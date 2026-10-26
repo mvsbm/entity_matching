@@ -1,0 +1,24 @@
+{"synthetic": false,
+ "schemaVersion": "2025-09-10",
+ "outputs": "f10ce1fd55fcbfc7",
+ "log":
+ [{"message":
+   ".> MACOSX_DEPLOYMENT_TARGET=99.0 /Users/marvinma/.elan/toolchains/leanprover--lean4---v4.35.0/bin/clang -o /Users/marvinma/projects/entity matching/.lake/build/bin/export @/Users/marvinma/projects/entity matching/.lake/build/bin/export.rsp",
+   "level": "trace"}],
+ "inputs":
+ [["Export:linkInfo",
+   [["Module.moreLinkObjs",
+     [["/Users/marvinma/projects/entity matching/.lake/build/ir/Export.c.o.export",
+       "a29da56636da1396"],
+      ["/Users/marvinma/projects/entity matching/.lake/build/ir/Nayose/Rules.c.o.export",
+       "c06e1e8c205fed9c"],
+      ["/Users/marvinma/projects/entity matching/.lake/build/ir/Nayose/Compare.c.o.export",
+       "46ea8c6468e7ba34"]]],
+    ["Module.moreLinkLibs", "00000000000006bb"],
+    ["Module.moreLinkArgs: #[]", "00000000000006bb"]]],
+  ["LeanExe.exeOnlyLinkArgs: #[]", "00000000000006bb"],
+  ["Lean 4.35.0, commit eb6cafb7290e8bd5f2937522d8d804f58f02bafc",
+   "407ce514b71d5a10"],
+  ["arm64-apple-darwin24.6.0", "77c16133d139df5a"],
+  ["MACOSX_DEPLOYMENT_TARGET: 99.0", "841efb403ba0ed2d"]],
+ "depHash": "34fed4d89cd99992"}

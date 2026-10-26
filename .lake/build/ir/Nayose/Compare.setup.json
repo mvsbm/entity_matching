@@ -1,0 +1,9 @@
+{"plugins": [],
+ "package": "nayose",
+ "options": {},
+ "name": "Nayose.Compare",
+ "isModule": false,
+ "importArts":
+ {"Nayose.Rules":
+  [["/Users/marvinma/projects/entity matching/.lake/build/lib/lean/Nayose/Rules.olean"]]},
+ "dynlibs": []}

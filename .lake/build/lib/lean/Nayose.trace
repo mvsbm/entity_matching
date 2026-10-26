@@ -1,0 +1,33 @@
+{"synthetic": false,
+ "schemaVersion": "2025-09-10",
+ "outputs":
+ {"o": ["e3971aba331b8b0c.olean"],
+  "m": false,
+  "i": "945c92ab6ae2c7c1.ilean",
+  "c": "5fef3e7edf71af73.c"},
+ "log":
+ [{"message":
+   ".> LEAN_PATH=/Users/marvinma/projects/entity matching/.lake/build/lib/lean /Users/marvinma/.elan/toolchains/leanprover--lean4---v4.35.0/bin/lean /Users/marvinma/projects/entity matching/Nayose.lean -o /Users/marvinma/projects/entity matching/.lake/build/lib/lean/Nayose.olean -i /Users/marvinma/projects/entity matching/.lake/build/lib/lean/Nayose.ilean -c /Users/marvinma/projects/entity matching/.lake/build/ir/Nayose.c --setup /Users/marvinma/projects/entity matching/.lake/build/ir/Nayose.setup.json --json",
+   "level": "trace"}],
+ "inputs":
+ [["deps",
+   [["nayose/Nayose:extraDep", [["@nayose:extraDep", "00000000000006bb"]]],
+    ["imports",
+     [["Nayose.Rules transitive imports (legacy)", "00000000000006bb"],
+      ["Nayose.Rules:importAllArts", "fdbd161c8a69810b"],
+      ["Nayose.Compare transitive imports (legacy)", "500e55d58220556b"],
+      ["Nayose.Compare:importAllArts", "5206f2e9621d0ca4"]]]]],
+  ["libs",
+   [["import dynlibs", "00000000000006bb"],
+    ["package external libraries", "00000000000006bb"],
+    ["module dynlibs", "00000000000006bb"],
+    ["module plugins", "00000000000006bb"]]],
+  ["Lean 4.35.0, commit eb6cafb7290e8bd5f2937522d8d804f58f02bafc",
+   "407ce514b71d5a10"],
+  ["/Users/marvinma/projects/entity matching/Nayose.lean", "cb6150b13d34443a"],
+  ["options", "00000000000006bb"],
+  ["isModule: false", "feefd2a0d3a1847e"],
+  ["Module.name: Nayose", "66f0c5fa067fe5a5"],
+  ["Package.id?: (some nayose)", "be905c28927a37b6"],
+  ["Module.leanArgs: #[]", "00000000000006bb"]],
+ "depHash": "eccb32ef9773d8b8"}

@@ -1,0 +1,30 @@
+{"synthetic": false,
+ "schemaVersion": "2025-09-10",
+ "outputs":
+ {"o": ["3d5ef400ef55a44e.olean"],
+  "m": false,
+  "i": "9868e85aa039d1e0.ilean",
+  "c": "ee9abf579b8f4182.c"},
+ "log":
+ [{"message":
+   ".> LEAN_PATH=/Users/marvinma/projects/entity matching/.lake/build/lib/lean /Users/marvinma/.elan/toolchains/leanprover--lean4---v4.35.0/bin/lean /Users/marvinma/projects/entity matching/Nayose/Rules.lean -o /Users/marvinma/projects/entity matching/.lake/build/lib/lean/Nayose/Rules.olean -i /Users/marvinma/projects/entity matching/.lake/build/lib/lean/Nayose/Rules.ilean -c /Users/marvinma/projects/entity matching/.lake/build/ir/Nayose/Rules.c --setup /Users/marvinma/projects/entity matching/.lake/build/ir/Nayose/Rules.setup.json --json",
+   "level": "trace"}],
+ "inputs":
+ [["deps",
+   [["nayose/Nayose:extraDep", [["@nayose:extraDep", "00000000000006bb"]]],
+    ["imports", "00000000000006bb"]]],
+  ["libs",
+   [["import dynlibs", "00000000000006bb"],
+    ["package external libraries", "00000000000006bb"],
+    ["module dynlibs", "00000000000006bb"],
+    ["module plugins", "00000000000006bb"]]],
+  ["Lean 4.35.0, commit eb6cafb7290e8bd5f2937522d8d804f58f02bafc",
+   "407ce514b71d5a10"],
+  ["/Users/marvinma/projects/entity matching/Nayose/Rules.lean",
+   "c4870d77ad4f7922"],
+  ["options", "00000000000006bb"],
+  ["isModule: false", "feefd2a0d3a1847e"],
+  ["Module.name: Nayose.Rules", "a099b95640eb2206"],
+  ["Package.id?: (some nayose)", "be905c28927a37b6"],
+  ["Module.leanArgs: #[]", "00000000000006bb"]],
+ "depHash": "6bdcf20d4afa4d3e"}
