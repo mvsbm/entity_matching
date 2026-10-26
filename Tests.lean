@@ -8,6 +8,7 @@
 
 import Nayose.Rules
 import Nayose.Compare
+import Nayose.Normalize
 
 open Nayose Field
 
@@ -66,3 +67,39 @@ def prof (kind : Kind) (fs : List (Field × Nat)) : Profile :=
 #guard (prof .org [(kanaFull, 5), (dob, 3), (cif, 2)]).tier == .none
 -- Name and birth date agree, but nothing corroborates: not SAFE
 #guard (prof .person [(kanaFull, 5), (dob, 3)]).tier == .candidate
+
+-- Normalization (T7 is proved in Nayose/Normalize.lean; these fix the data) -----
+
+#print axioms Nayose.strict_idem
+#print axioms Nayose.loose_idem
+#print axioms Nayose.kanjiNorm_idem
+
+-- Strict: hiragana to katakana, separators out, small kana and vowels untouched
+#guard strict "さとう たろう" == "サトウタロウ"
+#guard strict "サトウ・タロウ" == "サトウタロウ"
+#guard strict "ゆーこ" == "ユーコ"
+#guard strict "ヴ" == "ヴ"
+
+-- Loose: small kana enlarged, voiced folded, long vowels spelled out
+#guard loose "ゆーこ" == "ユウコ"
+#guard loose "けーこ" == "ケイコ"
+#guard loose "おーさま" == "オウサマ"
+#guard loose "コーヒー" == "コウヒイ"
+#guard loose "ヴ" == "ブ"
+#guard loose "ヂヅヲ" == "ジズオ"
+#guard loose "きゃく" == "キヤク"
+-- ゖ is small ケ: one pass must reach ケ, not stop at ヶ
+#guard loose "ゖ" == "ケ"
+#guard loose "ゎ" == "ワ"
+-- a mark with nothing to lengthen is dropped
+#guard loose "ー" == ""
+
+-- Kanji variants (starter list)
+#guard kanjiNorm "髙橋" == "高橋"
+#guard kanjiNorm "澤田" == "沢田"
+
+-- T7 as a property, on the shapes that actually occur
+#guard strict (strict "さとう たろう") == strict "さとう たろう"
+#guard loose (loose "ゆーこ") == loose "ゆーこ"
+#guard loose (loose "ゖゃー・ヂ") == loose "ゖゃー・ヂ"
+#guard kanjiNorm (kanjiNorm "髙﨑邊澤") == kanjiNorm "髙﨑邊澤"

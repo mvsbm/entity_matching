@@ -156,7 +156,7 @@ Each line is a theorem over all inputs, not a test over samples.
 | T4 | `tier_mono` | Moving any field toward agreement never lowers the tier (given weights that rise with agreement, checked at runtime) — proven as `review_mono`: an improved field can cost SAFE, because a newly populated kanji or given name can fire a veto, but it can never drop the pair out of review. `tier_mono` as written is false with vetoes; the review form is what the code needs. |
 | T5 | `safe_has_corroboration` | Every SAFE pair has a shared CIF, identifier or household |
 | T6 | `safe_shares_corroboration_key` | Restated on the actual records: a SAFE pair always shares a corroboration block key, so blocking can't miss it |
-| T7 | `lookupD_idem` + table checks | Character folding is idempotent: folding twice equals folding once |
+| T7 | `foldList_idem`, `strict_idem`, `loose_idem`, `kanjiNorm_idem` | Character folding is idempotent: folding twice equals folding once (proved for the kana strict/loose and kanji-variant tables; half-width kana are NFKC, upstream in Python) |
 | T8 | `agrees_merge`, `agree_no_*_veto` | The chain check's merge test is sound: members of a merged group never veto each other on gender, birth date, given name or kanji (the unique-ID part is checked but not proven) |
 
 **Not proven (tested instead):** TSV parsing, Jaro-Winkler, EM, the union-find loop around the T8 lemma, and the link from keys to buckets. These are short, and the synthetic-data run checks them end to end.
@@ -247,7 +247,7 @@ Every one of the N = 1.2M records is read, normalized and indexed; only pair com
 
 ## Phases
 
-1. ~~**Compile the Lean project**~~ — **done**: `lake build` is green on Lean 4.35.0. T1–T5 and T6 are proven, the rule table is exported to `rules.json`, and `Tests.lean` holds the evaluation table below as `#guard` checks. T7 and T8 are not written yet. (Building it already caught one rule-transcription bug: S1's kana requirement was encoded as two required groups instead of one with two alternatives.)
+1. ~~**Compile the Lean project**~~ — **done**: `lake build` is green on Lean 4.35.0. T1–T7 are proven, the rule table is exported to `rules.json`, and `Tests.lean` holds the evaluation table below as `#guard` checks. T8 and everything after the decision — levels for 9 more fields, blocking, scoring, clustering, output — is not written yet; README.md lists the milestones and the two end-to-end theorems that define done. Three data bugs so far, all caught mechanically: S1's kana requirement was AND instead of OR; ゖ → ヶ → ケ needed two folding passes; the long-vowel table mapped オ to itself instead of ウ.
 2. **Profile (data PC)** — aggregate stats only: null and placeholder rates, ID\_TP\_CD values and how often each identifier is shared, CIF and household sharing, gender codes, block sizes. Settles the open items.
 3. **Run on synthetic data** — a generator with planted duplicates and look-alikes checks the whole pipeline before it touches real data.
 4. **Run on the 1.2M test set** — export Parquet → TSV with Polars, run `nayose run`, read the report.

@@ -25,6 +25,55 @@ No `sorry`; only `propext` and `Quot.sound`.
 runner reads. `safe_person_rules_need_dob` and `safe_rules_force_corroboration`
 are `decide` checks over that data, so a bad rule edit fails the build.
 
+## Status against the pipeline
+
+| Stage | In Lean | Proofs |
+| --- | --- | --- |
+| read Parquet → TSV | no (Python, by plan) | — |
+| normalize | `Nayose/Normalize.lean`: kana strict, kana loose, kanji variants | T7 ✓ |
+| levels | 3 of 12 (`cif`, `ident`, `household`) | T6 on those |
+| block | corroboration keys only | T6 |
+| score | no | — |
+| decide | rules, vetoes, `tier` | T1, T2, T3, T5, T4-review |
+| cluster | no | — |
+| output | no | — |
+
+## Definition of done
+
+The binary's `main` calls one function `run`. Every theorem is about `run` or a
+pure helper it calls — not about a test-only copy. Two end-to-end theorems close
+the pipeline:
+
+- **E1 `safe_pairs_returned`** — if the rules make a pair SAFE, the pair is in
+  `run`'s output. Chain: rules → corroboration (T5) → a shared key (T6) → the
+  key is never stoplisted or truncated (cap lemma) → the pair is generated →
+  dedup keeps it → the writer emits it.
+- **E2 `merged_groups_consistent`** — the union-find only merges groups whose
+  members do not conflict on gender, birth date, given name, kanji or a unique
+  identifier (T8), and a refused merge is emitted as CANDIDATE `CHAIN_CONFLICT`.
+
+Milestones, in order, each one green before the next:
+
+| # | Content | Acceptance |
+| --- | --- | --- |
+| M1 | normalize (done) | `strict_idem`, `loose_idem`, `kanjiNorm_idem` + `#guard` examples |
+| M2 | all 12 level functions on `Norm`; delete `profileOf`'s `other` | T6 restated with no assumption; levels ≤ `arity` proved |
+| M3 | `decide` returns `{tier, rule, reasons}`; C6 threshold folded in | `Tests.lean` checks rule names and reason codes |
+| M4 | keys B1–B9, sorted neighbourhood, cap, stoplist blanking, dedup | E1 |
+| M5 | Fellegi-Sunter with integer centibits + monotone-weight check | weight check is a build-time `decide` over the level order |
+| M6 | union-find, strongest-first, refused merge → CANDIDATE | E2 |
+| M7 | TSV in/out, report, `run` | the binary and the theorems name the same function |
+
+Trust ledger — what stays unproven, and how each is checked:
+
+| Assumption | Why it stays | Checked by |
+| --- | --- | --- |
+| Unicode NFKC | standards conformance, not a decision | Python `unicodedata`, version pinned |
+| Jaro-Winkler | float distance, not part of the SAFE rules | differential test vs Python on name pairs |
+| EM for `m` | fitted statistics | synthetic run + the weight check |
+| rule/variant/vowel tables | they encode the business rules | `#guard` cases, review samples, `decide` invariants |
+| TSV parsing | Lean has no CSV reader | round-trip test on the 1.2M export |
+
 ## Not proven, by design
 
 - Jaro-Winkler, TSV parsing, EM, and the union-find loop. The plan tests these.
