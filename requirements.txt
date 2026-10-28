@@ -1,0 +1,11 @@
+# pinned: the seeded synthetic data is only reproducible with the same numpy/pandas
+numpy==2.4.4
+pandas==3.0.3
+ipykernel==7.4.0
+splink==5.0.0
+optuna==5.0.0
+optuna-dashboard==0.21.0  # localhost web UI for the study
+ipywidgets==8.1.9  # notebook progress bars (tqdm / optuna)
+rapidfuzz==3.14.6  # character-level string metrics; DuckDB's jaro_winkler/jaccard/damerau compare UTF-8 bytes
+scikit-learn==1.9.1  # TF-IDF char n-gram candidates
+-e .  # the er package (pipeline engine shared by the notebooks)

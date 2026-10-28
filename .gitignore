@@ -1,1 +1,11 @@
-.lake/
+.venv/
+__pycache__/
+*.egg-info/
+.DS_Store
+
+# Generated data: rebuild by running the notebooks in order.
+# data/medallion/bronze/reference/ stays tracked: a frozen snapshot of public sources (see its SOURCES.md).
+data/medallion/silver/
+data/medallion/gold/
+data/labels/
+data/artifacts/
