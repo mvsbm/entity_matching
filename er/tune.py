@@ -6,6 +6,7 @@ import warnings
 
 import optuna
 import optuna_dashboard
+import pandas as pd
 
 from er.config import Candidate, Comparator, ProbTune, Tune
 from er.strings import FUNCTIONS
@@ -57,12 +58,14 @@ def plain(v: object) -> object:  # SQLite storage needs plain Python numbers in 
     return v.item() if hasattr(v, "item") else v
 
 
-def pick_within_noise(front: "pd.DataFrame", recall: str, recall_lo: str, recall_hi: str, fp_ok: str, cost: str) -> int:
+def pick_within_noise(front: pd.DataFrame, recall: str, recall_lo: str, recall_hi: str, fp_ok: str, cost: str) -> int | None:
     """The one-standard-error idea for a Pareto front: among rows that meet the FP target (`fp_ok`), take every row
     whose recall is within the best row's interval half-width of it, then the cheapest of those. Prefers a simpler
-    configuration when the 'better' one is better only by noise. Returns the row's index label."""
+    configuration when the 'better' one is better only by noise. Returns the row's index label, or None when no row
+    meets the FP target."""
     ok = front[front[fp_ok]]
-    pool = ok if len(ok) else front
-    best = pool.loc[pool[recall].idxmax()]
-    near = pool[pool[recall] >= best[recall] - (best[recall_hi] - best[recall_lo]) / 2]
+    if ok.empty:
+        return None
+    best = ok.loc[ok[recall].idxmax()]
+    near = ok[ok[recall] >= best[recall] - (best[recall_hi] - best[recall_lo]) / 2]
     return near[cost].idxmin()

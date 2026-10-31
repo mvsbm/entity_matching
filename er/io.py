@@ -1,4 +1,4 @@
-"""Datasets and the standard stage files (dataset ∈ full, train, val, test, stress, large, …).
+"""Datasets and the standard stage files (dataset ∈ train, val, test).
 
 data/medallion/silver/<dataset>.csv                      input records
 data/labels/<dataset>.csv                                truth, read only to evaluate
@@ -30,6 +30,8 @@ def stage_path(data: Data, kind: str, dataset: str, stage: str) -> Path:
 
 def write_stage(data: Data, dataset: str, stage: str, pairs: pd.DataFrame, resolved: pd.DataFrame,
                 unresolved: pd.DataFrame) -> None:
+    l, r = f"{data.unique_id}_l", f"{data.unique_id}_r"
+    pairs = pairs.sort_values([l, r], kind="stable")  # DuckDB's parallel joins emit rows in varying order
     for kind, frame in (("matched", pairs), ("resolved", resolved), ("unresolved", unresolved)):
         path = stage_path(data, kind, dataset, stage)
         path.parent.mkdir(parents=True, exist_ok=True)

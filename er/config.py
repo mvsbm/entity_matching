@@ -7,7 +7,6 @@ from typing import Literal
 from er.strings import FUNCTIONS, Function
 
 Normalizer = Literal["nfkc", "strip_spaces", "kana_fold", "strip_legal_form", "address"]
-Kind = Literal["person", "company"]
 
 
 class OverBudget(Exception):
@@ -195,10 +194,10 @@ class FSModel:
     em_rules: tuple[tuple[Key, ...], ...]     # one EM session per rule
     seed: int
 
-    def u_signature(self) -> str:
-        """What u depends on: the comparisons (term-frequency adjustment aside), the sample size and the seed.
-        Models that share it, e.g. differing only in m_method or tf, have identical u."""
-        return repr((tuple(replace(c, tf=None) for c in self.comparisons), self.u_max_pairs, self.seed))
+    def u_keys(self) -> dict[str, str]:
+        """What each comparison's u depends on, besides the fitting records: the comparison (term-frequency adjustment
+        aside), the sample size and the seed. Equal keys give identical u, also across models."""
+        return {c.name: repr((replace(c, tf=None), self.u_max_pairs, self.seed)) for c in self.comparisons}
 
     def normalized(self) -> list[tuple[str, tuple[Normalizer, ...]]]:
         out = [(col, comp.normalize) for c in self.comparisons for lv in c.levels for col, comp in lv.any_of if comp.normalize]
@@ -255,8 +254,7 @@ class Data:
     artifacts_dir: Path                       # {matched,resolved,unresolved}/<dataset>/<stage>_*.csv
     experiments_dir: Path                     # leaderboard.csv
     models_dir: Path
-    datasets: tuple[str, ...]                 # every dataset a notebook writes outputs for
-    robustness: tuple[str, ...]               # evaluation-only datasets: reported, never tuned on
+    datasets: tuple[str, ...]                 # every dataset a notebook writes outputs for: train, val, test
     unique_id: str
     entity_id: str                            # truth column
     show_rows: int
@@ -290,8 +288,7 @@ class Candidate:
 class Tune:
     stage: str                                # the stage whose comparators are searched
     space: Mapping[str, tuple[Candidate, ...]]
-    n_trials: int
-    timeout_s: float
+    n_trials: int                             # the only bound: a wall-clock timeout would make the front depend on machine speed
     seed: int
     storage_path: Path                        # SQLite file the study is saved to; optuna-dashboard reads it
     study_prefix: str                         # each run is a new study: <prefix>_<timestamp>
@@ -306,10 +303,8 @@ class ProbTune:
     m_methods: tuple[Literal["em", "labels"], ...]
     tf_options: tuple[bool, ...]
     level_thresholds: Mapping[tuple[str, str], tuple[float, float, float]]  # (comparison, level) → low, high, step
-    weight_range: tuple[float, float, float]  # min_match_weight: low, high, step
     resolvers: Mapping[str, Resolver]
-    n_trials: int
-    timeout_s: float
+    n_trials: int                             # the only bound, as in Tune
     seed: int
     storage_path: Path
     study_prefix: str

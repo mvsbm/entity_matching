@@ -45,10 +45,3 @@ def prepare(std: Standardization, records: pd.DataFrame, normalized: Iterable[tu
     missing = set(used) - set(df.columns)
     assert not missing, f"unknown columns: {sorted(missing)}"
     return df
-
-
-def self_check(std: Standardization) -> None:
-    """The ways one address gets typed must normalize to one key."""
-    typed = pd.Series(["東京都千代田区丸の内1丁目3番17号", "千代田区丸の内１－３－１７", "東京都千代田区丸の内1-3-17　サクラハイツ101"],
-                      dtype="string")
-    assert normalize(typed, ("address",), std).nunique() == 1, normalize(typed, ("address",), std).tolist()

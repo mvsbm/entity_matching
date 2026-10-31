@@ -21,7 +21,7 @@ def connected_components(ids: pd.Series, edges: pd.DataFrame, db: DuckDBAPI, uid
 
 
 def constrained(ids: pd.Series, edges: pd.DataFrame, records: pd.DataFrame, cannot_link: tuple[str, ...],
-                uid: str) -> tuple[pd.Series, int]:
+                uid: str) -> pd.Series:
     parent = {i: i for i in ids}
     by_id = records.set_index(uid)
     values = {i: {c: ({by_id.at[i, c]} if pd.notna(by_id.at[i, c]) else set()) for c in cannot_link} for i in ids}
@@ -33,24 +33,22 @@ def constrained(ids: pd.Series, edges: pd.DataFrame, records: pd.DataFrame, cann
             i = parent[i]
         return i
 
-    refused = 0
     for a, b in edges.sort_values("score", ascending=False, kind="stable")[[f"{uid}_l", f"{uid}_r"]].itertuples(index=False):
         ra, rb = find(a), find(b)
         if ra == rb:
             continue
         if any(values[ra][c] and values[rb][c] and values[ra][c].isdisjoint(values[rb][c]) for c in cannot_link):
-            refused += 1
-            continue
+            continue  # refused: the two clusters conflict
         if size[ra] < size[rb]:
             ra, rb = rb, ra
         parent[rb], size[ra] = ra, size[ra] + size[rb]
         for c in cannot_link:
             values[ra][c] |= values[rb][c]
-    return pd.Series([find(i) for i in ids], index=ids.to_numpy(), dtype="string"), refused
+    return pd.Series([find(i) for i in ids], index=ids.to_numpy(), dtype="string")
 
 
 def resolve(resolver: Resolver, ids: pd.Series, edges: pd.DataFrame, records: pd.DataFrame, db: DuckDBAPI,
             uid: str) -> pd.Series:
     if resolver.method == "connected_components":
         return connected_components(ids, edges, db, uid)
-    return constrained(ids, edges, records, resolver.cannot_link, uid)[0]
+    return constrained(ids, edges, records, resolver.cannot_link, uid)

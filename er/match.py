@@ -8,6 +8,7 @@ fellegi_sunter  Splink's Fellegi–Sunter model: λ from near-certain rules, u b
 import logging
 import math
 import time
+from dataclasses import replace
 
 import pandas as pd
 import splink.comparison_level_library as cll
@@ -15,6 +16,7 @@ import splink.comparison_library as cl
 from splink import DuckDBAPI, Linker, SettingsCreator
 
 from er.config import Comparison, FSModel, RulesSpec, keys_sql
+from er.evaluate import fp_upper
 
 
 def rule_edges(spec: RulesSpec, df: pd.DataFrame, db: DuckDBAPI, uid: str) -> tuple[pd.DataFrame, dict[str, float]]:
@@ -34,12 +36,12 @@ def rule_edges(spec: RulesSpec, df: pd.DataFrame, db: DuckDBAPI, uid: str) -> tu
 
 
 ELSE = "else"
-U = dict[tuple[str, str], float]  # (comparison, level label) → u probability
+U = dict[str, dict[str, float]]  # comparison → level label → u probability
 
 
-def comparison(c: Comparison, u: U | None = None) -> cl.CustomComparison:
+def comparison(c: Comparison, u: dict[str, float] | None = None) -> cl.CustomComparison:
     def with_u(level: cll.ComparisonLevelCreator, label: str) -> cll.ComparisonLevelCreator:
-        return level.configure(u_probability=u[c.name, label]) if u and (c.name, label) in u else level
+        return level.configure(u_probability=u[label]) if u and label in u else level
     null = " AND ".join(f'("{col}_l" IS NULL OR "{col}_r" IS NULL)' for col in c.null_if_missing)
     levels = [cll.CustomLevel(null, "missing").configure(is_null_level=True)]
     for lv in c.levels:
@@ -51,45 +53,86 @@ def comparison(c: Comparison, u: U | None = None) -> cl.CustomComparison:
 
 def fs_settings(model: FSModel, uid: str, u: U | None = None) -> SettingsCreator:
     return SettingsCreator(link_type="dedupe_only", unique_id_column_name=uid,
-                           comparisons=[comparison(c, u) for c in model.comparisons],
+                           comparisons=[comparison(c, (u or {}).get(c.name)) for c in model.comparisons],
                            blocking_rules_to_generate_predictions=[keys_sql(r) for r in model.em_rules])
 
 
 def u_values(model_json: dict) -> U:
-    """u per (comparison, level) of a trained model, to reuse in models with the same comparisons (FSModel.u_signature).
-    A level no random pair reached (e.g. a lower JW level shadowed by a higher one at the same threshold) has no u;
-    it is left out, so the reused model falls back to Splink's default exactly as a fresh one does."""
-    return {(c["output_column_name"], lv["label_for_charts"]): lv["u_probability"]
-            for c in model_json["comparisons"] for lv in c["comparison_levels"]
-            if not lv.get("is_null_level") and "u_probability" in lv}
+    """Estimated u per comparison and level, to reuse for comparisons with the same FSModel.u_keys(). Levels filled with
+    a bound (no sampled pair reached them) are left out: the reusing model recomputes the same bound."""
+    filled = {tuple(x) for x in model_json.get("er", {}).get("filled", {}).get("u", [])}
+    return {c["output_column_name"]: {lv["label_for_charts"]: lv["u_probability"] for lv in c["comparison_levels"]
+                                      if not lv.get("is_null_level") and "u_probability" in lv
+                                      and (c["output_column_name"], lv["label_for_charts"]) not in filled}
+            for c in model_json["comparisons"]}
+
+
+def sample_u(model: FSModel, comparisons: list[Comparison], df: pd.DataFrame, db: DuckDBAPI, uid: str) -> U:
+    """Splink's random sampling for just these comparisons. The sample depends only on the records, the size and the
+    seed, so this equals sampling them inside the full model (tests/). O(max_pairs · comparisons)."""
+    if not comparisons:
+        return {}
+    linker = Linker(db.register(df), fs_settings(replace(model, comparisons=tuple(comparisons)), uid), log_level=logging.ERROR)
+    linker.training.estimate_u_using_random_sampling(max_pairs=model.u_max_pairs, seed=model.seed)
+    return u_values(linker.misc.save_model_to_json())
+
+
+def u_bound(model: FSModel, c: Comparison, df: pd.DataFrame) -> float:
+    """95% upper bound on u for a level no sampled pair reached: zero hits among the sampled pairs where the comparison
+    is filled, of which there are at least (largest fill share of its columns)² of the sample."""
+    sampled = min(model.u_max_pairs, len(df) * (len(df) - 1) / 2)
+    return fp_upper(0, max(1, int(sampled * max(df[col].notna().mean() for col in c.null_if_missing) ** 2)))
 
 
 def train_fs(model: FSModel, df: pd.DataFrame, db: DuckDBAPI, uid: str, labels: pd.Series | None = None,
              u: U | None = None) -> dict:
-    """Train on df; `labels` (entity per uid) is required for m_method="labels". Returns the Splink model JSON.
-    u-sampling is ~97% of training time and depends only on the comparisons and the records (FSModel.u_signature),
-    not on the m method or term-frequency adjustment. Pass `u` from such a model to skip it."""
+    """Train on df; `labels` (entity per uid) is required for m_method="labels". Returns the Splink model JSON plus
+    "er": what scoring needs (fitting-set size, term frequencies) and which levels had no estimate.
+    u-sampling is ~97% of training time and depends only on each comparison and the records (FSModel.u_keys), not on
+    the m method or term-frequency adjustment: pass `u` (u_values of such a model) to skip those comparisons.
+    A level without an estimate never falls back to Splink's defaults: no sampled pair → u at its upper bound (the
+    weight is a lower bound on the evidence); never seen in training → m = u (0 bits)."""
     t = df.copy()
     if model.m_method == "labels":
         assert labels is not None, "m_method='labels' needs truth labels"
         t["__label__"] = t[uid].map(labels)
-    linker = Linker(db.register(t), fs_settings(model, uid, u), log_level=logging.WARNING)
+    u = {**(u or {}), **sample_u(model, [c for c in model.comparisons if c.name not in (u or {})], t, db, uid)}
+    labels_of = {c.name: [*(lv.label for lv in c.levels), ELSE] for c in model.comparisons}
+    filled_u = [[c.name, lv] for c in model.comparisons for lv in labels_of[c.name] if lv not in u[c.name]]
+    u = {c.name: {lv: u[c.name].get(lv) or u_bound(model, c, t) for lv in labels_of[c.name]} for c in model.comparisons}
+    linker = Linker(db.register(t), fs_settings(model, uid, u), log_level=logging.ERROR)  # unestimated levels: handled here
     linker.training.estimate_probability_two_random_records_match([keys_sql(r) for r in model.prior_rules],
                                                                   recall=model.prior_recall)
-    if u is None:
-        linker.training.estimate_u_using_random_sampling(max_pairs=model.u_max_pairs, seed=model.seed)
     if model.m_method == "em":
         for rule in model.em_rules:
             linker.training.estimate_parameters_using_expectation_maximisation(keys_sql(rule))
     else:
         linker.training.estimate_m_from_label_column("__label__")
-    return linker.misc.save_model_to_json()
+    model_json = linker.misc.save_model_to_json()
+    filled_m = []
+    for c in model_json["comparisons"]:
+        for lv in c["comparison_levels"]:
+            if not lv.get("is_null_level") and "m_probability" not in lv:
+                lv["m_probability"] = lv["u_probability"]
+                filled_m.append([c["output_column_name"], lv["label_for_charts"]])
+    tf = {c.tf.name: (t[c.tf.name].value_counts() / t[c.tf.name].notna().sum()).to_dict()  # Splink's own formula
+          for c in model.comparisons if c.tf and any(lv.tf for lv in c.levels)}
+    return {**model_json, "er": dict(fit_rows=len(t), tf=tf, filled=dict(u=filled_u, m=filled_m))}
 
 
 def score_fs(model_json: dict, df: pd.DataFrame, pairs: pd.DataFrame, db: DuckDBAPI, uid: str) -> pd.DataFrame:
-    """Score exactly these candidate pairs (uid_l < uid_r) with a trained model."""
+    """Score exactly these candidate pairs (uid_l < uid_r) with a model from train_fs, so that a score doesn't depend
+    on the size of the scored set: term frequencies come from the fitting records (a value unseen there gets no
+    adjustment), and λ, a per-pair rate (true pairs grow with N, pairs with N²), is rescaled to this set's size."""
     l, r = f"{uid}_l", f"{uid}_r"
-    linker = Linker(db.register(df), model_json, log_level=logging.WARNING)
+    fit = model_json["er"]
+    prior = model_json["probability_two_random_records_match"] * (fit["fit_rows"] - 1) / max(len(df) - 1, 1)
+    settings = {k: v for k, v in model_json.items() if k != "er"} | {"probability_two_random_records_match": min(prior, 1 - 1e-9)}
+    linker = Linker(db.register(df), settings, log_level=logging.WARNING)
+    linker.table_management.invalidate_cache()  # the cache lives on the shared db, keyed by table name only
+    for col, tf in fit["tf"].items():
+        lookup = pd.DataFrame({col: list(tf), f"tf_{col}": list(tf.values())})
+        linker.table_management.register_term_frequency_lookup(db.register(lookup), col)
     if pairs.empty:
         return pairs.assign(match_weight=pd.Series(dtype=float), match_probability=pd.Series(dtype=float))
     blocked = db.register(pd.DataFrame({"match_key": "0", "join_key_l": pairs[l].to_numpy(), "join_key_r": pairs[r].to_numpy()}))

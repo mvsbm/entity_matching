@@ -3,7 +3,7 @@
 This project finds the CONT_IDs that belong to the same real person or company. It works on synthetic records built from **real Japanese names, companies and addresses**, whose true answers are known, so every method can be measured exactly before it touches real data.
 
 Ground rules:
-- **Config-driven:** each notebook has one Configuration cell, the only place that names columns. The engine is the shared `er` package, which names none.
+- **Config-driven:** column names live only in `config/settings.toml` (paths, datasets, schema, standardization, shared by every notebook) and in each notebook's Configuration cell (that stage's rules, model and search). The engine is the shared `er` package, which names none.
 - **Every search reports its time complexity** (Big-O with the numbers filled in) before and after it runs.
 - **Every metric carries its uncertainty**, and every choice is made on data the choice is not judged on (§7).
 
@@ -21,6 +21,7 @@ flowchart LR
     yub["yubinbango-data"]
   end
   bronze[("medallion/bronze/reference<br/>individual · companies · addresses (.json)")]
+  settings[/"config/settings.toml<br/>paths · datasets · schema · standardization"/]
   gen["dataset_generation.ipynb"]
   silver[("medallion/silver/〈dataset〉.csv<br/>19 columns")]
   labels[("labels/〈dataset〉.csv<br/>truth")]
@@ -45,9 +46,10 @@ flowchart LR
   labels -.->|"evaluation only"| prob
   det -->|"one row per experiment"| board
   prob -->|"one row per experiment"| board
+  settings -.->|"er.settings.load_settings()"| gen & det & prob
 ```
 
-`〈dataset〉` ∈ `full`, `train`, `val`, `test`, `stress`, `large` (§3).
+`〈dataset〉` ∈ `train`, `val`, `test`: one generated population, split by entity (§3).
 
 **Where Splink and Optuna sit inside the two matching stages.** Splink does the joins, the scoring and the clustering. Everything around it (candidates, thresholds, decisions, evaluation) is the `er` package. Optuna proposes configurations and is scored only on data it doesn't fit on.
 
@@ -70,7 +72,7 @@ flowchart LR
     pmodel -->|"weights"| pscore
     pscore -->|"weight ≥ threshold (rule on out-of-fold scores)"| pacc["accepted pairs"]
     pacc -->|"+ deterministic pairs"| pcc["Splink connected components"]
-    popt["Optuna, cross-validated objective<br/>dashboard :8081"] -->|"generators, m, tf, levels, threshold, resolver"| pcand
+    popt["Optuna, cross-validated objective<br/>dashboard :8081"] -->|"generators, m, tf, levels, resolver"| pcand
     pcc -->|"out-of-fold FP, recall"| popt
   end
   dcc -->|"leftovers"| pleft
@@ -81,16 +83,21 @@ Both Optuna studies are stored in SQLite (`artifacts/optuna/*.db`), and optuna-d
 ## 2. Setup
 
 ```bash
-./setup_venv.sh        # creates .venv (Python ≥ 3.12) with pinned dependencies and `er` installed editable
+./setup_venv.sh                    # creates .venv (Python ≥ 3.12) with pinned dependencies and `er` installed editable
+.venv/bin/python -m pytest tests/  # engine checks (character-level strings, address keys, u reuse, scoring), ~2 s
 ```
 
 - **Kernel:** in VS Code, **Select Kernel → Python Environments → .venv**.
-- **Order:** run the notebooks from `notebooks/`, in order: generation → deterministic → probabilistic. All paths are relative to that folder.
+- **Order:** generation → deterministic → probabilistic. Paths in `config/settings.toml` are relative to the project root (the folder with `pyproject.toml`), so the notebooks run from any working folder.
 - **Reading CSVs:** use `dtype=str`, because codes such as `0600042` keep their leading zeros.
 
-## 3. Data layout
+## 3. Layout
 
 ```
+config/settings.toml    shared settings, loaded and validated by er.settings.load_settings()
+er/                     the engine (no column names)
+notebooks/              dataset_generation · deterministic_matching · probabilistic_matching
+tests/                  pytest checks of the engine, on a small hand-made frame
 data/
   medallion/
     bronze/reference/   individual.json · companies.json · addresses.json · SOURCES.md   (tracked in git)
@@ -105,14 +112,13 @@ data/
     models/ · optuna/                            Splink models (JSON) · Optuna studies (SQLite)
 ```
 
-**Datasets** use the same file name in every layer. Splits are partitions of one dataset, so they are files, not folders:
+**Datasets:** one generated population of 40,000 entities (50,215 records), split by entity so a duplicate group never spans two splits. Each split uses the same file name in every layer:
 
-| Dataset | Size | Role |
-|---|---|---|
-| `full` | 8,000 entities, 10,000 records | seed 0, the whole generated set |
-| `train` / `val` / `test` | 60 / 20 / 20% of `full`'s entities | fitting and selection / A/B confirmation / final report, once per configuration |
-| `stress` | 8,000 entities | seed 1; about 2× the typos (incl. addresses), less nesting, more households. Evaluation only |
-| `large` | 50,000 entities, 62,510 records | seed 2; certifies FP rates. Evaluation only |
+| Dataset | Entities | Records | Role |
+|---|---|---|---|
+| `train` | 60% | 30,147 | fitting, design analyses, cross-validated threshold and decisions, Optuna objective |
+| `val` | 20% | 10,002 | A/B confirmation and selection checks |
+| `test` | 20% | 10,066 | final report, once per configuration |
 
 Only `bronze/reference` is in git; everything else rebuilds from the notebooks (`.gitignore`).
 
@@ -132,10 +138,10 @@ Two traps came up while building this:
 
 ## 5. Synthetic data: `dataset_generation.ipynb`
 
-All parameters live in `SPEC`. `DATASETS` holds the `full`, `stress` and `large` variants of it, and `generate(spec)` builds each one.
+All parameters live in `SPEC` (the population) and `SPLIT` (shares and seed). `generate(SPEC)` builds the population, `check` asserts its invariants, and the split writes `silver/<split>.csv` and `labels/<split>.csv`.
 
-- **Entities:** 20% companies. Each entity has `1 + Poisson(0.25)` records.
-  - **Persons** are sampled personas, with realistic surname frequencies (サトウ, スズキ, タカハシ …). Their addresses lie in the persona's prefecture.
+- **Entities:** 40,000, 20% companies. Each entity has `1 + Poisson(0.25)` records.
+  - **Persons** are sampled personas, each at most once, with realistic surname frequencies (サトウ, スズキ, タカハシ …). Their addresses lie in the persona's prefecture. Sampling with replacement made about 8,500 pairs of clones (same name, same prefecture) that no matcher can tell apart; same-name pairs now come only from the persona file itself.
   - **Companies** are sampled real names with a legal form (カブシキガイシャ before or after the name).
   - **Addresses** are real towns with random 番/号, and a real postal code and JIS code.
 - **Multi-valued entities:** each entity owns `1 + Poisson(λ)` phones, addresses and names (λ = 0.3 for persons, 1.0 for companies). Each record shows one of them: married names, branch offices.
@@ -153,7 +159,7 @@ All parameters live in `SPEC`. `DATASETS` holds the `full`, `stress` and `large`
   - **Rates:** the non-null rate falls from 0.9999 to 0.6544 along the column order, counted where the column applies.
   - **Correlation:** shared within the name, postal and address groups by `nesting` ρ.
 - **Households:** unrelated entities sometimes share an address, which gives look-alikes that must not be merged.
-- **Asserts** run on every dataset: exact rates, digit formats, kind consistency, no CIF shared across entities, address code ↔ address 1:1.
+- **Asserts** run on the whole population before it is split: exact rates, digit formats, kind consistency, no CIF shared across entities, address code ↔ address 1:1.
 
 ## 6. Pipeline concepts and the `er` package
 
@@ -188,21 +194,20 @@ All parameters live in `SPEC`. `DATASETS` holds the `full`, `stress` and `large`
   | sorted neighbourhood | `O(N log N + N·w)` |
   | TF-IDF | brute-force cosine, `O(U·N·q)` |
 
-  On `large`, the phone key alone gives 42% of the candidates (only 10,000 possible values, so it grows with N²). TF-IDF takes 12 of the ~14 s of candidate time.
+  On val, the sorted neighbourhoods give 76% of the 33,945 candidates but reach no missed pair the exact keys miss. The phone key (only 10,000 possible values, so it grows with N²) gives 14%. TF-IDF takes 0.45 of the 0.64 s of candidate time.
 
-**Character vs byte:** DuckDB's `jaro_winkler_similarity`, `jaccard` and `damerau_levenshtein` compare UTF-8 bytes, and katakana is 3 bytes per character. That scores サトウヒロシ / サトウタカシ at 0.897 instead of 0.844. `er.strings.connect()` registers character-level rapidfuzz versions (`cl_*`); every rule and every Fellegi–Sunter level uses them, and a self-check guards them.
+**Character vs byte:** DuckDB's `jaro_winkler_similarity`, `jaccard` and `damerau_levenshtein` compare UTF-8 bytes, and katakana is 3 bytes per character. That scores サトウヒロシ / サトウタカシ at 0.897 instead of 0.844. `er.strings.connect()` registers character-level rapidfuzz versions (`cl_*`); every rule and every Fellegi–Sunter level uses them. `connect()` checks them on every start, and so does `tests/`.
 
 ## 7. Overfitting and uncertainty controls
 
 | Risk | Control in the code |
 |---|---|
 | Fitting and selecting on the same data | Fellegi–Sunter is fitted on train. The threshold and Optuna's objective use **entity-level 3-fold cross-validation inside train**: each fold is scored by a model fitted on the other folds. |
-| Selecting on one small set | Every table shows `recall_lo`/`recall_hi` (95% Wilson interval) and `fp_rate_hi` (95% Clopper–Pearson upper bound). A/B rows are **paired** against `SPEC`: true pairs gained and lost on the same records, an exact sign test, FP added and removed. Pareto choice by `pick_within_noise`: the cheapest configuration within one interval half-width of the best. |
-| Threshold chosen by eye | `ThresholdRule`: on out-of-fold train scores, the lowest weight with 0 false accepted pairs and a stage FP upper bound ≤ 5%, then one grid step stricter as a safety margin. Val only confirms. |
-| Variants adopted by preference | `DECISIONS` adopt a change only by rule, each applied on top of the current choice. "Better" needs a significant paired gain on cross-validated train with no FP added. "Cheaper" needs no paired loss. Both need no loss on `stress` and `large`. |
+| Selecting on one small set | Every table shows `recall_lo`/`recall_hi` (95% Wilson interval) and `fp_rate_hi` (95% Clopper–Pearson upper bound). A/B rows are **paired** against `SPEC`: true pairs gained and lost on the same records, an exact sign test, FP added and removed. Pareto choice by `pick_within_noise`: the cheapest configuration within one interval half-width of the best, among points that meet the FP target on val (none if no point does). |
+| Threshold chosen by eye | `ThresholdRule`: on out-of-fold train scores, the lowest weight with 0 false accepted pairs and a stage FP upper bound ≤ 5%, then one grid step stricter as a safety margin. One policy for every configuration: `SPEC`, each decision variant and each Optuna trial get their threshold this way (Optuna does not search it). The evaluation cell checks that it transfers: val's false-pair rate within the CV bound. |
+| Variants adopted by preference | `DECISIONS` adopt a change only by `er.evaluate.adopt`, each applied on top of the current choice. "Better" needs a significant paired gain (p < 0.05) on the selection set with no FP added; "cheaper" needs no paired loss there. Both need no paired loss on val. The selection set is cross-validated train for the probabilistic stage and train for the rules, which fit nothing. Optuna's suggestion faces the same rule before it can become a `CHANGES` entry. |
 | Leakage into design | Design analyses (which keys reach which pairs) run on **train only**. |
-| Overfitting the generator | Every final configuration is also reported on `stress` (another seed, harsher noise) and `large`. |
-| Small sets can't certify FP rates | `large` gives thousands of predicted pairs. Zero FP among n pairs only bounds the rate at ≈ 3/n. |
+| Small sets can't certify FP rates | Zero FP among n predicted pairs only bounds the rate at ≈ 3/n, so the population is 40,000 entities: test alone gives ~1,700 deterministic pairs, enough to bound the rate at 0.18%. |
 | Test peeking | The leaderboard counts distinct configurations scored on test per family; the output cells warn above 1. Currently 1 each. |
 
 ## 8. Stage 1: deterministic matching
@@ -214,30 +219,44 @@ All parameters live in `SPEC`. `DATASETS` holds the `full`, `stress` and `large`
   - CIF_ID + PHONE_NUM_4
   - FULL_NAME_KANA + SOURCE_ADDR_CD + PHONE_NUM_4
   - NYS_CNV_P_NAME_KANA + SOURCE_ADDR_CD + PHONE_NUM_4
-- **fuzzy:** one `Comparator` per column over derived fallback columns:
-  - `PERSON_NAME`: kana fold → JW ≥ 0.92
-  - company name: legal form stripped, then the same
-  - `ADDRESS`: normalized so all typed formats give one key, then exact
-  - phone: hamming ≤ 1
-  - plus the surname-change rule: given name + address code + phone
+- **fuzzy:** one `Comparator` per column over derived fallback columns, plus the surname-change rule (given name + address code + phone):
 
-The train-only design analysis justifies "never one key alone". Single keys collide across entities: phone 1,805 different-entity pairs, postal code 3,675, given name 4,586. Every rule's key combination has 0.
+  | Column | As written (`SPEC`) | Adopted (`FINAL`) |
+  |---|---|---|
+  | `PERSON_NAME` | kana fold → JW ≥ 0.92 | kana fold → Levenshtein ≤ 2 |
+  | company name | legal form stripped, kana fold → JW ≥ 0.92 | character-set Jaccard ≥ 0.77 |
+  | `ADDRESS` | normalized (all typed formats give one key) → exact | normalized → JW ≥ 0.91 |
+  | phone | Hamming ≤ 1 | Damerau–Levenshtein ≤ 1 |
 
-| Data | exact → + fuzzy recall | 95% interval | FP | FP rate ≤ |
+The train-only design analysis justifies "never one key alone". Single keys collide across entities: phone 45,506 different-entity pairs, postal code 41,868, given name 117,118, even the full name 230. Every exact rule's key combination has 0. The fuzzy rules' join keys have at most 4, and their fuzzy conditions reject those.
+
+**Decisions** (`adopt`, each on top of the choice so far; rules fit nothing, so train is the selection set):
+
+| Change | Rule | Train: true pairs gained / lost | Val: gained / lost | Adopted |
 |---|---|---|---|---|
-| val | 51.1% → 67.0% | 62.6–71.2% | 0 | 0.97% |
-| **test** | 57.0% → **73.4%** | 69.0–77.4% | 0 | 0.97% |
-| stress | 46.0% → 69.1% | 67.2–70.9% | 0 | 0.18% |
-| **large** | 51.8% → 68.1% | 67.4–68.9% | **0 of 9,618 pairs** | **0.031%** |
+| names: fold → Levenshtein ≤ 1 | better | 14 / 3 (p = 0.013) | 6 / 0 | yes |
+| names: fold → exact | cheaper | 0 / 173 | 0 / 66 | no |
+| Optuna's comparators (below) | better | 26 / 1 (p < 0.001) | 6 / 0 | yes |
 
-Paired A/B on val against `SPEC`, all with 0 FP:
+None adds a false pair. **Optuna** (60 trials on train, ≈ 50 s) starts from `FINAL`: its suggestion passed the same rule and became a `CHANGES` entry. Re-run from the new `FINAL`, the search's suggestion joins exactly the same pairs as `FINAL` (it differs only in using address Levenshtein ≤ 1 instead of JW ≥ 0.91), so the loop has converged.
+
+**Results with `FINAL`:**
+
+| Data | Recall | 95% interval | FP | FP rate ≤ |
+|---|---|---|---|---|
+| train | 69.2% | 68.1–70.3% | 0 | 0.06% |
+| val | 69.3% (exact rules alone: 52.2%) | 67.4–71.2% | 0 | 0.19% |
+| **test** | **71.1%** | 69.2–72.9% | **0** | 0.18% |
+
+Paired A/B on val against `SPEC` (informational; decisions use the rule above), all with 0 FP:
 
 | Variant | True pairs gained / lost | p |
 |---|---|---|
-| fold → Levenshtein ≤ 1 | 0 / 0 | 1 |
-| fold → exact | 0 / 5 | 0.06 |
-| raw Jaro-Winkler (no kana folding) | 0 / 8 | 0.008 |
-| constrained resolver (cannot-link on given name) | 0 / 40 | < 0.001 |
+| fold → Levenshtein ≤ 1 | 6 / 0 | 0.031 |
+| fold → exact | 0 / 60 | < 0.001 |
+| raw Jaro-Winkler (no kana folding) | 1 / 53 | < 0.001 |
+| constrained resolver (cannot-link on given name) | 0 / 210 | < 0.001 |
+| Optuna's comparators | 12 / 0 | < 0.001 |
 
 The constrained resolver loses because given-name typos look like conflicts.
 
@@ -247,65 +266,82 @@ The constrained resolver loses because given-name typos look like conflicts.
 - λ comes from near-certain rules, u from 1e7 random pairs, m from EM (or labels).
 - There are five comparisons: name, company, address, phone, cif. Correlated columns share one comparison (address code / normalized address / postal form one), because FS assumes independence.
 - Levels use the `cl_*` functions.
+- **A level without an estimate never uses Splink's defaults.** No sampled pair reached it → u at its 95% upper bound, so its weight is a lower bound on the evidence. Never seen in training → m = u, 0 bits. The training cell lists such levels (none in `SPEC`).
 
-**Candidates** (val: 151 true pairs the deterministic stage missed):
+**Scores don't depend on the size of the scored set** (`er.match.score_fs`):
+- **Term frequencies** come from the fitting records, stored in the model. A value never seen in training gets no adjustment, the conservative side.
+- **λ** is a per-pair rate: true pairs grow with N, pairs with N². It is rescaled from the fitting set's size to the scored set's. So CV folds, val and test (about 10k records each) are scored on the same scale, and the threshold keeps its meaning at production size. There, the same evidence earns log2(N/10k) fewer bits.
+- Before this, Splink computed term frequencies on whatever it scored and cached them on the shared connection. Every dataset after the first was scored with the first one's frequencies (tests/ reproduces it). That is why train and CV recall had sat about 10 points below val and test.
+
+**Candidates** (val: 683 true pairs the deterministic stage missed):
 
 | Generators (cumulative) | Candidates | Missed pairs reached |
 |---|---|---|
-| phone | 242 | 41.7% |
-| + address, address code, CIF | 592 | 82.1% |
-| + folded person name, folded company name | 621 | 94.0% |
-| + sorted neighbourhood | 5,713 | 94.7% |
-| + TF-IDF | 5,801 | **95.4%** |
+| phone | 4,985 | 47.6% |
+| + address, address code, CIF | 6,566 | 84.3% |
+| + folded person name, folded company name | 6,724 | 93.1% |
+| + sorted neighbourhood | 31,942 | 93.6% |
+| + TF-IDF | 33,871 | **93.9%** |
+
+`FINAL` keeps six of them (phone, address, address code, CIF, company sorted neighbourhood, person TF-IDF): 14,180 candidates on val.
 
 **Training:** EM and labels learn the same weights within noise.
-- Agreeing on CIF, phone, same address or postal code is worth about 10–14 bits; an exact name about 13.
-- The new address typos give "address close" a sensible +9.9 bits; it learned −34.7 when addresses were never mistyped.
-- Splink reports the company "JW low" level as never observed, so its m stays at Splink's default.
+- Agreeing on CIF, phone, same address or postal code is worth about 11–16 bits; an exact name about 15.5.
+- "address close" (Levenshtein ≤ 2 on the normalized address) is worth +8.9 bits, "phone one digit off" +4.5.
 
-**Threshold** (`ThresholdRule` on out-of-fold train scores): the lowest weight with 0 FP is 4 (0 of 183 accepted pairs); one step of margin gives **6**. Val confirms 0 FP.
+**Threshold** (`ThresholdRule` on out-of-fold train scores): for `SPEC`, the lowest weight with 0 false pairs is 6 (0 of 1,397 accepted), and one step of margin gives 8. Every decision variant gets its own threshold the same way; `FINAL`'s is **6**.
 
-**Decisions** (paired, cross-validated train + robustness):
+**Decisions** (`adopt`: paired on cross-validated train, plus no paired loss on val):
 
-| Change | Rule | Cross-validated train | stress | large | Adopted |
-|---|---|---|---|---|---|
-| term-frequency adjustment off | better | +82 / −0 true pairs (p < 10⁻²⁰), no FP added | +23 / −0 | +150 / −0 | **yes** |
-| exact keys only (drop sorted neighbourhood, TF-IDF) | cheaper | −1 true pair | −2 | −1 | no |
+| Change | Rule | Cross-validated train | Val | Adopted |
+|---|---|---|---|---|
+| term-frequency adjustment off | better | +15 / −0 true pairs (p = 0.0001), no FP added | +2 / −0 | **yes** |
+| exact keys only (drop sorted neighbourhood, TF-IDF) | cheaper | −4 true pairs | ±0 | no |
+| Optuna's suggestion (below) | better | +198 / −0 (p < 10⁻⁵⁰), no FP added | +62 / −1 | **yes** |
 
-On val alone, both variants tied with `SPEC`. The cross-validated and robustness checks are what separated them.
-
-**Results with the final `SPEC`** (all generators, term frequency off, m by EM, threshold 6, connected components):
+**Results with `FINAL`** (six generators, term frequency off, m by EM, Optuna's JW thresholds, threshold 6, connected components):
 
 | Data | After deterministic → after probabilistic | 95% interval | FP | FP rate ≤ |
 |---|---|---|---|---|
-| val | 67.0% → 86.5% | 83.0–89.3% | 0 | 0.75% |
-| **test** | 73.4% → **90.7%** | 87.6–93.2% | **0** | 0.78% |
-| stress | 69.1% → 88.7% | 87.4–89.9% | 2 | 0.30% |
-| **large** | 68.1% → 88.4% | 87.9–88.9% | **13 of 12,494 pairs** | **0.17%** |
+| train | 69.2% → 89.3% | 88.5–90.0% | 0 | 0.05% |
+| val | 69.3% → 91.5% | 90.2–92.6% | 0 | 0.15% |
+| **test** | 71.1% → **90.2%** | 88.9–91.3% | **0** | 0.14% |
 
-**What the large dataset revealed:** at 50k entities, the probabilistic stage makes false positives that small sets never show, because false-pair opportunities grow with N². The top ones share a cause: **one side has no name**, or one side is a **company and the other a person**. Neither name comparison can fire, so the same address (+11.8 bits) plus the same last-4 phone digits (+12.3 bits) is enough. The deterministic stage stays at 0 FP on `large`.
+**The threshold transfers:** at weight 6, cross-validated train accepts 0 false of 1,430 pairs (rate ≤ 0.21%) and val 0 of 471. The evaluation cell prints this check on every run.
 
-**Optuna** (cross-validated objective, 30 trials, ≈ 10 min): three Pareto points.
-- **Suggested (`pick_within_noise`):** trial 25, with **0 FP and 90.7% recall out-of-fold**, confirmed on val at **0 FP, 91.7% recall (88.8–93.9%)**. It uses a lower threshold (2.5), term-frequency adjustment on, and fewer generators (the folded-name keys, person sorted neighbourhood and TF-IDF off).
-- **Train and val now agree.** With the old train-scored objective, a 0-FP point turned into 1 FP on val.
-- **Not adopted yet:** it must pass the same decision rule (paired on cross-validated train, no loss on `stress` / `large`), and the low threshold needs checking against the large-scale false positives below.
+**What the false positives were:** an earlier run had 3 false pairs on val and 2 on test, each from one over-merged cluster. Each time, two entities with the same full name lived at the same address and differed only in CIF and phone. They were clones: the generator drew personas with replacement, about 8,500 same-persona pairs. It now draws each persona at most once (§5), and those false positives are gone.
+
+**Optuna** (cross-validated objective, 30 trials, seeded): each trial switches generators off and picks the m method, term frequency, level thresholds and resolver. Its threshold comes from `THRESHOLD_RULE`, as `FINAL`'s does.
+- **Round 1** searched the threshold directly. Its 0-FP suggestion (trial 12) passed `adopt` against `FINAL` (cross-validated train +280 / −0, val +92 / −0) and became the `optuna_suggestion` decision. It drops four generators (folded-name keys, person sorted neighbourhood, company TF-IDF) and changes the JW thresholds (names 0.95 / 0.75, companies 0.97 / 0.80).
+- **That exposed a policy conflict.** Optuna's own low threshold (3.5) beat any configuration whose threshold the rule had set with its safety margin, so the adopt-and-rerun loop could not converge. Trials now take the rule's threshold instead of searching it.
+- **Round 2,** from the new `FINAL`: the suggestion (trial 19: 0 FP out-of-fold, 90.8% recall; 0 FP on val, 91.5%) does not pass `adopt` (+11 / −7, p = 0.48). The search has converged.
+- A trial's "term frequency on" now restores `SPEC`'s keys. Before, it was a no-op once `FINAL` had dropped them.
+- Studies are bounded by `n_trials` only. A wall-clock timeout made the front depend on machine speed, and on this laptop, sleep cut studies to 3–37 trials.
 
 ## 10. Performance
 
-Measured on `large`: candidates ~14 s (TF-IDF 12.4 s), scoring 437k pairs 1.5 s. One model fit is 8.2 s, of which u-sampling is 8.0 s.
+Measured in this session's final runs, on battery with the machine mostly in low-power wakes. Absolute times run about 1.8× slower than on an awake machine: the same EM fit took 8.3 s in earlier awake runs and 15 s here.
 
-**Free savings in the code** (identical results, self-checked):
-- **u reuse.** u depends only on the comparisons and the fitting records (`FSModel.u_signature`), not on the m method or term-frequency adjustment. Reusing it gives an identical model (weights equal to 1e-14) and cuts that training from 7.4 s to 0.1 s.
-- **Run cache.** Identical runs (same config, dataset and threshold) are computed once. The decision cell went 96 → 57 s, robustness 20 → 0 s, outputs 24 → 3 s.
+| Step | Time | Note |
+|---|---|---|
+| one fit on train, nothing cached | 14.4 s | u-sampling of 1e7 pairs is nearly all of it |
+| one fit, only name + company u re-sampled | 11.7 s | an Optuna trial: it changes those comparisons' thresholds |
+| one fit, all u cached | 0.7 s | m method / term-frequency variants, decisions, re-scoring |
+| candidates on val | 0.6 s | TF-IDF 0.47 s of it |
+| Optuna, 30 trials | 920 s | each trial: 3 fold fits, candidates, scoring, threshold rule |
+| whole probabilistic notebook | ≈ 18.5 min | |
+
+**Free savings in the code** (identical results, covered by tests/):
+- **u cached per comparison** (`FSModel.u_keys`). A comparison's u depends only on itself and the fitting records, and Splink's random sample doesn't depend on which comparisons it scores. So any model that shares a comparison reuses its u.
+- **Threshold rule without clustering** (`accept_curve`). The rule reads only accepted and false accepted pairs per weight, so trials and decision variants resolve clusters at the chosen weight only.
+- **Run cache.** Identical runs (same config, dataset and threshold) are computed once.
 
 **Tried and rejected, because they change results:**
-- **u from 1e6 pairs** instead of 1e7: 6× faster, but loses true pairs on stress (−19 / +7, p = 0.03) and on large (−104 / +59, p = 0.0005).
-- **Exact sparse top-k for TF-IDF:** only 10.5 → 9.0 s, and 2,911 pairs differ through tie handling.
+- **u from 1e6 pairs** instead of 1e7: 6× faster, but lost true pairs on an earlier 50k-entity set (−104 / +59, p = 0.0005).
+- **Exact sparse top-k for TF-IDF:** only 10.5 → 9.0 s there, and 2,911 pairs differ through tie handling.
 
-**Still slow:** the Optuna study (≈ 9 min for 30 trials). Each trial changes level thresholds, so u must be re-sampled per fold. Options:
-- fewer trials
-- not searching the level thresholds
-- computing u from a fixed per-fold sample of pairs (needs a paired check)
+**What still costs time:** every Optuna trial changes the name comparison's JW thresholds, so its u must be re-sampled per fold. Cutting that means searching fewer name thresholds, which changes what Optuna can find.
+
 
 ## 11. Comparing solutions
 
@@ -313,22 +349,19 @@ Every experiment appends a leaderboard row: experiment, dataset, config hash, ca
 
 How to choose:
 1. **Candidates:** the cheapest generator union that reaches the target completeness on the previous stage's misses.
-2. **Scorer, threshold and variants:** by the rules in §7, on cross-validated train with robustness checks.
+2. **Scorer, threshold and variants:** by the rules in §7 (`ThresholdRule`, `adopt`), on cross-validated train, confirmed on val.
 3. **Resolver:** by resolution FP and over-merged clusters.
 4. **Test:** once.
 
 ## Next steps
 
-- **Stop the false positives at scale:**
-  - add a "kind" comparison (person vs company, from which name columns are filled) or block on kind
-  - make a missing name on one side count against a pair that agrees only on address + phone
-- **Certify at production size:** set `budget.target_rows` to the real row count and generate a `large` at that size.
-- **Speed up Optuna** (§10).
-- **Supervised classifier** on the Fellegi–Sunter comparison vectors (`gamma_*`, already in the scored pairs), compared on the leaderboard.
+- **Certify at production size:** set `budget.target_rows` to the real row count and raise `SPEC.entities` towards it; scores already rescale λ to the scored size (§9).
+- **Supervised classifier** on the Fellegi–Sunter comparison vectors (`gamma_*`, already in the scored pairs), compared on the leaderboard by the same `adopt` rule.
 - Then: a clerical-review band, golden-record survivorship, approximate nearest-neighbour TF-IDF at scale.
 
 ## Known limits
 
+- **One generator, one noise model:** test is an independent sample of entities from the same generator, so the results hold for its duplicate, typo and missingness model. A shift to noisier data is untested by design (one population, by choice); only real data can settle it.
 - **Real names, synthetic behaviour:** names, companies and towns are real, but who has duplicates, typos and missing values is still the generator's model.
 - **Machine-read kana:** given-name readings come from SudachiPy, and some differ from the intended reading.
-- **FP bounds hold only at the tested size:** at production scale, validate again (§9).
+- **Test was seen during development:** an earlier version of the pipeline (with the stale term-frequency cache and the persona clones) was scored on test. The fixes since came from bugs found on train and val. The leaderboard was restarted with the fixed code. It counts 1 deterministic and 2 probabilistic configurations on test: `FINAL` before and after it adopted Optuna's suggestion, which `adopt` chose on cross-validated train and val.

@@ -112,6 +112,15 @@ def paired_test(base: set[tuple[str, str]], variant: set[tuple[str, str]], truth
                 FP_added=len((variant - base) - truth), FP_removed=len((base - variant) - truth))
 
 
+def adopt(kind: str, selection: dict[str, float], val: dict[str, float], p_max: float) -> bool:
+    """The decision rule, on paired_test results against the current choice. "better" needs a significant paired gain
+    on the selection set, "cheaper" no paired loss there; both need no FP added there and no paired loss on val."""
+    assert kind in ("better", "cheaper"), kind
+    gain = (selection["TP_gains"] > selection["TP_losses"] and selection["p"] < p_max if kind == "better"
+            else selection["TP_losses"] == 0)
+    return gain and selection["FP_added"] == 0 and val["TP_gains"] >= val["TP_losses"] and val["FP_added"] <= val["FP_removed"]
+
+
 def average_precision(scores: np.ndarray, same: np.ndarray) -> float:
     """Area under the precision–recall curve of a ranking (higher score first), over candidate pairs."""
     order = np.argsort(-scores, kind="stable")

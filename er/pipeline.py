@@ -218,6 +218,15 @@ def cross_validate_fs(spec: ProbSpec, train_model: Callable[[ProbSpec, pd.DataFr
     return out
 
 
+def accept_curve(results: list[ProbResult], weights: list[float]) -> pd.DataFrame:
+    """Accepted and false accepted pairs per min_match_weight, summed over (fold) results, with the stage FP-rate bound:
+    all a ThresholdRule reads, so the same weight as cv_threshold_curve without resolving clusters. O(|weights| · P)."""
+    scored = pd.concat([r.scored[["match_weight", "fp"]] for r in results])
+    out = pd.DataFrame([dict(min_match_weight=w, accepted=int(a.sum()), pairs_FP=int((a & scored["fp"]).sum()))
+                        for w in weights for a in [scored["match_weight"] >= w]])
+    return out.assign(stage_fp_rate_hi=[fp_upper(int(f), int(n)) for f, n in zip(out["pairs_FP"], out["accepted"])])
+
+
 def cv_threshold_curve(results: list[ProbResult], spec: ProbSpec, prev_pairs: pd.DataFrame, truth: pd.DataFrame,
                        folds: pd.Series, db: DuckDBAPI, data: Data, weights: list[float]) -> pd.DataFrame:
     """threshold_curve per fold (out-of-fold scores), summed over folds; bounds recomputed on the totals."""
