@@ -12,7 +12,7 @@ from splink import Linker
 from er.config import (Budget, Comparator, Comparison, FSModel, Key, Level, Resolver, Rule, RulesSpec, Stage, ThresholdRule,
                        keys_sql)
 from er.evaluate import adopt, fp_upper, paired_test, wilson
-from er.match import parameters, rule_edges, sample_u, score_fs, train_fs, u_values
+from er.match import parameters, rule_edges, sample_u, score_fs, train_fs, u_values, waterfall
 from er.pipeline import accept_curve, select_threshold
 from er.resolve import connected_components
 from er.settings import load_settings
@@ -106,6 +106,16 @@ def test_registered_pairs_score_like_splink_blocking(con_db, records):
     both = native.merge(ours, on=["uid_l", "uid_r"], suffixes=("_native", "_registered"))
     assert len(both) == len(native) > 0
     assert np.allclose(both["match_weight_native"], both["match_weight_registered"], atol=1e-9)
+
+
+def test_waterfall_bits_sum_to_the_match_weight(con_db, records):
+    _, db = con_db
+    model_json = train_fs(model(), records, db, UID)
+    pairs = pd.DataFrame({"uid_l": ["001a", "000a", "000a"], "uid_r": ["001b", "000b", "059b"]}, dtype="string")
+    scored = score_fs(model_json, records, pairs, db, UID)  # exact name, close name, different entity
+    for _, row in scored.iterrows():
+        bits = waterfall(model_json, {c: row[f"gamma_{c}"] for c in ("name", "phone")}, len(records))
+        assert bits["bits"].sum() == pytest.approx(row["match_weight"])
 
 
 def test_term_frequencies_come_from_the_fitting_records(con_db, records):

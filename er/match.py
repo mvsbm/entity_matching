@@ -120,14 +120,19 @@ def train_fs(model: FSModel, df: pd.DataFrame, db: DuckDBAPI, uid: str, labels: 
     return {**model_json, "er": dict(fit_rows=len(t), tf=tf, filled=dict(u=filled_u, m=filled_m))}
 
 
+def scaled_prior(model_json: dict, n_records: int) -> float:
+    """λ for a set of n_records: a per-pair rate (true pairs grow with N, pairs with N²), rescaled from the fitting set."""
+    prior = model_json["probability_two_random_records_match"] * (model_json["er"]["fit_rows"] - 1) / max(n_records - 1, 1)
+    return min(prior, 1 - 1e-9)
+
+
 def score_fs(model_json: dict, df: pd.DataFrame, pairs: pd.DataFrame, db: DuckDBAPI, uid: str) -> pd.DataFrame:
     """Score exactly these candidate pairs (uid_l < uid_r) with a model from train_fs, so that a score doesn't depend
     on the size of the scored set: term frequencies come from the fitting records (a value unseen there gets no
-    adjustment), and λ, a per-pair rate (true pairs grow with N, pairs with N²), is rescaled to this set's size."""
+    adjustment), and λ is rescaled to this set's size (scaled_prior)."""
     l, r = f"{uid}_l", f"{uid}_r"
     fit = model_json["er"]
-    prior = model_json["probability_two_random_records_match"] * (fit["fit_rows"] - 1) / max(len(df) - 1, 1)
-    settings = {k: v for k, v in model_json.items() if k != "er"} | {"probability_two_random_records_match": min(prior, 1 - 1e-9)}
+    settings = {k: v for k, v in model_json.items() if k != "er"} | {"probability_two_random_records_match": scaled_prior(model_json, len(df))}
     linker = Linker(db.register(df), settings, log_level=logging.WARNING)
     linker.table_management.invalidate_cache()  # the cache lives on the shared db, keyed by table name only
     for col, tf in fit["tf"].items():
@@ -140,6 +145,21 @@ def score_fs(model_json: dict, df: pd.DataFrame, pairs: pd.DataFrame, db: DuckDB
     out = linker.inference.predict().as_pandas_dataframe()
     gammas = [c for c in out.columns if c.startswith("gamma_")]
     return out[[l, r, "match_weight", "match_probability", *gammas]].astype({l: "string", r: "string"})
+
+
+def waterfall(model_json: dict, gammas: dict[str, int], n_records: int) -> pd.DataFrame:
+    """One scored pair's match weight as evidence: the prior, then per comparison the bits log2(m/u) of the level the
+    pair landed in (gamma, as score_fs returns it; a missing side adds 0). The bits sum to Splink's match_weight."""
+    assert not model_json["er"]["tf"], "term-frequency adjustments are per value and not shown here"
+    lam = scaled_prior(model_json, n_records)
+    rows = [dict(evidence="prior", level="two random records match", bits=math.log2(lam / (1 - lam)))]
+    for c in model_json["comparisons"]:
+        levels = [lv for lv in c["comparison_levels"] if not lv.get("is_null_level")]  # gamma counts down to else = 0
+        g = int(gammas[c["output_column_name"]])
+        lv = levels[len(levels) - 1 - g] if g >= 0 else None
+        rows.append(dict(evidence=c["output_column_name"], level=lv["label_for_charts"] if lv else "missing",
+                         bits=math.log2(lv["m_probability"] / lv["u_probability"]) if lv else 0.0))
+    return pd.DataFrame(rows)
 
 
 def parameters(model_json: dict) -> pd.DataFrame:
