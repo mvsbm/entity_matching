@@ -109,6 +109,7 @@ data/
     resolved/<dataset>/<stage>_resolved.csv      entity resolution: clusters
     unresolved/<dataset>/<stage>_unresolved.csv  records still unresolved: the hand-off
     experiments/leaderboard.csv                  one row per (experiment, dataset)
+    experiments/archive/                         leaderboards of development runs
     models/ · optuna/                            Splink models (JSON) · Optuna studies (SQLite)
 ```
 
@@ -298,6 +299,7 @@ The constrained resolver loses because given-name typos look like conflicts.
 | term-frequency adjustment off | better | +15 / −0 true pairs (p = 0.0001), no FP added | +2 / −0 | **yes** |
 | exact keys only (drop sorted neighbourhood, TF-IDF) | cheaper | −4 true pairs | ±0 | no |
 | Optuna's suggestion (below) | better | +198 / −0 (p < 10⁻⁵⁰), no FP added | +62 / −1 | **yes** |
+| u from 1e6 pairs instead of 1e7 | cheaper | +10 / −24 (p = 0.024) | +0 / −3 | no |
 
 **Results with `FINAL`** (six generators, term frequency off, m by EM, Optuna's JW thresholds, threshold 6, connected components):
 
@@ -320,28 +322,25 @@ The constrained resolver loses because given-name typos look like conflicts.
 
 ## 10. Performance
 
-Measured in this session's final runs, on battery with the machine mostly in low-power wakes. Absolute times run about 1.8× slower than on an awake machine: the same EM fit took 8.3 s in earlier awake runs and 15 s here.
+Measured in the final clean pass, on an awake machine:
 
 | Step | Time | Note |
 |---|---|---|
-| one fit on train, nothing cached | 14.4 s | u-sampling of 1e7 pairs is nearly all of it |
-| one fit, only name + company u re-sampled | 11.7 s | an Optuna trial: it changes those comparisons' thresholds |
-| one fit, all u cached | 0.7 s | m method / term-frequency variants, decisions, re-scoring |
-| candidates on val | 0.6 s | TF-IDF 0.47 s of it |
-| Optuna, 30 trials | 920 s | each trial: 3 fold fits, candidates, scoring, threshold rule |
-| whole probabilistic notebook | ≈ 18.5 min | |
+| one fit on train, nothing cached | 8.1 s | u-sampling of 1e7 pairs is nearly all of it |
+| one fit, only name + company u re-sampled | 5.0 s | an Optuna trial: it changes those comparisons' thresholds |
+| one fit, all u cached | 0.4 s | m method / term-frequency variants, decisions, re-scoring |
+| candidates on val | 0.56 s | person TF-IDF 0.33 s of it |
+| Optuna, 30 trials | 518 s | ≈ 17 s per trial (was ≈ 27 s) |
+| whole probabilistic notebook | ≈ 10.7 min | was ≈ 15 min; the deterministic one takes ≈ 1.3 min |
 
 **Free savings in the code** (identical results, covered by tests/):
 - **u cached per comparison** (`FSModel.u_keys`). A comparison's u depends only on itself and the fitting records, and Splink's random sample doesn't depend on which comparisons it scores. So any model that shares a comparison reuses its u.
 - **Threshold rule without clustering** (`accept_curve`). The rule reads only accepted and false accepted pairs per weight, so trials and decision variants resolve clusters at the chosen weight only.
 - **Run cache.** Identical runs (same config, dataset and threshold) are computed once.
 
-**Tried and rejected, because they change results:**
-- **u from 1e6 pairs** instead of 1e7: 6× faster, but lost true pairs on an earlier 50k-entity set (−104 / +59, p = 0.0005).
-- **Exact sparse top-k for TF-IDF:** only 10.5 → 9.0 s there, and 2,911 pairs differ through tie handling.
+**Tried and rejected by the rule, because it changes results:** u from 1e6 pairs instead of 1e7 (the `u_from_1e6_pairs` decision) would make u-sampling about 6× cheaper. It loses true pairs, though: cross-validated train +10 / −24 (p = 0.024), val −3.
 
-**What still costs time:** every Optuna trial changes the name comparison's JW thresholds, so its u must be re-sampled per fold. Cutting that means searching fewer name thresholds, which changes what Optuna can find.
-
+**What still costs time:** every Optuna trial changes the name comparison's JW thresholds, so its u must be re-sampled per fold.
 
 ## 11. Comparing solutions
 
@@ -364,4 +363,4 @@ How to choose:
 - **One generator, one noise model:** test is an independent sample of entities from the same generator, so the results hold for its duplicate, typo and missingness model. A shift to noisier data is untested by design (one population, by choice); only real data can settle it.
 - **Real names, synthetic behaviour:** names, companies and towns are real, but who has duplicates, typos and missing values is still the generator's model.
 - **Machine-read kana:** given-name readings come from SudachiPy, and some differ from the intended reading.
-- **Test was seen during development:** an earlier version of the pipeline (with the stale term-frequency cache and the persona clones) was scored on test. The fixes since came from bugs found on train and val. The leaderboard was restarted with the fixed code. It counts 1 deterministic and 2 probabilistic configurations on test: `FINAL` before and after it adopted Optuna's suggestion, which `adopt` chose on cross-validated train and val.
+- **Test was seen during development:** an earlier version of the pipeline (with the stale term-frequency cache and the persona clones) was scored on test. The fixes since came from bugs found on train and val. The leaderboard holds one clean pass of the final code: 1 configuration per family scored on test. Development runs are archived in `data/artifacts/experiments/archive/`.
