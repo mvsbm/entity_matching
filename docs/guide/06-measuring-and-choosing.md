@@ -4,7 +4,7 @@
 
 *Challenge C8.*
 
-The headline result is: on test, **90.2% recall (88.9–91.3%) and 0 false merges, with a false-merge rate of at most 0.14%**. This chapter explains every part of that sentence, and why it is a fair number and not a lucky or tuned one.
+The headline result is: on test, **90.3% recall (89.1–91.5%) and 0 false merges, with a false-merge rate of at most 0.14%**. This chapter explains every part of that sentence, and why it is a fair number and not a lucky or tuned one.
 
 ## Challenge: what exactly do we count?
 
@@ -80,7 +80,7 @@ We make many choices: thresholds, comparators, candidate generators, model optio
 
 Every configuration gets its threshold this way: the configuration as written, each variant, and each Optuna trial. The final configuration's rule gives 6 bits.
 
-A check then confirms that the threshold transfers. Out-of-fold, 0 of 1,430 accepted pairs are false, a rate of at most 0.21%. On validation, 0 of 471 are.
+A check then confirms that the threshold transfers. Out-of-fold, 0 of 1,432 accepted pairs are false, a rate of at most 0.21%. On validation, 0 of 471 are.
 
 **4. The decision rule (`adopt`).** A change is adopted only if it passes a rule, applied on top of the current choice:
 
@@ -94,14 +94,40 @@ A check then confirms that the threshold transfers. Out-of-fold, 0 of 1,430 acce
 | exact keys only (cheaper) | +0 / −4 | ±0 | no |
 | Optuna's suggestion | +198 / −0 | +62 / −1 | yes |
 | u from 1 million random pairs instead of 10 million (cheaper) | +10 / −24 | +0 / −3 | no |
+| three compound phone keys instead of the phone (cheaper, for scale) | +0 / −0 | ±0 | yes |
+| a reversed sorted pass instead of TF-IDF (cheaper, for scale) | +2 / −0 | ±0 | yes |
 
-**5. Optuna proposes; the rule decides.** Optuna is a search tool. It tries many combinations of options (30 seeded trials, scored out-of-fold) and keeps the best trade-offs between recall and false merges. A tie-break, `pick_within_noise`, prefers the cheapest point whose recall is within noise of the best. The suggestion then faces `adopt` like any other change. After one adoption, the next search found nothing that passed (+11 / −7, p = 0.48), so the search had converged.
+**5. Optuna proposes; the rule decides.** Optuna is a search tool. It tries many combinations of options (30 seeded trials, scored out-of-fold) and keeps the best trade-offs between recall and false merges. A tie-break, `pick_within_noise`, prefers the cheapest point whose recall is within noise of the best. The suggestion then faces `adopt` like any other change. After one adoption, later searches found nothing that passed (most recently +6 / −18 out-of-fold), so the search has converged.
 
-**6. Test is scored once.** A leaderboard records every run. It counts the distinct configurations scored on test, and the notebooks warn above 1. The count is 1 for each stage.
+**6. Test is scored once.** A leaderboard records every run. It counts the distinct configurations scored on test, and the notebooks stop with an error above 1. The count is 1 for each stage.
 
 **Why this solution:** a person choosing by eye always drifts toward the numbers they can see. Rules applied to data the final number never touches remove that drift.
 
 **In short:** learn on train, confirm on validation, report on test once, and let rules make the choices.
+
+## Challenge: does it hold beyond our one dataset?
+
+Every number so far comes from one generated population: one seed, one noise model, one assumed prior. A result that holds only there would be fragile. So `scripts/robustness.py` re-runs both final configurations, unchanged, on populations generated differently. As in the notebook, it refits the model's parameters on each population's train split, then reports that population's test split. Nothing is re-tuned.
+
+| Scenario | Rules alone | Both stages | 95% interval | False merges | False-merge rate ≤ |
+|---|---|---|---|---|---|
+| as reported (seed 0) | 71.1% | 90.3% | 89.1–91.5% | 0 | 0.14% |
+| another seed (1) | 70.3% | 91.1% | 89.9–92.2% | 0 | 0.14% |
+| another seed (2) | 66.9% | 91.1% | 89.9–92.2% | 0 | 0.15% |
+| twice as many typos in names, phones and addresses | 67.4% | 90.0% | 88.7–91.2% | 0 | 0.15% |
+| emptier fields (fill rates fall to 45%, not 65%) | 62.8% | 88.8% | 87.5–90.0% | 0 | 0.14% |
+| prior: the near-certain rules find 25% of true pairs, not 50% (λ × 2) | 71.1% | 91.4% | 90.2–92.5% | 0 | 0.14% |
+| prior: they find 75% (λ × ⅔) | 71.1% | 90.2% | 89.0–91.4% | 0 | 0.14% |
+
+What the table shows:
+
+- **The final result moves by about a point.** Across seeds and noise, recall stays between 88.8% and 91.1%, and no scenario has a false merge.
+- **The rules are the sensitive part.** They need exact agreements, so emptier fields cost them 8 points (71.1% → 62.8%). The second stage recovers most of that, and the final result loses 1.5 points.
+- **A prior off by a factor of two barely matters.** λ rests on an assumption: that the near-certain rules find half of all true pairs. If they found a quarter, or three quarters, every weight would shift by one bit, or by about half a bit. Recall moves by +1.1 or −0.1 points, with no false merge, because the threshold's safety step absorbs the shift.
+
+How the cost and the quality behave as the file grows to a million records is in [chapter 3](03-far-too-many-pairs.md#scaling-to-a-million-records).
+
+**In short:** the final configurations hold across seeds, more noise, emptier fields and a prior off by a factor of two.
 
 ## Challenge: the tools themselves can fool you
 
@@ -111,6 +137,7 @@ Even with careful splits, the pipeline once reported numbers that were wrong. We
 - **Cloned personas.** Three "false merges" turned out to be one impossible twin made by the generator.
 - **Two policies in conflict.** Optuna searched the threshold that the threshold rule also set, so the adopt-and-rerun loop never settled.
 - **A wall-clock timeout.** The sleeping laptop made the search results depend on the machine.
+- **A copy that outgrew the laptop.** At a million records, a full copy of the model's predictions needed more memory than the machine had.
 
 Each now has a guard: a test or a check printed on every run. The full stories are in [lessons.md](../lessons.md).
 
@@ -122,7 +149,8 @@ Each now has a guard: a test or a check printed on every run. The full stories a
 - `er/pipeline.py`: `entity_folds`, `cross_validate_fs`, `cv_threshold_curve`, `accept_curve`, `select_threshold`
 - `er/config.py`: `ThresholdRule`
 - `er/tune.py`: `pick_within_noise`, `new_study`
-- `er/io.py`: `append_leaderboard`, `test_evaluations` (the test counter)
+- `er/io.py`: `append_leaderboard`, `test_evaluations` and `assert_test_scored_once` (the test counter)
+- `scripts/robustness.py`: the scenarios above, and the cost run of [chapter 3](03-far-too-many-pairs.md#scaling-to-a-million-records)
 - every table: [results.md](../results.md)
 
 ## Further reading

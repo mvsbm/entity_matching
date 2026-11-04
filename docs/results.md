@@ -33,8 +33,12 @@ The train-only design analysis justifies "never one key alone". Single keys coll
 | names: fold → Levenshtein ≤ 1 | better | 14 / 3 (p = 0.013) | 6 / 0 | yes |
 | names: fold → exact | cheaper | 0 / 173 | 0 / 66 | no |
 | Optuna's comparators (below) | better | 26 / 1 (p < 0.001) | 6 / 0 | yes |
+| F2 joins on phone + exact normalized address (scale) | cheaper | 0 / 8 (p = 0.008) | 0 / 3 | no |
+| F2 joins on phone + first 3 characters of the normalized address (scale) | cheaper | 0 / 0 | 0 / 0 | **yes** |
 
-None adds a false pair. **Optuna** (60 trials on train, ≈ 50 s) starts from `FINAL`: its suggestion passed the same rule and became a `CHANGES` entry. Re-run from the new `FINAL`, the search's suggestion joins exactly the same pairs as `FINAL` (it differs only in using address Levenshtein ≤ 1 instead of JW ≥ 0.91), so the loop has converged.
+None adds a false pair. The two F2 rows exist for scale: as written, F2 joins on the last four phone digits alone, which grows like N^1.89 and projects to 55.8 million pairs at a million records. An earlier alternative, joining on the phone plus the name initial or the postal area, lost 2 true pairs on train and was dropped. The adopted one projects to 0.12 million ([chapter 3](guide/03-far-too-many-pairs.md#scaling-to-a-million-records)).
+
+**Optuna** (60 trials on train, ≈ 90 s) starts from `FINAL`: its first suggestion passed the same rule and became a `CHANGES` entry. Re-run from the final `FINAL`, the suggestion (trial 47) gains 1 true pair and loses none (p = 1.0), so it is not adopted and the loop has converged.
 
 **Results with `FINAL`:**
 
@@ -79,7 +83,18 @@ The constrained resolver loses because given-name typos look like conflicts.
 | + sorted neighbourhood | 31,942 | 93.6% |
 | + TF-IDF | 33,871 | **93.9%** |
 
-`FINAL` keeps six of them (phone, address, address code, CIF, company sorted neighbourhood, person TF-IDF): 14,180 candidates on val.
+That table is `SPEC`, as written. `FINAL` keeps nine generators, chosen for quality and then for scale:
+
+| `FINAL`'s generators (cumulative) | Candidates | Missed pairs reached |
+|---|---|---|
+| address | 1,380 | 36.9% |
+| + address code, CIF | 1,662 | 48.6% |
+| + company-name sorted neighbourhood | 6,322 | 54.9% |
+| + phone + prefecture, phone + postal area, phone + name initial | 6,769 | 83.6% |
+| + person-name sorted neighbourhood | 27,512 | 90.3% |
+| + the same on the reversed name | 48,105 | **91.5%** |
+
+That is 48,105 candidates on val (99.90% of all pairs skipped). Before the scale changes, `FINAL` used the phone key and person-name TF-IDF instead: 14,180 candidates reaching 93.9%. The 16 missed pairs no longer on the list were all rejected by the model anyway; the decision rule found no accepted pair lost (below).
 
 **Training:** EM and labels learn the same weights within noise.
 - Agreeing on CIF, phone, same address or postal code is worth about 11–16 bits; an exact name about 15.5.
@@ -95,20 +110,51 @@ The constrained resolver loses because given-name typos look like conflicts.
 | exact keys only (drop sorted neighbourhood, TF-IDF) | cheaper | −4 true pairs | ±0 | no |
 | Optuna's suggestion (below) | better | +198 / −0 (p < 10⁻⁵⁰), no FP added | +62 / −1 | **yes** |
 | u from 1e6 pairs instead of 1e7 | cheaper | +10 / −24 (p = 0.024) | +0 / −3 | no |
+| phone key → three compound keys (scale) | cheaper | +0 / −0 | +0 / −0 | **yes** |
+| TF-IDF → sorted neighbourhood on the name and the reversed name (scale) | cheaper | +2 / −0 (p = 0.5) | +0 / −0 | **yes** |
 
-**Results with `FINAL`** (six generators, term frequency off, m by EM, Optuna's JW thresholds, threshold 6, connected components):
+**Results with `FINAL`** (nine generators, term frequency off, m by EM, Optuna's JW thresholds, threshold 6, connected components):
 
 | Data | After deterministic → after probabilistic | 95% interval | FP | FP rate ≤ |
 |---|---|---|---|---|
 | train | 69.2% → 89.3% | 88.5–90.0% | 0 | 0.05% |
 | val | 69.3% → 91.5% | 90.2–92.6% | 0 | 0.15% |
-| **test** | 71.1% → **90.2%** | 88.9–91.3% | **0** | 0.14% |
+| **test** | 71.1% → **90.3%** | 89.1–91.5% | **0** | 0.14% |
 
-**The threshold transfers:** at weight 6, cross-validated train accepts 0 false of 1,430 pairs (rate ≤ 0.21%) and val 0 of 471. The evaluation cell prints this check on every run.
+**The threshold transfers:** at weight 6, cross-validated train accepts 0 false of 1,432 pairs (rate ≤ 0.21%) and val 0 of 471. The evaluation cell prints this check on every run.
 
 **Worked example:** the notebook's "Why a pair matches" cell breaks one accepted and one rejected pair into bits; the README walks through both.
 
 **Optuna** (cross-validated objective, 30 trials, seeded): each trial switches generators off and picks the m method, term frequency, level thresholds and resolver. Its threshold comes from `THRESHOLD_RULE`, as `FINAL`'s does.
 - **Round 1** searched the threshold directly. Its 0-FP suggestion (trial 12) passed `adopt` against `FINAL` (cross-validated train +280 / −0, val +92 / −0) and became the `optuna_suggestion` decision. It drops four generators (folded-name keys, person sorted neighbourhood, company TF-IDF) and changes the JW thresholds (names 0.95 / 0.75, companies 0.97 / 0.80).
 - That round searched the threshold directly, which could never converge with the threshold rule ([lessons.md](lessons.md)); trials now take the rule's threshold.
-- **Round 2,** from the new `FINAL`: the suggestion (trial 19: 0 FP out-of-fold, 90.8% recall; 0 FP on val, 91.5%) does not pass `adopt` (+11 / −7, p = 0.48). The search has converged.
+- **Round 2,** from the new `FINAL`: the suggestion (trial 19: 0 FP out-of-fold, 90.8% recall; 0 FP on val, 91.5%) did not pass `adopt` (+11 / −7, p = 0.48).
+- **Round 3,** after the scale changes: the suggestion (trial 25: 0 FP out-of-fold, 90.6%; 0 FP on val, 91.3%) does not pass either (cross-validated train +6 / −18, p = 0.023; val +4 / −8). The search has converged.
+
+## Robustness and scale
+
+`scripts/robustness.py` re-runs both final configurations in memory, without re-tuning anything, and writes `data/artifacts/robustness/report.md`. Chapter [6](guide/06-measuring-and-choosing.md#challenge-does-it-hold-beyond-our-one-dataset) explains the scenarios, and chapter [3](guide/03-far-too-many-pairs.md#scaling-to-a-million-records) the cost.
+
+### Scenarios (test split, fixed final configurations, nothing re-tuned)
+
+| scenario | rules_recall | recall | interval | false_merges | fp_rate_at_most |
+| --- | --- | --- | --- | --- | --- |
+| as reported (seed 0) | 0.7106 | 0.9033 | 0.891–0.915 | 0 | 0.14% |
+| seed 1 | 0.7029 | 0.9112 | 0.899–0.922 | 0 | 0.14% |
+| seed 2 | 0.6691 | 0.9112 | 0.899–0.922 | 0 | 0.15% |
+| typos doubled | 0.6738 | 0.9004 | 0.887–0.912 | 0 | 0.15% |
+| fields emptier (last column 45% filled) | 0.6275 | 0.888 | 0.875–0.900 | 0 | 0.14% |
+| prior_recall 0.25 (λ ×2) | 0.7106 | 0.9143 | 0.902–0.925 | 0 | 0.14% |
+| prior_recall 0.75 (λ ×⅔) | 0.7106 | 0.9024 | 0.890–0.914 | 0 | 0.14% |
+
+### Cost: both stages on files of growing size (time grows like N^1.01)
+
+One model fitted on train. Above 60,000 entities personas repeat, so those rows measure cost only.
+
+| records | rules_seconds | probabilistic_seconds | peak_memory_gb | recall | false_merges | fp_rate_at_most | recall_u_from_file |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 12392 | 0.5 | 1.3 | 1.2 | 0.8977 | 0 | 0.12% | 0.8962 |
+| 24944 | 0.7 | 2.6 | 1.3 | 0.8971 | 4 | 0.18% | 0.8964 |
+| 50215 | 1.0 | 4.9 | 1.6 | 0.8842 | 1 | 0.05% | 0.8916 |
+| 75284 | 1.5 | 7.4 | 2.1 | 0.8748 | 5 | 0.07% | 0.8859 |
+| 999481 | 18.2 | 127.0 | 6.0 | — | — | — | — |

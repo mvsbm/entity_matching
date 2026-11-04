@@ -14,6 +14,8 @@ from nbconvert import HTMLExporter
 from nbconvert.preprocessors import ExecutePreprocessor
 from playwright.sync_api import sync_playwright
 
+from er.settings import load_settings
+
 ROOT = Path(__file__).resolve().parents[1]
 NOTEBOOKS = ("dataset_generation", "deterministic_matching", "probabilistic_matching")  # run order
 PRINT_CSS = """<style>  /* print every character: wrap long lines, fit wide tables to the page */
@@ -23,6 +25,8 @@ pre { white-space: pre-wrap !important; word-break: break-all; }
 
 
 def main(names: list[str]) -> None:
+    if not load_settings().data.synthetic:  # the PDFs show records and are committed to git
+        raise SystemExit("refusing to export: config/settings.toml says the data is not synthetic")
     out = ROOT / "notebooks" / "pdf"
     out.mkdir(exist_ok=True)
     with sync_playwright() as p:

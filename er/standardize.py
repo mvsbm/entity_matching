@@ -14,6 +14,12 @@ def normalize(s: pd.Series, steps: tuple[Normalizer, ...], std: Standardization)
                 s = s.str.normalize("NFKC")
             case "strip_spaces":
                 s = s.str.replace(r"\s+", "", regex=True)
+            case "initial":  # blocking keys: the first character (an empty value must not become one huge block)
+                s = s.str[:1].replace("", pd.NA)
+            case "first3":  # blocking keys: a postal area
+                s = s.str[:3].replace("", pd.NA)
+            case "reverse":  # a second sort key: names that end alike sort together, so an early typo doesn't split them
+                s = s.str[::-1]
             case "kana_fold":
                 s = s.str.translate(str.maketrans(dict(std.kana_fold)))
             case "strip_legal_form":
@@ -30,8 +36,12 @@ def normalize(s: pd.Series, steps: tuple[Normalizer, ...], std: Standardization)
 def prepare(std: Standardization, records: pd.DataFrame, normalized: Iterable[tuple[str, tuple[Normalizer, ...]]],
             used: Iterable[str] = ()) -> pd.DataFrame:
     df = records.copy()
+    sources = {c for d in std.derived for cols in d.sources for c in cols} - set(records.columns)
+    if sources:  # the trust boundary: say what is missing, instead of a KeyError deep inside
+        raise ValueError(f"input lacks columns that config/settings.toml derives from: {sorted(sources)}")
     for d in std.derived:
-        assert d.name not in records.columns, f"derived column {d.name} shadows an input column"
+        if d.name in records.columns:
+            raise ValueError(f"derived column {d.name} shadows an input column")
         out = pd.Series(pd.NA, index=df.index, dtype="string")
         for cols in d.sources:
             joined = df[cols[0]]
@@ -43,5 +53,6 @@ def prepare(std: Standardization, records: pd.DataFrame, normalized: Iterable[tu
         if column_name(col, steps) not in df:
             df[column_name(col, steps)] = normalize(df[col], steps, std)
     missing = set(used) - set(df.columns)
-    assert not missing, f"unknown columns: {sorted(missing)}"
+    if missing:
+        raise ValueError(f"input lacks columns the configuration uses: {sorted(missing)}")
     return df

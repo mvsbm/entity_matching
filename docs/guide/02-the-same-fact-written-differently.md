@@ -242,7 +242,7 @@ Reading down each column shows what each function notices:
 
 - **Phonetic codes** such as Soundex give names that sound alike the same code. They were built for English, where spelling and sound often disagree. Katakana is already a phonetic script, and folding does the remaining work.
 - **Weighted edits** could make ガ → カ cost less than ガ → サ. Folding gets the same effect more simply: confusable kana become equal before any comparison.
-- **Character pieces with TF-IDF** compare names by shared fragments, weighting rare fragments more. We use them to *find* candidates ([chapter 3](03-far-too-many-pairs.md)), where speed over many names matters more than a precise score.
+- **Character pieces with TF-IDF** compare names by shared fragments, weighting rare fragments more. They were tried for *finding* candidates, where speed over many names matters more than a precise score. Their search compares every name with every other, though, so the final configuration finds the same pairs by sorting instead ([chapter 3](03-far-too-many-pairs.md#scaling-to-a-million-records)).
 
 **In short:** give each field the function whose idea of a small mistake matches how that field really goes wrong.
 

@@ -142,9 +142,12 @@ def score_fs(model_json: dict, df: pd.DataFrame, pairs: pd.DataFrame, db: DuckDB
         return pairs.assign(match_weight=pd.Series(dtype=float), match_probability=pd.Series(dtype=float))
     blocked = db.register(pd.DataFrame({"match_key": "0", "join_key_l": pairs[l].to_numpy(), "join_key_r": pairs[r].to_numpy()}))
     linker.table_management.register_blocked_pairs_for_predict(blocked)
-    out = linker.inference.predict().as_pandas_dataframe()
-    gammas = [c for c in out.columns if c.startswith("gamma_")]
-    return out[[l, r, "match_weight", "match_probability", *gammas]].astype({l: "string", r: "string"})
+    predictions = linker.inference.predict()
+    rel = predictions.as_duckdbpyrelation()
+    keep = [l, r, "match_weight", "match_probability", *(c for c in rel.columns if c.startswith("gamma_"))]
+    out = rel.project(", ".join(f'"{c}"' for c in keep)).df()  # memory: the matching columns never reach pandas
+    predictions.drop_table_from_database_and_remove_from_cache()  # else every call keeps its predictions in the shared db
+    return out.astype({l: "string", r: "string"})
 
 
 def waterfall(model_json: dict, gammas: dict[str, int], n_records: int) -> pd.DataFrame:

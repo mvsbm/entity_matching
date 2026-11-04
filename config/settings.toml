@@ -15,6 +15,7 @@ optuna = "data/artifacts/optuna"                 # Optuna studies (SQLite), read
 
 [datasets]
 all = ["train", "val", "test"]                   # one generated population, split by entity: fit / select / report
+synthetic = true                                 # the notebooks print records: scripts/export_pdfs.py exports them only while this is true
 
 [schema]
 unique_id = "CONT_ID"
@@ -42,6 +43,11 @@ address_cut_at = " "                             # drop the building / room afte
 name = "PERSON_NAME"
 sources = [["FULL_NAME_KANA"], ["O_PERSON_NAME_KANA"], ["LAST_NAME_KANA", "GIVEN_NAME_KANA"]]
 normalize = ["strip_spaces"]
+
+[[standardize.derived]]
+name = "ANY_NAME"                                  # person or company name, for blocking keys (name initial)
+sources = [["FULL_NAME_KANA"], ["O_PERSON_NAME_KANA"], ["LAST_NAME_KANA", "GIVEN_NAME_KANA"], ["NYS_CNV_P_NAME_KANA"]]
+normalize = ["strip_spaces", "nfkc", "strip_legal_form", "kana_fold"]
 
 [[standardize.derived]]
 name = "POSTAL"

@@ -9,14 +9,16 @@ import pandas as pd
 import pytest
 from splink import Linker
 
-from er.config import (Budget, Comparator, Comparison, FSModel, Key, Level, Resolver, Rule, RulesSpec, Stage, ThresholdRule,
-                       keys_sql)
-from er.evaluate import adopt, fp_upper, paired_test, wilson
+from er.candidates import generate
+from er.config import (Budget, Comparator, Comparison, FSModel, Key, KeyBlocker, Level, OverBudget, Resolver, Rule, RulesSpec,
+                       SortedNeighbourhood, Stage, TfidfNeighbours, ThresholdRule, keys_sql)
+from er.evaluate import adopt, cluster_metrics, fp_upper, paired_test, predicted_pairs, true_pairs, wilson
+from er.io import load, read_stage, write_stage
 from er.match import parameters, rule_edges, sample_u, score_fs, train_fs, u_values, waterfall
-from er.pipeline import accept_curve, select_threshold
-from er.resolve import connected_components
+from er.pipeline import accept_curve, cascade, check_budget, entity_folds, grown_pairs, preflight, select_threshold
+from er.resolve import connected_components, constrained
 from er.settings import load_settings
-from er.standardize import normalize
+from er.standardize import normalize, prepare
 from er.strings import connect
 from er.tune import pick_within_noise
 
@@ -203,3 +205,142 @@ def test_settings_resolve_paths_from_any_working_folder(monkeypatch):
     root = load_settings().root
     monkeypatch.chdir(root / "notebooks")
     assert load_settings().data.silver_dir == root / "data" / "medallion" / "silver"
+
+
+# ---------- the core every reported number rests on ----------
+
+def brute_pairs(groups: pd.Series) -> set[tuple[str, str]]:  # every pair inside each group, by enumeration
+    out = set()
+    for _, members in groups.groupby(groups.to_numpy()):
+        ids = sorted(members.index)
+        out.update((a, b) for i, a in enumerate(ids) for b in ids[i + 1:])
+    return out
+
+
+def test_pair_and_cluster_metrics_match_a_brute_force_recount():
+    rng = np.random.default_rng(1)
+    ids = [f"r{i:03d}" for i in range(80)]
+    entity = pd.Series(rng.integers(0, 30, 80).astype(str), index=ids)
+    cluster = pd.Series(np.where(rng.random(80) < 0.7, entity.to_numpy(), rng.integers(30, 60, 80).astype(str)), index=ids)
+    truth, pred = brute_pairs(entity), brute_pairs(cluster)
+    assert predicted_pairs(cluster) == pred
+    assert set(map(tuple, true_pairs(entity.rename_axis("uid"), "uid").to_numpy())) == truth
+    m = cluster_metrics(cluster, entity)
+    assert (m["TP"], m["FP"], m["FN"]) == (len(truth & pred), len(pred - truth), len(truth - pred))
+    assert m["overmerged"] == sum(entity[cluster == c].nunique() > 1 for c in cluster.unique())
+    assert m["split"] == sum(cluster[entity == e].nunique() > 1 for e in entity.unique())
+    bcubed = np.mean([((cluster == cluster[i]) & (entity == entity[i])).sum() / (cluster == cluster[i]).sum() for i in ids])
+    assert m["bcubed_precision"] == pytest.approx(bcubed)
+
+
+def test_entity_folds_keep_every_entity_in_one_fold():
+    data = load_settings().data
+    truth = pd.DataFrame({data.unique_id: [f"r{i}" for i in range(300)], data.entity_id: [f"E{i // 3}" for i in range(300)]})
+    folds = entity_folds(truth, data, 3, 0)
+    by_entity = truth.assign(fold=folds.to_numpy()).groupby(data.entity_id)["fold"].nunique()
+    assert by_entity.max() == 1 and folds.nunique() == 3 and folds.equals(entity_folds(truth, data, 3, 0))
+
+
+def test_cascade_skips_pairs_already_resolved_on_both_sides(con_db):
+    _, db = con_db
+    ids = pd.Series(list("ABCDEF"), dtype="string", name=UID)
+    pair = lambda rows: pd.DataFrame(rows, columns=["uid_l", "uid_r"], dtype="string")
+    stages = [("rules", pair([("A", "B"), ("C", "D")])), ("model", pair([("B", "C"), ("A", "E"), ("E", "F")]))]
+    entity = pd.Series(list("xxyyxx"), index=list("ABCDEF"))
+    clusters, stage_of, kept, _ = cascade(ids, stages, lambda e: connected_components(ids, e, db, UID), entity, UID)
+    assert ("B", "C") not in set(map(tuple, kept[["uid_l", "uid_r"]].to_numpy()))  # both already resolved by the rules
+    assert clusters["A"] == clusters["E"] == clusters["F"] != clusters["C"]
+    assert stage_of.to_dict() == dict(A="rules", B="rules", C="rules", D="rules", E="model", F="model")
+
+
+def test_candidate_generators_respect_query_window_and_cosine():
+    df = pd.DataFrame({"uid": [f"{i}" for i in range(8)], "phone": ["1", "1", "1", "2", "2", "3", "3", "3"],
+                       "name": ["サトウ", "サトオ", "サトウ", "タナカ", "タナカ", "スズキ", "スズキイチ", "イトウ"]}, dtype="string")
+    query = {"0", "5"}
+    keys = generate(KeyBlocker(name="k", keys=(Key("phone"),)), df, UID, query)
+    assert set(map(tuple, keys.to_numpy())) == {("0", "1"), ("0", "2"), ("5", "6"), ("5", "7")}  # only pairs touching a query
+    sn = generate(SortedNeighbourhood(name="s", key=Key("name"), window=2), df, UID, query)
+    order = df.sort_values(["name", "uid"])["uid"].tolist()
+    assert all(abs(order.index(a) - order.index(b)) == 1 and query & {a, b} for a, b in sn.to_numpy())
+    tf = generate(TfidfNeighbours(name="t", key=Key("name"), ngram=(2, 3), k=3, min_cosine=0.5), df, UID, query)
+    assert ("5", "7") not in set(map(tuple, tf.to_numpy()))  # スズキ vs イトウ share no 2-3-gram: below the cosine cutoff
+    assert len(tf) and all(query & {a, b} for a, b in tf.to_numpy())
+
+
+def test_constrained_resolver_refuses_a_conflicting_merge():
+    records = pd.DataFrame({"uid": list("ABC"), "given": ["ヒロシ", "ヒロシ", "タカシ"]}, dtype="string")
+    edges = pd.DataFrame({"uid_l": ["A", "B"], "uid_r": ["B", "C"], "score": [0.9, 0.8]})
+    out = constrained(records["uid"], edges, records, ("given",), UID)
+    assert out["A"] == out["B"] != out["C"]
+
+
+def test_preflight_counts_block_pairs_and_the_budget_stops_a_run():
+    df = pd.DataFrame({"uid": list("ABCDE"), "phone": ["1", "1", "1", "2", "2"]}, dtype="string")
+    spec = RulesSpec(standardize=load_settings().standardize, resolver=Resolver(method="connected_components"),
+                     budget=Budget(max_candidate_pairs=3, max_block_size=10, target_rows=10, benchmark_pairs=10),
+                     stages=(Stage(name="exact", rules=(Rule(name="R", exact=("phone",)),)),))
+    plan = preflight(spec, df)
+    assert plan["P"].tolist() == [3 + 1]  # C(3,2) + C(2,2)
+    with pytest.raises(OverBudget):
+        check_budget(plan, spec.budget)
+
+
+def test_load_validates_input_and_stage_files_refuse_a_changed_input(tmp_path):
+    data = replace(load_settings().data, silver_dir=tmp_path / "silver", labels_dir=tmp_path / "labels", artifacts_dir=tmp_path / "artifacts")
+    data.silver_dir.mkdir(); data.labels_dir.mkdir()
+    uid, ent = data.unique_id, data.entity_id
+    write = lambda ids, entities: (pd.DataFrame({uid: ids, "x": "a"}).to_csv(data.silver_dir / "d.csv", index=False),
+                                   pd.DataFrame({uid: ids[:len(entities)], ent: entities}).to_csv(data.labels_dir / "d.csv", index=False))
+    write(["1", "1"], ["E", "E"])
+    with pytest.raises(ValueError, match="more than once"):
+        load(data, "d")
+    write(["1", "2"], ["E"])
+    with pytest.raises(ValueError, match="different"):
+        load(data, "d")
+    write(["1", "2"], ["E", "E"])
+    records, _ = load(data, "d")
+    pairs = pd.DataFrame({f"{uid}_l": ["1"], f"{uid}_r": ["2"]})
+    write_stage(data, "d", "rules", pairs, records[[uid]], records.iloc[:0], config="v1")
+    read_stage(data, "d", "rules")  # fine while the input is unchanged
+    write(["1", "3"], ["E", "E"])
+    with pytest.raises(ValueError, match="stale"):
+        read_stage(data, "d", "rules")
+
+
+def test_prepare_names_missing_input_columns():
+    with pytest.raises(ValueError, match="lacks columns"):
+        prepare(load_settings().standardize, pd.DataFrame({"uid": ["1"]}, dtype="string"), [])
+
+
+def test_blocking_normalizers():
+    std = load_settings().standardize
+    s = pd.Series(["マツモト", "", pd.NA], dtype="string")
+    assert normalize(s, ("initial",), std).tolist()[:1] == ["マ"] and normalize(s, ("initial",), std).isna().tolist()[1:] == [True, True]
+    assert normalize(pd.Series(["1000033"], dtype="string"), ("first3",), std).tolist() == ["100"]
+    assert normalize(pd.Series(["サトウ"], dtype="string"), ("reverse",), std).tolist() == ["ウトサ"]
+
+
+def test_grown_pairs_tells_a_square_law_key_from_a_linear_one():
+    rng = np.random.default_rng(0)
+    entities = np.repeat(np.arange(4000), 2)  # two records per entity
+    df = pd.DataFrame({"uid": [f"r{i}" for i in range(8000)], "few": rng.integers(0, 50, 8000).astype(str),  # 50 values
+                       "own": entities.astype(str)}).astype("string")
+    entity = pd.Series(entities.astype(str), index=df["uid"].to_numpy())
+    few, _ = grown_pairs(df, entity, "uid", ["few"], 10**6)
+    own, _ = grown_pairs(df, entity, "uid", ["own"], 10**6)
+    assert few == pytest.approx(2, abs=0.1) and own == pytest.approx(1, abs=0.1)
+
+
+def test_a_blocking_key_limits_a_rule_join(con_db):
+    _, db = con_db
+    std = replace(load_settings().standardize, derived=())  # a hand-made frame without the real input columns
+    df = pd.DataFrame({"uid": list("ABC"), "phone": ["1", "1", "1"], "name": ["サトウ", "サトオ", "カトウ"]}, dtype="string")
+    budget = Budget(max_candidate_pairs=10, max_block_size=10, target_rows=10, benchmark_pairs=10)
+    def spec(blocking):
+        return RulesSpec(standardize=std, resolver=Resolver(method="connected_components"), budget=budget,
+                         stages=(Stage(name="fuzzy", rules=(Rule(name="R", exact=("phone",), fuzzy=("name",), blocking=blocking),),
+                                       comparators={"name": Comparator("levenshtein", 1)}),))
+    plain = set(map(tuple, rule_edges(spec(()), df, db, UID)[0][["uid_l", "uid_r"]].to_numpy()))
+    s = spec((Key("name", ("initial",)),))
+    blocked = set(map(tuple, rule_edges(s, prepare(std, df, s.normalized()), db, UID)[0][["uid_l", "uid_r"]].to_numpy()))
+    assert plain == {("A", "B"), ("A", "C")} and blocked == {("A", "B")}  # カトウ starts differently: not joined

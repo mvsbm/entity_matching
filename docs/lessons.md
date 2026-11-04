@@ -18,6 +18,12 @@ Each entry gives the symptom that gave it away, the cause, the fix, and what kee
 - **Fix:** `score_fs` rescales λ to the scored set's size (`scaled_prior`), so cross-validation folds, val, test and production are all scored on one scale.
 - **Guard:** a test pads the scored set and checks that the weight moves by exactly the change in the prior's odds.
 
+## The size rescaling is only half done (open)
+- **Symptom:** at a fixed threshold, recall falls as the scored file grows: 89.8% at 12,000 records, 87.5% at 75,000 (`scripts/robustness.py`).
+- **Cause:** λ is rescaled to the scored file's size, but u stays as measured on train. For fields whose number of distinct values grows with the file, such as the address and the CIF ID, the chance that two random records agree also shrinks like 1/N. Train's u then under-credits an agreement on them by about log2(N / 30,000) bits: 1.3 bits at 75,000 records, 5 bits at a million. On the 10,000-record val and test files it over-credits them by about 1.6 bits instead. Fields with a fixed set of values, such as the phone digits or a surname, are not affected.
+- **Measured fix:** re-sample u on the scored file. It needs no labels and costs the same 10 million random pairs whatever the size. At 75,000 records it recovers recall from 87.5% to 88.6%, with the same false pairs (the `recall_u_from_file` column of the robustness report).
+- **Status:** not adopted yet. It changes every reported number, so it needs its own clean pass through the decision rule, with the threshold re-chosen.
+
 ## Three false positives that were one clone
 - **Symptom:** the check that the threshold transfers failed. Cross-validated train had 0 false pairs out of 784 accepted; val had 3 out of 300.
 - **Cause:** all three were one event. Two entities with the same full name lived at the same address and differed only in CIF and phone. The generator drew personas with replacement, which made about 8,500 pairs of entities with the same name and prefecture. Two of them also drew the same address. No matcher can separate such a pair, and real data wouldn't contain it.
@@ -48,6 +54,27 @@ Each entry gives the symptom that gave it away, the cause, the fix, and what kee
 - **Cause:** DuckDB's `jaro_winkler_similarity`, `jaccard` and `damerau_levenshtein` compare UTF-8 bytes, and katakana takes 3 bytes per character. That scores サトウヒロシ / サトウタカシ at 0.897 instead of 0.844.
 - **Fix:** `er.strings` registers character-level versions (`cl_*`), and every rule and Fellegi–Sunter level uses them.
 - **Guard:** `connect()` checks them on every start, and so does `tests/`.
+
+## Two steps grew with the square of the file
+- **Symptom:** none at 10,000 records, where every step took under a second. It showed only when each step was priced by its complexity and its growth measured on larger generated files.
+- **Cause:** the phone key and rule F2 joined on the last four phone digits, which take only 10,000 values, so chance pairs grow like N². TF-IDF compared each unresolved record with every record. At a million records: 39 million pairs, 55.8 million pairs and 6.4 × 10¹¹ operations.
+- **Fix:** three compound phone keys, a sorted pass on the reversed name instead of TF-IDF, and F2 joined on the phone plus the start of the address. Each passed the decision rule with no true pair lost ([chapter 3](guide/03-far-too-many-pairs.md#scaling-to-a-million-records)).
+- **Guard:** the "Will it scale?" cell in each notebook stops the run if `FINAL` would go over budget at a million records, and Optuna prunes trials that would.
+
+## A projection that assumed too much
+- **Cause:** the design projected each key from how fast its distinct values grow on record samples (α ≈ 2 − β). That formula assumes every value is equally common, and a record sample splits each entity's duplicates apart, so true pairs shrink as fast as chance pairs. Neither holds here.
+- **Fix:** `grown_pairs` keeps or drops whole entities and fits the pair counts themselves. It overstates the growth of keys that households share (α 1.58 for the address, against 1.01 on generated files), which is the safe direction.
+
+## A check slower than the trial it guarded
+- **Symptom:** the scale check took 52.5 s. Optuna, which runs it in every trial, took 41 minutes instead of 8.
+- **Cause:** `np.isin` on arrays of Python strings, to select the sampled entities.
+- **Fix:** rank the entities once and keep those below a cut-off: 0.30 s. The study went from 2,455 s to 506 s.
+
+## The first million-record run ran out of memory
+- **Symptom:** the robustness script's million-record run stalled at 27 GB on a 16 GB laptop, deep in swap.
+- **Cause:** `score_fs` read Splink's predictions into pandas with every matching column of both records, only to keep the ids, the weights and the gammas. At 250,000 records that copy added 4.8 GB to the peak. At a million it would have needed about 19 GB.
+- **Fix:** DuckDB selects the needed columns before anything reaches pandas, and the predictions table is dropped once read. At 250,000 records the step now adds 1.1 GB, with identical results.
+- **Guard:** the cost table of `scripts/robustness.py --smoke` reports the peak memory at each file size.
 
 ## Reference data traps
 - **Wikidata's class tree:** 13,766 of the 16k "Japanese companies" with kana in the transitive `company` tree are dissolved municipalities. Only direct company types give real companies.

@@ -170,7 +170,7 @@ We also tested the cautious alternative: refuse a merge when the two groups hold
 |---|---|---|---|---|
 | train | 69.2% → 89.3% | 88.5–90.0% | 0 | 0.05% |
 | val | 69.3% → 91.5% | 90.2–92.6% | 0 | 0.15% |
-| **test** | 71.1% → **90.2%** | 88.9–91.3% | **0** | 0.14% |
+| **test** | 71.1% → **90.3%** | 89.1–91.5% | **0** | 0.14% |
 
 **In short:** weighing evidence lifts recall from about 70% to about 90%, with no false merges.
 

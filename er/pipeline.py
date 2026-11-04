@@ -14,7 +14,8 @@ import pyarrow as pa
 from splink import DuckDBAPI
 
 from er.candidates import candidates
-from er.config import Budget, Data, OverBudget, ProbSpec, RulesSpec, ThresholdRule
+from er.config import (Budget, Data, KeyBlocker, OverBudget, ProbSpec, RulesSpec, SortedNeighbourhood, TfidfNeighbours,
+                       ThresholdRule)
 from er.evaluate import (average_precision, candidate_metrics, cluster_metrics, edge_metrics, fp_upper, missed_pairs,
                          wilson)
 from er.match import rule_edges, score_fs
@@ -56,6 +57,50 @@ def preflight(spec: RulesSpec, df: pd.DataFrame) -> pd.DataFrame:
                 ops=n + p * max(per_pair, 1), P=p, largest_block=int(blocks.max()) if len(blocks) else 0,
                 est_fuzzy_ms=round(1000 * est, 2), projected_P=int(p * (spec.budget.target_rows / n) ** 2)))
     return pd.DataFrame(rows)
+
+
+def grown_pairs(df: pd.DataFrame, entity: pd.Series, uid: str, cols: list[str], target_rows: int,
+                fractions: tuple[float, ...] = (0.25, 0.5, 1.0), seed: int = 0) -> tuple[float, int]:
+    """How a key's block pairs P grow with the population (P ∝ N^α), and P projected to target_rows.
+    Measured by keeping whole entities, which mimics a smaller population of the same kind: on a key with few
+    distinct values (the last four phone digits) chance collisions shrink with the square, true duplicates only
+    linearly. A key whose value pool grows with the population (addresses) comes out a little steeper than it
+    really is, which is the safe side. O(N) per fraction."""
+    ent = df[uid].map(entity)
+    order = np.random.default_rng(seed).permutation(ent.unique())
+    rank = ent.map(pd.Series(np.arange(len(order)), index=order)).to_numpy()  # an entity's place in a random order
+    sizes, pairs = [], []
+    for f in fractions:
+        keep = rank < max(1, int(len(order) * f))
+        blocks = df[keep].dropna(subset=cols).groupby(cols).size()
+        sizes.append(int(keep.sum()))
+        pairs.append(max(int((blocks * (blocks - 1) // 2).sum()), 1))
+    alpha = float(np.polyfit(np.log(sizes), np.log(pairs), 1)[0])
+    return alpha, int(pairs[-1] * (target_rows / sizes[-1]) ** alpha)
+
+
+def scale_check(spec: RulesSpec | ProbSpec, records: pd.DataFrame, truth: pd.DataFrame, data: Data) -> pd.DataFrame:
+    """Every join key of a configuration, with its pairs projected to budget.target_rows. Key blocks are measured
+    (grown_pairs); a sorted neighbourhood makes at most N·(w − 1) pairs; TF-IDF neighbours compare each query
+    with every record, so up to N² similarities. `within_budget` is False where the projection exceeds
+    budget.max_candidate_pairs: such a configuration would stop with OverBudget at that size."""
+    uid, budget = data.unique_id, spec.budget
+    df = prepare(spec.standardize, records, spec.normalized(), spec.used())
+    entity = truth.set_index(uid)[data.entity_id]
+    rows = []
+    if isinstance(spec, RulesSpec):
+        keyed = [(r.name, s.keys(r)) for s in spec.stages for r in s.rules]
+    else:
+        keyed = [(b.name, [k.name for k in b.keys]) for b in spec.blockers if isinstance(b, KeyBlocker)]
+        for b in spec.blockers:
+            if isinstance(b, SortedNeighbourhood):
+                rows.append(dict(key=b.name, columns=b.key.name, alpha=1.0, projected_pairs=budget.target_rows * (b.window - 1)))
+            elif isinstance(b, TfidfNeighbours):
+                rows.append(dict(key=b.name, columns=b.key.name, alpha=2.0, projected_pairs=budget.target_rows ** 2))
+    for name, cols in keyed:
+        alpha, projected = grown_pairs(df, entity, uid, cols, budget.target_rows)
+        rows.append(dict(key=name, columns=" + ".join(cols), alpha=round(alpha, 2), projected_pairs=projected))
+    return pd.DataFrame(rows).assign(within_budget=lambda t: t["projected_pairs"] <= budget.max_candidate_pairs)
 
 
 def check_budget(plan: pd.DataFrame, budget: Budget) -> None:

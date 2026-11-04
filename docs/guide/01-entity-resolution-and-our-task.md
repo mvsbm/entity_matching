@@ -111,7 +111,7 @@ Here is what happens to the validation file:
 flowchart LR
   A["10,002 records<br/>2,227 true duplicate pairs"] -->|"exact rules"| B["52% found"]
   B -->|"fuzzy rules"| C["69% found<br/>683 pairs still missed"]
-  C -->|"6 candidate generators"| D["14,180 candidate pairs<br/>contain 641 of the 683"]
+  C -->|"9 candidate generators"| D["48,105 candidate pairs<br/>contain 625 of the 683"]
   D -->|"Fellegi–Sunter ≥ 6 bits"| E["471 pairs accepted<br/>all of them true"]
   E -->|"connected components"| F["91.5% found<br/>0 false merges"]
 ```

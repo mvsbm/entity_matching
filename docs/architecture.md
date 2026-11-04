@@ -61,7 +61,7 @@ flowchart LR
   end
   subgraph probstage["probabilistic_matching.ipynb"]
     direction LR
-    pleft["deterministic leftovers"] -->|"unresolved vs all records"| pcand["candidates (er.candidates)<br/>exact keys · sorted neighbourhood · TF-IDF"]
+    pleft["deterministic leftovers"] -->|"unresolved vs all records"| pcand["candidates (er.candidates)<br/>exact and compound keys · sorted neighbourhood"]
     pfit["train, k−1 folds"] -->|"λ prior · u sampling · m by EM or labels"| pmodel[("Splink FS model")]
     pcand -->|"register_blocked_pairs_for_predict"| pscore["Splink predict<br/>match_weight per pair"]
     pmodel -->|"weights"| pscore
@@ -106,8 +106,10 @@ Both Optuna studies are stored in SQLite (`artifacts/optuna/*.db`), and optuna-d
   |---|---|
   | exact keys | hash join, `O(N + P)` |
   | sorted neighbourhood | `O(N log N + N·w)` |
-  | TF-IDF | brute-force cosine, `O(U·N·q)` |
+  | TF-IDF (offered in `SPEC`, not in `FINAL`) | brute-force cosine, `O(U·N·q)` |
 
-  On val, the sorted neighbourhoods give 76% of the 33,871 candidates but reach almost no missed pair the exact keys miss (+0.4 points). The phone key (only 10,000 possible values, so it grows with N²) gives 15%. TF-IDF takes 0.37 of the 0.56 s of candidate time.
+  The phone key (10,000 possible values, so it grows with N²) and TF-IDF (every leftover against every record) are the two generators that could not run at a million records. `FINAL` replaces them with three compound phone keys and a second sorted pass on the reversed name. A "Will it scale?" cell in each notebook projects every key and rule to `budget.target_rows` (`er.pipeline.scale_check`) and stops the run if one is over budget ([chapter 3](guide/03-far-too-many-pairs.md#scaling-to-a-million-records)).
+
+  On val, `FINAL`'s nine generators take 0.3 s in all, and the two person-name sorted passes add 86% of the 48,105 candidates.
 
 **Character vs byte:** DuckDB's `jaro_winkler_similarity`, `jaccard` and `damerau_levenshtein` compare UTF-8 bytes, and katakana is 3 bytes per character. That scores サトウヒロシ / サトウタカシ at 0.897 instead of 0.844. `er.strings.connect()` registers character-level rapidfuzz versions (`cl_*`); every rule and every Fellegi–Sunter level uses them. `connect()` checks them on every start, and so does `tests/`.

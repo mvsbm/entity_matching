@@ -6,7 +6,7 @@ from typing import Literal
 
 from er.strings import FUNCTIONS, Function
 
-Normalizer = Literal["nfkc", "strip_spaces", "kana_fold", "strip_legal_form", "address"]
+Normalizer = Literal["nfkc", "strip_spaces", "kana_fold", "strip_legal_form", "address", "initial", "first3", "reverse"]
 
 
 class OverBudget(Exception):
@@ -77,6 +77,7 @@ class Rule:
     name: str
     exact: tuple[str, ...]                    # raw equality
     fuzzy: tuple[str, ...] = ()               # compared with the stage's comparator for that column
+    blocking: tuple[Key, ...] = ()            # extra exact keys that only limit the join, e.g. a name initial
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -86,10 +87,12 @@ class Stage:
     comparators: Mapping[str, Comparator] = field(default_factory=dict)
 
     def keys(self, rule: Rule) -> list[str]:  # equi-join columns: they decide the blocks, so the work P
-        return [*rule.exact, *(self.comparators[c].column(c) for c in rule.fuzzy if self.comparators[c].function == "exact")]
+        return [*rule.exact, *(self.comparators[c].column(c) for c in rule.fuzzy if self.comparators[c].function == "exact"),
+                *(k.name for k in rule.blocking)]
 
     def sql(self, rule: Rule) -> str:
-        return " AND ".join([f'l."{c}" = r."{c}"' for c in rule.exact] + [self.comparators[c].sql(c) for c in rule.fuzzy])
+        return " AND ".join([f'l."{c}" = r."{c}"' for c in (*rule.exact, *(k.name for k in rule.blocking))]
+                            + [self.comparators[c].sql(c) for c in rule.fuzzy])
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -128,10 +131,11 @@ class RulesSpec:
                 assert comp.function == "exact" or comp.threshold is not None, f"{s.name}.{c}: threshold missing"
 
     def normalized(self) -> list[tuple[str, tuple[Normalizer, ...]]]:
-        return [(c, comp.normalize) for s in self.stages for c, comp in s.comparators.items() if comp.normalize]
+        return ([(c, comp.normalize) for s in self.stages for c, comp in s.comparators.items() if comp.normalize]
+                + [(k.column, k.normalize) for s in self.stages for r in s.rules for k in r.blocking if k.normalize])
 
     def used(self) -> set[str]:
-        return {c for s in self.stages for r in s.rules for c in (*r.exact, *r.fuzzy)}
+        return {c for s in self.stages for r in s.rules for c in (*r.exact, *r.fuzzy, *(k.name for k in r.blocking))}
 
 
 def with_comparators(spec: RulesSpec, stage: str, comparators: Mapping[str, Comparator]) -> RulesSpec:
@@ -258,6 +262,7 @@ class Data:
     unique_id: str
     entity_id: str                            # truth column
     show_rows: int
+    synthetic: bool                           # True for generated data; real (personal) data must not be exported
 
 
 @dataclass(frozen=True, kw_only=True)

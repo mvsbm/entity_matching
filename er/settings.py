@@ -43,7 +43,7 @@ def load_settings(path: Path | None = None) -> Settings:
         data=Data(silver_dir=paths["silver"], labels_dir=paths["labels"], gold_dir=paths["gold"],
                   artifacts_dir=paths["artifacts"], experiments_dir=paths["experiments"], models_dir=paths["models"],
                   datasets=tuple(cfg["datasets"]["all"]), unique_id=cfg["schema"]["unique_id"], entity_id=cfg["schema"]["entity_id"],
-                  show_rows=cfg["display"]["show_rows"]),
+                  show_rows=cfg["display"]["show_rows"], synthetic=bool(cfg["datasets"]["synthetic"])),
         standardize=Standardization(kana_fold=dict(zip(s["kana_fold_from"], s["kana_fold_to"])),
                                     legal_forms=tuple(s["legal_forms"]), prefectures=tuple(s["prefectures"]),
                                     address_replacements=tuple(map(tuple, s["address_replacements"])),
