@@ -8,7 +8,7 @@ Before two records can be compared, they must say the same thing in the same way
 
 ## Challenge: the same fact, many spellings
 
-Staff type what they hear and what they see. In our validation file, one man appears as マツモトヒサオ on one record and マツモトヒサウ on another. One address arrives in three forms:
+The same fact rarely reaches the database in the same form. Katakana names lose voicing marks or get small kana typed full-size, and addresses are typed in whatever format the clerk prefers. In our validation file, one man appears as マツモトヒサオ on one record and マツモトヒサウ on another. One address arrives in three forms:
 
 | Typed as | Why it differs |
 |---|---|
@@ -63,38 +63,188 @@ Normalizing is not perfectly safe:
 
 ## Challenge: how close is "close"?
 
-After folding, マツモトヒサオ and マツモトヒサウ still differ in one character. We need a number that says how close two strings are.
+After folding, マツモトヒサオ and マツモトヒサウ still differ in one character. We need a number that says how close two strings are. The right number depends on **how the field goes wrong**. A phone number goes wrong differently from a name, so each field gets a function built for its kind of mistake.
 
-### Solution: a similarity function for each kind of field
+The functions come in four families:
 
-| Function | What it measures | マツモトヒサオ vs マツモトヒサウ | Cost per pair |
+| Family | Functions | The question each asks |
+|---|---|---|
+| edits | Levenshtein, Damerau–Levenshtein, Hamming | how many keystrokes turn one string into the other? |
+| character matching | Jaro, Jaro–Winkler | how many characters do they share, in about the same order? |
+| sets | Jaccard | how many of their characters do they share, in any order? |
+| equality | exact | are they the same? |
+
+### Levenshtein distance: counting edits
+
+**The idea.** It counts the fewest single-character edits that turn one string into the other. An edit is inserting, deleting or replacing one character.
+
+**How it is computed.** Fill a table. Cell (i, j) holds the distance between the first i characters of one string and the first j characters of the other. Each cell takes the cheapest of three moves: delete, insert, or replace. Replacing is free when the two characters are already equal:
+
+$$d(i,j) = \min\big\{\, d(i-1,j)+1,\;\; d(i,j-1)+1,\;\; d(i-1,j-1) + [\,a_i \ne b_j\,] \,\big\}$$
+
+For サトウ and サトオ:
+
+| | "" | サ | ト | オ |
+|---|---|---|---|---|
+| **""** | 0 | 1 | 2 | 3 |
+| **サ** | 1 | **0** | 1 | 2 |
+| **ト** | 2 | 1 | **0** | 1 |
+| **ウ** | 3 | 2 | 1 | **1** |
+
+Along the diagonal the cost stays at 0 while the characters agree. The last step replaces ウ with オ, so the distance, in the bottom-right cell, is **1**.
+
+**Properties:**
+- Every edit costs 1, wherever it happens and however long the strings are.
+- The result is a whole number: 0 means identical.
+- It takes O(m·n) time for strings of lengths m and n.
+
+**Where we use it, and why:**
+- **Addresses in the model** ("address close": at most 2 edits). After normalization, an address error is usually a wrong or dropped digit. `千代田区丸の内1-3-17` and `1-3-7` are 1 edit apart, and a limit of 2 allows for one more slip.
+- **Names in the rules** (folded names at most 2 edits apart). A rule always needs two more fields to agree exactly as well, so a simple count is safe there.
+
+**Its blind spot.** Every edit costs the same, so it can't tell a slip in a long name from one in a short name. サトウ / サトオ and マツモトヒサオ / マツモトヒサウ are both 1 edit apart. But one kana is a third of サトウ and only a seventh of マツモトヒサオ. That's why the model uses Jaro–Winkler for names.
+
+### Damerau–Levenshtein distance: a swap counts once
+
+**The idea.** It is Levenshtein plus one more edit: swapping two neighbouring characters counts as a single edit.
+
+**Example.** In 0599 and 0959, the 5 and the 9 have traded places. Levenshtein needs two replacements (distance 2). Damerau–Levenshtein needs one swap (distance **1**).
+
+**Where we use it, and why.** **Phones in the rules** (at most 1). Typing two digits in the wrong order is one of the most common keying slips. It should count as one mistake, not two.
+
+### Hamming distance: positions that differ
+
+**The idea.** For two strings of the same length, it counts the positions where they differ.
+
+**Example.** In 0599 and 0499, only the second digit differs, so the distance is **1**. The swap 0599 / 0959 counts **2**. Strings of different lengths have no Hamming distance at all.
+
+**Properties.** It is the simplest and fastest function, O(n). It allows replacements only, never insertions or deletions.
+
+**Where we use it, and why.** **Phones in the model** (the level "one digit off"). The last four digits always have exactly four characters, and the most common error is one wrong digit, which is exactly Hamming distance 1.
+
+It also makes the evidence easy to check by counting. Each number has 4 × 9 = 36 neighbours at distance 1. So two strangers land there by chance about 36 times in 10,000, which is the 1 in 279 the model learned ([chapter 5](05-uncertain-evidence-fellegi-sunter.md)).
+
+### Jaro and Jaro–Winkler: shared characters, in order, with a bonus for the start
+
+**The idea.** Two strings are similar if they share many characters in roughly the same order, especially at the start. The score runs from 0 (nothing shared) to 1 (identical).
+
+**How Jaro counts:**
+
+1. **Matches.** A character in one string *matches* an equal character in the other if the two are at most w positions apart:
+
+   $$w = \left\lfloor \frac{\max(|a|,\,|b|)}{2} \right\rfloor - 1$$
+
+   Each character can match only once. The number of matches is m.
+
+2. **Transpositions.** Read the matched characters of each string in order, and count the positions where the two sequences disagree. Half that count is t.
+
+3. **The score** averages three shares: the share of the first string that matched, the share of the second, and the share of matches in the right order.
+
+   $$J = \frac{1}{3}\left(\frac{m}{|a|} + \frac{m}{|b|} + \frac{m - t}{m}\right)$$
+
+**Winkler's bonus.** William Winkler observed that typing errors are less common at the start of a name. So a shared start of ℓ characters, counted up to 4, pulls the score towards 1:
+
+$$JW = J + 0.1\,\ell\,(1 - J)$$
+
+**Worked examples:**
+
+| Pair | Window w | Matches m | Transpositions t | Jaro | Shared start ℓ | Jaro–Winkler |
+|---|---|---|---|---|---|---|
+| マツモトヒサオ / マツモトヒサウ | 2 | 6 | 0 | 0.905 | 4 | **0.943** |
+| サトウ / サトオ | 0 | 2 | 0 | 0.778 | 2 | **0.822** |
+| マツモト / マツトモ | 1 | 4 | 1 | 0.917 | 2 | **0.933** |
+
+- **First row.** マ ツ モ ト ヒ サ match, but オ and ウ don't, and nothing is out of order. So $J = \tfrac13(\tfrac67 + \tfrac67 + \tfrac66) = 0.905$. The shared start マツモト lifts it to $0.905 + 0.1 \times 4 \times 0.095 = 0.943$.
+- **Second row.** The window is 0, so characters can match only in the same position. サ and ト match, giving $J = \tfrac13(\tfrac23 + \tfrac23 + \tfrac22) = 0.778$.
+- **Third row.** モ and ト are swapped. All four characters match, but read in order (マツモト vs マツトモ) two positions disagree, so t = 1 and $J = \tfrac13(1 + 1 + \tfrac34) = 0.917$.
+
+**Properties:**
+- **It is relative to length.** One slip in a long name costs less than one in a short name: 0.943 against 0.822 above, although both are a single edit.
+- **It is forgiving at the end and strict at the start.**
+- **It runs in O(m·n)** in the worst case. Names are short, so it is cheap.
+
+**Where we use it, and why.** **Names in the model:** "very close" at 0.95 or more, "close" at 0.75 or more. Matt Jaro and William Winkler designed it at the US Census Bureau for exactly this job: comparing personal names with typing errors. Three of its properties fit our names:
+1. It judges a slip against the length of the name, as a person would.
+2. The first character is the one people most often get right. Folding has already removed the kana variants that do touch it, such as ガトウ → カトウ.
+3. Japanese names start with the surname, so the shared start is usually the shared surname.
+
+The rules also use Jaro–Winkler for addresses (0.91 or more). A normalized address shares a long start, the city and town, and differs, if at all, near the end.
+
+**Its blind spot.** Different people who share a surname score high. サトウヒロシ and サトウタカシ reach **0.844**, which counts as "close" (at least 0.75). That's why "close" is weak evidence in the model, worth only about 4 bits ([chapter 5](05-uncertain-evidence-fellegi-sunter.md)).
+
+### Jaccard similarity: shared characters, in any order
+
+**The idea.** Treat each string as a *set* of characters, and measure how much the two sets overlap:
+
+$$\text{Jaccard}(A, B) = \frac{|A \cap B|}{|A \cup B|}$$
+
+The score runs from 0 (no character in common) to 1 (the same characters).
+
+**Example.** マツモトヒサオ and マツモトヒサウ share 6 characters (マツモトヒサ), out of 8 distinct characters in total (adding オ and ウ). So the score is 6 / 8 = **0.75**.
+
+**Properties.** It ignores order and repetition entirely, and runs in O(m + n).
+
+**Where we use it, and why.** **Raw company names in the rules** (0.77 or more). A company's legal form can come first or last:
+
+| Pair | Levenshtein | Jaro–Winkler | Jaccard |
 |---|---|---|---|
-| exact | equal or not | not equal | constant, using a hash |
-| Levenshtein | the fewest single-character edits from one to the other | 1 edit | O(m·n) |
-| Jaro–Winkler | shared characters in a similar order, with a bonus for a shared start | 0.943 | O(m·n) |
-| Jaccard | shared characters, ignoring order: \|A ∩ B\| / \|A ∪ B\| | 6 / 8 = 0.75 | O(m + n) |
-| Hamming | positions that differ, for strings of equal length | (phones 0599 vs 0499: 1) | O(n) |
+| カブシキガイシャカネコカイソウテン / カネコカイソウテンカブシキガイシャ | 16 | 0.513 | **1.000** |
 
-Here m and n are the two string lengths. Names are short, so even O(m·n) is cheap.
+To the order-sensitive functions, the same company looks completely different. To Jaccard, it looks identical.
 
-**How Jaro–Winkler reaches 0.943.** Both names have 7 characters, and 6 of them match in the same order, with no swaps. The Jaro score averages three ratios: matches in the first string, matches in the second, and matches in the right order:
+**Its blind spot, and why we use it nowhere else.** Because order doesn't count, Jaccard is the wrong tool for numbers. 0599 and 0959 have the same digits, so their Jaccard is 1.0. So do `千代田区丸の内1-3-17` and `1-3-7`, which may be a different address. For phones and addresses, the order *is* the information.
 
-$$J = \tfrac{1}{3}\left(\tfrac{6}{7} + \tfrac{6}{7} + \tfrac{6}{6}\right) = 0.905$$
+### Exact equality: for identifiers
 
-Winkler then rewards a shared start, because typing errors are rarer at the beginning. The two names share their first 4 characters (マツモト), so:
+**The idea.** Two values are equal after normalization, or they aren't.
 
-$$JW = J + 4 \times 0.1 \times (1 - J) = 0.905 + 0.038 = 0.943$$
+**Where we use it, and why.** For the CIF ID, the address code and the postal code, and as the strongest level of every comparison. These are identifiers, not words: a code one digit away is usually a different code, so "nearly equal" carries no meaning. Exact matching is also the cheapest test, because the database finds equal values with a hash join ([chapter 3](03-far-too-many-pairs.md)).
 
-### Why each field gets its own function
+### All the functions side by side
 
-- **Names use Jaro–Winkler.** Japanese names start with the surname, and the shared start earns a bonus. So a typo late in the given name still scores high.
-- **Addresses use edit distance.** A wrong digit or a dropped character is one edit.
-- **Phones use Hamming distance.** The last four digits have a fixed length, so one wrong digit is distance 1.
-- **Company names can use Jaccard.** The legal form comes either first or last: カブシキガイシャ… or …カブシキガイシャ. Jaccard ignores order, so both forms score the same. The rules stage adopted it for this reason ([chapter 4](04-certain-cases-first-rules.md)).
+| Pair | What happened | Levenshtein | Damerau–Lev. | Hamming | Jaro–Winkler | Jaccard |
+|---|---|---|---|---|---|---|
+| マツモトヒサオ / マツモトヒサウ | one kana wrong, long name | 1 | 1 | 1 | 0.943 | 0.750 |
+| サトウ / サトオ | one kana wrong, short name | 1 | 1 | 1 | 0.822 | 0.500 |
+| マツモトヒサオ / マツモヒサオ | one kana dropped | 1 | 1 | — | 0.967 | 0.857 |
+| マツモト / マツトモ | two kana swapped | 2 | 1 | 2 | 0.933 | 1.000 |
+| サトウヒロシ / サトウタカシ | different people, same surname | 2 | 2 | 2 | 0.844 | 0.500 |
+| カブシキガイシャカネコカイソウテン / カネコカイソウテンカブシキガイシャ | legal form moved | 16 | 16 | 16 | 0.513 | 1.000 |
+| 0599 / 0499 | phone, one digit wrong | 1 | 1 | 1 | 0.850 | 0.500 |
+| 0599 / 0959 | phone, two digits swapped | 2 | 1 | 2 | 0.925 | 1.000 |
+| 福島市吉倉4-11 / 福島市吉倉4-17 | address, a digit wrong, or the neighbour | 1 | 1 | 1 | 0.956 | 0.889 |
+| 千代田区丸の内1-3-17 / 千代田区丸の内1-3-7 | address, a digit dropped | 1 | 1 | — | 0.985 | 1.000 |
 
-The exact thresholds (for example, "Jaro–Winkler at least 0.95") are chosen per stage, by rule ([chapter 6](06-measuring-and-choosing.md)).
+Reading down each column shows what each function notices:
+- **The edit distances** see every slip, but not how big it is relative to the string.
+- **Jaro–Winkler** sees the short-name slip as bigger, and still rates the different-people pair as fairly close.
+- **Jaccard** ignores order. That rescues the moved legal form and ruins the swapped digits.
 
-**In short:** pick the similarity that matches how each field goes wrong.
+### Match the function to how the field goes wrong
+
+| Field | How it goes wrong | Function | Why this one | Stage |
+|---|---|---|---|---|
+| person name | a kana wrong or dropped (spelling variants are folded first) | Jaro–Winkler: ≥ 0.95 very close, ≥ 0.75 close | judges a slip against the name's length, and rewards the shared surname at the start | model |
+| | | Levenshtein ≤ 2, on folded names | a simple count, safe because the rule also needs the address code and phone | rules |
+| company name | the legal form before or after the name | Jaccard ≥ 0.77, on raw names | order doesn't matter | rules |
+| | a kana wrong | Jaro–Winkler, with the legal form removed | as for person names | model |
+| address | a digit wrong or dropped (formats are normalized first) | Levenshtein ≤ 2 | one slip is one edit | model |
+| | | Jaro–Winkler ≥ 0.91 | a long shared start (city, town), with any difference at the end | rules |
+| phone (last 4) | one digit wrong | Hamming = 1 | fixed length, so one wrong digit is exactly distance 1 | model |
+| | two digits swapped | Damerau–Levenshtein ≤ 1 | a swap counts as one slip | rules |
+| CIF ID, address code, postal code | none in the generator | exact | an identifier has no "nearly" | both |
+
+**A risk we accept, and how we contain it.** "Close" addresses include neighbours. 福島市吉倉4-11 and 4-17 score 0.956 and are one edit apart, whether through a typo or because they are next door. So a close address is never enough on its own:
+- **In the rules,** a close address must come with a close name and the same phone.
+- **In the model,** "address close" is worth +8.9 bits, against +14.0 for the same address.
+
+### Other options, and why we didn't take them
+
+- **Phonetic codes** such as Soundex give names that sound alike the same code. They were built for English, where spelling and sound often disagree. Katakana is already a phonetic script, and folding does the remaining work.
+- **Weighted edits** could make ガ → カ cost less than ガ → サ. Folding gets the same effect more simply: confusable kana become equal before any comparison.
+- **Character pieces with TF-IDF** compare names by shared fragments, weighting rare fragments more. We use them to *find* candidates ([chapter 3](03-far-too-many-pairs.md)), where speed over many names matters more than a precise score.
+
+**In short:** give each field the function whose idea of a small mistake matches how that field really goes wrong.
 
 ## Challenge: Japanese text breaks standard tools
 
@@ -125,7 +275,12 @@ The gap is not cosmetic. Our model treats Jaro–Winkler at or above 0.95 as "ve
 ## Further reading
 
 - P. Christen, *Data Matching*, Springer, 2012: chapter 3 (data pre-processing) and chapter 5 (field and record comparison).
-- W. E. Winkler, "String comparator metrics and enhanced decision rules in the Fellegi–Sunter model of record linkage," *Proceedings of the Section on Survey Research Methods*, American Statistical Association, 1990. The origin of Jaro–Winkler.
+- V. I. Levenshtein, "Binary codes capable of correcting deletions, insertions, and reversals," *Soviet Physics Doklady* 10(8), 1966.
+- F. J. Damerau, "A technique for computer detection and correction of spelling errors," *Communications of the ACM* 7(3), 1964.
+- R. W. Hamming, "Error detecting and error correcting codes," *Bell System Technical Journal* 29(2), 1950.
+- M. A. Jaro, "Advances in record-linkage methodology as applied to matching the 1985 census of Tampa, Florida," *Journal of the American Statistical Association* 84(406), 1989.
+- W. E. Winkler, "String comparator metrics and enhanced decision rules in the Fellegi–Sunter model of record linkage," *Proceedings of the Section on Survey Research Methods*, American Statistical Association, 1990. The prefix bonus.
+- P. Jaccard, "The distribution of the flora in the alpine zone," *New Phytologist* 11(2), 1912. The origin of the Jaccard index.
 - [rapidfuzz documentation](https://rapidfuzz.github.io/RapidFuzz/): the string metrics behind `cl_*`.
 
 **Next:** [3. Far too many pairs →](03-far-too-many-pairs.md)

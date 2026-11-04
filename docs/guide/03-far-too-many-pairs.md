@@ -23,7 +23,7 @@ The standard answer is **blocking**: compare two records only if they already sh
 
 $$P = \sum_{\text{blocks}} \binom{k}{2}$$
 
-The configuration offers six keys: phone, normalized address, address code, customer number, folded person name and folded company name.
+The configuration offers six keys: phone, normalized address, address code, CIF ID, folded person name and folded company name.
 
 **Sorted neighbourhood.** Sort all records by a key, such as the folded name, and compare each record with the next few, here 4. A typo near the end of a name keeps the record close in the sorted order, so the pair is still found.
 
@@ -49,12 +49,12 @@ On validation, for the 683 true pairs the rules missed:
 | Generators, added one by one | Candidates | Missed pairs on the list |
 |---|---|---|
 | phone | 4,985 | 47.6% |
-| + address, address code, customer number | 6,566 | 84.3% |
+| + address, address code, CIF ID | 6,566 | 84.3% |
 | + folded person and company names | 6,724 | 93.1% |
 | + sorted neighbourhood | 31,942 | 93.6% |
 | + TF-IDF | 33,871 | 93.9% |
 
-Sorted neighbourhood more than quadruples the list but adds only half a point. The final configuration keeps six generators: phone, address, address code, customer number, company-name sorted neighbourhood and person-name TF-IDF. It has **14,180 candidates holding 641 of the 683 missed pairs (93.9%)**, while skipping 99.972% of all pairs.
+Sorted neighbourhood more than quadruples the list but adds only half a point. The final configuration keeps six generators: phone, address, address code, CIF ID, company-name sorted neighbourhood and person-name TF-IDF. It has **14,180 candidates holding 641 of the 683 missed pairs (93.9%)**, while skipping 99.972% of all pairs.
 
 **In short:** a few cheap keys find most duplicates; the extra generators buy the last few points.
 

@@ -6,7 +6,7 @@
 
 Here are two customer records from our data:
 
-| | Name | Address | Phone (last 4) | Customer number |
+| | Name | Address | Phone (last 4) | CIF ID |
 |---|---|---|---|---|
 | Record A | マツモトヒサオ | 福島県福島市吉倉4-11 | 0599 | 5227073594045 |
 | Record B | マツモトヒサウ | 福島県福島市吉倉4-11 | 0499 | 5912064752971 |
@@ -67,9 +67,9 @@ We implement the first two tiers. The third is a planned next step.
 
 We find duplicates within one file of Japanese customer records. Five things make it hard:
 
-- **Names are in katakana, typed by ear.** Staff type what they hear, so similar sounds get swapped: ガ for カ, ッ for ツ, ウ for ー.
+- **One name, several katakana spellings.** Voicing marks get lost (ガ becomes カ), small kana are typed full-size (ッ becomes ツ), and long vowels are spelled in different ways (ー, ウ or オ). On top of that come ordinary typos: a wrong or dropped character.
 - **Addresses come in many formats.** One address can be typed as 1丁目3番17号, as 1-3-17, or with full-width digits and a building name.
-- **Identifiers are weak.** We see only the last four digits of a phone number, and half of all duplicate records carry a new customer number.
+- **Identifiers are weak.** We see only the last four digits of a phone number, and half of all duplicate records carry a new CIF ID (the ID our CIF system assigns).
 - **People and companies change.** People move and marry; companies open branches. So one entity can have several phones, addresses and names.
 - **Many fields are empty.** Some columns are filled in for only 65% of records.
 
@@ -81,7 +81,7 @@ In production there are no labelled examples. So the method must learn without l
 
 ## What exactly is the task?
 
-- **Input:** customer records, each with 19 columns. The ones that matter most are the name in katakana, the address, the last four phone digits and the customer number (CIF). Many are empty.
+- **Input:** customer records, each with 19 columns. The ones that matter most are the name in katakana, the address, the last four phone digits and the CIF ID. Many are empty.
 - **Output:** for every record (CONT_ID), the entity it belongs to.
 - **What "good" means.** Two numbers, always reported together:
   - **Recall:** of all pairs of records that truly belong together, the share we put together.
@@ -98,12 +98,12 @@ In production there are no labelled examples. So the method must learn without l
 | C2 | Japanese text breaks standard tools | a standard similarity function scores katakana by bytes, not characters | character-level versions of every function | [2](02-the-same-fact-written-differently.md) |
 | C3 | Far too many pairs | 10,002 records make 50,015,001 pairs; a million make 5 × 10¹¹ | compare only pairs that share a key or look alike | [3](03-far-too-many-pairs.md) |
 | C4 | Different people look alike | 45,506 pairs of *different* entities share the last four phone digits | never trust one field; weigh them all | [4](04-certain-cases-first-rules.md), [5](05-uncertain-evidence-fellegi-sunter.md) |
-| C5 | Evidence is partial and uncertain | one true pair has a name typo, a phone typo and a new customer number at once | add up evidence from every field, in bits | [5](05-uncertain-evidence-fellegi-sunter.md) |
+| C5 | Evidence is partial and uncertain | one true pair has a name typo, a phone typo and a new CIF ID at once | add up evidence from every field, in bits | [5](05-uncertain-evidence-fellegi-sunter.md) |
 | C6 | Fields are often empty | some columns are filled for only 65% of records | an empty field counts as no evidence either way | [5](05-uncertain-evidence-fellegi-sunter.md) |
 | C7 | Answers about pairs don't make groups | A matches B, and B matches C | group with connected components, behind a strict threshold | [5](05-uncertain-evidence-fellegi-sunter.md) |
 | C8 | No answer key, and every choice can overfit | real data has no truth to learn from or measure against | synthetic data with known truth; a rule for every choice; test used once | [1](#where-does-the-truth-come-from), [6](06-measuring-and-choosing.md) |
 
-**Why two stages?** Rules are cheap, easy to audit and, on our data, never wrong. So they go first and settle the clear cases: 69% of the duplicates. What remains is messy, with typos in two fields at once, or a move plus a new customer number. Messy pairs need evidence weighed, not all-or-nothing conditions, so a probabilistic model handles them.
+**Why two stages?** Rules are cheap, easy to audit and, on our data, never wrong. So they go first and settle the clear cases: 69% of the duplicates. What remains is messy, with typos in two fields at once, or a move plus a new CIF ID. Messy pairs need evidence weighed, not all-or-nothing conditions, so a probabilistic model handles them.
 
 Here is what happens to the validation file:
 
@@ -134,7 +134,7 @@ Real customer data has no answer key. Nobody knows for sure which records are th
 - **Records per entity:** 1 plus a Poisson(0.25) draw. 22.5% of entities end up with more than one record.
 - **Several of everything.** Each person owns 1 + Poisson(0.3) phones, addresses and surnames (married names); a company owns 1 + Poisson(1.0) (branch offices). Each record shows one of them.
 - **Typing errors:** 10% of name parts get one kana wrong, 5% of phones one digit wrong, 5% of typed addresses one digit or character wrong.
-- **A customer number** is kept on half of the duplicate records and new on the other half.
+- **A CIF ID** is kept on half of the duplicate records and new on the other half.
 - **Empty fields:** the fill rate falls from 99.99% to 65% across the columns, and fields of one kind (name, postal code, address) tend to be empty together.
 - **Households:** unrelated entities sometimes share an address. They are look-alikes that must not be merged.
 

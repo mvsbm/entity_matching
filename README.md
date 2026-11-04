@@ -8,15 +8,15 @@ Finds which customer records (CONT_IDs) belong to the same person or company. It
 
 Two records of the same man, taken from the val split:
 
-| | name | address | phone (last 4) | customer number (CIF) |
+| | name | address | phone (last 4) | CIF ID |
 |---|---|---|---|---|
 | record A | マツモトヒサオ | 福島県福島市吉倉4-11 | 0599 | 5227073594045 |
 | record B | マツモトヒサウ | 福島県福島市吉倉4-11 | 0499 | 5912064752971 |
 
-The name has one wrong kana (オ → ウ), the phone one wrong digit, and the customer number is new. Here is what happens to the pair:
+The name has one wrong kana (オ → ウ), the phone one wrong digit, and the CIF ID (the ID our CIF system assigns) is new. Here is what happens to the pair:
 
 1. **Standardize.** Kana variants are folded and every address format is parsed to one key, so 福島市吉倉4-11 compares equal whether it was typed with 丁目/番/号, full-width digits or a building name.
-2. **Rules (exact, then fuzzy).** None fires. Every rule needs the name, the phone or the CIF to match exactly, and here all three differ slightly. The rules are cheap and never wrong on our data (0 false merges on every split), but they find only 69% of the duplicates.
+2. **Rules (exact, then fuzzy).** None fires. Every rule needs the name, the phone or the CIF ID to match exactly, and here all three differ slightly. The rules are cheap and never wrong on our data (0 false merges on every split), but they find only 69% of the duplicates.
 3. **Candidates.** Three generators put the pair on a short list: the shared address, the shared address code, and name similarity (TF-IDF). That list has 14,180 candidate pairs for 10,002 records, instead of all 50 million possible pairs.
 4. **Score.** A Fellegi–Sunter model weighs each field as evidence, in bits. Each bit doubles the odds that the two records are the same entity.
 
@@ -26,19 +26,19 @@ The name has one wrong kana (オ → ウ), the phone one wrong digit, and the cu
    | names close (Jaro–Winkler ≥ 0.75 after kana folding) | +4.0 |
    | same address | +14.0 |
    | phone one digit off | +4.5 |
-   | different CIF | −0.9 |
+   | different CIF ID | −0.9 |
    | **total** | **+6.6 bits, a 99% match probability** |
 
 5. **Decide and cluster.** A pair needs at least **6 bits** to be accepted, and this one passes. Connected components then merge it with any other records already linked to either side.
 
 **The closest non-match**, from the same val split:
 
-| | name | address | phone | CIF |
+| | name | address | phone | CIF ID |
 |---|---|---|---|---|
 | record C | セルシスカブシキガイシャ (a company) | 東京都多摩市連光寺5-18-5 | 8813 | 2754477213332 |
 | record D | ヤマモトカヨ (a person) | 東京都多摩市連光寺5-18-5 | 6813 | 4590715084681 |
 
-Same address (+14.0), phone one digit off (+4.5), different CIF (−0.9). The same evidence as the true match, except for the name: a company and a person have no name the model can compare, so the name adds 0 bits. Total **+2.6 bits, rejected.**
+Same address (+14.0), phone one digit off (+4.5), different CIF ID (−0.9). The same evidence as the true match, except for the name: a company and a person have no name the model can compare, so the name adds 0 bits. Total **+2.6 bits, rejected.**
 
 The four bits between a match and a non-match come from the name. The notebook computes both breakdowns ([`er.match.waterfall`](er/match.py); the "Why a pair matches" cell in the probabilistic PDF).
 
@@ -55,7 +55,7 @@ flowchart LR
 
 ## Why it's built this way
 
-- **Two stages.** Rules are cheap, auditable and, on this data, never wrong, so they go first. What they leave is messy: a typo in the name and in the phone at once, a move, a new customer number. Messy pairs need evidence weighed, not all-or-nothing conditions.
+- **Two stages.** Rules are cheap, auditable and, on this data, never wrong, so they go first. What they leave is messy: a typo in the name and in the phone at once, a move, a new CIF ID. Messy pairs need evidence weighed, not all-or-nothing conditions.
 - **Bits.** Evidence from independent fields adds up, so every accepted pair can be explained line by line, as above. Correlated fields (address code, address text, postal code) share one comparison, so the same fact is never counted twice.
 - **A rule picks the threshold, not a person.** The threshold is the lowest weight at which cross-validated train accepts no false pair, plus one safety step. Every other choice is made by a paired test on train and must not lose anything on val. Test is scored once, at the end. The headline number above was never used to choose anything ([chapter 6](docs/guide/06-measuring-and-choosing.md)).
 - **Synthetic data from real names.** Real name, company and address distributions with an exact answer key, so each method's errors can be counted, not guessed ([chapter 1](docs/guide/01-entity-resolution-and-our-task.md#where-does-the-truth-come-from)).

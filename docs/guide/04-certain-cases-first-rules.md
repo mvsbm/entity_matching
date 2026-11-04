@@ -6,7 +6,7 @@
 
 ## Challenge: some pairs are obvious, but no single field is safe
 
-Many duplicates are easy. Two records with the same customer number and the same full name are almost surely one person. A computer should settle these cheaply, explainably and without mistakes.
+Many duplicates are easy. Two records with the same CIF ID and the same full name are almost surely one person. A computer should settle these cheaply, explainably and without mistakes.
 
 The trap is that any **single** field is shared by many different people. On train, for each field alone we counted how many true pairs agree on it, and how many pairs of *different* entities agree on it too:
 
@@ -18,7 +18,7 @@ The trap is that any **single** field is shared by many different people. On tra
 | address | 41.5% | 7,724 |
 | given name | 48.0% | 117,118 |
 | full name | 42.5% | 230 |
-| customer number | 45.2% | 0 |
+| CIF ID | 45.2% | 0 |
 
 The phone is the most common agreement among true pairs, and also among strangers. A rule on any one of these fields would merge thousands of different people.
 
@@ -28,25 +28,25 @@ A **rule** is a short list of conditions that must *all* hold. Requiring two or 
 
 | Fields that must agree | True pairs that agree | Pairs of different entities that agree |
 |---|---|---|
-| customer number + full name | 19.2% | 0 |
-| customer number + phone | 33.2% | 0 |
+| CIF ID + full name | 19.2% | 0 |
+| CIF ID + phone | 33.2% | 0 |
 | full name + address code + phone | 19.9% | 0 |
 | address code + phone | 42.9% | 0 |
 | phone + postal code | 53.6% | 4 |
 
 Each rule finds only some true pairs, but rules are combined: a pair is accepted if **any one** rule holds.
 
-The customer number is a special case. In our synthetic data, it is never shared by two entities, so it would be safe on its own. Real systems reuse and mistype customer numbers, so our rules don't rely on that.
+The CIF ID is a special case. In our synthetic data, it is never shared by two entities, so it would be safe on its own. Real systems reuse and mistype CIF IDs, so our rules don't rely on that.
 
 ### Two stages: exact, then fuzzy
 
-**Exact rules** ask for exact agreement, for example *customer number and full name*. There are five:
+**Exact rules** ask for exact agreement, for example *CIF ID and full name*. There are five:
 
 | Rule | Fields that must be equal |
 |---|---|
-| X1 | customer number + full name |
-| X2 | customer number + company name |
-| X3 | customer number + phone |
+| X1 | CIF ID + full name |
+| X2 | CIF ID + company name |
+| X3 | CIF ID + phone |
 | X4 | full name + address code + phone |
 | X5 | company name + address code + phone |
 
@@ -95,12 +95,12 @@ The exact rules find about half of the true pairs. The fuzzy rules lift that to 
 
 Back to the pair from [chapter 1](01-entity-resolution-and-our-task.md):
 
-| | Name | Address | Phone | Customer number |
+| | Name | Address | Phone | CIF ID |
 |---|---|---|---|---|
 | A | マツモトヒサオ | 福島県福島市吉倉4-11 | 0599 | 5227073594045 |
 | B | マツモトヒサウ | 福島県福島市吉倉4-11 | 0499 | 5912064752971 |
 
-Every rule needs the full name, the phone or the customer number to agree exactly. Here all three differ: the name by one kana, the phone by one digit, the customer number entirely. So no rule fires, although a person would match these at a glance.
+Every rule needs the full name, the phone or the CIF ID to agree exactly. Here all three differ: the name by one kana, the phone by one digit, the CIF ID entirely. So no rule fires, although a person would match these at a glance.
 
 About 30% of duplicates are like this, with small differences in two or more fields at once. Rules can't weigh one strong agreement against two weak differences. That needs a model of evidence, which is the next chapter.
 
