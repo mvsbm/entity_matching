@@ -85,6 +85,7 @@ Both Optuna studies are stored in SQLite (`artifacts/optuna/*.db`), and optuna-d
 ```bash
 ./setup_venv.sh                    # creates .venv (Python ≥ 3.12) with pinned dependencies and `er` installed editable
 .venv/bin/python -m pytest tests/  # engine checks (character-level strings, address keys, u reuse, scoring), ~2 s
+.venv/bin/python scripts/export_pdfs.py  # runs the notebooks in order and saves each, with outputs, to notebooks/pdf/ (~13 min)
 ```
 
 - **Kernel:** in VS Code, **Select Kernel → Python Environments → .venv**.
@@ -96,7 +97,9 @@ Both Optuna studies are stored in SQLite (`artifacts/optuna/*.db`), and optuna-d
 ```
 config/settings.toml    shared settings, loaded and validated by er.settings.load_settings()
 er/                     the engine (no column names)
-notebooks/              dataset_generation · deterministic_matching · probabilistic_matching
+notebooks/              dataset_generation · deterministic_matching · probabilistic_matching (saved without outputs)
+notebooks/pdf/          the same notebooks run, with every output: the results of the last full run
+scripts/export_pdfs.py  re-creates notebooks/pdf/ (once: .venv/bin/python -m playwright install chromium)
 tests/                  pytest checks of the engine, on a small hand-made frame
 data/
   medallion/

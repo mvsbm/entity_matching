@@ -9,4 +9,6 @@ ipywidgets==8.1.9  # notebook progress bars (tqdm / optuna)
 rapidfuzz==3.14.6  # character-level string metrics; DuckDB's jaro_winkler/jaccard/damerau compare UTF-8 bytes
 scikit-learn==1.9.1  # TF-IDF char n-gram candidates
 pytest==9.2.0  # tests/: engine self-checks
+nbconvert==7.17.2  # scripts/export_pdfs.py: run the notebooks, render them with their outputs
+playwright==1.64.1  # scripts/export_pdfs.py: prints the PDFs (once: python -m playwright install chromium)
 -e .  # the er package (pipeline engine shared by the notebooks)
