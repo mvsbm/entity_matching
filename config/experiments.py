@@ -10,7 +10,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import replace
 from pathlib import Path
 
-from er.config import (Candidate, Comparator, FSSpec, FSTune, Key, Pipeline, Resolver, RulesSpec, SortedNeighbourhood, TfidfNeighbours,
+from er.config import (Candidate, Comparator, FSSpec, FSTune, Key, Level, Pipeline, Resolver, RulesSpec, SortedNeighbourhood, TfidfNeighbours,
                        Tune, KeyBlocker, with_comparators, with_level, without_tf)
 
 FOLD, COMPANY = ("kana_fold",), ("nfkc", "strip_legal_form", "kana_fold")
@@ -76,6 +76,12 @@ def fs_changes(p: Pipeline) -> dict[str, Callable[[FSSpec], FSSpec]]:
     pool: Mapping = p.generators
     as_written = p.fs.blockers
 
+    def cif_one_digit_off(s: FSSpec) -> FSSpec:
+        """The customer ID typed with one digit wrong: a level between exact and else."""
+        off = Level(label="one digit off", any_of=(("customer_id", Comparator("damerau_levenshtein", 1)),))
+        return replace(s, model=replace(s.model, comparisons=tuple(replace(c, levels=(*c.levels, off)) if c.name == "cif" else c
+                                                                   for c in s.model.comparisons)))
+
     def optuna_suggestion(s: FSSpec) -> FSSpec:  # an Optuna study's suggestion (trial 12); passed adopt
         model = without_tf(s.model)
         for (comparison, label), threshold in {("name", "fold JW high"): 0.95, ("name", "fold JW low"): 0.75,
@@ -108,13 +114,17 @@ def fs_changes(p: Pipeline) -> dict[str, Callable[[FSSpec], FSSpec]]:
         "u_from_scored_file": lambda s: replace(s, model=replace(s.model, u_from_scored=True)),  # calibrated at every file size
         # exact, where a 10⁷-pair sample can't see an agreement rarer than one in 10⁹ pairs (exact name, CIF ID in a big file)
         "u_exact_by_counts": lambda s: replace(s, model=replace(s.model, u_exact_by_counts=True)),
+        "cif_one_digit_off": cif_one_digit_off,
+        # the key that level needs: a pair it lifts over the threshold must share a key, or it is never compared
+        "cif_deletion_key": lambda s: replace(s, blockers=s.blockers + (pool["cif_deletions"],) if pool["cif_deletions"] not in s.blockers else s.blockers),
     }
 
 
 FS_DECISIONS = (("no_term_frequency", "better"), ("exact_keys_only", "cheaper"), ("optuna_suggestion", "better"),
                 ("u_from_1e6_pairs", "cheaper"), ("compound_phone_keys", "cheaper"), ("sorted_names_for_tfidf", "cheaper"),
                 ("name_keys", "safer"), ("bounded_address_keys", "cheaper"), ("no_sorted_windows", "cheaper"), ("bridge_rule_clusters", "better"), ("u_from_scored_file", "chosen"),
-                ("u_exact_by_counts", "chosen"))
+                ("u_exact_by_counts", "chosen"), ("cif_one_digit_off", "better"),
+                ("cif_deletion_key", "safer"))
 
 
 def fs_tune(optuna_dir: Path) -> FSTune:

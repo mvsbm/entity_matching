@@ -323,8 +323,8 @@ class Run:
     def _gate(self, pairs: pd.DataFrame) -> pd.DataFrame:  # an oversized block's sampled pairs, scored with the fitted model
         return score_fs(self.model, "records", pairs, self.db, self.uid, n_records=self.n)
 
-    def _gated(self, gated: pd.DataFrame) -> None:  # the oversized blocks' decisions, kept for qa and named in the summary
-        self.gated = gated
+    def _gated(self, records: list[dict]) -> None:  # the oversized blocks' decisions, kept for qa and named in the summary
+        self.gated = gated = pd.DataFrame(records)
         if gated.empty:
             return
         floor = review_floor(self.pipeline)

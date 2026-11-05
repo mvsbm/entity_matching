@@ -50,30 +50,38 @@ def write_final(data: Data, name: str, config: object, model: dict | None = None
     return path
 
 
+def population(data: Data) -> str:  # which generated population the labels hold: test is counted per population
+    labels = pd.read_parquet(data.labels_dir / "test.parquet").sort_values(data.unique_id, ignore_index=True)
+    return f"{int(pd.util.hash_pandas_object(labels, index=False).sum()) & (2**48 - 1):012x}"
+
+
 def append_leaderboard(data: Data, experiment: str, config: object, dataset: str, metrics: dict) -> None:
-    """Append one row; the config hash tells identical configurations apart from same-named ones."""
+    """Append one row; the config hash tells identical configurations apart from same-named ones, the population
+    which data they were scored on."""
     path = data.experiments_dir / "leaderboard.parquet"
     data.experiments_dir.mkdir(parents=True, exist_ok=True)
     row = pd.DataFrame([dict(time=time.strftime("%Y-%m-%d %H:%M:%S"), experiment=experiment, dataset=dataset,
-                             config_hash=config_hash(config), **metrics)])
+                             population=population(data), config_hash=config_hash(config), **metrics)])
     board = pd.concat([pd.read_parquet(path), row], ignore_index=True) if path.exists() else row
     board.to_parquet(path, index=False)
 
 
 def test_evaluations(data: Data) -> pd.DataFrame:
-    """Distinct configurations scored on test, per experiment family (the part before ':'). More than one per family
-    means test influenced a choice and its numbers are no longer unbiased."""
+    """Distinct configurations scored on this population's test, per experiment family (the part before ':'). More
+    than one per family means test influenced a choice and its numbers are no longer unbiased. A newly generated
+    population has a test nobody has seen, so its count starts again."""
     path = data.experiments_dir / "leaderboard.parquet"
     if not path.exists():
         return pd.DataFrame(columns=["family", "configs_on_test"])
     board = pd.read_parquet(path)
+    board = board[board.get("population", pd.Series(index=board.index, dtype="string")) == population(data)]
     test = board[board["dataset"] == "test"].assign(family=lambda b: b["experiment"].str.split(":").str[0])
     return test.groupby("family")["config_hash"].nunique().rename("configs_on_test").reset_index()
 
 
 def assert_test_scored_once(data: Data) -> None:
-    """Fail loudly when a family has been scored on test with more than one configuration. Archive the leaderboard
-    (data/artifacts/experiments/archive/) to start a clean pass after a deliberate change."""
+    """Fail loudly when a family has been scored on this population's test with more than one configuration. To start a
+    clean pass on the same population after a deliberate change, archive the leaderboard (data/artifacts/experiments/archive/)."""
     over = test_evaluations(data).query("configs_on_test > 1")
     if len(over):
         raise AssertionError(f"test was scored with several configurations: {over.to_dict('records')}")

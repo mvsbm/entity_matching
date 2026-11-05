@@ -210,6 +210,20 @@ class FSChooser:
         self.train_true, self.val_true = truth_set(self.train_truth, self.data), truth_set(self.val_truth, self.data)
         self.models, self.u, self.runs, self.cvs = {}, {}, {}, {}
         self.growth: pd.DataFrame | None = None
+        self.spec = replace(self.spec, model=replace(self.spec.model, prior_recall=self.prior_recall(self.spec)))
+
+    def prior_recall(self, spec: FSSpec) -> float:
+        """The share of train's true pairs the near-certain rules find, which λ's estimate divides by: measured, not
+        assumed, since it depends on how often duplicates agree exactly. O(N + pairs in their blocks)."""
+        uid = self.data.unique_id
+        df = prepare(spec.standardize, self.train_records, spec.normalized(), spec.used())
+        found = set()
+        for rule in spec.model.prior_rules:
+            cols = [k.name for k in rule]
+            keys = df[[uid, *cols]].dropna()
+            pairs = keys.merge(keys, on=cols)
+            found |= {(a, b) for a, b in zip(pairs[f"{uid}_x"], pairs[f"{uid}_y"]) if a < b}
+        return round(len(found & self.train_true) / max(len(self.train_true), 1), 4)
 
     def previous(self, dataset: str) -> tuple[pd.DataFrame, pd.DataFrame]:
         """The chosen rules on a dataset, as this stage starts from them: their pairs (and which were kept), and each

@@ -55,13 +55,14 @@ def quality(run: Path, entity: pd.Series) -> dict:
 
 def scenarios() -> pd.DataFrame:
     base = SPEC
-    with_prior = lambda x: replace(FINAL, fs=replace(FINAL.fs, model=replace(FINAL.fs.model, prior_recall=x)))
+    measured = FINAL.fs.model.prior_recall  # what choose.py measured on train
+    with_prior = lambda x: replace(FINAL, fs=replace(FINAL.fs, model=replace(FINAL.fs.model, prior_recall=x * measured)))
     variants = {"as reported (seed 0)": (base, FINAL), "seed 1": (replace(base, seed=1), FINAL), "seed 2": (replace(base, seed=2), FINAL),
                 "typos doubled": (replace(base, name_typo_rate=2 * base.name_typo_rate, phone_typo_rate=2 * base.phone_typo_rate,
                                           address_typo_rate=2 * base.address_typo_rate), FINAL),
                 "fields emptier (last column 45% filled)": (replace(base, rate_end=0.45), FINAL),
-                "prior_recall 0.25 (λ ×2)": (base, with_prior(0.25)),  # λ changes by 2×, so every weight by about ±1 bit
-                "prior_recall 0.75 (λ ×⅔)": (base, with_prior(0.75))}
+                "prior_recall halved (λ ×2)": (base, with_prior(0.5)),  # λ changes by 2×, so every weight by about ±1 bit
+                "prior_recall ×1.5 (λ ×⅔)": (base, with_prior(1.5))}
     rows, made = [], {}
     for i, (name, (spec, p)) in enumerate(variants.items()):
         if repr(spec) not in made:

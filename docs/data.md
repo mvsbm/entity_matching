@@ -52,21 +52,38 @@ All parameters live in `config/generator.toml`: `[population]` (`er.generate.Spe
 
 - **Entities:** 40,000, 20% companies. Each entity has `1 + Poisson(0.25)` records.
   - **Persons** are sampled personas, each at most once, with realistic surname frequencies (サトウ, スズキ, タカハシ …). Their addresses lie in the persona's prefecture. Sampling with replacement made about 8,500 pairs of clones (same name, same prefecture) that no matcher can tell apart; same-name pairs now come only from the persona file itself.
-  - **Companies** are sampled real names with a legal form (カブシキガイシャ before or after the name).
+  - **Companies** are sampled real names with a legal form before or after the name, written as each record's system writes it: カブシキガイシャ, (カ), カ), ｶﾌﾞｼｷｶﾞｲｼｬ or left out; one record in ten adds a branch (ホンシャ, トウキョウシテン …).
   - **Addresses** are real towns with random 番/号, and a real postal code and JIS code.
-- **Multi-valued entities:** each entity owns `1 + Poisson(λ)` phones, addresses and names (λ = 0.3 for persons, 1.0 for companies). Each record shows one of them: married names, branch offices.
+- **Multi-valued entities:** each entity owns `1 + Poisson(λ)` phones and addresses (λ = 2.0 for persons, 3.0 for companies: moves and new phones) and names (λ = 0.3 and 1.0: married names, other company names). Each record shows one of them.
 - **Columns:**
-  - IDs and codes: CONT_ID, PHONE_NUM_4, CIF_ID (a duplicate keeps the entity's CIF half the time)
+  - IDs and codes: CONT_ID (unique everywhere: the key a user's input is joined back by), PHONE_NUM_4, CIF_ID (a duplicate keeps the entity's CIF 3% of the time, one digit off in a tenth of those)
   - person names in kana: FULL_NAME_KANA, O_PERSON_NAME_KANA, LAST_NAME_KANA, GIVEN_NAME_KANA
   - company name in kana: NYS_CNV_P_NAME_KANA
   - postal: POST_CD, POST_CD_KANA
   - address: SOURCE_ADDR_CD, ORIGINAL_ADDRESS (as typed, in 3 formats), ADDRESS_FIVE(_KANA) (`chome-ban-go`, or `ban-go`), ADDR_CD(_KANA) (11-digit 住所コード), STD_ADDRESS, ADDRESS_ONE (prefecture), ADDRESS_TWO (city)
-- **Entry errors:**
-  - 10% of name parts get one kana typo (ガ/カ, ッ/ツ, ー/ウ … or a dropped character)
-  - 5% of phones get one wrong digit
-  - 5% of ORIGINAL_ADDRESS values get one wrong digit or a dropped character
+- **Entry errors and notations:**
+  - 30% of name parts get one kana typo (ガ/カ, ッ/ツ, ー/ウ … or a dropped character)
+  - 30% of person records put a space between surname and given name; 15% of records hold every name in half-width katakana (ｻﾄｳ)
+  - 10% of phones, ORIGINAL_ADDRESS values and reused CIF IDs get one wrong digit (or, in an address, a dropped character)
 - **Missingness:**
   - **Rates:** the non-null rate falls from 0.9999 to 0.6544 along the column order, counted where the column applies.
   - **Correlation:** shared within the name, postal and address groups by `nesting` ρ.
 - **Households:** unrelated entities sometimes share an address, which gives look-alikes that must not be merged.
-- **Asserts** run on the whole population before it is split: exact rates, digit formats, kind consistency, no CIF shared across entities, address code ↔ address 1:1.
+- **Asserts** run on the whole population before it is split: exact rates, digit formats, kind consistency, CONT_ID unique, no CIF shared across entities, address code ↔ address 1:1.
+
+### How hard it is
+
+Real data holds very few direct duplicates, so the generator is calibrated to make them rare. `er.generate.profile`
+measures it on the true pairs (two records of one entity), and `scripts/generate.py` prints it:
+
+| A true pair shares | Share |
+|---|---|
+| the customer ID | 2.2% |
+| the exact name, as written | 9.0% |
+| the phone digits | 34.0% |
+| the address code | 27.0% |
+| the standard address | 19.8% |
+| **direct**: the same customer ID and name, or the same name, address code and phone (what exact rules settle) | **1.0%** |
+| **nothing in common**: no field equal, and the names not even close (Jaro–Winkler under 0.75) | **10.8%** |
+
+The pairs with nothing in common can't be found by any method, so recall is read against the other 89.2%.

@@ -598,9 +598,10 @@ def test_the_batch_budget_counts_the_pairs_touching_the_batch():
 
 @pytest.fixture(scope="module")
 def wide_band(population):
-    """The final pipeline with its threshold two steps up, so the safety margin below it holds pairs to decide."""
+    """The final pipeline with a wide safety margin (four grid steps) and its threshold three steps up, so the margin holds
+    pairs to decide on a small population."""
     s, p, g = population
-    return s, replace(p, fs=replace(p.fs, min_match_weight=p.fs.min_match_weight + 2)), g
+    return s, replace(p, threshold=replace(p.threshold, margin_steps=4), fs=replace(p.fs, min_match_weight=p.fs.min_match_weight + 6)), g
 
 
 def test_the_review_sheet_asks_about_each_cluster_pair_in_the_safety_margin_once(tmp_path, wide_band):
@@ -611,7 +612,7 @@ def test_the_review_sheet_asks_about_each_cluster_pair_in_the_safety_margin_once
     run = Run(p, s).full(tmp_path / "all.parquet", tmp_path / "a")
     sheet = qa(run, [f for f in s.columns if f not in ("id", "entity")])["review_sheet"]
     t, lo = p.fs.min_match_weight, review_floor(p)
-    assert lo == t - 2  # one grid step (margin_steps = 1) below the threshold
+    assert lo == t - 8  # margin_steps (4) grid steps of 2 bits below the threshold
     decide, audit = sheet[sheet["why"] == "decide"], sheet[sheet["why"] == "audit"]
     assert len(decide) and sheet["decision"].isna().all()
     assert decide["match_weight"].between(lo, t, inclusive="left").all() and audit["accepted"].all()
@@ -890,4 +891,32 @@ def test_the_runaway_guard_stops_only_what_would_not_fit(tmp_path, population, m
     monkeypatch.setattr(Run, "capacity", lambda self: 10)
     with pytest.raises(InputError, match="more than fit in memory"):
         Run(p, s).full(tmp_path / "in.parquet", tmp_path / "run")
+
+
+def test_the_generator_makes_direct_matches_rare_and_reports_how_hard_it_is():
+    from er.generate import check, generate, halfwidth, load_reference, load_spec, profile
+    import unicodedata
+    s = load_settings()
+    spec = replace(load_spec(s.root / "config" / "generator.toml")[0], entities=8_000)
+    g = generate(spec, *load_reference(s.paths["reference"]))
+    check(spec, g)  # CONT_ID unique, digits, fill rates
+    hard = profile(g)
+    assert 0.004 <= hard["direct (exact rules)"] <= 0.02  # calibrated to about 1% on the full population
+    assert hard["same customer ID"] < 0.05 and 0.05 < hard["nothing in common"] < 0.2
+    assert halfwidth("ガッコウ") == "ｶﾞｯｺｳ" and unicodedata.normalize("NFKC", halfwidth("ガッコウ")) == "ガッコウ"
+
+
+def test_test_is_counted_once_per_population(tmp_path):
+    from er.io import append_leaderboard, test_evaluations
+    data = replace(load_settings().data, labels_dir=tmp_path / "labels", experiments_dir=tmp_path / "experiments")
+    data.labels_dir.mkdir()
+    uid, ent = data.unique_id, data.entity_id
+    labels = lambda ids: pd.DataFrame({uid: ids, ent: ["E"] * len(ids)}).to_parquet(data.labels_dir / "test.parquet", index=False)
+    labels(["1", "2"])
+    append_leaderboard(data, "fs:FINAL", ("config", 1), "test", {})
+    labels(["3", "4"])  # a newly generated population: a test nobody has seen
+    append_leaderboard(data, "fs:FINAL", ("config", 2), "test", {})
+    assert test_evaluations(data)["configs_on_test"].max() == 1
+    append_leaderboard(data, "fs:FINAL", ("config", 3), "test", {})  # the same population, a second configuration
+    assert test_evaluations(data)["configs_on_test"].max() == 2
 

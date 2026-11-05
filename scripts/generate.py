@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from er.generate import check, generate, load_reference, load_spec, split_by_entity
+from er.generate import check, generate, load_reference, load_spec, profile, split_by_entity
 from er.settings import load_settings
 
 
@@ -29,6 +29,9 @@ def main() -> None:
     check(spec, g)
     entities = g.truth.groupby("ENTITY_ID").size()
     print(f"{len(g.df):,} records · {len(entities):,} entities · {(entities > 1).mean():.1%} duplicated · typos {g.typos}")
+    hard = profile(g)
+    print(f"how hard: of {int(hard['true pairs']):,} true pairs, " +
+          " · ".join(f"{k} {v:.1%}" for k, v in hard.drop("true pairs").items()))
 
     if args.out:
         args.out.mkdir(parents=True, exist_ok=True)

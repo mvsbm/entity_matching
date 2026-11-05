@@ -1,5 +1,6 @@
 """The synthetic generator: entities from real reference names, companies and towns, each appearing under one or more
-records, with realistic typos and correlated missing values, then split by entity. Its spec is config/generator.toml.
+records, with realistic typos, notations, moves, new phones and correlated missing values, then split by entity. Its
+spec is config/generator.toml. profile() says how hard the result is: what a customer's records still share.
 """
 import json
 import tomllib
@@ -11,6 +12,7 @@ from typing import Literal
 
 import numpy as np
 import pandas as pd
+from rapidfuzz.distance import JaroWinkler
 
 Kind = Literal["person", "company"]
 
@@ -37,8 +39,9 @@ class Spec:
     entities: int
     company_share: float
     dup_lambda: float                        # extra CONT_IDs per entity, Poisson
-    multi_lambda: Mapping[Kind, float]       # extra phones / addresses / names per entity, Poisson
+    multi_lambda: Mapping[str, Mapping[Kind, float]]  # per attribute (phone, address, name): extra values per entity, Poisson
     cif_keep: float                          # chance a duplicate record reuses the entity's CIF_ID
+    cif_typo_rate: float                     # per reused CIF_ID: one wrong digit
     rate_start: float
     rate_end: float
     phone_prefixes: tuple[str, ...]
@@ -48,8 +51,12 @@ class Spec:
     address_pool_ratio: float                # pool size / addresses held, per prefecture; < 1 makes unrelated entities share
     full_name_sep: str
     original_name_sep: str
-    legal_form_kana: str
-    legal_prefix_share: float                # 株式会社〇〇 vs 〇〇株式会社
+    legal_forms_written: tuple[tuple[str, float], ...]  # how a record writes the legal form, with its weight; "" = left out
+    legal_prefix_share: float                # 株式会社〇〇 vs 〇〇株式会社, per company name
+    branch_rate: float                       # per company record: a branch written after the name
+    branches: tuple[str, ...]
+    space_rate: float                        # per person record: a space between surname and given name in FULL_NAME_KANA
+    halfwidth_rate: float                    # per record: every name column in half-width katakana
     name_typo_rate: float                    # per record and name part (surname, given name, company name)
     kana_confusions: tuple[tuple[str, str], ...]  # swapped both ways; a dropped character when none applies
     phone_typo_rate: float                   # per record: one wrong PHONE_NUM_4 digit
@@ -67,6 +74,7 @@ class Spec:
             assert len({c.kind for c in g}) == 1, f"group mixes kinds: {[c.name for c in g]}"
         assert set(self.nesting) <= {c.group for c in self.columns}, "nesting names an unknown group"
         assert all(0 <= rho <= 1 for rho in self.nesting.values())
+        assert set(self.multi_lambda) == {"phone", "address", "name"}, "multi_lambda: phone, address and name"
 
     @property
     def rates(self) -> dict[str, float]:
@@ -91,6 +99,13 @@ class Split:
         assert abs(sum(self.shares.values()) - 1) < 1e-9, "split shares must sum to 1"
 
 FULLWIDTH = str.maketrans("0123456789-", "０１２３４５６７８９－")
+HALFWIDTH = {unicodedata.normalize("NFKC", chr(c)): chr(c) for c in range(0xFF66, 0xFF9E)}  # katakana → its half-width form
+MARKS = {"\u3099": "ﾞ", "\u309a": "ﾟ"}  # the voicing marks, written after the half-width letter
+
+
+def halfwidth(s: str) -> str:  # ガ → ｶﾞ: how many systems store katakana; NFKC turns it back
+    return "".join(HALFWIDTH.get(d[0], d[0]) + "".join(MARKS.get(m, m) for m in d[1:])
+                   for d in (unicodedata.normalize("NFD", ch) for ch in s))
 
 
 def load_reference(folder: Path) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
@@ -126,7 +141,7 @@ def generate(spec: Spec, persons: pd.DataFrame, companies: pd.DataFrame, towns: 
     rng = np.random.default_rng(spec.seed)
     digits = {c.name: c.digits for c in spec.columns}
     confusions = [(a, b) for x, y in spec.kana_confusions for a, b in ((x, y), (y, x))]
-    typos = {"name": 0, "phone": 0, "address": 0}
+    typos = {"name": 0, "phone": 0, "address": 0, "cif": 0}
     town_rows = towns.to_dict("records")
     surname_pool = persons["surname_kana"].to_numpy()
 
@@ -162,8 +177,8 @@ def generate(spec: Spec, persons: pd.DataFrame, companies: pd.DataFrame, towns: 
         d = (unicodedata.digit(s[i]) + int(rng.integers(1, 10))) % 10
         return s[:i] + (chr(0xFF10 + d) if ord(s[i]) >= 0xFF10 else str(d)) + s[i + 1:]
 
-    def noisy(s: str, kind: Literal["name", "phone", "address"]) -> str:
-        rate = {"name": spec.name_typo_rate, "phone": spec.phone_typo_rate, "address": spec.address_typo_rate}[kind]
+    def noisy(s: str, kind: Literal["name", "phone", "address", "cif"]) -> str:
+        rate = {"name": spec.name_typo_rate, "phone": spec.phone_typo_rate, "address": spec.address_typo_rate, "cif": spec.cif_typo_rate}[kind]
         if rng.random() >= rate:
             return s
         typos[kind] += 1
@@ -189,8 +204,7 @@ def generate(spec: Spec, persons: pd.DataFrame, companies: pd.DataFrame, towns: 
         return noisy(s.translate(FULLWIDTH) if fmt.fullwidth else s, "address")
 
     kinds = np.where(rng.random(spec.entities) < spec.company_share, "company", "person")
-    lam = np.array([spec.multi_lambda[k] for k in kinds])
-    n_phone, n_addr, n_name = (1 + rng.poisson(lam) for _ in range(3))
+    n_phone, n_addr, n_name = (1 + rng.poisson(np.array([spec.multi_lambda[a][k] for k in kinds])) for a in ("phone", "address", "name"))
     n_rec = 1 + rng.poisson(spec.dup_lambda, spec.entities)
     assert spec.entities <= len(persons), f"{spec.entities:,} entities need as many distinct personas; there are {len(persons):,}"
     # without replacement: two entities drawn from one persona would be clones (same name and prefecture), which no
@@ -226,20 +240,25 @@ def generate(spec: Spec, persons: pd.DataFrame, companies: pd.DataFrame, towns: 
         else:  # (name, legal form in front?)
             names = [(s, rng.random() < spec.legal_prefix_share) for s in rng.choice(company_names, n_name[e], replace=False).tolist()]
         base_cif = next(cifs)
+        forms, weights = zip(*spec.legal_forms_written)
         for r in range(n_rec[e]):
             a = pool[pick(addrs)]
+            cif = base_cif if r == 0 else noisy(base_cif, "cif") if rng.random() < spec.cif_keep else next(cifs)
             row = dict(ENTITY_ID=f"E{e:06d}", KIND=str(kind), PHONE_NUM_4=noisy(pick(phones)[-digits["PHONE_NUM_4"]:], "phone"),
-                       CIF_ID=base_cif if r == 0 or rng.random() < spec.cif_keep else next(cifs),
-                       ORIGINAL_ADDRESS=original_address(a), **address_columns(a))
+                       CIF_ID=cif, ORIGINAL_ADDRESS=original_address(a), **address_columns(a))
             if kind == "person":  # typos go into the parts, so every name column agrees
                 last, first = noisy(pick(names), "name"), noisy(given, "name")
-                row |= dict(FULL_NAME_KANA=f"{last}{spec.full_name_sep}{first}",
-                            O_PERSON_NAME_KANA=f"{last}{spec.original_name_sep}{first}",
+                sep = "　" if rng.random() < spec.space_rate else spec.full_name_sep
+                row |= dict(FULL_NAME_KANA=f"{last}{sep}{first}", O_PERSON_NAME_KANA=f"{last}{spec.original_name_sep}{first}",
                             LAST_NAME_KANA=last, GIVEN_NAME_KANA=first)
-            else:
+            else:  # the legal form written one of several ways, sometimes a branch after it
                 stem, legal_first = pick(names)
-                stem = noisy(stem, "name")
-                row["NYS_CNV_P_NAME_KANA"] = spec.legal_form_kana + stem if legal_first else stem + spec.legal_form_kana
+                stem, legal = noisy(stem, "name"), forms[rng.choice(len(forms), p=np.array(weights) / sum(weights))]
+                name = legal + stem if legal_first else stem + legal
+                row["NYS_CNV_P_NAME_KANA"] = name + (f"　{pick(spec.branches)}" if rng.random() < spec.branch_rate else "")
+            if rng.random() < spec.halfwidth_rate:  # the system that took this record stores half-width katakana
+                row |= {c: halfwidth(row[c]) for c in ("FULL_NAME_KANA", "O_PERSON_NAME_KANA", "LAST_NAME_KANA", "GIVEN_NAME_KANA",
+                                                       "NYS_CNV_P_NAME_KANA") if c in row}
             rows.append(row)
 
     with_truth = pd.DataFrame(rows).sample(frac=1, random_state=rng, ignore_index=True)  # shuffle so duplicates aren't adjacent
@@ -277,17 +296,39 @@ def check(spec: Spec, g: Generated) -> None:
         if spec.nesting.get(group[0].group, 1.0) == 1:
             for prev, c in zip(group, group[1:]):
                 assert not (g.df[c.name].notna() & g.df[prev.name].isna()).any(), (prev.name, c.name)
-    assert g.df["CONT_ID"].is_unique
+    assert g.df["CONT_ID"].is_unique  # the key a user's input is joined back by
     assert g.with_truth.groupby("CIF_ID")["ENTITY_ID"].nunique().max() == 1  # no CIF_ID shared by two entities
     assert g.with_truth.groupby("SOURCE_ADDR_CD")["STD_ADDRESS"].nunique().max() == 1
     assert g.with_truth.groupby("STD_ADDRESS")["SOURCE_ADDR_CD"].nunique().max() == 1
+
+
+def profile(g: Generated) -> pd.Series:
+    """How hard the population is: the share of true pairs (two records of one entity) that share each field exactly;
+    the direct share (the same CIF_ID and name, or the same name, address code and phone), what exact rules settle;
+    and the share with nothing in common: no field equal and names not even close (Jaro–Winkler under 0.75 after
+    NFKC, spaces dropped), the pairs no method can find. O(pairs)."""
+    d = g.df.merge(g.truth[["CONT_ID", "ENTITY_ID"]], on="CONT_ID")
+    p = d.merge(d, on="ENTITY_ID", suffixes=("_l", "_r"))
+    p = p[p["CONT_ID_l"] < p["CONT_ID_r"]]
+    same = lambda c: ((p[f"{c}_l"] == p[f"{c}_r"]) & p[f"{c}_l"].notna()).fillna(False).to_numpy(bool)
+    name_l, name_r = (p[f"FULL_NAME_KANA_{s}"].fillna(p[f"NYS_CNV_P_NAME_KANA_{s}"]) for s in "lr")
+    name = ((name_l == name_r) & name_l.notna()).fillna(False).to_numpy(bool)
+    plain = lambda s: unicodedata.normalize("NFKC", s).replace(" ", "").replace("　", "") if isinstance(s, str) else None
+    close = np.array([a is not None and b is not None and JaroWinkler.similarity(a, b) >= 0.75
+                      for a, b in zip(name_l.map(plain), name_r.map(plain))], dtype=bool)
+    cif, phone, code = same("CIF_ID"), same("PHONE_NUM_4"), same("SOURCE_ADDR_CD")
+    shared = cif | name | phone | code | same("STD_ADDRESS") | same("POST_CD") | same("GIVEN_NAME_KANA") | same("LAST_NAME_KANA")
+    return pd.Series({"true pairs": len(p), "same customer ID": cif.mean(), "same exact name": name.mean(), "same phone": phone.mean(),
+                      "same address code": code.mean(), "same standard address": same("STD_ADDRESS").mean(),
+                      "direct (exact rules)": ((cif & name) | (name & code & phone)).mean(), "nothing in common": (~shared & ~close).mean()})
 
 
 def load_spec(path: Path) -> tuple[Spec, Split]:
     """config/generator.toml → the population spec and the split."""
     cfg = tomllib.loads(path.read_text(encoding="utf-8"))
     p = dict(cfg["population"])
-    spec = Spec(**{**p, "multi_lambda": dict(p["multi_lambda"]), "phone_prefixes": tuple(p["phone_prefixes"]),
+    spec = Spec(**{**p, "multi_lambda": {a: dict(v) for a, v in p["multi_lambda"].items()}, "phone_prefixes": tuple(p["phone_prefixes"]),
+                   "legal_forms_written": tuple(map(tuple, p["legal_forms_written"])), "branches": tuple(p["branches"]),
                    "kana_confusions": tuple(map(tuple, p["kana_confusions"])), "nesting": dict(p["nesting"]),
                    "buildings": tuple(p["buildings"]),
                    "original_address_formats": tuple(AddressFormat(**f) for f in p["original_address_formats"]),

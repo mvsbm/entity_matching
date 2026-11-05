@@ -68,6 +68,7 @@ phone_name_initial = { kind = "keys", keys = ["phone", { field = "any_name", nor
 sn_person_name_reversed = { kind = "sorted", key = { field = "person_name", normalize = "reversed" }, window = 4 }
 # one-deletion keys find every name one edit away at any size; a sorted window reaches fewer of them as N grows
 company_name_deletions = { kind = "deletions", key = { field = "company_name", normalize = "company" } }
+cif_deletions = { kind = "deletions", key = { field = "customer_id" } }   # two IDs one digit apart share a deletion
 person_name_deletions_postal_area = { kind = "deletions", key = { field = "person_name", normalize = "fold" }, within = [{ field = "postal_code", normalize = "first3" }] }   # alone: N^1.7
 given_name_postal = { kind = "keys", keys = [{ field = "given_name", normalize = "fold" }, "postal_code"] }   # surname change
 # an address alone pairs everyone who shares it (households, a fixed pool of addresses): N²; with one more field, linear
@@ -88,7 +89,7 @@ resolver = { method = "connected_components" }
 bridge = false                    # true: a pair may also join two clusters the previous stage formed
 name = "fs"
 prior_rules = [["customer_id", "full_name"], ["customer_id", "company_name"], ["full_name", "address_code", "phone"]]
-prior_recall = 0.5                # those rules recall about half of the true pairs (the exact rules' recall, measured)
+prior_recall = 0.5                # the share of true pairs those rules find: a starting value; scripts/choose.py measures it on train
 u_max_pairs = 1e7
 m_method = "em"
 em_rules = [["phone"], [{ field = "address", normalize = "address" }]]

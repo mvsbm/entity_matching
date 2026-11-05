@@ -27,7 +27,7 @@ temp_directory = ""
 # kana folding, character by character: voiced → unvoiced, small → large, ヴ/ヂ/ヅ/ヲ, ー → ウ
 kana_fold_from = "ガギグゲゴザジズゼゾダヂヅデドバビブベボパピプペポヴァィゥェォッャュョヮヵヶヲー"
 kana_fold_to   = "カキクケコサシスセソタチツテトハヒフヘホハヒフヘホフアイウエオツヤユヨワカケオウ"
-legal_forms = ["カブシキガイシャ", "ユウゲンガイシャ", "ゴウドウガイシャ", "(カ)", "(ユ)"]
+legal_forms = ["カブシキガイシャ", "ユウゲンガイシャ", "ゴウドウガイシャ", "(カ)", "(ユ)", "カ)", "ユ)"]   # after NFKC: half-width and full-width forms fold into these
 prefectures = [
   "北海道", "青森県", "岩手県", "宮城県", "秋田県", "山形県", "福島県", "茨城県", "栃木県", "群馬県", "埼玉県", "千葉県",
   "東京都", "神奈川県", "新潟県", "富山県", "石川県", "福井県", "山梨県", "長野県", "岐阜県", "静岡県", "愛知県", "三重県",
@@ -50,11 +50,11 @@ address_first3 = ["address", "first3"]
 # What each field's values look like (RE2, matched against a sample of the file). Used only to suggest a column for a
 # field no column is mapped to; a suggestion is never applied without you. RE2's \s doesn't match the full-width space.
 [locale.detect]
-full_name = '^[ァ-ヴー・\s　]+$'
-person_name = '^[ァ-ヴー・\s　]+$'
-given_name = '^[ァ-ヴー]{1,8}$'
+full_name = '^[ァ-ヴー・ｦ-ﾟ\s　]+$'
+person_name = '^[ァ-ヴー・ｦ-ﾟ\s　]+$'
+given_name = '^[ァ-ヴーｦ-ﾟ]{1,12}$'
 company_name = 'カブシキガイシャ|ユウゲンガイシャ|ゴウドウガイシャ|株式会社|有限会社|合同会社'
-any_name = '^[ァ-ヴー・\s　()（）]+$'
+any_name = '^[ァ-ヴー・ｦ-ﾟ\s　()（）]+$'
 address = '[都道府県市区町村].*[0-9０-９]'
 address_code = '^[0-9]{5,}$'
 postal_code = '^〒?[0-9０-９]{3}[-－]?[0-9０-９]{4}$'
@@ -69,10 +69,10 @@ customer_id = '^[0-9]{8,}$'
 [columns]
 id = "CONT_ID"
 entity = "ENTITY_ID"                               # the truth, in labels/: read only by labelled runs
-full_name = "FULL_NAME_KANA"
-person_name = { sources = [["FULL_NAME_KANA"], ["O_PERSON_NAME_KANA"], ["LAST_NAME_KANA", "GIVEN_NAME_KANA"]], normalize = ["strip_spaces"] }
-given_name = "GIVEN_NAME_KANA"
-company_name = "NYS_CNV_P_NAME_KANA"
+full_name = { sources = [["FULL_NAME_KANA"]], normalize = ["nfkc", "strip_spaces"] }   # half-width or spaced: the same name
+person_name = { sources = [["FULL_NAME_KANA"], ["O_PERSON_NAME_KANA"], ["LAST_NAME_KANA", "GIVEN_NAME_KANA"]], normalize = ["nfkc", "strip_spaces"] }
+given_name = { sources = [["GIVEN_NAME_KANA"]], normalize = ["nfkc", "strip_spaces"] }
+company_name = { sources = [["NYS_CNV_P_NAME_KANA"]], normalize = ["nfkc", "strip_spaces"] }
 any_name = { sources = [["FULL_NAME_KANA"], ["O_PERSON_NAME_KANA"], ["LAST_NAME_KANA", "GIVEN_NAME_KANA"], ["NYS_CNV_P_NAME_KANA"]], normalize = ["strip_spaces", "nfkc", "strip_legal_form", "kana_fold"] }   # person or company
 address = [["STD_ADDRESS"], ["ORIGINAL_ADDRESS"]]
 address_code = "SOURCE_ADDR_CD"

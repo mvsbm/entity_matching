@@ -317,8 +317,8 @@ def candidates(blockers: tuple[Blocker, ...], records: pd.DataFrame | str, uid: 
             n = r.con.execute(f"SELECT count(*) FROM {table}").fetchall()[0][0]
             report.append(dict(generator=b.name, **est, pairs=n, seconds=round(time.perf_counter() - t, 3)))
             parts.append(f"SELECT l, r, {1 << i}::BIGINT AS bit FROM {table}")
-        gated = _gate(blockers, r, big, parts, gate, floor, capacity, m, (l, rr)) if big else pd.DataFrame()
-        for i, extra in gated.attrs.get("added", {}).items():
+        gated, added = _gate(blockers, r, big, parts, gate, floor, capacity, m, (l, rr)) if big else (pd.DataFrame(), {})
+        for i, extra in added.items():
             report[i]["pairs"] += extra
         union = f"SELECT l, r, bit_or(bit) AS bits FROM ({' UNION ALL '.join(parts)}) GROUP BY l, r"
         bits = r._temp(union)
@@ -334,13 +334,14 @@ def candidates(blockers: tuple[Blocker, ...], records: pd.DataFrame | str, uid: 
     finally:
         r.close()
     report = pd.DataFrame(report)
-    report.attrs["gated"] = gated
+    report.attrs["gated"] = gated.to_dict("records")  # plain records: pandas compares attrs when it combines frames
     return result, report
 
 
 def _gate(blockers: tuple[Blocker, ...], r: Records, big: dict[int, str], parts: list[str], gate: Callable | None, floor: float,
-          capacity: int | None, rows: int, names: tuple[str, str]) -> pd.DataFrame:
-    """Decide each oversized block, and add the pairs of those kept to `parts`. O(sampled pairs) to decide."""
+          capacity: int | None, rows: int, names: tuple[str, str]) -> tuple[pd.DataFrame, dict[int, int]]:
+    """Decide each oversized block, and add the pairs of those kept to `parts`; returns the decisions and the pairs added
+    per generator. O(sampled pairs) to decide."""
     info = pd.concat([r.con.execute(f"SELECT {i} AS g, __b AS b, __n AS records, concat_ws(' · ', {', '.join(block_cols(blockers[i]))}) AS value "
                                     f"FROM {table}").df() for i, table in big.items()], ignore_index=True)
     info.insert(0, "generator", info["g"].map(lambda i: blockers[i].name))
@@ -374,6 +375,4 @@ def _gate(blockers: tuple[Blocker, ...], r: Records, big: dict[int, str], parts:
             pairs_table = r._temp(pairs_sql(blockers[i], r, only=kept))
             added[i] = r.con.execute(f"SELECT count(*) FROM {pairs_table}").fetchall()[0][0]
             parts.append(f"SELECT l, r, {1 << i}::BIGINT AS bit FROM {pairs_table}")
-    out = info.drop(columns=["g", "b"])
-    out.attrs["added"] = added
-    return out
+    return info.drop(columns=["g", "b"]), added

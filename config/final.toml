@@ -1,5 +1,5 @@
 # The chosen pipeline: config/pipeline.toml with config/experiments.py's adopted changes, written by scripts/choose.py.
-# Adopted: rules fold_levenshtein, optuna_comparators, f2_address_prefix; Fellegi–Sunter no_term_frequency, optuna_suggestion, compound_phone_keys, sorted_names_for_tfidf, name_keys, bounded_address_keys, bridge_rule_clusters, u_from_scored_file, u_exact_by_counts.
+# Adopted: rules f2_address_exact, f2_address_prefix; Fellegi–Sunter no_term_frequency, compound_phone_keys, sorted_names_for_tfidf, name_keys, bounded_address_keys, no_sorted_windows, u_from_scored_file, u_exact_by_counts, cif_one_digit_off, cif_deletion_key.
 # scripts/resolve.py runs it. It can be edited by hand; scripts/choose.py overwrites it.
 
 [fields]
@@ -30,7 +30,7 @@ rules = [
 
 [[rules.stages]]
 name = "fuzzy"
-comparators = { person_name = { function = "levenshtein", threshold = 2, normalize = "fold" }, company_name = { function = "jaccard", threshold = 0.77 }, address = { function = "jaro_winkler", threshold = 0.91, normalize = "address" }, phone = { function = "damerau_levenshtein", threshold = 1 } }
+comparators = { person_name = { function = "jaro_winkler", threshold = 0.92, normalize = "fold" }, company_name = { function = "jaro_winkler", threshold = 0.92, normalize = "company" }, address = { function = "exact", normalize = "address" }, phone = { function = "hamming", threshold = 1 } }
 rules = [
   { name = "F1_NAME~_ADDRCD_PHONE", exact = ["address_code", "phone"], fuzzy = ["person_name"] },
   { name = "F2_NAME~_ADDRESS~_PHONE", exact = ["phone"], fuzzy = ["person_name", "address"], blocking = [{ field = "address", normalize = "address_first3" }] },
@@ -57,6 +57,7 @@ phone_postal_area = { kind = "keys", keys = ["phone", { field = "postal_code", n
 phone_name_initial = { kind = "keys", keys = ["phone", { field = "any_name", normalize = "initial" }] }
 sn_person_name_reversed = { kind = "sorted", key = { field = "person_name", normalize = "reversed" }, window = 4 }
 company_name_deletions = { kind = "deletions", key = { field = "company_name", normalize = "company" } }
+cif_deletions = { kind = "deletions", key = "customer_id" }
 person_name_deletions_postal_area = { kind = "deletions", key = { field = "person_name", normalize = "fold" }, within = [{ field = "postal_code", normalize = "first3" }] }
 given_name_postal = { kind = "keys", keys = [{ field = "given_name", normalize = "fold" }, "postal_code"] }
 address_phone = { kind = "keys", keys = [{ field = "address", normalize = "address" }, "phone"] }
@@ -68,13 +69,13 @@ given_name_address_code = { kind = "keys", keys = [{ field = "given_name", norma
 [model]
 previous_stage = "deterministic"
 stage = "probabilistic"
-generators = ["cif", "sn_company_name", "phone_prefecture", "phone_postal_area", "phone_name_initial", "sn_person_name", "sn_person_name_reversed", "person_name", "company_name", "company_name_deletions", "person_name_deletions_postal_area", "given_name_postal", "address_phone", "address_code_phone", "address_name_initial", "address_code_name_initial", "given_name_address_code"]
-min_match_weight = 6.0
+generators = ["cif", "person_name", "company_name", "phone_prefecture", "phone_postal_area", "phone_name_initial", "company_name_deletions", "person_name_deletions_postal_area", "given_name_postal", "address_phone", "address_code_phone", "address_name_initial", "address_code_name_initial", "given_name_address_code", "cif_deletions"]
+min_match_weight = 10.0
 resolver = { method = "connected_components" }
-bridge = true
+bridge = false
 name = "fs"
 prior_rules = [["customer_id", "full_name"], ["customer_id", "company_name"], ["full_name", "address_code", "phone"]]
-prior_recall = 0.5
+prior_recall = 0.0218
 u_max_pairs = 10000000.0
 m_method = "em"
 em_rules = [["phone"], [{ field = "address", normalize = "address" }]]
@@ -89,9 +90,9 @@ null_if_missing = ["person_name"]
 levels = [
   { label = "exact", any_of = [{ field = "person_name", function = "exact" }], tf = true },
   { label = "fold exact", any_of = [{ field = "person_name", function = "exact", normalize = "fold" }], tf = true },
-  { label = "fold JW high", any_of = [{ field = "person_name", function = "jaro_winkler", threshold = 0.95, normalize = "fold" }] },
+  { label = "fold JW high", any_of = [{ field = "person_name", function = "jaro_winkler", threshold = 0.92, normalize = "fold" }] },
   { label = "given name", any_of = [{ field = "given_name", function = "exact", normalize = "fold" }] },
-  { label = "fold JW low", any_of = [{ field = "person_name", function = "jaro_winkler", threshold = 0.75, normalize = "fold" }] },
+  { label = "fold JW low", any_of = [{ field = "person_name", function = "jaro_winkler", threshold = 0.85, normalize = "fold" }] },
 ]
 
 [[model.comparisons]]
@@ -99,8 +100,8 @@ name = "company"
 null_if_missing = ["company_name"]
 levels = [
   { label = "exact", any_of = [{ field = "company_name", function = "exact", normalize = "company" }], tf = true },
-  { label = "JW high", any_of = [{ field = "company_name", function = "jaro_winkler", threshold = 0.97, normalize = "company" }] },
-  { label = "JW low", any_of = [{ field = "company_name", function = "jaro_winkler", threshold = 0.8, normalize = "company" }] },
+  { label = "JW high", any_of = [{ field = "company_name", function = "jaro_winkler", threshold = 0.92, normalize = "company" }] },
+  { label = "JW low", any_of = [{ field = "company_name", function = "jaro_winkler", threshold = 0.85, normalize = "company" }] },
 ]
 
 [[model.comparisons]]
@@ -125,6 +126,7 @@ name = "cif"
 null_if_missing = ["customer_id"]
 levels = [
   { label = "exact", any_of = [{ field = "customer_id", function = "exact" }] },
+  { label = "one digit off", any_of = [{ field = "customer_id", function = "damerau_levenshtein", threshold = 1 }] },
 ]
 
 [threshold]
