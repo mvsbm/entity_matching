@@ -90,7 +90,7 @@ Each entry gives the symptom that gave it away, the cause, the fix, and what kee
 - **Symptom:** the first million-record scale run stalled at 27 GB on a 16 GB laptop, deep in swap.
 - **Cause:** `score_fs` read Splink's predictions into pandas with every matching column of both records, only to keep the ids, the weights and the gammas. At 250,000 records that copy added 4.8 GB to the peak. At a million it would have needed about 19 GB.
 - **Fix:** DuckDB selects the needed columns before anything reaches pandas, and the predictions table is dropped once read. At 250,000 records the step now adds 1.1 GB, with identical results.
-- **Since:** every table of size N or C is a DuckDB table (`er.run`), which spills past `[compute]` `memory_limit`. A million records peak at 5.5 GB, under an 8 GB limit.
+- **Since:** every table of size N or C is a DuckDB table (`er.run`), which spills past `[compute]` `memory_limit`. A million records peak at 3.8 GB, under an 8 GB limit; 5.5 GB while the candidate step still copied every column of every record, not only the keys.
 - **Guard:** every run's `steps.json` records the peak memory after each step, and `scripts/benchmark.py` reports it at every file size.
 
 ## Merging the candidate lists was most of the work
@@ -116,6 +116,18 @@ Each entry gives the symptom that gave it away, the cause, the fix, and what kee
 - **Cause:** a full run overwrote only the files it writes itself, and an increment replaced its files one by one.
 - **Fix:** a full run refuses a folder that holds a run unless `--overwrite`. Every file is written under a temporary name; once all are complete, the renames they need are saved, then done, and the next increment finishes any left undone.
 - **Guard:** tests re-run into a used folder, and stop an increment halfway through its renames.
+
+## An increment counted its own batch twice
+- **Symptom:** found by a new test, not in the numbers: after an increment, u counted on the run's records disagreed with the u the increment had scored with.
+- **Cause:** the stored records were a view over a glob of `state/records/`. Once the increment wrote its own part, the view held the batch, and `records` held it a second time. The QA report runs after the write, so each field's fill rate weighed the batch twice, and a review row touching a new record could appear twice.
+- **Fix:** an increment reads the stored parts it found when it started, by name, not by glob.
+- **Guard:** a test compares the increment's exact u with u counted on its records after the write.
+
+## Every increment re-measured u, mostly noise
+- **Symptom:** an increment of 1,000 records into a million took 11.6 s, 9.2 s of it measuring u again from 10 million random pairs.
+- **Cause:** u was measured again on every increment, whatever had changed. On the million-record file, from half of it to all of it, every exactly counted level moved by at most 0.004 bits, and every sampled level by less than its own sampling error.
+- **Fix:** the exact levels are counted again on every increment (0.1 s). A comparison's sampled u are measured again only once the drift of its exact level exceeds the sampling error of its sampled levels. Before that, a new sample is no closer to the truth. The same increment now takes 2.0 s.
+- **Guard:** a test checks that an increment samples exactly the comparisons whose drift exceeds their error, and each run's `state/scoring.json` keeps the last check, drift and error, per comparison.
 
 ## DuckDB 2.0 changed under us
 - **Symptom:** a run hung on its second query, or failed on `fetchone`.

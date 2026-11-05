@@ -26,7 +26,7 @@ These numbers come from synthetic records built from real Japanese names, compan
 
 - **It finds 9 duplicates in 10:** 89.9% of the true pairs on test (95% interval 88.7–91.1%). Test is a split never used for any choice.
 - **It merged no two different customers:** 0 false merges on test, so the rate is at most 0.14%.
-- **A million records take about 40 seconds** and 5.5 GB of memory. Every step's work grows about linearly with the file.
+- **A million records take about 45 seconds** and 3.8 GB of memory. Every step's work grows about linearly with the file.
 
 Real data is likely noisier, and only a run on it can tell ([limits](#limits)).
 
@@ -38,7 +38,7 @@ Real data is likely noisier, and only a run on it can tell ([limits](#limits)).
 .venv/bin/python scripts/resolve.py --input customers.csv --output runs/customers
 ```
 
-The run folder holds `gold.parquet` (each record and its entity's ID), `review.parquet` (borderline pairs for a person to check) and `qa.md` (checks that need no labels). New records join the run later with `--increment`. Every step is in [usage](docs/usage.md).
+The run folder holds `gold.parquet` (each record and its entity's ID), `review.parquet` (pairs for a person to decide or audit) and `qa.md` (checks that need no labels). New records join the run later with `--increment`, and people's decisions with `--decisions`. Every step is in [usage](docs/usage.md).
 
 ## Read next
 

@@ -9,6 +9,7 @@ import copy
 import logging
 import math
 import time
+from collections.abc import Iterable
 from dataclasses import replace
 from itertools import combinations
 
@@ -182,30 +183,85 @@ def fingerprint(records: Records, cols: list[str], db: DuckDBAPI) -> int:  # the
     return int(db.duckdb_con.execute(f'SELECT bit_xor(hash({", ".join(chr(34) + c + chr(34) for c in cols)})) FROM "{records}"').fetchall()[0][0])
 
 
-def with_scored_u(model: FSModel, model_json: dict, df: Records, db: DuckDBAPI, uid: str) -> dict:
-    """model_json with u re-sampled on the records to be scored. In a bigger file, a field whose value set grows with it
-    (address, CIF ID) agrees by chance less often, so u fixed from the fitting set under-credits it. Needs no labels and
-    costs u_max_pairs whatever the file's size; cached per comparison and set of records. m and λ stay as fitted (score_fs
-    rescales λ). Levels without an estimate keep their rules: no sampled pair → the bound on these records; never seen in
-    training → m = u, 0 bits."""
+def scored_sample(model: FSModel, df: Records, db: DuckDBAPI, uid: str) -> U:
+    """u of every comparison by random sampling on these records, cached per comparison and set of records (SCORED_U).
+    O(N) for the fingerprint, plus u_max_pairs per comparison not cached yet."""
     cols = sorted({comp.column(col) for c in model.comparisons for lv in c.levels for col, comp in lv.any_of}
                   | {col for c in model.comparisons for col in c.null_if_missing})
     records = fingerprint(df, [uid, *cols], db)
-    keys, by_name = model.u_keys(), {c.name: c for c in model.comparisons}
+    keys = model.u_keys()
     todo = [c for c in model.comparisons if (keys[c.name], records) not in SCORED_U]
     for name, u in sample_u(model, todo, df, db, uid).items():
         SCORED_U[keys[name], records] = u
-    exact = exact_u(model, df, db) if model.u_exact_by_counts else {}
-    filled_m = {tuple(x) for x in model_json["er"]["filled"]["m"]}
+    return {c.name: SCORED_U[keys[c.name], records] for c in model.comparisons}
+
+
+def assemble_u(model: FSModel, model_json: dict, sampled: U, exact: U, df: Records, db: DuckDBAPI) -> dict:
+    """model_json with each level's u: counted exactly (when the model counts them), else sampled, else, for a level no
+    sampled pair reached, the bound on these records. A level never seen in training gets m = u, 0 bits. m and λ stay as
+    fitted (score_fs rescales λ)."""
+    exact = exact if model.u_exact_by_counts else {}
+    by_name, filled_m = {c.name: c for c in model.comparisons}, {tuple(x) for x in model_json["er"]["filled"]["m"]}
     out = copy.deepcopy(model_json)
     for c in out["comparisons"]:
         name = c["output_column_name"]
         for lv in (lv for lv in c["comparison_levels"] if not lv.get("is_null_level")):
             label = lv["label_for_charts"]
-            lv["u_probability"] = exact.get(name, {}).get(label) or SCORED_U[keys[name], records].get(label) or u_bound(model, by_name[name], df, db)
-            if (name, lv["label_for_charts"]) in filled_m:
+            lv["u_probability"] = exact.get(name, {}).get(label) or sampled.get(name, {}).get(label) or u_bound(model, by_name[name], df, db)
+            if (name, label) in filled_m:
                 lv["m_probability"] = lv["u_probability"]
     return out
+
+
+def with_scored_u(model: FSModel, model_json: dict, df: Records, db: DuckDBAPI, uid: str) -> dict:
+    """model_json with u measured on the records to be scored. In a bigger file, a field whose value set grows with it
+    (address, CIF ID) agrees by chance less often, so u fixed from the fitting set under-credits it. Needs no labels and
+    costs u_max_pairs whatever the file's size."""
+    return assemble_u(model, model_json, scored_sample(model, df, db, uid), exact_u(model, df, db) if model.u_exact_by_counts else {}, df, db)
+
+
+def u_basis(model: FSModel, sampled: U, exact: U, df: Records, db: DuckDBAPI, names: Iterable[str] | None = None) -> dict:
+    """What a later increment needs to tell whether these sampled u have gone stale, per comparison: the sampled u, the
+    exact-level u counted alongside, the record count, and how many sampled pairs had the comparison filled."""
+    n = rows(df, db)
+    sampled_pairs = min(model.u_max_pairs, n * (n - 1) / 2)
+    return {c.name: dict(sampled=sampled.get(c.name, {}), exact=exact.get(c.name, {}), n=n,
+                         pairs=sampled_pairs * max(fill_share(df, col, db) for col in c.null_if_missing) ** 2)
+            for c in model.comparisons if names is None or c.name in names}
+
+
+def stale_u(model: FSModel, basis: dict, exact_now: U, n: int) -> dict[str, dict[str, float]]:
+    """Per comparison, d: how far its sampled u have likely drifted since they were sampled, in bits. That is the drift
+    of its leading exact level, counted exactly, or log2(N / N then) without one (an equality level can't fall faster).
+    And se: the sampling error of its most precise sampled agreement level, 1/(ln 2·√hits). Once d > se, staleness
+    outweighs the sample's own noise, so a new sample is closer to the truth; below that, it would only redraw the
+    noise. A comparison never sampled has d = ∞."""
+    out = {}
+    for c in model.comparisons:
+        b = basis.get(c.name)
+        if b is None:
+            out[c.name] = dict(drift_bits=math.inf, se_bits=0.0)
+            continue
+        lead = next(iter(b["exact"]), None)
+        now = exact_now.get(c.name, {}).get(lead) if lead else None
+        d = abs(math.log2(now / b["exact"][lead])) if now else math.log2(max(n, 2) / max(b["n"], 2))
+        hits = [u * b["pairs"] for label, u in b["sampled"].items() if label != ELSE and label not in b["exact"]]
+        out[c.name] = dict(drift_bits=d, se_bits=min((1 / (math.log(2) * math.sqrt(h)) for h in hits if h >= 1), default=math.inf))
+    return out
+
+
+def refreshed_u(model: FSModel, model_json: dict, basis: dict, df: Records, db: DuckDBAPI, uid: str) -> tuple[dict, dict, list[str]]:
+    """For an increment: the exact levels counted again on all records (O(N), a group-by per level), and only the
+    comparisons stale_u finds stale sampled again (u_max_pairs each); the rest keep their stored sample. Returns the
+    scoring model, the updated basis (each comparison with its last check) and the comparisons sampled again."""
+    exact, n = exact_u(model, df, db), rows(df, db)
+    check = stale_u(model, basis, exact, n)
+    todo = [c for c in model.comparisons if check[c.name]["drift_bits"] > check[c.name]["se_bits"]]
+    basis = {**basis, **u_basis(model, sample_u(model, todo, df, db, uid), exact, df, db, {c.name for c in todo})}
+    for name, x in check.items():
+        basis[name]["last_check"] = {k: v if math.isfinite(v) else None for k, v in x.items()}
+    sampled = {name: b["sampled"] for name, b in basis.items()}
+    return assemble_u(model, model_json, sampled, exact, df, db), basis, [c.name for c in todo]
 
 
 def train_fs(model: FSModel, df: pd.DataFrame, db: DuckDBAPI, uid: str, labels: pd.Series | None = None,

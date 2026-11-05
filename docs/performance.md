@@ -29,15 +29,15 @@
 
 | # | Step | Code | Cost | Grows like | At 1M |
 |---|---|---|---|---|---|
-| 1 | load: read in chunks, check the fields, standardize each chunk | `Run.load`, `er.standardize.prepare` | O(N·L) | N | 5.5 s |
-| 2 | budget: every rule's and generator's pairs, exactly, before any join | `Run.budget`, `er.candidates.estimate` | O(N) per rule and generator, a group-by | N | 0.9 s |
-| 3 | fit: λ from near-certain rules, u, m by EM, on a sample of whole postal areas | `Run.fit`, `er.match.train_fs` | O(n + S·K + P_em·K) | **constant** | 7.3 s |
-| 4 | rules: one join per rule (the first rule wins a pair), fuzzy checks on the joined pairs only, then the cascade's clusters | `Run.rules`, `er.match.rule_edges_table` | O(N + Σ P_r·L²) + O((N + E)·d) | N; ≤ 0.22 pairs per record per rule at 1M | 3.3 s |
-| 5 | candidates: every generator as one SQL join or window, merged by bitmask, pairs inside one rule cluster dropped | `Run.candidates`, `er.candidates.candidates` | O(N·L + Σ P_g) | N; ≤ 2.0 pairs per record per key at 1M, 3 per sorted window | 3.0 s |
-| 6 | score: u measured on this file (value counts for the leading exact levels, S pairs for the rest), then every candidate | `Run.score`, `er.match.with_scored_u`, `score_fs` | O(N + S·K) + O(C·K·L²) | C, plus a constant | 18.5 s |
-| 7 | cluster: accept at the threshold, connected components with the rules' pairs, gold | `Run.cluster` | O(C + (N + E)·d) | N | 0.4 s |
-| 8 | write: gold, matches, the rules' pairs and the state for increments, as Parquet | `Run.write` | O(N + C) | N | 0.9 s |
-| | **total** | | | | **39.8 s, 5.5 GB peak** |
+| 1 | load: read in chunks, check the fields, standardize each chunk | `Run.load`, `er.standardize.prepare` | O(N·L) | N | 5.7 s |
+| 2 | budget: every rule's and generator's pairs, exactly, before any join | `Run.budget`, `er.candidates.estimate` | O(N) per rule and generator, a group-by | N | 1.0 s |
+| 3 | fit: λ from near-certain rules, u, m by EM, on a sample of whole postal areas | `Run.fit`, `er.match.train_fs` | O(n + S·K + P_em·K) | **constant** | 7.8 s |
+| 4 | rules: one join per rule (the first rule wins a pair), fuzzy checks on the joined pairs only, then the cascade's clusters | `Run.rules`, `er.match.rule_edges_table` | O(N + Σ P_r·L²) + O((N + E)·d) | N; ≤ 0.22 pairs per record per rule at 1M | 3.5 s |
+| 5 | candidates: every generator as one SQL join or window, merged by bitmask, pairs inside one rule cluster dropped | `Run.candidates`, `er.candidates.candidates` | O(N·L + Σ P_g) | N; ≤ 2.0 pairs per record per key at 1M, 3 per sorted window | 3.4 s |
+| 6 | score: u measured on this file (value counts for the leading exact levels, S pairs for the rest), then every candidate | `Run.score`, `er.match.with_scored_u`, `score_fs` | O(N + S·K) + O(C·K·L²) | C, plus a constant | 20.7 s |
+| 7 | cluster: accept at the threshold, connected components with the rules' pairs, gold | `Run.cluster` | O(C + (N + E)·d) | N | 0.5 s |
+| 8 | write: gold, matches, the rules' pairs and the state for increments, as Parquet | `Run.write` | O(N + C) | N | 1.5 s |
+| | **total** | | | | **44.1 s, 3.8 GB peak** |
 
 **An increment** (`Run.increment`, `scripts/resolve.py --increment`): a batch of Δ new records joins a written run.
 
@@ -45,21 +45,32 @@
 |---|---|---|
 | load | O(Δ·L) | the batch; a record already in the run stops it |
 | rules | O(Δ·Σ b) + a scan of the stored records | each rule joins the batch against all records; the cascade merges into the stored clusters, each cluster one node |
-| candidates | O(Δ·Σ b) + a scan | every generator, with the batch as the query |
-| score | O(N + S·K) + O(C_Δ·K·L²) | u measured again on all the records; only the pairs touching the batch are scored |
+| candidates | O(Δ·Σ b) + a scan | every generator, with the batch as the query; the budget counts only the blocks the batch's keys reach |
+| score | O(N) + O(S·K_stale) + O(C_Δ·K·L²) | the exact u counted again on all the records (a group-by); a comparison's sampled u measured again only once the drift of its exact u exceeds its sampling error (`er.match.refreshed_u`); only the pairs touching the batch are scored |
 | cluster | O(C_Δ + touched clusters) | the stored clusters, with the new pairs merged in |
 | write | O(Δ + C_Δ) appended, O(N) rewritten | new Parquet parts for records, rule pairs and matches; gold and the rules' clusters rewritten. Every file is staged under a temporary name and renamed into place only once all are complete, so an interrupted increment leaves the run as it was, or is finished by the next one |
 
 So a full run costs **O(N·L + Σ P + C·K·L² + (N + E)·d)**, plus the fit and the u sample, whose sizes are fixed. It
 is linear in N when every key's pairs per record stay flat as the file grows, which `budget` checks exactly on each
 file and `scale_check` projects to `budget.target_rows` while choosing (below). An increment costs
-**O(Δ·(L + Σ b) + C_Δ·K·L²)**, plus the fixed u sample and sequential scans and rewrites of the stored columns. Its
-expensive work grows with the batch, not with the file. A full run re-fits the model and should follow many increments.
+**O(Δ·(L + Σ b) + C_Δ·K·L²)**, plus sequential scans and rewrites of the stored columns, the exact u counts, and a u
+sample only for a comparison that has drifted. Its expensive work grows with the batch, not with the file. A full run
+re-fits the model.
+
+**People's decisions** (`Run.decide`, `scripts/resolve.py --decisions`) cost **O(D + touched clusters)** for D
+decisions, plus O(N) to rewrite gold: each `match` pair merges two stored clusters, each one node, and nothing is scored.
+
+**Measured:** into the million-record run (1,000,481 records once the batch is in), an increment of 1,000 records
+takes 2.0 s and one of 10,000 takes 2.8 s, before its write. The candidates take about 1.1 s of it, rules and
+clustering 0.5 s, the score 0.5–1.0 s. No comparison's u needed sampling again: the largest drift was 0.023 bits (the
+address), against a sampling error of 0.067. When every increment measured u again, they took 11.6 s and 12.7 s, 9.2 s
+of it the u sample.
 
 **Memory.** Records, pairs, scores and clusters are DuckDB tables. Past `memory_limit` (config/settings.toml `[compute]`,
 or `scripts/resolve.py --compute memory_limit=8GB`), DuckDB spills them to `temp_directory`. Python holds one chunk of
 `load` (200,000 records), the fitting sample (n records) and small summaries. At a million records the process peaked at
-5.5 GB, Python included, while writing the run folder, under an 8 GB limit, so nothing spilled.
+3.8 GB, Python included, under an 8 GB limit, so nothing spilled. The candidate step copies only the key
+columns it joins on.
 
 ## The cost checks before a run
 
@@ -122,12 +133,12 @@ on the file itself, without labels ([reports/benchmark.md](../reports/benchmark.
 
 | Records | Seconds | Peak memory | fit | score | everything else |
 |---|---|---|---|---|---|
-| 12,392 | 17.1 | 0.57 GB | 8.7 | 7.8 | 0.6 |
-| 50,215 | 18.4 | 0.78 GB | 8.5 | 8.5 | 1.4 |
-| 75,284 | 19.3 | 0.97 GB | 8.3 | 9.0 | 2.0 |
-| 999,481 | 39.8 | 5.5 GB | 7.3 | 18.5 | 14.0 |
+| 12,392 | 17.9 | 0.57 GB | 9.0 | 8.2 | 0.6 |
+| 50,215 | 19.6 | 0.78 GB | 9.0 | 9.1 | 1.5 |
+| 75,284 | 20.4 | 0.97 GB | 8.8 | 9.6 | 2.1 |
+| 999,481 | 44.1 | 3.8 GB | 7.8 | 20.7 | 15.6 |
 
 The fit and the u sample inside `score` (about 8 s) cost the same at every size, so they are nearly all of a small
-file's time. Everything else goes from 2.0 s at 75,000 records to 14.0 s at a million: 13 times the records, 7 times
+file's time. Everything else goes from 2.1 s at 75,000 records to 15.6 s at a million: 13 times the records, 7.5 times
 the time, because DuckDB uses its threads better on bigger tables. Scoring the candidates, the rest of `score`, grows
-from under a second to about 10 s.
+from under a second to about 12 s.

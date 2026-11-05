@@ -20,7 +20,7 @@ import duckdb
 import numpy as np
 import pandas as pd
 
-from er.config import Blocker, Budget, DeletionKeys, KeyBlocker, OverBudget, SortedNeighbourhood, TfidfNeighbours
+from er.config import Blocker, Budget, DeletionKeys, KeyBlocker, OverBudget, SortedNeighbourhood, TfidfNeighbours, keys_of
 
 _CON: duckdb.DuckDBPyConnection | None = None  # for pandas input when the caller passes no connection
 
@@ -34,7 +34,7 @@ class Records:
     holding each record's previous cluster, `query` a table of the query ids."""
 
     def __init__(self, records: pd.DataFrame | str, uid: str, con: duckdb.DuckDBPyConnection | None = None,
-                 query: Iterable[str] | None = None, clusters: pd.Series | str | None = None):
+                 query: Iterable[str] | None = None, clusters: pd.Series | str | None = None, columns: Iterable[str] | None = None):
         global _CON
         self.con = con or (_CON := _CON or duckdb.connect())
         self.uid, self.views = uid, []
@@ -43,7 +43,8 @@ class Records:
         if clusters is not None:  # a Series uid → cluster, or a table with columns uid and cluster_id
             c = (self._view(pd.DataFrame({uid: clusters.index.to_numpy(), "cluster_id": clusters.to_numpy()}).astype("string"))
                  if isinstance(clusters, pd.Series) else q(clusters))
-            base = self._temp(f"SELECT t.*, c.cluster_id AS __cluster FROM {base} t JOIN {c} c USING ({q(uid)})")
+            cols = ", ".join(f"t.{q(x)}" for x in dict.fromkeys([uid, *columns])) if columns else "t.*"  # the copy holds only what is read
+            base = self._temp(f"SELECT {cols}, c.cluster_id AS __cluster FROM {base} t JOIN {c} c USING ({q(uid)})")
         self.table, self.cluster = base, clusters is not None
         self.query = (None if query is None else q(query) if isinstance(query, str)  # a table of query ids, or the ids
                       else self._view(pd.DataFrame({uid: list(query)}, dtype="string")))
@@ -175,6 +176,35 @@ def estimate(b: Blocker, records: pd.DataFrame | str, n_query: int, con: duckdb.
             r.close()
 
 
+def estimate_touching(b: Blocker, r: Records) -> dict[str, object]:
+    """For an increment: the pairs a generator would make that touch the query records (an upper bound), and the
+    largest block they fall in. Only the blocks the query's keys reach are counted: a join against the query's distinct
+    keys, then a group-by. O(N) to scan the key columns, plus the touched blocks; no group-by of the whole file."""
+    t, u = r.table, q(r.uid)
+    asked = f"sum(({u} IN (SELECT {u} FROM {r.query}))::INT)"
+    total = "SELECT coalesce(sum(c * (c - 1) // 2 - (c - qn) * (c - qn - 1) // 2), 0), coalesce(max(c), 0) FROM b"
+    match b:
+        case KeyBlocker():
+            cols = ", ".join(q(k.name) for k in b.keys)
+            filled = _filled(k.name for k in b.keys)
+            sql = (f"WITH k AS (SELECT DISTINCT {cols} FROM {r.asked(t)} WHERE {filled}), "
+                   f"b AS (SELECT count(*) AS c, {asked} AS qn FROM {t} JOIN k USING ({cols}) GROUP BY {cols}) {total}")
+        case DeletionKeys():
+            k, within = q(b.key.name), [q(w.name) for w in b.within]
+            filled, keys = _filled([b.key.name, *(w.name for w in b.within)]), ", ".join(["__dk", *within])
+            variants = lambda src, uid: f"(SELECT {uid}{', '.join(within + [f'unnest({_deletions_sql(k)}) AS __dk'])} FROM {src} WHERE {filled})"
+            sql = (f"WITH k AS (SELECT DISTINCT {keys} FROM {variants(r.asked(t), '')}), "
+                   f"b AS (SELECT count(*) AS c, {asked} AS qn FROM {variants(t, u + ', ')} v JOIN k USING ({keys}) GROUP BY {keys}) {total}")
+        case SortedNeighbourhood():  # each query record pairs with up to window − 1 records on either side
+            m = r.con.execute(f"SELECT count({q(b.key.name)}) FROM {r.asked(t)}").fetchall()[0][0]
+            return dict(big_o="O(N log N + Δ·w)", filled=f"O(N log N + {m:,}·{b.window})", est_pairs=2 * m * (b.window - 1), largest_block=b.window)
+        case _:
+            m = r.con.execute(f"SELECT count(*) FROM {r.query}").fetchall()[0][0]
+            return estimate(b, r, m)
+    p, big = r.con.execute(sql).fetchall()[0]
+    return dict(big_o="O(N + Δ·b)", filled=f"O(N + {int(p):,})", est_pairs=int(p), largest_block=int(big))
+
+
 def generate(b: Blocker, records: pd.DataFrame | str, uid: str, query: Iterable[str] | None,
              con: duckdb.DuckDBPyConnection | None = None) -> pd.DataFrame:
     """One generator's pairs, uid_l < uid_r, as pandas (small files and tests)."""
@@ -193,22 +223,26 @@ def found_by(cands: pd.DataFrame, names: Iterable[str]) -> np.ndarray:  # the pa
 
 def candidates(blockers: tuple[Blocker, ...], records: pd.DataFrame | str, uid: str, query: Iterable[str] | str | None,
                budget: Budget, clusters: pd.Series | str | None = None, con: duckdb.DuckDBPyConnection | None = None,
-               into: str | None = None) -> tuple[pd.DataFrame | str, pd.DataFrame]:
+               into: str | None = None, touching: bool = False) -> tuple[pd.DataFrame | str, pd.DataFrame]:
     """The union of all generators, with the generators that found each pair in `sources`, and a per-generator report.
     Stops before any join if a generator is over budget. With `into`, the union is written to that table in `con` and
-    its name returned instead of a frame, so nothing of size C reaches pandas."""
+    its name returned instead of a frame, so nothing of size C reaches pandas. `touching` (an increment, with `query` the
+    batch): the budget counts only the pairs touching the batch, against the same allowance per record as a full run.
+    A pair has two records, so a full run within budget gives a record 2 × max_pairs_per_record pairs on average."""
     if not blockers:
         raise ValueError("no candidate generator")
     assert len(blockers) < 63, "one bit per generator"
-    r = Records(records, uid, con, query, clusters)
+    assert query is not None or not touching, "touching needs the batch as the query"
+    r = Records(records, uid, con, query, clusters, columns=[k.name for b in blockers for k in keys_of(b)])
     l, rr = f"{uid}_l", f"{uid}_r"
     try:
         n_query = r.con.execute(f"SELECT count(*) FROM {r.query or r.table}").fetchall()[0][0]
         n_records = r.con.execute(f"SELECT count(*) FROM {r.table}").fetchall()[0][0]
         report, parts = [], []
+        limit = budget.max_pairs(2 * n_query if touching else n_records)
         for i, b in enumerate(blockers):
-            est = estimate(b, r, n_query)
-            if est["est_pairs"] > budget.max_pairs(n_records) or est["largest_block"] > budget.max_block_size:
+            est = estimate_touching(b, r) if touching else estimate(b, r, n_query)
+            if est["est_pairs"] > limit or est["largest_block"] > budget.max_block_size:
                 raise OverBudget(f"{b.name}: {est}")
             t = time.perf_counter()
             if isinstance(b, TfidfNeighbours):

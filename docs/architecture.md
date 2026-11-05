@@ -18,14 +18,14 @@ This page says how the system is built. Why each method was chosen is in the [gu
 The system turns a file of customer records into one ID per person or company. It works in two loops:
 
 - **Design time** happens once, and again whenever the matching changes. `scripts/generate.py` builds synthetic records from real names, companies and addresses, with the truth for each. `scripts/choose.py` tries each proposed change on them, keeps the ones the decision rule accepts, and writes the result to `config/final.toml`. This is the only loop that reads labels.
-- **Run time** happens for every file, without labels. `scripts/resolve.py` runs `config/final.toml` on the file and writes a run folder. New records join that run later, with `--increment`.
+- **Run time** happens for every file, without labels. `scripts/resolve.py` runs `config/final.toml` on the file and writes a run folder. New records join that run later, with `--increment`, and people's decisions on the pairs just below the threshold go back with `--decisions`.
 
 `config/final.toml` is the only hand-off between the loops. It is plain TOML, so it can be read, diffed and edited by hand.
 
 | Who | Does | Uses |
 |---|---|---|
 | data owner | maps the file's columns once, then runs the resolution | [usage](usage.md), `config/settings.toml` |
-| reviewer | checks the pairs near the threshold, and the largest clusters | `review.parquet`, `qa.md` |
+| reviewer | decides the pairs just below the threshold, audits those just above, checks the largest clusters | `review.parquet`, `qa.md`; gives back decisions |
 | downstream system | takes one ID per person or company | `gold.parquet` |
 | developer | proposes changes to the matching, and lets the decision rule judge them | `config/pipeline.toml`, `config/experiments.py`, `reports/choose.md` |
 
@@ -74,7 +74,8 @@ Splink writes the training, scoring and clustering SQL for each engine it suppor
 | Mode | Cost |
 |---|---|
 | full run | `O(N·L + ΣP + C·K·L² + (N+E)·d)`, plus a fixed-size fit and u sample. Linear in N while every key keeps its pairs per record flat, which the budget checks |
-| increment | `O(Δ·(L + Σb) + C_Δ·K·L²)`, plus the fixed u sample and scans of stored columns. Its joins start from the batch, so the cost follows Δ, not N |
+| increment | `O(Δ·(L + Σb) + C_Δ·K·L²)`, plus narrow `O(N)` scans: the stored key columns, the exact u counts, gold rewritten. A comparison's u is sampled again, `O(S)`, only once its drift exceeds its sampling error. The joins start from the batch, so the expensive work follows Δ, not N |
+| decisions | `O(D + touched clusters)`, plus `O(N)` to rewrite gold. Nothing is scored |
 
 *N records · Δ records in a batch · L characters in a value · P pairs a key makes, b records in one key block · C candidate pairs · K comparisons · E accepted pairs · d the largest cluster's diameter. All symbols, and the measured times: [performance](performance.md#end-to-end-the-cost-of-every-step).*
 
@@ -92,7 +93,7 @@ Counts the pairs each rule and each candidate generator would make, Σ C(b, 2) o
 
 - **Why:** a key that is too coarse, such as four phone digits alone, makes pairs that grow like N². Counting costs `O(N)`; the join it prevents would cost far more, in time and memory.
 - **Code:** `Run.budget` → `candidates.estimate`
-- **Increment:** checked per generator, inside step 5.
+- **Increment:** inside step 5, and only for the blocks the batch's keys reach. The batch may make 2 × 5 pairs per record, the average a full run within budget gives a record (a pair has two records).
 
 ### 3 · Fit the model, without labels · `O(n + S·K + P_em·K)`, whatever N
 
@@ -131,15 +132,15 @@ Each generator sets one bit, so OR-ing the bits merges the lists and every pair 
 Measures u again on this file, then scores every candidate: for each field, it finds the level the pair reaches (exact, close, different or missing) and adds that level's bits, log2(m/u), to the starting point.
 
 - **Why:** how often strangers agree depends on the file's size, so u from a file of another size would weigh agreements wrongly. Bits add up, so every score can be explained field by field.
-- **Code:** `Run.score` → `match.with_scored_u` (u on this file), `match.score_fs`, `scaled_prior` (λ at this file's size)
-- **Increment:** u on all records, then only the pairs touching the batch: `O(S·K + C_Δ·K·L²)`.
+- **Code:** `Run.score` → `match.exact_u` (exact levels, from value counts), `scored_sample` (the rest, from S random pairs), `assemble_u`; `match.score_fs`, `scaled_prior` (λ at this file's size)
+- **Increment:** `match.refreshed_u`. The exact levels are counted again on all records. A comparison's sampled u are measured again only once the drift of its exact level, since it was sampled, exceeds the sampling error of its most precise sampled level, 1/(ln 2·√hits) bits: before that, a new sample would only redraw the noise. Then only the pairs touching the batch are scored: `O(N + S·K_stale + C_Δ·K·L²)`.
 
 ### 7 · Cluster: from pairs to entities · `O(C + (N+E)·d)`
 
-Accepts a pair at 6 bits or more, if it touches a record the rules left alone or joins two rule clusters. Then it clusters the accepted pairs with the rules' pairs (connected components), and records, for each record, its cluster, the stage that resolved it, and the rule (or `fs` for the model). A cluster is named after its smallest record ID.
+Accepts a pair at 6 bits or more, if it touches a record the rules left alone or joins two rule clusters, and if people haven't decided it is no match. Then it clusters the accepted pairs with the rules' pairs and the pairs people decided are a match (connected components), and records, for each record, its cluster, the stage that resolved it, and the rule (`fs` for the model, `review` for people). A cluster is named after its smallest record ID.
 
 - **Why:** pairs must become entities: if A matches B and B matches C, all three are one. Recording what resolved each record makes every merge auditable, and naming a cluster by its smallest ID makes an increment name it as a full run would.
-- **Code:** `Run.cluster` → `Run._accept` (the threshold), `Run._cluster` (Splink's connected components), `Run._gold`
+- **Code:** `Run.cluster` → `Run._accept` (the threshold; people's decisions, loaded by `Run._load_decisions` from `decisions/`), `Run._cluster` (Splink's connected components), `Run._gold`
 - **Increment:** the stored gold is the base, each stored cluster one node, and stored answers stand: `O(C_Δ + touched clusters)`.
 
 ### 8 · Write the run folder · `O(N + C)`
@@ -152,11 +153,18 @@ Writes each table as Parquet under a temporary name. Once all are complete, it s
 
 ### 9 · Report, for people · `O(review pairs)`
 
-`scripts/resolve.py` writes `qa.md`, the label-free checks, and `review.parquet`, about 50 pairs near the threshold with the evidence for each ([usage](usage.md#4--read-the-outputs)).
+`scripts/resolve.py` writes `qa.md`, the label-free checks, and `review.parquet`, with the evidence for each pair ([usage](usage.md#6--review-and-decide)). Its *decide* rows are every pair of clusters whose best link scored in the threshold rule's safety margin: from the `[threshold]` grid point `margin_steps` below the threshold (4 bits) up to it. Its *audit* rows are about 50 accepted pairs up to 4 bits above it.
 
-- **Why:** without labels, this is how a person checks a run. The largest clusters show over-merging; the review sheet shows the borderline calls.
-- **Code:** `run.qa`, `run.review_sheet`, `pipeline.pattern_coverage` (match patterns no key guarantees)
-- **Increment:** the same, after each increment.
+- **Why:** the margin holds pairs that were clean on cross-validated train, held back in case of noise: on the synthetic test split, 47 pairs, all true. Accepting them automatically would let false pairs through (1 out of fold at 4 bits), so people decide them. Without labels, the audit rows and the largest clusters are how a person catches over-merging.
+- **Code:** `run.qa`, `review_floor`, `review_sheet`; `pipeline.pattern_coverage` (match patterns no key guarantees)
+- **Increment:** the same, for the pairs the batch made.
+
+### Decisions · `O(D + touched clusters) + O(N)`
+
+`scripts/resolve.py --decisions` gives people's decisions back to a written run, scoring nothing. Each `match` pair merges its two clusters, each cluster one node. A `no_match` pair splits nothing now, but a full run on the folder never accepts it.
+
+- **Why:** people's work must change the answer at once, and must survive a full re-run. `decisions/` is not a run file, so `--overwrite` keeps it and the full run applies it again.
+- **Code:** `Run.decide` (checks the file: the columns, the values, a pair decided both ways, IDs not in the run), `Run._merge`, `Run._stage`
 
 ## 4 · Data
 
@@ -180,15 +188,17 @@ Kept on disk. Steps are numbered as in [the run](#3--the-run).
 
 | File | Written by step | Read by | Holds |
 |---|---|---|---|
-| `gold.parquet` | 8, rewritten each run | you; the next increment | record → `cluster_id`, `resolved_stage`, `resolved_by` |
+| `gold.parquet` | 8, rewritten each run and by decisions | you; the next increment | record → `cluster_id`, `resolved_stage`, `resolved_by` |
 | `matches/part-n.parquet` | 8, one part per run | you | accepted pairs: weight, probability, generators |
 | `rule_kept/part-n.parquet` | 8, one part per run | you | the rules' pairs |
 | `state/records/part-n.parquet` | 8, one part per run | increments | the standardized records: the silver layer |
 | `state/rule_clusters.parquet` | 8, rewritten each run | increments | record → rule cluster |
 | `state/model.json` | 8, full runs only | increments | the fitted model: λ, and m and u per level |
+| `state/scoring.json` | 8, every run | increments | the u the run scored with; per comparison, the exact u it was sampled alongside and its last drift check |
 | `steps.json` | 8 | you | each step's Big-O with its numbers, time and peak memory |
 | `pending.json` | 8, deleted when done | the next increment | renames owed by an unfinished write |
-| `qa.md`, `review.parquet` | 9 | people | the label-free report; the pairs to review |
+| `qa.md`, `review.parquet` | 9 | people | the label-free report; the pairs to decide and to audit |
+| `decisions/part-n.parquet` | decisions, one part per file | full runs | the pairs people decided: both IDs and `match` or `no_match` |
 
 ### While a run runs
 
@@ -201,6 +211,7 @@ Working tables live in DuckDB, in memory; past `[compute]` `memory_limit` they s
 | `cands` | 5 | 6, 7, 9 | candidate pairs, and the generators that found each |
 | `scores` | 6 | 7, 9 | weight, probability, the level of each field |
 | `matches`, `kept`, `clusters`, `gold` | 7 | 8, 9 | accepted pairs; all kept pairs; record → cluster; the answer |
+| `er_decisions` | 7, or decisions | 7, 9 | people's decisions, from `decisions/` or the file given |
 | `new_records`, `old_records`, `new_ids`, `touched`, `gold_old` | 1, 6, 7, increments only | 4–7 | the batch; a view over the stored records; the batch's IDs; the records its pairs touch; the stored gold |
 
 The Python process holds only one chunk at a time (200,000 records), the fit sample (30,000) and the model.

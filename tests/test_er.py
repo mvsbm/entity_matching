@@ -9,12 +9,12 @@ import pandas as pd
 import pytest
 from splink import Linker
 
-from er.candidates import candidates, estimate, found_by, generate
+from er.candidates import Records, candidates, estimate, estimate_touching, found_by, generate
 from er.config import (Budget, Comparator, Comparison, DeletionKeys, FSModel, FSSpec, Key, KeyBlocker, Level, OverBudget,
                        Resolver, Rule, RulesSpec, SortedNeighbourhood, Stage, TfidfNeighbours, ThresholdRule, keys_sql)
 from er.evaluate import adopt, cluster_metrics, fp_upper, paired_test, predicted_pairs, true_pairs, wilson
 from er.io import load
-from er.match import exact_u, parameters, rule_edges, sample_u, score_fs, train_fs, u_values, waterfall, with_scored_u
+from er.match import exact_u, parameters, rule_edges, sample_u, score_fs, stale_u, train_fs, u_values, waterfall, with_scored_u
 from er.pipeline import (accept_curve, cascade, check_budget, entity_folds, grown_pairs, pattern_coverage, preflight, select_threshold,
                          window_only)
 from er.resolve import connected_components, constrained
@@ -500,7 +500,7 @@ def test_a_run_ignores_record_order_refuses_a_used_folder_and_an_increment_keeps
     g.df.to_parquet(tmp_path / "all.parquet", index=False)
     g.df.sample(frac=1, random_state=1).to_parquet(tmp_path / "shuffled.parquet", index=False)
     first = Run(p, s).full(tmp_path / "all.parquet", tmp_path / "a")
-    sheet = qa(first, [f for f in s.columns if f not in ("id", "entity")])["review_sample"]
+    sheet = qa(first, [f for f in s.columns if f not in ("id", "entity")])["review_sheet"]
     assert len(sheet) and {"person_name_l", "person_name_r", "address_l", "address_r", "phone_l", "name", "name_bits"} <= set(sheet.columns)
     lam = scaled_prior(first.scoring, first.n)  # the prior and each field's bits add up to the score a reviewer sees
     bits = sheet[[f"{c.name}_bits" for c in p.fs.model.comparisons]].sum(axis=1) + math.log2(lam / (1 - lam))
@@ -581,3 +581,110 @@ def test_the_labelled_engine_and_the_run_give_the_same_gold(tmp_path, population
                 .set_axis(["cluster_id", "resolved_stage", "resolved_by"], axis=1).astype("string"))
     gold = pd.read_parquet(tmp_path / "run" / "gold.parquet").set_index(uid).astype("string")
     pd.testing.assert_frame_equal(gold, labelled.loc[gold.index], check_index_type=False)
+
+
+def test_the_batch_budget_counts_the_pairs_touching_the_batch():
+    df = pd.DataFrame({"id": [f"{i:02d}" for i in range(9)], "k": list("aaabbbccc"), "n": ["サトウ", "サト", "サウ", "スズキ", "スズ", "ヤマダ",
+                                                                                         "ヤマダ", "ヤマ", "タナカ"]})
+    batch = ["00", "03", "04"]
+    for b in (KeyBlocker(name="k", keys=(Key("k"),)), DeletionKeys(name="d", key=Key("n"))):
+        r = Records(df, "id", query=batch)
+        est, pairs = estimate_touching(b, r), generate(b, df, "id", batch)
+        r.close()
+        assert est["est_pairs"] >= len(pairs) > 0  # an upper bound, exact for equal keys
+        assert est["est_pairs"] == len(pairs) or isinstance(b, DeletionKeys)
+
+
+@pytest.fixture(scope="module")
+def wide_band(population):
+    """The final pipeline with its threshold two steps up, so the safety margin below it holds pairs to decide."""
+    s, p, g = population
+    return s, replace(p, fs=replace(p.fs, min_match_weight=p.fs.min_match_weight + 2)), g
+
+
+def test_the_review_sheet_asks_about_each_cluster_pair_in_the_safety_margin_once(tmp_path, wide_band):
+    from er.run import Run, qa, review_floor
+    s, p, g = wide_band
+    uid = s.data.unique_id
+    g.df.to_parquet(tmp_path / "all.parquet", index=False)
+    run = Run(p, s).full(tmp_path / "all.parquet", tmp_path / "a")
+    sheet = qa(run, [f for f in s.columns if f not in ("id", "entity")])["review_sheet"]
+    t, lo = p.fs.min_match_weight, review_floor(p)
+    assert lo == t - 2  # one grid step (margin_steps = 1) below the threshold
+    decide, audit = sheet[sheet["why"] == "decide"], sheet[sheet["why"] == "audit"]
+    assert len(decide) and sheet["decision"].isna().all()
+    assert decide["match_weight"].between(lo, t, inclusive="left").all() and audit["accepted"].all()
+    gold = pd.read_parquet(tmp_path / "a" / "gold.parquet").set_index(uid)["cluster_id"]
+    a, b = decide[f"{uid}_l"].map(gold).to_numpy(), decide[f"{uid}_r"].map(gold).to_numpy()
+    assert (a != b).all() and not pd.DataFrame({"x": np.minimum(a, b), "y": np.maximum(a, b)}).duplicated().any()
+
+
+def test_decisions_join_clusters_without_scoring_and_a_full_run_applies_them_again(tmp_path, wide_band):
+    from er.run import Run, qa
+    s, p, g = wide_band
+    uid = s.data.unique_id
+    l, r = f"{uid}_l", f"{uid}_r"
+    g.df.to_parquet(tmp_path / "all.parquet", index=False)
+    run = Run(p, s).full(tmp_path / "all.parquet", tmp_path / "a")
+    sheet = qa(run, [f for f in s.columns if f not in ("id", "entity")])["review_sheet"]
+    yes = sheet[sheet["why"] == "decide"].index[0]
+    sheet.loc[yes, "decision"] = "match"
+    sheet.to_parquet(tmp_path / "reviewed.parquet")  # the sheet as people return it; undecided rows are skipped
+    rejected = run.con.execute(f'SELECT "{l}", "{r}" FROM matches ORDER BY match_weight DESC LIMIT 1').fetchall()[0]
+    pd.DataFrame({l: [rejected[0]], r: [rejected[1]], "decision": [" No_Match "]}).to_parquet(tmp_path / "rejected.parquet")
+    before = pd.read_parquet(tmp_path / "a" / "gold.parquet").set_index(uid)
+    Run(p, s).decide(tmp_path / "reviewed.parquet", tmp_path / "a")
+    Run(p, s).decide(tmp_path / "rejected.parquet", tmp_path / "a")  # an accepted pair people reject: it splits nothing now
+    after = pd.read_parquet(tmp_path / "a" / "gold.parquet").set_index(uid)
+    pair = sheet.loc[yes, [l, r]].tolist()
+    assert after.loc[pair[0], "cluster_id"] == after.loc[pair[1], "cluster_id"] != before.loc[pair[1], "cluster_id"] or \
+        before.loc[pair[0], "cluster_id"] != before.loc[pair[1], "cluster_id"]
+    joined = before["resolved_stage"].isna() & after["resolved_stage"].notna()
+    assert joined.any() and after.loc[joined, "resolved_by"].eq("review").all()
+    assert len(pd.read_parquet(tmp_path / "a" / "decisions")) == 2
+
+    Run(p, s, model=run.model).full(tmp_path / "all.parquet", tmp_path / "a", overwrite=True)  # people's work survives
+    again = pd.read_parquet(tmp_path / "a" / "gold.parquet").set_index(uid)
+    assert again.loc[pair[0], "cluster_id"] == again.loc[pair[1], "cluster_id"]
+    matches = pd.read_parquet(tmp_path / "a" / "matches")
+    assert not ((matches[l] == rejected[0]) & (matches[r] == rejected[1])).any()
+
+    sheet.loc[yes, "decision"] = "maybe"
+    sheet.to_parquet(tmp_path / "bad.parquet")
+    with pytest.raises(ValueError, match="match or no_match"):
+        Run(p, s).decide(tmp_path / "bad.parquet", tmp_path / "a")
+    pd.DataFrame({l: ["nobody"], r: [pair[0]], "decision": ["match"]}).to_parquet(tmp_path / "unknown.parquet")
+    with pytest.raises(ValueError, match="not in the run"):
+        Run(p, s).decide(tmp_path / "unknown.parquet", tmp_path / "a")
+
+
+def test_an_increment_counts_exact_u_again_and_samples_only_a_drifted_comparison(tmp_path, population, monkeypatch):
+    import json
+    import er.match as M
+    from er.run import Run
+    s, p, g = population
+    new = np.random.default_rng(1).random(len(g.df)) < 0.1
+    g.df[~new].to_parquet(tmp_path / "old.parquet", index=False)
+    g.df[new].to_parquet(tmp_path / "new.parquet", index=False)
+    full = Run(p, s).full(tmp_path / "old.parquet", tmp_path / "c")
+    basis = json.loads((tmp_path / "c" / "state" / "scoring.json").read_text())["basis"]
+    model = p.fs.model
+    same = stale_u(model, basis, {name: b["exact"] for name, b in basis.items()}, full.n)
+    assert all(x["drift_bits"] == 0 for x in same.values())  # nothing moved: nothing is stale
+    halved = {name: {k: v / (2 if name == "name" else 1) for k, v in b["exact"].items()} for name, b in basis.items()}
+    moved = stale_u(model, basis, halved, full.n)
+    assert moved["name"]["drift_bits"] == pytest.approx(1) and all(x["drift_bits"] == 0 for k, x in moved.items() if k != "name")
+    assert stale_u(model, {}, {}, full.n)["name"]["drift_bits"] == math.inf  # never sampled: sample it
+
+    sampled, real = [], M.sample_u
+    monkeypatch.setattr(M, "sample_u", lambda m, comps, *a: sampled.extend(c.name for c in comps) or real(m, comps, *a))
+    inc = Run(p, s).increment(tmp_path / "new.parquet", tmp_path / "c")
+    after = json.loads((tmp_path / "c" / "state" / "scoring.json").read_text())["basis"]
+    stale = [k for k, b in after.items() if b["last_check"]["drift_bits"] > (b["last_check"]["se_bits"] or math.inf)]
+    assert sampled == stale  # sampled again exactly where drift outgrew the sampling error
+    exact = exact_u(model, "records", inc.db)  # the exact levels are always counted on every record
+    for c in inc.scoring["comparisons"]:
+        for lv in c["comparison_levels"]:
+            if lv.get("label_for_charts") in exact.get(c["output_column_name"], {}):
+                assert lv["u_probability"] == pytest.approx(exact[c["output_column_name"]][lv["label_for_charts"]])
+
