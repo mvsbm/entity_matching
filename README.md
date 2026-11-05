@@ -26,7 +26,7 @@ These numbers come from synthetic records built from real Japanese names, compan
 
 - **It finds 9 duplicates in 10:** 89.9% of the true pairs on test (95% interval 88.7–91.1%). Test is a split never used for any choice.
 - **It merged no two different customers:** 0 false merges on test, so the rate is at most 0.14%.
-- **A million records take about 40 seconds** and 4.5 GB of memory. Every step's work grows about linearly with the file.
+- **A million records take about 40 seconds** and 5.5 GB of memory. Every step's work grows about linearly with the file.
 
 Real data is likely noisier, and only a run on it can tell ([limits](#limits)).
 
@@ -55,6 +55,6 @@ The run folder holds `gold.parquet` (each record and its entity's ID), `review.p
 
 ## Limits
 
-- **Measured on synthetic data only.** Test comes from the same generator as the data the choices were made on. Other seeds, twice the typos, emptier fields, or a prior off by a factor of two keep recall between 88.5% and 91.5%, with no false merge ([benchmark](reports/benchmark.md)). Real data has not been measured.
+- **Measured on synthetic data only.** Test comes from the same generator as the data the choices were made on. Other seeds, twice the typos, emptier fields, or a prior off by a factor of two keep recall between 88.3% and 91.5%, with no false merge ([benchmark](reports/benchmark.md)). Real data has not been measured.
 - **Close names at one address rely on the name's first letter.** Two names that are close but start with different letters, at the same address, are compared only if another key lists them. Up to 0.6% of matches rest on such keys, by the model's own bound; on labelled data, none was lost.
 - **Machine-read kana.** Given-name readings come from SudachiPy, and some differ from the intended reading.

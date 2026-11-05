@@ -217,17 +217,17 @@ Without labels, a run can check only the patterns: every combination of comparis
 
 ### Measured: a whole run, up to a million records
 
-`scripts/benchmark.py` generates files of growing size and resolves each with `scripts/resolve.py`, in a process of its own, as a real run: on DuckDB tables, fitted on the file itself, without labels, under an 8 GB memory limit ([reports/benchmark.md](../../reports/benchmark.md), measured before the standardization fixes in [lessons.md](../lessons.md#two-spellings-of-nothing)):
+`scripts/benchmark.py` generates files of growing size and resolves each with `scripts/resolve.py`, in a process of its own, as a real run: on DuckDB tables, fitted on the file itself, without labels, under an 8 GB memory limit ([reports/benchmark.md](../../reports/benchmark.md)):
 
 | Records | Fit | Rules | Candidates | Score | Total | Peak memory |
 |---|---|---|---|---|---|---|
-| 12,392 | 9.7 s | 0.3 s | 0.1 s | 8.8 s | 19.1 s | 0.6 GB |
-| 24,944 | 9.6 s | 0.3 s | 0.2 s | 8.6 s | 19.0 s | 0.7 GB |
-| 50,215 | 8.6 s | 0.4 s | 0.4 s | 8.8 s | 18.8 s | 0.8 GB |
-| 75,284 | 8.5 s | 0.5 s | 0.6 s | 9.2 s | 19.7 s | 1.0 GB |
-| **999,481** | **7.5 s** | **3.3 s** | **3.2 s** | **18.9 s** | **40.6 s** | **4.5 GB** |
+| 12,392 | 8.7 s | 0.2 s | 0.1 s | 7.8 s | 17.1 s | 0.6 GB |
+| 24,944 | 9.4 s | 0.3 s | 0.2 s | 8.6 s | 18.9 s | 0.7 GB |
+| 50,215 | 8.5 s | 0.4 s | 0.4 s | 8.5 s | 18.4 s | 0.8 GB |
+| 75,284 | 8.3 s | 0.5 s | 0.6 s | 9.0 s | 19.3 s | 1.0 GB |
+| **999,481** | **7.3 s** | **3.3 s** | **3.0 s** | **18.5 s** | **39.8 s** | **5.5 GB** |
 
-A million records take 41 seconds. The fit, on a fixed sample, and the u sample inside the score, from 10 million random pairs, cost about the same at any size; without them, the work grows about linearly with the file. DuckDB would spill to disk past the 8 GB limit, and didn't need to. The cost of every step, for a full run and for an increment, is in [performance.md](../performance.md).
+A million records take 40 seconds. The fit, on a fixed sample, and the u sample inside the score, from 10 million random pairs, cost about the same at any size; without them, the work grows about linearly with the file. DuckDB would spill to disk past the 8 GB limit, and didn't need to. The cost of every step, for a full run and for an increment, is in [performance.md](../performance.md).
 
 Three limits had to be removed on the way:
 
@@ -244,16 +244,16 @@ Up to 75,000 records, every entity is still a distinct persona, so quality can b
 | Records | Recall | False merges | False-merge rate ≤ |
 |---|---|---|---|
 | 12,392 | 88.9% | 0 | 0.12% |
-| 24,944 | 89.6% | 3 | 0.16% |
-| 50,215 | 89.3% | 1 | 0.05% |
+| 24,944 | 89.4% | 3 | 0.16% |
+| 50,215 | 89.4% | 1 | 0.05% |
 | 75,284 | 89.0% | 5 | 0.07% |
 
 Blocking loses nothing that could have been accepted: on train, val and test, every true pair that could reach the threshold shares a key, at their own size, at 75,000 records and at a million. Two things change as the file grows:
 
 - **False merges appear, but stay rare.** A bigger file holds more pairs of different entities that look alike. The five at 75,000 records come from two accepted pairs, at 8.7 bits each. In each, two entities live at the same street address and share their last four phone digits by chance, and the name gives no evidence: one record is a company and the other a person, or one has no name at all. The bound on the false-merge rate stays at the level reported for val and test (0.14–0.15%) or below it, except at 25,000 records (0.16%).
-- **Recall holds within a point.** That's because u is measured on each scored file. With u kept from train, recall fell by more than 2 points from 12,000 to 75,000 records (measured by the in-memory runs this benchmark replaced). For the address and the CIF ID, a bigger file has more distinct values, so two strangers agree on them less often, and train's u under-credits their agreements. The crossover is train's own size: below it, train's u over-credits instead, which is why the 10,000-record test file scores 91.1% with train's u and 89.9% without it. Production files are bigger than train, so u is measured on the scored file ([lessons.md](../lessons.md#the-size-rescaling-was-only-half-done)).
+- **Recall holds within a point.** That's because u is measured on each scored file. With u kept from train, recall fell by more than 2 points from 12,000 to 75,000 records (measured by the in-memory runs this benchmark replaced). For the address and the CIF ID, a bigger file has more distinct values, so two strangers agree on them less often, and train's u under-credits their agreements. The crossover is train's own size: below it, train's u over-credits instead, which is why the 10,000-record test file scores 91.1% with train's u and 89.9% without it. Real files are usually bigger than train, so u is measured on the scored file ([lessons.md](../lessons.md#the-size-rescaling-was-only-half-done)).
 
-**In short:** two kinds of step grew with the square of the file: keys whose values come from a fixed pool (the phone digits, the address), and all-against-all similarity. Compound keys, a reversed sorted pass and a narrower F2 join remove both. A sorted window reaches fewer pairs as the file grows, so five more keys make sure no potential match depends on one. The second stage also scores pairs between two rule clusters. A million records take 41 seconds and 4.5 GB, on DuckDB tables that spill to disk past a memory limit.
+**In short:** two kinds of step grew with the square of the file: keys whose values come from a fixed pool (the phone digits, the address), and all-against-all similarity. Compound keys, a reversed sorted pass and a narrower F2 join remove both. A sorted window reaches fewer pairs as the file grows, so five more keys make sure no potential match depends on one. The second stage also scores pairs between two rule clusters. A million records take 40 seconds and 5.5 GB, on DuckDB tables that spill to disk past a memory limit.
 
 ## In the code
 

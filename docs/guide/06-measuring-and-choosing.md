@@ -117,23 +117,23 @@ The "chosen" rows are the owner's calls, made in the open. u measured on each sc
 
 ## Challenge: does it hold beyond our one dataset?
 
-Every number so far comes from one generated population: one seed, one noise model, one assumed prior. A result that holds only there would be fragile. So `scripts/benchmark.py` re-runs the final configuration, unchanged, on populations generated differently, the way a real file is run (`er.run`, without labels): it fits λ, u and m on each population's train split, then resolves that population's test split. Nothing is re-tuned ([reports/benchmark.md](../../reports/benchmark.md), measured before the standardization fixes in [lessons.md](../lessons.md#two-spellings-of-nothing)).
+Every number so far comes from one generated population: one seed, one noise model, one assumed prior. A result that holds only there would be fragile. So `scripts/benchmark.py` re-runs the final configuration, unchanged, on populations generated differently, the way a real file is run (`er.run`, without labels): it fits λ, u and m on each population's train split, then resolves that population's test split. Nothing is re-tuned ([reports/benchmark.md](../../reports/benchmark.md)).
 
 | Scenario | Rules alone | Both stages | 95% interval | False merges | False-merge rate ≤ |
 |---|---|---|---|---|---|
-| as reported (seed 0) | 71.1% | 89.9% | 88.6–91.1% | 0 | 0.14% |
+| as reported (seed 0) | 71.1% | 89.9% | 88.7–91.1% | 0 | 0.14% |
 | another seed (1) | 70.3% | 90.7% | 89.5–91.8% | 0 | 0.14% |
-| another seed (2) | 66.9% | 88.8% | 87.4–90.0% | 0 | 0.15% |
-| twice as many typos in names, phones and addresses | 67.4% | 88.8% | 87.4–90.0% | 0 | 0.15% |
-| emptier fields (fill rates fall to 45%, not 65%) | 62.8% | 88.5% | 87.2–89.7% | 0 | 0.14% |
+| another seed (2) | 67.0% | 88.9% | 87.5–90.1% | 0 | 0.15% |
+| twice as many typos in names, phones and addresses | 67.4% | 88.7% | 87.3–89.9% | 0 | 0.15% |
+| emptier fields (fill rates fall to 45%, not 65%) | 62.8% | 88.3% | 86.9–89.5% | 0 | 0.14% |
 | prior: the near-certain rules find 25% of true pairs, not 50% (λ × 2) | 71.1% | 91.5% | 90.3–92.5% | 0 | 0.14% |
-| prior: they find 75% (λ × ⅔) | 71.1% | 89.1% | 87.8–90.3% | 0 | 0.14% |
+| prior: they find 75% (λ × ⅔) | 71.1% | 89.0% | 87.7–90.2% | 0 | 0.14% |
 
 What the table shows:
 
-- **The final result moves by about a point.** Across seeds and noise, recall stays between 88.5% and 90.7%, and no scenario has a false merge.
-- **The rules are the sensitive part.** They need exact agreements, so emptier fields cost them 8 points (71.1% → 62.8%). The second stage recovers most of that, and the final result loses 1.4 points.
-- **A prior off by a factor of two barely matters.** λ rests on an assumption: that the near-certain rules find half of all true pairs. If they found a quarter, or three quarters, every weight would shift by one bit, or by about half a bit. Recall moves by +1.6 or −0.8 points, with no false merge, because the threshold's safety step absorbs the shift.
+- **The final result moves by about a point.** Across seeds and noise, recall stays between 88.3% and 90.7%, and no scenario has a false merge.
+- **The rules are the sensitive part.** They need exact agreements, so emptier fields cost them 8 points (71.1% → 62.8%). The second stage recovers most of that, and the final result loses 1.7 points.
+- **A prior off by a factor of two barely matters.** λ rests on an assumption: that the near-certain rules find half of all true pairs. If they found a quarter, or three quarters, every weight would shift by one bit, or by about half a bit. Recall moves by +1.5 or −0.9 points, with no false merge, because the threshold's safety step absorbs the shift.
 
 How the cost and the quality behave as the file grows to a million records is in [chapter 3](03-far-too-many-pairs.md#scaling-to-a-million-records).
 

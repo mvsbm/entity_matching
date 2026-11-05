@@ -90,7 +90,7 @@ Each entry gives the symptom that gave it away, the cause, the fix, and what kee
 - **Symptom:** the first million-record scale run stalled at 27 GB on a 16 GB laptop, deep in swap.
 - **Cause:** `score_fs` read Splink's predictions into pandas with every matching column of both records, only to keep the ids, the weights and the gammas. At 250,000 records that copy added 4.8 GB to the peak. At a million it would have needed about 19 GB.
 - **Fix:** DuckDB selects the needed columns before anything reaches pandas, and the predictions table is dropped once read. At 250,000 records the step now adds 1.1 GB, with identical results.
-- **Since:** every table of size N or C is a DuckDB table (`er.run`), which spills past `[compute]` `memory_limit`. A million records peak at 4.45 GB.
+- **Since:** every table of size N or C is a DuckDB table (`er.run`), which spills past `[compute]` `memory_limit`. A million records peak at 5.5 GB, under an 8 GB limit.
 - **Guard:** every run's `steps.json` records the peak memory after each step, and `scripts/benchmark.py` reports it at every file size.
 
 ## Merging the candidate lists was most of the work
