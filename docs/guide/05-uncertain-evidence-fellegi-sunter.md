@@ -137,11 +137,11 @@ A score is not yet a decision. We accept a pair at **6 bits or more**, a probabi
 
 | Accept at or above | Pairs accepted | False pairs among them | Recall after grouping |
 |---|---|---|---|
-| 0 bits | 531 | 5 | 93.7% |
-| 2 bits | 519 | 2 | 93.4% |
-| 4 bits | 491 | 0 | 92.4% |
-| **6 bits** | **471** | **0** | **91.5%** |
-| 8 bits | 423 | 0 | 89.4% |
+| 0 bits | 537 | 5 | 93.9% |
+| 2 bits | 523 | 1 | 93.6% |
+| 4 bits | 494 | 0 | 92.6% |
+| **6 bits** | **474** | **0** | **91.7%** |
+| 8 bits | 425 | 0 | 89.5% |
 
 The line was not picked from this table, which would tune it on validation. It comes from a rule applied to train ([chapter 6](06-measuring-and-choosing.md)): the lowest weight with no false pair in cross-validation, plus one safety step.
 
@@ -168,9 +168,9 @@ We also tested the cautious alternative: refuse a merge when the two groups hold
 
 | Split | Recall: rules → + this stage | 95% interval | False merges | False-merge rate at most |
 |---|---|---|---|---|
-| train | 69.2% → 89.3% | 88.5–90.0% | 0 | 0.05% |
-| val | 69.3% → 91.5% | 90.2–92.6% | 0 | 0.15% |
-| **test** | 71.1% → **90.3%** | 89.1–91.5% | **0** | 0.14% |
+| train | 69.2% → 89.5% | 88.7–90.2% | 0 | 0.05% |
+| val | 69.3% → 91.7% | 90.5–92.8% | 0 | 0.15% |
+| **test** | 71.1% → **91.1%** | 89.9–92.2% | **0** | 0.14% |
 
 **In short:** weighing evidence lifts recall from about 70% to about 90%, with no false merges.
 

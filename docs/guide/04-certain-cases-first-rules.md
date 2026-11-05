@@ -61,7 +61,7 @@ The close-enough tests were chosen by rule ([chapter 6](06-measuring-and-choosin
 | address | normalized addresses have Jaro–Winkler ≥ 0.91 |
 | phone | at most one digit wrong or two digits swapped (Damerau–Levenshtein ≤ 1) |
 
-The stages run in order, as a **cascade**. Fuzzy rules only add pairs that touch a record the exact rules left unresolved, so the clear cases are settled first.
+The stages run in order, as a **cascade**. Fuzzy rules only add pairs that touch a record the exact rules left unresolved, so the clear cases are settled first. The probabilistic stage goes one step further: it may also join two clusters the rules formed, when the rules split one entity in two ([chapter 3](03-far-too-many-pairs.md#keeping-every-potential-match)).
 
 ### Why this solution
 

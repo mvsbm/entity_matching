@@ -2,7 +2,7 @@
 
 Finds which customer records (CONT_IDs) belong to the same person or company. It runs on synthetic records built from **real Japanese names, companies and addresses**, so every answer can be checked against the truth before the method touches real data.
 
-**On test** (10,066 records never used for any choice), it finds **90.3%** of the true duplicate pairs (95% interval 89.1–91.5%) with **0 false merges**; the false-merge rate is at most 0.14%. Every notebook, run with all its outputs, is in [`notebooks/pdf/`](notebooks/pdf/).
+**On test** (10,066 records never used for any choice), it finds **91.1%** of the true duplicate pairs (95% interval 89.9–92.2%) with **0 false merges**; the false-merge rate is at most 0.14%. Every notebook, run with all its outputs, is in [`notebooks/pdf/`](notebooks/pdf/).
 
 ## How it works, on one pair
 
@@ -17,7 +17,7 @@ The name has one wrong kana (オ → ウ), the phone one wrong digit, and the CI
 
 1. **Standardize.** Kana variants are folded and every address format is parsed to one key, so 福島市吉倉4-11 compares equal whether it was typed with 丁目/番/号, full-width digits or a building name.
 2. **Rules (exact, then fuzzy).** None fires. Every rule needs the name, the phone or the CIF ID to match exactly, and here all three differ slightly. The rules are cheap and never wrong on our data (0 false merges on every split), but they find only 69% of the duplicates.
-3. **Candidates.** Three generators put the pair on a short list: the shared address, the shared address code, and the name's sorted neighbourhood (sorted by name, the two records sit within a few places of each other). That list has 48,105 candidate pairs for 10,002 records, instead of all 50 million possible pairs.
+3. **Candidates.** Four generators put the pair on a short list: the shared address, the shared address code, the name's sorted neighbourhood (sorted by name, the two records sit within a few places of each other), and a one-deletion key (without its last kana, each name becomes マツモトヒサ, and both records are in one postal area). That list has 51,484 candidate pairs for 10,002 records, instead of all 50 million possible pairs.
 4. **Score.** A Fellegi–Sunter model weighs each field as evidence, in bits. Each bit doubles the odds that the two records are the same entity.
 
    | evidence | bits |
@@ -48,16 +48,16 @@ The four bits between a match and a non-match come from the name. The notebook c
 flowchart LR
   A["10,002 records<br/>2,227 true duplicate pairs"] -->|"exact rules"| B["52% found"]
   B -->|"fuzzy rules"| C["69% found<br/>683 pairs still missed"]
-  C -->|"9 candidate generators"| D["48,105 candidate pairs<br/>contain 625 of the 683"]
-  D -->|"Fellegi–Sunter ≥ 6 bits"| E["471 pairs accepted<br/>all of them true"]
-  E -->|"connected components"| F["91.5% found<br/>0 false merges"]
+  C -->|"14 candidate generators"| D["51,484 candidate pairs<br/>contain 632 of the 683"]
+  D -->|"Fellegi–Sunter ≥ 6 bits"| E["474 pairs accepted<br/>all of them true"]
+  E -->|"connected components"| F["91.7% found<br/>0 false merges"]
 ```
 
 ## Why it's built this way
 
 - **Two stages.** Rules are cheap, auditable and, on this data, never wrong, so they go first. What they leave is messy: a typo in the name and in the phone at once, a move, a new CIF ID. Messy pairs need evidence weighed, not all-or-nothing conditions.
 - **Bits.** Evidence from independent fields adds up, so every accepted pair can be explained line by line, as above. Correlated fields (address code, address text, postal code) share one comparison, so the same fact is never counted twice.
-- **Linear work, so it scales.** Up to a million records, every step's work grows about linearly with the file. Two steps grew with its square: keys on the last four phone digits, which take only 10,000 values, and TF-IDF, which compares every record with every other. Both were replaced without losing a true pair the model accepts ([chapter 3](docs/guide/03-far-too-many-pairs.md#scaling-to-a-million-records)).
+- **Linear work, so it scales.** Up to a million records, every step's work grows about linearly with the file. Two steps grew with its square: keys on the last four phone digits, which take only 10,000 values, and TF-IDF, which compares every record with every other. Both were replaced ([chapter 3](docs/guide/03-far-too-many-pairs.md#scaling-to-a-million-records)). A sorted window also reaches fewer pairs as the file grows, so five more keys make sure that no pair the model could accept depends on one ([why](docs/guide/03-far-too-many-pairs.md#keeping-every-potential-match)).
 - **A rule picks the threshold, not a person.** The threshold is the lowest weight at which cross-validated train accepts no false pair, plus one safety step. Every other choice is made by a paired test on train and must not lose anything on val. Test is scored once, at the end. The headline number above was never used to choose anything ([chapter 6](docs/guide/06-measuring-and-choosing.md)).
 - **Synthetic data from real names.** Real name, company and address distributions with an exact answer key, so each method's errors can be counted, not guessed ([chapter 1](docs/guide/01-entity-resolution-and-our-task.md#where-does-the-truth-come-from)).
 - **Configured and measured.** Column names live only in `config/settings.toml` and each notebook's Configuration cell. Every search reports its cost (Big-O with the numbers filled in) before it runs, and every metric carries its 95% interval.
@@ -82,7 +82,7 @@ flowchart LR
 .venv/bin/python -m pytest tests/         # engine checks, ~2 s
 ```
 
-Then run the notebooks in order, with the `.venv` kernel: `dataset_generation` → `deterministic_matching` → `probabilistic_matching`. Or run `.venv/bin/python scripts/export_pdfs.py` to run all three and save them, with outputs, to `notebooks/pdf/` (~13 min; once first: `.venv/bin/python -m playwright install chromium`). After them, `.venv/bin/python scripts/robustness.py --smoke` re-runs the final configurations on other populations and on a million records, and writes `data/artifacts/robustness/report.md` (~15 min, 6 GB of memory).
+Then run the notebooks in order, with the `.venv` kernel: `dataset_generation` → `deterministic_matching` → `probabilistic_matching`. Or run `.venv/bin/python scripts/export_pdfs.py` to run all three and save them, with outputs, to `notebooks/pdf/` (~13 min; once first: `.venv/bin/python -m playwright install chromium`). After them, `.venv/bin/python scripts/robustness.py --smoke` re-runs the final configurations on other populations and on a million records, and writes `data/artifacts/robustness/report.md` (~5 min, 7 GB of memory).
 
 ```
 config/settings.toml   paths, datasets, schema, standardization: the only shared place that names columns
@@ -109,7 +109,7 @@ Six chapters explain how everything works. Each starts from a real example, name
 
 ## Known limits
 
-- **One generator.** Test is an independent sample from the same generator, so the results hold for its kind of duplicates, typos and gaps. Other seeds, twice the typos, emptier fields and a prior off by a factor of two keep recall between 88.8% and 91.4% with 0 false merges ([chapter 6](docs/guide/06-measuring-and-choosing.md#challenge-does-it-hold-beyond-our-one-dataset)), but noisier real data may still do worse. Only real data can tell.
-- **Bigger files, slightly lower recall.** A million records take under two and a half minutes and 6 GB. At a fixed threshold, though, recall falls from 89.8% at 12,000 records to 87.5% at 75,000, and a few false merges appear (a rate of at most 0.07%). Half of the drop comes from keeping train's u values; re-sampling u on the scored file recovers it ([chapter 3](docs/guide/03-far-too-many-pairs.md#quality-as-the-file-grows)).
+- **One generator.** Test is an independent sample from the same generator, so the results hold for its kind of duplicates, typos and gaps. Other seeds, twice the typos, emptier fields and a prior off by a factor of two keep recall between 89.4% and 92.2% with 0 false merges ([chapter 6](docs/guide/06-measuring-and-choosing.md#challenge-does-it-hold-beyond-our-one-dataset)), but noisier real data may still do worse. Only real data can tell.
+- **Bigger files, slightly lower recall.** A million records take under two minutes and 7 GB. At a fixed threshold, though, recall falls from 89.9% at 12,000 records to 87.6% at 75,000, and a few false merges appear (a rate of at most 0.07%). Blocking loses none of it: at every size, every missed pair that could reach the threshold is on a candidate list. Half of the drop comes from keeping train's u values; re-sampling u on the scored file recovers it ([chapter 3](docs/guide/03-far-too-many-pairs.md#quality-as-the-file-grows)).
 - **Machine-read kana.** Given-name readings come from SudachiPy, and some differ from the intended reading.
 - **Next steps:** take u from the scored file, through the decision rule; certify on real data at production size; try a supervised classifier on the same comparison vectors under the same decision rule; and add a clerical-review band for pairs just below 6 bits.

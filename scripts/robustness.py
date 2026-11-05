@@ -1,8 +1,8 @@
 """Robustness evidence for the final configurations, computed in memory. Only a report is written:
 data/artifacts/robustness/report.md.
 
-    .venv/bin/python scripts/robustness.py            # replicates, noise, prior sensitivity, scale curve (~5 min)
-    .venv/bin/python scripts/robustness.py --smoke    # also one cost run at about a million records (about 6 GB peak memory)
+    .venv/bin/python scripts/robustness.py            # replicates, noise, prior sensitivity, scale curve (under 5 min)
+    .venv/bin/python scripts/robustness.py --smoke    # also one cost run at about a million records (about 7 GB peak memory)
 
 The configurations are the ones the matching notebooks ended with: data/artifacts/models/*_final.json records the
 adopted changes, and they are re-applied to the notebooks' own Configuration cells. Nothing is re-tuned. Each
@@ -23,7 +23,8 @@ import numpy as np
 import pandas as pd
 
 from er.config import OverBudget
-from er.match import sample_u, train_fs
+from er.evaluate import missed_pairs
+from er.match import sample_u, score_fs, train_fs
 from er.pipeline import run_fs, run_rules
 from er.settings import load_settings
 from er.standardize import prepare
@@ -86,8 +87,9 @@ def peak_gb() -> float:  # the process's peak resident memory so far (ru_maxrss:
     return resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / (1e9 if sys.platform == "darwin" else 1e6)
 
 
-def resolve(records: pd.DataFrame, truth: pd.DataFrame, model_json: dict) -> tuple[dict, dict, float, float]:
-    """Both stages on one file: rules, then the probabilistic stage on what they left. → metrics after each, seconds."""
+def resolve(records: pd.DataFrame, truth: pd.DataFrame, model_json: dict) -> tuple[dict, dict, float, float, object]:
+    """Both stages on one file: rules, then the probabilistic stage on what they left. → metrics after each, seconds,
+    the probabilistic stage's result."""
     t = time.perf_counter()
     det = run_rules(DET, records, truth, DB, DATA)
     t_det = time.perf_counter() - t
@@ -95,7 +97,17 @@ def resolve(records: pd.DataFrame, truth: pd.DataFrame, model_json: dict) -> tup
     clusters = det.records[[UID, "CLUSTER_ID"]].set_axis([UID, "cluster_id"], axis=1).astype("string")
     t = time.perf_counter()
     res = run_fs(PROB, model_json, records, truth, pairs, clusters, DB, DATA)
-    return res.metrics.iloc[0].to_dict(), res.metrics.iloc[-1].to_dict(), t_det, time.perf_counter() - t
+    return res.metrics.iloc[0].to_dict(), res.metrics.iloc[-1].to_dict(), t_det, time.perf_counter() - t, res
+
+
+def potential_off_list(res, truth: pd.DataFrame, model_json: dict) -> int:
+    """True pairs both stages missed that are on no candidate list, yet would reach the threshold if compared: the
+    potential matches blocking lost. O(T · C) for the T missed pairs."""
+    l, r = f"{UID}_l", f"{UID}_r"
+    missed = missed_pairs(res.records.set_index(UID)["CLUSTER_ID"], truth.set_index(UID)[ENT], UID).astype("string")
+    off = missed.merge(res.candidates[[l, r]], on=[l, r], how="left", indicator=True)
+    scored = score_fs(model_json, res.records, off.loc[off["_merge"] == "left_only", [l, r]], DB, UID)
+    return int((scored["match_weight"] >= PROB.min_match_weight).sum())
 
 
 def row(name: str, before: dict, after: dict) -> dict:
@@ -133,7 +145,8 @@ def scale(smoke: bool) -> pd.DataFrame:
     """Production cost: one model fitted on a train-sized split scores files of growing size, both stages. Up to
     len(PERSONS) entities every entity is a distinct persona. Above that, personas repeat and two entities can be
     clones no matcher can tell apart, so those rows measure cost only. `recall_u_from_file` re-samples u on the scored
-    file (m and λ still from train): the fields whose value sets grow with N (address, CIF ID) then keep their weight."""
+    file (m and λ still from train): the fields whose value sets grow with N (address, CIF ID) then keep their weight.
+    `potential_off_list` counts the missed true pairs that no generator listed but that would reach the threshold."""
     base = GEN["SPEC"]
     train = split(*population(base))["train"]
     model = fit(*train)
@@ -143,16 +156,17 @@ def scale(smoke: bool) -> pd.DataFrame:
         persons = PERSONS if n <= len(PERSONS) else pd.concat([PERSONS] * (n // len(PERSONS) + 1), ignore_index=True)
         g = GEN["generate"](replace(base, entities=n), persons, COMPANIES, TOWNS)
         try:
-            _, after, t_det, t_prob = resolve(g.df, g.truth, model)
+            _, after, t_det, t_prob, res = resolve(g.df, g.truth, model)
         except OverBudget as e:
             print(f"{len(g.df):,} records: over budget: {e}", flush=True)
             continue
         row = dict(records=len(g.df), rules_seconds=round(t_det, 1), probabilistic_seconds=round(t_prob, 1),
-                   peak_memory_gb=round(peak_gb(), 1), recall="—", false_merges="—", fp_rate_at_most="—", recall_u_from_file="—")
+                   peak_memory_gb=round(peak_gb(), 1), recall="—", false_merges="—", fp_rate_at_most="—", potential_off_list="—",
+                   recall_u_from_file="—")
         if n <= len(PERSONS):
             _, local, *_ = resolve(g.df, g.truth, fit(*train, u=u_of(g.df)))
             row |= dict(recall=round(after["recall"], 4), false_merges=int(after["FP"]), fp_rate_at_most=f"{after['fp_rate_hi']:.2%}",
-                        recall_u_from_file=round(local["recall"], 4))
+                        potential_off_list=potential_off_list(res, g.truth, model), recall_u_from_file=round(local["recall"], 4))
         rows.append(row)
         print(rows[-1], flush=True)
     out = pd.DataFrame(rows)

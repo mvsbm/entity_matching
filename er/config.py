@@ -167,7 +167,18 @@ class TfidfNeighbours:
     min_cosine: float
 
 
-Blocker = KeyBlocker | SortedNeighbourhood | TfidfNeighbours
+@dataclass(frozen=True, kw_only=True)
+class DeletionKeys:
+    name: str
+    key: Key                                  # the value and each one-character deletion of it are its keys
+    within: tuple[Key, ...] = ()              # all equal too: limits chance pairs between short values
+
+
+Blocker = KeyBlocker | SortedNeighbourhood | TfidfNeighbours | DeletionKeys
+
+
+def keys_of(b: Blocker) -> tuple[Key, ...]:  # every column a generator reads
+    return b.keys if isinstance(b, KeyBlocker) else (b.key, *b.within) if isinstance(b, DeletionKeys) else (b.key,)
 
 
 # ---------- Fellegi–Sunter (probabilistic stage) ----------
@@ -219,14 +230,15 @@ class ProbSpec:
     min_match_weight: float                   # accept a pair at or above this (bits); probability = 1 / (1 + 2^−w)
     resolver: Resolver
     budget: Budget
+    bridge: bool = False                      # may join two clusters the previous stage formed
 
     def normalized(self) -> list[tuple[str, tuple[Normalizer, ...]]]:
-        keys = [k for b in self.blockers for k in (b.keys if isinstance(b, KeyBlocker) else (b.key,))]
+        keys = [k for b in self.blockers for k in keys_of(b)]
         return [(k.column, k.normalize) for k in keys if k.normalize] + self.model.normalized()
 
     def used(self) -> set[str]:  # every column the SQL or the generators read, after normalization
         m = self.model
-        cols = {k.name for b in self.blockers for k in (b.keys if isinstance(b, KeyBlocker) else (b.key,))}
+        cols = {k.name for b in self.blockers for k in keys_of(b)}
         cols |= {comp.column(col) for c in m.comparisons for lv in c.levels for col, comp in lv.any_of}
         cols |= {col for c in m.comparisons for col in c.null_if_missing} | {c.tf.name for c in m.comparisons if c.tf}
         return cols | {k.name for rule in (*m.prior_rules, *m.em_rules) for k in rule}

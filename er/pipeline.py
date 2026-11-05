@@ -1,8 +1,9 @@
 """Stage cascade, preflight (time complexity before any join), and the rule-based run.
 
 Cascade semantics: stages run in order. A stage's accepted pairs are kept only if at least one record is still
-unresolved (in a singleton cluster), then everything kept so far is resolved again. Metrics after each stage are
-cumulative: matching metrics on the accepted pairs, resolution metrics on the clusters.
+unresolved (in a singleton cluster), or, for a stage listed in `bridge`, if they join two different clusters; then
+everything kept so far is resolved again. Metrics after each stage are cumulative: matching metrics on the accepted
+pairs, resolution metrics on the clusters.
 """
 import time
 from collections.abc import Callable
@@ -13,12 +14,12 @@ import pandas as pd
 import pyarrow as pa
 from splink import DuckDBAPI
 
-from er.candidates import candidates
-from er.config import (Budget, Data, KeyBlocker, OverBudget, ProbSpec, RulesSpec, SortedNeighbourhood, TfidfNeighbours,
-                       ThresholdRule)
+from er.candidates import candidates, estimate, found_by, generate
+from er.config import (Blocker, Budget, Data, DeletionKeys, Key, KeyBlocker, OverBudget, ProbSpec, RulesSpec,
+                       SortedNeighbourhood, TfidfNeighbours, ThresholdRule, keys_of)
 from er.evaluate import (average_precision, candidate_metrics, cluster_metrics, edge_metrics, fp_upper, missed_pairs,
-                         wilson)
-from er.match import rule_edges, score_fs
+                         true_pairs, wilson)
+from er.match import rule_edges, scaled_prior, score_fs
 from er.resolve import resolve
 from er.standardize import prepare
 from er.strings import FUNCTIONS, udf
@@ -55,13 +56,13 @@ def preflight(spec: RulesSpec, df: pd.DataFrame) -> pd.DataFrame:
                 big_o=f"O(N + P·({' + '.join(FUNCTIONS[comp.function].big_o for _, comp in fuzzy)}))" if fuzzy else "O(N + P)",
                 filled=f"O({n:,} + {p:,}·{per_pair:,.0f})" if fuzzy else f"O({n:,} + {p:,})",
                 ops=n + p * max(per_pair, 1), P=p, largest_block=int(blocks.max()) if len(blocks) else 0,
-                est_fuzzy_ms=round(1000 * est, 2), projected_P=int(p * (spec.budget.target_rows / n) ** 2)))
+                est_fuzzy_ms=round(1000 * est, 2)))
     return pd.DataFrame(rows)
 
 
-def grown_pairs(df: pd.DataFrame, entity: pd.Series, uid: str, cols: list[str], target_rows: int,
+def grown_pairs(df: pd.DataFrame, entity: pd.Series, uid: str, b: KeyBlocker | DeletionKeys, target_rows: int,
                 fractions: tuple[float, ...] = (0.25, 0.5, 1.0), seed: int = 0) -> tuple[float, int]:
-    """How a key's block pairs P grow with the population (P ∝ N^α), and P projected to target_rows.
+    """How a key's pairs P (as `estimate` counts them) grow with the population (P ∝ N^α), and P projected to target_rows.
     Measured by keeping whole entities, which mimics a smaller population of the same kind: on a key with few
     distinct values (the last four phone digits) chance collisions shrink with the square, true duplicates only
     linearly. A key whose value pool grows with the population (addresses) comes out a little steeper than it
@@ -72,35 +73,53 @@ def grown_pairs(df: pd.DataFrame, entity: pd.Series, uid: str, cols: list[str], 
     sizes, pairs = [], []
     for f in fractions:
         keep = rank < max(1, int(len(order) * f))
-        blocks = df[keep].dropna(subset=cols).groupby(cols).size()
         sizes.append(int(keep.sum()))
-        pairs.append(max(int((blocks * (blocks - 1) // 2).sum()), 1))
+        pairs.append(max(int(estimate(b, df[keep], 0)["est_pairs"]), 1))
     alpha = float(np.polyfit(np.log(sizes), np.log(pairs), 1)[0])
     return alpha, int(pairs[-1] * (target_rows / sizes[-1]) ** alpha)
 
 
 def scale_check(spec: RulesSpec | ProbSpec, records: pd.DataFrame, truth: pd.DataFrame, data: Data) -> pd.DataFrame:
-    """Every join key of a configuration, with its pairs projected to budget.target_rows. Key blocks are measured
+    """Every join key of a configuration, with its pairs projected to budget.target_rows. Keys are measured
     (grown_pairs); a sorted neighbourhood makes at most N·(w − 1) pairs; TF-IDF neighbours compare each query
     with every record, so up to N² similarities. `within_budget` is False where the projection exceeds
     budget.max_candidate_pairs: such a configuration would stop with OverBudget at that size."""
     uid, budget = data.unique_id, spec.budget
     df = prepare(spec.standardize, records, spec.normalized(), spec.used())
     entity = truth.set_index(uid)[data.entity_id]
+    blockers: list[Blocker] = ([KeyBlocker(name=r.name, keys=tuple(map(Key, st.keys(r)))) for st in spec.stages for r in st.rules]
+                               if isinstance(spec, RulesSpec) else list(spec.blockers))
     rows = []
-    if isinstance(spec, RulesSpec):
-        keyed = [(r.name, s.keys(r)) for s in spec.stages for r in s.rules]
-    else:
-        keyed = [(b.name, [k.name for k in b.keys]) for b in spec.blockers if isinstance(b, KeyBlocker)]
-        for b in spec.blockers:
-            if isinstance(b, SortedNeighbourhood):
-                rows.append(dict(key=b.name, columns=b.key.name, alpha=1.0, projected_pairs=budget.target_rows * (b.window - 1)))
-            elif isinstance(b, TfidfNeighbours):
-                rows.append(dict(key=b.name, columns=b.key.name, alpha=2.0, projected_pairs=budget.target_rows ** 2))
-    for name, cols in keyed:
-        alpha, projected = grown_pairs(df, entity, uid, cols, budget.target_rows)
-        rows.append(dict(key=name, columns=" + ".join(cols), alpha=round(alpha, 2), projected_pairs=projected))
+    for b in blockers:
+        cols = " + ".join(k.name for k in keys_of(b))
+        if isinstance(b, SortedNeighbourhood):
+            rows.append(dict(key=b.name, columns=cols, alpha=1.0, projected_pairs=budget.target_rows * (b.window - 1)))
+        elif isinstance(b, TfidfNeighbours):
+            rows.append(dict(key=b.name, columns=cols, alpha=2.0, projected_pairs=budget.target_rows ** 2))
+        else:
+            alpha, projected = grown_pairs(df, entity, uid, b, budget.target_rows)
+            rows.append(dict(key=b.name, columns=cols, alpha=round(alpha, 2), projected_pairs=projected))
     return pd.DataFrame(rows).assign(within_budget=lambda t: t["projected_pairs"] <= budget.max_candidate_pairs)
+
+
+def window_only(spec: ProbSpec, model_json: dict, records: pd.DataFrame, truth: pd.DataFrame, db: DuckDBAPI, data: Data,
+                sizes: list[int]) -> pd.DataFrame:
+    """Per file size: the potential matches (true pairs whose fields would reach min_match_weight, λ moved to that size)
+    and how many of them share no equality key (KeyBlocker, DeletionKeys). Only a window (sorted neighbourhood,
+    TF-IDF) can find those, and a window's reach shrinks as the file grows. O(N + P + T·C), T true pairs."""
+    uid = data.unique_id
+    l, r = f"{uid}_l", f"{uid}_r"
+    df = prepare(spec.standardize, records, spec.normalized(), spec.used())
+    scored = score_fs(model_json, df, true_pairs(truth.set_index(uid)[data.entity_id], uid).astype("string"), db, uid)
+    keyed = pd.concat([generate(b, df, uid, None) for b in spec.blockers if isinstance(b, KeyBlocker | DeletionKeys)]
+                      + [pd.DataFrame(columns=[l, r], dtype="string")])
+    on_key = scored.merge(keyed.drop_duplicates().assign(keyed=True), on=[l, r], how="left")["keyed"].fillna(False).to_numpy(bool)
+    bits = lambda n: np.log2((lam := scaled_prior(model_json, n)) / (1 - lam))  # the prior's log-odds at size n
+    rows = []
+    for n in sizes:
+        potential = scored["match_weight"].to_numpy() + bits(n) - bits(len(df)) >= spec.min_match_weight
+        rows.append(dict(records=n, potential=int(potential.sum()), window_only=int((potential & ~on_key).sum())))
+    return pd.DataFrame(rows)
 
 
 def check_budget(plan: pd.DataFrame, budget: Budget) -> None:
@@ -110,7 +129,7 @@ def check_budget(plan: pd.DataFrame, budget: Budget) -> None:
 
 
 def cascade(ids: pd.Series, stages: list[tuple[str, pd.DataFrame]], resolve_edges: Callable[[pd.DataFrame], pd.Series],
-            entity: pd.Series, uid: str) -> tuple[pd.Series, pd.Series, pd.DataFrame, list[dict]]:
+            entity: pd.Series, uid: str, bridge: tuple[str, ...] = ()) -> tuple[pd.Series, pd.Series, pd.DataFrame, list[dict]]:
     """→ final clusters, the stage that first resolved each record, the kept edges, metrics after each stage."""
     l, r = f"{uid}_l", f"{uid}_r"
     resolved = pd.Series(False, index=ids.to_numpy())
@@ -119,7 +138,10 @@ def cascade(ids: pd.Series, stages: list[tuple[str, pd.DataFrame]], resolve_edge
     clusters = pd.Series(ids.to_numpy(), index=ids.to_numpy(), dtype="string")
     for name, e in stages:
         accepted.append(e)
-        e = e[~(e[l].map(resolved).to_numpy() & e[r].map(resolved).to_numpy())]  # skip pairs already resolved on both sides
+        if name in bridge:  # may join two clusters: skip only pairs already in one
+            e = e[e[l].map(clusters).to_numpy() != e[r].map(clusters).to_numpy()]
+        else:  # skip pairs already resolved on both sides
+            e = e[~(e[l].map(resolved).to_numpy() & e[r].map(resolved).to_numpy())]
         kept.append(e)
         clusters = resolve_edges(pd.concat(kept))
         now = clusters.map(clusters.value_counts()) > 1
@@ -170,6 +192,10 @@ def run_rules(spec: RulesSpec, records: pd.DataFrame, truth: pd.DataFrame, db: D
     return Result(plan, rules, pd.DataFrame(metrics), out, edges, time.perf_counter() - t0)
 
 
+def bridged(spec: ProbSpec) -> tuple[str, ...]:  # the cascade stages that may join two clusters
+    return (spec.stage,) if spec.bridge else ()
+
+
 @dataclass
 class ProbResult:
     report: pd.DataFrame      # per candidate generator: Big-O, estimated and actual pairs, completeness, seconds
@@ -183,20 +209,21 @@ class ProbResult:
 
 def run_fs(spec: ProbSpec, model_json: dict, records: pd.DataFrame, truth: pd.DataFrame, prev_pairs: pd.DataFrame,
            prev_clusters: pd.DataFrame, db: DuckDBAPI, data: Data, min_match_weight: float | None = None) -> ProbResult:
-    """Candidates for the previous stage's singletons (against all records) → FS scores → threshold → cascade."""
+    """Candidates for the previous stage's singletons (against all records) → FS scores → threshold → cascade. With
+    spec.bridge, candidates for every record, less the pairs already inside one previous cluster, so a pair may also
+    join two clusters the previous stage formed."""
     t0, uid = time.perf_counter(), data.unique_id
     l, r = f"{uid}_l", f"{uid}_r"
     weight = spec.min_match_weight if min_match_weight is None else min_match_weight
     df = prepare(spec.standardize, records, spec.normalized(), spec.used())
     entity = truth.set_index(uid)[data.entity_id]
     prev = prev_clusters.set_index(uid)["cluster_id"].reindex(df[uid].to_numpy())
-    query = set(prev.index[prev.map(prev.value_counts()).eq(1).to_numpy()])  # singletons after the previous stage
+    query = None if spec.bridge else set(prev.index[prev.map(prev.value_counts()).eq(1).to_numpy()])  # None: every record
 
-    cands, report = candidates(spec.blockers, df, uid, query, spec.budget)
+    cands, report = candidates(spec.blockers, df, uid, query, spec.budget, clusters=prev if spec.bridge else None)
     targets = missed_pairs(prev, entity.reindex(prev.index), uid)
-    found_by = cands["sources"].str.split("+")
-    report = report.assign(**pd.DataFrame([candidate_metrics(cands[found_by.map(lambda s, n=b.name: n in s)],
-                                                             entity, uid, targets) for b in spec.blockers]))
+    report = report.assign(**pd.DataFrame([candidate_metrics(cands[found_by(cands, [b.name])], entity, uid, targets)
+                                            for b in spec.blockers]))
     scored = score_fs(model_json, df, cands[[l, r]], db, uid).merge(cands, on=[l, r])
     scored["fp"] = scored[l].map(entity).to_numpy() != scored[r].map(entity).to_numpy()
     accepted = scored[scored["match_weight"] >= weight].assign(stage=spec.stage, rule=spec.model.name,
@@ -206,7 +233,7 @@ def run_fs(spec: ProbSpec, model_json: dict, records: pd.DataFrame, truth: pd.Da
     ids = df[uid]
     clusters, stage_of, kept, metrics = cascade(
         ids, [(spec.previous_stage, prev_kept), (spec.stage, accepted)],
-        lambda e: resolve(spec.resolver, ids, e, df, db, uid), entity, uid)
+        lambda e: resolve(spec.resolver, ids, e, df, db, uid), entity, uid, bridged(spec))
     resolved_by = pd.concat([kept[[l, "rule"]].set_axis([uid, "rule"], axis=1), kept[[r, "rule"]].set_axis([uid, "rule"], axis=1)])
     first = resolved_by.drop_duplicates(uid).set_index(uid)["rule"]
     out = df.assign(CLUSTER_ID=clusters.to_numpy(), MATCH_STAGE=stage_of.to_numpy(),
@@ -229,7 +256,7 @@ def threshold_curve(res: ProbResult, spec: ProbSpec, prev_pairs: pd.DataFrame, t
         accepted = res.scored[res.scored["match_weight"] >= w].assign(stage=spec.stage, rule=spec.model.name,
                                                                        score=lambda s: s["match_probability"])
         *_, metrics = cascade(ids, [(spec.previous_stage, prev_kept), (spec.stage, accepted)],
-                              lambda e: resolve(spec.resolver, ids, e, res.records, db, uid), entity, uid)
+                              lambda e: resolve(spec.resolver, ids, e, res.records, db, uid), entity, uid, bridged(spec))
         m = metrics[-1]
         rows.append(dict(min_match_weight=w, probability=1 / (1 + 2 ** -w), accepted=len(accepted),
                          pairs_FP=int(accepted["fp"].sum()), stage_fp_rate_hi=fp_upper(int(accepted["fp"].sum()), len(accepted)),

@@ -19,9 +19,9 @@ Each entry gives the symptom that gave it away, the cause, the fix, and what kee
 - **Guard:** a test pads the scored set and checks that the weight moves by exactly the change in the prior's odds.
 
 ## The size rescaling is only half done (open)
-- **Symptom:** at a fixed threshold, recall falls as the scored file grows: 89.8% at 12,000 records, 87.5% at 75,000 (`scripts/robustness.py`).
+- **Symptom:** at a fixed threshold, recall falls as the scored file grows: 89.9% at 12,000 records, 87.6% at 75,000 (`scripts/robustness.py`).
 - **Cause:** λ is rescaled to the scored file's size, but u stays as measured on train. For fields whose number of distinct values grows with the file, such as the address and the CIF ID, the chance that two random records agree also shrinks like 1/N. Train's u then under-credits an agreement on them by about log2(N / 30,000) bits: 1.3 bits at 75,000 records, 5 bits at a million. On the 10,000-record val and test files it over-credits them by about 1.6 bits instead. Fields with a fixed set of values, such as the phone digits or a surname, are not affected.
-- **Measured fix:** re-sample u on the scored file. It needs no labels and costs the same 10 million random pairs whatever the size. At 75,000 records it recovers recall from 87.5% to 88.6%, with the same false pairs (the `recall_u_from_file` column of the robustness report).
+- **Measured fix:** re-sample u on the scored file. It needs no labels and costs the same 10 million random pairs whatever the size. At 75,000 records it recovers recall from 87.6% to 88.7%, with the same false pairs (the `recall_u_from_file` column of the robustness report).
 - **Status:** not adopted yet. It changes every reported number, so it needs its own clean pass through the decision rule, with the threshold re-chosen.
 
 ## Three false positives that were one clone
@@ -59,7 +59,19 @@ Each entry gives the symptom that gave it away, the cause, the fix, and what kee
 - **Symptom:** none at 10,000 records, where every step took under a second. It showed only when each step was priced by its complexity and its growth measured on larger generated files.
 - **Cause:** the phone key and rule F2 joined on the last four phone digits, which take only 10,000 values, so chance pairs grow like N². TF-IDF compared each unresolved record with every record. At a million records: 39 million pairs, 55.8 million pairs and 6.4 × 10¹¹ operations.
 - **Fix:** three compound phone keys, a sorted pass on the reversed name instead of TF-IDF, and F2 joined on the phone plus the start of the address. Each passed the decision rule with no true pair lost ([chapter 3](guide/03-far-too-many-pairs.md#scaling-to-a-million-records)).
-- **Guard:** the "Will it scale?" cell in each notebook stops the run if `FINAL` would go over budget at a million records, and Optuna prunes trials that would.
+- **Guard:** the "Cost of FINAL" cell (deterministic) and the "Will it scale?" cell (probabilistic) stop the run if `FINAL` would go over budget at a million records, and Optuna prunes trials that would.
+
+## A window that shrinks as the file grows
+- **Symptom:** none in the decisions, which lost no pair the model accepts. It showed when we asked a stricter question: which true pairs *could* reach the threshold, and does a list hold them at every file size?
+- **Cause:** a sorted neighbourhood compares each record with the next three in name order. The more records, the more sort between two similar names: the window held 85.8% of the name-close true pairs at 12,000 records, and 60.9% at 75,000. Some potential matches shared no exact key, so only the window found them: 61 on train, 27 of them still potential at a million records.
+- **Fix:** keys, whose reach does not depend on the file size. They are the exact person and company names, one-deletion keys on the company name and, within the postal area, on the person name, and given name + postal code. Now no potential match depends on a window, on any split, up to a million records ([chapter 3](guide/03-far-too-many-pairs.md#keeping-every-potential-match)).
+- **Guard:** the "Will it scale?" cell counts the potential matches that share no key (`window_only`) and stops the run if any is left.
+
+## Two rule clusters were never compared
+- **Symptom:** in the robustness files, most potential matches that both stages missed were on no candidate list: 28 of 30 at 50,000 records, and 14 of 14 at 75,000.
+- **Cause:** the second stage generated candidates only for records the rules left alone. When the rules split one entity into two clusters, no pair between them was ever scored.
+- **Fix:** the second stage scores every pair across two clusters (`ProbSpec.bridge`). Pairs inside one cluster are dropped before the union, so the list grows by only 7%. It passed the decision rule as "better": +12 / −0 true pairs on cross-validated train, +4 / −0 on val, no false pair added.
+- **Guard:** `scripts/robustness.py` reports `potential_off_list`, the missed true pairs that are on no list but would reach the threshold.
 
 ## A projection that assumed too much
 - **Cause:** the design projected each key from how fast its distinct values grow on record samples (α ≈ 2 − β). That formula assumes every value is equally common, and a record sample splits each entity's duplicates apart, so true pairs shrink as fast as chance pairs. Neither holds here.
@@ -75,6 +87,12 @@ Each entry gives the symptom that gave it away, the cause, the fix, and what kee
 - **Cause:** `score_fs` read Splink's predictions into pandas with every matching column of both records, only to keep the ids, the weights and the gammas. At 250,000 records that copy added 4.8 GB to the peak. At a million it would have needed about 19 GB.
 - **Fix:** DuckDB selects the needed columns before anything reaches pandas, and the predictions table is dropped once read. At 250,000 records the step now adds 1.1 GB, with identical results.
 - **Guard:** the cost table of `scripts/robustness.py --smoke` reports the peak memory at each file size.
+
+## Merging the candidate lists was most of the work
+- **Symptom:** with the five name keys and bridging, the million-record run's probabilistic stage went from 127 s to 228 s, though only 7% more pairs were scored.
+- **Cause:** three per-pair Python loops, each linear and each slow. Merging the generators' lists joined their names with `"+".join`, once per pair: 55% of the stage at 250,000 records. Reporting each generator's reach ran a lambda per pair and generator. With every record a query, each generator still filtered all records through an `isin`.
+- **Fix:** a pair's generators are one bit each, summed in C, then named once per distinct combination. A regex over those names reports each generator's reach. `query=None` skips the filter. At 250,000 records the stage takes 15 s instead of 59 s, with identical results.
+- **Guard:** the cost table of `scripts/robustness.py --smoke` reports the stage's time at every file size.
 
 ## Reference data traps
 - **Wikidata's class tree:** 13,766 of the 16k "Japanese companies" with kana in the transitive `company` tree are dissolved municipalities. Only direct company types give real companies.

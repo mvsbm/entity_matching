@@ -9,13 +9,13 @@ import pandas as pd
 import pytest
 from splink import Linker
 
-from er.candidates import generate
-from er.config import (Budget, Comparator, Comparison, FSModel, Key, KeyBlocker, Level, OverBudget, Resolver, Rule, RulesSpec,
-                       SortedNeighbourhood, Stage, TfidfNeighbours, ThresholdRule, keys_sql)
+from er.candidates import candidates, estimate, found_by, generate
+from er.config import (Budget, Comparator, Comparison, DeletionKeys, FSModel, Key, KeyBlocker, Level, OverBudget, ProbSpec,
+                       Resolver, Rule, RulesSpec, SortedNeighbourhood, Stage, TfidfNeighbours, ThresholdRule, keys_sql)
 from er.evaluate import adopt, cluster_metrics, fp_upper, paired_test, predicted_pairs, true_pairs, wilson
 from er.io import load, read_stage, write_stage
 from er.match import parameters, rule_edges, sample_u, score_fs, train_fs, u_values, waterfall
-from er.pipeline import accept_curve, cascade, check_budget, entity_folds, grown_pairs, preflight, select_threshold
+from er.pipeline import accept_curve, cascade, check_budget, entity_folds, grown_pairs, preflight, select_threshold, window_only
 from er.resolve import connected_components, constrained
 from er.settings import load_settings
 from er.standardize import normalize, prepare
@@ -251,6 +251,36 @@ def test_cascade_skips_pairs_already_resolved_on_both_sides(con_db):
     assert ("B", "C") not in set(map(tuple, kept[["uid_l", "uid_r"]].to_numpy()))  # both already resolved by the rules
     assert clusters["A"] == clusters["E"] == clusters["F"] != clusters["C"]
     assert stage_of.to_dict() == dict(A="rules", B="rules", C="rules", D="rules", E="model", F="model")
+    clusters, _, kept, _ = cascade(ids, stages, lambda e: connected_components(ids, e, db, UID), entity, UID, bridge=("model",))
+    assert ("B", "C") in set(map(tuple, kept[["uid_l", "uid_r"]].to_numpy()))  # a bridging stage may join two clusters
+    assert clusters["A"] == clusters["C"] == clusters["F"]
+
+
+def test_deletion_keys_find_every_pair_one_edit_apart():
+    names = {"0": "サトウヒロシ", "1": "サトウヒロミ", "2": "サトヒロシ", "3": "サトウヒロシイ", "4": "サウトヒロシ",  # swap ウ/ト
+             "5": "サトウタカシ", "6": "サトウヒロシ"}
+    df = pd.DataFrame({"uid": list(names), "name": list(names.values()), "area": ["1", "1", "1", "1", "1", "1", "2"]}, dtype="string")
+    pairs = set(map(tuple, generate(DeletionKeys(name="d", key=Key("name")), df, UID, {"0"}).to_numpy()))
+    assert pairs == {("0", "1"), ("0", "2"), ("0", "3"), ("0", "4"), ("0", "6")}  # 5: two substitutions away
+    within = set(map(tuple, generate(DeletionKeys(name="d", key=Key("name"), within=(Key("area"),)), df, UID, {"0"}).to_numpy()))
+    assert within == pairs - {("0", "6")}  # another area
+    every = generate(DeletionKeys(name="d", key=Key("name")), df, UID, set(names))
+    assert estimate(DeletionKeys(name="d", key=Key("name")), df, len(df))["est_pairs"] >= len(every)  # an upper bound
+
+
+def test_window_only_counts_potential_matches_no_key_reaches(con_db, records):
+    _, db = con_db
+    data = replace(load_settings().data, unique_id=UID, entity_id="entity")
+    spec = ProbSpec(standardize=replace(load_settings().standardize, derived=()), previous_stage="rules", stage="fs", model=model(),
+                    blockers=(KeyBlocker(name="phone", keys=(Key("phone"),)),), min_match_weight=-10.0,  # toy weights: −6 to −3
+                    resolver=Resolver(method="connected_components"),
+                    budget=Budget(max_candidate_pairs=10**6, max_block_size=10**4, target_rows=10**6, benchmark_pairs=10))
+    model_json, truth = train_fs(model(), records, db, UID), records[[UID, "entity"]]
+    keyed = window_only(spec, model_json, records, truth, db, data, [len(records), 10**6])
+    windowed = window_only(replace(spec, blockers=(SortedNeighbourhood(name="s", key=Key("name"), window=2),)), model_json,
+                           records, truth, db, data, [len(records)])
+    assert keyed["window_only"].eq(0).all() and keyed["potential"].iloc[1] < keyed["potential"].iloc[0]  # λ falls with N
+    assert windowed["window_only"].iloc[0] == windowed["potential"].iloc[0] > 0  # every true pair shares the phone, none a key here
 
 
 def test_candidate_generators_respect_query_window_and_cosine():
@@ -265,6 +295,15 @@ def test_candidate_generators_respect_query_window_and_cosine():
     tf = generate(TfidfNeighbours(name="t", key=Key("name"), ngram=(2, 3), k=3, min_cosine=0.5), df, UID, query)
     assert ("5", "7") not in set(map(tuple, tf.to_numpy()))  # スズキ vs イトウ share no 2-3-gram: below the cosine cutoff
     assert len(tf) and all(query & {a, b} for a, b in tf.to_numpy())
+    assert len(generate(KeyBlocker(name="k", keys=(Key("phone"),)), df, UID, None)) == 3 + 1 + 3  # None: every record a query
+    clusters = pd.Series(["c0", "c0", "c2", "c3", "c4", "c5", "c6", "c7"], index=df["uid"].to_numpy())
+    budget = Budget(max_candidate_pairs=100, max_block_size=100, target_rows=10, benchmark_pairs=10)
+    union, _ = candidates((KeyBlocker(name="k", keys=(Key("phone"),)), SortedNeighbourhood(name="s", key=Key("name"), window=2)),
+                          df, UID, None, budget, clusters)
+    sources = dict(zip(zip(union["uid_l"], union["uid_r"]), union["sources"]))
+    assert ("0", "1") not in sources and sources[("0", "2")] == sources[("3", "4")] == "k+s"  # one cluster already; found by both
+    named = pd.DataFrame({"sources": ["person_name", "sn_person_name", "sn_person_name+person_name"]}, dtype="string")
+    assert found_by(named, ["person_name"]).tolist() == [True, False, True]  # whole names only
 
 
 def test_constrained_resolver_refuses_a_conflicting_merge():
@@ -326,8 +365,8 @@ def test_grown_pairs_tells_a_square_law_key_from_a_linear_one():
     df = pd.DataFrame({"uid": [f"r{i}" for i in range(8000)], "few": rng.integers(0, 50, 8000).astype(str),  # 50 values
                        "own": entities.astype(str)}).astype("string")
     entity = pd.Series(entities.astype(str), index=df["uid"].to_numpy())
-    few, _ = grown_pairs(df, entity, "uid", ["few"], 10**6)
-    own, _ = grown_pairs(df, entity, "uid", ["own"], 10**6)
+    few, _ = grown_pairs(df, entity, "uid", KeyBlocker(name="few", keys=(Key("few"),)), 10**6)
+    own, _ = grown_pairs(df, entity, "uid", KeyBlocker(name="own", keys=(Key("own"),)), 10**6)
     assert few == pytest.approx(2, abs=0.1) and own == pytest.approx(1, abs=0.1)
 
 

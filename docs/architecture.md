@@ -61,7 +61,7 @@ flowchart LR
   end
   subgraph probstage["probabilistic_matching.ipynb"]
     direction LR
-    pleft["deterministic leftovers"] -->|"unresolved vs all records"| pcand["candidates (er.candidates)<br/>exact and compound keys · sorted neighbourhood"]
+    pleft["deterministic clusters"] -->|"every pair across two clusters"| pcand["candidates (er.candidates)<br/>exact, compound and one-deletion keys · sorted neighbourhood"]
     pfit["train, k−1 folds"] -->|"λ prior · u sampling · m by EM or labels"| pmodel[("Splink FS model")]
     pcand -->|"register_blocked_pairs_for_predict"| pscore["Splink predict<br/>match_weight per pair"]
     pmodel -->|"weights"| pscore
@@ -70,7 +70,7 @@ flowchart LR
     popt["Optuna, cross-validated objective<br/>dashboard :8081"] -->|"generators, m, tf, levels, resolver"| pcand
     pcc -->|"out-of-fold FP, recall"| popt
   end
-  dcc -->|"leftovers"| pleft
+  dcc -->|"clusters"| pleft
 ```
 
 Both Optuna studies are stored in SQLite (`artifacts/optuna/*.db`), and optuna-dashboard reads them live.
@@ -96,20 +96,21 @@ Both Optuna studies are stored in SQLite (`artifacts/optuna/*.db`), and optuna-d
   - `constrained`: refuses a merge whose clusters hold different values in a cannot-link column
 - **Metrics:** `pairs_*` measure the accepted pairs; the others measure the clusters (pairwise, B-cubed, over-merged, split).
 
-**Cascade:** a stage adds pairs only where at least one record is still unresolved, so leftovers can join existing clusters. Metrics are cumulative.
+**Cascade:** a rule stage adds pairs only where at least one record is still unresolved, so leftovers can join existing clusters. The probabilistic stage may also join two clusters the rules formed (`ProbSpec.bridge`, listed in `cascade`'s `bridge`): it scores every pair across two clusters, so an entity the rules split in two can still be joined. Metrics are cumulative.
 
 **Blocking:**
 - **Deterministic stage:** each rule is a DuckDB hash join on its exact keys. Fuzzy conditions run only on the joined pairs, so a rule costs `O(N + P)`, with P = Σ C(k, 2) over its key blocks. The preflight counts P per rule before any join and stops the run if a rule is over budget.
-- **Probabilistic stage:** `er.candidates` generates pairs for the deterministic leftovers against all records, and Splink scores exactly that list.
+- **Probabilistic stage:** `er.candidates` generates every pair across two deterministic clusters (pairs inside one cluster are dropped per generator, before the union), and Splink scores exactly that list.
 
   | Generator | Cost |
   |---|---|
   | exact keys | hash join, `O(N + P)` |
+  | one-deletion keys (`DeletionKeys`) | the value and each one-character deletion of it, `O(N·L + P)` |
   | sorted neighbourhood | `O(N log N + N·w)` |
   | TF-IDF (offered in `SPEC`, not in `FINAL`) | brute-force cosine, `O(U·N·q)` |
 
-  The phone key (10,000 possible values, so it grows with N²) and TF-IDF (every leftover against every record) are the two generators that could not run at a million records. `FINAL` replaces them with three compound phone keys and a second sorted pass on the reversed name. A "Will it scale?" cell in each notebook projects every key and rule to `budget.target_rows` (`er.pipeline.scale_check`) and stops the run if one is over budget ([chapter 3](guide/03-far-too-many-pairs.md#scaling-to-a-million-records)).
+  The phone key (10,000 possible values, so it grows with N²) and TF-IDF (every leftover against every record) are the two generators that could not run at a million records. `FINAL` replaces them with three compound phone keys and a second sorted pass on the reversed name. A sorted window reaches fewer pairs as the file grows, so five more keys (the exact names, one-deletion keys, given name + postal code) make sure no potential match depends on one. One cell in each notebook ("Cost of FINAL", "Will it scale?") projects every key and rule to `budget.target_rows` (`er.pipeline.scale_check`) and stops the run if one is over budget. The probabilistic cell also stops it if a potential match shares no key (`er.pipeline.window_only`; [chapter 3](guide/03-far-too-many-pairs.md#keeping-every-potential-match)).
 
-  On val, `FINAL`'s nine generators take 0.3 s in all, and the two person-name sorted passes add 86% of the 48,105 candidates.
+  On val, `FINAL`'s 14 generators take 0.5 s in all. The two person-name sorted passes make 45,074 pairs between them, most of the 51,484 candidates.
 
 **Character vs byte:** DuckDB's `jaro_winkler_similarity`, `jaccard` and `damerau_levenshtein` compare UTF-8 bytes, and katakana is 3 bytes per character. That scores サトウヒロシ / サトウタカシ at 0.897 instead of 0.844. `er.strings.connect()` registers character-level rapidfuzz versions (`cl_*`); every rule and every Fellegi–Sunter level uses them. `connect()` checks them on every start, and so does `tests/`.
