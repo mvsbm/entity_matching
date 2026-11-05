@@ -1,7 +1,7 @@
 """Entity matching: candidate pairs → decided / scored pairs.
 
-rules           a pair is accepted when every condition of one rule holds (score 1.0); each rule is a Splink
-                deterministic link, so its work is the pairs inside its equi-join blocks
+rules           a pair is accepted when every condition of one rule holds (score 1.0); each rule is one SQL
+                equi-join, so its work is the pairs inside its blocks
 fellegi_sunter  Splink's Fellegi–Sunter model: λ from near-certain rules, u by random sampling, m by EM or from
                 labels; scores any registered candidate table, so candidates and scoring stay independent
 """
@@ -22,44 +22,38 @@ from er.config import Comparison, FSModel, InputError, Key, RulesSpec, keys_sql
 from er.evaluate import fp_upper
 
 
-def rule_edges_table(spec: RulesSpec, records: str, db: DuckDBAPI, uid: str, into: str,
-                     inputs: Mapping[str, str] | None = None) -> dict[str, float]:
-    """rule_edges on a table, into a table: columns uid_l, uid_r, rule, stage, score; the first rule wins. `inputs`: a
-    rule's own records table, where it differs (values it doesn't trust left out)."""
-    l, r, con = f"{uid}_l", f"{uid}_r", db.duckdb_con
-    sdf, seconds, parts = db.register(records), {}, []
-    for i, (s, rule) in enumerate((s, rule) for s in spec.stages for rule in s.rules):
-        t = time.perf_counter()
-        settings = SettingsCreator(link_type="dedupe_only", unique_id_column_name=uid, blocking_rules_to_generate_predictions=[s.sql(rule)])
-        source = db.register((inputs or {}).get(rule.name, records)) if inputs and rule.name in inputs else sdf
-        pairs = Linker(source, settings, log_level=logging.WARNING).inference.deterministic_link()
-        table = f"er_rule_{i}"
-        con.execute(f"DROP TABLE IF EXISTS {table}")
-        pairs.as_duckdbpyrelation().project(f'"{l}", "{r}"').to_table(table)
-        pairs.drop_table_from_database_and_remove_from_cache()
-        seconds[rule.name] = time.perf_counter() - t
-        parts.append(f"SELECT \"{l}\", \"{r}\", '{rule.name}' AS rule, '{s.name}' AS stage, {i} AS i FROM {table}")
-    con.execute(f'CREATE OR REPLACE TABLE "{into}" AS SELECT DISTINCT ON ("{l}", "{r}") "{l}", "{r}", rule, stage, 1.0 AS score '
-                f'FROM ({" UNION ALL ".join(parts)}) ORDER BY "{l}", "{r}", i')
-    for i in range(len(parts)):
-        con.execute(f"DROP TABLE IF EXISTS er_rule_{i}")
-    return seconds
-
-
-def rule_edges(spec: RulesSpec, df: pd.DataFrame, db: DuckDBAPI, uid: str) -> tuple[pd.DataFrame, dict[str, float]]:
-    l, r = f"{uid}_l", f"{uid}_r"
-    sdf = db.register(df)
-    found, seconds = [], {}
-    for s in spec.stages:
-        for rule in s.rules:
+def rule_edges(spec: RulesSpec, records: "Records", db: DuckDBAPI, uid: str, batch: str | None = None,
+               trust: Mapping[int, str] | None = None, into: str | None = None) -> tuple[pd.DataFrame | str, dict[str, float]]:
+    """Every rule's pairs, uid_l < uid_r, with the rule and stage that found it (the first rule in order wins a pair)
+    and score 1.0: one equi-join per rule, its fuzzy conditions checked on the joined pairs only. `batch`: a table of
+    records joined against all of them (an increment), O(|batch|·b) instead of every pair; `trust`: per rule (its index
+    in order), a condition its record `l` must meet (values it doesn't trust left out: the keys are equal on both
+    sides). With `into`, a table in db's connection, else a frame. Also returns each rule's seconds.
+    Plain SQL, not Splink's deterministic_link, which joins every column of both records back only for us to drop them."""
+    l, r, u, con = f'"{uid}_l"', f'"{uid}_r"', f'"{uid}"', db.duckdb_con
+    name = records if isinstance(records, str) else f"er_rules_{abs(hash(id(records)))}"
+    if not isinstance(records, str):
+        con.register(name, records)
+    left, order = (batch, "<>") if batch else (name, "<")  # a batch pair can come both ways round: DISTINCT ON keeps one
+    seconds, parts = {}, []
+    try:
+        for i, (s, rule) in enumerate((s, rule) for s in spec.stages for rule in s.rules):
             t = time.perf_counter()
-            settings = SettingsCreator(link_type="dedupe_only", unique_id_column_name=uid,
-                                       blocking_rules_to_generate_predictions=[s.sql(rule)])
-            linker = Linker(sdf, settings, log_level=logging.WARNING)  # the default (INFO) logs every rule
-            pairs = linker.inference.deterministic_link().as_pandas_dataframe()[[l, r]]
+            keep = f" AND {trust[i]}" if trust and i in trust else ""
+            con.execute(f'CREATE OR REPLACE TEMP TABLE er_rule_{i} AS SELECT least(l.{u}, r.{u}) AS {l}, greatest(l.{u}, r.{u}) AS {r} '
+                        f'FROM "{left}" l JOIN "{name}" r ON {s.sql(rule)} AND l.{u} {order} r.{u}{keep}')
             seconds[rule.name] = time.perf_counter() - t
-            found.append(pairs.astype("string").assign(rule=rule.name, stage=s.name, score=1.0))
-    return pd.concat(found, ignore_index=True).drop_duplicates([l, r], keep="first"), seconds  # first rule wins
+            parts.append(f"SELECT {l}, {r}, '{rule.name}' AS rule, '{s.name}' AS stage, {i} AS i FROM er_rule_{i}")
+        sql = f'SELECT DISTINCT ON ({l}, {r}) {l}, {r}, rule, stage, 1.0 AS score FROM ({" UNION ALL ".join(parts)}) ORDER BY {l}, {r}, i'
+        if into:
+            con.execute(f'CREATE OR REPLACE TABLE "{into}" AS {sql}')
+            return into, seconds
+        return con.sql(sql).df().astype({f"{uid}_l": "string", f"{uid}_r": "string"}), seconds
+    finally:
+        for i in range(len(parts)):
+            con.execute(f"DROP TABLE IF EXISTS er_rule_{i}")
+        if not isinstance(records, str):
+            con.unregister(name)
 
 
 ELSE = "else"
@@ -177,26 +171,33 @@ def u_bound(model: FSModel, c: Comparison, records: Records, db: DuckDBAPI) -> f
     return fp_upper(0, max(1, int(sampled * max(fill_share(records, col, db) for col in c.null_if_missing) ** 2)))
 
 
-SCORED_U: dict[tuple[str, int], dict[str, float]] = {}  # (FSModel.u_keys() value, scored records' fingerprint) → u per level
+SCORED_U: dict[tuple[str, int], dict[str, float]] = {}  # (FSModel.u_keys() value, fingerprint of what it reads) → u per level
 
 
-def fingerprint(records: Records, cols: list[str], db: DuckDBAPI) -> int:  # the same set of records and values, in any order
-    if isinstance(records, pd.DataFrame):
-        return int(pd.util.hash_pandas_object(records[cols], index=False).sum())
-    return int(db.duckdb_con.execute(f'SELECT bit_xor(hash({", ".join(chr(34) + c + chr(34) for c in cols)})) FROM "{records}"').fetchall()[0][0])
+def fingerprint(records: Records, cols: list[str], db: DuckDBAPI) -> int:
+    """The same set of records and values, in any order, a frame or a table alike: hashed by DuckDB either way."""
+    con, name = db.duckdb_con, records if isinstance(records, str) else f"er_fp_{abs(hash(id(records)))}"
+    if not isinstance(records, str):
+        con.register(name, records)
+    try:
+        return int(con.execute(f'SELECT coalesce(bit_xor(hash({", ".join(chr(34) + c + chr(34) for c in cols)})), 0) FROM "{name}"').fetchall()[0][0])
+    finally:
+        if not isinstance(records, str):
+            con.unregister(name)
 
 
-def scored_sample(model: FSModel, df: Records, db: DuckDBAPI, uid: str) -> U:
-    """u of every comparison by random sampling on these records, cached per comparison and set of records (SCORED_U).
-    O(N) for the fingerprint, plus u_max_pairs per comparison not cached yet."""
-    cols = sorted({comp.column(col) for c in model.comparisons for lv in c.levels for col, comp in lv.any_of}
-                  | {col for c in model.comparisons for col in c.null_if_missing})
-    records = fingerprint(df, [uid, *cols], db)
-    keys = model.u_keys()
-    todo = [c for c in model.comparisons if (keys[c.name], records) not in SCORED_U]
+def scored_sample(model: FSModel, df: Records, db: DuckDBAPI, uid: str, comparisons: Iterable[Comparison] | None = None) -> U:
+    """u by random sampling on these records, per comparison (all, or these), cached (SCORED_U) by the comparison and
+    the values it reads. Splink picks the sampled pairs by a hash of the record ID, so nothing else changes them: a fit
+    on a whole small file and the run's u on it, or a model and its variant, share one sample. O(N) per comparison for
+    the fingerprint, plus u_max_pairs per comparison not cached yet."""
+    keys, wanted = model.u_keys(), list(model.comparisons if comparisons is None else comparisons)
+    reads = {c.name: [uid, *sorted({comp.column(col) for lv in c.levels for col, comp in lv.any_of} | set(c.null_if_missing))] for c in wanted}
+    prints = {c.name: fingerprint(df, reads[c.name], db) for c in wanted}
+    todo = [c for c in wanted if (keys[c.name], prints[c.name]) not in SCORED_U]
     for name, u in sample_u(model, todo, df, db, uid).items():
-        SCORED_U[keys[name], records] = u
-    return {c.name: SCORED_U[keys[c.name], records] for c in model.comparisons}
+        SCORED_U[keys[name], prints[name]] = u
+    return {c.name: SCORED_U[keys[c.name], prints[c.name]] for c in wanted}
 
 
 def assemble_u(model: FSModel, model_json: dict, sampled: U, exact: U, df: Records, db: DuckDBAPI) -> dict:
@@ -273,12 +274,11 @@ def rule_pairs(df: pd.DataFrame, rule: tuple[Key, ...]) -> int:  # the pairs a b
     return int((sizes * (sizes - 1) // 2).sum())
 
 
-def train_fs(model: FSModel, df: pd.DataFrame, db: DuckDBAPI, uid: str, labels: pd.Series | None = None,
-             u: U | None = None) -> dict:
+def train_fs(model: FSModel, df: pd.DataFrame, db: DuckDBAPI, uid: str, labels: pd.Series | None = None) -> dict:
     """Train on df; `labels` (entity per uid) is required for m_method="labels". Returns the Splink model JSON plus
     "er": what scoring needs (fitting-set size, term frequencies) and which levels had no estimate.
     u-sampling is ~97% of training time and depends only on each comparison and the records (FSModel.u_keys), not on
-    the m method or term-frequency adjustment: pass `u` (u_values of such a model) to skip those comparisons.
+    the m method or term-frequency adjustment, so it goes through scored_sample's cache.
     A level without an estimate never falls back to Splink's defaults: no sampled pair → u at its upper bound (the
     weight is a lower bound on the evidence); never seen in training → m = u (0 bits). A prior or EM rule that finds no
     pair in df (its fields nearly empty there) is skipped, and listed in "er"; none left of either stops the fit."""
@@ -286,9 +286,10 @@ def train_fs(model: FSModel, df: pd.DataFrame, db: DuckDBAPI, uid: str, labels: 
     if model.m_method == "labels":
         assert labels is not None, "m_method='labels' needs truth labels"
         t["__label__"] = t[uid].map(labels)
-    u = {**(u or {}), **sample_u(model, [c for c in model.comparisons if c.name not in (u or {})], t, db, uid)}
+    u = scored_sample(model, t, db, uid)
     if model.u_exact_by_counts:  # the leading exact levels, exactly
-        u = {c: {**levels, **exact_u(model, t, db).get(c, {})} for c, levels in u.items()}
+        exact = exact_u(model, t, db)
+        u = {c: {**levels, **exact.get(c, {})} for c, levels in u.items()}
     labels_of = {c.name: [*(lv.label for lv in c.levels), ELSE] for c in model.comparisons}
     filled_u = [[c.name, lv] for c in model.comparisons for lv in labels_of[c.name] if lv not in u[c.name]]
     u = {c.name: {lv: u[c.name].get(lv) or u_bound(model, c, t, db) for lv in labels_of[c.name]} for c in model.comparisons}

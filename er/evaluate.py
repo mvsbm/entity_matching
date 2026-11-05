@@ -96,11 +96,11 @@ def missed_pairs(cluster_id: pd.Series, entity: pd.Series, uid: str) -> pd.DataF
 
 def predicted_pairs(cluster_id: pd.Series) -> set[tuple[str, str]]:
     """Every pair the clusters put together (uid_l < uid_r). O(Σ k²) over cluster sizes k; clusters are small."""
-    out = set()
-    for members in cluster_id.groupby(cluster_id.to_numpy()).groups.values():
-        ids = sorted(map(str, members))
-        out.update((a, b) for i, a in enumerate(ids) for b in ids[i + 1:])
-    return out
+    d = pd.DataFrame({"u": cluster_id.index.map(str), "c": cluster_id.to_numpy()})
+    d = d[d["c"].notna() & d["c"].duplicated(keep=False)]  # a record alone pairs with nothing
+    pairs = d.merge(d, on="c")
+    pairs = pairs[pairs["u_x"] < pairs["u_y"]]
+    return set(zip(pairs["u_x"], pairs["u_y"]))
 
 
 def paired_test(base: set[tuple[str, str]], variant: set[tuple[str, str]], truth: set[tuple[str, str]]) -> dict[str, float]:

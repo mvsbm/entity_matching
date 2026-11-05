@@ -8,11 +8,11 @@ with the numbers filled in, and its time.
     budget      O(N)                             exact block sizes per rule and generator, before any join; blocks of
                                                  64+ records flagged (a rule doesn't trust them; candidates sample them)
     fit         O(n + S·K + P_em·K)              λ, u and m by EM on a fixed-size sample of n records (or a fitted model)
-    rules       O(N + Σ P_r·L²) + O((N + E)·d)   one join per rule (the first rule wins), then the rules' cascade
+    rules       O(N + Σ P_r·L²) + O(E·d + N)     one join per rule (the first rule wins), then the rules' cascade
     candidates  O(N·L + Σ P_g)                   every generator; pairs inside one rule cluster dropped; a flagged block
                                                  joined only if a sample of its pairs reaches the review floor
     score       O(N + S·K) + O(C·K·L²)           u on this file, then every candidate scored
-    cluster     O(C + (N + E)·d)                 accept at the threshold, then cluster with the rules' pairs
+    cluster     O(C + E·d + N)                   accept at the threshold, then cluster with the rules' pairs
     write       O(N + C)                         gold clusters and matches, as Parquet; the state for increments
 
 increment() adds a batch Δ of new records to a written run: the batch is joined against all records, rule by rule and
@@ -32,7 +32,8 @@ already holds a run unless told to overwrite it. A run folder takes one writer a
 increment or a set of decisions holds it for as long as it writes.
 
 N records, L characters per value, P pairs in a rule's or generator's key blocks, C candidates, K comparisons,
-S sampled pairs for u, E accepted pairs, d cluster diameter (Splink's connected components take up to d rounds).
+S sampled pairs for u, E accepted pairs, d cluster diameter (Splink's connected components take up to d rounds, over
+the edges' records only: each existing cluster is one node, see _merge).
 """
 import fcntl
 import functools
@@ -54,7 +55,7 @@ from splink.clustering import cluster_pairwise_predictions_at_threshold
 
 from er.candidates import candidates, estimate, q
 from er.config import FSSpec, InputError, Key, KeyBlocker, Pipeline
-from er.match import ELSE, assemble_u, exact_u, levels, refreshed_u, rule_edges_table, score_fs, scored_sample, train_fs, u_basis
+from er.match import ELSE, assemble_u, exact_u, levels, refreshed_u, rule_edges, score_fs, scored_sample, train_fs, u_basis
 from er.pipeline import named, pattern_coverage
 from er.settings import Settings, fit_to_file, present_fields
 from er.source import lit, open_source, suggest
@@ -270,42 +271,35 @@ class Run:
     def _columns(self) -> set[str]:
         return {c[0] for c in self.con.execute("DESCRIBE records").fetchall()}
 
-    def _cluster(self, edges: str, into: str) -> None:
-        """Connected components (Splink, in SQL) over these edges; every record is a node."""
-        u = q(self.uid)
-        self.con.execute(f"DROP TABLE IF EXISTS {into}")
-        if not self._count(edges):
-            self.con.execute(f"CREATE TABLE {into} AS SELECT {u}, {u} AS cluster_id FROM records")
-            return
-        out = cluster_pairwise_predictions_at_threshold(
-            nodes=self.db.register(self.con.sql(f"SELECT {u} FROM records")),
-            edges=self.db.register(self.con.sql(f"SELECT {q(self.l)}, {q(self.r)} FROM {edges}")), db_api=self.db, node_id_column_name=self.uid)
-        out.as_duckdbpyrelation().project(f"{u}, cluster_id::VARCHAR AS cluster_id").to_table(into)
-        out.drop_table_from_database_and_remove_from_cache()
-
     def _resolved(self, clusters: str) -> str:  # the records in a cluster of two or more
         return f"(SELECT {q(self.uid)} FROM {clusters} WHERE cluster_id IN (SELECT cluster_id FROM {clusters} GROUP BY 1 HAVING count(*) > 1))"
 
     def rules(self) -> None:
         """One join per rule (the first rule wins a pair), then the cascade: a later stage adds a pair only if it
-        touches a record still unresolved; clusters are recomputed after each stage."""
-        t, l, r = time.perf_counter(), q(self.l), q(self.r)
-        rules = self.pipeline.rules
-        inputs = {}
-        for i, (st, rule) in enumerate((st, rule) for st in rules.stages for rule in st.rules):
-            if (untrusted := self._untrusted(i, st.keys(rule))):
-                keys = " AND ".join(f"z.{q(c)} = x.{q(c)}" for c in st.keys(rule))
-                self.con.execute(f"CREATE OR REPLACE VIEW er_rule_in_{i} AS SELECT * FROM records x WHERE NOT EXISTS (SELECT 1 FROM {untrusted} z WHERE {keys})")
-                inputs[rule.name] = f"er_rule_in_{i}"
-        rule_edges_table(rules, "records", self.db, self.uid, "rule_edges", inputs)
-        self.con.execute(f"CREATE OR REPLACE TABLE rule_kept AS SELECT * FROM rule_edges WHERE FALSE")
+        touches a record still unresolved; clusters are merged after each stage."""
+        t = time.perf_counter()
         self.con.execute(f"CREATE OR REPLACE TABLE rule_clusters AS SELECT {q(self.uid)}, {q(self.uid)} AS cluster_id FROM records")
+        self._rules()
+        p = self._count("rule_edges")
+        self._done("rules", "O(N + Σ P_r·L²) + O(E·d + N)", f"O({self.n:,} + {p:,} pairs)", t, pairs=p, kept=self._count("rule_kept"))
+
+    def _rules(self, batch: str | None = None) -> None:
+        """The rules' pairs (er.match.rule_edges: every record, or a batch against all), less the values each rule
+        doesn't trust (_untrusted), then the cascade into rule_clusters, which the caller starts: a stage's pair is kept
+        only if it touches a record still unresolved, and merged in (_merge)."""
+        l, r, rules = q(self.l), q(self.r), self.pipeline.rules
+        trust = {}
+        for i, (st, rule) in enumerate((st, rule) for st in rules.stages for rule in st.rules):
+            if (untrusted := self._untrusted(i, st.keys(rule), within=batch)):
+                trust[i] = f"NOT EXISTS (SELECT 1 FROM {untrusted} z WHERE {' AND '.join(f'z.{q(c)} = l.{q(c)}' for c in st.keys(rule))})"
+        rule_edges(rules, "records", self.db, self.uid, batch=batch, trust=trust, into="rule_edges")
+        self.con.execute("CREATE OR REPLACE TABLE rule_kept AS SELECT * FROM rule_edges WHERE FALSE")
         for st in rules.stages:
             done = self._resolved("rule_clusters")
-            self.con.execute(f"INSERT INTO rule_kept SELECT * FROM rule_edges WHERE stage = '{st.name}' AND NOT ({l} IN {done} AND {r} IN {done})")
-            self._cluster("rule_kept", "rule_clusters")
-        p = self._count("rule_edges")
-        self._done("rules", "O(N + Σ P_r·L²) + O((N + E)·d)", f"O({self.n:,} + {p:,} pairs)", t, pairs=p, kept=self._count("rule_kept"))
+            self.con.execute(f"""CREATE OR REPLACE TABLE er_stage AS SELECT * FROM rule_edges WHERE stage = '{st.name}'
+                AND NOT ({l} IN {done} AND {r} IN {done})""")
+            self.con.execute("INSERT INTO rule_kept SELECT * FROM er_stage")
+            self._merge("rule_clusters", "er_stage", "rule_clusters")
 
     def candidates(self) -> pd.DataFrame:
         t, fs = time.perf_counter(), self.pipeline.fs
@@ -393,10 +387,10 @@ class Run:
         """Accept at min_match_weight, then cluster every kept pair, the rules' and these; then gold."""
         t = time.perf_counter()
         self._accept()
-        self._cluster("kept", "clusters")
+        self._merge("rule_clusters", "kept", "clusters")
         self._gold()
         e = self._count("matches")
-        self._done("cluster", "O(C + (N + E)·d)", f"O({self._count('scores'):,} + ({self.n:,} + {e:,})·d)", t, accepted=e)
+        self._done("cluster", "O(C + E·d + N)", f"O({self._count('scores'):,} + {e:,}·d + {self.n:,})", t, accepted=e)
 
     def write(self, out: Path, part: int = 0) -> None:
         """Gold (each record's cluster, and the stage and rule that resolved it), the accepted pairs with their weights,
@@ -477,30 +471,14 @@ class Run:
             if other:
                 raise InputError(f"{path}: no new record to add ({'; '.join(self.notes)})", fix="give the records set aside IDs, one per record")
             return self  # every record is already in the run: nothing to do
-        self.con.execute("CREATE OR REPLACE VIEW records AS SELECT * FROM old_records UNION ALL BY NAME SELECT * FROM new_records")
+        self.con.execute("CREATE OR REPLACE TABLE records AS SELECT * FROM old_records UNION ALL BY NAME SELECT * FROM new_records")  # read by every step: once
         self.con.execute(f"CREATE OR REPLACE TABLE new_ids AS SELECT {u} FROM new_records")
         self.n = self._count("records")
 
         t = time.perf_counter()  # the rules: each against the batch only, then the cascade on the merged clusters
-        rules = self.pipeline.rules
-        parts = []
-        for i, (st, rule) in enumerate((st, rule) for st in rules.stages for rule in st.rules):
-            untrusted = self._untrusted(i, st.keys(rule), within="new_records")
-            trust = (f" AND NOT EXISTS (SELECT 1 FROM {untrusted} z WHERE {' AND '.join(f'z.{q(c)} = l.{q(c)}' for c in st.keys(rule))})"
-                     if untrusted else "")
-            parts.append(f"SELECT least(l.{u}, r.{u}) AS {l}, greatest(l.{u}, r.{u}) AS {r}, '{rule.name}' AS rule, '{st.name}' AS stage, "
-                         f"{i} AS i FROM new_records l JOIN records r ON {st.sql(rule)} AND l.{u} <> r.{u}{trust}")
-        self.con.execute(f"""CREATE OR REPLACE TABLE rule_edges AS SELECT DISTINCT ON ({l}, {r}) {l}, {r}, rule, stage, 1.0 AS score
-            FROM ({' UNION ALL '.join(parts)}) ORDER BY {l}, {r}, i""")
         self.con.execute(f"""CREATE OR REPLACE TABLE rule_clusters AS SELECT * FROM read_parquet({lit(state / 'rule_clusters.parquet')})
             UNION ALL SELECT {u}, {u} AS cluster_id FROM new_ids""")
-        self.con.execute("CREATE OR REPLACE TABLE rule_kept AS SELECT * FROM rule_edges WHERE FALSE")
-        for st in rules.stages:
-            done = self._resolved("rule_clusters")
-            self.con.execute(f"""CREATE OR REPLACE TABLE er_stage AS SELECT * FROM rule_edges WHERE stage = '{st.name}'
-                AND NOT ({l} IN {done} AND {r} IN {done})""")
-            self.con.execute("INSERT INTO rule_kept SELECT * FROM er_stage")
-            self._merge("rule_clusters", "er_stage", "rule_clusters")
+        self._rules("new_records")
         self._done("rules", "O(|Δ|·Σ b + scan)", f"O({self._count('new_ids'):,} new records)", t, kept=self._count("rule_kept"))
 
         t, fs = time.perf_counter(), self.pipeline.fs

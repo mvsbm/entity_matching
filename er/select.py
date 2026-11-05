@@ -18,7 +18,7 @@ from er.config import (Data, FSSpec, FSTune, KeyBlocker, OverBudget, Pipeline, R
                        with_level)
 from er.evaluate import adopt, c2, candidate_metrics, missed_pairs, paired_test, predicted_pairs, true_pairs
 from er.io import append_leaderboard, assert_test_scored_once, load, test_evaluations, write_final
-from er.match import parameters, train_fs, u_values, waterfall
+from er.match import parameters, train_fs, waterfall
 from er.pipeline import (FSResult, Result, accept_curve, automatic, complexity_summary, cross_validate_fs, cv_threshold_curve, entity_folds,
                          pattern_coverage, preflight, run_fs, run_rules, scale_check, select_threshold, summed, threshold_curve,
                          window_only)
@@ -56,9 +56,13 @@ class RulesChooser:
         self.train, self.train_truth = load(self.data, "train")
         self.val_records, self.val_truth = load(self.data, "val")
         self.train_true, self.val_true = truth_set(self.train_truth, self.data), truth_set(self.val_truth, self.data)
+        self.runs: dict[tuple[str, str], Result] = {}
 
-    def run(self, spec: RulesSpec, records: pd.DataFrame, truth: pd.DataFrame) -> Result:
-        return run_rules(spec, records, truth, self.db, self.data)
+    def run(self, spec: RulesSpec, dataset: str) -> Result:  # on train or val, cached by (config, dataset): rules fit nothing
+        if (repr(spec), dataset) not in self.runs:
+            records, truth = (self.train, self.train_truth) if dataset == "train" else (self.val_records, self.val_truth)
+            self.runs[repr(spec), dataset] = run_rules(spec, records, truth, self.db, self.data)
+        return self.runs[repr(spec), dataset]
 
     def joined(self, res: Result) -> set[tuple[str, str]]:  # every pair the clusters put together
         return predicted_pairs(res.records.set_index(self.data.unique_id)["CLUSTER_ID"])
@@ -77,10 +81,10 @@ class RulesChooser:
 
     def ab(self) -> list[Section]:
         """Each change applied to the configuration as written, compared pair by pair on val (informational)."""
-        base, rows = self.joined(self.run(self.spec, self.val_records, self.val_truth)), []
+        base, rows = self.joined(self.run(self.spec, "val")), []
         for name, change in self.changes.items():
             spec = change(self.spec)
-            res = self.run(spec, self.val_records, self.val_truth)
+            res = self.run(spec, "val")
             m = res.metrics.iloc[-1]
             row = dict(recall=m["recall"], FP=m["FP"], fp_rate_hi=m["fp_rate_hi"], **paired_test(base, self.joined(res), self.val_true),
                        P=int(res.plan["P"].sum()), seconds=round(res.seconds, 1))
@@ -93,10 +97,10 @@ class RulesChooser:
         final, rows = self.spec, []
         for name, kind in self.decisions:
             variant = self.changes[name](final)
-            on_train = paired_test(self.joined(self.run(final, self.train, self.train_truth)),
-                                   self.joined(self.run(variant, self.train, self.train_truth)), self.train_true)
-            on_val = paired_test(self.joined(self.run(final, self.val_records, self.val_truth)),
-                                 self.joined(self.run(variant, self.val_records, self.val_truth)), self.val_true)
+            on_train = paired_test(self.joined(self.run(final, "train")),
+                                   self.joined(self.run(variant, "train")), self.train_true)
+            on_val = paired_test(self.joined(self.run(final, "val")),
+                                 self.joined(self.run(variant, "val")), self.val_true)
             rows.append(verdict(name, kind, on_train, on_val, self.decision_p, "train"))
             if rows[-1]["adopted"]:
                 final = variant
@@ -116,7 +120,7 @@ class RulesChooser:
                  plan[["stage", "rule", "keys", "big_o", "filled", "P", "largest_block", "est_fuzzy_ms", "alpha", "projected_pairs", "per_record", "within_budget"]])]
 
     def evaluate(self) -> list[Section]:
-        val = self.run(self.final, self.val_records, self.val_truth)
+        val = self.run(self.final, "val")
         fp = int((val.edges["kept"] & val.edges["fp"]).sum())
         return [("Evaluation on val", f"{complexity_summary(val)} · false-positive pairs: {fp}", val.metrics[SHOW].round(4)),
                 ("Rules on val", "", val.plan[["rule", "P", "actual_ms"]].merge(val.rules, on="rule"))]
@@ -126,7 +130,7 @@ class RulesChooser:
         rows = []
         for dataset in self.data.datasets:
             records, truth = load(self.data, dataset)
-            res = self.run(self.final, records, truth)
+            res = run_rules(self.final, records, truth, self.db, self.data)
             append_leaderboard(self.data, "deterministic:FINAL", self.final, dataset, res.metrics.iloc[-1].drop("stage").to_dict())
             rows.append(dict(dataset=dataset, records=len(records), **res.metrics.iloc[-1][SHOW[1:]].to_dict(), seconds=round(res.seconds, 1)))
         write_final(self.data, "deterministic_final", self.final, adopted=self.adopted)
@@ -146,7 +150,7 @@ class RulesChooser:
             if not scale_check(spec, self.train, self.train_truth, self.data)["within_budget"].all():
                 raise optuna.TrialPruned("over budget at target_rows")
             try:
-                res = self.run(spec, self.train, self.train_truth)
+                res = run_rules(spec, self.train, self.train_truth, self.db, self.data)  # a trial runs once: not kept
             except OverBudget as e:
                 raise optuna.TrialPruned(str(e))
             m = res.metrics.iloc[-1]
@@ -163,7 +167,7 @@ class RulesChooser:
             if repr(comps) in seen:
                 continue
             seen.add(repr(comps))
-            v = self.run(with_comparators(self.final, self.tune.stage, comps), self.val_records, self.val_truth)
+            v = self.run(with_comparators(self.final, self.tune.stage, comps), "val")
             m = v.metrics.iloc[-1]
             front.append(dict(trial=t.number, train_FP=t.values[0], train_recall=t.values[1], train_recall_lo=t.user_attrs["recall_lo"],
                               train_recall_hi=t.user_attrs["recall_hi"], train_zero_fp=t.values[0] == 0, val_FP=m["FP"],
@@ -174,8 +178,8 @@ class RulesChooser:
         text = "no Pareto point has 0 FP on train: FINAL stays"
         if best is not None:
             spec = with_comparators(self.final, self.tune.stage, front.at[best, "comparators"])
-            on_train = paired_test(self.joined(self.run(self.final, self.train, self.train_truth)), self.joined(self.run(spec, self.train, self.train_truth)), self.train_true)
-            on_val = paired_test(self.joined(self.run(self.final, self.val_records, self.val_truth)), self.joined(self.run(spec, self.val_records, self.val_truth)), self.val_true)
+            on_train = paired_test(self.joined(self.run(self.final, "train")), self.joined(self.run(spec, "train")), self.train_true)
+            on_val = paired_test(self.joined(self.run(self.final, "val")), self.joined(self.run(spec, "val")), self.val_true)
             text = (f"suggested: trial {front.at[best, 'trial']} → adopt by rule ('better' vs FINAL): "
                     f"{adopt('better', on_train, on_val, self.decision_p)} · train {on_train} · val {on_val}")
         return [("Optuna: the Pareto front, re-scored on val", text, front.drop(columns="comparators").round(4))]
@@ -185,8 +189,9 @@ class RulesChooser:
 
 @dataclass
 class FSChooser:
-    """The caches skip repeated work without changing any result: models by (config, fitting set); u per comparison
-    by FSModel.u_keys(), so models that share a comparison reuse its u; runs by (config, dataset, threshold)."""
+    """The caches skip repeated work without changing any result: models by (config, fitting set); runs by (config,
+    dataset, threshold); u per comparison and the values it reads (er.match.scored_sample), so models that share a
+    comparison, and a model's fit and its scores on the same records, reuse one sample."""
     spec: FSSpec
     pipeline: Pipeline
     rules: RulesSpec                          # the rules stage as chosen: its results are this stage's starting point
@@ -208,7 +213,7 @@ class FSChooser:
         self.train_prev_pairs, self.train_prev_resolved = self.previous("train")
         self.folds = entity_folds(self.train_truth, self.data, p.cv_folds, p.cv_seed)
         self.train_true, self.val_true = truth_set(self.train_truth, self.data), truth_set(self.val_truth, self.data)
-        self.models, self.u, self.runs, self.cvs = {}, {}, {}, {}
+        self.models, self.runs, self.cvs = {}, {}, {}
         self.growth: pd.DataFrame | None = None
         self.spec = replace(self.spec, model=replace(self.spec.model, prior_recall=self.prior_recall(self.spec)))
 
@@ -240,12 +245,7 @@ class FSChooser:
         uid = self.data.unique_id
         if (repr(spec.model), key) not in self.models:
             df = prepare(spec.standardize, records, spec.normalized(), spec.used())
-            u_keys = spec.model.u_keys()
-            model_json = train_fs(spec.model, df, self.db, uid, labels=truth.set_index(uid)[self.data.entity_id],
-                                  u={c: self.u[k, key] for c, k in u_keys.items() if (k, key) in self.u})
-            for c, u in u_values(model_json).items():
-                self.u.setdefault((u_keys[c], key), u)
-            self.models[repr(spec.model), key] = model_json
+            self.models[repr(spec.model), key] = train_fs(spec.model, df, self.db, uid, labels=truth.set_index(uid)[self.data.entity_id])
         return self.models[repr(spec.model), key]
 
     def run(self, spec: FSSpec, dataset: str) -> FSResult:  # model fitted on all of train

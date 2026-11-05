@@ -82,7 +82,8 @@ class Comparator:
         a, b = (f'"{c}_l"', f'"{c}_r"') if level else (f'l."{c}"', f'r."{c}"')
         if self.function == "exact":
             return f"{a} = {b}"
-        return f'cl_{self.function}({a}, {b}) {">=" if FUNCTIONS[self.function].similarity else "<="} {self.threshold}'
+        test = f'cl_{self.function}({a}, {b}) {">=" if FUNCTIONS[self.function].similarity else "<="} {self.threshold}'
+        return test if level else f"({a} = {b} OR {test})"  # a rule: equal values pass without the Python call
 
 
 @dataclass(frozen=True, kw_only=True)

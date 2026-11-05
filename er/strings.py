@@ -10,6 +10,7 @@ from typing import Literal
 import duckdb
 import numpy as np
 import pyarrow as pa
+import pyarrow.compute as pc
 from rapidfuzz import process
 from rapidfuzz.distance import DamerauLevenshtein, Hamming, Jaro, JaroWinkler, Levenshtein
 from splink import DuckDBAPI
@@ -42,16 +43,18 @@ FUNCTIONS: dict[str, FunctionInfo] = {
 
 def udf(function: str) -> Callable[[pa.Array, pa.Array], pa.Array]:  # vectorized, character-level, NULL-safe
     scorer = FUNCTIONS[function].scorer
+    # DuckDB already calls this on its threads, a vector of ~2,000 rows at a time: a thread pool per call costs more than
+    # it saves, except for Damerau–Levenshtein on long values (a customer ID), where the work per pair dominates
+    workers = -1 if function == "damerau_levenshtein" else 1
 
     def f(a: pa.Array, b: pa.Array) -> pa.Array:
-        x, y = a.to_pylist(), b.to_pylist()
-        null = np.array([p is None or q is None for p, q in zip(x, y)], dtype=bool)
-        x, y = ["" if n else p for p, n in zip(x, null)], ["" if n else q for q, n in zip(y, null)]
+        null = pc.or_(a.is_null(), b.is_null())
+        x, y = pc.fill_null(a, "").to_pylist(), pc.fill_null(b, "").to_pylist()
         if scorer is char_jaccard:
             scores = np.array([char_jaccard(p, q) if p or q else 0.0 for p, q in zip(x, y)])
         else:
-            scores = process.cpdist(x, y, scorer=scorer, workers=-1)
-        return pa.array(np.asarray(scores, dtype=float), mask=null)  # NULL never satisfies a condition
+            scores = process.cpdist(x, y, scorer=scorer, workers=workers)
+        return pa.array(np.asarray(scores, dtype=float), mask=null.to_numpy(zero_copy_only=False))  # NULL never satisfies a condition
     return f
 
 

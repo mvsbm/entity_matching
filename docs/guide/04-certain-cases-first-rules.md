@@ -112,13 +112,13 @@ About 30% of duplicates are like this, with small differences in two or more fie
 - `er/select.py`: `RulesChooser` (the design analysis, A/B tests, decisions, cost and output), run by `scripts/choose.py`; its tables are in [`reports/choose.md`](../../reports/choose.md)
 - `notebooks/demo.ipynb`, section 4: each rule's pairs on a small file
 - `er/config.py`: `Rule`, `Stage`, `RulesSpec`, `Comparator`
-- `er/match.py`: `rule_edges` (one Splink join per rule)
+- `er/match.py`: `rule_edges` (one SQL join per rule, for `choose.py`, full runs and increments alike)
 - `er/pipeline.py`: `run_rules`, `preflight`, `cascade`
 - all tables: [results.md](../results.md)
 
 ## Further reading
 
 - P. Christen, *Data Matching*, Springer, 2012: chapter 6 (classification), on rule-based matching.
-- [Splink documentation](https://moj-analytical-services.github.io/splink/): `deterministic_link` runs each of our rules.
+- [Splink documentation](https://moj-analytical-services.github.io/splink/): `deterministic_link` would give the same pairs, but joins every column of both records back first; a plain join is 1.35× faster at a million records.
 
 **Next:** [5. Uncertain evidence: Fellegi–Sunter →](05-uncertain-evidence-fellegi-sunter.md)

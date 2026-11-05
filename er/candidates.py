@@ -54,6 +54,25 @@ class Records:
         self.table, self.cluster = base, clusters is not None
         self.query = (None if query is None else q(query) if isinstance(query, str)  # a table of query ids, or the ids
                       else self._view(pd.DataFrame({uid: list(query)}, dtype="string")))
+        self.touching = False                 # the query is a batch joined against all (an increment), not most of the file
+        self.dk: dict[tuple, str] = {}        # deletion-key rows per (key, within), built once (variants)
+
+    def variants(self, b: DeletionKeys) -> str:
+        """b's rows, one per deletion key (__dk) of its value (__v), with the uid, the within columns and the cluster:
+        unnested once, then read by every count, join and sample of these records. O(N·L) once. When touching (an
+        increment), only the blocks the batch's keys reach are kept, all an increment reads, so memory follows the batch."""
+        at = (b.key.name, tuple(w.name for w in b.within))
+        if at not in self.dk:
+            k, within, u = q(b.key.name), [q(w.name) for w in b.within], q(self.uid)
+            cols = [u] * bool(self.uid) + within + ["__cluster"] * self.cluster + [f"{k} AS __v", f"unnest({deletions_sql(k)}) AS __dk"]
+            rows = lambda where="": f"SELECT {', '.join(cols)} FROM {self.table} WHERE {_filled([b.key.name, *(w.name for w in b.within)])}{where}"
+            sql = rows()
+            if self.touching and self.query:
+                keys = ", ".join(["__dk", *within])
+                sql = (f"SELECT x.* FROM ({sql}) x SEMI JOIN (SELECT DISTINCT {keys} FROM ({rows(f' AND {u} IN (SELECT {u} FROM {self.query})')})) z "
+                       f"USING ({keys})")
+            self.dk[at] = self._temp(sql)
+        return self.dk[at]
 
     def _view(self, df: pd.DataFrame) -> str:
         name = f"er_{uuid.uuid4().hex[:12]}"
@@ -80,7 +99,7 @@ class Records:
         return " AND ".join(out + ([f"{a}.__cluster <> {b}.__cluster"] if self.cluster else [])) or "TRUE"
 
 
-def _deletions_sql(col: str) -> str:  # the value and each one-character deletion of it, distinct
+def deletions_sql(col: str) -> str:  # the value and each one-character deletion of it, distinct
     return f"list_distinct(list_prepend({col}, list_transform(range(1, length({col}) + 1), lambda i: {col}[:i - 1] || {col}[i + 1:])))"
 
 
@@ -93,12 +112,10 @@ def block_cols(b: Blocker) -> list[str]:  # the columns naming a generator's blo
             else ["__dk", *(q(w.name) for w in b.within)] if isinstance(b, DeletionKeys) else [])
 
 
-def _rows(b: Blocker, r: Records, src: str) -> str:  # a generator's rows, each with its block columns
+def _rows(b: Blocker, r: Records, asked: bool = False) -> str:  # a generator's rows (the query's only, if asked), each with its block columns
     if isinstance(b, DeletionKeys):
-        k, within = q(b.key.name), [q(w.name) for w in b.within]
-        return (f"(SELECT {', '.join([q(r.uid), *within])}{', __cluster' if r.cluster else ''}, unnest({_deletions_sql(k)}) AS __dk "
-                f"FROM {src} WHERE {_filled([b.key.name, *(w.name for w in b.within)])})")
-    return f"(SELECT * FROM {src} WHERE {_filled(k.name for k in b.keys)})"
+        return f"(SELECT * FROM {r.variants(b)} WHERE {q(r.uid)} IN (SELECT {q(r.uid)} FROM {r.query}))" if asked else r.variants(b)
+    return f"(SELECT * FROM {r.asked(r.table) if asked else r.table} WHERE {_filled(k.name for k in b.keys)})"
 
 
 def oversized(b: Blocker, r: Records, from_records: int) -> str | None:
@@ -108,7 +125,7 @@ def oversized(b: Blocker, r: Records, from_records: int) -> str | None:
     if not cols:
         return None
     asked = f" AND count(*) FILTER (WHERE {q(r.uid)} IN (SELECT {q(r.uid)} FROM {r.query})) > 0" if r.query else ""
-    table = r._temp(f"""SELECT {', '.join(cols)}, count(*) AS __n, row_number() OVER () AS __b FROM {_rows(b, r, r.table)}
+    table = r._temp(f"""SELECT {', '.join(cols)}, count(*) AS __n, row_number() OVER () AS __b FROM {_rows(b, r)}
                        GROUP BY {', '.join(cols)} HAVING count(*) >= {from_records}{asked}""")
     return table if r.con.execute(f"SELECT count(*) FROM {table}").fetchall()[0][0] else None
 
@@ -146,16 +163,12 @@ def pairs_sql(b: Blocker, r: Records, skip: str | None = None, only: str | None 
                     f"SELECT DISTINCT least(x.a, x.b) AS l, greatest(x.a, x.b) AS r FROM ({arms}) x WHERE {cond}") if b.window > 1 else \
                 f"SELECT NULL::VARCHAR AS l, NULL::VARCHAR AS r WHERE FALSE"
         case DeletionKeys():
-            k, within = q(b.key.name), [q(w.name) for w in b.within]
-            cols = ", ".join([u, *within]) + cl
-            filled = _filled([b.key.name, *(w.name for w in b.within)])
-            variants = lambda src: f"(SELECT {cols}, unnest({_deletions_sql(k)}) AS __dk FROM {src} WHERE {filled})"
-            same = " AND ".join(["a.__dk = b.__dk", *(f"a.{w} = b.{w}" for w in within)])
-            if r.query:  # the query's rows against all
-                return (f"SELECT DISTINCT least(a.{u}, b.{u}) AS l, greatest(a.{u}, b.{u}) AS r FROM {variants(r.asked(t))} a "
-                        f"JOIN {variants(t)} b ON {same} AND a.{u} <> b.{u} WHERE {r.filters('a', 'b', query=False)} AND {_in(bcols, 'a', blocks, keep)}")
-            return (f"WITH v AS {variants(t)} "
-                    f"SELECT DISTINCT a.{u} AS l, b.{u} AS r FROM v a JOIN v b ON {same} AND a.{u} < b.{u} "
+            v = r.variants(b)
+            same = " AND ".join(["a.__dk = b.__dk", *(f"a.{q(w.name)} = b.{q(w.name)}" for w in b.within)])
+            if r.query and r.touching:  # a batch against all: O(|Q|·b), whatever N
+                return (f"SELECT DISTINCT least(a.{u}, b.{u}) AS l, greatest(a.{u}, b.{u}) AS r FROM {_rows(b, r, asked=True)} a "
+                        f"JOIN {v} b ON {same} AND a.{u} <> b.{u} WHERE {r.filters('a', 'b', query=False)} AND {_in(bcols, 'a', blocks, keep)}")
+            return (f"SELECT DISTINCT a.{u} AS l, b.{u} AS r FROM {v} a JOIN {v} b ON {same} AND a.{u} < b.{u} "  # one pass, the query a filter
                     f"WHERE {r.filters('a', 'b')} AND {_in(bcols, 'a', blocks, keep)}")
     raise TypeError(f"{b.name}: no SQL generator for {type(b).__name__}")
 
@@ -164,9 +177,9 @@ def sample_sql(b: Blocker, r: Records, blocks: str, rows: int) -> str:
     """Pairs among up to `rows` records of each of these blocks, chosen by hash (with a query: up to `rows` query
     records against up to `rows` of the block), with the block's `__b`: about rows²/2 pairs per block, whatever its size."""
     cols, u = block_cols(b), q(r.uid)
-    ranked = lambda src: (f"(SELECT x.*, z.__b, row_number() OVER (PARTITION BY z.__b ORDER BY hash(x.{u})) AS __k "
-                          f"FROM {_rows(b, r, src)} x JOIN {blocks} z USING ({', '.join(cols)}))")
-    a, c = ranked(r.asked(r.table) if r.query else r.table), ranked(r.table)
+    ranked = lambda asked: (f"(SELECT x.*, z.__b, row_number() OVER (PARTITION BY z.__b ORDER BY hash(x.{u})) AS __k "
+                            f"FROM {_rows(b, r, asked)} x JOIN {blocks} z USING ({', '.join(cols)}))")
+    a, c = ranked(bool(r.query)), ranked(False)
     order = f"a.{u} <> c.{u}" if r.query else f"a.{u} < c.{u}"
     return (f"SELECT DISTINCT least(a.{u}, c.{u}) AS l, greatest(a.{u}, c.{u}) AS r, a.__b FROM {a} a JOIN {c} c "
             f"ON a.__b = c.__b AND {order} AND a.__k <= {rows} AND c.__k <= {rows} WHERE {r.filters('a', 'c', query=False)}")
@@ -212,17 +225,13 @@ def estimate(b: Blocker, records: pd.DataFrame | str, n_query: int, con: duckdb.
                 m = r.con.execute(f"SELECT count({q(b.key.name)}) FROM {t}").fetchall()[0][0]
                 return dict(big_o="O(N log N + N·w)", filled=f"O({m:,}·log {m:,} + {m:,}·{b.window})",
                             est_pairs=m * (b.window - 1), largest_block=b.window, **none)
-            case DeletionKeys():  # Σ C(k,2) over the key blocks, less the repeats: identical values share all their keys
-                k, within = q(b.key.name), [q(w.name) for w in b.within]
-                filled = _filled([b.key.name, *(w.name for w in b.within)])
-                group = ", ".join(["__dk", *within])
+            case DeletionKeys():  # Σ C(k,2) over the key blocks, less the repeats: identical values share all their d keys
+                v, within = r.variants(b), [q(w.name) for w in b.within]
                 p, big, *o = r.con.execute(f"""
-                    WITH v AS (SELECT {', '.join(within + ['unnest(' + _deletions_sql(k) + ') AS __dk']) } FROM {t} WHERE {filled}),
-                         blocks AS (SELECT count(*) AS c FROM v GROUP BY {group}),
-                         same AS (SELECT count(*) AS n, any_value(len({_deletions_sql(k)})) - 1 AS extra FROM {t} WHERE {filled}
-                                  GROUP BY {', '.join([k, *within])}),
+                    WITH blocks AS (SELECT count(*) AS c FROM {v} GROUP BY {', '.join(['__dk', *within])}),
+                         same AS (SELECT count(*) AS c, count(DISTINCT __dk) AS d FROM {v} GROUP BY {', '.join(['__v', *within])}),
                          agg AS (SELECT coalesce(sum(c * (c - 1) // 2), 0) AS p, coalesce(max(c), 0) AS big, {over} FROM blocks)
-                    SELECT agg.p - (SELECT coalesce(sum(extra * n * (n - 1) // 2), 0) FROM same), agg.* EXCLUDE (p) FROM agg""").fetchall()[0]
+                    SELECT agg.p - (SELECT coalesce(sum((d - 1) * (c // d) * (c // d - 1) // 2), 0) FROM same), agg.* EXCLUDE (p) FROM agg""").fetchall()[0]
                 return dict(big_o="O(N·L + P)", filled=f"O({n:,}·L + {int(p):,})", est_pairs=int(p), largest_block=int(big), **dict(zip(none, map(int, o))))
             case TfidfNeighbours():
                 m, length = r.con.execute(f"SELECT count({q(b.key.name)}), avg(length({q(b.key.name)})) FROM {t}").fetchall()[0]
@@ -248,11 +257,9 @@ def estimate_touching(b: Blocker, r: Records) -> dict[str, object]:
             sql = (f"WITH k AS (SELECT DISTINCT {cols} FROM {r.asked(t)} WHERE {filled}), "
                    f"b AS (SELECT count(*) AS c, {asked} AS qn FROM {t} JOIN k USING ({cols}) GROUP BY {cols}) {total}")
         case DeletionKeys():
-            k, within = q(b.key.name), [q(w.name) for w in b.within]
-            filled, keys = _filled([b.key.name, *(w.name for w in b.within)]), ", ".join(["__dk", *within])
-            variants = lambda src, uid: f"(SELECT {uid}{', '.join(within + [f'unnest({_deletions_sql(k)}) AS __dk'])} FROM {src} WHERE {filled})"
-            sql = (f"WITH k AS (SELECT DISTINCT {keys} FROM {variants(r.asked(t), '')}), "
-                   f"b AS (SELECT count(*) AS c, {asked} AS qn FROM {variants(t, u + ', ')} v JOIN k USING ({keys}) GROUP BY {keys}) {total}")
+            keys = ", ".join(["__dk", *(q(w.name) for w in b.within)])
+            sql = (f"WITH k AS (SELECT DISTINCT {keys} FROM {_rows(b, r, asked=True)}), "
+                   f"b AS (SELECT count(*) AS c, {asked} AS qn FROM {r.variants(b)} v JOIN k USING ({keys}) GROUP BY {keys}) {total}")
         case SortedNeighbourhood():  # each query record pairs with up to window − 1 records on either side
             m = r.con.execute(f"SELECT count({q(b.key.name)}) FROM {r.asked(t)}").fetchall()[0][0]
             return dict(big_o="O(N log N + Δ·w)", filled=f"O(N log N + {m:,}·{b.window})", est_pairs=2 * m * (b.window - 1), largest_block=b.window)
@@ -296,6 +303,7 @@ def candidates(blockers: tuple[Blocker, ...], records: pd.DataFrame | str, uid: 
     assert len(blockers) < 63, "one bit per generator"
     assert query is not None or not touching, "touching needs the batch as the query"
     r = Records(records, uid, con, query, clusters, columns=[k.name for b in blockers for k in keys_of(b)])
+    r.touching = touching
     l, rr = f"{uid}_l", f"{uid}_r"
     try:
         n_query = r.con.execute(f"SELECT count(*) FROM {r.query or r.table}").fetchall()[0][0]
@@ -325,12 +333,12 @@ def candidates(blockers: tuple[Blocker, ...], records: pd.DataFrame | str, uid: 
         names = {m: "+".join(g.name for i, g in enumerate(blockers) if m >> i & 1)
                  for (m,) in r.con.execute(f"SELECT DISTINCT bits FROM {bits}").fetchall()}
         cases = " ".join(f"WHEN {m} THEN '{s}'" for m, s in names.items())
-        out = f"SELECT l AS {q(l)}, r AS {q(rr)}, CASE bits {cases} END AS sources FROM {bits} ORDER BY l, r"
-        if into:
+        out = f"SELECT l AS {q(l)}, r AS {q(rr)}, CASE bits {cases} END AS sources FROM {bits}"
+        if into:  # unordered: whoever reads the table joins it or orders it
             r.con.execute(f"CREATE OR REPLACE TABLE {q(into)} AS {out}")
             result = into
         else:
-            result = r.con.sql(out).df().astype("string")
+            result = r.con.sql(f"{out} ORDER BY l, r").df().astype("string")
     finally:
         r.close()
     report = pd.DataFrame(report)

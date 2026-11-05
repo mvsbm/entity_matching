@@ -21,7 +21,7 @@ from er.config import (Blocker, Budget, Data, DeletionKeys, FSSpec, Key, KeyBloc
                        SortedNeighbourhood, TfidfNeighbours, ThresholdRule, keys_of)
 from er.evaluate import (average_precision, candidate_metrics, cluster_metrics, edge_metrics, fp_upper, missed_pairs,
                          true_pairs, wilson)
-from er.match import rule_edges, sample_u, scaled_prior, score_fs, with_scored_u
+from er.match import rule_edges, scaled_prior, score_fs, scored_sample, with_scored_u
 from er.resolve import resolve
 from er.standardize import prepare
 from er.strings import FUNCTIONS, udf
@@ -122,7 +122,7 @@ def window_only(spec: FSSpec, model_json: dict, records: pd.DataFrame, truth: pd
     if spec.model.u_from_scored:
         entity = df[uid].map(truth.set_index(uid)[data.entity_id])
         half = df[entity_rank(entity) < entity.nunique() // 2]  # whole entities, as the population would grow
-        u_here, u_half = (sample_u(spec.model, list(spec.model.comparisons), d, db, uid) for d in (df, half))
+        u_here, u_half = (scored_sample(spec.model, d, db, uid) for d in (df, half))  # df: the fit's own sample of train
         growth = {(c, lv): math.log(u / u_half[c][lv]) / math.log(len(df) / len(half))
                   for c in u_here for lv, u in u_here[c].items() if u_half[c].get(lv)}
     keyed = pd.concat([generate(b, df, uid, None) for b in spec.blockers if isinstance(b, KeyBlocker | DeletionKeys)]

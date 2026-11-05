@@ -72,14 +72,23 @@ def test_typed_addresses_normalize_to_one_key():
     assert normalize(typed, ("address",), load_settings().standardize).nunique() == 1
 
 
-def test_reused_u_gives_the_same_model(con_db, records):
-    _, db = con_db
+def test_a_u_sample_is_drawn_once_per_set_of_records(con_db, records, monkeypatch):
+    import er.match as M
+    con, db = con_db
     labels = records.set_index(UID)["entity"]
-    u = u_values(train_fs(model("em"), records, db, UID, labels))
-    assert model("em").u_keys() == model("labels").u_keys()
+    M.SCORED_U.clear()
     fresh = train_fs(model("labels"), records, db, UID, labels)
-    reused = train_fs(model("labels"), records, db, UID, labels, u=u)
-    assert parameters(fresh).fillna(0).round(12).equals(parameters(reused).fillna(0).round(12))
+    sampled, real = [], M.sample_u
+    monkeypatch.setattr(M, "sample_u", lambda m, comps, *a: sampled.extend(c.name for c in comps) or real(m, comps, *a))
+    assert model("em").u_keys() == model("labels").u_keys()
+    other = train_fs(model("em"), records, db, UID, labels)  # another m method, the same comparisons and records
+    con.register("er_shuffled", records.sample(frac=1, random_state=0))  # the same records as a table, in another order
+    table = M.scored_sample(model(), "er_shuffled", db, UID)
+    assert sampled == []
+    assert table == M.scored_sample(model(), records, db, UID) == u_values(other) == u_values(fresh)
+    M.SCORED_U.clear()
+    again = train_fs(model("labels"), records, db, UID, labels)
+    assert sampled == ["name", "phone"] and parameters(fresh).fillna(0).round(12).equals(parameters(again).fillna(0).round(12))
 
 
 def test_u_sampled_per_comparison_equals_sampling_them_together(con_db, records):

@@ -45,7 +45,7 @@ The system turns a file of customer records into one ID per person or company. I
 
 **One engine.** `resolve.py`, `benchmark.py` and the demo all run `er.run.Run`. `choose.py` makes its decisions on pandas frames through `er.select`, which calls the same rule, key and model functions, and a test requires both paths to give the same gold. `choose.py` then writes each split's run folder through `er.run`.
 
-**Where Splink sits.** Splink does the rules' joins, the model's training and scoring, and the clustering, on the run's DuckDB connection. Everything around it is the `er` package: candidate generation as SQL, budgets, u from the scored file, the threshold rule, decisions, evaluation.
+**Where Splink sits.** Splink does the model's training and scoring, and the clustering, on the run's DuckDB connection. Everything around it is the `er` package: the rules' joins and candidate generation as SQL, budgets, u from the scored file, the threshold rule, decisions, evaluation ([what we take from Splink, and why the rest is ours](#what-we-take-from-splink-and-what-we-do-ourselves)).
 
 **Configured for any file.** The engine reads logical fields only. `config/settings.toml` `[columns]` maps each field to the file's columns, and `[fields]` in the pipeline says which are mandatory and which optional. A missing optional field turns off only what reads it ([usage](usage.md#2--map-your-columns)).
 
@@ -64,6 +64,24 @@ The SQL is written to move: joins, group-bys, window functions and `CREATE TABLE
 | standardization (NFKC, kana folding, the address chain) | `er.standardize` | pandas, per chunk: DuckDB has no NFKC |
 
 Splink writes the training, scoring and clustering SQL for each engine it supports.
+
+### What we take from Splink, and what we do ourselves
+
+Splink 5 was read against this code, and each overlap measured on the same data, with the same output both ways.
+
+| Job | Ours or Splink's | Why |
+|---|---|---|
+| training (λ, EM), scoring, connected components | Splink's | its job; pairs are scored through `register_blocked_pairs_for_predict`, Splink 5's path for given pairs, which also prunes the records read |
+| the rules' joins | ours, plain SQL | `deterministic_link` gives the same pairs but first joins every column of both records back: 1.35× slower at a million records, 17× at 10,000. Splink has no cascade (a later stage adding a pair only for a record still unresolved) |
+| merging the generators' pairs | ours | 1.56× faster at a million records, and every generator that found a pair is kept (`sources`); Splink keeps the first. Sorted windows aren't Splink blocking rules |
+| counting a key's pairs before any join | ours | one group-by, 5–6× faster than Splink's exact count |
+| threshold curves | ours | the same counts as Splink's truth-space table at every weight, faster, and with folds, bounds and the name check, none of which Splink has |
+| cluster metrics, intervals, the paired test | ours | Splink has no cluster-level accuracy |
+| λ at the file's size, exact u from value counts | ours | Splink has neither; a 10⁷-pair sample can't see an agreement rarer than one in 10⁹ pairs |
+| increments: merging into stored clusters, stable names | ours | Splink 5 has no incremental clustering; `predict_between`, which replaced `find_matches_to_new_records`, scores only |
+| string similarity | ours (`cl_*`) | DuckDB's built-ins, which Splink's comparison libraries call, compare bytes: タナカ / タカナ get Jaro–Winkler 0.956 from them, 0.556 by character |
+
+Not used, and why: chunked prediction (refuses given pairs, and only bounds memory); salting (ignored in Splink 5); Parquet materialisation (1.05–1.67× slower here); `cluster_using_single_best_links` (for sources without duplicates); `DateOfBirthComparison` (birth dates that aren't dates, and no extra true pair); m from people's review decisions (rows chosen by their score bias m by up to 3.8 bits; the decisions are applied as merges instead).
 
 ## 3 · The run
 
@@ -103,12 +121,12 @@ Takes a fixed sample of 30,000 records, made of whole postal areas, and learns t
 - **Code:** `Run.fit` → `match.train_fs` (Splink), `match.sample_u`, `exact_u`. A near-certain or learning rule that finds no pair in the sample (its field nearly empty) is skipped and named in the summary; with none left of either, the run stops with what to fix.
 - **Increment:** no fit. It reads `state/model.json`, so every increment scores with the full run's model.
 
-### 4 · Rules: the certain cases · `O(N + ΣP_r·L²) + O((N+E)·d)`
+### 4 · Rules: the certain cases · `O(N + ΣP_r·L²) + O(E·d + N)`
 
 Each rule is one join on its exact keys; its fuzzy conditions (names within two edits, addresses by Jaro–Winkler, a phone one digit off, …) are checked on the joined pairs only. A pair belongs to the first rule that finds it. Stage by stage, exact then fuzzy, a pair is kept only if it touches a record still unresolved, and the kept pairs are clustered.
 
 - **Why:** certain cases are cheap and auditable, and settle most duplicates without a false merge. The model then works only on what is left.
-- **Code:** `Run.rules` → `match.rule_edges_table` (one Splink join per rule), `config.Stage.sql`, `strings.connect` (the character-level `cl_*` functions). A rule leaves out any value of its keys held by an oversized block (`Run._untrusted`): one customer ID on 3,000 records is not one customer's, so the summary names it, and the model can still match those records.
+- **Code:** `Run.rules` → `match.rule_edges` (one SQL join per rule, the same for `choose.py`, full runs and increments), `config.Stage.sql` (a fuzzy condition lets equal values through without the string function), `strings.connect` (the character-level `cl_*` functions). A rule leaves out any value of its keys held by an oversized block (`Run._untrusted`): one customer ID on 3,000 records is not one customer's, so the summary names it, and the model can still match those records.
 - **Increment:** each rule joins the batch against all records. Each stored cluster is merged as a single node (`Run._merge`): `O(Δ·Σb)` plus a scan.
 
 ### 5 · Candidates: which pairs to score · `O(N·L + ΣP_g)`
@@ -118,7 +136,7 @@ Lists the pairs worth scoring. Each generator is one SQL query:
 | Generator | SQL | Cost |
 |---|---|---|
 | equal keys | a self-join | `O(N + P)` |
-| one-character deletions of a name, within its postal area | each value and its deletions, unnested, then a self-join | `O(N·L + P)` |
+| one-character deletions of a name, within its postal area | each value and its deletions, unnested once into a table that the count, the join and the sample read, then a self-join | `O(N·L + P)` |
 | sorted neighbourhood | `lead()` over the sorted key, w − 1 times | `O(N log N + N·w)` |
 
 Each generator sets one bit, so OR-ing the bits merges the lists and every pair keeps the names of the generators that found it. Pairs inside one rule cluster are dropped.
@@ -137,12 +155,12 @@ Measures u again on this file, then scores every candidate: for each field, it f
 - **Code:** `Run.score` → `match.exact_u` (exact levels, from value counts), `scored_sample` (the rest, from S random pairs), `assemble_u`; `match.score_fs`, `scaled_prior` (λ at this file's size)
 - **Increment:** `match.refreshed_u`. The exact levels are counted again on all records. A comparison's sampled u are measured again only once the drift of its exact level, since it was sampled, exceeds the sampling error of its most precise sampled level, 1/(ln 2·√hits) bits: before that, a new sample would only redraw the noise. Then only the pairs touching the batch are scored: `O(N + S·K_stale + C_Δ·K·L²)`.
 
-### 7 · Cluster: from pairs to entities · `O(C + (N+E)·d)`
+### 7 · Cluster: from pairs to entities · `O(C + E·d + N)`
 
 Accepts a pair at 6 bits or more, if it touches a record the rules left alone or joins two rule clusters, if a name was compared (`[model] needs`: the person names or the company names, filled on both sides), and if people haven't decided it is no match. Then it clusters the accepted pairs with the rules' pairs and the pairs people decided are a match (connected components), and records, for each record, its cluster, the stage that resolved it, and the rule (`fs` for the model, `review` for people). A cluster is named after its smallest record ID.
 
 - **Why:** pairs must become entities: if A matches B and B matches C, all three are one. Recording what resolved each record makes every merge auditable, and naming a cluster by its smallest ID makes an increment name it as a full run would. A household shares address and phone, and those two alone reach the threshold; so do a person and a company at one address. Without a name compared, people decide.
-- **Code:** `Run.cluster` → `Run._accept` (the threshold; people's decisions, loaded by `Run._load_decisions` from `decisions/`), `Run._cluster` (Splink's connected components), `Run._gold`
+- **Code:** `Run.cluster` → `Run._accept` (the threshold; people's decisions, loaded by `Run._load_decisions` from `decisions/`), `Run._merge` (Splink's connected components over the pairs' records only, each rule cluster one node, as in an increment), `Run._gold`
 - **Increment:** the stored gold is the base, each stored cluster one node, and stored answers stand: `O(C_Δ + touched clusters)`.
 
 ### 8 · Write the run folder · `O(N + C)`
