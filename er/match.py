@@ -296,18 +296,26 @@ def score_fs(model_json: dict, df: Records, pairs: pd.DataFrame | str, db: DuckD
     return out.astype({l: "string", r: "string"})
 
 
+def levels(model_json: dict) -> dict[str, dict[int, tuple[str, float]]]:
+    """Per comparison: each gamma, as score_fs returns it, → its level's label and bits log2(m/u). Gamma counts up from
+    the else level (0); -1 is a missing side, worth 0 bits."""
+    out = {}
+    for c in model_json["comparisons"]:
+        ordered = [lv for lv in c["comparison_levels"] if not lv.get("is_null_level")][::-1]
+        out[c["output_column_name"]] = {-1: ("missing", 0.0), **{g: (lv["label_for_charts"], math.log2(lv["m_probability"] / lv["u_probability"]))
+                                                                for g, lv in enumerate(ordered)}}
+    return out
+
+
 def waterfall(model_json: dict, gammas: dict[str, int], n_records: int) -> pd.DataFrame:
-    """One scored pair's match weight as evidence: the prior, then per comparison the bits log2(m/u) of the level the
-    pair landed in (gamma, as score_fs returns it; a missing side adds 0). The bits sum to Splink's match_weight."""
+    """One scored pair's match weight as evidence: the prior, then per comparison the bits of the level the pair landed
+    in. The bits sum to Splink's match_weight."""
     assert not model_json["er"]["tf"], "term-frequency adjustments are per value and not shown here"
     lam = scaled_prior(model_json, n_records)
     rows = [dict(evidence="prior", level="two random records match", bits=math.log2(lam / (1 - lam)))]
-    for c in model_json["comparisons"]:
-        levels = [lv for lv in c["comparison_levels"] if not lv.get("is_null_level")]  # gamma counts down to else = 0
-        g = int(gammas[c["output_column_name"]])
-        lv = levels[len(levels) - 1 - g] if g >= 0 else None
-        rows.append(dict(evidence=c["output_column_name"], level=lv["label_for_charts"] if lv else "missing",
-                         bits=math.log2(lv["m_probability"] / lv["u_probability"]) if lv else 0.0))
+    for name, by_gamma in levels(model_json).items():
+        label, bits = by_gamma[int(gammas[name])]
+        rows.append(dict(evidence=name, level=label, bits=bits))
     return pd.DataFrame(rows)
 
 

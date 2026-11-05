@@ -116,7 +116,7 @@ Six chapters explain how everything works. Each starts from a real example, name
 | [5. Uncertain evidence: Fellegi–Sunter](docs/guide/05-uncertain-evidence-fellegi-sunter.md) | How do we weigh partial evidence, learn without labels, and form groups? |
 | [6. Measuring honestly, choosing without overfitting](docs/guide/06-measuring-and-choosing.md) | How good is it, how sure are we, and how do we avoid fooling ourselves? |
 
-**Reference:** [architecture](docs/architecture.md) (data flow, the `er` package) · [data](docs/data.md) (sources, generator, columns) · [results](docs/results.md) (every table) · [performance](docs/performance.md) · [lessons](docs/lessons.md) (what went wrong, and the guards)
+**Reference:** [architecture](docs/architecture.md) (the run step by step, as a draw.io diagram; data flow; the `er` package) · [data](docs/data.md) (sources, generator, columns) · [results](docs/results.md) (every table) · [performance](docs/performance.md) · [lessons](docs/lessons.md) (what went wrong, and the guards)
 
 ## Known limits
 

@@ -27,7 +27,7 @@ data/artifacts/optuna/*.db                  the Optuna studies, with --optuna
 data/artifacts/benchmark/, demo/            run folders of scripts/benchmark.py and the demo
 ```
 
-A run folder is the same wherever it is written, by `scripts/choose.py` here or by `scripts/resolve.py` anywhere: `gold.parquet`, `matches/`, `rule_kept/`, `steps.json` and `state/` ([architecture](architecture.md#a-run-on-duckdb-tables)).
+A run folder is the same wherever it is written, by `scripts/choose.py` here or by `scripts/resolve.py` anywhere: `gold.parquet`, `matches/`, `rule_kept/`, `steps.json` and `state/` ([architecture](architecture.md#where-the-data-lives)).
 
 ## Reference data (bronze)
 

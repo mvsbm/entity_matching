@@ -10,8 +10,8 @@ Fits λ and m by EM on a fixed-size sample of the file (config/pipeline.toml [mo
 fitted model (data/artifacts/models/probabilistic_final.json). Writes to --output: gold.parquet (each record's cluster,
 and the stage and rule that resolved it), matches/ (accepted pairs, their weights and the generators that found them)
 and rule_kept/ as Parquet parts, steps.json (each step's Big-O and time), qa.md (label-free checks), review.parquet
-(pairs around the threshold, for people to check: it holds records, so keep it with the data), and state/ for
-increments.
+(about 50 pairs around the threshold for people to check: both records' compared fields side by side, and each
+field's level and bits; it holds records, so keep it with the data), and state/ for increments.
 """
 import argparse
 import json

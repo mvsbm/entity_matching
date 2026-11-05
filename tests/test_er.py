@@ -493,12 +493,18 @@ def population():
 
 
 def test_a_run_ignores_record_order_refuses_a_used_folder_and_an_increment_keeps_every_cluster(tmp_path, population):
-    from er.run import Run
+    from er.match import scaled_prior
+    from er.run import Run, qa
     s, p, g = population
     uid = s.data.unique_id
     g.df.to_parquet(tmp_path / "all.parquet", index=False)
     g.df.sample(frac=1, random_state=1).to_parquet(tmp_path / "shuffled.parquet", index=False)
     first = Run(p, s).full(tmp_path / "all.parquet", tmp_path / "a")
+    sheet = qa(first, [f for f in s.columns if f not in ("id", "entity")])["review_sample"]
+    assert len(sheet) and {"person_name_l", "person_name_r", "address_l", "address_r", "phone_l", "name", "name_bits"} <= set(sheet.columns)
+    lam = scaled_prior(first.scoring, first.n)  # the prior and each field's bits add up to the score a reviewer sees
+    bits = sheet[[f"{c.name}_bits" for c in p.fs.model.comparisons]].sum(axis=1) + math.log2(lam / (1 - lam))
+    assert np.allclose(bits, sheet["match_weight"], atol=0.05)
     Run(p, s, model=first.model).full(tmp_path / "shuffled.parquet", tmp_path / "b")
     gold = [pd.read_parquet(tmp_path / d / "gold.parquet") for d in ("a", "b")]
     pd.testing.assert_frame_equal(*gold)  # clusters, and the stage and rule that resolved each record

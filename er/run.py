@@ -40,7 +40,7 @@ from splink.clustering import cluster_pairwise_predictions_at_threshold
 
 from er.candidates import candidates, estimate, q
 from er.config import Key, KeyBlocker, OverBudget, Pipeline
-from er.match import ELSE, rule_edges_table, score_fs, train_fs, with_scored_u
+from er.match import ELSE, levels, rule_edges_table, score_fs, train_fs, with_scored_u
 from er.pipeline import pattern_coverage
 from er.settings import Settings, fit_to_file
 from er.standardize import prepare
@@ -376,7 +376,7 @@ class Run:
 def qa(run: "Run", fields: list[str], review: int = 50) -> dict[str, pd.DataFrame]:
     """The label-free report of a run: fill rate per field (flagged under 5%), what was disabled, every step's cost,
     accepted pairs by weight band, cluster sizes, the largest clusters (the over-merge alarm), and a review sample
-    of pairs around the threshold, stratified by weight band, to be checked by people."""
+    of pairs around the threshold, stratified by weight band, to be checked by people (review_sheet)."""
     con, u, t = run.con, q(run.uid), run.pipeline.fs.min_match_weight
     cols = run._columns()
     fill = pd.DataFrame([dict(field=f, filled=con.execute(f"SELECT avg(({q(f)} IS NOT NULL)::INT) FROM records").fetchall()[0][0])
@@ -385,12 +385,34 @@ def qa(run: "Run", fields: list[str], review: int = 50) -> dict[str, pd.DataFram
                                count(*) FILTER (WHERE match_weight >= {t}) AS accepted FROM scores GROUP BY 1 ORDER BY 1""").df()
     sizes = con.sql("SELECT n AS cluster_size, count(*) AS clusters FROM (SELECT count(*) AS n FROM gold GROUP BY cluster_id) GROUP BY 1 ORDER BY 1").df()
     largest = con.sql("SELECT cluster_id, count(*) AS records FROM gold GROUP BY 1 ORDER BY 2 DESC, 1 LIMIT 10").df()
-    sample = con.sql(f"""SELECT * FROM (SELECT s.*, row_number() OVER (PARTITION BY floor(match_weight) ORDER BY hash({q(run.l)}, {q(run.r)})) AS k
-                         FROM scores s WHERE match_weight BETWEEN {t - 4} AND {t + 4}) WHERE k <= {max(1, review // 8)} ORDER BY match_weight""").df()
+    sample = con.sql(f"""SELECT * FROM (SELECT s.*, c.sources, row_number() OVER (PARTITION BY floor(s.match_weight) ORDER BY hash(s.{q(run.l)}, s.{q(run.r)})) AS k
+                         FROM scores s JOIN cands c USING ({q(run.l)}, {q(run.r)}) WHERE s.match_weight BETWEEN {t - 4} AND {t + 4})
+                         WHERE k <= {max(1, review // 8)}""").df().drop(columns="k")
     steps = pd.DataFrame(run.steps)
     base = ["step", "big_o", "filled", "seconds", "peak_memory_gb"]
     steps = steps[base].assign(facts=steps.drop(columns=base).apply(lambda r: " · ".join(f"{k} {v:,.0f}" for k, v in r.dropna().items()), axis=1))
     coverage = pattern_coverage(run.pipeline.fs, run.scoring, run.n)
     return dict(fill=fill, disabled=pd.DataFrame({"disabled": run.disabled}), steps=steps, weight_bands=bands,
                 cluster_sizes=sizes, largest_clusters=largest, patterns_without_a_key=coverage.head(20),
-                review_sample=sample.drop(columns="k"))
+                review_sample=review_sheet(run, sample))
+
+
+def review_sheet(run: "Run", pairs: pd.DataFrame) -> pd.DataFrame:
+    """Scored pairs as people judge them: both records' compared fields side by side, and per comparison the level the
+    pair landed in and the bits it earned, which with the prior sum to its weight. O(pairs)."""
+    comps, uid = run.pipeline.fs.model.comparisons, run.uid
+    fields = [f for f in dict.fromkeys(col for c in comps for col in (*c.null_if_missing, *(x for lv in c.levels for x, _ in lv.any_of)))
+              if f in run._columns()]
+    run.con.register("er_review_ids", pd.DataFrame({uid: pd.concat([pairs[run.l], pairs[run.r]]).unique()}))
+    records = run.con.sql(f"SELECT {', '.join(q(c) for c in [uid, *fields])} FROM records JOIN er_review_ids USING ({q(uid)})").df()
+    run.con.unregister("er_review_ids")
+    out = pairs.merge(records.add_suffix("_l"), on=run.l).merge(records.add_suffix("_r"), on=run.r)
+    out["accepted"] = out["match_weight"] >= run.pipeline.fs.min_match_weight
+    by_gamma = levels(run.scoring)
+    for c in comps:
+        gamma = out.pop(f"gamma_{c.name}").astype(int)
+        out[c.name] = gamma.map(lambda g: by_gamma[c.name][g][0])
+        out[f"{c.name}_bits"] = gamma.map(lambda g: round(by_gamma[c.name][g][1], 2))
+    return out[[run.l, run.r, "match_weight", "match_probability", "accepted", "sources",
+                *(f"{f}_{side}" for f in fields for side in ("l", "r")), *(x for c in comps for x in (c.name, f"{c.name}_bits"))]
+               ].sort_values("match_weight", ignore_index=True)
