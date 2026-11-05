@@ -48,6 +48,7 @@ The run folder holds `gold.parquet` (each record and its entity's ID), `review.p
 | see every step on a small file, with charts | [the demo](notebooks/pdf/demo.pdf) |
 | see how it is built | [architecture](docs/architecture.md) |
 | understand each method, and why it was chosen | [the guide](docs/guide/01-entity-resolution-and-our-task.md), six chapters |
+| look up a term | [the glossary](docs/guide/01-entity-resolution-and-our-task.md#words-used-in-this-guide) |
 | check the numbers | [results](docs/results.md) · [performance](docs/performance.md) · [choose report](reports/choose.md) · [benchmark](reports/benchmark.md) |
 | know where the data comes from | [data](docs/data.md) |
 | learn from what went wrong | [lessons](docs/lessons.md) |

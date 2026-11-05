@@ -148,6 +148,33 @@ Real customer data has no answer key. Nobody knows for sure which records are th
 
 **In short:** real names, invented behaviour, exact truth.
 
+## Words used in this guide
+
+| Term | Meaning | Chapter |
+|---|---|---|
+| record, entity | one row of a file; the person or company behind one or more records | 1 |
+| true pair | two records of the same entity | 1 |
+| matching, resolution | deciding pair by pair; turning the accepted pairs into groups | 1 |
+| train, val, test | the three splits: fit and choose; confirm; report, once | 1, 6 |
+| field | a logical part of a record (name, address, phone), mapped from the file's columns by `[columns]` | [usage](../usage.md#2--map-your-columns) |
+| standardize | rewrite each value in one form, so equal facts compare equal | 2 |
+| rule | a condition that accepts a pair outright, such as the same customer ID and the same name | 4 |
+| key, block | a value records share, such as the same address and phone; records with one key form a block, and only pairs inside a block are listed | 3 |
+| candidate generator | one way of listing pairs: a key, one-letter deletions of a name, or a sorted window | 3 |
+| candidates | every generator's pairs together: the only pairs scored | 3 |
+| potential match | a true pair whose fields would reach the threshold, if it were scored | 3 |
+| m | how often two records of the **same** entity land in a comparison level, such as "same address" | 5 |
+| u | how often two **different** entities land there by chance | 5 |
+| λ | the chance that two random records are the same entity: the starting point | 5 |
+| bits, match weight | log₂(λ / (1 − λ)) plus log₂(m / u) for each field; each bit doubles the odds | 5 |
+| threshold | the weight a pair needs to be accepted: 6 bits | 5, 6 |
+| cluster | records joined by accepted pairs, directly or through others: one entity | 5 |
+| recall | the share of true pairs found | 6 |
+| false merge | two different entities put in one cluster; "at most 0.14%" is the 95% upper bound when none was seen | 6 |
+| cross-validation | fitting on two thirds of train and scoring the other third, three times, so a choice is never judged on the data it was fitted on | 6 |
+| the chosen pipeline, `FINAL` | every change `scripts/choose.py` adopted, written to `config/final.toml`; the reports call it `FINAL` | 6 |
+| increment | a batch of new records added to a written run | [usage](../usage.md#5--add-new-records) |
+
 ## In the code
 
 - `config/settings.toml`: paths, datasets, `[columns]` (which of a file's columns hold each field)

@@ -67,7 +67,7 @@ or `scripts/resolve.py --compute memory_limit=8GB`), DuckDB spills them to `temp
 |---|---|---|---|
 | `budget` | every run, on the actual file | O(N) per rule and generator | a rule or generator over `max_pairs_per_record` × N pairs, or with a block over `max_block_size` |
 | `scale_check` | `scripts/choose.py`, on train | O(N) per key | a key whose pairs, projected to `target_rows`, exceed the budget |
-| `window_only` | `scripts/choose.py`, on train | O(N + P + T·K), T true pairs, plus two u samples | a true pair that could reach the threshold but shares no key, now or at `target_rows` |
+| `window_only` | `scripts/choose.py`, on train | O(N + P + P_true·K), P_true true pairs, plus two u samples | a true pair that could reach the threshold but shares no key, now or at `target_rows` |
 | `pattern_coverage` | `scripts/choose.py` and every run's QA report | O(Π levels), a few thousand patterns | reported, not stopped: patterns that can reach the threshold with no guaranteed key |
 
 `scale_check` splits a key's pairs P on train into T pairs of one entity and C chance pairs between entities. A
@@ -90,8 +90,8 @@ from few records). Pairs between members of one household count as chance, the s
 | threshold rule on out-of-fold scores | O(F · (fit + run on n/F records)) | 32 s |
 | A/B on val | O(variants · run) | 36 s |
 | decisions | O(D · (F + 1) · run) | 105 s |
-| will it scale: `scale_check`, `window_only`, `pattern_coverage` | O(N) per key + O(N + P + T·K) + O(Π levels) | 17 s |
-| output: train, val and test through FINAL | O(3 · run) | 20 s |
+| will it scale: `scale_check`, `window_only`, `pattern_coverage` | O(N) per key + O(N + P + P_true·K) + O(Π levels) | 17 s |
+| output: train, val and test through the chosen pipeline | O(3 · run) | 20 s |
 | gold: train, val and test resolved by `er.run` into `data/medallion/gold/<dataset>/` | O(3 · full run), with train's model | 31 s |
 | Optuna (off by default) | O(T · F · run) | +1.5 min (rules), +8.5 min (Fellegi–Sunter) |
 

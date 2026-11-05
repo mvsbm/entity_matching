@@ -4,7 +4,7 @@
 
 # Results
 
-Every number here is printed by `scripts/choose.py` ([`reports/choose.md`](../reports/choose.md)) or `scripts/benchmark.py` ([`reports/benchmark.md`](../reports/benchmark.md)); the rules and the model are in `config/final.toml`, in the logical fields of `config/settings.toml` `[columns]`.
+Every number here is printed by `scripts/choose.py` ([`reports/choose.md`](../reports/choose.md)) or `scripts/benchmark.py` ([`reports/benchmark.md`](../reports/benchmark.md)); the rules and the model are in `config/final.toml`, in the logical fields of `config/settings.toml` `[columns]`. `FINAL` is the reports' name for that chosen pipeline: every change `scripts/choose.py` adopted, written to `config/final.toml`.
 
 ## Stage 1: deterministic matching
 
