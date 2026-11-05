@@ -4,7 +4,7 @@
 
 *Challenge C8.*
 
-The headline result is: on test, **89.9% recall (88.6–91.1%) and 0 false merges, with a false-merge rate of at most 0.14%**. This chapter explains every part of that sentence, and why it is a fair number and not a lucky or tuned one.
+The headline result is: on test, **89.9% recall (88.7–91.1%) and 0 false merges, with a false-merge rate of at most 0.14%**. This chapter explains every part of that sentence, and why it is a fair number and not a lucky or tuned one.
 
 ## Challenge: what exactly do we count?
 
@@ -14,7 +14,7 @@ A system can be judged on its pairs or on its groups, and the two can disagree.
 
 **Group metrics** judge the final groups, after the pairs from both stages have been joined into entities. A pair counts as *found* if its two records end up in the same group, whether it was accepted directly or joined through other records.
 
-- **Recall:** of all true pairs, the share that end up in one group. On validation, 2,034 of 2,227, so 91.3%.
+- **Recall:** of all true pairs, the share that end up in one group. On validation, 2,033 of 2,227, so 91.3%.
 - **False merges:** pairs of different entities that end up in one group. On validation, 0.
 - **Over-merged groups:** groups that mix two or more real entities. On validation, 0.
 
@@ -32,13 +32,13 @@ Seeing no false merge among a few thousand pairs doesn't prove the rate is zero.
 
 $$\frac{\hat p + \frac{z^2}{2n} \pm z\sqrt{\frac{\hat p(1-\hat p)}{n} + \frac{z^2}{4n^2}}}{1 + \frac{z^2}{n}}, \qquad \hat p = \frac{k}{n}$$
 
-On validation, with k = 2,034 and n = 2,227, this gives **90.1–92.4%**. Unlike the simpler normal approximation, it stays sensible near 0% and 100%.
+On validation, with k = 2,033 and n = 2,227, this gives **90.1–92.4%**. Unlike the simpler normal approximation, it stays sensible near 0% and 100%.
 
 **Zero events use the rule of three.** If nothing went wrong in n tries, the true rate is at most about 3/n, with 95% confidence. Precisely, it is the largest rate p at which seeing no errors still has a 5% chance:
 
 $$(1 - p)^n = 0.05 \;\Rightarrow\; p = 1 - 0.05^{1/n} \approx \frac{3}{n}$$
 
-On test the groups contain 2,126 predicted pairs and none is false, so the false-merge rate is **at most 0.14%**.
+On test the groups contain 2,120 predicted pairs and none is false, so the false-merge rate is **at most 0.14%**.
 
 That's why the population is large, with 40,000 entities. A small test set could only promise "at most a few percent".
 
@@ -46,7 +46,7 @@ That's why the population is large, with 40,000 entities. A small test set could
 
 ## Challenge: is a change really better?
 
-Allowing names within one edit lifts the rules' validation recall from 68.8% to 69.1%. The two intervals overlap almost completely, so comparing recalls says nothing.
+Allowing names within one edit lifts the rules' validation recall from 68.9% to 69.2%. The two intervals overlap almost completely, so comparing recalls says nothing.
 
 **Solution: compare on the same pairs (a paired sign test).** Run both configurations on the same records and look only at the pairs where they disagree:
 
@@ -55,7 +55,7 @@ Allowing names within one edit lifts the rules' validation recall from 68.8% to 
 
 If the change made no difference, each disagreement would be a coin flip. The **sign test** asks how surprising the split is.
 
-For example, the names-within-one-edit change gained 6 true pairs on validation and lost none. Under a fair coin, a 6–0 split has a probability of 2 × 0.5⁶ = **0.031**.
+For example, the names-within-one-edit change gained 7 true pairs on validation and lost none. Under a fair coin, a 7–0 split has a probability of 2 × 0.5⁷ = **0.016**.
 
 **Why:** pairs both versions agree on carry no information about the difference, and the paired test ignores them. That makes it far more sensitive than two overlapping intervals.
 
@@ -88,7 +88,7 @@ A check then confirms that the threshold transfers. Out-of-fold, 0 of 1,386 acce
 - **"cheaper"**: no paired loss on the selection set
 - **"safer"**: the same test as "cheaper", for a change that adds pairs because its gain shows only at scale
 - **"chosen"**: the owner's call, for a gain that our 10,000-record sets are too small to show. Recall may move there, but no false pair may be added
-- **both:** no paired loss on validation
+- **then, on validation:** "better", "cheaper" and "safer" may lose no true pair; "chosen" may, but may add no false pair
 
 | Change (second stage) | Out-of-fold gains / losses | Validation | Adopted |
 |---|---|---|---|

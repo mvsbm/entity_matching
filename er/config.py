@@ -102,7 +102,8 @@ class Stage:
 @dataclass(frozen=True, kw_only=True)
 class Budget:
     max_pairs_per_record: float               # per rule / generator, now and projected: above this × records, the run stops
-    max_block_size: int                       # before any join; per record, so a budget means the same at any size
+                                              # before any join; per record, so a budget means the same at any size
+    max_block_size: int                       # the most records one key value may hold
     target_rows: int                          # the size the cost checks project to
     benchmark_pairs: int                      # pairs timed per (column, function) to estimate seconds
 
@@ -273,7 +274,7 @@ def without_tf(model: FSModel) -> FSModel:
 
 @dataclass(frozen=True, kw_only=True)
 class Data:
-    silver_dir: Path                          # <dataset>.parquet: input records
+    bronze_dir: Path                          # <dataset>.parquet: records as they arrive, the input
     labels_dir: Path                          # <dataset>.parquet: truth, read only to choose and evaluate
     gold_dir: Path                            # <dataset>/: each dataset resolved, a run folder (er.run)
     experiments_dir: Path                     # leaderboard.parquet

@@ -83,11 +83,11 @@ The exact rules find about half of the true pairs. The fuzzy rules lift that to 
 
 | Change | True pairs gained / lost | Verdict |
 |---|---|---|
-| no kana folding before Jaro–Winkler | +1 / −53 | worse: folding matters |
-| folded names must be equal, not close | +0 / −60 | worse: typos need tolerance |
+| no kana folding before Jaro–Winkler | +1 / −48 | worse: folding matters |
+| folded names must be equal, not close | +0 / −38 | worse: typos need tolerance |
 | refuse a merge if two given names conflict | +0 / −210 | worse: given-name typos look like conflicts |
-| names within 1 edit (Levenshtein) | +6 / −0 | adopted, then superseded by the next row |
-| Optuna's comparators (the table above) | +12 / −0 | adopted |
+| names within 1 edit (Levenshtein) | +7 / −0 | adopted, then superseded by the next row |
+| Optuna's comparators (the table above) | +13 / −0 | adopted |
 
 **In short:** rules settle 70% of duplicates for almost nothing, and never wrongly.
 

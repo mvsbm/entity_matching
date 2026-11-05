@@ -69,11 +69,11 @@ We find duplicates within one file of Japanese customer records. Five things mak
 
 - **One name, several katakana spellings.** Voicing marks get lost (ガ becomes カ), small kana are typed full-size (ッ becomes ツ), and long vowels are spelled in different ways (ー, ウ or オ). On top of that come ordinary typos: a wrong or dropped character.
 - **Addresses come in many formats.** One address can be typed as 1丁目3番17号, as 1-3-17, or with full-width digits and a building name.
-- **Identifiers are weak.** We see only the last four digits of a phone number, and half of all duplicate records carry a new CIF ID (the ID our CIF system assigns).
+- **Identifiers are weak.** We see only the last four digits of a phone number, and half of all duplicate records carry a new CIF ID (the customer ID).
 - **People and companies change.** People move and marry; companies open branches. So one entity can have several phones, addresses and names.
 - **Many fields are empty.** Some columns are filled in for only 65% of records.
 
-In production there are no labelled examples. So the method must learn without labels, and we test it on synthetic records whose true answers we know.
+On real data there are no labelled examples. So the method must learn without labels, and we test it on synthetic records whose true answers we know.
 
 **Our goal:** find as many duplicates as possible, while almost never merging two different people. Every merge must be explainable, and the method must scale to a million records.
 
@@ -88,7 +88,7 @@ In production there are no labelled examples. So the method must learn without l
   - **False merges:** pairs of *different* entities we put together by mistake.
 
   A missed duplicate costs a little: one customer is seen as two. A false merge costs a lot: one customer's mail or statements go to another. So we maximize recall while keeping false merges at (almost) zero.
-- **Constraints:** no labels in production; every merge explainable; a million records must be feasible.
+- **Constraints:** no labels on real data; every merge explainable; the cost must grow about linearly with the file, so any size is feasible.
 
 ## What makes it hard, and how do we answer each challenge?
 
@@ -153,7 +153,7 @@ Real customer data has no answer key. Nobody knows for sure which records are th
 - `config/settings.toml`: paths, datasets, `[columns]` (which of a file's columns hold each field)
 - `er/generate.py`: the generator (`Spec`, `Split`, `generate`, `check`), configured by `config/generator.toml` and run by `scripts/generate.py`
 - `notebooks/demo.ipynb`, section 2: a small population generated and charted
-- `data/medallion/bronze/reference/SOURCES.md`: where each reference file came from
+- `data/reference/SOURCES.md`: where each reference file came from
 - reference details: [data.md](../data.md)
 
 ## Further reading

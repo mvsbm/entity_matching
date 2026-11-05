@@ -1,7 +1,8 @@
 """Write a synthetic population: config/generator.toml's spec, generated from the reference data, checked, then split
-by entity into the datasets of config/settings.toml (silver records, and labels for evaluation), as Parquet.
+by entity into the datasets of config/settings.toml (records as they arrive, in the bronze layer, and labels for
+evaluation), as Parquet.
 
-    .venv/bin/python scripts/generate.py                                   # data/medallion/silver/<dataset>.parquet, data/labels/<dataset>.parquet
+    .venv/bin/python scripts/generate.py                                   # data/medallion/bronze/<dataset>.parquet, data/labels/<dataset>.parquet
     .venv/bin/python scripts/generate.py --entities 20000 --seed 3 --out data/synthetic/s3   # another population, unsplit
 """
 import argparse
@@ -37,10 +38,10 @@ def main() -> None:
         return
     assert set(split.shares) == set(s.data.datasets), "config/generator.toml [split] must name config/settings.toml's datasets"
     of = split_by_entity(g.truth, split)
-    s.data.silver_dir.mkdir(parents=True, exist_ok=True)
+    s.data.bronze_dir.mkdir(parents=True, exist_ok=True)
     s.data.labels_dir.mkdir(parents=True, exist_ok=True)
     for name in split.shares:
-        g.df[of == name].to_parquet(s.data.silver_dir / f"{name}.parquet", index=False)
+        g.df[of == name].to_parquet(s.data.bronze_dir / f"{name}.parquet", index=False)
         g.truth[of == name].to_parquet(s.data.labels_dir / f"{name}.parquet", index=False)
     print(pd.DataFrame({"records": of.value_counts(), "entities": g.truth.groupby(of)["ENTITY_ID"].nunique()}).reindex(list(split.shares)))
 

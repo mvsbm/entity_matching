@@ -66,7 +66,7 @@ def load_settings(path: Path | None = None) -> Settings:
     return Settings(
         root=root,
         paths=paths,
-        data=Data(silver_dir=paths["silver"], labels_dir=paths["labels"], gold_dir=paths["gold"],
+        data=Data(bronze_dir=paths["bronze"], labels_dir=paths["labels"], gold_dir=paths["gold"],
                   experiments_dir=paths["experiments"], models_dir=paths["models"],
                   datasets=tuple(cfg["datasets"]["all"]), unique_id=cols["id"], entity_id=cols["entity"],
                   synthetic=bool(cfg["datasets"]["synthetic"])),

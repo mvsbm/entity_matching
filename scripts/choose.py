@@ -59,7 +59,7 @@ def main() -> None:
     dump_pipeline(final, s.chains, s.root / "config" / "final.toml", header)
     model = fs.fit(fs.final, fs.train_records, fs.train_truth, "train")
     for dataset in s.data.datasets:  # the gold layer, written by the code scripts/resolve.py runs
-        Run(final, s, model=model).full(s.data.silver_dir / f"{dataset}.parquet", s.data.gold_dir / dataset, overwrite=True)
+        Run(final, s, model=model).full(s.data.bronze_dir / f"{dataset}.parquet", s.data.gold_dir / dataset, overwrite=True)
     print(f"wrote reports/choose.md, config/final.toml and {s.data.gold_dir}/<dataset>/")
 
 

@@ -1,8 +1,9 @@
 """Datasets, the chosen configurations and the experiment log (dataset ∈ train, val, test).
 
-data/medallion/silver/<dataset>.parquet          input records
+data/medallion/bronze/<dataset>.parquet          records as they arrive: the input
 data/labels/<dataset>.parquet                    truth, read only to choose and evaluate
-data/medallion/gold/<dataset>/                   each dataset resolved: a run folder, as er.run writes it
+data/medallion/gold/<dataset>/                   each dataset resolved: a run folder, as er.run writes it (its
+                                                 state/records/ holds the standardized records, the silver layer)
 data/artifacts/models/<name>.json                a final configuration (and model) as it was run
 data/artifacts/experiments/leaderboard.parquet   one row per (experiment, dataset)
 """
@@ -22,7 +23,7 @@ def config_hash(config: object) -> str:
 
 def load(data: Data, dataset: str) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Records and truth, validated: this is where outside data enters every stage."""
-    records = pd.read_parquet(data.silver_dir / f"{dataset}.parquet").astype("string")
+    records = pd.read_parquet(data.bronze_dir / f"{dataset}.parquet").astype("string")
     truth = pd.read_parquet(data.labels_dir / f"{dataset}.parquet").astype("string")
     uid = data.unique_id
     for name, frame in (("records", records), ("labels", truth)):

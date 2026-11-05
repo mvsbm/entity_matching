@@ -36,7 +36,7 @@ The train-only design analysis justifies "never one key alone". Single keys coll
 | F2 joins on phone + exact normalized address (scale) | cheaper | 0 / 8 (p = 0.008) | 0 / 3 | no |
 | F2 joins on phone + first 3 characters of the normalized address (scale) | cheaper | 0 / 0 | 0 / 0 | **yes** |
 
-None adds a false pair. The two F2 rows exist for scale: as written, F2 joins on the last four phone digits alone, which grows like N^1.89 and projects to 55.8 million pairs at a million records. An earlier alternative, joining on the phone plus the name initial or the postal area, lost 2 true pairs on train and was dropped. The adopted one projects to 0.12 million ([chapter 3](guide/03-far-too-many-pairs.md#scaling-to-a-million-records)).
+None adds a false pair. The two F2 rows exist for scale: once Optuna's comparators make F2's address check fuzzy, F2 joins on the last four phone digits alone, the phone key's blocks: 50 million pairs at a million records. An earlier alternative, joining on the phone plus the name initial or the postal area, lost 2 true pairs on train and was dropped. The adopted one projects to 0.22 million ([chapter 3](guide/03-far-too-many-pairs.md#scaling-to-a-million-records)).
 
 **Optuna** (60 trials on train, ≈ 90 s) starts from `FINAL`: its first suggestion passed the same rule and became a change in `config/experiments.py` (`optuna_comparators`). Re-run from the final `FINAL`, the suggestion (trial 47) gains 1 true pair and loses none (p = 1.0), so it is not adopted and the loop has converged. The study is now off by default (`rules_tune`, `enabled=False`; `scripts/choose.py --optuna` runs it).
 
@@ -56,7 +56,7 @@ Paired A/B on val against the rules as written (informational; decisions use the
 | fold → exact | 0 / 38 | < 0.001 |
 | raw Jaro-Winkler (no kana folding) | 1 / 48 | < 0.001 |
 | constrained resolver (cannot-link on given name) | 0 / 210 | < 0.001 |
-| Optuna's comparators | 12 / 0 | < 0.001 |
+| Optuna's comparators | 13 / 0 | < 0.001 |
 
 The constrained resolver loses because given-name typos look like conflicts.
 
@@ -70,7 +70,7 @@ The constrained resolver loses because given-name typos look like conflicts.
 
 **Scores are calibrated to the scored file** (`er.match.score_fs`, `er.match.with_scored_u`):
 - **Term frequencies** come from the fitting records, stored in the model. A value never seen in training gets no adjustment, the conservative side.
-- **λ** is a per-pair rate: true pairs grow with N, pairs with N². It is rescaled from the fitting set's size to the scored set's. So CV folds, val and test (about 10k records each) are scored on the same scale, and the threshold keeps its meaning at production size. There, the same evidence earns log2(N/10k) fewer bits.
+- **λ** is a per-pair rate: true pairs grow with N, pairs with N². It is rescaled from the fitting set's size to the scored set's. So CV folds, val and test (about 10k records each) are scored on the same scale, and the threshold keeps its meaning at any size: on a file of N records, the same evidence earns log2(N/10k) fewer bits than on a 10k file.
 - **u** is re-sampled on the scored file's records (no labels; 1e7 pairs, about 8 s whatever the size), because a field whose values grow with the file agrees by chance less often in a bigger one. m stays from train.
 - Why this matters, and the bug it replaced: [lessons.md](lessons.md).
 
@@ -134,7 +134,7 @@ That is 49,987 candidates on val (99.90% of all pairs skipped). Before the scale
 
 **Threshold** (`ThresholdRule` on out-of-fold train scores): for the pipeline as written, the lowest weight with 0 false pairs is 6 (0 of 1,392 accepted), and one step of margin gives 8. Every decision variant gets its own threshold the same way; `FINAL`'s is **6**.
 
-**Decisions** (`adopt`: paired on cross-validated train, plus no paired loss on val):
+**Decisions** (`adopt`: paired on cross-validated train; on val, no true pair lost, except for the owner's "chosen" calls, which may move recall but add no false pair):
 
 | Change | Kind | Cross-validated train | Val | Adopted |
 |---|---|---|---|---|

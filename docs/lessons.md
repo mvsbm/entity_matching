@@ -13,16 +13,16 @@ Each entry gives the symptom that gave it away, the cause, the fix, and what kee
 - **Guard:** `tests/` scores one set after another on a shared connection and compares the result with a fresh connection.
 
 ## Scores depended on the size of the scored set
-- **Symptom:** none visible yet. It would have shown at production size.
+- **Symptom:** none visible yet. It would have shown on a much bigger file.
 - **Cause:** the prior λ is a per-pair rate. True pairs grow with the number of records N, pairs with N². A model fitted on 30,000 records and applied to 10,000 or to 1,000,000 uses the wrong prior by log2 of the size ratio. Term frequencies computed on the scored set have the same problem.
-- **Fix:** `score_fs` rescales λ to the scored set's size (`scaled_prior`), so cross-validation folds, val, test and production are all scored on one scale.
+- **Fix:** `score_fs` rescales λ to the scored set's size (`scaled_prior`), so cross-validation folds, val, test and any real file are all scored on one scale.
 - **Guard:** a test pads the scored set and checks that the weight moves by exactly the change in the prior's odds.
 
 ## The size rescaling was only half done
 - **Symptom:** at a fixed threshold, recall falls as the scored file grows: 89.9% at 12,000 records, 87.6% at 75,000 (the scale runs, now `scripts/benchmark.py`).
 - **Cause:** λ is rescaled to the scored file's size, but u stays as measured on train. For fields whose number of distinct values grows with the file, such as the address and the CIF ID, the chance that two random records agree also shrinks like 1/N. Train's u then under-credits an agreement on them by about log2(N / 30,000) bits: 1.3 bits at 75,000 records, 5 bits at a million. On the 10,000-record val and test files it over-credits them by about 1.6 bits instead. Fields with a fixed set of values, such as the phone digits or a surname, are not affected.
 - **Fix:** re-sample u on each scored file (`FSModel.u_from_scored`). It needs no labels and costs the same 10 million random pairs whatever the size. At 75,000 records it lifts recall from 87.6% to 88.7%, with the same false pairs.
-- **How it was decided:** by the owner, as a "chosen" decision. Since the standardization fixes it gains on the selection sets too (+63 / −0 true pairs out-of-fold, +20 / −0 on val); the rest of this entry is the first decision's evidence. The rule's selection sets have about 10,000 records, where the change only removes credit u from train had over-given: −27 true pairs out-of-fold, −8 on val, no false pair added either way. The gain shows on bigger files, and production files are bigger.
+- **How it was decided:** by the owner, as a "chosen" decision. Since the standardization fixes it gains on the selection sets too (+63 / −0 true pairs out-of-fold, +20 / −0 on val); the rest of this entry is the first decision's evidence. The rule's selection sets have about 10,000 records, where the change only removes credit u from train had over-given: −27 true pairs out-of-fold, −8 on val, no false pair added either way. The gain shows on bigger files, and real files are usually bigger than train.
 - **Guard:** a test checks that u comes from the scored file, and `scripts/benchmark.py` reports recall at every file size.
 
 ## Three false positives that were one clone

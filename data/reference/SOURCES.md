@@ -1,6 +1,6 @@
 # Reference data: sources, transformations, licences
 
-These three files are a **frozen snapshot**. They were built once, on 2026-10-28, from public sources. The downloads and the throwaway build environment were deleted afterwards; the steps below record exactly how each file was made. Each file is a JSON array with one record per line. `notebooks/dataset_generation.ipynb` reads only these files.
+These three files are a **frozen snapshot**. They were built once, on 2026-10-28, from public sources. The downloads and the throwaway build environment were deleted afterwards; the steps below record exactly how each file was made. Each file is a JSON array with one record per line. Only the synthetic-data generator reads them (`er.generate.load_reference`), for `scripts/generate.py`, `scripts/benchmark.py`, the demo and the tests; the pipeline itself never does.
 
 ## individual.json: 60,000 persons
 

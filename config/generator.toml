@@ -1,5 +1,5 @@
 # The synthetic generator (er.generate): one population of entities built from the reference data in
-# data/medallion/bronze/reference, then split by entity. scripts/generate.py writes it; tests and reports reuse it.
+# data/reference, then split by entity. scripts/generate.py writes it; tests and reports reuse it.
 
 [population]
 seed = 0

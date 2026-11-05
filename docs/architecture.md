@@ -8,7 +8,7 @@
 
 | Part | Role | Data size |
 |---|---|---|
-| `er/` | the engine: every computation, tested; names no column | any |
+| `er/` | the engine: every computation, tested; names no column, except the synthetic generator (`er/generate.py`) | any |
 | `config/` | every setting: `settings.toml` (paths, `[columns]`, `[locale]`, `[compute]`), `pipeline.toml` (the matching, in logical fields), `final.toml` (what was chosen), `generator.toml` and `experiments.py` (development only) | — |
 | `scripts/` | the runs: generate, choose, resolve, benchmark, export | any |
 | `notebooks/demo.ipynb` | a walkthrough that calls the engine one step at a time and charts each; no logic of its own | about 3,700 records, 25 s |
@@ -28,25 +28,25 @@ flowchart LR
     geo["geolonia/japanese-addresses"]
     yub["yubinbango-data"]
   end
-  bronze[("medallion/bronze/reference<br/>individual · companies · addresses (.json)")]
+  ref[("reference/<br/>individual · companies · addresses (.json)")]
   gen["scripts/generate.py<br/>config/generator.toml"]
-  silver[("medallion/silver/〈dataset〉.parquet<br/>19 columns")]
+  bronze[("medallion/bronze/〈dataset〉.parquet<br/>records as they arrive · 19 columns")]
   labels[("labels/〈dataset〉.parquet<br/>truth")]
   choose["scripts/choose.py<br/>config/pipeline.toml + experiments.py"]
   final[/"config/final.toml"/]
   report[("reports/choose.md<br/>artifacts: leaderboard, models")]
-  goldsets[("medallion/gold/〈dataset〉/<br/>a run folder per dataset")]
+  goldsets[("medallion/gold/〈dataset〉/<br/>a run folder per dataset<br/>silver: its state/records")]
   any[("any file of records<br/>CSV or Parquet, any size")]
   resolve["scripts/resolve.py<br/>er.run.Run"]
   out[("the run's folder<br/>gold · matches · state")]
   bench["scripts/benchmark.py"]
   breport[("reports/benchmark.md")]
 
-  sources -->|"parse names · read kana (SudachiPy) · join postal codes"| bronze
-  bronze -->|"samples personas, companies, towns"| gen
-  gen -->|"records"| silver
+  sources -->|"parse names · read kana (SudachiPy) · join postal codes"| ref
+  ref -->|"samples personas, companies, towns"| gen
+  gen -->|"records"| bronze
   gen -->|"truth"| labels
-  silver --> choose
+  bronze --> choose
   labels -.->|"to choose and evaluate"| choose
   choose -->|"the chosen pipeline"| final
   choose --> report
@@ -54,11 +54,14 @@ flowchart LR
   final --> resolve
   any --> resolve
   resolve -->|"full, or --increment"| out
-  bench -->|"generates populations, resolves each in its own process"| resolve
+  bench -->|"generates populations; each cost run in its own process"| resolve
   bench --> breport
 ```
 
-`〈dataset〉` ∈ `train`, `val`, `test`: one generated population, split by entity ([data.md](data.md)). Every script reads
+`〈dataset〉` ∈ `train`, `val`, `test`: one generated population, split by entity ([data.md](data.md)). The medallion
+layers follow the pipeline: bronze is the records as they arrive, silver the standardized records a run keeps in its
+folder's `state/records/`, gold the resolved run folder. The reference data feeds only the generator, so it sits outside
+them. Every script reads
 `config/settings.toml` through `er.settings.load_settings()`.
 
 **Configured for any file.** `[columns]` maps each logical field to the file's columns: a list is a set of fallbacks
@@ -87,7 +90,7 @@ numbers filled in, its time and the peak memory, in `steps.json` ([performance.m
 
 Functions without a module are in `er/run.py`. A full run refuses a folder that already holds a run, unless
 `--overwrite`. `scripts/choose.py` writes the same folder for each labelled dataset, in `data/medallion/gold/<dataset>/`,
-so the labelled splits and any production file are stored alike. A cluster is named after its smallest record id, so a
+so the labelled splits and any other file are stored alike. A cluster is named after its smallest record id, so a
 merge done by an increment names the cluster as a full run would.
 
 ### 1 · Load and standardize
@@ -128,7 +131,7 @@ merge done by an increment names the cluster as a full run would.
 
 `O(n + S·K + P_em·K) · 7.5 s, whatever N`
 
-**What happens.** Takes a fixed-size sample, 30,000 records from whole postal areas, and learns the Fellegi–Sunter model: λ, how likely two random records are to match, from near-certain rules; u, how often strangers agree at each level, counted exactly for exact levels and from 10 million random pairs for the rest; m, how often true matches agree, by EM on pairs that share a phone or an address.
+**What happens.** Takes a fixed-size sample, 30,000 records from whole postal areas, and learns the Fellegi–Sunter model: λ, how likely two random records are to match, from near-certain rules; u, how often strangers agree at each level, counted exactly for each comparison's leading exact levels and from 10 million random pairs for the rest; m, how often true matches agree, by EM on pairs that share a phone or an address.
 
 **Why here.** Real data has no labels, so the model learns from the data itself. A fixed sample keeps the cost the same at any size, and whole postal areas keep a household's records together.
 
@@ -145,7 +148,7 @@ merge done by an increment names the cluster as a full run would.
 
 `O(N + ΣP_r·L²) + O((N+E)·d) · 3.3 s`
 
-**What happens.** Runs each rule as one join on its exact keys, then checks its fuzzy conditions (character-level Jaro–Winkler, Levenshtein) on the joined pairs only. A pair takes the first rule that finds it. Stage by stage, exact then fuzzy, a pair is kept only if it touches a record still unresolved, and the kept pairs are clustered.
+**What happens.** Runs each rule as one join on its exact keys, then checks its fuzzy conditions (character-level: names within two edits, company names by shared characters, addresses by Jaro–Winkler, a phone one digit off) on the joined pairs only. A pair takes the first rule that finds it. Stage by stage, exact then fuzzy, a pair is kept only if it touches a record still unresolved, and the kept pairs are clustered.
 
 **Why here.** Certain cases are cheap and auditable: on test they settle about 70% of the duplicates with no false merge. The probabilistic stage then works only on what is left.
 
@@ -182,7 +185,7 @@ merge done by an increment names the cluster as a full run would.
 
 **What happens.** Measures u again on this file, then scores every candidate. For each field it finds the level the pair reaches (exact, close, different or missing) and adds that level's bits, log2(m/u), to the starting point.
 
-**Why here.** How often strangers agree depends on the file's size, so u from a smaller file would over-credit agreements. Bits add up, so every score can be explained field by field.
+**Why here.** How often strangers agree depends on the file's size, so u from a file of another size weighs agreements wrongly: too few bits on a bigger file, too many on a smaller one. Bits add up, so every score can be explained field by field.
 
 **Code:**
 - `er/run.py` · `Run.score`: score every candidate pair
@@ -265,7 +268,7 @@ disk. Steps are numbered as above.
 | `gold.parquet` | run folder | 8, rewritten each time | you; the next increment | record → cluster_id, resolved_stage, resolved_by |
 | `matches/part-n.parquet` | run folder | 8, one part per run | you | accepted pairs: weight, probability, generators |
 | `rule_kept/part-n.parquet` | run folder | 8, one part per run | you | the rules' pairs |
-| `state/records/part-n.parquet` | run folder | 8, one part per run | increments | standardized records to join against |
+| `state/records/part-n.parquet` | run folder | 8, one part per run | increments | standardized records to join against: the silver layer |
 | `state/rule_clusters.parquet` | run folder | 8, rewritten each time | increments | record → rule cluster |
 | `state/model.json` | run folder | 8, full runs only | increments | the fitted model: λ, m, u per level |
 | `steps.json` | run folder | 8 | you | each step's Big-O with its numbers, time and peak memory |

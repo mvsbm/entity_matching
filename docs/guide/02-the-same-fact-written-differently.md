@@ -40,17 +40,17 @@ A *normalizer* maps every variant of one fact to one standard form. We use three
 - **It stays readable.** Every rule is one line in `config/settings.toml`. Anyone can see exactly which forms get merged.
 - **Alternatives need labels.** A learned model of "same address" would need many labelled examples, and we have none.
 
-### Filling the gaps: derived columns
+### Filling the gaps: one field from several columns
 
-A record may have a full name, or only a surname and a given name in separate columns. So we build **derived columns** that take the first available source:
+A record may have a full name, or only a surname and a given name in separate columns. So each **logical field** the pipeline compares takes the first filled of its source columns, as `config/settings.toml` `[columns]` lists them:
 
-| Derived column | Takes the first filled of |
+| Field | Takes the first filled of |
 |---|---|
-| `PERSON_NAME` | full name → original full name → surname + given name |
-| `POSTAL` | postal code → postal code (kana form) |
-| `ADDRESS` | standardized address → address as typed |
+| `person_name` | full name → original full name → surname + given name |
+| `postal_code` | postal code → postal code (kana form) |
+| `address` | standardized address → address as typed |
 
-A derived column is filled more often than any of its sources. That matters, because an empty field gives no evidence at all ([chapter 5](05-uncertain-evidence-fellegi-sunter.md)).
+A field built this way is filled more often than any of its sources. A blank value, or one made only of spaces, counts as empty, so it never wins over a filled source. That matters, because an empty field gives no evidence at all ([chapter 5](05-uncertain-evidence-fellegi-sunter.md)).
 
 ### What it costs
 
@@ -100,7 +100,7 @@ Along the diagonal the cost stays at 0 while the characters agree. The last step
 
 **Where we use it, and why:**
 - **Addresses in the model** ("address close": at most 2 edits). After normalization, an address error is usually a wrong or dropped digit. `千代田区丸の内1-3-17` and `1-3-7` are 1 edit apart, and a limit of 2 allows for one more slip.
-- **Names in the rules** (folded names at most 2 edits apart). A rule always needs two more fields to agree exactly as well, so a simple count is safe there.
+- **Names in the rules** (folded names at most 2 edits apart). Each of those rules also needs the CIF ID or the phone to agree exactly, with the address code or a close address, so a simple count is safe there.
 
 **Its blind spot.** Every edit costs the same, so it can't tell a slip in a long name from one in a short name. サトウ / サトオ and マツモトヒサオ / マツモトヒサウ are both 1 edit apart. But one kana is a third of サトウ and only a seventh of マツモトヒサオ. That's why the model uses Jaro–Winkler for names.
 
@@ -225,7 +225,7 @@ Reading down each column shows what each function notices:
 | Field | How it goes wrong | Function | Why this one | Stage |
 |---|---|---|---|---|
 | person name | a kana wrong or dropped (spelling variants are folded first) | Jaro–Winkler: ≥ 0.95 very close, ≥ 0.75 close | judges a slip against the name's length, and rewards the shared surname at the start | model |
-| | | Levenshtein ≤ 2, on folded names | a simple count, safe because the rule also needs the address code and phone | rules |
+| | | Levenshtein ≤ 2, on folded names | a simple count, safe because the rule also needs an exact CIF ID or phone | rules |
 | company name | the legal form before or after the name | Jaccard ≥ 0.77, on raw names | order doesn't matter | rules |
 | | a kana wrong | Jaro–Winkler, with the legal form removed | as for person names | model |
 | address | a digit wrong or dropped (formats are normalized first) | Levenshtein ≤ 2 | one slip is one edit | model |
@@ -267,7 +267,7 @@ The gap is not cosmetic. Our model treats Jaro–Winkler at or above 0.95 as "ve
 
 ## In the code
 
-- `config/settings.toml`, section `[standardize]`: the folding table, legal forms, address rules, derived columns
+- `config/settings.toml`: `[locale]` (the folding table, legal forms, address rules, normalization chains) and `[columns]` (each field's source columns)
 - `er/standardize.py`: `normalize` (apply named normalizers), `prepare` (derive and normalize the columns a stage uses)
 - `er/strings.py`: `cl_*` functions, `connect()`
 - `tests/test_er.py`: character-level and NULL-safe functions; the three address formats give one key

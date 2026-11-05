@@ -3,7 +3,8 @@ the Optuna search spaces (off by default). A variant is code, so this is Python;
 Each variant is a change to a configuration, written once; DECISIONS adopt them in order, each on top of the choice
 so far, by er.evaluate.adopt: "better" needs a significant paired gain on the selection set (no FP added); "cheaper"
 and "safer" (more pairs, gain at scale) no paired loss there; "chosen" is the owner's call for a gain the selection sets
-are too small to show (no FP may be added, recall may move). All need no paired loss on val.
+are too small to show (no FP may be added, recall may move). "better", "cheaper" and "safer" also need no paired loss on val;
+"chosen" needs only that val adds no more false pairs than it removes.
 """
 from collections.abc import Callable, Mapping
 from dataclasses import replace

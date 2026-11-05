@@ -11,7 +11,7 @@ To find every duplicate, we would compare every record with every other one. The
 | Records | Pairs to compare |
 |---|---|
 | 10,002 (our validation file) | 50,015,001 |
-| 1,000,000 (a production-sized file) | 499,999,500,000 (5 × 10¹¹) |
+| 1,000,000 (a large file) | 499,999,500,000 (5 × 10¹¹) |
 
 Fewer than 2,300 of the 50 million validation pairs are true duplicates. Comparing all of them would waste almost all the work, and at a million records it would not finish in reasonable time.
 
@@ -25,7 +25,7 @@ $$P = \sum_{\text{blocks}} \binom{k}{2}$$
 
 The configuration offers six keys: phone, normalized address, address code, CIF ID, folded person name and folded company name.
 
-**Sorted neighbourhood.** Sort all records by a key, such as the folded name, and compare each record with the next few, here 4. A typo near the end of a name keeps the record close in the sorted order, so the pair is still found.
+**Sorted neighbourhood.** Sort all records by a key, such as the folded name, and compare each record with the next three (a window of 4). A typo near the end of a name keeps the record close in the sorted order, so the pair is still found.
 
 **TF-IDF neighbours.** Cut each name into overlapping pieces of 2–3 characters, give rare pieces more weight, and compare each record with its 5 most similar names (a cosine similarity of at least 0.5). This finds typos anywhere in a name, even in the first character. It is also the one generator that compares every record with every other, so the final configuration replaces it ([below](#scaling-to-a-million-records)).
 
@@ -50,10 +50,10 @@ On train, for the 2,135 true pairs the rules missed. Each generator is listed wi
 |---|---|---|
 | phone | 43,054 | 50.4% |
 | + address, address code, CIF ID | 22,453 | 84.8% |
-| + folded person and company names | 1,710 | 93.5% |
-| + sorted neighbourhood (person, company) | 77,653 | 93.9% |
-| + TF-IDF (person, company) | 24,417 | 94.4% |
-| + the scalable generators (below) | 69,503 | 95.1% |
+| + folded person and company names | 1,775 | 93.8% |
+| + sorted neighbourhood (person, company) | 77,581 | 94.1% |
+| + TF-IDF (person, company) | 25,281 | 94.6% |
+| + the scalable generators (below) | 71,488 | 95.1% |
 
 Sorted neighbourhood adds the most pairs and the fewest missed pairs. Chosen for quality alone, the configuration kept six generators (phone, address, address code, CIF ID, company-name sorted neighbourhood, person-name TF-IDF). On validation: 14,180 candidates holding 641 of the 683 missed pairs (93.9%).
 
@@ -80,19 +80,20 @@ Two more costs:
 
 ## Scaling to a million records
 
-The pipeline was built and tested on files of 10,000 to 30,000 records. A production file holds a million. So, before changing any code, we priced every step by its time complexity and measured how its work grows with the file.
+The pipeline was built and tested on files of 10,000 to 30,000 records, and must run on files of a million records and more. So, before changing any code, we priced every step by its time complexity and measured how its work grows with the file.
 
 ### Where the work grows faster than the file
 
-We generated files of 12,000, 25,000, 50,000 and 75,000 records, counted each step's work, and fitted a **growth exponent** α, with work ∝ N^α. At α = 1 the work is linear: ten times the records, ten times the work. At α = 2 it is quadratic: ten times the records, a hundred times the work.
+We generated files of 12,000, 25,000, 50,000 and 75,000 records, counted each step's work, and fitted a **growth exponent** α, with work ∝ N^α. The pairs at a million records are projected the way `scale_check` does it today: pairs of one entity grow like N, chance pairs like N². At α = 1 the work is linear: ten times the records, ten times the work. At α = 2 it is quadratic: ten times the records, a hundred times the work.
 
 | Step | Cost | Grows like | At a million records |
 |---|---|---|---|
 | standardize | O(N·L) | N | seconds |
 | rules, except F2 | O(N + P) per rule | N^0.98 to N^1.04 | ≤ 0.13 million pairs per rule |
-| **rule F2** (joined on the phone alone) | O(N + P) | **N^1.89** | **55.8 million pairs** |
-| key: **phone** | O(N + P) | **N^1.89** | **39 million pairs**, 4% of them true |
-| keys: address, address code, CIF ID, folded names | O(N + P) | N^1.0 to N^1.4 | ≤ 0.8 million pairs each |
+| **rule F2** (joined on the phone alone) | O(N + P) | **N^1.89** | **50 million pairs**, the phone key's blocks |
+| key: **phone** | O(N + P) | **N^1.89** | **50 million pairs**, nearly all by chance |
+| keys: address, address code | O(N + P) | N^1.0 on generated files | **12.8 and 11.9 million pairs**, projected from train ([below](#keeping-every-potential-match)) |
+| keys: CIF ID, folded names | O(N + P) | N^1.0 to N^1.4 | ≤ 0.6 million pairs each |
 | sorted neighbourhood | O(N log N + N·w) | N | ≤ 3 million pairs per pass |
 | **TF-IDF neighbours** | O(U·N·q) | **N^2.01** | **6.4 × 10¹¹ operations** |
 | scoring | O(C), for C candidates | as C | |
@@ -114,26 +115,26 @@ Every fix had to pass the decision rule that judges every other change ([chapter
 - phone + postal area (the first 3 digits of the postal code),
 - phone + name initial (the first character of the person name, else the company name, folded, legal form removed).
 
-Each key splits the 10,000 phone values into hundreds of thousands of combinations or more. At a million records, the chance pairs fall from 39 million to about 1.1 million for all three together. On val, the phone key alone reached 70 missed pairs that no other generator reached. The compound keys still reach 48, including all 20 that the model accepts.
+Each key splits the 10,000 phone values into hundreds of thousands of combinations or more. At a million records, the phone key alone projects to 50 million pairs; the three compound keys to 3.3 million together, each under the budget of 5 per record. On val, the phone key alone reached 70 missed pairs that no other generator reached. The compound keys still reach 48, including all 20 that the model accepts.
 
 *Decision:* 0 true pairs gained or lost, on cross-validated train and on val. **Adopted.** These keys are still quadratic in the limit, with a constant hundreds of times smaller. The check below would flag them first if files grew well past a million.
 
 **Fix 2: TF-IDF becomes a second sorted pass.** TF-IDF earned its place by finding typos near the start of a name, which a sorted order misses. Drop the ト from サトウヒロシ, and サウヒロシ sorts far away, among the names that begin with サウ. Sorted by the **reversed** name, the two stay close (シロヒウサ, シロヒウトサ), because they end alike. Two sorted passes cost O(N log N) each, against TF-IDF's N². Of the missed pairs that only TF-IDF found, the two passes reach 48 of 48 on val and 146 of 149 on train.
 
-*Decision:* +2 true pairs and 0 lost on cross-validated train; 0 and 0 on val. **Adopted.**
+*Decision:* +1 true pair and 0 lost on cross-validated train; 0 and 0 on val. **Adopted.**
 
-**Fix 3: rule F2 joins on more than the phone.** F2 accepts a pair with a similar name, a similar address and the same phone. It joined on the phone alone and checked the rest after the join, so the join inherited the phone's N² growth. Three alternatives were tried:
+**Fix 3: rule F2 joins on more than the phone.** F2 accepts a pair with a similar name, a similar address and the same phone. Once Optuna's comparators made its address check fuzzy, it joined on the phone alone and checked the rest after the join, so the join inherited the phone's N² growth. Three alternatives were tried:
 
 | F2 joins on | Pairs at a million records | Train: true pairs lost | Val: lost | Adopted |
 |---|---|---|---|---|
-| phone (as written) | 55.8 million | — | — | over budget |
+| phone alone | 50 million | — | — | over budget |
 | phone + exact normalized address | — | 8 | 3 | no |
 | phone + name initial, or phone + postal area | — | 2 | 0 | no |
-| phone + first 3 characters of the normalized address | 0.12 million | 0 | 0 | **yes** |
+| phone + first 3 characters of the normalized address | 0.22 million | 0 | 0 | **yes** |
 
 The exact address fails because F2 exists for address typos: joining on the exact address defeats its purpose. The first three characters (the start of the city, such as 福島市) survive typos later in the address.
 
-**Fix 4: fit and tune once, on a fixed-size sample.** u comes from 10 million random pairs, whatever the file size. EM runs on blocks of the training file. Cross-validation and Optuna run on train. None of this needs the production file. The model is fitted on train (about 30,000 records) and then scores a file of any size, with λ rescaled to that file's size and u re-sampled on its records, at the same fixed cost ([chapter 5](05-uncertain-evidence-fellegi-sunter.md)).
+**Fix 4: fit on a fixed-size sample.** u comes from 10 million random pairs (and from value counts for the leading exact levels), whatever the file size. EM runs on blocks of a fixed-size sample. Cross-validation and Optuna run on train only. A run fits its model on a 30,000-record sample of the file it resolves (or takes `scripts/choose.py`'s, fitted on train, with `--model`), then scores the whole file, with λ rescaled to the file's size and u measured on its records, at the same fixed cost ([chapter 5](05-uncertain-evidence-fellegi-sunter.md)).
 
 **Not chosen:**
 
@@ -162,11 +163,11 @@ The window needed grows with the file. A fixed window loses pairs, and a growing
 
 | Key | What it guarantees | Pairs at a million records |
 |---|---|---|
-| person name, exact (folded) | every pair with the same name | 0.18 million |
-| company name, exact | every pair with the same company name | 0.09 million |
-| company name, one-deletion keys | every pair of company names one edit apart | 0.23 million |
-| person name, one-deletion keys within the postal area | every pair of names one edit apart in one postal area | 0.12 million |
-| given name + postal code | a surname change at the same postal code | 0.09 million |
+| person name, exact (folded) | every pair with the same name | 0.58 million |
+| company name, exact | every pair with the same company name | 0.44 million |
+| company name, one-deletion keys | every pair of company names one edit apart | 1.04 million |
+| person name, one-deletion keys within the postal area | every pair of names one edit apart in one postal area | 0.14 million |
+| given name + postal code | a surname change at the same postal code | 0.11 million |
 
 With them, **no potential match depends on a window**: 0 on train, val and test, at their own size, at 75,000 records and at a million. Dropping the windows altogether was tried too: it lost 3 true pairs on cross-validated train and 1 on val, so the windows stay.
 
@@ -182,11 +183,11 @@ A name of L characters emits L + 1 keys, so the work is O(N·L + P). Spelling co
 
 **Challenge: two rule clusters were never compared.** In the scale runs, almost all the potential matches that both stages missed lay between two clusters the rules had already formed: 28 of 30 at 50,000 records, 14 of 14 at 75,000. The second stage generated candidates only for records the rules left alone. So when the rules split one entity into two clusters, no pair between them was ever scored, whatever its evidence.
 
-**Solution: score every pair across two clusters.** Candidates are now generated for every record. A pair inside one cluster is dropped before the lists are merged, because it is joined already. The list grows by 7% (val: 48,105 → 51,484 candidates), and scoring time does not measurably change. A false pair between two clusters would merge both of them, so the margin was checked first: between rule clusters, the highest-scoring false pair reaches 1.0 bits on train, far below the 6-bit threshold.
+**Solution: score every pair across two clusters.** Candidates are now generated for every record. A pair inside one cluster is dropped before the lists are merged, because it is joined already. The list grows only a little, because pairs inside one cluster are dropped first, and scoring time does not measurably change. A false pair between two clusters would merge both of them, so the margin was checked first: between rule clusters, the highest-scoring false pair reaches 1.0 bits on train, far below the 6-bit threshold.
 
 | Change | Kind | Cross-validated train | Val | Adopted |
 |---|---|---|---|---|
-| the five keys | safer | +1 / −0 true pairs, no false pair added | +1 / −0 | yes |
+| the five keys | safer | +1 / −0 true pairs, no false pair added | +0 / −0 | yes |
 | the address only with another field (next) | cheaper | +0 / −0, no false pair added | +0 / −0 | yes |
 | no sorted windows | cheaper | +0 / −3 | +0 / −1 | no |
 | score every pair across two clusters | better | +12 / −0 (p = 0.0005), no false pair added | +4 / −0 | yes |
@@ -256,7 +257,7 @@ Blocking loses nothing that could have been accepted: on train, val and test, ev
 
 ## In the code
 
-- `er/candidates.py`: `KeyBlocker`, `SortedNeighbourhood`, `TfidfNeighbours`, `DeletionKeys` (one-deletion keys), `estimate` (the count before any join)
+- `er/config.py`: the generator types `KeyBlocker`, `SortedNeighbourhood`, `TfidfNeighbours`, `DeletionKeys` (one-deletion keys); `er/candidates.py`: each as SQL (`pairs_sql`), `candidates` (merge by bits), `estimate` (the count before any join)
 - `er/pipeline.py`: `grown_pairs` (a key's pairs of one entity and by chance, each projected by its own law), `scale_check` (every key and rule projected to `target_rows`), `window_only` (the potential matches no key reaches), `pattern_coverage` (the same question without labels) and `cascade`'s `bridge` (a stage that may join two clusters)
 - `er/config.py`: `Budget` (`max_pairs_per_record`, `max_block_size`, `target_rows`); `FSSpec.bridge` (score every pair across two clusters)
 - `config/pipeline.toml`: every generator, in logical fields; `config/settings.toml`: the fields behind the compound keys (`any_name`, the postal area) and the normalizers `initial`, `first3`, `reverse`

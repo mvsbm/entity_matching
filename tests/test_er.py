@@ -206,7 +206,7 @@ def test_pick_within_noise_prefers_the_cheaper_tie():
 def test_settings_resolve_paths_from_any_working_folder(monkeypatch):
     root = load_settings().root
     monkeypatch.chdir(root / "notebooks")
-    assert load_settings().data.silver_dir == root / "data" / "medallion" / "silver"
+    assert load_settings().data.bronze_dir == root / "data" / "medallion" / "bronze"
 
 
 # ---------- the core every reported number rests on ----------
@@ -345,10 +345,10 @@ def test_preflight_counts_block_pairs_and_the_budget_stops_a_run():
 
 
 def test_load_validates_input(tmp_path):
-    data = replace(load_settings().data, silver_dir=tmp_path / "silver", labels_dir=tmp_path / "labels")
-    data.silver_dir.mkdir(); data.labels_dir.mkdir()
+    data = replace(load_settings().data, bronze_dir=tmp_path / "bronze", labels_dir=tmp_path / "labels")
+    data.bronze_dir.mkdir(); data.labels_dir.mkdir()
     uid, ent = data.unique_id, data.entity_id
-    write = lambda ids, entities: (pd.DataFrame({uid: ids, "x": "a"}).to_parquet(data.silver_dir / "d.parquet", index=False),
+    write = lambda ids, entities: (pd.DataFrame({uid: ids, "x": "a"}).to_parquet(data.bronze_dir / "d.parquet", index=False),
                                    pd.DataFrame({uid: ids[:len(entities)], ent: entities}).to_parquet(data.labels_dir / "d.parquet", index=False))
     write(["1", "1"], ["E", "E"])
     with pytest.raises(ValueError, match="more than once"):

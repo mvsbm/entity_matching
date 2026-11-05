@@ -4,8 +4,8 @@ __pycache__/
 .DS_Store
 
 # Generated data: rebuilt by scripts/generate.py and scripts/choose.py.
-# data/medallion/bronze/reference/ stays tracked: a frozen snapshot of public sources (see its SOURCES.md).
-data/medallion/silver/
+# data/reference/ stays tracked: the generator's frozen snapshot of public sources (see its SOURCES.md).
+data/medallion/bronze/
 data/medallion/gold/
 data/labels/
 data/artifacts/

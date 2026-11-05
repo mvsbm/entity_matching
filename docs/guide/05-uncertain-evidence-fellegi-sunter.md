@@ -92,9 +92,9 @@ The "same given name" level catches a surname change after marriage.
 
 ## Challenge: learning m, u and λ without labels
 
-In production, nobody tells us which pairs match. Each parameter must come from the records themselves.
+In a real file, nobody tells us which pairs match. Each parameter must come from the records themselves.
 
-**u, from random pairs.** Almost every random pair of records is two different entities. So we draw 10 million random pairs and count how often each level occurs. That count estimates u.
+**u, from random pairs and from counts.** Almost every random pair of records is two different entities. So we draw 10 million random pairs and count how often each level occurs. That count estimates u. For each comparison's leading exact levels (an exact name, the same address, the same CIF ID), u is counted exactly instead, from how often each value occurs: a sample of 10 million pairs cannot see an agreement rarer than about one in a billion pairs, which an exact name or CIF ID becomes in a big file.
 
 **u is re-sampled on every file we score.** Some fields have more distinct values in a bigger file: there are more addresses and more CIF IDs. Two random records then agree on them less often, so u is smaller. A u measured on train would under-credit those agreements on a bigger file, and over-credit them on a smaller one. Sampling u on the file being scored keeps each weight right at any size. It needs no labels, and it costs the same 10 million pairs, about 8 seconds, whatever the file's size.
 
@@ -111,7 +111,7 @@ It runs once on pairs that share a phone and once on pairs that share an address
 
 | Level | EM | From labels |
 |---|---|---|
-| name exact | +15.57 | +15.57 |
+| name exact | +15.58 | +15.58 |
 | name very close | +10.61 | +10.59 |
 | same address | +14.02 | +14.01 |
 | phone exact | +12.54 | +12.54 |
@@ -151,14 +151,14 @@ A score is not yet a decision. We accept a pair at **6 bits or more**, a probabi
 
 The line was not picked from this table, which would tune it on validation. It comes from a rule applied to train ([chapter 6](06-measuring-and-choosing.md)): the lowest weight with no false pair in cross-validation, plus one safety step.
 
-**A non-match the model rejects:**
+**The closest non-match**, the rejected pair of different people with the highest score on val:
 
 | | Name | Address | Phone | CIF ID |
 |---|---|---|---|---|
-| C | セルシスカブシキガイシャ (a company) | 東京都多摩市連光寺5-18-5 | 8813 | 2754477213332 |
-| D | ヤマモトカヨ (a person) | 東京都多摩市連光寺5-18-5 | 6813 | 4590715084681 |
+| C | ヤマモトサオリ | 茨城県土浦市木田余東台4-12-27 | 1797 | 2052586092547 |
+| D | ヤマモトカナコ | (empty) | 1797 | 2963638209010 |
 
-Same address (+13.52), phone one digit off (+4.47), different CIF ID (−0.90). That's the same evidence as our example pair, except the name. A company and a person have no name to compare, so the total is **+2.09 bits: rejected**. The 3.72 bits between the two pairs come from the name.
+Same phone digits (+12.45). The same surname with a different given name makes the names only close (+3.66), the same level as our example pair's names. No address to compare (0), and a different CIF ID (−0.90): **+0.24 bits, rejected**. Our example pair had the same name evidence and a phone one digit off, but it also shared an address, worth 13.52 bits; that is what lifted it to 5.78.
 
 ## Challenge: from pairs to groups
 
@@ -168,7 +168,7 @@ Accepted pairs must become groups. If A–B and B–C are accepted, then A, B an
 
 **Why, and the risk.** It is the natural reading of "same as", and it lets a record join a group that the rules already started. The risk is a **chain**: one false pair can join two whole groups. The strict 6-bit line is what keeps chains safe.
 
-We also tested the cautious alternative: refuse a merge when the two groups hold different given names. It lost 258 true pairs on validation, because a typo in a given name looks like a conflict.
+We also tested the cautious alternative: refuse a merge when the two groups hold different given names. It lost 257 true pairs on validation, because a typo in a given name looks like a conflict.
 
 ## On our data
 

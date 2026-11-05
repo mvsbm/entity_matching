@@ -14,13 +14,16 @@
 | `val` | 20% | 10,002 | A/B confirmation and selection checks |
 | `test` | 20% | 10,066 | final report, once per configuration |
 
-Every table is Parquet. Only `bronze/reference` is in git; everything else rebuilds from the scripts (`.gitignore`):
+Every table is Parquet. Only `reference/` is in git; everything else rebuilds from the scripts (`.gitignore`). The medallion
+layers follow the pipeline: bronze is the records as they arrive, silver the standardized records each run keeps in its
+folder, gold the resolved run folder. The reference data feeds only the generator, so it sits outside them:
 
 ```
-data/medallion/bronze/reference/*.json      public reference data (tracked; SOURCES.md)
-data/medallion/silver/<dataset>.parquet     generated records                       scripts/generate.py
+data/reference/*.json                       public reference data (tracked; SOURCES.md)
+data/medallion/bronze/<dataset>.parquet     records as they arrive (generated)      scripts/generate.py
 data/labels/<dataset>.parquet               truth, read only to choose and evaluate scripts/generate.py
 data/medallion/gold/<dataset>/              each dataset resolved: a run folder     scripts/choose.py, through er.run
+                                            (silver: its state/records/)
 data/artifacts/models/*_final.json          the chosen configurations, the fitted model
 data/artifacts/experiments/leaderboard.parquet   one row per experiment and dataset (archive/: earlier passes)
 data/artifacts/optuna/*.db                  the Optuna studies, with --optuna
@@ -29,7 +32,7 @@ data/artifacts/benchmark/, demo/            run folders of scripts/benchmark.py 
 
 A run folder is the same wherever it is written, by `scripts/choose.py` here or by `scripts/resolve.py` anywhere: `gold.parquet`, `matches/`, `rule_kept/`, `steps.json` and `state/` ([architecture](architecture.md#where-the-data-lives)).
 
-## Reference data (bronze)
+## Reference data: `data/reference/`
 
 Built once from public sources. The downloads were deleted afterwards; `SOURCES.md` records the exact steps, filters, counts and licences.
 
@@ -45,7 +48,7 @@ Two traps came up while building this:
 
 ## Synthetic data: `scripts/generate.py`
 
-All parameters live in `config/generator.toml`: `[population]` (`er.generate.Spec`) and `[split]` (shares and seed). `er.generate.generate` builds the population, `check` asserts its invariants, and `scripts/generate.py` writes `silver/<split>.parquet` and `labels/<split>.parquet` (`--entities`, `--seed` and `--out` write another population, unsplit).
+All parameters live in `config/generator.toml`: `[population]` (`er.generate.Spec`) and `[split]` (shares and seed). `er.generate.generate` builds the population, `check` asserts its invariants, and `scripts/generate.py` writes `medallion/bronze/<split>.parquet` and `labels/<split>.parquet` (`--entities`, `--seed` and `--out` write another population, unsplit).
 
 - **Entities:** 40,000, 20% companies. Each entity has `1 + Poisson(0.25)` records.
   - **Persons** are sampled personas, each at most once, with realistic surname frequencies (サトウ, スズキ, タカハシ …). Their addresses lie in the persona's prefecture. Sampling with replacement made about 8,500 pairs of clones (same name, same prefecture) that no matcher can tell apart; same-name pairs now come only from the persona file itself.

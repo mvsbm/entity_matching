@@ -105,8 +105,8 @@ class RulesChooser:
         return [("Decisions", f"FINAL fuzzy comparators: {comps} · {final.resolver.method}", pd.DataFrame(rows).round(4))]
 
     def cost(self) -> list[Section]:
-        """Per rule: P = Σ C(k, 2) over its key blocks now, and projected to budget.target_rows by the growth α
-        measured on whole-entity subsamples. Stops if a rule would exceed the budget at that size."""
+        """Per rule: P = Σ C(k, 2) over its key blocks now, and projected to budget.target_rows from its pairs of one
+        entity (× N) and by chance (× N²), er.pipeline.grown_pairs. Stops if a rule would exceed the budget there."""
         f = self.final
         grows = scale_check(f, self.train, self.train_truth, self.data).rename(columns={"key": "rule"})[["rule", "alpha", "projected_pairs", "per_record", "within_budget"]]
         plan = preflight(f, prepare(f.standardize, self.train, f.normalized(), f.used())).merge(grows, on="rule")
