@@ -1,5 +1,5 @@
 # The chosen pipeline: config/pipeline.toml with config/experiments.py's adopted changes, written by scripts/choose.py.
-# Adopted: rules fold_levenshtein, f2_address_exact, f2_address_prefix; Fellegi–Sunter no_term_frequency, exact_keys_only, optuna_suggestion, compound_phone_keys, sorted_names_for_tfidf, name_keys, bounded_address_keys, u_from_scored_file, u_exact_by_counts, cif_one_digit_off, cif_deletion_key, graded_address, birth_date, birth_date_key, given_name_phone_key, birth_date_deletion_key.
+# Adopted: rules fold_levenshtein, f2_address_exact, f2_address_prefix, optuna_comparators; Fellegi–Sunter no_term_frequency, exact_keys_only, optuna_suggestion, compound_phone_keys, sorted_names_for_tfidf, name_keys, bounded_address_keys, u_from_scored_file, u_exact_by_counts, cif_one_digit_off, cif_deletion_key, graded_address, birth_date, birth_date_key, given_name_phone_key, birth_date_deletion_key, u_near_by_keys, fit_u_from_1e6_pairs, company_without_jw_high, name_needed.
 # scripts/resolve.py runs it. It can be edited by hand; scripts/choose.py overwrites it.
 
 [fields]
@@ -30,7 +30,7 @@ rules = [
 
 [[rules.stages]]
 name = "fuzzy"
-comparators = { person_name = { function = "levenshtein", threshold = 1, normalize = "fold" }, company_name = { function = "levenshtein", threshold = 1, normalize = "company" }, address = { function = "exact", normalize = "address" }, phone = { function = "hamming", threshold = 1 } }
+comparators = { person_name = { function = "damerau_levenshtein", threshold = 2, normalize = "fold" }, company_name = { function = "levenshtein", threshold = 1, normalize = "company" }, address = { function = "jaro_winkler", threshold = 0.9, normalize = "address" }, phone = { function = "hamming", threshold = 1 } }
 rules = [
   { name = "F1_NAME~_ADDRCD_PHONE", exact = ["address_code", "phone"], fuzzy = ["person_name"] },
   { name = "F2_NAME~_ADDRESS~_PHONE", exact = ["phone"], fuzzy = ["person_name", "address"], blocking = [{ field = "address", normalize = "address_first3" }] },
@@ -76,6 +76,7 @@ generators = ["cif", "sn_company_name", "phone_prefecture", "phone_postal_area",
 min_match_weight = 8.0
 resolver = { method = "connected_components" }
 bridge = false
+needs = ["name", "company"]
 name = "fs"
 prior_rules = [["customer_id", "full_name"], ["customer_id", "company_name"], ["full_name", "address_code", "phone"]]
 prior_recall = 0.0231
@@ -85,6 +86,8 @@ em_rules = [["phone"], [{ field = "address", normalize = "address" }]]
 seed = 0
 u_from_scored = true
 u_exact_by_counts = true
+u_near_by_keys = true
+fit_u_max_pairs = 1000000.0
 fit_rows = 30000
 
 [[model.comparisons]]
@@ -103,7 +106,6 @@ name = "company"
 null_if_missing = ["company_name"]
 levels = [
   { label = "exact", any_of = [{ field = "company_name", function = "exact", normalize = "company" }], tf = true },
-  { label = "JW high", any_of = [{ field = "company_name", function = "jaro_winkler", threshold = 0.97, normalize = "company" }] },
   { label = "JW low", any_of = [{ field = "company_name", function = "jaro_winkler", threshold = 0.8, normalize = "company" }] },
 ]
 

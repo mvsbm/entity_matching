@@ -57,7 +57,7 @@ from splink.clustering import cluster_pairwise_predictions_at_threshold
 
 from er.candidates import candidates, estimate, q
 from er.config import FSSpec, InputError, Key, KeyBlocker, Pipeline
-from er.match import ELSE, assemble_u, exact_u, levels, refreshed_u, rule_edges, score_fs, scored_sample, train_fs, u_basis
+from er.match import ELSE, assemble_u, counted, exact_u, levels, refreshed_u, rule_edges, score_fs, scored_sample, train_fs, u_basis
 from er.pipeline import named, pattern_coverage
 from er.settings import Settings, fit_to_file, present_fields
 from er.source import lit, open_source, suggest
@@ -282,7 +282,9 @@ class Run:
                            for f in self.model["er"].get("skipped", [])]
         self.scoring, self.basis = self.model, {}
         if fs.model.u_from_scored:
-            exact, sampled = exact_u(fs.model, "records", self.db), scored_sample(fs.model, "records", self.db, self.uid)
+            exact = exact_u(fs.model, "records", self.db)
+            skip = counted(fs.model, exact)
+            sampled = scored_sample(fs.model, "records", self.db, self.uid, [c for c in fs.model.comparisons if c.name not in skip])
             self.scoring = assemble_u(fs.model, self.model, sampled, exact, "records", self.db)
             self.basis = u_basis(fs.model, sampled, exact, "records", self.db)
         self._done("fit", "O(n + S·K + P_em·K) + O(N + S·K)", f"n = {self.model['er']['fit_rows']:,}; u on {self.n:,} records", t)

@@ -91,6 +91,27 @@ def test_a_u_sample_is_drawn_once_per_set_of_records(con_db, records, monkeypatc
     assert sampled == ["name", "phone"] and parameters(fresh).fillna(0).round(12).equals(parameters(again).fillna(0).round(12))
 
 
+def test_a_one_edit_level_is_counted_exactly_through_deletion_keys(con_db):
+    from rapidfuzz.distance import DamerauLevenshtein, Hamming
+    from er.match import counted
+    _, db = con_db
+    rng = np.random.default_rng(1)  # repeated values, an insertion, an adjacent swap, unequal lengths for Hamming, a blank
+    vals = [f"{rng.integers(300):03d}" for _ in range(300)] + ["12", "123", "1234", "2134", None]
+    df = pd.DataFrame({"uid": [f"r{i}" for i in range(len(vals))], "cif": vals, "phone": vals[::-1]}, dtype="string")
+    one_off = lambda col, f: Comparison(name=col, null_if_missing=(col,), levels=(
+        Level(label="exact", any_of=((col, Comparator("exact")),)), Level(label="one off", any_of=((col, Comparator(f, 1)),))))
+    m = FSModel(name="t", comparisons=(one_off("cif", "damerau_levenshtein"), one_off("phone", "hamming")), prior_rules=(),
+                prior_recall=0.5, u_max_pairs=1e4, m_method="em", em_rules=(), seed=0, u_exact_by_counts=True, u_near_by_keys=True)
+    u = exact_u(m, df, db)
+    filled = [v for v in vals if v is not None]
+    pairs = [(a, b) for i, a in enumerate(filled) for b in filled[i + 1:]]
+    for name, dist in (("cif", DamerauLevenshtein.distance), ("phone", Hamming.distance)):
+        assert u[name]["exact"] == pytest.approx(sum(a == b for a, b in pairs) / len(pairs))
+        assert u[name]["one off"] == pytest.approx(sum(a != b and dist(a, b) <= 1 for a, b in pairs) / len(pairs))
+        assert u[name]["else"] == pytest.approx(1 - u[name]["exact"] - u[name]["one off"])
+    assert counted(m, u) == {"cif", "phone"} and counted(replace(m, u_near_by_keys=False), u) == set()  # nothing left to sample
+
+
 def test_u_sampled_per_comparison_equals_sampling_them_together(con_db, records):
     _, db = con_db
     m = replace(model(), u_max_pairs=2_000)  # fewer than the 7,140 pairs, so a real sample

@@ -420,8 +420,10 @@ class FSChooser:
             m_method = trial.suggest_categorical("m_method", list(tune.m_methods))
             tf = {c.name: c.tf for c in self.spec.model.comparisons} if trial.suggest_categorical("term_frequency", list(tune.tf_options)) else {}
             model = replace(final.model, m_method=m_method, comparisons=tuple(replace(c, tf=tf.get(c.name)) for c in final.model.comparisons))
+            have = {(c.name, lv.label) for c in model.comparisons for lv in c.levels}  # a decision may have dropped one
             for (comparison, label), (lo, hi, step) in tune.level_thresholds.items():
-                model = with_level(model, comparison, label, threshold=trial.suggest_float(f"{comparison}|{label}", lo, hi, step=step))
+                if (comparison, label) in have:
+                    model = with_level(model, comparison, label, threshold=trial.suggest_float(f"{comparison}|{label}", lo, hi, step=step))
             return replace(final, blockers=tuple(b for name, b in self.pipeline.generators.items() if name in fixed | on), model=model,
                            resolver=tune.resolvers[trial.suggest_categorical("resolver", list(tune.resolvers))])
 

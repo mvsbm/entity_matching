@@ -143,6 +143,15 @@ def fs_changes(p: Pipeline) -> dict[str, Callable[[FSSpec], FSSpec]]:
         "birth_date_deletion_key": with_key("birth_date_deletions_prefecture"),
         # a household shares address and phone, which alone reach the threshold: without a name compared, people decide
         "name_needed": lambda s: replace(s, needs=("name", "company")),
+        # one edit apart, counted exactly through the values' one-deletion keys: a 10⁷-pair sample sees about one CIF
+        # typo pair, none in a big file; cif, phone and birth need no sample then. Increments count it again, O(U·L)
+        "u_near_by_keys": lambda s: replace(s, model=replace(s.model, u_near_by_keys=True)),
+        # with u_from_scored, the fit's u feed only EM: 10⁶ pairs do there, the scores keep u_max_pairs
+        "fit_u_from_1e6_pairs": lambda s: replace(s, model=replace(s.model, fit_u_max_pairs=1e6)),
+        # never reached in the sample or in EM (0 bits), yet a second Jaro–Winkler call on every company pair
+        "company_without_jw_high": lambda s: replace(s, model=replace(s.model, comparisons=tuple(
+            replace(c, levels=tuple(lv for lv in c.levels if lv.label != "JW high")) if c.name == "company" else c
+            for c in s.model.comparisons))),
     }
 
 
@@ -152,6 +161,7 @@ FS_DECISIONS = (("no_term_frequency", "better"), ("exact_keys_only", "cheaper"),
                 ("u_exact_by_counts", "chosen"), ("cif_one_digit_off", "better"),
                 ("cif_deletion_key", "safer"), ("graded_address", "better"), ("birth_date", "better"),
                 ("birth_date_key", "safer"), ("given_name_phone_key", "safer"), ("birth_date_deletion_key", "safer"),
+                ("u_near_by_keys", "chosen"), ("fit_u_from_1e6_pairs", "cheaper"), ("company_without_jw_high", "cheaper"),
                 ("name_needed", "chosen"))  # its gain shows only at scale: train and val hold no such false pair
 
 

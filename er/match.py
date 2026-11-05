@@ -18,7 +18,8 @@ import splink.comparison_level_library as cll
 import splink.comparison_library as cl
 from splink import DuckDBAPI, Linker, SettingsCreator
 
-from er.config import Comparison, FSModel, InputError, Key, RulesSpec, keys_sql
+from er.candidates import deletions_sql
+from er.config import Comparator, Comparison, FSModel, InputError, Key, RulesSpec, keys_sql
 from er.evaluate import fp_upper
 
 
@@ -138,6 +139,16 @@ def exact_u(model: FSModel, records: Records, db: DuckDBAPI) -> U:
         def union(conds: list[str]) -> float:  # pairs equal on at least one of these columns
             return sum((-1) ** (k + 1) * agree(frozenset(sub)) for k in range(1, len(conds) + 1) for sub in combinations(conds, k))
 
+        def near(col: str, comp: Comparator) -> float:
+            """Distinct pairs of records whose values differ but pass comp (an edit distance ≤ 1): two such values always
+            share a one-deletion key, so the distinct values are joined on their keys and only those pairs are checked.
+            O(U·L + value pairs sharing a key), U distinct values."""
+            return float(con.execute(f"""
+                WITH v AS (SELECT "{col}" AS x, count(*) AS n FROM {t} WHERE "{col}" IS NOT NULL GROUP BY 1),
+                     k AS (SELECT x, n, unnest({deletions_sql('x')}) AS dk FROM v),
+                     p AS (SELECT DISTINCT a.x AS x, b.x AS y, a.n * b.n AS nn FROM k a JOIN k b ON a.dk = b.dk AND a.x < b.x)
+                SELECT coalesce(sum(nn), 0) FROM p WHERE cl_{comp.function}(x, y) <= {comp.threshold}""").fetchall()[0][0])
+
         out: U = {}
         for c in model.comparisons:
             cols = list(c.null_if_missing)
@@ -152,16 +163,31 @@ def exact_u(model: FSModel, records: Records, db: DuckDBAPI) -> U:
             prev: list[str] = []
             for lv in c.levels:
                 if any(comp.function != "exact" for _, comp in lv.any_of):
+                    (col, comp), *more = lv.any_of
+                    if (model.u_near_by_keys and not more and comp.function in ONE_EDIT and comp.threshold <= 1
+                            and set(prev) == {comp.column(col)}):  # after exact levels on its own column: unequal values only
+                        if (u := near(comp.column(col), comp) / outside if outside else 0.0) > 0:
+                            out.setdefault(c.name, {})[lv.label] = u
                     break
                 conds = [comp.column(col) for col, comp in lv.any_of]
                 u = (union(prev + conds) - union(prev)) / outside if outside else 0.0
                 if u > 0:
                     out.setdefault(c.name, {})[lv.label] = u
                 prev += conds
+            got = out.get(c.name, {})
+            if model.u_near_by_keys and all(lv.label in got for lv in c.levels) and (rest := 1 - sum(got.values())) > 0:
+                got[ELSE] = rest  # every level counted: nothing left to sample
         return out
     finally:
         if name:
             con.unregister(name)
+
+
+ONE_EDIT = ("levenshtein", "damerau_levenshtein", "hamming")  # distances under which one edit apart shares a deletion key
+
+
+def counted(model: FSModel, exact: U) -> set[str]:  # the comparisons exact_u counted level by level, else included: none to sample
+    return {name for name, u in exact.items() if ELSE in u} if model.u_exact_by_counts and model.u_near_by_keys else set()
 
 
 def u_bound(model: FSModel, c: Comparison, records: Records, db: DuckDBAPI) -> float:
@@ -222,7 +248,9 @@ def with_scored_u(model: FSModel, model_json: dict, df: Records, db: DuckDBAPI, 
     """model_json with u measured on the records to be scored. In a bigger file, a field whose value set grows with it
     (address, CIF ID) agrees by chance less often, so u fixed from the fitting set under-credits it. Needs no labels and
     costs u_max_pairs whatever the file's size."""
-    return assemble_u(model, model_json, scored_sample(model, df, db, uid), exact_u(model, df, db) if model.u_exact_by_counts else {}, df, db)
+    exact = exact_u(model, df, db) if model.u_exact_by_counts else {}
+    skip = counted(model, exact)
+    return assemble_u(model, model_json, scored_sample(model, df, db, uid, [c for c in model.comparisons if c.name not in skip]), exact, df, db)
 
 
 def u_basis(model: FSModel, sampled: U, exact: U, df: Records, db: DuckDBAPI, names: Iterable[str] | None = None) -> dict:
@@ -261,7 +289,7 @@ def refreshed_u(model: FSModel, model_json: dict, basis: dict, df: Records, db: 
     scoring model, the updated basis (each comparison with its last check) and the comparisons sampled again."""
     exact, n = exact_u(model, df, db), rows(df, db)
     check = stale_u(model, basis, exact, n)
-    todo = [c for c in model.comparisons if check[c.name]["drift_bits"] > check[c.name]["se_bits"]]
+    todo = [c for c in model.comparisons if check[c.name]["drift_bits"] > check[c.name]["se_bits"] and c.name not in counted(model, exact)]
     basis = {**basis, **u_basis(model, sample_u(model, todo, df, db, uid), exact, df, db, {c.name for c in todo})}
     for name, x in check.items():
         basis[name]["last_check"] = {k: v if math.isfinite(v) else None for k, v in x.items()}
@@ -284,13 +312,15 @@ def train_fs(model: FSModel, df: pd.DataFrame, db: DuckDBAPI, uid: str, labels: 
     weight is a lower bound on the evidence); never seen in training → m = u (0 bits). A prior or EM rule that finds no
     pair in df (its fields nearly empty there) is skipped, and listed in "er"; none left of either stops the fit."""
     t = df.copy()
+    if model.fit_u_max_pairs:  # the fit's own sample size: its own entries in the cache, and its own bounds
+        model = replace(model, u_max_pairs=model.fit_u_max_pairs)
     if model.m_method == "labels":
         assert labels is not None, "m_method='labels' needs truth labels"
         t["__label__"] = t[uid].map(labels)
-    u = scored_sample(model, t, db, uid)
-    if model.u_exact_by_counts:  # the leading exact levels, exactly
-        exact = exact_u(model, t, db)
-        u = {c: {**levels, **exact.get(c, {})} for c, levels in u.items()}
+    exact = exact_u(model, t, db) if model.u_exact_by_counts else {}  # the leading exact levels, exactly
+    skip = counted(model, exact)
+    u = {**{c: {} for c in skip}, **scored_sample(model, t, db, uid, [c for c in model.comparisons if c.name not in skip])}
+    u = {c: {**levels, **exact.get(c, {})} for c, levels in u.items()}
     labels_of = {c.name: [*(lv.label for lv in c.levels), ELSE] for c in model.comparisons}
     filled_u = [[c.name, lv] for c in model.comparisons for lv in labels_of[c.name] if lv not in u[c.name]]
     u = {c.name: {lv: u[c.name].get(lv) or u_bound(model, c, t, db) for lv in labels_of[c.name]} for c in model.comparisons}
