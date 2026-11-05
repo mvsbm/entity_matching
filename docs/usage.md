@@ -113,7 +113,7 @@ The run accepts a pair at 6 bits or more. Just below that line, from 4 to 6 bits
 
 `review.parquet` has two kinds of rows, named in `why`:
 
-- **decide:** every pair of clusters whose best link scored in the margin, one row per pair of clusters, highest first. Pairs already decided are left out. An increment keeps the rows still open, and any decision typed into the sheet but not yet given back, and adds its own.
+- **decide:** every pair of clusters whose best link scored in the margin, or above the line with no name compared (a person and a company at one address, a record with no name), one row per pair of clusters, highest first. Pairs already decided are left out. An increment keeps the rows still open, and any decision typed into the sheet but not yet given back, and adds its own.
 - **audit:** about 50 accepted pairs up to 4 bits above the line, a few from each 1-bit band. A wrong one is a false merge.
 
 Each row shows the two records' compared fields side by side, then, per comparison, the level the pair reached (for example "names very close") and the bits it earned. The bits, plus the starting point, add up to `match_weight`. `accepted` says what the run decided.

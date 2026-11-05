@@ -32,7 +32,7 @@ from pathlib import Path
 from er.config import InputError, load_pipeline, sources_text
 from er.io import markdown
 from er.run import Run, fill_rates, qa
-from er.settings import load_settings, present_fields
+from er.settings import load_settings
 
 
 def step(x: dict) -> None:  # one line per step, as it finishes: what it did, and how long it took
@@ -72,7 +72,7 @@ def main() -> None:
     if args.check:
         run.load(args.input)
         plan = run.budget()
-        present = present_fields(run.settings, run._columns())
+        present = run.present
         fill = fill_rates(run, fields).set_index("field")
         print(f"{run.n:,} records")
         for f in fields:

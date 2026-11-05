@@ -253,7 +253,8 @@ def run_fs(spec: FSSpec, model_json: dict, records: pd.DataFrame, truth: pd.Data
                                             for b in spec.blockers]))
     scored = score_fs(model_json, df, cands[[l, r]], db, uid).merge(cands, on=[l, r])
     scored["fp"] = scored[l].map(entity).to_numpy() != scored[r].map(entity).to_numpy()
-    accepted = scored[scored["match_weight"] >= weight].assign(stage=spec.stage, rule=spec.model.name,
+    scored["named"] = named(spec, scored)
+    accepted = scored[automatic(scored, weight)].assign(stage=spec.stage, rule=spec.model.name,
                                                                 score=lambda s: s["match_probability"])
 
     prev_kept = prev_pairs[prev_pairs["kept"].astype(str).eq("True")].assign(score=1.0)
@@ -273,6 +274,16 @@ def run_fs(spec: FSSpec, model_json: dict, records: pd.DataFrame, truth: pd.Data
     return FSResult(report, cands, scored, pd.DataFrame(metrics), stage_metrics, out, time.perf_counter() - t0, model_json)
 
 
+def named(spec: FSSpec, scored: pd.DataFrame) -> pd.Series:
+    """One of spec.needs compared: its gamma isn't −1, the null level of a field missing on either side. A household
+    shares address and phone, so without a name those two alone would merge its members."""
+    return scored[[f"gamma_{c}" for c in spec.needs]].ge(0).any(axis=1) if spec.needs else pd.Series(True, index=scored.index)
+
+
+def automatic(scored: pd.DataFrame, weight: float) -> pd.Series:  # the pairs merged without people; `named` from run_fs
+    return (scored["match_weight"] >= weight) & scored["named"]
+
+
 def threshold_curve(res: FSResult, spec: FSSpec, prev_pairs: pd.DataFrame, truth: pd.DataFrame, db: DuckDBAPI,
                     data: Data, weights: list[float]) -> pd.DataFrame:
     """FP / recall after resolution at each min_match_weight; scores stay fixed, only the decision and the
@@ -282,7 +293,7 @@ def threshold_curve(res: FSResult, spec: FSSpec, prev_pairs: pd.DataFrame, truth
     prev_kept = prev_pairs[prev_pairs["kept"].astype(str).eq("True")].assign(score=1.0)
     rows = []
     for w in weights:
-        accepted = res.scored[res.scored["match_weight"] >= w].assign(stage=spec.stage, rule=spec.model.name,
+        accepted = res.scored[automatic(res.scored, w)].assign(stage=spec.stage, rule=spec.model.name,
                                                                        score=lambda s: s["match_probability"])
         *_, metrics = cascade(ids, [(spec.previous_stage, prev_kept), (spec.stage, accepted)],
                               lambda e: resolve(spec.resolver, ids, e, res.records, db, uid), entity, uid, bridged(spec))
@@ -322,9 +333,9 @@ def cross_validate_fs(spec: FSSpec, train_model: Callable[[FSSpec, pd.DataFrame,
 def accept_curve(results: list[FSResult], weights: list[float]) -> pd.DataFrame:
     """Accepted and false accepted pairs per min_match_weight, summed over (fold) results, with the stage FP-rate bound:
     all a ThresholdRule reads, so the same weight as cv_threshold_curve without resolving clusters. O(|weights| · P)."""
-    scored = pd.concat([r.scored[["match_weight", "fp"]] for r in results])
+    scored = pd.concat([r.scored[["match_weight", "fp", "named"]] for r in results])
     out = pd.DataFrame([dict(min_match_weight=w, accepted=int(a.sum()), pairs_FP=int((a & scored["fp"]).sum()))
-                        for w in weights for a in [scored["match_weight"] >= w]])
+                        for w in weights for a in [automatic(scored, w)]])
     return out.assign(stage_fp_rate_hi=[fp_upper(int(f), int(n)) for f, n in zip(out["pairs_FP"], out["accepted"])])
 
 

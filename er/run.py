@@ -53,9 +53,9 @@ import pandas as pd
 from splink.clustering import cluster_pairwise_predictions_at_threshold
 
 from er.candidates import candidates, estimate, q
-from er.config import InputError, Key, KeyBlocker, Pipeline
+from er.config import FSSpec, InputError, Key, KeyBlocker, Pipeline
 from er.match import ELSE, assemble_u, exact_u, levels, refreshed_u, rule_edges_table, score_fs, scored_sample, train_fs, u_basis
-from er.pipeline import pattern_coverage
+from er.pipeline import named, pattern_coverage
 from er.settings import Settings, fit_to_file, present_fields
 from er.source import lit, open_source, suggest
 from er.standardize import prepare
@@ -127,6 +127,7 @@ class Run:
         self.notes: list[str] = []            # what the loader detected or fixed, for the run's summary
         self.added: int | None = None         # an increment's new records (0: nothing new)
         self.gated = pd.DataFrame()           # the oversized blocks the candidates checked, and what was decided
+        self.present: dict = {}               # each field the file holds, and the source columns it is built from
         self.rule_names = [rule.name for st in self.pipeline.rules.stages for rule in st.rules]
 
     def _done(self, name: str, big_o: str, filled: str, t: float, **facts: object) -> None:
@@ -147,7 +148,7 @@ class Run:
         t = time.perf_counter()
         src = open_source(path, self.con, {c for f, alts in self.settings.columns.items() if f != "entity" for alt in alts for c in alt})
         self.notes = list(src.notes)
-        present = present_fields(self.settings, src.columns)
+        present = self.present = present_fields(self.settings, src.columns)
         hints = suggest(src, self.con, [f for f in self.settings.columns if f not in present and f != "entity"], self.settings.detect)
         try:
             self.pipeline, self.disabled = fit_to_file(self.pipeline, self.settings, src.columns)
@@ -352,8 +353,8 @@ class Run:
         self._done("score", "O(N + S·K) + O(C·K·L²)", f"O({self.n:,} + {fs.model.u_max_pairs:,.0f}·{len(fs.model.comparisons)}) + O({c:,}·{len(fs.model.comparisons)}·L²)", t)
 
     def _accept(self) -> None:
-        """matches: the scored pairs at the threshold or above that join two rule clusters (bridge) or touch a record the
-        rules left alone, less those people decided are no match; kept: those, the rules' pairs, and the pairs people
+        """matches: the scored pairs at the threshold or above, with a name compared (fs.needs), that join two rule
+        clusters (bridge) or touch a record the rules left alone, less those people decided are no match; kept: those, the rules' pairs, and the pairs people
         decided are a match (er_decisions, loaded by full() from the run folder; empty otherwise)."""
         fs, l, r, u = self.pipeline.fs, q(self.l), q(self.r), q(self.uid)
         done = self._resolved("rule_clusters")
@@ -362,7 +363,7 @@ class Run:
         self.con.execute(f"""CREATE OR REPLACE TABLE matches AS
             SELECT s.{l}, s.{r}, s.match_weight, s.match_probability, c.sources FROM scores s JOIN cands c USING ({l}, {r})
                    JOIN rule_clusters a ON a.{u} = s.{l} JOIN rule_clusters b ON b.{u} = s.{r}
-            WHERE s.match_weight >= {fs.min_match_weight} AND {keep}
+            WHERE s.match_weight >= {fs.min_match_weight} AND {named_sql(fs)} AND {keep}
               AND NOT EXISTS (SELECT 1 FROM er_decisions d WHERE d.{l} = s.{l} AND d.{r} = s.{r} AND d.decision = 'no_match')""")
         self.con.execute(f"""CREATE OR REPLACE TABLE kept AS SELECT {l}, {r} FROM rule_kept UNION ALL SELECT {l}, {r} FROM matches
             UNION ALL SELECT {l}, {r} FROM er_decisions WHERE decision = 'match'""")
@@ -611,6 +612,10 @@ class Run:
         return self
 
 
+def named_sql(fs: FSSpec, s: str = "s") -> str:  # er.pipeline.named on scores aliased `s`
+    return "(" + (" OR ".join(f"{s}.{q('gamma_' + c)} >= 0" for c in fs.needs) or "TRUE") + ")"
+
+
 def review_floor(p: Pipeline) -> float:
     """The lowest weight people are asked to decide: the threshold rule's safety margin below min_match_weight, i.e. the
     [threshold] grid point margin_steps below it. Pairs there were clean on cross-validated train, but held back."""
@@ -632,13 +637,14 @@ def qa(run: "Run", fields: list[str], review: int = 50, previous: Path | None = 
     loader fixed), fill rate per field (flagged under 5%), what was disabled, every step's cost,
     accepted pairs by weight band, cluster sizes, the largest clusters (the over-merge alarm), and the review sheet
     for people (review_sheet). Its rows are of two kinds. "decide": every pair of clusters whose best link scored in the
-    threshold's safety margin [review_floor, min_match_weight), not decided yet, best link first. "audit": accepted pairs
+    threshold's safety margin [review_floor, min_match_weight), or above it with no name compared, not decided yet, best link first. "audit": accepted pairs
     up to 4 bits above the threshold, `review` of them, stratified by 1-bit band. `previous`, the run folder's sheet
     before an increment: its open rows stay (carry_over), since the scores behind them aren't kept."""
     con, u, t = run.con, q(run.uid), run.pipeline.fs.min_match_weight
     fill = fill_rates(run, fields)
     bands = con.sql(f"""SELECT floor(match_weight / 2) * 2 AS weight_from, count(*) AS pairs,
-                               count(*) FILTER (WHERE match_weight >= {t}) AS accepted FROM scores GROUP BY 1 ORDER BY 1""").df()
+                               count(*) FILTER (WHERE match_weight >= {t} AND {named_sql(run.pipeline.fs)}) AS accepted
+                        FROM scores s GROUP BY 1 ORDER BY 1""").df()
     sizes = con.sql("SELECT n AS cluster_size, count(*) AS clusters FROM (SELECT count(*) AS n FROM gold GROUP BY cluster_id) GROUP BY 1 ORDER BY 1").df()
     largest = con.sql("SELECT cluster_id, count(*) AS records FROM gold GROUP BY 1 ORDER BY 2 DESC, 1 LIMIT 10").df()
     l, r, lo = q(run.l), q(run.r), review_floor(run.pipeline)
@@ -646,12 +652,12 @@ def qa(run: "Run", fields: list[str], review: int = 50, previous: Path | None = 
     decide = con.sql(f"""SELECT * EXCLUDE (k1, k2) FROM (
             SELECT s.*, c.sources, least(ga.cluster_id, gb.cluster_id) AS k1, greatest(ga.cluster_id, gb.cluster_id) AS k2
             FROM scores s JOIN cands c USING ({l}, {r}) JOIN gold ga ON ga.{u} = s.{l} JOIN gold gb ON gb.{u} = s.{r}
-            WHERE s.match_weight >= {lo} AND s.match_weight < {t} AND ga.cluster_id <> gb.cluster_id
+            WHERE s.match_weight >= {lo} AND (s.match_weight < {t} OR NOT {named_sql(run.pipeline.fs)}) AND ga.cluster_id <> gb.cluster_id
               AND NOT EXISTS (SELECT 1 FROM er_decisions d WHERE d.{l} = s.{l} AND d.{r} = s.{r}))
         QUALIFY row_number() OVER (PARTITION BY k1, k2 ORDER BY match_weight DESC, {l}, {r}) = 1
         ORDER BY match_weight DESC, {l}, {r}""").df().assign(why="decide")
     audit = con.sql(f"""SELECT * EXCLUDE (k) FROM (SELECT s.*, c.sources, row_number() OVER (PARTITION BY floor(s.match_weight) ORDER BY hash(s.{l}, s.{r})) AS k
-                        FROM scores s JOIN cands c USING ({l}, {r}) WHERE s.match_weight >= {t} AND s.match_weight < {t + 4})
+                        FROM scores s JOIN cands c USING ({l}, {r}) WHERE s.match_weight >= {t} AND s.match_weight < {t + 4} AND {named_sql(run.pipeline.fs)})
                         WHERE k <= {max(1, review // 4)} ORDER BY match_weight, {l}, {r}""").df().assign(why="audit")
     steps = pd.DataFrame(run.steps)
     base = ["step", "big_o", "filled", "seconds", "peak_memory_gb"]
@@ -712,7 +718,7 @@ def review_sheet(run: "Run", pairs: pd.DataFrame) -> pd.DataFrame:
     records = run.con.sql(f"SELECT {', '.join(q(c) for c in [uid, *fields])} FROM records JOIN er_review_ids USING ({q(uid)})").df()
     run.con.unregister("er_review_ids")
     out = pairs.merge(records.add_suffix("_l"), on=run.l).merge(records.add_suffix("_r"), on=run.r)
-    out["accepted"] = out["match_weight"] >= run.pipeline.fs.min_match_weight
+    out["accepted"] = (out["match_weight"] >= run.pipeline.fs.min_match_weight) & named(run.pipeline.fs, out)
     out["decision"] = pd.Series(pd.NA, index=out.index, dtype="string")
     by_gamma = levels(run.scoring)
     for c in comps:

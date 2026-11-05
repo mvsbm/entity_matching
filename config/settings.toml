@@ -59,8 +59,11 @@ address = '[都道府県市区町村].*[0-9０-９]'
 address_code = '^[0-9]{5,}$'
 postal_code = '^〒?[0-9０-９]{3}[-－]?[0-9０-９]{4}$'
 prefecture = '^(北海道|東京都|京都府|大阪府|.{2,3}県)$'
+town_code = '^[0-9]{11}$'
+city = '[市区町村郡]$'
 phone = '^[0-9]{4}$'
 customer_id = '^[0-9]{8,}$'
+birth_date = '^(19|20)[0-9]{2}-?[01][0-9]-?[0-3][0-9]$'
 
 # Which of the file's columns hold each field. The pipeline reads fields only, never a file's column names.
 # A string is one column. A list of lists gives fallbacks: the first whose columns are all filled wins, concatenated.
@@ -78,5 +81,8 @@ address = [["STD_ADDRESS"], ["ORIGINAL_ADDRESS"]]
 address_code = "SOURCE_ADDR_CD"
 postal_code = [["POST_CD"], ["POST_CD_KANA"]]
 prefecture = "ADDRESS_ONE"
+town_code = "ADDR_CD"                               # municipality + town + chome (住所コード)
+city = "ADDRESS_TWO"
 phone = "PHONE_NUM_4"
 customer_id = "CIF_ID"                             # the ID the CIF system assigns
+birth_date = "BIRTH_DATE"                          # one format throughout (YYYYMMDD here), so equal dates are equal strings

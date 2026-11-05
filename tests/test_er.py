@@ -180,7 +180,7 @@ def test_threshold_rule_takes_the_first_safe_weight_plus_margin():
 def test_accept_curve_counts_pairs_over_folds():
     class Fold:  # accept_curve reads only the scored pairs
         def __init__(self, weights: list[float], fp: list[bool]):
-            self.scored = pd.DataFrame(dict(match_weight=weights, fp=fp))
+            self.scored = pd.DataFrame(dict(match_weight=weights, fp=fp, named=True))
     curve = accept_curve([Fold([1, 5, 9], [True, False, False]), Fold([3, 7], [True, False])], [0, 4, 8])
     assert curve[["accepted", "pairs_FP"]].to_numpy().tolist() == [[5, 2], [3, 0], [1, 0]]
     assert curve["stage_fp_rate_hi"].iloc[1] == pytest.approx(fp_upper(0, 3))
@@ -568,6 +568,7 @@ def test_the_labelled_engine_and_the_run_give_the_same_gold(tmp_path, population
     from er.pipeline import run_fs, run_rules
     from er.run import Run
     s, p, g = population
+    p = replace(p, fs=replace(p.fs, needs=("name", "company")))  # both paths hold back a pair with no name compared
     _, db = con_db
     uid = s.data.unique_id
     g.df.to_parquet(tmp_path / "all.parquet", index=False)
@@ -582,6 +583,30 @@ def test_the_labelled_engine_and_the_run_give_the_same_gold(tmp_path, population
                 .set_axis(["cluster_id", "resolved_stage", "resolved_by"], axis=1).astype("string"))
     gold = pd.read_parquet(tmp_path / "run" / "gold.parquet").set_index(uid).astype("string")
     pd.testing.assert_frame_equal(gold, labelled.loc[gold.index], check_index_type=False)
+
+
+def test_a_pair_with_no_name_compared_is_left_to_people(tmp_path, population):
+    """A company at a person's address with the person's phone: each record lacks the other's name field, so no name
+    is compared, and address and phone alone reach the threshold. With needs, people decide it instead."""
+    from er.run import Run, qa
+    s, p, g = population
+    uid = s.data.unique_id
+    l, r = f"{uid}_l", f"{uid}_r"
+    home = g.df[g.df[["FULL_NAME_KANA", "PHONE_NUM_4", "SOURCE_ADDR_CD", "STD_ADDRESS"]].notna().all(axis=1)].iloc[0]
+    firm = home.copy()
+    firm[["FULL_NAME_KANA", "O_PERSON_NAME_KANA", "LAST_NAME_KANA", "GIVEN_NAME_KANA", "CIF_ID", "BIRTH_DATE"]] = pd.NA
+    firm[[uid, "NYS_CNV_P_NAME_KANA"]] = ["9" * len(home[uid]), "カブシキガイシャテスト"]
+    pd.concat([g.df, firm.to_frame().T.astype(g.df.dtypes)], ignore_index=True).to_parquet(tmp_path / "all.parquet", index=False)
+    pair = (home[uid], firm[uid])
+    p = replace(p, fs=replace(p.fs, min_match_weight=4.0))
+    for needs, out in (((), "a"), (("name", "company"), "b")):
+        run = Run(replace(p, fs=replace(p.fs, needs=needs)), s).full(tmp_path / "all.parquet", tmp_path / out)
+        weight = run.con.execute(f'SELECT match_weight FROM scores WHERE "{l}" = ? AND "{r}" = ?', list(pair)).fetchall()[0][0]
+        merged = run.con.execute(f'SELECT count(*) FROM matches WHERE "{l}" = ? AND "{r}" = ?', list(pair)).fetchall()[0][0]
+        assert weight >= 4.0 and merged == (not needs)
+    sheet = qa(run, [f for f in s.columns if f not in ("id", "entity")])["review_sheet"]
+    row = sheet[(sheet[l] == pair[0]) & (sheet[r] == pair[1])]
+    assert row["why"].tolist() == ["decide"] and not row["accepted"].any()
 
 
 def test_the_batch_budget_counts_the_pairs_touching_the_batch():
@@ -758,7 +783,7 @@ def test_a_nearly_empty_field_is_kept_and_the_fit_skips_what_it_cannot_learn_fro
     assert [x["step"] for x in seen] == ["load", "budget", "fit", "rules", "candidates", "score", "cluster", "write"]  # step by step
     assert "address" in run.model["er"]["skipped"] and any("sharing address" in x for x in run.notes)
     sparse.assign(PHONE_NUM_4=None).to_parquet(tmp_path / "bare.parquet", index=False)  # nothing left to learn from
-    with pytest.raises(InputError, match="share phone or address"):
+    with pytest.raises(InputError, match="can't be estimated|share phone or address"):  # whichever check finds nothing first
         Run(p, s).full(tmp_path / "bare.parquet", tmp_path / "bare")
 
 

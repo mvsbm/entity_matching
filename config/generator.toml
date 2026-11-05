@@ -10,6 +10,7 @@ dup_lambda = 0.25                 # extra records per entity, Poisson
 multi_lambda = { phone = { person = 2.0, company = 3.0 }, address = { person = 2.0, company = 3.0 }, name = { person = 0.3, company = 1.0 } }
 cif_keep = 0.03                   # chance a duplicate record reuses the entity's CIF ID: rarely, as in real data
 cif_typo_rate = 0.1               # per reused CIF ID: one wrong digit
+birth_typo_rate = 0.1             # per record: one wrong digit of the birth date
 rate_start = 0.9999               # fill rates of the nullable columns, falling linearly in column order
 rate_end = 0.6544
 phone_prefixes = ["90", "80"]     # 090 / 080 mobiles with the leading 0 dropped
@@ -81,6 +82,11 @@ name = "GIVEN_NAME_KANA"
 group = "name"
 kind = "person"
 [[population.columns]]
+name = "BIRTH_DATE"               # YYYYMMDD
+kind = "person"
+digits = 8
+rate = 0.15                       # its own fill rate, missing independently of every other column
+[[population.columns]]
 name = "NYS_CNV_P_NAME_KANA"
 kind = "company"
 [[population.columns]]
@@ -105,13 +111,16 @@ name = "ADDR_CD"
 group = "address"
 digits = 11
 [[population.columns]]
-name = "STD_ADDRESS"
-group = "address"
+name = "STD_ADDRESS"              # built from the parts, so it is missing only where every part is
+parts = ["ADDRESS_ONE", "ADDRESS_TWO", "ADDRESS_THREE", "ADDRESS_FIVE"]
 [[population.columns]]
 name = "ADDRESS_ONE"
 group = "address"
 [[population.columns]]
 name = "ADDRESS_TWO"
+group = "address"
+[[population.columns]]
+name = "ADDRESS_THREE"            # the town
 group = "address"
 
 [split]

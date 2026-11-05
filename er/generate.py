@@ -25,6 +25,8 @@ class Column:
     group: str | None = None      # columns in one group share missingness (Spec.nesting), in column order
     kind: Kind | None = None      # filled only on rows of this kind; None = every row
     digits: int | None = None     # exact digit count, checked after generation
+    rate: float | None = None     # its own fill rate instead of the ramp: missing independently of every other column
+    parts: tuple[str, ...] = ()   # built from these columns as they arrive: the filled ones joined, missing only if all are
 
 
 @dataclass(frozen=True)
@@ -42,6 +44,7 @@ class Spec:
     multi_lambda: Mapping[str, Mapping[Kind, float]]  # per attribute (phone, address, name): extra values per entity, Poisson
     cif_keep: float                          # chance a duplicate record reuses the entity's CIF_ID
     cif_typo_rate: float                     # per reused CIF_ID: one wrong digit
+    birth_typo_rate: float                   # per record: one wrong digit of the birth date
     rate_start: float
     rate_end: float
     phone_prefixes: tuple[str, ...]
@@ -75,17 +78,22 @@ class Spec:
         assert set(self.nesting) <= {c.group for c in self.columns}, "nesting names an unknown group"
         assert all(0 <= rho <= 1 for rho in self.nesting.values())
         assert set(self.multi_lambda) == {"phone", "address", "name"}, "multi_lambda: phone, address and name"
+        assert all(set(c.parts) <= set(names) and c.rate is None for c in self.columns if c.parts), "parts: other columns; no own rate"
+
+    @property
+    def ramp(self) -> list[str]:  # the nullable columns whose fill rate comes from rate_start → rate_end
+        return [c.name for c in self.columns if c.nullable and c.rate is None and not c.parts]
 
     @property
     def rates(self) -> dict[str, float]:
-        names = [c.name for c in self.columns if c.nullable]
-        return dict(zip(names, np.linspace(self.rate_start, self.rate_end, len(names)).tolist()))
+        own = {c.name: c.rate for c in self.columns if c.rate is not None}
+        return dict(zip(self.ramp, np.linspace(self.rate_start, self.rate_end, len(self.ramp)).tolist())) | own
 
     @property
     def groups(self) -> list[list[Column]]:  # ungrouped nullable columns stand alone
         out: dict[str, list[Column]] = {}
         for c in self.columns:
-            if c.nullable:
+            if c.nullable and not c.parts:
                 out.setdefault(c.group or c.name, []).append(c)
         return list(out.values())
 
@@ -141,7 +149,7 @@ def generate(spec: Spec, persons: pd.DataFrame, companies: pd.DataFrame, towns: 
     rng = np.random.default_rng(spec.seed)
     digits = {c.name: c.digits for c in spec.columns}
     confusions = [(a, b) for x, y in spec.kana_confusions for a, b in ((x, y), (y, x))]
-    typos = {"name": 0, "phone": 0, "address": 0, "cif": 0}
+    typos = {"name": 0, "phone": 0, "address": 0, "cif": 0, "birth": 0}
     town_rows = towns.to_dict("records")
     surname_pool = persons["surname_kana"].to_numpy()
 
@@ -177,8 +185,9 @@ def generate(spec: Spec, persons: pd.DataFrame, companies: pd.DataFrame, towns: 
         d = (unicodedata.digit(s[i]) + int(rng.integers(1, 10))) % 10
         return s[:i] + (chr(0xFF10 + d) if ord(s[i]) >= 0xFF10 else str(d)) + s[i + 1:]
 
-    def noisy(s: str, kind: Literal["name", "phone", "address", "cif"]) -> str:
-        rate = {"name": spec.name_typo_rate, "phone": spec.phone_typo_rate, "address": spec.address_typo_rate, "cif": spec.cif_typo_rate}[kind]
+    def noisy(s: str, kind: Literal["name", "phone", "address", "cif", "birth"]) -> str:
+        rate = {"name": spec.name_typo_rate, "phone": spec.phone_typo_rate, "address": spec.address_typo_rate, "cif": spec.cif_typo_rate,
+                "birth": spec.birth_typo_rate}[kind]
         if rng.random() >= rate:
             return s
         typos[kind] += 1
@@ -193,7 +202,8 @@ def generate(spec: Spec, persons: pd.DataFrame, companies: pd.DataFrame, towns: 
         addr_cd = f"{t['city_code']}{t['town_seq']:03d}{t['chome'] or 0:03d}"  # 住所コード: municipality + town no. + chome
         return dict(POST_CD=t["postal"], POST_CD_KANA=t["postal"], SOURCE_ADDR_CD=a.code, ADDRESS_FIVE=five(a),
                     ADDRESS_FIVE_KANA=five(a), ADDR_CD_KANA=addr_cd, ADDR_CD=addr_cd,
-                    STD_ADDRESS=f"{t['pref']}{t['city']}{t['town']}{five(a)}", ADDRESS_ONE=t["pref"], ADDRESS_TWO=t["city"])
+                    STD_ADDRESS=f"{t['pref']}{t['city']}{t['town']}{five(a)}", ADDRESS_ONE=t["pref"], ADDRESS_TWO=t["city"],
+                    ADDRESS_THREE=t["town"])
 
     def original_address(a: Address) -> str:  # uncleaned, the way it was typed in
         t = town_rows[a.town]
@@ -239,6 +249,7 @@ def generate(spec: Spec, persons: pd.DataFrame, companies: pd.DataFrame, towns: 
                 names += [s] if s not in names else []
         else:  # (name, legal form in front?)
             names = [(s, rng.random() < spec.legal_prefix_share) for s in rng.choice(company_names, n_name[e], replace=False).tolist()]
+        birth = str(np.datetime64("1930-01-01") + rng.integers(75 * 365)).replace("-", "")  # YYYYMMDD; persons only
         base_cif = next(cifs)
         forms, weights = zip(*spec.legal_forms_written)
         for r in range(n_rec[e]):
@@ -250,7 +261,7 @@ def generate(spec: Spec, persons: pd.DataFrame, companies: pd.DataFrame, towns: 
                 last, first = noisy(pick(names), "name"), noisy(given, "name")
                 sep = "　" if rng.random() < spec.space_rate else spec.full_name_sep
                 row |= dict(FULL_NAME_KANA=f"{last}{sep}{first}", O_PERSON_NAME_KANA=f"{last}{spec.original_name_sep}{first}",
-                            LAST_NAME_KANA=last, GIVEN_NAME_KANA=first)
+                            LAST_NAME_KANA=last, GIVEN_NAME_KANA=first, BIRTH_DATE=noisy(birth, "birth"))
             else:  # the legal form written one of several ways, sometimes a branch after it
                 stem, legal_first = pick(names)
                 stem, legal = noisy(stem, "name"), forms[rng.choice(len(forms), p=np.array(weights) / sum(weights))]
@@ -279,6 +290,9 @@ def generate(spec: Spec, persons: pd.DataFrame, companies: pd.DataFrame, towns: 
             score = rho * shared + (1 - rho) * rng.random(len(idx))
             rank = pd.Series(score.argsort().argsort(), index=idx)
             df.loc[rank.index[rank >= round(rates[c.name] * len(idx))], c.name] = None
+    for c in spec.columns:
+        if c.parts:
+            df[c.name] = df[list(c.parts)].fillna("").agg("".join, axis=1).replace("", pd.NA).astype(c.dtype)
     return Generated(df, clean, with_truth, truth, applies, typos)
 
 
@@ -290,6 +304,9 @@ def check(spec: Spec, g: Generated) -> None:
         assert g.clean[c.name].notna().equals(applies), f"{c.name}: clean data must be filled exactly where it applies"
         if c.digits:
             assert g.df[c.name].dropna().str.fullmatch(rf"\d{{{c.digits}}}").all(), c.name
+        if c.parts:
+            assert g.df[c.name].isna().equals(g.df[list(c.parts)].isna().all(axis=1)), c.name
+            continue
         expected = round(rates[c.name] * applies.sum()) if c.nullable else applies.sum()
         assert g.df[c.name].notna().sum() == expected, c.name
     for group in spec.groups:
@@ -320,6 +337,7 @@ def profile(g: Generated) -> pd.Series:
     shared = cif | name | phone | code | same("STD_ADDRESS") | same("POST_CD") | same("GIVEN_NAME_KANA") | same("LAST_NAME_KANA")
     return pd.Series({"true pairs": len(p), "same customer ID": cif.mean(), "same exact name": name.mean(), "same phone": phone.mean(),
                       "same address code": code.mean(), "same standard address": same("STD_ADDRESS").mean(),
+                      "same birth date": same("BIRTH_DATE").mean(),
                       "direct (exact rules)": ((cif & name) | (name & code & phone)).mean(), "nothing in common": (~shared & ~close).mean()})
 
 
@@ -332,7 +350,7 @@ def load_spec(path: Path) -> tuple[Spec, Split]:
                    "kana_confusions": tuple(map(tuple, p["kana_confusions"])), "nesting": dict(p["nesting"]),
                    "buildings": tuple(p["buildings"]),
                    "original_address_formats": tuple(AddressFormat(**f) for f in p["original_address_formats"]),
-                   "columns": tuple(Column(**c) for c in p["columns"])})
+                   "columns": tuple(Column(**{**c, "parts": tuple(c.get("parts", ()))}) for c in p["columns"])})
     return spec, Split(shares=dict(cfg["split"]["shares"]), seed=cfg["split"]["seed"])
 
 

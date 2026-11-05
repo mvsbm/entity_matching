@@ -25,9 +25,12 @@ from er.strings import connect
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("--optuna", action="store_true", help="also run both Optuna searches")
+    parser.add_argument("--no-test", action="store_true", help="a development round: train and val only, test left unseen")
     args = parser.parse_args()
 
     s = load_settings()
+    if args.no_test:  # every report and leaderboard row comes from train and val; test stays unseen for the final round
+        s = replace(s, data=replace(s.data, datasets=tuple(d for d in s.data.datasets if d != "test")))
     p = load_pipeline(s.root / "config" / "pipeline.toml", s.standardize, s.chains, s.columns)
     x = load_experiments(s.root)
     _, db = connect()

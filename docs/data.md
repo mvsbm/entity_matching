@@ -58,15 +58,16 @@ All parameters live in `config/generator.toml`: `[population]` (`er.generate.Spe
 - **Columns:**
   - IDs and codes: CONT_ID (unique everywhere: the key a user's input is joined back by), PHONE_NUM_4, CIF_ID (a duplicate keeps the entity's CIF 3% of the time, one digit off in a tenth of those)
   - person names in kana: FULL_NAME_KANA, O_PERSON_NAME_KANA, LAST_NAME_KANA, GIVEN_NAME_KANA
+  - BIRTH_DATE (persons, YYYYMMDD): 15% filled, missing independently of everything else
   - company name in kana: NYS_CNV_P_NAME_KANA
   - postal: POST_CD, POST_CD_KANA
-  - address: SOURCE_ADDR_CD, ORIGINAL_ADDRESS (as typed, in 3 formats), ADDRESS_FIVE(_KANA) (`chome-ban-go`, or `ban-go`), ADDR_CD(_KANA) (11-digit 住所コード), STD_ADDRESS, ADDRESS_ONE (prefecture), ADDRESS_TWO (city)
+  - address: SOURCE_ADDR_CD, ORIGINAL_ADDRESS (as typed, in 3 formats), ADDRESS_FIVE(_KANA) (`chome-ban-go`, or `ban-go`), ADDR_CD(_KANA) (11-digit 住所コード), ADDRESS_ONE (prefecture), ADDRESS_TWO (city), ADDRESS_THREE (town), and STD_ADDRESS, built from those parts as they arrive (the filled ones joined), so it is missing only where every part is
 - **Entry errors and notations:**
   - 30% of name parts get one kana typo (ガ/カ, ッ/ツ, ー/ウ … or a dropped character)
   - 30% of person records put a space between surname and given name; 15% of records hold every name in half-width katakana (ｻﾄｳ)
-  - 10% of phones, ORIGINAL_ADDRESS values and reused CIF IDs get one wrong digit (or, in an address, a dropped character)
+  - 10% of phones, birth dates, ORIGINAL_ADDRESS values and reused CIF IDs get one wrong digit (or, in an address, a dropped character)
 - **Missingness:**
-  - **Rates:** the non-null rate falls from 0.9999 to 0.6544 along the column order, counted where the column applies.
+  - **Rates:** the non-null rate falls from 0.9999 to 0.6544 along the column order, counted where the column applies; BIRTH_DATE has its own rate, and STD_ADDRESS follows its parts.
   - **Correlation:** shared within the name, postal and address groups by `nesting` ρ.
 - **Households:** unrelated entities sometimes share an address, which gives look-alikes that must not be merged.
 - **Asserts** run on the whole population before it is split: exact rates, digit formats, kind consistency, CONT_ID unique, no CIF shared across entities, address code ↔ address 1:1.

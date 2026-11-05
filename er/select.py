@@ -19,7 +19,7 @@ from er.config import (Data, FSSpec, FSTune, KeyBlocker, OverBudget, Pipeline, R
 from er.evaluate import adopt, c2, candidate_metrics, missed_pairs, paired_test, predicted_pairs, true_pairs
 from er.io import append_leaderboard, assert_test_scored_once, load, test_evaluations, write_final
 from er.match import parameters, train_fs, u_values, waterfall
-from er.pipeline import (FSResult, Result, accept_curve, complexity_summary, cross_validate_fs, cv_threshold_curve, entity_folds,
+from er.pipeline import (FSResult, Result, accept_curve, automatic, complexity_summary, cross_validate_fs, cv_threshold_curve, entity_folds,
                          pattern_coverage, preflight, run_fs, run_rules, scale_check, select_threshold, summed, threshold_curve,
                          window_only)
 from er.standardize import prepare
@@ -377,7 +377,7 @@ class FSChooser:
         """The accepted true match with a typo closest to the threshold, and the rejected non-match closest to it, in bits."""
         uid, f, p = self.data.unique_id, self.final, self.pipeline
         res = self.run(f, "val")
-        accepted = res.scored["match_weight"] >= f.min_match_weight
+        accepted = automatic(res.scored, f.min_match_weight)
         shown = res.records.set_index(uid)[list(p.explain_show)]
         left, right = shown.loc[res.scored[f"{uid}_l"]].set_index(res.scored.index), shown.loc[res.scored[f"{uid}_r"]].set_index(res.scored.index)
         filled = (left[list(p.explain_filled)].notna() & right[list(p.explain_filled)].notna()).all(axis=1)
@@ -396,7 +396,7 @@ class FSChooser:
         f, rows = self.final, []
         for dataset in self.data.datasets:
             res, records = self.run(f, dataset), load(self.data, dataset)[0]
-            acc = res.scored[res.scored["match_weight"] >= f.min_match_weight]
+            acc = res.scored[automatic(res.scored, f.min_match_weight)]
             m = res.metrics.iloc[-1]
             append_leaderboard(self.data, "probabilistic:FINAL", f, dataset, {**m.drop("stage").to_dict(), **{f"stage_{x}": v for x, v in res.stage_metrics.items()}})
             rows.append(dict(dataset=dataset, records=len(records), recall_before=res.metrics.iloc[0]["recall"], **m[SHOW[1:]].to_dict(),

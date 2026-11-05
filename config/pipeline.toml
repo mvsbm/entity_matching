@@ -10,7 +10,7 @@
 [fields]
 mandatory = ["id"]
 one_of = [["person_name", "company_name"]]
-optional = ["full_name", "given_name", "any_name", "address", "address_code", "postal_code", "prefecture", "phone", "customer_id"]
+optional = ["full_name", "given_name", "any_name", "address", "address_code", "postal_code", "prefecture", "town_code", "city", "phone", "customer_id", "birth_date"]
 labels = ["entity"]
 
 [budget]
@@ -77,6 +77,10 @@ address_code_phone = { kind = "keys", keys = ["address_code", "phone"] }
 address_name_initial = { kind = "keys", keys = [{ field = "address", normalize = "address" }, { field = "any_name", normalize = "initial" }] }
 address_code_name_initial = { kind = "keys", keys = ["address_code", { field = "any_name", normalize = "initial" }] }
 given_name_address_code = { kind = "keys", keys = [{ field = "given_name", normalize = "fold" }, "address_code"] }   # surname change
+given_name_phone = { kind = "keys", keys = [{ field = "given_name", normalize = "fold" }, "phone"] }   # surname change and a move
+# the birth date: sparse, so few chance pairs; its deletions alone would pair too many dates one digit apart
+birth_date = { kind = "keys", keys = ["birth_date"] }
+birth_date_deletions_prefecture = { kind = "deletions", key = { field = "birth_date" }, within = ["prefecture"] }
 
 # ---------- stage 2: Fellegi–Sunter ----------
 [model]
@@ -87,6 +91,7 @@ generators = ["phone", "address", "address_code", "cif", "person_name", "company
 min_match_weight = 4.0            # a starting value; the threshold rule sets the real one
 resolver = { method = "connected_components" }
 bridge = false                    # true: a pair may also join two clusters the previous stage formed
+needs = []                        # comparisons of which one must be compared for a merge without people; else they decide
 name = "fs"
 prior_rules = [["customer_id", "full_name"], ["customer_id", "company_name"], ["full_name", "address_code", "phone"]]
 prior_recall = 0.5                # the share of true pairs those rules find: a starting value; scripts/choose.py measures it on train

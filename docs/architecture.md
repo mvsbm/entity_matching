@@ -139,9 +139,9 @@ Measures u again on this file, then scores every candidate: for each field, it f
 
 ### 7 · Cluster: from pairs to entities · `O(C + (N+E)·d)`
 
-Accepts a pair at 6 bits or more, if it touches a record the rules left alone or joins two rule clusters, and if people haven't decided it is no match. Then it clusters the accepted pairs with the rules' pairs and the pairs people decided are a match (connected components), and records, for each record, its cluster, the stage that resolved it, and the rule (`fs` for the model, `review` for people). A cluster is named after its smallest record ID.
+Accepts a pair at 6 bits or more, if it touches a record the rules left alone or joins two rule clusters, if a name was compared (`[model] needs`: the person names or the company names, filled on both sides), and if people haven't decided it is no match. Then it clusters the accepted pairs with the rules' pairs and the pairs people decided are a match (connected components), and records, for each record, its cluster, the stage that resolved it, and the rule (`fs` for the model, `review` for people). A cluster is named after its smallest record ID.
 
-- **Why:** pairs must become entities: if A matches B and B matches C, all three are one. Recording what resolved each record makes every merge auditable, and naming a cluster by its smallest ID makes an increment name it as a full run would.
+- **Why:** pairs must become entities: if A matches B and B matches C, all three are one. Recording what resolved each record makes every merge auditable, and naming a cluster by its smallest ID makes an increment name it as a full run would. A household shares address and phone, and those two alone reach the threshold; so do a person and a company at one address. Without a name compared, people decide.
 - **Code:** `Run.cluster` → `Run._accept` (the threshold; people's decisions, loaded by `Run._load_decisions` from `decisions/`), `Run._cluster` (Splink's connected components), `Run._gold`
 - **Increment:** the stored gold is the base, each stored cluster one node, and stored answers stand: `O(C_Δ + touched clusters)`.
 
@@ -155,7 +155,7 @@ Writes each table as Parquet under a temporary name. Once all are complete, it s
 
 ### 9 · Report, for people · `O(review pairs)`
 
-`scripts/resolve.py` writes `qa.md`, the label-free checks, and `review.parquet`, with the evidence for each pair ([usage](usage.md#6--review-and-decide)). Its *decide* rows are every pair of clusters whose best link scored in the threshold rule's safety margin: from the `[threshold]` grid point `margin_steps` below the threshold (4 bits) up to it. Its *audit* rows are about 50 accepted pairs up to 4 bits above it.
+`scripts/resolve.py` writes `qa.md`, the label-free checks, and `review.parquet`, with the evidence for each pair ([usage](usage.md#6--review-and-decide)). Its *decide* rows are every pair of clusters whose best link scored in the threshold rule's safety margin: from the `[threshold]` grid point `margin_steps` below the threshold (4 bits) up to it, and every pair above it with no name compared. Its *audit* rows are about 50 accepted pairs up to 4 bits above it.
 
 - **Why:** the margin holds pairs that were clean on cross-validated train, held back in case of noise: on the synthetic test split, 47 pairs, all true. Accepting them automatically would let false pairs through (1 out of fold at 4 bits), so people decide them. Without labels, the audit rows and the largest clusters are how a person catches over-merging.
 - **Code:** `run.qa`, `review_floor`, `review_sheet`, `carry_over`; `pipeline.pattern_coverage` (match patterns no key guarantees)

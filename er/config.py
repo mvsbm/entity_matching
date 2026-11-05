@@ -256,6 +256,7 @@ class FSSpec:
     resolver: Resolver
     budget: Budget
     bridge: bool = False                      # may join two clusters the previous stage formed
+    needs: tuple[str, ...] = ()               # comparisons of which one must be compared for a merge without people
 
     def normalized(self) -> list[tuple[str, tuple[Normalizer, ...]]]:
         keys = [k for b in self.blockers for k in keys_of(b)]
@@ -439,9 +440,12 @@ def pipeline_from(cfg: dict, std: Standardization, chains: Mapping[str, tuple[No
                     prior_rules=tuple(tuple(_key(k, chains) for k in r) for r in m["prior_rules"]), m_method=m["m_method"],
                     em_rules=tuple(tuple(_key(k, chains) for k in r) for r in m["em_rules"]), seed=m["seed"],
                     u_from_scored=m.get("u_from_scored", False), u_exact_by_counts=m.get("u_exact_by_counts", False))
+    unknown = [c for c in m.get("needs", ()) if c not in {c.name for c in comparisons}]
+    if unknown:
+        raise ValueError(f"[model] needs: {unknown} are not comparisons in [[model.comparisons]]")
     fs = FSSpec(standardize=std, previous_stage=m["previous_stage"], stage=m["stage"], model=model,
                   blockers=tuple(generators[g] for g in m["generators"]), min_match_weight=m["min_match_weight"],
-                  resolver=_resolver(m["resolver"]), budget=budget, bridge=m.get("bridge", False))
+                  resolver=_resolver(m["resolver"]), budget=budget, bridge=m.get("bridge", False), needs=tuple(m.get("needs", ())))
     t, sel, d = cfg["threshold"], cfg["selection"], cfg["display"]
     return Pipeline(fields=Fields(mandatory=tuple(f["mandatory"]), one_of=tuple(map(tuple, f["one_of"])),
                                   optional=tuple(f["optional"]), labels=tuple(f["labels"])),
@@ -540,7 +544,8 @@ def restrict(p: Pipeline, present: set[str]) -> tuple[Pipeline, list[str]]:
     gone += [f"prior rule {[k.column for k in r]}" for r in m.prior_rules if r not in prior]
     gone += [f"EM rule {[k.column for k in r]}" for r in m.em_rules if r not in em]
     model = replace(m, comparisons=tuple(comparisons), prior_rules=prior, em_rules=em)
-    return replace(p, rules=replace(p.rules, stages=tuple(stages)), fs=replace(p.fs, blockers=tuple(blockers), model=model),
+    needs = tuple(n for n in p.fs.needs if n in {c.name for c in comparisons})  # [fields] one_of keeps a name comparison
+    return replace(p, rules=replace(p.rules, stages=tuple(stages)), fs=replace(p.fs, blockers=tuple(blockers), model=model, needs=needs),
                    explain_show=tuple(f for f in p.explain_show if f in present),
                    explain_filled=tuple(f for f in p.explain_filled if f in present)), gone
 
@@ -578,7 +583,7 @@ def pipeline_dict(p: Pipeline, chains: Mapping[str, tuple[Normalizer, ...]]) -> 
             for s in p.rules.stages]},
         "generators": {name: gen(b) for name, b in p.generators.items()},
         "model": {"previous_stage": fs.previous_stage, "stage": fs.stage, "generators": [b.name for b in fs.blockers],
-                  "min_match_weight": fs.min_match_weight, "resolver": resolver(fs.resolver), "bridge": fs.bridge, "name": m.name,
+                  "min_match_weight": fs.min_match_weight, "resolver": resolver(fs.resolver), "bridge": fs.bridge, "needs": list(fs.needs), "name": m.name,
                   "prior_rules": [[key(k) for k in r] for r in m.prior_rules], "prior_recall": m.prior_recall,
                   "u_max_pairs": m.u_max_pairs, "m_method": m.m_method, "em_rules": [[key(k) for k in r] for r in m.em_rules],
                   "seed": m.seed, "u_from_scored": m.u_from_scored, "u_exact_by_counts": m.u_exact_by_counts, "fit_rows": p.fit_rows,

@@ -10,7 +10,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import replace
 from pathlib import Path
 
-from er.config import (Candidate, Comparator, FSSpec, FSTune, Key, Level, Pipeline, Resolver, RulesSpec, SortedNeighbourhood, TfidfNeighbours,
+from er.config import (Candidate, Comparator, Comparison, FSSpec, FSTune, Key, Level, Pipeline, Resolver, RulesSpec, SortedNeighbourhood, TfidfNeighbours,
                        Tune, KeyBlocker, with_comparators, with_level, without_tf)
 
 FOLD, COMPANY = ("kana_fold",), ("nfkc", "strip_legal_form", "kana_fold")
@@ -33,17 +33,17 @@ def rules_changes(p: Pipeline) -> dict[str, Callable[[RulesSpec], RulesSpec]]:
         "raw_jaro_winkler": lambda s: with_comparators(s, "fuzzy", {"person_name": Comparator("jaro_winkler", 0.92),
                                                                     "company_name": Comparator("jaro_winkler", 0.92)}),
         "constrained_given_name": lambda s: replace(s, resolver=Resolver(method="constrained", cannot_link=("given_name",))),
-        "optuna_comparators": lambda s: with_comparators(s, "fuzzy", {  # an Optuna study's suggestion; passed adopt
-            "person_name": Comparator("levenshtein", 2, FOLD), "company_name": Comparator("jaccard", 0.77),
-            "address": Comparator("jaro_winkler", 0.91, ("address",)), "phone": Comparator("damerau_levenshtein", 1)}),
+        "optuna_comparators": lambda s: with_comparators(s, "fuzzy", {  # an Optuna study's suggestion (trial 33); passed adopt
+            "person_name": Comparator("damerau_levenshtein", 2, FOLD), "company_name": Comparator("levenshtein", 1, COMPANY),
+            "address": Comparator("jaro_winkler", 0.9, ("address",)), "phone": Comparator("hamming", 1)}),
         # a fuzzy address leaves rule F2 joining on the phone alone, whose pairs grow with N²
         "f2_address_exact": lambda s: with_comparators(s, "fuzzy", {"address": Comparator("exact", normalize=("address",))}),
         "f2_address_prefix": f2_by_address_prefix,
     }
 
 
-RULES_DECISIONS = (("fold_levenshtein", "better"), ("fold_exact", "cheaper"), ("optuna_comparators", "better"),
-                   ("f2_address_exact", "cheaper"), ("f2_address_prefix", "cheaper"))
+RULES_DECISIONS = (("fold_levenshtein", "better"), ("fold_exact", "cheaper"), ("f2_address_exact", "cheaper"),
+                   ("f2_address_prefix", "cheaper"), ("optuna_comparators", "better"))   # the suggestion last: it was found on top of the rest
 
 
 def rules_tune(optuna_dir: Path) -> Tune:
@@ -60,7 +60,7 @@ def rules_tune(optuna_dir: Path) -> Tune:
             "phone": (Candidate("hamming", (), 1, 1, 1), Candidate("damerau_levenshtein", (), 1, 1, 1)),
         },
         n_trials=60, seed=0,
-        enabled=False,  # the last searches found nothing that passes adopt; FINAL keeps the suggestion it adopted
+        enabled=False,  # scripts/choose.py --optuna searches again; optuna_comparators keeps the last suggestion that passed adopt
         storage_path=optuna_dir / "deterministic_matching.db", study_prefix="deterministic",
         dashboard_host="127.0.0.1", dashboard_port=8080,
     )
@@ -81,6 +81,25 @@ def fs_changes(p: Pipeline) -> dict[str, Callable[[FSSpec], FSSpec]]:
         off = Level(label="one digit off", any_of=(("customer_id", Comparator("damerau_levenshtein", 1)),))
         return replace(s, model=replace(s.model, comparisons=tuple(replace(c, levels=(*c.levels, off)) if c.name == "cif" else c
                                                                    for c in s.model.comparisons)))
+
+    def graded_address(s: FSSpec) -> FSSpec:
+        """Credit for a move nearby: after the same postal code, the same town, the same city, the same prefecture."""
+        near = tuple(Level(label=label, any_of=((field, Comparator("exact")),))
+                     for label, field in (("same town", "town_code"), ("same city", "city"), ("same prefecture", "prefecture")))
+        return replace(s, model=replace(s.model, comparisons=tuple(
+            replace(c, levels=(*c.levels, *near), null_if_missing=(*c.null_if_missing, "town_code", "city", "prefecture"))
+            if c.name == "address" else c for c in s.model.comparisons)))
+
+    def with_key(name: str) -> Callable[[FSSpec], FSSpec]:
+        return lambda s: s if pool[name] in s.blockers else replace(s, blockers=(*s.blockers, pool[name]))
+
+    def birth_date(s: FSSpec) -> FSSpec:
+        """The birth date, where both records hold one: the same, one digit off or two adjacent digits swapped, else.
+        Sparse, so it settles few pairs, but a namesake born on another day is strong evidence against a match."""
+        levels = (Level(label="exact", any_of=(("birth_date", Comparator("exact")),)),
+                  Level(label="one digit off", any_of=(("birth_date", Comparator("damerau_levenshtein", 1)),)))
+        return replace(s, model=replace(s.model, comparisons=(*s.model.comparisons,
+                                                              Comparison(name="birth", levels=levels, null_if_missing=("birth_date",)))))
 
     def optuna_suggestion(s: FSSpec) -> FSSpec:  # an Optuna study's suggestion (trial 12); passed adopt
         model = without_tf(s.model)
@@ -115,8 +134,15 @@ def fs_changes(p: Pipeline) -> dict[str, Callable[[FSSpec], FSSpec]]:
         # exact, where a 10⁷-pair sample can't see an agreement rarer than one in 10⁹ pairs (exact name, CIF ID in a big file)
         "u_exact_by_counts": lambda s: replace(s, model=replace(s.model, u_exact_by_counts=True)),
         "cif_one_digit_off": cif_one_digit_off,
-        # the key that level needs: a pair it lifts over the threshold must share a key, or it is never compared
-        "cif_deletion_key": lambda s: replace(s, blockers=s.blockers + (pool["cif_deletions"],) if pool["cif_deletions"] not in s.blockers else s.blockers),
+        "graded_address": graded_address,
+        "birth_date": birth_date,
+        # the keys those levels need: a pair they lift over the threshold must share a key, or it is never compared
+        "cif_deletion_key": with_key("cif_deletions"),
+        "birth_date_key": with_key("birth_date"),
+        "given_name_phone_key": with_key("given_name_phone"),
+        "birth_date_deletion_key": with_key("birth_date_deletions_prefecture"),
+        # a household shares address and phone, which alone reach the threshold: without a name compared, people decide
+        "name_needed": lambda s: replace(s, needs=("name", "company")),
     }
 
 
@@ -124,7 +150,9 @@ FS_DECISIONS = (("no_term_frequency", "better"), ("exact_keys_only", "cheaper"),
                 ("u_from_1e6_pairs", "cheaper"), ("compound_phone_keys", "cheaper"), ("sorted_names_for_tfidf", "cheaper"),
                 ("name_keys", "safer"), ("bounded_address_keys", "cheaper"), ("no_sorted_windows", "cheaper"), ("bridge_rule_clusters", "better"), ("u_from_scored_file", "chosen"),
                 ("u_exact_by_counts", "chosen"), ("cif_one_digit_off", "better"),
-                ("cif_deletion_key", "safer"))
+                ("cif_deletion_key", "safer"), ("graded_address", "better"), ("birth_date", "better"),
+                ("birth_date_key", "safer"), ("given_name_phone_key", "safer"), ("birth_date_deletion_key", "safer"),
+                ("name_needed", "chosen"))  # its gain shows only at scale: train and val hold no such false pair
 
 
 def fs_tune(optuna_dir: Path) -> FSTune:
