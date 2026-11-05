@@ -38,7 +38,7 @@ The train-only design analysis justifies "never one key alone". Single keys coll
 
 None adds a false pair. The two F2 rows exist for scale: as written, F2 joins on the last four phone digits alone, which grows like N^1.89 and projects to 55.8 million pairs at a million records. An earlier alternative, joining on the phone plus the name initial or the postal area, lost 2 true pairs on train and was dropped. The adopted one projects to 0.12 million ([chapter 3](guide/03-far-too-many-pairs.md#scaling-to-a-million-records)).
 
-**Optuna** (60 trials on train, ≈ 90 s) starts from `FINAL`: its first suggestion passed the same rule and became a `CHANGES` entry. Re-run from the final `FINAL`, the suggestion (trial 47) gains 1 true pair and loses none (p = 1.0), so it is not adopted and the loop has converged.
+**Optuna** (60 trials on train, ≈ 90 s) starts from `FINAL`: its first suggestion passed the same rule and became a `CHANGES` entry. Re-run from the final `FINAL`, the suggestion (trial 47) gains 1 true pair and loses none (p = 1.0), so it is not adopted and the loop has converged. The study is now off by default (`TUNE.enabled`).
 
 **Results with `FINAL`:**
 
@@ -63,14 +63,15 @@ The constrained resolver loses because given-name typos look like conflicts.
 ## Stage 2: probabilistic matching
 
 **Method:** the **Fellegi–Sunter model (Splink 5)** is the only probabilistic method so far; every A/B row is a variant of it.
-- λ comes from near-certain rules, u from 1e7 random pairs, m from EM (or labels).
+- λ comes from near-certain rules, u from 1e7 random pairs, m from EM (or labels). `FINAL` re-samples u on each scored file.
 - There are five comparisons: name, company, address, phone, cif. Correlated columns share one comparison (address code / normalized address / postal form one), because FS assumes independence.
 - Levels use the `cl_*` functions.
 - **A level without an estimate never uses Splink's defaults.** No sampled pair reached it → u at its 95% upper bound, so its weight is a lower bound on the evidence. Never seen in training → m = u, 0 bits. The training cell lists such levels (none in `SPEC`).
 
-**Scores don't depend on the size of the scored set** (`er.match.score_fs`):
+**Scores are calibrated to the scored file** (`er.match.score_fs`, `er.match.with_scored_u`):
 - **Term frequencies** come from the fitting records, stored in the model. A value never seen in training gets no adjustment, the conservative side.
 - **λ** is a per-pair rate: true pairs grow with N, pairs with N². It is rescaled from the fitting set's size to the scored set's. So CV folds, val and test (about 10k records each) are scored on the same scale, and the threshold keeps its meaning at production size. There, the same evidence earns log2(N/10k) fewer bits.
+- **u** is re-sampled on the scored file's records (no labels; 1e7 pairs, about 8 s whatever the size), because a field whose values grow with the file agrees by chance less often in a bigger one. m stays from train.
 - Why this matters, and the bug it replaced: [lessons.md](lessons.md).
 
 **Candidates on train** (2,135 true pairs the deterministic stage missed), every generator in `SPEC` and `SCALABLE`, in order:
@@ -126,20 +127,21 @@ That is 51,484 candidates on val (99.90% of all pairs skipped). Before the scale
 | TF-IDF → sorted neighbourhood on the name and the reversed name (scale) | cheaper | +2 / −0 (p = 0.5) | +0 / −0 | **yes** |
 | five name keys: no potential match left to a sorted window (scale) | safer | +1 / −0, no FP added | +1 / −0 | **yes** |
 | score every pair across two rule clusters | better | +12 / −0 (p = 0.0005), no FP added | +4 / −0 | **yes** |
+| u re-sampled on each scored file (owner's decision, for scale) | chosen | +0 / −27 (p < 10⁻⁷), no FP added | +0 / −8 | **yes** |
 
-**Results with `FINAL`** (14 generators, pairs across two rule clusters scored, term frequency off, m by EM, Optuna's JW thresholds, threshold 6, connected components):
+**Results with `FINAL`** (14 generators, pairs across two rule clusters scored, u from each scored file, term frequency off, m by EM, Optuna's JW thresholds, threshold 6, connected components):
 
 | Data | After deterministic → after probabilistic | 95% interval | FP | FP rate ≤ |
 |---|---|---|---|---|
 | train | 69.2% → 89.5% | 88.7–90.2% | 0 | 0.05% |
-| val | 69.3% → 91.7% | 90.5–92.8% | 0 | 0.15% |
-| **test** | 71.1% → **91.1%** | 89.9–92.2% | **0** | 0.14% |
+| val | 69.3% → 91.3% | 90.1–92.4% | 0 | 0.15% |
+| **test** | 71.1% → **89.9%** | 88.6–91.1% | **0** | 0.14% |
 
-**The threshold transfers:** at weight 6, cross-validated train accepts 0 false of 1,443 pairs (rate ≤ 0.21%) and val 0 of 474. The evaluation cell prints this check on every run.
+**The threshold transfers:** at weight 6, cross-validated train accepts 0 false of 1,419 pairs (rate ≤ 0.21%) and val 0 of 466. The evaluation cell prints this check on every run.
 
 **Worked example:** the notebook's "Why a pair matches" cell breaks one accepted and one rejected pair into bits; the README walks through both.
 
-**Optuna** (cross-validated objective, 30 trials, seeded): each trial switches generators off and picks the m method, term frequency, level thresholds and resolver. Its threshold comes from `THRESHOLD_RULE`, as `FINAL`'s does.
+**Optuna** (cross-validated objective, 30 trials, seeded; off by default since round 4, `PTUNE.enabled`): each trial switches generators off and picks the m method, term frequency, level thresholds and resolver. Its threshold comes from `THRESHOLD_RULE`, as `FINAL`'s does.
 - **Round 1** searched the threshold directly. Its 0-FP suggestion (trial 12) passed `adopt` against `FINAL` (cross-validated train +280 / −0, val +92 / −0) and became the `optuna_suggestion` decision. It drops four generators (folded-name keys, person sorted neighbourhood, company TF-IDF) and changes the JW thresholds (names 0.95 / 0.75, companies 0.97 / 0.80).
 - That round searched the threshold directly, which could never converge with the threshold rule ([lessons.md](lessons.md)); trials now take the rule's threshold.
 - **Round 2,** from the new `FINAL`: the suggestion (trial 19: 0 FP out-of-fold, 90.8% recall; 0 FP on val, 91.5%) did not pass `adopt` (+11 / −7, p = 0.48).
@@ -154,22 +156,22 @@ That is 51,484 candidates on val (99.90% of all pairs skipped). Before the scale
 
 | scenario | rules_recall | recall | interval | false_merges | fp_rate_at_most |
 | --- | --- | --- | --- | --- | --- |
-| as reported (seed 0) | 0.7106 | 0.9113 | 0.899–0.922 | 0 | 0.14% |
-| seed 1 | 0.7029 | 0.9112 | 0.899–0.922 | 0 | 0.14% |
-| seed 2 | 0.6691 | 0.9116 | 0.899–0.923 | 0 | 0.15% |
-| typos doubled | 0.6738 | 0.9008 | 0.888–0.912 | 0 | 0.15% |
-| fields emptier (last column 45% filled) | 0.6275 | 0.8935 | 0.880–0.905 | 0 | 0.14% |
-| prior_recall 0.25 (λ ×2) | 0.7106 | 0.9224 | 0.911–0.932 | 0 | 0.14% |
-| prior_recall 0.75 (λ ×⅔) | 0.7106 | 0.9105 | 0.898–0.921 | 0 | 0.14% |
+| as reported (seed 0) | 0.7106 | 0.899 | 0.886–0.911 | 0 | 0.14% |
+| seed 1 | 0.7029 | 0.9057 | 0.893–0.917 | 0 | 0.14% |
+| seed 2 | 0.6691 | 0.8877 | 0.874–0.900 | 0 | 0.15% |
+| typos doubled | 0.6738 | 0.8889 | 0.875–0.901 | 0 | 0.15% |
+| fields emptier (last column 45% filled) | 0.6275 | 0.8842 | 0.871–0.896 | 0 | 0.14% |
+| prior_recall 0.25 (λ ×2) | 0.7106 | 0.9147 | 0.903–0.925 | 0 | 0.14% |
+| prior_recall 0.75 (λ ×⅔) | 0.7106 | 0.8914 | 0.878–0.903 | 0 | 0.14% |
 
-### Cost: both stages on files of growing size (time grows like N^1.06)
+### Cost: both stages on files of growing size (time grows like N^0.59: about 8 s per file is u-sampling, a fixed cost)
 
 One model fitted on train. Above 60,000 entities personas repeat, so those rows measure cost only.
 
-| records | rules_seconds | probabilistic_seconds | peak_memory_gb | recall | false_merges | fp_rate_at_most | potential_off_list | recall_u_from_file |
+| records | rules_seconds | probabilistic_seconds | peak_memory_gb | recall | false_merges | fp_rate_at_most | potential_off_list | recall_u_from_train |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| 12392 | 0.4 | 0.8 | 1.2 | 0.8992 | 0 | 0.12% | 0 | 0.8977 |
-| 24944 | 0.7 | 1.4 | 1.3 | 0.8987 | 4 | 0.18% | 0 | 0.8978 |
-| 50215 | 1.1 | 2.6 | 1.6 | 0.8873 | 1 | 0.05% | 0 | 0.8947 |
-| 75284 | 1.5 | 4.0 | 2.3 | 0.8759 | 5 | 0.07% | 0 | 0.8869 |
-| 999481 | 19.2 | 98.4 | 6.9 | — | — | — | — | — |
+| 12392 | 0.4 | 9.3 | 1.2 | 0.8977 | 0 | 0.12% | 0 | 0.8992 |
+| 24944 | 0.7 | 10.0 | 1.3 | 0.8978 | 4 | 0.18% | 0 | 0.8987 |
+| 50215 | 1.1 | 10.6 | 1.6 | 0.8947 | 1 | 0.05% | 0 | 0.8873 |
+| 75284 | 1.5 | 12.0 | 2.2 | 0.8869 | 5 | 0.07% | 0 | 0.8759 |
+| 999481 | 17.5 | 96.4 | 7.5 | — | — | — | — | — |

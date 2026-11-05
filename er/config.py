@@ -208,6 +208,7 @@ class FSModel:
     m_method: Literal["em", "labels"]
     em_rules: tuple[tuple[Key, ...], ...]     # one EM session per rule
     seed: int
+    u_from_scored: bool = False               # u re-sampled on each scored file, m and λ from the fit (er.match.with_scored_u)
 
     def u_keys(self) -> dict[str, str]:
         """What each comparison's u depends on, besides the fitting records: the comparison (term-frequency adjustment
@@ -306,6 +307,7 @@ class Tune:
     stage: str                                # the stage whose comparators are searched
     space: Mapping[str, tuple[Candidate, ...]]
     n_trials: int                             # the only bound: a wall-clock timeout would make the front depend on machine speed
+    enabled: bool = False                     # off by default: FINAL keeps the suggestions already adopted (CHANGES)
     seed: int
     storage_path: Path                        # SQLite file the study is saved to; optuna-dashboard reads it
     study_prefix: str                         # each run is a new study: <prefix>_<timestamp>
@@ -322,6 +324,7 @@ class ProbTune:
     level_thresholds: Mapping[tuple[str, str], tuple[float, float, float]]  # (comparison, level) → low, high, step
     resolvers: Mapping[str, Resolver]
     n_trials: int                             # the only bound, as in Tune
+    enabled: bool = False                     # as in Tune
     seed: int
     storage_path: Path
     study_prefix: str

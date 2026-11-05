@@ -45,21 +45,25 @@ $$w \;=\; \log_2\frac{\lambda}{1-\lambda} \;+\; \sum_k \log_2\frac{m_k}{u_k}$$
 
 Each term is a number of **bits**, and each bit doubles the odds. So +10 bits multiply the odds by about 1,000.
 
-**The example pair, field by field.** These numbers come from the notebook's "Why a pair matches" cell:
+**The example pair, field by field,** scored on val, with u measured on val's own records:
 
 | Evidence | Observation | Bits |
 |---|---|---|
 | before looking | two random records match about 1 in 32,000 | −14.98 |
-| name | close (Jaro–Winkler 0.943 after folding, at least 0.75) | +3.98 |
+| name | close (Jaro–Winkler 0.943 after folding, at least 0.75) | +3.72 |
 | company | missing (a person has no company name) | 0.00 |
-| address | the same | +14.01 |
-| phone | one digit off | +4.50 |
+| address | the same | +13.49 |
+| phone | one digit off | +4.47 |
 | CIF ID | different | −0.90 |
-| **total** | | **+6.61** |
+| **total** | | **+5.81** |
 
 Back from bits to a probability:
 
-$$p = \frac{2^{w}}{1 + 2^{w}} = \frac{2^{6.61}}{1 + 2^{6.61}} = 99.0\%$$
+$$p = \frac{2^{w}}{1 + 2^{w}} = \frac{2^{5.81}}{1 + 2^{5.81}} = 98.3\%$$
+
+That falls just short of the 6-bit line (below), so the model leaves this pair apart. It is a near miss, and an honest one. With u taken from train, the pair scored 6.61: a shared address was worth 14.01 bits, and a close name 3.98. On the 10,000-record val file, strangers agree on both a little more often, so they are worth 13.49 and 3.72.
+
+A pair that passes, from the notebook's "Why a pair matches" cell: イイハラユイ and イイハユイ have moved city and changed CIF ID, but they keep the phone digits. Names very close (+12.93), same phone (+12.35), different address (−2.50), different CIF ID (−0.90): **+6.90 bits**, 99.2%.
 
 ### Why this solution
 
@@ -91,6 +95,8 @@ The "same given name" level catches a surname change after marriage.
 In production, nobody tells us which pairs match. Each parameter must come from the records themselves.
 
 **u, from random pairs.** Almost every random pair of records is two different entities. So we draw 10 million random pairs and count how often each level occurs. That count estimates u.
+
+**u is re-sampled on every file we score.** Some fields have more distinct values in a bigger file: there are more addresses and more CIF IDs. Two random records then agree on them less often, so u is smaller. A u measured on train would under-credit those agreements on a bigger file, and over-credit them on a smaller one. Sampling u on the file being scored keeps each weight right at any size. It needs no labels, and it costs the same 10 million pairs, about 8 seconds, whatever the file's size.
 
 **λ, from near-certain rules.** Pairs that agree on CIF ID and name are almost surely matches. Counting them, and assuming these rules find about half of all true pairs, gives λ. On train it is about 1 in 97,000 pairs. The chance two random records match depends on the file's size, so λ is rescaled for each file. On validation it is 1 in 32,000.
 
@@ -137,11 +143,11 @@ A score is not yet a decision. We accept a pair at **6 bits or more**, a probabi
 
 | Accept at or above | Pairs accepted | False pairs among them | Recall after grouping |
 |---|---|---|---|
-| 0 bits | 537 | 5 | 93.9% |
-| 2 bits | 523 | 1 | 93.6% |
-| 4 bits | 494 | 0 | 92.6% |
-| **6 bits** | **474** | **0** | **91.7%** |
-| 8 bits | 425 | 0 | 89.5% |
+| 0 bits | 528 | 5 | 93.6% |
+| 2 bits | 509 | 1 | 93.1% |
+| 4 bits | 491 | 0 | 92.5% |
+| **6 bits** | **466** | **0** | **91.3%** |
+| 8 bits | 321 | 0 | 85.0% |
 
 The line was not picked from this table, which would tune it on validation. It comes from a rule applied to train ([chapter 6](06-measuring-and-choosing.md)): the lowest weight with no false pair in cross-validation, plus one safety step.
 
@@ -152,7 +158,7 @@ The line was not picked from this table, which would tune it on validation. It c
 | C | セルシスカブシキガイシャ (a company) | 東京都多摩市連光寺5-18-5 | 8813 | 2754477213332 |
 | D | ヤマモトカヨ (a person) | 東京都多摩市連光寺5-18-5 | 6813 | 4590715084681 |
 
-Same address (+14.01), phone one digit off (+4.50), different CIF ID (−0.90). That's the same evidence as our true pair, except the name. A company and a person have no name to compare, so the total is **+2.64 bits: rejected**. The four bits between a match and a non-match come from the name.
+Same address (+13.49), phone one digit off (+4.47), different CIF ID (−0.90). That's the same evidence as our example pair, except the name. A company and a person have no name to compare, so the total is **+2.09 bits: rejected**. The 3.72 bits between the two pairs come from the name.
 
 ## Challenge: from pairs to groups
 
@@ -169,8 +175,8 @@ We also tested the cautious alternative: refuse a merge when the two groups hold
 | Split | Recall: rules → + this stage | 95% interval | False merges | False-merge rate at most |
 |---|---|---|---|---|
 | train | 69.2% → 89.5% | 88.7–90.2% | 0 | 0.05% |
-| val | 69.3% → 91.7% | 90.5–92.8% | 0 | 0.15% |
-| **test** | 71.1% → **91.1%** | 89.9–92.2% | **0** | 0.14% |
+| val | 69.3% → 91.3% | 90.1–92.4% | 0 | 0.15% |
+| **test** | 71.1% → **89.9%** | 88.6–91.1% | **0** | 0.14% |
 
 **In short:** weighing evidence lifts recall from about 70% to about 90%, with no false merges.
 

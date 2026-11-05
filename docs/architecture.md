@@ -56,7 +56,7 @@ flowchart LR
     dprep -->|"one SQL join per rule on its exact keys"| djoin["Splink deterministic_link<br/>DuckDB hash join"]
     djoin -->|"fuzzy conditions on joined pairs only (cl_* functions)"| dacc["accepted pairs<br/>first rule wins"]
     dacc -->|"keep pairs touching an unresolved record"| dcc["Splink connected components"]
-    dopt["Optuna on train<br/>dashboard :8080"] -->|"swaps one Comparator per fuzzy column"| djoin
+    dopt["Optuna on train, off by default<br/>dashboard :8080"] -->|"swaps one Comparator per fuzzy column"| djoin
     dcc -->|"FP, recall"| dopt
   end
   subgraph probstage["probabilistic_matching.ipynb"]
@@ -67,13 +67,13 @@ flowchart LR
     pmodel -->|"weights"| pscore
     pscore -->|"weight ≥ threshold (rule on out-of-fold scores)"| pacc["accepted pairs"]
     pacc -->|"+ deterministic pairs"| pcc["Splink connected components"]
-    popt["Optuna, cross-validated objective<br/>dashboard :8081"] -->|"generators, m, tf, levels, resolver"| pcand
+    popt["Optuna, cross-validated objective, off by default<br/>dashboard :8081"] -->|"generators, m, tf, levels, resolver"| pcand
     pcc -->|"out-of-fold FP, recall"| popt
   end
   dcc -->|"clusters"| pleft
 ```
 
-Both Optuna studies are stored in SQLite (`artifacts/optuna/*.db`), and optuna-dashboard reads them live.
+Both Optuna studies are stored in SQLite (`artifacts/optuna/*.db`), and optuna-dashboard reads them live. They are off by default (`enabled=False`): their adopted suggestions live in `CHANGES`, and later searches found nothing that passed the decision rule.
 
 ## The `er` package and pipeline concepts
 

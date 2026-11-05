@@ -18,11 +18,12 @@ Each entry gives the symptom that gave it away, the cause, the fix, and what kee
 - **Fix:** `score_fs` rescales λ to the scored set's size (`scaled_prior`), so cross-validation folds, val, test and production are all scored on one scale.
 - **Guard:** a test pads the scored set and checks that the weight moves by exactly the change in the prior's odds.
 
-## The size rescaling is only half done (open)
+## The size rescaling was only half done
 - **Symptom:** at a fixed threshold, recall falls as the scored file grows: 89.9% at 12,000 records, 87.6% at 75,000 (`scripts/robustness.py`).
 - **Cause:** λ is rescaled to the scored file's size, but u stays as measured on train. For fields whose number of distinct values grows with the file, such as the address and the CIF ID, the chance that two random records agree also shrinks like 1/N. Train's u then under-credits an agreement on them by about log2(N / 30,000) bits: 1.3 bits at 75,000 records, 5 bits at a million. On the 10,000-record val and test files it over-credits them by about 1.6 bits instead. Fields with a fixed set of values, such as the phone digits or a surname, are not affected.
-- **Measured fix:** re-sample u on the scored file. It needs no labels and costs the same 10 million random pairs whatever the size. At 75,000 records it recovers recall from 87.6% to 88.7%, with the same false pairs (the `recall_u_from_file` column of the robustness report).
-- **Status:** not adopted yet. It changes every reported number, so it needs its own clean pass through the decision rule, with the threshold re-chosen.
+- **Fix:** re-sample u on each scored file (`FSModel.u_from_scored`). It needs no labels and costs the same 10 million random pairs whatever the size. At 75,000 records it lifts recall from 87.6% to 88.7%, with the same false pairs.
+- **How it was decided:** by the owner, as a "chosen" decision. The rule's selection sets have about 10,000 records, where the change only removes credit u from train had over-given: −27 true pairs out-of-fold, −8 on val, no false pair added either way. The gain shows on bigger files, and production files are bigger.
+- **Guard:** the robustness report keeps a `recall_u_from_train` column, so the trade-off stays visible at every size.
 
 ## Three false positives that were one clone
 - **Symptom:** the check that the threshold transfers failed. Cross-validated train had 0 false pairs out of 784 accepted; val had 3 out of 300.

@@ -5,6 +5,7 @@ rules           a pair is accepted when every condition of one rule holds (score
 fellegi_sunter  Splink's Fellegi–Sunter model: λ from near-certain rules, u by random sampling, m by EM or from
                 labels; scores any registered candidate table, so candidates and scoring stay independent
 """
+import copy
 import logging
 import math
 import time
@@ -82,6 +83,33 @@ def u_bound(model: FSModel, c: Comparison, df: pd.DataFrame) -> float:
     is filled, of which there are at least (largest fill share of its columns)² of the sample."""
     sampled = min(model.u_max_pairs, len(df) * (len(df) - 1) / 2)
     return fp_upper(0, max(1, int(sampled * max(df[col].notna().mean() for col in c.null_if_missing) ** 2)))
+
+
+SCORED_U: dict[tuple[str, int], dict[str, float]] = {}  # (FSModel.u_keys() value, scored records' fingerprint) → u per level
+
+
+def with_scored_u(model: FSModel, model_json: dict, df: pd.DataFrame, db: DuckDBAPI, uid: str) -> dict:
+    """model_json with u re-sampled on the records to be scored. In a bigger file, a field whose value set grows with it
+    (address, CIF ID) agrees by chance less often, so u fixed from the fitting set under-credits it. Needs no labels and
+    costs u_max_pairs whatever the file's size; cached per comparison and set of records. m and λ stay as fitted (score_fs
+    rescales λ). Levels without an estimate keep their rules: no sampled pair → the bound on these records; never seen in
+    training → m = u, 0 bits."""
+    cols = sorted({comp.column(col) for c in model.comparisons for lv in c.levels for col, comp in lv.any_of}
+                  | {col for c in model.comparisons for col in c.null_if_missing})
+    records = int(pd.util.hash_pandas_object(df[[uid, *cols]], index=False).sum())
+    keys, by_name = model.u_keys(), {c.name: c for c in model.comparisons}
+    todo = [c for c in model.comparisons if (keys[c.name], records) not in SCORED_U]
+    for name, u in sample_u(model, todo, df, db, uid).items():
+        SCORED_U[keys[name], records] = u
+    filled_m = {tuple(x) for x in model_json["er"]["filled"]["m"]}
+    out = copy.deepcopy(model_json)
+    for c in out["comparisons"]:
+        name = c["output_column_name"]
+        for lv in (lv for lv in c["comparison_levels"] if not lv.get("is_null_level")):
+            lv["u_probability"] = SCORED_U[keys[name], records].get(lv["label_for_charts"]) or u_bound(model, by_name[name], df)
+            if (name, lv["label_for_charts"]) in filled_m:
+                lv["m_probability"] = lv["u_probability"]
+    return out
 
 
 def train_fs(model: FSModel, df: pd.DataFrame, db: DuckDBAPI, uid: str, labels: pd.Series | None = None,

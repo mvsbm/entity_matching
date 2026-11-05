@@ -4,17 +4,17 @@
 
 *Challenge C8.*
 
-The headline result is: on test, **91.1% recall (89.9–92.2%) and 0 false merges, with a false-merge rate of at most 0.14%**. This chapter explains every part of that sentence, and why it is a fair number and not a lucky or tuned one.
+The headline result is: on test, **89.9% recall (88.6–91.1%) and 0 false merges, with a false-merge rate of at most 0.14%**. This chapter explains every part of that sentence, and why it is a fair number and not a lucky or tuned one.
 
 ## Challenge: what exactly do we count?
 
 A system can be judged on its pairs or on its groups, and the two can disagree.
 
-**Pair metrics** judge the decisions themselves. On validation, the second stage accepted 474 pairs, and all 474 were true.
+**Pair metrics** judge the decisions themselves. On validation, the second stage accepted 466 pairs, and all 466 were true.
 
 **Group metrics** judge the final groups, after the pairs from both stages have been joined into entities. A pair counts as *found* if its two records end up in the same group, whether it was accepted directly or joined through other records.
 
-- **Recall:** of all true pairs, the share that end up in one group. On validation, 2,042 of 2,227, so 91.7%.
+- **Recall:** of all true pairs, the share that end up in one group. On validation, 2,034 of 2,227, so 91.3%.
 - **False merges:** pairs of different entities that end up in one group. On validation, 0.
 - **Over-merged groups:** groups that mix two or more real entities. On validation, 0.
 
@@ -32,7 +32,7 @@ Seeing no false merge among a few thousand pairs doesn't prove the rate is zero.
 
 $$\frac{\hat p + \frac{z^2}{2n} \pm z\sqrt{\frac{\hat p(1-\hat p)}{n} + \frac{z^2}{4n^2}}}{1 + \frac{z^2}{n}}, \qquad \hat p = \frac{k}{n}$$
 
-On validation, with k = 2,042 and n = 2,227, this gives **90.5–92.8%**. Unlike the simpler normal approximation, it stays sensible near 0% and 100%.
+On validation, with k = 2,034 and n = 2,227, this gives **90.1–92.4%**. Unlike the simpler normal approximation, it stays sensible near 0% and 100%.
 
 **Zero events use the rule of three.** If nothing went wrong in n tries, the true rate is at most about 3/n, with 95% confidence. Precisely, it is the largest rate p at which seeing no errors still has a 5% chance:
 
@@ -80,13 +80,14 @@ We make many choices: thresholds, comparators, candidate generators, model optio
 
 Every configuration gets its threshold this way: the configuration as written, each variant, and each Optuna trial. The final configuration's rule gives 6 bits.
 
-A check then confirms that the threshold transfers. Out-of-fold, 0 of 1,443 accepted pairs are false, a rate of at most 0.21%. On validation, 0 of 474 are.
+A check then confirms that the threshold transfers. Out-of-fold, 0 of 1,419 accepted pairs are false, a rate of at most 0.21%. On validation, 0 of 466 are.
 
 **4. The decision rule (`adopt`).** A change is adopted only if it passes a rule, applied on top of the current choice:
 
 - **"better"**: a significant paired gain on the selection set (p < 0.05), with no false pair added
 - **"cheaper"**: no paired loss on the selection set
 - **"safer"**: the same test as "cheaper", for a change that adds pairs because its gain shows only at scale
+- **"chosen"**: the owner's call, for a gain that our 10,000-record sets are too small to show. Recall may move there, but no false pair may be added
 - **both:** no paired loss on validation
 
 | Change (second stage) | Out-of-fold gains / losses | Validation | Adopted |
@@ -99,8 +100,11 @@ A check then confirms that the threshold transfers. Out-of-fold, 0 of 1,443 acce
 | a reversed sorted pass instead of TF-IDF (cheaper, for scale) | +2 / −0 | ±0 | yes |
 | five name keys, so no potential match depends on a sorted window (safer, for scale) | +1 / −0 | +1 / −0 | yes |
 | score every pair across two rule clusters | +12 / −0 | +4 / −0 | yes |
+| u re-sampled on each scored file (chosen, for scale) | +0 / −27 | +0 / −8 | yes |
 
-**5. Optuna proposes; the rule decides.** Optuna is a search tool. It tries many combinations of options (30 seeded trials, scored out-of-fold) and keeps the best trade-offs between recall and false merges. A tie-break, `pick_within_noise`, prefers the cheapest point whose recall is within noise of the best. The suggestion then faces `adopt` like any other change. After one adoption, later searches found nothing that passed (most recently +0 / −12 out-of-fold), so the search has converged.
+The last row is the one exception to the rule, and it is made in the open. On 10,000-record files, u from the file removes credit that u from train had over-given, so 27 true pairs fall below the line out-of-fold, and 8 on val. No false pair is added either way. On bigger files the effect turns around: +0.7 points of recall at 50,000 records and +1.1 at 75,000 ([chapter 3](03-far-too-many-pairs.md#quality-as-the-file-grows)). Production files are bigger than train, so we chose calibration at every size over a slightly higher number on small files.
+
+**5. Optuna proposes; the rule decides.** Optuna is a search tool. It tries many combinations of options (30 seeded trials, scored out-of-fold) and keeps the best trade-offs between recall and false merges. A tie-break, `pick_within_noise`, prefers the cheapest point whose recall is within noise of the best. The suggestion then faces `adopt` like any other change. After one adoption, later searches found nothing that passed (most recently +0 / −12 out-of-fold), so the search has converged. Both studies are now **off by default** (`enabled=False` in each notebook's Configuration cell). `FINAL` keeps the suggestions that were adopted, because those are written into `CHANGES`. Turning a study back on costs about 10 minutes, and is worth it after the data or the rules change.
 
 **6. Test is scored once.** A leaderboard records every run. It counts the distinct configurations scored on test, and the notebooks stop with an error above 1. The count is 1 for each stage.
 
@@ -114,19 +118,19 @@ Every number so far comes from one generated population: one seed, one noise mod
 
 | Scenario | Rules alone | Both stages | 95% interval | False merges | False-merge rate ≤ |
 |---|---|---|---|---|---|
-| as reported (seed 0) | 71.1% | 91.1% | 89.9–92.2% | 0 | 0.14% |
-| another seed (1) | 70.3% | 91.1% | 89.9–92.2% | 0 | 0.14% |
-| another seed (2) | 66.9% | 91.2% | 89.9–92.3% | 0 | 0.15% |
-| twice as many typos in names, phones and addresses | 67.4% | 90.1% | 88.8–91.2% | 0 | 0.15% |
-| emptier fields (fill rates fall to 45%, not 65%) | 62.8% | 89.4% | 88.0–90.5% | 0 | 0.14% |
-| prior: the near-certain rules find 25% of true pairs, not 50% (λ × 2) | 71.1% | 92.2% | 91.1–93.2% | 0 | 0.14% |
-| prior: they find 75% (λ × ⅔) | 71.1% | 91.0% | 89.8–92.1% | 0 | 0.14% |
+| as reported (seed 0) | 71.1% | 89.9% | 88.6–91.1% | 0 | 0.14% |
+| another seed (1) | 70.3% | 90.6% | 89.3–91.7% | 0 | 0.14% |
+| another seed (2) | 66.9% | 88.8% | 87.4–90.0% | 0 | 0.15% |
+| twice as many typos in names, phones and addresses | 67.4% | 88.9% | 87.5–90.1% | 0 | 0.15% |
+| emptier fields (fill rates fall to 45%, not 65%) | 62.8% | 88.4% | 87.1–89.6% | 0 | 0.14% |
+| prior: the near-certain rules find 25% of true pairs, not 50% (λ × 2) | 71.1% | 91.5% | 90.3–92.5% | 0 | 0.14% |
+| prior: they find 75% (λ × ⅔) | 71.1% | 89.1% | 87.8–90.3% | 0 | 0.14% |
 
 What the table shows:
 
-- **The final result moves by about a point.** Across seeds and noise, recall stays between 89.4% and 91.2%, and no scenario has a false merge.
-- **The rules are the sensitive part.** They need exact agreements, so emptier fields cost them 8 points (71.1% → 62.8%). The second stage recovers most of that, and the final result loses 1.7 points.
-- **A prior off by a factor of two barely matters.** λ rests on an assumption: that the near-certain rules find half of all true pairs. If they found a quarter, or three quarters, every weight would shift by one bit, or by about half a bit. Recall moves by +1.1 or −0.1 points, with no false merge, because the threshold's safety step absorbs the shift.
+- **The final result moves by about a point.** Across seeds and noise, recall stays between 88.4% and 90.6%, and no scenario has a false merge.
+- **The rules are the sensitive part.** They need exact agreements, so emptier fields cost them 8 points (71.1% → 62.8%). The second stage recovers most of that, and the final result loses 1.5 points.
+- **A prior off by a factor of two barely matters.** λ rests on an assumption: that the near-certain rules find half of all true pairs. If they found a quarter, or three quarters, every weight would shift by one bit, or by about half a bit. Recall moves by +1.6 or −0.8 points, with no false merge, because the threshold's safety step absorbs the shift.
 
 How the cost and the quality behave as the file grows to a million records is in [chapter 3](03-far-too-many-pairs.md#scaling-to-a-million-records).
 

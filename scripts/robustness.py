@@ -24,7 +24,7 @@ import pandas as pd
 
 from er.config import OverBudget
 from er.evaluate import missed_pairs
-from er.match import sample_u, score_fs, train_fs
+from er.match import score_fs, train_fs
 from er.pipeline import run_fs, run_rules
 from er.settings import load_settings
 from er.standardize import prepare
@@ -73,40 +73,37 @@ def split(records: pd.DataFrame, truth: pd.DataFrame) -> dict[str, tuple[pd.Data
     return {name: (records[which == name].reset_index(drop=True), truth[which == name].reset_index(drop=True)) for name in shares}
 
 
-def fit(records: pd.DataFrame, truth: pd.DataFrame, model=None, u: dict | None = None) -> dict:
+def fit(records: pd.DataFrame, truth: pd.DataFrame, model=None) -> dict:
     model = model or PROB.model
     df = prepare(PROB.standardize, records, PROB.normalized(), PROB.used())
-    return train_fs(model, df, DB, UID, labels=truth.set_index(UID)[ENT], u=u)
-
-
-def u_of(records: pd.DataFrame) -> dict:  # u sampled on these records: no labels needed, fixed cost (u_max_pairs)
-    return sample_u(PROB.model, list(PROB.model.comparisons), prepare(PROB.standardize, records, PROB.normalized(), PROB.used()), DB, UID)
+    return train_fs(model, df, DB, UID, labels=truth.set_index(UID)[ENT])
 
 
 def peak_gb() -> float:  # the process's peak resident memory so far (ru_maxrss: bytes on macOS, KB on Linux)
     return resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / (1e9 if sys.platform == "darwin" else 1e6)
 
 
-def resolve(records: pd.DataFrame, truth: pd.DataFrame, model_json: dict) -> tuple[dict, dict, float, float, object]:
-    """Both stages on one file: rules, then the probabilistic stage on what they left. → metrics after each, seconds,
-    the probabilistic stage's result."""
+def resolve(records: pd.DataFrame, truth: pd.DataFrame, model_json: dict, prob=None) -> tuple[dict, dict, float, float, object]:
+    """Both stages on one file: rules, then the probabilistic stage (PROB unless given) on what they left. → metrics
+    after each, seconds, the probabilistic stage's result."""
+    prob = prob or PROB
     t = time.perf_counter()
     det = run_rules(DET, records, truth, DB, DATA)
     t_det = time.perf_counter() - t
     pairs = det.edges[[f"{UID}_l", f"{UID}_r", "stage", "rule", "score", "kept"]].astype("string")
     clusters = det.records[[UID, "CLUSTER_ID"]].set_axis([UID, "cluster_id"], axis=1).astype("string")
     t = time.perf_counter()
-    res = run_fs(PROB, model_json, records, truth, pairs, clusters, DB, DATA)
+    res = run_fs(prob, model_json, records, truth, pairs, clusters, DB, DATA)
     return res.metrics.iloc[0].to_dict(), res.metrics.iloc[-1].to_dict(), t_det, time.perf_counter() - t, res
 
 
-def potential_off_list(res, truth: pd.DataFrame, model_json: dict) -> int:
+def potential_off_list(res, truth: pd.DataFrame) -> int:
     """True pairs both stages missed that are on no candidate list, yet would reach the threshold if compared: the
     potential matches blocking lost. O(T · C) for the T missed pairs."""
     l, r = f"{UID}_l", f"{UID}_r"
     missed = missed_pairs(res.records.set_index(UID)["CLUSTER_ID"], truth.set_index(UID)[ENT], UID).astype("string")
     off = missed.merge(res.candidates[[l, r]], on=[l, r], how="left", indicator=True)
-    scored = score_fs(model_json, res.records, off.loc[off["_merge"] == "left_only", [l, r]], DB, UID)
+    scored = score_fs(res.model, res.records, off.loc[off["_merge"] == "left_only", [l, r]], DB, UID)  # the model that scored
     return int((scored["match_weight"] >= PROB.min_match_weight).sum())
 
 
@@ -144,9 +141,9 @@ def scenarios() -> pd.DataFrame:
 def scale(smoke: bool) -> pd.DataFrame:
     """Production cost: one model fitted on a train-sized split scores files of growing size, both stages. Up to
     len(PERSONS) entities every entity is a distinct persona. Above that, personas repeat and two entities can be
-    clones no matcher can tell apart, so those rows measure cost only. `recall_u_from_file` re-samples u on the scored
-    file (m and λ still from train): the fields whose value sets grow with N (address, CIF ID) then keep their weight.
-    `potential_off_list` counts the missed true pairs that no generator listed but that would reach the threshold."""
+    clones no matcher can tell apart, so those rows measure cost only. `FINAL` re-samples u on each scored file;
+    `recall_u_from_train` keeps train's u instead, for comparison. `potential_off_list` counts the missed true pairs that
+    no generator listed but that would reach the threshold."""
     base = GEN["SPEC"]
     train = split(*population(base))["train"]
     model = fit(*train)
@@ -162,11 +159,11 @@ def scale(smoke: bool) -> pd.DataFrame:
             continue
         row = dict(records=len(g.df), rules_seconds=round(t_det, 1), probabilistic_seconds=round(t_prob, 1),
                    peak_memory_gb=round(peak_gb(), 1), recall="—", false_merges="—", fp_rate_at_most="—", potential_off_list="—",
-                   recall_u_from_file="—")
+                   recall_u_from_train="—")
         if n <= len(PERSONS):
-            _, local, *_ = resolve(g.df, g.truth, fit(*train, u=u_of(g.df)))
+            _, fixed, *_ = resolve(g.df, g.truth, model, replace(PROB, model=replace(PROB.model, u_from_scored=False)))
             row |= dict(recall=round(after["recall"], 4), false_merges=int(after["FP"]), fp_rate_at_most=f"{after['fp_rate_hi']:.2%}",
-                        potential_off_list=potential_off_list(res, g.truth, model), recall_u_from_file=round(local["recall"], 4))
+                        potential_off_list=potential_off_list(res, g.truth), recall_u_from_train=round(fixed["recall"], 4))
         rows.append(row)
         print(rows[-1], flush=True)
     out = pd.DataFrame(rows)

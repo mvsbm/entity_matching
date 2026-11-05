@@ -5,6 +5,7 @@ unresolved (in a singleton cluster), or, for a stage listed in `bridge`, if they
 everything kept so far is resolved again. Metrics after each stage are cumulative: matching metrics on the accepted
 pairs, resolution metrics on the clusters.
 """
+import math
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -19,7 +20,7 @@ from er.config import (Blocker, Budget, Data, DeletionKeys, Key, KeyBlocker, Ove
                        SortedNeighbourhood, TfidfNeighbours, ThresholdRule, keys_of)
 from er.evaluate import (average_precision, candidate_metrics, cluster_metrics, edge_metrics, fp_upper, missed_pairs,
                          true_pairs, wilson)
-from er.match import rule_edges, scaled_prior, score_fs
+from er.match import rule_edges, sample_u, scaled_prior, score_fs, with_scored_u
 from er.resolve import resolve
 from er.standardize import prepare
 from er.strings import FUNCTIONS, udf
@@ -60,6 +61,11 @@ def preflight(spec: RulesSpec, df: pd.DataFrame) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
+def entity_rank(entity: pd.Series, seed: int = 0) -> np.ndarray:  # each record's entity's place in a random entity order
+    order = np.random.default_rng(seed).permutation(entity.unique())
+    return entity.map(pd.Series(np.arange(len(order)), index=order)).to_numpy()
+
+
 def grown_pairs(df: pd.DataFrame, entity: pd.Series, uid: str, b: KeyBlocker | DeletionKeys, target_rows: int,
                 fractions: tuple[float, ...] = (0.25, 0.5, 1.0), seed: int = 0) -> tuple[float, int]:
     """How a key's pairs P (as `estimate` counts them) grow with the population (P ∝ N^α), and P projected to target_rows.
@@ -67,12 +73,10 @@ def grown_pairs(df: pd.DataFrame, entity: pd.Series, uid: str, b: KeyBlocker | D
     distinct values (the last four phone digits) chance collisions shrink with the square, true duplicates only
     linearly. A key whose value pool grows with the population (addresses) comes out a little steeper than it
     really is, which is the safe side. O(N) per fraction."""
-    ent = df[uid].map(entity)
-    order = np.random.default_rng(seed).permutation(ent.unique())
-    rank = ent.map(pd.Series(np.arange(len(order)), index=order)).to_numpy()  # an entity's place in a random order
+    rank = entity_rank(df[uid].map(entity), seed)
     sizes, pairs = [], []
     for f in fractions:
-        keep = rank < max(1, int(len(order) * f))
+        keep = rank < max(1, int((rank.max() + 1) * f))
         sizes.append(int(keep.sum()))
         pairs.append(max(int(estimate(b, df[keep], 0)["est_pairs"]), 1))
     alpha = float(np.polyfit(np.log(sizes), np.log(pairs), 1)[0])
@@ -104,20 +108,40 @@ def scale_check(spec: RulesSpec | ProbSpec, records: pd.DataFrame, truth: pd.Dat
 
 def window_only(spec: ProbSpec, model_json: dict, records: pd.DataFrame, truth: pd.DataFrame, db: DuckDBAPI, data: Data,
                 sizes: list[int]) -> pd.DataFrame:
-    """Per file size: the potential matches (true pairs whose fields would reach min_match_weight, λ moved to that size)
-    and how many of them share no equality key (KeyBlocker, DeletionKeys). Only a window (sorted neighbourhood,
-    TF-IDF) can find those, and a window's reach shrinks as the file grows. O(N + P + T·C), T true pairs."""
+    """Per file size: the potential matches (true pairs whose fields would reach min_match_weight at that size) and how
+    many of them share no equality key (KeyBlocker, DeletionKeys). Only a window (sorted neighbourhood, TF-IDF) can find
+    those, and a window's reach shrinks as the file grows. λ moves to each size; with model.u_from_scored, so does u:
+    per level u ∝ N^γ, γ measured between half and all of the entities, so a pair agreeing on a field whose value set
+    grows with the file keeps its weight at scale. O(N + P + T·C) for T true pairs, plus two u samples."""
+    assert not model_json["er"]["tf"], "the weights at other sizes are summed from the levels, without term frequencies"
     uid = data.unique_id
     l, r = f"{uid}_l", f"{uid}_r"
     df = prepare(spec.standardize, records, spec.normalized(), spec.used())
     scored = score_fs(model_json, df, true_pairs(truth.set_index(uid)[data.entity_id], uid).astype("string"), db, uid)
+    u_here, growth = {}, {}
+    if spec.model.u_from_scored:
+        entity = df[uid].map(truth.set_index(uid)[data.entity_id])
+        half = df[entity_rank(entity) < entity.nunique() // 2]  # whole entities, as grown_pairs keeps them
+        u_here, u_half = (sample_u(spec.model, list(spec.model.comparisons), d, db, uid) for d in (df, half))
+        growth = {(c, lv): math.log(u / u_half[c][lv]) / math.log(len(df) / len(half))
+                  for c in u_here for lv, u in u_here[c].items() if u_half[c].get(lv)}
     keyed = pd.concat([generate(b, df, uid, None) for b in spec.blockers if isinstance(b, KeyBlocker | DeletionKeys)]
                       + [pd.DataFrame(columns=[l, r], dtype="string")])
     on_key = scored.merge(keyed.drop_duplicates().assign(keyed=True), on=[l, r], how="left")["keyed"].fillna(False).to_numpy(bool)
-    bits = lambda n: np.log2((lam := scaled_prior(model_json, n)) / (1 - lam))  # the prior's log-odds at size n
+    filled_m = {tuple(x) for x in model_json["er"]["filled"]["m"]}  # never seen in training: m = u, 0 bits at any size
     rows = []
     for n in sizes:
-        potential = scored["match_weight"].to_numpy() + bits(n) - bits(len(df)) >= spec.min_match_weight
+        lam = scaled_prior(model_json, n)
+        weight = np.full(len(scored), math.log2(lam / (1 - lam)))
+        for c in model_json["comparisons"]:  # the bits of each level at size n, picked by each pair's gamma (else = 0)
+            name, levels = c["output_column_name"], [lv for lv in c["comparison_levels"] if not lv.get("is_null_level")][::-1]
+            u = [min(1.0, u_here.get(name, {}).get(lv["label_for_charts"], lv["u_probability"])
+                     * (n / len(df)) ** growth.get((name, lv["label_for_charts"]), 0.0)) for lv in levels]
+            m = [u_i if (name, lv["label_for_charts"]) in filled_m else lv["m_probability"] for lv, u_i in zip(levels, u)]
+            per_level = np.log2(np.array(m) / np.array(u))
+            gamma = scored[f"gamma_{name}"].to_numpy(int)
+            weight += np.where(gamma >= 0, per_level[np.clip(gamma, 0, None)], 0.0)
+        potential = weight >= spec.min_match_weight
         rows.append(dict(records=n, potential=int(potential.sum()), window_only=int((potential & ~on_key).sum())))
     return pd.DataFrame(rows)
 
@@ -205,6 +229,7 @@ class ProbResult:
     stage_metrics: dict       # this stage alone: candidates, accepted pairs, average precision
     records: pd.DataFrame     # prepared records + CLUSTER_ID, MATCH_STAGE, MATCH_RULE
     seconds: float
+    model: dict               # the model that scored: the fitted one, with u from these records if model.u_from_scored
 
 
 def run_fs(spec: ProbSpec, model_json: dict, records: pd.DataFrame, truth: pd.DataFrame, prev_pairs: pd.DataFrame,
@@ -216,6 +241,8 @@ def run_fs(spec: ProbSpec, model_json: dict, records: pd.DataFrame, truth: pd.Da
     l, r = f"{uid}_l", f"{uid}_r"
     weight = spec.min_match_weight if min_match_weight is None else min_match_weight
     df = prepare(spec.standardize, records, spec.normalized(), spec.used())
+    if spec.model.u_from_scored:
+        model_json = with_scored_u(spec.model, model_json, df, db, uid)
     entity = truth.set_index(uid)[data.entity_id]
     prev = prev_clusters.set_index(uid)["cluster_id"].reindex(df[uid].to_numpy())
     query = None if spec.bridge else set(prev.index[prev.map(prev.value_counts()).eq(1).to_numpy()])  # None: every record
@@ -241,7 +268,7 @@ def run_fs(spec: ProbSpec, model_json: dict, records: pd.DataFrame, truth: pd.Da
     stage_metrics = dict(**candidate_metrics(cands, entity, uid, targets), **edge_metrics(accepted, entity, uid),
                          average_precision=average_precision(scored["match_weight"].to_numpy(), ~scored["fp"].to_numpy()),
                          min_match_weight=weight)
-    return ProbResult(report, cands, scored, pd.DataFrame(metrics), stage_metrics, out, time.perf_counter() - t0)
+    return ProbResult(report, cands, scored, pd.DataFrame(metrics), stage_metrics, out, time.perf_counter() - t0, model_json)
 
 
 def threshold_curve(res: ProbResult, spec: ProbSpec, prev_pairs: pd.DataFrame, truth: pd.DataFrame, db: DuckDBAPI,

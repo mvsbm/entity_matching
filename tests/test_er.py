@@ -14,7 +14,7 @@ from er.config import (Budget, Comparator, Comparison, DeletionKeys, FSModel, Ke
                        Resolver, Rule, RulesSpec, SortedNeighbourhood, Stage, TfidfNeighbours, ThresholdRule, keys_sql)
 from er.evaluate import adopt, cluster_metrics, fp_upper, paired_test, predicted_pairs, true_pairs, wilson
 from er.io import load, read_stage, write_stage
-from er.match import parameters, rule_edges, sample_u, score_fs, train_fs, u_values, waterfall
+from er.match import parameters, rule_edges, sample_u, score_fs, train_fs, u_values, waterfall, with_scored_u
 from er.pipeline import accept_curve, cascade, check_budget, entity_folds, grown_pairs, preflight, select_threshold, window_only
 from er.resolve import connected_components, constrained
 from er.settings import load_settings
@@ -268,6 +268,22 @@ def test_deletion_keys_find_every_pair_one_edit_apart():
     assert estimate(DeletionKeys(name="d", key=Key("name")), df, len(df))["est_pairs"] >= len(every)  # an upper bound
 
 
+def test_u_from_the_scored_file(con_db, records):
+    _, db = con_db
+    fitted = train_fs(model(), records, db, UID)
+    same = with_scored_u(model(), fitted, records, db, UID)  # the fitting records, the same sample: the same model
+    assert score_fs(same, records, PAIR, db, UID)["match_weight"].item() == pytest.approx(score_fs(fitted, records, PAIR, db, UID)["match_weight"].item())
+    padded = pd.concat([records, pd.DataFrame({"uid": [f"p{i:03d}" for i in range(240)], "name": [f"ヨソ{i}" for i in range(240)],
+                                               "phone": [f"{i:04d}" for i in range(240)], "entity": "pad"}, dtype="string")], ignore_index=True)
+    other = with_scored_u(model(), fitted, padded, db, UID)
+    u = lambda m: {lv["label_for_charts"]: lv["u_probability"] for c in m["comparisons"] if c["output_column_name"] == "phone" for lv in c["comparison_levels"] if not lv.get("is_null_level")}
+    assert u(other)["exact"] < u(fitted)["exact"]  # more distinct phones: random pairs agree less often
+    unseen = {tuple(x) for x in fitted["er"]["filled"]["m"]}  # never seen in training: m follows u, 0 bits
+    m = lambda j: {(c["output_column_name"], lv["label_for_charts"]): (lv["m_probability"], lv["u_probability"]) for c in j["comparisons"]
+                   for lv in c["comparison_levels"] if not lv.get("is_null_level")}
+    assert all(mu[0] == m(fitted)[k][0] if k not in unseen else mu[0] == mu[1] for k, mu in m(other).items())  # m stays as fitted
+
+
 def test_window_only_counts_potential_matches_no_key_reaches(con_db, records):
     _, db = con_db
     data = replace(load_settings().data, unique_id=UID, entity_id="entity")
@@ -281,6 +297,8 @@ def test_window_only_counts_potential_matches_no_key_reaches(con_db, records):
                            records, truth, db, data, [len(records)])
     assert keyed["window_only"].eq(0).all() and keyed["potential"].iloc[1] < keyed["potential"].iloc[0]  # λ falls with N
     assert windowed["window_only"].iloc[0] == windowed["potential"].iloc[0] > 0  # every true pair shares the phone, none a key here
+    moving = window_only(replace(spec, model=replace(spec.model, u_from_scored=True)), model_json, records, truth, db, data, [len(records)])
+    assert moving["potential"].iloc[0] == keyed["potential"].iloc[0]  # at its own size, u from the records is the fitted u
 
 
 def test_candidate_generators_respect_query_window_and_cosine():

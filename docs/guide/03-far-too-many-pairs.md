@@ -89,7 +89,7 @@ We generated files of 12,000, 25,000, 50,000 and 75,000 records, counted each st
 | Step | Cost | Grows like | At a million records |
 |---|---|---|---|
 | standardize | O(N·L) | N | seconds |
-| rules, except F2 | O(N + P) per rule | N^1.0 to N^1.4 | ≤ 4.1 million pairs per rule, at worst |
+| rules, except F2 | O(N + P) per rule | N^0.98 to N^1.04 | ≤ 0.13 million pairs per rule |
 | **rule F2** (joined on the phone alone) | O(N + P) | **N^1.89** | **55.8 million pairs** |
 | key: **phone** | O(N + P) | **N^1.89** | **39 million pairs**, 4% of them true |
 | keys: address, address code, CIF ID, folded names | O(N + P) | N^1.0 to N^1.4 | ≤ 0.8 million pairs each |
@@ -133,7 +133,7 @@ Each key splits the 10,000 phone values into hundreds of thousands of combinatio
 
 The exact address fails because F2 exists for address typos: joining on the exact address defeats its purpose. The first three characters (the start of the city, such as 福島市) survive typos later in the address.
 
-**Fix 4: fit and tune once, on a fixed-size sample.** u comes from 10 million random pairs, whatever the file size. EM runs on blocks of the training file. Cross-validation and Optuna run on train. None of this needs the production file. The model is fitted on train (about 30,000 records) and then scores a file of any size, with λ rescaled to that file's size ([chapter 5](05-uncertain-evidence-fellegi-sunter.md)).
+**Fix 4: fit and tune once, on a fixed-size sample.** u comes from 10 million random pairs, whatever the file size. EM runs on blocks of the training file. Cross-validation and Optuna run on train. None of this needs the production file. The model is fitted on train (about 30,000 records) and then scores a file of any size, with λ rescaled to that file's size and u re-sampled on its records, at the same fixed cost ([chapter 5](05-uncertain-evidence-fellegi-sunter.md)).
 
 **Not chosen:**
 
@@ -145,7 +145,7 @@ The exact address fails because F2 exists for address typos: joining on the exac
 
 The fixes above were judged by the pairs `FINAL` accepts. A stricter test asks about the pairs it *could* accept. Call a true pair a **potential match** if its fields, once compared, would reach the 6-bit threshold. Blocking must keep every potential match, at every file size. A pair that falls short with all its evidence counted can never be accepted, whatever list it is on.
 
-What counts as potential depends on the file size. λ shrinks as the file grows, so the same evidence earns fewer bits: log2(N / 30,000) fewer than on train. That makes every size testable on the training file: score its true pairs once, move λ to the target size, and see which pairs still reach 6 bits.
+What counts as potential depends on the file size. λ shrinks as the file grows, so the same evidence earns fewer bits: log2(N / 30,000) fewer than on train. u moves too, because u is measured on each scored file ([chapter 5](05-uncertain-evidence-fellegi-sunter.md#challenge-learning-m-u-and-λ-without-labels)): on fields whose values grow with the file, strangers agree less often, so an agreement earns more. That makes every size testable on the training file. Score its true pairs once, then move λ to the target size, and u by the growth measured between half and all of train's entities. The pairs still at 6 bits or more are the potential matches at that size.
 
 **Challenge: a sorted window reaches less as the file grows.** A sorted neighbourhood compares each record with the next three in name order. In a bigger file, more records sort between two similar names, so fewer true pairs fall inside the window. Here, "name-close" means a Jaro–Winkler similarity of at least 0.75 after kana folding, the model's lowest name level:
 
@@ -201,7 +201,7 @@ Each notebook has a cell that projects every key and rule of `FINAL` to a millio
 
 For the probabilistic `FINAL`, the largest projection is the address key, at 4.0 million pairs. Subsampling entities overstates the growth of keys that households share: it gives α 1.58 for the address, against 1.01 measured on growing generated files. So the check errs on the safe side. Optuna trials that fail it are pruned.
 
-The probabilistic cell also counts the potential matches on train that share no key, at train's size and at a million records (`window_only`). It stops the run if any is left. For `FINAL`: 0 of 6,120, and 0 of 5,034.
+The probabilistic cell also counts the potential matches on train that share no key, at train's size and at a million records (`window_only`). It stops the run if any is left. For `FINAL`: 0 of 6,120, and 0 of 5,996.
 
 ### Measured: both stages, up to a million records
 
@@ -209,13 +209,13 @@ One model, fitted on train, scores generated files of growing size, both stages,
 
 | Records | Rules | Probabilistic stage | Peak memory |
 |---|---|---|---|
-| 12,392 | 0.4 s | 0.8 s | 1.2 GB |
-| 24,944 | 0.7 s | 1.4 s | 1.3 GB |
-| 50,215 | 1.1 s | 2.6 s | 1.6 GB |
-| 75,284 | 1.5 s | 4.0 s | 2.3 GB |
-| **999,481** | **19.2 s** | **98.4 s** | **6.9 GB** |
+| 12,392 | 0.4 s | 9.3 s | 1.2 GB |
+| 24,944 | 0.7 s | 10.0 s | 1.3 GB |
+| 50,215 | 1.1 s | 10.6 s | 1.6 GB |
+| 75,284 | 1.5 s | 12.0 s | 2.2 GB |
+| **999,481** | **17.5 s** | **96.4 s** | **7.5 GB** |
 
-The total time grows like **N^1.06**, and a million records take under two minutes.
+A million records take under two minutes. About 8 s of each probabilistic run is a fixed cost: u is re-sampled on the scored file from 10 million random pairs, whatever its size. Without that fixed part, the work grows about linearly with the file.
 
 Two limits had to be removed on the way:
 
@@ -228,19 +228,19 @@ The generator has 60,000 distinct personas. Beyond that it must reuse them, whic
 
 Up to 75,000 records, every entity is still a distinct persona, so quality can be measured too:
 
-| Records | Recall | False merges | False-merge rate ≤ | Potential matches on no list | Recall, with u from the scored file |
+| Records | Recall | False merges | False-merge rate ≤ | Potential matches on no list | Recall, if u were kept from train |
 |---|---|---|---|---|---|
-| 12,392 | 89.9% | 0 | 0.12% | 0 | 89.8% |
-| 24,944 | 89.9% | 4 | 0.18% | 0 | 89.8% |
-| 50,215 | 88.7% | 1 | 0.05% | 0 | 89.5% |
-| 75,284 | 87.6% | 5 | 0.07% | 0 | 88.7% |
+| 12,392 | 89.8% | 0 | 0.12% | 0 | 89.9% |
+| 24,944 | 89.8% | 4 | 0.18% | 0 | 89.9% |
+| 50,215 | 89.5% | 1 | 0.05% | 0 | 88.7% |
+| 75,284 | 88.7% | 5 | 0.07% | 0 | 87.6% |
 
 At every size, no missed true pair that could reach the threshold is missing from the candidate lists. Blocking loses nothing that could have been accepted. Two things change as the file grows:
 
 - **False merges appear, but stay rare.** A bigger file holds more pairs of different entities that look alike. The five at 75,000 records come from two accepted pairs. In each, two entities live at the same street address and share their last four phone digits by chance, and the name gives no evidence: one record is a company and the other a person, or one has no name at all. The bound on the false-merge rate stays at the level reported for val and test (0.14–0.15%) or below it, except at 25,000 records (0.18%).
-- **Recall falls by about 2 points, and half of that is our own doing.** λ, the chance that two random records match, is rescaled to the file's size. But u, the chance that two different entities agree on a field, stays as measured on train. For the address and the CIF ID, a bigger file has more distinct values, so u should shrink as well. Re-sampling u on the scored file needs no labels and has a fixed cost. At 75,000 records it recovers 87.6% → 88.7%, with the same false merges. On files smaller than train it lowers recall slightly, as it should. It is not adopted yet: it changes every reported number, so it needs its own pass through the decision rule ([lessons.md](../lessons.md#the-size-rescaling-is-only-half-done-open)).
+- **Recall falls by about 1 point.** That's what is left once u is measured on each scored file. With u kept from train it would fall by more than 2 points. For the address and the CIF ID, a bigger file has more distinct values, so two strangers agree on them less often, and train's u under-credits their agreements. The crossover is train's own size: below it, train's u over-credits instead, which is why the 10,000-record test file scores 91.1% with train's u and 89.9% without it. Production files are bigger than train, so u is measured on the scored file ([lessons.md](../lessons.md#the-size-rescaling-was-only-half-done)).
 
-**In short:** two steps grew with the square of the file: keys with a fixed set of values, and all-against-all similarity. Compound keys, a reversed sorted pass and a narrower F2 join remove both. A sorted window reaches fewer pairs as the file grows, so five more keys make sure no potential match depends on one. And the second stage now also scores pairs between two rule clusters. A million records take under two minutes and 7 GB of memory.
+**In short:** two steps grew with the square of the file: keys with a fixed set of values, and all-against-all similarity. Compound keys, a reversed sorted pass and a narrower F2 join remove both. A sorted window reaches fewer pairs as the file grows, so five more keys make sure no potential match depends on one. And the second stage now also scores pairs between two rule clusters. A million records take under two minutes and 8 GB of memory.
 
 ## In the code
 

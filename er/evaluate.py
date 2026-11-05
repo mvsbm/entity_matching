@@ -115,8 +115,11 @@ def paired_test(base: set[tuple[str, str]], variant: set[tuple[str, str]], truth
 def adopt(kind: str, selection: dict[str, float], val: dict[str, float], p_max: float) -> bool:
     """The decision rule, on paired_test results against the current choice. "better" needs a significant paired gain
     on the selection set; "cheaper" and "safer" (adds pairs whose gain shows only at scale) no paired loss there. All
-    need no FP added there and no paired loss on val."""
-    assert kind in ("better", "cheaper", "safer"), kind
+    need no FP added there and no paired loss on val. "chosen" is the owner's call for a gain the selection sets are too
+    small to show: recall may move, but the safety part still applies, no FP added on the selection set or on val."""
+    assert kind in ("better", "cheaper", "safer", "chosen"), kind
+    if kind == "chosen":
+        return selection["FP_added"] == 0 and val["FP_added"] <= val["FP_removed"]
     gain = (selection["TP_gains"] > selection["TP_losses"] and selection["p"] < p_max if kind == "better"
             else selection["TP_losses"] == 0)
     return gain and selection["FP_added"] == 0 and val["TP_gains"] >= val["TP_losses"] and val["FP_added"] <= val["FP_removed"]
