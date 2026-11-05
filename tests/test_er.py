@@ -501,6 +501,15 @@ def population():
     return s, p, g
 
 
+def test_a_run_refuses_a_resolver_it_cannot_apply(population):
+    from er.run import Run
+    s, p, _ = population  # choose.py could adopt the constrained resolver; the run would then cluster otherwise
+    constrained = Resolver(method="constrained", cannot_link=("given_name",))
+    for q in (replace(p, fs=replace(p.fs, resolver=constrained)), replace(p, rules=replace(p.rules, resolver=constrained))):
+        with pytest.raises(InputError, match="connected components only"):
+            Run(q, s)
+
+
 def test_a_run_ignores_record_order_refuses_a_used_folder_and_an_increment_keeps_every_cluster(tmp_path, population):
     from er.match import scaled_prior
     from er.run import Run, qa

@@ -128,7 +128,7 @@ def main() -> None:
               f"## Cost: files of growing size (time grows like N^{curve.attrs['alpha']})", "",
               f"Each file is resolved by `scripts/resolve.py` in a process of its own, fitted on the file itself; DuckDB memory limit: "
               f"{limit}. Peak memory is the process's, Python included. Step columns are seconds. `fit` (on {FINAL.fit_rows:,} "
-              f"records) and the u sample inside `score` ({FINAL.fs.model.u_max_pairs:,.0f} pairs) cost the same at any size, so at "
+              f"records) and the u sample of the file inside it ({FINAL.fs.model.u_max_pairs:,.0f} pairs) cost the same at any size, so at "
               f"these sizes the total grows far slower than N. Above {len(PERSONS):,} entities personas repeat, so those rows measure "
               "cost only.", "", markdown(curve), ""]
     path = S.root / "reports" / "benchmark.md"

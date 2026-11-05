@@ -227,7 +227,7 @@ Without labels, a run can check only the patterns: every combination of comparis
 | 75,284 | 8.8 s | 0.5 s | 0.5 s | 9.6 s | 20.4 s | 1.0 GB |
 | **999,481** | **7.8 s** | **3.5 s** | **3.4 s** | **20.7 s** | **44.1 s** | **3.8 GB, varies** |
 
-A million records take 44 seconds. The fit, on a fixed sample, and the u sample inside the score, from 10 million random pairs, cost about the same at any size; without them, the work grows about linearly with the file. The peak memory under the 8 GB limit varies from run to run, because DuckDB keeps what the limit allows; the run itself needs little: a million records complete within a 2 GB limit in 46 s, with the same answer. The cost of every step, for a full run and for an increment, is in [performance.md](../performance.md).
+A million records take 44 seconds. The fit, on a fixed sample, and its u sample of the file, from 10 million random pairs, cost about the same at any size; without them, the work grows about linearly with the file. The peak memory under the 8 GB limit varies from run to run, because DuckDB keeps what the limit allows; the run itself needs little: a million records complete within a 2 GB limit in 46 s, with the same answer. The cost of every step, for a full run and for an increment, is in [performance.md](../performance.md).
 
 Three limits had to be removed on the way:
 

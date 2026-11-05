@@ -7,11 +7,13 @@ with the numbers filled in, and its time.
                                                  resolved, standardize each chunk → table records
     budget      O(N)                             exact block sizes per rule and generator, before any join; blocks of
                                                  64+ records flagged (a rule doesn't trust them; candidates sample them)
-    fit         O(n + S·K + P_em·K)              λ, u and m by EM on a fixed-size sample of n records (or a fitted model)
+    fit         O(n + S·K + P_em·K) + O(N + S·K) λ and m by EM on a fixed-size sample of n records (or a fitted model),
+                                                 then u on this file
     rules       O(N + Σ P_r·L²) + O(E·d + N)     one join per rule (the first rule wins), then the rules' cascade
     candidates  O(N·L + Σ P_g)                   every generator; pairs inside one rule cluster dropped; a flagged block
-                                                 joined only if a sample of its pairs reaches the review floor
-    score       O(N + S·K) + O(C·K·L²)           u on this file, then every candidate scored
+                                                 joined only if a sample of its pairs, scored as the run scores, reaches
+                                                 the review floor
+    score       O(C·K·L²)                        every candidate scored
     cluster     O(C + E·d + N)                   accept at the threshold, then cluster with the rules' pairs
     write       O(N + C)                         gold clusters and matches, as Parquet; the state for increments
 
@@ -129,7 +131,13 @@ class Run:
         self.added: int | None = None         # an increment's new records (0: nothing new)
         self.gated = pd.DataFrame()           # the oversized blocks the candidates checked, and what was decided
         self.present: dict = {}               # each field the file holds, and the source columns it is built from
+        self.scoring: dict | None = None      # the model with u from this file (fit): what the gate and the scores use
+        self.basis: dict = {}                 # what an increment needs to tell whether those u went stale (er.match.u_basis)
         self.rule_names = [rule.name for st in self.pipeline.rules.stages for rule in st.rules]
+        if {self.pipeline.rules.resolver.method, self.pipeline.fs.resolver.method} != {"connected_components"}:
+            raise InputError("the run clusters by connected components only; the pipeline asks for "
+                             f"{self.pipeline.rules.resolver.method} (rules) and {self.pipeline.fs.resolver.method} (model)",
+                             fix='set resolver = { method = "connected_components" } in both stages of the pipeline')
 
     def _done(self, name: str, big_o: str, filled: str, t: float, **facts: object) -> None:
         self.steps.append(dict(step=name, big_o=big_o, filled=filled, seconds=round(time.perf_counter() - t, 2),
@@ -230,10 +238,13 @@ class Run:
         return plan
 
     def capacity(self) -> int:
-        """The pairs that fit in DuckDB's memory limit plus the free space of its temp directory, at BYTES_PER_PAIR."""
-        limit, temp = self.con.execute("SELECT current_setting('memory_limit'), current_setting('temp_directory')").fetchall()[0]
+        """The pairs that fit in DuckDB's memory limit plus the room it may spill to, at BYTES_PER_PAIR: its temp
+        directory's free space, capped as DuckDB caps it (max_temp_directory_size: by default 90% of that space)."""
+        limit, temp, cap = self.con.execute("SELECT current_setting('memory_limit'), current_setting('temp_directory'), "
+                                            "current_setting('max_temp_directory_size')").fetchall()[0]
         free = shutil.disk_usage(temp if temp and os.path.isdir(temp) else ".").free
-        return int((size_bytes(limit) + free) / BYTES_PER_PAIR)
+        spill = 0.9 * free if "%" in cap else min(free, size_bytes(cap))
+        return int((size_bytes(limit) + spill) / BYTES_PER_PAIR)
 
     def _untrusted(self, i: int, rule_keys: list[str], within: str | None = None) -> str | None:
         """The values of a rule's keys held by an oversized block (with `within`, a table of records: only the values
@@ -255,17 +266,26 @@ class Run:
 
     def fit(self) -> dict:
         """λ from the near-certain rules, u by random sampling, m by EM, on a fixed-size sample of whole postal areas
-        (households stay together, and the cost doesn't grow with the file). Skipped when a fitted model was given."""
-        t = time.perf_counter()
+        (households stay together, and the cost doesn't grow with the file); skipped when a fitted model was given. Then
+        u measured on this file (the model's choice), which the gate on oversized blocks and the scores both use: the
+        sample's u would under-credit a field whose values grow with the file. A file no bigger than the sample reuses
+        the fit's own u sample (er.match.scored_sample). Keeps the basis an increment needs to judge whether these u
+        have gone stale (er.match.u_basis)."""
+        t, fs = time.perf_counter(), self.pipeline.fs
         if self.model is None:
             n = self.pipeline.fit_rows
             area = q("postal_code__first3") if "postal_code__first3" in self._columns() else None
             order = f"hash({area}), hash({q(self.uid)})" if area else f"hash({q(self.uid)})"
             sample = self.con.execute(f"SELECT * FROM records ORDER BY {order} LIMIT {n}").df().astype("string")
-            self.model = train_fs(self.pipeline.fs.model, sample, self.db, self.uid)
+            self.model = train_fs(fs.model, sample, self.db, self.uid)
             self.notes += [f"the fit found no two records sharing {f} in its sample of {len(sample):,}, so it learned nothing from them"
                            for f in self.model["er"].get("skipped", [])]
-        self._done("fit", "O(n + S·K + P_em·K)", f"n = {self.model['er']['fit_rows']:,}", t)
+        self.scoring, self.basis = self.model, {}
+        if fs.model.u_from_scored:
+            exact, sampled = exact_u(fs.model, "records", self.db), scored_sample(fs.model, "records", self.db, self.uid)
+            self.scoring = assemble_u(fs.model, self.model, sampled, exact, "records", self.db)
+            self.basis = u_basis(fs.model, sampled, exact, "records", self.db)
+        self._done("fit", "O(n + S·K + P_em·K) + O(N + S·K)", f"n = {self.model['er']['fit_rows']:,}; u on {self.n:,} records", t)
         return self.model
 
     def _columns(self) -> set[str]:
@@ -303,6 +323,7 @@ class Run:
 
     def candidates(self) -> pd.DataFrame:
         t, fs = time.perf_counter(), self.pipeline.fs
+        assert self.scoring is not None, "fit() before candidates(): the gate scores oversized blocks' samples with the model"
         if not fs.bridge:  # the query: the records the rules left alone
             self.con.execute(f"CREATE OR REPLACE TABLE er_query AS SELECT * FROM {self._singletons('rule_clusters')}")
         _, report = candidates(fs.blockers, "records", self.uid, None if fs.bridge else "er_query", fs.budget,
@@ -315,8 +336,8 @@ class Run:
                    oversized_skipped=int(self.gated.get("decision", pd.Series(dtype=str)).str.startswith("skipped").sum()))
         return report
 
-    def _gate(self, pairs: pd.DataFrame) -> pd.DataFrame:  # an oversized block's sampled pairs, scored with the fitted model
-        return score_fs(self.model, "records", pairs, self.db, self.uid, n_records=self.n)
+    def _gate(self, pairs: pd.DataFrame) -> pd.DataFrame:  # an oversized block's sampled pairs, scored as the candidates will be
+        return score_fs(self.scoring, "records", pairs, self.db, self.uid, n_records=self.n)
 
     def _gated(self, records: list[dict]) -> None:  # the oversized blocks' decisions, kept for qa and named in the summary
         self.gated = gated = pd.DataFrame(records)
@@ -334,17 +355,10 @@ class Run:
         return f"(SELECT {q(self.uid)} FROM {clusters} WHERE cluster_id IN (SELECT cluster_id FROM {clusters} GROUP BY 1 HAVING count(*) = 1))"
 
     def score(self) -> None:
-        """u measured on this file (the model's choice), then every candidate scored by Splink. Keeps the basis an
-        increment needs to judge whether these u have gone stale (er.match.u_basis)."""
-        t, fs = time.perf_counter(), self.pipeline.fs
-        self.scoring, self.basis = self.model, {}
-        if fs.model.u_from_scored:
-            exact, sampled = exact_u(fs.model, "records", self.db), scored_sample(fs.model, "records", self.db, self.uid)
-            self.scoring = assemble_u(fs.model, self.model, sampled, exact, "records", self.db)
-            self.basis = u_basis(fs.model, sampled, exact, "records", self.db)
+        """Every candidate scored by Splink, with the model and u that fit() settled."""
+        t, k = time.perf_counter(), len(self.pipeline.fs.model.comparisons)
         score_fs(self.scoring, "records", "cands", self.db, self.uid, into="scores")
-        c = self._count("scores")
-        self._done("score", "O(N + S·K) + O(C·K·L²)", f"O({self.n:,} + {fs.model.u_max_pairs:,.0f}·{len(fs.model.comparisons)}) + O({c:,}·{len(fs.model.comparisons)}·L²)", t)
+        self._done("score", "O(C·K·L²)", f"O({self._count('scores'):,}·{k}·L²)", t)
 
     def _accept(self) -> None:
         """matches: the scored pairs at the threshold or above, with a name compared (fs.needs), that join two rule
@@ -475,20 +489,7 @@ class Run:
         self.con.execute(f"CREATE OR REPLACE TABLE new_ids AS SELECT {u} FROM new_records")
         self.n = self._count("records")
 
-        t = time.perf_counter()  # the rules: each against the batch only, then the cascade on the merged clusters
-        self.con.execute(f"""CREATE OR REPLACE TABLE rule_clusters AS SELECT * FROM read_parquet({lit(state / 'rule_clusters.parquet')})
-            UNION ALL SELECT {u}, {u} AS cluster_id FROM new_ids""")
-        self._rules("new_records")
-        self._done("rules", "O(|Δ|·Σ b + scan)", f"O({self._count('new_ids'):,} new records)", t, kept=self._count("rule_kept"))
-
-        t, fs = time.perf_counter(), self.pipeline.fs
-        _, report = candidates(fs.blockers, "records", self.uid, "new_ids", fs.budget,
-                               clusters="rule_clusters" if fs.bridge else None, con=self.con, into="cands", touching=True,
-                               gate=self._gate, floor=review_floor(self.pipeline), capacity=self.capacity())
-        self._gated(report.attrs["gated"])
-        self._done("candidates", "O(|Δ|·Σ b + scan)", f"{self._count('cands'):,} pairs touching the batch", t)
-
-        t, again = time.perf_counter(), []
+        t, again, fs = time.perf_counter(), [], self.pipeline.fs  # the stored model; u settled before the gate needs them
         self.scoring, self.basis = self.model, {}
         if fs.model.u_from_scored:  # exact levels counted again; a comparison sampled again only once it is stale
             stored = state / "scoring.json"
@@ -496,11 +497,26 @@ class Run:
             self.scoring, self.basis, again = refreshed_u(fs.model, self.model, basis, "records", self.db, self.uid)
             self.notes += [f"u of {c} measured again: it drifted {self.basis[c]['last_check']['drift_bits']:.3f} bits, more than "
                            f"its sampling error ({self.basis[c]['last_check']['se_bits']:.3f})" for c in again if self.basis[c]['last_check']['drift_bits'] is not None]
+        self._done("fit", "O(N + S·K_stale)", f"O({self.n:,} + {fs.model.u_max_pairs:,.0f}·{len(again)})", t, sampled_again=len(again))
+
+        t = time.perf_counter()  # the rules: each against the batch only, then the cascade on the merged clusters
+        self.con.execute(f"""CREATE OR REPLACE TABLE rule_clusters AS SELECT * FROM read_parquet({lit(state / 'rule_clusters.parquet')})
+            UNION ALL SELECT {u}, {u} AS cluster_id FROM new_ids""")
+        self._rules("new_records")
+        self._done("rules", "O(|Δ|·Σ b + scan)", f"O({self._count('new_ids'):,} new records)", t, kept=self._count("rule_kept"))
+
+        t = time.perf_counter()
+        _, report = candidates(fs.blockers, "records", self.uid, "new_ids", fs.budget,
+                               clusters="rule_clusters" if fs.bridge else None, con=self.con, into="cands", touching=True,
+                               gate=self._gate, floor=review_floor(self.pipeline), capacity=self.capacity())
+        self._gated(report.attrs["gated"])
+        self._done("candidates", "O(|Δ|·Σ b + scan)", f"{self._count('cands'):,} pairs touching the batch", t)
+
+        t = time.perf_counter()
         self.con.execute(f"""CREATE OR REPLACE TABLE touched AS SELECT * FROM records WHERE {u} IN
             (SELECT {l} FROM cands UNION SELECT {r} FROM cands)""")
         score_fs(self.scoring, "touched", "cands", self.db, self.uid, into="scores", n_records=self.n)
-        self._done("score", "O(N + S·K_stale) + O(C_Δ·K·L²)", f"O({self.n:,} + {fs.model.u_max_pairs:,.0f}·{len(again)}) + "
-                   f"O({self._count('cands'):,}·{len(fs.model.comparisons)}·L²)", t, sampled_again=len(again))
+        self._done("score", "O(C_Δ·K·L²)", f"O({self._count('cands'):,}·{len(fs.model.comparisons)}·L²)", t)
 
         t = time.perf_counter()
         self._accept()

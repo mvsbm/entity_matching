@@ -94,7 +94,8 @@ def sample_u(model: FSModel, comparisons: list[Comparison], df: pd.DataFrame, db
     if not comparisons:
         return {}
     linker = Linker(db.register(df), fs_settings(replace(model, comparisons=tuple(comparisons)), uid), log_level=logging.ERROR)
-    linker.training.estimate_u_using_random_sampling(max_pairs=model.u_max_pairs, seed=model.seed)
+    # every one of max_pairs: Splink would stop once each level has 100 hits, while u_basis and u_bound count on them all
+    linker.training.estimate_u_using_random_sampling(max_pairs=model.u_max_pairs, seed=model.seed, min_count_per_level=None)
     return u_values(linker.misc.save_model_to_json())
 
 

@@ -113,13 +113,13 @@ Counts the pairs each rule and each candidate generator would make, Σ C(b, 2) o
 - **Code:** `Run.budget` → `candidates.estimate`; `Run.capacity` (memory limit + free temp disk)
 - **Increment:** inside step 5, for the blocks the batch's keys reach.
 
-### 3 · Fit the model, without labels · `O(n + S·K + P_em·K)`, whatever N
+### 3 · Fit the model, without labels · `O(n + S·K + P_em·K) + O(N + S·K)`
 
-Takes a fixed sample of 30,000 records, made of whole postal areas, and learns the Fellegi–Sunter model: λ, how likely two random records are to match, from near-certain rules; u, how often strangers agree at each level, counted exactly for the leading exact levels and from 10 million random pairs for the rest; m, how often true matches agree, by EM on pairs that share a phone or an address.
+Takes a fixed sample of 30,000 records, made of whole postal areas, and learns the Fellegi–Sunter model: λ, how likely two random records are to match, from near-certain rules; u, how often strangers agree at each level, counted exactly for the leading exact levels and from 10 million random pairs for the rest; m, how often true matches agree, by EM on pairs that share a phone or an address. Then it measures u again on the whole file, the same way: how often strangers agree depends on the file's size, so u from the sample would weigh agreements wrongly. The gate on oversized blocks (step 5) and the scores (step 6) both use these.
 
 - **Why:** a real file has no labels, so the model learns from the data. A fixed sample keeps the cost flat at any size; whole postal areas keep a household's records together.
-- **Code:** `Run.fit` → `match.train_fs` (Splink), `match.sample_u`, `exact_u`. A near-certain or learning rule that finds no pair in the sample (its field nearly empty) is skipped and named in the summary; with none left of either, the run stops with what to fix.
-- **Increment:** no fit. It reads `state/model.json`, so every increment scores with the full run's model.
+- **Code:** `Run.fit` → `match.train_fs` (Splink), `scored_sample` (u by random sampling, kept per comparison and the values it reads: a file no bigger than the sample is the sample, and is sampled once), `exact_u`, `assemble_u`. A near-certain or learning rule that finds no pair in the sample (its field nearly empty) is skipped and named in the summary; with none left of either, the run stops with what to fix.
+- **Increment:** no fit. It reads `state/model.json`, so every increment scores with the full run's model. Its u: `match.refreshed_u`. The exact levels are counted again on all records. A comparison's sampled u are measured again only once the drift of its exact level, since it was sampled, exceeds the sampling error of its most precise sampled level, 1/(ln 2·√hits) bits: before that, a new sample would only redraw the noise. `O(N + S·K_stale)`.
 
 ### 4 · Rules: the certain cases · `O(N + ΣP_r·L²) + O(E·d + N)`
 
@@ -141,19 +141,19 @@ Lists the pairs worth scoring. Each generator is one SQL query:
 
 Each generator sets one bit, so OR-ing the bits merges the lists and every pair keeps the names of the generators that found it. Pairs inside one rule cluster are dropped.
 
-Oversized blocks are left out of each generator's join, then checked: about 2,000 pairs among 64 of the block's records, chosen by hash, minus those another block already listed, are scored with the fitted model. A block with a sampled pair at the review floor (4 bits) or above is joined in full; one without is skipped, and the summary and `qa.md` name it with its sample. No hit in 2,000 pairs bounds a block's yield under 0.15%; the lowest normal block band measured yields 3.3%. If the kept blocks would not fit, the highest-yield ones go first.
+Oversized blocks are left out of each generator's join, then checked: about 2,000 pairs among 64 of the block's records, chosen by hash, minus those another block already listed, are scored as the candidates will be: with the model and the file's u (step 3). A block with a sampled pair at the review floor (4 bits) or above is joined in full; one without is skipped, and the summary and `qa.md` name it with its sample. No hit in 2,000 pairs bounds a block's yield under 0.15%; the lowest normal block band measured yields 3.3%. If the kept blocks would not fit, the highest-yield ones go first.
 
 - **Why:** comparing every pair is impossible: 5 × 10¹¹ at a million records. The keys keep about 5 pairs per record, and `choose.py` checks that every true pair able to reach the threshold shares one. Checking a big block on a sample costs at most what joining it would, and tells a placeholder from a real shared value without guessing.
 - **Code:** `Run.candidates` → `candidates.candidates` (run, gate, merge) → `candidates.oversized`, `pairs_sql`, `sample_sql`, `_gate`; `Run._gate` scores the sample
 - **Increment:** the batch is the query, so only pairs touching it are listed: `O(Δ·Σb)` plus a scan.
 
-### 6 · Score: evidence in bits · `O(N + S·K) + O(C·K·L²)`
+### 6 · Score: evidence in bits · `O(C·K·L²)`
 
-Measures u again on this file, then scores every candidate: for each field, it finds the level the pair reaches (exact, close, different or missing) and adds that level's bits, log2(m/u), to the starting point.
+Scores every candidate, with the u step 3 measured on this file: for each field, it finds the level the pair reaches (exact, close, different or missing) and adds that level's bits, log2(m/u), to the starting point.
 
-- **Why:** how often strangers agree depends on the file's size, so u from a file of another size would weigh agreements wrongly. Bits add up, so every score can be explained field by field.
-- **Code:** `Run.score` → `match.exact_u` (exact levels, from value counts), `scored_sample` (the rest, from S random pairs), `assemble_u`; `match.score_fs`, `scaled_prior` (λ at this file's size)
-- **Increment:** `match.refreshed_u`. The exact levels are counted again on all records. A comparison's sampled u are measured again only once the drift of its exact level, since it was sampled, exceeds the sampling error of its most precise sampled level, 1/(ln 2·√hits) bits: before that, a new sample would only redraw the noise. Then only the pairs touching the batch are scored: `O(N + S·K_stale + C_Δ·K·L²)`.
+- **Why:** bits add up, so every score can be explained field by field.
+- **Code:** `Run.score` → `match.score_fs`, `scaled_prior` (λ at this file's size)
+- **Increment:** only the pairs touching the batch are scored: `O(C_Δ·K·L²)`.
 
 ### 7 · Cluster: from pairs to entities · `O(C + E·d + N)`
 

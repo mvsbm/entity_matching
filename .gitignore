@@ -1,4 +1,6 @@
 .venv/
+# DuckDB's spill folder, under wherever a run starts
+.tmp/
 __pycache__/
 *.egg-info/
 .DS_Store

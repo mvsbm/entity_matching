@@ -31,10 +31,10 @@
 |---|---|---|---|---|---|
 | 1 | load: read in chunks, check the fields, standardize each chunk | `Run.load`, `er.standardize.prepare` | O(N·L) | N | 5.7 s |
 | 2 | budget: every rule's and generator's pairs, exactly, before any join | `Run.budget`, `er.candidates.estimate` | O(N) per rule and generator, a group-by | N | 1.0 s |
-| 3 | fit: λ from near-certain rules, u, m by EM, on a sample of whole postal areas | `Run.fit`, `er.match.train_fs` | O(n + S·K + P_em·K) | **constant** | 7.8 s |
+| 3 | fit: λ from near-certain rules, u, m by EM, on a sample of whole postal areas; then u measured on this file (value counts for the leading exact levels, S pairs for the rest) | `Run.fit`, `er.match.train_fs`, `exact_u`, `scored_sample`, `assemble_u` | O(n + S·K + P_em·K) + O(N + S·K) | **constant**, plus N | 7.8 s |
 | 4 | rules: one join per rule (the first rule wins a pair), fuzzy checks on the joined pairs only, then the cascade's clusters | `Run.rules`, `er.match.rule_edges` | O(N + Σ P_r·L²) + O(E·d + N) | N; ≤ 0.22 pairs per record per rule at 1M | 3.5 s |
 | 5 | candidates: every generator as one SQL join or window, merged by bitmask, pairs inside one rule cluster dropped | `Run.candidates`, `er.candidates.candidates` | O(N·L + Σ P_g) | N; ≤ 2.0 pairs per record per key at 1M, 3 per sorted window | 3.4 s |
-| 6 | score: u measured on this file (value counts for the leading exact levels, S pairs for the rest), then every candidate | `Run.score`, `er.match.exact_u`, `scored_sample`, `assemble_u`, `score_fs` | O(N + S·K) + O(C·K·L²) | C, plus a constant | 20.7 s |
+| 6 | score: every candidate, with the u the fit measured | `Run.score`, `er.match.score_fs` | O(C·K·L²) | C | 20.7 s |
 | 7 | cluster: accept at the threshold, connected components with the rules' pairs (each rule cluster one node), gold | `Run.cluster`, `Run._merge` | O(C + E·d + N) | N | 0.5 s |
 | 8 | write: gold, matches, the rules' pairs and the state for increments, as Parquet | `Run.write` | O(N + C) | N | 1.5 s |
 | | **total** | | | | **44.1 s** |
@@ -44,9 +44,10 @@
 | Step | Cost | What it touches |
 |---|---|---|
 | load | O(Δ·L) | the batch; a record already in the run is set aside |
+| fit | O(N) + O(S·K_stale) | the stored model; the exact u counted again on all the records (a group-by); a comparison's sampled u measured again only once the drift of its exact u exceeds its sampling error (`er.match.refreshed_u`) |
 | rules | O(Δ·Σ b) + a scan of the stored records | each rule joins the batch against all records; the cascade merges into the stored clusters, each cluster one node |
 | candidates | O(Δ·Σ b) + a scan | every generator, with the batch as the query; the budget counts only the blocks the batch's keys reach |
-| score | O(N) + O(S·K_stale) + O(C_Δ·K·L²) | the exact u counted again on all the records (a group-by); a comparison's sampled u measured again only once the drift of its exact u exceeds its sampling error (`er.match.refreshed_u`); only the pairs touching the batch are scored |
+| score | O(C_Δ·K·L²) | only the pairs touching the batch |
 | cluster | O(C_Δ + touched clusters) | the stored clusters, with the new pairs merged in |
 | write | O(Δ + C_Δ) appended, O(N) rewritten | new Parquet parts for records, rule pairs and matches; gold and the rules' clusters rewritten. Every file is staged under a temporary name and renamed into place only once all are complete, so an interrupted increment leaves the run as it was, or is finished by the next one |
 
@@ -140,7 +141,7 @@ on the file itself, without labels ([reports/benchmark.md](../reports/benchmark.
 | 75,284 | 20.4 | 0.97 GB | 8.8 | 9.6 | 2.1 |
 | 999,481 | 44.1 | 3.8 GB, varies | 7.8 | 20.7 | 15.6 |
 
-The fit and the u sample inside `score` (about 8 s) cost the same at every size, so they are nearly all of a small
-file's time. Everything else goes from 2.1 s at 75,000 records to 15.6 s at a million: 13 times the records, 7.5 times
-the time, because DuckDB uses its threads better on bigger tables. Scoring the candidates, the rest of `score`, grows
+The fit and the u sample of the file, both in `fit` (about 8 s each), cost the same at every size, so they are
+nearly all of a small file's time. Everything else goes from 2.1 s at 75,000 records to 15.6 s at a million: 13 times the records, 7.5 times
+the time, because DuckDB uses its threads better on bigger tables. Scoring the candidates, `score`, grows
 from under a second to about 12 s.
