@@ -13,6 +13,7 @@ max_pairs_per_record = 5.0
 max_block_size = 5000
 target_rows = 1000000
 benchmark_pairs = 20000
+sample_pairs = 2000
 
 [rules]
 resolver = { method = "connected_components" }

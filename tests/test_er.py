@@ -734,12 +734,6 @@ def test_a_run_sets_aside_what_it_cannot_resolve_and_suggests_a_mapping(tmp_path
         Run(p, s).load(tmp_path / "renamed.parquet")
     assert 'id = "customer_no"' in e.value.fix  # suggested from its values: filled and unique
 
-    phones = g.df.assign(PHONE_NUM_4="0000", ADDRESS_ONE="東京都")
-    phones.to_parquet(tmp_path / "placeholder.parquet", index=False)
-    run = Run(p, s)
-    run.load(tmp_path / "placeholder.parquet")
-    with pytest.raises(OverBudget, match="phone = 0000"):  # the stop names the value behind the block
-        run.budget()
 
 
 def test_resolve_prints_a_mistake_as_two_lines_and_exits_with_2(tmp_path):
@@ -845,4 +839,55 @@ def test_the_scheduler_serves_the_inbox_in_order_and_parks_what_people_must_fix(
     assert (run / "decisions").exists()
     before = len(schedule.ledger(run))
     assert serve().returncode == 0 and len(schedule.ledger(run)) == before  # nothing waiting: nothing done
+
+
+def test_an_oversized_block_is_checked_on_a_sample_and_a_placeholder_is_skipped(tmp_path, population):
+    import subprocess
+    import sys
+    from er.run import Run
+    s, p, g = population
+    uid = s.data.unique_id
+    df = g.df.copy()
+    dummy = df.index[:100]
+    df.loc[dummy, ["PHONE_NUM_4", "ADDRESS_ONE"]] = ["0000", "東京都"]  # a dummy phone on 100 records: one block of 100
+    df.to_parquet(tmp_path / "in.parquet", index=False)
+    run = Run(p, s).full(tmp_path / "in.parquet", tmp_path / "run")  # no stop
+    block = run.gated[run.gated["value"].str.contains("0000") & (run.gated["generator"] == "phone_prefecture")]
+    assert len(block) == 1 and block["decision"].iloc[0].startswith("skipped") and block["records"].iloc[0] == 100
+    assert any("0000" in x and "skipped" in x for x in run.notes)
+    check = subprocess.run([sys.executable, str(s.root / "scripts" / "resolve.py"), "--input", str(tmp_path / "in.parquet"), "--check"],
+                           capture_output=True, text=True)
+    assert check.returncode == 0 and "checked by sampling" in check.stdout
+
+    same = pd.concat([g.df.iloc[[0]]] * 70, ignore_index=True)  # 70 copies of one record: every key's block oversized
+    same[uid] = [f"copy{i:03d}" for i in range(70)]
+    pd.concat([g.df, same]).to_parquet(tmp_path / "copies.parquet", index=False)
+    run = Run(p, s).full(tmp_path / "copies.parquet", tmp_path / "copies")
+    gold = pd.read_parquet(tmp_path / "copies" / "gold.parquet").set_index(uid)
+    assert gold.loc[same[uid], "cluster_id"].nunique() == 1  # the sample shows they match: kept and joined
+    assert (run.gated["decision"] == "kept").any()
+
+
+def test_a_rule_never_trusts_a_value_held_by_an_oversized_block(tmp_path, population):
+    from er.run import Run
+    s, p, g = population
+    uid = s.data.unique_id
+    df = g.df.copy()
+    many = df.index[:70]
+    df.loc[many, ["CIF_ID", "FULL_NAME_KANA"]] = ["9999999999999", "ヤマダタロウ"]  # one customer ID and name on 70 records
+    df.to_parquet(tmp_path / "in.parquet", index=False)
+    run = Run(p, s).full(tmp_path / "in.parquet", tmp_path / "run")
+    kept = pd.read_parquet(tmp_path / "run" / "rule_kept")
+    ids = set(df.loc[many, uid])
+    by_x1 = kept[(kept["rule"] == "X1_CIF_PERSON_NAME") & kept[f"{uid}_l"].isin(ids) & kept[f"{uid}_r"].isin(ids)]
+    assert by_x1.empty and any("X1_CIF_PERSON_NAME doesn't trust" in x for x in run.notes)
+
+
+def test_the_runaway_guard_stops_only_what_would_not_fit(tmp_path, population, monkeypatch):
+    from er.run import Run
+    s, p, g = population
+    g.df.to_parquet(tmp_path / "in.parquet", index=False)
+    monkeypatch.setattr(Run, "capacity", lambda self: 10)
+    with pytest.raises(InputError, match="more than fit in memory"):
+        Run(p, s).full(tmp_path / "in.parquet", tmp_path / "run")
 

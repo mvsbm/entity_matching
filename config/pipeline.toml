@@ -14,10 +14,11 @@ optional = ["full_name", "given_name", "any_name", "address", "address_code", "p
 labels = ["entity"]
 
 [budget]
-max_pairs_per_record = 5.0        # per rule / generator, now and projected to target_rows; above, the run stops before any join
-max_block_size = 5_000
+max_pairs_per_record = 5.0        # design time: a key's pairs per record, now and projected to target_rows; above, choose.py refuses it
+max_block_size = 5_000            # design time: the most records one key value may hold in the labelled files
 target_rows = 1_000_000           # the size the cost checks project to; set it to the largest file you will run
 benchmark_pairs = 20_000          # pairs timed per (column, function) to estimate seconds
+sample_pairs = 2_000              # a run: a block with more pairs than this (64+ records) is checked on a sample before it is joined
 
 # ---------- stage 1: rules ----------
 [rules]

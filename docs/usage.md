@@ -49,7 +49,7 @@ Check a file and its mapping in seconds, before a long run:
 .venv/bin/python scripts/resolve.py --input customers.parquet --check
 ```
 
-It prints each field, its fill rate and the columns it comes from, what would be turned off, and whether the budget holds.
+It prints each field, its fill rate and the columns it comes from, what would be turned off, each key's pairs per record, and the blocks of 64 or more records that the run will check on a sample.
 - **Other names for the same information** need only `[columns]`. Another language needs `[locale]`. A different kind of record needs a new `config/pipeline.toml`, chosen again with `scripts/choose.py` on labelled or synthetic data ([architecture](architecture.md#1--context-two-loops)).
 
 ## 3 · Run
@@ -61,7 +61,7 @@ It prints each field, its fill rate and the columns it comes from, what would be
 | Option | Does |
 |---|---|
 | `--input` | a Parquet file, a quoted glob (`'data/in/*.parquet'`) or a folder of them; several files are read together by column name |
-| `--check` | reads and maps `--input`, checks the budget, resolves nothing ([section 2](#2--map-your-columns)) |
+| `--check` | reads and maps `--input`, counts each key's pairs, resolves nothing ([section 2](#2--map-your-columns)) |
 | `--output` | the run folder. A full run refuses a folder that already holds a run |
 | `--overwrite` | replaces the run in `--output` |
 | `--increment` | adds the records to the run in `--output` ([section 5](#5--add-new-records)) |
@@ -143,6 +143,8 @@ What the run handles by itself, and reports in its summary:
 | a column named like the mapping but for case, width or separators | used |
 | several files with different columns | read together by column name; the summary names what each file lacks |
 | a code stored as a number | read as text, with a warning |
+| one key value on 64 or more records (a dummy phone, a big building, a very common name) | a sample of about 2,000 of its pairs is scored first; the block is used only if one of them reaches 4 bits, otherwise skipped and named with its sample in the summary and `qa.md` |
+| a rule's key value on 64 or more records (one customer ID on thousands) | the rule doesn't trust it, so it can't merge them all; the model can still match those records |
 
 What stops it: two lines, what is wrong and how to fix it, and exit code 2:
 
@@ -154,13 +156,13 @@ What stops it: two lines, what is wrong and how to fix it, and exit code 2:
 | `the file lacks a field every run needs` | `[columns]` points at a column the file lacks; it lists the file's columns and suggests a mapping |
 | `columns … could each be …` | two columns match one name loosely |
 | `no record has an ID in column …` | `id` is mapped to the wrong column |
-| `over budget on this file` | a key would make too many pairs: more than 5 per record, or a block of over 5,000 records. It names the value behind the largest block, usually a placeholder such as one dummy phone number |
+| `the normal blocks alone would make … pairs, more than fit` | the file's pairs would not fit in memory and the temp disk: give DuckDB more room (`--compute memory_limit=… temp_directory=…`) or split the file |
 | `… already holds a run` | a full run into a used folder: add `--overwrite`, or pick another folder |
 | `another job is writing to …` | a run folder takes one writer at a time: wait for the other one |
 | `the model was fitted on other comparison levels` | `--model` was fitted on another pipeline, or on a file with other fields |
 | `a decision is match or no_match`, `pairs decided both ways`, `records not in the run` | a decisions file to correct |
 
-The budget is checked before any join, so a run that would explode stops within seconds instead of running out of memory.
+Pairs are counted before any join, so a run that couldn't fit stops within seconds instead of running out of memory or disk.
 
 ## 8 · Run it on a schedule
 

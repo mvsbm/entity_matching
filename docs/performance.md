@@ -78,8 +78,8 @@ candidate step copies only the key columns it joins on.
 
 | Check | When | Cost | What it stops |
 |---|---|---|---|
-| `budget` | every run, on the actual file | O(N) per rule and generator | a rule or generator over `max_pairs_per_record` × N pairs, or with a block over `max_block_size` |
-| `scale_check` | `scripts/choose.py`, on train | O(N) per key | a key whose pairs, projected to `target_rows`, exceed the budget |
+| `budget` | every run, on the actual file | O(N) per rule and generator | only a run whose normal blocks would not fit in memory and the temp disk. Oversized blocks (64+ records) are checked on a sample instead: at most `sample_pairs` scored pairs each, never more than joining them would cost |
+| `scale_check` | `scripts/choose.py`, on train | O(N) per key | a key whose pairs, projected to `target_rows`, exceed `max_pairs_per_record` × N: the guard against keys that grow by many normal blocks, which the sample check doesn't catch |
 | `window_only` | `scripts/choose.py`, on train | O(N + P + P_true·K), P_true true pairs, plus two u samples | a true pair that could reach the threshold but shares no key, now or at `target_rows` |
 | `pattern_coverage` | `scripts/choose.py` and every run's QA report | O(Π levels), a few thousand patterns | reported, not stopped: patterns that can reach the threshold with no guaranteed key |
 

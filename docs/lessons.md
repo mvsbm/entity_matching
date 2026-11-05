@@ -129,6 +129,12 @@ Each entry gives the symptom that gave it away, the cause, the fix, and what kee
 - **Fix:** the exact levels are counted again on every increment (0.1 s). A comparison's sampled u are measured again only once the drift of its exact level exceeds the sampling error of its sampled levels. Before that, a new sample is no closer to the truth. The same increment now takes 2.0 s.
 - **Guard:** a test checks that an increment samples exactly the comparisons whose drift exceeds their error, and each run's `state/scoring.json` keeps the last check, drift and error, per comparison.
 
+## A placeholder doubled the work and passed the budget
+- **Symptom:** a dummy phone `0000` on 5% of 75,284 records more than doubled the candidates (393,350 to 804,230), and the budget let it through; on a million records the same dummy would have stopped the run.
+- **Cause:** the budget capped each key's pairs per record. Spread over prefectures and name initials, the dummy's blocks stayed under the cap per key, while adding work for nothing: its sampled pairs that no other key lists never reached 4 bits.
+- **Fix:** a block of 64 or more records is checked on a sample of about 2,000 of its pairs first, and joined only if one reaches the review floor; a rule doesn't trust such a value. At a million records with 5% dummy phones, 295 blocks were skipped (about 61 million pairs), the run finished in 45 s, and on the clean file the answer is identical to before.
+- **Guard:** tests put a dummy phone on 100 records (skipped), 70 copies of one record (kept and joined), and one customer ID and name on 70 records (no rule merges them).
+
 ## An increment threw away the review queue
 - **Symptom:** found by walking through the command line: after a full run, 2 pairs waited for a decision; the next increment wrote a new `review.parquet`, and both were gone, though still open.
 - **Cause:** every run wrote the sheet from its own scores, and a run keeps no scores, so an increment's sheet held only the pairs its batch made.

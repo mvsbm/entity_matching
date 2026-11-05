@@ -71,13 +71,19 @@ def main() -> None:
     fields = [f for f in s.columns if f not in ("id", "entity")]
     if args.check:
         run.load(args.input)
-        run.budget()
+        plan = run.budget()
         present = present_fields(run.settings, run._columns())
         fill = fill_rates(run, fields).set_index("field")
         print(f"{run.n:,} records")
         for f in fields:
             print(f"  {f:<13} " + (f"{fill.at[f, 'filled']:>5.0%} filled  ← {sources_text(present[f])}" if f in fill.index else "—  no column"))
         print("\n".join(f"  turned off: {x}" for x in run.disabled) or "  nothing turned off")
+        m = p.fs.budget.min_oversized()
+        shown = plan[(plan["oversized_blocks"] > 0) | plan["name"].isin(plan.nlargest(5, "per_record")["name"])]
+        print(f"pairs per record, and blocks of {m}+ records (checked by sampling; a rule doesn't trust their values):")
+        for x in shown.sort_values("per_record", ascending=False).itertuples():
+            print(f"  {x.name:<34} {x.per_record:>6.2f} / record  largest block {x.largest_block:>6,}" +
+                  (f"  {x.oversized_blocks:,} oversized ({x.oversized_records:,} records): checked by sampling" if x.oversized_blocks else ""))
         for x in run.notes:
             print(f"  {x}")
         print("ready: run it with --output <run folder>")

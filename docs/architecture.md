@@ -89,11 +89,11 @@ Opens the input through `er.source`, the one door every file goes through: it fi
 
 ### 2 · Budget · `O(N)` per key
 
-Counts the pairs each rule and each candidate generator would make, Σ C(b, 2) over its blocks, and its largest block, with one group-by each. If any would exceed 5 pairs per record, or a block of 5,000, the run stops (`OverBudget`).
+Counts the pairs each rule and each candidate generator would make, Σ C(b, 2) over its blocks, its largest block, and its **oversized** blocks, with one group-by each. A block is oversized when it has more pairs than a check sample (`[budget] sample_pairs`, 2,000): 64 records or more sharing one value. Such a block is never joined blind: a generator checks it on a sample first (step 5), and a rule doesn't trust its value (step 4). The run stops only if the pairs of the normal blocks alone would not fit in memory and the temp disk (about 350 bytes a pair), naming the largest contributors.
 
-- **Why:** a key that is too coarse, such as four phone digits alone, makes pairs that grow like N². Counting costs `O(N)`; the join it prevents would cost far more, in time and memory.
-- **Code:** `Run.budget` → `candidates.estimate`
-- **Increment:** inside step 5, and only for the blocks the batch's keys reach. The batch may make 2 × 5 pairs per record, the average a full run within budget gives a record (a pair has two records).
+- **Why:** the work after this step is per pair, and a block's pairs grow with the square of its size. Measured, a block's share of true matches falls as it grows (person name: 52% of pairs in blocks of 2–3, 0% at 8–15), and a placeholder's block (a dummy phone) holds none. Counting costs `O(N)`; the joins it steers cost far more.
+- **Code:** `Run.budget` → `candidates.estimate`; `Run.capacity` (memory limit + free temp disk)
+- **Increment:** inside step 5, for the blocks the batch's keys reach.
 
 ### 3 · Fit the model, without labels · `O(n + S·K + P_em·K)`, whatever N
 
@@ -108,7 +108,7 @@ Takes a fixed sample of 30,000 records, made of whole postal areas, and learns t
 Each rule is one join on its exact keys; its fuzzy conditions (names within two edits, addresses by Jaro–Winkler, a phone one digit off, …) are checked on the joined pairs only. A pair belongs to the first rule that finds it. Stage by stage, exact then fuzzy, a pair is kept only if it touches a record still unresolved, and the kept pairs are clustered.
 
 - **Why:** certain cases are cheap and auditable, and settle most duplicates without a false merge. The model then works only on what is left.
-- **Code:** `Run.rules` → `match.rule_edges_table` (one Splink join per rule), `config.Stage.sql`, `strings.connect` (the character-level `cl_*` functions)
+- **Code:** `Run.rules` → `match.rule_edges_table` (one Splink join per rule), `config.Stage.sql`, `strings.connect` (the character-level `cl_*` functions). A rule leaves out any value of its keys held by an oversized block (`Run._untrusted`): one customer ID on 3,000 records is not one customer's, so the summary names it, and the model can still match those records.
 - **Increment:** each rule joins the batch against all records. Each stored cluster is merged as a single node (`Run._merge`): `O(Δ·Σb)` plus a scan.
 
 ### 5 · Candidates: which pairs to score · `O(N·L + ΣP_g)`
@@ -123,8 +123,10 @@ Lists the pairs worth scoring. Each generator is one SQL query:
 
 Each generator sets one bit, so OR-ing the bits merges the lists and every pair keeps the names of the generators that found it. Pairs inside one rule cluster are dropped.
 
-- **Why:** comparing every pair is impossible: 5 × 10¹¹ at a million records. The keys keep about 5 pairs per record, and `choose.py` checks that every true pair able to reach the threshold shares one.
-- **Code:** `Run.candidates` → `candidates.candidates` (budget, run, merge) → `candidates.pairs_sql`
+Oversized blocks are left out of each generator's join, then checked: about 2,000 pairs among 64 of the block's records, chosen by hash, minus those another block already listed, are scored with the fitted model. A block with a sampled pair at the review floor (4 bits) or above is joined in full; one without is skipped, and the summary and `qa.md` name it with its sample. No hit in 2,000 pairs bounds a block's yield under 0.15%; the lowest normal block band measured yields 3.3%. If the kept blocks would not fit, the highest-yield ones go first.
+
+- **Why:** comparing every pair is impossible: 5 × 10¹¹ at a million records. The keys keep about 5 pairs per record, and `choose.py` checks that every true pair able to reach the threshold shares one. Checking a big block on a sample costs at most what joining it would, and tells a placeholder from a real shared value without guessing.
+- **Code:** `Run.candidates` → `candidates.candidates` (run, gate, merge) → `candidates.oversized`, `pairs_sql`, `sample_sql`, `_gate`; `Run._gate` scores the sample
 - **Increment:** the batch is the query, so only pairs touching it are listed: `O(Δ·Σb)` plus a scan.
 
 ### 6 · Score: evidence in bits · `O(N + S·K) + O(C·K·L²)`

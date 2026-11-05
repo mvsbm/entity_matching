@@ -9,7 +9,7 @@ import copy
 import logging
 import math
 import time
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from dataclasses import replace
 from itertools import combinations
 
@@ -22,14 +22,17 @@ from er.config import Comparison, FSModel, InputError, Key, RulesSpec, keys_sql
 from er.evaluate import fp_upper
 
 
-def rule_edges_table(spec: RulesSpec, records: str, db: DuckDBAPI, uid: str, into: str) -> dict[str, float]:
-    """rule_edges on a table, into a table: columns uid_l, uid_r, rule, stage, score; the first rule wins."""
+def rule_edges_table(spec: RulesSpec, records: str, db: DuckDBAPI, uid: str, into: str,
+                     inputs: Mapping[str, str] | None = None) -> dict[str, float]:
+    """rule_edges on a table, into a table: columns uid_l, uid_r, rule, stage, score; the first rule wins. `inputs`: a
+    rule's own records table, where it differs (values it doesn't trust left out)."""
     l, r, con = f"{uid}_l", f"{uid}_r", db.duckdb_con
     sdf, seconds, parts = db.register(records), {}, []
     for i, (s, rule) in enumerate((s, rule) for s in spec.stages for rule in s.rules):
         t = time.perf_counter()
         settings = SettingsCreator(link_type="dedupe_only", unique_id_column_name=uid, blocking_rules_to_generate_predictions=[s.sql(rule)])
-        pairs = Linker(sdf, settings, log_level=logging.WARNING).inference.deterministic_link()
+        source = db.register((inputs or {}).get(rule.name, records)) if inputs and rule.name in inputs else sdf
+        pairs = Linker(source, settings, log_level=logging.WARNING).inference.deterministic_link()
         table = f"er_rule_{i}"
         con.execute(f"DROP TABLE IF EXISTS {table}")
         pairs.as_duckdbpyrelation().project(f'"{l}", "{r}"').to_table(table)

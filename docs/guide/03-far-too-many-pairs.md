@@ -35,7 +35,7 @@ The configuration offers six keys: phone, normalized address, address code, CIF 
 
 - **Keys cost almost nothing.** A database hash join finds all pairs in a block in about O(N + P) time.
 - **The three kinds catch different typos.** Keys need an exact agreement. Sorted neighbourhood survives late typos, and sorting the reversed name too survives early ones. TF-IDF survives typos anywhere.
-- **Every key is measured before use.** Before any join, a run counts P for every key and stops if one goes over budget: 5 pairs per record, so 5 million at a million records. While choosing, `scripts/choose.py` also projects every key to the target size ([below](#how-the-configuration-keeps-it-that-way)).
+- **Every key is measured before use.** Before any join, a run counts P for every key. A block of 64 or more records sharing one value is checked on a sample of about 2,000 of its pairs first, and joined only if one reaches 4 bits: a big block's share of true matches is small (52% of person-name pairs in blocks of 2–3, 0% at 8–15), and a placeholder's is none. While choosing, `scripts/choose.py` also projects every key to the target size, which keeps out keys that grow by many normal blocks ([below](#how-the-configuration-keeps-it-that-way)).
 
 ## How do we know a candidate list is good?
 
@@ -263,7 +263,7 @@ Blocking loses nothing that could have been accepted: on train, val and test, ev
 - `config/pipeline.toml`: every generator, in logical fields; `config/settings.toml`: the fields behind the compound keys (`any_name`, the postal area) and the normalizers `initial`, `first3`, `reverse`
 - `config/experiments.py`: the key changes and their decisions (`compound_phone_keys`, `sorted_names_for_tfidf`, `name_keys`, `bounded_address_keys`, `no_sorted_windows`, `bridge_rule_clusters`)
 - `er/select.py`: `FSChooser.candidates_on_train` prints the generator table above; `will_it_scale` stops `scripts/choose.py` if the chosen pipeline would go over budget at `target_rows`, or would leave a potential match to a window; `RulesChooser.cost` does the same for the rules
-- `er/run.py`: `Run.budget`, the exact count on the file before any join; `scripts/benchmark.py`: whole runs on generated files from 12,000 to a million records
+- `er/run.py`: `Run.budget`, the exact count on the file before any join; `er/candidates.py`: `oversized`, `sample_sql`, `_gate`, the sample check of big blocks; `scripts/benchmark.py`: whole runs on generated files from 12,000 to a million records
 
 ## Further reading
 

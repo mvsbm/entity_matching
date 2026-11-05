@@ -110,11 +110,17 @@ class Stage:
 
 @dataclass(frozen=True, kw_only=True)
 class Budget:
-    max_pairs_per_record: float               # per rule / generator, now and projected: above this × records, the run stops
-                                              # before any join; per record, so a budget means the same at any size
-    max_block_size: int                       # the most records one key value may hold
+    max_pairs_per_record: float               # design time (scripts/choose.py): a rule / generator's pairs, now and projected to
+                                              # target_rows, above this × records refuse the key; per record, so it means the same
+                                              # at any size. A run on a file never stops on it: it samples oversized blocks instead
+    max_block_size: int                       # design time: the most records one key value may hold in the labelled files
     target_rows: int                          # the size the cost checks project to
     benchmark_pairs: int                      # pairs timed per (column, function) to estimate seconds
+    sample_pairs: int = 2_000                 # a run on a file: a block with more pairs than this is checked on a sample of them
+                                              # first (er.candidates); no hit in 2,000 bounds its yield under 0.15%
+
+    def min_oversized(self) -> int:  # the fewest records a block needs to have more pairs than the check sample
+        return next(b for b in range(2, 10**9) if b * (b - 1) // 2 > self.sample_pairs)
 
     def max_pairs(self, n: int) -> int:
         return int(self.max_pairs_per_record * n)
@@ -564,7 +570,7 @@ def pipeline_dict(p: Pipeline, chains: Mapping[str, tuple[Normalizer, ...]]) -> 
     return {
         "fields": {"mandatory": list(f.mandatory), "one_of": [list(g) for g in f.one_of], "optional": list(f.optional), "labels": list(f.labels)},
         "budget": {"max_pairs_per_record": fs.budget.max_pairs_per_record, "max_block_size": fs.budget.max_block_size,
-                   "target_rows": fs.budget.target_rows, "benchmark_pairs": fs.budget.benchmark_pairs},
+                   "target_rows": fs.budget.target_rows, "benchmark_pairs": fs.budget.benchmark_pairs, "sample_pairs": fs.budget.sample_pairs},
         "rules": {"resolver": resolver(p.rules.resolver), "stages": [
             {"name": s.name, **({"comparators": {c: comp(x) for c, x in s.comparators.items()}} if s.comparators else {}),
              "rules": [{"name": r.name, "exact": list(r.exact), **({"fuzzy": list(r.fuzzy)} if r.fuzzy else {}),

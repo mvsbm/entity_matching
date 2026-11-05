@@ -5,10 +5,12 @@ with the numbers filled in, and its time.
 
     load        O(N·L)                           read through er.source (Parquet), check the fields, set aside what can't be
                                                  resolved, standardize each chunk → table records
-    budget      O(N)                             exact block sizes per rule and generator, before any join
+    budget      O(N)                             exact block sizes per rule and generator, before any join; blocks of
+                                                 64+ records flagged (a rule doesn't trust them; candidates sample them)
     fit         O(n + S·K + P_em·K)              λ, u and m by EM on a fixed-size sample of n records (or a fitted model)
     rules       O(N + Σ P_r·L²) + O((N + E)·d)   one join per rule (the first rule wins), then the rules' cascade
-    candidates  O(N·L + Σ P_g)                   every generator; pairs inside one rule cluster dropped
+    candidates  O(N·L + Σ P_g)                   every generator; pairs inside one rule cluster dropped; a flagged block
+                                                 joined only if a sample of its pairs reaches the review floor
     score       O(N + S·K) + O(C·K·L²)           u on this file, then every candidate scored
     cluster     O(C + (N + E)·d)                 accept at the threshold, then cluster with the rules' pairs
     write       O(N + C)                         gold clusters and matches, as Parquet; the state for increments
@@ -36,6 +38,7 @@ import fcntl
 import functools
 import json
 import os
+import re
 import resource
 import shutil
 import sys
@@ -50,7 +53,7 @@ import pandas as pd
 from splink.clustering import cluster_pairwise_predictions_at_threshold
 
 from er.candidates import candidates, estimate, q
-from er.config import InputError, Key, KeyBlocker, OverBudget, Pipeline
+from er.config import InputError, Key, KeyBlocker, Pipeline
 from er.match import ELSE, assemble_u, exact_u, levels, refreshed_u, rule_edges_table, score_fs, scored_sample, train_fs, u_basis
 from er.pipeline import pattern_coverage
 from er.settings import Settings, fit_to_file, present_fields
@@ -63,6 +66,7 @@ def peak_gb() -> float:  # the process's peak resident memory so far (ru_maxrss:
     return resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / (1e9 if sys.platform == "darwin" else 1e6)
 
 
+BYTES_PER_PAIR = 350  # shortcut: measured at 1M (candidate and score tables held together); measure again if those tables change
 PENDING = "pending.json"  # the renames a write still owes, saved once every new file is complete
 RUN_FILES = ("gold.parquet", "steps.json", PENDING, "matches", "rule_kept", "state", "set_aside")  # what a run writes in its folder
 DECISIONS = "decisions"  # people's decisions: not a run file, so a full run with overwrite keeps and applies them
@@ -88,6 +92,12 @@ def locked(method: Callable) -> Callable:  # the run folder (the method's `out`)
         with run_lock(Path(out)):
             return method(self, path, Path(out), *args, **kwargs)
     return wrapper
+
+
+def size_bytes(text: str) -> int:  # one of DuckDB's sizes: "8.0 GiB", "512.0 MiB", "1.5 GB"
+    num, unit = re.match(r"([\d.]+)\s*([A-Za-z]*)", text).groups()
+    scale = {"": 1, "b": 1, "bytes": 1, "kb": 1e3, "mb": 1e6, "gb": 1e9, "tb": 1e12, "kib": 2**10, "mib": 2**20, "gib": 2**30, "tib": 2**40}
+    return int(float(num) * scale[unit.lower()])
 
 
 def finish_writes(out: Path) -> None:
@@ -116,6 +126,8 @@ class Run:
         self.l, self.r = f"{self.uid}_l", f"{self.uid}_r"
         self.notes: list[str] = []            # what the loader detected or fixed, for the run's summary
         self.added: int | None = None         # an increment's new records (0: nothing new)
+        self.gated = pd.DataFrame()           # the oversized blocks the candidates checked, and what was decided
+        self.rule_names = [rule.name for st in self.pipeline.rules.stages for rule in st.rules]
 
     def _done(self, name: str, big_o: str, filled: str, t: float, **facts: object) -> None:
         self.steps.append(dict(step=name, big_o=big_o, filled=filled, seconds=round(time.perf_counter() - t, 2),
@@ -194,33 +206,50 @@ class Run:
         return f"(SELECT * FROM er_in WHERE NOT ({blank}) AND {u} NOT IN (SELECT {u} FROM set_aside WHERE {u} IS NOT NULL))"
 
     def budget(self) -> pd.DataFrame:
-        """Exact block sizes on this file, per rule and per generator, by group-by: the run stops here, before any join,
-        if one would exceed the budget."""
+        """Exact block sizes on this file, per rule and generator, by group-by, before any join: pairs, pairs per record,
+        the largest block, and the oversized blocks (budget.min_oversized() records or more). Those are never joined
+        blind: a generator checks each on a sample first (er.candidates), and a rule never trusts their values
+        (_untrusted). The run stops only if the pairs of the normal blocks alone would not fit (capacity)."""
         t, rows = time.perf_counter(), []
-        b = self.pipeline.fs.budget
-        blockers = [KeyBlocker(name=rule.name, keys=tuple(map(Key, st.keys(rule)))) for st in self.pipeline.rules.stages for rule in st.rules]
-        for kind, x in [*(("rule", k) for k in blockers), *(("generator", g) for g in self.pipeline.fs.blockers)]:
-            rows.append(dict(kind=kind, name=x.name, **estimate(x, "records", 0 if kind == "rule" else self.n, self.con)))
-        plan = pd.DataFrame(rows)
-        self._done("budget", "O(N)", f"O({self.n:,}) per rule and generator", t, pairs=int(plan["est_pairs"].sum()))
-        over = plan[(plan["est_pairs"] > b.max_pairs(self.n)) | (plan["largest_block"] > b.max_block_size)]
-        if len(over):
-            by_name = {x.name: x for x in [*blockers, *self.pipeline.fs.blockers]}
-            raise OverBudget("over budget on this file: " + "; ".join(self._over(by_name[x.name], x.est_pairs, x.largest_block) for x in over.itertuples()),
-                             fix="a value repeated in many records is usually a placeholder (a dummy phone, 'unknown'): blank it out, "
-                                 "so it counts as missing, then run again")
+        m = self.pipeline.fs.budget.min_oversized()
+        rules = [KeyBlocker(name=rule.name, keys=tuple(map(Key, st.keys(rule)))) for st in self.pipeline.rules.stages for rule in st.rules]
+        for kind, x in [*(("rule", k) for k in rules), *(("generator", g) for g in self.pipeline.fs.blockers)]:
+            rows.append(dict(kind=kind, name=x.name, **estimate(x, "records", 0 if kind == "rule" else self.n, self.con, oversized_from=m)))
+        plan = pd.DataFrame(rows).assign(per_record=lambda d: (d["est_pairs"] / max(self.n, 1)).round(2),
+                                         normal=lambda d: d["est_pairs"] - d["oversized_pairs"])
+        self._done("budget", "O(N)", f"O({self.n:,}) per rule and generator", t, pairs=int(plan["est_pairs"].sum()),
+                   oversized_blocks=int(plan["oversized_blocks"].sum()))
+        if (normal := int(plan["normal"].sum())) > (cap := self.capacity()):
+            raise InputError(f"the normal blocks alone would make {normal:,} pairs, more than fit in memory and the temp disk "
+                             f"({cap:,} pairs at about {BYTES_PER_PAIR} bytes each); the most: " +
+                             ", ".join(f"{x.name} {x.normal:,}" for x in plan.nlargest(3, "normal").itertuples()),
+                             fix="give DuckDB more room (--compute memory_limit=… temp_directory=<a disk with space>), or resolve the file in parts")
+        self.plan = plan
         return plan
 
-    def _over(self, blocker: object, pairs: int, largest: int) -> str:  # a budget stop, with the value behind its largest block
-        b = self.pipeline.fs.budget
-        text = f"{blocker.name} would make {pairs:,} pairs (budget {b.max_pairs(self.n):,}), the largest block {largest:,} records (budget {b.max_block_size:,})"
-        if isinstance(blocker, KeyBlocker):
-            cols = [k.name for k in blocker.keys]
-            top = self.con.execute(f"""SELECT {', '.join(q(c) for c in cols)}, count(*) AS n FROM records
-                WHERE {' AND '.join(f'{q(c)} IS NOT NULL' for c in cols)} GROUP BY ALL ORDER BY n DESC LIMIT 1""").fetchall()
-            if top:
-                text += f": {', '.join(f'{c} = {v}' for c, v in zip(cols, top[0]))} in {top[0][-1]:,} records"
-        return text
+    def capacity(self) -> int:
+        """The pairs that fit in DuckDB's memory limit plus the free space of its temp directory, at BYTES_PER_PAIR."""
+        limit, temp = self.con.execute("SELECT current_setting('memory_limit'), current_setting('temp_directory')").fetchall()[0]
+        free = shutil.disk_usage(temp if temp and os.path.isdir(temp) else ".").free
+        return int((size_bytes(limit) + free) / BYTES_PER_PAIR)
+
+    def _untrusted(self, i: int, rule_keys: list[str], within: str | None = None) -> str | None:
+        """The values of a rule's keys held by an oversized block (with `within`, a table of records: only the values
+        they hold), as a table; None if none. One value on that many records is not one entity's, so the rule leaves
+        it out, and the summary names it. O(N), a group-by."""
+        m, cols = self.pipeline.fs.budget.min_oversized(), ", ".join(q(c) for c in rule_keys)
+        filled = " AND ".join(f"{q(c)} IS NOT NULL" for c in rule_keys)
+        held = f" AND ({cols}) IN (SELECT {cols} FROM {within})" if within else ""
+        name = f"er_untrusted_{i}"
+        self.con.execute(f"CREATE OR REPLACE TABLE {name} AS SELECT {cols}, count(*) AS __n FROM records WHERE {filled}{held} "
+                         f"GROUP BY {cols} HAVING count(*) >= {m} ORDER BY __n DESC")
+        n, records = self.con.execute(f"SELECT count(*), coalesce(sum(__n), 0) FROM {name}").fetchall()[0]
+        if not n:
+            return None
+        top = self.con.execute(f"SELECT * FROM {name} LIMIT 1").fetchall()[0]
+        self.notes.append(f"rule {self.rule_names[i]} doesn't trust {n:,} value{'s' if n > 1 else ''} held by {m}+ records "
+                          f"({int(records):,} records), e.g. {', '.join(f'{c} = {v}' for c, v in zip(rule_keys, top))} in {top[-1]:,}")
+        return name
 
     def fit(self) -> dict:
         """λ from the near-certain rules, u by random sampling, m by EM, on a fixed-size sample of whole postal areas
@@ -261,7 +290,13 @@ class Run:
         touches a record still unresolved; clusters are recomputed after each stage."""
         t, l, r = time.perf_counter(), q(self.l), q(self.r)
         rules = self.pipeline.rules
-        rule_edges_table(rules, "records", self.db, self.uid, "rule_edges")
+        inputs = {}
+        for i, (st, rule) in enumerate((st, rule) for st in rules.stages for rule in st.rules):
+            if (untrusted := self._untrusted(i, st.keys(rule))):
+                keys = " AND ".join(f"z.{q(c)} = x.{q(c)}" for c in st.keys(rule))
+                self.con.execute(f"CREATE OR REPLACE VIEW er_rule_in_{i} AS SELECT * FROM records x WHERE NOT EXISTS (SELECT 1 FROM {untrusted} z WHERE {keys})")
+                inputs[rule.name] = f"er_rule_in_{i}"
+        rule_edges_table(rules, "records", self.db, self.uid, "rule_edges", inputs)
         self.con.execute(f"CREATE OR REPLACE TABLE rule_kept AS SELECT * FROM rule_edges WHERE FALSE")
         self.con.execute(f"CREATE OR REPLACE TABLE rule_clusters AS SELECT {q(self.uid)}, {q(self.uid)} AS cluster_id FROM records")
         for st in rules.stages:
@@ -276,10 +311,29 @@ class Run:
         if not fs.bridge:  # the query: the records the rules left alone
             self.con.execute(f"CREATE OR REPLACE TABLE er_query AS SELECT * FROM {self._singletons('rule_clusters')}")
         _, report = candidates(fs.blockers, "records", self.uid, None if fs.bridge else "er_query", fs.budget,
-                               clusters="rule_clusters" if fs.bridge else None, con=self.con, into="cands")
+                               clusters="rule_clusters" if fs.bridge else None, con=self.con, into="cands",
+                               gate=self._gate, floor=review_floor(self.pipeline), capacity=self.capacity())
+        self._gated(report.attrs["gated"])
         c = self._count("cands")
-        self._done("candidates", "O(N·L + Σ P_g)", f"O({self.n:,}·L + {int(report['pairs'].sum()):,})", t, candidates=c)
+        self._done("candidates", "O(N·L + Σ P_g)", f"O({self.n:,}·L + {int(report['pairs'].sum()):,})", t, candidates=c,
+                   oversized_kept=int((self.gated.get("decision", pd.Series(dtype=str)) == "kept").sum()),
+                   oversized_skipped=int(self.gated.get("decision", pd.Series(dtype=str)).str.startswith("skipped").sum()))
         return report
+
+    def _gate(self, pairs: pd.DataFrame) -> pd.DataFrame:  # an oversized block's sampled pairs, scored with the fitted model
+        return score_fs(self.model, "records", pairs, self.db, self.uid, n_records=self.n)
+
+    def _gated(self, gated: pd.DataFrame) -> None:  # the oversized blocks' decisions, kept for qa and named in the summary
+        self.gated = gated
+        if gated.empty:
+            return
+        floor = review_floor(self.pipeline)
+        for x in gated.sort_values("pairs", ascending=False).head(5).itertuples():
+            self.notes.append(f"{x.generator}: {x.value} holds {x.records:,} records ({x.pairs:,} pairs); {int(x.hits)} of {int(x.sampled)} "
+                              f"sampled pairs reach {floor:g} bits: {x.decision}")
+        if len(gated) > 5:
+            kept = (gated["decision"] == "kept").sum()
+            self.notes.append(f"{len(gated):,} oversized blocks in all: {kept:,} kept, {len(gated) - kept:,} skipped (qa.md lists them)")
 
     def _singletons(self, clusters: str) -> str:
         return f"(SELECT {q(self.uid)} FROM {clusters} WHERE cluster_id IN (SELECT cluster_id FROM {clusters} GROUP BY 1 HAVING count(*) = 1))"
@@ -430,8 +484,11 @@ class Run:
         rules = self.pipeline.rules
         parts = []
         for i, (st, rule) in enumerate((st, rule) for st in rules.stages for rule in st.rules):
+            untrusted = self._untrusted(i, st.keys(rule), within="new_records")
+            trust = (f" AND NOT EXISTS (SELECT 1 FROM {untrusted} z WHERE {' AND '.join(f'z.{q(c)} = l.{q(c)}' for c in st.keys(rule))})"
+                     if untrusted else "")
             parts.append(f"SELECT least(l.{u}, r.{u}) AS {l}, greatest(l.{u}, r.{u}) AS {r}, '{rule.name}' AS rule, '{st.name}' AS stage, "
-                         f"{i} AS i FROM new_records l JOIN records r ON {st.sql(rule)} AND l.{u} <> r.{u}")
+                         f"{i} AS i FROM new_records l JOIN records r ON {st.sql(rule)} AND l.{u} <> r.{u}{trust}")
         self.con.execute(f"""CREATE OR REPLACE TABLE rule_edges AS SELECT DISTINCT ON ({l}, {r}) {l}, {r}, rule, stage, 1.0 AS score
             FROM ({' UNION ALL '.join(parts)}) ORDER BY {l}, {r}, i""")
         self.con.execute(f"""CREATE OR REPLACE TABLE rule_clusters AS SELECT * FROM read_parquet({lit(state / 'rule_clusters.parquet')})
@@ -447,7 +504,9 @@ class Run:
 
         t, fs = time.perf_counter(), self.pipeline.fs
         _, report = candidates(fs.blockers, "records", self.uid, "new_ids", fs.budget,
-                               clusters="rule_clusters" if fs.bridge else None, con=self.con, into="cands", touching=True)
+                               clusters="rule_clusters" if fs.bridge else None, con=self.con, into="cands", touching=True,
+                               gate=self._gate, floor=review_floor(self.pipeline), capacity=self.capacity())
+        self._gated(report.attrs["gated"])
         self._done("candidates", "O(|Δ|·Σ b + scan)", f"{self._count('cands'):,} pairs touching the batch", t)
 
         t, again = time.perf_counter(), []
@@ -617,6 +676,7 @@ def qa(run: "Run", fields: list[str], review: int = 50, previous: Path | None = 
         *(("note", note) for note in run.notes)], columns=["what", "value"])
     return dict(summary=summary, fill=fill, disabled=pd.DataFrame({"disabled": run.disabled}), steps=steps, weight_bands=bands,
                 cluster_sizes=sizes, largest_clusters=largest, patterns_without_a_key=coverage.head(20), review=queue,
+                oversized_blocks=run.gated,
                 review_sheet=sheet)
 
 
