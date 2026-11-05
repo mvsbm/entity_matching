@@ -1,4 +1,8 @@
-"""Typed, frozen configuration. Notebooks build these in their Configuration cell; nothing here names a column."""
+"""Typed, frozen configuration, loaded from config/pipeline.toml (load_pipeline) and written back (dump_pipeline).
+Everything is in field names (config/settings.toml [columns]); nothing here names a file's column."""
+import json
+import re
+import tomllib
 from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
 from pathlib import Path
@@ -97,10 +101,13 @@ class Stage:
 
 @dataclass(frozen=True, kw_only=True)
 class Budget:
-    max_candidate_pairs: int                  # per rule / generator; above this the run stops before any join
-    max_block_size: int
-    target_rows: int                          # production row count, for the P projection
+    max_pairs_per_record: float               # per rule / generator, now and projected: above this × records, the run stops
+    max_block_size: int                       # before any join; per record, so a budget means the same at any size
+    target_rows: int                          # the size the cost checks project to
     benchmark_pairs: int                      # pairs timed per (column, function) to estimate seconds
+
+    def max_pairs(self, n: int) -> int:
+        return int(self.max_pairs_per_record * n)
 
 
 # ---------- resolution ----------
@@ -209,6 +216,7 @@ class FSModel:
     em_rules: tuple[tuple[Key, ...], ...]     # one EM session per rule
     seed: int
     u_from_scored: bool = False               # u re-sampled on each scored file, m and λ from the fit (er.match.with_scored_u)
+    u_exact_by_counts: bool = False           # u of the leading exact levels from value counts, not the sample (er.match.exact_u)
 
     def u_keys(self) -> dict[str, str]:
         """What each comparison's u depends on, besides the fitting records: the comparison (term-frequency adjustment
@@ -222,7 +230,7 @@ class FSModel:
 
 
 @dataclass(frozen=True, kw_only=True)
-class ProbSpec:
+class FSSpec:
     standardize: Standardization
     previous_stage: str                       # whose clusters / pairs this stage builds on
     stage: str
@@ -265,16 +273,14 @@ def without_tf(model: FSModel) -> FSModel:
 
 @dataclass(frozen=True, kw_only=True)
 class Data:
-    silver_dir: Path                          # <dataset>.csv: input records
-    labels_dir: Path                          # <dataset>.csv: truth, read only to evaluate
-    gold_dir: Path                            # <dataset>.csv: resolved entities, written by the last stage
-    artifacts_dir: Path                       # {matched,resolved,unresolved}/<dataset>/<stage>_*.csv
-    experiments_dir: Path                     # leaderboard.csv
+    silver_dir: Path                          # <dataset>.parquet: input records
+    labels_dir: Path                          # <dataset>.parquet: truth, read only to choose and evaluate
+    gold_dir: Path                            # <dataset>/: each dataset resolved, a run folder (er.run)
+    experiments_dir: Path                     # leaderboard.parquet
     models_dir: Path
-    datasets: tuple[str, ...]                 # every dataset a notebook writes outputs for: train, val, test
+    datasets: tuple[str, ...]                 # every dataset scripts/choose.py writes outputs for: train, val, test
     unique_id: str
     entity_id: str                            # truth column
-    show_rows: int
     synthetic: bool                           # True for generated data; real (personal) data must not be exported
 
 
@@ -307,7 +313,7 @@ class Tune:
     stage: str                                # the stage whose comparators are searched
     space: Mapping[str, tuple[Candidate, ...]]
     n_trials: int                             # the only bound: a wall-clock timeout would make the front depend on machine speed
-    enabled: bool = False                     # off by default: FINAL keeps the suggestions already adopted (CHANGES)
+    enabled: bool = False                     # off by default: FINAL keeps the suggestions already adopted (config/experiments.py)
     seed: int
     storage_path: Path                        # SQLite file the study is saved to; optuna-dashboard reads it
     study_prefix: str                         # each run is a new study: <prefix>_<timestamp>
@@ -316,7 +322,7 @@ class Tune:
 
 
 @dataclass(frozen=True, kw_only=True)
-class ProbTune:
+class FSTune:
     """Search over whole components of the probabilistic stage, not just thresholds."""
     toggle_blockers: tuple[str, ...]          # generators a trial may switch off
     m_methods: tuple[Literal["em", "labels"], ...]
@@ -330,3 +336,272 @@ class ProbTune:
     study_prefix: str
     dashboard_host: str
     dashboard_port: int
+
+
+# ---------- config/pipeline.toml: load, check the fields a file holds, write back ----------
+
+@dataclass(frozen=True, kw_only=True)
+class Fields:
+    mandatory: tuple[str, ...]                # the run stops if any is absent
+    one_of: tuple[tuple[str, ...], ...]       # ... or if every field of one group is absent
+    optional: tuple[str, ...]                 # absent: whatever reads it is disabled
+    labels: tuple[str, ...]                   # read only by labelled runs (choosing, evaluation)
+
+    def declared(self) -> set[str]:
+        return {*self.mandatory, *(f for g in self.one_of for f in g), *self.optional, *self.labels}
+
+
+@dataclass(frozen=True, kw_only=True)
+class Pipeline:
+    fields: Fields
+    rules: RulesSpec
+    fs: FSSpec
+    generators: Mapping[str, Blocker]         # every generator defined, by name; fs.blockers uses some of them
+    threshold: ThresholdRule
+    cv_folds: int
+    cv_seed: int
+    decision_p: float
+    explain_show: tuple[str, ...]             # the worked example's fields
+    explain_filled: tuple[str, ...]
+    fit_rows: int = 30_000                    # an unlabelled run fits on a sample of this many records (er.run)
+
+
+def _norm(value: object, chains: Mapping[str, tuple[Normalizer, ...]]) -> tuple[Normalizer, ...]:
+    if value is None:
+        return ()
+    if isinstance(value, str):
+        if value not in chains:
+            raise ValueError(f"unknown normalization chain {value!r}; [locale.chains] has {sorted(chains)}")
+        return chains[value]
+    return tuple(value)
+
+
+def _key(v: object, chains: Mapping[str, tuple[Normalizer, ...]]) -> Key:
+    return Key(v) if isinstance(v, str) else Key(v["field"], _norm(v.get("normalize"), chains))
+
+
+def _comparator(d: dict, chains: Mapping[str, tuple[Normalizer, ...]]) -> Comparator:
+    return Comparator(d["function"], d.get("threshold"), _norm(d.get("normalize"), chains))
+
+
+def _generator(name: str, d: dict, chains: Mapping[str, tuple[Normalizer, ...]]) -> Blocker:
+    match d["kind"]:
+        case "keys":
+            return KeyBlocker(name=name, keys=tuple(_key(k, chains) for k in d["keys"]))
+        case "sorted":
+            return SortedNeighbourhood(name=name, key=_key(d["key"], chains), window=d["window"])
+        case "tfidf":
+            return TfidfNeighbours(name=name, key=_key(d["key"], chains), ngram=tuple(d["ngram"]), k=d["k"], min_cosine=d["min_cosine"])
+        case "deletions":
+            return DeletionKeys(name=name, key=_key(d["key"], chains), within=tuple(_key(k, chains) for k in d.get("within", ())))
+    raise ValueError(f"generator {name}: unknown kind {d['kind']!r} (keys, sorted, tfidf, deletions)")
+
+
+def _resolver(d: dict) -> Resolver:
+    return Resolver(method=d["method"], cannot_link=tuple(d.get("cannot_link", ())))
+
+
+def pipeline_from(cfg: dict, std: Standardization, chains: Mapping[str, tuple[Normalizer, ...]]) -> Pipeline:
+    """The parsed config/pipeline.toml → typed config."""
+    f, b, m = cfg["fields"], cfg["budget"], cfg["model"]
+    budget = Budget(**b)
+    rules = RulesSpec(standardize=std, resolver=_resolver(cfg["rules"]["resolver"]), budget=budget, stages=tuple(
+        Stage(name=s["name"], comparators={c: _comparator(d, chains) for c, d in s.get("comparators", {}).items()},
+              rules=tuple(Rule(name=r["name"], exact=tuple(r["exact"]), fuzzy=tuple(r.get("fuzzy", ())),
+                               blocking=tuple(_key(k, chains) for k in r.get("blocking", ()))) for r in s["rules"]))
+        for s in cfg["rules"]["stages"]))
+    generators = {name: _generator(name, d, chains) for name, d in cfg["generators"].items()}
+    unknown = [g for g in m["generators"] if g not in generators]
+    if unknown:
+        raise ValueError(f"[model] generators: {unknown} are not defined in [generators]")
+    comparisons = tuple(Comparison(
+        name=c["name"], null_if_missing=tuple(c["null_if_missing"]), tf=_key(c["tf"], chains) if "tf" in c else None,
+        levels=tuple(Level(label=lv["label"], tf=lv.get("tf", False),
+                           any_of=tuple((a["field"], _comparator(a, chains)) for a in lv["any_of"])) for lv in c["levels"]))
+        for c in m["comparisons"])
+    model = FSModel(name=m["name"], comparisons=comparisons, prior_recall=m["prior_recall"], u_max_pairs=m["u_max_pairs"],
+                    prior_rules=tuple(tuple(_key(k, chains) for k in r) for r in m["prior_rules"]), m_method=m["m_method"],
+                    em_rules=tuple(tuple(_key(k, chains) for k in r) for r in m["em_rules"]), seed=m["seed"],
+                    u_from_scored=m.get("u_from_scored", False), u_exact_by_counts=m.get("u_exact_by_counts", False))
+    fs = FSSpec(standardize=std, previous_stage=m["previous_stage"], stage=m["stage"], model=model,
+                  blockers=tuple(generators[g] for g in m["generators"]), min_match_weight=m["min_match_weight"],
+                  resolver=_resolver(m["resolver"]), budget=budget, bridge=m.get("bridge", False))
+    t, sel, d = cfg["threshold"], cfg["selection"], cfg["display"]
+    return Pipeline(fields=Fields(mandatory=tuple(f["mandatory"]), one_of=tuple(map(tuple, f["one_of"])),
+                                  optional=tuple(f["optional"]), labels=tuple(f["labels"])),
+                    rules=rules, fs=fs, generators=generators,
+                    threshold=ThresholdRule(grid=tuple(t["grid"]), max_fp=t["max_fp"], max_fp_rate_hi=t["max_fp_rate_hi"],
+                                            margin_steps=t["margin_steps"]),
+                    cv_folds=sel["cv_folds"], cv_seed=sel["cv_seed"], decision_p=sel["decision_p"],
+                    explain_show=tuple(d["explain_show"]), explain_filled=tuple(d["explain_filled"]), fit_rows=m.get("fit_rows", 30_000))
+
+
+def load_pipeline(path: Path, std: Standardization, chains: Mapping[str, tuple[Normalizer, ...]],
+                  columns: Mapping[str, object]) -> Pipeline:
+    """config/pipeline.toml (or a written FINAL) → typed config. Every field it reads must be declared in [fields]
+    and mapped in config/settings.toml [columns]."""
+    p = pipeline_from(tomllib.loads(Path(path).read_text(encoding="utf-8")), std, chains)
+    read, declared = fields_read(p), p.fields.declared()
+    if read - declared:
+        raise ValueError(f"{path}: fields read but not declared in [fields]: {sorted(read - declared)}")
+    if declared - set(columns):
+        raise ValueError(f"{path}: fields not mapped in config/settings.toml [columns]: {sorted(declared - set(columns))}")
+    return p
+
+
+def fields_read(p: Pipeline) -> set[str]:  # every field the rules, the generators and the model read
+    r, m = p.rules, p.fs.model
+    out = {c for s in r.stages for rule in s.rules for c in (*rule.exact, *rule.fuzzy, *(k.column for k in rule.blocking))}
+    out |= set(r.stages[-1].comparators) if r.stages else set()
+    out |= {k.column for b in p.generators.values() for k in keys_of(b)}
+    out |= {col for c in m.comparisons for lv in c.levels for col, _ in lv.any_of} | {col for c in m.comparisons for col in c.null_if_missing}
+    out |= {c.tf.column for c in m.comparisons if c.tf} | {k.column for rule in (*m.prior_rules, *m.em_rules) for k in rule}
+    out |= {*p.explain_show, *p.explain_filled} | {c for s in r.stages for c in s.comparators}
+    return out
+
+
+def check_fields(fields: Fields, present: set[str], expected: Mapping[str, object], labelled: bool = False) -> None:
+    """Stop when a mandatory field, every field of a one_of group, or (for a labelled run) a label is absent; the error
+    names the columns config/settings.toml [columns] expects for each."""
+    missing = [f for f in (*fields.mandatory, *(fields.labels if labelled else ())) if f not in present]
+    if missing:
+        raise ValueError("mandatory fields absent from the file: " + "; ".join(f"{f} (expected {expected.get(f)})" for f in missing))
+    empty = [g for g in fields.one_of if not set(g) & present]
+    if empty:
+        raise ValueError("no field of these groups is in the file: " + "; ".join(
+            " / ".join(f"{f} (expected {expected.get(f)})" for f in g) for g in empty))
+
+
+def restrict(p: Pipeline, present: set[str]) -> tuple[Pipeline, list[str]]:
+    """The pipeline without whatever reads an absent field, and the list of what was disabled. A level that ORs
+    several conditions keeps the conditions it can still check."""
+    gone: list[str] = []
+    has = lambda cols: all(c in present for c in cols)
+    stages = []
+    for s in p.rules.stages:
+        keep = []
+        for r in s.rules:
+            cols = (*r.exact, *r.fuzzy, *(k.column for k in r.blocking))
+            (keep.append(r) if has(cols) else gone.append(f"rule {r.name} (needs {sorted(set(cols) - present)})"))
+        if keep:
+            stages.append(replace(s, rules=tuple(keep), comparators={c: x for c, x in s.comparators.items() if c in present}))
+    if not stages:
+        raise ValueError("no rule can run: every rule reads an absent field")
+    blockers = []
+    for b in p.fs.blockers:
+        cols = [k.column for k in keys_of(b)]
+        (blockers.append(b) if has(cols) else gone.append(f"generator {b.name} (needs {sorted(set(cols) - present)})"))
+    if not blockers:
+        raise ValueError("no candidate generator can run: every one reads an absent field")
+    comparisons = []
+    for c in p.fs.model.comparisons:
+        levels = []
+        for lv in c.levels:
+            any_of = tuple((col, comp) for col, comp in lv.any_of if col in present)
+            if any_of:
+                levels.append(replace(lv, any_of=any_of))
+            else:
+                gone.append(f"level {c.name}: {lv.label} (needs {sorted({col for col, _ in lv.any_of})})")
+        null = tuple(col for col in c.null_if_missing if col in present)
+        if levels and null:
+            tf = c.tf if c.tf and c.tf.column in present else None
+            comparisons.append(replace(c, levels=tuple(levels) if tf else tuple(replace(lv, tf=False) for lv in levels),
+                                       null_if_missing=null, tf=tf))
+        else:
+            gone.append(f"comparison {c.name}")
+    m = p.fs.model
+    prior = tuple(r for r in m.prior_rules if has(k.column for k in r))
+    em = tuple(r for r in m.em_rules if has(k.column for k in r))
+    if not prior:
+        raise ValueError("no prior rule can run (λ needs one): every one reads an absent field")
+    if m.m_method == "em" and not em:
+        raise ValueError("no EM blocking rule can run: every one reads an absent field")
+    gone += [f"prior rule {[k.column for k in r]}" for r in m.prior_rules if r not in prior]
+    gone += [f"EM rule {[k.column for k in r]}" for r in m.em_rules if r not in em]
+    model = replace(m, comparisons=tuple(comparisons), prior_rules=prior, em_rules=em)
+    return replace(p, rules=replace(p.rules, stages=tuple(stages)), fs=replace(p.fs, blockers=tuple(blockers), model=model),
+                   explain_show=tuple(f for f in p.explain_show if f in present),
+                   explain_filled=tuple(f for f in p.explain_filled if f in present)), gone
+
+
+def pipeline_dict(p: Pipeline, chains: Mapping[str, tuple[Normalizer, ...]]) -> dict:
+    """The inverse of pipeline_from, with normalizations written as chain names where one matches."""
+    name_of = {v: k for k, v in reversed(list(chains.items()))}  # the first chain defined wins
+    norm = lambda n: name_of.get(tuple(n), list(n))
+    key = lambda k: k.column if not k.normalize else {"field": k.column, "normalize": norm(k.normalize)}
+    comp = lambda c: {"function": c.function, **({"threshold": c.threshold} if c.threshold is not None else {}),
+                      **({"normalize": norm(c.normalize)} if c.normalize else {})}
+
+    def gen(b: Blocker) -> dict:
+        match b:
+            case KeyBlocker():
+                return {"kind": "keys", "keys": [key(k) for k in b.keys]}
+            case SortedNeighbourhood():
+                return {"kind": "sorted", "key": key(b.key), "window": b.window}
+            case TfidfNeighbours():
+                return {"kind": "tfidf", "key": key(b.key), "ngram": list(b.ngram), "k": b.k, "min_cosine": b.min_cosine}
+            case DeletionKeys():
+                return {"kind": "deletions", "key": key(b.key), **({"within": [key(k) for k in b.within]} if b.within else {})}
+
+    resolver = lambda r: {"method": r.method, **({"cannot_link": list(r.cannot_link)} if r.cannot_link else {})}
+    fs, m = p.fs, p.fs.model
+    f, t = p.fields, p.threshold
+    return {
+        "fields": {"mandatory": list(f.mandatory), "one_of": [list(g) for g in f.one_of], "optional": list(f.optional), "labels": list(f.labels)},
+        "budget": {"max_pairs_per_record": fs.budget.max_pairs_per_record, "max_block_size": fs.budget.max_block_size,
+                   "target_rows": fs.budget.target_rows, "benchmark_pairs": fs.budget.benchmark_pairs},
+        "rules": {"resolver": resolver(p.rules.resolver), "stages": [
+            {"name": s.name, **({"comparators": {c: comp(x) for c, x in s.comparators.items()}} if s.comparators else {}),
+             "rules": [{"name": r.name, "exact": list(r.exact), **({"fuzzy": list(r.fuzzy)} if r.fuzzy else {}),
+                        **({"blocking": [key(k) for k in r.blocking]} if r.blocking else {})} for r in s.rules]}
+            for s in p.rules.stages]},
+        "generators": {name: gen(b) for name, b in p.generators.items()},
+        "model": {"previous_stage": fs.previous_stage, "stage": fs.stage, "generators": [b.name for b in fs.blockers],
+                  "min_match_weight": fs.min_match_weight, "resolver": resolver(fs.resolver), "bridge": fs.bridge, "name": m.name,
+                  "prior_rules": [[key(k) for k in r] for r in m.prior_rules], "prior_recall": m.prior_recall,
+                  "u_max_pairs": m.u_max_pairs, "m_method": m.m_method, "em_rules": [[key(k) for k in r] for r in m.em_rules],
+                  "seed": m.seed, "u_from_scored": m.u_from_scored, "u_exact_by_counts": m.u_exact_by_counts, "fit_rows": p.fit_rows,
+                  "comparisons": [{"name": c.name, "null_if_missing": list(c.null_if_missing), **({"tf": key(c.tf)} if c.tf else {}),
+                                   "levels": [{"label": lv.label, "any_of": [{"field": col, **comp(x)} for col, x in lv.any_of],
+                                               **({"tf": True} if lv.tf else {})} for lv in c.levels]} for c in m.comparisons]},
+        "threshold": {"grid": list(t.grid), "max_fp": t.max_fp, "max_fp_rate_hi": t.max_fp_rate_hi, "margin_steps": t.margin_steps},
+        "selection": {"cv_folds": p.cv_folds, "cv_seed": p.cv_seed, "decision_p": p.decision_p},
+        "display": {"explain_show": list(p.explain_show), "explain_filled": list(p.explain_filled)},
+    }
+
+
+def _toml(v: object, inline: bool = False) -> str:  # one TOML value; tables inside a section are written inline
+    if isinstance(v, bool):
+        return "true" if v else "false"
+    if isinstance(v, int | float):
+        return repr(v)
+    if isinstance(v, str):
+        return json.dumps(v, ensure_ascii=False)  # JSON's string escapes are valid TOML basic-string escapes
+    if isinstance(v, dict):
+        keys = lambda k: k if re.fullmatch(r"[A-Za-z0-9_-]+", k) else json.dumps(k, ensure_ascii=False)
+        return "{ " + ", ".join(f"{keys(k)} = {_toml(x, inline=True)}" for k, x in v.items()) + " }" if v else "{}"
+    if not inline and any(isinstance(x, dict) for x in v):  # a list of tables, one per line
+        return "[\n" + "".join(f"  {_toml(x, inline=True)},\n" for x in v) + "]"
+    return "[" + ", ".join(_toml(x, inline=True) for x in v) + "]"
+
+
+def dump_toml(cfg: dict, header: str = "") -> str:
+    """A pipeline dict as TOML, in the layout of config/pipeline.toml: one [section] per top-level key, a section's
+    lists of tables as [[section.key]], everything deeper inline."""
+    out = [header] if header else []
+    for section, body in cfg.items():
+        out.append(f"\n[{section}]")
+        arrays = {k: v for k, v in body.items() if isinstance(v, list) and v and all(isinstance(x, dict) for x in v)
+                  and k in ("stages", "comparisons")}
+        out += [f"{k} = {_toml(v)}" for k, v in body.items() if k not in arrays]
+        for k, items in arrays.items():
+            for item in items:
+                out.append(f"\n[[{section}.{k}]]")
+                out += [f"{kk} = {_toml(vv)}" for kk, vv in item.items()]
+    return "\n".join(out) + "\n"
+
+
+def dump_pipeline(p: Pipeline, chains: Mapping[str, tuple[Normalizer, ...]], path: Path, header: str = "") -> None:
+    text = dump_toml(pipeline_dict(p, chains), header)
+    assert pipeline_from(tomllib.loads(text), p.rules.standardize, chains) == p, "the written pipeline must load back unchanged"
+    Path(path).write_text(text, encoding="utf-8")

@@ -1,30 +1,29 @@
-# Shared by every notebook: where data lives, which datasets exist, and how records are standardized.
-# Loaded and validated by er.settings.load_settings(). Paths are relative to the project root (the folder
-# with pyproject.toml), so notebooks run from any working folder. Stage-specific config (rules, models,
-# searches) stays in each notebook's Configuration cell.
+# Where data lives, which datasets exist, which of a file's columns hold which field, and the language-specific
+# normalization. Loaded and validated by er.settings.load_settings(). Paths are relative to the project root (the
+# folder with pyproject.toml). The matching itself is config/pipeline.toml, written in the field names of [columns].
 
 [paths]
 reference = "data/medallion/bronze/reference"   # tracked: frozen public reference data (see SOURCES.md)
-silver = "data/medallion/silver"                 # <dataset>.csv: generated records, the pipeline input
-gold = "data/medallion/gold"                     # <dataset>.csv: resolved entities, the pipeline output
-labels = "data/labels"                           # <dataset>.csv: truth, read only to evaluate
-artifacts = "data/artifacts"                     # {matched,resolved,unresolved}/<dataset>/<stage>_*.csv
-experiments = "data/artifacts/experiments"       # leaderboard.csv
+silver = "data/medallion/silver"                 # <dataset>.parquet: generated records, the pipeline input
+gold = "data/medallion/gold"                     # <dataset>/: each dataset resolved, a run folder like scripts/resolve.py writes
+labels = "data/labels"                           # <dataset>.parquet: truth, read only to choose and evaluate
+artifacts = "data/artifacts"                     # what the scripts keep for themselves: models, experiments, benchmark, demo
+experiments = "data/artifacts/experiments"       # leaderboard.parquet
 models = "data/artifacts/models"                 # trained Splink models
 optuna = "data/artifacts/optuna"                 # Optuna studies (SQLite), read by optuna-dashboard
 
 [datasets]
 all = ["train", "val", "test"]                   # one generated population, split by entity: fit / select / report
-synthetic = true                                 # the notebooks print records: scripts/export_pdfs.py exports them only while this is true
+synthetic = true                                 # the demo prints records: scripts/export_pdfs.py exports it only while this is true
 
-[schema]
-unique_id = "CONT_ID"
-entity_id = "ENTITY_ID"                          # truth column in labels/
+# DuckDB, the columnar engine: past memory_limit it spills to temp_directory, so a file of any size runs in bounded
+# memory. Empty values keep DuckDB's defaults (all cores; 80% of RAM; a temporary folder).
+[compute]
+threads = ""
+memory_limit = ""
+temp_directory = ""
 
-[display]
-show_rows = 8
-
-[standardize]
+[locale]                                         # the language-specific normalization
 # kana folding, character by character: voiced → unvoiced, small → large, ヴ/ヂ/ヅ/ヲ, ー → ウ
 kana_fold_from = "ガギグゲゴザジズゼゾダヂヅデドバビブベボパピプペポヴァィゥェォッャュョヮヵヶヲー"
 kana_fold_to   = "カキクケコサシスセソタチツテトハヒフヘホハヒフヘホフアイウエオツヤユヨワカケオウ"
@@ -38,21 +37,31 @@ prefectures = [
 address_replacements = [['(\d+)丁目', '\1-'], ['(\d+)番地?', '\1-'], ['(\d+)号', '\1']]  # regex → replacement, after NFKC
 address_cut_at = " "                             # drop the building / room after the first space
 
-# Derived columns: the first source whose columns are all filled wins (concatenated), then normalized.
-[[standardize.derived]]
-name = "PERSON_NAME"
-sources = [["FULL_NAME_KANA"], ["O_PERSON_NAME_KANA"], ["LAST_NAME_KANA", "GIVEN_NAME_KANA"]]
-normalize = ["strip_spaces"]
+# Named normalization chains, used by config/pipeline.toml (steps: er.config.Normalizer)
+[locale.chains]
+fold = ["kana_fold"]
+company = ["nfkc", "strip_legal_form", "kana_fold"]
+address = ["address"]
+reversed = ["kana_fold", "reverse"]
+initial = ["initial"]
+first3 = ["first3"]
+address_first3 = ["address", "first3"]
 
-[[standardize.derived]]
-name = "ANY_NAME"                                  # person or company name, for blocking keys (name initial)
-sources = [["FULL_NAME_KANA"], ["O_PERSON_NAME_KANA"], ["LAST_NAME_KANA", "GIVEN_NAME_KANA"], ["NYS_CNV_P_NAME_KANA"]]
-normalize = ["strip_spaces", "nfkc", "strip_legal_form", "kana_fold"]
-
-[[standardize.derived]]
-name = "POSTAL"
-sources = [["POST_CD"], ["POST_CD_KANA"]]
-
-[[standardize.derived]]
-name = "ADDRESS"
-sources = [["STD_ADDRESS"], ["ORIGINAL_ADDRESS"]]
+# Which of the file's columns hold each field. The pipeline reads fields only, never a file's column names.
+# A string is one column. A list of lists gives fallbacks: the first whose columns are all filled wins, concatenated.
+# A table adds a normalization, applied once when the field is built. config/pipeline.toml [fields] says which
+# fields a run needs and which it can do without. `id` and `entity` name single columns and are used as they are.
+[columns]
+id = "CONT_ID"
+entity = "ENTITY_ID"                               # the truth, in labels/: read only by labelled runs
+full_name = "FULL_NAME_KANA"
+person_name = { sources = [["FULL_NAME_KANA"], ["O_PERSON_NAME_KANA"], ["LAST_NAME_KANA", "GIVEN_NAME_KANA"]], normalize = ["strip_spaces"] }
+given_name = "GIVEN_NAME_KANA"
+company_name = "NYS_CNV_P_NAME_KANA"
+any_name = { sources = [["FULL_NAME_KANA"], ["O_PERSON_NAME_KANA"], ["LAST_NAME_KANA", "GIVEN_NAME_KANA"], ["NYS_CNV_P_NAME_KANA"]], normalize = ["strip_spaces", "nfkc", "strip_legal_form", "kana_fold"] }   # person or company
+address = [["STD_ADDRESS"], ["ORIGINAL_ADDRESS"]]
+address_code = "SOURCE_ADDR_CD"
+postal_code = [["POST_CD"], ["POST_CD_KANA"]]
+prefecture = "ADDRESS_ONE"
+phone = "PHONE_NUM_4"
+customer_id = "CIF_ID"                             # the ID the CIF system assigns

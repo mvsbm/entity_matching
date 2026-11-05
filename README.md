@@ -2,7 +2,7 @@
 
 Finds which customer records (CONT_IDs) belong to the same person or company. It runs on synthetic records built from **real Japanese names, companies and addresses**, so every answer can be checked against the truth before the method touches real data.
 
-**On test** (10,066 records never used for any choice), it finds **89.9%** of the true duplicate pairs (95% interval 88.6–91.1%) with **0 false merges**; the false-merge rate is at most 0.14%. Every notebook, run with all its outputs, is in [`notebooks/pdf/`](notebooks/pdf/).
+**On test** (10,066 records never used for any choice), it finds **89.9%** of the true duplicate pairs (95% interval 88.7–91.1%) with **0 false merges**; the false-merge rate is at most 0.14%. A demo of every step, run with its outputs and charts, is [`notebooks/pdf/demo.pdf`](notebooks/pdf/demo.pdf).
 
 ## How it works, on one pair
 
@@ -10,46 +10,46 @@ Two records of the same person, taken from the val split:
 
 | | name | address | phone (last 4) | CIF ID |
 |---|---|---|---|---|
-| record A | イイハラユイ | 愛知県江南市後飛保町神明野15-30 | 4091 | 1369848324410 |
-| record B | イイハユイ | 愛知県一宮市笹野29番27号 | 4091 | 7566678338121 |
+| record A | サワベキチヘイ | 北九州市八幡東区景勝町１０－１３ | 3734 | 1037183236105 |
+| record B | サベキチヘイ | 福岡県北九州市八幡東区景勝町10-13　メゾン青葉706 | 0945 | 6765670361201 |
 
-The name lost one kana (ラ), the person moved to another city, and the CIF ID (the ID our CIF system assigns) is new. Only the phone's last four digits agree. Here is what happens to the pair:
+The name lost one kana (ワ), the phone changed, and the CIF ID (the ID our CIF system assigns) is new. Only the address agrees, written two ways. Here is what happens to the pair:
 
-1. **Standardize.** Kana variants are folded, and every address format is parsed to one key: 一宮市笹野29番27号 becomes 一宮市笹野29-27, whether it was typed with 番/号, full-width digits or a building name.
-2. **Rules (exact, then fuzzy).** None fires. Every rule needs the CIF ID or the address (its code, a close spelling or the postal code) to agree, and this person has a new CIF ID and a new address. The rules are cheap and never wrong on our data (0 false merges on every split), but they find only 69% of the duplicates.
-3. **Candidates.** Two generators put the pair on a short list: the phone digits with the name's first kana (4091 and イ), and the name's sorted neighbourhood (sorted by name, the two records sit within a few places of each other). That list has 51,484 candidate pairs for 10,002 records, instead of all 50 million possible pairs.
+1. **Standardize.** Kana variants are folded, and every address format is parsed to one key: both addresses become 北九州市八幡東区景勝町10-13, whatever the prefecture, the full-width digits or the building name.
+2. **Rules (exact, then fuzzy).** None fires. Every rule that takes the address also needs the phone, the exact name or the CIF ID, and this person changed all three. The rules are cheap and never wrong on our data (0 false merges on every split), but they find only 70% of the duplicates.
+3. **Candidates.** Five generators put the pair on a short list. One is the one-deletion key: サベキチヘイ is サワベキチヘイ with one kana deleted, so the two share a key in their postal area. Others are the address with the name's first kana (サ), the given name with the postal code, and the name's sorted neighbourhood on the reversed name. That list has 49,987 candidate pairs for 10,002 records, instead of all 50 million possible pairs.
 4. **Score.** A Fellegi–Sunter model weighs each field as evidence, in bits. Each bit doubles the odds that the two records are the same entity. How often strangers agree on a field (u) is measured on the file being scored, here val.
 
    | evidence | bits |
    |---|---|
    | starting point: two random records are the same entity (about 1 in 32,000) | −14.98 |
-   | names very close (Jaro–Winkler ≥ 0.95 after kana folding) | +12.93 |
-   | different address | −2.50 |
-   | same phone digits | +12.35 |
+   | names very close (Jaro–Winkler ≥ 0.95 after kana folding) | +11.84 |
+   | same address | +13.52 |
+   | different phone | −2.51 |
    | different CIF ID | −0.90 |
-   | **total** | **+6.90 bits, a 99.2% match probability** |
+   | **total** | **+6.98 bits, a 99.2% match probability** |
 
 5. **Decide and cluster.** A pair needs at least **6 bits** to be accepted, and this one passes. Connected components then merge it with any other records already linked to either side.
 
-**The closest non-match**, from the same val split:
+**A rejected non-match**, from the same val split:
 
 | | name | address | phone | CIF ID |
 |---|---|---|---|---|
 | record C | セルシスカブシキガイシャ (a company) | 東京都多摩市連光寺5-18-5 | 8813 | 2754477213332 |
 | record D | ヤマモトカヨ (a person) | 東京都多摩市連光寺5-18-5 | 6813 | 4590715084681 |
 
-Same address (+13.49), phone one digit off (+4.47), different CIF ID (−0.90). A company and a person have no name the model can compare, so the name adds 0 bits. Total **+2.09 bits, rejected.**
+Same address (+13.52), phone one digit off (+4.47), different CIF ID (−0.90). A company and a person have no name the model can compare, so the name adds 0 bits. Total **+2.12 bits, rejected.**
 
-The true pair shares no address but has a near-identical name and the same phone; this pair has the address but no name to compare. The notebook computes both breakdowns ([`er.match.waterfall`](er/match.py); the "Why a pair matches" cell in the probabilistic PDF).
+Both pairs share an address. The true pair adds a near-identical name, which outweighs its new phone and CIF ID; this pair has nearly the same phone but no name to compare. Both breakdowns are computed by [`er.match.waterfall`](er/match.py); they are in [`reports/choose.md`](reports/choose.md), and section 8 of the demo draws two more.
 
 ## The whole funnel, on val
 
 ```mermaid
 flowchart LR
   A["10,002 records<br/>2,227 true duplicate pairs"] -->|"exact rules"| B["52% found"]
-  B -->|"fuzzy rules"| C["69% found<br/>683 pairs still missed"]
-  C -->|"14 candidate generators"| D["51,484 candidate pairs<br/>contain 632 of the 683"]
-  D -->|"Fellegi–Sunter ≥ 6 bits"| E["466 pairs accepted<br/>all of them true"]
+  B -->|"fuzzy rules"| C["70% found<br/>679 pairs still missed"]
+  C -->|"17 candidate generators"| D["49,987 candidate pairs<br/>contain 600 of the 679"]
+  D -->|"Fellegi–Sunter ≥ 6 bits"| E["460 pairs accepted<br/>all of them true"]
   E -->|"connected components"| F["91.3% found<br/>0 false merges"]
 ```
 
@@ -57,10 +57,10 @@ flowchart LR
 
 - **Two stages.** Rules are cheap, auditable and, on this data, never wrong, so they go first. What they leave is messy: a typo in the name and in the phone at once, a move, a new CIF ID. Messy pairs need evidence weighed, not all-or-nothing conditions.
 - **Bits.** Evidence from independent fields adds up, so every accepted pair can be explained line by line, as above. Correlated fields (address code, address text, postal code) share one comparison, so the same fact is never counted twice.
-- **Linear work, so it scales.** Up to a million records, every step's work grows about linearly with the file. Two steps grew with its square: keys on the last four phone digits, which take only 10,000 values, and TF-IDF, which compares every record with every other. Both were replaced ([chapter 3](docs/guide/03-far-too-many-pairs.md#scaling-to-a-million-records)). A sorted window also reaches fewer pairs as the file grows, so five more keys make sure that no pair the model could accept depends on one ([why](docs/guide/03-far-too-many-pairs.md#keeping-every-potential-match)).
+- **Linear work, so it scales.** Every step's work grows about linearly with the file. A key's pairs split into true pairs, which grow like N, and chance pairs, which grow like N² when the key's values come from a fixed pool: the last four phone digits, an address that households share. So no key is one such field alone; each adds another (phone and address, address and the name's first letter), and its pairs per record stay within a budget at the target size, checked before every run. TF-IDF, which compares every record with every other, was replaced too ([chapter 3](docs/guide/03-far-too-many-pairs.md#scaling-to-a-million-records)). A sorted window reaches fewer pairs as the file grows, so the keys alone must reach every pair the model could accept, at the target size as well ([why](docs/guide/03-far-too-many-pairs.md#keeping-every-potential-match)).
 - **A rule picks the threshold, not a person.** The threshold is the lowest weight at which cross-validated train accepts no false pair, plus one safety step. Every other choice is made by a paired test on train and must not lose anything on val. Test is scored once, at the end. The headline number above was never used to choose anything ([chapter 6](docs/guide/06-measuring-and-choosing.md)).
 - **Synthetic data from real names.** Real name, company and address distributions with an exact answer key, so each method's errors can be counted, not guessed ([chapter 1](docs/guide/01-entity-resolution-and-our-task.md#where-does-the-truth-come-from)).
-- **Configured and measured.** Column names live only in `config/settings.toml` and each notebook's Configuration cell. Every search reports its cost (Big-O with the numbers filled in) before it runs, and every metric carries its 95% interval. The cost of every step, end to end, is in [performance.md](docs/performance.md#end-to-end-the-cost-of-every-step).
+- **Configured for any file, and measured.** Column names live only in `config/settings.toml` `[columns]`; the matching (`config/pipeline.toml`) is written in logical fields, some mandatory and some optional, so a file with other column names or missing fields needs only that mapping. Every search reports its cost (Big-O with the numbers filled in) before it runs, and every metric carries its 95% interval. The cost of every step, end to end, is in [performance.md](docs/performance.md#end-to-end-the-cost-of-every-step).
 
 ## Words used here
 
@@ -82,14 +82,25 @@ flowchart LR
 .venv/bin/python -m pytest tests/         # engine checks, ~2 s
 ```
 
-Then run the notebooks in order, with the `.venv` kernel: `dataset_generation` → `deterministic_matching` → `probabilistic_matching`. Or run `.venv/bin/python scripts/export_pdfs.py` to run all three and save them, with outputs, to `notebooks/pdf/` (~4 min; once first: `.venv/bin/python -m playwright install chromium`). After them, `.venv/bin/python scripts/robustness.py --smoke` re-runs the final configurations on other populations and on a million records, and writes `data/artifacts/robustness/report.md` (~6 min, 8 GB of memory).
+| To | Run | Time |
+|---|---|---|
+| see every step on a small file | `notebooks/demo.ipynb` with the `.venv` kernel, or `scripts/export_pdfs.py` for its PDF (once first: `.venv/bin/python -m playwright install chromium`) | ~1 min |
+| generate the synthetic train / val / test files | `scripts/generate.py` | ~5 s |
+| choose the configuration on them | `scripts/choose.py` (`--optuna` adds the searches) → `config/final.toml`, `reports/choose.md`, `data/medallion/gold/<dataset>/` | ~5 min |
+| resolve any file, without labels | `scripts/resolve.py --input <file> --output <folder>`; `--increment` adds new records, `--overwrite` replaces a run, `--compute memory_limit=8GB` limits memory | 41 s per million records |
+| measure quality and cost | `scripts/benchmark.py --entities 10000 20000 40000 60000 800000 --memory-limit 8GB` → `reports/benchmark.md` | ~5 min |
+
+Every script is run as `.venv/bin/python scripts/<name>.py`.
 
 ```
-config/settings.toml   paths, datasets, schema, standardization: the only shared place that names columns
-er/                    the engine: candidates, matching, resolution, evaluation (names no column)
-notebooks/             the three stages, saved without outputs; notebooks/pdf/ holds the last full run
-tests/  scripts/       engine checks · PDF export · robustness report
-data/                  bronze reference data (in git); everything else is rebuilt by the notebooks
+config/settings.toml   paths, [columns] (logical field → the file's columns), [locale], [compute]: the only place that names columns
+config/pipeline.toml   the matching, in logical fields: [fields], rules, generators, model, threshold rule, budgets
+config/final.toml      what scripts/choose.py chose, in the same format; scripts/resolve.py runs it
+config/generator.toml  the synthetic population · config/experiments.py: the variants choose.py decides on
+er/                    the engine (names no column); er/run.py is the run on any file, on DuckDB tables
+scripts/  reports/     generate · choose · resolve · benchmark · export_pdfs; the reports of the synthetic runs
+notebooks/demo.ipynb   every step on ~3,700 records, with charts; saved without outputs, notebooks/pdf/demo.pdf with
+tests/  data/          engine checks; bronze reference data (in git); silver records, labels and gold run folders, all Parquet, rebuilt by the scripts
 ```
 
 ## Read the guide
@@ -109,8 +120,8 @@ Six chapters explain how everything works. Each starts from a real example, name
 
 ## Known limits
 
-- **One generator.** Test is an independent sample from the same generator, so the results hold for its kind of duplicates, typos and gaps. Other seeds, twice the typos, emptier fields and a prior off by a factor of two keep recall between 88.4% and 91.5% with 0 false merges ([chapter 6](docs/guide/06-measuring-and-choosing.md#challenge-does-it-hold-beyond-our-one-dataset)), but noisier real data may still do worse. Only real data can tell.
-- **Bigger files, slightly lower recall.** A million records take under two minutes and 8 GB. At a fixed threshold, recall moves from 89.8% at 12,000 records to 88.7% at 75,000, and a few false merges appear (a rate of at most 0.07%). Blocking loses none of it: at every size, every missed pair that could reach the threshold is on a candidate list. u is measured on each scored file, which keeps agreements on growing fields (address, CIF ID) at their true weight on big files. On files smaller than train it costs a little: test would score 91.1% with train's u, against 89.9% ([chapter 3](docs/guide/03-far-too-many-pairs.md#quality-as-the-file-grows)).
-- **Every big table is held in memory.** Measured up to a million records on one machine (8 GB). Larger files need the tables to stay in a columnar engine, keys whose blocks stay bounded at any size, and exact u for agreements too rare for a fixed sample.
+- **One generator.** Test is an independent sample from the same generator, so the results hold for its kind of duplicates, typos and gaps. Other seeds, twice the typos, emptier fields and a prior off by a factor of two keep recall between 88.5% and 91.5% with 0 false merges ([chapter 6](docs/guide/06-measuring-and-choosing.md#challenge-does-it-hold-beyond-our-one-dataset)), but noisier real data may still do worse. Only real data can tell.
+- **Bigger files, slightly lower recall.** A million records take 41 seconds and 4.5 GB, under an 8 GB limit past which DuckDB would spill to disk. Fitted on each file without labels, recall stays between 88.9% and 89.6% from 12,000 to 75,000 records, and a few false merges appear (a rate of at most 0.16%) ([benchmark](reports/benchmark.md), measured before the latest standardization fixes). Blocking loses none of it: on train, every true pair that could reach the threshold shares a key, at train's size and at a million records. u is measured on each scored file, which keeps agreements on growing fields (address, CIF ID) at their true weight on big files. On files smaller than train it costs a little: test would score 91.1% with train's u, against 89.9% ([chapter 3](docs/guide/03-far-too-many-pairs.md#quality-as-the-file-grows)).
+- **Close names at a shared address rely on the name's first letter.** Without labels, the run can only check that every pattern able to reach the threshold implies a shared key. Names that are close by Jaro–Winkler imply no key, so up to 0.6% of matches (the model's own bound) rest on keys that are near-certain but not guaranteed to hold: the name's first letter with the address, or another key. On labelled data none is lost.
 - **Machine-read kana.** Given-name readings come from SudachiPy, and some differ from the intended reading.
-- **Next steps:** run every step on columnar tables, so memory stays bounded at any size; certify on real data; try a supervised classifier on the same comparison vectors under the same decision rule; and add a clerical-review band for pairs just below 6 bits.
+- **Next steps:** certify on real data; try a supervised classifier on the same comparison vectors under the same decision rule; and add a clerical-review band for pairs just below 6 bits (`scripts/resolve.py` already writes them to `review.parquet`).

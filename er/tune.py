@@ -8,7 +8,7 @@ import optuna
 import optuna_dashboard
 import pandas as pd
 
-from er.config import Candidate, Comparator, ProbTune, Tune
+from er.config import Candidate, Comparator, FSTune, Tune
 from er.strings import FUNCTIONS
 
 optuna.logging.set_verbosity(optuna.logging.WARNING)
@@ -31,7 +31,7 @@ def suggest_comparators(trial: optuna.Trial | optuna.trial.FixedTrial,
     return out
 
 
-def start_dashboard(tune: Tune | ProbTune) -> optuna.storages.RDBStorage:
+def start_dashboard(tune: Tune | FSTune) -> optuna.storages.RDBStorage:
     """SQLite storage + optuna-dashboard in a background thread (reused if something already listens on the port)."""
     tune.storage_path.parent.mkdir(parents=True, exist_ok=True)
     url = f"sqlite:///{tune.storage_path}"
@@ -45,7 +45,7 @@ def start_dashboard(tune: Tune | ProbTune) -> optuna.storages.RDBStorage:
     return storage
 
 
-def new_study(tune: Tune | ProbTune, storage: optuna.storages.RDBStorage, metric_names: list[str],
+def new_study(tune: Tune | FSTune, storage: optuna.storages.RDBStorage, metric_names: list[str],
               directions: list[str]) -> optuna.Study:
     study = optuna.create_study(directions=directions, sampler=optuna.samplers.TPESampler(seed=tune.seed),
                                 storage=storage, study_name=f"{tune.study_prefix}_{time.strftime('%Y%m%d_%H%M%S')}")

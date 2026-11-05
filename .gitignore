@@ -3,7 +3,7 @@ __pycache__/
 *.egg-info/
 .DS_Store
 
-# Generated data: rebuild by running the notebooks in order.
+# Generated data: rebuilt by scripts/generate.py and scripts/choose.py.
 # data/medallion/bronze/reference/ stays tracked: a frozen snapshot of public sources (see its SOURCES.md).
 data/medallion/silver/
 data/medallion/gold/

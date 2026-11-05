@@ -110,9 +110,9 @@ Here is what happens to the validation file:
 ```mermaid
 flowchart LR
   A["10,002 records<br/>2,227 true duplicate pairs"] -->|"exact rules"| B["52% found"]
-  B -->|"fuzzy rules"| C["69% found<br/>683 pairs still missed"]
-  C -->|"14 candidate generators"| D["51,484 candidate pairs<br/>contain 632 of the 683"]
-  D -->|"Fellegi–Sunter ≥ 6 bits"| E["466 pairs accepted<br/>all of them true"]
+  B -->|"fuzzy rules"| C["70% found<br/>679 pairs still missed"]
+  C -->|"17 candidate generators"| D["49,987 candidate pairs<br/>contain 600 of the 679"]
+  D -->|"Fellegi–Sunter ≥ 6 bits"| E["460 pairs accepted<br/>all of them true"]
   E -->|"connected components"| F["91.3% found<br/>0 false merges"]
 ```
 
@@ -150,8 +150,9 @@ Real customer data has no answer key. Nobody knows for sure which records are th
 
 ## In the code
 
-- `config/settings.toml`: paths, datasets, column schema
-- `notebooks/dataset_generation.ipynb`: the generator (`SPEC`, `SPLIT`, `generate`, `check`)
+- `config/settings.toml`: paths, datasets, `[columns]` (which of a file's columns hold each field)
+- `er/generate.py`: the generator (`Spec`, `Split`, `generate`, `check`), configured by `config/generator.toml` and run by `scripts/generate.py`
+- `notebooks/demo.ipynb`, section 2: a small population generated and charted
 - `data/medallion/bronze/reference/SOURCES.md`: where each reference file came from
 - reference details: [data.md](../data.md)
 

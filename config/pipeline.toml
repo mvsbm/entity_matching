@@ -1,0 +1,161 @@
+# The matching pipeline, as written, in the field names of config/settings.toml [columns]. Loaded by
+# er.config.load_pipeline. scripts/choose.py applies config/experiments.py's adopted changes to it and writes the
+# result, in this same format, to config/final.toml, which scripts/resolve.py runs.
+#
+# A key or a compared value is a field name, or { field, normalize }; normalize is a chain from
+# config/settings.toml [locale.chains], or a list of steps. A comparator is { function, threshold, normalize }.
+
+# Which fields a run needs. A missing mandatory field, or a one_of group with no field present, stops the run. A
+# missing optional field disables every rule, generator and comparison level that reads it, and the run lists them.
+[fields]
+mandatory = ["id"]
+one_of = [["person_name", "company_name"]]
+optional = ["full_name", "given_name", "any_name", "address", "address_code", "postal_code", "prefecture", "phone", "customer_id"]
+labels = ["entity"]
+
+[budget]
+max_pairs_per_record = 5.0        # per rule / generator, now and projected to target_rows; above, the run stops before any join
+max_block_size = 5_000
+target_rows = 1_000_000           # the size the cost checks project to; set it to the largest file you will run
+benchmark_pairs = 20_000          # pairs timed per (column, function) to estimate seconds
+
+# ---------- stage 1: rules ----------
+[rules]
+resolver = { method = "connected_components" }
+
+[[rules.stages]]
+name = "exact"                    # raw equality on key combinations
+rules = [
+  { name = "X1_CIF_PERSON_NAME", exact = ["customer_id", "full_name"] },
+  { name = "X2_CIF_COMPANY_NAME", exact = ["customer_id", "company_name"] },
+  { name = "X3_CIF_PHONE", exact = ["customer_id", "phone"] },
+  { name = "X4_PERSON_NAME_ADDRCD_PHONE", exact = ["full_name", "address_code", "phone"] },
+  { name = "X5_COMPANY_NAME_ADDRCD_PHONE", exact = ["company_name", "address_code", "phone"] },
+]
+
+[[rules.stages]]
+name = "fuzzy"                    # one comparator per field; a pair is added only if it touches an unresolved record
+comparators = { person_name = { function = "jaro_winkler", threshold = 0.92, normalize = "fold" }, company_name = { function = "jaro_winkler", threshold = 0.92, normalize = "company" }, address = { function = "exact", normalize = "address" }, phone = { function = "hamming", threshold = 1 } }
+rules = [
+  { name = "F1_NAME~_ADDRCD_PHONE", exact = ["address_code", "phone"], fuzzy = ["person_name"] },
+  { name = "F2_NAME~_ADDRESS~_PHONE", exact = ["phone"], fuzzy = ["person_name", "address"] },
+  { name = "F3_NAME~_CIF", exact = ["customer_id"], fuzzy = ["person_name"] },
+  { name = "F4_NAME_ADDRCD_PHONE~", exact = ["person_name", "address_code"], fuzzy = ["phone"] },
+  { name = "F5_COMPANY~_PHONE_POSTAL", exact = ["phone", "postal_code"], fuzzy = ["company_name"] },
+  { name = "F6_COMPANY~_ADDRCD_PHONE", exact = ["address_code", "phone"], fuzzy = ["company_name"] },
+  { name = "F7_GIVEN_ADDRCD_PHONE", exact = ["given_name", "address_code", "phone"] },   # surname change
+]
+
+# ---------- candidate generators (stage 2), by name ----------
+# kind: keys (all keys equal), sorted (sorted neighbourhood), tfidf (char n-gram TF-IDF, k nearest; N², development
+# only), deletions (the value or a one-character deletion of it equal, optionally within other equal keys)
+[generators]
+phone = { kind = "keys", keys = ["phone"] }
+address = { kind = "keys", keys = [{ field = "address", normalize = "address" }] }
+address_code = { kind = "keys", keys = ["address_code"] }
+cif = { kind = "keys", keys = ["customer_id"] }
+person_name = { kind = "keys", keys = [{ field = "person_name", normalize = "fold" }] }
+company_name = { kind = "keys", keys = [{ field = "company_name", normalize = "company" }] }
+sn_person_name = { kind = "sorted", key = { field = "person_name", normalize = "fold" }, window = 4 }
+sn_company_name = { kind = "sorted", key = { field = "company_name", normalize = "company" }, window = 4 }
+tfidf_person_name = { kind = "tfidf", key = { field = "person_name", normalize = "fold" }, ngram = [2, 3], k = 5, min_cosine = 0.5 }
+tfidf_company_name = { kind = "tfidf", key = { field = "company_name", normalize = "company" }, ngram = [2, 3], k = 5, min_cosine = 0.5 }
+# linear in N; the phone alone (10,000 values) and TF-IDF (every query against every record) grow with N²
+phone_prefecture = { kind = "keys", keys = ["phone", "prefecture"] }
+phone_postal_area = { kind = "keys", keys = ["phone", { field = "postal_code", normalize = "first3" }] }
+phone_name_initial = { kind = "keys", keys = ["phone", { field = "any_name", normalize = "initial" }] }
+sn_person_name_reversed = { kind = "sorted", key = { field = "person_name", normalize = "reversed" }, window = 4 }
+# one-deletion keys find every name one edit away at any size; a sorted window reaches fewer of them as N grows
+company_name_deletions = { kind = "deletions", key = { field = "company_name", normalize = "company" } }
+person_name_deletions_postal_area = { kind = "deletions", key = { field = "person_name", normalize = "fold" }, within = [{ field = "postal_code", normalize = "first3" }] }   # alone: N^1.7
+given_name_postal = { kind = "keys", keys = [{ field = "given_name", normalize = "fold" }, "postal_code"] }   # surname change
+# an address alone pairs everyone who shares it (households, a fixed pool of addresses): N²; with one more field, linear
+address_phone = { kind = "keys", keys = [{ field = "address", normalize = "address" }, "phone"] }
+address_code_phone = { kind = "keys", keys = ["address_code", "phone"] }
+address_name_initial = { kind = "keys", keys = [{ field = "address", normalize = "address" }, { field = "any_name", normalize = "initial" }] }
+address_code_name_initial = { kind = "keys", keys = ["address_code", { field = "any_name", normalize = "initial" }] }
+given_name_address_code = { kind = "keys", keys = [{ field = "given_name", normalize = "fold" }, "address_code"] }   # surname change
+
+# ---------- stage 2: Fellegi–Sunter ----------
+[model]
+previous_stage = "deterministic"  # whose clusters / pairs this stage builds on
+stage = "probabilistic"
+generators = ["phone", "address", "address_code", "cif", "person_name", "company_name", "sn_person_name",
+              "sn_company_name", "tfidf_person_name", "tfidf_company_name"]
+min_match_weight = 4.0            # a starting value; the threshold rule sets the real one
+resolver = { method = "connected_components" }
+bridge = false                    # true: a pair may also join two clusters the previous stage formed
+name = "fs"
+prior_rules = [["customer_id", "full_name"], ["customer_id", "company_name"], ["full_name", "address_code", "phone"]]
+prior_recall = 0.5                # those rules recall about half of the true pairs (the exact rules' recall, measured)
+u_max_pairs = 1e7
+m_method = "em"
+em_rules = [["phone"], [{ field = "address", normalize = "address" }]]
+seed = 0
+u_from_scored = false             # true: u re-sampled on each scored file (m and λ from the fit)
+u_exact_by_counts = false         # true: u of the leading exact levels counted exactly from value counts, not sampled
+fit_rows = 30_000                 # an unlabelled run (er.run) fits λ and m on a sample of whole postal areas this size
+
+# Correlated fields share one comparison (address code / normalized address / postal code: address), because
+# Fellegi–Sunter assumes independence. Levels go from most to least similar; an else level is added.
+[[model.comparisons]]
+name = "name"
+null_if_missing = ["person_name"]
+tf = { field = "person_name", normalize = "fold" }
+levels = [
+  { label = "exact", any_of = [{ field = "person_name", function = "exact" }], tf = true },
+  { label = "fold exact", any_of = [{ field = "person_name", function = "exact", normalize = "fold" }], tf = true },
+  { label = "fold JW high", any_of = [{ field = "person_name", function = "jaro_winkler", threshold = 0.92, normalize = "fold" }] },
+  { label = "given name", any_of = [{ field = "given_name", function = "exact", normalize = "fold" }] },   # surname change
+  { label = "fold JW low", any_of = [{ field = "person_name", function = "jaro_winkler", threshold = 0.85, normalize = "fold" }] },
+]
+
+[[model.comparisons]]
+name = "company"
+null_if_missing = ["company_name"]
+tf = { field = "company_name", normalize = "company" }
+levels = [
+  { label = "exact", any_of = [{ field = "company_name", function = "exact", normalize = "company" }], tf = true },
+  { label = "JW high", any_of = [{ field = "company_name", function = "jaro_winkler", threshold = 0.92, normalize = "company" }] },
+  { label = "JW low", any_of = [{ field = "company_name", function = "jaro_winkler", threshold = 0.85, normalize = "company" }] },
+]
+
+[[model.comparisons]]
+name = "address"
+null_if_missing = ["address_code", "address", "postal_code"]
+levels = [
+  { label = "same address", any_of = [{ field = "address_code", function = "exact" }, { field = "address", function = "exact", normalize = "address" }] },
+  { label = "address close", any_of = [{ field = "address", function = "levenshtein", threshold = 2, normalize = "address" }] },
+  { label = "same postal", any_of = [{ field = "postal_code", function = "exact" }] },
+]
+
+[[model.comparisons]]
+name = "phone"
+null_if_missing = ["phone"]
+levels = [
+  { label = "exact", any_of = [{ field = "phone", function = "exact" }] },
+  { label = "one digit off", any_of = [{ field = "phone", function = "hamming", threshold = 1 }] },
+]
+
+[[model.comparisons]]
+name = "cif"
+null_if_missing = ["customer_id"]
+levels = [
+  { label = "exact", any_of = [{ field = "customer_id", function = "exact" }] },
+]
+
+# ---------- choosing ----------
+[threshold]                       # on out-of-fold scores: the lowest weight with no false accepted pair and a stage FP
+grid = [0, 2, 4, 6, 8, 10, 12, 14, 16]   # upper bound ≤ max_fp_rate_hi, then margin_steps stricter
+max_fp = 0
+max_fp_rate_hi = 0.05
+margin_steps = 1
+
+[selection]
+cv_folds = 3                      # entity folds of train, for out-of-fold scores
+cv_seed = 0
+decision_p = 0.05                 # "better" needs a paired gain with p below this
+
+[display]                         # the worked example: fields shown; the example match has these filled, the first differing
+explain_show = ["full_name", "company_name", "address", "phone", "customer_id"]
+explain_filled = ["full_name", "address", "customer_id"]

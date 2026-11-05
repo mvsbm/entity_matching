@@ -1,10 +1,9 @@
-"""Run the notebooks in order and save each, with its outputs, as notebooks/pdf/<name>.pdf.
+"""Run the demo notebook and save it, with its outputs, as notebooks/pdf/demo.pdf.
 
-    .venv/bin/python -m playwright install chromium    # once: the headless browser that prints the PDFs
-    .venv/bin/python scripts/export_pdfs.py            # all notebooks, in run order (about 13 min)
-    .venv/bin/python scripts/export_pdfs.py dataset_generation
+    .venv/bin/python -m playwright install chromium    # once: the headless browser that prints the PDF
+    .venv/bin/python scripts/export_pdfs.py            # about a minute
 
-Running a notebook rewrites its outputs in data/, exactly as running it by hand does.
+Running it writes its files in data/artifacts/demo, exactly as running it by hand does.
 """
 import sys
 from pathlib import Path
@@ -17,7 +16,7 @@ from playwright.sync_api import sync_playwright
 from er.settings import load_settings
 
 ROOT = Path(__file__).resolve().parents[1]
-NOTEBOOKS = ("dataset_generation", "deterministic_matching", "probabilistic_matching")  # run order
+NOTEBOOKS = ("demo",)
 PRINT_CSS = """<style>  /* print every character: wrap long lines, fit wide tables to the page */
 pre { white-space: pre-wrap !important; word-break: break-all; }
 .jp-RenderedHTMLCommon table { table-layout: fixed; width: 100%; font-size: 8px; word-break: break-all; }
@@ -25,7 +24,7 @@ pre { white-space: pre-wrap !important; word-break: break-all; }
 
 
 def main(names: list[str]) -> None:
-    if not load_settings().data.synthetic:  # the PDFs show records and are committed to git
+    if not load_settings().data.synthetic:  # the PDF shows records and is committed to git
         raise SystemExit("refusing to export: config/settings.toml says the data is not synthetic")
     out = ROOT / "notebooks" / "pdf"
     out.mkdir(exist_ok=True)

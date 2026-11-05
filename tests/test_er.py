@@ -1,5 +1,5 @@
-"""Self-checks for the er engine, kept out of the notebooks. Run from the project root: python -m pytest tests/
-Self-contained: a small hand-made frame plus the tracked settings; no generated data needed."""
+"""Self-checks for the er engine. Run from the project root: python -m pytest tests/
+Self-contained: small hand-made frames, the tracked config and reference data; no generated files needed."""
 import logging
 import math
 from dataclasses import replace
@@ -10,14 +10,16 @@ import pytest
 from splink import Linker
 
 from er.candidates import candidates, estimate, found_by, generate
-from er.config import (Budget, Comparator, Comparison, DeletionKeys, FSModel, Key, KeyBlocker, Level, OverBudget, ProbSpec,
+from er.config import (Budget, Comparator, Comparison, DeletionKeys, FSModel, FSSpec, Key, KeyBlocker, Level, OverBudget,
                        Resolver, Rule, RulesSpec, SortedNeighbourhood, Stage, TfidfNeighbours, ThresholdRule, keys_sql)
 from er.evaluate import adopt, cluster_metrics, fp_upper, paired_test, predicted_pairs, true_pairs, wilson
-from er.io import load, read_stage, write_stage
-from er.match import parameters, rule_edges, sample_u, score_fs, train_fs, u_values, waterfall, with_scored_u
-from er.pipeline import accept_curve, cascade, check_budget, entity_folds, grown_pairs, preflight, select_threshold, window_only
+from er.io import load
+from er.match import exact_u, parameters, rule_edges, sample_u, score_fs, train_fs, u_values, waterfall, with_scored_u
+from er.pipeline import (accept_curve, cascade, check_budget, entity_folds, grown_pairs, pattern_coverage, preflight, select_threshold,
+                         window_only)
 from er.resolve import connected_components, constrained
-from er.settings import load_settings
+from er.config import dump_pipeline, fields_read, load_pipeline
+from er.settings import fit_to_file, load_settings
 from er.standardize import normalize, prepare
 from er.strings import connect
 from er.tune import pick_within_noise
@@ -147,7 +149,7 @@ def test_prior_is_rescaled_to_the_scored_set_size(con_db, records):
 def test_shared_connection_gives_the_same_rules_and_clusters_as_a_fresh_one(con_db):
     _, db = con_db
     spec = RulesSpec(standardize=load_settings().standardize, resolver=Resolver(method="connected_components"),
-                     budget=Budget(max_candidate_pairs=10**6, max_block_size=10**4, target_rows=10**4, benchmark_pairs=100),
+                     budget=Budget(max_pairs_per_record=10**4, max_block_size=10**4, target_rows=10**4, benchmark_pairs=100),
                      stages=(Stage(name="fuzzy", rules=(Rule(name="R", exact=("phone",), fuzzy=("name",)),),
                                    comparators={"name": Comparator("jaro_winkler", 0.8)}),))
     a = pd.DataFrame({"uid": ["1", "2", "3"], "phone": ["11", "11", "22"], "name": ["サトウ", "サトオ", "スズキ"]}, dtype="string")
@@ -287,10 +289,10 @@ def test_u_from_the_scored_file(con_db, records):
 def test_window_only_counts_potential_matches_no_key_reaches(con_db, records):
     _, db = con_db
     data = replace(load_settings().data, unique_id=UID, entity_id="entity")
-    spec = ProbSpec(standardize=replace(load_settings().standardize, derived=()), previous_stage="rules", stage="fs", model=model(),
+    spec = FSSpec(standardize=replace(load_settings().standardize, derived=()), previous_stage="rules", stage="fs", model=model(),
                     blockers=(KeyBlocker(name="phone", keys=(Key("phone"),)),), min_match_weight=-10.0,  # toy weights: −6 to −3
                     resolver=Resolver(method="connected_components"),
-                    budget=Budget(max_candidate_pairs=10**6, max_block_size=10**4, target_rows=10**6, benchmark_pairs=10))
+                    budget=Budget(max_pairs_per_record=10**4, max_block_size=10**4, target_rows=10**6, benchmark_pairs=10))
     model_json, truth = train_fs(model(), records, db, UID), records[[UID, "entity"]]
     keyed = window_only(spec, model_json, records, truth, db, data, [len(records), 10**6])
     windowed = window_only(replace(spec, blockers=(SortedNeighbourhood(name="s", key=Key("name"), window=2),)), model_json,
@@ -315,7 +317,7 @@ def test_candidate_generators_respect_query_window_and_cosine():
     assert len(tf) and all(query & {a, b} for a, b in tf.to_numpy())
     assert len(generate(KeyBlocker(name="k", keys=(Key("phone"),)), df, UID, None)) == 3 + 1 + 3  # None: every record a query
     clusters = pd.Series(["c0", "c0", "c2", "c3", "c4", "c5", "c6", "c7"], index=df["uid"].to_numpy())
-    budget = Budget(max_candidate_pairs=100, max_block_size=100, target_rows=10, benchmark_pairs=10)
+    budget = Budget(max_pairs_per_record=100, max_block_size=100, target_rows=10, benchmark_pairs=10)
     union, _ = candidates((KeyBlocker(name="k", keys=(Key("phone"),)), SortedNeighbourhood(name="s", key=Key("name"), window=2)),
                           df, UID, None, budget, clusters)
     sources = dict(zip(zip(union["uid_l"], union["uid_r"]), union["sources"]))
@@ -334,20 +336,20 @@ def test_constrained_resolver_refuses_a_conflicting_merge():
 def test_preflight_counts_block_pairs_and_the_budget_stops_a_run():
     df = pd.DataFrame({"uid": list("ABCDE"), "phone": ["1", "1", "1", "2", "2"]}, dtype="string")
     spec = RulesSpec(standardize=load_settings().standardize, resolver=Resolver(method="connected_components"),
-                     budget=Budget(max_candidate_pairs=3, max_block_size=10, target_rows=10, benchmark_pairs=10),
+                     budget=Budget(max_pairs_per_record=0.6, max_block_size=10, target_rows=10, benchmark_pairs=10),
                      stages=(Stage(name="exact", rules=(Rule(name="R", exact=("phone",)),)),))
     plan = preflight(spec, df)
     assert plan["P"].tolist() == [3 + 1]  # C(3,2) + C(2,2)
     with pytest.raises(OverBudget):
-        check_budget(plan, spec.budget)
+        check_budget(plan, spec.budget, len(df))
 
 
-def test_load_validates_input_and_stage_files_refuse_a_changed_input(tmp_path):
-    data = replace(load_settings().data, silver_dir=tmp_path / "silver", labels_dir=tmp_path / "labels", artifacts_dir=tmp_path / "artifacts")
+def test_load_validates_input(tmp_path):
+    data = replace(load_settings().data, silver_dir=tmp_path / "silver", labels_dir=tmp_path / "labels")
     data.silver_dir.mkdir(); data.labels_dir.mkdir()
     uid, ent = data.unique_id, data.entity_id
-    write = lambda ids, entities: (pd.DataFrame({uid: ids, "x": "a"}).to_csv(data.silver_dir / "d.csv", index=False),
-                                   pd.DataFrame({uid: ids[:len(entities)], ent: entities}).to_csv(data.labels_dir / "d.csv", index=False))
+    write = lambda ids, entities: (pd.DataFrame({uid: ids, "x": "a"}).to_parquet(data.silver_dir / "d.parquet", index=False),
+                                   pd.DataFrame({uid: ids[:len(entities)], ent: entities}).to_parquet(data.labels_dir / "d.parquet", index=False))
     write(["1", "1"], ["E", "E"])
     with pytest.raises(ValueError, match="more than once"):
         load(data, "d")
@@ -355,13 +357,8 @@ def test_load_validates_input_and_stage_files_refuse_a_changed_input(tmp_path):
     with pytest.raises(ValueError, match="different"):
         load(data, "d")
     write(["1", "2"], ["E", "E"])
-    records, _ = load(data, "d")
-    pairs = pd.DataFrame({f"{uid}_l": ["1"], f"{uid}_r": ["2"]})
-    write_stage(data, "d", "rules", pairs, records[[uid]], records.iloc[:0], config="v1")
-    read_stage(data, "d", "rules")  # fine while the input is unchanged
-    write(["1", "3"], ["E", "E"])
-    with pytest.raises(ValueError, match="stale"):
-        read_stage(data, "d", "rules")
+    records, truth = load(data, "d")
+    assert records[uid].tolist() == ["1", "2"] and str(truth[ent].dtype) == "string"
 
 
 def test_prepare_names_missing_input_columns():
@@ -383,16 +380,17 @@ def test_grown_pairs_tells_a_square_law_key_from_a_linear_one():
     df = pd.DataFrame({"uid": [f"r{i}" for i in range(8000)], "few": rng.integers(0, 50, 8000).astype(str),  # 50 values
                        "own": entities.astype(str)}).astype("string")
     entity = pd.Series(entities.astype(str), index=df["uid"].to_numpy())
-    few, _ = grown_pairs(df, entity, "uid", KeyBlocker(name="few", keys=(Key("few"),)), 10**6)
-    own, _ = grown_pairs(df, entity, "uid", KeyBlocker(name="own", keys=(Key("own"),)), 10**6)
-    assert few == pytest.approx(2, abs=0.1) and own == pytest.approx(1, abs=0.1)
+    few, at_few = grown_pairs(df, entity, "uid", KeyBlocker(name="few", keys=(Key("few"),)), 10**6)
+    own, at_own = grown_pairs(df, entity, "uid", KeyBlocker(name="own", keys=(Key("own"),)), 10**6)
+    assert few == pytest.approx(2, abs=0.01) and own == 1.0
+    assert at_own == 10**6 // 2 and at_few == pytest.approx(10**6 * (10**6 - 1) / 2 / 50, rel=0.05)  # C(n, 2) / 50 values
 
 
 def test_a_blocking_key_limits_a_rule_join(con_db):
     _, db = con_db
     std = replace(load_settings().standardize, derived=())  # a hand-made frame without the real input columns
     df = pd.DataFrame({"uid": list("ABC"), "phone": ["1", "1", "1"], "name": ["サトウ", "サトオ", "カトウ"]}, dtype="string")
-    budget = Budget(max_candidate_pairs=10, max_block_size=10, target_rows=10, benchmark_pairs=10)
+    budget = Budget(max_pairs_per_record=10, max_block_size=10, target_rows=10, benchmark_pairs=10)
     def spec(blocking):
         return RulesSpec(standardize=std, resolver=Resolver(method="connected_components"), budget=budget,
                          stages=(Stage(name="fuzzy", rules=(Rule(name="R", exact=("phone",), fuzzy=("name",), blocking=blocking),),
@@ -401,3 +399,179 @@ def test_a_blocking_key_limits_a_rule_join(con_db):
     s = spec((Key("name", ("initial",)),))
     blocked = set(map(tuple, rule_edges(s, prepare(std, df, s.normalized()), db, UID)[0][["uid_l", "uid_r"]].to_numpy()))
     assert plain == {("A", "B"), ("A", "C")} and blocked == {("A", "B")}  # カトウ starts differently: not joined
+
+
+def pipeline_and_columns():
+    s = load_settings()
+    p = load_pipeline(s.root / "config" / "pipeline.toml", s.standardize, s.chains, s.columns)
+    return s, p, {c for sources in s.columns.values() for alt in sources for c in alt} - {"ENTITY_ID"}  # every mapped record column
+
+
+def test_the_pipeline_file_writes_and_loads_back_unchanged(tmp_path):
+    s, p, _ = pipeline_and_columns()
+    dump_pipeline(p, s.chains, tmp_path / "p.toml")
+    assert load_pipeline(tmp_path / "p.toml", s.standardize, s.chains, s.columns) == p
+
+
+def test_a_mandatory_field_or_an_empty_one_of_group_stops_the_run():
+    s, p, cols = pipeline_and_columns()
+    with pytest.raises(ValueError, match=r"id \(expected \(\('CONT_ID',\),\)\)"):
+        fit_to_file(p, s, cols - {"CONT_ID"})
+    names = {"FULL_NAME_KANA", "O_PERSON_NAME_KANA", "LAST_NAME_KANA", "GIVEN_NAME_KANA", "NYS_CNV_P_NAME_KANA"}
+    with pytest.raises(ValueError, match="person_name .* / company_name"):
+        fit_to_file(p, s, cols - names)
+    with pytest.raises(ValueError, match="entity"):
+        fit_to_file(p, s, cols, labelled=True)  # a labelled run needs the truth
+    fit_to_file(p, s, cols | {"ENTITY_ID"}, labelled=True)
+
+
+def test_an_absent_optional_field_disables_exactly_what_reads_it():
+    s, p, cols = pipeline_and_columns()
+    q, gone = fit_to_file(p, s, cols - {"CIF_ID"})
+    assert "customer_id" not in fields_read(replace(q, generators={b.name: b for b in q.fs.blockers}))
+    rules = {r.name for st in q.rules.stages for r in st.rules}
+    assert rules == {r.name for st in p.rules.stages for r in st.rules} - {"X1_CIF_PERSON_NAME", "X2_CIF_COMPANY_NAME", "X3_CIF_PHONE", "F3_NAME~_CIF"}
+    assert [b.name for b in q.fs.blockers] == [b.name for b in p.fs.blockers if b.name != "cif"]
+    assert [c.name for c in q.fs.model.comparisons] == ["name", "company", "address", "phone"]
+    assert [[k.column for k in r] for r in q.fs.model.prior_rules] == [["full_name", "address_code", "phone"]]
+    assert {g.split(" (")[0] for g in gone} == {"rule X1_CIF_PERSON_NAME", "rule X2_CIF_COMPANY_NAME", "rule X3_CIF_PHONE", "rule F3_NAME~_CIF",
+                                                "generator cif", "level cif: exact", "comparison cif",
+                                                "prior rule ['customer_id', 'full_name']", "prior rule ['customer_id', 'company_name']"}
+    q, gone = fit_to_file(p, s, cols - {"FULL_NAME_KANA", "O_PERSON_NAME_KANA"})  # a field built from the sources the file has
+    person = next(d for d in q.rules.standardize.derived if d.name == "person_name")
+    assert person.sources == (("LAST_NAME_KANA", "GIVEN_NAME_KANA"),) and any("X1_CIF_PERSON_NAME" in g for g in gone)
+
+
+def test_pattern_coverage_finds_the_patterns_no_key_guarantees(con_db, records):
+    _, db = con_db
+    spec = FSSpec(standardize=replace(load_settings().standardize, derived=()), previous_stage="rules", stage="fs", model=model(),
+                    blockers=(KeyBlocker(name="phone", keys=(Key("phone"),)),), min_match_weight=-10.0,  # toy weights
+                    resolver=Resolver(method="connected_components"),
+                    budget=Budget(max_pairs_per_record=10**4, max_block_size=10**4, target_rows=10**6, benchmark_pairs=10))
+    model_json = train_fs(model(), records, db, UID)
+    open_ = pattern_coverage(spec, model_json, len(records))
+    assert len(open_) and not (open_["phone"] == "exact").any()  # the phone key guarantees every pattern with phone exact
+    named = pattern_coverage(replace(spec, blockers=spec.blockers + (KeyBlocker(name="name", keys=(Key("name"),)),)), model_json, len(records))
+    assert len(named) < len(open_) and not (named["name"] == "exact").any()  # a name key adds the name-exact patterns
+    assert len(pattern_coverage(spec, model_json, 10**9)) <= len(open_)  # fewer patterns reach the threshold at scale
+
+
+def test_exact_u_counts_every_pair(con_db, records):
+    _, db = con_db
+    holes = records.assign(name=records["name"].mask(records.index % 7 == 0))  # some names missing: the null level
+    u = exact_u(model(), holes, db)
+    pairs = [(a, b) for i, a in enumerate(holes.itertuples()) for b in list(holes.itertuples())[i + 1:]]
+    filled = [(a, b) for a, b in pairs if pd.notna(a.name) and pd.notna(b.name)]
+    assert u["name"]["exact"] == pytest.approx(sum(a.name == b.name for a, b in filled) / len(filled))
+    assert u["phone"]["exact"] == pytest.approx(sum(a.phone == b.phone for a, b in pairs) / len(pairs))
+    assert "close" not in u["name"]  # a fuzzy level stays sampled
+
+
+def test_blank_values_are_missing_and_full_width_spaces_are_stripped():
+    s = load_settings()
+    p = load_pipeline(s.root / "config" / "final.toml", s.standardize, s.chains, s.columns)
+    sources = {c for alts in s.columns.values() for alt in alts for c in alt}
+    raw = pd.DataFrame({c: [pd.NA] * 3 for c in sources}, dtype="string")
+    raw["CONT_ID"] = ["1", "2", "3"]
+    raw["FULL_NAME_KANA"] = ["\u3000", " ", pd.NA]  # blank: the next source must win
+    raw["O_PERSON_NAME_KANA"] = ["ヤマダ\u3000タロウ", pd.NA, pd.NA]
+    raw["NYS_CNV_P_NAME_KANA"] = [pd.NA, "カブシキガイシャ", "\u3000"]  # a legal form alone is no company name
+    df = prepare(p.fs.standardize, raw, p.fs.normalized() + p.rules.normalized())
+    assert df["person_name"].tolist()[:1] == ["ヤマダタロウ"] and df["full_name"].isna().all()
+    assert df["person_name"].isna().tolist()[1:] == [True, True]
+    assert df["company_name__nfkc_strip_legal_form_kana_fold"].isna().all()
+
+
+@pytest.fixture(scope="module")
+def population():
+    """A small generated population and the final pipeline, for whole runs."""
+    from er.generate import generate as make, load_reference, load_spec
+    s = load_settings()
+    p = load_pipeline(s.root / "config" / "final.toml", s.standardize, s.chains, s.columns)
+    g = make(replace(load_spec(s.root / "config" / "generator.toml")[0], entities=400), *load_reference(s.paths["reference"]))
+    return s, p, g
+
+
+def test_a_run_ignores_record_order_refuses_a_used_folder_and_an_increment_keeps_every_cluster(tmp_path, population):
+    from er.run import Run
+    s, p, g = population
+    uid = s.data.unique_id
+    g.df.to_parquet(tmp_path / "all.parquet", index=False)
+    g.df.sample(frac=1, random_state=1).to_parquet(tmp_path / "shuffled.parquet", index=False)
+    first = Run(p, s).full(tmp_path / "all.parquet", tmp_path / "a")
+    Run(p, s, model=first.model).full(tmp_path / "shuffled.parquet", tmp_path / "b")
+    gold = [pd.read_parquet(tmp_path / d / "gold.parquet") for d in ("a", "b")]
+    pd.testing.assert_frame_equal(*gold)  # clusters, and the stage and rule that resolved each record
+    assert gold[0]["cluster_id"].nunique() < len(gold[0])
+
+    new = np.random.default_rng(0).random(len(g.df)) < 0.2
+    g.df[~new].to_parquet(tmp_path / "old.parquet", index=False)
+    g.df[new].to_parquet(tmp_path / "new.parquet", index=False)
+    Run(p, s, model=first.model).full(tmp_path / "old.parquet", tmp_path / "c")
+    before = pd.read_parquet(tmp_path / "c" / "gold.parquet").set_index(uid)["cluster_id"]
+    Run(p, s).increment(tmp_path / "new.parquet", tmp_path / "c")
+    after = pd.read_parquet(tmp_path / "c" / "gold.parquet").set_index(uid)["cluster_id"]
+    assert sorted(after.index) == sorted(g.df[uid]) and after.index.is_unique
+    assert after.reindex(before.index).groupby(before.to_numpy()).nunique().eq(1).all()  # no stored cluster is split
+    with pytest.raises(ValueError, match="already in the run"):
+        Run(p, s).increment(tmp_path / "new.parquet", tmp_path / "c")
+
+    with pytest.raises(FileExistsError, match="already holds a run"):  # a full run never mixes with an earlier one
+        Run(p, s, model=first.model).full(tmp_path / "all.parquet", tmp_path / "c")
+    Run(p, s, model=first.model).full(tmp_path / "all.parquet", tmp_path / "c", overwrite=True)
+    pd.testing.assert_frame_equal(pd.read_parquet(tmp_path / "c" / "gold.parquet"), gold[0])
+    assert [f.name for f in (tmp_path / "c" / "state" / "records").iterdir()] == ["part-00000.parquet"]
+
+    g.df.drop(columns="PHONE_NUM_4").to_parquet(tmp_path / "no_phone.parquet", index=False)
+    with pytest.raises(ValueError, match="fit on this file instead"):  # the model compares the phone; this file has none
+        Run(p, s, model=first.model).full(tmp_path / "no_phone.parquet", tmp_path / "d")
+
+
+def test_an_interrupted_increment_completes_when_run_again(tmp_path, population, monkeypatch):
+    import os
+    import shutil
+    from er.run import Run
+    s, p, g = population
+    new = np.random.default_rng(0).random(len(g.df)) < 0.2
+    g.df[~new].to_parquet(tmp_path / "old.parquet", index=False)
+    g.df[new].to_parquet(tmp_path / "new.parquet", index=False)
+    Run(p, s).full(tmp_path / "old.parquet", tmp_path / "clean")
+    shutil.copytree(tmp_path / "clean", tmp_path / "cut")
+    Run(p, s).increment(tmp_path / "new.parquet", tmp_path / "clean")
+
+    renames, replace_ = [], os.replace
+    def cut_short(a, b):  # dies halfway through the renames: gold and the clusters replaced, the batch's records not
+        renames.append(b)
+        if len(renames) == 5:
+            raise KeyboardInterrupt
+        replace_(a, b)
+    monkeypatch.setattr(os, "replace", cut_short)
+    with pytest.raises(KeyboardInterrupt):
+        Run(p, s).increment(tmp_path / "new.parquet", tmp_path / "cut")
+    monkeypatch.undo()
+    with pytest.raises(ValueError, match="already in the run"):  # the next increment first finishes the interrupted write
+        Run(p, s).increment(tmp_path / "new.parquet", tmp_path / "cut")
+    pd.testing.assert_frame_equal(*(pd.read_parquet(tmp_path / d / "gold.parquet") for d in ("clean", "cut")))
+    assert not list((tmp_path / "cut").rglob("*.tmp"))
+
+
+def test_the_labelled_engine_and_the_run_give_the_same_gold(tmp_path, population, con_db):
+    """scripts/choose.py measures with er.pipeline; scripts/resolve.py runs er.run: the same records and model must
+    give the same clusters and the same answer to what resolved each record."""
+    from er.pipeline import run_fs, run_rules
+    from er.run import Run
+    s, p, g = population
+    _, db = con_db
+    uid = s.data.unique_id
+    g.df.to_parquet(tmp_path / "all.parquet", index=False)
+    run = Run(p, s).full(tmp_path / "all.parquet", tmp_path / "run")
+    records = g.df.astype("string")
+    det = run_rules(p.rules, records, g.truth, db, s.data)
+    pairs = det.edges[[f"{uid}_l", f"{uid}_r", "stage", "rule", "score", "kept"]].astype("string")
+    clusters = (det.records[[uid, "CLUSTER_ID", "MATCH_STAGE", "MATCH_RULE"]]  # the resolved file, as scripts/choose.py writes it
+                .set_axis([uid, "cluster_id", "resolved_stage", "resolved_by"], axis=1).astype("string"))
+    res = run_fs(p.fs, run.model, records, g.truth, pairs, clusters, db, s.data)
+    labelled = (res.records.set_index(uid)[["CLUSTER_ID", "MATCH_STAGE", "MATCH_RULE"]]
+                .set_axis(["cluster_id", "resolved_stage", "resolved_by"], axis=1).astype("string"))
+    gold = pd.read_parquet(tmp_path / "run" / "gold.parquet").set_index(uid).astype("string")
+    pd.testing.assert_frame_equal(gold, labelled.loc[gold.index], check_index_type=False)

@@ -10,7 +10,7 @@ The headline result is: on test, **89.9% recall (88.6–91.1%) and 0 false merge
 
 A system can be judged on its pairs or on its groups, and the two can disagree.
 
-**Pair metrics** judge the decisions themselves. On validation, the second stage accepted 466 pairs, and all 466 were true.
+**Pair metrics** judge the decisions themselves. On validation, the second stage accepted 460 pairs, and all 460 were true.
 
 **Group metrics** judge the final groups, after the pairs from both stages have been joined into entities. A pair counts as *found* if its two records end up in the same group, whether it was accepted directly or joined through other records.
 
@@ -73,14 +73,14 @@ We make many choices: thresholds, comparators, candidate generators, model optio
 
 | Accept at or above | Pairs accepted (out-of-fold) | False pairs |
 |---|---|---|
-| 2 bits | 1,607 | 14 |
-| 4 bits | 1,503 | 1 |
-| **6 bits** | **1,397** | **0**: the lowest safe weight |
-| 8 bits | 1,216 | 0: one step stricter, chosen |
+| 2 bits | 1,609 | 14 |
+| 4 bits | 1,507 | 1 |
+| **6 bits** | **1,392** | **0**: the lowest safe weight |
+| 8 bits | 1,241 | 0: one step stricter, chosen |
 
 Every configuration gets its threshold this way: the configuration as written, each variant, and each Optuna trial. The final configuration's rule gives 6 bits.
 
-A check then confirms that the threshold transfers. Out-of-fold, 0 of 1,419 accepted pairs are false, a rate of at most 0.21%. On validation, 0 of 466 are.
+A check then confirms that the threshold transfers. Out-of-fold, 0 of 1,386 accepted pairs are false, a rate of at most 0.22%. On validation, 0 of 460 are.
 
 **4. The decision rule (`adopt`).** A change is adopted only if it passes a rule, applied on top of the current choice:
 
@@ -93,20 +93,23 @@ A check then confirms that the threshold transfers. Out-of-fold, 0 of 1,419 acce
 | Change (second stage) | Out-of-fold gains / losses | Validation | Adopted |
 |---|---|---|---|
 | term-frequency adjustment off | +15 / −0 | +2 / −0 | yes |
-| exact keys only (cheaper) | +0 / −4 | ±0 | no |
-| Optuna's suggestion | +198 / −0 | +62 / −1 | yes |
-| u from 1 million random pairs instead of 10 million (cheaper) | +10 / −24 | +0 / −3 | no |
+| exact keys only (cheaper) | +0 / −3 | ±0 | no |
+| Optuna's suggestion | +172 / −0 | +43 / −0 | yes |
+| u from 1 million random pairs instead of 10 million (cheaper) | +9 / −26 | +0 / −1 | no |
 | three compound phone keys instead of the phone (cheaper, for scale) | +0 / −0 | ±0 | yes |
-| a reversed sorted pass instead of TF-IDF (cheaper, for scale) | +2 / −0 | ±0 | yes |
-| five name keys, so no potential match depends on a sorted window (safer, for scale) | +1 / −0 | +1 / −0 | yes |
+| a reversed sorted pass instead of TF-IDF (cheaper, for scale) | +1 / −0 | ±0 | yes |
+| five name keys, so no potential match depends on a sorted window (safer, for scale) | +1 / −0 | ±0 | yes |
+| the address only with the phone, the name's first letter or the given name (cheaper, for scale) | +0 / −0 | ±0 | yes |
+| no sorted windows (cheaper) | +0 / −3 | +0 / −1 | no |
 | score every pair across two rule clusters | +12 / −0 | +4 / −0 | yes |
-| u re-sampled on each scored file (chosen, for scale) | +0 / −27 | +0 / −8 | yes |
+| u re-sampled on each scored file (chosen, for scale) | +63 / −0 | +20 / −0 | yes |
+| u of the exact levels counted from value counts (chosen, for scale) | +0 / −122 | +0 / −27 | yes |
 
-The last row is the one exception to the rule, and it is made in the open. On 10,000-record files, u from the file removes credit that u from train had over-given, so 27 true pairs fall below the line out-of-fold, and 8 on val. No false pair is added either way. On bigger files the effect turns around: +0.7 points of recall at 50,000 records and +1.1 at 75,000 ([chapter 3](03-far-too-many-pairs.md#quality-as-the-file-grows)). Production files are bigger than train, so we chose calibration at every size over a slightly higher number on small files.
+The "chosen" rows are the owner's calls, made in the open. u measured on each scored file gains on these sets too. Counting u exactly for the exact levels does not: it loses 122 true pairs out-of-fold and 27 on val, with no false pair added either way. A sample of 10 million pairs cannot see an agreement rarer than about one in a billion pairs, which an exact name or CIF ID becomes in big files, so the sample over-credits it there; the exact count is right at every size, and the owner chose that over the higher number on 10,000-record files.
 
-**5. Optuna proposes; the rule decides.** Optuna is a search tool. It tries many combinations of options (30 seeded trials, scored out-of-fold) and keeps the best trade-offs between recall and false merges. A tie-break, `pick_within_noise`, prefers the cheapest point whose recall is within noise of the best. The suggestion then faces `adopt` like any other change. After one adoption, later searches found nothing that passed (most recently +0 / −12 out-of-fold), so the search has converged. Both studies are now **off by default** (`enabled=False` in each notebook's Configuration cell). `FINAL` keeps the suggestions that were adopted, because those are written into `CHANGES`. Turning a study back on costs about 10 minutes, and is worth it after the data or the rules change.
+**5. Optuna proposes; the rule decides.** Optuna is a search tool. It tries many combinations of options (30 seeded trials, scored out-of-fold) and keeps the best trade-offs between recall and false merges. A tie-break, `pick_within_noise`, prefers the cheapest point whose recall is within noise of the best. The suggestion then faces `adopt` like any other change. After one adoption, later searches found nothing that passed (most recently +0 / −12 out-of-fold), so the search has converged. Both studies are now **off by default** (`enabled=False` in `config/experiments.py`). `FINAL` keeps the suggestions that were adopted, because those are written as changes there. Turning the studies back on (`scripts/choose.py --optuna`) costs about 10 minutes, and is worth it after the data or the rules change.
 
-**6. Test is scored once.** A leaderboard records every run. It counts the distinct configurations scored on test, and the notebooks stop with an error above 1. The count is 1 for each stage.
+**6. Test is scored once.** A leaderboard records every run. It counts the distinct configurations scored on test, and `scripts/choose.py` stops with an error above 1. The count is 1 for each stage.
 
 **Why this solution:** a person choosing by eye always drifts toward the numbers they can see. Rules applied to data the final number never touches remove that drift.
 
@@ -114,22 +117,22 @@ The last row is the one exception to the rule, and it is made in the open. On 10
 
 ## Challenge: does it hold beyond our one dataset?
 
-Every number so far comes from one generated population: one seed, one noise model, one assumed prior. A result that holds only there would be fragile. So `scripts/robustness.py` re-runs both final configurations, unchanged, on populations generated differently. As in the notebook, it refits the model's parameters on each population's train split, then reports that population's test split. Nothing is re-tuned.
+Every number so far comes from one generated population: one seed, one noise model, one assumed prior. A result that holds only there would be fragile. So `scripts/benchmark.py` re-runs the final configuration, unchanged, on populations generated differently, the way a real file is run (`er.run`, without labels): it fits λ, u and m on each population's train split, then resolves that population's test split. Nothing is re-tuned ([reports/benchmark.md](../../reports/benchmark.md), measured before the standardization fixes in [lessons.md](../lessons.md#two-spellings-of-nothing)).
 
 | Scenario | Rules alone | Both stages | 95% interval | False merges | False-merge rate ≤ |
 |---|---|---|---|---|---|
 | as reported (seed 0) | 71.1% | 89.9% | 88.6–91.1% | 0 | 0.14% |
-| another seed (1) | 70.3% | 90.6% | 89.3–91.7% | 0 | 0.14% |
+| another seed (1) | 70.3% | 90.7% | 89.5–91.8% | 0 | 0.14% |
 | another seed (2) | 66.9% | 88.8% | 87.4–90.0% | 0 | 0.15% |
-| twice as many typos in names, phones and addresses | 67.4% | 88.9% | 87.5–90.1% | 0 | 0.15% |
-| emptier fields (fill rates fall to 45%, not 65%) | 62.8% | 88.4% | 87.1–89.6% | 0 | 0.14% |
+| twice as many typos in names, phones and addresses | 67.4% | 88.8% | 87.4–90.0% | 0 | 0.15% |
+| emptier fields (fill rates fall to 45%, not 65%) | 62.8% | 88.5% | 87.2–89.7% | 0 | 0.14% |
 | prior: the near-certain rules find 25% of true pairs, not 50% (λ × 2) | 71.1% | 91.5% | 90.3–92.5% | 0 | 0.14% |
 | prior: they find 75% (λ × ⅔) | 71.1% | 89.1% | 87.8–90.3% | 0 | 0.14% |
 
 What the table shows:
 
-- **The final result moves by about a point.** Across seeds and noise, recall stays between 88.4% and 90.6%, and no scenario has a false merge.
-- **The rules are the sensitive part.** They need exact agreements, so emptier fields cost them 8 points (71.1% → 62.8%). The second stage recovers most of that, and the final result loses 1.5 points.
+- **The final result moves by about a point.** Across seeds and noise, recall stays between 88.5% and 90.7%, and no scenario has a false merge.
+- **The rules are the sensitive part.** They need exact agreements, so emptier fields cost them 8 points (71.1% → 62.8%). The second stage recovers most of that, and the final result loses 1.4 points.
 - **A prior off by a factor of two barely matters.** λ rests on an assumption: that the near-certain rules find half of all true pairs. If they found a quarter, or three quarters, every weight would shift by one bit, or by about half a bit. Recall moves by +1.6 or −0.8 points, with no false merge, because the threshold's safety step absorbs the shift.
 
 How the cost and the quality behave as the file grows to a million records is in [chapter 3](03-far-too-many-pairs.md#scaling-to-a-million-records).
@@ -157,7 +160,8 @@ Each now has a guard: a test or a check printed on every run. The full stories a
 - `er/config.py`: `ThresholdRule`
 - `er/tune.py`: `pick_within_noise`, `new_study`
 - `er/io.py`: `append_leaderboard`, `test_evaluations` and `assert_test_scored_once` (the test counter)
-- `scripts/robustness.py`: the scenarios above, and the cost run of [chapter 3](03-far-too-many-pairs.md#scaling-to-a-million-records)
+- `er/select.py`: `RulesChooser` and `FSChooser`, every step of the choice, run by `scripts/choose.py` ([reports/choose.md](../../reports/choose.md)); `config/experiments.py`: the changes and the order they are decided in
+- `scripts/benchmark.py`: the scenarios above, and the cost run of [chapter 3](03-far-too-many-pairs.md#scaling-to-a-million-records)
 - every table: [results.md](../results.md)
 
 ## Further reading

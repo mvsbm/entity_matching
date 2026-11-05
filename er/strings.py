@@ -55,9 +55,13 @@ def udf(function: str) -> Callable[[pa.Array, pa.Array], pa.Array]:  # vectorize
     return f
 
 
-def connect() -> tuple[duckdb.DuckDBPyConnection, DuckDBAPI]:
-    """A DuckDB connection with every cl_<function> registered, wrapped for Splink."""
+def connect(compute: dict | None = None) -> tuple[duckdb.DuckDBPyConnection, DuckDBAPI]:
+    """A DuckDB connection with every cl_<function> registered, wrapped for Splink. `compute` (config/settings.toml
+    [compute]) sets threads, memory_limit and temp_directory: past the memory limit, DuckDB spills to that folder."""
     con = duckdb.connect()
+    for key, value in (compute or {}).items():
+        if value not in ("", None):
+            con.execute(f"SET {key} = '{value}'")
     for name, info in FUNCTIONS.items():
         if info.scorer:
             con.create_function(f"cl_{name}", udf(name), ["VARCHAR", "VARCHAR"], "DOUBLE", type="arrow")

@@ -14,7 +14,20 @@
 | `val` | 20% | 10,002 | A/B confirmation and selection checks |
 | `test` | 20% | 10,066 | final report, once per configuration |
 
-Only `bronze/reference` is in git; everything else rebuilds from the notebooks (`.gitignore`).
+Every table is Parquet. Only `bronze/reference` is in git; everything else rebuilds from the scripts (`.gitignore`):
+
+```
+data/medallion/bronze/reference/*.json      public reference data (tracked; SOURCES.md)
+data/medallion/silver/<dataset>.parquet     generated records                       scripts/generate.py
+data/labels/<dataset>.parquet               truth, read only to choose and evaluate scripts/generate.py
+data/medallion/gold/<dataset>/              each dataset resolved: a run folder     scripts/choose.py, through er.run
+data/artifacts/models/*_final.json          the chosen configurations, the fitted model
+data/artifacts/experiments/leaderboard.parquet   one row per experiment and dataset (archive/: earlier passes)
+data/artifacts/optuna/*.db                  the Optuna studies, with --optuna
+data/artifacts/benchmark/, demo/            run folders of scripts/benchmark.py and the demo
+```
+
+A run folder is the same wherever it is written, by `scripts/choose.py` here or by `scripts/resolve.py` anywhere: `gold.parquet`, `matches/`, `rule_kept/`, `steps.json` and `state/` ([architecture](architecture.md#a-run-on-duckdb-tables)).
 
 ## Reference data (bronze)
 
@@ -30,9 +43,9 @@ Two traps came up while building this:
 - **Wikidata's class tree:** 13,766 of the 16k "Japanese companies" with kana in the transitive `company` tree are dissolved municipalities. Only direct company types give real companies.
 - **yubinbango prefecture codes:** they are written without the leading zero (`1`, not `01`), which silently dropped 9 prefectures until the codes were zero-padded.
 
-## Synthetic data: `dataset_generation.ipynb`
+## Synthetic data: `scripts/generate.py`
 
-All parameters live in `SPEC` (the population) and `SPLIT` (shares and seed). `generate(SPEC)` builds the population, `check` asserts its invariants, and the split writes `silver/<split>.csv` and `labels/<split>.csv`.
+All parameters live in `config/generator.toml`: `[population]` (`er.generate.Spec`) and `[split]` (shares and seed). `er.generate.generate` builds the population, `check` asserts its invariants, and `scripts/generate.py` writes `silver/<split>.parquet` and `labels/<split>.parquet` (`--entities`, `--seed` and `--out` write another population, unsplit).
 
 - **Entities:** 40,000, 20% companies. Each entity has `1 + Poisson(0.25)` records.
   - **Persons** are sampled personas, each at most once, with realistic surname frequencies (サトウ, スズキ, タカハシ …). Their addresses lie in the persona's prefecture. Sampling with replacement made about 8,500 pairs of clones (same name, same prefecture) that no matcher can tell apart; same-name pairs now come only from the persona file itself.

@@ -1,0 +1,111 @@
+# The synthetic generator (er.generate): one population of entities built from the reference data in
+# data/medallion/bronze/reference, then split by entity. scripts/generate.py writes it; tests and reports reuse it.
+
+[population]
+seed = 0
+entities = 40_000                 # large enough that 0 FP on test bounds the FP rate tightly
+company_share = 0.2
+dup_lambda = 0.25                 # extra records per entity, Poisson
+multi_lambda = { person = 0.3, company = 1.0 }   # extra phones / addresses / names per entity, Poisson
+cif_keep = 0.5                    # chance a duplicate record reuses the entity's CIF ID
+rate_start = 0.9999               # fill rates of the nullable columns, falling linearly in column order
+rate_end = 0.6544
+phone_prefixes = ["90", "80"]     # 090 / 080 mobiles with the leading 0 dropped
+phone_digits = 10
+ban_max = 30
+go_max = 30
+address_pool_ratio = 0.5          # addresses per prefecture < addresses held, so unrelated entities share (households)
+full_name_sep = ""
+original_name_sep = "　"
+legal_form_kana = "カブシキガイシャ"
+legal_prefix_share = 0.5          # 株式会社〇〇 vs 〇〇株式会社
+name_typo_rate = 0.1              # per record and name part (surname, given name, company name)
+kana_confusions = [["ウ", "ー"], ["オ", "ウ"], ["ツ", "ッ"], ["ヤ", "ャ"], ["ユ", "ュ"], ["ヨ", "ョ"], ["ガ", "カ"],
+                   ["ギ", "キ"], ["グ", "ク"], ["ゴ", "コ"], ["ジ", "シ"], ["ダ", "タ"], ["ド", "ト"], ["ブ", "フ"]]
+phone_typo_rate = 0.05            # per record: one wrong digit of the phone's last four
+address_typo_rate = 0.05          # per record: one wrong digit (else a dropped character) in the typed address
+nesting = { name = 0.7, postal = 0.9, address = 0.6 }   # per group: 1 = fully nested missingness, 0 = independent
+buildings = ["サクラハイツ", "メゾン青葉", "グランドール", "コーポ山田", "パークタワー"]
+
+[[population.original_address_formats]]
+template = "{pref}{city}{town}{chome_jp}{ban}番{go}号"
+
+[[population.original_address_formats]]
+template = "{city}{town}{five}"
+fullwidth = true
+
+[[population.original_address_formats]]
+template = "{pref}{city}{town}{five}　{building}{room}"
+
+# the generated file's columns, in order; config/settings.toml [columns] maps them to the pipeline's fields
+[[population.columns]]
+name = "CONT_ID"
+nullable = false
+digits = 10
+[[population.columns]]
+name = "PHONE_NUM_4"
+digits = 4
+[[population.columns]]
+name = "CIF_ID"
+digits = 13
+[[population.columns]]
+name = "FULL_NAME_KANA"
+group = "name"
+kind = "person"
+[[population.columns]]
+name = "O_PERSON_NAME_KANA"
+group = "name"
+kind = "person"
+[[population.columns]]
+name = "POST_CD"
+group = "postal"
+digits = 7
+[[population.columns]]
+name = "POST_CD_KANA"
+group = "postal"
+digits = 7
+[[population.columns]]
+name = "LAST_NAME_KANA"
+group = "name"
+kind = "person"
+[[population.columns]]
+name = "GIVEN_NAME_KANA"
+group = "name"
+kind = "person"
+[[population.columns]]
+name = "NYS_CNV_P_NAME_KANA"
+kind = "company"
+[[population.columns]]
+name = "SOURCE_ADDR_CD"
+group = "address"
+digits = 10
+[[population.columns]]
+name = "ORIGINAL_ADDRESS"
+group = "address"
+[[population.columns]]
+name = "ADDRESS_FIVE"
+group = "address"
+[[population.columns]]
+name = "ADDRESS_FIVE_KANA"
+group = "address"
+[[population.columns]]
+name = "ADDR_CD_KANA"
+group = "address"
+digits = 11
+[[population.columns]]
+name = "ADDR_CD"
+group = "address"
+digits = 11
+[[population.columns]]
+name = "STD_ADDRESS"
+group = "address"
+[[population.columns]]
+name = "ADDRESS_ONE"
+group = "address"
+[[population.columns]]
+name = "ADDRESS_TWO"
+group = "address"
+
+[split]
+seed = 0
+shares = { train = 0.6, val = 0.2, test = 0.2 }   # by entity; the names must match config/settings.toml [datasets]

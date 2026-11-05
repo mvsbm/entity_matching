@@ -35,7 +35,7 @@ The configuration offers six keys: phone, normalized address, address code, CIF 
 
 - **Keys cost almost nothing.** A database hash join finds all pairs in a block in about O(N + P) time.
 - **The three kinds catch different typos.** Keys need an exact agreement. Sorted neighbourhood survives late typos, and sorting the reversed name too survives early ones. TF-IDF survives typos anywhere.
-- **Every key is measured before use.** Before any join, a run counts P for every key and stops if one goes over budget (here, 5 million pairs). A notebook cell also projects every key to a million records ([below](#how-the-notebooks-keep-it-that-way)).
+- **Every key is measured before use.** Before any join, a run counts P for every key and stops if one goes over budget: 5 pairs per record, so 5 million at a million records. While choosing, `scripts/choose.py` also projects every key to the target size ([below](#how-the-configuration-keeps-it-that-way)).
 
 ## How do we know a candidate list is good?
 
@@ -57,7 +57,7 @@ On train, for the 2,135 true pairs the rules missed. Each generator is listed wi
 
 Sorted neighbourhood adds the most pairs and the fewest missed pairs. Chosen for quality alone, the configuration kept six generators (phone, address, address code, CIF ID, company-name sorted neighbourhood, person-name TF-IDF). On validation: 14,180 candidates holding 641 of the 683 missed pairs (93.9%).
 
-Two of those six cannot run at a million records, so the final configuration has 14 generators instead (next sections). On validation it has **51,484 candidates holding 632 of the 683 missed pairs (92.5%)**, while still skipping 99.90% of all pairs. That is 9 missed pairs fewer than the six-generator list, and none of them could have been accepted: every true pair that could reach the threshold shares one of the final keys ([below](#keeping-every-potential-match)).
+Four of those six cannot run at a million records (the phone, the address and the address code alone, and TF-IDF), so the final configuration has 17 generators instead (next sections). On validation it has **49,987 candidates holding 600 of the 679 missed pairs (88.4%)**, while still skipping 99.90% of all pairs. That is fewer than the six-generator list held (93.9%), and none of the difference could have been accepted: every true pair that could reach the threshold shares one of the final keys, on every split and up to a million records ([below](#keeping-every-potential-match)).
 
 **In short:** a few cheap keys find most duplicates; the extra generators buy the last few points.
 
@@ -67,13 +67,13 @@ The phone key is useful but dangerous. The last four digits have only 10,000 pos
 
 $$P \approx \frac{N^2}{2 \times 10{,}000}$$
 
-On validation that gives about 5,000 chance pairs. About 1,660 true duplicates also share a phone: on train, 74.5% of true pairs do, and 74.5% of val's 2,227 is about 1,660. Together they make roughly 6,660, and the notebook counts 6,634 pairs in the phone blocks.
+On validation that gives about 5,000 chance pairs. About 1,660 true duplicates also share a phone: on train, 74.5% of true pairs do, and 74.5% of val's 2,227 is about 1,660. Together they make roughly 6,660, and `estimate` counts 6,634 pairs in the phone blocks.
 
 At a million records, the same formula gives **50 million** chance pairs from the phone key alone. That's why the preflight projects every key to the target size before it runs.
 
 Two more costs:
 
-- **A missed candidate is lost for good.** 51 of the 683 missed pairs are on no list. The second stage can never find them.
+- **A missed candidate is lost for good.** 79 of the 679 missed pairs are on no list. The second stage can never find them, but none of them has the evidence to reach the threshold.
 - **Sorted neighbourhood fails on early typos.** A wrong first character moves a record far away in the sorted order. A second pass on the reversed name finds those, unless the name has typos at both ends.
 
 **In short:** blocking sets the ceiling on recall, and keys with few values blow up at scale.
@@ -168,7 +168,7 @@ The window needed grows with the file. A fixed window loses pairs, and a growing
 | person name, one-deletion keys within the postal area | every pair of names one edit apart in one postal area | 0.12 million |
 | given name + postal code | a surname change at the same postal code | 0.09 million |
 
-With them, **no potential match depends on a window**: 0 on train, val and test, at their own size, at 75,000 records and at a million.
+With them, **no potential match depends on a window**: 0 on train, val and test, at their own size, at 75,000 records and at a million. Dropping the windows altogether was tried too: it lost 3 true pairs on cross-validated train and 1 on val, so the windows stay.
 
 **One-deletion keys.** Each record emits its value, and the value with each single character deleted. サトウヒロシ gives サトウヒロシ, トウヒロシ, サウヒロシ, サトヒロシ, サトウロシ, サトウヒシ and サトウヒロ. Two names one edit apart always share one of these keys:
 
@@ -180,78 +180,89 @@ A name of L characters emits L + 1 keys, so the work is O(N·L + P). Spelling co
 
 **Why within the postal area?** Many short names differ from another person's by one kana. On their own, the person-name deletion keys would make 5.6 million pairs at a million records, growing like N^1.71. Within the postal area they grow like N^1.01. A potential match whose names are one edit apart but whose postal areas differ needs strong evidence from another field, and that field has a key of its own. The coverage check below confirms this on every split.
 
-**Challenge: two rule clusters were never compared.** In the robustness files, almost all the potential matches that both stages missed lay between two clusters the rules had already formed: 28 of 30 at 50,000 records, 14 of 14 at 75,000. The second stage generated candidates only for records the rules left alone. So when the rules split one entity into two clusters, no pair between them was ever scored, whatever its evidence.
+**Challenge: two rule clusters were never compared.** In the scale runs, almost all the potential matches that both stages missed lay between two clusters the rules had already formed: 28 of 30 at 50,000 records, 14 of 14 at 75,000. The second stage generated candidates only for records the rules left alone. So when the rules split one entity into two clusters, no pair between them was ever scored, whatever its evidence.
 
 **Solution: score every pair across two clusters.** Candidates are now generated for every record. A pair inside one cluster is dropped before the lists are merged, because it is joined already. The list grows by 7% (val: 48,105 → 51,484 candidates), and scoring time does not measurably change. A false pair between two clusters would merge both of them, so the margin was checked first: between rule clusters, the highest-scoring false pair reaches 1.0 bits on train, far below the 6-bit threshold.
 
-| Change | Rule | Cross-validated train | Val | Adopted |
+| Change | Kind | Cross-validated train | Val | Adopted |
 |---|---|---|---|---|
 | the five keys | safer | +1 / −0 true pairs, no false pair added | +1 / −0 | yes |
+| the address only with another field (next) | cheaper | +0 / −0, no false pair added | +0 / −0 | yes |
+| no sorted windows | cheaper | +0 / −3 | +0 / −1 | no |
 | score every pair across two clusters | better | +12 / −0 (p = 0.0005), no false pair added | +4 / −0 | yes |
 
 "Safer" is the cheaper test for a change that adds pairs: it may lose no true pair and add no false one. Its gain shows at scale, and the coverage check below measures it.
 
-### How the notebooks keep it that way
+**Challenge: an address alone grows with the square.** A key's pairs are of two kinds. Pairs of one entity grow like N: a bigger population of the same kind has proportionally more duplicated entities. Chance pairs between two entities grow like N², whenever the key's values come from a pool that doesn't grow with the file, because two entities then share a value with the same probability at any size. Addresses are such a pool: households share them, and a country has only so many. Across the generated population (50,215 records), 82% of the address key's 38,861 pairs are chance pairs, and projected that way they reach **12.8 pairs per record at a million records**, over the budget of 5. The address code makes 11.9.
 
-Each notebook has a cell that projects every key and rule of `FINAL` to a million records: "Cost of FINAL" in the deterministic notebook and "Will it scale?" in the probabilistic one. The cell stops the run if a key would exceed the budget of 5 million pairs. It needs only the training file:
+**Solution: the address only with one more field.** A true pair that shares an address almost always shares something else with it: the phone digits, the name's first letter, or, after a marriage, the given name. Two households at one address rarely do. So the address and the address code are each combined with the phone and with the name's first letter, and the address code with the given name:
 
-1. Keep 25%, 50% and 100% of the entities. Whole entities are kept or dropped, so a duplicate keeps its partners.
-2. Count each key's pairs P at each size.
-3. Fit P ∝ N^α and extrapolate to a million records.
+| Key | Pairs per record at a million records |
+|---|---|
+| address alone, address code alone | 12.8 and 11.9 |
+| address + phone, address code + phone | 0.10 each |
+| address + the name's first letter, address code + the name's first letter | 0.55 and 0.54 |
+| given name + address code | 0.08 |
 
-For the probabilistic `FINAL`, the largest projection is the address key, at 4.0 million pairs. Subsampling entities overstates the growth of keys that households share: it gives α 1.58 for the address, against 1.01 measured on growing generated files. So the check errs on the safe side. Optuna trials that fail it are pruned.
+The five keys reach every potential match the two address keys reached, at every size, and the decision rule adopted them as cheaper: no true pair lost or false pair added, on cross-validated train or on val.
 
-The probabilistic cell also counts the potential matches on train that share no key, at train's size and at a million records (`window_only`). It stops the run if any is left. For `FINAL`: 0 of 6,120, and 0 of 5,996.
+### How the configuration keeps it that way
 
-### Measured: both stages, up to a million records
+`scripts/choose.py` projects every key and rule of `FINAL` to `budget.target_rows` (a million records) and stops if one would exceed the budget of 5 pairs per record (`er.pipeline.scale_check`). It needs only the training file. For each key it counts the pairs of one entity, T, and the chance pairs, C, and projects each by its own law: P(n) = T·n/N + C·n(n − 1)/(N(N − 1)). That is what keeping a share of the entities would give on average, computed instead of sampled. Projected from a quarter of the generated records to all of them, it lands within ±5% for every key but one (company names, −12%, from few records); a single power law fitted the same way was 37% low on the address key, because the N² part takes over only past the sizes it was fitted on. Pairs between two members of a household count as chance, the safe side. Optuna trials that fail the check are pruned.
 
-One model, fitted on train, scores generated files of growing size, both stages, on a 16 GB laptop (`scripts/robustness.py --smoke`):
+For `FINAL`, the largest projection of a key is phone + name initial, at 2.0 pairs per record; each sorted window makes 3 per record by construction. The check also counts the potential matches on train that share no key, at train's size and at a million records (`window_only`), and stops if any is left. For `FINAL`: 0 of 6,116, and 0 of 6,020.
 
-| Records | Rules | Probabilistic stage | Peak memory |
-|---|---|---|---|
-| 12,392 | 0.4 s | 9.3 s | 1.2 GB |
-| 24,944 | 0.7 s | 10.0 s | 1.3 GB |
-| 50,215 | 1.1 s | 10.6 s | 1.6 GB |
-| 75,284 | 1.5 s | 12.0 s | 2.2 GB |
-| **999,481** | **17.5 s** | **96.4 s** | **7.5 GB** |
+Without labels, a run can check only the patterns: every combination of comparison levels that could reach the threshold must imply a shared key (`pattern_coverage`, in every run's QA report). A Jaro–Winkler level implies none, so a pattern built on close names counts as uncovered even when the name's first letter, in practice, joins it. For `FINAL` at a million records, 68 patterns are uncovered, and the model puts their share of matches at 0.6% at most, most of it close names at the same address with no phone agreement. On the labelled splits, none of those pairs is lost.
 
-A million records take under two minutes. About 8 s of each probabilistic run is a fixed cost: u is re-sampled on the scored file from 10 million random pairs, whatever its size. Without that fixed part, the work grows about linearly with the file.
+### Measured: a whole run, up to a million records
 
-Two limits had to be removed on the way:
+`scripts/benchmark.py` generates files of growing size and resolves each with `scripts/resolve.py`, in a process of its own, as a real run: on DuckDB tables, fitted on the file itself, without labels, under an 8 GB memory limit ([reports/benchmark.md](../../reports/benchmark.md), measured before the standardization fixes in [lessons.md](../lessons.md#two-spellings-of-nothing)):
+
+| Records | Fit | Rules | Candidates | Score | Total | Peak memory |
+|---|---|---|---|---|---|---|
+| 12,392 | 9.7 s | 0.3 s | 0.1 s | 8.8 s | 19.1 s | 0.6 GB |
+| 24,944 | 9.6 s | 0.3 s | 0.2 s | 8.6 s | 19.0 s | 0.7 GB |
+| 50,215 | 8.6 s | 0.4 s | 0.4 s | 8.8 s | 18.8 s | 0.8 GB |
+| 75,284 | 8.5 s | 0.5 s | 0.6 s | 9.2 s | 19.7 s | 1.0 GB |
+| **999,481** | **7.5 s** | **3.3 s** | **3.2 s** | **18.9 s** | **40.6 s** | **4.5 GB** |
+
+A million records take 41 seconds. The fit, on a fixed sample, and the u sample inside the score, from 10 million random pairs, cost about the same at any size; without them, the work grows about linearly with the file. DuckDB would spill to disk past the 8 GB limit, and didn't need to. The cost of every step, for a full run and for an increment, is in [performance.md](../performance.md).
+
+Three limits had to be removed on the way:
 
 - **Memory.** The first million-record run ran out of memory, because the scores were copied into pandas together with every compared field of both records, about 19 GB at a million. DuckDB now keeps only the columns that are read ([lessons.md](../lessons.md#the-first-million-record-run-ran-out-of-memory)).
-- **Merging the lists.** With the five name keys and bridging, the probabilistic stage first took 228 s at a million records. Most of it was Python code that ran once per pair, merging the generators' lists. Vectorized, the stage takes 98 s, less than before those changes ([lessons.md](../lessons.md#merging-the-candidate-lists-was-most-of-the-work)).
+- **Merging the lists.** With the five name keys and bridging, the probabilistic stage first took 228 s at a million records. Most of it was Python code that ran once per pair, merging the generators' lists. Vectorized, the stage took 98 s, less than before those changes ([lessons.md](../lessons.md#merging-the-candidate-lists-was-most-of-the-work)).
+- **Tables in memory.** Every table of size N or C was a pandas frame, 7.5 GB at a million records. Now they are DuckDB tables, which spill to disk past the memory limit, and pandas holds only one chunk of the file at a time and small summaries.
 
 The generator has 60,000 distinct personas. Beyond that it must reuse them, which creates clones no matcher can tell apart, so the million-record row measures cost only.
 
 ### Quality as the file grows
 
-Up to 75,000 records, every entity is still a distinct persona, so quality can be measured too:
+Up to 75,000 records, every entity is still a distinct persona, so quality can be measured too. Each file is fitted on itself, without labels:
 
-| Records | Recall | False merges | False-merge rate ≤ | Potential matches on no list | Recall, if u were kept from train |
-|---|---|---|---|---|---|
-| 12,392 | 89.8% | 0 | 0.12% | 0 | 89.9% |
-| 24,944 | 89.8% | 4 | 0.18% | 0 | 89.9% |
-| 50,215 | 89.5% | 1 | 0.05% | 0 | 88.7% |
-| 75,284 | 88.7% | 5 | 0.07% | 0 | 87.6% |
+| Records | Recall | False merges | False-merge rate ≤ |
+|---|---|---|---|
+| 12,392 | 88.9% | 0 | 0.12% |
+| 24,944 | 89.6% | 3 | 0.16% |
+| 50,215 | 89.3% | 1 | 0.05% |
+| 75,284 | 89.0% | 5 | 0.07% |
 
-At every size, no missed true pair that could reach the threshold is missing from the candidate lists. Blocking loses nothing that could have been accepted. Two things change as the file grows:
+Blocking loses nothing that could have been accepted: on train, val and test, every true pair that could reach the threshold shares a key, at their own size, at 75,000 records and at a million. Two things change as the file grows:
 
-- **False merges appear, but stay rare.** A bigger file holds more pairs of different entities that look alike. The five at 75,000 records come from two accepted pairs. In each, two entities live at the same street address and share their last four phone digits by chance, and the name gives no evidence: one record is a company and the other a person, or one has no name at all. The bound on the false-merge rate stays at the level reported for val and test (0.14–0.15%) or below it, except at 25,000 records (0.18%).
-- **Recall falls by about 1 point.** That's what is left once u is measured on each scored file. With u kept from train it would fall by more than 2 points. For the address and the CIF ID, a bigger file has more distinct values, so two strangers agree on them less often, and train's u under-credits their agreements. The crossover is train's own size: below it, train's u over-credits instead, which is why the 10,000-record test file scores 91.1% with train's u and 89.9% without it. Production files are bigger than train, so u is measured on the scored file ([lessons.md](../lessons.md#the-size-rescaling-was-only-half-done)).
+- **False merges appear, but stay rare.** A bigger file holds more pairs of different entities that look alike. The five at 75,000 records come from two accepted pairs, at 8.7 bits each. In each, two entities live at the same street address and share their last four phone digits by chance, and the name gives no evidence: one record is a company and the other a person, or one has no name at all. The bound on the false-merge rate stays at the level reported for val and test (0.14–0.15%) or below it, except at 25,000 records (0.16%).
+- **Recall holds within a point.** That's because u is measured on each scored file. With u kept from train, recall fell by more than 2 points from 12,000 to 75,000 records (measured by the in-memory runs this benchmark replaced). For the address and the CIF ID, a bigger file has more distinct values, so two strangers agree on them less often, and train's u under-credits their agreements. The crossover is train's own size: below it, train's u over-credits instead, which is why the 10,000-record test file scores 91.1% with train's u and 89.9% without it. Production files are bigger than train, so u is measured on the scored file ([lessons.md](../lessons.md#the-size-rescaling-was-only-half-done)).
 
-**In short:** two steps grew with the square of the file: keys with a fixed set of values, and all-against-all similarity. Compound keys, a reversed sorted pass and a narrower F2 join remove both. A sorted window reaches fewer pairs as the file grows, so five more keys make sure no potential match depends on one. And the second stage now also scores pairs between two rule clusters. A million records take under two minutes and 8 GB of memory.
+**In short:** two kinds of step grew with the square of the file: keys whose values come from a fixed pool (the phone digits, the address), and all-against-all similarity. Compound keys, a reversed sorted pass and a narrower F2 join remove both. A sorted window reaches fewer pairs as the file grows, so five more keys make sure no potential match depends on one. The second stage also scores pairs between two rule clusters. A million records take 41 seconds and 4.5 GB, on DuckDB tables that spill to disk past a memory limit.
 
 ## In the code
 
 - `er/candidates.py`: `KeyBlocker`, `SortedNeighbourhood`, `TfidfNeighbours`, `DeletionKeys` (one-deletion keys), `estimate` (the count before any join)
-- `er/pipeline.py`: `grown_pairs` (a key's growth α from entity subsamples), `scale_check` (every key and rule projected to `target_rows`), `window_only` (the potential matches no key reaches) and `cascade`'s `bridge` (a stage that may join two clusters)
-- `er/config.py`: `ProbSpec.bridge` (score every pair across two clusters)
-- `config/settings.toml`: the derived columns behind the compound keys (`ANY_NAME`, the postal area) and the normalizers `initial`, `first3`, `reverse`
-- `scripts/robustness.py`: both stages on generated files from 12,000 to a million records
-- `er/config.py`: `Budget` (`max_candidate_pairs`, `max_block_size`, `target_rows`)
-- `notebooks/probabilistic_matching.ipynb`: `GENERATORS` and `SCALABLE` in the Configuration cell; the "Candidates on train" cell prints the generator table above; the "Will it scale?" cell stops the run if `FINAL` would go over budget at a million records, or would leave a potential match to a window
-- `notebooks/deterministic_matching.ipynb`: the "Cost of FINAL" cell, which counts P per rule and projects it to a million records
+- `er/pipeline.py`: `grown_pairs` (a key's pairs of one entity and by chance, each projected by its own law), `scale_check` (every key and rule projected to `target_rows`), `window_only` (the potential matches no key reaches), `pattern_coverage` (the same question without labels) and `cascade`'s `bridge` (a stage that may join two clusters)
+- `er/config.py`: `Budget` (`max_pairs_per_record`, `max_block_size`, `target_rows`); `FSSpec.bridge` (score every pair across two clusters)
+- `config/pipeline.toml`: every generator, in logical fields; `config/settings.toml`: the fields behind the compound keys (`any_name`, the postal area) and the normalizers `initial`, `first3`, `reverse`
+- `config/experiments.py`: the key changes and their decisions (`compound_phone_keys`, `sorted_names_for_tfidf`, `name_keys`, `bounded_address_keys`, `no_sorted_windows`, `bridge_rule_clusters`)
+- `er/select.py`: `FSChooser.candidates_on_train` prints the generator table above; `will_it_scale` stops `scripts/choose.py` if `FINAL` would go over budget at `target_rows`, or would leave a potential match to a window; `RulesChooser.cost` does the same for the rules
+- `er/run.py`: `Run.budget`, the exact count on the file before any join; `scripts/benchmark.py`: whole runs on generated files from 12,000 to a million records
 
 ## Further reading
 

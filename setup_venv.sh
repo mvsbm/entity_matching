@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Creates .venv with the notebook's dependencies; VS Code then lists .venv as a Jupyter kernel.
+# Creates .venv with the pinned dependencies; VS Code then lists .venv as a Jupyter kernel (notebooks/demo.ipynb).
 set -euo pipefail
 cd "$(dirname "$0")"
 

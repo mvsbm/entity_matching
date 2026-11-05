@@ -10,95 +10,124 @@
 
 | Symbol | Meaning |
 |---|---|
-| N | records in the scored file |
-| n | records in the fitting set (train, about 30,000; fixed) |
+| N | records in the file |
+| Δ | records in an increment's batch |
+| n | records the model is fitted on (`fit_rows`, 30,000; fixed) |
 | L | characters in a name or address (about 7 and 15) |
-| P_r | pairs inside rule r's key blocks |
-| P_g | pairs inside generator g's key blocks |
-| C | candidate pairs, the union of all P_g |
+| P_r, P_g | pairs inside rule r's or generator g's key blocks |
+| b | records in one key block |
+| C | candidate pairs, the union of all P_g; C_Δ, those touching the batch |
 | K | comparisons in the model (5) |
+| S | random pairs sampled for u (10⁷; fixed) |
+| P_em | pairs in EM's blocks (equal phone, equal address) within the fitting sample |
 | E | accepted pairs |
-| d | diameter of the largest cluster |
-| S | sampled random pairs for u (10⁷) |
-| F | folds (3) |
-| D | decision variants (8) |
-| T | Optuna trials |
+| d | diameter of the largest cluster: Splink's connected components take up to d rounds |
+| F, D, T | folds (3), decision variants (12), Optuna trials |
 
-"Grows like" is measured on generated files from 12,000 to 75,000 records, or from entity subsamples of train (`scale_check`).
-
-**Every production run, per file** (`run_rules`, then `run_fs`). The times are measured on 999,481 records.
+**A full run** (`er.run.Run.full`, which `scripts/resolve.py` calls), with the times measured on 999,481 generated records by
+`scripts/benchmark.py`, in a process of its own under an 8 GB DuckDB memory limit:
 
 | # | Step | Code | Cost | Grows like | At 1M |
 |---|---|---|---|---|---|
-| 1 | load and standardize | `er.io.load`, `er.standardize.prepare` | O(N·L) | N | seconds |
-| 2 | count each rule's work before joining | `er.pipeline.preflight` | O(N) per rule, a group-by | N | < 1 s |
-| 3 | rules: one hash join per rule, fuzzy checks on the joined pairs only | `er.match.rule_edges` | O(N + P_r · L²) per rule | N^0.98 to N^1.04 per rule | ≤ 0.13 million pairs per rule |
-| 4 | rules: clustering | `er.resolve` (connected components) | O((N + E)·d) | N | |
-| | **rules, total** | | | | **17.5 s** |
-| 5 | candidates: exact and compound keys | `er.candidates.generate` | O(N + P_g) per key | N^0.98 to N^1.58 | 0.1 to 4.0 million pairs per key |
-| 6 | candidates: one-deletion keys | same | O(N·L + P_g) | N^1.01 to N^1.44 | ≤ 0.23 million |
-| 7 | candidates: sorted neighbourhood (3 passes) | same | O(N log N + N·w) per pass | N | 3 million per pass, at most |
-| 8 | merge the lists, drop pairs inside one rule cluster | `er.candidates.candidates` | O(Σ P_g), a vectorized group-by | N | |
-| 9 | u, re-sampled on the scored file | `er.match.with_scored_u` | O(S·K) + O(N), a fingerprint | **constant** | about 8 s |
-| 10 | score the candidates | `er.match.score_fs` (Splink, DuckDB) | O(C·K·L²) | as C | |
-| 11 | accept at the threshold, then cluster | `er.pipeline.cascade` | O(C) + O((N + E)·d) | N | |
-| | **probabilistic stage, total** | | | | **96.4 s** |
+| 1 | load: read in chunks, check the fields, standardize each chunk | `Run.load`, `er.standardize.prepare` | O(N·L) | N | 5.3 s |
+| 2 | budget: every rule's and generator's pairs, exactly, before any join | `Run.budget`, `er.candidates.estimate` | O(N) per rule and generator, a group-by | N | 0.9 s |
+| 3 | fit: λ from near-certain rules, u, m by EM, on a sample of whole postal areas | `Run.fit`, `er.match.train_fs` | O(n + S·K + P_em·K) | **constant** | 7.5 s |
+| 4 | rules: one join per rule (the first rule wins a pair), fuzzy checks on the joined pairs only, then the cascade's clusters | `Run.rules`, `er.match.rule_edges_table` | O(N + Σ P_r·L²) + O((N + E)·d) | N; ≤ 0.22 pairs per record per rule at 1M | 3.3 s |
+| 5 | candidates: every generator as one SQL join or window, merged by bitmask, pairs inside one rule cluster dropped | `Run.candidates`, `er.candidates.candidates` | O(N·L + Σ P_g) | N; ≤ 2.0 pairs per record per key at 1M, 3 per sorted window | 3.2 s |
+| 6 | score: u measured on this file (value counts for the exact levels, S pairs for the rest), then every candidate | `Run.score`, `er.match.with_scored_u`, `score_fs` | O(N + S·K) + O(C·K·L²) | C, plus a constant | 18.9 s |
+| 7 | cluster: accept at the threshold, connected components with the rules' pairs, gold | `Run.cluster` | O(C + (N + E)·d) | N | 0.4 s |
+| 8 | write: gold, matches, the rules' pairs and the state for increments, as Parquet | `Run.write` | O(N + C) | N | 1.1 s |
+| | **total** | | | | **40.6 s, 4.45 GB peak** |
 
-Once, before any file is scored, the model is **fitted on train**. That costs the same whatever the production size:
+**An increment** (`Run.increment`, `scripts/resolve.py --increment`): a batch of Δ new records joins a written run.
+
+| Step | Cost | What it touches |
+|---|---|---|
+| load | O(Δ·L) | the batch; a record already in the run stops it |
+| rules | O(Δ·Σ b) + a scan of the stored records | each rule joins the batch against all records; the cascade merges into the stored clusters, each cluster one node |
+| candidates | O(Δ·Σ b) + a scan | every generator, with the batch as the query |
+| score | O(N + S·K) + O(C_Δ·K·L²) | u measured again on all the records; only the pairs touching the batch are scored |
+| cluster | O(C_Δ + touched clusters) | the stored clusters, with the new pairs merged in |
+| write | O(Δ + C_Δ) appended, O(N) rewritten | new Parquet parts for records, rule pairs and matches; gold and the rules' clusters rewritten. Every file is staged under a temporary name and renamed into place only once all are complete, so an interrupted increment leaves the run as it was, or is finished by the next one |
+
+So a full run costs **O(N·L + Σ P + C·K·L² + (N + E)·d)**, plus the fit and the u sample, whose sizes are fixed. It
+is linear in N when every key's pairs per record stay flat as the file grows, which `budget` checks exactly on each
+file and `scale_check` projects to `budget.target_rows` while choosing (below). An increment costs
+**O(Δ·(L + Σ b) + C_Δ·K·L²)**, plus the fixed u sample and sequential scans and rewrites of the stored columns. Its
+expensive work grows with the batch, not with the file. A full run re-fits the model and should follow many increments.
+
+**Memory.** Records, pairs, scores and clusters are DuckDB tables. Past `memory_limit` (config/settings.toml `[compute]`,
+or `scripts/resolve.py --compute memory_limit=8GB`), DuckDB spills them to `temp_directory`. Python holds one chunk of
+`load` (200,000 records), the fitting sample (n records) and small summaries. At a million records the process peaked at
+4.45 GB, Python included, under an 8 GB limit, so nothing spilled.
+
+## The cost checks before a run
+
+| Check | When | Cost | What it stops |
+|---|---|---|---|
+| `budget` | every run, on the actual file | O(N) per rule and generator | a rule or generator over `max_pairs_per_record` × N pairs, or with a block over `max_block_size` |
+| `scale_check` | `scripts/choose.py`, on train | O(N) per key | a key whose pairs, projected to `target_rows`, exceed the budget |
+| `window_only` | `scripts/choose.py`, on train | O(N + P + T·K), T true pairs, plus two u samples | a true pair that could reach the threshold but shares no key, now or at `target_rows` |
+| `pattern_coverage` | `scripts/choose.py` and every run's QA report | O(Π levels), a few thousand patterns | reported, not stopped: patterns that can reach the threshold with no guaranteed key |
+
+`scale_check` splits a key's pairs P on train into T pairs of one entity and C chance pairs between entities. A
+bigger population of the same kind has proportionally more duplicated entities, so T grows like N, and two entities
+share a value with the same probability at any size, so C grows like N²: P(n) = T·n/N + C·n(n − 1)/(N(N − 1)). That is
+the expectation of keeping a share of the entities, computed instead of sampled. Projected from a quarter of all the
+generated records to all of them, it lands within ±5% of the actual count for every key but one (company names, −12%,
+from few records). Pairs between members of one household count as chance, the safe side
+([chapter 3](guide/03-far-too-many-pairs.md#scaling-to-a-million-records)).
+
+## Choosing the configuration
+
+`scripts/choose.py`, once, on the labelled synthetic train and val (4.8 minutes in all, Optuna off):
 
 | Step | Cost | Measured |
 |---|---|---|
-| u by random sampling | O(S·K) | 8.9 s (nearly all of a fit) |
-| λ from the near-certain rules | O(n + P_prior) | < 1 s |
-| m by EM, on the phone and address blocks | O(iterations · P_em · K) | < 1 s |
+| rules: design analyses, A/B, decisions, cost, evaluation, output | O(D · run) on train and val | 25 s |
+| candidates on train: every generator's reach | O(N·L + Σ P_g) | 5.5 s |
+| training: EM against labels | O(n + S·K + P_em·K), twice | 9.4 s |
+| threshold rule on out-of-fold scores | O(F · (fit + run on n/F records)) | 32 s |
+| A/B on val | O(variants · run) | 36 s |
+| decisions | O(D · (F + 1) · run) | 105 s |
+| will it scale: `scale_check`, `window_only`, `pattern_coverage` | O(N) per key + O(N + P + T·K) + O(Π levels) | 17 s |
+| output: train, val and test through FINAL | O(3 · run) | 20 s |
+| gold: train, val and test resolved by `er.run` into `data/medallion/gold/<dataset>/` | O(3 · full run), with train's model | 31 s |
+| Optuna (off by default) | O(T · F · run) | +1.5 min (rules), +8.5 min (Fellegi–Sunter) |
 
-**Choosing the configuration** happens in the notebooks only, on train and val:
-
-| Step | Cost |
-|---|---|
-| threshold rule on out-of-fold scores | O(F · (fit + run on n/F records)) |
-| decisions | O(D · (F + 1) · run) |
-| A/B on val | O(variants · run) |
-| Optuna (off by default) | O(T · F · run) |
-| coverage check (`window_only`) | O(n + P + T_true · K), plus two u samples |
-| evaluation | O(N + true pairs) |
-
-**In total**, a production file costs O(N log N + C·K·L²), with C growing about linearly in N. On top of that come a fixed ~8 s for u and a fit of fixed size. Two places can still grow faster than the file: a key whose blocks keep growing with N, such as a household address or a common company name, and the sorted windows' N log N sort. Both are measured, and projected to `budget.target_rows`, by `scale_check` before every run.
-
-## Measured in the final clean pass
-
-On an awake machine:
-
-| Step | Time | Note |
-|---|---|---|
-| one fit on train, nothing cached | 8.9 s | u-sampling of 10⁷ pairs is nearly all of it |
-| one fit, all u cached | 0.4 s | m method / term-frequency variants, decisions, re-scoring |
-| u on a scored file | ≈ 8 s, once per file and comparison | cached in `er.match.SCORED_U` |
-| candidates on val | 0.1 s | 14 generators, 51,484 pairs |
-
-**Where each notebook's time goes** (every code cell, in order):
-
-| Notebook | Cells | Total | The largest cells |
-|---|---|---|---|
-| `dataset_generation` | 5 | 2.8 s | generate and check the population, 2.3 s |
-| `deterministic_matching` | 11 | 26 s | decisions 16 s · A/B 4.4 s · output 2.2 s; Optuna and Pareto are off |
-| `probabilistic_matching` | 14 | 220 s | decisions 97 s · A/B 34 s · threshold 33 s · output 20 s · "Will it scale?" 17 s · training 9 s · candidates on train 6 s; Optuna and Pareto are off |
-
-u-sampling now runs once per scored file (each fold, val, train, test, and the coverage check's two samples), so it accounts for most of the decision, output and "Will it scale?" time. `scripts/export_pdfs.py` runs all three notebooks and prints them in 4.3 minutes. With Optuna it took 13; turning a study back on (`enabled=True`) adds about 1.5 minutes (deterministic) and at least 8.5 minutes (probabilistic).
+u-sampling runs once per scored file (each fold, val, train, test, and the coverage check's two samples), so it is
+most of the decision, output and "will it scale" time. `notebooks/demo.ipynb` runs every step of a full run and an
+increment on 3,747 records in about 25 seconds; `scripts/export_pdfs.py` prints it in about 30.
 
 **Free savings in the code** (identical results, covered by tests/):
-- **u cached per comparison** (`FSModel.u_keys`). A comparison's u depends only on itself and the records it is sampled on, and Splink's random sample doesn't depend on which comparisons it scores. So any model that shares a comparison reuses its u, from the fit (`U` in the notebook) or from a scored file (`SCORED_U`).
-- **Threshold rule without clustering** (`accept_curve`). The rule reads only accepted and false accepted pairs per weight, so decision variants resolve clusters at the chosen weight only.
-- **Run cache.** Identical runs (same config, dataset and threshold) are computed once.
-- **Merged lists by bitmask.** A pair's generators are one bit each, summed in C, then named once per combination. At 250,000 records the probabilistic stage takes 15 s instead of 59 s ([lessons.md](lessons.md#merging-the-candidate-lists-was-most-of-the-work)).
+- **u cached per comparison** (`FSModel.u_keys`). A comparison's u depends only on itself and the records it is
+  sampled on, and Splink's random sample doesn't depend on which comparisons it scores. So any model that shares a
+  comparison reuses its u, from the fit (`FSChooser.u`) or from a scored file (`SCORED_U`, keyed by the records'
+  fingerprint).
+- **Threshold rule without clustering** (`accept_curve`). The rule reads only accepted and false accepted pairs per
+  weight, so decision variants resolve clusters at the chosen weight only.
+- **Run cache.** Identical runs (same configuration, dataset and threshold) are computed once.
+- **Merged lists by bitmask.** A pair's generators are one bit each, combined with `bit_or` in SQL, then named once
+  per combination ([lessons.md](lessons.md#merging-the-candidate-lists-was-most-of-the-work)).
 
-**Tried and rejected by the rule, because it changes results:** u from 10⁶ pairs instead of 10⁷ (the `u_from_1e6_pairs` decision) would make u-sampling about 6× cheaper. It loses true pairs, though: cross-validated train +10 / −24 (p = 0.024), val −3.
+**Tried and rejected by the rule, because it changes results:** u from 10⁶ pairs instead of 10⁷ (`u_from_1e6_pairs`)
+would make u-sampling about 6× cheaper, but loses true pairs: cross-validated train +9 / −26 (p = 0.006), val −1.
+Dropping the three sorted windows (`no_sorted_windows`) would remove 9 of the run's pairs per record, but loses 3 true
+pairs on cross-validated train and 1 on val.
 
-**At a million records** (`scripts/robustness.py --smoke`, one model fitted on train, ~6 minutes in all):
+## Files of growing size
 
-| Records | Rules | Probabilistic stage | Peak memory |
-|---|---|---|---|
-| 75,284 | 1.5 s | 12.0 s | 2.2 GB |
-| 999,481 | 17.5 s | 96.4 s | 7.5 GB |
+`scripts/benchmark.py`: each generated file resolved by `scripts/resolve.py` in a process of its own, the model fitted
+on the file itself, without labels ([reports/benchmark.md](../reports/benchmark.md); measured before the standardization fixes in [lessons.md](lessons.md#two-spellings-of-nothing), which changed results more than cost):
 
-From 75,000 to a million records, 13 times the records take 8 times as long in the probabilistic stage, because the ~8 s u-sample is fixed. Why the steps grow linearly, and what had to change for that, is in [chapter 3](guide/03-far-too-many-pairs.md#scaling-to-a-million-records).
+| Records | Seconds | Peak memory | fit | score | everything else |
+|---|---|---|---|---|---|
+| 12,392 | 19.1 | 0.58 GB | 9.7 | 8.8 | 0.6 |
+| 50,215 | 18.8 | 0.78 GB | 8.6 | 8.8 | 1.4 |
+| 75,284 | 19.7 | 0.96 GB | 8.5 | 9.2 | 2.0 |
+| 999,481 | 40.6 | 4.45 GB | 7.5 | 18.9 | 14.2 |
+
+The fit and the u sample inside `score` (about 8 s) cost the same at every size, so they are nearly all of a small
+file's time. Everything else goes from 2.0 s at 75,000 records to 14.2 s at a million: 13 times the records, 7 times
+the time, because DuckDB uses its threads better on bigger tables. Scoring the candidates, the rest of `score`, grows
+from under a second to about 11 s.

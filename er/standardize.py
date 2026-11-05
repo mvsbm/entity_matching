@@ -12,12 +12,12 @@ def normalize(s: pd.Series, steps: tuple[Normalizer, ...], std: Standardization)
         match step:
             case "nfkc":
                 s = s.str.normalize("NFKC")
-            case "strip_spaces":
-                s = s.str.replace(r"\s+", "", regex=True)
-            case "initial":  # blocking keys: the first character (an empty value must not become one huge block)
-                s = s.str[:1].replace("", pd.NA)
+            case "strip_spaces":  # pandas' Arrow strings use RE2, whose \s is ASCII only: the full-width space is named
+                s = s.str.replace("[\\s\u3000]+", "", regex=True)
+            case "initial":  # blocking keys: the first character
+                s = s.str[:1]
             case "first3":  # blocking keys: a postal area
-                s = s.str[:3].replace("", pd.NA)
+                s = s.str[:3]
             case "reverse":  # a second sort key: names that end alike sort together, so an early typo doesn't split them
                 s = s.str[::-1]
             case "kana_fold":
@@ -30,15 +30,17 @@ def normalize(s: pd.Series, steps: tuple[Normalizer, ...], std: Standardization)
                     s = s.str.replace(pattern, repl, regex=True)
                 s = s.str.split(std.address_cut_at).str[0]
                 s = s.str.replace(f"^(?:{'|'.join(map(re.escape, std.prefectures))})", "", regex=True)
-    return s
+    return s.replace("", pd.NA)  # a value normalized away (a legal form alone) is missing, not one huge block of equal values
 
 
 def prepare(std: Standardization, records: pd.DataFrame, normalized: Iterable[tuple[str, tuple[Normalizer, ...]]],
             used: Iterable[str] = ()) -> pd.DataFrame:
     df = records.copy()
-    sources = {c for d in std.derived for cols in d.sources for c in cols} - set(records.columns)
-    if sources:  # the trust boundary: say what is missing, instead of a KeyError deep inside
-        raise ValueError(f"input lacks columns that config/settings.toml derives from: {sorted(sources)}")
+    read = {c for d in std.derived for cols in d.sources for c in cols}
+    if read - set(records.columns):  # the trust boundary: say what is missing, instead of a KeyError deep inside
+        raise ValueError(f"input lacks columns that config/settings.toml derives from: {sorted(read - set(records.columns))}")
+    for c in read | (set(used) & set(records.columns)):  # a blank value is missing: it must not win a fallback or match
+        df[c] = df[c].mask(df[c].str.fullmatch("[\\s\u3000]*").fillna(False))
     for d in std.derived:
         if d.name in records.columns:
             raise ValueError(f"derived column {d.name} shadows an input column")

@@ -74,7 +74,7 @@ The stages run in order, as a **cascade**. Fuzzy rules only add pairs that touch
 | Split | Recall | 95% interval | False merges | False-merge rate at most |
 |---|---|---|---|---|
 | train | 69.2% | 68.1–70.3% | 0 | 0.06% |
-| val | 69.3% (exact rules alone: 52.2%) | 67.4–71.2% | 0 | 0.19% |
+| val | 69.5% (exact rules alone: 52.2%) | 67.6–71.4% | 0 | 0.19% |
 | **test** | **71.1%** | 69.2–72.9% | **0** | 0.18% |
 
 The exact rules find about half of the true pairs. The fuzzy rules lift that to about 70%. No split has a single false merge.
@@ -108,7 +108,9 @@ About 30% of duplicates are like this, with small differences in two or more fie
 
 ## In the code
 
-- `notebooks/deterministic_matching.ipynb`: `SPEC` (the rules), `CHANGES` and `DECISIONS`; the cells for the design analysis, A/B tests, decisions and output
+- `config/pipeline.toml` `[rules]`: the rules, in logical fields; `config/experiments.py`: `rules_changes` and `RULES_DECISIONS`
+- `er/select.py`: `RulesChooser` (the design analysis, A/B tests, decisions, cost and output), run by `scripts/choose.py`; its tables are in [`reports/choose.md`](../../reports/choose.md)
+- `notebooks/demo.ipynb`, section 4: each rule's pairs on a small file
 - `er/config.py`: `Rule`, `Stage`, `RulesSpec`, `Comparator`
 - `er/match.py`: `rule_edges` (one Splink join per rule)
 - `er/pipeline.py`: `run_rules`, `preflight`, `cascade`

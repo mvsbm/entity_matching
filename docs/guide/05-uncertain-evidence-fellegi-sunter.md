@@ -22,7 +22,7 @@ The Fellegi–Sunter model asks two questions about every field.
 - **m:** if the two records *are* the same entity, how often does this field look like this?
 - **u:** if they are *different* entities, how often does it look like this by chance?
 
-The ratio m / u says how much more likely the observation is under "same" than under "different". Here are the values learned for the phone, from the training cell:
+The ratio m / u says how much more likely the observation is under "same" than under "different". Here are the values learned for the phone, on train ([`reports/choose.md`](../../reports/choose.md), "Training on train"):
 
 | Phone observation | m: same entity | u: different entities | Evidence |
 |---|---|---|---|
@@ -50,20 +50,20 @@ Each term is a number of **bits**, and each bit doubles the odds. So +10 bits mu
 | Evidence | Observation | Bits |
 |---|---|---|
 | before looking | two random records match about 1 in 32,000 | −14.98 |
-| name | close (Jaro–Winkler 0.943 after folding, at least 0.75) | +3.72 |
+| name | close (Jaro–Winkler 0.943 after folding, at least 0.75) | +3.66 |
 | company | missing (a person has no company name) | 0.00 |
-| address | the same | +13.49 |
+| address | the same | +13.52 |
 | phone | one digit off | +4.47 |
 | CIF ID | different | −0.90 |
-| **total** | | **+5.81** |
+| **total** | | **+5.78** |
 
 Back from bits to a probability:
 
-$$p = \frac{2^{w}}{1 + 2^{w}} = \frac{2^{5.81}}{1 + 2^{5.81}} = 98.3\%$$
+$$p = \frac{2^{w}}{1 + 2^{w}} = \frac{2^{5.78}}{1 + 2^{5.78}} = 98.2\%$$
 
-That falls just short of the 6-bit line (below), so the model leaves this pair apart. It is a near miss, and an honest one. With u taken from train, the pair scored 6.61: a shared address was worth 14.01 bits, and a close name 3.98. On the 10,000-record val file, strangers agree on both a little more often, so they are worth 13.49 and 3.72.
+That falls just short of the 6-bit line (below), so the model leaves this pair apart. It is a near miss, and an honest one. With u taken from train, the pair scored 6.61: a shared address was worth 14.08 bits, and a close name 3.91. On the 10,000-record val file, strangers agree on both a little more often, so they are worth 13.52 and 3.66.
 
-A pair that passes, from the notebook's "Why a pair matches" cell: イイハラユイ and イイハユイ have moved city and changed CIF ID, but they keep the phone digits. Names very close (+12.93), same phone (+12.35), different address (−2.50), different CIF ID (−0.90): **+6.90 bits**, 99.2%.
+A pair that passes, from the same report ("An accepted true match with a typo"): サワベキチヘイ and サベキチヘイ changed phone and CIF ID, but keep the address. Names very close (+11.84), same address (+13.52), different phone (−2.51), different CIF ID (−0.90): **+6.98 bits**, 99.2%.
 
 ### Why this solution
 
@@ -112,7 +112,7 @@ It runs once on pairs that share a phone and once on pairs that share an address
 | Level | EM | From labels |
 |---|---|---|
 | name exact | +15.57 | +15.57 |
-| name very close | +11.37 | +11.38 |
+| name very close | +10.61 | +10.59 |
 | same address | +14.02 | +14.01 |
 | phone exact | +12.54 | +12.54 |
 | CIF ID different | −0.90 | −0.92 |
@@ -143,22 +143,22 @@ A score is not yet a decision. We accept a pair at **6 bits or more**, a probabi
 
 | Accept at or above | Pairs accepted | False pairs among them | Recall after grouping |
 |---|---|---|---|
-| 0 bits | 528 | 5 | 93.6% |
-| 2 bits | 509 | 1 | 93.1% |
-| 4 bits | 491 | 0 | 92.5% |
-| **6 bits** | **466** | **0** | **91.3%** |
-| 8 bits | 321 | 0 | 85.0% |
+| 0 bits | 528 | 4 | 93.8% |
+| 2 bits | 505 | 0 | 93.1% |
+| 4 bits | 487 | 0 | 92.5% |
+| **6 bits** | **460** | **0** | **91.3%** |
+| 8 bits | 394 | 0 | 88.5% |
 
 The line was not picked from this table, which would tune it on validation. It comes from a rule applied to train ([chapter 6](06-measuring-and-choosing.md)): the lowest weight with no false pair in cross-validation, plus one safety step.
 
-**The closest non-match**, just below the line:
+**A non-match the model rejects:**
 
 | | Name | Address | Phone | CIF ID |
 |---|---|---|---|---|
 | C | セルシスカブシキガイシャ (a company) | 東京都多摩市連光寺5-18-5 | 8813 | 2754477213332 |
 | D | ヤマモトカヨ (a person) | 東京都多摩市連光寺5-18-5 | 6813 | 4590715084681 |
 
-Same address (+13.49), phone one digit off (+4.47), different CIF ID (−0.90). That's the same evidence as our example pair, except the name. A company and a person have no name to compare, so the total is **+2.09 bits: rejected**. The 3.72 bits between the two pairs come from the name.
+Same address (+13.52), phone one digit off (+4.47), different CIF ID (−0.90). That's the same evidence as our example pair, except the name. A company and a person have no name to compare, so the total is **+2.09 bits: rejected**. The 3.72 bits between the two pairs come from the name.
 
 ## Challenge: from pairs to groups
 
@@ -174,11 +174,11 @@ We also tested the cautious alternative: refuse a merge when the two groups hold
 
 | Split | Recall: rules → + this stage | 95% interval | False merges | False-merge rate at most |
 |---|---|---|---|---|
-| train | 69.2% → 89.5% | 88.7–90.2% | 0 | 0.05% |
-| val | 69.3% → 91.3% | 90.1–92.4% | 0 | 0.15% |
-| **test** | 71.1% → **89.9%** | 88.6–91.1% | **0** | 0.14% |
+| train | 69.2% → 89.7% | 89.0–90.4% | 2 | 0.10% |
+| val | 69.5% → 91.3% | 90.1–92.4% | 0 | 0.15% |
+| **test** | 71.1% → **89.9%** | 88.7–91.1% | **0** | 0.14% |
 
-**In short:** weighing evidence lifts recall from about 70% to about 90%, with no false merges.
+**In short:** weighing evidence lifts recall from about 70% to about 90%, with no false merges on val and test. Train, scored in-sample, has two false pairs.
 
 ## In the code
 
@@ -188,7 +188,8 @@ We also tested the cautious alternative: refuse a merge when the two groups hold
   - `waterfall`: the field-by-field table
   - `scaled_prior`: rescales λ to the scored file's size
 - `er/resolve.py`: `connected_components`, `constrained`
-- `notebooks/probabilistic_matching.ipynb`: `SPEC.model` (the comparisons and levels), the Training cell (EM against labels), "Why a pair matches", the Threshold cell
+- `config/pipeline.toml` `[model]`: the comparisons and levels; `er/select.py`: `FSChooser.training` (EM against labels), `why`, `threshold`, run by `scripts/choose.py`
+- `er/run.py`: `Run.fit` and `Run.score`, the same model without labels on any file; `notebooks/demo.ipynb`, sections 6–9, draws each step
 - every table: [results.md](../results.md)
 
 ## Further reading
