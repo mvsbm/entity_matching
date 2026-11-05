@@ -44,10 +44,11 @@ import pandas as pd
 from splink.clustering import cluster_pairwise_predictions_at_threshold
 
 from er.candidates import candidates, estimate, q
-from er.config import Key, KeyBlocker, OverBudget, Pipeline
+from er.config import InputError, Key, KeyBlocker, OverBudget, Pipeline
 from er.match import ELSE, assemble_u, exact_u, levels, refreshed_u, rule_edges_table, score_fs, scored_sample, train_fs, u_basis
 from er.pipeline import pattern_coverage
-from er.settings import Settings, fit_to_file
+from er.settings import Settings, fit_to_file, present_fields
+from er.source import lit, open_source, suggest
 from er.standardize import prepare
 from er.strings import connect
 
@@ -57,12 +58,8 @@ def peak_gb() -> float:  # the process's peak resident memory so far (ru_maxrss:
 
 
 PENDING = "pending.json"  # the renames a write still owes, saved once every new file is complete
-RUN_FILES = ("gold.parquet", "steps.json", PENDING, "matches", "rule_kept", "state")  # what a run writes in its folder
+RUN_FILES = ("gold.parquet", "steps.json", PENDING, "matches", "rule_kept", "state", "set_aside")  # what a run writes in its folder
 DECISIONS = "decisions"  # people's decisions: not a run file, so a full run with overwrite keeps and applies them
-
-
-def lit(path: str | Path) -> str:  # a path as an SQL string literal
-    return "'" + str(path).replace("'", "''") + "'"
 
 
 def finish_writes(out: Path) -> None:
@@ -73,13 +70,6 @@ def finish_writes(out: Path) -> None:
             if os.path.exists(tmp):
                 os.replace(tmp, dest)
         pending.unlink()
-
-
-def source_sql(path: str | Path) -> str:
-    """A file (or a glob) as a relation of strings: CSV or Parquet."""
-    if str(path).endswith(".parquet"):
-        return f"(SELECT * FROM read_parquet({lit(path)}))"
-    return f"(SELECT * FROM read_csv({lit(path)}, all_varchar = true, header = true))"
 
 
 @dataclass
@@ -95,6 +85,8 @@ class Run:
         self.con, self.db = connect(self.settings.compute)
         self.uid = self.settings.data.unique_id
         self.l, self.r = f"{self.uid}_l", f"{self.uid}_r"
+        self.notes: list[str] = []            # what the loader detected or fixed, for the run's summary
+        self.added: int | None = None         # an increment's new records (0: nothing new)
 
     def _done(self, name: str, big_o: str, filled: str, t: float, **facts: object) -> None:
         self.steps.append(dict(step=name, big_o=big_o, filled=filled, seconds=round(time.perf_counter() - t, 2),
@@ -105,50 +97,99 @@ class Run:
 
     # ---------- the steps ----------
 
-    def load(self, path: str | Path, into: str = "records") -> None:
-        """Read the file in chunks; check its fields against config/pipeline.toml [fields]; standardize each chunk with
-        er.standardize.prepare (each record on its own, so chunking changes nothing) into the table `records`."""
-        t, src = time.perf_counter(), source_sql(path)
-        columns = [c[0] for c in self.con.execute(f"DESCRIBE {src}").fetchall()]
-        self.pipeline, self.disabled = fit_to_file(self.pipeline, self.settings, columns)
+    def load(self, path: str | Path, into: str = "records", stored: str | None = None) -> None:
+        """Read the file through er.source (Parquet; columns matched to config/settings.toml [columns]); check its fields
+        against config/pipeline.toml [fields]; set aside what can't be resolved (_set_aside); standardize each chunk with
+        er.standardize.prepare (each record on its own, so chunking changes nothing) into the table `into`."""
+        t = time.perf_counter()
+        src = open_source(path, self.con, {c for f, alts in self.settings.columns.items() if f != "entity" for alt in alts for c in alt})
+        self.notes = list(src.notes)
+        present = present_fields(self.settings, src.columns)
+        hints = suggest(src, self.con, [f for f in self.settings.columns if f not in present and f != "entity"], self.settings.detect)
+        try:
+            self.pipeline, self.disabled = fit_to_file(self.pipeline, self.settings, src.columns)
+        except InputError as e:
+            raise InputError(f"{e}. The file's columns: {', '.join(src.columns)}", e.fix + (
+                ". Suggested from the file's values, check them first:\n  [columns]" + "".join(
+                    f"\n  {f} = \"{c}\"   # {why}" for f, (c, _, why) in hints.items()) if hints else "")) from None
+        self.notes += [f"no column for {f}; {c} may be it ({why})" for f, (c, share, why) in hints.items() if share > 0.5]
         if self.model is not None:  # a given model must compare exactly what this file's fields let the pipeline compare
             fitted = {(c["output_column_name"], lv["label_for_charts"]) for c in self.model["comparisons"]
                       for lv in c["comparison_levels"] if not lv.get("is_null_level")}
             here = {(c.name, label) for c in self.pipeline.fs.model.comparisons for label in (*(lv.label for lv in c.levels), ELSE)}
             if fitted != here:
-                raise ValueError(f"{path}: the model was fitted on other comparison levels (only in the model: {sorted(fitted - here)}; "
-                                 f"only here: {sorted(here - fitted)}); fit on this file instead (scripts/resolve.py without --model)")
-        n, ids, empty = self.con.execute(f"SELECT count(*), count(DISTINCT {q(self.uid)}), count(*) - count({q(self.uid)}) FROM {src}").fetchall()[0]
-        if empty or ids != n:
-            raise ValueError(f"{path}: {self.uid} must be filled and unique ({empty} empty, {n - ids} repeated)")
+                raise InputError(f"{path}: the model was fitted on other comparison levels (only in the model: {sorted(fitted - here)}; "
+                                 f"only here: {sorted(here - fitted)})", fix="run without --model: the run then fits its model on this file")
+        rows = self._set_aside(src.sql, stored)
+        self.con.execute(f"DROP TABLE IF EXISTS {into}")
+        self.n = 0
+        if not self._count(rows):
+            if stored is None:
+                raise InputError(f"{path}: no record left to resolve ({'; '.join(self.notes)})", fix="give the records IDs, one per record")
+            return
         fs, rules = self.pipeline.fs, self.pipeline.rules
         normalized, used = [*rules.normalized(), *fs.normalized()], rules.used() | fs.used()
-        reader = self.con.cursor().sql(f"SELECT * FROM {src}").to_arrow_reader(self.chunk_rows)  # its own cursor: inserts go on alongside
-        self.con.execute(f"DROP TABLE IF EXISTS {into}")
+        reader = self.con.cursor().sql(f"SELECT * FROM {rows}").to_arrow_reader(self.chunk_rows)  # its own cursor: inserts go on alongside
         for i, batch in enumerate(reader):
             chunk = prepare(fs.standardize, batch.to_pandas().astype("string"), normalized, used)
             self.con.register("er_chunk", chunk)
             self.con.execute(f"CREATE TABLE {into} AS SELECT * FROM er_chunk" if i == 0 else f"INSERT INTO {into} SELECT * FROM er_chunk")
             self.con.unregister("er_chunk")
         self.n = self._count(into)
-        self._done("load", "O(N·L)", f"O({self.n:,}·L)", t, records=self.n, disabled=len(self.disabled))
+        self._done("load", "O(N·L)", f"O({self.n:,}·L)", t, records=self.n, disabled=len(self.disabled), set_aside=self._count("set_aside"))
+
+    def _set_aside(self, src: str, stored: str | None) -> str:
+        """The records a run can resolve. Rows identical in every column are kept once. Set aside, with the reason, in
+        the table set_aside (written to set_aside/, to be fixed and added by an increment): a record without an ID;
+        every record of an ID that holds different content; with `stored` (an increment), a record already in the run.
+        O(N) to count; the rest only when something is off."""
+        u = q(self.uid)
+        blank, known = f"nullif(trim({u}), '') IS NULL", f"{u} IN (SELECT {u} FROM {stored})" if stored else "FALSE"
+        n, ids, empty, clash = self.con.execute(f"""SELECT count(*), count(DISTINCT {u}), count(*) FILTER (WHERE {blank}),
+            count(*) FILTER (WHERE {known}) FROM {src}""").fetchall()[0]
+        self.con.execute(f"CREATE OR REPLACE TABLE set_aside AS SELECT *, ''::VARCHAR AS reason FROM {src} WHERE FALSE")
+        if n and empty == n:
+            raise InputError(f"no record has an ID in column {self.uid}", fix="map id in config/settings.toml [columns] to the column holding each record's ID")
+        if not empty and ids == n and not clash:
+            return src
+        self.con.execute(f"CREATE OR REPLACE TABLE er_in AS SELECT DISTINCT * FROM {src}")
+        if (kept := self._count("er_in")) < n:
+            self.notes.append(f"{n - kept:,} rows identical to another in every column, kept once")
+        self.con.execute(f"""INSERT INTO set_aside SELECT *, CASE WHEN {blank} THEN 'no ID' WHEN {known} THEN 'already in the run'
+                ELSE 'the same ID with different content' END FROM er_in
+            WHERE {blank} OR {known} OR {u} IN (SELECT {u} FROM er_in GROUP BY {u} HAVING count(*) > 1)""")
+        self.notes += [f"{k:,} records set aside: {reason}" for reason, k in
+                       self.con.execute("SELECT reason, count(*) FROM set_aside GROUP BY 1 ORDER BY 1").fetchall()]
+        return f"(SELECT * FROM er_in WHERE NOT ({blank}) AND {u} NOT IN (SELECT {u} FROM set_aside WHERE {u} IS NOT NULL))"
 
     def budget(self) -> pd.DataFrame:
         """Exact block sizes on this file, per rule and per generator, by group-by: the run stops here, before any join,
         if one would exceed the budget."""
         t, rows = time.perf_counter(), []
         b = self.pipeline.fs.budget
-        for st in self.pipeline.rules.stages:
-            for rule in st.rules:
-                rows.append(dict(kind="rule", name=rule.name, **estimate(KeyBlocker(name=rule.name, keys=tuple(map(Key, st.keys(rule)))), "records", 0, self.con)))
-        for g in self.pipeline.fs.blockers:
-            rows.append(dict(kind="generator", name=g.name, **estimate(g, "records", self.n, self.con)))
+        blockers = [KeyBlocker(name=rule.name, keys=tuple(map(Key, st.keys(rule)))) for st in self.pipeline.rules.stages for rule in st.rules]
+        for kind, x in [*(("rule", k) for k in blockers), *(("generator", g) for g in self.pipeline.fs.blockers)]:
+            rows.append(dict(kind=kind, name=x.name, **estimate(x, "records", 0 if kind == "rule" else self.n, self.con)))
         plan = pd.DataFrame(rows)
         self._done("budget", "O(N)", f"O({self.n:,}) per rule and generator", t, pairs=int(plan["est_pairs"].sum()))
         over = plan[(plan["est_pairs"] > b.max_pairs(self.n)) | (plan["largest_block"] > b.max_block_size)]
         if len(over):
-            raise OverBudget(f"over budget on this file: {over[['kind', 'name', 'est_pairs', 'largest_block']].to_dict('records')}")
+            by_name = {x.name: x for x in [*blockers, *self.pipeline.fs.blockers]}
+            raise OverBudget("over budget on this file: " + "; ".join(self._over(by_name[x.name], x.est_pairs, x.largest_block) for x in over.itertuples()),
+                             fix="a value repeated in many records is usually a placeholder (a dummy phone, 'unknown'): blank it out, "
+                                 "so it counts as missing, then run again")
         return plan
+
+    def _over(self, blocker: object, pairs: int, largest: int) -> str:  # a budget stop, with the value behind its largest block
+        b = self.pipeline.fs.budget
+        text = f"{blocker.name} would make {pairs:,} pairs (budget {b.max_pairs(self.n):,}), the largest block {largest:,} records (budget {b.max_block_size:,})"
+        if isinstance(blocker, KeyBlocker):
+            cols = [k.name for k in blocker.keys]
+            top = self.con.execute(f"""SELECT {', '.join(q(c) for c in cols)}, count(*) AS n FROM records
+                WHERE {' AND '.join(f'{q(c)} IS NOT NULL' for c in cols)} GROUP BY ALL ORDER BY n DESC LIMIT 1""").fetchall()
+            if top:
+                text += f": {', '.join(f'{c} = {v}' for c, v in zip(cols, top[0]))} in {top[0][-1]:,} records"
+        return text
 
     def fit(self) -> dict:
         """λ from the near-certain rules, u by random sampling, m by EM, on a fixed-size sample of whole postal areas
@@ -276,13 +317,16 @@ class Run:
         t, state, name = time.perf_counter(), out / "state", f"part-{part:05d}.parquet"
         for folder in (state / "records", out / "rule_kept", out / "matches"):
             folder.mkdir(parents=True, exist_ok=True)
+        aside = [("SELECT * FROM set_aside", out / "set_aside" / name)] if self._count("set_aside") else []
+        if aside:
+            (out / "set_aside").mkdir(exist_ok=True)
         texts = [(json.dumps(self.model, ensure_ascii=False), state / "model.json")] if part == 0 else []
         if self.basis:  # the u this run scored with, and what an increment needs to tell when they go stale
             texts.append((json.dumps(dict(model=self.scoring, basis=self.basis), ensure_ascii=False), state / "scoring.json"))
         self._stage(out, [("SELECT * FROM rule_kept", out / "rule_kept" / name), ("SELECT * FROM matches", out / "matches" / name),
                           (f"SELECT * FROM gold ORDER BY {q(self.uid)}", out / "gold.parquet"),
                           ("SELECT * FROM rule_clusters", state / "rule_clusters.parquet"),
-                          (f"SELECT * FROM {'records' if part == 0 else 'new_records'}", state / "records" / name)], texts)
+                          (f"SELECT * FROM {'records' if part == 0 else 'new_records'}", state / "records" / name), *aside], texts)
         self._done("write", "O(N + C)", f"O({self.n:,} + {self._count('matches'):,})", t)
         self._log(out, part > 0, part=part, disabled=self.disabled)
 
@@ -335,12 +379,15 @@ class Run:
         finish_writes(out)
         self.model = json.loads((state / "model.json").read_text(encoding="utf-8"))
         part = len(list((state / "records").glob("part-*.parquet")))
-        self.load(path, into="new_records")
         parts = ", ".join(lit(x) for x in sorted((state / "records").glob("part-*.parquet")))  # not a glob: this run's own part comes later
         self.con.execute(f"CREATE OR REPLACE VIEW old_records AS SELECT * FROM read_parquet([{parts}])")
-        clash = self.con.execute(f"SELECT count(*) FROM new_records JOIN old_records USING ({u})").fetchall()[0][0]
-        if clash:
-            raise ValueError(f"{clash} records of {path} are already in the run: an increment adds new records only")
+        self.load(path, into="new_records", stored="old_records")  # a record already in the run is set aside: a retry adds nothing twice
+        self.added = self.n
+        if not self.added:
+            other = self.con.execute("SELECT count(*) FROM set_aside WHERE reason <> 'already in the run'").fetchall()[0][0]
+            if other:
+                raise InputError(f"{path}: no new record to add ({'; '.join(self.notes)})", fix="give the records set aside IDs, one per record")
+            return self  # every record is already in the run: nothing to do
         self.con.execute("CREATE OR REPLACE VIEW records AS SELECT * FROM old_records UNION ALL BY NAME SELECT * FROM new_records")
         self.con.execute(f"CREATE OR REPLACE TABLE new_ids AS SELECT {u} FROM new_records")
         self.n = self._count("records")
@@ -410,23 +457,24 @@ class Run:
         t, u, l, r = time.perf_counter(), q(self.uid), q(self.l), q(self.r)
         finish_writes(out)
         self.con.execute(f"CREATE OR REPLACE TABLE gold_old AS SELECT * FROM read_parquet({lit(out / 'gold.parquet')})")
-        src = source_sql(path)
-        cols = {c[0] for c in self.con.execute(f"DESCRIBE {src}").fetchall()}
+        source = open_source(path, self.con, [self.l, self.r, "decision"])
+        src, cols = source.sql, set(source.columns)
         if {self.l, self.r, "decision"} - cols:  # the trust boundary: say what is wrong, row by row where it can
-            raise ValueError(f"{path}: needs the columns {self.l}, {self.r} and decision; it has {sorted(cols)}")
+            raise InputError(f"{path}: needs the columns {self.l}, {self.r} and decision; it has {sorted(cols)}",
+                             fix="give back review.parquet with decision filled in, or a file with those three columns")
         self.con.execute(f"""CREATE OR REPLACE TABLE er_decisions AS SELECT DISTINCT least({l}::VARCHAR, {r}::VARCHAR) AS {l},
             greatest({l}::VARCHAR, {r}::VARCHAR) AS {r}, lower(trim(decision::VARCHAR)) AS decision FROM {src}
             WHERE nullif(trim(decision::VARCHAR), '') IS NOT NULL""")
         bad = self.con.execute("SELECT DISTINCT decision FROM er_decisions WHERE decision NOT IN ('match', 'no_match')").fetchall()
         if bad:
-            raise ValueError(f"{path}: a decision is match or no_match, not {sorted(x for x, in bad)}")
+            raise InputError(f"{path}: a decision is match or no_match, not {sorted(x for x, in bad)}", fix="correct those rows, or leave them empty")
         both = self.con.execute(f"SELECT {l}, {r} FROM er_decisions GROUP BY ALL HAVING count(*) > 1 LIMIT 5").fetchall()
         if both:
-            raise ValueError(f"{path}: pairs decided both ways: {both}")
+            raise InputError(f"{path}: pairs decided both ways: {both}", fix="keep one decision per pair")
         unknown = self.con.execute(f"""SELECT id FROM (SELECT {l} AS id FROM er_decisions UNION SELECT {r} FROM er_decisions)
             WHERE id NOT IN (SELECT {u} FROM gold_old) ORDER BY id LIMIT 5""").fetchall()
         if unknown:
-            raise ValueError(f"{path}: records not in the run in {out}: {[x for x, in unknown]}")
+            raise InputError(f"{path}: records not in the run in {out}: {[x for x, in unknown]}", fix="check --output, or the IDs in the file")
         self.n = self._count("gold_old")
         self.con.execute(f"CREATE OR REPLACE TABLE er_base AS SELECT {u}, cluster_id FROM gold_old")
         self.con.execute(f"CREATE OR REPLACE TABLE er_review AS SELECT {l}, {r} FROM er_decisions WHERE decision = 'match'")
@@ -473,16 +521,22 @@ def review_floor(p: Pipeline) -> float:
     return below[-min(p.threshold.margin_steps, len(below))]
 
 
+def fill_rates(run: "Run", fields: list[str]) -> pd.DataFrame:
+    """Each field's share of filled records, flagged under 5%: a field almost never filled is often a mapping mistake."""
+    cols = run._columns()
+    return pd.DataFrame([dict(field=f, filled=run.con.execute(f"SELECT avg(({q(f)} IS NOT NULL)::INT) FROM records").fetchall()[0][0])
+                         for f in fields if f in cols], columns=["field", "filled"]).assign(flag=lambda d: np.where(d["filled"] < 0.05, "under 5%", ""))
+
+
 def qa(run: "Run", fields: list[str], review: int = 50) -> dict[str, pd.DataFrame]:
-    """The label-free report of a run: fill rate per field (flagged under 5%), what was disabled, every step's cost,
+    """The label-free report of a run: a summary in words (records, entities, who joined them, what to decide, what the
+    loader fixed), fill rate per field (flagged under 5%), what was disabled, every step's cost,
     accepted pairs by weight band, cluster sizes, the largest clusters (the over-merge alarm), and the review sheet
     for people (review_sheet). Its rows are of two kinds. "decide": every pair of clusters whose best link scored in the
     threshold's safety margin [review_floor, min_match_weight), not decided yet, best link first. "audit": accepted pairs
     up to 4 bits above the threshold, `review` of them, stratified by 1-bit band."""
     con, u, t = run.con, q(run.uid), run.pipeline.fs.min_match_weight
-    cols = run._columns()
-    fill = pd.DataFrame([dict(field=f, filled=con.execute(f"SELECT avg(({q(f)} IS NOT NULL)::INT) FROM records").fetchall()[0][0])
-                         for f in fields if f in cols]).assign(flag=lambda d: np.where(d["filled"] < 0.05, "under 5%", ""))
+    fill = fill_rates(run, fields)
     bands = con.sql(f"""SELECT floor(match_weight / 2) * 2 AS weight_from, count(*) AS pairs,
                                count(*) FILTER (WHERE match_weight >= {t}) AS accepted FROM scores GROUP BY 1 ORDER BY 1""").df()
     sizes = con.sql("SELECT n AS cluster_size, count(*) AS clusters FROM (SELECT count(*) AS n FROM gold GROUP BY cluster_id) GROUP BY 1 ORDER BY 1").df()
@@ -504,7 +558,17 @@ def qa(run: "Run", fields: list[str], review: int = 50) -> dict[str, pd.DataFram
     steps = steps[base].assign(facts=steps.drop(columns=base).apply(lambda r: " · ".join(f"{k} {v:,.0f}" for k, v in r.dropna().items()), axis=1))
     coverage = pattern_coverage(run.pipeline.fs, run.scoring, run.n)
     queue = pd.DataFrame(dict(why=["decide", "audit"], pairs=[len(decide), len(audit)], from_bits=[lo, t], below_bits=[t, t + 4]))
-    return dict(fill=fill, disabled=pd.DataFrame({"disabled": run.disabled}), steps=steps, weight_bands=bands,
+    fs, aside = run.pipeline.fs, run._count("set_aside")
+    total, entities, biggest, by_rules, by_model, by_people = con.execute(f"""SELECT count(*), count(DISTINCT cluster_id), max(n),
+        count(*) FILTER (WHERE resolved_stage = '{fs.previous_stage}'), count(*) FILTER (WHERE resolved_stage = '{fs.stage}'),
+        count(*) FILTER (WHERE resolved_stage = 'review') FROM gold JOIN (SELECT cluster_id, count(*) AS n FROM gold GROUP BY 1) USING (cluster_id)""").fetchall()[0]
+    summary = pd.DataFrame([
+        ("records", f"{total:,}" + (f", {run.added:,} of them new" if run.added is not None else "") + (f"; {aside:,} set aside (set_aside/)" if aside else "")),
+        ("entities", f"{entities:,}; the largest holds {biggest:,} records"),
+        ("joined by", f"the rules {by_rules:,} · the model {by_model:,} · people {by_people:,} records"),
+        ("to decide", f"{len(decide):,} pairs in review.parquet (why = decide)"),
+        *(("input", note) for note in run.notes)], columns=["what", "value"])
+    return dict(summary=summary, fill=fill, disabled=pd.DataFrame({"disabled": run.disabled}), steps=steps, weight_bands=bands,
                 cluster_sizes=sizes, largest_clusters=largest, patterns_without_a_key=coverage.head(20), review=queue,
                 review_sheet=review_sheet(run, pd.concat([decide, audit], ignore_index=True)))
 

@@ -4,7 +4,7 @@ from collections.abc import Iterable
 
 import pandas as pd
 
-from er.config import Normalizer, Standardization, column_name
+from er.config import InputError, Normalizer, Standardization, column_name
 
 
 def normalize(s: pd.Series, steps: tuple[Normalizer, ...], std: Standardization) -> pd.Series:
@@ -43,7 +43,8 @@ def prepare(std: Standardization, records: pd.DataFrame, normalized: Iterable[tu
         df[c] = df[c].mask(df[c].str.fullmatch("[\\s\u3000]*").fillna(False))
     for d in std.derived:
         if d.name in records.columns:
-            raise ValueError(f"derived column {d.name} shadows an input column")
+            raise InputError(f"the file has a column named {d.name}, which is also the name of a field",
+                             fix=f"rename the column, or map field {d.name} to it in config/settings.toml [columns]")
         out = pd.Series(pd.NA, index=df.index, dtype="string")
         for cols in d.sources:
             joined = df[cols[0]]

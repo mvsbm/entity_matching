@@ -22,6 +22,7 @@ class Settings:
     columns: dict[str, tuple[tuple[str, ...], ...]]  # field → its sources: alternatives, each concatenated
     chains: dict[str, tuple[Normalizer, ...]]  # named normalization chains, for config/pipeline.toml
     compute: dict[str, str]                  # DuckDB settings: threads, memory_limit, temp_directory
+    detect: dict[str, str]                   # field → what its values look like ([locale.detect]): suggestions only
 
 
 def project_root(start: Path | None = None) -> Path:
@@ -77,6 +78,7 @@ def load_settings(path: Path | None = None) -> Settings:
         columns={**{name: ((cols[name],),) for name in SPECIAL}, **{name: d.sources for name, d in fields.items()}},
         chains=chains,
         compute={k: str(v) for k, v in cfg.get("compute", {}).items()},
+        detect=dict(loc.get("detect", {})),
     )
 
 

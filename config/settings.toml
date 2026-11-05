@@ -47,6 +47,21 @@ initial = ["initial"]
 first3 = ["first3"]
 address_first3 = ["address", "first3"]
 
+# What each field's values look like (RE2, matched against a sample of the file). Used only to suggest a column for a
+# field no column is mapped to; a suggestion is never applied without you. RE2's \s doesn't match the full-width space.
+[locale.detect]
+full_name = '^[ァ-ヴー・\s　]+$'
+person_name = '^[ァ-ヴー・\s　]+$'
+given_name = '^[ァ-ヴー]{1,8}$'
+company_name = 'カブシキガイシャ|ユウゲンガイシャ|ゴウドウガイシャ|株式会社|有限会社|合同会社'
+any_name = '^[ァ-ヴー・\s　()（）]+$'
+address = '[都道府県市区町村].*[0-9０-９]'
+address_code = '^[0-9]{5,}$'
+postal_code = '^〒?[0-9０-９]{3}[-－]?[0-9０-９]{4}$'
+prefecture = '^(北海道|東京都|京都府|大阪府|.{2,3}県)$'
+phone = '^[0-9]{4}$'
+customer_id = '^[0-9]{8,}$'
+
 # Which of the file's columns hold each field. The pipeline reads fields only, never a file's column names.
 # A string is one column. A list of lists gives fallbacks: the first whose columns are all filled wins, concatenated.
 # A table adds a normalization, applied once when the field is built. config/pipeline.toml [fields] says which

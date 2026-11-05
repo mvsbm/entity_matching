@@ -38,18 +38,29 @@ The fields, and which ones a run needs (`[fields]` in `config/final.toml`):
 | `entity` | the true entity, in labelled files only | never read by a run |
 
 - **A missing optional field** turns off only the rules, keys and comparison levels that read it. The run lists them in `qa.md`.
-- **Every column is read as text.** A blank value, or one made only of spaces (full-width ones included), counts as missing.
+- **Names are matched loosely.** A column whose name differs from the mapping only in case, width or separators (`cont_id`, `ＣＯＮＴ＿ＩＤ`) is used, and the summary says so.
+- **Every column is read as text.** A blank value, or one made only of spaces (full-width ones included), counts as missing. A code stored as a number (`599` for `0599`) is read as text with a warning: its leading zeros were lost before the file reached the run.
+- **A field the run needs and no column holds** stops the run with the file's columns and, for each missing field, the column whose values look most like it, as lines to paste into `[columns]`. These suggestions are never applied without you.
+
+Check a file and its mapping in seconds, before a long run:
+
+```bash
+.venv/bin/python scripts/resolve.py --input customers.parquet --check
+```
+
+It prints each field, its fill rate and the columns it comes from, what would be turned off, and whether the budget holds.
 - **Other names for the same information** need only `[columns]`. Another language needs `[locale]`. A different kind of record needs a new `config/pipeline.toml`, chosen again with `scripts/choose.py` on labelled or synthetic data ([architecture](architecture.md#1--context-two-loops)).
 
 ## 3 · Run
 
 ```bash
-.venv/bin/python scripts/resolve.py --input customers.csv --output runs/customers
+.venv/bin/python scripts/resolve.py --input customers.parquet --output runs/customers
 ```
 
 | Option | Does |
 |---|---|
-| `--input` | a CSV or Parquet file, or a quoted glob of them: `'data/in/*.parquet'` |
+| `--input` | a Parquet file, a quoted glob (`'data/in/*.parquet'`) or a folder of them; several files are read together by column name |
+| `--check` | reads and maps `--input`, checks the budget, resolves nothing ([section 2](#2--map-your-columns)) |
 | `--output` | the run folder. A full run refuses a folder that already holds a run |
 | `--overwrite` | replaces the run in `--output` |
 | `--increment` | adds the records to the run in `--output` ([section 5](#5--add-new-records)) |
@@ -58,7 +69,7 @@ The fields, and which ones a run needs (`[fields]` in `config/final.toml`):
 | `--pipeline` | another pipeline file. Default: `config/final.toml` |
 | `--model` | a model fitted before, used instead of fitting on this file |
 
-The run needs no labels: it fits its model on the file itself. What each step does, and what it costs: [architecture, the run](architecture.md#3--the-run).
+The run needs no labels: it fits its model on the file itself. It ends with a summary: records, entities, who joined them (the rules, the model, people), the pairs to decide, and anything the loader fixed. What each step does, and what it costs: [architecture, the run](architecture.md#3--the-run).
 
 ## 4 · Read the outputs
 
@@ -69,9 +80,10 @@ Everything is in the run folder.
 | `gold.parquet` | record | `cluster_id` (the smallest record ID of its cluster); `resolved_stage` (`deterministic`, `probabilistic` or `review`; empty for a record found alone); `resolved_by` (the rule, `fs` for the model, or `review` for people) | give every record its entity |
 | `matches/` | accepted pair | both IDs; `match_weight` in bits; `match_probability`; `sources`, the candidate generators that listed it | see why two records were joined |
 | `rule_kept/` | pair a rule accepted | both IDs, the rule and its stage | audit the rules |
-| `qa.md` | | each field's fill rate (flagged under 5%); what was turned off; each step's Big-O, time and memory; pairs by weight; cluster sizes; the 10 largest clusters; match patterns no key guarantees | check the run without labels |
+| `qa.md` | | the summary; each field's fill rate (flagged under 5%); what was turned off; each step's Big-O, time and memory; pairs by weight; cluster sizes; the 10 largest clusters; match patterns no key guarantees | check the run without labels |
 | `review.parquet` | pair for people | `why` (`decide` or `audit`); an empty `decision`; both records' compared fields; per comparison, the level reached and its bits; `accepted` | decide the pairs just below the line, audit those just above ([section 6](#6--review-and-decide)) |
 | `decisions/` | decided pair | both IDs and `decision`, one part per file people gave back | what people decided; a full run applies it again |
+| `set_aside/` | record not resolved | the record as read, and `reason`: no ID; the same ID with different content; already in the run | fix them and add them with `--increment` |
 | `steps.json` | step | its Big-O with the numbers filled in, seconds, peak memory | see the cost |
 | `state/` | | the standardized records, the rules' clusters, the model, the u it scored with | needed by `--increment`; don't edit |
 
@@ -84,14 +96,14 @@ matches = pd.read_parquet("runs/customers/matches")      # a folder of parts rea
 ## 5 · Add new records
 
 ```bash
-.venv/bin/python scripts/resolve.py --input new.csv --output runs/customers --increment
+.venv/bin/python scripts/resolve.py --input new.parquet --output runs/customers --increment
 ```
 
 - **The same model.** The batch is scored with the model the full run fitted, so weights stay comparable. The exact agreements' u are counted again on every record. A sampled u is measured again only once its drift, read from those exact counts, exceeds its own sampling error; before that, a new sample would only redraw the noise.
 - **Compared with everything.** Each new record is compared with every stored one, and can join an existing cluster. Earlier answers stand.
 - **Stored records aren't compared again.** A record left alone gets a new chance whenever a new record matches it, directly or through a third record. But two stored records that were not matched with each other stay apart until a full run (`--overwrite`) compares them again, for example after the matching changes.
 - **Cost follows the batch.** The joins start from the new records, so a small batch is fast whatever the run's size: into a million-record run, 1,000 new records take about 2 s, plus the write.
-- **New records only.** A record whose ID is already in the run stops the increment. An increment adds; it doesn't update.
+- **New records only.** A record whose ID is already in the run is set aside: an increment adds, it doesn't update. So running the same batch twice is harmless; the second time prints "nothing new".
 - **Safe to interrupt.** An interrupted write is finished by the next increment.
 
 ## 6 · Review and decide
@@ -119,21 +131,32 @@ Wrong audit pairs are also the evidence for changing the matching. In `qa.md`, a
 
 `review.parquet` holds records. Keep it wherever the data itself is kept.
 
-## 7 · When a run stops
+## 7 · When something is wrong
 
-| The message says | Why | What to do |
-|---|---|---|
-| `mandatory fields absent from the file: id (expected …)` | `[columns]` maps `id` to a column the file lacks | fix `id` in `[columns]` |
-| `no field of these groups is in the file` | neither `person_name` nor `company_name` is in the file | map at least one |
-| `… must be filled and unique` | some IDs are empty or repeated | fix the IDs first |
-| `derived column … shadows an input column` | the file has a column named like a logical field | rename that column |
-| `over budget on this file` | a key would make too many pairs: more than 5 per record, or one block of over 5,000 records. Usually a placeholder value repeated in many records, such as one dummy phone number | blank the placeholder out, then run again |
-| `… already holds a run` | a full run into a used folder | add `--overwrite`, or pick another folder |
-| `… are already in the run: an increment adds new records only` | the batch repeats stored IDs | remove them from the batch |
-| `the model was fitted on other comparison levels` | `--model` was fitted on another pipeline, or on a file with other fields | run without `--model` |
-| `a decision is match or no_match` | the `decision` column holds another value | fix those rows |
-| `pairs decided both ways` | one pair is marked both `match` and `no_match` | keep one |
-| `records not in the run` | the file names IDs the run in `--output` doesn't have | check `--output`, or the IDs |
+What the run handles by itself, and reports in its summary:
+
+| Found | Done |
+|---|---|
+| rows identical in every column | kept once |
+| a record without an ID, or one ID holding different records | set aside in `set_aside/`; the run goes on |
+| a column named like the mapping but for case, width or separators | used |
+| several files with different columns | read together by column name; the summary names what each file lacks |
+| a code stored as a number | read as text, with a warning |
+
+What stops it: two lines, what is wrong and how to fix it, and exit code 2:
+
+| The message says | Why |
+|---|---|
+| `no file matches …` | a wrong path; it suggests the closest names in that folder |
+| `… not a Parquet file; it looks like …` | a CSV or an Excel file; it shows how to convert it |
+| `… a Parquet file cut short` | an interrupted copy |
+| `the file lacks a field every run needs` | `[columns]` points at a column the file lacks; it lists the file's columns and suggests a mapping |
+| `columns … could each be …` | two columns match one name loosely |
+| `no record has an ID in column …` | `id` is mapped to the wrong column |
+| `over budget on this file` | a key would make too many pairs: more than 5 per record, or a block of over 5,000 records. It names the value behind the largest block, usually a placeholder such as one dummy phone number |
+| `… already holds a run` | a full run into a used folder: add `--overwrite`, or pick another folder |
+| `the model was fitted on other comparison levels` | `--model` was fitted on another pipeline, or on a file with other fields |
+| `a decision is match or no_match`, `pairs decided both ways`, `records not in the run` | a decisions file to correct |
 
 The budget is checked before any join, so a run that would explode stops within seconds instead of running out of memory.
 

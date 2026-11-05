@@ -43,7 +43,7 @@
 
 | Step | Cost | What it touches |
 |---|---|---|
-| load | O(Δ·L) | the batch; a record already in the run stops it |
+| load | O(Δ·L) | the batch; a record already in the run is set aside |
 | rules | O(Δ·Σ b) + a scan of the stored records | each rule joins the batch against all records; the cascade merges into the stored clusters, each cluster one node |
 | candidates | O(Δ·Σ b) + a scan | every generator, with the batch as the query; the budget counts only the blocks the batch's keys reach |
 | score | O(N) + O(S·K_stale) + O(C_Δ·K·L²) | the exact u counted again on all the records (a group-by); a comparison's sampled u measured again only once the drift of its exact u exceeds its sampling error (`er.match.refreshed_u`); only the pairs touching the batch are scored |

@@ -10,7 +10,7 @@ import pytest
 from splink import Linker
 
 from er.candidates import Records, candidates, estimate, estimate_touching, found_by, generate
-from er.config import (Budget, Comparator, Comparison, DeletionKeys, FSModel, FSSpec, Key, KeyBlocker, Level, OverBudget,
+from er.config import (Budget, Comparator, Comparison, DeletionKeys, FSModel, FSSpec, InputError, Key, KeyBlocker, Level, OverBudget,
                        Resolver, Rule, RulesSpec, SortedNeighbourhood, Stage, TfidfNeighbours, ThresholdRule, keys_sql)
 from er.evaluate import adopt, cluster_metrics, fp_upper, paired_test, predicted_pairs, true_pairs, wilson
 from er.io import load
@@ -415,7 +415,7 @@ def test_the_pipeline_file_writes_and_loads_back_unchanged(tmp_path):
 
 def test_a_mandatory_field_or_an_empty_one_of_group_stops_the_run():
     s, p, cols = pipeline_and_columns()
-    with pytest.raises(ValueError, match=r"id \(expected \(\('CONT_ID',\),\)\)"):
+    with pytest.raises(InputError, match=r"id \(expected in CONT_ID\)"):
         fit_to_file(p, s, cols - {"CONT_ID"})
     names = {"FULL_NAME_KANA", "O_PERSON_NAME_KANA", "LAST_NAME_KANA", "GIVEN_NAME_KANA", "NYS_CNV_P_NAME_KANA"}
     with pytest.raises(ValueError, match="person_name .* / company_name"):
@@ -519,8 +519,8 @@ def test_a_run_ignores_record_order_refuses_a_used_folder_and_an_increment_keeps
     after = pd.read_parquet(tmp_path / "c" / "gold.parquet").set_index(uid)["cluster_id"]
     assert sorted(after.index) == sorted(g.df[uid]) and after.index.is_unique
     assert after.reindex(before.index).groupby(before.to_numpy()).nunique().eq(1).all()  # no stored cluster is split
-    with pytest.raises(ValueError, match="already in the run"):
-        Run(p, s).increment(tmp_path / "new.parquet", tmp_path / "c")
+    assert Run(p, s).increment(tmp_path / "new.parquet", tmp_path / "c").added == 0  # a retry adds nothing twice
+    pd.testing.assert_series_equal(pd.read_parquet(tmp_path / "c" / "gold.parquet").set_index(uid)["cluster_id"], after)
 
     with pytest.raises(FileExistsError, match="already holds a run"):  # a full run never mixes with an earlier one
         Run(p, s, model=first.model).full(tmp_path / "all.parquet", tmp_path / "c")
@@ -529,8 +529,9 @@ def test_a_run_ignores_record_order_refuses_a_used_folder_and_an_increment_keeps
     assert [f.name for f in (tmp_path / "c" / "state" / "records").iterdir()] == ["part-00000.parquet"]
 
     g.df.drop(columns="PHONE_NUM_4").to_parquet(tmp_path / "no_phone.parquet", index=False)
-    with pytest.raises(ValueError, match="fit on this file instead"):  # the model compares the phone; this file has none
+    with pytest.raises(InputError, match="fitted on other comparison levels") as e:  # the model compares the phone; this file has none
         Run(p, s, model=first.model).full(tmp_path / "no_phone.parquet", tmp_path / "d")
+    assert "without --model" in e.value.fix
 
 
 def test_an_interrupted_increment_completes_when_run_again(tmp_path, population, monkeypatch):
@@ -555,8 +556,8 @@ def test_an_interrupted_increment_completes_when_run_again(tmp_path, population,
     with pytest.raises(KeyboardInterrupt):
         Run(p, s).increment(tmp_path / "new.parquet", tmp_path / "cut")
     monkeypatch.undo()
-    with pytest.raises(ValueError, match="already in the run"):  # the next increment first finishes the interrupted write
-        Run(p, s).increment(tmp_path / "new.parquet", tmp_path / "cut")
+    again = Run(p, s).increment(tmp_path / "new.parquet", tmp_path / "cut")  # first finishes the interrupted write
+    assert again.added == 0  # so the batch is in the run already: nothing to add
     pd.testing.assert_frame_equal(*(pd.read_parquet(tmp_path / d / "gold.parquet") for d in ("clean", "cut")))
     assert not list((tmp_path / "cut").rglob("*.tmp"))
 
@@ -687,4 +688,66 @@ def test_an_increment_counts_exact_u_again_and_samples_only_a_drifted_comparison
         for lv in c["comparison_levels"]:
             if lv.get("label_for_charts") in exact.get(c["output_column_name"], {}):
                 assert lv["u_probability"] == pytest.approx(exact[c["output_column_name"]][lv["label_for_charts"]])
+
+
+def test_the_loader_reads_parquet_by_column_name_and_says_what_is_wrong(tmp_path, con_db):
+    from er.source import open_source
+    con, _ = con_db
+    pd.DataFrame({"cont_id": ["1", "2"], "Phone-Num 4": [599, 1234], "x": ["a", "b"]}).to_parquet(tmp_path / "a.parquet", index=False)
+    pd.DataFrame({"CONT_ID": ["3"], "y": ["c"]}).to_parquet(tmp_path / "b.parquet", index=False)
+    src = open_source(tmp_path / "a.parquet", con, ["CONT_ID", "PHONE_NUM_4"])  # case, width and separators aside
+    assert src.columns == ["CONT_ID", "PHONE_NUM_4", "x"]
+    assert con.execute(f"SELECT PHONE_NUM_4 FROM {src.sql}").fetchall() == [("599",), ("1234",)]  # text, zeros lost upstream
+    assert any("read as CONT_ID" in x for x in src.notes) and any("stored as a number" in x for x in src.notes)
+    both = open_source(tmp_path / "*.parquet", con, ["CONT_ID"])  # a glob: read together by column name
+    assert con.execute(f"SELECT count(*) FROM {both.sql}").fetchall()[0][0] == 3 and any("lacks" in x for x in both.notes)
+
+    with pytest.raises(InputError, match="no file matches") as e:
+        open_source(tmp_path / "aa.parquet", con, [])
+    assert "a.parquet" in e.value.fix  # did you mean
+    (tmp_path / "c.parquet").write_text("CONT_ID,name\n1,x\n")
+    with pytest.raises(InputError, match="looks like text"):
+        open_source(tmp_path / "c.parquet", con, [])
+    (tmp_path / "d.parquet").write_bytes((tmp_path / "a.parquet").read_bytes()[:-10])
+    with pytest.raises(InputError, match="cut short"):
+        open_source(tmp_path / "d.parquet", con, [])
+    pd.DataFrame({"cont_id": ["1"], "CONT-ID": ["2"]}).to_parquet(tmp_path / "e.parquet", index=False)
+    with pytest.raises(InputError, match="could each be CONT_ID"):
+        open_source(tmp_path / "e.parquet", con, ["CONT_ID"])
+
+
+def test_a_run_sets_aside_what_it_cannot_resolve_and_suggests_a_mapping(tmp_path, population):
+    from er.run import Run
+    s, p, g = population
+    uid = s.data.unique_id
+    df = g.df.copy()
+    df = pd.concat([df, df.iloc[[0]], df.iloc[[1]].assign(PHONE_NUM_4="9999")], ignore_index=True)  # an exact copy; a clash
+    df.loc[2, uid] = " "  # no ID
+    df.to_parquet(tmp_path / "in.parquet", index=False)
+    run = Run(p, s).full(tmp_path / "in.parquet", tmp_path / "run")
+    aside = pd.read_parquet(tmp_path / "run" / "set_aside")
+    assert sorted(aside["reason"]) == ["no ID", "the same ID with different content", "the same ID with different content"]
+    assert run.n == len(g.df) - 2 and any("kept once" in x for x in run.notes)
+
+    g.df.rename(columns={uid: "customer_no"}).to_parquet(tmp_path / "renamed.parquet", index=False)
+    with pytest.raises(InputError, match="lacks a field every run needs") as e:
+        Run(p, s).load(tmp_path / "renamed.parquet")
+    assert 'id = "customer_no"' in e.value.fix  # suggested from its values: filled and unique
+
+    phones = g.df.assign(PHONE_NUM_4="0000", ADDRESS_ONE="東京都")
+    phones.to_parquet(tmp_path / "placeholder.parquet", index=False)
+    run = Run(p, s)
+    run.load(tmp_path / "placeholder.parquet")
+    with pytest.raises(OverBudget, match="phone = 0000"):  # the stop names the value behind the block
+        run.budget()
+
+
+def test_resolve_prints_a_mistake_as_two_lines_and_exits_with_2(tmp_path):
+    import subprocess
+    import sys
+    s = load_settings()
+    done = subprocess.run([sys.executable, str(s.root / "scripts" / "resolve.py"), "--input", str(tmp_path / "none.parquet"), "--check"],
+                          capture_output=True, text=True)
+    assert done.returncode == 2 and done.stderr.splitlines()[0].startswith("error: no file matches")
+    assert done.stderr.splitlines()[1].startswith("fix: ") and "Traceback" not in done.stderr
 

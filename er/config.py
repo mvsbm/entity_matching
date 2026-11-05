@@ -13,7 +13,16 @@ from er.strings import FUNCTIONS, Function
 Normalizer = Literal["nfkc", "strip_spaces", "kana_fold", "strip_legal_form", "address", "initial", "first3", "reverse"]
 
 
-class OverBudget(Exception):
+class InputError(ValueError):
+    """Something in the input, or in how its columns are mapped, that people must fix; `fix` says how. scripts/resolve.py
+    prints the two as lines, not a traceback."""
+
+    def __init__(self, message: str, fix: str = ""):
+        super().__init__(message)
+        self.fix = fix
+
+
+class OverBudget(InputError):
     """A rule or candidate generator would exceed the Budget; raised before any join runs."""
 
 
@@ -461,16 +470,21 @@ def fields_read(p: Pipeline) -> set[str]:  # every field the rules, the generato
     return out
 
 
+def sources_text(alternatives: object) -> str:  # a field's sources as people read them: "A, or B + C"
+    return ", or ".join(" + ".join(alt) for alt in alternatives) if alternatives else "no column (unmapped)"
+
+
 def check_fields(fields: Fields, present: set[str], expected: Mapping[str, object], labelled: bool = False) -> None:
     """Stop when a mandatory field, every field of a one_of group, or (for a labelled run) a label is absent; the error
     names the columns config/settings.toml [columns] expects for each."""
+    fix = "map the field to the file's column in config/settings.toml [columns]"
     missing = [f for f in (*fields.mandatory, *(fields.labels if labelled else ())) if f not in present]
     if missing:
-        raise ValueError("mandatory fields absent from the file: " + "; ".join(f"{f} (expected {expected.get(f)})" for f in missing))
+        raise InputError("the file lacks a field every run needs: " + "; ".join(f"{f} (expected in {sources_text(expected.get(f))})" for f in missing), fix)
     empty = [g for g in fields.one_of if not set(g) & present]
     if empty:
-        raise ValueError("no field of these groups is in the file: " + "; ".join(
-            " / ".join(f"{f} (expected {expected.get(f)})" for f in g) for g in empty))
+        raise InputError("the file holds none of these fields, and a run needs one: " + "; ".join(
+            " / ".join(f"{f} (expected in {sources_text(expected.get(f))})" for f in g) for g in empty), fix)
 
 
 def restrict(p: Pipeline, present: set[str]) -> tuple[Pipeline, list[str]]:

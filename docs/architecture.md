@@ -60,7 +60,7 @@ The SQL is written to move: joins, group-bys, window functions and `CREATE TABLE
 | a pair's generators as bits | `er.candidates` | `bit_or`, `any_value` |
 | the first rule that pairs two records | `er.match`, `er.run` | `DISTINCT ON`, `arg_min` |
 | sampling whole postal areas for the fit | `er.run` | `ORDER BY hash(…)` |
-| reading and writing files | `er.run` | `read_csv`, `read_parquet`, `COPY … (FORMAT parquet)`, `UNION ALL BY NAME` |
+| reading and writing files | `er.source`, `er.run` | `read_parquet(…, union_by_name = true)`, `COPY … (FORMAT parquet)`, `UNION ALL BY NAME` |
 | standardization (NFKC, kana folding, the address chain) | `er.standardize` | pandas, per chunk: DuckDB has no NFKC |
 
 Splink writes the training, scoring and clustering SQL for each engine it supports.
@@ -81,11 +81,11 @@ Splink writes the training, scoring and clustering SQL for each engine it suppor
 
 ### 1 · Load and standardize · `O(N·L)`
 
-Reads the file in chunks of 200,000 records and checks its columns against `[fields]`. A missing mandatory field stops the run; a missing optional one turns off what reads it. Then it builds each logical field from its columns, and the normalized copies that keys and comparisons use: kana folded, legal forms removed, one key per address.
+Opens the input through `er.source`, the one door every file goes through: it finds the Parquet files (a path, a glob or a folder), checks that each is Parquet, reads several together by column name, and uses a column whose name differs from the mapping only in case, width or separators. Then it checks the columns against `[fields]`: a missing mandatory field stops the run, with suggestions from the file's values; a missing optional one turns off what reads it. Records it can't resolve are set aside, with the reason: no ID, or one ID holding different records. Finally, in chunks of 200,000 records, it builds each logical field from its columns, and the normalized copies that keys and comparisons use: kana folded, legal forms removed, one key per address.
 
-- **Why:** every later step compares values, so the same fact must be written the same way first. Chunks keep memory flat at any size.
-- **Code:** `Run.load` → `settings.fit_to_file` → `config.check_fields`, `restrict` → `standardize.prepare`
-- **Increment:** the batch only, `O(Δ·L)`. It first finishes any interrupted write, and refuses IDs already stored.
+- **Why:** every later step compares values, so the same fact must be written the same way first. Chunks keep memory flat at any size. A mistake in the input either gets fixed and reported, or stops the run with what to fix: never a traceback.
+- **Code:** `Run.load` → `source.open_source` (reads only each file's schema), `source.suggest` (a fixed-size sample), `settings.fit_to_file` → `config.check_fields`, `restrict`; `Run._set_aside`; `standardize.prepare`
+- **Increment:** the batch only, `O(Δ·L)`. It first finishes any interrupted write. A record already stored is set aside, so a batch given twice adds nothing.
 
 ### 2 · Budget · `O(N)` per key
 
@@ -199,6 +199,7 @@ Kept on disk. Steps are numbered as in [the run](#3--the-run).
 | `pending.json` | 8, deleted when done | the next increment | renames owed by an unfinished write |
 | `qa.md`, `review.parquet` | 9 | people | the label-free report; the pairs to decide and to audit |
 | `decisions/part-n.parquet` | decisions, one part per file | full runs | the pairs people decided: both IDs and `match` or `no_match` |
+| `set_aside/part-n.parquet` | 8, one part per run | you | records not resolved, and why: no ID; the same ID with different content; already in the run |
 
 ### While a run runs
 
@@ -207,6 +208,7 @@ Working tables live in DuckDB, in memory; past `[compute]` `memory_limit` they s
 | Table | Made by step | Used by | Holds |
 |---|---|---|---|
 | `records` | 1 | 2–9 | the standardized records: logical fields and keys |
+| `set_aside`, `er_in` | 1 | 8 | records set aside, with the reason; the input with exact copies dropped, when something was off |
 | `rule_edges`, `rule_kept`, `rule_clusters` | 4 | 5, 7 | every rule pair; the pairs the cascade kept; record → rule cluster |
 | `cands` | 5 | 6, 7, 9 | candidate pairs, and the generators that found each |
 | `scores` | 6 | 7, 9 | weight, probability, the level of each field |

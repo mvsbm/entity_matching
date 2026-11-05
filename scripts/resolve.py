@@ -1,11 +1,16 @@
 """Resolve a file of records, without labels: the chosen pipeline (config/final.toml by default), on DuckDB tables.
 
-    .venv/bin/python scripts/resolve.py --input customers.csv --output data/medallion/gold/customers
-    .venv/bin/python scripts/resolve.py --input 'data/in/*.parquet' --output data/medallion/gold/all --pipeline config/final.toml
-    .venv/bin/python scripts/resolve.py --input new.csv --output data/medallion/gold/all --increment      # add new records
+    .venv/bin/python scripts/resolve.py --input customers.parquet --check                                  # will it run?
+    .venv/bin/python scripts/resolve.py --input customers.parquet --output data/medallion/gold/customers
+    .venv/bin/python scripts/resolve.py --input 'data/in/*.parquet' --output data/medallion/gold/all     # a glob, or a folder
+    .venv/bin/python scripts/resolve.py --input new.parquet --output data/medallion/gold/all --increment   # add new records
     .venv/bin/python scripts/resolve.py --input big.parquet --output data/medallion/gold/big --compute memory_limit=8GB threads=4
-    .venv/bin/python scripts/resolve.py --input customers.csv --output data/medallion/gold/customers --overwrite   # replace that run
-    .venv/bin/python scripts/resolve.py --output data/medallion/gold/customers --decisions reviewed.parquet      # people's decisions
+    .venv/bin/python scripts/resolve.py --input customers.parquet --output data/medallion/gold/customers --overwrite
+    .venv/bin/python scripts/resolve.py --output data/medallion/gold/customers --decisions reviewed.parquet   # people's decisions
+
+Input is Parquet, read through er.source: a file, a glob or a folder. Records that can't be resolved (no ID, one ID with
+different content, or in an increment, already in the run) are set aside in set_aside/ and the run goes on.
+A mistake people must fix stops the run with two lines, what is wrong and how to fix it, and exit code 2.
 
 Fits λ and m by EM on a fixed-size sample of the file (config/pipeline.toml [model] fit_rows), or uses --model, a
 fitted model (data/artifacts/models/probabilistic_final.json). Writes to --output: gold.parquet (each record's cluster,
@@ -20,19 +25,21 @@ folder applies them again.
 """
 import argparse
 import json
+import sys
 from dataclasses import replace
 from pathlib import Path
 
-from er.config import load_pipeline
+from er.config import InputError, load_pipeline, sources_text
 from er.io import markdown
-from er.run import Run, qa
-from er.settings import load_settings
+from er.run import Run, fill_rates, qa
+from er.settings import load_settings, present_fields
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    parser.add_argument("--input", help="a CSV or Parquet file, or a glob of them")
-    parser.add_argument("--output", required=True, type=Path)
+    parser.add_argument("--input", help="a Parquet file, a glob of them, or a folder holding them")
+    parser.add_argument("--output", type=Path, help="the run folder")
+    parser.add_argument("--check", action="store_true", help="read and map --input and check the budget, in seconds; resolve nothing")
     parser.add_argument("--pipeline", type=Path, help="default: config/final.toml")
     parser.add_argument("--model", type=Path, help="a fitted model (its 'model' key, or the Splink JSON itself)")
     parser.add_argument("--increment", action="store_true", help="add these records to the run in --output")
@@ -43,6 +50,8 @@ def main() -> None:
     args = parser.parse_args()
     if bool(args.input) == bool(args.decisions):
         parser.error("give either --input (a run or an increment) or --decisions (applied to the run in --output)")
+    if not args.output and not args.check:
+        parser.error("give --output, the run folder")
 
     s = load_settings()
     s = replace(s, compute={**s.compute, **dict(kv.split("=", 1) for kv in args.compute)})
@@ -52,6 +61,20 @@ def main() -> None:
         saved = json.loads(args.model.read_text(encoding="utf-8"))
         model = saved.get("model", saved)
     run = Run(p, s, model=model)
+    fields = [f for f in s.columns if f not in ("id", "entity")]
+    if args.check:
+        run.load(args.input)
+        run.budget()
+        present = present_fields(run.settings, run._columns())
+        fill = fill_rates(run, fields).set_index("field")
+        print(f"{run.n:,} records")
+        for f in fields:
+            print(f"  {f:<13} " + (f"{fill.at[f, 'filled']:>5.0%} filled  ← {sources_text(present[f])}" if f in fill.index else "—  no column"))
+        print("\n".join(f"  turned off: {x}" for x in run.disabled) or "  nothing turned off")
+        for x in run.notes:
+            print(f"  {x}")
+        print("ready: run it with --output <run folder>")
+        return
     if args.decisions:
         run.decide(args.decisions, args.output)
         x = run.steps[-1]
@@ -59,17 +82,26 @@ def main() -> None:
         return
     if args.increment:
         run.increment(args.input, args.output)
+        if run.added == 0:
+            print(f"nothing new: every record of {args.input} is already in the run in {args.output}")
+            return
     else:
         run.full(args.input, args.output, overwrite=args.overwrite)
-    report = qa(run, [f for f in s.columns if f not in ("id", "entity")])
+    report = qa(run, fields)
     report.pop("review_sheet").to_parquet(args.output / "review.parquet")
     text = ["# Run report", "", f"Input: `{args.input}` · {run.n:,} records", ""]
     for name, table in report.items():
         text += [f"## {name.replace('_', ' ')}", "", markdown(table.round(4)) if len(table) else "none", ""]
     (args.output / "qa.md").write_text("\n".join(text), encoding="utf-8")
-    print("\n".join(f"{x['step']:<11} {x['filled']:<60} {x['seconds']:>8.2f}s" for x in run.steps))
-    print(f"wrote {args.output}: gold.parquet, matches/, rule_kept/, qa.md, review.parquet, state/")
+    print("\n".join(f"{what:<10} {value}" for what, value in report["summary"].itertuples(index=False)))
+    print(f"{sum(x['seconds'] for x in run.steps):.1f} s · wrote {args.output}: gold.parquet, review.parquet, qa.md (each step's cost), matches/, state/")
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except (InputError, FileExistsError) as e:  # a mistake people fix: what is wrong, and how; anything else keeps its traceback
+        print(f"error: {e}", file=sys.stderr)
+        if getattr(e, "fix", ""):
+            print(f"fix: {e.fix}", file=sys.stderr)
+        sys.exit(2)

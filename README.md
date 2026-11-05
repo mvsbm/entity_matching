@@ -35,7 +35,8 @@ Real data is likely noisier, and only a run on it can tell ([limits](#limits)).
 ```bash
 ./setup_venv.sh
 # map your columns to the logical fields: config/settings.toml [columns]
-.venv/bin/python scripts/resolve.py --input customers.csv --output runs/customers
+.venv/bin/python scripts/resolve.py --input customers.parquet --check            # will it run? in seconds
+.venv/bin/python scripts/resolve.py --input customers.parquet --output runs/customers
 ```
 
 The run folder holds `gold.parquet` (each record and its entity's ID), `review.parquet` (pairs for a person to decide or audit) and `qa.md` (checks that need no labels). New records join the run later with `--increment`, and people's decisions with `--decisions`. Every step is in [usage](docs/usage.md).

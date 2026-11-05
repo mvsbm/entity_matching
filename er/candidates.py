@@ -243,7 +243,10 @@ def candidates(blockers: tuple[Blocker, ...], records: pd.DataFrame | str, uid: 
         for i, b in enumerate(blockers):
             est = estimate_touching(b, r) if touching else estimate(b, r, n_query)
             if est["est_pairs"] > limit or est["largest_block"] > budget.max_block_size:
-                raise OverBudget(f"{b.name}: {est}")
+                raise OverBudget(f"{b.name} would make {est['est_pairs']:,} pairs{' touching the batch' if touching else ''} (budget {limit:,}), "
+                                 f"the largest block {est['largest_block']:,} records (budget {budget.max_block_size:,})",
+                                 fix="a value repeated in many records is usually a placeholder (a dummy phone, 'unknown'): blank it out, "
+                                     "so it counts as missing, then run again")
             t = time.perf_counter()
             if isinstance(b, TfidfNeighbours):
                 pairs = _tfidf(b, r)
