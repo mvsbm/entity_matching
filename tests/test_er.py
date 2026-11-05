@@ -751,3 +751,98 @@ def test_resolve_prints_a_mistake_as_two_lines_and_exits_with_2(tmp_path):
     assert done.returncode == 2 and done.stderr.splitlines()[0].startswith("error: no file matches")
     assert done.stderr.splitlines()[1].startswith("fix: ") and "Traceback" not in done.stderr
 
+
+def test_a_nearly_empty_field_is_kept_and_the_fit_skips_what_it_cannot_learn_from(tmp_path, population):
+    from er.run import Run
+    s, p, g = population
+    sparse = g.df.copy()
+    sparse.loc[sparse.index[10:], ["STD_ADDRESS", "ORIGINAL_ADDRESS"]] = None  # no two records share an address
+    sparse.to_parquet(tmp_path / "sparse.parquet", index=False)
+    seen = []
+    run = Run(p, s, echo=seen.append).full(tmp_path / "sparse.parquet", tmp_path / "run")
+    assert [x["step"] for x in seen] == ["load", "budget", "fit", "rules", "candidates", "score", "cluster", "write"]  # step by step
+    assert "address" in run.model["er"]["skipped"] and any("sharing address" in x for x in run.notes)
+    sparse.assign(PHONE_NUM_4=None).to_parquet(tmp_path / "bare.parquet", index=False)  # nothing left to learn from
+    with pytest.raises(InputError, match="share phone or address"):
+        Run(p, s).full(tmp_path / "bare.parquet", tmp_path / "bare")
+
+
+def test_an_increment_keeps_the_open_review_queue(tmp_path, population):
+    from er.run import Run, qa
+    s, p, g = population
+    p = replace(p, threshold=replace(p.threshold, margin_steps=4), fs=replace(p.fs, min_match_weight=p.fs.min_match_weight + 6))  # a wide band
+    uid = s.data.unique_id
+    l, r = f"{uid}_l", f"{uid}_r"
+    new = np.random.default_rng(2).random(len(g.df)) < 0.2
+    g.df[~new].to_parquet(tmp_path / "old.parquet", index=False)
+    g.df[new].to_parquet(tmp_path / "new.parquet", index=False)
+    fields = [f for f in s.columns if f not in ("id", "entity")]
+    run = Run(p, s).full(tmp_path / "old.parquet", tmp_path / "c")
+    first = qa(run, fields)["review_sheet"]
+    first.to_parquet(tmp_path / "c" / "review.parquet")
+    open_ = first[first["why"] == "decide"]
+    assert len(open_) >= 2
+    first.loc[open_.index[:1], "decision"] = "no_match"  # one decided and given back; the rest still open
+    first.loc[open_.index[:1]].to_parquet(tmp_path / "given.parquet")
+    Run(p, s).decide(tmp_path / "given.parquet", tmp_path / "c")
+    inc = Run(p, s).increment(tmp_path / "new.parquet", tmp_path / "c")
+    sheet = qa(inc, fields, previous=tmp_path / "c" / "review.parquet")["review_sheet"]
+    pairs = set(map(tuple, sheet.loc[sheet["why"] == "decide", [l, r]].to_numpy()))
+    gold = pd.read_parquet(tmp_path / "c" / "gold.parquet").set_index(uid)["cluster_id"]
+    still = {(a, b) for a, b in open_.iloc[1:][[l, r]].to_numpy() if gold[a] != gold[b]}
+    assert still and still <= pairs  # still open after the increment
+    assert tuple(open_.iloc[0][[l, r]]) not in pairs  # decided: gone
+
+
+def test_a_run_folder_takes_one_writer_at_a_time(tmp_path, population):
+    from er.run import Run, run_lock
+    s, p, g = population
+    g.df.to_parquet(tmp_path / "all.parquet", index=False)
+    with run_lock(tmp_path / "run"):  # another job holds the folder
+        with pytest.raises(InputError, match="another job is writing"):
+            Run(p, s).full(tmp_path / "all.parquet", tmp_path / "run")
+    Run(p, s).full(tmp_path / "all.parquet", tmp_path / "run")  # released: free again
+
+
+def test_the_scheduler_serves_the_inbox_in_order_and_parks_what_people_must_fix(tmp_path, population):
+    import importlib.util
+    import os
+    import shutil
+    import subprocess
+    import sys
+    s, p, g = population
+    uid = s.data.unique_id
+    script = s.root / "scripts" / "schedule.py"
+    spec = importlib.util.spec_from_file_location("schedule", script)
+    schedule = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(schedule)
+    code, _, _, tries = schedule.attempt([sys.executable, "-c", "import sys; sys.exit(1)"], retries=2, wait=0)
+    assert (code, tries) == (1, 3)  # an unexpected failure is tried again
+
+    inbox, run = tmp_path / "inbox", tmp_path / "run"
+    (inbox / "batches").mkdir(parents=True)
+    new = np.random.default_rng(3).random(len(g.df)) < 0.2
+    g.df[~new].to_parquet(inbox / "batches" / "a_first.parquet", index=False)
+    g.df[new].to_parquet(inbox / "batches" / "b_new.parquet", index=False)
+    shutil.copy(inbox / "batches" / "b_new.parquet", inbox / "batches" / "c_again.parquet")  # the same content, twice
+    (inbox / "batches" / "d_bad.parquet").write_text("CONT_ID\n1\n")  # a CSV, named as Parquet
+    for k, f in enumerate(sorted((inbox / "batches").iterdir())):
+        os.utime(f, (1_000 + k, 1_000 + k))  # arrival order
+    serve = lambda: subprocess.run([sys.executable, str(script), "--run", str(run), "--inbox", str(inbox)], capture_output=True, text=True)
+    done = serve()
+    assert done.returncode == 0, done.stderr
+    jobs = [(e["file"], e["outcome"]) for e in schedule.ledger(run)]
+    assert jobs == [("a_first.parquet", "done"), ("b_new.parquet", "done"), ("c_again.parquet", "done"), ("d_bad.parquet", "failed")]
+    assert len(pd.read_parquet(run / "gold.parquet")) == len(g.df)  # the first batch the full run, the second an increment
+    parked = list((inbox / "failed" / "batches").glob("*.error.txt"))
+    assert len(parked) == 1 and "not a Parquet file" in parked[0].read_text()
+    assert not list((inbox / "batches").glob("*.parquet"))
+
+    sheet = pd.read_parquet(run / "review.parquet")
+    (inbox / "decisions").mkdir(exist_ok=True)
+    sheet.iloc[:1].assign(decision="match").to_parquet(inbox / "decisions" / "reviewed.parquet")
+    assert serve().returncode == 0 and schedule.ledger(run)[-1]["outcome"] == "done"
+    assert (run / "decisions").exists()
+    before = len(schedule.ledger(run))
+    assert serve().returncode == 0 and len(schedule.ledger(run)) == before  # nothing waiting: nothing done
+

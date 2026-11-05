@@ -90,7 +90,7 @@ Each entry gives the symptom that gave it away, the cause, the fix, and what kee
 - **Symptom:** the first million-record scale run stalled at 27 GB on a 16 GB laptop, deep in swap.
 - **Cause:** `score_fs` read Splink's predictions into pandas with every matching column of both records, only to keep the ids, the weights and the gammas. At 250,000 records that copy added 4.8 GB to the peak. At a million it would have needed about 19 GB.
 - **Fix:** DuckDB selects the needed columns before anything reaches pandas, and the predictions table is dropped once read. At 250,000 records the step now adds 1.1 GB, with identical results.
-- **Since:** every table of size N or C is a DuckDB table (`er.run`), which spills past `[compute]` `memory_limit`. A million records peak at 3.8 GB, under an 8 GB limit; 5.5 GB while the candidate step still copied every column of every record, not only the keys.
+- **Since:** every table of size N or C is a DuckDB table (`er.run`), which spills past `[compute]` `memory_limit`. A million records run within a 2 GB limit (3.5 GB for the process, Python included), with the same answer as under 8 GB. Under a larger limit the peak varies from run to run (3.8 to 6.6 GB under 8 GB), because DuckDB keeps what the limit allows: test the smallest limit that completes, not the peak.
 - **Guard:** every run's `steps.json` records the peak memory after each step, and `scripts/benchmark.py` reports it at every file size.
 
 ## Merging the candidate lists was most of the work
@@ -128,6 +128,18 @@ Each entry gives the symptom that gave it away, the cause, the fix, and what kee
 - **Cause:** u was measured again on every increment, whatever had changed. On the million-record file, from half of it to all of it, every exactly counted level moved by at most 0.004 bits, and every sampled level by less than its own sampling error.
 - **Fix:** the exact levels are counted again on every increment (0.1 s). A comparison's sampled u are measured again only once the drift of its exact level exceeds the sampling error of its sampled levels. Before that, a new sample is no closer to the truth. The same increment now takes 2.0 s.
 - **Guard:** a test checks that an increment samples exactly the comparisons whose drift exceeds their error, and each run's `state/scoring.json` keeps the last check, drift and error, per comparison.
+
+## An increment threw away the review queue
+- **Symptom:** found by walking through the command line: after a full run, 2 pairs waited for a decision; the next increment wrote a new `review.parquet`, and both were gone, though still open.
+- **Cause:** every run wrote the sheet from its own scores, and a run keeps no scores, so an increment's sheet held only the pairs its batch made.
+- **Fix:** an increment keeps the previous sheet's rows that nobody gave back and whose records are still apart, with any decision typed in, and adds its own.
+- **Guard:** a test decides one pair, runs an increment, and checks the others are still on the sheet and the decided one is not.
+
+## A nearly empty field crashed the fit
+- **Symptom:** with the address filled in 1% of records, the run stopped in Splink with a 20-line traceback.
+- **Cause:** the fit learns m from pairs that share a phone, and from pairs that share an address; no two records of its sample shared an address, and Splink refuses a learning rule with no pairs.
+- **Fix:** a rule that finds no pair is skipped, and the summary names it; the field still counts where it is filled. With no rule left, the run stops with two lines saying what to fix.
+- **Guard:** a test empties the address and then the phone too.
 
 ## DuckDB 2.0 changed under us
 - **Symptom:** a run hung on its second query, or failed on `fetchone`.

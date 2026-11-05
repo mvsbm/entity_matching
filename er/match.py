@@ -18,7 +18,7 @@ import splink.comparison_level_library as cll
 import splink.comparison_library as cl
 from splink import DuckDBAPI, Linker, SettingsCreator
 
-from er.config import Comparison, FSModel, RulesSpec, keys_sql
+from er.config import Comparison, FSModel, InputError, Key, RulesSpec, keys_sql
 from er.evaluate import fp_upper
 
 
@@ -264,6 +264,12 @@ def refreshed_u(model: FSModel, model_json: dict, basis: dict, df: Records, db: 
     return assemble_u(model, model_json, sampled, exact, df, db), basis, [c.name for c in todo]
 
 
+def rule_pairs(df: pd.DataFrame, rule: tuple[Key, ...]) -> int:  # the pairs a blocking rule makes in these records
+    cols = [k.name for k in rule]
+    sizes = df.dropna(subset=cols).groupby(cols).size()
+    return int((sizes * (sizes - 1) // 2).sum())
+
+
 def train_fs(model: FSModel, df: pd.DataFrame, db: DuckDBAPI, uid: str, labels: pd.Series | None = None,
              u: U | None = None) -> dict:
     """Train on df; `labels` (entity per uid) is required for m_method="labels". Returns the Splink model JSON plus
@@ -271,7 +277,8 @@ def train_fs(model: FSModel, df: pd.DataFrame, db: DuckDBAPI, uid: str, labels: 
     u-sampling is ~97% of training time and depends only on each comparison and the records (FSModel.u_keys), not on
     the m method or term-frequency adjustment: pass `u` (u_values of such a model) to skip those comparisons.
     A level without an estimate never falls back to Splink's defaults: no sampled pair → u at its upper bound (the
-    weight is a lower bound on the evidence); never seen in training → m = u (0 bits)."""
+    weight is a lower bound on the evidence); never seen in training → m = u (0 bits). A prior or EM rule that finds no
+    pair in df (its fields nearly empty there) is skipped, and listed in "er"; none left of either stops the fit."""
     t = df.copy()
     if model.m_method == "labels":
         assert labels is not None, "m_method='labels' needs truth labels"
@@ -282,13 +289,21 @@ def train_fs(model: FSModel, df: pd.DataFrame, db: DuckDBAPI, uid: str, labels: 
     labels_of = {c.name: [*(lv.label for lv in c.levels), ELSE] for c in model.comparisons}
     filled_u = [[c.name, lv] for c in model.comparisons for lv in labels_of[c.name] if lv not in u[c.name]]
     u = {c.name: {lv: u[c.name].get(lv) or u_bound(model, c, t, db) for lv in labels_of[c.name]} for c in model.comparisons}
+    fields = lambda rule: " + ".join(k.column for k in rule)
+    prior = [r for r in model.prior_rules if rule_pairs(t, r)]
+    em = [r for r in model.em_rules if rule_pairs(t, r)] if model.m_method == "em" else []
+    if not prior:
+        raise InputError(f"no two records of the {len(t):,} the fit samples agree on any near-certain rule "
+                         f"({'; '.join(map(fields, model.prior_rules))}), so the chance that two records match can't be estimated",
+                         fix="map the fields those rules read, or give a model fitted before with --model")
+    if model.m_method == "em" and not em:
+        raise InputError(f"no two records of the {len(t):,} the fit samples share {' or '.join(map(fields, model.em_rules))}, "
+                         "the pairs it learns from", fix="map those fields to filled columns, or give a model fitted before with --model")
     linker = Linker(db.register(t), fs_settings(model, uid, u), log_level=logging.ERROR)  # unestimated levels: handled here
-    linker.training.estimate_probability_two_random_records_match([keys_sql(r) for r in model.prior_rules],
-                                                                  recall=model.prior_recall)
-    if model.m_method == "em":
-        for rule in model.em_rules:
-            linker.training.estimate_parameters_using_expectation_maximisation(keys_sql(rule))
-    else:
+    linker.training.estimate_probability_two_random_records_match([keys_sql(r) for r in prior], recall=model.prior_recall)
+    for rule in em:
+        linker.training.estimate_parameters_using_expectation_maximisation(keys_sql(rule))
+    if model.m_method == "labels":
         linker.training.estimate_m_from_label_column("__label__")
     model_json = linker.misc.save_model_to_json()
     filled_m = []
@@ -299,7 +314,8 @@ def train_fs(model: FSModel, df: pd.DataFrame, db: DuckDBAPI, uid: str, labels: 
                 filled_m.append([c["output_column_name"], lv["label_for_charts"]])
     tf = {c.tf.name: (t[c.tf.name].value_counts() / t[c.tf.name].notna().sum()).to_dict()  # Splink's own formula
           for c in model.comparisons if c.tf and any(lv.tf for lv in c.levels)}
-    return {**model_json, "er": dict(fit_rows=len(t), tf=tf, filled=dict(u=filled_u, m=filled_m))}
+    skipped = [fields(r) for r in (*model.prior_rules, *(model.em_rules if model.m_method == "em" else ())) if r not in (*prior, *em)]
+    return {**model_json, "er": dict(fit_rows=len(t), tf=tf, filled=dict(u=filled_u, m=filled_m), skipped=skipped)}
 
 
 def scaled_prior(model_json: dict, n_records: int) -> float:

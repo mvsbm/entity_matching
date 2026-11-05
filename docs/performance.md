@@ -34,10 +34,10 @@
 | 3 | fit: λ from near-certain rules, u, m by EM, on a sample of whole postal areas | `Run.fit`, `er.match.train_fs` | O(n + S·K + P_em·K) | **constant** | 7.8 s |
 | 4 | rules: one join per rule (the first rule wins a pair), fuzzy checks on the joined pairs only, then the cascade's clusters | `Run.rules`, `er.match.rule_edges_table` | O(N + Σ P_r·L²) + O((N + E)·d) | N; ≤ 0.22 pairs per record per rule at 1M | 3.5 s |
 | 5 | candidates: every generator as one SQL join or window, merged by bitmask, pairs inside one rule cluster dropped | `Run.candidates`, `er.candidates.candidates` | O(N·L + Σ P_g) | N; ≤ 2.0 pairs per record per key at 1M, 3 per sorted window | 3.4 s |
-| 6 | score: u measured on this file (value counts for the leading exact levels, S pairs for the rest), then every candidate | `Run.score`, `er.match.with_scored_u`, `score_fs` | O(N + S·K) + O(C·K·L²) | C, plus a constant | 20.7 s |
+| 6 | score: u measured on this file (value counts for the leading exact levels, S pairs for the rest), then every candidate | `Run.score`, `er.match.exact_u`, `scored_sample`, `assemble_u`, `score_fs` | O(N + S·K) + O(C·K·L²) | C, plus a constant | 20.7 s |
 | 7 | cluster: accept at the threshold, connected components with the rules' pairs, gold | `Run.cluster` | O(C + (N + E)·d) | N | 0.5 s |
 | 8 | write: gold, matches, the rules' pairs and the state for increments, as Parquet | `Run.write` | O(N + C) | N | 1.5 s |
-| | **total** | | | | **44.1 s, 3.8 GB peak** |
+| | **total** | | | | **44.1 s** |
 
 **An increment** (`Run.increment`, `scripts/resolve.py --increment`): a batch of Δ new records joins a written run.
 
@@ -68,9 +68,11 @@ of it the u sample.
 
 **Memory.** Records, pairs, scores and clusters are DuckDB tables. Past `memory_limit` (config/settings.toml `[compute]`,
 or `scripts/resolve.py --compute memory_limit=8GB`), DuckDB spills them to `temp_directory`. Python holds one chunk of
-`load` (200,000 records), the fitting sample (n records) and small summaries. At a million records the process peaked at
-3.8 GB, Python included, under an 8 GB limit, so nothing spilled. The candidate step copies only the key
-columns it joins on.
+`load` (200,000 records), the fitting sample (n records) and small summaries. A million records run within a 2 GB
+limit: 46 s, against 43 s under 8 GB, with identical clusters and accepted pairs; the process then peaks at 3.5 GB,
+Python included. Under a larger limit DuckDB keeps more in memory, so the peak reported there (3.8 to 6.6 GB at a
+million records, from one run to the next under 8 GB) shows what DuckDB chose to keep, not what the run needs. The
+candidate step copies only the key columns it joins on.
 
 ## The cost checks before a run
 
@@ -136,7 +138,7 @@ on the file itself, without labels ([reports/benchmark.md](../reports/benchmark.
 | 12,392 | 17.9 | 0.57 GB | 9.0 | 8.2 | 0.6 |
 | 50,215 | 19.6 | 0.78 GB | 9.0 | 9.1 | 1.5 |
 | 75,284 | 20.4 | 0.97 GB | 8.8 | 9.6 | 2.1 |
-| 999,481 | 44.1 | 3.8 GB | 7.8 | 20.7 | 15.6 |
+| 999,481 | 44.1 | 3.8 GB, varies | 7.8 | 20.7 | 15.6 |
 
 The fit and the u sample inside `score` (about 8 s) cost the same at every size, so they are nearly all of a small
 file's time. Everything else goes from 2.1 s at 75,000 records to 15.6 s at a million: 13 times the records, 7.5 times

@@ -40,6 +40,7 @@ The fields, and which ones a run needs (`[fields]` in `config/final.toml`):
 - **A missing optional field** turns off only the rules, keys and comparison levels that read it. The run lists them in `qa.md`.
 - **Names are matched loosely.** A column whose name differs from the mapping only in case, width or separators (`cont_id`, `ＣＯＮＴ＿ＩＤ`) is used, and the summary says so.
 - **Every column is read as text.** A blank value, or one made only of spaces (full-width ones included), counts as missing. A code stored as a number (`599` for `0599`) is read as text with a warning: its leading zeros were lost before the file reached the run.
+- **A nearly empty field** is used where it is filled. If no two records of the fit's sample share it, the fit learns nothing from it, and the summary says so.
 - **A field the run needs and no column holds** stops the run with the file's columns and, for each missing field, the column whose values look most like it, as lines to paste into `[columns]`. These suggestions are never applied without you.
 
 Check a file and its mapping in seconds, before a long run:
@@ -69,7 +70,7 @@ It prints each field, its fill rate and the columns it comes from, what would be
 | `--pipeline` | another pipeline file. Default: `config/final.toml` |
 | `--model` | a model fitted before, used instead of fitting on this file |
 
-The run needs no labels: it fits its model on the file itself. It ends with a summary: records, entities, who joined them (the rules, the model, people), the pairs to decide, and anything the loader fixed. What each step does, and what it costs: [architecture, the run](architecture.md#3--the-run).
+The run needs no labels: it fits its model on the file itself. It prints each step as it finishes, with its time and what it did, then a summary: records, entities, who joined them (the rules, the model, people), the pairs to decide, and notes. A note says what the loader fixed, a field filled in under 5% of records (often a mapping mistake), a part turned off, or what the fit couldn't learn from. What each step does, and what it costs: [architecture, the run](architecture.md#3--the-run).
 
 ## 4 · Read the outputs
 
@@ -112,7 +113,7 @@ The run accepts a pair at 6 bits or more. Just below that line, from 4 to 6 bits
 
 `review.parquet` has two kinds of rows, named in `why`:
 
-- **decide:** every pair of clusters whose best link scored in the margin, one row per pair of clusters, highest first. Pairs already decided are left out.
+- **decide:** every pair of clusters whose best link scored in the margin, one row per pair of clusters, highest first. Pairs already decided are left out. An increment keeps the rows still open, and any decision typed into the sheet but not yet given back, and adds its own.
 - **audit:** about 50 accepted pairs up to 4 bits above the line, a few from each 1-bit band. A wrong one is a false merge.
 
 Each row shows the two records' compared fields side by side, then, per comparison, the level the pair reached (for example "names very close") and the bits it earned. The bits, plus the starting point, add up to `match_weight`. `accepted` says what the run decided.
@@ -155,10 +156,37 @@ What stops it: two lines, what is wrong and how to fix it, and exit code 2:
 | `no record has an ID in column …` | `id` is mapped to the wrong column |
 | `over budget on this file` | a key would make too many pairs: more than 5 per record, or a block of over 5,000 records. It names the value behind the largest block, usually a placeholder such as one dummy phone number |
 | `… already holds a run` | a full run into a used folder: add `--overwrite`, or pick another folder |
+| `another job is writing to …` | a run folder takes one writer at a time: wait for the other one |
 | `the model was fitted on other comparison levels` | `--model` was fitted on another pipeline, or on a file with other fields |
 | `a decision is match or no_match`, `pairs decided both ways`, `records not in the run` | a decisions file to correct |
 
 The budget is checked before any join, so a run that would explode stops within seconds instead of running out of memory.
+
+## 8 · Run it on a schedule
+
+`scripts/schedule.py` serves an inbox: every Parquet file dropped in it goes into the run, one at a time, in the order it arrived.
+
+```bash
+.venv/bin/python scripts/schedule.py --run runs/customers --inbox inbox                # one pass; cron can call it
+.venv/bin/python scripts/schedule.py --run runs/customers --inbox inbox --every 300    # a pass every 5 minutes
+```
+
+```
+inbox/batches/*.parquet      new records: an increment; into an empty run folder, the first batch is the full run
+inbox/decisions/*.parquet    people's decisions (section 6)
+inbox/done/, inbox/failed/   where each file goes once it ran
+runs/customers/jobs.jsonl    one line per attempt: file, SHA-256, outcome, exit code, attempts, seconds, error
+```
+
+Each file runs as `scripts/resolve.py` in a process of its own, so a crash can't take the scheduler down. What happens next depends on how that process ends:
+
+| It ends | The file |
+|---|---|
+| well (exit 0) | moves to `done/`. A batch already in the run is done too, so a retry is harmless |
+| on a mistake people must fix (exit 2) | moves to `failed/`, with its two-line error beside it (`….error.txt`). The pass goes on |
+| any other way: a crash, memory | is tried again, waiting 2, 4, 8 … s (`--retries`, default 2). If it still fails, the pass stops and the file stays, so nothing jumps ahead of it; the next pass tries again |
+
+A file whose content was done before, by its SHA-256, moves to `done/` without running. One scheduler serves an inbox at a time, and a run folder takes one writer at a time, so starting a second one, or running `resolve.py` by hand meanwhile, is refused, not raced.
 
 ## Development scripts
 

@@ -3,7 +3,8 @@ so memory stays bounded at any size (past config/settings.toml [compute] memory_
 step is a method of Run, called in order by full(), or one at a time by the demo notebook. Each records its Big-O,
 with the numbers filled in, and its time.
 
-    load        O(N·L)                           read in chunks, check the fields, standardize each chunk → table records
+    load        O(N·L)                           read through er.source (Parquet), check the fields, set aside what can't be
+                                                 resolved, standardize each chunk → table records
     budget      O(N)                             exact block sizes per rule and generator, before any join
     fit         O(n + S·K + P_em·K)              λ, u and m by EM on a fixed-size sample of n records (or a fitted model)
     rules       O(N + Σ P_r·L²) + O((N + E)·d)   one join per rule (the first rule wins), then the rules' cascade
@@ -25,17 +26,22 @@ clusters. Decisions are kept in decisions/, which a full run on the same folder 
 Writes are staged: every file is written under a temporary name; once all are complete, the list of renames still owed
 is saved (pending.json), then they are done. A write interrupted before that list exists left the run as it was: run the
 batch again. One interrupted after it is finished by the next increment (finish_writes). A full run refuses a folder that
-already holds a run unless told to overwrite it.
+already holds a run unless told to overwrite it. A run folder takes one writer at a time (run_lock): a full run, an
+increment or a set of decisions holds it for as long as it writes.
 
 N records, L characters per value, P pairs in a rule's or generator's key blocks, C candidates, K comparisons,
 S sampled pairs for u, E accepted pairs, d cluster diameter (Splink's connected components take up to d rounds).
 """
+import fcntl
+import functools
 import json
 import os
 import resource
 import shutil
 import sys
 import time
+from collections.abc import Callable
+from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 
@@ -62,6 +68,28 @@ RUN_FILES = ("gold.parquet", "steps.json", PENDING, "matches", "rule_kept", "sta
 DECISIONS = "decisions"  # people's decisions: not a run file, so a full run with overwrite keeps and applies them
 
 
+@contextmanager
+def run_lock(out: Path):
+    """One writer per run folder: an OS lock on <out>/.lock for as long as a run, an increment or a set of decisions
+    writes there. The system releases it when the process ends, even if it dies, so it never goes stale.
+    shortcut: flock holds on a local disk, not on network or object storage; there, run one job per folder at a time."""
+    out.mkdir(parents=True, exist_ok=True)
+    with open(out / ".lock", "w") as f:
+        try:
+            fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            raise InputError(f"another job is writing to {out}", fix="wait for it to finish: a run folder takes one writer at a time") from None
+        yield
+
+
+def locked(method: Callable) -> Callable:  # the run folder (the method's `out`) locked for the whole method
+    @functools.wraps(method)
+    def wrapper(self: "Run", path: str | Path, out: Path, *args: object, **kwargs: object) -> "Run":
+        with run_lock(Path(out)):
+            return method(self, path, Path(out), *args, **kwargs)
+    return wrapper
+
+
 def finish_writes(out: Path) -> None:
     """Complete the renames of a write that was interrupted after its new files were complete; nothing otherwise."""
     pending = out / PENDING
@@ -80,6 +108,7 @@ class Run:
     chunk_rows: int = 200_000
     steps: list[dict] = field(default_factory=list)
     disabled: list[str] = field(default_factory=list)
+    echo: Callable[[dict], None] | None = None  # called with each step as it finishes: progress for people (scripts/resolve.py)
 
     def __post_init__(self) -> None:
         self.con, self.db = connect(self.settings.compute)
@@ -91,6 +120,8 @@ class Run:
     def _done(self, name: str, big_o: str, filled: str, t: float, **facts: object) -> None:
         self.steps.append(dict(step=name, big_o=big_o, filled=filled, seconds=round(time.perf_counter() - t, 2),
                                peak_memory_gb=round(peak_gb(), 2), **facts))
+        if self.echo:
+            self.echo(self.steps[-1])
 
     def _count(self, sql: str) -> int:
         return self.con.execute(f"SELECT count(*) FROM {sql}").fetchall()[0][0]
@@ -201,6 +232,8 @@ class Run:
             order = f"hash({area}), hash({q(self.uid)})" if area else f"hash({q(self.uid)})"
             sample = self.con.execute(f"SELECT * FROM records ORDER BY {order} LIMIT {n}").df().astype("string")
             self.model = train_fs(self.pipeline.fs.model, sample, self.db, self.uid)
+            self.notes += [f"the fit found no two records sharing {f} in its sample of {len(sample):,}, so it learned nothing from them"
+                           for f in self.model["er"].get("skipped", [])]
         self._done("fit", "O(n + S·K + P_em·K)", f"n = {self.model['er']['fit_rows']:,}", t)
         return self.model
 
@@ -373,6 +406,7 @@ class Run:
         self.con.execute(f"""CREATE OR REPLACE TABLE {into} AS SELECT b.{u}, coalesce(c.cluster_id, b.cluster_id) AS cluster_id
             FROM {base} b LEFT JOIN er_comp c ON c.node = b.cluster_id""")
 
+    @locked
     def increment(self, path: str | Path, out: Path) -> "Run":
         """Add a batch of new records to the run written in `out`. See the module docstring for the cost."""
         state, u, l, r = out / "state", q(self.uid), q(self.l), q(self.r)
@@ -422,6 +456,8 @@ class Run:
             stored = state / "scoring.json"
             basis = json.loads(stored.read_text(encoding="utf-8"))["basis"] if stored.exists() else {}
             self.scoring, self.basis, again = refreshed_u(fs.model, self.model, basis, "records", self.db, self.uid)
+            self.notes += [f"u of {c} measured again: it drifted {self.basis[c]['last_check']['drift_bits']:.3f} bits, more than "
+                           f"its sampling error ({self.basis[c]['last_check']['se_bits']:.3f})" for c in again if self.basis[c]['last_check']['drift_bits'] is not None]
         self.con.execute(f"""CREATE OR REPLACE TABLE touched AS SELECT * FROM records WHERE {u} IN
             (SELECT {l} FROM cands UNION SELECT {r} FROM cands)""")
         score_fs(self.scoring, "touched", "cands", self.db, self.uid, into="scores", n_records=self.n)
@@ -448,14 +484,17 @@ class Run:
                 FROM read_parquet({lit(parts / 'part-*.parquet')}, filename = true)
                 WHERE {l} IN (SELECT {u} FROM records) AND {r} IN (SELECT {u} FROM records) GROUP BY {l}, {r}""")
 
+    @locked
     def decide(self, path: str | Path, out: Path) -> "Run":
-        """Apply people's decisions on review pairs (a CSV or Parquet file: uid_l, uid_r, decision) to the run in `out`,
+        """Apply people's decisions on review pairs (a Parquet file: uid_l, uid_r, decision) to the run in `out`,
         scoring nothing. Each `match` pair merges its two clusters, each cluster one node, and a record joined only this
         way is resolved by `review`. A `no_match` pair splits nothing here; every decision is stored in decisions/, and a
         full run on this folder applies them again, never accepting a `no_match` pair. Rows without a decision are
         skipped. O(D + touched clusters) + O(N) to rewrite gold."""
         t, u, l, r = time.perf_counter(), q(self.uid), q(self.l), q(self.r)
         finish_writes(out)
+        if not (out / "gold.parquet").exists():
+            raise InputError(f"no run in {out} to apply decisions to", fix="resolve the records into that folder first (--input … --output …)")
         self.con.execute(f"CREATE OR REPLACE TABLE gold_old AS SELECT * FROM read_parquet({lit(out / 'gold.parquet')})")
         source = open_source(path, self.con, [self.l, self.r, "decision"])
         src, cols = source.sql, set(source.columns)
@@ -494,6 +533,7 @@ class Run:
         self._log(out, True, decisions=str(path))
         return self
 
+    @locked
     def full(self, path: str | Path, out: Path, overwrite: bool = False) -> "Run":
         held = [out / f for f in RUN_FILES if (out / f).exists()]
         if held and not overwrite:
@@ -528,13 +568,14 @@ def fill_rates(run: "Run", fields: list[str]) -> pd.DataFrame:
                          for f in fields if f in cols], columns=["field", "filled"]).assign(flag=lambda d: np.where(d["filled"] < 0.05, "under 5%", ""))
 
 
-def qa(run: "Run", fields: list[str], review: int = 50) -> dict[str, pd.DataFrame]:
+def qa(run: "Run", fields: list[str], review: int = 50, previous: Path | None = None) -> dict[str, pd.DataFrame]:
     """The label-free report of a run: a summary in words (records, entities, who joined them, what to decide, what the
     loader fixed), fill rate per field (flagged under 5%), what was disabled, every step's cost,
     accepted pairs by weight band, cluster sizes, the largest clusters (the over-merge alarm), and the review sheet
     for people (review_sheet). Its rows are of two kinds. "decide": every pair of clusters whose best link scored in the
     threshold's safety margin [review_floor, min_match_weight), not decided yet, best link first. "audit": accepted pairs
-    up to 4 bits above the threshold, `review` of them, stratified by 1-bit band."""
+    up to 4 bits above the threshold, `review` of them, stratified by 1-bit band. `previous`, the run folder's sheet
+    before an increment: its open rows stay (carry_over), since the scores behind them aren't kept."""
     con, u, t = run.con, q(run.uid), run.pipeline.fs.min_match_weight
     fill = fill_rates(run, fields)
     bands = con.sql(f"""SELECT floor(match_weight / 2) * 2 AS weight_from, count(*) AS pairs,
@@ -557,6 +598,10 @@ def qa(run: "Run", fields: list[str], review: int = 50) -> dict[str, pd.DataFram
     base = ["step", "big_o", "filled", "seconds", "peak_memory_gb"]
     steps = steps[base].assign(facts=steps.drop(columns=base).apply(lambda r: " · ".join(f"{k} {v:,.0f}" for k, v in r.dropna().items()), axis=1))
     coverage = pattern_coverage(run.pipeline.fs, run.scoring, run.n)
+    sheet = review_sheet(run, pd.concat([decide, audit], ignore_index=True))
+    if previous is not None and previous.exists():
+        sheet = carry_over(run, pd.read_parquet(previous), sheet, previous.parent)
+    decide = sheet[sheet["why"] == "decide"]
     queue = pd.DataFrame(dict(why=["decide", "audit"], pairs=[len(decide), len(audit)], from_bits=[lo, t], below_bits=[t, t + 4]))
     fs, aside = run.pipeline.fs, run._count("set_aside")
     total, entities, biggest, by_rules, by_model, by_people = con.execute(f"""SELECT count(*), count(DISTINCT cluster_id), max(n),
@@ -566,11 +611,34 @@ def qa(run: "Run", fields: list[str], review: int = 50) -> dict[str, pd.DataFram
         ("records", f"{total:,}" + (f", {run.added:,} of them new" if run.added is not None else "") + (f"; {aside:,} set aside (set_aside/)" if aside else "")),
         ("entities", f"{entities:,}; the largest holds {biggest:,} records"),
         ("joined by", f"the rules {by_rules:,} · the model {by_model:,} · people {by_people:,} records"),
-        ("to decide", f"{len(decide):,} pairs in review.parquet (why = decide)"),
-        *(("input", note) for note in run.notes)], columns=["what", "value"])
+        ("to decide", f"{len(decide):,} pair{'' if len(decide) == 1 else 's'} in review.parquet (why = decide)"),
+        *(("note", f"{f} only {x:.1%} filled: check its mapping") for f, x in fill.loc[fill["flag"] != "", ["field", "filled"]].itertuples(index=False)),
+        *(("note", f"turned off, a field it reads is missing: {d}") for d in run.disabled),
+        *(("note", note) for note in run.notes)], columns=["what", "value"])
     return dict(summary=summary, fill=fill, disabled=pd.DataFrame({"disabled": run.disabled}), steps=steps, weight_bands=bands,
                 cluster_sizes=sizes, largest_clusters=largest, patterns_without_a_key=coverage.head(20), review=queue,
-                review_sheet=review_sheet(run, pd.concat([decide, audit], ignore_index=True)))
+                review_sheet=sheet)
+
+
+def carry_over(run: "Run", previous: pd.DataFrame, sheet: pd.DataFrame, out: Path) -> pd.DataFrame:
+    """The open review queue across increments: the previous sheet's decide rows that nobody gave back yet (none in
+    decisions/) and whose records are still in different clusters, or that hold a decision typed in but not given back,
+    with this run's new rows; this run's audit rows only. O(previous rows)."""
+    l, r, u = q(run.l), q(run.r), q(run.uid)
+    prev = previous[previous["why"] == "decide"] if "why" in previous else previous.iloc[:0]  # a sheet from before the queue: nothing to keep
+    if prev.empty:
+        return sheet
+    run.con.register("er_prev", prev[[run.l, run.r, "decision"]])
+    stored = (f"SELECT {l}, {r} FROM read_parquet({lit(out / DECISIONS / 'part-*.parquet')})"
+              if any((out / DECISIONS).glob("part-*.parquet")) else f"SELECT NULL AS {l}, NULL AS {r} WHERE FALSE")
+    keep = run.con.execute(f"""SELECT p.{l}, p.{r} FROM er_prev p JOIN gold a ON a.{u} = p.{l} JOIN gold b ON b.{u} = p.{r}
+        WHERE (p.decision IS NOT NULL OR a.cluster_id <> b.cluster_id)
+          AND NOT EXISTS (SELECT 1 FROM ({stored}) d WHERE d.{l} = p.{l} AND d.{r} = p.{r})""").df()
+    run.con.unregister("er_prev")
+    kept = prev.merge(keep, on=[run.l, run.r])
+    new = sheet[(sheet["why"] == "decide") & ~sheet.set_index([run.l, run.r]).index.isin(kept.set_index([run.l, run.r]).index)]
+    decide = pd.concat([new, kept[sheet.columns]], ignore_index=True).sort_values("match_weight", ascending=False, ignore_index=True)
+    return pd.concat([decide, sheet[sheet["why"] == "audit"]], ignore_index=True)
 
 
 def review_sheet(run: "Run", pairs: pd.DataFrame) -> pd.DataFrame:

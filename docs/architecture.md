@@ -18,7 +18,7 @@ This page says how the system is built. Why each method was chosen is in the [gu
 The system turns a file of customer records into one ID per person or company. It works in two loops:
 
 - **Design time** happens once, and again whenever the matching changes. `scripts/generate.py` builds synthetic records from real names, companies and addresses, with the truth for each. `scripts/choose.py` tries each proposed change on them, keeps the ones the decision rule accepts, and writes the result to `config/final.toml`. This is the only loop that reads labels.
-- **Run time** happens for every file, without labels. `scripts/resolve.py` runs `config/final.toml` on the file and writes a run folder. New records join that run later, with `--increment`, and people's decisions on the pairs just below the threshold go back with `--decisions`.
+- **Run time** happens for every file, without labels. `scripts/resolve.py` runs `config/final.toml` on the file and writes a run folder. New records join that run later, with `--increment`, and people's decisions on the pairs just below the threshold go back with `--decisions`. `scripts/schedule.py` does both from an inbox, one file at a time.
 
 `config/final.toml` is the only hand-off between the loops. It is plain TOML, so it can be read, diffed and edited by hand.
 
@@ -35,7 +35,7 @@ The system turns a file of customer records into one ID per person or company. I
 
 | Part | Holds |
 |---|---|
-| `scripts/` | the entry points: generate, choose, resolve, benchmark, export_pdfs |
+| `scripts/` | the entry points: generate, choose, resolve, schedule (serves an inbox through resolve), benchmark, export_pdfs |
 | `er/` | the engine: every computation, tested. It names no column, except the synthetic generator (`er/generate.py`) |
 | `config/` | every setting: `settings.toml` (paths, `[columns]`, `[locale]`, `[compute]`), `pipeline.toml` (the matching, in logical fields), `final.toml` (what was chosen), and for design time `generator.toml` and `experiments.py` |
 | `data/` | records, labels, run folders and artifacts, all Parquet. Only `data/reference/` is in git; the scripts rebuild the rest |
@@ -100,7 +100,7 @@ Counts the pairs each rule and each candidate generator would make, Σ C(b, 2) o
 Takes a fixed sample of 30,000 records, made of whole postal areas, and learns the Fellegi–Sunter model: λ, how likely two random records are to match, from near-certain rules; u, how often strangers agree at each level, counted exactly for the leading exact levels and from 10 million random pairs for the rest; m, how often true matches agree, by EM on pairs that share a phone or an address.
 
 - **Why:** a real file has no labels, so the model learns from the data. A fixed sample keeps the cost flat at any size; whole postal areas keep a household's records together.
-- **Code:** `Run.fit` → `match.train_fs` (Splink), `match.sample_u`, `exact_u`
+- **Code:** `Run.fit` → `match.train_fs` (Splink), `match.sample_u`, `exact_u`. A near-certain or learning rule that finds no pair in the sample (its field nearly empty) is skipped and named in the summary; with none left of either, the run stops with what to fix.
 - **Increment:** no fit. It reads `state/model.json`, so every increment scores with the full run's model.
 
 ### 4 · Rules: the certain cases · `O(N + ΣP_r·L²) + O((N+E)·d)`
@@ -156,8 +156,8 @@ Writes each table as Parquet under a temporary name. Once all are complete, it s
 `scripts/resolve.py` writes `qa.md`, the label-free checks, and `review.parquet`, with the evidence for each pair ([usage](usage.md#6--review-and-decide)). Its *decide* rows are every pair of clusters whose best link scored in the threshold rule's safety margin: from the `[threshold]` grid point `margin_steps` below the threshold (4 bits) up to it. Its *audit* rows are about 50 accepted pairs up to 4 bits above it.
 
 - **Why:** the margin holds pairs that were clean on cross-validated train, held back in case of noise: on the synthetic test split, 47 pairs, all true. Accepting them automatically would let false pairs through (1 out of fold at 4 bits), so people decide them. Without labels, the audit rows and the largest clusters are how a person catches over-merging.
-- **Code:** `run.qa`, `review_floor`, `review_sheet`; `pipeline.pattern_coverage` (match patterns no key guarantees)
-- **Increment:** the same, for the pairs the batch made.
+- **Code:** `run.qa`, `review_floor`, `review_sheet`, `carry_over`; `pipeline.pattern_coverage` (match patterns no key guarantees)
+- **Increment:** the same for the pairs the batch made, plus the previous sheet's rows still open: a run keeps no scores, so a row dropped from the sheet could never come back.
 
 ### Decisions · `O(D + touched clusters) + O(N)`
 
@@ -197,6 +197,8 @@ Kept on disk. Steps are numbered as in [the run](#3--the-run).
 | `state/scoring.json` | 8, every run | increments | the u the run scored with; per comparison, the exact u it was sampled alongside and its last drift check |
 | `steps.json` | 8 | you | each step's Big-O with its numbers, time and peak memory |
 | `pending.json` | 8, deleted when done | the next increment | renames owed by an unfinished write |
+| `.lock` | every writer | every writer | the run folder's lock: one writer at a time |
+| `jobs.jsonl` | `scripts/schedule.py` | people | one line per attempt: the file, its SHA-256, the outcome |
 | `qa.md`, `review.parquet` | 9 | people | the label-free report; the pairs to decide and to audit |
 | `decisions/part-n.parquet` | decisions, one part per file | full runs | the pairs people decided: both IDs and `match` or `no_match` |
 | `set_aside/part-n.parquet` | 8, one part per run | you | records not resolved, and why: no ID; the same ID with different content; already in the run |

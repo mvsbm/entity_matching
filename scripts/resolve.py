@@ -35,8 +35,15 @@ from er.run import Run, fill_rates, qa
 from er.settings import load_settings, present_fields
 
 
+def step(x: dict) -> None:  # one line per step, as it finishes: what it did, and how long it took
+    base = ("step", "big_o", "filled", "seconds", "peak_memory_gb")
+    facts = " · ".join(f"{k.replace('_', ' ')} {v:,}" for k, v in x.items() if k not in base and isinstance(v, int | float))
+    print(f"  {x['step']:<11} {x['seconds']:>6.1f} s  {facts}", flush=True)
+
+
 def main() -> None:
-    parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
+    parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0], formatter_class=argparse.RawDescriptionHelpFormatter,
+                                     epilog="examples:\n" + __doc__.split("\n\n")[1])
     parser.add_argument("--input", help="a Parquet file, a glob of them, or a folder holding them")
     parser.add_argument("--output", type=Path, help="the run folder")
     parser.add_argument("--check", action="store_true", help="read and map --input and check the budget, in seconds; resolve nothing")
@@ -60,7 +67,7 @@ def main() -> None:
     if args.model:
         saved = json.loads(args.model.read_text(encoding="utf-8"))
         model = saved.get("model", saved)
-    run = Run(p, s, model=model)
+    run = Run(p, s, model=model, echo=step)
     fields = [f for f in s.columns if f not in ("id", "entity")]
     if args.check:
         run.load(args.input)
@@ -87,7 +94,7 @@ def main() -> None:
             return
     else:
         run.full(args.input, args.output, overwrite=args.overwrite)
-    report = qa(run, fields)
+    report = qa(run, fields, previous=args.output / "review.parquet" if args.increment else None)
     report.pop("review_sheet").to_parquet(args.output / "review.parquet")
     text = ["# Run report", "", f"Input: `{args.input}` · {run.n:,} records", ""]
     for name, table in report.items():

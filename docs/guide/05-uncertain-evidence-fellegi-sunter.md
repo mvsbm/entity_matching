@@ -151,6 +151,8 @@ A score is not yet a decision. We accept a pair at **6 bits or more**, a probabi
 
 The line was not picked from this table, which would tune it on validation. It comes from a rule applied to train ([chapter 6](06-measuring-and-choosing.md)): the lowest weight with no false pair in cross-validation, plus one safety step.
 
+**The safety step goes to people.** The pairs between the lowest clean weight and the line, from 4 to 6 bits, were never wrong on cross-validated train, but are held back in case of noise. Every run lists them in `review.parquet` for people to decide ([usage](../usage.md#6--review-and-decide)). On val all 26 are true, and accepting them takes recall from 91.3% to 92.5%, the 4-bit row above. The automatic line stays where the rule put it.
+
 **The closest non-match**, the rejected pair of different people with the highest score on val:
 
 | | Name | Address | Phone | CIF ID |

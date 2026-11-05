@@ -225,7 +225,7 @@ class FSModel:
     m_method: Literal["em", "labels"]
     em_rules: tuple[tuple[Key, ...], ...]     # one EM session per rule
     seed: int
-    u_from_scored: bool = False               # u re-sampled on each scored file, m and λ from the fit (er.match.with_scored_u)
+    u_from_scored: bool = False               # u measured on each scored file, m and λ from the fit (er.match.with_scored_u; an increment: refreshed_u)
     u_exact_by_counts: bool = False           # u of the leading exact levels from value counts, not the sample (er.match.exact_u)
 
     def u_keys(self) -> dict[str, str]:
