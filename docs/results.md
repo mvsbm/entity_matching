@@ -19,158 +19,203 @@ Every number here is printed by `scripts/choose.py` ([`reports/choose.md`](../re
 
   | Field | As written (`config/pipeline.toml`) | Adopted (`FINAL`) |
   |---|---|---|
-  | person name | kana fold → JW ≥ 0.92 | kana fold → Levenshtein ≤ 2 |
-  | company name | legal form stripped, kana fold → JW ≥ 0.92 | character-set Jaccard ≥ 0.77 |
-  | address | normalized (all typed formats give one key) → exact | normalized → JW ≥ 0.91 |
-  | phone | Hamming ≤ 1 | Damerau–Levenshtein ≤ 1 |
+  | person name | kana fold → JW ≥ 0.92 | kana fold → Damerau–Levenshtein ≤ 2 |
+  | company name | NFKC, legal form stripped, kana fold → JW ≥ 0.92 | NFKC, legal form stripped, kana fold → Levenshtein ≤ 1 |
+  | address | normalized (all typed formats give one key) → exact | normalized → JW ≥ 0.9 |
+  | phone | Hamming ≤ 1 | Hamming ≤ 1 |
 
-The train-only design analysis justifies "never one key alone". Single keys collide across entities: phone 45,506 different-entity pairs, postal code 41,868, given name 117,118, even the full name 230. Every exact rule's key combination has 0. The fuzzy rules' join keys have at most 4, and their fuzzy conditions reject those.
+  Rule F2 (name, address and phone) joins on the phone and the first three characters of the normalized address.
+
+The train-only design analysis justifies "never one key alone". Single keys collide across entities: phone 45,079 different-entity pairs, postal code 33,413, given name 84,380, even the full name 150. Every exact rule's key combination has 0. The fuzzy rules' join keys have at most 4, and their fuzzy conditions reject those.
 
 **Decisions** (`adopt`, each on top of the choice so far; rules fit nothing, so train is the selection set):
 
 | Change | Kind | Train: true pairs gained / lost | Val: gained / lost | Adopted |
 |---|---|---|---|---|
-| names: fold → Levenshtein ≤ 1 | better | 15 / 0 (p = 0.0001) | 7 / 0 | yes |
-| names: fold → exact | cheaper | 0 / 108 | 0 / 45 | no |
-| Optuna's comparators (below) | better | 19 / 1 (p < 0.001) | 6 / 0 | yes |
-| F2 joins on phone + exact normalized address (scale) | cheaper | 0 / 8 (p = 0.008) | 0 / 3 | no |
-| F2 joins on phone + first 3 characters of the normalized address (scale) | cheaper | 0 / 0 | 0 / 0 | **yes** |
+| names: fold → Levenshtein ≤ 1 (`fold_levenshtein`) | better | 17 / 4 (p = 0.0072) | 6 / 2 | yes |
+| names: fold → exact (`fold_exact`) | cheaper | 0 / 83 | 0 / 26 | no |
+| F2's address exact, so F2 joins on phone + normalized address (`f2_address_exact`, scale) | cheaper | 0 / 0 | 0 / 0 | yes |
+| F2 joins on phone + first 3 characters of the normalized address (`f2_address_prefix`, scale) | cheaper | 0 / 0 | 0 / 0 | yes |
+| Optuna's comparators, the table above (`optuna_comparators`) | better | 33 / 0 (p < 0.0001) | 11 / 0 | yes |
 
-None adds a false pair. The two F2 rows exist for scale: once Optuna's comparators make F2's address check fuzzy, F2 joins on the last four phone digits alone, the phone key's blocks: 50 million pairs at a million records. An earlier alternative, joining on the phone plus the name initial or the postal area, lost 2 true pairs on train and was dropped. The adopted one projects to 0.22 million ([chapter 3](guide/03-far-too-many-pairs.md#scaling-to-a-million-records)).
+None adds a false pair. The two F2 rows are there for scale. With a fuzzy address check, F2 would join on the last four phone digits alone, the phone key's blocks: about 50 million pairs at a million records. Close normalized addresses share their start, so F2 joins on the phone and the address's first three characters (the city), which loses no true pair and projects to 136,616 pairs at a million records. All the rules together project to 244,185 pairs there, from 3,710 on train ([chapter 3](guide/03-far-too-many-pairs.md#scaling-to-a-million-records)).
 
-**Optuna** (60 trials on train, ≈ 90 s) starts from `FINAL`: its first suggestion passed the same rule and became a change in `config/experiments.py` (`optuna_comparators`). Re-run from the final `FINAL`, the suggestion (trial 47) gains 1 true pair and loses none (p = 1.0), so it is not adopted and the loop has converged. The study is now off by default (`rules_tune`, `enabled=False`; `scripts/choose.py --optuna` runs it).
+**Optuna** (60 trials on train, seeded; off by default: `rules_tune`, `enabled=False`; `scripts/choose.py --optuna` runs it) searches each field's comparator. Its suggestion passed the same rule and is a change in `config/experiments.py` (`optuna_comparators`), decided last because it was found on top of the rest.
 
 **Results with `FINAL`:**
 
 | Data | Recall | 95% interval | FP | FP rate ≤ |
 |---|---|---|---|---|
-| train | 69.2% | 68.1–70.3% | 0 | 0.06% |
-| val | 69.5% (exact rules alone: 52.2%) | 67.6–71.4% | 0 | 0.19% |
-| **test** | **71.1%** | 69.2–72.9% | **0** | 0.18% |
+| train | 10.74% | 10.03–11.49% | 0 | 0.40% |
+| val | 9.71% (exact rules alone: 2.98%) | 8.54–11.01% | 0 | 1.38% |
+| **test** | **9.71%** | 8.58–10.98% | **0** | 1.31% |
 
 Paired A/B on val against the rules as written (informational; decisions use the rule above), all with 0 FP:
 
 | Variant | True pairs gained / lost | p |
 |---|---|---|
-| fold → Levenshtein ≤ 1 | 7 / 0 | 0.016 |
-| fold → exact | 0 / 38 | < 0.001 |
-| raw Jaro-Winkler (no kana folding) | 1 / 48 | < 0.001 |
-| constrained resolver (cannot-link on given name) | 0 / 210 | < 0.001 |
-| Optuna's comparators | 13 / 0 | < 0.001 |
+| fold → Levenshtein ≤ 1 | 6 / 2 | 0.2891 |
+| fold → exact | 0 / 22 | < 0.0001 |
+| raw Jaro-Winkler (no kana folding) | 0 / 41 | < 0.0001 |
+| constrained resolver (cannot-link on given name) | 0 / 42 | < 0.0001 |
+| Optuna's comparators | 21 / 1 | < 0.0001 |
+| F2's address exact | 0 / 0 | 1.0 |
+| F2 on phone + address prefix | 0 / 0 | 1.0 |
 
 The constrained resolver loses because given-name typos look like conflicts.
 
 ## Stage 2: probabilistic matching
 
-**Method:** the **Fellegi–Sunter model (Splink 5)** is the only probabilistic method so far; every A/B row is a variant of it.
-- λ comes from near-certain rules, u from 1e7 random pairs, m from EM (or labels). `FINAL` re-samples u on each scored file.
-- There are five comparisons: name, company, address, phone, cif. Correlated columns share one comparison (address code / normalized address / postal form one), because FS assumes independence.
+**Method:** the **Fellegi–Sunter model (Splink 5)** is the only probabilistic method; every A/B row is a variant of it.
+- λ comes from near-certain rules and m from EM (or labels), both on the fitting records. EM's own u come from 10⁶ random pairs of those records (`fit_u_max_pairs`). The u the scores use are measured on each scored file (below).
+- There are six comparisons: name, company, address, phone, cif, birth. Correlated columns share one comparison (address code, normalized address, postal code, town, city and prefecture form one), because FS assumes independence.
 - Levels use the `cl_*` functions.
 - **A level without an estimate never uses Splink's defaults.** No sampled pair reached it → u at its 95% upper bound, so its weight is a lower bound on the evidence. Never seen in training → m = u, 0 bits. The training table lists such levels (none in the pipeline as written).
 
 **Scores are calibrated to the scored file** (`er.match.score_fs`, `er.match.with_scored_u`):
-- **Term frequencies** come from the fitting records, stored in the model. A value never seen in training gets no adjustment, the conservative side.
+- **Term frequencies** come from the fitting records, stored in the model. A value never seen in training gets no adjustment, the conservative side. `FINAL` turns them off.
 - **λ** is a per-pair rate: true pairs grow with N, pairs with N². It is rescaled from the fitting set's size to the scored set's. So CV folds, val and test (about 10k records each) are scored on the same scale, and the threshold keeps its meaning at any size: on a file of N records, the same evidence earns log2(N/10k) fewer bits than on a 10k file.
-- **u** is re-sampled on the scored file's records (no labels; 1e7 pairs, about 8 s whatever the size), because a field whose values grow with the file agrees by chance less often in a bigger one. m stays from train.
-- Why this matters, and the bug it replaced: [lessons.md](lessons.md).
+- **u** is measured on the scored file's records, without labels, because a field whose values grow with the file agrees by chance less often in a bigger one. The leading exact levels are counted from value counts. A one-edit level right after them on the same column (the customer ID, phone or birth date one digit off) is counted exactly too: the distinct values are joined on their one-character deletions, which two values one edit apart always share. So cif, phone and birth need no sample; name, company and address are sampled on 10⁷ random pairs, every one of them. m stays from train.
+- Why this matters: [lessons.md](lessons.md).
 
-**Candidates on train** (2,135 true pairs the deterministic stage missed): every generator in `config/pipeline.toml`, in order, from `reports/choose.md`. Pairs per record at a million records are projected by `scale_check` (pairs of one entity × N, chance pairs × N²):
+**Candidates on train** (6,177 true pairs the deterministic stage missed): every generator in `config/pipeline.toml` `[generators]`, in order, from `reports/choose.md`. Pairs per record at a million records are projected by `scale_check` (pairs of one entity × N, chance pairs × N²):
 
 | Generator | Pairs | Missed pairs it reaches | Cumulative | Pairs per record at 1M |
 |---|---|---|---|---|
-| phone | 43,054 | 50.3% | 50.3% | 50.24 |
-| address | 11,534 | 37.7% | 76.1% | 12.80 |
-| address_code | 10,689 | 34.3% | 80.6% | 11.87 |
-| cif | 230 | 10.8% | 84.8% | 0.10 |
-| person_name | 1,228 | 40.2% | 91.2% | 0.58 |
-| company_name | 547 | 8.1% | 93.8% | 0.44 |
-| sn_person_name | 63,338 | 42.0% | 94.0% | 3.00 |
-| sn_company_name | 14,243 | 8.2% | 94.0% | 3.00 |
-| tfidf_person_name | 22,865 | 44.2% | 94.5% | N² |
-| tfidf_company_name | 2,416 | 8.3% | 94.6% | N² |
-| phone_prefecture | 1,211 | 18.6% | 94.6% | 1.05 |
-| phone_postal_area | 633 | 26.7% | 94.6% | 0.19 |
-| phone_name_initial | 2,134 | 26.4% | 94.6% | 2.03 |
-| sn_person_name_reversed | 63,317 | 49.0% | 95.0% | 3.00 |
-| company_name_deletions | 1,082 | 8.3% | 95.0% | 1.04 |
-| person_name_deletions_postal_area | 567 | 25.7% | 95.0% | 0.14 |
-| given_name_postal | 519 | 23.6% | 95.1% | 0.11 |
-| address_phone | 256 | 12.0% | 95.1% | 0.10 |
-| address_code_phone | 215 | 10.1% | 95.1% | 0.10 |
-| address_name_initial | 671 | 14.0% | 95.1% | 0.55 |
-| address_code_name_initial | 658 | 13.2% | 95.1% | 0.54 |
-| given_name_address_code | 225 | 10.5% | 95.1% | 0.08 |
+| phone | 46,675 | 27.02% | 27.02% | 49.823 |
+| address | 5,507 | 10.99% | 37.19% | 5.373 |
+| address_code | 6,063 | 21.01% | 48.00% | 5.345 |
+| cif | 37 | 0.60% | 48.50% | 0.005 |
+| person_name | 3,651 | 52.00% | 75.31% | 0.609 |
+| company_name | 746 | 7.12% | 79.50% | 0.354 |
+| sn_person_name | 70,472 | 59.32% | 82.97% | 3.0 |
+| sn_company_name | 15,030 | 9.54% | 84.33% | 3.0 |
+| tfidf_person_name | 28,092 | 61.84% | 86.03% | 1,000,000 (N²) |
+| tfidf_company_name | 2,805 | 9.49% | 86.11% | 1,000,000 (N²) |
+| phone_prefecture | 1,729 | 12.21% | 86.11% | 1.116 |
+| phone_postal_area | 462 | 5.99% | 86.11% | 0.131 |
+| phone_name_initial | 2,730 | 19.49% | 86.11% | 1.745 |
+| sn_person_name_reversed | 70,478 | 60.82% | 88.41% | 3.0 |
+| company_name_deletions | 1,210 | 7.48% | 88.44% | 0.843 |
+| cif_deletions | 53 | 0.86% | 88.46% | 0.006 |
+| person_name_deletions_postal_area | 1,418 | 22.70% | 88.51% | 0.081 |
+| given_name_postal | 971 | 15.56% | 88.73% | 0.055 |
+| address_phone | 53 | 0.83% | 88.73% | 0.012 |
+| address_code_phone | 92 | 1.47% | 88.73% | 0.021 |
+| address_name_initial | 649 | 7.43% | 88.73% | 0.233 |
+| address_code_name_initial | 1,110 | 14.62% | 88.73% | 0.276 |
+| given_name_address_code | 637 | 10.30% | 88.73% | 0.035 |
+| given_name_phone | 905 | 14.47% | 88.73% | 0.055 |
+| birth_date | 333 | 1.30% | 88.83% | 0.282 |
+| birth_date_deletions_prefecture | 324 | 0.83% | 88.83% | 0.313 |
 
-The last five add nothing to the cumulative reach: they are the address keys, each with one more field, and every pair they list is on the address or address-code key above. They replace those two in `FINAL`, with a tenth of their pairs on train and an eighteenth at a million records.
+The keys that pair the phone or the address with one more field add nothing to the cumulative reach: every pair they list shares the phone, the address or the address code, whose keys come first. They replace those three in `FINAL`. At a million records, the phone key alone would make 49.8 pairs per record and its three compound keys 3.0 together; the two address keys 10.7, and their five compound keys 0.6.
 
-**`FINAL`'s candidates on val** (679 missed pairs; each generator alone):
+**`FINAL`'s candidates on val** (each generator alone, and the share of the true pairs the rules missed that it reaches):
 
 | Generator | Pairs | Missed pairs reached |
 |---|---|---|
-| cif | 81 | 11.9% |
-| sn_company_name | 4,810 | 9.7% |
-| phone_prefecture | 196 | 17.8% |
-| phone_postal_area | 166 | 24.0% |
-| phone_name_initial | 370 | 26.5% |
-| sn_person_name | 22,543 | 43.6% |
-| sn_person_name_reversed | 22,477 | 52.7% |
-| person_name | 334 | 42.0% |
-| company_name | 116 | 9.7% |
-| company_name_deletions | 169 | 10.2% |
-| person_name_deletions_postal_area | 191 | 28.1% |
-| given_name_postal | 180 | 26.2% |
-| address_phone | 73 | 10.8% |
-| address_code_phone | 53 | 7.8% |
-| address_name_initial | 150 | 15.8% |
-| address_code_name_initial | 138 | 14.0% |
-| given_name_address_code | 81 | 11.9% |
-| **all 17** | **49,987** | **88.4%** (600 of 679) |
+| cif | 7 | 0.35% |
+| sn_company_name | 5,093 | 9.15% |
+| phone_prefecture | 342 | 12.00% |
+| phone_postal_area | 139 | 6.65% |
+| phone_name_initial | 577 | 19.50% |
+| sn_person_name | 23,218 | 60.05% |
+| sn_person_name_reversed | 23,210 | 64.70% |
+| person_name | 1,088 | 52.10% |
+| company_name | 203 | 7.60% |
+| company_name_deletions | 270 | 7.95% |
+| person_name_deletions_postal_area | 426 | 21.05% |
+| given_name_postal | 301 | 15.05% |
+| address_phone | 18 | 0.90% |
+| address_code_phone | 38 | 1.90% |
+| address_name_initial | 158 | 7.20% |
+| address_code_name_initial | 293 | 13.60% |
+| given_name_address_code | 204 | 10.20% |
+| cif_deletions | 11 | 0.55% |
+| birth_date | 66 | 2.00% |
+| given_name_phone | 282 | 14.00% |
+| birth_date_deletions_prefecture | 48 | 1.00% |
+| **all 21** | **50,923** | **86.1%** |
 
-That is 49,987 candidates on val (99.90% of all pairs skipped). Before the scale changes, `FINAL` used the phone key, the address keys and person-name TF-IDF instead: 14,180 candidates reaching 93.9%. None of the missed pairs no longer on the list could have been accepted: on every split, every true pair that could reach the threshold shares one of `FINAL`'s keys, at its own size, at 75,000 records and at a million ([chapter 3](guide/03-far-too-many-pairs.md#keeping-every-potential-match); `scripts/choose.py` checks train on every run).
+That is 50,923 candidates on val (99.90% of all pairs skipped). Every true pair on train that could reach the threshold shares one of `FINAL`'s keys, not only a sorted window: 3,036 such pairs at train's size and 2,960 at a million records, none window-only ([chapter 3](guide/03-far-too-many-pairs.md#keeping-every-potential-match); `scripts/choose.py` checks train on every run). Without labels, `pattern_coverage` finds 226 agreement patterns that can reach the threshold at a million records with no guaranteed key. The model puts their share of matches at 11.92% at most, an upper bound, since a Jaro–Winkler level implies no key.
 
-**Training:** EM and labels learn the same weights within noise.
-- Agreeing on CIF, phone, same address or postal code is worth about 11–16 bits; an exact name about 15.5.
-- "address close" (Levenshtein ≤ 2 on the normalized address) is worth +8.9 bits, "phone one digit off" +4.5.
+**Training** (the pipeline as written, on train): EM and labels learn nearly the same weights, within about half a bit on every agreeing level. The company's else level differs most: −2.66 bits by EM, −1.60 from labels.
+- By EM, the customer ID is worth 17.4 bits, an exact or folded-exact name 15.6–15.8, the same address 13.3, the phone 11.4, the postal code 10.3.
+- "address close" (Levenshtein ≤ 2 on the normalized address) is worth +2.2 bits, "phone one digit off" +4.1.
 
-**Threshold** (`ThresholdRule` on out-of-fold train scores): for the pipeline as written, the lowest weight with 0 false pairs is 6 (0 of 1,392 accepted), and one step of margin gives 8. Every decision variant gets its own threshold the same way; `FINAL`'s is **6**.
+**Threshold** (`ThresholdRule` on out-of-fold train scores, 3 folds): for the pipeline as written, the lowest weight with 0 false pairs is 10 (0 of 2,057 accepted), and one step of margin gives 12. Every decision variant gets its own threshold the same way; `FINAL`'s is **8**.
 
-**Decisions** (`adopt`: paired on cross-validated train; on val, no true pair lost, except for the owner's "chosen" calls, which may move recall but add no false pair):
-
-| Change | Kind | Cross-validated train | Val | Adopted |
+| Weight | Accepted | False pairs | Recall | Eligible |
 |---|---|---|---|---|
-| term-frequency adjustment off | better | +15 / −0 true pairs (p = 0.0001), no FP added | +2 / −0 | **yes** |
-| exact keys only (drop sorted neighbourhood, TF-IDF) | cheaper | −3 true pairs | ±0 | no |
-| Optuna's suggestion (below) | better | +172 / −0 (p < 10⁻⁵⁰), no FP added | +43 / −0 | **yes** |
-| u from 1e6 pairs instead of 1e7 | cheaper | +9 / −26 (p = 0.006) | +0 / −1 | no |
-| phone key → three compound keys (scale) | cheaper | +0 / −0 | +0 / −0 | **yes** |
-| TF-IDF → sorted neighbourhood on the name and the reversed name (scale) | cheaper | +1 / −0 (p = 1.0) | +0 / −0 | **yes** |
-| five name keys: no potential match left to a sorted window (scale) | safer | +1 / −0, no FP added | +0 / −0 | **yes** |
-| the address only with the phone, the name's first letter or the given name (scale) | cheaper | +0 / −0 | +0 / −0 | **yes** |
-| no sorted windows | cheaper | +0 / −3 | +0 / −1 | no |
-| score every pair across two rule clusters | better | +12 / −0 (p = 0.0005), no FP added | +4 / −0 | **yes** |
-| u re-sampled on each scored file (owner's decision, for scale) | chosen | +63 / −0 (p < 10⁻¹⁸), no FP added | +20 / −0 | **yes** |
-| u of the leading exact levels counted from value counts, not sampled (owner's decision, for scale) | chosen | +0 / −122, no FP added | +0 / −27 | **yes** |
+| 0 | 3,194 | 27 | 59.23% | no |
+| 2 | 3,081 | 8 | 57.72% | no |
+| 4 | 2,966 | 3 | 56.16% | no |
+| 6 | 2,649 | 1 | 51.23% | no |
+| 8 | 2,380 | 1 | 47.07% | no |
+| 10 | 2,057 | 0 | 42.18% | yes |
+| 12 | 925 | 0 | 24.51% | yes |
+| 14 | 280 | 0 | 14.86% | yes |
+| 16 | 218 | 0 | 13.93% | yes |
 
-**Results with `FINAL`** (17 generators, pairs across two rule clusters scored, u from each scored file with the exact levels counted, term frequency off, m by EM, Optuna's JW thresholds, threshold 6, connected components):
+**Decisions** (`adopt`, in order, each on top of the choice so far: paired on cross-validated train; on val, no more true pairs lost than gained. The owner's "chosen" calls may move recall. No change adds a false pair, on cross-validated train or on val):
 
-| Data | After deterministic → after probabilistic | 95% interval | FP | FP rate ≤ |
+| Change | Kind | Cross-validated train: true pairs gained / lost | Val | Adopted |
 |---|---|---|---|---|
-| train | 69.2% → 89.7% | 89.0–90.4% | 2 | 0.10% |
-| val | 69.5% → 91.3% | 90.1–92.4% | 0 | 0.15% |
-| **test** | 71.1% → **89.9%** | 88.7–91.1% | **0** | 0.14% |
+| term-frequency adjustment off (`no_term_frequency`) | better | +12 / −0 (p = 0.0005) | +15 / −0 | yes |
+| exact keys only: no sorted windows, no TF-IDF (`exact_keys_only`) | cheaper | +0 / −0 | +0 / −0 | yes |
+| Optuna's suggestion, below (`optuna_suggestion`) | better | +1,488 / −1 (p < 0.0001) | +243 / −0 | yes |
+| u from 10⁶ pairs instead of 10⁷ (`u_from_1e6_pairs`) | cheaper | +1 / −8 (p = 0.0391) | +0 / −1 | no |
+| phone key → phone + prefecture, postal area or name initial (`compound_phone_keys`, scale) | cheaper | +0 / −0 | +0 / −0 | yes |
+| TF-IDF → sorted neighbourhood on the name and the reversed name (`sorted_names_for_tfidf`, scale) | cheaper | +1 / −0 | +4 / −0 | yes |
+| five name keys: no potential match left to a sorted window (`name_keys`, scale) | safer | +1 / −0 | +0 / −0 | yes |
+| the address only with the phone, the name's first letter or the given name (`bounded_address_keys`, scale) | cheaper | +0 / −0 | +0 / −0 | yes |
+| no sorted windows (`no_sorted_windows`) | cheaper | +0 / −0 | +0 / −1 | no |
+| score every pair across two rule clusters (`bridge_rule_clusters`) | better | +0 / −0 | +0 / −0 | no |
+| u measured on each scored file (`u_from_scored_file`, owner's decision, for scale) | chosen | +0 / −60 (p < 0.0001) | +0 / −12 | yes |
+| u of the leading exact levels from value counts, not sampled (`u_exact_by_counts`, owner's decision, for scale) | chosen | +47 / −5 (p < 0.0001) | +0 / −0 | yes |
+| the customer ID one digit off, a level (`cif_one_digit_off`) | better | +8 / −0 (p = 0.0078) | +2 / −0 | yes |
+| its key: the customer ID's one-character deletions (`cif_deletion_key`) | safer | +2 / −0 (p = 0.5) | +0 / −0 | yes |
+| graded address: the same town, city or prefecture after the postal code (`graded_address`) | better | +124 / −67 (p < 0.0001) | +29 / −20 | yes |
+| the birth date: exact, one digit off (`birth_date`) | better | +56 / −0 (p < 0.0001) | +22 / −0 | yes |
+| its key: the birth date (`birth_date_key`) | safer | +1 / −0 | +0 / −0 | yes |
+| the given name + the phone, a key (`given_name_phone_key`) | safer | +0 / −0 | +0 / −0 | yes |
+| the birth date's deletions within the prefecture, a key (`birth_date_deletion_key`) | safer | +0 / −0 | +0 / −0 | yes |
+| one-edit levels counted through one-character deletions, not sampled (`u_near_by_keys`, owner's decision, for scale) | chosen | +0 / −2 (p = 0.5) | +0 / −0 | yes |
+| the fit's own u from 10⁶ pairs, for EM only (`fit_u_from_1e6_pairs`) | cheaper | +0 / −0 | +0 / −0 | yes |
+| the company without its "JW high" level (`company_without_jw_high`) | cheaper | +1 / −0 | +0 / −0 | yes |
+| a name compared, or people decide (`name_needed`, owner's decision) | chosen | +0 / −39 (p < 0.0001) | +0 / −22 | yes |
 
-Train is scored in-sample (the model is fitted on all of it). It has 2 false pairs, in one over-merged cluster; out-of-fold, no adopted change added a false pair.
+`optuna_suggestion` sets the generators itself (those of the pipeline as written, less four), so `exact_keys_only` leaves no trace in `FINAL`; the scale changes after it replace the phone, address and TF-IDF keys. The four "chosen" calls lose true pairs on train-sized files on purpose. The three on u make the weights right at any file size: u measured on the file itself, and counted where a sample of 10⁷ pairs can't see an agreement rarer than one in 10⁹ pairs (an exact name, or a customer ID, equal or one digit off, in a big file). The name check holds back pairs with no name compared, such as a household sharing an address and a phone: they go to people ([usage](usage.md#6--review-and-decide)). Train and val hold no such false pair, so its gain shows only at scale.
 
-**The threshold transfers:** at weight 6, cross-validated train accepts 0 false of 1,386 pairs (rate ≤ 0.22%) and val 0 of 460. `scripts/choose.py` checks this on every run.
+**Results with `FINAL`** (21 generators, u from each scored file with the exact and one-edit levels counted, term frequency off, m by EM, Optuna's JW thresholds, a name compared, threshold 8, connected components):
 
-**Worked example:** `reports/choose.md` breaks one accepted and one rejected pair into bits; the README walks through both, and section 8 of the demo draws two more.
+| Data | After deterministic → after probabilistic | 95% interval | FP | FP rate ≤ | Accepted pairs |
+|---|---|---|---|---|---|
+| train | 10.74% → 45.62% | 44.45–46.80% | 0 | 0.09% | 2,267 |
+| val | 9.71% → 46.32% | 44.25–48.40% | 0 | 0.29% | 765 |
+| **test** | 9.71% → **45.91%** | 43.90–47.94% | **0** | 0.28% | 798 |
 
-**Optuna** (cross-validated objective, 30 trials, seeded; off by default since round 4, `fs_tune`, `enabled=False`): each trial switches generators off and picks the m method, term frequency, level thresholds and resolver. Its threshold comes from the threshold rule, as `FINAL`'s does.
-- **Round 1** searched the threshold directly. Its 0-FP suggestion (trial 12) passed `adopt` against `FINAL` (cross-validated train +280 / −0, val +92 / −0) and became the `optuna_suggestion` decision. It drops four generators (folded-name keys, person sorted neighbourhood, company TF-IDF) and changes the JW thresholds (names 0.95 / 0.75, companies 0.97 / 0.80).
-- That round searched the threshold directly, which could never converge with the threshold rule ([lessons.md](lessons.md)); trials now take the rule's threshold.
-- **Round 2,** from the new `FINAL`: the suggestion (trial 19: 0 FP out-of-fold, 90.8% recall; 0 FP on val, 91.5%) did not pass `adopt` (+11 / −7, p = 0.48).
-- **Round 3,** after the scale changes: the suggestion (trial 25: 0 FP out-of-fold, 90.6%; 0 FP on val, 91.3%) does not pass either (cross-validated train +6 / −18, p = 0.023; val +4 / −8).
-- **Round 4,** after the name keys and bridging: the suggestion (trial 3: 0 FP out-of-fold, 90.8%; 0 FP on val, 91.4%) loses true pairs (cross-validated train +0 / −12, p = 0.0005; val +0 / −6). The search has converged.
+Train is scored in-sample (the model is fitted on all of it), and has no false pair either. Test is scored once per stage, with one configuration each.
+
+**The threshold transfers:** at weight 8, cross-validated train accepts 0 false of 2,368 pairs (rate ≤ 0.13%) and val 0 of 765. `scripts/choose.py` checks this on every run. On val, the first false pair comes at 4 bits:
+
+| Weight | Accepted | False pairs | Recall |
+|---|---|---|---|
+| 0 | 1,280 | 23 | 68.80% |
+| 2 | 1,180 | 12 | 64.79% |
+| 4 | 907 | 1 | 53.18% |
+| 6 | 877 | 0 | 51.74% |
+| 8 | 765 | 0 | 46.32% |
+| 10 | 518 | 0 | 34.58% |
+| 12 | 460 | 0 | 31.78% |
+| 14 | 231 | 0 | 20.72% |
+| 16 | 90 | 0 | 13.91% |
+
+**Worked example:** `reports/choose.md` breaks two pairs into bits: an accepted true match with a typo (8.07 bits, from the given name, the postal code and a phone one digit off), and the rejected non-match closest to the threshold (5.46 bits, from the phone and the prefecture, the names only loosely alike). [Chapter 5](guide/05-uncertain-evidence-fellegi-sunter.md#solution-evidence-in-bits) walks through one pair field by field, and section 8 of the demo draws two more.
+
+**Optuna** (cross-validated objective, 30 trials, seeded; off by default: `fs_tune`, `enabled=False`; `scripts/choose.py --optuna` runs it): each trial switches generators off and picks the m method, term frequency, level thresholds and resolver. Its threshold comes from the threshold rule, as `FINAL`'s does: a search that set the threshold itself would pull against the rule ([lessons.md](lessons.md#two-policies-that-set-one-parameter)). A tuned level the model doesn't have is skipped.
+- Its suggestion that passed `adopt` is the `optuna_suggestion` decision. It drops four generators (the person- and company-name keys, the person-name sorted neighbourhood, the company TF-IDF), turns term frequency off, and sets the JW thresholds: names 0.95 / 0.75, companies 0.97 / 0.80. `company_without_jw_high` then drops the company's 0.97 level, which no pair reached.
 
 ## Benchmark
 
@@ -182,22 +227,24 @@ Each population's test split, with λ, u and m fitted on its train split without
 
 | scenario | rules_recall | recall | interval | false_merges | fp_rate_at_most |
 | --- | --- | --- | --- | --- | --- |
-| as reported (seed 0) | 0.7111 | 0.8994 | 0.887–0.911 | 0 | 0.14% |
-| seed 1 | 0.7034 | 0.9069 | 0.895–0.918 | 0 | 0.14% |
-| seed 2 | 0.67 | 0.8886 | 0.875–0.901 | 0 | 0.15% |
-| typos doubled | 0.6743 | 0.8867 | 0.873–0.899 | 0 | 0.15% |
-| fields emptier (last column 45% filled) | 0.6279 | 0.8829 | 0.869–0.895 | 0 | 0.14% |
-| prior_recall 0.25 (λ ×2) | 0.7111 | 0.9147 | 0.903–0.925 | 0 | 0.14% |
-| prior_recall 0.75 (λ ×⅔) | 0.7111 | 0.8901 | 0.877–0.902 | 0 | 0.14% |
+| as reported (seed 0) | 0.0971 | 0.4591 | 0.439–0.479 | 0 | 0.28% |
+| seed 1 | 0.1108 | 0.463 | 0.443–0.484 | 0 | 0.29% |
+| seed 2 | 0.1206 | 0.4929 | 0.472–0.514 | 0 | 0.27% |
+| typos doubled | 0.0812 | 0.3338 | 0.314–0.354 | 0 | 0.41% |
+| fields emptier (last column 45% filled) | 0.0727 | 0.4172 | 0.397–0.437 | 0 | 0.31% |
+| prior_recall halved (λ ×2) | 0.0971 | 0.4908 | 0.471–0.511 | 0 | 0.26% |
+| prior_recall ×1.5 (λ ×⅔) | 0.0971 | 0.4506 | 0.431–0.471 | 0 | 0.28% |
 
-### Cost: files of growing size (time grows like N^0.21)
+### Cost: files of growing size (time grows like N^0.4)
 
 Each file is resolved by `scripts/resolve.py` in a process of its own, fitted on the file itself; DuckDB memory limit: 8GB. Peak memory is the process's, Python included. Step columns are seconds. `fit` (on 30,000 records) and the u sample of the file inside it (10,000,000 pairs) cost the same at any size, so at these sizes the total grows far slower than N. Above 60,000 entities personas repeat, so those rows measure cost only.
 
 | records | seconds | peak_memory_gb | load | budget | fit | rules | candidates | score | cluster | write | recall | false_merges | fp_rate_at_most |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| 12392 | 17.9 | 0.57 | 0.12 | 0.07 | 9.01 | 0.24 | 0.12 | 8.24 | 0.03 | 0.03 | 0.8885 | 0 | 0.12% |
-| 24944 | 19.1 | 0.66 | 0.22 | 0.08 | 9.42 | 0.32 | 0.21 | 8.77 | 0.05 | 0.07 | 0.894 | 3 | 0.16% |
-| 50215 | 19.6 | 0.78 | 0.34 | 0.15 | 8.97 | 0.42 | 0.38 | 9.14 | 0.07 | 0.13 | 0.8944 | 1 | 0.05% |
-| 75284 | 20.4 | 0.97 | 0.5 | 0.21 | 8.76 | 0.53 | 0.52 | 9.59 | 0.1 | 0.19 | 0.8902 | 5 | 0.07% |
-| 999481 | 44.1 | 3.81 | 5.7 | 0.99 | 7.75 | 3.52 | 3.37 | 20.68 | 0.53 | 1.53 | — | — | — |
+| 12532 | 8.0 | 0.73 | 0.15 | 0.11 | 7.19 | 0.06 | 0.22 | 0.23 | 0.03 | 0.04 | 0.4573 | 2 | 0.48% |
+| 24955 | 9.0 | 0.85 | 0.26 | 0.17 | 7.63 | 0.09 | 0.34 | 0.38 | 0.04 | 0.07 | 0.4598 | 0 | 0.12% |
+| 50116 | 9.9 | 0.94 | 0.43 | 0.3 | 7.75 | 0.14 | 0.58 | 0.51 | 0.05 | 0.13 | 0.4467 | 0 | 0.06% |
+| 74959 | 11.0 | 1.07 | 0.61 | 0.44 | 7.89 | 0.2 | 0.83 | 0.74 | 0.06 | 0.19 | 0.4422 | 4 | 0.12% |
+| 1000338 | 42.9 | 6.23 | 6.95 | 1.82 | 9.18 | 2.29 | 6.24 | 15.35 | 0.27 | 0.81 | — | — | — |
+
+The model makes false merges on two of these populations: 2 false pairs at 12,532 records and 4 at 74,959. They are model links at 8.2–10.1 bits, just over the threshold of 8, between near-namesakes a kana typo apart who share an address or a phone.

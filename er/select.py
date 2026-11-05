@@ -93,7 +93,7 @@ class RulesChooser:
         return [("A/B on val, paired against the rules as written", "", pd.DataFrame(rows).round(4))]
 
     def decide(self) -> list[Section]:
-        """Each decision on top of the choice so far: paired on train (rules fit nothing), and no paired loss on val."""
+        """Each decision on top of the choice so far: paired on train (rules fit nothing), and no net paired loss on val."""
         final, rows = self.spec, []
         for name, kind in self.decisions:
             variant = self.changes[name](final)
@@ -190,8 +190,8 @@ class RulesChooser:
 @dataclass
 class FSChooser:
     """The caches skip repeated work without changing any result: models by (config, fitting set); runs by (config,
-    dataset, threshold); u per comparison and the values it reads (er.match.scored_sample), so models that share a
-    comparison, and a model's fit and its scores on the same records, reuse one sample."""
+    dataset, threshold); u per comparison, sample size and the values it reads (er.match.scored_sample), so models that
+    share a comparison reuse one sample, and so do a fit and its scores on the same records when they sample as many pairs."""
     spec: FSSpec
     pipeline: Pipeline
     rules: RulesSpec                          # the rules stage as chosen: its results are this stage's starting point
@@ -327,7 +327,7 @@ class FSChooser:
 
     def decide(self) -> list[Section]:
         """Each decision on top of the choice so far, at its own threshold-rule threshold: paired on cross-validated
-        train, plus no paired loss on val."""
+        train, plus no net paired loss on val."""
         final, rows = self.tuned, []
         for name, kind in self.decisions:
             variant = self.changes[name](final)

@@ -6,13 +6,13 @@
 
 ## Datasets
 
-**Datasets:** one generated population of 40,000 entities (50,215 records), split by entity so a duplicate group never spans two splits. Each split uses the same file name in every layer:
+**Datasets:** one generated population of 40,000 entities (50,116 records), split by entity so a duplicate group never spans two splits. Each split uses the same file name in every layer:
 
 | Dataset | Entities | Records | Role |
 |---|---|---|---|
-| `train` | 60% | 30,147 | fitting, design analyses, cross-validated threshold and decisions, Optuna objective |
-| `val` | 20% | 10,002 | A/B confirmation and selection checks |
-| `test` | 20% | 10,066 | final report, once per configuration |
+| `train` | 60% | 30,103 | fitting, design analyses, cross-validated threshold and decisions, Optuna objective |
+| `val` | 20% | 9,966 | A/B confirmation and selection checks |
+| `test` | 20% | 10,047 | final report, once per configuration |
 
 Every table is Parquet. Only `reference/` is in git; everything else rebuilds from the scripts (`.gitignore`). The medallion
 layers follow the pipeline: bronze is the records as they arrive, silver the standardized records each run keeps in its
@@ -34,7 +34,7 @@ A run folder is the same wherever it is written, by `scripts/choose.py` here or 
 
 ## Reference data: `data/reference/`
 
-Built once from public sources. The downloads were deleted afterwards; `SOURCES.md` records the exact steps, filters, counts and licences.
+Built once from public sources. The downloads are not kept; `SOURCES.md` records the exact steps, filters, counts and licences.
 
 | File | Records | Source (licence) | Content |
 |---|---|---|---|
@@ -42,16 +42,16 @@ Built once from public sources. The downloads were deleted afterwards; `SOURCES.
 | `companies.json` | 31,596 companies | Wikidata, direct company types (CC0) | name + kana (official P1814 where present, else SudachiPy); legal forms stripped |
 | `addresses.json` | 46,364 towns, all 47 prefectures | geolonia/japanese-addresses (CC BY 4.0) + yubinbango-data | prefecture, city and town with kana, JIS municipality code, chome, postal code |
 
-Two traps came up while building this:
+Two traps in the sources:
 - **Wikidata's class tree:** 13,766 of the 16k "Japanese companies" with kana in the transitive `company` tree are dissolved municipalities. Only direct company types give real companies.
-- **yubinbango prefecture codes:** they are written without the leading zero (`1`, not `01`), which silently dropped 9 prefectures until the codes were zero-padded.
+- **yubinbango prefecture codes:** they are written without the leading zero (`1`, not `01`), so they are zero-padded; unpadded, the prefectures numbered 1 to 9 would drop out of the join silently.
 
 ## Synthetic data: `scripts/generate.py`
 
 All parameters live in `config/generator.toml`: `[population]` (`er.generate.Spec`) and `[split]` (shares and seed). `er.generate.generate` builds the population, `check` asserts its invariants, and `scripts/generate.py` writes `medallion/bronze/<split>.parquet` and `labels/<split>.parquet` (`--entities`, `--seed` and `--out` write another population, unsplit).
 
 - **Entities:** 40,000, 20% companies. Each entity has `1 + Poisson(0.25)` records.
-  - **Persons** are sampled personas, each at most once, with realistic surname frequencies (サトウ, スズキ, タカハシ …). Their addresses lie in the persona's prefecture. Sampling with replacement made about 8,500 pairs of clones (same name, same prefecture) that no matcher can tell apart; same-name pairs now come only from the persona file itself.
+  - **Persons** are sampled personas, each at most once, with realistic surname frequencies (サトウ, スズキ, タカハシ …). Their addresses lie in the persona's prefecture. Sampling with replacement would make clones (same name, same prefecture) that no matcher can tell apart, so same-name pairs come only from the persona file itself.
   - **Companies** are sampled real names with a legal form before or after the name, written as each record's system writes it: カブシキガイシャ, (カ), カ), ｶﾌﾞｼｷｶﾞｲｼｬ or left out; one record in ten adds a branch (ホンシャ, トウキョウシテン …).
   - **Addresses** are real towns with random 番/号, and a real postal code and JIS code.
 - **Multi-valued entities:** each entity owns `1 + Poisson(λ)` phones and addresses (λ = 2.0 for persons, 3.0 for companies: moves and new phones) and names (λ = 0.3 and 1.0: married names, other company names). Each record shows one of them.
@@ -75,16 +75,17 @@ All parameters live in `config/generator.toml`: `[population]` (`er.generate.Spe
 ### How hard it is
 
 Real data holds very few direct duplicates, so the generator is calibrated to make them rare. `er.generate.profile`
-measures it on the true pairs (two records of one entity), and `scripts/generate.py` prints it:
+measures it on the true pairs (two records of one entity; 11,472 in this population), and `scripts/generate.py` prints it:
 
 | A true pair shares | Share |
 |---|---|
 | the customer ID | 2.2% |
 | the exact name, as written | 9.0% |
-| the phone digits | 34.0% |
-| the address code | 27.0% |
-| the standard address | 19.8% |
+| the phone digits | 33.1% |
+| the address code | 26.7% |
+| the standard address | 10.2% |
+| the birth date | 1.6% |
 | **direct**: the same customer ID and name, or the same name, address code and phone (what exact rules settle) | **1.0%** |
-| **nothing in common**: no field equal, and the names not even close (Jaro–Winkler under 0.75) | **10.8%** |
+| **nothing in common**: no field equal, and the names not even close (Jaro–Winkler under 0.75) | **11.5%** |
 
-The pairs with nothing in common can't be found by any method, so recall is read against the other 89.2%.
+The pairs with nothing in common can't be found by any method, so recall is read against the other 88.5%.

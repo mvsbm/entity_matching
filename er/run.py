@@ -268,8 +268,8 @@ class Run:
         """λ from the near-certain rules, u by random sampling, m by EM, on a fixed-size sample of whole postal areas
         (households stay together, and the cost doesn't grow with the file); skipped when a fitted model was given. Then
         u measured on this file (the model's choice), which the gate on oversized blocks and the scores both use: the
-        sample's u would under-credit a field whose values grow with the file. A file no bigger than the sample reuses
-        the fit's own u sample (er.match.scored_sample). Keeps the basis an increment needs to judge whether these u
+        sample's u would under-credit a field whose values grow with the file. On a file no bigger than the sample, a fit
+        that samples as many pairs as the file's u (fit_u_max_pairs unset) shares that sample (er.match.scored_sample). Keeps the basis an increment needs to judge whether these u
         have gone stale (er.match.u_basis)."""
         t, fs = time.perf_counter(), self.pipeline.fs
         if self.model is None:

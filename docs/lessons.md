@@ -2,160 +2,156 @@
 
 *Reference for the guide. A short summary is in [chapter 6](guide/06-measuring-and-choosing.md#challenge-the-tools-themselves-can-fool-you).*
 
-# Lessons: how this pipeline fooled us, and what now guards against it
+# Pitfalls and what guards against them
 
-Each entry gives the symptom that gave it away, the cause, the fix, and what keeps it fixed. They are worth reading before trusting any entity-resolution number, ours included.
+Each entry names a way an entity-resolution pipeline like this one goes wrong, and how it would show (**Pitfall**); why it happens (**Why**); what this pipeline does against it (**Guard**); and the test or report that keeps it so (**Check**). They are worth reading before trusting any entity-resolution number, ours included.
 
-## Scores depended on what had been scored before
-- **Symptom:** recall on train and in cross-validation sat about 10 points below val and test. Turning term frequency off gained 560 true pairs in cross-validation but only 26 on val.
-- **Cause:** Splink keeps term-frequency tables in a cache on the DuckDB connection, keyed by the column name alone. With one shared connection, every dataset after the first was scored with the first dataset's name frequencies. Names missing from that stale table got no adjustment at all.
-- **Fix:** `score_fs` clears the cache before scoring, and term frequencies now come from the fitting records, stored in the model.
-- **Guard:** `tests/` scores one set after another on a shared connection and compares the result with a fresh connection.
+## Scores that depend on what was scored before
+- **Pitfall:** a cache keyed too loosely makes a file's scores depend on which file was scored before it on the same connection. It shows as train and cross-validation disagreeing with val and test, or a change gaining far more on one set than on another.
+- **Why:** Splink keeps term-frequency tables in a cache on the DuckDB connection, keyed by name alone. With one shared connection, every file after the first is scored with the first file's name frequencies, and a name missing from that stale table gets no adjustment at all.
+- **Guard:** `score_fs` clears Splink's cache before scoring, and term frequencies come from the fitting records, stored in the model. The pipeline's own caches are keyed by everything they read: the u cache (`er.match.scored_sample`) by the comparison and a fingerprint of the values it reads.
+- **Check:** `tests/` scores one set after another on a shared connection and compares the result with a fresh connection, for the model and for the rules. Another test checks that one u sample serves the same records in any order, as a frame or as a table.
 
-## Scores depended on the size of the scored set
-- **Symptom:** none visible yet. It would have shown on a much bigger file.
-- **Cause:** the prior λ is a per-pair rate. True pairs grow with the number of records N, pairs with N². A model fitted on 30,000 records and applied to 10,000 or to 1,000,000 uses the wrong prior by log2 of the size ratio. Term frequencies computed on the scored set have the same problem.
-- **Fix:** `score_fs` rescales λ to the scored set's size (`scaled_prior`), so cross-validation folds, val, test and any real file are all scored on one scale.
-- **Guard:** a test pads the scored set and checks that the weight moves by exactly the change in the prior's odds.
+## Weights fitted at one file size, used at another
+- **Pitfall:** a model fitted on one file and applied to a bigger or a smaller one weighs the evidence wrongly. It shows as recall that drifts with the file's size at a fixed threshold, or as a change that loses on small selection sets and gains on big files.
+- **Why:** the prior λ is a per-pair rate. True pairs grow with the number of records N, pairs with N², so a prior fitted on 30,000 records is off by log2 of the size ratio on another file. u has the same problem for fields whose number of distinct values grows with the file, such as the address and the CIF ID: two random records agree on them less often in a bigger file. A u from 30,000 records under-credits an agreement on them by about log2(N / 30,000) bits on a bigger file, 5 bits at a million, and over-credits it on a smaller one. Fields with a fixed set of values, such as the phone digits or a surname, are not affected. And a sample of 10 million pairs cannot see an agreement rarer than about one in a billion pairs, which an exact name or CIF ID becomes in a big file.
+- **Guard:** `score_fs` rescales λ to the scored file's size (`scaled_prior`). The fit ends by measuring u on the whole file (`with_scored_u`): the leading exact levels from value counts, a one-edit level right after them through one-deletion keys, the rest from 10 million random pairs. The scores and the gate on oversized blocks both use these u. Measuring u on the scored file is a "chosen" decision: on the 10,000-record selection sets it removes credit that the larger fitting set's u over-gives there, so it loses 60 true pairs out-of-fold and 12 on val, with no false pair added. Counting the exact levels gains 47 and loses 5 out-of-fold.
+- **Check:** tests pad the scored set and check that the weight moves by exactly the change in the prior's odds, and that u comes from the scored file while m stays as fitted. [`reports/benchmark.md`](../reports/benchmark.md) reports recall at every file size, and [`reports/choose.md`](../reports/choose.md) each decision's paired counts.
 
-## The size rescaling was only half done
-- **Symptom:** at a fixed threshold, recall falls as the scored file grows: 89.9% at 12,000 records, 87.6% at 75,000 (the scale runs, now `scripts/benchmark.py`).
-- **Cause:** λ is rescaled to the scored file's size, but u stays as measured on train. For fields whose number of distinct values grows with the file, such as the address and the CIF ID, the chance that two random records agree also shrinks like 1/N. Train's u then under-credits an agreement on them by about log2(N / 30,000) bits: 1.3 bits at 75,000 records, 5 bits at a million. On the 10,000-record val and test files it over-credits them by about 1.6 bits instead. Fields with a fixed set of values, such as the phone digits or a surname, are not affected.
-- **Fix:** re-sample u on each scored file (`FSModel.u_from_scored`). It needs no labels and costs the same 10 million random pairs whatever the size. At 75,000 records it lifts recall from 87.6% to 88.7%, with the same false pairs.
-- **How it was decided:** by the owner, as a "chosen" decision. Since the standardization fixes it gains on the selection sets too (+63 / −0 true pairs out-of-fold, +20 / −0 on val); the rest of this entry is the first decision's evidence. The rule's selection sets have about 10,000 records, where the change only removes credit u from train had over-given: −27 true pairs out-of-fold, −8 on val, no false pair added either way. The gain shows on bigger files, and real files are usually bigger than train.
-- **Guard:** a test checks that u comes from the scored file, and `scripts/benchmark.py` reports recall at every file size.
+## A generator that makes impossible twins
+- **Pitfall:** synthetic data holds pairs no matcher could separate, which count as false merges that are no fault of the matcher. They show as false pairs that cluster in one over-merged entity, or as a threshold that fails to transfer from cross-validation to val.
+- **Why:** drawing personas with replacement makes entities with the same name and prefecture. When two of them also draw the same address, they differ only in CIF ID and phone. Real data wouldn't contain such a pair.
+- **Guard:** the generator draws each persona at most once, and refuses a population larger than the persona file. Same-name pairs come only from the persona file itself.
+- **Check:** `reports/choose.md` prints the transfer check every round: at 8 bits, 0 false of 2,368 accepted pairs out-of-fold, and 0 of 765 on val. False pairs that cluster into one over-merged entity are a sign of one cause, not several.
 
-## Three false positives that were one clone
-- **Symptom:** the check that the threshold transfers failed. Cross-validated train had 0 false pairs out of 784 accepted; val had 3 out of 300.
-- **Cause:** all three were one event. Two entities with the same full name lived at the same address and differed only in CIF and phone. The generator drew personas with replacement, which made about 8,500 pairs of entities with the same name and prefecture. Two of them also drew the same address. No matcher can separate such a pair, and real data wouldn't contain it.
-- **Fix:** the generator draws each persona at most once. Same-name pairs now come only from the persona file itself (3,872 personas share a full name).
-- **Guard:** the evaluation cell prints the transfer check on every run. False pairs that cluster into one over-merged entity are a sign of one cause, not several.
+## Levels without an estimate
+- **Pitfall:** Splink fills a level it could not estimate with default m and u values, which can produce strong weights out of nothing. It shows as Splink warning "u values not fully trained" or "level not observed".
+- **Why:** a lower level can be unreachable, when its threshold sits above the level before it ("JW low" above "JW high"), or a threshold can be so strict that no random pair reaches it.
+- **Guard:** a level no sampled pair reached gets u at its 95% upper bound, so its weight is a lower bound on the evidence. A level never seen in training gets m = u, worth 0 bits. The model lists such levels (`er.filled`). A level that is never reached is left out: the company comparison has no "JW high" level, and the search skips a tuned level the model doesn't have.
+- **Check:** a test builds a shadowed level and checks that it carries 0 bits.
 
-## Levels without an estimate fell back to Splink's defaults
-- **Symptom:** Splink warned "u values not fully trained" and "level not observed" during the Optuna studies.
-- **Cause:** some trials placed a "JW low" threshold above "JW high", which leaves the lower level unreachable, or used thresholds so strict that no random pair reached them. Splink then filled in default m and u values, and those can produce strong weights out of nothing.
-- **Fix:** a level no sampled pair reached gets u at its 95% upper bound, so its weight is a lower bound on the evidence. A level never seen in training gets m = u, worth 0 bits. The training cell lists such levels.
-- **Guard:** a test builds a shadowed level and checks that it carries 0 bits.
+## Two policies that set one parameter
+- **Pitfall:** two procedures that both choose the same setting make the adopt-and-rerun loop go round for ever. It shows as a search suggesting an adopted configuration again, and that suggestion passing the decision rule again.
+- **Why:** if Optuna searches the acceptance threshold while the threshold rule re-sets each adopted configuration's threshold to its own choice, any point with a lower threshold beats the choice again.
+- **Guard:** one policy everywhere. Every configuration, whether the pipeline as written, a decision variant or an Optuna trial, takes its threshold from the threshold rule (`config/pipeline.toml` `[threshold]`), and Optuna does not search it.
+- **Check:** the search spaces in `config/experiments.py` hold no threshold, each trial takes the rule's (`FSChooser.threshold_of`), and a test checks the rule's pick.
 
-## Optuna and the threshold rule pulled in opposite directions
-- **Symptom:** after we adopted Optuna's suggestion, the next study suggested the same configuration again, and it passed the decision rule again.
-- **Cause:** Optuna searched the acceptance threshold directly and settled on 3.5. The threshold rule then re-set the adopted configuration's threshold to its own choice: the lowest weight with no false pairs plus one safety step, which came to 6. Any point with a lower threshold beat `FINAL` again, so the loop could never converge.
-- **Fix:** one policy everywhere. Every configuration, whether the pipeline as written, a decision variant or an Optuna trial, takes its threshold from the threshold rule (`config/pipeline.toml` `[threshold]`), and Optuna no longer searches it.
+## A search option that does nothing
+- **Pitfall:** a search option built on top of the current choice can be a no-op, so the search spends trials on it and learns nothing. It shows as an option whose two values give identical trials.
+- **Why:** trials are built from `FINAL`'s model. With term frequency off in `FINAL`, a trial's "term frequency on" has no keys to turn back on; with a level dropped by a decision, a threshold for it has nothing to tune.
+- **Guard:** "on" restores the keys from the pipeline as written, and a trial tunes only the levels the model has.
+- **Check:** none automated: `FSChooser.search` in `er/select.py` builds each trial, in one place.
 
-## A search option that did nothing
-- **Cause:** trials were built from `FINAL`'s model. Once `FINAL` had term frequency off, a trial's "term frequency on" had no keys to turn back on.
-- **Fix:** "on" now restores the keys from the pipeline as written.
-
-## A wall-clock timeout made results depend on the laptop
-- **Symptom:** studies ran 3–37 trials instead of 30 or 60.
-- **Cause:** Optuna's `timeout` counts wall-clock time, and a laptop asleep with the lid closed uses it up. The notebook's own timers pause during sleep, so they hid it.
-- **Fix:** studies are bounded by `n_trials` only, so a seeded study always runs the same trials.
+## A wall-clock bound on a search
+- **Pitfall:** a search bounded by time gives results that depend on the machine. It shows as studies that run fewer trials than asked.
+- **Why:** Optuna's `timeout` counts wall-clock time, and a laptop asleep with the lid closed uses it up. The notebook's own timers pause during sleep, so they hide it.
+- **Guard:** studies are bounded by `n_trials` only, and seeded, so a study always runs the same trials.
+- **Check:** `Tune` and `FSTune` (`er/config.py`) have no timeout to set.
 
 ## String similarity on bytes, not characters
-- **Cause:** DuckDB's `jaro_winkler_similarity`, `jaccard` and `damerau_levenshtein` compare UTF-8 bytes, and katakana takes 3 bytes per character. That scores サトウヒロシ / サトウタカシ at 0.897 instead of 0.844.
-- **Fix:** `er.strings` registers character-level versions (`cl_*`), and every rule and Fellegi–Sunter level uses them.
-- **Guard:** `connect()` checks them on every start, and so does `tests/`.
+- **Pitfall:** a string function that compares bytes scores Japanese names wrongly, and nothing fails. It shows only when a known pair's score is checked by hand.
+- **Why:** DuckDB's `jaro_winkler_similarity`, `jaccard` and `damerau_levenshtein` compare UTF-8 bytes, and katakana takes 3 bytes per character. That scores サトウヒロシ / サトウタカシ at 0.897 instead of 0.844.
+- **Guard:** `er.strings` registers character-level versions (`cl_*`, on rapidfuzz), and every rule and Fellegi–Sunter level uses them.
+- **Check:** `connect()` checks them on every start, and so does `tests/`.
 
-## Two steps grew with the square of the file
-- **Symptom:** none at 10,000 records, where every step took under a second. It showed only when each step was priced by its complexity and its growth measured on larger generated files.
-- **Cause:** the phone key and rule F2 joined on the last four phone digits, which take only 10,000 values, so chance pairs grow like N². TF-IDF compared each unresolved record with every record. At a million records: 39 million pairs, 55.8 million pairs and 6.4 × 10¹¹ operations.
-- **Fix:** three compound phone keys, a sorted pass on the reversed name instead of TF-IDF, and F2 joined on the phone plus the start of the address. Each passed the decision rule with no true pair lost ([chapter 3](guide/03-far-too-many-pairs.md#scaling-to-a-million-records)).
-- **Guard:** `scripts/choose.py` stops if `FINAL` would go over budget at `target_rows` (its cost and "will it scale" steps), Optuna prunes trials that would, and every run's `budget` step stops before any join if a rule or generator is over budget on the actual file.
+## Keys whose pairs grow with the square of the file
+- **Pitfall:** a key or a rule that is cheap on a small file explodes on a big one. Nothing shows on a 10,000-record file; it shows only when each step is priced by its complexity and its growth projected to larger files.
+- **Why:** a key with a fixed set of values makes chance pairs that grow like N². The last four phone digits take only 10,000 values: the phone key alone projects to 49.8 pairs per record at a million records, against a budget of 5 ([`reports/choose.md`](../reports/choose.md)). TF-IDF compares each unresolved record with every record, up to 10⁶ comparisons per record there. Rule F2, joined on the phone alone, has the same problem.
+- **Guard:** three compound phone keys instead of the phone, a sorted pass on the reversed name instead of TF-IDF, and F2 joined on the phone plus the start of the address. Each passed the decision rule with no true pair lost ([chapter 3](guide/03-far-too-many-pairs.md#scaling-to-a-million-records)).
+- **Check:** `scripts/choose.py` stops if `FINAL` would go over budget at `target_rows` (its "Cost of FINAL" and "Will it scale?" tables), and Optuna prunes trials that would. Every run's `budget` step counts each key's pairs before any join: it stops only if the normal blocks would not fit in memory and the temp disk, and checks oversized blocks on a sample.
 
 ## A window that shrinks as the file grows
-- **Symptom:** none in the decisions, which lost no pair the model accepts. It showed when we asked a stricter question: which true pairs *could* reach the threshold, and does a list hold them at every file size?
-- **Cause:** a sorted neighbourhood compares each record with the next three in name order. The more records, the more sort between two similar names: the window held 85.8% of the name-close true pairs at 12,000 records, and 60.9% at 75,000. Some potential matches shared no exact key, so only the window found them: 61 on train, 27 of them still potential at a million records.
-- **Fix:** keys, whose reach does not depend on the file size. They are the exact person and company names, one-deletion keys on the company name and, within the postal area, on the person name, and given name + postal code. Now no potential match depends on a window, on any split, up to a million records ([chapter 3](guide/03-far-too-many-pairs.md#keeping-every-potential-match)).
-- **Guard:** `scripts/choose.py` counts the potential matches that share no key (`window_only`), at train's size and at `target_rows`, and stops if any is left.
+- **Pitfall:** a sorted neighbourhood finds fewer of the close pairs as the file grows, so a potential match found on a small file is lost on a big one. The decisions don't show it: they ask which true pairs the model accepts, not which could reach the threshold at every size.
+- **Why:** a sorted neighbourhood compares each record with the next three in name order. The more records, the more sort between two similar names.
+- **Guard:** keys, whose reach does not depend on the file size: the exact person and company names, one-deletion keys on the company name and, within the postal area, on the person name, and given name + postal code. No potential match depends on a window, on train or at a million records ([chapter 3](guide/03-far-too-many-pairs.md#keeping-every-potential-match)).
+- **Check:** `scripts/choose.py` counts the potential matches that share no key (`window_only`), at train's size and at `target_rows`, and stops if any is left: 0 of 3,036 on train, 0 of 2,960 at a million records. A label-free check lists the agreement patterns that can reach the threshold with no guaranteed key, with the model's estimate of their share of matches: at most 11.9% at a million.
 
-## Two rule clusters were never compared
-- **Symptom:** in the scale runs, most potential matches that both stages missed were on no candidate list: 28 of 30 at 50,000 records, and 14 of 14 at 75,000.
-- **Cause:** the second stage generated candidates only for records the rules left alone. When the rules split one entity into two clusters, no pair between them was ever scored.
-- **Fix:** the second stage scores every pair across two clusters (`FSSpec.bridge`). Pairs inside one cluster are dropped before the union, so the list grows by only 7%. It passed the decision rule as "better": +12 / −0 true pairs on cross-validated train, +4 / −0 on val, no false pair added.
-- **Guard:** a test checks that, with the whole file as the query, generators list pairs between any two records.
+## Two rule clusters that are never compared
+- **Pitfall:** when the rules split one entity into two clusters, a second stage that looks only at records the rules left alone never scores a pair between them. It shows as potential matches both stages miss that are on no candidate list.
+- **Why:** candidates are generated for the records the rules left alone, and an accepted pair must touch one.
+- **Guard:** `FSSpec.bridge` scores every pair across two rule clusters, and `scripts/choose.py` decides it every round, as "better". On these sets it finds no extra true pair (+0 / −0 out-of-fold and on val), so `FINAL` leaves it off.
+- **Check:** tests check that a bridging stage joins two clusters, and that with the whole file as the query, generators list pairs between any two records not already in one cluster. The decision is in `reports/choose.md`.
 
-## A projection that assumed too much
-- **Cause:** the design projected each key from how fast its distinct values grow on record samples (α ≈ 2 − β). That formula assumes every value is equally common, and a record sample splits each entity's duplicates apart, so true pairs shrink as fast as chance pairs. Neither holds here.
-- **First fix:** keep or drop whole entities, and fit a power law to the pair counts themselves.
-- **Then:** the power law understated the keys that matter most. Fitted on the smallest three subsamples, it predicted the address key's pairs on a file four times bigger 37% too low, because chance pairs (×N²) only begin to dominate past the sizes it was fitted on. It put the address key at 1.5 million pairs at a million records, inside the budget; the address is shared by households and drawn from a fixed pool.
-- **Fix:** `grown_pairs` counts, on train, the pairs of one entity (T, which grow like N) and the chance pairs between entities (C, which grow like N²), and projects each: P(n) = T·n/N + C·n(n − 1)/(N(N − 1)). It is the exact expectation of keeping a share of the entities, and lands within ±5% on that same test. The address key then projects to 12.8 pairs per record at a million records, over the budget of 5, so the address alone was replaced by the address with the phone, the name's first letter or the given name (`bounded_address_keys`, adopted with no true pair lost). Household pairs count as chance, the safe direction.
-- **Guard:** budgets are per record (`max_pairs_per_record`), so a budget means the same at any size; a test checks the projection on a key with a fixed pool of values and on one without.
+## A projection that assumes too much
+- **Pitfall:** a projection of a key's pairs to a bigger file understates the keys that matter most, so a key over budget passes the design check.
+- **Why:** projecting from how fast distinct values grow on record samples (α ≈ 2 − β) assumes every value is equally common, and a record sample splits each entity's duplicates apart, so true pairs shrink as fast as chance pairs. Neither holds here. A power law fitted to the pair counts of small subsamples fails too: chance pairs (×N²) only begin to dominate past the sizes it was fitted on. The address is shared by households and drawn from a fixed pool, so it is the key such a projection understates most.
+- **Guard:** `grown_pairs` counts, on train, the pairs of one entity (T, which grow like N) and the chance pairs between entities (C, which grow like N²), and projects each: P(n) = T·n/N + C·n(n − 1)/(N(N − 1)). It is the exact expectation of keeping a share of the entities. The address key alone projects to 5.4 pairs per record at a million records, over the budget of 5, so the address is used only with the phone, the name's first letter or the given name (`bounded_address_keys`, adopted with no true pair lost). Household pairs count as chance, the safe direction.
+- **Check:** budgets are per record (`max_pairs_per_record`), so a budget means the same at any size; a test checks the projection on a key with a fixed pool of values and on one without.
 
-## A check slower than the trial it guarded
-- **Symptom:** the scale check took 52.5 s. Optuna, which runs it in every trial, took 41 minutes instead of 8.
-- **Cause:** `np.isin` on arrays of Python strings, to select the sampled entities.
-- **Fix:** rank the entities once and keep those below a cut-off: 0.30 s. The study went from 2,455 s to 506 s.
+## Linear work done one pair at a time in Python
+- **Pitfall:** a step that is linear, but runs Python code once per pair or per record, becomes most of the work. It shows as a step whose time grows far faster than its pairs, or as a check that costs more than the trial it guards.
+- **Why:** per-element Python is slow: joining the generators' names with `"+".join` once per pair, a lambda per pair and generator to report each generator's reach, an `isin` filter of every record when every record is a query, `np.isin` on arrays of Python strings to select sampled entities.
+- **Guard:** a pair's generators are one bit each, combined by `bit_or` in SQL, then named once per distinct combination; a regex over those names reports each generator's reach; `query=None` skips the filter. The scale check samples nothing: `grown_pairs` computes the expectation with group-bys, once per round, and each Optuna trial reads its generators' rows from it. Where whole entities must be kept, they are ranked once (`entity_rank`) and kept below a cut-off.
+- **Check:** every run's `steps.json`, and [`reports/benchmark.md`](../reports/benchmark.md), report each step's time at every file size.
 
-## The first million-record run ran out of memory
-- **Symptom:** the first million-record scale run stalled at 27 GB on a 16 GB laptop, deep in swap.
-- **Cause:** `score_fs` read Splink's predictions into pandas with every matching column of both records, only to keep the ids, the weights and the gammas. At 250,000 records that copy added 4.8 GB to the peak. At a million it would have needed about 19 GB.
-- **Fix:** DuckDB selects the needed columns before anything reaches pandas, and the predictions table is dropped once read. At 250,000 records the step now adds 1.1 GB, with identical results.
-- **Since:** every table of size N or C is a DuckDB table (`er.run`), which spills past `[compute]` `memory_limit`. A million records run within a 2 GB limit (3.5 GB for the process, Python included), with the same answer as under 8 GB. Under a larger limit the peak varies from run to run (3.8 to 6.6 GB under 8 GB), because DuckDB keeps what the limit allows: test the smallest limit that completes, not the peak.
-- **Guard:** every run's `steps.json` records the peak memory after each step, and `scripts/benchmark.py` reports it at every file size.
+## A copy that outgrows memory
+- **Pitfall:** an intermediate table copied into pandas with more columns than needed outgrows memory on a big file. It shows as a run that stalls deep in swap.
+- **Why:** reading Splink's predictions into pandas with every matching column of both records, only to keep the ids, the weights and the gammas, makes a copy that grows with the candidates times the columns.
+- **Guard:** DuckDB selects the needed columns before anything reaches pandas, and the predictions table is dropped once read. Every table of size N or C is a DuckDB table (`er.run`), which spills past `[compute]` `memory_limit` to `.tmp/` under the folder a run starts in, unless `temp_directory` says otherwise. A run's capacity counts the spill room DuckDB allows: 90% of the free disk by default. DuckDB keeps what the limit allows, so the peak under a large limit says little: test the smallest limit that completes, not the peak.
+- **Check:** every run's `steps.json` records the peak memory after each step, and `reports/benchmark.md` reports it at every file size: 6.23 GB at a million records under an 8 GB limit, Python included.
 
-## Merging the candidate lists was most of the work
-- **Symptom:** with the five name keys and bridging, the million-record run's probabilistic stage went from 127 s to 228 s, though only 7% more pairs were scored.
-- **Cause:** three per-pair Python loops, each linear and each slow. Merging the generators' lists joined their names with `"+".join`, once per pair: 55% of the stage at 250,000 records. Reporting each generator's reach ran a lambda per pair and generator. With every record a query, each generator still filtered all records through an `isin`.
-- **Fix:** a pair's generators are one bit each, combined by `bit_or` in SQL, then named once per distinct combination. A regex over those names reports each generator's reach. `query=None` skips the filter. At 250,000 records the stage takes 15 s instead of 59 s, with identical results.
-- **Guard:** every run's `steps.json`, and `scripts/benchmark.py`, report each step's time at every file size.
-
-## Who resolved a record depended on the file's order
-- **Symptom:** the run without labels reproduced the labelled clusters exactly, but `resolved_by` differed on 318 train records, 81 val and 117 test.
-- **Cause:** for a record the probabilistic stage reached, gold named the first rule in the file that touched it, so shuffling the file changed the answer.
-- **Fix:** a record keeps the rule that resolved it in the previous stage, or else is named after the model, whatever the order.
-- **Guard:** a test runs the same records in two orders and requires identical gold, every column; it also checks that an increment never splits a stored cluster. Another requires the engine `scripts/choose.py` measures with (`er.pipeline`) and the one `scripts/resolve.py` runs (`er.run`) to give identical gold.
+## An answer that depends on the file's order
+- **Pitfall:** an output column depends on the order of the records in the file. It shows as identical clusters but a different `resolved_by` after the file is shuffled.
+- **Why:** naming, for a record the probabilistic stage reached, the first rule in the file that touched it.
+- **Guard:** a record keeps the rule that resolved it in the previous stage, or else is named after the model, whatever the order.
+- **Check:** a test runs the same records in two orders and requires identical gold, every column; it also checks that an increment never splits a stored cluster. Another requires the engine `scripts/choose.py` measures with (`er.pipeline`) and the one `scripts/resolve.py` runs (`er.run`) to give identical gold.
 
 ## Two spellings of "nothing"
-- **Symptom:** found by reading the code, not in the numbers: after `strip_spaces`, 614 of train's 23,848 person names (2.6%) still held a full-width space, so ホンエ　ヨシツグ never equalled ホンエヨシツグ. And a company name that was only a legal form became an empty string.
-- **Cause:** pandas' Arrow-backed strings run regexes with RE2, whose `\s` matches ASCII whitespace only. And an empty string is a value: two records whose company name had been emptied agreed at "exact", and fell into one block.
-- **Fix:** the patterns name the full-width space; a blank input value is missing, so it can't win a fallback; a value that normalization empties is missing too.
-- **Guard:** a test standardizes blank, space-only and legal-form-only values.
+- **Pitfall:** a blank that isn't treated as missing. A name that still holds a full-width space never equals the same name without it, and two values emptied by normalization agree at "exact" and fall into one block. It shows by reading the code or the values, not in the numbers.
+- **Why:** pandas' Arrow-backed strings run regexes with RE2, whose `\s` matches ASCII whitespace only, so ホンエ　ヨシツグ keeps its full-width space and never equals ホンエヨシツグ. And an empty string is a value: a company name that is only a legal form becomes an empty string.
+- **Guard:** the patterns name the full-width space; a blank input value is missing, so it can't win a fallback; a value that normalization empties is missing too.
+- **Check:** a test standardizes blank, space-only and legal-form-only values.
 
-## A run folder could hold two runs
-- **Symptom:** a full run written into a folder that held an earlier run and its increment kept the increment's files: 598 stored records for 501. And an increment stopped between its writes left gold and the stored records disagreeing, with no way to retry.
-- **Cause:** a full run overwrote only the files it writes itself, and an increment replaced its files one by one.
-- **Fix:** a full run refuses a folder that holds a run unless `--overwrite`. Every file is written under a temporary name; once all are complete, the renames they need are saved, then done, and the next increment finishes any left undone.
-- **Guard:** tests re-run into a used folder, and stop an increment halfway through its renames.
+## A run folder that holds two runs
+- **Pitfall:** a full run written into a folder that holds an earlier run keeps some of the earlier files, and an increment stopped between its writes leaves gold and the stored records disagreeing, with no way to retry. It shows as more stored records than the input holds.
+- **Why:** a full run that overwrites only the files it writes itself, and an increment that replaces its files one by one.
+- **Guard:** a full run refuses a folder that holds a run unless `--overwrite`, and a folder takes one writer at a time (`run_lock`). Every file is written under a temporary name; once all are complete, the renames they need are saved, then done, and the next increment finishes any left undone.
+- **Check:** tests re-run into a used folder, stop an increment halfway through its renames, and hold a folder's lock while another run tries it.
 
-## An increment counted its own batch twice
-- **Symptom:** found by a new test, not in the numbers: after an increment, u counted on the run's records disagreed with the u the increment had scored with.
-- **Cause:** the stored records were a view over a glob of `state/records/`. Once the increment wrote its own part, the view held the batch, and `records` held it a second time. The QA report runs after the write, so each field's fill rate weighed the batch twice, and a review row touching a new record could appear twice.
-- **Fix:** an increment reads the stored parts it found when it started, by name, not by glob.
-- **Guard:** a test compares the increment's exact u with u counted on its records after the write.
+## An increment that counts its own batch twice
+- **Pitfall:** an increment that reads the stored records through a glob sees its own batch twice once it has written its part. It shows as u counted on the run's records disagreeing with the u the increment scored with; the QA report's fill rates weigh the batch twice, and a review row touching a new record can appear twice.
+- **Why:** a view over a glob of `state/records/` includes the part the increment just wrote, and the QA report runs after the write.
+- **Guard:** an increment reads the stored parts it found when it started, by name, not by glob.
+- **Check:** a test compares the increment's exact u with u counted on its records after the write.
 
-## Every increment re-measured u, mostly noise
-- **Symptom:** an increment of 1,000 records into a million took 11.6 s, 9.2 s of it measuring u again from 10 million random pairs.
-- **Cause:** u was measured again on every increment, whatever had changed. On the million-record file, from half of it to all of it, every exactly counted level moved by at most 0.004 bits, and every sampled level by less than its own sampling error.
-- **Fix:** the exact levels are counted again on every increment (0.1 s). A comparison's sampled u are measured again only once the drift of its exact level exceeds the sampling error of its sampled levels. Before that, a new sample is no closer to the truth. The same increment now takes 2.0 s.
-- **Guard:** a test checks that an increment samples exactly the comparisons whose drift exceeds their error, and each run's `state/scoring.json` keeps the last check, drift and error, per comparison.
+## Re-measuring u on every increment
+- **Pitfall:** measuring u again on every increment, whatever has changed, takes most of an increment's time and only redraws the noise. It shows as a small batch costing nearly as much as a full fit.
+- **Why:** a small batch barely moves u. Until the drift is larger than a sampled level's own sampling error, a new sample is no closer to the truth.
+- **Guard:** before its rules, an increment counts the exact and the one-edit levels again on all records (`refreshed_u`). A comparison's sampled u are measured again only once the drift of its exact level exceeds the sampling error of its most precise sampled level, 1/(ln 2·√hits) bits. The CIF ID, phone and birth date comparisons are counted in full, so they need no sample.
+- **Check:** a test checks that an increment samples exactly the comparisons whose drift exceeds their error, and each run's `state/scoring.json` keeps the last check, drift and error, per comparison.
 
-## A placeholder doubled the work and passed the budget
-- **Symptom:** a dummy phone `0000` on 5% of 75,284 records more than doubled the candidates (393,350 to 804,230), and the budget let it through; on a million records the same dummy would have stopped the run.
-- **Cause:** the budget capped each key's pairs per record. Spread over prefectures and name initials, the dummy's blocks stayed under the cap per key, while adding work for nothing: its sampled pairs that no other key lists never reached 4 bits.
-- **Fix:** a block of 64 or more records is checked on a sample of about 2,000 of its pairs first, and joined only if one reaches the review floor; a rule doesn't trust such a value. At a million records with 5% dummy phones, 295 blocks were skipped (about 61 million pairs), the run finished in 45 s, and on the clean file the answer is identical to before.
-- **Guard:** tests put a dummy phone on 100 records (skipped), 70 copies of one record (kept and joined), and one customer ID and name on 70 records (no rule merges them).
+## A placeholder value that passes the budget
+- **Pitfall:** a dummy value, such as a phone `0000` on many records, makes huge blocks that add work for nothing. Spread over compound keys, its blocks stay under the cap per key, so a per-key budget lets it through. It shows as candidates that jump with no gain in matches.
+- **Why:** a budget that caps each key's pairs per record can't tell a placeholder from a real shared value. A block's share of true matches falls as it grows, and a placeholder's block holds none.
+- **Guard:** a block of 64 or more records (more pairs than `[budget] sample_pairs`, 2,000) is left out of its generator's join and checked first: about 2,000 of its pairs are scored with the model and the file's u, and the block is joined only if one reaches the review floor (6 bits, one grid step below the threshold). No hit in 2,000 pairs bounds a block's yield under 0.15%. A rule doesn't trust a key value held by such a block. Skipped blocks are named in the summary and in `qa.md`.
+- **Check:** tests put a dummy phone on 100 records (skipped), 70 copies of one record (kept and joined), and one customer ID and name on 70 records (no rule merges them).
 
-## An increment threw away the review queue
-- **Symptom:** found by walking through the command line: after a full run, 2 pairs waited for a decision; the next increment wrote a new `review.parquet`, and both were gone, though still open.
-- **Cause:** every run wrote the sheet from its own scores, and a run keeps no scores, so an increment's sheet held only the pairs its batch made.
-- **Fix:** an increment keeps the previous sheet's rows that nobody gave back and whose records are still apart, with any decision typed in, and adds its own.
-- **Guard:** a test decides one pair, runs an increment, and checks the others are still on the sheet and the decided one is not.
+## An increment that drops the review queue
+- **Pitfall:** pairs waiting for a decision vanish when the next run writes a new review sheet, though they are still open.
+- **Why:** a run keeps no scores, so a sheet written from an increment's own scores holds only the pairs its batch made.
+- **Guard:** an increment keeps the previous sheet's rows that nobody gave back and whose records are still apart, with any decision typed in, and adds its own.
+- **Check:** a test decides one pair, runs an increment, and checks that the others are still on the sheet and the decided one is not.
 
-## A nearly empty field crashed the fit
-- **Symptom:** with the address filled in 1% of records, the run stopped in Splink with a 20-line traceback.
-- **Cause:** the fit learns m from pairs that share a phone, and from pairs that share an address; no two records of its sample shared an address, and Splink refuses a learning rule with no pairs.
-- **Fix:** a rule that finds no pair is skipped, and the summary names it; the field still counts where it is filled. With no rule left, the run stops with two lines saying what to fix.
-- **Guard:** a test empties the address and then the phone too.
+## A nearly empty field that stops the fit
+- **Pitfall:** a field filled on very few records makes the fit stop with a long traceback from Splink.
+- **Why:** the fit learns m from pairs that share a phone, and from pairs that share an address. If no two records of its sample share an address, Splink refuses a learning rule with no pairs.
+- **Guard:** a rule that finds no pair is skipped, and the summary names it; the field still counts where it is filled. With no rule left, the run stops with two lines saying what to fix.
+- **Check:** a test empties the address and then the phone too.
 
-## DuckDB 2.0 changed under us
-- **Symptom:** a run hung on its second query, or failed on `fetchone`.
-- **Cause:** in DuckDB 2.0 a relation has no `fetchone`, and an `execute()` whose rows are not all fetched holds the connection. The connection-level `fetch_record_batch` is gone, and the `x -> …` lambda syntax is deprecated.
-- **Fix:** every query fetches its rows (`.fetchall()`), the chunked reader has a cursor of its own, and lambdas are written `lambda x: …`.
-- **Guard:** `requirements.txt` pins DuckDB, and `tests/` runs every generator and a whole run on it.
+## An engine upgrade that changes the API
+- **Pitfall:** a new major version of the database changes its Python API. It shows as a run that hangs on its second query, or fails on `fetchone`.
+- **Why:** in DuckDB 2.0 a relation has no `fetchone`, and an `execute()` whose rows are not all fetched holds the connection. The connection-level `fetch_record_batch` is gone, and the `x -> …` lambda syntax is deprecated.
+- **Guard:** every query fetches its rows (`.fetchall()`), the chunked reader has a cursor of its own, and lambdas are written `lambda x: …`.
+- **Check:** `requirements.txt` pins DuckDB, and `tests/` runs every generator and a whole run on it.
 
 ## Reference data traps
-- **Wikidata's class tree:** 13,766 of the 16k "Japanese companies" with kana in the transitive `company` tree are dissolved municipalities. Only direct company types give real companies.
-- **yubinbango prefecture codes** are written without the leading zero (`1`, not `01`). That silently dropped 9 prefectures until the codes were zero-padded.
+- **Pitfall:** reference data that looks complete but isn't. It shows as odd names among the generated companies, or prefectures missing from the generated addresses.
+- **Why:** Wikidata's transitive `company` tree, for Japanese companies with kana, holds mostly dissolved municipalities. yubinbango writes prefecture codes without the leading zero (`1`, not `01`), so a join on two-digit codes silently drops the nine prefectures coded 01–09.
+- **Guard:** only direct company types give real companies, and the prefecture codes are zero-padded.
+- **Check:** [data.md](data.md) records what each reference file holds, down to the towns in all 47 prefectures.
 
-## Test was seen during development
-Earlier versions of the pipeline, with the stale cache and the persona clones, were scored on test. The fixes came from symptoms found on train and val, never from test numbers. The leaderboard now holds one clean pass of the final code, which scored test once per stage. The development runs are archived in `data/artifacts/experiments/archive/`.
+## Test that informs a choice
+- **Pitfall:** scoring test while developing turns it into another selection set, and its numbers stop being unbiased. Nothing in the numbers shows it.
+- **Why:** every look at test before the choices are final is a chance for a choice to follow it.
+- **Guard:** choices are made on train and confirmed on val, by rule. A leaderboard records every run and counts the distinct configurations scored on each population's test; `scripts/choose.py` stops above 1 per stage. `scripts/choose.py --no-test` runs a development round with test left unseen, and a newly generated population starts its count afresh. A deliberate clean pass on the same population first archives the leaderboard (`data/artifacts/experiments/archive/`).
+- **Check:** a test counts test evaluations per population, and [`reports/choose.md`](../reports/choose.md) ends with the count: 1 for each stage.

@@ -4,7 +4,7 @@
 
 ## Start with an example
 
-Here are two customer records from our data:
+Here are two customer records:
 
 | | Name | Address | Phone (last 4) | CIF ID |
 |---|---|---|---|---|
@@ -61,17 +61,18 @@ Teams cleaning customer data often work in three tiers:
 2. A score decides the rest.
 3. People review the uncertain middle.
 
-We implement the first two tiers. The third is a planned next step.
+We implement all three. For the third, a run writes a review sheet of the uncertain pairs, and takes people's decisions back.
 
 ## What problem are we solving?
 
-We find duplicates within one file of Japanese customer records. Five things make it hard:
+We find duplicates within one file of Japanese customer records. Six things make it hard:
 
-- **One name, several katakana spellings.** Voicing marks get lost (ガ becomes カ), small kana are typed full-size (ッ becomes ツ), and long vowels are spelled in different ways (ー, ウ or オ). On top of that come ordinary typos: a wrong or dropped character.
+- **One name, several katakana spellings.** Voicing marks get lost (ガ becomes カ), small kana are typed full-size (ッ becomes ツ), and long vowels are spelled in different ways (ー, ウ or オ). Some systems write names in half-width katakana (ｻﾄｳ) or with a space between surname and given name. On top of that come ordinary typos: a wrong or dropped character.
 - **Addresses come in many formats.** One address can be typed as 1丁目3番17号, as 1-3-17, or with full-width digits and a building name.
-- **Identifiers are weak.** We see only the last four digits of a phone number, and half of all duplicate records carry a new CIF ID (the customer ID).
+- **Identifiers are weak.** We see only the last four digits of a phone number, and a duplicate record keeps its customer's CIF ID (the customer ID) only 3% of the time.
 - **People and companies change.** People move and marry; companies open branches. So one entity can have several phones, addresses and names.
-- **Many fields are empty.** Some columns are filled in for only 65% of records.
+- **Many fields are empty.** Some columns are filled in for only 65% of records, and the birth date for 15%.
+- **Few duplicates are clear-cut.** About 1% of true pairs share the customer ID and the name, or the name, the address code and the phone. 11.5% share nothing usable at all, so no method can find them.
 
 On real data there are no labelled examples. So the method must learn without labels, and we test it on synthetic records whose true answers we know.
 
@@ -81,7 +82,7 @@ On real data there are no labelled examples. So the method must learn without la
 
 ## What exactly is the task?
 
-- **Input:** customer records, each with 19 columns. The ones that matter most are the name in katakana, the address, the last four phone digits and the CIF ID. Many are empty.
+- **Input:** customer records, each with 21 columns. The ones that matter most are the name in katakana, the address, the last four phone digits, the CIF ID and the birth date. Many are empty.
 - **Output:** for every record (CONT_ID), the entity it belongs to.
 - **What "good" means.** Two numbers, always reported together:
   - **Recall:** of all pairs of records that truly belong together, the share we put together.
@@ -96,24 +97,24 @@ On real data there are no labelled examples. So the method must learn without la
 |---|---|---|---|---|
 | C1 | The same fact is written differently | マツモトヒサオ and マツモトヒサウ; one address typed three ways | normalize, then compare with a similarity score | [2](02-the-same-fact-written-differently.md) |
 | C2 | Japanese text breaks standard tools | a standard similarity function scores katakana by bytes, not characters | character-level versions of every function | [2](02-the-same-fact-written-differently.md) |
-| C3 | Far too many pairs | 10,002 records make 50,015,001 pairs; a million make 5 × 10¹¹ | compare only pairs that share a key or look alike | [3](03-far-too-many-pairs.md) |
-| C4 | Different people look alike | 45,506 pairs of *different* entities share the last four phone digits | never trust one field; weigh them all | [4](04-certain-cases-first-rules.md), [5](05-uncertain-evidence-fellegi-sunter.md) |
+| C3 | Far too many pairs | 9,966 records make 49,655,595 pairs; a million make 5 × 10¹¹ | compare only pairs that share a key or look alike | [3](03-far-too-many-pairs.md) |
+| C4 | Different people look alike | on train, 45,079 pairs of *different* entities share the last four phone digits | never trust one field; weigh them all | [4](04-certain-cases-first-rules.md), [5](05-uncertain-evidence-fellegi-sunter.md) |
 | C5 | Evidence is partial and uncertain | one true pair has a name typo, a phone typo and a new CIF ID at once | add up evidence from every field, in bits | [5](05-uncertain-evidence-fellegi-sunter.md) |
 | C6 | Fields are often empty | some columns are filled for only 65% of records | an empty field counts as no evidence either way | [5](05-uncertain-evidence-fellegi-sunter.md) |
 | C7 | Answers about pairs don't make groups | A matches B, and B matches C | group with connected components, behind a strict threshold | [5](05-uncertain-evidence-fellegi-sunter.md) |
 | C8 | No answer key, and every choice can overfit | real data has no truth to learn from or measure against | synthetic data with known truth; a rule for every choice; test used once | [1](#where-does-the-truth-come-from), [6](06-measuring-and-choosing.md) |
 
-**Why two stages?** Rules are cheap, easy to audit and, on our data, never wrong. So they go first and settle the clear cases: 69% of the duplicates. What remains is messy, with typos in two fields at once, or a move plus a new CIF ID. Messy pairs need evidence weighed, not all-or-nothing conditions, so a probabilistic model handles them.
+**Why two stages?** Rules are cheap, easy to audit and, on our data, never wrong. So they go first and settle the clear cases: 9.7% of the true pairs on val. What remains is messy, with typos in two fields at once, or a move plus a new CIF ID. Messy pairs need evidence weighed, not all-or-nothing conditions, so a probabilistic model handles them.
 
 Here is what happens to the validation file:
 
 ```mermaid
 flowchart LR
-  A["10,002 records<br/>2,227 true duplicate pairs"] -->|"exact rules"| B["52% found"]
-  B -->|"fuzzy rules"| C["70% found<br/>679 pairs still missed"]
-  C -->|"17 candidate generators"| D["49,987 candidate pairs<br/>contain 600 of the 679"]
-  D -->|"Fellegi–Sunter ≥ 6 bits"| E["460 pairs accepted<br/>all of them true"]
-  E -->|"connected components"| F["91.3% found<br/>0 false merges"]
+  A["9,966 records<br/>2,215 true duplicate pairs"] -->|"exact rules"| B["3.0% found"]
+  B -->|"fuzzy rules"| C["9.7% found<br/>2,000 pairs still missed"]
+  C -->|"21 candidate generators"| D["50,923 candidate pairs<br/>contain 86.1% of the 2,000"]
+  D -->|"Fellegi–Sunter ≥ 8 bits"| E["765 pairs accepted<br/>all of them true"]
+  E -->|"connected components"| F["46.3% found<br/>0 false merges"]
 ```
 
 **In short:** each challenge has one answer, and each answer has a chapter.
@@ -131,20 +132,22 @@ Real customer data has no answer key. Nobody knows for sure which records are th
 **Synthetic behaviour.** The generator then decides who has duplicates and how the records go wrong:
 
 - **40,000 entities.** 20% are companies. Each persona is used at most once, so no two entities are copies of the same person.
-- **Records per entity:** 1 plus a Poisson(0.25) draw. 22.5% of entities end up with more than one record.
-- **Several of everything.** Each person owns 1 + Poisson(0.3) phones, addresses and surnames (married names); a company owns 1 + Poisson(1.0) (branch offices). Each record shows one of them.
-- **Typing errors:** 10% of name parts get one kana wrong, 5% of phones one digit wrong, 5% of typed addresses one digit or character wrong.
-- **A CIF ID** is kept on half of the duplicate records and new on the other half.
-- **Empty fields:** the fill rate falls from 99.99% to 65% across the columns, and fields of one kind (name, postal code, address) tend to be empty together.
+- **Records per entity:** 1 plus a Poisson(0.25) draw, so about one entity in five has more than one record.
+- **Several of everything.** People move and change phones: each person owns 1 + Poisson(2.0) phones and addresses, and a company 1 + Poisson(3.0). Each person owns 1 + Poisson(0.3) surnames (married names), each company 1 + Poisson(1.0) names. Each record shows one of them.
+- **Typing errors:** 30% of name parts get one kana wrong or dropped; 10% of phones, birth dates and typed addresses one digit wrong (in an address, sometimes a dropped character).
+- **Notations:** 30% of person records put a space between surname and given name, 15% of records write every name in half-width katakana, a company's legal form is written five ways (or left out), and one company record in ten adds a branch.
+- **A CIF ID** is kept on 3% of the duplicate records, and in a tenth of those typed with one digit wrong. The other duplicates carry a new one.
+- **Empty fields:** the fill rate falls from 99.99% to 65% across the columns, and fields of one kind (name, postal code, address) tend to be empty together. A person's birth date is filled for 15%, independently of the rest.
 - **Households:** unrelated entities sometimes share an address. They are look-alikes that must not be merged.
+- **Hard on purpose.** These rates make about 1% of true pairs direct, the kind exact rules settle. `er.generate.profile` measures it ([data.md](../data.md#how-hard-it-is)).
 
 **Split by entity, not by record.** The 40,000 entities are split 60 / 20 / 20 into train, validation (val) and test. A person's records always stay in one split, so test asks only about people that nothing was ever tuned on.
 
 | Split | Records | Used for |
 |---|---|---|
-| train | 30,147 | learning, and every choice (by rule) |
-| val | 10,002 | confirming each choice |
-| test | 10,066 | the final report, scored once |
+| train | 30,103 | learning, and every choice (by rule) |
+| val | 9,966 | confirming each choice |
+| test | 10,047 | the final report, scored once |
 
 **In short:** real names, invented behaviour, exact truth.
 
@@ -167,10 +170,10 @@ Real customer data has no answer key. Nobody knows for sure which records are th
 | u | how often two **different** entities land there by chance | 5 |
 | λ | the chance that two random records are the same entity: the starting point | 5 |
 | bits, match weight | log₂(λ / (1 − λ)) plus log₂(m / u) for each field; each bit doubles the odds | 5 |
-| threshold | the weight a pair needs to be accepted: 6 bits | 5, 6 |
+| threshold | the weight a pair needs to be accepted: 8 bits | 5, 6 |
 | cluster | records joined by accepted pairs, directly or through others: one entity | 5 |
 | recall | the share of true pairs found | 6 |
-| false merge | two different entities put in one cluster; "at most 0.14%" is the 95% upper bound when none was seen | 6 |
+| false merge | two different entities put in one cluster; "at most 0.28%" is the 95% upper bound when none was seen | 6 |
 | cross-validation | fitting on two thirds of train and scoring the other third, three times, so a choice is never judged on the data it was fitted on | 6 |
 | the chosen pipeline, `FINAL` | every change `scripts/choose.py` adopted, written to `config/final.toml`; the reports call it `FINAL` | 6 |
 | increment | a batch of new records added to a written run | [usage](../usage.md#5--add-new-records) |
@@ -178,7 +181,7 @@ Real customer data has no answer key. Nobody knows for sure which records are th
 ## In the code
 
 - `config/settings.toml`: paths, datasets, `[columns]` (which of a file's columns hold each field)
-- `er/generate.py`: the generator (`Spec`, `Split`, `generate`, `check`), configured by `config/generator.toml` and run by `scripts/generate.py`
+- `er/generate.py`: the generator (`Spec`, `Split`, `generate`, `check`, and `profile`, how hard the population is), configured by `config/generator.toml` and run by `scripts/generate.py`
 - `notebooks/demo.ipynb`, section 2: a small population generated and charted
 - `data/reference/SOURCES.md`: where each reference file came from
 - reference details: [data.md](../data.md)

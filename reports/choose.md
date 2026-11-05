@@ -35,7 +35,7 @@ Written by `scripts/choose.py` from `config/pipeline.toml` and `config/experimen
 | fold_levenshtein | 0.0921 | 0 | 0.0146 | 6 | 2 | 0.2891 | 0 | 0 | 1041 | 0.2 |
 | fold_exact | 0.0804 | 0 | 0.0167 | 0 | 22 | 0.0 | 0 | 0 | 475 | 0.2 |
 | raw_jaro_winkler | 0.0718 | 0 | 0.0187 | 0 | 41 | 0.0 | 0 | 0 | 1041 | 0.2 |
-| constrained_given_name | 0.0713 | 0 | 0.0188 | 0 | 42 | 0.0 | 0 | 0 | 1041 | 0.5 |
+| constrained_given_name | 0.0713 | 0 | 0.0188 | 0 | 42 | 0.0 | 0 | 0 | 1041 | 0.4 |
 | optuna_comparators | 0.0993 | 0 | 0.0135 | 21 | 1 | 0.0 | 0 | 0 | 6706 | 0.2 |
 | f2_address_exact | 0.0903 | 0 | 0.0149 | 0 | 0 | 1.0 | 0 | 0 | 1041 | 0.3 |
 | f2_address_prefix | 0.0903 | 0 | 0.0149 | 0 | 0 | 1.0 | 0 | 0 | 1041 | 0.2 |
@@ -64,7 +64,7 @@ train: N = 30,103 · total P = 3,710 → 244,185 at 1,000,000 rows
 | exact | X4_PERSON_NAME_ADDRCD_PHONE | full_name + address_code + phone | O(N + P) | O(30,103 + 137) | 137 | 3 | 0.0 | 1.0 | 4551 | 0.005 | True |
 | exact | X5_COMPANY_NAME_ADDRCD_PHONE | company_name + address_code + phone | O(N + P) | O(30,103 + 5) | 5 | 2 | 0.0 | 1.0 | 166 | 0.0 | True |
 | fuzzy | F1_NAME~_ADDRCD_PHONE | address_code + phone | O(N + P·(m·n)) | O(30,103 + 613·45) | 613 | 3 | 0.12 | 1.0 | 21433 | 0.021 | True |
-| fuzzy | F2_NAME~_ADDRESS~_PHONE | phone + address__address_first3 | O(N + P·(m·n + m·n)) | O(30,103 + 665·153) | 665 | 4 | 0.27 | 1.16 | 136616 | 0.137 | True |
+| fuzzy | F2_NAME~_ADDRESS~_PHONE | phone + address__address_first3 | O(N + P·(m·n + m·n)) | O(30,103 + 665·153) | 665 | 4 | 0.25 | 1.16 | 136616 | 0.137 | True |
 | fuzzy | F3_NAME~_CIF | customer_id | O(N + P·(m·n)) | O(30,103 + 162·45) | 162 | 3 | 0.03 | 1.0 | 5381 | 0.005 | True |
 | fuzzy | F4_NAME_ADDRCD_PHONE~ | person_name + address_code | O(N + P·(n)) | O(30,103 + 418·4) | 418 | 3 | 0.02 | 1.0 | 13885 | 0.014 | True |
 | fuzzy | F5_COMPANY~_PHONE_POSTAL | phone + postal_code | O(N + P·(m·n)) | O(30,103 + 799·91) | 799 | 3 | 0.16 | 1.01 | 30823 | 0.031 | True |
@@ -85,24 +85,25 @@ rules: Σ ops ≈ 196,662 (see big_o per rule) · normalize: O(N·L), N = 9,966 
 | rule | P | actual_ms | edges | edge_FP | kept | kept_FP |
 | --- | --- | --- | --- | --- | --- | --- |
 | X1_CIF_PERSON_NAME | 12 | 2.4 | 12 | 0 | 12 | 0 |
-| X2_CIF_COMPANY_NAME | 0 | 1.9 | 0 | 0 | 0 | 0 |
-| X3_CIF_PHONE | 15 | 2.2 | 12 | 0 | 12 | 0 |
+| X2_CIF_COMPANY_NAME | 0 | 1.7 | 0 | 0 | 0 | 0 |
+| X3_CIF_PHONE | 15 | 2.1 | 12 | 0 | 12 | 0 |
 | X4_PERSON_NAME_ADDRCD_PHONE | 40 | 2.2 | 38 | 0 | 38 | 0 |
-| X5_COMPANY_NAME_ADDRCD_PHONE | 4 | 2.0 | 4 | 0 | 4 | 0 |
-| F1_NAME~_ADDRCD_PHONE | 198 | 3.6 | 92 | 0 | 92 | 0 |
+| X5_COMPANY_NAME_ADDRCD_PHONE | 4 | 1.9 | 4 | 0 | 4 | 0 |
+| F1_NAME~_ADDRCD_PHONE | 198 | 3.9 | 92 | 0 | 92 | 0 |
 | F2_NAME~_ADDRESS~_PHONE | 170 | 4.3 | 13 | 0 | 13 | 0 |
-| F3_NAME~_CIF | 48 | 3.1 | 17 | 0 | 17 | 0 |
+| F3_NAME~_CIF | 48 | 3.2 | 17 | 0 | 17 | 0 |
 | F4_NAME_ADDRCD_PHONE~ | 120 | 2.4 | 2 | 0 | 2 | 0 |
-| F5_COMPANY~_PHONE_POSTAL | 246 | 2.5 | 13 | 0 | 13 | 0 |
-| F6_COMPANY~_ADDRCD_PHONE | 198 | 2.4 | 2 | 0 | 2 | 0 |
-| F7_GIVEN_ADDRCD_PHONE | 66 | 2.2 | 8 | 0 | 8 | 0 |
+| F5_COMPANY~_PHONE_POSTAL | 246 | 2.8 | 13 | 0 | 13 | 0 |
+| F6_COMPANY~_ADDRCD_PHONE | 198 | 2.6 | 2 | 0 | 2 | 0 |
+| F7_GIVEN_ADDRCD_PHONE | 66 | 2.1 | 8 | 0 | 8 | 0 |
 
 ### FINAL on train, val and test
 
 | dataset | records | TP | FP | recall | recall_lo | recall_hi | fp_rate_hi | pairs_FP | overmerged | dup_unresolved | seconds |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | train | 30103 | 743 | 0 | 0.1074 | 0.1003 | 0.1149 | 0.004 | 0 | 0 | 10040 | 0.5 |
-| val | 9966 | 215 | 0 | 0.0971 | 0.0854 | 0.1101 | 0.0138 | 0 | 0 | 3281 | 0.2 |
+| val | 9966 | 215 | 0 | 0.0971 | 0.0854 | 0.1101 | 0.0138 | 0 | 0 | 3281 | 0.3 |
+| test | 10047 | 227 | 0 | 0.0971 | 0.0858 | 0.1098 | 0.0131 | 0 | 0 | 3394 | 0.2 |
 
 ## Stage 2: Fellegi–Sunter
 
@@ -113,35 +114,35 @@ train: 6,177 true pairs missed by the rules
 | generator | big_o | filled | pairs | seconds | finds | cumulative | different_entity_pairs | alpha | projected_pairs | per_record |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | phone | O(N + P) | O(30,103 + 47,375) | 46675 | 0.013 | 0.2702 | 0.2702 | 45006 | 1.95 | 49823479 | 49.823 |
-| address | O(N + P) | O(30,103 + 5,788) | 5507 | 0.01 | 0.1099 | 0.3719 | 4828 | 1.84 | 5372703 | 5.373 |
+| address | O(N + P) | O(30,103 + 5,788) | 5507 | 0.009 | 0.1099 | 0.3719 | 4828 | 1.84 | 5372703 | 5.373 |
 | address_code | O(N + P) | O(30,103 + 6,665) | 6063 | 0.008 | 0.2101 | 0.48 | 4765 | 1.72 | 5345109 | 5.345 |
-| cif | O(N + P) | O(30,103 + 162) | 37 | 0.008 | 0.006 | 0.485 | 0 | 1.0 | 5381 | 0.005 |
-| person_name | O(N + P) | O(30,103 + 4,185) | 3651 | 0.009 | 0.52 | 0.7531 | 439 | 1.1 | 608900 | 0.609 |
+| cif | O(N + P) | O(30,103 + 162) | 37 | 0.007 | 0.006 | 0.485 | 0 | 1.0 | 5381 | 0.005 |
+| person_name | O(N + P) | O(30,103 + 4,185) | 3651 | 0.008 | 0.52 | 0.7531 | 439 | 1.1 | 608900 | 0.609 |
 | company_name | O(N + P) | O(30,103 + 795) | 746 | 0.006 | 0.0712 | 0.795 | 306 | 1.38 | 353932 | 0.354 |
-| sn_person_name | O(N log N + N·w) | O(23,741·log 23,741 + 23,741·4) | 70472 | 0.011 | 0.5932 | 0.8297 | 66808 | 1.0 | 3000000 | 3.0 |
-| sn_company_name | O(N log N + N·w) | O(5,032·log 5,032 + 5,032·4) | 15030 | 0.004 | 0.0954 | 0.8433 | 14441 | 1.0 | 3000000 | 3.0 |
-| tfidf_person_name | O(N·L + U·N·q) | O(23,741·L + 28,692·23,741·13) | 28092 | 2.969 | 0.6184 | 0.8603 | 24272 | 2.0 | 1000000000000 | 1000000.0 |
-| tfidf_company_name | O(N·L + U·N·q) | O(5,032·L + 28,692·5,032·19) | 2805 | 0.287 | 0.0949 | 0.8611 | 2219 | 2.0 | 1000000000000 | 1000000.0 |
+| sn_person_name | O(N log N + N·w) | O(23,741·log 23,741 + 23,741·4) | 70472 | 0.009 | 0.5932 | 0.8297 | 66808 | 1.0 | 3000000 | 3.0 |
+| sn_company_name | O(N log N + N·w) | O(5,032·log 5,032 + 5,032·4) | 15030 | 0.005 | 0.0954 | 0.8433 | 14441 | 1.0 | 3000000 | 3.0 |
+| tfidf_person_name | O(N·L + U·N·q) | O(23,741·L + 28,692·23,741·13) | 28092 | 2.86 | 0.6184 | 0.8603 | 24272 | 2.0 | 1000000000000 | 1000000.0 |
+| tfidf_company_name | O(N·L + U·N·q) | O(5,032·L + 28,692·5,032·19) | 2805 | 0.266 | 0.0949 | 0.8611 | 2219 | 2.0 | 1000000000000 | 1000000.0 |
 | phone_prefecture | O(N + P) | O(30,103 + 2,070) | 1729 | 0.008 | 0.1221 | 0.8611 | 975 | 1.47 | 1115553 | 1.116 |
 | phone_postal_area | O(N + P) | O(30,103 + 981) | 462 | 0.008 | 0.0599 | 0.8611 | 92 | 1.09 | 131059 | 0.131 |
-| phone_name_initial | O(N + P) | O(30,103 + 3,307) | 2730 | 0.009 | 0.1949 | 0.8611 | 1526 | 1.46 | 1745330 | 1.745 |
+| phone_name_initial | O(N + P) | O(30,103 + 3,307) | 2730 | 0.008 | 0.1949 | 0.8611 | 1526 | 1.46 | 1745330 | 1.745 |
 | sn_person_name_reversed | O(N log N + N·w) | O(23,741·log 23,741 + 23,741·4) | 70478 | 0.009 | 0.6082 | 0.8841 | 66721 | 1.0 | 3000000 | 3.0 |
-| company_name_deletions | O(N·L + P) | O(30,103·L + 1,264) | 1210 | 0.011 | 0.0748 | 0.8844 | 748 | 1.59 | 842601 | 0.843 |
+| company_name_deletions | O(N·L + P) | O(30,103·L + 1,264) | 1210 | 0.01 | 0.0748 | 0.8844 | 748 | 1.59 | 842601 | 0.843 |
 | cif_deletions | O(N·L + P) | O(30,103·L + 181) | 53 | 0.025 | 0.0086 | 0.8846 | 0 | 1.0 | 6012 | 0.006 |
-| person_name_deletions_postal_area | O(N·L + P) | O(30,103·L + 1,925) | 1418 | 0.026 | 0.227 | 0.8851 | 16 | 1.01 | 81072 | 0.081 |
+| person_name_deletions_postal_area | O(N·L + P) | O(30,103·L + 1,925) | 1418 | 0.025 | 0.227 | 0.8851 | 16 | 1.01 | 81072 | 0.081 |
 | given_name_postal | O(N + P) | O(30,103 + 1,338) | 971 | 0.008 | 0.1556 | 0.8873 | 10 | 1.01 | 55150 | 0.055 |
 | address_phone | O(N + P) | O(30,103 + 294) | 53 | 0.01 | 0.0083 | 0.8873 | 2 | 1.01 | 11907 | 0.012 |
 | address_code_phone | O(N + P) | O(30,103 + 613) | 92 | 0.008 | 0.0147 | 0.8873 | 1 | 1.0 | 21433 | 0.021 |
 | address_name_initial | O(N + P) | O(30,103 + 895) | 649 | 0.01 | 0.0743 | 0.8873 | 190 | 1.21 | 233095 | 0.233 |
 | address_code_name_initial | O(N + P) | O(30,103 + 1,650) | 1110 | 0.008 | 0.1462 | 0.8873 | 207 | 1.13 | 276371 | 0.276 |
 | given_name_address_code | O(N + P) | O(30,103 + 1,009) | 637 | 0.007 | 0.103 | 0.8873 | 1 | 1.0 | 34588 | 0.035 |
-| given_name_phone | O(N + P) | O(30,103 + 1,290) | 905 | 0.008 | 0.1447 | 0.8873 | 11 | 1.01 | 54626 | 0.055 |
+| given_name_phone | O(N + P) | O(30,103 + 1,290) | 905 | 0.007 | 0.1447 | 0.8873 | 11 | 1.01 | 54626 | 0.055 |
 | birth_date | O(N + P) | O(30,103 + 352) | 333 | 0.005 | 0.013 | 0.8883 | 253 | 1.72 | 282488 | 0.282 |
 | birth_date_deletions_prefecture | O(N·L + P) | O(30,103·L + 342) | 324 | 0.005 | 0.0083 | 0.8883 | 273 | 1.82 | 313195 | 0.313 |
 
 ### Training on train: EM against labels
 
-cost: u O(max_pairs·C) = O(10,000,000·5) · EM O(iterations·P·C), P = 53,163 · em: fitted in 7.4s · no estimate: u - · m - · labels: fitted in 0.3s · no estimate: u - · m -
+cost: u O(max_pairs·C) = O(10,000,000·5) · EM O(iterations·P·C), P = 53,163 · em: fitted in 7.5s · no estimate: u - · m - · labels: fitted in 0.3s · no estimate: u - · m -
 
 | comparison | level | em m | em u | em weight | labels m | labels u | labels weight |
 | --- | --- | --- | --- | --- | --- | --- | --- |
@@ -167,7 +168,7 @@ cost: u O(max_pairs·C) = O(10,000,000·5) · EM O(iterations·P·C), P = 53,163
 
 ### Threshold: chosen on cross-validated train
 
-3-fold CV in 27.3s → min_match_weight = 12.0
+3-fold CV in 27.5s → min_match_weight = 12.0
 
 | min_match_weight | accepted | pairs_FP | stage_fp_rate_hi | TP | FP | recall | recall_lo | recall_hi | eligible |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
@@ -282,15 +283,15 @@ FINAL: 21 generators · term frequency off · m by em · min_match_weight 8.0 ·
 | name | company | address | phone | cif | birth | bits | share_of_matches |
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | missing | JW low | same address | missing | missing | one digit off | 8.45 | 0.008214792308347848 |
-| missing | JW low | same address | missing | else | one digit off | 8.42 | 0.008029964224770769 |
-| given name | JW low | same address | missing | missing | missing | 9.73 | 0.007840528277182542 |
-| given name | JW low | same address | missing | else | missing | 9.7 | 0.0076641209182002675 |
-| given name | JW low | same address | else | missing | missing | 9.17 | 0.005292774359679305 |
-| given name | JW low | same address | else | else | missing | 9.14 | 0.005173689992724424 |
-| fold JW high | JW low | missing | exact | missing | missing | 12.59 | 0.004399026064126564 |
-| fold JW high | JW low | missing | exact | else | missing | 12.55 | 0.004300050517756158 |
-| fold JW high | JW low | same address | missing | missing | missing | 14.79 | 0.004101120274908529 |
-| fold JW high | JW low | same address | missing | else | missing | 14.76 | 0.004008847436779661 |
+| missing | JW low | same address | missing | else | one digit off | 8.42 | 0.00802996422477077 |
+| given name | JW low | same address | missing | missing | missing | 9.73 | 0.007840528277182532 |
+| given name | JW low | same address | missing | else | missing | 9.7 | 0.007664120918200259 |
+| given name | JW low | same address | else | missing | missing | 9.17 | 0.005292774359679308 |
+| given name | JW low | same address | else | else | missing | 9.14 | 0.005173689992724428 |
+| fold JW high | JW low | missing | exact | missing | missing | 12.59 | 0.004399026064126556 |
+| fold JW high | JW low | missing | exact | else | missing | 12.55 | 0.004300050517756151 |
+| fold JW high | JW low | same address | missing | missing | missing | 14.79 | 0.00410112027490853 |
+| fold JW high | JW low | same address | missing | else | missing | 14.76 | 0.004008847436779663 |
 
 ### FINAL's candidates on val
 
@@ -315,7 +316,7 @@ candidates 50,923 · they contain 86.1% of the true pairs the rules missed
 | address_name_initial | O(N + P) | O(9,966 + 233) | 158 | 0.072 | 0.005 |
 | address_code_name_initial | O(N + P) | O(9,966 + 448) | 293 | 0.136 | 0.005 |
 | given_name_address_code | O(N + P) | O(9,966 + 300) | 204 | 0.102 | 0.005 |
-| cif_deletions | O(N·L + P) | O(9,966·L + 52) | 11 | 0.0055 | 0.016 |
+| cif_deletions | O(N·L + P) | O(9,966·L + 52) | 11 | 0.0055 | 0.017 |
 | birth_date | O(N + P) | O(9,966 + 71) | 66 | 0.02 | 0.004 |
 | given_name_phone | O(N + P) | O(9,966 + 387) | 282 | 0.14 | 0.005 |
 | birth_date_deletions_prefecture | O(N·L + P) | O(9,966·L + 50) | 48 | 0.01 | 0.003 |
@@ -389,10 +390,13 @@ transfer at weight 8.0: CV 0 false of 2368 accepted pairs (rate ≤ 0.13%) · va
 
 | dataset | records | recall_before | TP | FP | recall | recall_lo | recall_hi | fp_rate_hi | pairs_FP | overmerged | dup_unresolved | accepted | seconds |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| train | 30103 | 0.1074 | 3157 | 0 | 0.4562 | 0.4445 | 0.468 | 0.0009 | 0 | 0 | 6042 | 2267 | 1.9 |
+| train | 30103 | 0.1074 | 3157 | 0 | 0.4562 | 0.4445 | 0.468 | 0.0009 | 0 | 0 | 6042 | 2267 | 2.0 |
 | val | 9966 | 0.0971 | 1026 | 0 | 0.4632 | 0.4425 | 0.484 | 0.0029 | 0 | 0 | 1918 | 765 | 0.9 |
+| test | 10047 | 0.0971 | 1073 | 0 | 0.4591 | 0.439 | 0.4794 | 0.0028 | 0 | 0 | 1991 | 798 | 6.7 |
 
 ### Configurations scored on test, per stage
 
 | family | configs_on_test |
 | --- | --- |
+| deterministic | 1 |
+| probabilistic | 1 |

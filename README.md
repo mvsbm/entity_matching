@@ -1,6 +1,6 @@
 # Entity resolution for Japanese customer records
 
-Finds which customer records belong to the same person or company, and gives each of them one ID. It reads names in katakana, addresses in any format, the last four phone digits and customer IDs. It needs no labels to run.
+Finds which customer records belong to the same person or company, and gives each of them one ID. It reads names in katakana, addresses in any format, the last four phone digits, customer IDs and birth dates. It needs no labels to run.
 
 ```mermaid
 flowchart LR
@@ -15,7 +15,7 @@ flowchart LR
 1. **Standardize.** The same fact is written many ways: full-width digits, kana variants, addresses with or without the prefecture or the building. Each is rewritten in one form.
 2. **Rules.** Pairs that agree on strong evidence, such as the same customer ID and the same name, are matched at once. Rules are cheap and easy to audit.
 3. **Candidates.** Comparing every pair is impossible on a large file: a million records make 500 billion pairs. Shared keys, such as the same address and phone, or a name one letter apart in the same postal area, list about 5 pairs per record instead.
-4. **Score.** Each field adds evidence for or against, in bits. Each bit doubles the odds that the two records are one entity. A pair is accepted at 6 bits or more.
+4. **Score.** Each field adds evidence for or against, in bits. Each bit doubles the odds that the two records are one entity. A pair is accepted at 8 bits or more, if a name was compared; without one, a person decides.
 5. **Cluster.** Records linked by accepted pairs become one entity. If A matches B and B matches C, all three are one.
 
 One pair, scored field by field: [chapter 5](docs/guide/05-uncertain-evidence-fellegi-sunter.md#solution-evidence-in-bits).
@@ -24,11 +24,12 @@ One pair, scored field by field: [chapter 5](docs/guide/05-uncertain-evidence-fe
 
 These numbers come from synthetic records built from real Japanese names, companies and addresses, where the truth is known:
 
-- **It finds 9 duplicates in 10:** 89.9% of the true pairs on test (95% interval 88.7–91.1%). Test is a split never used for any choice.
-- **It merged no two different customers:** 0 false merges on test, so the rate is at most 0.14%.
-- **A million records take about 45 seconds,** within a 2 GB memory limit. Every step's work grows about linearly with the file.
+- **It finds almost half the duplicates:** 45.9% of the true pairs on test (95% interval 43.9–47.9%); the rules alone find 9.7%. Test is a split never used for any choice.
+- **The data is hard on purpose.** About 1% of true pairs are direct matches (the same customer ID and name, or the same name, address code and phone), and 11.5% share nothing usable, so no method finds them all ([data](docs/data.md#how-hard-it-is)).
+- **It merged no two different customers:** 0 false merges on test, so the rate is at most 0.28%.
+- **A million records take 42.9 seconds,** with peak memory 6.23 GB under an 8 GB limit. Every step's work grows about linearly with the file.
 
-Real data is likely noisier, and only a run on it can tell ([limits](#limits)).
+Real data may differ, and only a run on it can tell ([limits](#limits)).
 
 ## Use it
 
@@ -56,6 +57,7 @@ The run folder holds `gold.parquet` (each record and its entity's ID), `review.p
 
 ## Limits
 
-- **Measured on synthetic data only.** Test comes from the same generator as the data the choices were made on. Other seeds, twice the typos, emptier fields, or a prior off by a factor of two keep recall between 88.3% and 91.5%, with no false merge ([benchmark](reports/benchmark.md)). Real data has not been measured.
-- **Close names at one address rely on the name's first letter.** Two names that are close but start with different letters, at the same address, are compared only if another key lists them. Up to 0.6% of matches rest on such keys, by the model's own bound; on labelled data, none was lost.
+- **Measured on synthetic data only.** Test comes from the same generator as the data the choices were made on. Other seeds, emptier fields, or a prior off by a factor of two keep recall between 41.7% and 49.3%; twice the typos lowers it to 33.4%. None of these made a false merge ([benchmark](reports/benchmark.md)). Real data has not been measured.
+- **False pairs appear on files fitted on themselves.** On the generated files of the cost benchmark, the run joined 2 false pairs at 12,532 records and 4 at 74,959. Each is a model link between 8.2 and 10.1 bits (the threshold is 8), between near-namesakes with a kana typo who share an address or a phone.
+- **Close names rely on other keys.** A Jaro–Winkler level guarantees no shared key, so two close but unequal names (or company names) are compared only if another key lists them. By the model's own bound, up to 11.9% of matches at a million records rest on such patterns; on labelled train, every pair that could reach the threshold shares a key.
 - **Machine-read kana.** Given-name readings come from SudachiPy, and some differ from the intended reading.

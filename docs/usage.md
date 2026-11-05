@@ -8,7 +8,7 @@ Install it, map your columns, run it, read what it wrote. Later, add new records
 
 ```bash
 ./setup_venv.sh                         # .venv with Python ≥ 3.12, the pinned dependencies, and the er package
-.venv/bin/python -m pytest tests/       # about 10 s
+.venv/bin/python -m pytest tests/       # engine checks and whole runs
 ```
 
 Every script runs as `.venv/bin/python scripts/<name>.py`.
@@ -32,9 +32,10 @@ The fields, and which ones a run needs (`[fields]` in `config/final.toml`):
 | `id` | a record ID, filled and unique | yes: the run stops without it |
 | `person_name`, `company_name` | the name of a person or of a company, in katakana | at least one of the two |
 | `full_name`, `given_name`, `any_name` | the full name; the given name alone; a person's or a company's name | optional |
-| `address`, `address_code`, `postal_code`, `prefecture` | the address in any format; an address code; the postal code; the prefecture | optional |
+| `address`, `address_code`, `postal_code`, `town_code`, `city`, `prefecture` | the address in any format; an address code; the postal code; the town code (municipality, town and chome); the city; the prefecture | optional |
 | `phone` | the phone number's last four digits | optional |
 | `customer_id` | the ID another system gave the customer | optional |
+| `birth_date` | a person's birth date, in one format throughout, so equal dates are equal strings | optional |
 | `entity` | the true entity, in labelled files only | never read by a run |
 
 - **A missing optional field** turns off only the rules, keys and comparison levels that read it. The run lists them in `qa.md`.
@@ -66,9 +67,11 @@ It prints each field, its fill rate and the columns it comes from, what would be
 | `--overwrite` | replaces the run in `--output` |
 | `--increment` | adds the records to the run in `--output` ([section 5](#5--add-new-records)) |
 | `--decisions` | applies people's decisions to the run in `--output`, instead of `--input` ([section 6](#6--review-and-decide)) |
-| `--compute KEY=VALUE …` | DuckDB limits for this run: `memory_limit=8GB`, `threads=4`, `temp_directory=<folder>`. Past the memory limit, DuckDB spills to that folder |
+| `--compute KEY=VALUE …` | DuckDB limits for this run, overriding `config/settings.toml` `[compute]`: `memory_limit=8GB`, `threads=4`, `temp_directory=<folder>`. Past the memory limit, DuckDB spills to that folder |
 | `--pipeline` | another pipeline file. Default: `config/final.toml` |
 | `--model` | a model fitted before, used instead of fitting on this file |
+
+`[compute]` in `config/settings.toml` sets the same three for every run. Left empty, each keeps DuckDB's default: all cores, 80% of the memory, and spilling to `.tmp/` under the folder the run starts in. Before any join, the run checks that the pairs fit in memory plus the room DuckDB may spill to: 90% of that disk's free space.
 
 The run needs no labels: it fits its model on the file itself. It prints each step as it finishes, with its time and what it did, then a summary: records, entities, who joined them (the rules, the model, people), the pairs to decide, and notes. A note says what the loader fixed, a field filled in under 5% of records (often a mapping mistake), a part turned off, or what the fit couldn't learn from. What each step does, and what it costs: [architecture, the run](architecture.md#3--the-run).
 
@@ -82,7 +85,7 @@ Everything is in the run folder.
 | `matches/` | accepted pair | both IDs; `match_weight` in bits; `match_probability`; `sources`, the candidate generators that listed it | see why two records were joined |
 | `rule_kept/` | pair a rule accepted | both IDs, the rule and its stage | audit the rules |
 | `qa.md` | | the summary; each field's fill rate (flagged under 5%); what was turned off; each step's Big-O, time and memory; pairs by weight; cluster sizes; the 10 largest clusters; match patterns no key guarantees | check the run without labels |
-| `review.parquet` | pair for people | `why` (`decide` or `audit`); an empty `decision`; both records' compared fields; per comparison, the level reached and its bits; `accepted` | decide the pairs just below the line, audit those just above ([section 6](#6--review-and-decide)) |
+| `review.parquet` | pair for people | `why` (`decide` or `audit`); an empty `decision`; both records' compared fields; per comparison, the level reached and its bits; `accepted` | decide the pairs just below the line and those above it with no name compared, audit those just above ([section 6](#6--review-and-decide)) |
 | `decisions/` | decided pair | both IDs and `decision`, one part per file people gave back | what people decided; a full run applies it again |
 | `set_aside/` | record not resolved | the record as read, and `reason`: no ID; the same ID with different content; already in the run | fix them and add them with `--increment` |
 | `steps.json` | step | its Big-O with the numbers filled in, seconds, peak memory | see the cost |
@@ -100,23 +103,23 @@ matches = pd.read_parquet("runs/customers/matches")      # a folder of parts rea
 .venv/bin/python scripts/resolve.py --input new.parquet --output runs/customers --increment
 ```
 
-- **The same model.** The batch is scored with the model the full run fitted, so weights stay comparable. The exact agreements' u are counted again on every record. A sampled u is measured again only once its drift, read from those exact counts, exceeds its own sampling error; before that, a new sample would only redraw the noise.
+- **The same model.** The batch is scored with the model the full run fitted, so weights stay comparable. The u of the exact and one-digit-off levels are counted again on every record, before the rules. A sampled u is measured again only once its drift, read from those exact counts, exceeds its own sampling error; before that, a new sample would only redraw the noise.
 - **Compared with everything.** Each new record is compared with every stored one, and can join an existing cluster. Earlier answers stand.
 - **Stored records aren't compared again.** A record left alone gets a new chance whenever a new record matches it, directly or through a third record. But two stored records that were not matched with each other stay apart until a full run (`--overwrite`) compares them again, for example after the matching changes.
-- **Cost follows the batch.** The joins start from the new records, so a small batch is fast whatever the run's size: into a million-record run, 1,000 new records take about 2 s, plus the write.
+- **Cost follows the batch.** The joins start from the new records, so a small batch is fast whatever the run's size: into a million-record run, 1,000 new records take about 4 s.
 - **New records only.** A record whose ID is already in the run is set aside: an increment adds, it doesn't update. So running the same batch twice is harmless; the second time prints "nothing new".
 - **Safe to interrupt.** An interrupted write is finished by the next increment.
 
 ## 6 · Review and decide
 
-The run accepts a pair at 6 bits or more. Just below that line, from 4 to 6 bits, is the threshold rule's safety margin: pairs that were never wrong on cross-validated training data, but are held back in case of noise. People decide them. On the synthetic test split, all 47 such pairs were true, and accepting them raised recall from 89.9% to 92.2%, with no false merge.
+The run accepts a pair at 8 bits or more. Just below that line, from 6 to 8 bits, is the threshold rule's safety margin: pairs that were never wrong on cross-validated training data, but are held back in case of noise. People decide them. On the synthetic val split, the margin holds 112 pairs, all true: accepting them would raise recall from 46.3% to 51.7%, with no false merge. One grid step lower, at 4 bits, the first false pair appears ([results](results.md)).
 
 `review.parquet` has two kinds of rows, named in `why`:
 
-- **decide:** every pair of clusters whose best link scored in the margin, or above the line with no name compared (a person and a company at one address, a record with no name), one row per pair of clusters, highest first. Pairs already decided are left out. An increment keeps the rows still open, and any decision typed into the sheet but not yet given back, and adds its own.
+- **decide:** every pair of clusters whose best link scored in the margin, or above the line with no name compared (the name check, `[model] needs`: a person and a company at one address, a record with no name), one row per pair of clusters, highest first. Pairs already decided are left out. An increment keeps the rows still open, and any decision typed into the sheet but not yet given back, and adds its own.
 - **audit:** about 50 accepted pairs up to 4 bits above the line, a few from each 1-bit band. A wrong one is a false merge.
 
-Each row shows the two records' compared fields side by side, then, per comparison, the level the pair reached (for example "names very close") and the bits it earned. The bits, plus the starting point, add up to `match_weight`. `accepted` says what the run decided.
+Each row shows the two records' compared fields side by side, then, per comparison, the level the pair reached (for example "fold JW high": the kana-folded names close by Jaro–Winkler) and the bits it earned. The bits, plus the starting point, add up to `match_weight`. `accepted` says what the run decided.
 
 Fill in `decision` with `match` or `no_match`, leave the rest empty, and give the file back:
 
@@ -125,7 +128,7 @@ Fill in `decision` with `match` or `no_match`, leave the rest empty, and give th
 ```
 
 - **`match`** joins the two clusters at once, scoring nothing. A record joined only this way gets `resolved_by` = `review`.
-- **`no_match`** splits nothing now. It is kept, and a full run never accepts the pair. It applies to that pair only: a third record can still join the two.
+- **`no_match`** splits nothing at once. It is kept, and a full run never accepts the pair. It applies to that pair only: a third record can still join the two.
 - **Kept for good.** Decisions are stored in `decisions/`, which a full run with `--overwrite` on the same folder applies again. Any file with the two ID columns and `decision` works; rows without a decision are skipped.
 
 Wrong audit pairs are also the evidence for changing the matching. In `qa.md`, a cluster far larger than the rest is the first sign of over-merging.
@@ -143,7 +146,7 @@ What the run handles by itself, and reports in its summary:
 | a column named like the mapping but for case, width or separators | used |
 | several files with different columns | read together by column name; the summary names what each file lacks |
 | a code stored as a number | read as text, with a warning |
-| one key value on 64 or more records (a dummy phone, a big building, a very common name) | a sample of about 2,000 of its pairs is scored first; the block is used only if one of them reaches 4 bits, otherwise skipped and named with its sample in the summary and `qa.md` |
+| one key value on 64 or more records (a dummy phone, a big building, a very common name) | a sample of about 2,000 of its pairs is scored first; the block is used only if one of them reaches the review floor (6 bits), otherwise skipped and named with its sample in the summary and `qa.md` |
 | a rule's key value on 64 or more records (one customer ID on thousands) | the rule doesn't trust it, so it can't merge them all; the model can still match those records |
 
 What stops it: two lines, what is wrong and how to fix it, and exit code 2:
@@ -196,7 +199,7 @@ For changing the matching or measuring it, on synthetic labelled data:
 
 | To | Run | Time |
 |---|---|---|
-| generate the synthetic train, val and test files | `scripts/generate.py` | ~5 s |
-| choose the configuration on them | `scripts/choose.py` (`--optuna` adds the searches) → `config/final.toml`, `reports/choose.md` | ~5 min |
-| measure quality and cost on growing files | `scripts/benchmark.py --memory-limit 8GB` → `reports/benchmark.md` | ~5 min |
-| see every step on a small file | `notebooks/demo.ipynb`, or `scripts/export_pdfs.py` for its PDF (first: `.venv/bin/python -m playwright install chromium`) | ~1 min |
+| generate the synthetic train, val and test files | `scripts/generate.py` | seconds |
+| choose the configuration on them | `scripts/choose.py` (`--optuna` adds the searches) → `config/final.toml`, `reports/choose.md` | minutes |
+| measure quality and cost on growing files | `scripts/benchmark.py --memory-limit 8GB` → `reports/benchmark.md` | minutes |
+| see every step on a small file | `notebooks/demo.ipynb`, or `scripts/export_pdfs.py` for its PDF (first: `.venv/bin/python -m playwright install chromium`) | under a minute |

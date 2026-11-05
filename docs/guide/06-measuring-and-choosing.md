@@ -4,17 +4,17 @@
 
 *Challenge C8.*
 
-The headline result is: on test, **89.9% recall (88.7–91.1%) and 0 false merges, with a false-merge rate of at most 0.14%**. This chapter explains every part of that sentence, and why it is a fair number and not a lucky or tuned one.
+The headline result is: on test, **45.9% recall (43.9–47.9%) and 0 false merges, with a false-merge rate of at most 0.28%**. This chapter explains every part of that sentence, and why it is a fair number and not a lucky or tuned one.
 
 ## Challenge: what exactly do we count?
 
 A system can be judged on its pairs or on its groups, and the two can disagree.
 
-**Pair metrics** judge the decisions themselves. On validation, the second stage accepted 460 pairs, and all 460 were true.
+**Pair metrics** judge the decisions themselves. On validation, the second stage accepts 765 pairs, and all 765 are true.
 
-**Group metrics** judge the final groups, after the pairs from both stages have been joined into entities. A pair counts as *found* if its two records end up in the same group, whether it was accepted directly or joined through other records.
+**Group metrics** judge the final groups, after the pairs from both stages have been joined into entities. A pair counts as *found* if its two records end up in the same group, whether it is accepted directly or joined through other records.
 
-- **Recall:** of all true pairs, the share that end up in one group. On validation, 2,033 of 2,227, so 91.3%.
+- **Recall:** of all true pairs, the share that end up in one group. On validation, 1,026 of 2,215, so 46.3%.
 - **False merges:** pairs of different entities that end up in one group. On validation, 0.
 - **Over-merged groups:** groups that mix two or more real entities. On validation, 0.
 
@@ -24,7 +24,7 @@ A system can be judged on its pairs or on its groups, and the two can disagree.
 
 ## Challenge: "0 false merges" doesn't mean "never"
 
-Seeing no false merge among a few thousand pairs doesn't prove the rate is zero. And a recall from 2,227 pairs carries chance variation. Every number needs a range.
+Seeing no false merge among a few thousand pairs doesn't prove the rate is zero. And a recall from 2,215 pairs carries chance variation. Every number needs a range.
 
 **Solution: two intervals.**
 
@@ -32,13 +32,13 @@ Seeing no false merge among a few thousand pairs doesn't prove the rate is zero.
 
 $$\frac{\hat p + \frac{z^2}{2n} \pm z\sqrt{\frac{\hat p(1-\hat p)}{n} + \frac{z^2}{4n^2}}}{1 + \frac{z^2}{n}}, \qquad \hat p = \frac{k}{n}$$
 
-On validation, with k = 2,033 and n = 2,227, this gives **90.1–92.4%**. Unlike the simpler normal approximation, it stays sensible near 0% and 100%.
+On validation, with k = 1,026 and n = 2,215, this gives **44.3–48.4%**. Unlike the simpler normal approximation, it stays sensible near 0% and 100%.
 
 **Zero events use the rule of three.** If nothing went wrong in n tries, the true rate is at most about 3/n, with 95% confidence. Precisely, it is the largest rate p at which seeing no errors still has a 5% chance:
 
 $$(1 - p)^n = 0.05 \;\Rightarrow\; p = 1 - 0.05^{1/n} \approx \frac{3}{n}$$
 
-On test the groups contain 2,120 predicted pairs and none is false, so the false-merge rate is **at most 0.14%**.
+On test the groups contain 1,073 predicted pairs and none is false, so the false-merge rate is **at most 0.28%**.
 
 That's why the population is large, with 40,000 entities. A small test set could only promise "at most a few percent".
 
@@ -46,7 +46,7 @@ That's why the population is large, with 40,000 entities. A small test set could
 
 ## Challenge: is a change really better?
 
-Allowing names within one edit lifts the rules' validation recall from 68.9% to 69.2%. The two intervals overlap almost completely, so comparing recalls says nothing.
+Allowing names within one edit lifts the rules' validation recall from 9.0% to 9.2%. The two intervals overlap almost completely, so comparing recalls says nothing.
 
 **Solution: compare on the same pairs (a paired sign test).** Run both configurations on the same records and look only at the pairs where they disagree:
 
@@ -55,7 +55,7 @@ Allowing names within one edit lifts the rules' validation recall from 68.9% to 
 
 If the change made no difference, each disagreement would be a coin flip. The **sign test** asks how surprising the split is.
 
-For example, the names-within-one-edit change gained 7 true pairs on validation and lost none. Under a fair coin, a 7–0 split has a probability of 2 × 0.5⁷ = **0.016**.
+For a split of k gains and no losses, that probability is 2 × 0.5ᵏ. The CIF ID one-digit-off level gained 8 true pairs out-of-fold and lost none: 2 × 0.5⁸ = **0.0078**. The names-within-one-edit change gained 17 on train and lost 4: p = **0.0072**, a significant gain. On validation it gained 6 and lost 2 (p = 0.29): too few disagreements to tell, which is why choices are made on the larger selection set.
 
 **Why:** pairs both versions agree on carry no information about the difference, and the paired test ignores them. That makes it far more sensitive than two overlapping intervals.
 
@@ -73,43 +73,62 @@ We make many choices: thresholds, comparators, candidate generators, model optio
 
 | Accept at or above | Pairs accepted (out-of-fold) | False pairs |
 |---|---|---|
-| 2 bits | 1,609 | 14 |
-| 4 bits | 1,507 | 1 |
-| **6 bits** | **1,392** | **0**: the lowest safe weight |
-| 8 bits | 1,241 | 0: one step stricter, chosen |
+| 6 bits | 2,649 | 1 |
+| 8 bits | 2,380 | 1 |
+| **10 bits** | **2,057** | **0**: the lowest safe weight |
+| 12 bits | 925 | 0: one step stricter, chosen |
 
-Every configuration gets its threshold this way: the configuration as written, each variant, and each Optuna trial. The final configuration's rule gives 6 bits.
+Every configuration gets its threshold this way: the configuration as written, each variant, and each Optuna trial. The final configuration's rule gives 8 bits.
 
-A check then confirms that the threshold transfers. Out-of-fold, 0 of 1,386 accepted pairs are false, a rate of at most 0.22%. On validation, 0 of 460 are.
+A check then confirms that the threshold transfers. Out-of-fold, 0 of 2,368 accepted pairs are false, a rate of at most 0.13%. On validation, 0 of 765 are.
 
 **4. The decision rule (`adopt`).** A change is adopted only if it passes a rule, applied on top of the current choice:
 
-- **"better"**: a significant paired gain on the selection set (p < 0.05), with no false pair added
-- **"cheaper"**: no paired loss on the selection set
+- **"better"**: a significant paired gain on the selection set (more gains than losses, p < 0.05), with no false pair added
+- **"cheaper"**: no paired loss on the selection set, and no false pair added
 - **"safer"**: the same test as "cheaper", for a change that adds pairs because its gain shows only at scale
 - **"chosen"**: the owner's call, for a gain that our 10,000-record sets are too small to show. Recall may move there, but no false pair may be added
-- **then, on validation:** "better", "cheaper" and "safer" may lose no true pair; "chosen" may, but may add no false pair
+- **then, on validation:** "better", "cheaper" and "safer" may not lose more true pairs than they gain; and no kind may add more false pairs than it removes
 
 | Change (second stage) | Out-of-fold gains / losses | Validation | Adopted |
 |---|---|---|---|
-| term-frequency adjustment off | +15 / −0 | +2 / −0 | yes |
-| exact keys only (cheaper) | +0 / −3 | ±0 | no |
-| Optuna's suggestion | +172 / −0 | +43 / −0 | yes |
-| u from 1 million random pairs instead of 10 million (cheaper) | +9 / −26 | +0 / −1 | no |
+| term-frequency adjustment off (better) | +12 / −0 | +15 / −0 | yes |
+| exact keys only (cheaper) | +0 / −0 | ±0 | yes |
+| Optuna's suggestion, with its own generators (better) | +1,488 / −1 | +243 / −0 | yes |
+| u for the scores from 1 million random pairs instead of 10 million (cheaper) | +1 / −8 | +0 / −1 | no |
 | three compound phone keys instead of the phone (cheaper, for scale) | +0 / −0 | ±0 | yes |
-| a reversed sorted pass instead of TF-IDF (cheaper, for scale) | +1 / −0 | ±0 | yes |
+| a reversed sorted pass instead of TF-IDF (cheaper, for scale) | +1 / −0 | +4 / −0 | yes |
 | five name keys, so no potential match depends on a sorted window (safer, for scale) | +1 / −0 | ±0 | yes |
 | the address only with the phone, the name's first letter or the given name (cheaper, for scale) | +0 / −0 | ±0 | yes |
-| no sorted windows (cheaper) | +0 / −3 | +0 / −1 | no |
-| score every pair across two rule clusters | +12 / −0 | +4 / −0 | yes |
-| u re-sampled on each scored file (chosen, for scale) | +63 / −0 | +20 / −0 | yes |
-| u of the exact levels counted from value counts (chosen, for scale) | +0 / −122 | +0 / −27 | yes |
+| no sorted windows (cheaper) | +0 / −0 | +0 / −1 | no |
+| score every pair across two rule clusters (better) | +0 / −0 | ±0 | no |
+| u measured on each scored file (chosen, for scale) | +0 / −60 | +0 / −12 | yes |
+| u of the exact levels counted from value counts (chosen, for scale) | +47 / −5 | ±0 | yes |
+| a CIF ID one digit off, as a level (better) | +8 / −0 | +2 / −0 | yes |
+| its one-deletion key (safer) | +2 / −0 | ±0 | yes |
+| the same town, city or prefecture, as address levels (better) | +124 / −67 | +29 / −20 | yes |
+| the birth date, as a comparison (better) | +56 / −0 | +22 / −0 | yes |
+| a birth-date key (safer) | +1 / −0 | ±0 | yes |
+| a given name + phone key (safer) | +0 / −0 | ±0 | yes |
+| a birth-date one-deletion key, within the prefecture (safer) | +0 / −0 | ±0 | yes |
+| a one-edit level counted exactly through one-deletion keys (chosen, for scale) | +0 / −2 | ±0 | yes |
+| the fit's own u from 1 million pairs; the scores keep 10 million (cheaper) | +0 / −0 | ±0 | yes |
+| the company comparison without its "very close" level (cheaper) | +1 / −0 | ±0 | yes |
+| a name must be compared for an automatic merge (chosen, for scale) | +0 / −39 | +0 / −22 | yes |
 
-The "chosen" rows are the owner's calls, made in the open. u measured on each scored file gains on these sets too. Counting u exactly for the exact levels does not: it loses 122 true pairs out-of-fold and 27 on val, with no false pair added either way. A sample of 10 million pairs cannot see an agreement rarer than about one in a billion pairs, which an exact name or CIF ID becomes in big files, so the sample over-credits it there; the exact count is right at every size, and the owner chose that over the higher number on 10,000-record files.
+Each row is decided on top of the rows above it that were adopted. Optuna's suggestion brings its own list of generators, so it replaces the "exact keys only" list adopted just before it.
 
-**5. Optuna proposes; the rule decides.** Optuna is a search tool. It tries many combinations of options (30 seeded trials, scored out-of-fold) and keeps the best trade-offs between recall and false merges. A tie-break, `pick_within_noise`, prefers the cheapest point whose recall is within noise of the best. The suggestion then faces `adopt` like any other change. After one adoption, later searches found nothing that passed (most recently +0 / −12 out-of-fold), so the search has converged. Both studies are now **off by default** (`enabled=False` in `config/experiments.py`). The chosen pipeline keeps the suggestions that were adopted, because those are written as changes there. Turning the studies back on (`scripts/choose.py --optuna`) costs about 10 minutes, and is worth it after the data or the rules change.
+The "chosen" rows are the owner's calls, made in the open, and on these sets they mostly cost recall:
+- **u measured on each scored file** loses 60 true pairs out-of-fold and 12 on val. The folds and val hold about 10,000 records, fewer than train, and on a smaller file strangers agree more often. The change removes credit that u from the larger fitting set over-gives there. On a bigger file it adds the credit that train's u withholds, and real files are usually bigger than train.
+- **u counted from value counts** gains here: +47 / −5 out-of-fold. A sample of 10 million pairs cannot see an agreement rarer than about one in a billion pairs, which an exact name or CIF ID becomes in big files; the exact count is right at every size.
+- **A one-edit level counted exactly** loses 2 true pairs out-of-fold. It is chosen for the same reason: the count is right at every size, where a sample sees almost no CIF ID typo pairs.
+- **A name must be compared** holds back 39 true pairs out-of-fold and 22 on val, which a run puts on the review sheet instead. A household shares an address and a phone, which alone can reach the line; train and val hold no such false pair, so the gain shows only at scale.
 
-**6. Test is scored once.** A leaderboard records every run. It counts the distinct configurations scored on test, and `scripts/choose.py` stops with an error above 1. The count is 1 for each stage.
+No "chosen" row adds a false pair.
+
+**5. Optuna proposes; the rule decides.** Optuna is a search tool. It tries many combinations of options (60 seeded trials for the rules, 30 for the model, scored out-of-fold) and keeps the best trade-offs between recall and false merges. A tie-break, `pick_within_noise`, prefers the cheapest point whose recall is within noise of the best. The suggestion then faces `adopt` like any other change. Both studies are **off by default** (`enabled=False` in `config/experiments.py`). The chosen pipeline keeps the suggestions that passed, because those are written there as changes (`optuna_comparators` for the rules, `optuna_suggestion` for the model). `scripts/choose.py --optuna` searches again, which is worth it after the data or the rules change.
+
+**6. Test is scored once.** A leaderboard records every run. It counts the distinct configurations scored on this population's test, and `scripts/choose.py` stops with an error above 1. The count is 1 for each stage. A newly generated population has a test nobody has seen, so its count starts again. `scripts/choose.py --no-test` runs a development round on train and val only.
 
 **Why this solution:** a person choosing by eye always drifts toward the numbers they can see. Rules applied to data the final number never touches remove that drift.
 
@@ -117,39 +136,40 @@ The "chosen" rows are the owner's calls, made in the open. u measured on each sc
 
 ## Challenge: does it hold beyond our one dataset?
 
-Every number so far comes from one generated population: one seed, one noise model, one assumed prior. A result that holds only there would be fragile. So `scripts/benchmark.py` re-runs the final configuration, unchanged, on populations generated differently, the way a real file is run (`er.run`, without labels): it fits λ, u and m on each population's train split, then resolves that population's test split. Nothing is re-tuned ([reports/benchmark.md](../../reports/benchmark.md)).
+Every number so far comes from one generated population: one seed, one noise model, one prior. A result that holds only there would be fragile. So `scripts/benchmark.py` re-runs the final configuration, unchanged, on populations generated differently, the way a real file is run (`er.run`, without labels): it fits λ, u and m on each population's train split, then resolves that population's test split. Nothing is re-tuned ([reports/benchmark.md](../../reports/benchmark.md)).
 
 | Scenario | Rules alone | Both stages | 95% interval | False merges | False-merge rate ≤ |
 |---|---|---|---|---|---|
-| as reported (seed 0) | 71.1% | 89.9% | 88.7–91.1% | 0 | 0.14% |
-| another seed (1) | 70.3% | 90.7% | 89.5–91.8% | 0 | 0.14% |
-| another seed (2) | 67.0% | 88.9% | 87.5–90.1% | 0 | 0.15% |
-| twice as many typos in names, phones and addresses | 67.4% | 88.7% | 87.3–89.9% | 0 | 0.15% |
-| emptier fields (fill rates fall to 45%, not 65%) | 62.8% | 88.3% | 86.9–89.5% | 0 | 0.14% |
-| prior: the near-certain rules find 25% of true pairs, not 50% (λ × 2) | 71.1% | 91.5% | 90.3–92.5% | 0 | 0.14% |
-| prior: they find 75% (λ × ⅔) | 71.1% | 89.0% | 87.7–90.2% | 0 | 0.14% |
+| as reported (seed 0) | 9.7% | 45.9% | 43.9–47.9% | 0 | 0.28% |
+| another seed (1) | 11.1% | 46.3% | 44.3–48.4% | 0 | 0.29% |
+| another seed (2) | 12.1% | 49.3% | 47.2–51.4% | 0 | 0.27% |
+| twice as many typos in names, phones and addresses | 8.1% | 33.4% | 31.4–35.4% | 0 | 0.41% |
+| emptier fields (fill rates fall to 45%, not 65%) | 7.3% | 41.7% | 39.7–43.7% | 0 | 0.31% |
+| prior: the near-certain rules find half the share measured on train (λ × 2) | 9.7% | 49.1% | 47.1–51.1% | 0 | 0.26% |
+| prior: they find 1.5 times that share (λ × ⅔) | 9.7% | 45.1% | 43.1–47.1% | 0 | 0.28% |
 
 What the table shows:
 
-- **The final result moves by about a point.** Across seeds and noise, recall stays between 88.3% and 90.7%, and no scenario has a false merge.
-- **The rules are the sensitive part.** They need exact agreements, so emptier fields cost them 8 points (71.1% → 62.8%). The second stage recovers most of that, and the final result loses 1.7 points.
-- **A prior off by a factor of two barely matters.** λ rests on an assumption: that the near-certain rules find half of all true pairs. If they found a quarter, or three quarters, every weight would shift by one bit, or by about half a bit. Recall moves by +1.5 or −0.9 points, with no false merge, because the threshold's safety step absorbs the shift.
+- **No scenario has a false merge.** Across the three seeds, recall stays between 45.9% and 49.3%.
+- **Typos are the sensitive part.** Twice as many typos cost the final result 12.5 points (45.9% → 33.4%): a typo turns an exact agreement into a close one, worth fewer bits, and pushes more pairs below the line. Emptier fields cost 4.2 points (to 41.7%), and the rules 2.4 (9.7% → 7.3%).
+- **A prior off by a factor of two moves recall by a few points, not the false merges.** λ rests on a share measured on train's labels: the true pairs the near-certain rules find (2.3%). A real file has no labels to measure it. If the share were half as large, or 1.5 times as large, every weight would shift by one bit, or by about half a bit. Recall moves from 45.9% to 49.1% or to 45.1%, with no false merge, because the threshold's safety step absorbs the shift.
 
-How the cost and the quality behave as the file grows to a million records is in [chapter 3](03-far-too-many-pairs.md#scaling-to-a-million-records).
+The cost files of [chapter 3](03-far-too-many-pairs.md#scaling-to-a-million-records), each fitted on itself, are not all clean: the model merges 2 false pairs at 12,532 records and 4 at 74,959, against 0 at 24,955 and 50,116 ([reports/benchmark.md](../../reports/benchmark.md)). Each is a model link of 8.2–10.1 bits, against the 8-bit line: near-namesakes, a kana typo apart, sharing an address or a phone. Test, scored once, has none. How the cost and the quality behave as the file grows to a million records is in chapter 3.
 
-**In short:** the final configurations hold across seeds, more noise, emptier fields and a prior off by a factor of two.
+**In short:** the final configuration holds across seeds, emptier fields and a prior off by a factor of two; more typos cost recall, not false merges. A few near-namesakes do slip through on some larger files.
 
 ## Challenge: the tools themselves can fool you
 
-Even with careful splits, the pipeline once reported numbers that were wrong. We found each problem from a symptom on train or validation:
+Careful splits are not enough. The pipeline's own tools can produce numbers that look right and are wrong:
 
-- **A stale cache.** It scored files with another file's name frequencies, so train and validation disagreed by 10 points.
-- **Cloned personas.** Three "false merges" turned out to be one impossible twin made by the generator.
-- **Two policies in conflict.** Optuna searched the threshold that the threshold rule also set, so the adopt-and-rerun loop never settled.
-- **A wall-clock timeout.** The sleeping laptop made the search results depend on the machine.
-- **A copy that outgrew the laptop.** At a million records, a full copy of the model's predictions needed more memory than the machine had.
+- **A cache keyed too loosely** scores a file with another file's name frequencies. `score_fs` clears Splink's cache, and the frequencies are stored with the model.
+- **Weights fitted at one size** are wrong at another. λ is rescaled, and u measured, on every scored file.
+- **The generator can make impossible twins,** two entities no matcher could tell apart. Each persona is drawn at most once.
+- **Two policies on one setting** never settle: if Optuna searched the threshold the threshold rule also sets, the adopt-and-rerun loop would go round for ever. The rule alone sets it.
+- **A wall-clock bound** makes a search depend on the machine. Studies are bounded by their number of trials only.
+- **A copy that outgrows memory** stops a big run. Every table that grows with the file stays in DuckDB, which spills to disk.
 
-Each now has a guard: a test or a check printed on every run. The full stories are in [lessons.md](../lessons.md).
+Each has a guard and a check: a test, or a number printed on every run. The full list is in [lessons.md](../lessons.md).
 
 **In short:** distrust a surprising number until its cause is found.
 

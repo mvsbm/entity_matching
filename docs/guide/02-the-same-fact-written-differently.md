@@ -8,7 +8,7 @@ Before two records can be compared, they must say the same thing in the same way
 
 ## Challenge: the same fact, many spellings
 
-The same fact rarely reaches the database in the same form. Katakana names lose voicing marks or get small kana typed full-size, and addresses are typed in whatever format the clerk prefers. In our validation file, one man appears as マツモトヒサオ on one record and マツモトヒサウ on another. One address arrives in three forms:
+The same fact rarely reaches the database in the same form. Katakana names lose voicing marks or get small kana typed full-size, and addresses are typed in whatever format the clerk prefers. One man may appear as マツモトヒサオ on one record and マツモトヒサウ on another. One address arrives in three forms:
 
 | Typed as | Why it differs |
 |---|---|
@@ -20,7 +20,9 @@ Compared as raw text, these are three different addresses.
 
 ### Solution: normalize before comparing
 
-A *normalizer* maps every variant of one fact to one standard form. We use three.
+A *normalizer* maps every variant of one fact to one standard form. We use four.
+
+**Width and spaces** are notation, not identity. Every name field is rewritten in NFKC, the Unicode standard form, and loses its spaces: ｻﾄｳ ﾋﾛｼ becomes サトウヒロシ.
 
 **Kana folding** maps similar-sounding katakana to one form: voiced to unvoiced (ガ → カ), small to large (ッ → ツ), and the long-vowel mark to a vowel (ー → ウ).
 
@@ -32,7 +34,7 @@ A *normalizer* maps every variant of one fact to one standard form. We use three
 
 **Address parsing** turns any typed address into one key. It converts full-width characters to normal ones, drops the prefecture, rewrites 丁目, 番 and 号 as dashes, and cuts off the building. All three addresses above become `千代田区丸の内1-3-17`.
 
-**Company names** lose their legal form before comparing: カブシキガイシャカネコカイソウテン becomes カネコカイソウテン.
+**Company names** lose their legal form before comparing, wherever it stands and however it is written: カブシキガイシャカネコカイソウテン, カネコカイソウテン(カ) and ｶﾌﾞｼｷｶﾞｲｼｬｶﾈｺｶｲｿｳﾃﾝ all become カネコカイソウテン.
 
 ### Why this solution
 
@@ -48,7 +50,7 @@ A record may have a full name, or only a surname and a given name in separate co
 |---|---|
 | `person_name` | full name → original full name → surname + given name |
 | `postal_code` | postal code → postal code (kana form) |
-| `address` | standardized address → address as typed |
+| `address` | standard address (built from prefecture, city, town and number) → address as typed |
 
 A field built this way is filled more often than any of its sources. A blank value, or one made only of spaces, counts as empty, so it never wins over a filled source. That matters, because an empty field gives no evidence at all ([chapter 5](05-uncertain-evidence-fellegi-sunter.md)).
 
@@ -56,7 +58,7 @@ A field built this way is filled more often than any of its sources. A blank val
 
 Normalizing is not perfectly safe:
 
-- **Folding can merge different names.** ショウジ and ショウシ are different names, but both fold to シヨウシ. That's why a folded match counts for a little less than an exact one ([chapter 5](05-uncertain-evidence-fellegi-sunter.md)).
+- **Folding can merge different names.** ショウジ and ショウシ are different names, but both fold to シヨウシ. That's why a folded match is a level of its own in the model, with its own weight ([chapter 5](05-uncertain-evidence-fellegi-sunter.md)).
 - **Cutting the building merges neighbours.** Two flats in one building get the same address key. Different households at one address are a known source of look-alikes.
 
 **In short:** normalize first, so that the same fact is written once.
@@ -100,7 +102,7 @@ Along the diagonal the cost stays at 0 while the characters agree. The last step
 
 **Where we use it, and why:**
 - **Addresses in the model** ("address close": at most 2 edits). After normalization, an address error is usually a wrong or dropped digit. `千代田区丸の内1-3-17` and `1-3-7` are 1 edit apart, and a limit of 2 allows for one more slip.
-- **Names in the rules** (folded names at most 2 edits apart). Each of those rules also needs the CIF ID or the phone to agree exactly, with the address code or a close address, so a simple count is safe there.
+- **Company names in the rules** (at most 1 edit, legal form removed, folded). Each of those rules also needs the phone to agree exactly, with the postal code or the address code, so a simple count is safe there.
 
 **Its blind spot.** Every edit costs the same, so it can't tell a slip in a long name from one in a short name. サトウ / サトオ and マツモトヒサオ / マツモトヒサウ are both 1 edit apart. But one kana is a third of サトウ and only a seventh of マツモトヒサオ. That's why the model uses Jaro–Winkler for names.
 
@@ -110,7 +112,9 @@ Along the diagonal the cost stays at 0 while the characters agree. The last step
 
 **Example.** In 0599 and 0959, the 5 and the 9 have traded places. Levenshtein needs two replacements (distance 2). Damerau–Levenshtein needs one swap (distance **1**).
 
-**Where we use it, and why.** **Phones in the rules** (at most 1). Typing two digits in the wrong order is one of the most common keying slips. It should count as one mistake, not two.
+**Where we use it, and why.** Typing two characters in the wrong order is one of the most common keying slips. It should count as one mistake, not two.
+- **Names in the rules** (folded names at most 2 edits apart). Each of those rules also needs the CIF ID or the phone to agree exactly, with the address code or a close address, so a simple count is safe there.
+- **The CIF ID and the birth date in the model** (the level "one digit off": at most 1). A reused CIF ID, or a birth date, is sometimes typed with one digit wrong, and a swap of two digits counts as one slip too. Both are exact identifiers otherwise ([below](#exact-equality-for-identifiers)).
 
 ### Hamming distance: positions that differ
 
@@ -120,9 +124,9 @@ Along the diagonal the cost stays at 0 while the characters agree. The last step
 
 **Properties.** It is the simplest and fastest function, O(n). It allows replacements only, never insertions or deletions.
 
-**Where we use it, and why.** **Phones in the model** (the level "one digit off"). The last four digits always have exactly four characters, and the most common error is one wrong digit, which is exactly Hamming distance 1.
+**Where we use it, and why.** **Phones, in the model** (the level "one digit off") **and in the rules** (at most 1). The last four digits always have exactly four characters, and the most common error is one wrong digit, which is exactly Hamming distance 1.
 
-It also makes the evidence easy to check by counting. Each number has 4 × 9 = 36 neighbours at distance 1. So two strangers land there by chance about 36 times in 10,000, which is the 1 in 279 the model learned ([chapter 5](05-uncertain-evidence-fellegi-sunter.md)).
+It also makes the evidence easy to check by counting. Each number has 4 × 9 = 36 neighbours at distance 1. So two strangers land there by chance about 36 times in 10,000. The model counts this level exactly on each file, through one-deletion keys ([chapter 3](03-far-too-many-pairs.md#keeping-every-potential-match)), and finds the same: about 1 in 277 on val ([chapter 5](05-uncertain-evidence-fellegi-sunter.md)).
 
 ### Jaro and Jaro–Winkler: shared characters, in order, with a bonus for the start
 
@@ -163,14 +167,14 @@ $$JW = J + 0.1\,\ell\,(1 - J)$$
 - **It is forgiving at the end and strict at the start.**
 - **It runs in O(m·n)** in the worst case. Names are short, so it is cheap.
 
-**Where we use it, and why.** **Names in the model:** "very close" at 0.95 or more, "close" at 0.75 or more. Matt Jaro and William Winkler designed it at the US Census Bureau for exactly this job: comparing personal names with typing errors. Three of its properties fit our names:
+**Where we use it, and why.** **Names in the model:** "very close" at 0.95 or more, "close" at 0.75 or more; company names, with the legal form removed, at 0.8 or more. Matt Jaro and William Winkler designed it at the US Census Bureau for exactly this job: comparing personal names with typing errors. Three of its properties fit our names:
 1. It judges a slip against the length of the name, as a person would.
 2. The first character is the one people most often get right. Folding has already removed the kana variants that do touch it, such as ガトウ → カトウ.
 3. Japanese names start with the surname, so the shared start is usually the shared surname.
 
-The rules also use Jaro–Winkler for addresses (0.91 or more). A normalized address shares a long start, the city and town, and differs, if at all, near the end.
+The rules also use Jaro–Winkler for addresses (0.9 or more). A normalized address shares a long start, the city and town, and differs, if at all, near the end.
 
-**Its blind spot.** Different people who share a surname score high. サトウヒロシ and サトウタカシ reach **0.844**, which counts as "close" (at least 0.75). That's why "close" is weak evidence in the model, worth only about 4 bits ([chapter 5](05-uncertain-evidence-fellegi-sunter.md)).
+**Its blind spot.** Different people who share a surname score high. サトウヒロシ and サトウタカシ reach **0.844**, which counts as "close" (at least 0.75). That's why "close" is weak evidence in the model, worth only about 5 bits ([chapter 5](05-uncertain-evidence-fellegi-sunter.md)).
 
 ### Jaccard similarity: shared characters, in any order
 
@@ -184,21 +188,21 @@ The score runs from 0 (no character in common) to 1 (the same characters).
 
 **Properties.** It ignores order and repetition entirely, and runs in O(m + n).
 
-**Where we use it, and why.** **Raw company names in the rules** (0.77 or more). A company's legal form can come first or last:
+**Where it would help, and why we don't need it.** A company's legal form can come first or last:
 
 | Pair | Levenshtein | Jaro–Winkler | Jaccard |
 |---|---|---|---|
 | カブシキガイシャカネコカイソウテン / カネコカイソウテンカブシキガイシャ | 16 | 0.513 | **1.000** |
 
-To the order-sensitive functions, the same company looks completely different. To Jaccard, it looks identical.
+To the order-sensitive functions, the same company looks completely different. To Jaccard, it looks identical. But the company normalizer removes the legal form wherever it stands, so both become カネコカイソウテン, and an order-sensitive count works. Jaccard stays in the rules' search space (`config/experiments.py`); the search picks Levenshtein.
 
-**Its blind spot, and why we use it nowhere else.** Because order doesn't count, Jaccard is the wrong tool for numbers. 0599 and 0959 have the same digits, so their Jaccard is 1.0. So do `千代田区丸の内1-3-17` and `1-3-7`, which may be a different address. For phones and addresses, the order *is* the information.
+**Its blind spot, and why we use it nowhere.** Because order doesn't count, Jaccard is the wrong tool for numbers. 0599 and 0959 have the same digits, so their Jaccard is 1.0. So do `千代田区丸の内1-3-17` and `1-3-7`, which may be a different address. For phones and addresses, the order *is* the information.
 
 ### Exact equality: for identifiers
 
 **The idea.** Two values are equal after normalization, or they aren't.
 
-**Where we use it, and why.** For the CIF ID, the address code and the postal code, and as the strongest level of every comparison. These are identifiers, not words: a code one digit away is usually a different code, so "nearly equal" carries no meaning. Exact matching is also the cheapest test, because the database finds equal values with a hash join ([chapter 3](03-far-too-many-pairs.md)).
+**Where we use it, and why.** For the address code, the postal code, the town code, the city and the prefecture, and as the strongest level of every comparison. These are identifiers, not words: a code one digit away is usually a different code, so "nearly equal" carries no meaning. The CIF ID and the birth date are identifiers too, but people retype them, so the model adds a "one digit off" level after the exact one (Damerau–Levenshtein, above). Exact matching is also the cheapest test, because the database finds equal values with a hash join ([chapter 3](03-far-too-many-pairs.md)).
 
 ### All the functions side by side
 
@@ -225,24 +229,25 @@ Reading down each column shows what each function notices:
 | Field | How it goes wrong | Function | Why this one | Stage |
 |---|---|---|---|---|
 | person name | a kana wrong or dropped (spelling variants are folded first) | Jaro–Winkler: ≥ 0.95 very close, ≥ 0.75 close | judges a slip against the name's length, and rewards the shared surname at the start | model |
-| | | Levenshtein ≤ 2, on folded names | a simple count, safe because the rule also needs an exact CIF ID or phone | rules |
-| company name | the legal form before or after the name | Jaccard ≥ 0.77, on raw names | order doesn't matter | rules |
-| | a kana wrong | Jaro–Winkler, with the legal form removed | as for person names | model |
+| | | Damerau–Levenshtein ≤ 2, on folded names | a simple count, safe because the rule also needs an exact CIF ID or phone | rules |
+| company name | the legal form before or after the name, written in several ways | removed by the normalizer | then order doesn't matter | both |
+| | a kana wrong | Jaro–Winkler ≥ 0.8, with the legal form removed | as for person names | model |
+| | | Levenshtein ≤ 1, with the legal form removed | a simple count, safe because the rule also needs an exact phone | rules |
 | address | a digit wrong or dropped (formats are normalized first) | Levenshtein ≤ 2 | one slip is one edit | model |
-| | | Jaro–Winkler ≥ 0.91 | a long shared start (city, town), with any difference at the end | rules |
-| phone (last 4) | one digit wrong | Hamming = 1 | fixed length, so one wrong digit is exactly distance 1 | model |
-| | two digits swapped | Damerau–Levenshtein ≤ 1 | a swap counts as one slip | rules |
-| CIF ID, address code, postal code | none in the generator | exact | an identifier has no "nearly" | both |
+| | | Jaro–Winkler ≥ 0.9 | a long shared start (city, town), with any difference at the end | rules |
+| phone (last 4) | one digit wrong | Hamming = 1 | fixed length, so one wrong digit is exactly distance 1 | both |
+| CIF ID, birth date | one digit wrong | exact, then Damerau–Levenshtein ≤ 1 | an identifier, retyped: one slip, a swap included | model |
+| address code, postal code, town, city, prefecture | none in the generator | exact | an identifier has no "nearly" | both |
 
 **A risk we accept, and how we contain it.** "Close" addresses include neighbours. 福島市吉倉4-11 and 4-17 score 0.956 and are one edit apart, whether through a typo or because they are next door. So a close address is never enough on its own:
 - **In the rules,** a close address must come with a close name and the same phone.
-- **In the model,** "address close" is worth +8.9 bits, against +14.0 for the same address.
+- **In the model,** "address close" is worth +2.5 bits on val, against +13.1 for the same address.
 
 ### Other options, and why we didn't take them
 
 - **Phonetic codes** such as Soundex give names that sound alike the same code. They were built for English, where spelling and sound often disagree. Katakana is already a phonetic script, and folding does the remaining work.
 - **Weighted edits** could make ガ → カ cost less than ガ → サ. Folding gets the same effect more simply: confusable kana become equal before any comparison.
-- **Character pieces with TF-IDF** compare names by shared fragments, weighting rare fragments more. They were tried for *finding* candidates, where speed over many names matters more than a precise score. Their search compares every name with every other, though, so the final configuration finds the same pairs by sorting instead ([chapter 3](03-far-too-many-pairs.md#scaling-to-a-million-records)).
+- **Character pieces with TF-IDF** compare names by shared fragments, weighting rare fragments more. They suit *finding* candidates, where speed over many names matters more than a precise score, and `scripts/choose.py` measures them there. Their search compares every name with every other, though, so the chosen pipeline finds such pairs by a second sort instead ([chapter 3](03-far-too-many-pairs.md#scaling-to-a-million-records)).
 
 **In short:** give each field the function whose idea of a small mistake matches how that field really goes wrong.
 
@@ -267,7 +272,7 @@ The gap is not cosmetic. Our model treats Jaro–Winkler at or above 0.95 as "ve
 
 ## In the code
 
-- `config/settings.toml`: `[locale]` (the folding table, legal forms, address rules, normalization chains) and `[columns]` (each field's source columns)
+- `config/settings.toml`: `[locale]` (the folding table, legal forms, address rules, normalization chains) and `[columns]` (each field's source columns, and the NFKC and space removal of the name fields)
 - `er/standardize.py`: `normalize` (apply named normalizers), `prepare` (derive and normalize the columns a stage uses)
 - `er/strings.py`: `cl_*` functions, `connect()`
 - `tests/test_er.py`: character-level and NULL-safe functions; the three address formats give one key

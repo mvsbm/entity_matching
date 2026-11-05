@@ -3,8 +3,8 @@ the Optuna search spaces (off by default). A variant is code, so this is Python;
 Each variant is a change to a configuration, written once; DECISIONS adopt them in order, each on top of the choice
 so far, by er.evaluate.adopt: "better" needs a significant paired gain on the selection set (no FP added); "cheaper"
 and "safer" (more pairs, gain at scale) no paired loss there; "chosen" is the owner's call for a gain the selection sets
-are too small to show (no FP may be added, recall may move). "better", "cheaper" and "safer" also need no paired loss on val;
-"chosen" needs only that val adds no more false pairs than it removes.
+are too small to show (no FP may be added, recall may move). "better", "cheaper" and "safer" also need no net loss on val
+(at least as many true pairs gained as lost, no more false pairs added than removed); "chosen" needs only the second.
 """
 from collections.abc import Callable, Mapping
 from dataclasses import replace
@@ -123,7 +123,7 @@ def fs_changes(p: Pipeline) -> dict[str, Callable[[FSSpec], FSSpec]]:
         "sorted_names_for_tfidf": lambda s: replace(s, blockers=tuple(b for b in s.blockers if not isinstance(b, TfidfNeighbours)) + tuple(
             pool[n] for n in ("sn_person_name", "sn_person_name_reversed") if pool[n] not in s.blockers)),
         "name_keys": lambda s: replace(s, blockers=s.blockers + tuple(pool[n] for n in NAME_KEYS if pool[n] not in s.blockers)),
-        # the address alone grows like N² (12.8 pairs per record at 10⁶); the address with the phone, the name's first
+        # the address alone grows like N² (about 5 pairs per record at 10⁶); the address with the phone, the name's first
         # letter or the given name finds the same potential matches, linearly
         "bounded_address_keys": lambda s: replace(s, blockers=tuple(b for b in s.blockers if b.name not in ("address", "address_code"))
                                                   + tuple(pool[n] for n in ADDRESS_KEYS if pool[n] not in s.blockers)),
