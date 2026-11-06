@@ -27,9 +27,9 @@ What a file can't tell about itself, over its plausible range (a Latin hypercube
 
 | scenarios | combinations | seconds |
 | --- | --- | --- |
-| 3 | 768 | 128 |
+| 3 | 768 | 132 |
 | 6 | 192 | 51 |
-| 12 | 48 | 54 |
+| 12 | 48 | 56 |
 
 ## The finalists on all 12 scenarios (the best 15 of 48)
 
@@ -95,19 +95,29 @@ The pipeline's combination, each way of counting them.
 
 ## Placing the lines from people's answers
 
-The pipeline's combination: answers drawn at random or stratified, the combiner fitted on them, the lines placed on their out-of-fold probabilities (`er.kind.lines`: the company rule as below; the person line where the answers' wrong share is at most half of 1%), then the wrong calls on every other record: the mean share decided, the worst wrong share, and in how many of the 12 scenarios the wrong share broke its budget.
+The pipeline's combination and the best: answers drawn at random, 5 draws per scenario (60 trials), the combiner fitted on them, the lines placed on their out-of-fold probabilities: the company line by `er.kind.lines` (no labelled person above it, then 2 grid steps stricter), the person line by each rule below. Then the calls on every other record: the mean share decided, the worst wrong share, and in how many trials the wrong share broke its budget (1% for person calls, 0.1% for company calls).
 
-| answers | drawn | company_rule | companies | company_wrong_worst | company_over_budget | persons | person_wrong_worst | person_over_budget |
+- a: the lowest line whose answers above it are 30 or more and at most half the budget wrong
+- b: the lowest line whose 95% one-sided upper bound (Clopper–Pearson) on the wrong share above it is within the budget
+- c: the company's rule: the lowest line with no wrong answer above it, then margin_steps stricter
+
+| combination | answers | person_rule | persons | person_wrong_worst | person_over_budget | companies | company_wrong_worst | company_over_budget |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| 500 | random | no error above, then 1 step stricter | 65.40% | 0.29% | 1 | 27.46% | 1.36% | 2 |
-| 500 | random | no error above, then 2 steps stricter | 60.27% | 0.12% | 1 | 27.46% | 1.36% | 2 |
-| 500 | stratified (a third at random, a third leaning company, a third leaning person) | no error above, then 1 step stricter | 68.59% | 0.57% | 2 | 8.84% | 2.86% | 1 |
-| 500 | stratified (a third at random, a third leaning company, a third leaning person) | no error above, then 2 steps stricter | 63.56% | 0.60% | 2 | 8.84% | 2.86% | 1 |
-| 1000 | random | no error above, then 1 step stricter | 68.17% | 0.81% | 4 | 14.96% | 0.54% | 0 |
-| 1000 | random | no error above, then 2 steps stricter | 64.64% | 0.17% | 2 | 14.96% | 0.54% | 0 |
-| 1000 | stratified (a third at random, a third leaning company, a third leaning person) | no error above, then 1 step stricter | 62.34% | 0.04% | 0 | 19.32% | 1.49% | 1 |
-| 1000 | stratified (a third at random, a third leaning company, a third leaning person) | no error above, then 2 steps stricter | 56.65% | 0.02% | 0 | 19.32% | 1.49% | 1 |
-| 2000 | random | no error above, then 1 step stricter | 66.76% | 0.31% | 2 | 22.25% | 1.67% | 2 |
-| 2000 | random | no error above, then 2 steps stricter | 64.74% | 0.02% | 0 | 22.25% | 1.67% | 2 |
-| 2000 | stratified (a third at random, a third leaning company, a third leaning person) | no error above, then 1 step stricter | 70.88% | 0.04% | 0 | 23.91% | 0.86% | 0 |
-| 2000 | stratified (a third at random, a third leaning company, a third leaning person) | no error above, then 2 steps stricter | 68.03% | 0.04% | 0 | 23.91% | 0.86% | 0 |
+| the pipeline's | 1000 | a | 22.27% | 1.54% | 8 | 66.77% | 0.41% | 4 |
+| the pipeline's | 1000 | b | 10.50% | 1.19% | 2 | 66.77% | 0.41% | 4 |
+| the pipeline's | 1000 | c | 2.52% | 1.62% | 3 | 66.77% | 0.41% | 4 |
+| the pipeline's | 2000 | a | 25.34% | 1.23% | 4 | 66.74% | 0.12% | 1 |
+| the pipeline's | 2000 | b | 19.81% | 1.23% | 2 | 66.74% | 0.12% | 1 |
+| the pipeline's | 2000 | c | 2.05% | 0.56% | 0 | 66.74% | 0.12% | 1 |
+| the pipeline's | 4000 | a | 20.57% | 1.51% | 2 | 67.69% | 0.04% | 0 |
+| the pipeline's | 4000 | b | 29.84% | 1.14% | 2 | 67.69% | 0.04% | 0 |
+| the pipeline's | 4000 | c | 0.01% | 0.00% | 0 | 67.69% | 0.04% | 0 |
+| the best | 1000 | a | 26.38% | 2.69% | 10 | 65.47% | 0.80% | 3 |
+| the best | 1000 | b | 7.27% | 1.02% | 1 | 65.47% | 0.80% | 3 |
+| the best | 1000 | c | 1.59% | 1.17% | 1 | 65.47% | 0.80% | 3 |
+| the best | 2000 | a | 24.13% | 1.20% | 3 | 67.06% | 0.13% | 1 |
+| the best | 2000 | b | 22.03% | 1.20% | 2 | 67.06% | 0.13% | 1 |
+| the best | 2000 | c | 0.47% | 0.28% | 0 | 67.06% | 0.13% | 1 |
+| the best | 4000 | a | 22.43% | 1.85% | 4 | 67.64% | 0.02% | 0 |
+| the best | 4000 | b | 29.82% | 1.00% | 1 | 67.64% | 0.02% | 0 |
+| the best | 4000 | c | 0.01% | 0.00% | 0 | 67.64% | 0.02% | 0 |

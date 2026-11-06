@@ -381,7 +381,7 @@ class KindSpec:
     ngram: int = 3                            # the name model's character n-grams: 1 to this
     depth: int = 2                            # the combiner's trees (gradient boosting)
     company_wrong_at_most: float = 0.001      # the budget the company line is judged by (choose_kind): placed with no labelled error above it, then margin_steps stricter
-    person_wrong_at_most: float = 0.01        # the person line: the labelled error above it at most half of this
+    person_wrong_at_most: float = 0.01        # the person line: the labelled error above it within this, at 95% confidence
     margin_steps: int = 2
     labels_to_draw: int = 2000                # the review sheet's records drawn to measure the flag and the engine
     review_max: int = 1000                    # ... and at most this many it sends people to decide (the surest disagreements)
