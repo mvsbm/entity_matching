@@ -171,7 +171,7 @@ Each entry names a way an entity-resolution pipeline like this one goes wrong, a
 ## A line placed at zero errors on a few hundred labels
 - **Pitfall:** "no labelled error above the line" on a few hundred labels says little about a 0.1% error rate: a sample with 100 companies in it passes a line that lets one call in a hundred go wrong. It shows as a line that holds on the labels and breaks on the file, in some files and not in others.
 - **Why:** no error in n draws bounds the rate only near 3/n.
-- **Guard:** the company line is two grid steps stricter than the first clean one, on a measuring draw of 2,000 records at random. The person line asks for a wrong share within its budget at 95% confidence: a share of at most half the budget, measured on as few as 30 answers, broke the budget in 4 of 60 trials.
+- **Guard:** the company line is two grid steps stricter than the first clean one on a measuring draw of 2,000 records at random, and three on fewer answers: on 1,000, two steps broke the budget in 4 of 60 trials. The person line asks for a wrong share within its budget at 95% confidence: a share of at most half the budget, measured on as few as 30 answers, broke the budget in 4 of 60 trials.
 - **Check:** `reports/choose_kind.md`, placing the lines: in how many of the 12 scenarios each number of answers and each rule breaks the budget.
 
 ## An increment that drops the review queue

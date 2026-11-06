@@ -1174,8 +1174,9 @@ def test_each_side_s_line_keeps_within_its_labels():
     from er.kind import lines
     p = np.r_[np.full(50, 0.999), [0.97], np.full(300, 0.01), [0.03]]  # 50 companies, a person at 0.97, 300 persons, a company at 0.03
     company = np.r_[np.ones(50, bool), [False], np.zeros(300, bool), [True]]
-    line_c, line_p, error = lines(p, company, KindSpec(margin_steps=1))
+    line_c, line_p, error = lines(p, company, KindSpec(margin_steps=1, labels_to_draw=len(p)))
     assert line_c == 0.99   # the lowest line with no person above it is 0.98; one step stricter
+    assert lines(p, company, KindSpec(margin_steps=1, labels_to_draw=len(p) + 1))[0] == 0.995  # fewer answers than the draw: one more
     assert (line_p, error) == (0.98, 0.0)  # 300 right: the rate's 95% bound is 0.99%; at 0.95, 1 wrong in 301 bounds it at 1.6%
     few = np.r_[np.full(40, 0.01), np.full(10, 0.999)]  # 40 persons, none wrong: the bound is still 7.2%
     assert lines(few, np.r_[np.zeros(40, bool), np.ones(10, bool)], KindSpec())[1] == 1.01
