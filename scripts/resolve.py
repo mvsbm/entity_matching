@@ -7,6 +7,7 @@
     .venv/bin/python scripts/resolve.py --input big.parquet --output data/medallion/gold/big --compute memory_limit=8GB threads=4
     .venv/bin/python scripts/resolve.py --input customers.parquet --output data/medallion/gold/customers --overwrite
     .venv/bin/python scripts/resolve.py --output data/medallion/gold/customers --decisions reviewed.parquet   # people's decisions
+    .venv/bin/python scripts/resolve.py --input customers.parquet --output data/medallion/gold/customers --overwrite --kind-labels labelled.parquet
 
 Input is Parquet, read through er.source: a file, a glob or a folder. Records that can't be resolved (no ID, one ID with
 different content, or in an increment, already in the run) are set aside in set_aside/ and the run goes on.
@@ -14,12 +15,15 @@ A mistake people must fix stops the run with two lines, what is wrong and how to
 
 Fits λ and m by EM on a fixed-size sample of the file (config/pipeline.toml [model] fit_rows), or uses --model, a
 fitted model (data/artifacts/models/probabilistic_final.json). Writes to --output: gold.parquet (each record's cluster,
-and the stage and rule that resolved it), matches/ (accepted pairs, their weights and the generators that found them)
-and rule_kept/ as Parquet parts, steps.json (each step's Big-O and time), qa.md (label-free checks), report.txt (the run
-on one page with no record's value in it, to send to whoever helps you with it), review.parquet
-(pairs for people: "decide", every cluster pair whose best link scored in the threshold's safety margin, and "audit",
+the stage and rule that resolved it, and its kind and its customer's: company, person or unsure), matches/ (accepted
+pairs, their weights and the generators that found them) and rule_kept/ as Parquet parts, steps.json (each step's
+Big-O and time), qa.md (label-free checks), report.txt (the run on one page with no record's value in it, to send to
+whoever helps you with it), review.parquet (pairs for people: "decide", every cluster pair whose best link scored in the threshold's safety margin, and "audit",
 a sample of accepted pairs just above it; both records' compared fields side by side, each field's level and bits,
-and an empty decision column; it holds records, so keep it with the data), and state/ for increments.
+and an empty decision column; it holds records, so keep it with the data), kind_review.parquet (a full run's records for
+people to label as company or person: a third at random, a third leaning company, a third leaning person; it holds
+names, so keep it with the data), and state/ for increments. --kind-labels gives a filled-in kind_review.parquet to a
+full run: the kinds then rest on those labels (er.kind), and the run keeps them for its increments and its next full run.
 --decisions applies people's decisions (review.parquet with decision filled in as match or no_match, or any file with
 the two ids and decision) to the run in --output, scoring nothing; they are kept in decisions/, and a full run on that
 folder applies them again.
@@ -34,6 +38,7 @@ import pandas as pd
 
 from er.config import InputError, load_pipeline, sources_text
 from er.io import markdown
+from er.kind import label_sheet
 from er.run import Run, fill_rates, qa, report_text
 from er.settings import load_settings
 
@@ -55,6 +60,7 @@ def main() -> None:
     parser.add_argument("--increment", action="store_true", help="add these records to the run in --output")
     parser.add_argument("--overwrite", action="store_true", help="replace the run already in --output (a full run refuses otherwise)")
     parser.add_argument("--decisions", type=Path, help="people's decisions to apply to the run in --output (without --input)")
+    parser.add_argument("--kind-labels", type=Path, help="people's person/company labels: a filled-in kind_review.parquet (a full run)")
     parser.add_argument("--compute", nargs="*", default=[], metavar="KEY=VALUE",
                         help="override config/settings.toml [compute] for this run, e.g. memory_limit=8GB")
     args = parser.parse_args()
@@ -71,7 +77,8 @@ def main() -> None:
     if args.model:
         saved = json.loads(args.model.read_text(encoding="utf-8"))
         model = saved.get("model", saved)
-    run = Run(p, s, model=model, echo=step)
+    kept = args.output / "state" / "kind_labels.parquet" if args.output else None  # a run on its own folder keeps its labels
+    run = Run(p, s, model=model, echo=step, kind_labels=args.kind_labels or (kept if kept and kept.exists() else None))
     fields = [f for f in s.columns if f not in ("id", "entity")]
     if args.check:
         run.load(args.input)
@@ -114,9 +121,16 @@ def main() -> None:
         text += [f"## {name.replace('_', ' ')}", "", markdown(table.round(4)) if len(table) else "none", ""]
     (args.output / "qa.md").write_text("\n".join(text), encoding="utf-8")
     (args.output / "report.txt").write_text(report_text(run, report, pipeline), encoding="utf-8")
+    if run.classifier is not None and not args.increment:  # records for people to label; none of those labelled already
+        names = [c for c in ("company_name", "person_name", "full_name", "any_name") if c in run._columns()]
+        cols = [c for c in ("kind_flag", "birth_date") if c in run._columns()]
+        records = run.con.sql(f'SELECT "{run.uid}", coalesce({", ".join(names)}) AS name, {", ".join(cols + ["kind_p"])} FROM records').df()
+        done = set(run.labels[run.uid]) if run.labels is not None and run.uid in run.labels else set()
+        label_sheet(records, run.uid, p.kind.labels_to_draw, done).to_parquet(args.output / "kind_review.parquet")
     print("\n".join(f"{what:<12} {value}" for what, value in report["summary"].itertuples(index=False)))
     print(f"{sum(x['seconds'] for x in run.steps):.1f} s · wrote {args.output}: gold.parquet, review.parquet, qa.md (each step's cost), "
-          "report.txt (no record's value in it: to share), matches/, state/")
+          "report.txt (no record's value in it: to share)" + (", kind_review.parquet (to label)" if run.classifier is not None and not args.increment else "")
+          + ", matches/, state/")
 
 
 if __name__ == "__main__":

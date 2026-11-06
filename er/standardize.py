@@ -1,10 +1,15 @@
 """Standardize: derived (fallback) columns and normalized copies of columns. O(N·L)."""
 import re
 from collections.abc import Iterable
+from typing import TYPE_CHECKING
 
+import numpy as np
 import pandas as pd
 
 from er.config import InputError, Normalizer, Standardization, column_name
+
+if TYPE_CHECKING:
+    from er.kind import Classifier
 
 
 SMALL_KANA = str.maketrans("ァィゥェォッャュョヮ", "アイウエオツヤユヨワ")  # banks write no small kana
@@ -49,14 +54,18 @@ def normalize(s: pd.Series, steps: tuple[Normalizer, ...], std: Standardization)
 
 
 def prepare(std: Standardization, records: pd.DataFrame, normalized: Iterable[tuple[str, tuple[Normalizer, ...]]],
-            used: Iterable[str] = ()) -> pd.DataFrame:
-    df = records.copy()
-    read = {c for d in std.derived for cols in d.sources for c in cols}
+            used: Iterable[str] = (), kind: "Classifier | None" = None) -> pd.DataFrame:
+    """Each field built from its sources, then each record's kind (with `kind`, an er.kind.Classifier: kind_p and kind,
+    and a field routed by kind kept only where the record leans its way), then the normalized copies. O(N·L)."""
+    df, used, raw = records.copy(), set(used), None
+    # a field nothing reads and the file holds none of is absent, as a run treats it (er.settings.fit_to_file)
+    derived = [d for d in std.derived if d.name in used or any(c in records.columns for cols in d.sources for c in cols)]
+    read = {c for d in derived for cols in d.sources for c in cols}
     if read - set(records.columns):  # the trust boundary: say what is missing, instead of a KeyError deep inside
         raise ValueError(f"input lacks columns that config/settings.toml derives from: {sorted(read - set(records.columns))}")
-    for c in read | (set(used) & set(records.columns)):  # a blank value is missing: it must not win a fallback or match
+    for c in read | (used & set(records.columns)):  # a blank value is missing: it must not win a fallback or match
         df[c] = df[c].mask(df[c].str.fullmatch("[\\s\u3000]*").fillna(False))
-    for d in std.derived:
+    for d in derived:
         if d.name in records.columns:
             raise InputError(f"the file has a column named {d.name}, which is also the name of a field",
                              fix=f"rename the column, or map field {d.name} to it in config/settings.toml [columns]")
@@ -67,6 +76,15 @@ def prepare(std: Standardization, records: pd.DataFrame, normalized: Iterable[tu
                 joined = joined + df[c]  # NA if any part is missing
             out = out.fillna(joined)
         df[d.name] = normalize(out, d.normalize, std)
+        if kind is not None and d.name == kind.spec.name_field:
+            raw = out  # the name as written: its legal form still in it
+    if kind is not None and raw is not None:
+        k = kind.classify(raw, df.get("kind_flag"), df.get("birth_date"))
+        df["kind_p"], df["kind"] = k["kind_p"].to_numpy(), k["kind"].to_numpy()
+        lean = np.where(k["kind_p"].to_numpy() >= 0.5, "company", "person")
+        for d in derived:
+            if d.kind:
+                df[d.name] = df[d.name].where(lean == d.kind)
     for col, steps in normalized:
         if column_name(col, steps) not in df:
             df[column_name(col, steps)] = normalize(df[col], steps, std)

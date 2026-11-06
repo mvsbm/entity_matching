@@ -63,6 +63,7 @@ from splink.clustering import cluster_pairwise_predictions_at_threshold
 
 from er.candidates import candidates, estimate, q
 from er.config import FSSpec, InputError, Key, KeyBlocker, Pipeline, sources_text
+from er.kind import classifier as kind_classifier
 from er.match import (ELSE, assemble_u, counted, exact_u, levels, parameters, refreshed_u, rule_edges, scaled_prior, score_fs,
                       scored_sample, train_fs, u_basis)
 from er.pipeline import named, pattern_coverage
@@ -129,6 +130,7 @@ class Run:
     steps: list[dict] = field(default_factory=list)
     disabled: list[str] = field(default_factory=list)
     echo: Callable[[dict], None] | None = None  # called with each step as it finishes: progress for people (scripts/resolve.py)
+    kind_labels: Path | None = None           # people's person/company labels (a filled-in kind_review.parquet); an increment keeps the run's
 
     def __post_init__(self) -> None:
         self.con, self.db = connect(self.settings.compute)
@@ -141,6 +143,8 @@ class Run:
         self.present: dict = {}               # each field the file holds, and the source columns it is built from
         self.scoring: dict | None = None      # the model with u from this file (fit): what the gate and the scores use
         self.basis: dict = {}                 # what an increment needs to tell whether those u went stale (er.match.u_basis)
+        self.classifier = None                # each record's kind, person or company (er.kind); None: the pipeline doesn't ask
+        self.labels: pd.DataFrame | None = None  # the person/company labels it rests on, kept in state/ for increments
         self.rule_names = [rule.name for st in self.pipeline.rules.stages for rule in st.rules]
         if {self.pipeline.rules.resolver.method, self.pipeline.fs.resolver.method} != {"connected_components"}:
             raise InputError("the run clusters by connected components only; the pipeline asks for "
@@ -188,16 +192,23 @@ class Run:
             if stored is None:
                 raise InputError(f"{path}: no record left to resolve ({'; '.join(self.notes)})", fix="give the records IDs, one per record")
             return
-        fs, rules = self.pipeline.fs, self.pipeline.rules
+        fs, rules, spec = self.pipeline.fs, self.pipeline.rules, self.pipeline.kind
+        if spec and spec.name_field in present:
+            self.labels = pd.read_parquet(self.kind_labels) if self.kind_labels and Path(self.kind_labels).exists() else None
+            self.classifier = kind_classifier(self.settings, spec, self.labels)
         normalized, used = [*rules.normalized(), *fs.normalized()], rules.used() | fs.used()
         reader = self.con.cursor().sql(f"SELECT * FROM {rows}").to_arrow_reader(self.chunk_rows)  # its own cursor: inserts go on alongside
         for i, batch in enumerate(reader):
-            chunk = prepare(fs.standardize, batch.to_pandas().astype("string"), normalized, used)
+            chunk = prepare(fs.standardize, batch.to_pandas().astype("string"), normalized, used, kind=self.classifier)
             self.con.register("er_chunk", chunk)
             self.con.execute(f"CREATE TABLE {into} AS SELECT * FROM er_chunk" if i == 0 else f"INSERT INTO {into} SELECT * FROM er_chunk")
             self.con.unregister("er_chunk")
         self.n = self._count(into)
-        self._done("load", "O(N·L)", f"O({self.n:,}·L)", t, records=self.n, disabled=len(self.disabled), set_aside=self._count("set_aside"))
+        kinds = {}
+        if self.classifier is not None:  # how many records each kind holds
+            kinds = dict(self.con.execute(f"SELECT kind, count(*) FROM {into} GROUP BY 1").fetchall())
+            kinds = {"companies": kinds.get("company", 0), "persons": kinds.get("person", 0), "unsure": kinds.get("unsure", 0)}
+        self._done("load", "O(N·L)", f"O({self.n:,}·L)", t, records=self.n, disabled=len(self.disabled), set_aside=self._count("set_aside"), **kinds)
 
     def _set_aside(self, src: str, stored: str | None) -> str:
         """The records a run can resolve. Rows identical in every column are kept once. Set aside, with the reason, in
@@ -400,15 +411,21 @@ class Run:
         by = f"CASE WHEN rz.n > 1 THEN f.rule WHEN m.id IS NOT NULL THEN '{fs.model.name}' WHEN z.n > 1 THEN 'review' END"
         if old:
             stage, by = f"coalesce(o.resolved_stage, {stage})", f"coalesce(o.resolved_by, {by})"
+        kinds = "kind" in self._columns()  # each record's kind, and its customer's: a company if any record surely is one;
+        # a person if no record leans company and one surely is a person; else unsure
         self.con.execute(f"""CREATE OR REPLACE TABLE gold AS
             WITH touch AS (SELECT {l} AS id, rule FROM rule_kept UNION ALL SELECT {r}, rule FROM rule_kept),
                  first AS (SELECT id, arg_min(rule, CASE rule {order} END) AS rule FROM touch GROUP BY id),
                  rsize AS (SELECT cluster_id, count(*) AS n FROM rule_clusters GROUP BY 1),
                  size AS (SELECT cluster_id, count(*) AS n FROM clusters GROUP BY 1),
                  matched AS (SELECT {l} AS id FROM matches UNION SELECT {r} FROM matches)
-            SELECT k.{u}, k.cluster_id, {stage} AS resolved_stage, {by} AS resolved_by
+                 {f''', customer AS (SELECT k.cluster_id, CASE WHEN bool_or(x.kind = 'company') THEN 'company'
+                        WHEN coalesce(max(x.kind_p), 0) < 0.5 AND bool_or(x.kind = 'person') THEN 'person' ELSE 'unsure' END AS customer_kind
+                        FROM clusters k JOIN records x USING ({u}) GROUP BY 1)''' if kinds else ""}
+            SELECT k.{u}, k.cluster_id, {stage} AS resolved_stage, {by} AS resolved_by{", x.kind, x.kind_p, c.customer_kind" if kinds else ""}
             FROM clusters k JOIN size z USING (cluster_id) JOIN rule_clusters rc USING ({u}) JOIN rsize rz ON rz.cluster_id = rc.cluster_id
                  LEFT JOIN first f ON f.id = k.{u} LEFT JOIN matched m ON m.id = k.{u} {f"LEFT JOIN {old} o USING ({u})" if old else ""}
+                 {f"JOIN records x USING ({u}) JOIN customer c USING (cluster_id)" if kinds else ""}
             ORDER BY k.{u}""")
 
     def cluster(self) -> None:
@@ -437,10 +454,14 @@ class Run:
         texts = [(json.dumps(self.model, ensure_ascii=False), state / "model.json")] if part == 0 else []
         if self.basis:  # the u this run scored with, and what an increment needs to tell when they go stale
             texts.append((json.dumps(dict(model=self.scoring, basis=self.basis), ensure_ascii=False), state / "scoring.json"))
+        labels = []
+        if self.labels is not None and part == 0:  # the person/company labels this run's kinds rest on: an increment reads them
+            self.con.register("er_kind_labels", self.labels)
+            labels = [("SELECT * FROM er_kind_labels", state / "kind_labels.parquet")]
         self._stage(out, [("SELECT * FROM rule_kept", out / "rule_kept" / name), ("SELECT * FROM matches", out / "matches" / name),
                           (f"SELECT * FROM gold ORDER BY {q(self.uid)}", out / "gold.parquet"),
                           ("SELECT * FROM rule_clusters", state / "rule_clusters.parquet"),
-                          (f"SELECT * FROM {'records' if part == 0 else 'new_records'}", state / "records" / name), *aside], texts)
+                          (f"SELECT * FROM {'records' if part == 0 else 'new_records'}", state / "records" / name), *aside, *labels], texts)
         self._done("write", "O(N + C)", f"O({self.n:,} + {self._count('matches'):,})", t)
         self._log(out, part > 0, part=part, disabled=self.disabled)
 
@@ -495,7 +516,9 @@ class Run:
         self.model = json.loads((state / "model.json").read_text(encoding="utf-8"))
         part = len(list((state / "records").glob("part-*.parquet")))
         parts = ", ".join(lit(x) for x in sorted((state / "records").glob("part-*.parquet")))  # not a glob: this run's own part comes later
-        self.con.execute(f"CREATE OR REPLACE VIEW old_records AS SELECT * FROM read_parquet([{parts}])")
+        self.con.execute(f"CREATE OR REPLACE VIEW old_records AS SELECT * FROM read_parquet([{parts}], union_by_name = true)")
+        if self.kind_labels is None and (state / "kind_labels.parquet").exists():  # the batch's kinds rest on the run's labels
+            self.kind_labels = state / "kind_labels.parquet"
         self.load(path, into="new_records", stored="old_records")  # a record already in the run is set aside: a retry adds nothing twice
         self.added = self.n
         if not self.added:
@@ -702,6 +725,36 @@ def qa(run: "Run", fields: list[str], review: int = 50, previous: Path | None = 
         count(*) FILTER (WHERE resolved_stage = '{fs.previous_stage}'), count(*) FILTER (WHERE resolved_stage = '{fs.stage}'),
         count(*) FILTER (WHERE resolved_stage = 'review') FROM gold JOIN (SELECT cluster_id, count(*) AS n FROM gold GROUP BY 1) USING (cluster_id)""").fetchall()[0]
     linked = next(x for x in reversed(run.steps) if x["step"] == "cluster")
+    kinds, mixed, kind_rows = pd.DataFrame(), pd.DataFrame(), []
+    if "kind" in con.sql("DESCRIBE gold").df()["column_name"].tolist():
+        kinds = con.sql("""SELECT 'records' AS of, kind, count(*) AS how_many FROM gold GROUP BY ALL
+                           UNION ALL SELECT 'customers', customer_kind, count(DISTINCT cluster_id) FROM gold GROUP BY ALL ORDER BY ALL""").df()
+        mixed = con.sql("""SELECT cluster_id, count(*) AS records, count(*) FILTER (WHERE kind = 'company') AS companies,
+                                  count(*) FILTER (WHERE kind = 'person') AS persons FROM gold GROUP BY 1
+                           HAVING companies > 0 AND persons > 0 ORDER BY records DESC, cluster_id""").df()
+        n = {(x.of, x.kind): x.how_many for x in kinds.itertuples()}
+        kind_rows = [("kinds", " · ".join(f"{n.get((of, k), 0):,} {k}" for k in ("company", "person", "unsure")) + f" {of}")
+                     for of in ("records", "customers")]
+        c = run.classifier
+        if c is not None and c.spec.trust_flag:
+            how = "the file's flag, as it is (trust_flag)"
+        elif c is not None and c.labels:
+            side = lambda line, at: at if line <= 1 else "never (no line holds its budget)"
+            how = (f"{c.labels:,} labels: company {side(c.line_company, f'at P ≥ {c.line_company:g}')}, "
+                   f"person {side(c.line_person, f'at P ≤ {1 - c.line_person:.4g}, its labelled error {c.person_error:.2%}' if c.person_error is not None else '')}")
+        else:
+            how = "no labels: company only where a legal form is written; label kind_review.parquet, then run again with --kind-labels"
+        if c is not None and c.flag_error is not None:
+            how += f"; the flag wrong on {c.flag_error:.1%} of {c.flag_checked:,} labels drawn at random"
+        kind_rows += [("kinds from", how)] if c is not None else []
+        if c is not None and not c.spec.trust_flag and "kind_flag" in run._columns():  # the flag's likely errors, for its owners
+            says = "x.kind_flag IN (" + ", ".join(f"'{v}'" for v in c.flag_company) + ")"
+            a, b = con.execute(f"""SELECT count(*) FILTER (WHERE g.kind = 'company' AND NOT {says}), count(*) FILTER (WHERE g.kind = 'person' AND {says})
+                                   FROM gold g JOIN records x USING ({u}) WHERE x.kind_flag IS NOT NULL""").fetchall()[0]
+            kind_rows.append(("flag", f"a sure kind contradicts it on {a + b:,} records: {a:,} sure companies flagged person, "
+                                      f"{b:,} sure persons flagged company (gold.parquet kind against the file's flag)"))
+        if len(mixed):
+            kind_rows.append(("note", f"{len(mixed):,} cluster{'s hold' if len(mixed) > 1 else ' holds'} a sure person and a sure company: see qa.md, mixed kinds"))
     summary = pd.DataFrame([
         ("records", f"{total:,}" + (f", {run.added:,} of them new" if run.added is not None else "") + (f"; {aside:,} set aside (set_aside/)" if aside else "")),
         ("entities", f"{entities:,}; the largest holds {biggest:,} records"),
@@ -709,12 +762,14 @@ def qa(run: "Run", fields: list[str], review: int = 50, previous: Path | None = 
         ("model links", f"{linked['accepted']:,}{' in this batch' if run.added is not None else ''}; about {linked['expected_false']:,.{1 if linked['expected_false'] >= 1 else 2}f} "
                         "of them false, as the model expects (the sum of 1 − match probability)"),
         ("to decide", f"{len(decide):,} pair{'' if len(decide) == 1 else 's'} in review.parquet (why = decide)"),
+        *kind_rows,
         *(("note", f"{f} only {x:.1%} filled: check its mapping") for f, x in fill.loc[fill["flag"] != "", ["field", "filled"]].itertuples(index=False)),
         *(("note", f"turned off, a field it reads is missing: {d}") for d in run.disabled),
         *(("note", note) for note in run.notes),
         *(("example", x) for x in run.examples)], columns=["what", "value"])
     return dict(summary=summary, fill=fill, disabled=pd.DataFrame({"disabled": run.disabled}), steps=steps, weight_bands=bands,
                 cluster_sizes=sizes, largest_clusters=largest, patterns_without_a_key=coverage.head(20), review=queue,
+                kinds=kinds, mixed_kinds=mixed,
                 oversized_blocks=run.gated,
                 review_sheet=sheet)
 

@@ -1,6 +1,6 @@
 # Reference data: sources, transformations, licences
 
-These three files are a **frozen snapshot**. They were built once, on 2026-10-28, from public sources. The downloads and the throwaway build environment were deleted afterwards; the steps below record exactly how each file was made. Each file is a JSON array with one record per line. Only the synthetic-data generator reads them (`er.generate.load_reference`), for `scripts/generate.py`, `scripts/benchmark.py`, the demo and the tests; the pipeline itself never does.
+These four files are **frozen snapshots**, each built once from public sources: `individual.json`, `companies.json` and `addresses.json` on 2026-10-28, `registry.json` on 2026-11-06. The downloads and the throwaway build environments were deleted afterwards; the steps below record exactly how each file was made. Each file is a JSON array with one record per line. The synthetic-data generator reads them (`er.generate.load_reference`, `load_registry`), for `scripts/generate.py`, `scripts/benchmark.py`, `scripts/choose_kind.py`, the demo and the tests. The pipeline reads two of them, `individual.json` and `registry.json`, once, to train the name model that tells persons from companies (`er.kind.name_model`); it caches the model and never reads them while it resolves.
 
 ## individual.json: 60,000 persons
 
@@ -42,3 +42,14 @@ These three files are a **frozen snapshot**. They were built once, on 2026-10-28
   3. Towns without a town-level match are dropped: 233,679 of 277,630 had one.
   4. At most 1,000 towns are sampled per prefecture (seed 0).
 - **Fields:** `pref, pref_kana, city, city_kana, city_code, town, town_kana, chome (int or null), postal`.
+
+## registry.json: 60,000 corporations
+
+- **Source:** the National Tax Agency's corporate-number publication site, 法人番号公表サイト, full data (全件データ), CSV Unicode, all of Japan, created 2026-10-30. https://www.houjin-bangou.nta.go.jp/download/zenken/
+- **Licence: Public Data License 1.0** (公共データ利用規約 第1.0版), compatible with CC BY 4.0. Attribution, as the site's terms ask: 「出典：国税庁法人番号公表サイト（国税庁）（https://www.houjin-bangou.nta.go.jp/）を加工して作成」. This file is processed data: it is not the National Tax Agency's, and no government body made it.
+- **Transformation:**
+  1. Of 5,850,621 rows, those with a reading (フリガナ) are kept, government bodies (法人種別 101 and 201) dropped, and rows de-duplicated on (reading, prefecture): 2,851,033.
+  2. Each name's legal form is found in the name (longest first, so 医療法人社団 before 医療法人), with whether it leads the name (株式会社〇〇) or ends it (〇〇株式会社). The reading never holds 株式会社, 有限会社 or 合同会社; a leading legal form's reading is removed where one does (some 特定非営利活動法人).
+  3. Readings that are not 2 or more katakana are dropped. 35,000 corporations of Miyagi (04) and Okayama (33) and 25,000 of Fukuoka (40) are sampled (seed 0); `scripts/choose_kind.py` trains on the first two prefectures and tests on the third.
+  4. Each row gets its legal form's reading and its bank abbreviation (the Zengin list: 株式会社 カ, 有限会社 ユ, 医療法人 イ, …); none for a name without a legal form.
+- **Fields:** `reading, legal, abbreviation, front, prefecture`.

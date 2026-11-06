@@ -23,6 +23,7 @@ class Settings:
     chains: dict[str, tuple[Normalizer, ...]]  # named normalization chains, for config/pipeline.toml
     compute: dict[str, str]                  # DuckDB settings: threads, memory_limit, temp_directory
     detect: dict[str, str]                   # field → what its values look like ([locale.detect]): suggestions only
+    flag_company: tuple[str, ...] = ()       # the values of field kind_flag that say company ([kind])
 
 
 def project_root(start: Path | None = None) -> Path:
@@ -35,11 +36,22 @@ def project_root(start: Path | None = None) -> Path:
 
 
 def field(name: str, spec: object) -> Derived:
-    """One [columns] entry: a column, a list of fallback column lists, or {sources, normalize}."""
+    """One [columns] entry: a column, a list of fallback column lists, or {sources, normalize, kind}."""
     sources, normalize = (spec["sources"], spec.get("normalize", ())) if isinstance(spec, dict) else (spec, ())
     sources = ((sources,),) if isinstance(sources, str) else tuple(tuple(alt) for alt in sources)
     assert sources and all(sources), f"[columns] {name}: no source column"
-    return Derived(name=name, sources=sources, normalize=tuple(normalize))
+    kind = spec.get("kind") if isinstance(spec, dict) else None
+    assert kind in (None, "person", "company"), f"[columns] {name}: kind is person or company"
+    return Derived(name=name, sources=sources, normalize=tuple(normalize), kind=kind)
+
+
+def shared_name(s: "Settings", column: str) -> "Settings":
+    """The settings for a file whose one column holds every name, a person's or a company's: the name fields all read
+    it, and full_name, person_name and company_name keep it only on records that lean their kind (er.kind)."""
+    kinds = {"full_name": "person", "person_name": "person", "company_name": "company", "any_name": None}
+    derived = tuple(replace(d, sources=((column,),), kind=kinds[d.name]) if d.name in kinds else d for d in s.standardize.derived)
+    columns = {f: (((column,),) if f in kinds else src) for f, src in s.columns.items()}
+    return replace(s, standardize=replace(s.standardize, derived=derived), columns=columns)
 
 
 def load_settings(path: Path | None = None) -> Settings:
@@ -80,6 +92,7 @@ def load_settings(path: Path | None = None) -> Settings:
         chains=chains,
         compute={k: str(v) for k, v in cfg.get("compute", {}).items()},
         detect=dict(loc.get("detect", {})),
+        flag_company=tuple(str(v) for v in cfg.get("kind", {}).get("flag_company", ())),
     )
 
 

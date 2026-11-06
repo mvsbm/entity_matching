@@ -145,6 +145,17 @@ levels = [
   { label = "one digit off", any_of = [{ field = "birth_date", function = "damerau_levenshtein", threshold = 1 }] },
 ]
 
+[kind]
+name_field = "any_name"
+ngram = 4
+depth = 2
+company_wrong_at_most = 0.001
+person_wrong_at_most = 0.01
+margin_steps = 2
+labels_to_draw = 2000
+grid = [0.5, 0.8, 0.9, 0.95, 0.98, 0.99, 0.995, 0.998, 0.999, 0.9995, 0.9999]
+trust_flag = false
+
 [threshold]
 grid = [0, 2, 4, 6, 8, 10, 12, 14, 16]
 max_fp = 0

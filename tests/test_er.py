@@ -20,7 +20,7 @@ from er.pipeline import (accept_curve, cascade, check_budget, entity_folds, grow
 from er.resolve import connected_components, constrained
 from er.config import dump_pipeline, fields_read, load_pipeline
 from er.settings import fit_to_file, load_settings
-from er.standardize import normalize, prepare
+from er.standardize import legal_pattern, normalize, prepare
 from er.strings import connect
 from er.tune import pick_within_noise
 
@@ -393,7 +393,7 @@ def test_load_validates_input(tmp_path):
 
 def test_prepare_names_missing_input_columns():
     with pytest.raises(ValueError, match="lacks columns"):
-        prepare(load_settings().standardize, pd.DataFrame({"uid": ["1"]}, dtype="string"), [])
+        prepare(load_settings().standardize, pd.DataFrame({"uid": ["1"]}, dtype="string"), [], used=["person_name"])
 
 
 def test_blocking_normalizers():
@@ -636,7 +636,7 @@ def test_the_labelled_engine_and_the_run_give_the_same_gold(tmp_path, population
     res = run_fs(p.fs, run.model, records, g.truth, pairs, clusters, db, s.data)
     labelled = (res.records.set_index(uid)[["CLUSTER_ID", "MATCH_STAGE", "MATCH_RULE"]]
                 .set_axis(["cluster_id", "resolved_stage", "resolved_by"], axis=1).astype("string"))
-    gold = pd.read_parquet(tmp_path / "run" / "gold.parquet").set_index(uid).astype("string")
+    gold = pd.read_parquet(tmp_path / "run" / "gold.parquet").set_index(uid)[list(labelled.columns)].astype("string")
     pd.testing.assert_frame_equal(gold, labelled.loc[gold.index], check_index_type=False)
 
 
@@ -1020,3 +1020,101 @@ def test_test_is_counted_once_per_population(tmp_path):
     append_leaderboard(data, "fs:FINAL", ("config", 3), "test", {})  # the same population, a second configuration
     assert test_evaluations(data)["configs_on_test"].max() == 2
 
+
+
+# ---------- person or company ----------
+
+@pytest.fixture(scope="module")
+def kind_population():
+    """A small population with one name column for every kind, a person/company flag that is sometimes wrong, companies
+    under their representative's name and sole traders; the settings that read it; the final pipeline."""
+    from er.generate import KindProblems, generate as make, kind_problems, load_reference, load_registry, load_spec
+    from er.settings import shared_name
+    base = load_settings()
+    spec = replace(load_spec(base.root / "config" / "generator.toml")[0], entities=1_500)
+    ref, std = load_reference(base.paths["reference"]), base.standardize
+    g = kind_problems(make(spec, *ref), KindProblems(), ref[0], load_registry(base.paths["reference"]), std.legal_front, std.legal_end,
+                      spec.kana_confusions, spec.branches)
+    s = shared_name(base, "NAME_KANA")
+    return s, load_pipeline(s.root / "config" / "final.toml", s.standardize, s.chains, s.columns), g
+
+
+def test_the_name_model_saves_and_loads_to_the_same_scores(tmp_path):
+    from er.kind import NameModel
+    texts = pd.Series(["ヤマダタロウ", "スズキハナコ", "ヤマダシヨウテン", "トヨタシトウシヤ", "サトウイチロウ", "ミツヒシシヨウシ"] * 3, dtype="string")
+    m = NameModel.fit(texts, np.array([0, 0, 1, 1, 0, 1] * 3), ngram=3)
+    m.save(tmp_path / "m.npz", "k")
+    probe = pd.Series(["ヤマダハナコ", pd.NA, "スズキシヨウテン"], dtype="string")
+    back = NameModel.load(tmp_path / "m.npz", "k")
+    assert np.allclose(m.logit(probe), back.logit(probe), equal_nan=True) and np.isnan(back.logit(probe)[1])
+    assert NameModel.load(tmp_path / "m.npz", "another key") is None  # a model trained on other settings is trained again
+
+
+def test_each_side_s_line_keeps_within_its_labels():
+    from er.config import KindSpec
+    from er.kind import lines
+    p = np.r_[np.full(50, 0.999), [0.97], np.full(100, 0.01), [0.03]]  # 50 companies, a person at 0.97, 100 persons, a company at 0.03
+    company = np.r_[np.ones(50, bool), [False], np.zeros(100, bool), [True]]
+    line_c, line_p, error = lines(p, company, KindSpec(margin_steps=1))
+    assert line_c == 0.99   # the lowest line with no person above it is 0.98; one step stricter
+    assert (line_p, error) == (0.98, 0.0)  # at 0.95 the company at 0.03 is 1 wrong in 101, over half the 1% budget
+
+
+def test_the_kind_problems_change_names_dates_and_the_flag_only(kind_population):
+    from er.generate import generate as make, load_reference, load_spec
+    s, p, g = kind_population
+    made = make(replace(load_spec(s.root / "config" / "generator.toml")[0], entities=1_500), *load_reference(s.paths["reference"])).df
+    assert {"NAME_KANA", "PERSON_ORG_CODE"} <= set(g.df.columns) and "FULL_NAME_KANA" not in g.df.columns
+    kept = ["CONT_ID", "PHONE_NUM_4", "CIF_ID", "STD_ADDRESS", "ADDR_CD"]
+    assert g.df[kept].equals(made[kept])  # the records start as generate() made them
+    assert set(g.truth["CASE"]) == {"company", "person", "representative", "sole trader"}
+    flag_company = g.df["PERSON_ORG_CODE"] == "2"
+    assert 0.02 < (flag_company != g.truth["KIND"].eq("company")).mean() < 0.1  # the flag is wrong, now and then
+
+
+def test_without_labels_only_a_legal_form_makes_a_company_and_a_person_company_pair_goes_to_people(tmp_path, kind_population):
+    from er.run import Run, qa
+    s, p, g = kind_population
+    uid = s.data.unique_id
+    l, r = f"{uid}_l", f"{uid}_r"
+    home = g.df[g.df[["NAME_KANA", "PHONE_NUM_4", "SOURCE_ADDR_CD", "STD_ADDRESS"]].notna().all(axis=1) & g.truth["CASE"].eq("person").to_numpy()].iloc[0]
+    firm = home.copy()
+    firm[["CIF_ID", "BIRTH_DATE"]] = pd.NA
+    firm[[uid, "NAME_KANA", "PERSON_ORG_CODE"]] = ["9" * len(home[uid]), "カブシキガイシャテスト", "2"]
+    pd.concat([g.df, firm.to_frame().T.astype(g.df.dtypes)], ignore_index=True).to_parquet(tmp_path / "all.parquet", index=False)
+    run = Run(replace(p, fs=replace(p.fs, min_match_weight=4.0)), s).full(tmp_path / "all.parquet", tmp_path / "run")
+    rec = run.con.sql(f'SELECT "{uid}", person_name, company_name, kind FROM records').df().set_index(uid)
+    assert rec.loc[firm[uid], "kind"] == "company" and pd.isna(rec.loc[firm[uid], "person_name"]) and rec.loc[firm[uid], "company_name"] == "カブシキガイシャテスト"
+    assert pd.notna(rec.loc[home[uid], "person_name"]) and pd.isna(rec.loc[home[uid], "company_name"])
+    named = rec[rec.index.isin(g.df[uid])].join(g.df.set_index(uid)["NAME_KANA"])
+    written = named["NAME_KANA"].str.normalize("NFKC").str.replace("[ 　]", "", regex=True).str.contains(legal_pattern(s.standardize))
+    assert set(named["kind"]) == {"company", "unsure"}  # never a sure person without labels
+    assert ((named["kind"] == "company") == written.fillna(False)).all()  # a company exactly where a legal form is written
+    pair = (home[uid], firm[uid])
+    assert run.con.execute(f'SELECT count(*) FROM matches WHERE "{l}" = ? AND "{r}" = ?', list(pair)).fetchall()[0][0] == 0
+    sheet = qa(run, [f for f in s.columns if f not in ("id", "entity")])["review_sheet"]
+    assert sheet[(sheet[l] == pair[0]) & (sheet[r] == pair[1])]["why"].tolist() == ["decide"]
+
+
+def test_with_labels_the_kinds_are_the_same_every_run_and_a_customer_takes_its_surest_record(tmp_path, kind_population):
+    from er.kind import label_sheet
+    from er.run import Run
+    s, p, g = kind_population
+    uid = s.data.unique_id
+    g.df.to_parquet(tmp_path / "all.parquet", index=False)
+    first = Run(p, s).full(tmp_path / "all.parquet", tmp_path / "a")
+    records = first.con.sql(f'SELECT "{uid}", coalesce(company_name, person_name) AS name, kind_flag, birth_date, kind_p FROM records').df()
+    sheet = label_sheet(records, uid, 900)
+    sheet["kind"] = g.truth.set_index("CONT_ID").loc[sheet[uid], "KIND"].to_numpy()  # people's labels: here, the truth
+    sheet.to_parquet(tmp_path / "labels.parquet")
+    a = Run(p, s, kind_labels=tmp_path / "labels.parquet").full(tmp_path / "all.parquet", tmp_path / "b")
+    b = Run(p, s, kind_labels=tmp_path / "labels.parquet").full(tmp_path / "all.parquet", tmp_path / "c")
+    ga, gb = (pd.read_parquet(tmp_path / x / "gold.parquet") for x in ("b", "c"))
+    assert a.classifier.labels == len(sheet) and ga[["kind", "kind_p", "customer_kind"]].equals(gb[["kind", "kind_p", "customer_kind"]])
+    assert (tmp_path / "b" / "state" / "kind_labels.parquet").exists()  # kept for the run's increments
+    by = ga.groupby("cluster_id").agg(any_company=("kind", lambda k: (k == "company").any()), leans=("kind_p", "max"),
+                                      any_person=("kind", lambda k: (k == "person").any()), customer=("customer_kind", "first"))
+    expect = np.where(by.any_company, "company", np.where((by.leans.fillna(0) < 0.5) & by.any_person, "person", "unsure"))
+    assert (by.customer.to_numpy() == expect).all()
+    wrong = ga.set_index(uid).join(g.truth.set_index("CONT_ID")["KIND"])
+    assert not ((wrong["kind"] == "company") & (wrong["KIND"] != "company")).any()  # no sure company that isn't one

@@ -365,3 +365,115 @@ def split_by_entity(truth: pd.DataFrame, split: Split) -> pd.Series:
     for name, share in split.shares.items():
         assert abs(truth.loc[out == name, "ENTITY_ID"].nunique() / len(entities) - share) <= 0.01, name
     return out
+
+
+# ---------- persons and companies, as hard to tell apart as real records make them ----------
+
+def load_registry(folder: Path) -> pd.DataFrame:
+    """registry.json: real corporations' readings, each with its legal form's reading and bank abbreviation (none when the
+    name holds no legal form), whether the form leads the name, and the prefecture (SOURCES.md)."""
+    d = pd.DataFrame(json.loads((folder / "registry.json").read_text(encoding="utf-8")))
+    return d.astype(object).where(d.notna(), None)  # no legal form: None, not NaN
+
+
+def kana_typo(s: str, rng: np.random.Generator, confusions: Sequence[tuple[str, str]]) -> str:
+    """One kana error: a confusable swapped (either way round), else a non-initial character dropped."""
+    swap = {a: b for x, y in confusions for a, b in ((x, y), (y, x))}
+    spots = [i for i, ch in enumerate(s) if ch in swap]
+    if spots and rng.random() < 0.6:
+        i = spots[int(rng.integers(len(spots)))]
+        return s[:i] + swap[s[i]] + s[i + 1:]
+    i = int(rng.integers(1, len(s))) if len(s) > 1 else 0
+    return s[:i] + s[i + 1:] if len(s) > 1 else s
+
+
+def bank_name(reading: str, legal: str | None, abbreviation: str | None, front: bool, rng: np.random.Generator,
+              legal_front: Sequence[str], legal_end: Sequence[str], confusions: Sequence[tuple[str, str]], branches: Sequence[str]) -> str:
+    """A company's name as bank records write it: the legal form in full, abbreviated where banks may put it (カ)〇〇 or
+    〇〇(カ), or left out; sometimes a space after the form, a branch after the name, a typo in the reading."""
+    stem = kana_typo(reading, rng, confusions) if rng.random() < 0.08 else reading
+    how = rng.choice(["full", "abbreviated", "none"], p=[0.4, 0.4, 0.2]) if legal else "none"
+    sep = "　" if rng.random() < 0.2 else ""
+    if how == "full":
+        name = legal + sep + stem if front else stem + sep + legal
+    elif how == "abbreviated" and (front and abbreviation in legal_front or abbreviation not in legal_end):
+        name = f"{abbreviation}){sep}{stem}"
+    elif how == "abbreviated":
+        name = f"{stem}{sep}({abbreviation}"
+    else:
+        name = stem
+    return name + (f"　{branches[int(rng.integers(len(branches)))]}" if rng.random() < 0.05 else "")
+
+
+@dataclass(frozen=True, kw_only=True)
+class KindProblems:
+    """What makes persons and companies hard to tell apart. Off unless asked for (the benchmark, the demo, the tests)."""
+    flag_wrong: float = 0.03                  # the person/company flag wrong on any record
+    flag_wrong_representative: float = 0.5    # ... on a record under the representative's name
+    sole_flagged_company: float = 0.3         # a sole trader's record flagged company
+    representatives: float = 0.1              # of companies: some of their records under the representative's name
+    sole_traders: float = 0.05                # of persons: named like a shop on most of their records (legally persons)
+    company_dates: float = 0.3                # of company records: a date in the birth-date column
+    company_date: Literal["founding", "representative"] = "founding"  # the founding date, or the representative's birth date
+    seed: int = 1
+
+
+def kind_problems(g: Generated, k: KindProblems, persons: pd.DataFrame, registry: pd.DataFrame, legal_front: Sequence[str],
+                  legal_end: Sequence[str], confusions: Sequence[tuple[str, str]], branches: Sequence[str]) -> Generated:
+    """The records with one name column for every kind, NAME_KANA: real company names from the registry, written as banks
+    write them; companies with records under their representative's name; sole traders named like a shop; companies
+    with a date in BIRTH_DATE; and the file's own flag, PERSON_ORG_CODE (1 person, 2 company), sometimes wrong. truth gains
+    CASE: company, person, representative or sole trader. Its own random stream: the records start as generate() made
+    them. O(N)."""
+    rng = np.random.default_rng(k.seed)
+    df, truth = g.df.copy(), g.truth.copy()
+    assert (df["CONT_ID"].astype("string").to_numpy() == truth["CONT_ID"].to_numpy()).all()
+    company = truth["KIND"].eq("company").to_numpy()
+    person_name = df["FULL_NAME_KANA"].fillna(df["O_PERSON_NAME_KANA"]).fillna(df["LAST_NAME_KANA"] + df["GIVEN_NAME_KANA"])
+    named = (person_name.notna() & ~company) | (df["NYS_CNV_P_NAME_KANA"].notna() & company)
+    ents = truth["ENTITY_ID"].to_numpy()
+    c_ents, p_ents = pd.unique(ents[company]), pd.unique(ents[~company])
+    reg = registry.sample(len(c_ents), replace=len(c_ents) > len(registry), random_state=int(rng.integers(1 << 31)))
+    firm = dict(zip(c_ents, reg.itertuples(index=False)))
+    rep_of = dict(zip(c_ents, persons.sample(len(c_ents), replace=True, random_state=int(rng.integers(1 << 31))).itertuples(index=False)))
+    rep_named = {e for e in c_ents if rng.random() < k.representatives}
+    shops = registry["reading"].sample(len(p_ents), replace=True, random_state=int(rng.integers(1 << 31))).to_numpy()
+    sole = {e: shop for e, shop in zip(p_ents, shops) if rng.random() < k.sole_traders}
+    name, case, birth = [], [], df["BIRTH_DATE"].astype(object).to_numpy().copy()
+    for i, e in enumerate(ents):
+        if company[i]:
+            f, rep = firm[e], rep_of[e]
+            is_rep = e in rep_named and rng.random() < 0.5
+            name.append((rep.surname_kana + rep.given_kana if is_rep else
+                         bank_name(f.reading, f.legal, f.abbreviation, f.front, rng, legal_front, legal_end, confusions, branches)) if named[i] else None)
+            case.append("representative" if is_rep else "company")
+            if rng.random() < k.company_dates:
+                year = int(rng.integers(1950, 2026)) if k.company_date == "founding" else 2026 - int(rep.age)
+                birth[i] = f"{year:04d}{int(rng.integers(1, 13)):02d}{int(rng.integers(1, 29)):02d}"
+            else:
+                birth[i] = None
+        else:
+            trade = e in sole and rng.random() < 0.7
+            own = person_name.iat[i]
+            name.append((sole[e] + (f"　{own}" if rng.random() < 0.5 else "") if trade else own) if named[i] else None)
+            case.append("sole trader" if e in sole else "person")
+    case = np.array(case)
+    wrong = rng.random(len(df)) < np.select([case == "representative", case == "sole trader"], [k.flag_wrong_representative, k.sole_flagged_company], k.flag_wrong)
+    says_company = np.where(wrong, ~company, company)
+    df = df.drop(columns=["FULL_NAME_KANA", "O_PERSON_NAME_KANA", "LAST_NAME_KANA", "GIVEN_NAME_KANA", "NYS_CNV_P_NAME_KANA"])
+    df["NAME_KANA"] = pd.Series(name, index=df.index, dtype="string")
+    df["BIRTH_DATE"] = pd.Series(birth, index=df.index, dtype="string")
+    df["PERSON_ORG_CODE"] = pd.Series(np.where(says_company, "2", "1"), index=df.index, dtype="string")
+    return Generated(df, g.clean, g.with_truth, truth.assign(CASE=pd.Series(case, index=truth.index, dtype="string")), g.applies, g.typos)
+
+
+def kind_training_names(persons: pd.DataFrame, registry: pd.DataFrame, legal_front: Sequence[str], legal_end: Sequence[str],
+                        confusions: Sequence[tuple[str, str]], branches: Sequence[str], seed: int = 0) -> pd.DataFrame:
+    """The person-or-company name model's training set, from public data only: every registry company written as a
+    bank record would write it (y = 1), and every persona's name, twice over, sometimes spaced or with a typo (y = 0)."""
+    rng = np.random.default_rng(seed)
+    firms = [bank_name(x.reading, x.legal, x.abbreviation, x.front, rng, legal_front, legal_end, confusions, branches)
+             for x in registry.itertuples(index=False)]
+    people = [(x.surname_kana + ("　" if rng.random() < 0.3 else "") + x.given_kana) for x in persons.itertuples(index=False) for _ in (0, 1)]
+    people = [kana_typo(s, rng, confusions) if rng.random() < 0.08 else s for s in people]
+    return pd.DataFrame(dict(name=firms + people, y=[1] * len(firms) + [0] * len(people)))

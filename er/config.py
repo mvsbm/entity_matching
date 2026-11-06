@@ -39,6 +39,7 @@ class Derived:
     name: str
     sources: tuple[tuple[str, ...], ...]      # first source whose columns are all filled wins (concatenated)
     normalize: tuple[Normalizer, ...] = ()
+    kind: str | None = None                   # "person" or "company": kept only on records that lean that kind (er.kind)
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -374,6 +375,20 @@ class Fields:
 
 
 @dataclass(frozen=True, kw_only=True)
+class KindSpec:
+    """Person or company (er.kind): a name model, a combiner fitted on people's labels, and a line on each side."""
+    name_field: str = "any_name"              # the field holding each record's name, a person's or a company's
+    ngram: int = 4                            # the name model's character n-grams: 1 to this
+    depth: int = 2                            # the combiner's trees (gradient boosting)
+    company_wrong_at_most: float = 0.001      # the company line: no labelled error above it, then margin_steps stricter
+    person_wrong_at_most: float = 0.01        # the person line: the labelled error above it at most half of this
+    margin_steps: int = 2
+    labels_to_draw: int = 2000                # the records a run puts on its labelling sheet
+    grid: tuple[float, ...] = (0.5, 0.8, 0.9, 0.95, 0.98, 0.99, 0.995, 0.998, 0.999, 0.9995, 0.9999)
+    trust_flag: bool = False                  # take the file's person/company flag as it is, instead of the model
+
+
+@dataclass(frozen=True, kw_only=True)
 class Pipeline:
     fields: Fields
     rules: RulesSpec
@@ -386,6 +401,7 @@ class Pipeline:
     explain_show: tuple[str, ...]             # the worked example's fields
     explain_filled: tuple[str, ...]
     fit_rows: int = 30_000                    # an unlabelled run fits on a sample of this many records (er.run)
+    kind: KindSpec | None = None              # person or company, on every record; None: not told apart
 
 
 def _norm(value: object, chains: Mapping[str, tuple[Normalizer, ...]]) -> tuple[Normalizer, ...]:
@@ -459,7 +475,8 @@ def pipeline_from(cfg: dict, std: Standardization, chains: Mapping[str, tuple[No
                     threshold=ThresholdRule(grid=tuple(t["grid"]), max_fp=t["max_fp"], max_fp_rate_hi=t["max_fp_rate_hi"],
                                             margin_steps=t["margin_steps"]),
                     cv_folds=sel["cv_folds"], cv_seed=sel["cv_seed"], decision_p=sel["decision_p"],
-                    explain_show=tuple(d["explain_show"]), explain_filled=tuple(d["explain_filled"]), fit_rows=m.get("fit_rows", 30_000))
+                    explain_show=tuple(d["explain_show"]), explain_filled=tuple(d["explain_filled"]), fit_rows=m.get("fit_rows", 30_000),
+                    kind=KindSpec(**{k: tuple(v) if k == "grid" else v for k, v in cfg["kind"].items()}) if "kind" in cfg else None)
 
 
 def load_pipeline(path: Path, std: Standardization, chains: Mapping[str, tuple[Normalizer, ...]],
@@ -597,6 +614,7 @@ def pipeline_dict(p: Pipeline, chains: Mapping[str, tuple[Normalizer, ...]]) -> 
                   "comparisons": [{"name": c.name, "null_if_missing": list(c.null_if_missing), **({"tf": key(c.tf)} if c.tf else {}),
                                    "levels": [{"label": lv.label, "any_of": [{"field": col, **comp(x)} for col, x in lv.any_of],
                                                **({"tf": True} if lv.tf else {})} for lv in c.levels]} for c in m.comparisons]},
+        **({"kind": {k: list(v) if k == "grid" else v for k, v in vars(p.kind).items()}} if p.kind else {}),
         "threshold": {"grid": list(t.grid), "max_fp": t.max_fp, "max_fp_rate_hi": t.max_fp_rate_hi, "margin_steps": t.margin_steps},
         "selection": {"cv_folds": p.cv_folds, "cv_seed": p.cv_seed, "decision_p": p.decision_p},
         "display": {"explain_show": list(p.explain_show), "explain_filled": list(p.explain_filled)},

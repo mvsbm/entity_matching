@@ -101,3 +101,11 @@ city = "ADDRESS_TWO"
 phone = "PHONE_NUM_4"
 customer_id = "CIF_ID"                             # the ID the CIF system assigns
 birth_date = "BIRTH_DATE"                          # one format throughout (YYYYMMDD here), so equal dates are equal strings
+kind_flag = "PERSON_ORG_CODE"                      # the file's own person/company flag, if it has one; values in [kind]
+# One column holding every name, a person's or a company's? Give full_name, person_name, company_name and any_name
+# that column, and add kind = "person" to full_name and person_name, kind = "company" to company_name: each record's
+# name then goes to the side its kind leans to (er.kind), e.g.
+#   person_name = { sources = [["NAME_KANA"]], normalize = ["nfkc", "strip_spaces"], kind = "person" }
+
+[kind]
+flag_company = ["2"]                               # the values of kind_flag that say company; any other value says person
