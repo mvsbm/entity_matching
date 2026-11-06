@@ -63,7 +63,7 @@ from splink.clustering import cluster_pairwise_predictions_at_threshold
 
 from er.candidates import candidates, estimate, q
 from er.config import FSSpec, InputError, Key, KeyBlocker, Pipeline, sources_text
-from er.kind import COMPANY, PERSON, SAYS, UNSURE, classifier as kind_classifier
+from er.kind import COMPANY, PERSON, SAYS, UNSURE, classifier as kind_classifier, merge_answers
 from er.match import (ELSE, assemble_u, counted, exact_u, levels, parameters, refreshed_u, rule_edges, scaled_prior, score_fs,
                       scored_sample, train_fs, u_basis)
 from er.pipeline import named, pattern_coverage
@@ -194,7 +194,8 @@ class Run:
             return
         fs, rules, spec = self.pipeline.fs, self.pipeline.rules, self.pipeline.kind
         if spec and spec.name_field in present:
-            self.labels = pd.read_parquet(self.kind_labels) if self.kind_labels and Path(self.kind_labels).exists() else None
+            if self.labels is None and self.kind_labels and Path(self.kind_labels).exists():  # full() and increment() merge them first
+                self.labels = merge_answers(None, pd.read_parquet(self.kind_labels), self.uid)
             self.classifier = kind_classifier(self.settings, spec, self.labels)
         normalized, used = [*rules.normalized(), *fs.normalized()], rules.used() | fs.used()
         reader = self.con.cursor().sql(f"SELECT * FROM {rows}").to_arrow_reader(self.chunk_rows)  # its own cursor: inserts go on alongside
@@ -412,17 +413,14 @@ class Run:
         by = f"CASE WHEN rz.n > 1 THEN f.rule WHEN m.id IS NOT NULL THEN '{fs.model.name}' WHEN z.n > 1 THEN 'review' END"
         if old:
             stage, by = f"coalesce(o.resolved_stage, {stage})", f"coalesce(o.resolved_by, {by})"
-        kinds = "kind" in self._columns()  # each record's kind, and its customer's: 2 company if any record surely is one;
-        # 1 person if no record leans company and one surely is a person; else 0 not sure
+        kinds = "kind" in self._columns()  # each record's kind, and its customer's (customer_kinds)
         self.con.execute(f"""CREATE OR REPLACE TABLE gold AS
             WITH touch AS (SELECT {l} AS id, rule FROM rule_kept UNION ALL SELECT {r}, rule FROM rule_kept),
                  first AS (SELECT id, arg_min(rule, CASE rule {order} END) AS rule FROM touch GROUP BY id),
                  rsize AS (SELECT cluster_id, count(*) AS n FROM rule_clusters GROUP BY 1),
                  size AS (SELECT cluster_id, count(*) AS n FROM clusters GROUP BY 1),
                  matched AS (SELECT {l} AS id FROM matches UNION SELECT {r} FROM matches)
-                 {f''', customer AS (SELECT k.cluster_id, CASE WHEN bool_or(x.kind = 2) THEN 2
-                        WHEN coalesce(max(x.kind_p), 0) < 0.5 AND bool_or(x.kind = 1) THEN 1 ELSE 0 END::TINYINT AS customer_kind
-                        FROM clusters k JOIN records x USING ({u}) GROUP BY 1)''' if kinds else ""}
+                 {f", customer AS ({customer_kinds('clusters', 'records', u)})" if kinds else ""}
             SELECT k.{u}, k.cluster_id, {stage} AS resolved_stage, {by} AS resolved_by{", x.kind, x.kind_p, x.kind_by, x.kind_held, c.customer_kind" if kinds else ""}
             FROM clusters k JOIN size z USING (cluster_id) JOIN rule_clusters rc USING ({u}) JOIN rsize rz ON rz.cluster_id = rc.cluster_id
                  LEFT JOIN first f ON f.id = k.{u} LEFT JOIN matched m ON m.id = k.{u} {f"LEFT JOIN {old} o USING ({u})" if old else ""}
@@ -456,7 +454,7 @@ class Run:
         if self.basis:  # the u this run scored with, and what an increment needs to tell when they go stale
             texts.append((json.dumps(dict(model=self.scoring, basis=self.basis), ensure_ascii=False), state / "scoring.json"))
         labels = []
-        if self.labels is not None and part == 0:  # the person/company labels this run's kinds rest on: an increment reads them
+        if self.labels is not None:  # the person/company answers this run's kinds rest on: the next run adds to them
             self.con.register("er_kind_labels", self.labels)
             labels = [("SELECT * FROM er_kind_labels", state / "kind_labels.parquet")]
         self._stage(out, [("SELECT * FROM rule_kept", out / "rule_kept" / name), ("SELECT * FROM matches", out / "matches" / name),
@@ -518,8 +516,7 @@ class Run:
         part = len(list((state / "records").glob("part-*.parquet")))
         parts = ", ".join(lit(x) for x in sorted((state / "records").glob("part-*.parquet")))  # not a glob: this run's own part comes later
         self.con.execute(f"CREATE OR REPLACE VIEW old_records AS SELECT * FROM read_parquet([{parts}], union_by_name = true)")
-        if self.kind_labels is None and (state / "kind_labels.parquet").exists():  # the batch's kinds rest on the run's labels
-            self.kind_labels = state / "kind_labels.parquet"
+        self.labels = self._answers(out)  # the batch's kinds rest on the run's answers, and any given with it
         self.load(path, into="new_records", stored="old_records")  # a record already in the run is set aside: a retry adds nothing twice
         self.added = self.n
         if not self.added:
@@ -571,6 +568,11 @@ class Run:
         self.write(out, part)
         return self
 
+    def _answers(self, out: Path) -> pd.DataFrame | None:
+        """People's person/company answers: those the run in `out` keeps, then any newer ones (kind_labels) on top."""
+        read = lambda f: pd.read_parquet(f) if f is not None and Path(f).exists() else None
+        return merge_answers(read(out / "state" / "kind_labels.parquet"), read(self.kind_labels), self.uid)
+
     # ---------- people's decisions ----------
 
     def _load_decisions(self, out: Path) -> None:
@@ -615,10 +617,14 @@ class Run:
         self.con.execute(f"CREATE OR REPLACE TABLE er_base AS SELECT {u}, cluster_id FROM gold_old")
         self.con.execute(f"CREATE OR REPLACE TABLE er_review AS SELECT {l}, {r} FROM er_decisions WHERE decision = 'match'")
         self._merge("er_base", "er_review", "clusters")
+        kinds = "kind" in {c[0] for c in self.con.execute("DESCRIBE gold_old").fetchall()}  # each record's kind stands; its customer's follows the merge
         self.con.execute(f"""CREATE OR REPLACE TABLE gold AS WITH size AS (SELECT cluster_id, count(*) AS n FROM clusters GROUP BY 1)
+                 {f", customer AS ({customer_kinds('clusters', 'gold_old', u)})" if kinds else ""}
             SELECT c.{u}, c.cluster_id, coalesce(o.resolved_stage, CASE WHEN z.n > 1 THEN 'review' END) AS resolved_stage,
                    coalesce(o.resolved_by, CASE WHEN z.n > 1 THEN 'review' END) AS resolved_by
-            FROM clusters c JOIN size z USING (cluster_id) JOIN gold_old o USING ({u}) ORDER BY c.{u}""")
+                   {", o.kind, o.kind_p, o.kind_by, o.kind_held, k.customer_kind" if kinds else ""}
+            FROM clusters c JOIN size z USING (cluster_id) JOIN gold_old o USING ({u}) {"JOIN customer k USING (cluster_id)" if kinds else ""}
+            ORDER BY c.{u}""")
         d, m = self._count("er_decisions"), self._count("er_review")
         before, after = (self.con.execute(f"SELECT count(DISTINCT cluster_id) FROM {x}").fetchall()[0][0] for x in ("gold_old", "gold"))
         self._done("decide", "O(D + touched clusters) + O(N)", f"O({d:,} decisions + {self.n:,})", t,
@@ -635,6 +641,7 @@ class Run:
         held = [out / f for f in RUN_FILES if (out / f).exists()]
         if held and not overwrite:
             raise FileExistsError(f"{out} already holds a run: choose another folder, or overwrite it (scripts/resolve.py --overwrite)")
+        self.labels = self._answers(out)  # read before the folder's old state goes
         self.load(path)
         self.budget()
         self.fit()
@@ -647,6 +654,13 @@ class Run:
             shutil.rmtree(f) if f.is_dir() else f.unlink()
         self.write(out)
         return self
+
+
+def customer_kinds(clusters: str, kinds: str, u: str) -> str:
+    """Each cluster's customer_kind, from its records' kind and kind_p (`kinds`: a table holding both): 2 company if any
+    record surely is one; 1 person if no record leans company and one surely is a person; else 0 not sure. O(N)."""
+    return f"""SELECT k.cluster_id, CASE WHEN bool_or(x.kind = 2) THEN 2 WHEN coalesce(max(x.kind_p), 0) < 0.5 AND bool_or(x.kind = 1)
+               THEN 1 ELSE 0 END::TINYINT AS customer_kind FROM {clusters} k JOIN {kinds} x USING ({u}) GROUP BY 1"""
 
 
 def named_sql(fs: FSSpec, s: str = "s") -> str:  # er.pipeline.named on scores aliased `s`

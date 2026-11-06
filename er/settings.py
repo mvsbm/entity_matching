@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import get_args
 
 from er.config import Data, Derived, Normalizer, Pipeline, Standardization, check_fields, restrict
+from er.standardize import legal_pattern
 
 SPECIAL = ("id", "entity")  # single columns, used under their own names: the record id and the truth
 
@@ -76,6 +77,11 @@ def load_settings(path: Path | None = None) -> Settings:
     # a field that is its own single column, unnormalized, needs no copy
     derived = tuple(d for d in fields.values() if d.sources != ((d.name,),) or d.normalize)
 
+    std = Standardization(kana_fold=dict(zip(loc["kana_fold_from"], loc["kana_fold_to"])),
+                          legal_forms=tuple(loc["legal_forms"]), legal_front=tuple(loc.get("legal_front", ())),
+                          legal_end=tuple(loc.get("legal_end", ())), prefectures=tuple(loc["prefectures"]),
+                          address_replacements=tuple(map(tuple, loc["address_replacements"])),
+                          address_cut_at=loc["address_cut_at"], derived=derived)
     return Settings(
         root=root,
         paths=paths,
@@ -83,15 +89,11 @@ def load_settings(path: Path | None = None) -> Settings:
                   experiments_dir=paths["experiments"], models_dir=paths["models"],
                   datasets=tuple(cfg["datasets"]["all"]), unique_id=cols["id"], entity_id=cols["entity"],
                   synthetic=bool(cfg["datasets"]["synthetic"])),
-        standardize=Standardization(kana_fold=dict(zip(loc["kana_fold_from"], loc["kana_fold_to"])),
-                                    legal_forms=tuple(loc["legal_forms"]), legal_front=tuple(loc.get("legal_front", ())),
-                                    legal_end=tuple(loc.get("legal_end", ())), prefectures=tuple(loc["prefectures"]),
-                                    address_replacements=tuple(map(tuple, loc["address_replacements"])),
-                                    address_cut_at=loc["address_cut_at"], derived=derived),
+        standardize=std,
         columns={**{name: ((cols[name],),) for name in SPECIAL}, **{name: d.sources for name, d in fields.items()}},
         chains=chains,
         compute={k: str(v) for k, v in cfg.get("compute", {}).items()},
-        detect=dict(loc.get("detect", {})),
+        detect={**loc.get("detect", {}), "company_name": legal_pattern(std)},  # a company name holds a legal form: the run's own table
         flag_company=tuple(str(v) for v in cfg.get("kind", {}).get("flag_company", ())),
     )
 

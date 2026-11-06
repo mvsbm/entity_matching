@@ -1147,3 +1147,71 @@ def test_with_answers_the_kinds_are_the_same_every_run_people_s_stand_and_a_cust
     assert (by.customer.to_numpy() == expect).all()
     wrong = ga.set_index(uid).join(g.truth.set_index("CONT_ID")["KIND"])
     assert not ((wrong["kind"] == 2) & (wrong["KIND"] != "company")).any()  # no sure company that isn't one
+
+
+def test_the_field_check_and_the_run_read_one_legal_form_table():
+    import duckdb
+    s = load_settings()
+    names = ["イ)ヤマダクリニック", "ヤマダショウジ(カ", "トクヒ)ミライノカイ", "カブシキガイシヤヤマダ", "カ)ヤマダ", "ヤマダ(カ)", "株式会社ヤマダ", "ヤマダ㈱", "（有）ヤマダ商店"]
+    folded = normalize(pd.Series(names, dtype="string"), ("nfkc", "strip_spaces"), s.standardize)  # as the field holds them
+    pattern = s.detect["company_name"].replace("'", "''")
+    assert all(duckdb.sql(f"SELECT regexp_matches('{n}', '{pattern}')").fetchall()[0][0] for n in folded)  # every one looks right
+    assert normalize(pd.Series(names[6:], dtype="string"), ("nfkc", "strip_legal_form"), s.standardize).tolist() == ["ヤマダ", "ヤマダ", "ヤマダ商店"]
+
+
+def test_a_decision_keeps_each_record_s_kind_and_a_merged_customer_takes_its_surest(tmp_path, population):
+    from er.run import Run
+    s, p, g = population
+    uid = s.data.unique_id
+    g.df.to_parquet(tmp_path / "all.parquet", index=False)
+    Run(p, s).full(tmp_path / "all.parquet", tmp_path / "run")
+    before = pd.read_parquet(tmp_path / "run" / "gold.parquet")
+    alone = before.groupby("cluster_id").filter(lambda c: len(c) == 1)
+    company, other = alone[alone["kind"] == 2].iloc[0], alone[alone["kind"] == 0].iloc[0]  # a sure company, a record not sure
+    pair = sorted([company[uid], other[uid]])
+    pd.DataFrame({f"{uid}_l": [pair[0]], f"{uid}_r": [pair[1]], "decision": ["match"]}).to_parquet(tmp_path / "decided.parquet")
+    Run(p, s).decide(tmp_path / "decided.parquet", tmp_path / "run")
+    after = pd.read_parquet(tmp_path / "run" / "gold.parquet").set_index(uid)
+    assert list(after.reset_index().columns) == list(before.columns)
+    assert after.loc[pair, "cluster_id"].nunique() == 1 and (after.loc[pair, "customer_kind"] == 2).all()
+    assert after["kind"].equals(before.set_index(uid)["kind"].reindex(after.index))  # each record's kind stands
+
+
+def test_answers_add_up_over_sheets_and_a_blank_row_erases_nothing(tmp_path, kind_population):
+    from er.run import Run
+    s, p, g = kind_population
+    uid = s.data.unique_id
+    g.df.to_parquet(tmp_path / "all.parquet", index=False)
+    sheet = kind_sheet_for(Run(p, s).full(tmp_path / "all.parquet", tmp_path / "free"), s, p, 600)
+    truth = np.where(g.truth.set_index("CONT_ID").loc[sheet[uid], "KIND"].eq("company"), 2, 1)
+    half = len(sheet) // 2
+    first = sheet.assign(kind=pd.array([*truth[:half], *[pd.NA] * (len(sheet) - half)], dtype="Int8"))  # the second half left blank
+    first.to_parquet(tmp_path / "first.parquet")
+    run1 = Run(p, s, kind_labels=tmp_path / "first.parquet").full(tmp_path / "all.parquet", tmp_path / "run")
+    assert set(run1.labels[uid]) == set(sheet[uid][:half])  # a blank row isn't an answer: its record comes back on the next sheet
+    second = sheet.assign(kind=pd.array([pd.NA] * half + list(truth[half:]), dtype="Int8"))  # the first half blank this time
+    second.to_parquet(tmp_path / "second.parquet")
+    run2 = Run(p, s, kind_labels=tmp_path / "second.parquet").full(tmp_path / "all.parquet", tmp_path / "run", overwrite=True)
+    kept = pd.read_parquet(tmp_path / "run" / "state" / "kind_labels.parquet")
+    assert set(kept[uid]) == set(sheet[uid]) and len(run2.classifier.decided) == len(sheet)  # both sheets' answers stand
+    gold = pd.read_parquet(tmp_path / "run" / "gold.parquet").set_index(uid).loc[sheet[uid]]
+    assert (gold["kind_by"] == "people").all() and (gold["kind"].to_numpy() == truth).all()
+
+
+def test_an_increment_classifies_its_batch_on_the_run_s_answers(tmp_path, kind_population):
+    from er.run import Run
+    s, p, g = kind_population
+    uid = s.data.unique_id
+    batch = np.random.default_rng(0).random(len(g.df)) < 0.1
+    g.df[~batch].to_parquet(tmp_path / "first.parquet", index=False)
+    g.df[batch].to_parquet(tmp_path / "new.parquet", index=False)
+    sheet = kind_sheet_for(Run(p, s).full(tmp_path / "first.parquet", tmp_path / "free"), s, p, 600)
+    sheet["kind"] = np.where(g.truth.set_index("CONT_ID").loc[sheet[uid], "KIND"].eq("company"), 2, 1)
+    sheet.to_parquet(tmp_path / "answers.parquet")
+    full = Run(p, s, kind_labels=tmp_path / "answers.parquet").full(tmp_path / "first.parquet", tmp_path / "run")
+    inc = Run(p, s).increment(tmp_path / "new.parquet", tmp_path / "run")
+    assert inc.classifier.labels == full.classifier.labels > 0 and inc.classifier.line_company == full.classifier.line_company
+    gold = pd.read_parquet(tmp_path / "run" / "gold.parquet").set_index(uid)
+    assert (gold.loc[sheet[uid], "kind_by"] == "people").all()  # the stored records' answers stand
+    new = gold.loc[g.df.loc[batch, uid]]
+    assert new["kind"].notna().all() and (new["kind_by"] == "engine").all()  # the batch: kinds from the same engine

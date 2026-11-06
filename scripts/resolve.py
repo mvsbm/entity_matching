@@ -23,9 +23,9 @@ a sample of accepted pairs just above it; both records' compared fields side by 
 and an empty decision column; it holds records, so keep it with the data), kind_review.parquet (a full run's
 records for people to answer 1 person, 2 company or 0 can't tell: "decide", where the engine or the name disagrees with
 the file's flag, and "measure", a draw that measures the flag and the engine; each row says why in words; it holds
-names, so keep it with the data), and state/ for increments. --kind-labels gives the answered sheet to a full run: the
-answers stand for their records, train the engine, and the measuring draw places its lines (er.kind); the run keeps
-them for its increments and its next full run.
+names, so keep it with the data), and state/ for increments. --kind-labels gives an answered sheet to a run: its
+answers join those the run in --output keeps, the newest per record standing, and a blank row erases nothing; they
+stand for their records, train the engine, and the measuring draw places its lines (er.kind).
 --decisions applies people's decisions (review.parquet with decision filled in as match or no_match, or any file with
 the two ids and decision) to the run in --output, scoring nothing; they are kept in decisions/, and a full run on that
 folder applies them again.
@@ -62,7 +62,7 @@ def main() -> None:
     parser.add_argument("--increment", action="store_true", help="add these records to the run in --output")
     parser.add_argument("--overwrite", action="store_true", help="replace the run already in --output (a full run refuses otherwise)")
     parser.add_argument("--decisions", type=Path, help="people's decisions to apply to the run in --output (without --input)")
-    parser.add_argument("--kind-labels", type=Path, help="people's person/company labels: a filled-in kind_review.parquet (a full run)")
+    parser.add_argument("--kind-labels", type=Path, help="people's person/company answers: a filled-in kind_review.parquet, added to those the run keeps")
     parser.add_argument("--compute", nargs="*", default=[], metavar="KEY=VALUE",
                         help="override config/settings.toml [compute] for this run, e.g. memory_limit=8GB")
     args = parser.parse_args()
@@ -79,8 +79,7 @@ def main() -> None:
     if args.model:
         saved = json.loads(args.model.read_text(encoding="utf-8"))
         model = saved.get("model", saved)
-    kept = args.output / "state" / "kind_labels.parquet" if args.output else None  # a run on its own folder keeps its labels
-    run = Run(p, s, model=model, echo=step, kind_labels=args.kind_labels or (kept if kept and kept.exists() else None))
+    run = Run(p, s, model=model, echo=step, kind_labels=args.kind_labels)  # added to the answers the run in --output keeps
     fields = [f for f in s.columns if f not in ("id", "entity")]
     if args.check:
         run.load(args.input)
@@ -127,7 +126,7 @@ def main() -> None:
         cols = [c for c in ("kind_flag", "birth_date") if c in run._columns()]
         records = run.con.sql(f'SELECT "{run.uid}", kind_name AS name, {", ".join(cols)}{", " if cols else ""}'
                               "kind, kind_p, kind_by, name_p, kind_held FROM records").df()
-        done = set(run.labels[run.uid].astype("string")) if run.labels is not None and run.uid in run.labels else set()
+        done = set(run.labels[run.uid].astype("string")) if run.labels is not None else set()  # answered: blank rows come back
         kind_sheet(records, run.uid, p.kind, s.flag_company, done).to_parquet(args.output / "kind_review.parquet")
     print("\n".join(f"{what:<12} {value}" for what, value in report["summary"].itertuples(index=False)))
     print(f"{sum(x['seconds'] for x in run.steps):.1f} s · wrote {args.output}: gold.parquet, review.parquet, qa.md (each step's cost), "

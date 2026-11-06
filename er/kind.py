@@ -172,6 +172,14 @@ class Classifier:
                              "kind_name": name.astype("string").to_numpy()}, index=name.index)
 
 
+def merge_answers(kept: pd.DataFrame | None, given: pd.DataFrame | None, uid: str) -> pd.DataFrame | None:
+    """People's answers over several sheets: per record the newest filled answer (kind 1, 2 or 0, can't tell). A blank
+    row answers nothing, so it never erases an older answer, and its record comes back on the next sheet. O(answers)."""
+    parts = [d[pd.to_numeric(d["kind"], errors="coerce").isin([PERSON, COMPANY, UNSURE]).to_numpy()] for d in (given, kept) if d is not None and len(d)]
+    parts = [d for d in parts if len(d)]
+    return pd.concat(parts, ignore_index=True).drop_duplicates(uid, keep="first").reset_index(drop=True) if parts else None
+
+
 def lines(p: np.ndarray, company: np.ndarray, spec: KindSpec) -> tuple[float, float, float | None]:
     """Each side's line from out-of-fold probabilities on people's answers: the company line is the lowest grid point
     with no labelled person above it, then margin_steps stricter; the person line the lowest whose labelled wrong share
