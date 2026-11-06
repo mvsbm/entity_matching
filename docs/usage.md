@@ -97,9 +97,10 @@ Everything is in the run folder, except the name model that tells persons from c
 | `review.parquet` | pair for people | `why` (`decide` or `audit`); an empty `decision`; both records' compared fields; per comparison, the level reached and its bits; `accepted`, whether the run accepted the pair | decide the pairs just below the line and those above it with no name compared, audit those just above ([section 6](#6--review-and-decide)) |
 | `kind_review.parquet` | record for people | `why` (`decide` or `measure`), `reason` in words, `engine_says`, `name_says`, `flag` and `birth_date` if the file has them, the name; `engine` and `engine_p` (the engine's kind and its probability of a company), `name_p`, `drawn`; an empty `kind` | answer 1 person, 2 company or 0 can't tell ([section 6](#6--review-and-decide)) |
 | `decisions/` | decided pair | both IDs and `decision`, one part per file people gave back | what people decided; a full run applies it again |
+| `kind_answers/` | answered record | the answered rows of each `kind_review.parquet` given back, one part per sheet, as given | what people answered; every later run reads it |
 | `set_aside/` | record not resolved | the record as read, and `reason`: no ID; the same ID with different content; already in the run | fix them and add them with `--increment` |
 | `steps.json` | run, increment or set of decisions | when; the code's commit; the config hash; each file read with its size and SHA-256; each step's Big-O with the numbers filled in, seconds, peak memory | see the cost; say exactly what went into the run |
-| `state/` | | the standardized records, the rules' clusters, the model, the u it scored with, people's person/company answers, the hash of the config the full run used | needed by `--increment`; don't edit |
+| `state/` | | the standardized records, the rules' clusters, the model, the u it scored with, the hash of the config the full run used | needed by `--increment`; don't edit |
 
 ```python
 import pandas as pd
@@ -139,7 +140,7 @@ Fill in `decision` with `match` or `no_match`, leave the rest empty, and give th
 
 - **`match`** joins the two clusters at once, scoring nothing. A record joined only this way gets `resolved_by` = `review`.
 - **`no_match`** splits nothing at once. It is kept, and a full run never accepts the pair. It applies to that pair only: a third record can still join the two.
-- **Kept for good.** Decisions are stored in `decisions/`, which a full run with `--overwrite` on the same folder applies again. Any file with the two ID columns and `decision` works; rows without a decision are skipped.
+- **Kept for good.** Decisions are stored in `decisions/`, which a full run with `--overwrite` on the same folder applies again. `decisions/` and `kind_answers/` are people's work: back them up. Any file with the two ID columns and `decision` works; rows without a decision are skipped.
 
 ### Persons and companies
 
@@ -156,7 +157,7 @@ Write `kind`: `1` person, `2` company, `0` can't tell from the record. A sole tr
 
 - **Your answers stand** for their records (`kind_by` = `people`): a held record's name goes to its side, and matching can use it. A `0` stands too: the record's name stays out of matching, and its pairs come to you in `review.parquet` with no name compared.
 - **They teach the engine.** The combiner fits on every answer 1 or 2, once there are 50 holding both kinds; the lines on the measuring draw only, once 50 of it are answered, and the person line where 30 answers lie above it. The summary says where the lines fall, how often the flag is wrong on the answers drawn at random, and how many records stay held back.
-- **They add up.** The run keeps the answers in `state/`, and each sheet given later adds to them: per record the newest answer stands, and a blank row erases nothing. The next sheet leaves out the records answered, and brings back those left blank.
+- **They add up.** The run keeps each sheet's answers as given, one part per sheet in `kind_answers/`; per record the newest answer stands, and a blank row erases nothing. The next sheet leaves out the records answered, and brings back those left blank. A sheet answered wrong is undone by deleting its part, then a full run with `--overwrite`.
 - **A full run writes the sheet.** A record an increment holds back is on the sheet of the next full run.
 
 `[kind] trust_flag = true` takes the file's flag as it is, with no engine and no review sheet: the benchmark's flag-alone baseline.

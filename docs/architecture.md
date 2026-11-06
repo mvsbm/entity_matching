@@ -210,7 +210,7 @@ Writes each table as Parquet under a temporary name. Once all are complete, it s
 
 ![LLD 2, an increment: the batch loaded beside the stored records, records formed from both, u refreshed, the rules, candidates and scores on the pairs touching the batch, the clusters merged into the stored ones, new parts written and the report kept open](diagrams/increment.svg)
 
-`Run.increment` reads back from the run folder `state/model.json`, `state/scoring.json`, `state/records/`, `state/rule_clusters.parquet`, `gold.parquet` and the kept answers, and runs steps 1 and 3–8 on the batch, as each step's *Increment* line above says; `Run.report` then keeps the previous sheet's open rows. It takes no `--kind-labels` and no `--model`: the stored records' kinds and the model come from the full run, and `scripts/resolve.py` refuses both with an increment. It stops, with what to fix, when the folder holds no run, and when the pipeline or the column mapping is not the one the full run used (`state/config.txt`): its batch would be resolved otherwise than the records it joins.
+`Run.increment` reads back from the run folder `state/model.json`, `state/scoring.json`, `state/records/`, `state/rule_clusters.parquet`, `gold.parquet` and `kind_answers/`, and runs steps 1 and 3–8 on the batch, as each step's *Increment* line above says; `Run.report` then keeps the previous sheet's open rows. It takes no `--kind-labels` and no `--model`: the stored records' kinds and the model come from the full run, and `scripts/resolve.py` refuses both with an increment. It stops, with what to fix, when the folder holds no run, and when the pipeline or the column mapping is not the one the full run used (`state/config.txt`): its batch would be resolved otherwise than the records it joins.
 
 ## 6 · Decisions
 
@@ -235,7 +235,7 @@ Each chunk, before its normalized copies, gets each record's kind (`er.kind`): `
 
 ## 8 · Data
 
-![LLD 5, the run folder: gold, matches, rule_kept, set_aside and steps.json; state/ with the records, the rules' clusters, the model, the scoring and people's answers; review.parquet, kind_review.parquet, qa.md and report.txt; decisions/, pending.json and jobs.jsonl; each with its columns and keys](diagrams/data.svg)
+![LLD 5, the run folder: gold, matches, rule_kept, set_aside and steps.json; state/ with the records, the rules' clusters, the model, the scoring and the config hash; people's decisions and answers; review.parquet, kind_review.parquet, qa.md and report.txt; decisions/, pending.json and jobs.jsonl; each with its columns and keys](diagrams/data.svg)
 
 ### On disk
 
@@ -264,9 +264,9 @@ Kept on disk. Steps are numbered as in [the run](#4--the-run); the diagram above
 | `state/rule_clusters.parquet` | 8, rewritten each run | increments | record → rule cluster |
 | `state/model.json` | 8, full runs only | increments | the fitted model: λ, and m and u per level |
 | `state/scoring.json` | 8, every run | increments | the u the run scored with; per comparison, the exact u it was sampled alongside and its last drift check |
-| `state/kind_labels.parquet` | 8, whenever there are answers | increments; the next full run | people's person/company answers, the newest per record |
 | `state/config.txt` | 8, full runs only | increments | the hash of the pipeline and the settings that shape the records (column mapping, `[locale]`, the flag's values) the full run used |
 | `steps.json` | 8, and decisions | you; an audit | one entry per run, increment or set of decisions: when, the code's commit and the files changed in this copy, the config hash, each file read with its size and SHA-256, and each step's Big-O with its numbers, time and peak memory |
+| `kind_answers/part-n.parquet` | 8, one part per sheet given | every later run on the folder | people's person/company answers, each sheet's filled rows as given; the newest per record stands. Kept, like `decisions/`, by `--overwrite` |
 | `pending.json` | 8, deleted when done | the next run, increment or decisions | moves owed by an unfinished write |
 | `.lock` | every writer | every writer | the run folder's lock: one writer at a time |
 | `jobs.jsonl` | `scripts/schedule.py` | people | one line per file per pass: the file, its SHA-256, the outcome, the attempts |
