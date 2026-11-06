@@ -68,7 +68,7 @@ from splink.clustering import cluster_pairwise_predictions_at_threshold
 from er.candidates import candidates, estimate, q
 from er.config import FSSpec, InputError, Key, KeyBlocker, Pipeline, sources_text
 from er.io import config_hash, markdown
-from er.kind import COMPANY, PERSON, SAYS, UNSURE, classifier as kind_classifier, kind_review_sheet, merge_answers
+from er.kind import COMPANY, NAME_MODEL, PERSON, SAYS, UNSURE, classifier as kind_classifier, kind_review_sheet, merge_answers
 from er.match import (ELSE, assemble_u, counted, exact_u, levels, parameters, refreshed_u, rule_edges, scaled_prior, score_fs,
                       scored_sample, train_fs, u_basis)
 from er.pipeline import pattern_coverage
@@ -247,6 +247,7 @@ class Run:
             if self.labels is None:  # full() and increment() merge them with the run's first
                 self.labels = merge_answers(None, self._given(), self.uid)
             self.classifier = kind_classifier(self.settings, spec, self.labels)
+            self.inputs += file_facts([self.settings.root / NAME_MODEL])
         normalized, used = [*rules.normalized(), *fs.normalized()], rules.used() | fs.used()
         reader = self.con.cursor().sql(f"SELECT * FROM {rows}").to_arrow_reader(self.chunk_rows)  # its own cursor: inserts go on alongside
         for i, batch in enumerate(reader):

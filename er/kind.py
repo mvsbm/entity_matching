@@ -2,7 +2,7 @@
 
     legal form   written where banks write it (er.standardize.legal_pattern): a company, near certain
     name model   logistic regression on the name's character n-grams (1 to KindSpec.ngram), legal forms and spaces
-                 removed; trained once on public reference data (er.generate.kind_training_names) and cached
+                 removed; trained once on public reference data by scripts/train_name_model.py: config/kind_names.npz
     combiner     gradient-boosted trees on the name model's score, the file's flag, the birth year and the legal form,
                  fitted on people's labels (kind_review.parquet, filled in); none without labels
     lines        company: no labelled error above it (out of fold), then margin_steps stricter; person: the labelled
@@ -31,7 +31,7 @@ from sklearn.feature_extraction.text import CountVectorizer
 from sklearn.linear_model import LogisticRegression
 from sklearn.model_selection import StratifiedKFold, cross_val_predict
 
-from er.config import KindSpec, Standardization
+from er.config import InputError, KindSpec, Standardization
 from er.standardize import legal_pattern, normalize
 
 VERSION = 2  # of the name model's training: a change here trains it again
@@ -80,7 +80,7 @@ class NameModel:
 
     def save(self, path: Path, key: str) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = path.with_name(f"{path.stem}.{os.getpid()}.tmp.npz")  # complete before it replaces the cache: another run may be reading it
+        tmp = path.with_name(f"{path.stem}.{os.getpid()}.tmp.npz")  # complete before it replaces the old file: a run may be reading it
         np.savez_compressed(tmp, terms=np.array(self.terms), coef=self.coef, intercept=self.intercept, ngram=self.ngram, key=key)
         os.replace(tmp, path)
 
@@ -92,24 +92,22 @@ class NameModel:
         return cls(z["terms"].tolist(), z["coef"], float(z["intercept"]), int(z["ngram"])) if str(z["key"]) == key else None
 
 
+NAME_MODEL = Path("config") / "kind_names.npz"  # trained by scripts/train_name_model.py, tracked in git: every run loads it
+
+
+def name_key(settings, spec: KindSpec) -> str:
+    """What of a run's settings the name model was trained under: a run refuses a model trained under others."""
+    std = settings.standardize
+    return hashlib.sha256(f"{VERSION}|{spec.ngram}|{std.legal_forms}|{std.legal_front}|{std.legal_end}|"
+                          f"{sorted(std.kana_fold.items())}".encode()).hexdigest()
+
+
 def name_model(settings, spec: KindSpec) -> NameModel:
-    """The name model for these settings: trained on the reference data's training half (er.generate.name_model_split:
-    half the personas, two prefectures' companies), written as config/generator.toml's kana_confusions and branches
-    write them; cached in the models folder under a key of everything it depends on."""
-    from er.generate import kind_training_names, load_reference, load_registry, load_spec, name_model_split  # the generator's data
-    ref, std = settings.paths["reference"], settings.standardize
-    spec_g = load_spec(settings.root / "config" / "generator.toml")[0]  # how bank records misspell and suffix names
-    h = hashlib.sha256(f"{VERSION}|{spec.ngram}|{std.legal_forms}|{std.legal_front}|{std.legal_end}|{sorted(std.kana_fold.items())}|"
-                       f"{spec_g.kana_confusions}|{spec_g.branches}".encode())
-    for f in ("individual.json", "registry.json"):
-        h.update((ref / f).read_bytes())
-    key, path = h.hexdigest(), settings.paths["models"] / "kind_names.npz"
-    if (m := NameModel.load(path, key)) is not None:
-        return m
-    persons, _, companies, _ = name_model_split(load_reference(ref)[0], load_registry(ref))
-    names = kind_training_names(persons, companies, std.legal_front, std.legal_end, spec_g.kana_confusions, spec_g.branches)
-    m = NameModel.fit(text(names["name"], std), names["y"].to_numpy(), spec.ngram)
-    m.save(path, key)
+    """The name model a run loads, config/kind_names.npz: trained once, on public data only, by
+    scripts/train_name_model.py (er.generate.train_name_model). A run never trains it."""
+    if (m := NameModel.load(settings.root / NAME_MODEL, name_key(settings, spec))) is None:
+        raise InputError(f"{NAME_MODEL}: missing, or trained under other settings (the legal forms, the kana folding or [kind] ngram)",
+                         fix="run scripts/train_name_model.py and commit config/kind_names.npz")
     return m
 
 

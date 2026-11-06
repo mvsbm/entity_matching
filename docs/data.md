@@ -26,7 +26,6 @@ data/labels/<dataset>.parquet               truth, read only to choose and evalu
 data/medallion/gold/<dataset>/              each dataset resolved: a run folder     scripts/choose.py, through er.run
                                             (silver: its state/records/)
 data/artifacts/models/*_final.json          the chosen configurations, the fitted model
-data/artifacts/models/kind_names.npz        the person-or-company name model, cached by any run er.kind
 data/artifacts/experiments/leaderboard.parquet   one row per experiment and dataset (archive/: earlier passes)
 data/artifacts/optuna/*.db                  the Optuna studies, with --optuna
 data/artifacts/benchmark/, demo/            run folders of scripts/benchmark.py and the demo
@@ -45,7 +44,7 @@ Built once from public sources. The downloads are not kept; `SOURCES.md` records
 | `addresses.json` | 46,364 towns, all 47 prefectures | geolonia/japanese-addresses (CC BY 4.0) + yubinbango-data | prefecture, city and town with kana, JIS municipality code, chome, postal code |
 | `registry.json` | 60,000 corporations of three prefectures (Miyagi, Okayama, Fukuoka) | the National Tax Agency's corporate-number site (Public Data License 1.0; processed) | each name's reading, its legal form's reading and bank abbreviation, whether the form leads the name |
 
-Every run that tells persons from companies reads two of them: `individual.json` and `registry.json` train the person-or-company name model (`er.kind.name_model`), and the cached model is checked against them, with `config/generator.toml`'s `kana_confusions` and `branches`, which write its training names. When the cache misses, it also reads `companies.json` and `addresses.json`, loaded with the personas, and trains again. It trains on one half of them only (`er.generate.name_model_split`): the companies of Miyagi and Okayama, and the first half of the shuffled personas. Fukuoka's companies and the other personas are held out, for `scripts/choose_kind.py` to test on and for `kind_problems` to draw its companies from. The rest is for the generator.
+Two of them train the person-or-company name model, `config/kind_names.npz` (`scripts/train_name_model.py`, `er.generate.train_name_model`): `individual.json` and `registry.json`, written as `config/generator.toml`'s `kana_confusions` and `branches` say bank records write them; `companies.json` and `addresses.json` are loaded with the personas. A run reads none of them: it loads the model. It trains on one half of them only (`er.generate.name_model_split`): the companies of Miyagi and Okayama, and the first half of the shuffled personas. Fukuoka's companies and the other personas are held out, for `scripts/choose_kind.py` to test on and for `kind_problems` to draw its companies from. The rest is for the generator.
 
 Two traps in the sources:
 - **Wikidata's class tree:** 13,766 of the 16k "Japanese companies" with kana in the transitive `company` tree are dissolved municipalities. Only direct company types give real companies.

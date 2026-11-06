@@ -50,7 +50,7 @@ A customer's kind follows from its records: 2 if any record surely is a company,
 | a dictionary of known surnames and given names | 67.6% with it, 67.3% without |
 | training also on the file's own legal-form records | 67.6% (66.8% on public data only) |
 
-The name model it judges is the run's own: trained on `er.generate.kind_training_names`, as `er.kind.name_model` trains it. The pipeline's combination, public training only so the name model is trained once, comes 25th of 48 at 65.5%, 2.1 points below the best, which also trains on the file's own legal-form records and adds the dictionary of names. On the company side it decides 74.0% of companies on average and 70.5% in the worst scenario. On the person side, 57.0% on average, and from 0.0% to 97.5% by scenario: it falls to nothing where many companies have records under their representative's name and the flag is wrong on them (15–20% of companies, the flag wrong on 33–79% of those records). Those records are a person's name, flagged person: no signal in them says company.
+The name model it judges is the run's own: trained on `er.generate.kind_training_names`, as `scripts/train_name_model.py` trains it. The pipeline's combination, public training only so the name model is trained once, comes 25th of 48 at 65.5%, 2.1 points below the best, which also trains on the file's own legal-form records and adds the dictionary of names. On the company side it decides 74.0% of companies on average and 70.5% in the worst scenario. On the person side, 57.0% on average, and from 0.0% to 97.5% by scenario: it falls to nothing where many companies have records under their representative's name and the flag is wrong on them (15–20% of companies, the flag wrong on 33–79% of those records). Those records are a person's name, flagged person: no signal in them says company.
 
 **Sole traders.** Counted as individuals, the person side decides 57.0% of persons; counted as businesses on their trade-name records, 7.8%; on every record, 0.1%. A sole trader is legally a person, which is also what the flag means.
 
@@ -82,7 +82,7 @@ The name model it judges is the run's own: trained on `er.generate.kind_training
 
 ## In the code
 
-- `er/kind.py`: `legal`, `text`, `NameModel` (scored in DuckDB), `name_model` (trained once, cached), `Classifier.classify`, `lines`, `classifier` (people's answers), `merge_answers`, `kind_review_sheet`
+- `er/kind.py`: `legal`, `text`, `NameModel` (scored in DuckDB), `name_model` (loads `config/kind_names.npz`, trained by `scripts/train_name_model.py`), `Classifier.classify`, `lines`, `classifier` (people's answers), `merge_answers`, `kind_review_sheet`
 - `er/standardize.py`: `legal_pattern`, and `prepare`, which scores each chunk and routes the name fields
 - `er/run.py`: `Run.load` (the classifier), `Run._gold` (a customer's kind), `qa` (the summary's kind lines)
 - `er/settings.py`: `shared_name`, the settings for one name column

@@ -1,5 +1,5 @@
 @startuml kind
-title LLD 4 · Person or company: trained once, fitted on people's answers, applied in every chunk, asked about on a sheet
+title LLD 4 · Person or company: trained once at design time, fitted on people's answers, applied in every chunk, asked about on a sheet
 skinparam defaultFontSize 11
 skinparam rectangle {
   BackgroundColor #F4F6F8
@@ -14,14 +14,15 @@ skinparam file {
   BorderColor #B07D00
 }
 
-package "the name model: public data only, trained once" {
+package "the name model: public data only, trained once by scripts/train_name_model.py, at design time" {
   file "data/reference/individual.json · data/reference/registry.json" as f_ref
   file "config/generator.toml: kana_confusions, branches" as f_gen
   rectangle "generate.name_model_split\nhalf the personas; the companies of Miyagi and Okayama (Fukuoka's held out)" as split
   rectangle "generate.kind_training_names\nevery company as banks write it (generate.bank_name), every persona twice" as names
-  rectangle "kind.name_model · NameModel.fit\nlogistic regression on the character n-grams of kind.text, n from 1 to 3\n(folded, no spaces, no legal form); scored in DuckDB: NameModel.logit" as model
-  file "data/artifacts/models/kind_names.npz\ncached under a key of everything it reads" as f_cache
+  rectangle "generate.train_name_model · NameModel.fit\nlogistic regression on the character n-grams of kind.text, n from 1 to 3\n(folded, no spaces, no legal form); scored in DuckDB: NameModel.logit" as model
+  file "config/kind_names.npz, tracked in git\nunder kind.name_key: the settings it was trained under" as f_cache
 }
+rectangle "kind.name_model: every run loads it, never trains it;\nunder other settings it stops, with what to fix" as load
 
 package "people's answers" {
   file "~--kind-labels: kind_review.parquet answered · kind_answers/part-n.parquet" as f_answers
@@ -45,7 +46,8 @@ split --> names
 f_gen --> names
 names --> model
 model --> f_cache
-f_cache --> fit
+f_cache --> load
+load --> fit
 f_answers --> merge
 merge --> fit
 fit --> classify
