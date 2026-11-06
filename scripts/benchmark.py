@@ -4,8 +4,8 @@ tables. Writes reports/benchmark.md. Nothing is re-tuned.
     .venv/bin/python scripts/benchmark.py                                         # scenarios and the cost curve
     .venv/bin/python scripts/benchmark.py --entities 10000 800000 --memory-limit 8GB   # cost up to a million records, in 8 GB
 
-Quality: each scenario generates a population with er.generate (config/generator.toml, varied), fits λ, u and m on
-its train split without labels, resolves its test split, and compares the clusters with the truth.
+Quality: each scenario generates a population with er.generate (config/generator.toml, varied), fits λ and m on
+its train split without labels, resolves its test split with u measured on it, and compares the clusters with the truth.
 Person or company: populations with every kind problem on (er.generate.kind_problems) and one name column, resolved
 with names routed by the truth, by the file's flag alone, and by the kind step on people's answers (here, the truth).
 Cost: populations of growing size, each resolved by scripts/resolve.py in a process of its own, so the peak memory is
@@ -14,6 +14,7 @@ that run's alone. Past the memory limit (--memory-limit, else config/settings.to
 import argparse
 import json
 import logging
+import shutil
 import subprocess
 import sys
 from dataclasses import replace
@@ -113,17 +114,19 @@ def kinds(entities: int, labels: int = 2_000) -> pd.DataFrame:
         g = kind_problems(generate(replace(SPEC, entities=entities), PERSONS, COMPANIES, TOWNS), problems, reg,
                           std.legal_front, std.legal_end, SPEC.kana_confusions, SPEC.branches)
         d = OUT / f"kinds_{i}"
-        d.mkdir(parents=True, exist_ok=True)
+        shutil.rmtree(d, ignore_errors=True)  # fresh: a run folder keeps people's answers across --overwrite
+        d.mkdir(parents=True)
         g.df.to_parquet(d / "records.parquet", index=False)
         g.df.assign(PERSON_ORG_CODE=np.where(g.truth["KIND"].eq("company"), "2", "1")).to_parquet(d / "truth_flag.parquet", index=False)
         truth = g.truth.set_index(UID)
-        free = Run(p, s).full(d / "records.parquet", d / "free", overwrite=True)
+        free = Run(p, s).full(d / "records.parquet", d / "free")
         sheet = kind_review_sheet(free.con, "records", UID, replace(p.kind, labels_to_draw=labels), S.flag_company)  # people answer every row: here, the truth
         sheet.assign(kind=np.where(truth.loc[sheet[UID], "KIND"].eq("company"), 2, 1)).to_parquet(d / "labels.parquet")
-        for how, pipeline, records, kind_labels in (("the truth", flag_only, "truth_flag.parquet", None), ("the flag alone", flag_only, "records.parquet", None),
-                                                    (f"the kind step, {labels:,} labels", p, "records.parquet", d / "labels.parquet")):
-            run = Run(pipeline, s, kind_labels=kind_labels).full(d / records, d / "run", overwrite=True)
-            gold = pd.read_parquet(d / "run" / "gold.parquet").set_index(UID).join(truth[["ENTITY_ID", "KIND"]])
+        for how, folder, pipeline, records, kind_labels in (("the truth", "truth", flag_only, "truth_flag.parquet", None),
+                                                            ("the flag alone", "flag", flag_only, "records.parquet", None),
+                                                            (f"the kind step, {labels:,} labels", "kind", p, "records.parquet", d / "labels.parquet")):
+            run = Run(pipeline, s, kind_labels=kind_labels).full(d / records, d / folder)  # each its own folder: no answers carried over
+            gold = pd.read_parquet(d / folder / "gold.parquet").set_index(UID).join(truth[["ENTITY_ID", "KIND"]])
             m = cluster_metrics(gold["cluster_id"], gold["ENTITY_ID"])
             mixed = gold.assign(c=gold["KIND"].eq("company")).groupby("cluster_id")["c"].agg(["any", "all"])
             sheet_ = qa(run)["review_sheet"]
@@ -180,7 +183,7 @@ def main() -> None:
               "Written by `scripts/benchmark.py`: `config/final.toml` through `er.run`, the run without labels on DuckDB tables, on "
               "generated populations. Nothing is re-tuned.", "",
               "## Quality: scenarios", "",
-              "Each population's test split, with λ, u and m fitted on its train split without labels. `false_merges` are pairs of "
+              "Each population's test split, with λ and m fitted on its train split without labels and u measured on the test split, as a run does. `false_merges` are pairs of "
               "records in one cluster that are two entities; `false_links` are the model's links between two entities, and "
               "`expected_false` the false links the model expects among its own (the sum of 1 − match probability), which a run "
               "reports without labels.", "", markdown(robust), "",

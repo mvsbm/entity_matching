@@ -38,7 +38,7 @@ from sklearn.linear_model import LogisticRegression
 from sklearn.model_selection import StratifiedKFold, cross_val_predict
 
 from er.config import load_pipeline
-from er.generate import bank_name, kana_typo, load_reference, load_registry, load_spec, name_model_split
+from er.generate import bank_name, kana_typo, kind_training_names, load_reference, load_registry, load_spec, name_model_split
 from er.io import markdown
 from er.kind import NameModel, legal, lines, text
 from er.settings import load_settings
@@ -119,9 +119,7 @@ def main() -> None:
     c_test, shops = fukuoka.iloc[: len(fukuoka) // 2], fukuoka.iloc[len(fukuoka) // 2:]["reading"].tolist()
     fold = lambda s: normalize(pd.Series(s, dtype="string"), ("nfkc", "strip_spaces", "kana_fold"), S.standardize)
     surnames, givens = set(fold(p_train.surname_kana).dropna()), set(fold(p_train.given_kana).dropna())
-    rng = np.random.default_rng(1)
-    pub = pd.DataFrame(dict(name=[write_company(x, rng) for x in c_train.itertuples()], y=1))
-    pub = pd.concat([pub, pd.DataFrame(dict(name=[write_person(x, rng) for x in p_train.itertuples()] * 2, y=0))], ignore_index=True)
+    pub = kind_training_names(p_train, c_train, S.standardize.legal_front, S.standardize.legal_end, SPEC.kana_confusions, SPEC.branches)  # the run's own
     public = {(lg, ng): NameModel.fit(text(pub.name, STD[lg]), pub.y.to_numpy(), ng) for lg in STD for ng in (3, 4)}
     print(f"ready in {time.perf_counter() - t0:.0f}s: name models on {len(pub):,} public names", flush=True)
 

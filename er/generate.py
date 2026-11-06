@@ -454,7 +454,7 @@ def kind_problems(g: Generated, k: KindProblems, registry: pd.DataFrame, legal_f
     first = pd.Series(np.arange(len(df))).groupby(ents).first()  # each entity's first record
     rep_of = dict(zip(c_ents, first[p_ents].to_numpy()[rng.integers(len(p_ents), size=len(c_ents))]))  # a person of the file
     rep_named = {e for e in c_ents if rng.random() < k.representatives}
-    home = {e for e in rep_named if rng.random() < k.home_office}
+    home = {e for e in c_ents if e in rep_named and rng.random() < k.home_office}  # drawn in the entities' order, not a set's
     where = [c for c in df.columns if c == "PHONE_NUM_4" or c.startswith(("POST_CD", "ADDR", "ADDRESS", "SOURCE_ADDR", "ORIGINAL_ADDR", "STD_ADDR"))]
     moved = []  # (company record, its representative's record): the company at the representative's address and phone
     shops = registry["reading"].sample(len(p_ents), replace=True, random_state=int(rng.integers(1 << 31))).to_numpy()

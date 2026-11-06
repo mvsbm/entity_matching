@@ -34,7 +34,7 @@ A customer's kind follows from its records: 2 if any record surely is a company,
 
 - **The flag alone isn't enough, and neither is the name.** The flag is wrong where the cases are hard; the name can't see a company under a person's name. The combiner uses both, weighted by this file's answers.
 - **No labels needed to start.** Without answers the engine calls a company only where a legal form is written, and never surely a person. The name model is trained on public data, so a run works on day one, and gets better as people answer.
-- **The measuring draw is random.** Records sent to people because they look wrong would make every error rate look worse than it is. A draw stratified to hold more of the surest records puts more of them above each line than the file has, so the error above the line looks smaller than it is (below).
+- **The measuring draw is random.** Records sent to people because they look wrong would make every error rate look worse than it is. A draw stratified to hold more of the surest records puts more of them above each line than the file has, so the error measured above the line is not the file's. On the scenarios the two draws trade places by size (below); only the random draw measures the file as it is.
 - **Held back, not guessed.** A company sent to the person side can merge into its representative's own records. Holding the disagreements back costs some recall until people answer, and spares those merges.
 
 ## How we know: every combination, across the unknowns
@@ -43,36 +43,37 @@ A customer's kind follows from its records: 2 if any record surely is a company,
 
 | Idea | Best mean over the 12 scenarios |
 |---|---|
-| the bank table (against the generator's forms alone) | 67.8% (the generator's forms: not among the 48 finalists) |
-| n-grams 1–3 (against 1–4) | 67.8% (67.0%) |
-| trees of depth 2 (against depth 3; logistic regression) | 67.8% (66.5%; not among the finalists) |
-| the birth year (against without it) | 67.8% (67.1%) |
-| a dictionary of known surnames and given names | 67.6% with it, 67.8% without |
-| training also on the file's own legal-form records | 67.8% (67.6% on public data only) |
+| the bank table (against the generator's forms alone) | 67.6% (the generator's forms: not among the 48 finalists) |
+| n-grams 1–3 (against 1–4) | 67.6% (67.2%) |
+| trees of depth 2 (against depth 3; logistic regression) | 67.6% (66.0%; not among the finalists) |
+| the birth year (against without it) | 67.6% (66.8%) |
+| a dictionary of known surnames and given names | 67.6% with it, 67.3% without |
+| training also on the file's own legal-form records | 67.6% (66.8% on public data only) |
 
-The pipeline's combination, public training only so the name model is trained once, comes 8th of 48 at 67.4%, within 0.4 points of the best. On the company side it decides 73.7% of companies on average and 70.3% in the worst scenario. On the person side, 61.2% on average, and from 0.0% to 97.5% by scenario: it falls to nothing where many companies have records under their representative's name and the flag is wrong on them (17–20% of companies, the flag wrong on 33–79% of those records). Those records are a person's name, flagged person: no signal in them says company.
+The name model it judges is the run's own: trained on `er.generate.kind_training_names`, as `er.kind.name_model` trains it. The pipeline's combination, public training only so the name model is trained once, comes 25th of 48 at 65.5%, 2.1 points below the best, which also trains on the file's own legal-form records and adds the dictionary of names. On the company side it decides 74.0% of companies on average and 70.5% in the worst scenario. On the person side, 57.0% on average, and from 0.0% to 97.5% by scenario: it falls to nothing where many companies have records under their representative's name and the flag is wrong on them (15–20% of companies, the flag wrong on 33–79% of those records). Those records are a person's name, flagged person: no signal in them says company.
 
-**Sole traders.** Counted as individuals, the person side decides 61.2% of persons; counted as businesses on their trade-name records, 7.5%; on every record, 0.1%. A sole trader is legally a person, which is also what the flag means.
+**Sole traders.** Counted as individuals, the person side decides 57.0% of persons; counted as businesses on their trade-name records, 7.8%; on every record, 0.1%. A sole trader is legally a person, which is also what the flag means.
 
-**Placing the lines from answers.** With 2,000 answers at random and the company line two steps stricter, no scenario broke either budget (the worst wrong share: 0.04% of company calls, 0.95% of person calls). Stratified the same 2,000 (a third leaning company, a third leaning person), each side broke it once (0.13% and 3.30%).
+**Placing the lines from answers.** With 2,000 answers at random and the company line two steps stricter, the company side kept its budget in every scenario (the worst wrong share: 0.02% of company calls); the person side broke its 1% in 2 of 12 (worst 1.67%). Stratified the same 2,000 (a third leaning company, a third leaning person), neither broke it (0.04%, 0.86%); at 500 and 1,000 answers its worst person error was the higher one (2.86% and 1.49%, against 1.36% and 0.54% at random), and at 1,000 the random draw kept the person budget everywhere. No draw and size keeps both budgets in every scenario: the person line is measured, not guaranteed.
 
 ## On a whole run
 
 `scripts/benchmark.py` runs the whole pipeline on generated populations of 20,000 customers with all of the above, one name column for both kinds, and a flag good (wrong on 1% of records at random, on 20% of the representative-named ones), medium (3%, 50%) or poor (10%, 80%). The company names come from the registry's companies held out of the name model's training; the persons come from every persona, half of them in its training. Each population is resolved three ways: names routed by the truth, by the flag alone, and by the kind step with people answering its review sheet (here, with the truth) ([reports/benchmark.md](../../reports/benchmark.md)):
 
-| Flag | Routed by | Recall | False merges | Person–company clusters | Persons called 2 | Companies called 1 |
-|---|---|---|---|---|---|---|
-| any | the truth | 47.0% | 0 | 0 | 0 | 0 |
-| good | the flag alone | 45.8% | 15 | 15 | 223 | 58 |
-| good | the kind step | 46.8% | 12 | 12 | 0 | 23 |
-| medium | the flag alone | 44.3% | 45 | 40 | 642 | 192 |
-| medium | the kind step | 46.3% | 44 | 39 | 0 | 79 |
-| poor | the flag alone | 40.1% | 79 | 68 | 2,014 | 478 |
-| poor | the kind step | 41.5% | 77 | 66 | 0 | 97 |
+| Flag | Routed by | Recall | False merges | Person–company clusters | Persons called 2 | Companies called 1 | Persons called 1 |
+|---|---|---|---|---|---|---|---|
+| any | the truth | 46.2% | 1 | 0 | 0 | 0 | 98.5% |
+| good | the flag alone | 45.5% | 21 | 20 | 304 | 83 | 97.0% |
+| good | the kind step | 46.8% | 20 | 19 | 0 | 40 | 98.3% |
+| medium | the flag alone | 44.2% | 62 | 54 | 832 | 244 | 94.4% |
+| medium | the kind step | 46.5% | 53 | 46 | 0 | 0 | 12.1% |
+| poor | the flag alone | 39.0% | 84 | 72 | 2,362 | 571 | 86.7% |
+| poor | the kind step | 41.4% | 75 | 63 | 0 | 0 | 11.5% |
 
-- **Recall** is 1.0–2.1 points higher by the kind step than by the flag alone.
-- **No person is called a company** by the kind step; the flag alone calls 223 to 2,014. It also calls fewer companies persons: 23 to 97, against 58 to 478.
-- **False merges** are fewer than the flag's on every flag, by one to three. Routed by the truth there are none: they come from names sent to the wrong side. A company record under its representative's name, at the representative's address and phone and flagged person, goes to the person side by either route, and can merge into the representative's own records.
+- **Recall** is 1.2–2.4 points higher by the kind step than by the flag alone.
+- **No person is called a company** by the kind step; the flag alone calls 304 to 2,362. It also calls fewer companies persons: 0 to 40, against 83 to 571.
+- **False merges** are fewer than the flag's on every flag: 20, 53 and 75 against 21, 62 and 84. Routed by the truth there is one, between two persons: the others come from names sent to the wrong side. A company record under its representative's name, at the representative's address and phone and flagged person, goes to the person side by either route, and can merge into the representative's own records.
+- **Few persons are surely persons** where the flag is medium or poor: 12.1% and 11.5%. The person line, placed on the 2,000 answers drawn to measure, sits high there, so most persons stay 0, not sure. A record that is not sure still sends its name to the side it leans to, unless it is held back, so matching uses it; only its kind waits for more answers. With a good flag, 98.3%.
 
 ## What it can't do
 

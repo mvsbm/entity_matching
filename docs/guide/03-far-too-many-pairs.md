@@ -88,17 +88,17 @@ For each key, `scale_check` splits its pairs on train into pairs of one entity, 
 
 | Step | Cost | Grows like | At a million records |
 |---|---|---|---|
-| load and standardize, persons and companies | O(N·L) | N | 11.08 s |
-| fit | O(n + S·K + P_em·K) + O(N + S·K) | a fixed sample, plus O(N) counts | 9.52 s |
-| rules | O(N + ΣP_r·L²) + O(E·d + N) | N^1.0 to N^1.16 per rule | ≤ 0.14 million pairs per rule; 2.39 s |
+| load and standardize, persons and companies | O(N·L) | N | 10.87 s |
+| fit | O(n + S·K + P_em·K) + O(N + S·K) | a fixed sample, plus O(N) counts | 9.32 s |
+| rules | O(N + ΣP_r·L²) + O(E·d + N) | N^1.0 to N^1.16 per rule | ≤ 0.14 million pairs per rule; 2.23 s |
 | **rule F2, joined on the phone alone** | O(N + P) | **N^1.95** | **50 million pairs**, the phone key's blocks |
 | key: **phone alone** | O(N + P) | **N^1.95** | **50 million pairs**, nearly all by chance |
 | keys: **address alone, address code alone** | O(N + P) | **N^1.84, N^1.72** | **5.4 and 5.3 pairs per record**, over the budget of 5 |
 | the chosen keys and one-deletion keys | O(N + P), O(N·L + P) | N^1.0 to N^1.82 | ≤ 1.7 million pairs each |
 | sorted neighbourhood | O(N log N + N·w) | N | 3 million pairs per pass |
 | **TF-IDF neighbours** | O(N·L + U·N·q) | **N^2.0** | **10¹² similarities** |
-| candidates | O(N·L + ΣP_g) | as ΣP_g | 6.61 s |
-| score | O(C·K·L²) | as C | 15.82 s |
+| candidates | O(N·L + ΣP_g) | as ΣP_g | 6.38 s |
+| score | O(C·K·L²) | as C | 15.75 s |
 | cluster | O(C + E·d + N) | N | 0.37 s |
 
 *N records · n = 30,000 records in the fit's sample · S = 10⁷ pairs sampled for u · K comparisons (6) · P_em pairs in EM's blocks · L characters in a value · P_r, P_g pairs in a rule's or a generator's blocks · w the window · U records queried, q n-grams per name · C candidates · E accepted pairs · d the largest cluster's diameter. Every symbol and step: [performance](../performance.md#end-to-end-the-cost-of-every-step).*
@@ -143,7 +143,7 @@ An exact address would defeat F2's purpose, which is address typos. The first th
 - **Counted** for a one-edit level right after them on the same column: the CIF ID, the phone and the birth date "one digit off". The distinct values are joined on their one-deletion keys, so these three comparisons need no sample at all.
 - **Sampled** for the other levels of the name, the company and the address, from 10⁷ random pairs, every one of them used.
 
-The gate on oversized blocks and the scores both use these u. The fit costs O(n + S·K + P_em·K) and u on the file O(N + S·K): fixed, apart from the O(N) counts. Each u sample is kept per comparison and the values it reads (`er.match.scored_sample`), so a file no bigger than the fit's sample is sampled once. Cross-validation and Optuna run on train only. A run fits on the file it resolves (or takes `scripts/choose.py`'s model, fitted on train, with `--model`), then scores the whole file, with λ rescaled to the file's size ([chapter 5](05-uncertain-evidence-fellegi-sunter.md)). An increment keeps the stored model and refreshes u before its rules: the counted levels are counted again, and a sampled comparison is sampled again only once its drift outgrows its sampling error.
+The gate on oversized blocks and the scores both use these u. The fit costs O(n + S·K + P_em·K) and u on the file O(N + S·K): fixed, apart from the O(N) counts. Each u sample is kept per comparison and the values it reads (`er.match.scored_sample`), so within one process a model and its variants share one sample, and a file no bigger than the fit's sample is sampled once when the fit samples as many pairs as the file's u (`fit_u_max_pairs` unset). Cross-validation and Optuna run on train only. A run fits on the file it resolves (or takes `scripts/choose.py`'s model, fitted on train, with `--model`), then scores the whole file, with λ rescaled to the file's size ([chapter 5](05-uncertain-evidence-fellegi-sunter.md)). An increment keeps the stored model and refreshes u before its rules: the counted levels are counted again, and a sampled comparison is sampled again only once its drift outgrows its sampling error.
 
 **Not chosen:**
 
@@ -219,13 +219,13 @@ Without labels, a run can check only the patterns: every combination of comparis
 
 | Records | Fit | Rules | Candidates | Score | Total | Peak memory |
 |---|---|---|---|---|---|---|
-| 12,532 | 7.38 s | 0.06 s | 0.22 s | 0.24 s | 8.3 s | 0.8 GB |
-| 24,955 | 7.80 s | 0.09 s | 0.36 s | 0.35 s | 9.3 s | 0.91 GB |
-| 50,116 | 7.86 s | 0.14 s | 0.60 s | 0.71 s | 10.5 s | 1.01 GB |
-| 74,959 | 8.10 s | 0.21 s | 0.83 s | 0.78 s | 11.6 s | 1.17 GB |
-| **1,000,338** | **9.52 s** | **2.39 s** | **6.61 s** | **15.82 s** | **48.6 s** | **6.07 GB** |
+| 12,532 | 7.36 s | 0.06 s | 0.22 s | 0.24 s | 8.3 s | 0.8 GB |
+| 24,955 | 7.82 s | 0.09 s | 0.36 s | 0.35 s | 9.3 s | 0.9 GB |
+| 50,116 | 7.83 s | 0.15 s | 0.59 s | 0.57 s | 10.3 s | 1.02 GB |
+| 74,959 | 8.19 s | 0.21 s | 0.83 s | 0.80 s | 11.7 s | 1.19 GB |
+| **1,000,338** | **9.32 s** | **2.23 s** | **6.38 s** | **15.75 s** | **47.7 s** | **6.23 GB** |
 
-A million records take 48.6 seconds. The fit, on a fixed sample, and the u sample of the file inside it, 10 million pairs, cost about the same at any size, so at these sizes the total grows far slower than the file. Without them, the work grows about linearly with it. Peak memory is the process's, Python included: 6.07 GB at a million records, under the 8 GB limit. The cost of every step, for a full run and for an increment, is in [performance.md](../performance.md).
+A million records take 47.7 seconds. The fit, on a fixed sample, and the u sample of the file inside it, 10 million pairs, cost about the same at any size, so at these sizes the total grows far slower than the file. Without them, the work grows about linearly with it. Peak memory is the process's, Python included: 6.23 GB at a million records, under the 8 GB limit. The cost of every step, for a full run and for an increment, is in [performance.md](../performance.md).
 
 Three choices keep a million records within bounds:
 
@@ -251,7 +251,7 @@ On train, every true pair that could reach the threshold shares a key, at its si
 - **False pairs appear.** A bigger file holds more pairs of different entities that look alike. The run joined 2 false pairs at 12,532 records, through 1 false link, and 4 at 74,959, through 3. Each is a model link between 8.2 and 10.1 bits (the threshold is 8), between near-namesakes with a kana typo who share an address or a phone. The model expects them: the sum of 1 − match probability over its links, which every run reports without labels, is 0.84 at 12,532 records, 4.38 at 74,959, and 30.11 of 38,786 links at a million. The bound on the false-merge rate is 0.48% at 12,532 records, above the 0.28% reported for test, and 0.06–0.12% at the larger sizes.
 - **Recall stays within two points,** between 44.2% and 46.0%. u is measured on each scored file, so an agreement on a field whose values grow with the file, such as the address or the CIF ID, earns the credit it has at that size ([lessons.md](../lessons.md#weights-fitted-at-one-file-size-used-at-another)). On the labelled splits, which are no bigger than train, this choice costs true pairs: 60 on cross-validated train and 12 on val (`u_from_scored_file`, adopted as "chosen", [chapter 6](06-measuring-and-choosing.md)).
 
-**In short:** two kinds of step grow with the square of the file: keys whose values come from a fixed pool (the phone digits, the address), and all-against-all similarity. Compound keys, a reversed sorted pass and a narrower F2 join keep both in check. A sorted window reaches fewer pairs as the file grows, so five more keys make sure no potential match depends on one. A million records take 48.6 seconds, with peak memory 6.07 GB under an 8 GB limit, on DuckDB tables that spill to disk past it.
+**In short:** two kinds of step grow with the square of the file: keys whose values come from a fixed pool (the phone digits, the address), and all-against-all similarity. Compound keys, a reversed sorted pass and a narrower F2 join keep both in check. A sorted window reaches fewer pairs as the file grows, so five more keys make sure no potential match depends on one. A million records take 47.7 seconds, with peak memory 6.23 GB under an 8 GB limit, on DuckDB tables that spill to disk past it.
 
 ## In the code
 

@@ -4,7 +4,7 @@ Written by `scripts/benchmark.py`: `config/final.toml` through `er.run`, the run
 
 ## Quality: scenarios
 
-Each population's test split, with λ, u and m fitted on its train split without labels. `false_merges` are pairs of records in one cluster that are two entities; `false_links` are the model's links between two entities, and `expected_false` the false links the model expects among its own (the sum of 1 − match probability), which a run reports without labels.
+Each population's test split, with λ and m fitted on its train split without labels and u measured on the test split, as a run does. `false_merges` are pairs of records in one cluster that are two entities; `false_links` are the model's links between two entities, and `expected_false` the false links the model expects among its own (the sum of 1 − match probability), which a run reports without labels.
 
 | scenario | rules_recall | recall | interval | false_merges | fp_rate_at_most | model_links | expected_false | false_links |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
@@ -22,15 +22,15 @@ Populations with one name column for every kind (`er.generate.kind_problems`): r
 
 | flag | routed_by | recall | false_merges | person_company_clusters | pairs_to_decide | sure_companies | wrong_companies | sure_persons | wrong_persons | seconds |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| good (1% wrong at random, 20% on representatives) | the truth | 0.4704 | 0 | 0 | 517 | 83.7% | 0 | 98.5% | 0 | 6.1 |
-| good (1% wrong at random, 20% on representatives) | the flag alone | 0.4578 | 15 | 15 | 520 | 82.5% | 223 | 97.4% | 58 | 6.1 |
-| good (1% wrong at random, 20% on representatives) | the kind step, 2,000 labels | 0.4679 | 12 | 12 | 504 | 65.1% | 0 | 98.4% | 23 | 6.6 |
-| medium (3%, 50%) | the truth | 0.4704 | 0 | 0 | 517 | 83.7% | 0 | 98.5% | 0 | 2.6 |
-| medium (3%, 50%) | the flag alone | 0.4426 | 45 | 40 | 509 | 79.8% | 642 | 95.3% | 192 | 6.1 |
-| medium (3%, 50%) | the kind step, 2,000 labels | 0.4634 | 44 | 39 | 484 | 65.8% | 0 | 97.2% | 79 | 6.4 |
-| poor (10%, 80%) | the truth | 0.4704 | 0 | 0 | 517 | 83.7% | 0 | 98.5% | 0 | 2.6 |
-| poor (10%, 80%) | the flag alone | 0.401 | 79 | 68 | 511 | 74.0% | 2014 | 88.5% | 478 | 5.9 |
-| poor (10%, 80%) | the kind step, 2,000 labels | 0.4145 | 77 | 66 | 512 | 65.1% | 0 | 73.9% | 97 | 6.3 |
+| good (1% wrong at random, 20% on representatives) | the truth | 0.4618 | 1 | 0 | 573 | 83.7% | 0 | 98.5% | 0 | 6.2 |
+| good (1% wrong at random, 20% on representatives) | the flag alone | 0.4553 | 21 | 20 | 532 | 82.0% | 304 | 97.0% | 83 | 6.1 |
+| good (1% wrong at random, 20% on representatives) | the kind step, 2,000 labels | 0.4677 | 20 | 19 | 513 | 64.5% | 0 | 98.3% | 40 | 6.6 |
+| medium (3%, 50%) | the truth | 0.4618 | 1 | 0 | 573 | 83.7% | 0 | 98.5% | 0 | 2.7 |
+| medium (3%, 50%) | the flag alone | 0.4417 | 62 | 54 | 500 | 78.8% | 832 | 94.4% | 244 | 6.0 |
+| medium (3%, 50%) | the kind step, 2,000 labels | 0.4652 | 53 | 46 | 483 | 63.9% | 0 | 12.1% | 0 | 6.5 |
+| poor (10%, 80%) | the truth | 0.4618 | 1 | 0 | 573 | 83.7% | 0 | 98.5% | 0 | 2.5 |
+| poor (10%, 80%) | the flag alone | 0.3899 | 84 | 72 | 528 | 72.1% | 2362 | 86.7% | 571 | 5.9 |
+| poor (10%, 80%) | the kind step, 2,000 labels | 0.4142 | 75 | 63 | 530 | 63.7% | 0 | 11.5% | 0 | 6.2 |
 
 ## Cost: files of growing size (time grows like N^0.42)
 
@@ -38,8 +38,8 @@ Each file is resolved by `scripts/resolve.py` in a process of its own, fitted on
 
 | records | seconds | peak_memory_gb | load | budget | fit | rules | candidates | score | cluster | write | recall | false_merges | fp_rate_at_most | model_links | expected_false | false_links |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| 12532 | 8.3 | 0.8 | 0.22 | 0.11 | 7.38 | 0.06 | 0.22 | 0.24 | 0.03 | 0.04 | 0.4573 | 2 | 0.48% | 985 | 0.84 | 1 |
-| 24955 | 9.3 | 0.91 | 0.39 | 0.17 | 7.8 | 0.09 | 0.36 | 0.35 | 0.04 | 0.08 | 0.4598 | 0 | 0.12% | 1832 | 1.03 | 0 |
-| 50116 | 10.5 | 1.01 | 0.66 | 0.31 | 7.86 | 0.14 | 0.6 | 0.71 | 0.06 | 0.14 | 0.4467 | 0 | 0.06% | 3705 | 2.48 | 0 |
-| 74959 | 11.6 | 1.17 | 0.96 | 0.44 | 8.1 | 0.21 | 0.83 | 0.78 | 0.07 | 0.21 | 0.4422 | 4 | 0.12% | 5383 | 4.38 | 3 |
-| 1000338 | 48.6 | 6.07 | 11.08 | 1.91 | 9.52 | 2.39 | 6.61 | 15.82 | 0.37 | 0.88 | — | — | — | 38786 | 30.11 | — |
+| 12532 | 8.3 | 0.8 | 0.23 | 0.11 | 7.36 | 0.06 | 0.22 | 0.24 | 0.03 | 0.04 | 0.4573 | 2 | 0.48% | 985 | 0.84 | 1 |
+| 24955 | 9.3 | 0.9 | 0.39 | 0.17 | 7.82 | 0.09 | 0.36 | 0.35 | 0.04 | 0.07 | 0.4598 | 0 | 0.12% | 1832 | 1.03 | 0 |
+| 50116 | 10.3 | 1.02 | 0.64 | 0.3 | 7.83 | 0.15 | 0.59 | 0.57 | 0.06 | 0.16 | 0.4467 | 0 | 0.06% | 3705 | 2.48 | 0 |
+| 74959 | 11.7 | 1.19 | 0.96 | 0.44 | 8.19 | 0.21 | 0.83 | 0.8 | 0.08 | 0.21 | 0.4422 | 4 | 0.12% | 5383 | 4.38 | 3 |
+| 1000338 | 47.7 | 6.23 | 10.87 | 1.85 | 9.32 | 2.23 | 6.38 | 15.75 | 0.34 | 1.0 | — | — | — | 38786 | 30.11 | — |

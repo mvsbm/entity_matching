@@ -27,8 +27,8 @@ These numbers come from synthetic records built from real Japanese names, compan
 - **It finds almost half the duplicates:** 45.9% of the true pairs on test (95% interval 43.9–47.9%); the rules alone find 9.7%. Test is a split never used for any choice.
 - **The data is hard on purpose.** About 1% of true pairs are direct matches (the same customer ID and name, or the same name, address code and phone), and 11.5% share nothing usable, so no method finds them all ([data](docs/data.md#how-hard-it-is)).
 - **It merged no two different customers:** 0 false merges on test, so the rate is at most 0.28%.
-- **It tells persons from companies without trusting the file's flag:** on generated files with one name column for both, and company names held out of its name model's training, it called no person a company, against 223 to 2,014 by the flag alone; recall is 41.5–46.8%, against 40.1–45.8% by the flag, with fewer false merges ([chapter 7](docs/guide/07-person-or-company.md)).
-- **A million records take 48.6 seconds,** with peak memory 6.07 GB under an 8 GB limit. Every step's work grows about linearly with the file.
+- **It tells persons from companies without trusting the file's flag:** on generated files with one name column for both, and company names held out of its name model's training, it called no person a company, against 304 to 2,362 by the flag alone; recall is 41.4–46.8%, against 39.0–45.5% by the flag, with fewer false merges. With a poor flag it calls few persons surely persons: the rest stay 0, not sure ([chapter 7](docs/guide/07-person-or-company.md)).
+- **A million records take 47.7 seconds,** with peak memory 6.23 GB under an 8 GB limit. Every step's work grows about linearly with the file.
 
 Real data may differ, and only a run on it can tell ([limits](#limits)).
 

@@ -1314,6 +1314,23 @@ def test_an_increment_classifies_its_batch_on_the_run_s_answers(tmp_path, kind_p
     assert new["kind"].notna().all() and (new["kind_by"] == "engine").all()  # the batch: kinds from the same engine
 
 
+def test_the_kind_problems_are_the_same_in_every_process(tmp_path):
+    import subprocess
+    import sys
+    code = """import sys
+from dataclasses import replace
+from er.generate import KindProblems, generate, kind_problems, load_reference, load_registry, load_spec
+from er.settings import load_settings
+s = load_settings()
+spec = replace(load_spec(s.root / "config" / "generator.toml")[0], entities=400)
+g = kind_problems(generate(spec, *load_reference(s.paths["reference"])), KindProblems(representatives=0.5), load_registry(s.paths["reference"]),
+                  s.standardize.legal_front, s.standardize.legal_end, spec.kana_confusions, spec.branches)
+g.df.to_parquet(sys.argv[1], index=False)"""
+    for seed in ("1", "2"):  # Python hashes strings differently in every process: nothing may depend on it
+        subprocess.run([sys.executable, "-c", code, str(tmp_path / f"{seed}.parquet")], check=True, env={**__import__("os").environ, "PYTHONHASHSEED": seed})
+    pd.testing.assert_frame_equal(pd.read_parquet(tmp_path / "1.parquet"), pd.read_parquet(tmp_path / "2.parquet"))
+
+
 def test_the_kind_problems_name_no_company_the_name_model_trains_on():
     from er.generate import KindProblems, generate as make, kind_problems, load_reference, load_spec, name_model_split
     s = load_settings()

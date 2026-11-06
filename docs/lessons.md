@@ -88,7 +88,7 @@ Each entry names a way an entity-resolution pipeline like this one goes wrong, a
 - **Pitfall:** an intermediate table copied into pandas with more columns than needed outgrows memory on a big file. It shows as a run that stalls deep in swap.
 - **Why:** reading Splink's predictions into pandas with every matching column of both records, only to keep the ids, the weights and the gammas, makes a copy that grows with the candidates times the columns.
 - **Guard:** DuckDB selects the needed columns before anything reaches pandas, and the predictions table is dropped once read. Every table of size N or C is a DuckDB table (`er.run`), which spills past `[compute]` `memory_limit` to `.tmp/` under the folder a run starts in, unless `temp_directory` says otherwise. A run's capacity counts the spill room DuckDB allows: 90% of the free disk by default. DuckDB keeps what the limit allows, so the peak under a large limit says little: test the smallest limit that completes, not the peak.
-- **Check:** every run's `steps.json` records the peak memory after each step, and `reports/benchmark.md` reports it at every file size: 6.07 GB at a million records under an 8 GB limit, Python included.
+- **Check:** every run's `steps.json` records the peak memory after each step, and `reports/benchmark.md` reports it at every file size: 6.23 GB at a million records under an 8 GB limit, Python included.
 
 ## An answer that depends on the file's order
 - **Pitfall:** an output column depends on the order of the records in the file. It shows as identical clusters but a different `resolved_by` after the file is shuffled.
@@ -143,6 +143,24 @@ Each entry names a way an entity-resolution pipeline like this one goes wrong, a
 - **Why:** the generator's choices become the model's evidence. A signal that exists only by construction is learned as if it were real.
 - **Guard:** `scripts/choose_kind.py` gives companies a date on 0–60% of their records, a founding year or the representative's birth date, and judges every combination across that range. The combiner reads the birth year, which still tells a founding year from most birth years, not only whether a date is filled.
 - **Check:** `reports/choose_kind.md`: each signal's worth, with and without, across the scenarios.
+
+## A seeded generator that draws in a set's order
+- **Pitfall:** a generator seeded for reproducible data draws its random numbers while looping over a Python set. It shows as a benchmark whose baseline row moves between two runs of the same code.
+- **Why:** Python hashes strings differently in every process, so a set of entity IDs iterates in a different order each time, and the same draws land on different entities: which companies sit at their representative's address, in `er.generate.kind_problems`, would change from run to run.
+- **Guard:** every draw follows a fixed order: the entities' own order (`pd.unique`), never a set's.
+- **Check:** a test generates the person-or-company problems in two processes with different `PYTHONHASHSEED` and requires identical records.
+
+## A model judged that isn't the one that runs
+- **Pitfall:** a script that chooses between configurations builds its own copy of a training set. Its verdict then holds for a model no run uses. It shows as a ranking that moves when the copy is replaced by the real one.
+- **Why:** a copy with another seed, or the same names written another way (each persona written once and duplicated, where the run writes each twice), trains another model, and the ranking of the 48 finalists moves with it by many places.
+- **Guard:** `scripts/choose_kind.py` trains its public name model on `er.generate.kind_training_names`, as `er.kind.name_model` does, and judges by `[kind]`'s own budgets.
+- **Check:** `reports/choose_kind.md`, written from the run's own training names.
+
+## Measurements run into a folder that keeps people's work
+- **Pitfall:** a benchmark resolves its baseline into a run folder that an earlier, labelled run used. The baseline then carries that run's answers. It shows as a baseline better than it is.
+- **Why:** a full run keeps people's answers across `--overwrite`, as it must for real work. Three ways of routing resolved into one folder hand each the answers of the labelled run before it: about 3,000 truth answers, most of them exactly the flag's errors, would correct the flag-alone baseline.
+- **Guard:** each routing gets a fresh folder of its own.
+- **Check:** `reports/benchmark.md`, written with fresh folders.
 
 ## A measuring draw taken from what review left
 - **Pitfall:** records sent to people because they look wrong are a biased sample, and so is a draw taken from the records left after them, or one stratified to hold more of the records the engine is surest of. Placing a line or measuring an error rate on any of them misjudges it. It shows as a line that holds on the answers and breaks on the file.
