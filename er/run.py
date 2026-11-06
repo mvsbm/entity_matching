@@ -16,6 +16,7 @@ with the numbers filled in, and its time.
     score       O(C·K·L²)                        every candidate scored
     cluster     O(C + E·d + N)                   accept at the threshold, then cluster with the rules' pairs
     write       O(N + C)                         gold clusters and matches, as Parquet; the state for increments
+    report      O(review pairs) + O(N) in SQL    for people: qa.md, report.txt, review.parquet, kind_review.parquet
 
 increment() adds a batch Δ of new records to a written run: the batch is joined against all records, rule by rule and
 generator by generator, scored, and merged into the existing clusters, each cluster one node. Its cost is
@@ -64,11 +65,12 @@ from splink.clustering import cluster_pairwise_predictions_at_threshold
 
 from er.candidates import candidates, estimate, q
 from er.config import FSSpec, InputError, Key, KeyBlocker, Pipeline, sources_text
-from er.kind import COMPANY, PERSON, SAYS, UNSURE, classifier as kind_classifier, merge_answers
+from er.io import markdown
+from er.kind import COMPANY, PERSON, SAYS, UNSURE, classifier as kind_classifier, kind_review_sheet, merge_answers
 from er.match import (ELSE, assemble_u, counted, exact_u, levels, parameters, refreshed_u, rule_edges, scaled_prior, score_fs,
                       scored_sample, train_fs, u_basis)
 from er.pipeline import pattern_coverage
-from er.settings import Settings, fit_to_file, present_fields
+from er.settings import SPECIAL, Settings, fit_to_file, present_fields
 from er.source import lit, open_source, suggest
 from er.standardize import prepare
 from er.strings import connect
@@ -80,7 +82,8 @@ def peak_gb() -> float:  # the process's peak resident memory so far (ru_maxrss:
 
 BYTES_PER_PAIR = 350  # shortcut: measured at 1M (candidate and score tables held together); measure again if those tables change
 PENDING = "pending.json"  # the renames a write still owes, saved once every new file is complete
-RUN_FILES = ("gold.parquet", "steps.json", PENDING, "matches", "rule_kept", "state", "set_aside")  # what a run writes in its folder
+RUN_FILES = ("gold.parquet", "steps.json", PENDING, "matches", "rule_kept", "state", "set_aside",  # what a run writes in its folder
+             "qa.md", "report.txt", "review.parquet", "kind_review.parquet")
 DECISIONS = "decisions"  # people's decisions: not a run file, so a full run with overwrite keeps and applies them
 FULL_TMP = ".full.tmp"  # a full run's new files, until they replace the old run's
 
@@ -103,10 +106,12 @@ def run_lock(out: Path):
         yield
 
 
-def locked(method: Callable) -> Callable:  # the run folder (the method's `out`) locked for the whole method
+def locked(method: Callable) -> Callable:  # the run folder (the method's `out`) locked for the whole method, unless this run holds it
     @functools.wraps(method)
-    def wrapper(self: "Run", path: str | Path, out: Path, *args: object, **kwargs: object) -> "Run":
-        with run_lock(Path(out)):
+    def wrapper(self: "Run", path: str | Path, out: Path, *args: object, **kwargs: object) -> object:
+        if self.holding == Path(out):
+            return method(self, path, Path(out), *args, **kwargs)
+        with self.writing(out):
             return method(self, path, Path(out), *args, **kwargs)
     return wrapper
 
@@ -159,11 +164,24 @@ class Run:
         self.basis: dict = {}                 # what an increment needs to tell whether those u went stale (er.match.u_basis)
         self.classifier = None                # each record's kind, person or company (er.kind); None: the pipeline doesn't ask
         self.labels: pd.DataFrame | None = None  # the person/company labels it rests on, kept in state/ for increments
+        self.holding: Path | None = None      # the run folder this run holds locked (writing)
+        self.fields = [f for f in self.settings.columns if f not in SPECIAL]  # the logical fields of [columns]
         self.rule_names = [rule.name for st in self.pipeline.rules.stages for rule in st.rules]
         if {self.pipeline.rules.resolver.method, self.pipeline.fs.resolver.method} != {"connected_components"}:
             raise InputError("the run clusters by connected components only; the pipeline asks for "
                              f"{self.pipeline.rules.resolver.method} (rules) and {self.pipeline.fs.resolver.method} (model)",
                              fix='set resolver = { method = "connected_components" } in both stages of the pipeline')
+
+    @contextmanager
+    def writing(self, out: Path):
+        """The run folder locked for this run (run_lock) across several steps, such as a run and its report: no other job
+        writes in between."""
+        with run_lock(Path(out)):
+            self.holding = Path(out)
+            try:
+                yield
+            finally:
+                self.holding = None
 
     def _done(self, name: str, big_o: str, filled: str, t: float, **facts: object) -> None:
         self.steps.append(dict(step=name, big_o=big_o, filled=filled, seconds=round(time.perf_counter() - t, 2),
@@ -476,7 +494,8 @@ class Run:
         self._done("write", "O(N + C)", f"O({self.n:,} + {self._count('matches'):,})", t)
         self._log(out, part > 0, part=part, disabled=self.disabled)
 
-    def _stage(self, out: Path, tables: list[tuple[str, Path]], texts: list[tuple[str, Path]] = (), replace: list[Path] | None = None) -> None:
+    def _stage(self, out: Path, tables: list[tuple[str, Path]], texts: list[tuple[str, Path]] = (), replace: list[Path] | None = None,
+               frames: list[tuple[pd.DataFrame, Path]] = ()) -> None:
         """Write every file under a temporary name; once all are complete, save the moves still owed (pending.json),
         then do them. An interruption before that leaves the folder as it was; one after it, finish_writes completes.
         With `replace` (a full run), the new files are written in FULL_TMP, and each of its entries replaces the old
@@ -490,7 +509,9 @@ class Run:
         for text, dest in texts:
             tmp(dest).parent.mkdir(parents=True, exist_ok=True)
             tmp(dest).write_text(text, encoding="utf-8")
-        dests = [dest for _, dest in (*tables, *texts)]
+        for frame, dest in frames:  # sheets for people: pandas keeps their empty answer columns typed
+            frame.to_parquet(tmp(dest))
+        dests = [dest for _, dest in (*tables, *texts, *frames)]
         if replace is None:
             staged = [[str(tmp(d)), str(d)] for d in dests]
         else:
@@ -504,6 +525,25 @@ class Run:
         log = out / "steps.json"
         runs = json.loads(log.read_text())["runs"] if append and log.exists() else []
         log.write_text(json.dumps(dict(runs=[*runs, dict(**entry, steps=self.steps)]), indent=1, default=str))
+
+    @locked
+    def report(self, path: str | Path, out: Path, pipeline: Path) -> dict[str, pd.DataFrame]:
+        """Step 9, for people, staged: qa.md (the label-free checks, qa), report.txt (the run on a page with no record's
+        value in it), review.parquet (the pairs to decide and to audit; an increment keeps the previous sheet's open
+        rows) and, on a full run that tells persons from companies, kind_review.parquet (records to answer, none
+        answered already; a record an increment holds back reaches the next full run's sheet). `path` is the input,
+        `pipeline` the pipeline file, both named in the reports. Returns qa's tables, the summary first."""
+        tables = qa(self, previous=out / "review.parquet" if self.added is not None else None)
+        frames = [(tables.pop("review_sheet"), out / "review.parquet")]
+        text = ["# Run checks", "", f"Input: `{path}` · {self.n:,} records", ""]
+        for name, table in tables.items():
+            text += [f"## {name.replace('_', ' ')}", "", markdown(table.round(4)) if len(table) else "none", ""]
+        if self.classifier is not None and self.added is None:
+            answered = self.labels[self.uid].astype("string") if self.labels is not None else ()
+            frames.append((kind_review_sheet(self.con, "records", self.uid, self.pipeline.kind, self.settings.flag_company, answered),
+                           out / "kind_review.parquet"))
+        self._stage(out, [], [("\n".join(text), out / "qa.md"), (report_text(self, tables, pipeline), out / "report.txt")], frames=frames)
+        return tables
 
     # ---------- increments ----------
 
@@ -710,13 +750,13 @@ def review_floor(p: Pipeline) -> float:
     return below[-min(p.threshold.margin_steps, len(below))]
 
 
-def fill_rates(run: "Run", fields: list[str], sample: int = 10_000) -> pd.DataFrame:
+def fill_rates(run: "Run", fields: list[str] | None = None, sample: int = 10_000) -> pd.DataFrame:
     """Each field's share of filled records, flagged under 5%: a field almost never filled is often a mapping mistake.
     Then, on a random sample of `sample` records, the share of filled values that look like the field ([locale.detect];
     a low share is a wrong column or a format the comparisons don't expect), and the share held by its most common
     value (a placeholder such as 0000 counts as an agreement between the records that hold it). O(N·F + sample·F)."""
     cols = run._columns()
-    fs = [f for f in fields if f in cols]
+    fs = [f for f in (run.fields if fields is None else fields) if f in cols]
     if not fs:
         return pd.DataFrame(columns=["field", "filled", "looks_right", "top_value", "flag"])
     filled = run.con.execute(f"SELECT {', '.join(f'avg(({q(f)} IS NOT NULL)::INT)' for f in fs)} FROM records").fetchall()[0]
@@ -731,10 +771,10 @@ def fill_rates(run: "Run", fields: list[str], sample: int = 10_000) -> pd.DataFr
         flag=lambda d: np.where(d["filled"] < 0.05, "under 5%", ""))
 
 
-def qa(run: "Run", fields: list[str], review: int = 50, previous: Path | None = None) -> dict[str, pd.DataFrame]:
+def qa(run: "Run", fields: list[str] | None = None, review: int = 50, previous: Path | None = None) -> dict[str, pd.DataFrame]:
     """The label-free report of a run: a summary in words (records, entities, who joined them, the model's links and the
     false ones it expects among them, what to decide, what the loader fixed), fill rate per field (flagged under 5%)
-    with the share that looks like the field and the share of its most common value, what was disabled, every step's cost,
+    (of `fields`, by default every logical field) with the share that looks like the field and the share of its most common value, what was disabled, every step's cost,
     accepted pairs by weight band, cluster sizes, the largest clusters (the over-merge alarm), and the review sheet
     for people (review_sheet). Its rows are of two kinds. "decide": every pair of clusters whose best link scored in the
     threshold's safety margin [review_floor, min_match_weight), or above it with no name compared, not decided yet, best link first. "audit": accepted pairs

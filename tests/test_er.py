@@ -941,6 +941,15 @@ def test_a_run_folder_takes_one_writer_at_a_time(tmp_path, population):
             Run(p, s).full(tmp_path / "all.parquet", tmp_path / "run")
     Run(p, s).full(tmp_path / "all.parquet", tmp_path / "run")  # released: free again
 
+    from er.run import Busy
+    run, out = Run(p, s), tmp_path / "reported"
+    with run.writing(out):  # a run and its report, as scripts/resolve.py makes them: no other job in between
+        run.full(tmp_path / "all.parquet", out)
+        with pytest.raises(Busy):
+            Run(p, s).increment(tmp_path / "all.parquet", out)
+        run.report(tmp_path / "all.parquet", out, s.root / "config" / "final.toml")
+    assert {"qa.md", "report.txt", "review.parquet"} <= {f.name for f in out.iterdir()} and not list(out.rglob("*.tmp"))
+
 
 def test_the_scheduler_serves_the_inbox_in_order_and_parks_what_people_must_fix(tmp_path, population):
     import importlib.util
@@ -1172,12 +1181,9 @@ def test_without_labels_only_a_legal_form_makes_a_company_and_a_person_company_p
     assert sheet[(sheet[l] == pair[0]) & (sheet[r] == pair[1])]["why"].tolist() == ["decide"]
 
 
-def kind_sheet_for(run, s, p, draw):  # the run's review sheet, as scripts/resolve.py writes it
+def kind_sheet_for(run, s, p, draw):  # the run's review sheet, as Run.report writes it, with a smaller draw
     from er.kind import kind_review_sheet
-    uid = s.data.unique_id
-    records = run.con.sql(f'SELECT "{uid}", kind_name AS name, kind_flag, birth_date, kind, kind_p, kind_by, name_p, kind_held '
-                          "FROM records").df()
-    return kind_review_sheet(records, uid, replace(p.kind, labels_to_draw=draw, review_max=200), s.flag_company)
+    return kind_review_sheet(run.con, "records", s.data.unique_id, replace(p.kind, labels_to_draw=draw, review_max=200), s.flag_company)
 
 
 def test_the_review_sheet_says_in_words_why_each_record_is_there(tmp_path, kind_population):

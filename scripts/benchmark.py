@@ -118,8 +118,7 @@ def kinds(entities: int, labels: int = 2_000) -> pd.DataFrame:
         g.df.assign(PERSON_ORG_CODE=np.where(g.truth["KIND"].eq("company"), "2", "1")).to_parquet(d / "truth_flag.parquet", index=False)
         truth = g.truth.set_index(UID)
         free = Run(p, s).full(d / "records.parquet", d / "free", overwrite=True)
-        records = free.con.sql(f'SELECT "{UID}", kind_name AS name, kind_flag, birth_date, kind, kind_p, kind_by, name_p, kind_held FROM records').df()
-        sheet = kind_review_sheet(records, UID, replace(p.kind, labels_to_draw=labels), S.flag_company)  # people answer every row: here, the truth
+        sheet = kind_review_sheet(free.con, "records", UID, replace(p.kind, labels_to_draw=labels), S.flag_company)  # people answer every row: here, the truth
         sheet.assign(kind=np.where(truth.loc[sheet[UID], "KIND"].eq("company"), 2, 1)).to_parquet(d / "labels.parquet")
         for how, pipeline, records, kind_labels in (("the truth", flag_only, "truth_flag.parquet", None), ("the flag alone", flag_only, "records.parquet", None),
                                                     (f"the kind step, {labels:,} labels", p, "records.parquet", d / "labels.parquet")):
@@ -127,7 +126,7 @@ def kinds(entities: int, labels: int = 2_000) -> pd.DataFrame:
             gold = pd.read_parquet(d / "run" / "gold.parquet").set_index(UID).join(truth[["ENTITY_ID", "KIND"]])
             m = cluster_metrics(gold["cluster_id"], gold["ENTITY_ID"])
             mixed = gold.assign(c=gold["KIND"].eq("company")).groupby("cluster_id")["c"].agg(["any", "all"])
-            sheet_ = qa(run, [f for f in s.columns if f not in ("id", "entity")])["review_sheet"]
+            sheet_ = qa(run)["review_sheet"]
             company, person = gold["KIND"].eq("company"), gold["KIND"].eq("person")
             rows.append(dict(flag=name, routed_by=how, recall=round(m["recall"], 4), false_merges=int(m["FP"]),
                              person_company_clusters=int((mixed["any"] & ~mixed["all"]).sum()), pairs_to_decide=int((sheet_["why"] == "decide").sum()),

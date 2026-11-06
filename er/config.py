@@ -288,8 +288,8 @@ def with_level(model: FSModel, comparison: str, label: str, **changes: object) -
                                             for c in model.comparisons))
 
 
-def without_tf(model: FSModel) -> FSModel:
-    return replace(model, comparisons=tuple(replace(c, tf=None) for c in model.comparisons))
+def without_tf(model: FSModel) -> FSModel:  # no term frequencies: neither the comparisons' keys nor their levels' flags
+    return replace(model, comparisons=tuple(replace(c, tf=None, levels=tuple(replace(lv, tf=False) for lv in c.levels)) for c in model.comparisons))
 
 
 # ---------- data, search ----------
@@ -380,7 +380,7 @@ class KindSpec:
     name_field: str = "any_name"              # the field holding each record's name, a person's or a company's
     ngram: int = 3                            # the name model's character n-grams: 1 to this
     depth: int = 2                            # the combiner's trees (gradient boosting)
-    company_wrong_at_most: float = 0.001      # the company line: no labelled error above it, then margin_steps stricter
+    company_wrong_at_most: float = 0.001      # the budget the company line is judged by (choose_kind): placed with no labelled error above it, then margin_steps stricter
     person_wrong_at_most: float = 0.01        # the person line: the labelled error above it at most half of this
     margin_steps: int = 2
     labels_to_draw: int = 2000                # the review sheet's records drawn to measure the flag and the engine

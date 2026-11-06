@@ -94,8 +94,8 @@ fit_rows = 30000
 name = "name"
 null_if_missing = ["person_name"]
 levels = [
-  { label = "exact", any_of = [{ field = "person_name", function = "exact" }], tf = true },
-  { label = "fold exact", any_of = [{ field = "person_name", function = "exact", normalize = "fold" }], tf = true },
+  { label = "exact", any_of = [{ field = "person_name", function = "exact" }] },
+  { label = "fold exact", any_of = [{ field = "person_name", function = "exact", normalize = "fold" }] },
   { label = "fold JW high", any_of = [{ field = "person_name", function = "jaro_winkler", threshold = 0.95, normalize = "fold" }] },
   { label = "given name", any_of = [{ field = "given_name", function = "exact", normalize = "fold" }] },
   { label = "fold JW low", any_of = [{ field = "person_name", function = "jaro_winkler", threshold = 0.75, normalize = "fold" }] },
@@ -105,7 +105,7 @@ levels = [
 name = "company"
 null_if_missing = ["company_name"]
 levels = [
-  { label = "exact", any_of = [{ field = "company_name", function = "exact", normalize = "company" }], tf = true },
+  { label = "exact", any_of = [{ field = "company_name", function = "exact", normalize = "company" }] },
   { label = "JW low", any_of = [{ field = "company_name", function = "jaro_winkler", threshold = 0.8, normalize = "company" }] },
 ]
 

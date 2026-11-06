@@ -48,7 +48,7 @@ logging.disable(logging.WARNING)
 S = load_settings()
 SPEC = load_spec(S.root / "config" / "generator.toml")[0]
 KIND = load_pipeline(S.root / "config" / "pipeline.toml", S.standardize, S.chains, S.columns).kind
-BUDGET_C, BUDGET_P, HAND, CUSTOMERS = 0.001, 0.01, 1_000, 20_000
+BUDGET_C, BUDGET_P, HAND, CUSTOMERS = KIND.company_wrong_at_most, KIND.person_wrong_at_most, 1_000, 20_000
 SIGNALS = ("flag", "birth", "birth_year", "legal", "known_name")
 COMBINERS = ("gbdt2", "gbdt3", "lr")
 GENERATOR_FORMS = tuple(sorted({normalize(pd.Series([f], dtype="string"), ("nfkc",), S.standardize)[0] for f, _ in SPEC.legal_forms_written if f}))

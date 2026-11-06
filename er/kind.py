@@ -17,6 +17,7 @@ scripts/choose_kind.py chose these parts. O(N·L·g) to score N records (g n-gra
 O(Λ·trees) for Λ labels.
 """
 import hashlib
+from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -235,9 +236,11 @@ def classifier(settings, spec: KindSpec, labels: pd.DataFrame | None = None) -> 
     return c
 
 
-def kind_review_sheet(records: pd.DataFrame, uid: str, spec: KindSpec, flag_company: tuple[str, ...], answered: set[str] = frozenset()) -> pd.DataFrame:
-    """Records for people, as matching's review sheet holds pairs. `records`: uid, name (as written: kind_name), kind_flag (if any), birth_date
-    (if any), kind, kind_p, kind_by, name_p, kind_held. Two kinds of row, none already answered or decided by people:
+def kind_review_sheet(con: duckdb.DuckDBPyConnection, records: str, uid: str, spec: KindSpec, flag_company: tuple[str, ...],
+                      answered: Iterable[str] = ()) -> pd.DataFrame:
+    """Records for people, as matching's review sheet holds pairs, from the table `records` (each record's kind, kind_p,
+    kind_by, name_p, kind_held and kind_name, the name as written; kind_flag and birth_date if the file has them). Two
+    kinds of row, none already answered (`answered`) or decided by people:
 
         decide    the engine and the file's flag disagree: the record is held back from matching until a person decides
                   (sure contradictions first); then records the engine and the flag agree on but the name alone says
@@ -247,36 +250,43 @@ def kind_review_sheet(records: pd.DataFrame, uid: str, spec: KindSpec, flag_comp
                   smaller than it is (reports/choose_kind.md). The draw follows a hash of the record ID: the same file
                   gives the same sheet. A record without a name has nothing to judge: it is left out.
 
-    Each row says in words why it is there (reason), what the engine says, what the name alone says and what the flag
-    says; people write kind: 1 person, 2 company, 0 can't tell. O(N)."""
-    r = records[~records[uid].isin(answered) & (records["kind_by"] != "people") & records["name"].notna()].copy()  # a name to judge
-    r["_h"] = pd.util.hash_pandas_object(r[uid], index=False).to_numpy()
-    flag = (np.where(r["kind_flag"].isna(), np.nan, np.where(r["kind_flag"].astype("string").isin(flag_company), COMPANY, PERSON))
-            if "kind_flag" in r else np.full(len(r), np.nan))
-    held = r["kind_held"].fillna(False).to_numpy(dtype=bool) if "kind_held" in r else np.zeros(len(r), dtype=bool)
-    sure = r["kind"].isin([PERSON, COMPANY]).to_numpy()
-    lean = np.where(r["kind_p"] >= 0.5, COMPANY, PERSON)
-    name_says = np.where(r["name_p"] >= spec.name_line, COMPANY, np.where(r["name_p"] <= 1 - spec.name_line, PERSON, UNSURE))
-    against = ~held & (name_says != UNSURE) & ~np.isnan(flag) & (name_says != flag)
+    The rows are picked in DuckDB, so only they reach Python. Each says in words why it is there (reason), what the
+    engine says, what the name alone says and what the flag says; people write kind: 1 person, 2 company, 0 can't tell.
+    O(N) in SQL, O(rows) in Python."""
+    u, cols = f'"{uid}"', {c for c, *_ in con.execute(f"DESCRIBE {records}").fetchall()}
+    flagged, dated = "kind_flag" in cols, "birth_date" in cols
+    says = ", ".join("'" + v.replace("'", "''") + "'" for v in flag_company) or "NULL"
+    code = f"CASE WHEN kind_flag IS NULL THEN NULL WHEN kind_flag IN ({says}) THEN {COMPANY} ELSE {PERSON} END" if flagged else "NULL::INT"
+    con.register("er_answered", pd.DataFrame({uid: pd.Series(list(answered), dtype="string")}))
+    rows = con.sql(f"""WITH r AS (
+            SELECT {u}, kind_name AS name, {"kind_flag, " if flagged else ""}{"birth_date, " if dated else ""}kind, kind_p, name_p,
+                   coalesce(kind_held, FALSE) AS held, {code} AS flag_code, hash({u}) AS h,
+                   CASE WHEN name_p >= {spec.name_line} THEN {COMPANY} WHEN name_p <= {1 - spec.name_line} THEN {PERSON} ELSE {UNSURE} END AS name_code
+            FROM {records} WHERE kind_name IS NOT NULL AND kind_by <> 'people' AND {u} NOT IN (SELECT {u} FROM er_answered)),
+        s AS (SELECT *, NOT held AND name_code <> {UNSURE} AND flag_code IS NOT NULL AND name_code <> flag_code AS against FROM r),
+        m AS (SELECT 'measure' AS why, *, row_number() OVER (ORDER BY h) AS k FROM s ORDER BY h LIMIT {spec.labels_to_draw}),
+        d AS (SELECT 'decide' AS why, *, row_number() OVER (ORDER BY 2 * held::INT + (held AND kind IN ({PERSON}, {COMPANY}))::INT
+                                                         + abs(coalesce(name_p, 0.5) - 0.5) DESC, h) AS k
+              FROM s WHERE (held OR against) AND {u} NOT IN (SELECT {u} FROM m))
+        SELECT * FROM m UNION ALL SELECT * FROM d WHERE k <= {spec.review_max} ORDER BY why, k""").df()  # decide first
+    con.unregister("er_answered")
     pct = lambda x: f"{max(x, 1 - x):.1%}"
-    r["reason"] = np.select(
-        [held & sure, held, against],
-        [[f"the engine is sure it is {SAYS[k]}, the flag says {int(f)}: held back from matching until you decide" for k, f in zip(r["kind"], np.nan_to_num(flag))],
-         [f"the engine is not sure, it leans to {SAYS[n]} ({pct(x)}); the flag says {int(f)}: held back from matching until you decide"
-          for n, x, f in zip(lean, r["kind_p"], np.nan_to_num(flag))],
-         [f"the name looks like {SAYS[n]} ({pct(x)}), the flag says {int(f)}; the engine says {SAYS[k]}"
-          for n, x, f, k in zip(name_says, r["name_p"], np.nan_to_num(flag), r["kind"])]], "")
-    r["_s"] = np.where(held, 2.0, 0.0) + np.where(held & sure, 1.0, 0.0) + np.abs(r["name_p"].fillna(0.5).to_numpy() - 0.5)
-    r["_decide"] = held | against
-    words = "drawn at random, to measure the flag and the engine"  # first, from every record: what it measures can't depend on decide
-    measure = r.nsmallest(spec.labels_to_draw, "_h")
-    measure = measure.assign(why="measure", drawn="at random", reason=np.where(measure["_decide"], words + "; also: " + measure["reason"], words))
-    rest = r.drop(measure.index)
-    decide = rest[rest["_decide"]].sort_values(["_s", "_h"], ascending=[False, True]).head(spec.review_max)
-    sheet = pd.concat([decide.assign(why="decide", drawn=""), measure]).drop(columns=["_h", "_s", "_decide"])
-    sheet["engine_says"] = sheet["kind"].map(SAYS)
-    sheet["name_says"] = [f"{SAYS[COMPANY if x >= 0.5 else PERSON]} ({pct(x)})" if pd.notna(x) else "" for x in sheet["name_p"]]
-    sheet = sheet.rename(columns={"kind": "engine", "kind_p": "engine_p", "kind_flag": "flag"} if "kind_flag" in sheet else {"kind": "engine", "kind_p": "engine_p"})
-    front = ["why", "reason", "engine_says", "name_says", *(["flag"] if "flag" in sheet else []), "name", *(["birth_date"] if "birth_date" in sheet else [])]
-    sheet = sheet[[uid, *front, "engine", "engine_p", "name_p", "drawn"]].assign(kind=pd.Series(pd.NA, index=sheet.index, dtype="Int8"))
-    return sheet.reset_index(drop=True)
+    flag = rows["flag_code"].fillna(0).astype(int)
+    held, sure = rows["held"].to_numpy(dtype=bool), rows["kind"].isin([PERSON, COMPANY]).to_numpy()
+    lean = np.where(rows["kind_p"] >= 0.5, COMPANY, PERSON)
+    reason = np.select(
+        [held & sure, held, rows["against"].to_numpy(dtype=bool)],
+        [[f"the engine is sure it is {SAYS[k]}, the flag says {f}: held back from matching until you decide" for k, f in zip(rows["kind"], flag)],
+         [f"the engine is not sure, it leans to {SAYS[n]} ({pct(x)}); the flag says {f}: held back from matching until you decide"
+          for n, x, f in zip(lean, rows["kind_p"], flag)],
+         [f"the name looks like {SAYS[n]} ({pct(x)}), the flag says {f}; the engine says {SAYS[k]}"
+          for n, x, f, k in zip(rows["name_code"], rows["name_p"], flag, rows["kind"])]], "")
+    words = "drawn at random, to measure the flag and the engine"
+    measure = (rows["why"] == "measure").to_numpy()
+    rows["reason"] = np.where(measure, np.where(reason != "", words + "; also: " + reason, words), reason)
+    rows["drawn"] = np.where(measure, "at random", "")
+    rows["engine_says"] = rows["kind"].map(SAYS)
+    rows["name_says"] = [f"{SAYS[COMPANY if x >= 0.5 else PERSON]} ({pct(x)})" if pd.notna(x) else "" for x in rows["name_p"]]
+    sheet = rows.rename(columns={"kind": "engine", "kind_p": "engine_p", "kind_flag": "flag"})
+    front = ["why", "reason", "engine_says", "name_says", *(["flag"] if flagged else []), "name", *(["birth_date"] if dated else [])]
+    return sheet[[uid, *front, "engine", "engine_p", "name_p", "drawn"]].assign(kind=pd.Series(pd.NA, index=sheet.index, dtype="Int8"))

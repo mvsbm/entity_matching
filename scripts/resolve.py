@@ -41,9 +41,7 @@ from pathlib import Path
 import pandas as pd
 
 from er.config import InputError, load_pipeline, sources_text
-from er.io import markdown
-from er.kind import kind_review_sheet
-from er.run import Busy, Run, fill_rates, qa, report_text
+from er.run import Busy, Run, fill_rates
 from er.settings import load_settings
 
 
@@ -86,12 +84,12 @@ def main() -> None:
         saved = json.loads(args.model.read_text(encoding="utf-8"))
         model = saved.get("model", saved)
     run = Run(p, s, model=model, echo=step, kind_labels=args.kind_labels)  # added to the answers the run in --output keeps
-    fields = [f for f in s.columns if f not in ("id", "entity")]
+    fields = run.fields
     if args.check:
         run.load(args.input)
         plan = run.budget()
         present = run.present
-        fill = fill_rates(run, fields).set_index("field")
+        fill = fill_rates(run).set_index("field")
         pct = lambda x: "  —" if pd.isna(x) else f"{x:>3.0%}"
         print(f"{run.n:,} records · filled · looks right, top value: on a sample of 10,000")
         for f in fields:
@@ -114,26 +112,15 @@ def main() -> None:
         x = run.steps[-1]
         print(f"applied {x['decisions']:,} decisions ({x['matches']:,} match): {x['clusters_joined']:,} clusters joined; wrote {args.output}/gold.parquet")
         return
-    if args.increment:
-        run.increment(args.input, args.output)
-        if run.added == 0:
-            print(f"nothing new: every record of {args.input} is already in the run in {args.output}")
-            return
-    else:
-        run.full(args.input, args.output, overwrite=args.overwrite)
-    report = qa(run, fields, previous=args.output / "review.parquet" if args.increment else None)
-    report.pop("review_sheet").to_parquet(args.output / "review.parquet")
-    text = ["# Run checks", "", f"Input: `{args.input}` · {run.n:,} records", ""]
-    for name, table in report.items():
-        text += [f"## {name.replace('_', ' ')}", "", markdown(table.round(4)) if len(table) else "none", ""]
-    (args.output / "qa.md").write_text("\n".join(text), encoding="utf-8")
-    (args.output / "report.txt").write_text(report_text(run, report, pipeline), encoding="utf-8")
-    if run.classifier is not None and not args.increment:  # records for people: to decide and to measure; none answered already
-        cols = [c for c in ("kind_flag", "birth_date") if c in run._columns()]
-        records = run.con.sql(f'SELECT "{run.uid}", kind_name AS name, {", ".join(cols)}{", " if cols else ""}'
-                              "kind, kind_p, kind_by, name_p, kind_held FROM records").df()
-        done = set(run.labels[run.uid].astype("string")) if run.labels is not None else set()  # answered: blank rows come back
-        kind_review_sheet(records, run.uid, p.kind, s.flag_company, done).to_parquet(args.output / "kind_review.parquet")
+    with run.writing(args.output):  # the run and its reports: no other job writes in between
+        if args.increment:
+            run.increment(args.input, args.output)
+            if run.added == 0:
+                print(f"nothing new: every record of {args.input} is already in the run in {args.output}")
+                return
+        else:
+            run.full(args.input, args.output, overwrite=args.overwrite)
+        report = run.report(args.input, args.output, pipeline)
     print("\n".join(f"{what:<12} {value}" for what, value in report["summary"].itertuples(index=False)))
     print(f"{sum(x['seconds'] for x in run.steps):.1f} s · wrote {args.output}: gold.parquet, review.parquet, qa.md (each step's cost), "
           "report.txt (no record's value in it: to share)" + (", kind_review.parquet (persons and companies to decide and to measure)" if run.classifier is not None and not args.increment else "")
