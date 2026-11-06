@@ -245,13 +245,14 @@ def assemble_u(model: FSModel, model_json: dict, sampled: U, exact: U, df: Recor
     return out
 
 
-def with_scored_u(model: FSModel, model_json: dict, df: Records, db: DuckDBAPI, uid: str) -> dict:
-    """model_json with u measured on the records to be scored. In a bigger file, a field whose value set grows with it
-    (address, CIF ID) agrees by chance less often, so u fixed from the fitting set under-credits it. Needs no labels and
-    costs u_max_pairs whatever the file's size."""
-    exact = exact_u(model, df, db) if model.u_exact_by_counts else {}
+def scored_u(model: FSModel, model_json: dict, df: Records, db: DuckDBAPI, uid: str) -> tuple[dict, U, U]:
+    """model_json with u measured on the records to be scored, and the u sampled and counted for it (u_basis reads them).
+    In a bigger file, a field whose value set grows with it (address, CIF ID) agrees by chance less often, so u fixed
+    from the fitting set under-credits it. Needs no labels; O(N) counts and u_max_pairs sampled, whatever the file's size."""
+    exact = exact_u(model, df, db)
     skip = counted(model, exact)
-    return assemble_u(model, model_json, scored_sample(model, df, db, uid, [c for c in model.comparisons if c.name not in skip]), exact, df, db)
+    sampled = scored_sample(model, df, db, uid, [c for c in model.comparisons if c.name not in skip])
+    return assemble_u(model, model_json, sampled, exact, df, db), sampled, exact
 
 
 def u_basis(model: FSModel, sampled: U, exact: U, df: Records, db: DuckDBAPI, names: Iterable[str] | None = None) -> dict:

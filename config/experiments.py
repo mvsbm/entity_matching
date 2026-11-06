@@ -10,7 +10,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import replace
 from pathlib import Path
 
-from er.config import (Candidate, Comparator, Comparison, FSSpec, FSTune, Key, Level, Pipeline, Resolver, RulesSpec, SortedNeighbourhood, TfidfNeighbours,
+from er.config import (Candidate, Comparator, Comparison, FSSpec, FSTune, Key, Level, Pipeline, RulesSpec, SortedNeighbourhood, TfidfNeighbours,
                        Tune, KeyBlocker, with_comparators, with_level, without_tf)
 
 FOLD, COMPANY = ("kana_fold",), ("nfkc", "strip_legal_form", "kana_fold")
@@ -32,7 +32,6 @@ def rules_changes(p: Pipeline) -> dict[str, Callable[[RulesSpec], RulesSpec]]:
                                                               "company_name": Comparator("exact", normalize=COMPANY)}),
         "raw_jaro_winkler": lambda s: with_comparators(s, "fuzzy", {"person_name": Comparator("jaro_winkler", 0.92),
                                                                     "company_name": Comparator("jaro_winkler", 0.92)}),
-        "constrained_given_name": lambda s: replace(s, resolver=Resolver(method="constrained", cannot_link=("given_name",))),
         "optuna_comparators": lambda s: with_comparators(s, "fuzzy", {  # an Optuna study's suggestion (trial 33); passed adopt
             "person_name": Comparator("damerau_levenshtein", 2, FOLD), "company_name": Comparator("levenshtein", 1, COMPANY),
             "address": Comparator("jaro_winkler", 0.9, ("address",)), "phone": Comparator("hamming", 1)}),
@@ -115,7 +114,6 @@ def fs_changes(p: Pipeline) -> dict[str, Callable[[FSSpec], FSSpec]]:
         "exact_keys_only": lambda s: replace(s, blockers=tuple(b for b in s.blockers if isinstance(b, KeyBlocker))),
         "levenshtein_names": lambda s: replace(s, model=with_level(with_level(s.model, "name", "fold JW high", function="levenshtein",
                                                                               threshold=1), "name", "fold JW low", function="levenshtein", threshold=2)),
-        "constrained_given_name": lambda s: replace(s, resolver=Resolver(method="constrained", cannot_link=("given_name",))),
         "optuna_suggestion": optuna_suggestion,
         "u_from_1e6_pairs": lambda s: replace(s, model=replace(s.model, u_max_pairs=1e6)),  # u-sampling ≈ 6× cheaper
         "compound_phone_keys": lambda s: replace(s, blockers=tuple(b for b in s.blockers if b.name != "phone") + tuple(
@@ -172,8 +170,6 @@ def fs_tune(optuna_dir: Path) -> FSTune:
         tf_options=(True, False),
         level_thresholds={("name", "fold JW high"): (0.88, 0.97, 0.01), ("name", "fold JW low"): (0.75, 0.90, 0.01),
                           ("company", "JW high"): (0.88, 0.97, 0.01), ("company", "JW low"): (0.75, 0.90, 0.01)},
-        resolvers={"connected_components": Resolver(method="connected_components"),
-                   "constrained_given_name": Resolver(method="constrained", cannot_link=("given_name",))},
         n_trials=30, seed=0,
         enabled=False,  # as rules_tune
         storage_path=optuna_dir / "probabilistic_matching.db", study_prefix="probabilistic",

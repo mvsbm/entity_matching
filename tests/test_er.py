@@ -16,10 +16,9 @@ from er.config import (Budget, Comparator, Comparison, DeletionKeys, FSModel, FS
                        Resolver, Rule, RulesSpec, SortedNeighbourhood, Stage, TfidfNeighbours, ThresholdRule, keys_sql)
 from er.evaluate import adopt, cluster_metrics, fp_upper, paired_test, predicted_pairs, true_pairs, wilson
 from er.io import load
-from er.match import exact_u, parameters, pattern_coverage, rule_edges, sample_u, score_fs, stale_u, train_fs, u_values, waterfall, with_scored_u
-from er.pipeline import (accept_curve, cascade, check_budget, entity_folds, grown_pairs, preflight, select_threshold,
+from er.match import exact_u, parameters, pattern_coverage, rule_edges, sample_u, score_fs, stale_u, train_fs, u_values, waterfall, scored_u
+from er.pipeline import (accept_curve, check_budget, clustered, entity_folds, grown_pairs, preflight, select_threshold,
                          window_only)
-from er.cluster import connected_components, constrained
 from er.config import dump_pipeline, fields_read, legal_pattern, load_pipeline
 from er.settings import fit_to_file, load_settings
 from er.standardize import normalize, prepare
@@ -186,11 +185,12 @@ def test_shared_connection_gives_the_same_rules_and_clusters_as_a_fresh_one(con_
                                    comparators={"name": Comparator("jaro_winkler", 0.8)}),))
     a = pd.DataFrame({"uid": ["1", "2", "3"], "phone": ["11", "11", "22"], "name": ["サトウ", "サトオ", "スズキ"]}, dtype="string")
     b = pd.DataFrame({"uid": ["7", "8", "9"], "phone": ["33", "33", "33"], "name": ["タナカ", "タナカ", "イトウ"]}, dtype="string")
+    base = lambda d: pd.DataFrame({UID: d[UID], "cluster_id": d[UID]})
     first = rule_edges(spec, a, db, UID)[0]
-    connected_components(a[UID], first, db, UID)  # leaves whatever it caches on the shared db
+    clustered(db.duckdb_con, db, base(a), first, a[UID], UID)  # leaves whatever it caches on the shared db
     shared, fresh = rule_edges(spec, b, db, UID)[0], rule_edges(spec, b, connect()[1], UID)[0]
     assert shared.reset_index(drop=True).equals(fresh.reset_index(drop=True)) and len(shared) == 1
-    assert connected_components(b[UID], shared, db, UID).equals(connected_components(b[UID], fresh, connect()[1], UID))
+    assert clustered(db.duckdb_con, db, base(b), shared, b[UID], UID).equals(clustered(*connect(), base(b), fresh, b[UID], UID))
 
 
 def test_uncertainty():
@@ -275,19 +275,14 @@ def test_entity_folds_keep_every_entity_in_one_fold():
     assert by_entity.max() == 1 and folds.nunique() == 3 and folds.equals(entity_folds(truth, data, 3, 0))
 
 
-def test_cascade_skips_pairs_already_resolved_on_both_sides(con_db):
-    _, db = con_db
-    ids = pd.Series(list("ABCDEF"), dtype="string", name=UID)
+def test_the_run_s_clustering_merges_whole_clusters_and_names_each_after_its_smallest_id(con_db):
+    con, db = con_db
+    ids = pd.Series(list("ABCDEF"), dtype="string")
+    base = pd.DataFrame({UID: list("ABCDEF"), "cluster_id": ["A", "A", "C", "C", "E", "F"]})  # the rules' clusters: AB, CD
     pair = lambda rows: pd.DataFrame(rows, columns=["uid_l", "uid_r"], dtype="string")
-    stages = [("rules", pair([("A", "B"), ("C", "D")])), ("model", pair([("B", "C"), ("A", "E"), ("E", "F")]))]
-    entity = pd.Series(list("xxyyxx"), index=list("ABCDEF"))
-    clusters, stage_of, kept, _ = cascade(ids, stages, lambda e: connected_components(ids, e, db, UID), entity, UID)
-    assert ("B", "C") not in set(map(tuple, kept[["uid_l", "uid_r"]].to_numpy()))  # both already resolved by the rules
-    assert clusters["A"] == clusters["E"] == clusters["F"] != clusters["C"]
-    assert stage_of.to_dict() == dict(A="rules", B="rules", C="rules", D="rules", E="model", F="model")
-    clusters, _, kept, _ = cascade(ids, stages, lambda e: connected_components(ids, e, db, UID), entity, UID, bridge=("model",))
-    assert ("B", "C") in set(map(tuple, kept[["uid_l", "uid_r"]].to_numpy()))  # a bridging stage may join two clusters
-    assert clusters["A"] == clusters["C"] == clusters["F"]
+    out = clustered(con, db, base, pair([("D", "B"), ("E", "F")]), ids, UID)
+    assert out.tolist() == ["A", "A", "A", "A", "E", "E"]  # D–B joins both whole clusters; E–F a new one
+    assert clustered(con, db, base, pair([]), ids, UID).tolist() == base["cluster_id"].tolist()  # no pair: as they were
 
 
 def test_deletion_keys_find_every_pair_one_edit_apart():
@@ -305,11 +300,11 @@ def test_deletion_keys_find_every_pair_one_edit_apart():
 def test_u_from_the_scored_file(con_db, records):
     _, db = con_db
     fitted = train_fs(model(), records, db, UID)
-    same = with_scored_u(model(), fitted, records, db, UID)  # the fitting records, the same sample: the same model
+    same = scored_u(model(), fitted, records, db, UID)[0]  # the fitting records, the same sample: the same model
     assert score_fs(same, records, PAIR, db, UID)["match_weight"].item() == pytest.approx(score_fs(fitted, records, PAIR, db, UID)["match_weight"].item())
     padded = pd.concat([records, pd.DataFrame({"uid": [f"p{i:03d}" for i in range(240)], "name": [f"ヨソ{i}" for i in range(240)],
                                                "phone": [f"{i:04d}" for i in range(240)], "entity": "pad"}, dtype="string")], ignore_index=True)
-    other = with_scored_u(model(), fitted, padded, db, UID)
+    other = scored_u(model(), fitted, padded, db, UID)[0]
     u = lambda m: {lv["label_for_charts"]: lv["u_probability"] for c in m["comparisons"] if c["output_column_name"] == "phone" for lv in c["comparison_levels"] if not lv.get("is_null_level")}
     assert u(other)["exact"] < u(fitted)["exact"]  # more distinct phones: random pairs agree less often
     unseen = {tuple(x) for x in fitted["er"]["filled"]["m"]}  # never seen in training: m follows u, 0 bits
@@ -356,13 +351,6 @@ def test_candidate_generators_respect_query_window_and_cosine():
     assert ("0", "1") not in sources and sources[("0", "2")] == sources[("3", "4")] == "k+s"  # one cluster already; found by both
     named = pd.DataFrame({"sources": ["person_name", "sn_person_name", "sn_person_name+person_name"]}, dtype="string")
     assert found_by(named, ["person_name"]).tolist() == [True, False, True]  # whole names only
-
-
-def test_constrained_resolver_refuses_a_conflicting_merge():
-    records = pd.DataFrame({"uid": list("ABC"), "given": ["ヒロシ", "ヒロシ", "タカシ"]}, dtype="string")
-    edges = pd.DataFrame({"uid_l": ["A", "B"], "uid_r": ["B", "C"], "score": [0.9, 0.8]})
-    out = constrained(records["uid"], edges, records, ("given",), UID)
-    assert out["A"] == out["B"] != out["C"]
 
 
 def test_preflight_counts_block_pairs_and_the_budget_stops_a_run():
@@ -689,32 +677,29 @@ def test_answers_given_wrong_stop_the_run(tmp_path, population):
         Run(p, s).increment(tmp_path / "all.parquet", tmp_path / "empty")
 
 
-def test_the_labelled_engine_and_the_run_give_the_same_gold_and_accept_the_same_pairs(tmp_path, population, con_db):
-    """scripts/choose.py measures with er.pipeline; scripts/resolve.py runs er.run: the same records and model must
-    give the same clusters and the same answer to what resolved each record."""
+def test_design_time_measures_the_run_s_own_gold_pairs_and_rule_clusters(tmp_path, population):
+    """scripts/choose.py measures through er.pipeline, which reads the tables of an er.run.Run: it must report the gold,
+    the accepted pairs and their weights, and the rules' clusters that the run writes."""
     from er.pipeline import automatic, run_fs, run_rules
     from er.run import Run
     s, p, g = population
-    p = replace(p, fs=replace(p.fs, needs=("name", "company")))  # both paths hold back a pair with no name compared
-    _, db = con_db
+    p = replace(p, fs=replace(p.fs, needs=("name", "company")))  # a pair with no name compared is held back
     uid = s.data.unique_id
+    l, r = f"{uid}_l", f"{uid}_r"
     g.df.to_parquet(tmp_path / "all.parquet", index=False)
     run = Run(p, s).full(tmp_path / "all.parquet", tmp_path / "run")
-    records = g.df.astype("string")
-    det = run_rules(p.rules, records, g.truth, db, s.data)
-    pairs = det.edges[[f"{uid}_l", f"{uid}_r", "stage", "rule", "score", "kept"]].astype("string")
-    clusters = (det.records[[uid, "CLUSTER_ID", "MATCH_STAGE", "MATCH_RULE"]]  # the resolved file, as scripts/choose.py writes it
-                .set_axis([uid, "cluster_id", "resolved_stage", "resolved_by"], axis=1).astype("string"))
-    res = run_fs(p.fs, run.model, records, g.truth, pairs, clusters, db, s.data)
+    res = run_fs(p, s, tmp_path / "all.parquet", g.truth, run.model)
     labelled = (res.records.set_index(uid)[["CLUSTER_ID", "MATCH_STAGE", "MATCH_RULE"]]
                 .set_axis(["cluster_id", "resolved_stage", "resolved_by"], axis=1).astype("string"))
     gold = pd.read_parquet(tmp_path / "run" / "gold.parquet").set_index(uid)[list(labelled.columns)].astype("string")
     pd.testing.assert_frame_equal(gold, labelled.loc[gold.index], check_index_type=False)
-    l, r = f"{uid}_l", f"{uid}_r"  # and the same pairs accepted, with the same weights
     key = lambda d: d[[l, r, "match_weight"]].astype({l: "string", r: "string"}).sort_values([l, r], ignore_index=True)
-    design, ran = key(res.scored[automatic(res.scored, p.fs.min_match_weight)]), key(run.con.sql("SELECT * FROM matches").df())
+    design, ran = key(res.scored[automatic(res.scored, p.fs.min_match_weight) & res.scored["keep"]]), key(pd.read_parquet(tmp_path / "run" / "matches"))
     assert len(design) > 0
     pd.testing.assert_frame_equal(design, ran, check_exact=False, atol=1e-9)
+    rules = run_rules(p, s, tmp_path / "all.parquet", g.truth).records.set_index(uid)["CLUSTER_ID"]
+    stored = pd.read_parquet(tmp_path / "run" / "state" / "rule_clusters.parquet").set_index(uid)["cluster_id"].astype("string")
+    assert rules.loc[stored.index].tolist() == stored.tolist()
 
 
 def test_a_pair_with_no_name_compared_is_left_to_people(tmp_path, population):

@@ -33,7 +33,7 @@ Matching is one step inside resolution. Resolution adds two jobs of its own:
 | Question | are these two records the same entity? | which records belong together? |
 | Looks at | one pair | the whole file |
 | Answer | yes / no, or a probability | groups of records, one per entity |
-| In this repo | `er.match` | `er.candidates`, then `er.match`, then connected components (`Run._merge` in a run, `er.cluster` at design time) |
+| In this repo | `er.match` | `er.candidates`, then `er.match`, then connected components (`er.cluster.merge`, the same in a run and at design time) |
 
 The same problem goes by other names. *Deduplication* finds duplicates inside one file, which is our case. *Record linkage* connects records across two files. Linking records to a master list is a third variant.
 

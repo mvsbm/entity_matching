@@ -180,7 +180,7 @@ Accepted pairs must become groups. If A–B and B–C are accepted, then A, B an
 
 **Why, and the risk.** It is the natural reading of "same as", and it lets a record join a group that the rules already started. The risk is a **chain**: one false pair can join two whole groups. The strict 8-bit line is what keeps chains safe.
 
-The cautious alternative is tested too: refuse a merge when the two groups hold different given names. It loses 224 true pairs on validation, because a typo in a given name looks like a conflict. A run refuses any resolver other than connected components, so it groups the way the choice is measured.
+A cautious alternative would refuse a merge when the two groups hold different given names, but a typo in a given name looks like a conflict, so it loses true pairs. A run groups by connected components only (`er.cluster.merge`), and design time measures the run itself, so the choice is measured the way it runs.
 
 ## On our data
 
@@ -196,11 +196,11 @@ The cautious alternative is tested too: refuse a merge when the two groups hold 
 
 - `er/match.py`:
   - `train_fs`: learns λ, u and m
-  - `exact_u`, `with_scored_u`: u counted exactly where it can be, the rest sampled, on the scored file
+  - `exact_u`, `scored_u`: u counted exactly where it can be, the rest sampled, on the scored file
   - `score_fs`: scores candidate pairs
   - `waterfall`: the field-by-field table
   - `scaled_prior`: rescales λ to the scored file's size
-- `er/cluster.py`: `connected_components`, `constrained`
+- `er/cluster.py`: `merge`, the run's clustering
 - `config/pipeline.toml` `[model]`: the comparisons and levels; `er/select.py`: `FSChooser.training` (EM against labels), `why`, `threshold`, run by `scripts/choose.py`
 - `er/run.py`: `Run.fit` (the fit, then u on the whole file) and `Run.score`, the same model without labels on any file; `named_sql`, the name check; `notebooks/demo.ipynb`, sections 5 and 8–11, draws each step
 - every table: [results.md](../results.md)

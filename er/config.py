@@ -149,8 +149,8 @@ class Budget:
 
 @dataclass(frozen=True, kw_only=True)
 class Resolver:
-    method: Literal["connected_components", "constrained"]
-    cannot_link: tuple[str, ...] = ()         # constrained: refuse a merge whose clusters hold disjoint values here
+    method: Literal["connected_components"]  # er.cluster.merge: the run's clustering, the only one
+    cannot_link: tuple[str, ...] = ()         # read by no resolver; kept so the config hash of a stored run stays the same
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -250,7 +250,7 @@ class FSModel:
     m_method: Literal["em", "labels"]
     em_rules: tuple[tuple[Key, ...], ...]     # one EM session per rule
     seed: int
-    u_from_scored: bool = False               # u measured on each scored file, m and λ from the fit (er.match.with_scored_u; an increment: refreshed_u)
+    u_from_scored: bool = False               # u measured on each scored file, m and λ from the fit (er.match.scored_u; an increment: refreshed_u)
     u_exact_by_counts: bool = False           # u of the leading exact levels from value counts, not the sample (er.match.exact_u)
     u_near_by_keys: bool = False              # and a one-edit level right after them, counted through one-deletion keys
     fit_u_max_pairs: float | None = None      # the fit's own u sample, if it differs (with u_from_scored its u feed only EM)
@@ -366,7 +366,6 @@ class FSTune:
     m_methods: tuple[Literal["em", "labels"], ...]
     tf_options: tuple[bool, ...]
     level_thresholds: Mapping[tuple[str, str], tuple[float, float, float]]  # (comparison, level) → low, high, step
-    resolvers: Mapping[str, Resolver]
     n_trials: int                             # the only bound, as in Tune
     enabled: bool = False                     # as in Tune
     seed: int

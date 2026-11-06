@@ -46,10 +46,10 @@ def main() -> None:
                 report.extend([f"### {heading}", ""] + ([text, ""] if text else []) + ([markdown(table), ""] if table is not None else []))
             print(f"{title}: {step.__name__} ({time.perf_counter() - t:.1f}s)", flush=True)
 
-    rules = RulesChooser(p.rules, s.data, db, x.rules_changes(p), x.RULES_DECISIONS, p.decision_p,
+    rules = RulesChooser(p.rules, p, s, db, x.rules_changes(p), x.RULES_DECISIONS, p.decision_p,
                          replace(x.rules_tune(s.paths["optuna"]), enabled=args.optuna))
     section("Stage 1: rules", [rules.design, rules.ab, rules.decide, rules.cost, rules.evaluate, rules.output, rules.search])
-    fs = FSChooser(p.fs, p, rules.final, s.data, db, x.fs_changes(p), x.FS_DECISIONS, replace(x.fs_tune(s.paths["optuna"]), enabled=args.optuna))
+    fs = FSChooser(p.fs, p, rules.final, s, db, x.fs_changes(p), x.FS_DECISIONS, replace(x.fs_tune(s.paths["optuna"]), enabled=args.optuna))
     section("Stage 2: Fellegi–Sunter", [fs.candidates_on_train, fs.training, fs.threshold, fs.ab, fs.decide, fs.will_it_scale,
                                          fs.evaluate, fs.why, fs.output, fs.search])
 
