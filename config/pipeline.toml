@@ -159,7 +159,7 @@ name_field = "any_name"           # the field holding each record's name, a pers
 ngram = 3                         # the name model: logistic regression on character n-grams 1 to this
 depth = 2                         # the combiner: gradient-boosted trees this deep, fitted on people's labels
 company_wrong_at_most = 0.001     # the budget the company line is judged by (choose_kind): placed with no labelled error above it, then margin_steps stricter
-person_wrong_at_most = 0.01       # the person line: the labelled error above it at most half of this
+person_wrong_at_most = 0.01       # the person line: the labelled error above it within this, at 95% confidence
 margin_steps = 2
 labels_to_draw = 2000             # kind_review.parquet: records drawn to measure the flag and the engine (why = measure)
 review_max = 1000                 # ... and at most this many sent to decide (why = decide): the engine's sure kind against

@@ -6,8 +6,8 @@
     combiner     gradient-boosted trees on the name model's score, the file's flag, the birth year and the legal form,
                  fitted on people's labels (kind_review.parquet, filled in); none without labels
     lines        company: no labelled error above it (out of fold), then margin_steps stricter; person: the labelled
-                 error above it at most half its budget. Without labels: a company only where a legal form is
-                 written, never a sure person.
+                 error above it within its budget at 95% confidence. Without labels: a company only where a legal
+                 form is written, never a sure person.
 
 Each record gets kind (2 company, 1 person, 0 not sure: the codes a person/company flag uses), kind_p (the probability
 of a company), kind_by (engine, or people: their answer stands) and name_p (what its name alone says). A name routed by
@@ -25,6 +25,7 @@ from pathlib import Path
 import duckdb
 import numpy as np
 import pandas as pd
+from scipy.stats import beta
 from sklearn.ensemble import HistGradientBoostingClassifier
 from sklearn.feature_extraction.text import CountVectorizer
 from sklearn.linear_model import LogisticRegression
@@ -192,15 +193,17 @@ def merge_answers(kept: pd.DataFrame | None, given: pd.DataFrame | None, uid: st
 def lines(p: np.ndarray, company: np.ndarray, spec: KindSpec) -> tuple[float, float, float | None]:
     """Each side's line from out-of-fold probabilities on people's answers: the company line is the lowest grid point
     with no labelled person above it, then margin_steps stricter; the person line the lowest whose labelled wrong share
-    is at most half of person_wrong_at_most, on 30 answers or more. Above 1: never."""
+    has a one-sided 95% upper bound (Clopper–Pearson) within person_wrong_at_most: with none wrong, 300 answers above
+    it. A share measured on few answers can hide a rate over budget (reports/choose_kind.md). Above 1: never."""
     grid = list(spec.grid)
     clean = [g for g in grid if not ((p >= g) & ~company).any() and (p >= g).any()]
     line_c = grid[min(grid.index(clean[0]) + spec.margin_steps, len(grid) - 1)] if clean else 1.01
     line_p, error = 1.01, None
     for g in grid:
         above = (1 - p) >= g
-        if above.sum() >= 30 and (above & company).sum() / above.sum() <= spec.person_wrong_at_most / 2:
-            line_p, error = g, float((above & company).sum() / above.sum())
+        n, wrong = int(above.sum()), int((above & company).sum())
+        if wrong < n and beta.ppf(0.95, wrong + 1, n - wrong) <= spec.person_wrong_at_most:
+            line_p, error = g, wrong / n
             break
     return line_c, line_p, error
 

@@ -1,7 +1,7 @@
 """Choose how to tell persons from companies (config/pipeline.toml [kind]): every combination of the ideas, judged across
 the range of what a file can't tell about itself. Writes reports/choose_kind.md. The truth is the generator's.
 
-    .venv/bin/python scripts/choose_kind.py          # about 8 minutes
+    .venv/bin/python scripts/choose_kind.py          # about 6 minutes
 
 Data. Companies: data/reference/registry.json, real corporations' readings, written the ways bank records write them
 (er.generate.bank_name); training uses Miyagi's and Okayama's, the test Fukuoka's. Persons: the personas, half each.
@@ -23,7 +23,8 @@ those on 12; the combination of config/pipeline.toml always on 12.
 
 Correct first: on each side, the share decided while its wrong calls stay within a budget (company calls: 0.1% wrong;
 person calls: 1%), the line placed with the truth, so the ranking measures the score itself. Then, for the pipeline's
-combination: how sole traders are counted, and how well people's answers place the lines (er.kind.lines).
+combination: how sole traders are counted; and, for it and the best, how well people's answers place the lines, the person
+line by each rule judged.
 """
 import itertools
 import logging
@@ -32,7 +33,7 @@ from dataclasses import replace
 
 import numpy as np
 import pandas as pd
-from scipy.stats import qmc
+from scipy.stats import beta, qmc
 from sklearn.ensemble import HistGradientBoostingClassifier
 from sklearn.linear_model import LogisticRegression
 from sklearn.model_selection import StratifiedKFold, cross_val_predict
@@ -99,6 +100,27 @@ def population(companies: pd.DataFrame, persons: pd.DataFrame, shops: list[str],
     d["flag"] = np.where(wrong, 1 - d.y, d.y)
     d["birth"] = d.birth_year.notna().astype(float)
     return d
+
+
+PERSON_RULES = {"a": "the lowest line whose answers above it are 30 or more and at most half the budget wrong",
+                "b": "the lowest line whose 95% one-sided upper bound (Clopper–Pearson) on the wrong share above it is within the budget",
+                "c": "the company's rule: the lowest line with no wrong answer above it, then margin_steps stricter"}
+DRAWS = 5
+
+
+def person_line(p: np.ndarray, company: np.ndarray, rule: str) -> float:
+    """The person line by each rule judged, on out-of-fold probabilities of a company (1.01: never)."""
+    grid = list(KIND.grid)
+    for k, g in enumerate(grid):
+        above = (1 - p) >= g
+        n, wrong = int(above.sum()), int((above & company).sum())
+        if rule == "a" and n >= 30 and wrong / n <= BUDGET_P / 2:
+            return g
+        if rule == "b" and n and wrong < n and beta.ppf(0.95, wrong + 1, n - wrong) <= BUDGET_P:
+            return g
+        if rule == "c" and n and not wrong:
+            return grid[min(k + KIND.margin_steps, len(grid) - 1)]
+    return 1.01
 
 
 def coverage(score: np.ndarray, right: np.ndarray, budget: float) -> float:
@@ -197,8 +219,8 @@ def main() -> None:
                              sole_flagged_company=f"{sc['flag_sole']:.0%}", company_dates=f"{sc['company_dates']:.0%} ({sc['company_date']})",
                              companies=f"{results[(pipeline, i)][0]:.1%}", persons=f"{results[(pipeline, i)][1]:.1%}") for i, sc in enumerate(plan)])
 
-    print("sole traders and the lines, for the pipeline's combination", flush=True)
-    cfg, policies, placing = configs[pipeline], [], []
+    print("sole traders, for the pipeline's combination", flush=True)
+    cfg, policies = configs[pipeline], []
     for i in range(12):
         d, hand, rest, logits = scenario(i)
         logits = {k: pd.Series(v, index=d.index) for k, v in logits.items()}
@@ -209,33 +231,36 @@ def main() -> None:
             p = make(cfg["combiner"]).fit(features(cfg, hand, logits), y[hand.index]).predict_proba(features(cfg, rest, logits))[:, 1]
             policies.append(dict(scenario=i, policy=policy, companies=coverage(p, y[rest.index].to_numpy() == 1, BUDGET_C),
                                  persons=coverage(1 - p, y[rest.index].to_numpy() == 0, BUDGET_P)))
-        name_p = 1 / (1 + np.exp(-logits[(cfg["legal"], cfg["ngram"], cfg["train"])]))  # what a run without answers leans to
-        for n_ans in (500, 1000, 2000):
-            for how in ("random", "stratified (a third at random, a third leaning company, a third leaning person)"):
-                if how == "random":
-                    ans = d.sample(n_ans, random_state=i)
-                else:
-                    k, ans = n_ans // 3, d.iloc[:0]
-                    for which, size in ((lambda x: x == x, k), (lambda x: x >= 0.9, k), (lambda x: x <= 0.1, n_ans - 2 * k)):
-                        pool = d.drop(ans.index)[which(name_p.drop(ans.index))]
-                        ans = pd.concat([ans, pool.sample(min(size, len(pool)), random_state=i)])
-                X = features(cfg, ans, logits)
-                oof = cross_val_predict(make(cfg["combiner"]), X, ans.y, cv=StratifiedKFold(5, shuffle=True, random_state=0), method="predict_proba")[:, 1]
-                scored = d.drop(ans.index)
-                p = make(cfg["combiner"]).fit(X, ans.y).predict_proba(features(cfg, scored, logits))[:, 1]
-                y = scored.y.to_numpy()
-                for margin in (1, 2):
-                    lc, lp, _ = lines(oof, ans.y.to_numpy() == 1, replace(KIND, margin_steps=margin))
-                    c_calls, p_calls = p >= lc, (1 - p) >= lp
-                    placing.append(dict(scenario=i, answers=n_ans, drawn=how, company_rule=f"no error above, then {margin} step{'s' if margin > 1 else ''} stricter",
-                                        companies=c_calls[y == 1].mean(), company_wrong=(c_calls & (y == 0)).sum() / max(c_calls.sum(), 1),
-                                        persons=p_calls[y == 0].mean(), person_wrong=(p_calls & (y == 1)).sum() / max(p_calls.sum(), 1)))
     pol = pd.DataFrame(policies).groupby("policy", sort=False).agg(companies_mean=("companies", "mean"), companies_worst=("companies", "min"),
                                                                     persons_mean=("persons", "mean"), persons_worst=("persons", "min"))
     pol = pol.map(lambda v: f"{v:.1%}").reset_index()
-    pl = pd.DataFrame(placing).groupby(["answers", "drawn", "company_rule"], sort=False).agg(
-        companies=("companies", "mean"), company_wrong_worst=("company_wrong", "max"), company_over_budget=("company_wrong", lambda s: int((s > BUDGET_C).sum())),
-        persons=("persons", "mean"), person_wrong_worst=("person_wrong", "max"), person_over_budget=("person_wrong", lambda s: int((s > BUDGET_P).sum()))).reset_index()
+
+    best_k = int(final.k.iloc[0])
+    print(f"placing the lines: {DRAWS} draws of answers per scenario, each rule", flush=True)
+    placing = []
+    for which, k in {"the pipeline's": pipeline, "the best": best_k}.items():
+        cfg = configs[k]
+        for i in range(12):
+            d, hand, rest, logits = scenario(i)
+            logits = {kk: pd.Series(v, index=d.index) for kk, v in logits.items()}
+            for n_ans in (1000, 2000, 4000):
+                for j in range(DRAWS):
+                    ans = d.sample(n_ans, random_state=1000 * i + j)  # drawn at random, as the review sheet draws them
+                    X, company = features(cfg, ans, logits), ans.y.to_numpy() == 1
+                    oof = cross_val_predict(make(cfg["combiner"]), X, ans.y, cv=StratifiedKFold(5, shuffle=True, random_state=0), method="predict_proba")[:, 1]
+                    scored = d.drop(ans.index)
+                    p, y = make(cfg["combiner"]).fit(X, ans.y).predict_proba(features(cfg, scored, logits))[:, 1], scored.y.to_numpy()
+                    c_calls = p >= lines(oof, company, KIND)[0]
+                    for rule in PERSON_RULES:
+                        p_calls = (1 - p) >= person_line(oof, company, rule)
+                        placing.append(dict(combination=which, answers=n_ans, person_rule=rule,
+                                            companies=c_calls[y == 1].mean(), company_wrong=(c_calls & (y == 0)).sum() / max(c_calls.sum(), 1),
+                                            persons=p_calls[y == 0].mean(), person_wrong=(p_calls & (y == 1)).sum() / max(p_calls.sum(), 1)))
+        if k == pipeline == best_k:
+            break
+    pl = pd.DataFrame(placing).groupby(["combination", "answers", "person_rule"], sort=False).agg(
+        persons=("persons", "mean"), person_wrong_worst=("person_wrong", "max"), person_over_budget=("person_wrong", lambda s: int((s > BUDGET_P).sum())),
+        companies=("companies", "mean"), company_wrong_worst=("company_wrong", "max"), company_over_budget=("company_wrong", lambda s: int((s > BUDGET_C).sum()))).reset_index()
     for c in ("companies", "company_wrong_worst", "persons", "person_wrong_worst"):
         pl[c] = pl[c].map(lambda v: f"{v:.2%}")
 
@@ -260,10 +285,12 @@ def main() -> None:
               f"({best['legal']}, {best['ngram']}, {best['training']}, {best['combiner']}: {best['signals']}).", "",
               "## Counting sole traders", "", "The pipeline's combination, each way of counting them.", "", markdown(pol), "",
               "## Placing the lines from people's answers", "",
-              "The pipeline's combination: answers drawn at random or stratified, the combiner fitted on them, the lines placed on "
-              "their out-of-fold probabilities (`er.kind.lines`: the company rule as below; the person line where the answers' wrong "
-              f"share is at most half of {BUDGET_P:.0%}), then the wrong calls on every other record: the mean share decided, the "
-              "worst wrong share, and in how many of the 12 scenarios the wrong share broke its budget.", "", markdown(pl), ""]
+              f"The pipeline's combination and the best: answers drawn at random, {DRAWS} draws per scenario ({12 * DRAWS} trials), the "
+              "combiner fitted on them, the lines placed on their out-of-fold probabilities: the company line by `er.kind.lines` (no "
+              f"labelled person above it, then {KIND.margin_steps} grid steps stricter), the person line by each rule below. Then the "
+              "calls on every other record: the mean share decided, the worst wrong share, and in how many trials the wrong share "
+              f"broke its budget ({BUDGET_P:.0%} for person calls, {BUDGET_C:.1%} for company calls).", "",
+              *[f"- {r}: {w}" for r, w in PERSON_RULES.items()], "", markdown(pl), ""]
     path = S.root / "reports" / "choose_kind.md"
     path.write_text("\n".join(report), encoding="utf-8")
     print("\n".join(report))

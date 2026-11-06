@@ -156,7 +156,7 @@ Write `kind`: `1` person, `2` company, `0` can't tell from the record. A sole tr
 ```
 
 - **Your answers stand** for their records (`kind_by` = `people`): a held record's name goes to its side, and matching can use it. A `0` stands too: the record's name stays out of matching, and its pairs come to you in `review.parquet` with no name compared.
-- **They teach the engine.** The combiner fits on every answer 1 or 2, once there are 50 holding both kinds; the lines on the measuring draw only, once 50 of it are answered, and the person line where 30 answers lie above it. The summary says where the lines fall, how often the flag is wrong on the answers drawn at random, and how many records stay held back.
+- **They teach the engine.** The combiner fits on every answer 1 or 2, once there are 50 holding both kinds; the lines on the measuring draw only, once 50 of it are answered; the person line only where the answers above it keep it within 1% wrong at 95% confidence (with none wrong, 300 answers above it). The summary says where the lines fall, how often the flag is wrong on the answers drawn at random, and how many records stay held back.
 - **They add up.** The run keeps each sheet's answers as given, one part per sheet in `kind_answers/`; per record the newest answer stands, and a blank row erases nothing. The next sheet leaves out the records answered, and brings back those left blank. A sheet answered wrong is undone by deleting its part, then a full run with `--overwrite`.
 - **A full run writes the sheet.** A record an increment holds back is on the sheet of the next full run.
 

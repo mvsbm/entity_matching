@@ -308,16 +308,30 @@ The pipeline's combination (`config/pipeline.toml` `[kind]`: the bank table, n-g
 
 ### Placing the lines from people's answers
 
-The company line two grid steps stricter than the first clean one; the person line where the answers' wrong share is at most half of 1%. `over_budget`: of the 12 scenarios.
+The lines placed on answers drawn at random, as the review sheet draws them, 5 draws per scenario: 60 trials. The company line: no labelled person above it, then two grid steps stricter. The person line by three rules: (a) the answers above it 30 or more, and at most half of 1% of them wrong; (b) the 95% one-sided upper bound on their wrong share (Clopper–Pearson) within 1%; (c) the company's rule. `over_budget`: of the 60 trials.
 
-| answers | drawn | company_rule | companies | company_wrong_worst | company_over_budget | persons | person_wrong_worst | person_over_budget |
+Chosen before the run: the rule over budget in at most 3 of 60 trials with 2,000 answers, then the most persons decided. Rule a breaks its budget in 4; b in 2, deciding 19.8% of persons; c decides almost none, since an answered company lies above nearly every line. `er.kind.lines` places the person line by b. The best combination decides 2.2 points more persons under b, with as many trials over budget: too little to train the name model on each file.
+
+| combination | answers | person_rule | persons | person_wrong_worst | person_over_budget | companies | company_wrong_worst | company_over_budget |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| 500 | random | no error above, then 2 steps stricter | 60.27% | 0.12% | 1 | 27.46% | 1.36% | 2 |
-| 500 | stratified (a third at random, a third leaning company, a third leaning person) | no error above, then 2 steps stricter | 63.56% | 0.60% | 2 | 8.84% | 2.86% | 1 |
-| 1000 | random | no error above, then 2 steps stricter | 64.64% | 0.17% | 2 | 14.96% | 0.54% | 0 |
-| 1000 | stratified (a third at random, a third leaning company, a third leaning person) | no error above, then 2 steps stricter | 56.65% | 0.02% | 0 | 19.32% | 1.49% | 1 |
-| 2000 | random | no error above, then 2 steps stricter | 64.74% | 0.02% | 0 | 22.25% | 1.67% | 2 |
-| 2000 | stratified (a third at random, a third leaning company, a third leaning person) | no error above, then 2 steps stricter | 68.03% | 0.04% | 0 | 23.91% | 0.86% | 0 |
+| the pipeline's | 1000 | a | 22.27% | 1.54% | 8 | 66.77% | 0.41% | 4 |
+| the pipeline's | 1000 | b | 10.50% | 1.19% | 2 | 66.77% | 0.41% | 4 |
+| the pipeline's | 1000 | c | 2.52% | 1.62% | 3 | 66.77% | 0.41% | 4 |
+| the pipeline's | 2000 | a | 25.34% | 1.23% | 4 | 66.74% | 0.12% | 1 |
+| the pipeline's | 2000 | b | 19.81% | 1.23% | 2 | 66.74% | 0.12% | 1 |
+| the pipeline's | 2000 | c | 2.05% | 0.56% | 0 | 66.74% | 0.12% | 1 |
+| the pipeline's | 4000 | a | 20.57% | 1.51% | 2 | 67.69% | 0.04% | 0 |
+| the pipeline's | 4000 | b | 29.84% | 1.14% | 2 | 67.69% | 0.04% | 0 |
+| the pipeline's | 4000 | c | 0.01% | 0.00% | 0 | 67.69% | 0.04% | 0 |
+| the best | 1000 | a | 26.38% | 2.69% | 10 | 65.47% | 0.80% | 3 |
+| the best | 1000 | b | 7.27% | 1.02% | 1 | 65.47% | 0.80% | 3 |
+| the best | 1000 | c | 1.59% | 1.17% | 1 | 65.47% | 0.80% | 3 |
+| the best | 2000 | a | 24.13% | 1.20% | 3 | 67.06% | 0.13% | 1 |
+| the best | 2000 | b | 22.03% | 1.20% | 2 | 67.06% | 0.13% | 1 |
+| the best | 2000 | c | 0.47% | 0.28% | 0 | 67.06% | 0.13% | 1 |
+| the best | 4000 | a | 22.43% | 1.85% | 4 | 67.64% | 0.02% | 0 |
+| the best | 4000 | b | 29.82% | 1.00% | 1 | 67.64% | 0.02% | 0 |
+| the best | 4000 | c | 0.01% | 0.00% | 0 | 67.64% | 0.02% | 0 |
 
 ### End to end
 
