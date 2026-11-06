@@ -397,7 +397,7 @@ class KindSpec:
     depth: int = 2                            # the combiner's trees (gradient boosting)
     company_wrong_at_most: float = 0.001      # the budget the company line is judged by (choose_kind): placed with no labelled error above it, then margin_steps stricter
     person_wrong_at_most: float = 0.01        # the person line: the labelled error above it within this, at 95% confidence
-    margin_steps: int = 2
+    margin_steps: int = 2                     # the company line: this many grid steps above the first clean one; one more on fewer than labels_to_draw answers
     labels_to_draw: int = 2000                # the review sheet's records drawn to measure the flag and the engine
     review_max: int = 1000                    # ... and at most this many it sends people to decide (the surest disagreements)
     name_line: float = 0.99                   # a name that says the other kind than the flag this surely is sent to decide

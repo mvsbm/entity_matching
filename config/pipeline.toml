@@ -160,7 +160,7 @@ ngram = 3                         # the name model: logistic regression on chara
 depth = 2                         # the combiner: gradient-boosted trees this deep, fitted on people's labels
 company_wrong_at_most = 0.001     # the budget the company line is judged by (choose_kind): placed with no labelled error above it, then margin_steps stricter
 person_wrong_at_most = 0.01       # the person line: the labelled error above it within this, at 95% confidence
-margin_steps = 2
+margin_steps = 2                  # the company line this many grid steps stricter; one more on fewer answers than labels_to_draw
 labels_to_draw = 2000             # kind_review.parquet: records drawn to measure the flag and the engine (why = measure)
 review_max = 1000                 # ... and at most this many sent to decide (why = decide): the engine's sure kind against
 name_line = 0.99                  # the flag, or a name that says the other kind than the flag at least this surely

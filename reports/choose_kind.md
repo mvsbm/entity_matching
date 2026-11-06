@@ -27,9 +27,9 @@ What a file can't tell about itself, over its plausible range (a Latin hypercube
 
 | scenarios | combinations | seconds |
 | --- | --- | --- |
-| 3 | 768 | 132 |
-| 6 | 192 | 51 |
-| 12 | 48 | 56 |
+| 3 | 768 | 131 |
+| 6 | 192 | 53 |
+| 12 | 48 | 54 |
 
 ## The finalists on all 12 scenarios (the best 15 of 48)
 
@@ -95,29 +95,76 @@ The pipeline's combination, each way of counting them.
 
 ## Placing the lines from people's answers
 
-The pipeline's combination and the best: answers drawn at random, 5 draws per scenario (60 trials), the combiner fitted on them, the lines placed on their out-of-fold probabilities: the company line by `er.kind.lines` (no labelled person above it, then 2 grid steps stricter), the person line by each rule below. Then the calls on every other record: the mean share decided, the worst wrong share, and in how many trials the wrong share broke its budget (1% for person calls, 0.1% for company calls).
+The pipeline's combination and the best: answers drawn at random, 5 draws per scenario (60 trials), the combiner fitted on them, each line placed on their out-of-fold probabilities by each rule below. Then the calls on every other record: the mean share decided, the worst wrong share, and in how many trials the wrong share broke its budget (1% for person calls, 0.1% for company calls).
+
+### The person line
 
 - a: the lowest line whose answers above it are 30 or more and at most half the budget wrong
 - b: the lowest line whose 95% one-sided upper bound (Clopper–Pearson) on the wrong share above it is within the budget
 - c: the company's rule: the lowest line with no wrong answer above it, then margin_steps stricter
 
-| combination | answers | person_rule | persons | person_wrong_worst | person_over_budget | companies | company_wrong_worst | company_over_budget |
-| --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| the pipeline's | 1000 | a | 22.27% | 1.54% | 8 | 66.77% | 0.41% | 4 |
-| the pipeline's | 1000 | b | 10.50% | 1.19% | 2 | 66.77% | 0.41% | 4 |
-| the pipeline's | 1000 | c | 2.52% | 1.62% | 3 | 66.77% | 0.41% | 4 |
-| the pipeline's | 2000 | a | 25.34% | 1.23% | 4 | 66.74% | 0.12% | 1 |
-| the pipeline's | 2000 | b | 19.81% | 1.23% | 2 | 66.74% | 0.12% | 1 |
-| the pipeline's | 2000 | c | 2.05% | 0.56% | 0 | 66.74% | 0.12% | 1 |
-| the pipeline's | 4000 | a | 20.57% | 1.51% | 2 | 67.69% | 0.04% | 0 |
-| the pipeline's | 4000 | b | 29.84% | 1.14% | 2 | 67.69% | 0.04% | 0 |
-| the pipeline's | 4000 | c | 0.01% | 0.00% | 0 | 67.69% | 0.04% | 0 |
-| the best | 1000 | a | 26.38% | 2.69% | 10 | 65.47% | 0.80% | 3 |
-| the best | 1000 | b | 7.27% | 1.02% | 1 | 65.47% | 0.80% | 3 |
-| the best | 1000 | c | 1.59% | 1.17% | 1 | 65.47% | 0.80% | 3 |
-| the best | 2000 | a | 24.13% | 1.20% | 3 | 67.06% | 0.13% | 1 |
-| the best | 2000 | b | 22.03% | 1.20% | 2 | 67.06% | 0.13% | 1 |
-| the best | 2000 | c | 0.47% | 0.28% | 0 | 67.06% | 0.13% | 1 |
-| the best | 4000 | a | 22.43% | 1.85% | 4 | 67.64% | 0.02% | 0 |
-| the best | 4000 | b | 29.82% | 1.00% | 1 | 67.64% | 0.02% | 0 |
-| the best | 4000 | c | 0.01% | 0.00% | 0 | 67.64% | 0.02% | 0 |
+| combination | answers | person_rule | persons | person_wrong_worst | person_over_budget |
+| --- | --- | --- | --- | --- | --- |
+| the pipeline's | 500 | a | 26.36% | 3.15% | 8 |
+| the pipeline's | 500 | b | 4.47% | 0.95% | 0 |
+| the pipeline's | 500 | c | 5.13% | 2.06% | 4 |
+| the pipeline's | 1000 | a | 22.27% | 1.54% | 8 |
+| the pipeline's | 1000 | b | 10.50% | 1.19% | 2 |
+| the pipeline's | 1000 | c | 2.52% | 1.62% | 3 |
+| the pipeline's | 2000 | a | 25.34% | 1.23% | 4 |
+| the pipeline's | 2000 | b | 19.81% | 1.23% | 2 |
+| the pipeline's | 2000 | c | 2.05% | 0.56% | 0 |
+| the pipeline's | 4000 | a | 20.57% | 1.51% | 2 |
+| the pipeline's | 4000 | b | 29.84% | 1.14% | 2 |
+| the pipeline's | 4000 | c | 0.01% | 0.00% | 0 |
+| the best | 500 | a | 29.87% | 2.91% | 13 |
+| the best | 500 | b | 4.42% | 1.14% | 1 |
+| the best | 500 | c | 4.89% | 5.62% | 6 |
+| the best | 1000 | a | 26.38% | 2.69% | 10 |
+| the best | 1000 | b | 7.27% | 1.02% | 1 |
+| the best | 1000 | c | 1.59% | 1.17% | 1 |
+| the best | 2000 | a | 24.13% | 1.20% | 3 |
+| the best | 2000 | b | 22.03% | 1.20% | 2 |
+| the best | 2000 | c | 0.47% | 0.28% | 0 |
+| the best | 4000 | a | 22.43% | 1.85% | 4 |
+| the best | 4000 | b | 29.82% | 1.00% | 1 |
+| the best | 4000 | c | 0.01% | 0.00% | 0 |
+
+### The company line
+
+The lowest grid line with no labelled person above it, then this many grid steps stricter (`margin_steps`).
+
+| combination | answers | company_rule | companies | company_wrong_worst | company_over_budget |
+| --- | --- | --- | --- | --- | --- |
+| the pipeline's | 500 | 2 steps | 61.79% | 3.13% | 10 |
+| the pipeline's | 500 | 3 steps | 52.13% | 1.45% | 7 |
+| the pipeline's | 500 | 4 steps | 35.02% | 1.41% | 2 |
+| the pipeline's | 500 | 2 steps from 2,000 answers, 3 below (er.kind.lines) | 52.13% | 1.45% | 7 |
+| the pipeline's | 1000 | 2 steps | 66.77% | 0.41% | 4 |
+| the pipeline's | 1000 | 3 steps | 57.97% | 0.14% | 1 |
+| the pipeline's | 1000 | 4 steps | 40.48% | 0.27% | 1 |
+| the pipeline's | 1000 | 2 steps from 2,000 answers, 3 below (er.kind.lines) | 57.97% | 0.14% | 1 |
+| the pipeline's | 2000 | 2 steps | 66.74% | 0.12% | 1 |
+| the pipeline's | 2000 | 3 steps | 59.29% | 0.08% | 0 |
+| the pipeline's | 2000 | 4 steps | 46.14% | 0.15% | 1 |
+| the pipeline's | 2000 | 2 steps from 2,000 answers, 3 below (er.kind.lines) | 66.74% | 0.12% | 1 |
+| the pipeline's | 4000 | 2 steps | 67.69% | 0.04% | 0 |
+| the pipeline's | 4000 | 3 steps | 62.03% | 0.03% | 0 |
+| the pipeline's | 4000 | 4 steps | 50.68% | 0.09% | 0 |
+| the pipeline's | 4000 | 2 steps from 2,000 answers, 3 below (er.kind.lines) | 67.69% | 0.04% | 0 |
+| the best | 500 | 2 steps | 61.42% | 3.01% | 11 |
+| the best | 500 | 3 steps | 49.53% | 1.46% | 6 |
+| the best | 500 | 4 steps | 35.09% | 1.37% | 3 |
+| the best | 500 | 2 steps from 2,000 answers, 3 below (er.kind.lines) | 49.53% | 1.46% | 6 |
+| the best | 1000 | 2 steps | 65.47% | 0.80% | 3 |
+| the best | 1000 | 3 steps | 54.68% | 0.32% | 2 |
+| the best | 1000 | 4 steps | 36.66% | 0.14% | 1 |
+| the best | 1000 | 2 steps from 2,000 answers, 3 below (er.kind.lines) | 54.68% | 0.32% | 2 |
+| the best | 2000 | 2 steps | 67.06% | 0.13% | 1 |
+| the best | 2000 | 3 steps | 59.52% | 0.06% | 0 |
+| the best | 2000 | 4 steps | 45.54% | 0.12% | 1 |
+| the best | 2000 | 2 steps from 2,000 answers, 3 below (er.kind.lines) | 67.06% | 0.13% | 1 |
+| the best | 4000 | 2 steps | 67.64% | 0.02% | 0 |
+| the best | 4000 | 3 steps | 61.91% | 0.03% | 0 |
+| the best | 4000 | 4 steps | 50.94% | 0.05% | 0 |
+| the best | 4000 | 2 steps from 2,000 answers, 3 below (er.kind.lines) | 67.64% | 0.02% | 0 |

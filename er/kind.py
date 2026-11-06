@@ -5,7 +5,8 @@
                  removed; trained once on public reference data by scripts/train_name_model.py: config/kind_names.npz
     combiner     gradient-boosted trees on the name model's score, the file's flag, the birth year and the legal form,
                  fitted on people's labels (kind_review.parquet, filled in); none without labels
-    lines        company: no labelled error above it (out of fold), then margin_steps stricter; person: the labelled
+    lines        company: no labelled error above it (out of fold), then margin_steps stricter, one more on fewer
+                 answers than a measuring draw; person: the labelled
                  error above it within its budget at 95% confidence. Without labels: a company only where a legal
                  form is written, never a sure person.
 
@@ -190,12 +191,14 @@ def merge_answers(kept: pd.DataFrame | None, given: pd.DataFrame | None, uid: st
 
 def lines(p: np.ndarray, company: np.ndarray, spec: KindSpec) -> tuple[float, float, float | None]:
     """Each side's line from out-of-fold probabilities on people's answers: the company line is the lowest grid point
-    with no labelled person above it, then margin_steps stricter; the person line the lowest whose labelled wrong share
+    with no labelled person above it, then margin_steps stricter, one more on fewer answers than labels_to_draw (at
+    1,000 answers, 2 steps broke the budget in 4 of 60 trials); the person line the lowest whose labelled wrong share
     has a one-sided 95% upper bound (Clopper–Pearson) within person_wrong_at_most: with none wrong, 300 answers above
     it. A share measured on few answers can hide a rate over budget (reports/choose_kind.md). Above 1: never."""
     grid = list(spec.grid)
     clean = [g for g in grid if not ((p >= g) & ~company).any() and (p >= g).any()]
-    line_c = grid[min(grid.index(clean[0]) + spec.margin_steps, len(grid) - 1)] if clean else 1.01
+    steps = spec.margin_steps + (len(p) < spec.labels_to_draw)  # fewer answers than the measuring draw: one step stricter
+    line_c = grid[min(grid.index(clean[0]) + steps, len(grid) - 1)] if clean else 1.01
     line_p, error = 1.01, None
     for g in grid:
         above = (1 - p) >= g

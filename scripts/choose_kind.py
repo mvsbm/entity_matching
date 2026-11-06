@@ -105,6 +105,8 @@ def population(companies: pd.DataFrame, persons: pd.DataFrame, shops: list[str],
 PERSON_RULES = {"a": "the lowest line whose answers above it are 30 or more and at most half the budget wrong",
                 "b": "the lowest line whose 95% one-sided upper bound (Clopper–Pearson) on the wrong share above it is within the budget",
                 "c": "the company's rule: the lowest line with no wrong answer above it, then margin_steps stricter"}
+COMPANY_RULES = {"2 steps": lambda n: 2, "3 steps": lambda n: 3, "4 steps": lambda n: 4,
+                 "2 steps from 2,000 answers, 3 below (er.kind.lines)": lambda n: 2 if n >= 2000 else 3}  # margin_steps by the answers measured
 DRAWS = 5
 
 
@@ -237,32 +239,36 @@ def main() -> None:
 
     best_k = int(final.k.iloc[0])
     print(f"placing the lines: {DRAWS} draws of answers per scenario, each rule", flush=True)
-    placing = []
+    placing, company_placing = [], []
     for which, k in {"the pipeline's": pipeline, "the best": best_k}.items():
         cfg = configs[k]
         for i in range(12):
             d, hand, rest, logits = scenario(i)
             logits = {kk: pd.Series(v, index=d.index) for kk, v in logits.items()}
-            for n_ans in (1000, 2000, 4000):
+            for n_ans in (500, 1000, 2000, 4000):
                 for j in range(DRAWS):
                     ans = d.sample(n_ans, random_state=1000 * i + j)  # drawn at random, as the review sheet draws them
                     X, company = features(cfg, ans, logits), ans.y.to_numpy() == 1
                     oof = cross_val_predict(make(cfg["combiner"]), X, ans.y, cv=StratifiedKFold(5, shuffle=True, random_state=0), method="predict_proba")[:, 1]
                     scored = d.drop(ans.index)
                     p, y = make(cfg["combiner"]).fit(X, ans.y).predict_proba(features(cfg, scored, logits))[:, 1], scored.y.to_numpy()
-                    c_calls = p >= lines(oof, company, KIND)[0]
                     for rule in PERSON_RULES:
                         p_calls = (1 - p) >= person_line(oof, company, rule)
                         placing.append(dict(combination=which, answers=n_ans, person_rule=rule,
-                                            companies=c_calls[y == 1].mean(), company_wrong=(c_calls & (y == 0)).sum() / max(c_calls.sum(), 1),
                                             persons=p_calls[y == 0].mean(), person_wrong=(p_calls & (y == 1)).sum() / max(p_calls.sum(), 1)))
+                    for rule, margin in COMPANY_RULES.items():
+                        c_calls = p >= lines(oof, company, replace(KIND, margin_steps=margin(n_ans), labels_to_draw=0))[0]  # this rule's steps only
+                        company_placing.append(dict(combination=which, answers=n_ans, company_rule=rule, companies=c_calls[y == 1].mean(),
+                                                    company_wrong=(c_calls & (y == 0)).sum() / max(c_calls.sum(), 1)))
         if k == pipeline == best_k:
             break
     pl = pd.DataFrame(placing).groupby(["combination", "answers", "person_rule"], sort=False).agg(
-        persons=("persons", "mean"), person_wrong_worst=("person_wrong", "max"), person_over_budget=("person_wrong", lambda s: int((s > BUDGET_P).sum())),
+        persons=("persons", "mean"), person_wrong_worst=("person_wrong", "max"), person_over_budget=("person_wrong", lambda s: int((s > BUDGET_P).sum()))).reset_index()
+    cl = pd.DataFrame(company_placing).groupby(["combination", "answers", "company_rule"], sort=False).agg(
         companies=("companies", "mean"), company_wrong_worst=("company_wrong", "max"), company_over_budget=("company_wrong", lambda s: int((s > BUDGET_C).sum()))).reset_index()
-    for c in ("companies", "company_wrong_worst", "persons", "person_wrong_worst"):
-        pl[c] = pl[c].map(lambda v: f"{v:.2%}")
+    for df, cols in ((pl, ("persons", "person_wrong_worst")), (cl, ("companies", "company_wrong_worst"))):
+        for c in cols:
+            df[c] = df[c].map(lambda v: f"{v:.2%}")
 
     best = final.iloc[0]
     report = ["# Choosing how to tell persons from companies", "",
@@ -286,11 +292,13 @@ def main() -> None:
               "## Counting sole traders", "", "The pipeline's combination, each way of counting them.", "", markdown(pol), "",
               "## Placing the lines from people's answers", "",
               f"The pipeline's combination and the best: answers drawn at random, {DRAWS} draws per scenario ({12 * DRAWS} trials), the "
-              "combiner fitted on them, the lines placed on their out-of-fold probabilities: the company line by `er.kind.lines` (no "
-              f"labelled person above it, then {KIND.margin_steps} grid steps stricter), the person line by each rule below. Then the "
-              "calls on every other record: the mean share decided, the worst wrong share, and in how many trials the wrong share "
-              f"broke its budget ({BUDGET_P:.0%} for person calls, {BUDGET_C:.1%} for company calls).", "",
-              *[f"- {r}: {w}" for r, w in PERSON_RULES.items()], "", markdown(pl), ""]
+              "combiner fitted on them, each line placed on their out-of-fold probabilities by each rule below. Then the calls on "
+              "every other record: the mean share decided, the worst wrong share, and in how many trials the wrong share broke its "
+              f"budget ({BUDGET_P:.0%} for person calls, {BUDGET_C:.1%} for company calls).", "",
+              "### The person line", "", *[f"- {r}: {w}" for r, w in PERSON_RULES.items()], "", markdown(pl), "",
+              "### The company line", "",
+              "The lowest grid line with no labelled person above it, then this many grid steps stricter (`margin_steps`).", "",
+              markdown(cl), ""]
     path = S.root / "reports" / "choose_kind.md"
     path.write_text("\n".join(report), encoding="utf-8")
     print("\n".join(report))
