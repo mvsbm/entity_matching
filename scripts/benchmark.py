@@ -1,8 +1,10 @@
 """Benchmark the chosen pipeline (config/final.toml) as it runs on real files: er.run, without labels, on DuckDB
 tables. Writes reports/benchmark.md. Nothing is re-tuned.
 
-    .venv/bin/python scripts/benchmark.py                                         # scenarios and the cost curve
-    .venv/bin/python scripts/benchmark.py --entities 10000 800000 --memory-limit 8GB   # cost up to a million records, in 8 GB
+    .venv/bin/python scripts/benchmark.py                 # scenarios and the cost curve up to 60,000 entities
+    .venv/bin/python scripts/benchmark.py --entities 10000 20000 40000 60000 800000 --memory-limit 8GB   # reports/benchmark.md: up to a million records, in 8 GB
+
+The report starts with the command that wrote it.
 
 Quality: each scenario generates a population with er.generate (config/generator.toml, varied), fits λ and m on
 its train split without labels, resolves its test split with u measured on it, and compares the clusters with the truth.
@@ -14,6 +16,7 @@ that run's alone. Past the memory limit (--memory-limit, else config/settings.to
 import argparse
 import json
 import logging
+import shlex
 import shutil
 import subprocess
 import sys
@@ -180,8 +183,8 @@ def main() -> None:
     robust, kind, curve = scenarios(), kinds(20_000), cost(args.entities, args.memory_limit)
     limit = args.memory_limit or "DuckDB's default (80% of RAM)"
     report = ["# Benchmark", "",
-              "Written by `scripts/benchmark.py`: `config/final.toml` through `er.run`, the run without labels on DuckDB tables, on "
-              "generated populations. Nothing is re-tuned.", "",
+              f"Written by `{shlex.join(['scripts/benchmark.py', *sys.argv[1:]])}`: `config/final.toml` through `er.run`, the run "
+              "without labels on DuckDB tables, on generated populations. Nothing is re-tuned.", "",
               "## Quality: scenarios", "",
               "Each population's test split, with λ and m fitted on its train split without labels and u measured on the test split, as a run does. `false_merges` are pairs of "
               "records in one cluster that are two entities; `false_links` are the model's links between two entities, and "

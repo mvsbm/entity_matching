@@ -1,7 +1,9 @@
 """Self-checks for the er engine. Run from the project root: python -m pytest tests/
 Self-contained: small hand-made frames, the tracked config and reference data; no generated files needed."""
+import json
 import logging
 import math
+from pathlib import Path
 from dataclasses import replace
 
 import numpy as np
@@ -1257,6 +1259,8 @@ def test_with_answers_the_kinds_are_the_same_every_run_people_s_stand_and_a_cust
     answered = ga.set_index(uid).loc[sheet[uid][3:]]
     assert (answered["kind_by"] == "people").all() and (answered["kind"].to_numpy() == sheet["kind"][3:].to_numpy()).all()  # people's answers stand
     assert len(pd.read_parquet(tmp_path / "b" / "kind_answers" / "part-00000.parquet")) == len(sheet)  # kept as given, for later runs
+    inputs = json.loads((tmp_path / "b" / "steps.json").read_text())["runs"][0]["inputs"]
+    assert {Path(i["file"]).name for i in inputs} == {"all.parquet", "kind_names.npz", "labels.parquet"}  # what went in, with its SHA-256
     by = ga.groupby("cluster_id").agg(any_company=("kind", lambda k: (k == 2).any()), leans=("kind_p", "max"),
                                       any_person=("kind", lambda k: (k == 1).any()), customer=("customer_kind", "first"))
     expect = np.where(by.any_company, 2, np.where((by.leans.fillna(0) < 0.5) & by.any_person, 1, 0))

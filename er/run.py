@@ -247,7 +247,7 @@ class Run:
             if self.labels is None:  # full() and increment() merge them with the run's first
                 self.labels = merge_answers(None, self._given(), self.uid)
             self.classifier = kind_classifier(self.settings, spec, self.labels)
-            self.inputs += file_facts([self.settings.root / NAME_MODEL])
+            self.inputs += file_facts([self.settings.root / NAME_MODEL, *([Path(self.kind_labels)] if self.kind_labels else [])])
         normalized, used = [*rules.normalized(), *fs.normalized()], rules.used() | fs.used()
         reader = self.con.cursor().sql(f"SELECT * FROM {rows}").to_arrow_reader(self.chunk_rows)  # its own cursor: inserts go on alongside
         for i, batch in enumerate(reader):

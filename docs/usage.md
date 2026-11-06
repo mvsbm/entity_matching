@@ -244,7 +244,7 @@ For changing the matching or measuring it, on synthetic labelled data:
 |---|---|---|
 | generate the synthetic train, val and test files | `scripts/generate.py` | seconds |
 | choose the configuration on them | `scripts/choose.py` (`--optuna` adds the searches) → `config/final.toml`, `reports/choose.md` | minutes |
-| measure quality and cost on growing files | `scripts/benchmark.py --memory-limit 8GB` → `reports/benchmark.md` | minutes |
+| measure quality and cost on growing files | `scripts/benchmark.py --entities 10000 20000 40000 60000 800000 --memory-limit 8GB` → `reports/benchmark.md`, which starts with the command that wrote it | minutes |
 | choose how persons and companies are told apart | `scripts/choose_kind.py` → `reports/choose_kind.md` | minutes |
 | train the name model again, after changing `data/reference/`, the generator's `kana_confusions` or `branches`, the legal forms or kana folding, or `[kind] ngram` (a run refuses a model trained under other settings; commit the file) | `scripts/train_name_model.py` → `config/kind_names.npz` | seconds |
 | see every step on a small file | `notebooks/demo.ipynb`, or `scripts/export_pdfs.py` for its PDF (first: `.venv/bin/python -m playwright install chromium`) | under a minute |
