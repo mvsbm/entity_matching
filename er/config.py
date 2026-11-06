@@ -44,7 +44,9 @@ class Derived:
 @dataclass(frozen=True, kw_only=True)
 class Standardization:
     kana_fold: Mapping[str, str]              # character → replacement
-    legal_forms: tuple[str, ...]
+    legal_forms: tuple[str, ...]              # removed wherever they stand
+    legal_front: tuple[str, ...] = ()         # bank abbreviations that stand first: カ)〇〇
+    legal_end: tuple[str, ...] = ()           # and last: 〇〇(カ
     prefectures: tuple[str, ...]
     address_replacements: tuple[tuple[str, str], ...]  # regex → replacement, after NFKC
     address_cut_at: str                       # drop everything after this (building / room)

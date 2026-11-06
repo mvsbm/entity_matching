@@ -7,6 +7,21 @@ import pandas as pd
 from er.config import InputError, Normalizer, Standardization, column_name
 
 
+SMALL_KANA = str.maketrans("ァィゥェォッャュョヮ", "アイウエオツヤユヨワ")  # banks write no small kana
+
+
+def legal_pattern(std: Standardization) -> str:
+    """A legal form anywhere (its reading, also with small kana written large), or a bank abbreviation where it may
+    stand: first, カ)〇〇, or last, 〇〇(カ. Longest first, so 医療法人社団 isn't cut to 医療法人. On NFKC text."""
+    forms = sorted({f for x in std.legal_forms for f in (x, x.translate(SMALL_KANA))}, key=len, reverse=True)
+    parts = [re.escape(f) for f in forms]
+    if std.legal_front:
+        parts.append(f"^(?:{'|'.join(map(re.escape, sorted(std.legal_front, key=len, reverse=True)))})\\)")
+    if std.legal_end:
+        parts.append(f"\\((?:{'|'.join(map(re.escape, sorted(std.legal_end, key=len, reverse=True)))})$")
+    return "|".join(parts)
+
+
 def normalize(s: pd.Series, steps: tuple[Normalizer, ...], std: Standardization) -> pd.Series:
     for step in steps:
         match step:
@@ -23,7 +38,7 @@ def normalize(s: pd.Series, steps: tuple[Normalizer, ...], std: Standardization)
             case "kana_fold":
                 s = s.str.translate(str.maketrans(dict(std.kana_fold)))
             case "strip_legal_form":
-                s = s.str.replace("|".join(map(re.escape, std.legal_forms)), "", regex=True)
+                s = s.str.replace(legal_pattern(std), "", regex=True)
             case "address":
                 s = s.str.normalize("NFKC")
                 for pattern, repl in std.address_replacements:

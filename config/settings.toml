@@ -27,7 +27,22 @@ temp_directory = ""
 # kana folding, character by character: voiced → unvoiced, small → large, ヴ/ヂ/ヅ/ヲ, ー → ウ
 kana_fold_from = "ガギグゲゴザジズゼゾダヂヅデドバビブベボパピプペポヴァィゥェォッャュョヮヵヶヲー"
 kana_fold_to   = "カキクケコサシスセソタチツテトハヒフヘホハヒフヘホフアイウエオツヤユヨワカケオウ"
-legal_forms = ["カブシキガイシャ", "ユウゲンガイシャ", "ゴウドウガイシャ", "(カ)", "(ユ)", "カ)", "ユ)"]   # after NFKC: half-width and full-width forms fold into these
+# Legal forms, after NFKC (half-width and full-width forms fold into these). legal_forms are removed wherever they
+# stand: each form's reading (also as banks write it, small kana large: カブシキガイシヤ), the bank abbreviation in the
+# middle of a name, (カ), and the forms of the generator. legal_front stand first, カ)〇〇; legal_end stand last, 〇〇(カ.
+# The bank abbreviations and where each may stand: the Zengin list as banks publish it.
+legal_forms = ["カブシキガイシャ", "ユウゲンガイシャ", "ゴウドウガイシャ", "ゴウシガイシャ", "ゴウメイガイシャ", "ソウゴガイシャ",
+               "イリョウホウジンシャダン", "イリョウホウジンザイダン", "イリョウホウジン", "イッパンザイダンホウジン", "コウエキザイダンホウジン",
+               "イッパンシャダンホウジン", "コウエキシャダンホウジン", "シュウキョウホウジン", "ガッコウホウジン", "シャカイフクシホウジン",
+               "コウセイホゴホウジン", "トクテイヒエイリカツドウホウジン", "ドクリツギョウセイホウジン", "ベンゴシホウジン",
+               "ギョウセイショシホウジン", "シホウショシホウジン", "ゼイリシホウジン", "ユウゲンセキニンチュウカンホウジン",
+               "ムゲンセキニンチュウカンホウジン", "コクリツダイガクホウジン", "コウリツダイガクホウジン", "ノウジクミアイホウジン",
+               "カンリクミアイホウジン", "シャカイホケンロウムシホウジン", "コクリツケンキュウカイハツホウジン",
+               "(カ)", "(ユ)", "(メ)", "(シ)", "(ド)", "(ソ)", "(ホゴ)", "(ギヨ)", "(シホウ)", "(ゼイ)", "(ダイ)", "(ノウ)", "(ケン)",
+               "カ)", "ユ)"]
+legal_front = ["カ", "ユ", "メ", "シ", "ド", "ソ", "イ", "ザイ", "シヤ", "シユウ", "ガク", "フク", "ホゴ", "トクヒ", "ドク", "ベン",
+               "ギヨ", "シホウ", "ゼイ", "チユウ", "ダイ", "ノウ", "ケン"]
+legal_end = ["カ", "ユ", "メ", "シ", "ド", "ソ", "イ", "ギヨ", "シホウ", "ゼイ", "ダイ", "ノウ", "カンリ", "ロウム"]
 prefectures = [
   "北海道", "青森県", "岩手県", "宮城県", "秋田県", "山形県", "福島県", "茨城県", "栃木県", "群馬県", "埼玉県", "千葉県",
   "東京都", "神奈川県", "新潟県", "富山県", "石川県", "福井県", "山梨県", "長野県", "岐阜県", "静岡県", "愛知県", "三重県",

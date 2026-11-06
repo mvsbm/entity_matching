@@ -404,6 +404,22 @@ def test_blocking_normalizers():
     assert normalize(pd.Series(["サトウ"], dtype="string"), ("reverse",), std).tolist() == ["ウトサ"]
 
 
+def test_legal_forms_go_wherever_banks_write_them_and_the_generator_s_names_lose_exactly_its_forms():
+    import re
+    import unicodedata
+    from er.generate import generate, load_reference, load_spec
+    s = load_settings()
+    std = s.standardize
+    strip = lambda xs: normalize(pd.Series(xs, dtype="string"), ("nfkc", "strip_legal_form"), std).tolist()
+    assert strip(["カ)ヤマダ", "ヤマダ(カ", "ヤマダ(カ)ショウジ", "ｲ)ﾔﾏﾀﾞｸﾘﾆﾂｸ", "カブシキガイシヤヤマダ", "トクヒ)ヤマダ", "イリョウホウジンシャダンヤマダ"]) \
+        == ["ヤマダ", "ヤマダ", "ヤマダショウジ", "ヤマダクリニツク", "ヤマダ", "ヤマダ", "ヤマダ"]
+    assert strip(["ヤマダ(ザイ", "ザイ)ヤマダ", "シヤ)ヤマダ"]) == ["ヤマダ(ザイ", "ヤマダ", "ヤマダ"]  # ザイ stands first only
+    spec = replace(load_spec(s.root / "config" / "generator.toml")[0], entities=3_000)
+    names = generate(spec, *load_reference(s.paths["reference"])).df["NYS_CNV_P_NAME_KANA"].dropna().astype("string").str.normalize("NFKC")
+    written = sorted({unicodedata.normalize("NFKC", f) for f, _ in spec.legal_forms_written if f}, key=len, reverse=True)
+    assert strip(names) == names.str.replace("|".join(map(re.escape, written)), "", regex=True).tolist()
+
+
 def test_grown_pairs_tells_a_square_law_key_from_a_linear_one():
     rng = np.random.default_rng(0)
     entities = np.repeat(np.arange(4000), 2)  # two records per entity
