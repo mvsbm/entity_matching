@@ -1,0 +1,61 @@
+@startuml containers
+!include <C4/C4_Container>
+LAYOUT_LEFT_RIGHT()
+HIDE_STEREOTYPE()
+title HLD 2 · Containers: the entry points, the engine and every store
+
+Person(owner, "Data owner / reviewer")
+Person(developer, "Developer")
+
+System_Boundary(entry, "Entry points: scripts/ and notebooks/") {
+  Container(resolve, "scripts/resolve.py", "CLI", "a full run, ~--increment, ~--decisions, ~--kind-labels, ~--check; exit 2 a mistake to fix, 75 busy")
+  Container(schedule, "scripts/schedule.py", "CLI", "serves an inbox through resolve.py, one file at a time; jobs.jsonl")
+  Container(generate, "scripts/generate.py", "CLI", "synthetic records and their truth, split by entity")
+  Container(choose, "scripts/choose.py", "CLI", "each change tried on train, confirmed on val, test scored once; writes config/final.toml")
+  Container(choose_kind, "scripts/choose_kind.py", "CLI", "measures every way to tell persons from companies across the unknowns")
+  Container(benchmark, "scripts/benchmark.py", "CLI", "quality, person or company, and cost up to a million records")
+  Container(export, "scripts/export_pdfs.py", "CLI", "runs the demo, prints notebooks/pdf/demo.pdf")
+  Container(demo, "notebooks/demo.ipynb", "Jupyter", "every step of a run, charted; no logic of its own")
+}
+
+System_Boundary(engine, "The engine: er/ (components: HLD 3)") {
+  Container(er, "er", "Python package", "every computation; names no column except the generator")
+  Container(duckdb, "DuckDB", "in process", "every working table; past memory_limit it spills to temp_directory")
+  Container(splink, "Splink 5", "library", "EM training, scoring of given pairs, connected components")
+}
+
+System_Boundary(stores, "Stores") {
+  ContainerDb(config, "config/", "TOML, Python", "settings.toml (paths, [columns], [locale], [compute], [kind]); pipeline.toml; final.toml; generator.toml; experiments.py")
+  ContainerDb(reference, "data/reference/", "JSON, in git", "personas, companies, addresses, the registry: generator input and the name model's training")
+  ContainerDb(medallion, "data/medallion/, data/labels/", "Parquet", "bronze: records as they arrive; labels: the truth, read only to choose and evaluate; gold: a run folder per dataset")
+  ContainerDb(runfolder, "Run folder (~--output)", "Parquet, JSON, Markdown", "gold, matches, review sheets, qa.md, report.txt, state/ for increments: the data diagram, LLD 5")
+  ContainerDb(artifacts, "data/artifacts/", "Parquet, JSON, npz", "models/kind_names.npz (the cached name model), models/*_final.json, the leaderboard, Optuna studies, benchmark runs")
+  ContainerDb(reports, "reports/", "Markdown, in git", "choose.md, choose_kind.md, benchmark.md: what was measured on synthetic data")
+}
+
+Rel(owner, resolve, "runs")
+Rel(owner, schedule, "drops files in its inbox")
+Rel(developer, choose, "runs")
+Rel(schedule, resolve, "runs, a process per file")
+Rel(resolve, er, "er.run.Run")
+Rel(benchmark, er, "er.run.Run, er.generate")
+Rel(choose, er, "er.select, then er.run")
+Rel(choose_kind, er, "er.kind, er.generate")
+Rel(generate, er, "er.generate")
+Rel(demo, er, "er.run.Run, step by step")
+Rel(export, demo, "executes")
+Rel(er, duckdb, "SQL on one connection")
+Rel(er, splink, "train_fs, score_fs, clustering")
+Rel(splink, duckdb, "its own SQL")
+Rel(er, config, "reads")
+Rel(er, reference, "reads")
+Rel(generate, medallion, "writes bronze, labels")
+Rel(choose, medallion, "reads; writes gold/<dataset>/")
+Rel(choose, config, "writes final.toml")
+Rel(er, runfolder, "reads, writes (staged)")
+Rel(er, artifacts, "the name model's cache")
+Rel(choose, artifacts, "models, leaderboard")
+Rel(choose, reports, "choose.md")
+Rel(choose_kind, reports, "choose_kind.md")
+Rel(benchmark, reports, "benchmark.md")
+@enduml

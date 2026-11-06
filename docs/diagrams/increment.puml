@@ -1,0 +1,109 @@
+@startuml increment
+title LLD 2 · An increment: Run.increment, then Run.report (scripts/resolve.py ~--input … ~--output … ~--increment)
+skinparam defaultFontSize 11
+skinparam rectangle {
+  BackgroundColor #F4F6F8
+  BorderColor #65717E
+}
+skinparam database {
+  BackgroundColor #E8F1FB
+  BorderColor #2C6DB3
+}
+skinparam file {
+  BackgroundColor #FFF8E6
+  BorderColor #B07D00
+}
+
+package "read back from the run folder" {
+  file "state/model.json · state/scoring.json" as f_model
+  file "state/records/part-n.parquet" as f_records
+  file "state/rule_clusters.parquet · gold.parquet" as f_clusters
+  file "state/kind_labels.parquet" as f_answers
+  file "review.parquet · decisions/part-n.parquet" as f_sheet
+}
+file "the batch: Parquet files (~--input)" as f_batch
+
+rectangle "<b>1 load</b> · O(Δ·L) · Run.increment\nrun.finish_writes · Run._answers · Run._given · kind.merge_answers\nRun.load · source.open_source · source.suggest · settings.present_fields · settings.fit_to_file\nRun._set_aside (a record already in the run is set aside) · kind.classifier · standardize.prepare" as load
+rectangle "<b>2 fit</b> · O(N + S·K_stale)\nrecords = old_records ∪ new_records; new_ids\nmatch.refreshed_u: exact levels counted again; a comparison sampled again only once its drift outgrows its sampling error" as fit
+rectangle "<b>3 rules</b> · O(Δ·Σb) + a scan\nRun._rules · Run._untrusted · match.rule_edges (the batch against all) · Run._merge" as rules
+rectangle "<b>4 candidates</b> · O(Δ·Σb) + a scan\ncandidates.candidates (the batch as the query) · Run._gate · match.score_fs · Run._gated\nrun.review_floor · Run.capacity · Run.spill_room · run.size_bytes" as candidates
+rectangle "<b>5 score</b> · O(C_Δ·K·L²)\nmatch.score_fs on the records the pairs touch" as score
+rectangle "<b>6 cluster</b> · O(C_Δ + touched clusters)\nRun._accept · run.named_sql · Run._merge (each stored cluster one node)\nRun._gold (the stored answers stand) · run.customer_kinds · Run._expected_false" as cluster
+rectangle "<b>7 write</b> · O(Δ + C_Δ) + O(N)\nRun.write · Run._stage · run.finish_writes · Run._log" as write
+rectangle "<b>8 report</b>, as a full run's; review.parquet keeps the previous sheet's open rows (run.carry_over)\nRun.report · run.qa · run.report_text" as report
+
+database "old_records" as old_records
+database "new_records" as new_records
+database "set_aside" as set_aside
+database "records" as records
+database "new_ids" as new_ids
+database "rule_clusters" as rule_clusters
+database "rule_kept" as rule_kept
+database "cands" as cands
+database "scores" as scores
+database "matches" as matches
+database "gold" as gold
+
+package "written to the run folder" {
+  file "new parts: matches/, rule_kept/, state/records/, set_aside/\nrewritten: gold.parquet, state/rule_clusters.parquet, state/scoring.json\nsteps.json: an entry added" as f_out
+  file "qa.md · report.txt · review.parquet" as f_people
+}
+
+f_batch --> load
+f_records --> load
+f_answers --> load
+f_model --> fit
+f_clusters --> rules
+f_clusters --> cluster
+f_sheet --> report
+
+load ..> fit
+fit ..> rules
+rules ..> candidates
+candidates ..> score
+score ..> cluster
+cluster ..> write
+write ..> report
+
+load --> old_records
+load --> new_records
+load --> set_aside
+old_records --> fit
+new_records --> fit
+fit --> records
+fit --> new_ids
+records --> rules
+new_records --> rules
+new_ids --> rules
+rules --> rule_clusters
+rules --> rule_kept
+records --> candidates
+new_ids --> candidates
+candidates --> cands
+records --> score
+cands --> score
+score --> scores
+records --> cluster
+new_ids --> cluster
+rule_clusters --> cluster
+rule_kept --> cluster
+cands --> cluster
+scores --> cluster
+cluster --> matches
+cluster --> gold
+new_records --> write
+rule_clusters --> write
+rule_kept --> write
+matches --> write
+gold --> write
+set_aside --> write
+records --> report
+cands --> report
+scores --> report
+matches --> report
+gold --> report
+set_aside --> report
+
+write --> f_out
+report --> f_people
+@enduml

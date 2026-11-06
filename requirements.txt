@@ -9,6 +9,7 @@ optuna-dashboard==0.21.0  # localhost web UI for the study
 rapidfuzz==3.14.6  # character-level string metrics; DuckDB's jaro_winkler/jaccard/damerau compare UTF-8 bytes
 scikit-learn==1.9.1  # TF-IDF char n-gram candidates; the person-or-company name model and combiner (er.kind)
 pytest==9.2.0  # tests/: engine self-checks
+sqlglot==30.25.0  # tests/test_design.py: the tables each step's SQL makes and reads (Splink installs it too)
 matplotlib==3.11.2  # notebooks/demo.ipynb: the charts (static, so the PDF keeps them)
 nbconvert==7.17.2  # scripts/export_pdfs.py: run the demo notebook, render it with its outputs
 playwright==1.64.1  # scripts/export_pdfs.py: prints the PDFs (once: python -m playwright install chromium)

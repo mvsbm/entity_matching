@@ -1,0 +1,141 @@
+@startuml data
+title LLD 5 · The run folder: every file, its columns, and who writes it (<id> is [columns] id, <field> a logical field)
+set namespaceSeparator none
+left to right direction
+hide circle
+hide methods
+skinparam defaultFontSize 11
+skinparam class {
+  BackgroundColor #FFFFFF
+  BorderColor #65717E
+  HeaderBackgroundColor #E8F1FB
+}
+
+package "the answer: Run.write" {
+  entity "gold.parquet" as gold {
+    * <id> : the record
+    cluster_id : the smallest <id> of its cluster
+    resolved_stage : deterministic · probabilistic · review
+    resolved_by : the rule, fs or review
+    kind : 2 company · 1 person · 0 not sure
+    kind_p : the probability of a company
+    kind_by : engine · people
+    kind_held : the name kept from matching
+    customer_kind : its cluster's kind
+  }
+  entity "matches/part-n.parquet" as matches {
+    * <id>_l
+    * <id>_r
+    match_weight : bits
+    match_probability
+    sources : the generators that found the pair
+  }
+  entity "rule_kept/part-n.parquet" as rule_kept {
+    * <id>_l
+    * <id>_r
+    rule
+    stage
+    score
+  }
+  entity "set_aside/part-n.parquet" as set_aside {
+    <the input's columns>
+    reason : no ID · the same ID with different content · already in the run
+  }
+  entity "steps.json" as steps {
+    one entry per run, increment or set of decisions
+    each step: big_o, filled, seconds, peak_memory_gb, facts
+  }
+}
+
+package "state/, for increments: Run.write" {
+  entity "state/records/part-n.parquet" as records {
+    * <id>
+    <the input's columns>
+    <field> : each logical field
+    <field>__<normalizers> : each normalized copy
+    kind
+    kind_p
+    kind_by
+    name_p
+    kind_held
+    kind_name : the name as written
+  }
+  entity "state/rule_clusters.parquet" as rule_clusters {
+    * <id>
+    cluster_id : its rule cluster
+  }
+  entity "state/model.json" as model {
+    Splink's model: λ, m and u per level, the fit's facts
+  }
+  entity "state/scoring.json" as scoring {
+    the u the run scored with; per comparison its basis and last drift check
+  }
+  entity "state/kind_labels.parquet" as kind_labels {
+    * <id>
+    kind : people's answer
+    <the answered sheet's other columns>
+  }
+}
+
+package "for people: Run.report" {
+  entity "review.parquet" as review {
+    why : decide · audit
+    decision : match · no_match, to fill in
+    * <id>_l
+    * <id>_r
+    match_weight
+    match_probability
+    accepted : in matches
+    sources
+    <field>_l
+    <field>_r
+    <comparison> : its level
+    <comparison>_bits
+  }
+  entity "kind_review.parquet" as kind_review {
+    * <id>
+    why : decide · measure
+    reason : in words
+    engine_says
+    name_says
+    <flag, if the file has one>
+    name
+    <birth_date, if the file has one>
+    engine
+    engine_p
+    name_p
+    drawn
+    kind : 1 · 2 · 0, to fill in
+  }
+  entity "qa.md" as qa {
+    the label-free checks: summary, fill, steps, weight bands,
+    clusters, kinds, oversized blocks, the review queue
+  }
+  entity "report.txt" as report {
+    the run on a page, with no record's value in it
+  }
+}
+
+package "people's work and the writers' state" {
+  entity "decisions/part-n.parquet" as decisions {
+    * <id>_l
+    * <id>_r
+    decision : match · no_match
+  }
+  entity "pending.json" as pending {
+    the moves a write still owes; only while one is cut short
+  }
+  entity "jobs.jsonl" as jobs {
+    scripts/schedule.py: one line per file per pass
+  }
+}
+
+gold }o--|| rule_clusters : <id>
+matches }o--|| gold : <id>_l, <id>_r
+rule_kept }o--|| gold : <id>_l, <id>_r
+records ||--|| gold : <id>
+kind_labels |o--|| records : <id>
+review }o--|| gold : <id>_l, <id>_r
+kind_review |o--|| records : <id>
+decisions }o--|| gold : <id>_l, <id>_r
+@enduml

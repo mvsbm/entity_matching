@@ -215,8 +215,9 @@ def fingerprint(records: Records, cols: list[str], db: DuckDBAPI) -> int:
 
 def scored_sample(model: FSModel, df: Records, db: DuckDBAPI, uid: str, comparisons: Iterable[Comparison] | None = None) -> U:
     """u by random sampling on these records, per comparison (all, or these), cached (SCORED_U) by the comparison and
-    the values it reads. Splink picks the sampled pairs by a hash of the record ID, so nothing else changes them: a fit
-    on a whole small file and the run's u on it, or a model and its variant, share one sample. O(N) per comparison for
+    the values it reads, within this process. Splink picks the sampled pairs by a hash of the record ID, so nothing else
+    changes them: a model and its variant share one sample, and so do a fit on a whole small file and the run's u on it
+    when both sample as many pairs (fit_u_max_pairs unset). O(N) per comparison for
     the fingerprint, plus u_max_pairs per comparison not cached yet."""
     keys, wanted = model.u_keys(), list(model.comparisons if comparisons is None else comparisons)
     reads = {c.name: [uid, *sorted({comp.column(col) for lv in c.levels for col, comp in lv.any_of} | set(c.null_if_missing))] for c in wanted}

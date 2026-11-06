@@ -15,7 +15,7 @@ Every script runs as `.venv/bin/python scripts/<name>.py`.
 
 ## 2 · Map your columns
 
-The pipeline never names your columns. It works on logical fields, and `config/settings.toml` `[columns]` says which of your columns hold each one:
+The pipeline never names your columns. It works on logical fields, and `config/settings.toml` `[columns]` says which of your columns hold each one (`ER_SETTINGS=<file>` points a run at another settings file):
 
 ```toml
 [columns]
@@ -40,7 +40,7 @@ The fields, and which ones a run needs (`[fields]` in `config/final.toml`; `kind
 | `entity` | the true entity, in labelled files only | never read by a run |
 
 - **A missing optional field** turns off only the rules, keys and comparison levels that read it. The run lists them in `qa.md`.
-- **Names are matched loosely.** A column whose name differs from the mapping only in case, width or separators (`cont_id`, `ＣＯＮＴ＿ＩＤ`) is used, and the summary says so.
+- **Names are matched loosely.** A column whose name differs from the mapping only in case, width or separators (`cont_id`, `ＣＯＮＴ＿ＩＤ`) is used, and the summary says so. A column named like a field but for case (`BIRTH_DATE` for `birth_date`) is dropped once the field is built from it, and one named exactly like a field it doesn't map to stops the run.
 - **Every column is read as text.** A blank value, or one made only of spaces (full-width ones included), counts as missing. A code stored as a number (`599` for `0599`) is read as text with a warning: its leading zeros were lost before the file reached the run.
 - **A nearly empty field** is used where it is filled. If no two records of the fit's sample share it, the fit learns nothing from it, and the summary says so.
 - **One column for every name**, a person's or a company's: map `full_name`, `person_name`, `company_name` and `any_name` to it, and add `kind = "person"` to the first two and `kind = "company"` to `company_name`. Each record's name then goes to the side its kind leans to, and a pair of a person and a company has no name compared, so the model leaves it to people ([section 6](#6--review-and-decide)). A record whose lean and flag disagree goes to neither side until a person decides.
@@ -72,14 +72,14 @@ It prints each field, its fill rate and the columns it comes from, what would be
 | `--overwrite` | replaces the run in `--output` |
 | `--increment` | adds the records to the run in `--output` ([section 5](#5--add-new-records)) |
 | `--decisions` | applies people's decisions to the run in `--output`, instead of `--input` ([section 6](#6--review-and-decide)) |
-| `--kind-labels` | people's person/company answers, a filled-in `kind_review.parquet`, added to those the run keeps ([section 6](#persons-and-companies)) |
+| `--kind-labels` | people's person/company answers, a filled-in `kind_review.parquet`, added to those the run keeps; with a full run only ([section 6](#persons-and-companies)) |
 | `--compute KEY=VALUE …` | DuckDB limits for this run, overriding `config/settings.toml` `[compute]`: `memory_limit=8GB`, `threads=4`, `temp_directory=<folder>`. Past the memory limit, DuckDB spills to that folder |
 | `--pipeline` | another pipeline file. Default: `config/final.toml` |
-| `--model` | a model fitted before, used instead of fitting on this file |
+| `--model` | a model fitted before, used instead of fitting on this file; with a full run only: an increment scores with the model of the run it adds to |
 
-`[compute]` in `config/settings.toml` sets the same three for every run. Left empty, each keeps DuckDB's default: all cores, 80% of the memory, and spilling to `.tmp/` under the folder the run starts in. Before any join, the run checks that the pairs fit in memory plus the room DuckDB may spill to: 90% of that disk's free space.
+`[compute]` in `config/settings.toml` sets the same three for every run. Left empty, each keeps DuckDB's default: all cores, 80% of the memory, and spilling to `.tmp/` under the folder the run starts in. Before any join, a full run checks that the pairs fit in memory plus the room DuckDB may spill to: 90% of that disk's free space. An increment checks the blocks of 64 or more records its batch reaches; its other pairs all touch the batch.
 
-The run needs no labels: it fits its model on the file itself. It prints each step as it finishes, with its time and what it did, then a summary: records, entities, who joined them (the rules, the model, people), the model's links and how many of them it expects to be false, the pairs to decide, the records' and customers' kinds, where the kinds come from (no answers yet; or the answers, the lines and how often the flag is wrong on those drawn at random), how many records are held back, how often a sure kind contradicts the flag, and notes. The expected false links are the sum of 1 − match probability over the model's links: the model's own estimate, with no labels. A bigger file holds more people who share a name and an address, so at a fixed threshold the count grows with the file: on generated files, 0.84 at 12,532 records, 4.38 at 74,959 (1 and 3 found) and 30.11 at a million ([benchmark](../reports/benchmark.md)). A note says what the loader fixed, a field filled in under 5% of records (often a mapping mistake), a part turned off, or what the fit couldn't learn from. What each step does, and what it costs: [architecture, the run](architecture.md#3--the-run).
+The run needs no labels: it fits its model on the file itself. It prints each step as it finishes, with its time and what it did, then a summary: records, entities, who joined them (the rules, the model, people), the model's links and how many of them it expects to be false, the pairs to decide, the records' and customers' kinds, where the kinds come from (no answers yet; or the answers, the lines and how often the flag is wrong on those drawn at random), how many records are held back, how often a sure kind contradicts the flag, and notes. The expected false links are the sum of 1 − match probability over the model's links: the model's own estimate, with no labels. A bigger file holds more people who share a name and an address, so at a fixed threshold the count grows with the file: on generated files, 0.84 at 12,532 records, 4.38 at 74,959 (1 and 3 found) and 30.11 at a million ([benchmark](../reports/benchmark.md)). A note says what the loader fixed, a field filled in under 5% of records (often a mapping mistake), a part turned off, or what the fit couldn't learn from. What each step does, and what it costs: [architecture, the run](architecture.md#4--the-run).
 
 ## 4 · Read the outputs
 
@@ -90,10 +90,10 @@ Everything is in the run folder, except the name model that tells persons from c
 | `gold.parquet` | record | `cluster_id` (the smallest record ID of its cluster); `resolved_stage` (`deterministic`, `probabilistic` or `review`; empty for a record found alone); `resolved_by` (the rule, `fs` for the model, or `review` for people); `kind` (1 person, 2 company, 0 not sure), `kind_p` (the probability of a company), `kind_by` (`engine` or `people`), `kind_held` (held back from matching: the engine and the flag disagree) and `customer_kind`, the entity's (2 if any record surely is a company; 1 if none leans company and one surely is a person; else 0) | give every record its entity, and every entity its kind |
 | `matches/` | accepted pair | both IDs; `match_weight` in bits; `match_probability`; `sources`, the candidate generators that listed it | see why two records were joined |
 | `rule_kept/` | pair a rule accepted | both IDs, the rule and its stage | audit the rules |
-| `qa.md` | | the summary; each field's fill rate (flagged under 5%), the share that looks right and the share of its most common value; what was turned off; each step's Big-O, time and memory; pairs by weight; cluster sizes; the 10 largest clusters; match patterns no key guarantees; records and customers by kind; clusters holding both a sure person and a sure company | check the run without labels |
-| `report.txt` | | the run on one page of plain text, with no record's value in it: what ran (the code, the tracked files changed in this copy, the pipeline, the machine's limits), the summary, the fields, scores and links by weight with the false links expected, cluster sizes, each step's time and memory, the model's m, u and bits per level, the costliest blocks | send it to whoever helps with the run ([section 7](#7--when-something-is-wrong)) |
-| `review.parquet` | pair for people | `why` (`decide` or `audit`); an empty `decision`; both records' compared fields; per comparison, the level reached and its bits; `accepted` | decide the pairs just below the line and those above it with no name compared, audit those just above ([section 6](#6--review-and-decide)) |
-| `kind_review.parquet` | record for people | `why` (`decide` or `measure`), `reason` in words, `engine_says`, `name_says`, `flag`, the name, `birth_date`; `engine` and `engine_p` (the engine's kind and its probability of a company), `name_p`, `drawn`; an empty `kind` | answer 1 person, 2 company or 0 can't tell ([section 6](#6--review-and-decide)) |
+| `qa.md` | | the summary; each field's fill rate (flagged under 5%), the share that looks right and the share of its most common value; what was turned off; each step's Big-O, time and memory; pairs by weight; cluster sizes; the 10 largest clusters; match patterns no key guarantees; the review queue; records and customers by kind; clusters holding both a sure person and a sure company; the oversized blocks and what was decided for each | check the run without labels |
+| `report.txt` | | the run on one page of plain text, with no record's value in it: what ran (the code, the tracked files changed in this copy, the pipeline, the machine's limits), the summary, the fields, scores and links by weight with the false links expected, cluster sizes, each step's time and memory, the model's m, u and bits per level, the costliest blocks (a full run), the match patterns no key pairs | send it to whoever helps with the run ([section 7](#7--when-something-is-wrong)) |
+| `review.parquet` | pair for people | `why` (`decide` or `audit`); an empty `decision`; both records' compared fields; per comparison, the level reached and its bits; `accepted`, whether the run accepted the pair | decide the pairs just below the line and those above it with no name compared, audit those just above ([section 6](#6--review-and-decide)) |
+| `kind_review.parquet` | record for people | `why` (`decide` or `measure`), `reason` in words, `engine_says`, `name_says`, `flag` and `birth_date` if the file has them, the name; `engine` and `engine_p` (the engine's kind and its probability of a company), `name_p`, `drawn`; an empty `kind` | answer 1 person, 2 company or 0 can't tell ([section 6](#6--review-and-decide)) |
 | `decisions/` | decided pair | both IDs and `decision`, one part per file people gave back | what people decided; a full run applies it again |
 | `set_aside/` | record not resolved | the record as read, and `reason`: no ID; the same ID with different content; already in the run | fix them and add them with `--increment` |
 | `steps.json` | step | its Big-O with the numbers filled in, seconds, peak memory | see the cost |
@@ -146,16 +146,18 @@ A full run writes `kind_review.parquet`, records for people, as `review.parquet`
 - **decide:** records where the engine and the flag disagree, held back from matching until you decide, the engine's sure calls first ("the engine is sure it is 1 person, the flag says 2"); then records the engine and the flag agree on but whose name alone says the other kind, the flag's likely errors. At most `[kind] review_max` (1,000).
 - **measure:** 2,000 records drawn at random, to measure the flag and the engine. They place the engine's lines and say how often the flag is wrong. Records you were sent to decide can't do that: they were picked because they look wrong.
 
-Write `kind`: `1` person, `2` company, `0` can't tell from the record. A sole trader is `1`: legally a person. Give the sheet back with a full run:
+Write `kind`: `1` person, `2` company, `0` can't tell from the record. A sole trader is `1`: legally a person. Give the sheet back with a full run; `scripts/resolve.py` refuses it with `--increment` or `--decisions`, which don't route the stored records again:
 
 ```bash
 .venv/bin/python scripts/resolve.py --input customers.parquet --output runs/customers --overwrite --kind-labels kind_review.parquet
 ```
 
-- **Your answers stand** for their records (`kind_by` = `people`): a held record's name goes to its side, and matching can use it.
-- **They teach the engine.** The combiner fits on every answer; the lines on the measuring draw only. The summary says where the lines fall, how often the flag is wrong on the answers drawn at random, and how many records stay held back.
+- **Your answers stand** for their records (`kind_by` = `people`): a held record's name goes to its side, and matching can use it. A `0` stands too: the record's name stays out of matching, and its pairs come to you in `review.parquet` with no name compared.
+- **They teach the engine.** The combiner fits on every answer 1 or 2, once there are 50 holding both kinds; the lines on the measuring draw only, once 50 of it are answered, and the person line where 30 answers lie above it. The summary says where the lines fall, how often the flag is wrong on the answers drawn at random, and how many records stay held back.
 - **They add up.** The run keeps the answers in `state/`, and each sheet given later adds to them: per record the newest answer stands, and a blank row erases nothing. The next sheet leaves out the records answered, and brings back those left blank.
 - **A full run writes the sheet.** A record an increment holds back is on the sheet of the next full run.
+
+`[kind] trust_flag = true` takes the file's flag as it is, with no engine and no review sheet: the benchmark's flag-alone baseline.
 
 Without answers, a record is `2` only where a legal form is written (株式会社, カ)〇〇, 〇〇(カ …), and never surely `1`. A company record under its representative's name, at the representative's address and phone and flagged person, looks like the person's own record in every column; nothing in the file tells them apart, so no sheet finds it.
 
@@ -189,9 +191,16 @@ What stops it: two lines, what is wrong and how to fix it, and exit code 2:
 | `no record has an ID in column …` | `id` is mapped to the wrong column |
 | `the normal blocks alone would make … pairs, more than fit` | the file's pairs would not fit in memory and the temp disk: give DuckDB more room (`--compute memory_limit=… temp_directory=…`) or split the file |
 | `… already holds a run` | a full run into a used folder: add `--overwrite`, or pick another folder |
-| `another job is writing to …` | a run folder takes one writer at a time: wait for the other one |
 | `the model was fitted on other comparison levels` | `--model` was fitted on another pipeline, or on a file with other fields |
+| `the file has a column named …, which is also the name of a field` | a column named like a field it doesn't map to |
+| `no rule can run`, `no candidate generator can run`, `no prior rule can run`, `no EM blocking rule can run` | the file lacks every field they read: map them, or give the file those columns |
+| `no record left to resolve`, `no new record to add` | every record was set aside (`set_aside/` says why) |
+| `no run in … to add records to` | `--increment` into a folder with no run: run it without `--increment` first |
+| `… no such file of person/company answers`, `needs the columns … and kind` | `--kind-labels` points at the wrong file |
+| `needs the columns …_l, …_r and decision` | a decisions file without both IDs and `decision` |
 | `a decision is match or no_match`, `pairs decided both ways`, `records not in the run` | a decisions file to correct |
+
+A run folder another job is writing to stops the run with `another job is writing to …` and exit code 75: nothing to fix, try again once the other job is done.
 
 Pairs are counted before any join, so a run that couldn't fit stops within seconds instead of running out of memory or disk.
 
@@ -210,7 +219,7 @@ Pairs are counted before any join, so a run that couldn't fit stops within secon
 inbox/batches/*.parquet      new records: an increment; into an empty run folder, the first batch is the full run
 inbox/decisions/*.parquet    people's decisions (section 6)
 inbox/done/, inbox/failed/   where each file goes once it ran
-runs/customers/jobs.jsonl    one line per attempt: file, SHA-256, outcome, exit code, attempts, seconds, error
+runs/customers/jobs.jsonl    one line per file per pass: file, SHA-256, outcome, exit code, attempts, seconds, error
 ```
 
 Each file runs as `scripts/resolve.py` in a process of its own, so a crash can't take the scheduler down. What happens next depends on how that process ends:
@@ -219,9 +228,9 @@ Each file runs as `scripts/resolve.py` in a process of its own, so a crash can't
 |---|---|
 | well (exit 0) | moves to `done/`. A batch already in the run is done too, so a retry is harmless |
 | on a mistake people must fix (exit 2) | moves to `failed/`, with its two-line error beside it (`….error.txt`). The pass goes on |
-| any other way: a crash, memory | is tried again, waiting 2, 4, 8 … s (`--retries`, default 2). If it still fails, the pass stops and the file stays, so nothing jumps ahead of it; the next pass tries again |
+| any other way: busy (exit 75: another job writes to the run folder), a crash, memory | is tried again, waiting 2, 4, 8 … s (`--retries`, default 2). If it still fails, the pass stops and the file stays, so nothing jumps ahead of it; the next pass tries again |
 
-A file whose content was done before, by its SHA-256, moves to `done/` without running. One scheduler serves an inbox at a time, and a run folder takes one writer at a time, so starting a second one, or running `resolve.py` by hand meanwhile, is refused, not raced.
+`--compute` passes DuckDB limits on to every batch's run. A file whose content was done before, by its SHA-256, moves to `done/` without running. The pass ends with exit code 1 if it stopped on a file. One scheduler serves an inbox at a time, and a run folder takes one writer at a time, so starting a second one, or running `resolve.py` by hand meanwhile, is refused, not raced.
 
 ## Development scripts
 

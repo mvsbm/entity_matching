@@ -14,7 +14,7 @@ different content, or in an increment, already in the run) are set aside in set_
 A mistake people must fix stops the run with two lines, what is wrong and how to fix it, and exit code 2; a run folder
 another job is writing to, with exit code 75, to try again later.
 
-Fits λ and m by EM on a fixed-size sample of the file (config/pipeline.toml [model] fit_rows), or uses --model, a
+Fits λ and m by EM on a fixed-size sample of the file (the pipeline's [model] fit_rows), or uses --model, a
 fitted model (data/artifacts/models/probabilistic_final.json). Writes to --output: gold.parquet (each record's cluster,
 the stage and rule that resolved it, and its kind and its customer's: company, person or unsure), matches/ (accepted
 pairs, their weights and the generators that found them) and rule_kept/ as Parquet parts, steps.json (each step's

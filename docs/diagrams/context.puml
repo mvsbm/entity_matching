@@ -1,0 +1,30 @@
+@startuml context
+!include <C4/C4_Context>
+LAYOUT_TOP_DOWN()
+HIDE_STEREOTYPE()
+title HLD 1 · Context: who uses the system, and what crosses its edges
+
+Person(owner, "Data owner", "maps the file's columns once (config/settings.toml [columns]), then runs the resolution")
+Person(reviewer, "Reviewer", "decides the pairs in the margin and the records held back; audits the pairs above; answers 1 person, 2 company or 0 can't tell")
+Person(developer, "Developer", "proposes changes to the matching; the decision rule on synthetic data judges them")
+
+System_Ext(files, "Customer files", "Parquet, columns of any name: a file, a glob or a folder; new batches later")
+System_Ext(reference, "Public reference data", "data/reference/*.json: names, companies (the corporate registry), addresses (SOURCES.md)")
+System_Ext(downstream, "Downstream systems", "take one ID per person or company")
+
+System_Boundary(er, "Entity resolution (this repository)") {
+  System(runtime, "Run time", "scripts/resolve.py, scripts/schedule.py: one file, without labels, into a run folder; batches added, decisions and answers applied")
+  System(design, "Design time", "scripts/generate.py, scripts/choose.py, scripts/choose_kind.py, scripts/benchmark.py: synthetic records with the truth; the matching chosen and measured")
+}
+
+Rel(owner, runtime, "runs", "~--input, ~--output, ~--increment")
+Rel(runtime, files, "reads", "er.source")
+Rel(runtime, reference, "reads", "the person-or-company name model, trained once and cached")
+Rel(design, reference, "reads", "the generator's input")
+Rel(developer, design, "proposes", "config/pipeline.toml, config/experiments.py")
+Rel(design, developer, "reports", "reports/*.md")
+Rel(design, runtime, "hands over", "config/final.toml: the only hand-off")
+Rel(runtime, reviewer, "asks", "review.parquet, kind_review.parquet, qa.md, report.txt")
+Rel(reviewer, runtime, "answers", "~--decisions, ~--kind-labels")
+Rel(runtime, downstream, "gives", "gold.parquet: cluster_id, customer_kind")
+@enduml

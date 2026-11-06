@@ -1,0 +1,100 @@
+@startuml full-run
+title LLD 1 · A full run: Run.full, then Run.report (scripts/resolve.py ~--input … ~--output …)
+skinparam defaultFontSize 11
+skinparam rectangle {
+  BackgroundColor #F4F6F8
+  BorderColor #65717E
+}
+skinparam database {
+  BackgroundColor #E8F1FB
+  BorderColor #2C6DB3
+}
+skinparam file {
+  BackgroundColor #FFF8E6
+  BorderColor #B07D00
+}
+
+package "inputs" {
+  file "the input: Parquet files (~--input)" as f_input
+  file "config/final.toml · config/settings.toml" as f_config
+  file "data/reference/*.json → data/artifacts/models/kind_names.npz" as f_names
+  file "~--kind-labels · state/kind_labels.parquet" as f_answers
+  file "decisions/part-n.parquet" as f_decisions
+}
+
+rectangle "<b>1 load</b> · O(N·L)\nRun.load · Run._answers · Run._given\nsource.open_source · source.suggest · settings.present_fields · settings.fit_to_file\nRun._set_aside · kind.classifier · kind.merge_answers\nstandardize.prepare, per chunk of 200,000" as load
+rectangle "<b>2 budget</b> · O(N) per key\nRun.budget · candidates.estimate\nRun.capacity · Run.spill_room · run.size_bytes" as budget
+rectangle "<b>3 fit</b> · O(n + S·K + P_em·K) + O(N + S·K)\nRun.fit · match.train_fs\nmatch.exact_u · match.counted · match.scored_sample\nmatch.assemble_u · match.u_basis" as fit
+rectangle "<b>4 rules</b> · O(N + ΣP_r·L²) + O(E·d + N)\nRun.rules · Run._rules · Run._untrusted\nmatch.rule_edges · Run._merge" as rules
+rectangle "<b>5 candidates</b> · O(N·L + ΣP_g)\nRun.candidates · candidates.candidates\nRun._gate · match.score_fs · run.review_floor · Run._gated\nRun.capacity · Run.spill_room · run.size_bytes" as candidates
+rectangle "<b>6 score</b> · O(C·K·L²)\nRun.score · match.score_fs" as score
+rectangle "<b>7 cluster</b> · O(C + E·d + N)\nRun._load_decisions · Run.cluster · Run._accept · run.named_sql\nRun._merge · Run._gold · run.customer_kinds · Run._expected_false" as cluster
+rectangle "<b>8 write</b> · O(N + C), staged\nRun.write · Run._stage · run.finish_writes · Run._log" as write
+rectangle "<b>9 report</b> · O(review pairs) + O(N) in SQL, staged\nRun.report · run.qa · run.fill_rates · run.review_floor · run.named_sql\npipeline.pattern_coverage · run.review_sheet · match.levels · run.carry_over\nio.markdown · kind.kind_review_sheet\nrun.report_text · match.scaled_prior · match.parameters · config.sources_text\nRun._stage · run.finish_writes" as report
+
+database "records" as records
+database "set_aside" as set_aside
+database "rule_clusters" as rule_clusters
+database "rule_kept" as rule_kept
+database "cands" as cands
+database "scores" as scores
+database "matches" as matches
+database "gold" as gold
+
+package "the run folder (~--output)" {
+  file "gold.parquet · steps.json\nmatches/part-n.parquet · rule_kept/part-n.parquet\nset_aside/part-n.parquet" as f_out
+  file "state/records/part-n.parquet · state/rule_clusters.parquet\nstate/model.json · state/scoring.json\nstate/kind_labels.parquet" as f_state
+  file "qa.md · report.txt · review.parquet · kind_review.parquet" as f_people
+}
+
+f_input --> load
+f_config --> load
+f_names --> load
+f_answers --> load
+f_decisions --> cluster
+
+load ..> budget
+budget ..> fit
+fit ..> rules
+rules ..> candidates
+candidates ..> score
+score ..> cluster
+cluster ..> write
+write ..> report
+
+load --> records
+load --> set_aside
+records --> budget
+records --> fit
+records --> rules
+records --> candidates
+records --> score
+records --> cluster
+records --> write
+records --> report
+rules --> rule_clusters
+rules --> rule_kept
+rule_clusters --> candidates
+rule_clusters --> cluster
+rule_clusters --> write
+rule_kept --> cluster
+rule_kept --> write
+candidates --> cands
+cands --> cluster
+cands --> report
+score --> scores
+scores --> cluster
+scores --> report
+cluster --> matches
+cluster --> gold
+matches --> write
+matches --> report
+gold --> write
+gold --> report
+set_aside --> write
+set_aside --> report
+
+write --> f_out
+write --> f_state
+report --> f_people
+@enduml

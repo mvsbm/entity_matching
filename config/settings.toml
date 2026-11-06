@@ -65,8 +65,8 @@ initial = ["initial"]
 first3 = ["first3"]
 address_first3 = ["address", "first3"]
 
-# What each field's values look like (RE2, matched against a sample of the file). Used only to suggest a column for a
-# field no column is mapped to; a suggestion is never applied without you. RE2's \s doesn't match the full-width space.
+# What each field's values look like (RE2, matched against a sample of the file). Used to suggest a column for a field
+# no column is mapped to, a suggestion never applied without you, and for each field's "looks right" share (--check, qa.md). RE2's \s doesn't match the full-width space.
 [locale.detect]
 full_name = '^[ァ-ヴー・ｦ-ﾟ\s　]+$'
 person_name = '^[ァ-ヴー・ｦ-ﾟ\s　]+$'

@@ -113,7 +113,7 @@ Along the diagonal the cost stays at 0 while the characters agree. The last step
 **Example.** In 0599 and 0959, the 5 and the 9 have traded places. Levenshtein needs two replacements (distance 2). Damerau–Levenshtein needs one swap (distance **1**).
 
 **Where we use it, and why.** Typing two characters in the wrong order is one of the most common keying slips. It should count as one mistake, not two.
-- **Names in the rules** (folded names at most 2 edits apart). Each of those rules also needs the CIF ID or the phone to agree exactly, with the address code or a close address, so a simple count is safe there.
+- **Names in the rules** (folded names at most 2 edits apart). Each of those rules also needs the CIF ID to agree exactly, or the phone with the address code or a close address, so a simple count is safe there.
 - **The CIF ID and the birth date in the model** (the level "one digit off": at most 1). A reused CIF ID, or a birth date, is sometimes typed with one digit wrong, and a swap of two digits counts as one slip too. Both are exact identifiers otherwise ([below](#exact-equality-for-identifiers)).
 
 ### Hamming distance: positions that differ

@@ -1,0 +1,59 @@
+@startuml kind
+title LLD 4 · Person or company: trained once, fitted on people's answers, applied in every chunk, asked about on a sheet
+skinparam defaultFontSize 11
+skinparam rectangle {
+  BackgroundColor #F4F6F8
+  BorderColor #65717E
+}
+skinparam database {
+  BackgroundColor #E8F1FB
+  BorderColor #2C6DB3
+}
+skinparam file {
+  BackgroundColor #FFF8E6
+  BorderColor #B07D00
+}
+
+package "the name model: public data only, trained once" {
+  file "data/reference/individual.json · data/reference/registry.json" as f_ref
+  file "config/generator.toml: kana_confusions, branches" as f_gen
+  rectangle "generate.name_model_split\nhalf the personas; the companies of Miyagi and Okayama (Fukuoka's held out)" as split
+  rectangle "generate.kind_training_names\nevery company as banks write it (generate.bank_name), every persona twice" as names
+  rectangle "kind.name_model · NameModel.fit\nlogistic regression on the character n-grams of kind.text, n from 1 to 3\n(folded, no spaces, no legal form); scored in DuckDB: NameModel.logit" as model
+  file "data/artifacts/models/kind_names.npz\ncached under a key of everything it reads" as f_cache
+}
+
+package "people's answers" {
+  file "~--kind-labels: kind_review.parquet answered · state/kind_labels.parquet" as f_answers
+  rectangle "Run._answers · Run._given (checked) · kind.merge_answers\nper record the newest answer; a blank row erases nothing" as merge
+  rectangle "kind.classifier\nthe combiner: gradient-boosted trees, depth 2, on Classifier.features\n(the name's logit, the flag, the birth year, kind.legal), fitted on the answers 1 and 2\nkind.lines: each side's line on the out-of-fold answers drawn to measure" as fit
+}
+
+package "every chunk of the load (LLD 1, step 1)" {
+  rectangle "standardize.prepare → Classifier.classify\nkind 2 company · 1 person · 0 not sure; kind_p, kind_by, name_p, kind_held, kind_name\npeople's answers stand; 0 keeps the record held\nthe name routed: person_name and full_name where kind_p leans person, company_name where it leans company;\nheld back (the engine and the flag disagree, or people can't tell): neither side" as classify
+  database "records" as records
+}
+
+rectangle "Run._gold · run.customer_kinds\neach record's kind; each customer's: 2 if any record is surely 2,\n1 if none leans company and one is surely 1, else 0" as gold
+file "gold.parquet" as f_gold
+rectangle "Run.report → kind.kind_review_sheet\npicked in DuckDB: decide (held back, then the flag's likely errors, at most review_max);\nmeasure (labels_to_draw drawn at random by hash of the ID); each row in words" as sheet
+file "kind_review.parquet" as f_sheet
+actor "people: 1 person, 2 company, 0 can't tell" as people
+
+f_ref --> split
+split --> names
+f_gen --> names
+names --> model
+model --> f_cache
+f_cache --> fit
+f_answers --> merge
+merge --> fit
+fit --> classify
+classify --> records
+records --> gold
+gold --> f_gold
+records --> sheet
+sheet --> f_sheet
+f_sheet --> people
+people --> f_answers
+@enduml
