@@ -639,7 +639,7 @@ def test_an_overwrite_cut_short_keeps_the_old_run_and_people_s_answers(tmp_path,
         Run(p, s).full(tmp_path / "all.parquet", tmp_path / "run", overwrite=True)
     monkeypatch.undo()
     pd.testing.assert_frame_equal(pd.read_parquet(tmp_path / "run" / "gold.parquet"), before)  # the old run stands
-    assert len(pd.read_parquet(tmp_path / "run" / "state" / "kind_labels.parquet")) == 5  # and people's answers with it
+    assert len(pd.read_parquet(tmp_path / "run" / "kind_answers")) == 5  # and people's answers with it
 
     moves, replace_ = [], os.replace
     def cut_short(a, b):  # dies after the first of the moves that replace the old run
@@ -653,7 +653,7 @@ def test_an_overwrite_cut_short_keeps_the_old_run_and_people_s_answers(tmp_path,
     monkeypatch.undo()
     finish_writes(tmp_path / "run")  # what the next run, increment or decisions do first
     pd.testing.assert_frame_equal(pd.read_parquet(tmp_path / "run" / "gold.parquet"), before)
-    assert len(pd.read_parquet(tmp_path / "run" / "state" / "kind_labels.parquet")) == 5
+    assert len(pd.read_parquet(tmp_path / "run" / "kind_answers")) == 5
     assert len(pd.read_parquet(tmp_path / "run" / "state" / "records")) == len(g.df) and not (tmp_path / "run" / ".full.tmp").exists()
 
 
@@ -1238,7 +1238,7 @@ def test_with_answers_the_kinds_are_the_same_every_run_people_s_stand_and_a_cust
     assert ga[["kind", "kind_p", "kind_by", "customer_kind"]].equals(gb[["kind", "kind_p", "kind_by", "customer_kind"]])
     answered = ga.set_index(uid).loc[sheet[uid][3:]]
     assert (answered["kind_by"] == "people").all() and (answered["kind"].to_numpy() == sheet["kind"][3:].to_numpy()).all()  # people's answers stand
-    assert (tmp_path / "b" / "state" / "kind_labels.parquet").exists()  # kept for the run's increments
+    assert len(pd.read_parquet(tmp_path / "b" / "kind_answers" / "part-00000.parquet")) == len(sheet)  # kept as given, for later runs
     by = ga.groupby("cluster_id").agg(any_company=("kind", lambda k: (k == 2).any()), leans=("kind_p", "max"),
                                       any_person=("kind", lambda k: (k == 1).any()), customer=("customer_kind", "first"))
     expect = np.where(by.any_company, 2, np.where((by.leans.fillna(0) < 0.5) & by.any_person, 1, 0))
@@ -1275,7 +1275,8 @@ def test_a_decision_keeps_each_record_s_kind_and_a_merged_customer_takes_its_sur
     assert after["kind"].equals(before.set_index(uid)["kind"].reindex(after.index))  # each record's kind stands
 
 
-def test_answers_add_up_over_sheets_and_a_blank_row_erases_nothing(tmp_path, kind_population):
+def test_answers_add_up_over_sheets_each_kept_as_given_and_a_blank_row_erases_nothing(tmp_path, kind_population):
+    import shutil
     from er.run import Run
     s, p, g = kind_population
     uid = s.data.unique_id
@@ -1290,10 +1291,24 @@ def test_answers_add_up_over_sheets_and_a_blank_row_erases_nothing(tmp_path, kin
     second = sheet.assign(kind=pd.array([pd.NA] * half + list(truth[half:]), dtype="Int8"))  # the first half blank this time
     second.to_parquet(tmp_path / "second.parquet")
     run2 = Run(p, s, kind_labels=tmp_path / "second.parquet").full(tmp_path / "all.parquet", tmp_path / "run", overwrite=True)
-    kept = pd.read_parquet(tmp_path / "run" / "state" / "kind_labels.parquet")
-    assert set(kept[uid]) == set(sheet[uid]) and len(run2.classifier.decided) == len(sheet)  # both sheets' answers stand
+    answers = tmp_path / "run" / "kind_answers"
+    parts = sorted(answers.glob("part-*.parquet"))
+    assert [set(pd.read_parquet(f)[uid]) for f in parts] == [set(sheet[uid][:half]), set(sheet[uid][half:])]  # a part per sheet, its filled rows
+    assert len(run2.classifier.decided) == len(sheet)  # both sheets' answers stand
     gold = pd.read_parquet(tmp_path / "run" / "gold.parquet").set_index(uid).loc[sheet[uid]]
     assert (gold["kind_by"] == "people").all() and (gold["kind"].to_numpy() == truth).all()
+
+    parts[1].unlink()  # a sheet answered wrong: deleting its part undoes it
+    Run(p, s).full(tmp_path / "all.parquet", tmp_path / "run", overwrite=True)
+    assert set(pd.read_parquet(answers)[uid]) == set(sheet[uid][:half])
+    gold = pd.read_parquet(tmp_path / "run" / "gold.parquet").set_index(uid)
+    assert not (gold.loc[sheet[uid][half:], "kind_by"] == "people").any()
+
+    os_ = tmp_path / "run" / "state" / "kind_labels.parquet"  # a folder that keeps its answers in state/
+    shutil.move(parts[0], os_)
+    shutil.rmtree(answers)
+    Run(p, s).full(tmp_path / "all.parquet", tmp_path / "run", overwrite=True)
+    assert set(pd.read_parquet(answers / "part-00000.parquet")[uid]) == set(sheet[uid][:half]) and not os_.exists()  # kept, not lost
 
 
 def test_a_record_people_can_t_tell_stays_out_of_name_matching_and_off_the_next_sheet(tmp_path, kind_population):

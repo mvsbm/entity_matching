@@ -18,7 +18,7 @@ package "read back from the run folder" {
   file "state/model.json · state/scoring.json" as f_model
   file "state/records/part-n.parquet" as f_records
   file "state/rule_clusters.parquet · gold.parquet" as f_clusters
-  file "state/kind_labels.parquet" as f_answers
+  file "kind_answers/part-n.parquet" as f_answers
   file "review.parquet · decisions/part-n.parquet" as f_sheet
 }
 file "the batch: Parquet files (~--input)" as f_batch

@@ -73,11 +73,6 @@ package "state/, for increments: Run.write" {
   entity "state/config.txt" as config {
     the pipeline and column mapping the full run used, hashed: an increment refuses others
   }
-  entity "state/kind_labels.parquet" as kind_labels {
-    * <id>
-    kind : people's answer
-    <the answered sheet's other columns>
-  }
 }
 
 package "for people: Run.report" {
@@ -125,6 +120,11 @@ package "people's work and the writers' state" {
     * <id>_r
     decision : match · no_match
   }
+  entity "kind_answers/part-n.parquet" as kind_answers {
+    * <id>
+    kind : 1 · 2 · 0, people's answer
+    <the answered sheet's other columns, as given>
+  }
   entity "pending.json" as pending {
     the moves a write still owes; only while one is cut short
   }
@@ -137,7 +137,7 @@ gold }o--|| rule_clusters : <id>
 matches }o--|| gold : <id>_l, <id>_r
 rule_kept }o--|| gold : <id>_l, <id>_r
 records ||--|| gold : <id>
-kind_labels |o--|| records : <id>
+kind_answers }o--|| records : <id>
 review }o--|| gold : <id>_l, <id>_r
 kind_review |o--|| records : <id>
 decisions }o--|| gold : <id>_l, <id>_r

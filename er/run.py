@@ -26,7 +26,8 @@ only for a comparison whose drift has outgrown its sampling error (er.match.refr
 re-scores everything.
 
 decide() applies people's decisions on the review sheet (qa) without scoring anything: a `match` pair merges two
-clusters. Decisions are kept in decisions/, which a full run on the same folder applies again.
+clusters. Decisions are kept in decisions/, which a full run on the same folder applies again; people's person/company
+answers in kind_answers/, a part per sheet as given, which every later run on the folder reads.
 
 Writes are staged: every file is written under a temporary name; once all are complete, the list of moves still owed is
 saved (pending.json), then they are done. A write interrupted before that list exists left the run as it was: run it
@@ -86,6 +87,7 @@ PENDING = "pending.json"  # the renames a write still owes, saved once every new
 RUN_FILES = ("gold.parquet", "steps.json", PENDING, "matches", "rule_kept", "state", "set_aside",  # what a run writes in its folder
              "qa.md", "report.txt", "review.parquet", "kind_review.parquet")
 DECISIONS = "decisions"  # people's decisions: not a run file, so a full run with overwrite keeps and applies them
+KIND_ANSWERS = "kind_answers"  # people's person/company answers, a part per sheet as given: kept as decisions are
 FULL_TMP = ".full.tmp"  # a full run's new files, until they replace the old run's
 
 
@@ -175,7 +177,8 @@ class Run:
         self.scoring: dict | None = None      # the model with u from this file (fit): what the gate and the scores use
         self.basis: dict = {}                 # what an increment needs to tell whether those u went stale (er.match.u_basis)
         self.classifier = None                # each record's kind, person or company (er.kind); None: the pipeline doesn't ask
-        self.labels: pd.DataFrame | None = None  # the person/company labels it rests on, kept in state/ for increments
+        self.labels: pd.DataFrame | None = None  # the person/company answers it rests on: the folder's sheets and the one given
+        self.given: pd.DataFrame | None = None   # the filled rows of the sheet given (kind_labels), as given
         self.holding: Path | None = None      # the run folder this run holds locked (writing)
         self.fields = [f for f in self.settings.columns if f not in SPECIAL]  # the logical fields of [columns]
         self.rule_names = [rule.name for st in self.pipeline.rules.stages for rule in st.rules]
@@ -498,14 +501,16 @@ class Run:
         texts = [(json.dumps(self.model, ensure_ascii=False), state / "model.json"), (self.config, state / "config.txt")] if part == 0 else []
         if self.basis:  # the u this run scored with, and what an increment needs to tell when they go stale
             texts.append((json.dumps(dict(model=self.scoring, basis=self.basis), ensure_ascii=False), state / "scoring.json"))
-        labels = []
-        if self.labels is not None:  # the person/company answers this run's kinds rest on: the next run adds to them
-            self.con.register("er_kind_labels", self.labels)
-            labels = [("SELECT * FROM er_kind_labels", state / "kind_labels.parquet")]
+        sheets, n = [], len(list((out / KIND_ANSWERS).glob("part-*.parquet")))
+        if n == 0 and (old := state / "kind_labels.parquet").exists():  # a folder that keeps its answers in state/: its first sheet
+            sheets, n = [(f"SELECT * FROM read_parquet({lit(old)})", out / KIND_ANSWERS / "part-00000.parquet")], 1
+        if self.given is not None and len(self.given):  # the sheet given, kept as it came: the next run reads it again
+            self.con.register("er_given", self.given)
+            sheets.append(("SELECT * FROM er_given", out / KIND_ANSWERS / f"part-{n:05d}.parquet"))
         self._stage(out, [("SELECT * FROM rule_kept", out / "rule_kept" / name), ("SELECT * FROM matches", out / "matches" / name),
                           (f"SELECT * FROM gold ORDER BY {q(self.uid)}", out / "gold.parquet"),
                           ("SELECT * FROM rule_clusters", state / "rule_clusters.parquet"),
-                          (f"SELECT * FROM {'records' if part == 0 else 'new_records'}", state / "records" / name), *aside, *labels], texts, replace)
+                          (f"SELECT * FROM {'records' if part == 0 else 'new_records'}", state / "records" / name), *aside, *sheets], texts, replace)
         self._done("write", "O(N + C)", f"O({self.n:,} + {self._count('matches'):,})", t)
         self._log(out, part > 0, part=part, disabled=self.disabled)
 
@@ -513,11 +518,12 @@ class Run:
                frames: list[tuple[pd.DataFrame, Path]] = ()) -> None:
         """Write every file under a temporary name; once all are complete, save the moves still owed (pending.json),
         then do them. An interruption before that leaves the folder as it was; one after it, finish_writes completes.
-        With `replace` (a full run), the new files are written in FULL_TMP, and each of its entries replaces the old
-        run's; the old entries the new run doesn't write go."""
+        With `replace` (a full run), the new run files are written in FULL_TMP, and each of its entries replaces the old
+        run's; the old entries the new run doesn't write go. A file outside the run files (people's work) is only added."""
         if replace is not None:
             shutil.rmtree(out / FULL_TMP, ignore_errors=True)  # the files of a full run cut short before its moves
-        tmp = (lambda d: out / FULL_TMP / d.relative_to(out)) if replace is not None else (lambda d: d.with_name(d.name + ".tmp"))
+        whole = lambda d: replace is not None and d.relative_to(out).parts[0] in RUN_FILES
+        tmp = lambda d: out / FULL_TMP / d.relative_to(out) if whole(d) else d.with_name(d.name + ".tmp")
         for sql, dest in tables:
             tmp(dest).parent.mkdir(parents=True, exist_ok=True)
             self.con.execute(f"COPY ({sql}) TO {lit(tmp(dest))} (FORMAT parquet)")
@@ -527,11 +533,10 @@ class Run:
         for frame, dest in frames:  # sheets for people: pandas keeps their empty answer columns typed
             frame.to_parquet(tmp(dest))
         dests = [dest for _, dest in (*tables, *texts, *frames)]
-        if replace is None:
-            staged = [[str(tmp(d)), str(d)] for d in dests]
-        else:
-            new = sorted({d.relative_to(out).parts[0] for d in dests})
-            staged = [[None, str(x)] for x in replace if x.name not in new] + [[str(out / FULL_TMP / x), str(out / x)] for x in new]
+        staged = [[str(tmp(d)), str(d)] for d in dests if not whole(d)]
+        if replace is not None:
+            new = sorted({d.relative_to(out).parts[0] for d in dests if whole(d)})
+            staged += [[None, str(x)] for x in replace if x.name not in new] + [[str(out / FULL_TMP / x), str(out / x)] for x in new]
         (out / (PENDING + ".tmp")).write_text(json.dumps(staged), encoding="utf-8")
         os.replace(out / (PENDING + ".tmp"), out / PENDING)  # from here on the write is done, whatever happens next
         finish_writes(out)
@@ -653,14 +658,17 @@ class Run:
         return self
 
     def _answers(self, out: Path) -> pd.DataFrame | None:
-        """People's person/company answers: those the run in `out` keeps, then any newer ones (kind_labels) on top."""
-        kept = out / "state" / "kind_labels.parquet"
-        return merge_answers(pd.read_parquet(kept) if kept.exists() else None, self._given(), self.uid)
+        """People's person/company answers: the sheets the folder `out` keeps, newest first, then the one given on top.
+        O(answers)."""
+        parts = sorted((out / KIND_ANSWERS).glob("part-*.parquet"), reverse=True) or [
+            f for f in [out / "state" / "kind_labels.parquet"] if f.exists()]  # a folder that keeps its answers in state/
+        kept = pd.concat([pd.read_parquet(f) for f in parts], ignore_index=True) if parts else None
+        return merge_answers(kept, self._given(), self.uid)
 
     def _given(self) -> pd.DataFrame | None:
-        """The answered sheet given (kind_labels), checked: the trust boundary."""
-        if self.kind_labels is None:
-            return None
+        """The answered sheet given (kind_labels), checked: the trust boundary. Its filled rows, read once."""
+        if self.kind_labels is None or self.given is not None:
+            return self.given
         path = Path(self.kind_labels)
         if not path.is_file():
             raise InputError(f"{path}: no such file of person/company answers", fix="give --kind-labels the answered kind_review.parquet")
@@ -668,7 +676,8 @@ class Run:
         if {self.uid, "kind"} - set(given.columns):
             raise InputError(f"{path}: needs the columns {self.uid} and kind; it has {sorted(given.columns)}",
                              fix="give back kind_review.parquet with kind filled in: 1 person, 2 company, 0 can't tell")
-        return given
+        self.given = given[pd.to_numeric(given["kind"], errors="coerce").isin([PERSON, COMPANY, UNSURE]).to_numpy()].reset_index(drop=True)
+        return self.given
 
     # ---------- people's decisions ----------
 

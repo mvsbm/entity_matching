@@ -18,7 +18,7 @@ package "inputs" {
   file "the input: Parquet files (~--input)" as f_input
   file "config/final.toml · config/settings.toml" as f_config
   file "data/reference/*.json → data/artifacts/models/kind_names.npz" as f_names
-  file "~--kind-labels · state/kind_labels.parquet" as f_answers
+  file "~--kind-labels · kind_answers/part-n.parquet" as f_answers
   file "decisions/part-n.parquet" as f_decisions
 }
 
@@ -45,7 +45,7 @@ database "gold" as gold
 
 package "the run folder (~--output)" {
   file "gold.parquet · steps.json\nmatches/part-n.parquet · rule_kept/part-n.parquet\nset_aside/part-n.parquet" as f_out
-  file "state/records/part-n.parquet · state/rule_clusters.parquet\nstate/model.json · state/scoring.json\nstate/kind_labels.parquet" as f_state
+  file "state/records/part-n.parquet · state/rule_clusters.parquet\nstate/model.json · state/scoring.json · state/config.txt\nkind_answers/part-n.parquet: the sheet given, as given" as f_state
   file "qa.md · report.txt · review.parquet · kind_review.parquet" as f_people
 }
 
