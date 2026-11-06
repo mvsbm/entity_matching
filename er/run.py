@@ -15,7 +15,8 @@ with the numbers filled in, and its time.
                                                  the review floor
     score       O(C·K·L²)                        every candidate scored
     cluster     O(C + E·d + N)                   accept at the threshold, then cluster with the rules' pairs
-    write       O(N + C)                         gold clusters and matches, as Parquet; the state for increments
+    write       O(N + C)                         gold clusters and matches, as Parquet; the state for increments; and,
+                                                 built first, the report
     report      O(review pairs) + O(N) in SQL    for people: qa.md, report.txt, review.parquet, kind_review.parquet
 
 increment() adds a batch Δ of new records to a written run: the batch is joined against all records, rule by rule and
@@ -30,7 +31,7 @@ clusters. Decisions are kept in decisions/, which a full run on the same folder 
 answers in kind_answers/, a part per sheet as given, which every later run on the folder reads.
 
 Writes are staged: every file is written under a temporary name; once all are complete, the list of moves still owed is
-saved (pending.json), then they are done. A write interrupted before that list exists left the run as it was: run it
+saved (pending.json), then they are done. A run's reports are among its files, and steps.json replaces itself whole. A write interrupted before that list exists left the run as it was: run it
 again. One interrupted after it is finished by the next run, increment or set of decisions (finish_writes). A full run
 refuses a folder that already holds a run unless told to overwrite it, and then replaces the old run only once the new
 one is complete. A run folder takes one writer at a time (run_lock): a full run, an increment or a set of decisions holds
@@ -108,12 +109,10 @@ def run_lock(out: Path):
         yield
 
 
-def locked(method: Callable) -> Callable:  # the run folder (the method's `out`) locked for the whole method, unless this run holds it
+def locked(method: Callable) -> Callable:  # the run folder (the method's `out`) locked for the whole method
     @functools.wraps(method)
     def wrapper(self: "Run", path: str | Path, out: Path, *args: object, **kwargs: object) -> object:
-        if self.holding == Path(out):
-            return method(self, path, Path(out), *args, **kwargs)
-        with self.writing(out):
+        with run_lock(Path(out)):
             return method(self, path, Path(out), *args, **kwargs)
     return wrapper
 
@@ -178,9 +177,8 @@ class Run:
         self.classifier = None                # each record's kind, person or company (er.kind); None: the pipeline doesn't ask
         self.labels: pd.DataFrame | None = None  # the person/company answers it rests on: the folder's sheets and the one given
         self.given: pd.DataFrame | None = None   # the filled rows of the sheet given (kind_labels), as given
-        self.holding: Path | None = None      # the run folder this run holds locked (writing)
+        self.tables: dict[str, pd.DataFrame] = {}  # qa's tables, the summary first, once report() built them
         self.fields = [f for f in self.settings.columns if f not in SPECIAL]  # the logical fields of [columns]
-        self.rule_names = [rule.name for st in self.pipeline.rules.stages for rule in st.rules]
         self.inputs: list[dict] = []          # the files read: path, bytes, SHA-256 (steps.json)
         # what decides the answer: the pipeline as given and the settings that shape the records; an increment needs the full run's
         self.config = config_hash((self.pipeline, self.settings.columns, self.settings.standardize, self.settings.flag_company))
@@ -188,17 +186,6 @@ class Run:
             raise InputError("the run clusters by connected components only; the pipeline asks for "
                              f"{self.pipeline.rules.resolver.method} (rules) and {self.pipeline.fs.resolver.method} (model)",
                              fix='set resolver = { method = "connected_components" } in both stages of the pipeline')
-
-    @contextmanager
-    def writing(self, out: Path):
-        """The run folder locked for this run (run_lock) across several steps, such as a run and its report: no other job
-        writes in between."""
-        with run_lock(Path(out)):
-            self.holding = Path(out)
-            try:
-                yield
-            finally:
-                self.holding = None
 
     def _done(self, name: str, big_o: str, filled: str, t: float, **facts: object) -> None:
         self.steps.append(dict(step=name, big_o=big_o, filled=filled, seconds=round(time.perf_counter() - t, 2),
@@ -246,6 +233,7 @@ class Run:
             if self.labels is None:  # full() and increment() merge them with the run's first
                 self.labels = merge_answers(None, self._given(), self.uid)
             self.classifier = kind_classifier(self.settings, spec, self.labels)
+            self._known(rows, path)
             self.inputs += file_facts([self.settings.root / NAME_MODEL, *([Path(self.kind_labels)] if self.kind_labels else [])])
         normalized, used = [*rules.normalized(), *fs.normalized()], rules.used() | fs.used()
         reader = self.con.cursor().sql(f"SELECT * FROM {rows}").to_arrow_reader(self.chunk_rows)  # its own cursor: inserts go on alongside
@@ -261,6 +249,19 @@ class Run:
             kinds = {"companies": kinds.get(2, 0), "persons": kinds.get(1, 0), "not sure": kinds.get(0, 0),
                      "decided by people": self._count(f"{into} WHERE kind_by = 'people'"), "held back": self._count(f"{into} WHERE kind_held")}
         self._done("load", "O(N·L)", f"O({self.n:,}·L)", t, records=self.n, disabled=len(self.disabled), set_aside=self._count("set_aside"), **kinds)
+
+    def _known(self, rows: str, path: str | Path) -> None:
+        """The trust boundary of the answers given (kind_labels): each names a record of this file, as each decision must.
+        A spreadsheet reads 0000000151 as the number 151: that sheet's answers would stand for no record. O(answers + N)."""
+        if self.given is None or not len(self.given):
+            return
+        self.con.register("er_given_ids", self.given[[self.uid]])
+        unknown = [x for x, in self.con.execute(f"""SELECT {q(self.uid)} FROM er_given_ids WHERE {q(self.uid)} NOT IN
+            (SELECT {q(self.uid)} FROM {rows}) ORDER BY 1 LIMIT 5""").fetchall()]
+        self.con.unregister("er_given_ids")
+        if unknown:
+            raise InputError(f"{self.kind_labels}: answers for records not in {path}: {unknown}",
+                             fix="check the IDs, as the run wrote them in kind_review.parquet: a spreadsheet may have read them as numbers")
 
     def _set_aside(self, src: str, stored: str | None) -> str:
         """The records a run can resolve. Rows identical in every column are kept once. Set aside, with the reason, in
@@ -320,7 +321,7 @@ class Run:
         free = shutil.disk_usage(temp if temp and os.path.isdir(temp) else ".").free
         return 0.9 * free if "%" in cap else min(free, size_bytes(cap))
 
-    def _untrusted(self, i: int, rule_keys: list[str], within: str | None = None) -> str | None:
+    def _untrusted(self, i: int, rule: str, rule_keys: list[str], within: str | None = None) -> str | None:
         """The values of a rule's keys held by an oversized block (with `within`, a table of records: only the values
         they hold), as a table; None if none. One value on that many records is not one entity's, so the rule leaves
         it out, and the summary names it. O(N), a group-by."""
@@ -334,8 +335,8 @@ class Run:
         if not n:
             return None
         top = self.con.execute(f"SELECT * FROM {name} LIMIT 1").fetchall()[0]
-        self.notes.append(f"rule {self.rule_names[i]} doesn't trust {n:,} value{'s' if n > 1 else ''} held by {m}+ records ({int(records):,} records)")
-        self.examples.append(f"rule {self.rule_names[i]}: {', '.join(f'{c} = {v}' for c, v in zip(rule_keys, top))} in {top[-1]:,} records")
+        self.notes.append(f"rule {rule} doesn't trust {n:,} value{'s' if n > 1 else ''} held by {m}+ records ({int(records):,} records)")
+        self.examples.append(f"rule {rule}: {', '.join(f'{c} = {v}' for c, v in zip(rule_keys, top))} in {top[-1]:,} records")
         return name
 
     def fit(self) -> dict:
@@ -383,7 +384,7 @@ class Run:
         l, r, rules = q(self.l), q(self.r), self.pipeline.rules
         trust = {}
         for i, (st, rule) in enumerate((st, rule) for st in rules.stages for rule in st.rules):
-            if (untrusted := self._untrusted(i, st.keys(rule), within=batch)):
+            if (untrusted := self._untrusted(i, rule.name, st.keys(rule), within=batch)):
                 trust[i] = f"NOT EXISTS (SELECT 1 FROM {untrusted} z WHERE {' AND '.join(f'z.{q(c)} = l.{q(c)}' for c in st.keys(rule))})"
         _, self.rule_seconds = rule_edges(rules, "records", self.db, self.uid, batch=batch, trust=trust, into="rule_edges")
         self.con.execute("CREATE OR REPLACE TABLE rule_kept AS SELECT * FROM rule_edges WHERE FALSE")
@@ -494,18 +495,20 @@ class Run:
     def _expected_false(self) -> float:  # the false links the model expects among those it accepted: Σ (1 − match probability), O(E)
         return round(self.con.execute("SELECT coalesce(sum(1 - match_probability), 0) FROM matches").fetchall()[0][0], 2)
 
-    def write(self, out: Path, part: int = 0, replace: list[Path] | None = None) -> None:
+    def write(self, out: Path, part: int = 0, replace: list[Path] | None = None, report: tuple[str | Path, Path] | None = None) -> None:
         """Gold (each record's cluster, the stage and rule that resolved it, its kind and its customer's), the accepted
         pairs with their weights, the rules' pairs, as Parquet; and the state an increment needs: the standardized
         records, the rules' clusters and people's person/company answers. Records, rules' pairs and matches are folders
-        that increments append to. `replace` (a full run): the old run's files, which the new ones replace. Staged: see
-        the module."""
+        that increments append to. `replace` (a full run): the old run's files, which the new ones replace. `report`
+        (the input and the pipeline file): the reports for people (report()), built first and written with these files.
+        Staged: see the module."""
+        people, frames = self.report(report[0], out, report[1]) if report else ([], [])
         t, state, name = time.perf_counter(), out / "state", f"part-{part:05d}.parquet"
         aside = [("SELECT * FROM set_aside", out / "set_aside" / name)] if self._count("set_aside") else []
         texts = [(json.dumps(self.model, ensure_ascii=False), state / "model.json"), (self.config, state / "config.txt")] if part == 0 else []
         if self.basis:  # the u this run scored with, and what an increment needs to tell when they go stale
             texts.append((json.dumps(dict(model=self.scoring, basis=self.basis), ensure_ascii=False), state / "scoring.json"))
-        sheets, n = [], len(list((out / KIND_ANSWERS).glob("part-*.parquet")))
+        sheets, n = [], next_part(out / KIND_ANSWERS)
         if n == 0 and (old := state / "kind_labels.parquet").exists():  # a folder that keeps its answers in state/: its first sheet
             sheets, n = [(f"SELECT * FROM read_parquet({lit(old)})", out / KIND_ANSWERS / "part-00000.parquet")], 1
         if self.given is not None and len(self.given):  # the sheet given, kept as it came: the next run reads it again
@@ -514,7 +517,8 @@ class Run:
         self._stage(out, [("SELECT * FROM rule_kept", out / "rule_kept" / name), ("SELECT * FROM matches", out / "matches" / name),
                           (f"SELECT * FROM gold ORDER BY {q(self.uid)}", out / "gold.parquet"),
                           ("SELECT * FROM rule_clusters", state / "rule_clusters.parquet"),
-                          (f"SELECT * FROM {'records' if part == 0 else 'new_records'}", state / "records" / name), *aside, *sheets], texts, replace)
+                          (f"SELECT * FROM {'records' if part == 0 else 'new_records'}", state / "records" / name), *aside, *sheets],
+                    texts + people, replace, frames)
         self._done("write", "O(N + C)", f"O({self.n:,} + {self._count('matches'):,})", t)
         self._log(out, part > 0, part=part, disabled=self.disabled)
 
@@ -535,6 +539,7 @@ class Run:
             tmp(dest).parent.mkdir(parents=True, exist_ok=True)
             tmp(dest).write_text(text, encoding="utf-8")
         for frame, dest in frames:  # sheets for people: pandas keeps their empty answer columns typed
+            tmp(dest).parent.mkdir(parents=True, exist_ok=True)
             frame.to_parquet(tmp(dest))
         dests = [dest for _, dest in (*tables, *texts, *frames)]
         staged = [[str(tmp(d)), str(d)] for d in dests if not whole(d)]
@@ -552,15 +557,19 @@ class Run:
         runs = json.loads(log.read_text())["runs"] if append and log.exists() else []
         entry = dict(at=datetime.now().isoformat(timespec="seconds"), code=code_version(self.settings.root), config=self.config,
                      inputs=self.inputs, **entry, steps=self.steps)
-        log.write_text(json.dumps(dict(runs=[*runs, entry]), indent=1, default=str))
+        tmp = log.with_name(log.name + ".tmp")  # complete before it replaces the log: a write cut short leaves the old one
+        tmp.write_text(json.dumps(dict(runs=[*runs, entry]), indent=1, default=str))
+        os.replace(tmp, log)
 
-    @locked
-    def report(self, path: str | Path, out: Path, pipeline: Path) -> dict[str, pd.DataFrame]:
-        """Step 9, for people, staged: qa.md (the label-free checks, qa), report.txt (the run on a page with no record's
-        value in it), review.parquet (the pairs to decide and to audit; an increment keeps the previous sheet's open
-        rows) and, on a full run that tells persons from companies, kind_review.parquet (records to answer, none
-        answered already; a record an increment holds back reaches the next full run's sheet). `path` is the input,
-        `pipeline` the pipeline file, both named in the reports. Returns qa's tables, the summary first."""
+    def report(self, path: str | Path, out: Path, pipeline: Path) -> tuple[list[tuple[str, Path]], list[tuple[pd.DataFrame, Path]]]:
+        """Step 9, for people: qa.md (the label-free checks, qa), report.txt (the run on a page with no record's value in
+        it), review.parquet (the pairs to decide and to audit; an increment keeps the previous sheet's open rows) and, on
+        a full run that tells persons from companies, kind_review.parquet (records to answer, none answered already; a
+        record an increment holds back reaches the next full run's sheet). Built before the run's files are written, and
+        returned as texts and frames for write() to stage with them: a run never lands without its reports, which a
+        retry could not make again, since nothing is new by then. `path` is the input, `pipeline` the pipeline file, both
+        named in the reports. Keeps qa's tables, the summary first, in self.tables."""
+        t = time.perf_counter()
         tables = qa(self, previous=out / "review.parquet" if self.added is not None else None)
         frames = [(tables.pop("review_sheet"), out / "review.parquet")]
         text = ["# Run checks", "", f"Input: `{path}` · {self.n:,} records", ""]
@@ -570,14 +579,17 @@ class Run:
             answered = self.labels[self.uid].astype("string") if self.labels is not None else ()
             frames.append((kind_review_sheet(self.con, "records", self.uid, self.pipeline.kind, self.settings.flag_company, answered),
                            out / "kind_review.parquet"))
-        self._stage(out, [], [("\n".join(text), out / "qa.md"), (report_text(self, tables, pipeline), out / "report.txt")], frames=frames)
-        return tables
+        self.tables = tables
+        texts = [("\n".join(text), out / "qa.md"), (report_text(self, tables, pipeline), out / "report.txt")]
+        self._done("report", "O(review pairs) + O(N)", f"O({len(frames[0][0]):,} review pairs + {self.n:,})", t)
+        return texts, frames
 
     # ---------- increments ----------
 
     @locked
-    def increment(self, path: str | Path, out: Path) -> "Run":
-        """Add a batch of new records to the run written in `out`. See the module docstring for the cost."""
+    def increment(self, path: str | Path, out: Path, pipeline_file: Path | None = None) -> "Run":
+        """Add a batch of new records to the run written in `out`, with its reports as full() writes them. See the module
+        docstring for the cost."""
         state, u, l, r = out / "state", q(self.uid), q(self.l), q(self.r)
         finish_writes(out)
         if not (state / "model.json").exists():
@@ -586,7 +598,7 @@ class Run:
             raise InputError(f"the pipeline or the column mapping changed since the full run in {out}: an increment would resolve its batch otherwise",
                              fix="run a full run with --overwrite, or the increment with the pipeline and config/settings.toml that run used")
         self.model = json.loads((state / "model.json").read_text(encoding="utf-8"))
-        part = len(list((state / "records").glob("part-*.parquet")))
+        part = next_part(state / "records")
         parts = ", ".join(lit(x) for x in sorted((state / "records").glob("part-*.parquet")))  # not a glob: this run's own part comes later
         self.con.execute(f"CREATE OR REPLACE VIEW old_records AS SELECT * FROM read_parquet([{parts}], union_by_name = true)")
         self.labels = self._answers(out)  # the batch's kinds rest on the run's answers, and any given with it
@@ -638,7 +650,7 @@ class Run:
         self._gold("gold_old")
         self._done("cluster", "O(C_Δ + touched clusters)", f"{self._count('matches'):,} accepted", t, accepted=self._count("matches"),
                    expected_false=self._expected_false())
-        self.write(out, part)
+        self.write(out, part, report=(path, pipeline_file) if pipeline_file else None)
         return self
 
     def _answers(self, out: Path) -> pd.DataFrame | None:
@@ -646,7 +658,7 @@ class Run:
         O(answers)."""
         parts = sorted((out / KIND_ANSWERS).glob("part-*.parquet"), reverse=True) or [
             f for f in [out / "state" / "kind_labels.parquet"] if f.exists()]  # a folder that keeps its answers in state/
-        kept = pd.concat([pd.read_parquet(f) for f in parts], ignore_index=True) if parts else None
+        kept = pd.concat([pd.read_parquet(f).astype({self.uid: "string"}) for f in parts], ignore_index=True) if parts else None
         return merge_answers(kept, self._given(), self.uid)
 
     def _given(self) -> pd.DataFrame | None:
@@ -660,7 +672,11 @@ class Run:
         if {self.uid, "kind"} - set(given.columns):
             raise InputError(f"{path}: needs the columns {self.uid} and kind; it has {sorted(given.columns)}",
                              fix="give back kind_review.parquet with kind filled in: 1 person, 2 company, 0 can't tell")
-        self.given = given[pd.to_numeric(given["kind"], errors="coerce").isin([PERSON, COMPANY, UNSURE]).to_numpy()].reset_index(drop=True)
+        given = given[pd.to_numeric(given["kind"], errors="coerce").isin([PERSON, COMPANY, UNSURE]).to_numpy()].reset_index(drop=True)
+        given[self.uid] = given[self.uid].astype("string")  # as the run reads every ID: text
+        if (blank := int(given[self.uid].str.strip().fillna("").eq("").sum())):
+            raise InputError(f"{path}: {blank:,} answered rows have no {self.uid}", fix="fill in each answered row's ID, or clear its answer")
+        self.given = given
         return self.given
 
     # ---------- people's decisions ----------
@@ -722,12 +738,14 @@ class Run:
         parts = out / DECISIONS
         parts.mkdir(exist_ok=True)
         self._stage(out, [(f"SELECT * FROM gold ORDER BY {u}", out / "gold.parquet"),
-                          ("SELECT * FROM er_decisions", parts / f"part-{len(list(parts.glob('part-*.parquet'))):05d}.parquet")])
+                          ("SELECT * FROM er_decisions", parts / f"part-{next_part(parts):05d}.parquet")])
         self._log(out, True, decisions=str(path))
         return self
 
     @locked
-    def full(self, path: str | Path, out: Path, overwrite: bool = False) -> "Run":
+    def full(self, path: str | Path, out: Path, overwrite: bool = False, pipeline_file: Path | None = None) -> "Run":
+        """Steps 1–8 on the file at `path` into the run folder `out`; with `pipeline_file` (named in the reports), step 8
+        writes step 9's reports with the run's files."""
         finish_writes(out)
         held = [out / f for f in RUN_FILES if (out / f).exists()]
         if held and not overwrite:
@@ -741,8 +759,12 @@ class Run:
         self.score()
         self._load_decisions(out)
         self.cluster()
-        self.write(out, replace=held)  # the old run goes only once the new one is complete
+        self.write(out, replace=held, report=(path, pipeline_file) if pipeline_file else None)  # the old run goes only once the new one is complete
         return self
+
+
+def next_part(folder: Path) -> int:  # one past the highest part-n.parquet: a part deleted by hand frees no number to write over
+    return max((int(f.stem.removeprefix("part-")) for f in folder.glob("part-*.parquet")), default=-1) + 1
 
 
 def file_facts(files: list[Path]) -> list[dict]:
@@ -849,12 +871,14 @@ def qa(run: "Run", fields: list[str] | None = None, review: int = 50, previous: 
         c = run.classifier
         if c is not None and c.spec.trust_flag:
             how = "the file's flag, as it is (trust_flag)"
-        elif c is not None and c.labels:
+        elif c is not None and c.combiner is not None:
             side = lambda line, at: at if line <= 1 else "never (no line holds its budget)"
             how = (f"{c.labels:,} answers ({c.measured:,} drawn to measure): company {side(c.line_company, f'at P ≥ {c.line_company:g}')}, "
                    f"person {side(c.line_person, f'at P ≤ {1 - c.line_person:.4g}, its labelled error {c.person_error:.2%}' if c.person_error is not None else '')}")
-        else:
-            how = "no answers yet: 2 company only where a legal form is written; answer kind_review.parquet, then run again with --kind-labels"
+        else:  # no line placed: a written legal form decides
+            how = ((f"{c.labels:,} answers, {c.measured:,} of them drawn to measure: a line needs 50 drawn to measure, of both kinds"
+                    if c is not None and c.labels else "no answers yet")
+                   + "; 2 company only where a legal form is written; answer kind_review.parquet, then run again with --kind-labels")
         if c is not None and c.decided:
             how += f"; people decided {len(c.decided):,} records"
         held, unknown = con.execute("SELECT count(*) FILTER (WHERE kind_held AND kind_by <> 'people'), count(*) FILTER (WHERE kind_held AND kind_by = 'people') FROM gold").fetchall()[0]

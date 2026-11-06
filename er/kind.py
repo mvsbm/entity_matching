@@ -4,10 +4,11 @@
     name model   logistic regression on the name's character n-grams (1 to KindSpec.ngram), legal forms and spaces
                  removed; trained once on public reference data by scripts/train_name_model.py: config/kind_names.npz
     combiner     gradient-boosted trees on the name model's score, the file's flag, the birth year and the legal form,
-                 fitted on people's labels (kind_review.parquet, filled in); none without labels
+                 fitted on people's labels (kind_review.parquet, filled in), once 50 of them, of both kinds, were
+                 drawn to measure: what its lines are placed on
     lines        company: no labelled error above it (out of fold), then margin_steps stricter, one more on fewer
                  answers than a measuring draw; person: the labelled
-                 error above it within its budget at 95% confidence. Without labels: a company only where a legal
+                 error above it within its budget at 95% confidence. Without them: a company only where a legal
                  form is written, never a sure person.
 
 Each record gets kind (2 company, 1 person, 0 not sure: the codes a person/company flag uses), kind_p (the probability
@@ -124,7 +125,7 @@ class Classifier:
     names: NameModel
     uid: str = ""
     combiner: HistGradientBoostingClassifier | None = None
-    labels: int = 0                           # people's answers the combiner rests on (1 or 2)
+    labels: int = 0                           # people's answers, 1 or 2: what the combiner rests on
     measured: int = 0                         # ... of them drawn to measure: the lines and error rates rest on these only
     decided: dict[str, int] | None = None     # record → people's answer, 1 or 2: it stands, whatever the engine says
     line_company: float = 1.01                # above 1: never
@@ -230,16 +231,17 @@ def classifier(settings, spec: KindSpec, labels: pd.DataFrame | None = None) -> 
         d = at_random & flag.notna().to_numpy()
         c.flag_error, c.flag_checked = float((c.flag_code(flag[d], int(d.sum())) != lab["kind"].to_numpy()[d]).mean()), int(d.sum())
     y = (lab["kind"] == COMPANY).to_numpy()
-    if spec.trust_flag or len(lab) < 50 or y.all() or not y.any():  # too few to fit and to place a line on
+    c.labels, c.measured = len(lab), int(measure.sum())
+    # no line without 50 answers drawn to measure, of both kinds: a combiner then would call nothing, so the legal form decides
+    if spec.trust_flag or c.measured < 50 or y[measure].all() or not y[measure].any():
         return c
     X = c.features(lab["name"], flag, col("birth_date"))
     c.blank = np.isnan(X).all(axis=0)
     X = np.where(c.blank, 0.0, X)
     make = lambda: HistGradientBoostingClassifier(max_depth=spec.depth, max_iter=100, learning_rate=0.1, random_state=0)
     oof = cross_val_predict(make(), X, y, cv=StratifiedKFold(5, shuffle=True, random_state=0), method="predict_proba")[:, 1]
-    if measure.sum() >= 50 and y[measure].any() and not y[measure].all():
-        c.line_company, c.line_person, c.person_error = lines(oof[measure], y[measure], spec)
-    c.combiner, c.labels, c.measured = make().fit(X, y), len(lab), int(measure.sum())
+    c.line_company, c.line_person, c.person_error = lines(oof[measure], y[measure], spec)
+    c.combiner = make().fit(X, y)
     return c
 
 
@@ -264,7 +266,7 @@ def kind_review_sheet(con: duckdb.DuckDBPyConnection, records: str, uid: str, sp
     flagged, dated = "kind_flag" in cols, "birth_date" in cols
     says = ", ".join("'" + v.replace("'", "''") + "'" for v in flag_company) or "NULL"
     code = f"CASE WHEN kind_flag IS NULL THEN NULL WHEN kind_flag IN ({says}) THEN {COMPANY} ELSE {PERSON} END" if flagged else "NULL::INT"
-    con.register("er_answered", pd.DataFrame({uid: pd.Series(list(answered), dtype="string")}))
+    con.register("er_answered", pd.DataFrame({uid: pd.Series(list(answered), dtype="string").dropna()}))  # one NULL: NOT IN keeps no row
     rows = con.sql(f"""WITH r AS (
             SELECT {u}, kind_name AS name, {"kind_flag, " if flagged else ""}{"birth_date, " if dated else ""}kind, kind_p, name_p,
                    coalesce(kind_held, FALSE) AS held, {code} AS flag_code, hash({u}) AS h,

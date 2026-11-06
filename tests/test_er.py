@@ -950,14 +950,26 @@ def test_a_run_folder_takes_one_writer_at_a_time(tmp_path, population):
             Run(p, s).full(tmp_path / "all.parquet", tmp_path / "run")
     Run(p, s).full(tmp_path / "all.parquet", tmp_path / "run")  # released: free again
 
-    from er.run import Busy
-    run, out = Run(p, s), tmp_path / "reported"
-    with run.writing(out):  # a run and its report, as scripts/resolve.py makes them: no other job in between
-        run.full(tmp_path / "all.parquet", out)
-        with pytest.raises(Busy):
-            Run(p, s).increment(tmp_path / "all.parquet", out)
-        run.report(tmp_path / "all.parquet", out, s.root / "config" / "final.toml")
-    assert {"qa.md", "report.txt", "review.parquet"} <= {f.name for f in out.iterdir()} and not list(out.rglob("*.tmp"))
+
+
+def test_a_run_and_its_reports_land_together_even_when_the_write_is_cut_short(tmp_path, population, monkeypatch):
+    import er.run
+    from er.run import Run
+    s, p, g = population
+    g.df.to_parquet(tmp_path / "all.parquet", index=False)
+    out, real = tmp_path / "run", er.run.finish_writes
+
+    def killed(folder):  # the process dies once the moves owed are saved, before it does them
+        if (folder / "pending.json").exists():
+            raise SystemExit("killed")
+        real(folder)
+    monkeypatch.setattr(er.run, "finish_writes", killed)
+    with pytest.raises(SystemExit):
+        Run(p, s).full(tmp_path / "all.parquet", out, pipeline_file=s.root / "config" / "final.toml")
+    monkeypatch.setattr(er.run, "finish_writes", real)
+    again = Run(p, s).increment(tmp_path / "all.parquet", out)  # the retry: the next job finishes the moves, and finds nothing new
+    assert again.added == 0 and (out / "gold.parquet").exists()
+    assert {"qa.md", "report.txt", "review.parquet", "kind_review.parquet"} <= {f.name for f in out.iterdir()} and not list(out.rglob("*.tmp"))
 
 
 def test_the_scheduler_serves_the_inbox_in_order_and_parks_what_people_must_fix(tmp_path, population):
@@ -972,8 +984,9 @@ def test_the_scheduler_serves_the_inbox_in_order_and_parks_what_people_must_fix(
     spec = importlib.util.spec_from_file_location("schedule", script)
     schedule = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(schedule)
-    code, _, _, tries = schedule.attempt([sys.executable, "-c", "import sys; sys.exit(1)"], retries=2, wait=0)
-    assert (code, tries) == (1, 3)  # an unexpected failure is tried again
+    made = []
+    code, _, _, tries = schedule.attempt(lambda: made.append(1) or [sys.executable, "-c", "import sys; sys.exit(1)"], retries=2, wait=0)
+    assert (code, tries, len(made)) == (1, 3, 3)  # an unexpected failure is tried again, its command made again: the folder may hold the run now
 
     inbox, run = tmp_path / "inbox", tmp_path / "run"
     (inbox / "batches").mkdir(parents=True)
@@ -1258,6 +1271,44 @@ def test_with_answers_the_kinds_are_the_same_every_run_people_s_stand_and_a_cust
     assert (by.customer.to_numpy() == expect).all()
     wrong = ga.set_index(uid).join(g.truth.set_index("CONT_ID")["KIND"])
     assert not ((wrong["kind"] == 2) & (wrong["KIND"] != "company")).any()  # no sure company that isn't one
+
+
+def test_answers_without_a_measuring_draw_keep_the_legal_form_rule(tmp_path, kind_population):
+    from er.run import Run
+    s, p, g = kind_population
+    uid = s.data.unique_id
+    g.df.to_parquet(tmp_path / "all.parquet", index=False)
+    sheet = kind_sheet_for(Run(p, s).full(tmp_path / "all.parquet", tmp_path / "free"), s, p, 600)
+    decide = (sheet["why"] == "decide").to_numpy()  # the top of the sheet: answered first
+    truth = np.where(g.truth.set_index("CONT_ID").loc[sheet[uid], "KIND"].eq("company"), 2, 1)
+    sheet.assign(kind=pd.array(np.where(decide, truth, pd.NA), dtype="Int8")).to_parquet(tmp_path / "top.parquet")
+    run = Run(p, s, kind_labels=tmp_path / "top.parquet").full(tmp_path / "all.parquet", tmp_path / "run")
+    assert run.classifier.labels == decide.sum() >= 50 and run.classifier.measured == 0 and run.classifier.combiner is None
+    before, after = (pd.read_parquet(tmp_path / x / "gold.parquet").set_index(uid) for x in ("free", "run"))
+    engine = after.index[after["kind_by"] == "engine"]
+    assert (before.loc[engine, "kind"] == 2).any() and after.loc[engine, "kind"].equals(before.loc[engine, "kind"])  # a legal form still decides
+    assert (after.loc[sheet[uid][decide], "kind"].to_numpy() == truth[decide]).all()  # and people's answers stand
+
+
+def test_a_sheet_s_ids_must_name_records_of_the_file(tmp_path, kind_population):
+    from er.run import Run
+    s, p, g = kind_population
+    uid = s.data.unique_id
+    g.df.to_parquet(tmp_path / "all.parquet", index=False)
+    sheet = kind_sheet_for(Run(p, s).full(tmp_path / "all.parquet", tmp_path / "free"), s, p, 100).assign(kind=1)
+    sheet.assign(**{uid: sheet[uid].astype("int64")}).to_parquet(tmp_path / "numbers.parquet")  # as a spreadsheet gives 0000000151 back
+    with pytest.raises(InputError, match="answers for records not in"):
+        Run(p, s, kind_labels=tmp_path / "numbers.parquet").full(tmp_path / "all.parquet", tmp_path / "a")
+    sheet.assign(**{uid: [pd.NA, *sheet[uid][1:]]}).astype({uid: "string"}).to_parquet(tmp_path / "blank.parquet")
+    with pytest.raises(InputError, match="answered rows have no"):
+        Run(p, s, kind_labels=tmp_path / "blank.parquet").full(tmp_path / "all.parquet", tmp_path / "b")
+
+
+def test_a_new_part_takes_the_number_after_the_highest(tmp_path):
+    from er.run import next_part
+    assert next_part(tmp_path) == 0
+    (tmp_path / "part-00001.parquet").touch()  # part-00000 deleted by hand: undone
+    assert next_part(tmp_path) == 2
 
 
 def test_the_field_check_and_the_run_read_one_legal_form_table():

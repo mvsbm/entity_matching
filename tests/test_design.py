@@ -183,8 +183,7 @@ def lineage(statements: list[str]) -> tuple[set[str], set[str]]:
 
 
 class Logged:
-    """A Run whose every query is logged, and given to the step that finishes after it (Run.echo); what comes after the
-    last step is the report's."""
+    """A Run whose every query is logged, and given to the step that finishes after it (Run.echo)."""
 
     def __init__(self, run):
         self.run, self.by_step = run, defaultdict(list)
@@ -226,15 +225,12 @@ def logged_runs(tmp: Path) -> tuple:
     batch = np.random.default_rng(0).random(len(g.df)) < 0.2
     g.df[~batch].to_parquet(tmp / "first.parquet", index=False)
     pd.concat([g.df[batch], g.df[~batch].head(1)]).to_parquet(tmp / "new.parquet", index=False)  # one already in the run: set aside
-    pd.DataFrame({s.data.unique_id: g.df[s.data.unique_id].astype("string")[:3], "kind": [1] * 3}).to_parquet(tmp / "answers.parquet")
+    pd.DataFrame({s.data.unique_id: g.df[~batch][s.data.unique_id].astype("string")[:3], "kind": [1] * 3}).to_parquet(tmp / "answers.parquet")
     out, pipeline, logs = tmp / "run", s.root / "config" / "final.toml", {}
     for mode in ("full", "increment"):
         run = Run(p, s, kind_labels=tmp / "answers.parquet" if mode == "full" else None)
         logs[mode] = log = Logged(run)
-        with run.writing(out):
-            run.full(tmp / "first.parquet", out) if mode == "full" else run.increment(tmp / "new.parquet", out)
-            run.report(tmp / ("first.parquet" if mode == "full" else "new.parquet"), out, pipeline)
-        log.cut("report")
+        run.full(tmp / "first.parquet", out, pipeline_file=pipeline) if mode == "full" else run.increment(tmp / "new.parquet", out, pipeline_file=pipeline)
     sheet = pd.read_parquet(out / "review.parquet")
     sheet.iloc[:1].assign(decision="match").to_parquet(tmp / "decided.parquet")
     run = Run(p, s)
@@ -294,7 +290,7 @@ def test_each_step_box_names_the_functions_its_step_reaches():
     for diagram, method in (("increment", "increment"), ("decisions", "decide")):
         elements, _, _ = parse(diagram)
         named = set().union(*(names_in(label) for eid, (kind, label) in elements.items() if kind == "rectangle" and eid != "report"))
-        expected = code.reach({f"Run.{method}"})
+        expected = code.reach({f"Run.{method}"}, steps={"report"})  # the report: its own box, as in the full run's
         assert named == expected, f"{diagram}.puml: to draw {sorted(expected - named)}, to remove {sorted(named - expected)}"
 
 
