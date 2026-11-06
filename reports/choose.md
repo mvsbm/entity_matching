@@ -35,7 +35,6 @@ Written by `scripts/choose.py` from `config/pipeline.toml` and `config/experimen
 | fold_levenshtein | 0.0921 | 0 | 0.0146 | 6 | 2 | 0.2891 | 0 | 0 | 1041 | 0.2 |
 | fold_exact | 0.0804 | 0 | 0.0167 | 0 | 22 | 0.0 | 0 | 0 | 475 | 0.2 |
 | raw_jaro_winkler | 0.0718 | 0 | 0.0187 | 0 | 41 | 0.0 | 0 | 0 | 1041 | 0.2 |
-| constrained_given_name | 0.0713 | 0 | 0.0188 | 0 | 42 | 0.0 | 0 | 0 | 1041 | 0.4 |
 | optuna_comparators | 0.0993 | 0 | 0.0135 | 21 | 1 | 0.0 | 0 | 0 | 6706 | 0.2 |
 | f2_address_exact | 0.0903 | 0 | 0.0149 | 0 | 0 | 1.0 | 0 | 0 | 1041 | 0.3 |
 | f2_address_prefix | 0.0903 | 0 | 0.0149 | 0 | 0 | 1.0 | 0 | 0 | 1041 | 0.2 |
@@ -190,7 +189,6 @@ cost: u O(max_pairs·C) = O(10,000,000·5) · EM O(iterations·P·C), P = 53,163
 | no_term_frequency | 0.3521 | 0 | 0.0038 | 15 | 0 | 0.0001 | 0 | 0 | 36620 |
 | exact_keys_only | 0.3454 | 0 | 0.0039 | 0 | 0 | 1.0 | 0 | 0 | 7518 |
 | levenshtein_names | 0.3065 | 0 | 0.0044 | 2 | 88 | 0.0 | 0 | 0 | 36620 |
-| constrained_given_name | 0.2442 | 0 | 0.0055 | 0 | 224 | 0.0 | 0 | 0 | 36620 |
 | optuna_suggestion | 0.3639 | 0 | 0.0037 | 42 | 1 | 0.0 | 0 | 0 | 15771 |
 | u_from_1e6_pairs | 0.3025 | 0 | 0.0045 | 0 | 95 | 0.0 | 0 | 0 | 36620 |
 | compound_phone_keys | 0.3454 | 0 | 0.0039 | 0 | 0 | 1.0 | 0 | 0 | 31845 |

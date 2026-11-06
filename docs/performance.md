@@ -32,10 +32,10 @@
 | 1 | load: read in chunks, check the fields, standardize each chunk, and tell persons from companies | `Run.load`, `er.standardize.prepare`, `er.kind` | O(N·L) | N | 10.87 s |
 | 2 | budget: every rule's and generator's pairs, exactly, before any join | `Run.budget`, `er.candidates.estimate` | O(N) per rule and generator, a group-by | N | 1.85 s |
 | 3 | fit: λ, and m by EM, on a sample of whole postal areas (EM's own u from 10⁶ pairs); then u measured on this file: value counts for the leading exact levels, one-deletion keys for a one-edit level after them (so cif, phone and birth are counted exactly), S pairs for name, company and address | `Run.fit`, `er.match.train_fs`, `exact_u`, `scored_sample`, `assemble_u` | O(n + S·K + P_em·K) + O(N + S·K) | **constant**, plus N | 9.32 s |
-| 4 | rules: one plain SQL join per rule (the first rule wins a pair), fuzzy checks on the joined pairs only, then the cascade's clusters | `Run.rules`, `er.match.rule_edges`, `Run._merge` | O(N + Σ P_r·L²) + O(E·d + N) | N; ≤ 0.14 pairs per record per rule at 1M | 2.23 s |
+| 4 | rules: one plain SQL join per rule (the first rule wins a pair), fuzzy checks on the joined pairs only, then the cascade's clusters | `Run.rules`, `er.match.rule_edges`, `er.cluster.merge` | O(N + Σ P_r·L²) + O(E·d + N) | N; ≤ 0.14 pairs per record per rule at 1M | 2.23 s |
 | 5 | candidates: every generator as one SQL join or window, merged by bitmask, only pairs touching a record the rules left alone; oversized blocks checked on a sample scored with the file's u | `Run.candidates`, `er.candidates.candidates` | O(N·L + Σ P_g) | N; ≤ 1.75 pairs per record per key at 1M, 3 per sorted window | 6.38 s |
 | 6 | score: every candidate, with the u the fit measured | `Run.score`, `er.match.score_fs` | O(C·K·L²) | C | 15.75 s |
-| 7 | cluster: accept at the threshold, connected components with the rules' pairs (each rule cluster one node), gold | `Run.cluster`, `Run._merge` | O(C + E·d + N) | N | 0.34 s |
+| 7 | cluster: accept at the threshold, connected components with the rules' pairs (each rule cluster one node), gold | `Run.cluster`, `er.cluster.merge` | O(C + E·d + N) | N | 0.34 s |
 | 8 | write: gold, matches, the rules' pairs and the state for increments, as Parquet | `Run.write` | O(N + C) | N | 1.00 s |
 | | **total** | | | | **47.7 s** |
 
@@ -133,7 +133,7 @@ trained once and its signals computed once; a combination fits only its combiner
 - **Deletion keys unnested once** per candidates call (`Records.variants`), into a table that the count, the join and
   the oversized blocks' sample all read. A full run joins it in one pass; an increment keeps only the blocks its batch
   reaches.
-- **Clusters merged, not rebuilt** (`Run._merge`). A full run merges its pairs into the rule clusters as an increment
+- **Clusters merged, not rebuilt** (`er.cluster.merge`). A full run merges its pairs into the rule clusters as an increment
   does, each cluster one node, so connected components run over the clusters the pairs touch, not over every record.
 - **An increment's records in one table**: the stored parts and the batch are read once, into `records`, which every
   later step reads.

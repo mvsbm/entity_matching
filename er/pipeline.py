@@ -1,29 +1,31 @@
-"""Stage cascade, preflight (time complexity before any join), and the rule-based run.
-
-Cascade semantics: stages run in order. A stage's accepted pairs are kept only if at least one record is still
-unresolved (in a singleton cluster), or, for a stage listed in `bridge`, if they join two different clusters; then
-everything kept so far is resolved again. Metrics after each stage are cumulative: matching metrics on the accepted
-pairs, resolution metrics on the clusters.
+"""Design time's measurements: preflight (the work per rule before any join), projections to a target size, and the
+pipeline measured against the truth. Every measured run is er.run.Run, the run scripts/resolve.py makes: run_rules and
+run_fs read its tables and join them to the truth, so design time judges exactly what runs. Metrics after each stage
+are cumulative: matching metrics on the accepted pairs, resolution metrics on the clusters.
 """
 import math
+import tempfile
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, replace
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
 import pyarrow as pa
 from splink import DuckDBAPI
 
-from er.candidates import candidates, estimate, found_by, generate
-from er.config import (Blocker, Budget, Data, DeletionKeys, FSSpec, Key, KeyBlocker, OverBudget, RulesSpec,
+from er.candidates import estimate, found_by, generate, q
+from er.cluster import merge
+from er.config import (Blocker, Budget, Data, DeletionKeys, FSSpec, Key, KeyBlocker, OverBudget, Pipeline, RulesSpec,
                        SortedNeighbourhood, TfidfNeighbours, ThresholdRule, keys_of)
 from er.evaluate import (average_precision, candidate_metrics, cluster_metrics, edge_metrics, fp_upper, missed_pairs,
                          true_pairs, wilson)
-from er.match import rule_edges, scaled_prior, score_fs, scored_sample, with_scored_u
-from er.cluster import resolve
+from er.match import scaled_prior, score_fs, scored_sample
+from er.run import Run
+from er.settings import Settings
 from er.standardize import prepare
-from er.strings import FUNCTIONS, udf
+from er.strings import FUNCTIONS, connect, udf
 
 BENCH: dict[tuple[str, str], float] = {}  # seconds per pair, by (column, function)
 
@@ -151,28 +153,20 @@ def check_budget(plan: pd.DataFrame, budget: Budget, n: int) -> None:
         raise OverBudget(f"over budget: {over[['rule', 'P', 'largest_block']].to_dict('records')}")
 
 
-def cascade(ids: pd.Series, stages: list[tuple[str, pd.DataFrame]], resolve_edges: Callable[[pd.DataFrame], pd.Series],
-            entity: pd.Series, uid: str, bridge: tuple[str, ...] = ()) -> tuple[pd.Series, pd.Series, pd.DataFrame, list[dict]]:
-    """→ final clusters, the stage that first resolved each record, the kept edges, metrics after each stage."""
-    l, r = f"{uid}_l", f"{uid}_r"
-    resolved = pd.Series(False, index=ids.to_numpy())
-    stage_of = pd.Series(pd.NA, index=ids.to_numpy(), dtype="string")
-    kept, accepted, metrics = [], [], []
-    clusters = pd.Series(ids.to_numpy(), index=ids.to_numpy(), dtype="string")
-    for name, e in stages:
-        accepted.append(e)
-        if name in bridge:  # may join two clusters: skip only pairs already in one
-            e = e[e[l].map(clusters).to_numpy() != e[r].map(clusters).to_numpy()]
-        else:  # skip pairs already resolved on both sides
-            e = e[~(e[l].map(resolved).to_numpy() & e[r].map(resolved).to_numpy())]
-        kept.append(e)
-        clusters = resolve_edges(pd.concat(kept))
-        now = clusters.map(clusters.value_counts()) > 1
-        stage_of[now & ~resolved] = name
-        resolved = now
-        metrics.append(dict(stage=name, edges=len(pd.concat(kept)), **cluster_metrics(clusters, ids.map(entity)),
-                            **edge_metrics(pd.concat(accepted), entity, uid)))
-    return clusters, stage_of, pd.concat(kept), metrics
+def table(run: Run, sql: str) -> pd.DataFrame:  # a query on a run's tables, its text columns as pandas strings
+    df = run.con.sql(sql).df()
+    return df.astype({c: "string" for c in df.columns if df[c].dtype == object})
+
+
+def clustered(con, db: DuckDBAPI, base: pd.DataFrame, edges: pd.DataFrame, ids: pd.Series, uid: str) -> pd.Series:
+    """`base` (uid, cluster_id) with `edges` added (er.cluster.merge, the run's own clustering), in the order of ids."""
+    con.register("er_base_df", base)
+    con.register("er_edges_df", edges[[f"{uid}_l", f"{uid}_r"]])
+    con.execute("CREATE OR REPLACE TABLE er_base AS SELECT * FROM er_base_df")
+    con.execute("CREATE OR REPLACE TABLE er_edges AS SELECT * FROM er_edges_df")
+    merge(con, db, "er_base", "er_edges", "er_clusters", uid)
+    out = con.sql("SELECT * FROM er_clusters").df().set_index(uid)["cluster_id"]
+    return out.astype("string").reindex(ids.to_numpy())
 
 
 @dataclass
@@ -185,123 +179,136 @@ class Result:
     seconds: float
 
 
-def run_rules(spec: RulesSpec, records: pd.DataFrame, truth: pd.DataFrame, db: DuckDBAPI, data: Data) -> Result:
-    t0, uid = time.perf_counter(), data.unique_id
+def run_rules(pipeline: Pipeline, settings: Settings, path: Path, truth: pd.DataFrame) -> Result:
+    """The pipeline's rules on the file at `path`, run by er.run.Run, measured against the truth. The preflight comes
+    first and stops an over-budget configuration (OverBudget) before any join. O(N + Σ P_r·L²) + O(N) per stage."""
+    t0, spec, uid = time.perf_counter(), pipeline.rules, settings.data.unique_id
     l, r = f"{uid}_l", f"{uid}_r"
-    df = prepare(spec.standardize, records, spec.normalized(), spec.used())
+    run = Run(pipeline, settings)
+    run.load(path)
+    df = table(run, "SELECT * FROM records")
     plan = preflight(spec, df)
     check_budget(plan, spec.budget, len(df))
-    edges, actual = rule_edges(spec, df, db, uid)
-    entity = truth.set_index(uid)[data.entity_id]
+    run.rules()
+    entity = truth.set_index(uid)[settings.data.entity_id]
+    edges = table(run, f"""SELECT e.*, k.{q(l)} IS NOT NULL AS kept FROM rule_edges e
+        LEFT JOIN rule_kept k ON k.{q(l)} = e.{q(l)} AND k.{q(r)} = e.{q(r)} ORDER BY e.{q(l)}, e.{q(r)}""")
     edges["fp"] = edges[l].map(entity).to_numpy() != edges[r].map(entity).to_numpy()
+    kept_edges = edges[edges["kept"]]
 
     ids = df[uid]
-    clusters, stage_of, kept_edges, metrics = cascade(
-        ids, [(s.name, edges[edges["stage"] == s.name]) for s in spec.stages],
-        lambda e: resolve(spec.resolver, ids, e, df, db, uid), entity, uid)
-    edges["kept"] = edges.index.isin(kept_edges.index)
+    base = pd.DataFrame({uid: ids.to_numpy(), "cluster_id": ids.to_numpy()})
+    resolved = pd.Series(False, index=ids.to_numpy())
+    stage_of = pd.Series(pd.NA, index=ids.to_numpy(), dtype="string")
+    metrics, names = [], []
+    for st in spec.stages:  # the clusters after each stage: the kept pairs of the stages so far, merged as the run merges them
+        names.append(st.name)
+        upto = edges["stage"].isin(names).to_numpy()
+        clusters = clustered(run.con, run.db, base, edges[upto & edges["kept"].to_numpy()], ids, uid)
+        now = clusters.map(clusters.value_counts()) > 1
+        stage_of[now & ~resolved] = st.name
+        resolved = now
+        metrics.append(dict(stage=st.name, edges=int((upto & edges["kept"].to_numpy()).sum()), **cluster_metrics(clusters, ids.map(entity)),
+                            **edge_metrics(edges[upto], entity, uid)))
 
     order = {rule.name: i for i, rule in enumerate(rule for s in spec.stages for rule in s.rules)}
     touch = pd.concat([kept_edges[[l, "rule"]].set_axis([uid, "rule"], axis=1), kept_edges[[r, "rule"]].set_axis([uid, "rule"], axis=1)])
     first_rule = touch.assign(o=touch["rule"].map(order)).sort_values("o").drop_duplicates(uid).set_index(uid)["rule"]
-    resolved = stage_of.notna().to_numpy()
     out = df.assign(CLUSTER_ID=clusters.to_numpy(), MATCH_STAGE=stage_of.to_numpy(),
-                    MATCH_RULE=df[uid].map(first_rule).where(resolved))
+                    MATCH_RULE=df[uid].map(first_rule).where(stage_of.notna().to_numpy()))
 
     rules = (edges.groupby("rule", sort=False).agg(edges=("fp", "size"), edge_FP=("fp", "sum"), kept=("kept", "sum"),
                                                    kept_FP=("fp", lambda f: int((f & edges.loc[f.index, "kept"]).sum())))
              .reindex(plan["rule"]).fillna(0).astype(int).reset_index())
-    plan = plan.assign(actual_ms=(1000 * plan["rule"].map(actual)).round(1))  # includes Splink's per-rule overhead
+    plan = plan.assign(actual_ms=(1000 * plan["rule"].map(run.rule_seconds)).round(1))  # includes Splink's per-rule overhead
+    run.con.close()  # its tables are read: free its memory now, not when the collector finds the run
     return Result(plan, rules, pd.DataFrame(metrics), out, edges, time.perf_counter() - t0)
-
-
-def bridged(spec: FSSpec) -> tuple[str, ...]:  # the cascade stages that may join two clusters
-    return (spec.stage,) if spec.bridge else ()
 
 
 @dataclass
 class FSResult:
     report: pd.DataFrame      # per candidate generator: Big-O, estimated and actual pairs, completeness, seconds
     candidates: pd.DataFrame  # union of candidate pairs with the generators that found them
-    scored: pd.DataFrame      # candidates + match_weight, match_probability, gamma levels, fp
+    scored: pd.DataFrame      # candidates + match_weight, match_probability, gamma levels, named, keep, fp
     metrics: pd.DataFrame     # cascade: previous stage, then this one (cumulative)
     stage_metrics: dict       # this stage alone: candidates, accepted pairs, average precision
     records: pd.DataFrame     # prepared records + CLUSTER_ID, MATCH_STAGE, MATCH_RULE
     seconds: float
     model: dict               # the model that scored: the fitted one, with u from these records if model.u_from_scored
+    rule_clusters: pd.DataFrame  # uid → cluster_id after the rules: where threshold_curve starts
+    rule_pairs: pd.DataFrame     # the rules' kept pairs
 
 
-def run_fs(spec: FSSpec, model_json: dict, records: pd.DataFrame, truth: pd.DataFrame, prev_pairs: pd.DataFrame,
-           prev_clusters: pd.DataFrame, db: DuckDBAPI, data: Data, min_match_weight: float | None = None) -> FSResult:
-    """Candidates for the previous stage's singletons (against all records) → FS scores → threshold → cascade. With
-    spec.bridge, candidates for every record, less the pairs already inside one previous cluster, so a pair may also
-    join two clusters the previous stage formed."""
-    t0, uid = time.perf_counter(), data.unique_id
+def stage_rows(res: FSResult, spec: FSSpec, accepted: pd.DataFrame, clusters: pd.Series, entity: pd.Series, uid: str) -> list[dict]:
+    """The cascade's metrics: after the rules, then after this stage's accepted pairs (kept where the run keeps them)."""
+    ids = res.records[uid]
+    before = res.rule_clusters.set_index(uid)["cluster_id"].reindex(ids.to_numpy())
+    return [dict(stage=spec.previous_stage, edges=len(res.rule_pairs), **cluster_metrics(before, ids.map(entity)),
+                 **edge_metrics(res.rule_pairs, entity, uid)),
+            dict(stage=spec.stage, edges=len(res.rule_pairs) + int(accepted["keep"].sum()), **cluster_metrics(clusters, ids.map(entity)),
+                 **edge_metrics(pd.concat([res.rule_pairs, accepted]), entity, uid))]
+
+
+def run_fs(pipeline: Pipeline, settings: Settings, path: Path, truth: pd.DataFrame, model_json: dict,
+           min_match_weight: float | None = None) -> FSResult:
+    """The pipeline on the file at `path` with this fitted model, run by er.run.Run (u measured on the file when the
+    model asks), accepting at min_match_weight (default the pipeline's), measured against the truth."""
+    t0, uid = time.perf_counter(), settings.data.unique_id
     l, r = f"{uid}_l", f"{uid}_r"
-    weight = spec.min_match_weight if min_match_weight is None else min_match_weight
-    df = prepare(spec.standardize, records, spec.normalized(), spec.used())
-    if spec.model.u_from_scored:
-        model_json = with_scored_u(spec.model, model_json, df, db, uid)
-    entity = truth.set_index(uid)[data.entity_id]
-    prev = prev_clusters.set_index(uid)["cluster_id"].reindex(df[uid].to_numpy())
-    query = None if spec.bridge else set(prev.index[prev.map(prev.value_counts()).eq(1).to_numpy()])  # None: every record
-
-    cands, report = candidates(spec.blockers, df, uid, query, spec.budget, clusters=prev if spec.bridge else None)
+    spec = pipeline.fs if min_match_weight is None else replace(pipeline.fs, min_match_weight=min_match_weight)
+    run = Run(replace(pipeline, fs=spec), settings, model=model_json)
+    run.load(path)
+    run.fit()
+    run.rules()
+    report = run.candidates()
+    run.score()
+    run.cluster()
+    entity = truth.set_index(uid)[settings.data.entity_id]
+    df = table(run, "SELECT * FROM records")
+    rule_clusters = table(run, "SELECT * FROM rule_clusters")
+    prev = rule_clusters.set_index(uid)["cluster_id"].reindex(df[uid].to_numpy())
     targets = missed_pairs(prev, entity.reindex(prev.index), uid)
+    cands = table(run, f"SELECT * FROM cands ORDER BY {q(l)}, {q(r)}")
     report = report.assign(**pd.DataFrame([candidate_metrics(cands[found_by(cands, [b.name])], entity, uid, targets)
-                                            for b in spec.blockers]))
-    scored = score_fs(model_json, df, cands[[l, r]], db, uid).merge(cands, on=[l, r])
+                                           for b in spec.blockers]))
+    scored = table(run, f"SELECT * FROM ({run.scored()}) ORDER BY {q(l)}, {q(r)}")
     scored["fp"] = scored[l].map(entity).to_numpy() != scored[r].map(entity).to_numpy()
-    scored["named"] = named(spec, scored)
-    accepted = scored[automatic(scored, weight)].assign(stage=spec.stage, rule=spec.model.name,
-                                                                score=lambda s: s["match_probability"])
-
-    prev_kept = prev_pairs[prev_pairs["kept"].astype(str).eq("True")].assign(score=1.0)
-    ids = df[uid]
-    clusters, stage_of, kept, metrics = cascade(
-        ids, [(spec.previous_stage, prev_kept), (spec.stage, accepted)],
-        lambda e: resolve(spec.resolver, ids, e, df, db, uid), entity, uid, bridged(spec))
-    # a record keeps the rule that first resolved it; one this stage resolves, the model's name
-    before = (prev_clusters.set_index(uid)["resolved_by"].reindex(df[uid].to_numpy()).to_numpy() if "resolved_by" in prev_clusters
-              else np.full(len(df), pd.NA, dtype=object))
-    rule_of = pd.Series(np.where(stage_of.eq(spec.stage).fillna(False).to_numpy(bool), spec.model.name, before), dtype="string")
-    out = df.assign(CLUSTER_ID=clusters.to_numpy(), MATCH_STAGE=stage_of.to_numpy(),
-                    MATCH_RULE=rule_of.where(stage_of.notna().to_numpy()).to_numpy())
-    stage_metrics = dict(**candidate_metrics(cands, entity, uid, targets), **edge_metrics(accepted, entity, uid),
-                         average_precision=average_precision(scored["match_weight"].to_numpy(), ~scored["fp"].to_numpy()),
-                         min_match_weight=weight)
-    return FSResult(report, cands, scored, pd.DataFrame(metrics), stage_metrics, out, time.perf_counter() - t0, model_json)
+    accepted = scored[automatic(scored, spec.min_match_weight)].assign(stage=spec.stage, rule=spec.model.name,
+                                                                       score=lambda s: s["match_probability"])
+    gold = table(run, "SELECT * FROM gold").set_index(uid).reindex(df[uid].to_numpy())
+    out = df.assign(CLUSTER_ID=gold["cluster_id"].to_numpy(), MATCH_STAGE=gold["resolved_stage"].to_numpy(),
+                    MATCH_RULE=gold["resolved_by"].to_numpy())
+    rule_pairs = table(run, "SELECT * FROM rule_kept")
+    run.con.close()  # its tables are read: free its memory now, not when the collector finds the run
+    res = FSResult(report, cands, scored, pd.DataFrame(), {}, out, 0.0, run.scoring, rule_clusters, rule_pairs)
+    res.metrics = pd.DataFrame(stage_rows(res, spec, accepted, gold["cluster_id"], entity, uid))
+    res.stage_metrics = dict(**candidate_metrics(cands, entity, uid, targets), **edge_metrics(accepted, entity, uid),
+                             average_precision=average_precision(scored["match_weight"].to_numpy(), ~scored["fp"].to_numpy()),
+                             min_match_weight=spec.min_match_weight)
+    res.seconds = time.perf_counter() - t0
+    return res
 
 
-def named(spec: FSSpec, scored: pd.DataFrame) -> pd.Series:
-    """One of spec.needs compared: its gamma isn't −1, the null level of a field missing on either side. A household
-    shares address and phone, so without a name those two alone would merge its members."""
-    return scored[[f"gamma_{c}" for c in spec.needs]].ge(0).any(axis=1) if spec.needs else pd.Series(True, index=scored.index)
-
-
-def automatic(scored: pd.DataFrame, weight: float) -> pd.Series:  # the pairs merged without people; `named` from run_fs
+def automatic(scored: pd.DataFrame, weight: float) -> pd.Series:  # the pairs merged without people at this weight
     return (scored["match_weight"] >= weight) & scored["named"]
 
 
-def threshold_curve(res: FSResult, spec: FSSpec, prev_pairs: pd.DataFrame, truth: pd.DataFrame, db: DuckDBAPI,
-                    data: Data, weights: list[float]) -> pd.DataFrame:
-    """FP / recall after resolution at each min_match_weight; scores stay fixed, only the decision and the
-    resolution are redone. O(|weights| · (N + E)·d)."""
+def threshold_curve(res: FSResult, spec: FSSpec, truth: pd.DataFrame, data: Data, weights: list[float]) -> pd.DataFrame:
+    """FP / recall after resolution at each min_match_weight; scores stay fixed, only the decision and the clusters are
+    redone, by the run's own clustering from the rules' clusters. O(|weights| · (E·d + N))."""
     uid = data.unique_id
     ids, entity = res.records[uid], truth.set_index(uid)[data.entity_id]
-    prev_kept = prev_pairs[prev_pairs["kept"].astype(str).eq("True")].assign(score=1.0)
+    con, db = connect()
     rows = []
     for w in weights:
-        accepted = res.scored[automatic(res.scored, w)].assign(stage=spec.stage, rule=spec.model.name,
-                                                                       score=lambda s: s["match_probability"])
-        *_, metrics = cascade(ids, [(spec.previous_stage, prev_kept), (spec.stage, accepted)],
-                              lambda e: resolve(spec.resolver, ids, e, res.records, db, uid), entity, uid, bridged(spec))
-        m = metrics[-1]
+        accepted = res.scored[automatic(res.scored, w)]
+        m = stage_rows(res, spec, accepted, clustered(con, db, res.rule_clusters, accepted[accepted["keep"]], ids, uid), entity, uid)[-1]
         rows.append(dict(min_match_weight=w, probability=1 / (1 + 2 ** -w), accepted=len(accepted),
                          pairs_FP=int(accepted["fp"].sum()), stage_fp_rate_hi=fp_upper(int(accepted["fp"].sum()), len(accepted)),
                          TP=m["TP"], FP=m["FP"], FN=m["FN"], recall=m["recall"], recall_lo=m["recall_lo"],
                          recall_hi=m["recall_hi"], precision=m["precision"], fp_rate_hi=m["fp_rate_hi"], f1=m["f1"],
                          overmerged=m["overmerged"], dup_unresolved=m["dup_unresolved"]))
+    con.close()
     return pd.DataFrame(rows)
 
 
@@ -312,20 +319,20 @@ def entity_folds(truth: pd.DataFrame, data: Data, k: int, seed: int) -> pd.Serie
     return truth.set_index(data.unique_id)[data.entity_id].map(fold_of)
 
 
-def cross_validate_fs(spec: FSSpec, train_model: Callable[[FSSpec, pd.DataFrame, pd.DataFrame, int], dict],
-                      records: pd.DataFrame, truth: pd.DataFrame, prev_pairs: pd.DataFrame, prev_clusters: pd.DataFrame,
-                      folds: pd.Series, db: DuckDBAPI, data: Data, min_match_weight: float | None = None) -> list[FSResult]:
-    """Out-of-fold results: for each fold, fit FS on the other folds and score only the held-out fold, so tuning
-    never scores a model on the records it was fitted on. O(k · (fit + candidates + score + resolve))."""
-    uid = data.unique_id
+def cross_validate_fs(pipeline: Pipeline, settings: Settings, train_model: Callable[[FSSpec, pd.DataFrame, pd.DataFrame, int], dict],
+                      records: pd.DataFrame, truth: pd.DataFrame, folds: pd.Series, min_match_weight: float | None = None) -> list[FSResult]:
+    """Out-of-fold results: for each fold, fit FS on the other folds and run only the held-out fold, so tuning never
+    scores a model on the records it was fitted on. O(k · (fit + run on N/k records))."""
+    uid, spec = settings.data.unique_id, pipeline.fs
     out = []
-    for f in sorted(folds.unique()):
-        hold = set(folds.index[folds == f])
-        fit_rec, fit_truth = records[~records[uid].isin(hold)], truth[~truth[uid].isin(hold)]
-        model = train_model(spec, fit_rec, fit_truth, int(f))
-        both = prev_pairs[f"{uid}_l"].isin(hold) & prev_pairs[f"{uid}_r"].isin(hold)
-        out.append(run_fs(spec, model, records[records[uid].isin(hold)], truth[truth[uid].isin(hold)], prev_pairs[both],
-                          prev_clusters[prev_clusters[uid].isin(hold)], db, data, min_match_weight))
+    with tempfile.TemporaryDirectory() as tmp:
+        for f in sorted(folds.unique()):
+            hold = set(folds.index[folds == f])
+            fit_rec, fit_truth = records[~records[uid].isin(hold)], truth[~truth[uid].isin(hold)]
+            model = train_model(spec, fit_rec, fit_truth, int(f))
+            path = Path(tmp) / f"fold_{f}.parquet"
+            records[records[uid].isin(hold)].to_parquet(path, index=False)
+            out.append(run_fs(pipeline, settings, path, truth[truth[uid].isin(hold)], model, min_match_weight))
     return out
 
 
@@ -338,15 +345,12 @@ def accept_curve(results: list[FSResult], weights: list[float]) -> pd.DataFrame:
     return out.assign(stage_fp_rate_hi=[fp_upper(int(f), int(n)) for f, n in zip(out["pairs_FP"], out["accepted"])])
 
 
-def cv_threshold_curve(results: list[FSResult], spec: FSSpec, prev_pairs: pd.DataFrame, truth: pd.DataFrame,
-                       folds: pd.Series, db: DuckDBAPI, data: Data, weights: list[float]) -> pd.DataFrame:
+def cv_threshold_curve(results: list[FSResult], spec: FSSpec, truth: pd.DataFrame, folds: pd.Series, data: Data,
+                       weights: list[float]) -> pd.DataFrame:
     """threshold_curve per fold (out-of-fold scores), summed over folds; bounds recomputed on the totals."""
     uid = data.unique_id
-    curves = []
-    for f, res in zip(sorted(folds.unique()), results):
-        hold = set(folds.index[folds == f])
-        both = prev_pairs[f"{uid}_l"].isin(hold) & prev_pairs[f"{uid}_r"].isin(hold)
-        curves.append(threshold_curve(res, spec, prev_pairs[both], truth[truth[uid].isin(hold)], db, data, weights))
+    curves = [threshold_curve(res, spec, truth[truth[uid].isin(set(folds.index[folds == f]))], data, weights)
+              for f, res in zip(sorted(folds.unique()), results)]
     total = pd.concat(curves).groupby("min_match_weight")[["accepted", "pairs_FP", "TP", "FP", "FN", "overmerged",
                                                            "dup_unresolved"]].sum().reset_index()
     ci = [wilson(int(tp), int(tp + fn)) for tp, fn in zip(total["TP"], total["FN"])]

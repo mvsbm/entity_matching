@@ -22,6 +22,7 @@ from er.match import parameters, pattern_coverage, train_fs, waterfall
 from er.pipeline import (FSResult, Result, accept_curve, automatic, complexity_summary, cross_validate_fs, cv_threshold_curve, entity_folds,
                          preflight, run_fs, run_rules, scale_check, select_threshold, summed, threshold_curve,
                          window_only)
+from er.settings import Settings
 from er.standardize import prepare
 from er.tune import new_study, pick_within_noise, plain, start_dashboard, suggest_comparators
 
@@ -43,7 +44,8 @@ def verdict(name: str, kind: str, on_sel: dict, on_val: dict, p_max: float, pref
 @dataclass
 class RulesChooser:
     spec: RulesSpec
-    data: Data
+    pipeline: Pipeline                        # the rest of the pipeline the rules run in (er.run.Run)
+    settings: Settings
     db: DuckDBAPI
     changes: Mapping[str, Callable[[RulesSpec], RulesSpec]]
     decisions: tuple[tuple[str, str], ...]
@@ -53,15 +55,18 @@ class RulesChooser:
     adopted: list[str] = field(default_factory=list)
 
     def __post_init__(self) -> None:
+        self.data = self.settings.data
         self.train, self.train_truth = load(self.data, "train")
         self.val_records, self.val_truth = load(self.data, "val")
         self.train_true, self.val_true = truth_set(self.train_truth, self.data), truth_set(self.val_truth, self.data)
         self.runs: dict[tuple[str, str], Result] = {}
 
+    def rules_run(self, spec: RulesSpec, dataset: str, truth: pd.DataFrame) -> Result:  # the rules as er.run.Run runs them
+        return run_rules(replace(self.pipeline, rules=spec), self.settings, self.data.bronze_dir / f"{dataset}.parquet", truth)
+
     def run(self, spec: RulesSpec, dataset: str) -> Result:  # on train or val, cached by (config, dataset): rules fit nothing
         if (repr(spec), dataset) not in self.runs:
-            records, truth = (self.train, self.train_truth) if dataset == "train" else (self.val_records, self.val_truth)
-            self.runs[repr(spec), dataset] = run_rules(spec, records, truth, self.db, self.data)
+            self.runs[repr(spec), dataset] = self.rules_run(spec, dataset, self.train_truth if dataset == "train" else self.val_truth)
         return self.runs[repr(spec), dataset]
 
     def joined(self, res: Result) -> set[tuple[str, str]]:  # every pair the clusters put together
@@ -130,7 +135,7 @@ class RulesChooser:
         rows = []
         for dataset in self.data.datasets:
             records, truth = load(self.data, dataset)
-            res = run_rules(self.final, records, truth, self.db, self.data)
+            res = self.rules_run(self.final, dataset, truth)
             append_leaderboard(self.data, "deterministic:FINAL", self.final, dataset, res.metrics.iloc[-1].drop("stage").to_dict())
             rows.append(dict(dataset=dataset, records=len(records), **res.metrics.iloc[-1][SHOW[1:]].to_dict(), seconds=round(res.seconds, 1)))
         write_final(self.data, "deterministic_final", self.final, adopted=self.adopted)
@@ -150,7 +155,7 @@ class RulesChooser:
             if not scale_check(spec, self.train, self.train_truth, self.data)["within_budget"].all():
                 raise optuna.TrialPruned("over budget at target_rows")
             try:
-                res = run_rules(spec, self.train, self.train_truth, self.db, self.data)  # a trial runs once: not kept
+                res = self.rules_run(spec, "train", self.train_truth)  # a trial runs once: not kept
             except OverBudget as e:
                 raise optuna.TrialPruned(str(e))
             m = res.metrics.iloc[-1]
@@ -195,7 +200,7 @@ class FSChooser:
     spec: FSSpec
     pipeline: Pipeline
     rules: RulesSpec                          # the rules stage as chosen: its results are this stage's starting point
-    data: Data
+    settings: Settings
     db: DuckDBAPI
     changes: Mapping[str, Callable[[FSSpec], FSSpec]]
     decisions: tuple[tuple[str, str], ...]
@@ -205,12 +210,12 @@ class FSChooser:
     adopted: list[str] = field(default_factory=list)
 
     def __post_init__(self) -> None:
-        p = self.pipeline
+        p, self.data = self.pipeline, self.settings.data
         self.rule: ThresholdRule = p.threshold
         self.train_records, self.train_truth = load(self.data, "train")
         self.val_records, self.val_truth = load(self.data, "val")
-        self.prev: dict[str, tuple[pd.DataFrame, pd.DataFrame]] = {}
-        self.train_prev_pairs, self.train_prev_resolved = self.previous("train")
+        rules = run_rules(self.pipe(self.spec), self.settings, self.data.bronze_dir / "train.parquet", self.train_truth)  # where this stage starts
+        self.train_prev_resolved = rules.records[[self.data.unique_id, "CLUSTER_ID"]].set_axis([self.data.unique_id, "cluster_id"], axis=1)
         self.folds = entity_folds(self.train_truth, self.data, p.cv_folds, p.cv_seed)
         self.train_true, self.val_true = truth_set(self.train_truth, self.data), truth_set(self.val_truth, self.data)
         self.models, self.runs, self.cvs = {}, {}, {}
@@ -230,16 +235,8 @@ class FSChooser:
             found |= {(a, b) for a, b in zip(pairs[f"{uid}_x"], pairs[f"{uid}_y"]) if a < b}
         return round(len(found & self.train_true) / max(len(self.train_true), 1), 4)
 
-    def previous(self, dataset: str) -> tuple[pd.DataFrame, pd.DataFrame]:
-        """The chosen rules on a dataset, as this stage starts from them: their pairs (and which were kept), and each
-        record's cluster, stage and rule. O(N + Σ P_r·L²), once per dataset."""
-        if dataset not in self.prev:
-            uid = self.data.unique_id
-            res = run_rules(self.rules, *load(self.data, dataset), self.db, self.data)
-            pairs = res.edges[[f"{uid}_l", f"{uid}_r", "stage", "rule", "score", "kept"]].sort_values([f"{uid}_l", f"{uid}_r"], kind="stable")
-            resolved = res.records[[uid, "CLUSTER_ID", "MATCH_STAGE", "MATCH_RULE"]].set_axis([uid, "cluster_id", "resolved_stage", "resolved_by"], axis=1)
-            self.prev[dataset] = pairs.reset_index(drop=True).astype("string"), resolved.astype("string")
-        return self.prev[dataset]
+    def pipe(self, spec: FSSpec) -> Pipeline:  # the pipeline a run of this configuration runs: the chosen rules, then spec
+        return replace(self.pipeline, rules=self.rules, fs=spec)
 
     def fit(self, spec: FSSpec, records: pd.DataFrame, truth: pd.DataFrame, key: object) -> dict:
         uid = self.data.unique_id
@@ -251,15 +248,14 @@ class FSChooser:
     def run(self, spec: FSSpec, dataset: str) -> FSResult:  # model fitted on all of train
         key = (repr(spec), dataset)
         if key not in self.runs:
-            records, truth = load(self.data, dataset)
-            self.runs[key] = run_fs(spec, self.fit(spec, self.train_records, self.train_truth, "train"), records, truth,
-                                    *self.previous(dataset), self.db, self.data)
+            truth = self.train_truth if dataset == "train" else self.val_truth if dataset == "val" else load(self.data, dataset)[1]
+            self.runs[key] = run_fs(self.pipe(spec), self.settings, self.data.bronze_dir / f"{dataset}.parquet", truth,
+                                    self.fit(spec, self.train_records, self.train_truth, "train"))
         return self.runs[key]
 
     def cv(self, spec: FSSpec) -> list[FSResult]:  # out-of-fold results on train
         if repr(spec) not in self.cvs:
-            self.cvs[repr(spec)] = cross_validate_fs(spec, self.fit, self.train_records, self.train_truth, self.train_prev_pairs,
-                                                     self.train_prev_resolved, self.folds, self.db, self.data)
+            self.cvs[repr(spec)] = cross_validate_fs(self.pipe(spec), self.settings, self.fit, self.train_records, self.train_truth, self.folds)
         return self.cvs[repr(spec)]
 
     def threshold_of(self, spec: FSSpec) -> float:  # the threshold rule on this configuration's out-of-fold scores
@@ -306,8 +302,8 @@ class FSChooser:
 
     def threshold(self) -> list[Section]:
         t = time.perf_counter()
-        weight, curve = select_threshold(cv_threshold_curve(self.cv(self.spec), self.spec, self.train_prev_pairs, self.train_truth,
-                                                            self.folds, self.db, self.data, list(self.rule.grid)), self.rule)
+        weight, curve = select_threshold(cv_threshold_curve(self.cv(self.spec), self.spec, self.train_truth,
+                                                            self.folds, self.data, list(self.rule.grid)), self.rule)
         assert weight == self.threshold_of(self.spec)  # the full curve and the pair counts the rule reads pick the same weight
         self.tuned = replace(self.spec, min_match_weight=weight)
         return [("Threshold: chosen on cross-validated train", f"{self.pipeline.cv_folds}-fold CV in {time.perf_counter() - t:.1f}s → min_match_weight = {weight}",
@@ -361,8 +357,8 @@ class FSChooser:
     def evaluate(self) -> list[Section]:
         uid, f = self.data.unique_id, self.final
         res = self.run(f, "val")
-        val_curve = threshold_curve(res, f, self.previous("val")[0], self.val_truth, self.db, self.data, list(self.rule.grid))
-        cv_at = cv_threshold_curve(self.cv(f), f, self.train_prev_pairs, self.train_truth, self.folds, self.db, self.data, [f.min_match_weight]).iloc[0]
+        val_curve = threshold_curve(res, f, self.val_truth, self.data, list(self.rule.grid))
+        cv_at = cv_threshold_curve(self.cv(f), f, self.train_truth, self.folds, self.data, [f.min_match_weight]).iloc[0]
         val_at = val_curve.set_index("min_match_weight").loc[f.min_match_weight]
         val_rate = val_at["pairs_FP"] / max(val_at["accepted"], 1)
         transfer = (f"transfer at weight {f.min_match_weight}: CV {cv_at['pairs_FP']:.0f} false of {cv_at['accepted']:.0f} accepted pairs "
@@ -424,8 +420,7 @@ class FSChooser:
             for (comparison, label), (lo, hi, step) in tune.level_thresholds.items():
                 if (comparison, label) in have:
                     model = with_level(model, comparison, label, threshold=trial.suggest_float(f"{comparison}|{label}", lo, hi, step=step))
-            return replace(final, blockers=tuple(b for name, b in self.pipeline.generators.items() if name in fixed | on), model=model,
-                           resolver=tune.resolvers[trial.suggest_categorical("resolver", list(tune.resolvers))])
+            return replace(final, blockers=tuple(b for name, b in self.pipeline.generators.items() if name in fixed | on), model=model)
 
         def objective(trial: optuna.Trial) -> tuple[float, float]:
             spec = spec_for(trial)
@@ -435,7 +430,7 @@ class FSChooser:
                 weight = self.threshold_of(spec)
             except OverBudget as e:
                 raise optuna.TrialPruned(str(e))
-            at = cv_threshold_curve(self.cv(spec), spec, self.train_prev_pairs, self.train_truth, self.folds, self.db, self.data, [weight]).iloc[0]
+            at = cv_threshold_curve(self.cv(spec), spec, self.train_truth, self.folds, self.data, [weight]).iloc[0]
             for x, v in dict(min_match_weight=weight, recall_lo=at["recall_lo"], recall_hi=at["recall_hi"], candidates=summed(self.cv(spec))["candidates"]).items():
                 trial.set_user_attr(x, plain(v))
             return float(at["FP"]), float(at["recall"])

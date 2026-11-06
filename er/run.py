@@ -38,7 +38,7 @@ it for as long as it writes.
 
 N records, L characters per value, P pairs in a rule's or generator's key blocks, C candidates, K comparisons,
 S sampled pairs for u, E accepted pairs, d cluster diameter (Splink's connected components take up to d rounds, over
-the edges' records only: each existing cluster is one node, see _merge).
+the edges' records only: each existing cluster is one node, see er.cluster.merge).
 """
 import fcntl
 import functools
@@ -63,14 +63,14 @@ from pathlib import Path
 import duckdb
 import numpy as np
 import pandas as pd
-from splink.clustering import cluster_pairwise_predictions_at_threshold
 
 from er.candidates import candidates, estimate, q
 from er.config import FSSpec, InputError, Key, KeyBlocker, Pipeline, sources_text
 from er.io import config_hash, markdown
+from er.cluster import merge
 from er.kind import COMPANY, NAME_MODEL, PERSON, SAYS, UNSURE, classifier as kind_classifier, kind_review_sheet, merge_answers
-from er.match import (ELSE, assemble_u, counted, exact_u, levels, parameters, pattern_coverage, refreshed_u, rule_edges, scaled_prior,
-                      score_fs, scored_sample, train_fs, u_basis)
+from er.match import (counted, ELSE, levels, parameters, pattern_coverage, refreshed_u, rule_edges, scaled_prior,
+                      score_fs, scored_u, train_fs, u_basis)
 from er.settings import SPECIAL, Settings, fit_to_file, present_fields
 from er.source import lit, open_source, suggest
 from er.standardize import prepare
@@ -356,10 +356,7 @@ class Run:
                            for f in self.model["er"].get("skipped", [])]
         self.scoring, self.basis = self.model, {}
         if fs.model.u_from_scored:
-            exact = exact_u(fs.model, "records", self.db)
-            skip = counted(fs.model, exact)
-            sampled = scored_sample(fs.model, "records", self.db, self.uid, [c for c in fs.model.comparisons if c.name not in skip])
-            self.scoring = assemble_u(fs.model, self.model, sampled, exact, "records", self.db)
+            self.scoring, sampled, exact = scored_u(fs.model, self.model, "records", self.db, self.uid)
             self.basis = u_basis(fs.model, sampled, exact, "records", self.db)
         self._done("fit", "O(n + S·K + P_em·K) + O(N + S·K)", f"n = {self.model['er']['fit_rows']:,}; u on {self.n:,} records", t)
         return self.model
@@ -382,20 +379,20 @@ class Run:
     def _rules(self, batch: str | None = None) -> None:
         """The rules' pairs (er.match.rule_edges: every record, or a batch against all), less the values each rule
         doesn't trust (_untrusted), then the cascade into rule_clusters, which the caller starts: a stage's pair is kept
-        only if it touches a record still unresolved, and merged in (_merge)."""
+        only if it touches a record still unresolved, and merged in (er.cluster.merge)."""
         l, r, rules = q(self.l), q(self.r), self.pipeline.rules
         trust = {}
         for i, (st, rule) in enumerate((st, rule) for st in rules.stages for rule in st.rules):
             if (untrusted := self._untrusted(i, st.keys(rule), within=batch)):
                 trust[i] = f"NOT EXISTS (SELECT 1 FROM {untrusted} z WHERE {' AND '.join(f'z.{q(c)} = l.{q(c)}' for c in st.keys(rule))})"
-        rule_edges(rules, "records", self.db, self.uid, batch=batch, trust=trust, into="rule_edges")
+        _, self.rule_seconds = rule_edges(rules, "records", self.db, self.uid, batch=batch, trust=trust, into="rule_edges")
         self.con.execute("CREATE OR REPLACE TABLE rule_kept AS SELECT * FROM rule_edges WHERE FALSE")
         for st in rules.stages:
             done = self._resolved("rule_clusters")
             self.con.execute(f"""CREATE OR REPLACE TABLE er_stage AS SELECT * FROM rule_edges WHERE stage = '{st.name}'
                 AND NOT ({l} IN {done} AND {r} IN {done})""")
             self.con.execute("INSERT INTO rule_kept SELECT * FROM er_stage")
-            self._merge("rule_clusters", "er_stage", "rule_clusters")
+            merge(self.con, self.db, "rule_clusters", "er_stage", "rule_clusters", self.uid)
 
     def candidates(self) -> pd.DataFrame:
         t, fs = time.perf_counter(), self.pipeline.fs
@@ -437,18 +434,25 @@ class Run:
         score_fs(self.scoring, "records", "cands", self.db, self.uid, into="scores")
         self._done("score", "O(C·K·L²)", f"O({self._count('scores'):,}·{k}·L²)", t)
 
-    def _accept(self) -> None:
-        """matches: the scored pairs at the threshold or above, with a name compared (fs.needs), that join two rule
-        clusters (bridge) or touch a record the rules left alone, less those people decided are no match; kept: those, the rules' pairs, and the pairs people
-        decided are a match (er_decisions, loaded by full() from the run folder; empty otherwise)."""
+    def scored(self) -> str:
+        """Every scored pair with its generators (sources) and what acceptance reads besides the weight: named, a name
+        compared (fs.needs); keep, the pair joins two rule clusters (bridge) or touches a record the rules left alone. As
+        SQL, for _accept, and for design time to accept at other weights (er.pipeline)."""
         fs, l, r, u = self.pipeline.fs, q(self.l), q(self.r), q(self.uid)
         done = self._resolved("rule_clusters")
         keep = "a.cluster_id <> b.cluster_id" if fs.bridge else f"NOT (s.{l} IN {done} AND s.{r} IN {done})"
+        return f"""SELECT s.*, c.sources, {named_sql(fs)} AS named, {keep} AS keep FROM scores s JOIN cands c USING ({l}, {r})
+            JOIN rule_clusters a ON a.{u} = s.{l} JOIN rule_clusters b ON b.{u} = s.{r}"""
+
+    def _accept(self) -> None:
+        """matches: the scored pairs at the threshold or above that are named and kept (scored), less those people
+        decided are no match; kept: those, the rules' pairs, and the pairs people decided are a match (er_decisions,
+        loaded by full() from the run folder; empty otherwise)."""
+        fs, l, r = self.pipeline.fs, q(self.l), q(self.r)
         self.con.execute(f"CREATE TABLE IF NOT EXISTS er_decisions ({l} VARCHAR, {r} VARCHAR, decision VARCHAR)")
         self.con.execute(f"""CREATE OR REPLACE TABLE matches AS
-            SELECT s.{l}, s.{r}, s.match_weight, s.match_probability, c.sources FROM scores s JOIN cands c USING ({l}, {r})
-                   JOIN rule_clusters a ON a.{u} = s.{l} JOIN rule_clusters b ON b.{u} = s.{r}
-            WHERE s.match_weight >= {fs.min_match_weight} AND {named_sql(fs)} AND {keep}
+            SELECT s.{l}, s.{r}, s.match_weight, s.match_probability, s.sources FROM ({self.scored()}) s
+            WHERE s.match_weight >= {fs.min_match_weight} AND s.named AND s.keep
               AND NOT EXISTS (SELECT 1 FROM er_decisions d WHERE d.{l} = s.{l} AND d.{r} = s.{r} AND d.decision = 'no_match')""")
         self.con.execute(f"""CREATE OR REPLACE TABLE kept AS SELECT {l}, {r} FROM rule_kept UNION ALL SELECT {l}, {r} FROM matches
             UNION ALL SELECT {l}, {r} FROM er_decisions WHERE decision = 'match'""")
@@ -481,7 +485,7 @@ class Run:
         """Accept at min_match_weight, then cluster every kept pair, the rules' and these; then gold."""
         t = time.perf_counter()
         self._accept()
-        self._merge("rule_clusters", "kept", "clusters")
+        merge(self.con, self.db, "rule_clusters", "kept", "clusters", self.uid)
         self._gold()
         e = self._count("matches")
         self._done("cluster", "O(C + E·d + N)", f"O({self._count('scores'):,} + {e:,}·d + {self.n:,})", t, accepted=e,
@@ -571,26 +575,6 @@ class Run:
 
     # ---------- increments ----------
 
-    def _merge(self, base: str, edges: str, into: str) -> None:
-        """`base` (uid → cluster_id, every record) with these edges added. Each existing cluster is one node, so the
-        work grows with the edges, not with the file; a merged cluster takes the smallest id, as a full rebuild does
-        (Splink names a cluster after its smallest uid)."""
-        u, l, r = q(self.uid), q(self.l), q(self.r)
-        self.con.execute(f"""CREATE OR REPLACE TABLE er_e AS SELECT DISTINCT least(a.cluster_id, b.cluster_id) AS {l},
-            greatest(a.cluster_id, b.cluster_id) AS {r} FROM {edges} e JOIN {base} a ON a.{u} = e.{l} JOIN {base} b ON b.{u} = e.{r}
-            WHERE a.cluster_id <> b.cluster_id""")
-        if not self._count("er_e"):
-            self.con.execute(f"CREATE OR REPLACE TABLE {into} AS SELECT * FROM {base}")
-            return
-        comp = cluster_pairwise_predictions_at_threshold(
-            nodes=self.db.register(self.con.sql(f"SELECT {l} AS {u} FROM er_e UNION SELECT {r} FROM er_e")),
-            edges=self.db.register(self.con.sql("SELECT * FROM er_e")), db_api=self.db, node_id_column_name=self.uid)
-        self.con.execute("DROP TABLE IF EXISTS er_comp")
-        comp.as_duckdbpyrelation().project(f"{u} AS node, cluster_id::VARCHAR AS cluster_id").to_table("er_comp")
-        comp.drop_table_from_database_and_remove_from_cache()
-        self.con.execute(f"""CREATE OR REPLACE TABLE {into} AS SELECT b.{u}, coalesce(c.cluster_id, b.cluster_id) AS cluster_id
-            FROM {base} b LEFT JOIN er_comp c ON c.node = b.cluster_id""")
-
     @locked
     def increment(self, path: str | Path, out: Path) -> "Run":
         """Add a batch of new records to the run written in `out`. See the module docstring for the cost."""
@@ -650,7 +634,7 @@ class Run:
         self._accept()
         self.con.execute(f"CREATE OR REPLACE TABLE gold_old AS SELECT * FROM read_parquet({lit(out / 'gold.parquet')})")
         self.con.execute(f"CREATE OR REPLACE TABLE er_base AS SELECT {u}, cluster_id FROM gold_old UNION ALL SELECT {u}, {u} FROM new_ids")
-        self._merge("er_base", "kept", "clusters")
+        merge(self.con, self.db, "er_base", "kept", "clusters", self.uid)
         self._gold("gold_old")
         self._done("cluster", "O(C_Δ + touched clusters)", f"{self._count('matches'):,} accepted", t, accepted=self._count("matches"),
                    expected_false=self._expected_false())
@@ -722,7 +706,7 @@ class Run:
         self.n = self._count("gold_old")
         self.con.execute(f"CREATE OR REPLACE TABLE er_base AS SELECT {u}, cluster_id FROM gold_old")
         self.con.execute(f"CREATE OR REPLACE TABLE er_review AS SELECT {l}, {r} FROM er_decisions WHERE decision = 'match'")
-        self._merge("er_base", "er_review", "clusters")
+        merge(self.con, self.db, "er_base", "er_review", "clusters", self.uid)
         kinds = "kind" in {c[0] for c in self.con.execute("DESCRIBE gold_old").fetchall()}  # each record's kind stands; its customer's follows the merge
         self.con.execute(f"""CREATE OR REPLACE TABLE gold AS WITH size AS (SELECT cluster_id, count(*) AS n FROM clusters GROUP BY 1)
                  {f", customer AS ({customer_kinds('clusters', 'gold_old', u)})" if kinds else ""}

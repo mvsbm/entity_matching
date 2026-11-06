@@ -6,7 +6,7 @@ Stages and their tables:
   kind         each record → person, company or not sure; names routed  (er.kind)
   candidates   records → candidate pairs (uid_l, uid_r, sources)         (er.candidates)
   matching     pairs → scored / decided pairs                            (er.match)
-  resolution   accepted pairs → clusters                                 (a run: er.run.Run._merge; design time: er.cluster)
+  resolution   accepted pairs → clusters                                 (er.cluster.merge, in a run and at design time)
   report       qa.md, report.txt, review.parquet, kind_review.parquet    (er.run.Run.report)
   evaluation   pairs and clusters vs truth, plus cost                     (er.evaluate)
 """

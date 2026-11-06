@@ -116,7 +116,7 @@ Most true pairs are like this: on train, the rules miss 6,177 of them, about nin
 - `notebooks/demo.ipynb`, section 6: each rule's pairs on a small file
 - `er/config.py`: `Rule`, `Stage` (`Stage.sql`: a fuzzy condition lets equal values through without the string function), `RulesSpec`, `Comparator`
 - `er/match.py`: `rule_edges` (one SQL join per rule, the first rule wins a pair; for `choose.py`, full runs and increments alike)
-- `er/pipeline.py`: `run_rules`, `preflight`, `cascade`; `er/run.py`: `Run.rules` (each stored cluster merged as one node, `Run._merge`)
+- `er/run.py`: `Run.rules` (the cascade; each stored cluster merged as one node, `er.cluster.merge`); `er/pipeline.py`: `run_rules` (the run's rules measured against the truth), `preflight`
 - all tables: [results.md](../results.md)
 
 ## Further reading

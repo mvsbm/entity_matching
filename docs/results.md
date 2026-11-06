@@ -57,12 +57,10 @@ Paired A/B on val against the rules as written (informational; decisions use the
 | fold → Levenshtein ≤ 1 | 6 / 2 | 0.2891 |
 | fold → exact | 0 / 22 | < 0.0001 |
 | raw Jaro-Winkler (no kana folding) | 0 / 41 | < 0.0001 |
-| constrained resolver (cannot-link on given name) | 0 / 42 | < 0.0001 |
 | Optuna's comparators | 21 / 1 | < 0.0001 |
 | F2's address exact | 0 / 0 | 1.0 |
 | F2 on phone + address prefix | 0 / 0 | 1.0 |
 
-The constrained resolver loses because given-name typos look like conflicts.
 
 ## Stage 2: probabilistic matching
 
@@ -72,7 +70,7 @@ The constrained resolver loses because given-name typos look like conflicts.
 - Levels use the `cl_*` functions.
 - **A level without an estimate never uses Splink's defaults.** No sampled pair reached it → u at its 95% upper bound, so its weight is a lower bound on the evidence. Never seen in training → m = u, 0 bits. The training table lists such levels (none in the pipeline as written).
 
-**Scores are calibrated to the scored file** (`er.match.score_fs`, `er.match.with_scored_u`):
+**Scores are calibrated to the scored file** (`er.match.score_fs`, `er.match.scored_u`):
 - **Term frequencies** come from the fitting records, stored in the model. A value never seen in training gets no adjustment, the conservative side. `FINAL` turns them off.
 - **λ** is a per-pair rate: true pairs grow with N, pairs with N². It is rescaled from the fitting set's size to the scored set's. So CV folds, val and test (about 10k records each) are scored on the same scale, and the threshold keeps its meaning at any size: on a file of N records, the same evidence earns log2(N/10k) fewer bits than on a 10k file.
 - **u** is measured on the scored file's records, without labels, because a field whose values grow with the file agrees by chance less often in a bigger one. The leading exact levels are counted from value counts. A one-edit level right after them on the same column (the customer ID, phone or birth date one digit off) is counted exactly too: the distinct values are joined on their one-character deletions, which two values one edit apart always share. So cif, phone and birth need no sample; name, company and address are sampled on 10⁷ random pairs, every one of them. m stays from train.
@@ -214,7 +212,7 @@ Train is scored in-sample (the model is fitted on all of it), and has no false p
 
 **Worked example:** `reports/choose.md` breaks two pairs into bits: an accepted true match with a typo (8.07 bits, from the given name, the postal code and a phone one digit off), and the rejected non-match closest to the threshold (5.46 bits, from the phone and the prefecture, the names only loosely alike). [Chapter 5](guide/05-uncertain-evidence-fellegi-sunter.md#solution-evidence-in-bits) walks through one pair field by field, and section 9 of the demo draws two more.
 
-**Optuna** (cross-validated objective, 30 trials, seeded; off by default: `fs_tune`, `enabled=False`; `scripts/choose.py --optuna` runs it): each trial switches generators off and picks the m method, term frequency, level thresholds and resolver. Its threshold comes from the threshold rule, as `FINAL`'s does: a search that set the threshold itself would pull against the rule ([lessons.md](lessons.md#two-policies-that-set-one-parameter)). A tuned level the model doesn't have is skipped.
+**Optuna** (cross-validated objective, 30 trials, seeded; off by default: `fs_tune`, `enabled=False`; `scripts/choose.py --optuna` runs it): each trial switches generators off and picks the m method, term frequency and level thresholds. Its threshold comes from the threshold rule, as `FINAL`'s does: a search that set the threshold itself would pull against the rule ([lessons.md](lessons.md#two-policies-that-set-one-parameter)). A tuned level the model doesn't have is skipped.
 - Its suggestion that passed `adopt` is the `optuna_suggestion` decision. It drops four generators (the person- and company-name keys, the person-name sorted neighbourhood, the company TF-IDF), turns term frequency off, and sets the JW thresholds: names 0.95 / 0.75, companies 0.97 / 0.80. `company_without_jw_high` then drops the company's 0.97 level, which no pair reached.
 
 ## Benchmark

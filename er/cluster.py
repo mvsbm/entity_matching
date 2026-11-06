@@ -1,54 +1,30 @@
-"""Entity resolution: accepted pairs → clusters.
-
-connected_components  transitive closure via Splink: A–B and B–C make one entity even if A–C never matched. O((N + E)·d).
-constrained           greedy union-find over edges, strongest first; refuses a merge when the two clusters hold disjoint
-                      values in a cannot-link column (e.g. two different given names). O(E·α(N) + N log N).
+"""Entity resolution: accepted pairs → clusters, by transitive closure (connected components): A–B and B–C make one
+entity even if A–C never matched. One implementation for full runs, increments, decisions and design time alike.
 """
-import pandas as pd
+import duckdb
 from splink import DuckDBAPI
 from splink.clustering import cluster_pairwise_predictions_at_threshold
 
-from er.config import Resolver
+from er.candidates import q
 
 
-def connected_components(ids: pd.Series, edges: pd.DataFrame, db: DuckDBAPI, uid: str) -> pd.Series:
-    if edges.empty:
-        return pd.Series(ids.to_numpy(), index=ids.to_numpy(), dtype="string")
-    out = cluster_pairwise_predictions_at_threshold(
-        nodes=db.register(ids.to_frame()), edges=db.register(edges[[f"{uid}_l", f"{uid}_r"]].reset_index(drop=True)),
-        db_api=db, node_id_column_name=uid).as_pandas_dataframe()
-    return out.set_index(uid)["cluster_id"].astype("string").reindex(ids.to_numpy())
-
-
-def constrained(ids: pd.Series, edges: pd.DataFrame, records: pd.DataFrame, cannot_link: tuple[str, ...],
-                uid: str) -> pd.Series:
-    parent = {i: i for i in ids}
-    by_id = records.set_index(uid)
-    values = {i: {c: ({by_id.at[i, c]} if pd.notna(by_id.at[i, c]) else set()) for c in cannot_link} for i in ids}
-    size = dict.fromkeys(ids, 1)
-
-    def find(i: str) -> str:
-        while parent[i] != i:
-            parent[i] = parent[parent[i]]
-            i = parent[i]
-        return i
-
-    for a, b in edges.sort_values("score", ascending=False, kind="stable")[[f"{uid}_l", f"{uid}_r"]].itertuples(index=False):
-        ra, rb = find(a), find(b)
-        if ra == rb:
-            continue
-        if any(values[ra][c] and values[rb][c] and values[ra][c].isdisjoint(values[rb][c]) for c in cannot_link):
-            continue  # refused: the two clusters conflict
-        if size[ra] < size[rb]:
-            ra, rb = rb, ra
-        parent[rb], size[ra] = ra, size[ra] + size[rb]
-        for c in cannot_link:
-            values[ra][c] |= values[rb][c]
-    return pd.Series([find(i) for i in ids], index=ids.to_numpy(), dtype="string")
-
-
-def resolve(resolver: Resolver, ids: pd.Series, edges: pd.DataFrame, records: pd.DataFrame, db: DuckDBAPI,
-            uid: str) -> pd.Series:
-    if resolver.method == "connected_components":
-        return connected_components(ids, edges, db, uid)
-    return constrained(ids, edges, records, resolver.cannot_link, uid)
+def merge(con: duckdb.DuckDBPyConnection, db: DuckDBAPI, base: str, edges: str, into: str, uid: str) -> None:
+    """`into`: `base` (uid → cluster_id, every record) with the pairs of `edges` (<uid>_l, <uid>_r) added. Each existing
+    cluster is one node, so the work grows with the edges, not with the file; a merged cluster takes the smallest id, as
+    a full rebuild does (Splink names a cluster after its smallest uid). O(E·d + N) for E edges, d the largest
+    cluster's diameter."""
+    u, l, r = q(uid), q(f"{uid}_l"), q(f"{uid}_r")
+    con.execute(f"""CREATE OR REPLACE TABLE er_e AS SELECT DISTINCT least(a.cluster_id, b.cluster_id) AS {l},
+        greatest(a.cluster_id, b.cluster_id) AS {r} FROM {edges} e JOIN {base} a ON a.{u} = e.{l} JOIN {base} b ON b.{u} = e.{r}
+        WHERE a.cluster_id <> b.cluster_id""")
+    if not con.execute("SELECT count(*) FROM er_e").fetchall()[0][0]:
+        con.execute(f"CREATE OR REPLACE TABLE {into} AS SELECT * FROM {base}")
+        return
+    comp = cluster_pairwise_predictions_at_threshold(
+        nodes=db.register(con.sql(f"SELECT {l} AS {u} FROM er_e UNION SELECT {r} FROM er_e")),
+        edges=db.register(con.sql("SELECT * FROM er_e")), db_api=db, node_id_column_name=uid)
+    con.execute("DROP TABLE IF EXISTS er_comp")
+    comp.as_duckdbpyrelation().project(f"{u} AS node, cluster_id::VARCHAR AS cluster_id").to_table("er_comp")
+    comp.drop_table_from_database_and_remove_from_cache()
+    con.execute(f"""CREATE OR REPLACE TABLE {into} AS SELECT b.{u}, coalesce(c.cluster_id, b.cluster_id) AS cluster_id
+        FROM {base} b LEFT JOIN er_comp c ON c.node = b.cluster_id""")

@@ -52,7 +52,7 @@ The system turns a file of customer records into one ID per person or company. I
 | `docs/diagrams/` | the diagrams on this page, as PlantUML |
 | `tests/` | engine checks, whole runs, and the design's checks |
 
-**One engine.** `resolve.py`, `benchmark.py` and the demo all run `er.run.Run`. `choose.py` makes its decisions on pandas frames through `er.select`, which calls the same rule, key and model functions, and a test requires both paths to give the same gold. `choose.py` then writes each split's run folder through `er.run`.
+**One engine.** `resolve.py`, `benchmark.py`, the demo and `choose.py` all run `er.run.Run`. `choose.py` measures each configuration by running it (`er.pipeline.run_rules`, `run_fs`: the run's steps up to its clusters, nothing written) and joining the run's tables to the truth, so it judges exactly what runs, with the same gate on oversized blocks and the same untrusted values. It then writes each split's run folder through `er.run`.
 
 **Where Splink sits.** Splink does the model's training and scoring, and the clustering, on the run's DuckDB connection. Everything around it is the `er` package: the rules' joins and candidate generation as SQL, budgets, u from the scored file, the threshold rule, decisions, evaluation ([what we take from Splink, and why the rest is ours](#what-we-take-from-splink-and-what-we-do-ourselves)).
 
@@ -147,8 +147,8 @@ The gate on oversized blocks (step 5) and the scores (step 6) both use these u.
 Each rule is one join on its exact keys; its fuzzy conditions (names within two edits, addresses by Jaro–Winkler, a phone one digit off, …) are checked on the joined pairs only. A pair belongs to the first rule that finds it. Stage by stage, exact then fuzzy, a pair is kept only if it touches a record still unresolved, and the kept pairs are merged into the rule clusters, each cluster one node.
 
 - **Why:** certain cases are cheap and auditable, and settle most duplicates without a false merge. The model then works only on what is left.
-- **Code:** `Run.rules` → `Run._rules` → `match.rule_edges` (one plain SQL join per rule, the same for `choose.py`, full runs and increments: Splink's `deterministic_link` would join every column of both records back first), `config.Stage.sql` (a fuzzy condition lets equal values through without the string function), `strings.connect` (the character-level `cl_*` functions), `Run._merge`. A rule leaves out any value of its keys held by an oversized block (`Run._untrusted`): one customer ID on 3,000 records is not one customer's, so the summary names it, and the model can still match those records.
-- **Increment:** each rule joins the batch against all records. Each stored cluster is merged as a single node (`Run._merge`): `O(Δ·Σb)` plus a scan.
+- **Code:** `Run.rules` → `Run._rules` → `match.rule_edges` (one plain SQL join per rule, the same for `choose.py`, full runs and increments: Splink's `deterministic_link` would join every column of both records back first), `config.Stage.sql` (a fuzzy condition lets equal values through without the string function), `strings.connect` (the character-level `cl_*` functions), `cluster.merge`. A rule leaves out any value of its keys held by an oversized block (`Run._untrusted`): one customer ID on 3,000 records is not one customer's, so the summary names it, and the model can still match those records.
+- **Increment:** each rule joins the batch against all records. Each stored cluster is merged as a single node (`cluster.merge`): `O(Δ·Σb)` plus a scan.
 
 ### 5 · Candidates: which pairs to score · `O(N·L + ΣP_g)`
 
@@ -181,7 +181,7 @@ Scores every candidate, with the u step 3 measured on this file: for each field,
 Accepts a pair at 8 bits or more (`[model] min_match_weight`), if it touches a record the rules left alone (with `[model] bridge`, also if it joins two rule clusters), if a name was compared (`[model] needs`: the person names or the company names, filled on both sides), and if people haven't decided it is no match. Then it clusters the accepted pairs with the rules' pairs and the pairs people decided are a match (connected components: a run refuses a pipeline that asks for another resolver), and records, for each record, its cluster, the stage that resolved it, and the rule (`fs` for the model, `review` for people), with its kind and its customer's ([7](#7--person-or-company)). A cluster is named after its smallest record ID.
 
 - **Why:** pairs must become entities: if A matches B and B matches C, all three are one. Recording what resolved each record makes every merge auditable, and naming a cluster by its smallest ID makes an increment name it as a full run would. A household shares address and phone, and those two alone reach the threshold; so do a person and a company at one address. Without a name compared, people decide.
-- **Code:** `Run._load_decisions` (people's decisions, from `decisions/`), `Run.cluster` → `Run._accept` (the threshold, `run.named_sql`), `Run._merge` (Splink's connected components over the clusters the pairs touch only, each rule cluster one node, as in an increment), `Run._gold` (`run.customer_kinds`), `Run._expected_false`
+- **Code:** `Run._load_decisions` (people's decisions, from `decisions/`), `Run.cluster` → `Run._accept` (the threshold, `run.named_sql`), `cluster.merge` (Splink's connected components over the clusters the pairs touch only, each rule cluster one node, as in an increment), `Run._gold` (`run.customer_kinds`), `Run._expected_false`
 - **Increment:** the stored gold is the base, each stored cluster one node, and stored answers stand: `O(C_Δ + touched clusters)`.
 
 ### 8 · Write the run folder · `O(N + C)`
@@ -213,7 +213,7 @@ Writes each table as Parquet under a temporary name. Once all are complete, it s
 `scripts/resolve.py --decisions` gives people's decisions back to a written run, scoring nothing. Each `match` pair merges its two clusters, each cluster one node; each record keeps its kind, and a merged customer's kind follows its records again. A `no_match` pair splits nothing at once, but a full run on the folder never accepts it.
 
 - **Why:** people's work must change the answer at once, and must survive a full re-run. `decisions/` is not a run file, so `--overwrite` keeps it and the full run applies it again. `qa.md`, `report.txt` and the sheets describe the run before the decisions until the next run or increment writes them again.
-- **Code:** `Run.decide` (checks the file: the columns, the values, a pair decided both ways, IDs not in the run), `Run._merge`, `run.customer_kinds`, `Run._stage`
+- **Code:** `Run.decide` (checks the file: the columns, the values, a pair decided both ways, IDs not in the run), `cluster.merge`, `run.customer_kinds`, `Run._stage`
 
 ## 7 · Person or company
 
