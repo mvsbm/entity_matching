@@ -147,7 +147,7 @@ levels = [
 
 [kind]
 name_field = "any_name"
-ngram = 4
+ngram = 3
 depth = 2
 company_wrong_at_most = 0.001
 person_wrong_at_most = 0.01

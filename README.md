@@ -27,7 +27,8 @@ These numbers come from synthetic records built from real Japanese names, compan
 - **It finds almost half the duplicates:** 45.9% of the true pairs on test (95% interval 43.9–47.9%); the rules alone find 9.7%. Test is a split never used for any choice.
 - **The data is hard on purpose.** About 1% of true pairs are direct matches (the same customer ID and name, or the same name, address code and phone), and 11.5% share nothing usable, so no method finds them all ([data](docs/data.md#how-hard-it-is)).
 - **It merged no two different customers:** 0 false merges on test, so the rate is at most 0.28%.
-- **A million records take 43.0 seconds,** with peak memory 5.85 GB under an 8 GB limit. Every step's work grows about linearly with the file.
+- **It tells persons from companies without trusting the file's flag:** on generated files with one name column for both, recall stays at 41.3–47.0% where routing by the flag alone gives 38.9–45.8%, and it calls a person a company once in three files, against 321 to 2,372 times by the flag ([chapter 7](docs/guide/07-person-or-company.md)).
+- **A million records take 47.2 seconds,** with peak memory 5.93 GB under an 8 GB limit. Every step's work grows about linearly with the file.
 
 Real data may differ, and only a run on it can tell ([limits](#limits)).
 
@@ -40,7 +41,7 @@ Real data may differ, and only a run on it can tell ([limits](#limits)).
 .venv/bin/python scripts/resolve.py --input customers.parquet --output runs/customers
 ```
 
-The run folder holds `gold.parquet` (each record and its entity's ID), `review.parquet` (pairs for a person to decide or audit), `qa.md` (checks that need no labels) and `report.txt` (the run on one page with no record's value in it, to send when asking for help). New records join the run later with `--increment`, and people's decisions with `--decisions`; `scripts/schedule.py` does both from an inbox, one file at a time. Every step is in [usage](docs/usage.md).
+The run folder holds `gold.parquet` (each record and its entity's ID, and each one's kind: 1 person, 2 company, 0 not sure), `review.parquet` (pairs for a person to decide or audit), `kind_review.parquet` (records for a person to decide person or company), `qa.md` (checks that need no labels) and `report.txt` (the run on one page with no record's value in it, to send when asking for help). New records join the run later with `--increment`, and people's decisions with `--decisions`; `scripts/schedule.py` does both from an inbox, one file at a time. Every step is in [usage](docs/usage.md).
 
 ## Read next
 
@@ -49,9 +50,9 @@ The run folder holds `gold.parquet` (each record and its entity's ID), `review.p
 | run it on your records | [usage](docs/usage.md) |
 | see every step on a small file, with charts | [the demo](notebooks/pdf/demo.pdf) |
 | see how it is built | [architecture](docs/architecture.md) |
-| understand each method, and why it was chosen | [the guide](docs/guide/01-entity-resolution-and-our-task.md), six chapters |
+| understand each method, and why it was chosen | [the guide](docs/guide/01-entity-resolution-and-our-task.md), seven chapters |
 | look up a term | [the glossary](docs/guide/01-entity-resolution-and-our-task.md#words-used-in-this-guide) |
-| check the numbers | [results](docs/results.md) · [performance](docs/performance.md) · [choose report](reports/choose.md) · [benchmark](reports/benchmark.md) |
+| check the numbers | [results](docs/results.md) · [performance](docs/performance.md) · [choose report](reports/choose.md) · [kind report](reports/choose_kind.md) · [benchmark](reports/benchmark.md) |
 | know where the data comes from | [data](docs/data.md) |
 | learn from what went wrong | [lessons](docs/lessons.md) |
 
@@ -59,5 +60,6 @@ The run folder holds `gold.parquet` (each record and its entity's ID), `review.p
 
 - **Measured on synthetic data only.** Test comes from the same generator as the data the choices were made on. Other seeds, emptier fields, or a prior off by a factor of two keep recall between 41.7% and 49.3%; twice the typos lowers it to 33.4%. None of these made a false merge ([benchmark](reports/benchmark.md)). Real data has not been measured.
 - **False pairs appear on files fitted on themselves.** On the generated files of the cost benchmark, the run joined 2 false pairs at 12,532 records, through 1 false link, and 4 at 74,959, through 3. Each is a model link between 8.2 and 10.1 bits (the threshold is 8), between near-namesakes with a kana typo who share an address or a phone. The model expects them: the sum of 1 − match probability over its links, which every run reports without labels, is 0.84 at 12,532 records, 4.38 at 74,959, and 30.11 of 38,787 links at a million.
+- **A company that looks like its representative.** A company record under its representative's name, at the representative's address and phone and flagged person, looks like the person's own record in every column. Nothing tells them apart, so it can merge into the person ([chapter 7](docs/guide/07-person-or-company.md#what-it-cant-do)).
 - **Close names rely on other keys.** A Jaro–Winkler level guarantees no shared key, so two close but unequal names (or company names) are compared only if another key lists them. By the model's own bound, up to 11.9% of matches at a million records rest on such patterns; on labelled train, every pair that could reach the threshold shares a key.
 - **Machine-read kana.** Given-name readings come from SudachiPy, and some differ from the intended reading.

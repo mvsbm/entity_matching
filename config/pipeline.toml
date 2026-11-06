@@ -156,7 +156,7 @@ levels = [
 # ---------- choosing ----------
 [kind]                            # person or company, on every record (er.kind); the choice: scripts/choose_kind.py
 name_field = "any_name"           # the field holding each record's name, a person's or a company's
-ngram = 4                         # the name model: logistic regression on character n-grams 1 to this
+ngram = 3                         # the name model: logistic regression on character n-grams 1 to this
 depth = 2                         # the combiner: gradient-boosted trees this deep, fitted on people's labels
 company_wrong_at_most = 0.001     # the company line: no labelled error above it, then margin_steps stricter
 person_wrong_at_most = 0.01       # the person line: the labelled error above it at most half of this

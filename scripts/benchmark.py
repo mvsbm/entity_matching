@@ -173,7 +173,7 @@ def main() -> None:
     parser.add_argument("--entities", type=int, nargs="+", default=[10_000, 20_000, 40_000, 60_000], help="population sizes of the cost curve")
     parser.add_argument("--memory-limit", default=S.compute.get("memory_limit", ""), help="DuckDB's, e.g. 8GB (default: [compute])")
     args = parser.parse_args()
-    robust, curve = scenarios(), cost(args.entities, args.memory_limit)
+    robust, kind, curve = scenarios(), kinds(20_000), cost(args.entities, args.memory_limit)
     limit = args.memory_limit or "DuckDB's default (80% of RAM)"
     report = ["# Benchmark", "",
               "Written by `scripts/benchmark.py`: `config/final.toml` through `er.run`, the run without labels on DuckDB tables, on "
@@ -183,6 +183,14 @@ def main() -> None:
               "records in one cluster that are two entities; `false_links` are the model's links between two entities, and "
               "`expected_false` the false links the model expects among its own (the sum of 1 − match probability), which a run "
               "reports without labels.", "", markdown(robust), "",
+              "## Person or company: end to end", "",
+              "Populations with one name column for every kind (`er.generate.kind_problems`): real company names from the registry, "
+              "written as banks write them; companies with records under their representative's name, the representative a person of "
+              "the file (half at that person's address and phone); sole traders named like a shop; company dates; and a flag good, "
+              "medium or poor. Each resolved three ways: names routed by the truth (the flag replaced by it, taken as it is); by the "
+              "flag alone; by the kind step, people answering its review sheet (here, with the truth). `person_company_clusters` hold "
+              "a true person and a true company; `sure_*` is the share of true companies called 2 and of true persons called 1; "
+              "`wrong_*` the records called 2 that are persons and called 1 that are companies.", "", markdown(kind), "",
               f"## Cost: files of growing size (time grows like N^{curve.attrs['alpha']})", "",
               f"Each file is resolved by `scripts/resolve.py` in a process of its own, fitted on the file itself; DuckDB memory limit: "
               f"{limit}. Peak memory is the process's, Python included. Step columns are seconds. `fit` (on {FINAL.fit_rows:,} "

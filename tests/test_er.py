@@ -1117,7 +1117,7 @@ def test_the_review_sheet_says_in_words_why_each_record_is_there(tmp_path, kind_
     assert decide["reason"].str.startswith(("the engine is sure it is", "the engine is not sure", "the name looks like")).all()
     assert set(sheet["engine_says"]) <= {"2 company", "1 person", "0 not sure"} and sheet["name_says"].str.match(r"[12] (company|person) \(").all()
     measure = sheet[sheet["why"] == "measure"]
-    assert len(measure) == 300 and measure["drawn"].value_counts().to_dict() == {"at random": 100, "leans company": 100, "leans person": 100}
+    assert len(measure) == 300 and set(measure["drawn"]) == {"at random"} and measure["reason"].str.startswith("drawn at random").all()
     flags = g.df.set_index(uid).loc[decide[uid], "PERSON_ORG_CODE"].astype(int).to_numpy()
     sure = decide["reason"].str.startswith("the engine is sure").to_numpy()
     assert sure.any() and (decide["engine"].to_numpy()[sure] != flags[sure]).all()  # held: the engine's sure kind against the flag

@@ -1,4 +1,4 @@
-[README](../../README.md) · **Guide:** [1 Task](01-entity-resolution-and-our-task.md) · **2 Variants** · [3 Pairs](03-far-too-many-pairs.md) · [4 Rules](04-certain-cases-first-rules.md) · [5 Evidence](05-uncertain-evidence-fellegi-sunter.md) · [6 Measuring](06-measuring-and-choosing.md)
+[README](../../README.md) · **Guide:** [1 Task](01-entity-resolution-and-our-task.md) · **2 Variants** · [3 Pairs](03-far-too-many-pairs.md) · [4 Rules](04-certain-cases-first-rules.md) · [5 Evidence](05-uncertain-evidence-fellegi-sunter.md) · [6 Measuring](06-measuring-and-choosing.md) · [7 Kinds](07-person-or-company.md)
 
 # 2. The same fact, written differently
 

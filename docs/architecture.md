@@ -35,11 +35,11 @@ The system turns a file of customer records into one ID per person or company. I
 
 | Part | Holds |
 |---|---|
-| `scripts/` | the entry points: generate, choose, resolve, schedule (serves an inbox through resolve), benchmark, export_pdfs |
+| `scripts/` | the entry points: generate, choose, choose_kind (how persons and companies are told apart), resolve, schedule (serves an inbox through resolve), benchmark, export_pdfs |
 | `er/` | the engine: every computation, tested. It names no column, except the synthetic generator (`er/generate.py`) |
 | `config/` | every setting: `settings.toml` (paths, `[columns]`, `[locale]`, `[compute]`), `pipeline.toml` (the matching, in logical fields), `final.toml` (what was chosen), and for design time `generator.toml` and `experiments.py` |
 | `data/` | records, labels, run folders and artifacts, all Parquet. Only `data/reference/` is in git; the scripts rebuild the rest |
-| `reports/` | what `choose.py` and `benchmark.py` measured on synthetic data, kept in git; never real records |
+| `reports/` | what `choose.py`, `choose_kind.py` and `benchmark.py` measured on synthetic data, kept in git; never real records |
 | `notebooks/demo.ipynb` | every step of a run on 3,758 records, charted; no logic of its own |
 | `tests/` | engine checks and whole runs |
 
@@ -104,6 +104,16 @@ Opens the input through `er.source`, the one door every file goes through: it fi
 - **Why:** every later step compares values, so the same fact must be written the same way first. Chunks keep memory flat at any size. A mistake in the input either gets fixed and reported, or stops the run with what to fix: never a traceback.
 - **Code:** `Run.load` → `source.open_source` (reads only each file's schema), `source.suggest` (a fixed-size sample), `settings.fit_to_file` → `config.check_fields`, `restrict`; `Run._set_aside`; `standardize.prepare`
 - **Increment:** the batch only, `O(Δ·L)`. It first finishes any interrupted write. A record already stored is set aside, so a batch given twice adds nothing. The stored records and the batch then form one table, `records`, which every later step reads.
+
+#### Person or company · `O(N·L)`, inside load
+
+Each chunk, before its normalized copies, gets each record's kind (`er.kind`): `kind` 2 company, 1 person, 0 not sure (the codes a person/company flag uses), `kind_p` the probability of a company, and `name_p`, what the name alone says.
+
+- **The parts:** a legal form written where banks write one (`standardize.legal_pattern`: each reading, and the bank abbreviation at the front, カ)〇〇, or the end, 〇〇(カ), a company, near certain. A name model, logistic regression on the name's character 1–3-grams with legal forms and spaces removed, trained once on public data (the registry's readings and the personas) and cached. With people's answers, a combiner, gradient-boosted trees of depth 2, on the name's score, the file's flag, the birth year and the legal form.
+- **Correct first:** a side is called only above its line, placed on the answers drawn to measure, out of fold: no labelled person above the company line, then two grid steps stricter; at most half of 1% wrong above the person line. Without answers: 2 only where a legal form is written, never a sure 1. A record without a name stays 0.
+- **Routing, and the gate:** with one name column for every kind (`[columns]` `kind = …`), each record's name goes to `person_name` or `company_name` by where `kind_p` leans. A person–company pair then has no name compared, and the model's name check (`[model] needs`) leaves it to people: no other gate is needed. A record whose lean and the flag disagree goes to neither side (`kind_held`): a company sent to the person side could merge into its representative's own records, and nothing in the record says which of the two is right.
+- **People:** `kind_review.parquet` sends people the held records and the flag's likely errors (decide), and a draw to measure (measure). Their answers stand for their records (`kind_by` = `people`), train the combiner, and, the measuring draw only, place the lines. `scripts/choose_kind.py` chose the parts ([results](results.md#person-or-company)).
+- **Code:** `kind.classifier`, `kind.name_model`, `Classifier.classify`, `kind.lines`, `kind.review_sheet`; `standardize.prepare`; a customer's kind in `Run._gold`.
 
 ### 2 · Budget · `O(N)` per key
 
@@ -214,19 +224,21 @@ Kept on disk. Steps are numbered as in [the run](#3--the-run).
 
 | File | Written by step | Read by | Holds |
 |---|---|---|---|
-| `gold.parquet` | 8, rewritten each run and by decisions | you; the next increment | record → `cluster_id`, `resolved_stage`, `resolved_by` |
+| `gold.parquet` | 8, rewritten each run and by decisions | you; the next increment | record → `cluster_id`, `resolved_stage`, `resolved_by`; its `kind`, `kind_p`, `kind_by`, `kind_held`, and its entity's `customer_kind` |
 | `matches/part-n.parquet` | 8, one part per run | you | accepted pairs: weight, probability, generators |
 | `rule_kept/part-n.parquet` | 8, one part per run | you | the rules' pairs |
 | `state/records/part-n.parquet` | 8, one part per run | increments | the standardized records: the silver layer |
 | `state/rule_clusters.parquet` | 8, rewritten each run | increments | record → rule cluster |
 | `state/model.json` | 8, full runs only | increments | the fitted model: λ, and m and u per level |
 | `state/scoring.json` | 8, every run | increments | the u the run scored with; per comparison, the exact u it was sampled alongside and its last drift check |
+| `state/kind_labels.parquet` | 8, full runs given answers | increments; the next full run | people's person/company answers |
 | `steps.json` | 8 | you | each step's Big-O with its numbers, time and peak memory |
 | `pending.json` | 8, deleted when done | the next increment | renames owed by an unfinished write |
 | `.lock` | every writer | every writer | the run folder's lock: one writer at a time |
 | `jobs.jsonl` | `scripts/schedule.py` | people | one line per attempt: the file, its SHA-256, the outcome |
 | `qa.md`, `review.parquet` | 9 | people | the label-free report; the pairs to decide and to audit |
 | `report.txt` | 9 | whoever helps with the run | the run on one page, with no record's value in it |
+| `kind_review.parquet` | 9, full runs | people | records to decide 1 person or 2 company, and a draw to measure the engine and the flag |
 | `decisions/part-n.parquet` | decisions, one part per file | full runs | the pairs people decided: both IDs and `match` or `no_match` |
 | `set_aside/part-n.parquet` | 8, one part per run | you | records not resolved, and why: no ID; the same ID with different content; already in the run |
 

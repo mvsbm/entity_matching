@@ -20,6 +20,7 @@ import hashlib
 from dataclasses import dataclass
 from pathlib import Path
 
+import duckdb
 import numpy as np
 import pandas as pd
 from sklearn.ensemble import HistGradientBoostingClassifier
@@ -45,11 +46,16 @@ def text(names: pd.Series, std: Standardization) -> pd.Series:
 
 
 class NameModel:
-    """Logistic regression on a name's character n-grams; saved as its terms and weights, no pickle."""
+    """Logistic regression on a name's character n-grams; saved as its terms and weights, no pickle. It scores in
+    DuckDB: every name's distinct n-grams in one query, joined to the weights, the same sums as scikit-learn's
+    vectorizer builds one name at a time in Python, three times faster."""
 
     def __init__(self, terms: list[str], coef: np.ndarray, intercept: float, ngram: int):
         self.terms, self.coef, self.intercept, self.ngram = terms, coef, intercept, ngram
-        self.vec = CountVectorizer(analyzer="char", ngram_range=(1, ngram), binary=True, vocabulary=terms)
+        self.con = duckdb.connect()
+        self.con.register("er_weights", pd.DataFrame({"term": terms, "w": coef}))
+        self.con.execute("CREATE TABLE weights AS SELECT * FROM er_weights")
+        self.con.unregister("er_weights")
 
     @classmethod
     def fit(cls, texts: pd.Series, y: np.ndarray, ngram: int) -> "NameModel":
@@ -59,9 +65,14 @@ class NameModel:
 
     def logit(self, texts: pd.Series) -> np.ndarray:  # log-odds of a company; NaN where there is no name
         has = texts.notna().to_numpy()
-        out = np.full(len(texts), np.nan)
-        if has.any():
-            out[has] = self.vec.transform(texts[has]) @ self.coef + self.intercept
+        out = np.where(has, self.intercept, np.nan)
+        if has.any():  # lower case and each n-gram once, as the vectorizer that trained it counts them
+            self.con.register("er_names", pd.DataFrame({"r": np.flatnonzero(has), "t": texts[has].str.lower().to_numpy()}))
+            sums = self.con.execute(f"""SELECT r, sum(w ORDER BY term) AS s FROM (SELECT DISTINCT r, substr(t, i, n) AS term FROM
+                (SELECT r, t, n, unnest(range(1, length(t) - n + 2)) AS i FROM er_names, (SELECT unnest(range(1, {self.ngram} + 1)) AS n)))
+                JOIN weights USING (term) GROUP BY r""").fetchnumpy()
+            self.con.unregister("er_names")
+            out[sums["r"]] += sums["s"]  # summed in term order: the same bits every run
         return out
 
     def save(self, path: Path, key: str) -> None:
@@ -217,9 +228,10 @@ def review_sheet(records: pd.DataFrame, uid: str, spec: KindSpec, flag_company: 
         decide    the engine and the file's flag disagree: the record is held back from matching until a person decides
                   (sure contradictions first); then records the engine and the flag agree on but the name alone says
                   the other kind (name_p beyond spec.name_line), the flag's likely errors. At most spec.review_max.
-        measure   spec.labels_to_draw records drawn to measure the flag and the engine: a third at random, a third the
-                  engine leans company (kind_p ≥ 0.9), a third it leans person (≤ 0.1). The draw follows a hash of
-                  the record ID: the same file gives the same sheet. A record without a name has nothing to judge: it is left out.
+        measure   spec.labels_to_draw records drawn at random, to measure the flag and the engine: not stratified, since
+                  a draw that over-represents the records the engine is surest of makes the error above a line look
+                  smaller than it is (reports/choose_kind.md). The draw follows a hash of the record ID: the same file
+                  gives the same sheet. A record without a name has nothing to judge: it is left out.
 
     Each row says in words why it is there (reason), what the engine says, what the name alone says and what the flag
     says; people write kind: 1 person, 2 company, 0 can't tell. O(N)."""
@@ -242,16 +254,12 @@ def review_sheet(records: pd.DataFrame, uid: str, spec: KindSpec, flag_company: 
           for n, x, f, k in zip(name_says, r["name_p"], np.nan_to_num(flag), r["kind"])]], "")
     r["_s"] = np.where(held, 2.0, 0.0) + np.where(held & sure, 1.0, 0.0) + np.abs(r["name_p"].fillna(0.5).to_numpy() - 0.5)
     r["_decide"] = held | against
-    rest, k, parts = r, spec.labels_to_draw // 3, []
-    for drawn, which, size, words in (  # the measuring draw first, from every record: what it measures must not depend on decide
-            ("at random", lambda d: np.ones(len(d), dtype=bool), k, "drawn at random, to measure the flag and the engine"),
-            ("leans company", lambda d: d["kind_p"] >= 0.9, k, "drawn among records the engine leans to 2 company, to measure it"),
-            ("leans person", lambda d: d["kind_p"] <= 0.1, spec.labels_to_draw - 2 * k, "drawn among records the engine leans to 1 person, to measure it")):
-        pick = rest[which(rest)].nsmallest(size, "_h")
-        parts.append(pick.assign(why="measure", drawn=drawn, reason=np.where(pick["_decide"], words + "; also: " + pick["reason"], words)))
-        rest = rest.drop(pick.index)  # each third from the records not drawn yet
+    words = "drawn at random, to measure the flag and the engine"  # first, from every record: what it measures can't depend on decide
+    measure = r.nsmallest(spec.labels_to_draw, "_h")
+    measure = measure.assign(why="measure", drawn="at random", reason=np.where(measure["_decide"], words + "; also: " + measure["reason"], words))
+    rest = r.drop(measure.index)
     decide = rest[rest["_decide"]].sort_values(["_s", "_h"], ascending=[False, True]).head(spec.review_max)
-    sheet = pd.concat([decide.assign(why="decide", drawn=""), *parts]).drop(columns=["_h", "_s", "_decide"])
+    sheet = pd.concat([decide.assign(why="decide", drawn=""), measure]).drop(columns=["_h", "_s", "_decide"])
     sheet["engine_says"] = sheet["kind"].map(SAYS)
     sheet["name_says"] = [f"{SAYS[COMPANY if x >= 0.5 else PERSON]} ({pct(x)})" if pd.notna(x) else "" for x in sheet["name_p"]]
     sheet = sheet.rename(columns={"kind": "engine", "kind_p": "engine_p", "kind_flag": "flag"} if "kind_flag" in sheet else {"kind": "engine", "kind_p": "engine_p"})

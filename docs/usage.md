@@ -35,13 +35,15 @@ The fields, and which ones a run needs (`[fields]` in `config/final.toml`):
 | `address`, `address_code`, `postal_code`, `town_code`, `city`, `prefecture` | the address in any format; an address code; the postal code; the town code (municipality, town and chome); the city; the prefecture | optional |
 | `phone` | the phone number's last four digits | optional |
 | `customer_id` | the ID another system gave the customer | optional |
-| `birth_date` | a person's birth date, in one format throughout, so equal dates are equal strings | optional |
+| `birth_date` | a person's birth date, in one format throughout, so equal dates are equal strings (a company's date there is read too) | optional |
+| `kind_flag` | the file's own person/company flag; `[kind] flag_company` lists the values that say company (`2`), any other says person | optional |
 | `entity` | the true entity, in labelled files only | never read by a run |
 
 - **A missing optional field** turns off only the rules, keys and comparison levels that read it. The run lists them in `qa.md`.
 - **Names are matched loosely.** A column whose name differs from the mapping only in case, width or separators (`cont_id`, `ＣＯＮＴ＿ＩＤ`) is used, and the summary says so.
 - **Every column is read as text.** A blank value, or one made only of spaces (full-width ones included), counts as missing. A code stored as a number (`599` for `0599`) is read as text with a warning: its leading zeros were lost before the file reached the run.
 - **A nearly empty field** is used where it is filled. If no two records of the fit's sample share it, the fit learns nothing from it, and the summary says so.
+- **One column for every name**, a person's or a company's: map `full_name`, `person_name`, `company_name` and `any_name` to it, and add `kind = "person"` to the first two and `kind = "company"` to `company_name`. Each record's name then goes to the side its kind leans to, and a pair of a person and a company has no name compared, so the model leaves it to people ([section 6](#6--review-and-decide)). A record whose kind and flag disagree goes to neither side until a person decides.
 - **A field the run needs and no column holds** stops the run with the file's columns and, for each missing field, the column whose values look most like it, as lines to paste into `[columns]`. These suggestions are never applied without you.
 
 Check a file and its mapping in seconds, before a long run:
@@ -84,16 +86,17 @@ Everything is in the run folder.
 
 | File | One row per | Holds | Use it to |
 |---|---|---|---|
-| `gold.parquet` | record | `cluster_id` (the smallest record ID of its cluster); `resolved_stage` (`deterministic`, `probabilistic` or `review`; empty for a record found alone); `resolved_by` (the rule, `fs` for the model, or `review` for people) | give every record its entity |
+| `gold.parquet` | record | `cluster_id` (the smallest record ID of its cluster); `resolved_stage` (`deterministic`, `probabilistic` or `review`; empty for a record found alone); `resolved_by` (the rule, `fs` for the model, or `review` for people); `kind` (1 person, 2 company, 0 not sure), `kind_p` (the probability of a company), `kind_by` (`engine` or `people`), `kind_held` (held back from matching: the engine and the flag disagree) and `customer_kind`, the entity's (2 if any record surely is a company; 1 if none leans company and one surely is a person; else 0) | give every record its entity, and every entity its kind |
 | `matches/` | accepted pair | both IDs; `match_weight` in bits; `match_probability`; `sources`, the candidate generators that listed it | see why two records were joined |
 | `rule_kept/` | pair a rule accepted | both IDs, the rule and its stage | audit the rules |
 | `qa.md` | | the summary; each field's fill rate (flagged under 5%), the share that looks right and the share of its most common value; what was turned off; each step's Big-O, time and memory; pairs by weight; cluster sizes; the 10 largest clusters; match patterns no key guarantees | check the run without labels |
 | `report.txt` | | the run on one page of plain text, with no record's value in it: what ran (the code, the tracked files changed in this copy, the pipeline, the machine's limits), the summary, the fields, scores and links by weight with the false links expected, cluster sizes, each step's time and memory, the model's m, u and bits per level, the costliest blocks | send it to whoever helps with the run ([section 7](#7--when-something-is-wrong)) |
 | `review.parquet` | pair for people | `why` (`decide` or `audit`); an empty `decision`; both records' compared fields; per comparison, the level reached and its bits; `accepted` | decide the pairs just below the line and those above it with no name compared, audit those just above ([section 6](#6--review-and-decide)) |
+| `kind_review.parquet` | record for people | `why` (`decide` or `measure`), `reason` in words, what the engine, the name alone and the flag say, the name, an empty `kind` | answer 1 person, 2 company or 0 can't tell ([section 6](#6--review-and-decide)) |
 | `decisions/` | decided pair | both IDs and `decision`, one part per file people gave back | what people decided; a full run applies it again |
 | `set_aside/` | record not resolved | the record as read, and `reason`: no ID; the same ID with different content; already in the run | fix them and add them with `--increment` |
 | `steps.json` | step | its Big-O with the numbers filled in, seconds, peak memory | see the cost |
-| `state/` | | the standardized records, the rules' clusters, the model, the u it scored with | needed by `--increment`; don't edit |
+| `state/` | | the standardized records, the rules' clusters, the model, the u it scored with, people's person/company answers | needed by `--increment`; don't edit |
 
 ```python
 import pandas as pd
@@ -134,6 +137,25 @@ Fill in `decision` with `match` or `no_match`, leave the rest empty, and give th
 - **`match`** joins the two clusters at once, scoring nothing. A record joined only this way gets `resolved_by` = `review`.
 - **`no_match`** splits nothing at once. It is kept, and a full run never accepts the pair. It applies to that pair only: a third record can still join the two.
 - **Kept for good.** Decisions are stored in `decisions/`, which a full run with `--overwrite` on the same folder applies again. Any file with the two ID columns and `decision` works; rows without a decision are skipped.
+
+### Persons and companies
+
+A full run writes `kind_review.parquet`, records for people, as `review.parquet` holds pairs. Each row says in `reason` why it is there, and what the engine (`engine_says`: `1 person`, `2 company`, `0 not sure`), the name alone (`name_says`, with how sure) and the file's flag (`flag`) say. Two kinds of rows, named in `why`:
+
+- **decide:** records where the engine and the flag disagree, held back from matching until you decide, the engine's sure calls first ("the engine is sure it is 1 person, the flag says 2"); then records the engine and the flag agree on but whose name alone says the other kind, the flag's likely errors. At most `[kind] review_max` (1,000).
+- **measure:** 2,000 records drawn at random, to measure the flag and the engine. They place the engine's lines and say how often the flag is wrong. Records you were sent to decide can't do that: they were picked because they look wrong.
+
+Write `kind`: `1` person, `2` company, `0` can't tell from the record. A sole trader is `1`: legally a person. Give the sheet back with a full run:
+
+```bash
+.venv/bin/python scripts/resolve.py --input customers.parquet --output runs/customers --overwrite --kind-labels kind_review.parquet
+```
+
+- **Your answers stand** for their records (`kind_by` = `people`): a held record's name goes to its side, and matching can use it.
+- **They teach the engine.** The combiner fits on every answer; the lines on the measuring draw only. The summary says where the lines fall, how often the flag is wrong on the answers drawn at random, and how many records stay held back.
+- **Kept for good.** The run keeps the answers in `state/` for its increments and its next full run, and the next sheet leaves out the records already answered.
+
+Without answers, a record is `2` only where a legal form is written (株式会社, カ)〇〇, 〇〇(カ …), and never surely `1`. A company record under its representative's name, at the representative's address and phone and flagged person, looks like the person's own record in every column; nothing in the file tells them apart, so no sheet finds it.
 
 Wrong audit pairs are also the evidence for changing the matching. In `qa.md`, a cluster far larger than the rest is the first sign of over-merging.
 

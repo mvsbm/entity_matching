@@ -88,7 +88,7 @@ Each entry names a way an entity-resolution pipeline like this one goes wrong, a
 - **Pitfall:** an intermediate table copied into pandas with more columns than needed outgrows memory on a big file. It shows as a run that stalls deep in swap.
 - **Why:** reading Splink's predictions into pandas with every matching column of both records, only to keep the ids, the weights and the gammas, makes a copy that grows with the candidates times the columns.
 - **Guard:** DuckDB selects the needed columns before anything reaches pandas, and the predictions table is dropped once read. Every table of size N or C is a DuckDB table (`er.run`), which spills past `[compute]` `memory_limit` to `.tmp/` under the folder a run starts in, unless `temp_directory` says otherwise. A run's capacity counts the spill room DuckDB allows: 90% of the free disk by default. DuckDB keeps what the limit allows, so the peak under a large limit says little: test the smallest limit that completes, not the peak.
-- **Check:** every run's `steps.json` records the peak memory after each step, and `reports/benchmark.md` reports it at every file size: 5.85 GB at a million records under an 8 GB limit, Python included.
+- **Check:** every run's `steps.json` records the peak memory after each step, and `reports/benchmark.md` reports it at every file size: 5.93 GB at a million records under an 8 GB limit, Python included.
 
 ## An answer that depends on the file's order
 - **Pitfall:** an output column depends on the order of the records in the file. It shows as identical clusters but a different `resolved_by` after the file is shuffled.
@@ -131,6 +131,30 @@ Each entry names a way an entity-resolution pipeline like this one goes wrong, a
 - **Why:** the notes that make a run's problems clear quote the values behind them, and a report built from them inherits the values.
 - **Guard:** `report.txt` is built only from field and column names, counts, shares, times and the model's parameters. A note that quotes a value is kept apart (`Run.examples`) and goes to the terminal and `qa.md` only.
 - **Check:** a test puts a placeholder phone and a customer ID with one name on many records, so the run has notes quoting them, and checks that the report holds no kana or kanji, no record ID and no customer ID.
+
+## A legal-form list that misses how banks write it
+- **Pitfall:** a list of legal forms in full (株式会社, カブシキガイシャ) and one abbreviation misses most of how bank records write them: カ)〇〇 at the front, 〇〇(カ at the end, イ) for 医療法人, ザイ) for a 財団法人, and readings with small kana written large (カブシキガイシヤ). It shows as companies that look like persons to every later step, and company names that keep their legal form when compared.
+- **Why:** bank systems store names in half-width katakana under the Zengin rules: no small kana, and each legal form abbreviated, at a position that depends on where the form stands in the name.
+- **Guard:** `[locale]` `legal_forms` holds every form's reading and the middle abbreviations ((カ)); `legal_front` and `legal_end` hold the abbreviations by where banks may put them. `standardize.legal_pattern` adds each reading with small kana written large, longest first, so 医療法人社団 isn't cut to 医療法人.
+- **Check:** a test strips every form at its positions, keeps a front-only one at the end, and leaves the generator's names losing exactly the forms the generator writes; `reports/choose_kind.md` shows what the bank table is worth against the generator's forms alone.
+
+## A signal true only in the generator
+- **Pitfall:** a generator that fills birth dates for persons only makes "a birth date is filled" look like proof of a person, and a classifier leans on it. In a real file a company's record can hold a date there too: its founding date, or its representative's birth date. It shows as companies called persons, confidently.
+- **Why:** the generator's choices become the model's evidence. A signal that exists only by construction is learned as if it were real.
+- **Guard:** `scripts/choose_kind.py` gives companies a date on 0–60% of their records, a founding year or the representative's birth date, and judges every combination across that range. The combiner reads the birth year, which still tells a founding year from most birth years, not only whether a date is filled.
+- **Check:** `reports/choose_kind.md`: each signal's worth, with and without, across the scenarios.
+
+## A measuring draw taken from what review left
+- **Pitfall:** records sent to people because they look wrong are a biased sample, and so is a draw taken from the records left after them, or one stratified to hold more of the records the engine is surest of. Placing a line or measuring an error rate on any of them misjudges it. It shows as a line that holds on the answers and breaks on the file.
+- **Why:** the records sent to decide are those where the engine and the flag disagree, where the errors gather; taking them out of the measuring draw leaves the easy records. A stratified draw puts more of the surest records above each line than the file has there, so the error above it looks smaller than it is.
+- **Guard:** `kind.review_sheet` draws the measuring rows first, at random from every record with a name, then the records to decide from the rest. `kind.classifier` places the lines and measures the flag on the measuring answers only, and fits the combiner on all of them.
+- **Check:** a test checks the sheet's two kinds of rows and their reasons; the benchmark's "Person or company" section counts the wrong calls on every record.
+
+## A line placed at zero errors on a few hundred labels
+- **Pitfall:** "no labelled error above the line" on a few hundred labels says little about a 0.1% error rate: a sample with 100 companies in it passes a line that lets one call in a hundred go wrong. It shows as a line that holds on the labels and breaks on the file, in some files and not in others.
+- **Why:** no error in n draws bounds the rate only near 3/n.
+- **Guard:** the company line is two grid steps stricter than the first clean one, on a measuring draw of 2,000 records at random. The person line asks for a measured wrong share of at most half its budget.
+- **Check:** `reports/choose_kind.md`, placing the lines: in how many of the 12 scenarios each number of answers and each rule breaks the budget.
 
 ## An increment that drops the review queue
 - **Pitfall:** pairs waiting for a decision vanish when the next run writes a new review sheet, though they are still open.

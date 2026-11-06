@@ -41,6 +41,9 @@ Built once from public sources. The downloads are not kept; `SOURCES.md` records
 | `individual.json` | 60,000 personas, 8,405 distinct surnames | NVIDIA Nemotron-Personas-Japan (CC BY 4.0) | names parsed from the persona text; kana readings by SudachiPy; sex, age, prefecture |
 | `companies.json` | 31,596 companies | Wikidata, direct company types (CC0) | name + kana (official P1814 where present, else SudachiPy); legal forms stripped |
 | `addresses.json` | 46,364 towns, all 47 prefectures | geolonia/japanese-addresses (CC BY 4.0) + yubinbango-data | prefecture, city and town with kana, JIS municipality code, chome, postal code |
+| `registry.json` | 60,000 corporations of three prefectures (Miyagi, Okayama, Fukuoka) | the National Tax Agency's corporate-number site (Public Data License 1.0; processed) | each name's reading, its legal form's reading and bank abbreviation, whether the form leads the name |
+
+The pipeline reads two of them once: `individual.json` and `registry.json` train the person-or-company name model (`er.kind.name_model`), which it caches. The rest is for the generator.
 
 Two traps in the sources:
 - **Wikidata's class tree:** 13,766 of the 16k "Japanese companies" with kana in the transitive `company` tree are dissolved municipalities. Only direct company types give real companies.
@@ -70,6 +73,7 @@ All parameters live in `config/generator.toml`: `[population]` (`er.generate.Spe
   - **Rates:** the non-null rate falls from 0.9999 to 0.6544 along the column order, counted where the column applies; BIRTH_DATE has its own rate, and STD_ADDRESS follows its parts.
   - **Correlation:** shared within the name, postal and address groups by `nesting` ρ.
 - **Households:** unrelated entities sometimes share an address, which gives look-alikes that must not be merged.
+- **Persons and companies, made hard to tell apart** (`er.generate.kind_problems`, off unless asked for: the benchmark, the demo, the tests and `scripts/choose_kind.py` turn it on). One name column for every kind, NAME_KANA; real company names from `registry.json`, written as bank records write them (the legal form in full, abbreviated at the front, カ)〇〇, or the end, 〇〇(カ, or left out); company records under their representative's name, the representative a person of the file, half at that person's address and phone; sole traders (legally persons) named like a shop on most of their records; a date in BIRTH_DATE on 30% of company records; and PERSON_ORG_CODE, the file's flag (1 person, 2 company), wrong on 3% of records, on half the representative-named ones and on 30% of the sole traders'. Its own random stream: the records start as `generate` made them.
 - **Asserts** run on the whole population before it is split: exact rates, digit formats, kind consistency, CONT_ID unique, no CIF shared across entities, address code ↔ address 1:1.
 
 ### How hard it is

@@ -1,4 +1,4 @@
-[README](../../README.md) · **Guide:** [1 Task](01-entity-resolution-and-our-task.md) · [2 Variants](02-the-same-fact-written-differently.md) · [3 Pairs](03-far-too-many-pairs.md) · [4 Rules](04-certain-cases-first-rules.md) · [5 Evidence](05-uncertain-evidence-fellegi-sunter.md) · **6 Measuring**
+[README](../../README.md) · **Guide:** [1 Task](01-entity-resolution-and-our-task.md) · [2 Variants](02-the-same-fact-written-differently.md) · [3 Pairs](03-far-too-many-pairs.md) · [4 Rules](04-certain-cases-first-rules.md) · [5 Evidence](05-uncertain-evidence-fellegi-sunter.md) · **6 Measuring** · [7 Kinds](07-person-or-company.md)
 
 # 6. Measuring honestly, choosing without overfitting
 
@@ -191,4 +191,4 @@ Each has a guard and a check: a test, or a number printed on every run. The full
 - C. J. Clopper and E. S. Pearson, "The use of confidence or fiducial limits illustrated in the case of the binomial," *Biometrika* 26(4), 1934.
 - D. Menestrina, S. E. Whang and H. Garcia-Molina, "Evaluating entity resolution results," *PVLDB* 3(1), 2010. On group metrics such as B-cubed.
 
-**Back to:** [README](../../README.md) · [1. The task](01-entity-resolution-and-our-task.md)
+**Next:** [7. Person or company →](07-person-or-company.md) · **Back to:** [README](../../README.md) · [1. The task](01-entity-resolution-and-our-task.md)

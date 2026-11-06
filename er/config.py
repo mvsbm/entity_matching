@@ -378,7 +378,7 @@ class Fields:
 class KindSpec:
     """Person or company (er.kind): a name model, a combiner fitted on people's labels, and a line on each side."""
     name_field: str = "any_name"              # the field holding each record's name, a person's or a company's
-    ngram: int = 4                            # the name model's character n-grams: 1 to this
+    ngram: int = 3                            # the name model's character n-grams: 1 to this
     depth: int = 2                            # the combiner's trees (gradient boosting)
     company_wrong_at_most: float = 0.001      # the company line: no labelled error above it, then margin_steps stricter
     person_wrong_at_most: float = 0.01        # the person line: the labelled error above it at most half of this
