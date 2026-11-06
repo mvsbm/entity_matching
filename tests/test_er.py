@@ -689,10 +689,10 @@ def test_answers_given_wrong_stop_the_run(tmp_path, population):
         Run(p, s).increment(tmp_path / "all.parquet", tmp_path / "empty")
 
 
-def test_the_labelled_engine_and_the_run_give_the_same_gold(tmp_path, population, con_db):
+def test_the_labelled_engine_and_the_run_give_the_same_gold_and_accept_the_same_pairs(tmp_path, population, con_db):
     """scripts/choose.py measures with er.pipeline; scripts/resolve.py runs er.run: the same records and model must
     give the same clusters and the same answer to what resolved each record."""
-    from er.pipeline import run_fs, run_rules
+    from er.pipeline import automatic, run_fs, run_rules
     from er.run import Run
     s, p, g = population
     p = replace(p, fs=replace(p.fs, needs=("name", "company")))  # both paths hold back a pair with no name compared
@@ -710,6 +710,11 @@ def test_the_labelled_engine_and_the_run_give_the_same_gold(tmp_path, population
                 .set_axis(["cluster_id", "resolved_stage", "resolved_by"], axis=1).astype("string"))
     gold = pd.read_parquet(tmp_path / "run" / "gold.parquet").set_index(uid)[list(labelled.columns)].astype("string")
     pd.testing.assert_frame_equal(gold, labelled.loc[gold.index], check_index_type=False)
+    l, r = f"{uid}_l", f"{uid}_r"  # and the same pairs accepted, with the same weights
+    key = lambda d: d[[l, r, "match_weight"]].astype({l: "string", r: "string"}).sort_values([l, r], ignore_index=True)
+    design, ran = key(res.scored[automatic(res.scored, p.fs.min_match_weight)]), key(run.con.sql("SELECT * FROM matches").df())
+    assert len(design) > 0
+    pd.testing.assert_frame_equal(design, ran, check_exact=False, atol=1e-9)
 
 
 def test_a_pair_with_no_name_compared_is_left_to_people(tmp_path, population):
