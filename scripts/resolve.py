@@ -11,7 +11,8 @@
 
 Input is Parquet, read through er.source: a file, a glob or a folder. Records that can't be resolved (no ID, one ID with
 different content, or in an increment, already in the run) are set aside in set_aside/ and the run goes on.
-A mistake people must fix stops the run with two lines, what is wrong and how to fix it, and exit code 2.
+A mistake people must fix stops the run with two lines, what is wrong and how to fix it, and exit code 2; a run folder
+another job is writing to, with exit code 75, to try again later.
 
 Fits λ and m by EM on a fixed-size sample of the file (config/pipeline.toml [model] fit_rows), or uses --model, a
 fitted model (data/artifacts/models/probabilistic_final.json). Writes to --output: gold.parquet (each record's cluster,
@@ -42,7 +43,7 @@ import pandas as pd
 from er.config import InputError, load_pipeline, sources_text
 from er.io import markdown
 from er.kind import kind_review_sheet
-from er.run import Run, fill_rates, qa, report_text
+from er.run import Busy, Run, fill_rates, qa, report_text
 from er.settings import load_settings
 
 
@@ -71,6 +72,10 @@ def main() -> None:
         parser.error("give either --input (a run or an increment) or --decisions (applied to the run in --output)")
     if not args.output and not args.check:
         parser.error("give --output, the run folder")
+    if args.kind_labels and (args.increment or args.decisions):
+        parser.error("--kind-labels goes with a full run (--overwrite): an increment or a set of decisions doesn't route the stored records again")
+    if args.model and (args.increment or args.decisions):
+        parser.error("--model goes with a full run: an increment scores with the model of the run in --output, and decisions score nothing")
 
     s = load_settings()
     s = replace(s, compute={**s.compute, **dict(kv.split("=", 1) for kv in args.compute)})
@@ -142,4 +147,4 @@ if __name__ == "__main__":
         print(f"error: {e}", file=sys.stderr)
         if getattr(e, "fix", ""):
             print(f"fix: {e.fix}", file=sys.stderr)
-        sys.exit(2)
+        sys.exit(75 if isinstance(e, Busy) else 2)  # busy: no mistake, try again later (EX_TEMPFAIL)

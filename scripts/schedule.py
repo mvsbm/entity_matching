@@ -10,10 +10,12 @@ own, so a crash or a memory spike can't take the scheduler down.
 What happens to a file, by how its process ends:
     exit 0      done: moved to inbox/done/; a batch already in the run is done too ("nothing new")
     exit 2      a mistake people must fix: moved to inbox/failed/, with its two-line error beside it; the pass goes on
+    exit 75     the run folder is busy (another job writes to it, scripts/resolve.py by hand): tried again, as below
     otherwise   tried again (--retries, waiting 2, 4, 8 … s); if it still fails, the pass stops and the file stays,
                 so nothing jumps ahead of it, and the next pass tries again
-A file whose content was done before (its SHA-256 in the ledger) is moved to done/ without running. Every attempt is
-a line in <run>/jobs.jsonl. One scheduler serves an inbox at a time; a run folder takes one writer at a time.
+A file whose content was done before (its SHA-256 in the ledger) is moved to done/ without running. Each file a pass
+runs is a line in <run>/jobs.jsonl, with its outcome and attempts. One scheduler serves an inbox at a time
+(inbox/.schedule.lock); a run folder takes one writer at a time.
 """
 import argparse
 import fcntl

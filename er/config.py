@@ -536,13 +536,13 @@ def restrict(p: Pipeline, present: set[str]) -> tuple[Pipeline, list[str]]:
         if keep:
             stages.append(replace(s, rules=tuple(keep), comparators={c: x for c, x in s.comparators.items() if c in present}))
     if not stages:
-        raise ValueError("no rule can run: every rule reads an absent field")
+        raise InputError("no rule can run: every rule reads a field this file lacks", fix="map the fields it reads in config/settings.toml [columns], or give the file those columns")
     blockers = []
     for b in p.fs.blockers:
         cols = [k.column for k in keys_of(b)]
         (blockers.append(b) if has(cols) else gone.append(f"generator {b.name} (needs {sorted(set(cols) - present)})"))
     if not blockers:
-        raise ValueError("no candidate generator can run: every one reads an absent field")
+        raise InputError("no candidate generator can run: every one reads a field this file lacks", fix="map the fields it reads in config/settings.toml [columns], or give the file those columns")
     comparisons = []
     for c in p.fs.model.comparisons:
         levels = []
@@ -563,9 +563,9 @@ def restrict(p: Pipeline, present: set[str]) -> tuple[Pipeline, list[str]]:
     prior = tuple(r for r in m.prior_rules if has(k.column for k in r))
     em = tuple(r for r in m.em_rules if has(k.column for k in r))
     if not prior:
-        raise ValueError("no prior rule can run (λ needs one): every one reads an absent field")
+        raise InputError("no prior rule can run (λ needs one): every one reads a field this file lacks", fix="map the fields it reads in config/settings.toml [columns], or give the file those columns")
     if m.m_method == "em" and not em:
-        raise ValueError("no EM blocking rule can run: every one reads an absent field")
+        raise InputError("no EM blocking rule can run: every one reads a field this file lacks", fix="map the fields it reads in config/settings.toml [columns], or give the file those columns")
     gone += [f"prior rule {[k.column for k in r]}" for r in m.prior_rules if r not in prior]
     gone += [f"EM rule {[k.column for k in r]}" for r in m.em_rules if r not in em]
     model = replace(m, comparisons=tuple(comparisons), prior_rules=prior, em_rules=em)

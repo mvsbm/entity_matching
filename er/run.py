@@ -27,11 +27,12 @@ re-scores everything.
 decide() applies people's decisions on the review sheet (qa) without scoring anything: a `match` pair merges two
 clusters. Decisions are kept in decisions/, which a full run on the same folder applies again.
 
-Writes are staged: every file is written under a temporary name; once all are complete, the list of renames still owed
-is saved (pending.json), then they are done. A write interrupted before that list exists left the run as it was: run the
-batch again. One interrupted after it is finished by the next increment (finish_writes). A full run refuses a folder that
-already holds a run unless told to overwrite it. A run folder takes one writer at a time (run_lock): a full run, an
-increment or a set of decisions holds it for as long as it writes.
+Writes are staged: every file is written under a temporary name; once all are complete, the list of moves still owed is
+saved (pending.json), then they are done. A write interrupted before that list exists left the run as it was: run it
+again. One interrupted after it is finished by the next run, increment or set of decisions (finish_writes). A full run
+refuses a folder that already holds a run unless told to overwrite it, and then replaces the old run only once the new
+one is complete. A run folder takes one writer at a time (run_lock): a full run, an increment or a set of decisions holds
+it for as long as it writes.
 
 N records, L characters per value, P pairs in a rule's or generator's key blocks, C candidates, K comparisons,
 S sampled pairs for u, E accepted pairs, d cluster diameter (Splink's connected components take up to d rounds, over
@@ -66,7 +67,7 @@ from er.config import FSSpec, InputError, Key, KeyBlocker, Pipeline, sources_tex
 from er.kind import COMPANY, PERSON, SAYS, UNSURE, classifier as kind_classifier, merge_answers
 from er.match import (ELSE, assemble_u, counted, exact_u, levels, parameters, refreshed_u, rule_edges, scaled_prior, score_fs,
                       scored_sample, train_fs, u_basis)
-from er.pipeline import named, pattern_coverage
+from er.pipeline import pattern_coverage
 from er.settings import Settings, fit_to_file, present_fields
 from er.source import lit, open_source, suggest
 from er.standardize import prepare
@@ -81,6 +82,11 @@ BYTES_PER_PAIR = 350  # shortcut: measured at 1M (candidate and score tables hel
 PENDING = "pending.json"  # the renames a write still owes, saved once every new file is complete
 RUN_FILES = ("gold.parquet", "steps.json", PENDING, "matches", "rule_kept", "state", "set_aside")  # what a run writes in its folder
 DECISIONS = "decisions"  # people's decisions: not a run file, so a full run with overwrite keeps and applies them
+FULL_TMP = ".full.tmp"  # a full run's new files, until they replace the old run's
+
+
+class Busy(InputError):
+    """Another job is writing to the run folder: no mistake, so scripts/resolve.py exits 75, to be tried again."""
 
 
 @contextmanager
@@ -93,7 +99,7 @@ def run_lock(out: Path):
         try:
             fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
-            raise InputError(f"another job is writing to {out}", fix="wait for it to finish: a run folder takes one writer at a time") from None
+            raise Busy(f"another job is writing to {out}", fix="wait for it to finish: a run folder takes one writer at a time") from None
         yield
 
 
@@ -112,12 +118,20 @@ def size_bytes(text: str) -> int:  # one of DuckDB's sizes: "8.0 GiB", "512.0 Mi
 
 
 def finish_writes(out: Path) -> None:
-    """Complete the renames of a write that was interrupted after its new files were complete; nothing otherwise."""
+    """Complete the moves of a write that was interrupted after its new files were complete; nothing otherwise. Each
+    move [new, dest] replaces dest, a file or a folder, if new is still there; [None, dest] deletes dest. So done
+    twice, they do the same as done once."""
     pending = out / PENDING
     if pending.exists():
-        for tmp, dest in json.loads(pending.read_text(encoding="utf-8")):
-            if os.path.exists(tmp):
-                os.replace(tmp, dest)
+        for new, dest in json.loads(pending.read_text(encoding="utf-8")):
+            if new is None or os.path.exists(new):
+                if os.path.isdir(dest):
+                    shutil.rmtree(dest)
+                elif os.path.exists(dest) and new is None:
+                    os.unlink(dest)
+                if new is not None:
+                    os.replace(new, dest)
+        shutil.rmtree(out / FULL_TMP, ignore_errors=True)
         pending.unlink()
 
 
@@ -194,8 +208,8 @@ class Run:
             return
         fs, rules, spec = self.pipeline.fs, self.pipeline.rules, self.pipeline.kind
         if spec and spec.name_field in present:
-            if self.labels is None and self.kind_labels and Path(self.kind_labels).exists():  # full() and increment() merge them first
-                self.labels = merge_answers(None, pd.read_parquet(self.kind_labels), self.uid)
+            if self.labels is None:  # full() and increment() merge them with the run's first
+                self.labels = merge_answers(None, self._given(), self.uid)
             self.classifier = kind_classifier(self.settings, spec, self.labels)
         normalized, used = [*rules.normalized(), *fs.normalized()], rules.used() | fs.used()
         reader = self.con.cursor().sql(f"SELECT * FROM {rows}").to_arrow_reader(self.chunk_rows)  # its own cursor: inserts go on alongside
@@ -440,16 +454,14 @@ class Run:
     def _expected_false(self) -> float:  # the false links the model expects among those it accepted: Σ (1 − match probability), O(E)
         return round(self.con.execute("SELECT coalesce(sum(1 - match_probability), 0) FROM matches").fetchall()[0][0], 2)
 
-    def write(self, out: Path, part: int = 0) -> None:
+    def write(self, out: Path, part: int = 0, replace: list[Path] | None = None) -> None:
         """Gold (each record's cluster, the stage and rule that resolved it, its kind and its customer's), the accepted
         pairs with their weights, the rules' pairs, as Parquet; and the state an increment needs: the standardized
-        records, the rules' clusters and people's person/company answers. Records, rules' pairs and matches are folders that increments append to. Staged: see the module."""
+        records, the rules' clusters and people's person/company answers. Records, rules' pairs and matches are folders
+        that increments append to. `replace` (a full run): the old run's files, which the new ones replace. Staged: see
+        the module."""
         t, state, name = time.perf_counter(), out / "state", f"part-{part:05d}.parquet"
-        for folder in (state / "records", out / "rule_kept", out / "matches"):
-            folder.mkdir(parents=True, exist_ok=True)
         aside = [("SELECT * FROM set_aside", out / "set_aside" / name)] if self._count("set_aside") else []
-        if aside:
-            (out / "set_aside").mkdir(exist_ok=True)
         texts = [(json.dumps(self.model, ensure_ascii=False), state / "model.json")] if part == 0 else []
         if self.basis:  # the u this run scored with, and what an increment needs to tell when they go stale
             texts.append((json.dumps(dict(model=self.scoring, basis=self.basis), ensure_ascii=False), state / "scoring.json"))
@@ -460,22 +472,30 @@ class Run:
         self._stage(out, [("SELECT * FROM rule_kept", out / "rule_kept" / name), ("SELECT * FROM matches", out / "matches" / name),
                           (f"SELECT * FROM gold ORDER BY {q(self.uid)}", out / "gold.parquet"),
                           ("SELECT * FROM rule_clusters", state / "rule_clusters.parquet"),
-                          (f"SELECT * FROM {'records' if part == 0 else 'new_records'}", state / "records" / name), *aside, *labels], texts)
+                          (f"SELECT * FROM {'records' if part == 0 else 'new_records'}", state / "records" / name), *aside, *labels], texts, replace)
         self._done("write", "O(N + C)", f"O({self.n:,} + {self._count('matches'):,})", t)
         self._log(out, part > 0, part=part, disabled=self.disabled)
 
-    def _stage(self, out: Path, tables: list[tuple[str, Path]], texts: list[tuple[str, Path]] = ()) -> None:
-        """Write every file under a temporary name; once all are complete, save the renames still owed (pending.json),
-        then do them. An interruption before that leaves the folder as it was; one after it, finish_writes completes."""
-        staged = []
+    def _stage(self, out: Path, tables: list[tuple[str, Path]], texts: list[tuple[str, Path]] = (), replace: list[Path] | None = None) -> None:
+        """Write every file under a temporary name; once all are complete, save the moves still owed (pending.json),
+        then do them. An interruption before that leaves the folder as it was; one after it, finish_writes completes.
+        With `replace` (a full run), the new files are written in FULL_TMP, and each of its entries replaces the old
+        run's; the old entries the new run doesn't write go."""
+        if replace is not None:
+            shutil.rmtree(out / FULL_TMP, ignore_errors=True)  # the files of a full run cut short before its moves
+        tmp = (lambda d: out / FULL_TMP / d.relative_to(out)) if replace is not None else (lambda d: d.with_name(d.name + ".tmp"))
         for sql, dest in tables:
-            tmp = dest.with_name(dest.name + ".tmp")
-            self.con.execute(f"COPY ({sql}) TO {lit(tmp)} (FORMAT parquet)")
-            staged.append([str(tmp), str(dest)])
+            tmp(dest).parent.mkdir(parents=True, exist_ok=True)
+            self.con.execute(f"COPY ({sql}) TO {lit(tmp(dest))} (FORMAT parquet)")
         for text, dest in texts:
-            tmp = dest.with_name(dest.name + ".tmp")
-            tmp.write_text(text, encoding="utf-8")
-            staged.append([str(tmp), str(dest)])
+            tmp(dest).parent.mkdir(parents=True, exist_ok=True)
+            tmp(dest).write_text(text, encoding="utf-8")
+        dests = [dest for _, dest in (*tables, *texts)]
+        if replace is None:
+            staged = [[str(tmp(d)), str(d)] for d in dests]
+        else:
+            new = sorted({d.relative_to(out).parts[0] for d in dests})
+            staged = [[None, str(x)] for x in replace if x.name not in new] + [[str(out / FULL_TMP / x), str(out / x)] for x in new]
         (out / (PENDING + ".tmp")).write_text(json.dumps(staged), encoding="utf-8")
         os.replace(out / (PENDING + ".tmp"), out / PENDING)  # from here on the write is done, whatever happens next
         finish_writes(out)
@@ -512,6 +532,8 @@ class Run:
         """Add a batch of new records to the run written in `out`. See the module docstring for the cost."""
         state, u, l, r = out / "state", q(self.uid), q(self.l), q(self.r)
         finish_writes(out)
+        if not (state / "model.json").exists():
+            raise InputError(f"no run in {out} to add records to", fix="resolve the records into that folder first, without --increment")
         self.model = json.loads((state / "model.json").read_text(encoding="utf-8"))
         part = len(list((state / "records").glob("part-*.parquet")))
         parts = ", ".join(lit(x) for x in sorted((state / "records").glob("part-*.parquet")))  # not a glob: this run's own part comes later
@@ -570,8 +592,21 @@ class Run:
 
     def _answers(self, out: Path) -> pd.DataFrame | None:
         """People's person/company answers: those the run in `out` keeps, then any newer ones (kind_labels) on top."""
-        read = lambda f: pd.read_parquet(f) if f is not None and Path(f).exists() else None
-        return merge_answers(read(out / "state" / "kind_labels.parquet"), read(self.kind_labels), self.uid)
+        kept = out / "state" / "kind_labels.parquet"
+        return merge_answers(pd.read_parquet(kept) if kept.exists() else None, self._given(), self.uid)
+
+    def _given(self) -> pd.DataFrame | None:
+        """The answered sheet given (kind_labels), checked: the trust boundary."""
+        if self.kind_labels is None:
+            return None
+        path = Path(self.kind_labels)
+        if not path.is_file():
+            raise InputError(f"{path}: no such file of person/company answers", fix="give --kind-labels the answered kind_review.parquet")
+        given = pd.read_parquet(path)
+        if {self.uid, "kind"} - set(given.columns):
+            raise InputError(f"{path}: needs the columns {self.uid} and kind; it has {sorted(given.columns)}",
+                             fix="give back kind_review.parquet with kind filled in: 1 person, 2 company, 0 can't tell")
+        return given
 
     # ---------- people's decisions ----------
 
@@ -638,6 +673,7 @@ class Run:
 
     @locked
     def full(self, path: str | Path, out: Path, overwrite: bool = False) -> "Run":
+        finish_writes(out)
         held = [out / f for f in RUN_FILES if (out / f).exists()]
         if held and not overwrite:
             raise FileExistsError(f"{out} already holds a run: choose another folder, or overwrite it (scripts/resolve.py --overwrite)")
@@ -650,9 +686,7 @@ class Run:
         self.score()
         self._load_decisions(out)
         self.cluster()
-        for f in held:  # removed only now: a run that fails before this keeps the old one
-            shutil.rmtree(f) if f.is_dir() else f.unlink()
-        self.write(out)
+        self.write(out, replace=held)  # the old run goes only once the new one is complete
         return self
 
 
@@ -708,12 +742,11 @@ def qa(run: "Run", fields: list[str], review: int = 50, previous: Path | None = 
     before an increment: its open rows stay (carry_over), since the scores behind them aren't kept."""
     con, u, t = run.con, q(run.uid), run.pipeline.fs.min_match_weight
     fill = fill_rates(run, fields)
-    bands = con.sql(f"""SELECT floor(match_weight / 2) * 2 AS weight_from, count(*) AS pairs,
-                               count(*) FILTER (WHERE match_weight >= {t} AND {named_sql(run.pipeline.fs)}) AS accepted
-                        FROM scores s GROUP BY 1 ORDER BY 1""").df()
+    l, r, lo = q(run.l), q(run.r), review_floor(run.pipeline)
+    bands = con.sql(f"""SELECT floor(s.match_weight / 2) * 2 AS weight_from, count(*) AS pairs, count(m.{l}) AS accepted
+                        FROM scores s LEFT JOIN matches m USING ({l}, {r}) GROUP BY 1 ORDER BY 1""").df()
     sizes = con.sql("SELECT n AS cluster_size, count(*) AS clusters FROM (SELECT count(*) AS n FROM gold GROUP BY cluster_id) GROUP BY 1 ORDER BY 1").df()
     largest = con.sql("SELECT cluster_id, count(*) AS records FROM gold GROUP BY 1 ORDER BY 2 DESC, 1 LIMIT 10").df()
-    l, r, lo = q(run.l), q(run.r), review_floor(run.pipeline)
     con.execute(f"CREATE TABLE IF NOT EXISTS er_decisions ({l} VARCHAR, {r} VARCHAR, decision VARCHAR)")
     decide = con.sql(f"""SELECT * EXCLUDE (k1, k2) FROM (
             SELECT s.*, c.sources, least(ga.cluster_id, gb.cluster_id) AS k1, greatest(ga.cluster_id, gb.cluster_id) AS k2
@@ -722,8 +755,8 @@ def qa(run: "Run", fields: list[str], review: int = 50, previous: Path | None = 
               AND NOT EXISTS (SELECT 1 FROM er_decisions d WHERE d.{l} = s.{l} AND d.{r} = s.{r}))
         QUALIFY row_number() OVER (PARTITION BY k1, k2 ORDER BY match_weight DESC, {l}, {r}) = 1
         ORDER BY match_weight DESC, {l}, {r}""").df().assign(why="decide")
-    audit = con.sql(f"""SELECT * EXCLUDE (k) FROM (SELECT s.*, c.sources, row_number() OVER (PARTITION BY floor(s.match_weight) ORDER BY hash(s.{l}, s.{r})) AS k
-                        FROM scores s JOIN cands c USING ({l}, {r}) WHERE s.match_weight >= {t} AND s.match_weight < {t + 4} AND {named_sql(run.pipeline.fs)})
+    audit = con.sql(f"""SELECT * EXCLUDE (k) FROM (SELECT s.*, m.sources, row_number() OVER (PARTITION BY floor(s.match_weight) ORDER BY hash(s.{l}, s.{r})) AS k
+                        FROM matches m JOIN scores s USING ({l}, {r}) WHERE s.match_weight < {t + 4})
                         WHERE k <= {max(1, review // 4)} ORDER BY match_weight, {l}, {r}""").df().assign(why="audit")
     steps = pd.DataFrame(run.steps)
     base = ["step", "big_o", "filled", "seconds", "peak_memory_gb"]
@@ -761,9 +794,11 @@ def qa(run: "Run", fields: list[str], review: int = 50, previous: Path | None = 
             how = "no answers yet: 2 company only where a legal form is written; answer kind_review.parquet, then run again with --kind-labels"
         if c is not None and c.decided:
             how += f"; people decided {len(c.decided):,} records"
-        held = con.execute("SELECT count(*) FILTER (WHERE kind_held) FROM gold").fetchall()[0][0]
+        held, unknown = con.execute("SELECT count(*) FILTER (WHERE kind_held AND kind_by <> 'people'), count(*) FILTER (WHERE kind_held AND kind_by = 'people') FROM gold").fetchall()[0]
         if held:
             kind_rows.append(("held back", f"{held:,} records from matching: the engine and the flag disagree; decide them in kind_review.parquet"))
+        if unknown:
+            kind_rows.append(("held back", f"{unknown:,} records people can't tell: their names stay out of matching, and their pairs come to review.parquet"))
         if c is not None and c.flag_error is not None:
             how += f"; the flag wrong on {c.flag_error:.1%} of {c.flag_checked:,} answers drawn at random"
         kind_rows += [("kinds from", how)] if c is not None else []
@@ -898,16 +933,18 @@ def carry_over(run: "Run", previous: pd.DataFrame, sheet: pd.DataFrame, out: Pat
 
 def review_sheet(run: "Run", pairs: pd.DataFrame) -> pd.DataFrame:
     """Scored pairs as people judge them, in the order given: both records' compared fields side by side, and per
-    comparison the level the pair landed in and the bits it earned, which with the prior sum to its weight; an empty
-    `decision` for people to fill in (match or no_match) and give to Run.decide. O(pairs)."""
+    comparison the level the pair landed in and the bits it earned, which with the prior sum to its weight; whether the
+    run accepted it (in matches); an empty `decision` for people to fill in (match or no_match) and give to Run.decide. O(pairs)."""
     comps, uid = run.pipeline.fs.model.comparisons, run.uid
     fields = [f for f in dict.fromkeys(col for c in comps for col in (*c.null_if_missing, *(x for lv in c.levels for x, _ in lv.any_of)))
               if f in run._columns()]
     run.con.register("er_review_ids", pd.DataFrame({uid: pd.concat([pairs[run.l], pairs[run.r]]).unique()}))
     records = run.con.sql(f"SELECT {', '.join(q(c) for c in [uid, *fields])} FROM records JOIN er_review_ids USING ({q(uid)})").df()
     run.con.unregister("er_review_ids")
-    out = pairs.merge(records.add_suffix("_l"), on=run.l).merge(records.add_suffix("_r"), on=run.r)
-    out["accepted"] = (out["match_weight"] >= run.pipeline.fs.min_match_weight) & named(run.pipeline.fs, out)
+    run.con.register("er_review_pairs", pairs[[run.l, run.r]])
+    accepted = run.con.sql(f"SELECT p.*, m.{q(run.l)} IS NOT NULL AS accepted FROM er_review_pairs p LEFT JOIN matches m USING ({q(run.l)}, {q(run.r)})").df()
+    run.con.unregister("er_review_pairs")
+    out = pairs.merge(accepted, on=[run.l, run.r]).merge(records.add_suffix("_l"), on=run.l).merge(records.add_suffix("_r"), on=run.r)
     out["decision"] = pd.Series(pd.NA, index=out.index, dtype="string")
     by_gamma = levels(run.scoring)
     for c in comps:

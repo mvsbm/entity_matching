@@ -468,6 +468,8 @@ def test_a_mandatory_field_or_an_empty_one_of_group_stops_the_run():
         fit_to_file(p, s, cols - names)
     with pytest.raises(ValueError, match="entity"):
         fit_to_file(p, s, cols, labelled=True)  # a labelled run needs the truth
+    with pytest.raises(InputError, match="can run: every .* reads a field this file lacks"):
+        fit_to_file(p, s, {"CONT_ID", "NYS_CNV_P_NAME_KANA"})  # a mistake to fix, not a traceback
     fit_to_file(p, s, cols | {"ENTITY_ID"}, labelled=True)
 
 
@@ -617,6 +619,57 @@ def test_an_interrupted_increment_completes_when_run_again(tmp_path, population,
     assert not list((tmp_path / "cut").rglob("*.tmp"))
 
 
+def test_an_overwrite_cut_short_keeps_the_old_run_and_people_s_answers(tmp_path, population, monkeypatch):
+    import os
+    import er.run
+    from er.run import Run, finish_writes
+    s, p, g = population
+    uid = s.data.unique_id
+    g.df.to_parquet(tmp_path / "all.parquet", index=False)
+    pd.DataFrame({uid: g.df[uid].astype("string")[:5], "kind": [1] * 5}).to_parquet(tmp_path / "answers.parquet")
+    Run(p, s, kind_labels=tmp_path / "answers.parquet").full(tmp_path / "all.parquet", tmp_path / "run")
+    before = pd.read_parquet(tmp_path / "run" / "gold.parquet")
+    lit = er.run.lit
+    def full_disk(path):  # the new gold can't be written
+        if "gold" in str(path):
+            raise OSError("No space left on device")
+        return lit(path)
+    monkeypatch.setattr(er.run, "lit", full_disk)
+    with pytest.raises(OSError):
+        Run(p, s).full(tmp_path / "all.parquet", tmp_path / "run", overwrite=True)
+    monkeypatch.undo()
+    pd.testing.assert_frame_equal(pd.read_parquet(tmp_path / "run" / "gold.parquet"), before)  # the old run stands
+    assert len(pd.read_parquet(tmp_path / "run" / "state" / "kind_labels.parquet")) == 5  # and people's answers with it
+
+    moves, replace_ = [], os.replace
+    def cut_short(a, b):  # dies after the first of the moves that replace the old run
+        moves.append(b)
+        if len(moves) == 3:
+            raise KeyboardInterrupt
+        replace_(a, b)
+    monkeypatch.setattr(os, "replace", cut_short)
+    with pytest.raises(KeyboardInterrupt):
+        Run(p, s).full(tmp_path / "all.parquet", tmp_path / "run", overwrite=True)
+    monkeypatch.undo()
+    finish_writes(tmp_path / "run")  # what the next run, increment or decisions do first
+    pd.testing.assert_frame_equal(pd.read_parquet(tmp_path / "run" / "gold.parquet"), before)
+    assert len(pd.read_parquet(tmp_path / "run" / "state" / "kind_labels.parquet")) == 5
+    assert len(pd.read_parquet(tmp_path / "run" / "state" / "records")) == len(g.df) and not (tmp_path / "run" / ".full.tmp").exists()
+
+
+def test_answers_given_wrong_stop_the_run(tmp_path, population):
+    from er.run import Run
+    s, p, g = population
+    g.df.to_parquet(tmp_path / "all.parquet", index=False)
+    with pytest.raises(InputError, match="no such file"):
+        Run(p, s, kind_labels=tmp_path / "answres.parquet").full(tmp_path / "all.parquet", tmp_path / "run")
+    pd.DataFrame({"kind": [1]}).to_parquet(tmp_path / "no_ids.parquet")
+    with pytest.raises(InputError, match="needs the columns"):
+        Run(p, s, kind_labels=tmp_path / "no_ids.parquet").full(tmp_path / "all.parquet", tmp_path / "run")
+    with pytest.raises(InputError, match="no run in"):
+        Run(p, s).increment(tmp_path / "all.parquet", tmp_path / "empty")
+
+
 def test_the_labelled_engine_and_the_run_give_the_same_gold(tmp_path, population, con_db):
     """scripts/choose.py measures with er.pipeline; scripts/resolve.py runs er.run: the same records and model must
     give the same clusters and the same answer to what resolved each record."""
@@ -725,11 +778,15 @@ def test_decisions_join_clusters_without_scoring_and_a_full_run_applies_them_aga
     assert joined.any() and after.loc[joined, "resolved_by"].eq("review").all()
     assert len(pd.read_parquet(tmp_path / "a" / "decisions")) == 2
 
-    Run(p, s, model=run.model).full(tmp_path / "all.parquet", tmp_path / "a", overwrite=True)  # people's work survives
+    rerun = Run(p, s, model=run.model).full(tmp_path / "all.parquet", tmp_path / "a", overwrite=True)  # people's work survives
     again = pd.read_parquet(tmp_path / "a" / "gold.parquet").set_index(uid)
     assert again.loc[pair[0], "cluster_id"] == again.loc[pair[1], "cluster_id"]
     matches = pd.read_parquet(tmp_path / "a" / "matches")
     assert not ((matches[l] == rejected[0]) & (matches[r] == rejected[1])).any()
+    sheet = qa(rerun, [f for f in s.columns if f not in ("id", "entity")])["review_sheet"]  # what people see: what the run did
+    accepted = sheet.set_index([l, r]).index.isin(matches.set_index([l, r]).index)
+    assert (sheet["accepted"] == accepted).all() and sheet.loc[sheet["why"] == "audit", "accepted"].all()
+    assert not ((sheet[l] == rejected[0]) & (sheet[r] == rejected[1])).any()  # a pair people rejected is no audit row
 
     sheet.loc[yes, "decision"] = "maybe"
     sheet.to_parquet(tmp_path / "bad.parquet")
@@ -825,6 +882,12 @@ def test_resolve_prints_a_mistake_as_two_lines_and_exits_with_2(tmp_path):
                           capture_output=True, text=True)
     assert done.returncode == 2 and done.stderr.splitlines()[0].startswith("error: no file matches")
     assert done.stderr.splitlines()[1].startswith("fix: ") and "Traceback" not in done.stderr
+    for flags, says in ((["--input", "x", "--increment", "--kind-labels", "y"], "--kind-labels goes with a full run"),
+                        (["--decisions", "x", "--kind-labels", "y"], "--kind-labels goes with a full run"),
+                        (["--input", "x", "--increment", "--model", "y"], "--model goes with a full run")):
+        done = subprocess.run([sys.executable, str(s.root / "scripts" / "resolve.py"), "--output", str(tmp_path / "run"), *flags],
+                              capture_output=True, text=True)
+        assert done.returncode == 2 and says in done.stderr
 
 
 def test_a_nearly_empty_field_is_kept_and_the_fit_skips_what_it_cannot_learn_from(tmp_path, population):
@@ -920,6 +983,14 @@ def test_the_scheduler_serves_the_inbox_in_order_and_parks_what_people_must_fix(
     assert (run / "decisions").exists()
     before = len(schedule.ledger(run))
     assert serve().returncode == 0 and len(schedule.ledger(run)) == before  # nothing waiting: nothing done
+
+    from er.run import run_lock
+    g.df[~new].head(10).to_parquet(inbox / "batches" / "e_busy.parquet", index=False)  # records the run holds: nothing new
+    with run_lock(run):  # someone runs scripts/resolve.py on the folder by hand
+        busy = subprocess.run([sys.executable, str(script), "--run", str(run), "--inbox", str(inbox), "--retries", "0"], capture_output=True, text=True)
+    assert busy.returncode != 0 and (schedule.ledger(run)[-1]["outcome"], schedule.ledger(run)[-1]["exit"]) == ("stopped", 75)
+    assert (inbox / "batches" / "e_busy.parquet").exists()  # it waits in the inbox, not parked in failed/
+    assert serve().returncode == 0 and schedule.ledger(run)[-1]["outcome"] == "done"
 
 
 def test_an_oversized_block_is_checked_on_a_sample_and_a_placeholder_is_skipped(tmp_path, population):
@@ -1019,6 +1090,10 @@ def test_test_is_counted_once_per_population(tmp_path):
     assert test_evaluations(data)["configs_on_test"].max() == 1
     append_leaderboard(data, "fs:FINAL", ("config", 3), "test", {})  # the same population, a second configuration
     assert test_evaluations(data)["configs_on_test"].max() == 2
+    (data.labels_dir / "test.parquet").unlink()  # choose.py --no-test: train and val only, test never read
+    dev = replace(data, datasets=("train", "val"))
+    append_leaderboard(dev, "fs:x", ("config", 4), "val", {})
+    assert test_evaluations(dev).empty
 
 
 
@@ -1196,6 +1271,22 @@ def test_answers_add_up_over_sheets_and_a_blank_row_erases_nothing(tmp_path, kin
     assert set(kept[uid]) == set(sheet[uid]) and len(run2.classifier.decided) == len(sheet)  # both sheets' answers stand
     gold = pd.read_parquet(tmp_path / "run" / "gold.parquet").set_index(uid).loc[sheet[uid]]
     assert (gold["kind_by"] == "people").all() and (gold["kind"].to_numpy() == truth).all()
+
+
+def test_a_record_people_can_t_tell_stays_out_of_name_matching_and_off_the_next_sheet(tmp_path, kind_population):
+    from er.run import Run
+    s, p, g = kind_population
+    uid = s.data.unique_id
+    g.df.to_parquet(tmp_path / "all.parquet", index=False)
+    sheet = kind_sheet_for(Run(p, s).full(tmp_path / "all.parquet", tmp_path / "free"), s, p, 600)
+    first = sheet[uid].iloc[0]
+    sheet.assign(kind=pd.array([0] + [pd.NA] * (len(sheet) - 1), dtype="Int8")).to_parquet(tmp_path / "answers.parquet")
+    run = Run(p, s, kind_labels=tmp_path / "answers.parquet").full(tmp_path / "all.parquet", tmp_path / "run")
+    gold = pd.read_parquet(tmp_path / "run" / "gold.parquet").set_index(uid)
+    assert gold.loc[first, ["kind", "kind_by"]].tolist() == [0, "people"] and gold.loc[first, "kind_held"]
+    names = run.con.execute(f'SELECT person_name, company_name FROM records WHERE "{uid}" = ?', [first]).fetchall()[0]
+    assert names == (None, None)  # its name goes to neither side: its pairs go to people
+    assert first not in set(kind_sheet_for(run, s, p, 600)[uid])
 
 
 def test_an_increment_classifies_its_batch_on_the_run_s_answers(tmp_path, kind_population):

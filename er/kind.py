@@ -89,17 +89,18 @@ class NameModel:
 
 def name_model(settings, spec: KindSpec) -> NameModel:
     """The name model for these settings: trained on the reference data's training half (er.generate.name_model_split:
-    half the personas, two prefectures' companies), cached in the models folder under a key of everything it depends on."""
+    half the personas, two prefectures' companies), written as config/generator.toml's kana_confusions and branches
+    write them; cached in the models folder under a key of everything it depends on."""
     from er.generate import kind_training_names, load_reference, load_registry, load_spec, name_model_split  # the generator's data
-    ref = settings.paths["reference"]
-    std = settings.standardize
-    h = hashlib.sha256(f"{VERSION}|{spec.ngram}|{std.legal_forms}|{std.legal_front}|{std.legal_end}|{sorted(std.kana_fold.items())}".encode())
+    ref, std = settings.paths["reference"], settings.standardize
+    spec_g = load_spec(settings.root / "config" / "generator.toml")[0]  # how bank records misspell and suffix names
+    h = hashlib.sha256(f"{VERSION}|{spec.ngram}|{std.legal_forms}|{std.legal_front}|{std.legal_end}|{sorted(std.kana_fold.items())}|"
+                       f"{spec_g.kana_confusions}|{spec_g.branches}".encode())
     for f in ("individual.json", "registry.json"):
         h.update((ref / f).read_bytes())
     key, path = h.hexdigest(), settings.paths["models"] / "kind_names.npz"
     if (m := NameModel.load(path, key)) is not None:
         return m
-    spec_g = load_spec(settings.root / "config" / "generator.toml")[0]
     persons, _, companies, _ = name_model_split(load_reference(ref)[0], load_registry(ref))
     names = kind_training_names(persons, companies, std.legal_front, std.legal_end, spec_g.kana_confusions, spec_g.branches)
     m = NameModel.fit(text(names["name"], std), names["y"].to_numpy(), spec.ngram)
@@ -144,9 +145,10 @@ class Classifier:
                  ids: pd.Series | None = None) -> pd.DataFrame:
         """Per record: kind (2 company, 1 person, 0 not sure), kind_p (the probability of a company), kind_by (engine or
         people), name_p (what the name and its legal form alone say, the flag aside: the review sheet's other view) and
-        kind_held: the engine leans one way, the file's flag says the other, and no person has decided. A held record's
-        name goes to neither side (er.standardize.prepare): a company sent to the person side could merge into its
-        representative's own records, and nothing tells which of the two is right until a person looks."""
+        kind_held: the engine leans one way, the file's flag says the other, and no person has decided; or a person
+        looked and can't tell (0). A held record's name goes to neither side (er.standardize.prepare): a company sent to
+        the person side could merge into its representative's own records, and nothing tells which of the two is
+        right. Its pairs then have no name compared, so they go to people."""
         X = self.features(name, flag, birth)
         name_p = np.where(X[:, 3] == 1, 1.0, 1 / (1 + np.exp(-X[:, 0])))
         if self.spec.trust_flag:
@@ -160,13 +162,15 @@ class Classifier:
             kind = np.where(X[:, 3] == 1, COMPANY, UNSURE)
         nameless = name.isna().to_numpy()  # nothing a person could judge, nor a line was placed on: not sure, no lean
         kind, p = np.where(nameless, UNSURE, kind), np.where(nameless, np.nan, p)
-        by = np.full(len(name), "engine", dtype=object)
-        if self.decided and ids is not None:  # people's answers stand
+        by, unknown = np.full(len(name), "engine", dtype=object), np.zeros(len(name), dtype=bool)
+        if self.decided and ids is not None:  # people's answers stand; 0, they can't tell, keeps the engine's lean
             said = ids.map(self.decided).to_numpy(dtype=float)
-            hit = ~np.isnan(said)
-            kind, p, by = np.where(hit, said, kind), np.where(hit, said == COMPANY, p).astype(float), np.where(hit, "people", by)
+            hit, unknown = ~np.isnan(said), said == UNSURE
+            kind, by = np.where(hit, said, kind), np.where(hit, "people", by)
+            p = np.where(hit & ~unknown, said == COMPANY, p).astype(float)
         flag_code = X[:, 1] + 1
-        held = (by != "people") & ~nameless & ~np.isnan(flag_code) & (np.where(p >= 0.5, COMPANY, PERSON) != flag_code)
+        disagree = (by != "people") & ~np.isnan(flag_code) & (np.where(p >= 0.5, COMPANY, PERSON) != flag_code)
+        held = ~nameless & (disagree | unknown)
         if self.spec.trust_flag:
             held[:] = False
         return pd.DataFrame({"kind": kind.astype(np.int8), "kind_p": p, "kind_by": by, "name_p": name_p, "kind_held": held,
@@ -198,8 +202,8 @@ def lines(p: np.ndarray, company: np.ndarray, spec: KindSpec) -> tuple[float, fl
 
 
 def classifier(settings, spec: KindSpec, labels: pd.DataFrame | None = None) -> Classifier:
-    """The kind for a run. People's answers (a filled-in kind_review.parquet: kind = 1 or 2; 0, can't tell, is kept out)
-    stand for their records, and train the combiner. Only the answers drawn to measure (why = measure) place the lines
+    """The kind for a run. People's answers (a filled-in kind_review.parquet: kind = 1, 2, or 0 can't tell) stand for
+    their records; 1 and 2 train the combiner. Only the answers drawn to measure (why = measure) place the lines
     and measure the flag: the records sent to decide were picked because they look wrong, so every error rate on them
     would look worse than it is. Without answers: the name model and written legal forms only."""
     uid = settings.data.unique_id
@@ -207,8 +211,9 @@ def classifier(settings, spec: KindSpec, labels: pd.DataFrame | None = None) -> 
     if labels is None or not len(labels):
         return c
     lab = labels.assign(kind=pd.to_numeric(labels["kind"], errors="coerce"))
-    lab = lab[lab["kind"].isin([PERSON, COMPANY])]
+    lab = lab[lab["kind"].isin([PERSON, COMPANY, UNSURE])]
     c.decided = dict(zip(lab[uid].astype("string"), lab["kind"].astype(int))) if uid in lab else None
+    lab = lab[lab["kind"] != UNSURE]  # can't tell: it stands for its record, and teaches the engine nothing
     measure = (lab["why"] == "measure").to_numpy() if "why" in lab else np.ones(len(lab), dtype=bool)
     at_random = measure & ((lab["drawn"] == "at random").to_numpy() if "drawn" in lab else True)
     col = lambda *names: next((lab[n] for n in names if n in lab), None)  # the sheet shows the flag as `flag`

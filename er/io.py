@@ -57,11 +57,11 @@ def population(data: Data) -> str:  # which generated population the labels hold
 
 def append_leaderboard(data: Data, experiment: str, config: object, dataset: str, metrics: dict) -> None:
     """Append one row; the config hash tells identical configurations apart from same-named ones, the population
-    which data they were scored on."""
+    (test rows only) which test they were scored on."""
     path = data.experiments_dir / "leaderboard.parquet"
     data.experiments_dir.mkdir(parents=True, exist_ok=True)
     row = pd.DataFrame([dict(time=time.strftime("%Y-%m-%d %H:%M:%S"), experiment=experiment, dataset=dataset,
-                             population=population(data), config_hash=config_hash(config), **metrics)])
+                             population=population(data) if dataset == "test" else None, config_hash=config_hash(config), **metrics)])
     board = pd.concat([pd.read_parquet(path), row], ignore_index=True) if path.exists() else row
     board.to_parquet(path, index=False)
 
@@ -71,7 +71,7 @@ def test_evaluations(data: Data) -> pd.DataFrame:
     than one per family means test influenced a choice and its numbers are no longer unbiased. A newly generated
     population has a test nobody has seen, so its count starts again."""
     path = data.experiments_dir / "leaderboard.parquet"
-    if not path.exists():
+    if "test" not in data.datasets or not path.exists():  # a development round (choose.py --no-test) never reads test
         return pd.DataFrame(columns=["family", "configs_on_test"])
     board = pd.read_parquet(path)
     board = board[board.get("population", pd.Series(index=board.index, dtype="string")) == population(data)]
