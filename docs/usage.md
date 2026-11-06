@@ -8,8 +8,10 @@ Install it, map your columns, run it, read what it wrote. Later, add new records
 
 ```bash
 ./setup_venv.sh                         # .venv with Python ≥ 3.12, the pinned dependencies, and the er package
-.venv/bin/python -m pytest tests/       # engine checks, whole runs, the design against the code; GitHub runs them on every push
+.venv/bin/python -m pytest tests/       # engine checks, whole runs, the design against the code
 ```
+
+GitHub runs the same tests on Python 3.12 and 3.14 for every pull request (`.github/workflows/tests.yml`). `main` changes only through a pull request whose checks pass.
 
 Every script runs as `.venv/bin/python scripts/<name>.py`.
 

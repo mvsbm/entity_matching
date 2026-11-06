@@ -1,6 +1,9 @@
-# Every push and pull request runs the tests: the engine, whole runs, and the design checked against the code.
+# Every pull request, and main, runs the tests: the engine, whole runs, and the design checked against the code.
 name: tests
-on: [push, pull_request]
+on:
+  push:
+    branches: [main]  # a branch's pushes run as its pull request's
+  pull_request:
 jobs:
   pytest:
     runs-on: ubuntu-latest
