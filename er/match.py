@@ -62,7 +62,7 @@ U = dict[str, dict[str, float]]  # comparison → level label → u probability
 
 
 def comparison(c: Comparison, u: dict[str, float] | None = None) -> cl.CustomComparison:
-    def with_u(level: cll.ComparisonLevelCreator, label: str) -> cll.ComparisonLevelCreator:
+    def with_u(level: cll.CustomLevel, label: str) -> cll.CustomLevel:
         return level.configure(u_probability=u[label]) if u and label in u else level
     null = " AND ".join(f'("{col}_l" IS NULL OR "{col}_r" IS NULL)' for col in c.null_if_missing)
     levels = [cll.CustomLevel(null, "missing").configure(is_null_level=True)]
