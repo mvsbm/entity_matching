@@ -412,6 +412,7 @@ class KindProblems:
     flag_wrong_representative: float = 0.5    # ... on a record under the representative's name
     sole_flagged_company: float = 0.3         # a sole trader's record flagged company
     representatives: float = 0.1              # of companies: some of their records under the representative's name
+    home_office: float = 0.5                  # of those: the company at its representative's own address and phone
     sole_traders: float = 0.05                # of persons: named like a shop on most of their records (legally persons)
     company_dates: float = 0.3                # of company records: a date in the birth-date column
     company_date: Literal["founding", "representative"] = "founding"  # the founding date, or the representative's birth date
@@ -421,10 +422,11 @@ class KindProblems:
 def kind_problems(g: Generated, k: KindProblems, persons: pd.DataFrame, registry: pd.DataFrame, legal_front: Sequence[str],
                   legal_end: Sequence[str], confusions: Sequence[tuple[str, str]], branches: Sequence[str]) -> Generated:
     """The records with one name column for every kind, NAME_KANA: real company names from the registry, written as banks
-    write them; companies with records under their representative's name; sole traders named like a shop; companies
-    with a date in BIRTH_DATE; and the file's own flag, PERSON_ORG_CODE (1 person, 2 company), sometimes wrong. truth gains
-    CASE: company, person, representative or sole trader. Its own random stream: the records start as generate() made
-    them. O(N)."""
+    write them; companies with records under their representative's name, the representative a person of the file
+    (with home_office, the company's records at that person's address and phone: they could merge into the person's own);
+    sole traders named like a shop; companies with a date in BIRTH_DATE; and the file's own flag, PERSON_ORG_CODE
+    (1 person, 2 company), sometimes wrong. truth gains CASE: company, person, representative or sole trader. Its own
+    random stream: the records start as generate() made them. O(N)."""
     rng = np.random.default_rng(k.seed)
     df, truth = g.df.copy(), g.truth.copy()
     assert (df["CONT_ID"].astype("string").to_numpy() == truth["CONT_ID"].to_numpy()).all()
@@ -435,21 +437,28 @@ def kind_problems(g: Generated, k: KindProblems, persons: pd.DataFrame, registry
     c_ents, p_ents = pd.unique(ents[company]), pd.unique(ents[~company])
     reg = registry.sample(len(c_ents), replace=len(c_ents) > len(registry), random_state=int(rng.integers(1 << 31)))
     firm = dict(zip(c_ents, reg.itertuples(index=False)))
-    rep_of = dict(zip(c_ents, persons.sample(len(c_ents), replace=True, random_state=int(rng.integers(1 << 31))).itertuples(index=False)))
+    first = pd.Series(np.arange(len(df))).groupby(ents).first()  # each entity's first record
+    rep_of = dict(zip(c_ents, first[p_ents].to_numpy()[rng.integers(len(p_ents), size=len(c_ents))]))  # a person of the file
     rep_named = {e for e in c_ents if rng.random() < k.representatives}
+    home = {e for e in rep_named if rng.random() < k.home_office}
+    where = [c for c in df.columns if c == "PHONE_NUM_4" or c.startswith(("POST_CD", "ADDR", "ADDRESS", "SOURCE_ADDR", "ORIGINAL_ADDR", "STD_ADDR"))]
+    moved = []  # (company record, its representative's record): the company at the representative's address and phone
     shops = registry["reading"].sample(len(p_ents), replace=True, random_state=int(rng.integers(1 << 31))).to_numpy()
     sole = {e: shop for e, shop in zip(p_ents, shops) if rng.random() < k.sole_traders}
     name, case, birth = [], [], df["BIRTH_DATE"].astype(object).to_numpy().copy()
     for i, e in enumerate(ents):
         if company[i]:
             f, rep = firm[e], rep_of[e]
-            is_rep = e in rep_named and rng.random() < 0.5
-            name.append((rep.surname_kana + rep.given_kana if is_rep else
+            is_rep = e in rep_named and rng.random() < 0.5 and pd.notna(person_name.iat[rep])
+            name.append((person_name.iat[rep] if is_rep else
                          bank_name(f.reading, f.legal, f.abbreviation, f.front, rng, legal_front, legal_end, confusions, branches)) if named[i] else None)
             case.append("representative" if is_rep else "company")
+            if e in home:
+                moved.append((i, rep))
             if rng.random() < k.company_dates:
-                year = int(rng.integers(1950, 2026)) if k.company_date == "founding" else 2026 - int(rep.age)
-                birth[i] = f"{year:04d}{int(rng.integers(1, 13)):02d}{int(rng.integers(1, 29)):02d}"
+                own = df["BIRTH_DATE"].iat[rep]
+                birth[i] = (own if k.company_date == "representative" and pd.notna(own) else
+                            f"{int(rng.integers(1950, 2026)):04d}{int(rng.integers(1, 13)):02d}{int(rng.integers(1, 29)):02d}")
             else:
                 birth[i] = None
         else:
@@ -458,6 +467,9 @@ def kind_problems(g: Generated, k: KindProblems, persons: pd.DataFrame, registry
             name.append((sole[e] + (f"　{own}" if rng.random() < 0.5 else "") if trade else own) if named[i] else None)
             case.append("sole trader" if e in sole else "person")
     case = np.array(case)
+    if moved:
+        at, rep = map(list, zip(*moved))
+        df.iloc[at, [df.columns.get_loc(c) for c in where]] = df.iloc[rep][where].to_numpy()
     wrong = rng.random(len(df)) < np.select([case == "representative", case == "sole trader"], [k.flag_wrong_representative, k.sole_flagged_company], k.flag_wrong)
     says_company = np.where(wrong, ~company, company)
     df = df.drop(columns=["FULL_NAME_KANA", "O_PERSON_NAME_KANA", "LAST_NAME_KANA", "GIVEN_NAME_KANA", "NYS_CNV_P_NAME_KANA"])

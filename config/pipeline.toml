@@ -161,7 +161,9 @@ depth = 2                         # the combiner: gradient-boosted trees this de
 company_wrong_at_most = 0.001     # the company line: no labelled error above it, then margin_steps stricter
 person_wrong_at_most = 0.01       # the person line: the labelled error above it at most half of this
 margin_steps = 2
-labels_to_draw = 2000             # the records a run puts on its labelling sheet (kind_review.parquet)
+labels_to_draw = 2000             # kind_review.parquet: records drawn to measure the flag and the engine (why = measure)
+review_max = 1000                 # ... and at most this many sent to decide (why = decide): the engine's sure kind against
+name_line = 0.99                  # the flag, or a name that says the other kind than the flag at least this surely
 grid = [0.5, 0.8, 0.9, 0.95, 0.98, 0.99, 0.995, 0.998, 0.999, 0.9995, 0.9999]
 trust_flag = false                # true: take the file's flag (kind_flag) as it is, instead of the model
 

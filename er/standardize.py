@@ -79,12 +79,13 @@ def prepare(std: Standardization, records: pd.DataFrame, normalized: Iterable[tu
         if kind is not None and d.name == kind.spec.name_field:
             raw = out  # the name as written: its legal form still in it
     if kind is not None and raw is not None:
-        k = kind.classify(raw, df.get("kind_flag"), df.get("birth_date"))
-        df["kind_p"], df["kind"] = k["kind_p"].to_numpy(), k["kind"].to_numpy()
+        k = kind.classify(raw, df.get("kind_flag"), df.get("birth_date"), ids=df.get(kind.uid))
+        for c in ("kind", "kind_p", "kind_by", "name_p", "kind_held", "kind_name"):
+            df[c] = k[c].to_numpy()
         lean = np.where(k["kind_p"].to_numpy() >= 0.5, "company", "person")
         for d in derived:
-            if d.kind:
-                df[d.name] = df[d.name].where(lean == d.kind)
+            if d.kind:  # a held record (the engine and the flag disagree) goes to neither side until a person decides
+                df[d.name] = df[d.name].where((lean == d.kind) & ~k["kind_held"].to_numpy())
     for col, steps in normalized:
         if column_name(col, steps) not in df:
             df[column_name(col, steps)] = normalize(df[col], steps, std)

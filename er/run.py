@@ -63,7 +63,7 @@ from splink.clustering import cluster_pairwise_predictions_at_threshold
 
 from er.candidates import candidates, estimate, q
 from er.config import FSSpec, InputError, Key, KeyBlocker, Pipeline, sources_text
-from er.kind import classifier as kind_classifier
+from er.kind import COMPANY, PERSON, SAYS, UNSURE, classifier as kind_classifier
 from er.match import (ELSE, assemble_u, counted, exact_u, levels, parameters, refreshed_u, rule_edges, scaled_prior, score_fs,
                       scored_sample, train_fs, u_basis)
 from er.pipeline import named, pattern_coverage
@@ -207,7 +207,8 @@ class Run:
         kinds = {}
         if self.classifier is not None:  # how many records each kind holds
             kinds = dict(self.con.execute(f"SELECT kind, count(*) FROM {into} GROUP BY 1").fetchall())
-            kinds = {"companies": kinds.get("company", 0), "persons": kinds.get("person", 0), "unsure": kinds.get("unsure", 0)}
+            kinds = {"companies": kinds.get(2, 0), "persons": kinds.get(1, 0), "not sure": kinds.get(0, 0),
+                     "decided by people": self._count(f"{into} WHERE kind_by = 'people'"), "held back": self._count(f"{into} WHERE kind_held")}
         self._done("load", "O(N·L)", f"O({self.n:,}·L)", t, records=self.n, disabled=len(self.disabled), set_aside=self._count("set_aside"), **kinds)
 
     def _set_aside(self, src: str, stored: str | None) -> str:
@@ -411,18 +412,18 @@ class Run:
         by = f"CASE WHEN rz.n > 1 THEN f.rule WHEN m.id IS NOT NULL THEN '{fs.model.name}' WHEN z.n > 1 THEN 'review' END"
         if old:
             stage, by = f"coalesce(o.resolved_stage, {stage})", f"coalesce(o.resolved_by, {by})"
-        kinds = "kind" in self._columns()  # each record's kind, and its customer's: a company if any record surely is one;
-        # a person if no record leans company and one surely is a person; else unsure
+        kinds = "kind" in self._columns()  # each record's kind, and its customer's: 2 company if any record surely is one;
+        # 1 person if no record leans company and one surely is a person; else 0 not sure
         self.con.execute(f"""CREATE OR REPLACE TABLE gold AS
             WITH touch AS (SELECT {l} AS id, rule FROM rule_kept UNION ALL SELECT {r}, rule FROM rule_kept),
                  first AS (SELECT id, arg_min(rule, CASE rule {order} END) AS rule FROM touch GROUP BY id),
                  rsize AS (SELECT cluster_id, count(*) AS n FROM rule_clusters GROUP BY 1),
                  size AS (SELECT cluster_id, count(*) AS n FROM clusters GROUP BY 1),
                  matched AS (SELECT {l} AS id FROM matches UNION SELECT {r} FROM matches)
-                 {f''', customer AS (SELECT k.cluster_id, CASE WHEN bool_or(x.kind = 'company') THEN 'company'
-                        WHEN coalesce(max(x.kind_p), 0) < 0.5 AND bool_or(x.kind = 'person') THEN 'person' ELSE 'unsure' END AS customer_kind
+                 {f''', customer AS (SELECT k.cluster_id, CASE WHEN bool_or(x.kind = 2) THEN 2
+                        WHEN coalesce(max(x.kind_p), 0) < 0.5 AND bool_or(x.kind = 1) THEN 1 ELSE 0 END::TINYINT AS customer_kind
                         FROM clusters k JOIN records x USING ({u}) GROUP BY 1)''' if kinds else ""}
-            SELECT k.{u}, k.cluster_id, {stage} AS resolved_stage, {by} AS resolved_by{", x.kind, x.kind_p, c.customer_kind" if kinds else ""}
+            SELECT k.{u}, k.cluster_id, {stage} AS resolved_stage, {by} AS resolved_by{", x.kind, x.kind_p, x.kind_by, x.kind_held, c.customer_kind" if kinds else ""}
             FROM clusters k JOIN size z USING (cluster_id) JOIN rule_clusters rc USING ({u}) JOIN rsize rz ON rz.cluster_id = rc.cluster_id
                  LEFT JOIN first f ON f.id = k.{u} LEFT JOIN matched m ON m.id = k.{u} {f"LEFT JOIN {old} o USING ({u})" if old else ""}
                  {f"JOIN records x USING ({u}) JOIN customer c USING (cluster_id)" if kinds else ""}
@@ -729,30 +730,35 @@ def qa(run: "Run", fields: list[str], review: int = 50, previous: Path | None = 
     if "kind" in con.sql("DESCRIBE gold").df()["column_name"].tolist():
         kinds = con.sql("""SELECT 'records' AS of, kind, count(*) AS how_many FROM gold GROUP BY ALL
                            UNION ALL SELECT 'customers', customer_kind, count(DISTINCT cluster_id) FROM gold GROUP BY ALL ORDER BY ALL""").df()
-        mixed = con.sql("""SELECT cluster_id, count(*) AS records, count(*) FILTER (WHERE kind = 'company') AS companies,
-                                  count(*) FILTER (WHERE kind = 'person') AS persons FROM gold GROUP BY 1
+        mixed = con.sql("""SELECT cluster_id, count(*) AS records, count(*) FILTER (WHERE kind = 2) AS companies,
+                                  count(*) FILTER (WHERE kind = 1) AS persons FROM gold GROUP BY 1
                            HAVING companies > 0 AND persons > 0 ORDER BY records DESC, cluster_id""").df()
         n = {(x.of, x.kind): x.how_many for x in kinds.itertuples()}
-        kind_rows = [("kinds", " · ".join(f"{n.get((of, k), 0):,} {k}" for k in ("company", "person", "unsure")) + f" {of}")
+        kind_rows = [("kinds", " · ".join(f"{n.get((of, k), 0):,} × {SAYS[k]}" for k in (COMPANY, PERSON, UNSURE)) + f" ({of})")
                      for of in ("records", "customers")]
         c = run.classifier
         if c is not None and c.spec.trust_flag:
             how = "the file's flag, as it is (trust_flag)"
         elif c is not None and c.labels:
             side = lambda line, at: at if line <= 1 else "never (no line holds its budget)"
-            how = (f"{c.labels:,} labels: company {side(c.line_company, f'at P ≥ {c.line_company:g}')}, "
+            how = (f"{c.labels:,} answers ({c.measured:,} drawn to measure): company {side(c.line_company, f'at P ≥ {c.line_company:g}')}, "
                    f"person {side(c.line_person, f'at P ≤ {1 - c.line_person:.4g}, its labelled error {c.person_error:.2%}' if c.person_error is not None else '')}")
         else:
-            how = "no labels: company only where a legal form is written; label kind_review.parquet, then run again with --kind-labels"
+            how = "no answers yet: 2 company only where a legal form is written; answer kind_review.parquet, then run again with --kind-labels"
+        if c is not None and c.decided:
+            how += f"; people decided {len(c.decided):,} records"
+        held = con.execute("SELECT count(*) FILTER (WHERE kind_held) FROM gold").fetchall()[0][0]
+        if held:
+            kind_rows.append(("held back", f"{held:,} records from matching: the engine and the flag disagree; decide them in kind_review.parquet"))
         if c is not None and c.flag_error is not None:
-            how += f"; the flag wrong on {c.flag_error:.1%} of {c.flag_checked:,} labels drawn at random"
+            how += f"; the flag wrong on {c.flag_error:.1%} of {c.flag_checked:,} answers drawn at random"
         kind_rows += [("kinds from", how)] if c is not None else []
         if c is not None and not c.spec.trust_flag and "kind_flag" in run._columns():  # the flag's likely errors, for its owners
             says = "x.kind_flag IN (" + ", ".join(f"'{v}'" for v in c.flag_company) + ")"
-            a, b = con.execute(f"""SELECT count(*) FILTER (WHERE g.kind = 'company' AND NOT {says}), count(*) FILTER (WHERE g.kind = 'person' AND {says})
+            a, b = con.execute(f"""SELECT count(*) FILTER (WHERE g.kind = 2 AND NOT {says}), count(*) FILTER (WHERE g.kind = 1 AND {says})
                                    FROM gold g JOIN records x USING ({u}) WHERE x.kind_flag IS NOT NULL""").fetchall()[0]
-            kind_rows.append(("flag", f"a sure kind contradicts it on {a + b:,} records: {a:,} sure companies flagged person, "
-                                      f"{b:,} sure persons flagged company (gold.parquet kind against the file's flag)"))
+            kind_rows.append(("flag", f"a sure kind contradicts it on {a + b:,} records: {a:,} sure 2 company flagged 1, "
+                                      f"{b:,} sure 1 person flagged 2 (sent to decide in kind_review.parquet)"))
         if len(mixed):
             kind_rows.append(("note", f"{len(mixed):,} cluster{'s hold' if len(mixed) > 1 else ' holds'} a sure person and a sure company: see qa.md, mixed kinds"))
     summary = pd.DataFrame([

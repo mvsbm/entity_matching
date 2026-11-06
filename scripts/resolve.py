@@ -20,10 +20,12 @@ pairs, their weights and the generators that found them) and rule_kept/ as Parqu
 Big-O and time), qa.md (label-free checks), report.txt (the run on one page with no record's value in it, to send to
 whoever helps you with it), review.parquet (pairs for people: "decide", every cluster pair whose best link scored in the threshold's safety margin, and "audit",
 a sample of accepted pairs just above it; both records' compared fields side by side, each field's level and bits,
-and an empty decision column; it holds records, so keep it with the data), kind_review.parquet (a full run's records for
-people to label as company or person: a third at random, a third leaning company, a third leaning person; it holds
-names, so keep it with the data), and state/ for increments. --kind-labels gives a filled-in kind_review.parquet to a
-full run: the kinds then rest on those labels (er.kind), and the run keeps them for its increments and its next full run.
+and an empty decision column; it holds records, so keep it with the data), kind_review.parquet (a full run's
+records for people to answer 1 person, 2 company or 0 can't tell: "decide", where the engine or the name disagrees with
+the file's flag, and "measure", a draw that measures the flag and the engine; each row says why in words; it holds
+names, so keep it with the data), and state/ for increments. --kind-labels gives the answered sheet to a full run: the
+answers stand for their records, train the engine, and the measuring draw places its lines (er.kind); the run keeps
+them for its increments and its next full run.
 --decisions applies people's decisions (review.parquet with decision filled in as match or no_match, or any file with
 the two ids and decision) to the run in --output, scoring nothing; they are kept in decisions/, and a full run on that
 folder applies them again.
@@ -38,7 +40,7 @@ import pandas as pd
 
 from er.config import InputError, load_pipeline, sources_text
 from er.io import markdown
-from er.kind import label_sheet
+from er.kind import review_sheet as kind_sheet
 from er.run import Run, fill_rates, qa, report_text
 from er.settings import load_settings
 
@@ -121,15 +123,15 @@ def main() -> None:
         text += [f"## {name.replace('_', ' ')}", "", markdown(table.round(4)) if len(table) else "none", ""]
     (args.output / "qa.md").write_text("\n".join(text), encoding="utf-8")
     (args.output / "report.txt").write_text(report_text(run, report, pipeline), encoding="utf-8")
-    if run.classifier is not None and not args.increment:  # records for people to label; none of those labelled already
-        names = [c for c in ("company_name", "person_name", "full_name", "any_name") if c in run._columns()]
+    if run.classifier is not None and not args.increment:  # records for people: to decide and to measure; none answered already
         cols = [c for c in ("kind_flag", "birth_date") if c in run._columns()]
-        records = run.con.sql(f'SELECT "{run.uid}", coalesce({", ".join(names)}) AS name, {", ".join(cols + ["kind_p"])} FROM records').df()
-        done = set(run.labels[run.uid]) if run.labels is not None and run.uid in run.labels else set()
-        label_sheet(records, run.uid, p.kind.labels_to_draw, done).to_parquet(args.output / "kind_review.parquet")
+        records = run.con.sql(f'SELECT "{run.uid}", kind_name AS name, {", ".join(cols)}{", " if cols else ""}'
+                              "kind, kind_p, kind_by, name_p, kind_held FROM records").df()
+        done = set(run.labels[run.uid].astype("string")) if run.labels is not None and run.uid in run.labels else set()
+        kind_sheet(records, run.uid, p.kind, s.flag_company, done).to_parquet(args.output / "kind_review.parquet")
     print("\n".join(f"{what:<12} {value}" for what, value in report["summary"].itertuples(index=False)))
     print(f"{sum(x['seconds'] for x in run.steps):.1f} s · wrote {args.output}: gold.parquet, review.parquet, qa.md (each step's cost), "
-          "report.txt (no record's value in it: to share)" + (", kind_review.parquet (to label)" if run.classifier is not None and not args.increment else "")
+          "report.txt (no record's value in it: to share)" + (", kind_review.parquet (persons and companies to decide and to measure)" if run.classifier is not None and not args.increment else "")
           + ", matches/, state/")
 
 

@@ -1065,8 +1065,9 @@ def test_the_kind_problems_change_names_dates_and_the_flag_only(kind_population)
     s, p, g = kind_population
     made = make(replace(load_spec(s.root / "config" / "generator.toml")[0], entities=1_500), *load_reference(s.paths["reference"])).df
     assert {"NAME_KANA", "PERSON_ORG_CODE"} <= set(g.df.columns) and "FULL_NAME_KANA" not in g.df.columns
-    kept = ["CONT_ID", "PHONE_NUM_4", "CIF_ID", "STD_ADDRESS", "ADDR_CD"]
-    assert g.df[kept].equals(made[kept])  # the records start as generate() made them
+    assert g.df[["CONT_ID", "CIF_ID"]].equals(made[["CONT_ID", "CIF_ID"]])  # the records start as generate() made them
+    stay = g.truth["KIND"].eq("person").to_numpy()  # only a company moves: to its representative's address and phone
+    assert g.df.loc[stay, ["PHONE_NUM_4", "STD_ADDRESS"]].equals(made.loc[stay, ["PHONE_NUM_4", "STD_ADDRESS"]])
     assert set(g.truth["CASE"]) == {"company", "person", "representative", "sole trader"}
     flag_company = g.df["PERSON_ORG_CODE"] == "2"
     assert 0.02 < (flag_company != g.truth["KIND"].eq("company")).mean() < 0.1  # the flag is wrong, now and then
@@ -1084,37 +1085,65 @@ def test_without_labels_only_a_legal_form_makes_a_company_and_a_person_company_p
     pd.concat([g.df, firm.to_frame().T.astype(g.df.dtypes)], ignore_index=True).to_parquet(tmp_path / "all.parquet", index=False)
     run = Run(replace(p, fs=replace(p.fs, min_match_weight=4.0)), s).full(tmp_path / "all.parquet", tmp_path / "run")
     rec = run.con.sql(f'SELECT "{uid}", person_name, company_name, kind FROM records').df().set_index(uid)
-    assert rec.loc[firm[uid], "kind"] == "company" and pd.isna(rec.loc[firm[uid], "person_name"]) and rec.loc[firm[uid], "company_name"] == "カブシキガイシャテスト"
+    assert rec.loc[firm[uid], "kind"] == 2 and pd.isna(rec.loc[firm[uid], "person_name"]) and rec.loc[firm[uid], "company_name"] == "カブシキガイシャテスト"
     assert pd.notna(rec.loc[home[uid], "person_name"]) and pd.isna(rec.loc[home[uid], "company_name"])
     named = rec[rec.index.isin(g.df[uid])].join(g.df.set_index(uid)["NAME_KANA"])
     written = named["NAME_KANA"].str.normalize("NFKC").str.replace("[ 　]", "", regex=True).str.contains(legal_pattern(s.standardize))
-    assert set(named["kind"]) == {"company", "unsure"}  # never a sure person without labels
-    assert ((named["kind"] == "company") == written.fillna(False)).all()  # a company exactly where a legal form is written
+    assert set(named["kind"]) == {2, 0}  # 2 company or 0 not sure: never a sure person without answers
+    assert ((named["kind"] == 2) == written.fillna(False)).all()  # a company exactly where a legal form is written
     pair = (home[uid], firm[uid])
     assert run.con.execute(f'SELECT count(*) FROM matches WHERE "{l}" = ? AND "{r}" = ?', list(pair)).fetchall()[0][0] == 0
     sheet = qa(run, [f for f in s.columns if f not in ("id", "entity")])["review_sheet"]
     assert sheet[(sheet[l] == pair[0]) & (sheet[r] == pair[1])]["why"].tolist() == ["decide"]
 
 
-def test_with_labels_the_kinds_are_the_same_every_run_and_a_customer_takes_its_surest_record(tmp_path, kind_population):
-    from er.kind import label_sheet
+def kind_sheet_for(run, s, p, draw):  # the run's review sheet, as scripts/resolve.py writes it
+    from er.kind import review_sheet
+    uid = s.data.unique_id
+    records = run.con.sql(f'SELECT "{uid}", kind_name AS name, kind_flag, birth_date, kind, kind_p, kind_by, name_p, kind_held '
+                          "FROM records").df()
+    return review_sheet(records, uid, replace(p.kind, labels_to_draw=draw, review_max=200), s.flag_company)
+
+
+def test_the_review_sheet_says_in_words_why_each_record_is_there(tmp_path, kind_population):
     from er.run import Run
     s, p, g = kind_population
     uid = s.data.unique_id
     g.df.to_parquet(tmp_path / "all.parquet", index=False)
-    first = Run(p, s).full(tmp_path / "all.parquet", tmp_path / "a")
-    records = first.con.sql(f'SELECT "{uid}", coalesce(company_name, person_name) AS name, kind_flag, birth_date, kind_p FROM records').df()
-    sheet = label_sheet(records, uid, 900)
-    sheet["kind"] = g.truth.set_index("CONT_ID").loc[sheet[uid], "KIND"].to_numpy()  # people's labels: here, the truth
+    sheet = kind_sheet_for(Run(p, s).full(tmp_path / "all.parquet", tmp_path / "a"), s, p, 300)
+    assert set(sheet["why"]) == {"decide", "measure"} and sheet[uid].is_unique and sheet["kind"].isna().all()
+    decide = sheet[sheet["why"] == "decide"]
+    assert len(decide) <= 200 and (decide["reason"].str.contains("the flag says")).all()
+    assert decide["reason"].str.startswith(("the engine is sure it is", "the engine is not sure", "the name looks like")).all()
+    assert set(sheet["engine_says"]) <= {"2 company", "1 person", "0 not sure"} and sheet["name_says"].str.match(r"[12] (company|person) \(").all()
+    measure = sheet[sheet["why"] == "measure"]
+    assert len(measure) == 300 and measure["drawn"].value_counts().to_dict() == {"at random": 100, "leans company": 100, "leans person": 100}
+    flags = g.df.set_index(uid).loc[decide[uid], "PERSON_ORG_CODE"].astype(int).to_numpy()
+    sure = decide["reason"].str.startswith("the engine is sure").to_numpy()
+    assert sure.any() and (decide["engine"].to_numpy()[sure] != flags[sure]).all()  # held: the engine's sure kind against the flag
+    assert decide["reason"].str.endswith("held back from matching until you decide").sum() >= sure.sum()
+
+
+def test_with_answers_the_kinds_are_the_same_every_run_people_s_stand_and_a_customer_takes_its_surest_record(tmp_path, kind_population):
+    from er.run import Run
+    s, p, g = kind_population
+    uid = s.data.unique_id
+    g.df.to_parquet(tmp_path / "all.parquet", index=False)
+    sheet = kind_sheet_for(Run(p, s).full(tmp_path / "all.parquet", tmp_path / "a"), s, p, 900)
+    sheet["kind"] = np.where(g.truth.set_index("CONT_ID").loc[sheet[uid], "KIND"].eq("company"), 2, 1)  # people's answers: here, the truth
+    sheet.loc[sheet.index[:3], "kind"] = 0  # can't tell: kept out
     sheet.to_parquet(tmp_path / "labels.parquet")
     a = Run(p, s, kind_labels=tmp_path / "labels.parquet").full(tmp_path / "all.parquet", tmp_path / "b")
     b = Run(p, s, kind_labels=tmp_path / "labels.parquet").full(tmp_path / "all.parquet", tmp_path / "c")
     ga, gb = (pd.read_parquet(tmp_path / x / "gold.parquet") for x in ("b", "c"))
-    assert a.classifier.labels == len(sheet) and ga[["kind", "kind_p", "customer_kind"]].equals(gb[["kind", "kind_p", "customer_kind"]])
+    assert a.classifier.labels == len(sheet) - 3 and a.classifier.measured == (sheet["why"] == "measure").sum() - (sheet["why"][:3] == "measure").sum()
+    assert ga[["kind", "kind_p", "kind_by", "customer_kind"]].equals(gb[["kind", "kind_p", "kind_by", "customer_kind"]])
+    answered = ga.set_index(uid).loc[sheet[uid][3:]]
+    assert (answered["kind_by"] == "people").all() and (answered["kind"].to_numpy() == sheet["kind"][3:].to_numpy()).all()  # people's answers stand
     assert (tmp_path / "b" / "state" / "kind_labels.parquet").exists()  # kept for the run's increments
-    by = ga.groupby("cluster_id").agg(any_company=("kind", lambda k: (k == "company").any()), leans=("kind_p", "max"),
-                                      any_person=("kind", lambda k: (k == "person").any()), customer=("customer_kind", "first"))
-    expect = np.where(by.any_company, "company", np.where((by.leans.fillna(0) < 0.5) & by.any_person, "person", "unsure"))
+    by = ga.groupby("cluster_id").agg(any_company=("kind", lambda k: (k == 2).any()), leans=("kind_p", "max"),
+                                      any_person=("kind", lambda k: (k == 1).any()), customer=("customer_kind", "first"))
+    expect = np.where(by.any_company, 2, np.where((by.leans.fillna(0) < 0.5) & by.any_person, 1, 0))
     assert (by.customer.to_numpy() == expect).all()
     wrong = ga.set_index(uid).join(g.truth.set_index("CONT_ID")["KIND"])
-    assert not ((wrong["kind"] == "company") & (wrong["KIND"] != "company")).any()  # no sure company that isn't one
+    assert not ((wrong["kind"] == 2) & (wrong["KIND"] != "company")).any()  # no sure company that isn't one

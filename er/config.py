@@ -383,7 +383,9 @@ class KindSpec:
     company_wrong_at_most: float = 0.001      # the company line: no labelled error above it, then margin_steps stricter
     person_wrong_at_most: float = 0.01        # the person line: the labelled error above it at most half of this
     margin_steps: int = 2
-    labels_to_draw: int = 2000                # the records a run puts on its labelling sheet
+    labels_to_draw: int = 2000                # the review sheet's records drawn to measure the flag and the engine
+    review_max: int = 1000                    # ... and at most this many it sends people to decide (the surest disagreements)
+    name_line: float = 0.99                   # a name that says the other kind than the flag this surely is sent to decide
     grid: tuple[float, ...] = (0.5, 0.8, 0.9, 0.95, 0.98, 0.99, 0.995, 0.998, 0.999, 0.9995, 0.9999)
     trust_flag: bool = False                  # take the file's person/company flag as it is, instead of the model
 

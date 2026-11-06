@@ -22,10 +22,11 @@ import pandas as pd
 
 from er.config import load_pipeline
 from er.evaluate import cluster_metrics, pair_metrics
-from er.generate import generate, load_reference, load_spec, split_by_entity
+from er.generate import KindProblems, generate, kind_problems, load_reference, load_registry, load_spec, split_by_entity
 from er.io import markdown
-from er.run import Run
-from er.settings import load_settings
+from er.kind import review_sheet as kind_sheet
+from er.run import Run, qa
+from er.settings import load_settings, shared_name
 
 logging.disable(logging.WARNING)
 S = load_settings()
@@ -87,6 +88,51 @@ def scenarios() -> pd.DataFrame:
         Run(p, S, model=fit.fit()).full(d / "test.parquet", OUT / f"scenario_{i}", overwrite=True)  # this script's own folders
         rows.append(dict(scenario=name, **quality(OUT / f"scenario_{i}", entity)))
         print(rows[-1], flush=True)
+    return pd.DataFrame(rows)
+
+
+FLAGS = {"good (1% wrong at random, 20% on representatives)": KindProblems(flag_wrong=0.01, flag_wrong_representative=0.2, sole_flagged_company=0.1),
+         "medium (3%, 50%)": KindProblems(),
+         "poor (10%, 80%)": KindProblems(flag_wrong=0.10, flag_wrong_representative=0.8, sole_flagged_company=0.5)}
+
+
+def kinds(entities: int, labels: int = 2_000) -> pd.DataFrame:
+    """Person or company, end to end: populations with one name column for every kind, representative-named companies,
+    sole traders, company dates and a flag good, medium or poor, each resolved three ways. The truth routes each name
+    (the flag replaced by the truth, taken as it is: the bound); the flag alone (taken as it is); the kind step, on
+    `labels` records of its labelling sheet labelled with the truth, as people would. A person–company cluster holds a
+    true person and a true company."""
+    std, reg = S.standardize, load_registry(S.paths["reference"])
+    s = shared_name(S, "NAME_KANA")
+    p = load_pipeline(S.root / "config" / "final.toml", s.standardize, s.chains, s.columns)
+    flag_only = replace(p, kind=replace(p.kind, trust_flag=True))
+    rows = []
+    for i, (name, problems) in enumerate(FLAGS.items()):
+        g = kind_problems(generate(replace(SPEC, entities=entities), PERSONS, COMPANIES, TOWNS), problems, PERSONS, reg,
+                          std.legal_front, std.legal_end, SPEC.kana_confusions, SPEC.branches)
+        d = OUT / f"kinds_{i}"
+        d.mkdir(parents=True, exist_ok=True)
+        g.df.to_parquet(d / "records.parquet", index=False)
+        g.df.assign(PERSON_ORG_CODE=np.where(g.truth["KIND"].eq("company"), "2", "1")).to_parquet(d / "truth_flag.parquet", index=False)
+        truth = g.truth.set_index(UID)
+        free = Run(p, s).full(d / "records.parquet", d / "free", overwrite=True)
+        records = free.con.sql(f'SELECT "{UID}", kind_name AS name, kind_flag, birth_date, kind, kind_p, kind_by, name_p, kind_held FROM records').df()
+        sheet = kind_sheet(records, UID, replace(p.kind, labels_to_draw=labels), S.flag_company)  # people answer every row: here, the truth
+        sheet.assign(kind=np.where(truth.loc[sheet[UID], "KIND"].eq("company"), 2, 1)).to_parquet(d / "labels.parquet")
+        for how, pipeline, records, kind_labels in (("the truth", flag_only, "truth_flag.parquet", None), ("the flag alone", flag_only, "records.parquet", None),
+                                                    (f"the kind step, {labels:,} labels", p, "records.parquet", d / "labels.parquet")):
+            run = Run(pipeline, s, kind_labels=kind_labels).full(d / records, d / "run", overwrite=True)
+            gold = pd.read_parquet(d / "run" / "gold.parquet").set_index(UID).join(truth[["ENTITY_ID", "KIND"]])
+            m = cluster_metrics(gold["cluster_id"], gold["ENTITY_ID"])
+            mixed = gold.assign(c=gold["KIND"].eq("company")).groupby("cluster_id")["c"].agg(["any", "all"])
+            sheet_ = qa(run, [f for f in s.columns if f not in ("id", "entity")])["review_sheet"]
+            company, person = gold["KIND"].eq("company"), gold["KIND"].eq("person")
+            rows.append(dict(flag=name, routed_by=how, recall=round(m["recall"], 4), false_merges=int(m["FP"]),
+                             person_company_clusters=int((mixed["any"] & ~mixed["all"]).sum()), pairs_to_decide=int((sheet_["why"] == "decide").sum()),
+                             sure_companies=f"{(gold['kind'].eq(2) & company).sum() / company.sum():.1%}", wrong_companies=int((gold["kind"].eq(2) & person).sum()),
+                             sure_persons=f"{(gold['kind'].eq(1) & person).sum() / person.sum():.1%}", wrong_persons=int((gold["kind"].eq(1) & company).sum()),
+                             seconds=round(sum(x["seconds"] for x in run.steps), 1)))
+            print(rows[-1], flush=True)
     return pd.DataFrame(rows)
 
 
