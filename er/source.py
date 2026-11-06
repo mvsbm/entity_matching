@@ -34,6 +34,7 @@ class Source:
     sql: str                                  # the files as one relation: every column text, under its configured name
     columns: list[str]
     notes: list[str] = field(default_factory=list)  # what was detected or fixed, for the run's summary
+    files: list[Path] = field(default_factory=list)  # the files read
 
 
 def find(path: str | Path) -> list[Path]:
@@ -112,7 +113,7 @@ def open_source(path: str | Path, con: duckdb.DuckDBPyConnection, expected: Iter
                  if kind in ("FLOAT", "DOUBLE", "REAL") else f"CAST({q(c)} AS VARCHAR)")
         cols.append(f"{value} AS {q(name)}")
     return Source(sql=f"(SELECT {', '.join(cols)} FROM read_parquet([{', '.join(lit(f) for f in files)}], union_by_name = true))",
-                  columns=[rename.get(c, c) for c in types], notes=notes)
+                  columns=[rename.get(c, c) for c in types], notes=notes, files=files)
 
 
 def suggest(src: Source, con: duckdb.DuckDBPyConnection, fields: Iterable[str], patterns: Mapping[str, str],

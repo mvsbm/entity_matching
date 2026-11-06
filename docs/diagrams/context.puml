@@ -27,4 +27,5 @@ Rel(design, runtime, "hands over", "config/final.toml: the only hand-off")
 Rel(runtime, reviewer, "asks", "review.parquet, kind_review.parquet, qa.md, report.txt")
 Rel(reviewer, runtime, "answers", "~--decisions, ~--kind-labels")
 Rel(runtime, downstream, "gives", "gold.parquet: cluster_id, customer_kind")
+SHOW_LEGEND()
 @enduml

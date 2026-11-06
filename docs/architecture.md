@@ -2,7 +2,9 @@
 
 # Architecture
 
-A high-level design (HLD) in three C4 views, from the outside in, then a low-level design (LLD) of every flow and every file:
+![Start here: customer records are loaded and standardized, the rules settle the certain cases, the model scores the pairs worth scoring, and the clusters give gold.parquet; review sheets go to people, whose decisions and answers come back; config/final.toml, chosen once on synthetic records, sets the rules, keys, model and threshold](diagrams/overview.svg)
+
+Above, the whole system on one page. Below, a high-level design (HLD) in three C4 views, from the outside in, then a low-level design (LLD) of every flow and every file. Each diagram has a legend: in the LLD a box is a step (what it does, its cost, and in grey the code it runs), a cylinder a working table and a note a file; a solid arrow makes or uses, a dashed one runs next, and an arrow into a group stands for one to each step in it.
 
 | | View | Shows |
 |---|---|---|
@@ -37,7 +39,7 @@ The system turns a file of customer records into one ID per person or company. I
 
 ## 2 · Containers
 
-![HLD 2, containers: the seven scripts and the demo call the er package, which runs SQL on DuckDB and Splink in process, reads config/ and data/reference/, and reads and writes the run folder and data/artifacts/; choose.py writes final.toml; the scripts write reports/](diagrams/containers.svg)
+![HLD 2, containers: people run the run-time tools (resolve, schedule) and the developer the design-time tools; both, and the demo, call the er package, which runs on DuckDB and Splink in one process, reads config/ and data/reference/, writes the run folder and caches the name model in data/artifacts/; the design-time tools write the synthetic data, the reports and final.toml](diagrams/containers.svg)
 
 | Part | Holds |
 |---|---|
@@ -92,16 +94,15 @@ Not used, and why: chunked prediction (refuses given pairs, and only bounds memo
 
 ## 3 · Components
 
-![HLD 3, components: the scripts on top; in er/, the run (run, pipeline), design time (select, tune, evaluate, generate), the steps (source, standardize, kind, candidates, match, cluster, strings) and configuration (config, settings, io), with every import between them](diagrams/components.svg)
+![HLD 3, components: the run-time and design-time tools on top; the run (er/run.py), design time (select, pipeline, evaluate, tune, generate), the steps (source, standardize, kind, candidates, match, cluster, strings) and configuration (config, settings, io), with an arrow wherever one layer imports another, and three red dashed arrows against the layers](diagrams/components.svg)
 
-`er/` falls into four layers: the run (`run`, and `pipeline`, whose design-time cascade the run borrows `pattern_coverage` from), design time (`select`, `tune`, `evaluate`, `generate`), the steps, and configuration. A layer imports from the layers below it, with four exceptions, each one function:
+Every module sits in one layer: the tools, the run (`er/run.py`), design time, the steps, and configuration. A layer imports from the layers below it, and three imports go against that, each a function or two:
 
 | Import | For |
 |---|---|
-| `er.config` → `er.strings` | `FUNCTIONS`: the cost of each comparison function, which the configuration's checks read |
-| `er.source` → `er.candidates` | `q`, the identifier quoting every SQL string uses |
-| `er.match` → `er.candidates`, `er.evaluate` | `deletions_sql` (exact one-edit u); `fp_upper` (a bound on a level no sample saw) |
-| `er.kind` → `er.generate` | the name model's training names, built from the reference data the generator also reads; imported only when the cache misses |
+| the run → design time: `er.pipeline.pattern_coverage` | the match patterns no key guarantees, in `qa.md` |
+| the steps → design time: `er.kind` → `er.generate`, `er.match` → `er.evaluate` | the name model's training names, imported only when its cache misses; `fp_upper`, a bound on a level no sample saw |
+| configuration → the steps: `er.config` → `er.strings`, `er.settings` → `er.standardize` | `FUNCTIONS`, each comparison function's cost; `legal_pattern`, which the field check reads |
 
 ## 4 · The run
 
@@ -209,7 +210,7 @@ Writes each table as Parquet under a temporary name. Once all are complete, it s
 
 ![LLD 2, an increment: the batch loaded beside the stored records, records formed from both, u refreshed, the rules, candidates and scores on the pairs touching the batch, the clusters merged into the stored ones, new parts written and the report kept open](diagrams/increment.svg)
 
-`Run.increment` reads back from the run folder `state/model.json`, `state/scoring.json`, `state/records/`, `state/rule_clusters.parquet`, `gold.parquet` and the kept answers, and runs steps 1 and 3–8 on the batch, as each step's *Increment* line above says; `Run.report` then keeps the previous sheet's open rows. It takes no `--kind-labels` and no `--model`: the stored records' kinds and the model come from the full run, and `scripts/resolve.py` refuses both with an increment. An increment into a folder with no run stops with what to fix.
+`Run.increment` reads back from the run folder `state/model.json`, `state/scoring.json`, `state/records/`, `state/rule_clusters.parquet`, `gold.parquet` and the kept answers, and runs steps 1 and 3–8 on the batch, as each step's *Increment* line above says; `Run.report` then keeps the previous sheet's open rows. It takes no `--kind-labels` and no `--model`: the stored records' kinds and the model come from the full run, and `scripts/resolve.py` refuses both with an increment. It stops, with what to fix, when the folder holds no run, and when the pipeline or the column mapping is not the one the full run used (`state/config.txt`): its batch would be resolved otherwise than the records it joins.
 
 ## 6 · Decisions
 
@@ -264,7 +265,8 @@ Kept on disk. Steps are numbered as in [the run](#4--the-run); the diagram above
 | `state/model.json` | 8, full runs only | increments | the fitted model: λ, and m and u per level |
 | `state/scoring.json` | 8, every run | increments | the u the run scored with; per comparison, the exact u it was sampled alongside and its last drift check |
 | `state/kind_labels.parquet` | 8, whenever there are answers | increments; the next full run | people's person/company answers, the newest per record |
-| `steps.json` | 8 | you | each step's Big-O with its numbers, time and peak memory |
+| `state/config.txt` | 8, full runs only | increments | the hash of the pipeline and the settings that shape the records (column mapping, `[locale]`, the flag's values) the full run used |
+| `steps.json` | 8, and decisions | you; an audit | one entry per run, increment or set of decisions: when, the code's commit and the files changed in this copy, the config hash, each file read with its size and SHA-256, and each step's Big-O with its numbers, time and peak memory |
 | `pending.json` | 8, deleted when done | the next run, increment or decisions | moves owed by an unfinished write |
 | `.lock` | every writer | every writer | the run folder's lock: one writer at a time |
 | `jobs.jsonl` | `scripts/schedule.py` | people | one line per file per pass: the file, its SHA-256, the outcome, the attempts |
@@ -304,7 +306,7 @@ plantuml -tsvg docs/diagrams/*.puml        # every diagram
 
 | Check | Against |
 |---|---|
-| the components diagram draws every import between the files of `er/` and `scripts/`, and no other | the code, read with `ast` |
+| the components diagram holds every file of `er/` and `scripts/` in exactly one box, and draws an arrow between two boxes exactly where an import connects them | the code, read with `ast` |
 | every path and every function a diagram or a doc names exists | the repository, and `er` imported |
 | each step box of the run, the increment and the decisions names the functions its step reaches in `er/run.py`, and those of other modules they call | `er/run.py`, read with `ast` |
 | each step's tables: those it makes, and those it uses that an earlier step made | a whole run, increment and decisions on a generated population, with DuckDB's query log on, parsed by sqlglot |

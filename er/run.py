@@ -41,6 +41,7 @@ the edges' records only: each existing cluster is one node, see _merge).
 """
 import fcntl
 import functools
+import hashlib
 import json
 import math
 import os
@@ -65,7 +66,7 @@ from splink.clustering import cluster_pairwise_predictions_at_threshold
 
 from er.candidates import candidates, estimate, q
 from er.config import FSSpec, InputError, Key, KeyBlocker, Pipeline, sources_text
-from er.io import markdown
+from er.io import config_hash, markdown
 from er.kind import COMPANY, PERSON, SAYS, UNSURE, classifier as kind_classifier, kind_review_sheet, merge_answers
 from er.match import (ELSE, assemble_u, counted, exact_u, levels, parameters, refreshed_u, rule_edges, scaled_prior, score_fs,
                       scored_sample, train_fs, u_basis)
@@ -114,6 +115,17 @@ def locked(method: Callable) -> Callable:  # the run folder (the method's `out`)
         with self.writing(out):
             return method(self, path, Path(out), *args, **kwargs)
     return wrapper
+
+
+def code_version(root: Path) -> str:
+    """The commit of the code that ran, and the tracked files changed in this copy (the column mapping, say)."""
+    def git(*args: str) -> str:
+        try:
+            return subprocess.run(["git", "-C", str(root), *args], capture_output=True, text=True, timeout=10).stdout.strip()
+        except OSError:
+            return ""
+    changed = git("diff", "--name-only", "HEAD").splitlines()
+    return (git("rev-parse", "--short", "HEAD") or "unknown (not a git checkout)") + (f" · changed here: {', '.join(changed)}" if changed else "")
 
 
 def size_bytes(text: str) -> int:  # one of DuckDB's sizes: "8.0 GiB", "512.0 MiB", "1.5 GB"
@@ -167,6 +179,9 @@ class Run:
         self.holding: Path | None = None      # the run folder this run holds locked (writing)
         self.fields = [f for f in self.settings.columns if f not in SPECIAL]  # the logical fields of [columns]
         self.rule_names = [rule.name for st in self.pipeline.rules.stages for rule in st.rules]
+        self.inputs: list[dict] = []          # the files read: path, bytes, SHA-256 (steps.json)
+        # what decides the answer: the pipeline as given and the settings that shape the records; an increment needs the full run's
+        self.config = config_hash((self.pipeline, self.settings.columns, self.settings.standardize, self.settings.flag_company))
         if {self.pipeline.rules.resolver.method, self.pipeline.fs.resolver.method} != {"connected_components"}:
             raise InputError("the run clusters by connected components only; the pipeline asks for "
                              f"{self.pipeline.rules.resolver.method} (rules) and {self.pipeline.fs.resolver.method} (model)",
@@ -200,7 +215,7 @@ class Run:
         er.standardize.prepare (each record on its own, so chunking changes nothing) into the table `into`."""
         t = time.perf_counter()
         src = open_source(path, self.con, {c for f, alts in self.settings.columns.items() if f != "entity" for alt in alts for c in alt})
-        self.notes = list(src.notes)
+        self.notes, self.inputs = list(src.notes), file_facts(src.files)
         present = self.present = present_fields(self.settings, src.columns)
         hints = suggest(src, self.con, [f for f in self.settings.columns if f not in present and f != "entity"], self.settings.detect)
         try:
@@ -480,7 +495,7 @@ class Run:
         the module."""
         t, state, name = time.perf_counter(), out / "state", f"part-{part:05d}.parquet"
         aside = [("SELECT * FROM set_aside", out / "set_aside" / name)] if self._count("set_aside") else []
-        texts = [(json.dumps(self.model, ensure_ascii=False), state / "model.json")] if part == 0 else []
+        texts = [(json.dumps(self.model, ensure_ascii=False), state / "model.json"), (self.config, state / "config.txt")] if part == 0 else []
         if self.basis:  # the u this run scored with, and what an increment needs to tell when they go stale
             texts.append((json.dumps(dict(model=self.scoring, basis=self.basis), ensure_ascii=False), state / "scoring.json"))
         labels = []
@@ -521,10 +536,14 @@ class Run:
         os.replace(out / (PENDING + ".tmp"), out / PENDING)  # from here on the write is done, whatever happens next
         finish_writes(out)
 
-    def _log(self, out: Path, append: bool, **entry: object) -> None:  # steps.json: one entry per run, increment or set of decisions
+    def _log(self, out: Path, append: bool, **entry: object) -> None:
+        """steps.json: one entry per run, increment or set of decisions: when, the code and config that ran, the files
+        read with their SHA-256, and each step."""
         log = out / "steps.json"
         runs = json.loads(log.read_text())["runs"] if append and log.exists() else []
-        log.write_text(json.dumps(dict(runs=[*runs, dict(**entry, steps=self.steps)]), indent=1, default=str))
+        entry = dict(at=datetime.now().isoformat(timespec="seconds"), code=code_version(self.settings.root), config=self.config,
+                     inputs=self.inputs, **entry, steps=self.steps)
+        log.write_text(json.dumps(dict(runs=[*runs, entry]), indent=1, default=str))
 
     @locked
     def report(self, path: str | Path, out: Path, pipeline: Path) -> dict[str, pd.DataFrame]:
@@ -574,6 +593,9 @@ class Run:
         finish_writes(out)
         if not (state / "model.json").exists():
             raise InputError(f"no run in {out} to add records to", fix="resolve the records into that folder first, without --increment")
+        if (state / "config.txt").exists() and (state / "config.txt").read_text(encoding="utf-8") != self.config:
+            raise InputError(f"the pipeline or the column mapping changed since the full run in {out}: an increment would resolve its batch otherwise",
+                             fix="run a full run with --overwrite, or the increment with the pipeline and config/settings.toml that run used")
         self.model = json.loads((state / "model.json").read_text(encoding="utf-8"))
         part = len(list((state / "records").glob("part-*.parquet")))
         parts = ", ".join(lit(x) for x in sorted((state / "records").glob("part-*.parquet")))  # not a glob: this run's own part comes later
@@ -671,7 +693,7 @@ class Run:
             raise InputError(f"no run in {out} to apply decisions to", fix="resolve the records into that folder first (--input … --output …)")
         self.con.execute(f"CREATE OR REPLACE TABLE gold_old AS SELECT * FROM read_parquet({lit(out / 'gold.parquet')})")
         source = open_source(path, self.con, [self.l, self.r, "decision"])
-        src, cols = source.sql, set(source.columns)
+        src, cols, self.inputs = source.sql, set(source.columns), file_facts(source.files)
         if {self.l, self.r, "decision"} - cols:  # the trust boundary: say what is wrong, row by row where it can
             raise InputError(f"{path}: needs the columns {self.l}, {self.r} and decision; it has {sorted(cols)}",
                              fix="give back review.parquet with decision filled in, or a file with those three columns")
@@ -728,6 +750,14 @@ class Run:
         self.cluster()
         self.write(out, replace=held)  # the old run goes only once the new one is complete
         return self
+
+
+def file_facts(files: list[Path]) -> list[dict]:
+    """Each file read: its path, size and SHA-256, so a run says exactly what went in. O(bytes)."""
+    def sha256(f: Path) -> str:
+        with open(f, "rb") as fh:
+            return hashlib.file_digest(fh, "sha256").hexdigest()
+    return [dict(file=str(f), bytes=f.stat().st_size, sha256=sha256(f)) for f in files]
 
 
 def customer_kinds(clusters: str, kinds: str, u: str) -> str:
@@ -880,12 +910,6 @@ def report_text(run: "Run", tables: dict[str, pd.DataFrame], pipeline: Path) -> 
     con, fs = run.con, run.pipeline.fs
     t, lo = fs.min_match_weight, review_floor(run.pipeline)
 
-    def git(*args: str) -> str:
-        try:
-            return subprocess.run(["git", "-C", str(run.settings.root), *args], capture_output=True, text=True, timeout=10).stdout.strip()
-        except OSError:
-            return ""
-
     def table(df: pd.DataFrame) -> list[str]:  # numbers right-aligned, text left, so the page stays narrow
         if not len(df):
             return ["  none"]
@@ -897,8 +921,7 @@ def report_text(run: "Run", tables: dict[str, pd.DataFrame], pipeline: Path) -> 
     def pct(x: object) -> str:
         return "—" if x is None or pd.isna(x) else f"{x:.1%}"
 
-    changed = git("diff", "--name-only", "HEAD").splitlines()  # tracked files edited in this copy, e.g. the column mapping
-    code = (git("rev-parse", "--short", "HEAD") or "unknown (not a git checkout)") + (f" · changed here: {', '.join(changed)}" if changed else "")
+    code = code_version(run.settings.root)
     threads, memory = con.execute("SELECT current_setting('threads'), current_setting('memory_limit')").fetchall()[0]
     kind = "full run" if run.added is None else f"increment of {run.added:,} new records"
     out = [f"RUN REPORT · {datetime.now():%Y-%m-%d %H:%M} · {kind} · no record's value in it",

@@ -1,0 +1,39 @@
+@startuml overview
+title Start here: one file of customer records in, one ID per person or company out
+left to right direction
+skinparam defaultFontSize 12
+skinparam rectangle {
+  BackgroundColor #F4F6F8
+  BorderColor #65717E
+}
+skinparam file {
+  BackgroundColor #FFF8E6
+  BorderColor #B07D00
+}
+
+file "<b>Customer records</b>\nParquet, columns of any name" as input
+rectangle "<b>Load</b>\nread and check the file;\nwrite each fact one way;\nperson or company" as load
+rectangle "<b>Rules</b>\nthe certain cases:\nthe same ID and name,\nname, address and phone" as rules
+rectangle "<b>The model</b>\nlist the pairs worth scoring;\nscore each in bits of evidence,\nlearned from the file itself" as model
+rectangle "<b>Cluster</b>\naccept the sure pairs;\njoin pairs into entities" as cluster
+file "<b>gold.parquet</b>\neach record's entity\nand its kind" as gold
+file "<b>review sheets</b>\npairs just below the line;\nrecords person or company\nisn't sure of" as sheets
+actor "people" as people
+file "<b>config/final.toml</b>\nchosen once, on synthetic records\nwhose truth is known" as config
+
+input --> load
+load --> rules
+rules --> model
+model --> cluster
+cluster --> gold
+cluster --> sheets
+sheets --> people
+people --> cluster : decisions
+people --> load : answers
+config ..> load : the rules, keys, model and threshold
+
+legend right
+  The run's nine steps, each with its code, its cost and the tables it
+  makes and uses: docs/architecture.md, section 4 (LLD 1)
+endlegend
+@enduml

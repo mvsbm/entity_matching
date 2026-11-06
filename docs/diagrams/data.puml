@@ -70,6 +70,9 @@ package "state/, for increments: Run.write" {
   entity "state/scoring.json" as scoring {
     the u the run scored with; per comparison its basis and last drift check
   }
+  entity "state/config.txt" as config {
+    the pipeline and column mapping the full run used, hashed: an increment refuses others
+  }
   entity "state/kind_labels.parquet" as kind_labels {
     * <id>
     kind : people's answer

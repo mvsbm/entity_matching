@@ -8,7 +8,7 @@ Install it, map your columns, run it, read what it wrote. Later, add new records
 
 ```bash
 ./setup_venv.sh                         # .venv with Python ≥ 3.12, the pinned dependencies, and the er package
-.venv/bin/python -m pytest tests/       # engine checks and whole runs
+.venv/bin/python -m pytest tests/       # engine checks, whole runs, the design against the code; GitHub runs them on every push
 ```
 
 Every script runs as `.venv/bin/python scripts/<name>.py`.
@@ -96,8 +96,8 @@ Everything is in the run folder, except the name model that tells persons from c
 | `kind_review.parquet` | record for people | `why` (`decide` or `measure`), `reason` in words, `engine_says`, `name_says`, `flag` and `birth_date` if the file has them, the name; `engine` and `engine_p` (the engine's kind and its probability of a company), `name_p`, `drawn`; an empty `kind` | answer 1 person, 2 company or 0 can't tell ([section 6](#6--review-and-decide)) |
 | `decisions/` | decided pair | both IDs and `decision`, one part per file people gave back | what people decided; a full run applies it again |
 | `set_aside/` | record not resolved | the record as read, and `reason`: no ID; the same ID with different content; already in the run | fix them and add them with `--increment` |
-| `steps.json` | step | its Big-O with the numbers filled in, seconds, peak memory | see the cost |
-| `state/` | | the standardized records, the rules' clusters, the model, the u it scored with, people's person/company answers | needed by `--increment`; don't edit |
+| `steps.json` | run, increment or set of decisions | when; the code's commit; the config hash; each file read with its size and SHA-256; each step's Big-O with the numbers filled in, seconds, peak memory | see the cost; say exactly what went into the run |
+| `state/` | | the standardized records, the rules' clusters, the model, the u it scored with, people's person/company answers, the hash of the config the full run used | needed by `--increment`; don't edit |
 
 ```python
 import pandas as pd
@@ -196,6 +196,7 @@ What stops it: two lines, what is wrong and how to fix it, and exit code 2:
 | `no rule can run`, `no candidate generator can run`, `no prior rule can run`, `no EM blocking rule can run` | the file lacks every field they read: map them, or give the file those columns |
 | `no record left to resolve`, `no new record to add` | every record was set aside (`set_aside/` says why) |
 | `no run in … to add records to` | `--increment` into a folder with no run: run it without `--increment` first |
+| `the pipeline or the column mapping changed since the full run` | an increment would resolve its batch otherwise than the records it joins: run a full run with `--overwrite`, or the increment with the pipeline and settings that run used |
 | `… no such file of person/company answers`, `needs the columns … and kind` | `--kind-labels` points at the wrong file |
 | `needs the columns …_l, …_r and decision` | a decisions file without both IDs and `decision` |
 | `a decision is match or no_match`, `pairs decided both ways`, `records not in the run` | a decisions file to correct |

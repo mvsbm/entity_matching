@@ -657,6 +657,23 @@ def test_an_overwrite_cut_short_keeps_the_old_run_and_people_s_answers(tmp_path,
     assert len(pd.read_parquet(tmp_path / "run" / "state" / "records")) == len(g.df) and not (tmp_path / "run" / ".full.tmp").exists()
 
 
+def test_an_increment_refuses_a_changed_pipeline_and_steps_json_says_what_went_in(tmp_path, population):
+    import hashlib
+    import json
+    from er.run import Run
+    s, p, g = population
+    new = np.random.default_rng(0).random(len(g.df)) < 0.2
+    g.df[~new].to_parquet(tmp_path / "old.parquet", index=False)
+    g.df[new].to_parquet(tmp_path / "new.parquet", index=False)
+    Run(p, s).full(tmp_path / "old.parquet", tmp_path / "run")
+    entry = json.loads((tmp_path / "run" / "steps.json").read_text())["runs"][-1]
+    assert entry["inputs"][0]["sha256"] == hashlib.sha256((tmp_path / "old.parquet").read_bytes()).hexdigest() and entry["code"] and entry["config"]
+    changed = replace(p, fs=replace(p.fs, min_match_weight=p.fs.min_match_weight + 1))
+    with pytest.raises(InputError, match="changed since the full run"):
+        Run(changed, s).increment(tmp_path / "new.parquet", tmp_path / "run")  # the batch would be resolved otherwise
+    Run(p, s).increment(tmp_path / "new.parquet", tmp_path / "run")  # the run's own pipeline: it goes on
+
+
 def test_answers_given_wrong_stop_the_run(tmp_path, population):
     from er.run import Run
     s, p, g = population

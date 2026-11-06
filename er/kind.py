@@ -17,6 +17,7 @@ scripts/choose_kind.py chose these parts. O(N·L·g) to score N records (g n-gra
 O(Λ·trees) for Λ labels.
 """
 import hashlib
+import os
 from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
@@ -78,7 +79,9 @@ class NameModel:
 
     def save(self, path: Path, key: str) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
-        np.savez_compressed(path, terms=np.array(self.terms), coef=self.coef, intercept=self.intercept, ngram=self.ngram, key=key)
+        tmp = path.with_name(f"{path.stem}.{os.getpid()}.tmp.npz")  # complete before it replaces the cache: another run may be reading it
+        np.savez_compressed(tmp, terms=np.array(self.terms), coef=self.coef, intercept=self.intercept, ngram=self.ngram, key=key)
+        os.replace(tmp, path)
 
     @classmethod
     def load(cls, path: Path, key: str) -> "NameModel | None":

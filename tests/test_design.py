@@ -36,18 +36,30 @@ EXTENSIONS = {"py", "toml", "md", "parquet", "json", "jsonl", "txt", "npz", "svg
 
 def parse(name: str) -> tuple[dict[str, tuple[str, str]], list[tuple[str, str]], dict[str, list[str]]]:
     """A diagram's elements (id → kind, label), its edges (from, to) and its entities' fields: the subset of PlantUML the
-    diagrams use. C4: Person|System|Container|Component…(id, "label", …) and Rel…(a, b, …). UML: <kind> "label" as id,
-    a --> b, and entity "label" as id { one field per line }."""
+    diagrams use. C4: Person|System|Container|Component…(id, "label", …), its label all its texts, and Rel…(a, b, …).
+    UML: <kind> "label" as id, a --> b, entity "label" as id { one field per line }, and package "label" as id { … }:
+    an edge to a package is an edge to each step (rectangle) in it."""
     text = (DIAGRAMS / f"{name}.puml").read_text(encoding="utf-8")
-    elements, edges, fields = {}, [], {}
-    for kind, eid, label in re.findall(r'^\s*((?:Person|System|Container|Component)\w*)\(\s*(\w+)\s*,\s*"([^"]*)"', text, re.M):
-        elements[eid] = (kind, label)
+    elements, edges, fields, members, open_ = {}, [], {}, defaultdict(list), []
+    for kind, eid, rest in re.findall(r'^\s*((?:Person|System|Container|Component)\w*)\(\s*(\w+)\s*,(.*)\)\s*$', text, re.M):
+        elements[eid] = (kind, " · ".join(re.findall(r'"([^"]*)"', rest)).replace("\\n", " · "))
     for kind, label, eid in re.findall(r'^\s*(rectangle|database|file|folder|actor|entity|card|collections)\s+"([^"]*)"\s+as\s+(\w+)', text, re.M):
         elements[eid] = (kind, label)
     edges += re.findall(r'^\s*Rel\w*\(\s*(\w+)\s*,\s*(\w+)', text, re.M)
     edges += re.findall(r'^\s*(\w+)\s+[-.]+(?:\[[^\]]*\])?[-.]*>\s+(\w+)', text, re.M)
     for eid, body in re.findall(r'^\s*entity\s+"[^"]*"\s+as\s+(\w+)\s*\{(.*?)^\s*\}', text, re.M | re.S):
         fields[eid] = [line.strip() for line in body.splitlines() if line.strip() and not line.strip().startswith(("--", ".."))]
+    for line in text.splitlines():  # which steps each package holds
+        if (m := re.match(r'^\s*package\s+"[^"]*"\s+as\s+(\w+)\s*\{', line)):
+            open_.append(m.group(1))
+        elif re.match(r"^\s*package\b.*\{", line):
+            open_.append(None)
+        elif re.match(r"^\s*\}", line) and open_:
+            open_.pop()
+        elif (m := re.match(r'^\s*rectangle\s+"[^"]*"\s+as\s+(\w+)', line)):
+            for g in filter(None, open_):
+                members[g].append(m.group(1))
+    edges = [(x, y) for a, b in edges for x in members.get(a, [a]) for y in members.get(b, [b])]
     return elements, edges, fields
 
 
@@ -232,19 +244,26 @@ def logged_runs(tmp: Path) -> tuple:
 
 # ---------- the checks ----------
 
-def test_the_components_diagram_draws_every_import_and_no_other():
+def test_the_components_diagram_holds_every_module_once_and_draws_the_imports_between_its_layers():
     elements, edges, _ = parse("components")
-    path = {eid: label for eid, (kind, label) in elements.items() if label.endswith(".py")}
-    drawn = {(path[a], path[b]) for a, b in edges if a in path and b in path}
-    code = imports()
-    assert not code - drawn, f"imports to draw in components.puml: {sorted(code - drawn)}"
-    assert not drawn - code, f"edges in components.puml that no import makes: {sorted(drawn - code)}"
+    layer = {}
+    for eid, (_, label) in elements.items():
+        for f in re.findall(r"\b(?:er|scripts)/\w+\.py", label):
+            assert f not in layer, f"{f} is in two boxes of components.puml: {layer[f]}, {eid}"
+            layer[f] = eid
+    files = {f"er/{m}.py" for m in MODULES} | {str(f.relative_to(ROOT)) for f in (ROOT / "scripts").glob("*.py")}
+    assert files == set(layer), f"components.puml: modules to place {sorted(files - set(layer))}, to remove {sorted(set(layer) - files)}"
+    code = {(layer[a], layer[b]) for a, b in imports() if layer[a] != layer[b]}
+    drawn = {(a, b) for a, b in edges if a in layer.values() and b in layer.values()}
+    assert not code - drawn, f"components.puml: imports between these boxes to draw {sorted(code - drawn)}"
+    assert not drawn - code, f"components.puml: arrows no import makes {sorted(drawn - code)}"
 
 
 def test_every_path_and_function_a_diagram_or_a_doc_names_exists():
     texts = {f.relative_to(ROOT): f.read_text(encoding="utf-8") for f in [*DIAGRAMS.glob("*.puml"), *(ROOT / "docs").rglob("*.md"), ROOT / "README.md"]}
     missing_paths, missing_names = set(), set()
     for f, text in texts.items():
+        text = re.sub(r"</?(?:b|i|u|size|color|font)(?::[^>]*)?>", "", text)  # PlantUML's formatting, not part of a path
         for p in re.findall(r"\b((?:er|scripts|config|docs|reports|notebooks|tests|data/reference)/[\w./*<>-]*\w)", text):
             pattern = re.sub(r"<[^>]+>|part-n", "*", p)
             if not list(ROOT.glob(pattern)) and not (ROOT / pattern).exists():
