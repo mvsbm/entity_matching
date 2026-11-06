@@ -16,13 +16,13 @@ from er.config import (Budget, Comparator, Comparison, DeletionKeys, FSModel, FS
                        Resolver, Rule, RulesSpec, SortedNeighbourhood, Stage, TfidfNeighbours, ThresholdRule, keys_sql)
 from er.evaluate import adopt, cluster_metrics, fp_upper, paired_test, predicted_pairs, true_pairs, wilson
 from er.io import load
-from er.match import exact_u, parameters, rule_edges, sample_u, score_fs, stale_u, train_fs, u_values, waterfall, with_scored_u
-from er.pipeline import (accept_curve, cascade, check_budget, entity_folds, grown_pairs, pattern_coverage, preflight, select_threshold,
+from er.match import exact_u, parameters, pattern_coverage, rule_edges, sample_u, score_fs, stale_u, train_fs, u_values, waterfall, with_scored_u
+from er.pipeline import (accept_curve, cascade, check_budget, entity_folds, grown_pairs, preflight, select_threshold,
                          window_only)
 from er.cluster import connected_components, constrained
-from er.config import dump_pipeline, fields_read, load_pipeline
+from er.config import dump_pipeline, fields_read, legal_pattern, load_pipeline
 from er.settings import fit_to_file, load_settings
-from er.standardize import legal_pattern, normalize, prepare
+from er.standardize import normalize, prepare
 from er.strings import connect
 from er.tune import pick_within_noise
 

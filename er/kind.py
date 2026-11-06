@@ -1,6 +1,6 @@
 """Person or company: each record's kind, from its name and what else the record holds (config/pipeline.toml [kind]).
 
-    legal form   written where banks write it (er.standardize.legal_pattern): a company, near certain
+    legal form   written where banks write it (er.config.legal_pattern): a company, near certain
     name model   logistic regression on the name's character n-grams (1 to KindSpec.ngram), legal forms and spaces
                  removed; trained once on public reference data by scripts/train_name_model.py: config/kind_names.npz
     combiner     gradient-boosted trees on the name model's score, the file's flag, the birth year and the legal form,
@@ -31,8 +31,8 @@ from sklearn.feature_extraction.text import CountVectorizer
 from sklearn.linear_model import LogisticRegression
 from sklearn.model_selection import StratifiedKFold, cross_val_predict
 
-from er.config import InputError, KindSpec, Standardization
-from er.standardize import legal_pattern, normalize
+from er.config import InputError, KindSpec, Standardization, legal_pattern
+from er.standardize import normalize
 
 VERSION = 2  # of the name model's training: a change here trains it again
 

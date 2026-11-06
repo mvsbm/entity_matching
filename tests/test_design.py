@@ -64,6 +64,7 @@ def parse(name: str) -> tuple[dict[str, tuple[str, str]], list[tuple[str, str]],
 
 
 MODULES = {f.stem for f in (ROOT / "er").glob("*.py")} - {"__init__"}
+RANK = {"tools_run": 4, "tools_design": 4, "design": 3, "run": 2, "steps": 1, "configuration": 0}  # components.puml: each layer imports only those below
 CLASSES = {"Run": "er.run", "Classifier": "er.kind", "NameModel": "er.kind"}
 
 
@@ -257,6 +258,8 @@ def test_the_components_diagram_holds_every_module_once_and_draws_the_imports_be
     drawn = {(a, b) for a, b in edges if a in layer.values() and b in layer.values()}
     assert not code - drawn, f"components.puml: imports between these boxes to draw {sorted(code - drawn)}"
     assert not drawn - code, f"components.puml: arrows no import makes {sorted(drawn - code)}"
+    against = sorted((a, b) for a, b in imports() if layer[a] != layer[b] and RANK[layer[a]] <= RANK[layer[b]])
+    assert not against, f"imports against the layers (each layer imports only those below it): {against}"
 
 
 def test_every_path_and_function_a_diagram_or_a_doc_names_exists():

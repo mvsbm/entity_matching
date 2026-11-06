@@ -8,8 +8,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import get_args
 
-from er.config import Data, Derived, Normalizer, Pipeline, Standardization, check_fields, restrict
-from er.standardize import legal_pattern
+from er.config import Data, Derived, Normalizer, Pipeline, Standardization, check_fields, legal_pattern, restrict
 
 SPECIAL = ("id", "entity")  # single columns, used under their own names: the record id and the truth
 
