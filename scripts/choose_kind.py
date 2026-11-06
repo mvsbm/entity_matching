@@ -27,7 +27,6 @@ combination: how sole traders are counted, and how well people's answers place t
 """
 import itertools
 import logging
-import sys
 import time
 from dataclasses import replace
 
@@ -39,7 +38,7 @@ from sklearn.linear_model import LogisticRegression
 from sklearn.model_selection import StratifiedKFold, cross_val_predict
 
 from er.config import load_pipeline
-from er.generate import bank_name, kana_typo, load_reference, load_registry, load_spec
+from er.generate import bank_name, kana_typo, load_reference, load_registry, load_spec, name_model_split
 from er.io import markdown
 from er.kind import NameModel, legal, lines, text
 from er.settings import load_settings
@@ -116,9 +115,7 @@ def make(kind: str):
 
 def main() -> None:
     t0 = time.perf_counter()
-    reg, persons = load_registry(S.paths["reference"]), load_reference(S.paths["reference"])[0].sample(frac=1, random_state=0)
-    p_train, p_test = persons.iloc[: len(persons) // 2], persons.iloc[len(persons) // 2:]
-    c_train, fukuoka = reg[reg.prefecture.isin(["04", "33"])], reg[reg.prefecture == "40"]
+    p_train, p_test, c_train, fukuoka = name_model_split(load_reference(S.paths["reference"])[0], load_registry(S.paths["reference"]))
     c_test, shops = fukuoka.iloc[: len(fukuoka) // 2], fukuoka.iloc[len(fukuoka) // 2:]["reading"].tolist()
     fold = lambda s: normalize(pd.Series(s, dtype="string"), ("nfkc", "strip_spaces", "kana_fold"), S.standardize)
     surnames, givens = set(fold(p_train.surname_kana).dropna()), set(fold(p_train.given_kana).dropna())

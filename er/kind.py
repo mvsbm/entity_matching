@@ -11,7 +11,7 @@
 
 Each record gets kind (2 company, 1 person, 0 not sure: the codes a person/company flag uses), kind_p (the probability
 of a company), kind_by (engine, or people: their answer stands) and name_p (what its name alone says). A name routed by
-kind (er.standardize.prepare) goes to the side kind_p leans to. The review sheet (review_sheet) sends people the
+kind (er.standardize.prepare) goes to the side kind_p leans to. The review sheet (kind_review_sheet) sends people the
 records where the engine or the name disagrees with the file's flag, and a draw that measures both.
 scripts/choose_kind.py chose these parts. O(N·L·g) to score N records (g n-gram lengths), O(T·L·g) once to train on T reference names,
 O(Λ·trees) for Λ labels.
@@ -31,7 +31,7 @@ from sklearn.model_selection import StratifiedKFold, cross_val_predict
 from er.config import KindSpec, Standardization
 from er.standardize import legal_pattern, normalize
 
-VERSION = 1  # of the name model's training: a change here trains it again
+VERSION = 2  # of the name model's training: a change here trains it again
 
 
 def legal(names: pd.Series, std: Standardization) -> np.ndarray:
@@ -88,9 +88,9 @@ class NameModel:
 
 
 def name_model(settings, spec: KindSpec) -> NameModel:
-    """The name model for these settings: trained on the reference data (personas and the registry), cached in the
-    models folder under a key of everything it depends on."""
-    from er.generate import kind_training_names, load_reference, load_registry, load_spec  # the generator's data, read once
+    """The name model for these settings: trained on the reference data's training half (er.generate.name_model_split:
+    half the personas, two prefectures' companies), cached in the models folder under a key of everything it depends on."""
+    from er.generate import kind_training_names, load_reference, load_registry, load_spec, name_model_split  # the generator's data
     ref = settings.paths["reference"]
     std = settings.standardize
     h = hashlib.sha256(f"{VERSION}|{spec.ngram}|{std.legal_forms}|{std.legal_front}|{std.legal_end}|{sorted(std.kana_fold.items())}".encode())
@@ -100,7 +100,8 @@ def name_model(settings, spec: KindSpec) -> NameModel:
     if (m := NameModel.load(path, key)) is not None:
         return m
     spec_g = load_spec(settings.root / "config" / "generator.toml")[0]
-    names = kind_training_names(load_reference(ref)[0], load_registry(ref), std.legal_front, std.legal_end, spec_g.kana_confusions, spec_g.branches)
+    persons, _, companies, _ = name_model_split(load_reference(ref)[0], load_registry(ref))
+    names = kind_training_names(persons, companies, std.legal_front, std.legal_end, spec_g.kana_confusions, spec_g.branches)
     m = NameModel.fit(text(names["name"], std), names["y"].to_numpy(), spec.ngram)
     m.save(path, key)
     return m
@@ -229,7 +230,7 @@ def classifier(settings, spec: KindSpec, labels: pd.DataFrame | None = None) -> 
     return c
 
 
-def review_sheet(records: pd.DataFrame, uid: str, spec: KindSpec, flag_company: tuple[str, ...], answered: set[str] = frozenset()) -> pd.DataFrame:
+def kind_review_sheet(records: pd.DataFrame, uid: str, spec: KindSpec, flag_company: tuple[str, ...], answered: set[str] = frozenset()) -> pd.DataFrame:
     """Records for people, as matching's review sheet holds pairs. `records`: uid, name (as written: kind_name), kind_flag (if any), birth_date
     (if any), kind, kind_p, kind_by, name_p, kind_held. Two kinds of row, none already answered or decided by people:
 

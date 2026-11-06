@@ -22,7 +22,7 @@ from er.config import (Blocker, Budget, Data, DeletionKeys, FSSpec, Key, KeyBloc
 from er.evaluate import (average_precision, candidate_metrics, cluster_metrics, edge_metrics, fp_upper, missed_pairs,
                          true_pairs, wilson)
 from er.match import rule_edges, scaled_prior, score_fs, scored_sample, with_scored_u
-from er.resolve import resolve
+from er.cluster import resolve
 from er.standardize import prepare
 from er.strings import FUNCTIONS, udf
 

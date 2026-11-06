@@ -3,8 +3,9 @@ columns to logical fields.
 
 Stages and their tables:
   standardize  records → records + derived / normalized columns        (er.standardize)
+  kind         each record → person, company or not sure; names routed  (er.kind)
   candidates   records → candidate pairs (uid_l, uid_r, sources)         (er.candidates)
   matching     pairs → scored / decided pairs                            (er.match)
-  resolution   accepted pairs → clusters                                 (er.resolve, er.pipeline.cascade)
+  resolution   accepted pairs → clusters                                 (er.cluster, er.pipeline.cascade)
   evaluation   pairs and clusters vs truth, plus cost                     (er.evaluate)
 """

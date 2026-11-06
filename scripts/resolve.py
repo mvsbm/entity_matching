@@ -18,7 +18,8 @@ fitted model (data/artifacts/models/probabilistic_final.json). Writes to --outpu
 the stage and rule that resolved it, and its kind and its customer's: company, person or unsure), matches/ (accepted
 pairs, their weights and the generators that found them) and rule_kept/ as Parquet parts, steps.json (each step's
 Big-O and time), qa.md (label-free checks), report.txt (the run on one page with no record's value in it, to send to
-whoever helps you with it), review.parquet (pairs for people: "decide", every cluster pair whose best link scored in the threshold's safety margin, and "audit",
+whoever helps you with it), review.parquet (pairs for people: "decide", every cluster pair whose best link scored in the threshold's safety margin or above it
+with no name compared, and "audit",
 a sample of accepted pairs just above it; both records' compared fields side by side, each field's level and bits,
 and an empty decision column; it holds records, so keep it with the data), kind_review.parquet (a full run's
 records for people to answer 1 person, 2 company or 0 can't tell: "decide", where the engine or the name disagrees with
@@ -40,7 +41,7 @@ import pandas as pd
 
 from er.config import InputError, load_pipeline, sources_text
 from er.io import markdown
-from er.kind import review_sheet as kind_sheet
+from er.kind import kind_review_sheet
 from er.run import Run, fill_rates, qa, report_text
 from er.settings import load_settings
 
@@ -127,7 +128,7 @@ def main() -> None:
         records = run.con.sql(f'SELECT "{run.uid}", kind_name AS name, {", ".join(cols)}{", " if cols else ""}'
                               "kind, kind_p, kind_by, name_p, kind_held FROM records").df()
         done = set(run.labels[run.uid].astype("string")) if run.labels is not None else set()  # answered: blank rows come back
-        kind_sheet(records, run.uid, p.kind, s.flag_company, done).to_parquet(args.output / "kind_review.parquet")
+        kind_review_sheet(records, run.uid, p.kind, s.flag_company, done).to_parquet(args.output / "kind_review.parquet")
     print("\n".join(f"{what:<12} {value}" for what, value in report["summary"].itertuples(index=False)))
     print(f"{sum(x['seconds'] for x in run.steps):.1f} s · wrote {args.output}: gold.parquet, review.parquet, qa.md (each step's cost), "
           "report.txt (no record's value in it: to share)" + (", kind_review.parquet (persons and companies to decide and to measure)" if run.classifier is not None and not args.increment else "")

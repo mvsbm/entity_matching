@@ -17,7 +17,7 @@ from er.io import load
 from er.match import exact_u, parameters, rule_edges, sample_u, score_fs, stale_u, train_fs, u_values, waterfall, with_scored_u
 from er.pipeline import (accept_curve, cascade, check_budget, entity_folds, grown_pairs, pattern_coverage, preflight, select_threshold,
                          window_only)
-from er.resolve import connected_components, constrained
+from er.cluster import connected_components, constrained
 from er.config import dump_pipeline, fields_read, load_pipeline
 from er.settings import fit_to_file, load_settings
 from er.standardize import legal_pattern, normalize, prepare
@@ -1033,7 +1033,7 @@ def kind_population():
     base = load_settings()
     spec = replace(load_spec(base.root / "config" / "generator.toml")[0], entities=1_500)
     ref, std = load_reference(base.paths["reference"]), base.standardize
-    g = kind_problems(make(spec, *ref), KindProblems(), ref[0], load_registry(base.paths["reference"]), std.legal_front, std.legal_end,
+    g = kind_problems(make(spec, *ref), KindProblems(), load_registry(base.paths["reference"]), std.legal_front, std.legal_end,
                       spec.kana_confusions, spec.branches)
     s = shared_name(base, "NAME_KANA")
     return s, load_pipeline(s.root / "config" / "final.toml", s.standardize, s.chains, s.columns), g
@@ -1098,11 +1098,11 @@ def test_without_labels_only_a_legal_form_makes_a_company_and_a_person_company_p
 
 
 def kind_sheet_for(run, s, p, draw):  # the run's review sheet, as scripts/resolve.py writes it
-    from er.kind import review_sheet
+    from er.kind import kind_review_sheet
     uid = s.data.unique_id
     records = run.con.sql(f'SELECT "{uid}", kind_name AS name, kind_flag, birth_date, kind, kind_p, kind_by, name_p, kind_held '
                           "FROM records").df()
-    return review_sheet(records, uid, replace(p.kind, labels_to_draw=draw, review_max=200), s.flag_company)
+    return kind_review_sheet(records, uid, replace(p.kind, labels_to_draw=draw, review_max=200), s.flag_company)
 
 
 def test_the_review_sheet_says_in_words_why_each_record_is_there(tmp_path, kind_population):
@@ -1215,3 +1215,17 @@ def test_an_increment_classifies_its_batch_on_the_run_s_answers(tmp_path, kind_p
     assert (gold.loc[sheet[uid], "kind_by"] == "people").all()  # the stored records' answers stand
     new = gold.loc[g.df.loc[batch, uid]]
     assert new["kind"].notna().all() and (new["kind_by"] == "engine").all()  # the batch: kinds from the same engine
+
+
+def test_the_kind_problems_name_no_company_the_name_model_trains_on():
+    from er.generate import KindProblems, generate as make, kind_problems, load_reference, load_spec, name_model_split
+    s = load_settings()
+    spec = replace(load_spec(s.root / "config" / "generator.toml")[0], entities=600)
+    registry = pd.DataFrame({"reading": ["ヰヱヰヱ", "アオイ"], "legal": ["カブシキガイシャ"] * 2, "abbreviation": ["カ"] * 2,
+                             "front": [True] * 2, "prefecture": ["04", "40"]}).astype(object)  # a training company, a held-out one
+    g = kind_problems(make(spec, *load_reference(s.paths["reference"])), KindProblems(), registry, s.standardize.legal_front,
+                      s.standardize.legal_end, spec.kana_confusions, spec.branches)
+    names = g.df.loc[g.truth["CASE"].eq("company").to_numpy(), "NAME_KANA"].dropna()
+    assert len(names) and not names.str.contains("ヰ").any()  # only the held-out company is ever written
+    _, _, train, held = name_model_split(load_reference(s.paths["reference"])[0], registry)
+    assert set(train["reading"]) == {"ヰヱヰヱ"} and set(held["reading"]) == {"アオイ"}

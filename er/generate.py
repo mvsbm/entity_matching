@@ -369,6 +369,19 @@ def split_by_entity(truth: pd.DataFrame, split: Split) -> pd.Series:
 
 # ---------- persons and companies, as hard to tell apart as real records make them ----------
 
+NAME_MODEL_PREFECTURES = ("04", "33")  # the registry's companies the name model trains on (Miyagi, Okayama); Fukuoka's are held out
+
+
+def name_model_split(persons: pd.DataFrame, registry: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    """The person-or-company name model's training data and what is held out of it: the first half of the shuffled
+    personas and the registry's companies of NAME_MODEL_PREFECTURES train it (er.kind.name_model); the other half and
+    the other prefecture's companies are held out (scripts/choose_kind.py tests on them, kind_problems draws its
+    companies from them). Returns persons to train, persons held out, companies to train, companies held out."""
+    shuffled = persons.sample(frac=1, random_state=0)
+    trains = registry["prefecture"].isin(NAME_MODEL_PREFECTURES)
+    return shuffled.iloc[: len(shuffled) // 2], shuffled.iloc[len(shuffled) // 2:], registry[trains], registry[~trains]
+
+
 def load_registry(folder: Path) -> pd.DataFrame:
     """registry.json: real corporations' readings, each with its legal form's reading and bank abbreviation (none when the
     name holds no legal form), whether the form leads the name, and the prefecture (SOURCES.md)."""
@@ -419,10 +432,10 @@ class KindProblems:
     seed: int = 1
 
 
-def kind_problems(g: Generated, k: KindProblems, persons: pd.DataFrame, registry: pd.DataFrame, legal_front: Sequence[str],
+def kind_problems(g: Generated, k: KindProblems, registry: pd.DataFrame, legal_front: Sequence[str],
                   legal_end: Sequence[str], confusions: Sequence[tuple[str, str]], branches: Sequence[str]) -> Generated:
     """The records with one name column for every kind, NAME_KANA: real company names from the registry, written as banks
-    write them; companies with records under their representative's name, the representative a person of the file
+    write them, from the companies held out of the name model's training (name_model_split); companies with records under their representative's name, the representative a person of the file
     (with home_office, the company's records at that person's address and phone: they could merge into the person's own);
     sole traders named like a shop; companies with a date in BIRTH_DATE; and the file's own flag, PERSON_ORG_CODE
     (1 person, 2 company), sometimes wrong. truth gains CASE: company, person, representative or sole trader. Its own
@@ -435,6 +448,7 @@ def kind_problems(g: Generated, k: KindProblems, persons: pd.DataFrame, registry
     named = (person_name.notna() & ~company) | (df["NYS_CNV_P_NAME_KANA"].notna() & company)
     ents = truth["ENTITY_ID"].to_numpy()
     c_ents, p_ents = pd.unique(ents[company]), pd.unique(ents[~company])
+    registry = registry[~registry["prefecture"].isin(NAME_MODEL_PREFECTURES)]  # names the name model hasn't seen
     reg = registry.sample(len(c_ents), replace=len(c_ents) > len(registry), random_state=int(rng.integers(1 << 31)))
     firm = dict(zip(c_ents, reg.itertuples(index=False)))
     first = pd.Series(np.arange(len(df))).groupby(ents).first()  # each entity's first record

@@ -6,6 +6,8 @@ tables. Writes reports/benchmark.md. Nothing is re-tuned.
 
 Quality: each scenario generates a population with er.generate (config/generator.toml, varied), fits λ, u and m on
 its train split without labels, resolves its test split, and compares the clusters with the truth.
+Person or company: populations with every kind problem on (er.generate.kind_problems) and one name column, resolved
+with names routed by the truth, by the file's flag alone, and by the kind step on people's answers (here, the truth).
 Cost: populations of growing size, each resolved by scripts/resolve.py in a process of its own, so the peak memory is
 that run's alone. Past the memory limit (--memory-limit, else config/settings.toml [compute]) DuckDB spills to disk.
 """
@@ -24,7 +26,7 @@ from er.config import load_pipeline
 from er.evaluate import cluster_metrics, pair_metrics
 from er.generate import KindProblems, generate, kind_problems, load_reference, load_registry, load_spec, split_by_entity
 from er.io import markdown
-from er.kind import review_sheet as kind_sheet
+from er.kind import kind_review_sheet
 from er.run import Run, qa
 from er.settings import load_settings, shared_name
 
@@ -108,7 +110,7 @@ def kinds(entities: int, labels: int = 2_000) -> pd.DataFrame:
     flag_only = replace(p, kind=replace(p.kind, trust_flag=True))
     rows = []
     for i, (name, problems) in enumerate(FLAGS.items()):
-        g = kind_problems(generate(replace(SPEC, entities=entities), PERSONS, COMPANIES, TOWNS), problems, PERSONS, reg,
+        g = kind_problems(generate(replace(SPEC, entities=entities), PERSONS, COMPANIES, TOWNS), problems, reg,
                           std.legal_front, std.legal_end, SPEC.kana_confusions, SPEC.branches)
         d = OUT / f"kinds_{i}"
         d.mkdir(parents=True, exist_ok=True)
@@ -117,7 +119,7 @@ def kinds(entities: int, labels: int = 2_000) -> pd.DataFrame:
         truth = g.truth.set_index(UID)
         free = Run(p, s).full(d / "records.parquet", d / "free", overwrite=True)
         records = free.con.sql(f'SELECT "{UID}", kind_name AS name, kind_flag, birth_date, kind, kind_p, kind_by, name_p, kind_held FROM records').df()
-        sheet = kind_sheet(records, UID, replace(p.kind, labels_to_draw=labels), S.flag_company)  # people answer every row: here, the truth
+        sheet = kind_review_sheet(records, UID, replace(p.kind, labels_to_draw=labels), S.flag_company)  # people answer every row: here, the truth
         sheet.assign(kind=np.where(truth.loc[sheet[UID], "KIND"].eq("company"), 2, 1)).to_parquet(d / "labels.parquet")
         for how, pipeline, records, kind_labels in (("the truth", flag_only, "truth_flag.parquet", None), ("the flag alone", flag_only, "records.parquet", None),
                                                     (f"the kind step, {labels:,} labels", p, "records.parquet", d / "labels.parquet")):
@@ -185,7 +187,7 @@ def main() -> None:
               "reports without labels.", "", markdown(robust), "",
               "## Person or company: end to end", "",
               "Populations with one name column for every kind (`er.generate.kind_problems`): real company names from the registry, "
-              "written as banks write them; companies with records under their representative's name, the representative a person of "
+              "held out of the name model's training and written as banks write them; companies with records under their representative's name, the representative a person of "
               "the file (half at that person's address and phone); sole traders named like a shop; company dates; and a flag good, "
               "medium or poor. Each resolved three ways: names routed by the truth (the flag replaced by it, taken as it is); by the "
               "flag alone; by the kind step, people answering its review sheet (here, with the truth). `person_company_clusters` hold "

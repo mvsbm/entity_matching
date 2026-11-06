@@ -26,7 +26,7 @@ import duckdb
 import numpy as np
 import pandas as pd
 
-from er.config import Blocker, Budget, DeletionKeys, KeyBlocker, OverBudget, SortedNeighbourhood, TfidfNeighbours, keys_of
+from er.config import Blocker, Budget, DeletionKeys, KeyBlocker, SortedNeighbourhood, TfidfNeighbours, keys_of
 
 _CON: duckdb.DuckDBPyConnection | None = None  # for pandas input when the caller passes no connection
 

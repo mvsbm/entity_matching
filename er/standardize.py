@@ -1,4 +1,5 @@
-"""Standardize: derived (fallback) columns and normalized copies of columns. O(N·L)."""
+"""Standardize: derived (fallback) columns, each record's kind and the name fields routed by it (er.kind), and the
+normalized copies of columns. O(N·L)."""
 import re
 from collections.abc import Iterable
 from typing import TYPE_CHECKING

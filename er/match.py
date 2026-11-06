@@ -2,8 +2,8 @@
 
 rules           a pair is accepted when every condition of one rule holds (score 1.0); each rule is one SQL
                 equi-join, so its work is the pairs inside its blocks
-fellegi_sunter  Splink's Fellegi–Sunter model: λ from near-certain rules, u by random sampling, m by EM or from
-                labels; scores any registered candidate table, so candidates and scoring stay independent
+fellegi_sunter  Splink's Fellegi–Sunter model: λ from near-certain rules, u counted on the file where a level can be
+                (exact_u) and sampled where it can't, m by EM or from labels; scores any registered candidate table, so candidates and scoring stay independent
 """
 import copy
 import logging

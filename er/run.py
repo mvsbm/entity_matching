@@ -4,7 +4,7 @@ step is a method of Run, called in order by full(), or one at a time by the demo
 with the numbers filled in, and its time.
 
     load        O(N·L)                           read through er.source (Parquet), check the fields, set aside what can't be
-                                                 resolved, standardize each chunk → table records
+                                                 resolved, standardize each chunk, each record's kind (er.kind) → table records
     budget      O(N)                             exact block sizes per rule and generator, before any join; blocks of
                                                  64+ records flagged (a rule doesn't trust them; candidates sample them)
     fit         O(n + S·K + P_em·K) + O(N + S·K) λ and m by EM on a fixed-size sample of n records (or a fitted model),
@@ -441,9 +441,9 @@ class Run:
         return round(self.con.execute("SELECT coalesce(sum(1 - match_probability), 0) FROM matches").fetchall()[0][0], 2)
 
     def write(self, out: Path, part: int = 0) -> None:
-        """Gold (each record's cluster, and the stage and rule that resolved it), the accepted pairs with their weights,
-        the rules' pairs, as Parquet; and the state an increment needs: the standardized records and the rules'
-        clusters. Records, rules' pairs and matches are folders that increments append to. Staged: see the module."""
+        """Gold (each record's cluster, the stage and rule that resolved it, its kind and its customer's), the accepted
+        pairs with their weights, the rules' pairs, as Parquet; and the state an increment needs: the standardized
+        records, the rules' clusters and people's person/company answers. Records, rules' pairs and matches are folders that increments append to. Staged: see the module."""
         t, state, name = time.perf_counter(), out / "state", f"part-{part:05d}.parquet"
         for folder in (state / "records", out / "rule_kept", out / "matches"):
             folder.mkdir(parents=True, exist_ok=True)
