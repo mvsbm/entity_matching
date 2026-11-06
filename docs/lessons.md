@@ -135,7 +135,7 @@ Each entry names a way an entity-resolution pipeline like this one goes wrong, a
 ## A legal-form list that misses how banks write it
 - **Pitfall:** a list of legal forms in full (株式会社, カブシキガイシャ) and one abbreviation misses most of how bank records write them: カ)〇〇 at the front, 〇〇(カ at the end, イ) for 医療法人, ザイ) for a 財団法人, and readings with small kana written large (カブシキガイシヤ). It shows as companies that look like persons to every later step, and company names that keep their legal form when compared.
 - **Why:** bank systems store names in half-width katakana under the Zengin rules: no small kana, and each legal form abbreviated, at a position that depends on where the form stands in the name.
-- **Guard:** `[locale]` `legal_forms` holds every form's reading and the middle abbreviations ((カ)); `legal_front` and `legal_end` hold the abbreviations by where banks may put them. `standardize.legal_pattern` adds each reading with small kana written large, longest first, so 医療法人社団 isn't cut to 医療法人.
+- **Guard:** `[locale]` `legal_forms` holds every form's reading and the middle abbreviations ((カ)); `legal_front` and `legal_end` hold the abbreviations by where banks may put them. `config.legal_pattern` adds each reading with small kana written large, longest first, so 医療法人社団 isn't cut to 医療法人.
 - **Check:** a test strips every form at its positions, keeps a front-only one at the end, and leaves the generator's names losing exactly the forms the generator writes; `reports/choose_kind.md` shows what the bank table is worth against the generator's forms alone.
 
 ## A signal true only in the generator

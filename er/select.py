@@ -18,9 +18,9 @@ from er.config import (Data, FSSpec, FSTune, KeyBlocker, OverBudget, Pipeline, R
                        with_level)
 from er.evaluate import adopt, c2, candidate_metrics, missed_pairs, paired_test, predicted_pairs, true_pairs
 from er.io import append_leaderboard, assert_test_scored_once, load, test_evaluations, write_final
-from er.match import parameters, train_fs, waterfall
+from er.match import parameters, pattern_coverage, train_fs, waterfall
 from er.pipeline import (FSResult, Result, accept_curve, automatic, complexity_summary, cross_validate_fs, cv_threshold_curve, entity_folds,
-                         pattern_coverage, preflight, run_fs, run_rules, scale_check, select_threshold, summed, threshold_curve,
+                         preflight, run_fs, run_rules, scale_check, select_threshold, summed, threshold_curve,
                          window_only)
 from er.standardize import prepare
 from er.tune import new_study, pick_within_noise, plain, start_dashboard, suggest_comparators

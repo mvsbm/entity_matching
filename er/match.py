@@ -11,7 +11,7 @@ import math
 import time
 from collections.abc import Iterable, Mapping
 from dataclasses import replace
-from itertools import combinations
+from itertools import combinations, product
 
 import pandas as pd
 import splink.comparison_level_library as cll
@@ -19,8 +19,7 @@ import splink.comparison_library as cl
 from splink import DuckDBAPI, Linker, SettingsCreator
 
 from er.candidates import deletions_sql
-from er.config import Comparator, Comparison, FSModel, InputError, Key, RulesSpec, keys_sql
-from er.evaluate import fp_upper
+from er.config import Comparator, Comparison, DeletionKeys, FSModel, FSSpec, InputError, Key, KeyBlocker, RulesSpec, keys_sql
 
 
 def rule_edges(spec: RulesSpec, records: "Records", db: DuckDBAPI, uid: str, batch: str | None = None,
@@ -195,7 +194,8 @@ def u_bound(model: FSModel, c: Comparison, records: Records, db: DuckDBAPI) -> f
     is filled, of which there are at least (largest fill share of its columns)² of the sample."""
     n = rows(records, db)
     sampled = min(model.u_max_pairs, n * (n - 1) / 2)
-    return fp_upper(0, max(1, int(sampled * max(fill_share(records, col, db) for col in c.null_if_missing) ** 2)))
+    n_filled = max(1, int(sampled * max(fill_share(records, col, db) for col in c.null_if_missing) ** 2))
+    return 1 - 0.05 ** (1 / n_filled)  # the one-sided 95% Clopper–Pearson bound at zero hits (er.evaluate.fp_upper(0, n))
 
 
 SCORED_U: dict[tuple[str, int], dict[str, float]] = {}  # (FSModel.u_keys() value, fingerprint of what it reads) → u per level
@@ -438,3 +438,60 @@ def parameters(model_json: dict) -> pd.DataFrame:
             rows.append(dict(comparison=c["output_column_name"], level=lv.get("label_for_charts"), m=m, u=u,
                              weight=math.log2(m / u) if m and u else None, tf=lv.get("tf_adjustment_column")))
     return pd.DataFrame(rows)
+
+
+def pattern_coverage(spec: FSSpec, model_json: dict, n_records: int) -> pd.DataFrame:
+    """The label-free form of window_only: every agreement pattern (one level per comparison, or missing) whose bits
+    reach min_match_weight at n_records, that no equality key is guaranteed to pair, with its share of true matches
+    (Π m, the model's own estimate). A level guarantees what its comparators imply: an exact comparator, equality of
+    that normalized field and of any longer normalization of it; a distance ≤ 1, a shared one-deletion key. A fuzzy
+    similarity (Jaro–Winkler) implies no key, so for its patterns the share is an upper bound on what is at risk.
+    O(Π levels) patterns, a few thousand."""
+    by_name = {c.name: c for c in spec.model.comparisons}
+    lam = scaled_prior(model_json, n_records)
+    prior = math.log2(lam / (1 - lam))
+
+    def implied(col: str, comp) -> set[tuple[str, tuple[str, ...], str]]:  # (field, normalization, "eq" | "near")
+        if comp.function == "exact":
+            return {(col, comp.normalize, "eq")}
+        if comp.function in ("levenshtein", "damerau_levenshtein", "hamming") and comp.threshold is not None and comp.threshold <= 1:
+            return {(col, comp.normalize, "near")}
+        return set()
+
+    def holds(facts: set, key, near_ok: bool = False) -> bool:  # does a fact imply equality (or nearness) of this key?
+        return any(f == key.column and key.normalize[:len(n)] == n and (kind == "eq" or (near_ok and n == key.normalize))
+                   for f, n, kind in facts)
+
+    def covered(branches: list[set]) -> bool:  # every way the pattern can hold must imply some generator's keys
+        def one(facts: set) -> bool:
+            for b in spec.blockers:
+                if isinstance(b, KeyBlocker) and all(holds(facts, k) for k in b.keys):
+                    return True
+                if isinstance(b, DeletionKeys) and holds(facts, b.key, near_ok=True) and all(holds(facts, k) for k in b.within):
+                    return True
+            return False
+        return all(one(f) for f in branches)
+
+    options = []
+    for c in model_json["comparisons"]:
+        comp = by_name[c["output_column_name"]]
+        levels = {lv.label: lv for lv in comp.levels}
+        opts = [("missing", 0.0, 1.0, [set()])]
+        for lv in (x for x in c["comparison_levels"] if not x.get("is_null_level")):
+            label = lv["label_for_charts"]
+            branches = [implied(col, cmp) for col, cmp in levels[label].any_of] if label in levels else [set()]
+            opts.append((label, math.log2(lv["m_probability"] / lv["u_probability"]), lv["m_probability"], branches))
+        options.append((c["output_column_name"], opts))
+    rows = []
+    for combo in product(*(opts for _, opts in options)):
+        weight = prior + sum(o[1] for o in combo)
+        if weight < spec.min_match_weight:
+            continue
+        branches = [set()]
+        for o in combo:  # the pattern's facts: one branch per OR'd condition of each level
+            branches = [b | f for b in branches for f in o[3]]
+        if not covered(branches):
+            rows.append({**{name: o[0] for (name, _), o in zip(options, combo)}, "bits": round(weight, 2),
+                         "share_of_matches": math.prod(o[2] for o in combo if o[0] != "missing")})
+    out = pd.DataFrame(rows, columns=[*(n for n, _ in options), "bits", "share_of_matches"])
+    return out.sort_values("share_of_matches", ascending=False, ignore_index=True)

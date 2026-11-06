@@ -256,7 +256,8 @@ On train, every true pair that could reach the threshold shares a key, at its si
 ## In the code
 
 - `er/config.py`: the generator types `KeyBlocker`, `SortedNeighbourhood`, `TfidfNeighbours`, `DeletionKeys` (one-deletion keys); `er/candidates.py`: each as SQL (`pairs_sql`), `candidates` (merge by bits), `estimate` (the count before any join)
-- `er/pipeline.py`: `grown_pairs` (a key's pairs of one entity and by chance, each projected by its own law), `scale_check` (every key and rule projected to `target_rows`), `window_only` (the potential matches no key reaches), `pattern_coverage` (the same question without labels) and `cascade`'s `bridge` (a stage that may join two clusters)
+- `er/pipeline.py`: `grown_pairs` (a key's pairs of one entity and by chance, each projected by its own law), `scale_check` (every key and rule projected to `target_rows`), `window_only` (the potential matches no key reaches) and `cascade`'s `bridge` (a stage that may join two clusters)
+- `er/match.py`: `pattern_coverage` (the same question without labels, which every run's `qa.md` reports)
 - `er/config.py`: `Budget` (`max_pairs_per_record`, `max_block_size`, `target_rows`, `sample_pairs`); `FSSpec.bridge` (score every pair across two clusters)
 - `er/match.py`: `exact_u` (u counted: the leading exact levels, and a one-edit level after them through one-deletion keys), `scored_sample` (u sampled, kept per comparison and the values it reads), `assemble_u`, `refreshed_u` (an increment's u)
 - `config/pipeline.toml`: every generator, in logical fields; `config/settings.toml`: the fields behind the compound keys (`any_name`, the postal area) and the normalizers `initial`, `first3`, `reverse`
