@@ -112,16 +112,14 @@ def main() -> None:
         x = run.steps[-1]
         print(f"applied {x['decisions']:,} decisions ({x['matches']:,} match): {x['clusters_joined']:,} clusters joined; wrote {args.output}/gold.parquet")
         return
-    with run.writing(args.output):  # the run and its reports: no other job writes in between
-        if args.increment:
-            run.increment(args.input, args.output)
-            if run.added == 0:
-                print(f"nothing new: every record of {args.input} is already in the run in {args.output}")
-                return
-        else:
-            run.full(args.input, args.output, overwrite=args.overwrite)
-        report = run.report(args.input, args.output, pipeline)
-    print("\n".join(f"{what:<12} {value}" for what, value in report["summary"].itertuples(index=False)))
+    if args.increment:  # the run and its reports, written together
+        run.increment(args.input, args.output, pipeline_file=pipeline)
+        if run.added == 0:
+            print(f"nothing new: every record of {args.input} is already in the run in {args.output}")
+            return
+    else:
+        run.full(args.input, args.output, overwrite=args.overwrite, pipeline_file=pipeline)
+    print("\n".join(f"{what:<12} {value}" for what, value in run.tables["summary"].itertuples(index=False)))
     print(f"{sum(x['seconds'] for x in run.steps):.1f} s · wrote {args.output}: gold.parquet, review.parquet, qa.md (each step's cost), "
           "report.txt (no record's value in it: to share)" + (", kind_review.parquet (persons and companies to decide and to measure)" if run.classifier is not None and not args.increment else "")
           + ", matches/, state/")

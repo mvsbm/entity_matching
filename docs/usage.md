@@ -156,7 +156,7 @@ Write `kind`: `1` person, `2` company, `0` can't tell from the record. A sole tr
 ```
 
 - **Your answers stand** for their records (`kind_by` = `people`): a held record's name goes to its side, and matching can use it. A `0` stands too: the record's name stays out of matching, and its pairs come to you in `review.parquet` with no name compared.
-- **They teach the engine.** The combiner fits on every answer 1 or 2, once there are 50 holding both kinds; the lines on the measuring draw only, once 50 of it are answered (answer the whole draw: on fewer answers the company line goes a step stricter, and below 1,000 answers it can still be too loose); the person line only where the answers above it keep it within 1% wrong at 95% confidence (with none wrong, 300 answers above it). The summary says where the lines fall, how often the flag is wrong on the answers drawn at random, and how many records stay held back.
+- **They teach the engine.** The combiner fits on every answer 1 or 2 and places its lines on the measuring draw only, once 50 of the draw are answered, both kinds among them; until then a written legal form decides, as without answers (answer the whole draw: on fewer answers the company line goes a step stricter, and below 1,000 answers it can still be too loose); the person line only where the answers above it keep it within 1% wrong at 95% confidence (with none wrong, 300 answers above it). The summary says where the lines fall, how often the flag is wrong on the answers drawn at random, and how many records stay held back.
 - **They add up.** The run keeps each sheet's answers as given, one part per sheet in `kind_answers/`; per record the newest answer stands, and a blank row erases nothing. The next sheet leaves out the records answered, and brings back those left blank. A sheet answered wrong is undone by deleting its part, then a full run with `--overwrite`.
 - **A full run writes the sheet.** A record an increment holds back is on the sheet of the next full run.
 
@@ -201,6 +201,7 @@ What stops it: two lines, what is wrong and how to fix it, and exit code 2:
 | `no run in … to add records to` | `--increment` into a folder with no run: run it without `--increment` first |
 | `the pipeline or the column mapping changed since the full run` | an increment would resolve its batch otherwise than the records it joins: run a full run with `--overwrite`, or the increment with the pipeline and settings that run used |
 | `… no such file of person/company answers`, `needs the columns … and kind` | `--kind-labels` points at the wrong file |
+| `answers for records not in …`, `answered rows have no …` | the sheet's IDs changed: a spreadsheet may read 0000000151 as the number 151. Give the IDs back as the run wrote them |
 | `needs the columns …_l, …_r and decision` | a decisions file without both IDs and `decision` |
 | `a decision is match or no_match`, `pairs decided both ways`, `records not in the run` | a decisions file to correct |
 

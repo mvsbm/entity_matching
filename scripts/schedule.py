@@ -25,6 +25,7 @@ import os
 import subprocess
 import sys
 import time
+from collections.abc import Callable
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -66,11 +67,12 @@ def command(kind: str, f: Path, run: Path, compute: list[str]) -> list[str]:
             *(["--compute", *compute] if compute else [])]
 
 
-def attempt(cmd: list[str], retries: int, wait: float = 2.0) -> tuple[int, str, str, int]:
-    """Run cmd; on an unexpected failure (not 0, not 2), again, waiting wait, 2·wait, … Returns the last exit code,
-    stdout, stderr and the attempts made."""
+def attempt(cmd: Callable[[], list[str]], retries: int, wait: float = 2.0) -> tuple[int, str, str, int]:
+    """Run the command cmd() makes; on an unexpected failure (not 0, not 2), make it and run it again, waiting wait,
+    2·wait, …: a first batch whose full run was written before it failed goes again as an increment, which finds it
+    done. Returns the last exit code, stdout, stderr and the attempts made."""
     for k in range(retries + 1):
-        done = subprocess.run(cmd, capture_output=True, text=True)
+        done = subprocess.run(cmd(), capture_output=True, text=True)
         if done.returncode in (0, 2) or k == retries:
             return done.returncode, done.stdout, done.stderr, k + 1
         time.sleep(wait * 2 ** k)
@@ -88,7 +90,7 @@ def one_pass(run: Path, inbox: Path, retries: int, compute: list[str]) -> bool:
             move(f, inbox / "done" / kind)
             continue
         t = time.perf_counter()
-        code, out, err, tries = attempt(command(kind, f, run, compute), retries)
+        code, out, err, tries = attempt(lambda: command(kind, f, run, compute), retries)
         seconds = round(time.perf_counter() - t, 1)
         if code == 0:
             outcome = "done"
