@@ -43,14 +43,22 @@ def population(spec) -> tuple[pd.DataFrame, pd.Series]:
     return g.df, g.truth.set_index(UID)[ENT]
 
 
+def links(run: Path) -> dict:
+    """A written run's model links, and the false ones the model expects among them (the sum of 1 − match probability)."""
+    c = next(x for x in reversed(json.loads((run / "steps.json").read_text())["runs"][-1]["steps"]) if x["step"] == "cluster")
+    return dict(model_links=c["accepted"], expected_false=c["expected_false"])
+
+
 def quality(run: Path, entity: pd.Series) -> dict:
-    """A written run's clusters against the truth: after the rules, and at the end."""
+    """A written run's clusters against the truth: after the rules, and at the end; and its model links that are false."""
     gold = pd.read_parquet(run / "gold.parquet").set_index(UID)["cluster_id"]
     rules = pd.read_parquet(run / "state" / "rule_clusters.parquet").set_index(UID)["cluster_id"].reindex(gold.index)
     e = entity.reindex(gold.index)
     m = cluster_metrics(gold, e)
+    x = pd.read_parquet(run / "matches", columns=[f"{UID}_l", f"{UID}_r"])
     return dict(rules_recall=round(pair_metrics(rules, e)["recall"], 4), recall=round(m["recall"], 4),
-                interval=f"{m['recall_lo']:.3f}–{m['recall_hi']:.3f}", false_merges=int(m["FP"]), fp_rate_at_most=f"{m['fp_rate_hi']:.2%}")
+                interval=f"{m['recall_lo']:.3f}–{m['recall_hi']:.3f}", false_merges=int(m["FP"]), fp_rate_at_most=f"{m['fp_rate_hi']:.2%}",
+                **links(run), false_links=int((x[f"{UID}_l"].map(entity) != x[f"{UID}_r"].map(entity)).sum()))
 
 
 def scenarios() -> pd.DataFrame:
@@ -101,10 +109,11 @@ def cost(entities: list[int], memory_limit: str) -> pd.DataFrame:
             continue
         steps = json.loads((d / "run" / "steps.json").read_text())["runs"][-1]["steps"]
         row = dict(records=size, seconds=round(sum(x["seconds"] for x in steps), 1), peak_memory_gb=max(x["peak_memory_gb"] for x in steps),
-                   **{x["step"]: x["seconds"] for x in steps}, recall="—", false_merges="—", fp_rate_at_most="—")
+                   **{x["step"]: x["seconds"] for x in steps}, recall="—", false_merges="—", fp_rate_at_most="—", **links(d / "run"),
+                   false_links="—")
         if n <= len(PERSONS):
             q = quality(d / "run", entity)
-            row |= dict(recall=q["recall"], false_merges=q["false_merges"], fp_rate_at_most=q["fp_rate_at_most"])
+            row |= {k: q[k] for k in ("recall", "false_merges", "fp_rate_at_most", "false_links")}
         rows.append(row)
         print(rows[-1], flush=True)
     out = pd.DataFrame(rows)
@@ -124,7 +133,10 @@ def main() -> None:
               "Written by `scripts/benchmark.py`: `config/final.toml` through `er.run`, the run without labels on DuckDB tables, on "
               "generated populations. Nothing is re-tuned.", "",
               "## Quality: scenarios", "",
-              "Each population's test split, with λ, u and m fitted on its train split without labels.", "", markdown(robust), "",
+              "Each population's test split, with λ, u and m fitted on its train split without labels. `false_merges` are pairs of "
+              "records in one cluster that are two entities; `false_links` are the model's links between two entities, and "
+              "`expected_false` the false links the model expects among its own (the sum of 1 − match probability), which a run "
+              "reports without labels.", "", markdown(robust), "",
               f"## Cost: files of growing size (time grows like N^{curve.attrs['alpha']})", "",
               f"Each file is resolved by `scripts/resolve.py` in a process of its own, fitted on the file itself; DuckDB memory limit: "
               f"{limit}. Peak memory is the process's, Python included. Step columns are seconds. `fit` (on {FINAL.fit_rows:,} "

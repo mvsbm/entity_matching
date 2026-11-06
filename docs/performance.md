@@ -25,21 +25,21 @@
 | F, D, T | folds (3), decision variants (5 for the rules, 23 for the model), Optuna trials |
 
 **A full run** (`er.run.Run.full`, which `scripts/resolve.py` calls), with the times measured on 1,000,338 generated records by
-`scripts/benchmark.py`, in a process of its own under an 8 GB DuckDB memory limit (peak 6.23 GB, Python included):
+`scripts/benchmark.py`, in a process of its own under an 8 GB DuckDB memory limit (peak 5.85 GB, Python included):
 
 | # | Step | Code | Cost | Grows like | At 1M |
 |---|---|---|---|---|---|
-| 1 | load: read in chunks, check the fields, standardize each chunk | `Run.load`, `er.standardize.prepare` | O(N·L) | N | 6.95 s |
-| 2 | budget: every rule's and generator's pairs, exactly, before any join | `Run.budget`, `er.candidates.estimate` | O(N) per rule and generator, a group-by | N | 1.82 s |
-| 3 | fit: λ, and m by EM, on a sample of whole postal areas (EM's own u from 10⁶ pairs); then u measured on this file: value counts for the leading exact levels, one-deletion keys for a one-edit level after them (so cif, phone and birth are counted exactly), S pairs for name, company and address | `Run.fit`, `er.match.train_fs`, `exact_u`, `scored_sample`, `assemble_u` | O(n + S·K + P_em·K) + O(N + S·K) | **constant**, plus N | 9.18 s |
-| 4 | rules: one plain SQL join per rule (the first rule wins a pair), fuzzy checks on the joined pairs only, then the cascade's clusters | `Run.rules`, `er.match.rule_edges`, `Run._merge` | O(N + Σ P_r·L²) + O(E·d + N) | N; ≤ 0.14 pairs per record per rule at 1M | 2.29 s |
+| 1 | load: read in chunks, check the fields, standardize each chunk | `Run.load`, `er.standardize.prepare` | O(N·L) | N | 6.89 s |
+| 2 | budget: every rule's and generator's pairs, exactly, before any join | `Run.budget`, `er.candidates.estimate` | O(N) per rule and generator, a group-by | N | 1.93 s |
+| 3 | fit: λ, and m by EM, on a sample of whole postal areas (EM's own u from 10⁶ pairs); then u measured on this file: value counts for the leading exact levels, one-deletion keys for a one-edit level after them (so cif, phone and birth are counted exactly), S pairs for name, company and address | `Run.fit`, `er.match.train_fs`, `exact_u`, `scored_sample`, `assemble_u` | O(n + S·K + P_em·K) + O(N + S·K) | **constant**, plus N | 9.24 s |
+| 4 | rules: one plain SQL join per rule (the first rule wins a pair), fuzzy checks on the joined pairs only, then the cascade's clusters | `Run.rules`, `er.match.rule_edges`, `Run._merge` | O(N + Σ P_r·L²) + O(E·d + N) | N; ≤ 0.14 pairs per record per rule at 1M | 2.23 s |
 | 5 | candidates: every generator as one SQL join or window, merged by bitmask, only pairs touching a record the rules left alone; oversized blocks checked on a sample scored with the file's u | `Run.candidates`, `er.candidates.candidates` | O(N·L + Σ P_g) | N; ≤ 1.75 pairs per record per key at 1M, 3 per sorted window | 6.24 s |
-| 6 | score: every candidate, with the u the fit measured | `Run.score`, `er.match.score_fs` | O(C·K·L²) | C | 15.35 s |
+| 6 | score: every candidate, with the u the fit measured | `Run.score`, `er.match.score_fs` | O(C·K·L²) | C | 15.22 s |
 | 7 | cluster: accept at the threshold, connected components with the rules' pairs (each rule cluster one node), gold | `Run.cluster`, `Run._merge` | O(C + E·d + N) | N | 0.27 s |
-| 8 | write: gold, matches, the rules' pairs and the state for increments, as Parquet | `Run.write` | O(N + C) | N | 0.81 s |
-| | **total** | | | | **42.9 s** |
+| 8 | write: gold, matches, the rules' pairs and the state for increments, as Parquet | `Run.write` | O(N + C) | N | 0.93 s |
+| | **total** | | | | **43.0 s** |
 
-At a million records, scoring the candidates (15.35 s) and the fit (9.18 s) take more than half the time. The fit costs
+At a million records, scoring the candidates (15.22 s) and the fit (9.24 s) take more than half the time. The fit costs
 nearly the same at any size: it learns on n records, and its u sample of the file is S pairs for each of name, company
 and address, whatever the file's size; cif, phone and birth are counted exactly, in O(N). The score grows with the
 candidates.
@@ -72,7 +72,7 @@ decisions, plus O(N) to rewrite gold: each `match` pair merges two stored cluste
 or `scripts/resolve.py --compute memory_limit=8GB`), DuckDB spills them to `temp_directory`: by default `.tmp/` under
 the folder the run starts in. The budget counts the room DuckDB may spill to: 90% of that disk's free space, DuckDB's
 own cap (`max_temp_directory_size`). Python holds one chunk of `load` (200,000 records), the fitting sample (n records)
-and small summaries. DuckDB keeps in memory what fits under its limit and spills the rest, so the 6.23 GB peak at a
+and small summaries. DuckDB keeps in memory what fits under its limit and spills the rest, so the 5.85 GB peak at a
 million records shows what it chose to keep under 8 GB. The deletion-key tables hold only the IDs and the key columns.
 
 ## The cost checks before a run
@@ -151,14 +151,14 @@ on the file itself, without labels ([reports/benchmark.md](../reports/benchmark.
 
 | Records | Seconds | Peak memory | fit | score | everything else |
 |---|---|---|---|---|---|
-| 12,532 | 8.0 | 0.73 GB | 7.19 | 0.23 | 0.61 |
-| 24,955 | 9.0 | 0.85 GB | 7.63 | 0.38 | 0.97 |
-| 50,116 | 9.9 | 0.94 GB | 7.75 | 0.51 | 1.63 |
-| 74,959 | 11.0 | 1.07 GB | 7.89 | 0.74 | 2.33 |
-| 1,000,338 | 42.9 | 6.23 GB | 9.18 | 15.35 | 18.38 |
+| 12,532 | 8.0 | 0.72 GB | 7.16 | 0.23 | 0.59 |
+| 24,955 | 8.9 | 0.86 GB | 7.66 | 0.33 | 0.94 |
+| 50,116 | 10.0 | 0.93 GB | 7.68 | 0.69 | 1.60 |
+| 74,959 | 11.0 | 1.08 GB | 7.91 | 0.74 | 2.31 |
+| 1,000,338 | 43.0 | 5.85 GB | 9.24 | 15.22 | 18.49 |
 
-Over these sizes, time grows like N^0.4. `fit` costs nearly the same at every size, 7.19 s at 12,532 records and 9.18 s
+Over these sizes, time grows like N^0.4. `fit` costs nearly the same at every size, 7.16 s at 12,532 records and 9.24 s
 at a million: it learns on 30,000 records, its u sample of the file is 10⁷ pairs for each of name, company and address
 whatever the file's size, and cif, phone and birth are counted exactly. So it is nearly all of a small file's time.
-Everything else goes from 2.33 s at 74,959 records to 18.38 s at a million: 13 times the records, 8 times the time.
-Scoring the candidates, `score`, grows from 0.74 s to 15.35 s, the largest step at a million records.
+Everything else goes from 2.31 s at 74,959 records to 18.49 s at a million: 13 times the records, 8 times the time.
+Scoring the candidates, `score`, grows from 0.74 s to 15.22 s, the largest step at a million records.

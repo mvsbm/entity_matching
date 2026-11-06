@@ -15,7 +15,8 @@ A mistake people must fix stops the run with two lines, what is wrong and how to
 Fits λ and m by EM on a fixed-size sample of the file (config/pipeline.toml [model] fit_rows), or uses --model, a
 fitted model (data/artifacts/models/probabilistic_final.json). Writes to --output: gold.parquet (each record's cluster,
 and the stage and rule that resolved it), matches/ (accepted pairs, their weights and the generators that found them)
-and rule_kept/ as Parquet parts, steps.json (each step's Big-O and time), qa.md (label-free checks), review.parquet
+and rule_kept/ as Parquet parts, steps.json (each step's Big-O and time), qa.md (label-free checks), report.txt (the run
+on one page with no record's value in it, to send to whoever helps you with it), review.parquet
 (pairs for people: "decide", every cluster pair whose best link scored in the threshold's safety margin, and "audit",
 a sample of accepted pairs just above it; both records' compared fields side by side, each field's level and bits,
 and an empty decision column; it holds records, so keep it with the data), and state/ for increments.
@@ -29,9 +30,11 @@ import sys
 from dataclasses import replace
 from pathlib import Path
 
+import pandas as pd
+
 from er.config import InputError, load_pipeline, sources_text
 from er.io import markdown
-from er.run import Run, fill_rates, qa
+from er.run import Run, fill_rates, qa, report_text
 from er.settings import load_settings
 
 
@@ -62,7 +65,8 @@ def main() -> None:
 
     s = load_settings()
     s = replace(s, compute={**s.compute, **dict(kv.split("=", 1) for kv in args.compute)})
-    p = load_pipeline(args.pipeline or s.root / "config" / "final.toml", s.standardize, s.chains, s.columns)
+    pipeline = args.pipeline or s.root / "config" / "final.toml"
+    p = load_pipeline(pipeline, s.standardize, s.chains, s.columns)
     model = None
     if args.model:
         saved = json.loads(args.model.read_text(encoding="utf-8"))
@@ -74,9 +78,12 @@ def main() -> None:
         plan = run.budget()
         present = run.present
         fill = fill_rates(run, fields).set_index("field")
-        print(f"{run.n:,} records")
+        pct = lambda x: "  —" if pd.isna(x) else f"{x:>3.0%}"
+        print(f"{run.n:,} records · filled · looks right, top value: on a sample of 10,000")
         for f in fields:
-            print(f"  {f:<13} " + (f"{fill.at[f, 'filled']:>5.0%} filled  ← {sources_text(present[f])}" if f in fill.index else "—  no column"))
+            x = fill.loc[f] if f in fill.index else None
+            print(f"  {f:<13} " + (f"{x.filled:>5.0%} filled · looks right {pct(x.looks_right)} · top value {pct(x.top_value)}  ← {sources_text(present[f])}"
+                                   if x is not None else "—  no column"))
         print("\n".join(f"  turned off: {x}" for x in run.disabled) or "  nothing turned off")
         m = p.fs.budget.min_oversized()
         shown = plan[(plan["oversized_blocks"] > 0) | plan["name"].isin(plan.nlargest(5, "per_record")["name"])]
@@ -102,12 +109,14 @@ def main() -> None:
         run.full(args.input, args.output, overwrite=args.overwrite)
     report = qa(run, fields, previous=args.output / "review.parquet" if args.increment else None)
     report.pop("review_sheet").to_parquet(args.output / "review.parquet")
-    text = ["# Run report", "", f"Input: `{args.input}` · {run.n:,} records", ""]
+    text = ["# Run checks", "", f"Input: `{args.input}` · {run.n:,} records", ""]
     for name, table in report.items():
         text += [f"## {name.replace('_', ' ')}", "", markdown(table.round(4)) if len(table) else "none", ""]
     (args.output / "qa.md").write_text("\n".join(text), encoding="utf-8")
-    print("\n".join(f"{what:<10} {value}" for what, value in report["summary"].itertuples(index=False)))
-    print(f"{sum(x['seconds'] for x in run.steps):.1f} s · wrote {args.output}: gold.parquet, review.parquet, qa.md (each step's cost), matches/, state/")
+    (args.output / "report.txt").write_text(report_text(run, report, pipeline), encoding="utf-8")
+    print("\n".join(f"{what:<12} {value}" for what, value in report["summary"].itertuples(index=False)))
+    print(f"{sum(x['seconds'] for x in run.steps):.1f} s · wrote {args.output}: gold.parquet, review.parquet, qa.md (each step's cost), "
+          "report.txt (no record's value in it: to share), matches/, state/")
 
 
 if __name__ == "__main__":

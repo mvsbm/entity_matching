@@ -919,7 +919,7 @@ def test_an_oversized_block_is_checked_on_a_sample_and_a_placeholder_is_skipped(
     run = Run(p, s).full(tmp_path / "in.parquet", tmp_path / "run")  # no stop
     block = run.gated[run.gated["value"].str.contains("0000") & (run.gated["generator"] == "phone_prefecture")]
     assert len(block) == 1 and block["decision"].iloc[0].startswith("skipped") and block["records"].iloc[0] == 100
-    assert any("0000" in x and "skipped" in x for x in run.notes)
+    assert any("0000" in x and "skipped" in x for x in run.examples) and not any("0000" in x for x in run.notes)
     check = subprocess.run([sys.executable, str(s.root / "scripts" / "resolve.py"), "--input", str(tmp_path / "in.parquet"), "--check"],
                            capture_output=True, text=True)
     assert check.returncode == 0 and "checked by sampling" in check.stdout
@@ -946,6 +946,26 @@ def test_a_rule_never_trusts_a_value_held_by_an_oversized_block(tmp_path, popula
     ids = set(df.loc[many, uid])
     by_x1 = kept[(kept["rule"] == "X1_CIF_PERSON_NAME") & kept[f"{uid}_l"].isin(ids) & kept[f"{uid}_r"].isin(ids)]
     assert by_x1.empty and any("X1_CIF_PERSON_NAME doesn't trust" in x for x in run.notes)
+
+
+def test_the_run_report_holds_no_record_value(tmp_path, population):
+    import re
+    from er.run import Run, qa, report_text
+    s, p, g = population
+    uid = s.data.unique_id
+    df = g.df.copy()
+    df.loc[df.index[:100], ["PHONE_NUM_4", "ADDRESS_ONE"]] = ["0000", "東京都"]  # placeholders: notes that quote a value
+    df.loc[df.index[100:170], ["CIF_ID", "FULL_NAME_KANA"]] = ["9999999999999", "ヤマダタロウ"]
+    df.to_parquet(tmp_path / "in.parquet", index=False)
+    run = Run(p, s).full(tmp_path / "in.parquet", tmp_path / "run")
+    tables = qa(run, [f for f in s.columns if f not in ("id", "entity")])
+    text = report_text(run, tables, s.root / "config" / "final.toml")
+    assert any("9999999999999" in x for x in run.examples) and any("0000" in x for x in run.examples)
+    assert not re.search(r"[\u3040-\u30ff\u3400-\u9fff\uff66-\uff9f]", text)  # no kana or kanji: no name, address or town
+    assert not any(v in text for c in (uid, "CIF_ID") for v in df[c].dropna())  # no record ID, no customer ID
+    expected = (1 - pd.read_parquet(tmp_path / "run" / "matches")["match_probability"]).sum()
+    assert run.steps[-2]["step"] == "cluster" and run.steps[-2]["expected_false"] == round(expected, 2)
+    assert f"about {expected:,.{1 if expected >= 1 else 2}f} of them false" in text and "MODEL" in text and "birth_date" in text
 
 
 def test_the_runaway_guard_stops_only_what_would_not_fit(tmp_path, population, monkeypatch):

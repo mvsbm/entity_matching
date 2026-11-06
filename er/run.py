@@ -40,24 +40,31 @@ the edges' records only: each existing cluster is one node, see _merge).
 import fcntl
 import functools
 import json
+import math
 import os
+import platform
 import re
 import resource
 import shutil
+import subprocess
 import sys
 import time
 from collections.abc import Callable
 from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
+from datetime import datetime
+from importlib.metadata import version
 from pathlib import Path
 
+import duckdb
 import numpy as np
 import pandas as pd
 from splink.clustering import cluster_pairwise_predictions_at_threshold
 
 from er.candidates import candidates, estimate, q
-from er.config import FSSpec, InputError, Key, KeyBlocker, Pipeline
-from er.match import ELSE, assemble_u, counted, exact_u, levels, refreshed_u, rule_edges, score_fs, scored_sample, train_fs, u_basis
+from er.config import FSSpec, InputError, Key, KeyBlocker, Pipeline, sources_text
+from er.match import (ELSE, assemble_u, counted, exact_u, levels, parameters, refreshed_u, rule_edges, scaled_prior, score_fs,
+                      scored_sample, train_fs, u_basis)
 from er.pipeline import named, pattern_coverage
 from er.settings import Settings, fit_to_file, present_fields
 from er.source import lit, open_source, suggest
@@ -127,7 +134,8 @@ class Run:
         self.con, self.db = connect(self.settings.compute)
         self.uid = self.settings.data.unique_id
         self.l, self.r = f"{self.uid}_l", f"{self.uid}_r"
-        self.notes: list[str] = []            # what the loader detected or fixed, for the run's summary
+        self.notes: list[str] = []            # what the loader detected or fixed, for the run's summary; never a record's value
+        self.examples: list[str] = []         # notes that quote a record's value: the summary and qa.md show them, report.txt doesn't
         self.added: int | None = None         # an increment's new records (0: nothing new)
         self.gated = pd.DataFrame()           # the oversized blocks the candidates checked, and what was decided
         self.present: dict = {}               # each field the file holds, and the source columns it is built from
@@ -238,13 +246,16 @@ class Run:
         return plan
 
     def capacity(self) -> int:
-        """The pairs that fit in DuckDB's memory limit plus the room it may spill to, at BYTES_PER_PAIR: its temp
-        directory's free space, capped as DuckDB caps it (max_temp_directory_size: by default 90% of that space)."""
-        limit, temp, cap = self.con.execute("SELECT current_setting('memory_limit'), current_setting('temp_directory'), "
-                                            "current_setting('max_temp_directory_size')").fetchall()[0]
+        """The pairs that fit in DuckDB's memory limit plus the room it may spill to, at BYTES_PER_PAIR."""
+        limit = self.con.execute("SELECT current_setting('memory_limit')").fetchall()[0][0]
+        return int((size_bytes(limit) + self.spill_room()) / BYTES_PER_PAIR)
+
+    def spill_room(self) -> float:
+        """The bytes DuckDB may spill: its temp directory's free space, capped as DuckDB caps it (max_temp_directory_size:
+        by default 90% of that space)."""
+        temp, cap = self.con.execute("SELECT current_setting('temp_directory'), current_setting('max_temp_directory_size')").fetchall()[0]
         free = shutil.disk_usage(temp if temp and os.path.isdir(temp) else ".").free
-        spill = 0.9 * free if "%" in cap else min(free, size_bytes(cap))
-        return int((size_bytes(limit) + spill) / BYTES_PER_PAIR)
+        return 0.9 * free if "%" in cap else min(free, size_bytes(cap))
 
     def _untrusted(self, i: int, rule_keys: list[str], within: str | None = None) -> str | None:
         """The values of a rule's keys held by an oversized block (with `within`, a table of records: only the values
@@ -260,8 +271,8 @@ class Run:
         if not n:
             return None
         top = self.con.execute(f"SELECT * FROM {name} LIMIT 1").fetchall()[0]
-        self.notes.append(f"rule {self.rule_names[i]} doesn't trust {n:,} value{'s' if n > 1 else ''} held by {m}+ records "
-                          f"({int(records):,} records), e.g. {', '.join(f'{c} = {v}' for c, v in zip(rule_keys, top))} in {top[-1]:,}")
+        self.notes.append(f"rule {self.rule_names[i]} doesn't trust {n:,} value{'s' if n > 1 else ''} held by {m}+ records ({int(records):,} records)")
+        self.examples.append(f"rule {self.rule_names[i]}: {', '.join(f'{c} = {v}' for c, v in zip(rule_keys, top))} in {top[-1]:,} records")
         return name
 
     def fit(self) -> dict:
@@ -347,8 +358,9 @@ class Run:
             return
         floor = review_floor(self.pipeline)
         for x in gated.sort_values("pairs", ascending=False).head(5).itertuples():
-            self.notes.append(f"{x.generator}: {x.value} holds {x.records:,} records ({x.pairs:,} pairs); {int(x.hits)} of {int(x.sampled)} "
+            self.notes.append(f"{x.generator}: a block of {x.records:,} records ({x.pairs:,} pairs); {int(x.hits)} of {int(x.sampled)} "
                               f"sampled pairs reach {floor:g} bits: {x.decision}")
+            self.examples.append(f"{x.generator}: {x.value} holds {x.records:,} records: {x.decision}")
         if len(gated) > 5:
             kept = (gated["decision"] == "kept").sum()
             self.notes.append(f"{len(gated):,} oversized blocks in all: {kept:,} kept, {len(gated) - kept:,} skipped (qa.md lists them)")
@@ -406,7 +418,11 @@ class Run:
         self._merge("rule_clusters", "kept", "clusters")
         self._gold()
         e = self._count("matches")
-        self._done("cluster", "O(C + E·d + N)", f"O({self._count('scores'):,} + {e:,}·d + {self.n:,})", t, accepted=e)
+        self._done("cluster", "O(C + E·d + N)", f"O({self._count('scores'):,} + {e:,}·d + {self.n:,})", t, accepted=e,
+                   expected_false=self._expected_false())
+
+    def _expected_false(self) -> float:  # the false links the model expects among those it accepted: Σ (1 − match probability), O(E)
+        return round(self.con.execute("SELECT coalesce(sum(1 - match_probability), 0) FROM matches").fetchall()[0][0], 2)
 
     def write(self, out: Path, part: int = 0) -> None:
         """Gold (each record's cluster, and the stage and rule that resolved it), the accepted pairs with their weights,
@@ -526,7 +542,8 @@ class Run:
         self.con.execute(f"CREATE OR REPLACE TABLE er_base AS SELECT {u}, cluster_id FROM gold_old UNION ALL SELECT {u}, {u} FROM new_ids")
         self._merge("er_base", "kept", "clusters")
         self._gold("gold_old")
-        self._done("cluster", "O(C_Δ + touched clusters)", f"{self._count('matches'):,} accepted", t, accepted=self._count("matches"))
+        self._done("cluster", "O(C_Δ + touched clusters)", f"{self._count('matches'):,} accepted", t, accepted=self._count("matches"),
+                   expected_false=self._expected_false())
         self.write(out, part)
         return self
 
@@ -621,16 +638,31 @@ def review_floor(p: Pipeline) -> float:
     return below[-min(p.threshold.margin_steps, len(below))]
 
 
-def fill_rates(run: "Run", fields: list[str]) -> pd.DataFrame:
-    """Each field's share of filled records, flagged under 5%: a field almost never filled is often a mapping mistake."""
+def fill_rates(run: "Run", fields: list[str], sample: int = 10_000) -> pd.DataFrame:
+    """Each field's share of filled records, flagged under 5%: a field almost never filled is often a mapping mistake.
+    Then, on a random sample of `sample` records, the share of filled values that look like the field ([locale.detect];
+    a low share is a wrong column or a format the comparisons don't expect), and the share held by its most common
+    value (a placeholder such as 0000 counts as an agreement between the records that hold it). O(N·F + sample·F)."""
     cols = run._columns()
-    return pd.DataFrame([dict(field=f, filled=run.con.execute(f"SELECT avg(({q(f)} IS NOT NULL)::INT) FROM records").fetchall()[0][0])
-                         for f in fields if f in cols], columns=["field", "filled"]).assign(flag=lambda d: np.where(d["filled"] < 0.05, "under 5%", ""))
+    fs = [f for f in fields if f in cols]
+    if not fs:
+        return pd.DataFrame(columns=["field", "filled", "looks_right", "top_value", "flag"])
+    filled = run.con.execute(f"SELECT {', '.join(f'avg(({q(f)} IS NOT NULL)::INT)' for f in fs)} FROM records").fetchall()[0]
+    run.con.execute(f"CREATE OR REPLACE TEMP TABLE er_fill_sample AS SELECT {', '.join(f'{q(f)}::VARCHAR AS {q(f)}' for f in fs)} "
+                    f"FROM records USING SAMPLE reservoir({sample} ROWS) REPEATABLE (0)")
+    pattern = {f: run.settings.detect[f].replace("'", "''") for f in fs if f in run.settings.detect}
+    looks = dict(zip(pattern, run.con.execute("SELECT " + ", ".join(f"avg(regexp_matches({q(f)}, '{p}')::INT)" for f, p in pattern.items())
+                                              + " FROM er_fill_sample").fetchall()[0])) if pattern else {}
+    top = dict(run.con.execute("""SELECT field, max(n) / sum(n) FROM (SELECT field, v, count(*) AS n FROM
+        (UNPIVOT er_fill_sample ON COLUMNS(*) INTO NAME field VALUE v) GROUP BY ALL) GROUP BY field""").fetchall())
+    return pd.DataFrame(dict(field=fs, filled=filled, looks_right=[looks.get(f) for f in fs], top_value=[top.get(f) for f in fs])).assign(
+        flag=lambda d: np.where(d["filled"] < 0.05, "under 5%", ""))
 
 
 def qa(run: "Run", fields: list[str], review: int = 50, previous: Path | None = None) -> dict[str, pd.DataFrame]:
-    """The label-free report of a run: a summary in words (records, entities, who joined them, what to decide, what the
-    loader fixed), fill rate per field (flagged under 5%), what was disabled, every step's cost,
+    """The label-free report of a run: a summary in words (records, entities, who joined them, the model's links and the
+    false ones it expects among them, what to decide, what the loader fixed), fill rate per field (flagged under 5%)
+    with the share that looks like the field and the share of its most common value, what was disabled, every step's cost,
     accepted pairs by weight band, cluster sizes, the largest clusters (the over-merge alarm), and the review sheet
     for people (review_sheet). Its rows are of two kinds. "decide": every pair of clusters whose best link scored in the
     threshold's safety margin [review_floor, min_match_weight), or above it with no name compared, not decided yet, best link first. "audit": accepted pairs
@@ -657,7 +689,8 @@ def qa(run: "Run", fields: list[str], review: int = 50, previous: Path | None = 
                         WHERE k <= {max(1, review // 4)} ORDER BY match_weight, {l}, {r}""").df().assign(why="audit")
     steps = pd.DataFrame(run.steps)
     base = ["step", "big_o", "filled", "seconds", "peak_memory_gb"]
-    steps = steps[base].assign(facts=steps.drop(columns=base).apply(lambda r: " · ".join(f"{k} {v:,.0f}" for k, v in r.dropna().items()), axis=1))
+    steps = steps[base].assign(facts=steps.drop(columns=base).apply(lambda r: " · ".join(
+        f"{k} {v:,.0f}" if float(v).is_integer() else f"{k} {v:,.2f}" for k, v in r.dropna().items()), axis=1))
     coverage = pattern_coverage(run.pipeline.fs, run.scoring, run.n)
     sheet = review_sheet(run, pd.concat([decide, audit], ignore_index=True))
     if previous is not None and previous.exists():
@@ -668,19 +701,104 @@ def qa(run: "Run", fields: list[str], review: int = 50, previous: Path | None = 
     total, entities, biggest, by_rules, by_model, by_people = con.execute(f"""SELECT count(*), count(DISTINCT cluster_id), max(n),
         count(*) FILTER (WHERE resolved_stage = '{fs.previous_stage}'), count(*) FILTER (WHERE resolved_stage = '{fs.stage}'),
         count(*) FILTER (WHERE resolved_stage = 'review') FROM gold JOIN (SELECT cluster_id, count(*) AS n FROM gold GROUP BY 1) USING (cluster_id)""").fetchall()[0]
+    linked = next(x for x in reversed(run.steps) if x["step"] == "cluster")
     summary = pd.DataFrame([
         ("records", f"{total:,}" + (f", {run.added:,} of them new" if run.added is not None else "") + (f"; {aside:,} set aside (set_aside/)" if aside else "")),
         ("entities", f"{entities:,}; the largest holds {biggest:,} records"),
         ("joined by", f"the rules {by_rules:,} · the model {by_model:,} · people {by_people:,} records"),
+        ("model links", f"{linked['accepted']:,}{' in this batch' if run.added is not None else ''}; about {linked['expected_false']:,.{1 if linked['expected_false'] >= 1 else 2}f} "
+                        "of them false, as the model expects (the sum of 1 − match probability)"),
         ("to decide", f"{len(decide):,} pair{'' if len(decide) == 1 else 's'} in review.parquet (why = decide)"),
         *(("note", f"{f} only {x:.1%} filled: check its mapping") for f, x in fill.loc[fill["flag"] != "", ["field", "filled"]].itertuples(index=False)),
         *(("note", f"turned off, a field it reads is missing: {d}") for d in run.disabled),
-        *(("note", note) for note in run.notes)], columns=["what", "value"])
+        *(("note", note) for note in run.notes),
+        *(("example", x) for x in run.examples)], columns=["what", "value"])
     return dict(summary=summary, fill=fill, disabled=pd.DataFrame({"disabled": run.disabled}), steps=steps, weight_bands=bands,
                 cluster_sizes=sizes, largest_clusters=largest, patterns_without_a_key=coverage.head(20), review=queue,
                 oversized_blocks=run.gated,
                 review_sheet=sheet)
 
+
+
+def report_text(run: "Run", tables: dict[str, pd.DataFrame], pipeline: Path) -> str:
+    """The run on a page of plain text that holds no record's value (no ID, name, phone or address: the notes that
+    quote one are run.examples, in qa.md only), so it can leave the machine that holds the records. `tables` is qa()'s.
+    It shows what ran (the code, the tracked files changed in this copy, the pipeline, the machine's limits), the
+    summary, each field's fill and shape, scores and accepted links by weight with the false links the model expects,
+    cluster sizes, each step's time and memory, the model (the prior, and m, u and bits per level), the costliest
+    blocks, and the patterns no key pairs. O(C + E) over scores and matches."""
+    con, fs = run.con, run.pipeline.fs
+    t, lo = fs.min_match_weight, review_floor(run.pipeline)
+
+    def git(*args: str) -> str:
+        try:
+            return subprocess.run(["git", "-C", str(run.settings.root), *args], capture_output=True, text=True, timeout=10).stdout.strip()
+        except OSError:
+            return ""
+
+    def table(df: pd.DataFrame) -> list[str]:  # numbers right-aligned, text left, so the page stays narrow
+        if not len(df):
+            return ["  none"]
+        rows = [list(map(str, df.columns)), *([str(v) for v in r] for r in df.itertuples(index=False))]
+        width = [max(len(r[i]) for r in rows) for i in range(len(df.columns))]
+        number = [all(re.fullmatch(r"[-+]?[\d,.]+(%|e[-+]\d+)?|—", r[i]) for r in rows[1:]) for i in range(len(df.columns))]
+        return ["  " + "  ".join(v.rjust(w) if n else v.ljust(w) for v, w, n in zip(r, width, number)).rstrip() for r in rows]
+
+    def pct(x: object) -> str:
+        return "—" if x is None or pd.isna(x) else f"{x:.1%}"
+
+    changed = git("diff", "--name-only", "HEAD").splitlines()  # tracked files edited in this copy, e.g. the column mapping
+    code = (git("rev-parse", "--short", "HEAD") or "unknown (not a git checkout)") + (f" · changed here: {', '.join(changed)}" if changed else "")
+    threads, memory = con.execute("SELECT current_setting('threads'), current_setting('memory_limit')").fetchall()[0]
+    kind = "full run" if run.added is None else f"increment of {run.added:,} new records"
+    out = [f"RUN REPORT · {datetime.now():%Y-%m-%d %H:%M} · {kind} · no record's value in it",
+           f"code {code} · pipeline {pipeline.name}",
+           f"python {platform.python_version()} · duckdb {duckdb.__version__} · splink {version('splink')} · {platform.system()} {platform.machine()}",
+           f"{threads} threads · memory limit {memory} · spill room {run.spill_room() / 1e9:,.0f} GB · "
+           f"took {sum(x['seconds'] for x in run.steps):,.1f} s · peak {max(x['peak_memory_gb'] for x in run.steps):.2f} GB", ""]
+
+    summary = tables["summary"][tables["summary"]["what"] != "example"]
+    out += ["SUMMARY", *(f"  {what:<12} {value}" for what, value in summary.itertuples(index=False)), ""]
+
+    fill = tables["fill"]
+    out += ["FIELDS  (looks right, top value: on a sample of 10,000 records)", *table(pd.DataFrame(dict(
+        field=fill["field"], filled=fill["filled"].map(pct), looks_right=fill["looks_right"].map(pct), top_value=fill["top_value"].map(pct),
+        columns=[sources_text(run.present.get(f)) for f in fill["field"]]))), ""]
+
+    edges = sorted({-20, -10, 0, lo, t, t + 2, t + 4, t + 8, t + 12})
+    band = "CASE " + " ".join(f"WHEN match_weight < {b} THEN {i}" for i, b in enumerate(edges)) + f" ELSE {len(edges)} END"
+    scored = dict(con.execute(f"SELECT {band}, count(*) FROM scores GROUP BY 1").fetchall())
+    accepted = {k: (n, x) for k, n, x in con.execute(f"SELECT {band}, count(*), sum(1 - match_probability) FROM matches GROUP BY 1").fetchall()}
+    label = lambda i: f"below {edges[0]:g}" if i == 0 else f"{edges[-1]:g} and up" if i == len(edges) else f"{edges[i - 1]:g} to {edges[i]:g}"
+    out += [f"SCORES  (bits; review from {lo:g}, accept from {t:g}; expected false = the sum of 1 − match probability)", *table(pd.DataFrame(
+        [dict(bits=label(i), candidates=f"{scored[i]:,}", accepted=f"{accepted.get(i, (0, 0))[0]:,}", expected_false=f"{accepted.get(i, (0, 0))[1]:.2f}")
+         for i in sorted(scored)])), ""]
+
+    sizes = tables["cluster_sizes"]
+    by = pd.cut(sizes["cluster_size"], [0, 1, 2, 3, 4, 9, 49, np.inf], labels=["1", "2", "3", "4", "5–9", "10–49", "50+"])
+    out += ["CLUSTERS  (size: how many)", "  " + " · ".join(f"{k}: {v:,}" for k, v in sizes.groupby(by, observed=True)["clusters"].sum().items()), ""]
+
+    steps = tables["steps"]
+    out += ["STEPS", *table(steps[["step", "seconds", "peak_memory_gb", "facts"]].rename(columns={"peak_memory_gb": "peak_gb"})), ""]
+
+    lam, m = scaled_prior(run.scoring, run.n), run.scoring["er"]
+    params = parameters(run.scoring)
+    out += [f"MODEL  (prior {math.log2(lam / (1 - lam)):.2f} bits at {run.n:,} records; fitted on {m['fit_rows']:,} records"
+            + (f"; learned nothing about {', '.join(m['skipped'])}" if m.get("skipped") else "") + ")", *table(pd.DataFrame(dict(
+                comparison=params["comparison"], level=params["level"], m=params["m"].map(lambda x: f"{x:.4f}" if x >= 1e-3 else f"{x:.2e}"),
+                u=params["u"].map(lambda x: f"{x:.2e}"), bits=params["weight"].map(lambda x: f"{x:.2f}")))), ""]
+
+    plan = getattr(run, "plan", None)  # the budget runs before a full run only
+    if plan is not None:
+        shown = plan[(plan["oversized_blocks"] > 0) | plan["name"].isin(plan.nlargest(6, "per_record")["name"])].sort_values("per_record", ascending=False)
+        out += [f"BLOCKS  ({int(plan['est_pairs'].sum()):,} pairs before dedupe; room for {run.capacity():,})", *table(pd.DataFrame(dict(
+            kind=shown["kind"], name=shown["name"], per_record=shown["per_record"].map(lambda x: f"{x:.2f}"),
+            largest=shown["largest_block"].map(lambda x: f"{x:,}"), oversized=shown["oversized_blocks"].map(lambda x: f"{x:,}")))), ""]
+
+    patterns = tables["patterns_without_a_key"].head(5)
+    out += ["PATTERNS WITHOUT A KEY  (they reach the threshold, but no key is sure to pair them; share of matches, at most)",
+            *table(patterns.assign(bits=patterns["bits"].map(lambda x: f"{x:.2f}"), share_of_matches=patterns["share_of_matches"].map(lambda x: f"{x:.3%}")))]
+    return "\n".join(out) + "\n"
 
 def carry_over(run: "Run", previous: pd.DataFrame, sheet: pd.DataFrame, out: Path) -> pd.DataFrame:
     """The open review queue across increments: the previous sheet's decide rows that nobody gave back yet (none in

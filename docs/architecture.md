@@ -179,7 +179,7 @@ Writes each table as Parquet under a temporary name. Once all are complete, it s
 
 ### 9 · Report, for people · `O(review pairs)`
 
-`scripts/resolve.py` writes `qa.md`, the label-free checks, and `review.parquet`, with the evidence for each pair ([usage](usage.md#6--review-and-decide)). Its *decide* rows are every pair of clusters whose best link scored in the threshold rule's safety margin: from the `[threshold]` grid point `margin_steps` below the threshold (6 bits) up to it, and every pair above it with no name compared. Its *audit* rows are about 50 accepted pairs up to 4 bits above it.
+`scripts/resolve.py` writes `qa.md`, the label-free checks; `report.txt`, the run on one page with no record's value in it, which can leave the machine that holds the records; and `review.parquet`, with the evidence for each pair ([usage](usage.md#6--review-and-decide)). Its *decide* rows are every pair of clusters whose best link scored in the threshold rule's safety margin: from the `[threshold]` grid point `margin_steps` below the threshold (6 bits) up to it, and every pair above it with no name compared. Its *audit* rows are about 50 accepted pairs up to 4 bits above it.
 
 - **Why:** the margin holds pairs that were clean on cross-validated train, held back in case of noise: on the synthetic val split, 112 pairs from 6 to 8 bits, all true; one grid step lower, at 4 bits, val's first false pair appears. So people decide them. Without labels, the audit rows and the largest clusters are how a person catches over-merging.
 - **Code:** `run.qa`, `review_floor`, `review_sheet`, `carry_over`; `pipeline.pattern_coverage` (match patterns no key guarantees)
@@ -226,6 +226,7 @@ Kept on disk. Steps are numbered as in [the run](#3--the-run).
 | `.lock` | every writer | every writer | the run folder's lock: one writer at a time |
 | `jobs.jsonl` | `scripts/schedule.py` | people | one line per attempt: the file, its SHA-256, the outcome |
 | `qa.md`, `review.parquet` | 9 | people | the label-free report; the pairs to decide and to audit |
+| `report.txt` | 9 | whoever helps with the run | the run on one page, with no record's value in it |
 | `decisions/part-n.parquet` | decisions, one part per file | full runs | the pairs people decided: both IDs and `match` or `no_match` |
 | `set_aside/part-n.parquet` | 8, one part per run | you | records not resolved, and why: no ID; the same ID with different content; already in the run |
 

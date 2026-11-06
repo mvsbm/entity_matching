@@ -88,7 +88,7 @@ Each entry names a way an entity-resolution pipeline like this one goes wrong, a
 - **Pitfall:** an intermediate table copied into pandas with more columns than needed outgrows memory on a big file. It shows as a run that stalls deep in swap.
 - **Why:** reading Splink's predictions into pandas with every matching column of both records, only to keep the ids, the weights and the gammas, makes a copy that grows with the candidates times the columns.
 - **Guard:** DuckDB selects the needed columns before anything reaches pandas, and the predictions table is dropped once read. Every table of size N or C is a DuckDB table (`er.run`), which spills past `[compute]` `memory_limit` to `.tmp/` under the folder a run starts in, unless `temp_directory` says otherwise. A run's capacity counts the spill room DuckDB allows: 90% of the free disk by default. DuckDB keeps what the limit allows, so the peak under a large limit says little: test the smallest limit that completes, not the peak.
-- **Check:** every run's `steps.json` records the peak memory after each step, and `reports/benchmark.md` reports it at every file size: 6.23 GB at a million records under an 8 GB limit, Python included.
+- **Check:** every run's `steps.json` records the peak memory after each step, and `reports/benchmark.md` reports it at every file size: 5.85 GB at a million records under an 8 GB limit, Python included.
 
 ## An answer that depends on the file's order
 - **Pitfall:** an output column depends on the order of the records in the file. It shows as identical clusters but a different `resolved_by` after the file is shuffled.
@@ -125,6 +125,12 @@ Each entry names a way an entity-resolution pipeline like this one goes wrong, a
 - **Why:** a budget that caps each key's pairs per record can't tell a placeholder from a real shared value. A block's share of true matches falls as it grows, and a placeholder's block holds none.
 - **Guard:** a block of 64 or more records (more pairs than `[budget] sample_pairs`, 2,000) is left out of its generator's join and checked first: about 2,000 of its pairs are scored with the model and the file's u, and the block is joined only if one reaches the review floor (6 bits, one grid step below the threshold). No hit in 2,000 pairs bounds a block's yield under 0.15%. A rule doesn't trust a key value held by such a block. Skipped blocks are named in the summary and in `qa.md`.
 - **Check:** tests put a dummy phone on 100 records (skipped), 70 copies of one record (kept and joined), and one customer ID and name on 70 records (no rule merges them).
+
+## A report that carries records off the machine
+- **Pitfall:** a run report sent to someone for help carries records with it: the value of a placeholder phone, a customer ID on thousands of records, the IDs of the largest clusters. It shows only by reading the report.
+- **Why:** the notes that make a run's problems clear quote the values behind them, and a report built from them inherits the values.
+- **Guard:** `report.txt` is built only from field and column names, counts, shares, times and the model's parameters. A note that quotes a value is kept apart (`Run.examples`) and goes to the terminal and `qa.md` only.
+- **Check:** a test puts a placeholder phone and a customer ID with one name on many records, so the run has notes quoting them, and checks that the report holds no kana or kanji, no record ID and no customer ID.
 
 ## An increment that drops the review queue
 - **Pitfall:** pairs waiting for a decision vanish when the next run writes a new review sheet, though they are still open.
