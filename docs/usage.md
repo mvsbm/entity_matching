@@ -203,7 +203,7 @@ What stops it: two lines, what is wrong and how to fix it, and exit code 2:
 | `needs the columns …_l, …_r and decision` | a decisions file without both IDs and `decision` |
 | `a decision is match or no_match`, `pairs decided both ways`, `records not in the run` | a decisions file to correct |
 
-A run folder another job is writing to stops the run with `another job is writing to …` and exit code 75: nothing to fix, try again once the other job is done.
+A run folder another job is writing to stops the run with `another job is writing to …` and exit code 75: nothing to fix, try again once the other job is done. The lock and the renames that finish each write hold on a local disk: keep run folders and inboxes on one. On network or object storage they don't, so there let one scheduler be a folder's only writer.
 
 Pairs are counted before any join, so a run that couldn't fit stops within seconds instead of running out of memory or disk.
 
@@ -233,7 +233,7 @@ Each file runs as `scripts/resolve.py` in a process of its own, so a crash can't
 | on a mistake people must fix (exit 2) | moves to `failed/`, with its two-line error beside it (`….error.txt`). The pass goes on |
 | any other way: busy (exit 75: another job writes to the run folder), a crash, memory | is tried again, waiting 2, 4, 8 … s (`--retries`, default 2). If it still fails, the pass stops and the file stays, so nothing jumps ahead of it; the next pass tries again |
 
-`--compute` passes DuckDB limits on to every batch's run. A file whose content was done before, by its SHA-256, moves to `done/` without running. The pass ends with exit code 1 if it stopped on a file. One scheduler serves an inbox at a time, and a run folder takes one writer at a time, so starting a second one, or running `resolve.py` by hand meanwhile, is refused, not raced.
+`--compute` passes DuckDB limits on to every batch's run. A file whose content was done before, by its SHA-256, moves to `done/` without running. The pass ends with exit code 1 if it stopped on a file. One scheduler serves an inbox at a time, and a run folder takes one writer at a time, so starting a second one, or running `resolve.py` by hand meanwhile, is refused, not raced, on a local disk.
 
 ## Development scripts
 

@@ -108,7 +108,7 @@ Every module sits in one layer: the tools, the run (`er/run.py`), design time, t
 
 ![LLD 1, a full run: load, budget, fit, rules, candidates, score, cluster, write and report, each with the functions it calls; the tables records, set_aside, rule_clusters, rule_kept, cands, scores, matches and gold, made by one step and used by the later ones; the inputs and the files of the run folder](diagrams/full-run.svg)
 
-`er.run.Run` runs a chosen pipeline on one file, without labels. `full()` calls steps 1–8 in order and `report()` step 9; `scripts/resolve.py` holds the run folder's lock across both (`Run.writing`), so no other job writes in between. `increment()` adds a batch of new records to a written run ([5](#5--an-increment)); the demo calls the steps one at a time. Each step logs its Big-O, with the numbers filled in, its time and its peak memory to `steps.json`.
+`er.run.Run` runs a chosen pipeline on one file, without labels. `full()` calls steps 1–8 in order and `report()` step 9; `scripts/resolve.py` holds the run folder's lock across both (`Run.writing`), so no other job writes in between. The lock (`flock`) and the renames that finish a write (`os.replace`) hold on a local disk, not on network or object storage. `increment()` adds a batch of new records to a written run ([5](#5--an-increment)); the demo calls the steps one at a time. Each step logs its Big-O, with the numbers filled in, its time and its peak memory to `steps.json`.
 
 | Mode | Cost |
 |---|---|
