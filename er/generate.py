@@ -374,7 +374,7 @@ NAME_MODEL_PREFECTURES = ("04", "33")  # the registry's companies the name model
 
 def name_model_split(persons: pd.DataFrame, registry: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     """The person-or-company name model's training data and what is held out of it: the first half of the shuffled
-    personas and the registry's companies of NAME_MODEL_PREFECTURES train it (er.kind.name_model); the other half and
+    personas and the registry's companies of NAME_MODEL_PREFECTURES train it (train_name_model); the other half and
     the other prefecture's companies are held out (scripts/choose_kind.py tests on them, kind_problems draws its
     companies from them). Returns persons to train, persons held out, companies to train, companies held out."""
     shuffled = persons.sample(frac=1, random_state=0)
@@ -503,3 +503,15 @@ def kind_training_names(persons: pd.DataFrame, registry: pd.DataFrame, legal_fro
     people = [(x.surname_kana + ("　" if rng.random() < 0.3 else "") + x.given_kana) for x in persons.itertuples(index=False) for _ in (0, 1)]
     people = [kana_typo(s, rng, confusions) if rng.random() < 0.08 else s for s in people]
     return pd.DataFrame(dict(name=firms + people, y=[1] * len(firms) + [0] * len(people)))
+
+
+def train_name_model(settings, spec):
+    """The person-or-company name model (er.kind.NameModel) for these settings: trained on the reference data's
+    training half (name_model_split), written as config/generator.toml's kana_confusions and branches write bank records
+    (kind_training_names). scripts/train_name_model.py saves it for the runs. O(T·L·g) for T names."""
+    from er.kind import NameModel, text
+    ref, std = settings.paths["reference"], settings.standardize
+    spec_g = load_spec(settings.root / "config" / "generator.toml")[0]  # how bank records misspell and suffix names
+    persons, _, companies, _ = name_model_split(load_reference(ref)[0], load_registry(ref))
+    names = kind_training_names(persons, companies, std.legal_front, std.legal_end, spec_g.kana_confusions, spec_g.branches)
+    return NameModel.fit(text(names["name"], std), names["y"].to_numpy(), spec.ngram)

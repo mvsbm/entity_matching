@@ -8,7 +8,7 @@ Person(owner, "Data owner, reviewer", "runs the resolution; answers its sheets")
 Person(developer, "Developer", "changes the matching")
 
 Container(runtime, "Run-time tools", "scripts/resolve.py, scripts/schedule.py", "resolve a file, add a batch, apply decisions and answers; exit 2: a mistake to fix, 75: busy")
-Container(designtime, "Design-time tools", "scripts/generate.py, scripts/choose.py, scripts/choose_kind.py, scripts/benchmark.py", "synthetic data with the truth; the matching chosen and measured")
+Container(designtime, "Design-time tools", "scripts/generate.py, scripts/choose.py, scripts/choose_kind.py, scripts/train_name_model.py, scripts/benchmark.py", "synthetic data with the truth; the matching chosen and measured; the name model trained")
 Container(demo, "Demo", "notebooks/demo.ipynb, scripts/export_pdfs.py", "every step of a run, charted; its PDF")
 
 System_Boundary(engine, "The engine, in one process") {
@@ -16,10 +16,10 @@ System_Boundary(engine, "The engine, in one process") {
   Container(duckdb, "DuckDB and Splink", "in process", "the working tables, spilled to disk past memory_limit; EM training, scoring, connected components")
 }
 
-ContainerDb(config, "config/", "TOML", "settings.toml: the file's columns, [locale], [compute], [kind] · final.toml: the chosen pipeline, the only hand-off from design time")
+ContainerDb(config, "config/", "TOML, npz", "settings.toml: the file's columns, [locale], [compute], [kind] · final.toml: the chosen pipeline and kind_names.npz: the name model, the hand-off from design time")
 ContainerDb(reference, "data/reference/", "JSON, in git", "public names, companies, addresses: the generator's input and the name model's training")
 ContainerDb(runfolder, "Run folder (~--output)", "Parquet, JSON, Markdown", "gold.parquet, the review sheets, qa.md, report.txt, steps.json, state/: LLD 5")
-ContainerDb(artifacts, "data/artifacts/", "npz, JSON, Parquet", "the cached name model, the chosen models, the leaderboard, benchmark runs")
+ContainerDb(artifacts, "data/artifacts/", "npz, JSON, Parquet", "the chosen models, the leaderboard, benchmark runs")
 ContainerDb(synthetic, "Synthetic data and reports", "Parquet, Markdown", "data/medallion/, data/labels/: records and their truth · reports/: what was measured")
 
 Rel(owner, runtime, "runs")
@@ -31,9 +31,9 @@ Rel(er, duckdb, "SQL on one connection")
 Rel(er, config, "reads")
 Rel(er, reference, "reads")
 Rel(er, runfolder, "reads, writes (staged, one writer)")
-Rel(er, artifacts, "the name model's cache")
+Rel(er, artifacts, "the leaderboard, the fitted models")
 Rel(designtime, synthetic, "writes")
-Rel(designtime, config, "writes final.toml")
+Rel(designtime, config, "writes final.toml, kind_names.npz")
 
 SHOW_LEGEND()
 @enduml

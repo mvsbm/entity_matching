@@ -19,7 +19,7 @@ rectangle "<b>Cluster</b>\naccept the sure pairs;\njoin pairs into entities" as 
 file "<b>gold.parquet</b>\neach record's entity\nand its kind" as gold
 file "<b>review sheets</b>\npairs just below the line;\nrecords person or company\nisn't sure of" as sheets
 actor "people" as people
-file "<b>config/final.toml</b>\nchosen once, on synthetic records\nwhose truth is known" as config
+file "<b>config/final.toml</b>\nchosen once, on synthetic records\nwhose truth is known;\n<b>config/kind_names.npz</b>, the name model" as config
 
 input --> load
 load --> rules

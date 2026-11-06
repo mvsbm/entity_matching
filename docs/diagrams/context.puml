@@ -23,7 +23,7 @@ Rel(runtime, reference, "reads", "the person-or-company name model, trained once
 Rel(design, reference, "reads", "the generator's input")
 Rel(developer, design, "proposes", "config/pipeline.toml, config/experiments.py")
 Rel(design, developer, "reports", "reports/*.md")
-Rel(design, runtime, "hands over", "config/final.toml: the only hand-off")
+Rel(design, runtime, "hands over", "config/final.toml, config/kind_names.npz")
 Rel(runtime, reviewer, "asks", "review.parquet, kind_review.parquet, qa.md, report.txt")
 Rel(reviewer, runtime, "answers", "~--decisions, ~--kind-labels")
 Rel(runtime, downstream, "gives", "gold.parquet: cluster_id, customer_kind")

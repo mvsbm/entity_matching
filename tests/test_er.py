@@ -1148,7 +1148,23 @@ def test_the_name_model_saves_and_loads_to_the_same_scores(tmp_path):
     probe = pd.Series(["ヤマダハナコ", pd.NA, "スズキシヨウテン"], dtype="string")
     back = NameModel.load(tmp_path / "m.npz", "k")
     assert np.allclose(m.logit(probe), back.logit(probe), equal_nan=True) and np.isnan(back.logit(probe)[1])
-    assert NameModel.load(tmp_path / "m.npz", "another key") is None  # a model trained on other settings is trained again
+    assert NameModel.load(tmp_path / "m.npz", "another key") is None  # a model trained under other settings isn't loaded
+
+
+def test_a_run_loads_the_committed_name_model_and_it_is_what_training_builds():
+    """config/kind_names.npz is what scripts/train_name_model.py builds from today's reference data, generator settings
+    and code; a run refuses one trained under its other settings."""
+    from er.generate import train_name_model
+    from er.kind import name_model
+    s = load_settings()
+    spec = load_pipeline(s.root / "config" / "final.toml", s.standardize, s.chains, s.columns).kind
+    kept, fresh = name_model(s, spec), train_name_model(s, spec)
+    assert kept.terms == fresh.terms and np.allclose(kept.coef, fresh.coef, rtol=0, atol=1e-3) and abs(kept.intercept - fresh.intercept) < 1e-3, \
+        "the training changed: run scripts/train_name_model.py and commit config/kind_names.npz"
+    other = replace(s, standardize=replace(s.standardize, legal_forms=s.standardize.legal_forms[1:]))
+    with pytest.raises(InputError, match="trained under other settings") as stop:
+        name_model(other, spec)
+    assert "train_name_model.py" in stop.value.fix
 
 
 def test_each_side_s_line_keeps_within_its_labels():

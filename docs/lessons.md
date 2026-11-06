@@ -153,7 +153,7 @@ Each entry names a way an entity-resolution pipeline like this one goes wrong, a
 ## A model judged that isn't the one that runs
 - **Pitfall:** a script that chooses between configurations builds its own copy of a training set. Its verdict then holds for a model no run uses. It shows as a ranking that moves when the copy is replaced by the real one.
 - **Why:** a copy with another seed, or the same names written another way (each persona written once and duplicated, where the run writes each twice), trains another model, and the ranking of the 48 finalists moves with it by many places.
-- **Guard:** `scripts/choose_kind.py` trains its public name model on `er.generate.kind_training_names`, as `er.kind.name_model` does, and judges by `[kind]`'s own budgets.
+- **Guard:** `scripts/choose_kind.py` trains its public name model on `er.generate.kind_training_names`, as `er.generate.train_name_model` does, and judges by `[kind]`'s own budgets.
 - **Check:** `reports/choose_kind.md`, written from the run's own training names.
 
 ## Measurements run into a folder that keeps people's work
