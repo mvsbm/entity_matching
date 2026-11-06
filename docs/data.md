@@ -16,7 +16,8 @@
 
 Every table is Parquet. Only `reference/` is in git; everything else rebuilds from the scripts (`.gitignore`). The medallion
 layers follow the pipeline: bronze is the records as they arrive, silver the standardized records each run keeps in its
-folder, gold the resolved run folder. The reference data feeds only the generator, so it sits outside them:
+folder, gold the resolved run folder. The reference data feeds the generator and the person-or-company name model, so it
+sits outside them:
 
 ```
 data/reference/*.json                       public reference data (tracked; SOURCES.md)
@@ -25,12 +26,13 @@ data/labels/<dataset>.parquet               truth, read only to choose and evalu
 data/medallion/gold/<dataset>/              each dataset resolved: a run folder     scripts/choose.py, through er.run
                                             (silver: its state/records/)
 data/artifacts/models/*_final.json          the chosen configurations, the fitted model
+data/artifacts/models/kind_names.npz        the person-or-company name model, cached by any run er.kind
 data/artifacts/experiments/leaderboard.parquet   one row per experiment and dataset (archive/: earlier passes)
 data/artifacts/optuna/*.db                  the Optuna studies, with --optuna
 data/artifacts/benchmark/, demo/            run folders of scripts/benchmark.py and the demo
 ```
 
-A run folder is the same wherever it is written, by `scripts/choose.py` here or by `scripts/resolve.py` anywhere: `gold.parquet`, `matches/`, `rule_kept/`, `steps.json` and `state/`. `scripts/resolve.py` adds `qa.md`, `report.txt` and `review.parquet`; `decisions/` and `set_aside/` appear when there are any ([architecture](architecture.md#the-run-folder)).
+A run folder is the same wherever it is written, by `scripts/choose.py` here or by `scripts/resolve.py` anywhere: `gold.parquet`, `matches/`, `rule_kept/`, `steps.json` and `state/`. `scripts/resolve.py` adds `qa.md`, `report.txt`, `review.parquet` and, on a full run, `kind_review.parquet`; `decisions/`, `set_aside/` and `state/kind_labels.parquet` (people's person/company answers) appear when there are any ([architecture](architecture.md#the-run-folder)).
 
 ## Reference data: `data/reference/`
 
@@ -43,7 +45,7 @@ Built once from public sources. The downloads are not kept; `SOURCES.md` records
 | `addresses.json` | 46,364 towns, all 47 prefectures | geolonia/japanese-addresses (CC BY 4.0) + yubinbango-data | prefecture, city and town with kana, JIS municipality code, chome, postal code |
 | `registry.json` | 60,000 corporations of three prefectures (Miyagi, Okayama, Fukuoka) | the National Tax Agency's corporate-number site (Public Data License 1.0; processed) | each name's reading, its legal form's reading and bank abbreviation, whether the form leads the name |
 
-The pipeline reads two of them once: `individual.json` and `registry.json` train the person-or-company name model (`er.kind.name_model`), which it caches. The rest is for the generator.
+Every run reads two of them: `individual.json` and `registry.json` train the person-or-company name model (`er.kind.name_model`), and the cached model is checked against them. It trains on one half of them only (`er.generate.name_model_split`): the companies of Miyagi and Okayama, and the first half of the shuffled personas. Fukuoka's companies and the other personas are held out, for `scripts/choose_kind.py` to test on and for `kind_problems` to draw its companies from. The rest is for the generator.
 
 Two traps in the sources:
 - **Wikidata's class tree:** 13,766 of the 16k "Japanese companies" with kana in the transitive `company` tree are dissolved municipalities. Only direct company types give real companies.
@@ -73,7 +75,7 @@ All parameters live in `config/generator.toml`: `[population]` (`er.generate.Spe
   - **Rates:** the non-null rate falls from 0.9999 to 0.6544 along the column order, counted where the column applies; BIRTH_DATE has its own rate, and STD_ADDRESS follows its parts.
   - **Correlation:** shared within the name, postal and address groups by `nesting` ρ.
 - **Households:** unrelated entities sometimes share an address, which gives look-alikes that must not be merged.
-- **Persons and companies, made hard to tell apart** (`er.generate.kind_problems`, off unless asked for: the benchmark, the demo, the tests and `scripts/choose_kind.py` turn it on). One name column for every kind, NAME_KANA; real company names from `registry.json`, written as bank records write them (the legal form in full, abbreviated at the front, カ)〇〇, or the end, 〇〇(カ, or left out); company records under their representative's name, the representative a person of the file, half at that person's address and phone; sole traders (legally persons) named like a shop on most of their records; a date in BIRTH_DATE on 30% of company records; and PERSON_ORG_CODE, the file's flag (1 person, 2 company), wrong on 3% of records, on half the representative-named ones and on 30% of the sole traders'. Its own random stream: the records start as `generate` made them.
+- **Persons and companies, made hard to tell apart** (`er.generate.kind_problems`, off unless asked for: the benchmark, the demo and the tests turn it on; `scripts/choose_kind.py` builds its own name-only populations). One name column for every kind, NAME_KANA; real company names from `registry.json`'s held-out companies, written as bank records write them (the legal form in full, abbreviated at the front, カ)〇〇, or the end, 〇〇(カ, or left out); company records under their representative's name, the representative a person of the file, half at that person's address and phone; sole traders (legally persons) named like a shop on most of their records; a date in BIRTH_DATE on 30% of company records; and PERSON_ORG_CODE, the file's flag (1 person, 2 company), wrong on 3% of records, on half the representative-named ones and on 30% of the sole traders'. Its own random stream: the records start as `generate` made them.
 - **Asserts** run on the whole population before it is split: exact rates, digit formats, kind consistency, CONT_ID unique, no CIF shared across entities, address code ↔ address 1:1.
 
 ### How hard it is

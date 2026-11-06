@@ -25,25 +25,25 @@ person_name = { sources = [["FULL_NAME_KANA"], ["LAST_NAME_KANA", "GIVEN_NAME_KA
                                                       # an inner list is joined: last name, then given name
 ```
 
-The fields, and which ones a run needs (`[fields]` in `config/final.toml`):
+The fields, and which ones a run needs (`[fields]` in `config/final.toml`; `kind_flag` is read by the person-or-company step only, and `any_name` is the name it reads):
 
 | Field | Holds | Needed |
 |---|---|---|
 | `id` | a record ID, filled and unique | yes: the run stops without it |
 | `person_name`, `company_name` | the name of a person or of a company, in katakana | at least one of the two |
-| `full_name`, `given_name`, `any_name` | the full name; the given name alone; a person's or a company's name | optional |
+| `full_name`, `given_name`, `any_name` | the full name; the given name alone; a person's or a company's name | optional; without `any_name`, records get no kind |
 | `address`, `address_code`, `postal_code`, `town_code`, `city`, `prefecture` | the address in any format; an address code; the postal code; the town code (municipality, town and chome); the city; the prefecture | optional |
 | `phone` | the phone number's last four digits | optional |
 | `customer_id` | the ID another system gave the customer | optional |
 | `birth_date` | a person's birth date, in one format throughout, so equal dates are equal strings (a company's date there is read too) | optional |
-| `kind_flag` | the file's own person/company flag; `[kind] flag_company` lists the values that say company (`2`), any other says person | optional |
+| `kind_flag` | the file's own person/company flag; `config/settings.toml` `[kind] flag_company` lists the values that say company (`2`), any other says person | optional |
 | `entity` | the true entity, in labelled files only | never read by a run |
 
 - **A missing optional field** turns off only the rules, keys and comparison levels that read it. The run lists them in `qa.md`.
 - **Names are matched loosely.** A column whose name differs from the mapping only in case, width or separators (`cont_id`, `ＣＯＮＴ＿ＩＤ`) is used, and the summary says so.
 - **Every column is read as text.** A blank value, or one made only of spaces (full-width ones included), counts as missing. A code stored as a number (`599` for `0599`) is read as text with a warning: its leading zeros were lost before the file reached the run.
 - **A nearly empty field** is used where it is filled. If no two records of the fit's sample share it, the fit learns nothing from it, and the summary says so.
-- **One column for every name**, a person's or a company's: map `full_name`, `person_name`, `company_name` and `any_name` to it, and add `kind = "person"` to the first two and `kind = "company"` to `company_name`. Each record's name then goes to the side its kind leans to, and a pair of a person and a company has no name compared, so the model leaves it to people ([section 6](#6--review-and-decide)). A record whose kind and flag disagree goes to neither side until a person decides.
+- **One column for every name**, a person's or a company's: map `full_name`, `person_name`, `company_name` and `any_name` to it, and add `kind = "person"` to the first two and `kind = "company"` to `company_name`. Each record's name then goes to the side its kind leans to, and a pair of a person and a company has no name compared, so the model leaves it to people ([section 6](#6--review-and-decide)). A record whose lean and flag disagree goes to neither side until a person decides.
 - **A field the run needs and no column holds** stops the run with the file's columns and, for each missing field, the column whose values look most like it, as lines to paste into `[columns]`. These suggestions are never applied without you.
 
 Check a file and its mapping in seconds, before a long run:
@@ -72,27 +72,28 @@ It prints each field, its fill rate and the columns it comes from, what would be
 | `--overwrite` | replaces the run in `--output` |
 | `--increment` | adds the records to the run in `--output` ([section 5](#5--add-new-records)) |
 | `--decisions` | applies people's decisions to the run in `--output`, instead of `--input` ([section 6](#6--review-and-decide)) |
+| `--kind-labels` | people's person/company answers, a filled-in `kind_review.parquet`, added to those the run keeps ([section 6](#persons-and-companies)) |
 | `--compute KEY=VALUE …` | DuckDB limits for this run, overriding `config/settings.toml` `[compute]`: `memory_limit=8GB`, `threads=4`, `temp_directory=<folder>`. Past the memory limit, DuckDB spills to that folder |
 | `--pipeline` | another pipeline file. Default: `config/final.toml` |
 | `--model` | a model fitted before, used instead of fitting on this file |
 
 `[compute]` in `config/settings.toml` sets the same three for every run. Left empty, each keeps DuckDB's default: all cores, 80% of the memory, and spilling to `.tmp/` under the folder the run starts in. Before any join, the run checks that the pairs fit in memory plus the room DuckDB may spill to: 90% of that disk's free space.
 
-The run needs no labels: it fits its model on the file itself. It prints each step as it finishes, with its time and what it did, then a summary: records, entities, who joined them (the rules, the model, people), the model's links and how many of them it expects to be false, the pairs to decide, and notes. The expected false links are the sum of 1 − match probability over the model's links: the model's own estimate, with no labels. A bigger file holds more people who share a name and an address, so at a fixed threshold the count grows with the file: on generated files, 0.84 at 12,532 records, 4.38 at 74,959 (1 and 3 found) and 30.11 at a million ([benchmark](../reports/benchmark.md)). A note says what the loader fixed, a field filled in under 5% of records (often a mapping mistake), a part turned off, or what the fit couldn't learn from. What each step does, and what it costs: [architecture, the run](architecture.md#3--the-run).
+The run needs no labels: it fits its model on the file itself. It prints each step as it finishes, with its time and what it did, then a summary: records, entities, who joined them (the rules, the model, people), the model's links and how many of them it expects to be false, the pairs to decide, the records' and customers' kinds, where the kinds come from (no answers yet; or the answers, the lines and how often the flag is wrong on those drawn at random), how many records are held back, how often a sure kind contradicts the flag, and notes. The expected false links are the sum of 1 − match probability over the model's links: the model's own estimate, with no labels. A bigger file holds more people who share a name and an address, so at a fixed threshold the count grows with the file: on generated files, 0.84 at 12,532 records, 4.38 at 74,959 (1 and 3 found) and 30.11 at a million ([benchmark](../reports/benchmark.md)). A note says what the loader fixed, a field filled in under 5% of records (often a mapping mistake), a part turned off, or what the fit couldn't learn from. What each step does, and what it costs: [architecture, the run](architecture.md#3--the-run).
 
 ## 4 · Read the outputs
 
-Everything is in the run folder.
+Everything is in the run folder, except the name model that tells persons from companies: trained once from `data/reference/`, it is cached as `data/artifacts/models/kind_names.npz`.
 
 | File | One row per | Holds | Use it to |
 |---|---|---|---|
 | `gold.parquet` | record | `cluster_id` (the smallest record ID of its cluster); `resolved_stage` (`deterministic`, `probabilistic` or `review`; empty for a record found alone); `resolved_by` (the rule, `fs` for the model, or `review` for people); `kind` (1 person, 2 company, 0 not sure), `kind_p` (the probability of a company), `kind_by` (`engine` or `people`), `kind_held` (held back from matching: the engine and the flag disagree) and `customer_kind`, the entity's (2 if any record surely is a company; 1 if none leans company and one surely is a person; else 0) | give every record its entity, and every entity its kind |
 | `matches/` | accepted pair | both IDs; `match_weight` in bits; `match_probability`; `sources`, the candidate generators that listed it | see why two records were joined |
 | `rule_kept/` | pair a rule accepted | both IDs, the rule and its stage | audit the rules |
-| `qa.md` | | the summary; each field's fill rate (flagged under 5%), the share that looks right and the share of its most common value; what was turned off; each step's Big-O, time and memory; pairs by weight; cluster sizes; the 10 largest clusters; match patterns no key guarantees | check the run without labels |
+| `qa.md` | | the summary; each field's fill rate (flagged under 5%), the share that looks right and the share of its most common value; what was turned off; each step's Big-O, time and memory; pairs by weight; cluster sizes; the 10 largest clusters; match patterns no key guarantees; records and customers by kind; clusters holding both a sure person and a sure company | check the run without labels |
 | `report.txt` | | the run on one page of plain text, with no record's value in it: what ran (the code, the tracked files changed in this copy, the pipeline, the machine's limits), the summary, the fields, scores and links by weight with the false links expected, cluster sizes, each step's time and memory, the model's m, u and bits per level, the costliest blocks | send it to whoever helps with the run ([section 7](#7--when-something-is-wrong)) |
 | `review.parquet` | pair for people | `why` (`decide` or `audit`); an empty `decision`; both records' compared fields; per comparison, the level reached and its bits; `accepted` | decide the pairs just below the line and those above it with no name compared, audit those just above ([section 6](#6--review-and-decide)) |
-| `kind_review.parquet` | record for people | `why` (`decide` or `measure`), `reason` in words, what the engine, the name alone and the flag say, the name, an empty `kind` | answer 1 person, 2 company or 0 can't tell ([section 6](#6--review-and-decide)) |
+| `kind_review.parquet` | record for people | `why` (`decide` or `measure`), `reason` in words, `engine_says`, `name_says`, `flag`, the name, `birth_date`; `engine` and `engine_p` (the engine's kind and its probability of a company), `name_p`, `drawn`; an empty `kind` | answer 1 person, 2 company or 0 can't tell ([section 6](#6--review-and-decide)) |
 | `decisions/` | decided pair | both IDs and `decision`, one part per file people gave back | what people decided; a full run applies it again |
 | `set_aside/` | record not resolved | the record as read, and `reason`: no ID; the same ID with different content; already in the run | fix them and add them with `--increment` |
 | `steps.json` | step | its Big-O with the numbers filled in, seconds, peak memory | see the cost |
@@ -153,7 +154,8 @@ Write `kind`: `1` person, `2` company, `0` can't tell from the record. A sole tr
 
 - **Your answers stand** for their records (`kind_by` = `people`): a held record's name goes to its side, and matching can use it.
 - **They teach the engine.** The combiner fits on every answer; the lines on the measuring draw only. The summary says where the lines fall, how often the flag is wrong on the answers drawn at random, and how many records stay held back.
-- **Kept for good.** The run keeps the answers in `state/` for its increments and its next full run, and the next sheet leaves out the records already answered.
+- **They add up.** The run keeps the answers in `state/`, and each sheet given later adds to them: per record the newest answer stands, and a blank row erases nothing. The next sheet leaves out the records answered, and brings back those left blank.
+- **A full run writes the sheet.** A record an increment holds back is on the sheet of the next full run.
 
 Without answers, a record is `2` only where a legal form is written (株式会社, カ)〇〇, 〇〇(カ …), and never surely `1`. A company record under its representative's name, at the representative's address and phone and flagged person, looks like the person's own record in every column; nothing in the file tells them apart, so no sheet finds it.
 
@@ -230,4 +232,5 @@ For changing the matching or measuring it, on synthetic labelled data:
 | generate the synthetic train, val and test files | `scripts/generate.py` | seconds |
 | choose the configuration on them | `scripts/choose.py` (`--optuna` adds the searches) → `config/final.toml`, `reports/choose.md` | minutes |
 | measure quality and cost on growing files | `scripts/benchmark.py --memory-limit 8GB` → `reports/benchmark.md` | minutes |
+| choose how persons and companies are told apart | `scripts/choose_kind.py` → `reports/choose_kind.md` | minutes |
 | see every step on a small file | `notebooks/demo.ipynb`, or `scripts/export_pdfs.py` for its PDF (first: `.venv/bin/python -m playwright install chromium`) | under a minute |

@@ -17,27 +17,27 @@ This page says how the system is built. Why each method was chosen is in the [gu
 
 The system turns a file of customer records into one ID per person or company. It works in two loops:
 
-- **Design time** happens once, and again whenever the matching changes. `scripts/generate.py` builds synthetic records from real names, companies and addresses, with the truth for each. `scripts/choose.py` tries each proposed change on them, keeps the ones the decision rule accepts, and writes the result to `config/final.toml`. This is the only loop that reads labels.
-- **Run time** happens for every file, without labels. `scripts/resolve.py` runs `config/final.toml` on the file and writes a run folder. New records join that run later, with `--increment`, and people's decisions on the pairs just below the threshold go back with `--decisions`. `scripts/schedule.py` does both from an inbox, one file at a time.
+- **Design time** happens once, and again whenever the matching changes. `scripts/generate.py` builds synthetic records from real names, companies and addresses, with the truth for each. `scripts/choose.py` tries each proposed change on them, keeps the ones the decision rule accepts, and writes the result to `config/final.toml`; `scripts/choose_kind.py` chooses, the same way, how persons and companies are told apart (`config/pipeline.toml` `[kind]`). This is the only loop that reads the truth (`data/labels/`).
+- **Run time** happens for every file, without labels. `scripts/resolve.py` runs `config/final.toml` on the file and writes a run folder. New records join that run later, with `--increment`; people's decisions on the pairs just below the threshold go back with `--decisions`, and their person/company answers with `--kind-labels`. `scripts/schedule.py` does both from an inbox, one file at a time.
 
-`config/final.toml` is the only hand-off between the loops. It is plain TOML, so it can be read, diffed and edited by hand.
+`config/final.toml` is the only hand-off between the loops. A run also reads `data/reference/`, to train once the person-or-company name model it caches. It is plain TOML, so it can be read, diffed and edited by hand.
 
 | Who | Does | Uses |
 |---|---|---|
 | data owner | maps the file's columns once, then runs the resolution | [usage](usage.md), `config/settings.toml` |
-| reviewer | decides the pairs just below the threshold, audits those just above, checks the largest clusters | `review.parquet`, `qa.md`; gives back decisions |
+| reviewer | decides the pairs just below the threshold, audits those just above, checks the largest clusters; answers person or company for the records held back and those drawn to measure | `review.parquet`, `kind_review.parquet`, `qa.md`; gives back decisions and answers |
 | downstream system | takes one ID per person or company | `gold.parquet` |
-| developer | proposes changes to the matching, and lets the decision rule judge them | `config/pipeline.toml`, `config/experiments.py`, `reports/choose.md` |
+| developer | proposes changes to the matching, and lets the decision rule judge them | `config/pipeline.toml`, `config/experiments.py`, `reports/choose.md`, `reports/choose_kind.md` |
 
 ## 2 · Building blocks
 
-![The repository's parts: five entry points; the engine in er/, split into design-time modules and the run; the configuration modules; and the stores in config/, data/ and reports/](architecture-blocks.drawio.svg)
+![The repository's parts: the entry points in scripts/ and the demo; the engine in er/, split into design-time modules and the run; the configuration modules; and the stores in config/, data/ and reports/](architecture-blocks.drawio.svg)
 
 | Part | Holds |
 |---|---|
 | `scripts/` | the entry points: generate, choose, choose_kind (how persons and companies are told apart), resolve, schedule (serves an inbox through resolve), benchmark, export_pdfs |
 | `er/` | the engine: every computation, tested. It names no column, except the synthetic generator (`er/generate.py`) |
-| `config/` | every setting: `settings.toml` (paths, `[columns]`, `[locale]`, `[compute]`), `pipeline.toml` (the matching, in logical fields), `final.toml` (what was chosen), and for design time `generator.toml` and `experiments.py` |
+| `config/` | every setting: `settings.toml` (paths, `[datasets]`, `[columns]`, `[locale]`, `[compute]`, `[kind]`), `pipeline.toml` (the matching, in logical fields), `final.toml` (what was chosen), and for design time `generator.toml` and `experiments.py` |
 | `data/` | records, labels, run folders and artifacts, all Parquet. Only `data/reference/` is in git; the scripts rebuild the rest |
 | `reports/` | what `choose.py`, `choose_kind.py` and `benchmark.py` measured on synthetic data, kept in git; never real records |
 | `notebooks/demo.ipynb` | every step of a run on 3,758 records, charted; no logic of its own |
@@ -113,7 +113,7 @@ Each chunk, before its normalized copies, gets each record's kind (`er.kind`): `
 - **Correct first:** a side is called only above its line, placed on the answers drawn to measure, out of fold: no labelled person above the company line, then two grid steps stricter; at most half of 1% wrong above the person line. Without answers: 2 only where a legal form is written, never a sure 1. A record without a name stays 0.
 - **Routing, and the gate:** with one name column for every kind (`[columns]` `kind = …`), each record's name goes to `person_name` or `company_name` by where `kind_p` leans. A person–company pair then has no name compared, and the model's name check (`[model] needs`) leaves it to people: no other gate is needed. A record whose lean and the flag disagree goes to neither side (`kind_held`): a company sent to the person side could merge into its representative's own records, and nothing in the record says which of the two is right.
 - **People:** `kind_review.parquet` sends people the held records and the flag's likely errors (decide), and a draw to measure (measure). Their answers stand for their records (`kind_by` = `people`), train the combiner, and, the measuring draw only, place the lines. `scripts/choose_kind.py` chose the parts ([results](results.md#person-or-company)).
-- **Code:** `kind.classifier`, `kind.name_model`, `Classifier.classify`, `kind.lines`, `kind.review_sheet`; `standardize.prepare`; a customer's kind in `Run._gold`.
+- **Code:** `kind.classifier`, `kind.name_model`, `Classifier.classify`, `kind.lines`, `kind.merge_answers`, `kind.kind_review_sheet`; `standardize.prepare`; a customer's kind in `Run._gold`.
 
 ### 2 · Budget · `O(N)` per key
 
@@ -189,7 +189,7 @@ Writes each table as Parquet under a temporary name. Once all are complete, it s
 
 ### 9 · Report, for people · `O(review pairs)`
 
-`scripts/resolve.py` writes `qa.md`, the label-free checks; `report.txt`, the run on one page with no record's value in it, which can leave the machine that holds the records; and `review.parquet`, with the evidence for each pair ([usage](usage.md#6--review-and-decide)). Its *decide* rows are every pair of clusters whose best link scored in the threshold rule's safety margin: from the `[threshold]` grid point `margin_steps` below the threshold (6 bits) up to it, and every pair above it with no name compared. Its *audit* rows are about 50 accepted pairs up to 4 bits above it.
+`scripts/resolve.py` writes `qa.md`, the label-free checks; `report.txt`, the run on one page with no record's value in it, which can leave the machine that holds the records; `review.parquet`, with the evidence for each pair; and, on a full run, `kind_review.parquet`, the records for people to answer person or company ([usage](usage.md#6--review-and-decide)). Its *decide* rows are every pair of clusters whose best link scored in the threshold rule's safety margin: from the `[threshold]` grid point `margin_steps` below the threshold (6 bits) up to it, and every pair above it with no name compared. Its *audit* rows are about 50 accepted pairs up to 4 bits above it.
 
 - **Why:** the margin holds pairs that were clean on cross-validated train, held back in case of noise: on the synthetic val split, 112 pairs from 6 to 8 bits, all true; one grid step lower, at 4 bits, val's first false pair appears. So people decide them. Without labels, the audit rows and the largest clusters are how a person catches over-merging.
 - **Code:** `run.qa`, `review_floor`, `review_sheet`, `carry_over`; `pipeline.pattern_coverage` (match patterns no key guarantees)

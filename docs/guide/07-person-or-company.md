@@ -11,7 +11,7 @@ A customer file usually carries a flag, 1 for a person and 2 for a company. It i
 What makes it hard, each built into the generator (`er.generate.kind_problems`) so it can be measured:
 
 - **One name column for both kinds.** A person's name and a company's name arrive in the same column.
-- **Legal forms written the bank's way.** 株式会社 in full, カ)ヤマダショウジ in front, ヤマダショウジ(カ at the end, イ) for 医療法人, or left out.
+- **Legal forms written the bank's way.** カブシキガイシャ in full, カ)ヤマダショウジ in front, ヤマダショウジ(カ at the end, イ) for 医療法人, or left out.
 - **Companies under their representative's name.** Some of a company's records carry a person's name: its representative, who may have records of their own, sometimes at the same address and phone.
 - **Sole traders** are legally persons, and named like a shop: ヨシヤスショウテン.
 - **Companies with a date** in the birth-date column: a founding date, or the representative's birth date.
@@ -58,21 +58,21 @@ The pipeline's combination, public training only so the name model is trained on
 
 ## On a whole run
 
-`scripts/benchmark.py` runs the whole pipeline on generated populations of 20,000 customers with all of the above, one name column for both kinds, and a flag good (wrong on 1% of records at random, on 20% of the representative-named ones), medium (3%, 50%) or poor (10%, 80%). Each is resolved three ways: names routed by the truth, by the flag alone, and by the kind step with people answering its review sheet (here, with the truth) ([reports/benchmark.md](../../reports/benchmark.md)):
+`scripts/benchmark.py` runs the whole pipeline on generated populations of 20,000 customers with all of the above, one name column for both kinds, and a flag good (wrong on 1% of records at random, on 20% of the representative-named ones), medium (3%, 50%) or poor (10%, 80%). The company names come from the registry's companies held out of the name model's training; the persons come from every persona, half of them in its training. Each population is resolved three ways: names routed by the truth, by the flag alone, and by the kind step with people answering its review sheet (here, with the truth) ([reports/benchmark.md](../../reports/benchmark.md)):
 
 | Flag | Routed by | Recall | False merges | Person–company clusters | Persons called 2 | Companies called 1 |
 |---|---|---|---|---|---|---|
-| any | the truth | 46.4% | 0 | 0 | 0 | 0 |
-| good | the flag alone | 45.8% | 29 | 23 | 321 | 83 |
-| good | the kind step | 47.0% | 30 | 24 | 1 | 41 |
-| medium | the flag alone | 44.3% | 63 | 51 | 858 | 224 |
-| medium | the kind step | 46.5% | 60 | 49 | 0 | 75 |
-| poor | the flag alone | 38.9% | 91 | 77 | 2,372 | 543 |
-| poor | the kind step | 41.3% | 90 | 76 | 0 | 89 |
+| any | the truth | 47.0% | 0 | 0 | 0 | 0 |
+| good | the flag alone | 45.8% | 15 | 15 | 223 | 58 |
+| good | the kind step | 46.8% | 12 | 12 | 0 | 23 |
+| medium | the flag alone | 44.3% | 45 | 40 | 642 | 192 |
+| medium | the kind step | 46.3% | 44 | 39 | 0 | 79 |
+| poor | the flag alone | 40.1% | 79 | 68 | 2,014 | 478 |
+| poor | the kind step | 41.5% | 77 | 66 | 0 | 97 |
 
-- **Recall** is 1.2–2.4 points higher by the kind step than by the flag alone.
-- **Wrong kinds** almost vanish on the company side: the flag alone calls 321 to 2,372 persons companies; the kind step one, in one of the three files.
-- **False merges** are within three of the flag's, either way. Routed by the truth there are none: they come from names sent to the wrong side. A company record under its representative's name, at the representative's address and phone and flagged person, goes to the person side by either route, and can merge into the representative's own records.
+- **Recall** is 1.0–2.1 points higher by the kind step than by the flag alone.
+- **No person is called a company** by the kind step; the flag alone calls 223 to 2,014. It also calls fewer companies persons: 23 to 97, against 58 to 478.
+- **False merges** are fewer than the flag's on every flag, by one to three. Routed by the truth there are none: they come from names sent to the wrong side. A company record under its representative's name, at the representative's address and phone and flagged person, goes to the person side by either route, and can merge into the representative's own records.
 
 ## What it can't do
 
@@ -81,11 +81,11 @@ The pipeline's combination, public training only so the name model is trained on
 
 ## In the code
 
-- `er/kind.py`: `legal`, `text`, `NameModel` (scored in DuckDB), `name_model` (trained once, cached), `Classifier.classify`, `lines`, `classifier` (people's answers), `review_sheet`
+- `er/kind.py`: `legal`, `text`, `NameModel` (scored in DuckDB), `name_model` (trained once, cached), `Classifier.classify`, `lines`, `classifier` (people's answers), `merge_answers`, `kind_review_sheet`
 - `er/standardize.py`: `legal_pattern`, and `prepare`, which scores each chunk and routes the name fields
 - `er/run.py`: `Run.load` (the classifier), `Run._gold` (a customer's kind), `qa` (the summary's kind lines)
 - `er/settings.py`: `shared_name`, the settings for one name column
-- `er/generate.py`: `kind_problems`, `bank_name`, `kind_training_names`
+- `er/generate.py`: `name_model_split`, `kind_problems`, `bank_name`, `kind_training_names`
 - `scripts/choose_kind.py`: the choice above; `scripts/benchmark.py`: `kinds`, the whole run; `scripts/resolve.py`: `--kind-labels` and `kind_review.parquet`
 - every table: [results.md](../results.md#person-or-company)
 

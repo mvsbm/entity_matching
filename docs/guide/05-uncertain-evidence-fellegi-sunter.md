@@ -100,7 +100,7 @@ In a real file, nobody tells us which pairs match. Each parameter must come from
 
 The other levels (a close name, a nearby address) come from 10 million random pairs, every one of them scored. Counting matters because a sample of 10 million pairs cannot see an agreement rarer than about one in a billion pairs, which an exact name or CIF ID becomes in a big file.
 
-**u is measured on every file we score.** Some fields have more distinct values in a bigger file: there are more addresses and more CIF IDs. Two random records then agree on them less often, so u is smaller. A u measured on train would under-credit those agreements on a bigger file, and over-credit them on a smaller one. Measuring u on the whole file being scored keeps each weight right at any size. The scores and the check on oversized key blocks ([chapter 3](03-far-too-many-pairs.md)) use the same u. It needs no labels, and costs about the same at any size: the fit, with this measurement inside it, takes 7.2 seconds at 12,532 records and 9.2 at a million ([`reports/benchmark.md`](../../reports/benchmark.md)).
+**u is measured on every file we score.** Some fields have more distinct values in a bigger file: there are more addresses and more CIF IDs. Two random records then agree on them less often, so u is smaller. A u measured on train would under-credit those agreements on a bigger file, and over-credit them on a smaller one. Measuring u on the whole file being scored keeps each weight right at any size. The scores and the check on oversized key blocks ([chapter 3](03-far-too-many-pairs.md)) use the same u. It needs no labels, and costs about the same at any size: the fit, with this measurement inside it, takes 7.4 seconds at 12,532 records and 9.2 at a million ([`reports/benchmark.md`](../../reports/benchmark.md)).
 
 **λ, from near-certain rules.** Pairs that agree on CIF ID and name, on CIF ID and company name, or on name, address code and phone are almost surely matches. Counting them, and dividing by the share of true pairs these rules find, gives λ. That share is measured on train's labels by `scripts/choose.py`: 2.3%, kept in `config/final.toml` for files without labels. The chance two random records match depends on the file's size, so λ is rescaled for each file. On val, a file of 9,966 records, it is about 1 in 21,600 pairs (−14.4 bits).
 
@@ -200,9 +200,9 @@ The cautious alternative is tested too: refuse a merge when the two groups hold 
   - `score_fs`: scores candidate pairs
   - `waterfall`: the field-by-field table
   - `scaled_prior`: rescales λ to the scored file's size
-- `er/resolve.py`: `connected_components`, `constrained`
+- `er/cluster.py`: `connected_components`, `constrained`
 - `config/pipeline.toml` `[model]`: the comparisons and levels; `er/select.py`: `FSChooser.training` (EM against labels), `why`, `threshold`, run by `scripts/choose.py`
-- `er/run.py`: `Run.fit` (the fit, then u on the whole file) and `Run.score`, the same model without labels on any file; `named_sql`, the name check; `notebooks/demo.ipynb`, sections 4 and 7–10, draws each step
+- `er/run.py`: `Run.fit` (the fit, then u on the whole file) and `Run.score`, the same model without labels on any file; `named_sql`, the name check; `notebooks/demo.ipynb`, sections 5 and 8–11, draws each step
 - every table: [results.md](../results.md)
 
 ## Further reading

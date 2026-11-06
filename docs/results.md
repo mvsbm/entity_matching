@@ -1,6 +1,6 @@
 [← README](../README.md) · [Guide](guide/01-entity-resolution-and-our-task.md)
 
-*Reference for the guide. Each table is explained in chapters [4](guide/04-certain-cases-first-rules.md), [5](guide/05-uncertain-evidence-fellegi-sunter.md) and [6](guide/06-measuring-and-choosing.md).*
+*Reference for the guide. Each table is explained in chapters [4](guide/04-certain-cases-first-rules.md), [5](guide/05-uncertain-evidence-fellegi-sunter.md), [6](guide/06-measuring-and-choosing.md) and [7](guide/07-person-or-company.md).*
 
 # Results
 
@@ -212,7 +212,7 @@ Train is scored in-sample (the model is fitted on all of it), and has no false p
 | 14 | 231 | 0 | 20.72% |
 | 16 | 90 | 0 | 13.91% |
 
-**Worked example:** `reports/choose.md` breaks two pairs into bits: an accepted true match with a typo (8.07 bits, from the given name, the postal code and a phone one digit off), and the rejected non-match closest to the threshold (5.46 bits, from the phone and the prefecture, the names only loosely alike). [Chapter 5](guide/05-uncertain-evidence-fellegi-sunter.md#solution-evidence-in-bits) walks through one pair field by field, and section 8 of the demo draws two more.
+**Worked example:** `reports/choose.md` breaks two pairs into bits: an accepted true match with a typo (8.07 bits, from the given name, the postal code and a phone one digit off), and the rejected non-match closest to the threshold (5.46 bits, from the phone and the prefecture, the names only loosely alike). [Chapter 5](guide/05-uncertain-evidence-fellegi-sunter.md#solution-evidence-in-bits) walks through one pair field by field, and section 9 of the demo draws two more.
 
 **Optuna** (cross-validated objective, 30 trials, seeded; off by default: `fs_tune`, `enabled=False`; `scripts/choose.py --optuna` runs it): each trial switches generators off and picks the m method, term frequency, level thresholds and resolver. Its threshold comes from the threshold rule, as `FINAL`'s does: a search that set the threshold itself would pull against the rule ([lessons.md](lessons.md#two-policies-that-set-one-parameter)). A tuned level the model doesn't have is skipped.
 - Its suggestion that passed `adopt` is the `optuna_suggestion` decision. It drops four generators (the person- and company-name keys, the person-name sorted neighbourhood, the company TF-IDF), turns term frequency off, and sets the JW thresholds: names 0.95 / 0.75, companies 0.97 / 0.80. `company_without_jw_high` then drops the company's 0.97 level, which no pair reached.
@@ -241,11 +241,11 @@ Each file is resolved by `scripts/resolve.py` in a process of its own, fitted on
 
 | records | seconds | peak_memory_gb | load | budget | fit | rules | candidates | score | cluster | write | recall | false_merges | fp_rate_at_most | model_links | expected_false | false_links |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| 12532 | 8.0 | 0.81 | 0.22 | 0.1 | 7.09 | 0.06 | 0.21 | 0.23 | 0.03 | 0.04 | 0.4573 | 2 | 0.48% | 985 | 0.84 | 1 |
-| 24955 | 9.0 | 0.91 | 0.37 | 0.16 | 7.58 | 0.09 | 0.32 | 0.37 | 0.04 | 0.07 | 0.4598 | 0 | 0.12% | 1832 | 1.03 | 0 |
-| 50116 | 9.9 | 1.01 | 0.63 | 0.29 | 7.58 | 0.14 | 0.57 | 0.5 | 0.06 | 0.14 | 0.4467 | 0 | 0.06% | 3705 | 2.48 | 0 |
-| 74959 | 11.2 | 1.17 | 0.94 | 0.42 | 7.77 | 0.2 | 0.79 | 0.77 | 0.07 | 0.2 | 0.4422 | 4 | 0.12% | 5383 | 4.38 | 3 |
-| 1000338 | 47.2 | 5.93 | 10.67 | 1.83 | 9.17 | 2.29 | 6.21 | 15.84 | 0.34 | 0.86 | — | — | — | 38786 | 30.11 | — |
+| 12532 | 8.3 | 0.8 | 0.22 | 0.11 | 7.38 | 0.06 | 0.22 | 0.24 | 0.03 | 0.04 | 0.4573 | 2 | 0.48% | 985 | 0.84 | 1 |
+| 24955 | 9.3 | 0.91 | 0.39 | 0.17 | 7.8 | 0.09 | 0.36 | 0.35 | 0.04 | 0.08 | 0.4598 | 0 | 0.12% | 1832 | 1.03 | 0 |
+| 50116 | 10.5 | 1.01 | 0.66 | 0.31 | 7.86 | 0.14 | 0.6 | 0.71 | 0.06 | 0.14 | 0.4467 | 0 | 0.06% | 3705 | 2.48 | 0 |
+| 74959 | 11.6 | 1.17 | 0.96 | 0.44 | 8.1 | 0.21 | 0.83 | 0.78 | 0.07 | 0.21 | 0.4422 | 4 | 0.12% | 5383 | 4.38 | 3 |
+| 1000338 | 48.6 | 6.07 | 11.08 | 1.91 | 9.52 | 2.39 | 6.61 | 15.82 | 0.37 | 0.88 | — | — | — | 38786 | 30.11 | — |
 
 The model makes false merges on two of these populations: 2 false pairs at 12,532 records, through 1 false link, and 4 at 74,959, through 3. They are model links at 8.2–10.1 bits, just over the threshold of 8, between near-namesakes a kana typo apart who share an address or a phone. The model expects about as many (`expected_false`: 0.84 and 4.38), and under one on every scenario's test split, where none appears.
 
@@ -321,17 +321,16 @@ The company line two grid steps stricter than the first clean one; the person li
 
 ### End to end
 
-From `scripts/benchmark.py` ([`reports/benchmark.md`](../reports/benchmark.md)). Populations with one name column for every kind (`er.generate.kind_problems`): real company names from the registry, written as banks write them; companies with records under their representative's name, the representative a person of the file (half at that person's address and phone); sole traders named like a shop; company dates; and a flag good, medium or poor. Each resolved three ways: names routed by the truth (the flag replaced by it, taken as it is); by the flag alone; by the kind step, people answering its review sheet (here, with the truth). `person_company_clusters` hold a true person and a true company; `sure_*` is the share of true companies called 2 and of true persons called 1; `wrong_*` the records called 2 that are persons and called 1 that are companies.
+From `scripts/benchmark.py` ([`reports/benchmark.md`](../reports/benchmark.md)). Populations with one name column for every kind (`er.generate.kind_problems`): real company names from the registry, held out of the name model's training and written as banks write them; companies with records under their representative's name, the representative a person of the file (half at that person's address and phone); sole traders named like a shop; company dates; and a flag good, medium or poor. Each resolved three ways: names routed by the truth (the flag replaced by it, taken as it is); by the flag alone; by the kind step, people answering its review sheet (here, with the truth). `person_company_clusters` hold a true person and a true company; `sure_*` is the share of true companies called 2 and of true persons called 1; `wrong_*` the records called 2 that are persons and called 1 that are companies.
 
 | flag | routed_by | recall | false_merges | person_company_clusters | pairs_to_decide | sure_companies | wrong_companies | sure_persons | wrong_persons | seconds |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| good (1% wrong at random, 20% on representatives) | the truth | 0.4641 | 0 | 0 | 518 | 83.7% | 0 | 98.5% | 0 | 6.0 |
-| good (1% wrong at random, 20% on representatives) | the flag alone | 0.4577 | 29 | 23 | 518 | 82.0% | 321 | 96.9% | 83 | 5.9 |
-| good (1% wrong at random, 20% on representatives) | the kind step, 2,000 labels | 0.4695 | 30 | 24 | 502 | 67.0% | 1 | 98.2% | 41 | 6.3 |
-| medium (3%, 50%) | the truth | 0.4641 | 0 | 0 | 518 | 83.7% | 0 | 98.5% | 0 | 2.4 |
-| medium (3%, 50%) | the flag alone | 0.4433 | 63 | 51 | 497 | 79.2% | 858 | 94.2% | 224 | 5.8 |
-| medium (3%, 50%) | the kind step, 2,000 labels | 0.4652 | 60 | 49 | 485 | 66.2% | 0 | 92.5% | 75 | 6.3 |
-| poor (10%, 80%) | the truth | 0.4641 | 0 | 0 | 518 | 83.7% | 0 | 98.5% | 0 | 2.5 |
-| poor (10%, 80%) | the flag alone | 0.3888 | 91 | 77 | 529 | 72.7% | 2372 | 86.7% | 543 | 5.6 |
-| poor (10%, 80%) | the kind step, 2,000 labels | 0.4131 | 90 | 76 | 518 | 64.1% | 0 | 72.3% | 89 | 6.1 |
-
+| good (1% wrong at random, 20% on representatives) | the truth | 0.4704 | 0 | 0 | 517 | 83.7% | 0 | 98.5% | 0 | 6.1 |
+| good (1% wrong at random, 20% on representatives) | the flag alone | 0.4578 | 15 | 15 | 520 | 82.5% | 223 | 97.4% | 58 | 6.1 |
+| good (1% wrong at random, 20% on representatives) | the kind step, 2,000 labels | 0.4679 | 12 | 12 | 504 | 65.1% | 0 | 98.4% | 23 | 6.6 |
+| medium (3%, 50%) | the truth | 0.4704 | 0 | 0 | 517 | 83.7% | 0 | 98.5% | 0 | 2.6 |
+| medium (3%, 50%) | the flag alone | 0.4426 | 45 | 40 | 509 | 79.8% | 642 | 95.3% | 192 | 6.1 |
+| medium (3%, 50%) | the kind step, 2,000 labels | 0.4634 | 44 | 39 | 484 | 65.8% | 0 | 97.2% | 79 | 6.4 |
+| poor (10%, 80%) | the truth | 0.4704 | 0 | 0 | 517 | 83.7% | 0 | 98.5% | 0 | 2.6 |
+| poor (10%, 80%) | the flag alone | 0.401 | 79 | 68 | 511 | 74.0% | 2014 | 88.5% | 478 | 5.9 |
+| poor (10%, 80%) | the kind step, 2,000 labels | 0.4145 | 77 | 66 | 512 | 65.1% | 0 | 73.9% | 97 | 6.3 |

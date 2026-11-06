@@ -88,7 +88,7 @@ Each entry names a way an entity-resolution pipeline like this one goes wrong, a
 - **Pitfall:** an intermediate table copied into pandas with more columns than needed outgrows memory on a big file. It shows as a run that stalls deep in swap.
 - **Why:** reading Splink's predictions into pandas with every matching column of both records, only to keep the ids, the weights and the gammas, makes a copy that grows with the candidates times the columns.
 - **Guard:** DuckDB selects the needed columns before anything reaches pandas, and the predictions table is dropped once read. Every table of size N or C is a DuckDB table (`er.run`), which spills past `[compute]` `memory_limit` to `.tmp/` under the folder a run starts in, unless `temp_directory` says otherwise. A run's capacity counts the spill room DuckDB allows: 90% of the free disk by default. DuckDB keeps what the limit allows, so the peak under a large limit says little: test the smallest limit that completes, not the peak.
-- **Check:** every run's `steps.json` records the peak memory after each step, and `reports/benchmark.md` reports it at every file size: 5.93 GB at a million records under an 8 GB limit, Python included.
+- **Check:** every run's `steps.json` records the peak memory after each step, and `reports/benchmark.md` reports it at every file size: 6.07 GB at a million records under an 8 GB limit, Python included.
 
 ## An answer that depends on the file's order
 - **Pitfall:** an output column depends on the order of the records in the file. It shows as identical clusters but a different `resolved_by` after the file is shuffled.
@@ -147,7 +147,7 @@ Each entry names a way an entity-resolution pipeline like this one goes wrong, a
 ## A measuring draw taken from what review left
 - **Pitfall:** records sent to people because they look wrong are a biased sample, and so is a draw taken from the records left after them, or one stratified to hold more of the records the engine is surest of. Placing a line or measuring an error rate on any of them misjudges it. It shows as a line that holds on the answers and breaks on the file.
 - **Why:** the records sent to decide are those where the engine and the flag disagree, where the errors gather; taking them out of the measuring draw leaves the easy records. A stratified draw puts more of the surest records above each line than the file has there, so the error above it looks smaller than it is.
-- **Guard:** `kind.review_sheet` draws the measuring rows first, at random from every record with a name, then the records to decide from the rest. `kind.classifier` places the lines and measures the flag on the measuring answers only, and fits the combiner on all of them.
+- **Guard:** `kind.kind_review_sheet` draws the measuring rows first, at random from every record with a name, then the records to decide from the rest. `kind.classifier` places the lines and measures the flag on the measuring answers only, and fits the combiner on all of them.
 - **Check:** a test checks the sheet's two kinds of rows and their reasons; the benchmark's "Person or company" section counts the wrong calls on every record.
 
 ## A line placed at zero errors on a few hundred labels

@@ -3,7 +3,7 @@
 # folder with pyproject.toml). The matching itself is config/pipeline.toml, written in the field names of [columns].
 
 [paths]
-reference = "data/reference"                     # tracked: the synthetic generator's frozen public reference data (SOURCES.md)
+reference = "data/reference"                     # tracked: frozen public reference data for the generator and the name model (SOURCES.md)
 bronze = "data/medallion/bronze"                 # <dataset>.parquet: records as they arrive (generated), the pipeline input
 gold = "data/medallion/gold"                     # <dataset>/: each dataset resolved, a run folder; its state/records/ is the silver layer
 labels = "data/labels"                           # <dataset>.parquet: truth, read only to choose and evaluate

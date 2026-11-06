@@ -33,7 +33,7 @@ Matching is one step inside resolution. Resolution adds two jobs of its own:
 | Question | are these two records the same entity? | which records belong together? |
 | Looks at | one pair | the whole file |
 | Answer | yes / no, or a probability | groups of records, one per entity |
-| In this repo | `er.match` | `er.candidates`, then `er.match`, then `er.resolve` |
+| In this repo | `er.match` | `er.candidates`, then `er.match`, then `er.cluster` |
 
 The same problem goes by other names. *Deduplication* finds duplicates inside one file, which is our case. *Record linkage* connects records across two files. Linking records to a master list is a third variant.
 
@@ -128,6 +128,7 @@ Real customer data has no answer key. Nobody knows for sure which records are th
 - 60,000 Japanese personas from NVIDIA's Nemotron-Personas-Japan, with kana readings
 - 31,596 companies from Wikidata
 - about 46,000 towns in all 47 prefectures, with postal codes, from geolonia's address data and yubinbango
+- 60,000 corporations' kana readings from the National Tax Agency's corporate-number registry, for telling persons from companies ([chapter 7](07-person-or-company.md))
 
 **Synthetic behaviour.** The generator then decides who has duplicates and how the records go wrong:
 
@@ -135,7 +136,7 @@ Real customer data has no answer key. Nobody knows for sure which records are th
 - **Records per entity:** 1 plus a Poisson(0.25) draw, so about one entity in five has more than one record.
 - **Several of everything.** People move and change phones: each person owns 1 + Poisson(2.0) phones and addresses, and a company 1 + Poisson(3.0). Each person owns 1 + Poisson(0.3) surnames (married names), each company 1 + Poisson(1.0) names. Each record shows one of them.
 - **Typing errors:** 30% of name parts get one kana wrong or dropped; 10% of phones, birth dates and typed addresses one digit wrong (in an address, sometimes a dropped character).
-- **Notations:** 30% of person records put a space between surname and given name, 15% of records write every name in half-width katakana, a company's legal form is written five ways (or left out), and one company record in ten adds a branch.
+- **Notations:** 30% of person records put a space between surname and given name, 15% of records write every name in half-width katakana, a company's legal form is written four ways, or left out, and one company record in ten adds a branch.
 - **A CIF ID** is kept on 3% of the duplicate records, and in a tenth of those typed with one digit wrong. The other duplicates carry a new one.
 - **Empty fields:** the fill rate falls from 99.99% to 65% across the columns, and fields of one kind (name, postal code, address) tend to be empty together. A person's birth date is filled for 15%, independently of the rest.
 - **Households:** unrelated entities sometimes share an address. They are look-alikes that must not be merged.
