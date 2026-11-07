@@ -270,11 +270,12 @@ async function api(path, body) {
   const r = await fetch(path, {method: body ? "POST" : "GET", headers: {"X-Token": token, "Content-Type": "application/json"}, body: body ? JSON.stringify(body) : undefined});
   return r.json();
 }
-const use = (screen, command) => LAYOUT.screens.find((s) => s.id === screen).uses.find((u) => u.command === command);
+const screen = (id) => LAYOUT.screens.find((s) => s.id === id);
+const use = (id, command) => screen(id).uses.find((u) => u.command === command);
 
-function argsFor(screen, command, extra) {
+function argsFor(id, command, extra) {
   const args = {};
-  for (const [k, v] of Object.entries(use(screen, command).args)) {
+  for (const [k, v] of Object.entries(use(id, command).args)) {
     const value = typeof v === "string" && v.startsWith("@") ? (extra[v.slice(1)] ?? state[v.slice(1)]) : v;
     if (value !== undefined && value !== "" && value !== null) args[k] = value;
   }
@@ -316,26 +317,35 @@ function snack(html, ms = 0) {
   if (ms) snackTimer = setTimeout(() => { $("snack").hidden = true; }, ms);
 }
 
-// Run one command as the layout places it, its arguments filled from what the person typed or chose.
-async function run(screen, command, extra = {}, onEvent = null) {
-  const started = await api("/api/run", {command, args: argsFor(screen, command, extra)});
-  if (started.error) return {event: "error", error: started.error, fix: started.fix};
-  const entry = term.add(started.command), quick = COMMANDS[command].quick;
-  if (!quick) snack(`<span class="spin"></span><span class="msg">Running <code>${esc(started.command)}</code></span>`);
-  let from = 0, last = {};
-  for (;;) {
-    const j = await api(`/api/job/${started.job}?from=${from}`);
-    for (const e of j.events) { last = e; if (e.event === "step") entry.step(e); if (onEvent) onEvent(e); }
-    from += j.events.length;
-    if (j.done) {
-      entry.end(last, j.exit);
-      if (!quick) snack(j.exit === 0 ? `${icon("check")}<span class="msg">Done: ${esc(COMMANDS[command].help)}</span>`
-                                     : `${icon("error")}<span class="msg">Failed: ${esc(last.error || `exit ${j.exit}`)}</span><button class="btn" data-term>View</button>`, 6000);
-      break;
+// Run one command as the layout places it, its arguments filled from what the person typed or chose. A lost server
+// ends it with an error: the page never waits forever.
+async function run(id, command, extra = {}, onEvent = null) {
+  const quick = COMMANDS[command].quick;
+  let entry = null;
+  try {
+    const started = await api("/api/run", {command, args: argsFor(id, command, extra)});
+    if (started.error) return {event: "error", error: started.error, fix: started.fix};
+    entry = term.add(started.command);
+    if (!quick) snack(`<span class="spin"></span><span class="msg">Running <code>${esc(started.command)}</code></span>`);
+    let from = 0, last = {};
+    for (;;) {
+      const j = await api(`/api/job/${started.job}?from=${from}`);
+      for (const e of j.events) { last = e; if (e.event === "step") entry.step(e); if (onEvent) onEvent(e); }
+      from += j.events.length;
+      if (j.done) {
+        entry.end(last, j.exit);
+        if (!quick) snack(j.exit === 0 ? `${icon("check")}<span class="msg">Done: ${esc(COMMANDS[command].help)}</span>`
+                                       : `${icon("error")}<span class="msg">Failed: ${esc(last.error || `exit ${j.exit}`)}</span><button class="btn" data-term>View</button>`, 6000);
+        return last;
+      }
+      await sleep(quick ? 120 : 300);
     }
-    await sleep(quick ? 120 : 300);
+  } catch {
+    const e = {event: "error", error: "Lost the server: is nayose open ui still running?", fix: "Start it again, then reload this page."};
+    if (entry) entry.end(e, 1);
+    snack(`${icon("error")}<span class="msg">${esc(e.error)}</span>`, 6000);
+    return e;
   }
-  return last;
 }
 
 // ---------- pieces every page draws with ----------
@@ -364,10 +374,11 @@ function grid(box, rows, cols, opts = {}) {
   const draw = () => {
     const q = filter ? filter.value.trim().toLowerCase() : "";
     const shown = rows.map((r, i) => [r, i]).filter(([r]) => !q || cols.some((c) => String(r[c] ?? "").toLowerCase().includes(q)));
-    body.innerHTML = shown.slice(0, most).map(([r, i]) => `<tr data-i="${i}" class="${opts.onPick ? "pick" : ""}" aria-selected="${i === opts.selected}">` +
+    const at = Math.max(0, Math.min(shown.findIndex(([, i]) => i === opts.selected) - 50, shown.length - most));  // the window holds the picked row
+    body.innerHTML = shown.slice(at, at + most).map(([r, i]) => `<tr data-i="${i}" class="${opts.onPick ? "pick" : ""}" aria-selected="${i === opts.selected}">` +
       cols.map((c) => `<td${typeof r[c] === "number" ? ' class="num"' : ""}>${cellOf(r, c)}</td>`).join("") + "</tr>").join("") ||
       `<tr><td colspan="${cols.length}" class="faint">No rows</td></tr>`;
-    foot.textContent = `${shown.length.toLocaleString()} of ${rows.length.toLocaleString()} rows` + (shown.length > most ? ` · the first ${most} shown` : "");
+    foot.textContent = `${shown.length.toLocaleString()} of ${rows.length.toLocaleString()} rows` + (shown.length > most ? ` · ${(at + 1).toLocaleString()}–${(at + most).toLocaleString()} shown` : "");
     if (opts.onPick) body.querySelectorAll("tr[data-i]").forEach((tr) => tr.onclick = () => opts.onPick(Number(tr.dataset.i)));
   };
   if (filter) filter.oninput = draw;
@@ -375,6 +386,7 @@ function grid(box, rows, cols, opts = {}) {
   return {
     select(i) {
       opts.selected = i;
+      if (!body.querySelector(`tr[data-i="${i}"]`)) draw();  // outside the window drawn: draw the window around it
       body.querySelectorAll("tr[data-i]").forEach((tr) => tr.setAttribute("aria-selected", String(Number(tr.dataset.i) === i)));
       const tr = body.querySelector(`tr[data-i="${i}"]`), wrap = box.querySelector(".tablewrap");  // scroll the table, never the page
       if (!tr) return;
@@ -403,14 +415,14 @@ function formValues(command, form) {
 }
 
 // A command in a dialog, as a console's create dialog: its form, the command line it will run, then run.
-function action(screen, command, label, done) {
-  const c = COMMANDS[command], form = use(screen, command).form || [], dlg = $("dlg");
+function action(id, command, label, done, onEvent = null) {
+  const c = COMMANDS[command], form = use(id, command).form || [], dlg = $("dlg");
   dlg.innerHTML = `<form method="dialog"><div class="dlg-body"><h2>${esc(c.help)}</h2><p class="about">${esc(c.about)}</p>
       ${form.map((n) => field(command, n)).join("")}<span class="lab faint" style="font-size:12px">Equivalent command line</span>
       <div class="equiv">${icon("terminal")}<code id="equiv-line"></code><button type="button" class="iconbtn" id="copy" aria-label="Copy the command line">${icon("copy")}</button></div></div>
     <div class="dlg-foot"><span class="grow"></span><button class="btn" value="cancel" formnovalidate>Cancel</button><button class="btn filled" value="run">${esc(label)}</button></div></form>`;
   const preview = async () => {
-    const d = await api("/api/run", {command, args: argsFor(screen, command, formValues(command, form)), dry: true});
+    const d = await api("/api/run", {command, args: argsFor(id, command, formValues(command, form)), dry: true});
     $("equiv-line").textContent = d.command || d.error;
   };
   dlg.querySelectorAll("input, select").forEach((x) => x.oninput = preview);
@@ -420,7 +432,7 @@ function action(screen, command, label, done) {
     if (dlg.returnValue !== "run") return;
     const extra = formValues(command, form);
     if (extra.input) { state.input = extra.input; store("input", extra.input); }
-    done(await run(screen, command, extra, done.onEvent));
+    done(await run(id, command, extra, onEvent));
   };
   dlg.returnValue = "";
   dlg.showModal();
@@ -434,8 +446,7 @@ const SCREENS = {
     $("refresh").onclick = () => go("records");
     if (!state.run) { $("out").innerHTML = emptyRun(); return; }
     const d = await run("records", "describe run");
-    if (d.event === "error") { $("out").innerHTML = /no run in/.test(d.error) ? emptyRun() : banner(d); return; }
-    counts(d);
+    if (d.event === "error") { $("out").innerHTML = /no run in/.test(d.error) ? emptyRun() : banner(d); return d; }
     $("out").innerHTML = (d.write_owed ? banner({event: "error", error: "A write was cut short", fix: "The next command that writes to this folder finishes it."}, "warn") : "") +
       `<div class="tiles">
         <div class="tile"><div class="k">Records</div><div class="v">${fmt(d.records)}</div></div>
@@ -446,6 +457,7 @@ const SCREENS = {
       <div class="card"><h2>Activity</h2><div id="runs"></div></div>`;
     grid($("runs"), d.runs.slice().reverse(), ["at", "what", "files", "seconds"],
          {filter: false, cell: (r, c) => c === "files" ? esc(r.files.map((f) => f.split("/").pop()).join(", ")) : esc(fmt(r[c]))});
+    return d;  // go() counts the navigation's open pairs and kinds from it
   },
 
   async columns(el) {
@@ -481,7 +493,7 @@ const SCREENS = {
     el.innerHTML = head("Runs", `<button class="btn filled" data-act="resolve records" data-label="Resolve">${icon("run")}Resolve records</button>
         <button class="btn" data-act="add records" data-label="Add">Add records</button><button class="btn" data-act="match records" data-label="Match">Match records</button>
         <button class="btn" data-act="rerun records" data-label="Rerun">Rerun records</button>`) +
-      `<div id="out">${state.run ? "" : emptyRun()}<div class="card"><h2>${icon("info")}${esc(LAYOUT.screens[2].what)}</h2><p class="muted" style="margin:0">Each button opens its
+      `<div id="out">${state.run ? "" : emptyRun()}<div class="card"><h2>${icon("info")}${esc(screen("run").what)}</h2><p class="muted" style="margin:0">Each button opens its
        command with the command line it will run. Each step shows as it finishes, then the result.</p></div></div>`;
     el.querySelectorAll("[data-act]").forEach((b) => b.onclick = () => {
       const command = b.dataset.act;
@@ -494,7 +506,7 @@ const SCREENS = {
         if (command === "match records" && d.records) grid($("matched"), d.records, ["id", "entity", "status", "by", "weight"], {cell: (r, c) => c === "status" ? chip(r.status) : esc(fmt(r[c]))});
         counts();
       };
-      done.onEvent = (e) => {
+      const step = (e) => {
         if (e.event !== "step") return;
         let box = $("out").querySelector(".steps-card ul");
         if (!box) {
@@ -503,7 +515,7 @@ const SCREENS = {
         }
         box.insertAdjacentHTML("beforeend", `<li>${icon("check")}${esc(e.step)} <span class="faint">${e.seconds.toFixed(1)} s</span></li>`);
       };
-      action("run", command, b.dataset.label, done);
+      action("run", command, b.dataset.label, done, step);
     });
   },
 
@@ -523,81 +535,104 @@ const SCREENS = {
     if (record) entity(record);
     if (!state.run) { $("left").innerHTML = emptyRun(); return; }
     const d = await run("results", "describe run");
-    if (d.event === "error") { $("left").innerHTML = banner(d); return; }
+    if (d.event === "error") { $("left").innerHTML = banner(d); return d; }
     $("left").innerHTML = `<div class="card"><h2>Largest entities</h2><div id="largest"></div></div><div class="card"><h2>Summary</h2>${summary(d.summary)}</div>`;
     const t = grid($("largest"), d.largest, ["entity", "records"], {filter: false, onPick: (i) => { t.select(i); entity(d.largest[i].entity); }});
+    return d;
   },
 
   pairs: (el, note) => review(el, "pairs", note),
   kinds: (el, note) => review(el, "kinds", note),
 };
 
-// The two review pages: the queue as a table, the picked row in a panel beside it, answered by keyboard.
+// The two review queues, and what differs between them: their commands, columns, keys, the card a row is shown in, and
+// how answers are applied (decisions join entities at once; answers need a rerun, so the page reloads its new sheet).
+const QUEUES = {
+  pairs: {title: "Pairs", list: "list pairs", one: "decide pair", apply: "apply decisions", applyLabel: "Apply decisions",
+          rows: (d) => d.pairs, cols: ["status", "why", "id_l", "id_r", "match_weight"], labels: {match_weight: "weight"},
+          note: "Answers are written in as you go, then applied together: a match joins the two entities at once.",
+          keys: {m: "match", n: "no_match"}, answer: (r, value) => ({first: r.id_l, second: r.id_r, decision: value}), card: pairCard,
+          applied: (e) => `<div class="banner info">${icon("check")}<div><b>${fmt(e.decisions)} decisions applied, ${fmt(e.matches)} of them match: ${fmt(e.clusters_joined)} entities joined.</b>` +
+                          `${(e.summary || []).length ? `<div class="fix">${esc(e.summary.map((x) => x.join(": ")).join(" · "))}</div>` : ""}</div></div>`},
+  kinds: {title: "Kinds", list: "list kinds", one: "answer kind", apply: "apply answers", applyLabel: "Apply answers", rerun: true,
+          rows: (d) => d.kinds, cols: ["status", "why", "id", "name", "engine_says"], labels: {engine_says: "engine"},
+          note: "Answers are written in as you go. A sole trader is a person. Applying them resolves the run's own files again, since they change how names are matched.",
+          keys: {"1": "person", "2": "company", "0": "unsure"}, answer: (r, value) => ({id: r.id, kind: value}), card: kindCard},
+};
+
+const keyHint = (keys) => `<span class="keys">${keys.map(([k, what]) => `<kbd>${esc(k)}</kbd> ${esc(what)}`).join(" · ")} · <kbd>S</kbd> skip · <kbd>↑</kbd><kbd>↓</kbd> move</span>`;
+const cardHead = (r, at, of) => `<h2>${at + 1} of ${of} ${chip(r.why)} ${chip(r.status)}</h2>`;
+
+function pairCard(r, at, of) {  // the two records side by side, the values that differ marked, each comparison's bits
+  const differ = (f) => r[`${f}_l`] !== null && r[`${f}_r`] !== null && r[`${f}_l`] !== r[`${f}_r`];
+  const fields = Object.keys(r).filter((k) => k.endsWith("_l") && k !== "id_l" && `${k.slice(0, -2)}_r` in r).map((k) => k.slice(0, -2))
+    .filter((f) => r[`${f}_l`] !== null || r[`${f}_r`] !== null);
+  const comps = Object.keys(r).filter((k) => `${k}_bits` in r);
+  return `<div class="card">${cardHead(r, at, of)}
+    <p class="muted" style="margin:0 0 12px">Weight <b>${fmt(r.match_weight)}</b> bits · ${r.accepted ? '<span class="chip good">accepted by the run</span>' : '<span class="chip">not accepted</span>'}</p>
+    <div class="tablecard"><table><thead><tr><th>field</th><th>${esc(r.id_l)}</th><th>${esc(r.id_r)}</th></tr></thead><tbody>${fields.map((f) =>
+      `<tr class="${differ(f) ? "differ" : ""}"><td>${esc(f.replaceAll("_", " "))}</td><td class="v wrap">${esc(fmt(r[`${f}_l`]))}</td><td class="v wrap">${esc(fmt(r[`${f}_r`]))}</td></tr>`).join("")}</tbody></table></div>
+    <div class="chips">${comps.map((c) => `<span class="chip ${r[`${c}_bits`] > 0 ? "good" : ""}">${esc(c)}: ${esc(r[c])} · ${r[`${c}_bits`] >= 0 ? "+" : ""}${fmt(r[`${c}_bits`])}</span>`).join("")}</div>
+    <div class="actions"><button class="btn filled" data-a="match">Match</button><button class="btn outlined" data-a="no_match">No match</button>
+      <button class="btn" data-skip>Skip</button>${keyHint([["M", "match"], ["N", "no match"]])}</div><div id="said"></div></div>`;
+}
+
+function kindCard(r, at, of) {  // the name, what the engine, the name and the flag say, and why the record is here
+  const said = ["engine_says", "name_says", "flag", "birth_date"].filter((k) => k in r && r[k] !== null);
+  return `<div class="card">${cardHead(r, at, of)}<p class="muted" style="margin:0">${esc(r.reason)}</p>
+    <div class="big">${esc(r.name)}</div><div class="chips">${said.map((k) => `<span class="chip">${esc(k.replace("_says", "").replaceAll("_", " "))}: ${esc(r[k])}</span>`).join("")}</div>
+    <div class="actions"><button class="btn filled" data-a="person">Person</button><button class="btn filled" data-a="company">Company</button>
+      <button class="btn outlined" data-a="unsure">Can't tell</button><button class="btn" data-skip>Skip</button>${keyHint([["1", "person"], ["2", "company"], ["0", "can't tell"]])}</div>
+    <div id="said"></div></div>`;
+}
+
+// A review page: the queue as a table, the picked row in a card beside it, answered by keyboard, one answer at a time.
 async function review(el, which, note = "") {
-  const pairs = which === "pairs";
-  const list = pairs ? "list pairs" : "list kinds", one = pairs ? "decide pair" : "answer kind", apply = pairs ? "apply decisions" : "apply answers";
-  el.innerHTML = head(pairs ? "Pairs" : "Kinds", `<button class="btn filled" id="apply">${icon("check")}${pairs ? "Apply decisions" : "Apply answers"} <span class="badge" id="written">0</span></button>
+  const q = QUEUES[which];
+  el.innerHTML = head(q.title, `<button class="btn filled" id="apply">${icon("check")}${q.applyLabel} <span class="badge" id="written">0</span></button>
       <button class="btn" id="refresh">${icon("refresh")}Refresh</button>`) +
-    `<div id="note">${note}</div><div class="split"><div id="left" class="faint">Loading…</div><div id="right" class="panel-sticky"></div></div>`;
+    `<div id="note">${note || `<div class="banner info">${icon("info")}<div><b>${esc(screen(which).what)}</b><div class="fix">${esc(q.note)}</div></div></div>`}</div>
+     <div class="split"><div id="left" class="faint">Loading…</div><div id="right" class="panel-sticky"></div></div>`;
   $("refresh").onclick = () => go(which);
-  if (!state.run) { $("left").innerHTML = emptyRun(); $("apply").disabled = true; return; }
-  const d = await run(which, list);
-  if (d.event === "error") { $("left").innerHTML = banner(d); $("apply").disabled = true; return; }
-  const rows = pairs ? d.pairs : d.kinds;
-  let i = Math.max(0, rows.findIndex((r) => r.status === "open")), written = 0;
+  $("apply").disabled = true;
+  if (!state.run) { $("left").innerHTML = emptyRun(); return; }
+  const d = await run(which, q.list);
+  if (d.event === "error") { $("left").innerHTML = banner(d); return; }
+  const rows = q.rows(d);
+  let i = Math.max(0, rows.findIndex((r) => r.status === "open")), written = 0, pending = false;
   const tally = () => { $("written").textContent = String(written); $("apply").disabled = !rows.some((r) => r.status === "written in"); };
-  if (!note) $("note").innerHTML = `<div class="banner info">${icon("info")}<div><b>${esc(LAYOUT.screens.find((s) => s.id === which).what)}</b><div class="fix">${pairs
-    ? "Answers are written in as you go, then applied together: a match joins the two entities at once."
-    : "Answers are written in as you go. A sole trader is a person. Applying them resolves the run's own files again, since they change how names are matched."}</div></div></div>`;
-  const cols = pairs ? ["status", "why", "id_l", "id_r", "match_weight"] : ["status", "why", "id", "name", "engine_says"];
-  const t = grid($("left"), rows, cols, {labels: {match_weight: "weight", engine_says: "engine"}, selected: i,
-    cell: (r, c) => c === "status" || c === "why" ? chip(r[c]) : esc(fmt(r[c])), onPick: (k) => { i = k; show(); }});
+  const t = grid($("left"), rows, q.cols, {labels: q.labels, selected: i, cell: (r, c) => c === "status" || c === "why" ? chip(r[c]) : esc(fmt(r[c])),
+                                           onPick: (k) => { i = k; show(); }});
   const move = (step) => { i = Math.min(rows.length - 1, Math.max(0, i + step)); show(); };
   const answer = async (value) => {
-    const r = rows[i], extra = pairs ? {first: r.id_l, second: r.id_r, decision: value} : {id: r.id, kind: value};
-    const e = await run(which, one, extra);
-    if (e.event === "error") { $("said").innerHTML = banner(e); return; }
-    r.status = "written in"; written++; tally(); t.redraw();
-    const next = rows.findIndex((x, k) => k > i && x.status === "open");
-    if (next >= 0) i = next;
-    show();
+    if (pending) return;  // a key held down or pressed twice: one answer for the row, then the next row
+    pending = true;
+    try {
+      const r = rows[i], e = await run(which, q.one, q.answer(r, value));
+      if (e.event === "error") { $("said").innerHTML = banner(e); return; }
+      r.status = "written in"; written++; tally(); t.redraw();
+      const next = rows.findIndex((x, k) => k > i && x.status === "open");
+      if (next >= 0) i = next;
+      show();
+    } finally { pending = false; }
   };
   const show = () => {
     t.select(i);
-    const r = rows[i];
-    if (!r) { $("right").innerHTML = `<div class="card empty">${icon("empty")}<p class="muted">Nothing is open here.</p></div>`; return; }
-    if (pairs) {
-      const fields = Object.keys(r).filter((k) => k.endsWith("_l") && k !== "id_l" && `${k.slice(0, -2)}_r` in r).map((k) => k.slice(0, -2))
-        .filter((f) => r[`${f}_l`] !== null || r[`${f}_r`] !== null);
-      const comps = Object.keys(r).filter((k) => `${k}_bits` in r);
-      $("right").innerHTML = `<div class="card"><h2>${i + 1} of ${rows.length} ${chip(r.why)} ${chip(r.status)}</h2>
-        <p class="muted" style="margin:0 0 12px">Weight <b>${fmt(r.match_weight)}</b> bits · ${r.accepted ? '<span class="chip good">accepted by the run</span>' : '<span class="chip">not accepted</span>'}</p>
-        <div class="tablecard"><table><thead><tr><th>field</th><th>${esc(r.id_l)}</th><th>${esc(r.id_r)}</th></tr></thead><tbody>${fields.map((f) =>
-          `<tr class="${r[`${f}_l`] !== null && r[`${f}_r`] !== null && r[`${f}_l`] !== r[`${f}_r`] ? "differ" : ""}"><td>${esc(f.replaceAll("_", " "))}</td><td class="v wrap">${esc(fmt(r[`${f}_l`]))}</td><td class="v wrap">${esc(fmt(r[`${f}_r`]))}</td></tr>`).join("")}</tbody></table></div>
-        <div class="chips">${comps.map((c) => `<span class="chip ${r[`${c}_bits`] > 0 ? "good" : ""}">${esc(c)}: ${esc(r[c])} · ${r[`${c}_bits`] >= 0 ? "+" : ""}${fmt(r[`${c}_bits`])}</span>`).join("")}</div>
-        <div class="actions"><button class="btn filled" data-a="match">Match</button><button class="btn outlined" data-a="no_match">No match</button>
-          <button class="btn" data-skip>Skip</button><span class="keys"><kbd>M</kbd> match · <kbd>N</kbd> no match · <kbd>S</kbd> skip · <kbd>↑</kbd><kbd>↓</kbd> move</span></div><div id="said"></div></div>`;
-    } else {
-      const said = ["engine_says", "name_says", "flag", "birth_date"].filter((k) => k in r && r[k] !== null);
-      $("right").innerHTML = `<div class="card"><h2>${i + 1} of ${rows.length} ${chip(r.why)} ${chip(r.status)}</h2><p class="muted" style="margin:0">${esc(r.reason)}</p>
-        <div class="big">${esc(r.name)}</div><div class="chips">${said.map((k) => `<span class="chip">${esc(k.replace("_says", "").replaceAll("_", " "))}: ${esc(r[k])}</span>`).join("")}</div>
-        <div class="actions"><button class="btn filled" data-a="person">Person</button><button class="btn filled" data-a="company">Company</button>
-          <button class="btn outlined" data-a="unsure">Can't tell</button><button class="btn" data-skip>Skip</button>
-          <span class="keys"><kbd>1</kbd> person · <kbd>2</kbd> company · <kbd>0</kbd> can't tell · <kbd>S</kbd> skip · <kbd>↑</kbd><kbd>↓</kbd> move</span></div><div id="said"></div></div>`;
-    }
+    if (!rows[i]) { $("right").innerHTML = `<div class="card empty">${icon("empty")}<p class="muted">Nothing is open here.</p></div>`; return; }
+    $("right").innerHTML = q.card(rows[i], i, rows.length);
     $("right").querySelectorAll("[data-a]").forEach((b) => b.onclick = () => answer(b.dataset.a));
     $("right").querySelector("[data-skip]").onclick = () => move(1);
   };
   const applied = (e) => {
-    if (!pairs && e.event !== "error") return go(which, `<div class="banner info">${icon("check")}<div><b>Answers applied: the run was resolved again, and these are the records still open.</b></div></div>`);
-    $("note").innerHTML = e.event === "error" ? banner(e) : pairs
-      ? `<div class="banner info">${icon("check")}<div><b>${fmt(e.decisions)} decisions applied, ${fmt(e.matches)} of them match: ${fmt(e.clusters_joined)} entities joined.</b>${(e.summary || []).length ? `<div class="fix">${esc(e.summary.map((x) => x.join(": ")).join(" · "))}</div>` : ""}</div></div>`
-      : `<div class="banner info">${icon("check")}<div><b>Answers applied: the run was resolved again.</b></div></div>${summary(e.summary)}`;
-    if (e.event !== "error") { rows.forEach((r) => { if (r.status === "written in") r.status = "applied"; }); written = 0; tally(); t.redraw(); counts(); }
+    if (e.event === "error") { $("note").innerHTML = banner(e); return; }
+    if (q.rerun) return go(which, `<div class="banner info">${icon("check")}<div><b>Answers applied: the run was resolved again, and these are the records still open.</b></div></div>`);
+    $("note").innerHTML = q.applied(e);
+    rows.forEach((r) => { if (r.status === "written in") r.status = "applied"; });
+    written = 0; tally(); t.redraw(); counts();
   };
-  $("apply").onclick = () => pairs ? run(which, apply).then(applied) : action(which, apply, "Apply", applied);
-  keyHandler = (k) => ({...(pairs ? {m: () => answer("match"), n: () => answer("no_match")} : {"1": () => answer("person"), "2": () => answer("company"), "0": () => answer("unsure")}),
-                        s: () => move(1), ArrowDown: () => move(1), ArrowUp: () => move(-1), j: () => move(1), k: () => move(-1)})[k];
+  $("apply").onclick = () => q.rerun ? action(which, q.apply, "Apply", applied) : run(which, q.apply).then(applied);
+  const keys = Object.fromEntries(Object.entries(q.keys).map(([k, value]) => [k, () => answer(value)]));
+  keyHandler = (k) => ({...keys, s: () => move(1), ArrowDown: () => move(1), ArrowUp: () => move(-1), j: () => move(1), k: () => move(-1)})[k];
   tally();
   show();
 }
@@ -608,7 +643,8 @@ function emptyRun() {
     <div class="actions" style="justify-content:center">${state.run ? '<a class="btn outlined" data-go="columns">Check columns</a><a class="btn filled" data-go="run">Resolve records</a>' : '<button class="btn filled" data-pick>Choose a run folder</button>'}</div></div>`;
 }
 
-// The counts beside the navigation's review pages, from the run folder.
+// The counts beside the navigation's review pages, from the run folder: from the page's own describe run when it made
+// one, else from one of their own.
 async function counts(d) {
   if (!d) { if (!state.run) return; d = await run("records", "describe run"); }
   const set = (id, n) => { const el = document.querySelector(`[data-screen="${id}"] .count`); if (el) el.textContent = n ? n.toLocaleString() : ""; };
@@ -633,7 +669,6 @@ function setRun(r) {
   store("run", r);
   store("recent", JSON.stringify([r, ...JSON.parse(store("recent") || "[]").filter((x) => x !== r)].filter(Boolean).slice(0, 6)));
   $("picker").innerHTML = `${icon("folder")}<span>${esc(r || "Choose a run folder")}</span>${icon("down")}`;
-  counts();
   go(current);
 }
 
@@ -647,11 +682,11 @@ function help() {
   dlg.showModal();
 }
 
-function go(id, arg) {
+async function go(id, arg) {
   current = id; keyHandler = null;
   document.body.classList.remove("nav-open");
   $("nav").querySelectorAll(".navitem").forEach((b) => b.setAttribute("aria-current", b.dataset.screen === id ? "page" : "false"));
-  SCREENS[id]($("screen"), arg);
+  counts(await SCREENS[id]($("screen"), arg));
 }
 
 document.addEventListener("click", (e) => {

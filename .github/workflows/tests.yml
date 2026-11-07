@@ -17,5 +17,6 @@ jobs:
           python-version: ${{ matrix.python }}
           cache: pip
       - run: pip install -r requirements.txt
+      - run: python -m playwright install --with-deps chromium  # the UI's page runs in a browser in one test
       - run: ruff check --select F .  # unused imports, names never defined
       - run: python -m pytest tests/ -q
