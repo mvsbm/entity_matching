@@ -24,7 +24,7 @@
 | d | diameter of the largest cluster: Splink's connected components take up to d rounds |
 | F, D, T | folds (3), decision variants (5 for the rules, 23 for the model), Optuna trials |
 
-**A full run** (`er.run.Run.full`, which `scripts/resolve.py` calls), with the times measured on 1,000,338 generated records by
+**A full run** (`er.run.Run.full`, which `nayose resolve records` calls), with the times measured on 1,000,338 generated records by
 `scripts/benchmark.py`, in a process of its own under an 8 GB DuckDB memory limit (peak 6.23 GB, Python included):
 
 | # | Step | Code | Cost | Grows like | At 1M |
@@ -44,7 +44,7 @@ nearly the same at any size: it learns on n records, and its u sample of the fil
 and address, whatever the file's size; cif, phone and birth are counted exactly, in O(N). The score grows with the
 candidates.
 
-**An increment** (`Run.increment`, `scripts/resolve.py --increment`): a batch of Δ new records joins a written run.
+**An increment** (`Run.increment`, `nayose add records`): a batch of Δ new records joins a written run.
 
 | Step | Cost | What it touches |
 |---|---|---|
@@ -63,13 +63,13 @@ file and `scale_check` projects to `budget.target_rows` while choosing (below). 
 sample only for a comparison that has drifted. Its expensive work grows with the batch, not with the file. A full run
 re-fits the model.
 
-**People's decisions** (`Run.decide`, `scripts/resolve.py --decisions`) cost **O(D + touched clusters)** for D
+**People's decisions** (`Run.decide`, `nayose apply decisions`) cost **O(D + touched clusters)** for D
 decisions, plus O(N) to rewrite gold: each `match` pair merges two stored clusters, each one node, and nothing is scored.
 
 **Measured:** into the million-record run, an increment of 1,000 records takes about 4 s, with a peak of 2.25 GB.
 
 **Memory.** Records, pairs, scores and clusters are DuckDB tables. Past `memory_limit` (config/settings.toml `[compute]`,
-or `scripts/resolve.py --compute memory_limit=8GB`), DuckDB spills them to `temp_directory`: by default `.tmp/` under
+or `--compute memory_limit=8GB` on a command), DuckDB spills them to `temp_directory`: by default `.tmp/` under
 the folder the run starts in. The budget counts the room DuckDB may spill to: 90% of that disk's free space, DuckDB's
 own cap (`max_temp_directory_size`). Python holds one chunk of `load` (200,000 records), the fitting sample (n records)
 and small summaries. DuckDB keeps in memory what fits under its limit and spills the rest, so the 6.23 GB peak at a
@@ -126,7 +126,7 @@ trained once and its signals computed once; a combination fits only its combiner
   itself, the sample size, the seed (`FSModel.u_keys`) and the values it reads, since Splink picks the sampled pairs by
   a hash of the record ID. So the cache is keyed by the comparison and a fingerprint of those values, a frame and a
   table with the same rows alike: within one process, a model's variants and `choose.py`'s repeats of train share one
-  sample. The cache lives in the process: two runs of `scripts/resolve.py` each draw their own. cif, phone and birth need none: their levels are counted (`exact_u`, once per fit).
+  sample. The cache lives in the process: two runs of `nayose` each draw their own. cif, phone and birth need none: their levels are counted (`exact_u`, once per fit).
 - **Rules in plain SQL** (`er.match.rule_edges`): one equi-join per rule, for `choose.py`, full runs and increments
   alike. A fuzzy condition lets equal values through without calling the string function. Splink's
   `deterministic_link` would join every column of both records back first.
@@ -154,7 +154,7 @@ million records, 3 per window, but loses 1 true pair on val.
 
 ## Files of growing size
 
-`scripts/benchmark.py`: each generated file resolved by `scripts/resolve.py` in a process of its own, the model fitted
+`scripts/benchmark.py`: each generated file resolved by `nayose resolve records` in a process of its own, the model fitted
 on the file itself, without labels ([reports/benchmark.md](../reports/benchmark.md)):
 
 | Records | Seconds | Peak memory | fit | score | everything else |

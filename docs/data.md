@@ -31,7 +31,7 @@ data/artifacts/optuna/*.db                  the Optuna studies, with --optuna
 data/artifacts/benchmark/, demo/            run folders of scripts/benchmark.py and the demo
 ```
 
-A run folder is the same wherever it is written, by `scripts/choose.py` here or by `scripts/resolve.py` anywhere: `gold.parquet`, `matches/`, `rule_kept/`, `steps.json` and `state/`. `scripts/resolve.py` adds `qa.md`, `report.txt`, `review.parquet` and, on a full run, `kind_review.parquet`; `decisions/`, `set_aside/` and `kind_answers/` (people's person/company answers) appear when there are any ([architecture](architecture.md#the-run-folder)).
+A run folder is the same wherever it is written, by `scripts/choose.py` here or by `nayose resolve records` anywhere: `gold.parquet`, `matches/`, `rule_kept/`, `steps.json` and `state/`. `nayose` adds `qa.md`, `report.txt`, `review.parquet` and, on a full run, `kind_review.parquet`; `decisions/`, `set_aside/` and `kind_answers/` (people's person/company answers) appear when there are any ([architecture](architecture.md#the-run-folder)).
 
 ## Reference data: `data/reference/`
 

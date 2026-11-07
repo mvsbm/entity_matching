@@ -26,7 +26,7 @@ Every diagram is the contract: `tests/test_design.py` checks it against the code
 The system turns a file of customer records into one ID per person or company. It works in two loops:
 
 - **Design time** happens once, and again whenever the matching changes. `scripts/generate.py` builds synthetic records from real names, companies and addresses, with the truth for each. `scripts/choose.py` tries each proposed change on them, keeps the ones the decision rule accepts, and writes the result to `config/final.toml`. `scripts/choose_kind.py` measures every way to tell persons from companies across the unknowns; the combination in `config/pipeline.toml` `[kind]` is set from its report. This is the only loop that reads the truth (`data/labels/`).
-- **Run time** happens for every file, without labels. `scripts/resolve.py` runs `config/final.toml` on the file and writes a run folder. New records join that run later, with `--increment`; people's decisions on the pairs just below the threshold go back with `--decisions`, and their person/company answers with `--kind-labels` on a full run. `scripts/schedule.py` does both from an inbox, one file at a time.
+- **Run time** happens for every file, without labels. `nayose resolve records` runs `config/final.toml` on the file and writes a run folder. New records join that run later (`nayose add records`); people's decisions on the pairs just below the threshold go back with `nayose apply decisions`, and their person/company answers with `nayose apply answers`, a rerun. `nayose serve inbox` takes all three from an inbox, one file at a time. Every command: [commands](commands.md).
 
 `config/final.toml` and `config/kind_names.npz` are the hand-off between the loops. `final.toml` is plain TOML, so it can be read, diffed and edited by hand. `kind_names.npz` is the person-or-company name model, trained by `scripts/train_name_model.py` from `data/reference/` and two settings of `config/generator.toml` (`kana_confusions`, `branches`); a run only loads it, so no change to the synthetic-data generator reaches a run until the model is trained again and committed.
 
@@ -39,11 +39,12 @@ The system turns a file of customer records into one ID per person or company. I
 
 ## 2 · Containers
 
-![HLD 2, containers: people run the run-time tools (resolve, schedule) and the developer the design-time tools; both, and the demo, call the er package, which runs on DuckDB and Splink in one process, reads config/ and data/reference/, writes the run folder and caches the name model in data/artifacts/; the design-time tools write the synthetic data, the reports and final.toml](diagrams/containers.svg)
+![HLD 2, containers: people run nayose and the developer the design-time tools; both, and the demo, call the er package, which runs on DuckDB and Splink in one process, reads config/ and data/reference/, writes the run folder and caches the name model in data/artifacts/; the design-time tools write the synthetic data, the reports and final.toml](diagrams/containers.svg)
 
 | Part | Holds |
 |---|---|
-| `scripts/` | the entry points: generate, choose, choose_kind, resolve, schedule (serves an inbox through resolve), benchmark, export_pdfs |
+| `nayose` | the run-time entry point, `er/cli.py`: every command declared once, the parser and [the reference](commands.md) built from the declarations; `er/inbox.py` serves an inbox through it |
+| `scripts/` | the design-time entry points: generate, choose, choose_kind, train_name_model, benchmark, export_pdfs, document_commands |
 | `er/` | the engine: every computation, tested. It names no column, except the synthetic generator (`er/generate.py`) |
 | `config/` | every setting: `settings.toml` (paths, `[datasets]`, `[columns]`, `[locale]`, `[compute]`, `[kind]`), `pipeline.toml` (the matching, in logical fields), `final.toml` (what was chosen), and for design time `generator.toml` and `experiments.py` |
 | `data/` | records, labels, run folders and artifacts, all Parquet. Only `data/reference/` is in git; the scripts rebuild the rest |
@@ -52,7 +53,7 @@ The system turns a file of customer records into one ID per person or company. I
 | `docs/diagrams/` | the diagrams on this page, as PlantUML |
 | `tests/` | engine checks, whole runs, and the design's checks |
 
-**One engine.** `resolve.py`, `benchmark.py`, the demo and `choose.py` all run `er.run.Run`. `choose.py` measures each configuration by running it (`er.pipeline.run_rules`, `run_fs`: the run's steps up to its clusters, nothing written) and joining the run's tables to the truth, so it judges exactly what runs, with the same gate on oversized blocks and the same untrusted values. It then writes each split's run folder through `er.run`.
+**One engine.** `nayose`, `benchmark.py`, the demo and `choose.py` all run `er.run.Run`. `choose.py` measures each configuration by running it (`er.pipeline.run_rules`, `run_fs`: the run's steps up to its clusters, nothing written) and joining the run's tables to the truth, so it judges exactly what runs, with the same gate on oversized blocks and the same untrusted values. It then writes each split's run folder through `er.run`.
 
 **Where Splink sits.** Splink does the model's training and scoring, and the clustering, on the run's DuckDB connection. Everything around it is the `er` package: the rules' joins and candidate generation as SQL, budgets, u from the scored file, the threshold rule, decisions, evaluation ([what we take from Splink, and why the rest is ours](#what-we-take-from-splink-and-what-we-do-ourselves)).
 
@@ -96,13 +97,13 @@ Not used, and why: chunked prediction (refuses given pairs, and only bounds memo
 
 ![HLD 3, components: the run-time and design-time tools on top; design time (select, pipeline, evaluate, tune, generate), the run (er/run.py, er/folder.py, er/report.py), the steps (source, standardize, kind, candidates, match, cluster) and the foundation (config, settings, io, strings), with an arrow wherever one layer imports another](diagrams/components.svg)
 
-Every module sits in one layer: the tools, design time, the run (`er/run.py`, the steps of a run; `er/folder.py`, the run folder on disk; `er/report.py`, the reports for people), the steps, and the foundation. Each layer imports only the layers below it; `tests/test_design.py` fails on an import that goes up or across.
+Every module sits in one layer: the tools (`nayose`: `er/cli.py`, `er/inbox.py`; and `scripts/`), design time, the run (`er/run.py`, the steps of a run; `er/folder.py`, the run folder on disk; `er/report.py`, the reports for people), the steps, and the foundation. Each layer imports only the layers below it; `tests/test_design.py` fails on an import that goes up or across.
 
 ## 4 · The run
 
 ![LLD 1, a full run: load, budget, fit, rules, candidates, score, cluster, write and report, each with the functions it calls; the tables records, set_aside, rule_clusters, rule_kept, cands, scores, matches and gold, made by one step and used by the later ones; the inputs and the files of the run folder](diagrams/full-run.svg)
 
-`er.run.Run` runs a chosen pipeline on one file, without labels. `full()` calls steps 1–8 in order and holds the run folder's lock throughout, so no other job writes in between; given the pipeline file (`scripts/resolve.py` gives it), step 8 builds step 9's reports first and writes them with the run's files. The lock (`flock`) and the renames that finish a write (`os.replace`) hold on a local disk, not on network or object storage. `increment()` adds a batch of new records to a written run ([5](#5--an-increment)); the demo calls the steps one at a time. Each step logs its Big-O, with the numbers filled in, its time and its peak memory to `steps.json`.
+`er.run.Run` runs a chosen pipeline on one file, without labels. `full()` calls steps 1–8 in order and holds the run folder's lock throughout, so no other job writes in between; given the pipeline file (`nayose` gives it), step 8 builds step 9's reports first and writes them with the run's files. The lock (`flock`) and the renames that finish a write (`os.replace`) hold on a local disk, not on network or object storage. `increment()` adds a batch of new records to a written run, `match()` says what adding it would do, and `rerun()` runs a full run again on the run's own files ([5](#5--an-increment)); the demo calls the steps one at a time. Each step logs its Big-O, with the numbers filled in, its time and its peak memory to `steps.json`.
 
 | Mode | Cost |
 |---|---|
@@ -204,7 +205,7 @@ Writes each table as Parquet under a temporary name, with the reports (9). Once 
 
 ![LLD 2, an increment: the batch loaded beside the stored records, records formed from both, u refreshed, the rules, candidates and scores on the pairs touching the batch, the clusters merged into the stored ones, new parts written and the report kept open](diagrams/increment.svg)
 
-`Run.increment` reads back from the run folder `state/model.json`, `state/scoring.json`, `state/records/`, `state/rule_clusters.parquet`, `gold.parquet` and `kind_answers/`, and runs steps 1 and 3–8 on the batch, as each step's *Increment* line above says; `Run.report` then keeps the previous sheet's open rows. It takes no `--kind-labels` and no `--model`: the stored records' kinds and the model come from the full run, and `scripts/resolve.py` refuses both with an increment. It stops, with what to fix, when the folder holds no run, and when the pipeline or the column mapping is not the one the full run used (`state/config.txt`): its batch would be resolved otherwise than the records it joins.
+`Run.increment` reads back from the run folder `state/model.json`, `state/scoring.json`, `state/records/`, `state/rule_clusters.parquet`, `gold.parquet` and `kind_answers/`, and runs steps 1 and 3–8 on the batch, as each step's *Increment* line above says; `Run.report` then keeps the previous sheet's open rows. It takes no answers and no model: the stored records' kinds and the model come from the full run. It stops, with what to fix, when the folder holds no run, and when the pipeline or the column mapping is not the one the full run used (`state/config.txt`): its batch would be resolved otherwise than the records it joins.
 
 `Run.match` runs the same steps on a batch and writes nothing: for each record, the entity it would join, or a new one, the rule or the model's best weight that links it, or why it is set aside (`Run._join` holds the steps both share).
 
@@ -216,7 +217,7 @@ Writes each table as Parquet under a temporary name, with the reports (9). Once 
 
 ![LLD 3, decisions: people's reviewed file and the run's gold go into Run.decide, which checks the file, merges each match pair's clusters, keeps the kinds and writes gold, decisions/part-n and steps.json](diagrams/decisions.svg)
 
-`scripts/resolve.py --decisions` gives people's decisions back to a written run, scoring nothing. Each `match` pair merges its two clusters, each cluster one node; each record keeps its kind, and a merged customer's kind follows its records again. A `no_match` pair splits nothing at once, but a full run on the folder never accepts it.
+`nayose apply decisions` gives people's decisions back to a written run, scoring nothing. Each `match` pair merges its two clusters, each cluster one node; each record keeps its kind, and a merged customer's kind follows its records again. A `no_match` pair splits nothing at once, but a full run on the folder never accepts it.
 
 - **Why:** people's work must change the answer at once, and must survive a full re-run. `decisions/` is not a run file, so `--overwrite` keeps it and the full run applies it again. `qa.md`, `report.txt` and the sheets describe the run before the decisions until the next run or increment writes them again.
 - **One at a time:** an answer can also be written into the run folder's sheet, a decision into `review.parquet`, a kind into `kind_review.parquet`, under the lock and staged as every run file is (`folder.type_in`). Nothing is applied until the sheet is given back; an increment keeps the decisions written in.
@@ -250,7 +251,7 @@ data/medallion/gold/<dataset>/              a run folder per dataset; silver is 
 data/artifacts/                             the chosen models, the leaderboard, Optuna studies, benchmark runs   scripts/choose.py, benchmark.py
 ```
 
-`<dataset>` is `train`, `val` or `test`: one generated population, split by entity ([data](data.md)). `scripts/resolve.py` writes a run folder wherever `--output` says, in the same form.
+`<dataset>` is `train`, `val` or `test`: one generated population, split by entity ([data](data.md)). `nayose resolve records` writes a run folder wherever `--run` says, in the same form.
 
 ### The run folder
 
@@ -270,7 +271,7 @@ Kept on disk. Steps are numbered as in [the run](#4--the-run); the diagram above
 | `kind_answers/part-n.parquet` | 8, one part per sheet given | every later run on the folder | people's person/company answers, each sheet's filled rows as given; the newest per record stands. Kept, like `decisions/`, by `--overwrite` |
 | `pending.json` | 8, deleted when done | the next run, increment or decisions | moves owed by an unfinished write |
 | `.lock` | every writer | every writer | the run folder's lock: one writer at a time |
-| `jobs.jsonl` | `scripts/schedule.py` | people; a rerun | one line per file per pass: the file, its SHA-256, the outcome, the attempts, and where a file that ran went |
+| `jobs.jsonl` | `nayose serve inbox` | people; a rerun | one line per file per pass: the file, its SHA-256, the outcome, the attempts, and where a file that ran went |
 | `qa.md`, `review.parquet` | 9 | people | the label-free report; the pairs to decide and to audit |
 | `report.txt` | 9 | whoever helps with the run | the run on one page, with no record's value in it |
 | `kind_review.parquet` | 9, full runs | people | records to decide 1 person or 2 company, and a draw to measure the engine and the flag |

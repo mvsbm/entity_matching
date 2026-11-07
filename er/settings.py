@@ -29,8 +29,9 @@ class Settings:
 
 
 def project_root(start: Path | None = None) -> Path:
-    """The nearest folder at or above `start` (default: the working folder) that holds pyproject.toml."""
-    here = (start or Path.cwd()).resolve()
+    """The nearest folder at or above `start` that holds pyproject.toml; without `start`, the project this package is
+    part of, wherever the command runs from."""
+    here = (start or Path(__file__).parent).resolve()
     for folder in (here, *here.parents):
         if (folder / "pyproject.toml").exists():
             return folder

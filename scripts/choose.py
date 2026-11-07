@@ -5,8 +5,8 @@
 
 Starts from config/pipeline.toml and config/experiments.py. Writes:
 - reports/choose.md: every table of the run (the docs cite it)
-- config/final.toml: the chosen pipeline, in the pipeline.toml format, which scripts/resolve.py runs
-- data/medallion/gold/<dataset>/: each dataset resolved by er.run, as scripts/resolve.py would, with train's fitted model
+- config/final.toml: the chosen pipeline, in the pipeline.toml format, which nayose runs
+- data/medallion/gold/<dataset>/: each dataset resolved by er.run, as nayose would, with train's fitted model
 - data/artifacts: the leaderboard and the fitted models (data/artifacts/models/*_final.json)
 Test is scored once per stage; the run stops if the leaderboard shows test scored with another configuration.
 """
@@ -57,11 +57,11 @@ def main() -> None:
     (s.root / "reports" / "choose.md").write_text("\n".join(report), encoding="utf-8")
     header = ("# The chosen pipeline: config/pipeline.toml with config/experiments.py's adopted changes, written by "
               "scripts/choose.py.\n# Adopted: rules " + ", ".join(rules.adopted) + "; Fellegi–Sunter " + ", ".join(fs.adopted) +
-              ".\n# scripts/resolve.py runs it. It can be edited by hand; scripts/choose.py overwrites it.")
+              ".\n# nayose runs it. It can be edited by hand; scripts/choose.py overwrites it.")
     final = replace(p, rules=rules.final, fs=fs.final)
     dump_pipeline(final, s.chains, s.root / "config" / "final.toml", header)
     model = fs.fit(fs.final, fs.train_records, fs.train_truth, "train")
-    for dataset in s.data.datasets:  # the gold layer, written by the code scripts/resolve.py runs
+    for dataset in s.data.datasets:  # the gold layer, written by the code nayose runs
         Run(final, s, model=model).full(s.data.bronze_dir / f"{dataset}.parquet", s.data.gold_dir / dataset, overwrite=True)
     print(f"wrote reports/choose.md, config/final.toml and {s.data.gold_dir}/<dataset>/")
 

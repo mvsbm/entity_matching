@@ -356,3 +356,9 @@ def test_each_svg_is_rendered_from_its_puml(puml):
     lines = lambda text: [x.rstrip() for x in text.strip().splitlines() if x.strip() and not x.startswith(("@startuml", "@enduml"))]  # stored without them
     assert lines(plantuml_source(svg.read_text(encoding="utf-8"))) == lines(puml.read_text(encoding="utf-8")), \
         f"{svg.name} is older than its source: plantuml -tsvg {puml.relative_to(ROOT)}"
+
+
+def test_the_commands_reference_is_the_declarations():
+    from er.cli import reference
+    assert (ROOT / "docs" / "commands.md").read_text(encoding="utf-8") == reference() + "\n", \
+        "docs/commands.md differs from er/cli.py's declarations: .venv/bin/python scripts/document_commands.py"

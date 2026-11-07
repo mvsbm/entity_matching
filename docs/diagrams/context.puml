@@ -13,11 +13,11 @@ System_Ext(reference, "Public reference data", "data/reference/*.json: names, co
 System_Ext(downstream, "Downstream systems", "take one ID per person or company")
 
 System_Boundary(er, "Entity resolution (this repository)") {
-  System(runtime, "Run time", "scripts/resolve.py, scripts/schedule.py: one file, without labels, into a run folder; batches added, decisions and answers applied")
+  System(runtime, "Run time", "nayose: one file, without labels, into a run folder; batches added, decisions and answers applied")
   System(design, "Design time", "scripts/generate.py, scripts/choose.py, scripts/choose_kind.py, scripts/benchmark.py: synthetic records with the truth; the matching chosen and measured")
 }
 
-Rel(owner, runtime, "runs", "~--input, ~--output, ~--increment")
+Rel(owner, runtime, "runs", "check, resolve, add records")
 Rel(runtime, files, "reads", "er.source")
 Rel(runtime, reference, "reads", "the person-or-company name model, trained once and cached")
 Rel(design, reference, "reads", "the generator's input")
@@ -25,7 +25,7 @@ Rel(developer, design, "proposes", "config/pipeline.toml, config/experiments.py"
 Rel(design, developer, "reports", "reports/*.md")
 Rel(design, runtime, "hands over", "config/final.toml, config/kind_names.npz")
 Rel(runtime, reviewer, "asks", "review.parquet, kind_review.parquet, qa.md, report.txt")
-Rel(reviewer, runtime, "answers", "~--decisions, ~--kind-labels")
+Rel(reviewer, runtime, "answers", "decide pair, answer kind, apply")
 Rel(runtime, downstream, "gives", "gold.parquet: cluster_id, customer_kind")
 SHOW_LEGEND()
 @enduml

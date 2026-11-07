@@ -94,7 +94,7 @@ Each entry names a way an entity-resolution pipeline like this one goes wrong, a
 - **Pitfall:** an output column depends on the order of the records in the file. It shows as identical clusters but a different `resolved_by` after the file is shuffled.
 - **Why:** naming, for a record the probabilistic stage reached, the first rule in the file that touched it.
 - **Guard:** a record keeps the rule that resolved it in the previous stage, or else is named after the model, whatever the order.
-- **Check:** a test runs the same records in two orders and requires identical gold, every column; it also checks that an increment never splits a stored cluster. Another requires the engine `scripts/choose.py` measures with (`er.pipeline`) and the one `scripts/resolve.py` runs (`er.run`) to give identical gold.
+- **Check:** a test runs the same records in two orders and requires identical gold, every column; it also checks that an increment never splits a stored cluster. Another requires the engine `scripts/choose.py` measures with (`er.pipeline`) and the one `nayose` runs (`er.run`) to give identical gold.
 
 ## Two spellings of "nothing"
 - **Pitfall:** a blank that isn't treated as missing. A name that still holds a full-width space never equals the same name without it, and two values emptied by normalization agree at "exact" and fall into one block. It shows by reading the code or the values, not in the numbers.

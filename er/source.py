@@ -179,7 +179,7 @@ def answers(path: str | Path, con: duckdb.DuckDBPyConnection, uid: str) -> pd.Da
         raise InputError(f"{path}: a kind is 1, 2 or 0, not {bad[:5]}", fix="write 1 person, 2 company or 0 can't tell, or leave it empty")
     rows = rows[kind.isin([0, 1, 2]).to_numpy()].reset_index(drop=True)
     if rows.empty:
-        raise InputError(f"{path}: no row is answered", fix="write kind on the records you can tell (1 person, 2 company, 0 can't tell), then give the sheet back")
+        raise InputError(f"{path}: no row is answered", fix="answer records first (nayose answer kind ID company), or write 1 person, 2 company or 0 can't tell in the sheet's kind column")
     if (blank := int(rows[uid].str.strip().fillna("").eq("").sum())):
         raise InputError(f"{path}: {blank:,} answered rows have no {uid}", fix="fill in each answered row's ID, or clear its answer")
     return rows
@@ -200,7 +200,7 @@ def decisions(path: str | Path, con: duckdb.DuckDBPyConnection, l: str, r: str, 
     con.execute(f"""CREATE OR REPLACE TABLE {q(into)} AS SELECT DISTINCT least({q(l)}, {q(r)}) AS {q(l)}, greatest({q(l)}, {q(r)}) AS {q(r)},
         lower(trim(decision)) AS decision {decided}""")
     if not con.execute(f"SELECT count(*) FROM {q(into)}").fetchall()[0][0]:
-        raise InputError(f"{path}: no row has a decision", fix="write match or no_match in decision on the pairs you decided, then give the sheet back")
+        raise InputError(f"{path}: no row has a decision", fix="decide pairs first (nayose decide pair ID ID match), or write match or no_match in the sheet's decision column")
     if (bad := con.execute(f"SELECT DISTINCT decision FROM {q(into)} WHERE decision NOT IN ('match', 'no_match')").fetchall()):
         raise InputError(f"{path}: a decision is match or no_match, not {sorted(x for x, in bad)}", fix="correct those rows, or leave them empty")
     if (both := con.execute(f"SELECT {q(l)}, {q(r)} FROM {q(into)} GROUP BY ALL HAVING count(*) > 1 LIMIT 5").fetchall()):

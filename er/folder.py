@@ -28,7 +28,7 @@ OLD_ANSWERS = Path("state") / "kind_labels.parquet"  # where a folder kept peopl
 
 
 class Busy(InputError):
-    """Another job is writing to the run folder: no mistake, so scripts/resolve.py exits 75, to be tried again."""
+    """Another job is writing to the run folder: no mistake, so nayose exits 75, to be tried again."""
 
 
 _held = threading.local()  # the folders this thread holds: taking one again (a rerun's full run) is no second lock
@@ -118,7 +118,7 @@ def next_part(folder: Path) -> int:  # one past the highest part-n.parquet: a pa
     return max((int(f.stem.removeprefix("part-")) for f in folder.glob("part-*.parquet")), default=-1) + 1
 
 
-def held(out: Path) -> list[Path]:  # the run files a folder holds: what a full run with --overwrite replaces
+def held(out: Path) -> list[Path]:  # the run files a folder holds: what resolve records --overwrite replaces
     return [out / f for f in RUN_FILES if (out / f).exists()]
 
 

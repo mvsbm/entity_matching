@@ -1,5 +1,5 @@
 @startuml increment
-title LLD 2 · An increment: Run.increment, its reports written with it (scripts/resolve.py ~--input … ~--output … ~--increment)
+title LLD 2 · An increment: Run.increment, its reports written with it (nayose add records … ~--run …)
 skinparam defaultFontSize 11
 skinparam rectangle {
   BackgroundColor #F4F6F8
