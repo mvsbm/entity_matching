@@ -7,13 +7,14 @@ their results. The server knows nothing of the screens. It serves the page and t
                                 with "dry": true, the command only, for the page to show before it runs
     GET  /api/job/<id>?from=n   the job's events from the n-th on, whether it ended, and its exit code
 
-Each job is parsed by nayose's own parser. A quick command (a list, a describe, one answer) runs in this process; any
-other runs as python -m er.cli … --format json in a process of its own, one at a time, so a crash or a memory spike
-can't take the page down. The server binds 127.0.0.1; every request needs the token in the link it prints, and a Host
+Each job is parsed by nayose's own parser, built to raise a refusal rather than print it and exit: quick jobs run in
+threads, which can't share the process's stderr. A quick command (a list, a describe, one answer) runs in this
+process; any other runs as python -m er.cli … --format json in a process of its own, one at a time, so a crash or a
+memory spike can't take the page down. A finished job is dropped once the page has read its last events. The server binds 127.0.0.1; every request needs the token in the link it prints, and a Host
 of 127.0.0.1 or localhost, so neither another user of the machine nor a web page elsewhere can use it.
 """
+import argparse
 import contextlib
-import io
 import json
 import secrets
 import shlex
@@ -39,13 +40,17 @@ def declarations() -> list[dict]:
                               required=p.required, metavar=p.shown) for p in c.params]) for c in cli.COMMANDS]
 
 
-def argv(command: str, args: dict) -> list[str]:
+def command(name: str) -> cli.Command:
+    if (c := next((c for c in cli.COMMANDS if c.name == name), None)) is None:
+        raise InputError(f"no command {name}", fix="the commands: " + ", ".join(x.name for x in cli.COMMANDS))
+    return c
+
+
+def argv(name: str, args: dict) -> list[str]:
     """The command line for a command and the values the page gives its parameters: what the page shows and runs."""
-    c = next((c for c in cli.COMMANDS if c.name == command), None)
-    if c is None:
-        raise InputError(f"no command {command}", fix="the commands: " + ", ".join(x.name for x in cli.COMMANDS))
+    c = command(name)
     if unknown := set(args) - {p.name for p in c.params}:
-        raise InputError(f"{command} has no parameter {', '.join(sorted(unknown))}", fix="see nayose " + command + " --help")
+        raise InputError(f"{name} has no parameter {', '.join(sorted(unknown))}", fix=f"see nayose {name} --help")
     words = [c.verb, c.noun]
     for p in c.params:
         v = args.get(p.name)
@@ -75,47 +80,47 @@ class Collect(cli.Emit):  # a quick command's events, kept for the page as JSON 
         self.job.events.append({"event": event, **cli.plain(x)})
 
 
+def fail(job: Job, error: str, code: int, fix: str = "") -> None:  # the job's end, as an error event cli.Emit writes
+    Collect(job).error(InputError(error, fix), code)
+    job.code = code
+
+
+class Refusing(argparse.ArgumentParser):
+    """nayose's parser for the page: a refusal raised, never printed to the process's stderr and exited."""
+
+    def error(self, message: str) -> None:
+        raise InputError(message, fix=f"{self.prog} --help says what it takes")
+
+
 class Server:
     def __init__(self, run: str | None = None):
         self.token, self.jobs, self.lock, self.long = secrets.token_urlsafe(24), {}, threading.Lock(), threading.Lock()
         self.run = run                        # the run folder the page starts with
 
-    def start(self, command: str, args: dict) -> tuple[str, Job]:
-        words = argv(command, args)
+    def start(self, name: str, args: dict) -> tuple[str, Job]:
+        words = argv(name, args)
         job, key = Job(words), secrets.token_hex(8)
         with self.lock:
             self.jobs[key] = job
-        quick = next(c for c in cli.COMMANDS if c.name == command).quick
-        threading.Thread(target=self._quick if quick else self._long, args=(job,), daemon=True).start()
+        threading.Thread(target=self._quick if command(name).quick else self._long, args=(job,), daemon=True).start()
         return key, job
 
     def _quick(self, job: Job) -> None:
-        err = io.StringIO()
-        try:
-            with contextlib.redirect_stderr(err):
-                a = cli.parser().parse_args([*job.words, "--format", "json"])
-        except SystemExit:  # the parser refused it, as it would on the command line
-            job.events.append(dict(event="error", error=err.getvalue().strip().splitlines()[-1], fix="", hints={}, exit=2))
-            job.code = 2
-            return
         emit = Collect(job)
         try:
+            a = cli.parser(Refusing).parse_args([*job.words, "--format", "json"])
             result = a.command.run({p.name: getattr(a, p.name) for p in a.command.params}, emit)
             result.pop("exit_code", None)
             emit.result(a.command, result)
             job.code = 0
-        except InputError as e:
-            job.code = 75 if isinstance(e, cli.Busy) else 2
-            emit.error(e, job.code)
+        except InputError as e:  # the parser's refusal, or a mistake people fix
+            fail(job, str(e), 75 if isinstance(e, cli.Busy) else 2, e.fix)
         except Exception as e:  # a bug, not a mistake people fix: its message, so the page doesn't hang
-            job.events.append(dict(event="error", error=f"{type(e).__name__}: {e}", fix="", hints={}, exit=1))
-            job.code = 1
+            fail(job, f"{type(e).__name__}: {e}", 1)
 
     def _long(self, job: Job) -> None:
         if not self.long.acquire(blocking=False):
-            job.events.append(dict(event="error", error="another long command is running", fix="wait for it to finish", hints={}, exit=75))
-            job.code = 75
-            return
+            return fail(job, "another long command is running", 75, "wait for it to finish")
         try:
             done = subprocess.Popen([sys.executable, "-m", "er.cli", *job.words, "--format", "json"], stdout=subprocess.PIPE,
                                     stderr=subprocess.PIPE, text=True, bufsize=1)
@@ -123,8 +128,8 @@ class Server:
                 with contextlib.suppress(json.JSONDecodeError):
                     job.events.append(json.loads(line))
             code = done.wait()
-            if code and not any(e.get("event") == "error" for e in job.events):  # a crash: the last lines of its traceback
-                job.events.append(dict(event="error", error=" ".join(done.stderr.read().strip().splitlines()[-1:]), fix="", hints={}, exit=code))
+            if code and not any(e.get("event") == "error" for e in job.events):  # a crash: the last line of its traceback
+                return fail(job, " ".join(done.stderr.read().strip().splitlines()[-1:]), code)
             job.code = code
         finally:
             self.long.release()
@@ -160,9 +165,13 @@ def handler(server: Server):
                 self._send(200, PAGE.read_text(encoding="utf-8"), "text/html")
             elif url.path == "/api/commands":
                 self._send(200, dict(commands=declarations(), run=server.run))
-            elif url.path.startswith("/api/job/") and (job := server.jobs.get(url.path.rsplit("/", 1)[1])):
-                start = int(parse_qs(url.query).get("from", ["0"])[0])
-                self._send(200, dict(events=job.events[start:], done=job.code is not None, exit=job.code))
+            elif url.path.startswith("/api/job/") and (job := server.jobs.get(key := url.path.rsplit("/", 1)[1])):
+                done = job.code is not None  # read first: a finished job's events are all there
+                events = job.events[int(parse_qs(url.query).get("from", ["0"])[0]):]
+                if done:  # its last events go now: nothing keeps a job the page has read
+                    with server.lock:
+                        server.jobs.pop(key, None)
+                self._send(200, dict(events=events, done=done, exit=job.code))
             else:
                 self._send(404, {"error": "no such page"})
 

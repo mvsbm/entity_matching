@@ -1696,8 +1696,23 @@ def test_the_ui_serves_only_its_own_link_and_runs_the_commands_as_nayose_does(tm
         assert dry == {"command": "nayose list pairs --run r --open"}  # the equivalent command line, nothing run
         assert call("POST", "/api/run", dict(command="list pairs", args={"nope": 1}))[0] == 400  # only declared parameters
         assert call("POST", "/api/run", dict(command="delete everything", args={}))[0] == 400  # only declared commands
+        _, j = job("describe entity", {"run": str(tmp_path / "run")})  # no ID: nayose's parser refuses it, as on the command line
+        assert j["exit"] == 2 and "required" in j["events"][-1]["error"]
+        assert not server.jobs  # a job the page has read to its end is dropped
     finally:
         httpd.shutdown()
+
+
+def test_quick_commands_at_once_leave_the_process_s_stderr_alone():
+    import sys
+    import time
+    from er import ui
+    real, server = sys.stderr, ui.Server("nowhere")
+    for _ in range(10):  # the page starts several at once on every load
+        jobs = [server.start("list columns", {})[1] for _ in range(8)] + [server.start("describe entity", {"run": "nowhere"})[1]]
+        while any(j.code is None for j in jobs):
+            time.sleep(0.01)
+        assert sys.stderr is real and jobs[-1].code == 2
 
 
 def test_the_ui_layout_names_only_declared_commands_parameters_and_result_fields():
@@ -1715,3 +1730,47 @@ def test_the_ui_layout_names_only_declared_commands_parameters_and_result_fields
     placed = {(s["id"], u["command"]) for s in layout["screens"] for u in s["uses"]}
     called = {(m.group(1), m.group(2)) for m in re.finditer(r'(?:run|action)\("(\w+)", "(\w+ \w+)"', html)}
     assert called and called <= placed  # every command the page runs, it runs as the layout places it
+    block = html.split("const QUEUES = {", 1)[1].split("\n};", 1)[0]
+    named = {(q, c) for q, body in re.findall(r"\n  (\w+): \{title(.*?)(?=\n  \w+: \{title|$)", block, re.S)
+             for c in re.findall(r'(?:list|one|apply): "(\w+ \w+)"', body)}
+    assert len(named) == 6 and named <= placed  # each review queue's commands, placed on its own page
+
+
+def test_the_page_answers_once_per_key_shows_any_row_and_says_when_the_server_is_gone(tmp_path, population):
+    import threading
+    from http.server import ThreadingHTTPServer
+    from er import cli, ui
+    sync = pytest.importorskip("playwright.sync_api")
+    s, p, g = population
+    g.df.to_parquet(tmp_path / "all.parquet", index=False)
+    run = tmp_path / "run"
+    assert cli.main(["resolve", "records", str(tmp_path / "all.parquet"), "--run", str(run), "--format", "json"]) == 0
+    server = ui.Server(str(run))
+    httpd = ThreadingHTTPServer(("127.0.0.1", 0), ui.handler(server))
+    threading.Thread(target=httpd.serve_forever, daemon=True).start()
+    with sync.sync_playwright() as pw:
+        try:
+            browser = pw.chromium.launch()
+        except sync.Error:
+            httpd.shutdown()
+            pytest.skip("no browser: .venv/bin/python -m playwright install chromium")
+        page = browser.new_page()
+        page.goto(f"http://127.0.0.1:{httpd.server_address[1]}/?token={server.token}")
+        page.click(".navitem[data-screen=pairs]")
+        page.wait_for_selector("[data-a=match]")
+        page.keyboard.press("m")
+        page.keyboard.press("m")  # pressed again before the first answer is back
+        page.wait_for_function("() => document.querySelector('#written').textContent === '1'")
+        page.wait_for_timeout(600)
+        assert page.inner_text("#written") == "1" and not page.query_selector("#said .banner")  # one answer, no busy folder
+        assert "nayose decide pair" in page.inner_text("#term-body")  # the command line it ran
+        assert page.evaluate("""() => {  // a row far past the table's 500 drawn is drawn once picked
+            const box = document.body.appendChild(document.createElement("div"));
+            const t = grid(box, Array.from({length: 2000}, (_, n) => ({n})), ["n"], {selected: 0});
+            t.select(1500);
+            return box.querySelector('tr[data-i="1500"]')?.getAttribute("aria-selected") === "true"; }""")
+        httpd.shutdown()
+        httpd.server_close()
+        lost = page.evaluate("() => run('pairs', 'list pairs')")
+        assert lost["event"] == "error" and lost["error"].startswith("Lost the server")
+        browser.close()

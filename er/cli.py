@@ -559,9 +559,10 @@ COMMANDS: tuple[Command, ...] = (
 
 # ---------- the parser and the reference, from the declarations ----------
 
-def parser() -> argparse.ArgumentParser:
+def parser(kind: type[argparse.ArgumentParser] = argparse.ArgumentParser) -> argparse.ArgumentParser:
+    """The parser, from the declarations; `kind` its class, which every subcommand's parser takes too."""
     raw = argparse.RawDescriptionHelpFormatter
-    top = argparse.ArgumentParser(prog="nayose", description=__doc__.split("\n\n")[0], formatter_class=raw,
+    top = kind(prog="nayose", description=__doc__.split("\n\n")[0], formatter_class=raw,
                                   epilog="commands:\n" + "\n".join(f"  {c.name:<18} {c.help}" for c in COMMANDS) +
                                          "\n\nnayose VERB NOUN --help says what one does; docs/commands.md has them all.")
     verbs = top.add_subparsers(dest="verb", required=True, metavar="VERB")
