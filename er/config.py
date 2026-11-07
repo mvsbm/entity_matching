@@ -3,14 +3,14 @@ Everything is in field names (config/settings.toml [columns]); nothing here name
 import json
 import re
 import tomllib
-from collections.abc import Iterator, Mapping
+from collections.abc import Iterable, Iterator, Mapping
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Literal
 
 from er.strings import FUNCTIONS, Function
 
-Normalizer = Literal["nfkc", "strip_spaces", "kana_fold", "strip_legal_form", "address", "initial", "first3", "reverse"]
+Normalizer = Literal["nfkc", "strip_spaces", "kana_fold", "strip_legal_form", "address", "initial", "first3", "reverse", "casefold"]
 
 
 class InputError(ValueError):
@@ -499,6 +499,41 @@ def pipeline_from(cfg: dict, std: Standardization, chains: Mapping[str, tuple[No
                     cv_folds=sel["cv_folds"], cv_seed=sel["cv_seed"], decision_p=sel["decision_p"],
                     explain_show=tuple(d["explain_show"]), explain_filled=tuple(d["explain_filled"]), fit_rows=m.get("fit_rows", 30_000),
                     kind=KindSpec(**{k: tuple(v) if k == "grid" else v for k, v in cfg["kind"].items()}) if "kind" in cfg else None)
+
+
+def widen(p: "Pipeline", added: Iterable[tuple[str, str]]) -> "Pipeline":
+    """The pipeline with a workspace's own fields beside the fields they stand with (added: pairs of (added field, the
+    field it stands beside), e.g. ("person_name_2", "person_name")). Each comparison step that tests a field tests the
+    added one the same way too, so a step is reached when either agrees, and the two are one piece of evidence, not two;
+    a comparison is missing only when none of them is filled on both sides. Each generator keyed on a field gets a copy
+    keyed on the added one, used when its original is. The added fields are declared optional, so a file without them
+    turns off only what reads them. Rules are unchanged. Nothing added: the same pipeline, so the same config hash.
+    O(steps + generators)."""
+    beside: dict[str, list[str]] = {}
+    for new, old in added:
+        beside.setdefault(old, []).append(new)
+    if not beside:
+        return p
+    level = lambda lv: replace(lv, any_of=lv.any_of + tuple((n, comp) for col, comp in lv.any_of for n in beside.get(col, ())))
+    model = replace(p.fs.model, comparisons=tuple(
+        replace(c, levels=tuple(level(lv) for lv in c.levels), null_if_missing=c.null_if_missing + tuple(n for col in c.null_if_missing for n in beside.get(col, ())))
+        for c in p.fs.model.comparisons))
+
+    def rekeyed(b: Blocker, old: str, new: str) -> Blocker:  # the generator, reading the added field where it read the old
+        swap = lambda k: replace(k, column=new) if k.column == old else k
+        changes: dict = {"name": f"{b.name}@{new}"}
+        if isinstance(b, KeyBlocker):
+            changes["keys"] = tuple(swap(k) for k in b.keys)
+        else:
+            changes["key"] = swap(b.key)
+        if isinstance(b, DeletionKeys):
+            changes["within"] = tuple(swap(k) for k in b.within)
+        return replace(b, **changes)
+    copies = {b.name: [rekeyed(b, old, new) for old, news in beside.items() if old in {k.column for k in keys_of(b)} for new in news]
+              for b in p.generators.values()}
+    return replace(p, fields=replace(p.fields, optional=p.fields.optional + tuple(n for news in beside.values() for n in news)),
+                   generators={**p.generators, **{c.name: c for cs in copies.values() for c in cs}},
+                   fs=replace(p.fs, model=model, blockers=p.fs.blockers + tuple(c for b in p.fs.blockers for c in copies.get(b.name, ()))))
 
 
 def load_pipeline(path: Path, std: Standardization, chains: Mapping[str, tuple[Normalizer, ...]],

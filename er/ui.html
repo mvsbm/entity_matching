@@ -307,6 +307,10 @@ body.collapsed .navitem .stack, body.collapsed .rail li::before { display: none;
 .frow .fex { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; } .frow .fwarn { color: var(--warn); font-size: 12px; white-space: nowrap; }
 .mini { border: 0; background: transparent; color: var(--primary); cursor: pointer; font: inherit; font-size: 12px; padding: 2px 6px; border-radius: 6px; white-space: nowrap; }
 .mini:hover { background: var(--primary-soft); }
+.flab .x { border: 0; background: transparent; color: var(--faint); cursor: pointer; margin-left: 6px; font: inherit; }
+.frow.offer { background: var(--primary-soft); } .frow.offer .flab { color: var(--primary); }
+.addform { gap: 6px; } .addform input { font: inherit; font-size: 13px; padding: 5px 8px; border: 1px solid var(--outline); border-radius: 6px; background: var(--surface); color: var(--ink); min-width: 0; }
+.addform select { font: inherit; font-size: 13px; } .frow .addnote { grid-column: span 3; font-size: 12px; }
 @media (max-width: 860px) { .frow { grid-template-columns: 1fr; gap: 4px; } }
 @media (max-width: 600px) { .empty .flow { flex-direction: column; align-items: center; } .empty .flow .arrow { transform: rotate(90deg); } }
 </style>
@@ -343,9 +347,11 @@ body.collapsed .navitem .stack, body.collapsed .rail li::before { display: none;
             {"command": "create workspace", "args": {"name": "@name", "home": "@home"}, "reads": ["workspace"]}]},
   {"id": "columns", "title": "Prepare your data", "icon": "columns", "what": "Which of your columns hold each field, and how each value is made comparable.",
    "strip": ["records", "prepare"],
-   "uses": [{"command": "load records", "args": {"input": "@input", "workspace": "@workspace"}, "reads": ["columns", "slots", "features", "placements", "fields", "needed", "loaded"]},
-            {"command": "describe records", "args": {"input": "@loaded", "workspace": "@workspace"}, "reads": ["columns", "slots", "features", "placements", "fields", "needed"]},
+   "uses": [{"command": "load records", "args": {"input": "@input", "workspace": "@workspace"}, "reads": ["columns", "slots", "features", "placements", "offers", "fields", "needed", "loaded"]},
+            {"command": "describe records", "args": {"input": "@loaded", "workspace": "@workspace"}, "reads": ["columns", "slots", "features", "placements", "offers", "fields", "needed"]},
             {"command": "set feature", "args": {"mapping": "@mapping", "workspace": "@workspace"}, "reads": ["slots"]},
+            {"command": "add feature", "args": {"path": "@path", "type": "@type", "script": "@script", "column": "@column", "workspace": "@workspace"}, "reads": ["slots"]},
+            {"command": "remove feature", "args": {"path": "@path", "workspace": "@workspace"}, "reads": ["slots"]},
             {"command": "describe workspace", "args": {"workspace": "@workspace"}, "reads": ["inputs"]},
             {"command": "describe matching", "args": {"workspace": "@workspace"}, "reads": ["nodes"]}]},
   {"id": "run", "title": "Find matches", "icon": "run", "what": "Rules settle the certain pairs; the rest are listed, scored and accepted at the line; linked records become one customer.",
@@ -760,6 +766,7 @@ function features(d, view) {
   const used = new Set(d.slots.flatMap((x) => x.alternatives.filter((a) => a.found).flatMap((a) => a.columns)));
   const ghost = Object.fromEntries(d.placements.map((x) => [x.feature, x]));
   const FEW = 0.5;  // under this share of values that look like the slot, the column is likely the wrong one
+  const ADDABLE = ["Name"];  // the groups a feature can be added to: one compared with the ones beside it (add feature)
   const meter = (v) => v === null || v === undefined ? "" : `<span class="meter"><i style="width:${Math.round(v * 100)}%"></i></span>${pct(v)}`;
   const chipOf = (c, from, alt) => `<span class="colchip ${from ? "in" : used.has(c) ? "used" : ""} ${info[c] ? "" : "gone"}" draggable="true" data-col="${esc(c)}"
     ${from ? `data-from="${esc(from)}" data-alt="${alt}"` : ""} title="${info[c] ? `${pct(info[c].filled)} filled · ${esc(info[c].example ?? "")}` : "not in this file"}">${esc(c)}${
@@ -771,7 +778,7 @@ function features(d, view) {
     const chips = alts.map((a, i) => (i ? '<span class="else">else</span>' : "") + a.map((c) => chipOf(c, path, i)).join('<span class="plus">+</span>')).join("");
     const g = shown && ghost[path];
     return `<div class="frow" data-depth="${depth}"><span class="flab">${depth ? (last ? "└ " : "├ ") : ""}${esc(x.name)}${x.script ? ` <span class="tag">${esc(x.script)}</span>` : ""}${
-        needs(x) ? ' <b class="need">needed</b>' : ""}</span>
+        needs(x) ? ' <b class="need">needed</b>' : ""}${x.added && !depth ? `<button class="x" data-remove="${esc(path)}" aria-label="Remove ${esc(x.name)}">✕</button>` : ""}</span>
       <span class="drop" data-slot="${esc(path)}">${chips}${alts.length ? "" : '<span class="hole" tabindex="0">drop a column</span>'}${
         g ? `<span class="colchip ghost" title="${esc(g.why)}">✦ ${esc(g.column)}<button class="x keep" data-keep='${esc(JSON.stringify([path, g.column]))}' aria-label="Keep it">✓</button></span>` : ""}</span>
       <span class="fstat">${meter(s.filled)}</span><span class="fex faint">${esc(s.example ?? "")}</span>
@@ -792,12 +799,16 @@ function features(d, view) {
         waiting && view.ghosts.size ? '<button class="btn filled" data-keepall="*">Keep all</button>' : ""}</div>
       <div class="chips">${d.columns.map((c) => chipOf(c.column)).join("")}</div></div>` +
     d.features.map((g) => {
-      const [cls, text] = status(g), shown = view.ghosts.has(g.group), mine = d.placements.filter((x) => x.feature.startsWith(`${g.group}/`)).length;
+      const [cls, text] = status(g), shown = view.ghosts.has(g.group), offered = (d.offers || []).filter((x) => x.feature.startsWith(`${g.group}/`));
+      const mine = d.placements.filter((x) => x.feature.startsWith(`${g.group}/`)).length + offered.length;
       return `<details class="fgroup" data-g="${esc(g.group)}" ${(view.toggled.has(g.group) ? view.toggled.get(g.group) : cls !== "") ? "open" : ""}>
         <summary><b>${esc(g.group)}</b>${mine ? `<button class="mini" data-suggest="${esc(g.group)}">✦ ${shown ? "Hide" : "Suggest"}</button>` : ""}${
           shown && mine ? `<button class="mini" data-keepall="${esc(g.group)}">Keep all</button>` : ""}<span class="gstat ${cls}">${esc(text)}</span></summary>
         ${g.features.map((f) => row(`${g.group}/${f.name}`, f, 0, false, shown) + (f.parts || []).map((p, i, all) =>
-          row(`${g.group}/${f.name}/${p.name}`, p, 1, i === all.length - 1, shown)).join("")).join("")}</details>`;
+          row(`${g.group}/${f.name}/${p.name}`, p, 1, i === all.length - 1, shown)).join("")).join("")}${
+        shown ? offered.map((x) => `<div class="frow offer" title="${esc(x.why)}"><span class="flab">✦ ${esc(x.feature.split("/").pop())} <span class="tag">${esc(x.script)}</span></span>
+          <span class="drop"><span class="colchip ghost">${esc(x.column)}</span><button class="btn" data-offer='${esc(JSON.stringify(x))}'>Add</button></span></div>`).join("") : ""}${
+        ADDABLE.includes(g.group) ? `<div class="frow addrow"><span class="flab"></span><span class="drop"><button class="mini" data-add="${esc(g.group)}">+ Add a feature</button></span></div>` : ""}</details>`;
     }).join("");
 }
 
@@ -983,6 +994,22 @@ const SCREENS = {
         wire(d);
       });
       el.querySelectorAll("details.fgroup").forEach((g) => g.ontoggle = () => view.toggled.set(g.dataset.g, g.open));
+      const change = async (command, args) => { const e = await run("columns", command, args); if (e.event === "error") $("out").insertAdjacentHTML("afterbegin", banner(e)); else draw(); };
+      el.querySelectorAll("[data-remove]").forEach((b) => b.onclick = () => change("remove feature", {path: b.dataset.remove}));
+      el.querySelectorAll("[data-offer]").forEach((b) => b.onclick = () => { const x = JSON.parse(b.dataset.offer); change("add feature", {path: x.feature, type: x.type, script: x.script, column: x.column}); });
+      el.querySelectorAll("[data-add]").forEach((b) => b.onclick = () => {  // one line, in place: its name, what it is, its script
+        const row = b.closest(".frow");
+        row.innerHTML = `<span class="flab"></span><span class="drop addform"><input type="text" placeholder="its name, e.g. Kanji name" aria-label="Its name">
+          <select aria-label="What it is"><option value="person name">person's name</option><option value="company name">company name</option></select>
+          <select aria-label="Script"><option>kana</option><option>kanji</option><option>romaji</option></select>
+          <button class="btn filled">Add</button><button class="btn" data-cancel>Cancel</button></span>
+          <span class="faint addnote">compared beside the kana name; its steps were tuned on kana</span>`;
+        const [name, kind, script] = row.querySelectorAll("input, select");
+        name.focus();
+        row.querySelector(".btn.filled").onclick = () => name.value.trim() ? change("add feature", {path: `${b.dataset.add}/${name.value.trim()}`, type: kind.value, script: script.value}) : name.focus();
+        name.onkeydown = (e) => { if (e.key === "Enter") row.querySelector(".btn.filled").click(); };
+        row.querySelector("[data-cancel]").onclick = () => draw();
+      });
     };
     $("load").onclick = async () => {
       const input = $("cin").value.trim();
