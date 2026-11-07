@@ -62,6 +62,8 @@ class Spec:
     halfwidth_rate: float                    # per record: every name column in half-width katakana
     name_typo_rate: float                    # per record and name part (surname, given name, company name)
     kana_confusions: tuple[tuple[str, str], ...]  # swapped both ways; a dropped character when none applies
+    kanji_variants: tuple[tuple[str, str], ...] = ()  # a character and its variant (斎 / 齋), swapped both ways in a kanji name
+    kanji_variant_rate: float = 0.0          # per record and kanji name part: one character written as its variant
     phone_typo_rate: float                   # per record: one wrong PHONE_NUM_4 digit
     address_typo_rate: float                 # per record: one wrong digit (else a dropped character) in ORIGINAL_ADDRESS
     nesting: Mapping[str, float]             # per group: 1 = fully nested missingness, 0 = independent
@@ -151,7 +153,9 @@ def generate(spec: Spec, persons: pd.DataFrame, companies: pd.DataFrame, towns: 
     confusions = [(a, b) for x, y in spec.kana_confusions for a, b in ((x, y), (y, x))]
     typos = {"name": 0, "phone": 0, "address": 0, "cif": 0, "birth": 0}
     town_rows = towns.to_dict("records")
-    surname_pool = persons["surname_kana"].to_numpy()
+    surname_pool, surname_kanji = persons["surname_kana"].to_numpy(), persons["surname"].to_numpy()
+    rk = np.random.default_rng([spec.seed, 1])  # the kanji columns' own draws: adding them changes no other column
+    variants = [(a, b) for x, y in spec.kanji_variants for a, b in ((x, y), (y, x))]
 
     def pick[T](xs: Sequence[T]) -> T:
         return xs[rng.integers(len(xs))]
@@ -192,6 +196,13 @@ def generate(spec: Spec, persons: pd.DataFrame, companies: pd.DataFrame, towns: 
             return s
         typos[kind] += 1
         return kana_typo(s) if kind == "name" else digit_typo(s)
+
+    def variant(s: str) -> str:  # a kanji name part, one character sometimes written as its variant; drawn from rk, not rng
+        spots = [(i, b) for i, ch in enumerate(s) for a, b in variants if ch == a]
+        if not spots or rk.random() >= spec.kanji_variant_rate:
+            return s
+        i, b = spots[int(rk.integers(len(spots)))]
+        return s[:i] + b + s[i + 1:]
 
     def five(a: Address) -> str:  # 丁目-番-号, or 番-号 where the town has no 丁目
         chome = town_rows[a.town]["chome"]
@@ -236,7 +247,7 @@ def generate(spec: Spec, persons: pd.DataFrame, companies: pd.DataFrame, towns: 
         pools[p] = [Address(int(t[i]), int(bb) + 1, int(gg) + 1, next(codes)) for i, bb, gg in zip(ti, b, g)]
 
     cifs = iter(distinct_digits(spec.entities + n_rec.sum(), digits["CIF_ID"]))
-    company_names = companies["name_kana"].to_numpy()
+    company_names, company_kanji = companies["name_kana"].to_numpy(), companies["name"].to_numpy()
     rows: list[dict[str, str]] = []
     for e, kind in enumerate(kinds):
         phones = [phone() for _ in range(n_phone[e])]
@@ -244,11 +255,17 @@ def generate(spec: Spec, persons: pd.DataFrame, companies: pd.DataFrame, towns: 
         addrs = rng.choice(len(pool), min(n_addr[e], len(pool)), replace=False).tolist()
         if kind == "person":  # extra surnames (maiden / married) come from the persona surname pool
             names, given = [persons.at[persona[e], "surname_kana"]], persons.at[persona[e], "given_kana"]
+            kanji = {names[0]: persons.at[persona[e], "surname"]}  # each surname's kanji, from its reference row
+            given_kanji = persons.at[persona[e], "given"]
             while len(names) < n_name[e]:
-                s = pick(surname_pool)
+                i = rng.integers(len(surname_pool))  # as pick(surname_pool) draws, so every other column stays as it was
+                s = surname_pool[i]
+                kanji.setdefault(s, surname_kanji[i])
                 names += [s] if s not in names else []
         else:  # (name, legal form in front?)
-            names = [(s, rng.random() < spec.legal_prefix_share) for s in rng.choice(company_names, n_name[e], replace=False).tolist()]
+            chosen = rng.choice(len(company_names), n_name[e], replace=False).tolist()  # as rng.choice(company_names, …) draws
+            names = [(company_names[i], rng.random() < spec.legal_prefix_share) for i in chosen]
+            kanji = {company_names[i]: company_kanji[i] for i in chosen}
         birth = str(np.datetime64("1930-01-01") + rng.integers(75 * 365)).replace("-", "")  # YYYYMMDD; persons only
         base_cif = next(cifs)
         forms, weights = zip(*spec.legal_forms_written)
@@ -258,15 +275,20 @@ def generate(spec: Spec, persons: pd.DataFrame, companies: pd.DataFrame, towns: 
             row = dict(ENTITY_ID=f"E{e:06d}", KIND=str(kind), PHONE_NUM_4=noisy(pick(phones)[-digits["PHONE_NUM_4"]:], "phone"),
                        CIF_ID=cif, ORIGINAL_ADDRESS=original_address(a), **address_columns(a))
             if kind == "person":  # typos go into the parts, so every name column agrees
-                last, first = noisy(pick(names), "name"), noisy(given, "name")
+                surname = pick(names)
+                last, first = noisy(surname, "name"), noisy(given, "name")
                 sep = "　" if rng.random() < spec.space_rate else spec.full_name_sep
                 row |= dict(FULL_NAME_KANA=f"{last}{sep}{first}", O_PERSON_NAME_KANA=f"{last}{spec.original_name_sep}{first}",
                             LAST_NAME_KANA=last, GIVEN_NAME_KANA=first, BIRTH_DATE=noisy(birth, "birth"))
+                last_k, first_k = variant(kanji[surname]), variant(given_kanji)  # the same person in kanji: its own noise, its own draws
+                row |= dict(FULL_NAME_KANJI=f"{last_k}{'　' if rk.random() < spec.space_rate else ''}{first_k}", LAST_NAME_KANJI=last_k, GIVEN_NAME_KANJI=first_k)
             else:  # the legal form written one of several ways, sometimes a branch after it
                 stem, legal_first = pick(names)
+                stem_k = kanji[stem]
                 stem, legal = noisy(stem, "name"), forms[rng.choice(len(forms), p=np.array(weights) / sum(weights))]
                 name = legal + stem if legal_first else stem + legal
                 row["NYS_CNV_P_NAME_KANA"] = name + (f"　{pick(spec.branches)}" if rng.random() < spec.branch_rate else "")
+                row["COMPANY_NAME_KANJI"] = ("株式会社" + variant(stem_k) if legal_first else variant(stem_k) + "株式会社") if legal else variant(stem_k)
             if rng.random() < spec.halfwidth_rate:  # the system that took this record stores half-width katakana
                 row |= {c: halfwidth(row[c]) for c in ("FULL_NAME_KANA", "O_PERSON_NAME_KANA", "LAST_NAME_KANA", "GIVEN_NAME_KANA",
                                                        "NYS_CNV_P_NAME_KANA") if c in row}
@@ -348,6 +370,7 @@ def load_spec(path: Path) -> tuple[Spec, Split]:
     spec = Spec(**{**p, "multi_lambda": {a: dict(v) for a, v in p["multi_lambda"].items()}, "phone_prefixes": tuple(p["phone_prefixes"]),
                    "legal_forms_written": tuple(map(tuple, p["legal_forms_written"])), "branches": tuple(p["branches"]),
                    "kana_confusions": tuple(map(tuple, p["kana_confusions"])), "nesting": dict(p["nesting"]),
+                   "kanji_variants": tuple(map(tuple, p.get("kanji_variants", ()))),
                    "buildings": tuple(p["buildings"]),
                    "original_address_formats": tuple(AddressFormat(**f) for f in p["original_address_formats"]),
                    "columns": tuple(Column(**{**c, "parts": tuple(c.get("parts", ()))}) for c in p["columns"])})

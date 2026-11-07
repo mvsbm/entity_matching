@@ -7,6 +7,7 @@ import json
 import os
 import re
 import tomllib
+import unicodedata
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -286,9 +287,14 @@ def set_features(workspace: str | Path, values: Mapping[str, tuple[tuple[str, ..
     return feats
 
 
+PHONE_NAME = re.compile(r"phone|tel|mobile|cell|keitai|denwa|電話|携帯")  # a column named for a phone (not a fax: it doesn't take calls)
 PROFILED = {"full name": "full", "family name": "family", "given name": "given", "address": "address"}  # slot type → the profile's share
 SAYS = {"full": "are a known family name and given name", "family": "are known family names", "given": "are known given names",
         "address": "start with a known prefecture or city"}
+
+
+def norm_name(column: str) -> str:  # a column's name as people mean it: width, case and separators aside
+    return re.sub(r"[\s_\-・.]+", "", unicodedata.normalize("NFKC", column).casefold())
 
 
 def placements(features: list[dict], profile: Mapping[str, dict], fit: Mapping[str, Mapping[str, float]], least: float = 0.5) -> list[dict]:
@@ -312,6 +318,10 @@ def placements(features: list[dict], profile: Mapping[str, dict], fit: Mapping[s
         if kind in PROFILED:
             share = {c: p[PROFILED[kind]] for c, p in profile.items() if kind == "address" or not script[path] or p["script"] == script[path]}
             say = f" {SAYS[PROFILED[kind]]}" + (f", in {script[path]}" if script[path] and kind != "address" else "")
+        elif x.get("type") == "phone":  # its name says phone and its values are numbers; else its values alone, 4 digits
+            named = {c: p["phone"] for c, p in profile.items() if PHONE_NAME.search(norm_name(c)) and "fax" not in norm_name(c) and p.get("phone", 0) >= 0.8}
+            share = {c: v for c, v in fit.get(x["field"], {}).items() if c not in named} | {c: 1 + v for c, v in named.items()}  # a name that says so first
+            say = " look like phone numbers"
         elif x.get("field") in fit:
             share, say = dict(fit[x["field"]]), " filled, each value once" if x["field"] == "id" else f" look like {x['field'].replace('_', ' ')}"
             if x["type"] == "id" and x["field"] != "id":  # another ID: its pattern, and how few records share a value (an address code repeats)
@@ -326,7 +336,8 @@ def placements(features: list[dict], profile: Mapping[str, dict], fit: Mapping[s
         free = [(v, -order[c], c) for c, v in candidates[path].items() if c not in taken and not set(profile[c].get("same", ())) & taken]
         if free:
             v, _, c = max(free)
-            out.append(dict(feature=path, column=c, share=v, why=f"{v:.0%}{why[path]}"))
+            v, named = (v - 1, True) if v > 1 else (v, False)  # a phone named so: its share as it is, and its name said
+            out.append(dict(feature=path, column=c, share=v, why=("its name says phone; " if named else "") + f"{v:.0%}{why[path]}"))
             taken.add(c)
     return out
 

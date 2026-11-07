@@ -733,7 +733,10 @@ def test_the_file_s_contents_say_which_feature_each_column_fills(tmp_path, capsy
         "c8": ["".join(rnd.choice("abcdefgh") for _ in range(6)) for _ in range(n)],
         "c9": [a["postal"] for a in where], "c10": [a["postal"] for a in where],  # a postal code, and a copy of it
         "c11": [f"{rnd.randint(0, n // 2):010d}" for _ in range(n)],  # an address code: ten digits, shared
-        "c12": [f"{rnd.randrange(10 ** 12, 10 ** 13)}" for _ in range(n)]}).to_parquet(tmp_path / "theirs.parquet", index=False)  # a customer number
+        "c12": [f"{rnd.randrange(10 ** 12, 10 ** 13)}" for _ in range(n)],  # a customer number
+        "c13": [f"{rnd.randint(1000, 9999)}" for _ in range(n)],  # four digits, named nothing: a branch code as much as a phone
+        "携帯電話": [f"090-{rnd.randint(1000, 9999)}-{rnd.randint(1000, 9999)}" for _ in range(n)],  # named a phone, written as one
+        "fax_tel": [f"03{rnd.randint(10 ** 7, 10 ** 8 - 1)}" for _ in range(n)]}).to_parquet(tmp_path / "theirs.parquet", index=False)  # a fax: no calls
     monkeypatch.chdir(tmp_path)
 
     def say(*words: object) -> tuple[int, dict]:
@@ -744,10 +747,13 @@ def test_the_file_s_contents_say_which_feature_each_column_fills(tmp_path, capsy
     code, d = say("load", "records", "theirs.parquet", "--workspace", "workspaces/w")
     assert code == 0 and {c: x["script"] for c, x in d["profile"].items()} == {"c1": "romaji", "c2": "kana", "c3": "kana", "c4": "kana", "c5": "kanji",
                                                                                "c6": "kanji", "c7": "kanji", "c8": "romaji", "c9": None, "c10": None,
-                                                                               "c11": None, "c12": None}  # digits: no script
+                                                                               "c11": None, "c12": None, "c13": None, "携帯電話": None,
+                                                                               "fax_tel": None}  # digits: no script
     assert {x["feature"]: x["column"] for x in d["placements"]} == {
         "ID/Record ID": "c1", "Name/Full name": "c4", "Name/Full name/Family name": "c2", "Name/Full name/Given name": "c3",
-        "Name/Company name": "c6", "Address/Address": "c7", "Address/Postal code": "c9", "Address/Address code": "c11", "ID/Customer number": "c12"}
+        "Name/Company name": "c6", "Address/Address": "c7", "Address/Postal code": "c9", "Address/Address code": "c11", "ID/Customer number": "c12",
+        "Phone/Phone": "携帯電話"}  # named a phone, and numbers: before four digits named nothing, and never the fax
+    assert next(x for x in d["placements"] if x["feature"] == "Phone/Phone")["why"].startswith("its name says phone; 100%")
     # the narrow pattern (a postal code) placed before the broad one (five digits or more), and its copy (c10) nowhere; an ID
     # mostly unique; the kanji full name (c5) waits for a kanji feature; the random text, nowhere
     assert [(x["feature"], x["script"], x["column"]) for x in d["offers"]] == [("Name/Kanji name", "kanji", "c5")]  # offered as a new feature
@@ -760,6 +766,25 @@ def test_the_file_s_contents_say_which_feature_each_column_fills(tmp_path, capsy
     say("set", "feature", "Address/Address=", "--workspace", "workspaces/w")
     assert load_settings(columns=tmp_path / "workspaces" / "w" / "columns.toml").columns["address"] == ()  # no column, still declared
     assert say("describe", "records", "theirs.parquet", "--workspace", "workspaces/w")[1]["placements"][0]["feature"] == "Address/Address"  # offered again
+
+
+def test_the_generator_writes_kanji_names_without_changing_any_other_column():
+    from er.generate import check, generate as make, load_reference, load_spec
+    s = load_settings()
+    spec, ref = replace(load_spec(s.root / "config" / "generator.toml")[0], entities=300), load_reference(s.paths["reference"])
+    full = make(spec, *ref)
+    check(spec, full)
+    bare = make(replace(spec, columns=tuple(c for c in spec.columns if "KANJI" not in c.name)), *ref)
+    assert all(full.df[c].equals(bare.df[c]) for c in bare.df.columns)  # the kanji columns' own draws: every other column as it was
+    d = full.df.merge(full.truth, on="CONT_ID")
+    person, company = d["KIND"].eq("person"), d["KIND"].eq("company")
+    assert d.loc[company, "FULL_NAME_KANJI"].isna().all() and d.loc[person, "COMPANY_NAME_KANJI"].isna().all()
+    assert 0.5 < d.loc[person, "FULL_NAME_KANJI"].notna().mean() < 0.7  # fewer systems hold kanji than kana
+    canon = {b: a for a, b in spec.kanji_variants}  # 齋 → 斎: a variant is the same character, written another way
+    plain = lambda v: "".join(canon.get(ch, ch) for ch in v)
+    given = d[person].dropna(subset=["GIVEN_NAME_KANJI"]).groupby("ENTITY_ID")["GIVEN_NAME_KANJI"].agg(lambda x: x.map(plain).nunique())
+    assert given.max() == 1  # one person, one given name in kanji, through their kana typos
+    assert d["COMPANY_NAME_KANJI"].dropna().str.contains("株式会社").any()
 
 
 def test_a_name_added_in_another_script_is_compared_beside_the_kana_one(tmp_path, population, capsys, monkeypatch):

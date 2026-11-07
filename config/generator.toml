@@ -31,6 +31,9 @@ halfwidth_rate = 0.15             # per record: every name column in half-width 
 name_typo_rate = 0.3              # per record and name part (surname, given name, company name)
 kana_confusions = [["ウ", "ー"], ["オ", "ウ"], ["ツ", "ッ"], ["ヤ", "ャ"], ["ユ", "ュ"], ["ヨ", "ョ"], ["ガ", "カ"],
                    ["ギ", "キ"], ["グ", "ク"], ["ゴ", "コ"], ["ジ", "シ"], ["ダ", "タ"], ["ド", "ト"], ["ブ", "フ"]]
+kanji_variants = [["斎", "齋"], ["斉", "齊"], ["辺", "邊"], ["辺", "邉"], ["高", "髙"], ["崎", "﨑"], ["沢", "澤"], ["浜", "濱"], ["桜", "櫻"],
+                  ["広", "廣"], ["国", "國"], ["島", "嶋"], ["竜", "龍"], ["恵", "惠"], ["真", "眞"], ["徳", "德"], ["富", "冨"], ["栄", "榮"]]
+kanji_variant_rate = 0.1          # per record and kanji name part: one character written as its variant, as systems store them
 phone_typo_rate = 0.1             # per record: one wrong digit of the phone's last four
 address_typo_rate = 0.1           # per record: one wrong digit (else a dropped character) in the typed address
 nesting = { name = 0.7, postal = 0.9, address = 0.6 }   # per group: 1 = fully nested missingness, 0 = independent
@@ -122,6 +125,25 @@ group = "address"
 [[population.columns]]
 name = "ADDRESS_THREE"            # the town
 group = "address"
+[[population.columns]]            # kanji names: held by fewer systems than kana; their own fill rate and draws, after every other column
+name = "FULL_NAME_KANJI"
+group = "kanji"
+kind = "person"
+rate = 0.6
+[[population.columns]]
+name = "LAST_NAME_KANJI"
+group = "kanji"
+kind = "person"
+rate = 0.5
+[[population.columns]]
+name = "GIVEN_NAME_KANJI"
+group = "kanji"
+kind = "person"
+rate = 0.5
+[[population.columns]]
+name = "COMPANY_NAME_KANJI"
+kind = "company"
+rate = 0.6
 
 [split]
 seed = 0

@@ -64,10 +64,12 @@ All parameters live in `config/generator.toml`: `[population]` (`er.generate.Spe
   - person names in kana: FULL_NAME_KANA, O_PERSON_NAME_KANA, LAST_NAME_KANA, GIVEN_NAME_KANA
   - BIRTH_DATE (persons, YYYYMMDD): 15% filled, missing independently of everything else
   - company name in kana: NYS_CNV_P_NAME_KANA
+  - names in kanji, from the same reference rows as the kana (a maiden or married surname with its own kanji): FULL_NAME_KANJI, LAST_NAME_KANJI, GIVEN_NAME_KANJI (persons; 60%, 50% and 50% filled), COMPANY_NAME_KANJI (companies, 60%: the name with 株式会社 where the record writes a legal form). Fewer systems hold kanji than kana; these columns have their own fill rates and their own random draws, so every other column is exactly what it would be without them
   - postal: POST_CD, POST_CD_KANA
   - address: SOURCE_ADDR_CD, ORIGINAL_ADDRESS (as typed, in 3 formats), ADDRESS_FIVE(_KANA) (`chome-ban-go`, or `ban-go`), ADDR_CD(_KANA) (11-digit 住所コード), ADDRESS_ONE (prefecture), ADDRESS_TWO (city), ADDRESS_THREE (town), and STD_ADDRESS, built from those parts as they arrive (the filled ones joined), so it is missing only where every part is
 - **Entry errors and notations:**
-  - 30% of name parts get one kana typo (ガ/カ, ッ/ツ, ー/ウ … or a dropped character)
+  - 30% of name parts get one kana typo (ガ/カ, ッ/ツ, ー/ウ … or a dropped character); the kanji of the same record keeps the right name
+  - 10% of kanji name parts have one character written as its variant (斎/齋, 高/髙, 崎/﨑, 辺/邊 …: `kanji_variants`)
   - 30% of person records put a space between surname and given name; 15% of records hold every name in half-width katakana (ｻﾄｳ)
   - 10% of phones, birth dates, ORIGINAL_ADDRESS values and reused CIF IDs get one wrong digit (or, in an address, a dropped character)
 - **Missingness:**
