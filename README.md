@@ -37,7 +37,7 @@ Real data may differ, and only a run on it can tell ([limits](#limits)).
 ```bash
 ./setup_venv.sh
 .venv/bin/nayose create workspace customers                                        # workspaces/customers: one matching job
-.venv/bin/nayose load records customers.parquet --workspace workspaces/customers   # copied in, then checked: will it run?
+.venv/bin/nayose load records customers.parquet --workspace workspaces/customers   # copied in, then described: what each field reads, in a second
 # a field it can't find: the check prints the line, nayose set columns id=CUSTOMER_NO --workspace workspaces/customers
 .venv/bin/nayose resolve records --workspace workspaces/customers
 .venv/bin/nayose open ui                                                           # or the six steps in a browser, on this machine only

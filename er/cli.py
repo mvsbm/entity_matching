@@ -31,6 +31,7 @@ from er import folder, inbox
 from er.config import InputError, load_pipeline, sources_text
 from er.folder import Busy
 from er.report import applied, describe_entity, describe_matching, describe_workspace, fill_rates
+from er.source import describe
 from er.run import Run
 from er.settings import COLUMNS, SPECIAL, columns_file, load_settings, own_columns, set_columns, settings_path
 
@@ -156,6 +157,8 @@ def text(c: Command, r: dict) -> str:
         if v is None or v == [] or v == {} or v == "":
             continue
         label = key.replace("_", " ")
+        if (c.show or {}).get(key) == ():  # for programs only
+            continue
         if key == "next":
             out += ["next"] + [f"  {x['command']}" + (f"    # {x['why']}" if x.get("why") else "") for x in v]
         elif key == "summary":
@@ -307,11 +310,19 @@ def given(a: dict) -> str:
     return str(parts[-1])
 
 
+def describe_records(a: dict, emit: "Emit") -> dict:
+    s, there = settings_for(a), ["--workspace", a["workspace"]] if a.get("workspace") else []
+    d = describe(a["input"], duckdb.connect(), s.columns, s.detect)
+    found = [f"{x['field']}={x['column']}" for x in d["suggested"]]
+    return {**d, "next": ([dict(command=nayose("set", "columns", *found, *there), why="map what the file's names and values suggest")] if found else []) +
+            [dict(command=nayose("resolve", "records", *there) if there else nayose("check", "records", a["input"]),
+                  why="find matches in it" if there else "the full check: every record prepared, every key counted")]}
+
+
 def load_records(a: dict, emit: "Emit") -> dict:
     ws = Path(a["workspace"])
     part, copied = folder.take_in(ws, a["input"])
-    return {**check_records({**a, "input": str(part)}, emit), "loaded": str(part), "copied": copied,
-            "next": [dict(command=nayose("resolve", "records", "--workspace", ws), why="find matches in it")]}
+    return {**describe_records({**a, "input": str(part)}, emit), "loaded": str(part), "copied": copied}
 
 
 def create_workspace(a: dict, emit: "Emit") -> dict:
@@ -468,6 +479,11 @@ WORKSPACE = Param("workspace", "the workspace: the folder that keeps one matchin
 OWN = Param("workspace", "a workspace, for its own mapping (without it, the project's: config/settings.toml)", "path")
 GIVEN = replace(INPUT, help=INPUT.help + "; copied into the workspace first. Without it, the file loaded into it last", optional=True)
 HOME = Param("home", "the folder that holds the workspaces (default: workspaces, in the current folder)", "path")
+DESCRIBED = {"records": "records", "columns": "each column of the file: column, filled, example",
+             "fields": "each field: field, sources, filled, example, looks_right, and each of its alternatives (columns, found, filled, example, looks_right)",
+             "fit": "for each field, each column's fit: the share of its values that look like the field (id: filled, each value once)",
+             "suggested": "for each field the file holds none of: field, column, why", "notes": "what the reader detected or fixed",
+             "next": "the commands that usually follow"}
 CHECKED = {"records": "records read", "fields": "each field: filled, looks_right, top_value (shares), columns",
            "turned_off": "rules, keys and levels a missing field turns off", "keys": "each key's pairs per record and largest block",
            "oversized_from": "the block size checked by sampling", "notes": "what the loader detected or fixed", "next": "the commands that usually follow"}
@@ -493,13 +509,21 @@ COMMANDS: tuple[Command, ...] = (
             (HOME,), {"home": "the folder listed", "workspaces": "each one: name, workspace, files, ran, last",
                       "next": "the commands that usually follow"},
             "nayose list workspaces", list_workspaces, quick=True, show={"workspaces": ("name", "files", "ran", "last")}),
-    Command("load", "records", "Copy a file into a workspace, then check it",
+    Command("load", "records", "Copy a file into a workspace, then describe it",
             "Copies the records into a part of the workspace's own (inputs/0001-customers/), unless it holds the same content "
-            "already, then checks the copy as check records does, with the workspace's mapping. Its runs read the copy, so "
-            "the original can move or go. O(bytes) for the copy, then the check's.",
-            (INPUT, WORKSPACE, COMPUTE, PIPELINE),
-            {**CHECKED, "loaded": "the part the records are in", "copied": "false: the workspace held them already"},
-            "nayose load records customers.parquet --workspace workspaces/acme", load_records),
+            "already, then describes the copy as describe records does, with the workspace's mapping. Its runs read the copy, "
+            "so the original can move or go. O(bytes) for the copy, then the description's.",
+            (INPUT, WORKSPACE), {**DESCRIBED, "loaded": "the part the records are in", "copied": "false: the workspace held them already"},
+            "nayose load records customers.parquet --workspace workspaces/acme", load_records, quick=True,
+            show={"columns": ("column", "filled", "example"), "fields": ("field", "filled", "looks_right"), "fit": ()}),
+    Command("describe", "records", "What a file holds, for mapping its columns: in a second, nothing prepared",
+            "Each column's share filled and an example; each field's columns as the mapping reads them (a later one where the "
+            "earlier are empty, a joined one where every part is filled), each with its share filled, an example and the share "
+            "of its values that look like the field; how well each column fits each field; and, for a field the file holds "
+            "none of, the column its name or values suggest, never applied: set columns applies it. Shares filled cover the "
+            "file; the rest a sample of 2,000 records. O(N·C) in one scan, plus the sample.",
+            (INPUT, OWN), DESCRIBED, "nayose describe records customers.parquet --workspace workspaces/acme", describe_records, quick=True,
+            show={"columns": ("column", "filled", "example"), "fields": ("field", "filled", "looks_right"), "fit": ()}),
     Command("check", "records", "Read, map and check a file, in seconds; resolve nothing",
             "Reads the file through the door every input takes, maps its columns to the logical fields (config/settings.toml "
             "[columns]), and counts each key's pairs before any join. Shows each field's fill rate, the share of values that "

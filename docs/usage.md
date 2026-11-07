@@ -21,13 +21,13 @@ Each matching job lives in a workspace: a folder that keeps your records file, h
 
 ```bash
 .venv/bin/nayose create workspace customers                                        # workspaces/customers, with its own mapping
-.venv/bin/nayose load records customers.parquet --workspace workspaces/customers   # copied into it, then checked
+.venv/bin/nayose load records customers.parquet --workspace workspaces/customers   # copied into it, then described
 .venv/bin/nayose list workspaces                                                   # every workspace, the latest active first
 ```
 
-`load records` copies the file into the workspace's `inputs/` (`inputs/0001-customers/`), so its runs read the copy and the original can move or go. The same content loaded twice is copied once. Until the original is deleted, every file is on disk twice.
+`load records` copies the file into the workspace's `inputs/` (`inputs/0001-customers/`), so its runs read the copy and the original can move or go. The same content loaded twice is copied once. Until the original is deleted, every file is on disk twice. It then describes the copy, as `nayose describe records FILE` does for any file, without preparing a record: each column's share filled and an example, each field's columns with their own shares and the share that looks like the field, and for a field the file holds none of, the column its name or values suggest. On a million records that takes about a second.
 
-The pipeline never names your columns. It works on logical fields, and the workspace's `columns.toml` says which of your columns hold each one. A new workspace copies it from `config/settings.toml` `[columns]` and `[kind]` (`ER_SETTINGS=<file>` points nayose at another settings file); a workspace without one reads the project's. `nayose list columns --workspace W` shows the mapping, and `nayose set columns … --workspace W` changes it, keeping every comment and option, and checking the file before it saves. Without `--workspace`, both work on the project's mapping, which new workspaces start from. When `load records` finds a field missing, its fix is the `set columns` line to run:
+The pipeline never names your columns. It works on logical fields, and the workspace's `columns.toml` says which of your columns hold each one. A new workspace copies it from `config/settings.toml` `[columns]` and `[kind]` (`ER_SETTINGS=<file>` points nayose at another settings file); a workspace without one reads the project's. `nayose list columns --workspace W` shows the mapping, and `nayose set columns … --workspace W` changes it, keeping every comment and option, and checking the file before it saves. Without `--workspace`, both work on the project's mapping, which new workspaces start from. For the fields it suggests, `describe records` ends with the `set columns` line to run; a suggestion is never applied without you:
 
 ```bash
 .venv/bin/nayose set columns id=CUSTOMER_NO phone=TEL4 person_name=NAME_KANA,SEI+MEI --workspace workspaces/customers   # , a fallback; + columns joined
@@ -64,7 +64,7 @@ The fields, and which ones a run needs (`[fields]` in `config/final.toml`; `kind
 - **One column for every name**, a person's or a company's: map `full_name`, `person_name`, `company_name` and `any_name` to it, and add `kind = "person"` to the first two and `kind = "company"` to `company_name`. Each record's name then goes to the side its kind leans to, and a pair of a person and a company has no name compared, so the model leaves it to people ([section 6](#6--review-and-decide)). A record whose lean and flag disagree goes to neither side until a person decides.
 - **A field the run needs and no column holds** stops the run with the file's columns and, for each missing field, the column whose values look most like it (in JSON, as `hints`). These suggestions are never applied without you.
 
-Check a file and its mapping in seconds, before a long run:
+The full check, every record prepared and every key's pairs counted, as a run's first steps do:
 
 ```bash
 .venv/bin/nayose check records customers.parquet
@@ -288,7 +288,7 @@ The page runs the same commands, and nothing else. It opens on step 1: what nayo
 | Step | Runs | Shows |
 |---|---|---|
 | 1 Choose a workspace | `list workspaces`, `create workspace` | the workspaces in `workspaces/` (`open ui --home` names another folder), the latest active first, or a new one by name |
-| 2 Prepare your data | `load records`, `check records`, `list columns`, `set columns` | your file, loaded into the workspace (each file it holds, and whether a run has read it); each field's columns, a real value made comparable step by step, how full each field is; a field the run needs, with the column its values suggest one click away |
+| 2 Prepare your data | `load records`, `describe records`, `list columns`, `set columns` | your file, loaded into the workspace (each file it holds, and whether a run has read it); each field's columns, a real value made comparable step by step, how full each field is; a field the run needs, with the column its values suggest one click away |
 | 3 Find matches | `resolve records`, `add records`, `match records`, `rerun records` | records → rules → candidates (each way of listing pairs, as a bar) → weighed (what each level of each comparison is worth, in points) → matched (pairs by weight, against the line) → customers |
 | 4 Review possible matches | `list pairs`, `decide pair`, `apply decisions` | the pairs to review beside the picked pair, and why it is asked: its two records with their differences marked, each comparison's step and points, the total against the line. <kbd>M</kbd> same customer, <kbd>N</kbd> different, <kbd>S</kbd> skip, <kbd>↑</kbd> <kbd>↓</kbd> move |
 | 5 Confirm person or company | `list kinds`, `answer kind`, `apply answers` | each record on a slider from person to company, where the engine and its name alone place it. <kbd>1</kbd> person, <kbd>2</kbd> company, <kbd>0</kbd> can't tell |

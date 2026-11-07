@@ -15,7 +15,8 @@ Written by `scripts/document_commands.py` from the declarations in `er/cli.py`; 
 |---|---|
 | [`create workspace`](#nayose-create-workspace) | Start a workspace: the folder for one matching job |
 | [`list workspaces`](#nayose-list-workspaces) | The workspaces, the latest active first |
-| [`load records`](#nayose-load-records) | Copy a file into a workspace, then check it |
+| [`load records`](#nayose-load-records) | Copy a file into a workspace, then describe it |
+| [`describe records`](#nayose-describe-records) | What a file holds, for mapping its columns: in a second, nothing prepared |
 | [`check records`](#nayose-check-records) | Read, map and check a file, in seconds; resolve nothing |
 | [`list columns`](#nayose-list-columns) | Show which of a file's columns hold each field |
 | [`set columns`](#nayose-set-columns) | Map fields to a file's columns |
@@ -85,35 +86,62 @@ nayose list workspaces
 
 ## nayose load records
 
-Copy a file into a workspace, then check it.
+Copy a file into a workspace, then describe it.
 
 ```
-nayose load records INPUT --workspace WORKSPACE [--compute KEY=VALUE …] [--pipeline PIPELINE] [--format text|json]
+nayose load records INPUT --workspace WORKSPACE [--format text|json]
 ```
 
-Copies the records into a part of the workspace's own (inputs/0001-customers/), unless it holds the same content already, then checks the copy as check records does, with the workspace's mapping. Its runs read the copy, so the original can move or go. O(bytes) for the copy, then the check's.
+Copies the records into a part of the workspace's own (inputs/0001-customers/), unless it holds the same content already, then describes the copy as describe records does, with the workspace's mapping. Its runs read the copy, so the original can move or go. O(bytes) for the copy, then the description's.
 
 | Parameter | |
 |---|---|
 | `INPUT` | the records: a Parquet file, a quoted glob ('in/*.parquet') or a folder of them, read together by column name |
 | `--workspace WORKSPACE` | the workspace: the folder that keeps one matching job (required) |
-| `--compute KEY=VALUE` | DuckDB limits for this run, over config/settings.toml [compute]: memory_limit=8GB, threads=4, temp_directory=<folder> (past the memory limit DuckDB spills there) |
-| `--pipeline PIPELINE` | the pipeline file (default: config/final.toml) |
 
 | Result | |
 |---|---|
-| `records` | records read |
-| `fields` | each field: filled, looks_right, top_value (shares), columns |
-| `turned_off` | rules, keys and levels a missing field turns off |
-| `keys` | each key's pairs per record and largest block |
-| `oversized_from` | the block size checked by sampling |
-| `notes` | what the loader detected or fixed |
+| `records` | records |
+| `columns` | each column of the file: column, filled, example |
+| `fields` | each field: field, sources, filled, example, looks_right, and each of its alternatives (columns, found, filled, example, looks_right) |
+| `fit` | for each field, each column's fit: the share of its values that look like the field (id: filled, each value once) |
+| `suggested` | for each field the file holds none of: field, column, why |
+| `notes` | what the reader detected or fixed |
 | `next` | the commands that usually follow |
 | `loaded` | the part the records are in |
 | `copied` | false: the workspace held them already |
 
 ```bash
 nayose load records customers.parquet --workspace workspaces/acme
+```
+
+## nayose describe records
+
+What a file holds, for mapping its columns: in a second, nothing prepared.
+
+```
+nayose describe records INPUT [--workspace WORKSPACE] [--format text|json]
+```
+
+Each column's share filled and an example; each field's columns as the mapping reads them (a later one where the earlier are empty, a joined one where every part is filled), each with its share filled, an example and the share of its values that look like the field; how well each column fits each field; and, for a field the file holds none of, the column its name or values suggest, never applied: set columns applies it. Shares filled cover the file; the rest a sample of 2,000 records. O(N·C) in one scan, plus the sample.
+
+| Parameter | |
+|---|---|
+| `INPUT` | the records: a Parquet file, a quoted glob ('in/*.parquet') or a folder of them, read together by column name |
+| `--workspace WORKSPACE` | a workspace, for its own mapping (without it, the project's: config/settings.toml) |
+
+| Result | |
+|---|---|
+| `records` | records |
+| `columns` | each column of the file: column, filled, example |
+| `fields` | each field: field, sources, filled, example, looks_right, and each of its alternatives (columns, found, filled, example, looks_right) |
+| `fit` | for each field, each column's fit: the share of its values that look like the field (id: filled, each value once) |
+| `suggested` | for each field the file holds none of: field, column, why |
+| `notes` | what the reader detected or fixed |
+| `next` | the commands that usually follow |
+
+```bash
+nayose describe records customers.parquet --workspace workspaces/acme
 ```
 
 ## nayose check records
