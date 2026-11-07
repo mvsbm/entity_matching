@@ -30,7 +30,7 @@ import pandas as pd
 from er import folder, inbox
 from er.config import InputError, adjust, load_pipeline, sources_text, widen
 from er.folder import Busy
-from er.report import applied, describe_entity, describe_matching, describe_method, describe_workspace, fill_rates
+from er.report import applied, describe_entity, describe_matching, describe_method, describe_workspace, fill_rates, trust_state
 from er.source import describe, lexicon
 from er.run import Run, trial
 from er.settings import (COLUMNS, SPECIAL, add_feature, added_of, beside, columns_file, features_of, load_settings, offers, own_columns,
@@ -469,6 +469,28 @@ def reset_method(a: dict, emit: "Emit") -> dict:
     return adopt(a, emit, {})
 
 
+def lower_trust(a: dict, emit: "Emit") -> dict:
+    s, p, _ = setup(a)
+    ws = Path(a["workspace"])
+    state = trust_state(duckdb.connect(), ws, p, s.data.unique_id) if (ws / "gold.parquet").exists() else None
+    if state is None:
+        raise InputError(f"{ws} has no trust line: it merges as tuned", fix="start one, and nothing merges before people check: nayose raise trust --workspace …")
+    if not state["may_lower"]:
+        span = state["next"]
+        raise InputError(f"the range below the line isn't proven yet: {state['checked']:,} of {state['needed']:,} checked, {state['false']:,} found false"
+                         if span else "the trust line is at its last step", fix="check the range's pairs: nayose list pairs --workspace … --open" if span else "")
+    return adopt(a, emit, {**folder.method(ws), "trust": state["next"]["down_to"]})
+
+
+def raise_trust(a: dict, emit: "Emit") -> dict:
+    s, p, _ = setup(a)
+    ws, line = Path(a["workspace"]), p.trust.line
+    if line is not None and math.isinf(line):
+        raise InputError("the trust line is above every step already: nothing merges before people check", fix="")
+    up = [x for x in p.trust.steps if line is not None and x > line]
+    return adopt(a, emit, {**folder.method(ws), "trust": min(up) if up else "none"})
+
+
 def draw_pairs(a: dict, emit: "Emit") -> dict:
     s, p, _ = setup(a)
     out, count = Path(a["workspace"]), int(number(a.get("count") or "50", "--count"))
@@ -477,8 +499,10 @@ def draw_pairs(a: dict, emit: "Emit") -> dict:
 
 
 def describe_workspace_(a: dict, emit: "Emit") -> dict:
-    s, out = settings_for(a), Path(a["workspace"])
+    s, p, _ = setup(a)
+    out = Path(a["workspace"])
     d = describe_workspace(duckdb.connect(), out, s.data.unique_id)
+    d["trust"] = trust_state(duckdb.connect(), out, p, s.data.unique_id) if d["records"] else None
     files = folder.loaded(out)
     then = (next_after(out, s.data.unique_id)[:-1] + [dict(command=nayose("describe", "entity", "<record ID>", "--workspace", out),
                                                            why="one record's entity, and what joined it")] if d["records"] else
@@ -593,6 +617,8 @@ def open_ui(a: dict, emit: "Emit") -> dict:
 INPUT = Param("input", "the records: a Parquet file, a quoted glob ('in/*.parquet') or a folder of them, read together by column name",
               "path", positional=True)
 WORKSPACE = Param("workspace", "the workspace: the folder that keeps one matching job", "path", required=True)
+TRUST = ("the trust line (none: the method as tuned): line (none: above every step), next (the range checked next: down_to, "
+         "up_to), its pairs, checked, false, needed, may_lower; above (the pairs above the line: pairs, checked, false); checks")
 OWN = Param("workspace", "a workspace, for its own mapping (without it, the project's: config/settings.toml)", "path")
 GIVEN = replace(INPUT, help=INPUT.help + "; copied into the workspace first. Without it, the file loaded into it last", optional=True)
 HOME = Param("home", "the folder that holds the workspaces (default: workspaces, in the current folder)", "path")
@@ -707,8 +733,9 @@ COMMANDS: tuple[Command, ...] = (
             "nayose set columns phone=TEL4 person_name=NAME_KANA,SEI+MEI --workspace workspaces/acme", set_columns_, quick=True),
     Command("resolve", "records", "Resolve a file: one ID per person or company",
             "A full run, without labels: load, budget, fit, rules, candidates, score, cluster, write, report. Writes the "
-            "workspace: gold.parquet, matches/, rule_kept/, set_aside/, state/, steps.json, and for people qa.md, report.txt, "
-            "review.parquet and kind_review.parquet. A folder that holds a run is refused without --overwrite; people's "
+            "workspace: gold.parquet, matches/, rule_kept/, proposed/, set_aside/, state/, steps.json, and for people qa.md, "
+            "report.txt, review.parquet and kind_review.parquet. With a trust line (method.toml trust), only pairs scoring at "
+            "or above it join; the rest wait for people. A folder that holds a run is refused without --overwrite; people's "
             "decisions and answers in it stand. O(N·L + ΣP + C·K·L²).",
             (GIVEN, WORKSPACE, Param("overwrite", "replace the results it holds", "flag"), PIPELINE,
              Param("model", "a fitted model to score with instead of fitting one on the file (its JSON, or the file that holds it under 'model')", "path"),
@@ -733,13 +760,14 @@ COMMANDS: tuple[Command, ...] = (
             (WORKSPACE, PIPELINE, COMPUTE), RUN_RESULT, "nayose rerun records --workspace workspaces/customers", rerun_records),
     Command("describe", "workspace", "What a workspace holds",
             "Records and entities, the largest entities, each run so far, the pairs and kinds still open and the answers written "
-            "in, records set aside, a write still owed, the last summary, and the round with its audits. O(N) in SQL.",
-            (Param("workspace", "the workspace", "path", positional=True),),
+            "in, records set aside, a write still owed, the last summary, the round with its audits, and the trust line. O(N) in SQL.",
+            (Param("workspace", "the workspace", "path", positional=True), PIPELINE),
             {"workspace": "the workspace", "records": "records", "entities": "entities", "largest": "the 10 largest entities",
              "runs": "each run so far: at, what, files, seconds", "pairs": "open pairs to decide and audit, and decisions written in",
              "kinds": "open records to decide and to measure, and answers written in", "set_aside": "records set aside",
              "write_owed": "a write cut short, finished by the next one", "summary": "the last run's summary",
              "round": "the round now: one per method the workspace ran (rounds.json)", "audits": "this round's audits people decided: checked, false",
+             "trust": TRUST,
              "inputs": "the records files given to it, each in inputs/: name, path, files, bytes, read (by a run)",
              "columns": "own: its columns.toml; project: config/settings.toml's", "next": "the commands that usually follow"},
             "nayose describe workspace workspaces/customers", describe_workspace_, quick=True,
@@ -781,7 +809,7 @@ COMMANDS: tuple[Command, ...] = (
              "rules": "name, pairs, below (scored below the line), different (people said)",
              "keys": "name, pairs, seconds, matched, only (links no other key found)",
              "steps": "comparison, level, bits, reached", "proposals": "change (method.toml keys), why",
-             "trials": "the trials kept (the last 5), as try method gave them", "next": "the commands that usually follow"},
+             "trials": "the trials kept (the last 5), as try method gave them", "trust": TRUST, "next": "the commands that usually follow"},
             "nayose describe method --workspace workspaces/customers", describe_method_, quick=True,
             show={"rounds": ("round", "matched", "audited", "false_found", "expected_false"), "bands": (), "decided": (),
                   "rules": ("name", "pairs", "below", "different"), "keys": ("name", "pairs", "seconds", "matched", "only"),
@@ -816,6 +844,17 @@ COMMANDS: tuple[Command, ...] = (
             "Removes the workspace's method.toml, then runs the workspace's files again, as rerun records does; method.toml "
             "is left as it was if the run fails. O(a full run).",
             (WORKSPACE, PIPELINE, COMPUTE), RUN_RESULT, "nayose reset method --workspace workspaces/customers", reset_method),
+    Command("lower", "trust", "Merge the next range of scores without people, once its sample is clean",
+            "The trust line (the workspace's method.toml trust): pairs scoring at or above it merge without people. It steps "
+            "down one range ([trust] steps) once people answered checks pairs of that range (or all of them), drawn at "
+            "random, and found none false: at most 1% false at 95% for 300. Refused before then. Then runs the workspace's "
+            "files again with the new line, as rerun records does; method.toml is left as it was if the run fails. O(a full run).",
+            (WORKSPACE, PIPELINE, COMPUTE), RUN_RESULT, "nayose lower trust --workspace workspaces/customers", lower_trust),
+    Command("raise", "trust", "Take a range of scores back to people",
+            "Raises the trust line one step (or starts one, above every step, on a workspace without: nothing then merges "
+            "before people check), then runs the workspace's files again; method.toml is left as it was if the run fails. "
+            "For when a spot-check above the line finds a false link. O(a full run).",
+            (WORKSPACE, PIPELINE, COMPUTE), RUN_RESULT, "nayose raise trust --workspace workspaces/customers", raise_trust),
     Command("draw", "pairs", "More links on the review sheet, to audit",
             "Adds audit rows to review.parquet: links, the model's and the rules', that people have not decided and the sheet "
             "does not hold, spread evenly over 1-bit weight bands, a rule's pairs scored as the model scores them. No false "

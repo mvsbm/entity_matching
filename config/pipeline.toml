@@ -173,6 +173,11 @@ max_fp = 0
 max_fp_rate_hi = 0.05
 margin_steps = 1
 
+[trust]                           # a workspace's trust line (its method.toml trust): pairs scoring at or above it merge without people
+steps = [20.0, 12.0, 8.0, 6.0, 0.0]   # bits, high to low: the line steps down one range at a time; none set: the method as tuned
+checks = 300                      # answers on the next range down, none false, before the line may step down: ≤1% false at 95%
+watch = 20                        # spot-checks a run of the pairs above the line
+
 [selection]
 cv_folds = 3                      # entity folds of train, for out-of-fold scores
 cv_seed = 0

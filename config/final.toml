@@ -164,6 +164,11 @@ max_fp = 0
 max_fp_rate_hi = 0.05
 margin_steps = 1
 
+[trust]
+steps = [20.0, 12.0, 8.0, 6.0, 0.0]
+checks = 300
+watch = 20
+
 [selection]
 cv_folds = 3
 cv_seed = 0

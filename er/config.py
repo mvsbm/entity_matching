@@ -1,6 +1,7 @@
 """Typed, frozen configuration, loaded from config/pipeline.toml (load_pipeline) and written back (dump_pipeline).
 Everything is in field names (config/settings.toml [columns]); nothing here names a file's column."""
 import json
+import math
 import re
 import tomllib
 from collections.abc import Iterable, Iterator, Mapping
@@ -339,6 +340,24 @@ class ThresholdRule:
     margin_steps: int
 
 
+@dataclass(frozen=True, kw_only=True)
+class TrustRule:
+    """The trust line: pairs scoring at or above it merge without people, because a random sample of their range came
+    back clean. It starts above every step (no line: nothing merges) and is lowered a step at a time, once `checks`
+    answers on the next range down hold none false: at most 1% false at 95% for 300 (the rule of three). `line` is the
+    workspace's (method.toml trust, through adjust): inf, nothing merges; None, no trust line, the method as tuned."""
+    steps: tuple[float, ...] = (20.0, 12.0, 8.0, 6.0, 0.0)  # bits, high to low; a rule pair below the last never merges by itself
+    checks: int = 300
+    watch: int = 20                           # spot-checks a run of the pairs above the line
+    line: float | None = None
+
+    def below(self) -> tuple[float, float] | None:  # the range people check next: [the next step down, the line); None at the last
+        if self.line is None:
+            return None
+        lower = [s for s in self.steps if s < self.line]
+        return (max(lower), self.line) if lower else None
+
+
 @dataclass(frozen=True)
 class Candidate:
     function: Function
@@ -424,6 +443,7 @@ class Pipeline:
     explain_filled: tuple[str, ...]
     fit_rows: int = 30_000                    # an unlabelled run fits on a sample of this many records (er.run)
     kind: KindSpec | None = None              # person or company, on every record; None: not told apart
+    trust: TrustRule = TrustRule()            # what merges without people (er.run._accept)
 
 
 def _norm(value: object, chains: Mapping[str, tuple[Normalizer, ...]]) -> tuple[Normalizer, ...]:
@@ -498,7 +518,8 @@ def pipeline_from(cfg: dict, std: Standardization, chains: Mapping[str, tuple[No
                                             margin_steps=t["margin_steps"]),
                     cv_folds=sel["cv_folds"], cv_seed=sel["cv_seed"], decision_p=sel["decision_p"],
                     explain_show=tuple(d["explain_show"]), explain_filled=tuple(d["explain_filled"]), fit_rows=m.get("fit_rows", 30_000),
-                    kind=KindSpec(**{k: tuple(v) if k == "grid" else v for k, v in cfg["kind"].items()}) if "kind" in cfg else None)
+                    kind=KindSpec(**{k: tuple(v) if k == "grid" else v for k, v in cfg["kind"].items()}) if "kind" in cfg else None,
+                    trust=TrustRule(**{k: tuple(map(float, v)) if k == "steps" else v for k, v in cfg.get("trust", {}).items()}))
 
 
 def widen(p: "Pipeline", added: Iterable[tuple[str, str]]) -> "Pipeline":
@@ -536,21 +557,25 @@ def widen(p: "Pipeline", added: Iterable[tuple[str, str]]) -> "Pipeline":
                    fs=replace(p.fs, model=model, blockers=p.fs.blockers + tuple(c for b in p.fs.blockers for c in copies.get(b.name, ()))))
 
 
-METHOD_KEYS = ("line", "drop_rules", "drop_keys")
+METHOD_KEYS = ("line", "drop_rules", "drop_keys", "trust")
 
 
 def adjust(p: "Pipeline", method: Mapping[str, object]) -> "Pipeline":
     """The pipeline with a workspace's changes to the tuned method (method.toml): `line`, the weight pairs are accepted
     at; `drop_rules`, sure-match rules left out; `drop_keys`, pair keys left out, each with the copies widen made of it
-    (name@field). Nothing changed: the same pipeline, so the same config hash. O(rules + generators)."""
+    (name@field); `trust`, the trust line (TrustRule): "none" (nothing merges without people) or one of its steps.
+    Nothing changed: the same pipeline, so the same config hash. O(rules + generators)."""
     if not method:
         return p
     fix = "correct method.toml in the workspace, or go back to the tuned method: nayose reset method --workspace …"
     if unknown := set(method) - set(METHOD_KEYS):
         raise InputError(f"method.toml: unknown keys {sorted(unknown)}; it takes {', '.join(METHOD_KEYS)}", fix)
     line = method.get("line", p.fs.min_match_weight)
-    if isinstance(line, bool) or not isinstance(line, int | float) or not all(isinstance(method.get(k, []), list) for k in METHOD_KEYS[1:]):
+    if isinstance(line, bool) or not isinstance(line, int | float) or not all(isinstance(method.get(k, []), list) for k in METHOD_KEYS[1:3]):
         raise InputError("method.toml: line is a weight in bits, drop_rules and drop_keys lists of names", fix)
+    trust = method.get("trust")
+    if trust is not None and trust != "none" and (isinstance(trust, bool) or not isinstance(trust, int | float) or float(trust) not in p.trust.steps):
+        raise InputError(f'method.toml: trust is "none" or one of the steps {list(p.trust.steps)}', fix)
     rules, keys = set(method.get("drop_rules", ())), set(method.get("drop_keys", ()))
     if bad := (rules - {r.name for _, _, r in p.rules.each()}) | (keys - {b.name for b in p.fs.blockers}):
         raise InputError(f"method.toml: no rule or pair key named {sorted(bad)}", fix)
@@ -558,8 +583,8 @@ def adjust(p: "Pipeline", method: Mapping[str, object]) -> "Pipeline":
     blockers = tuple(b for b in p.fs.blockers if b.name not in keys and b.name.split("@")[0] not in keys)
     if not stages or not blockers:
         raise InputError(f"method.toml leaves no {'sure-match rule' if not stages else 'pair key'}", fix)
-    return replace(p, rules=replace(p.rules, stages=stages),
-                   fs=replace(p.fs, blockers=blockers, min_match_weight=float(line)))
+    return replace(p, rules=replace(p.rules, stages=stages), fs=replace(p.fs, blockers=blockers, min_match_weight=float(line)),
+                   trust=p.trust if trust is None else replace(p.trust, line=math.inf if trust == "none" else float(trust)))
 
 
 def load_pipeline(path: Path, std: Standardization, chains: Mapping[str, tuple[Normalizer, ...]],
@@ -699,6 +724,7 @@ def pipeline_dict(p: Pipeline, chains: Mapping[str, tuple[Normalizer, ...]]) -> 
                                                **({"tf": True} if lv.tf else {})} for lv in c.levels]} for c in m.comparisons]},
         **({"kind": {k: list(v) if k == "grid" else v for k, v in vars(p.kind).items()}} if p.kind else {}),
         "threshold": {"grid": list(t.grid), "max_fp": t.max_fp, "max_fp_rate_hi": t.max_fp_rate_hi, "margin_steps": t.margin_steps},
+        "trust": {"steps": list(p.trust.steps), "checks": p.trust.checks, "watch": p.trust.watch},  # its line is the workspace's
         "selection": {"cv_folds": p.cv_folds, "cv_seed": p.cv_seed, "decision_p": p.decision_p},
         "display": {"explain_show": list(p.explain_show), "explain_filled": list(p.explain_filled)},
     }

@@ -63,7 +63,7 @@ from er.config import InputError, Pipeline
 from er.io import code_version, config_hash, markdown
 from er.kind import NAME_MODEL, classifier as kind_classifier, kind_review_sheet, merge_answers
 from er.match import ELSE, named_sql, refreshed_u, review_floor, rule_edges, score_fs, scored_u, train_fs, u_basis
-from er.report import applied, qa, report_text, review_sheet, scored_again
+from er.report import applied, bits, qa, report_text, review_sheet, scored_again
 from er.settings import SPECIAL, Settings, fit_to_file, present_fields
 from er.source import answers, decisions, file_facts, known, lit, open_source, suggest
 from er.standardize import prepare
@@ -332,14 +332,21 @@ class Run:
 
     def _rules(self, batch: str | None = None) -> None:
         """The rules' pairs (er.match.rule_edges: every record, or a batch against all), less the values each rule
-        doesn't trust (_untrusted), then the cascade into rule_clusters, which the caller starts: a stage's pair is kept
-        only if it touches a record still unresolved, and merged in (er.cluster.merge)."""
+        doesn't trust (_untrusted), each scored by the model too (rule_scores: what the trust line and the review sheet
+        read), then the cascade into rule_clusters, which the caller starts: a stage's pair is kept only if it touches a
+        record still unresolved, and merged in (er.cluster.merge). The rule clusters steer the candidates; what merges
+        into customers is _accept's."""
         l, r, rules = q(self.l), q(self.r), self.pipeline.rules
         trust = {}
         for i, st, rule in rules.each():
             if (untrusted := self._untrusted(i, rule.name, st.keys(rule), within=batch)):
                 trust[i] = f"NOT EXISTS (SELECT 1 FROM {untrusted} z WHERE {' AND '.join(f'z.{q(c)} = l.{q(c)}' for c in st.keys(rule))})"
         _, self.rule_seconds = rule_edges(rules, "records", self.db, self.uid, batch=batch, trust=trust, into="rule_edges")
+        if self.scoring is None:  # design time measures the rules alone, before any model is fitted: no trust line reads them
+            self.con.execute("CREATE OR REPLACE TABLE rule_edges AS SELECT *, NULL::DOUBLE AS match_weight FROM rule_edges")
+        else:
+            score_fs(self.scoring, "records", "rule_edges", self.db, self.uid, into="rule_scores", n_records=self._count("records"))  # O(R·K)
+            self.con.execute(f"CREATE OR REPLACE TABLE rule_edges AS SELECT e.*, s.match_weight FROM rule_edges e JOIN rule_scores s USING ({l}, {r})")
         self.con.execute("CREATE OR REPLACE TABLE rule_kept AS SELECT * FROM rule_edges WHERE FALSE")
         for st in rules.stages:
             done = self._resolved("rule_clusters")
@@ -403,47 +410,52 @@ class Run:
             JOIN rule_clusters a ON a.{u} = s.{l} JOIN rule_clusters b ON b.{u} = s.{r}"""
 
     def _accept(self) -> None:
-        """matches: the scored pairs at the threshold or above that are named and kept (scored), less those people
-        decided are no match; kept: those, the rules' pairs, and the pairs people decided are a match (er_decisions,
-        loaded by full() from the workspace; empty otherwise)."""
-        fs, l, r = self.pipeline.fs, q(self.l), q(self.r)
+        """What merges into customers (kept): the rules' pairs and the model's (matches), less the pairs people decided
+        are no match, and the pairs they decided are a match (er_decisions, loaded by full() from the workspace; empty
+        otherwise). With no trust line (TrustRule.line None), every rule pair and the model's named and kept pairs
+        (scored) at its threshold or above; with one, only the pairs scoring at or above the line, the rules' and the
+        model's alike: the rest wait for people, the model's in proposed. rule_kept says which of its pairs merged."""
+        fs, l, r, line = self.pipeline.fs, q(self.l), q(self.r), self.pipeline.trust.line
         self.con.execute(f"CREATE TABLE IF NOT EXISTS er_decisions ({l} VARCHAR, {r} VARCHAR, decision VARCHAR)")
-        self.con.execute(f"""CREATE OR REPLACE TABLE matches AS
-            SELECT s.{l}, s.{r}, s.match_weight, s.match_probability, s.sources FROM ({self.scored()}) s
-            WHERE s.match_weight >= {fs.min_match_weight} AND s.named AND s.keep
-              AND NOT EXISTS (SELECT 1 FROM er_decisions d WHERE d.{l} = s.{l} AND d.{r} = s.{r} AND d.decision = 'no_match')""")
-        self.con.execute(f"""CREATE OR REPLACE TABLE kept AS SELECT {l}, {r} FROM rule_kept UNION ALL SELECT {l}, {r} FROM matches
+        no = lambda x: f"NOT EXISTS (SELECT 1 FROM er_decisions d WHERE d.{l} = {x}.{l} AND d.{r} = {x}.{r} AND d.decision = 'no_match')"
+        model = f"SELECT s.{l}, s.{r}, s.match_weight, s.match_probability, s.sources FROM ({self.scored()}) s WHERE s.named AND s.keep"
+        at = fs.min_match_weight if line is None else line
+        self.con.execute(f"CREATE OR REPLACE TABLE matches AS SELECT * FROM ({model}) s WHERE s.match_weight >= {bits(at)} AND {no('s')}")
+        self.con.execute(f"""CREATE OR REPLACE TABLE proposed AS SELECT * FROM ({model}) s WHERE s.match_weight < {bits(at)}
+            AND s.match_weight >= {bits(min(self.pipeline.trust.steps)) if line is not None else bits(at)}""")  # with a line only: the pairs people may check
+        self.con.execute(f"""CREATE OR REPLACE TABLE rule_kept AS SELECT k.* EXCLUDE (merged), ({'TRUE' if line is None else f'k.match_weight >= {bits(line)}'})
+            AND {no('k')} AS merged FROM (SELECT *, NULL AS merged FROM rule_kept) k""")
+        self.con.execute(f"""CREATE OR REPLACE TABLE kept AS SELECT {l}, {r} FROM rule_kept WHERE merged UNION ALL SELECT {l}, {r} FROM matches
             UNION ALL SELECT {l}, {r} FROM er_decisions WHERE decision = 'match'""")
 
     def _gold(self, old: str | None = None) -> None:
-        """Each record's cluster, and what resolved it: if the rules put it in a cluster, the first rule (in rule order)
-        among its kept rule pairs; else the model, if one of its pairs was accepted; else people (review), if a pair
+        """Each record's cluster, and what resolved it: if a rule pair of it merged, the first rule (in rule order)
+        among those; else the model, if one of its pairs was accepted; else people (review), if a pair
         they decided joined it. An increment passes the stored gold as `old`, whose answers stand."""
         fs, l, r, u = self.pipeline.fs, q(self.l), q(self.r), q(self.uid)
         order = " ".join(f"WHEN '{rule.name}' THEN {i}" for i, _, rule in self.pipeline.rules.each())
-        stage = f"CASE WHEN rz.n > 1 THEN '{fs.previous_stage}' WHEN m.id IS NOT NULL THEN '{fs.stage}' WHEN z.n > 1 THEN 'review' END"
-        by = f"CASE WHEN rz.n > 1 THEN f.rule WHEN m.id IS NOT NULL THEN '{fs.model.name}' WHEN z.n > 1 THEN 'review' END"
+        stage = f"CASE WHEN f.id IS NOT NULL THEN '{fs.previous_stage}' WHEN m.id IS NOT NULL THEN '{fs.stage}' WHEN z.n > 1 THEN 'review' END"
+        by = f"CASE WHEN f.id IS NOT NULL THEN f.rule WHEN m.id IS NOT NULL THEN '{fs.model.name}' WHEN z.n > 1 THEN 'review' END"
         if old:
             stage, by = f"coalesce(o.resolved_stage, {stage})", f"coalesce(o.resolved_by, {by})"
         kinds = "kind" in self.columns()  # each record's kind, and its customer's (customer_kinds)
         self.con.execute(f"""CREATE OR REPLACE TABLE gold AS
-            WITH touch AS (SELECT {l} AS id, rule FROM rule_kept UNION ALL SELECT {r}, rule FROM rule_kept),
+            WITH touch AS (SELECT {l} AS id, rule FROM rule_kept WHERE merged UNION ALL SELECT {r}, rule FROM rule_kept WHERE merged),
                  first AS (SELECT id, arg_min(rule, CASE rule {order} END) AS rule FROM touch GROUP BY id),
-                 rsize AS (SELECT cluster_id, count(*) AS n FROM rule_clusters GROUP BY 1),
                  size AS (SELECT cluster_id, count(*) AS n FROM clusters GROUP BY 1),
                  matched AS (SELECT {l} AS id FROM matches UNION SELECT {r} FROM matches)
                  {f", customer AS ({customer_kinds('clusters', 'records', u)})" if kinds else ""}
             SELECT k.{u}, k.cluster_id, {stage} AS resolved_stage, {by} AS resolved_by{", x.kind, x.kind_p, x.kind_by, x.kind_held, c.customer_kind" if kinds else ""}
-            FROM clusters k JOIN size z USING (cluster_id) JOIN rule_clusters rc USING ({u}) JOIN rsize rz ON rz.cluster_id = rc.cluster_id
-                 LEFT JOIN first f ON f.id = k.{u} LEFT JOIN matched m ON m.id = k.{u} {f"LEFT JOIN {old} o USING ({u})" if old else ""}
+            FROM clusters k JOIN size z USING (cluster_id) LEFT JOIN first f ON f.id = k.{u} LEFT JOIN matched m ON m.id = k.{u} {f"LEFT JOIN {old} o USING ({u})" if old else ""}
                  {f"JOIN records x USING ({u}) JOIN customer c USING (cluster_id)" if kinds else ""}
             ORDER BY k.{u}""")
 
     def cluster(self) -> None:
-        """Accept at min_match_weight, then cluster every kept pair, the rules' and these; then gold."""
+        """Accept (_accept), then cluster every kept pair from single records; then gold."""
         t = time.perf_counter()
         self._accept()
-        merge(self.con, self.db, "rule_clusters", "kept", "clusters", self.uid)
+        self.con.execute(f"CREATE OR REPLACE TABLE er_single AS SELECT {q(self.uid)}, {q(self.uid)} AS cluster_id FROM records")
+        merge(self.con, self.db, "er_single", "kept", "clusters", self.uid)
         self._gold()
         e = self._count("matches")
         self._done("cluster", "O(C + E·d + N)", f"O({self._count('scores'):,} + {e:,}·d + {self.n:,})", t, accepted=e,
@@ -454,7 +466,8 @@ class Run:
 
     def write(self, out: Path, part: int = 0, replace: list[Path] | None = None, report: tuple[str | Path, Path] | None = None) -> None:
         """Gold (each record's cluster, the stage and rule that resolved it, its kind and its customer's), the accepted
-        pairs with their weights, the rules' pairs, as Parquet; and the state an increment needs: the standardized
+        pairs with their weights, the rules' pairs (with their weights, and whether each merged), with a trust line the
+        model's pairs left to people (proposed), as Parquet; and the state an increment needs: the standardized
         records, the rules' clusters and people's person/company answers. Records, rules' pairs and matches are folders
         that increments append to. `replace` (a full run): the old run's files, which the new ones replace. `report`
         (the input and the pipeline file): the reports for people (report()), built first and written with these files.
@@ -472,6 +485,7 @@ class Run:
             self.con.register("er_given", self.given)
             sheets.append(("SELECT * FROM er_given", out / folder.KIND_ANSWERS / f"part-{n:05d}.parquet"))
         folder.stage(self.con, out, [("SELECT * FROM rule_kept", out / "rule_kept" / name), ("SELECT * FROM matches", out / "matches" / name),
+                                     ("SELECT * FROM proposed", out / "proposed" / name),
                                      (f"SELECT * FROM gold ORDER BY {q(self.uid)}", out / "gold.parquet"),
                                      ("SELECT * FROM rule_clusters", state / "rule_clusters.parquet"),
                                      (f"SELECT * FROM {'records' if part == 0 else 'new_records'}", state / "records" / name), *aside, *sheets],
@@ -531,7 +545,7 @@ class Run:
         u = q(self.uid)
         if self._join(path, out):
             self.con.execute(f"""CREATE OR REPLACE TABLE er_match AS WITH
-                ends AS (SELECT {q(self.l)} AS id, rule, NULL::DOUBLE AS w FROM rule_kept UNION ALL SELECT {q(self.r)}, rule, NULL FROM rule_kept
+                ends AS (SELECT {q(self.l)} AS id, rule, NULL::DOUBLE AS w FROM rule_kept WHERE merged UNION ALL SELECT {q(self.r)}, rule, NULL FROM rule_kept WHERE merged
                          UNION ALL SELECT {q(self.l)}, 'fs', match_weight FROM matches UNION ALL SELECT {q(self.r)}, 'fs', match_weight FROM matches),
                 best AS (SELECT id, arg_max(rule, coalesce(w, 1e9)) AS by, max(w) AS weight FROM ends GROUP BY 1),
                 old AS (SELECT DISTINCT g.cluster_id FROM gold g JOIN gold_old o USING ({u}))
@@ -691,11 +705,13 @@ class Run:
             folder.finish_writes(out)
             if not sheet.exists():
                 raise InputError(f"no review sheet in {out}", fix="find matches first: nayose resolve records --workspace …")
-            self.con.execute(f"CREATE OR REPLACE TABLE er_rule AS SELECT {l}, {r}, min(rule) AS rule FROM {read('rule_kept/*.parquet')} GROUP BY ALL")
+            self.con.execute(f"""CREATE OR REPLACE TABLE er_rule AS SELECT {l}, {r}, min(rule) AS rule FROM {read('rule_kept/*.parquet')}
+                WHERE coalesce(merged, TRUE) GROUP BY ALL""")  # a part written before merged was: every pair merged
             scored_again(self.con, self.db, out, self.uid, "er_rule", "er_rule_scores")
             self.con.execute(f"""CREATE OR REPLACE TABLE matches AS SELECT {l}, {r}, match_weight, match_probability, sources FROM {read('matches/*.parquet')}
                 UNION ALL SELECT x.{l}, x.{r}, s.match_weight, s.match_probability, x.rule FROM er_rule x JOIN er_rule_scores s USING ({l}, {r})
                 WHERE NOT EXISTS (SELECT 1 FROM {read('matches/*.parquet')} m WHERE m.{l} = x.{l} AND m.{r} = x.{r})""")
+            self.con.execute(f"CREATE OR REPLACE TABLE kept AS SELECT {l}, {r} FROM matches")  # what review_sheet says merged
             self.con.register("er_sheet", pd.read_parquet(sheet, columns=[self.l, self.r]))
             asked = [f"SELECT {l}, {r} FROM er_sheet"] + ([f"SELECT {l}, {r} FROM {read(folder.DECISIONS + '/part-*.parquet')}"]
                                                          if any((out / folder.DECISIONS).glob("part-*.parquet")) else [])
@@ -773,7 +789,7 @@ def trial(ws: Path, base: Pipeline, variant: Pipeline, method: dict, s: Settings
         run.labels = run._answers(ws)
         run.resolve(files, None)
         gold = run.con.execute(f"SELECT {q(uid)}, cluster_id FROM gold").df()
-        numbers = dict(matched=run._count("matches"), expected_false=run._expected_false(), rule_pairs=run._count("rule_kept"),
+        numbers = dict(matched=run._count("matches"), expected_false=run._expected_false(), rule_pairs=run._count("rule_kept WHERE merged"),
                        entities=int(gold["cluster_id"].nunique()))
         run.con.close()
         return gold, numbers
