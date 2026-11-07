@@ -254,13 +254,20 @@ def logged_runs(tmp: Path) -> tuple:
 
 # ---------- the checks ----------
 
-def test_the_components_diagram_holds_every_module_once_and_draws_the_imports_between_its_layers():
-    elements, edges, _ = parse("components")
+def layers() -> dict[str, str]:
+    """Each module's box in components.puml: its layer."""
+    elements, _, _ = parse("components")
     layer = {}
     for eid, (_, label) in elements.items():
         for f in re.findall(r"\b(?:er|scripts)/\w+\.py", label):
             assert f not in layer, f"{f} is in two boxes of components.puml: {layer[f]}, {eid}"
             layer[f] = eid
+    return layer
+
+
+def test_the_components_diagram_holds_every_module_once_and_draws_the_imports_between_its_layers():
+    _, edges, _ = parse("components")
+    layer = layers()
     files = {f"er/{m}.py" for m in MODULES} | {str(f.relative_to(ROOT)) for f in (ROOT / "scripts").glob("*.py")}
     assert files == set(layer), f"components.puml: modules to place {sorted(files - set(layer))}, to remove {sorted(set(layer) - files)}"
     code = {(layer[a], layer[b]) for a, b in imports() if layer[a] != layer[b]}
@@ -272,7 +279,7 @@ def test_the_components_diagram_holds_every_module_once_and_draws_the_imports_be
 
 
 def test_every_path_and_function_a_diagram_or_a_doc_names_exists():
-    texts = {f.relative_to(ROOT): f.read_text(encoding="utf-8") for f in [*DIAGRAMS.glob("*.puml"), *(ROOT / "docs").rglob("*.md"), ROOT / "README.md"]}
+    texts = {f.relative_to(ROOT): f.read_text(encoding="utf-8") for f in [*DIAGRAMS.glob("*.puml"), *(ROOT / "docs").rglob("*.md"), ROOT / "README.md", ROOT / "CONTRIBUTING.md"]}
     missing_paths, missing_names = set(), set()
     for f, text in texts.items():
         text = re.sub(r"</?(?:b|i|u|size|color|font)(?::[^>]*)?>", "", text)  # PlantUML's formatting, not part of a path
@@ -362,3 +369,67 @@ def test_the_commands_reference_is_the_declarations():
     from er.cli import reference
     assert (ROOT / "docs" / "commands.md").read_text(encoding="utf-8") == reference() + "\n", \
         "docs/commands.md differs from er/cli.py's declarations: .venv/bin/python scripts/document_commands.py"
+
+
+# ---------- the engineering rules (CONTRIBUTING.md) that code can check ----------
+
+def calls(tree: ast.AST) -> list[tuple[str, int]]:  # every call, by its dotted name: print, sys.exit, contextlib.redirect_stderr
+    def name(f: ast.expr) -> str:
+        return f.id if isinstance(f, ast.Name) else f"{name(f.value)}.{f.attr}" if isinstance(f, ast.Attribute) else ""
+    return [(name(n.func), n.lineno) for n in ast.walk(tree) if isinstance(n, ast.Call)]
+
+
+def test_code_nayose_runs_never_prints_or_exits():
+    """Rule 1, errors are values: the command line (er/cli.py) owns the terminal; the code its commands run raises
+    InputError or returns, since nayose open ui runs it in threads of a long-lived server."""
+    runs = {f for f, box in layers().items() if f.startswith("er/") and box in ("tools_run", "run", "steps", "configuration")} - {"er/cli.py"}
+    found = []
+    for f in sorted(runs):
+        tree = ast.parse((ROOT / f).read_text(encoding="utf-8"))
+        found += [f"{f}:{line} {c}" for c, line in calls(tree) if c in ("print", "exit", "quit", "sys.exit", "os._exit")]
+        found += [f"{f}:{n.lineno} raise SystemExit" for n in ast.walk(tree) if isinstance(n, ast.Raise) and "SystemExit" in ast.unparse(n)]
+    assert not found, f"print or exit outside er/cli.py: {found}"
+
+
+def test_no_code_in_er_changes_process_wide_state():
+    """Rule 2: the server runs commands in threads, which share the process's streams, working folder and environment."""
+    banned_calls = ("redirect_stdout", "redirect_stderr", "os.chdir", "os.putenv", "os.environ.update", "os.environ.pop",
+                    "os.environ.setdefault", "os.environ.clear", "sys.path.insert", "sys.path.append")
+    found = []
+    for f in sorted((ROOT / "er").glob("*.py")):
+        tree = ast.parse(f.read_text(encoding="utf-8"))
+        found += [f"{f.name}:{line} {c}" for c, line in calls(tree) if c.split(".")[-1] in banned_calls or c in banned_calls]
+        for n in ast.walk(tree):
+            targets = n.targets if isinstance(n, ast.Assign) else [n.target] if isinstance(n, ast.AugAssign) else []
+            found += [f"{f.name}:{n.lineno} {ast.unparse(t)} =" for t in targets
+                      if ast.unparse(t).split("[")[0] in ("sys.stdout", "sys.stderr", "sys.stdin", "sys.argv", "sys.path", "os.environ")]
+    assert not found, f"process-wide state changed in er/: {found}"
+
+
+def test_a_store_that_grows_says_what_bounds_it():
+    """Rule 3: a module-level dict, list or set that code adds to names its bound on the line that makes it
+    (bounded: …), or the limit it doesn't have (shortcut: …)."""
+    found = []
+    for f in sorted((ROOT / "er").glob("*.py")):
+        text = f.read_text(encoding="utf-8")
+        tree, lines = ast.parse(text), text.splitlines()
+        stores = {}
+        for n in tree.body:
+            target, value = (n.targets[0], n.value) if isinstance(n, ast.Assign) else (n.target, n.value) if isinstance(n, ast.AnnAssign) else (None, None)
+            if isinstance(target, ast.Name) and (isinstance(value, ast.Dict | ast.List | ast.Set) or
+                                                 (isinstance(value, ast.Call) and ast.unparse(value.func) in ("dict", "list", "set", "defaultdict", "threading.local"))):
+                stores[target.id] = n.lineno
+        grown = {n.value.id for n in ast.walk(tree) if isinstance(n, ast.Subscript) and isinstance(n.ctx, ast.Store) and isinstance(n.value, ast.Name)}
+        grown |= {c.split(".")[0] for c, _ in calls(tree) if c.split(".")[-1] in ("append", "add", "update", "setdefault", "extend", "insert")}
+        for name, line in stores.items():
+            said = " ".join(lines[line - 1:line + 2])
+            if name in grown and "bounded:" not in said and "shortcut:" not in said:
+                found.append(f"{f.name}:{line} {name}")
+    assert not found, f"stores that grow without saying what bounds them: {found}"
+
+
+def test_the_page_reaches_the_network_through_one_call_that_never_throws():
+    """Rule 5: every request the page makes goes through api(), which turns a lost server into a value."""
+    html = (ROOT / "er" / "ui.html").read_text(encoding="utf-8")
+    api = re.search(r"async function api\(.*?\n}\n", html, re.S)
+    assert html.count("fetch(") == 1 and api and "fetch(" in api.group(0) and "try {" in api.group(0) and "catch" in api.group(0)

@@ -1764,6 +1764,11 @@ def test_the_page_answers_once_per_key_shows_any_row_and_says_when_the_server_is
         page.wait_for_timeout(600)
         assert page.inner_text("#written") == "1" and not page.query_selector("#said .banner")  # one answer, no busy folder
         assert "nayose decide pair" in page.inner_text("#term-body")  # the command line it ran
+        twice = page.evaluate("""async () => {  // the same command asked twice at once runs once
+            const before = document.querySelectorAll("#term-body .cmd").length;
+            await Promise.all([run("pairs", "list pairs"), run("pairs", "list pairs")]);
+            return document.querySelectorAll("#term-body .cmd").length - before; }""")
+        assert twice == 1
         assert page.evaluate("""() => {  // a row far past the table's 500 drawn is drawn once picked
             const box = document.body.appendChild(document.createElement("div"));
             const t = grid(box, Array.from({length: 2000}, (_, n) => ({n})), ["n"], {selected: 0});

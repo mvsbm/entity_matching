@@ -266,9 +266,13 @@ const icon = (name) => `<svg class="ic" viewBox="0 0 24 24" aria-hidden="true">$
 let COMMANDS = {}, current = "records", keyHandler = null;
 const state = {};
 
-async function api(path, body) {
-  const r = await fetch(path, {method: body ? "POST" : "GET", headers: {"X-Token": token, "Content-Type": "application/json"}, body: body ? JSON.stringify(body) : undefined});
-  return r.json();
+async function api(path, body) {  // the page's one network call: a lost server is a value, never a throw
+  try {
+    const r = await fetch(path, {method: body ? "POST" : "GET", headers: {"X-Token": token, "Content-Type": "application/json"}, body: body ? JSON.stringify(body) : undefined});
+    return await r.json();
+  } catch {
+    return {error: "Lost the server: is nayose open ui still running?", fix: "Start it again, then reload this page."};
+  }
 }
 const screen = (id) => LAYOUT.screens.find((s) => s.id === id);
 const use = (id, command) => screen(id).uses.find((u) => u.command === command);
@@ -317,34 +321,38 @@ function snack(html, ms = 0) {
   if (ms) snackTimer = setTimeout(() => { $("snack").hidden = true; }, ms);
 }
 
-// Run one command as the layout places it, its arguments filled from what the person typed or chose. A lost server
-// ends it with an error: the page never waits forever.
-async function run(id, command, extra = {}, onEvent = null) {
-  const quick = COMMANDS[command].quick;
-  let entry = null;
-  try {
-    const started = await api("/api/run", {command, args: argsFor(id, command, extra)});
-    if (started.error) return {event: "error", error: started.error, fix: started.fix};
-    entry = term.add(started.command);
-    if (!quick) snack(`<span class="spin"></span><span class="msg">Running <code>${esc(started.command)}</code></span>`);
-    let from = 0, last = {};
-    for (;;) {
-      const j = await api(`/api/job/${started.job}?from=${from}`);
-      for (const e of j.events) { last = e; if (e.event === "step") entry.step(e); if (onEvent) onEvent(e); }
-      from += j.events.length;
-      if (j.done) {
-        entry.end(last, j.exit);
-        if (!quick) snack(j.exit === 0 ? `${icon("check")}<span class="msg">Done: ${esc(COMMANDS[command].help)}</span>`
-                                       : `${icon("error")}<span class="msg">Failed: ${esc(last.error || `exit ${j.exit}`)}</span><button class="btn" data-term>View</button>`, 6000);
-        return last;
-      }
-      await sleep(quick ? 120 : 300);
+// Run one command as the layout places it, its arguments filled from what the person typed or chose. The same command
+// with the same arguments, asked again while it runs, is that run: a write is never sent twice.
+const inflight = new Map();
+function run(id, command, extra = {}, onEvent = null) {
+  const args = argsFor(id, command, extra), key = JSON.stringify([command, args]);
+  if (!inflight.has(key)) inflight.set(key, runOnce(command, args, onEvent).finally(() => inflight.delete(key)));
+  return inflight.get(key);
+}
+
+async function runOnce(command, args, onEvent) {
+  const quick = COMMANDS[command].quick, failed = (j) => ({event: "error", error: j.error, fix: j.fix || ""});
+  const started = await api("/api/run", {command, args});
+  if (started.error) return failed(started);
+  const entry = term.add(started.command);
+  if (!quick) snack(`<span class="spin"></span><span class="msg">Running <code>${esc(started.command)}</code></span>`);
+  let from = 0, last = {};
+  for (;;) {
+    const j = await api(`/api/job/${started.job}?from=${from}`);
+    if (j.error) {  // the server is gone: the command ends here, the page never waits forever
+      entry.end(failed(j), 1);
+      snack(`${icon("error")}<span class="msg">${esc(j.error)}</span>`, 6000);
+      return failed(j);
     }
-  } catch {
-    const e = {event: "error", error: "Lost the server: is nayose open ui still running?", fix: "Start it again, then reload this page."};
-    if (entry) entry.end(e, 1);
-    snack(`${icon("error")}<span class="msg">${esc(e.error)}</span>`, 6000);
-    return e;
+    for (const e of j.events) { last = e; if (e.event === "step") entry.step(e); if (onEvent) onEvent(e); }
+    from += j.events.length;
+    if (j.done) {
+      entry.end(last, j.exit);
+      if (!quick) snack(j.exit === 0 ? `${icon("check")}<span class="msg">Done: ${esc(COMMANDS[command].help)}</span>`
+                                     : `${icon("error")}<span class="msg">Failed: ${esc(last.error || `exit ${j.exit}`)}</span><button class="btn" data-term>View</button>`, 6000);
+      return last;
+    }
+    await sleep(quick ? 120 : 300);
   }
 }
 

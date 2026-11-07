@@ -27,7 +27,7 @@ from er.settings import Settings
 from er.standardize import prepare
 from er.strings import FUNCTIONS, connect, udf
 
-BENCH: dict[tuple[str, str], float] = {}  # seconds per pair, by (column, function)
+BENCH: dict[tuple[str, str], float] = {}  # seconds per pair, by (column, function); bounded: one per column and function compared
 
 
 def pair_seconds(values: pd.Series, column: str, function: str, n: int) -> float:
