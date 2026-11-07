@@ -730,7 +730,10 @@ def test_the_file_s_contents_say_which_feature_each_column_fills(tmp_path, capsy
         "c1": [f"R{i:06d}" for i in range(n)], "c2": [p["surname_kana"] for p in who], "c3": [p["given_kana"] for p in who],
         "c4": [p["surname_kana"] + " " + p["given_kana"] for p in who], "c5": [p["surname"] + p["given"] for p in who],
         "c6": [f"株式会社{p['surname']}商事" for p in who], "c7": [f"{a['pref']}{a['city']}{a['town']}{rnd.randint(1, 9)}-{rnd.randint(1, 30)}" for a in where],
-        "c8": ["".join(rnd.choice("abcdefgh") for _ in range(6)) for _ in range(n)]}).to_parquet(tmp_path / "theirs.parquet", index=False)
+        "c8": ["".join(rnd.choice("abcdefgh") for _ in range(6)) for _ in range(n)],
+        "c9": [a["postal"] for a in where], "c10": [a["postal"] for a in where],  # a postal code, and a copy of it
+        "c11": [f"{rnd.randint(0, n // 2):010d}" for _ in range(n)],  # an address code: ten digits, shared
+        "c12": [f"{rnd.randrange(10 ** 12, 10 ** 13)}" for _ in range(n)]}).to_parquet(tmp_path / "theirs.parquet", index=False)  # a customer number
     monkeypatch.chdir(tmp_path)
 
     def say(*words: object) -> tuple[int, dict]:
@@ -740,10 +743,13 @@ def test_the_file_s_contents_say_which_feature_each_column_fills(tmp_path, capsy
     say("create", "workspace", "w")
     code, d = say("load", "records", "theirs.parquet", "--workspace", "workspaces/w")
     assert code == 0 and {c: x["script"] for c, x in d["profile"].items()} == {"c1": "romaji", "c2": "kana", "c3": "kana", "c4": "kana", "c5": "kanji",
-                                                                               "c6": "kanji", "c7": "kanji", "c8": "romaji"}
+                                                                               "c6": "kanji", "c7": "kanji", "c8": "romaji", "c9": None, "c10": None,
+                                                                               "c11": None, "c12": None}  # digits: no script
     assert {x["feature"]: x["column"] for x in d["placements"]} == {
         "ID/Record ID": "c1", "Name/Full name": "c4", "Name/Full name/Family name": "c2", "Name/Full name/Given name": "c3",
-        "Name/Company name": "c6", "Address/Address": "c7"}  # the kanji full name (c5) waits for a kanji feature; the random text, nowhere
+        "Name/Company name": "c6", "Address/Address": "c7", "Address/Postal code": "c9", "Address/Address code": "c11", "ID/Customer number": "c12"}
+    # the narrow pattern (a postal code) placed before the broad one (five digits or more), and its copy (c10) nowhere; an ID
+    # mostly unique; the kanji full name (c5) waits for a kanji feature; the random text, nowhere
     code, _ = say("set", "feature", *(f"{x['feature']}={x['column']}" for x in d["placements"]), "--workspace", "workspaces/w")
     m = load_settings(columns=tmp_path / "workspaces" / "w" / "columns.toml").columns
     assert code == 0 and m["id"] == (("c1",),) and m["person_name"] == (("c4",), ("c2", "c3")) and m["given_name"] == (("c3",),)

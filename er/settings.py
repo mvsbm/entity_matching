@@ -199,34 +199,41 @@ SAYS = {"full": "are a known family name and given name", "family": "are known f
 
 def placements(features: list[dict], profile: Mapping[str, dict], fit: Mapping[str, Mapping[str, float]], least: float = 0.5) -> list[dict]:
     """For each slot none of whose columns the file holds (profile: the file's columns), the file's column that most looks
-    like it and no other slot holds, with the share and
-    the evidence: a person's name and an address from the profile (er.source.profiled: known names and places, in the
-    feature's script), anything else from its field's fit (its [locale.detect] pattern; an ID: filled, each value once).
-    Strongest first, each column placed once, none under `least`. Suggestions only. O(slots · columns)."""
+    like it, with the share and the evidence: a person's name and an address from the profile (er.source.profiled: known
+    names and places, in the feature's script), anything else from its field's fit (its [locale.detect] pattern; an ID:
+    every value different). The slot with the fewest columns that could fill it is placed first, so a broad pattern (five
+    digits or more) doesn't take what only a narrow one (a postal code) fits; then the best free column, the file's order
+    breaking ties. A column no other slot holds, and not one holding the same values as a placed one (profile: same).
+    Suggestions only. O(slots · columns)."""
     here = lambda alt: set(alt) <= set(profile)
-    used = {c for _, x in slots(features) for alt in x.get("columns", []) if here(alt) for c in alt}
+    taken = {c for _, x in slots(features) for alt in x.get("columns", []) if here(alt) for c in alt}
     script = {path: f.get("script") for g in features for f in g["features"] for path, x in slots([dict(g, features=[f])])}
     kinds = {"person name": "full name", "family": "family name", "given": "given name"}
-    found = []
+    order = {c: i for i, c in enumerate(profile)}
+    candidates, why = {}, {}
     for path, x in slots(features):
         if any(here(alt) for alt in x.get("columns", [])):
             continue
         kind = kinds.get(x.get("role")) or kinds.get(x.get("type"), x.get("type"))
         if kind in PROFILED:
             share = {c: p[PROFILED[kind]] for c, p in profile.items() if kind == "address" or not script[path] or p["script"] == script[path]}
-            why = lambda c: f"{share[c]:.0%} {SAYS[PROFILED[kind]]}" + (f", in {script[path]}" if script[path] and kind != "address" else "")
+            say = f" {SAYS[PROFILED[kind]]}" + (f", in {script[path]}" if script[path] and kind != "address" else "")
         elif x.get("field") in fit:
-            share = dict(fit[x["field"]])
-            why = lambda c, f=x["field"]: f"{share[c]:.0%} " + ("filled, each value once" if f == "id" else f"look like {f.replace('_', ' ')}")
+            share, say = dict(fit[x["field"]]), " filled, each value once" if x["field"] == "id" else f" look like {x['field'].replace('_', ' ')}"
+            if x["type"] == "id" and x["field"] != "id":  # another ID: its pattern, and how few records share a value (an address code repeats)
+                share = {c: v * fit.get("id", {}).get(c, 0) for c, v in share.items()}
+                say += ", mostly each value once"
         else:
             continue
-        found += [(v, path, c, why(c)) for c, v in share.items() if v >= least]
-    out, taken, placed = [], set(used), set()
-    for v, path, c, why in sorted(found, key=lambda t: -t[0]):
-        if c not in taken and path not in placed:
-            out.append(dict(feature=path, column=c, share=v, why=why))
+        floor = 0.99 if x.get("field") == "id" else least  # an ID: every value different, or nothing
+        candidates[path], why[path] = {c: v for c, v in share.items() if v >= floor}, say
+    out = []
+    for path in sorted(candidates, key=lambda p: len(candidates[p])):
+        free = [(v, -order[c], c) for c, v in candidates[path].items() if c not in taken and not set(profile[c].get("same", ())) & taken]
+        if free:
+            v, _, c = max(free)
+            out.append(dict(feature=path, column=c, share=v, why=f"{v:.0%}{why[path]}"))
             taken.add(c)
-            placed.add(path)
     return out
 
 
