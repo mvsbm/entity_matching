@@ -7,7 +7,7 @@ title HLD 2 · Containers: the tools people run, the engine, and where everythin
 Person(owner, "Data owner, reviewer", "runs the resolution; answers its sheets")
 Person(developer, "Developer", "changes the matching")
 
-Container(runtime, "Run-time tools", "nayose (er/cli.py)", "check, resolve, add, match and rerun records; describe a run or an entity; list, decide and apply pairs and kinds; serve an inbox; exit 2: a mistake to fix, 75: busy")
+Container(runtime, "Run-time tools", "nayose (er/cli.py)", "check, resolve, add, match and rerun records; describe a run or an entity; list, decide and apply pairs and kinds; serve an inbox; open ui, the same commands in a browser; exit 2: a mistake to fix, 75: busy")
 Container(designtime, "Design-time tools", "scripts/generate.py, scripts/choose.py, scripts/choose_kind.py, scripts/train_name_model.py, scripts/benchmark.py", "synthetic data with the truth; the matching chosen and measured; the name model trained")
 Container(demo, "Demo", "notebooks/demo.ipynb, scripts/export_pdfs.py", "every step of a run, charted; its PDF")
 

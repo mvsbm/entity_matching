@@ -43,7 +43,7 @@ The system turns a file of customer records into one ID per person or company. I
 
 | Part | Holds |
 |---|---|
-| `nayose` | the run-time entry point, `er/cli.py`: every command declared once, the parser and [the reference](commands.md) built from the declarations; `er/inbox.py` serves an inbox through it |
+| `nayose` | the run-time entry point, `er/cli.py`: every command declared once, the parser and [the reference](commands.md) built from the declarations; `er/inbox.py` serves an inbox through it; `er/ui.py` and `er/ui.html`, the same commands in a browser (`nayose open ui`): the page places commands and draws their results, its forms built from the declarations |
 | `scripts/` | the design-time entry points: generate, choose, choose_kind, train_name_model, benchmark, export_pdfs, document_commands |
 | `er/` | the engine: every computation, tested. It names no column, except the synthetic generator (`er/generate.py`) |
 | `config/` | every setting: `settings.toml` (paths, `[datasets]`, `[columns]`, `[locale]`, `[compute]`, `[kind]`), `pipeline.toml` (the matching, in logical fields), `final.toml` (what was chosen), and for design time `generator.toml` and `experiments.py` |
@@ -97,7 +97,7 @@ Not used, and why: chunked prediction (refuses given pairs, and only bounds memo
 
 ![HLD 3, components: the run-time and design-time tools on top; design time (select, pipeline, evaluate, tune, generate), the run (er/run.py, er/folder.py, er/report.py), the steps (source, standardize, kind, candidates, match, cluster) and the foundation (config, settings, io, strings), with an arrow wherever one layer imports another](diagrams/components.svg)
 
-Every module sits in one layer: the tools (`nayose`: `er/cli.py`, `er/inbox.py`; and `scripts/`), design time, the run (`er/run.py`, the steps of a run; `er/folder.py`, the run folder on disk; `er/report.py`, the reports for people), the steps, and the foundation. Each layer imports only the layers below it; `tests/test_design.py` fails on an import that goes up or across.
+Every module sits in one layer: the tools (`nayose`: `er/cli.py`, `er/inbox.py`, `er/ui.py`; and `scripts/`), design time, the run (`er/run.py`, the steps of a run; `er/folder.py`, the run folder on disk; `er/report.py`, the reports for people), the steps, and the foundation. Each layer imports only the layers below it; `tests/test_design.py` fails on an import that goes up or across.
 
 ## 4 · The run
 

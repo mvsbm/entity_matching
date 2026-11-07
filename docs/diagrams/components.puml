@@ -4,7 +4,7 @@ LAYOUT_TOP_DOWN()
 HIDE_STEREOTYPE()
 title HLD 3 · Components: every module, in its layer; each layer imports only the layers below it
 
-Container(tools_run, "Run-time tools", "nayose", "er/cli.py: every nayose command, its parser and reference\ner/inbox.py: nayose serve inbox\nscripts/document_commands.py: docs/commands.md")
+Container(tools_run, "Run-time tools", "nayose", "er/cli.py: every nayose command, its parser and reference\ner/inbox.py: nayose serve inbox\ner/ui.py: nayose open ui, the commands in a browser\nscripts/document_commands.py: docs/commands.md")
 Container(tools_design, "Design-time tools", "scripts/", "scripts/generate.py: synthetic data\nscripts/choose.py: the matching chosen\nscripts/choose_kind.py: person or company measured\nscripts/train_name_model.py: config/kind_names.npz\nscripts/benchmark.py: quality and cost\nscripts/export_pdfs.py: the demo's PDF")
 
 Component(run, "The run", "er/", "er/run.py: Run, its steps: load, budget, fit, rules, candidates, score, cluster, write, report; increment, decide\ner/folder.py: the run folder: one writer, staged writes, steps.json, part numbers\ner/report.py: the reports for people")

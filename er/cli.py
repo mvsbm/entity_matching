@@ -403,6 +403,12 @@ def serve_inbox(a: dict, emit: "Emit") -> dict:
     return dict(stopped=not ok, exit_code=0 if ok else 1, next=[dict(command=nayose("describe", "run", a["run"]), why="the run folder at a glance")])
 
 
+def open_ui(a: dict, emit: "Emit") -> dict:
+    from er import ui  # the page's server: it reads these declarations
+    ui.serve(int(a["port"] or 8765), a["run"], emit.line, open_browser=not a["link"])
+    return dict(next=[])
+
+
 # ---------- the declarations ----------
 
 INPUT = Param("input", "the records: a Parquet file, a quoted glob ('in/*.parquet') or a folder of them, read together by column name",
@@ -539,6 +545,15 @@ COMMANDS: tuple[Command, ...] = (
              Param("retries", "attempts after an unexpected failure (default 2)", "text", metavar="N"), COMPUTE),
             {"stopped": "the pass stopped on a file that kept failing", "next": "the commands that usually follow"},
             "nayose serve inbox inbox --run runs/customers --every 300", serve_inbox),
+    Command("open", "ui", "The commands in a browser, on this machine only",
+            "Serves a page on 127.0.0.1, reachable only from this machine and only with the link it prints, and opens it. Its "
+            "screens follow the work: records, columns, check and run, results, pairs (keys M, N, S), kinds (keys 1, 2, 0). Each "
+            "button runs one of these commands, shown as the command line it is; lists, describes and single answers run in "
+            "the page's own process, the others each in a process of their own, one at a time. Nothing is loaded from the "
+            "network. Ctrl-C stops it.",
+            (Param("run", "the run folder the page starts with", "path"), Param("port", "the port (default 8765; 0: any free one)", metavar="PORT"),
+             Param("link", "print the link only; open no browser", "flag")),
+            {"next": "the commands that usually follow"}, "nayose open ui --run runs/customers", open_ui),
 )
 
 
