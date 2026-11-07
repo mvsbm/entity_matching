@@ -50,6 +50,7 @@ The run folder holds `gold.parquet` (each record and its entity's ID, and each o
 |---|---|
 | run it on your records | [usage](docs/usage.md) |
 | look up a command | [commands](docs/commands.md) |
+| change the code: the rules, and what checks each | [contributing](CONTRIBUTING.md) |
 | see every step on a small file, with charts | [the demo](notebooks/pdf/demo.pdf) |
 | see how it is built | [architecture](docs/architecture.md) |
 | understand each method, and why it was chosen | [the guide](docs/guide/01-entity-resolution-and-our-task.md), seven chapters |

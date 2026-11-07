@@ -1,0 +1,14 @@
+# A pull request merges with its checklist ticked (.github/pull_request_template.md): CONTRIBUTING.md, rule 10.
+name: checklist
+on:
+  pull_request:
+    types: [opened, edited, synchronize, reopened]
+jobs:
+  ticked:
+    runs-on: ubuntu-latest
+    steps:
+      - env:
+          BODY: ${{ github.event.pull_request.body }}  # through the environment, never pasted into the script
+        run: |
+          if printf '%s\n' "$BODY" | grep -- '- \[ \]'; then echo "unticked boxes above: tick them, or say in the description why one doesn't apply"; exit 1; fi
+          printf '%s' "$BODY" | grep -q -- '- \[x\]' || { echo "no checklist: start from .github/pull_request_template.md"; exit 1; }

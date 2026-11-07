@@ -199,6 +199,8 @@ def u_bound(model: FSModel, c: Comparison, records: Records, db: DuckDBAPI) -> f
 
 
 SCORED_U: dict[tuple[str, int], dict[str, float]] = {}  # (FSModel.u_keys() value, fingerprint of what it reads) → u per level
+# shortcut: one entry per comparison and file this process scores, never dropped; fine for a run or choose.py, a
+# process that scores file after file needs a limit (nayose open ui runs those in processes of their own)
 
 
 def fingerprint(records: Records, cols: list[str], db: DuckDBAPI) -> int:

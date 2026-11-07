@@ -31,7 +31,8 @@ class Busy(InputError):
     """Another job is writing to the run folder: no mistake, so nayose exits 75, to be tried again."""
 
 
-_held = threading.local()  # the folders this thread holds: taking one again (a rerun's full run) is no second lock
+_held = threading.local()  # the folders this thread holds: taking one again (a rerun's full run) is no second lock;
+# bounded: the locks held now, each dropped when released
 
 
 @contextmanager
