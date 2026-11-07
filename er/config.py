@@ -536,6 +536,32 @@ def widen(p: "Pipeline", added: Iterable[tuple[str, str]]) -> "Pipeline":
                    fs=replace(p.fs, model=model, blockers=p.fs.blockers + tuple(c for b in p.fs.blockers for c in copies.get(b.name, ()))))
 
 
+METHOD_KEYS = ("line", "drop_rules", "drop_keys")
+
+
+def adjust(p: "Pipeline", method: Mapping[str, object]) -> "Pipeline":
+    """The pipeline with a workspace's changes to the tuned method (method.toml): `line`, the weight pairs are accepted
+    at; `drop_rules`, sure-match rules left out; `drop_keys`, pair keys left out, each with the copies widen made of it
+    (name@field). Nothing changed: the same pipeline, so the same config hash. O(rules + generators)."""
+    if not method:
+        return p
+    fix = "correct method.toml in the workspace, or go back to the tuned method: nayose reset method --workspace …"
+    if unknown := set(method) - set(METHOD_KEYS):
+        raise InputError(f"method.toml: unknown keys {sorted(unknown)}; it takes {', '.join(METHOD_KEYS)}", fix)
+    line = method.get("line", p.fs.min_match_weight)
+    if isinstance(line, bool) or not isinstance(line, int | float) or not all(isinstance(method.get(k, []), list) for k in METHOD_KEYS[1:]):
+        raise InputError("method.toml: line is a weight in bits, drop_rules and drop_keys lists of names", fix)
+    rules, keys = set(method.get("drop_rules", ())), set(method.get("drop_keys", ()))
+    if bad := (rules - {r.name for _, _, r in p.rules.each()}) | (keys - {b.name for b in p.fs.blockers}):
+        raise InputError(f"method.toml: no rule or pair key named {sorted(bad)}", fix)
+    stages = tuple(s for s in (replace(s, rules=tuple(r for r in s.rules if r.name not in rules)) for s in p.rules.stages) if s.rules)
+    blockers = tuple(b for b in p.fs.blockers if b.name not in keys and b.name.split("@")[0] not in keys)
+    if not stages or not blockers:
+        raise InputError(f"method.toml leaves no {'sure-match rule' if not stages else 'pair key'}", fix)
+    return replace(p, rules=replace(p.rules, stages=stages),
+                   fs=replace(p.fs, blockers=blockers, min_match_weight=float(line)))
+
+
 def load_pipeline(path: Path, std: Standardization, chains: Mapping[str, tuple[Normalizer, ...]],
                   columns: Mapping[str, object]) -> Pipeline:
     """config/pipeline.toml (or a written FINAL) → typed config. Every field it reads must be declared in [fields]

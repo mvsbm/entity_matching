@@ -31,6 +31,7 @@ Written by `scripts/document_commands.py` from the declarations in `er/cli.py`; 
 | [`describe workspace`](#nayose-describe-workspace) | What a workspace holds |
 | [`describe entity`](#nayose-describe-entity) | One record's entity, and what joined it |
 | [`describe matching`](#nayose-describe-matching) | How records are matched: every method, on which fields, with its numbers |
+| [`describe method`](#nayose-describe-method) | What the run shows about its method, and the changes worth trying |
 | [`list pairs`](#nayose-list-pairs) | The pairs for people to decide and to audit |
 | [`decide pair`](#nayose-decide-pair) | Decide one pair: match or no match |
 | [`apply decisions`](#nayose-apply-decisions) | Apply people's decisions to the run |
@@ -540,6 +541,42 @@ The pipeline as a graph: records, how each field is made comparable, the rules, 
 
 ```bash
 nayose describe matching --workspace workspaces/customers
+```
+
+## nayose describe method
+
+What the run shows about its method, and the changes worth trying.
+
+```
+nayose describe method --workspace WORKSPACE [--pipeline PIPELINE] [--format text|json]
+```
+
+From the run in the workspace and people's decisions: each round so far (a round per method the workspace ran: the tuned one, then each change of method.toml), with the links it made and the audits people decided in it; the line pairs are accepted at, the weight bands, and every pair people decided, scored again with the run's model; each sure-match rule's pairs, those scoring below the line, and those people said are different; each pair key's pairs, seconds, links, and links only it found; each comparison step's bits and the pairs that reached it; and proposals: a line that sets right decided pairs without setting any wrong, a rule people found different pairs in, a key no link needs. Changes nothing. O((D + R)·K) to score the decided and rule pairs again, + O(E) over the run's files.
+
+| Parameter | |
+|---|---|
+| `--workspace WORKSPACE` | the workspace: the folder that keeps one matching job (required) |
+| `--pipeline PIPELINE` | the pipeline file (default: config/final.toml) |
+
+| Result | |
+|---|---|
+| `line` | the weight pairs are accepted at |
+| `review_from` | the lowest weight people are asked to decide |
+| `method` | the workspace's changes to the tuned method (method.toml) |
+| `round` | the round now (0: no round recorded) |
+| `rounds` | round, method, at, matched, expected_false, decided, audited, false_found |
+| `audits` | this round's audits: checked, false, at_most (the false rate's 95% upper bound) |
+| `to_decide` | pairs left to decide |
+| `bands` | weight_from, pairs, accepted |
+| `decided` | each pair people decided: id_l, id_r, decision, why, round, weight, named, rule |
+| `rules` | name, pairs, below (scored below the line), different (people said) |
+| `keys` | name, pairs, seconds, matched, only (links no other key found) |
+| `steps` | comparison, level, bits, reached |
+| `proposals` | change (method.toml keys), why |
+| `next` | the commands that usually follow |
+
+```bash
+nayose describe method --workspace workspaces/customers
 ```
 
 ## nayose list pairs

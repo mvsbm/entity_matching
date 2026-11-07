@@ -270,7 +270,7 @@ Kept on disk. Steps are numbered as in [the run](#4--the-run); the diagram above
 | `state/model.json` | 8, full runs only | increments | the fitted model: λ, and m and u per level |
 | `state/scoring.json` | 8, every run | increments | the u the run scored with; per comparison, the exact u it was sampled alongside and its last drift check |
 | `state/config.txt` | 8, full runs only | increments | the hash of the pipeline and the settings that shape the records (column mapping, `[locale]`, the flag's values) the full run used |
-| `steps.json` | 8, and decisions | you; an audit; a rerun | one entry per run, increment or set of decisions: when, the code's commit and the files changed in this copy, the config hash, each file read with what it is (records, decisions, answers, the name model), its size and SHA-256, and each step's Big-O with its numbers, time and peak memory; the candidates step also lists the pairs each generator found |
+| `steps.json` | 8, and decisions | you; an audit; a rerun | one entry per run, increment or set of decisions: when, the code's commit and the files changed in this copy, the config hash, each file read with what it is (records, decisions, answers, the name model), its size and SHA-256, and each step's Big-O with its numbers, time and peak memory; the candidates step also lists the pairs each generator found, and the score step the pairs at each level of each comparison |
 | `kind_answers/part-n.parquet` | 8, one part per sheet given | every later run on the folder | people's person/company answers, each sheet's filled rows as given; the newest per record stands. Kept, like `decisions/`, by `--overwrite` |
 | `pending.json` | 8, deleted when done | the next run, increment or decisions | moves owed by an unfinished write |
 | `.lock` | every writer | every writer | the workspace's lock: one writer at a time |
@@ -278,7 +278,9 @@ Kept on disk. Steps are numbered as in [the run](#4--the-run); the diagram above
 | `qa.md`, `review.parquet` | 9 | people | the label-free report; the pairs to decide and to audit |
 | `report.txt` | 9 | whoever helps with the run | the run on one page, with no record's value in it |
 | `kind_review.parquet` | 9, full runs | people | records to decide 1 person or 2 company, and a draw to measure the engine and the flag |
-| `decisions/part-n.parquet` | decisions, one part per file | full runs | the pairs people decided: both IDs and `match` or `no_match` |
+| `decisions/part-n.parquet` | decisions, one part per file | full runs; `describe method` | the pairs people decided: both IDs and `match` or `no_match`, the sheet's `why` and the `round` |
+| `method.toml` | people | every command given the workspace (`config.adjust`) | its changes to the tuned method: `line`, `drop_rules`, `drop_keys` |
+| `rounds.json` | 8, full runs | `describe method`; decisions | one entry per method run: config hash, method, when, links, expected false links. A run of the same method replaces the last entry. Kept, like `decisions/`, by `--overwrite` |
 | `set_aside/part-n.parquet` | 8, one part per run | you | records not resolved, and why: no ID; the same ID with different content; already in the run |
 
 ### While a run runs

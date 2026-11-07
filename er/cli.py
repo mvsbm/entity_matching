@@ -28,9 +28,9 @@ import numpy as np
 import pandas as pd
 
 from er import folder, inbox
-from er.config import InputError, load_pipeline, sources_text, widen
+from er.config import InputError, adjust, load_pipeline, sources_text, widen
 from er.folder import Busy
-from er.report import applied, describe_entity, describe_matching, describe_workspace, fill_rates
+from er.report import applied, describe_entity, describe_matching, describe_method, describe_workspace, fill_rates
 from er.source import describe, lexicon
 from er.run import Run
 from er.settings import (COLUMNS, SPECIAL, add_feature, added_of, beside, columns_file, features_of, load_settings, offers, own_columns,
@@ -205,7 +205,8 @@ def setup(a: dict):
         raise InputError(f"--compute {' '.join(bad)}: each limit is KEY=VALUE", fix="for example --compute memory_limit=8GB threads=4")
     s = replace(s, compute={**s.compute, **dict(kv.split("=", 1) for kv in a.get("compute") or [])})
     pipeline = Path(a.get("pipeline") or s.root / "config" / "final.toml")
-    return s, widen(load_pipeline(pipeline, s.standardize, s.chains, s.columns), beside(added_of(a.get("workspace")))), pipeline  # and the workspace's own features
+    ws = a.get("workspace")  # its own features, then its changes to the method
+    return s, adjust(widen(load_pipeline(pipeline, s.standardize, s.chains, s.columns), beside(added_of(ws))), folder.method(ws)), pipeline
 
 
 def sheet(out: Path, name: str) -> pd.DataFrame | None:
@@ -434,6 +435,12 @@ def describe_matching_(a: dict, emit: "Emit") -> dict:
     return {**describe_matching(duckdb.connect(), out, p, s),
             "next": [dict(command=nayose("describe", "workspace", out), why="the workspace at a glance")] if out else
                     [dict(command=nayose("resolve", "records", "<file>", "--workspace", "<workspace>"), why="match records: the graph then holds their numbers")]}
+
+
+def describe_method_(a: dict, emit: "Emit") -> dict:
+    s, p, _ = setup(a)
+    out = Path(a["workspace"])
+    return {**describe_method(out, p, s), "next": [dict(command=nayose("list", "pairs", "--workspace", out, "--open"), why="the pairs left to decide")]}
 
 
 def picked(frame: pd.DataFrame, why: str | None, only_open: bool) -> pd.DataFrame:
@@ -687,6 +694,30 @@ COMMANDS: tuple[Command, ...] = (
             {"nodes": "each part: id, name, method, its parameters and fields, and with --workspace its numbers and examples",
              "edges": "source, target, count", "next": "the commands that usually follow"},
             "nayose describe matching --workspace workspaces/customers", describe_matching_, quick=True),
+    Command("describe", "method", "What the run shows about its method, and the changes worth trying",
+            "From the run in the workspace and people's decisions: each round so far (a round per method the workspace "
+            "ran: the tuned one, then each change of method.toml), with the links it made and the audits people decided in "
+            "it; the line pairs are accepted at, the weight bands, and every pair people decided, scored again with the "
+            "run's model; each sure-match rule's pairs, those scoring below the line, and those people said are different; "
+            "each pair key's pairs, seconds, links, and links only it found; each comparison step's bits and the pairs that "
+            "reached it; and proposals: a line that sets right decided pairs without setting any wrong, a rule people found "
+            "different pairs in, a key no link needs. Changes nothing. O((D + R)·K) to score the decided and rule pairs "
+            "again, + O(E) over the run's files.",
+            (WORKSPACE, PIPELINE),
+            {"line": "the weight pairs are accepted at", "review_from": "the lowest weight people are asked to decide",
+             "method": "the workspace's changes to the tuned method (method.toml)", "round": "the round now (0: no round recorded)",
+             "rounds": "round, method, at, matched, expected_false, decided, audited, false_found",
+             "audits": "this round's audits: checked, false, at_most (the false rate's 95% upper bound)",
+             "to_decide": "pairs left to decide", "bands": "weight_from, pairs, accepted",
+             "decided": "each pair people decided: id_l, id_r, decision, why, round, weight, named, rule",
+             "rules": "name, pairs, below (scored below the line), different (people said)",
+             "keys": "name, pairs, seconds, matched, only (links no other key found)",
+             "steps": "comparison, level, bits, reached", "proposals": "change (method.toml keys), why",
+             "next": "the commands that usually follow"},
+            "nayose describe method --workspace workspaces/customers", describe_method_, quick=True,
+            show={"rounds": ("round", "matched", "audited", "false_found", "expected_false"), "bands": (), "decided": (),
+                  "rules": ("name", "pairs", "below", "different"), "keys": ("name", "pairs", "seconds", "matched", "only"),
+                  "steps": ("comparison", "level", "bits", "reached"), "proposals": ("change", "why")}),
     Command("list", "pairs", "The pairs for people to decide and to audit",
             "The run's review.parquet: decide rows (the pairs just below the threshold, and those above it with no name "
             "compared) and audit rows (accepted pairs just above it), each with both records' fields, each comparison's level "

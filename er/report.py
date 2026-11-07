@@ -19,10 +19,10 @@ import pandas as pd
 
 from er.candidates import q
 from er.config import DeletionKeys, InputError, KeyBlocker, Pipeline, SortedNeighbourhood, TfidfNeighbours, sources_text
-from er.folder import DECISIONS, PENDING
+from er.folder import DECISIONS, PENDING, method, rounds
 from er.io import code_version, table_after
 from er.kind import COMPANY, PERSON, SAYS, UNSURE
-from er.match import ELSE, levels, named_sql, parameters, pattern_coverage, review_floor, scaled_prior
+from er.match import ELSE, levels, named_sql, parameters, pattern_coverage, review_floor, scaled_prior, score_fs
 from er.source import lit
 
 if TYPE_CHECKING:
@@ -58,7 +58,7 @@ def qa(run: "Run", fields: list[str] | None = None, review: int = 50, previous: 
     accepted pairs by weight band, cluster sizes, the largest clusters (the over-merge alarm), and the review sheet
     for people (review_sheet). Its rows are of two kinds. "decide": every pair of clusters whose best link scored in the
     threshold's safety margin [review_floor, min_match_weight), or above it with no name compared, not decided yet, best link first. "audit": accepted pairs
-    up to 4 bits above the threshold, `review` of them, stratified by 1-bit band. `previous`, the workspace's sheet
+    up to 4 bits above the threshold not decided yet, `review` of them, stratified by 1-bit band. `previous`, the workspace's sheet
     before an increment: its open rows stay (carry_over), since the scores behind them aren't kept."""
     con, u, t = run.con, q(run.uid), run.pipeline.fs.min_match_weight
     fill = fill_rates(run, fields)
@@ -76,7 +76,8 @@ def qa(run: "Run", fields: list[str] | None = None, review: int = 50, previous: 
         QUALIFY row_number() OVER (PARTITION BY k1, k2 ORDER BY match_weight DESC, {l}, {r}) = 1
         ORDER BY match_weight DESC, {l}, {r}""").df().assign(why="decide")
     audit = con.sql(f"""SELECT * EXCLUDE (k) FROM (SELECT s.*, m.sources, row_number() OVER (PARTITION BY floor(s.match_weight) ORDER BY hash(s.{l}, s.{r})) AS k
-                        FROM matches m JOIN scores s USING ({l}, {r}) WHERE s.match_weight < {t + 4})
+                        FROM matches m JOIN scores s USING ({l}, {r}) WHERE s.match_weight < {t + 4}
+                          AND NOT EXISTS (SELECT 1 FROM er_decisions d WHERE d.{l} = s.{l} AND d.{r} = s.{r}))
                         WHERE k <= {max(1, review // 4)} ORDER BY match_weight, {l}, {r}""").df().assign(why="audit")
     steps = pd.DataFrame(run.steps)
     base = ["step", "big_o", "filled", "seconds", "peak_memory_gb"]
@@ -457,3 +458,113 @@ def describe_matching(con: duckdb.DuckDBPyConnection, out: Path | None, p: Pipel
     assert [x["id"] for x in nodes] == list(GRAPH_NODES)
     return dict(nodes=nodes, edges=edges)
 
+
+
+def line_change(decided: pd.DataFrame, t: float) -> tuple[float, int] | None:
+    """The acceptance line that sets right the most pairs people decided, against the model alone (accepted: named and
+    at the line or above), and sets wrong none it gets right at `t`; the nearest such line on a tie. None: no line
+    does better. Rows: weight, named, same (people said match). Lines tried: the half bit at or just below each
+    pair's weight, and the next one up. O(D·B) with numpy, D decided, B the half bits between the lowest weight and the highest."""
+    if decided.empty:
+        return None
+    w, named, same = decided["weight"].to_numpy(), decided["named"].to_numpy(bool), decided["same"].to_numpy(bool)
+    right = lambda x: (named & (w >= x)) == same
+    now, best = right(t), None
+    for x in sorted({float(v) for f in np.floor(w * 2) / 2 for v in (f, f + 0.5)}):
+        at = right(x)
+        if (now & ~at).any():
+            continue
+        fixes = int((at & ~now).sum())
+        if fixes and (best is None or (fixes, -abs(x - t)) > (best[1], -abs(best[0] - t))):
+            best = (x, fixes)
+    return best
+
+
+def describe_method(out: Path, p: Pipeline, s: "Settings") -> dict:
+    """What the run in the workspace `out` shows about its method, for people improving it: each round so far
+    (rounds.json), with the links it made and the audits people decided in it; the line, the weight bands, and each pair
+    people decided, scored again with the run's model; each sure-match rule's pairs, how many of them score below the
+    line, and how many people said are different; each pair key's pairs and seconds, the links it found and those only
+    it found; each comparison step's bits and the pairs that reached it; and the changes worth trying. Changes nothing.
+    O((D + R)·K) to score the D decided pairs and the R rule pairs again, + O(E) over the run's files."""
+    from scipy.stats import beta
+
+    from er.strings import connect
+    if not (out / "gold.parquet").exists():
+        raise InputError(f"no run in {out}", fix="find matches first: nayose resolve records --workspace …")
+    uid, t, fs = s.data.unique_id, p.fs.min_match_weight, p.fs
+    l, r = f"{uid}_l", f"{uid}_r"
+    con, db = connect(s.compute)
+    read = lambda name: f"read_parquet({lit(out / name)}, union_by_name = true)"
+    scoring = out / "state" / "scoring.json"
+    model = json.loads(scoring.read_text(encoding="utf-8"))["model"] if scoring.exists() else json.loads((out / "state" / "model.json").read_text(encoding="utf-8"))
+    n = con.execute(f"SELECT count(*) FROM {read('gold.parquet')}").fetchall()[0][0]
+
+    # the pairs people decided, the latest decision per pair, and the rules' pairs: scored again, with the name check
+    parts = out / DECISIONS / "part-*.parquet"
+    con.execute(f"""CREATE TABLE er_decided AS SELECT {q(l)}, {q(r)}, arg_max(decision, filename) AS decision, arg_max(why, filename) AS why,
+        arg_max(round, filename) AS round FROM read_parquet({lit(parts)}, filename = true, union_by_name = true) GROUP BY ALL"""
+                if any(parts.parent.glob("part-*.parquet")) else
+                f"CREATE TABLE er_decided ({q(l)} VARCHAR, {q(r)} VARCHAR, decision VARCHAR, why VARCHAR, round INTEGER)")
+    con.execute(f"CREATE TABLE er_rule AS SELECT {q(l)}, {q(r)}, rule FROM {read('rule_kept/*.parquet')}")
+    con.execute(f"CREATE TABLE er_pairs AS SELECT {q(l)}, {q(r)} FROM er_decided UNION SELECT {q(l)}, {q(r)} FROM er_rule")
+    con.execute(f"""CREATE TABLE er_touched AS SELECT * FROM {read('state/records/*.parquet')}
+        WHERE {q(uid)} IN (SELECT {q(l)} FROM er_pairs UNION SELECT {q(r)} FROM er_pairs)""")
+    score_fs(model, "er_touched", "er_pairs", db, uid, into="er_scored", n_records=n)
+    scored = f"SELECT {q(l)}, {q(r)}, match_weight AS weight, {named_sql(fs)} AS named FROM er_scored s"
+    decided = con.execute(f"""SELECT d.*, s.weight, s.named, d.decision = 'match' AS same, x.rule FROM er_decided d JOIN ({scored}) s USING ({q(l)}, {q(r)})
+        LEFT JOIN (SELECT {q(l)}, {q(r)}, min(rule) AS rule FROM er_rule GROUP BY ALL) x USING ({q(l)}, {q(r)}) ORDER BY s.weight""").df()
+    rules = {name: (pairs, below, apart) for name, pairs, below, apart in con.execute(f"""SELECT x.rule, count(*), count(*) FILTER (WHERE s.weight < {t} OR NOT s.named),
+        count(d.decision) FILTER (WHERE d.decision = 'no_match') FROM er_rule x JOIN ({scored}) s USING ({q(l)}, {q(r)})
+        LEFT JOIN er_decided d USING ({q(l)}, {q(r)}) GROUP BY 1""").fetchall()}
+
+    # what the run's log and files say: the rounds, each key's pairs and seconds, each step's reach, the links by key
+    log = json.loads((out / "steps.json").read_text(encoding="utf-8"))["runs"] if (out / "steps.json").exists() else []
+    facts = [x for run in log for x in run["steps"]]
+    listed, reached = {}, {}
+    for x in facts:
+        for g in x.get("generators", ()):
+            pairs, seconds = listed.get(g["name"], (0, 0.0))
+            listed[g["name"]] = (pairs + g["pairs"], seconds + g["seconds"])
+        for c, by in x.get("reached", {}).items():
+            for g, k in by.items():
+                reached[(c, int(g))] = reached.get((c, int(g)), 0) + k
+    found = {g: (k, only) for g, k, only in con.execute(f"""SELECT g, count(*), count(*) FILTER (WHERE alone)
+        FROM (SELECT unnest(string_split(sources, '+')) AS g, NOT contains(sources, '+') AS alone FROM {read('matches/*.parquet')}) GROUP BY 1""").fetchall()}
+    ran = rounds(out)
+    now = len(ran)
+    audits = decided[(decided["why"] == "audit") & (decided["round"] == now)] if now else decided.iloc[:0]
+    false = int((~audits["same"].astype(bool)).sum())
+    review = pd.read_parquet(out / "review.parquet") if (out / "review.parquet").exists() else pd.DataFrame(columns=["why", "decision"])
+    bands = table_after((out / "qa.md").read_text(encoding="utf-8"), "## weight bands").values.tolist() if (out / "qa.md").exists() else []
+    by_round = lambda i, x: decided[(decided["round"] == i) & x(decided)]
+    ran = [dict(round=i, method=x["method"], at=x["at"], matched=x["matched"], expected_false=x["expected_false"],
+                   decided=len(by_round(i, lambda d: True)), audited=len(by_round(i, lambda d: d["why"] == "audit")),
+                   false_found=len(by_round(i, lambda d: (d["why"] == "audit") & ~d["same"].astype(bool))))
+              for i, x in enumerate(ran, 1)]
+
+    # the changes worth trying: none applies itself
+    proposals = []
+    if line := line_change(decided[decided["rule"].isna()], t):
+        proposals.append(dict(change=dict(line=line[0]), why=f"sets right {line[1]:,} pair{'s' if line[1] > 1 else ''} people decided, and wrong none"))
+    proposals += [dict(change=dict(drop_rules=[name]), why=f"people said {apart:,} of its pairs {'are' if apart > 1 else 'is'} different")
+                  for name, (_, _, apart) in rules.items() if apart]
+    total = sum(pairs for pairs, _ in listed.values())  # a key worth leaving out: a tenth of the pairs or more, and no link only it finds
+    proposals += [dict(change=dict(drop_keys=[b.name]), why=f"{listed[b.name][0] / total:.0%} of the pairs, and no link only it finds")
+                  for b in fs.blockers if listed.get(b.name, (0,))[0] >= total / 10 and not found.get(b.name, (0, 0))[1]]
+    by_gamma = levels(model)
+    return dict(
+        line=t, review_from=review_floor(p), method=method(out), round=now, rounds=ran,
+        audits=dict(checked=len(audits), false=false,  # the false rate's one-sided 95% bound, as er.evaluate.fp_upper (design time)
+                    at_most=float(beta.ppf(0.95, false + 1, len(audits) - false)) if len(audits) > false else 1.0),
+        to_decide=int(((review["why"] == "decide") & review["decision"].isna()).sum()),
+        bands=[dict(weight_from=float(a), pairs=int(b), accepted=int(c)) for a, b, c in bands],
+        decided=[dict(id_l=x[l], id_r=x[r], decision=x["decision"], why=x["why"], round=None if pd.isna(x["round"]) else int(x["round"]),
+                      weight=round(float(x["weight"]), 2), named=bool(x["named"]), rule=x["rule"]) for x in decided.to_dict("records")],
+        rules=[dict(name=x.name, pairs=rules.get(x.name, (0, 0, 0))[0], below=rules.get(x.name, (0, 0, 0))[1],
+                    different=rules.get(x.name, (0, 0, 0))[2]) for _, _, x in p.rules.each()],
+        keys=[dict(name=b.name, pairs=listed.get(b.name, (0, 0.0))[0], seconds=round(listed.get(b.name, (0, 0.0))[1], 2),
+                   matched=found.get(b.name, (0, 0))[0], only=found.get(b.name, (0, 0))[1]) for b in fs.blockers],
+        steps=[dict(comparison=c, level=label, bits=round(bits, 2), reached=reached.get((c, g), 0))
+               for c, by in by_gamma.items() for g, (label, bits) in sorted(by.items(), reverse=True)],
+        proposals=proposals)
