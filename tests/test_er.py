@@ -955,6 +955,8 @@ def test_nayose_takes_a_file_from_the_check_to_people_s_answers(tmp_path, popula
     added = say("add", "records", tmp_path / "new.parquet", "--run", run)
     assert added["summary"][0][1].startswith(f"{len(g.df):,}")
     assert say("describe", "run", run)["records"] == len(g.df)
+    graph = say("describe", "matching", "--run", run)
+    assert {n["id"] for n in graph["nodes"]} >= {"rules", "candidates", "score", "group"} and graph["edges"]
 
 
 def test_a_nearly_empty_field_is_kept_and_the_fit_skips_what_it_cannot_learn_from(tmp_path, population):
@@ -1779,3 +1781,26 @@ def test_the_page_answers_once_per_key_shows_any_row_and_says_when_the_server_is
         lost = page.evaluate("() => run('pairs', 'list pairs')")
         assert lost["event"] == "error" and lost["error"].startswith("Lost the server")
         browser.close()
+
+
+def test_describe_matching_draws_the_pipeline_with_the_run_s_numbers(tmp_path, population):
+    import duckdb
+    from er.report import GRAPH_NODES, describe_matching
+    from er.run import Run
+    s, p, g = population
+    g.df.to_parquet(tmp_path / "all.parquet", index=False)
+    out = tmp_path / "run"
+    Run(p, s).full(tmp_path / "all.parquet", out, pipeline_file=s.root / "config" / "final.toml")
+    nodes = {n["id"]: n for n in describe_matching(duckdb.connect(), out, p, s)["nodes"]}
+    assert list(nodes) == list(GRAPH_NODES)
+    kept = pd.read_parquet(out / "rule_kept")["rule"].value_counts().to_dict()
+    assert {r["name"]: r["pairs"] for r in nodes["rules"]["rules"] if r["pairs"]} == kept
+    step = next(x for x in json.loads((out / "steps.json").read_text())["runs"][0]["steps"] if x["step"] == "candidates")
+    assert {x["name"]: x["pairs"] for x in nodes["candidates"]["generators"]} == {x["name"]: x["pairs"] for x in step["generators"]}
+    gold = pd.read_parquet(out / "gold.parquet")
+    assert nodes["accept"]["accepted"] == len(pd.read_parquet(out / "matches")) and nodes["customers"]["count"] == gold["cluster_id"].nunique()
+    levels = [lv for c in nodes["score"]["comparisons"] for lv in c["levels"] if lv["m"]]
+    assert levels and all(math.isclose(lv["bits"], math.log2(lv["m"] / lv["u"])) for lv in levels)  # each level's worth, as fitted
+    assert all(f["example"] for f in nodes["prepare"]["fields"] if f["filled"])  # a real value for every field the file fills
+    bare = {n["id"]: n for n in describe_matching(duckdb.connect(), None, p, s)["nodes"]}  # no run yet: the methods only
+    assert bare["records"]["count"] is None and bare["rules"]["rules"][0]["pairs"] is None and bare["score"]["comparisons"][0]["levels"][0]["bits"] is None

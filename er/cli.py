@@ -30,7 +30,7 @@ import pandas as pd
 from er import folder, inbox
 from er.config import InputError, load_pipeline, sources_text
 from er.folder import Busy
-from er.report import describe_entity, describe_run, fill_rates
+from er.report import describe_entity, describe_matching, describe_run, fill_rates
 from er.run import Run
 from er.settings import SPECIAL, load_settings, set_columns, settings_path
 
@@ -324,6 +324,14 @@ def describe_entity_(a: dict, emit: "Emit") -> dict:
                 next=[dict(command=nayose("list", "pairs", "--run", out), why="the pairs for people")])
 
 
+def describe_matching_(a: dict, emit: "Emit") -> dict:
+    s, p, _ = setup(a)
+    out = Path(a["run"]) if a["run"] else None
+    return {**describe_matching(duckdb.connect(), out, p, s),
+            "next": [dict(command=nayose("describe", "run", out), why="the run folder at a glance")] if out else
+                    [dict(command=nayose("resolve", "records", "<file>", "--run", "<run folder>"), why="match records: the graph then holds their numbers")]}
+
+
 def applied(out: Path, uid: str) -> pd.DataFrame:  # each pair's latest decision the folder holds
     parts = sorted((out / folder.DECISIONS).glob("part-*.parquet"))
     if not parts:
@@ -490,6 +498,15 @@ COMMANDS: tuple[Command, ...] = (
             "nayose describe entity 0000000151 --run runs/customers", describe_entity_, quick=True,
             show={"records": ("id", "resolved_by", "kind", "person_name", "company_name", "address", "postal_code", "phone", "customer_id", "birth_date"),
                   "links": ("id_l", "id_r", "by", "weight")}),
+    Command("describe", "matching", "How records are matched: every method, on which fields, with its numbers",
+            "The pipeline as a graph: records, how each field is made comparable, the rules, the ways pairs are listed, the "
+            "comparisons and what each level is worth in bits, the line pairs are accepted at, the pairs left to people, and "
+            "how linked records become customers. With --run, each part also holds that run's numbers and a real example. "
+            "O(E + R + N) in SQL over the run's files.",
+            (Param("run", "a run folder: its numbers and examples (without it, the methods only)", "path"), PIPELINE),
+            {"nodes": "each part: id, name, method, its parameters and fields, and with --run its numbers and examples",
+             "edges": "source, target, count", "next": "the commands that usually follow"},
+            "nayose describe matching --run runs/customers", describe_matching_, quick=True),
     Command("list", "pairs", "The pairs for people to decide and to audit",
             "The run's review.parquet: decide rows (the pairs just below the threshold, and those above it with no name "
             "compared) and audit rows (accepted pairs just above it), each with both records' fields, each comparison's level "

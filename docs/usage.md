@@ -92,6 +92,7 @@ Everything is in the run folder. A run also reads `config/kind_names.npz`, the n
 ```bash
 .venv/bin/nayose describe run runs/customers                         # records, entities, the largest, each run, what is open
 .venv/bin/nayose describe entity 0000000151 --run runs/customers     # one record's entity: its records, and what joined them
+.venv/bin/nayose describe matching --run runs/customers              # every method, on which fields, with this run's numbers
 ```
 
 | File | One row per | Holds | Use it to |
