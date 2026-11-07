@@ -36,6 +36,15 @@ package "the answer: Run.write" {
     rule
     stage
     score
+    match_weight : bits, the model's
+    merged : at the trust line or above (none set: every pair), and no no_match
+  }
+  entity "proposed/part-n.parquet" as proposed {
+    * <id>_l
+    * <id>_r
+    match_weight : bits, below the trust line
+    match_probability
+    sources : the generators that found the pair
   }
   entity "set_aside/part-n.parquet" as set_aside {
     <the input's columns>
@@ -144,6 +153,7 @@ package "people's work and the writers' state" {
 gold }o--|| rule_clusters : <id>
 matches }o--|| gold : <id>_l, <id>_r
 rule_kept }o--|| gold : <id>_l, <id>_r
+proposed }o--|| gold : <id>_l, <id>_r
 records ||--|| gold : <id>
 kind_answers }o--|| records : <id>
 review }o--|| gold : <id>_l, <id>_r

@@ -24,7 +24,7 @@ from er.settings import COLUMNS
 from er.source import find, lit, sha256
 
 PENDING = "pending.json"  # the renames a write still owes, saved once every new file is complete
-RUN_FILES = ("gold.parquet", "steps.json", PENDING, "matches", "rule_kept", "state", "set_aside",  # what a run writes in its folder
+RUN_FILES = ("gold.parquet", "steps.json", PENDING, "matches", "rule_kept", "proposed", "state", "set_aside",  # what a run writes in its folder
              "qa.md", "report.txt", "review.parquet", "kind_review.parquet")
 DECISIONS = "decisions"  # people's decisions: not a run file, so a full run with overwrite keeps and applies them
 KIND_ANSWERS = "kind_answers"  # people's person/company answers, a part per sheet as given: kept as decisions are
@@ -206,7 +206,8 @@ NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
 
 
 def create(home: Path, name: str, columns: str) -> Path:
-    """The new workspace home/name, with its own mapping (columns.toml, the text given). O(1)."""
+    """The new workspace home/name, with its own mapping (columns.toml, the text given) and its method (method.toml):
+    a trust line above every step, so nothing merges before people check (config.TrustRule). O(1)."""
     if not NAME.fullmatch(name):
         raise InputError(f"{name!r}: not a workspace name", fix="letters, digits, '.', '_' and '-', starting with a letter or digit, at most 64")
     ws = home / name
@@ -216,6 +217,7 @@ def create(home: Path, name: str, columns: str) -> Path:
         raise InputError(f"{ws} exists", fix="open it, or choose another name") from None
     try:
         (ws / COLUMNS).write_text(columns, encoding="utf-8")
+        (ws / METHOD).write_text('trust = "none"\n', encoding="utf-8")
     except BaseException:
         shutil.rmtree(ws, ignore_errors=True)
         raise

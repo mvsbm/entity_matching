@@ -35,6 +35,8 @@ Written by `scripts/document_commands.py` from the declarations in `er/cli.py`; 
 | [`try method`](#nayose-try-method) | Try a change of the method beside the method as it is |
 | [`adopt method`](#nayose-adopt-method) | Adopt a method tried, and find matches with it |
 | [`reset method`](#nayose-reset-method) | Go back to the tuned method, and find matches with it |
+| [`lower trust`](#nayose-lower-trust) | Merge the next range of scores without people, once its sample is clean |
+| [`raise trust`](#nayose-raise-trust) | Take a range of scores back to people |
 | [`draw pairs`](#nayose-draw-pairs) | More links on the review sheet, to audit |
 | [`list pairs`](#nayose-list-pairs) | The pairs for people to decide and to audit |
 | [`decide pair`](#nayose-decide-pair) | Decide one pair: match or no match |
@@ -357,7 +359,7 @@ Resolve a file: one ID per person or company.
 nayose resolve records [INPUT] --workspace WORKSPACE [--overwrite] [--pipeline PIPELINE] [--model MODEL] [--compute KEY=VALUE …] [--format text|json]
 ```
 
-A full run, without labels: load, budget, fit, rules, candidates, score, cluster, write, report. Writes the workspace: gold.parquet, matches/, rule_kept/, set_aside/, state/, steps.json, and for people qa.md, report.txt, review.parquet and kind_review.parquet. A folder that holds a run is refused without --overwrite; people's decisions and answers in it stand. O(N·L + ΣP + C·K·L²).
+A full run, without labels: load, budget, fit, rules, candidates, score, cluster, write, report. Writes the workspace: gold.parquet, matches/, rule_kept/, proposed/, set_aside/, state/, steps.json, and for people qa.md, report.txt, review.parquet and kind_review.parquet. With a trust line (method.toml trust), only pairs scoring at or above it join; the rest wait for people. A folder that holds a run is refused without --overwrite; people's decisions and answers in it stand. O(N·L + ΣP + C·K·L²).
 
 | Parameter | |
 |---|---|
@@ -466,14 +468,15 @@ nayose rerun records --workspace workspaces/customers
 What a workspace holds.
 
 ```
-nayose describe workspace WORKSPACE [--format text|json]
+nayose describe workspace WORKSPACE [--pipeline PIPELINE] [--format text|json]
 ```
 
-Records and entities, the largest entities, each run so far, the pairs and kinds still open and the answers written in, records set aside, a write still owed, the last summary, and the round with its audits. O(N) in SQL.
+Records and entities, the largest entities, each run so far, the pairs and kinds still open and the answers written in, records set aside, a write still owed, the last summary, the round with its audits, and the trust line. O(N) in SQL.
 
 | Parameter | |
 |---|---|
 | `WORKSPACE` | the workspace |
+| `--pipeline PIPELINE` | the pipeline file (default: config/final.toml) |
 
 | Result | |
 |---|---|
@@ -489,6 +492,7 @@ Records and entities, the largest entities, each run so far, the pairs and kinds
 | `summary` | the last run's summary |
 | `round` | the round now: one per method the workspace ran (rounds.json) |
 | `audits` | this round's audits people decided: checked, false |
+| `trust` | the trust line (none: the method as tuned): line (none: above every step), next (the range checked next: down_to, up_to), its pairs, checked, false, needed, may_lower; above (the pairs above the line: pairs, checked, false); checks |
 | `inputs` | the records files given to it, each in inputs/: name, path, files, bytes, read (by a run) |
 | `columns` | own: its columns.toml; project: config/settings.toml's |
 | `next` | the commands that usually follow |
@@ -580,6 +584,7 @@ From the run in the workspace and people's decisions: each round so far (a round
 | `steps` | comparison, level, bits, reached |
 | `proposals` | change (method.toml keys), why |
 | `trials` | the trials kept (the last 5), as try method gave them |
+| `trust` | the trust line (none: the method as tuned): line (none: above every step), next (the range checked next: down_to, up_to), its pairs, checked, false, needed, may_lower; above (the pairs above the line: pairs, checked, false); checks |
 | `next` | the commands that usually follow |
 
 ```bash
@@ -676,6 +681,60 @@ Removes the workspace's method.toml, then runs the workspace's files again, as r
 
 ```bash
 nayose reset method --workspace workspaces/customers
+```
+
+## nayose lower trust
+
+Merge the next range of scores without people, once its sample is clean.
+
+```
+nayose lower trust --workspace WORKSPACE [--pipeline PIPELINE] [--compute KEY=VALUE …] [--format text|json]
+```
+
+The trust line (the workspace's method.toml trust): pairs scoring at or above it merge without people. It steps down one range ([trust] steps) once people answered checks pairs of that range (or all of them), drawn at random, and found none false: at most 1% false at 95% for 300. Refused before then. Then runs the workspace's files again with the new line, as rerun records does; method.toml is left as it was if the run fails. O(a full run).
+
+| Parameter | |
+|---|---|
+| `--workspace WORKSPACE` | the workspace: the folder that keeps one matching job (required) |
+| `--pipeline PIPELINE` | the pipeline file (default: config/final.toml) |
+| `--compute KEY=VALUE` | DuckDB limits for this run, over config/settings.toml [compute]: memory_limit=8GB, threads=4, temp_directory=<folder> (past the memory limit DuckDB spills there) |
+
+| Result | |
+|---|---|
+| `summary` | the run in words: records, entities, who joined them, the model's links, what is left to people |
+| `seconds` | the run's time |
+| `wrote` | the files written |
+| `next` | the commands that usually follow |
+
+```bash
+nayose lower trust --workspace workspaces/customers
+```
+
+## nayose raise trust
+
+Take a range of scores back to people.
+
+```
+nayose raise trust --workspace WORKSPACE [--pipeline PIPELINE] [--compute KEY=VALUE …] [--format text|json]
+```
+
+Raises the trust line one step (or starts one, above every step, on a workspace without: nothing then merges before people check), then runs the workspace's files again; method.toml is left as it was if the run fails. For when a spot-check above the line finds a false link. O(a full run).
+
+| Parameter | |
+|---|---|
+| `--workspace WORKSPACE` | the workspace: the folder that keeps one matching job (required) |
+| `--pipeline PIPELINE` | the pipeline file (default: config/final.toml) |
+| `--compute KEY=VALUE` | DuckDB limits for this run, over config/settings.toml [compute]: memory_limit=8GB, threads=4, temp_directory=<folder> (past the memory limit DuckDB spills there) |
+
+| Result | |
+|---|---|
+| `summary` | the run in words: records, entities, who joined them, the model's links, what is left to people |
+| `seconds` | the run's time |
+| `wrote` | the files written |
+| `next` | the commands that usually follow |
+
+```bash
+nayose raise trust --workspace workspaces/customers
 ```
 
 ## nayose draw pairs

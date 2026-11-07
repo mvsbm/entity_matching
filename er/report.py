@@ -68,17 +68,21 @@ def qa(run: "Run", fields: list[str] | None = None, review: int = 50, previous: 
     sizes = con.sql("SELECT n AS cluster_size, count(*) AS clusters FROM (SELECT count(*) AS n FROM gold GROUP BY cluster_id) GROUP BY 1 ORDER BY 1").df()
     largest = con.sql("SELECT cluster_id, count(*) AS records FROM gold GROUP BY 1 ORDER BY 2 DESC, 1 LIMIT 10").df()
     con.execute(f"CREATE TABLE IF NOT EXISTS er_decisions ({l} VARCHAR, {r} VARCHAR, decision VARCHAR)")
-    decide = con.sql(f"""SELECT * EXCLUDE (k1, k2) FROM (
-            SELECT s.*, c.sources, least(ga.cluster_id, gb.cluster_id) AS k1, greatest(ga.cluster_id, gb.cluster_id) AS k2
-            FROM scores s JOIN cands c USING ({l}, {r}) JOIN gold ga ON ga.{u} = s.{l} JOIN gold gb ON gb.{u} = s.{r}
-            WHERE s.match_weight >= {lo} AND (s.match_weight < {t} OR NOT {named_sql(run.pipeline.fs)}) AND ga.cluster_id <> gb.cluster_id
-              AND NOT EXISTS (SELECT 1 FROM er_decisions d WHERE d.{l} = s.{l} AND d.{r} = s.{r}))
-        QUALIFY row_number() OVER (PARTITION BY k1, k2 ORDER BY match_weight DESC, {l}, {r}) = 1
-        ORDER BY match_weight DESC, {l}, {r}""").df().assign(why="decide")
-    audit = con.sql(f"""SELECT * EXCLUDE (k) FROM (SELECT s.*, m.sources, row_number() OVER (PARTITION BY floor(s.match_weight) ORDER BY hash(s.{l}, s.{r})) AS k
-                        FROM matches m JOIN scores s USING ({l}, {r}) WHERE s.match_weight < {t + 4}
-                          AND NOT EXISTS (SELECT 1 FROM er_decisions d WHERE d.{l} = s.{l} AND d.{r} = s.{r}))
-                        WHERE k <= {max(1, review // 4)} ORDER BY match_weight, {l}, {r}""").df().assign(why="audit")
+    if run.pipeline.trust.line is not None:  # with a trust line: the next range's sample, and spot-checks above the line
+        decide, audit = trust_sheet(run)
+        lo, t = run.pipeline.trust.below() or (run.pipeline.trust.line, run.pipeline.trust.line)
+    else:
+        decide = con.sql(f"""SELECT * EXCLUDE (k1, k2) FROM (
+                SELECT s.*, c.sources, least(ga.cluster_id, gb.cluster_id) AS k1, greatest(ga.cluster_id, gb.cluster_id) AS k2
+                FROM scores s JOIN cands c USING ({l}, {r}) JOIN gold ga ON ga.{u} = s.{l} JOIN gold gb ON gb.{u} = s.{r}
+                WHERE s.match_weight >= {lo} AND (s.match_weight < {t} OR NOT {named_sql(run.pipeline.fs)}) AND ga.cluster_id <> gb.cluster_id
+                  AND NOT EXISTS (SELECT 1 FROM er_decisions d WHERE d.{l} = s.{l} AND d.{r} = s.{r}))
+            QUALIFY row_number() OVER (PARTITION BY k1, k2 ORDER BY match_weight DESC, {l}, {r}) = 1
+            ORDER BY match_weight DESC, {l}, {r}""").df().assign(why="decide")
+        audit = con.sql(f"""SELECT * EXCLUDE (k) FROM (SELECT s.*, m.sources, row_number() OVER (PARTITION BY floor(s.match_weight) ORDER BY hash(s.{l}, s.{r})) AS k
+                            FROM matches m JOIN scores s USING ({l}, {r}) WHERE s.match_weight < {t + 4}
+                              AND NOT EXISTS (SELECT 1 FROM er_decisions d WHERE d.{l} = s.{l} AND d.{r} = s.{r}))
+                            WHERE k <= {max(1, review // 4)} ORDER BY match_weight, {l}, {r}""").df().assign(why="audit")
     steps = pd.DataFrame(run.steps)
     base = ["step", "big_o", "filled", "seconds", "peak_memory_gb"]
     number = lambda v: isinstance(v, int | float) and not isinstance(v, bool) and not math.isnan(v)  # a list (generators) is no fact
@@ -90,6 +94,7 @@ def qa(run: "Run", fields: list[str] | None = None, review: int = 50, previous: 
         sheet = carry_over(run, pd.read_parquet(previous), sheet, previous.parent)
     decide = sheet[sheet["why"] == "decide"]
     queue = pd.DataFrame(dict(why=["decide", "audit"], pairs=[len(decide), len(audit)], from_bits=[lo, t], below_bits=[t, t + 4]))
+    queue = queue.replace([math.inf, -math.inf], None)  # no trust line yet: the range from the top step up
     fs, aside = run.pipeline.fs, run.con.execute("SELECT count(*) FROM set_aside").fetchall()[0][0]
     total, entities, biggest, by_rules, by_model, by_people = con.execute(f"""SELECT count(*), count(DISTINCT cluster_id), max(n),
         count(*) FILTER (WHERE resolved_stage = '{fs.previous_stage}'), count(*) FILTER (WHERE resolved_stage = '{fs.stage}'),
@@ -227,6 +232,65 @@ def report_text(run: "Run", tables: dict[str, pd.DataFrame], pipeline: Path) -> 
             *table(patterns.assign(bits=patterns["bits"].map(lambda x: f"{x:.2f}"), share_of_matches=patterns["share_of_matches"].map(lambda x: f"{x:.3%}")))]
     return "\n".join(out) + "\n"
 
+
+def bits(v: float) -> str:  # a weight in SQL; the trust line above everything is infinity
+    return "'Infinity'::DOUBLE" if math.isinf(v) else repr(float(v))
+
+
+def trust_sheet(run: "Run") -> tuple[pd.DataFrame, pd.DataFrame]:
+    """With a trust line: the next range's links (the rules' pairs and the model's named ones, from its next step down
+    to the line) that people have not decided, in a fixed random order (hash), as many as `checks` less those of the
+    range they decided already, and the model's pairs above its threshold with no name compared, which no line joins;
+    and `watch` spot-checks of the links at the line or above. O(E)."""
+    con, l, r, trust = run.con, q(run.l), q(run.r), run.pipeline.trust
+    links = f"""SELECT * FROM (SELECT s.* EXCLUDE (named, keep) FROM ({run.scored()}) s WHERE s.named AND s.keep
+                UNION ALL BY NAME SELECT x.*, k.rule AS sources FROM rule_kept k JOIN rule_scores x USING ({l}, {r}))
+                QUALIFY row_number() OVER (PARTITION BY {l}, {r} ORDER BY sources) = 1"""
+    open_ = f"NOT EXISTS (SELECT 1 FROM er_decisions d WHERE d.{l} = x.{l} AND d.{r} = x.{r})"
+    decide = pd.DataFrame()
+    if (span := trust.below()) is not None:
+        within = f"x.match_weight >= {bits(span[0])} AND x.match_weight < {bits(span[1])}"
+        done = con.execute(f"SELECT count(*) FROM ({links}) x WHERE {within} AND NOT {open_}").fetchall()[0][0]
+        decide = con.sql(f"SELECT * FROM ({links}) x WHERE {within} AND {open_} ORDER BY hash(x.{l}, x.{r}) LIMIT {max(0, trust.checks - done)}").df()
+    audit = con.sql(f"SELECT * FROM ({links}) x WHERE x.match_weight >= {bits(trust.line)} AND {open_} ORDER BY hash(x.{l}, x.{r}) LIMIT {trust.watch}").df()
+    unnamed = con.sql(f"""SELECT * EXCLUDE (named, keep) FROM ({run.scored()}) x WHERE NOT x.named AND x.keep
+        AND x.match_weight >= {run.pipeline.fs.min_match_weight} AND {open_} ORDER BY x.match_weight DESC""").df()  # no line joins them: people do
+    return pd.concat([decide, unnamed], ignore_index=True).assign(why="decide"), audit.assign(why="audit")
+
+
+def trust_state(con: duckdb.DuckDBPyConnection, out: Path, p: Pipeline, uid: str) -> dict | None:
+    """The trust line of the run in `out` (p.trust, the workspace's method.toml), and how far people are: the range
+    they check next (from the next step down to the line), its links (the rules' and the model's, in the run's
+    files), how many they decided and how many they found false, and whether the line may step down (`checks`
+    decided, or the whole range, none false); and the same for the links above the line, its spot-checks. None: no
+    trust line. O(E + D)."""
+    trust = p.trust
+    if trust.line is None:
+        return None
+    l, r = q(f"{uid}_l"), q(f"{uid}_r")
+    parts = [f"SELECT {l}, {r}, match_weight FROM read_parquet({lit(out / x / '*.parquet')}, union_by_name = true)"
+             for x in ("matches", "proposed", "rule_kept") if any((out / x).glob("*.parquet"))]
+    decided = applied(out, uid)[[f"{uid}_l", f"{uid}_r", "decision"]]
+    con.register("er_trust_decided", decided)
+
+    def count(where: str) -> dict:
+        if not parts:
+            return dict(pairs=0, checked=0, false=0)
+        pairs, checked, false = con.execute(f"""SELECT count(*), count(d.decision), count(*) FILTER (WHERE d.decision = 'no_match')
+            FROM (SELECT DISTINCT ON ({l}, {r}) * FROM ({' UNION ALL '.join(parts)})) x LEFT JOIN er_trust_decided d USING ({l}, {r})
+            WHERE {where}""").fetchall()[0]
+        return dict(pairs=pairs, checked=checked, false=false)
+    span = trust.below()
+    near = count(f"x.match_weight >= {bits(span[0])} AND x.match_weight < {bits(span[1])}") if span else dict(pairs=0, checked=0, false=0)
+    above = count(f"x.match_weight >= {bits(trust.line)}")
+    con.unregister("er_trust_decided")
+    needed = min(trust.checks, near["pairs"])
+    return dict(line="none" if math.isinf(trust.line) else trust.line,
+                next=dict(down_to=span[0], up_to=None if math.isinf(span[1]) else span[1]) if span else None,
+                **near, needed=needed, may_lower=span is not None and near["checked"] >= needed and not near["false"],
+                above=above, checks=trust.checks)
+
+
 def carry_over(run: "Run", previous: pd.DataFrame, sheet: pd.DataFrame, out: Path) -> pd.DataFrame:
     """The open review queue across increments: the previous sheet's decide rows that nobody gave back yet (none in
     decisions/) and whose records are still in different clusters, or that hold a decision typed in but not given back,
@@ -251,7 +315,7 @@ def carry_over(run: "Run", previous: pd.DataFrame, sheet: pd.DataFrame, out: Pat
 def review_sheet(run: "Run", pairs: pd.DataFrame) -> pd.DataFrame:
     """Scored pairs as people judge them, in the order given: both records' compared fields side by side, and per
     comparison the level the pair landed in and the bits it earned, which with the prior sum to its weight; whether the
-    run accepted it (in matches); an empty `decision` for people to fill in (match or no_match) and give to Run.decide. O(pairs)."""
+    run merged it (in kept: a rule's pair, the model's, or people's); an empty `decision` for people to fill in (match or no_match) and give to Run.decide. O(pairs)."""
     comps, uid = run.pipeline.fs.model.comparisons, run.uid
     fields = [f for f in dict.fromkeys(col for c in comps for col in (*c.null_if_missing, *(x for lv in c.levels for x, _ in lv.any_of)))
               if f in run.columns()]
@@ -259,7 +323,8 @@ def review_sheet(run: "Run", pairs: pd.DataFrame) -> pd.DataFrame:
     records = run.con.sql(f"SELECT {', '.join(q(c) for c in [uid, *fields])} FROM records JOIN er_review_ids USING ({q(uid)})").df()
     run.con.unregister("er_review_ids")
     run.con.register("er_review_pairs", pairs[[run.l, run.r]])
-    accepted = run.con.sql(f"SELECT p.*, m.{q(run.l)} IS NOT NULL AS accepted FROM er_review_pairs p LEFT JOIN matches m USING ({q(run.l)}, {q(run.r)})").df()
+    accepted = run.con.sql(f"""SELECT p.*, EXISTS (SELECT 1 FROM kept k WHERE k.{q(run.l)} = p.{q(run.l)} AND k.{q(run.r)} = p.{q(run.r)}) AS accepted
+        FROM er_review_pairs p""").df()
     run.con.unregister("er_review_pairs")
     out = pairs.merge(accepted, on=[run.l, run.r]).merge(records.add_suffix("_l"), on=run.l).merge(records.add_suffix("_r"), on=run.r)
     out["decision"] = pd.Series(pd.NA, index=out.index, dtype="string")
@@ -332,7 +397,8 @@ def describe_entity(con: duckdb.DuckDBPyConnection, out: Path, uid: str, record:
     rows = con.execute(f"SELECT e.*, {', '.join(f's.{q(f)}' for f in have) or 'NULL AS none'} FROM er_entity e "
                        f"JOIN {stored} s USING ({u}) ORDER BY e.{u}").df()
     among = f"WHERE {l} IN (SELECT {u} FROM er_entity) AND {r} IN (SELECT {u} FROM er_entity)"
-    links = [f"SELECT {l}, {r}, rule AS by, NULL::DOUBLE AS weight FROM read_parquet({lit(out / 'rule_kept' / '*.parquet')}) {among}",
+    links = [f"""SELECT {l}, {r}, rule AS by, NULL::DOUBLE AS weight FROM read_parquet({lit(out / 'rule_kept' / '*.parquet')}, union_by_name = true)
+                 {among} AND coalesce(merged, TRUE)""",  # a part written before merged was: every pair merged
              f"SELECT {l}, {r}, 'fs' AS by, match_weight AS weight FROM read_parquet({lit(out / 'matches' / '*.parquet')}) {among}"]
     if any((out / DECISIONS).glob("*.parquet")):
         links.append(f"SELECT {l}, {r}, 'people: ' || decision AS by, NULL FROM read_parquet({lit(out / DECISIONS / '*.parquet')}) {among}")
@@ -382,7 +448,8 @@ def describe_matching(con: duckdb.DuckDBPyConnection, out: Path | None, p: Pipel
         fields.append(item)
 
     # rules: what each compares, how, and the pairs it kept
-    kept = {name: (k, a, b) for name, k, a, b in rows(f"SELECT rule, count(*), min({l}), arg_min({r}, {l}) FROM {parquet('rule_kept/*.parquet')} GROUP BY 1")}
+    kept = {name: (k, a, b) for name, k, a, b in rows(f"""SELECT rule, count(*), min({l}), arg_min({r}, {l}) FROM {parquet('rule_kept/*.parquet')}
+        WHERE coalesce(merged, TRUE) GROUP BY 1""")}  # the pairs each rule joined: below a trust line, none until people check
     rules = [dict(stage=st.name, name=x.name, exact=list(x.exact),
                   fuzzy=[dict(field=c, function=st.comparators[c].function, threshold=st.comparators[c].threshold,
                               normalize=list(st.comparators[c].normalize)) for c in x.fuzzy],
@@ -583,5 +650,5 @@ def describe_method(out: Path, p: Pipeline, s: "Settings") -> dict:
                    matched=found.get(b.name, (0, 0))[0], only=found.get(b.name, (0, 0))[1]) for b in fs.blockers],
         steps=[dict(comparison=c, level=label, bits=round(bits, 2), reached=reached.get((c, g), 0))
                for c, by in by_gamma.items() for g, (label, bits) in sorted(by.items(), reverse=True)],
-        proposals=proposals,
+        proposals=proposals, trust=trust_state(con, out, p, uid),
         trials=sorted((json.loads(f.read_text(encoding="utf-8")) for f in (out / TRIALS).glob("*.json") if f.stem.isdigit()), key=lambda x: x["trial"]))

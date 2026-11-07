@@ -113,13 +113,14 @@ Everything is in the workspace. A run also reads `config/kind_names.npz`, the na
 |---|---|---|---|
 | `gold.parquet` | record | `cluster_id` (the smallest record ID of its cluster); `resolved_stage` (`deterministic`, `probabilistic` or `review`; empty for a record found alone); `resolved_by` (the rule, `fs` for the model, or `review` for people); `kind` (1 person, 2 company, 0 not sure), `kind_p` (the probability of a company), `kind_by` (`engine` or `people`), `kind_held` (held back from matching: the engine and the flag disagree) and `customer_kind`, the entity's (2 if any record surely is a company; 1 if none leans company and one surely is a person; else 0) | give every record its entity, and every entity its kind |
 | `matches/` | accepted pair | both IDs; `match_weight` in bits; `match_probability`; `sources`, the candidate generators that listed it | see why two records were joined |
-| `rule_kept/` | pair a rule accepted | both IDs, the rule and its stage | audit the rules |
+| `rule_kept/` | pair a rule found | both IDs, the rule and its stage; `match_weight`, the model's bits for it; `merged`, whether it joined (at the trust line or above, or no line set; and not decided no_match) | audit the rules |
+| `proposed/` | the model's pair below the trust line | both IDs, `match_weight`, `match_probability`, `sources`; empty with no trust line | the pairs waiting for people, or for the line to come down |
 | `qa.md` | | the summary; each field's fill rate (flagged under 5%), the share that looks right and the share of its most common value; what was turned off; each step's Big-O, time and memory; pairs by weight; cluster sizes; the 10 largest clusters; match patterns no key guarantees; the review queue; records and customers by kind; clusters holding both a sure person and a sure company; the oversized blocks and what was decided for each | check the run without labels |
 | `report.txt` | | the run on one page of plain text, with no record's value in it: what ran (the code, the tracked files changed in this copy, the pipeline, the machine's limits), the summary, the fields, scores and links by weight with the false links expected, cluster sizes, each step's time and memory, the model's m, u and bits per level, the costliest blocks (a full run), the match patterns no key pairs | send it to whoever helps with the run ([section 7](#7--when-something-is-wrong)) |
-| `review.parquet` | pair for people | `why` (`decide` or `audit`); an empty `decision`; both records' compared fields; per comparison, the level reached and its bits; `accepted`, whether the run accepted the pair | decide the pairs just below the line and those above it with no name compared, audit those just above ([section 6](#6--review-and-decide)) |
+| `review.parquet` | pair for people | `why` (`decide` or `audit`); an empty `decision`; both records' compared fields; per comparison, the level reached and its bits; `accepted`, whether the run joined the pair | decide the next range below the trust line and audit above it, or, with no line, decide the pairs just below the threshold and those above it with no name compared, and audit those just above ([section 6](#6--review-and-decide)) |
 | `kind_review.parquet` | record for people | `why` (`decide` or `measure`), `reason` in words, `engine_says`, `name_says`, `flag` and `birth_date` if the file has them, the name; `engine` and `engine_p` (the engine's kind and its probability of a company), `name_p`, `drawn`; an empty `kind` | answer 1 person, 2 company or 0 can't tell ([section 6](#6--review-and-decide)) |
 | `decisions/` | decided pair | both IDs and `decision`; `why` (`decide` or `audit`) when the sheet had it; `round`, the round it was decided in; one part per file people gave back | what people decided; a full run applies it again |
-| `method.toml` | | the workspace's changes to the tuned method: `line`, `drop_rules`, `drop_keys` | every command on the workspace runs the method it says ([section 6](#improve-the-method)) |
+| `method.toml` | | the workspace's changes to the tuned method: `trust` (the trust line), `line`, `drop_rules`, `drop_keys` | every command on the workspace runs the method it says ([section 6](#the-trust-line)) |
 | `rounds.json` | round | per method the workspace ran: its `config` hash, `method`, when, the links it made and the false links the model expects | see each round's results side by side |
 | `trials/` | trial | each trial's result (`<n>.json`, the last 5); the clusters of the method it was tried against (`base.parquet`, `base.json`) | `adopt method --trial n` |
 | `kind_answers/` | answered record | the answered rows of each `kind_review.parquet` given back, one part per sheet, as given | what people answered; every later run reads it |
@@ -159,6 +160,19 @@ WHERE o.cluster_id IS DISTINCT FROM n.cluster_id;
 
 ## 6 · Review and decide
 
+### The trust line
+
+A file comes with no answer sheet, so how often a score is right on it is not known until people check. The trust line is one number per workspace, its `method.toml` `trust`: pairs scoring at or above it, a rule's or the model's, join without people. A workspace made with `nayose create workspace` starts with `trust = "none"`, above every step: nothing joins before people check.
+
+- **The next range.** Each run puts on `review.parquet` a random sample of the pairs from the next step down to the line (`[trust] steps`: 20, 12, 8, 6, 0 bits), 300 of them (`checks`), less those already decided. A pair people say is the same joins at once; one they say is different never joins.
+- **Lowering it.** When the sample's 300 are decided and none is false (at most 1% false, at 95% confidence; a range with fewer pairs is decided whole), `nayose lower trust --workspace W` moves the line down one step and runs the files again: the whole range joins. It refuses before then, and says how far the sample is.
+- **Watching above it.** Each run also puts 20 spot-checks (`watch`) of the pairs above the line on the sheet. One found false: `nayose raise trust --workspace W` moves the line back up a step, and that range waits for people again.
+- **Never by itself.** A rule's pair the model scores below the last step, and a model pair with no name compared, join only when people say so.
+
+`nayose describe workspace W` says where the line is, the range checked next, how many of its pairs are decided and how many were found false. A workspace with no `trust` runs the method as tuned: every rule's pair, and the model's at 8 bits with a name compared.
+
+### Without a trust line
+
 The run accepts a pair at 8 bits or more. Just below that line, from 6 to 8 bits, is the threshold rule's safety margin: pairs that were never wrong on cross-validated training data, but are held back in case of noise. People decide them. On the synthetic val split, the margin holds 112 pairs, all true: accepting them would raise recall from 46.3% to 51.7%, with no false merge. One grid step lower, at 4 bits, the first false pair appears ([results](results.md)).
 
 `review.parquet` has two kinds of rows, named in `why`:
@@ -179,7 +193,7 @@ List the open pairs, decide each, then apply the decisions:
 Each decision is written into the workspace's `review.parquet` (its `decision` column) and applied by `apply decisions`. `list pairs` marks each row open, written in, or applied. A sheet filled in elsewhere, any file with the two ID columns and `decision`, goes back with `apply decisions --file reviewed.parquet`.
 
 - **`match`** joins the two clusters at once, scoring nothing. A record joined only this way gets `resolved_by` = `review`.
-- **`no_match`** splits nothing at once. It is kept, and a full run never accepts the pair. It applies to that pair only: a third record can still join the two.
+- **`no_match`** splits nothing at once. It is kept, and a full run never joins the pair, by the model or by a rule. It applies to that pair only: a third record can still join the two.
 - **Kept for good.** Decisions are stored in `decisions/`, which every full run on the same folder applies again. `decisions/` and `kind_answers/` are people's work: back them up. Rows without a decision are skipped, and a decision applied before changes nothing, so applying a sheet twice is harmless.
 
 ### Improve the method

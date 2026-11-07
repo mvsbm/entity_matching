@@ -817,6 +817,7 @@ def test_a_name_added_in_another_script_is_compared_beside_the_kana_one(tmp_path
     joined = lambda w: (lambda gold: gold.loc[a, "cluster_id"] == gold.loc[b, "cluster_id"])(pd.read_parquet(tmp_path / "workspaces" / w / "gold.parquet").set_index(uid))
     for w in ("kana", "kanji"):
         say("create", "workspace", w)
+        (tmp_path / "workspaces" / w / "method.toml").unlink()  # the method as tuned: this is about matching, not the trust line
         say("load", "records", "theirs.parquet", "--workspace", f"workspaces/{w}")
     code_, e = say("add", "feature", "Name/Kanji name", "--type", "person name", "--script", "kanji", "--column", "SHIMEI", "--workspace", "workspaces/kanji")
     assert code_ == 0 and "Name/Kanji name" in [x["feature"] for x in e["slots"]]
@@ -1048,8 +1049,9 @@ def test_a_workspace_s_method_changes_the_tuned_one_only_where_it_says(tmp_path)
     assert q.fs.min_match_weight == 9.5 and rule not in {r.name for _, _, r in q.rules.each()}
     assert [b.name for b in q.fs.blockers] == [b.name for b in p.fs.blockers if b.name != "cif"]
     assert config_hash(q) != config_hash(p) and q.rules.stages[0] == p.rules.stages[0] and q.fs.model == p.fs.model
+    assert adjust(p, {"trust": "none"}).trust.line == math.inf and adjust(p, {"trust": 12}).trust.below() == (8.0, 12.0)
     for bad, says in (({"drop_keys": ["nope"]}, "no rule or pair key named"), ({"lines": 9}, "unknown keys"), ({"line": "9"}, "a weight in bits"),
-                      ({"drop_keys": "cif"}, "lists of names"),
+                      ({"drop_keys": "cif"}, "lists of names"), ({"trust": 7}, "one of the steps"), ({"trust": "all"}, "one of the steps"),
                       ({"drop_keys": [b.name for b in p.fs.blockers]}, "leaves no pair key")):
         with pytest.raises(InputError, match=says):
             adjust(p, bad)
@@ -1132,6 +1134,7 @@ def test_a_bad_rule_is_found_tried_and_left_out_and_audits_reach_every_kind_of_l
         return code_, json.loads(capsys.readouterr().out.splitlines()[-1])
 
     say("create", "workspace", "w")
+    (ws / "method.toml").unlink()  # the method as tuned: this is about improving it, not the trust line
     say("load", "records", "theirs.parquet", "--workspace", "workspaces/w")
     assert say("resolve", "records", *pipe)[0] == 0
     tuned = (ws / "state" / "config.txt").read_text()
@@ -1193,6 +1196,80 @@ def test_a_bad_rule_is_found_tried_and_left_out_and_audits_reach_every_kind_of_l
     assert say("reset", "method", *pipe)[0] == 0
     assert not (ws / "method.toml").exists() and (ws / "state" / "config.txt").read_text() == tuned
     assert len(folder.rounds(ws)) == 3
+
+
+def test_the_trust_line_merges_only_ranges_people_proved_and_steps_down_one_at_a_time(tmp_path, population, capsys, monkeypatch):
+    import er.cli as cli
+    from er import folder
+    from er.config import dump_pipeline
+    s, p, g = population
+    uid, ent = s.data.unique_id, s.data.entity_id
+    l, r = f"{uid}_l", f"{uid}_r"
+    dump_pipeline(replace(p, trust=replace(p.trust, checks=8, watch=3)), s.chains, tmp_path / "small.toml")  # a sample of 8, to test on 492 records
+    g.df.iloc[:400].to_parquet(tmp_path / "theirs.parquet", index=False)
+    g.df.iloc[400:].to_parquet(tmp_path / "batch.parquet", index=False)
+    monkeypatch.chdir(tmp_path)
+    ws, pipe = tmp_path / "workspaces" / "w", ("--workspace", "workspaces/w", "--pipeline", "small.toml")
+    truth = g.truth.set_index(uid)[ent]
+
+    def say(*words: object) -> tuple[int, dict]:
+        code_ = cli.main([*map(str, words), "--format", "json"])
+        return code_, json.loads(capsys.readouterr().out.splitlines()[-1])
+
+    def decide_by_truth() -> None:  # people answer every open row of the sheet, rightly
+        sheet = pd.read_parquet(ws / "review.parquet")
+        sheet = sheet[sheet["decision"].isna()].assign(decision=lambda x: np.where(x[l].map(truth) == x[r].map(truth), "match", "no_match"))
+        sheet.to_parquet(tmp_path / "decided.parquet")
+        assert say("apply", "decisions", "--file", "decided.parquet", *pipe)[0] == 0
+
+    say("create", "workspace", "w")
+    assert folder.method(ws) == {"trust": "none"}  # a new workspace starts strict
+    say("load", "records", "theirs.parquet", "--workspace", "workspaces/w")
+    assert say("resolve", "records", *pipe)[0] == 0
+    gold = pd.read_parquet(ws / "gold.parquet")
+    assert gold["cluster_id"].nunique() == len(gold) and not pd.read_parquet(ws / "rule_kept")["merged"].any()  # nothing merged
+    trust = say("describe", "workspace", "workspaces/w", "--pipeline", "small.toml")[1]["trust"]
+    assert trust["line"] == "none" and trust["next"] == {"down_to": 20.0, "up_to": None}
+    assert trust["pairs"] == trust["needed"] == 0 and trust["may_lower"]  # nothing scores 20 on 492 records: nothing there can be false
+    tuned = (ws / "state" / "config.txt").read_text()
+    assert say("lower", "trust", *pipe)[0] == 0 and folder.method(ws) == {"trust": 20.0}
+    trust = say("describe", "workspace", "workspaces/w", "--pipeline", "small.toml")[1]["trust"]
+    assert trust["next"] == {"down_to": 12.0, "up_to": 20.0} and trust["checked"] == 0 < trust["needed"] <= 8
+    assert say("lower", "trust", *pipe)[0] == 2  # not proven yet
+    sheet = pd.read_parquet(ws / "review.parquet")
+    sample = sheet[sheet["why"] == "decide"]
+    assert len(sample) == trust["needed"] and sample["match_weight"].between(12, 20, inclusive="left").all() and not sample.duplicated([l, r]).any()
+    decide_by_truth()
+    trust = say("describe", "workspace", "workspaces/w", "--pipeline", "small.toml")[1]["trust"]
+    assert trust["checked"] == trust["needed"] and trust["may_lower"] == (trust["false"] == 0)
+    assert trust["false"] == 0  # 12 bits and more: right on this population
+
+    assert say("lower", "trust", *pipe)[0] == 0 and folder.method(ws) == {"trust": 12.0}
+    kept = pd.read_parquet(ws / "rule_kept")
+    assert kept["merged"].any() and (kept.loc[kept["merged"], "match_weight"] >= 12).all() and (kept.loc[~kept["merged"], "match_weight"] < 12).all()
+    assert (pd.read_parquet(ws / "matches")["match_weight"] >= 12).all() and (pd.read_parquet(ws / "proposed")["match_weight"] < 12).all()
+    assert (ws / "state" / "config.txt").read_text() != tuned and len(folder.rounds(ws)) == 3
+    trust = say("describe", "workspace", "workspaces/w", "--pipeline", "small.toml")[1]["trust"]
+    assert trust["line"] == 12.0 and trust["next"] == {"down_to": 8.0, "up_to": 12.0} and trust["above"]["pairs"] > 0
+    assert (pd.read_parquet(ws / "review.parquet").query("why == 'audit'")["match_weight"] >= 12).all()  # spot-checks above the line
+
+    pair = kept[kept["merged"]].iloc[0]  # people say a merged rule pair is no match: it stays apart from then on
+    pd.DataFrame({l: [pair[l]], r: [pair[r]], "decision": ["no_match"]}).to_parquet(tmp_path / "no.parquet")
+    assert say("apply", "decisions", "--file", "no.parquet", *pipe)[0] == 0 and say("rerun", "records", *pipe)[0] == 0
+    again = pd.read_parquet(ws / "rule_kept").set_index([l, r])
+    assert not again.loc[(pair[l], pair[r]), "merged"]
+
+    assert say("add", "records", "batch.parquet", *pipe)[0] == 0  # a batch: above the line merges, below waits
+    part = sorted((ws / "rule_kept").glob("part-*.parquet"))[-1]
+    batch = pd.read_parquet(part)
+    assert (batch["merged"] == (batch["match_weight"] >= 12)).all()
+
+    assert say("raise", "trust", *pipe)[0] == 0 and folder.method(ws) == {"trust": 20.0}  # a step up
+    assert say("raise", "trust", *pipe)[0] == 0 and folder.method(ws) == {"trust": "none"}  # back to people for everything
+    gold = pd.read_parquet(ws / "gold.parquet").set_index(uid)
+    joined = gold.groupby("cluster_id").filter(lambda x: len(x) > 1)
+    assert joined["resolved_by"].eq("review").all()  # only what people said is the same
+    assert say("raise", "trust", *pipe)[0] == 2  # above every step already
 
 
 def test_an_increment_counts_exact_u_again_and_samples_only_a_drifted_comparison(tmp_path, population, monkeypatch):
