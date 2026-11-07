@@ -5,86 +5,223 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>nayose</title>
 <style>
-:root { --bg: #fbfbfa; --panel: #ffffff; --ink: #1d2125; --muted: #5d6670; --line: #dfe2e6; --accent: #2457c5; --accent-ink: #ffffff;
-        --good: #1f7a3d; --bad: #b3261e; --mark: #fff1c2; --mark-ink: #5a4500; --code: #f2f4f6; }
+:root {
+  --bg: #f8fafd; --surface: #ffffff; --hover: #eef2f8; --sel: #d3e3fd; --sel-ink: #041e49;
+  --primary: #0b57d0; --on-primary: #ffffff; --primary-soft: #e8f0fe;
+  --ink: #1f1f1f; --muted: #444746; --faint: #747775; --outline: #c4c7c5; --line: #e3e3e3;
+  --good: #146c2e; --good-bg: #e6f4ea; --bad: #b3261e; --bad-bg: #fce8e6; --warn: #7a5900; --warn-bg: #fef7e0;
+  --mark: #fff4ce; --mark-ink: #3d2e00; --term: #1e1f20; --term-ink: #e3e3e3; --term-dim: #9aa0a6; --term-ok: #6dd58c; --term-bad: #f2b8b5;
+  --shadow: 0 1px 2px rgba(0,0,0,.08), 0 1px 3px 1px rgba(0,0,0,.06);
+}
 @media (prefers-color-scheme: dark) {
-  :root { --bg: #15181b; --panel: #1d2125; --ink: #e8eaed; --muted: #9aa3ad; --line: #343a40; --accent: #7ea6ff; --accent-ink: #0d1117;
-          --good: #6fcf8f; --bad: #ff8a80; --mark: #4a3d12; --mark-ink: #ffe7a3; --code: #262b30; }
+  :root {
+    --bg: #131314; --surface: #1e1f20; --hover: #282a2c; --sel: #004a77; --sel-ink: #c2e7ff;
+    --primary: #a8c7fa; --on-primary: #062e6f; --primary-soft: #1f3760;
+    --ink: #e3e3e3; --muted: #c4c7c5; --faint: #8e918f; --outline: #5c5f5e; --line: #3c4043;
+    --good: #6dd58c; --good-bg: #0f3d1f; --bad: #f2b8b5; --bad-bg: #4b1713; --warn: #fdd663; --warn-bg: #3d2f00;
+    --mark: #4a3f10; --mark-ink: #ffe7a3; --term: #0e0e0f; --shadow: 0 1px 3px rgba(0,0,0,.5);
+  }
 }
 * { box-sizing: border-box; }
-body { margin: 0; background: var(--bg); color: var(--ink); font: 15px/1.45 system-ui, -apple-system, "Hiragino Sans", "Noto Sans JP", sans-serif; }
-header { position: sticky; top: 0; z-index: 2; background: var(--panel); border-bottom: 1px solid var(--line); padding: 10px 16px; }
-.top { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
-.brand { font-weight: 700; }
-.brand small { font-weight: 400; color: var(--muted); }
-nav { display: flex; gap: 4px; flex-wrap: wrap; margin-top: 8px; }
-nav button { border: 1px solid var(--line); background: transparent; color: var(--ink); border-radius: 999px; padding: 4px 12px; cursor: pointer; }
-nav button[aria-current="page"] { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
-main { max-width: 1100px; margin: 0 auto; padding: 16px; }
-section.panel { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px; margin-bottom: 14px; overflow-x: auto; }
-h2 { font-size: 18px; margin: 0 0 4px; }
-p.what { color: var(--muted); margin: 0 0 12px; }
-label { display: inline-flex; gap: 6px; align-items: center; margin: 4px 12px 4px 0; }
-input[type=text] { font: inherit; padding: 5px 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); color: var(--ink); min-width: 18em; }
-select { font: inherit; padding: 4px 6px; border-radius: 6px; border: 1px solid var(--line); background: var(--bg); color: var(--ink); }
-button.go { font: inherit; padding: 6px 14px; border-radius: 6px; border: 1px solid var(--accent); background: var(--accent); color: var(--accent-ink); cursor: pointer; margin: 4px 8px 4px 0; }
-button.plain { font: inherit; padding: 5px 12px; border-radius: 6px; border: 1px solid var(--line); background: transparent; color: var(--ink); cursor: pointer; margin: 4px 8px 4px 0; }
-button:disabled { opacity: .5; cursor: default; }
-table { border-collapse: collapse; width: 100%; }
-th, td { text-align: left; padding: 5px 8px; border-bottom: 1px solid var(--line); vertical-align: top; }
-th { color: var(--muted); font-weight: 600; font-size: 13px; }
-td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
-tr.differ td.v { background: var(--mark); color: var(--mark-ink); }
-.err { border-left: 4px solid var(--bad); padding: 8px 12px; background: var(--code); margin: 8px 0; }
-.ok { color: var(--good); }
-.bad { color: var(--bad); }
+html, body { height: 100%; }
+body { margin: 0; overflow-x: hidden; background: var(--bg); color: var(--ink); font: 14px/1.43 Roboto, system-ui, -apple-system, "Segoe UI", "Hiragino Sans", "Noto Sans JP", sans-serif; }
+.ic { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; flex: none; }
+button { font: inherit; color: inherit; }
+:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; }
+
+/* the app bar */
+.appbar { position: fixed; inset: 0 0 auto 0; height: 56px; z-index: 5; display: flex; align-items: center; gap: 8px; padding: 0 8px 0 4px;
+          background: var(--surface); border-bottom: 1px solid var(--line); }
+.iconbtn { display: inline-grid; place-items: center; width: 40px; height: 40px; border-radius: 50%; border: 0; background: transparent; cursor: pointer; color: var(--muted); }
+.iconbtn:hover { background: var(--hover); }
+.iconbtn[aria-pressed="true"] { background: var(--sel); color: var(--sel-ink); }
+.logo { display: flex; align-items: center; gap: 8px; font-size: 20px; color: var(--ink); white-space: nowrap; margin-right: 8px; }
+.mark { display: inline-grid; place-items: center; width: 28px; height: 28px; border-radius: 7px; background: var(--primary); color: var(--on-primary); font-size: 15px; font-weight: 600; }
+.picker { display: inline-flex; align-items: center; gap: 6px; height: 36px; padding: 0 10px; border: 1px solid var(--outline); border-radius: 8px; background: transparent;
+          cursor: pointer; max-width: 260px; }
+.picker span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.picker:hover { background: var(--hover); }
+.search { flex: 1; min-width: 0; display: flex; align-items: center; gap: 8px; max-width: 720px; margin: 0 auto; height: 44px; padding: 0 14px; border-radius: 22px; background: var(--hover); color: var(--muted); }
+.search input { flex: 1; width: 100%; border: 0; background: transparent; color: var(--ink); font: inherit; font-size: 15px; outline: none; min-width: 0; }
+.search kbd { border: 1px solid var(--outline); border-radius: 4px; padding: 0 5px; font-size: 12px; }
+
+/* the side navigation */
+.sidenav { position: fixed; top: 56px; bottom: 0; left: 0; width: 256px; overflow-y: auto; padding: 8px 12px 8px 0; background: var(--surface); border-right: 1px solid var(--line); z-index: 4; }
+.sidenav h3 { margin: 16px 0 4px 24px; font-size: 11px; font-weight: 500; letter-spacing: .08em; color: var(--faint); text-transform: uppercase; }
+.navitem { display: flex; align-items: center; gap: 16px; width: 100%; height: 40px; padding: 0 16px 0 24px; border: 0; border-radius: 0 20px 20px 0; background: transparent;
+           cursor: pointer; text-align: left; color: var(--ink); font-weight: 500; }
+.navitem:hover { background: var(--hover); }
+.navitem[aria-current="page"] { background: var(--sel); color: var(--sel-ink); }
+.navitem .count { margin-left: auto; font-size: 12px; color: var(--faint); }
+body.collapsed .sidenav { width: 72px; }
+body.collapsed .sidenav h3, body.collapsed .navitem span { display: none; }
+body.collapsed main { margin-left: 72px; }
+
+/* the page */
+main { margin: 56px 0 0 256px; padding: 0 24px 120px; min-height: calc(100% - 56px); }
+.pagehead { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; min-height: 64px; border-bottom: 1px solid var(--line); margin: 0 -24px 16px; padding: 8px 24px; background: var(--surface); }
+.pagehead h1 { font-size: 22px; font-weight: 400; margin: 0 16px 0 0; }
+.btn { display: inline-flex; align-items: center; gap: 6px; height: 36px; padding: 0 16px; border-radius: 18px; border: 1px solid transparent; background: transparent; cursor: pointer;
+       font-weight: 500; letter-spacing: .01em; color: var(--primary); white-space: nowrap; text-decoration: none; }
+.btn:hover { background: var(--primary-soft); }
+.btn.filled { background: var(--primary); color: var(--on-primary); }
+.btn.filled:hover { box-shadow: var(--shadow); filter: brightness(1.05); }
+.btn.outlined { border-color: var(--outline); }
+.btn:disabled { opacity: .45; cursor: default; box-shadow: none; }
+.btn .badge { background: var(--on-primary); color: var(--primary); border-radius: 10px; padding: 0 7px; font-size: 12px; }
+.card { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 16px 20px; margin-bottom: 16px; }
+.card h2 { display: flex; align-items: center; gap: 8px; font-size: 16px; font-weight: 500; margin: 0 0 12px; }
 .muted { color: var(--muted); }
-code, .cmd { font: 13px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace; background: var(--code); padding: 1px 5px; border-radius: 4px; overflow-wrap: anywhere; }
-.steps { font: 13px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--muted); white-space: pre-wrap; }
-.card { display: grid; grid-template-columns: 1fr; gap: 10px; }
-.big { font-size: 26px; font-weight: 600; }
+.faint { color: var(--faint); }
+.tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 16px; margin-bottom: 16px; }
+.tile { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 14px 18px; }
+.tile[data-go] { cursor: pointer; }
+.tile[data-go]:hover { box-shadow: var(--shadow); }
+.tile .k { color: var(--muted); font-size: 13px; }
+.tile .v { font-size: 28px; font-weight: 400; margin-top: 4px; font-variant-numeric: tabular-nums; }
+.split { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.15fr); gap: 16px; align-items: start; }
+.panel-sticky { position: sticky; top: 72px; }
+
+/* tables, with a filter bar */
+.tablecard { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; overflow: hidden; margin-bottom: 16px; }
+.filterbar { display: flex; align-items: center; gap: 8px; padding: 8px 16px; border-bottom: 1px solid var(--line); color: var(--muted); }
+.filterbar input { flex: 1; border: 0; background: transparent; color: var(--ink); font: inherit; outline: none; }
+.tablewrap { overflow: auto; max-height: 62vh; }
+table { border-collapse: collapse; width: 100%; }
+th, td { text-align: left; padding: 9px 16px; border-bottom: 1px solid var(--line); vertical-align: middle; white-space: nowrap; }
+td.wrap { white-space: normal; }
+thead th { position: sticky; top: 0; background: var(--surface); font-weight: 500; font-size: 12px; color: var(--muted); z-index: 1; }
+td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
+tbody tr.pick { cursor: pointer; }
+tbody tr.pick:hover { background: var(--hover); }
+tbody tr[aria-selected="true"] { background: var(--sel); color: var(--sel-ink); }
+.tablefoot { padding: 8px 16px; color: var(--faint); font-size: 12px; }
+tr.differ td.v { background: var(--mark); color: var(--mark-ink); }
+
+/* status, banners, chips */
+.chip { display: inline-flex; align-items: center; gap: 4px; height: 24px; padding: 0 10px; border-radius: 12px; font-size: 12px; font-weight: 500; background: var(--hover); color: var(--muted); }
+.chip.good { background: var(--good-bg); color: var(--good); }
+.chip.warn { background: var(--warn-bg); color: var(--warn); }
+.chip.info { background: var(--primary-soft); color: var(--primary); }
 .chips { display: flex; flex-wrap: wrap; gap: 6px; }
-.chip { border: 1px solid var(--line); border-radius: 999px; padding: 2px 10px; font-size: 13px; }
-.keys { color: var(--muted); font-size: 13px; }
-kbd { border: 1px solid var(--line); border-bottom-width: 2px; border-radius: 4px; padding: 0 5px; font: 12px ui-monospace, monospace; }
-#log { max-width: 1100px; margin: 0 auto 24px; padding: 0 16px; }
-#log li { margin: 2px 0; }
-a.link { color: var(--accent); cursor: pointer; text-decoration: underline; }
+.banner { display: flex; gap: 12px; align-items: flex-start; padding: 12px 16px; border-radius: 8px; margin-bottom: 16px; }
+.banner.bad { background: var(--bad-bg); color: var(--bad); }
+.banner.warn { background: var(--warn-bg); color: var(--warn); }
+.banner.info { background: var(--primary-soft); color: var(--ink); }
+.banner b { display: block; }
+.banner .fix { color: var(--ink); margin-top: 2px; }
+.meter { display: inline-block; width: 64px; height: 6px; border-radius: 3px; background: var(--line); vertical-align: middle; margin-right: 8px; overflow: hidden; }
+.meter i { display: block; height: 100%; background: var(--primary); }
+.inline { font: inherit; padding: 6px 8px; border: 1px solid var(--outline); border-radius: 4px; background: var(--surface); color: var(--ink); width: 100%; min-width: 14em; }
+.field { display: block; margin: 0 0 16px; }
+.field .lab { display: block; font-size: 12px; color: var(--muted); margin-bottom: 4px; }
+.field input[type=text], .field select { font: inherit; width: 100%; padding: 10px 12px; border: 1px solid var(--outline); border-radius: 4px; background: var(--surface); color: var(--ink); }
+.field .help { font-size: 12px; color: var(--faint); margin-top: 4px; }
+.check { display: flex; gap: 10px; align-items: flex-start; margin: 0 0 16px; }
+.big { font-size: 26px; margin: 4px 0 12px; }
+.keys { color: var(--faint); font-size: 12px; }
+kbd { border: 1px solid var(--outline); border-bottom-width: 2px; border-radius: 4px; padding: 0 5px; font: 11px ui-monospace, Menlo, monospace; }
+.actions { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-top: 12px; }
+a.link { color: var(--primary); cursor: pointer; text-decoration: none; font-weight: 500; }
+a.link:hover { text-decoration: underline; }
+.empty { text-align: center; padding: 48px 16px; }
+.empty > .ic { width: 48px; height: 48px; color: var(--faint); stroke-width: 1.2; }
+.empty h2 { justify-content: center; }
+.steps { list-style: none; padding: 0; margin: 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 6px; }
+.steps li { display: flex; align-items: center; gap: 6px; color: var(--muted); }
+.steps li .ic { color: var(--good); width: 18px; height: 18px; }
+code { font: 13px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; }
+
+/* the dialog */
+dialog { border: 0; border-radius: 28px; padding: 0; width: min(560px, calc(100vw - 32px)); background: var(--surface); color: var(--ink); box-shadow: 0 8px 28px rgba(0,0,0,.28); }
+dialog::backdrop { background: rgba(0,0,0,.32); }
+.dlg-body { padding: 24px 24px 8px; max-height: 70vh; overflow-y: auto; }
+.dlg-body h2 { font-size: 22px; font-weight: 400; margin: 0 0 8px; }
+.dlg-body p.about { color: var(--muted); margin: 0 0 20px; }
+.dlg-foot { display: flex; align-items: center; gap: 8px; padding: 8px 16px 16px 24px; }
+.dlg-foot .grow { flex: 1; }
+.equiv { margin: 0 0 16px; background: var(--hover); border-radius: 8px; padding: 6px 6px 6px 12px; display: flex; gap: 8px; align-items: center; }
+.equiv code { flex: 1; overflow-wrap: anywhere; }
+
+/* the command drawer, at the bottom: every command the page ran */
+.term { position: fixed; left: 0; right: 0; bottom: 0; z-index: 6; height: 260px; display: flex; flex-direction: column; background: var(--term); color: var(--term-ink); box-shadow: 0 -2px 8px rgba(0,0,0,.25); }
+.term[hidden] { display: none; }
+.term-bar { display: flex; align-items: center; gap: 10px; height: 40px; padding: 0 8px 0 16px; border-bottom: 1px solid #3c4043; font-size: 13px; }
+.term-bar .faint { color: var(--term-dim); }
+.term-bar .iconbtn { color: var(--term-dim); width: 32px; height: 32px; }
+.term-bar .iconbtn:hover { background: #2d2f31; }
+.term-body { flex: 1; overflow-y: auto; padding: 8px 16px; font: 13px/1.55 ui-monospace, SFMono-Regular, Menlo, monospace; }
+.term-body .cmd::before { content: "$ "; color: var(--term-ok); }
+.term-body .out { color: var(--term-dim); white-space: pre-wrap; }
+.term-body .ok { color: var(--term-ok); }
+.term-body .bad { color: var(--term-bad); white-space: pre-wrap; }
+.term-body .faint { color: var(--term-dim); }
+body.term-open main { padding-bottom: 300px; }
+
+/* the snackbar */
+.snack { position: fixed; left: 24px; bottom: 24px; z-index: 7; display: flex; align-items: center; gap: 12px; min-width: 288px; max-width: 560px; padding: 12px 16px; border-radius: 4px;
+         background: #313033; color: #f4eff4; box-shadow: 0 4px 12px rgba(0,0,0,.3); font-size: 14px; }
+.snack[hidden] { display: none; }
+.snack code { overflow-wrap: anywhere; }
+.snack .msg { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.snack .btn { color: #a8c7fa; height: 32px; padding: 0 8px; }
+.spin { width: 18px; height: 18px; border-radius: 50%; border: 2px solid #a8c7fa; border-right-color: transparent; animation: spin .8s linear infinite; flex: none; }
+@keyframes spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .spin { animation: none; } }
+
+@media (max-width: 1100px) { .split { grid-template-columns: minmax(0, 1fr); } .panel-sticky { position: static; } }
+@media (max-width: 860px) {
+  .sidenav { transform: translateX(-100%); transition: transform .2s; width: 256px; box-shadow: var(--shadow); }
+  body.nav-open .sidenav { transform: none; }
+  main, body.collapsed main { margin-left: 0; padding: 0 16px 120px; }
+  .pagehead { margin: 0 -16px 16px; padding: 8px 16px; }
+  .logo .name, .search kbd { display: none; }
+  .picker { max-width: 120px; }
+  .appbar { gap: 4px; }
+  #help { display: none; }
+}
 </style>
 </head>
 <body>
-<header>
-  <div class="top">
-    <span class="brand">nayose <small>名寄せ · one ID per person or company</small></span>
-    <label>Run folder <input type="text" id="run" placeholder="runs/customers"></label>
-    <label>Records file <input type="text" id="input" placeholder="customers.parquet"></label>
-  </div>
-  <nav id="nav" aria-label="Steps"></nav>
+<header class="appbar">
+  <button class="iconbtn" id="menu" aria-label="Show or hide the navigation"></button>
+  <span class="logo"><span class="mark">名</span><span class="name">nayose</span></span>
+  <button class="picker" id="picker" aria-label="Choose the run folder"></button>
+  <label class="search"><span id="search-ic"></span><input id="search" type="search" placeholder="Look up a record ID" aria-label="Look up a record ID"><kbd>/</kbd></label>
+  <button class="iconbtn" id="term-toggle" aria-label="Show the commands run" aria-pressed="false"></button>
+  <button class="iconbtn" id="help" aria-label="Every command"></button>
 </header>
+<nav class="sidenav" id="nav" aria-label="Pages"></nav>
 <main id="screen" aria-live="polite"></main>
-<section id="log" aria-label="Commands run"><h2>Commands run</h2><p class="what">Every button runs one of these; each can be typed in a terminal as it is.</p><ol reversed id="cmds"></ol></section>
+<section class="term" id="term" hidden aria-label="Commands run">
+  <div class="term-bar"><span id="term-ic"></span><b>nayose</b><span class="faint">every button runs one of these; each can be typed in a terminal as it is</span>
+    <span style="flex:1"></span><button class="iconbtn" id="term-clear" aria-label="Clear"></button><button class="iconbtn" id="term-close" aria-label="Close"></button></div>
+  <div class="term-body" id="term-body"></div>
+</section>
+<div class="snack" id="snack" hidden role="status"></div>
+<dialog id="dlg"></dialog>
 
 <script type="application/json" id="layout">
 {"screens": [
-  {"id": "records", "title": "1 · Records", "what": "The file to resolve, and the run folder it goes into.",
+  {"id": "records", "title": "Overview", "icon": "overview", "section": "Resolve", "what": "What the run folder holds.",
    "uses": [{"command": "describe run", "args": {"run": "@run"}, "reads": ["records", "entities", "runs", "pairs", "kinds", "set_aside", "write_owed"]}]},
-  {"id": "columns", "title": "2 · Columns", "what": "Which of the file's columns hold each field, and how each looks in the file.",
+  {"id": "columns", "title": "Columns", "icon": "columns", "section": "Resolve", "what": "Which of the file's columns hold each field, and how each looks in the file.",
    "uses": [{"command": "list columns", "args": {}, "reads": ["columns", "settings"]},
             {"command": "check records", "args": {"input": "@input"}, "reads": ["records", "fields", "turned_off", "keys", "notes"]},
             {"command": "set columns", "args": {"mapping": "@mapping"}, "reads": ["columns"]}]},
-  {"id": "run", "title": "3 · Run", "what": "Resolve the file, add new records to the run, see what adding them would do, or resolve the run's own files again.",
-   "uses": [{"command": "resolve records", "args": {"input": "@input", "run": "@run", "overwrite": "@overwrite", "compute": "@compute"}, "form": ["overwrite", "compute"], "reads": ["summary", "seconds"]},
-            {"command": "add records", "args": {"input": "@input", "run": "@run"}, "reads": ["summary"]},
-            {"command": "match records", "args": {"input": "@input", "run": "@run"}, "reads": ["counts", "records"]},
-            {"command": "rerun records", "args": {"run": "@run"}, "reads": ["summary"]}]},
-  {"id": "results", "title": "4 · Results", "what": "The run at a glance, and any record's entity with what joined it.",
+  {"id": "run", "title": "Runs", "icon": "run", "section": "Resolve", "what": "Resolve a file, add new records to the run, see what adding them would do, or resolve the run's own files again.",
+   "uses": [{"command": "resolve records", "args": {"input": "@input", "run": "@run", "overwrite": "@overwrite", "compute": "@compute"}, "form": ["input", "overwrite", "compute"], "reads": ["summary", "seconds"]},
+            {"command": "add records", "args": {"input": "@input", "run": "@run", "compute": "@compute"}, "form": ["input", "compute"], "reads": ["summary"]},
+            {"command": "match records", "args": {"input": "@input", "run": "@run"}, "form": ["input"], "reads": ["counts", "records"]},
+            {"command": "rerun records", "args": {"run": "@run", "compute": "@compute"}, "form": ["compute"], "reads": ["summary"]}]},
+  {"id": "results", "title": "Entities", "icon": "entities", "section": "Resolve", "what": "The largest entities, and any record's entity with what joined it.",
    "uses": [{"command": "describe run", "args": {"run": "@run"}, "reads": ["summary", "largest"]},
             {"command": "describe entity", "args": {"id": "@id", "run": "@run"}, "reads": ["entity", "records", "links"]}]},
-  {"id": "pairs", "title": "5 · Pairs", "what": "Decide the pairs just below the line, and audit those just above it.",
+  {"id": "pairs", "title": "Pairs", "icon": "pairs", "section": "Review", "what": "Decide the pairs just below the line, and audit those just above it.",
    "uses": [{"command": "list pairs", "args": {"run": "@run", "open": true}, "reads": ["pairs", "counts"]},
             {"command": "decide pair", "args": {"first": "@first", "second": "@second", "decision": "@decision", "run": "@run"}, "reads": ["decision"]},
             {"command": "apply decisions", "args": {"run": "@run"}, "reads": ["decisions", "matches", "clusters_joined", "summary"]}]},
-  {"id": "kinds", "title": "6 · Kinds", "what": "Answer person or company for the records held back, and for the draw that measures the engine.",
+  {"id": "kinds", "title": "Kinds", "icon": "kinds", "section": "Review", "what": "Answer person or company for the records held back, and for the draw that measures the engine.",
    "uses": [{"command": "list kinds", "args": {"run": "@run", "open": true}, "reads": ["kinds", "counts"]},
             {"command": "answer kind", "args": {"id": "@id", "kind": "@kind", "run": "@run"}, "reads": ["kind"]},
             {"command": "apply answers", "args": {"run": "@run", "compute": "@compute"}, "form": ["compute"], "reads": ["summary"]}]}
@@ -99,7 +236,33 @@ const esc = (v) => String(v ?? "—").replace(/[&<>"']/g, (c) => ({"&": "&amp;",
 const fmt = (v) => v === null || v === undefined ? "—" : typeof v === "number" ? (Number.isInteger(v) ? v.toLocaleString() : v.toFixed(2)) : typeof v === "boolean" ? (v ? "yes" : "no") : String(v);
 const pct = (v) => v === null || v === undefined ? "—" : `${Math.round(v * 100)}%`;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-const store = (k, v) => { try { v === undefined ? null : localStorage.setItem(`nayose.${k}`, v); return localStorage.getItem(`nayose.${k}`); } catch { return null; } };
+const store = (k, v) => { try { if (v !== undefined) localStorage.setItem(`nayose.${k}`, v); return localStorage.getItem(`nayose.${k}`); } catch { return null; } };
+
+// Line icons, drawn here: nothing comes from the network.
+const ICON = {
+  menu: '<path d="M4 6h16M4 12h16M4 18h16"/>',
+  folder: '<path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/>',
+  search: '<circle cx="11" cy="11" r="6"/><path d="M20 20l-4.5-4.5"/>',
+  terminal: '<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M7 9l3 3-3 3M12 15h5"/>',
+  help: '<circle cx="12" cy="12" r="9"/><path d="M9.5 9.5a2.5 2.5 0 1 1 3.5 2.3c-.6.3-1 .9-1 1.6V14M12 17.5v.01"/>',
+  overview: '<rect x="4" y="4" width="7" height="7" rx="1.5"/><rect x="13" y="4" width="7" height="7" rx="1.5"/><rect x="4" y="13" width="7" height="7" rx="1.5"/><rect x="13" y="13" width="7" height="7" rx="1.5"/>',
+  columns: '<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M9 4v16M15 4v16"/>',
+  run: '<path d="M8 5.5v13l10-6.5z"/>',
+  entities: '<circle cx="12" cy="6" r="2.5"/><circle cx="6" cy="18" r="2.5"/><circle cx="18" cy="18" r="2.5"/><path d="M11 8.2L7.2 15.8M13 8.2l3.8 7.6M8.5 18h7"/>',
+  pairs: '<rect x="3" y="6" width="8" height="12" rx="2"/><rect x="13" y="6" width="8" height="12" rx="2"/><path d="M11 12h2"/>',
+  kinds: '<circle cx="9" cy="8" r="3"/><path d="M3.5 19a5.5 5.5 0 0 1 11 0"/><path d="M15 10h6v9h-6M17 13h2M17 16h2"/>',
+  refresh: '<path d="M19 12a7 7 0 1 1-2.1-5M19 4v4h-4"/>',
+  copy: '<rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2"/>',
+  close: '<path d="M6 6l12 12M18 6L6 18"/>',
+  clear: '<path d="M5 7h14M10 11v6M14 11v6M6 7l1 12h10l1-12M9 7V4h6v3"/>',
+  check: '<circle cx="12" cy="12" r="9"/><path d="M8 12.5l2.7 2.7L16 9.8"/>',
+  error: '<circle cx="12" cy="12" r="9"/><path d="M12 7.5v5.5M12 16.5v.01"/>',
+  info: '<circle cx="12" cy="12" r="9"/><path d="M12 11v6M12 7.5v.01"/>',
+  down: '<path d="M7 10l5 5 5-5"/>',
+  empty: '<rect x="4" y="5" width="16" height="14" rx="2"/><path d="M4 10h16M9 14h6"/>',
+};
+const icon = (name) => `<svg class="ic" viewBox="0 0 24 24" aria-hidden="true">${ICON[name]}</svg>`;
+
 let COMMANDS = {}, current = "records", keyHandler = null;
 const state = {};
 
@@ -107,240 +270,419 @@ async function api(path, body) {
   const r = await fetch(path, {method: body ? "POST" : "GET", headers: {"X-Token": token, "Content-Type": "application/json"}, body: body ? JSON.stringify(body) : undefined});
   return r.json();
 }
+const use = (screen, command) => LAYOUT.screens.find((s) => s.id === screen).uses.find((u) => u.command === command);
 
-function use(screen, command) {
-  return LAYOUT.screens.find((s) => s.id === screen).uses.find((u) => u.command === command);
-}
-
-// Run one command as the layout places it: its arguments from the layout, "@name" filled from what the person typed.
-async function run(screen, command, extra = {}, onEvent = null) {
-  const u = use(screen, command);
+function argsFor(screen, command, extra) {
   const args = {};
-  for (const [k, v] of Object.entries(u.args)) {
+  for (const [k, v] of Object.entries(use(screen, command).args)) {
     const value = typeof v === "string" && v.startsWith("@") ? (extra[v.slice(1)] ?? state[v.slice(1)]) : v;
     if (value !== undefined && value !== "" && value !== null) args[k] = value;
   }
-  const started = await api("/api/run", {command, args});
+  return args;
+}
+
+// ---------- the command drawer and the snackbar ----------
+
+const term = {
+  add(line) {
+    const div = document.createElement("div");
+    div.innerHTML = `<div class="cmd">${esc(line)}</div><div class="out"></div><div class="state faint">running…</div>`;
+    $("term-body").append(div);
+    $("term-body").scrollTop = $("term-body").scrollHeight;
+    return {
+      step: (e) => { div.querySelector(".out").textContent += `${e.step.padEnd(11)} ${e.seconds.toFixed(1).padStart(6)} s\n`; },
+      end: (e, code) => {
+        const s = div.querySelector(".state");
+        s.className = code === 0 ? "ok" : "bad";
+        s.textContent = code === 0 ? "✓ done" : `✗ exit ${code}${e && e.error ? `: ${e.error}${e.fix ? `\n  ${e.fix}` : ""}` : ""}`;
+        $("term-body").scrollTop = $("term-body").scrollHeight;
+      },
+    };
+  },
+  show(open = true) {
+    $("term").hidden = !open;
+    document.body.classList.toggle("term-open", open);
+    $("term-toggle").setAttribute("aria-pressed", String(open));
+    if (open) $("term-body").scrollTop = $("term-body").scrollHeight;
+  },
+};
+let snackTimer = null;
+function snack(html, ms = 0) {
+  clearTimeout(snackTimer);
+  $("snack").innerHTML = html;
+  $("snack").hidden = false;
+  const view = $("snack").querySelector("[data-term]");
+  if (view) view.onclick = () => term.show(true);
+  if (ms) snackTimer = setTimeout(() => { $("snack").hidden = true; }, ms);
+}
+
+// Run one command as the layout places it, its arguments filled from what the person typed or chose.
+async function run(screen, command, extra = {}, onEvent = null) {
+  const started = await api("/api/run", {command, args: argsFor(screen, command, extra)});
   if (started.error) return {event: "error", error: started.error, fix: started.fix};
-  const li = document.createElement("li");
-  li.innerHTML = `<span class="cmd">${esc(started.command)}</span> <span class="muted">running…</span>`;
-  $("cmds").prepend(li);
+  const entry = term.add(started.command), quick = COMMANDS[command].quick;
+  if (!quick) snack(`<span class="spin"></span><span class="msg">Running <code>${esc(started.command)}</code></span>`);
   let from = 0, last = {};
   for (;;) {
     const j = await api(`/api/job/${started.job}?from=${from}`);
-    for (const e of j.events) { last = e; if (onEvent) onEvent(e); }
+    for (const e of j.events) { last = e; if (e.event === "step") entry.step(e); if (onEvent) onEvent(e); }
     from += j.events.length;
-    if (j.done) { li.lastElementChild.textContent = j.exit === 0 ? "done" : `exit ${j.exit}`; li.lastElementChild.className = j.exit === 0 ? "ok" : "bad"; break; }
-    await sleep(250);
+    if (j.done) {
+      entry.end(last, j.exit);
+      if (!quick) snack(j.exit === 0 ? `${icon("check")}<span class="msg">Done: ${esc(COMMANDS[command].help)}</span>`
+                                     : `${icon("error")}<span class="msg">Failed: ${esc(last.error || `exit ${j.exit}`)}</span><button class="btn" data-term>View</button>`, 6000);
+      break;
+    }
+    await sleep(quick ? 120 : 300);
   }
   return last;
 }
 
-function error(e) {
+// ---------- pieces every page draws with ----------
+
+function banner(e, kind = "bad") {
   if (!e || e.event !== "error") return "";
-  return `<div class="err" role="alert"><b>${esc(e.error)}</b>${e.fix ? `<br>${esc(e.fix)}` : ""}</div>`;
+  return `<div class="banner ${kind}" role="alert">${icon(kind === "bad" ? "error" : "info")}<div><b>${esc(e.error)}</b>${e.fix ? `<div class="fix">${esc(e.fix)}</div>` : ""}</div></div>`;
+}
+const head = (title, actions = "") => `<div class="pagehead"><h1>${esc(title)}</h1>${actions}</div>`;
+function chip(status) {
+  const kind = {open: "", "written in": "warn", applied: "good", decide: "info"}[status] ?? "";
+  return `<span class="chip ${kind}">${esc(status)}</span>`;
+}
+function summary(rows) {
+  if (!rows || !rows.length) return "";
+  return `<div class="tablecard"><table><tbody>${rows.map(([w, v]) => `<tr><th style="width:9em">${esc(w)}</th><td class="wrap">${esc(v)}</td></tr>`).join("")}</tbody></table></div>`;
+}
+
+// A table in a card, with a filter bar; rows the person can pick when onPick is given.
+function grid(box, rows, cols, opts = {}) {
+  const labels = {id_l: "record A", id_r: "record B", ...opts.labels}, cellOf = opts.cell || ((r, c) => esc(fmt(r[c]))), most = opts.most || 500;
+  box.innerHTML = `<div class="tablecard">${opts.filter === false ? "" : `<div class="filterbar">${icon("search")}<input type="text" placeholder="Filter" aria-label="Filter the rows"></div>`}
+    <div class="tablewrap"><table><thead><tr>${cols.map((c) => `<th${typeof (rows[0] || {})[c] === "number" ? ' class="num"' : ""}>${esc(labels[c] ?? c.replaceAll("_", " "))}</th>`).join("")}</tr></thead><tbody></tbody></table></div>
+    <div class="tablefoot"></div></div>`;
+  const body = box.querySelector("tbody"), foot = box.querySelector(".tablefoot"), filter = box.querySelector(".filterbar input");
+  const draw = () => {
+    const q = filter ? filter.value.trim().toLowerCase() : "";
+    const shown = rows.map((r, i) => [r, i]).filter(([r]) => !q || cols.some((c) => String(r[c] ?? "").toLowerCase().includes(q)));
+    body.innerHTML = shown.slice(0, most).map(([r, i]) => `<tr data-i="${i}" class="${opts.onPick ? "pick" : ""}" aria-selected="${i === opts.selected}">` +
+      cols.map((c) => `<td${typeof r[c] === "number" ? ' class="num"' : ""}>${cellOf(r, c)}</td>`).join("") + "</tr>").join("") ||
+      `<tr><td colspan="${cols.length}" class="faint">No rows</td></tr>`;
+    foot.textContent = `${shown.length.toLocaleString()} of ${rows.length.toLocaleString()} rows` + (shown.length > most ? ` · the first ${most} shown` : "");
+    if (opts.onPick) body.querySelectorAll("tr[data-i]").forEach((tr) => tr.onclick = () => opts.onPick(Number(tr.dataset.i)));
+  };
+  if (filter) filter.oninput = draw;
+  draw();
+  return {
+    select(i) {
+      opts.selected = i;
+      body.querySelectorAll("tr[data-i]").forEach((tr) => tr.setAttribute("aria-selected", String(Number(tr.dataset.i) === i)));
+      const tr = body.querySelector(`tr[data-i="${i}"]`), wrap = box.querySelector(".tablewrap");  // scroll the table, never the page
+      if (!tr) return;
+      const r = tr.getBoundingClientRect(), w = wrap.getBoundingClientRect(), top = w.top + box.querySelector("thead").offsetHeight;
+      if (r.top < top) wrap.scrollTop -= top - r.top; else if (r.bottom > w.bottom) wrap.scrollTop += r.bottom - w.bottom;
+    },
+    redraw: draw,
+  };
 }
 
 // A parameter's input, built from its declaration: a flag a checkbox, a choice a list, the rest a text box.
 function field(command, name) {
-  const p = COMMANDS[command].params.find((x) => x.name === name);
-  const id = `f-${command.replace(" ", "-")}-${name}`;
-  if (p.kind === "flag") return `<label title="${esc(p.help)}"><input type="checkbox" id="${id}"> ${esc(p.help)}</label>`;
-  if (p.choices.length) return `<label>${esc(name)} <select id="${id}">${p.choices.map((c) => `<option>${esc(c)}</option>`).join("")}</select></label>`;
-  return `<label title="${esc(p.help)}">${esc(name)} <input type="text" id="${id}" placeholder="${esc(p.metavar)}"></label>`;
+  const p = COMMANDS[command].params.find((x) => x.name === name), id = `f-${name}`, needed = p.required || p.positional;
+  if (p.kind === "flag") return `<label class="check"><input type="checkbox" id="${id}"><span>${esc(p.help)}</span></label>`;
+  const control = p.choices.length ? `<select id="${id}">${p.choices.map((c) => `<option>${esc(c)}</option>`).join("")}</select>`
+    : `<input type="text" id="${id}" value="${esc(name === "input" ? state.input || "" : "")}" placeholder="${esc(p.metavar)}" ${needed ? "required" : ""}>`;
+  return `<label class="field"><span class="lab">${esc(name)}${needed ? " *" : ""}</span>${control}<div class="help">${esc(p.help)}</div></label>`;
 }
-function formValues(command) {
+function formValues(command, form) {
   const out = {};
-  for (const name of use(current, command).form || []) {
-    const p = COMMANDS[command].params.find((x) => x.name === name), el = $(`f-${command.replace(" ", "-")}-${name}`);
-    out[name] = p.kind === "flag" ? el.checked : p.kind === "many" ? el.value.split(/\s+/).filter(Boolean) : el.value;
+  for (const name of form) {
+    const p = COMMANDS[command].params.find((x) => x.name === name), el = $(`f-${name}`);
+    out[name] = p.kind === "flag" ? el.checked : p.kind === "many" ? el.value.split(/\s+/).filter(Boolean) : el.value.trim();
   }
   return out;
 }
-function button(screen, command, label) {
-  const c = COMMANDS[command];
-  return `<div><button class="go" data-run="${esc(command)}" title="${esc(c.help)}">${esc(label || c.help)}</button>${(use(screen, command).form || []).map((n) => field(command, n)).join("")}</div>`;
+
+// A command in a dialog, as a console's create dialog: its form, the command line it will run, then run.
+function action(screen, command, label, done) {
+  const c = COMMANDS[command], form = use(screen, command).form || [], dlg = $("dlg");
+  dlg.innerHTML = `<form method="dialog"><div class="dlg-body"><h2>${esc(c.help)}</h2><p class="about">${esc(c.about)}</p>
+      ${form.map((n) => field(command, n)).join("")}<span class="lab faint" style="font-size:12px">Equivalent command line</span>
+      <div class="equiv">${icon("terminal")}<code id="equiv-line"></code><button type="button" class="iconbtn" id="copy" aria-label="Copy the command line">${icon("copy")}</button></div></div>
+    <div class="dlg-foot"><span class="grow"></span><button class="btn" value="cancel" formnovalidate>Cancel</button><button class="btn filled" value="run">${esc(label)}</button></div></form>`;
+  const preview = async () => {
+    const d = await api("/api/run", {command, args: argsFor(screen, command, formValues(command, form)), dry: true});
+    $("equiv-line").textContent = d.command || d.error;
+  };
+  dlg.querySelectorAll("input, select").forEach((x) => x.oninput = preview);
+  $("copy").onclick = () => navigator.clipboard?.writeText($("equiv-line").textContent);
+  preview();
+  dlg.onclose = async () => {
+    if (dlg.returnValue !== "run") return;
+    const extra = formValues(command, form);
+    if (extra.input) { state.input = extra.input; store("input", extra.input); }
+    done(await run(screen, command, extra, done.onEvent));
+  };
+  dlg.returnValue = "";
+  dlg.showModal();
 }
 
-function table(rows, cols, labels = {}) {
-  if (!rows || !rows.length) return `<p class="muted">none</p>`;
-  cols = cols || Object.keys(rows[0]);
-  return `<table><thead><tr>${cols.map((c) => `<th${typeof rows[0][c] === "number" ? ' class="num"' : ""}>${esc(labels[c] || c.replaceAll("_", " "))}</th>`).join("")}</tr></thead><tbody>` +
-    rows.map((r) => `<tr>${cols.map((c) => `<td${typeof r[c] === "number" ? ' class="num"' : ""}>${esc(fmt(r[c]))}</td>`).join("")}</tr>`).join("") + "</tbody></table>";
-}
-const summary = (rows) => rows && rows.length ? table(rows.map(([what, value]) => ({what, value})), ["what", "value"]) : "";
-function steps(target) {
-  const box = target.querySelector(".steps") || target.appendChild(Object.assign(document.createElement("div"), {className: "steps"}));
-  return (e) => { if (e.event === "step") box.textContent += `${e.step.padEnd(11)} ${e.seconds.toFixed(1).padStart(6)} s\n`; };
-}
-
-// ---------- the screens: what each places, and how it draws the results ----------
+// ---------- the pages: what each places, and how it draws the results ----------
 
 const SCREENS = {
   async records(el) {
-    el.innerHTML = `<section class="panel"><h2>The run folder</h2><p class="what">Type the run folder and the records file above; they are kept for the next visit.</p>
-      ${button("records", "describe run", "Look at the run folder")}<div id="out"></div></section>`;
-    el.querySelector("[data-run]").onclick = async () => {
-      const d = await run("records", "describe run");
-      $("out").innerHTML = d.event === "error" ? error(d) + `<p>Not a run yet? Go on to <a class="link" data-go="columns">2 · Columns</a> and <a class="link" data-go="run">3 · Run</a>.</p>` :
-        `<p><b>${fmt(d.records)}</b> records, <b>${fmt(d.entities)}</b> entities${d.write_owed ? ' · <span class="bad">a write was cut short: the next one finishes it</span>' : ""}</p>
-         <p>Pairs open: decide ${fmt(d.pairs.decide)}, audit ${fmt(d.pairs.audit)} · <a class="link" data-go="pairs">5 · Pairs</a><br>
-            Records to answer: decide ${fmt(d.kinds.decide)}, measure ${fmt(d.kinds.measure)} · <a class="link" data-go="kinds">6 · Kinds</a><br>
-            Set aside: ${fmt(d.set_aside)}</p>${table(d.runs, ["at", "what", "seconds"])}`;
-    };
+    el.innerHTML = head("Overview", `<button class="btn" id="refresh">${icon("refresh")}Refresh</button>`) + `<div id="out" class="faint">Loading…</div>`;
+    $("refresh").onclick = () => go("records");
+    if (!state.run) { $("out").innerHTML = emptyRun(); return; }
+    const d = await run("records", "describe run");
+    if (d.event === "error") { $("out").innerHTML = /no run in/.test(d.error) ? emptyRun() : banner(d); return; }
+    counts(d);
+    $("out").innerHTML = (d.write_owed ? banner({event: "error", error: "A write was cut short", fix: "The next command that writes to this folder finishes it."}, "warn") : "") +
+      `<div class="tiles">
+        <div class="tile"><div class="k">Records</div><div class="v">${fmt(d.records)}</div></div>
+        <div class="tile" data-go="results"><div class="k">Entities</div><div class="v">${fmt(d.entities)}</div></div>
+        <div class="tile" data-go="pairs"><div class="k">Pairs to decide</div><div class="v">${fmt(d.pairs.decide)}</div></div>
+        <div class="tile" data-go="kinds"><div class="k">Records to answer</div><div class="v">${fmt(d.kinds.decide + d.kinds.measure)}</div></div>
+        <div class="tile"><div class="k">Set aside</div><div class="v">${fmt(d.set_aside)}</div></div></div>
+      <div class="card"><h2>Activity</h2><div id="runs"></div></div>`;
+    grid($("runs"), d.runs.slice().reverse(), ["at", "what", "files", "seconds"],
+         {filter: false, cell: (r, c) => c === "files" ? esc(r.files.map((f) => f.split("/").pop()).join(", ")) : esc(fmt(r[c]))});
   },
 
   async columns(el) {
-    el.innerHTML = `<section class="panel"><h2>Columns</h2><p class="what">Each field reads the first of its columns that is filled; <code>A+B</code> joins two. Change one, save, and the check runs again.</p><div id="out">loading…</div></section>`;
+    el.innerHTML = head("Columns", `<button class="btn filled" id="check">${icon("check")}Check records</button><button class="btn" id="refresh">${icon("refresh")}Refresh</button>`) +
+      `<div class="card"><label class="field" style="margin:0"><span class="lab">Records file</span><input type="text" id="cin" value="${esc(state.input || "")}" placeholder="customers.parquet"></label></div>
+       <div id="out" class="faint">Loading…</div>`;
+    const remember = () => { state.input = $("cin").value.trim(); store("input", state.input); };
+    $("cin").onchange = remember;
     const draw = async () => {
       const [cols, check] = await Promise.all([run("columns", "list columns"), state.input ? run("columns", "check records") : null]);
       const shares = Object.fromEntries(((check && check.fields) || []).map((f) => [f.field, f]));
       const hints = check && check.event === "error" ? Object.entries(check.hints || {}) : [];
-      $("out").innerHTML = (check ? error(check) : `<p class="muted">Type the records file above to check it.</p>`) +
-        (hints.length ? `<p>${hints.map(([f, c]) => `<button class="plain" data-hint="${esc(f)}=${esc(c)}">use ${esc(c)} for ${esc(f)}</button>`).join("")}</p>` : "") +
-        `<table><thead><tr><th>field</th><th>columns</th><th class="num">filled</th><th class="num">looks right</th><th class="num">top value</th><th></th></tr></thead><tbody>` +
-        cols.columns.map((c) => { const s = shares[c.field] || {}; return `<tr><td>${esc(c.field)}${c.options ? `<br><span class="muted">${esc(c.options)}</span>` : ""}</td>
-          <td><input type="text" data-field="${esc(c.field)}" value="${esc(c.columns)}" aria-label="columns of ${esc(c.field)}"></td>
-          <td class="num">${pct(s.filled)}</td><td class="num">${pct(s.looks_right)}</td><td class="num">${pct(s.top_value)}</td>
-          <td><button class="plain" data-save="${esc(c.field)}">save</button></td></tr>`; }).join("") + "</tbody></table>" +
-        (check && check.event === "result" ? `<p>${fmt(check.records)} records · turned off: ${esc((check.turned_off || []).join(", ") || "nothing")}</p>${table(check.keys)}
-          ${(check.notes || []).map((n) => `<p class="muted">${esc(n)}</p>`).join("")}<p>Ready: <a class="link" data-go="run">3 · Run</a></p>` : "");
-      const save = async (mapping) => { const d = await run("columns", "set columns", {mapping}); if (d.event === "error") $("out").insertAdjacentHTML("afterbegin", error(d)); else draw(); };
+      const meter = (v) => v === null || v === undefined ? '<span class="faint">—</span>' : `<span class="meter"><i style="width:${Math.round(v * 100)}%"></i></span>${pct(v)}`;
+      $("out").innerHTML = (check ? banner(check) : banner({event: "error", error: "No records file yet", fix: "Type the file above, then check it."}, "info")) +
+        (hints.length ? `<div class="actions" style="margin:-4px 0 16px">${hints.map(([f, c]) => `<button class="btn outlined" data-hint="${esc(f)}=${esc(c)}">Use ${esc(c)} for ${esc(f)}</button>`).join("")}</div>` : "") +
+        (check && check.event === "result" ? `<div class="banner info">${icon("info")}<div><b>${fmt(check.records)} records read</b><div class="fix">Turned off: ${esc((check.turned_off || []).join(", ") || "nothing")}${(check.notes || []).length ? ` · ${esc(check.notes.join(" · "))}` : ""} · <a class="link" data-go="run">Resolve them</a></div></div></div>` : "") +
+        `<div id="map"></div>`;
+      grid($("map"), cols.columns, ["field", "columns", "filled", "looks_right", "top_value", "save"], {
+        labels: {looks_right: "looks right", top_value: "top value", save: ""},
+        cell: (r, c) => c === "columns" ? `<input class="inline" data-field="${esc(r.field)}" value="${esc(r.columns)}" aria-label="columns of ${esc(r.field)}">` :
+          c === "field" ? `${esc(r.field)}${r.options ? `<div class="faint" style="font-size:12px">${esc(r.options)}</div>` : ""}` :
+          c === "save" ? `<button class="btn" data-save="${esc(r.field)}">Save</button>` : meter((shares[r.field] || {})[c])});
+      const save = async (mapping) => { const d = await run("columns", "set columns", {mapping}); if (d.event === "error") $("out").insertAdjacentHTML("afterbegin", banner(d)); else draw(); };
       el.querySelectorAll("[data-save]").forEach((b) => b.onclick = () => save([`${b.dataset.save}=${el.querySelector(`[data-field="${b.dataset.save}"]`).value.replaceAll(" ", "")}`]));
       el.querySelectorAll("[data-hint]").forEach((b) => b.onclick = () => save([b.dataset.hint]));
     };
+    $("check").onclick = () => { remember(); draw(); };
+    $("refresh").onclick = draw;
     draw();
   },
 
   async run(el) {
-    el.innerHTML = `<section class="panel"><h2>Run</h2><p class="what">${esc(LAYOUT.screens[2].what)}</p>
-      ${button("run", "resolve records")}${button("run", "add records")}${button("run", "match records")}${button("run", "rerun records")}<div id="out"></div></section>`;
-    el.querySelectorAll("[data-run]").forEach((b) => b.onclick = async () => {
-      el.querySelectorAll("[data-run]").forEach((x) => x.disabled = true);
-      $("out").innerHTML = "";
-      const d = await run("run", b.dataset.run, formValues(b.dataset.run), steps($("out")));
-      el.querySelectorAll("[data-run]").forEach((x) => x.disabled = false);
-      $("out").insertAdjacentHTML("beforeend", d.event === "error" ? error(d) : b.dataset.run === "match records" ?
-        `<p>${Object.entries(d.counts).map(([k, n]) => `${esc(k)}: <b>${fmt(n)}</b>`).join(" · ")}</p>${table(d.records.slice(0, 200), ["id", "entity", "status", "by", "weight"])}` :
-        summary(d.summary) + `<p>Next: <a class="link" data-go="pairs">5 · Pairs</a> · <a class="link" data-go="kinds">6 · Kinds</a> · <a class="link" data-go="results">4 · Results</a></p>`);
+    el.innerHTML = head("Runs", `<button class="btn filled" data-act="resolve records" data-label="Resolve">${icon("run")}Resolve records</button>
+        <button class="btn" data-act="add records" data-label="Add">Add records</button><button class="btn" data-act="match records" data-label="Match">Match records</button>
+        <button class="btn" data-act="rerun records" data-label="Rerun">Rerun records</button>`) +
+      `<div id="out">${state.run ? "" : emptyRun()}<div class="card"><h2>${icon("info")}${esc(LAYOUT.screens[2].what)}</h2><p class="muted" style="margin:0">Each button opens its
+       command with the command line it will run. Each step shows as it finishes, then the result.</p></div></div>`;
+    el.querySelectorAll("[data-act]").forEach((b) => b.onclick = () => {
+      const command = b.dataset.act;
+      const done = (d) => {
+        $("out").querySelector(".steps-card")?.classList.remove("steps-card");
+        $("out").insertAdjacentHTML("beforeend", d.event === "error" ? banner(d) : command === "match records" ?
+          `<div class="card"><h2>What adding them would do</h2><div class="chips">${Object.entries(d.counts).map(([k, n]) => `<span class="chip info">${esc(k)}: ${fmt(n)}</span>`).join("")}</div></div><div id="matched"></div>` :
+          `<div class="card"><h2>${icon("check")}${esc(COMMANDS[command].help)}${d.seconds ? ` · ${fmt(d.seconds)} s` : ""}</h2>${summary(d.summary)}
+           <div class="actions"><a class="btn outlined" data-go="pairs">Review pairs</a><a class="btn outlined" data-go="kinds">Answer kinds</a><a class="btn" data-go="results">See entities</a></div></div>`);
+        if (command === "match records" && d.records) grid($("matched"), d.records, ["id", "entity", "status", "by", "weight"], {cell: (r, c) => c === "status" ? chip(r.status) : esc(fmt(r[c]))});
+        counts();
+      };
+      done.onEvent = (e) => {
+        if (e.event !== "step") return;
+        let box = $("out").querySelector(".steps-card ul");
+        if (!box) {
+          $("out").insertAdjacentHTML("beforeend", `<div class="card steps-card"><h2><span class="spin" style="border-color:var(--primary);border-right-color:transparent"></span>${esc(COMMANDS[command].help)}</h2><ul class="steps"></ul></div>`);
+          box = $("out").querySelector(".steps-card ul");
+        }
+        box.insertAdjacentHTML("beforeend", `<li>${icon("check")}${esc(e.step)} <span class="faint">${e.seconds.toFixed(1)} s</span></li>`);
+      };
+      action("run", command, b.dataset.label, done);
     });
   },
 
-  async results(el) {
-    el.innerHTML = `<section class="panel"><h2>Results</h2><p class="what">${esc(LAYOUT.screens[3].what)}</p>
-      <label>Record ID <input type="text" id="rid" placeholder="0000000151"></label><button class="go" id="look">Look up its entity</button><div id="entity"></div><div id="out">loading…</div></section>`;
+  async results(el, record) {
+    el.innerHTML = head("Entities", `<button class="btn" id="refresh">${icon("refresh")}Refresh</button>`) + `<div class="split"><div id="left" class="faint">Loading…</div><div id="right" class="panel-sticky"></div></div>`;
+    $("refresh").onclick = () => go("results");
     const entity = async (id) => {
+      $("right").innerHTML = `<div class="card faint">Loading ${esc(id)}…</div>`;
       const d = await run("results", "describe entity", {id});
-      if (d.event === "error") { $("entity").innerHTML = error(d); return; }
-      const cols = Object.keys(d.records[0]).filter((k) => !["cluster_id", "kind_p", "kind_held"].includes(k));
-      $("entity").innerHTML = `<h2>Entity ${esc(d.entity)}</h2>${table(d.records, cols)}<h2>What joined them</h2>${table(d.links, ["id_l", "id_r", "by", "weight"])}`;
+      if (d.event === "error") { $("right").innerHTML = banner(d); return; }
+      const cols = Object.keys(d.records[0]).filter((k) => !["cluster_id", "kind_p", "kind_held", "resolved_stage"].includes(k));
+      $("right").innerHTML = `<div class="card"><h2>${icon("entities")}Entity ${esc(d.entity)} · ${d.records.length} records</h2><div id="erecs"></div><h2>What joined them</h2><div id="elinks"></div></div>`;
+      grid($("erecs"), d.records, cols, {filter: false});
+      grid($("elinks"), d.links, ["id_l", "id_r", "by", "weight"], {filter: false});
     };
-    $("look").onclick = () => entity($("rid").value.trim());
+    $("right").innerHTML = `<div class="card empty">${icon("entities")}<p class="muted">Pick an entity, or look up a record ID in the search bar above.</p></div>`;
+    if (record) entity(record);
+    if (!state.run) { $("left").innerHTML = emptyRun(); return; }
     const d = await run("results", "describe run");
-    $("out").innerHTML = d.event === "error" ? error(d) : `<h2>Summary</h2>${summary(d.summary)}<h2>Largest entities</h2>
-      <table><thead><tr><th>entity</th><th class="num">records</th></tr></thead><tbody>${d.largest.map((x) => `<tr><td><a class="link" data-entity="${esc(x.entity)}">${esc(x.entity)}</a></td><td class="num">${fmt(x.records)}</td></tr>`).join("")}</tbody></table>`;
-    el.querySelectorAll("[data-entity]").forEach((a) => a.onclick = () => entity(a.dataset.entity));
+    if (d.event === "error") { $("left").innerHTML = banner(d); return; }
+    $("left").innerHTML = `<div class="card"><h2>Largest entities</h2><div id="largest"></div></div><div class="card"><h2>Summary</h2>${summary(d.summary)}</div>`;
+    const t = grid($("largest"), d.largest, ["entity", "records"], {filter: false, onPick: (i) => { t.select(i); entity(d.largest[i].entity); }});
   },
 
-  async pairs(el) {
-    el.innerHTML = `<section class="panel"><h2>Pairs</h2><p class="what">${esc(LAYOUT.screens[4].what)}</p><div id="out">loading…</div></section>
-      <section class="panel"><p class="what" id="tally">Nothing written in yet.</p>${button("pairs", "apply decisions", "Apply the decisions written in")}<div id="applied"></div></section>`;
-    el.querySelector('[data-run="apply decisions"]').onclick = () => apply();
-    const d = await run("pairs", "list pairs");
-    if (d.event === "error") { $("out").innerHTML = error(d); return; }
-    const rows = d.pairs;
-    let i = 0, written = 0;
-    const draw = () => {
-      if (!rows.length || i >= rows.length) {
-        $("out").innerHTML = `<p>${rows.length ? "Every pair here has an answer." : "No pair is open."}</p>`;
-        return;
-      }
-      const r = rows[i], fields = Object.keys(r).filter((k) => k.endsWith("_l") && k !== "id_l" && `${k.slice(0, -2)}_r` in r).map((k) => k.slice(0, -2));
-      const comps = Object.keys(r).filter((k) => `${k}_bits` in r);
-      $("out").innerHTML = `<div class="card"><div><b>${i + 1}</b> of ${rows.length} · ${esc(r.why)} · weight <b>${fmt(r.match_weight)}</b> bits · ${r.accepted ? '<span class="ok">accepted by the run</span>' : '<span class="muted">not accepted</span>'}</div>
-        <table><thead><tr><th>field</th><th>${esc(r.id_l)}</th><th>${esc(r.id_r)}</th></tr></thead><tbody>${fields.filter((f) => r[`${f}_l`] !== null || r[`${f}_r`] !== null).map((f) =>
-          `<tr class="${r[`${f}_l`] !== null && r[`${f}_r`] !== null && r[`${f}_l`] !== r[`${f}_r`] ? "differ" : ""}"><td>${esc(f.replaceAll("_", " "))}</td><td class="v">${esc(fmt(r[`${f}_l`]))}</td><td class="v">${esc(fmt(r[`${f}_r`]))}</td></tr>`).join("")}</tbody></table>
-        <div class="chips">${comps.map((c) => `<span class="chip">${esc(c)}: ${esc(r[c])} <b>${r[`${c}_bits`] >= 0 ? "+" : ""}${fmt(r[`${c}_bits`])}</b></span>`).join("")}</div>
-        <div><button class="go" id="m">Match</button><button class="plain" id="n">No match</button><button class="plain" id="s">Skip</button><button class="plain" id="b" ${i ? "" : "disabled"}>Back</button>
-          <span class="keys"><kbd>M</kbd> match · <kbd>N</kbd> no match · <kbd>S</kbd> skip · <kbd>←</kbd> back</span></div><div id="said"></div></div>`;
-      $("m").onclick = () => decide("match"); $("n").onclick = () => decide("no_match"); $("s").onclick = () => { i++; draw(); }; $("b").onclick = () => { i = Math.max(0, i - 1); draw(); };
-    };
-    const decide = async (decision) => {
-      const r = rows[i], e = await run("pairs", "decide pair", {first: r.id_l, second: r.id_r, decision});
-      if (e.event === "error") { $("said").innerHTML = error(e); return; }
-      written++; i++; $("tally").textContent = `${written} written in, not applied yet.`; draw();
-    };
-    const apply = async () => {
-      $("applied").innerHTML = "";
-      const e = await run("pairs", "apply decisions", {}, steps($("applied")));
-      $("applied").insertAdjacentHTML("beforeend", e.event === "error" ? error(e) : `<p class="ok">${fmt(e.decisions)} decisions applied, ${fmt(e.matches)} of them match: ${fmt(e.clusters_joined)} entities joined.</p>${summary(e.summary)}`);
-    };
-    keyHandler = (k) => ({m: () => decide("match"), n: () => decide("no_match"), s: () => { i++; draw(); }, ArrowLeft: () => { i = Math.max(0, i - 1); draw(); }})[k];
-    draw();
-  },
-
-  async kinds(el) {
-    el.innerHTML = `<section class="panel"><h2>Kinds</h2><p class="what">${esc(LAYOUT.screens[5].what)} A sole trader is a person.</p><div id="out">loading…</div></section>
-      <section class="panel"><p class="what" id="tally">Nothing written in yet. Answers change how names are matched, so applying them resolves the run's own files again.</p>
-      ${button("kinds", "apply answers", "Apply the answers written in")}<div id="applied"></div></section>`;
-    el.querySelector('[data-run="apply answers"]').onclick = () => apply();
-    const d = await run("kinds", "list kinds");
-    if (d.event === "error") { $("out").innerHTML = error(d); return; }
-    const rows = d.kinds;
-    let i = 0, written = 0;
-    const draw = () => {
-      if (!rows.length || i >= rows.length) {
-        $("out").innerHTML = `<p>${rows.length ? "Every record here has an answer." : "No record is open."}</p>`;
-        return;
-      }
-      const r = rows[i], said = ["engine_says", "name_says", "flag", "birth_date"].filter((k) => k in r && r[k] !== null);
-      $("out").innerHTML = `<div class="card"><div><b>${i + 1}</b> of ${rows.length} · ${esc(r.why)} · ${esc(r.reason)}</div><div class="big">${esc(r.name)}</div>
-        <div class="chips">${said.map((k) => `<span class="chip">${esc(k.replace("_says", "").replaceAll("_", " "))}: ${esc(r[k])}</span>`).join("")}</div>
-        <div><button class="go" id="k1">Person</button><button class="go" id="k2">Company</button><button class="plain" id="k0">Can't tell</button><button class="plain" id="s">Skip</button><button class="plain" id="b" ${i ? "" : "disabled"}>Back</button>
-          <span class="keys"><kbd>1</kbd> person · <kbd>2</kbd> company · <kbd>0</kbd> can't tell · <kbd>S</kbd> skip · <kbd>←</kbd> back</span></div><div id="said"></div></div>`;
-      $("k1").onclick = () => answer("person"); $("k2").onclick = () => answer("company"); $("k0").onclick = () => answer("unsure");
-      $("s").onclick = () => { i++; draw(); }; $("b").onclick = () => { i = Math.max(0, i - 1); draw(); };
-    };
-    const answer = async (kind) => {
-      const e = await run("kinds", "answer kind", {id: rows[i].id, kind});
-      if (e.event === "error") { $("said").innerHTML = error(e); return; }
-      written++; i++; $("tally").textContent = `${written} written in, not applied yet.`; draw();
-    };
-    const apply = async () => {
-      $("applied").innerHTML = "";
-      const e = await run("kinds", "apply answers", formValues("apply answers"), steps($("applied")));
-      $("applied").insertAdjacentHTML("beforeend", e.event === "error" ? error(e) : summary(e.summary));
-    };
-    keyHandler = (k) => ({"1": () => answer("person"), "2": () => answer("company"), "0": () => answer("unsure"), s: () => { i++; draw(); }, ArrowLeft: () => { i = Math.max(0, i - 1); draw(); }})[k];
-    draw();
-  },
+  pairs: (el, note) => review(el, "pairs", note),
+  kinds: (el, note) => review(el, "kinds", note),
 };
 
-function go(id) {
-  current = id; keyHandler = null;
-  $("nav").querySelectorAll("button").forEach((b) => b.setAttribute("aria-current", b.dataset.screen === id ? "page" : "false"));
-  SCREENS[id]($("screen"));
+// The two review pages: the queue as a table, the picked row in a panel beside it, answered by keyboard.
+async function review(el, which, note = "") {
+  const pairs = which === "pairs";
+  const list = pairs ? "list pairs" : "list kinds", one = pairs ? "decide pair" : "answer kind", apply = pairs ? "apply decisions" : "apply answers";
+  el.innerHTML = head(pairs ? "Pairs" : "Kinds", `<button class="btn filled" id="apply">${icon("check")}${pairs ? "Apply decisions" : "Apply answers"} <span class="badge" id="written">0</span></button>
+      <button class="btn" id="refresh">${icon("refresh")}Refresh</button>`) +
+    `<div id="note">${note}</div><div class="split"><div id="left" class="faint">Loading…</div><div id="right" class="panel-sticky"></div></div>`;
+  $("refresh").onclick = () => go(which);
+  if (!state.run) { $("left").innerHTML = emptyRun(); $("apply").disabled = true; return; }
+  const d = await run(which, list);
+  if (d.event === "error") { $("left").innerHTML = banner(d); $("apply").disabled = true; return; }
+  const rows = pairs ? d.pairs : d.kinds;
+  let i = Math.max(0, rows.findIndex((r) => r.status === "open")), written = 0;
+  const tally = () => { $("written").textContent = String(written); $("apply").disabled = !rows.some((r) => r.status === "written in"); };
+  if (!note) $("note").innerHTML = `<div class="banner info">${icon("info")}<div><b>${esc(LAYOUT.screens.find((s) => s.id === which).what)}</b><div class="fix">${pairs
+    ? "Answers are written in as you go, then applied together: a match joins the two entities at once."
+    : "Answers are written in as you go. A sole trader is a person. Applying them resolves the run's own files again, since they change how names are matched."}</div></div></div>`;
+  const cols = pairs ? ["status", "why", "id_l", "id_r", "match_weight"] : ["status", "why", "id", "name", "engine_says"];
+  const t = grid($("left"), rows, cols, {labels: {match_weight: "weight", engine_says: "engine"}, selected: i,
+    cell: (r, c) => c === "status" || c === "why" ? chip(r[c]) : esc(fmt(r[c])), onPick: (k) => { i = k; show(); }});
+  const move = (step) => { i = Math.min(rows.length - 1, Math.max(0, i + step)); show(); };
+  const answer = async (value) => {
+    const r = rows[i], extra = pairs ? {first: r.id_l, second: r.id_r, decision: value} : {id: r.id, kind: value};
+    const e = await run(which, one, extra);
+    if (e.event === "error") { $("said").innerHTML = banner(e); return; }
+    r.status = "written in"; written++; tally(); t.redraw();
+    const next = rows.findIndex((x, k) => k > i && x.status === "open");
+    if (next >= 0) i = next;
+    show();
+  };
+  const show = () => {
+    t.select(i);
+    const r = rows[i];
+    if (!r) { $("right").innerHTML = `<div class="card empty">${icon("empty")}<p class="muted">Nothing is open here.</p></div>`; return; }
+    if (pairs) {
+      const fields = Object.keys(r).filter((k) => k.endsWith("_l") && k !== "id_l" && `${k.slice(0, -2)}_r` in r).map((k) => k.slice(0, -2))
+        .filter((f) => r[`${f}_l`] !== null || r[`${f}_r`] !== null);
+      const comps = Object.keys(r).filter((k) => `${k}_bits` in r);
+      $("right").innerHTML = `<div class="card"><h2>${i + 1} of ${rows.length} ${chip(r.why)} ${chip(r.status)}</h2>
+        <p class="muted" style="margin:0 0 12px">Weight <b>${fmt(r.match_weight)}</b> bits · ${r.accepted ? '<span class="chip good">accepted by the run</span>' : '<span class="chip">not accepted</span>'}</p>
+        <div class="tablecard"><table><thead><tr><th>field</th><th>${esc(r.id_l)}</th><th>${esc(r.id_r)}</th></tr></thead><tbody>${fields.map((f) =>
+          `<tr class="${r[`${f}_l`] !== null && r[`${f}_r`] !== null && r[`${f}_l`] !== r[`${f}_r`] ? "differ" : ""}"><td>${esc(f.replaceAll("_", " "))}</td><td class="v wrap">${esc(fmt(r[`${f}_l`]))}</td><td class="v wrap">${esc(fmt(r[`${f}_r`]))}</td></tr>`).join("")}</tbody></table></div>
+        <div class="chips">${comps.map((c) => `<span class="chip ${r[`${c}_bits`] > 0 ? "good" : ""}">${esc(c)}: ${esc(r[c])} · ${r[`${c}_bits`] >= 0 ? "+" : ""}${fmt(r[`${c}_bits`])}</span>`).join("")}</div>
+        <div class="actions"><button class="btn filled" data-a="match">Match</button><button class="btn outlined" data-a="no_match">No match</button>
+          <button class="btn" data-skip>Skip</button><span class="keys"><kbd>M</kbd> match · <kbd>N</kbd> no match · <kbd>S</kbd> skip · <kbd>↑</kbd><kbd>↓</kbd> move</span></div><div id="said"></div></div>`;
+    } else {
+      const said = ["engine_says", "name_says", "flag", "birth_date"].filter((k) => k in r && r[k] !== null);
+      $("right").innerHTML = `<div class="card"><h2>${i + 1} of ${rows.length} ${chip(r.why)} ${chip(r.status)}</h2><p class="muted" style="margin:0">${esc(r.reason)}</p>
+        <div class="big">${esc(r.name)}</div><div class="chips">${said.map((k) => `<span class="chip">${esc(k.replace("_says", "").replaceAll("_", " "))}: ${esc(r[k])}</span>`).join("")}</div>
+        <div class="actions"><button class="btn filled" data-a="person">Person</button><button class="btn filled" data-a="company">Company</button>
+          <button class="btn outlined" data-a="unsure">Can't tell</button><button class="btn" data-skip>Skip</button>
+          <span class="keys"><kbd>1</kbd> person · <kbd>2</kbd> company · <kbd>0</kbd> can't tell · <kbd>S</kbd> skip · <kbd>↑</kbd><kbd>↓</kbd> move</span></div><div id="said"></div></div>`;
+    }
+    $("right").querySelectorAll("[data-a]").forEach((b) => b.onclick = () => answer(b.dataset.a));
+    $("right").querySelector("[data-skip]").onclick = () => move(1);
+  };
+  const applied = (e) => {
+    if (!pairs && e.event !== "error") return go(which, `<div class="banner info">${icon("check")}<div><b>Answers applied: the run was resolved again, and these are the records still open.</b></div></div>`);
+    $("note").innerHTML = e.event === "error" ? banner(e) : pairs
+      ? `<div class="banner info">${icon("check")}<div><b>${fmt(e.decisions)} decisions applied, ${fmt(e.matches)} of them match: ${fmt(e.clusters_joined)} entities joined.</b>${(e.summary || []).length ? `<div class="fix">${esc(e.summary.map((x) => x.join(": ")).join(" · "))}</div>` : ""}</div></div>`
+      : `<div class="banner info">${icon("check")}<div><b>Answers applied: the run was resolved again.</b></div></div>${summary(e.summary)}`;
+    if (e.event !== "error") { rows.forEach((r) => { if (r.status === "written in") r.status = "applied"; }); written = 0; tally(); t.redraw(); counts(); }
+  };
+  $("apply").onclick = () => pairs ? run(which, apply).then(applied) : action(which, apply, "Apply", applied);
+  keyHandler = (k) => ({...(pairs ? {m: () => answer("match"), n: () => answer("no_match")} : {"1": () => answer("person"), "2": () => answer("company"), "0": () => answer("unsure")}),
+                        s: () => move(1), ArrowDown: () => move(1), ArrowUp: () => move(-1), j: () => move(1), k: () => move(-1)})[k];
+  tally();
+  show();
 }
 
-document.addEventListener("click", (e) => { const a = e.target.closest("[data-go]"); if (a) go(a.dataset.go); });
+function emptyRun() {
+  return `<div class="card empty">${icon("folder")}<h2>${state.run ? `No run in ${esc(state.run)} yet` : "Choose a run folder"}</h2>
+    <p class="muted">${state.run ? "Map the file's columns and check them, then resolve the records into this folder." : "Pick the run folder in the bar above: an existing one, or a new one to resolve records into."}</p>
+    <div class="actions" style="justify-content:center">${state.run ? '<a class="btn outlined" data-go="columns">Check columns</a><a class="btn filled" data-go="run">Resolve records</a>' : '<button class="btn filled" data-pick>Choose a run folder</button>'}</div></div>`;
+}
+
+// The counts beside the navigation's review pages, from the run folder.
+async function counts(d) {
+  if (!d) { if (!state.run) return; d = await run("records", "describe run"); }
+  const set = (id, n) => { const el = document.querySelector(`[data-screen="${id}"] .count`); if (el) el.textContent = n ? n.toLocaleString() : ""; };
+  if (d.event === "error" || !d.pairs) { set("pairs", 0); set("kinds", 0); return; }
+  set("pairs", d.pairs.decide); set("kinds", d.kinds.decide + d.kinds.measure);
+}
+
+// The run folder picker, as a console's project picker: recent folders, or a new one.
+function pick() {
+  const recent = JSON.parse(store("recent") || "[]"), dlg = $("dlg");
+  dlg.innerHTML = `<form method="dialog"><div class="dlg-body"><h2>Run folder</h2><p class="about">The folder a run writes and every page reads. A new folder is fine: resolve records into it.</p>
+    <label class="field"><span class="lab">Run folder *</span><input type="text" id="pick-run" value="${esc(state.run || "")}" placeholder="runs/customers" required></label>
+    ${recent.length ? `<span class="lab faint" style="font-size:12px">Recent</span><div class="tablecard"><table><tbody>${recent.map((r) => `<tr class="pick" data-r="${esc(r)}"><td style="width:40px">${icon("folder")}</td><td>${esc(r)}</td></tr>`).join("")}</tbody></table></div>` : ""}</div>
+    <div class="dlg-foot"><span class="grow"></span><button class="btn" value="cancel" formnovalidate>Cancel</button><button class="btn filled" value="open">Open</button></div></form>`;
+  dlg.querySelectorAll("[data-r]").forEach((tr) => tr.onclick = () => { $("pick-run").value = tr.dataset.r; });
+  dlg.onclose = () => { if (dlg.returnValue === "open") setRun($("pick-run").value.trim()); };
+  dlg.returnValue = "";
+  dlg.showModal();
+}
+function setRun(r) {
+  state.run = r;
+  store("run", r);
+  store("recent", JSON.stringify([r, ...JSON.parse(store("recent") || "[]").filter((x) => x !== r)].filter(Boolean).slice(0, 6)));
+  $("picker").innerHTML = `${icon("folder")}<span>${esc(r || "Choose a run folder")}</span>${icon("down")}`;
+  counts();
+  go(current);
+}
+
+// Every command, from the declarations.
+function help() {
+  const dlg = $("dlg");
+  dlg.innerHTML = `<form method="dialog"><div class="dlg-body"><h2>Commands</h2><p class="about">Every button runs one of these, as <code>nayose VERB NOUN</code>; docs/commands.md has them all.</p>
+    <div class="tablecard"><div class="tablewrap" style="max-height:50vh"><table><tbody>${Object.values(COMMANDS).map((c) => `<tr><td><code>${esc(c.name)}</code></td><td class="wrap">${esc(c.help)}</td></tr>`).join("")}</tbody></table></div></div></div>
+    <div class="dlg-foot"><span class="grow"></span><button class="btn filled" value="close">Close</button></div></form>`;
+  dlg.onclose = null;
+  dlg.showModal();
+}
+
+function go(id, arg) {
+  current = id; keyHandler = null;
+  document.body.classList.remove("nav-open");
+  $("nav").querySelectorAll(".navitem").forEach((b) => b.setAttribute("aria-current", b.dataset.screen === id ? "page" : "false"));
+  SCREENS[id]($("screen"), arg);
+}
+
+document.addEventListener("click", (e) => {
+  const a = e.target.closest("[data-go]");
+  if (a) { e.preventDefault(); go(a.dataset.go); }
+  if (e.target.closest("[data-pick]")) pick();
+});
 document.addEventListener("keydown", (e) => {
-  if (e.target.matches("input, select, textarea") || e.metaKey || e.ctrlKey || e.altKey || !keyHandler) return;
-  const act = keyHandler(e.key.length === 1 ? e.key.toLowerCase() : e.key);
+  if (e.target.matches("input, select, textarea") || e.metaKey || e.ctrlKey || e.altKey || $("dlg").open) return;
+  if (e.key === "/") { e.preventDefault(); $("search").focus(); return; }
+  const act = keyHandler && keyHandler(e.key.length === 1 ? e.key.toLowerCase() : e.key);
   if (act) { e.preventDefault(); act(); }
 });
 
 (async () => {
+  for (const [id, name] of [["menu", "menu"], ["search-ic", "search"], ["term-toggle", "terminal"], ["help", "help"], ["term-ic", "terminal"], ["term-clear", "clear"], ["term-close", "close"]]) $(id).innerHTML = icon(name);
   const d = await api("/api/commands");
-  if (!d.commands) { $("screen").innerHTML = error({event: "error", error: d.error || "this page needs the link nayose open ui printed"}); return; }
+  if (!d.commands) { $("screen").innerHTML = `<div style="padding:24px">${banner({event: "error", error: d.error || "This page needs the link nayose open ui printed"})}</div>`; return; }
   COMMANDS = Object.fromEntries(d.commands.map((c) => [c.name, c]));
-  for (const k of ["run", "input"]) {
-    state[k] = (k === "run" && d.run) || store(k) || "";
-    $(k).value = state[k];
-    $(k).onchange = () => { state[k] = $(k).value.trim(); store(k, state[k]); };
-  }
-  $("nav").innerHTML = LAYOUT.screens.map((s) => `<button data-screen="${s.id}">${esc(s.title)}</button>`).join("");
-  $("nav").querySelectorAll("button").forEach((b) => b.onclick = () => go(b.dataset.screen));
-  go("records");
+  state.input = store("input") || "";
+  $("nav").innerHTML = [...new Set(LAYOUT.screens.map((s) => s.section))].map((sec) => `<h3>${esc(sec)}</h3>` + LAYOUT.screens.filter((s) => s.section === sec).map((s) =>
+    `<button class="navitem" data-screen="${s.id}" title="${esc(s.what)}">${icon(s.icon)}<span>${esc(s.title)}</span><span class="count"></span></button>`).join("")).join("");
+  $("nav").querySelectorAll(".navitem").forEach((b) => b.onclick = () => go(b.dataset.screen));
+  $("menu").onclick = () => document.body.classList.toggle(matchMedia("(max-width: 860px)").matches ? "nav-open" : "collapsed");
+  $("picker").onclick = pick;
+  $("help").onclick = help;
+  $("term-toggle").onclick = () => term.show($("term").hidden);
+  $("term-close").onclick = () => term.show(false);
+  $("term-clear").onclick = () => { $("term-body").innerHTML = ""; };
+  $("search").onkeydown = (e) => { if (e.key === "Enter" && $("search").value.trim()) { go("results", $("search").value.trim()); $("search").blur(); } };
+  setRun(d.run || store("run") || "");
 })();
 </script>
 </body>

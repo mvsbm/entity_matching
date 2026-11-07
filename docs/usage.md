@@ -272,16 +272,16 @@ Each file runs as its `nayose` command in a process of its own, so a crash can't
 .venv/bin/nayose open ui --run runs/customers      # prints a link and opens it; Ctrl-C stops it
 ```
 
-The page runs the same commands, and nothing else: each button is one `nayose` command, and the list at the bottom shows each one as it ran, ready to type in a terminal. Its screens follow the work:
+The page runs the same commands, and nothing else, laid out like a cloud console: the run folder in a picker at the top, a record ID search beside it (<kbd>/</kbd>), the pages in a navigation on the left, each page's actions in its header. A button that starts a run opens its command in a dialog, with the form its declaration gives and the equivalent command line, ready to copy. The drawer at the bottom (the terminal icon) lists every command the page ran, with each step as it finished.
 
-| Screen | Runs | For |
+| Page | Runs | For |
 |---|---|---|
-| 1 · Records | `describe run` | the file and the run folder, and what the folder holds |
-| 2 · Columns | `list columns`, `check records`, `set columns` | each field's columns beside how it looks in the file; a field the run needs, with the column the values suggest one click away |
-| 3 · Run | `resolve records`, `add records`, `match records`, `rerun records` | each step as it finishes, then the summary |
-| 4 · Results | `describe run`, `describe entity` | the largest entities; any record's entity, and what joined it |
-| 5 · Pairs | `list pairs`, `decide pair`, `apply decisions` | one pair at a time, the values that differ marked: <kbd>M</kbd> match, <kbd>N</kbd> no match, <kbd>S</kbd> skip, <kbd>←</kbd> back |
-| 6 · Kinds | `list kinds`, `answer kind`, `apply answers` | one record at a time: <kbd>1</kbd> person, <kbd>2</kbd> company, <kbd>0</kbd> can't tell |
+| Overview | `describe run` | records, entities, what is left to people, and each run so far |
+| Columns | `list columns`, `check records`, `set columns` | each field's columns beside how it looks in the file; a field the run needs, with the column the values suggest one click away |
+| Runs | `resolve records`, `add records`, `match records`, `rerun records` | each step as it finishes, then the summary |
+| Entities | `describe run`, `describe entity` | the largest entities; any record's entity, and what joined it |
+| Pairs | `list pairs`, `decide pair`, `apply decisions` | the queue beside the picked pair, the values that differ marked: <kbd>M</kbd> match, <kbd>N</kbd> no match, <kbd>S</kbd> skip, <kbd>↑</kbd> <kbd>↓</kbd> move |
+| Kinds | `list kinds`, `answer kind`, `apply answers` | the queue beside the picked record: <kbd>1</kbd> person, <kbd>2</kbd> company, <kbd>0</kbd> can't tell |
 
 - **Only this machine, only this link.** The page is served on `127.0.0.1`, and every request needs the random token in the link `open ui` prints, so another user of the machine can't use it, and a web page elsewhere can't reach it. It loads nothing from the network: the records never leave the machine.
 - **One long command at a time.** Lists, describes and single answers run at once; a run, a rerun or applying the answers runs in a process of its own, so a crash can't take the page down, and a second one waits its turn. A run folder another job is writing to says so: answer again once it is done.
