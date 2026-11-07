@@ -61,11 +61,11 @@ from er.candidates import candidates, estimate, q
 from er.cluster import merge
 from er.config import InputError, Pipeline
 from er.io import code_version, config_hash, markdown
-from er.kind import COMPANY, NAME_MODEL, PERSON, UNSURE, classifier as kind_classifier, kind_review_sheet, merge_answers
+from er.kind import NAME_MODEL, classifier as kind_classifier, kind_review_sheet, merge_answers
 from er.match import ELSE, named_sql, refreshed_u, review_floor, rule_edges, score_fs, scored_u, train_fs, u_basis
 from er.report import qa, report_text
 from er.settings import SPECIAL, Settings, fit_to_file, present_fields
-from er.source import file_facts, lit, open_source, suggest
+from er.source import answers, decisions, file_facts, known, lit, open_source, suggest
 from er.standardize import prepare
 from er.strings import connect
 
@@ -172,7 +172,10 @@ class Run:
             if self.labels is None:  # full() and increment() merge them with the run's first
                 self.labels = merge_answers(None, self._given(), self.uid)
             self.classifier = kind_classifier(self.settings, spec, self.labels)
-            self._known(rows, path)
+            if self.given is not None and len(self.given):  # each answer names a record of this file
+                self.con.register("er_given_ids", self.given[[self.uid]])
+                known(self.con, f"SELECT {q(self.uid)} AS id FROM er_given_ids", rows, self.uid, self.kind_labels, path)
+                self.con.unregister("er_given_ids")
             self.inputs += file_facts([self.settings.root / NAME_MODEL, *([Path(self.kind_labels)] if self.kind_labels else [])])
         normalized, used = [*rules.normalized(), *fs.normalized()], rules.used() | fs.used()
         reader = self.con.cursor().sql(f"SELECT * FROM {rows}").to_arrow_reader(self.chunk_rows)  # its own cursor: inserts go on alongside
@@ -188,19 +191,6 @@ class Run:
             kinds = {"companies": kinds.get(2, 0), "persons": kinds.get(1, 0), "not sure": kinds.get(0, 0),
                      "decided by people": self._count(f"{into} WHERE kind_by = 'people'"), "held back": self._count(f"{into} WHERE kind_held")}
         self._done("load", "O(N·L)", f"O({self.n:,}·L)", t, records=self.n, disabled=len(self.disabled), set_aside=self._count("set_aside"), **kinds)
-
-    def _known(self, rows: str, path: str | Path) -> None:
-        """The trust boundary of the answers given (kind_labels): each names a record of this file, as each decision must.
-        A spreadsheet reads 0000000151 as the number 151: that sheet's answers would stand for no record. O(answers + N)."""
-        if self.given is None or not len(self.given):
-            return
-        self.con.register("er_given_ids", self.given[[self.uid]])
-        unknown = [x for x, in self.con.execute(f"""SELECT {q(self.uid)} FROM er_given_ids WHERE {q(self.uid)} NOT IN
-            (SELECT {q(self.uid)} FROM {rows}) ORDER BY 1 LIMIT 5""").fetchall()]
-        self.con.unregister("er_given_ids")
-        if unknown:
-            raise InputError(f"{self.kind_labels}: answers for records not in {path}: {unknown}",
-                             fix="check the IDs, as the run wrote them in kind_review.parquet: a spreadsheet may have read them as numbers")
 
     def _set_aside(self, src: str, stored: str | None) -> str:
         """The records a run can resolve. Rows identical in every column are kept once. Set aside, with the reason, in
@@ -567,21 +557,10 @@ class Run:
         return merge_answers(kept, self._given(), self.uid)
 
     def _given(self) -> pd.DataFrame | None:
-        """The answered sheet given (kind_labels), checked: the trust boundary. Its filled rows, read once."""
-        if self.kind_labels is None or self.given is not None:
-            return self.given
-        path = Path(self.kind_labels)
-        if not path.is_file():
-            raise InputError(f"{path}: no such file of person/company answers", fix="give --kind-labels the answered kind_review.parquet")
-        given = pd.read_parquet(path)
-        if {self.uid, "kind"} - set(given.columns):
-            raise InputError(f"{path}: needs the columns {self.uid} and kind; it has {sorted(given.columns)}",
-                             fix="give back kind_review.parquet with kind filled in: 1 person, 2 company, 0 can't tell")
-        given = given[pd.to_numeric(given["kind"], errors="coerce").isin([PERSON, COMPANY, UNSURE]).to_numpy()].reset_index(drop=True)
-        given[self.uid] = given[self.uid].astype("string")  # as the run reads every ID: text
-        if (blank := int(given[self.uid].str.strip().fillna("").eq("").sum())):
-            raise InputError(f"{path}: {blank:,} answered rows have no {self.uid}", fix="fill in each answered row's ID, or clear its answer")
-        self.given = given
+        """The answered sheet given (kind_labels), through the door every input takes (er.source.answers): its answered
+        rows, read once."""
+        if self.kind_labels is not None and self.given is None:
+            self.given = answers(self.kind_labels, self.con, self.uid)
         return self.given
 
     # ---------- people's decisions ----------
@@ -606,24 +585,8 @@ class Run:
         if not (out / "gold.parquet").exists():
             raise InputError(f"no run in {out} to apply decisions to", fix="resolve the records into that folder first (--input … --output …)")
         self.con.execute(f"CREATE OR REPLACE TABLE gold_old AS SELECT * FROM read_parquet({lit(out / 'gold.parquet')})")
-        source = open_source(path, self.con, [self.l, self.r, "decision"])
-        src, cols, self.inputs = source.sql, set(source.columns), file_facts(source.files)
-        if {self.l, self.r, "decision"} - cols:  # the trust boundary: say what is wrong, row by row where it can
-            raise InputError(f"{path}: needs the columns {self.l}, {self.r} and decision; it has {sorted(cols)}",
-                             fix="give back review.parquet with decision filled in, or a file with those three columns")
-        self.con.execute(f"""CREATE OR REPLACE TABLE er_decisions AS SELECT DISTINCT least({l}::VARCHAR, {r}::VARCHAR) AS {l},
-            greatest({l}::VARCHAR, {r}::VARCHAR) AS {r}, lower(trim(decision::VARCHAR)) AS decision FROM {src}
-            WHERE nullif(trim(decision::VARCHAR), '') IS NOT NULL""")
-        bad = self.con.execute("SELECT DISTINCT decision FROM er_decisions WHERE decision NOT IN ('match', 'no_match')").fetchall()
-        if bad:
-            raise InputError(f"{path}: a decision is match or no_match, not {sorted(x for x, in bad)}", fix="correct those rows, or leave them empty")
-        both = self.con.execute(f"SELECT {l}, {r} FROM er_decisions GROUP BY ALL HAVING count(*) > 1 LIMIT 5").fetchall()
-        if both:
-            raise InputError(f"{path}: pairs decided both ways: {both}", fix="keep one decision per pair")
-        unknown = self.con.execute(f"""SELECT id FROM (SELECT {l} AS id FROM er_decisions UNION SELECT {r} FROM er_decisions)
-            WHERE id NOT IN (SELECT {u} FROM gold_old) ORDER BY id LIMIT 5""").fetchall()
-        if unknown:
-            raise InputError(f"{path}: records not in the run in {out}: {[x for x, in unknown]}", fix="check --output, or the IDs in the file")
+        self.inputs = file_facts(decisions(path, self.con, self.l, self.r, into="er_decisions"))  # the door: er.source checks them
+        known(self.con, f"SELECT {l} AS id FROM er_decisions UNION SELECT {r} FROM er_decisions", "gold_old", self.uid, path, f"the run in {out}")
         self.n = self._count("gold_old")
         self.con.execute(f"CREATE OR REPLACE TABLE er_base AS SELECT {u}, cluster_id FROM gold_old")
         self.con.execute(f"CREATE OR REPLACE TABLE er_review AS SELECT {l}, {r} FROM er_decisions WHERE decision = 'match'")
