@@ -316,8 +316,8 @@ body.collapsed .navitem .stack, body.collapsed .rail li::before { display: none;
   {"id": "columns", "title": "Prepare your data", "icon": "columns", "what": "Which of your columns hold each field, and how each value is made comparable.",
    "strip": ["records", "prepare"],
    "uses": [{"command": "list columns", "args": {"workspace": "@workspace"}, "reads": ["columns", "own"]},
-            {"command": "load records", "args": {"input": "@input", "workspace": "@workspace"}, "reads": ["records", "fields", "loaded", "copied"]},
-            {"command": "check records", "args": {"input": "@loaded", "workspace": "@workspace"}, "reads": ["records", "fields", "turned_off", "keys", "notes"]},
+            {"command": "load records", "args": {"input": "@input", "workspace": "@workspace"}, "reads": ["records", "fields", "suggested", "loaded", "copied"]},
+            {"command": "describe records", "args": {"input": "@loaded", "workspace": "@workspace"}, "reads": ["records", "fields", "suggested", "notes"]},
             {"command": "set columns", "args": {"mapping": "@mapping", "workspace": "@workspace"}, "reads": ["columns"]},
             {"command": "describe workspace", "args": {"workspace": "@workspace"}, "reads": ["inputs"]},
             {"command": "describe matching", "args": {"workspace": "@workspace"}, "reads": ["nodes"]}]},
@@ -851,12 +851,12 @@ const SCREENS = {
       const [cols, d, g] = await Promise.all([run("columns", "list columns"), run("columns", "describe workspace"), flowOf("columns", $("flow"))]);
       const files = d.inputs || [], last = files[files.length - 1];
       $("files").innerHTML = files.map((f) => `<span class="tag" title="${esc(f.path)}">${esc(f.name)} · ${fmt(Math.ceil(f.bytes / 1e6))} MB · ${f.read ? "matched" : "not run yet"}</span>`).join("");
-      if (check === undefined && last) check = await run("columns", "check records", {loaded: last.path});
+      if (check === undefined && last) check = await run("columns", "describe records", {loaded: last.path});
       const shares = Object.fromEntries(((check && check.fields) || []).map((f) => [f.field, f]));
       const examples = Object.fromEntries((g && g.nodes ? g.nodes.find((n) => n.id === "prepare").fields : []).map((f) => [f.field, f]));
-      const hints = check && check.event === "error" ? Object.entries(check.hints || {}) : [];
+      const hints = (check && check.suggested || []).map((x) => [x.field, x.column]);
       const meter = (v) => v === null || v === undefined ? '<span class="faint">—</span>' : `<span class="meter"><i style="width:${Math.round(v * 100)}%"></i></span>${pct(v)}`;
-      $("out").innerHTML = (check ? banner(hints.length ? {event: "error", error: check.error.split(". ")[0]} : check) : "") +
+      $("out").innerHTML = (check ? banner(check) : "") +
         (hints.length ? `<div class="actions" style="margin:-4px 0 16px">${hints.map(([f, c]) => `<button class="btn outlined" data-hint="${esc(f)}=${esc(c)}">Use ${esc(c)} for ${esc(f)}</button>`).join("")}</div>` : "") +
         `<div id="map"></div>`;
       grid($("map"), cols.columns, ["field", "columns", "example", "filled", "looks_right", "save"], {

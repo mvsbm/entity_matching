@@ -683,6 +683,30 @@ def test_answers_given_wrong_stop_the_run(tmp_path, population):
         Run(p, s).increment(tmp_path / "all.parquet", tmp_path / "empty")
 
 
+def test_describe_records_says_what_a_file_holds_without_preparing_it(tmp_path, population):
+    import duckdb
+    from er.source import describe
+    s, p, g = population
+    uid, phone = s.data.unique_id, s.columns["phone"][0][0]
+    df = g.df.rename(columns={uid: "customer_no", phone: "TEL"}).astype({"TEL": "string"})
+    df.loc[df.index[:5], "TEL"] = ["", " ", "\u3000", None, "12"]  # blank is missing, as a run reads it
+    df["Postal Code"] = df.pop(s.columns["postal_code"][0][0])  # the field's own name, not the column the mapping names
+    df = df.drop(columns=[c for alt in s.columns["postal_code"][1:] for c in alt if c in df])
+    df["n"] = range(len(df))  # a number column: read as text
+    df.to_parquet(tmp_path / "theirs.parquet", index=False)
+    d = describe(tmp_path / "theirs.parquet", duckdb.connect(), s.columns, s.detect)
+    blank = lambda x: x.isna() | x.astype("string").str.fullmatch("[ \t\n\r\u3000]*").fillna(True)
+    assert d["records"] == len(df) and {c["column"]: round(c["filled"], 9) for c in d["columns"]} == {c: round(1 - blank(df[c]).mean(), 9) for c in df}
+    person = next(f for f in d["fields"] if f["field"] == "person_name")
+    alts = [df[a[0]].mask(blank(df[a[0]])) if len(a) == 1 else (df[a[0]].mask(blank(df[a[0]])) + df[a[1]].mask(blank(df[a[1]]))) for a in person["sources"]]
+    whole = alts[0]
+    for x in alts[1:]:
+        whole = whole.fillna(x)
+    assert math.isclose(person["filled"], whole.notna().mean()) and [x["found"] for x in person["alternatives"]] == [True] * len(alts)
+    assert {x["field"]: x["column"] for x in d["suggested"]} == {"id": "customer_no", "phone": "TEL", "postal_code": "Postal Code"}  # values, values, name
+    assert d["fit"]["phone"]["TEL"] > 0.9 and not next(f for f in d["fields"] if f["field"] == "phone")["sources"][0] == ["TEL"]  # suggested, not applied
+
+
 def test_a_workspace_keeps_its_own_mapping_and_a_copy_of_its_files(tmp_path, population, capsys, monkeypatch):
     import threading
     from er import folder
@@ -704,7 +728,9 @@ def test_a_workspace_keeps_its_own_mapping_and_a_copy_of_its_files(tmp_path, pop
     assert {w["name"] for w in say("list", "workspaces")[1]["workspaces"]} == {"a", "b"}
     a, b = Path("workspaces/a"), Path("workspaces/b")
 
-    code, e = say("load", "records", "theirs.parquet", "--workspace", a)  # copied, then checked: the ID is not where the mapping looks
+    code, e = say("load", "records", "theirs.parquet", "--workspace", a)  # copied, then described: the ID is not where the mapping looks
+    assert code == 0 and [(x["field"], x["column"]) for x in e["suggested"]] == [("id", "customer_no")] and "turned_off" not in e  # nothing prepared
+    code, e = say("check", "records", a / "inputs" / "0001-theirs", "--workspace", a)  # the full check stops, and says the line to run
     assert code == 2 and e["hints"] == {"id": "customer_no"} and "set columns id=customer_no --workspace" in e["fix"]
     assert folder.sums(a / "inputs" / "0001-theirs") == {"theirs.parquet": sha256(tmp_path / "theirs.parquet")}
     say("load", "records", "theirs.parquet", "--workspace", a)

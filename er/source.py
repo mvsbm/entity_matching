@@ -3,7 +3,7 @@ decisions on pairs), all Parquet. It finds the files (a path, a glob or a folder
 several together by column name, and gives a column its configured name when the two differ only in case, width or
 separators. Source.notes says what it did; when it must stop, it raises an InputError that says what to fix. It reads
 each file's footer (its schema), never its rows, so its cost doesn't grow with the file. suggest() profiles a
-fixed-size sample. People's files are checked here too (answers, decisions), and every ID they give must name a record
+fixed-size sample; describe() says what a file holds, for mapping its columns, in one scan and a sample. People's files are checked here too (answers, decisions), and every ID they give must name a record
 (known): one rule for both.
 """
 import difflib
@@ -126,32 +126,100 @@ def open_source(path: str | Path | list[Path], con: duckdb.DuckDBPyConnection, e
                   columns=[rename.get(c, c) for c in types], notes=notes, files=files, ordered=ordered)
 
 
+FILLED = " \t\n\r\u3000"  # what a blank value is made of: blank is missing, as the run reads it (er.standardize.prepare)
+
+
+def filled(c: str) -> str:  # SQL: the column holds a value; trimmed only when its first byte is blank (CASE: a sixth of the cost)
+    starts = " OR ".join(f"prefix({q(c)}, '{ch}')" for ch in FILLED)
+    return f"({q(c)} <> '' AND CASE WHEN {starts} THEN trim({q(c)}, '{FILLED}') <> '' ELSE true END)"
+
+
+def fit(con: duckdb.DuckDBPyConnection, table: str, columns: list[str], fields: Iterable[str], patterns: Mapping[str, str]) -> dict[str, dict[str, float]]:
+    """For each field and each column of `table`, how well the column's values fit the field: for `id`, the share of
+    rows filled with a value no other row holds; for another field, the share of filled values its [locale.detect]
+    pattern matches. A field with neither is left out. O(rows · columns · fields)."""
+    asked = [f for f in fields if f == "id" or f in patterns]
+    if not asked or not columns:
+        return {}
+    n = max(1, con.execute(f"SELECT count(*) FROM {table}").fetchall()[0][0])
+    def share(f: str, c: str) -> str:
+        if f == "id":
+            return f"count(DISTINCT {q(c)}) FILTER (WHERE {filled(c)}) / {n}"
+        p = patterns[f].replace("'", "''")
+        return f"coalesce(avg(regexp_matches({q(c)}, '{p}')::INT) FILTER (WHERE {filled(c)}), 0)"
+    got = con.execute(f"SELECT {', '.join(share(f, c) for f in asked for c in columns)} FROM {table}").fetchall()[0]
+    return {f: dict(zip(columns, got[i * len(columns):(i + 1) * len(columns)])) for i, f in enumerate(asked)}
+
+
 def suggest(src: Source, con: duckdb.DuckDBPyConnection, fields: Iterable[str], patterns: Mapping[str, str],
             rows: int = 10_000) -> dict[str, tuple[str, float, str]]:
     """For each field, the file's column whose values look most like it, its share and the evidence, from the first `rows`
-    records: for `id`, the share filled and unique; for another field, the share of filled values its [locale.detect]
-    pattern matches. A field nothing matches is left out. Suggestions only: a wrong guess applied silently would
+    records (fit). A field nothing matches is left out. Suggestions only: a wrong guess applied silently would
     corrupt results. O(rows · columns)."""
     con.execute(f"CREATE OR REPLACE TEMP TABLE er_sample AS SELECT * FROM {src.sql} LIMIT {rows}")
-    n = con.execute("SELECT count(*) FROM er_sample").fetchall()[0][0]
-    if not n:
-        return {}
     out = {}
-    for f in fields:
-        if f == "id":
-            stats = [f"count(DISTINCT nullif(trim({q(c)}), '')) / {n}" for c in src.columns]
-            what = "filled and unique"
-        elif f in patterns:
-            p = patterns[f].replace("'", "''")
-            stats = [f"coalesce(avg(regexp_matches({q(c)}, '{p}')::INT) FILTER (WHERE nullif(trim({q(c)}), '') IS NOT NULL), 0)" for c in src.columns]
-            what = f"of filled values look like {f}"
-        else:
-            continue
-        shares = con.execute(f"SELECT {', '.join(stats)} FROM er_sample").fetchall()[0]
-        best = max(range(len(shares)), key=lambda i: shares[i])
+    for f, shares in fit(con, "er_sample", src.columns, fields, patterns).items():
+        best = max(shares, key=shares.get)
         if shares[best] > 0:
-            out[f] = (src.columns[best], shares[best], f"{shares[best]:.0%} {what}")
+            out[f] = (best, shares[best], f"{shares[best]:.0%} {'filled and unique' if f == 'id' else f'of filled values look like {f}'}")
     return out
+
+
+def describe(path: str | Path, con: duckdb.DuckDBPyConnection, columns: Mapping[str, tuple[tuple[str, ...], ...]],
+             patterns: Mapping[str, str], rows: int = 2_000) -> dict:
+    """What a records file holds, for mapping its columns, without preparing a record. Its records; each column's share
+    filled and an example; each field's sources (`columns`: its alternatives, each one column or several joined, as a
+    run reads them: a later one where the earlier are empty, a joined one only where every part is filled), with each
+    one's share filled, an example, and the share of its values that look like the field, and the same for the field
+    as a whole; for each field and column, how well the column fits (`fit`: the order to offer them in); and for a
+    field the file holds none of, the column whose name or values suggest it. Shares filled cover the file; examples
+    and fits come from a sample of `rows` records. Suggestions only: a wrong guess applied silently would corrupt
+    results. O(N · (C + alternatives)) in one scan, plus O(rows · C · F)."""
+    src = open_source(path, con, {c for alts in columns.values() for alt in alts for c in alt})
+    cols, fields = src.columns, {f: alts for f, alts in columns.items() if f != "entity"}
+    here = {f: [alt for alt in alts if set(alt) <= set(cols)] for f, alts in fields.items()}
+    value = lambda alt: (f"CASE WHEN {' AND '.join(filled(c) for c in alt)} THEN {' || '.join(q(c) for c in alt)} END"
+                         if len(alt) > 1 else f"CASE WHEN {filled(alt[0])} THEN {q(alt[0])} END")
+    whole = lambda alts: f"coalesce({', '.join(value(a) for a in alts)})"
+    shown = {**{("column", c): value((c,)) for c in cols},
+             **{("alt", f, i): value(a) for f, alts in here.items() for i, a in enumerate(alts)},
+             **{("field", f): whole(alts) for f, alts in here.items() if alts}}
+    keys = list(shown)
+    b = {c: f"er_b{i}" for i, c in enumerate(cols)}  # each column's filled test once per row, every share counted from them
+    held = lambda alt: " AND ".join(b[c] for c in alt)
+    test = {k: b[k[1]] if k[0] == "column" else held(here[k[1]][k[2]]) if k[0] == "alt" else " OR ".join(f"({held(a)})" for a in here[k[1]])
+            for k in keys}
+    counts = con.execute(f"SELECT count(*), {', '.join(f'count_if({test[k]})' for k in keys)} "
+                         f"FROM (SELECT {', '.join(f'{filled(c)} AS {b[c]}' for c in cols)} FROM {src.sql})").fetchall()[0]
+    n, share = counts[0], dict(zip(keys, (x / max(1, counts[0]) for x in counts[1:])))
+    con.execute(f"CREATE OR REPLACE TEMP TABLE er_described AS SELECT * FROM {src.sql} USING SAMPLE reservoir({rows} ROWS) REPEATABLE (0)")
+    pattern = {f: patterns[f].replace("'", "''") for f in here if f in patterns}
+    looks = lambda f, v: f"coalesce(avg(regexp_matches({v}, '{pattern[f]}')::INT) FILTER (WHERE {v} IS NOT NULL), 0)" if f in pattern else "NULL"
+    seen = con.execute(f"SELECT {', '.join(f'first({shown[k]}) FILTER (WHERE {shown[k]} IS NOT NULL), ' + (looks(k[1], shown[k]) if k[0] != 'column' else 'NULL') for k in keys)} "
+                       f"FROM er_described").fetchall()[0]
+    example, looks_right = dict(zip(keys, seen[0::2])), dict(zip(keys, seen[1::2]))
+    fits = fit(con, "er_described", cols, fields, patterns)
+    norms, suggested = {norm(c): c for c in cols}, []
+    unique = lambda c: con.execute(f"SELECT count(DISTINCT {q(c)}) = count(*) FROM {src.sql} WHERE {filled(c)}").fetchall()[0][0]
+    for f in fields:
+        if here[f]:
+            continue
+        if (c := norms.get(norm(f))) is not None:
+            suggested.append(dict(field=f, column=c, why="its name"))
+        elif f in fits and (c := max(fits[f], key=fits[f].get, default=None)) and fits[f][c] >= (0.99 if f == "id" else 0.5) and (f != "id" or unique(c)):
+            suggested.append(dict(field=f, column=c, why=f"{fits[f][c]:.0%} " + ("filled, each value once" if f == "id" else f"look like {f.replace('_', ' ')}")))
+    return dict(
+        records=n,
+        columns=[dict(column=c, filled=share[("column", c)], example=example[("column", c)]) for c in cols],
+        fields=[dict(field=f, sources=[list(a) for a in alts], filled=share.get(("field", f)), example=example.get(("field", f)),
+                     looks_right=looks_right.get(("field", f)),
+                     alternatives=[dict(columns=list(a), found=set(a) <= set(cols),
+                                        **({k: v for k, v in zip(("filled", "example", "looks_right"),
+                                                                  (share[key], example[key], looks_right[key]))}
+                                           if (key := ("alt", f, here[f].index(a)) if a in here[f] else None) else
+                                           dict(filled=None, example=None, looks_right=None))) for a in alts])
+                for f, alts in fields.items()],
+        fit=fits, suggested=suggested, notes=src.notes)
 
 
 def sha256(f: Path) -> str:
