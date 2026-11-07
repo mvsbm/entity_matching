@@ -258,6 +258,21 @@ body.collapsed .navitem .stack, body.collapsed .rail li::before { display: none;
 .stepfoot .btn { white-space: normal; height: auto; min-height: 36px; text-align: left; }
 .next { display: flex; align-items: center; gap: 12px; padding: 14px 18px; border-radius: 12px; background: var(--primary-soft); margin-bottom: 16px; }
 .next b { font-weight: 500; }
+
+/* how much a part of the page covers: all the records (a grey band), some of them (a list), one (a card with a blue edge) */
+.zone.all { background: var(--hover); border-radius: 14px; padding: 10px 14px 0; margin: 0 0 16px; }
+.zone.all .flow { margin-bottom: 10px; }
+.zone.all .detail { margin: 0 0 14px; }
+.scope { display: flex; align-items: center; gap: 6px; margin: 0 0 8px; font-size: 11px; font-weight: 600; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); }
+.scope .ic, .path .ic { width: 16px; height: 16px; }
+.card.one { border-left: 4px solid var(--primary); }
+.card h2.question { font-size: 22px; font-weight: 400; margin: 0 0 4px; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.why { color: var(--muted); margin: 0 0 12px; }
+.path { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; margin: -6px 0 14px; font-size: 13px; color: var(--muted); }
+.path:empty { display: none; }
+.path span { display: inline-flex; align-items: center; gap: 4px; }
+.path span:last-of-type { color: var(--ink); font-weight: 500; }
+.path i { font-style: normal; color: var(--faint); }
 </style>
 </head>
 <body>
@@ -363,6 +378,7 @@ const ICON = {
   info: '<circle cx="12" cy="12" r="9"/><path d="M12 11v6M12 7.5v.01"/>',
   down: '<path d="M7 10l5 5 5-5"/>',
   empty: '<rect x="4" y="5" width="16" height="14" rx="2"/><path d="M4 10h16M9 14h6"/>',
+  stack: '<path d="M12 4l9 4.5-9 4.5-9-4.5z"/><path d="M3 12.5l9 4.5 9-4.5M3 16.5l9 4.5 9-4.5"/>',
 };
 const icon = (name) => `<svg class="ic" viewBox="0 0 24 24" aria-hidden="true">${ICON[name]}</svg>`;
 
@@ -516,7 +532,15 @@ async function refresh(d) {  // the stepper, from the page's own describe run wh
 const head = (id, actions = "") => {
   const n = ORDER.indexOf(id), s = (steps.steps || {})[id];
   return `<div class="pagehead"><h1>${n >= 0 ? `<span class="faint">Step ${n + 1} of ${ORDER.length} · </span>` : ""}${esc(screen(id).title)}</h1>${
-    s ? `<span class="chip ${s.state === "done" ? "good" : s.state === "attention" ? "warn" : "info"}" id="stepchip">${esc(STATE_WORD[s.state])} · ${esc(s.line)}</span>` : ""}${actions}</div>`;
+    s ? `<span class="chip ${s.state === "done" ? "good" : s.state === "attention" ? "warn" : "info"}" id="stepchip">${esc(STATE_WORD[s.state])} · ${esc(s.line)}</span>` : ""}${actions}</div>
+    <nav class="path" id="path" aria-label="What this page shows"></nav>`;
+};
+
+// How much each part of a page covers, as a label on it; the path under the heading strings them together, widest first.
+const scope = (ic, text) => `<div class="scope">${icon(ic)}${esc(text)}</div>`;
+const where = () => {  // one part is the band's own label: a path once the page narrows
+  const parts = [...$("screen").querySelectorAll(".scope")].map((s) => `<span>${s.innerHTML}</span>`);
+  $("path").innerHTML = parts.length > 1 ? parts.join("<i>›</i>") : "";
 };
 
 function stepFoot(id) {  // back and next, in the workflow's order
@@ -528,33 +552,39 @@ function stepFoot(id) {  // back and next, in the workflow's order
 
 // ---------- the flow strip: each stage of the pipeline as a chip, its details drawn, not written ----------
 
-const NODE = {
-  records: {icon: "records", word: "records", n: (x) => x.count},
-  prepare: {icon: "wand", word: "fields prepared", n: (x) => x.fields.filter((f) => f.filled).length || x.fields.length},
-  rules: {icon: "rule", word: "pairs by rules", tone: "rule", n: (x) => x.pairs},
-  candidates: {icon: "fan", word: "pairs compared", n: (x) => x.pairs},
-  score: {icon: "scale", word: "pairs scored", n: (x) => x.pairs},
-  accept: {icon: "check", word: "matched", tone: "model", n: (x) => x.accepted},
-  people: {icon: "person", word: "for you", tone: "people", n: (x) => x.to_decide},
-  group: {icon: "group", word: "grouped", n: (x) => x.customers},
-  kind: {icon: "kinds", word: "person / company", n: (x) => x.counts ? x.counts.company + x.counts.person : null},
-  customers: {icon: "customers", word: "customers", n: (x) => x.count},
+const NODE = {  // each stage in everyday words; describe matching's own name and method show on a click
+  records: {icon: "records", name: "Records", word: "records", n: (x) => x.count},
+  prepare: {icon: "wand", name: "Made comparable", word: "fields", n: (x) => x.fields.filter((f) => f.filled).length || x.fields.length},
+  rules: {icon: "rule", name: "Sure matches", word: "pairs", tone: "rule", n: (x) => x.pairs},
+  candidates: {icon: "fan", name: "Compared", word: "pairs", n: (x) => x.pairs},
+  score: {icon: "scale", name: "Weighed", word: "pairs", n: (x) => x.pairs},
+  accept: {icon: "check", name: "Matched", word: "pairs", tone: "model", n: (x) => x.accepted},
+  people: {icon: "person", name: "You decide", word: "pairs", tone: "people", n: (x) => x.to_decide},
+  group: {icon: "group", name: "Customers formed", word: "customers", n: (x) => x.customers},
+  kind: {icon: "kinds", name: "Person or company", word: "told apart", n: (x) => x.counts ? x.counts.company + x.counts.person : null},
+  customers: {icon: "customers", name: "Customers", word: "customers", n: (x) => x.count},
 };
+const LEVEL = {exact: "same", "fold exact": "same, spelling aside", "fold JW high": "very similar", "JW high": "very similar", "given name": "same given name", "same address": "same",
+               "fold JW low": "somewhat similar", "JW low": "somewhat similar", "address close": "nearly the same", "same postal": "same postal code",
+               "one digit off": "1 digit different", else: "different", missing: "not given"};
+const level = (l) => LEVEL[l] || l;
+const comp = (c) => ({cif: "customer ID", birth: "birth date"})[c] || c;
 const ARROW = '<span class="arrow"><svg viewBox="0 0 26 14" aria-hidden="true"><path d="M1 7h20M16 2l6 5-6 5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg></span>';
 
 function strip(box, graph, ids, open = null) {
-  const nodes = Object.fromEntries(graph.nodes.map((x) => [x.id, x]));
-  box.innerHTML = `<div class="flow">${ids.map((id, i) => {
+  const nodes = Object.fromEntries(graph.nodes.map((x) => [x.id, x])), all = nodes.records.count;
+  box.className = "zone all";
+  box.innerHTML = `${scope("stack", all === null ? "All records" : `All ${fmt(all)} records`)}<div class="flow">${ids.map((id, i) => {
     const x = nodes[id], k = NODE[id], n = k.n(x);
-    return `${i ? ARROW : ""}<button class="node ${k.tone || ""} ${n === null || n === undefined ? "dim" : ""}" data-node="${id}" aria-expanded="false" title="${esc(x.method || x.name)}">
-      <span class="top">${icon(k.icon)}${esc(x.name)}</span><span class="n">${n === null || n === undefined ? "—" : fmt(n)}</span><span class="faint" style="font-size:12px">${esc(k.word)}</span></button>`;
+    return `${i ? ARROW : ""}<button class="node ${k.tone || ""} ${n === null || n === undefined ? "dim" : ""}" data-node="${id}" aria-expanded="false" title="${esc(x.name)}: ${esc(x.method || "")}">
+      <span class="top">${icon(k.icon)}${esc(k.name)}</span><span class="n">${n === null || n === undefined ? "—" : fmt(n)}</span><span class="faint" style="font-size:12px">${esc(k.word)}</span></button>`;
   }).join("")}</div><div class="slot"></div>`;
   const slot = box.querySelector(".slot");
   const show = (id) => {
     box.querySelectorAll(".node").forEach((b) => b.setAttribute("aria-expanded", String(b.dataset.node === id && slot.dataset.open !== id)));
     if (slot.dataset.open === id) { slot.innerHTML = ""; slot.dataset.open = ""; return; }
     slot.dataset.open = id;
-    slot.innerHTML = `<div class="detail"><h3>${esc(nodes[id].name)} <small>${esc(nodes[id].method || "")}</small></h3>${(DETAIL[id] || (() => ""))(nodes[id], nodes)}</div>`;
+    slot.innerHTML = `<div class="detail"><h3>${esc(NODE[id].name)} <small>${esc(nodes[id].name)}: ${esc(nodes[id].method || "")}</small></h3>${(DETAIL[id] || (() => ""))(nodes[id], nodes)}</div>`;
     slot.querySelectorAll("[data-example]").forEach((b) => b.onclick = () => go("results", b.dataset.example));
   };
   box.querySelectorAll(".node").forEach((b) => b.onclick = () => show(b.dataset.node));
@@ -612,21 +642,21 @@ const DETAIL = {
   score: (x) => {
     const max = Math.max(1, ...x.comparisons.flatMap((c) => c.levels.map((l) => Math.abs(l.bits ?? 0))), Math.abs(x.prior_bits ?? 0));
     return `<div class="bars" style="grid-template-columns:minmax(120px,max-content) minmax(120px,1fr) 56px">${x.comparisons.map((c) => c.levels.map((l, n) =>
-      `<span class="lab" title="${esc(l.tests.map(test).join(" or ") || "anything else")}">${n ? "" : `<b>${esc(c.name)}</b> `}${esc(l.label)}</span>${bitsBar(l.bits, max)}
+      `<span class="lab" title="${esc(l.tests.map(test).join(" or ") || "anything else")}">${n ? "" : `<b>${esc(comp(c.name))}</b> `}${esc(level(l.label))}</span>${bitsBar(l.bits, max)}
        <span class="val">${l.bits === null || l.bits === undefined ? "—" : `${l.bits >= 0 ? "+" : ""}${l.bits.toFixed(1)}`}</span>`).join("")).join("")}
-      <span class="lab"><b>start</b></span>${bitsBar(x.prior_bits, max)}<span class="val">${x.prior_bits === null ? "—" : x.prior_bits.toFixed(1)}</span></div>`;
+      <span class="lab"><b>starting doubt</b></span>${bitsBar(x.prior_bits, max)}<span class="val">${x.prior_bits === null ? "—" : x.prior_bits.toFixed(1)}</span></div>`;
   },
   accept: (x) => {
     if (!x.bands.length) return `${ruler([], x.threshold)}`;
     const bands = x.bands.map(([from, pairs, accepted]) => ({from: Number(from), pairs: Number(pairs), accepted: Number(accepted)})).filter((b) => b.from > -40);
     const max = Math.max(1, ...bands.map((b) => b.pairs)), w = 600 / bands.length, at = (v) => (bands.findIndex((b) => b.from >= v) + 0) * w;
-    return `<svg class="ruler hist" style="height:150px" viewBox="0 0 600 90" role="img" aria-label="pairs by weight, with the line at ${x.threshold} bits">
+    return `<svg class="ruler hist" style="height:150px" viewBox="0 0 600 90" role="img" aria-label="pairs by points, with the line at ${x.threshold} points">
       <rect x="${at(x.review_from)}" y="0" width="${at(x.threshold) - at(x.review_from)}" height="70" fill="var(--people-bg)"/>
       ${bands.map((b, i) => `<rect x="${i * w + 1}" y="${70 - 66 * Math.sqrt(b.pairs / max)}" width="${w - 2}" height="${66 * Math.sqrt(b.pairs / max)}" rx="2"
-        fill="${b.accepted ? "var(--model)" : "var(--outline)"}"><title>${b.from} to ${b.from + 2} bits: ${b.pairs} pairs</title></rect>`).join("")}
+        fill="${b.accepted ? "var(--model)" : "var(--outline)"}"><title>${b.from} to ${b.from + 2} points: ${b.pairs} pairs</title></rect>`).join("")}
       <line x1="${at(x.threshold)}" x2="${at(x.threshold)}" y1="0" y2="74" stroke="var(--ink)" stroke-width="2"/>
-      <text x="${at(x.threshold) + 4}" y="86">${x.threshold} bits: matched →</text><text x="${at(x.review_from) - 3}" y="12" text-anchor="end" style="fill:var(--people)">you decide ▸</text>
-      <text x="0" y="86">← fewer bits</text></svg>`;
+      <text x="${at(x.threshold) + 4}" y="86">${x.threshold} points needed: matched →</text><text x="${at(x.review_from) - 3}" y="12" text-anchor="end" style="fill:var(--people)">you decide ▸</text>
+      <text x="0" y="86">← fewer points</text></svg>`;
   },
   people: (x) => bars([{label: "to decide", value: x.to_decide, tone: "people"}, {label: "decided", value: x.decided, tone: "people"}, {label: "joined by you", value: x.joined, tone: "people"}]),
   group: (x) => bars(x.sizes.map((s) => ({label: `${s.records} record${s.records > 1 ? "s" : ""}`, value: s.customers, text: `${fmt(s.customers)} customers`}))),
@@ -636,34 +666,40 @@ const DETAIL = {
 };
 
 function ruler(parts, threshold, prior = 0) {  // evidence stacking from the start toward the line: matched past it
-  const steps = [{label: "start", bits: prior}, ...parts], ends = [];
+  const steps = [{label: "starting doubt", bits: prior}, ...parts], ends = [];
   let at = 0;
   for (const p of steps) { ends.push([at, at + p.bits, p]); at += p.bits; }
   const lo = Math.min(0, ...ends.flat().filter(Number.isFinite)), hi = Math.max(threshold + 2, ...ends.flat().filter(Number.isFinite));
   const x = (v) => 20 + 560 * (v - lo) / (hi - lo);
-  return `<svg class="ruler" viewBox="0 0 600 74" role="img" aria-label="evidence: ${at.toFixed(1)} bits, the line at ${threshold}">
+  return `<svg class="ruler" viewBox="0 0 600 74" role="img" aria-label="evidence: ${at.toFixed(1)} points, ${threshold} needed">
     ${ends.map(([a, b, p], i) => `<rect x="${Math.min(x(a), x(b))}" y="${10 + i * 4}" width="${Math.max(1.5, Math.abs(x(b) - x(a)))}" height="14" rx="3"
-      fill="${p.bits >= 0 ? "var(--good)" : "var(--neg)"}" opacity="${i ? 0.85 : 0.55}"><title>${esc(p.label)}: ${p.bits >= 0 ? "+" : ""}${p.bits.toFixed(1)} bits</title></rect>`).join("")}
-    <line x1="${x(threshold)}" x2="${x(threshold)}" y1="2" y2="56" stroke="var(--ink)" stroke-width="2"/><text x="${x(threshold) + 4}" y="68">${threshold} · matched →</text>
+      fill="${p.bits >= 0 ? "var(--good)" : "var(--neg)"}" opacity="${i ? 0.85 : 0.55}"><title>${esc(p.label)}: ${p.bits >= 0 ? "+" : ""}${p.bits.toFixed(1)} points</title></rect>`).join("")}
+    <line x1="${x(threshold)}" x2="${x(threshold)}" y1="2" y2="56" stroke="var(--ink)" stroke-width="2"/><text x="${x(threshold) + 4}" y="68">${threshold} needed · matched →</text>
     <line x1="${x(0)}" x2="${x(0)}" y1="2" y2="56" stroke="var(--outline)"/><text x="${x(0) - 4}" y="68" text-anchor="end">0</text>
     ${parts.length ? `<circle cx="${x(at)}" cy="${20 + steps.length * 2}" r="6" fill="var(--ink)"/><text x="${x(at)}" y="${46 + steps.length * 2}" text-anchor="middle" style="font-weight:600">${at.toFixed(1)}</text>` : ""}</svg>`;
 }
 
 function web(records, links) {  // a customer's records as dots, joined by what linked them: rule, model or person
-  const n = records.length, r = n > 1 ? 85 : 0, pos = Object.fromEntries(records.map((x, i) => [x.id, [230 + r * Math.cos(2 * Math.PI * i / n - Math.PI / 2), 118 + r * Math.sin(2 * Math.PI * i / n - Math.PI / 2)]]));
+  const n = records.length, r = n > 1 ? 85 : 0, turn = (i) => 2 * Math.PI * i / n - Math.PI / 2, at = (i, out) => [230 + out * Math.cos(turn(i)), 118 + out * Math.sin(turn(i))];
+  const pos = Object.fromEntries(records.map((x, i) => [x.id, at(i, r)]));
+  const label = (i) => {  // outside the circle, so no link runs through it
+    if (!r) return `x="${pos[records[i].id][0]}" y="${pos[records[i].id][1] + 24}" text-anchor="middle"`;
+    const [x, y] = at(i, r + 18), c = Math.cos(turn(i));
+    return `x="${x}" y="${y + 4}" text-anchor="${c < -0.3 ? "end" : c > 0.3 ? "start" : "middle"}"`;
+  };
   const tone = (by) => by === "fs" ? "var(--model)" : by.startsWith("people") ? "var(--people)" : "var(--rule)";
-  return `<div class="legend"><span><i style="background:var(--rule)"></i>a rule</span><span><i style="background:var(--model)"></i>the model, bits</span><span><i style="background:var(--people)"></i>a person</span></div>
+  return `<div class="legend"><span><i style="background:var(--rule)"></i>a rule</span><span><i style="background:var(--model)"></i>the model's points</span><span><i style="background:var(--people)"></i>a person</span></div>
     <svg class="web" viewBox="0 0 460 240" role="img" aria-label="${n} records joined by ${links.length} links">
     ${links.filter((l) => pos[l.id_l] && pos[l.id_r]).map((l) => { const [a, b] = [pos[l.id_l], pos[l.id_r]];
-      return `<line x1="${a[0]}" y1="${a[1]}" x2="${b[0]}" y2="${b[1]}" stroke="${tone(l.by)}" stroke-width="3"><title>${esc(l.by)}${l.weight ? ` · ${l.weight.toFixed(1)} bits` : ""}</title></line>
+      return `<line x1="${a[0]}" y1="${a[1]}" x2="${b[0]}" y2="${b[1]}" stroke="${tone(l.by)}" stroke-width="3"><title>${esc(l.by)}${l.weight ? ` · ${l.weight.toFixed(1)} points` : ""}</title></line>
         ${l.weight ? `<text x="${(a[0] + b[0]) / 2}" y="${(a[1] + b[1]) / 2 - 4}" text-anchor="middle">${l.weight.toFixed(1)}</text>` : ""}`; }).join("")}
-    ${records.map((x) => `<circle cx="${pos[x.id][0]}" cy="${pos[x.id][1]}" r="9" fill="var(--surface)" stroke="var(--ink)" stroke-width="2"/>
-      <text x="${pos[x.id][0]}" y="${pos[x.id][1] + 24}" text-anchor="middle">${esc(x.id)}</text>`).join("")}</svg>`;
+    ${records.map((x, i) => `<circle cx="${pos[x.id][0]}" cy="${pos[x.id][1]}" r="9" fill="var(--surface)" stroke="var(--ink)" stroke-width="2"/>
+      <text ${label(i)}>${esc(x.id)}</text>`).join("")}</svg>`;
 }
 
 function slider(r) {  // where the engine and the name alone place a record, from person to company
   const at = (p) => 3 + 94 * p, e = Number(r.engine_p), n = Number(r.name_p), same = Math.abs(e - n) < 0.06;
-  const pin = (p, cls, label) => Number.isNaN(p) ? "" : `<span class="pin ${cls}" style="left:${at(p)}%"><span>${label}</span></span>`;
+  const pin = (p, cls, label) => Number.isNaN(p) ? "" : `<span class="pin ${cls}" style="left:${at(p)}%"><span style="transform:translateX(-${Math.round(100 * p)}%)">${label}</span></span>`;
   return `<div class="slider"><span class="track"></span><span class="mid"></span>${same ? "" : pin(n, "name", "name")}${pin(e, "engine", same ? "engine and name" : "engine")}
     <span class="ends"><span>${icon("person")} person</span><span>company ${icon("kinds")}</span></span></div>`;
 }
@@ -762,6 +798,7 @@ async function flowOf(id, box, open = null) {  // the step's part of the pipelin
   const g = await run(id, "describe matching");
   if (g.event === "error") { box.innerHTML = banner(g); return null; }
   strip(box, g, screen(id).strip, open);
+  where();
   return g;
 }
 
@@ -853,15 +890,18 @@ const SCREENS = {
       const d = await run("results", "describe entity", {id});
       if (d.event === "error") { $("right").innerHTML = banner(d); return; }
       const cols = Object.keys(d.records[0]).filter((k) => !["cluster_id", "kind_p", "kind_held", "resolved_stage"].includes(k));
-      $("right").innerHTML = `<div class="card"><h2>${icon("customers")}Customer ${esc(d.entity)} · ${d.records.length} records</h2>${web(d.records, d.links)}<div id="erecs"></div></div>`;
+      $("right").innerHTML = `<div class="card one">${scope("customers", `Customer ${d.entity}`)}<h2 class="question">${d.records.length > 1 ? `Why are these ${d.records.length} records one customer?` : "One record, matched to no other"}</h2>
+        ${web(d.records, d.links)}<div id="erecs"></div></div>`;
       grid($("erecs"), d.records, cols, {filter: false});
+      where();
     };
     $("right").innerHTML = `<div class="card empty">${icon("customers")}<p class="muted">Pick a customer, or look up a record ID above.</p></div>`;
     if (record) entity(record);
     if (!state.run) { $("left").innerHTML = emptyRun(); return; }
     const [d] = await Promise.all([run("results", "describe run"), flowOf("results", $("flow"))]);
     if (d.event === "error") { $("left").innerHTML = banner(d); return d; }
-    $("left").innerHTML = `<div class="card"><h2>Largest customers</h2><div id="largest"></div></div>`;
+    $("left").innerHTML = `${scope("records", `The ${fmt(d.largest.length)} largest customers`)}<div id="largest"></div>`;
+    where();
     const t = grid($("largest"), d.largest, ["entity", "records"], {labels: {entity: "customer"}, filter: false, onPick: (i) => { t.select(i); entity(d.largest[i].entity); }});
     return d;
   },
@@ -874,42 +914,47 @@ const SCREENS = {
 // how answers are applied (decisions join entities at once; answers need a rerun, so the page reloads its new sheet).
 const QUEUES = {
   pairs: {title: "Pairs", list: "list pairs", one: "decide pair", apply: "apply decisions", applyLabel: "Apply decisions", written: "decided",
-          rows: (d) => d.pairs, cols: ["status", "why", "id_l", "id_r", "match_weight"], labels: {match_weight: "bits"},
+          rows: (d) => d.pairs, cols: ["status", "why", "id_l", "id_r", "match_weight"], labels: {match_weight: "points"}, some: "pairs to review",
           keys: {m: "match", n: "no_match"}, answer: (r, value) => ({first: r.id_l, second: r.id_r, decision: value}), card: pairCard,
           applied: (e) => `<div class="banner info">${icon("check")}<div><b>${fmt(e.decisions)} decisions applied: ${fmt(e.clusters_joined)} customers joined.</b></div></div>`},
   kinds: {title: "Kinds", list: "list kinds", one: "answer kind", apply: "apply answers", applyLabel: "Apply answers", rerun: true, written: "answered",
-          rows: (d) => d.kinds, cols: ["status", "why", "id", "name", "engine_says"], labels: {engine_says: "engine"},
+          rows: (d) => d.kinds, cols: ["status", "why", "id", "name", "engine_says"], labels: {engine_says: "engine"}, some: "records to check",
           keys: {"1": "person", "2": "company", "0": "unsure"}, answer: (r, value) => ({id: r.id, kind: value}), card: kindCard},
 };
 
 const keyHint = (keys) => `<span class="keys">${keys.map(([k, what]) => `<kbd>${esc(k)}</kbd> ${esc(what)}`).join(" · ")} · <kbd>S</kbd> skip · <kbd>↑</kbd><kbd>↓</kbd> move</span>`;
-const cardHead = (r, at, of, written) => `<h2>${at + 1} of ${of} ${chip(r.why)} ${chip(r.status, written)}</h2>`;
+// A card's head: what it shows, one of the list; the question it asks; why this one is asked.
+const cardHead = (r, at, of, written, [ic, what, question], why) => `${scope(ic, `${what} · ${fmt(at + 1)} of ${fmt(of)}`)}
+  <h2 class="question">${esc(question)} ${chip(r.status, written)}</h2><p class="why">${esc(why)}</p>`;
 let graph = null;  // the run's describe matching, which the cards draw their ladders and the line from
 
-function pairCard(r, at, of) {  // the two records side by side, their differences marked; each comparison's step on its ladder and its bits
+function pairCard(r, at, of) {  // the two records side by side, their differences marked; each comparison's step on its ladder and its points
   const fields = Object.keys(r).filter((k) => k.endsWith("_l") && k !== "id_l" && `${k.slice(0, -2)}_r` in r).map((k) => k.slice(0, -2))
     .filter((f) => r[`${f}_l`] !== null || r[`${f}_r`] !== null);
   const score = graph && graph.nodes.find((n) => n.id === "score"), accept = graph && graph.nodes.find((n) => n.id === "accept");
   const comps = Object.keys(r).filter((k) => `${k}_bits` in r), ladder = Object.fromEntries((score ? score.comparisons : []).map((c) => [c.name, c.levels]));
-  const max = Math.max(4, ...comps.map((c) => Math.abs(r[`${c}_bits`] ?? 0)));
-  return `<div class="card">${cardHead(r, at, of, "decided")}
+  const max = Math.max(4, ...comps.map((c) => Math.abs(r[`${c}_bits`] ?? 0))), line = accept ? accept.threshold : 8;
+  const why = r.why === "audit" ? "A spot-check: the engine matched these two, and you confirm it."
+    : r.match_weight >= line ? "No name to compare, so the engine leaves this one to you." : `Close to the line: ${fmt(r.match_weight)} points, and ${line} are needed.`;
+  return `<div class="card one">${cardHead(r, at, of, "decided", ["pairs", "This pair", "Same customer?"], why)}
     <div class="tablecard"><table><thead><tr><th></th><th>${esc(r.id_l)}</th><th>${esc(r.id_r)}</th></tr></thead><tbody>${fields.map((f) => {
       const [a, b] = highlight(r[`${f}_l`], r[`${f}_r`]);
       return `<tr><td class="faint">${esc(words(f))}</td><td class="wrap">${r[`${f}_l`] === null ? "—" : a}</td><td class="wrap">${r[`${f}_r`] === null ? "—" : b}</td></tr>`;
     }).join("")}</tbody></table></div>
-    <div class="bars" style="grid-template-columns:70px max-content minmax(0,1fr) minmax(100px,1.2fr) 48px">${comps.map((c) => {
+    <div class="bars" style="grid-template-columns:minmax(70px,max-content) max-content minmax(0,1fr) minmax(100px,1.2fr) 48px">${comps.map((c) => {
       const levels = ladder[c] || [], reached = levels.findIndex((l) => l.label === r[c]), bits = r[`${c}_bits`];
-      return `<span class="lab">${esc(c)}</span><span class="ladder" title="${esc(levels.map((l) => l.label).join(" › "))}">${levels.map((l, n) =>
-        `<i class="${n === reached ? `on ${bits < 0 ? "neg" : ""}` : ""}" title="${esc(l.label)}${l.bits !== null && l.bits !== undefined ? `: ${l.bits >= 0 ? "+" : ""}${l.bits.toFixed(1)} bits` : ""}"></i>`).join("")}</span>
-        <span class="faint" style="font-size:12px">${esc(r[c])}</span>${bitsBar(bits, max)}<span class="val">${bits >= 0 ? "+" : ""}${fmt(bits)}</span>`;
+      return `<span class="lab">${esc(comp(c))}</span><span class="ladder" title="${esc(levels.map((l) => level(l.label)).join(" › "))}">${levels.map((l, n) =>
+        `<i class="${n === reached ? `on ${bits < 0 ? "neg" : ""}` : ""}" title="${esc(level(l.label))}${l.bits !== null && l.bits !== undefined ? `: ${l.bits >= 0 ? "+" : ""}${l.bits.toFixed(1)} points` : ""}"></i>`).join("")}</span>
+        <span class="faint" style="font-size:12px">${esc(level(r[c]))}</span>${bitsBar(bits, max)}<span class="val">${bits >= 0 ? "+" : ""}${fmt(bits)}</span>`;
     }).join("")}</div>
-    ${ruler(comps.map((c) => ({label: c, bits: r[`${c}_bits`] || 0})), accept ? accept.threshold : 8, score && score.prior_bits !== null ? score.prior_bits : 0)}
-    <div class="actions"><button class="btn filled" data-a="match">Match</button><button class="btn outlined" data-a="no_match">No match</button>
-      <button class="btn" data-skip>Skip</button>${keyHint([["M", "match"], ["N", "no match"]])}</div><div id="said"></div></div>`;
+    ${ruler(comps.map((c) => ({label: comp(c), bits: r[`${c}_bits`] || 0})), line, score && score.prior_bits !== null ? score.prior_bits : 0)}
+    <div class="actions"><button class="btn filled" data-a="match">Same customer</button><button class="btn outlined" data-a="no_match">Different</button>
+      <button class="btn" data-skip>Skip</button>${keyHint([["M", "same customer"], ["N", "different"]])}</div><div id="said"></div></div>`;
 }
 
 function kindCard(r, at, of) {  // the name, and where the engine and the name alone place it, from person to company
-  return `<div class="card">${cardHead(r, at, of, "answered")}<div class="big">${esc(r.name)}</div>${slider(r)}
+  const why = {decide: "The engine is not sure, so it holds this record back for you.", measure: "A random sample: your answer checks the engine."}[r.why] || "";
+  return `<div class="card one">${cardHead(r, at, of, "answered", ["person", "This record", "Person or company?"], why)}<div class="big">${esc(r.name)}</div>${slider(r)}
     <div class="chips" style="margin-top:12px">${["flag", "birth_date"].filter((k) => k in r && r[k] !== null).map((k) => `<span class="tag">${esc(words(k))}: ${esc(r[k])}</span>`).join("")}</div>
     <div class="actions"><button class="btn filled" data-a="person">${icon("person")}Person</button><button class="btn filled" data-a="company">${icon("kinds")}Company</button>
       <button class="btn outlined" data-a="unsure">Can't tell</button><button class="btn" data-skip>Skip</button>${keyHint([["1", "person"], ["2", "company"], ["0", "can't tell"]])}</div>
@@ -921,7 +966,7 @@ async function review(el, which, note = "") {
   const q = QUEUES[which];
   el.innerHTML = head(which, `<button class="btn filled" id="apply">${icon("check")}${q.applyLabel} <span class="badge" id="written">0</span></button>
       <button class="btn" id="refresh">${icon("refresh")}Refresh</button>`) +
-    `<div id="note">${note}</div><div id="flow"></div><div class="split"><div id="left" class="faint">Loading…</div><div id="right" class="panel-sticky"></div></div>${stepFoot(which)}`;
+    `<div id="note">${note}</div><div id="flow"></div><div class="split"><div><div id="some"></div><div id="left" class="faint">Loading…</div></div><div id="right" class="panel-sticky"></div></div>${stepFoot(which)}`;
   $("refresh").onclick = () => go(which);
   $("apply").disabled = true;
   if (!state.run) { $("left").innerHTML = emptyRun(); return; }
@@ -929,6 +974,7 @@ async function review(el, which, note = "") {
   graph = g;
   if (d.event === "error") { $("left").innerHTML = banner(d); return; }
   const rows = q.rows(d);
+  $("some").innerHTML = scope("records", `${fmt(rows.length)} ${q.some}`);
   let i = Math.max(0, rows.findIndex((r) => r.status === "open")), written = 0, pending = false;
   const tally = () => { $("written").textContent = String(written); $("apply").disabled = !rows.some((r) => r.status === "written in"); };
   const t = grid($("left"), rows, q.cols, {labels: q.labels, selected: i, cell: (r, c) => c === "status" || c === "why" ? chip(r[c], q.written) : esc(fmt(r[c])),
@@ -952,8 +998,9 @@ async function review(el, which, note = "") {
   };
   const show = () => {
     t.select(i);
-    if (!rows[i]) { $("right").innerHTML = `<div class="card empty">${icon("empty")}<p class="muted">Nothing is open here.</p></div>`; return; }
+    if (!rows[i]) { $("right").innerHTML = `<div class="card empty">${icon("empty")}<p class="muted">Nothing is open here.</p></div>`; where(); return; }
     $("right").innerHTML = q.card(rows[i], i, rows.length);
+    where();
     $("right").querySelectorAll("[data-a]").forEach((b) => b.onclick = () => answer(b.dataset.a));
     $("right").querySelector("[data-skip]").onclick = () => move(1);
   };

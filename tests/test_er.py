@@ -3,6 +3,7 @@ Self-contained: small hand-made frames, the tracked config and reference data; n
 import json
 import logging
 import math
+import re
 from pathlib import Path
 from dataclasses import replace
 
@@ -1785,6 +1786,9 @@ def test_the_page_answers_once_per_key_shows_any_row_and_says_when_the_server_is
         page.click(".navitem[data-screen=pairs]")
         page.wait_for_selector("[data-a=match]")
         assert page.query_selector(".ruler") and page.query_selector(".ladder i.on")  # the evidence against the line, each comparison's step
+        path = page.inner_text("#path")  # how much each part covers: all the records, the pairs listed, the one shown
+        assert re.fullmatch(r"All [\d,]+ records\s*›\s*[\d,]+ pairs to review\s*›\s*This pair · \d+ of [\d,]+", path), path
+        assert page.query_selector(".zone.all .flow") and page.inner_text(".card.one .question").startswith("Same customer?")
         page.click(".stepfoot a.filled")
         page.wait_for_selector("h1:has-text('Confirm person or company')")
         twice = page.evaluate("""async () => {  // the same command asked twice at once runs once
