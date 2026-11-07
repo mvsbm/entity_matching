@@ -91,8 +91,7 @@ def scale_check(spec: RulesSpec | FSSpec, records: pd.DataFrame, truth: pd.DataF
     uid, budget = data.unique_id, spec.budget
     df = prepare(spec.standardize, records, spec.normalized(), spec.used())
     entity = truth.set_index(uid)[data.entity_id]
-    blockers: list[Blocker] = ([KeyBlocker(name=r.name, keys=tuple(map(Key, st.keys(r)))) for st in spec.stages for r in st.rules]
-                               if isinstance(spec, RulesSpec) else list(spec.blockers))
+    blockers: list[Blocker] = spec.blockers() if isinstance(spec, RulesSpec) else list(spec.blockers)
     rows = []
     for b in blockers:
         cols = " + ".join(k.name for k in keys_of(b))
@@ -211,7 +210,7 @@ def run_rules(pipeline: Pipeline, settings: Settings, path: Path, truth: pd.Data
         metrics.append(dict(stage=st.name, edges=int((upto & edges["kept"].to_numpy()).sum()), **cluster_metrics(clusters, ids.map(entity)),
                             **edge_metrics(edges[upto], entity, uid)))
 
-    order = {rule.name: i for i, rule in enumerate(rule for s in spec.stages for rule in s.rules)}
+    order = {rule.name: i for i, _, rule in spec.each()}
     touch = pd.concat([kept_edges[[l, "rule"]].set_axis([uid, "rule"], axis=1), kept_edges[[r, "rule"]].set_axis([uid, "rule"], axis=1)])
     first_rule = touch.assign(o=touch["rule"].map(order)).sort_values("o").drop_duplicates(uid).set_index(uid)["rule"]
     out = df.assign(CLUSTER_ID=clusters.to_numpy(), MATCH_STAGE=stage_of.to_numpy(),

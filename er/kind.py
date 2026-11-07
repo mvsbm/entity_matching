@@ -117,6 +117,14 @@ PERSON, COMPANY, UNSURE = 1, 2, 0  # the codes of kind, customer_kind and people
 SAYS = {PERSON: "1 person", COMPANY: "2 company", UNSURE: "0 not sure"}
 
 
+@dataclass(frozen=True)
+class Fitted:  # the combiner and the lines placed on its out-of-fold answers: one without the other can't be
+    combiner: HistGradientBoostingClassifier
+    line_company: float                       # above 1: never
+    line_person: float
+    person_error: float | None                # the measured wrong share above the person line
+
+
 @dataclass
 class Classifier:
     spec: KindSpec
@@ -124,13 +132,10 @@ class Classifier:
     flag_company: tuple[str, ...]
     names: NameModel
     uid: str = ""
-    combiner: HistGradientBoostingClassifier | None = None
+    fitted: Fitted | None = None              # None: no line placed, so a written legal form decides
     labels: int = 0                           # people's answers, 1 or 2: what the combiner rests on
     measured: int = 0                         # ... of them drawn to measure: the lines and error rates rest on these only
     decided: dict[str, int] | None = None     # record → people's answer, 1 or 2: it stands, whatever the engine says
-    line_company: float = 1.01                # above 1: never
-    line_person: float = 1.01
-    person_error: float | None = None         # the measured wrong share above the person line
     flag_error: float | None = None           # how often the file's flag is wrong, on the answers drawn at random
     flag_checked: int = 0                     # ... on this many of them
     blank: np.ndarray | None = None           # features the answers never fill (a file without a flag): held at 0
@@ -159,9 +164,9 @@ class Classifier:
         if self.spec.trust_flag:
             p = X[:, 1]
             kind = np.where(p == 1, COMPANY, np.where(p == 0, PERSON, UNSURE))
-        elif self.combiner is not None:
-            p = self.combiner.predict_proba(np.where(self.blank, 0.0, X))[:, 1]
-            kind = np.where(p >= self.line_company, COMPANY, np.where(1 - p >= self.line_person, PERSON, UNSURE))
+        elif (f := self.fitted) is not None:
+            p = f.combiner.predict_proba(np.where(self.blank, 0.0, X))[:, 1]
+            kind = np.where(p >= f.line_company, COMPANY, np.where(1 - p >= f.line_person, PERSON, UNSURE))
         else:  # no labels: a written legal form decides; the name model only says where a name leans
             p = name_p
             kind = np.where(X[:, 3] == 1, COMPANY, UNSURE)
@@ -240,8 +245,7 @@ def classifier(settings, spec: KindSpec, labels: pd.DataFrame | None = None) -> 
     X = np.where(c.blank, 0.0, X)
     make = lambda: HistGradientBoostingClassifier(max_depth=spec.depth, max_iter=100, learning_rate=0.1, random_state=0)
     oof = cross_val_predict(make(), X, y, cv=StratifiedKFold(5, shuffle=True, random_state=0), method="predict_proba")[:, 1]
-    c.line_company, c.line_person, c.person_error = lines(oof[measure], y[measure], spec)
-    c.combiner = make().fit(X, y)
+    c.fitted = Fitted(make().fit(X, y), *lines(oof[measure], y[measure], spec))
     return c
 
 

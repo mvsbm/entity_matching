@@ -5,6 +5,7 @@ it must stop, it raises an InputError that says what to fix. It reads each file'
 so its cost doesn't grow with the file. suggest() profiles a fixed-size sample.
 """
 import difflib
+import hashlib
 import re
 import unicodedata
 from collections.abc import Iterable, Mapping
@@ -142,3 +143,11 @@ def suggest(src: Source, con: duckdb.DuckDBPyConnection, fields: Iterable[str], 
         if shares[best] > 0:
             out[f] = (src.columns[best], shares[best], f"{shares[best]:.0%} {what}")
     return out
+
+
+def file_facts(files: list[Path]) -> list[dict]:
+    """Each file read: its path, size and SHA-256, so a run says exactly what went in. O(bytes)."""
+    def sha256(f: Path) -> str:
+        with open(f, "rb") as fh:
+            return hashlib.file_digest(fh, "sha256").hexdigest()
+    return [dict(file=str(f), bytes=f.stat().st_size, sha256=sha256(f)) for f in files]

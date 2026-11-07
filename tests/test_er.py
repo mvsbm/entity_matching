@@ -541,7 +541,8 @@ def test_a_run_refuses_a_resolver_it_cannot_apply(population):
 
 def test_a_run_ignores_record_order_refuses_a_used_folder_and_an_increment_keeps_every_cluster(tmp_path, population):
     from er.match import scaled_prior
-    from er.run import Run, qa
+    from er.report import qa
+    from er.run import Run
     s, p, g = population
     uid = s.data.unique_id
     g.df.to_parquet(tmp_path / "all.parquet", index=False)
@@ -611,20 +612,21 @@ def test_an_interrupted_increment_completes_when_run_again(tmp_path, population,
 
 def test_an_overwrite_cut_short_keeps_the_old_run_and_people_s_answers(tmp_path, population, monkeypatch):
     import os
-    import er.run
-    from er.run import Run, finish_writes
+    import er.folder
+    from er.folder import finish_writes
+    from er.run import Run
     s, p, g = population
     uid = s.data.unique_id
     g.df.to_parquet(tmp_path / "all.parquet", index=False)
     pd.DataFrame({uid: g.df[uid].astype("string")[:5], "kind": [1] * 5}).to_parquet(tmp_path / "answers.parquet")
     Run(p, s, kind_labels=tmp_path / "answers.parquet").full(tmp_path / "all.parquet", tmp_path / "run")
     before = pd.read_parquet(tmp_path / "run" / "gold.parquet")
-    lit = er.run.lit
+    lit = er.folder.lit
     def full_disk(path):  # the new gold can't be written
         if "gold" in str(path):
             raise OSError("No space left on device")
         return lit(path)
-    monkeypatch.setattr(er.run, "lit", full_disk)
+    monkeypatch.setattr(er.folder, "lit", full_disk)
     with pytest.raises(OSError):
         Run(p, s).full(tmp_path / "all.parquet", tmp_path / "run", overwrite=True)
     monkeypatch.undo()
@@ -705,7 +707,8 @@ def test_design_time_measures_the_run_s_own_gold_pairs_and_rule_clusters(tmp_pat
 def test_a_pair_with_no_name_compared_is_left_to_people(tmp_path, population):
     """A company at a person's address with the person's phone: each record lacks the other's name field, so no name
     is compared, and address and phone alone reach the threshold. With needs, people decide it instead."""
-    from er.run import Run, qa
+    from er.report import qa
+    from er.run import Run
     s, p, g = population
     uid = s.data.unique_id
     l, r = f"{uid}_l", f"{uid}_r"
@@ -747,7 +750,9 @@ def wide_band(population):
 
 
 def test_the_review_sheet_asks_about_each_cluster_pair_in_the_safety_margin_once(tmp_path, wide_band):
-    from er.run import Run, qa, review_floor
+    from er.match import review_floor
+    from er.report import qa
+    from er.run import Run
     s, p, g = wide_band
     uid = s.data.unique_id
     g.df.to_parquet(tmp_path / "all.parquet", index=False)
@@ -764,7 +769,8 @@ def test_the_review_sheet_asks_about_each_cluster_pair_in_the_safety_margin_once
 
 
 def test_decisions_join_clusters_without_scoring_and_a_full_run_applies_them_again(tmp_path, wide_band):
-    from er.run import Run, qa
+    from er.report import qa
+    from er.run import Run
     s, p, g = wide_band
     uid = s.data.unique_id
     l, r = f"{uid}_l", f"{uid}_r"
@@ -915,7 +921,8 @@ def test_a_nearly_empty_field_is_kept_and_the_fit_skips_what_it_cannot_learn_fro
 
 
 def test_an_increment_keeps_the_open_review_queue(tmp_path, population):
-    from er.run import Run, qa
+    from er.report import qa
+    from er.run import Run
     s, p, g = population
     p = replace(p, threshold=replace(p.threshold, margin_steps=4), fs=replace(p.fs, min_match_weight=p.fs.min_match_weight + 6))  # a wide band
     uid = s.data.unique_id
@@ -942,7 +949,8 @@ def test_an_increment_keeps_the_open_review_queue(tmp_path, population):
 
 
 def test_a_run_folder_takes_one_writer_at_a_time(tmp_path, population):
-    from er.run import Run, run_lock
+    from er.folder import run_lock
+    from er.run import Run
     s, p, g = population
     g.df.to_parquet(tmp_path / "all.parquet", index=False)
     with run_lock(tmp_path / "run"):  # another job holds the folder
@@ -953,20 +961,20 @@ def test_a_run_folder_takes_one_writer_at_a_time(tmp_path, population):
 
 
 def test_a_run_and_its_reports_land_together_even_when_the_write_is_cut_short(tmp_path, population, monkeypatch):
-    import er.run
+    import er.folder
     from er.run import Run
     s, p, g = population
     g.df.to_parquet(tmp_path / "all.parquet", index=False)
-    out, real = tmp_path / "run", er.run.finish_writes
+    out, real = tmp_path / "run", er.folder.finish_writes
 
     def killed(folder):  # the process dies once the moves owed are saved, before it does them
         if (folder / "pending.json").exists():
             raise SystemExit("killed")
         real(folder)
-    monkeypatch.setattr(er.run, "finish_writes", killed)
+    monkeypatch.setattr(er.folder, "finish_writes", killed)
     with pytest.raises(SystemExit):
         Run(p, s).full(tmp_path / "all.parquet", out, pipeline_file=s.root / "config" / "final.toml")
-    monkeypatch.setattr(er.run, "finish_writes", real)
+    monkeypatch.setattr(er.folder, "finish_writes", real)
     again = Run(p, s).increment(tmp_path / "all.parquet", out)  # the retry: the next job finishes the moves, and finds nothing new
     assert again.added == 0 and (out / "gold.parquet").exists()
     assert {"qa.md", "report.txt", "review.parquet", "kind_review.parquet"} <= {f.name for f in out.iterdir()} and not list(out.rglob("*.tmp"))
@@ -1015,7 +1023,7 @@ def test_the_scheduler_serves_the_inbox_in_order_and_parks_what_people_must_fix(
     before = len(schedule.ledger(run))
     assert serve().returncode == 0 and len(schedule.ledger(run)) == before  # nothing waiting: nothing done
 
-    from er.run import run_lock
+    from er.folder import run_lock
     g.df[~new].head(10).to_parquet(inbox / "batches" / "e_busy.parquet", index=False)  # records the run holds: nothing new
     with run_lock(run):  # someone runs scripts/resolve.py on the folder by hand
         busy = subprocess.run([sys.executable, str(script), "--run", str(run), "--inbox", str(inbox), "--retries", "0"], capture_output=True, text=True)
@@ -1068,7 +1076,8 @@ def test_a_rule_never_trusts_a_value_held_by_an_oversized_block(tmp_path, popula
 
 def test_the_run_report_holds_no_record_value(tmp_path, population):
     import re
-    from er.run import Run, qa, report_text
+    from er.report import qa, report_text
+    from er.run import Run
     s, p, g = population
     uid = s.data.unique_id
     df = g.df.copy()
@@ -1199,7 +1208,8 @@ def test_the_kind_problems_change_names_dates_and_the_flag_only(kind_population)
 
 
 def test_without_labels_only_a_legal_form_makes_a_company_and_a_person_company_pair_goes_to_people(tmp_path, kind_population):
-    from er.run import Run, qa
+    from er.report import qa
+    from er.run import Run
     s, p, g = kind_population
     uid = s.data.unique_id
     l, r = f"{uid}_l", f"{uid}_r"
@@ -1283,7 +1293,7 @@ def test_answers_without_a_measuring_draw_keep_the_legal_form_rule(tmp_path, kin
     truth = np.where(g.truth.set_index("CONT_ID").loc[sheet[uid], "KIND"].eq("company"), 2, 1)
     sheet.assign(kind=pd.array(np.where(decide, truth, pd.NA), dtype="Int8")).to_parquet(tmp_path / "top.parquet")
     run = Run(p, s, kind_labels=tmp_path / "top.parquet").full(tmp_path / "all.parquet", tmp_path / "run")
-    assert run.classifier.labels == decide.sum() >= 50 and run.classifier.measured == 0 and run.classifier.combiner is None
+    assert run.classifier.labels == decide.sum() >= 50 and run.classifier.measured == 0 and run.classifier.fitted is None
     before, after = (pd.read_parquet(tmp_path / x / "gold.parquet").set_index(uid) for x in ("free", "run"))
     engine = after.index[after["kind_by"] == "engine"]
     assert (before.loc[engine, "kind"] == 2).any() and after.loc[engine, "kind"].equals(before.loc[engine, "kind"])  # a legal form still decides
@@ -1305,7 +1315,7 @@ def test_a_sheet_s_ids_must_name_records_of_the_file(tmp_path, kind_population):
 
 
 def test_a_new_part_takes_the_number_after_the_highest(tmp_path):
-    from er.run import next_part
+    from er.folder import next_part
     assert next_part(tmp_path) == 0
     (tmp_path / "part-00001.parquet").touch()  # part-00000 deleted by hand: undone
     assert next_part(tmp_path) == 2
@@ -1403,7 +1413,7 @@ def test_an_increment_classifies_its_batch_on_the_run_s_answers(tmp_path, kind_p
     sheet.to_parquet(tmp_path / "answers.parquet")
     full = Run(p, s, kind_labels=tmp_path / "answers.parquet").full(tmp_path / "first.parquet", tmp_path / "run")
     inc = Run(p, s).increment(tmp_path / "new.parquet", tmp_path / "run")
-    assert inc.classifier.labels == full.classifier.labels > 0 and inc.classifier.line_company == full.classifier.line_company
+    assert inc.classifier.labels == full.classifier.labels > 0 and inc.classifier.fitted.line_company == full.classifier.fitted.line_company
     gold = pd.read_parquet(tmp_path / "run" / "gold.parquet").set_index(uid)
     assert (gold.loc[sheet[uid], "kind_by"] == "people").all()  # the stored records' answers stand
     new = gold.loc[g.df.loc[batch, uid]]

@@ -94,9 +94,9 @@ Not used, and why: chunked prediction (refuses given pairs, and only bounds memo
 
 ## 3 · Components
 
-![HLD 3, components: the run-time and design-time tools on top; design time (select, pipeline, evaluate, tune, generate), the run (er/run.py), the steps (source, standardize, kind, candidates, match, cluster) and the foundation (config, settings, io, strings), with an arrow wherever one layer imports another](diagrams/components.svg)
+![HLD 3, components: the run-time and design-time tools on top; design time (select, pipeline, evaluate, tune, generate), the run (er/run.py, er/folder.py, er/report.py), the steps (source, standardize, kind, candidates, match, cluster) and the foundation (config, settings, io, strings), with an arrow wherever one layer imports another](diagrams/components.svg)
 
-Every module sits in one layer: the tools, design time, the run (`er/run.py`), the steps, and the foundation. Each layer imports only the layers below it; `tests/test_design.py` fails on an import that goes up or across.
+Every module sits in one layer: the tools, design time, the run (`er/run.py`, the steps of a run; `er/folder.py`, the run folder on disk; `er/report.py`, the reports for people), the steps, and the foundation. Each layer imports only the layers below it; `tests/test_design.py` fails on an import that goes up or across.
 
 ## 4 · The run
 
@@ -181,15 +181,15 @@ Scores every candidate, with the u step 3 measured on this file: for each field,
 Accepts a pair at 8 bits or more (`[model] min_match_weight`), if it touches a record the rules left alone (with `[model] bridge`, also if it joins two rule clusters), if a name was compared (`[model] needs`: the person names or the company names, filled on both sides), and if people haven't decided it is no match. Then it clusters the accepted pairs with the rules' pairs and the pairs people decided are a match (connected components: a run refuses a pipeline that asks for another resolver), and records, for each record, its cluster, the stage that resolved it, and the rule (`fs` for the model, `review` for people), with its kind and its customer's ([7](#7--person-or-company)). A cluster is named after its smallest record ID.
 
 - **Why:** pairs must become entities: if A matches B and B matches C, all three are one. Recording what resolved each record makes every merge auditable, and naming a cluster by its smallest ID makes an increment name it as a full run would. A household shares address and phone, and those two alone reach the threshold; so do a person and a company at one address. Without a name compared, people decide.
-- **Code:** `Run._load_decisions` (people's decisions, from `decisions/`), `Run.cluster` → `Run._accept` (the threshold, `run.named_sql`), `cluster.merge` (Splink's connected components over the clusters the pairs touch only, each rule cluster one node, as in an increment), `Run._gold` (`run.customer_kinds`), `Run._expected_false`
+- **Code:** `Run._load_decisions` (people's decisions, from `decisions/`), `Run.cluster` → `Run._accept` (the threshold, `match.named_sql`), `cluster.merge` (Splink's connected components over the clusters the pairs touch only, each rule cluster one node, as in an increment), `Run._gold` (`run.customer_kinds`), `Run._expected_false`
 - **Increment:** the stored gold is the base, each stored cluster one node, and stored answers stand: `O(C_Δ + touched clusters)`.
 
 ### 8 · Write the run folder · `O(N + C)`
 
 Writes each table as Parquet under a temporary name, with the reports (9). Once all are complete, it saves the moves still owed in `pending.json`, then does them; `steps.json` too is written whole, then renamed. A full run writes into `.full.tmp/`, and its moves replace the old run's files only then: an overwrite cut short leaves the old run, people's answers included.
 
-- **Why:** an interruption must never leave half a run. A write cut before `pending.json` leaves the run as it was; one cut after it is finished by the next run, increment or set of decisions. A run lands with its reports or not at all: a retry finds nothing new, so it could not make them again. A new part takes the number after the highest (`run.next_part`), so a part deleted by hand, a sheet of answers undone, frees no number to write over.
-- **Code:** `Run.write` → `run.next_part`, `Run._stage`, `run.finish_writes`, `Run._log`
+- **Why:** an interruption must never leave half a run. A write cut before `pending.json` leaves the run as it was; one cut after it is finished by the next run, increment or set of decisions. A run lands with its reports or not at all: a retry finds nothing new, so it could not make them again. A new part takes the number after the highest (`folder.next_part`), so a part deleted by hand, a sheet of answers undone, frees no number to write over.
+- **Code:** `Run.write` → `folder.next_part`, `folder.stage`, `folder.finish_writes`, `Run._log` → `folder.log`
 - **Increment:** new parts of records, rule pairs and matches; gold and the rules' clusters rewritten: `O(Δ + C_Δ) + O(N)`.
 
 ### 9 · Report, for people · `O(review pairs)` + `O(N)` in SQL
@@ -197,7 +197,7 @@ Writes each table as Parquet under a temporary name, with the reports (9). Once 
 `Run.report` builds, and step 8 writes with the run's files: `qa.md`, the label-free checks; `report.txt`, the run on one page with no record's value in it, which can leave the machine that holds the records; `review.parquet`, with the evidence for each pair; and, on a full run that tells persons from companies, `kind_review.parquet`, the records for people to answer person or company ([usage](usage.md#6--review-and-decide)). The review sheet's *decide* rows are every pair of clusters whose best link scored in the threshold rule's safety margin: from the `[threshold]` grid point `margin_steps` below the threshold (6 bits) up to it, and every pair above it with no name compared. Its *audit* rows are about 50 of the pairs the run accepted (`matches`), up to 4 bits above it.
 
 - **Why:** the margin holds pairs that were clean on cross-validated train, held back in case of noise: on the synthetic val split, 112 pairs from 6 to 8 bits, all true; one grid step lower, at 4 bits, val's first false pair appears. So people decide them. Without labels, the audit rows and the largest clusters are how a person catches over-merging.
-- **Code:** `Run.report` → `run.qa` (`run.fill_rates`, `run.review_floor`, `run.review_sheet`, `run.carry_over`, `match.pattern_coverage`), `run.report_text`, `kind.kind_review_sheet` (its rows picked in DuckDB, so only they reach Python), `io.markdown`
+- **Code:** `Run.report` → `report.qa` (`report.fill_rates`, `match.review_floor`, `report.review_sheet`, `report.carry_over`, `match.pattern_coverage`), `report.report_text`, `kind.kind_review_sheet` (its rows picked in DuckDB, so only they reach Python), `io.markdown`
 - **Increment:** the same for the pairs the batch made, plus the previous sheet's rows still open: a run keeps no scores, so a row dropped from the sheet could never come back. No `kind_review.parquet`: a record an increment holds back is on the next full run's sheet.
 
 ## 5 · An increment
@@ -213,7 +213,7 @@ Writes each table as Parquet under a temporary name, with the reports (9). Once 
 `scripts/resolve.py --decisions` gives people's decisions back to a written run, scoring nothing. Each `match` pair merges its two clusters, each cluster one node; each record keeps its kind, and a merged customer's kind follows its records again. A `no_match` pair splits nothing at once, but a full run on the folder never accepts it.
 
 - **Why:** people's work must change the answer at once, and must survive a full re-run. `decisions/` is not a run file, so `--overwrite` keeps it and the full run applies it again. `qa.md`, `report.txt` and the sheets describe the run before the decisions until the next run or increment writes them again.
-- **Code:** `Run.decide` (checks the file: the columns, the values, a pair decided both ways, IDs not in the run), `cluster.merge`, `run.customer_kinds`, `Run._stage`
+- **Code:** `Run.decide` (checks the file: the columns, the values, a pair decided both ways, IDs not in the run), `cluster.merge`, `run.customer_kinds`, `folder.stage`
 
 ## 7 · Person or company
 
@@ -225,7 +225,7 @@ Each chunk, before its normalized copies, gets each record's kind (`er.kind`): `
 - **Correct first:** a side is called only above its line, placed on the answers drawn to measure, out of fold: no labelled person above the company line, then two grid steps stricter, three on fewer answers than the measuring draw (`labels_to_draw`, 2,000); above the person line, a wrong share within 1% at 95% confidence (with none wrong, 300 answers above it). The combiner and its lines need 50 answers drawn to measure, both kinds among them; below that, answers stand for their own records and the engine calls a company only where a legal form is written, never surely a person. A record without a name stays 0.
 - **Routing, and the gate:** with one name column for every kind (`[columns]` `kind = …`), each record's name goes to `person_name` or `company_name` by where `kind_p` leans. A person–company pair then has no name compared, and the model's name check (`[model] needs`) leaves it to people: no other gate is needed. A record whose lean and the flag disagree goes to neither side (`kind_held`): a company sent to the person side could merge into its representative's own records, and nothing in the record says which of the two is right.
 - **People:** `kind_review.parquet` sends people the held records and the flag's likely errors (decide), and a draw to measure (measure). Their answers 1 and 2 stand for their records (`kind_by` = `people`), train the combiner, and, the measuring draw only, place the lines. An answer of 0, can't tell, stands too: its record's name stays out of matching, and its pairs come to people in `review.parquet`. `scripts/choose_kind.py` measured the parts ([results](results.md#person-or-company)).
-- **Code:** `kind.name_model`, `kind.name_key`, `NameModel.load`, `NameModel.logit`, `kind.classifier`, `Classifier.features`, `Classifier.classify`, `kind.lines`, `kind.merge_answers`, `kind.kind_review_sheet`; `standardize.prepare`; a customer's kind in `run.customer_kinds`.
+- **Code:** `kind.name_model`, `kind.name_key`, `NameModel.load`, `NameModel.logit`, `kind.classifier`, `Classifier.features`, `Classifier.classify`, `kind.lines`, `Classifier.fitted`, `kind.merge_answers`, `kind.kind_review_sheet`; `standardize.prepare`; a customer's kind in `run.customer_kinds`.
 
 ## 8 · Data
 
@@ -302,7 +302,7 @@ plantuml -tsvg docs/diagrams/*.puml        # every diagram
 |---|---|
 | the components diagram holds every file of `er/` and `scripts/` in exactly one box, and draws an arrow between two boxes exactly where an import connects them | the code, read with `ast` |
 | every path and every function a diagram or a doc names exists | the repository, and `er` imported |
-| each step box of the run, the increment and the decisions names the functions its step reaches in `er/run.py`, and those of other modules they call | `er/run.py`, read with `ast` |
+| each step box of the run, the increment and the decisions names the functions its step reaches in the run layer, and those of other modules they call | `er/run.py`, `er/folder.py` and `er/report.py`, read with `ast` |
 | each step's tables: those it makes, and those it uses that an earlier step made | a whole run, increment and decisions on a generated population, with DuckDB's query log on, parsed by sqlglot |
 | the data diagram's files and columns | the run folder that run leaves |
 | each SVG holds its `.puml`'s source | the source PlantUML stores in the SVG |

@@ -7,6 +7,6 @@ Stages and their tables:
   candidates   records → candidate pairs (uid_l, uid_r, sources)         (er.candidates)
   matching     pairs → scored / decided pairs                            (er.match)
   resolution   accepted pairs → clusters                                 (er.cluster.merge, in a run and at design time)
-  report       qa.md, report.txt, review.parquet, kind_review.parquet    (er.run.Run.report)
+  report       qa.md, report.txt, review.parquet, kind_review.parquet    (er.report, by er.run.Run.report)
   evaluation   pairs and clusters vs truth, plus cost                     (er.evaluate)
 """

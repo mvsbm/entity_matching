@@ -31,7 +31,8 @@ from er.evaluate import cluster_metrics, pair_metrics
 from er.generate import KindProblems, generate, kind_problems, load_reference, load_registry, load_spec, split_by_entity
 from er.io import markdown
 from er.kind import kind_review_sheet
-from er.run import Run, qa
+from er.report import qa
+from er.run import Run
 from er.settings import load_settings, shared_name
 
 logging.disable(logging.WARNING)
