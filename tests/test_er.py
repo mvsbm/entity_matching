@@ -707,6 +707,45 @@ def test_describe_records_says_what_a_file_holds_without_preparing_it(tmp_path, 
     assert d["fit"]["phone"]["TEL"] > 0.9 and not next(f for f in d["fields"] if f["field"] == "phone")["sources"][0] == ["TEL"]  # suggested, not applied
 
 
+def test_the_file_s_contents_say_which_feature_each_column_fills(tmp_path, capsys, monkeypatch):
+    import random
+    from er.cli import main
+    from er.settings import compiled, features_from, load_settings
+    s = load_settings()
+    assert compiled(features_from(s.columns)) == {k: v for k, v in s.columns.items() if k != "entity"}  # the structure is the mapping, read back
+    people = json.loads((s.paths["reference"] / "individual.json").read_text(encoding="utf-8"))
+    places = json.loads((s.paths["reference"] / "addresses.json").read_text(encoding="utf-8"))
+    rnd, n = random.Random(0), 400
+    who, where = rnd.sample(people, n), rnd.sample(places, n)
+    pd.DataFrame({  # columns named nothing a mapping knows: only their contents say what they hold
+        "c1": [f"R{i:06d}" for i in range(n)], "c2": [p["surname_kana"] for p in who], "c3": [p["given_kana"] for p in who],
+        "c4": [p["surname_kana"] + " " + p["given_kana"] for p in who], "c5": [p["surname"] + p["given"] for p in who],
+        "c6": [f"株式会社{p['surname']}商事" for p in who], "c7": [f"{a['pref']}{a['city']}{a['town']}{rnd.randint(1, 9)}-{rnd.randint(1, 30)}" for a in where],
+        "c8": ["".join(rnd.choice("abcdefgh") for _ in range(6)) for _ in range(n)]}).to_parquet(tmp_path / "theirs.parquet", index=False)
+    monkeypatch.chdir(tmp_path)
+
+    def say(*words: object) -> tuple[int, dict]:
+        code = main([*map(str, words), "--format", "json"])
+        return code, json.loads(capsys.readouterr().out.splitlines()[-1])
+
+    say("create", "workspace", "w")
+    code, d = say("load", "records", "theirs.parquet", "--workspace", "workspaces/w")
+    assert code == 0 and {c: x["script"] for c, x in d["profile"].items()} == {"c1": "romaji", "c2": "kana", "c3": "kana", "c4": "kana", "c5": "kanji",
+                                                                               "c6": "kanji", "c7": "kanji", "c8": "romaji"}
+    assert {x["feature"]: x["column"] for x in d["placements"]} == {
+        "ID/Record ID": "c1", "Name/Full name": "c4", "Name/Full name/Family name": "c2", "Name/Full name/Given name": "c3",
+        "Name/Company name": "c6", "Address/Address": "c7"}  # the kanji full name (c5) waits for a kanji feature; the random text, nowhere
+    code, _ = say("set", "feature", *(f"{x['feature']}={x['column']}" for x in d["placements"]), "--workspace", "workspaces/w")
+    m = load_settings(columns=tmp_path / "workspaces" / "w" / "columns.toml").columns
+    assert code == 0 and m["id"] == (("c1",),) and m["person_name"] == (("c4",), ("c2", "c3")) and m["given_name"] == (("c3",),)
+    assert m["full_name"] == (("c4",),) and m["any_name"] == (("c4",), ("c2", "c3"), ("c6",)) and m["company_name"] == (("c6",),)
+    code, e = say("set", "feature", "Name/Nickname=c8", "--workspace", "workspaces/w")
+    assert code == 2 and "Name/Full name/Family name" in e["fix"]  # no such feature: the ones there are
+    say("set", "feature", "Address/Address=", "--workspace", "workspaces/w")
+    assert load_settings(columns=tmp_path / "workspaces" / "w" / "columns.toml").columns["address"] == ()  # no column, still declared
+    assert say("describe", "records", "theirs.parquet", "--workspace", "workspaces/w")[1]["placements"][0]["feature"] == "Address/Address"  # offered again
+
+
 def test_a_workspace_keeps_its_own_mapping_and_a_copy_of_its_files(tmp_path, population, capsys, monkeypatch):
     import threading
     from er import folder
@@ -1201,11 +1240,11 @@ def test_set_columns_rewrites_the_fields_lines_and_keeps_the_rest(tmp_path):
     before = f.read_text(encoding="utf-8")
     set_columns(f, {"phone": (("TEL4",),), "person_name": (("NAME",), ("SEI", "MEI")), "town_code": (("TOWN",),), "birth_date": ()})
     s = load_settings(f)
-    assert s.columns["phone"] == (("TEL4",),) and s.columns["person_name"] == (("NAME",), ("SEI", "MEI")) and "birth_date" not in s.columns
+    assert s.columns["phone"] == (("TEL4",),) and s.columns["person_name"] == (("NAME",), ("SEI", "MEI")) and s.columns["birth_date"] == ()  # no column, still declared
     after = f.read_text(encoding="utf-8")
     line = lambda name: next(x for x in after.split("\n[columns]\n", 1)[1].splitlines() if x.startswith(f"{name} ="))
     assert 'normalize = ["nfkc", "strip_spaces"]' in line("person_name") and "# municipality + town + chome" in line("town_code")  # options, comments stay
-    assert len(after.splitlines()) == len(before.splitlines()) - 1
+    assert len(after.splitlines()) == len(before.splitlines()) and line("birth_date").startswith("birth_date = []") and "#" in line("birth_date")
     with pytest.raises(InputError, match="id must name one column"):
         set_columns(f, {"id": (("A",), ("B",))})
     assert f.read_text(encoding="utf-8") == after and not (tmp_path / "config" / "settings.toml.tmp").exists()

@@ -7,7 +7,9 @@ fixed-size sample; describe() says what a file holds, for mapping its columns, i
 (known): one rule for both.
 """
 import difflib
+import functools
 import hashlib
+import json
 import re
 import unicodedata
 from collections.abc import Iterable, Mapping
@@ -166,7 +168,8 @@ def suggest(src: Source, con: duckdb.DuckDBPyConnection, fields: Iterable[str], 
 
 
 def describe(path: str | Path, con: duckdb.DuckDBPyConnection, columns: Mapping[str, tuple[tuple[str, ...], ...]],
-             patterns: Mapping[str, str], rows: int = 2_000) -> dict:
+             patterns: Mapping[str, str], rows: int = 2_000, lex: "Lexicon | None" = None,
+             slots: Mapping[str, tuple[tuple[str, ...], ...]] | None = None, slot_patterns: Mapping[str, str] | None = None) -> dict:
     """What a records file holds, for mapping its columns, without preparing a record. Its records; each column's share
     filled and an example; each field's sources (`columns`: its alternatives, each one column or several joined, as a
     run reads them: a later one where the earlier are empty, a joined one only where every part is filled), with each
@@ -174,10 +177,13 @@ def describe(path: str | Path, con: duckdb.DuckDBPyConnection, columns: Mapping[
     as a whole; for each field and column, how well the column fits (`fit`: the order to offer them in); and for a
     field the file holds none of, the column whose name or values suggest it. Shares filled cover the file; examples
     and fits come from a sample of `rows` records. Suggestions only: a wrong guess applied silently would corrupt
-    results. O(N · (C + alternatives)) in one scan, plus O(rows · C · F)."""
-    src = open_source(path, con, {c for alts in columns.values() for alt in alts for c in alt})
+    results. With `slots` (a workspace's features, by path, er.settings.slots), the same numbers for each, in the same
+    scan, and their values matched against `slot_patterns`; with `lex`, each column's profile (profiled). O(N · (C +
+    alternatives)) in one scan, plus O(rows · C · F)."""
+    every = {**columns, **{f"slot:{k}": v for k, v in (slots or {}).items()}}  # a slot by its path, apart from the fields
+    src = open_source(path, con, {c for alts in every.values() for alt in alts for c in alt})
     cols, fields = src.columns, {f: alts for f, alts in columns.items() if f != "entity"}
-    here = {f: [alt for alt in alts if set(alt) <= set(cols)] for f, alts in fields.items()}
+    here = {f: [alt for alt in alts if set(alt) <= set(cols)] for f, alts in {**fields, **{k: v for k, v in every.items() if k.startswith("slot:")}}.items()}
     value = lambda alt: (f"CASE WHEN {' AND '.join(filled(c) for c in alt)} THEN {' || '.join(q(c) for c in alt)} END"
                          if len(alt) > 1 else f"CASE WHEN {filled(alt[0])} THEN {q(alt[0])} END")
     whole = lambda alts: f"coalesce({', '.join(value(a) for a in alts)})"
@@ -193,12 +199,14 @@ def describe(path: str | Path, con: duckdb.DuckDBPyConnection, columns: Mapping[
                          f"FROM (SELECT {', '.join(f'{filled(c)} AS {b[c]}' for c in cols)} FROM {src.sql})").fetchall()[0]
     n, share = counts[0], dict(zip(keys, (x / max(1, counts[0]) for x in counts[1:])))
     con.execute(f"CREATE OR REPLACE TEMP TABLE er_described AS SELECT * FROM {src.sql} USING SAMPLE reservoir({rows} ROWS) REPEATABLE (0)")
-    pattern = {f: patterns[f].replace("'", "''") for f in here if f in patterns}
+    pattern = {f: x.replace("'", "''") for f, x in {**patterns, **{f"slot:{k}": v for k, v in (slot_patterns or {}).items()}}.items() if f in here}
     looks = lambda f, v: f"coalesce(avg(regexp_matches({v}, '{pattern[f]}')::INT) FILTER (WHERE {v} IS NOT NULL), 0)" if f in pattern else "NULL"
     seen = con.execute(f"SELECT {', '.join(f'first({shown[k]}) FILTER (WHERE {shown[k]} IS NOT NULL), ' + (looks(k[1], shown[k]) if k[0] != 'column' else 'NULL') for k in keys)} "
                        f"FROM er_described").fetchall()[0]
     example, looks_right = dict(zip(keys, seen[0::2])), dict(zip(keys, seen[1::2]))
     fits = fit(con, "er_described", cols, fields, patterns)
+    sample = con.execute(f"SELECT {', '.join(q(c) for c in cols)} FROM er_described").fetchall()
+    profile = profiled({c: [r[i] for r in sample if r[i] is not None] for i, c in enumerate(cols)}, lex) if lex else {}
     norms, suggested = {norm(c): c for c in cols}, []
     unique = lambda c: con.execute(f"SELECT count(DISTINCT {q(c)}) = count(*) FROM {src.sql} WHERE {filled(c)}").fetchall()[0][0]
     for f in fields:
@@ -208,18 +216,66 @@ def describe(path: str | Path, con: duckdb.DuckDBPyConnection, columns: Mapping[
             suggested.append(dict(field=f, column=c, why="its name"))
         elif f in fits and (c := max(fits[f], key=fits[f].get, default=None)) and fits[f][c] >= (0.99 if f == "id" else 0.5) and (f != "id" or unique(c)):
             suggested.append(dict(field=f, column=c, why=f"{fits[f][c]:.0%} " + ("filled, each value once" if f == "id" else f"look like {f.replace('_', ' ')}")))
+    def entry(f: str, alts: tuple[tuple[str, ...], ...]) -> dict:  # a field's or a slot's numbers, and each of its alternatives'
+        return dict(sources=[list(a) for a in alts], filled=share.get(("field", f)), example=example.get(("field", f)), looks_right=looks_right.get(("field", f)),
+                    alternatives=[dict(columns=list(a), found=set(a) <= set(cols),
+                                       **({k: v for k, v in zip(("filled", "example", "looks_right"), (share[key], example[key], looks_right[key]))}
+                                          if (key := ("alt", f, here[f].index(a)) if a in here[f] else None) else
+                                          dict(filled=None, example=None, looks_right=None))) for a in alts])
     return dict(
         records=n,
         columns=[dict(column=c, filled=share[("column", c)], example=example[("column", c)]) for c in cols],
-        fields=[dict(field=f, sources=[list(a) for a in alts], filled=share.get(("field", f)), example=example.get(("field", f)),
-                     looks_right=looks_right.get(("field", f)),
-                     alternatives=[dict(columns=list(a), found=set(a) <= set(cols),
-                                        **({k: v for k, v in zip(("filled", "example", "looks_right"),
-                                                                  (share[key], example[key], looks_right[key]))}
-                                           if (key := ("alt", f, here[f].index(a)) if a in here[f] else None) else
-                                           dict(filled=None, example=None, looks_right=None))) for a in alts])
-                for f, alts in fields.items()],
-        fit=fits, suggested=suggested, notes=src.notes)
+        fields=[dict(field=f, **entry(f, alts)) for f, alts in fields.items()],
+        slots=[dict(feature=k, **entry(f"slot:{k}", alts)) for k, alts in (slots or {}).items()],
+        fit=fits, suggested=suggested, profile=profile, notes=src.notes)
+
+
+@dataclass(frozen=True)
+class Lexicon:
+    """What names and places look like, from data/reference/ (individual.json, addresses.json): family and given names
+    and prefectures and cities, each in kanji and in kana, kana folded as the run folds it."""
+    family: frozenset[str]
+    given: frozenset[str]
+    places: frozenset[str]
+    fold: dict[int, str]
+
+
+@functools.lru_cache(maxsize=1)  # bounded: the one reference folder a process reads
+def lexicon(folder: Path, kana_fold: tuple[tuple[str, str], ...]) -> Lexicon:
+    """The reference lists as sets, read once per process. O(reference rows)."""
+    fold = str.maketrans(dict(kana_fold))
+    people = json.loads((folder / "individual.json").read_text(encoding="utf-8"))
+    places = json.loads((folder / "addresses.json").read_text(encoding="utf-8"))
+    keep = lambda values: frozenset(v for x in values if x and (v := plain(x, fold)))
+    return Lexicon(family=keep(x for r in people for x in (r["surname"], r["surname_kana"])),
+                   given=keep(x for r in people for x in (r["given"], r["given_kana"])),
+                   places=keep(x for r in places for x in (r["pref"], r["pref_kana"], r["city"], r["city_kana"])), fold=fold)
+
+
+def plain(value: str, fold: dict[int, str]) -> str:  # a value as names are looked up: same width, no spaces, katakana, kana folded
+    v = re.sub(r"[\s\u3000・]+", "", unicodedata.normalize("NFKC", value))
+    return "".join(chr(ord(c) + 0x60) if "ぁ" <= c <= "ゖ" else c for c in v).translate(fold)
+
+
+SCRIPTS = {"kanji": re.compile(r"[\u4e00-\u9fff々]"), "kana": re.compile(r"[\u30a0-\u30ff\u3040-\u309f]"), "romaji": re.compile(r"[A-Za-z]")}
+
+
+def profiled(values: Mapping[str, list[str]], lex: Lexicon) -> dict[str, dict]:
+    """For each column, from its sampled filled values: its script (kanji, kana, romaji, or none: the letters most of its
+    values are written in), and the share of values that are a known family name, a known given name, a known family name
+    followed by a known given name (a full name), and that start with a known prefecture or city and go on (an address).
+    O(values · length)."""
+    out = {}
+    for c, vs in values.items():
+        vs = [plain(v, lex.fold) for v in vs if v and v.strip()]
+        n = max(1, len(vs))
+        written = {k: sum(bool(rx.search(v)) for v in vs) / n for k, rx in SCRIPTS.items()}
+        script = max(written, key=written.get) if vs and max(written.values()) >= 0.5 else None
+        full = lambda v: any(v[:i] in lex.family and v[i:] in lex.given for i in range(1, len(v)))
+        address = lambda v: any(v[:i] in lex.places for i in range(2, min(len(v) - 1, 12) + 1))  # a place, then more
+        out[c] = dict(script=script, family=sum(v in lex.family for v in vs) / n, given=sum(v in lex.given for v in vs) / n,
+                      full=sum(full(v) for v in vs) / n, address=sum(address(v) for v in vs) / n)
+    return out
 
 
 def sha256(f: Path) -> str:

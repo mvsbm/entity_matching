@@ -7,7 +7,7 @@ import json
 import os
 import re
 import tomllib
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import get_args
@@ -45,7 +45,7 @@ def field(name: str, spec: object) -> Derived:
     """One [columns] entry: a column, a list of fallback column lists, or {sources, normalize, kind}."""
     sources, normalize = (spec["sources"], spec.get("normalize", ())) if isinstance(spec, dict) else (spec, ())
     sources = ((sources,),) if isinstance(sources, str) else tuple(tuple(alt) for alt in sources)
-    assert sources and all(sources), f"[columns] {name}: no source column"
+    assert all(sources), f"[columns] {name}: an alternative with no column"  # no alternative at all: the field has no column, as in a file without it
     kind = spec.get("kind") if isinstance(spec, dict) else None
     assert kind in (None, "person", "company"), f"[columns] {name}: kind is person or company"
     return Derived(name=name, sources=sources, normalize=tuple(normalize), kind=kind)
@@ -82,7 +82,8 @@ def own_columns(path: Path) -> str:
 
 def set_columns(path: Path, mapping: dict[str, tuple[tuple[str, ...], ...]]) -> None:
     """Rewrite the [columns] lines of the fields in `mapping` in the settings file at `path`: each field's source
-    alternatives, tried in order, each one column or several joined (empty: the field goes). Every other line, each
+    alternatives, tried in order, each one column or several joined (none: the field has no column, and whatever reads it
+    is turned off, as for a file that lacks it; the field stays declared, so the pipeline still loads). Every other line, each
     line's comment, and a field's options (normalize, kind) stay. The new text is loaded and validated before it
     replaces the old. O(the file)."""
     text = path.read_text(encoding="utf-8")
@@ -92,14 +93,9 @@ def set_columns(path: Path, mapping: dict[str, tuple[tuple[str, ...], ...]]) -> 
     toml = lambda v: json.dumps(v, ensure_ascii=False)  # a string or a list of strings: the same in TOML
     for name, sources in mapping.items():
         at = next((i for i in range(start + 1, end) if re.match(rf"{re.escape(name)}\s*=", lines[i])), None)
-        if not sources:
-            if at is not None:
-                del lines[at]
-                end -= 1
-            continue
         old, alts = current.get(name), [list(a) for a in sources]
         value = (f"{{ {', '.join(f'{k} = {toml(v)}' for k, v in {**old, 'sources': alts}.items())} }}" if isinstance(old, dict)
-                 else toml(alts[0][0]) if alts == [alts[0][:1]] else toml(alts))
+                 else toml(alts[0][0]) if alts and alts == [alts[0][:1]] else toml(alts))
         comment = re.search(r'^[^"#]*(?:"[^"]*"[^"#]*)*\s(#.*)$', lines[at].rstrip("\n")) if at is not None else None
         line = f"{name} = {value}"
         line += (" " * max(1, comment.start(1) - len(line)) + comment.group(1) if comment else "") + "\n"  # the comment in its column
@@ -117,6 +113,121 @@ def set_columns(path: Path, mapping: dict[str, tuple[tuple[str, ...], ...]]) -> 
         tmp.unlink()
         raise InputError(f"{path}: [columns] would not load: {e}", fix="give each field existing columns; id names one column") from None
     os.replace(tmp, path)
+
+
+# ---------- a workspace's features: groups › features › parts, each with its columns, compiled into [columns] ----------
+# The structure is read back from the mapping (features_from), so the two can't disagree.
+
+# The structure a workspace starts with: what people know their file holds, grouped. A slot names the field it fills, or
+# for a person's name, the part it plays in the name fields (compiled).
+DEFAULT_FEATURES = (
+    ("ID", (dict(name="Record ID", type="id", field="id"), dict(name="Customer number", type="id", field="customer_id"))),
+    ("Name", (dict(name="Full name", type="person name", script="kana", parts=(dict(name="Family name", role="family"), dict(name="Given name", role="given"))),
+              dict(name="Company name", type="company name", field="company_name"),
+              dict(name="Person or company", type="flag", field="kind_flag"))),
+    ("Address", (dict(name="Address", type="address", field="address"), dict(name="Address code", type="code", field="address_code"),
+                 dict(name="Postal code", type="postal code", field="postal_code"), dict(name="Prefecture", type="prefecture", field="prefecture"),
+                 dict(name="City", type="city", field="city"), dict(name="Town code", type="code", field="town_code"))),
+    ("Phone", (dict(name="Phone", type="phone", field="phone"),)),
+    ("Birth date", (dict(name="Birth date", type="date", field="birth_date"),)),
+)
+
+
+def features_from(columns: Mapping[str, tuple[tuple[str, ...], ...]]) -> list[dict]:
+    """The default structure, filled from a mapping ([columns]): each slot's columns from its field's; a person's name read
+    back from person_name (its alternatives but a last, joined one: the full name; that joined one: the family name, then
+    the given name) and given_name. compiled() turns it back into the same mapping. O(fields)."""
+    alts = lambda f: [list(a) for a in columns.get(f, ())]
+    person = alts("person_name")
+    joined = person[-1] if person and len(person[-1]) > 1 else None
+    part = lambda role: ([joined[:-1]] if joined else []) if role == "family" else (alts("given_name") or ([joined[-1:]] if joined else []))
+    return [dict(group=group, features=[
+        {**{k: v for k, v in f.items() if k != "parts"}, "columns": person[:-1] if joined else person,
+         "parts": [dict(p, columns=part(p["role"])) for p in f["parts"]]} if f["type"] == "person name" else
+        {**f, "columns": alts(f["field"])} for f in feats]) for group, feats in DEFAULT_FEATURES]
+
+
+def compiled(features: list[dict]) -> dict[str, tuple[tuple[str, ...], ...]]:
+    """The mapping ([columns]) a structure means: each slot's columns for its field; from the person's name, full_name (its
+    first column), person_name (its columns, then the family and given names joined) and given_name; any_name, every
+    person and company name alternative. O(slots)."""
+    out, person, company = {}, [], []
+    for g in features:
+        for f in g["features"]:
+            if f["type"] == "person name":
+                parts = {x["role"]: x["columns"] for x in f.get("parts", [])}
+                family, given = parts.get("family", []), parts.get("given", [])
+                person = [*f["columns"], *([family[0] + given[0]] if family and given else [])]
+                out.update(full_name=f["columns"][:1], person_name=person, given_name=given)
+            elif "field" in f:
+                out[f["field"]] = f["columns"]
+                company = f["columns"] if f["type"] == "company name" else company
+    out["any_name"] = [*person, *company]
+    return {k: tuple(tuple(a) for a in v) for k, v in out.items()}
+
+
+def slots(features: list[dict]) -> list[tuple[str, dict]]:  # every slot with its path: group/feature, group/feature/part
+    return [(f"{g['group']}/{f['name']}" + (f"/{x['name']}" if x is not f else ""), x) for g in features for f in g["features"] for x in [f, *f.get("parts", [])]]
+
+
+def features_of(workspace: str | Path | None) -> list[dict]:  # a workspace's structure, read back from its mapping (else the project's)
+    return features_from(load_settings(columns=columns_file(workspace)).columns)
+
+
+def set_features(workspace: str | Path, values: Mapping[str, tuple[tuple[str, ...], ...]]) -> list[dict]:
+    """Set slots' columns (by path: group/feature, or group/feature/part), then write the mapping they compile to into
+    the workspace's columns.toml, made from the project's first; set_columns checks it loads before it replaces the old.
+    O(the file)."""
+    ws, feats = Path(workspace), features_of(workspace)
+    if not ws.is_dir():
+        raise InputError(f"no workspace at {ws}", fix="create it: nayose create workspace NAME")
+    found = dict(slots(feats))
+    for path, alternatives in values.items():
+        if path not in found:
+            raise InputError(f"no feature {path}", fix="the features: " + ", ".join(found))
+        found[path]["columns"] = [list(a) for a in alternatives]
+    if not columns_file(ws):
+        (ws / COLUMNS).write_text(own_columns(settings_path()), encoding="utf-8")
+    set_columns(ws / COLUMNS, compiled(feats))
+    return feats
+
+
+PROFILED = {"full name": "full", "family name": "family", "given name": "given", "address": "address"}  # slot type → the profile's share
+SAYS = {"full": "are a known family name and given name", "family": "are known family names", "given": "are known given names",
+        "address": "start with a known prefecture or city"}
+
+
+def placements(features: list[dict], profile: Mapping[str, dict], fit: Mapping[str, Mapping[str, float]], least: float = 0.5) -> list[dict]:
+    """For each slot none of whose columns the file holds (profile: the file's columns), the file's column that most looks
+    like it and no other slot holds, with the share and
+    the evidence: a person's name and an address from the profile (er.source.profiled: known names and places, in the
+    feature's script), anything else from its field's fit (its [locale.detect] pattern; an ID: filled, each value once).
+    Strongest first, each column placed once, none under `least`. Suggestions only. O(slots · columns)."""
+    here = lambda alt: set(alt) <= set(profile)
+    used = {c for _, x in slots(features) for alt in x.get("columns", []) if here(alt) for c in alt}
+    script = {path: f.get("script") for g in features for f in g["features"] for path, x in slots([dict(g, features=[f])])}
+    kinds = {"person name": "full name", "family": "family name", "given": "given name"}
+    found = []
+    for path, x in slots(features):
+        if any(here(alt) for alt in x.get("columns", [])):
+            continue
+        kind = kinds.get(x.get("role")) or kinds.get(x.get("type"), x.get("type"))
+        if kind in PROFILED:
+            share = {c: p[PROFILED[kind]] for c, p in profile.items() if kind == "address" or not script[path] or p["script"] == script[path]}
+            why = lambda c: f"{share[c]:.0%} {SAYS[PROFILED[kind]]}" + (f", in {script[path]}" if script[path] and kind != "address" else "")
+        elif x.get("field") in fit:
+            share = dict(fit[x["field"]])
+            why = lambda c, f=x["field"]: f"{share[c]:.0%} " + ("filled, each value once" if f == "id" else f"look like {f.replace('_', ' ')}")
+        else:
+            continue
+        found += [(v, path, c, why(c)) for c, v in share.items() if v >= least]
+    out, taken, placed = [], set(used), set()
+    for v, path, c, why in sorted(found, key=lambda t: -t[0]):
+        if c not in taken and path not in placed:
+            out.append(dict(feature=path, column=c, share=v, why=why))
+            taken.add(c)
+            placed.add(path)
+    return out
 
 
 def load_settings(path: Path | None = None, columns: Path | None = None) -> Settings:
