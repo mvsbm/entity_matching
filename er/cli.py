@@ -32,7 +32,7 @@ from er.config import InputError, load_pipeline, sources_text
 from er.folder import Busy
 from er.report import applied, describe_entity, describe_matching, describe_workspace, fill_rates
 from er.run import Run
-from er.settings import SPECIAL, load_settings, set_columns, settings_path
+from er.settings import COLUMNS, SPECIAL, columns_file, load_settings, own_columns, set_columns, settings_path
 
 
 @dataclass(frozen=True)
@@ -44,6 +44,7 @@ class Param:
     positional: bool = False
     required: bool = False
     metavar: str = ""
+    optional: bool = False                    # a positional that may be left out
 
     @property
     def shown(self) -> str:  # how the synopsis writes its value
@@ -189,9 +190,13 @@ def check_text(r: dict) -> str:
 
 # ---------- what each command does ----------
 
+def settings_for(a: dict):  # the settings, with the named workspace's own mapping when it keeps one
+    return load_settings(columns=columns_file(a.get("workspace")))
+
+
 def setup(a: dict):
     """The settings, with this run's DuckDB limits, the pipeline, and its file."""
-    s = load_settings()
+    s = settings_for(a)
     if bad := [kv for kv in a.get("compute") or [] if "=" not in kv]:
         raise InputError(f"--compute {' '.join(bad)}: each limit is KEY=VALUE", fix="for example --compute memory_limit=8GB threads=4")
     s = replace(s, compute={**s.compute, **dict(kv.split("=", 1) for kv in a.get("compute") or [])})
@@ -231,7 +236,13 @@ def after_run(run: Run, out: Path) -> dict:
 def check_records(a: dict, emit: "Emit") -> dict:
     s, p, _ = setup(a)
     run = Run(p, s, echo=emit.step)
-    run.load(a["input"])
+    try:
+        run.load(a["input"])
+    except InputError as e:
+        if not (a.get("workspace") and e.hints):
+            raise
+        raise InputError(str(e), fix=f"map it in the workspace, once the values look right: "
+                         f"{nayose('set', 'columns', *(f'{f}={c}' for f, c in e.hints.items()), '--workspace', a['workspace'])}", hints=e.hints) from None
     plan = run.budget()
     fill = fill_rates(run).set_index("field")
     shown = plan[(plan["oversized_blocks"] > 0) | plan["name"].isin(plan.nlargest(5, "per_record")["name"])].sort_values("per_record", ascending=False)
@@ -245,14 +256,16 @@ def check_records(a: dict, emit: "Emit") -> dict:
 
 
 def list_columns(a: dict, emit: "Emit") -> dict:
-    path = settings_path()
+    path = columns_file(a.get("workspace")) or settings_path()
     found = []
     for f, spec in tomllib.loads(path.read_text(encoding="utf-8"))["columns"].items():
         src = spec["sources"] if isinstance(spec, dict) else spec
         alts = [[src]] if isinstance(src, str) else src
         options = " · ".join(f"{k} {v if isinstance(v, str) else ' '.join(v)}" for k, v in spec.items() if k != "sources") if isinstance(spec, dict) else ""
         found.append(dict(field=f, columns=", ".join(" + ".join(x) for x in alts), options=options))
-    return dict(settings=str(path), columns=found, next=[dict(command=nayose("set", "columns", "FIELD=COLUMN"), why="map a field to other columns"),
+    there = ["--workspace", a["workspace"]] if a.get("workspace") else []
+    return dict(settings=str(path), own=path.name == COLUMNS, columns=found,
+                next=[dict(command=nayose("set", "columns", "FIELD=COLUMN", *there), why="map a field to other columns"),
                                                          dict(command=nayose("check", "records", "<file>"), why="check a file with this mapping")])
 
 
@@ -268,7 +281,12 @@ def set_columns_(a: dict, emit: "Emit") -> dict:
         if f not in known:
             raise InputError(f"{f}: no such field", fix=f"the fields: {', '.join(sorted(known))}")
         mapping[f] = tuple(tuple(c.strip() for c in alt.split("+")) for alt in cols.split(",")) if cols else ()
-    set_columns(settings_path(), mapping)
+    ws = a.get("workspace")
+    if ws and not Path(ws).is_dir():
+        raise InputError(f"no workspace at {ws}", fix="create it: nayose create workspace NAME")
+    if ws and not columns_file(ws):  # a workspace made before it kept its own mapping starts from the project's
+        (Path(ws) / COLUMNS).write_text(own_columns(settings_path()), encoding="utf-8")
+    set_columns(columns_file(ws) or settings_path(), mapping)
     return {**list_columns(a, emit), "next": [dict(command=nayose("check", "records", "<file>"), why="check a file with the new mapping")]}
 
 
@@ -279,18 +297,46 @@ def model_from(path: str | None) -> dict | None:
     return saved.get("model", saved)
 
 
+def given(a: dict) -> str:
+    """The records a run reads: the file named, copied into the workspace first; without one, the file loaded last."""
+    ws = Path(a["workspace"])
+    if a["input"]:
+        return str(folder.take_in(ws, a["input"])[0])
+    if not (parts := folder.parts(ws)):
+        raise InputError(f"no records file in {ws}", fix=f"load one: nayose load records FILE --workspace {ws}; or name it here")
+    return str(parts[-1])
+
+
+def load_records(a: dict, emit: "Emit") -> dict:
+    ws = Path(a["workspace"])
+    part, copied = folder.take_in(ws, a["input"])
+    return {**check_records({**a, "input": str(part)}, emit), "loaded": str(part), "copied": copied,
+            "next": [dict(command=nayose("resolve", "records", "--workspace", ws), why="find matches in it")]}
+
+
+def create_workspace(a: dict, emit: "Emit") -> dict:
+    ws = folder.create(Path(a["home"] or "workspaces"), a["name"], own_columns(settings_path()))
+    return dict(workspace=str(ws), next=[dict(command=nayose("load", "records", "<file>", "--workspace", ws), why="give it your records file")])
+
+
+def list_workspaces(a: dict, emit: "Emit") -> dict:
+    home = Path(a["home"] or "workspaces")
+    return dict(home=str(home), workspaces=folder.workspaces(home),
+                next=[dict(command=nayose("create", "workspace", "<name>", *(["--home", home] if a["home"] else [])), why="start a new one")])
+
+
 def resolve_records(a: dict, emit: "Emit") -> dict:
     s, p, pipeline = setup(a)
     out = Path(a["workspace"])
-    return after_run(Run(p, s, model=model_from(a["model"]), echo=emit.step).full(a["input"], out, overwrite=a["overwrite"], pipeline_file=pipeline), out)
+    return after_run(Run(p, s, model=model_from(a["model"]), echo=emit.step).full(given(a), out, overwrite=a["overwrite"], pipeline_file=pipeline), out)
 
 
 def add_records(a: dict, emit: "Emit") -> dict:
     s, p, pipeline = setup(a)
     out = Path(a["workspace"])
-    run = Run(p, s, echo=emit.step).increment(a["input"], out, pipeline_file=pipeline)
+    run = Run(p, s, echo=emit.step).increment(path := given(a), out, pipeline_file=pipeline)
     if run.added == 0:
-        return dict(summary=[["nothing new", f"every record of {a['input']} is already in the run"]], next=next_after(out, run.uid))
+        return dict(summary=[["nothing new", f"every record of {path} is already in the run"]], next=next_after(out, run.uid))
     return after_run(run, out)
 
 
@@ -309,14 +355,18 @@ def rerun_records(a: dict, emit: "Emit") -> dict:
 
 
 def describe_workspace_(a: dict, emit: "Emit") -> dict:
-    s, out = load_settings(), Path(a["workspace"])
+    s, out = settings_for(a), Path(a["workspace"])
     d = describe_workspace(duckdb.connect(), out, s.data.unique_id)
-    return {**d, "next": next_after(out, s.data.unique_id)[:-1] + [dict(command=nayose("describe", "entity", "<record ID>", "--workspace", out),
-                                                                       why="one record's entity, and what joined it")]}
+    files = folder.loaded(out)
+    then = (next_after(out, s.data.unique_id)[:-1] + [dict(command=nayose("describe", "entity", "<record ID>", "--workspace", out),
+                                                           why="one record's entity, and what joined it")] if d["records"] else
+            [dict(command=nayose("resolve", "records", "--workspace", out), why="find matches in the file loaded last")] if files else
+            [dict(command=nayose("load", "records", "<file>", "--workspace", out), why="give it your records file")])
+    return {**d, "inputs": files, "columns": "own" if columns_file(out) else "project", "next": then}
 
 
 def describe_entity_(a: dict, emit: "Emit") -> dict:
-    s, out = load_settings(), Path(a["workspace"])
+    s, out = settings_for(a), Path(a["workspace"])
     uid = s.data.unique_id
     d = describe_entity(duckdb.connect(), out, uid, a["id"], [f for f in s.columns if f not in SPECIAL])
     rename = lambda xs: [{{uid: "id", f"{uid}_l": "id_l", f"{uid}_r": "id_r"}.get(k, k): v for k, v in x.items()} for x in xs]
@@ -346,7 +396,7 @@ def counts(frame: pd.DataFrame) -> dict[str, int]:  # rows by why and status
 
 
 def list_pairs(a: dict, emit: "Emit") -> dict:
-    uid, out = load_settings().data.unique_id, Path(a["workspace"])
+    uid, out = settings_for(a).data.unique_id, Path(a["workspace"])
     pairs = sheet(out, "review.parquet")
     if pairs is None:
         raise InputError(f"no run in {out}", fix="resolve records into that folder first")
@@ -357,7 +407,7 @@ def list_pairs(a: dict, emit: "Emit") -> dict:
 
 
 def decide_pair(a: dict, emit: "Emit") -> dict:
-    uid, out = load_settings().data.unique_id, Path(a["workspace"])
+    uid, out = settings_for(a).data.unique_id, Path(a["workspace"])
     first, second = sorted([a["first"], a["second"]])  # the sheet holds each pair lower ID first
     folder.type_in(out, "review.parquet", "decision", None if a["decision"] == "clear" else a["decision"], **{f"{uid}_l": first, f"{uid}_r": second})
     return dict(pair=[first, second], decision=a["decision"], next=[dict(command=nayose("apply", "decisions", "--workspace", out), why="apply them")])
@@ -377,7 +427,7 @@ KINDS = {"person": 1, "company": 2, "unsure": 0, "clear": None}
 
 
 def list_kinds(a: dict, emit: "Emit") -> dict:
-    uid, out = load_settings().data.unique_id, Path(a["workspace"])
+    uid, out = settings_for(a).data.unique_id, Path(a["workspace"])
     kinds = sheet(out, "kind_review.parquet")
     if kinds is None:
         raise InputError(f"{out}: no kind_review.parquet", fix="a full run that tells persons from companies writes it: nayose resolve records …")
@@ -387,7 +437,7 @@ def list_kinds(a: dict, emit: "Emit") -> dict:
 
 
 def answer_kind(a: dict, emit: "Emit") -> dict:
-    uid, out = load_settings().data.unique_id, Path(a["workspace"])
+    uid, out = settings_for(a).data.unique_id, Path(a["workspace"])
     folder.type_in(out, "kind_review.parquet", "kind", KINDS[a["kind"]], **{uid: a["id"]})
     return dict(record=a["id"], kind=a["kind"], next=[dict(command=nayose("apply", "answers", "--workspace", out), why="apply them: a rerun")])
 
@@ -406,7 +456,7 @@ def serve_inbox(a: dict, emit: "Emit") -> dict:
 
 def open_ui(a: dict, emit: "Emit") -> dict:
     from er import ui  # the page's server: it reads these declarations
-    ui.serve(int(a["port"] or 8765), a["workspace"], emit.line, open_browser=not a["link"])
+    ui.serve(int(a["port"] or 8765), a["workspace"], a["home"] or "workspaces", emit.line, open_browser=not a["link"])
     return dict(next=[])
 
 
@@ -415,6 +465,12 @@ def open_ui(a: dict, emit: "Emit") -> dict:
 INPUT = Param("input", "the records: a Parquet file, a quoted glob ('in/*.parquet') or a folder of them, read together by column name",
               "path", positional=True)
 WORKSPACE = Param("workspace", "the workspace: the folder that keeps one matching job", "path", required=True)
+OWN = Param("workspace", "a workspace, for its own mapping (without it, the project's: config/settings.toml)", "path")
+GIVEN = replace(INPUT, help=INPUT.help + "; copied into the workspace first. Without it, the file loaded into it last", optional=True)
+HOME = Param("home", "the folder that holds the workspaces (default: workspaces, in the current folder)", "path")
+CHECKED = {"records": "records read", "fields": "each field: filled, looks_right, top_value (shares), columns",
+           "turned_off": "rules, keys and levels a missing field turns off", "keys": "each key's pairs per record and largest block",
+           "oversized_from": "the block size checked by sampling", "notes": "what the loader detected or fixed", "next": "the commands that usually follow"}
 COMPUTE = Param("compute", "DuckDB limits for this run, over config/settings.toml [compute]: memory_limit=8GB, threads=4, "
                 "temp_directory=<folder> (past the memory limit DuckDB spills there)", "many", metavar="KEY=VALUE")
 PIPELINE = Param("pipeline", "the pipeline file (default: config/final.toml)", "path")
@@ -423,35 +479,55 @@ FILE = lambda what: Param("file", f"{what} (default: the workspace's own sheet, 
 RUN_RESULT = {"summary": "the run in words: records, entities, who joined them, the model's links, what is left to people",
               "seconds": "the run's time", "wrote": "the files written", "next": "the commands that usually follow"}
 COMMANDS: tuple[Command, ...] = (
+    Command("create", "workspace", "Start a workspace: the folder for one matching job",
+            "Makes HOME/NAME (HOME: --home, else workspaces/ in the current folder) with its own mapping, columns.toml: "
+            "config/settings.toml's [columns] and [kind], which of its files' columns hold each field. Records files given to "
+            "it are copied into its inputs/, and its runs, people's decisions and their answers are written beside them, so "
+            "opening it again finds all of it. O(1).",
+            (Param("name", "letters, digits, '.', '_' and '-', at most 64", positional=True, metavar="NAME"), HOME),
+            {"workspace": "the workspace made", "next": "the commands that usually follow"},
+            "nayose create workspace acme", create_workspace, quick=True),
+    Command("list", "workspaces", "The workspaces, the latest active first",
+            "Every folder in HOME that holds a workspace: its name, the files given to it, whether it holds a run, and when it "
+            "last changed. Reads steps.json, no record. O(workspaces).",
+            (HOME,), {"home": "the folder listed", "workspaces": "each one: name, workspace, files, ran, last",
+                      "next": "the commands that usually follow"},
+            "nayose list workspaces", list_workspaces, quick=True, show={"workspaces": ("name", "files", "ran", "last")}),
+    Command("load", "records", "Copy a file into a workspace, then check it",
+            "Copies the records into a part of the workspace's own (inputs/0001-customers/), unless it holds the same content "
+            "already, then checks the copy as check records does, with the workspace's mapping. Its runs read the copy, so "
+            "the original can move or go. O(bytes) for the copy, then the check's.",
+            (INPUT, WORKSPACE, COMPUTE, PIPELINE),
+            {**CHECKED, "loaded": "the part the records are in", "copied": "false: the workspace held them already"},
+            "nayose load records customers.parquet --workspace workspaces/acme", load_records),
     Command("check", "records", "Read, map and check a file, in seconds; resolve nothing",
             "Reads the file through the door every input takes, maps its columns to the logical fields (config/settings.toml "
             "[columns]), and counts each key's pairs before any join. Shows each field's fill rate, the share of values that "
             "look like it and the share of its most common value, what would be turned off, and the blocks the run will check "
             "on a sample. A field the run needs and the file lacks stops it, with the column whose values look most like it. "
             "O(N) for the counts; a sample of 10,000 records for the shares.",
-            (INPUT, COMPUTE, PIPELINE),
-            {"records": "records read", "fields": "each field: filled, looks_right, top_value (shares), columns",
-             "turned_off": "rules, keys and levels a missing field turns off", "keys": "each key's pairs per record and largest block",
-             "oversized_from": "the block size checked by sampling", "notes": "what the loader detected or fixed", "next": "the commands that usually follow"},
-            "nayose check records customers.parquet", check_records),
+            (INPUT, OWN, COMPUTE, PIPELINE), CHECKED, "nayose check records customers.parquet", check_records),
     Command("list", "columns", "Show which of a file's columns hold each field",
-            "Reads config/settings.toml [columns] (or the ER_SETTINGS file): each field, its columns (a comma between fallbacks, "
-            "+ between columns joined) and its options. O(the file).",
-            (), {"settings": "the settings file", "columns": "each field: columns, options", "next": "the commands that usually follow"},
-            "nayose list columns", list_columns, quick=True),
+            "Reads the workspace's columns.toml, or without one config/settings.toml [columns] (or the ER_SETTINGS file): each "
+            "field, its columns (a comma between fallbacks, + between columns joined) and its options. O(the file).",
+            (OWN,), {"settings": "the file read", "own": "true: the workspace's own mapping", "columns": "each field: columns, options",
+                     "next": "the commands that usually follow"},
+            "nayose list columns --workspace workspaces/acme", list_columns, quick=True),
     Command("set", "columns", "Map fields to a file's columns",
             "Rewrites the named fields' lines in [columns]: FIELD=COLUMN, FIELD=A,B (B where A is empty), FIELD=A+B (A and B "
             "joined), FIELD= (the field goes). Every other line, each line's comment and a field's options stay; the new file "
-            "is checked before it replaces the old. O(the file).",
-            (Param("mapping", "one or more FIELD=COLUMNS", "many", positional=True, metavar="FIELD=COLUMNS"),),
-            {"settings": "the settings file", "columns": "each field: columns, options", "next": "the commands that usually follow"},
-            "nayose set columns phone=TEL4 person_name=NAME_KANA,SEI+MEI", set_columns_, quick=True),
+            "is checked before it replaces the old. With --workspace, the workspace's columns.toml; else the project's, which "
+            "new workspaces start from. O(the file).",
+            (Param("mapping", "one or more FIELD=COLUMNS", "many", positional=True, metavar="FIELD=COLUMNS"), OWN),
+            {"settings": "the file written", "own": "true: the workspace's own mapping", "columns": "each field: columns, options",
+             "next": "the commands that usually follow"},
+            "nayose set columns phone=TEL4 person_name=NAME_KANA,SEI+MEI --workspace workspaces/acme", set_columns_, quick=True),
     Command("resolve", "records", "Resolve a file: one ID per person or company",
-            "A full run, without labels: load, budget, fit, rules, candidates, score, cluster, write, report. Writes the run "
-            "folder: gold.parquet, matches/, rule_kept/, set_aside/, state/, steps.json, and for people qa.md, report.txt, "
+            "A full run, without labels: load, budget, fit, rules, candidates, score, cluster, write, report. Writes the "
+            "workspace: gold.parquet, matches/, rule_kept/, set_aside/, state/, steps.json, and for people qa.md, report.txt, "
             "review.parquet and kind_review.parquet. A folder that holds a run is refused without --overwrite; people's "
             "decisions and answers in it stand. O(N·L + ΣP + C·K·L²).",
-            (INPUT, WORKSPACE, Param("overwrite", "replace the run the folder holds", "flag"), PIPELINE,
+            (GIVEN, WORKSPACE, Param("overwrite", "replace the run the folder holds", "flag"), PIPELINE,
              Param("model", "a fitted model to score with instead of fitting one on the file (its JSON, or the file that holds it under 'model')", "path"),
              COMPUTE),
             RUN_RESULT, "nayose resolve records customers.parquet --workspace workspaces/customers", resolve_records),
@@ -459,7 +535,7 @@ COMMANDS: tuple[Command, ...] = (
             "An increment: each new record compared with every stored one, with the run's model; it can join an existing "
             "entity. A record whose ID is already in the run is set aside, so adding the same file twice adds nothing. "
             "O(Δ·(L + Σb) + C_Δ·K·L²) plus narrow O(N) scans.",
-            (INPUT, WORKSPACE, PIPELINE, COMPUTE), RUN_RESULT, "nayose add records new.parquet --workspace workspaces/customers", add_records),
+            (GIVEN, WORKSPACE, PIPELINE, COMPUTE), RUN_RESULT, "nayose add records new.parquet --workspace workspaces/customers", add_records),
     Command("match", "records", "Which entity each record would join; nothing written",
             "An increment's steps without its write: for each record, the entity it would join or a new one, and the rule or the "
             "model's best weight that links it. The workspace is left as it was. O(an increment).",
@@ -479,9 +555,11 @@ COMMANDS: tuple[Command, ...] = (
             {"workspace": "the workspace", "records": "records", "entities": "entities", "largest": "the 10 largest entities",
              "runs": "each run so far: at, what, files, seconds", "pairs": "open pairs to decide and audit, and decisions written in",
              "kinds": "open records to decide and to measure, and answers written in", "set_aside": "records set aside",
-             "write_owed": "a write cut short, finished by the next one", "summary": "the last run's summary", "next": "the commands that usually follow"},
+             "write_owed": "a write cut short, finished by the next one", "summary": "the last run's summary",
+             "inputs": "the records files given to it, each in inputs/: name, path, files, bytes, read (by a run)",
+             "columns": "own: its columns.toml; project: config/settings.toml's", "next": "the commands that usually follow"},
             "nayose describe workspace workspaces/customers", describe_workspace_, quick=True,
-            show={"largest": ("entity", "records"), "runs": ("at", "what", "seconds")}),
+            show={"largest": ("entity", "records"), "runs": ("at", "what", "seconds"), "inputs": ("name", "files", "bytes", "read")}),
     Command("describe", "entity", "One record's entity, and what joined it",
             "The entity of the record ID: each of its records with its fields and kind, and every link between them: a rule, "
             "the model with its weight in bits, or people. O(N) in SQL.",
@@ -561,7 +639,7 @@ COMMANDS: tuple[Command, ...] = (
             "button runs one of these commands, shown as the command line it is; lists, describes and single answers run in "
             "the page's own process, the others each in a process of their own, one at a time. Nothing is loaded from the "
             "network. Ctrl-C stops it.",
-            (Param("workspace", "the workspace the page starts with", "path"), Param("port", "the port (default 8765; 0: any free one)", metavar="PORT"),
+            (Param("workspace", "the workspace the page starts with", "path"), HOME, Param("port", "the port (default 8765; 0: any free one)", metavar="PORT"),
              Param("link", "print the link only; open no browser", "flag")),
             {"next": "the commands that usually follow"}, "nayose open ui --workspace workspaces/customers", open_ui),
 )
@@ -595,7 +673,7 @@ def parser(kind: type[argparse.ArgumentParser] = argparse.ArgumentParser) -> arg
                 if p.metavar and not p.choices:
                     kw["metavar"] = p.metavar
                 if p.positional:
-                    cp.add_argument(p.name, **kw)
+                    cp.add_argument(p.name, **kw, **({"nargs": "?"} if p.optional else {}))
                 else:
                     cp.add_argument(f"--{p.name}", required=p.required, **kw)
             cp.add_argument("--format", choices=("text", "json"), default="text", help="text for people (the default); json: one object per line")
@@ -608,7 +686,7 @@ def synopsis(c: Command) -> str:
     for p in c.params:
         value = "|".join(p.choices) if p.choices else p.shown + (" …" if p.kind == "many" else "")
         word = value if p.positional else f"--{p.name}" if p.kind == "flag" else f"--{p.name} {value}"
-        words.append(word if p.positional or p.required else f"[{word}]")
+        words.append(word if (p.positional and not p.optional) or p.required else f"[{word}]")
     return " ".join(words + ["[--format text|json]"])
 
 

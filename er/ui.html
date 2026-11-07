@@ -308,13 +308,17 @@ body.collapsed .navitem .stack, body.collapsed .rail li::before { display: none;
  "screens": [
   {"id": "records", "title": "Overview", "icon": "overview", "what": "The whole workflow, and what it did with your records.",
    "strip": ["records", "prepare", "rules", "candidates", "score", "accept", "people", "group", "customers"],
-   "uses": [{"command": "describe workspace", "args": {"workspace": "@workspace"}, "reads": ["records", "entities", "runs", "pairs", "kinds", "set_aside", "write_owed"]},
-            {"command": "describe matching", "args": {"workspace": "@workspace"}, "reads": ["nodes", "edges"]}]},
+   "uses": [{"command": "describe workspace", "args": {"workspace": "@workspace"}, "reads": ["records", "entities", "runs", "pairs", "kinds", "set_aside", "write_owed", "inputs"]},
+            {"command": "describe matching", "args": {"workspace": "@workspace"}, "reads": ["nodes", "edges"]},
+            {"command": "list workspaces", "args": {"home": "@home"}, "reads": ["home", "workspaces"]},
+            {"command": "create workspace", "args": {"name": "@name", "home": "@home"}, "reads": ["workspace"]}]},
   {"id": "columns", "title": "Prepare your data", "icon": "columns", "what": "Which of your columns hold each field, and how each value is made comparable.",
    "strip": ["records", "prepare"],
-   "uses": [{"command": "list columns", "args": {}, "reads": ["columns", "settings"]},
-            {"command": "check records", "args": {"input": "@input"}, "reads": ["records", "fields", "turned_off", "keys", "notes"]},
-            {"command": "set columns", "args": {"mapping": "@mapping"}, "reads": ["columns"]},
+   "uses": [{"command": "list columns", "args": {"workspace": "@workspace"}, "reads": ["columns", "own"]},
+            {"command": "load records", "args": {"input": "@input", "workspace": "@workspace"}, "reads": ["records", "fields", "loaded", "copied"]},
+            {"command": "check records", "args": {"input": "@loaded", "workspace": "@workspace"}, "reads": ["records", "fields", "turned_off", "keys", "notes"]},
+            {"command": "set columns", "args": {"mapping": "@mapping", "workspace": "@workspace"}, "reads": ["columns"]},
+            {"command": "describe workspace", "args": {"workspace": "@workspace"}, "reads": ["inputs"]},
             {"command": "describe matching", "args": {"workspace": "@workspace"}, "reads": ["nodes"]}]},
   {"id": "run", "title": "Find matches", "icon": "run", "what": "Rules settle the certain pairs; the rest are listed, scored and accepted at the line; linked records become one customer.",
    "strip": ["records", "rules", "candidates", "score", "accept", "group", "customers"],
@@ -492,9 +496,10 @@ const STATE_WORD = {done: "done", current: "next", attention: "needs you", optio
 // Each step's state (done, current, attention, optional, later) and one-line status, from describe workspace's result.
 function progress(d) {
   const ran = d && d.event !== "error" && d.records > 0, s = {};
-  s.workspace = state.workspace ? {state: "done", line: state.workspace} : {state: "current", line: "choose one"};
-  s.columns = ran ? {state: "done", line: "ready"} : {state: state.workspace ? "current" : "later", line: "map and check"};
-  s.run = ran ? {state: "done", line: `${fmt(d.records)} → ${fmt(d.entities)} customers`} : {state: "later", line: "not yet"};
+  s.workspace = state.workspace ? {state: "done", line: state.workspace.split("/").filter(Boolean).pop()} : {state: "current", line: "choose one"};
+  const files = (d && d.inputs) || [], last = files.length ? files[files.length - 1].name.replace(/^\d+-/, "") : "";
+  s.columns = ran || last ? {state: "done", line: last ? `${last} loaded` : "ready"} : {state: state.workspace ? "current" : "later", line: "load your file"};
+  s.run = ran ? {state: "done", line: `${fmt(d.records)} → ${fmt(d.entities)} customers`} : {state: last ? "current" : "later", line: last ? "ready to run" : "not yet"};
   if (!ran) {
     for (const k of ["pairs", "kinds", "results"]) s[k] = {state: "later", line: "after matching"};
   } else {
@@ -765,10 +770,10 @@ function grid(box, rows, cols, opts = {}) {
 
 // A parameter's input, built from its declaration: a flag a checkbox, a choice a list, the rest a text box.
 function field(command, name) {
-  const p = COMMANDS[command].params.find((x) => x.name === name), id = `f-${name}`, needed = p.required || p.positional;
+  const p = COMMANDS[command].params.find((x) => x.name === name), id = `f-${name}`, needed = p.required || (p.positional && !p.optional);
   if (p.kind === "flag") return `<label class="check"><input type="checkbox" id="${id}"><span>${esc(p.help)}</span></label>`;
   const control = p.choices.length ? `<select id="${id}">${p.choices.map((c) => `<option>${esc(c)}</option>`).join("")}</select>`
-    : `<input type="text" id="${id}" value="${esc(name === "input" ? state.input || "" : "")}" placeholder="${esc(p.metavar)}" ${needed ? "required" : ""}>`;
+    : `<input type="text" id="${id}" placeholder="${esc(p.optional ? "the file loaded last" : p.metavar)}" ${needed ? "required" : ""}>`;
   return `<label class="field"><span class="lab">${esc(name)}${needed ? " *" : ""}</span>${control}<div class="help">${esc(p.help)}</div></label>`;
 }
 function formValues(command, form) {
@@ -797,7 +802,6 @@ function action(id, command, label, done, onEvent = null) {
   dlg.onclose = async () => {
     if (dlg.returnValue !== "run") return;
     const extra = formValues(command, form);
-    if (extra.input) { state.input = extra.input; store("input", extra.input); }
     done(await run(id, command, extra, onEvent));
   };
   dlg.returnValue = "";
@@ -820,7 +824,7 @@ const SCREENS = {
     el.innerHTML = head("records", `<button class="btn" id="refresh">${icon("refresh")}Refresh</button>`) + `<div id="next"></div><div id="flow"></div><div id="out"></div>`;
     $("refresh").onclick = () => go("records");
     const [d] = await Promise.all([run("records", "describe workspace"), flowOf("records", $("flow"))]);
-    if (d.event === "error") { $("out").innerHTML = /no run in/.test(d.error) ? emptyRun() : banner(d); return d; }
+    if (d.event === "error" || !d.records) { $("out").innerHTML = d.event === "error" ? banner(d) : emptyRun(); return d; }
     const p = progress(d), s = p.steps[p.next];
     $("next").innerHTML = `<div class="next">${icon(s.state === "attention" ? "person" : "run")}<span><b>Next: ${ORDER.indexOf(p.next) + 1} · ${esc(STEP[p.next])}</b>
       <span class="muted"> · ${esc(s.line)}</span></span><span class="grow" style="flex:1"></span>${p.next === "workspace" ? '<button class="btn filled" data-pick>Open</button>' : `<a class="btn filled" data-go="${p.next}">Open</a>`}</div>`;
@@ -832,14 +836,16 @@ const SCREENS = {
   },
 
   async columns(el) {
-    el.innerHTML = head("columns", `<button class="btn filled" id="check">${icon("check")}Check the file</button>`) +
-      `<div id="flow"></div><div class="card"><label class="field" style="margin:0"><span class="lab">Records file</span><input type="text" id="cin" value="${esc(state.input || "")}" placeholder="customers.parquet"></label></div>
+    el.innerHTML = head("columns", `<button class="btn filled" id="load">${icon("add")}Load and check</button>`) +
+      `<div id="flow"></div><div class="card"><label class="field" style="margin:0"><span class="lab">Your records file: copied into this workspace, then checked</span>
+       <input type="text" id="cin" placeholder="customers.parquet"></label><div id="files" class="chips" style="margin-top:10px"></div></div>
        <div id="out" class="faint">Loading…</div>${stepFoot("columns")}`;
-    const remember = () => { state.input = $("cin").value.trim(); store("input", state.input); };
-    $("cin").onchange = remember;
-    const draw = async () => {
-      const [cols, check, g] = await Promise.all([run("columns", "list columns"), state.input ? run("columns", "check records") : null,
-                                                  state.workspace ? flowOf("columns", $("flow")) : null]);
+    if (!state.workspace) { $("out").innerHTML = emptyRun(); return; }
+    const draw = async (check) => {  // a check just made, or one of the file loaded last
+      const [cols, d, g] = await Promise.all([run("columns", "list columns"), run("columns", "describe workspace"), flowOf("columns", $("flow"))]);
+      const files = d.inputs || [], last = files[files.length - 1];
+      $("files").innerHTML = files.map((f) => `<span class="tag" title="${esc(f.path)}">${esc(f.name)} · ${fmt(Math.ceil(f.bytes / 1e6))} MB · ${f.read ? "matched" : "not run yet"}</span>`).join("");
+      if (check === undefined && last) check = await run("columns", "check records", {loaded: last.path});
       const shares = Object.fromEntries(((check && check.fields) || []).map((f) => [f.field, f]));
       const examples = Object.fromEntries((g && g.nodes ? g.nodes.find((n) => n.id === "prepare").fields : []).map((f) => [f.field, f]));
       const hints = check && check.event === "error" ? Object.entries(check.hints || {}) : [];
@@ -853,11 +859,18 @@ const SCREENS = {
           c === "field" ? esc(words(r.field)) :
           c === "example" ? (examples[r.field] ? chainOf(examples[r.field]) : '<span class="faint">—</span>') :
           c === "save" ? `<button class="btn" data-save="${esc(r.field)}">Save</button>` : meter((shares[r.field] || {})[c])});
-      const save = async (mapping) => { const d = await run("columns", "set columns", {mapping}); if (d.event === "error") $("out").insertAdjacentHTML("afterbegin", banner(d)); else draw(); };
+      const save = async (mapping) => { const e = await run("columns", "set columns", {mapping}); if (e.event === "error") $("out").insertAdjacentHTML("afterbegin", banner(e)); else draw(); };
       el.querySelectorAll("[data-save]").forEach((b) => b.onclick = () => save([`${b.dataset.save}=${el.querySelector(`[data-field="${b.dataset.save}"]`).value.replaceAll(" ", "")}`]));
       el.querySelectorAll("[data-hint]").forEach((b) => b.onclick = () => save([b.dataset.hint]));
     };
-    $("check").onclick = () => { remember(); draw(); };
+    $("load").onclick = async () => {
+      const input = $("cin").value.trim();
+      if (!input) { $("cin").focus(); return; }
+      const e = await run("columns", "load records", {input});
+      if (e.loaded || e.event !== "error") $("cin").value = "";
+      draw(e);
+    };
+    $("cin").onkeydown = (e) => { if (e.key === "Enter") $("load").click(); };
     draw();
   },
 
@@ -909,7 +922,7 @@ const SCREENS = {
     if (record) entity(record);
     if (!state.workspace) { $("left").innerHTML = emptyRun(); return; }
     const [d] = await Promise.all([run("results", "describe workspace"), flowOf("results", $("flow"))]);
-    if (d.event === "error") { $("left").innerHTML = banner(d); return d; }
+    if (d.event === "error" || !d.records) { $("left").innerHTML = d.event === "error" ? banner(d) : emptyRun(); return d; }
     $("left").innerHTML = `${scope("records", `The ${fmt(d.largest.length)} largest customers`)}<div id="largest"></div>`;
     where();
     const t = grid($("largest"), d.largest, ["entity", "records"], {labels: {entity: "customer"}, filter: false, onPick: (i) => { t.select(i); entity(d.largest[i].entity); }});
@@ -1028,33 +1041,43 @@ async function review(el, which, note = "") {
   show();
 }
 
-const NEED = [["folder", "Workspace", "a folder for the results; a new one is fine"], ["records", "Your records", "the file you match, chosen in step 2"],
+const NEED = [["folder", "Workspace", "a folder that keeps your file, your mapping and the results"], ["records", "Your records", "copied into it in step 2"],
               ["customers", "Customers", "one ID each"]];  // what matching needs, then what it gives
 function emptyRun() {
   if (!state.workspace) return `<div class="card empty"><h2>Gather each customer's records under one ID</h2><div class="flow">${NEED.map(([ic, name, what], i) =>
     `${i ? ARROW : ""}<span class="node static"><span class="top">${icon(ic)}${esc(name)}</span><span class="faint" style="font-size:12px">${esc(what)}</span></span>`).join("")}</div>
     <div class="actions" style="justify-content:center"><button class="btn filled" data-pick>1 · Choose a workspace</button></div></div>`;
-  return `<div class="card empty">${icon("folder")}<h2>Nothing matched in ${esc(state.workspace)} yet</h2><p class="muted">Prepare your data, then find matches into this workspace.</p>
+  return `<div class="card empty">${icon("folder")}<h2>Nothing matched in ${esc(state.workspace.split("/").filter(Boolean).pop())} yet</h2><p class="muted">Load your records file in step 2, then find matches.</p>
     <div class="actions" style="justify-content:center"><a class="btn outlined" data-go="columns">2 · Prepare your data</a><a class="btn filled" data-go="run">3 · Find matches</a></div></div>`;
 }
 
-// The workspace picker, as a console's project picker: recent workspaces, or a new one.
-function pick() {
-  const recent = JSON.parse(store("recent") || "[]"), dlg = $("dlg");
-  dlg.innerHTML = `<form method="dialog"><div class="dlg-body"><h2>Choose a workspace</h2><p class="about">A folder for this matching job: results are written here, and every step reads them. A new name starts a new job; the folder is made on the first run.</p>
-    <label class="field"><span class="lab">Workspace *</span><input type="text" id="pick-workspace" value="${esc(state.workspace || "")}" placeholder="workspaces/customers" required></label>
-    ${recent.length ? `<span class="lab faint" style="font-size:12px">Recent</span><div class="tablecard"><table><tbody>${recent.map((r) => `<tr class="pick" data-r="${esc(r)}"><td style="width:40px">${icon("folder")}</td><td>${esc(r)}</td></tr>`).join("")}</tbody></table></div>` : ""}</div>
-    <div class="dlg-foot"><span class="grow"></span><button class="btn" value="cancel" formnovalidate>Cancel</button><button class="btn filled" value="open">Open</button></div></form>`;
-  dlg.querySelectorAll("[data-r]").forEach((tr) => tr.onclick = () => { $("pick-workspace").value = tr.dataset.r; });
-  dlg.onclose = () => { if (dlg.returnValue === "open") setWorkspace($("pick-workspace").value.trim()); };
+// The workspace picker, as a console's project picker: the workspaces on disk (list workspaces), or a new one.
+async function pick() {
+  const dlg = $("dlg"), list = await run("records", "list workspaces"), rows = list.workspaces || [];
+  dlg.innerHTML = `<form method="dialog"><div class="dlg-body"><h2>Choose a workspace</h2>
+    <p class="about">A workspace is the folder for one matching job, in ${esc(list.home || state.home)}/. Your records file, how its columns are read, the results and people's answers all stay in it, so opening it again finds all of it.</p>
+    <label class="field"><span class="lab">New workspace</span><span style="display:flex;gap:8px"><input type="text" id="new-name" placeholder="acme-2026" aria-label="New workspace name">
+      <button type="button" class="btn filled" id="create">Create</button></span><div class="help">letters, digits, - _ and .</div></label><div id="made"></div>
+    ${rows.length ? `<span class="lab faint" style="font-size:12px">Open one</span><div class="tablecard"><table><tbody>${rows.map((w) =>
+      `<tr class="pick" data-w="${esc(w.workspace)}"><td style="width:40px">${icon("folder")}</td><td>${esc(w.name)}</td><td class="faint">${fmt(w.files)} file${w.files === 1 ? "" : "s"} · ${w.ran ? "matched" : "not run yet"}</td>
+       <td class="faint">${esc(String(w.last).slice(0, 10))}</td></tr>`).join("")}</tbody></table></div>` : ""}${banner(list)}</div>
+    <div class="dlg-foot"><span class="grow"></span><button class="btn" value="cancel" formnovalidate>Cancel</button></div></form>`;
+  dlg.querySelectorAll("[data-w]").forEach((tr) => tr.onclick = () => { dlg.close(); setWorkspace(tr.dataset.w); });
+  $("create").onclick = async () => {
+    const d = await run("records", "create workspace", {name: $("new-name").value.trim()});
+    if (d.event === "error") { $("made").innerHTML = banner(d); return; }
+    dlg.close();
+    setWorkspace(d.workspace);
+  };
+  $("new-name").onkeydown = (e) => { if (e.key === "Enter") { e.preventDefault(); $("create").click(); } };
+  dlg.onclose = null;
   dlg.returnValue = "";
   dlg.showModal();
 }
 function setWorkspace(r) {
   state.workspace = r;
-  store("workspace", r);
-  store("recent", JSON.stringify([r, ...JSON.parse(store("recent") || "[]").filter((x) => x !== r)].filter(Boolean).slice(0, 6)));
-  $("picker").innerHTML = `${icon("folder")}<span>${esc(r ? `Workspace: ${r}` : "Choose a workspace")}</span>${icon("down")}`;
+  store("workspace", r);  // per viewer: the workspace this browser opens with
+  $("picker").innerHTML = `${icon("folder")}<span title="${esc(r)}">${esc(r ? `Workspace: ${r.split("/").filter(Boolean).pop()}` : "Choose a workspace")}</span>${icon("down")}`;
   go(current);
 }
 
@@ -1092,7 +1115,7 @@ document.addEventListener("keydown", (e) => {
   const d = await api("/api/commands");
   if (!d.commands) { $("screen").innerHTML = `<div style="padding:24px">${banner({event: "error", error: d.error || "This page needs the link nayose open ui printed"})}</div>`; return; }
   COMMANDS = Object.fromEntries(d.commands.map((c) => [c.name, c]));
-  state.input = store("input") || "";
+  state.home = d.home;
   $("menu").onclick = () => document.body.classList.toggle(matchMedia("(max-width: 860px)").matches ? "nav-open" : "collapsed");
   $("picker").onclick = pick;
   $("help").onclick = help;

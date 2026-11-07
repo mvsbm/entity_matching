@@ -282,12 +282,14 @@ def applied(out: Path, uid: str) -> pd.DataFrame:  # each pair's latest decision
 def describe_workspace(con: duckdb.DuckDBPyConnection, out: Path, uid: str) -> dict:
     """What the workspace `out` holds, for people: records and entities, the largest entities, each run so far
     (steps.json), the pairs and kinds still open and the answers written in but not given back, the records set
-    aside, a write still owed, and the last summary (qa.md). O(N) in SQL + O(sheet rows)."""
-    if not (out / "gold.parquet").exists():
-        raise InputError(f"no run in {out}", fix="resolve records into that folder first")
+    aside, a write still owed, and the last summary (qa.md); a workspace with no run yet holds none of them.
+    O(N) in SQL + O(sheet rows)."""
+    if not out.is_dir():
+        raise InputError(f"no workspace at {out}", fix="create it: nayose create workspace NAME; or see them: nayose list workspaces")
     gold = f"read_parquet({lit(out / 'gold.parquet')})"
-    records, entities = con.execute(f"SELECT count(*), count(DISTINCT cluster_id) FROM {gold}").fetchall()[0]
-    largest = con.execute(f"SELECT cluster_id AS entity, count(*) AS records FROM {gold} GROUP BY 1 ORDER BY 2 DESC, 1 LIMIT 10").fetchall()
+    ran = (out / "gold.parquet").exists()
+    records, entities = con.execute(f"SELECT count(*), count(DISTINCT cluster_id) FROM {gold}").fetchall()[0] if ran else (0, 0)
+    largest = con.execute(f"SELECT cluster_id AS entity, count(*) AS records FROM {gold} GROUP BY 1 ORDER BY 2 DESC, 1 LIMIT 10").fetchall() if ran else []
     log = json.loads((out / "steps.json").read_text(encoding="utf-8"))["runs"] if (out / "steps.json").exists() else []
     runs = [dict(at=x["at"], what="decisions" if "decisions" in x else "increment" if x.get("part") else "full run",
                  files=[f["file"] for f in x.get("inputs", []) if f.get("role") != "name model"],

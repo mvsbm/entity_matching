@@ -2,7 +2,7 @@
 
 # Using it on your records
 
-Install it, map your columns, run it, read what it wrote. Later, add new records as they arrive, and have a person check the borderline pairs. Every step is a `nayose` command; `nayose open ui` runs the same commands in a browser ([section 9](#9--in-a-browser)).
+Install it, start a workspace, load your file and map its columns, run it, read what it wrote. Later, add new records as they arrive, and have a person check the borderline pairs. Every step is a `nayose` command; `nayose open ui` runs the same commands in a browser ([section 9](#9--in-a-browser)).
 
 ## 1 · Install
 
@@ -17,10 +17,20 @@ The setup installs `.venv/bin/nayose` (名寄せ, gathering one customer's recor
 
 ## 2 · Map your columns
 
-The pipeline never names your columns. It works on logical fields, and `config/settings.toml` `[columns]` says which of your columns hold each one (`ER_SETTINGS=<file>` points a run at another settings file). `nayose list columns` shows the mapping, and `nayose set columns` changes it, keeping every comment and option, and checking the file before it saves:
+Each matching job lives in a workspace: a folder that keeps your records file, how its columns are read, the results and people's answers, so opening it again finds all of it.
 
 ```bash
-.venv/bin/nayose set columns id=CUSTOMER_NO phone=TEL4 person_name=NAME_KANA,SEI+MEI   # , a fallback; + columns joined
+.venv/bin/nayose create workspace customers                                        # workspaces/customers, with its own mapping
+.venv/bin/nayose load records customers.parquet --workspace workspaces/customers   # copied into it, then checked
+.venv/bin/nayose list workspaces                                                   # every workspace, the latest active first
+```
+
+`load records` copies the file into the workspace's `inputs/` (`inputs/0001-customers/`), so its runs read the copy and the original can move or go. The same content loaded twice is copied once. Until the original is deleted, every file is on disk twice.
+
+The pipeline never names your columns. It works on logical fields, and the workspace's `columns.toml` says which of your columns hold each one. A new workspace copies it from `config/settings.toml` `[columns]` and `[kind]` (`ER_SETTINGS=<file>` points nayose at another settings file); a workspace without one reads the project's. `nayose list columns --workspace W` shows the mapping, and `nayose set columns … --workspace W` changes it, keeping every comment and option, and checking the file before it saves. Without `--workspace`, both work on the project's mapping, which new workspaces start from. When `load records` finds a field missing, its fix is the `set columns` line to run:
+
+```bash
+.venv/bin/nayose set columns id=CUSTOMER_NO phone=TEL4 person_name=NAME_KANA,SEI+MEI --workspace workspaces/customers   # , a fallback; + columns joined
 ```
 
 In the file itself:
@@ -69,13 +79,13 @@ It prints each field, its fill rate and the columns it comes from, what would be
 ## 3 · Run
 
 ```bash
-.venv/bin/nayose resolve records customers.parquet --workspace workspaces/customers
+.venv/bin/nayose resolve records --workspace workspaces/customers     # the file loaded last
 ```
 
 | Parameter | Does |
 |---|---|
-| `INPUT` | a Parquet file, a quoted glob (`'data/in/*.parquet'`) or a folder of them; several files are read together by column name |
-| `--workspace` | the workspace. A full run refuses a folder that already holds a run |
+| `INPUT` | a Parquet file, a quoted glob (`'data/in/*.parquet'`) or a folder of them; several files are read together by column name. Copied into the workspace first, as `load records` does; left out, the file loaded into it last |
+| `--workspace` | the workspace: the folder that keeps one matching job. A full run refuses one that already holds a run |
 | `--overwrite` | replaces the run in `--workspace`; people's decisions and answers in it stand |
 | `--compute KEY=VALUE …` | DuckDB limits for this run, overriding `config/settings.toml` `[compute]`: `memory_limit=8GB`, `threads=4`, `temp_directory=<folder>`. Past the memory limit, DuckDB spills to that folder |
 | `--pipeline` | another pipeline file. Default: `config/final.toml` |
@@ -273,12 +283,12 @@ Each file runs as its `nayose` command in a process of its own, so a crash can't
 .venv/bin/nayose open ui --workspace workspaces/customers      # prints a link and opens it; Ctrl-C stops it
 ```
 
-The page runs the same commands, and nothing else. It opens on step 1: what nayose needs (a workspace, the folder its results go in, then your records file) and what it gives (customers, one ID each); what can't act before the first run (adding records, matching again, looking up a record) is greyed out until then. On the left, the work in six steps, in order, each marked done (✓), next, needs you (!) or optional, with one line of where it stands. Each page says how much each part of it covers: a grey band for all the records, a titled list for some of them, and a card with a blue edge for the one picked; the path under the heading strings them together (*All 8,936 records › 151 pairs to review › This pair*), and each card asks one question (*Same customer?*). The grey band is the step's part of the pipeline: chips joined by arrows, each with how many records or pairs it handled, in everyday words (*Sure matches*, *Compared*, *Weighed*, *Matched*, *Customers formed*); click a chip to see how it works, drawn rather than written, with the method's own name beside it. The methods show on real values: before and after with the changed letters marked, the differing letters of two records marked, each comparison's step on its ladder and the points (bits of evidence) it adds toward the 8 needed. Every button runs one `nayose` command; a run opens in a dialog with its equivalent command line, and the drawer at the bottom (the terminal icon) lists every command the page ran.
+The page runs the same commands, and nothing else. It opens on step 1: what nayose needs (a workspace, the folder that keeps the job, then your records file, copied into it) and what it gives (customers, one ID each); what can't act before the first run (adding records, matching again, looking up a record) is greyed out until then. On the left, the work in six steps, in order, each marked done (✓), next, needs you (!) or optional, with one line of where it stands. Each page says how much each part of it covers: a grey band for all the records, a titled list for some of them, and a card with a blue edge for the one picked; the path under the heading strings them together (*All 8,936 records › 151 pairs to review › This pair*), and each card asks one question (*Same customer?*). The grey band is the step's part of the pipeline: chips joined by arrows, each with how many records or pairs it handled, in everyday words (*Sure matches*, *Compared*, *Weighed*, *Matched*, *Customers formed*); click a chip to see how it works, drawn rather than written, with the method's own name beside it. The methods show on real values: before and after with the changed letters marked, the differing letters of two records marked, each comparison's step on its ladder and the points (bits of evidence) it adds toward the 8 needed. Every button runs one `nayose` command; a run opens in a dialog with its equivalent command line, and the drawer at the bottom (the terminal icon) lists every command the page ran.
 
 | Step | Runs | Shows |
 |---|---|---|
-| 1 Choose a workspace | `describe workspace` | the workspace, the folder that keeps one matching job: an existing one, or a new one |
-| 2 Prepare your data | `list columns`, `check records`, `set columns` | each field's columns, a real value made comparable step by step, how full each field is; a field the run needs, with the column its values suggest one click away |
+| 1 Choose a workspace | `list workspaces`, `create workspace` | the workspaces in `workspaces/` (`open ui --home` names another folder), the latest active first, or a new one by name |
+| 2 Prepare your data | `load records`, `check records`, `list columns`, `set columns` | your file, loaded into the workspace (each file it holds, and whether a run has read it); each field's columns, a real value made comparable step by step, how full each field is; a field the run needs, with the column its values suggest one click away |
 | 3 Find matches | `resolve records`, `add records`, `match records`, `rerun records` | records → rules → candidates (each way of listing pairs, as a bar) → weighed (what each level of each comparison is worth, in points) → matched (pairs by weight, against the line) → customers |
 | 4 Review possible matches | `list pairs`, `decide pair`, `apply decisions` | the pairs to review beside the picked pair, and why it is asked: its two records with their differences marked, each comparison's step and points, the total against the line. <kbd>M</kbd> same customer, <kbd>N</kbd> different, <kbd>S</kbd> skip, <kbd>↑</kbd> <kbd>↓</kbd> move |
 | 5 Confirm person or company | `list kinds`, `answer kind`, `apply answers` | each record on a slider from person to company, where the engine and its name alone place it. <kbd>1</kbd> person, <kbd>2</kbd> company, <kbd>0</kbd> can't tell |

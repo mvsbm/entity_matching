@@ -11,3 +11,6 @@ data/medallion/bronze/
 data/medallion/gold/
 data/labels/
 data/artifacts/
+
+# People's workspaces (nayose create workspace): their records and results, never committed
+workspaces/

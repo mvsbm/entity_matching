@@ -13,6 +13,9 @@ Written by `scripts/document_commands.py` from the declarations in `er/cli.py`; 
 
 | Command | Does |
 |---|---|
+| [`create workspace`](#nayose-create-workspace) | Start a workspace: the folder for one matching job |
+| [`list workspaces`](#nayose-list-workspaces) | The workspaces, the latest active first |
+| [`load records`](#nayose-load-records) | Copy a file into a workspace, then check it |
 | [`check records`](#nayose-check-records) | Read, map and check a file, in seconds; resolve nothing |
 | [`list columns`](#nayose-list-columns) | Show which of a file's columns hold each field |
 | [`set columns`](#nayose-set-columns) | Map fields to a file's columns |
@@ -32,12 +35,93 @@ Written by `scripts/document_commands.py` from the declarations in `er/cli.py`; 
 | [`serve inbox`](#nayose-serve-inbox) | Take in every file dropped in an inbox, one at a time |
 | [`open ui`](#nayose-open-ui) | The commands in a browser, on this machine only |
 
+## nayose create workspace
+
+Start a workspace: the folder for one matching job.
+
+```
+nayose create workspace NAME [--home HOME] [--format text|json]
+```
+
+Makes HOME/NAME (HOME: --home, else workspaces/ in the current folder) with its own mapping, columns.toml: config/settings.toml's [columns] and [kind], which of its files' columns hold each field. Records files given to it are copied into its inputs/, and its runs, people's decisions and their answers are written beside them, so opening it again finds all of it. O(1).
+
+| Parameter | |
+|---|---|
+| `NAME` | letters, digits, '.', '_' and '-', at most 64 |
+| `--home HOME` | the folder that holds the workspaces (default: workspaces, in the current folder) |
+
+| Result | |
+|---|---|
+| `workspace` | the workspace made |
+| `next` | the commands that usually follow |
+
+```bash
+nayose create workspace acme
+```
+
+## nayose list workspaces
+
+The workspaces, the latest active first.
+
+```
+nayose list workspaces [--home HOME] [--format text|json]
+```
+
+Every folder in HOME that holds a workspace: its name, the files given to it, whether it holds a run, and when it last changed. Reads steps.json, no record. O(workspaces).
+
+| Parameter | |
+|---|---|
+| `--home HOME` | the folder that holds the workspaces (default: workspaces, in the current folder) |
+
+| Result | |
+|---|---|
+| `home` | the folder listed |
+| `workspaces` | each one: name, workspace, files, ran, last |
+| `next` | the commands that usually follow |
+
+```bash
+nayose list workspaces
+```
+
+## nayose load records
+
+Copy a file into a workspace, then check it.
+
+```
+nayose load records INPUT --workspace WORKSPACE [--compute KEY=VALUE …] [--pipeline PIPELINE] [--format text|json]
+```
+
+Copies the records into a part of the workspace's own (inputs/0001-customers/), unless it holds the same content already, then checks the copy as check records does, with the workspace's mapping. Its runs read the copy, so the original can move or go. O(bytes) for the copy, then the check's.
+
+| Parameter | |
+|---|---|
+| `INPUT` | the records: a Parquet file, a quoted glob ('in/*.parquet') or a folder of them, read together by column name |
+| `--workspace WORKSPACE` | the workspace: the folder that keeps one matching job (required) |
+| `--compute KEY=VALUE` | DuckDB limits for this run, over config/settings.toml [compute]: memory_limit=8GB, threads=4, temp_directory=<folder> (past the memory limit DuckDB spills there) |
+| `--pipeline PIPELINE` | the pipeline file (default: config/final.toml) |
+
+| Result | |
+|---|---|
+| `records` | records read |
+| `fields` | each field: filled, looks_right, top_value (shares), columns |
+| `turned_off` | rules, keys and levels a missing field turns off |
+| `keys` | each key's pairs per record and largest block |
+| `oversized_from` | the block size checked by sampling |
+| `notes` | what the loader detected or fixed |
+| `next` | the commands that usually follow |
+| `loaded` | the part the records are in |
+| `copied` | false: the workspace held them already |
+
+```bash
+nayose load records customers.parquet --workspace workspaces/acme
+```
+
 ## nayose check records
 
 Read, map and check a file, in seconds; resolve nothing.
 
 ```
-nayose check records INPUT [--compute KEY=VALUE …] [--pipeline PIPELINE] [--format text|json]
+nayose check records INPUT [--workspace WORKSPACE] [--compute KEY=VALUE …] [--pipeline PIPELINE] [--format text|json]
 ```
 
 Reads the file through the door every input takes, maps its columns to the logical fields (config/settings.toml [columns]), and counts each key's pairs before any join. Shows each field's fill rate, the share of values that look like it and the share of its most common value, what would be turned off, and the blocks the run will check on a sample. A field the run needs and the file lacks stops it, with the column whose values look most like it. O(N) for the counts; a sample of 10,000 records for the shares.
@@ -45,6 +129,7 @@ Reads the file through the door every input takes, maps its columns to the logic
 | Parameter | |
 |---|---|
 | `INPUT` | the records: a Parquet file, a quoted glob ('in/*.parquet') or a folder of them, read together by column name |
+| `--workspace WORKSPACE` | a workspace, for its own mapping (without it, the project's: config/settings.toml) |
 | `--compute KEY=VALUE` | DuckDB limits for this run, over config/settings.toml [compute]: memory_limit=8GB, threads=4, temp_directory=<folder> (past the memory limit DuckDB spills there) |
 | `--pipeline PIPELINE` | the pipeline file (default: config/final.toml) |
 
@@ -67,19 +152,24 @@ nayose check records customers.parquet
 Show which of a file's columns hold each field.
 
 ```
-nayose list columns [--format text|json]
+nayose list columns [--workspace WORKSPACE] [--format text|json]
 ```
 
-Reads config/settings.toml [columns] (or the ER_SETTINGS file): each field, its columns (a comma between fallbacks, + between columns joined) and its options. O(the file).
+Reads the workspace's columns.toml, or without one config/settings.toml [columns] (or the ER_SETTINGS file): each field, its columns (a comma between fallbacks, + between columns joined) and its options. O(the file).
+
+| Parameter | |
+|---|---|
+| `--workspace WORKSPACE` | a workspace, for its own mapping (without it, the project's: config/settings.toml) |
 
 | Result | |
 |---|---|
-| `settings` | the settings file |
+| `settings` | the file read |
+| `own` | true: the workspace's own mapping |
 | `columns` | each field: columns, options |
 | `next` | the commands that usually follow |
 
 ```bash
-nayose list columns
+nayose list columns --workspace workspaces/acme
 ```
 
 ## nayose set columns
@@ -87,23 +177,25 @@ nayose list columns
 Map fields to a file's columns.
 
 ```
-nayose set columns FIELD=COLUMNS … [--format text|json]
+nayose set columns FIELD=COLUMNS … [--workspace WORKSPACE] [--format text|json]
 ```
 
-Rewrites the named fields' lines in [columns]: FIELD=COLUMN, FIELD=A,B (B where A is empty), FIELD=A+B (A and B joined), FIELD= (the field goes). Every other line, each line's comment and a field's options stay; the new file is checked before it replaces the old. O(the file).
+Rewrites the named fields' lines in [columns]: FIELD=COLUMN, FIELD=A,B (B where A is empty), FIELD=A+B (A and B joined), FIELD= (the field goes). Every other line, each line's comment and a field's options stay; the new file is checked before it replaces the old. With --workspace, the workspace's columns.toml; else the project's, which new workspaces start from. O(the file).
 
 | Parameter | |
 |---|---|
 | `FIELD=COLUMNS` | one or more FIELD=COLUMNS |
+| `--workspace WORKSPACE` | a workspace, for its own mapping (without it, the project's: config/settings.toml) |
 
 | Result | |
 |---|---|
-| `settings` | the settings file |
+| `settings` | the file written |
+| `own` | true: the workspace's own mapping |
 | `columns` | each field: columns, options |
 | `next` | the commands that usually follow |
 
 ```bash
-nayose set columns phone=TEL4 person_name=NAME_KANA,SEI+MEI
+nayose set columns phone=TEL4 person_name=NAME_KANA,SEI+MEI --workspace workspaces/acme
 ```
 
 ## nayose resolve records
@@ -111,14 +203,14 @@ nayose set columns phone=TEL4 person_name=NAME_KANA,SEI+MEI
 Resolve a file: one ID per person or company.
 
 ```
-nayose resolve records INPUT --workspace WORKSPACE [--overwrite] [--pipeline PIPELINE] [--model MODEL] [--compute KEY=VALUE …] [--format text|json]
+nayose resolve records [INPUT] --workspace WORKSPACE [--overwrite] [--pipeline PIPELINE] [--model MODEL] [--compute KEY=VALUE …] [--format text|json]
 ```
 
-A full run, without labels: load, budget, fit, rules, candidates, score, cluster, write, report. Writes the run folder: gold.parquet, matches/, rule_kept/, set_aside/, state/, steps.json, and for people qa.md, report.txt, review.parquet and kind_review.parquet. A folder that holds a run is refused without --overwrite; people's decisions and answers in it stand. O(N·L + ΣP + C·K·L²).
+A full run, without labels: load, budget, fit, rules, candidates, score, cluster, write, report. Writes the workspace: gold.parquet, matches/, rule_kept/, set_aside/, state/, steps.json, and for people qa.md, report.txt, review.parquet and kind_review.parquet. A folder that holds a run is refused without --overwrite; people's decisions and answers in it stand. O(N·L + ΣP + C·K·L²).
 
 | Parameter | |
 |---|---|
-| `INPUT` | the records: a Parquet file, a quoted glob ('in/*.parquet') or a folder of them, read together by column name |
+| `INPUT` | the records: a Parquet file, a quoted glob ('in/*.parquet') or a folder of them, read together by column name; copied into the workspace first. Without it, the file loaded into it last |
 | `--workspace WORKSPACE` | the workspace: the folder that keeps one matching job (required) |
 | `--overwrite` | replace the run the folder holds |
 | `--pipeline PIPELINE` | the pipeline file (default: config/final.toml) |
@@ -141,14 +233,14 @@ nayose resolve records customers.parquet --workspace workspaces/customers
 Add new records to a run.
 
 ```
-nayose add records INPUT --workspace WORKSPACE [--pipeline PIPELINE] [--compute KEY=VALUE …] [--format text|json]
+nayose add records [INPUT] --workspace WORKSPACE [--pipeline PIPELINE] [--compute KEY=VALUE …] [--format text|json]
 ```
 
 An increment: each new record compared with every stored one, with the run's model; it can join an existing entity. A record whose ID is already in the run is set aside, so adding the same file twice adds nothing. O(Δ·(L + Σb) + C_Δ·K·L²) plus narrow O(N) scans.
 
 | Parameter | |
 |---|---|
-| `INPUT` | the records: a Parquet file, a quoted glob ('in/*.parquet') or a folder of them, read together by column name |
+| `INPUT` | the records: a Parquet file, a quoted glob ('in/*.parquet') or a folder of them, read together by column name; copied into the workspace first. Without it, the file loaded into it last |
 | `--workspace WORKSPACE` | the workspace: the folder that keeps one matching job (required) |
 | `--pipeline PIPELINE` | the pipeline file (default: config/final.toml) |
 | `--compute KEY=VALUE` | DuckDB limits for this run, over config/settings.toml [compute]: memory_limit=8GB, threads=4, temp_directory=<folder> (past the memory limit DuckDB spills there) |
@@ -244,6 +336,8 @@ Records and entities, the largest entities, each run so far, the pairs and kinds
 | `set_aside` | records set aside |
 | `write_owed` | a write cut short, finished by the next one |
 | `summary` | the last run's summary |
+| `inputs` | the records files given to it, each in inputs/: name, path, files, bytes, read (by a run) |
+| `columns` | own: its columns.toml; project: config/settings.toml's |
 | `next` | the commands that usually follow |
 
 ```bash
@@ -495,7 +589,7 @@ nayose serve inbox inbox --workspace workspaces/customers --every 300
 The commands in a browser, on this machine only.
 
 ```
-nayose open ui [--workspace WORKSPACE] [--port PORT] [--link] [--format text|json]
+nayose open ui [--workspace WORKSPACE] [--home HOME] [--port PORT] [--link] [--format text|json]
 ```
 
 Serves a page on 127.0.0.1, reachable only from this machine and only with the link it prints, and opens it. Its screens follow the work: records, columns, check and run, results, pairs (keys M, N, S), kinds (keys 1, 2, 0). Each button runs one of these commands, shown as the command line it is; lists, describes and single answers run in the page's own process, the others each in a process of their own, one at a time. Nothing is loaded from the network. Ctrl-C stops it.
@@ -503,6 +597,7 @@ Serves a page on 127.0.0.1, reachable only from this machine and only with the l
 | Parameter | |
 |---|---|
 | `--workspace WORKSPACE` | the workspace the page starts with |
+| `--home HOME` | the folder that holds the workspaces (default: workspaces, in the current folder) |
 | `--port PORT` | the port (default 8765; 0: any free one) |
 | `--link` | print the link only; open no browser |
 
