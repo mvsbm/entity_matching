@@ -707,6 +707,15 @@ def test_describe_records_says_what_a_file_holds_without_preparing_it(tmp_path, 
     assert d["fit"]["phone"]["TEL"] > 0.9 and not next(f for f in d["fields"] if f["field"] == "phone")["sources"][0] == ["TEL"]  # suggested, not applied
 
 
+def test_a_joined_alternative_whose_parts_never_fill_together_is_filled_nowhere(tmp_path):
+    import duckdb
+    from er.source import describe
+    pd.DataFrame({"a": ["x", None, "z"], "b": [None, "y", ""]}).to_parquet(tmp_path / "f.parquet", index=False)
+    d = describe(tmp_path / "f.parquet", duckdb.connect(), {"both": (("a", "b"),), "either": (("a", "b"), ("a",), ("b",))}, {})
+    shares = {f["field"]: f["filled"] for f in d["fields"]}
+    assert shares["both"] == 0 and shares["either"] == 1  # each row holds one of them
+
+
 def test_the_file_s_contents_say_which_feature_each_column_fills(tmp_path, capsys, monkeypatch):
     import random
     from er.cli import main
@@ -1900,21 +1909,38 @@ def test_the_page_answers_once_per_key_shows_any_row_and_says_when_the_server_is
         page.click("#picker")  # a new workspace, from the picker: a folder in the server's workspaces/, with its own mapping
         page.fill("#new-name", "fresh")
         page.click("#create")
-        page.wait_for_selector("text=Nothing matched in fresh")
-        assert (tmp_path / "workspaces" / "fresh" / "columns.toml").is_file()
+        page.wait_for_selector("h1:has-text('Prepare your data')")  # a new workspace opens on its next step
+        assert (tmp_path / "workspaces" / "fresh" / "columns.toml").is_file() and not page.query_selector("details.fgroup")  # nothing to fill before a file
+        company = s.columns["company_name"][0][0]
+        g.df.rename(columns={s.data.unique_id: "customer_no"}).to_parquet(tmp_path / "theirs.parquet", index=False)
+        page.fill("#cin", str(tmp_path / "theirs.parquet"))
+        page.click("#load")  # copied into it, then described
+        page.wait_for_selector("details.fgroup[data-g='ID'][open]", timeout=60_000)  # the ID it can't find opens its group
+        assert page.inner_text("#files").startswith("0001-theirs") and "Record ID needed" in page.inner_text("details.fgroup[data-g='ID'] summary")
+        columns = tmp_path / "workspaces" / "fresh" / "columns.toml"
+        page.click("[data-suggest='ID']")  # what the file's contents place there, shown, then kept
+        page.click(".drop[data-slot='ID/Record ID'] [data-keep]")
+        page.wait_for_function("() => !document.querySelector('.colchip.ghost')")
+        assert 'id = "customer_no"' in columns.read_text() and "Record ID needed" not in page.inner_text("details.fgroup[data-g='ID'] summary")
+        page.evaluate("document.querySelector(\"details.fgroup[data-g='Name']\").open = true")  # opened: it stays open as the page redraws
+        page.click(f".drop[data-slot='Name/Company name'] .colchip[data-col='{company}'] [data-x]")  # taken off
+        page.wait_for_function(f"() => !document.querySelector(\".drop[data-slot='Name/Company name'] .colchip[data-col='{company}']\")")
+        assert load_settings(columns=columns).columns["company_name"] == () and page.query_selector("details.fgroup[data-g='Name'][open]")
+        page.evaluate(f"""() => {{  // dragged back from the file's columns: the drag as the browser fires it
+            const dt = new DataTransfer(), from = document.querySelector(".tray .colchip[data-col='{company}']");
+            const to = document.querySelector(".drop[data-slot='Name/Company name']");
+            from.dispatchEvent(new DragEvent("dragstart", {{dataTransfer: dt, bubbles: true}}));
+            to.dispatchEvent(new DragEvent("drop", {{dataTransfer: dt, bubbles: true, cancelable: true}})); }}""")
+        page.wait_for_selector(f".drop[data-slot='Name/Company name'] .colchip[data-col='{company}']")
+        assert load_settings(columns=columns).columns["company_name"] == ((company,),)
         page.click(".navitem[data-screen=columns]")
-        page.fill("#cin", str(tmp_path / "all.parquet"))
-        page.click("#load")  # copied into it, then checked
-        page.wait_for_selector("#files .tag", timeout=60_000)
-        assert page.inner_text("#files").startswith("0001-all") and (tmp_path / "workspaces" / "fresh" / "inputs" / "0001-all" / "all.parquet").is_file()
-        page.click(".navitem[data-screen=columns]")
-        page.wait_for_selector("#files .tag")  # its check of the file starts now, and takes a while
+        page.wait_for_selector("#files .tag")  # its description starts now
         page.click(".navitem[data-screen=run]")
-        page.wait_for_timeout(3000)
-        assert not page.query_selector("#map")  # the page left draws nothing on the page now open
+        page.wait_for_timeout(1500)
+        assert not page.query_selector("details.fgroup")  # the page left draws nothing on the page now open
         page.click("[data-act='resolve records']")  # the file loaded last: nothing to type
         page.wait_for_function("() => document.querySelector('#equiv-line').textContent.includes('resolve records')")
-        assert page.get_attribute("#f-input", "required") is None and "all.parquet" not in page.inner_text("#equiv-line")
+        assert page.get_attribute("#f-input", "required") is None and "theirs.parquet" not in page.inner_text("#equiv-line")
         page.keyboard.press("Escape")
         page.click("#picker")
         page.wait_for_selector("tr[data-w]")

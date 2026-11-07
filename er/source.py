@@ -195,7 +195,7 @@ def describe(path: str | Path, con: duckdb.DuckDBPyConnection, columns: Mapping[
     held = lambda alt: " AND ".join(b[c] for c in alt)
     test = {k: b[k[1]] if k[0] == "column" else held(here[k[1]][k[2]]) if k[0] == "alt" else " OR ".join(f"({held(a)})" for a in here[k[1]])
             for k in keys}
-    counts = con.execute(f"SELECT count(*), {', '.join(f'count_if({test[k]})' for k in keys)} "
+    counts = con.execute(f"SELECT count(*), {', '.join(f'coalesce(count_if({test[k]}), 0)' for k in keys)} "  # none true: NULL, not 0
                          f"FROM (SELECT {', '.join(f'{filled(c)} AS {b[c]}' for c in cols)} FROM {src.sql})").fetchall()[0]
     n, share = counts[0], dict(zip(keys, (x / max(1, counts[0]) for x in counts[1:])))
     con.execute(f"CREATE OR REPLACE TEMP TABLE er_described AS SELECT * FROM {src.sql} USING SAMPLE reservoir({rows} ROWS) REPEATABLE (0)")
