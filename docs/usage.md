@@ -200,10 +200,10 @@ What stops it: two lines, what is wrong and how to fix it, and exit code 2:
 | `no record left to resolve`, `no new record to add` | every record was set aside (`set_aside/` says why) |
 | `no run in … to add records to` | `--increment` into a folder with no run: run it without `--increment` first |
 | `the pipeline or the column mapping changed since the full run` | an increment would resolve its batch otherwise than the records it joins: run a full run with `--overwrite`, or the increment with the pipeline and settings that run used |
-| `… no such file of person/company answers`, `needs the columns … and kind` | `--kind-labels` points at the wrong file |
-| `answers for records not in …`, `answered rows have no …` | the sheet's IDs changed: a spreadsheet may read 0000000151 as the number 151. Give the IDs back as the run wrote them |
+| `needs the columns … and kind` | `--kind-labels` points at the wrong file |
 | `needs the columns …_l, …_r and decision` | a decisions file without both IDs and `decision` |
-| `a decision is match or no_match`, `pairs decided both ways`, `records not in the run` | a decisions file to correct |
+| `IDs that name no record of …` | a sheet of answers or decisions whose IDs changed: a spreadsheet may read 0000000151 as the number 151. Give the IDs back as the run wrote them |
+| `answered rows have no …`, `decided rows lack an ID`, `a decision is match or no_match`, `pairs decided both ways` | a sheet to correct |
 
 A run folder another job is writing to stops the run with `another job is writing to …` and exit code 75: nothing to fix, try again once the other job is done. The lock and the renames that finish each write hold on a local disk: keep run folders and inboxes on one. On network or object storage they don't, so there let one scheduler be a folder's only writer.
 

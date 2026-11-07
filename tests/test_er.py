@@ -670,11 +670,14 @@ def test_answers_given_wrong_stop_the_run(tmp_path, population):
     from er.run import Run
     s, p, g = population
     g.df.to_parquet(tmp_path / "all.parquet", index=False)
-    with pytest.raises(InputError, match="no such file"):
+    with pytest.raises(InputError, match="no file matches"):
         Run(p, s, kind_labels=tmp_path / "answres.parquet").full(tmp_path / "all.parquet", tmp_path / "run")
     pd.DataFrame({"kind": [1]}).to_parquet(tmp_path / "no_ids.parquet")
     with pytest.raises(InputError, match="needs the columns"):
         Run(p, s, kind_labels=tmp_path / "no_ids.parquet").full(tmp_path / "all.parquet", tmp_path / "run")
+    (tmp_path / "sheet.parquet").write_text(f"{s.data.unique_id},kind\n0000000001,1\n")  # a sheet saved as CSV: the same door as records
+    with pytest.raises(InputError, match="not a Parquet file"):
+        Run(p, s, kind_labels=tmp_path / "sheet.parquet").full(tmp_path / "all.parquet", tmp_path / "run")
     with pytest.raises(InputError, match="no run in"):
         Run(p, s).increment(tmp_path / "all.parquet", tmp_path / "empty")
 
@@ -808,8 +811,11 @@ def test_decisions_join_clusters_without_scoring_and_a_full_run_applies_them_aga
     with pytest.raises(ValueError, match="match or no_match"):
         Run(p, s).decide(tmp_path / "bad.parquet", tmp_path / "a")
     pd.DataFrame({l: ["nobody"], r: [pair[0]], "decision": ["match"]}).to_parquet(tmp_path / "unknown.parquet")
-    with pytest.raises(ValueError, match="not in the run"):
+    with pytest.raises(ValueError, match="IDs that name no record of the run"):
         Run(p, s).decide(tmp_path / "unknown.parquet", tmp_path / "a")
+    pd.DataFrame({l: [None], r: [pair[0]], "decision": ["match"]}).to_parquet(tmp_path / "blank.parquet")
+    with pytest.raises(ValueError, match="decided rows lack an ID"):  # it would decide a pair of one record with itself
+        Run(p, s).decide(tmp_path / "blank.parquet", tmp_path / "a")
 
 
 def test_an_increment_counts_exact_u_again_and_samples_only_a_drifted_comparison(tmp_path, population, monkeypatch):
@@ -1307,7 +1313,7 @@ def test_a_sheet_s_ids_must_name_records_of_the_file(tmp_path, kind_population):
     g.df.to_parquet(tmp_path / "all.parquet", index=False)
     sheet = kind_sheet_for(Run(p, s).full(tmp_path / "all.parquet", tmp_path / "free"), s, p, 100).assign(kind=1)
     sheet.assign(**{uid: sheet[uid].astype("int64")}).to_parquet(tmp_path / "numbers.parquet")  # as a spreadsheet gives 0000000151 back
-    with pytest.raises(InputError, match="answers for records not in"):
+    with pytest.raises(InputError, match="IDs that name no record of"):  # as for decisions
         Run(p, s, kind_labels=tmp_path / "numbers.parquet").full(tmp_path / "all.parquet", tmp_path / "a")
     sheet.assign(**{uid: [pd.NA, *sheet[uid][1:]]}).astype({uid: "string"}).to_parquet(tmp_path / "blank.parquet")
     with pytest.raises(InputError, match="answered rows have no"):
