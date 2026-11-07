@@ -2371,6 +2371,60 @@ def test_the_improve_page_tries_a_line_once_adopts_it_and_opens_the_next_round(t
     httpd.shutdown()
 
 
+def test_step_4_shows_the_trust_line_lowers_it_and_an_answer_waits_out_a_busy_workspace(tmp_path, population, capsys, monkeypatch):
+    import threading
+    from http.server import ThreadingHTTPServer
+    from er import cli, folder, ui
+    sync = pytest.importorskip("playwright.sync_api")
+    s, p, g = population
+    g.df.to_parquet(tmp_path / "all.parquet", index=False)
+    monkeypatch.chdir(tmp_path)
+    assert cli.main(["create", "workspace", "w", "--format", "json"]) == 0  # a new workspace: nothing merges by itself
+    ws = tmp_path / "workspaces" / "w"
+    assert cli.main(["resolve", "records", "all.parquet", "--workspace", str(ws), "--format", "json"]) == 0
+    capsys.readouterr()
+    server = ui.Server(str(ws), str(tmp_path / "workspaces"))
+    httpd = ThreadingHTTPServer(("127.0.0.1", 0), ui.handler(server))
+    threading.Thread(target=httpd.serve_forever, daemon=True).start()
+    with sync.sync_playwright() as pw:
+        try:
+            browser = pw.chromium.launch()
+        except sync.Error:
+            httpd.shutdown()
+            pytest.skip("no browser: .venv/bin/python -m playwright install chromium")
+        page = browser.new_page(viewport={"width": 1280, "height": 900})
+        page.goto(f"http://127.0.0.1:{httpd.server_address[1]}/?token={server.token}")
+        page.wait_for_selector(".next")
+        page.click(".navitem[data-screen=pairs]")
+        page.wait_for_selector(".trustbar")
+        assert page.inner_text(".trustbar").startswith("Nothing merges by itself yet")
+        page.click("[data-trust='lower trust']")  # nothing scores 20 on this population: that range merges at once
+        page.click("dialog button[value=run]")
+        page.wait_for_selector("#note .banner", timeout=120_000)
+        assert folder.method(ws) == {"trust": 20.0}
+        page.wait_for_function("() => document.querySelector('.trustbar')?.textContent.includes('checking 12–20: 0 of')")
+        assert "Drawn from the pairs scoring 12–20" in page.inner_text("#right")
+        page.keyboard.press("m")
+        page.wait_for_function("() => document.querySelector('.trustbar')?.textContent.includes('checking 12–20: 1 of')")
+        held, go = threading.Event(), threading.Event()
+        def other_job():  # another job writes to the workspace for a moment
+            with folder.run_lock(ws):
+                held.set()
+                go.wait(10)
+        other = threading.Thread(target=other_job)
+        other.start()
+        held.wait(10)
+        page.keyboard.press("n")  # refused as busy, then tried again once the other job is done
+        page.wait_for_timeout(1500)
+        go.set()
+        other.join()
+        page.wait_for_function("() => document.querySelector('#written').textContent === '2'", timeout=15_000)
+        assert not page.query_selector("#said .banner") and "1 different" in page.inner_text(".trustbar")
+        assert "12–20" in page.inner_text(".rail li.attention .sub")
+        browser.close()
+    httpd.shutdown()
+
+
 def test_describe_matching_draws_the_pipeline_with_the_run_s_numbers(tmp_path, population):
     import duckdb
     from er.report import GRAPH_NODES, describe_matching
