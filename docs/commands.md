@@ -212,7 +212,7 @@ A full run, without labels: load, budget, fit, rules, candidates, score, cluster
 |---|---|
 | `INPUT` | the records: a Parquet file, a quoted glob ('in/*.parquet') or a folder of them, read together by column name; copied into the workspace first. Without it, the file loaded into it last |
 | `--workspace WORKSPACE` | the workspace: the folder that keeps one matching job (required) |
-| `--overwrite` | replace the run the folder holds |
+| `--overwrite` | replace the results it holds |
 | `--pipeline PIPELINE` | the pipeline file (default: config/final.toml) |
 | `--model MODEL` | a fitted model to score with instead of fitting one on the file (its JSON, or the file that holds it under 'model') |
 | `--compute KEY=VALUE` | DuckDB limits for this run, over config/settings.toml [compute]: memory_limit=8GB, threads=4, temp_directory=<folder> (past the memory limit DuckDB spills there) |

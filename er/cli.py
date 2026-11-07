@@ -527,7 +527,7 @@ COMMANDS: tuple[Command, ...] = (
             "workspace: gold.parquet, matches/, rule_kept/, set_aside/, state/, steps.json, and for people qa.md, report.txt, "
             "review.parquet and kind_review.parquet. A folder that holds a run is refused without --overwrite; people's "
             "decisions and answers in it stand. O(N·L + ΣP + C·K·L²).",
-            (GIVEN, WORKSPACE, Param("overwrite", "replace the run the folder holds", "flag"), PIPELINE,
+            (GIVEN, WORKSPACE, Param("overwrite", "replace the results it holds", "flag"), PIPELINE,
              Param("model", "a fitted model to score with instead of fitting one on the file (its JSON, or the file that holds it under 'model')", "path"),
              COMPUTE),
             RUN_RESULT, "nayose resolve records customers.parquet --workspace workspaces/customers", resolve_records),

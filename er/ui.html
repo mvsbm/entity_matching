@@ -142,6 +142,7 @@ dialog::backdrop { background: rgba(0,0,0,.32); }
 .dlg-foot .grow { flex: 1; }
 .equiv { margin: 0 0 16px; background: var(--hover); border-radius: 8px; padding: 6px 6px 6px 12px; display: flex; gap: 8px; align-items: center; }
 .equiv code { flex: 1; overflow-wrap: anywhere; }
+.cmdline summary { cursor: pointer; font-size: 12px; color: var(--faint); margin: 4px 0 8px; }
 
 /* the command drawer, at the bottom: every command the page ran */
 .term { position: fixed; left: 0; right: 0; bottom: 0; z-index: 6; height: 260px; display: flex; flex-direction: column; background: var(--term); color: var(--term-ink); box-shadow: 0 -2px 8px rgba(0,0,0,.25); }
@@ -322,10 +323,10 @@ body.collapsed .navitem .stack, body.collapsed .rail li::before { display: none;
             {"command": "describe matching", "args": {"workspace": "@workspace"}, "reads": ["nodes"]}]},
   {"id": "run", "title": "Find matches", "icon": "run", "what": "Rules settle the certain pairs; the rest are listed, scored and accepted at the line; linked records become one customer.",
    "strip": ["records", "rules", "candidates", "score", "accept", "group", "customers"],
-   "uses": [{"command": "resolve records", "args": {"input": "@input", "workspace": "@workspace", "overwrite": "@overwrite", "compute": "@compute"}, "form": ["input", "overwrite", "compute"], "reads": ["summary", "seconds"]},
-            {"command": "add records", "args": {"input": "@input", "workspace": "@workspace", "compute": "@compute"}, "form": ["input", "compute"], "reads": ["summary"]},
+   "uses": [{"command": "resolve records", "args": {"input": "@input", "workspace": "@workspace", "overwrite": "@overwrite", "compute": "@compute"}, "form": ["input", "overwrite"], "reads": ["summary", "seconds"]},
+            {"command": "add records", "args": {"input": "@input", "workspace": "@workspace", "compute": "@compute"}, "form": ["input"], "reads": ["summary"]},
             {"command": "match records", "args": {"input": "@input", "workspace": "@workspace"}, "form": ["input"], "reads": ["counts", "records"]},
-            {"command": "rerun records", "args": {"workspace": "@workspace", "compute": "@compute"}, "form": ["compute"], "reads": ["summary"]},
+            {"command": "rerun records", "args": {"workspace": "@workspace", "compute": "@compute"}, "form": [], "reads": ["summary"]},
             {"command": "describe matching", "args": {"workspace": "@workspace"}, "reads": ["nodes"]}]},
   {"id": "pairs", "title": "Review possible matches", "icon": "pairs", "what": "Close calls, just below the line, and pairs with no name compared: you decide.",
    "strip": ["score", "accept", "people", "group"],
@@ -337,7 +338,7 @@ body.collapsed .navitem .stack, body.collapsed .rail li::before { display: none;
    "strip": ["records", "kind", "score"],
    "uses": [{"command": "list kinds", "args": {"workspace": "@workspace", "open": true}, "reads": ["kinds", "counts"]},
             {"command": "answer kind", "args": {"id": "@id", "kind": "@kind", "workspace": "@workspace"}, "reads": ["kind"]},
-            {"command": "apply answers", "args": {"workspace": "@workspace", "compute": "@compute"}, "form": ["compute"], "reads": ["summary"]},
+            {"command": "apply answers", "args": {"workspace": "@workspace", "compute": "@compute"}, "form": [], "reads": ["summary"]},
             {"command": "describe matching", "args": {"workspace": "@workspace"}, "reads": ["nodes"]}]},
   {"id": "results", "title": "View customers", "icon": "customers", "what": "Every customer, and what joined its records.",
    "strip": ["group", "customers"],
@@ -452,12 +453,15 @@ function snack(html, ms = 0) {
 }
 
 // Run one command as the layout places it, its arguments filled from what the person typed or chose. The same command
-// with the same arguments, asked again while it runs, is that run: a write is never sent twice.
+// with the same arguments, asked again while it runs, is that run: a write is never sent twice. A page left while its
+// command runs draws nothing from it: its events and its result go nowhere, and the command runs on.
 const inflight = new Map();
+let visit = 0;  // one per page drawn (go)
 function run(id, command, extra = {}, onEvent = null) {
-  const args = argsFor(id, command, extra), key = JSON.stringify([command, args]);
-  if (!inflight.has(key)) inflight.set(key, runOnce(command, args, onEvent).finally(() => inflight.delete(key)));
-  return inflight.get(key);
+  const args = argsFor(id, command, extra), key = JSON.stringify([command, args]), mine = visit;
+  const here = () => mine === visit;
+  if (!inflight.has(key)) inflight.set(key, runOnce(command, args, onEvent && ((e) => here() && onEvent(e))).finally(() => inflight.delete(key)));
+  return inflight.get(key).then((r) => here() ? r : new Promise(() => {}));  // never settles: the page that asked is gone
 }
 
 async function runOnce(command, args, onEvent) {
@@ -465,7 +469,7 @@ async function runOnce(command, args, onEvent) {
   const started = await api("/api/run", {command, args});
   if (started.error) return failed(started);
   const entry = term.add(started.command);
-  if (!quick) snack(`<span class="spin"></span><span class="msg">Running <code>${esc(started.command)}</code></span>`);
+  if (!quick) snack(`<span class="spin"></span><span class="msg">Running <code>${esc(command)}</code></span>`);
   let from = 0, last = {};
   for (;;) {
     const j = await api(`/api/job/${started.job}?from=${from}`);
@@ -478,8 +482,9 @@ async function runOnce(command, args, onEvent) {
     from += j.events.length;
     if (j.done) {
       entry.end(last, j.exit);
-      if (!quick) snack(j.exit === 0 ? `${icon("check")}<span class="msg">Done: ${esc(COMMANDS[command].help)}</span>`
-                                     : `${icon("error")}<span class="msg">Failed: ${esc(last.error || `exit ${j.exit}`)}</span><button class="btn" data-term>View</button>`, 6000);
+      if (!quick && j.exit === 0) refresh();  // the stepper, whichever page is open now
+      if (!quick) snack(j.exit === 0 ? `${icon("check")}<span class="msg">Done <code>${esc(command)}</code></span>`
+                                     : `${icon("error")}<span class="msg">Failed <code>${esc(command)}</code></span><button class="btn" data-term>View</button>`, 6000);
       return last;
     }
     await sleep(quick ? 120 : 300);
@@ -769,12 +774,13 @@ function grid(box, rows, cols, opts = {}) {
 }
 
 // A parameter's input, built from its declaration: a flag a checkbox, a choice a list, the rest a text box.
+const FIELD = {input: "Records file"};  // a parameter's name on the page, where its own name says less
 function field(command, name) {
   const p = COMMANDS[command].params.find((x) => x.name === name), id = `f-${name}`, needed = p.required || (p.positional && !p.optional);
-  if (p.kind === "flag") return `<label class="check"><input type="checkbox" id="${id}"><span>${esc(p.help)}</span></label>`;
+  if (p.kind === "flag") return `<label class="check"><input type="checkbox" id="${id}"><span>${esc(p.help[0].toUpperCase() + p.help.slice(1))}</span></label>`;
   const control = p.choices.length ? `<select id="${id}">${p.choices.map((c) => `<option>${esc(c)}</option>`).join("")}</select>`
     : `<input type="text" id="${id}" placeholder="${esc(p.optional ? "the file loaded last" : p.metavar)}" ${needed ? "required" : ""}>`;
-  return `<label class="field"><span class="lab">${esc(name)}${needed ? " *" : ""}</span>${control}<div class="help">${esc(p.help)}</div></label>`;
+  return `<label class="field"><span class="lab">${esc(FIELD[name] || words(name))}${needed ? " *" : ""}</span>${control}</label>`;
 }
 function formValues(command, form) {
   const out = {};
@@ -788,9 +794,9 @@ function formValues(command, form) {
 // A command in a dialog, as a console's create dialog: its form, the command line it will run, then run.
 function action(id, command, label, done, onEvent = null) {
   const c = COMMANDS[command], form = use(id, command).form || [], dlg = $("dlg");
-  dlg.innerHTML = `<form method="dialog"><div class="dlg-body"><h2>${esc(c.help)}</h2><p class="about">${esc(c.about)}</p>
-      ${form.map((n) => field(command, n)).join("")}<span class="lab faint" style="font-size:12px">Equivalent command line</span>
-      <div class="equiv">${icon("terminal")}<code id="equiv-line"></code><button type="button" class="iconbtn" id="copy" aria-label="Copy the command line">${icon("copy")}</button></div></div>
+  dlg.innerHTML = `<form method="dialog"><div class="dlg-body"><h2>${esc(label)}</h2>${form.map((n) => field(command, n)).join("")}
+      <details class="cmdline"><summary>Command line</summary><div class="equiv">${icon("terminal")}<code id="equiv-line"></code>
+        <button type="button" class="iconbtn" id="copy" aria-label="Copy the command line">${icon("copy")}</button></div></details></div>
     <div class="dlg-foot"><span class="grow"></span><button class="btn" value="cancel" formnovalidate>Cancel</button><button class="btn filled" value="run">${esc(label)}</button></div></form>`;
   const preview = async () => {
     const d = await api("/api/run", {command, args: argsFor(id, command, formValues(command, form)), dry: true});
@@ -836,8 +842,8 @@ const SCREENS = {
   },
 
   async columns(el) {
-    el.innerHTML = head("columns", `<button class="btn filled" id="load">${icon("add")}Load and check</button>`) +
-      `<div id="flow"></div><div class="card"><label class="field" style="margin:0"><span class="lab">Your records file: copied into this workspace, then checked</span>
+    el.innerHTML = head("columns", `<button class="btn filled" id="load">${icon("add")}Load</button>`) +
+      `<div id="flow"></div><div class="card"><label class="field" style="margin:0"><span class="lab">Records file</span>
        <input type="text" id="cin" placeholder="customers.parquet"></label><div id="files" class="chips" style="margin-top:10px"></div></div>
        <div id="out" class="faint">Loading…</div>${stepFoot("columns")}`;
     if (!state.workspace) { $("out").innerHTML = emptyRun(); return; }
@@ -850,7 +856,7 @@ const SCREENS = {
       const examples = Object.fromEntries((g && g.nodes ? g.nodes.find((n) => n.id === "prepare").fields : []).map((f) => [f.field, f]));
       const hints = check && check.event === "error" ? Object.entries(check.hints || {}) : [];
       const meter = (v) => v === null || v === undefined ? '<span class="faint">—</span>' : `<span class="meter"><i style="width:${Math.round(v * 100)}%"></i></span>${pct(v)}`;
-      $("out").innerHTML = (check ? banner(check) : "") +
+      $("out").innerHTML = (check ? banner(hints.length ? {event: "error", error: check.error.split(". ")[0]} : check) : "") +
         (hints.length ? `<div class="actions" style="margin:-4px 0 16px">${hints.map(([f, c]) => `<button class="btn outlined" data-hint="${esc(f)}=${esc(c)}">Use ${esc(c)} for ${esc(f)}</button>`).join("")}</div>` : "") +
         `<div id="map"></div>`;
       grid($("map"), cols.columns, ["field", "columns", "example", "filled", "looks_right", "save"], {
@@ -869,6 +875,7 @@ const SCREENS = {
       const e = await run("columns", "load records", {input});
       if (e.loaded || e.event !== "error") $("cin").value = "";
       draw(e);
+      refresh();
     };
     $("cin").onkeydown = (e) => { if (e.key === "Enter") $("load").click(); };
     draw();
@@ -876,8 +883,8 @@ const SCREENS = {
 
   async run(el, loop) {
     el.innerHTML = head("run", `<button class="btn filled" data-act="resolve records" data-label="Find matches">${icon("run")}Find matches</button>
-        <button class="btn" data-act="add records" data-label="Add">${icon("add")}Add new records</button><button class="btn" data-act="match records" data-label="Preview">Preview new records</button>
-        <button class="btn" data-act="rerun records" data-label="Run again">${icon("refresh")}Run matching again</button>`) +
+        <button class="btn" data-act="add records" data-label="Add new records">${icon("add")}Add new records</button><button class="btn" data-act="match records" data-label="Preview new records">Preview new records</button>
+        <button class="btn" data-act="rerun records" data-label="Run matching again">${icon("refresh")}Run matching again</button>`) +
       `<div id="flow"></div><div id="out">${state.workspace ? "" : emptyRun()}</div>${stepFoot("run")}`;
     if (state.workspace) flowOf("run", $("flow"));
     el.querySelectorAll("[data-act]").forEach((b) => b.onclick = () => {
@@ -894,7 +901,7 @@ const SCREENS = {
         if (e.event !== "step") return;
         let box = $("out").querySelector(".steps-card ul");
         if (!box) {
-          $("out").insertAdjacentHTML("beforeend", `<div class="card steps-card"><h2><span class="spin" style="border-color:var(--primary);border-right-color:transparent"></span>${esc(COMMANDS[command].help)}</h2><ul class="steps"></ul></div>`);
+          $("out").insertAdjacentHTML("beforeend", `<div class="card steps-card"><h2><span class="spin" style="border-color:var(--primary);border-right-color:transparent"></span>${esc(b.dataset.label)}</h2><ul class="steps"></ul></div>`);
           box = $("out").querySelector(".steps-card ul");
         }
         box.insertAdjacentHTML("beforeend", `<li>${icon("check")}${esc(e.step)} <span class="faint">${e.seconds.toFixed(1)} s</span></li>`);
@@ -918,7 +925,7 @@ const SCREENS = {
       grid($("erecs"), d.records, cols, {filter: false});
       where();
     };
-    $("right").innerHTML = `<div class="card empty">${icon("customers")}<p class="muted">Pick a customer, or look up a record ID above.</p></div>`;
+    $("right").innerHTML = `<div class="card empty">${icon("customers")}<p class="muted">Pick a customer</p></div>`;
     if (record) entity(record);
     if (!state.workspace) { $("left").innerHTML = emptyRun(); return; }
     const [d] = await Promise.all([run("results", "describe workspace"), flowOf("results", $("flow"))]);
@@ -1034,20 +1041,20 @@ async function review(el, which, note = "") {
     rows.forEach((r) => { if (r.status === "written in") r.status = "applied"; });
     written = 0; tally(); t.redraw(); refresh(); flowOf(which, $("flow"));
   };
-  $("apply").onclick = () => q.rerun ? action(which, q.apply, "Apply", applied) : run(which, q.apply).then(applied);
+  $("apply").onclick = () => q.rerun ? action(which, q.apply, q.applyLabel, applied) : run(which, q.apply).then(applied);
   const keys = Object.fromEntries(Object.entries(q.keys).map(([k, value]) => [k, () => answer(value)]));
   keyHandler = (k) => ({...keys, s: () => move(1), ArrowDown: () => move(1), ArrowUp: () => move(-1), j: () => move(1), k: () => move(-1)})[k];
   tally();
   show();
 }
 
-const NEED = [["folder", "Workspace", "a folder that keeps your file, your mapping and the results"], ["records", "Your records", "copied into it in step 2"],
+const NEED = [["folder", "Workspace", "one folder per job"], ["records", "Your records", "loaded in step 2"],
               ["customers", "Customers", "one ID each"]];  // what matching needs, then what it gives
 function emptyRun() {
   if (!state.workspace) return `<div class="card empty"><h2>Gather each customer's records under one ID</h2><div class="flow">${NEED.map(([ic, name, what], i) =>
     `${i ? ARROW : ""}<span class="node static"><span class="top">${icon(ic)}${esc(name)}</span><span class="faint" style="font-size:12px">${esc(what)}</span></span>`).join("")}</div>
     <div class="actions" style="justify-content:center"><button class="btn filled" data-pick>1 · Choose a workspace</button></div></div>`;
-  return `<div class="card empty">${icon("folder")}<h2>Nothing matched in ${esc(state.workspace.split("/").filter(Boolean).pop())} yet</h2><p class="muted">Load your records file in step 2, then find matches.</p>
+  return `<div class="card empty">${icon("folder")}<h2>Nothing matched in ${esc(state.workspace.split("/").filter(Boolean).pop())} yet</h2>
     <div class="actions" style="justify-content:center"><a class="btn outlined" data-go="columns">2 · Prepare your data</a><a class="btn filled" data-go="run">3 · Find matches</a></div></div>`;
 }
 
@@ -1055,9 +1062,8 @@ function emptyRun() {
 async function pick() {
   const dlg = $("dlg"), list = await run("records", "list workspaces"), rows = list.workspaces || [];
   dlg.innerHTML = `<form method="dialog"><div class="dlg-body"><h2>Choose a workspace</h2>
-    <p class="about">A workspace is the folder for one matching job, in ${esc(list.home || state.home)}/. Your records file, how its columns are read, the results and people's answers all stay in it, so opening it again finds all of it.</p>
     <label class="field"><span class="lab">New workspace</span><span style="display:flex;gap:8px"><input type="text" id="new-name" placeholder="acme-2026" aria-label="New workspace name">
-      <button type="button" class="btn filled" id="create">Create</button></span><div class="help">letters, digits, - _ and .</div></label><div id="made"></div>
+      <button type="button" class="btn filled" id="create">Create</button></span></label><div id="made"></div>
     ${rows.length ? `<span class="lab faint" style="font-size:12px">Open one</span><div class="tablecard"><table><tbody>${rows.map((w) =>
       `<tr class="pick" data-w="${esc(w.workspace)}"><td style="width:40px">${icon("folder")}</td><td>${esc(w.name)}</td><td class="faint">${fmt(w.files)} file${w.files === 1 ? "" : "s"} · ${w.ran ? "matched" : "not run yet"}</td>
        <td class="faint">${esc(String(w.last).slice(0, 10))}</td></tr>`).join("")}</tbody></table></div>` : ""}${banner(list)}</div>
@@ -1092,7 +1098,7 @@ function help() {
 }
 
 async function go(id, arg) {
-  current = id; keyHandler = null;
+  current = id; keyHandler = null; visit++;
   document.body.classList.remove("nav-open");
   rail();
   await refresh(await SCREENS[id]($("screen"), arg));

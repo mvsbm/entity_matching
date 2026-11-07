@@ -1842,7 +1842,11 @@ def test_the_page_answers_once_per_key_shows_any_row_and_says_when_the_server_is
         page.click("#load")  # copied into it, then checked
         page.wait_for_selector("#files .tag", timeout=60_000)
         assert page.inner_text("#files").startswith("0001-all") and (tmp_path / "workspaces" / "fresh" / "inputs" / "0001-all" / "all.parquet").is_file()
+        page.click(".navitem[data-screen=columns]")
+        page.wait_for_selector("#files .tag")  # its check of the file starts now, and takes a while
         page.click(".navitem[data-screen=run]")
+        page.wait_for_timeout(3000)
+        assert not page.query_selector("#map")  # the page left draws nothing on the page now open
         page.click("[data-act='resolve records']")  # the file loaded last: nothing to type
         page.wait_for_function("() => document.querySelector('#equiv-line').textContent.includes('resolve records')")
         assert page.get_attribute("#f-input", "required") is None and "all.parquet" not in page.inner_text("#equiv-line")
