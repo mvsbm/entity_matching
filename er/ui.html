@@ -59,6 +59,7 @@ body.collapsed main { margin-left: 72px; }
 
 /* the page */
 main { margin: 56px 0 0 256px; padding: 0 24px 120px; min-height: calc(100% - 56px); }
+#screen > :not(.pagehead) { max-width: 1280px; }  /* wide screens: content keeps a readable width; the page head spans */
 .pagehead { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; min-height: 64px; border-bottom: 1px solid var(--line); margin: 0 -24px 16px; padding: 8px 24px; background: var(--surface); }
 .pagehead h1 { font-size: 22px; font-weight: 400; margin: 0 16px 0 0; }
 .btn { display: inline-flex; align-items: center; gap: 6px; height: 36px; padding: 0 16px; border-radius: 18px; border: 1px solid transparent; background: transparent; cursor: pointer;
@@ -79,7 +80,8 @@ main { margin: 56px 0 0 256px; padding: 0 24px 120px; min-height: calc(100% - 56
 .tile[data-go]:hover { box-shadow: var(--shadow); }
 .tile .k { color: var(--muted); font-size: 13px; }
 .tile .v { font-size: 28px; font-weight: 400; margin-top: 4px; font-variant-numeric: tabular-nums; }
-.split { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.15fr); gap: 16px; align-items: start; }
+.split { display: grid; grid-template-columns: minmax(0, 2fr) minmax(0, 3fr); gap: 16px; align-items: start; }
+.split.narrow { grid-template-columns: minmax(240px, 340px) minmax(0, 1fr); }  /* a short list beside its card */
 .panel-sticky { position: sticky; top: 72px; }
 
 /* tables, with a filter bar */
@@ -170,7 +172,7 @@ body.term-open main { padding-bottom: 300px; }
 @keyframes spin { to { transform: rotate(360deg); } }
 @media (prefers-reduced-motion: reduce) { .spin { animation: none; } }
 
-@media (max-width: 1100px) { .split { grid-template-columns: minmax(0, 1fr); } .panel-sticky { position: static; } }
+@media (max-width: 1100px) { .split, .split.narrow { grid-template-columns: minmax(0, 1fr); } .panel-sticky { position: static; } }
 @media (max-width: 860px) {
   .sidenav { transform: translateX(-100%); transition: transform .2s; width: 256px; box-shadow: var(--shadow); }
   body.nav-open .sidenav { transform: none; }
@@ -212,13 +214,14 @@ body.term-open main { padding-bottom: 300px; }
 .ink-good { color: var(--good); } .ink-bad { color: var(--bad); }
 .trustbar { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; padding: 12px 16px; border-radius: 12px; background: var(--surface); border: 1px solid var(--line); margin-bottom: 16px; }
 .trustbar .grow { flex: 1; }
-.hist { width: 100%; height: auto; display: block; }
+.hist { width: 100%; max-width: 880px; height: auto; display: block; }  /* drawn at its own size: its labels stay small */
 .hist rect { fill: var(--outline); } .hist rect.acc { fill: var(--primary); }
 .hist .axis { stroke: var(--line); } .hist .tick { font-size: 11px; fill: var(--faint); text-anchor: middle; }
 .hist .now { stroke: var(--ink); stroke-width: 2; } .hist .at { stroke: var(--primary); stroke-width: 2; stroke-dasharray: 4 3; }
 .hist circle { stroke: var(--surface); stroke-width: 2; } .hist circle.same { fill: var(--good); } .hist circle.diff { fill: var(--bad); }
 .legend .sw { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 6px; vertical-align: -1px; }
 .legend .sw.same { background: var(--good); } .legend .sw.diff { background: var(--bad); } .legend .sw.now { width: 2px; height: 12px; border-radius: 0; background: var(--ink); }
+#line { max-width: 880px; }  /* the chart, its legend and its slider at one width: the slider sits under the scores it moves to */
 #line input[type=range] { width: 100%; }
 #at-says { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; min-height: 36px; }
 details.fold > summary { cursor: pointer; list-style: none; } details.fold > summary h2 { display: inline; }
@@ -285,9 +288,11 @@ body.collapsed .navitem .stack, body.collapsed .rail li::before { display: none;
 .next b { font-weight: 500; }
 
 /* how much a part of the page covers: all the records (a grey band), some of them (a list), one (a card with a blue edge) */
-.zone.all { background: var(--hover); border-radius: 14px; padding: 10px 14px 0; margin: 0 0 16px; }
-.zone.all .flow { margin-bottom: 10px; }
-.zone.all .detail { margin: 0 0 14px; }
+.zone.all { background: var(--hover); border-radius: 14px; padding: 10px 14px 14px; margin: 0 0 16px; width: fit-content; }  /* it hugs its stages */
+.zone.all .flow .node { min-width: 124px; }
+.node .top { white-space: nowrap; }  /* a label on one line: every number sits at one height */
+.zone.all .flow { margin-bottom: 0; }  /* the band's own padding is the space below: a child's margin would slip out of it */
+.zone.all .detail { margin: 14px 0 0; }
 .scope { display: flex; align-items: center; gap: 6px; margin: 0 0 8px; font-size: 11px; font-weight: 600; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); }
 .scope .ic, .path .ic { width: 16px; height: 16px; }
 .card.one { border-left: 4px solid var(--primary); }
@@ -1105,7 +1110,7 @@ const SCREENS = {
 
   async results(el, record) {
     el.innerHTML = head("results", `<button class="btn" id="refresh">${icon("refresh")}Refresh</button>`) +
-      `<div id="flow"></div><div class="split"><div id="left" class="faint">Loading…</div><div id="right" class="panel-sticky"></div></div>${stepFoot("results")}`;
+      `<div id="flow"></div><div class="split narrow"><div id="left" class="faint">Loading…</div><div id="right" class="panel-sticky"></div></div>${stepFoot("results")}`;
     $("refresh").onclick = () => go("results");
     const entity = async (id) => {
       $("right").innerHTML = `<div class="card faint">Loading ${esc(id)}…</div>`;
@@ -1192,7 +1197,8 @@ const SCREENS = {
 
 // A change of method in words, and what try method takes for it.
 const methodText = (m) => !m || !Object.keys(m).length ? "as tuned"
-  : [...(m.line !== undefined ? [`line at ${fmt(m.line)}`] : []), ...[...(m.drop_rules || []), ...(m.drop_keys || [])].map((x) => `without ${x}`)].join(" · ");
+  : [...(m.trust !== undefined ? [m.trust === "none" ? "nothing merges by itself" : `${fmt(m.trust)}+ merge by themselves`] : []),
+     ...(m.line !== undefined ? [`line at ${fmt(m.line)}`] : []), ...[...(m.drop_rules || []), ...(m.drop_keys || [])].map((x) => `without ${x}`)].join(" · ");
 const tryArgs = (c) => c.line !== undefined ? {line: String(c.line)} : {drop: [...(c.drop_rules || []), ...(c.drop_keys || [])]};
 const tryBtn = (c, label = "Try") => `<button class="btn" data-try='${esc(JSON.stringify(c))}'>${esc(label)}</button>`;
 
@@ -1209,7 +1215,7 @@ function trialCard(x) {  // a trial beside the method as it is: on people's deci
 // The weight bands near the line, every pair people decided as a dot, the line, and a slider that moves it: what a
 // line there would set right and wrong among those pairs, counted here (the rules' pairs aside: no line moves them).
 function lineView(box, d) {
-  const pts = d.decided.filter((x) => !x.rule), lo = Math.floor(d.line) - 10, hi = Math.floor(d.line) + 14, W = 640;  // pairs past the window: at its edge
+  const pts = d.decided.filter((x) => !x.rule), lo = Math.floor(d.line) - 10, hi = Math.floor(d.line) + 14, W = 880;  // pairs past the window: at its edge
   const x = (w) => 12 + ((Math.min(hi, Math.max(lo, w)) - lo) / (hi - lo)) * (W - 24);
   const bands = d.bands.filter((b) => b.weight_from + 2 > lo && b.weight_from < hi), top = Math.max(1, ...bands.map((b) => Math.log2(b.pairs + 1)));
   const stack = {}, MOST = 10, dots = [...pts].sort((a, b) => (a.decision === "match") - (b.decision === "match")).map((p) => {  // a column: different first, 10 dots, then a count
