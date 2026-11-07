@@ -16,22 +16,22 @@
 
 Every table is Parquet. Only `reference/` is in git; everything else rebuilds from the scripts (`.gitignore`). The medallion
 layers follow the pipeline: bronze is the records as they arrive, silver the standardized records each run keeps in its
-folder, gold the resolved run folder. The reference data feeds the generator and the person-or-company name model, so it
+folder, gold the resolved workspace. The reference data feeds the generator and the person-or-company name model, so it
 sits outside them:
 
 ```
 data/reference/*.json                       public reference data (tracked; SOURCES.md)
 data/medallion/bronze/<dataset>.parquet     records as they arrive (generated)      scripts/generate.py
 data/labels/<dataset>.parquet               truth, read only to choose and evaluate scripts/generate.py
-data/medallion/gold/<dataset>/              each dataset resolved: a run folder     scripts/choose.py, through er.run
+data/medallion/gold/<dataset>/              each dataset resolved: a workspace     scripts/choose.py, through er.run
                                             (silver: its state/records/)
 data/artifacts/models/*_final.json          the chosen configurations, the fitted model
 data/artifacts/experiments/leaderboard.parquet   one row per experiment and dataset (archive/: earlier passes)
 data/artifacts/optuna/*.db                  the Optuna studies, with --optuna
-data/artifacts/benchmark/, demo/            run folders of scripts/benchmark.py and the demo
+data/artifacts/benchmark/, demo/            workspaces of scripts/benchmark.py and the demo
 ```
 
-A run folder is the same wherever it is written, by `scripts/choose.py` here or by `nayose resolve records` anywhere: `gold.parquet`, `matches/`, `rule_kept/`, `steps.json` and `state/`. `nayose` adds `qa.md`, `report.txt`, `review.parquet` and, on a full run, `kind_review.parquet`; `decisions/`, `set_aside/` and `kind_answers/` (people's person/company answers) appear when there are any ([architecture](architecture.md#the-run-folder)).
+A workspace is the same wherever it is written, by `scripts/choose.py` here or by `nayose resolve records` anywhere: `gold.parquet`, `matches/`, `rule_kept/`, `steps.json` and `state/`. `nayose` adds `qa.md`, `report.txt`, `review.parquet` and, on a full run, `kind_review.parquet`; `decisions/`, `set_aside/` and `kind_answers/` (people's person/company answers) appear when there are any ([architecture](architecture.md#the-run-folder)).
 
 ## Reference data: `data/reference/`
 

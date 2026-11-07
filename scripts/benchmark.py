@@ -118,7 +118,7 @@ def kinds(entities: int, labels: int = 2_000) -> pd.DataFrame:
         g = kind_problems(generate(replace(SPEC, entities=entities), PERSONS, COMPANIES, TOWNS), problems, reg,
                           std.legal_front, std.legal_end, SPEC.kana_confusions, SPEC.branches)
         d = OUT / f"kinds_{i}"
-        shutil.rmtree(d, ignore_errors=True)  # fresh: a run folder keeps people's answers across --overwrite
+        shutil.rmtree(d, ignore_errors=True)  # fresh: a workspace keeps people's answers across --overwrite
         d.mkdir(parents=True)
         g.df.to_parquet(d / "records.parquet", index=False)
         g.df.assign(PERSON_ORG_CODE=np.where(g.truth["KIND"].eq("company"), "2", "1")).to_parquet(d / "truth_flag.parquet", index=False)
@@ -155,7 +155,7 @@ def cost(entities: list[int], memory_limit: str) -> pd.DataFrame:
         size = len(records)
         del records
         compute = [f"memory_limit={memory_limit}"] if memory_limit else []
-        done = subprocess.run([sys.executable, "-m", "er.cli", "resolve", "records", str(d / "records.parquet"), "--run", str(d / "run"),
+        done = subprocess.run([sys.executable, "-m", "er.cli", "resolve", "records", str(d / "records.parquet"), "--workspace", str(d / "run"),
                                "--overwrite", "--compute", *compute, f"temp_directory={OUT / 'spill'}"], cwd=S.root, capture_output=True, text=True)
         if done.returncode:
             print(f"{size:,} records: failed\n{done.stderr[-2000:]}", flush=True)

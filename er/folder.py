@@ -1,8 +1,8 @@
-"""The run folder on disk, and how it is written: one writer at a time (run_lock); every write staged (stage: each
+"""The workspace on disk, and how it is written: one writer at a time (run_lock); every write staged (stage: each
 file under a temporary name, then the moves still owed in pending.json, then the moves; finish_writes completes a write
 cut short); steps.json written whole, then renamed (log); a new part numbered after the highest (next_part); one
 answer people give, written into a sheet (type_in); the record files a run read (inputs). What a run writes there, and
-what people keep there (decisions/, kind_answers/): docs/architecture.md, the run folder.
+what people keep there (decisions/, kind_answers/): docs/architecture.md, the workspace.
 """
 import fcntl
 import json
@@ -28,7 +28,7 @@ OLD_ANSWERS = Path("state") / "kind_labels.parquet"  # where a folder kept peopl
 
 
 class Busy(InputError):
-    """Another job is writing to the run folder: no mistake, so nayose exits 75, to be tried again."""
+    """Another job is writing to the workspace: no mistake, so nayose exits 75, to be tried again."""
 
 
 _held = threading.local()  # the folders this thread holds: taking one again (a rerun's full run) is no second lock;
@@ -37,7 +37,7 @@ _held = threading.local()  # the folders this thread holds: taking one again (a 
 
 @contextmanager
 def run_lock(out: Path):
-    """One writer per run folder: an OS lock on <out>/.lock for as long as a run, an increment or a set of decisions
+    """One writer per workspace: an OS lock on <out>/.lock for as long as a run, an increment or a set of decisions
     writes there. The system releases it when the process ends, even if it dies, so it never goes stale. A thread that
     holds it may take it again; another thread or process can't.
     shortcut: flock holds on a local disk, not on network or object storage; there, run one job per folder at a time."""
@@ -50,7 +50,7 @@ def run_lock(out: Path):
         try:
             fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
-            raise Busy(f"another job is writing to {out}", fix="wait for it to finish: a run folder takes one writer at a time") from None
+            raise Busy(f"another job is writing to {out}", fix="wait for it to finish: a workspace takes one writer at a time") from None
         held.add(key)
         try:
             yield
@@ -129,7 +129,7 @@ def answer_parts(out: Path) -> list[Path]:
 
 
 def type_in(out: Path, sheet: str, column: str, value: object, **keys: str) -> None:
-    """One answer people give, written into the run folder's sheet (review.parquet's decision, kind_review.parquet's
+    """One answer people give, written into the workspace's sheet (review.parquet's decision, kind_review.parquet's
     kind) on the row whose `keys` columns hold those values, as a person would type it in; None clears it. Nothing is
     applied: the sheet is given back later (Run.decide, a rerun with the answers). Under the lock, and staged as every
     run file is. O(sheet rows)."""

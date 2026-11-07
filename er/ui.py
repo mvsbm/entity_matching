@@ -93,9 +93,9 @@ class Refusing(argparse.ArgumentParser):
 
 
 class Server:
-    def __init__(self, run: str | None = None):
+    def __init__(self, workspace: str | None = None):
         self.token, self.jobs, self.lock, self.long = secrets.token_urlsafe(24), {}, threading.Lock(), threading.Lock()
-        self.run = run                        # the run folder the page starts with
+        self.workspace = workspace            # the workspace the page starts with
 
     def start(self, name: str, args: dict) -> tuple[str, Job]:
         words = argv(name, args)
@@ -164,7 +164,7 @@ def handler(server: Server):
             if url.path == "/":
                 self._send(200, PAGE.read_text(encoding="utf-8"), "text/html")
             elif url.path == "/api/commands":
-                self._send(200, dict(commands=declarations(), run=server.run))
+                self._send(200, dict(commands=declarations(), workspace=server.workspace))
             elif url.path.startswith("/api/job/") and (job := server.jobs.get(key := url.path.rsplit("/", 1)[1])):
                 done = job.code is not None  # read first: a finished job's events are all there
                 events = job.events[int(parse_qs(url.query).get("from", ["0"])[0]):]
@@ -191,9 +191,9 @@ def handler(server: Server):
     return Handler
 
 
-def serve(port: int, run: str | None, say, open_browser: bool = True) -> None:
+def serve(port: int, workspace: str | None, say, open_browser: bool = True) -> None:
     """Serve the page on 127.0.0.1:port until stopped (Ctrl-C)."""
-    server = Server(run)
+    server = Server(workspace)
     httpd = ThreadingHTTPServer(("127.0.0.1", port), handler(server))
     link = f"http://127.0.0.1:{httpd.server_address[1]}/?token={server.token}"
     say(f"open {link}\n  only this machine can reach it, and only with this link; Ctrl-C stops it", link=link)

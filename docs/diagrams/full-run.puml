@@ -1,5 +1,5 @@
 @startuml full-run
-title LLD 1 · A full run: Run.full, its reports written with it (nayose resolve records … ~--run …)
+title LLD 1 · A full run: Run.full, its reports written with it (nayose resolve records … ~--workspace …)
 skinparam defaultFontSize 11
 skinparam rectangle {
   BackgroundColor #F4F6F8
@@ -43,7 +43,7 @@ database "scores" as scores
 database "matches" as matches
 database "gold" as gold
 
-package "the run folder (~--output)" {
+package "the workspace (~--workspace)" {
   file "gold.parquet · steps.json\nmatches/part-n.parquet · rule_kept/part-n.parquet\nset_aside/part-n.parquet" as f_out
   file "state/records/part-n.parquet · state/rule_clusters.parquet\nstate/model.json · state/scoring.json · state/config.txt\nkind_answers/part-n.parquet: the sheet given, as given" as f_state
   file "qa.md · report.txt · review.parquet · kind_review.parquet" as f_people

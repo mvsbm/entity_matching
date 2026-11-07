@@ -13,7 +13,7 @@ System_Ext(reference, "Public reference data", "data/reference/*.json: names, co
 System_Ext(downstream, "Downstream systems", "take one ID per person or company")
 
 System_Boundary(er, "Entity resolution (this repository)") {
-  System(runtime, "Run time", "nayose: one file, without labels, into a run folder; batches added, decisions and answers applied")
+  System(runtime, "Run time", "nayose: one file, without labels, into a workspace; batches added, decisions and answers applied")
   System(design, "Design time", "scripts/generate.py, scripts/choose.py, scripts/choose_kind.py, scripts/benchmark.py: synthetic records with the truth; the matching chosen and measured")
 }
 

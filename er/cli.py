@@ -2,15 +2,15 @@
 then a noun, then its parameters.
 
     nayose check records customers.parquet
-    nayose resolve records customers.parquet --run runs/customers
-    nayose list pairs --run runs/customers --open
+    nayose resolve records customers.parquet --workspace workspaces/customers
+    nayose list pairs --workspace workspaces/customers --open
 
 Each command is declared once, in COMMANDS: its verb and noun, what it does, its parameters, the fields of its result,
 an example, and the function that runs it. The parser, the reference (docs/commands.md, reference()) and the UI's
 forms are all built from those declarations. A command emits events: each step as it finishes, then one result, or an
 error. --format text renders them for a person; --format json writes each as one JSON object per line. Every result
 names the commands that usually come next. Exit codes: 0; 2, a mistake people fix, in two lines (what is wrong, and
-how to fix it); 75, the run folder is busy: try again later; 1, a pass of serve inbox stopped on a file.
+how to fix it); 75, the workspace is busy: try again later; 1, a pass of serve inbox stopped on a file.
 """
 import argparse
 import json
@@ -30,7 +30,7 @@ import pandas as pd
 from er import folder, inbox
 from er.config import InputError, load_pipeline, sources_text
 from er.folder import Busy
-from er.report import applied, describe_entity, describe_matching, describe_run, fill_rates
+from er.report import applied, describe_entity, describe_matching, describe_workspace, fill_rates
 from er.run import Run
 from er.settings import SPECIAL, load_settings, set_columns, settings_path
 
@@ -215,10 +215,10 @@ def next_after(out: Path, uid: str) -> list[dict]:
     """What usually follows a run: the pairs and the kinds still open, then the folder at a glance."""
     found = []
     if (pairs := sheet(out, "review.parquet")) is not None and (n := int(((pairs["why"] == "decide") & pairs["decision"].isna()).sum())):
-        found.append(dict(command=nayose("list", "pairs", "--run", out, "--open"), why=f"{n:,} pairs for people to decide"))
+        found.append(dict(command=nayose("list", "pairs", "--workspace", out, "--open"), why=f"{n:,} pairs for people to decide"))
     if (kinds := sheet(out, "kind_review.parquet")) is not None and (n := int(kinds["kind"].isna().sum())):
-        found.append(dict(command=nayose("list", "kinds", "--run", out, "--open"), why=f"{n:,} records to answer person or company"))
-    return found + [dict(command=nayose("describe", "run", out), why="the run folder at a glance")]
+        found.append(dict(command=nayose("list", "kinds", "--workspace", out, "--open"), why=f"{n:,} records to answer person or company"))
+    return found + [dict(command=nayose("describe", "workspace", out), why="the workspace at a glance")]
 
 
 def after_run(run: Run, out: Path) -> dict:
@@ -241,7 +241,7 @@ def check_records(a: dict, emit: "Emit") -> dict:
     keys = [dict(key=x.name, per_record=x.per_record, largest_block=x.largest_block, oversized_blocks=x.oversized_blocks,
                  oversized_records=x.oversized_records) for x in shown.itertuples()]
     return plain(dict(records=run.n, fields=fields, turned_off=run.disabled, keys=keys, oversized_from=p.fs.budget.min_oversized(), notes=run.notes,
-                      next=[dict(command=nayose("resolve", "records", a["input"], "--run", "<run folder>"), why="ready: resolve them")]))
+                      next=[dict(command=nayose("resolve", "records", a["input"], "--workspace", "<workspace>"), why="ready: resolve them")]))
 
 
 def list_columns(a: dict, emit: "Emit") -> dict:
@@ -281,13 +281,13 @@ def model_from(path: str | None) -> dict | None:
 
 def resolve_records(a: dict, emit: "Emit") -> dict:
     s, p, pipeline = setup(a)
-    out = Path(a["run"])
+    out = Path(a["workspace"])
     return after_run(Run(p, s, model=model_from(a["model"]), echo=emit.step).full(a["input"], out, overwrite=a["overwrite"], pipeline_file=pipeline), out)
 
 
 def add_records(a: dict, emit: "Emit") -> dict:
     s, p, pipeline = setup(a)
-    out = Path(a["run"])
+    out = Path(a["workspace"])
     run = Run(p, s, echo=emit.step).increment(a["input"], out, pipeline_file=pipeline)
     if run.added == 0:
         return dict(summary=[["nothing new", f"every record of {a['input']} is already in the run"]], next=next_after(out, run.uid))
@@ -296,40 +296,40 @@ def add_records(a: dict, emit: "Emit") -> dict:
 
 def match_records(a: dict, emit: "Emit") -> dict:
     s, p, _ = setup(a)
-    out = Path(a["run"])
+    out = Path(a["workspace"])
     found = Run(p, s, echo=emit.step).match(a["input"], out)
     return dict(counts={k: int(v) for k, v in found["status"].value_counts().items()}, records=rows(ids(found, s.data.unique_id)),
-                next=[dict(command=nayose("add", "records", a["input"], "--run", out), why="add them to the run")])
+                next=[dict(command=nayose("add", "records", a["input"], "--workspace", out), why="add them to the run")])
 
 
 def rerun_records(a: dict, emit: "Emit") -> dict:
     s, p, pipeline = setup(a)
-    out = Path(a["run"])
+    out = Path(a["workspace"])
     return after_run(Run(p, s, echo=emit.step).rerun(out, pipeline_file=pipeline), out)
 
 
-def describe_run_(a: dict, emit: "Emit") -> dict:
-    s, out = load_settings(), Path(a["run"])
-    d = describe_run(duckdb.connect(), out, s.data.unique_id)
-    return {**d, "next": next_after(out, s.data.unique_id)[:-1] + [dict(command=nayose("describe", "entity", "<record ID>", "--run", out),
+def describe_workspace_(a: dict, emit: "Emit") -> dict:
+    s, out = load_settings(), Path(a["workspace"])
+    d = describe_workspace(duckdb.connect(), out, s.data.unique_id)
+    return {**d, "next": next_after(out, s.data.unique_id)[:-1] + [dict(command=nayose("describe", "entity", "<record ID>", "--workspace", out),
                                                                        why="one record's entity, and what joined it")]}
 
 
 def describe_entity_(a: dict, emit: "Emit") -> dict:
-    s, out = load_settings(), Path(a["run"])
+    s, out = load_settings(), Path(a["workspace"])
     uid = s.data.unique_id
     d = describe_entity(duckdb.connect(), out, uid, a["id"], [f for f in s.columns if f not in SPECIAL])
     rename = lambda xs: [{{uid: "id", f"{uid}_l": "id_l", f"{uid}_r": "id_r"}.get(k, k): v for k, v in x.items()} for x in xs]
     return dict(record=d["record"], entity=d["entity"], records=rename(d["records"]), links=rename(d["links"]),
-                next=[dict(command=nayose("list", "pairs", "--run", out), why="the pairs for people")])
+                next=[dict(command=nayose("list", "pairs", "--workspace", out), why="the pairs for people")])
 
 
 def describe_matching_(a: dict, emit: "Emit") -> dict:
     s, p, _ = setup(a)
-    out = Path(a["run"]) if a["run"] else None
+    out = Path(a["workspace"]) if a["workspace"] else None
     return {**describe_matching(duckdb.connect(), out, p, s),
-            "next": [dict(command=nayose("describe", "run", out), why="the run folder at a glance")] if out else
-                    [dict(command=nayose("resolve", "records", "<file>", "--run", "<run folder>"), why="match records: the graph then holds their numbers")]}
+            "next": [dict(command=nayose("describe", "workspace", out), why="the workspace at a glance")] if out else
+                    [dict(command=nayose("resolve", "records", "<file>", "--workspace", "<workspace>"), why="match records: the graph then holds their numbers")]}
 
 
 def picked(frame: pd.DataFrame, why: str | None, only_open: bool) -> pd.DataFrame:
@@ -346,67 +346,67 @@ def counts(frame: pd.DataFrame) -> dict[str, int]:  # rows by why and status
 
 
 def list_pairs(a: dict, emit: "Emit") -> dict:
-    uid, out = load_settings().data.unique_id, Path(a["run"])
+    uid, out = load_settings().data.unique_id, Path(a["workspace"])
     pairs = sheet(out, "review.parquet")
     if pairs is None:
         raise InputError(f"no run in {out}", fix="resolve records into that folder first")
     done = pairs.merge(applied(out, uid), on=[f"{uid}_l", f"{uid}_r"], how="left", suffixes=("", "_applied"))["decision_applied"]
     pairs.insert(1, "status", np.where(done.notna() & (done == pairs["decision"]), "applied", np.where(pairs["decision"].notna(), "written in", "open")))
-    return dict(counts=counts(pairs), pairs=rows(ids(picked(pairs, a["why"], a["open"]), uid)), next=[dict(command=nayose("decide", "pair", "<ID>", "<ID>", "match", "--run", out), why="decide one"),
-                                                    dict(command=nayose("apply", "decisions", "--run", out), why="apply the decisions written in")])
+    return dict(counts=counts(pairs), pairs=rows(ids(picked(pairs, a["why"], a["open"]), uid)), next=[dict(command=nayose("decide", "pair", "<ID>", "<ID>", "match", "--workspace", out), why="decide one"),
+                                                    dict(command=nayose("apply", "decisions", "--workspace", out), why="apply the decisions written in")])
 
 
 def decide_pair(a: dict, emit: "Emit") -> dict:
-    uid, out = load_settings().data.unique_id, Path(a["run"])
+    uid, out = load_settings().data.unique_id, Path(a["workspace"])
     first, second = sorted([a["first"], a["second"]])  # the sheet holds each pair lower ID first
     folder.type_in(out, "review.parquet", "decision", None if a["decision"] == "clear" else a["decision"], **{f"{uid}_l": first, f"{uid}_r": second})
-    return dict(pair=[first, second], decision=a["decision"], next=[dict(command=nayose("apply", "decisions", "--run", out), why="apply them")])
+    return dict(pair=[first, second], decision=a["decision"], next=[dict(command=nayose("apply", "decisions", "--workspace", out), why="apply them")])
 
 
 def apply_decisions(a: dict, emit: "Emit") -> dict:
     s, p, _ = setup(a)
-    out = Path(a["run"])
+    out = Path(a["workspace"])
     run = Run(p, s, echo=emit.step).decide(a["file"] or out / "review.parquet", out)
     x = run.steps[-1]
     return dict(decisions=x["decisions"], matches=x["matches"], clusters_joined=x["clusters_joined"],
                 summary=[["nothing new", "every decision was applied before"]] if not x["decisions"] else [],
-                next=[dict(command=nayose("describe", "run", out), why="the run folder at a glance")])
+                next=[dict(command=nayose("describe", "workspace", out), why="the workspace at a glance")])
 
 
 KINDS = {"person": 1, "company": 2, "unsure": 0, "clear": None}
 
 
 def list_kinds(a: dict, emit: "Emit") -> dict:
-    uid, out = load_settings().data.unique_id, Path(a["run"])
+    uid, out = load_settings().data.unique_id, Path(a["workspace"])
     kinds = sheet(out, "kind_review.parquet")
     if kinds is None:
         raise InputError(f"{out}: no kind_review.parquet", fix="a full run that tells persons from companies writes it: nayose resolve records …")
     kinds.insert(2, "status", np.where(kinds["kind"].notna(), "written in", "open"))
-    return dict(counts=counts(kinds), kinds=rows(ids(picked(kinds, a["why"], a["open"]), uid)), next=[dict(command=nayose("answer", "kind", "<ID>", "company", "--run", out), why="answer one"),
-                                                    dict(command=nayose("apply", "answers", "--run", out), why="apply the answers written in: a rerun")])
+    return dict(counts=counts(kinds), kinds=rows(ids(picked(kinds, a["why"], a["open"]), uid)), next=[dict(command=nayose("answer", "kind", "<ID>", "company", "--workspace", out), why="answer one"),
+                                                    dict(command=nayose("apply", "answers", "--workspace", out), why="apply the answers written in: a rerun")])
 
 
 def answer_kind(a: dict, emit: "Emit") -> dict:
-    uid, out = load_settings().data.unique_id, Path(a["run"])
+    uid, out = load_settings().data.unique_id, Path(a["workspace"])
     folder.type_in(out, "kind_review.parquet", "kind", KINDS[a["kind"]], **{uid: a["id"]})
-    return dict(record=a["id"], kind=a["kind"], next=[dict(command=nayose("apply", "answers", "--run", out), why="apply them: a rerun")])
+    return dict(record=a["id"], kind=a["kind"], next=[dict(command=nayose("apply", "answers", "--workspace", out), why="apply them: a rerun")])
 
 
 def apply_answers(a: dict, emit: "Emit") -> dict:
     s, p, pipeline = setup(a)
-    out = Path(a["run"])
+    out = Path(a["workspace"])
     return after_run(Run(p, s, echo=emit.step, kind_labels=Path(a["file"] or out / "kind_review.parquet")).rerun(out, pipeline_file=pipeline), out)
 
 
 def serve_inbox(a: dict, emit: "Emit") -> dict:
     every = float(a["every"]) if a["every"] else None
-    ok = inbox.serve(Path(a["run"]), Path(a["inbox"]), every, int(a["retries"] or 2), a["compute"] or [], emit.line)
-    return dict(stopped=not ok, exit_code=0 if ok else 1, next=[dict(command=nayose("describe", "run", a["run"]), why="the run folder at a glance")])
+    ok = inbox.serve(Path(a["workspace"]), Path(a["inbox"]), every, int(a["retries"] or 2), a["compute"] or [], emit.line)
+    return dict(stopped=not ok, exit_code=0 if ok else 1, next=[dict(command=nayose("describe", "workspace", a["workspace"]), why="the workspace at a glance")])
 
 
 def open_ui(a: dict, emit: "Emit") -> dict:
     from er import ui  # the page's server: it reads these declarations
-    ui.serve(int(a["port"] or 8765), a["run"], emit.line, open_browser=not a["link"])
+    ui.serve(int(a["port"] or 8765), a["workspace"], emit.line, open_browser=not a["link"])
     return dict(next=[])
 
 
@@ -414,12 +414,12 @@ def open_ui(a: dict, emit: "Emit") -> dict:
 
 INPUT = Param("input", "the records: a Parquet file, a quoted glob ('in/*.parquet') or a folder of them, read together by column name",
               "path", positional=True)
-RUN = Param("run", "the run folder", "path", required=True)
+WORKSPACE = Param("workspace", "the workspace: the folder that keeps one matching job", "path", required=True)
 COMPUTE = Param("compute", "DuckDB limits for this run, over config/settings.toml [compute]: memory_limit=8GB, threads=4, "
                 "temp_directory=<folder> (past the memory limit DuckDB spills there)", "many", metavar="KEY=VALUE")
 PIPELINE = Param("pipeline", "the pipeline file (default: config/final.toml)", "path")
 OPEN = Param("open", "only the rows nobody has answered", "flag")
-FILE = lambda what: Param("file", f"{what} (default: the run folder's own sheet, with the answers written in)", "path")
+FILE = lambda what: Param("file", f"{what} (default: the workspace's own sheet, with the answers written in)", "path")
 RUN_RESULT = {"summary": "the run in words: records, entities, who joined them, the model's links, what is left to people",
               "seconds": "the run's time", "wrote": "the files written", "next": "the commands that usually follow"}
 COMMANDS: tuple[Command, ...] = (
@@ -451,119 +451,119 @@ COMMANDS: tuple[Command, ...] = (
             "folder: gold.parquet, matches/, rule_kept/, set_aside/, state/, steps.json, and for people qa.md, report.txt, "
             "review.parquet and kind_review.parquet. A folder that holds a run is refused without --overwrite; people's "
             "decisions and answers in it stand. O(N·L + ΣP + C·K·L²).",
-            (INPUT, RUN, Param("overwrite", "replace the run the folder holds", "flag"), PIPELINE,
+            (INPUT, WORKSPACE, Param("overwrite", "replace the run the folder holds", "flag"), PIPELINE,
              Param("model", "a fitted model to score with instead of fitting one on the file (its JSON, or the file that holds it under 'model')", "path"),
              COMPUTE),
-            RUN_RESULT, "nayose resolve records customers.parquet --run runs/customers", resolve_records),
+            RUN_RESULT, "nayose resolve records customers.parquet --workspace workspaces/customers", resolve_records),
     Command("add", "records", "Add new records to a run",
             "An increment: each new record compared with every stored one, with the run's model; it can join an existing "
             "entity. A record whose ID is already in the run is set aside, so adding the same file twice adds nothing. "
             "O(Δ·(L + Σb) + C_Δ·K·L²) plus narrow O(N) scans.",
-            (INPUT, RUN, PIPELINE, COMPUTE), RUN_RESULT, "nayose add records new.parquet --run runs/customers", add_records),
+            (INPUT, WORKSPACE, PIPELINE, COMPUTE), RUN_RESULT, "nayose add records new.parquet --workspace workspaces/customers", add_records),
     Command("match", "records", "Which entity each record would join; nothing written",
             "An increment's steps without its write: for each record, the entity it would join or a new one, and the rule or the "
-            "model's best weight that links it. The run folder is left as it was. O(an increment).",
-            (INPUT, RUN, PIPELINE, COMPUTE),
+            "model's best weight that links it. The workspace is left as it was. O(an increment).",
+            (INPUT, WORKSPACE, PIPELINE, COMPUTE),
             {"counts": "records by status", "records": "each record: id, entity, status, by, weight", "next": "the commands that usually follow"},
-            "nayose match records new.parquet --run runs/customers", match_records,
+            "nayose match records new.parquet --workspace workspaces/customers", match_records,
             show={"records": ("id", "entity", "status", "by", "weight")}),
     Command("rerun", "records", "A full run again, on the run's own files",
             "Reads the record files the run read, the full run's and each increment's, in order (steps.json; a scheduled batch "
             "found where the scheduler moved it), each checked by its SHA-256, and resolves them again in one full run: every "
             "pair compared again, an ID's records kept as the increments kept them. O(a full run).",
-            (RUN, PIPELINE, COMPUTE), RUN_RESULT, "nayose rerun records --run runs/customers", rerun_records),
-    Command("describe", "run", "What a run folder holds",
+            (WORKSPACE, PIPELINE, COMPUTE), RUN_RESULT, "nayose rerun records --workspace workspaces/customers", rerun_records),
+    Command("describe", "workspace", "What a workspace holds",
             "Records and entities, the largest entities, each run so far, the pairs and kinds still open and the answers written "
             "in, records set aside, a write still owed, and the last summary. O(N) in SQL.",
-            (Param("run", "the run folder", "path", positional=True),),
-            {"run": "the run folder", "records": "records", "entities": "entities", "largest": "the 10 largest entities",
+            (Param("workspace", "the workspace", "path", positional=True),),
+            {"workspace": "the workspace", "records": "records", "entities": "entities", "largest": "the 10 largest entities",
              "runs": "each run so far: at, what, files, seconds", "pairs": "open pairs to decide and audit, and decisions written in",
              "kinds": "open records to decide and to measure, and answers written in", "set_aside": "records set aside",
              "write_owed": "a write cut short, finished by the next one", "summary": "the last run's summary", "next": "the commands that usually follow"},
-            "nayose describe run runs/customers", describe_run_, quick=True,
+            "nayose describe workspace workspaces/customers", describe_workspace_, quick=True,
             show={"largest": ("entity", "records"), "runs": ("at", "what", "seconds")}),
     Command("describe", "entity", "One record's entity, and what joined it",
             "The entity of the record ID: each of its records with its fields and kind, and every link between them: a rule, "
             "the model with its weight in bits, or people. O(N) in SQL.",
-            (Param("id", "a record ID, as the run wrote it", positional=True, metavar="ID"), RUN),
+            (Param("id", "a record ID, as the run wrote it", positional=True, metavar="ID"), WORKSPACE),
             {"record": "the ID asked for", "entity": "its entity (the cluster_id)", "records": "each of the entity's records",
              "links": "each link between them: id_l, id_r, by, weight", "next": "the commands that usually follow"},
-            "nayose describe entity 0000000151 --run runs/customers", describe_entity_, quick=True,
+            "nayose describe entity 0000000151 --workspace workspaces/customers", describe_entity_, quick=True,
             show={"records": ("id", "resolved_by", "kind", "person_name", "company_name", "address", "postal_code", "phone", "customer_id", "birth_date"),
                   "links": ("id_l", "id_r", "by", "weight")}),
     Command("describe", "matching", "How records are matched: every method, on which fields, with its numbers",
             "The pipeline as a graph: records, how each field is made comparable, the rules, the ways pairs are listed, the "
             "comparisons and what each level is worth in bits, the line pairs are accepted at, the pairs left to people, and "
-            "how linked records become customers. With --run, each part also holds that run's numbers and a real example. "
+            "how linked records become customers. With --workspace, each part also holds that run's numbers and a real example. "
             "O(E + R + N) in SQL over the run's files.",
-            (Param("run", "a run folder: its numbers and examples (without it, the methods only)", "path"), PIPELINE),
-            {"nodes": "each part: id, name, method, its parameters and fields, and with --run its numbers and examples",
+            (Param("workspace", "a workspace: its numbers and examples (without it, the methods only)", "path"), PIPELINE),
+            {"nodes": "each part: id, name, method, its parameters and fields, and with --workspace its numbers and examples",
              "edges": "source, target, count", "next": "the commands that usually follow"},
-            "nayose describe matching --run runs/customers", describe_matching_, quick=True),
+            "nayose describe matching --workspace workspaces/customers", describe_matching_, quick=True),
     Command("list", "pairs", "The pairs for people to decide and to audit",
             "The run's review.parquet: decide rows (the pairs just below the threshold, and those above it with no name "
             "compared) and audit rows (accepted pairs just above it), each with both records' fields, each comparison's level "
             "and bits, and a status: open, written in, or applied. O(sheet rows).",
-            (RUN, Param("why", "decide or audit only", "choice", ("decide", "audit")), OPEN),
+            (WORKSPACE, Param("why", "decide or audit only", "choice", ("decide", "audit")), OPEN),
             {"counts": "rows by why and status", "pairs": "each pair: why, status, decision, id_l, id_r, match_weight, accepted, fields, levels",
              "next": "the commands that usually follow"},
-            "nayose list pairs --run runs/customers --open", list_pairs, quick=True,
+            "nayose list pairs --workspace workspaces/customers --open", list_pairs, quick=True,
             show={"pairs": ("why", "status", "id_l", "id_r", "match_weight", "accepted")}),
     Command("decide", "pair", "Decide one pair: match or no match",
-            "Writes the decision into the run folder's review.parquet; nothing is applied until apply decisions. clear takes "
+            "Writes the decision into the workspace's review.parquet; nothing is applied until apply decisions. clear takes "
             "it back. O(sheet rows).",
             (Param("first", "one record ID of the pair", positional=True, metavar="ID"), Param("second", "the other", positional=True, metavar="ID"),
-             Param("decision", "match, no_match, or clear", "choice", ("match", "no_match", "clear"), positional=True), RUN),
+             Param("decision", "match, no_match, or clear", "choice", ("match", "no_match", "clear"), positional=True), WORKSPACE),
             {"pair": "the two IDs, lower first", "decision": "what was written", "next": "the commands that usually follow"},
-            "nayose decide pair 0000000151 0000000152 match --run runs/customers", decide_pair, quick=True),
+            "nayose decide pair 0000000151 0000000152 match --workspace workspaces/customers", decide_pair, quick=True),
     Command("apply", "decisions", "Apply people's decisions to the run",
             "Each match pair joins its two entities at once, scoring nothing; no_match is kept, and a full run never accepts "
             "the pair. Decisions are kept in decisions/; one applied before changes nothing. O(D + touched clusters) + O(N).",
-            (RUN, FILE("a file of decisions: the two ID columns and decision"), PIPELINE),
+            (WORKSPACE, FILE("a file of decisions: the two ID columns and decision"), PIPELINE),
             {"decisions": "decisions applied", "matches": "of them, match", "clusters_joined": "entities joined",
              "summary": "said when nothing was new", "next": "the commands that usually follow"},
-            "nayose apply decisions --run runs/customers", apply_decisions),
+            "nayose apply decisions --workspace workspaces/customers", apply_decisions),
     Command("list", "kinds", "The records for people to answer person or company",
             "The run's kind_review.parquet: decide rows (where the engine and the file's flag disagree, and the flag's likely "
             "errors) and measure rows (a random draw that places the engine's lines), each with what the engine, the name and "
             "the flag say, and why it is there. O(sheet rows).",
-            (RUN, Param("why", "decide or measure only", "choice", ("decide", "measure")), OPEN),
+            (WORKSPACE, Param("why", "decide or measure only", "choice", ("decide", "measure")), OPEN),
             {"counts": "rows by why and status", "kinds": "each record: id, why, status, reason, engine_says, name_says, name, kind",
              "next": "the commands that usually follow"},
-            "nayose list kinds --run runs/customers --open", list_kinds, quick=True,
+            "nayose list kinds --workspace workspaces/customers --open", list_kinds, quick=True,
             show={"kinds": ("id", "why", "status", "name", "engine_says", "name_says", "flag")}),
     Command("answer", "kind", "Answer one record: person, company, or unsure",
-            "Writes the answer into the run folder's kind_review.parquet (1 person, 2 company, 0 can't tell); nothing is "
+            "Writes the answer into the workspace's kind_review.parquet (1 person, 2 company, 0 can't tell); nothing is "
             "applied until apply answers. clear takes it back. A sole trader is a person. O(sheet rows).",
-            (Param("id", "the record ID", positional=True, metavar="ID"), Param("kind", "person, company, unsure, or clear", "choice", tuple(KINDS), positional=True), RUN),
+            (Param("id", "the record ID", positional=True, metavar="ID"), Param("kind", "person, company, unsure, or clear", "choice", tuple(KINDS), positional=True), WORKSPACE),
             {"record": "the ID", "kind": "what was written", "next": "the commands that usually follow"},
-            "nayose answer kind 0000000151 company --run runs/customers", answer_kind, quick=True),
+            "nayose answer kind 0000000151 company --workspace workspaces/customers", answer_kind, quick=True),
     Command("apply", "answers", "Apply people's person/company answers: a rerun",
             "The answers stand for their records, teach the engine, and the draw to measure places its lines; they are kept in "
             "kind_answers/. They change how each name is matched, so they are applied by a full run on the run's own files "
             "(rerun records). O(a full run).",
-            (RUN, FILE("a file of answers: the ID column and kind"), PIPELINE, COMPUTE), RUN_RESULT,
-            "nayose apply answers --run runs/customers", apply_answers),
+            (WORKSPACE, FILE("a file of answers: the ID column and kind"), PIPELINE, COMPUTE), RUN_RESULT,
+            "nayose apply answers --workspace workspaces/customers", apply_answers),
     Command("serve", "inbox", "Take in every file dropped in an inbox, one at a time",
-            "inbox/batches/ (new records: add records; into an empty run folder, resolve records), inbox/decisions/ (apply "
+            "inbox/batches/ (new records: add records; into an empty workspace, resolve records), inbox/decisions/ (apply "
             "decisions), inbox/answers/ (apply answers), oldest first, each as its nayose command in a process of its own. "
             "Done files go to inbox/done/, ones people must fix to inbox/failed/ with their error; any other failure is tried "
             "again, then stops the pass with the file left in place. One pass, or one every --every seconds. Each file is a "
             "line in <run>/jobs.jsonl.",
-            (Param("inbox", "the inbox folder", "path", positional=True, metavar="INBOX"), RUN,
+            (Param("inbox", "the inbox folder", "path", positional=True, metavar="INBOX"), WORKSPACE,
              Param("every", "seconds between passes; without it, one pass", "text", metavar="SECONDS"),
              Param("retries", "attempts after an unexpected failure (default 2)", "text", metavar="N"), COMPUTE),
             {"stopped": "the pass stopped on a file that kept failing", "next": "the commands that usually follow"},
-            "nayose serve inbox inbox --run runs/customers --every 300", serve_inbox),
+            "nayose serve inbox inbox --workspace workspaces/customers --every 300", serve_inbox),
     Command("open", "ui", "The commands in a browser, on this machine only",
             "Serves a page on 127.0.0.1, reachable only from this machine and only with the link it prints, and opens it. Its "
             "screens follow the work: records, columns, check and run, results, pairs (keys M, N, S), kinds (keys 1, 2, 0). Each "
             "button runs one of these commands, shown as the command line it is; lists, describes and single answers run in "
             "the page's own process, the others each in a process of their own, one at a time. Nothing is loaded from the "
             "network. Ctrl-C stops it.",
-            (Param("run", "the run folder the page starts with", "path"), Param("port", "the port (default 8765; 0: any free one)", metavar="PORT"),
+            (Param("workspace", "the workspace the page starts with", "path"), Param("port", "the port (default 8765; 0: any free one)", metavar="PORT"),
              Param("link", "print the link only; open no browser", "flag")),
-            {"next": "the commands that usually follow"}, "nayose open ui --run runs/customers", open_ui),
+            {"next": "the commands that usually follow"}, "nayose open ui --workspace workspaces/customers", open_ui),
 )
 
 
@@ -622,7 +622,7 @@ def reference() -> str:
            "- **`--format json`**: one JSON object per line: `{\"event\": \"step\", …}` per step, then `{\"event\": \"result\", "
            "\"command\": …, …}` with the fields listed below, or `{\"event\": \"error\", \"error\": …, \"fix\": …, \"hints\": …, "
            "\"exit\": …}`. IDs are `id`, `id_l`, `id_r`, whatever the file calls them.",
-           "- **Exit codes:** 0; 2, a mistake people fix (two lines: what is wrong, and the fix); 75, the run folder is busy: "
+           "- **Exit codes:** 0; 2, a mistake people fix (two lines: what is wrong, and the fix); 75, the workspace is busy: "
            "try again later; 1, a pass of `serve inbox` stopped on a file.",
            "- **`next`**, in every result: the commands that usually follow, each with why.", "",
            "| Command | Does |", "|---|---|", *(f"| [`{c.name}`](#nayose-{c.verb}-{c.noun}) | {c.help} |" for c in COMMANDS), ""]

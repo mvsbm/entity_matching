@@ -319,7 +319,7 @@ def without_tf(model: FSModel) -> FSModel:  # no term frequencies: neither the c
 class Data:
     bronze_dir: Path                          # <dataset>.parquet: records as they arrive, the input
     labels_dir: Path                          # <dataset>.parquet: truth, read only to choose and evaluate
-    gold_dir: Path                            # <dataset>/: each dataset resolved, a run folder (er.run)
+    gold_dir: Path                            # <dataset>/: each dataset resolved, a workspace (er.run)
     experiments_dir: Path                     # leaderboard.parquet
     models_dir: Path
     datasets: tuple[str, ...]                 # every dataset scripts/choose.py writes outputs for: train, val, test

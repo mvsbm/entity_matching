@@ -2,7 +2,7 @@
 
 data/medallion/bronze/<dataset>.parquet          records as they arrive: the input
 data/labels/<dataset>.parquet                    truth, read only to choose and evaluate
-data/medallion/gold/<dataset>/                   each dataset resolved: a run folder, as er.run writes it (its
+data/medallion/gold/<dataset>/                   each dataset resolved: a workspace, as er.run writes it (its
                                                  state/records/ holds the standardized records, the silver layer)
 data/artifacts/models/<name>.json                a final configuration (and model) as it was run
 data/artifacts/experiments/leaderboard.parquet   one row per (experiment, dataset)

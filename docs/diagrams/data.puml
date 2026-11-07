@@ -1,5 +1,5 @@
 @startuml data
-title LLD 5 · The run folder: every file, its columns, and who writes it (<id> is [columns] id, <field> a logical field)
+title LLD 5 · The workspace: every file, its columns, and who writes it (<id> is [columns] id, <field> a logical field)
 set namespaceSeparator none
 left to right direction
 hide circle
