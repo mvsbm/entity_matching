@@ -33,6 +33,7 @@ OLD_ANSWERS = Path("state") / "kind_labels.parquet"  # where a folder kept peopl
 METHOD = "method.toml"  # the workspace's changes to the tuned method (config.adjust); none: the method as tuned
 ROUNDS = "rounds.json"  # one entry per method a full run used, in order: not a run file, so the history outlasts each run;
 # bounded: one entry per change of method people make, each a full run
+TRIALS = "trials"  # trials of a method (er.run.trial): the last 5 results, and the clusters of the method they were tried against
 
 
 class Busy(InputError):

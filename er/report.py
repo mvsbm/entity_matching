@@ -480,6 +480,23 @@ def line_change(decided: pd.DataFrame, t: float) -> tuple[float, int] | None:
     return best
 
 
+def run_model(out: Path) -> dict:  # the model the run in `out` scored with: its u from the file, else as fitted
+    scoring = out / "state" / "scoring.json"
+    return json.loads(scoring.read_text(encoding="utf-8"))["model"] if scoring.exists() else json.loads((out / "state" / "model.json").read_text(encoding="utf-8"))
+
+
+def scored_again(con: duckdb.DuckDBPyConnection, db: object, out: Path, uid: str, pairs: str, into: str) -> dict:
+    """The pairs of the table `pairs` (uid_l, uid_r) scored as the run in `out` scored its candidates: its model, λ for
+    its size, on its standardized records (those the pairs touch), into the table `into`. Returns the model.
+    O(N) to find the records + O(P·K)."""
+    l, r, model = q(f"{uid}_l"), q(f"{uid}_r"), run_model(out)
+    stored = f"read_parquet({lit(out / 'state' / 'records' / '*.parquet')}, union_by_name = true)"
+    con.execute(f"CREATE OR REPLACE TABLE er_touched AS SELECT * FROM {stored} WHERE {q(uid)} IN (SELECT {l} FROM {pairs} UNION SELECT {r} FROM {pairs})")
+    n = con.execute(f"SELECT count(*) FROM read_parquet({lit(out / 'gold.parquet')})").fetchall()[0][0]
+    score_fs(model, "er_touched", pairs, db, uid, into=into, n_records=n)
+    return model
+
+
 def describe_method(out: Path, p: Pipeline, s: "Settings") -> dict:
     """What the run in the workspace `out` shows about its method, for people improving it: each round so far
     (rounds.json), with the links it made and the audits people decided in it; the line, the weight bands, and each pair
@@ -496,9 +513,6 @@ def describe_method(out: Path, p: Pipeline, s: "Settings") -> dict:
     l, r = f"{uid}_l", f"{uid}_r"
     con, db = connect(s.compute)
     read = lambda name: f"read_parquet({lit(out / name)}, union_by_name = true)"
-    scoring = out / "state" / "scoring.json"
-    model = json.loads(scoring.read_text(encoding="utf-8"))["model"] if scoring.exists() else json.loads((out / "state" / "model.json").read_text(encoding="utf-8"))
-    n = con.execute(f"SELECT count(*) FROM {read('gold.parquet')}").fetchall()[0][0]
 
     # the pairs people decided, the latest decision per pair, and the rules' pairs: scored again, with the name check
     parts = out / DECISIONS / "part-*.parquet"
@@ -508,9 +522,7 @@ def describe_method(out: Path, p: Pipeline, s: "Settings") -> dict:
                 f"CREATE TABLE er_decided ({q(l)} VARCHAR, {q(r)} VARCHAR, decision VARCHAR, why VARCHAR, round INTEGER)")
     con.execute(f"CREATE TABLE er_rule AS SELECT {q(l)}, {q(r)}, rule FROM {read('rule_kept/*.parquet')}")
     con.execute(f"CREATE TABLE er_pairs AS SELECT {q(l)}, {q(r)} FROM er_decided UNION SELECT {q(l)}, {q(r)} FROM er_rule")
-    con.execute(f"""CREATE TABLE er_touched AS SELECT * FROM {read('state/records/*.parquet')}
-        WHERE {q(uid)} IN (SELECT {q(l)} FROM er_pairs UNION SELECT {q(r)} FROM er_pairs)""")
-    score_fs(model, "er_touched", "er_pairs", db, uid, into="er_scored", n_records=n)
+    model = scored_again(con, db, out, uid, "er_pairs", "er_scored")
     scored = f"SELECT {q(l)}, {q(r)}, match_weight AS weight, {named_sql(fs)} AS named FROM er_scored s"
     decided = con.execute(f"""SELECT d.*, s.weight, s.named, d.decision = 'match' AS same, x.rule FROM er_decided d JOIN ({scored}) s USING ({q(l)}, {q(r)})
         LEFT JOIN (SELECT {q(l)}, {q(r)}, min(rule) AS rule FROM er_rule GROUP BY ALL) x USING ({q(l)}, {q(r)}) ORDER BY s.weight""").df()

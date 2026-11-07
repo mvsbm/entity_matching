@@ -279,8 +279,9 @@ Kept on disk. Steps are numbered as in [the run](#4--the-run); the diagram above
 | `report.txt` | 9 | whoever helps with the run | the run on one page, with no record's value in it |
 | `kind_review.parquet` | 9, full runs | people | records to decide 1 person or 2 company, and a draw to measure the engine and the flag |
 | `decisions/part-n.parquet` | decisions, one part per file | full runs; `describe method` | the pairs people decided: both IDs and `match` or `no_match`, the sheet's `why` and the `round` |
-| `method.toml` | people | every command given the workspace (`config.adjust`) | its changes to the tuned method: `line`, `drop_rules`, `drop_keys` |
+| `method.toml` | `adopt method`, `reset method` | every command given the workspace (`config.adjust`) | its changes to the tuned method: `line`, `drop_rules`, `drop_keys` |
 | `rounds.json` | 8, full runs | `describe method`; decisions | one entry per method run: config hash, method, when, links, expected false links. A run of the same method replaces the last entry. Kept, like `decisions/`, by `--overwrite` |
+| `trials/` | `try method` (`run.trial`) | `adopt method`; the next trial | each trial's result, the last 5; the clusters of the method tried against, with the method's config hash and files, reused while they are the same |
 | `set_aside/part-n.parquet` | 8, one part per run | you | records not resolved, and why: no ID; the same ID with different content; already in the run |
 
 ### While a run runs

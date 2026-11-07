@@ -1111,6 +1111,88 @@ def test_describe_method_scores_people_s_pairs_again_and_an_audit_stays_one_acro
     assert d["audits"]["checked"] == 0 and d["rounds"][0]["false_found"] == 1 and config_hash(q) != config_hash(p)
 
 
+def test_a_bad_rule_is_found_tried_and_left_out_and_audits_reach_every_kind_of_link(tmp_path, population, capsys, monkeypatch):
+    import threading
+    import er.cli as cli
+    from er import folder
+    from er.config import dump_pipeline
+    s, p, g = population
+    uid, ent = s.data.unique_id, s.data.entity_id
+    l, r = f"{uid}_l", f"{uid}_r"
+    bad = Rule(name="BAD_POSTAL_CODE", exact=("postal_code",))  # one postal code: many people
+    last = p.rules.stages[-1]
+    dump_pipeline(replace(p, rules=replace(p.rules, stages=(*p.rules.stages[:-1], replace(last, rules=(*last.rules, bad))))), s.chains, tmp_path / "planted.toml")
+    g.df.to_parquet(tmp_path / "theirs.parquet", index=False)
+    monkeypatch.chdir(tmp_path)
+    ws, pipe = tmp_path / "workspaces" / "w", ("--workspace", "workspaces/w", "--pipeline", "planted.toml")
+
+    def say(*words: object) -> tuple[int, dict]:
+        code_ = cli.main([*map(str, words), "--format", "json"])
+        return code_, json.loads(capsys.readouterr().out.splitlines()[-1])
+
+    say("create", "workspace", "w")
+    say("load", "records", "theirs.parquet", "--workspace", "workspaces/w")
+    assert say("resolve", "records", *pipe)[0] == 0
+    tuned = (ws / "state" / "config.txt").read_text()
+    entity = g.truth.set_index(uid)[ent]
+    kept = pd.read_parquet(ws / "rule_kept")
+    wrong = kept[(kept["rule"] == bad.name) & (kept[l].map(entity) != kept[r].map(entity))].head(3)
+    assert len(wrong) == 3
+    sheet = pd.read_parquet(ws / "review.parquet")
+    joins = sheet[sheet["why"] == "decide"].head(1)  # a pair people join: a trial must not see it joined
+    pd.concat([wrong[[l, r]].assign(decision="no_match"), joins[[l, r]].assign(decision="match")]).to_parquet(tmp_path / "decided.parquet")
+    assert say("apply", "decisions", "--file", "decided.parquet", *pipe)[0] == 0
+
+    code_, d = say("describe", "method", *pipe)
+    assert code_ == 0 and next(x for x in d["rules"] if x["name"] == bad.name)["different"] == 3
+    assert {"drop_rules": [bad.name]} in [x["change"] for x in d["proposals"]]
+    code_, tried = say("try", "method", "--drop", bad.name, *pipe)
+    assert code_ == 0 and tried["fixes"] >= 1 and tried["breaks"] == 0 and tried["apart"] >= tried["fixes"]
+    entities = pd.read_parquet(ws / "gold.parquet")["cluster_id"].nunique()
+    assert tried["base"]["entities"] == entities + 1  # the trial ran without people's decisions: the pair they joined is apart
+    assert say("try", "method", "--drop", "nope", *pipe)[0] == 2 and say("try", "method", *pipe)[0] == 2
+
+    monkeypatch.setattr(cli, "rerun_records", lambda a, emit: (_ for _ in ()).throw(InputError("the disk is full")))
+    assert say("adopt", "method", "--trial", tried["trial"], *pipe)[0] == 2 and not (ws / "method.toml").exists()  # as it was
+    monkeypatch.undo()
+    monkeypatch.chdir(tmp_path)
+    assert say("adopt", "method", "--trial", tried["trial"], *pipe)[0] == 0
+    assert folder.method(ws) == {"drop_rules": [bad.name]} and (ws / "state" / "config.txt").read_text() != tuned
+    code_, d = say("describe", "method", *pipe)
+    assert d["round"] == 2 and bad.name not in [x["name"] for x in d["rules"]] and d["rounds"][0]["decided"] == 4
+
+    asked = lambda: pd.read_parquet(ws / "review.parquet")
+    before = asked()
+    assert say("draw", "pairs", "--count", 5, *pipe)[1]["drawn"] == 5
+    assert say("draw", "pairs", "--count", 50, *pipe)[1]["drawn"] > 0  # the rest
+    assert say("draw", "pairs", "--count", 50, *pipe)[1]["drawn"] == 0  # every link is asked about once
+    after = asked()
+    drawn = after.iloc[len(before):]
+    assert (drawn["why"] == "audit").all() and drawn["accepted"].all() and not after.duplicated([l, r]).any()
+    decided = pd.read_parquet(ws / "decisions")[[l, r]]
+    assert not drawn.set_index([l, r]).index.isin(decided.set_index([l, r]).index).any()  # never a pair people decided
+    assert drawn["match_weight"].floordiv(1).nunique() > 1 and drawn["sources"].str.match(r"^[A-Z]").any()  # bands, and the rules' links too
+
+    held, go = threading.Event(), threading.Event()
+    def other_trial():  # another trial of the workspace, in a thread of its own
+        with folder.run_lock(ws / "trials"):
+            held.set()
+            go.wait(60)
+    other = threading.Thread(target=other_trial)
+    other.start()
+    held.wait(60)
+    assert say("try", "method", "--line", 9, *pipe)[0] == 75  # the trials take turns
+    go.set()
+    other.join()
+    for line in (9, 10, 11, 12, 13, 14):
+        assert say("try", "method", "--line", line, *pipe)[0] == 0
+    assert sorted(int(f.stem) for f in (ws / "trials").glob("*.json") if f.stem.isdigit()) == list(range(3, 8))  # bounded: the last 5
+
+    assert say("reset", "method", *pipe)[0] == 0
+    assert not (ws / "method.toml").exists() and (ws / "state" / "config.txt").read_text() == tuned
+    assert len(folder.rounds(ws)) == 3
+
+
 def test_an_increment_counts_exact_u_again_and_samples_only_a_drifted_comparison(tmp_path, population, monkeypatch):
     import json
     import er.match as M

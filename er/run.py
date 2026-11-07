@@ -50,7 +50,7 @@ import shutil
 import sys
 import time
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime
 from pathlib import Path
 
@@ -63,7 +63,7 @@ from er.config import InputError, Pipeline
 from er.io import code_version, config_hash, markdown
 from er.kind import NAME_MODEL, classifier as kind_classifier, kind_review_sheet, merge_answers
 from er.match import ELSE, named_sql, refreshed_u, review_floor, rule_edges, score_fs, scored_u, train_fs, u_basis
-from er.report import qa, report_text
+from er.report import applied, qa, report_text, review_sheet, scored_again
 from er.settings import SPECIAL, Settings, fit_to_file, present_fields
 from er.source import answers, decisions, file_facts, known, lit, open_source, suggest
 from er.standardize import prepare
@@ -120,8 +120,7 @@ class Run:
         self.tables: dict[str, pd.DataFrame] = {}  # qa's tables, the summary first, once report() built them
         self.fields = [f for f in self.settings.columns if f not in SPECIAL]  # the logical fields of [columns]
         self.inputs: list[dict] = []          # the files read: path, bytes, SHA-256 (steps.json)
-        # what decides the answer: the pipeline as given and the settings that shape the records; an increment needs the full run's
-        self.config = config_hash((self.pipeline, self.settings.columns, self.settings.standardize, self.settings.flag_company))
+        self.config = run_config(self.pipeline, self.settings)
         if {self.pipeline.rules.resolver.method, self.pipeline.fs.resolver.method} != {"connected_components"}:
             raise InputError("the run clusters by connected components only; the pipeline asks for "
                              f"{self.pipeline.rules.resolver.method} (rules) and {self.pipeline.fs.resolver.method} (model)",
@@ -627,10 +626,10 @@ class Run:
 
     # ---------- people's decisions ----------
 
-    def _load_decisions(self, out: Path) -> None:
-        """The decisions stored in this workspace, on records of this file, the latest per pair, for _accept."""
-        u, l, r, parts = q(self.uid), q(self.l), q(self.r), out / folder.DECISIONS
-        if any(parts.glob("part-*.parquet")):
+    def _load_decisions(self, out: Path | None) -> None:
+        """The decisions stored in this workspace (None: none), on records of this file, the latest per pair, for _accept."""
+        u, l, r, parts = q(self.uid), q(self.l), q(self.r), out / folder.DECISIONS if out else None
+        if parts and any(parts.glob("part-*.parquet")):
             self.con.execute(f"""CREATE OR REPLACE TABLE er_decisions AS SELECT {l}, {r}, arg_max(decision, filename) AS decision
                 FROM read_parquet({lit(parts / 'part-*.parquet')}, filename = true)
                 WHERE {l} IN (SELECT {u} FROM records) AND {r} IN (SELECT {u} FROM records) GROUP BY {l}, {r}""")
@@ -681,6 +680,41 @@ class Run:
         self._log(out, True, decisions=str(path))
         return self
 
+    def draw(self, out: Path, count: int) -> "Run":
+        """`count` more audit rows on the review sheet of the run in `out`: links, the model's and the rules', that
+        people have not decided and the sheet does not hold, spread evenly over 1-bit weight bands, a rule's pairs
+        scored as the model would score them. Audits of every kind of link say how few false ones are left. Under the
+        lock, and staged. O(N + (R + count)·K + E) + O(sheet)."""
+        t, l, r, sheet = time.perf_counter(), q(self.l), q(self.r), out / "review.parquet"
+        read = lambda name: f"read_parquet({lit(out / name)}, union_by_name = true)"
+        with folder.run_lock(out):
+            folder.finish_writes(out)
+            if not sheet.exists():
+                raise InputError(f"no review sheet in {out}", fix="find matches first: nayose resolve records --workspace …")
+            self.con.execute(f"CREATE OR REPLACE TABLE er_rule AS SELECT {l}, {r}, min(rule) AS rule FROM {read('rule_kept/*.parquet')} GROUP BY ALL")
+            scored_again(self.con, self.db, out, self.uid, "er_rule", "er_rule_scores")
+            self.con.execute(f"""CREATE OR REPLACE TABLE matches AS SELECT {l}, {r}, match_weight, match_probability, sources FROM {read('matches/*.parquet')}
+                UNION ALL SELECT x.{l}, x.{r}, s.match_weight, s.match_probability, x.rule FROM er_rule x JOIN er_rule_scores s USING ({l}, {r})
+                WHERE NOT EXISTS (SELECT 1 FROM {read('matches/*.parquet')} m WHERE m.{l} = x.{l} AND m.{r} = x.{r})""")
+            self.con.register("er_sheet", pd.read_parquet(sheet, columns=[self.l, self.r]))
+            asked = [f"SELECT {l}, {r} FROM er_sheet"] + ([f"SELECT {l}, {r} FROM {read(folder.DECISIONS + '/part-*.parquet')}"]
+                                                         if any((out / folder.DECISIONS).glob("part-*.parquet")) else [])
+            self.con.execute(f"""CREATE OR REPLACE TABLE er_drawn AS SELECT {l}, {r} FROM (
+                SELECT {l}, {r}, floor(match_weight) AS band, row_number() OVER (PARTITION BY floor(match_weight) ORDER BY hash({l}, {r})) AS k
+                FROM matches m WHERE NOT EXISTS (SELECT 1 FROM ({' UNION ALL '.join(asked)}) a WHERE a.{l} = m.{l} AND a.{r} = m.{r}))
+                ORDER BY k, band LIMIT {int(count)}""")
+            drawn = self._count("er_drawn")
+            if drawn:
+                self.scoring = scored_again(self.con, self.db, out, self.uid, "er_drawn", "er_drawn_scores")
+                self.con.execute("CREATE OR REPLACE TABLE records AS SELECT * FROM er_touched")  # what review_sheet shows of each record
+                names = {c["output_column_name"] for c in self.scoring["comparisons"]}  # the comparisons the run could make
+                m = self.pipeline.fs.model
+                self.pipeline = replace(self.pipeline, fs=replace(self.pipeline.fs, model=replace(m, comparisons=tuple(c for c in m.comparisons if c.name in names))))
+                pairs = self.con.execute(f"SELECT s.*, m.sources, 'audit' AS why FROM er_drawn_scores s JOIN matches m USING ({l}, {r}) ORDER BY s.match_weight").df()
+                folder.stage(self.con, out, [], frames=[(pd.concat([pd.read_parquet(sheet), review_sheet(self, pairs)], ignore_index=True), sheet)])
+        self._done("draw", "O(N + (R + count)·K + E)", f"O({self._count('er_rule'):,} rule pairs + {self._count('matches'):,} links)", t, drawn=drawn)
+        return self
+
     @locked
     def full(self, path: str | Path, out: Path, overwrite: bool = False, pipeline_file: Path | None = None) -> "Run":
         """Steps 1–8 on the file at `path` into the workspace `out`; with `pipeline_file` (named in the reports), step 8
@@ -690,15 +724,21 @@ class Run:
         if held and not overwrite:
             raise InputError(f"{out} already holds a run", fix="choose another folder, or replace the run: nayose resolve records … --overwrite")
         self.labels = self._answers(out)  # read before the folder's old state goes
+        self.resolve(path, out)
+        self.write(out, replace=held, report=(path, pipeline_file) if pipeline_file else None)  # the old run goes only once the new one is complete
+        return self
+
+    def resolve(self, path: str | Path | list[Path], decided: Path | None) -> "Run":
+        """Steps 1–7 on the file at `path`, writing nothing: each record's cluster (gold), with the decisions the
+        workspace `decided` keeps (None: none). A trial of a method runs these alone (er.run.trial)."""
         self.load(path)
         self.budget()
         self.fit()
         self.rules()
         self.candidates()
         self.score()
-        self._load_decisions(out)
+        self._load_decisions(decided)
         self.cluster()
-        self.write(out, replace=held, report=(path, pipeline_file) if pipeline_file else None)  # the old run goes only once the new one is complete
         return self
 
     def rerun(self, out: Path, pipeline_file: Path | None = None) -> "Run":
@@ -709,6 +749,63 @@ class Run:
         out = Path(out)
         with folder.run_lock(out):  # the files named inside the lock: no increment lands between
             return self.full(folder.inputs(out), out, overwrite=True, pipeline_file=pipeline_file)
+
+
+def run_config(p: Pipeline, s: Settings) -> str:  # what decides the answer: the pipeline and the settings that shape the records
+    return config_hash((p, s.columns, s.standardize, s.flag_company))  # an increment needs the full run's
+
+
+def trial(ws: Path, base: Pipeline, variant: Pipeline, method: dict, s: Settings, echo: Callable[[dict], None] | None = None) -> dict:
+    """The workspace's method (`base`) and a variant of it (`method`, as method.toml would say it), each run on the
+    workspace's files without people's decisions, so neither is judged on pairs it was told; both keep the run's
+    fitted model and people's person/company answers. Compared on the pairs people decided (fixes: pairs the variant
+    sets right that the base got wrong; breaks: the other way round), and without labels: links, the false ones the
+    model expects, entities, and the pairs of records the variant puts apart or together. The base's clusters are
+    kept for the next trial of the same method on the same files (trials/base.parquet); each trial's result in
+    trials/<n>.json. Two trials of one workspace take turns. O(two full runs without the fit) + O(N + D)."""
+    trials, uid = ws / folder.TRIALS, s.data.unique_id
+    trials.mkdir(exist_ok=True)
+    model, files = json.loads((ws / "state" / "model.json").read_text(encoding="utf-8")), folder.inputs(ws)
+
+    def resolved(p: Pipeline) -> tuple[pd.DataFrame, dict]:  # each record's cluster, and the numbers people compare
+        run = Run(p, s, model=model, echo=echo)
+        run.labels = run._answers(ws)
+        run.resolve(files, None)
+        gold = run.con.execute(f"SELECT {q(uid)}, cluster_id FROM gold").df()
+        numbers = dict(matched=run._count("matches"), expected_false=run._expected_false(), rule_pairs=run._count("rule_kept"),
+                       entities=int(gold["cluster_id"].nunique()))
+        run.con.close()
+        return gold, numbers
+
+    with folder.run_lock(trials):
+        key = dict(config=run_config(base, s), files=[str(f) for f in files])
+        kept = json.loads((trials / "base.json").read_text(encoding="utf-8")) if (trials / "base.json").exists() else {}
+        if kept.get("key") == key and (trials / "base.parquet").exists():
+            old, before = pd.read_parquet(trials / "base.parquet"), kept["numbers"]
+        else:
+            old, before = resolved(base)
+            old.to_parquet(trials / "base.parquet", index=False)
+            (trials / "base.json").write_text(json.dumps(dict(key=key, numbers=before)), encoding="utf-8")
+        new, after = resolved(variant)
+        l, r = f"{uid}_l", f"{uid}_r"
+        decided = applied(ws, uid)
+        same = (decided["decision"] == "match").to_numpy()
+        together = lambda gold: (decided[l].map(gold.set_index(uid)["cluster_id"]) == decided[r].map(gold.set_index(uid)["cluster_id"])).to_numpy()
+        was, now = together(old) == same, together(new) == same
+        pairs = lambda rows: decided.loc[rows, [l, r, "decision"]].head(50).rename(columns={l: "id_l", r: "id_r"}).to_dict("records")
+        both = old.merge(new, on=uid, suffixes=("_base", "_variant"))
+        c2 = lambda sizes: int((sizes * (sizes - 1) // 2).sum())  # pairs of records inside clusters of these sizes
+        kept_together = c2(both.groupby(["cluster_id_base", "cluster_id_variant"]).size())
+        n = max((int(f.stem) for f in trials.glob("*.json") if f.stem.isdigit()), default=0) + 1
+        result = dict(trial=n, at=datetime.now().isoformat(timespec="seconds"), method=method, base=before, variant=after,
+                      fixes=int((now & ~was).sum()), breaks=int((was & ~now).sum()), fixed=pairs(now & ~was), broken=pairs(was & ~now),
+                      apart=c2(both["cluster_id_base"].value_counts()) - kept_together, together=c2(both["cluster_id_variant"].value_counts()) - kept_together)
+        (trials / f"{n}.json.tmp").write_text(json.dumps(result, ensure_ascii=False, default=str), encoding="utf-8")
+        os.replace(trials / f"{n}.json.tmp", trials / f"{n}.json")
+        for f in trials.glob("*.json"):  # bounded: the last 5 trials
+            if f.stem.isdigit() and int(f.stem) <= n - 5:
+                f.unlink()
+    return result
 
 
 def listed(report: pd.DataFrame) -> list[dict]:  # each generator's pairs and seconds, kept in steps.json (describe matching)
