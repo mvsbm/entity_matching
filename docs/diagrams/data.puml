@@ -46,6 +46,10 @@ package "the answer: Run.write" {
     inputs: file, role, bytes, sha256
     each step: big_o, filled, seconds, peak_memory_gb, facts
   }
+  entity "rounds.json" as rounds {
+    one entry per method the workspace ran; kept by --overwrite
+    config, method, at, matched, expected_false
+  }
 }
 
 package "state/, for increments: Run.write" {
@@ -120,6 +124,8 @@ package "people's work and the writers' state" {
     * <id>_l
     * <id>_r
     decision : match · no_match
+    why : decide · audit, from the sheet
+    round : the round it was decided in (rounds.json)
   }
   entity "kind_answers/part-n.parquet" as kind_answers {
     * <id>

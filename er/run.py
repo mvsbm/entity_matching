@@ -388,7 +388,10 @@ class Run:
         """Every candidate scored by Splink, with the model and u that fit() settled."""
         t, k = time.perf_counter(), len(self.pipeline.fs.model.comparisons)
         score_fs(self.scoring, "records", "cands", self.db, self.uid, into="scores")
-        self._done("score", "O(C·K·L²)", f"O({self._count('scores'):,}·{k}·L²)", t)
+        reached: dict[str, dict[str, int]] = {}  # per comparison, the pairs at each level (gamma, as score_fs gives it): one scan
+        for c, g, n in self.con.execute("SELECT c, g, count(*) FROM (UNPIVOT scores ON COLUMNS('^gamma_') INTO NAME c VALUE g) GROUP BY ALL").fetchall():
+            reached.setdefault(c.removeprefix("gamma_"), {})[str(g)] = n
+        self._done("score", "O(C·K·L²)", f"O({self._count('scores'):,}·{k}·L²)", t, reached=reached)
 
     def scored(self) -> str:
         """Every scored pair with its generators (sources) and what acceptance reads besides the weight: named, a name
@@ -476,6 +479,10 @@ class Run:
                      texts + people, replace, frames)
         self._done("write", "O(N + C)", f"O({self.n:,} + {self._count('matches'):,})", t)
         self._log(out, part > 0, part=part, disabled=self.disabled)
+        if part == 0:  # the round this method is in, and how it did
+            linked = next(x for x in reversed(self.steps) if x["step"] == "cluster")
+            folder.round_ran(out, dict(config=self.config, method=folder.method(out), at=datetime.now().isoformat(timespec="seconds"),
+                                       matched=linked["accepted"], expected_false=linked["expected_false"]))
 
     def _log(self, out: Path, append: bool, **entry: object) -> None:
         """This run's entry in steps.json (folder.log): when, the code and config that ran, the files read with their
@@ -632,10 +639,10 @@ class Run:
     def decide(self, path: str | Path, out: Path) -> "Run":
         """Apply people's decisions on review pairs (a Parquet file: uid_l, uid_r, decision) to the run in `out`,
         scoring nothing. Each `match` pair merges its two clusters, each cluster one node, and a record joined only this
-        way is resolved by `review`. A `no_match` pair splits nothing here; every decision is stored in decisions/, and a
-        full run on this folder applies them again, never accepting a `no_match` pair. Rows without a decision are
-        skipped, and so is a decision the folder already holds as its pair's latest: a sheet given twice changes
-        nothing. O(D + touched clusters) + O(N) to rewrite gold."""
+        way is resolved by `review`. A `no_match` pair splits nothing here; every decision is stored in decisions/, with
+        its why and the round it was made in (rounds.json), and a full run on this folder applies them again, never
+        accepting a `no_match` pair. Rows without a decision are skipped, and so is a decision the folder already holds
+        as its pair's latest: a sheet given twice changes nothing. O(D + touched clusters) + O(N) to rewrite gold."""
         t, u, l, r = time.perf_counter(), q(self.uid), q(self.l), q(self.r)
         folder.finish_writes(out)
         if not (out / "gold.parquet").exists():
@@ -669,7 +676,8 @@ class Run:
         parts = out / folder.DECISIONS
         parts.mkdir(exist_ok=True)
         folder.stage(self.con, out, [(f"SELECT * FROM gold ORDER BY {u}", out / "gold.parquet"),
-                                     ("SELECT * FROM er_decisions", parts / f"part-{folder.next_part(parts):05d}.parquet")])
+                                     (f"SELECT *, {len(folder.rounds(out)) or 'NULL'}::INTEGER AS round FROM er_decisions",
+                                      parts / f"part-{folder.next_part(parts):05d}.parquet")])
         self._log(out, True, decisions=str(path))
         return self
 

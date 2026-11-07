@@ -1035,6 +1035,82 @@ def test_decisions_join_clusters_without_scoring_and_a_full_run_applies_them_aga
         Run(p, s).decide(tmp_path / "blank.parquet", tmp_path / "a")
 
 
+def test_a_workspace_s_method_changes_the_tuned_one_only_where_it_says(tmp_path):
+    from er.cli import setup
+    from er.config import adjust
+    from er.io import config_hash
+    s = load_settings()
+    p = load_pipeline(s.root / "config" / "final.toml", s.standardize, s.chains, s.columns)
+    assert adjust(p, {}) is p and setup(dict(workspace=str(tmp_path)))[1] == p  # no method.toml: the tuned method, the same hash
+    rule = p.rules.stages[-1].rules[0].name
+    (tmp_path / "method.toml").write_text(f'line = 9.5\ndrop_rules = ["{rule}"]\ndrop_keys = ["cif"]\n')
+    q = setup(dict(workspace=str(tmp_path)))[1]  # every command on the workspace: increments compare this hash
+    assert q.fs.min_match_weight == 9.5 and rule not in {r.name for _, _, r in q.rules.each()}
+    assert [b.name for b in q.fs.blockers] == [b.name for b in p.fs.blockers if b.name != "cif"]
+    assert config_hash(q) != config_hash(p) and q.rules.stages[0] == p.rules.stages[0] and q.fs.model == p.fs.model
+    for bad, says in (({"drop_keys": ["nope"]}, "no rule or pair key named"), ({"lines": 9}, "unknown keys"), ({"line": "9"}, "a weight in bits"),
+                      ({"drop_keys": "cif"}, "lists of names"),
+                      ({"drop_keys": [b.name for b in p.fs.blockers]}, "leaves no pair key")):
+        with pytest.raises(InputError, match=says):
+            adjust(p, bad)
+
+
+def test_a_line_change_sets_right_what_people_decided_and_never_sets_wrong_what_was_right():
+    from er.report import line_change
+    d = lambda rows: pd.DataFrame(rows, columns=["weight", "named", "same"])
+    keep = d([(9.0, True, False), (8.5, True, True), (12.0, True, True)])  # raising past the different pair loses the same one
+    assert line_change(keep, 8.0) is None
+    both = d([(9.0, True, False), (8.5, True, False), (12.0, True, True), (7.0, True, True), (13.0, False, True)])
+    assert line_change(both, 8.0) == (9.5, 2)  # up sets right two, down (7) one; the unnamed pair no line accepts
+    assert line_change(d([]), 8.0) is None
+
+
+def test_describe_method_scores_people_s_pairs_again_and_an_audit_stays_one_across_rounds(tmp_path, wide_band):
+    from er.config import adjust
+    from er.io import config_hash
+    from er.report import describe_method
+    from er.run import Run
+    s, p, g = wide_band
+    uid = s.data.unique_id
+    l, r = f"{uid}_l", f"{uid}_r"
+    ws = tmp_path / "ws"
+    g.df.to_parquet(tmp_path / "all.parquet", index=False)
+    final = s.root / "config" / "final.toml"  # named in the reports, which a run then writes
+    run = Run(p, s).full(tmp_path / "all.parquet", ws, pipeline_file=final)
+    sheet = pd.read_parquet(ws / "review.parquet")
+    yes, no = sheet[sheet["why"] == "decide"].index[0], sheet[sheet["why"] == "audit"].index[0]
+    sheet.loc[yes, "decision"], sheet.loc[no, "decision"] = "match", "no_match"
+    sheet.to_parquet(tmp_path / "reviewed.parquet")
+    rule_pair = pd.read_parquet(ws / "rule_kept").iloc[0]
+    pd.DataFrame({l: [rule_pair[l]], r: [rule_pair[r]], "decision": ["no_match"]}).to_parquet(tmp_path / "rule.parquet")  # no why: a file of one's own
+    Run(p, s).decide(tmp_path / "reviewed.parquet", ws)
+    Run(p, s).decide(tmp_path / "rule.parquet", ws)
+
+    d = describe_method(ws, p, s)
+    assert d["round"] == 1 and d["method"] == {} and d["rounds"][0]["matched"] == run.steps[-3]["accepted"]
+    assert d["audits"]["checked"] == d["audits"]["false"] == d["rounds"][0]["false_found"] == 1 and d["rounds"][0]["decided"] == 3
+    weights = {(x["id_l"], x["id_r"]): x["weight"] for x in d["decided"]}
+    for i in (yes, no):  # scored again: as the run scored them
+        assert weights[tuple(sheet.loc[i, [l, r]])] == pytest.approx(sheet.loc[i, "match_weight"], abs=0.01)
+    flagged = next(x for x in d["rules"] if x["name"] == rule_pair["rule"])
+    assert flagged["different"] == 1 and {"drop_rules": [rule_pair["rule"]]} in [x["change"] for x in d["proposals"]]
+    keys = {x["name"]: x for x in d["keys"]}
+    assert all(keys[c["drop_keys"][0]]["only"] == 0 < keys[c["drop_keys"][0]]["pairs"] for x in d["proposals"] if "drop_keys" in (c := x["change"]))
+    scored = run.con.execute("SELECT count(*) FROM scores").fetchall()[0][0]
+    for c in p.fs.model.comparisons:  # every scored pair reaches one step of each comparison
+        assert sum(x["reached"] for x in d["steps"] if x["comparison"] == c.name) == scored
+
+    again = Run(p, s, model=run.model).rerun(ws, pipeline_file=final)  # the same method: the same round, and the audit is still one
+    assert describe_method(ws, p, s)["rounds"][0]["false_found"] == 1 and len(json.loads((ws / "rounds.json").read_text())) == 1
+    assert not pd.read_parquet(ws / "review.parquet").set_index([l, r]).index.isin(list(weights)).any()  # decided pairs: never asked again
+    (ws / "method.toml").write_text(f"line = {p.fs.min_match_weight + 1}\n")
+    q = adjust(p, {"line": p.fs.min_match_weight + 1})
+    Run(q, s, model=again.model).rerun(ws, pipeline_file=final)
+    d = describe_method(ws, q, s)
+    assert d["round"] == 2 and [x["method"] for x in d["rounds"]] == [{}, {"line": p.fs.min_match_weight + 1}]
+    assert d["audits"]["checked"] == 0 and d["rounds"][0]["false_found"] == 1 and config_hash(q) != config_hash(p)
+
+
 def test_an_increment_counts_exact_u_again_and_samples_only_a_drifted_comparison(tmp_path, population, monkeypatch):
     import json
     import er.match as M

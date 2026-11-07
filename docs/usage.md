@@ -118,7 +118,9 @@ Everything is in the workspace. A run also reads `config/kind_names.npz`, the na
 | `report.txt` | | the run on one page of plain text, with no record's value in it: what ran (the code, the tracked files changed in this copy, the pipeline, the machine's limits), the summary, the fields, scores and links by weight with the false links expected, cluster sizes, each step's time and memory, the model's m, u and bits per level, the costliest blocks (a full run), the match patterns no key pairs | send it to whoever helps with the run ([section 7](#7--when-something-is-wrong)) |
 | `review.parquet` | pair for people | `why` (`decide` or `audit`); an empty `decision`; both records' compared fields; per comparison, the level reached and its bits; `accepted`, whether the run accepted the pair | decide the pairs just below the line and those above it with no name compared, audit those just above ([section 6](#6--review-and-decide)) |
 | `kind_review.parquet` | record for people | `why` (`decide` or `measure`), `reason` in words, `engine_says`, `name_says`, `flag` and `birth_date` if the file has them, the name; `engine` and `engine_p` (the engine's kind and its probability of a company), `name_p`, `drawn`; an empty `kind` | answer 1 person, 2 company or 0 can't tell ([section 6](#6--review-and-decide)) |
-| `decisions/` | decided pair | both IDs and `decision`, one part per file people gave back | what people decided; a full run applies it again |
+| `decisions/` | decided pair | both IDs and `decision`; `why` (`decide` or `audit`) when the sheet had it; `round`, the round it was decided in; one part per file people gave back | what people decided; a full run applies it again |
+| `method.toml` | | the workspace's changes to the tuned method: `line`, `drop_rules`, `drop_keys` | every command on the workspace runs the method it says ([section 6](#improve-the-method)) |
+| `rounds.json` | round | per method the workspace ran: its `config` hash, `method`, when, the links it made and the false links the model expects | see each round's results side by side |
 | `kind_answers/` | answered record | the answered rows of each `kind_review.parquet` given back, one part per sheet, as given | what people answered; every later run reads it |
 | `set_aside/` | record not resolved | the record as read, and `reason`: no ID; the same ID with different content; already in the run | fix them and add them with `nayose add records` |
 | `steps.json` | run, increment or set of decisions | when; the code's commit; the config hash; each file read with what it is, its size and SHA-256; each step's Big-O with the numbers filled in, seconds, peak memory | see the cost; say exactly what went into the run; `nayose rerun records` reads its files again |
@@ -178,6 +180,22 @@ Each decision is written into the workspace's `review.parquet` (its `decision` c
 - **`match`** joins the two clusters at once, scoring nothing. A record joined only this way gets `resolved_by` = `review`.
 - **`no_match`** splits nothing at once. It is kept, and a full run never accepts the pair. It applies to that pair only: a third record can still join the two.
 - **Kept for good.** Decisions are stored in `decisions/`, which every full run on the same folder applies again. `decisions/` and `kind_answers/` are people's work: back them up. Rows without a decision are skipped, and a decision applied before changes nothing, so applying a sheet twice is harmless.
+
+### Improve the method
+
+The method (pair keys, comparison steps, sure-match rules, the line) is tuned on generated records; on your file only the model's weights are fitted. People's decisions show where it fails, so the review is a loop: find matches, decide the pairs, see what the decisions say about the method, change it, and find matches again.
+
+```bash
+.venv/bin/nayose describe method --workspace workspaces/customers
+```
+
+- **The rounds.** Each method the workspace ran is a round (`rounds.json`): the links it made, the pairs people decided in it, and the audits they found false.
+- **The line.** Every pair people decided, scored again with the run's model, beside the weight bands. A line that sets right decided pairs without setting any wrong is proposed.
+- **The rules.** Each sure-match rule's pairs, those that score below the line, and those people said are different: a rule joins its pairs whatever people say, so such a rule is proposed to leave out.
+- **The pair keys.** Each key's pairs and seconds, the links it found, and those no other key found. A key with a tenth of the pairs or more and no link of its own is proposed to leave out.
+- **The comparison steps.** Each step's bits and the pairs that reached it.
+
+A change goes in the workspace's `method.toml` (`line = 9.0`, `drop_rules = ["F3_NAME~_CIF"]`, `drop_keys = ["sn_person_name_reversed"]`). Every command on the workspace then runs that method, an increment included; a new method is a new round, and its run takes `nayose rerun records`.
 
 ### Persons and companies
 

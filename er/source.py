@@ -320,9 +320,10 @@ def answers(path: str | Path, con: duckdb.DuckDBPyConnection, uid: str) -> pd.Da
 
 def decisions(path: str | Path, con: duckdb.DuckDBPyConnection, l: str, r: str, into: str) -> list[Path]:
     """People's decisions on pairs (review.parquet with decision filled in, or any file with the two IDs and decision)
-    as the table `into`, and the files read: each pair once, the lower ID first, decision match or no_match; rows
-    without a decision skipped. Refuses a file without those columns, a decided row without both IDs, a file with no
-    decision, another decision, and a pair decided both ways. O(rows)."""
+    as the table `into`, and the files read: each pair once, the lower ID first, decision match or no_match, and the
+    sheet's why (decide, audit) where it has one; rows without a decision skipped. Refuses a file without those
+    columns, a decided row without both IDs, a file with no decision, another decision, and a pair decided both ways.
+    O(rows)."""
     src = open_source(path, con, [l, r, "decision"])
     if {l, r, "decision"} - set(src.columns):  # say what is wrong, row by row where it can
         raise InputError(f"{path}: needs the columns {l}, {r} and decision; it has {sorted(src.columns)}",
@@ -330,8 +331,9 @@ def decisions(path: str | Path, con: duckdb.DuckDBPyConnection, l: str, r: str, 
     decided = f"FROM {src.sql} WHERE nullif(trim(decision), '') IS NOT NULL"
     if (blank := con.execute(f"SELECT count(*) {decided} AND (nullif(trim({q(l)}), '') IS NULL OR nullif(trim({q(r)}), '') IS NULL)").fetchall()[0][0]):
         raise InputError(f"{path}: {blank:,} decided rows lack an ID", fix="fill in both IDs of each decided row, or clear its decision")
-    con.execute(f"""CREATE OR REPLACE TABLE {q(into)} AS SELECT DISTINCT least({q(l)}, {q(r)}) AS {q(l)}, greatest({q(l)}, {q(r)}) AS {q(r)},
-        lower(trim(decision)) AS decision {decided}""")
+    why = "nullif(trim(why), '')" if "why" in src.columns else "NULL::VARCHAR"  # the sheet's row kind: an audit stays known as one
+    con.execute(f"""CREATE OR REPLACE TABLE {q(into)} AS SELECT least({q(l)}, {q(r)}) AS {q(l)}, greatest({q(l)}, {q(r)}) AS {q(r)},
+        lower(trim(decision)) AS decision, any_value({why}) AS why {decided} GROUP BY 1, 2, 3""")
     if not con.execute(f"SELECT count(*) FROM {q(into)}").fetchall()[0][0]:
         raise InputError(f"{path}: no row has a decision", fix="decide pairs first (nayose decide pair ID ID match), or write match or no_match in the sheet's decision column")
     if (bad := con.execute(f"SELECT DISTINCT decision FROM {q(into)} WHERE decision NOT IN ('match', 'no_match')").fetchall()):
