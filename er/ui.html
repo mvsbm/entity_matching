@@ -280,6 +280,34 @@ body.collapsed .navitem .stack, body.collapsed .rail li::before { display: none;
 .empty .flow { justify-content: center; margin: 20px 0 24px; }
 .node.static { cursor: default; max-width: 210px; }
 .node.static:hover { box-shadow: none; }
+.loadrow { display: flex; gap: 8px; } .loadrow input { flex: 1; min-width: 0; }
+.tray .trayhead { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; } .tray .trayhead .btn { margin-left: auto; }
+.colchip { display: inline-flex; align-items: center; gap: 4px; height: 26px; padding: 0 9px; border-radius: 13px; border: 1px solid var(--outline);
+           background: var(--surface); font-size: 12px; cursor: grab; white-space: nowrap; user-select: none; }
+.colchip.used { opacity: .45; } .colchip.in { background: var(--primary-soft); border-color: transparent; } .colchip.gone { text-decoration: line-through; opacity: .6; }
+.colchip.ghost { border-style: dashed; border-color: var(--primary); color: var(--primary); background: transparent; cursor: default; }
+.colchip .x { border: 0; background: transparent; color: var(--muted); cursor: pointer; font: inherit; padding: 0 0 0 2px; }
+.colchip .x.keep { color: var(--primary); font-weight: 600; }
+.fgroup { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; margin-bottom: 12px; overflow: hidden; }
+.fgroup summary { display: flex; align-items: center; gap: 10px; padding: 12px 16px; cursor: pointer; list-style: none; }
+.fgroup summary::-webkit-details-marker { display: none; }
+.fgroup summary::before { content: "▸"; color: var(--faint); width: 12px; }
+.fgroup[open] summary::before { content: "▾"; }
+.fgroup b { font-weight: 500; }
+.gstat { margin-left: auto; font-size: 12px; color: var(--faint); } .gstat.bad { color: var(--bad); } .gstat.warn { color: var(--warn); }
+.frow { display: grid; grid-template-columns: 180px minmax(220px, 1fr) 110px minmax(0, 200px) 120px; gap: 10px; align-items: center;
+        padding: 6px 16px; border-top: 1px solid var(--line); font-size: 13px; }
+.frow[data-depth="1"] .flab { padding-left: 14px; }
+.frow .flab { color: var(--muted); white-space: nowrap; } .frow .need { color: var(--bad); font-weight: 500; font-size: 11px; }
+.drop { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; min-height: 32px; padding: 2px; border-radius: 8px; }
+.drop.over, .colchip.over { outline: 2px dashed var(--primary); outline-offset: 1px; }
+.drop .hole { color: var(--faint); border: 1px dashed var(--outline); border-radius: 13px; padding: 3px 10px; font-size: 12px; cursor: pointer; }
+.drop .else, .drop .plus { color: var(--faint); font-size: 11px; }
+.drop select { font: inherit; font-size: 12px; padding: 3px 6px; border: 1px solid var(--outline); border-radius: 6px; background: var(--surface); color: var(--ink); }
+.frow .fex { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; } .frow .fwarn { color: var(--warn); font-size: 12px; white-space: nowrap; }
+.mini { border: 0; background: transparent; color: var(--primary); cursor: pointer; font: inherit; font-size: 12px; padding: 2px 6px; border-radius: 6px; white-space: nowrap; }
+.mini:hover { background: var(--primary-soft); }
+@media (max-width: 860px) { .frow { grid-template-columns: 1fr; gap: 4px; } }
 @media (max-width: 600px) { .empty .flow { flex-direction: column; align-items: center; } .empty .flow .arrow { transform: rotate(90deg); } }
 </style>
 </head>
@@ -315,10 +343,9 @@ body.collapsed .navitem .stack, body.collapsed .rail li::before { display: none;
             {"command": "create workspace", "args": {"name": "@name", "home": "@home"}, "reads": ["workspace"]}]},
   {"id": "columns", "title": "Prepare your data", "icon": "columns", "what": "Which of your columns hold each field, and how each value is made comparable.",
    "strip": ["records", "prepare"],
-   "uses": [{"command": "list columns", "args": {"workspace": "@workspace"}, "reads": ["columns", "own"]},
-            {"command": "load records", "args": {"input": "@input", "workspace": "@workspace"}, "reads": ["records", "fields", "suggested", "loaded", "copied"]},
-            {"command": "describe records", "args": {"input": "@loaded", "workspace": "@workspace"}, "reads": ["records", "fields", "suggested", "notes"]},
-            {"command": "set columns", "args": {"mapping": "@mapping", "workspace": "@workspace"}, "reads": ["columns"]},
+   "uses": [{"command": "load records", "args": {"input": "@input", "workspace": "@workspace"}, "reads": ["columns", "slots", "features", "placements", "fields", "needed", "loaded"]},
+            {"command": "describe records", "args": {"input": "@loaded", "workspace": "@workspace"}, "reads": ["columns", "slots", "features", "placements", "fields", "needed"]},
+            {"command": "set feature", "args": {"mapping": "@mapping", "workspace": "@workspace"}, "reads": ["slots"]},
             {"command": "describe workspace", "args": {"workspace": "@workspace"}, "reads": ["inputs"]},
             {"command": "describe matching", "args": {"workspace": "@workspace"}, "reads": ["nodes"]}]},
   {"id": "run", "title": "Find matches", "icon": "run", "what": "Rules settle the certain pairs; the rest are listed, scored and accepted at the line; linked records become one customer.",
@@ -574,7 +601,7 @@ function stepFoot(id) {  // back and next, in the workflow's order
 
 const NODE = {  // each stage in everyday words; describe matching's own name and method show on a click
   records: {icon: "records", name: "Records", word: "records", n: (x) => x.count},
-  prepare: {icon: "wand", name: "Made comparable", word: "fields", n: (x) => x.fields.filter((f) => f.filled).length || x.fields.length},
+  prepare: {icon: "wand", name: "Made comparable", word: "fields", n: (x) => x.fields.filter((f) => f.filled).length || null},
   rules: {icon: "rule", name: "Sure matches", word: "pairs", tone: "rule", n: (x) => x.pairs},
   candidates: {icon: "fan", name: "Compared", word: "pairs", n: (x) => x.pairs},
   score: {icon: "scale", name: "Weighed", word: "pairs", n: (x) => x.pairs},
@@ -724,6 +751,54 @@ function slider(r) {  // where the engine and the name alone place a record, fro
     <span class="ends"><span>${icon("person")} person</span><span>company ${icon("kinds")}</span></span></div>`;
 }
 
+// Step 2: the file's columns as chips, and each group's features and their parts as slots to drop them into. A slot shows
+// its columns (else: read where the ones before are empty; +: joined), its share filled, an example, and a warning when
+// few of its values look like it; ✦ Suggest shows what the file's contents place there, kept with ✓.
+function features(d, view) {
+  const slot = Object.fromEntries(d.slots.map((x) => [x.feature, x])), info = Object.fromEntries(d.columns.map((c) => [c.column, c]));
+  const field = Object.fromEntries(d.fields.map((f) => [f.field, f])), lost = (f) => !field[f] || field[f].filled === null;
+  const used = new Set(d.slots.flatMap((x) => x.alternatives.filter((a) => a.found).flatMap((a) => a.columns)));
+  const ghost = Object.fromEntries(d.placements.map((x) => [x.feature, x]));
+  const FEW = 0.5;  // under this share of values that look like the slot, the column is likely the wrong one
+  const meter = (v) => v === null || v === undefined ? "" : `<span class="meter"><i style="width:${Math.round(v * 100)}%"></i></span>${pct(v)}`;
+  const chipOf = (c, from, alt) => `<span class="colchip ${from ? "in" : used.has(c) ? "used" : ""} ${info[c] ? "" : "gone"}" draggable="true" data-col="${esc(c)}"
+    ${from ? `data-from="${esc(from)}" data-alt="${alt}"` : ""} title="${info[c] ? `${pct(info[c].filled)} filled · ${esc(info[c].example ?? "")}` : "not in this file"}">${esc(c)}${
+      from ? `<button class="x" data-x aria-label="Take ${esc(c)} off">×</button>` : ""}</span>`;
+  const needs = (x) => (x.field && d.needed.every.includes(x.field) && lost(x.field)) ||
+    (x.type === "person name" || x.field === "company_name") && d.needed.one_of.some((g) => g.every(lost));
+  const row = (path, x, depth, last, shown) => {
+    const s = slot[path], alts = s.sources;
+    const chips = alts.map((a, i) => (i ? '<span class="else">else</span>' : "") + a.map((c) => chipOf(c, path, i)).join('<span class="plus">+</span>')).join("");
+    const g = shown && ghost[path];
+    return `<div class="frow" data-depth="${depth}"><span class="flab">${depth ? (last ? "└ " : "├ ") : ""}${esc(x.name)}${x.script ? ` <span class="tag">${esc(x.script)}</span>` : ""}${
+        needs(x) ? ' <b class="need">needed</b>' : ""}</span>
+      <span class="drop" data-slot="${esc(path)}">${chips}${alts.length ? "" : '<span class="hole" tabindex="0">drop a column</span>'}${
+        g ? `<span class="colchip ghost" title="${esc(g.why)}">✦ ${esc(g.column)}<button class="x keep" data-keep='${esc(JSON.stringify([path, g.column]))}' aria-label="Keep it">✓</button></span>` : ""}</span>
+      <span class="fstat">${meter(s.filled)}</span><span class="fex faint">${esc(s.example ?? "")}</span>
+      <span class="fwarn">${s.looks_right !== null && s.looks_right !== undefined && s.looks_right < FEW ? `⚠ ${pct(s.looks_right)} look right` : ""}</span></div>`;
+  };
+  const status = (g) => {
+    const need = g.features.filter(needs);
+    const paths = g.features.flatMap((f) => [`${g.group}/${f.name}`, ...(f.parts || []).map((p) => `${g.group}/${f.name}/${p.name}`)]);
+    const bad = paths.filter((p) => slot[p].looks_right !== null && slot[p].looks_right !== undefined && slot[p].looks_right < FEW);
+    const found = paths.filter((p) => slot[p].filled !== null).length;
+    return need.length ? ["bad", `✗ ${need.map((f) => f.name).join(", ")} needed`] : bad.length ? ["warn", `⚠ ${bad.map((p) => p.split("/").pop()).join(", ")}`]
+      : ["", `${found} of ${paths.length} found`];
+  };
+  const waiting = d.placements.length;
+  return `<div class="card tray"><div class="trayhead"><b>Columns in your file</b><span class="faint">drag one into a feature</span>
+      ${waiting ? `<button class="btn" data-suggest="*">✦ Suggest all</button>` : ""}</div>
+      <div class="chips">${d.columns.map((c) => chipOf(c.column)).join("")}</div></div>` +
+    d.features.map((g) => {
+      const [cls, text] = status(g), shown = view.ghosts.has(g.group), mine = d.placements.filter((x) => x.feature.startsWith(`${g.group}/`)).length;
+      return `<details class="fgroup" data-g="${esc(g.group)}" ${(view.toggled.has(g.group) ? view.toggled.get(g.group) : cls !== "") ? "open" : ""}>
+        <summary><b>${esc(g.group)}</b>${mine ? `<button class="mini" data-suggest="${esc(g.group)}">✦ ${shown ? "Hide" : "Suggest"}</button>` : ""}${
+          shown && mine ? `<button class="mini" data-keepall="${esc(g.group)}">Keep all</button>` : ""}<span class="gstat ${cls}">${esc(text)}</span></summary>
+        ${g.features.map((f) => row(`${g.group}/${f.name}`, f, 0, false, shown) + (f.parts || []).map((p, i, all) =>
+          row(`${g.group}/${f.name}/${p.name}`, p, 1, i === all.length - 1, shown)).join("")).join("")}</details>`;
+    }).join("");
+}
+
 // ---------- pieces every page draws with ----------
 
 function banner(e, kind = "bad") {
@@ -830,7 +905,7 @@ const SCREENS = {
     el.innerHTML = head("records", `<button class="btn" id="refresh">${icon("refresh")}Refresh</button>`) + `<div id="next"></div><div id="flow"></div><div id="out"></div>`;
     $("refresh").onclick = () => go("records");
     const [d] = await Promise.all([run("records", "describe workspace"), flowOf("records", $("flow"))]);
-    if (d.event === "error" || !d.records) { $("out").innerHTML = d.event === "error" ? banner(d) : emptyRun(); return d; }
+    if (d.event === "error" || !d.records) { $("out").innerHTML = d.event === "error" ? banner(d) : emptyRun(d); return d; }
     const p = progress(d), s = p.steps[p.next];
     $("next").innerHTML = `<div class="next">${icon(s.state === "attention" ? "person" : "run")}<span><b>Next: ${ORDER.indexOf(p.next) + 1} · ${esc(STEP[p.next])}</b>
       <span class="muted"> · ${esc(s.line)}</span></span><span class="grow" style="flex:1"></span>${p.next === "workspace" ? '<button class="btn filled" data-pick>Open</button>' : `<a class="btn filled" data-go="${p.next}">Open</a>`}</div>`;
@@ -842,38 +917,74 @@ const SCREENS = {
   },
 
   async columns(el) {
-    el.innerHTML = head("columns", `<button class="btn filled" id="load">${icon("add")}Load</button>`) +
-      `<div id="flow"></div><div class="card"><label class="field" style="margin:0"><span class="lab">Records file</span>
-       <input type="text" id="cin" placeholder="customers.parquet"></label><div id="files" class="chips" style="margin-top:10px"></div></div>
-       <div id="out" class="faint">Loading…</div>${stepFoot("columns")}`;
+    el.innerHTML = head("columns") + `<div id="flow"></div>
+      <div class="card"><label class="field" style="margin:0"><span class="lab">Records file</span>
+        <span class="loadrow"><input type="text" id="cin" placeholder="path to a .parquet file"><button class="btn filled" id="load">${icon("add")}Load</button></span></label>
+        <div id="files" class="chips" style="margin-top:10px"></div></div><div id="out"></div>${stepFoot("columns")}`;
     if (!state.workspace) { $("out").innerHTML = emptyRun(); return; }
-    const draw = async (check) => {  // a check just made, or one of the file loaded last
-      const [cols, d, g] = await Promise.all([run("columns", "list columns"), run("columns", "describe workspace"), flowOf("columns", $("flow"))]);
-      const files = d.inputs || [], last = files[files.length - 1];
+    const view = {toggled: new Map(), ghosts: new Set()};  // groups opened or closed, groups showing their suggestions: kept as the page redraws
+    const draw = async (d) => {  // d: a description just made; else the file loaded last is described
+      const [w] = await Promise.all([run("columns", "describe workspace"), flowOf("columns", $("flow"))]);
+      const files = w.inputs || [], last = files[files.length - 1];
       $("files").innerHTML = files.map((f) => `<span class="tag" title="${esc(f.path)}">${esc(f.name)} · ${fmt(Math.ceil(f.bytes / 1e6))} MB · ${f.read ? "matched" : "not run yet"}</span>`).join("");
-      if (check === undefined && last) check = await run("columns", "describe records", {loaded: last.path});
-      const shares = Object.fromEntries(((check && check.fields) || []).map((f) => [f.field, f]));
-      const examples = Object.fromEntries((g && g.nodes ? g.nodes.find((n) => n.id === "prepare").fields : []).map((f) => [f.field, f]));
-      const hints = (check && check.suggested || []).map((x) => [x.field, x.column]);
-      const meter = (v) => v === null || v === undefined ? '<span class="faint">—</span>' : `<span class="meter"><i style="width:${Math.round(v * 100)}%"></i></span>${pct(v)}`;
-      $("out").innerHTML = (check ? banner(check) : "") +
-        (hints.length ? `<div class="actions" style="margin:-4px 0 16px">${hints.map(([f, c]) => `<button class="btn outlined" data-hint="${esc(f)}=${esc(c)}">Use ${esc(c)} for ${esc(f)}</button>`).join("")}</div>` : "") +
-        `<div id="map"></div>`;
-      grid($("map"), cols.columns, ["field", "columns", "example", "filled", "looks_right", "save"], {
-        labels: {looks_right: "looks right", save: ""},
-        cell: (r, c) => c === "columns" ? `<input class="inline" data-field="${esc(r.field)}" value="${esc(r.columns)}" aria-label="columns of ${esc(r.field)}">` :
-          c === "field" ? esc(words(r.field)) :
-          c === "example" ? (examples[r.field] ? chainOf(examples[r.field]) : '<span class="faint">—</span>') :
-          c === "save" ? `<button class="btn" data-save="${esc(r.field)}">Save</button>` : meter((shares[r.field] || {})[c])});
-      const save = async (mapping) => { const e = await run("columns", "set columns", {mapping}); if (e.event === "error") $("out").insertAdjacentHTML("afterbegin", banner(e)); else draw(); };
-      el.querySelectorAll("[data-save]").forEach((b) => b.onclick = () => save([`${b.dataset.save}=${el.querySelector(`[data-field="${b.dataset.save}"]`).value.replaceAll(" ", "")}`]));
-      el.querySelectorAll("[data-hint]").forEach((b) => b.onclick = () => save([b.dataset.hint]));
+      if (d === undefined && last) d = await run("columns", "describe records", {loaded: last.path});
+      if (!d) return;
+      $("out").innerHTML = d.event === "error" ? banner(d) : features(d, view);
+      if (d.event !== "error") wire(d);
+    };
+    const wire = (d) => {  // every change is one set feature: the slots it touches, with their columns as they become
+      const alts = Object.fromEntries(d.slots.map((x) => [x.feature, x.sources.map((a) => [...a])])), inFile = new Set(d.columns.map((c) => c.column));
+      const single = new Set(d.features.flatMap((g) => g.features.filter((f) => f.field === "id").map((f) => `${g.group}/${f.name}`)));  // one column, no fallback
+      const save = async (paths) => {
+        const e = await run("columns", "set feature", {mapping: [...new Set(paths)].map((p) => `${p}=${alts[p].filter((a) => a.length).map((a) => a.join("+")).join(",")}`)});
+        if (e.event === "error") $("out").insertAdjacentHTML("afterbegin", banner(e)); else draw();
+      };
+      const take = (from, col) => { alts[from] = alts[from].map((a) => a.filter((c) => c !== col)).filter((a) => a.length); };
+      const place = (to, col, join, from) => {  // into a slot: a fallback; onto a chip: joined to it; columns this file lacks give way
+        if (from) take(from, col);
+        alts[to] = single.has(to) ? [] : alts[to].filter((a) => a.length && a.every((c) => inFile.has(c)));
+        join !== null && alts[to][join] ? alts[to][join].push(col) : alts[to].push([col]);
+        save([to, ...(from && from !== to ? [from] : [])]);
+      };
+      el.querySelectorAll(".colchip[draggable]").forEach((c) => c.ondragstart = (e) => e.dataTransfer.setData("text/plain", JSON.stringify({col: c.dataset.col, from: c.dataset.from || null})));
+      el.querySelectorAll(".drop, .drop .colchip").forEach((t) => {
+        t.ondragover = (e) => { e.preventDefault(); t.classList.add("over"); };
+        t.ondragleave = () => t.classList.remove("over");
+        t.ondrop = (e) => {
+          e.preventDefault(); e.stopPropagation();
+          const {col, from} = JSON.parse(e.dataTransfer.getData("text/plain")), slot = t.closest(".drop").dataset.slot;
+          place(slot, col, t.classList.contains("colchip") ? Number(t.dataset.alt) : null, from);
+        };
+      });
+      el.querySelectorAll("[data-x]").forEach((b) => b.onclick = () => { const c = b.closest(".colchip"); take(c.dataset.from, c.dataset.col); save([c.dataset.from]); });
+      el.querySelectorAll(".hole").forEach((h) => h.onclick = () => {  // without dragging: the file's columns in a list
+        const pick = document.createElement("select");
+        pick.innerHTML = `<option value="">pick a column</option>` + d.columns.map((c) => `<option>${esc(c.column)}</option>`).join("");
+        pick.onchange = () => pick.value && place(h.closest(".drop").dataset.slot, pick.value, null, null);
+        h.replaceWith(pick);
+        pick.focus();
+      });
+      el.querySelectorAll("[data-keep]").forEach((b) => b.onclick = () => { const [slot, col] = JSON.parse(b.dataset.keep); place(slot, col, null, null); });
+      el.querySelectorAll("[data-keepall]").forEach((b) => b.onclick = () => {
+        const mine = d.placements.filter((x) => b.dataset.keepall === "*" || x.feature.startsWith(`${b.dataset.keepall}/`));
+        mine.forEach((x) => { alts[x.feature] = [[x.column]]; });
+        save(mine.map((x) => x.feature));
+      });
+      el.querySelectorAll("[data-suggest]").forEach((b) => b.onclick = (e) => {
+        e.preventDefault();
+        const g = b.dataset.suggest;
+        g === "*" ? (view.ghosts.size ? view.ghosts.clear() : d.features.forEach((x) => view.ghosts.add(x.group))) : view.ghosts.has(g) ? view.ghosts.delete(g) : view.ghosts.add(g);
+        if (g !== "*") view.toggled.set(g, true);
+        $("out").innerHTML = features(d, view);
+        wire(d);
+      });
+      el.querySelectorAll("details.fgroup").forEach((g) => g.ontoggle = () => view.toggled.set(g.dataset.g, g.open));
     };
     $("load").onclick = async () => {
       const input = $("cin").value.trim();
       if (!input) { $("cin").focus(); return; }
       const e = await run("columns", "load records", {input});
-      if (e.loaded || e.event !== "error") $("cin").value = "";
+      if (e.event !== "error") $("cin").value = "";
       draw(e);
       refresh();
     };
@@ -929,7 +1040,7 @@ const SCREENS = {
     if (record) entity(record);
     if (!state.workspace) { $("left").innerHTML = emptyRun(); return; }
     const [d] = await Promise.all([run("results", "describe workspace"), flowOf("results", $("flow"))]);
-    if (d.event === "error" || !d.records) { $("left").innerHTML = d.event === "error" ? banner(d) : emptyRun(); return d; }
+    if (d.event === "error" || !d.records) { $("left").innerHTML = d.event === "error" ? banner(d) : emptyRun(d); return d; }
     $("left").innerHTML = `${scope("records", `The ${fmt(d.largest.length)} largest customers`)}<div id="largest"></div>`;
     where();
     const t = grid($("largest"), d.largest, ["entity", "records"], {labels: {entity: "customer"}, filter: false, onPick: (i) => { t.select(i); entity(d.largest[i].entity); }});
@@ -1050,12 +1161,13 @@ async function review(el, which, note = "") {
 
 const NEED = [["folder", "Workspace", "one folder per job"], ["records", "Your records", "loaded in step 2"],
               ["customers", "Customers", "one ID each"]];  // what matching needs, then what it gives
-function emptyRun() {
+function emptyRun(d) {  // d: the workspace described, when the page has it
   if (!state.workspace) return `<div class="card empty"><h2>Gather each customer's records under one ID</h2><div class="flow">${NEED.map(([ic, name, what], i) =>
     `${i ? ARROW : ""}<span class="node static"><span class="top">${icon(ic)}${esc(name)}</span><span class="faint" style="font-size:12px">${esc(what)}</span></span>`).join("")}</div>
     <div class="actions" style="justify-content:center"><button class="btn filled" data-pick>1 · Choose a workspace</button></div></div>`;
   return `<div class="card empty">${icon("folder")}<h2>Nothing matched in ${esc(state.workspace.split("/").filter(Boolean).pop())} yet</h2>
-    <div class="actions" style="justify-content:center"><a class="btn outlined" data-go="columns">2 · Prepare your data</a><a class="btn filled" data-go="run">3 · Find matches</a></div></div>`;
+    <div class="actions" style="justify-content:center">${d && d.inputs && d.inputs.length ? '<a class="btn filled" data-go="run">3 · Find matches</a>'
+      : '<a class="btn filled" data-go="columns">2 · Prepare your data</a>'}</div></div>`;
 }
 
 // The workspace picker, as a console's project picker: the workspaces on disk (list workspaces), or a new one.
@@ -1073,6 +1185,7 @@ async function pick() {
     const d = await run("records", "create workspace", {name: $("new-name").value.trim()});
     if (d.event === "error") { $("made").innerHTML = banner(d); return; }
     dlg.close();
+    current = "columns";  // a new workspace's next step
     setWorkspace(d.workspace);
   };
   $("new-name").onkeydown = (e) => { if (e.key === "Enter") { e.preventDefault(); $("create").click(); } };
