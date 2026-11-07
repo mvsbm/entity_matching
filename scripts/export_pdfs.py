@@ -5,7 +5,7 @@
 
 Running it writes its files in data/artifacts/demo, exactly as running it by hand does.
 """
-import sys
+import argparse
 from pathlib import Path
 
 import nbformat
@@ -44,4 +44,7 @@ def main(names: list[str]) -> None:
 
 
 if __name__ == "__main__":
-    main(sys.argv[1:] or list(NOTEBOOKS))
+    parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0], formatter_class=argparse.RawDescriptionHelpFormatter,
+                                     epilog=__doc__.split("\n\n", 1)[1])
+    parser.add_argument("names", nargs="*", default=list(NOTEBOOKS), help=f"the notebooks to export (default: {', '.join(NOTEBOOKS)})")
+    main(parser.parse_args().names)

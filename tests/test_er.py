@@ -1331,7 +1331,7 @@ def test_test_is_counted_once_per_population(tmp_path):
     assert test_evaluations(data)["configs_on_test"].max() == 1
     append_leaderboard(data, "fs:FINAL", ("config", 3), "test", {})  # the same population, a second configuration
     assert test_evaluations(data)["configs_on_test"].max() == 2
-    (data.labels_dir / "test.parquet").unlink()  # choose.py --no-test: train and val only, test never read
+    (data.labels_dir / "test.parquet").unlink()  # a development round of choose.py: train and val only, test never read
     dev = replace(data, datasets=("train", "val"))
     append_leaderboard(dev, "fs:x", ("config", 4), "val", {})
     assert test_evaluations(dev).empty
@@ -1467,7 +1467,7 @@ def test_with_answers_the_kinds_are_the_same_every_run_people_s_stand_and_a_cust
     sheet.loc[sheet.index[:3], "kind"] = 0  # can't tell: kept out
     sheet.to_parquet(tmp_path / "labels.parquet")
     a = Run(p, s, kind_labels=tmp_path / "labels.parquet").full(tmp_path / "all.parquet", tmp_path / "b")
-    b = Run(p, s, kind_labels=tmp_path / "labels.parquet").full(tmp_path / "all.parquet", tmp_path / "c")
+    Run(p, s, kind_labels=tmp_path / "labels.parquet").full(tmp_path / "all.parquet", tmp_path / "c")
     ga, gb = (pd.read_parquet(tmp_path / x / "gold.parquet") for x in ("b", "c"))
     assert a.classifier.labels == len(sheet) - 3 and a.classifier.measured == (sheet["why"] == "measure").sum() - (sheet["why"][:3] == "measure").sum()
     assert ga[["kind", "kind_p", "kind_by", "customer_kind"]].equals(gb[["kind", "kind_p", "kind_by", "customer_kind"]])

@@ -161,7 +161,7 @@ def pairs_sql(b: Blocker, r: Records, skip: str | None = None, only: str | None 
             cond = " AND ".join(touch + (["x.ca <> x.cb"] if r.cluster else [])) or "TRUE"
             return (f"WITH s AS (SELECT {u}{cl}, {leads} FROM {t} WHERE {k} IS NOT NULL WINDOW w AS (ORDER BY {k}, {u})) "
                     f"SELECT DISTINCT least(x.a, x.b) AS l, greatest(x.a, x.b) AS r FROM ({arms}) x WHERE {cond}") if b.window > 1 else \
-                f"SELECT NULL::VARCHAR AS l, NULL::VARCHAR AS r WHERE FALSE"
+                "SELECT NULL::VARCHAR AS l, NULL::VARCHAR AS r WHERE FALSE"
         case DeletionKeys():
             v = r.variants(b)
             same = " AND ".join(["a.__dk = b.__dk", *(f"a.{q(w.name)} = b.{q(w.name)}" for w in b.within)])

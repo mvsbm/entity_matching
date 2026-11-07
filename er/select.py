@@ -355,7 +355,7 @@ class FSChooser:
                 ("Patterns without a guaranteed key, at target_rows (label-free)", text, patterns.head(10))]
 
     def evaluate(self) -> list[Section]:
-        uid, f = self.data.unique_id, self.final
+        f = self.final
         res = self.run(f, "val")
         val_curve = threshold_curve(res, f, self.val_truth, self.data, list(self.rule.grid))
         cv_at = cv_threshold_curve(self.cv(f), f, self.train_truth, self.folds, self.data, [f.min_match_weight]).iloc[0]

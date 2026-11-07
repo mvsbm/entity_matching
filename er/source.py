@@ -105,7 +105,7 @@ def open_source(path: str | Path | list[Path], con: duckdb.DuckDBPyConnection, e
         if e in types or not found:
             continue
         if len(found) > 1:
-            raise InputError(f"columns {', '.join(found)} could each be {e}", fix=f"rename all but one, or map the field to one of them in config/settings.toml [columns]")
+            raise InputError(f"columns {', '.join(found)} could each be {e}", fix="rename all but one, or map the field to one of them in config/settings.toml [columns]")
         rename[found[0]] = e
         notes.append(f"column {found[0]} read as {e}")
     cols = []
