@@ -114,6 +114,8 @@ tr.differ td.v { background: var(--mark); color: var(--mark-ink); }
 .banner .fix { color: var(--ink); margin-top: 2px; }
 .meter { display: inline-block; width: 64px; height: 6px; border-radius: 3px; background: var(--line); vertical-align: middle; margin-right: 8px; overflow: hidden; }
 .meter i { display: block; height: 100%; background: var(--primary); }
+.meter.wide { display: block; width: 100%; max-width: 480px; margin: 4px 0 2px; } .meter.wide i { transition: width .3s; }
+.card.ready { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; } .card.ready .grow { flex: 1; }
 .inline { font: inherit; padding: 6px 8px; border: 1px solid var(--outline); border-radius: 4px; background: var(--surface); color: var(--ink); width: 100%; min-width: 14em; }
 .field { display: block; margin: 0 0 16px; }
 .field .lab { display: block; font-size: 12px; color: var(--muted); margin-bottom: 4px; }
@@ -382,11 +384,12 @@ body.collapsed .navitem .stack, body.collapsed .rail li::before { display: none;
             {"command": "describe workspace", "args": {"workspace": "@workspace"}, "reads": ["inputs"]},
             {"command": "describe matching", "args": {"workspace": "@workspace"}, "reads": ["nodes"]}]},
   {"id": "run", "title": "Find matches", "icon": "run", "what": "Rules settle the certain pairs; the rest are listed, scored and accepted at the line; linked records become one customer.",
-   "strip": ["records", "rules", "candidates", "score", "accept", "group", "customers"],
+   "strip": ["records", "rules", "candidates", "score", "accept", "people", "group"],
    "uses": [{"command": "resolve records", "args": {"input": "@input", "workspace": "@workspace", "overwrite": "@overwrite", "compute": "@compute"}, "form": ["input", "overwrite"], "reads": ["summary", "seconds"]},
             {"command": "add records", "args": {"input": "@input", "workspace": "@workspace", "compute": "@compute"}, "form": ["input"], "reads": ["summary"]},
             {"command": "match records", "args": {"input": "@input", "workspace": "@workspace"}, "form": ["input"], "reads": ["counts", "records"]},
             {"command": "rerun records", "args": {"workspace": "@workspace", "compute": "@compute"}, "form": [], "reads": ["summary"]},
+            {"command": "describe workspace", "args": {"workspace": "@workspace"}, "reads": ["records", "entities", "pairs", "trust", "inputs"]},
             {"command": "describe matching", "args": {"workspace": "@workspace"}, "reads": ["nodes"]}]},
   {"id": "pairs", "title": "Review possible matches", "icon": "pairs", "what": "Close calls, just below the line, and pairs with no name compared: you decide.",
    "strip": ["score", "accept", "people", "group"],
@@ -591,7 +594,7 @@ function progress(d) {
     s.kinds = k.decide ? {state: "attention", line: `${fmt(k.decide)} to decide`}
       : k.written_in ? {state: "attention", line: `${fmt(k.written_in)} answered, to apply`}
       : {state: "optional", line: k.measure ? `${fmt(k.measure)} to check` : "nothing to check"};
-    s.results = {state: "done", line: `${fmt(d.entities)} customers`};
+    s.results = d.entities < d.records ? {state: "done", line: `${fmt(d.entities)} customers`} : {state: "later", line: "none joined yet"};
     const a = d.audits || {checked: 0, false: 0}, r = `round ${d.round || 1}`;
     s.improve = tr ? (tr.above.false ? {state: "attention", line: `${fmt(tr.above.false)} different above the trust line`}  // the line is the proof
                                      : {state: "done", line: `${r} · ${tr.line === "none" ? "nothing merges by itself" : `${fmt(tr.line)}+ merge by themselves`}`})
@@ -655,7 +658,7 @@ function stepFoot(id) {  // back and next, in the workflow's order
   const link = (to, k, cls) => to === "workspace" ? `<button class="btn ${cls}" data-pick>${k}</button>` : `<a class="btn ${cls}" data-go="${to}">${k}</a>`;
   const loop = id === LOOP.after && (steps.steps || {}).improve ? `<a class="btn" data-go="${LOOP.screen}">${icon("loop")}${esc(STEP.improve)}</a>` : "";
   return `<div class="stepfoot">${back ? link(back, `← ${ORDER.indexOf(back) + 1} ${esc(STEP[back])}`, "") : ""}<span class="grow"></span>${loop}${
-    next ? link(next, `Next: ${ORDER.indexOf(next) + 1} ${esc(STEP[next])} →`, "filled") : ""}</div>`;
+    next ? link(next, `Next: ${ORDER.indexOf(next) + 1} ${esc(STEP[next])} →`, ["done", "optional"].includes(((steps.steps || {})[id] || {}).state) ? "filled" : "") : ""}</div>`;  // the way on stands out once this step is done
 }
 
 // ---------- the flow strip: each stage of the pipeline as a chip, its details drawn, not written ----------
@@ -742,7 +745,8 @@ const DETAIL = {
   prepare: (x) => `<div class="bars" style="grid-template-columns:minmax(90px,max-content) 1fr 60px">${x.fields.map((f) =>
     `<span class="lab">${esc(words(f.field))}</span>${chainOf(f)}<span class="val">${pct(f.filled)}</span>`).join("")}</div>`,
   rules: (x) => bars(x.rules.map((r) => ({label: `${r.exact.map((f) => `= ${words(f)}`).concat(r.fuzzy.map((t) => test(t))).join(" · ")}`,
-                                           title: `${r.stage}: ${r.name}`, value: r.pairs, tone: "rule", example: r.example && r.example[0]}))),
+                                           title: `${r.stage}: ${r.name}`, value: r.pairs, tone: "rule", example: r.example && r.example[0],
+                                           text: r.pairs === null ? "—" : r.merged === r.pairs ? fmt(r.pairs) : `${fmt(r.pairs)} · ${fmt(r.merged)} merged`}))),
   candidates: (x) => bars(x.generators.slice().sort((a, b) => (b.pairs ?? 0) - (a.pairs ?? 0)).map((g) => ({
     label: `${{"same value": "=", "sorted neighbours": "↕", "TF-IDF nearest": "≈", "one letter deleted": "−1"}[g.method] || ""} ${g.keys.map(keyName).join(" + ")}`,
     title: `${g.method}${g.window ? `, window ${g.window}` : ""}${g.k ? `, ${g.k} nearest, cosine ≥ ${g.min_cosine}` : ""}: ${g.pairs ?? "—"} pairs, ${g.matched ?? "—"} matched`,
@@ -757,13 +761,14 @@ const DETAIL = {
   accept: (x) => {
     if (!x.bands.length) return `${ruler([], x.threshold)}`;
     const bands = x.bands.map(([from, pairs, accepted]) => ({from: Number(from), pairs: Number(pairs), accepted: Number(accepted)})).filter((b) => b.from > -40);
-    const max = Math.max(1, ...bands.map((b) => b.pairs)), w = 600 / bands.length, at = (v) => (bands.findIndex((b) => b.from >= v) + 0) * w;
+    const max = Math.max(1, ...bands.map((b) => b.pairs)), w = 600 / bands.length, at = (v) => { const i = bands.findIndex((b) => b.from >= v); return (i < 0 ? bands.length : i) * w; };
+    const line = x.trust === null || x.trust === undefined ? x.threshold : x.trust;  // what merges by itself: the trust line, where there is one
     return `<svg class="ruler hist" style="height:150px" viewBox="0 0 600 90" role="img" aria-label="pairs by points, with the line at ${x.threshold} points">
-      <rect x="${at(x.review_from)}" y="0" width="${at(x.threshold) - at(x.review_from)}" height="70" fill="var(--people-bg)"/>
+      ${x.trust === null || x.trust === undefined ? `<rect x="${at(x.review_from)}" y="0" width="${at(x.threshold) - at(x.review_from)}" height="70" fill="var(--people-bg)"/>` : ""}
       ${bands.map((b, i) => `<rect x="${i * w + 1}" y="${70 - 66 * Math.sqrt(b.pairs / max)}" width="${w - 2}" height="${66 * Math.sqrt(b.pairs / max)}" rx="2"
         fill="${b.accepted ? "var(--model)" : "var(--outline)"}"><title>${b.from} to ${b.from + 2} points: ${b.pairs} pairs</title></rect>`).join("")}
-      <line x1="${at(x.threshold)}" x2="${at(x.threshold)}" y1="0" y2="74" stroke="var(--ink)" stroke-width="2"/>
-      <text x="${at(x.threshold) + 4}" y="86">${x.threshold} points needed: matched →</text><text x="${at(x.review_from) - 3}" y="12" text-anchor="end" style="fill:var(--people)">you decide ▸</text>
+      ${line === "none" ? '<text x="600" y="86" text-anchor="end">nothing merges by itself yet</text>' : `<line x1="${at(line)}" x2="${at(line)}" y1="0" y2="74" stroke="var(--ink)" stroke-width="2"/>
+      <text x="${Math.min(at(line) + 4, 430)}" y="86">${line} points and more merge by themselves →</text>`}${x.trust === null || x.trust === undefined ? `<text x="${at(x.review_from) - 3}" y="12" text-anchor="end" style="fill:var(--people)">you decide ▸</text>` : ""}
       <text x="0" y="86">← fewer points</text></svg>`;
   },
   people: (x) => bars([{label: "to decide", value: x.to_decide, tone: "people"}, {label: "decided", value: x.decided, tone: "people"}, {label: "joined by you", value: x.joined, tone: "people"}]),
@@ -918,11 +923,15 @@ function grid(box, rows, cols, opts = {}) {
 
 // A parameter's input, built from its declaration: a flag a checkbox, a choice a list, the rest a text box.
 const FIELD = {input: "Records file"};  // a parameter's name on the page, where its own name says less
+const LIT = {load: ["records", "records"], rules: ["rules", "pairs"], candidates: ["candidates", "candidates"], cluster: ["accept", "accepted"]};  // a run's step, the stage it fills in
+const took = (rows) => { const s = Math.max(10, Math.round(rows * 6e-5 / 10) * 10); return s < 60 ? `${s} seconds` : s < 90 ? "a minute" : `${Math.round(s / 60)} minutes`; };  // about a minute a million records
+const NEW_FILE = ["add records", "match records"];  // their file is a new one: the file loaded last is matched already
 function field(command, name) {
-  const p = COMMANDS[command].params.find((x) => x.name === name), id = `f-${name}`, needed = p.required || (p.positional && !p.optional);
+  const p = COMMANDS[command].params.find((x) => x.name === name), id = `f-${name}`;
+  const fresh = NEW_FILE.includes(command) && name === "input", needed = fresh || p.required || (p.positional && !p.optional);
   if (p.kind === "flag") return `<label class="check"><input type="checkbox" id="${id}"><span>${esc(p.help[0].toUpperCase() + p.help.slice(1))}</span></label>`;
   const control = p.choices.length ? `<select id="${id}">${p.choices.map((c) => `<option>${esc(c)}</option>`).join("")}</select>`
-    : `<input type="text" id="${id}" placeholder="${esc(p.optional ? "the file loaded last" : p.metavar)}" ${needed ? "required" : ""}>`;
+    : `<input type="text" id="${id}" placeholder="${esc(fresh ? "the new records file" : p.optional ? "the file loaded last" : p.metavar)}" ${needed ? "required" : ""}>`;
   return `<label class="field"><span class="lab">${esc(FIELD[name] || words(name))}${needed ? " *" : ""}</span>${control}</label>`;
 }
 function formValues(command, form) {
@@ -935,9 +944,9 @@ function formValues(command, form) {
 }
 
 // A command in a dialog, as a console's create dialog: its form, the command line it will run, then run.
-function action(id, command, label, done, onEvent = null) {
-  const c = COMMANDS[command], form = use(id, command).form || [], dlg = $("dlg");
-  dlg.innerHTML = `<form method="dialog"><div class="dlg-body"><h2>${esc(label)}</h2>${form.map((n) => field(command, n)).join("")}
+function action(id, command, label, done, onEvent = null, opts = {}) {  // opts: form, the fields asked (else the layout's); about, one line on what it runs on
+  const c = COMMANDS[command], form = opts.form || use(id, command).form || [], dlg = $("dlg");
+  dlg.innerHTML = `<form method="dialog"><div class="dlg-body"><h2>${esc(label)}</h2>${opts.about ? `<p class="about">${esc(opts.about)}</p>` : ""}${form.map((n) => field(command, n)).join("")}
       <details class="cmdline"><summary>Command line</summary><div class="equiv">${icon("terminal")}<code id="equiv-line"></code>
         <button type="button" class="iconbtn" id="copy" aria-label="Copy the command line">${icon("copy")}</button></div></details></div>
     <div class="dlg-foot"><span class="grow"></span><button class="btn" value="cancel" formnovalidate>Cancel</button><button class="btn filled" value="run">${esc(label)}</button></div></form>`;
@@ -1079,33 +1088,56 @@ const SCREENS = {
   },
 
   async run(el, loop) {
-    el.innerHTML = head("run", `<button class="btn filled" data-act="resolve records" data-label="Find matches">${icon("run")}Find matches</button>
-        <button class="btn" data-act="add records" data-label="Add new records">${icon("add")}Add new records</button><button class="btn" data-act="match records" data-label="Preview new records">Preview new records</button>
-        <button class="btn" data-act="rerun records" data-label="Run matching again">${icon("refresh")}Run matching again</button>`) +
+    const ran = ((steps.steps || {}).run || {}).state === "done";  // before a first run: one thing to do
+    const act = (command, label, ic, filled) => `<button class="btn${filled ? " filled" : ""}" data-act="${command}" data-label="${label}">${ic ? icon(ic) : ""}${label}</button>`;
+    el.innerHTML = head("run", ran ? act("rerun records", "Run matching again", "refresh", true) + act("add records", "Add new records", "add") + act("match records", "Preview new records")
+                                   : act("resolve records", "Find matches", "run", true)) +
       `<div id="flow"></div><div id="out">${state.workspace ? "" : emptyRun()}</div>${stepFoot("run")}`;
-    if (state.workspace) flowOf("run", $("flow"));
-    el.querySelectorAll("[data-act]").forEach((b) => b.onclick = () => {
-      const command = b.dataset.act;
+    if (!state.workspace) return;
+    flowOf("run", $("flow"));
+    let file = null;  // the file a first run reads: the one loaded last
+    const start = (command, label) => {
       const done = (d) => {
-        $("out").querySelector(".steps-card h2 .spin")?.replaceWith(Object.assign(document.createElement("span"), {innerHTML: icon(d.event === "error" ? "error" : "check")}));
-        $("out").querySelector(".steps-card")?.classList.remove("steps-card");
-        $("out").insertAdjacentHTML("beforeend", d.event === "error" ? banner(d) : command === "match records" ?
-          `<div class="card"><h2>What adding them would do</h2>${bars(Object.entries(d.counts).map(([k, n]) => ({label: k, value: n})))}</div><div id="matched"></div>` : "");
-        if (command === "match records" && d.records) grid($("matched"), d.records, ["id", "entity", "status", "by", "weight"], {cell: (r, c) => c === "status" ? chip(r.status) : esc(fmt(r[c]))});
-        if (d.event !== "error" && command !== "match records") { flowOf("run", $("flow")); refresh(); }
+        $("out").querySelector(".steps-card")?.remove();
+        if (d.event === "error") { $("out").insertAdjacentHTML("beforeend", banner(d)); return; }
+        if (command !== "match records") { refresh().then(() => go("run")); return; }  // the page again, from the workspace as it is now: its result, and the actions a run brings
+        $("out").innerHTML = `<div class="card"><h2>What adding them would do</h2>${bars(Object.entries(d.counts).map(([k, n]) => ({label: k, value: n})))}</div><div id="matched"></div>`;
+        if (d.records) grid($("matched"), d.records, ["id", "entity", "status", "by", "weight"], {cell: (r, c) => c === "status" ? chip(r.status) : esc(fmt(r[c]))});
       };
-      const step = (e) => {
+      let n = 0;
+      const step = (e) => {  // each stage fills in on the strip as its step ends; the steps by name are in the command drawer
         if (e.event !== "step") return;
-        let box = $("out").querySelector(".steps-card ul");
-        if (!box) {
-          $("out").insertAdjacentHTML("beforeend", `<div class="card steps-card"><h2><span class="spin" style="border-color:var(--primary);border-right-color:transparent"></span>${esc(b.dataset.label)}</h2><ul class="steps"></ul></div>`);
-          box = $("out").querySelector(".steps-card ul");
-        }
-        box.insertAdjacentHTML("beforeend", `<li>${icon("check")}${esc(e.step)} <span class="faint">${e.seconds.toFixed(1)} s</span></li>`);
+        if (!$("out").querySelector(".steps-card")) $("out").innerHTML = `<div class="card steps-card"><h2><span class="spin" style="border-color:var(--primary);border-right-color:transparent"></span>${esc(label)}</h2>
+          <span class="meter wide"><i style="width:0"></i></span></div>`;
+        $("out").querySelector(".steps-card .meter i").style.width = `${Math.min(100, 100 * ++n / (command === "add records" ? 8 : 9))}%`;
+        const [node, fact] = LIT[e.step] || [];
+        const b = node && $("flow").querySelector(`.node[data-node=${node}]`);
+        if (b && e[fact] !== undefined) { b.querySelector(".n").textContent = fmt(e[fact]); b.classList.remove("dim"); }
       };
-      action("run", command, b.dataset.label, done, step);
-    });
+      action("run", command, label, done, step, command === "resolve records" && !ran && file ? {form: [], about: `${file.name.replace(/^\d+-/, "")} · ${fmt(file.rows)} records`} : {});
+    };
+    el.querySelectorAll("[data-act]").forEach((b) => b.onclick = () => start(b.dataset.act, b.dataset.label));
     if (loop) el.querySelector(`[data-act="${loop.via[loop.via.length - 1]}"]`)?.focus();
+    const w = await run("run", "describe workspace");
+    if (w.event === "error") { $("out").innerHTML = banner(w); return; }
+    file = (w.inputs || []).slice(-1)[0] || null;
+    if ($("out").querySelector(".steps-card")) return;  // a run started meanwhile: it draws its own
+    if (!w.records) {  // nothing run yet: the file, its size, and the one button
+      $("out").innerHTML = file ? `<div class="card ready">${icon("records")}<div><b>${esc(file.name.replace(/^\d+-/, ""))}</b>
+          <span class="muted"> · ${fmt(file.rows)} records · about ${took(file.rows)}</span></div><span class="grow"></span>
+          <button class="btn filled" data-first>${icon("run")}Find matches</button></div>` : emptyRun(w);
+      $("out").querySelector("[data-first]")?.addEventListener("click", () => start("resolve records", "Find matches"));
+      return w;
+    }
+    const joined = w.records - w.entities, waiting = w.pairs.decide, tr = w.trust;  // what the run did, in a sentence, and what is next
+    const next = waiting ? `${fmt(waiting)} pairs wait for you` : tr && tr.may_lower ? `${span(tr.next)} can merge now` : "";
+    $("out").innerHTML = `<div class="card ready">${icon("check")}<div><b>${fmt(w.records)} records → ${fmt(w.entities)} customers</b><div class="muted">${
+      joined ? `${fmt(joined)} records joined others` : tr && tr.line === "none" ? "Nothing merged yet: you check pairs first" : "Nothing merged"}${
+      next ? ` · ${next}` : ""}</div></div><span class="grow"></span>${next ? `<a class="btn filled" data-go="pairs">${waiting ? "Review them" : "Go to step 4"}</a>` : ""}</div>${
+      file && !file.read ? `<div class="card ready">${icon("records")}<div><b>${esc(file.name.replace(/^\d+-/, ""))}</b><span class="muted"> · ${fmt(file.rows)} records, not matched yet</span></div>
+        <span class="grow"></span><button class="btn" data-first>${icon("run")}Find matches</button></div>` : ""}`;  // a file loaded since: matching it replaces this run
+    $("out").querySelector("[data-first]")?.addEventListener("click", () => start("resolve records", "Find matches"));
+    return w;
   },
 
   async results(el, record) {
@@ -1430,6 +1462,7 @@ function help() {
 async function go(id, arg) {
   current = id; keyHandler = null; visit++;
   document.body.classList.remove("nav-open");
+  scrollTo(0, 0);  // a page opens at its top, not where the last one was left
   rail();
   await refresh(await SCREENS[id]($("screen"), arg));
 }

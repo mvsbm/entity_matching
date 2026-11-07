@@ -493,7 +493,7 @@ Records and entities, the largest entities, each run so far, the pairs and kinds
 | `round` | the round now: one per method the workspace ran (rounds.json) |
 | `audits` | this round's audits people decided: checked, false |
 | `trust` | the trust line (none: the method as tuned): line (none: above every step), next (the range checked next: down_to, up_to), its pairs, checked, false, needed, may_lower; above (the pairs above the line: pairs, checked, false); checks |
-| `inputs` | the records files given to it, each in inputs/: name, path, files, bytes, read (by a run) |
+| `inputs` | the records files given to it, each in inputs/: name, path, files, bytes, rows, read (by a run) |
 | `columns` | own: its columns.toml; project: config/settings.toml's |
 | `next` | the commands that usually follow |
 

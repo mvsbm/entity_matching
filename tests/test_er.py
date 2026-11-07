@@ -2266,9 +2266,11 @@ def test_the_page_answers_once_per_key_shows_any_row_and_says_when_the_server_is
         page.click(".navitem[data-screen=run]")
         page.wait_for_timeout(1500)
         assert not page.query_selector("details.fgroup")  # the page left draws nothing on the page now open
+        page.wait_for_selector(".card.ready [data-first]")  # before a first run: the file, its size, one button
+        assert page.inner_text(".card.ready").startswith("theirs · 492 records") and not page.query_selector("[data-act='rerun records']")
         page.click("[data-act='resolve records']")  # the file loaded last: nothing to type
         page.wait_for_function("() => document.querySelector('#equiv-line').textContent.includes('resolve records')")
-        assert page.get_attribute("#f-input", "required") is None and "theirs.parquet" not in page.inner_text("#equiv-line")
+        assert not page.query_selector("#f-input") and "theirs · 492 records" in page.inner_text("dialog .about") and "theirs.parquet" not in page.inner_text("#equiv-line")
         page.keyboard.press("Escape")
         page.click("#picker")
         page.wait_for_selector("tr[data-w]")
@@ -2297,7 +2299,7 @@ def test_the_page_answers_once_per_key_shows_any_row_and_says_when_the_server_is
         assert page.query_selector(".rail li.attention .sub").inner_text().endswith("to decide")  # the stepper points at the open pairs
         page.click(".navitem[data-screen=run]")
         page.wait_for_selector(".node[data-node=candidates]")
-        assert [n.get_attribute("data-node") for n in page.query_selector_all(".flow .node")] == ["records", "rules", "candidates", "score", "accept", "group", "customers"]
+        assert [n.get_attribute("data-node") for n in page.query_selector_all(".flow .node")] == ["records", "rules", "candidates", "score", "accept", "people", "group"]
         page.click(".node[data-node=candidates]")
         assert page.query_selector_all(".detail .bar")  # each generator drawn as a bar, its pairs as its length
         page.click(".navitem[data-screen=pairs]")
@@ -2306,7 +2308,8 @@ def test_the_page_answers_once_per_key_shows_any_row_and_says_when_the_server_is
         path = page.inner_text("#path")  # how much each part covers: all the records, the pairs listed, the one shown
         assert re.fullmatch(r"All [\d,]+ records\s*›\s*[\d,]+ pairs to review\s*›\s*This pair · \d+ of [\d,]+", path), path
         assert page.query_selector(".zone.all .flow") and page.inner_text(".card.one .question").startswith("Same customer?")
-        page.click(".stepfoot a.filled")
+        assert not page.query_selector(".stepfoot a.filled")  # pairs still open here: the way on doesn't stand out yet
+        page.click(".stepfoot a[data-go=kinds]")
         page.wait_for_selector("h1:has-text('Confirm person or company')")
         twice = page.evaluate("""async () => {  // the same command asked twice at once runs once
             const lines = () => [...document.querySelectorAll("#term-body .cmd")].filter((c) => c.textContent.startsWith("nayose list pairs")).length;
@@ -2395,6 +2398,17 @@ def test_step_4_shows_the_trust_line_lowers_it_and_an_answer_waits_out_a_busy_wo
         page = browser.new_page(viewport={"width": 1280, "height": 900})
         page.goto(f"http://127.0.0.1:{httpd.server_address[1]}/?token={server.token}")
         page.wait_for_selector(".next")
+        assert page.inner_text(".rail li:last-child .sub") == "none joined yet"  # step 6: nothing joined, nothing to see
+        page.evaluate("scrollTo(0, 400)")
+        page.click(".navitem[data-screen=run]")
+        page.wait_for_selector(".card.ready")  # step 3, opened at its top: what the run did, and what waits
+        said = page.inner_text(".card.ready")
+        assert page.evaluate("scrollY") == 0 and "Nothing merged yet: you check pairs first · 20+ can merge now" in said  # nothing scores 20 here
+        assert page.query_selector(".flow .node[data-node=people]") and page.query_selector(".card.ready [data-go=pairs]")
+        page.click("[data-act='add records']")  # a new file, never the one matched already
+        page.wait_for_selector("#f-input")
+        assert page.get_attribute("#f-input", "required") is not None and page.get_attribute("#f-input", "placeholder") == "the new records file"
+        page.keyboard.press("Escape")
         page.click(".navitem[data-screen=pairs]")
         page.wait_for_selector(".trustbar")
         assert page.inner_text(".trustbar").startswith("Nothing merges by itself yet")
