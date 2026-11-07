@@ -1,7 +1,8 @@
 """The reports for people, from a run's tables (er.run.Run): qa (the label-free checks, and the summary in words),
 fill_rates, review_sheet (scored pairs as people judge them), carry_over (the open review queue across increments) and
 report_text (the run on a page with no record's value in it). Run.report builds them; Run.write stages them with the
-run's files. From a written run folder: describe_run (what it holds) and describe_entity (one record's entity).
+run's files. From a written run folder: describe_run (what it holds), describe_entity (one record's entity) and
+describe_matching (the pipeline as a graph, with the run's numbers).
 """
 import json
 import math
@@ -17,15 +18,16 @@ import numpy as np
 import pandas as pd
 
 from er.candidates import q
-from er.config import InputError, sources_text
+from er.config import DeletionKeys, InputError, KeyBlocker, Pipeline, SortedNeighbourhood, TfidfNeighbours, sources_text
 from er.folder import DECISIONS, PENDING
 from er.io import code_version, table_after
 from er.kind import COMPANY, PERSON, SAYS, UNSURE
-from er.match import levels, named_sql, parameters, pattern_coverage, review_floor, scaled_prior
+from er.match import ELSE, levels, named_sql, parameters, pattern_coverage, review_floor, scaled_prior
 from er.source import lit
 
 if TYPE_CHECKING:
     from er.run import Run
+    from er.settings import Settings
 
 
 def fill_rates(run: "Run", fields: list[str] | None = None, sample: int = 10_000) -> pd.DataFrame:
@@ -78,8 +80,9 @@ def qa(run: "Run", fields: list[str] | None = None, review: int = 50, previous: 
                         WHERE k <= {max(1, review // 4)} ORDER BY match_weight, {l}, {r}""").df().assign(why="audit")
     steps = pd.DataFrame(run.steps)
     base = ["step", "big_o", "filled", "seconds", "peak_memory_gb"]
+    number = lambda v: isinstance(v, int | float) and not isinstance(v, bool) and not math.isnan(v)  # a list (generators) is no fact
     steps = steps[base].assign(facts=steps.drop(columns=base).apply(lambda r: " · ".join(
-        f"{k} {v:,.0f}" if float(v).is_integer() else f"{k} {v:,.2f}" for k, v in r.dropna().items()), axis=1))
+        f"{k} {v:,.0f}" if float(v).is_integer() else f"{k} {v:,.2f}" for k, v in r.items() if number(v)), axis=1))
     coverage = pattern_coverage(run.pipeline.fs, run.scoring, run.n)
     sheet = review_sheet(run, pd.concat([decide, audit], ignore_index=True))
     if previous is not None and previous.exists():
@@ -319,3 +322,125 @@ def describe_entity(con: duckdb.DuckDBPyConnection, out: Path, uid: str, record:
     found = con.execute(" UNION ALL ".join(links) + " ORDER BY 1, 2").df()
     plain = lambda d: d.astype(object).where(d.notna(), None).to_dict("records")  # JSON has no NaN
     return dict(record=record, entity=entity, records=plain(rows), links=plain(found))
+
+
+GRAPH_NODES = ("records", "prepare", "rules", "candidates", "score", "accept", "people", "group", "kind", "customers")
+
+
+def describe_matching(con: duckdb.DuckDBPyConnection, out: Path | None, p: Pipeline, s: "Settings") -> dict:
+    """The pipeline as a graph, for people to see what is computed and how: one node per stage (GRAPH_NODES) with its
+    method and parameters and the fields it reads, and the edges between them. With `out`, a written run, each node also
+    holds the run's numbers (records, pairs per rule and per generator, each level's m, u and bits, the weight bands,
+    accepted pairs, pairs for people, customers) and real examples. O(E + R + N) in SQL over the run's files."""
+    uid, ran = s.data.unique_id, out is not None and (out / "gold.parquet").exists()
+    l, r = q(f"{uid}_l"), q(f"{uid}_r")
+    rows = lambda sql: con.execute(sql).fetchall() if ran else []
+    parquet = lambda name: f"read_parquet({lit(out / name)}, union_by_name = true)" if ran else ""  # no run: nothing to read
+    log = json.loads((out / "steps.json").read_text(encoding="utf-8"))["runs"] if ran and (out / "steps.json").exists() else []
+    facts = [x for run in log for x in run["steps"]]
+    key = lambda k: dict(field=k.column, normalize=list(k.normalize))
+    n = rows(f"SELECT count(*) FROM {parquet('gold.parquet')}")[0][0] if ran else None
+
+    # prepare: each field's columns, how it is made comparable, how full it is, and one real record
+    stored = parquet("state/records/*.parquet")
+    have = {c for c, in rows(f"SELECT column_name FROM (DESCRIBE SELECT * FROM {stored})")}
+    variants = {}
+    for col, norm in [*p.rules.normalized(), *p.fs.normalized()]:
+        variants.setdefault(col, set()).add(norm)
+    shown_fields = [f for f in s.columns if f not in ("id", "entity") and f in have]
+    filled = dict(zip(shown_fields, rows(f"SELECT {', '.join(f'avg(({q(f)} IS NOT NULL)::DOUBLE)' for f in shown_fields)} FROM {stored}")[0])) if shown_fields else {}
+    fields = []  # one scan for every field's fill rate, then one row per field for its example
+    for f, alts in s.columns.items():
+        if f in ("id", "entity"):
+            continue
+        chain = next((list(d.normalize) for d in s.standardize.derived if d.name == f), [])
+        forms = sorted(variants.get(f, ()))
+        item = dict(field=f, columns=[list(a) for a in alts], normalize=chain, compared_as=[list(v) for v in forms], filled=None, example=None)
+        if f in have:
+            item["filled"] = filled[f]
+            raw = [c for a in alts for c in a if c in have]
+            shown = [c for c in (*raw, f, *(f"{f}__{'_'.join(v)}" for v in forms)) if c in have]
+            got = con.execute(f"SELECT {', '.join(q(c) for c in shown)} FROM {stored} WHERE {q(f)} IS NOT NULL LIMIT 1").fetchall()
+            item["example"] = dict(zip(shown, got[0])) if got else None
+        fields.append(item)
+
+    # rules: what each compares, how, and the pairs it kept
+    kept = {name: (k, a, b) for name, k, a, b in rows(f"SELECT rule, count(*), min({l}), arg_min({r}, {l}) FROM {parquet('rule_kept/*.parquet')} GROUP BY 1")}
+    rules = [dict(stage=st.name, name=x.name, exact=list(x.exact),
+                  fuzzy=[dict(field=c, function=st.comparators[c].function, threshold=st.comparators[c].threshold,
+                              normalize=list(st.comparators[c].normalize)) for c in x.fuzzy],
+                  blocking=[key(k) for k in x.blocking], pairs=kept.get(x.name, (0,))[0] if ran else None,
+                  example=list(kept[x.name][1:]) if x.name in kept else None) for _, st, x in p.rules.each()]
+
+    # candidates: each generator, its method, the pairs it listed, the accepted pairs it found, and one of them
+    listed = {}
+    for x in facts:
+        for g in x.get("generators", ()):
+            listed[g["name"]] = listed.get(g["name"], 0) + g["pairs"]
+    found = {g: (k, a, b) for g, k, a, b in rows(f"""SELECT g, count(*), min(a), arg_min(b, a) FROM (SELECT unnest(string_split(sources, '+')) AS g,
+        {l} AS a, {r} AS b FROM {parquet('matches/*.parquet')}) GROUP BY 1""")}
+    generators = []
+    for b in p.fs.blockers:
+        match b:
+            case KeyBlocker():
+                how = dict(method="same value", keys=[key(k) for k in b.keys])
+            case SortedNeighbourhood():
+                how = dict(method="sorted neighbours", keys=[key(b.key)], window=b.window)
+            case TfidfNeighbours():
+                how = dict(method="TF-IDF nearest", keys=[key(b.key)], ngram=list(b.ngram), k=b.k, min_cosine=b.min_cosine)
+            case DeletionKeys():
+                how = dict(method="one letter deleted", keys=[key(b.key)], within=[key(k) for k in b.within])
+        generators.append(dict(name=b.name, **how, pairs=listed.get(b.name) if ran else None, matched=found.get(b.name, (0,))[0] if ran else None,
+                               example=list(found[b.name][1:]) if b.name in found else None))
+
+    # score: each comparison's levels, the tests behind each, and what the fitted model says each is worth
+    model = None
+    if ran:
+        scoring = out / "state" / "scoring.json"
+        model = (json.loads(scoring.read_text(encoding="utf-8"))["model"] if scoring.exists()
+                 else json.loads((out / "state" / "model.json").read_text(encoding="utf-8")))
+    worth = {(x.comparison, x.level): (x.m, x.u, x.weight) for x in parameters(model).itertuples()} if model else {}
+    comparisons = [dict(name=c.name, levels=[dict(label=lv.label, tests=[dict(field=col, function=t.function, threshold=t.threshold,
+                                                                                normalize=list(t.normalize)) for col, t in lv.any_of],
+                                                   **dict(zip(("m", "u", "bits"), worth.get((c.name, lv.label), (None,) * 3))))
+                                              for lv in c.levels] + [dict(label=ELSE, tests=[], **dict(zip(("m", "u", "bits"), worth.get((c.name, ELSE), (None,) * 3))))])
+                   for c in p.fs.model.comparisons]
+    lam = scaled_prior(model, n) if model else None
+    scored = sum(x.get("candidates", 0) for x in facts if x["step"] == "candidates") if ran else None
+
+    # accept, people, group: the line, the band below it for people, and what joined into customers
+    bands = table_after((out / "qa.md").read_text(encoding="utf-8"), "## weight bands").values.tolist() if ran and (out / "qa.md").exists() else []
+    accepted = rows(f"SELECT count(*) FROM {parquet('matches/*.parquet')}")[0][0] if ran else None
+    rule_pairs = sum(v[0] for v in kept.values()) if ran else None
+    review = pd.read_parquet(out / "review.parquet") if ran and (out / "review.parquet").exists() else None
+    decided = rows(f"SELECT count(*) FROM {parquet(DECISIONS + '/*.parquet')}")[0][0] if ran and any((out / DECISIONS).glob("*.parquet")) else 0
+    by = dict(rows(f"SELECT resolved_by, count(*) FROM {parquet('gold.parquet')} WHERE resolved_by = 'review' GROUP BY 1"))
+    sizes = rows(f"SELECT n, count(*) FROM (SELECT count(*) AS n FROM {parquet('gold.parquet')} GROUP BY cluster_id) GROUP BY 1 ORDER BY 1")
+    customers = sum(k for _, k in sizes) if ran else None
+    kinds = dict(rows(f"SELECT kind, count(*) FROM {parquet('gold.parquet')} GROUP BY 1")) if ran and "kind" in {
+        c for c, in rows(f"SELECT column_name FROM (DESCRIBE SELECT * FROM {parquet('gold.parquet')})")} else {}
+    open_ = int(((review["why"] == "decide") & review["decision"].isna()).sum()) if review is not None else None
+    nodes = [
+        dict(id="records", name="Records", count=n, files=[f["file"] for run in log for f in run.get("inputs", []) if f.get("role") == "records"]),
+        dict(id="prepare", name="Make values comparable", method="normalizers per field", fields=fields),
+        dict(id="rules", name="Rules", method="certain cases first: exact, then fuzzy", rules=rules, pairs=rule_pairs),
+        dict(id="candidates", name="Candidates", method="list the pairs worth comparing", generators=generators, pairs=scored),
+        dict(id="score", name="Score", method="Fellegi–Sunter: each comparison adds evidence, in bits", comparisons=comparisons,
+             prior_bits=math.log2(lam / (1 - lam)) if lam else None, pairs=scored),
+        dict(id="accept", name="Accept", method="at the line, with a name compared", threshold=p.fs.min_match_weight, review_from=review_floor(p),
+             needs=list(p.fs.needs), bands=bands, accepted=accepted),
+        dict(id="people", name="People decide", method="close calls go to people", to_decide=open_, decided=decided, joined=by.get("review", 0) if ran else None),
+        dict(id="group", name="Group", method="connected components: linked records are one customer", customers=customers,
+             sizes=[dict(records=a, customers=k) for a, k in sizes]),
+        dict(id="kind", name="Person or company", method="legal form, name model, combiner", on=p.kind is not None,
+             legal_forms=len(s.standardize.legal_forms), ngram=p.kind.ngram if p.kind else None,
+             counts={"company": kinds.get(2, 0), "person": kinds.get(1, 0), "unsure": kinds.get(0, 0)} if kinds else None),
+        dict(id="customers", name="Customers", count=customers),
+    ]
+    edges = [dict(source=a, target=b, count=c) for a, b, c in (
+        ("records", "prepare", n), ("prepare", "rules", n), ("prepare", "candidates", n), ("prepare", "kind", n), ("kind", "score", n),
+        ("rules", "group", rule_pairs), ("candidates", "score", scored), ("score", "accept", scored), ("accept", "group", accepted),
+        ("accept", "people", open_), ("people", "group", decided), ("group", "customers", customers))]
+    assert [x["id"] for x in nodes] == list(GRAPH_NODES)
+    return dict(nodes=nodes, edges=edges)
+

@@ -361,7 +361,8 @@ class Run:
         c = self._count("cands")
         self._done("candidates", "O(N·L + Σ P_g)", f"O({self.n:,}·L + {int(report['pairs'].sum()):,})", t, candidates=c,
                    oversized_kept=int((self.gated.get("decision", pd.Series(dtype=str)) == "kept").sum()),
-                   oversized_skipped=int(self.gated.get("decision", pd.Series(dtype=str)).str.startswith("skipped").sum()))
+                   oversized_skipped=int(self.gated.get("decision", pd.Series(dtype=str)).str.startswith("skipped").sum()),
+                   generators=listed(report))
         return report
 
     def _gate(self, pairs: pd.DataFrame) -> pd.DataFrame:  # an oversized block's sampled pairs, scored as the candidates will be
@@ -585,7 +586,7 @@ class Run:
                                clusters="rule_clusters" if fs.bridge else None, con=self.con, into="cands", touching=True,
                                gate=self._gate, floor=review_floor(self.pipeline), capacity=self.capacity())
         self._gated(report.attrs["gated"])
-        self._done("candidates", "O(|Δ|·Σ b + scan)", f"{self._count('cands'):,} pairs touching the batch", t)
+        self._done("candidates", "O(|Δ|·Σ b + scan)", f"{self._count('cands'):,} pairs touching the batch", t, generators=listed(report))
 
         t = time.perf_counter()
         self.con.execute(f"""CREATE OR REPLACE TABLE touched AS SELECT * FROM records WHERE {u} IN
@@ -700,6 +701,10 @@ class Run:
         out = Path(out)
         with folder.run_lock(out):  # the files named inside the lock: no increment lands between
             return self.full(folder.inputs(out), out, overwrite=True, pipeline_file=pipeline_file)
+
+
+def listed(report: pd.DataFrame) -> list[dict]:  # each generator's pairs and seconds, kept in steps.json (describe matching)
+    return [dict(name=r.generator, pairs=int(r.pairs), seconds=float(r.seconds)) for r in report.itertuples()]
 
 
 def customer_kinds(clusters: str, kinds: str, u: str) -> str:

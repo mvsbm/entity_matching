@@ -22,6 +22,7 @@ Written by `scripts/document_commands.py` from the declarations in `er/cli.py`; 
 | [`rerun records`](#nayose-rerun-records) | A full run again, on the run's own files |
 | [`describe run`](#nayose-describe-run) | What a run folder holds |
 | [`describe entity`](#nayose-describe-entity) | One record's entity, and what joined it |
+| [`describe matching`](#nayose-describe-matching) | How records are matched: every method, on which fields, with its numbers |
 | [`list pairs`](#nayose-list-pairs) | The pairs for people to decide and to audit |
 | [`decide pair`](#nayose-decide-pair) | Decide one pair: match or no match |
 | [`apply decisions`](#nayose-apply-decisions) | Apply people's decisions to the run |
@@ -274,6 +275,31 @@ The entity of the record ID: each of its records with its fields and kind, and e
 
 ```bash
 nayose describe entity 0000000151 --run runs/customers
+```
+
+## nayose describe matching
+
+How records are matched: every method, on which fields, with its numbers.
+
+```
+nayose describe matching [--run RUN] [--pipeline PIPELINE] [--format text|json]
+```
+
+The pipeline as a graph: records, how each field is made comparable, the rules, the ways pairs are listed, the comparisons and what each level is worth in bits, the line pairs are accepted at, the pairs left to people, and how linked records become customers. With --run, each part also holds that run's numbers and a real example. O(E + R + N) in SQL over the run's files.
+
+| Parameter | |
+|---|---|
+| `--run RUN` | a run folder: its numbers and examples (without it, the methods only) |
+| `--pipeline PIPELINE` | the pipeline file (default: config/final.toml) |
+
+| Result | |
+|---|---|
+| `nodes` | each part: id, name, method, its parameters and fields, and with --run its numbers and examples |
+| `edges` | source, target, count |
+| `next` | the commands that usually follow |
+
+```bash
+nayose describe matching --run runs/customers
 ```
 
 ## nayose list pairs

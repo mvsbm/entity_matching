@@ -199,6 +199,7 @@ Writes each table as Parquet under a temporary name, with the reports (9). Once 
 
 - **Why:** the margin holds pairs that were clean on cross-validated train, held back in case of noise: on the synthetic val split, 112 pairs from 6 to 8 bits, all true; one grid step lower, at 4 bits, val's first false pair appears. So people decide them. Without labels, the audit rows and the largest clusters are how a person catches over-merging.
 - **Code:** `Run.report` → `report.qa` (`report.fill_rates`, `match.review_floor`, `report.review_sheet`, `report.carry_over`, `match.pattern_coverage`), `report.report_text`, `kind.kind_review_sheet` (its rows picked in DuckDB, so only they reach Python), `io.markdown`
+- **From a written folder:** `report.describe_run` (what the folder holds), `report.describe_entity` (one record's customer and what joined it), and `report.describe_matching`: the pipeline as a graph, each stage with its method, parameters and fields, and the run's numbers (pairs per rule and per generator, each level's m, u and bits, the weight bands, customers) with a real example. `nayose describe run`, `describe entity` and `describe matching` print them, and `nayose open ui` draws them.
 - **Increment:** the same for the pairs the batch made, plus the previous sheet's rows still open: a run keeps no scores, so a row dropped from the sheet could never come back. No `kind_review.parquet`: a record an increment holds back is on the next full run's sheet.
 
 ## 5 · An increment
@@ -267,7 +268,7 @@ Kept on disk. Steps are numbered as in [the run](#4--the-run); the diagram above
 | `state/model.json` | 8, full runs only | increments | the fitted model: λ, and m and u per level |
 | `state/scoring.json` | 8, every run | increments | the u the run scored with; per comparison, the exact u it was sampled alongside and its last drift check |
 | `state/config.txt` | 8, full runs only | increments | the hash of the pipeline and the settings that shape the records (column mapping, `[locale]`, the flag's values) the full run used |
-| `steps.json` | 8, and decisions | you; an audit; a rerun | one entry per run, increment or set of decisions: when, the code's commit and the files changed in this copy, the config hash, each file read with what it is (records, decisions, answers, the name model), its size and SHA-256, and each step's Big-O with its numbers, time and peak memory |
+| `steps.json` | 8, and decisions | you; an audit; a rerun | one entry per run, increment or set of decisions: when, the code's commit and the files changed in this copy, the config hash, each file read with what it is (records, decisions, answers, the name model), its size and SHA-256, and each step's Big-O with its numbers, time and peak memory; the candidates step also lists the pairs each generator found |
 | `kind_answers/part-n.parquet` | 8, one part per sheet given | every later run on the folder | people's person/company answers, each sheet's filled rows as given; the newest per record stands. Kept, like `decisions/`, by `--overwrite` |
 | `pending.json` | 8, deleted when done | the next run, increment or decisions | moves owed by an unfinished write |
 | `.lock` | every writer | every writer | the run folder's lock: one writer at a time |
