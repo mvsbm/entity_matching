@@ -260,6 +260,8 @@ Kept on disk. Steps are numbered as in [the run](#4--the-run); the diagram above
 
 | File | Written by step | Read by | Holds |
 |---|---|---|---|
+| `columns.toml` | `nayose create workspace`; `set columns --workspace` | every command given the workspace | its own mapping, `[columns]` and `[kind]`, over `config/settings.toml`'s; a workspace without one reads the project's |
+| `inputs/NNNN-<name>/` | `nayose load records`, and `resolve records` or `add records` given a file (`folder.take_in`) | its runs; a rerun | each records file given to it, copied in whole, with `.sha256`: each file's SHA-256, so content given twice is copied once |
 | `gold.parquet` | 8, rewritten each run and by decisions | you; the next increment | record → `cluster_id`, `resolved_stage`, `resolved_by`; its `kind`, `kind_p`, `kind_by`, `kind_held`, and its entity's `customer_kind` |
 | `matches/part-n.parquet` | 8, one part per run | you | accepted pairs: weight, probability, generators |
 | `rule_kept/part-n.parquet` | 8, one part per run | you | the rules' pairs |

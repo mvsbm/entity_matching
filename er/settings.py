@@ -1,5 +1,7 @@
 """Shared settings from config/settings.toml: paths, datasets, the fields a file's columns hold, and the language-specific
-normalization, validated on load. ER_SETTINGS may name another settings file. set_columns rewrites [columns] lines."""
+normalization, validated on load. ER_SETTINGS may name another settings file. A workspace keeps its own mapping in its
+columns.toml ([columns] and [kind]), which replaces the project's (own_columns makes it). set_columns rewrites [columns]
+lines of either file."""
 import importlib.util
 import json
 import os
@@ -13,6 +15,7 @@ from typing import get_args
 from er.config import Data, Derived, InputError, Normalizer, Pipeline, Standardization, check_fields, legal_pattern, restrict
 
 SPECIAL = ("id", "entity")  # single columns, used under their own names: the record id and the truth
+COLUMNS = "columns.toml"  # a workspace's own [columns] and [kind]: which of its files' columns hold each field
 
 
 @dataclass(frozen=True)
@@ -61,6 +64,22 @@ def settings_path() -> Path:  # the settings file a run reads
     return Path(os.environ.get("ER_SETTINGS") or project_root() / "config" / "settings.toml")
 
 
+def columns_file(workspace: str | Path | None) -> Path | None:  # a workspace's own mapping, if it keeps one
+    f = Path(workspace) / COLUMNS if workspace else None
+    return f if f and f.is_file() else None
+
+
+def own_columns(path: Path) -> str:
+    """A new workspace's columns.toml: the [columns] and [kind] sections of the settings file at `path`, comments kept."""
+    keep, out = False, ["# This workspace's mapping: which of its files' columns hold each field. nayose set columns --workspace changes it.\n"]
+    for line in path.read_text(encoding="utf-8").splitlines(keepends=True):
+        if line.lstrip().startswith("["):
+            keep = line.split("#")[0].strip() in ("[columns]", "[kind]")
+            out += ["\n"] if keep else []
+        out += [line] if keep else []
+    return "".join(out)
+
+
 def set_columns(path: Path, mapping: dict[str, tuple[tuple[str, ...], ...]]) -> None:
     """Rewrite the [columns] lines of the fields in `mapping` in the settings file at `path`: each field's source
     alternatives, tried in order, each one column or several joined (empty: the field goes). Every other line, each
@@ -93,17 +112,22 @@ def set_columns(path: Path, mapping: dict[str, tuple[tuple[str, ...], ...]]) -> 
     tmp = path.with_name(path.name + ".tmp")
     tmp.write_text("".join(lines), encoding="utf-8")
     try:
-        load_settings(tmp)
+        load_settings(tmp) if "paths" in tomllib.loads(text) else load_settings(columns=tmp)  # a workspace's file: over the project's
     except Exception as e:  # what load_settings checks: say it, and keep the old file
         tmp.unlink()
         raise InputError(f"{path}: [columns] would not load: {e}", fix="give each field existing columns; id names one column") from None
     os.replace(tmp, path)
 
 
-def load_settings(path: Path | None = None) -> Settings:
+def load_settings(path: Path | None = None, columns: Path | None = None) -> Settings:
+    """The settings file at `path` (settings_path()); with `columns`, a workspace's columns.toml, whose [columns] and
+    [kind] replace the file's."""
     path = Path(path or settings_path())
     root = project_root(path.parent)
     cfg = tomllib.loads(path.read_text(encoding="utf-8"))
+    if columns:
+        own = tomllib.loads(Path(columns).read_text(encoding="utf-8"))
+        cfg = {**cfg, "columns": own["columns"], "kind": own.get("kind", {})}
     paths = {name: root / rel for name, rel in cfg["paths"].items()}
     steps = set(get_args(Normalizer))
 

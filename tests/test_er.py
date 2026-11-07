@@ -683,6 +683,68 @@ def test_answers_given_wrong_stop_the_run(tmp_path, population):
         Run(p, s).increment(tmp_path / "all.parquet", tmp_path / "empty")
 
 
+def test_a_workspace_keeps_its_own_mapping_and_a_copy_of_its_files(tmp_path, population, capsys, monkeypatch):
+    import threading
+    from er import folder
+    from er.cli import main
+    from er.settings import settings_path
+    from er.source import sha256
+    s, p, g = population
+    g.df.rename(columns={s.data.unique_id: "customer_no"}).to_parquet(tmp_path / "theirs.parquet", index=False)  # their own ID column
+    monkeypatch.chdir(tmp_path)  # workspaces/, in the folder nayose starts from
+    project = settings_path().read_text(encoding="utf-8")
+
+    def say(*words: object) -> tuple[int, dict]:  # the exit code, and the last event
+        code = main([*map(str, words), "--format", "json"])
+        return code, json.loads(capsys.readouterr().out.splitlines()[-1])
+
+    assert say("create", "workspace", "a")[0] == 0 and say("create", "workspace", "b")[0] == 0
+    assert say("create", "workspace", "a")[0] == 2 and say("create", "workspace", "../x")[0] == 2  # taken; not a name
+    (tmp_path / "workspaces" / "notes").mkdir()  # a folder that is no workspace
+    assert {w["name"] for w in say("list", "workspaces")[1]["workspaces"]} == {"a", "b"}
+    a, b = Path("workspaces/a"), Path("workspaces/b")
+
+    code, e = say("load", "records", "theirs.parquet", "--workspace", a)  # copied, then checked: the ID is not where the mapping looks
+    assert code == 2 and e["hints"] == {"id": "customer_no"} and "set columns id=customer_no --workspace" in e["fix"]
+    assert folder.sums(a / "inputs" / "0001-theirs") == {"theirs.parquet": sha256(tmp_path / "theirs.parquet")}
+    say("load", "records", "theirs.parquet", "--workspace", a)
+    assert [x.name for x in folder.parts(a)] == ["0001-theirs"]  # the same content again: not copied again
+    assert say("set", "columns", "id=customer_no", "--workspace", a)[0] == 0
+    assert settings_path().read_text(encoding="utf-8") == project and 'id = "CONT_ID"' in (b / "columns.toml").read_text()  # a's alone
+    code, e = say("resolve", "records", "--workspace", b)
+    assert code == 2 and e["error"].startswith("no records file")
+    assert say("resolve", "records", "--workspace", a)[1]["summary"][0][1].startswith(f"{len(g.df):,}")  # the file loaded last
+    (tmp_path / "theirs.parquet").unlink()
+    assert say("rerun", "records", "--workspace", a)[0] == 0  # its own copy: the original may go
+    (tmp_path / "elsewhere").mkdir()
+    monkeypatch.chdir(tmp_path / "elsewhere")  # another folder: the paths steps.json holds lead nowhere, its inputs/ still holds them
+    assert say("rerun", "records", "--workspace", tmp_path / a)[0] == 0
+    monkeypatch.chdir(tmp_path)
+    d = say("describe", "workspace", a)[1]
+    assert d["columns"] == "own" and [(x["name"], x["read"]) for x in d["inputs"]] == [("0001-theirs", True)]
+    assert say("describe", "workspace", b)[1]["records"] == 0  # nothing run yet: no error
+    assert say("describe", "workspace", "workspaces/none")[0] == 2
+
+    for n, rows in (("one", g.df.iloc[:10]), ("two", g.df.iloc[10:20])):
+        rows.to_parquet(tmp_path / f"{n}.parquet", index=False)
+    said = []
+
+    def take(n: str) -> None:
+        try:
+            said.append(folder.take_in(b, tmp_path / f"{n}.parquet")[0].name)
+        except folder.Busy:  # one writer at a time: the others are told to try again
+            said.append("busy")
+    given = [threading.Thread(target=take, args=(n,)) for n in ("one", "two", "one")]  # at once
+    [t.start() for t in given]
+    [t.join() for t in given]
+    for n in ("one", "two"):  # tried again, one at a time
+        take(n)
+    names = [x.name for x in folder.parts(b)]
+    assert "busy" in said or len(set(said)) < 3  # they met
+    assert sorted(x.split("-", 1)[1] for x in names) == ["one", "two"] and len({x[:4] for x in names}) == 2  # each once, numbered apart
+    assert not list((b / "inputs").glob(".*"))  # no copy left half done
+
+
 def test_design_time_measures_the_run_s_own_gold_pairs_and_rule_clusters(tmp_path, population):
     """scripts/choose.py measures through er.pipeline, which reads the tables of an er.run.Run: it must report the gold,
     the accepted pairs and their weights, and the rules' clusters that the run writes."""
@@ -1215,7 +1277,7 @@ def test_the_scheduler_serves_the_inbox_in_order_and_parks_what_people_must_fix(
     assert serve().returncode == 0 and schedule.ledger(run)[-1]["outcome"] == "done"
     assert (run / "decisions").exists()
     from er.folder import inputs
-    assert [f.resolve().parent for f in inputs(run)] == [(inbox / "done" / "batches").resolve()] * 2  # moved, found again (jobs.jsonl)
+    assert [f.parent.name for f in inputs(run)] == ["0001-a_first", "0002-b_new"]  # copied into the workspace: found there, wherever the batch went
     before = len(schedule.ledger(run))
     assert serve().returncode == 0 and len(schedule.ledger(run)) == before  # nothing waiting: nothing done
 
@@ -1753,7 +1815,7 @@ def test_the_page_answers_once_per_key_shows_any_row_and_says_when_the_server_is
     g.df.to_parquet(tmp_path / "all.parquet", index=False)
     run = tmp_path / "run"
     assert cli.main(["resolve", "records", str(tmp_path / "all.parquet"), "--workspace", str(run), "--format", "json"]) == 0
-    server = ui.Server(str(run))
+    server = ui.Server(str(run), str(tmp_path / "workspaces"))
     httpd = ThreadingHTTPServer(("127.0.0.1", 0), ui.handler(server))
     threading.Thread(target=httpd.serve_forever, daemon=True).start()
     with sync.sync_playwright() as pw:
@@ -1770,6 +1832,26 @@ def test_the_page_answers_once_per_key_shows_any_row_and_says_when_the_server_is
         assert page.inner_text("h1").endswith("Choose a workspace") and page.get_attribute(".rail li:first-child .navitem", "aria-current") == "page"
         assert page.get_attribute(".navitem[data-screen=records]", "aria-current") == "false"  # the highlight is where you are
         assert all(b.is_disabled() for b in page.query_selector_all("[data-loop]")) and page.is_disabled("#search")  # off until the first run
+        page.click("#picker")  # a new workspace, from the picker: a folder in the server's workspaces/, with its own mapping
+        page.fill("#new-name", "fresh")
+        page.click("#create")
+        page.wait_for_selector("text=Nothing matched in fresh")
+        assert (tmp_path / "workspaces" / "fresh" / "columns.toml").is_file()
+        page.click(".navitem[data-screen=columns]")
+        page.fill("#cin", str(tmp_path / "all.parquet"))
+        page.click("#load")  # copied into it, then checked
+        page.wait_for_selector("#files .tag", timeout=60_000)
+        assert page.inner_text("#files").startswith("0001-all") and (tmp_path / "workspaces" / "fresh" / "inputs" / "0001-all" / "all.parquet").is_file()
+        page.click(".navitem[data-screen=run]")
+        page.click("[data-act='resolve records']")  # the file loaded last: nothing to type
+        page.wait_for_function("() => document.querySelector('#equiv-line').textContent.includes('resolve records')")
+        assert page.get_attribute("#f-input", "required") is None and "all.parquet" not in page.inner_text("#equiv-line")
+        page.keyboard.press("Escape")
+        page.click("#picker")
+        page.wait_for_selector("tr[data-w]")
+        assert [Path(r.get_attribute("data-w")).name for r in page.query_selector_all("tr[data-w]")] == ["fresh"]  # from disk, not the browser
+        page.keyboard.press("Escape")
+        page.click(".navitem[data-screen=records]")
         page.evaluate(f"setWorkspace({json.dumps(str(run))})")
         page.wait_for_selector(".next")
         assert not any(b.is_disabled() for b in page.query_selector_all("[data-loop]")) and not page.is_disabled("#search")

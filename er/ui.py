@@ -37,7 +37,7 @@ def declarations() -> list[dict]:
     """What the page needs of each command to place it and build its form: the declaration, as data."""
     return [dict(name=c.name, verb=c.verb, noun=c.noun, help=c.help, about=c.about, example=c.example, quick=c.quick, result=c.result,
                  params=[dict(name=p.name, help=p.help, kind=p.kind, choices=list(p.choices), positional=p.positional,
-                              required=p.required, metavar=p.shown) for p in c.params]) for c in cli.COMMANDS]
+                              required=p.required, optional=p.optional, metavar=p.shown) for p in c.params]) for c in cli.COMMANDS]
 
 
 def command(name: str) -> cli.Command:
@@ -93,9 +93,10 @@ class Refusing(argparse.ArgumentParser):
 
 
 class Server:
-    def __init__(self, workspace: str | None = None):
+    def __init__(self, workspace: str | None = None, home: str = "workspaces"):
         self.token, self.jobs, self.lock, self.long = secrets.token_urlsafe(24), {}, threading.Lock(), threading.Lock()
         self.workspace = workspace            # the workspace the page starts with
+        self.home = home                      # the folder its workspaces are in
 
     def start(self, name: str, args: dict) -> tuple[str, Job]:
         words = argv(name, args)
@@ -164,7 +165,7 @@ def handler(server: Server):
             if url.path == "/":
                 self._send(200, PAGE.read_text(encoding="utf-8"), "text/html")
             elif url.path == "/api/commands":
-                self._send(200, dict(commands=declarations(), workspace=server.workspace))
+                self._send(200, dict(commands=declarations(), workspace=server.workspace, home=server.home))
             elif url.path.startswith("/api/job/") and (job := server.jobs.get(key := url.path.rsplit("/", 1)[1])):
                 done = job.code is not None  # read first: a finished job's events are all there
                 events = job.events[int(parse_qs(url.query).get("from", ["0"])[0]):]
@@ -191,9 +192,9 @@ def handler(server: Server):
     return Handler
 
 
-def serve(port: int, workspace: str | None, say, open_browser: bool = True) -> None:
+def serve(port: int, workspace: str | None, home: str, say, open_browser: bool = True) -> None:
     """Serve the page on 127.0.0.1:port until stopped (Ctrl-C)."""
-    server = Server(workspace)
+    server = Server(workspace, home)
     httpd = ThreadingHTTPServer(("127.0.0.1", port), handler(server))
     link = f"http://127.0.0.1:{httpd.server_address[1]}/?token={server.token}"
     say(f"open {link}\n  only this machine can reach it, and only with this link; Ctrl-C stops it", link=link)

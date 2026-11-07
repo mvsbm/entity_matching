@@ -1,22 +1,26 @@
 """The workspace on disk, and how it is written: one writer at a time (run_lock); every write staged (stage: each
 file under a temporary name, then the moves still owed in pending.json, then the moves; finish_writes completes a write
 cut short); steps.json written whole, then renamed (log); a new part numbered after the highest (next_part); one
-answer people give, written into a sheet (type_in); the record files a run read (inputs). What a run writes there, and
-what people keep there (decisions/, kind_answers/): docs/architecture.md, the workspace.
+answer people give, written into a sheet (type_in); the record files a run read (inputs). A workspace is made with its
+own mapping (create), listed (workspaces), and given records files, each copied into inputs/ (take_in, loaded). What a
+run writes there, and what people keep there (decisions/, kind_answers/): docs/architecture.md, the workspace.
 """
 import fcntl
 import json
 import os
+import re
 import shutil
 import threading
 from contextlib import contextmanager
+from datetime import datetime
 from pathlib import Path
 
 import duckdb
 import pandas as pd
 
 from er.config import InputError
-from er.source import lit, sha256
+from er.settings import COLUMNS
+from er.source import find, lit, sha256
 
 PENDING = "pending.json"  # the renames a write still owes, saved once every new file is complete
 RUN_FILES = ("gold.parquet", "steps.json", PENDING, "matches", "rule_kept", "state", "set_aside",  # what a run writes in its folder
@@ -151,8 +155,8 @@ def type_in(out: Path, sheet: str, column: str, value: object, **keys: str) -> N
 
 def inputs(out: Path) -> list[Path]:
     """The record files the run in `out` read, in order: the full run's, then each increment's (steps.json). Each
-    must still hold what was read, by its SHA-256, where it was read or where the scheduler moved it (jobs.jsonl).
-    O(bytes)."""
+    must still hold what was read, by its SHA-256, where it was read, in the workspace's own inputs/ (wherever the
+    workspace now is, and whatever folder nayose starts from), or where the scheduler moved it (jobs.jsonl). O(bytes)."""
     log = out / "steps.json"
     named = [x for run in (json.loads(log.read_text(encoding="utf-8"))["runs"] if log.exists() else [])
              for x in run.get("inputs", []) if x.get("role") == "records"]
@@ -161,11 +165,95 @@ def inputs(out: Path) -> list[Path]:
     jobs = out / "jobs.jsonl"
     moved = {e["sha256"]: e["path"] for e in map(json.loads, jobs.read_text(encoding="utf-8").splitlines() if jobs.exists() else [])
              if e.get("path")}
+    inside = {sha: part / rel for part in parts(out) for rel, sha in sums(part).items()}
     files = []
     for x in named:
-        here = [Path(p) for p in (x["file"], moved.get(x["sha256"])) if p and Path(p).is_file()]
+        here = [Path(p) for p in (x["file"], inside.get(x["sha256"]), moved.get(x["sha256"])) if p and Path(p).is_file()]
         if not (found := next((p for p in here if sha256(p) == x["sha256"]), None)):
             raise InputError(f"{x['file']}: {'changed' if here else 'gone'} since the run read it",
                              fix="give the files again with a full run that overwrites the folder")
         files.append(found)
     return files
+
+
+INPUTS = "inputs"  # the records files a workspace was given, each copied into a part of its own: inputs/NNNN-<name>/
+SUMS = ".sha256"  # in each part: each file's SHA-256 and its path in the part, so content given twice is known without reading it
+NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
+
+
+def create(home: Path, name: str, columns: str) -> Path:
+    """The new workspace home/name, with its own mapping (columns.toml, the text given). O(1)."""
+    if not NAME.fullmatch(name):
+        raise InputError(f"{name!r}: not a workspace name", fix="letters, digits, '.', '_' and '-', starting with a letter or digit, at most 64")
+    ws = home / name
+    try:
+        ws.mkdir(parents=True)  # at once: two asking for one name, one gets it
+    except FileExistsError:
+        raise InputError(f"{ws} exists", fix="open it, or choose another name") from None
+    try:
+        (ws / COLUMNS).write_text(columns, encoding="utf-8")
+    except BaseException:
+        shutil.rmtree(ws, ignore_errors=True)
+        raise
+    return ws
+
+
+def workspaces(home: Path) -> list[dict]:
+    """The workspaces in `home` (a folder holding columns.toml or steps.json), the latest active first: each one's name,
+    path, files given, whether it holds a run, and when it last changed, from steps.json and the folder; no record is
+    read. O(workspaces)."""
+    found = []
+    for ws in (p for p in home.iterdir() if p.is_dir() and not p.name.startswith(".")) if home.is_dir() else ():
+        if not ((ws / COLUMNS).is_file() or (ws / "steps.json").is_file()):
+            continue
+        log = json.loads((ws / "steps.json").read_text(encoding="utf-8"))["runs"] if (ws / "steps.json").is_file() else []
+        found.append(dict(name=ws.name, workspace=str(ws), files=len(parts(ws)), ran=(ws / "gold.parquet").is_file(),
+                          last=log[-1]["at"] if log else datetime.fromtimestamp(ws.stat().st_mtime).isoformat(timespec="seconds")))
+    return sorted(found, key=lambda w: w["last"], reverse=True)
+
+
+def parts(ws: Path) -> list[Path]:  # inputs/'s parts, oldest first
+    return sorted(p for p in (ws / INPUTS).glob("[0-9]*-*") if p.is_dir())
+
+
+def sums(part: Path) -> dict[str, str]:  # a part's files: path in the part → SHA-256
+    return {rel: sha for sha, rel in (line.split("  ", 1) for line in (part / SUMS).read_text(encoding="utf-8").splitlines())}
+
+
+def take_in(ws: Path, path: str | Path) -> tuple[Path, bool]:
+    """Copy the files `path` names (a file, a glob or a folder: er.source.find) into the next part of the workspace's
+    inputs/, under its lock: into a hidden folder first, renamed into place once every file is complete, so a part is
+    whole or absent. Content the workspace already holds, file for file by SHA-256, is not copied again. The part, and
+    whether it is new. O(bytes)."""
+    files = find(path)
+    given = sorted(sha256(f) for f in files)
+    with run_lock(ws):
+        for part in parts(ws):
+            if sorted(sums(part).values()) == given:
+                return part, False
+        p = Path(path)
+        root = p if p.is_dir() else None
+        stem = p.parent.name if any(c in str(p) for c in "*?[") else p.name if root else p.stem
+        n = max((int(x.name.split("-", 1)[0]) for x in parts(ws)), default=0) + 1
+        part = ws / INPUTS / f"{n:04d}-{re.sub(r'[^A-Za-z0-9._-]+', '_', stem)[:40] or 'records'}"
+        tmp = part.with_name(f".{part.name}.tmp")
+        shutil.rmtree(tmp, ignore_errors=True)  # a copy cut short before
+        lines = []
+        for f in files:
+            rel = f.relative_to(root) if root else Path(f.name)
+            (tmp / rel).parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(f, tmp / rel)
+            lines.append(f"{sha256(tmp / rel)}  {rel.as_posix()}")
+        (tmp / SUMS).write_text("\n".join(lines) + "\n", encoding="utf-8")
+        os.replace(tmp, part)
+    return part, True
+
+
+def loaded(ws: Path) -> list[dict]:
+    """inputs/'s parts, oldest first: each one's name, path, files and bytes, and whether a run has read all of it
+    (steps.json, by SHA-256). O(parts + steps.json)."""
+    log = ws / "steps.json"
+    read = {x["sha256"] for run in (json.loads(log.read_text(encoding="utf-8"))["runs"] if log.is_file() else [])
+            for x in run.get("inputs", []) if x.get("role") == "records"}
+    return [dict(name=part.name, path=str(part), files=len(own), bytes=sum((part / rel).stat().st_size for rel in own),
+                 read=all(sha in read for sha in own.values())) for part in parts(ws) for own in [sums(part)]]
