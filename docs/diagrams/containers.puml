@@ -18,7 +18,7 @@ System_Boundary(engine, "The engine, in one process") {
 
 ContainerDb(config, "config/", "TOML, npz", "settings.toml: the file's columns, [locale], [compute], [kind] · final.toml: the chosen pipeline and kind_names.npz: the name model, the hand-off from design time")
 ContainerDb(reference, "data/reference/", "JSON, in git", "public names, companies, addresses: the generator's input and the name model's training")
-ContainerDb(runfolder, "Run folder (~--output)", "Parquet, JSON, Markdown", "gold.parquet, the review sheets, qa.md, report.txt, steps.json, state/: LLD 5")
+ContainerDb(runfolder, "Workspace (~--workspace)", "Parquet, JSON, Markdown", "gold.parquet, the review sheets, qa.md, report.txt, steps.json, state/: LLD 5")
 ContainerDb(artifacts, "data/artifacts/", "npz, JSON, Parquet", "the chosen models, the leaderboard, benchmark runs")
 ContainerDb(synthetic, "Synthetic data and reports", "Parquet, Markdown", "data/medallion/, data/labels/: records and their truth · reports/: what was measured")
 

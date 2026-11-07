@@ -1,7 +1,7 @@
 """The reports for people, from a run's tables (er.run.Run): qa (the label-free checks, and the summary in words),
 fill_rates, review_sheet (scored pairs as people judge them), carry_over (the open review queue across increments) and
 report_text (the run on a page with no record's value in it). Run.report builds them; Run.write stages them with the
-run's files. From a written run folder: describe_run (what it holds), describe_entity (one record's entity) and
+run's files. From a written workspace: describe_workspace (what it holds), describe_entity (one record's entity) and
 describe_matching (the pipeline as a graph, with the run's numbers).
 """
 import json
@@ -58,7 +58,7 @@ def qa(run: "Run", fields: list[str] | None = None, review: int = 50, previous: 
     accepted pairs by weight band, cluster sizes, the largest clusters (the over-merge alarm), and the review sheet
     for people (review_sheet). Its rows are of two kinds. "decide": every pair of clusters whose best link scored in the
     threshold's safety margin [review_floor, min_match_weight), or above it with no name compared, not decided yet, best link first. "audit": accepted pairs
-    up to 4 bits above the threshold, `review` of them, stratified by 1-bit band. `previous`, the run folder's sheet
+    up to 4 bits above the threshold, `review` of them, stratified by 1-bit band. `previous`, the workspace's sheet
     before an increment: its open rows stay (carry_over), since the scores behind them aren't kept."""
     con, u, t = run.con, q(run.uid), run.pipeline.fs.min_match_weight
     fill = fill_rates(run, fields)
@@ -279,8 +279,8 @@ def applied(out: Path, uid: str) -> pd.DataFrame:  # each pair's latest decision
     return pd.concat([pd.read_parquet(f) for f in parts]).drop_duplicates([f"{uid}_l", f"{uid}_r"], keep="last")
 
 
-def describe_run(con: duckdb.DuckDBPyConnection, out: Path, uid: str) -> dict:
-    """What the run folder `out` holds, for people: records and entities, the largest entities, each run so far
+def describe_workspace(con: duckdb.DuckDBPyConnection, out: Path, uid: str) -> dict:
+    """What the workspace `out` holds, for people: records and entities, the largest entities, each run so far
     (steps.json), the pairs and kinds still open and the answers written in but not given back, the records set
     aside, a write still owed, and the last summary (qa.md). O(N) in SQL + O(sheet rows)."""
     if not (out / "gold.parquet").exists():
@@ -302,7 +302,7 @@ def describe_run(con: duckdb.DuckDBPyConnection, out: Path, uid: str) -> dict:
         return {**{w: int(((rows["why"] == w) & rows[answer].isna()).sum()) for w in whys}, "written_in": int(written.sum())}
     aside = out / "set_aside"
     summary = table_after((out / "qa.md").read_text(encoding="utf-8"), "## summary") if (out / "qa.md").exists() else pd.DataFrame()
-    return dict(run=str(out), records=records, entities=entities, largest=[dict(entity=e, records=n) for e, n in largest], runs=runs,
+    return dict(workspace=str(out), records=records, entities=entities, largest=[dict(entity=e, records=n) for e, n in largest], runs=runs,
                 pairs=queue("review.parquet", "decision", ("decide", "audit")), kinds=queue("kind_review.parquet", "kind", ("decide", "measure")),
                 set_aside=con.execute(f"SELECT count(*) FROM read_parquet({lit(aside / '*.parquet')})").fetchall()[0][0]
                 if any(aside.glob("*.parquet")) else 0,
@@ -310,7 +310,7 @@ def describe_run(con: duckdb.DuckDBPyConnection, out: Path, uid: str) -> dict:
 
 
 def describe_entity(con: duckdb.DuckDBPyConnection, out: Path, uid: str, record: str, fields: list[str]) -> dict:
-    """The entity of `record` in the run folder `out`: each of its records with its fields and kind, and every link
+    """The entity of `record` in the workspace `out`: each of its records with its fields and kind, and every link
     between them, from a rule (rule_kept), the model (matches, with its weight) or people (decisions). O(N) in SQL."""
     u, l, r = q(uid), q(f"{uid}_l"), q(f"{uid}_r")
     gold = f"read_parquet({lit(out / 'gold.parquet')})"

@@ -5,7 +5,7 @@
 [paths]
 reference = "data/reference"                     # tracked: frozen public reference data for the generator and the name model (SOURCES.md)
 bronze = "data/medallion/bronze"                 # <dataset>.parquet: records as they arrive (generated), the pipeline input
-gold = "data/medallion/gold"                     # <dataset>/: each dataset resolved, a run folder; its state/records/ is the silver layer
+gold = "data/medallion/gold"                     # <dataset>/: each dataset resolved, a workspace; its state/records/ is the silver layer
 labels = "data/labels"                           # <dataset>.parquet: truth, read only to choose and evaluate
 artifacts = "data/artifacts"                     # what the scripts keep for themselves: models, experiments, benchmark, demo
 experiments = "data/artifacts/experiments"       # leaderboard.parquet

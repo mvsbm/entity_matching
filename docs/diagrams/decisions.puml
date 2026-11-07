@@ -1,5 +1,5 @@
 @startuml decisions
-title LLD 3 · Decisions: Run.decide (nayose apply decisions ~--run …), scoring nothing
+title LLD 3 · Decisions: Run.decide (nayose apply decisions ~--workspace …), scoring nothing
 skinparam defaultFontSize 11
 skinparam rectangle {
   BackgroundColor #F4F6F8

@@ -1,7 +1,7 @@
 """Serve an inbox (nayose serve inbox): every Parquet file dropped in it goes into a run, one at a time, in the order
 it arrived.
 
-    inbox/batches/*.parquet     new records: nayose add records, or, into an empty run folder, nayose resolve records
+    inbox/batches/*.parquet     new records: nayose add records, or, into an empty workspace, nayose resolve records
     inbox/decisions/*.parquet   people's decisions: nayose apply decisions --file
     inbox/answers/*.parquet     people's person/company answers: nayose apply answers --file (a rerun)
 
@@ -9,12 +9,12 @@ Each file runs as its nayose command in a process of its own, so a crash or a me
 down. What happens to a file, by how its process ends:
     exit 0      done: moved to inbox/done/; a batch already in the run is done too ("nothing new")
     exit 2      a mistake people must fix: moved to inbox/failed/, with its two-line error beside it; the pass goes on
-    exit 75     the run folder is busy (another job writes to it): tried again, as below
+    exit 75     the workspace is busy (another job writes to it): tried again, as below
     otherwise   tried again (retries, waiting 2, 4, 8 … s); if it still fails, the pass stops and the file stays, so
                 nothing jumps ahead of it, and the next pass tries again
 A file whose content was done before (its SHA-256 in the ledger) is moved to done/ without running. Each file a pass
 runs is a line in <run>/jobs.jsonl: its outcome, its attempts, and where a file that ran went, which a rerun reads.
-One scheduler serves an inbox at a time (inbox/.schedule.lock); a run folder takes one writer at a time.
+One scheduler serves an inbox at a time (inbox/.schedule.lock); a workspace takes one writer at a time.
 """
 import fcntl
 import json
@@ -54,11 +54,11 @@ def command(kind: str, f: Path, run: Path, compute: list[str]) -> list[str]:
     """The nayose command that takes the file in: run as python -m er.cli, so it needs nothing on PATH."""
     limits = ["--compute", *compute] if compute else []
     if kind == "decisions":
-        words = ["apply", "decisions", "--run", str(run), "--file", str(f)]
+        words = ["apply", "decisions", "--workspace", str(run), "--file", str(f)]
     elif kind == "answers":
-        words = ["apply", "answers", "--run", str(run), "--file", str(f), *limits]
-    else:  # into an empty run folder, the first batch is the full run
-        words = ["resolve" if not (run / "gold.parquet").exists() else "add", "records", str(f), "--run", str(run), *limits]
+        words = ["apply", "answers", "--workspace", str(run), "--file", str(f), *limits]
+    else:  # into an empty workspace, the first batch is the full run
+        words = ["resolve" if not (run / "gold.parquet").exists() else "add", "records", str(f), "--workspace", str(run), *limits]
     return [sys.executable, "-m", "er.cli", *words, "--format", "json"]
 
 

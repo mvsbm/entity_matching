@@ -909,7 +909,7 @@ def test_nayose_prints_a_mistake_as_two_lines_and_exits_with_2(tmp_path):
     done = nayose("check", "records", tmp_path / "none.parquet", "--format", "json")
     error = json.loads(done.stdout.splitlines()[-1])
     assert done.returncode == 2 and error["event"] == "error" and error["exit"] == 2 and error["fix"]
-    assert nayose("resolve", "records", tmp_path / "x.parquet").returncode == 2  # --run missing: the parser says so
+    assert nayose("resolve", "records", tmp_path / "x.parquet").returncode == 2  # --workspace missing: the parser says so
 
 
 def test_every_command_has_its_help(capsys):
@@ -938,25 +938,25 @@ def test_nayose_takes_a_file_from_the_check_to_people_s_answers(tmp_path, popula
         return r
 
     assert say("check", "records", tmp_path / "first.parquet")["records"] == half
-    assert say("resolve", "records", tmp_path / "first.parquet", "--run", run)["summary"][0][0] == "records"
-    pair = say("list", "pairs", "--run", run, "--open")["pairs"][0]
-    say("decide", "pair", pair["id_r"], pair["id_l"], "match", "--run", run)  # either order
-    assert say("apply", "decisions", "--run", run)["matches"] == 1
-    assert say("apply", "decisions", "--run", run)["decisions"] == 0  # given twice: nothing new
+    assert say("resolve", "records", tmp_path / "first.parquet", "--workspace", run)["summary"][0][0] == "records"
+    pair = say("list", "pairs", "--workspace", run, "--open")["pairs"][0]
+    say("decide", "pair", pair["id_r"], pair["id_l"], "match", "--workspace", run)  # either order
+    assert say("apply", "decisions", "--workspace", run)["matches"] == 1
+    assert say("apply", "decisions", "--workspace", run)["decisions"] == 0  # given twice: nothing new
     gold = pd.read_parquet(run / "gold.parquet").set_index(uid)
     assert gold.loc[pair["id_l"], "cluster_id"] == gold.loc[pair["id_r"], "cluster_id"]
-    record = say("list", "kinds", "--run", run, "--open")["kinds"][0]["id"]
-    say("answer", "kind", record, "company", "--run", run)
-    say("apply", "answers", "--run", run)
+    record = say("list", "kinds", "--workspace", run, "--open")["kinds"][0]["id"]
+    say("answer", "kind", record, "company", "--workspace", run)
+    say("apply", "answers", "--workspace", run)
     assert pd.read_parquet(run / "gold.parquet").set_index(uid).loc[record, ["kind", "kind_by"]].tolist() == [2, "people"]
-    entity = say("describe", "entity", pair["id_l"], "--run", run)
+    entity = say("describe", "entity", pair["id_l"], "--workspace", run)
     assert {pair["id_l"], pair["id_r"]} <= {x["id"] for x in entity["records"]} and any(x["by"] == "people: match" for x in entity["links"])
-    matched = say("match", "records", tmp_path / "new.parquet", "--run", run)
+    matched = say("match", "records", tmp_path / "new.parquet", "--workspace", run)
     assert len(matched["records"]) == len(g.df) - half and set(matched["counts"]) <= {"joins an entity", "a new entity"}
-    added = say("add", "records", tmp_path / "new.parquet", "--run", run)
+    added = say("add", "records", tmp_path / "new.parquet", "--workspace", run)
     assert added["summary"][0][1].startswith(f"{len(g.df):,}")
-    assert say("describe", "run", run)["records"] == len(g.df)
-    graph = say("describe", "matching", "--run", run)
+    assert say("describe", "workspace", run)["records"] == len(g.df)
+    graph = say("describe", "matching", "--workspace", run)
     assert {n["id"] for n in graph["nodes"]} >= {"rules", "candidates", "score", "group"} and graph["edges"]
 
 
@@ -1124,7 +1124,7 @@ def test_set_columns_rewrites_the_fields_lines_and_keeps_the_rest(tmp_path):
 
 
 def test_describe_says_what_a_run_folder_holds_and_what_joined_an_entity(tmp_path, population):
-    from er.report import describe_entity, describe_run
+    from er.report import describe_entity, describe_workspace
     from er.run import Run
     s, p, g = population
     uid = s.data.unique_id
@@ -1132,7 +1132,7 @@ def test_describe_says_what_a_run_folder_holds_and_what_joined_an_entity(tmp_pat
     out = tmp_path / "run"
     run = Run(p, s).full(tmp_path / "all.parquet", out, pipeline_file=s.root / "config" / "final.toml")
     gold = pd.read_parquet(out / "gold.parquet")
-    d = describe_run(run.con, out, uid)
+    d = describe_workspace(run.con, out, uid)
     assert (d["records"], d["entities"]) == (len(gold), gold["cluster_id"].nunique()) and d["runs"][0]["what"] == "full run"
     assert d["pairs"]["decide"] + d["pairs"]["audit"] == len(pd.read_parquet(out / "review.parquet")) and not d["write_owed"]
     assert d["summary"][0][0] == "records"
@@ -1199,7 +1199,7 @@ def test_the_scheduler_serves_the_inbox_in_order_and_parks_what_people_must_fix(
     (inbox / "batches" / "d_bad.parquet").write_text("CONT_ID\n1\n")  # a CSV, named as Parquet
     for k, f in enumerate(sorted((inbox / "batches").iterdir())):
         os.utime(f, (1_000 + k, 1_000 + k))  # arrival order
-    serve = lambda: nayose("serve", "inbox", inbox, "--run", run)
+    serve = lambda: nayose("serve", "inbox", inbox, "--workspace", run)
     done = serve()
     assert done.returncode == 0, done.stderr
     jobs = [(e["file"], e["outcome"]) for e in schedule.ledger(run)]
@@ -1222,7 +1222,7 @@ def test_the_scheduler_serves_the_inbox_in_order_and_parks_what_people_must_fix(
     from er.folder import run_lock
     g.df[~new].head(10).to_parquet(inbox / "batches" / "e_busy.parquet", index=False)  # records the run holds: nothing new
     with run_lock(run):  # someone runs nayose on the folder by hand
-        busy = nayose("serve", "inbox", inbox, "--run", run, "--retries", "0")
+        busy = nayose("serve", "inbox", inbox, "--workspace", run, "--retries", "0")
     assert busy.returncode != 0 and (schedule.ledger(run)[-1]["outcome"], schedule.ledger(run)[-1]["exit"]) == ("stopped", 75)
     assert (inbox / "batches" / "e_busy.parquet").exists()  # it waits in the inbox, not parked in failed/
     assert serve().returncode == 0 and schedule.ledger(run)[-1]["outcome"] == "done"
@@ -1686,20 +1686,20 @@ def test_the_ui_serves_only_its_own_link_and_runs_the_commands_as_nayose_does(tm
         assert call("GET", "/api/commands", token="wrong")[0] == 403  # another user of the machine: no link, no page
         assert call("GET", "/api/commands", host="example.com")[0] == 403  # a page elsewhere, through DNS rebinding
         status, d = call("GET", "/api/commands")
-        assert status == 200 and [c["name"] for c in d["commands"]] == [c.name for c in cli.COMMANDS] and d["run"] == str(tmp_path / "run")
+        assert status == 200 and [c["name"] for c in d["commands"]] == [c.name for c in cli.COMMANDS] and d["workspace"] == str(tmp_path / "run")
         assert call("GET", "/")[0] == 200
-        line, j = job("resolve records", {"input": str(tmp_path / "all.parquet"), "run": str(tmp_path / "run")})
-        assert line == f"nayose resolve records {tmp_path / 'all.parquet'} --run {tmp_path / 'run'}" and j["exit"] == 0
+        line, j = job("resolve records", {"input": str(tmp_path / "all.parquet"), "workspace": str(tmp_path / "run")})
+        assert line == f"nayose resolve records {tmp_path / 'all.parquet'} --workspace {tmp_path / 'run'}" and j["exit"] == 0
         assert {e["event"] for e in j["events"]} == {"step", "result"}  # each step as it finished, then the result
-        _, j = job("list pairs", {"run": str(tmp_path / "run"), "open": True})
+        _, j = job("list pairs", {"workspace": str(tmp_path / "run"), "open": True})
         assert j["exit"] == 0 and j["events"][-1]["pairs"]
-        _, j = job("describe entity", {"id": "nobody", "run": str(tmp_path / "run")})
+        _, j = job("describe entity", {"id": "nobody", "workspace": str(tmp_path / "run")})
         assert j["exit"] == 2 and j["events"][-1]["event"] == "error" and j["events"][-1]["fix"]
-        dry = call("POST", "/api/run", dict(command="list pairs", args={"run": "r", "open": True}, dry=True))[1]
-        assert dry == {"command": "nayose list pairs --run r --open"}  # the equivalent command line, nothing run
+        dry = call("POST", "/api/run", dict(command="list pairs", args={"workspace": "r", "open": True}, dry=True))[1]
+        assert dry == {"command": "nayose list pairs --workspace r --open"}  # the equivalent command line, nothing run
         assert call("POST", "/api/run", dict(command="list pairs", args={"nope": 1}))[0] == 400  # only declared parameters
         assert call("POST", "/api/run", dict(command="delete everything", args={}))[0] == 400  # only declared commands
-        _, j = job("describe entity", {"run": str(tmp_path / "run")})  # no ID: nayose's parser refuses it, as on the command line
+        _, j = job("describe entity", {"workspace": str(tmp_path / "run")})  # no ID: nayose's parser refuses it, as on the command line
         assert j["exit"] == 2 and "required" in j["events"][-1]["error"]
         assert not server.jobs  # a job the page has read to its end is dropped
     finally:
@@ -1712,7 +1712,7 @@ def test_quick_commands_at_once_leave_the_process_s_stderr_alone():
     from er import ui
     real, server = sys.stderr, ui.Server("nowhere")
     for _ in range(10):  # the page starts several at once on every load
-        jobs = [server.start("list columns", {})[1] for _ in range(8)] + [server.start("describe entity", {"run": "nowhere"})[1]]
+        jobs = [server.start("list columns", {})[1] for _ in range(8)] + [server.start("describe entity", {"workspace": "nowhere"})[1]]
         while any(j.code is None for j in jobs):
             time.sleep(0.01)
         assert sys.stderr is real and jobs[-1].code == 2
@@ -1752,7 +1752,7 @@ def test_the_page_answers_once_per_key_shows_any_row_and_says_when_the_server_is
     s, p, g = population
     g.df.to_parquet(tmp_path / "all.parquet", index=False)
     run = tmp_path / "run"
-    assert cli.main(["resolve", "records", str(tmp_path / "all.parquet"), "--run", str(run), "--format", "json"]) == 0
+    assert cli.main(["resolve", "records", str(tmp_path / "all.parquet"), "--workspace", str(run), "--format", "json"]) == 0
     server = ui.Server(str(run))
     httpd = ThreadingHTTPServer(("127.0.0.1", 0), ui.handler(server))
     threading.Thread(target=httpd.serve_forever, daemon=True).start()
@@ -1765,12 +1765,12 @@ def test_the_page_answers_once_per_key_shows_any_row_and_says_when_the_server_is
         page = browser.new_page()
         page.goto(f"http://127.0.0.1:{httpd.server_address[1]}/?token={server.token}")
         page.wait_for_selector(".next")
-        page.evaluate("setRun('')")  # the first screen of a new user: no workspace
+        page.evaluate("setWorkspace('')")  # the first screen of a new user: no workspace
         page.wait_for_selector(".empty .node.static")
         assert page.inner_text("h1").endswith("Choose a workspace") and page.get_attribute(".rail li:first-child .navitem", "aria-current") == "page"
         assert page.get_attribute(".navitem[data-screen=records]", "aria-current") == "false"  # the highlight is where you are
         assert all(b.is_disabled() for b in page.query_selector_all("[data-loop]")) and page.is_disabled("#search")  # off until the first run
-        page.evaluate(f"setRun({json.dumps(str(run))})")
+        page.evaluate(f"setWorkspace({json.dumps(str(run))})")
         page.wait_for_selector(".next")
         assert not any(b.is_disabled() for b in page.query_selector_all("[data-loop]")) and not page.is_disabled("#search")
         page.click(".navitem[data-screen=pairs]")
@@ -1781,7 +1781,7 @@ def test_the_page_answers_once_per_key_shows_any_row_and_says_when_the_server_is
         page.wait_for_timeout(600)
         assert page.inner_text("#written") == "1" and not page.query_selector("#said .banner")  # one answer, no busy folder
         assert "nayose decide pair" in page.inner_text("#term-body")  # the command line it ran
-        states = page.evaluate("""() => {  // each step's state, read from the workspace as describe run gives it
+        states = page.evaluate("""() => {  // each step's state, read from the workspace as describe workspace gives it
             const run = (pairs, kinds) => ({records: 9, entities: 7, pairs: {decide: 0, audit: 0, written_in: 0, ...pairs}, kinds: {decide: 0, measure: 0, written_in: 0, ...kinds}});
             const at = (d) => { const p = progress(d); return [p.next, p.steps.pairs.state, p.steps.kinds.state]; };
             return [at({event: "error", error: "no run"}), at(run({decide: 3}, {measure: 20})), at(run({}, {measure: 20})), at(run({}, {written_in: 2}))]; }""")

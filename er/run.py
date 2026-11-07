@@ -34,7 +34,7 @@ Writes are staged: every file is written under a temporary name; once all are co
 saved (pending.json), then they are done. A run's reports are among its files, and steps.json replaces itself whole. A write interrupted before that list exists left the run as it was: run it
 again. One interrupted after it is finished by the next run, increment or set of decisions (finish_writes). A full run
 refuses a folder that already holds a run unless told to overwrite it, and then replaces the old run only once the new
-one is complete. A run folder takes one writer at a time (run_lock): a full run, an increment or a set of decisions holds
+one is complete. A workspace takes one writer at a time (run_lock): a full run, an increment or a set of decisions holds
 it for as long as it writes.
 
 N records, L characters per value, P pairs in a rule's or generator's key blocks, C candidates, K comparisons,
@@ -77,7 +77,7 @@ def peak_gb() -> float:  # the process's peak resident memory so far (ru_maxrss:
 BYTES_PER_PAIR = 350  # shortcut: measured at 1M (candidate and score tables held together); measure again if those tables change
 
 
-def locked(method: Callable) -> Callable:  # the run folder (the method's `out`) locked for the whole method
+def locked(method: Callable) -> Callable:  # the workspace (the method's `out`) locked for the whole method
     @functools.wraps(method)
     def wrapper(self: "Run", path: str | Path, out: Path, *args: object, **kwargs: object) -> object:
         with folder.run_lock(Path(out)):
@@ -403,7 +403,7 @@ class Run:
     def _accept(self) -> None:
         """matches: the scored pairs at the threshold or above that are named and kept (scored), less those people
         decided are no match; kept: those, the rules' pairs, and the pairs people decided are a match (er_decisions,
-        loaded by full() from the run folder; empty otherwise)."""
+        loaded by full() from the workspace; empty otherwise)."""
         fs, l, r = self.pipeline.fs, q(self.l), q(self.r)
         self.con.execute(f"CREATE TABLE IF NOT EXISTS er_decisions ({l} VARCHAR, {r} VARCHAR, decision VARCHAR)")
         self.con.execute(f"""CREATE OR REPLACE TABLE matches AS
@@ -621,7 +621,7 @@ class Run:
     # ---------- people's decisions ----------
 
     def _load_decisions(self, out: Path) -> None:
-        """The decisions stored in this run folder, on records of this file, the latest per pair, for _accept."""
+        """The decisions stored in this workspace, on records of this file, the latest per pair, for _accept."""
         u, l, r, parts = q(self.uid), q(self.l), q(self.r), out / folder.DECISIONS
         if any(parts.glob("part-*.parquet")):
             self.con.execute(f"""CREATE OR REPLACE TABLE er_decisions AS SELECT {l}, {r}, arg_max(decision, filename) AS decision
@@ -675,7 +675,7 @@ class Run:
 
     @locked
     def full(self, path: str | Path, out: Path, overwrite: bool = False, pipeline_file: Path | None = None) -> "Run":
-        """Steps 1–8 on the file at `path` into the run folder `out`; with `pipeline_file` (named in the reports), step 8
+        """Steps 1–8 on the file at `path` into the workspace `out`; with `pipeline_file` (named in the reports), step 8
         writes step 9's reports with the run's files."""
         folder.finish_writes(out)
         held = folder.held(out)

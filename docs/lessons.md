@@ -102,7 +102,7 @@ Each entry names a way an entity-resolution pipeline like this one goes wrong, a
 - **Guard:** the patterns name the full-width space; a blank input value is missing, so it can't win a fallback; a value that normalization empties is missing too.
 - **Check:** a test standardizes blank, space-only and legal-form-only values.
 
-## A run folder that holds two runs
+## A workspace that holds two runs
 - **Pitfall:** a full run written into a folder that holds an earlier run keeps some of the earlier files, and an increment stopped between its writes leaves gold and the stored records disagreeing, with no way to retry. It shows as more stored records than the input holds.
 - **Why:** a full run that overwrites only the files it writes itself, and an increment that replaces its files one by one.
 - **Guard:** a full run refuses a folder that holds a run unless `--overwrite`, and a folder takes one writer at a time (`run_lock`). Every file is written under a temporary name; once all are complete, the renames they need are saved, then done, and the next increment finishes any left undone.
@@ -157,7 +157,7 @@ Each entry names a way an entity-resolution pipeline like this one goes wrong, a
 - **Check:** `reports/choose_kind.md`, written from the run's own training names.
 
 ## Measurements run into a folder that keeps people's work
-- **Pitfall:** a benchmark resolves its baseline into a run folder that an earlier, labelled run used. The baseline then carries that run's answers. It shows as a baseline better than it is.
+- **Pitfall:** a benchmark resolves its baseline into a workspace that an earlier, labelled run used. The baseline then carries that run's answers. It shows as a baseline better than it is.
 - **Why:** a full run keeps people's answers across `--overwrite`, as it must for real work. Three ways of routing resolved into one folder hand each the answers of the labelled run before it: about 3,000 truth answers, most of them exactly the flag's errors, would correct the flag-alone baseline.
 - **Guard:** each routing gets a fresh folder of its own.
 - **Check:** `reports/benchmark.md`, written with fresh folders.

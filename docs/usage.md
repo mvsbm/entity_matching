@@ -69,14 +69,14 @@ It prints each field, its fill rate and the columns it comes from, what would be
 ## 3 · Run
 
 ```bash
-.venv/bin/nayose resolve records customers.parquet --run runs/customers
+.venv/bin/nayose resolve records customers.parquet --workspace workspaces/customers
 ```
 
 | Parameter | Does |
 |---|---|
 | `INPUT` | a Parquet file, a quoted glob (`'data/in/*.parquet'`) or a folder of them; several files are read together by column name |
-| `--run` | the run folder. A full run refuses a folder that already holds a run |
-| `--overwrite` | replaces the run in `--run`; people's decisions and answers in it stand |
+| `--workspace` | the workspace. A full run refuses a folder that already holds a run |
+| `--overwrite` | replaces the run in `--workspace`; people's decisions and answers in it stand |
 | `--compute KEY=VALUE …` | DuckDB limits for this run, overriding `config/settings.toml` `[compute]`: `memory_limit=8GB`, `threads=4`, `temp_directory=<folder>`. Past the memory limit, DuckDB spills to that folder |
 | `--pipeline` | another pipeline file. Default: `config/final.toml` |
 | `--model` | a model fitted before, used instead of fitting on this file; an increment scores with the model of the run it adds to |
@@ -87,12 +87,12 @@ The run needs no labels: it fits its model on the file itself. It prints each st
 
 ## 4 · Read the outputs
 
-Everything is in the run folder. A run also reads `config/kind_names.npz`, the name model that tells persons from companies, and `steps.json` names it with its SHA-256.
+Everything is in the workspace. A run also reads `config/kind_names.npz`, the name model that tells persons from companies, and `steps.json` names it with its SHA-256.
 
 ```bash
-.venv/bin/nayose describe run runs/customers                         # records, entities, the largest, each run, what is open
-.venv/bin/nayose describe entity 0000000151 --run runs/customers     # one record's entity: its records, and what joined them
-.venv/bin/nayose describe matching --run runs/customers              # every method, on which fields, with this run's numbers
+.venv/bin/nayose describe workspace workspaces/customers                         # records, entities, the largest, each run, what is open
+.venv/bin/nayose describe entity 0000000151 --workspace workspaces/customers     # one record's entity: its records, and what joined them
+.venv/bin/nayose describe matching --workspace workspaces/customers              # every method, on which fields, with this run's numbers
 ```
 
 | File | One row per | Holds | Use it to |
@@ -112,8 +112,8 @@ Everything is in the run folder. A run also reads `config/kind_names.npz`, the n
 
 ```python
 import pandas as pd
-gold = pd.read_parquet("runs/customers/gold.parquet")
-matches = pd.read_parquet("runs/customers/matches")      # a folder of parts reads as one table
+gold = pd.read_parquet("workspaces/customers/gold.parquet")
+matches = pd.read_parquet("workspaces/customers/matches")      # a folder of parts reads as one table
 ```
 
 `gold.parquet` is rewritten whole by every run. To see which records a downstream system must update, keep the copy it read last and compare: a new record, or one whose `cluster_id` changed (two entities joined take the smaller ID).
@@ -121,20 +121,20 @@ matches = pd.read_parquet("runs/customers/matches")      # a folder of parts rea
 ```sql
 -- duckdb
 SELECT n.CONT_ID, o.cluster_id AS was, n.cluster_id AS now
-FROM 'runs/customers/gold.parquet' n LEFT JOIN 'last_read/gold.parquet' o USING (CONT_ID)
+FROM 'workspaces/customers/gold.parquet' n LEFT JOIN 'last_read/gold.parquet' o USING (CONT_ID)
 WHERE o.cluster_id IS DISTINCT FROM n.cluster_id;
 ```
 
 ## 5 · Add new records
 
 ```bash
-.venv/bin/nayose match records new.parquet --run runs/customers     # what adding them would do; nothing written
-.venv/bin/nayose add records new.parquet --run runs/customers
+.venv/bin/nayose match records new.parquet --workspace workspaces/customers     # what adding them would do; nothing written
+.venv/bin/nayose add records new.parquet --workspace workspaces/customers
 ```
 
 - **The same model.** The batch is scored with the model the full run fitted, so weights stay comparable. The u of the exact and one-digit-off levels are counted again on every record, before the rules. A sampled u is measured again only once its drift, read from those exact counts, exceeds its own sampling error; before that, a new sample would only redraw the noise.
 - **Compared with everything.** Each new record is compared with every stored one, and can join an existing cluster. Earlier answers stand.
-- **Stored records aren't compared again.** A record left alone gets a new chance whenever a new record matches it, directly or through a third record. But two stored records that were not matched with each other stay apart until a full run compares them again, for example after the matching changes: `nayose rerun records --run runs/customers` resolves the run's own files again, the full run's and each batch's, in the order they came, so it keeps the records the increments kept.
+- **Stored records aren't compared again.** A record left alone gets a new chance whenever a new record matches it, directly or through a third record. But two stored records that were not matched with each other stay apart until a full run compares them again, for example after the matching changes: `nayose rerun records --workspace workspaces/customers` resolves the run's own files again, the full run's and each batch's, in the order they came, so it keeps the records the increments kept.
 - **Cost follows the batch.** The joins start from the new records, so a small batch is fast whatever the run's size: into a million-record run, 1,000 new records take about 4 s.
 - **New records only.** A record whose ID is already in the run is set aside: an increment adds, it doesn't update. So running the same batch twice is harmless; the second time prints "nothing new".
 - **Safe to interrupt.** An interrupted write is finished by the next increment.
@@ -154,12 +154,12 @@ Each row shows the two records' compared fields side by side, then, per comparis
 List the open pairs, decide each, then apply the decisions:
 
 ```bash
-.venv/bin/nayose list pairs --run runs/customers --open
-.venv/bin/nayose decide pair 0000000151 0000000874 match --run runs/customers     # or no_match; clear takes it back
-.venv/bin/nayose apply decisions --run runs/customers
+.venv/bin/nayose list pairs --workspace workspaces/customers --open
+.venv/bin/nayose decide pair 0000000151 0000000874 match --workspace workspaces/customers     # or no_match; clear takes it back
+.venv/bin/nayose apply decisions --workspace workspaces/customers
 ```
 
-Each decision is written into the run folder's `review.parquet` (its `decision` column) and applied by `apply decisions`. `list pairs` marks each row open, written in, or applied. A sheet filled in elsewhere, any file with the two ID columns and `decision`, goes back with `apply decisions --file reviewed.parquet`.
+Each decision is written into the workspace's `review.parquet` (its `decision` column) and applied by `apply decisions`. `list pairs` marks each row open, written in, or applied. A sheet filled in elsewhere, any file with the two ID columns and `decision`, goes back with `apply decisions --file reviewed.parquet`.
 
 - **`match`** joins the two clusters at once, scoring nothing. A record joined only this way gets `resolved_by` = `review`.
 - **`no_match`** splits nothing at once. It is kept, and a full run never accepts the pair. It applies to that pair only: a third record can still join the two.
@@ -175,9 +175,9 @@ A full run writes `kind_review.parquet`, records for people, as `review.parquet`
 Answer each record `person`, `company` or `unsure` (stored as `1`, `2`, `0`: can't tell from the record). A sole trader is a person, legally. Then apply the answers:
 
 ```bash
-.venv/bin/nayose list kinds --run runs/customers --open
-.venv/bin/nayose answer kind 0000000151 company --run runs/customers
-.venv/bin/nayose apply answers --run runs/customers
+.venv/bin/nayose list kinds --workspace workspaces/customers --open
+.venv/bin/nayose answer kind 0000000151 company --workspace workspaces/customers
+.venv/bin/nayose apply answers --workspace workspaces/customers
 ```
 
 Answers change how each record's name is matched, so `apply answers` is a rerun: a full run on the run's own files ([section 5](#5--add-new-records)), with the answers. A sheet filled in elsewhere, any file with the ID column and `kind` (`1`, `2` or `0`), goes back with `apply answers --file answered.parquet`.
@@ -234,27 +234,27 @@ What stops it: two lines, what is wrong and how to fix it, and exit code 2:
 | `no row has a decision`, `no row is answered` | nothing decided or answered yet: `decide pair` or `answer kind` first, or fill in the sheet |
 | `answered rows have no …`, `decided rows lack an ID`, `a decision is match or no_match`, `a kind is 1, 2 or 0`, `pairs decided both ways` | a sheet to correct |
 
-A run folder another job is writing to stops the run with `another job is writing to …` and exit code 75: nothing to fix, try again once the other job is done. The lock and the renames that finish each write hold on a local disk: keep run folders and inboxes on one. On network or object storage they don't, so there let one scheduler be a folder's only writer.
+A workspace another job is writing to stops the run with `another job is writing to …` and exit code 75: nothing to fix, try again once the other job is done. The lock and the renames that finish each write hold on a local disk: keep workspaces and inboxes on one. On network or object storage they don't, so there let one scheduler be a folder's only writer.
 
 Pairs are counted before any join, so a run that couldn't fit stops within seconds instead of running out of memory or disk.
 
-**To ask for help, send `report.txt`** from the run folder. It holds field and column names, counts, shares, times and the model's parameters, and no record's value: no ID, name, phone or address. The notes that quote a value (a placeholder phone, a customer ID a rule doesn't trust) are only in the terminal and `qa.md`. For a run that stopped, send the two lines it printed, and the output of `nayose check records`.
+**To ask for help, send `report.txt`** from the workspace. It holds field and column names, counts, shares, times and the model's parameters, and no record's value: no ID, name, phone or address. The notes that quote a value (a placeholder phone, a customer ID a rule doesn't trust) are only in the terminal and `qa.md`. For a run that stopped, send the two lines it printed, and the output of `nayose check records`.
 
 ## 8 · Run it on a schedule
 
 `nayose serve inbox` takes in every Parquet file dropped in an inbox, one at a time, in the order it arrived.
 
 ```bash
-.venv/bin/nayose serve inbox inbox --run runs/customers                # one pass; cron can call it
-.venv/bin/nayose serve inbox inbox --run runs/customers --every 300    # a pass every 5 minutes
+.venv/bin/nayose serve inbox inbox --workspace workspaces/customers                # one pass; cron can call it
+.venv/bin/nayose serve inbox inbox --workspace workspaces/customers --every 300    # a pass every 5 minutes
 ```
 
 ```
-inbox/batches/*.parquet      new records: add records; into an empty run folder, the first batch is resolve records
+inbox/batches/*.parquet      new records: add records; into an empty workspace, the first batch is resolve records
 inbox/decisions/*.parquet    people's decisions: apply decisions (section 6)
 inbox/answers/*.parquet      people's person/company answers: apply answers, a rerun (section 6)
 inbox/done/, inbox/failed/   where each file goes once it ran
-runs/customers/jobs.jsonl    one line per file per pass: file, SHA-256, outcome, exit code, attempts, seconds, error, where it went
+workspaces/customers/jobs.jsonl    one line per file per pass: file, SHA-256, outcome, exit code, attempts, seconds, error, where it went
 ```
 
 Each file runs as its `nayose` command in a process of its own, so a crash can't take the scheduler down. What happens next depends on how that process ends:
@@ -263,31 +263,31 @@ Each file runs as its `nayose` command in a process of its own, so a crash can't
 |---|---|
 | well (exit 0) | moves to `done/`. A batch already in the run is done too, so a retry is harmless |
 | on a mistake people must fix (exit 2) | moves to `failed/`, with its two-line error beside it (`….error.txt`). The pass goes on |
-| any other way: busy (exit 75: another job writes to the run folder), a crash, memory | is tried again, waiting 2, 4, 8 … s (`--retries`, default 2). If it still fails, the pass stops and the file stays, so nothing jumps ahead of it; the next pass tries again |
+| any other way: busy (exit 75: another job writes to the workspace), a crash, memory | is tried again, waiting 2, 4, 8 … s (`--retries`, default 2). If it still fails, the pass stops and the file stays, so nothing jumps ahead of it; the next pass tries again |
 
-`--compute` passes DuckDB limits on to every run. A file whose content was done before, by its SHA-256, moves to `done/` without running. The pass ends with exit code 1 if it stopped on a file. One scheduler serves an inbox at a time, and a run folder takes one writer at a time, so starting a second one, or running `nayose` on the folder by hand meanwhile, is refused, not raced, on a local disk.
+`--compute` passes DuckDB limits on to every run. A file whose content was done before, by its SHA-256, moves to `done/` without running. The pass ends with exit code 1 if it stopped on a file. One scheduler serves an inbox at a time, and a workspace takes one writer at a time, so starting a second one, or running `nayose` on the folder by hand meanwhile, is refused, not raced, on a local disk.
 
 ## 9 · In a browser
 
 ```bash
-.venv/bin/nayose open ui --run runs/customers      # prints a link and opens it; Ctrl-C stops it
+.venv/bin/nayose open ui --workspace workspaces/customers      # prints a link and opens it; Ctrl-C stops it
 ```
 
 The page runs the same commands, and nothing else. It opens on step 1: what nayose needs (a workspace, the folder its results go in, then your records file) and what it gives (customers, one ID each); what can't act before the first run (adding records, matching again, looking up a record) is greyed out until then. On the left, the work in six steps, in order, each marked done (✓), next, needs you (!) or optional, with one line of where it stands. Each page says how much each part of it covers: a grey band for all the records, a titled list for some of them, and a card with a blue edge for the one picked; the path under the heading strings them together (*All 8,936 records › 151 pairs to review › This pair*), and each card asks one question (*Same customer?*). The grey band is the step's part of the pipeline: chips joined by arrows, each with how many records or pairs it handled, in everyday words (*Sure matches*, *Compared*, *Weighed*, *Matched*, *Customers formed*); click a chip to see how it works, drawn rather than written, with the method's own name beside it. The methods show on real values: before and after with the changed letters marked, the differing letters of two records marked, each comparison's step on its ladder and the points (bits of evidence) it adds toward the 8 needed. Every button runs one `nayose` command; a run opens in a dialog with its equivalent command line, and the drawer at the bottom (the terminal icon) lists every command the page ran.
 
 | Step | Runs | Shows |
 |---|---|---|
-| 1 Choose a workspace | `describe run` | the workspace (run folder): an existing one, or a new one |
+| 1 Choose a workspace | `describe workspace` | the workspace, the folder that keeps one matching job: an existing one, or a new one |
 | 2 Prepare your data | `list columns`, `check records`, `set columns` | each field's columns, a real value made comparable step by step, how full each field is; a field the run needs, with the column its values suggest one click away |
 | 3 Find matches | `resolve records`, `add records`, `match records`, `rerun records` | records → rules → candidates (each way of listing pairs, as a bar) → weighed (what each level of each comparison is worth, in points) → matched (pairs by weight, against the line) → customers |
 | 4 Review possible matches | `list pairs`, `decide pair`, `apply decisions` | the pairs to review beside the picked pair, and why it is asked: its two records with their differences marked, each comparison's step and points, the total against the line. <kbd>M</kbd> same customer, <kbd>N</kbd> different, <kbd>S</kbd> skip, <kbd>↑</kbd> <kbd>↓</kbd> move |
 | 5 Confirm person or company | `list kinds`, `answer kind`, `apply answers` | each record on a slider from person to company, where the engine and its name alone place it. <kbd>1</kbd> person, <kbd>2</kbd> company, <kbd>0</kbd> can't tell |
-| 6 View customers | `describe run`, `describe entity` | the largest customers, and any customer's records as dots joined by what linked them: a rule, the model (with its points) or a person |
+| 6 View customers | `describe workspace`, `describe entity` | the largest customers, and any customer's records as dots joined by what linked them: a rule, the model (with its points) or a person |
 
 *When things change*, under the steps, leads to adding new records (preview first) and to matching everything again. The Overview shows the whole pipeline in one strip, and the next step to take.
 
 - **Only this machine, only this link.** The page is served on `127.0.0.1`, and every request needs the random token in the link `open ui` prints, so another user of the machine can't use it, and a web page elsewhere can't reach it. It loads nothing from the network: the records never leave the machine.
-- **One long command at a time.** Lists, describes and single answers run at once; a run, a rerun or applying the answers runs in a process of its own, so a crash can't take the page down, and a second one waits its turn. A run folder another job is writing to says so: answer again once it is done.
+- **One long command at a time.** Lists, describes and single answers run at once; a run, a rerun or applying the answers runs in a process of its own, so a crash can't take the page down, and a second one waits its turn. A workspace another job is writing to says so: answer again once it is done.
 
 ## Development scripts
 

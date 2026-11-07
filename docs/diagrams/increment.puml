@@ -1,5 +1,5 @@
 @startuml increment
-title LLD 2 · An increment: Run.increment, its reports written with it (nayose add records … ~--run …)
+title LLD 2 · An increment: Run.increment, its reports written with it (nayose add records … ~--workspace …)
 skinparam defaultFontSize 11
 skinparam rectangle {
   BackgroundColor #F4F6F8
@@ -14,7 +14,7 @@ skinparam file {
   BorderColor #B07D00
 }
 
-package "read back from the run folder" {
+package "read back from the workspace" {
   file "state/model.json · state/scoring.json" as f_model
   file "state/records/part-n.parquet" as f_records
   file "state/rule_clusters.parquet · gold.parquet" as f_clusters
@@ -46,7 +46,7 @@ database "scores" as scores
 database "matches" as matches
 database "gold" as gold
 
-package "written to the run folder" {
+package "written to the workspace" {
   file "new parts: matches/, rule_kept/, state/records/, set_aside/\nrewritten: gold.parquet, state/rule_clusters.parquet, state/scoring.json\nsteps.json: an entry added" as f_out
   file "qa.md · report.txt · review.parquet" as f_people
 }

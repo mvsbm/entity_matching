@@ -29,7 +29,7 @@ from sqlglot import exp
 ROOT = Path(__file__).resolve().parents[1]
 DIAGRAMS = ROOT / "docs" / "diagrams"
 PLUMBING = {"candidates.q", "source.lit", "Run._count", "Run._done", "Run.columns", "Run._resolved", "Run._singletons"}  # SQL quoting, counting
-TRANSIENT = {"pending.json", "jobs.jsonl"}  # in a run folder only while a write is cut short; the scheduler's ledger
+TRANSIENT = {"pending.json", "jobs.jsonl"}  # in a workspace only while a write is cut short; the scheduler's ledger
 EXTENSIONS = {"py", "toml", "md", "parquet", "json", "jsonl", "txt", "npz", "svg", "puml", "lock", "tmp", "ipynb", "pdf"}
 
 
