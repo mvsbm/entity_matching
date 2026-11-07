@@ -263,7 +263,8 @@ SCRIPTS = {"kanji": re.compile(r"[\u4e00-\u9fff々]"), "kana": re.compile(r"[\u3
 def profiled(values: Mapping[str, list[str]], lex: Lexicon) -> dict[str, dict]:
     """For each column, from its sampled filled values: its script (kanji, kana, romaji, or none: the letters most of its
     values are written in), and the share of values that are a known family name, a known given name, a known family name
-    followed by a known given name (a full name), and that start with a known prefecture or city and go on (an address);
+    followed by a known given name (a full name), that start with a known prefecture or city and go on (an address), and
+    that are 4 to 11 digits once dashes and brackets are dropped (a phone number, when the column's name says so);
     and the other columns that hold the same values (same: equal, width aside, on 95% of the rows both fill, which both
     fill together on half the rows at least: one fact written twice). O(values · length + columns² · rows)."""
     out, rows = {}, {c: [plain(v, lex.fold) if v and v.strip() else None for v in vs] for c, vs in values.items()}
@@ -274,8 +275,9 @@ def profiled(values: Mapping[str, list[str]], lex: Lexicon) -> dict[str, dict]:
         script = max(written, key=written.get) if vs and max(written.values()) >= 0.5 else None
         full = lambda v: any(v[:i] in lex.family and v[i:] in lex.given for i in range(1, len(v)))
         address = lambda v: any(v[:i] in lex.places for i in range(2, min(len(v) - 1, 12) + 1))  # a place, then more
+        phone = lambda v: re.fullmatch(r"\d{4,11}", re.sub(r"[-()+－ー‐]", "", v)) is not None  # 4 to 11 digits, its dashes and brackets aside
         out[c] = dict(script=script, family=sum(v in lex.family for v in vs) / n, given=sum(v in lex.given for v in vs) / n,
-                      full=sum(full(v) for v in vs) / n, address=sum(address(v) for v in vs) / n, same=[])
+                      full=sum(full(v) for v in vs) / n, address=sum(address(v) for v in vs) / n, phone=sum(phone(v) for v in vs) / n, same=[])
     for a in rows:
         for b in rows:
             both = [(x, y) for x, y in zip(rows[a], rows[b]) if x is not None and y is not None] if a < b else []
