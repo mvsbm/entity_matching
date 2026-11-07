@@ -7,7 +7,7 @@ title HLD 3 · Components: every module, in its layer; each layer imports only t
 Container(tools_run, "Run-time tools", "scripts/", "scripts/resolve.py: a full run, an increment, decisions\nscripts/schedule.py: an inbox, through resolve.py")
 Container(tools_design, "Design-time tools", "scripts/", "scripts/generate.py: synthetic data\nscripts/choose.py: the matching chosen\nscripts/choose_kind.py: person or company measured\nscripts/train_name_model.py: config/kind_names.npz\nscripts/benchmark.py: quality and cost\nscripts/export_pdfs.py: the demo's PDF")
 
-Component(run, "The run", "er/run.py", "Run: load, budget, fit, rules, candidates, score, cluster, write, report; increment, decide")
+Component(run, "The run", "er/", "er/run.py: Run, its steps: load, budget, fit, rules, candidates, score, cluster, write, report; increment, decide\ner/folder.py: the run folder: one writer, staged writes, steps.json, part numbers\ner/report.py: the reports for people")
 Component(design, "Design time", "er/", "er/select.py: each change tested and adopted\ner/pipeline.py: the pipeline measured through er.run, threshold curves\ner/evaluate.py: metrics, intervals\ner/tune.py: Optuna\ner/generate.py: synthetic records and the truth")
 Component(steps, "The steps", "er/", "er/source.py: input files\ner/standardize.py: fields and normalized copies\ner/kind.py: person or company\ner/candidates.py: budgets and candidate pairs\ner/match.py: rules, the model, u\ner/cluster.py: clusters, for every run and design time")
 Component(configuration, "Foundation", "er/", "er/config.py: the pipeline's dataclasses, InputError\ner/settings.py: config/settings.toml\ner/io.py: datasets, the leaderboard, tables\ner/strings.py: the connection and cl_* functions")

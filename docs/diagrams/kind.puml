@@ -27,7 +27,7 @@ rectangle "kind.name_model: every run loads it, never trains it;\nunder other se
 package "people's answers" {
   file "~--kind-labels: kind_review.parquet answered · kind_answers/part-n.parquet" as f_answers
   rectangle "Run._answers · Run._given (checked) · kind.merge_answers\nper record the newest answer; a blank row erases nothing" as merge
-  rectangle "kind.classifier\nthe combiner: gradient-boosted trees, depth 2, on Classifier.features\n(the name's logit, the flag, the birth year, kind.legal), fitted on the answers 1 and 2\nkind.lines: each side's line on the out-of-fold answers drawn to measure" as fit
+  rectangle "kind.classifier\nthe combiner: gradient-boosted trees, depth 2, on Classifier.features\n(the name's logit, the flag, the birth year, kind.legal), fitted on the answers 1 and 2\nkind.lines: each side's line on the out-of-fold answers drawn to measure\nClassifier.fitted: the combiner with its lines, once 50 drawn to measure hold both kinds" as fit
 }
 
 package "every chunk of the load (LLD 1, step 1)" {

@@ -3,7 +3,8 @@ code. Each check fails with exactly what to draw or to remove.
 
     modules     the components diagram's edges are the imports between er/ and scripts/ (ast)
     names       every path and every function a diagram or a doc names exists
-    calls       each step box names the functions its step reaches in er/run.py, and those of other modules they call (ast)
+    calls       each step box names the functions its step reaches in the run layer (er/run.py, folder.py, report.py), and
+                those of other modules they call (ast)
     tables      each step's DuckDB tables, made and used, as a test run's query log says (DuckDB's QueryLog, parsed by sqlglot)
     files       the data diagram's files and columns are those a test run leaves in its folder
     rendered    each SVG holds its .puml's source: rendered after the last edit
@@ -27,7 +28,7 @@ from sqlglot import exp
 
 ROOT = Path(__file__).resolve().parents[1]
 DIAGRAMS = ROOT / "docs" / "diagrams"
-PLUMBING = {"candidates.q", "source.lit", "Run._count", "Run._done", "Run._columns", "Run._resolved", "Run._singletons"}  # SQL quoting, counting
+PLUMBING = {"candidates.q", "source.lit", "Run._count", "Run._done", "Run.columns", "Run._resolved", "Run._singletons"}  # SQL quoting, counting
 TRANSIENT = {"pending.json", "jobs.jsonl"}  # in a run folder only while a write is cut short; the scheduler's ledger
 EXTENSIONS = {"py", "toml", "md", "parquet", "json", "jsonl", "txt", "npz", "svg", "puml", "lock", "tmp", "ipynb", "pdf"}
 
@@ -65,7 +66,8 @@ def parse(name: str) -> tuple[dict[str, tuple[str, str]], list[tuple[str, str]],
 
 MODULES = {f.stem for f in (ROOT / "er").glob("*.py")} - {"__init__"}
 RANK = {"tools_run": 4, "tools_design": 4, "design": 3, "run": 2, "steps": 1, "configuration": 0}  # components.puml: each layer imports only those below
-CLASSES = {"Run": "er.run", "Classifier": "er.kind", "NameModel": "er.kind"}
+CLASSES = {"Run": "er.run", "Classifier": "er.kind", "NameModel": "er.kind", "Fitted": "er.kind"}
+RUN_LAYER = ("run", "folder", "report")  # the run's modules: a step box names what it reaches in them
 
 
 def names_in(label: str) -> set[str]:
@@ -106,25 +108,31 @@ def imports() -> set[tuple[str, str]]:
 
 
 class RunCode:
-    """er/run.py read with ast: which functions a step reaches. Inside er/run.py a step's reach follows Run's methods
-    (other steps aside) and the module's own functions; it stops at a function of another er module, named
-    module.function."""
+    """The run layer (er/run.py, er/folder.py, er/report.py) read with ast: which functions a step reaches. A step's
+    reach follows Run's methods (other steps aside) and the run layer's functions, named module.function; it stops at a
+    function of another er module, named module.function too."""
 
     def __init__(self):
-        tree = ast.parse((ROOT / "er" / "run.py").read_text(encoding="utf-8"))
-        self.imported = {}
-        for node in tree.body:
-            if isinstance(node, ast.ImportFrom) and node.module and node.module.startswith("er."):
-                mod = importlib.import_module(node.module)
-                for a in node.names:
-                    if callable(getattr(mod, a.name)) and not isinstance(getattr(mod, a.name), type):  # functions, not classes
-                        self.imported[a.asname or a.name] = f"{node.module.split('.')[1]}.{a.name}"
-        self.local = {n.name: n for n in tree.body if isinstance(n, ast.FunctionDef)}
-        run = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == "Run")
-        self.methods = {n.name: n for n in run.body if isinstance(n, ast.FunctionDef)}
+        self.local, self.names = {}, {}  # module.function → its ast; per module, each name it sees → module.function
+        for m in RUN_LAYER:
+            tree = ast.parse((ROOT / "er" / f"{m}.py").read_text(encoding="utf-8"))
+            names = self.names[m] = {}
+            for node in tree.body:
+                if isinstance(node, ast.ImportFrom) and node.module and node.module.startswith("er."):
+                    mod = importlib.import_module(node.module)
+                    for a in node.names:
+                        if callable(getattr(mod, a.name)) and not isinstance(getattr(mod, a.name), type):  # functions, not classes
+                            names[a.asname or a.name] = f"{node.module.split('.')[1]}.{a.name}"
+                elif isinstance(node, ast.ImportFrom) and node.module == "er":  # from er import folder: folder.stage
+                    names.update({a.asname or a.name: a.name for a in node.names})
+                elif isinstance(node, ast.FunctionDef):
+                    self.local[f"{m}.{node.name}"] = node
+                    names[node.name] = f"{m}.{node.name}"
+                elif isinstance(node, ast.ClassDef) and node.name == "Run":
+                    self.methods = {n.name: n for n in node.body if isinstance(n, ast.FunctionDef)}
 
     def body(self, name: str) -> ast.FunctionDef:
-        return self.methods[name.split(".")[1]] if name.startswith("Run.") else self.local[name.split(".")[1]]
+        return self.methods[name.split(".")[1]] if name.startswith("Run.") else self.local[name]
 
     def reach(self, roots: set[str], steps: set[str] = frozenset()) -> set[str]:
         seen, todo = set(), list(roots)
@@ -135,16 +143,21 @@ class RunCode:
             seen.add(name)
             if name in PLUMBING:
                 continue
+            names = self.names["run" if name.startswith("Run.") else name.split(".")[0]]
             for node in (n for stmt in self.body(name).body for n in ast.walk(stmt)):  # decorators aside
                 found = None
                 if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name) and node.value.id == "self" and node.attr in self.methods:
                     found = None if node.attr in steps else f"Run.{node.attr}"
-                elif isinstance(node, ast.Name) and node.id in self.local:
-                    found = f"run.{node.id}"
-                elif isinstance(node, ast.Name) and node.id in self.imported:
-                    seen.add(self.imported[node.id])
-                if found and found not in seen:
-                    todo.append(found)
+                elif isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name) and names.get(node.value.id) in RUN_LAYER:
+                    found = f"{names[node.value.id]}.{node.attr}"  # called by its module's name: a function, not a constant
+                    found = found if found in self.local else None
+                elif isinstance(node, ast.Name) and node.id in names and "." in names[node.id]:
+                    found = names[node.id]
+                if found in self.local or (found or "").startswith("Run."):
+                    if found not in seen:
+                        todo.append(found)
+                elif found:
+                    seen.add(found)
         return seen - PLUMBING
 
     def steps_of_full(self) -> dict[str, set[str]]:

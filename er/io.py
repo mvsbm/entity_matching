@@ -9,6 +9,7 @@ data/artifacts/experiments/leaderboard.parquet   one row per (experiment, datase
 """
 import hashlib
 import json
+import subprocess
 import time
 from itertools import takewhile
 from pathlib import Path
@@ -19,6 +20,17 @@ from er.config import Data
 
 def config_hash(config: object) -> str:
     return hashlib.sha1(repr(config).encode()).hexdigest()[:10]
+
+
+def code_version(root: Path) -> str:
+    """The commit of the code that ran, and the tracked files changed in this copy (the column mapping, say)."""
+    def git(*args: str) -> str:
+        try:
+            return subprocess.run(["git", "-C", str(root), *args], capture_output=True, text=True, timeout=10).stdout.strip()
+        except OSError:
+            return ""
+    changed = git("diff", "--name-only", "HEAD").splitlines()
+    return (git("rev-parse", "--short", "HEAD") or "unknown (not a git checkout)") + (f" · changed here: {', '.join(changed)}" if changed else "")
 
 
 def load(data: Data, dataset: str) -> tuple[pd.DataFrame, pd.DataFrame]:

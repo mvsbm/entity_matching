@@ -3,7 +3,7 @@ Everything is in field names (config/settings.toml [columns]); nothing here name
 import json
 import re
 import tomllib
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Literal
@@ -171,6 +171,12 @@ class RulesSpec:
                 assert s.keys(r), f"{r.name}: needs an exact column, or every pair is compared (O(N²))"
             for c, comp in s.comparators.items():
                 assert comp.function == "exact" or comp.threshold is not None, f"{s.name}.{c}: threshold missing"
+
+    def each(self) -> Iterator[tuple[int, Stage, Rule]]:  # every rule in order, with its stage: a pair's first rule wins by i
+        return ((i, s, r) for i, (s, r) in enumerate((s, r) for s in self.stages for r in s.rules))
+
+    def blockers(self) -> list["KeyBlocker"]:  # each rule's equi-join as a key generator: what a budget counts
+        return [KeyBlocker(name=r.name, keys=tuple(map(Key, s.keys(r)))) for _, s, r in self.each()]
 
     def normalized(self) -> list[tuple[str, tuple[Normalizer, ...]]]:
         return ([(c, comp.normalize) for s in self.stages for c, comp in s.comparators.items() if comp.normalize]

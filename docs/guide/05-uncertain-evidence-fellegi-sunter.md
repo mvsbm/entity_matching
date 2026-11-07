@@ -202,7 +202,7 @@ A cautious alternative would refuse a merge when the two groups hold different g
   - `scaled_prior`: rescales λ to the scored file's size
 - `er/cluster.py`: `merge`, the run's clustering
 - `config/pipeline.toml` `[model]`: the comparisons and levels; `er/select.py`: `FSChooser.training` (EM against labels), `why`, `threshold`, run by `scripts/choose.py`
-- `er/run.py`: `Run.fit` (the fit, then u on the whole file) and `Run.score`, the same model without labels on any file; `named_sql`, the name check; `notebooks/demo.ipynb`, sections 5 and 8–11, draws each step
+- `er/run.py`: `Run.fit` (the fit, then u on the whole file) and `Run.score`, the same model without labels on any file; `er/match.py`: `named_sql`, the name check; `notebooks/demo.ipynb`, sections 5 and 8–11, draws each step
 - every table: [results.md](../results.md)
 
 ## Further reading

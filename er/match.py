@@ -18,8 +18,8 @@ import splink.comparison_level_library as cll
 import splink.comparison_library as cl
 from splink import DuckDBAPI, Linker, SettingsCreator
 
-from er.candidates import deletions_sql
-from er.config import Comparator, Comparison, DeletionKeys, FSModel, FSSpec, InputError, Key, KeyBlocker, RulesSpec, keys_sql
+from er.candidates import deletions_sql, q
+from er.config import Comparator, Comparison, DeletionKeys, FSModel, FSSpec, InputError, Key, KeyBlocker, Pipeline, RulesSpec, keys_sql
 
 
 def rule_edges(spec: RulesSpec, records: "Records", db: DuckDBAPI, uid: str, batch: str | None = None,
@@ -37,7 +37,7 @@ def rule_edges(spec: RulesSpec, records: "Records", db: DuckDBAPI, uid: str, bat
     left, order = (batch, "<>") if batch else (name, "<")  # a batch pair can come both ways round: DISTINCT ON keeps one
     seconds, parts = {}, []
     try:
-        for i, (s, rule) in enumerate((s, rule) for s in spec.stages for rule in s.rules):
+        for i, s, rule in spec.each():
             t = time.perf_counter()
             keep = f" AND {trust[i]}" if trust and i in trust else ""
             con.execute(f'CREATE OR REPLACE TEMP TABLE er_rule_{i} AS SELECT least(l.{u}, r.{u}) AS {l}, greatest(l.{u}, r.{u}) AS {r} '
@@ -496,3 +496,16 @@ def pattern_coverage(spec: FSSpec, model_json: dict, n_records: int) -> pd.DataF
                          "share_of_matches": math.prod(o[2] for o in combo if o[0] != "missing")})
     out = pd.DataFrame(rows, columns=[*(n for n, _ in options), "bits", "share_of_matches"])
     return out.sort_values("share_of_matches", ascending=False, ignore_index=True)
+
+
+def named_sql(fs: FSSpec, s: str = "s") -> str:  # the name check (FSSpec.needs) on scores aliased `s`: a merge without people compares a name
+    return "(" + (" OR ".join(f"{s}.{q('gamma_' + c)} >= 0" for c in fs.needs) or "TRUE") + ")"
+
+
+def review_floor(p: Pipeline) -> float:
+    """The lowest weight people are asked to decide: the threshold rule's safety margin below min_match_weight, i.e. the
+    [threshold] grid point margin_steps below it. Pairs there were clean on cross-validated train, but held back."""
+    below = sorted(g for g in p.threshold.grid if g < p.fs.min_match_weight)
+    if not p.threshold.margin_steps or not below:
+        return p.fs.min_match_weight
+    return below[-min(p.threshold.margin_steps, len(below))]
