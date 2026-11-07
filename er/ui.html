@@ -201,7 +201,10 @@ body.term-open main { padding-bottom: 300px; }
 .attention .dot { border-color: var(--warn); background: var(--warn-bg); color: var(--warn); }
 .attention .sub { color: var(--warn); font-weight: 500; }
 .optional .dot { border-style: dashed; }
-.loopitem { font-weight: 400; height: 36px; }
+.loopitem { font-weight: 400; height: auto; min-height: 36px; }
+.navitem:disabled { color: var(--faint); cursor: default; }
+.navitem:disabled:hover { background: transparent; }
+.search:has(input:disabled) { opacity: .6; }
 body.collapsed .navitem .stack, body.collapsed .rail li::before { display: none; }
 
 /* the flow strip: what this step computes, as chips joined by arrows */
@@ -273,6 +276,10 @@ body.collapsed .navitem .stack, body.collapsed .rail li::before { display: none;
 .path span { display: inline-flex; align-items: center; gap: 4px; }
 .path span:last-of-type { color: var(--ink); font-weight: 500; }
 .path i { font-style: normal; color: var(--faint); }
+.empty .flow { justify-content: center; margin: 20px 0 24px; }
+.node.static { cursor: default; max-width: 210px; }
+.node.static:hover { box-shadow: none; }
+@media (max-width: 600px) { .empty .flow { flex-direction: column; align-items: center; } .empty .flow .arrow { transform: rotate(90deg); } }
 </style>
 </head>
 <body>
@@ -505,19 +512,19 @@ function progress(d) {
 }
 
 function rail() {  // the stepper: the navigation, in the order the work is done
-  const p = steps.steps || {};
-  $("nav").innerHTML = `<button class="navitem" data-screen="records">${icon("overview")}<span>Overview</span></button><ol class="rail">${ORDER.map((id, n) => {
+  const p = steps.steps || {}, ran = p.run && p.run.state === "done";
+  const here = !state.run && current === "records" ? "workspace" : current;  // with no workspace, the Overview is step 1
+  const at = (id) => `aria-current="${id === here ? "page" : "false"}"`;
+  $("nav").innerHTML = `<button class="navitem" data-screen="records" ${at("records")}>${icon("overview")}<span>Overview</span></button><ol class="rail">${ORDER.map((id, n) => {
     const s = p[id] || {state: "later", line: ""};
     const dot = s.state === "done" ? icon("tick") : s.state === "attention" ? "!" : n + 1;
     const go = id === "workspace" ? "data-pick" : `data-screen="${id}"`;
-    return `<li class="${s.state}"><button class="navitem step" ${go} title="${esc(STEP[id])}: ${esc(STATE_WORD[s.state])}">
+    return `<li class="${s.state}"><button class="navitem step" ${go} ${at(id)} title="${esc(STEP[id])}: ${esc(STATE_WORD[s.state])}">
       <span class="dot">${dot}</span><span class="stack"><span>${n + 1} · ${esc(STEP[id])}</span><span class="sub">${esc(s.line)}</span></span></button></li>`;
   }).join("")}</ol><h3>When things change</h3>${LAYOUT.workflow.loops.map((l, n) =>
-    `<button class="navitem loopitem" data-loop="${n}">${icon(l.icon)}<span>${esc(l.name)}</span></button>`).join("")}`;
-  $("nav").querySelectorAll("[data-screen]").forEach((b) => {
-    b.setAttribute("aria-current", b.dataset.screen === current ? "page" : "false");
-    b.onclick = () => go(b.dataset.screen);
-  });
+    `<button class="navitem loopitem" data-loop="${n}" ${ran ? "" : "disabled"}>${icon(l.icon)}<span class="stack"><span>${esc(l.name)}</span>${
+      ran ? "" : '<span class="sub">after the first run</span>'}</span></button>`).join("")}`;
+  $("nav").querySelectorAll("[data-screen]").forEach((b) => b.onclick = () => go(b.dataset.screen));
   $("nav").querySelectorAll("[data-loop]").forEach((b) => b.onclick = () => go(LAYOUT.workflow.loops[b.dataset.loop].screen, LAYOUT.workflow.loops[b.dataset.loop]));
 }
 
@@ -525,13 +532,16 @@ async function refresh(d) {  // the stepper, from the page's own describe run wh
   if (d === undefined && state.run) d = await run("records", "describe run");
   steps = progress(state.run ? d : null);
   rail();
+  const ran = steps.steps.run.state === "done";
+  $("search").disabled = !ran;
+  $("search").placeholder = ran ? "Look up a record ID" : "Look up a record ID, after the first run";
   const s = steps.steps[current], chip = $("stepchip");
   if (s && chip) { chip.className = `chip ${s.state === "done" ? "good" : s.state === "attention" ? "warn" : "info"}`; chip.textContent = `${STATE_WORD[s.state]} · ${s.line}`; }
 }
 
 const head = (id, actions = "") => {
   const n = ORDER.indexOf(id), s = (steps.steps || {})[id];
-  return `<div class="pagehead"><h1>${n >= 0 ? `<span class="faint">Step ${n + 1} of ${ORDER.length} · </span>` : ""}${esc(screen(id).title)}</h1>${
+  return `<div class="pagehead"><h1>${n >= 0 ? `<span class="faint">Step ${n + 1} of ${ORDER.length} · </span>` : ""}${esc(screen(id) ? screen(id).title : STEP[id])}</h1>${
     s ? `<span class="chip ${s.state === "done" ? "good" : s.state === "attention" ? "warn" : "info"}" id="stepchip">${esc(STATE_WORD[s.state])} · ${esc(s.line)}</span>` : ""}${actions}</div>
     <nav class="path" id="path" aria-label="What this page shows"></nav>`;
 };
@@ -806,9 +816,9 @@ async function flowOf(id, box, open = null) {  // the step's part of the pipelin
 
 const SCREENS = {
   async records(el) {
+    if (!state.run) { el.innerHTML = head("workspace") + emptyRun(); return; }
     el.innerHTML = head("records", `<button class="btn" id="refresh">${icon("refresh")}Refresh</button>`) + `<div id="next"></div><div id="flow"></div><div id="out"></div>`;
     $("refresh").onclick = () => go("records");
-    if (!state.run) { $("out").innerHTML = emptyRun(); return; }
     const [d] = await Promise.all([run("records", "describe run"), flowOf("records", $("flow"))]);
     if (d.event === "error") { $("out").innerHTML = /no run in/.test(d.error) ? emptyRun() : banner(d); return d; }
     const p = progress(d), s = p.steps[p.next];
@@ -1018,16 +1028,20 @@ async function review(el, which, note = "") {
   show();
 }
 
+const NEED = [["folder", "Workspace", "a folder for the results; a new one is fine"], ["records", "Your records", "the file you match, chosen in step 2"],
+              ["customers", "Customers", "one ID each"]];  // what matching needs, then what it gives
 function emptyRun() {
-  return `<div class="card empty">${icon("folder")}<h2>${state.run ? `Nothing matched in ${esc(state.run)} yet` : "Choose a workspace"}</h2>
-    <p class="muted">${state.run ? "Prepare your data, then find matches into this workspace." : "Pick the workspace in the bar above: an existing one, or a new one to match records into."}</p>
-    <div class="actions" style="justify-content:center">${state.run ? '<a class="btn outlined" data-go="columns">2 · Prepare your data</a><a class="btn filled" data-go="run">3 · Find matches</a>' : '<button class="btn filled" data-pick>1 · Choose a workspace</button>'}</div></div>`;
+  if (!state.run) return `<div class="card empty"><h2>Gather each customer's records under one ID</h2><div class="flow">${NEED.map(([ic, name, what], i) =>
+    `${i ? ARROW : ""}<span class="node static"><span class="top">${icon(ic)}${esc(name)}</span><span class="faint" style="font-size:12px">${esc(what)}</span></span>`).join("")}</div>
+    <div class="actions" style="justify-content:center"><button class="btn filled" data-pick>1 · Choose a workspace</button></div></div>`;
+  return `<div class="card empty">${icon("folder")}<h2>Nothing matched in ${esc(state.run)} yet</h2><p class="muted">Prepare your data, then find matches into this workspace.</p>
+    <div class="actions" style="justify-content:center"><a class="btn outlined" data-go="columns">2 · Prepare your data</a><a class="btn filled" data-go="run">3 · Find matches</a></div></div>`;
 }
 
 // The workspace picker, as a console's project picker: recent workspaces, or a new one.
 function pick() {
   const recent = JSON.parse(store("recent") || "[]"), dlg = $("dlg");
-  dlg.innerHTML = `<form method="dialog"><div class="dlg-body"><h2>Choose a workspace</h2><p class="about">The folder matching writes, and every step reads. A new folder is fine.</p>
+  dlg.innerHTML = `<form method="dialog"><div class="dlg-body"><h2>Choose a workspace</h2><p class="about">A folder for this matching job: results are written here, and every step reads them. A new name starts a new job; the folder is made on the first run.</p>
     <label class="field"><span class="lab">Workspace *</span><input type="text" id="pick-run" value="${esc(state.run || "")}" placeholder="runs/customers" required></label>
     ${recent.length ? `<span class="lab faint" style="font-size:12px">Recent</span><div class="tablecard"><table><tbody>${recent.map((r) => `<tr class="pick" data-r="${esc(r)}"><td style="width:40px">${icon("folder")}</td><td>${esc(r)}</td></tr>`).join("")}</tbody></table></div>` : ""}</div>
     <div class="dlg-foot"><span class="grow"></span><button class="btn" value="cancel" formnovalidate>Cancel</button><button class="btn filled" value="open">Open</button></div></form>`;

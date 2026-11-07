@@ -1764,6 +1764,15 @@ def test_the_page_answers_once_per_key_shows_any_row_and_says_when_the_server_is
             pytest.skip("no browser: .venv/bin/python -m playwright install chromium")
         page = browser.new_page()
         page.goto(f"http://127.0.0.1:{httpd.server_address[1]}/?token={server.token}")
+        page.wait_for_selector(".next")
+        page.evaluate("setRun('')")  # the first screen of a new user: no workspace
+        page.wait_for_selector(".empty .node.static")
+        assert page.inner_text("h1").endswith("Choose a workspace") and page.get_attribute(".rail li:first-child .navitem", "aria-current") == "page"
+        assert page.get_attribute(".navitem[data-screen=records]", "aria-current") == "false"  # the highlight is where you are
+        assert all(b.is_disabled() for b in page.query_selector_all("[data-loop]")) and page.is_disabled("#search")  # off until the first run
+        page.evaluate(f"setRun({json.dumps(str(run))})")
+        page.wait_for_selector(".next")
+        assert not any(b.is_disabled() for b in page.query_selector_all("[data-loop]")) and not page.is_disabled("#search")
         page.click(".navitem[data-screen=pairs]")
         page.wait_for_selector("[data-a=match]")
         page.keyboard.press("m")
