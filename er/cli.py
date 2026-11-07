@@ -28,13 +28,13 @@ import numpy as np
 import pandas as pd
 
 from er import folder, inbox
-from er.config import InputError, load_pipeline, sources_text
+from er.config import InputError, load_pipeline, sources_text, widen
 from er.folder import Busy
 from er.report import applied, describe_entity, describe_matching, describe_workspace, fill_rates
 from er.source import describe, lexicon
 from er.run import Run
-from er.settings import (COLUMNS, SPECIAL, columns_file, features_of, load_settings, own_columns, placements, set_columns, set_features,
-                         settings_path, slots)
+from er.settings import (COLUMNS, SPECIAL, add_feature, added_of, beside, columns_file, features_of, load_settings, offers, own_columns,
+                         placements, remove_feature, set_columns, set_features, settings_path, slots)
 
 
 @dataclass(frozen=True)
@@ -205,7 +205,7 @@ def setup(a: dict):
         raise InputError(f"--compute {' '.join(bad)}: each limit is KEY=VALUE", fix="for example --compute memory_limit=8GB threads=4")
     s = replace(s, compute={**s.compute, **dict(kv.split("=", 1) for kv in a.get("compute") or [])})
     pipeline = Path(a.get("pipeline") or s.root / "config" / "final.toml")
-    return s, load_pipeline(pipeline, s.standardize, s.chains, s.columns), pipeline
+    return s, widen(load_pipeline(pipeline, s.standardize, s.chains, s.columns), beside(added_of(a.get("workspace")))), pipeline  # and the workspace's own features
 
 
 def sheet(out: Path, name: str) -> pd.DataFrame | None:
@@ -311,16 +311,21 @@ def given(a: dict) -> str:
     return str(parts[-1])
 
 
-SLOT_FIELD = {"person name": "person_name", "family": "person_name", "given": "given_name"}  # a slot without a field of its own: whose pattern its values should match
+SLOT_FIELD = {"person name": "person_name", "family": "person_name", "given": "given_name", "company name": "company_name"}  # a slot without a field of its own: whose pattern its values should match
 
 
 def describe_records(a: dict, emit: "Emit") -> dict:
     (s, p, _), there = setup(a), ["--workspace", a["workspace"]] if a.get("workspace") else []
     feats = features_of(a.get("workspace"))
-    field = lambda x: x.get("field") or SLOT_FIELD.get(x.get("role") or x.get("type"))
+    script = {path: f.get("script") for g in feats for f in g["features"] for path, _ in slots([dict(g, features=[f])])}
+    def field(path: str, x: dict) -> str | None:  # whose pattern a slot's values should match: none in a script the patterns aren't written in
+        if script[path] not in (None, "kana"):
+            return None
+        return (None if x.get("added") else x.get("field")) or SLOT_FIELD.get(x.get("role") or x.get("type"))
     d = describe(a["input"], duckdb.connect(), s.columns, s.detect, lex=lexicon(s.paths["reference"], tuple(s.standardize.kana_fold.items())),
-                 slots={path: x["columns"] for path, x in slots(feats)}, slot_patterns={path: s.detect[f] for path, x in slots(feats) if (f := field(x)) in s.detect})
-    d = {**d, "features": feats, "placements": placements(feats, d["profile"], d["fit"]),
+                 slots={path: x["columns"] for path, x in slots(feats)},
+                 slot_patterns={path: s.detect[f] for path, x in slots(feats) if (f := field(path, x)) in s.detect})
+    d = {**d, "features": feats, "placements": placements(feats, d["profile"], d["fit"]), "offers": offers(feats, d["profile"]),
          "needed": dict(every=list(p.fields.mandatory), one_of=[list(g) for g in p.fields.one_of])}
     found = [f"{x['feature']}={x['column']}" for x in d["placements"]]
     return {**d, "next": ([dict(command=nayose("set", "feature", *found, *there), why="place what the file's contents suggest")] if found and there else []) +
@@ -351,6 +356,16 @@ def set_feature(a: dict, emit: "Emit") -> dict:
         values[path] = tuple(tuple(c.strip() for c in alt.split("+")) for alt in cols.split(",")) if cols else ()
     set_features(a["workspace"], values)
     return {**list_features(a, emit), "next": [dict(command=nayose("describe", "records", "<file>", "--workspace", a["workspace"]), why="see how the file fills them")]}
+
+
+def add_feature_(a: dict, emit: "Emit") -> dict:
+    add_feature(a["workspace"], a["path"], a["type"], a["script"], a["column"])
+    return {**list_features(a, emit), "next": [dict(command=nayose("describe", "records", "<file>", "--workspace", a["workspace"]), why="see how the file fills it")]}
+
+
+def remove_feature_(a: dict, emit: "Emit") -> dict:
+    remove_feature(a["workspace"], a["path"])
+    return list_features(a, emit)
 
 
 def create_workspace(a: dict, emit: "Emit") -> dict:
@@ -515,7 +530,8 @@ DESCRIBED = {"records": "records", "columns": "each column of the file: column, 
              "slots": "each feature and part: feature (its path), sources, filled, example, looks_right, and each of its alternatives",
              "features": "the structure: groups › features › parts, each with type and columns",
              "profile": "each column's script (kanji, kana, romaji) and the shares of its values that are known family names, given names, full names, addresses",
-             "placements": "for each feature with no column: feature, column, share, why (the file's contents)", "notes": "what the reader detected or fixed",
+             "placements": "for each feature with no column: feature, column, share, why (the file's contents)",
+             "offers": "new features the contents suggest: feature, type, script, column, share, why", "notes": "what the reader detected or fixed",
              "next": "the commands that usually follow"}
 CHECKED = {"records": "records read", "fields": "each field: filled, looks_right, top_value (shares), columns",
            "turned_off": "rules, keys and levels a missing field turns off", "keys": "each key's pairs per record and largest block",
@@ -549,7 +565,7 @@ COMMANDS: tuple[Command, ...] = (
             (INPUT, WORKSPACE), {**DESCRIBED, "loaded": "the part the records are in", "copied": "false: the workspace held them already"},
             "nayose load records customers.parquet --workspace workspaces/acme", load_records, quick=True,
             show={"columns": ("column", "filled", "example"), "fields": ("field", "filled", "looks_right"), "fit": (), "features": (), "profile": (),
-                  "slots": ("feature", "filled", "looks_right"), "placements": ("feature", "column", "why")}),
+                  "slots": ("feature", "filled", "looks_right"), "placements": ("feature", "column", "why"), "offers": ("feature", "column", "why")}),
     Command("list", "features", "The features a workspace's columns fill: groups, features, parts",
             "The workspace's structure: each group, its features and their parts (a full name's family and given names), each "
             "with the columns that hold it, read from its mapping. Without --workspace, the project's. O(the file).",
@@ -565,6 +581,25 @@ COMMANDS: tuple[Command, ...] = (
             {"features": "the structure, as set", "slots": "each feature and part: feature (its path), columns", "next": "the commands that usually follow"},
             "nayose set feature \"Name/Full name/Family name=SEI\" \"Name/Full name/Given name=MEI\" --workspace workspaces/acme", set_feature, quick=True,
             show={"features": ()}),
+    Command("add", "feature", "Add a feature: a name in another script, or another company name",
+            "Adds a feature to the Name group (PATH: Name/<its name>): a person's name, with its family and given names, or a "
+            "company name, in a script (kana, kanji or romaji: how its values are prepared). Its fields are numbered beside "
+            "the ones it stands with (person_name_2, given_name_2; company_name_2) in the workspace's columns.toml. A run then "
+            "compares it with them: each step of the name comparison is reached when either name agrees, as one piece of "
+            "evidence, and pairs are also found on it; the sure-match rules stay as they are. The steps' thresholds were "
+            "tuned on kana; their weights are fitted on each run's file. O(the file).",
+            (Param("path", "Name/<its name>", positional=True, metavar="PATH"),
+             Param("type", "person name or company name", "choice", ("person name", "company name"), required=True),
+             Param("script", "kana, kanji or romaji (default kana)", "choice", ("kana", "kanji", "romaji")),
+             Param("column", "the column that holds it, if you know it", metavar="COLUMN"), WORKSPACE),
+            {"features": "the structure, with it", "slots": "each feature and part: feature (its path), columns", "next": "the commands that usually follow"},
+            "nayose add feature \"Name/Kanji name\" --type \"person name\" --script kanji --column SHIMEI --workspace workspaces/acme", add_feature_,
+            quick=True, show={"features": ()}),
+    Command("remove", "feature", "Remove a feature added to a workspace",
+            "Its fields leave the workspace's columns.toml; the defaults stay (take their columns off instead). O(the file).",
+            (Param("path", "GROUP/FEATURE", positional=True, metavar="PATH"), WORKSPACE),
+            {"features": "the structure, without it", "slots": "each feature and part: feature (its path), columns", "next": "the commands that usually follow"},
+            "nayose remove feature \"Name/Kanji name\" --workspace workspaces/acme", remove_feature_, quick=True, show={"features": ()}),
     Command("describe", "records", "What a file holds, for mapping its columns: in a second, nothing prepared",
             "Each column's share filled and an example; each field's columns as the mapping reads them (a later one where the "
             "earlier are empty, a joined one where every part is filled), each with its share filled, an example and the share "
@@ -573,7 +608,7 @@ COMMANDS: tuple[Command, ...] = (
             "file; the rest a sample of 2,000 records. O(N·C) in one scan, plus the sample.",
             (INPUT, OWN), DESCRIBED, "nayose describe records customers.parquet --workspace workspaces/acme", describe_records, quick=True,
             show={"columns": ("column", "filled", "example"), "fields": ("field", "filled", "looks_right"), "fit": (), "features": (), "profile": (),
-                  "slots": ("feature", "filled", "looks_right"), "placements": ("feature", "column", "why")}),
+                  "slots": ("feature", "filled", "looks_right"), "placements": ("feature", "column", "why"), "offers": ("feature", "column", "why")}),
     Command("check", "records", "Read, map and check a file, in seconds; resolve nothing",
             "Reads the file through the door every input takes, maps its columns to the logical fields (config/settings.toml "
             "[columns]), and counts each key's pairs before any join. Shows each field's fill rate, the share of values that "

@@ -750,6 +750,7 @@ def test_the_file_s_contents_say_which_feature_each_column_fills(tmp_path, capsy
         "Name/Company name": "c6", "Address/Address": "c7", "Address/Postal code": "c9", "Address/Address code": "c11", "ID/Customer number": "c12"}
     # the narrow pattern (a postal code) placed before the broad one (five digits or more), and its copy (c10) nowhere; an ID
     # mostly unique; the kanji full name (c5) waits for a kanji feature; the random text, nowhere
+    assert [(x["feature"], x["script"], x["column"]) for x in d["offers"]] == [("Name/Kanji name", "kanji", "c5")]  # offered as a new feature
     code, _ = say("set", "feature", *(f"{x['feature']}={x['column']}" for x in d["placements"]), "--workspace", "workspaces/w")
     m = load_settings(columns=tmp_path / "workspaces" / "w" / "columns.toml").columns
     assert code == 0 and m["id"] == (("c1",),) and m["person_name"] == (("c4",), ("c2", "c3")) and m["given_name"] == (("c3",),)
@@ -759,6 +760,54 @@ def test_the_file_s_contents_say_which_feature_each_column_fills(tmp_path, capsy
     say("set", "feature", "Address/Address=", "--workspace", "workspaces/w")
     assert load_settings(columns=tmp_path / "workspaces" / "w" / "columns.toml").columns["address"] == ()  # no column, still declared
     assert say("describe", "records", "theirs.parquet", "--workspace", "workspaces/w")[1]["placements"][0]["feature"] == "Address/Address"  # offered again
+
+
+def test_a_name_added_in_another_script_is_compared_beside_the_kana_one(tmp_path, population, capsys, monkeypatch):
+    import random
+    from er.cli import main
+    from er.config import widen
+    from er.settings import added_of, beside, features_of
+    from er.standardize import normalize
+    s, p, g = population
+    assert widen(p, []) is p  # nothing added: the same pipeline, so the same config hash
+    assert normalize(pd.Series(["Tanaka Taro", "ＴＡＮＡＫＡ　ＴＡＲＯ"], dtype="string"), ("nfkc", "strip_spaces", "casefold"), s.standardize).nunique() == 1
+    uid, ent, kana = s.data.unique_id, s.data.entity_id, [c for alt in s.columns["person_name"] for c in alt]
+    phone, code, cif = s.columns["phone"][0][0], s.columns["address_code"][0][0], s.columns["customer_id"][0][0]
+    people = json.loads((s.paths["reference"] / "individual.json").read_text(encoding="utf-8"))
+    rnd = random.Random(1)
+    df = g.df.merge(g.truth[[uid, ent]], on=uid)
+    df["SHIMEI"] = df[ent].map({e: (lambda r: r["surname"] + r["given"])(rnd.choice(people)) for e in df[ent].unique()})  # one kanji name a person
+    same = df[df[kana[0]].notna() & df[phone].notna() & df[code].notna()].groupby([ent, phone, code])[uid].apply(list)
+    a, b = next(ids for ids in same if len(ids) >= 2)[:2]  # one person's two records, the same address and phone
+    other = df[df[ent] != df.loc[df[uid] == a, ent].iloc[0]].iloc[0]
+    df.loc[df[uid] == a, kana] = other[kana].to_numpy()  # renamed in kana (a new surname, a reading misheard); its customer number gone
+    df.loc[df[uid] == a, cif] = None
+    df.drop(columns=[ent]).to_parquet(tmp_path / "theirs.parquet", index=False)
+    monkeypatch.chdir(tmp_path)
+
+    def say(*words: object) -> tuple[int, dict]:
+        code_ = main([*map(str, words), "--format", "json"])
+        return code_, json.loads(capsys.readouterr().out.splitlines()[-1])
+
+    joined = lambda w: (lambda gold: gold.loc[a, "cluster_id"] == gold.loc[b, "cluster_id"])(pd.read_parquet(tmp_path / "workspaces" / w / "gold.parquet").set_index(uid))
+    for w in ("kana", "kanji"):
+        say("create", "workspace", w)
+        say("load", "records", "theirs.parquet", "--workspace", f"workspaces/{w}")
+    code_, e = say("add", "feature", "Name/Kanji name", "--type", "person name", "--script", "kanji", "--column", "SHIMEI", "--workspace", "workspaces/kanji")
+    assert code_ == 0 and "Name/Kanji name" in [x["feature"] for x in e["slots"]]
+    assert beside(added_of("workspaces/kanji")) == [("person_name_2", "person_name"), ("given_name_2", "given_name")]
+    assert any(f.get("added") for f in features_of("workspaces/kanji")[1]["features"]) and not added_of("workspaces/kana")
+    assert say("resolve", "records", "--workspace", "workspaces/kana")[0] == 0 and not joined("kana")  # kana alone: the names disagree
+    assert say("resolve", "records", "--workspace", "workspaces/kanji")[0] == 0 and joined("kanji")  # the kanji name agrees: one person
+    run = json.loads((tmp_path / "workspaces" / "kanji" / "steps.json").read_text())["runs"][0]
+    found = {x["name"]: x["pairs"] for x in next(x for x in run["steps"] if x["step"] == "candidates")["generators"]}
+    assert any(n.endswith("@person_name_2") and v for n, v in found.items())  # pairs are found on the kanji name too
+    gold = pd.read_parquet(tmp_path / "workspaces" / "kanji" / "gold.parquet")
+    assert gold["kind"].equals(pd.read_parquet(tmp_path / "workspaces" / "kana" / "gold.parquet")["kind"])  # any_name stays kana: kinds unchanged
+    code_, e = say("add", "feature", "Address/Old address", "--type", "person name", "--workspace", "workspaces/kanji")
+    assert code_ == 2  # only Name takes a feature here
+    say("remove", "feature", "Name/Kanji name", "--workspace", "workspaces/kanji")
+    assert not added_of("workspaces/kanji") and "person_name_2" not in (tmp_path / "workspaces" / "kanji" / "columns.toml").read_text()
 
 
 def test_a_workspace_keeps_its_own_mapping_and_a_copy_of_its_files(tmp_path, population, capsys, monkeypatch):
@@ -1939,6 +1988,15 @@ def test_the_page_answers_once_per_key_shows_any_row_and_says_when_the_server_is
             to.dispatchEvent(new DragEvent("drop", {{dataTransfer: dt, bubbles: true, cancelable: true}})); }}""")
         page.wait_for_selector(f".drop[data-slot='Name/Company name'] .colchip[data-col='{company}']")
         assert load_settings(columns=columns).columns["company_name"] == ((company,),)
+        page.click("[data-add='Name']")  # a feature of their own: named, what it is, its script
+        page.fill(".addform input", "Kanji name")
+        page.select_option(".addform select >> nth=1", "kanji")
+        page.click(".addform .btn.filled")
+        page.wait_for_selector(".drop[data-slot='Name/Kanji name/Family name']")  # with its parts
+        assert "person_name_2" in columns.read_text() and "kanji" in page.inner_text(".frow:has(.drop[data-slot='Name/Kanji name'])")
+        page.click("[data-remove='Name/Kanji name']")
+        page.wait_for_function("() => !document.querySelector(\".drop[data-slot='Name/Kanji name']\")")
+        assert "person_name_2" not in columns.read_text()
         page.click(".navitem[data-screen=columns]")
         page.wait_for_selector("#files .tag")  # its description starts now
         page.click(".navitem[data-screen=run]")

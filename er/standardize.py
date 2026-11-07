@@ -26,6 +26,8 @@ def normalize(s: pd.Series, steps: tuple[Normalizer, ...], std: Standardization)
                 s = s.str[:3]
             case "reverse":  # a second sort key: names that end alike sort together, so an early typo doesn't split them
                 s = s.str[::-1]
+            case "casefold":  # romaji: TANAKA and tanaka are one name
+                s = s.str.casefold()
             case "kana_fold":
                 s = s.str.translate(str.maketrans(dict(std.kana_fold)))
             case "strip_legal_form":

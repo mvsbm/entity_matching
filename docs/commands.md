@@ -18,6 +18,8 @@ Written by `scripts/document_commands.py` from the declarations in `er/cli.py`; 
 | [`load records`](#nayose-load-records) | Copy a file into a workspace, then describe it |
 | [`list features`](#nayose-list-features) | The features a workspace's columns fill: groups, features, parts |
 | [`set feature`](#nayose-set-feature) | Put columns into features |
+| [`add feature`](#nayose-add-feature) | Add a feature: a name in another script, or another company name |
+| [`remove feature`](#nayose-remove-feature) | Remove a feature added to a workspace |
 | [`describe records`](#nayose-describe-records) | What a file holds, for mapping its columns: in a second, nothing prepared |
 | [`check records`](#nayose-check-records) | Read, map and check a file, in seconds; resolve nothing |
 | [`list columns`](#nayose-list-columns) | Show which of a file's columns hold each field |
@@ -113,6 +115,7 @@ Copies the records into a part of the workspace's own (inputs/0001-customers/), 
 | `features` | the structure: groups › features › parts, each with type and columns |
 | `profile` | each column's script (kanji, kana, romaji) and the shares of its values that are known family names, given names, full names, addresses |
 | `placements` | for each feature with no column: feature, column, share, why (the file's contents) |
+| `offers` | new features the contents suggest: feature, type, script, column, share, why |
 | `notes` | what the reader detected or fixed |
 | `next` | the commands that usually follow |
 | `loaded` | the part the records are in |
@@ -171,6 +174,59 @@ Sets each named feature's or part's columns, by its path: GROUP/FEATURE=COLUMN, 
 nayose set feature "Name/Full name/Family name=SEI" "Name/Full name/Given name=MEI" --workspace workspaces/acme
 ```
 
+## nayose add feature
+
+Add a feature: a name in another script, or another company name.
+
+```
+nayose add feature PATH --type person name|company name [--script kana|kanji|romaji] [--column COLUMN] --workspace WORKSPACE [--format text|json]
+```
+
+Adds a feature to the Name group (PATH: Name/<its name>): a person's name, with its family and given names, or a company name, in a script (kana, kanji or romaji: how its values are prepared). Its fields are numbered beside the ones it stands with (person_name_2, given_name_2; company_name_2) in the workspace's columns.toml. A run then compares it with them: each step of the name comparison is reached when either name agrees, as one piece of evidence, and pairs are also found on it; the sure-match rules stay as they are. The steps' thresholds were tuned on kana; their weights are fitted on each run's file. O(the file).
+
+| Parameter | |
+|---|---|
+| `PATH` | Name/<its name> |
+| `--type person name|company name` | person name or company name (required) |
+| `--script kana|kanji|romaji` | kana, kanji or romaji (default kana) |
+| `--column COLUMN` | the column that holds it, if you know it |
+| `--workspace WORKSPACE` | the workspace: the folder that keeps one matching job (required) |
+
+| Result | |
+|---|---|
+| `features` | the structure, with it |
+| `slots` | each feature and part: feature (its path), columns |
+| `next` | the commands that usually follow |
+
+```bash
+nayose add feature "Name/Kanji name" --type "person name" --script kanji --column SHIMEI --workspace workspaces/acme
+```
+
+## nayose remove feature
+
+Remove a feature added to a workspace.
+
+```
+nayose remove feature PATH --workspace WORKSPACE [--format text|json]
+```
+
+Its fields leave the workspace's columns.toml; the defaults stay (take their columns off instead). O(the file).
+
+| Parameter | |
+|---|---|
+| `PATH` | GROUP/FEATURE |
+| `--workspace WORKSPACE` | the workspace: the folder that keeps one matching job (required) |
+
+| Result | |
+|---|---|
+| `features` | the structure, without it |
+| `slots` | each feature and part: feature (its path), columns |
+| `next` | the commands that usually follow |
+
+```bash
+nayose remove feature "Name/Kanji name" --workspace workspaces/acme
+```
+
 ## nayose describe records
 
 What a file holds, for mapping its columns: in a second, nothing prepared.
@@ -198,6 +254,7 @@ Each column's share filled and an example; each field's columns as the mapping r
 | `features` | the structure: groups › features › parts, each with type and columns |
 | `profile` | each column's script (kanji, kana, romaji) and the shares of its values that are known family names, given names, full names, addresses |
 | `placements` | for each feature with no column: feature, column, share, why (the file's contents) |
+| `offers` | new features the contents suggest: feature, type, script, column, share, why |
 | `notes` | what the reader detected or fixed |
 | `next` | the commands that usually follow |
 
