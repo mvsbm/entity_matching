@@ -215,7 +215,7 @@ Without labels, a run can check only the patterns: every combination of comparis
 
 ### Measured: a whole run, up to a million records
 
-`scripts/benchmark.py` generates files of growing size and resolves each with `scripts/resolve.py`, in a process of its own, as a real run: on DuckDB tables, fitted on the file itself, without labels, under an 8 GB memory limit ([reports/benchmark.md](../../reports/benchmark.md)):
+`scripts/benchmark.py` generates files of growing size and resolves each with `nayose resolve records`, in a process of its own, as a real run: on DuckDB tables, fitted on the file itself, without labels, under an 8 GB memory limit ([reports/benchmark.md](../../reports/benchmark.md)):
 
 | Records | Fit | Rules | Candidates | Score | Total | Peak memory |
 |---|---|---|---|---|---|---|

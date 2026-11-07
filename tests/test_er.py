@@ -570,7 +570,7 @@ def test_a_run_ignores_record_order_refuses_a_used_folder_and_an_increment_keeps
     assert Run(p, s).increment(tmp_path / "new.parquet", tmp_path / "c").added == 0  # a retry adds nothing twice
     pd.testing.assert_series_equal(pd.read_parquet(tmp_path / "c" / "gold.parquet").set_index(uid)["cluster_id"], after)
 
-    with pytest.raises(FileExistsError, match="already holds a run"):  # a full run never mixes with an earlier one
+    with pytest.raises(InputError, match="already holds a run"):  # a full run never mixes with an earlier one
         Run(p, s, model=first.model).full(tmp_path / "all.parquet", tmp_path / "c")
     Run(p, s, model=first.model).full(tmp_path / "all.parquet", tmp_path / "c", overwrite=True)
     pd.testing.assert_frame_equal(pd.read_parquet(tmp_path / "c" / "gold.parquet"), gold[0])
@@ -895,20 +895,66 @@ def test_a_run_sets_aside_what_it_cannot_resolve_and_suggests_a_mapping(tmp_path
 
 
 
-def test_resolve_prints_a_mistake_as_two_lines_and_exits_with_2(tmp_path):
+def nayose(*words: object, check: bool = False):  # the command line, as a user runs it, in a process of its own
     import subprocess
     import sys
-    s = load_settings()
-    done = subprocess.run([sys.executable, str(s.root / "scripts" / "resolve.py"), "--input", str(tmp_path / "none.parquet"), "--check"],
-                          capture_output=True, text=True)
+    return subprocess.run([sys.executable, "-m", "er.cli", *map(str, words)], capture_output=True, text=True, check=check)
+
+
+def test_nayose_prints_a_mistake_as_two_lines_and_exits_with_2(tmp_path):
+    done = nayose("check", "records", tmp_path / "none.parquet")
     assert done.returncode == 2 and done.stderr.splitlines()[0].startswith("error: no file matches")
     assert done.stderr.splitlines()[1].startswith("fix: ") and "Traceback" not in done.stderr
-    for flags, says in ((["--input", "x", "--increment", "--kind-labels", "y"], "--kind-labels goes with a full run"),
-                        (["--decisions", "x", "--kind-labels", "y"], "--kind-labels goes with a full run"),
-                        (["--input", "x", "--increment", "--model", "y"], "--model goes with a full run")):
-        done = subprocess.run([sys.executable, str(s.root / "scripts" / "resolve.py"), "--output", str(tmp_path / "run"), *flags],
-                              capture_output=True, text=True)
-        assert done.returncode == 2 and says in done.stderr
+    done = nayose("check", "records", tmp_path / "none.parquet", "--format", "json")
+    error = json.loads(done.stdout.splitlines()[-1])
+    assert done.returncode == 2 and error["event"] == "error" and error["exit"] == 2 and error["fix"]
+    assert nayose("resolve", "records", tmp_path / "x.parquet").returncode == 2  # --run missing: the parser says so
+
+
+def test_every_command_has_its_help(capsys):
+    from er.cli import COMMANDS, parser
+    for c in COMMANDS:
+        with pytest.raises(SystemExit) as done:
+            parser().parse_args([c.verb, c.noun, "--help"])
+        shown = capsys.readouterr().out
+        assert done.value.code == 0 and c.help in shown and c.example in shown
+
+
+def test_nayose_takes_a_file_from_the_check_to_people_s_answers(tmp_path, population, capsys):
+    from er.cli import COMMANDS, main
+    s, p, g = population
+    uid, half = s.data.unique_id, len(g.df) // 2
+    g.df.iloc[:half].to_parquet(tmp_path / "first.parquet", index=False)
+    g.df.iloc[half:].to_parquet(tmp_path / "new.parquet", index=False)
+    run, declared = tmp_path / "run", {c.name: set(c.result) for c in COMMANDS}
+
+    def say(*words: object) -> dict:  # one command, as JSON; its result checked against its declaration
+        code = main([*map(str, words), "--format", "json"])
+        said = [json.loads(x) for x in capsys.readouterr().out.splitlines()]
+        assert code == 0 and said[-1]["event"] == "result", said[-1]
+        r = said[-1]
+        assert set(r) - {"event", "command"} <= declared[r["command"]] and "next" in r
+        return r
+
+    assert say("check", "records", tmp_path / "first.parquet")["records"] == half
+    assert say("resolve", "records", tmp_path / "first.parquet", "--run", run)["summary"][0][0] == "records"
+    pair = say("list", "pairs", "--run", run, "--open")["pairs"][0]
+    say("decide", "pair", pair["id_r"], pair["id_l"], "match", "--run", run)  # either order
+    assert say("apply", "decisions", "--run", run)["matches"] == 1
+    assert say("apply", "decisions", "--run", run)["decisions"] == 0  # given twice: nothing new
+    gold = pd.read_parquet(run / "gold.parquet").set_index(uid)
+    assert gold.loc[pair["id_l"], "cluster_id"] == gold.loc[pair["id_r"], "cluster_id"]
+    record = say("list", "kinds", "--run", run, "--open")["kinds"][0]["id"]
+    say("answer", "kind", record, "company", "--run", run)
+    say("apply", "answers", "--run", run)
+    assert pd.read_parquet(run / "gold.parquet").set_index(uid).loc[record, ["kind", "kind_by"]].tolist() == [2, "people"]
+    entity = say("describe", "entity", pair["id_l"], "--run", run)
+    assert {pair["id_l"], pair["id_r"]} <= {x["id"] for x in entity["records"]} and any(x["by"] == "people: match" for x in entity["links"])
+    matched = say("match", "records", tmp_path / "new.parquet", "--run", run)
+    assert len(matched["records"]) == len(g.df) - half and set(matched["counts"]) <= {"joins an entity", "a new entity"}
+    added = say("add", "records", tmp_path / "new.parquet", "--run", run)
+    assert added["summary"][0][1].startswith(f"{len(g.df):,}")
+    assert say("describe", "run", run)["records"] == len(g.df)
 
 
 def test_a_nearly_empty_field_is_kept_and_the_fit_skips_what_it_cannot_learn_from(tmp_path, population):
@@ -1131,17 +1177,12 @@ def test_a_run_and_its_reports_land_together_even_when_the_write_is_cut_short(tm
 
 
 def test_the_scheduler_serves_the_inbox_in_order_and_parks_what_people_must_fix(tmp_path, population):
-    import importlib.util
     import os
     import shutil
-    import subprocess
     import sys
+    from er import inbox as schedule
     s, p, g = population
     uid = s.data.unique_id
-    script = s.root / "scripts" / "schedule.py"
-    spec = importlib.util.spec_from_file_location("schedule", script)
-    schedule = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(schedule)
     made = []
     code, _, _, tries = schedule.attempt(lambda: made.append(1) or [sys.executable, "-c", "import sys; sys.exit(1)"], retries=2, wait=0)
     assert (code, tries, len(made)) == (1, 3, 3)  # an unexpected failure is tried again, its command made again: the folder may hold the run now
@@ -1155,7 +1196,7 @@ def test_the_scheduler_serves_the_inbox_in_order_and_parks_what_people_must_fix(
     (inbox / "batches" / "d_bad.parquet").write_text("CONT_ID\n1\n")  # a CSV, named as Parquet
     for k, f in enumerate(sorted((inbox / "batches").iterdir())):
         os.utime(f, (1_000 + k, 1_000 + k))  # arrival order
-    serve = lambda: subprocess.run([sys.executable, str(script), "--run", str(run), "--inbox", str(inbox)], capture_output=True, text=True)
+    serve = lambda: nayose("serve", "inbox", inbox, "--run", run)
     done = serve()
     assert done.returncode == 0, done.stderr
     jobs = [(e["file"], e["outcome"]) for e in schedule.ledger(run)]
@@ -1177,16 +1218,25 @@ def test_the_scheduler_serves_the_inbox_in_order_and_parks_what_people_must_fix(
 
     from er.folder import run_lock
     g.df[~new].head(10).to_parquet(inbox / "batches" / "e_busy.parquet", index=False)  # records the run holds: nothing new
-    with run_lock(run):  # someone runs scripts/resolve.py on the folder by hand
-        busy = subprocess.run([sys.executable, str(script), "--run", str(run), "--inbox", str(inbox), "--retries", "0"], capture_output=True, text=True)
+    with run_lock(run):  # someone runs nayose on the folder by hand
+        busy = nayose("serve", "inbox", inbox, "--run", run, "--retries", "0")
     assert busy.returncode != 0 and (schedule.ledger(run)[-1]["outcome"], schedule.ledger(run)[-1]["exit"]) == ("stopped", 75)
     assert (inbox / "batches" / "e_busy.parquet").exists()  # it waits in the inbox, not parked in failed/
     assert serve().returncode == 0 and schedule.ledger(run)[-1]["outcome"] == "done"
 
+    sheet.assign(decision=pd.NA).to_parquet(inbox / "decisions" / "untouched.parquet")  # given back as it was sent
+    answers = pd.DataFrame({uid: g.df[uid].head(3), "kind": ["1", "1", "2"]})
+    answers.to_parquet(inbox / "answers" / "three.parquet")
+    for k, f in enumerate(("untouched", "three")):
+        os.utime(next(inbox.rglob(f"{f}.parquet")), (2_000 + k, 2_000 + k))  # arrival order
+    assert serve().returncode == 0
+    assert [(e["file"], e["outcome"]) for e in schedule.ledger(run)[-2:]] == [("untouched.parquet", "failed"), ("three.parquet", "done")]
+    assert "no row has a decision" in next((inbox / "failed" / "decisions").glob("*untouched.parquet.error.txt")).read_text()
+    gold = pd.read_parquet(run / "gold.parquet").set_index(uid)
+    assert (gold.loc[answers[uid], "kind_by"] == "people").all()  # the answers went in by a rerun
+
 
 def test_an_oversized_block_is_checked_on_a_sample_and_a_placeholder_is_skipped(tmp_path, population):
-    import subprocess
-    import sys
     from er.run import Run
     s, p, g = population
     uid = s.data.unique_id
@@ -1198,8 +1248,7 @@ def test_an_oversized_block_is_checked_on_a_sample_and_a_placeholder_is_skipped(
     block = run.gated[run.gated["value"].str.contains("0000") & (run.gated["generator"] == "phone_prefecture")]
     assert len(block) == 1 and block["decision"].iloc[0].startswith("skipped") and block["records"].iloc[0] == 100
     assert any("0000" in x and "skipped" in x for x in run.examples) and not any("0000" in x for x in run.notes)
-    check = subprocess.run([sys.executable, str(s.root / "scripts" / "resolve.py"), "--input", str(tmp_path / "in.parquet"), "--check"],
-                           capture_output=True, text=True)
+    check = nayose("check", "records", tmp_path / "in.parquet")
     assert check.returncode == 0 and "checked by sampling" in check.stdout
 
     same = pd.concat([g.df.iloc[[0]]] * 70, ignore_index=True)  # 70 copies of one record: every key's block oversized

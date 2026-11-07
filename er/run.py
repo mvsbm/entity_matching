@@ -99,7 +99,7 @@ class Run:
     chunk_rows: int = 200_000
     steps: list[dict] = field(default_factory=list)
     disabled: list[str] = field(default_factory=list)
-    echo: Callable[[dict], None] | None = None  # called with each step as it finishes: progress for people (scripts/resolve.py)
+    echo: Callable[[dict], None] | None = None  # called with each step as it finishes: progress for people (nayose)
     kind_labels: Path | None = None           # people's person/company labels (a filled-in kind_review.parquet); an increment keeps the run's
 
     def __post_init__(self) -> None:
@@ -152,7 +152,8 @@ class Run:
         except InputError as e:
             raise InputError(f"{e}. The file's columns: {', '.join(src.columns)}", e.fix + (
                 ". Suggested from the file's values, check them first:\n  [columns]" + "".join(
-                    f"\n  {f} = \"{c}\"   # {why}" for f, (c, _, why) in hints.items()) if hints else "")) from None
+                    f"\n  {f} = \"{c}\"   # {why}" for f, (c, _, why) in hints.items()) if hints else ""),
+                hints={f: c for f, (c, _, _) in hints.items()}) from None
         self.notes += [f"no column for {f}; {c} may be it ({why})" for f, (c, share, why) in hints.items() if share > 0.5]
         if self.model is not None:  # a given model must compare exactly what this file's fields let the pipeline compare
             fitted = {(c["output_column_name"], lv["label_for_charts"]) for c in self.model["comparisons"]
@@ -543,10 +544,10 @@ class Run:
         state, u, l, r = out / "state", q(self.uid), q(self.l), q(self.r)
         folder.finish_writes(out)
         if not (state / "model.json").exists():
-            raise InputError(f"no run in {out} to add records to", fix="resolve the records into that folder first, without --increment")
+            raise InputError(f"no run in {out} to add records to", fix="resolve records into that folder first: nayose resolve records …")
         if (state / "config.txt").exists() and (state / "config.txt").read_text(encoding="utf-8") != self.config:
             raise InputError(f"the pipeline or the column mapping changed since the full run in {out}: an increment would resolve its batch otherwise",
-                             fix="run a full run with --overwrite, or the increment with the pipeline and config/settings.toml that run used")
+                             fix="resolve all of them again (nayose rerun records), or add these with the pipeline and config/settings.toml that run used")
         self.model = json.loads((state / "model.json").read_text(encoding="utf-8"))
         self.part = folder.next_part(state / "records")
         parts = ", ".join(lit(x) for x in sorted((state / "records").glob("part-*.parquet")))  # not a glob: this run's own part comes later
@@ -632,14 +633,22 @@ class Run:
         scoring nothing. Each `match` pair merges its two clusters, each cluster one node, and a record joined only this
         way is resolved by `review`. A `no_match` pair splits nothing here; every decision is stored in decisions/, and a
         full run on this folder applies them again, never accepting a `no_match` pair. Rows without a decision are
-        skipped. O(D + touched clusters) + O(N) to rewrite gold."""
+        skipped, and so is a decision the folder already holds as its pair's latest: a sheet given twice changes
+        nothing. O(D + touched clusters) + O(N) to rewrite gold."""
         t, u, l, r = time.perf_counter(), q(self.uid), q(self.l), q(self.r)
         folder.finish_writes(out)
         if not (out / "gold.parquet").exists():
-            raise InputError(f"no run in {out} to apply decisions to", fix="resolve the records into that folder first (--input … --output …)")
+            raise InputError(f"no run in {out} to apply decisions to", fix="resolve the records into that folder first: nayose resolve records …")
         self.con.execute(f"CREATE OR REPLACE TABLE gold_old AS SELECT * FROM read_parquet({lit(out / 'gold.parquet')})")
         self.inputs = file_facts(decisions(path, self.con, self.l, self.r, into="er_decisions"), "decisions")  # the door: er.source checks them
         known(self.con, f"SELECT {l} AS id FROM er_decisions UNION SELECT {r} FROM er_decisions", "gold_old", self.uid, path, f"the run in {out}")
+        if any((parts := out / folder.DECISIONS).glob("part-*.parquet")):
+            self.con.execute(f"""DELETE FROM er_decisions d USING (SELECT {l}, {r}, arg_max(decision, filename) AS decision
+                FROM read_parquet({lit(parts / 'part-*.parquet')}, filename = true) GROUP BY ALL) p
+                WHERE p.{l} = d.{l} AND p.{r} = d.{r} AND p.decision = d.decision""")
+        if not self._count("er_decisions"):
+            self._done("decide", "O(D)", "O(0 new decisions)", t, decisions=0, matches=0, clusters_joined=0)
+            return self
         self.n = self._count("gold_old")
         self.con.execute(f"CREATE OR REPLACE TABLE er_base AS SELECT {u}, cluster_id FROM gold_old")
         self.con.execute(f"CREATE OR REPLACE TABLE er_review AS SELECT {l}, {r} FROM er_decisions WHERE decision = 'match'")
@@ -670,7 +679,7 @@ class Run:
         folder.finish_writes(out)
         held = folder.held(out)
         if held and not overwrite:
-            raise FileExistsError(f"{out} already holds a run: choose another folder, or overwrite it (scripts/resolve.py --overwrite)")
+            raise InputError(f"{out} already holds a run", fix="choose another folder, or replace the run: nayose resolve records … --overwrite")
         self.labels = self._answers(out)  # read before the folder's old state goes
         self.load(path)
         self.budget()

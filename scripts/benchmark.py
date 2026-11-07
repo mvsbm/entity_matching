@@ -10,7 +10,7 @@ Quality: each scenario generates a population with er.generate (config/generator
 its train split without labels, resolves its test split with u measured on it, and compares the clusters with the truth.
 Person or company: populations with every kind problem on (er.generate.kind_problems) and one name column, resolved
 with names routed by the truth, by the file's flag alone, and by the kind step on people's answers (here, the truth).
-Cost: populations of growing size, each resolved by scripts/resolve.py in a process of its own, so the peak memory is
+Cost: populations of growing size, each resolved by nayose resolve records in a process of its own, so the peak memory is
 that run's alone. Past the memory limit (--memory-limit, else config/settings.toml [compute]) DuckDB spills to disk.
 """
 import argparse
@@ -145,7 +145,7 @@ def kinds(entities: int, labels: int = 2_000) -> pd.DataFrame:
 
 
 def cost(entities: list[int], memory_limit: str) -> pd.DataFrame:
-    """Each population written to Parquet and resolved by scripts/resolve.py, fitted on the file itself, as a real run."""
+    """Each population written to Parquet and resolved by nayose resolve records, fitted on the file itself, as a real run."""
     rows = []
     for n in entities:
         records, entity = population(replace(SPEC, entities=n))
@@ -155,7 +155,7 @@ def cost(entities: list[int], memory_limit: str) -> pd.DataFrame:
         size = len(records)
         del records
         compute = [f"memory_limit={memory_limit}"] if memory_limit else []
-        done = subprocess.run([sys.executable, str(S.root / "scripts" / "resolve.py"), "--input", str(d / "records.parquet"), "--output", str(d / "run"),
+        done = subprocess.run([sys.executable, "-m", "er.cli", "resolve", "records", str(d / "records.parquet"), "--run", str(d / "run"),
                                "--overwrite", "--compute", *compute, f"temp_directory={OUT / 'spill'}"], cwd=S.root, capture_output=True, text=True)
         if done.returncode:
             print(f"{size:,} records: failed\n{done.stderr[-2000:]}", flush=True)
@@ -200,7 +200,7 @@ def main() -> None:
               "a true person and a true company; `sure_*` is the share of true companies called 2 and of true persons called 1; "
               "`wrong_*` the records called 2 that are persons and called 1 that are companies.", "", markdown(kind), "",
               f"## Cost: files of growing size (time grows like N^{curve.attrs['alpha']})", "",
-              f"Each file is resolved by `scripts/resolve.py` in a process of its own, fitted on the file itself; DuckDB memory limit: "
+              f"Each file is resolved by `nayose resolve records` in a process of its own, fitted on the file itself; DuckDB memory limit: "
               f"{limit}. Peak memory is the process's, Python included. Step columns are seconds. `fit` (on {FINAL.fit_rows:,} "
               f"records) and the u sample of the file inside it ({FINAL.fs.model.u_max_pairs:,.0f} pairs) cost the same at any size, so at "
               f"these sizes the total grows far slower than N. Above {len(PERSONS):,} entities personas repeat, so those rows measure "

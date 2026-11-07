@@ -14,12 +14,12 @@ Normalizer = Literal["nfkc", "strip_spaces", "kana_fold", "strip_legal_form", "a
 
 
 class InputError(ValueError):
-    """Something in the input, or in how its columns are mapped, that people must fix; `fix` says how. scripts/resolve.py
-    prints the two as lines, not a traceback."""
+    """Something in the input, or in how its columns are mapped, that people must fix; `fix` says how, and `hints`
+    (field → column) what the file's values suggest. nayose prints the two as lines, not a traceback."""
 
-    def __init__(self, message: str, fix: str = ""):
+    def __init__(self, message: str, fix: str = "", hints: dict[str, str] | None = None):
         super().__init__(message)
-        self.fix = fix
+        self.fix, self.hints = fix, hints or {}
 
 
 class OverBudget(InputError):

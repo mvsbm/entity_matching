@@ -130,7 +130,7 @@ package "people's work and the writers' state" {
     the moves a write still owes; only while one is cut short
   }
   entity "jobs.jsonl" as jobs {
-    scripts/schedule.py: one line per file per pass
+    nayose serve inbox: one line per file per pass
     file, sha256, outcome, attempts, path
   }
 }

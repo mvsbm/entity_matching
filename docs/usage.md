@@ -1,4 +1,4 @@
-[← README](../README.md) · [Architecture](architecture.md)
+[← README](../README.md) · [Commands](commands.md) · [Architecture](architecture.md)
 
 # Using it on your records
 
@@ -13,11 +13,17 @@ Install it, map your columns, run it, read what it wrote. Later, add new records
 
 GitHub runs the same tests on Python 3.12 and 3.14 for every pull request (`.github/workflows/tests.yml`). `main` changes only through a pull request whose checks pass.
 
-Every script runs as `.venv/bin/python scripts/<name>.py`.
+The setup installs `.venv/bin/nayose` (名寄せ, gathering one customer's records), the command line. It reads as a sentence, a verb then a noun: `nayose check records`, `nayose resolve records`, `nayose list pairs`. `nayose --help` lists every command, `nayose VERB NOUN --help` explains one, and [commands](commands.md) has them all. Each takes `--format json` for one JSON object per line, for programs. The development scripts run as `.venv/bin/python scripts/<name>.py`.
 
 ## 2 · Map your columns
 
-The pipeline never names your columns. It works on logical fields, and `config/settings.toml` `[columns]` says which of your columns hold each one (`ER_SETTINGS=<file>` points a run at another settings file):
+The pipeline never names your columns. It works on logical fields, and `config/settings.toml` `[columns]` says which of your columns hold each one (`ER_SETTINGS=<file>` points a run at another settings file). `nayose list columns` shows the mapping, and `nayose set columns` changes it, keeping every comment and option, and checking the file before it saves:
+
+```bash
+.venv/bin/nayose set columns id=CUSTOMER_NO phone=TEL4 person_name=NAME_KANA,SEI+MEI   # , a fallback; + columns joined
+```
+
+In the file itself:
 
 ```toml
 [columns]
@@ -46,12 +52,12 @@ The fields, and which ones a run needs (`[fields]` in `config/final.toml`; `kind
 - **Every column is read as text.** A blank value, or one made only of spaces (full-width ones included), counts as missing. A code stored as a number (`599` for `0599`) is read as text with a warning: its leading zeros were lost before the file reached the run.
 - **A nearly empty field** is used where it is filled. If no two records of the fit's sample share it, the fit learns nothing from it, and the summary says so.
 - **One column for every name**, a person's or a company's: map `full_name`, `person_name`, `company_name` and `any_name` to it, and add `kind = "person"` to the first two and `kind = "company"` to `company_name`. Each record's name then goes to the side its kind leans to, and a pair of a person and a company has no name compared, so the model leaves it to people ([section 6](#6--review-and-decide)). A record whose lean and flag disagree goes to neither side until a person decides.
-- **A field the run needs and no column holds** stops the run with the file's columns and, for each missing field, the column whose values look most like it, as lines to paste into `[columns]`. These suggestions are never applied without you.
+- **A field the run needs and no column holds** stops the run with the file's columns and, for each missing field, the column whose values look most like it (in JSON, as `hints`). These suggestions are never applied without you.
 
 Check a file and its mapping in seconds, before a long run:
 
 ```bash
-.venv/bin/python scripts/resolve.py --input customers.parquet --check
+.venv/bin/nayose check records customers.parquet
 ```
 
 It prints each field, its fill rate and the columns it comes from, what would be turned off, each key's pairs per record, and the blocks of 64 or more records that the run will check on a sample. For each field, two shares from a sample of 10,000 records point at a mistake before it costs a run:
@@ -63,29 +69,30 @@ It prints each field, its fill rate and the columns it comes from, what would be
 ## 3 · Run
 
 ```bash
-.venv/bin/python scripts/resolve.py --input customers.parquet --output runs/customers
+.venv/bin/nayose resolve records customers.parquet --run runs/customers
 ```
 
-| Option | Does |
+| Parameter | Does |
 |---|---|
-| `--input` | a Parquet file, a quoted glob (`'data/in/*.parquet'`) or a folder of them; several files are read together by column name |
-| `--check` | reads and maps `--input`, counts each key's pairs, resolves nothing ([section 2](#2--map-your-columns)) |
-| `--output` | the run folder. A full run refuses a folder that already holds a run |
-| `--overwrite` | replaces the run in `--output` |
-| `--increment` | adds the records to the run in `--output` ([section 5](#5--add-new-records)) |
-| `--decisions` | applies people's decisions to the run in `--output`, instead of `--input` ([section 6](#6--review-and-decide)) |
-| `--kind-labels` | people's person/company answers, a filled-in `kind_review.parquet`, added to those the run keeps; with a full run only ([section 6](#persons-and-companies)) |
+| `INPUT` | a Parquet file, a quoted glob (`'data/in/*.parquet'`) or a folder of them; several files are read together by column name |
+| `--run` | the run folder. A full run refuses a folder that already holds a run |
+| `--overwrite` | replaces the run in `--run`; people's decisions and answers in it stand |
 | `--compute KEY=VALUE …` | DuckDB limits for this run, overriding `config/settings.toml` `[compute]`: `memory_limit=8GB`, `threads=4`, `temp_directory=<folder>`. Past the memory limit, DuckDB spills to that folder |
 | `--pipeline` | another pipeline file. Default: `config/final.toml` |
-| `--model` | a model fitted before, used instead of fitting on this file; with a full run only: an increment scores with the model of the run it adds to |
+| `--model` | a model fitted before, used instead of fitting on this file; an increment scores with the model of the run it adds to |
 
 `[compute]` in `config/settings.toml` sets the same three for every run. Left empty, each keeps DuckDB's default: all cores, 80% of the memory, and spilling to `.tmp/` under the folder the run starts in. Before any join, a full run checks that the pairs fit in memory plus the room DuckDB may spill to: 90% of that disk's free space. An increment checks the blocks of 64 or more records its batch reaches; its other pairs all touch the batch.
 
-The run needs no labels: it fits its model on the file itself. It prints each step as it finishes, with its time and what it did, then a summary: records, entities, who joined them (the rules, the model, people), the model's links and how many of them it expects to be false, the pairs to decide, the records' and customers' kinds, where the kinds come from (no answers yet; or the answers, the lines and how often the flag is wrong on those drawn at random), how many records are held back, how often a sure kind contradicts the flag, and notes. The expected false links are the sum of 1 − match probability over the model's links: the model's own estimate, with no labels. A bigger file holds more people who share a name and an address, so at a fixed threshold the count grows with the file: on generated files, 0.84 at 12,532 records, 4.38 at 74,959 (1 and 3 found) and 30.11 at a million ([benchmark](../reports/benchmark.md)). A note says what the loader fixed, a field filled in under 5% of records (often a mapping mistake), a part turned off, or what the fit couldn't learn from. What each step does, and what it costs: [architecture, the run](architecture.md#4--the-run).
+The run needs no labels: it fits its model on the file itself. It prints each step as it finishes, with its time and what it did, then a summary: records, entities, who joined them (the rules, the model, people), the model's links and how many of them it expects to be false, the pairs to decide, the records' and customers' kinds, where the kinds come from (no answers yet; or the answers, the lines and how often the flag is wrong on those drawn at random), how many records are held back, how often a sure kind contradicts the flag, and notes. The expected false links are the sum of 1 − match probability over the model's links: the model's own estimate, with no labels. A bigger file holds more people who share a name and an address, so at a fixed threshold the count grows with the file: on generated files, 0.84 at 12,532 records, 4.38 at 74,959 (1 and 3 found) and 30.11 at a million ([benchmark](../reports/benchmark.md)). A note says what the loader fixed, a field filled in under 5% of records (often a mapping mistake), a part turned off, or what the fit couldn't learn from. Last, `next` lists the commands that usually follow: the pairs and the records left to people, and the folder at a glance. What each step does, and what it costs: [architecture, the run](architecture.md#4--the-run).
 
 ## 4 · Read the outputs
 
 Everything is in the run folder. A run also reads `config/kind_names.npz`, the name model that tells persons from companies, and `steps.json` names it with its SHA-256.
+
+```bash
+.venv/bin/nayose describe run runs/customers                         # records, entities, the largest, each run, what is open
+.venv/bin/nayose describe entity 0000000151 --run runs/customers     # one record's entity: its records, and what joined them
+```
 
 | File | One row per | Holds | Use it to |
 |---|---|---|---|
@@ -98,9 +105,9 @@ Everything is in the run folder. A run also reads `config/kind_names.npz`, the n
 | `kind_review.parquet` | record for people | `why` (`decide` or `measure`), `reason` in words, `engine_says`, `name_says`, `flag` and `birth_date` if the file has them, the name; `engine` and `engine_p` (the engine's kind and its probability of a company), `name_p`, `drawn`; an empty `kind` | answer 1 person, 2 company or 0 can't tell ([section 6](#6--review-and-decide)) |
 | `decisions/` | decided pair | both IDs and `decision`, one part per file people gave back | what people decided; a full run applies it again |
 | `kind_answers/` | answered record | the answered rows of each `kind_review.parquet` given back, one part per sheet, as given | what people answered; every later run reads it |
-| `set_aside/` | record not resolved | the record as read, and `reason`: no ID; the same ID with different content; already in the run | fix them and add them with `--increment` |
-| `steps.json` | run, increment or set of decisions | when; the code's commit; the config hash; each file read with its size and SHA-256; each step's Big-O with the numbers filled in, seconds, peak memory | see the cost; say exactly what went into the run |
-| `state/` | | the standardized records, the rules' clusters, the model, the u it scored with, the hash of the config the full run used | needed by `--increment`; don't edit |
+| `set_aside/` | record not resolved | the record as read, and `reason`: no ID; the same ID with different content; already in the run | fix them and add them with `nayose add records` |
+| `steps.json` | run, increment or set of decisions | when; the code's commit; the config hash; each file read with what it is, its size and SHA-256; each step's Big-O with the numbers filled in, seconds, peak memory | see the cost; say exactly what went into the run; `nayose rerun records` reads its files again |
+| `state/` | | the standardized records, the rules' clusters, the model, the u it scored with, the hash of the config the full run used | needed by `nayose add records`; don't edit |
 
 ```python
 import pandas as pd
@@ -108,18 +115,29 @@ gold = pd.read_parquet("runs/customers/gold.parquet")
 matches = pd.read_parquet("runs/customers/matches")      # a folder of parts reads as one table
 ```
 
+`gold.parquet` is rewritten whole by every run. To see which records a downstream system must update, keep the copy it read last and compare: a new record, or one whose `cluster_id` changed (two entities joined take the smaller ID).
+
+```sql
+-- duckdb
+SELECT n.CONT_ID, o.cluster_id AS was, n.cluster_id AS now
+FROM 'runs/customers/gold.parquet' n LEFT JOIN 'last_read/gold.parquet' o USING (CONT_ID)
+WHERE o.cluster_id IS DISTINCT FROM n.cluster_id;
+```
+
 ## 5 · Add new records
 
 ```bash
-.venv/bin/python scripts/resolve.py --input new.parquet --output runs/customers --increment
+.venv/bin/nayose match records new.parquet --run runs/customers     # what adding them would do; nothing written
+.venv/bin/nayose add records new.parquet --run runs/customers
 ```
 
 - **The same model.** The batch is scored with the model the full run fitted, so weights stay comparable. The u of the exact and one-digit-off levels are counted again on every record, before the rules. A sampled u is measured again only once its drift, read from those exact counts, exceeds its own sampling error; before that, a new sample would only redraw the noise.
 - **Compared with everything.** Each new record is compared with every stored one, and can join an existing cluster. Earlier answers stand.
-- **Stored records aren't compared again.** A record left alone gets a new chance whenever a new record matches it, directly or through a third record. But two stored records that were not matched with each other stay apart until a full run (`--overwrite`) compares them again, for example after the matching changes.
+- **Stored records aren't compared again.** A record left alone gets a new chance whenever a new record matches it, directly or through a third record. But two stored records that were not matched with each other stay apart until a full run compares them again, for example after the matching changes: `nayose rerun records --run runs/customers` resolves the run's own files again, the full run's and each batch's, in the order they came, so it keeps the records the increments kept.
 - **Cost follows the batch.** The joins start from the new records, so a small batch is fast whatever the run's size: into a million-record run, 1,000 new records take about 4 s.
 - **New records only.** A record whose ID is already in the run is set aside: an increment adds, it doesn't update. So running the same batch twice is harmless; the second time prints "nothing new".
 - **Safe to interrupt.** An interrupted write is finished by the next increment.
+- **Match without adding.** `nayose match records` runs the increment's steps and writes nothing: for each record, the entity it would join or a new one, and the rule or the model's best weight that links it.
 
 ## 6 · Review and decide
 
@@ -132,15 +150,19 @@ The run accepts a pair at 8 bits or more. Just below that line, from 6 to 8 bits
 
 Each row shows the two records' compared fields side by side, then, per comparison, the level the pair reached (for example "fold JW high": the kana-folded names close by Jaro–Winkler) and the bits it earned. The bits, plus the starting point, add up to `match_weight`. `accepted` says what the run decided.
 
-Fill in `decision` with `match` or `no_match`, leave the rest empty, and give the file back:
+List the open pairs, decide each, then apply the decisions:
 
 ```bash
-.venv/bin/python scripts/resolve.py --output runs/customers --decisions reviewed.parquet
+.venv/bin/nayose list pairs --run runs/customers --open
+.venv/bin/nayose decide pair 0000000151 0000000874 match --run runs/customers     # or no_match; clear takes it back
+.venv/bin/nayose apply decisions --run runs/customers
 ```
+
+Each decision is written into the run folder's `review.parquet` (its `decision` column) and applied by `apply decisions`. `list pairs` marks each row open, written in, or applied. A sheet filled in elsewhere, any file with the two ID columns and `decision`, goes back with `apply decisions --file reviewed.parquet`.
 
 - **`match`** joins the two clusters at once, scoring nothing. A record joined only this way gets `resolved_by` = `review`.
 - **`no_match`** splits nothing at once. It is kept, and a full run never accepts the pair. It applies to that pair only: a third record can still join the two.
-- **Kept for good.** Decisions are stored in `decisions/`, which a full run with `--overwrite` on the same folder applies again. `decisions/` and `kind_answers/` are people's work: back them up. Any file with the two ID columns and `decision` works; rows without a decision are skipped.
+- **Kept for good.** Decisions are stored in `decisions/`, which every full run on the same folder applies again. `decisions/` and `kind_answers/` are people's work: back them up. Rows without a decision are skipped, and a decision applied before changes nothing, so applying a sheet twice is harmless.
 
 ### Persons and companies
 
@@ -149,15 +171,19 @@ A full run writes `kind_review.parquet`, records for people, as `review.parquet`
 - **decide:** records where the engine and the flag disagree, held back from matching until you decide, the engine's sure calls first ("the engine is sure it is 1 person, the flag says 2"); then records the engine and the flag agree on but whose name alone says the other kind, the flag's likely errors. At most `[kind] review_max` (1,000).
 - **measure:** 2,000 records drawn at random, to measure the flag and the engine. They place the engine's lines and say how often the flag is wrong. Records you were sent to decide can't do that: they were picked because they look wrong.
 
-Write `kind`: `1` person, `2` company, `0` can't tell from the record. A sole trader is `1`: legally a person. Give the sheet back with a full run; `scripts/resolve.py` refuses it with `--increment` or `--decisions`, which don't route the stored records again:
+Answer each record `person`, `company` or `unsure` (stored as `1`, `2`, `0`: can't tell from the record). A sole trader is a person, legally. Then apply the answers:
 
 ```bash
-.venv/bin/python scripts/resolve.py --input customers.parquet --output runs/customers --overwrite --kind-labels kind_review.parquet
+.venv/bin/nayose list kinds --run runs/customers --open
+.venv/bin/nayose answer kind 0000000151 company --run runs/customers
+.venv/bin/nayose apply answers --run runs/customers
 ```
+
+Answers change how each record's name is matched, so `apply answers` is a rerun: a full run on the run's own files ([section 5](#5--add-new-records)), with the answers. A sheet filled in elsewhere, any file with the ID column and `kind` (`1`, `2` or `0`), goes back with `apply answers --file answered.parquet`.
 
 - **Your answers stand** for their records (`kind_by` = `people`): a held record's name goes to its side, and matching can use it. A `0` stands too: the record's name stays out of matching, and its pairs come to you in `review.parquet` with no name compared.
 - **They teach the engine.** The combiner fits on every answer 1 or 2 and places its lines on the measuring draw only, once 50 of the draw are answered, both kinds among them; until then a written legal form decides, as without answers (answer the whole draw: on fewer answers the company line goes a step stricter, and below 1,000 answers it can still be too loose); the person line only where the answers above it keep it within 1% wrong at 95% confidence (with none wrong, 300 answers above it). The summary says where the lines fall, how often the flag is wrong on the answers drawn at random, and how many records stay held back.
-- **They add up.** The run keeps each sheet's answers as given, one part per sheet in `kind_answers/`; per record the newest answer stands, and a blank row erases nothing. The next sheet leaves out the records answered, and brings back those left blank. A sheet answered wrong is undone by deleting its part, then a full run with `--overwrite`.
+- **They add up.** The run keeps each sheet's answers as given, one part per sheet in `kind_answers/`; per record the newest answer stands, and a blank row erases nothing. The next sheet leaves out the records answered, and brings back those left blank. A sheet answered wrong is undone by deleting its part, then `nayose rerun records`.
 - **A full run writes the sheet.** A record an increment holds back is on the sheet of the next full run.
 
 `[kind] trust_flag = true` takes the file's flag as it is, with no engine and no review sheet: the benchmark's flag-alone baseline.
@@ -193,42 +219,44 @@ What stops it: two lines, what is wrong and how to fix it, and exit code 2:
 | `columns … could each be …` | two columns match one name loosely |
 | `no record has an ID in column …` | `id` is mapped to the wrong column |
 | `the normal blocks alone would make … pairs, more than fit` | the file's pairs would not fit in memory and the temp disk: give DuckDB more room (`--compute memory_limit=… temp_directory=…`) or split the file |
-| `… already holds a run` | a full run into a used folder: add `--overwrite`, or pick another folder |
+| `… already holds a run` | `resolve records` into a used folder: add `--overwrite`, or pick another folder |
 | `the model was fitted on other comparison levels` | `--model` was fitted on another pipeline, or on a file with other fields |
 | `the file has a column named …, which is also the name of a field` | a column named like a field it doesn't map to |
 | `no rule can run`, `no candidate generator can run`, `no prior rule can run`, `no EM blocking rule can run` | the file lacks every field they read: map them, or give the file those columns |
 | `no record left to resolve`, `no new record to add` | every record was set aside (`set_aside/` says why) |
-| `no run in … to add records to` | `--increment` into a folder with no run: run it without `--increment` first |
-| `the pipeline or the column mapping changed since the full run` | an increment would resolve its batch otherwise than the records it joins: run a full run with `--overwrite`, or the increment with the pipeline and settings that run used |
-| `needs the columns … and kind` | `--kind-labels` points at the wrong file |
+| `no run in … to add records to` | `add records` into a folder with no run: `resolve records` first |
+| `the pipeline or the column mapping changed since the full run` | an increment would resolve its batch otherwise than the records it joins: `rerun records`, or add the batch with the pipeline and settings that run used |
+| `… gone since the run read it`, `… changed since the run read it` | `rerun records` needs the run's files as they were read: resolve the files again with `resolve records … --overwrite` |
+| `needs the columns … and kind` | `apply answers --file` points at the wrong file |
 | `needs the columns …_l, …_r and decision` | a decisions file without both IDs and `decision` |
 | `IDs that name no record of …` | a sheet of answers or decisions whose IDs changed: a spreadsheet may read 0000000151 as the number 151. Give the IDs back as the run wrote them |
-| `no row has a decision`, `no row is answered` | a sheet given back as it was sent: fill it in first |
+| `no row has a decision`, `no row is answered` | nothing decided or answered yet: `decide pair` or `answer kind` first, or fill in the sheet |
 | `answered rows have no …`, `decided rows lack an ID`, `a decision is match or no_match`, `a kind is 1, 2 or 0`, `pairs decided both ways` | a sheet to correct |
 
 A run folder another job is writing to stops the run with `another job is writing to …` and exit code 75: nothing to fix, try again once the other job is done. The lock and the renames that finish each write hold on a local disk: keep run folders and inboxes on one. On network or object storage they don't, so there let one scheduler be a folder's only writer.
 
 Pairs are counted before any join, so a run that couldn't fit stops within seconds instead of running out of memory or disk.
 
-**To ask for help, send `report.txt`** from the run folder. It holds field and column names, counts, shares, times and the model's parameters, and no record's value: no ID, name, phone or address. The notes that quote a value (a placeholder phone, a customer ID a rule doesn't trust) are only in the terminal and `qa.md`. For a run that stopped, send the two lines it printed, and the output of `--check`.
+**To ask for help, send `report.txt`** from the run folder. It holds field and column names, counts, shares, times and the model's parameters, and no record's value: no ID, name, phone or address. The notes that quote a value (a placeholder phone, a customer ID a rule doesn't trust) are only in the terminal and `qa.md`. For a run that stopped, send the two lines it printed, and the output of `nayose check records`.
 
 ## 8 · Run it on a schedule
 
-`scripts/schedule.py` serves an inbox: every Parquet file dropped in it goes into the run, one at a time, in the order it arrived.
+`nayose serve inbox` takes in every Parquet file dropped in an inbox, one at a time, in the order it arrived.
 
 ```bash
-.venv/bin/python scripts/schedule.py --run runs/customers --inbox inbox                # one pass; cron can call it
-.venv/bin/python scripts/schedule.py --run runs/customers --inbox inbox --every 300    # a pass every 5 minutes
+.venv/bin/nayose serve inbox inbox --run runs/customers                # one pass; cron can call it
+.venv/bin/nayose serve inbox inbox --run runs/customers --every 300    # a pass every 5 minutes
 ```
 
 ```
-inbox/batches/*.parquet      new records: an increment; into an empty run folder, the first batch is the full run
-inbox/decisions/*.parquet    people's decisions (section 6)
+inbox/batches/*.parquet      new records: add records; into an empty run folder, the first batch is resolve records
+inbox/decisions/*.parquet    people's decisions: apply decisions (section 6)
+inbox/answers/*.parquet      people's person/company answers: apply answers, a rerun (section 6)
 inbox/done/, inbox/failed/   where each file goes once it ran
-runs/customers/jobs.jsonl    one line per file per pass: file, SHA-256, outcome, exit code, attempts, seconds, error
+runs/customers/jobs.jsonl    one line per file per pass: file, SHA-256, outcome, exit code, attempts, seconds, error, where it went
 ```
 
-Each file runs as `scripts/resolve.py` in a process of its own, so a crash can't take the scheduler down. What happens next depends on how that process ends:
+Each file runs as its `nayose` command in a process of its own, so a crash can't take the scheduler down. What happens next depends on how that process ends:
 
 | It ends | The file |
 |---|---|
@@ -236,7 +264,7 @@ Each file runs as `scripts/resolve.py` in a process of its own, so a crash can't
 | on a mistake people must fix (exit 2) | moves to `failed/`, with its two-line error beside it (`….error.txt`). The pass goes on |
 | any other way: busy (exit 75: another job writes to the run folder), a crash, memory | is tried again, waiting 2, 4, 8 … s (`--retries`, default 2). If it still fails, the pass stops and the file stays, so nothing jumps ahead of it; the next pass tries again |
 
-`--compute` passes DuckDB limits on to every batch's run. A file whose content was done before, by its SHA-256, moves to `done/` without running. The pass ends with exit code 1 if it stopped on a file. One scheduler serves an inbox at a time, and a run folder takes one writer at a time, so starting a second one, or running `resolve.py` by hand meanwhile, is refused, not raced, on a local disk.
+`--compute` passes DuckDB limits on to every run. A file whose content was done before, by its SHA-256, moves to `done/` without running. The pass ends with exit code 1 if it stopped on a file. One scheduler serves an inbox at a time, and a run folder takes one writer at a time, so starting a second one, or running `nayose` on the folder by hand meanwhile, is refused, not raced, on a local disk.
 
 ## Development scripts
 
@@ -250,3 +278,4 @@ For changing the matching or measuring it, on synthetic labelled data:
 | choose how persons and companies are told apart | `scripts/choose_kind.py` → `reports/choose_kind.md` | minutes |
 | train the name model again, after changing `data/reference/`, the generator's `kana_confusions` or `branches`, the legal forms or kana folding, or `[kind] ngram` (a run refuses a model trained under other settings; commit the file) | `scripts/train_name_model.py` → `config/kind_names.npz` | seconds |
 | see every step on a small file | `notebooks/demo.ipynb`, or `scripts/export_pdfs.py` for its PDF (first: `.venv/bin/python -m playwright install chromium`) | under a minute |
+| write the commands' reference again, after changing a command in `er/cli.py` (a test fails until it matches) | `scripts/document_commands.py` → `docs/commands.md` | seconds |

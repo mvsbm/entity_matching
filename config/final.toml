@@ -1,6 +1,6 @@
 # The chosen pipeline: config/pipeline.toml with config/experiments.py's adopted changes, written by scripts/choose.py.
 # Adopted: rules fold_levenshtein, f2_address_exact, f2_address_prefix, optuna_comparators; Fellegi–Sunter no_term_frequency, exact_keys_only, optuna_suggestion, compound_phone_keys, sorted_names_for_tfidf, name_keys, bounded_address_keys, u_from_scored_file, u_exact_by_counts, cif_one_digit_off, cif_deletion_key, graded_address, birth_date, birth_date_key, given_name_phone_key, birth_date_deletion_key, u_near_by_keys, fit_u_from_1e6_pairs, company_without_jw_high, name_needed.
-# scripts/resolve.py runs it. It can be edited by hand; scripts/choose.py overwrites it.
+# nayose runs it. It can be edited by hand; scripts/choose.py overwrites it.
 
 [fields]
 mandatory = ["id"]

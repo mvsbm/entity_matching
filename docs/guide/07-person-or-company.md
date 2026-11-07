@@ -87,7 +87,7 @@ The name model it judges is the run's own: trained on `er.generate.kind_training
 - `er/run.py`: `Run.load` (the classifier), `Run._gold` (a customer's kind); `er/report.py`: `qa` (the summary's kind lines)
 - `er/settings.py`: `shared_name`, the settings for one name column
 - `er/generate.py`: `name_model_split`, `kind_problems`, `bank_name`, `kind_training_names`
-- `scripts/choose_kind.py`: the choice above; `scripts/benchmark.py`: `kinds`, the whole run; `scripts/resolve.py`: `--kind-labels` and `kind_review.parquet`
+- `scripts/choose_kind.py`: the choice above; `scripts/benchmark.py`: `kinds`, the whole run; `er/cli.py`: `nayose list kinds`, `answer kind` and `apply answers`, over `kind_review.parquet`
 - every table: [results.md](../results.md#person-or-company)
 
 ## Further reading

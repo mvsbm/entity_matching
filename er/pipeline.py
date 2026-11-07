@@ -1,5 +1,5 @@
 """Design time's measurements: preflight (the work per rule before any join), projections to a target size, and the
-pipeline measured against the truth. Every measured run is er.run.Run, the run scripts/resolve.py makes: run_rules and
+pipeline measured against the truth. Every measured run is er.run.Run, the run nayose resolve records makes: run_rules and
 run_fs read its tables and join them to the truth, so design time judges exactly what runs. Metrics after each stage
 are cumulative: matching metrics on the accepted pairs, resolution metrics on the clusters.
 """

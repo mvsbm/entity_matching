@@ -37,17 +37,18 @@ Real data may differ, and only a run on it can tell ([limits](#limits)).
 ```bash
 ./setup_venv.sh
 # map your columns to the logical fields: config/settings.toml [columns]
-.venv/bin/python scripts/resolve.py --input customers.parquet --check            # will it run? in seconds
-.venv/bin/python scripts/resolve.py --input customers.parquet --output runs/customers
+.venv/bin/nayose check records customers.parquet                            # will it run? in seconds
+.venv/bin/nayose resolve records customers.parquet --run runs/customers
 ```
 
-The run folder holds `gold.parquet` (each record and its entity's ID, and each one's kind: 1 person, 2 company, 0 not sure), `review.parquet` (pairs for a person to decide or audit), `kind_review.parquet` (records for a person to decide person or company), `qa.md` (checks that need no labels) and `report.txt` (the run on one page with no record's value in it, to send when asking for help). New records join the run later with `--increment`, and people's decisions with `--decisions`; `scripts/schedule.py` does both from an inbox, one file at a time. Every step is in [usage](docs/usage.md).
+The run folder holds `gold.parquet` (each record and its entity's ID, and each one's kind: 1 person, 2 company, 0 not sure), `review.parquet` (pairs for a person to decide or audit), `kind_review.parquet` (records for a person to decide person or company), `qa.md` (checks that need no labels) and `report.txt` (the run on one page with no record's value in it, to send when asking for help). New records join the run later (`nayose add records`). People decide the pairs (`nayose list pairs`, `decide pair`, `apply decisions`) and answer person or company (`list kinds`, `answer kind`, `apply answers`); `nayose serve inbox` takes batches, decisions and answers from an inbox, one file at a time. `nayose` (名寄せ, gathering one customer's records) reads as a sentence, verb then noun: every step is in [usage](docs/usage.md), every command in [commands](docs/commands.md).
 
 ## Read next
 
 | To | Read |
 |---|---|
 | run it on your records | [usage](docs/usage.md) |
+| look up a command | [commands](docs/commands.md) |
 | see every step on a small file, with charts | [the demo](notebooks/pdf/demo.pdf) |
 | see how it is built | [architecture](docs/architecture.md) |
 | understand each method, and why it was chosen | [the guide](docs/guide/01-entity-resolution-and-our-task.md), seven chapters |

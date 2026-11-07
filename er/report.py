@@ -111,7 +111,7 @@ def qa(run: "Run", fields: list[str] | None = None, review: int = 50, previous: 
         else:  # no line placed: a written legal form decides
             how = ((f"{c.labels:,} answers, {c.measured:,} of them drawn to measure: a line needs 50 drawn to measure, of both kinds"
                     if c is not None and c.labels else "no answers yet")
-                   + "; 2 company only where a legal form is written; answer kind_review.parquet, then run again with --kind-labels")
+                   + "; 2 company only where a legal form is written; answer them (nayose list kinds), then nayose apply answers")
         if c is not None and c.decided:
             how += f"; people decided {len(c.decided):,} records"
         held, unknown = con.execute("SELECT count(*) FILTER (WHERE kind_held AND kind_by <> 'people'), count(*) FILTER (WHERE kind_held AND kind_by = 'people') FROM gold").fetchall()[0]

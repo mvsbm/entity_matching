@@ -1,6 +1,6 @@
 # The matching pipeline, as written, in the field names of config/settings.toml [columns]. Loaded by
 # er.config.load_pipeline. scripts/choose.py applies config/experiments.py's adopted changes to it and writes the
-# result, in this same format, to config/final.toml, which scripts/resolve.py runs.
+# result, in this same format, to config/final.toml, which nayose runs.
 #
 # A key or a compared value is a field name, or { field, normalize }; normalize is a chain from
 # config/settings.toml [locale.chains], or a list of steps. A comparator is { function, threshold, normalize }.
