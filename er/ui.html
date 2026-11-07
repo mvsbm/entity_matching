@@ -203,6 +203,25 @@ body.term-open main { padding-bottom: 300px; }
 .attention .sub { color: var(--warn); font-weight: 500; }
 .optional .dot { border-style: dashed; }
 .loopitem { font-weight: 400; height: auto; min-height: 36px; }
+.rail li.loopstep .dot { width: 24px; height: 24px; margin: 2px; }
+.rail li.loopstep .dot .ic { width: 16px; height: 16px; }
+.trial .nums { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; margin: 8px 0 14px; }
+.trial .nums .lab { display: block; font-size: 12px; color: var(--faint); }
+.trial h2 { display: flex; align-items: center; gap: 8px; }
+.trial .row { display: flex; gap: 8px; flex-wrap: wrap; }
+.ink-good { color: var(--good); } .ink-bad { color: var(--bad); }
+.hist { width: 100%; height: auto; display: block; }
+.hist rect { fill: var(--outline); } .hist rect.acc { fill: var(--primary); }
+.hist .axis { stroke: var(--line); } .hist .tick { font-size: 11px; fill: var(--faint); text-anchor: middle; }
+.hist .now { stroke: var(--ink); stroke-width: 2; } .hist .at { stroke: var(--primary); stroke-width: 2; stroke-dasharray: 4 3; }
+.hist circle { stroke: var(--surface); stroke-width: 2; } .hist circle.same { fill: var(--good); } .hist circle.diff { fill: var(--bad); }
+.legend .sw { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 6px; vertical-align: -1px; }
+.legend .sw.same { background: var(--good); } .legend .sw.diff { background: var(--bad); } .legend .sw.now { width: 2px; height: 12px; border-radius: 0; background: var(--ink); }
+#line input[type=range] { width: 100%; }
+#at-says { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; min-height: 36px; }
+details.fold > summary { cursor: pointer; list-style: none; } details.fold > summary h2 { display: inline; }
+details.fold > summary::before { content: "▸ "; color: var(--faint); } details.fold[open] > summary::before { content: "▾ "; }
+details.fold[open] > summary { margin-bottom: 12px; }
 .navitem:disabled { color: var(--faint); cursor: default; }
 .navitem:disabled:hover { background: transparent; }
 .search:has(input:disabled) { opacity: .6; }
@@ -337,11 +356,12 @@ body.collapsed .navitem .stack, body.collapsed .rail li::before { display: none;
 <script type="application/json" id="layout">
 {"workflow": {"steps": ["workspace", "columns", "run", "pairs", "kinds", "results"],
   "loops": [{"name": "Add new records", "icon": "add", "screen": "run", "via": ["match records", "add records"], "to": "pairs"},
-            {"name": "Run matching again", "icon": "refresh", "screen": "run", "via": ["rerun records"], "to": "pairs"}]},
+            {"name": "Run matching again", "icon": "refresh", "screen": "run", "via": ["rerun records"], "to": "pairs"}],
+  "improve": {"screen": "improve", "after": "pairs", "back": "run"}},
  "screens": [
   {"id": "records", "title": "Overview", "icon": "overview", "what": "The whole workflow, and what it did with your records.",
    "strip": ["records", "prepare", "rules", "candidates", "score", "accept", "people", "group", "customers"],
-   "uses": [{"command": "describe workspace", "args": {"workspace": "@workspace"}, "reads": ["records", "entities", "runs", "pairs", "kinds", "set_aside", "write_owed", "inputs"]},
+   "uses": [{"command": "describe workspace", "args": {"workspace": "@workspace"}, "reads": ["records", "entities", "runs", "pairs", "kinds", "set_aside", "write_owed", "inputs", "round", "audits"]},
             {"command": "describe matching", "args": {"workspace": "@workspace"}, "reads": ["nodes", "edges"]},
             {"command": "list workspaces", "args": {"home": "@home"}, "reads": ["home", "workspaces"]},
             {"command": "create workspace", "args": {"name": "@name", "home": "@home"}, "reads": ["workspace"]}]},
@@ -366,6 +386,14 @@ body.collapsed .navitem .stack, body.collapsed .rail li::before { display: none;
    "uses": [{"command": "list pairs", "args": {"workspace": "@workspace", "open": true}, "reads": ["pairs", "counts"]},
             {"command": "decide pair", "args": {"first": "@first", "second": "@second", "decision": "@decision", "workspace": "@workspace"}, "reads": ["decision"]},
             {"command": "apply decisions", "args": {"workspace": "@workspace"}, "reads": ["decisions", "matches", "clusters_joined", "summary"]},
+            {"command": "describe matching", "args": {"workspace": "@workspace"}, "reads": ["nodes"]}]},
+  {"id": "improve", "title": "Improve matching", "icon": "loop", "what": "What people's decisions say about the method: try a change, adopt it, and review the new round.",
+   "strip": ["rules", "candidates", "score", "accept", "people"],
+   "uses": [{"command": "describe method", "args": {"workspace": "@workspace"}, "reads": ["line", "method", "round", "rounds", "audits", "bands", "decided", "rules", "keys", "steps", "proposals", "trials"]},
+            {"command": "try method", "args": {"workspace": "@workspace", "line": "@line", "drop": "@drop", "compute": "@compute"}, "reads": ["trial"]},
+            {"command": "adopt method", "args": {"workspace": "@workspace", "trial": "@trial", "compute": "@compute"}, "reads": ["summary"]},
+            {"command": "reset method", "args": {"workspace": "@workspace", "compute": "@compute"}, "reads": ["summary"]},
+            {"command": "draw pairs", "args": {"workspace": "@workspace", "count": "50"}, "reads": ["drawn"]},
             {"command": "describe matching", "args": {"workspace": "@workspace"}, "reads": ["nodes"]}]},
   {"id": "kinds", "title": "Confirm person or company", "icon": "kinds", "what": "Records the engine holds back, and a sample that sharpens it: person or company?",
    "strip": ["records", "kind", "score"],
@@ -416,6 +444,7 @@ const ICON = {
   group: '<circle cx="12" cy="6" r="2.5"/><circle cx="6" cy="18" r="2.5"/><circle cx="18" cy="18" r="2.5"/><path d="M11 8.2L7.2 15.8M13 8.2l3.8 7.6M8.5 18h7"/>',
   add: '<path d="M12 5v14M5 12h14"/>',
   refresh: '<path d="M19 12a7 7 0 1 1-2.1-5M19 4v4h-4"/>',
+  loop: '<path d="M5 11a7 7 0 0 1 12.2-4.7M19 13a7 7 0 0 1-12.2 4.7M17 3v3.5h-3.5M7 21v-3.5h3.5"/>',
   copy: '<rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2"/>',
   close: '<path d="M6 6l12 12M18 6L6 18"/>',
   clear: '<path d="M5 7h14M10 11v6M14 11v6M6 7l1 12h10l1-12M9 7V4h6v3"/>',
@@ -527,7 +556,8 @@ async function runOnce(command, args, onEvent) {
 // ---------- the workflow: six steps, each one's state read from the workspace ----------
 
 const STEP = {workspace: "Choose a workspace", columns: "Prepare your data", run: "Find matches", pairs: "Review possible matches",
-              kinds: "Confirm person or company", results: "View customers"};
+              kinds: "Confirm person or company", results: "View customers", improve: "Improve matching"};
+const LOOP = LAYOUT.workflow.improve, AUDITS = 50;  // the loop's page, after step 4; this many audits with none false: the method holds
 const ORDER = LAYOUT.workflow.steps;
 const STATE_WORD = {done: "done", current: "next", attention: "needs you", optional: "optional", later: "later"};
 
@@ -548,8 +578,13 @@ function progress(d) {
       : k.written_in ? {state: "attention", line: `${fmt(k.written_in)} answered, to apply`}
       : {state: "optional", line: k.measure ? `${fmt(k.measure)} to check` : "nothing to check"};
     s.results = {state: "done", line: `${fmt(d.entities)} customers`};
+    const a = d.audits || {checked: 0, false: 0}, r = `round ${d.round || 1}`;
+    s.improve = a.false ? {state: "attention", line: `${r} · ${fmt(a.false)} false found`}
+      : a.checked >= AUDITS ? {state: "done", line: `${r} · none false in ${fmt(a.checked)}`} : {state: "optional", line: `${r} · ${fmt(a.checked)} of ${AUDITS} checked`};
   }
-  const next = ORDER.find((id) => ["current", "attention"].includes(s[id].state)) || "results";
+  let next = ORDER.find((id) => ["current", "attention"].includes(s[id].state)) || "results";
+  const loop = s.improve && ORDER.indexOf(next) > ORDER.indexOf(LOOP.after) ? s.improve.state : "done";  // the loop, until it holds: before
+  if (loop === "attention" || (loop !== "done" && s[next].state !== "attention")) next = LOOP.screen;   // a later step, unless that one needs you
   if (s[next].state !== "attention") s[next] = {...s[next], state: "current"};
   return {steps: s, next};
 }
@@ -562,8 +597,11 @@ function rail() {  // the stepper: the navigation, in the order the work is done
     const s = p[id] || {state: "later", line: ""};
     const dot = s.state === "done" ? icon("tick") : s.state === "attention" ? "!" : n + 1;
     const go = id === "workspace" ? "data-pick" : `data-screen="${id}"`;
+    const loop = id === LOOP.after && p.improve ? `<li class="${p.improve.state} loopstep"><button class="navitem step" data-screen="${LOOP.screen}" ${at(LOOP.screen)}
+      title="${esc(STEP.improve)}: ${esc(STATE_WORD[p.improve.state])}"><span class="dot">${icon("loop")}</span><span class="stack"><span>${esc(STEP.improve)}</span>
+      <span class="sub">${esc(p.improve.line)}</span></span></button></li>` : "";
     return `<li class="${s.state}"><button class="navitem step" ${go} ${at(id)} title="${esc(STEP[id])}: ${esc(STATE_WORD[s.state])}">
-      <span class="dot">${dot}</span><span class="stack"><span>${n + 1} · ${esc(STEP[id])}</span><span class="sub">${esc(s.line)}</span></span></button></li>`;
+      <span class="dot">${dot}</span><span class="stack"><span>${n + 1} · ${esc(STEP[id])}</span><span class="sub">${esc(s.line)}</span></span></button></li>${loop}`;
   }).join("")}</ol><h3>When things change</h3>${LAYOUT.workflow.loops.map((l, n) =>
     `<button class="navitem loopitem" data-loop="${n}" ${ran ? "" : "disabled"}>${icon(l.icon)}<span class="stack"><span>${esc(l.name)}</span>${
       ran ? "" : '<span class="sub">after the first run</span>'}</span></button>`).join("")}`;
@@ -599,7 +637,8 @@ const where = () => {  // one part is the band's own label: a path once the page
 function stepFoot(id) {  // back and next, in the workflow's order
   const n = ORDER.indexOf(id), back = ORDER[n - 1], next = ORDER[n + 1];
   const link = (to, k, cls) => to === "workspace" ? `<button class="btn ${cls}" data-pick>${k}</button>` : `<a class="btn ${cls}" data-go="${to}">${k}</a>`;
-  return `<div class="stepfoot">${back ? link(back, `← ${ORDER.indexOf(back) + 1} ${esc(STEP[back])}`, "") : ""}<span class="grow"></span>${
+  const loop = id === LOOP.after && (steps.steps || {}).improve ? `<a class="btn" data-go="${LOOP.screen}">${icon("loop")}${esc(STEP.improve)}</a>` : "";
+  return `<div class="stepfoot">${back ? link(back, `← ${ORDER.indexOf(back) + 1} ${esc(STEP[back])}`, "") : ""}<span class="grow"></span>${loop}${
     next ? link(next, `Next: ${ORDER.indexOf(next) + 1} ${esc(STEP[next])} →`, "filled") : ""}</div>`;
 }
 
@@ -920,7 +959,7 @@ const SCREENS = {
     const [d] = await Promise.all([run("records", "describe workspace"), flowOf("records", $("flow"))]);
     if (d.event === "error" || !d.records) { $("out").innerHTML = d.event === "error" ? banner(d) : emptyRun(d); return d; }
     const p = progress(d), s = p.steps[p.next];
-    $("next").innerHTML = `<div class="next">${icon(s.state === "attention" ? "person" : "run")}<span><b>Next: ${ORDER.indexOf(p.next) + 1} · ${esc(STEP[p.next])}</b>
+    $("next").innerHTML = `<div class="next">${icon(s.state === "attention" ? "person" : "run")}<span><b>Next: ${ORDER.includes(p.next) ? `${ORDER.indexOf(p.next) + 1} · ` : ""}${esc(STEP[p.next])}</b>
       <span class="muted"> · ${esc(s.line)}</span></span><span class="grow" style="flex:1"></span>${p.next === "workspace" ? '<button class="btn filled" data-pick>Open</button>' : `<a class="btn filled" data-go="${p.next}">Open</a>`}</div>`;
     $("out").innerHTML = (d.write_owed ? banner({event: "error", error: "A write was cut short", fix: "The next command that writes to this workspace finishes it."}, "warn") : "") +
       `<div class="card"><h2>Activity</h2><div id="runs"></div></div>`;
@@ -1078,9 +1117,113 @@ const SCREENS = {
     return d;
   },
 
+  async improve(el) {  // the loop: what people's decisions say about the method; a change tried, adopted, and the new round reviewed
+    const foot = `<div class="stepfoot"><a class="btn" data-go="${LOOP.after}">← ${ORDER.indexOf(LOOP.after) + 1} ${esc(STEP[LOOP.after])}</a><span class="grow"></span>
+      <a class="btn" data-go="${LOOP.back}">${icon("run")}${ORDER.indexOf(LOOP.back) + 1} ${esc(STEP[LOOP.back])}</a>
+      <a class="btn filled" data-go="${ORDER[ORDER.indexOf(LOOP.after) + 1]}">Next: ${ORDER.indexOf(LOOP.after) + 2} ${esc(STEP[ORDER[ORDER.indexOf(LOOP.after) + 1]])} →</a></div>`;
+    el.innerHTML = head("improve", `<button class="btn" id="draw">${icon("add")}Draw ${AUDITS} to check</button><button class="btn" id="refresh">${icon("refresh")}Refresh</button>`) +
+      `<div id="busy"></div><div id="flow"></div><div id="out" class="faint">Loading…</div>${foot}`;
+    $("refresh").onclick = () => go("improve");
+    if (!state.workspace) { $("out").innerHTML = emptyRun(); return; }
+    const [d] = await Promise.all([run("improve", "describe method"), flowOf("improve", $("flow"))]);
+    if (d.event === "error") { $("out").innerHTML = banner(d); return; }
+    const a = d.audits, latest = d.trials.filter((x) => !d.rounds.length || x.at >= d.rounds[d.rounds.length - 1].at).pop();
+    $("out").className = "";
+    $("out").innerHTML = (latest ? trialCard(latest) : "") +
+      `<div class="card"><h2>Rounds</h2><div id="rounds"></div><p class="muted">${a.checked ? `Audits this round: ${fmt(a.false)} false in ${fmt(a.checked)} checked · at most ${pct(a.at_most)} false` : "No audit decided this round"}${
+        Object.keys(d.method).length ? ` · <button class="mini" id="reset">Back to the tuned method</button>` : ""}</p></div>` +
+      (d.proposals.length ? `<div class="card"><h2>Worth trying</h2>${d.proposals.map((x) => `<div class="offer">${icon("wand")}<span><b>${esc(methodText(x.change))}</b> <span class="muted">· ${esc(x.why)}</span></span>${tryBtn(x.change)}</div>`).join("")}</div>` : "") +
+      `<div class="card"><h2>The line</h2><div id="line"></div></div>
+       <details class="card fold"><summary><h2>Sure-match rules</h2></summary><div id="rules"></div></details>
+       <details class="card fold"><summary><h2>Pair keys</h2></summary><div id="keys"></div></details>
+       <details class="card fold"><summary><h2>Comparison steps</h2></summary><div id="steps"></div></details>`;
+    grid($("rounds"), d.rounds, ["round", "method", "matched", "decided", "audited", "false_found", "expected_false"],
+         {filter: false, labels: {matched: "links", false_found: "false found", expected_false: "expected false"},
+          cell: (r, c) => c === "method" ? esc(methodText(r.method)) : c === "false_found" && r[c] ? `<span class="chip warn">${fmt(r[c])}</span>` : esc(fmt(r[c]))});
+    lineView($("line"), d);
+    const without = (key) => (r) => r.pairs ? tryBtn({[key]: [r.name]}, "Try without") : "";
+    grid($("rules"), d.rules, ["name", "pairs", "below", "different", "try"], {filter: false, labels: {below: "below the line", different: "said different", try: ""},
+         cell: (r, c) => c === "try" ? without("drop_rules")(r) : c === "different" && r[c] ? `<span class="chip warn">${fmt(r[c])}</span>` : esc(fmt(r[c]))});
+    grid($("keys"), d.keys, ["name", "pairs", "seconds", "matched", "only", "try"], {filter: false, labels: {matched: "links", only: "only it finds", try: ""},
+         cell: (r, c) => c === "try" ? without("drop_keys")(r) : esc(fmt(r[c]))});
+    grid($("steps"), d.steps, ["comparison", "level", "bits", "reached"], {filter: false, labels: {level: "step", bits: "points", reached: "pairs"},
+         cell: (r, c) => c === "bits" && r.reached && Math.abs(r.bits) < 0.5 && r.level !== "missing" ? `${esc(fmt(r.bits))} <span class="chip warn">about 0</span>`
+           : c === "reached" && !r.reached ? '<span class="chip warn">never</span>' : esc(fmt(r[c]))});
+    where();
+    const busy = (label) => {  // one long command at a time: its steps as they finish, every action off until it ends
+      el.querySelectorAll("[data-try], [data-adopt], #draw, #reset").forEach((b) => { b.disabled = true; });
+      $("busy").innerHTML = `<div class="card steps-card"><h2><span class="spin" style="border-color:var(--primary);border-right-color:transparent"></span>${esc(label)}</h2><ul class="steps"></ul></div>`;
+      return (e) => { if (e.event === "step") $("busy").querySelector("ul")?.insertAdjacentHTML("beforeend", `<li>${icon("check")}${esc(e.step)} <span class="faint">${e.seconds.toFixed(1)} s</span></li>`); };
+    };
+    const failed = (e) => { $("busy").innerHTML = banner(e); el.querySelectorAll("[data-try], [data-adopt], #draw, #reset").forEach((b) => { b.disabled = false; }); };
+    const round = (e) => e.event === "error" ? failed(e)
+      : go(LOOP.after, `<div class="banner info">${icon("loop")}<div><b>Matched again with the new method: review this round's pairs.</b></div></div>`);
+    $("out").onclick = (e) => {  // the page's buttons, those the slider adds too
+      const b = e.target.closest("button:not(:disabled)");
+      if (!b) return;
+      if (b.dataset.try) {
+        const change = JSON.parse(b.dataset.try);
+        run("improve", "try method", tryArgs(change), busy(`Trying ${methodText(change)}`)).then((r) => r.event === "error" ? failed(r) : go("improve"));
+      } else if (b.dataset.adopt) run("improve", "adopt method", {trial: b.dataset.adopt}, busy("Adopting, and finding matches")).then(round);
+      else if (b.id === "reset") run("improve", "reset method", {}, busy("Back to the tuned method, and finding matches")).then(round);
+      else if ("discard" in b.dataset) b.closest(".card").remove();
+    };
+    $("draw").onclick = async () => {
+      $("draw").disabled = true;
+      const e = await run("improve", "draw pairs");
+      e.event === "error" ? failed(e) : go(LOOP.after, `<div class="banner info">${icon("check")}<div><b>${fmt(e.drawn)} links to check, as spot-checks.</b></div></div>`);
+    };
+  },
+
   pairs: (el, note) => review(el, "pairs", note),
   kinds: (el, note) => review(el, "kinds", note),
 };
+
+// A change of method in words, and what try method takes for it.
+const methodText = (m) => !m || !Object.keys(m).length ? "as tuned"
+  : [...(m.line !== undefined ? [`line at ${fmt(m.line)}`] : []), ...[...(m.drop_rules || []), ...(m.drop_keys || [])].map((x) => `without ${x}`)].join(" · ");
+const tryArgs = (c) => c.line !== undefined ? {line: String(c.line)} : {drop: [...(c.drop_rules || []), ...(c.drop_keys || [])]};
+const tryBtn = (c, label = "Try") => `<button class="btn" data-try='${esc(JSON.stringify(c))}'>${esc(label)}</button>`;
+
+function trialCard(x) {  // a trial beside the method as it is: on people's decisions first, then without labels
+  const was = x.base, now = x.variant, cell = (k, v) => `<div><span class="lab">${esc(k)}</span><b>${v}</b></div>`;
+  const change = (k, worse) => `<span class="${x[k].variant > x[k].base ? worse : x[k].variant < x[k].base ? "ink-good" : ""}">${fmt(x[k].base)} → ${fmt(x[k].variant)}</span>`;
+  return `<div class="card trial"><h2>${icon("loop")}Trial ${fmt(x.trial)}: ${esc(methodText(x.method))}</h2><div class="nums">${
+    cell("Joined, people said different", change("different_joined", "ink-bad"))}${cell("Apart, people said same", change("same_apart", ""))}${
+    cell("Links", `${fmt(was.matched)} → ${fmt(now.matched)}`)}${cell("Expected false", `${fmt(was.expected_false)} → ${fmt(now.expected_false)}`)}${
+    cell("Customers", `${fmt(was.entities)} → ${fmt(now.entities)}`)}${cell("Pairs of records", `${fmt(x.apart)} apart · ${fmt(x.together)} together`)}</div>
+    <div class="row"><button class="btn filled" data-adopt="${esc(x.trial)}">${icon("check")}Adopt and find matches</button><button class="btn" data-discard>Discard</button></div></div>`;
+}
+
+// The weight bands near the line, every pair people decided as a dot, the line, and a slider that moves it: what a
+// line there would set right and wrong among those pairs, counted here (the rules' pairs aside: no line moves them).
+function lineView(box, d) {
+  const pts = d.decided.filter((x) => !x.rule), lo = Math.floor(d.line) - 10, hi = Math.floor(d.line) + 14, W = 640;  // pairs past the window: at its edge
+  const x = (w) => 12 + ((Math.min(hi, Math.max(lo, w)) - lo) / (hi - lo)) * (W - 24);
+  const bands = d.bands.filter((b) => b.weight_from + 2 > lo && b.weight_from < hi), top = Math.max(1, ...bands.map((b) => Math.log2(b.pairs + 1)));
+  const stack = {}, MOST = 10, dots = [...pts].sort((a, b) => (a.decision === "match") - (b.decision === "match")).map((p) => {  // a column: different first, 10 dots, then a count
+    const k = Math.round(x(p.weight) / 9), n = stack[k] = (stack[k] || 0) + 1;
+    return n > MOST ? "" : `<circle cx="${x(p.weight)}" cy="${108 + n * 9}" r="4" class="${p.decision === "match" ? "same" : "diff"}"><title>${esc(p.id_l)} · ${esc(p.id_r)}: ${p.decision === "match" ? "same" : "different"}, ${fmt(p.weight)} points</title></circle>`; });
+  const more = Object.entries(stack).filter(([, n]) => n > MOST).map(([k, n]) => `<text x="${k * 9}" y="${108 + (MOST + 1) * 9 + 4}" class="tick">+${n - MOST}</text>`);
+  const H = 124 + 9 * Math.min(MOST + 1, Math.max(0, ...Object.values(stack)));
+  const ticks = Array.from({length: (hi - lo) / 2 + 1}, (_, i) => lo + i * 2);
+  box.innerHTML = `<svg class="hist" viewBox="0 0 ${W} ${H}" role="img" aria-label="Pairs by points, the line at ${fmt(d.line)}, and the pairs people decided">
+    ${bands.map((b) => { const h = Math.log2(b.pairs + 1) / top * 84, a = x(Math.max(lo, b.weight_from)), w = Math.max(1, x(Math.min(hi, b.weight_from + 2)) - a - 2);
+      return `<rect x="${a}" y="${96 - h}" width="${w}" height="${h}" rx="3" class="${b.accepted ? "acc" : ""}"><title>${fmt(b.pairs)} pairs, ${b.weight_from} to ${b.weight_from + 2} points</title></rect>`; }).join("")}
+    <line x1="0" x2="${W}" y1="96" y2="96" class="axis"/>${ticks.map((v) => `<text x="${x(v)}" y="110" class="tick">${v}</text>`).join("")}
+    <line x1="${x(d.line)}" x2="${x(d.line)}" y1="4" y2="96" class="now"/><line id="at-line" x1="${x(d.line)}" x2="${x(d.line)}" y1="4" y2="96" class="at"/>${dots.join("")}${more.join("")}</svg>
+    <div class="legend"><span><span class="sw same"></span>same</span><span><span class="sw diff"></span>different</span><span><span class="sw now"></span>the line, ${fmt(d.line)}</span></div>
+    <input type="range" id="at" min="${lo}" max="${hi}" step="0.5" value="${d.line}" aria-label="Move the line"><div id="at-says" class="muted"></div>`;
+  const says = () => {
+    const at = Number($("at").value), right = (p, line) => (p.named && p.weight >= line) === (p.decision === "match");
+    const fixes = pts.filter((p) => right(p, at) && !right(p, d.line)).length, breaks = pts.filter((p) => right(p, d.line) && !right(p, at)).length;
+    box.querySelector("#at-line").setAttribute("x1", x(at)); box.querySelector("#at-line").setAttribute("x2", x(at));
+    $("at-says").innerHTML = at === d.line ? `${fmt(pts.length)} pairs people decided` :
+      `At ${fmt(at)}: ${fmt(fixes)} set right · <span class="${breaks ? "ink-bad" : ""}">${fmt(breaks)} set wrong</span> ${tryBtn({line: at}, `Try ${fmt(at)}`)}`;
+  };
+  $("at").oninput = says;
+  says();
+}
 
 // The two review queues, and what differs between them: their commands, columns, keys, the card a row is shown in, and
 // how answers are applied (decisions join entities at once; answers need a rerun, so the page reloads its new sheet).

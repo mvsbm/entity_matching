@@ -19,7 +19,7 @@ import pandas as pd
 
 from er.candidates import q
 from er.config import DeletionKeys, InputError, KeyBlocker, Pipeline, SortedNeighbourhood, TfidfNeighbours, sources_text
-from er.folder import DECISIONS, PENDING, method, rounds
+from er.folder import DECISIONS, PENDING, TRIALS, method, rounds
 from er.io import code_version, table_after
 from er.kind import COMPANY, PERSON, SAYS, UNSURE
 from er.match import ELSE, levels, named_sql, parameters, pattern_coverage, review_floor, scaled_prior, score_fs
@@ -305,7 +305,10 @@ def describe_workspace(con: duckdb.DuckDBPyConnection, out: Path, uid: str) -> d
         return {**{w: int(((rows["why"] == w) & rows[answer].isna()).sum()) for w in whys}, "written_in": int(written.sum())}
     aside = out / "set_aside"
     summary = table_after((out / "qa.md").read_text(encoding="utf-8"), "## summary") if (out / "qa.md").exists() else pd.DataFrame()
+    now, decided = len(rounds(out)), applied(out, uid)
+    audits = decided[(decided["why"] == "audit") & (decided["round"] == now)] if {"why", "round"} <= set(decided) else decided.iloc[:0]  # this round's
     return dict(workspace=str(out), records=records, entities=entities, largest=[dict(entity=e, records=n) for e, n in largest], runs=runs,
+                round=now, audits=dict(checked=len(audits), false=int((audits["decision"] == "no_match").sum())),
                 pairs=queue("review.parquet", "decision", ("decide", "audit")), kinds=queue("kind_review.parquet", "kind", ("decide", "measure")),
                 set_aside=con.execute(f"SELECT count(*) FROM read_parquet({lit(aside / '*.parquet')})").fetchall()[0][0]
                 if any(aside.glob("*.parquet")) else 0,
@@ -460,17 +463,18 @@ def describe_matching(con: duckdb.DuckDBPyConnection, out: Path | None, p: Pipel
 
 
 
-def line_change(decided: pd.DataFrame, t: float) -> tuple[float, int] | None:
-    """The acceptance line that sets right the most pairs people decided, against the model alone (accepted: named and
-    at the line or above), and sets wrong none it gets right at `t`; the nearest such line on a tie. None: no line
-    does better. Rows: weight, named, same (people said match). Lines tried: the half bit at or just below each
-    pair's weight, and the next one up. O(D·B) with numpy, D decided, B the half bits between the lowest weight and the highest."""
+def line_change(decided: pd.DataFrame, t: float, lo: float = -math.inf, hi: float = math.inf) -> tuple[float, int] | None:
+    """The acceptance line in [lo, hi] that sets right the most pairs people decided, against the model alone
+    (accepted: named and at the line or above), and sets wrong none it gets right at `t`; the nearest such line on a
+    tie. None: no line does better. Rows: weight, named, same (people said match). Lines tried: the half bit at or
+    just below each pair's weight, and the next one up. [lo, hi] is the band people review: past it, the pairs a line
+    would take or drop are pairs nobody looked at. O(D·B) with numpy, D decided, B the half bits in the band."""
     if decided.empty:
         return None
     w, named, same = decided["weight"].to_numpy(), decided["named"].to_numpy(bool), decided["same"].to_numpy(bool)
     right = lambda x: (named & (w >= x)) == same
     now, best = right(t), None
-    for x in sorted({float(v) for f in np.floor(w * 2) / 2 for v in (f, f + 0.5)}):
+    for x in sorted({float(v) for f in np.floor(w * 2) / 2 for v in (f, f + 0.5) if lo <= v <= hi}):
         at = right(x)
         if (now & ~at).any():
             continue
@@ -557,7 +561,7 @@ def describe_method(out: Path, p: Pipeline, s: "Settings") -> dict:
 
     # the changes worth trying: none applies itself
     proposals = []
-    if line := line_change(decided[decided["rule"].isna()], t):
+    if line := line_change(decided[decided["rule"].isna()], t, review_floor(p), t + 4):  # within the band people decide and audit
         proposals.append(dict(change=dict(line=line[0]), why=f"sets right {line[1]:,} pair{'s' if line[1] > 1 else ''} people decided, and wrong none"))
     proposals += [dict(change=dict(drop_rules=[name]), why=f"people said {apart:,} of its pairs {'are' if apart > 1 else 'is'} different")
                   for name, (_, _, apart) in rules.items() if apart]
@@ -579,4 +583,5 @@ def describe_method(out: Path, p: Pipeline, s: "Settings") -> dict:
                    matched=found.get(b.name, (0, 0))[0], only=found.get(b.name, (0, 0))[1]) for b in fs.blockers],
         steps=[dict(comparison=c, level=label, bits=round(bits, 2), reached=reached.get((c, g), 0))
                for c, by in by_gamma.items() for g, (label, bits) in sorted(by.items(), reverse=True)],
-        proposals=proposals)
+        proposals=proposals,
+        trials=sorted((json.loads(f.read_text(encoding="utf-8")) for f in (out / TRIALS).glob("*.json") if f.stem.isdigit()), key=lambda x: x["trial"]))

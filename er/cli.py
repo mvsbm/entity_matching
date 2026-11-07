@@ -733,12 +733,13 @@ COMMANDS: tuple[Command, ...] = (
             (WORKSPACE, PIPELINE, COMPUTE), RUN_RESULT, "nayose rerun records --workspace workspaces/customers", rerun_records),
     Command("describe", "workspace", "What a workspace holds",
             "Records and entities, the largest entities, each run so far, the pairs and kinds still open and the answers written "
-            "in, records set aside, a write still owed, and the last summary. O(N) in SQL.",
+            "in, records set aside, a write still owed, the last summary, and the round with its audits. O(N) in SQL.",
             (Param("workspace", "the workspace", "path", positional=True),),
             {"workspace": "the workspace", "records": "records", "entities": "entities", "largest": "the 10 largest entities",
              "runs": "each run so far: at, what, files, seconds", "pairs": "open pairs to decide and audit, and decisions written in",
              "kinds": "open records to decide and to measure, and answers written in", "set_aside": "records set aside",
              "write_owed": "a write cut short, finished by the next one", "summary": "the last run's summary",
+             "round": "the round now: one per method the workspace ran (rounds.json)", "audits": "this round's audits people decided: checked, false",
              "inputs": "the records files given to it, each in inputs/: name, path, files, bytes, read (by a run)",
              "columns": "own: its columns.toml; project: config/settings.toml's", "next": "the commands that usually follow"},
             "nayose describe workspace workspaces/customers", describe_workspace_, quick=True,
@@ -767,9 +768,9 @@ COMMANDS: tuple[Command, ...] = (
             "it; the line pairs are accepted at, the weight bands, and every pair people decided, scored again with the "
             "run's model; each sure-match rule's pairs, those scoring below the line, and those people said are different; "
             "each pair key's pairs, seconds, links, and links only it found; each comparison step's bits and the pairs that "
-            "reached it; and proposals: a line that sets right decided pairs without setting any wrong, a rule people found "
-            "different pairs in, a key no link needs. Changes nothing. O((D + R)·K) to score the decided and rule pairs "
-            "again, + O(E) over the run's files.",
+            "reached it; and proposals: a line in the band people review that sets right decided pairs without setting any "
+            "wrong, a rule people found different pairs in, a key no link needs. Changes nothing. O((D + R)·K) to score the "
+            "decided and rule pairs again, + O(E) over the run's files.",
             (WORKSPACE, PIPELINE),
             {"line": "the weight pairs are accepted at", "review_from": "the lowest weight people are asked to decide",
              "method": "the workspace's changes to the tuned method (method.toml)", "round": "the round now (0: no round recorded)",
@@ -780,25 +781,27 @@ COMMANDS: tuple[Command, ...] = (
              "rules": "name, pairs, below (scored below the line), different (people said)",
              "keys": "name, pairs, seconds, matched, only (links no other key found)",
              "steps": "comparison, level, bits, reached", "proposals": "change (method.toml keys), why",
-             "next": "the commands that usually follow"},
+             "trials": "the trials kept (the last 5), as try method gave them", "next": "the commands that usually follow"},
             "nayose describe method --workspace workspaces/customers", describe_method_, quick=True,
             show={"rounds": ("round", "matched", "audited", "false_found", "expected_false"), "bands": (), "decided": (),
                   "rules": ("name", "pairs", "below", "different"), "keys": ("name", "pairs", "seconds", "matched", "only"),
-                  "steps": ("comparison", "level", "bits", "reached"), "proposals": ("change", "why")}),
+                  "steps": ("comparison", "level", "bits", "reached"), "proposals": ("change", "why"), "trials": ()}),
     Command("try", "method", "Try a change of the method beside the method as it is",
             "Runs the workspace's method and the method with the change (a line; --drop: sure-match rules and pair keys left "
             "out) on the workspace's files, both without people's decisions, so neither is judged on pairs it was told; both "
             "keep the run's fitted model and people's person/company answers. Says what the change does to the pairs people "
-            "decided (fixes, breaks) and, without labels, to the links, the false links the model expects, the entities, and "
-            "the pairs of records it puts apart or together. Writes only trials/ in the workspace: each trial's result (the "
+            "decided (those they said are different yet joined: false merges; those they said are the same yet apart) and, "
+            "without labels, to the links, the false links the model expects, the entities, and the pairs of records it puts "
+            "apart or together. Writes only trials/ in the workspace: each trial's result (the "
             "last 5 kept) and the clusters of the method as it is, kept for the next trial. O(two full runs without the fit); "
             "one when the method and the files are those of the last trial.",
             (WORKSPACE, Param("line", "the weight to accept pairs at, in bits", metavar="BITS"),
              Param("drop", "sure-match rules and pair keys to leave out, by name", "many", metavar="NAME"), PIPELINE, COMPUTE),
             {"trial": "its number, for adopt method", "at": "when", "method": "the method tried, as method.toml would say it",
              "base": "the method as it is: matched, expected_false, rule_pairs, entities", "variant": "the method tried: the same",
-             "fixes": "pairs people decided that it sets right", "breaks": "pairs people decided that it sets wrong",
-             "fixed": "id_l, id_r, decision (50 at most)", "broken": "id_l, id_r, decision (50 at most)",
+             "different_joined": "pairs people said are different, in one customer (false merges): base, variant",
+             "same_apart": "pairs people said are the same, apart: base, variant",
+             "fixed": "pairs people decided that it sets right: id_l, id_r, decision (50 at most)", "broken": "those it sets wrong (50 at most)",
              "apart": "pairs of records it puts apart", "together": "pairs of records it puts together",
              "next": "the commands that usually follow"},
             "nayose try method --workspace workspaces/customers --line 9 --drop F3_NAME~_CIF", try_method,
