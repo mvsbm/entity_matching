@@ -32,6 +32,10 @@ Written by `scripts/document_commands.py` from the declarations in `er/cli.py`; 
 | [`describe entity`](#nayose-describe-entity) | One record's entity, and what joined it |
 | [`describe matching`](#nayose-describe-matching) | How records are matched: every method, on which fields, with its numbers |
 | [`describe method`](#nayose-describe-method) | What the run shows about its method, and the changes worth trying |
+| [`try method`](#nayose-try-method) | Try a change of the method beside the method as it is |
+| [`adopt method`](#nayose-adopt-method) | Adopt a method tried, and find matches with it |
+| [`reset method`](#nayose-reset-method) | Go back to the tuned method, and find matches with it |
+| [`draw pairs`](#nayose-draw-pairs) | More links on the review sheet, to audit |
 | [`list pairs`](#nayose-list-pairs) | The pairs for people to decide and to audit |
 | [`decide pair`](#nayose-decide-pair) | Decide one pair: match or no match |
 | [`apply decisions`](#nayose-apply-decisions) | Apply people's decisions to the run |
@@ -577,6 +581,123 @@ From the run in the workspace and people's decisions: each round so far (a round
 
 ```bash
 nayose describe method --workspace workspaces/customers
+```
+
+## nayose try method
+
+Try a change of the method beside the method as it is.
+
+```
+nayose try method --workspace WORKSPACE [--line BITS] [--drop NAME …] [--pipeline PIPELINE] [--compute KEY=VALUE …] [--format text|json]
+```
+
+Runs the workspace's method and the method with the change (a line; --drop: sure-match rules and pair keys left out) on the workspace's files, both without people's decisions, so neither is judged on pairs it was told; both keep the run's fitted model and people's person/company answers. Says what the change does to the pairs people decided (fixes, breaks) and, without labels, to the links, the false links the model expects, the entities, and the pairs of records it puts apart or together. Writes only trials/ in the workspace: each trial's result (the last 5 kept) and the clusters of the method as it is, kept for the next trial. O(two full runs without the fit); one when the method and the files are those of the last trial.
+
+| Parameter | |
+|---|---|
+| `--workspace WORKSPACE` | the workspace: the folder that keeps one matching job (required) |
+| `--line BITS` | the weight to accept pairs at, in bits |
+| `--drop NAME` | sure-match rules and pair keys to leave out, by name |
+| `--pipeline PIPELINE` | the pipeline file (default: config/final.toml) |
+| `--compute KEY=VALUE` | DuckDB limits for this run, over config/settings.toml [compute]: memory_limit=8GB, threads=4, temp_directory=<folder> (past the memory limit DuckDB spills there) |
+
+| Result | |
+|---|---|
+| `trial` | its number, for adopt method |
+| `at` | when |
+| `method` | the method tried, as method.toml would say it |
+| `base` | the method as it is: matched, expected_false, rule_pairs, entities |
+| `variant` | the method tried: the same |
+| `fixes` | pairs people decided that it sets right |
+| `breaks` | pairs people decided that it sets wrong |
+| `fixed` | id_l, id_r, decision (50 at most) |
+| `broken` | id_l, id_r, decision (50 at most) |
+| `apart` | pairs of records it puts apart |
+| `together` | pairs of records it puts together |
+| `next` | the commands that usually follow |
+
+```bash
+nayose try method --workspace workspaces/customers --line 9 --drop F3_NAME~_CIF
+```
+
+## nayose adopt method
+
+Adopt a method tried, and find matches with it.
+
+```
+nayose adopt method --workspace WORKSPACE --trial N [--pipeline PIPELINE] [--compute KEY=VALUE …] [--format text|json]
+```
+
+Writes the trial's method into the workspace's method.toml, then runs the workspace's files again with it, as rerun records does; method.toml is left as it was if the run fails. Every later command on the workspace runs this method. O(a full run).
+
+| Parameter | |
+|---|---|
+| `--workspace WORKSPACE` | the workspace: the folder that keeps one matching job (required) |
+| `--trial N` | the trial's number (try method gives it) (required) |
+| `--pipeline PIPELINE` | the pipeline file (default: config/final.toml) |
+| `--compute KEY=VALUE` | DuckDB limits for this run, over config/settings.toml [compute]: memory_limit=8GB, threads=4, temp_directory=<folder> (past the memory limit DuckDB spills there) |
+
+| Result | |
+|---|---|
+| `summary` | the run in words: records, entities, who joined them, the model's links, what is left to people |
+| `seconds` | the run's time |
+| `wrote` | the files written |
+| `next` | the commands that usually follow |
+
+```bash
+nayose adopt method --workspace workspaces/customers --trial 3
+```
+
+## nayose reset method
+
+Go back to the tuned method, and find matches with it.
+
+```
+nayose reset method --workspace WORKSPACE [--pipeline PIPELINE] [--compute KEY=VALUE …] [--format text|json]
+```
+
+Removes the workspace's method.toml, then runs the workspace's files again, as rerun records does; method.toml is left as it was if the run fails. O(a full run).
+
+| Parameter | |
+|---|---|
+| `--workspace WORKSPACE` | the workspace: the folder that keeps one matching job (required) |
+| `--pipeline PIPELINE` | the pipeline file (default: config/final.toml) |
+| `--compute KEY=VALUE` | DuckDB limits for this run, over config/settings.toml [compute]: memory_limit=8GB, threads=4, temp_directory=<folder> (past the memory limit DuckDB spills there) |
+
+| Result | |
+|---|---|
+| `summary` | the run in words: records, entities, who joined them, the model's links, what is left to people |
+| `seconds` | the run's time |
+| `wrote` | the files written |
+| `next` | the commands that usually follow |
+
+```bash
+nayose reset method --workspace workspaces/customers
+```
+
+## nayose draw pairs
+
+More links on the review sheet, to audit.
+
+```
+nayose draw pairs --workspace WORKSPACE [--count N] [--pipeline PIPELINE] [--format text|json]
+```
+
+Adds audit rows to review.parquet: links, the model's and the rules', that people have not decided and the sheet does not hold, spread evenly over 1-bit weight bands, a rule's pairs scored as the model scores them. No false link in many audits is what says the links are right. O(N + (R + count)·K + E).
+
+| Parameter | |
+|---|---|
+| `--workspace WORKSPACE` | the workspace: the folder that keeps one matching job (required) |
+| `--count N` | how many (default 50) |
+| `--pipeline PIPELINE` | the pipeline file (default: config/final.toml) |
+
+| Result | |
+|---|---|
+| `drawn` | rows added |
+| `next` | the commands that usually follow |
+
+```bash
+nayose draw pairs --workspace workspaces/customers --count 50
 ```
 
 ## nayose list pairs

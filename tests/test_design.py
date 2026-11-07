@@ -161,10 +161,13 @@ class RunCode:
         return seen - PLUMBING
 
     def steps_of_full(self) -> dict[str, set[str]]:
-        """Run.full's steps in order: each step method it calls, with the helpers it calls just before (in that step)."""
+        """Run.full's steps in order: each step method it calls, with the helpers it calls just before (in that step);
+        Run.resolve's steps 1–7 in its place, as a trial runs them alone."""
         out, pending = {}, set()
-        for node in ast.walk(self.methods["full"]):
-            if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name) and node.value.id == "self" and node.attr in self.methods:
+        nodes = [x for node in ast.walk(self.methods["full"]) for x in
+                 (ast.walk(self.methods["resolve"]) if isinstance(node, ast.Attribute) and node.attr == "resolve" else [node])]
+        for node in nodes:
+            if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name) and node.value.id == "self" and node.attr in self.methods and node.attr != "resolve":
                 pending.add(f"Run.{node.attr}")
                 if not node.attr.startswith("_"):
                     out[node.attr], pending = pending, set()

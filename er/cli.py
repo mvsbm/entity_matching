@@ -32,7 +32,7 @@ from er.config import InputError, adjust, load_pipeline, sources_text, widen
 from er.folder import Busy
 from er.report import applied, describe_entity, describe_matching, describe_method, describe_workspace, fill_rates
 from er.source import describe, lexicon
-from er.run import Run
+from er.run import Run, trial
 from er.settings import (COLUMNS, SPECIAL, add_feature, added_of, beside, columns_file, features_of, load_settings, offers, own_columns,
                          placements, remove_feature, set_columns, set_features, settings_path, slots)
 
@@ -198,15 +198,17 @@ def settings_for(a: dict):  # the settings, with the named workspace's own mappi
     return load_settings(columns=columns_file(a.get("workspace")))
 
 
-def setup(a: dict):
-    """The settings, with this run's DuckDB limits, the pipeline, and its file."""
+def setup(a: dict, method: dict | None = None):
+    """The settings, with this run's DuckDB limits, the pipeline, and its file; with `method`, that method in place of
+    the workspace's method.toml."""
     s = settings_for(a)
     if bad := [kv for kv in a.get("compute") or [] if "=" not in kv]:
         raise InputError(f"--compute {' '.join(bad)}: each limit is KEY=VALUE", fix="for example --compute memory_limit=8GB threads=4")
     s = replace(s, compute={**s.compute, **dict(kv.split("=", 1) for kv in a.get("compute") or [])})
     pipeline = Path(a.get("pipeline") or s.root / "config" / "final.toml")
     ws = a.get("workspace")  # its own features, then its changes to the method
-    return s, adjust(widen(load_pipeline(pipeline, s.standardize, s.chains, s.columns), beside(added_of(ws))), folder.method(ws)), pipeline
+    return s, adjust(widen(load_pipeline(pipeline, s.standardize, s.chains, s.columns), beside(added_of(ws))),
+                     folder.method(ws) if method is None else method), pipeline
 
 
 def sheet(out: Path, name: str) -> pd.DataFrame | None:
@@ -407,6 +409,71 @@ def rerun_records(a: dict, emit: "Emit") -> dict:
     s, p, pipeline = setup(a)
     out = Path(a["workspace"])
     return after_run(Run(p, s, echo=emit.step).rerun(out, pipeline_file=pipeline), out)
+
+
+def try_method(a: dict, emit: "Emit") -> dict:
+    s, p, _ = setup(a)
+    ws, now = Path(a["workspace"]), folder.method(Path(a["workspace"]))
+    rules, keys = {r.name for _, _, r in p.rules.each()}, {b.name for b in p.fs.blockers}
+    if bad := [x for x in a.get("drop") or [] if x not in rules | keys]:
+        raise InputError(f"--drop {' '.join(bad)}: no sure-match rule or pair key of the method has that name", fix="see them: nayose describe method --workspace …")
+    method = {**now, **({"line": number(a["line"], "--line")} if a.get("line") else {})}
+    for name, among in (("drop_rules", rules), ("drop_keys", keys)):
+        if dropped := sorted({*now.get(name, []), *(x for x in a.get("drop") or [] if x in among)}):
+            method[name] = dropped
+    if method == now:
+        raise InputError("nothing to try: that is the method as it is", fix="give --line, or --drop with rules or keys to leave out")
+    if not (ws / "gold.parquet").exists():
+        raise InputError(f"no run in {ws} to try a method against", fix="find matches first: nayose resolve records --workspace …")
+    result = trial(ws, p, setup(a, method)[1], method, s, echo=emit.step)
+    return {**result, "next": [dict(command=nayose("adopt", "method", "--workspace", ws, "--trial", result["trial"]), why="adopt it, and find matches with it")]}
+
+
+def number(text: str, what: str) -> float:
+    try:
+        return float(text)
+    except ValueError:
+        raise InputError(f"{what} {text}: not a number", fix="a weight in bits, for example 9 or 9.5") from None
+
+
+def adopt(a: dict, emit: "Emit", method: dict) -> dict:
+    """The workspace's method.toml set to `method` ({}: none, the tuned method), then a run with it; method.toml as it
+    was if the run fails, so the method and the run always agree."""
+    ws = Path(a["workspace"])
+    path, old = ws / folder.METHOD, (ws / folder.METHOD).read_text(encoding="utf-8") if (ws / folder.METHOD).exists() else None
+    with folder.run_lock(ws):  # held through the run: no other writer sees the new method before its run
+        setup(a, method)  # a method that no longer fits the pipeline is refused before anything changes
+        if method:
+            path.write_text("".join(f"{k} = {json.dumps(v, ensure_ascii=False)}\n" for k, v in method.items()), encoding="utf-8")
+        else:
+            path.unlink(missing_ok=True)
+        try:
+            return rerun_records(a, emit)
+        except BaseException:
+            if old is None:
+                path.unlink(missing_ok=True)
+            else:
+                path.write_text(old, encoding="utf-8")
+            raise
+
+
+def adopt_method(a: dict, emit: "Emit") -> dict:
+    ws = Path(a["workspace"])
+    f = ws / folder.TRIALS / f"{a['trial']}.json"
+    if not f.exists():
+        raise InputError(f"no trial {a['trial']} in {ws}", fix="try it first: nayose try method --workspace …; the last 5 trials are kept")
+    return adopt(a, emit, json.loads(f.read_text(encoding="utf-8"))["method"])
+
+
+def reset_method(a: dict, emit: "Emit") -> dict:
+    return adopt(a, emit, {})
+
+
+def draw_pairs(a: dict, emit: "Emit") -> dict:
+    s, p, _ = setup(a)
+    out, count = Path(a["workspace"]), int(number(a.get("count") or "50", "--count"))
+    run = Run(p, s, echo=emit.step).draw(out, count)
+    return dict(drawn=run.steps[-1]["drawn"], next=[dict(command=nayose("list", "pairs", "--workspace", out, "--why", "audit", "--open"), why="the audits to decide")])
 
 
 def describe_workspace_(a: dict, emit: "Emit") -> dict:
@@ -718,6 +785,41 @@ COMMANDS: tuple[Command, ...] = (
             show={"rounds": ("round", "matched", "audited", "false_found", "expected_false"), "bands": (), "decided": (),
                   "rules": ("name", "pairs", "below", "different"), "keys": ("name", "pairs", "seconds", "matched", "only"),
                   "steps": ("comparison", "level", "bits", "reached"), "proposals": ("change", "why")}),
+    Command("try", "method", "Try a change of the method beside the method as it is",
+            "Runs the workspace's method and the method with the change (a line; --drop: sure-match rules and pair keys left "
+            "out) on the workspace's files, both without people's decisions, so neither is judged on pairs it was told; both "
+            "keep the run's fitted model and people's person/company answers. Says what the change does to the pairs people "
+            "decided (fixes, breaks) and, without labels, to the links, the false links the model expects, the entities, and "
+            "the pairs of records it puts apart or together. Writes only trials/ in the workspace: each trial's result (the "
+            "last 5 kept) and the clusters of the method as it is, kept for the next trial. O(two full runs without the fit); "
+            "one when the method and the files are those of the last trial.",
+            (WORKSPACE, Param("line", "the weight to accept pairs at, in bits", metavar="BITS"),
+             Param("drop", "sure-match rules and pair keys to leave out, by name", "many", metavar="NAME"), PIPELINE, COMPUTE),
+            {"trial": "its number, for adopt method", "at": "when", "method": "the method tried, as method.toml would say it",
+             "base": "the method as it is: matched, expected_false, rule_pairs, entities", "variant": "the method tried: the same",
+             "fixes": "pairs people decided that it sets right", "breaks": "pairs people decided that it sets wrong",
+             "fixed": "id_l, id_r, decision (50 at most)", "broken": "id_l, id_r, decision (50 at most)",
+             "apart": "pairs of records it puts apart", "together": "pairs of records it puts together",
+             "next": "the commands that usually follow"},
+            "nayose try method --workspace workspaces/customers --line 9 --drop F3_NAME~_CIF", try_method,
+            show={"method": (), "fixed": ("id_l", "id_r", "decision"), "broken": ("id_l", "id_r", "decision")}),
+    Command("adopt", "method", "Adopt a method tried, and find matches with it",
+            "Writes the trial's method into the workspace's method.toml, then runs the workspace's files again with it, as "
+            "rerun records does; method.toml is left as it was if the run fails. Every later command on the workspace runs "
+            "this method. O(a full run).",
+            (WORKSPACE, Param("trial", "the trial's number (try method gives it)", required=True, metavar="N"), PIPELINE, COMPUTE),
+            RUN_RESULT, "nayose adopt method --workspace workspaces/customers --trial 3", adopt_method),
+    Command("reset", "method", "Go back to the tuned method, and find matches with it",
+            "Removes the workspace's method.toml, then runs the workspace's files again, as rerun records does; method.toml "
+            "is left as it was if the run fails. O(a full run).",
+            (WORKSPACE, PIPELINE, COMPUTE), RUN_RESULT, "nayose reset method --workspace workspaces/customers", reset_method),
+    Command("draw", "pairs", "More links on the review sheet, to audit",
+            "Adds audit rows to review.parquet: links, the model's and the rules', that people have not decided and the sheet "
+            "does not hold, spread evenly over 1-bit weight bands, a rule's pairs scored as the model scores them. No false "
+            "link in many audits is what says the links are right. O(N + (R + count)·K + E).",
+            (WORKSPACE, Param("count", "how many (default 50)", metavar="N"), PIPELINE),
+            {"drawn": "rows added", "next": "the commands that usually follow"},
+            "nayose draw pairs --workspace workspaces/customers --count 50", draw_pairs, quick=True),
     Command("list", "pairs", "The pairs for people to decide and to audit",
             "The run's review.parquet: decide rows (the pairs just below the threshold, and those above it with no name "
             "compared) and audit rows (accepted pairs just above it), each with both records' fields, each comparison's level "

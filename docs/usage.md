@@ -121,6 +121,7 @@ Everything is in the workspace. A run also reads `config/kind_names.npz`, the na
 | `decisions/` | decided pair | both IDs and `decision`; `why` (`decide` or `audit`) when the sheet had it; `round`, the round it was decided in; one part per file people gave back | what people decided; a full run applies it again |
 | `method.toml` | | the workspace's changes to the tuned method: `line`, `drop_rules`, `drop_keys` | every command on the workspace runs the method it says ([section 6](#improve-the-method)) |
 | `rounds.json` | round | per method the workspace ran: its `config` hash, `method`, when, the links it made and the false links the model expects | see each round's results side by side |
+| `trials/` | trial | each trial's result (`<n>.json`, the last 5); the clusters of the method it was tried against (`base.parquet`, `base.json`) | `adopt method --trial n` |
 | `kind_answers/` | answered record | the answered rows of each `kind_review.parquet` given back, one part per sheet, as given | what people answered; every later run reads it |
 | `set_aside/` | record not resolved | the record as read, and `reason`: no ID; the same ID with different content; already in the run | fix them and add them with `nayose add records` |
 | `steps.json` | run, increment or set of decisions | when; the code's commit; the config hash; each file read with what it is, its size and SHA-256; each step's Big-O with the numbers filled in, seconds, peak memory | see the cost; say exactly what went into the run; `nayose rerun records` reads its files again |
@@ -195,7 +196,18 @@ The method (pair keys, comparison steps, sure-match rules, the line) is tuned on
 - **The pair keys.** Each key's pairs and seconds, the links it found, and those no other key found. A key with a tenth of the pairs or more and no link of its own is proposed to leave out.
 - **The comparison steps.** Each step's bits and the pairs that reached it.
 
-A change goes in the workspace's `method.toml` (`line = 9.0`, `drop_rules = ["F3_NAME~_CIF"]`, `drop_keys = ["sn_person_name_reversed"]`). Every command on the workspace then runs that method, an increment included; a new method is a new round, and its run takes `nayose rerun records`.
+Try a change before you take it, adopt it, and decide the new round's pairs:
+
+```bash
+.venv/bin/nayose try method --workspace workspaces/customers --line 9 --drop F3_NAME~_CIF
+.venv/bin/nayose adopt method --workspace workspaces/customers --trial 1
+.venv/bin/nayose draw pairs --workspace workspaces/customers --count 50
+.venv/bin/nayose reset method --workspace workspaces/customers      # back to the tuned method
+```
+
+- **`try method`** runs the method as it is and the method with the change on the workspace's files, both without people's decisions, so neither is judged on pairs it was told. It says what the change does to the pairs people decided (fixes, breaks) and, without labels, to the links, the false links expected, the entities, and the pairs of records it puts apart or together. Only `trials/` is written: the last 5 trials, and the clusters of the method as it is, kept for the next trial.
+- **`adopt method`** writes the trial's method into the workspace's `method.toml` (`line = 9.0`, `drop_rules = ["F3_NAME~_CIF"]`, `drop_keys = ["sn_person_name_reversed"]`) and finds matches again with it; if that run fails, `method.toml` stays as it was. Every command on the workspace then runs that method, an increment included. A new method is a new round. `reset method` goes back to the tuned one.
+- **`draw pairs`** adds audit rows to `review.parquet`: links, the model's and the rules', that nobody has decided, spread over the weight bands. No false link in many audits is what says the links are right: at 50 audits with none false, the false rate is under 6% at 95% confidence (`describe method`, `audits`).
 
 ### Persons and companies
 
