@@ -448,21 +448,24 @@ def describe_matching(con: duckdb.DuckDBPyConnection, out: Path | None, p: Pipel
         fields.append(item)
 
     # rules: what each compares, how, and the pairs it kept
-    kept = {name: (k, a, b) for name, k, a, b in rows(f"""SELECT rule, count(*), min({l}), arg_min({r}, {l}) FROM {parquet('rule_kept/*.parquet')}
-        WHERE coalesce(merged, TRUE) GROUP BY 1""")}  # the pairs each rule joined: below a trust line, none until people check
+    kept = {name: (k, a, b, m) for name, k, a, b, m in rows(f"""SELECT rule, count(*), min({l}), arg_min({r}, {l}),
+        count(*) FILTER (WHERE coalesce(merged, TRUE)) FROM {parquet('rule_kept/*.parquet')} GROUP BY 1""")}  # found, and merged: below a trust line, none until people check
     rules = [dict(stage=st.name, name=x.name, exact=list(x.exact),
                   fuzzy=[dict(field=c, function=st.comparators[c].function, threshold=st.comparators[c].threshold,
                               normalize=list(st.comparators[c].normalize)) for c in x.fuzzy],
                   blocking=[key(k) for k in x.blocking], pairs=kept.get(x.name, (0,))[0] if ran else None,
-                  example=list(kept[x.name][1:]) if x.name in kept else None) for _, st, x in p.rules.each()]
+                  merged=kept.get(x.name, (0, 0, 0, 0))[3] if ran else None,
+                  example=list(kept[x.name][1:3]) if x.name in kept else None) for _, st, x in p.rules.each()]
 
     # candidates: each generator, its method, the pairs it listed, the accepted pairs it found, and one of them
     listed = {}
     for x in facts:
         for g in x.get("generators", ()):
             listed[g["name"]] = listed.get(g["name"], 0) + g["pairs"]
+    likely = f"SELECT * FROM {parquet('matches/*.parquet')}" + (f" UNION ALL BY NAME SELECT * FROM {parquet('proposed/*.parquet')} WHERE match_weight >= {p.fs.min_match_weight}"
+                                                              if ran and any((out / "proposed").glob("*.parquet")) else "")  # merged, or waiting for people
     found = {g: (k, a, b) for g, k, a, b in rows(f"""SELECT g, count(*), min(a), arg_min(b, a) FROM (SELECT unnest(string_split(sources, '+')) AS g,
-        {l} AS a, {r} AS b FROM {parquet('matches/*.parquet')}) GROUP BY 1""")}
+        {l} AS a, {r} AS b FROM ({likely})) GROUP BY 1""")}
     generators = []
     for b in p.fs.blockers:
         match b:
@@ -496,6 +499,7 @@ def describe_matching(con: duckdb.DuckDBPyConnection, out: Path | None, p: Pipel
     bands = table_after((out / "qa.md").read_text(encoding="utf-8"), "## weight bands").values.tolist() if ran and (out / "qa.md").exists() else []
     accepted = rows(f"SELECT count(*) FROM {parquet('matches/*.parquet')}")[0][0] if ran else None
     rule_pairs = sum(v[0] for v in kept.values()) if ran else None
+    rule_merged = sum(v[3] for v in kept.values()) if ran else None
     review = pd.read_parquet(out / "review.parquet") if ran and (out / "review.parquet").exists() else None
     decided = rows(f"SELECT count(*) FROM {parquet(DECISIONS + '/*.parquet')}")[0][0] if ran and any((out / DECISIONS).glob("*.parquet")) else 0
     by = dict(rows(f"SELECT resolved_by, count(*) FROM {parquet('gold.parquet')} WHERE resolved_by = 'review' GROUP BY 1"))
@@ -507,11 +511,12 @@ def describe_matching(con: duckdb.DuckDBPyConnection, out: Path | None, p: Pipel
     nodes = [
         dict(id="records", name="Records", count=n, files=[f["file"] for run in log for f in run.get("inputs", []) if f.get("role") == "records"]),
         dict(id="prepare", name="Make values comparable", method="normalizers per field", fields=fields),
-        dict(id="rules", name="Rules", method="certain cases first: exact, then fuzzy", rules=rules, pairs=rule_pairs),
+        dict(id="rules", name="Rules", method="certain cases first: exact, then fuzzy", rules=rules, pairs=rule_pairs, merged=rule_merged),
         dict(id="candidates", name="Candidates", method="list the pairs worth comparing", generators=generators, pairs=scored),
         dict(id="score", name="Score", method="Fellegi–Sunter: each comparison adds evidence, in bits", comparisons=comparisons,
              prior_bits=math.log2(lam / (1 - lam)) if lam else None, pairs=scored),
         dict(id="accept", name="Accept", method="at the line, with a name compared", threshold=p.fs.min_match_weight, review_from=review_floor(p),
+             trust=None if p.trust.line is None else "none" if math.isinf(p.trust.line) else p.trust.line,
              needs=list(p.fs.needs), bands=bands, accepted=accepted),
         dict(id="people", name="People decide", method="close calls go to people", to_decide=open_, decided=decided, joined=by.get("review", 0) if ran else None),
         dict(id="group", name="Group", method="connected components: linked records are one customer", customers=customers,
@@ -523,7 +528,7 @@ def describe_matching(con: duckdb.DuckDBPyConnection, out: Path | None, p: Pipel
     ]
     edges = [dict(source=a, target=b, count=c) for a, b, c in (
         ("records", "prepare", n), ("prepare", "rules", n), ("prepare", "candidates", n), ("prepare", "kind", n), ("kind", "score", n),
-        ("rules", "group", rule_pairs), ("candidates", "score", scored), ("score", "accept", scored), ("accept", "group", accepted),
+        ("rules", "group", rule_merged), ("candidates", "score", scored), ("score", "accept", scored), ("accept", "group", accepted),
         ("accept", "people", open_), ("people", "group", decided), ("group", "customers", customers))]
     assert [x["id"] for x in nodes] == list(GRAPH_NODES)
     return dict(nodes=nodes, edges=edges)

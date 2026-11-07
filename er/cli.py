@@ -768,7 +768,7 @@ COMMANDS: tuple[Command, ...] = (
              "write_owed": "a write cut short, finished by the next one", "summary": "the last run's summary",
              "round": "the round now: one per method the workspace ran (rounds.json)", "audits": "this round's audits people decided: checked, false",
              "trust": TRUST,
-             "inputs": "the records files given to it, each in inputs/: name, path, files, bytes, read (by a run)",
+             "inputs": "the records files given to it, each in inputs/: name, path, files, bytes, rows, read (by a run)",
              "columns": "own: its columns.toml; project: config/settings.toml's", "next": "the commands that usually follow"},
             "nayose describe workspace workspaces/customers", describe_workspace_, quick=True,
             show={"largest": ("entity", "records"), "runs": ("at", "what", "seconds"), "inputs": ("name", "files", "bytes", "read")}),

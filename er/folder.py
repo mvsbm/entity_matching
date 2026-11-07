@@ -18,6 +18,7 @@ from pathlib import Path
 
 import duckdb
 import pandas as pd
+import pyarrow.parquet as pq
 
 from er.config import InputError
 from er.settings import COLUMNS
@@ -276,10 +277,11 @@ def take_in(ws: Path, path: str | Path) -> tuple[Path, bool]:
 
 
 def loaded(ws: Path) -> list[dict]:
-    """inputs/'s parts, oldest first: each one's name, path, files and bytes, and whether a run has read all of it
-    (steps.json, by SHA-256). O(parts + steps.json)."""
+    """inputs/'s parts, oldest first: each one's name, path, files, bytes and rows (from the Parquet footers), and
+    whether a run has read all of it (steps.json, by SHA-256). O(parts + files + steps.json)."""
     log = ws / "steps.json"
     read = {x["sha256"] for run in (json.loads(log.read_text(encoding="utf-8"))["runs"] if log.is_file() else [])
             for x in run.get("inputs", []) if x.get("role") == "records"}
     return [dict(name=part.name, path=str(part), files=len(own), bytes=sum((part / rel).stat().st_size for rel in own),
-                 read=all(sha in read for sha in own.values())) for part in parts(ws) for own in [sums(part)]]
+                 rows=sum(pq.ParquetFile(part / rel).metadata.num_rows for rel in own), read=all(sha in read for sha in own.values()))
+            for part in parts(ws) for own in [sums(part)]]
