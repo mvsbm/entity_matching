@@ -281,7 +281,7 @@ body.collapsed .navitem .stack, body.collapsed .rail li::before { display: none;
 .node.static { cursor: default; max-width: 210px; }
 .node.static:hover { box-shadow: none; }
 .loadrow { display: flex; gap: 8px; } .loadrow input { flex: 1; min-width: 0; }
-.tray .trayhead { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; } .tray .trayhead .btn { margin-left: auto; }
+.tray .trayhead { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; } .tray .trayhead .btn:first-of-type { margin-left: auto; }
 .colchip { display: inline-flex; align-items: center; gap: 4px; height: 26px; padding: 0 9px; border-radius: 13px; border: 1px solid var(--outline);
            background: var(--surface); font-size: 12px; cursor: grab; white-space: nowrap; user-select: none; }
 .colchip.used { opacity: .45; } .colchip.in { background: var(--primary-soft); border-color: transparent; } .colchip.gone { text-decoration: line-through; opacity: .6; }
@@ -767,7 +767,7 @@ function features(d, view) {
   const needs = (x) => (x.field && d.needed.every.includes(x.field) && lost(x.field)) ||
     (x.type === "person name" || x.field === "company_name") && d.needed.one_of.some((g) => g.every(lost));
   const row = (path, x, depth, last, shown) => {
-    const s = slot[path], alts = s.sources;
+    const s = slot[path], alts = s.sources.filter((a) => a.every((c) => info[c]));  // a column this file lacks is no column here
     const chips = alts.map((a, i) => (i ? '<span class="else">else</span>' : "") + a.map((c) => chipOf(c, path, i)).join('<span class="plus">+</span>')).join("");
     const g = shown && ghost[path];
     return `<div class="frow" data-depth="${depth}"><span class="flab">${depth ? (last ? "└ " : "├ ") : ""}${esc(x.name)}${x.script ? ` <span class="tag">${esc(x.script)}</span>` : ""}${
@@ -782,12 +782,14 @@ function features(d, view) {
     const paths = g.features.flatMap((f) => [`${g.group}/${f.name}`, ...(f.parts || []).map((p) => `${g.group}/${f.name}/${p.name}`)]);
     const bad = paths.filter((p) => slot[p].looks_right !== null && slot[p].looks_right !== undefined && slot[p].looks_right < FEW);
     const found = paths.filter((p) => slot[p].filled !== null).length;
-    return need.length ? ["bad", `✗ ${need.map((f) => f.name).join(", ")} needed`] : bad.length ? ["warn", `⚠ ${bad.map((p) => p.split("/").pop()).join(", ")}`]
+    const either = need.every((f) => f.type === "person name" || f.field === "company_name");  // a run needs one of them
+    return need.length ? ["bad", `✗ ${need.map((f) => f.name).join(either ? " or " : ", ")} needed`] : bad.length ? ["warn", `⚠ ${bad.map((p) => p.split("/").pop()).join(", ")}`]
       : ["", `${found} of ${paths.length} found`];
   };
   const waiting = d.placements.length;
   return `<div class="card tray"><div class="trayhead"><b>Columns in your file</b><span class="faint">drag one into a feature</span>
-      ${waiting ? `<button class="btn" data-suggest="*">✦ Suggest all</button>` : ""}</div>
+      ${waiting ? `<button class="btn" data-suggest="*">✦ ${view.ghosts.size ? "Hide" : "Suggest all"}</button>` : ""}${
+        waiting && view.ghosts.size ? '<button class="btn filled" data-keepall="*">Keep all</button>' : ""}</div>
       <div class="chips">${d.columns.map((c) => chipOf(c.column)).join("")}</div></div>` +
     d.features.map((g) => {
       const [cls, text] = status(g), shown = view.ghosts.has(g.group), mine = d.placements.filter((x) => x.feature.startsWith(`${g.group}/`)).length;
@@ -973,8 +975,10 @@ const SCREENS = {
       el.querySelectorAll("[data-suggest]").forEach((b) => b.onclick = (e) => {
         e.preventDefault();
         const g = b.dataset.suggest;
-        g === "*" ? (view.ghosts.size ? view.ghosts.clear() : d.features.forEach((x) => view.ghosts.add(x.group))) : view.ghosts.has(g) ? view.ghosts.delete(g) : view.ghosts.add(g);
-        if (g !== "*") view.toggled.set(g, true);
+        const has = (x) => d.placements.some((y) => y.feature.startsWith(`${x}/`));
+        g === "*" ? (view.ghosts.size ? view.ghosts.clear() : d.features.filter((x) => has(x.group)).forEach((x) => view.ghosts.add(x.group))) :
+          view.ghosts.has(g) ? view.ghosts.delete(g) : view.ghosts.add(g);
+        view.ghosts.forEach((x) => view.toggled.set(x, true));  // a group showing what it could hold is open
         $("out").innerHTML = features(d, view);
         wire(d);
       });
