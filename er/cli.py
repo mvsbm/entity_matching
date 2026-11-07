@@ -30,7 +30,7 @@ import pandas as pd
 from er import folder, inbox
 from er.config import InputError, load_pipeline, sources_text
 from er.folder import Busy
-from er.report import describe_entity, describe_matching, describe_run, fill_rates
+from er.report import applied, describe_entity, describe_matching, describe_run, fill_rates
 from er.run import Run
 from er.settings import SPECIAL, load_settings, set_columns, settings_path
 
@@ -330,13 +330,6 @@ def describe_matching_(a: dict, emit: "Emit") -> dict:
     return {**describe_matching(duckdb.connect(), out, p, s),
             "next": [dict(command=nayose("describe", "run", out), why="the run folder at a glance")] if out else
                     [dict(command=nayose("resolve", "records", "<file>", "--run", "<run folder>"), why="match records: the graph then holds their numbers")]}
-
-
-def applied(out: Path, uid: str) -> pd.DataFrame:  # each pair's latest decision the folder holds
-    parts = sorted((out / folder.DECISIONS).glob("part-*.parquet"))
-    if not parts:
-        return pd.DataFrame(columns=[f"{uid}_l", f"{uid}_r", "decision"])
-    return pd.concat([pd.read_parquet(f) for f in parts]).drop_duplicates([f"{uid}_l", f"{uid}_r"], keep="last")
 
 
 def picked(frame: pd.DataFrame, why: str | None, only_open: bool) -> pd.DataFrame:

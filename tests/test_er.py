@@ -1736,6 +1736,11 @@ def test_the_ui_layout_names_only_declared_commands_parameters_and_result_fields
     named = {(q, c) for q, body in re.findall(r"\n  (\w+): \{title(.*?)(?=\n  \w+: \{title|$)", block, re.S)
              for c in re.findall(r'(?:list|one|apply): "(\w+ \w+)"', body)}
     assert len(named) == 6 and named <= placed  # each review queue's commands, placed on its own page
+    from er.report import GRAPH_NODES
+    screens, flow = {sc["id"]: sc for sc in layout["screens"]}, layout["workflow"]
+    assert all(set(sc["strip"]) <= set(GRAPH_NODES) for sc in screens.values())  # each page's flow strip: stages describe matching gives
+    assert set(flow["steps"]) <= {*screens, "workspace"} and all(x in flow["steps"] for x in screens if x != "records")  # every page a step
+    assert all(l["to"] in flow["steps"] and {(l["screen"], c) for c in l["via"]} <= placed for l in flow["loops"])
 
 
 def test_the_page_answers_once_per_key_shows_any_row_and_says_when_the_server_is_gone(tmp_path, population):
@@ -1766,10 +1771,27 @@ def test_the_page_answers_once_per_key_shows_any_row_and_says_when_the_server_is
         page.wait_for_timeout(600)
         assert page.inner_text("#written") == "1" and not page.query_selector("#said .banner")  # one answer, no busy folder
         assert "nayose decide pair" in page.inner_text("#term-body")  # the command line it ran
+        states = page.evaluate("""() => {  // each step's state, read from the workspace as describe run gives it
+            const run = (pairs, kinds) => ({records: 9, entities: 7, pairs: {decide: 0, audit: 0, written_in: 0, ...pairs}, kinds: {decide: 0, measure: 0, written_in: 0, ...kinds}});
+            const at = (d) => { const p = progress(d); return [p.next, p.steps.pairs.state, p.steps.kinds.state]; };
+            return [at({event: "error", error: "no run"}), at(run({decide: 3}, {measure: 20})), at(run({}, {measure: 20})), at(run({}, {written_in: 2}))]; }""")
+        assert states == [["columns", "later", "later"], ["pairs", "attention", "optional"], ["results", "done", "optional"], ["kinds", "done", "attention"]]
+        assert page.query_selector(".rail li.attention .sub").inner_text().endswith("to decide")  # the stepper points at the open pairs
+        page.click(".navitem[data-screen=run]")
+        page.wait_for_selector(".node[data-node=candidates]")
+        assert [n.get_attribute("data-node") for n in page.query_selector_all(".flow .node")] == ["records", "rules", "candidates", "score", "accept", "group", "customers"]
+        page.click(".node[data-node=candidates]")
+        assert page.query_selector_all(".detail .bar")  # each generator drawn as a bar, its pairs as its length
+        page.click(".navitem[data-screen=pairs]")
+        page.wait_for_selector("[data-a=match]")
+        assert page.query_selector(".ruler") and page.query_selector(".ladder i.on")  # the evidence against the line, each comparison's step
+        page.click(".stepfoot a.filled")
+        page.wait_for_selector("h1:has-text('Confirm person or company')")
         twice = page.evaluate("""async () => {  // the same command asked twice at once runs once
-            const before = document.querySelectorAll("#term-body .cmd").length;
+            const lines = () => [...document.querySelectorAll("#term-body .cmd")].filter((c) => c.textContent.startsWith("nayose list pairs")).length;
+            const before = lines();
             await Promise.all([run("pairs", "list pairs"), run("pairs", "list pairs")]);
-            return document.querySelectorAll("#term-body .cmd").length - before; }""")
+            return lines() - before; }""")
         assert twice == 1
         assert page.evaluate("""() => {  // a row far past the table's 500 drawn is drawn once picked
             const box = document.body.appendChild(document.createElement("div"));

@@ -272,6 +272,13 @@ def review_sheet(run: "Run", pairs: pd.DataFrame) -> pd.DataFrame:
                ].reset_index(drop=True)
 
 
+def applied(out: Path, uid: str) -> pd.DataFrame:  # each pair's latest decision the folder holds
+    parts = sorted((out / DECISIONS).glob("part-*.parquet"))
+    if not parts:
+        return pd.DataFrame(columns=[f"{uid}_l", f"{uid}_r", "decision"])
+    return pd.concat([pd.read_parquet(f) for f in parts]).drop_duplicates([f"{uid}_l", f"{uid}_r"], keep="last")
+
+
 def describe_run(con: duckdb.DuckDBPyConnection, out: Path, uid: str) -> dict:
     """What the run folder `out` holds, for people: records and entities, the largest entities, each run so far
     (steps.json), the pairs and kinds still open and the answers written in but not given back, the records set
@@ -286,9 +293,13 @@ def describe_run(con: duckdb.DuckDBPyConnection, out: Path, uid: str) -> dict:
                  files=[f["file"] for f in x.get("inputs", []) if f.get("role") != "name model"],
                  seconds=round(sum(step["seconds"] for step in x["steps"]), 1)) for x in log]
 
-    def queue(sheet: str, answer: str, whys: tuple[str, ...]) -> dict:  # each kind of row still open, and the answers written in
+    def queue(sheet: str, answer: str, whys: tuple[str, ...]) -> dict:  # each kind of row still open, and the answers written in, not yet applied
         rows = pd.read_parquet(out / sheet) if (out / sheet).exists() else pd.DataFrame(columns=["why", answer])
-        return {**{w: int(((rows["why"] == w) & rows[answer].isna()).sum()) for w in whys}, "written_in": int(rows[answer].notna().sum())}
+        written = rows[answer].notna()
+        if answer == "decision" and len(rows):  # a decision applied since stays in the sheet until the next run writes it
+            done = rows.merge(applied(out, uid), on=[f"{uid}_l", f"{uid}_r"], how="left", suffixes=("", "_applied"))["decision_applied"]
+            written &= ~(done == rows["decision"]).fillna(False).to_numpy()
+        return {**{w: int(((rows["why"] == w) & rows[answer].isna()).sum()) for w in whys}, "written_in": int(written.sum())}
     aside = out / "set_aside"
     summary = table_after((out / "qa.md").read_text(encoding="utf-8"), "## summary") if (out / "qa.md").exists() else pd.DataFrame()
     return dict(run=str(out), records=records, entities=entities, largest=[dict(entity=e, records=n) for e, n in largest], runs=runs,
