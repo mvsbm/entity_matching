@@ -273,16 +273,18 @@ Each file runs as its `nayose` command in a process of its own, so a crash can't
 .venv/bin/nayose open ui --run runs/customers      # prints a link and opens it; Ctrl-C stops it
 ```
 
-The page runs the same commands, and nothing else, laid out like a cloud console: the run folder in a picker at the top, a record ID search beside it (<kbd>/</kbd>), the pages in a navigation on the left, each page's actions in its header. A button that starts a run opens its command in a dialog, with the form its declaration gives and the equivalent command line, ready to copy. The drawer at the bottom (the terminal icon) lists every command the page ran, with each step as it finished.
+The page runs the same commands, and nothing else. On the left, the work in six steps, in order, each marked done (✓), next, needs you (!) or optional, with one line of where it stands. Each step's page starts with its part of the pipeline: chips joined by arrows, each with how many records or pairs it handled; click a chip to see how it works, drawn rather than written. Below the strips, the methods show on real values: before and after with the changed letters marked, the differing letters of two records marked, each comparison's step on its ladder and the bits it adds toward the 8-bit line. Every button runs one `nayose` command; a run opens in a dialog with its equivalent command line, and the drawer at the bottom (the terminal icon) lists every command the page ran.
 
-| Page | Runs | For |
+| Step | Runs | Shows |
 |---|---|---|
-| Overview | `describe run` | records, entities, what is left to people, and each run so far |
-| Columns | `list columns`, `check records`, `set columns` | each field's columns beside how it looks in the file; a field the run needs, with the column the values suggest one click away |
-| Runs | `resolve records`, `add records`, `match records`, `rerun records` | each step as it finishes, then the summary |
-| Entities | `describe run`, `describe entity` | the largest entities; any record's entity, and what joined it |
-| Pairs | `list pairs`, `decide pair`, `apply decisions` | the queue beside the picked pair, the values that differ marked: <kbd>M</kbd> match, <kbd>N</kbd> no match, <kbd>S</kbd> skip, <kbd>↑</kbd> <kbd>↓</kbd> move |
-| Kinds | `list kinds`, `answer kind`, `apply answers` | the queue beside the picked record: <kbd>1</kbd> person, <kbd>2</kbd> company, <kbd>0</kbd> can't tell |
+| 1 Choose a workspace | `describe run` | the workspace (run folder): an existing one, or a new one |
+| 2 Prepare your data | `list columns`, `check records`, `set columns` | each field's columns, a real value made comparable step by step, how full each field is; a field the run needs, with the column its values suggest one click away |
+| 3 Find matches | `resolve records`, `add records`, `match records`, `rerun records` | records → rules → candidates (each way of listing pairs, as a bar) → score (what each level of each comparison is worth, in bits) → matched (pairs by weight, against the line) → customers |
+| 4 Review possible matches | `list pairs`, `decide pair`, `apply decisions` | the close calls beside the picked pair: its two records with their differences marked, each comparison's step and bits, the total against the line. <kbd>M</kbd> match, <kbd>N</kbd> no match, <kbd>S</kbd> skip, <kbd>↑</kbd> <kbd>↓</kbd> move |
+| 5 Confirm person or company | `list kinds`, `answer kind`, `apply answers` | each record on a slider from person to company, where the engine and its name alone place it. <kbd>1</kbd> person, <kbd>2</kbd> company, <kbd>0</kbd> can't tell |
+| 6 View customers | `describe run`, `describe entity` | the largest customers, and any customer's records as dots joined by what linked them: a rule, the model (with its bits) or a person |
+
+*When things change*, under the steps, leads to adding new records (preview first) and to matching everything again. The Overview shows the whole pipeline in one strip, and the next step to take.
 
 - **Only this machine, only this link.** The page is served on `127.0.0.1`, and every request needs the random token in the link `open ui` prints, so another user of the machine can't use it, and a web page elsewhere can't reach it. It loads nothing from the network: the records never leave the machine.
 - **One long command at a time.** Lists, describes and single answers run at once; a run, a rerun or applying the answers runs in a process of its own, so a crash can't take the page down, and a second one waits its turn. A run folder another job is writing to says so: answer again once it is done.

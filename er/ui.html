@@ -83,7 +83,7 @@ main { margin: 56px 0 0 256px; padding: 0 24px 120px; min-height: calc(100% - 56
 .panel-sticky { position: sticky; top: 72px; }
 
 /* tables, with a filter bar */
-.tablecard { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; overflow: hidden; margin-bottom: 16px; }
+.tablecard { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; overflow: auto; margin-bottom: 16px; }
 .filterbar { display: flex; align-items: center; gap: 8px; padding: 8px 16px; border-bottom: 1px solid var(--line); color: var(--muted); }
 .filterbar input { flex: 1; border: 0; background: transparent; color: var(--ink); font: inherit; outline: none; }
 .tablewrap { overflow: auto; max-height: 62vh; }
@@ -180,6 +180,84 @@ body.term-open main { padding-bottom: 300px; }
   .appbar { gap: 4px; }
   #help { display: none; }
 }
+
+/* the workflow: who joined what, one color each, on every page */
+:root { --rule: #00796b; --rule-bg: #e0f2f1; --model: #0b57d0; --model-bg: #e8f0fe; --people: #8e24aa; --people-bg: #f3e5f5; --neg: #c5221f; }
+@media (prefers-color-scheme: dark) { :root { --rule: #4db6ac; --rule-bg: #10302d; --model: #a8c7fa; --model-bg: #1f3760; --people: #ce93d8; --people-bg: #3a1f40; --neg: #f28b82; } }
+
+/* the stepper, in the navigation */
+.rail { list-style: none; margin: 4px 0 0; padding: 0; }
+.rail li { position: relative; }
+.rail li:not(:last-child)::before { content: ""; position: absolute; left: 37px; top: 34px; bottom: -6px; width: 2px; background: var(--line); }
+.rail li.done:not(:last-child)::before { background: var(--good); }
+.navitem.step { height: auto; min-height: 52px; align-items: flex-start; padding-top: 8px; padding-bottom: 8px; }
+.navitem .stack { display: flex; flex-direction: column; min-width: 0; }
+.navitem .sub { font-size: 12px; font-weight: 400; color: var(--faint); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.dot { display: inline-grid; place-items: center; flex: none; width: 28px; height: 28px; border-radius: 50%; font-size: 13px; font-weight: 600;
+       border: 2px solid var(--outline); color: var(--faint); background: var(--surface); position: relative; z-index: 1; }
+.dot .ic { width: 16px; height: 16px; stroke-width: 2.4; }
+.done .dot { border-color: var(--good); background: var(--good); color: #fff; }
+.current .dot { border-color: var(--primary); color: var(--primary); box-shadow: 0 0 0 4px var(--primary-soft); }
+.attention .dot { border-color: var(--warn); background: var(--warn-bg); color: var(--warn); }
+.attention .sub { color: var(--warn); font-weight: 500; }
+.optional .dot { border-style: dashed; }
+.loopitem { font-weight: 400; height: 36px; }
+body.collapsed .navitem .stack, body.collapsed .rail li::before { display: none; }
+
+/* the flow strip: what this step computes, as chips joined by arrows */
+.flow { display: flex; align-items: stretch; flex-wrap: wrap; gap: 6px 0; margin: 0 0 16px; }
+.node { display: flex; flex-direction: column; align-items: flex-start; gap: 2px; min-width: 104px; padding: 10px 14px; border-radius: 14px; border: 1px solid var(--line);
+        background: var(--surface); cursor: pointer; text-align: left; }
+.node:hover { box-shadow: var(--shadow); }
+.node[aria-expanded="true"] { border-color: var(--primary); box-shadow: 0 0 0 1px var(--primary); }
+.node .top { display: flex; align-items: center; gap: 6px; color: var(--muted); font-size: 12px; }
+.node .n { font-size: 20px; font-variant-numeric: tabular-nums; color: var(--ink); }
+.node.rule .top { color: var(--rule); } .node.model .top { color: var(--model); } .node.people .top { color: var(--people); }
+.node.dim { opacity: .55; }
+.arrow { display: flex; align-items: center; color: var(--outline); padding: 0 2px; }
+.arrow svg { width: 26px; height: 14px; }
+.detail { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 14px 18px; margin: -6px 0 16px; }
+.detail h3 { font-size: 14px; font-weight: 500; margin: 0 0 10px; display: flex; gap: 8px; align-items: baseline; }
+.detail h3 small { font-weight: 400; color: var(--faint); }
+
+/* bars, ladders, rulers: numbers drawn, not written */
+.bars { display: grid; grid-template-columns: minmax(90px, max-content) 1fr max-content; gap: 4px 10px; align-items: center; font-size: 13px; }
+.bars .lab { color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.bars .val { font-variant-numeric: tabular-nums; color: var(--faint); text-align: right; }
+.bar { display: block; height: 10px; border-radius: 5px; background: var(--primary); min-width: 2px; }
+.bar.rule { background: var(--rule); } .bar.people { background: var(--people); } .bar.neg { background: var(--neg); } .bar.good { background: var(--good); }
+.bar.pick { cursor: pointer; } .bar.pick:hover { filter: brightness(1.15); }
+.bits { display: block; position: relative; height: 10px; }
+.bits::before { content: ""; position: absolute; left: 50%; top: -3px; bottom: -3px; width: 1px; background: var(--outline); }
+.bits i { position: absolute; top: 0; height: 10px; border-radius: 5px; }
+.tag { display: inline-flex; align-items: center; height: 20px; padding: 0 7px; border-radius: 10px; font-size: 11px; background: var(--hover); color: var(--muted); margin: 0 3px 0 0; white-space: nowrap; }
+.diff { background: var(--mark); color: var(--mark-ink); border-radius: 3px; padding: 0 1px; }
+.chain { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; }
+.chain .to { color: var(--faint); }
+.ladder { display: inline-flex; gap: 3px; vertical-align: middle; }
+.ladder i { display: inline-block; width: 10px; height: 10px; border-radius: 50%; border: 1.5px solid var(--outline); }
+.ladder i.on { background: var(--model); border-color: var(--model); }
+.ladder i.on.neg { background: var(--neg); border-color: var(--neg); }
+.ruler { width: 100%; height: 74px; margin-top: 8px; }
+.ruler text { font: 11px system-ui, sans-serif; fill: var(--muted); }
+.ruler.hist text { font-size: 7px; }  /* this one is drawn taller: its labels stay at label size */
+.slider { position: relative; height: 54px; margin: 8px 0 4px; }
+.slider .track { position: absolute; left: 0; right: 0; top: 20px; height: 8px; border-radius: 4px;
+                 background: linear-gradient(90deg, var(--model-bg), var(--hover) 50%, var(--people-bg)); }
+.slider .mid { position: absolute; left: 50%; top: 14px; height: 20px; width: 1px; background: var(--outline); }
+.slider .pin { position: absolute; top: 15px; width: 18px; height: 18px; margin-left: -9px; border-radius: 50%; border: 3px solid var(--surface); box-shadow: var(--shadow); }
+.slider .pin.engine { background: var(--ink); } .slider .pin.name { background: var(--surface); border: 3px solid var(--faint); }
+.slider .ends { position: absolute; left: 0; right: 0; top: 36px; display: flex; justify-content: space-between; font-size: 12px; color: var(--muted); }
+.slider .pin span { position: absolute; top: -16px; left: 50%; transform: translateX(-50%); font-size: 11px; color: var(--faint); white-space: nowrap; }
+.web { width: 100%; max-width: 460px; height: 240px; display: block; margin: 0 auto 8px; }
+.web text { font: 11px system-ui, sans-serif; fill: var(--muted); }
+.legend { display: flex; gap: 14px; font-size: 12px; color: var(--muted); margin: 0 0 8px; }
+.legend i { display: inline-block; width: 18px; height: 3px; border-radius: 2px; vertical-align: middle; margin-right: 5px; }
+.stepfoot { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 24px 0 0; padding-top: 16px; border-top: 1px solid var(--line); }
+.stepfoot .grow { flex: 1; }
+.stepfoot .btn { white-space: normal; height: auto; min-height: 36px; text-align: left; }
+.next { display: flex; align-items: center; gap: 12px; padding: 14px 18px; border-radius: 12px; background: var(--primary-soft); margin-bottom: 16px; }
+.next b { font-weight: 500; }
 </style>
 </head>
 <body>
@@ -202,29 +280,44 @@ body.term-open main { padding-bottom: 300px; }
 <dialog id="dlg"></dialog>
 
 <script type="application/json" id="layout">
-{"screens": [
-  {"id": "records", "title": "Overview", "icon": "overview", "section": "Resolve", "what": "What the run folder holds.",
-   "uses": [{"command": "describe run", "args": {"run": "@run"}, "reads": ["records", "entities", "runs", "pairs", "kinds", "set_aside", "write_owed"]}]},
-  {"id": "columns", "title": "Columns", "icon": "columns", "section": "Resolve", "what": "Which of the file's columns hold each field, and how each looks in the file.",
+{"workflow": {"steps": ["workspace", "columns", "run", "pairs", "kinds", "results"],
+  "loops": [{"name": "Add new records", "icon": "add", "screen": "run", "via": ["match records", "add records"], "to": "pairs"},
+            {"name": "Run matching again", "icon": "refresh", "screen": "run", "via": ["rerun records"], "to": "pairs"}]},
+ "screens": [
+  {"id": "records", "title": "Overview", "icon": "overview", "what": "The whole workflow, and what it did with your records.",
+   "strip": ["records", "prepare", "rules", "candidates", "score", "accept", "people", "group", "customers"],
+   "uses": [{"command": "describe run", "args": {"run": "@run"}, "reads": ["records", "entities", "runs", "pairs", "kinds", "set_aside", "write_owed"]},
+            {"command": "describe matching", "args": {"run": "@run"}, "reads": ["nodes", "edges"]}]},
+  {"id": "columns", "title": "Prepare your data", "icon": "columns", "what": "Which of your columns hold each field, and how each value is made comparable.",
+   "strip": ["records", "prepare"],
    "uses": [{"command": "list columns", "args": {}, "reads": ["columns", "settings"]},
             {"command": "check records", "args": {"input": "@input"}, "reads": ["records", "fields", "turned_off", "keys", "notes"]},
-            {"command": "set columns", "args": {"mapping": "@mapping"}, "reads": ["columns"]}]},
-  {"id": "run", "title": "Runs", "icon": "run", "section": "Resolve", "what": "Resolve a file, add new records to the run, see what adding them would do, or resolve the run's own files again.",
+            {"command": "set columns", "args": {"mapping": "@mapping"}, "reads": ["columns"]},
+            {"command": "describe matching", "args": {"run": "@run"}, "reads": ["nodes"]}]},
+  {"id": "run", "title": "Find matches", "icon": "run", "what": "Rules settle the certain pairs; the rest are listed, scored and accepted at the line; linked records become one customer.",
+   "strip": ["records", "rules", "candidates", "score", "accept", "group", "customers"],
    "uses": [{"command": "resolve records", "args": {"input": "@input", "run": "@run", "overwrite": "@overwrite", "compute": "@compute"}, "form": ["input", "overwrite", "compute"], "reads": ["summary", "seconds"]},
             {"command": "add records", "args": {"input": "@input", "run": "@run", "compute": "@compute"}, "form": ["input", "compute"], "reads": ["summary"]},
             {"command": "match records", "args": {"input": "@input", "run": "@run"}, "form": ["input"], "reads": ["counts", "records"]},
-            {"command": "rerun records", "args": {"run": "@run", "compute": "@compute"}, "form": ["compute"], "reads": ["summary"]}]},
-  {"id": "results", "title": "Entities", "icon": "entities", "section": "Resolve", "what": "The largest entities, and any record's entity with what joined it.",
-   "uses": [{"command": "describe run", "args": {"run": "@run"}, "reads": ["summary", "largest"]},
-            {"command": "describe entity", "args": {"id": "@id", "run": "@run"}, "reads": ["entity", "records", "links"]}]},
-  {"id": "pairs", "title": "Pairs", "icon": "pairs", "section": "Review", "what": "Decide the pairs just below the line, and audit those just above it.",
+            {"command": "rerun records", "args": {"run": "@run", "compute": "@compute"}, "form": ["compute"], "reads": ["summary"]},
+            {"command": "describe matching", "args": {"run": "@run"}, "reads": ["nodes"]}]},
+  {"id": "pairs", "title": "Review possible matches", "icon": "pairs", "what": "Close calls, just below the line, and pairs with no name compared: you decide.",
+   "strip": ["score", "accept", "people", "group"],
    "uses": [{"command": "list pairs", "args": {"run": "@run", "open": true}, "reads": ["pairs", "counts"]},
             {"command": "decide pair", "args": {"first": "@first", "second": "@second", "decision": "@decision", "run": "@run"}, "reads": ["decision"]},
-            {"command": "apply decisions", "args": {"run": "@run"}, "reads": ["decisions", "matches", "clusters_joined", "summary"]}]},
-  {"id": "kinds", "title": "Kinds", "icon": "kinds", "section": "Review", "what": "Answer person or company for the records held back, and for the draw that measures the engine.",
+            {"command": "apply decisions", "args": {"run": "@run"}, "reads": ["decisions", "matches", "clusters_joined", "summary"]},
+            {"command": "describe matching", "args": {"run": "@run"}, "reads": ["nodes"]}]},
+  {"id": "kinds", "title": "Confirm person or company", "icon": "kinds", "what": "Records the engine holds back, and a sample that sharpens it: person or company?",
+   "strip": ["records", "kind", "score"],
    "uses": [{"command": "list kinds", "args": {"run": "@run", "open": true}, "reads": ["kinds", "counts"]},
             {"command": "answer kind", "args": {"id": "@id", "kind": "@kind", "run": "@run"}, "reads": ["kind"]},
-            {"command": "apply answers", "args": {"run": "@run", "compute": "@compute"}, "form": ["compute"], "reads": ["summary"]}]}
+            {"command": "apply answers", "args": {"run": "@run", "compute": "@compute"}, "form": ["compute"], "reads": ["summary"]},
+            {"command": "describe matching", "args": {"run": "@run"}, "reads": ["nodes"]}]},
+  {"id": "results", "title": "View customers", "icon": "customers", "what": "Every customer, and what joined its records.",
+   "strip": ["group", "customers"],
+   "uses": [{"command": "describe run", "args": {"run": "@run"}, "reads": ["summary", "largest"]},
+            {"command": "describe entity", "args": {"id": "@id", "run": "@run"}, "reads": ["entity", "records", "links"]},
+            {"command": "describe matching", "args": {"run": "@run"}, "reads": ["nodes"]}]}
 ]}
 </script>
 <script>
@@ -237,6 +330,7 @@ const fmt = (v) => v === null || v === undefined ? "—" : typeof v === "number"
 const pct = (v) => v === null || v === undefined ? "—" : `${Math.round(v * 100)}%`;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const store = (k, v) => { try { if (v !== undefined) localStorage.setItem(`nayose.${k}`, v); return localStorage.getItem(`nayose.${k}`); } catch { return null; } };
+const words = (s) => String(s).replaceAll("_", " ");
 
 // Line icons, drawn here: nothing comes from the network.
 const ICON = {
@@ -248,14 +342,23 @@ const ICON = {
   overview: '<rect x="4" y="4" width="7" height="7" rx="1.5"/><rect x="13" y="4" width="7" height="7" rx="1.5"/><rect x="4" y="13" width="7" height="7" rx="1.5"/><rect x="13" y="13" width="7" height="7" rx="1.5"/>',
   columns: '<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M9 4v16M15 4v16"/>',
   run: '<path d="M8 5.5v13l10-6.5z"/>',
-  entities: '<circle cx="12" cy="6" r="2.5"/><circle cx="6" cy="18" r="2.5"/><circle cx="18" cy="18" r="2.5"/><path d="M11 8.2L7.2 15.8M13 8.2l3.8 7.6M8.5 18h7"/>',
   pairs: '<rect x="3" y="6" width="8" height="12" rx="2"/><rect x="13" y="6" width="8" height="12" rx="2"/><path d="M11 12h2"/>',
   kinds: '<circle cx="9" cy="8" r="3"/><path d="M3.5 19a5.5 5.5 0 0 1 11 0"/><path d="M15 10h6v9h-6M17 13h2M17 16h2"/>',
+  customers: '<circle cx="8" cy="9" r="3"/><circle cx="16" cy="9" r="3"/><path d="M2.5 19a5.5 5.5 0 0 1 11 0M10.5 19a5.5 5.5 0 0 1 11 0"/>',
+  records: '<path d="M4 6h16M4 10h16M4 14h16M4 18h10"/>',
+  wand: '<path d="M4 20l11-11M14 4v2M18 6l-1.5 1.5M20 10h-2M13 9l2 2"/>',
+  rule: '<path d="M5 7h9M5 12h14M5 17h9M17 15l2 2 3-4"/>',
+  fan: '<path d="M4 12h5M9 12l9-6M9 12h11M9 12l9 6"/>',
+  scale: '<path d="M12 4v16M5 20h14M6 8h12M6 8l-3 6h6zM18 8l-3 6h6z"/>',
+  check: '<circle cx="12" cy="12" r="9"/><path d="M8 12.5l2.7 2.7L16 9.8"/>',
+  tick: '<path d="M6 12.5l4 4L18 8"/>',
+  person: '<circle cx="12" cy="8" r="3.5"/><path d="M5 20a7 7 0 0 1 14 0"/>',
+  group: '<circle cx="12" cy="6" r="2.5"/><circle cx="6" cy="18" r="2.5"/><circle cx="18" cy="18" r="2.5"/><path d="M11 8.2L7.2 15.8M13 8.2l3.8 7.6M8.5 18h7"/>',
+  add: '<path d="M12 5v14M5 12h14"/>',
   refresh: '<path d="M19 12a7 7 0 1 1-2.1-5M19 4v4h-4"/>',
   copy: '<rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2"/>',
   close: '<path d="M6 6l12 12M18 6L6 18"/>',
   clear: '<path d="M5 7h14M10 11v6M14 11v6M6 7l1 12h10l1-12M9 7V4h6v3"/>',
-  check: '<circle cx="12" cy="12" r="9"/><path d="M8 12.5l2.7 2.7L16 9.8"/>',
   error: '<circle cx="12" cy="12" r="9"/><path d="M12 7.5v5.5M12 16.5v.01"/>',
   info: '<circle cx="12" cy="12" r="9"/><path d="M12 11v6M12 7.5v.01"/>',
   down: '<path d="M7 10l5 5 5-5"/>',
@@ -263,7 +366,7 @@ const ICON = {
 };
 const icon = (name) => `<svg class="ic" viewBox="0 0 24 24" aria-hidden="true">${ICON[name]}</svg>`;
 
-let COMMANDS = {}, current = "records", keyHandler = null;
+let COMMANDS = {}, current = "records", keyHandler = null, steps = {};
 const state = {};
 
 async function api(path, body) {  // the page's one network call: a lost server is a value, never a throw
@@ -356,16 +459,225 @@ async function runOnce(command, args, onEvent) {
   }
 }
 
+// ---------- the workflow: six steps, each one's state read from the workspace ----------
+
+const STEP = {workspace: "Choose a workspace", columns: "Prepare your data", run: "Find matches", pairs: "Review possible matches",
+              kinds: "Confirm person or company", results: "View customers"};
+const ORDER = LAYOUT.workflow.steps;
+const STATE_WORD = {done: "done", current: "next", attention: "needs you", optional: "optional", later: "later"};
+
+// Each step's state (done, current, attention, optional, later) and one-line status, from describe run's result.
+function progress(d) {
+  const ran = d && d.event !== "error" && d.records > 0, s = {};
+  s.workspace = state.run ? {state: "done", line: state.run} : {state: "current", line: "choose one"};
+  s.columns = ran ? {state: "done", line: "ready"} : {state: state.run ? "current" : "later", line: "map and check"};
+  s.run = ran ? {state: "done", line: `${fmt(d.records)} → ${fmt(d.entities)} customers`} : {state: "later", line: "not yet"};
+  if (!ran) {
+    for (const k of ["pairs", "kinds", "results"]) s[k] = {state: "later", line: "after matching"};
+  } else {
+    const p = d.pairs, k = d.kinds;
+    s.pairs = p.decide ? {state: "attention", line: `${fmt(p.decide)} to decide`}
+      : p.written_in ? {state: "attention", line: `${fmt(p.written_in)} decided, to apply`} : {state: "done", line: "all decided"};
+    s.kinds = k.decide ? {state: "attention", line: `${fmt(k.decide)} to decide`}
+      : k.written_in ? {state: "attention", line: `${fmt(k.written_in)} answered, to apply`}
+      : {state: "optional", line: k.measure ? `${fmt(k.measure)} to check` : "nothing to check"};
+    s.results = {state: "done", line: `${fmt(d.entities)} customers`};
+  }
+  const next = ORDER.find((id) => ["current", "attention"].includes(s[id].state)) || "results";
+  if (s[next].state !== "attention") s[next] = {...s[next], state: "current"};
+  return {steps: s, next};
+}
+
+function rail() {  // the stepper: the navigation, in the order the work is done
+  const p = steps.steps || {};
+  $("nav").innerHTML = `<button class="navitem" data-screen="records">${icon("overview")}<span>Overview</span></button><ol class="rail">${ORDER.map((id, n) => {
+    const s = p[id] || {state: "later", line: ""};
+    const dot = s.state === "done" ? icon("tick") : s.state === "attention" ? "!" : n + 1;
+    const go = id === "workspace" ? "data-pick" : `data-screen="${id}"`;
+    return `<li class="${s.state}"><button class="navitem step" ${go} title="${esc(STEP[id])}: ${esc(STATE_WORD[s.state])}">
+      <span class="dot">${dot}</span><span class="stack"><span>${n + 1} · ${esc(STEP[id])}</span><span class="sub">${esc(s.line)}</span></span></button></li>`;
+  }).join("")}</ol><h3>When things change</h3>${LAYOUT.workflow.loops.map((l, n) =>
+    `<button class="navitem loopitem" data-loop="${n}">${icon(l.icon)}<span>${esc(l.name)}</span></button>`).join("")}`;
+  $("nav").querySelectorAll("[data-screen]").forEach((b) => {
+    b.setAttribute("aria-current", b.dataset.screen === current ? "page" : "false");
+    b.onclick = () => go(b.dataset.screen);
+  });
+  $("nav").querySelectorAll("[data-loop]").forEach((b) => b.onclick = () => go(LAYOUT.workflow.loops[b.dataset.loop].screen, LAYOUT.workflow.loops[b.dataset.loop]));
+}
+
+async function refresh(d) {  // the stepper, from the page's own describe run when it made one, else from one of its own
+  if (d === undefined && state.run) d = await run("records", "describe run");
+  steps = progress(state.run ? d : null);
+  rail();
+  const s = steps.steps[current], chip = $("stepchip");
+  if (s && chip) { chip.className = `chip ${s.state === "done" ? "good" : s.state === "attention" ? "warn" : "info"}`; chip.textContent = `${STATE_WORD[s.state]} · ${s.line}`; }
+}
+
+const head = (id, actions = "") => {
+  const n = ORDER.indexOf(id), s = (steps.steps || {})[id];
+  return `<div class="pagehead"><h1>${n >= 0 ? `<span class="faint">Step ${n + 1} of ${ORDER.length} · </span>` : ""}${esc(screen(id).title)}</h1>${
+    s ? `<span class="chip ${s.state === "done" ? "good" : s.state === "attention" ? "warn" : "info"}" id="stepchip">${esc(STATE_WORD[s.state])} · ${esc(s.line)}</span>` : ""}${actions}</div>`;
+};
+
+function stepFoot(id) {  // back and next, in the workflow's order
+  const n = ORDER.indexOf(id), back = ORDER[n - 1], next = ORDER[n + 1];
+  const link = (to, k, cls) => to === "workspace" ? `<button class="btn ${cls}" data-pick>${k}</button>` : `<a class="btn ${cls}" data-go="${to}">${k}</a>`;
+  return `<div class="stepfoot">${back ? link(back, `← ${ORDER.indexOf(back) + 1} ${esc(STEP[back])}`, "") : ""}<span class="grow"></span>${
+    next ? link(next, `Next: ${ORDER.indexOf(next) + 1} ${esc(STEP[next])} →`, "filled") : ""}</div>`;
+}
+
+// ---------- the flow strip: each stage of the pipeline as a chip, its details drawn, not written ----------
+
+const NODE = {
+  records: {icon: "records", word: "records", n: (x) => x.count},
+  prepare: {icon: "wand", word: "fields prepared", n: (x) => x.fields.filter((f) => f.filled).length || x.fields.length},
+  rules: {icon: "rule", word: "pairs by rules", tone: "rule", n: (x) => x.pairs},
+  candidates: {icon: "fan", word: "pairs compared", n: (x) => x.pairs},
+  score: {icon: "scale", word: "pairs scored", n: (x) => x.pairs},
+  accept: {icon: "check", word: "matched", tone: "model", n: (x) => x.accepted},
+  people: {icon: "person", word: "for you", tone: "people", n: (x) => x.to_decide},
+  group: {icon: "group", word: "grouped", n: (x) => x.customers},
+  kind: {icon: "kinds", word: "person / company", n: (x) => x.counts ? x.counts.company + x.counts.person : null},
+  customers: {icon: "customers", word: "customers", n: (x) => x.count},
+};
+const ARROW = '<span class="arrow"><svg viewBox="0 0 26 14" aria-hidden="true"><path d="M1 7h20M16 2l6 5-6 5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg></span>';
+
+function strip(box, graph, ids, open = null) {
+  const nodes = Object.fromEntries(graph.nodes.map((x) => [x.id, x]));
+  box.innerHTML = `<div class="flow">${ids.map((id, i) => {
+    const x = nodes[id], k = NODE[id], n = k.n(x);
+    return `${i ? ARROW : ""}<button class="node ${k.tone || ""} ${n === null || n === undefined ? "dim" : ""}" data-node="${id}" aria-expanded="false" title="${esc(x.method || x.name)}">
+      <span class="top">${icon(k.icon)}${esc(x.name)}</span><span class="n">${n === null || n === undefined ? "—" : fmt(n)}</span><span class="faint" style="font-size:12px">${esc(k.word)}</span></button>`;
+  }).join("")}</div><div class="slot"></div>`;
+  const slot = box.querySelector(".slot");
+  const show = (id) => {
+    box.querySelectorAll(".node").forEach((b) => b.setAttribute("aria-expanded", String(b.dataset.node === id && slot.dataset.open !== id)));
+    if (slot.dataset.open === id) { slot.innerHTML = ""; slot.dataset.open = ""; return; }
+    slot.dataset.open = id;
+    slot.innerHTML = `<div class="detail"><h3>${esc(nodes[id].name)} <small>${esc(nodes[id].method || "")}</small></h3>${(DETAIL[id] || (() => ""))(nodes[id], nodes)}</div>`;
+    slot.querySelectorAll("[data-example]").forEach((b) => b.onclick = () => go("results", b.dataset.example));
+  };
+  box.querySelectorAll(".node").forEach((b) => b.onclick = () => show(b.dataset.node));
+  if (open) show(open);
+}
+
+const bars = (rows, opts = {}) => {  // label, a bar whose length is the value, the value
+  const max = Math.max(1, ...rows.map((r) => Math.abs(r.value ?? 0)));
+  return `<div class="bars">${rows.map((r) => `<span class="lab" title="${esc(r.title || r.label)}">${esc(r.label)}</span>
+    <span><span class="bar ${r.tone || opts.tone || ""} ${r.example ? "pick" : ""}" ${r.example ? `data-example="${esc(r.example)}" title="see a pair it found"` : ""}
+      style="width:${r.value === null || r.value === undefined ? 0 : Math.max(1, 100 * Math.abs(r.value) / max)}%"></span></span>
+    <span class="val">${r.text ?? fmt(r.value)}</span>`).join("")}</div>`;
+};
+const bitsBar = (v, max) => {  // a bit count drawn from the middle: right for, left against; 20 bits fill a side
+  if (v === null || v === undefined) return '<span class="bits"></span>';
+  const w = Math.min(50, 50 * Math.abs(v) / Math.min(max, 20));
+  return `<span class="bits"><i style="${v >= 0 ? `left:50%;width:${w}%;background:var(--good)` : `right:50%;width:${w}%;background:var(--neg)`}"></i></span>`;
+};
+const NORM = {nfkc: "same width", strip_spaces: "no spaces", kana_fold: "kana folded", strip_legal_form: "no legal form", reverse: "reversed",
+              initial: "initial", first3: "first 3", address: "address rules"};
+const norm = (list) => list.map((n) => NORM[n] || words(n));
+const SHAPE = {reverse: "reversed", initial: "initial", first3: "first 3"};  // the ones that change what a key compares
+const keyName = (k) => `${words(k.field)}${k.normalize.filter((n) => SHAPE[n]).map((n) => ` ${SHAPE[n]}`).join("")}`;
+const METHOD = {jaro_winkler: "≈", levenshtein: "edits", damerau_levenshtein: "edits", hamming: "digits off", exact: "="};
+const test = (t) => `${words(t.field)} ${METHOD[t.function] || t.function}${t.threshold !== null && t.threshold !== undefined ? ` ${t.function === "jaro_winkler" ? "≥" : "≤"} ${t.threshold}` : ""}`;
+const tags = (list) => list.map((x) => `<span class="tag">${esc(x)}</span>`).join("");
+
+function highlight(a, b) {  // two values, the part where they differ marked in each
+  a = String(a ?? ""); b = String(b ?? "");
+  let i = 0, j = 0;
+  while (i < a.length && i < b.length && a[i] === b[i]) i++;
+  while (j < a.length - i && j < b.length - i && a[a.length - 1 - j] === b[b.length - 1 - j]) j++;
+  const mark = (s) => `${esc(s.slice(0, i))}<span class="diff">${esc(s.slice(i, s.length - j))}</span>${esc(s.slice(s.length - j))}`;
+  return a === b ? [esc(a), esc(b)] : [mark(a), mark(b)];
+}
+
+function chainOf(f) {  // a field's real value, step by step: the column as read, the field, each form it is compared as
+  const e = f.example || {}, raw = Object.entries(e).find(([k]) => !k.includes("__") && k !== f.field);
+  const seen = [raw && raw[1], e[f.field], ...Object.entries(e).filter(([k]) => k.startsWith(`${f.field}__`)).map(([, v]) => v)]
+    .filter((v, n, all) => v !== undefined && v !== null && v !== all[n - 1]);
+  return `<span class="chain">${seen.map((v, n) => n ? `<span class="to">▸</span>${highlight(seen[n - 1], v)[1]}` : esc(v)).join("") || '<span class="faint">no value</span>'}
+    ${tags([...new Set([...norm(f.normalize), ...f.compared_as.flatMap(norm)])])}</span>`;
+}
+
+const DETAIL = {
+  records: (x) => x.files && x.files.length ? tags(x.files.map((f) => f.split("/").pop())) : '<span class="faint">no run yet</span>',
+  prepare: (x) => `<div class="bars" style="grid-template-columns:minmax(90px,max-content) 1fr 60px">${x.fields.map((f) =>
+    `<span class="lab">${esc(words(f.field))}</span>${chainOf(f)}<span class="val">${pct(f.filled)}</span>`).join("")}</div>`,
+  rules: (x) => bars(x.rules.map((r) => ({label: `${r.exact.map((f) => `= ${words(f)}`).concat(r.fuzzy.map((t) => test(t))).join(" · ")}`,
+                                           title: `${r.stage}: ${r.name}`, value: r.pairs, tone: "rule", example: r.example && r.example[0]}))),
+  candidates: (x) => bars(x.generators.slice().sort((a, b) => (b.pairs ?? 0) - (a.pairs ?? 0)).map((g) => ({
+    label: `${{"same value": "=", "sorted neighbours": "↕", "TF-IDF nearest": "≈", "one letter deleted": "−1"}[g.method] || ""} ${g.keys.map(keyName).join(" + ")}`,
+    title: `${g.method}${g.window ? `, window ${g.window}` : ""}${g.k ? `, ${g.k} nearest, cosine ≥ ${g.min_cosine}` : ""}: ${g.pairs ?? "—"} pairs, ${g.matched ?? "—"} matched`,
+    value: g.pairs, text: g.pairs === null ? "—" : `${fmt(g.pairs)} · ✓${fmt(g.matched)}`, example: g.example && g.example[0]}))),
+  score: (x) => {
+    const max = Math.max(1, ...x.comparisons.flatMap((c) => c.levels.map((l) => Math.abs(l.bits ?? 0))), Math.abs(x.prior_bits ?? 0));
+    return `<div class="bars" style="grid-template-columns:minmax(120px,max-content) minmax(120px,1fr) 56px">${x.comparisons.map((c) => c.levels.map((l, n) =>
+      `<span class="lab" title="${esc(l.tests.map(test).join(" or ") || "anything else")}">${n ? "" : `<b>${esc(c.name)}</b> `}${esc(l.label)}</span>${bitsBar(l.bits, max)}
+       <span class="val">${l.bits === null || l.bits === undefined ? "—" : `${l.bits >= 0 ? "+" : ""}${l.bits.toFixed(1)}`}</span>`).join("")).join("")}
+      <span class="lab"><b>start</b></span>${bitsBar(x.prior_bits, max)}<span class="val">${x.prior_bits === null ? "—" : x.prior_bits.toFixed(1)}</span></div>`;
+  },
+  accept: (x) => {
+    if (!x.bands.length) return `${ruler([], x.threshold)}`;
+    const bands = x.bands.map(([from, pairs, accepted]) => ({from: Number(from), pairs: Number(pairs), accepted: Number(accepted)})).filter((b) => b.from > -40);
+    const max = Math.max(1, ...bands.map((b) => b.pairs)), w = 600 / bands.length, at = (v) => (bands.findIndex((b) => b.from >= v) + 0) * w;
+    return `<svg class="ruler hist" style="height:150px" viewBox="0 0 600 90" role="img" aria-label="pairs by weight, with the line at ${x.threshold} bits">
+      <rect x="${at(x.review_from)}" y="0" width="${at(x.threshold) - at(x.review_from)}" height="70" fill="var(--people-bg)"/>
+      ${bands.map((b, i) => `<rect x="${i * w + 1}" y="${70 - 66 * Math.sqrt(b.pairs / max)}" width="${w - 2}" height="${66 * Math.sqrt(b.pairs / max)}" rx="2"
+        fill="${b.accepted ? "var(--model)" : "var(--outline)"}"><title>${b.from} to ${b.from + 2} bits: ${b.pairs} pairs</title></rect>`).join("")}
+      <line x1="${at(x.threshold)}" x2="${at(x.threshold)}" y1="0" y2="74" stroke="var(--ink)" stroke-width="2"/>
+      <text x="${at(x.threshold) + 4}" y="86">${x.threshold} bits: matched →</text><text x="${at(x.review_from) - 3}" y="12" text-anchor="end" style="fill:var(--people)">you decide ▸</text>
+      <text x="0" y="86">← fewer bits</text></svg>`;
+  },
+  people: (x) => bars([{label: "to decide", value: x.to_decide, tone: "people"}, {label: "decided", value: x.decided, tone: "people"}, {label: "joined by you", value: x.joined, tone: "people"}]),
+  group: (x) => bars(x.sizes.map((s) => ({label: `${s.records} record${s.records > 1 ? "s" : ""}`, value: s.customers, text: `${fmt(s.customers)} customers`}))),
+  kind: (x) => x.counts ? bars([{label: "company", value: x.counts.company}, {label: "person", value: x.counts.person}, {label: "not sure", value: x.counts.unsure, tone: "neg"}]) +
+    `<div class="faint" style="margin-top:8px">${tags([`${x.legal_forms} legal forms`, `name model: 1–${x.ngram} letter chunks`])}</div>` : '<span class="faint">no run yet</span>',
+  customers: (x, all) => DETAIL.group(all.group),
+};
+
+function ruler(parts, threshold, prior = 0) {  // evidence stacking from the start toward the line: matched past it
+  const steps = [{label: "start", bits: prior}, ...parts], ends = [];
+  let at = 0;
+  for (const p of steps) { ends.push([at, at + p.bits, p]); at += p.bits; }
+  const lo = Math.min(0, ...ends.flat().filter(Number.isFinite)), hi = Math.max(threshold + 2, ...ends.flat().filter(Number.isFinite));
+  const x = (v) => 20 + 560 * (v - lo) / (hi - lo);
+  return `<svg class="ruler" viewBox="0 0 600 74" role="img" aria-label="evidence: ${at.toFixed(1)} bits, the line at ${threshold}">
+    ${ends.map(([a, b, p], i) => `<rect x="${Math.min(x(a), x(b))}" y="${10 + i * 4}" width="${Math.max(1.5, Math.abs(x(b) - x(a)))}" height="14" rx="3"
+      fill="${p.bits >= 0 ? "var(--good)" : "var(--neg)"}" opacity="${i ? 0.85 : 0.55}"><title>${esc(p.label)}: ${p.bits >= 0 ? "+" : ""}${p.bits.toFixed(1)} bits</title></rect>`).join("")}
+    <line x1="${x(threshold)}" x2="${x(threshold)}" y1="2" y2="56" stroke="var(--ink)" stroke-width="2"/><text x="${x(threshold) + 4}" y="68">${threshold} · matched →</text>
+    <line x1="${x(0)}" x2="${x(0)}" y1="2" y2="56" stroke="var(--outline)"/><text x="${x(0) - 4}" y="68" text-anchor="end">0</text>
+    ${parts.length ? `<circle cx="${x(at)}" cy="${20 + steps.length * 2}" r="6" fill="var(--ink)"/><text x="${x(at)}" y="${46 + steps.length * 2}" text-anchor="middle" style="font-weight:600">${at.toFixed(1)}</text>` : ""}</svg>`;
+}
+
+function web(records, links) {  // a customer's records as dots, joined by what linked them: rule, model or person
+  const n = records.length, r = n > 1 ? 85 : 0, pos = Object.fromEntries(records.map((x, i) => [x.id, [230 + r * Math.cos(2 * Math.PI * i / n - Math.PI / 2), 118 + r * Math.sin(2 * Math.PI * i / n - Math.PI / 2)]]));
+  const tone = (by) => by === "fs" ? "var(--model)" : by.startsWith("people") ? "var(--people)" : "var(--rule)";
+  return `<div class="legend"><span><i style="background:var(--rule)"></i>a rule</span><span><i style="background:var(--model)"></i>the model, bits</span><span><i style="background:var(--people)"></i>a person</span></div>
+    <svg class="web" viewBox="0 0 460 240" role="img" aria-label="${n} records joined by ${links.length} links">
+    ${links.filter((l) => pos[l.id_l] && pos[l.id_r]).map((l) => { const [a, b] = [pos[l.id_l], pos[l.id_r]];
+      return `<line x1="${a[0]}" y1="${a[1]}" x2="${b[0]}" y2="${b[1]}" stroke="${tone(l.by)}" stroke-width="3"><title>${esc(l.by)}${l.weight ? ` · ${l.weight.toFixed(1)} bits` : ""}</title></line>
+        ${l.weight ? `<text x="${(a[0] + b[0]) / 2}" y="${(a[1] + b[1]) / 2 - 4}" text-anchor="middle">${l.weight.toFixed(1)}</text>` : ""}`; }).join("")}
+    ${records.map((x) => `<circle cx="${pos[x.id][0]}" cy="${pos[x.id][1]}" r="9" fill="var(--surface)" stroke="var(--ink)" stroke-width="2"/>
+      <text x="${pos[x.id][0]}" y="${pos[x.id][1] + 24}" text-anchor="middle">${esc(x.id)}</text>`).join("")}</svg>`;
+}
+
+function slider(r) {  // where the engine and the name alone place a record, from person to company
+  const at = (p) => 3 + 94 * p, e = Number(r.engine_p), n = Number(r.name_p), same = Math.abs(e - n) < 0.06;
+  const pin = (p, cls, label) => Number.isNaN(p) ? "" : `<span class="pin ${cls}" style="left:${at(p)}%"><span>${label}</span></span>`;
+  return `<div class="slider"><span class="track"></span><span class="mid"></span>${same ? "" : pin(n, "name", "name")}${pin(e, "engine", same ? "engine and name" : "engine")}
+    <span class="ends"><span>${icon("person")} person</span><span>company ${icon("kinds")}</span></span></div>`;
+}
+
 // ---------- pieces every page draws with ----------
 
 function banner(e, kind = "bad") {
   if (!e || e.event !== "error") return "";
   return `<div class="banner ${kind}" role="alert">${icon(kind === "bad" ? "error" : "info")}<div><b>${esc(e.error)}</b>${e.fix ? `<div class="fix">${esc(e.fix)}</div>` : ""}</div></div>`;
 }
-const head = (title, actions = "") => `<div class="pagehead"><h1>${esc(title)}</h1>${actions}</div>`;
-function chip(status) {
+const WHY = {decide: "to decide", audit: "spot-check", measure: "sample"};
+function chip(status, written = "decided") {
   const kind = {open: "", "written in": "warn", applied: "good", decide: "info"}[status] ?? "";
-  return `<span class="chip ${kind}">${esc(status)}</span>`;
+  return `<span class="chip ${kind}">${esc(WHY[status] || (status === "written in" ? written : status))}</span>`;
 }
 function summary(rows) {
   if (!rows || !rows.length) return "";
@@ -446,73 +758,77 @@ function action(id, command, label, done, onEvent = null) {
   dlg.showModal();
 }
 
+async function flowOf(id, box, open = null) {  // the step's part of the pipeline: from describe matching
+  const g = await run(id, "describe matching");
+  if (g.event === "error") { box.innerHTML = banner(g); return null; }
+  strip(box, g, screen(id).strip, open);
+  return g;
+}
+
 // ---------- the pages: what each places, and how it draws the results ----------
 
 const SCREENS = {
   async records(el) {
-    el.innerHTML = head("Overview", `<button class="btn" id="refresh">${icon("refresh")}Refresh</button>`) + `<div id="out" class="faint">Loading…</div>`;
+    el.innerHTML = head("records", `<button class="btn" id="refresh">${icon("refresh")}Refresh</button>`) + `<div id="next"></div><div id="flow"></div><div id="out"></div>`;
     $("refresh").onclick = () => go("records");
     if (!state.run) { $("out").innerHTML = emptyRun(); return; }
-    const d = await run("records", "describe run");
+    const [d] = await Promise.all([run("records", "describe run"), flowOf("records", $("flow"))]);
     if (d.event === "error") { $("out").innerHTML = /no run in/.test(d.error) ? emptyRun() : banner(d); return d; }
-    $("out").innerHTML = (d.write_owed ? banner({event: "error", error: "A write was cut short", fix: "The next command that writes to this folder finishes it."}, "warn") : "") +
-      `<div class="tiles">
-        <div class="tile"><div class="k">Records</div><div class="v">${fmt(d.records)}</div></div>
-        <div class="tile" data-go="results"><div class="k">Entities</div><div class="v">${fmt(d.entities)}</div></div>
-        <div class="tile" data-go="pairs"><div class="k">Pairs to decide</div><div class="v">${fmt(d.pairs.decide)}</div></div>
-        <div class="tile" data-go="kinds"><div class="k">Records to answer</div><div class="v">${fmt(d.kinds.decide + d.kinds.measure)}</div></div>
-        <div class="tile"><div class="k">Set aside</div><div class="v">${fmt(d.set_aside)}</div></div></div>
-      <div class="card"><h2>Activity</h2><div id="runs"></div></div>`;
+    const p = progress(d), s = p.steps[p.next];
+    $("next").innerHTML = `<div class="next">${icon(s.state === "attention" ? "person" : "run")}<span><b>Next: ${ORDER.indexOf(p.next) + 1} · ${esc(STEP[p.next])}</b>
+      <span class="muted"> · ${esc(s.line)}</span></span><span class="grow" style="flex:1"></span>${p.next === "workspace" ? '<button class="btn filled" data-pick>Open</button>' : `<a class="btn filled" data-go="${p.next}">Open</a>`}</div>`;
+    $("out").innerHTML = (d.write_owed ? banner({event: "error", error: "A write was cut short", fix: "The next command that writes to this workspace finishes it."}, "warn") : "") +
+      `<div class="card"><h2>Activity</h2><div id="runs"></div></div>`;
     grid($("runs"), d.runs.slice().reverse(), ["at", "what", "files", "seconds"],
          {filter: false, cell: (r, c) => c === "files" ? esc(r.files.map((f) => f.split("/").pop()).join(", ")) : esc(fmt(r[c]))});
-    return d;  // go() counts the navigation's open pairs and kinds from it
+    return d;  // go() draws the stepper from it
   },
 
   async columns(el) {
-    el.innerHTML = head("Columns", `<button class="btn filled" id="check">${icon("check")}Check records</button><button class="btn" id="refresh">${icon("refresh")}Refresh</button>`) +
-      `<div class="card"><label class="field" style="margin:0"><span class="lab">Records file</span><input type="text" id="cin" value="${esc(state.input || "")}" placeholder="customers.parquet"></label></div>
-       <div id="out" class="faint">Loading…</div>`;
+    el.innerHTML = head("columns", `<button class="btn filled" id="check">${icon("check")}Check the file</button>`) +
+      `<div id="flow"></div><div class="card"><label class="field" style="margin:0"><span class="lab">Records file</span><input type="text" id="cin" value="${esc(state.input || "")}" placeholder="customers.parquet"></label></div>
+       <div id="out" class="faint">Loading…</div>${stepFoot("columns")}`;
     const remember = () => { state.input = $("cin").value.trim(); store("input", state.input); };
     $("cin").onchange = remember;
     const draw = async () => {
-      const [cols, check] = await Promise.all([run("columns", "list columns"), state.input ? run("columns", "check records") : null]);
+      const [cols, check, g] = await Promise.all([run("columns", "list columns"), state.input ? run("columns", "check records") : null,
+                                                  state.run ? flowOf("columns", $("flow")) : null]);
       const shares = Object.fromEntries(((check && check.fields) || []).map((f) => [f.field, f]));
+      const examples = Object.fromEntries((g && g.nodes ? g.nodes.find((n) => n.id === "prepare").fields : []).map((f) => [f.field, f]));
       const hints = check && check.event === "error" ? Object.entries(check.hints || {}) : [];
       const meter = (v) => v === null || v === undefined ? '<span class="faint">—</span>' : `<span class="meter"><i style="width:${Math.round(v * 100)}%"></i></span>${pct(v)}`;
-      $("out").innerHTML = (check ? banner(check) : banner({event: "error", error: "No records file yet", fix: "Type the file above, then check it."}, "info")) +
+      $("out").innerHTML = (check ? banner(check) : "") +
         (hints.length ? `<div class="actions" style="margin:-4px 0 16px">${hints.map(([f, c]) => `<button class="btn outlined" data-hint="${esc(f)}=${esc(c)}">Use ${esc(c)} for ${esc(f)}</button>`).join("")}</div>` : "") +
-        (check && check.event === "result" ? `<div class="banner info">${icon("info")}<div><b>${fmt(check.records)} records read</b><div class="fix">Turned off: ${esc((check.turned_off || []).join(", ") || "nothing")}${(check.notes || []).length ? ` · ${esc(check.notes.join(" · "))}` : ""} · <a class="link" data-go="run">Resolve them</a></div></div></div>` : "") +
         `<div id="map"></div>`;
-      grid($("map"), cols.columns, ["field", "columns", "filled", "looks_right", "top_value", "save"], {
-        labels: {looks_right: "looks right", top_value: "top value", save: ""},
+      grid($("map"), cols.columns, ["field", "columns", "example", "filled", "looks_right", "save"], {
+        labels: {looks_right: "looks right", save: ""},
         cell: (r, c) => c === "columns" ? `<input class="inline" data-field="${esc(r.field)}" value="${esc(r.columns)}" aria-label="columns of ${esc(r.field)}">` :
-          c === "field" ? `${esc(r.field)}${r.options ? `<div class="faint" style="font-size:12px">${esc(r.options)}</div>` : ""}` :
+          c === "field" ? esc(words(r.field)) :
+          c === "example" ? (examples[r.field] ? chainOf(examples[r.field]) : '<span class="faint">—</span>') :
           c === "save" ? `<button class="btn" data-save="${esc(r.field)}">Save</button>` : meter((shares[r.field] || {})[c])});
       const save = async (mapping) => { const d = await run("columns", "set columns", {mapping}); if (d.event === "error") $("out").insertAdjacentHTML("afterbegin", banner(d)); else draw(); };
       el.querySelectorAll("[data-save]").forEach((b) => b.onclick = () => save([`${b.dataset.save}=${el.querySelector(`[data-field="${b.dataset.save}"]`).value.replaceAll(" ", "")}`]));
       el.querySelectorAll("[data-hint]").forEach((b) => b.onclick = () => save([b.dataset.hint]));
     };
     $("check").onclick = () => { remember(); draw(); };
-    $("refresh").onclick = draw;
     draw();
   },
 
-  async run(el) {
-    el.innerHTML = head("Runs", `<button class="btn filled" data-act="resolve records" data-label="Resolve">${icon("run")}Resolve records</button>
-        <button class="btn" data-act="add records" data-label="Add">Add records</button><button class="btn" data-act="match records" data-label="Match">Match records</button>
-        <button class="btn" data-act="rerun records" data-label="Rerun">Rerun records</button>`) +
-      `<div id="out">${state.run ? "" : emptyRun()}<div class="card"><h2>${icon("info")}${esc(screen("run").what)}</h2><p class="muted" style="margin:0">Each button opens its
-       command with the command line it will run. Each step shows as it finishes, then the result.</p></div></div>`;
+  async run(el, loop) {
+    el.innerHTML = head("run", `<button class="btn filled" data-act="resolve records" data-label="Find matches">${icon("run")}Find matches</button>
+        <button class="btn" data-act="add records" data-label="Add">${icon("add")}Add new records</button><button class="btn" data-act="match records" data-label="Preview">Preview new records</button>
+        <button class="btn" data-act="rerun records" data-label="Run again">${icon("refresh")}Run matching again</button>`) +
+      `<div id="flow"></div><div id="out">${state.run ? "" : emptyRun()}</div>${stepFoot("run")}`;
+    if (state.run) flowOf("run", $("flow"));
     el.querySelectorAll("[data-act]").forEach((b) => b.onclick = () => {
       const command = b.dataset.act;
       const done = (d) => {
+        $("out").querySelector(".steps-card h2 .spin")?.replaceWith(Object.assign(document.createElement("span"), {innerHTML: icon(d.event === "error" ? "error" : "check")}));
         $("out").querySelector(".steps-card")?.classList.remove("steps-card");
         $("out").insertAdjacentHTML("beforeend", d.event === "error" ? banner(d) : command === "match records" ?
-          `<div class="card"><h2>What adding them would do</h2><div class="chips">${Object.entries(d.counts).map(([k, n]) => `<span class="chip info">${esc(k)}: ${fmt(n)}</span>`).join("")}</div></div><div id="matched"></div>` :
-          `<div class="card"><h2>${icon("check")}${esc(COMMANDS[command].help)}${d.seconds ? ` · ${fmt(d.seconds)} s` : ""}</h2>${summary(d.summary)}
-           <div class="actions"><a class="btn outlined" data-go="pairs">Review pairs</a><a class="btn outlined" data-go="kinds">Answer kinds</a><a class="btn" data-go="results">See entities</a></div></div>`);
+          `<div class="card"><h2>What adding them would do</h2>${bars(Object.entries(d.counts).map(([k, n]) => ({label: k, value: n})))}</div><div id="matched"></div>` : "");
         if (command === "match records" && d.records) grid($("matched"), d.records, ["id", "entity", "status", "by", "weight"], {cell: (r, c) => c === "status" ? chip(r.status) : esc(fmt(r[c]))});
-        counts();
+        if (d.event !== "error" && command !== "match records") { flowOf("run", $("flow")); refresh(); }
       };
       const step = (e) => {
         if (e.event !== "step") return;
@@ -525,27 +841,28 @@ const SCREENS = {
       };
       action("run", command, b.dataset.label, done, step);
     });
+    if (loop) el.querySelector(`[data-act="${loop.via[loop.via.length - 1]}"]`)?.focus();
   },
 
   async results(el, record) {
-    el.innerHTML = head("Entities", `<button class="btn" id="refresh">${icon("refresh")}Refresh</button>`) + `<div class="split"><div id="left" class="faint">Loading…</div><div id="right" class="panel-sticky"></div></div>`;
+    el.innerHTML = head("results", `<button class="btn" id="refresh">${icon("refresh")}Refresh</button>`) +
+      `<div id="flow"></div><div class="split"><div id="left" class="faint">Loading…</div><div id="right" class="panel-sticky"></div></div>${stepFoot("results")}`;
     $("refresh").onclick = () => go("results");
     const entity = async (id) => {
       $("right").innerHTML = `<div class="card faint">Loading ${esc(id)}…</div>`;
       const d = await run("results", "describe entity", {id});
       if (d.event === "error") { $("right").innerHTML = banner(d); return; }
       const cols = Object.keys(d.records[0]).filter((k) => !["cluster_id", "kind_p", "kind_held", "resolved_stage"].includes(k));
-      $("right").innerHTML = `<div class="card"><h2>${icon("entities")}Entity ${esc(d.entity)} · ${d.records.length} records</h2><div id="erecs"></div><h2>What joined them</h2><div id="elinks"></div></div>`;
+      $("right").innerHTML = `<div class="card"><h2>${icon("customers")}Customer ${esc(d.entity)} · ${d.records.length} records</h2>${web(d.records, d.links)}<div id="erecs"></div></div>`;
       grid($("erecs"), d.records, cols, {filter: false});
-      grid($("elinks"), d.links, ["id_l", "id_r", "by", "weight"], {filter: false});
     };
-    $("right").innerHTML = `<div class="card empty">${icon("entities")}<p class="muted">Pick an entity, or look up a record ID in the search bar above.</p></div>`;
+    $("right").innerHTML = `<div class="card empty">${icon("customers")}<p class="muted">Pick a customer, or look up a record ID above.</p></div>`;
     if (record) entity(record);
     if (!state.run) { $("left").innerHTML = emptyRun(); return; }
-    const d = await run("results", "describe run");
+    const [d] = await Promise.all([run("results", "describe run"), flowOf("results", $("flow"))]);
     if (d.event === "error") { $("left").innerHTML = banner(d); return d; }
-    $("left").innerHTML = `<div class="card"><h2>Largest entities</h2><div id="largest"></div></div><div class="card"><h2>Summary</h2>${summary(d.summary)}</div>`;
-    const t = grid($("largest"), d.largest, ["entity", "records"], {filter: false, onPick: (i) => { t.select(i); entity(d.largest[i].entity); }});
+    $("left").innerHTML = `<div class="card"><h2>Largest customers</h2><div id="largest"></div></div>`;
+    const t = grid($("largest"), d.largest, ["entity", "records"], {labels: {entity: "customer"}, filter: false, onPick: (i) => { t.select(i); entity(d.largest[i].entity); }});
     return d;
   },
 
@@ -556,40 +873,45 @@ const SCREENS = {
 // The two review queues, and what differs between them: their commands, columns, keys, the card a row is shown in, and
 // how answers are applied (decisions join entities at once; answers need a rerun, so the page reloads its new sheet).
 const QUEUES = {
-  pairs: {title: "Pairs", list: "list pairs", one: "decide pair", apply: "apply decisions", applyLabel: "Apply decisions",
-          rows: (d) => d.pairs, cols: ["status", "why", "id_l", "id_r", "match_weight"], labels: {match_weight: "weight"},
-          note: "Answers are written in as you go, then applied together: a match joins the two entities at once.",
+  pairs: {title: "Pairs", list: "list pairs", one: "decide pair", apply: "apply decisions", applyLabel: "Apply decisions", written: "decided",
+          rows: (d) => d.pairs, cols: ["status", "why", "id_l", "id_r", "match_weight"], labels: {match_weight: "bits"},
           keys: {m: "match", n: "no_match"}, answer: (r, value) => ({first: r.id_l, second: r.id_r, decision: value}), card: pairCard,
-          applied: (e) => `<div class="banner info">${icon("check")}<div><b>${fmt(e.decisions)} decisions applied, ${fmt(e.matches)} of them match: ${fmt(e.clusters_joined)} entities joined.</b>` +
-                          `${(e.summary || []).length ? `<div class="fix">${esc(e.summary.map((x) => x.join(": ")).join(" · "))}</div>` : ""}</div></div>`},
-  kinds: {title: "Kinds", list: "list kinds", one: "answer kind", apply: "apply answers", applyLabel: "Apply answers", rerun: true,
+          applied: (e) => `<div class="banner info">${icon("check")}<div><b>${fmt(e.decisions)} decisions applied: ${fmt(e.clusters_joined)} customers joined.</b></div></div>`},
+  kinds: {title: "Kinds", list: "list kinds", one: "answer kind", apply: "apply answers", applyLabel: "Apply answers", rerun: true, written: "answered",
           rows: (d) => d.kinds, cols: ["status", "why", "id", "name", "engine_says"], labels: {engine_says: "engine"},
-          note: "Answers are written in as you go. A sole trader is a person. Applying them resolves the run's own files again, since they change how names are matched.",
           keys: {"1": "person", "2": "company", "0": "unsure"}, answer: (r, value) => ({id: r.id, kind: value}), card: kindCard},
 };
 
 const keyHint = (keys) => `<span class="keys">${keys.map(([k, what]) => `<kbd>${esc(k)}</kbd> ${esc(what)}`).join(" · ")} · <kbd>S</kbd> skip · <kbd>↑</kbd><kbd>↓</kbd> move</span>`;
-const cardHead = (r, at, of) => `<h2>${at + 1} of ${of} ${chip(r.why)} ${chip(r.status)}</h2>`;
+const cardHead = (r, at, of, written) => `<h2>${at + 1} of ${of} ${chip(r.why)} ${chip(r.status, written)}</h2>`;
+let graph = null;  // the run's describe matching, which the cards draw their ladders and the line from
 
-function pairCard(r, at, of) {  // the two records side by side, the values that differ marked, each comparison's bits
-  const differ = (f) => r[`${f}_l`] !== null && r[`${f}_r`] !== null && r[`${f}_l`] !== r[`${f}_r`];
+function pairCard(r, at, of) {  // the two records side by side, their differences marked; each comparison's step on its ladder and its bits
   const fields = Object.keys(r).filter((k) => k.endsWith("_l") && k !== "id_l" && `${k.slice(0, -2)}_r` in r).map((k) => k.slice(0, -2))
     .filter((f) => r[`${f}_l`] !== null || r[`${f}_r`] !== null);
-  const comps = Object.keys(r).filter((k) => `${k}_bits` in r);
-  return `<div class="card">${cardHead(r, at, of)}
-    <p class="muted" style="margin:0 0 12px">Weight <b>${fmt(r.match_weight)}</b> bits · ${r.accepted ? '<span class="chip good">accepted by the run</span>' : '<span class="chip">not accepted</span>'}</p>
-    <div class="tablecard"><table><thead><tr><th>field</th><th>${esc(r.id_l)}</th><th>${esc(r.id_r)}</th></tr></thead><tbody>${fields.map((f) =>
-      `<tr class="${differ(f) ? "differ" : ""}"><td>${esc(f.replaceAll("_", " "))}</td><td class="v wrap">${esc(fmt(r[`${f}_l`]))}</td><td class="v wrap">${esc(fmt(r[`${f}_r`]))}</td></tr>`).join("")}</tbody></table></div>
-    <div class="chips">${comps.map((c) => `<span class="chip ${r[`${c}_bits`] > 0 ? "good" : ""}">${esc(c)}: ${esc(r[c])} · ${r[`${c}_bits`] >= 0 ? "+" : ""}${fmt(r[`${c}_bits`])}</span>`).join("")}</div>
+  const score = graph && graph.nodes.find((n) => n.id === "score"), accept = graph && graph.nodes.find((n) => n.id === "accept");
+  const comps = Object.keys(r).filter((k) => `${k}_bits` in r), ladder = Object.fromEntries((score ? score.comparisons : []).map((c) => [c.name, c.levels]));
+  const max = Math.max(4, ...comps.map((c) => Math.abs(r[`${c}_bits`] ?? 0)));
+  return `<div class="card">${cardHead(r, at, of, "decided")}
+    <div class="tablecard"><table><thead><tr><th></th><th>${esc(r.id_l)}</th><th>${esc(r.id_r)}</th></tr></thead><tbody>${fields.map((f) => {
+      const [a, b] = highlight(r[`${f}_l`], r[`${f}_r`]);
+      return `<tr><td class="faint">${esc(words(f))}</td><td class="wrap">${r[`${f}_l`] === null ? "—" : a}</td><td class="wrap">${r[`${f}_r`] === null ? "—" : b}</td></tr>`;
+    }).join("")}</tbody></table></div>
+    <div class="bars" style="grid-template-columns:70px max-content minmax(0,1fr) minmax(100px,1.2fr) 48px">${comps.map((c) => {
+      const levels = ladder[c] || [], reached = levels.findIndex((l) => l.label === r[c]), bits = r[`${c}_bits`];
+      return `<span class="lab">${esc(c)}</span><span class="ladder" title="${esc(levels.map((l) => l.label).join(" › "))}">${levels.map((l, n) =>
+        `<i class="${n === reached ? `on ${bits < 0 ? "neg" : ""}` : ""}" title="${esc(l.label)}${l.bits !== null && l.bits !== undefined ? `: ${l.bits >= 0 ? "+" : ""}${l.bits.toFixed(1)} bits` : ""}"></i>`).join("")}</span>
+        <span class="faint" style="font-size:12px">${esc(r[c])}</span>${bitsBar(bits, max)}<span class="val">${bits >= 0 ? "+" : ""}${fmt(bits)}</span>`;
+    }).join("")}</div>
+    ${ruler(comps.map((c) => ({label: c, bits: r[`${c}_bits`] || 0})), accept ? accept.threshold : 8, score && score.prior_bits !== null ? score.prior_bits : 0)}
     <div class="actions"><button class="btn filled" data-a="match">Match</button><button class="btn outlined" data-a="no_match">No match</button>
       <button class="btn" data-skip>Skip</button>${keyHint([["M", "match"], ["N", "no match"]])}</div><div id="said"></div></div>`;
 }
 
-function kindCard(r, at, of) {  // the name, what the engine, the name and the flag say, and why the record is here
-  const said = ["engine_says", "name_says", "flag", "birth_date"].filter((k) => k in r && r[k] !== null);
-  return `<div class="card">${cardHead(r, at, of)}<p class="muted" style="margin:0">${esc(r.reason)}</p>
-    <div class="big">${esc(r.name)}</div><div class="chips">${said.map((k) => `<span class="chip">${esc(k.replace("_says", "").replaceAll("_", " "))}: ${esc(r[k])}</span>`).join("")}</div>
-    <div class="actions"><button class="btn filled" data-a="person">Person</button><button class="btn filled" data-a="company">Company</button>
+function kindCard(r, at, of) {  // the name, and where the engine and the name alone place it, from person to company
+  return `<div class="card">${cardHead(r, at, of, "answered")}<div class="big">${esc(r.name)}</div>${slider(r)}
+    <div class="chips" style="margin-top:12px">${["flag", "birth_date"].filter((k) => k in r && r[k] !== null).map((k) => `<span class="tag">${esc(words(k))}: ${esc(r[k])}</span>`).join("")}</div>
+    <div class="actions"><button class="btn filled" data-a="person">${icon("person")}Person</button><button class="btn filled" data-a="company">${icon("kinds")}Company</button>
       <button class="btn outlined" data-a="unsure">Can't tell</button><button class="btn" data-skip>Skip</button>${keyHint([["1", "person"], ["2", "company"], ["0", "can't tell"]])}</div>
     <div id="said"></div></div>`;
 }
@@ -597,28 +919,32 @@ function kindCard(r, at, of) {  // the name, what the engine, the name and the f
 // A review page: the queue as a table, the picked row in a card beside it, answered by keyboard, one answer at a time.
 async function review(el, which, note = "") {
   const q = QUEUES[which];
-  el.innerHTML = head(q.title, `<button class="btn filled" id="apply">${icon("check")}${q.applyLabel} <span class="badge" id="written">0</span></button>
+  el.innerHTML = head(which, `<button class="btn filled" id="apply">${icon("check")}${q.applyLabel} <span class="badge" id="written">0</span></button>
       <button class="btn" id="refresh">${icon("refresh")}Refresh</button>`) +
-    `<div id="note">${note || `<div class="banner info">${icon("info")}<div><b>${esc(screen(which).what)}</b><div class="fix">${esc(q.note)}</div></div></div>`}</div>
-     <div class="split"><div id="left" class="faint">Loading…</div><div id="right" class="panel-sticky"></div></div>`;
+    `<div id="note">${note}</div><div id="flow"></div><div class="split"><div id="left" class="faint">Loading…</div><div id="right" class="panel-sticky"></div></div>${stepFoot(which)}`;
   $("refresh").onclick = () => go(which);
   $("apply").disabled = true;
   if (!state.run) { $("left").innerHTML = emptyRun(); return; }
-  const d = await run(which, q.list);
+  const [d, g] = await Promise.all([run(which, q.list), flowOf(which, $("flow"))]);
+  graph = g;
   if (d.event === "error") { $("left").innerHTML = banner(d); return; }
   const rows = q.rows(d);
   let i = Math.max(0, rows.findIndex((r) => r.status === "open")), written = 0, pending = false;
   const tally = () => { $("written").textContent = String(written); $("apply").disabled = !rows.some((r) => r.status === "written in"); };
-  const t = grid($("left"), rows, q.cols, {labels: q.labels, selected: i, cell: (r, c) => c === "status" || c === "why" ? chip(r[c]) : esc(fmt(r[c])),
+  const t = grid($("left"), rows, q.cols, {labels: q.labels, selected: i, cell: (r, c) => c === "status" || c === "why" ? chip(r[c], q.written) : esc(fmt(r[c])),
                                            onPick: (k) => { i = k; show(); }});
   const move = (step) => { i = Math.min(rows.length - 1, Math.max(0, i + step)); show(); };
+  const local = () => {  // the stepper's line, from the rows this page holds: no server call per answer
+    const open = rows.filter((r) => r.why === "decide" && r.status === "open").length, w = rows.filter((r) => r.status === "written in").length;
+    if (steps.steps && (open || w)) { steps.steps[which] = {state: "attention", line: open ? `${fmt(open)} to decide` : `${fmt(w)} ${q.written}, to apply`}; rail(); }
+  };
   const answer = async (value) => {
     if (pending) return;  // a key held down or pressed twice: one answer for the row, then the next row
     pending = true;
     try {
       const r = rows[i], e = await run(which, q.one, q.answer(r, value));
       if (e.event === "error") { $("said").innerHTML = banner(e); return; }
-      r.status = "written in"; written++; tally(); t.redraw();
+      r.status = "written in"; written++; tally(); t.redraw(); local();
       const next = rows.findIndex((x, k) => k > i && x.status === "open");
       if (next >= 0) i = next;
       show();
@@ -633,10 +959,10 @@ async function review(el, which, note = "") {
   };
   const applied = (e) => {
     if (e.event === "error") { $("note").innerHTML = banner(e); return; }
-    if (q.rerun) return go(which, `<div class="banner info">${icon("check")}<div><b>Answers applied: the run was resolved again, and these are the records still open.</b></div></div>`);
+    if (q.rerun) return go(which, `<div class="banner info">${icon("check")}<div><b>Answers applied: matched again, and these are the records still open.</b></div></div>`);
     $("note").innerHTML = q.applied(e);
     rows.forEach((r) => { if (r.status === "written in") r.status = "applied"; });
-    written = 0; tally(); t.redraw(); counts();
+    written = 0; tally(); t.redraw(); refresh(); flowOf(which, $("flow"));
   };
   $("apply").onclick = () => q.rerun ? action(which, q.apply, "Apply", applied) : run(which, q.apply).then(applied);
   const keys = Object.fromEntries(Object.entries(q.keys).map(([k, value]) => [k, () => answer(value)]));
@@ -646,25 +972,16 @@ async function review(el, which, note = "") {
 }
 
 function emptyRun() {
-  return `<div class="card empty">${icon("folder")}<h2>${state.run ? `No run in ${esc(state.run)} yet` : "Choose a run folder"}</h2>
-    <p class="muted">${state.run ? "Map the file's columns and check them, then resolve the records into this folder." : "Pick the run folder in the bar above: an existing one, or a new one to resolve records into."}</p>
-    <div class="actions" style="justify-content:center">${state.run ? '<a class="btn outlined" data-go="columns">Check columns</a><a class="btn filled" data-go="run">Resolve records</a>' : '<button class="btn filled" data-pick>Choose a run folder</button>'}</div></div>`;
+  return `<div class="card empty">${icon("folder")}<h2>${state.run ? `Nothing matched in ${esc(state.run)} yet` : "Choose a workspace"}</h2>
+    <p class="muted">${state.run ? "Prepare your data, then find matches into this workspace." : "Pick the workspace in the bar above: an existing one, or a new one to match records into."}</p>
+    <div class="actions" style="justify-content:center">${state.run ? '<a class="btn outlined" data-go="columns">2 · Prepare your data</a><a class="btn filled" data-go="run">3 · Find matches</a>' : '<button class="btn filled" data-pick>1 · Choose a workspace</button>'}</div></div>`;
 }
 
-// The counts beside the navigation's review pages, from the run folder: from the page's own describe run when it made
-// one, else from one of their own.
-async function counts(d) {
-  if (!d) { if (!state.run) return; d = await run("records", "describe run"); }
-  const set = (id, n) => { const el = document.querySelector(`[data-screen="${id}"] .count`); if (el) el.textContent = n ? n.toLocaleString() : ""; };
-  if (d.event === "error" || !d.pairs) { set("pairs", 0); set("kinds", 0); return; }
-  set("pairs", d.pairs.decide); set("kinds", d.kinds.decide + d.kinds.measure);
-}
-
-// The run folder picker, as a console's project picker: recent folders, or a new one.
+// The workspace picker, as a console's project picker: recent workspaces, or a new one.
 function pick() {
   const recent = JSON.parse(store("recent") || "[]"), dlg = $("dlg");
-  dlg.innerHTML = `<form method="dialog"><div class="dlg-body"><h2>Run folder</h2><p class="about">The folder a run writes and every page reads. A new folder is fine: resolve records into it.</p>
-    <label class="field"><span class="lab">Run folder *</span><input type="text" id="pick-run" value="${esc(state.run || "")}" placeholder="runs/customers" required></label>
+  dlg.innerHTML = `<form method="dialog"><div class="dlg-body"><h2>Choose a workspace</h2><p class="about">The folder matching writes, and every step reads. A new folder is fine.</p>
+    <label class="field"><span class="lab">Workspace *</span><input type="text" id="pick-run" value="${esc(state.run || "")}" placeholder="runs/customers" required></label>
     ${recent.length ? `<span class="lab faint" style="font-size:12px">Recent</span><div class="tablecard"><table><tbody>${recent.map((r) => `<tr class="pick" data-r="${esc(r)}"><td style="width:40px">${icon("folder")}</td><td>${esc(r)}</td></tr>`).join("")}</tbody></table></div>` : ""}</div>
     <div class="dlg-foot"><span class="grow"></span><button class="btn" value="cancel" formnovalidate>Cancel</button><button class="btn filled" value="open">Open</button></div></form>`;
   dlg.querySelectorAll("[data-r]").forEach((tr) => tr.onclick = () => { $("pick-run").value = tr.dataset.r; });
@@ -676,7 +993,7 @@ function setRun(r) {
   state.run = r;
   store("run", r);
   store("recent", JSON.stringify([r, ...JSON.parse(store("recent") || "[]").filter((x) => x !== r)].filter(Boolean).slice(0, 6)));
-  $("picker").innerHTML = `${icon("folder")}<span>${esc(r || "Choose a run folder")}</span>${icon("down")}`;
+  $("picker").innerHTML = `${icon("folder")}<span>${esc(r ? `Workspace: ${r}` : "Choose a workspace")}</span>${icon("down")}`;
   go(current);
 }
 
@@ -693,8 +1010,8 @@ function help() {
 async function go(id, arg) {
   current = id; keyHandler = null;
   document.body.classList.remove("nav-open");
-  $("nav").querySelectorAll(".navitem").forEach((b) => b.setAttribute("aria-current", b.dataset.screen === id ? "page" : "false"));
-  counts(await SCREENS[id]($("screen"), arg));
+  rail();
+  await refresh(await SCREENS[id]($("screen"), arg));
 }
 
 document.addEventListener("click", (e) => {
@@ -715,9 +1032,6 @@ document.addEventListener("keydown", (e) => {
   if (!d.commands) { $("screen").innerHTML = `<div style="padding:24px">${banner({event: "error", error: d.error || "This page needs the link nayose open ui printed"})}</div>`; return; }
   COMMANDS = Object.fromEntries(d.commands.map((c) => [c.name, c]));
   state.input = store("input") || "";
-  $("nav").innerHTML = [...new Set(LAYOUT.screens.map((s) => s.section))].map((sec) => `<h3>${esc(sec)}</h3>` + LAYOUT.screens.filter((s) => s.section === sec).map((s) =>
-    `<button class="navitem" data-screen="${s.id}" title="${esc(s.what)}">${icon(s.icon)}<span>${esc(s.title)}</span><span class="count"></span></button>`).join("")).join("");
-  $("nav").querySelectorAll(".navitem").forEach((b) => b.onclick = () => go(b.dataset.screen));
   $("menu").onclick = () => document.body.classList.toggle(matchMedia("(max-width: 860px)").matches ? "nav-open" : "collapsed");
   $("picker").onclick = pick;
   $("help").onclick = help;
