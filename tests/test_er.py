@@ -1063,6 +1063,7 @@ def test_a_line_change_sets_right_what_people_decided_and_never_sets_wrong_what_
     both = d([(9.0, True, False), (8.5, True, False), (12.0, True, True), (7.0, True, True), (13.0, False, True)])
     assert line_change(both, 8.0) == (9.5, 2)  # up sets right two, down (7) one; the unnamed pair no line accepts
     assert line_change(d([]), 8.0) is None
+    assert line_change(both, 8.0, 6.0, 9.0) == (7.0, 1)  # in the band people review only: past it, pairs nobody looked at
 
 
 def test_describe_method_scores_people_s_pairs_again_and_an_audit_stays_one_across_rounds(tmp_path, wide_band):
@@ -1147,7 +1148,8 @@ def test_a_bad_rule_is_found_tried_and_left_out_and_audits_reach_every_kind_of_l
     assert code_ == 0 and next(x for x in d["rules"] if x["name"] == bad.name)["different"] == 3
     assert {"drop_rules": [bad.name]} in [x["change"] for x in d["proposals"]]
     code_, tried = say("try", "method", "--drop", bad.name, *pipe)
-    assert code_ == 0 and tried["fixes"] >= 1 and tried["breaks"] == 0 and tried["apart"] >= tried["fixes"]
+    assert code_ == 0 and tried["different_joined"] == {"base": 3, "variant": 0} and tried["same_apart"]["variant"] <= 1  # false merges gone
+    assert len(tried["fixed"]) >= 3 and tried["apart"] >= 3
     entities = pd.read_parquet(ws / "gold.parquet")["cluster_id"].nunique()
     assert tried["base"]["entities"] == entities + 1  # the trial ran without people's decisions: the pair they joined is apart
     assert say("try", "method", "--drop", "nope", *pipe)[0] == 2 and say("try", "method", *pipe)[0] == 2
@@ -2114,7 +2116,9 @@ def test_the_ui_layout_names_only_declared_commands_parameters_and_result_fields
     from er.report import GRAPH_NODES
     screens, flow = {sc["id"]: sc for sc in layout["screens"]}, layout["workflow"]
     assert all(set(sc["strip"]) <= set(GRAPH_NODES) for sc in screens.values())  # each page's flow strip: stages describe matching gives
-    assert set(flow["steps"]) <= {*screens, "workspace"} and all(x in flow["steps"] for x in screens if x != "records")  # every page a step
+    loop = flow["improve"]  # the loop's page: after a step, and back to the one that runs the method again
+    assert set(flow["steps"]) <= {*screens, "workspace"} and all(x in flow["steps"] for x in screens if x not in ("records", loop["screen"]))  # every page a step
+    assert loop["screen"] in screens and {loop["after"], loop["back"]} <= set(flow["steps"])
     assert all(l["to"] in flow["steps"] and {(l["screen"], c) for c in l["via"]} <= placed for l in flow["loops"])
 
 
@@ -2206,10 +2210,13 @@ def test_the_page_answers_once_per_key_shows_any_row_and_says_when_the_server_is
         assert page.inner_text("#written") == "1" and not page.query_selector("#said .banner")  # one answer, no busy folder
         assert "nayose decide pair" in page.inner_text("#term-body")  # the command line it ran
         states = page.evaluate("""() => {  // each step's state, read from the workspace as describe workspace gives it
-            const run = (pairs, kinds) => ({records: 9, entities: 7, pairs: {decide: 0, audit: 0, written_in: 0, ...pairs}, kinds: {decide: 0, measure: 0, written_in: 0, ...kinds}});
+            const run = (pairs, kinds, audits = {checked: 0, false: 0}) => ({records: 9, entities: 7, round: 1, audits,
+              pairs: {decide: 0, audit: 0, written_in: 0, ...pairs}, kinds: {decide: 0, measure: 0, written_in: 0, ...kinds}});
             const at = (d) => { const p = progress(d); return [p.next, p.steps.pairs.state, p.steps.kinds.state]; };
-            return [at({event: "error", error: "no run"}), at(run({decide: 3}, {measure: 20})), at(run({}, {measure: 20})), at(run({}, {written_in: 2}))]; }""")
-        assert states == [["columns", "later", "later"], ["pairs", "attention", "optional"], ["results", "done", "optional"], ["kinds", "done", "attention"]]
+            return [at({event: "error", error: "no run"}), at(run({decide: 3}, {measure: 20})), at(run({}, {measure: 20})), at(run({}, {written_in: 2})),
+                    at(run({}, {measure: 20}, {checked: 50, false: 0})), at(run({}, {written_in: 2}, {checked: 12, false: 1}))]; }""")
+        assert states == [["columns", "later", "later"], ["pairs", "attention", "optional"], ["improve", "done", "optional"], ["kinds", "done", "attention"],
+                          ["results", "done", "optional"], ["improve", "done", "attention"]]  # the loop until audits hold; a false one first
         assert page.query_selector(".rail li.attention .sub").inner_text().endswith("to decide")  # the stepper points at the open pairs
         page.click(".navitem[data-screen=run]")
         page.wait_for_selector(".node[data-node=candidates]")
@@ -2240,6 +2247,51 @@ def test_the_page_answers_once_per_key_shows_any_row_and_says_when_the_server_is
         lost = page.evaluate("() => run('pairs', 'list pairs')")
         assert lost["event"] == "error" and lost["error"].startswith("Lost the server")
         browser.close()
+
+
+def test_the_improve_page_tries_a_line_once_adopts_it_and_opens_the_next_round(tmp_path, population):
+    import threading
+    from http.server import ThreadingHTTPServer
+    from er import cli, folder, ui
+    sync = pytest.importorskip("playwright.sync_api")
+    s, p, g = population
+    g.df.to_parquet(tmp_path / "all.parquet", index=False)
+    ws = tmp_path / "run"
+    assert cli.main(["resolve", "records", str(tmp_path / "all.parquet"), "--workspace", str(ws), "--format", "json"]) == 0
+    server = ui.Server(str(ws), str(tmp_path / "workspaces"))
+    httpd = ThreadingHTTPServer(("127.0.0.1", 0), ui.handler(server))
+    threading.Thread(target=httpd.serve_forever, daemon=True).start()
+    with sync.sync_playwright() as pw:
+        try:
+            browser = pw.chromium.launch()
+        except sync.Error:
+            httpd.shutdown()
+            pytest.skip("no browser: .venv/bin/python -m playwright install chromium")
+        page = browser.new_page(viewport={"width": 1280, "height": 900})
+        page.goto(f"http://127.0.0.1:{httpd.server_address[1]}/?token={server.token}")
+        page.wait_for_selector(".next")
+        assert "round 1" in page.inner_text(".rail li.loopstep .sub")  # the loop, under step 4
+        page.click(".navitem[data-screen=pairs]")
+        page.click(".stepfoot [data-go=improve]")  # from step 4's foot
+        page.wait_for_selector("#line svg")
+        assert page.inner_text("h1") == "Improve matching" and "as tuned" in page.inner_text("#rounds")
+        line = p.fs.min_match_weight
+        page.fill("#at", f"{line + 2:g}")  # the line dragged: counted at once, and offered as a trial
+        page.dispatch_event("#at", "input")
+        assert page.inner_text("#at-says").startswith(f"At {line + 2:g}") and page.get_attribute("#at-line", "x1") != page.get_attribute("#line .now", "x1")
+        page.click("#at-says [data-try]")
+        page.click("#at-says [data-try]", force=True)  # pressed again while it runs: one trial
+        page.wait_for_selector(".trial", timeout=120_000)
+        assert "Joined, people said different" in page.inner_text(".trial") and len([*(ws / "trials").glob("[0-9]*.json")]) == 1
+        page.click("[data-adopt]")
+        page.wait_for_selector("#note .banner", timeout=120_000)  # matched again: the next round's pairs
+        assert page.inner_text("h1").endswith("Review possible matches") and folder.method(ws) == {"line": line + 2}
+        page.wait_for_function("() => document.querySelector('.rail li.loopstep .sub').textContent.includes('round 2')")
+        page.click(".navitem[data-screen=improve]")
+        page.wait_for_selector("#line svg")
+        assert "Back to the tuned method" in page.inner_text("#out") and not page.query_selector(".trial")  # the trial adopted: no card
+        browser.close()
+    httpd.shutdown()
 
 
 def test_describe_matching_draws_the_pipeline_with_the_run_s_numbers(tmp_path, population):

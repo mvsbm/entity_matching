@@ -758,9 +758,10 @@ def run_config(p: Pipeline, s: Settings) -> str:  # what decides the answer: the
 def trial(ws: Path, base: Pipeline, variant: Pipeline, method: dict, s: Settings, echo: Callable[[dict], None] | None = None) -> dict:
     """The workspace's method (`base`) and a variant of it (`method`, as method.toml would say it), each run on the
     workspace's files without people's decisions, so neither is judged on pairs it was told; both keep the run's
-    fitted model and people's person/company answers. Compared on the pairs people decided (fixes: pairs the variant
-    sets right that the base got wrong; breaks: the other way round), and without labels: links, the false ones the
-    model expects, entities, and the pairs of records the variant puts apart or together. The base's clusters are
+    fitted model and people's person/company answers. Compared on the pairs people decided, each method's two kinds of
+    mistake (different_joined: pairs people said are different, in one customer: a false merge; same_apart: pairs
+    they said are the same, apart), with the pairs the variant sets right and wrong; and without labels: links, the
+    false ones the model expects, entities, and the pairs of records the variant puts apart or together. The base's clusters are
     kept for the next trial of the same method on the same files (trials/base.parquet); each trial's result in
     trials/<n>.json. Two trials of one workspace take turns. O(two full runs without the fit) + O(N + D)."""
     trials, uid = ws / folder.TRIALS, s.data.unique_id
@@ -791,14 +792,17 @@ def trial(ws: Path, base: Pipeline, variant: Pipeline, method: dict, s: Settings
         decided = applied(ws, uid)
         same = (decided["decision"] == "match").to_numpy()
         together = lambda gold: (decided[l].map(gold.set_index(uid)["cluster_id"]) == decided[r].map(gold.set_index(uid)["cluster_id"])).to_numpy()
-        was, now = together(old) == same, together(new) == same
+        joined_before, joined_after = together(old), together(new)
+        was, now = joined_before == same, joined_after == same
         pairs = lambda rows: decided.loc[rows, [l, r, "decision"]].head(50).rename(columns={l: "id_l", r: "id_r"}).to_dict("records")
         both = old.merge(new, on=uid, suffixes=("_base", "_variant"))
         c2 = lambda sizes: int((sizes * (sizes - 1) // 2).sum())  # pairs of records inside clusters of these sizes
         kept_together = c2(both.groupby(["cluster_id_base", "cluster_id_variant"]).size())
         n = max((int(f.stem) for f in trials.glob("*.json") if f.stem.isdigit()), default=0) + 1
         result = dict(trial=n, at=datetime.now().isoformat(timespec="seconds"), method=method, base=before, variant=after,
-                      fixes=int((now & ~was).sum()), breaks=int((was & ~now).sum()), fixed=pairs(now & ~was), broken=pairs(was & ~now),
+                      different_joined=dict(base=int((joined_before & ~same).sum()), variant=int((joined_after & ~same).sum())),
+                      same_apart=dict(base=int((~joined_before & same).sum()), variant=int((~joined_after & same).sum())),
+                      fixed=pairs(now & ~was), broken=pairs(was & ~now),
                       apart=c2(both["cluster_id_base"].value_counts()) - kept_together, together=c2(both["cluster_id_variant"].value_counts()) - kept_together)
         (trials / f"{n}.json.tmp").write_text(json.dumps(result, ensure_ascii=False, default=str), encoding="utf-8")
         os.replace(trials / f"{n}.json.tmp", trials / f"{n}.json")
