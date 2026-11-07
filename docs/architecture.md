@@ -206,6 +206,12 @@ Writes each table as Parquet under a temporary name, with the reports (9). Once 
 
 `Run.increment` reads back from the run folder `state/model.json`, `state/scoring.json`, `state/records/`, `state/rule_clusters.parquet`, `gold.parquet` and `kind_answers/`, and runs steps 1 and 3–8 on the batch, as each step's *Increment* line above says; `Run.report` then keeps the previous sheet's open rows. It takes no `--kind-labels` and no `--model`: the stored records' kinds and the model come from the full run, and `scripts/resolve.py` refuses both with an increment. It stops, with what to fix, when the folder holds no run, and when the pipeline or the column mapping is not the one the full run used (`state/config.txt`): its batch would be resolved otherwise than the records it joins.
 
+`Run.match` runs the same steps on a batch and writes nothing: for each record, the entity it would join, or a new one, the rule or the model's best weight that links it, or why it is set aside (`Run._join` holds the steps both share).
+
+`Run.rerun` is a full run again on the record files the run read: the full run's, then each increment's, in order, as `steps.json` names them (`folder.inputs`). Each must still hold what was read, by its SHA-256; a file the scheduler moved to `done/` is found through `jobs.jsonl`. An ID's records stand from the first file that holds it exactly once: copies in earlier files held other content, copies in later ones were already in the run (`Run._set_aside_in_order`).
+
+- **Why:** two stored records the increments never paired meet again only in a full run, and a full run on all the batches read together would set aside an ID sent twice with other content, which the increments kept. In order, the rerun keeps the records the increments kept and compares every pair of them again.
+
 ## 6 · Decisions
 
 ![LLD 3, decisions: people's reviewed file and the run's gold go into Run.decide, which checks the file, merges each match pair's clusters, keeps the kinds and writes gold, decisions/part-n and steps.json](diagrams/decisions.svg)
@@ -213,7 +219,8 @@ Writes each table as Parquet under a temporary name, with the reports (9). Once 
 `scripts/resolve.py --decisions` gives people's decisions back to a written run, scoring nothing. Each `match` pair merges its two clusters, each cluster one node; each record keeps its kind, and a merged customer's kind follows its records again. A `no_match` pair splits nothing at once, but a full run on the folder never accepts it.
 
 - **Why:** people's work must change the answer at once, and must survive a full re-run. `decisions/` is not a run file, so `--overwrite` keeps it and the full run applies it again. `qa.md`, `report.txt` and the sheets describe the run before the decisions until the next run or increment writes them again.
-- **Code:** `Run.decide` → `source.decisions` (the columns, a decided row without both IDs, the values, a pair decided both ways), `source.known` (every ID a record of the run), `cluster.merge`, `run.customer_kinds`, `folder.stage`
+- **One at a time:** an answer can also be written into the run folder's sheet, a decision into `review.parquet`, a kind into `kind_review.parquet`, under the lock and staged as every run file is (`folder.type_in`). Nothing is applied until the sheet is given back; an increment keeps the decisions written in.
+- **Code:** `Run.decide` → `source.decisions` (the columns, a decided row without both IDs, a sheet with no decision, the values, a pair decided both ways), `source.known` (every ID a record of the run), `cluster.merge`, `run.customer_kinds`, `folder.stage`
 
 ## 7 · Person or company
 
@@ -259,11 +266,11 @@ Kept on disk. Steps are numbered as in [the run](#4--the-run); the diagram above
 | `state/model.json` | 8, full runs only | increments | the fitted model: λ, and m and u per level |
 | `state/scoring.json` | 8, every run | increments | the u the run scored with; per comparison, the exact u it was sampled alongside and its last drift check |
 | `state/config.txt` | 8, full runs only | increments | the hash of the pipeline and the settings that shape the records (column mapping, `[locale]`, the flag's values) the full run used |
-| `steps.json` | 8, and decisions | you; an audit | one entry per run, increment or set of decisions: when, the code's commit and the files changed in this copy, the config hash, each file read with its size and SHA-256, and each step's Big-O with its numbers, time and peak memory |
+| `steps.json` | 8, and decisions | you; an audit; a rerun | one entry per run, increment or set of decisions: when, the code's commit and the files changed in this copy, the config hash, each file read with what it is (records, decisions, answers, the name model), its size and SHA-256, and each step's Big-O with its numbers, time and peak memory |
 | `kind_answers/part-n.parquet` | 8, one part per sheet given | every later run on the folder | people's person/company answers, each sheet's filled rows as given; the newest per record stands. Kept, like `decisions/`, by `--overwrite` |
 | `pending.json` | 8, deleted when done | the next run, increment or decisions | moves owed by an unfinished write |
 | `.lock` | every writer | every writer | the run folder's lock: one writer at a time |
-| `jobs.jsonl` | `scripts/schedule.py` | people | one line per file per pass: the file, its SHA-256, the outcome, the attempts |
+| `jobs.jsonl` | `scripts/schedule.py` | people; a rerun | one line per file per pass: the file, its SHA-256, the outcome, the attempts, and where a file that ran went |
 | `qa.md`, `review.parquet` | 9 | people | the label-free report; the pairs to decide and to audit |
 | `report.txt` | 9 | whoever helps with the run | the run on one page, with no record's value in it |
 | `kind_review.parquet` | 9, full runs | people | records to decide 1 person or 2 company, and a draw to measure the engine and the flag |

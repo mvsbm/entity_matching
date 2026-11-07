@@ -1,8 +1,9 @@
 """The reports for people, from a run's tables (er.run.Run): qa (the label-free checks, and the summary in words),
 fill_rates, review_sheet (scored pairs as people judge them), carry_over (the open review queue across increments) and
 report_text (the run on a page with no record's value in it). Run.report builds them; Run.write stages them with the
-run's files.
+run's files. From a written run folder: describe_run (what it holds) and describe_entity (one record's entity).
 """
+import json
 import math
 import platform
 import re
@@ -16,9 +17,9 @@ import numpy as np
 import pandas as pd
 
 from er.candidates import q
-from er.config import sources_text
-from er.folder import DECISIONS
-from er.io import code_version
+from er.config import InputError, sources_text
+from er.folder import DECISIONS, PENDING
+from er.io import code_version, table_after
 from er.kind import COMPANY, PERSON, SAYS, UNSURE
 from er.match import levels, named_sql, parameters, pattern_coverage, review_floor, scaled_prior
 from er.source import lit
@@ -266,3 +267,55 @@ def review_sheet(run: "Run", pairs: pd.DataFrame) -> pd.DataFrame:
     return out[[*(["why"] if "why" in out else []), "decision", run.l, run.r, "match_weight", "match_probability", "accepted", "sources",
                 *(f"{f}_{side}" for f in fields for side in ("l", "r")), *(x for c in comps for x in (c.name, f"{c.name}_bits"))]
                ].reset_index(drop=True)
+
+
+def describe_run(con: duckdb.DuckDBPyConnection, out: Path, uid: str) -> dict:
+    """What the run folder `out` holds, for people: records and entities, the largest entities, each run so far
+    (steps.json), the pairs and kinds still open and the answers written in but not given back, the records set
+    aside, a write still owed, and the last summary (qa.md). O(N) in SQL + O(sheet rows)."""
+    if not (out / "gold.parquet").exists():
+        raise InputError(f"no run in {out}", fix="resolve records into that folder first")
+    gold = f"read_parquet({lit(out / 'gold.parquet')})"
+    records, entities = con.execute(f"SELECT count(*), count(DISTINCT cluster_id) FROM {gold}").fetchall()[0]
+    largest = con.execute(f"SELECT cluster_id AS entity, count(*) AS records FROM {gold} GROUP BY 1 ORDER BY 2 DESC, 1 LIMIT 10").fetchall()
+    log = json.loads((out / "steps.json").read_text(encoding="utf-8"))["runs"] if (out / "steps.json").exists() else []
+    runs = [dict(at=x["at"], what="decisions" if "decisions" in x else "increment" if x.get("part") else "full run",
+                 files=[f["file"] for f in x.get("inputs", []) if f.get("role") != "name model"],
+                 seconds=round(sum(step["seconds"] for step in x["steps"]), 1)) for x in log]
+
+    def queue(sheet: str, answer: str, whys: tuple[str, ...]) -> dict:  # each kind of row still open, and the answers written in
+        rows = pd.read_parquet(out / sheet) if (out / sheet).exists() else pd.DataFrame(columns=["why", answer])
+        return {**{w: int(((rows["why"] == w) & rows[answer].isna()).sum()) for w in whys}, "written_in": int(rows[answer].notna().sum())}
+    aside = out / "set_aside"
+    summary = table_after((out / "qa.md").read_text(encoding="utf-8"), "## summary") if (out / "qa.md").exists() else pd.DataFrame()
+    return dict(run=str(out), records=records, entities=entities, largest=[dict(entity=e, records=n) for e, n in largest], runs=runs,
+                pairs=queue("review.parquet", "decision", ("decide", "audit")), kinds=queue("kind_review.parquet", "kind", ("decide", "measure")),
+                set_aside=con.execute(f"SELECT count(*) FROM read_parquet({lit(aside / '*.parquet')})").fetchall()[0][0]
+                if any(aside.glob("*.parquet")) else 0,
+                write_owed=(out / PENDING).exists(), summary=summary.values.tolist())
+
+
+def describe_entity(con: duckdb.DuckDBPyConnection, out: Path, uid: str, record: str, fields: list[str]) -> dict:
+    """The entity of `record` in the run folder `out`: each of its records with its fields and kind, and every link
+    between them, from a rule (rule_kept), the model (matches, with its weight) or people (decisions). O(N) in SQL."""
+    u, l, r = q(uid), q(f"{uid}_l"), q(f"{uid}_r")
+    gold = f"read_parquet({lit(out / 'gold.parquet')})"
+    if not (out / "gold.parquet").exists():
+        raise InputError(f"no run in {out}", fix="resolve records into that folder first")
+    if not (hit := con.execute(f"SELECT cluster_id FROM {gold} WHERE {u} = ?", [record]).fetchall()):
+        raise InputError(f"{record}: no record of the run in {out}",
+                         fix="check the ID as the run wrote it: a spreadsheet may read 0000000151 as the number 151")
+    entity = hit[0][0]
+    con.execute(f"CREATE OR REPLACE TEMP TABLE er_entity AS SELECT * FROM {gold} WHERE cluster_id = ?", [entity])
+    stored = f"read_parquet({lit(out / 'state' / 'records' / '*.parquet')}, union_by_name = true)"
+    have = [f for f, in con.execute(f"SELECT column_name FROM (DESCRIBE SELECT * FROM {stored})").fetchall() if f in fields]
+    rows = con.execute(f"SELECT e.*, {', '.join(f's.{q(f)}' for f in have) or 'NULL AS none'} FROM er_entity e "
+                       f"JOIN {stored} s USING ({u}) ORDER BY e.{u}").df()
+    among = f"WHERE {l} IN (SELECT {u} FROM er_entity) AND {r} IN (SELECT {u} FROM er_entity)"
+    links = [f"SELECT {l}, {r}, rule AS by, NULL::DOUBLE AS weight FROM read_parquet({lit(out / 'rule_kept' / '*.parquet')}) {among}",
+             f"SELECT {l}, {r}, 'fs' AS by, match_weight AS weight FROM read_parquet({lit(out / 'matches' / '*.parquet')}) {among}"]
+    if any((out / DECISIONS).glob("*.parquet")):
+        links.append(f"SELECT {l}, {r}, 'people: ' || decision AS by, NULL FROM read_parquet({lit(out / DECISIONS / '*.parquet')}) {among}")
+    found = con.execute(" UNION ALL ".join(links) + " ORDER BY 1, 2").df()
+    plain = lambda d: d.astype(object).where(d.notna(), None).to_dict("records")  # JSON has no NaN
+    return dict(record=record, entity=entity, records=plain(rows), links=plain(found))

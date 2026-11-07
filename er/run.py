@@ -109,6 +109,7 @@ class Run:
         self.notes: list[str] = []            # what the loader detected or fixed, for the run's summary; never a record's value
         self.examples: list[str] = []         # notes that quote a record's value: the summary and qa.md show them, report.txt doesn't
         self.added: int | None = None         # an increment's new records (0: nothing new)
+        self.part = 0                         # the part an increment writes: one past the run's highest
         self.gated = pd.DataFrame()           # the oversized blocks the candidates checked, and what was decided
         self.present: dict = {}               # each field the file holds, and the source columns it is built from
         self.scoring: dict | None = None      # the model with u from this file (fit): what the gate and the scores use
@@ -143,7 +144,7 @@ class Run:
         er.standardize.prepare (each record on its own, so chunking changes nothing) into the table `into`."""
         t = time.perf_counter()
         src = open_source(path, self.con, {c for f, alts in self.settings.columns.items() if f != "entity" for alt in alts for c in alt})
-        self.notes, self.inputs = list(src.notes), file_facts(src.files)
+        self.notes, self.inputs = list(src.notes), file_facts(src.files, "records")
         present = self.present = present_fields(self.settings, src.columns)
         hints = suggest(src, self.con, [f for f in self.settings.columns if f not in present and f != "entity"], self.settings.detect)
         try:
@@ -160,7 +161,7 @@ class Run:
             if fitted != here:
                 raise InputError(f"{path}: the model was fitted on other comparison levels (only in the model: {sorted(fitted - here)}; "
                                  f"only here: {sorted(here - fitted)})", fix="run without --model: the run then fits its model on this file")
-        rows = self._set_aside(src.sql, stored)
+        rows = self._set_aside(src.sql, stored, src.ordered)
         self.con.execute(f"DROP TABLE IF EXISTS {into}")
         self.n = 0
         if not self._count(rows):
@@ -176,7 +177,7 @@ class Run:
                 self.con.register("er_given_ids", self.given[[self.uid]])
                 known(self.con, f"SELECT {q(self.uid)} AS id FROM er_given_ids", rows, self.uid, self.kind_labels, path)
                 self.con.unregister("er_given_ids")
-            self.inputs += file_facts([self.settings.root / NAME_MODEL, *([Path(self.kind_labels)] if self.kind_labels else [])])
+            self.inputs += file_facts([self.settings.root / NAME_MODEL], "name model") + file_facts([self.kind_labels] if self.kind_labels else [], "answers")
         normalized, used = [*rules.normalized(), *fs.normalized()], rules.used() | fs.used()
         reader = self.con.cursor().sql(f"SELECT * FROM {rows}").to_arrow_reader(self.chunk_rows)  # its own cursor: inserts go on alongside
         for i, batch in enumerate(reader):
@@ -192,13 +193,17 @@ class Run:
                      "decided by people": self._count(f"{into} WHERE kind_by = 'people'"), "held back": self._count(f"{into} WHERE kind_held")}
         self._done("load", "O(N·L)", f"O({self.n:,}·L)", t, records=self.n, disabled=len(self.disabled), set_aside=self._count("set_aside"), **kinds)
 
-    def _set_aside(self, src: str, stored: str | None) -> str:
+    def _set_aside(self, src: str, stored: str | None, ordered: bool = False) -> str:
         """The records a run can resolve. Rows identical in every column are kept once. Set aside, with the reason, in
         the table set_aside (written to set_aside/, to be fixed and added by an increment): a record without an ID;
         every record of an ID that holds different content; with `stored` (an increment), a record already in the run.
-        O(N) to count; the rest only when something is off."""
+        `ordered` (files read in order, er_file: a rerun) sets aside as an increment would have: an ID's records stand
+        from the first file that holds it once, earlier ones held different content, later ones were already in the
+        run. O(N) to count; the rest only when something is off."""
         u = q(self.uid)
         blank, known = f"nullif(trim({u}), '') IS NULL", f"{u} IN (SELECT {u} FROM {stored})" if stored else "FALSE"
+        if ordered:
+            return self._set_aside_in_order(src, blank)
         n, ids, empty, clash = self.con.execute(f"""SELECT count(*), count(DISTINCT {u}), count(*) FILTER (WHERE {blank}),
             count(*) FILTER (WHERE {known}) FROM {src}""").fetchall()[0]
         self.con.execute(f"CREATE OR REPLACE TABLE set_aside AS SELECT *, ''::VARCHAR AS reason FROM {src} WHERE FALSE")
@@ -215,6 +220,25 @@ class Run:
         self.notes += [f"{k:,} records set aside: {reason}" for reason, k in
                        self.con.execute("SELECT reason, count(*) FROM set_aside GROUP BY 1 ORDER BY 1").fetchall()]
         return f"(SELECT * FROM er_in WHERE NOT ({blank}) AND {u} NOT IN (SELECT {u} FROM set_aside WHERE {u} IS NOT NULL))"
+
+    def _set_aside_in_order(self, src: str, blank: str) -> str:
+        """_set_aside on files read in order: per ID, the first file holding it exactly once (er_first); within a file,
+        rows identical in every column are kept once. O(N)."""
+        u = q(self.uid)
+        n = self._count(src)
+        if n and not self._count(f"{src} WHERE NOT ({blank})"):
+            raise InputError(f"no record has an ID in column {self.uid}", fix="map id in config/settings.toml [columns] to the column holding each record's ID")
+        self.con.execute(f"""CREATE OR REPLACE TABLE er_in AS WITH d AS (SELECT DISTINCT * FROM {src}),
+            once AS (SELECT {u}, min(er_file) AS er_first FROM (SELECT {u}, er_file FROM d WHERE NOT ({blank}) GROUP BY ALL HAVING count(*) = 1) GROUP BY 1)
+            SELECT d.*, once.er_first FROM d LEFT JOIN once USING ({u})""")
+        if (kept := self._count("er_in")) < n:
+            self.notes.append(f"{n - kept:,} rows identical to another in every column, kept once")
+        keep = f"NOT ({blank}) AND coalesce(er_file = er_first, FALSE)"
+        self.con.execute(f"""CREATE OR REPLACE TABLE set_aside AS SELECT * EXCLUDE (er_file, er_first), CASE WHEN {blank} THEN 'no ID'
+            WHEN er_file > er_first THEN 'already in the run' ELSE 'the same ID with different content' END AS reason FROM er_in WHERE NOT ({keep})""")
+        self.notes += [f"{k:,} records set aside: {reason}" for reason, k in
+                       self.con.execute("SELECT reason, count(*) FROM set_aside GROUP BY 1 ORDER BY 1").fetchall()]
+        return f"(SELECT * EXCLUDE (er_file, er_first) FROM er_in WHERE {keep})"
 
     def budget(self) -> pd.DataFrame:
         """Exact block sizes on this file, per rule and generator, by group-by, before any join: pairs, pairs per record,
@@ -486,6 +510,36 @@ class Run:
     def increment(self, path: str | Path, out: Path, pipeline_file: Path | None = None) -> "Run":
         """Add a batch of new records to the run written in `out`, with its reports as full() writes them. See the module
         docstring for the cost."""
+        if self._join(path, out):
+            self.write(out, self.part, report=(path, pipeline_file) if pipeline_file else None)
+        return self
+
+    @locked
+    def match(self, path: str | Path, out: Path) -> pd.DataFrame:
+        """Which entity each record of `path` would join in the run in `out`, and by what, writing nothing: the
+        increment's steps without its write. One row per record read: its ID; `entity`, the cluster_id it would have;
+        `status` (joins an entity, a new entity, already in the run, or set aside and why); `by`, the rule or `fs` that
+        linked it most strongly, and `weight`, its best model link in bits. O(an increment) less its write."""
+        u = q(self.uid)
+        if self._join(path, out):
+            self.con.execute(f"""CREATE OR REPLACE TABLE er_match AS WITH
+                ends AS (SELECT {q(self.l)} AS id, rule, NULL::DOUBLE AS w FROM rule_kept UNION ALL SELECT {q(self.r)}, rule, NULL FROM rule_kept
+                         UNION ALL SELECT {q(self.l)}, 'fs', match_weight FROM matches UNION ALL SELECT {q(self.r)}, 'fs', match_weight FROM matches),
+                best AS (SELECT id, arg_max(rule, coalesce(w, 1e9)) AS by, max(w) AS weight FROM ends GROUP BY 1),
+                old AS (SELECT DISTINCT g.cluster_id FROM gold g JOIN gold_old o USING ({u}))
+                SELECT n.{u}, g.cluster_id AS entity, CASE WHEN g.cluster_id IN (SELECT cluster_id FROM old) THEN 'joins an entity'
+                       ELSE 'a new entity' END AS status, b.by, b.weight
+                FROM new_ids n JOIN gold g USING ({u}) LEFT JOIN best b ON b.id = n.{u}""")
+        else:
+            self.con.execute(f"CREATE OR REPLACE TABLE er_match AS SELECT {u}, NULL::VARCHAR AS entity, '' AS status, NULL::VARCHAR AS by, NULL::DOUBLE AS weight WHERE FALSE")
+        return self.con.execute(f"""SELECT * FROM er_match UNION ALL BY NAME
+            SELECT s.{u}, g.cluster_id AS entity, CASE WHEN s.reason = 'already in the run' THEN s.reason ELSE 'set aside: ' || s.reason END AS status
+            FROM set_aside s LEFT JOIN read_parquet({lit(out / 'gold.parquet')}) g ON g.{u} = s.{u} AND s.reason = 'already in the run'
+            ORDER BY 1""").df()
+
+    def _join(self, path: str | Path, out: Path) -> bool:
+        """The increment's steps on the batch at `path` against the run in `out`, up to its clusters (gold), writing
+        nothing; False if every record is already in the run."""
         state, u, l, r = out / "state", q(self.uid), q(self.l), q(self.r)
         folder.finish_writes(out)
         if not (state / "model.json").exists():
@@ -494,7 +548,7 @@ class Run:
             raise InputError(f"the pipeline or the column mapping changed since the full run in {out}: an increment would resolve its batch otherwise",
                              fix="run a full run with --overwrite, or the increment with the pipeline and config/settings.toml that run used")
         self.model = json.loads((state / "model.json").read_text(encoding="utf-8"))
-        part = folder.next_part(state / "records")
+        self.part = folder.next_part(state / "records")
         parts = ", ".join(lit(x) for x in sorted((state / "records").glob("part-*.parquet")))  # not a glob: this run's own part comes later
         self.con.execute(f"CREATE OR REPLACE VIEW old_records AS SELECT * FROM read_parquet([{parts}], union_by_name = true)")
         self.labels = self._answers(out)  # the batch's kinds rest on the run's answers, and any given with it
@@ -504,7 +558,7 @@ class Run:
             other = self.con.execute("SELECT count(*) FROM set_aside WHERE reason <> 'already in the run'").fetchall()[0][0]
             if other:
                 raise InputError(f"{path}: no new record to add ({'; '.join(self.notes)})", fix="give the records set aside IDs, one per record")
-            return self  # every record is already in the run: nothing to do
+            return False  # every record is already in the run: nothing to do
         self.con.execute("CREATE OR REPLACE TABLE records AS SELECT * FROM old_records UNION ALL BY NAME SELECT * FROM new_records")  # read by every step: once
         self.con.execute(f"CREATE OR REPLACE TABLE new_ids AS SELECT {u} FROM new_records")
         self.n = self._count("records")
@@ -546,8 +600,7 @@ class Run:
         self._gold("gold_old")
         self._done("cluster", "O(C_Δ + touched clusters)", f"{self._count('matches'):,} accepted", t, accepted=self._count("matches"),
                    expected_false=self._expected_false())
-        self.write(out, part, report=(path, pipeline_file) if pipeline_file else None)
-        return self
+        return True
 
     def _answers(self, out: Path) -> pd.DataFrame | None:
         """People's person/company answers: the sheets the folder `out` keeps, newest first, then the one given on top.
@@ -585,7 +638,7 @@ class Run:
         if not (out / "gold.parquet").exists():
             raise InputError(f"no run in {out} to apply decisions to", fix="resolve the records into that folder first (--input … --output …)")
         self.con.execute(f"CREATE OR REPLACE TABLE gold_old AS SELECT * FROM read_parquet({lit(out / 'gold.parquet')})")
-        self.inputs = file_facts(decisions(path, self.con, self.l, self.r, into="er_decisions"))  # the door: er.source checks them
+        self.inputs = file_facts(decisions(path, self.con, self.l, self.r, into="er_decisions"), "decisions")  # the door: er.source checks them
         known(self.con, f"SELECT {l} AS id FROM er_decisions UNION SELECT {r} FROM er_decisions", "gold_old", self.uid, path, f"the run in {out}")
         self.n = self._count("gold_old")
         self.con.execute(f"CREATE OR REPLACE TABLE er_base AS SELECT {u}, cluster_id FROM gold_old")
@@ -629,6 +682,15 @@ class Run:
         self.cluster()
         self.write(out, replace=held, report=(path, pipeline_file) if pipeline_file else None)  # the old run goes only once the new one is complete
         return self
+
+    def rerun(self, out: Path, pipeline_file: Path | None = None) -> "Run":
+        """A full run again, on the record files the run in `out` read (folder.inputs): the full run's, then each
+        increment's, in order, an ID's records set aside as the increments set them aside (_set_aside, ordered).
+        People's decisions and answers stand, as on any full run of the folder. O(a full run) + O(bytes) to check the
+        files."""
+        out = Path(out)
+        with folder.run_lock(out):  # the files named inside the lock: no increment lands between
+            return self.full(folder.inputs(out), out, overwrite=True, pipeline_file=pipeline_file)
 
 
 def customer_kinds(clusters: str, kinds: str, u: str) -> str:

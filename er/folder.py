@@ -1,12 +1,14 @@
 """The run folder on disk, and how it is written: one writer at a time (run_lock); every write staged (stage: each
 file under a temporary name, then the moves still owed in pending.json, then the moves; finish_writes completes a write
-cut short); steps.json written whole, then renamed (log); a new part numbered after the highest (next_part). What a run
-writes there, and what people keep there (decisions/, kind_answers/): docs/architecture.md, the run folder.
+cut short); steps.json written whole, then renamed (log); a new part numbered after the highest (next_part); one
+answer people give, written into a sheet (type_in); the record files a run read (inputs). What a run writes there, and
+what people keep there (decisions/, kind_answers/): docs/architecture.md, the run folder.
 """
 import fcntl
 import json
 import os
 import shutil
+import threading
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -14,7 +16,7 @@ import duckdb
 import pandas as pd
 
 from er.config import InputError
-from er.source import lit
+from er.source import lit, sha256
 
 PENDING = "pending.json"  # the renames a write still owes, saved once every new file is complete
 RUN_FILES = ("gold.parquet", "steps.json", PENDING, "matches", "rule_kept", "state", "set_aside",  # what a run writes in its folder
@@ -29,18 +31,30 @@ class Busy(InputError):
     """Another job is writing to the run folder: no mistake, so scripts/resolve.py exits 75, to be tried again."""
 
 
+_held = threading.local()  # the folders this thread holds: taking one again (a rerun's full run) is no second lock
+
+
 @contextmanager
 def run_lock(out: Path):
     """One writer per run folder: an OS lock on <out>/.lock for as long as a run, an increment or a set of decisions
-    writes there. The system releases it when the process ends, even if it dies, so it never goes stale.
+    writes there. The system releases it when the process ends, even if it dies, so it never goes stale. A thread that
+    holds it may take it again; another thread or process can't.
     shortcut: flock holds on a local disk, not on network or object storage; there, run one job per folder at a time."""
     out.mkdir(parents=True, exist_ok=True)
+    held, key = _held.__dict__.setdefault("folders", set()), out.resolve()
+    if key in held:
+        yield
+        return
     with open(out / ".lock", "w") as f:
         try:
             fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
             raise Busy(f"another job is writing to {out}", fix="wait for it to finish: a run folder takes one writer at a time") from None
-        yield
+        held.add(key)
+        try:
+            yield
+        finally:
+            held.discard(key)
 
 
 def finish_writes(out: Path) -> None:
@@ -111,3 +125,46 @@ def held(out: Path) -> list[Path]:  # the run files a folder holds: what a full 
 def answer_parts(out: Path) -> list[Path]:
     """People's answer sheets the folder keeps, newest first; a folder that keeps them in state/, that one file."""
     return sorted((out / KIND_ANSWERS).glob("part-*.parquet"), reverse=True) or [f for f in [out / OLD_ANSWERS] if f.exists()]
+
+
+def type_in(out: Path, sheet: str, column: str, value: object, **keys: str) -> None:
+    """One answer people give, written into the run folder's sheet (review.parquet's decision, kind_review.parquet's
+    kind) on the row whose `keys` columns hold those values, as a person would type it in; None clears it. Nothing is
+    applied: the sheet is given back later (Run.decide, a rerun with the answers). Under the lock, and staged as every
+    run file is. O(sheet rows)."""
+    path = out / sheet
+    with run_lock(out):
+        finish_writes(out)
+        if not path.exists():
+            raise InputError(f"{path}: no such sheet", fix="run the records into that folder first: the run writes it")
+        frame = pd.read_parquet(path)
+        rows = pd.Series(True, index=frame.index)
+        for k, v in keys.items():
+            rows &= frame[k].astype("string").eq(str(v)).fillna(False)
+        if not rows.any():
+            raise InputError(f"{path}: no row for {', '.join(f'{k} {v}' for k, v in keys.items())}",
+                             fix="answer a row the sheet holds, with the IDs as the run wrote them")
+        frame.loc[rows, column] = pd.NA if value is None else value
+        stage(duckdb.connect(), out, [], frames=[(frame, path)])
+
+
+def inputs(out: Path) -> list[Path]:
+    """The record files the run in `out` read, in order: the full run's, then each increment's (steps.json). Each
+    must still hold what was read, by its SHA-256, where it was read or where the scheduler moved it (jobs.jsonl).
+    O(bytes)."""
+    log = out / "steps.json"
+    named = [x for run in (json.loads(log.read_text(encoding="utf-8"))["runs"] if log.exists() else [])
+             for x in run.get("inputs", []) if x.get("role") == "records"]
+    if not named:
+        raise InputError(f"{out}: steps.json names no record file", fix="give the files again with a full run that overwrites the folder")
+    jobs = out / "jobs.jsonl"
+    moved = {e["sha256"]: e["path"] for e in map(json.loads, jobs.read_text(encoding="utf-8").splitlines() if jobs.exists() else [])
+             if e.get("path")}
+    files = []
+    for x in named:
+        here = [Path(p) for p in (x["file"], moved.get(x["sha256"])) if p and Path(p).is_file()]
+        if not (found := next((p for p in here if sha256(p) == x["sha256"]), None)):
+            raise InputError(f"{x['file']}: {'changed' if here else 'gone'} since the run read it",
+                             fix="give the files again with a full run that overwrites the folder")
+        files.append(found)
+    return files

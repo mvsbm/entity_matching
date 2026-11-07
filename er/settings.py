@@ -1,14 +1,16 @@
 """Shared settings from config/settings.toml: paths, datasets, the fields a file's columns hold, and the language-specific
-normalization, validated on load. ER_SETTINGS may name another settings file."""
+normalization, validated on load. ER_SETTINGS may name another settings file. set_columns rewrites [columns] lines."""
 import importlib.util
+import json
 import os
+import re
 import tomllib
 from collections.abc import Iterable
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import get_args
 
-from er.config import Data, Derived, Normalizer, Pipeline, Standardization, check_fields, legal_pattern, restrict
+from er.config import Data, Derived, InputError, Normalizer, Pipeline, Standardization, check_fields, legal_pattern, restrict
 
 SPECIAL = ("id", "entity")  # single columns, used under their own names: the record id and the truth
 
@@ -54,8 +56,51 @@ def shared_name(s: "Settings", column: str) -> "Settings":
     return replace(s, standardize=replace(s.standardize, derived=derived), columns=columns)
 
 
+def settings_path() -> Path:  # the settings file a run reads
+    return Path(os.environ.get("ER_SETTINGS") or project_root() / "config" / "settings.toml")
+
+
+def set_columns(path: Path, mapping: dict[str, tuple[tuple[str, ...], ...]]) -> None:
+    """Rewrite the [columns] lines of the fields in `mapping` in the settings file at `path`: each field's source
+    alternatives, tried in order, each one column or several joined (empty: the field goes). Every other line, each
+    line's comment, and a field's options (normalize, kind) stay. The new text is loaded and validated before it
+    replaces the old. O(the file)."""
+    text = path.read_text(encoding="utf-8")
+    lines, current = text.splitlines(keepends=True), tomllib.loads(text)["columns"]
+    start = next(i for i, x in enumerate(lines) if x.strip() == "[columns]")
+    end = next((i for i in range(start + 1, len(lines)) if lines[i].lstrip().startswith("[")), len(lines))
+    toml = lambda v: json.dumps(v, ensure_ascii=False)  # a string or a list of strings: the same in TOML
+    for name, sources in mapping.items():
+        at = next((i for i in range(start + 1, end) if re.match(rf"{re.escape(name)}\s*=", lines[i])), None)
+        if not sources:
+            if at is not None:
+                del lines[at]
+                end -= 1
+            continue
+        old, alts = current.get(name), [list(a) for a in sources]
+        value = (f"{{ {', '.join(f'{k} = {toml(v)}' for k, v in {**old, 'sources': alts}.items())} }}" if isinstance(old, dict)
+                 else toml(alts[0][0]) if alts == [alts[0][:1]] else toml(alts))
+        comment = re.search(r'^[^"#]*(?:"[^"]*"[^"#]*)*\s(#.*)$', lines[at].rstrip("\n")) if at is not None else None
+        line = f"{name} = {value}"
+        line += (" " * max(1, comment.start(1) - len(line)) + comment.group(1) if comment else "") + "\n"  # the comment in its column
+        if at is None:  # a new field: after the section's last one
+            at = max(i for i in range(start, end) if re.match(r"\w+\s*=", lines[i])) + 1
+            lines.insert(at, line)
+            end += 1
+        else:
+            lines[at] = line
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text("".join(lines), encoding="utf-8")
+    try:
+        load_settings(tmp)
+    except Exception as e:  # what load_settings checks: say it, and keep the old file
+        tmp.unlink()
+        raise InputError(f"{path}: [columns] would not load: {e}", fix="give each field existing columns; id names one column") from None
+    os.replace(tmp, path)
+
+
 def load_settings(path: Path | None = None) -> Settings:
-    path = Path(path or os.environ.get("ER_SETTINGS") or project_root() / "config" / "settings.toml")
+    path = Path(path or settings_path())
     root = project_root(path.parent)
     cfg = tomllib.loads(path.read_text(encoding="utf-8"))
     paths = {name: root / rel for name, rel in cfg["paths"].items()}
