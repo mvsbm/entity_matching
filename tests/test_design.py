@@ -242,12 +242,12 @@ def logged_runs(tmp: Path) -> tuple:
     out, pipeline, logs = tmp / "run", s.root / "config" / "final.toml", {}
     for mode in ("full", "increment"):
         run = Run(p, s, kind_labels=tmp / "answers.parquet" if mode == "full" else None)
-        logs[mode] = log = Logged(run)
+        logs[mode] = Logged(run)
         run.full(tmp / "first.parquet", out, pipeline_file=pipeline) if mode == "full" else run.increment(tmp / "new.parquet", out, pipeline_file=pipeline)
     sheet = pd.read_parquet(out / "review.parquet")
     sheet.iloc[:1].assign(decision="match").to_parquet(tmp / "decided.parquet")
     run = Run(p, s)
-    logs["decisions"] = log = Logged(run)
+    logs["decisions"] = Logged(run)
     run.decide(tmp / "decided.parquet", out)
     return s, out, {mode: dict(log.by_step) for mode, log in logs.items()}
 

@@ -26,6 +26,7 @@ person calls: 1%), the line placed with the truth, so the ranking measures the s
 combination: how sole traders are counted; and, for it and the best, how well people's answers place the lines, the person
 line by each rule judged.
 """
+import argparse
 import itertools
 import logging
 import time
@@ -138,6 +139,8 @@ def make(kind: str):
 
 
 def main() -> None:
+    argparse.ArgumentParser(description=__doc__.split("\n\n")[0], formatter_class=argparse.RawDescriptionHelpFormatter,
+                            epilog=__doc__.split("\n\n", 1)[1]).parse_args()
     t0 = time.perf_counter()
     p_train, p_test, c_train, fukuoka = name_model_split(load_reference(S.paths["reference"])[0], load_registry(S.paths["reference"]))
     c_test, shops = fukuoka.iloc[: len(fukuoka) // 2], fukuoka.iloc[len(fukuoka) // 2:]["reading"].tolist()
