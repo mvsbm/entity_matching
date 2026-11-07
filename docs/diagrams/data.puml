@@ -43,6 +43,7 @@ package "the answer: Run.write" {
   }
   entity "steps.json" as steps {
     one entry per run, increment or set of decisions
+    inputs: file, role, bytes, sha256
     each step: big_o, filled, seconds, peak_memory_gb, facts
   }
 }
@@ -130,6 +131,7 @@ package "people's work and the writers' state" {
   }
   entity "jobs.jsonl" as jobs {
     scripts/schedule.py: one line per file per pass
+    file, sha256, outcome, attempts, path
   }
 }
 

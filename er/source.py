@@ -39,6 +39,7 @@ class Source:
     columns: list[str]
     notes: list[str] = field(default_factory=list)  # what was detected or fixed, for the run's summary
     files: list[Path] = field(default_factory=list)  # the files read
+    ordered: bool = False                     # a list of files in order: sql holds er_file, each row's file by position
 
 
 def find(path: str | Path) -> list[Path]:
@@ -71,10 +72,12 @@ def check_parquet(f: Path) -> None:
     raise InputError(f"{f}: not a Parquet file; it looks like {kind}", fix=CONVERT)
 
 
-def open_source(path: str | Path, con: duckdb.DuckDBPyConnection, expected: Iterable[str]) -> Source:
-    """The files `path` names as one relation of text columns. A column whose name matches an `expected` one but for
-    case, width or separators is given the expected name; one stored as a number is read as text, with a note."""
-    files = find(path)
+def open_source(path: str | Path | list[Path], con: duckdb.DuckDBPyConnection, expected: Iterable[str]) -> Source:
+    """The files `path` names as one relation of text columns; a list of files is read in order, and each row keeps
+    its file's position (er_file). A column whose name matches an `expected` one but for case, width or separators is
+    given the expected name; one stored as a number is read as text, with a note."""
+    ordered = isinstance(path, list)
+    files = [x for p in path for x in find(p)] if ordered else find(path)
     for f in files:
         check_parquet(f)
     schemas = {}
@@ -116,8 +119,11 @@ def open_source(path: str | Path, con: duckdb.DuckDBPyConnection, expected: Iter
         value = (f"CASE WHEN abs({q(c)}) < 9e18 AND {q(c)} = trunc({q(c)}) THEN CAST(CAST({q(c)} AS BIGINT) AS VARCHAR) ELSE CAST({q(c)} AS VARCHAR) END"
                  if kind in ("FLOAT", "DOUBLE", "REAL") else f"CAST({q(c)} AS VARCHAR)")
         cols.append(f"{value} AS {q(name)}")
-    return Source(sql=f"(SELECT {', '.join(cols)} FROM read_parquet([{', '.join(lit(f) for f in files)}], union_by_name = true))",
-                  columns=[rename.get(c, c) for c in types], notes=notes, files=files)
+    paths = ", ".join(lit(f) for f in files)
+    if ordered:
+        cols.append(f"list_position([{paths}], er_path) AS er_file")
+    return Source(sql=f"(SELECT {', '.join(cols)} FROM read_parquet([{paths}], union_by_name = true{", filename = 'er_path'" if ordered else ''}))",
+                  columns=[rename.get(c, c) for c in types], notes=notes, files=files, ordered=ordered)
 
 
 def suggest(src: Source, con: duckdb.DuckDBPyConnection, fields: Iterable[str], patterns: Mapping[str, str],
@@ -148,24 +154,32 @@ def suggest(src: Source, con: duckdb.DuckDBPyConnection, fields: Iterable[str], 
     return out
 
 
-def file_facts(files: list[Path]) -> list[dict]:
-    """Each file read: its path, size and SHA-256, so a run says exactly what went in. O(bytes)."""
-    def sha256(f: Path) -> str:
-        with open(f, "rb") as fh:
-            return hashlib.file_digest(fh, "sha256").hexdigest()
-    return [dict(file=str(f), bytes=f.stat().st_size, sha256=sha256(f)) for f in files]
+def sha256(f: Path) -> str:
+    with open(f, "rb") as fh:
+        return hashlib.file_digest(fh, "sha256").hexdigest()
+
+
+def file_facts(files: list[Path], role: str) -> list[dict]:
+    """Each file read: its path, what it is (records, decisions, answers, the name model), size and SHA-256, so a run
+    says exactly what went in, and a rerun finds its records again. O(bytes)."""
+    return [dict(file=str(Path(f).resolve()), role=role, bytes=Path(f).stat().st_size, sha256=sha256(Path(f))) for f in files]
 
 
 def answers(path: str | Path, con: duckdb.DuckDBPyConnection, uid: str) -> pd.DataFrame:
     """A sheet of person/company answers (kind_review.parquet, filled in): its answered rows (kind 1 person, 2 company,
-    0 can't tell), every column as text, as every input is read. Refuses a file without the ID and kind columns, and an
-    answered row without an ID. O(rows)."""
+    0 can't tell), every column as text, as every input is read. Refuses a file without the ID and kind columns, a kind
+    that is none of those, a sheet with no answer, and an answered row without an ID. O(rows)."""
     src = open_source(path, con, [uid, "kind"])
     if {uid, "kind"} - set(src.columns):
         raise InputError(f"{path}: needs the columns {uid} and kind; it has {sorted(src.columns)}",
                          fix="give back kind_review.parquet with kind filled in: 1 person, 2 company, 0 can't tell")
     rows = con.sql(f"SELECT * FROM {src.sql}").df().astype("string")
-    rows = rows[pd.to_numeric(rows["kind"], errors="coerce").isin([0, 1, 2]).to_numpy()].reset_index(drop=True)
+    given, kind = rows["kind"].str.strip().replace("", pd.NA), pd.to_numeric(rows["kind"], errors="coerce")
+    if len(bad := sorted(set(given[given.notna() & ~kind.isin([0, 1, 2])]))):
+        raise InputError(f"{path}: a kind is 1, 2 or 0, not {bad[:5]}", fix="write 1 person, 2 company or 0 can't tell, or leave it empty")
+    rows = rows[kind.isin([0, 1, 2]).to_numpy()].reset_index(drop=True)
+    if rows.empty:
+        raise InputError(f"{path}: no row is answered", fix="write kind on the records you can tell (1 person, 2 company, 0 can't tell), then give the sheet back")
     if (blank := int(rows[uid].str.strip().fillna("").eq("").sum())):
         raise InputError(f"{path}: {blank:,} answered rows have no {uid}", fix="fill in each answered row's ID, or clear its answer")
     return rows
@@ -174,8 +188,8 @@ def answers(path: str | Path, con: duckdb.DuckDBPyConnection, uid: str) -> pd.Da
 def decisions(path: str | Path, con: duckdb.DuckDBPyConnection, l: str, r: str, into: str) -> list[Path]:
     """People's decisions on pairs (review.parquet with decision filled in, or any file with the two IDs and decision)
     as the table `into`, and the files read: each pair once, the lower ID first, decision match or no_match; rows
-    without a decision skipped. Refuses a file without those columns, a decided row without both IDs, another decision,
-    and a pair decided both ways. O(rows)."""
+    without a decision skipped. Refuses a file without those columns, a decided row without both IDs, a file with no
+    decision, another decision, and a pair decided both ways. O(rows)."""
     src = open_source(path, con, [l, r, "decision"])
     if {l, r, "decision"} - set(src.columns):  # say what is wrong, row by row where it can
         raise InputError(f"{path}: needs the columns {l}, {r} and decision; it has {sorted(src.columns)}",
@@ -185,6 +199,8 @@ def decisions(path: str | Path, con: duckdb.DuckDBPyConnection, l: str, r: str, 
         raise InputError(f"{path}: {blank:,} decided rows lack an ID", fix="fill in both IDs of each decided row, or clear its decision")
     con.execute(f"""CREATE OR REPLACE TABLE {q(into)} AS SELECT DISTINCT least({q(l)}, {q(r)}) AS {q(l)}, greatest({q(l)}, {q(r)}) AS {q(r)},
         lower(trim(decision)) AS decision {decided}""")
+    if not con.execute(f"SELECT count(*) FROM {q(into)}").fetchall()[0][0]:
+        raise InputError(f"{path}: no row has a decision", fix="write match or no_match in decision on the pairs you decided, then give the sheet back")
     if (bad := con.execute(f"SELECT DISTINCT decision FROM {q(into)} WHERE decision NOT IN ('match', 'no_match')").fetchall()):
         raise InputError(f"{path}: a decision is match or no_match, not {sorted(x for x, in bad)}", fix="correct those rows, or leave them empty")
     if (both := con.execute(f"SELECT {q(l)}, {q(r)} FROM {q(into)} GROUP BY ALL HAVING count(*) > 1 LIMIT 5").fetchall()):

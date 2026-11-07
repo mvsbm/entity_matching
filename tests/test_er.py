@@ -955,14 +955,158 @@ def test_an_increment_keeps_the_open_review_queue(tmp_path, population):
 
 
 def test_a_run_folder_takes_one_writer_at_a_time(tmp_path, population):
+    import threading
     from er.folder import run_lock
     from er.run import Run
     s, p, g = population
     g.df.to_parquet(tmp_path / "all.parquet", index=False)
-    with run_lock(tmp_path / "run"):  # another job holds the folder
-        with pytest.raises(InputError, match="another job is writing"):
-            Run(p, s).full(tmp_path / "all.parquet", tmp_path / "run")
-    Run(p, s).full(tmp_path / "all.parquet", tmp_path / "run")  # released: free again
+    held, done = threading.Event(), threading.Event()
+
+    def other_job():  # another job holds the folder, in a thread of its own
+        with run_lock(tmp_path / "run"):
+            held.set()
+            done.wait()
+    job = threading.Thread(target=other_job)
+    job.start()
+    held.wait()
+    with pytest.raises(InputError, match="another job is writing"):
+        Run(p, s).full(tmp_path / "all.parquet", tmp_path / "run")
+    done.set()
+    job.join()
+    with run_lock(tmp_path / "run"), run_lock(tmp_path / "run"):  # the thread holding it may take it again (a rerun's full run)
+        Run(p, s).full(tmp_path / "all.parquet", tmp_path / "run")  # released by the other: free again
+
+
+def test_matching_a_batch_names_the_entities_adding_it_would_give_and_writes_nothing(tmp_path, population):
+    from er.run import Run
+    s, p, g = population
+    uid, half = s.data.unique_id, len(g.df) // 2
+    g.df.iloc[:half].to_parquet(tmp_path / "first.parquet", index=False)
+    pd.concat([g.df.iloc[half:], g.df.iloc[:1]]).to_parquet(tmp_path / "batch.parquet", index=False)  # one already in the run
+    out = tmp_path / "run"
+    Run(p, s).full(tmp_path / "first.parquet", out)
+    files = lambda: {f: f.read_bytes() for f in out.rglob("*") if f.is_file() and f.name != ".lock"}
+    before = files()
+    m = Run(p, s).match(tmp_path / "batch.parquet", out)
+    assert files() == before
+    assert m.loc[m[uid] == g.df.iloc[0][uid], "status"].item() == "already in the run"
+    assert set(m["status"]) == {"joins an entity", "a new entity", "already in the run"} and len(m) == len(g.df) - half + 1
+    Run(p, s).increment(tmp_path / "batch.parquet", out)
+    gold = pd.read_parquet(out / "gold.parquet").set_index(uid)["cluster_id"]
+    assert (gold.loc[m[uid]].to_numpy() == m["entity"].to_numpy()).all()  # the entities the increment then gave
+
+
+def test_a_rerun_reads_the_run_s_files_in_order_and_keeps_what_the_increments_kept(tmp_path, population):
+    from er.run import Run
+    s, p, g = population
+    uid, n = s.data.unique_id, len(g.df)
+    other = next(c for c in g.df.columns if c != uid)
+    resent = g.df.iloc[:1].assign(**{other: "changed"})  # an ID of the run, sent again with other content
+    for i, part in enumerate([g.df.iloc[:n // 2], g.df.iloc[n // 2:3 * n // 4], pd.concat([g.df.iloc[3 * n // 4:], resent])]):
+        part.to_parquet(tmp_path / f"{i}.parquet", index=False)
+    out = tmp_path / "run"
+    Run(p, s).full(tmp_path / "0.parquet", out)
+    for i in (1, 2):
+        Run(p, s).increment(tmp_path / f"{i}.parquet", out)
+    added = pd.read_parquet(out / "gold.parquet")
+    Run(p, s).rerun(out)
+    again = pd.read_parquet(out / "gold.parquet")
+    Run(p, s).full([tmp_path / f"{i}.parquet" for i in range(3)], tmp_path / "fresh")
+    assert again.equals(pd.read_parquet(tmp_path / "fresh" / "gold.parquet"))  # a full run on the same files, in order
+    assert sorted(again[uid]) == sorted(added[uid])
+    aside = pd.read_parquet(out / "set_aside")
+    assert aside.loc[aside[uid] == resent[uid].item(), "reason"].tolist() == ["already in the run"]
+    (tmp_path / "1.parquet").unlink()
+    with pytest.raises(InputError, match="1.parquet: gone since the run read it"):
+        Run(p, s).rerun(out)
+
+
+def test_one_answer_is_typed_into_the_sheet_and_waits_for_a_busy_folder(tmp_path, population):
+    import threading
+    from er.folder import Busy, run_lock, type_in
+    from er.run import Run
+    s, p, g = population
+    l, r = f"{s.data.unique_id}_l", f"{s.data.unique_id}_r"
+    g.df.to_parquet(tmp_path / "all.parquet", index=False)
+    out = tmp_path / "run"
+    Run(p, s).full(tmp_path / "all.parquet", out, pipeline_file=s.root / "config" / "final.toml")
+    a, b = pd.read_parquet(out / "review.parquet").iloc[0][[l, r]]
+    type_in(out, "review.parquet", "decision", "match", **{l: a, r: b})
+    sheet = pd.read_parquet(out / "review.parquet")
+    assert sheet.iloc[0]["decision"] == "match" and sheet["decision"].iloc[1:].isna().all()
+    type_in(out, "review.parquet", "decision", None, **{l: a, r: b})
+    assert pd.read_parquet(out / "review.parquet")["decision"].isna().all()
+    with pytest.raises(InputError, match="no row for"):
+        type_in(out, "review.parquet", "decision", "match", **{l: b, r: "nobody"})
+    held, done = threading.Event(), threading.Event()
+
+    def other_job():  # a run writing to the folder, in a thread of its own
+        with run_lock(out):
+            held.set()
+            done.wait()
+    job = threading.Thread(target=other_job)
+    job.start()
+    held.wait()
+    with pytest.raises(Busy):
+        type_in(out, "review.parquet", "decision", "match", **{l: a, r: b})
+    done.set()
+    job.join()
+
+
+def test_set_columns_rewrites_the_fields_lines_and_keeps_the_rest(tmp_path):
+    import shutil
+    from er.settings import set_columns
+    root = load_settings().root
+    (tmp_path / "config").mkdir()
+    (tmp_path / "pyproject.toml").touch()
+    f = tmp_path / "config" / "settings.toml"
+    shutil.copy(root / "config" / "settings.toml", f)
+    before = f.read_text(encoding="utf-8")
+    set_columns(f, {"phone": (("TEL4",),), "person_name": (("NAME",), ("SEI", "MEI")), "town_code": (("TOWN",),), "birth_date": ()})
+    s = load_settings(f)
+    assert s.columns["phone"] == (("TEL4",),) and s.columns["person_name"] == (("NAME",), ("SEI", "MEI")) and "birth_date" not in s.columns
+    after = f.read_text(encoding="utf-8")
+    line = lambda name: next(x for x in after.split("\n[columns]\n", 1)[1].splitlines() if x.startswith(f"{name} ="))
+    assert 'normalize = ["nfkc", "strip_spaces"]' in line("person_name") and "# municipality + town + chome" in line("town_code")  # options, comments stay
+    assert len(after.splitlines()) == len(before.splitlines()) - 1
+    with pytest.raises(InputError, match="id must name one column"):
+        set_columns(f, {"id": (("A",), ("B",))})
+    assert f.read_text(encoding="utf-8") == after and not (tmp_path / "config" / "settings.toml.tmp").exists()
+
+
+def test_describe_says_what_a_run_folder_holds_and_what_joined_an_entity(tmp_path, population):
+    from er.report import describe_entity, describe_run
+    from er.run import Run
+    s, p, g = population
+    uid = s.data.unique_id
+    g.df.to_parquet(tmp_path / "all.parquet", index=False)
+    out = tmp_path / "run"
+    run = Run(p, s).full(tmp_path / "all.parquet", out, pipeline_file=s.root / "config" / "final.toml")
+    gold = pd.read_parquet(out / "gold.parquet")
+    d = describe_run(run.con, out, uid)
+    assert (d["records"], d["entities"]) == (len(gold), gold["cluster_id"].nunique()) and d["runs"][0]["what"] == "full run"
+    assert d["pairs"]["decide"] + d["pairs"]["audit"] == len(pd.read_parquet(out / "review.parquet")) and not d["write_owed"]
+    assert d["summary"][0][0] == "records"
+    big = d["largest"][0]
+    e = describe_entity(run.con, out, uid, big["entity"], run.fields)
+    assert len(e["records"]) == big["records"] and len(e["links"]) >= big["records"] - 1  # a cluster is joined by its links
+    assert {x["by"] for x in e["links"]} <= {*(r.name for _, _, r in p.rules.each()), "fs"}
+    with pytest.raises(InputError, match="no record of the run"):
+        describe_entity(run.con, out, uid, "nobody", run.fields)
+
+
+def test_a_sheet_given_back_with_no_answer_or_a_kind_in_words_is_refused(tmp_path):
+    import duckdb
+    from er.source import answers, decisions
+    pd.DataFrame({"uid_l": ["1"], "uid_r": ["2"], "decision": [None]}, dtype="string").to_parquet(tmp_path / "untouched.parquet")
+    with pytest.raises(InputError, match="no row has a decision"):
+        decisions(tmp_path / "untouched.parquet", duckdb.connect(), "uid_l", "uid_r", into="d")
+    for kinds, error in ([None, None], "no row is answered"), (["2 company", None], r"a kind is 1, 2 or 0, not \['2 company'\]"):
+        pd.DataFrame({"uid": ["1", "2"], "kind": kinds}, dtype="string").to_parquet(tmp_path / "kinds.parquet")
+        with pytest.raises(InputError, match=error):
+            answers(tmp_path / "kinds.parquet", duckdb.connect(), "uid")
+    pd.DataFrame({"uid": ["1", "2"], "kind": ["2.0", None]}, dtype="string").to_parquet(tmp_path / "kinds.parquet")
+    assert len(answers(tmp_path / "kinds.parquet", duckdb.connect(), "uid")) == 1  # a spreadsheet's 2.0 is 2
 
 
 
@@ -1026,6 +1170,8 @@ def test_the_scheduler_serves_the_inbox_in_order_and_parks_what_people_must_fix(
     sheet.iloc[:1].assign(decision="match").to_parquet(inbox / "decisions" / "reviewed.parquet")
     assert serve().returncode == 0 and schedule.ledger(run)[-1]["outcome"] == "done"
     assert (run / "decisions").exists()
+    from er.folder import inputs
+    assert [f.resolve().parent for f in inputs(run)] == [(inbox / "done" / "batches").resolve()] * 2  # moved, found again (jobs.jsonl)
     before = len(schedule.ledger(run))
     assert serve().returncode == 0 and len(schedule.ledger(run)) == before  # nothing waiting: nothing done
 

@@ -94,7 +94,7 @@ def one_pass(run: Path, inbox: Path, retries: int, compute: list[str]) -> bool:
         seconds = round(time.perf_counter() - t, 1)
         if code == 0:
             outcome = "done"
-            move(f, inbox / "done" / kind)
+            dest = move(f, inbox / "done" / kind)
             done_before.add(digest)
         elif code == 2:
             outcome = "failed"
@@ -104,6 +104,7 @@ def one_pass(run: Path, inbox: Path, retries: int, compute: list[str]) -> bool:
             outcome = "stopped"
         summary = [line for line in out.splitlines() if line and not line.startswith("  ")]  # the summary, not the step lines
         record(run, file=name, kind=kind, sha256=digest, outcome=outcome, exit=code, attempts=tries, seconds=seconds,
+               path=str(dest.resolve()) if outcome == "done" else None,  # where a rerun finds the batch again
                error=err.strip().splitlines()[-1] if err.strip() and outcome != "done" else None)
         print(f"{kind}/{name}: {outcome} in {seconds} s" + (f" after {tries} attempts" if tries > 1 else ""))
         print("\n".join(f"  {line}" for line in (summary if outcome == "done" else err.strip().splitlines()[-2:])))
