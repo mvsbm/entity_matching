@@ -31,9 +31,10 @@ from er import folder, inbox
 from er.config import InputError, load_pipeline, sources_text
 from er.folder import Busy
 from er.report import applied, describe_entity, describe_matching, describe_workspace, fill_rates
-from er.source import describe
+from er.source import describe, lexicon
 from er.run import Run
-from er.settings import COLUMNS, SPECIAL, columns_file, load_settings, own_columns, set_columns, settings_path
+from er.settings import (COLUMNS, SPECIAL, columns_file, features_of, load_settings, own_columns, placements, set_columns, set_features,
+                         settings_path, slots)
 
 
 @dataclass(frozen=True)
@@ -310,11 +311,19 @@ def given(a: dict) -> str:
     return str(parts[-1])
 
 
+SLOT_FIELD = {"person name": "person_name", "family": "person_name", "given": "given_name"}  # a slot without a field of its own: whose pattern its values should match
+
+
 def describe_records(a: dict, emit: "Emit") -> dict:
-    s, there = settings_for(a), ["--workspace", a["workspace"]] if a.get("workspace") else []
-    d = describe(a["input"], duckdb.connect(), s.columns, s.detect)
-    found = [f"{x['field']}={x['column']}" for x in d["suggested"]]
-    return {**d, "next": ([dict(command=nayose("set", "columns", *found, *there), why="map what the file's names and values suggest")] if found else []) +
+    (s, p, _), there = setup(a), ["--workspace", a["workspace"]] if a.get("workspace") else []
+    feats = features_of(a.get("workspace"))
+    field = lambda x: x.get("field") or SLOT_FIELD.get(x.get("role") or x.get("type"))
+    d = describe(a["input"], duckdb.connect(), s.columns, s.detect, lex=lexicon(s.paths["reference"], tuple(s.standardize.kana_fold.items())),
+                 slots={path: x["columns"] for path, x in slots(feats)}, slot_patterns={path: s.detect[f] for path, x in slots(feats) if (f := field(x)) in s.detect})
+    d = {**d, "features": feats, "placements": placements(feats, d["profile"], d["fit"]),
+         "needed": dict(every=list(p.fields.mandatory), one_of=[list(g) for g in p.fields.one_of])}
+    found = [f"{x['feature']}={x['column']}" for x in d["placements"]]
+    return {**d, "next": ([dict(command=nayose("set", "feature", *found, *there), why="place what the file's contents suggest")] if found and there else []) +
             [dict(command=nayose("resolve", "records", *there) if there else nayose("check", "records", a["input"]),
                   why="find matches in it" if there else "the full check: every record prepared, every key counted")]}
 
@@ -323,6 +332,25 @@ def load_records(a: dict, emit: "Emit") -> dict:
     ws = Path(a["workspace"])
     part, copied = folder.take_in(ws, a["input"])
     return {**describe_records({**a, "input": str(part)}, emit), "loaded": str(part), "copied": copied}
+
+
+def list_features(a: dict, emit: "Emit") -> dict:
+    feats = features_of(a.get("workspace"))
+    return dict(features=feats, slots=[dict(feature=path, columns=sources_text(x["columns"])) for path, x in slots(feats)],
+                next=[dict(command=nayose("set", "feature", "GROUP/FEATURE=COLUMN", *(["--workspace", a["workspace"]] if a.get("workspace") else [])),
+                           why="put a column into a feature")])
+
+
+def set_feature(a: dict, emit: "Emit") -> dict:
+    values = {}
+    for item in a["mapping"]:
+        path, sep, cols = item.partition("=")
+        if not sep or not path:
+            raise InputError(f"{item}: write GROUP/FEATURE=COLUMNS", fix="for example \"Name/Full name/Family name=SEI\": a comma between "
+                             "fallbacks, + between columns joined, nothing after = for no column")
+        values[path] = tuple(tuple(c.strip() for c in alt.split("+")) for alt in cols.split(",")) if cols else ()
+    set_features(a["workspace"], values)
+    return {**list_features(a, emit), "next": [dict(command=nayose("describe", "records", "<file>", "--workspace", a["workspace"]), why="see how the file fills them")]}
 
 
 def create_workspace(a: dict, emit: "Emit") -> dict:
@@ -482,7 +510,12 @@ HOME = Param("home", "the folder that holds the workspaces (default: workspaces,
 DESCRIBED = {"records": "records", "columns": "each column of the file: column, filled, example",
              "fields": "each field: field, sources, filled, example, looks_right, and each of its alternatives (columns, found, filled, example, looks_right)",
              "fit": "for each field, each column's fit: the share of its values that look like the field (id: filled, each value once)",
-             "suggested": "for each field the file holds none of: field, column, why", "notes": "what the reader detected or fixed",
+             "suggested": "for each field the file holds none of: field, column, why",
+             "needed": "the fields a run stops without: every (each of them), one_of (at least one of each group)",
+             "slots": "each feature and part: feature (its path), sources, filled, example, looks_right, and each of its alternatives",
+             "features": "the structure: groups › features › parts, each with type and columns",
+             "profile": "each column's script (kanji, kana, romaji) and the shares of its values that are known family names, given names, full names, addresses",
+             "placements": "for each feature with no column: feature, column, share, why (the file's contents)", "notes": "what the reader detected or fixed",
              "next": "the commands that usually follow"}
 CHECKED = {"records": "records read", "fields": "each field: filled, looks_right, top_value (shares), columns",
            "turned_off": "rules, keys and levels a missing field turns off", "keys": "each key's pairs per record and largest block",
@@ -515,7 +548,23 @@ COMMANDS: tuple[Command, ...] = (
             "so the original can move or go. O(bytes) for the copy, then the description's.",
             (INPUT, WORKSPACE), {**DESCRIBED, "loaded": "the part the records are in", "copied": "false: the workspace held them already"},
             "nayose load records customers.parquet --workspace workspaces/acme", load_records, quick=True,
-            show={"columns": ("column", "filled", "example"), "fields": ("field", "filled", "looks_right"), "fit": ()}),
+            show={"columns": ("column", "filled", "example"), "fields": ("field", "filled", "looks_right"), "fit": (), "features": (), "profile": (),
+                  "slots": ("feature", "filled", "looks_right"), "placements": ("feature", "column", "why")}),
+    Command("list", "features", "The features a workspace's columns fill: groups, features, parts",
+            "The workspace's structure: each group, its features and their parts (a full name's family and given names), each "
+            "with the columns that hold it, read from its mapping. Without --workspace, the project's. O(the file).",
+            (OWN,), {"features": "the structure: groups › features › parts, each with type and columns", "slots": "each feature and part: feature (its path), columns",
+                     "next": "the commands that usually follow"},
+            "nayose list features --workspace workspaces/acme", list_features, quick=True, show={"features": ()}),
+    Command("set", "feature", "Put columns into features",
+            "Sets each named feature's or part's columns, by its path: GROUP/FEATURE=COLUMN, GROUP/FEATURE/PART=COLUMN, A,B "
+            "(B where A is empty), A+B (joined), nothing (no column). Then writes the mapping they mean into the workspace's "
+            "columns.toml, checked before it replaces the old: Name/Full name fills full_name and person_name, its Family name "
+            "and Given name a joined fallback of person_name and given_name, and every name, any_name. O(the file).",
+            (Param("mapping", "one or more GROUP/FEATURE=COLUMNS", "many", positional=True, metavar="PATH=COLUMNS"), WORKSPACE),
+            {"features": "the structure, as set", "slots": "each feature and part: feature (its path), columns", "next": "the commands that usually follow"},
+            "nayose set feature \"Name/Full name/Family name=SEI\" \"Name/Full name/Given name=MEI\" --workspace workspaces/acme", set_feature, quick=True,
+            show={"features": ()}),
     Command("describe", "records", "What a file holds, for mapping its columns: in a second, nothing prepared",
             "Each column's share filled and an example; each field's columns as the mapping reads them (a later one where the "
             "earlier are empty, a joined one where every part is filled), each with its share filled, an example and the share "
@@ -523,7 +572,8 @@ COMMANDS: tuple[Command, ...] = (
             "none of, the column its name or values suggest, never applied: set columns applies it. Shares filled cover the "
             "file; the rest a sample of 2,000 records. O(N·C) in one scan, plus the sample.",
             (INPUT, OWN), DESCRIBED, "nayose describe records customers.parquet --workspace workspaces/acme", describe_records, quick=True,
-            show={"columns": ("column", "filled", "example"), "fields": ("field", "filled", "looks_right"), "fit": ()}),
+            show={"columns": ("column", "filled", "example"), "fields": ("field", "filled", "looks_right"), "fit": (), "features": (), "profile": (),
+                  "slots": ("feature", "filled", "looks_right"), "placements": ("feature", "column", "why")}),
     Command("check", "records", "Read, map and check a file, in seconds; resolve nothing",
             "Reads the file through the door every input takes, maps its columns to the logical fields (config/settings.toml "
             "[columns]), and counts each key's pairs before any join. Shows each field's fill rate, the share of values that "
@@ -539,7 +589,7 @@ COMMANDS: tuple[Command, ...] = (
             "nayose list columns --workspace workspaces/acme", list_columns, quick=True),
     Command("set", "columns", "Map fields to a file's columns",
             "Rewrites the named fields' lines in [columns]: FIELD=COLUMN, FIELD=A,B (B where A is empty), FIELD=A+B (A and B "
-            "joined), FIELD= (the field goes). Every other line, each line's comment and a field's options stay; the new file "
+            "joined), FIELD= (no column: whatever reads it is turned off). Every other line, each line's comment and a field's options stay; the new file "
             "is checked before it replaces the old. With --workspace, the workspace's columns.toml; else the project's, which "
             "new workspaces start from. O(the file).",
             (Param("mapping", "one or more FIELD=COLUMNS", "many", positional=True, metavar="FIELD=COLUMNS"), OWN),

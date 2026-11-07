@@ -16,6 +16,8 @@ Written by `scripts/document_commands.py` from the declarations in `er/cli.py`; 
 | [`create workspace`](#nayose-create-workspace) | Start a workspace: the folder for one matching job |
 | [`list workspaces`](#nayose-list-workspaces) | The workspaces, the latest active first |
 | [`load records`](#nayose-load-records) | Copy a file into a workspace, then describe it |
+| [`list features`](#nayose-list-features) | The features a workspace's columns fill: groups, features, parts |
+| [`set feature`](#nayose-set-feature) | Put columns into features |
 | [`describe records`](#nayose-describe-records) | What a file holds, for mapping its columns: in a second, nothing prepared |
 | [`check records`](#nayose-check-records) | Read, map and check a file, in seconds; resolve nothing |
 | [`list columns`](#nayose-list-columns) | Show which of a file's columns hold each field |
@@ -106,6 +108,11 @@ Copies the records into a part of the workspace's own (inputs/0001-customers/), 
 | `fields` | each field: field, sources, filled, example, looks_right, and each of its alternatives (columns, found, filled, example, looks_right) |
 | `fit` | for each field, each column's fit: the share of its values that look like the field (id: filled, each value once) |
 | `suggested` | for each field the file holds none of: field, column, why |
+| `needed` | the fields a run stops without: every (each of them), one_of (at least one of each group) |
+| `slots` | each feature and part: feature (its path), sources, filled, example, looks_right, and each of its alternatives |
+| `features` | the structure: groups › features › parts, each with type and columns |
+| `profile` | each column's script (kanji, kana, romaji) and the shares of its values that are known family names, given names, full names, addresses |
+| `placements` | for each feature with no column: feature, column, share, why (the file's contents) |
 | `notes` | what the reader detected or fixed |
 | `next` | the commands that usually follow |
 | `loaded` | the part the records are in |
@@ -113,6 +120,55 @@ Copies the records into a part of the workspace's own (inputs/0001-customers/), 
 
 ```bash
 nayose load records customers.parquet --workspace workspaces/acme
+```
+
+## nayose list features
+
+The features a workspace's columns fill: groups, features, parts.
+
+```
+nayose list features [--workspace WORKSPACE] [--format text|json]
+```
+
+The workspace's structure: each group, its features and their parts (a full name's family and given names), each with the columns that hold it, read from its mapping. Without --workspace, the project's. O(the file).
+
+| Parameter | |
+|---|---|
+| `--workspace WORKSPACE` | a workspace, for its own mapping (without it, the project's: config/settings.toml) |
+
+| Result | |
+|---|---|
+| `features` | the structure: groups › features › parts, each with type and columns |
+| `slots` | each feature and part: feature (its path), columns |
+| `next` | the commands that usually follow |
+
+```bash
+nayose list features --workspace workspaces/acme
+```
+
+## nayose set feature
+
+Put columns into features.
+
+```
+nayose set feature PATH=COLUMNS … --workspace WORKSPACE [--format text|json]
+```
+
+Sets each named feature's or part's columns, by its path: GROUP/FEATURE=COLUMN, GROUP/FEATURE/PART=COLUMN, A,B (B where A is empty), A+B (joined), nothing (no column). Then writes the mapping they mean into the workspace's columns.toml, checked before it replaces the old: Name/Full name fills full_name and person_name, its Family name and Given name a joined fallback of person_name and given_name, and every name, any_name. O(the file).
+
+| Parameter | |
+|---|---|
+| `PATH=COLUMNS` | one or more GROUP/FEATURE=COLUMNS |
+| `--workspace WORKSPACE` | the workspace: the folder that keeps one matching job (required) |
+
+| Result | |
+|---|---|
+| `features` | the structure, as set |
+| `slots` | each feature and part: feature (its path), columns |
+| `next` | the commands that usually follow |
+
+```bash
+nayose set feature "Name/Full name/Family name=SEI" "Name/Full name/Given name=MEI" --workspace workspaces/acme
 ```
 
 ## nayose describe records
@@ -137,6 +193,11 @@ Each column's share filled and an example; each field's columns as the mapping r
 | `fields` | each field: field, sources, filled, example, looks_right, and each of its alternatives (columns, found, filled, example, looks_right) |
 | `fit` | for each field, each column's fit: the share of its values that look like the field (id: filled, each value once) |
 | `suggested` | for each field the file holds none of: field, column, why |
+| `needed` | the fields a run stops without: every (each of them), one_of (at least one of each group) |
+| `slots` | each feature and part: feature (its path), sources, filled, example, looks_right, and each of its alternatives |
+| `features` | the structure: groups › features › parts, each with type and columns |
+| `profile` | each column's script (kanji, kana, romaji) and the shares of its values that are known family names, given names, full names, addresses |
+| `placements` | for each feature with no column: feature, column, share, why (the file's contents) |
 | `notes` | what the reader detected or fixed |
 | `next` | the commands that usually follow |
 
@@ -208,7 +269,7 @@ Map fields to a file's columns.
 nayose set columns FIELD=COLUMNS … [--workspace WORKSPACE] [--format text|json]
 ```
 
-Rewrites the named fields' lines in [columns]: FIELD=COLUMN, FIELD=A,B (B where A is empty), FIELD=A+B (A and B joined), FIELD= (the field goes). Every other line, each line's comment and a field's options stay; the new file is checked before it replaces the old. With --workspace, the workspace's columns.toml; else the project's, which new workspaces start from. O(the file).
+Rewrites the named fields' lines in [columns]: FIELD=COLUMN, FIELD=A,B (B where A is empty), FIELD=A+B (A and B joined), FIELD= (no column: whatever reads it is turned off). Every other line, each line's comment and a field's options stay; the new file is checked before it replaces the old. With --workspace, the workspace's columns.toml; else the project's, which new workspaces start from. O(the file).
 
 | Parameter | |
 |---|---|
