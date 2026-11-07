@@ -1692,6 +1692,8 @@ def test_the_ui_serves_only_its_own_link_and_runs_the_commands_as_nayose_does(tm
         assert j["exit"] == 0 and j["events"][-1]["pairs"]
         _, j = job("describe entity", {"id": "nobody", "run": str(tmp_path / "run")})
         assert j["exit"] == 2 and j["events"][-1]["event"] == "error" and j["events"][-1]["fix"]
+        dry = call("POST", "/api/run", dict(command="list pairs", args={"run": "r", "open": True}, dry=True))[1]
+        assert dry == {"command": "nayose list pairs --run r --open"}  # the equivalent command line, nothing run
         assert call("POST", "/api/run", dict(command="list pairs", args={"nope": 1}))[0] == 400  # only declared parameters
         assert call("POST", "/api/run", dict(command="delete everything", args={}))[0] == 400  # only declared commands
     finally:
@@ -1711,5 +1713,5 @@ def test_the_ui_layout_names_only_declared_commands_parameters_and_result_fields
             assert set(u["args"]) <= params and set(u.get("form", [])) <= params, (screen["id"], u["command"])
             assert set(u["reads"]) <= set(c.result), (screen["id"], u["command"], set(u["reads"]) - set(c.result))
     placed = {(s["id"], u["command"]) for s in layout["screens"] for u in s["uses"]}
-    called = {(m.group(1), m.group(2)) for m in re.finditer(r'(?:run|button)\("(\w+)", "(\w+ \w+)"', html)}
+    called = {(m.group(1), m.group(2)) for m in re.finditer(r'(?:run|action)\("(\w+)", "(\w+ \w+)"', html)}
     assert called and called <= placed  # every command the page runs, it runs as the layout places it

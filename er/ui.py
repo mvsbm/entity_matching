@@ -3,7 +3,8 @@ commands each one places, in which order, with which parameters taken from what 
 their results. The server knows nothing of the screens. It serves the page and three endpoints:
 
     GET  /api/commands          every command's declaration (er.cli.COMMANDS): the page builds its forms from them
-    POST /api/run               {"command": "list pairs", "args": {...}} → the job, and the nayose command it runs
+    POST /api/run               {"command": "list pairs", "args": {...}} → the job, and the nayose command it runs;
+                                with "dry": true, the command only, for the page to show before it runs
     GET  /api/job/<id>?from=n   the job's events from the n-th on, whether it ended, and its exit code
 
 Each job is parsed by nayose's own parser. A quick command (a list, a describe, one answer) runs in this process; any
@@ -172,6 +173,8 @@ def handler(server: Server):
                 return self._send(404, {"error": "no such page"})
             try:
                 body = json.loads(self.rfile.read(int(self.headers.get("Content-Length") or 0)) or b"{}")
+                if body.get("dry"):  # the equivalent command line, from the code that runs it
+                    return self._send(200, dict(command=shlex.join(["nayose", *argv(body.get("command", ""), body.get("args") or {})])))
                 key, job = server.start(body.get("command", ""), body.get("args") or {})
             except (InputError, json.JSONDecodeError) as e:
                 return self._send(400, {"error": str(e), "fix": getattr(e, "fix", "")})
