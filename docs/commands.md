@@ -29,6 +29,7 @@ Written by `scripts/document_commands.py` from the declarations in `er/cli.py`; 
 | [`answer kind`](#nayose-answer-kind) | Answer one record: person, company, or unsure |
 | [`apply answers`](#nayose-apply-answers) | Apply people's person/company answers: a rerun |
 | [`serve inbox`](#nayose-serve-inbox) | Take in every file dropped in an inbox, one at a time |
+| [`open ui`](#nayose-open-ui) | The commands in a browser, on this machine only |
 
 ## nayose check records
 
@@ -461,5 +462,29 @@ inbox/batches/ (new records: add records; into an empty run folder, resolve reco
 
 ```bash
 nayose serve inbox inbox --run runs/customers --every 300
+```
+
+## nayose open ui
+
+The commands in a browser, on this machine only.
+
+```
+nayose open ui [--run RUN] [--port PORT] [--link] [--format text|json]
+```
+
+Serves a page on 127.0.0.1, reachable only from this machine and only with the link it prints, and opens it. Its screens follow the work: records, columns, check and run, results, pairs (keys M, N, S), kinds (keys 1, 2, 0). Each button runs one of these commands, shown as the command line it is; lists, describes and single answers run in the page's own process, the others each in a process of their own, one at a time. Nothing is loaded from the network. Ctrl-C stops it.
+
+| Parameter | |
+|---|---|
+| `--run RUN` | the run folder the page starts with |
+| `--port PORT` | the port (default 8765; 0: any free one) |
+| `--link` | print the link only; open no browser |
+
+| Result | |
+|---|---|
+| `next` | the commands that usually follow |
+
+```bash
+nayose open ui --run runs/customers
 ```
 

@@ -2,7 +2,7 @@
 
 # Using it on your records
 
-Install it, map your columns, run it, read what it wrote. Later, add new records as they arrive, and have a person check the borderline pairs.
+Install it, map your columns, run it, read what it wrote. Later, add new records as they arrive, and have a person check the borderline pairs. Every step is a `nayose` command; `nayose open ui` runs the same commands in a browser ([section 9](#9--in-a-browser)).
 
 ## 1 · Install
 
@@ -265,6 +265,26 @@ Each file runs as its `nayose` command in a process of its own, so a crash can't
 | any other way: busy (exit 75: another job writes to the run folder), a crash, memory | is tried again, waiting 2, 4, 8 … s (`--retries`, default 2). If it still fails, the pass stops and the file stays, so nothing jumps ahead of it; the next pass tries again |
 
 `--compute` passes DuckDB limits on to every run. A file whose content was done before, by its SHA-256, moves to `done/` without running. The pass ends with exit code 1 if it stopped on a file. One scheduler serves an inbox at a time, and a run folder takes one writer at a time, so starting a second one, or running `nayose` on the folder by hand meanwhile, is refused, not raced, on a local disk.
+
+## 9 · In a browser
+
+```bash
+.venv/bin/nayose open ui --run runs/customers      # prints a link and opens it; Ctrl-C stops it
+```
+
+The page runs the same commands, and nothing else: each button is one `nayose` command, and the list at the bottom shows each one as it ran, ready to type in a terminal. Its screens follow the work:
+
+| Screen | Runs | For |
+|---|---|---|
+| 1 · Records | `describe run` | the file and the run folder, and what the folder holds |
+| 2 · Columns | `list columns`, `check records`, `set columns` | each field's columns beside how it looks in the file; a field the run needs, with the column the values suggest one click away |
+| 3 · Run | `resolve records`, `add records`, `match records`, `rerun records` | each step as it finishes, then the summary |
+| 4 · Results | `describe run`, `describe entity` | the largest entities; any record's entity, and what joined it |
+| 5 · Pairs | `list pairs`, `decide pair`, `apply decisions` | one pair at a time, the values that differ marked: <kbd>M</kbd> match, <kbd>N</kbd> no match, <kbd>S</kbd> skip, <kbd>←</kbd> back |
+| 6 · Kinds | `list kinds`, `answer kind`, `apply answers` | one record at a time: <kbd>1</kbd> person, <kbd>2</kbd> company, <kbd>0</kbd> can't tell |
+
+- **Only this machine, only this link.** The page is served on `127.0.0.1`, and every request needs the random token in the link `open ui` prints, so another user of the machine can't use it, and a web page elsewhere can't reach it. It loads nothing from the network: the records never leave the machine.
+- **One long command at a time.** Lists, describes and single answers run at once; a run, a rerun or applying the answers runs in a process of its own, so a crash can't take the page down, and a second one waits its turn. A run folder another job is writing to says so: answer again once it is done.
 
 ## Development scripts
 

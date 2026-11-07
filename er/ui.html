@@ -1,0 +1,347 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>nayose</title>
+<style>
+:root { --bg: #fbfbfa; --panel: #ffffff; --ink: #1d2125; --muted: #5d6670; --line: #dfe2e6; --accent: #2457c5; --accent-ink: #ffffff;
+        --good: #1f7a3d; --bad: #b3261e; --mark: #fff1c2; --mark-ink: #5a4500; --code: #f2f4f6; }
+@media (prefers-color-scheme: dark) {
+  :root { --bg: #15181b; --panel: #1d2125; --ink: #e8eaed; --muted: #9aa3ad; --line: #343a40; --accent: #7ea6ff; --accent-ink: #0d1117;
+          --good: #6fcf8f; --bad: #ff8a80; --mark: #4a3d12; --mark-ink: #ffe7a3; --code: #262b30; }
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--ink); font: 15px/1.45 system-ui, -apple-system, "Hiragino Sans", "Noto Sans JP", sans-serif; }
+header { position: sticky; top: 0; z-index: 2; background: var(--panel); border-bottom: 1px solid var(--line); padding: 10px 16px; }
+.top { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+.brand { font-weight: 700; }
+.brand small { font-weight: 400; color: var(--muted); }
+nav { display: flex; gap: 4px; flex-wrap: wrap; margin-top: 8px; }
+nav button { border: 1px solid var(--line); background: transparent; color: var(--ink); border-radius: 999px; padding: 4px 12px; cursor: pointer; }
+nav button[aria-current="page"] { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
+main { max-width: 1100px; margin: 0 auto; padding: 16px; }
+section.panel { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px; margin-bottom: 14px; overflow-x: auto; }
+h2 { font-size: 18px; margin: 0 0 4px; }
+p.what { color: var(--muted); margin: 0 0 12px; }
+label { display: inline-flex; gap: 6px; align-items: center; margin: 4px 12px 4px 0; }
+input[type=text] { font: inherit; padding: 5px 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); color: var(--ink); min-width: 18em; }
+select { font: inherit; padding: 4px 6px; border-radius: 6px; border: 1px solid var(--line); background: var(--bg); color: var(--ink); }
+button.go { font: inherit; padding: 6px 14px; border-radius: 6px; border: 1px solid var(--accent); background: var(--accent); color: var(--accent-ink); cursor: pointer; margin: 4px 8px 4px 0; }
+button.plain { font: inherit; padding: 5px 12px; border-radius: 6px; border: 1px solid var(--line); background: transparent; color: var(--ink); cursor: pointer; margin: 4px 8px 4px 0; }
+button:disabled { opacity: .5; cursor: default; }
+table { border-collapse: collapse; width: 100%; }
+th, td { text-align: left; padding: 5px 8px; border-bottom: 1px solid var(--line); vertical-align: top; }
+th { color: var(--muted); font-weight: 600; font-size: 13px; }
+td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
+tr.differ td.v { background: var(--mark); color: var(--mark-ink); }
+.err { border-left: 4px solid var(--bad); padding: 8px 12px; background: var(--code); margin: 8px 0; }
+.ok { color: var(--good); }
+.bad { color: var(--bad); }
+.muted { color: var(--muted); }
+code, .cmd { font: 13px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace; background: var(--code); padding: 1px 5px; border-radius: 4px; overflow-wrap: anywhere; }
+.steps { font: 13px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--muted); white-space: pre-wrap; }
+.card { display: grid; grid-template-columns: 1fr; gap: 10px; }
+.big { font-size: 26px; font-weight: 600; }
+.chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.chip { border: 1px solid var(--line); border-radius: 999px; padding: 2px 10px; font-size: 13px; }
+.keys { color: var(--muted); font-size: 13px; }
+kbd { border: 1px solid var(--line); border-bottom-width: 2px; border-radius: 4px; padding: 0 5px; font: 12px ui-monospace, monospace; }
+#log { max-width: 1100px; margin: 0 auto 24px; padding: 0 16px; }
+#log li { margin: 2px 0; }
+a.link { color: var(--accent); cursor: pointer; text-decoration: underline; }
+</style>
+</head>
+<body>
+<header>
+  <div class="top">
+    <span class="brand">nayose <small>名寄せ · one ID per person or company</small></span>
+    <label>Run folder <input type="text" id="run" placeholder="runs/customers"></label>
+    <label>Records file <input type="text" id="input" placeholder="customers.parquet"></label>
+  </div>
+  <nav id="nav" aria-label="Steps"></nav>
+</header>
+<main id="screen" aria-live="polite"></main>
+<section id="log" aria-label="Commands run"><h2>Commands run</h2><p class="what">Every button runs one of these; each can be typed in a terminal as it is.</p><ol reversed id="cmds"></ol></section>
+
+<script type="application/json" id="layout">
+{"screens": [
+  {"id": "records", "title": "1 · Records", "what": "The file to resolve, and the run folder it goes into.",
+   "uses": [{"command": "describe run", "args": {"run": "@run"}, "reads": ["records", "entities", "runs", "pairs", "kinds", "set_aside", "write_owed"]}]},
+  {"id": "columns", "title": "2 · Columns", "what": "Which of the file's columns hold each field, and how each looks in the file.",
+   "uses": [{"command": "list columns", "args": {}, "reads": ["columns", "settings"]},
+            {"command": "check records", "args": {"input": "@input"}, "reads": ["records", "fields", "turned_off", "keys", "notes"]},
+            {"command": "set columns", "args": {"mapping": "@mapping"}, "reads": ["columns"]}]},
+  {"id": "run", "title": "3 · Run", "what": "Resolve the file, add new records to the run, see what adding them would do, or resolve the run's own files again.",
+   "uses": [{"command": "resolve records", "args": {"input": "@input", "run": "@run", "overwrite": "@overwrite", "compute": "@compute"}, "form": ["overwrite", "compute"], "reads": ["summary", "seconds"]},
+            {"command": "add records", "args": {"input": "@input", "run": "@run"}, "reads": ["summary"]},
+            {"command": "match records", "args": {"input": "@input", "run": "@run"}, "reads": ["counts", "records"]},
+            {"command": "rerun records", "args": {"run": "@run"}, "reads": ["summary"]}]},
+  {"id": "results", "title": "4 · Results", "what": "The run at a glance, and any record's entity with what joined it.",
+   "uses": [{"command": "describe run", "args": {"run": "@run"}, "reads": ["summary", "largest"]},
+            {"command": "describe entity", "args": {"id": "@id", "run": "@run"}, "reads": ["entity", "records", "links"]}]},
+  {"id": "pairs", "title": "5 · Pairs", "what": "Decide the pairs just below the line, and audit those just above it.",
+   "uses": [{"command": "list pairs", "args": {"run": "@run", "open": true}, "reads": ["pairs", "counts"]},
+            {"command": "decide pair", "args": {"first": "@first", "second": "@second", "decision": "@decision", "run": "@run"}, "reads": ["decision"]},
+            {"command": "apply decisions", "args": {"run": "@run"}, "reads": ["decisions", "matches", "clusters_joined", "summary"]}]},
+  {"id": "kinds", "title": "6 · Kinds", "what": "Answer person or company for the records held back, and for the draw that measures the engine.",
+   "uses": [{"command": "list kinds", "args": {"run": "@run", "open": true}, "reads": ["kinds", "counts"]},
+            {"command": "answer kind", "args": {"id": "@id", "kind": "@kind", "run": "@run"}, "reads": ["kind"]},
+            {"command": "apply answers", "args": {"run": "@run", "compute": "@compute"}, "form": ["compute"], "reads": ["summary"]}]}
+]}
+</script>
+<script>
+"use strict";
+const LAYOUT = JSON.parse(document.getElementById("layout").textContent);
+const token = new URLSearchParams(location.search).get("token") || "";
+const $ = (id) => document.getElementById(id);
+const esc = (v) => String(v ?? "—").replace(/[&<>"']/g, (c) => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"}[c]));
+const fmt = (v) => v === null || v === undefined ? "—" : typeof v === "number" ? (Number.isInteger(v) ? v.toLocaleString() : v.toFixed(2)) : typeof v === "boolean" ? (v ? "yes" : "no") : String(v);
+const pct = (v) => v === null || v === undefined ? "—" : `${Math.round(v * 100)}%`;
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const store = (k, v) => { try { v === undefined ? null : localStorage.setItem(`nayose.${k}`, v); return localStorage.getItem(`nayose.${k}`); } catch { return null; } };
+let COMMANDS = {}, current = "records", keyHandler = null;
+const state = {};
+
+async function api(path, body) {
+  const r = await fetch(path, {method: body ? "POST" : "GET", headers: {"X-Token": token, "Content-Type": "application/json"}, body: body ? JSON.stringify(body) : undefined});
+  return r.json();
+}
+
+function use(screen, command) {
+  return LAYOUT.screens.find((s) => s.id === screen).uses.find((u) => u.command === command);
+}
+
+// Run one command as the layout places it: its arguments from the layout, "@name" filled from what the person typed.
+async function run(screen, command, extra = {}, onEvent = null) {
+  const u = use(screen, command);
+  const args = {};
+  for (const [k, v] of Object.entries(u.args)) {
+    const value = typeof v === "string" && v.startsWith("@") ? (extra[v.slice(1)] ?? state[v.slice(1)]) : v;
+    if (value !== undefined && value !== "" && value !== null) args[k] = value;
+  }
+  const started = await api("/api/run", {command, args});
+  if (started.error) return {event: "error", error: started.error, fix: started.fix};
+  const li = document.createElement("li");
+  li.innerHTML = `<span class="cmd">${esc(started.command)}</span> <span class="muted">running…</span>`;
+  $("cmds").prepend(li);
+  let from = 0, last = {};
+  for (;;) {
+    const j = await api(`/api/job/${started.job}?from=${from}`);
+    for (const e of j.events) { last = e; if (onEvent) onEvent(e); }
+    from += j.events.length;
+    if (j.done) { li.lastElementChild.textContent = j.exit === 0 ? "done" : `exit ${j.exit}`; li.lastElementChild.className = j.exit === 0 ? "ok" : "bad"; break; }
+    await sleep(250);
+  }
+  return last;
+}
+
+function error(e) {
+  if (!e || e.event !== "error") return "";
+  return `<div class="err" role="alert"><b>${esc(e.error)}</b>${e.fix ? `<br>${esc(e.fix)}` : ""}</div>`;
+}
+
+// A parameter's input, built from its declaration: a flag a checkbox, a choice a list, the rest a text box.
+function field(command, name) {
+  const p = COMMANDS[command].params.find((x) => x.name === name);
+  const id = `f-${command.replace(" ", "-")}-${name}`;
+  if (p.kind === "flag") return `<label title="${esc(p.help)}"><input type="checkbox" id="${id}"> ${esc(p.help)}</label>`;
+  if (p.choices.length) return `<label>${esc(name)} <select id="${id}">${p.choices.map((c) => `<option>${esc(c)}</option>`).join("")}</select></label>`;
+  return `<label title="${esc(p.help)}">${esc(name)} <input type="text" id="${id}" placeholder="${esc(p.metavar)}"></label>`;
+}
+function formValues(command) {
+  const out = {};
+  for (const name of use(current, command).form || []) {
+    const p = COMMANDS[command].params.find((x) => x.name === name), el = $(`f-${command.replace(" ", "-")}-${name}`);
+    out[name] = p.kind === "flag" ? el.checked : p.kind === "many" ? el.value.split(/\s+/).filter(Boolean) : el.value;
+  }
+  return out;
+}
+function button(screen, command, label) {
+  const c = COMMANDS[command];
+  return `<div><button class="go" data-run="${esc(command)}" title="${esc(c.help)}">${esc(label || c.help)}</button>${(use(screen, command).form || []).map((n) => field(command, n)).join("")}</div>`;
+}
+
+function table(rows, cols, labels = {}) {
+  if (!rows || !rows.length) return `<p class="muted">none</p>`;
+  cols = cols || Object.keys(rows[0]);
+  return `<table><thead><tr>${cols.map((c) => `<th${typeof rows[0][c] === "number" ? ' class="num"' : ""}>${esc(labels[c] || c.replaceAll("_", " "))}</th>`).join("")}</tr></thead><tbody>` +
+    rows.map((r) => `<tr>${cols.map((c) => `<td${typeof r[c] === "number" ? ' class="num"' : ""}>${esc(fmt(r[c]))}</td>`).join("")}</tr>`).join("") + "</tbody></table>";
+}
+const summary = (rows) => rows && rows.length ? table(rows.map(([what, value]) => ({what, value})), ["what", "value"]) : "";
+function steps(target) {
+  const box = target.querySelector(".steps") || target.appendChild(Object.assign(document.createElement("div"), {className: "steps"}));
+  return (e) => { if (e.event === "step") box.textContent += `${e.step.padEnd(11)} ${e.seconds.toFixed(1).padStart(6)} s\n`; };
+}
+
+// ---------- the screens: what each places, and how it draws the results ----------
+
+const SCREENS = {
+  async records(el) {
+    el.innerHTML = `<section class="panel"><h2>The run folder</h2><p class="what">Type the run folder and the records file above; they are kept for the next visit.</p>
+      ${button("records", "describe run", "Look at the run folder")}<div id="out"></div></section>`;
+    el.querySelector("[data-run]").onclick = async () => {
+      const d = await run("records", "describe run");
+      $("out").innerHTML = d.event === "error" ? error(d) + `<p>Not a run yet? Go on to <a class="link" data-go="columns">2 · Columns</a> and <a class="link" data-go="run">3 · Run</a>.</p>` :
+        `<p><b>${fmt(d.records)}</b> records, <b>${fmt(d.entities)}</b> entities${d.write_owed ? ' · <span class="bad">a write was cut short: the next one finishes it</span>' : ""}</p>
+         <p>Pairs open: decide ${fmt(d.pairs.decide)}, audit ${fmt(d.pairs.audit)} · <a class="link" data-go="pairs">5 · Pairs</a><br>
+            Records to answer: decide ${fmt(d.kinds.decide)}, measure ${fmt(d.kinds.measure)} · <a class="link" data-go="kinds">6 · Kinds</a><br>
+            Set aside: ${fmt(d.set_aside)}</p>${table(d.runs, ["at", "what", "seconds"])}`;
+    };
+  },
+
+  async columns(el) {
+    el.innerHTML = `<section class="panel"><h2>Columns</h2><p class="what">Each field reads the first of its columns that is filled; <code>A+B</code> joins two. Change one, save, and the check runs again.</p><div id="out">loading…</div></section>`;
+    const draw = async () => {
+      const [cols, check] = await Promise.all([run("columns", "list columns"), state.input ? run("columns", "check records") : null]);
+      const shares = Object.fromEntries(((check && check.fields) || []).map((f) => [f.field, f]));
+      const hints = check && check.event === "error" ? Object.entries(check.hints || {}) : [];
+      $("out").innerHTML = (check ? error(check) : `<p class="muted">Type the records file above to check it.</p>`) +
+        (hints.length ? `<p>${hints.map(([f, c]) => `<button class="plain" data-hint="${esc(f)}=${esc(c)}">use ${esc(c)} for ${esc(f)}</button>`).join("")}</p>` : "") +
+        `<table><thead><tr><th>field</th><th>columns</th><th class="num">filled</th><th class="num">looks right</th><th class="num">top value</th><th></th></tr></thead><tbody>` +
+        cols.columns.map((c) => { const s = shares[c.field] || {}; return `<tr><td>${esc(c.field)}${c.options ? `<br><span class="muted">${esc(c.options)}</span>` : ""}</td>
+          <td><input type="text" data-field="${esc(c.field)}" value="${esc(c.columns)}" aria-label="columns of ${esc(c.field)}"></td>
+          <td class="num">${pct(s.filled)}</td><td class="num">${pct(s.looks_right)}</td><td class="num">${pct(s.top_value)}</td>
+          <td><button class="plain" data-save="${esc(c.field)}">save</button></td></tr>`; }).join("") + "</tbody></table>" +
+        (check && check.event === "result" ? `<p>${fmt(check.records)} records · turned off: ${esc((check.turned_off || []).join(", ") || "nothing")}</p>${table(check.keys)}
+          ${(check.notes || []).map((n) => `<p class="muted">${esc(n)}</p>`).join("")}<p>Ready: <a class="link" data-go="run">3 · Run</a></p>` : "");
+      const save = async (mapping) => { const d = await run("columns", "set columns", {mapping}); if (d.event === "error") $("out").insertAdjacentHTML("afterbegin", error(d)); else draw(); };
+      el.querySelectorAll("[data-save]").forEach((b) => b.onclick = () => save([`${b.dataset.save}=${el.querySelector(`[data-field="${b.dataset.save}"]`).value.replaceAll(" ", "")}`]));
+      el.querySelectorAll("[data-hint]").forEach((b) => b.onclick = () => save([b.dataset.hint]));
+    };
+    draw();
+  },
+
+  async run(el) {
+    el.innerHTML = `<section class="panel"><h2>Run</h2><p class="what">${esc(LAYOUT.screens[2].what)}</p>
+      ${button("run", "resolve records")}${button("run", "add records")}${button("run", "match records")}${button("run", "rerun records")}<div id="out"></div></section>`;
+    el.querySelectorAll("[data-run]").forEach((b) => b.onclick = async () => {
+      el.querySelectorAll("[data-run]").forEach((x) => x.disabled = true);
+      $("out").innerHTML = "";
+      const d = await run("run", b.dataset.run, formValues(b.dataset.run), steps($("out")));
+      el.querySelectorAll("[data-run]").forEach((x) => x.disabled = false);
+      $("out").insertAdjacentHTML("beforeend", d.event === "error" ? error(d) : b.dataset.run === "match records" ?
+        `<p>${Object.entries(d.counts).map(([k, n]) => `${esc(k)}: <b>${fmt(n)}</b>`).join(" · ")}</p>${table(d.records.slice(0, 200), ["id", "entity", "status", "by", "weight"])}` :
+        summary(d.summary) + `<p>Next: <a class="link" data-go="pairs">5 · Pairs</a> · <a class="link" data-go="kinds">6 · Kinds</a> · <a class="link" data-go="results">4 · Results</a></p>`);
+    });
+  },
+
+  async results(el) {
+    el.innerHTML = `<section class="panel"><h2>Results</h2><p class="what">${esc(LAYOUT.screens[3].what)}</p>
+      <label>Record ID <input type="text" id="rid" placeholder="0000000151"></label><button class="go" id="look">Look up its entity</button><div id="entity"></div><div id="out">loading…</div></section>`;
+    const entity = async (id) => {
+      const d = await run("results", "describe entity", {id});
+      if (d.event === "error") { $("entity").innerHTML = error(d); return; }
+      const cols = Object.keys(d.records[0]).filter((k) => !["cluster_id", "kind_p", "kind_held"].includes(k));
+      $("entity").innerHTML = `<h2>Entity ${esc(d.entity)}</h2>${table(d.records, cols)}<h2>What joined them</h2>${table(d.links, ["id_l", "id_r", "by", "weight"])}`;
+    };
+    $("look").onclick = () => entity($("rid").value.trim());
+    const d = await run("results", "describe run");
+    $("out").innerHTML = d.event === "error" ? error(d) : `<h2>Summary</h2>${summary(d.summary)}<h2>Largest entities</h2>
+      <table><thead><tr><th>entity</th><th class="num">records</th></tr></thead><tbody>${d.largest.map((x) => `<tr><td><a class="link" data-entity="${esc(x.entity)}">${esc(x.entity)}</a></td><td class="num">${fmt(x.records)}</td></tr>`).join("")}</tbody></table>`;
+    el.querySelectorAll("[data-entity]").forEach((a) => a.onclick = () => entity(a.dataset.entity));
+  },
+
+  async pairs(el) {
+    el.innerHTML = `<section class="panel"><h2>Pairs</h2><p class="what">${esc(LAYOUT.screens[4].what)}</p><div id="out">loading…</div></section>
+      <section class="panel"><p class="what" id="tally">Nothing written in yet.</p>${button("pairs", "apply decisions", "Apply the decisions written in")}<div id="applied"></div></section>`;
+    el.querySelector('[data-run="apply decisions"]').onclick = () => apply();
+    const d = await run("pairs", "list pairs");
+    if (d.event === "error") { $("out").innerHTML = error(d); return; }
+    const rows = d.pairs;
+    let i = 0, written = 0;
+    const draw = () => {
+      if (!rows.length || i >= rows.length) {
+        $("out").innerHTML = `<p>${rows.length ? "Every pair here has an answer." : "No pair is open."}</p>`;
+        return;
+      }
+      const r = rows[i], fields = Object.keys(r).filter((k) => k.endsWith("_l") && k !== "id_l" && `${k.slice(0, -2)}_r` in r).map((k) => k.slice(0, -2));
+      const comps = Object.keys(r).filter((k) => `${k}_bits` in r);
+      $("out").innerHTML = `<div class="card"><div><b>${i + 1}</b> of ${rows.length} · ${esc(r.why)} · weight <b>${fmt(r.match_weight)}</b> bits · ${r.accepted ? '<span class="ok">accepted by the run</span>' : '<span class="muted">not accepted</span>'}</div>
+        <table><thead><tr><th>field</th><th>${esc(r.id_l)}</th><th>${esc(r.id_r)}</th></tr></thead><tbody>${fields.filter((f) => r[`${f}_l`] !== null || r[`${f}_r`] !== null).map((f) =>
+          `<tr class="${r[`${f}_l`] !== null && r[`${f}_r`] !== null && r[`${f}_l`] !== r[`${f}_r`] ? "differ" : ""}"><td>${esc(f.replaceAll("_", " "))}</td><td class="v">${esc(fmt(r[`${f}_l`]))}</td><td class="v">${esc(fmt(r[`${f}_r`]))}</td></tr>`).join("")}</tbody></table>
+        <div class="chips">${comps.map((c) => `<span class="chip">${esc(c)}: ${esc(r[c])} <b>${r[`${c}_bits`] >= 0 ? "+" : ""}${fmt(r[`${c}_bits`])}</b></span>`).join("")}</div>
+        <div><button class="go" id="m">Match</button><button class="plain" id="n">No match</button><button class="plain" id="s">Skip</button><button class="plain" id="b" ${i ? "" : "disabled"}>Back</button>
+          <span class="keys"><kbd>M</kbd> match · <kbd>N</kbd> no match · <kbd>S</kbd> skip · <kbd>←</kbd> back</span></div><div id="said"></div></div>`;
+      $("m").onclick = () => decide("match"); $("n").onclick = () => decide("no_match"); $("s").onclick = () => { i++; draw(); }; $("b").onclick = () => { i = Math.max(0, i - 1); draw(); };
+    };
+    const decide = async (decision) => {
+      const r = rows[i], e = await run("pairs", "decide pair", {first: r.id_l, second: r.id_r, decision});
+      if (e.event === "error") { $("said").innerHTML = error(e); return; }
+      written++; i++; $("tally").textContent = `${written} written in, not applied yet.`; draw();
+    };
+    const apply = async () => {
+      $("applied").innerHTML = "";
+      const e = await run("pairs", "apply decisions", {}, steps($("applied")));
+      $("applied").insertAdjacentHTML("beforeend", e.event === "error" ? error(e) : `<p class="ok">${fmt(e.decisions)} decisions applied, ${fmt(e.matches)} of them match: ${fmt(e.clusters_joined)} entities joined.</p>${summary(e.summary)}`);
+    };
+    keyHandler = (k) => ({m: () => decide("match"), n: () => decide("no_match"), s: () => { i++; draw(); }, ArrowLeft: () => { i = Math.max(0, i - 1); draw(); }})[k];
+    draw();
+  },
+
+  async kinds(el) {
+    el.innerHTML = `<section class="panel"><h2>Kinds</h2><p class="what">${esc(LAYOUT.screens[5].what)} A sole trader is a person.</p><div id="out">loading…</div></section>
+      <section class="panel"><p class="what" id="tally">Nothing written in yet. Answers change how names are matched, so applying them resolves the run's own files again.</p>
+      ${button("kinds", "apply answers", "Apply the answers written in")}<div id="applied"></div></section>`;
+    el.querySelector('[data-run="apply answers"]').onclick = () => apply();
+    const d = await run("kinds", "list kinds");
+    if (d.event === "error") { $("out").innerHTML = error(d); return; }
+    const rows = d.kinds;
+    let i = 0, written = 0;
+    const draw = () => {
+      if (!rows.length || i >= rows.length) {
+        $("out").innerHTML = `<p>${rows.length ? "Every record here has an answer." : "No record is open."}</p>`;
+        return;
+      }
+      const r = rows[i], said = ["engine_says", "name_says", "flag", "birth_date"].filter((k) => k in r && r[k] !== null);
+      $("out").innerHTML = `<div class="card"><div><b>${i + 1}</b> of ${rows.length} · ${esc(r.why)} · ${esc(r.reason)}</div><div class="big">${esc(r.name)}</div>
+        <div class="chips">${said.map((k) => `<span class="chip">${esc(k.replace("_says", "").replaceAll("_", " "))}: ${esc(r[k])}</span>`).join("")}</div>
+        <div><button class="go" id="k1">Person</button><button class="go" id="k2">Company</button><button class="plain" id="k0">Can't tell</button><button class="plain" id="s">Skip</button><button class="plain" id="b" ${i ? "" : "disabled"}>Back</button>
+          <span class="keys"><kbd>1</kbd> person · <kbd>2</kbd> company · <kbd>0</kbd> can't tell · <kbd>S</kbd> skip · <kbd>←</kbd> back</span></div><div id="said"></div></div>`;
+      $("k1").onclick = () => answer("person"); $("k2").onclick = () => answer("company"); $("k0").onclick = () => answer("unsure");
+      $("s").onclick = () => { i++; draw(); }; $("b").onclick = () => { i = Math.max(0, i - 1); draw(); };
+    };
+    const answer = async (kind) => {
+      const e = await run("kinds", "answer kind", {id: rows[i].id, kind});
+      if (e.event === "error") { $("said").innerHTML = error(e); return; }
+      written++; i++; $("tally").textContent = `${written} written in, not applied yet.`; draw();
+    };
+    const apply = async () => {
+      $("applied").innerHTML = "";
+      const e = await run("kinds", "apply answers", formValues("apply answers"), steps($("applied")));
+      $("applied").insertAdjacentHTML("beforeend", e.event === "error" ? error(e) : summary(e.summary));
+    };
+    keyHandler = (k) => ({"1": () => answer("person"), "2": () => answer("company"), "0": () => answer("unsure"), s: () => { i++; draw(); }, ArrowLeft: () => { i = Math.max(0, i - 1); draw(); }})[k];
+    draw();
+  },
+};
+
+function go(id) {
+  current = id; keyHandler = null;
+  $("nav").querySelectorAll("button").forEach((b) => b.setAttribute("aria-current", b.dataset.screen === id ? "page" : "false"));
+  SCREENS[id]($("screen"));
+}
+
+document.addEventListener("click", (e) => { const a = e.target.closest("[data-go]"); if (a) go(a.dataset.go); });
+document.addEventListener("keydown", (e) => {
+  if (e.target.matches("input, select, textarea") || e.metaKey || e.ctrlKey || e.altKey || !keyHandler) return;
+  const act = keyHandler(e.key.length === 1 ? e.key.toLowerCase() : e.key);
+  if (act) { e.preventDefault(); act(); }
+});
+
+(async () => {
+  const d = await api("/api/commands");
+  if (!d.commands) { $("screen").innerHTML = error({event: "error", error: d.error || "this page needs the link nayose open ui printed"}); return; }
+  COMMANDS = Object.fromEntries(d.commands.map((c) => [c.name, c]));
+  for (const k of ["run", "input"]) {
+    state[k] = (k === "run" && d.run) || store(k) || "";
+    $(k).value = state[k];
+    $(k).onchange = () => { state[k] = $(k).value.trim(); store(k, state[k]); };
+  }
+  $("nav").innerHTML = LAYOUT.screens.map((s) => `<button data-screen="${s.id}">${esc(s.title)}</button>`).join("");
+  $("nav").querySelectorAll("button").forEach((b) => b.onclick = () => go(b.dataset.screen));
+  go("records");
+})();
+</script>
+</body>
+</html>

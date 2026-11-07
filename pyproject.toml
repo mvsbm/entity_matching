@@ -13,3 +13,4 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools]
 packages = ["er"]
+package-data = { er = ["ui.html"] }  # the page nayose open ui serves
