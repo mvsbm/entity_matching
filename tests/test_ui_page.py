@@ -317,6 +317,9 @@ def test_step_4_shows_the_trust_line_lowers_it_and_an_answer_waits_out_a_busy_wo
     page.click(".navitem[data-screen=pairs]")
     page.wait_for_selector(".trustbar")
     assert page.inner_text(".trustbar").startswith("Nothing merges by points yet")
+    page.click("#workload summary")  # how many pairs people must check, range by range: read once opened
+    page.wait_for_selector("#workload .answer")
+    assert page.inner_text("#workload .answer").startswith(("To let pairs scoring", "Nothing to check")) and page.query_selector("#workload tr[data-i]")
     page.click("[data-trust='lower trust']")  # nothing scores 20 on this population: that range merges at once
     page.click("dialog button[value=run]")
     page.wait_for_selector("#note .banner", timeout=120_000)

@@ -33,10 +33,10 @@ from er import folder, inbox, intake
 from er.config import InputError, adjust, load_pipeline, restrict, sources_text, toml_of, widen
 from er.folder import Busy
 from er.report import (applied, compare_records, describe_entity, describe_key, describe_matching, describe_method, describe_workspace, entity_pairs, explain_pair, fill_rates,
-                       key_how, list_patterns, rule_how, trust_state)
+                       key_how, list_patterns, review_workload, rule_how, trust_state)
 from er.source import describe, find, lexicon
 from er.strings import connect
-from er.run import Run, trial
+from er.run import Run, size_bytes, trial
 from er.settings import (COLUMNS, SPECIAL, add_feature, added_of, beside, columns_file, counted_once, features_of, load_settings, offers, own_columns,
                          placements, present_fields, remove_feature, set_columns, set_features, settings_path, slots)
 
@@ -193,6 +193,11 @@ def check_text(r: dict) -> str:
         out.append(f"  {k['key']:<34} {k['per_record']:>6.2f} / record  largest block {k['largest_block']:>6,}" +
                    (f"  {k['oversized_blocks']:,} oversized ({k['oversized_records']:,} records): checked by sampling" if k["oversized_blocks"] else ""))
     out += [f"  {x}" for x in r["notes"]]
+    c, ready = r["capacity"], r["ready"]
+    out.append(f"room: {c['memory_limit_gb']} GB of memory, {c['spill_free_gb']} GB to spill in {c['spill_folder']}: "
+               f"{c['pairs_fit']:,} pairs fit, the file needs {c['pairs_needed']:,}" + (f" ({c['headroom']}×)" if c["headroom"] else ""))
+    out.append("ready: " + ("yes" if ready["ok"] else "no") + (", but look at:" if ready["ok"] and ready["warns"] else ""))
+    out += [f"  ✗ {x['what']}: {x['fix']}" for x in ready["stops"]] + [f"  ! {x['what']}: {x['fix']}" for x in ready["warns"]]
     return "\n".join(out + ["next"] + [f"  {x['command']}    # {x['why']}" for x in r["next"]])
 
 
@@ -261,7 +266,7 @@ def checked(a: dict, s, p, path: str, emit: "Emit") -> dict:
             raise
         raise InputError(str(e), fix=f"map it in the workspace, once the values look right: "
                          f"{nayose('set', 'columns', *(f'{f}={c}' for f, c in e.hints.items()), '--workspace', a['workspace'])}", hints=e.hints) from None
-    plan = run.budget()
+    plan = run.budget(stop=False)
     fill = fill_rates(run).set_index("field")
     shown = plan[(plan["oversized_blocks"] > 0) | plan["name"].isin(plan.nlargest(5, "per_record")["name"])].sort_values("per_record", ascending=False)
     fields = [dict(field=f, filled=fill.loc[f, "filled"], looks_right=fill.loc[f, "looks_right"], top_value=fill.loc[f, "top_value"],
@@ -269,8 +274,40 @@ def checked(a: dict, s, p, path: str, emit: "Emit") -> dict:
               for f in run.fields]
     keys = [dict(key=x.name, per_record=x.per_record, largest_block=x.largest_block, oversized_blocks=x.oversized_blocks,
                  oversized_records=x.oversized_records) for x in shown.itertuples()]
-    return plain(dict(records=run.n, fields=fields, turned_off=run.disabled, keys=keys, oversized_from=p.fs.budget.min_oversized(), notes=run.notes, read=read_of(Path(path)),
+    limit, spill = run.con.execute("SELECT current_setting('memory_limit'), current_setting('temp_directory')").fetchall()[0]
+    needed, fit, read = int(plan["normal"].sum()), run.capacity(), read_of(Path(path))
+    capacity = dict(memory_limit_gb=round(size_bytes(limit) / 2**30, 2), spill_folder=spill, spill_free_gb=round(run.spill_room() / 2**30, 1),
+                    pairs_needed=needed, pairs_fit=fit, headroom=round(fit / needed, 1) if needed else None)
+    return plain(dict(records=run.n, fields=fields, turned_off=run.disabled, keys=keys, oversized_from=p.fs.budget.min_oversized(), notes=run.notes, read=read,
+                      capacity=capacity, ready=ready_for(run, fields, plan, capacity, read),
                       next=[dict(command=nayose("resolve", "records", a["input"], "--workspace", "<workspace>"), why="ready: resolve them")]))
+
+
+def ready_for(run: Run, fields: list[dict], plan: pd.DataFrame, capacity: dict, read: dict | None) -> dict:
+    """Whether a run of the file checked would go through, and what may hurt it: what would stop it (its pairs over
+    the room DuckDB has; a mistake in the file or the mapping stops the check itself, with its fix), and what to
+    look at first (a field nearly empty, or whose values don't look like it; repairs waiting; rows unread; records
+    set aside; little room to spare). Each a sentence, with what to do."""
+    stops, warns = [], []
+    if capacity["headroom"] is not None and capacity["headroom"] < 1:
+        most = ", ".join(f"{x.name} {x.normal:,}" for x in plan.nlargest(3, "normal").itertuples())
+        stops.append(dict(what=f"the pairs ({capacity['pairs_needed']:,}) are more than fit in memory and the spill disk ({capacity['pairs_fit']:,}); the most: {most}",
+                          fix="give DuckDB more room: --compute memory_limit=… temp_directory=<a disk with space>"))
+    elif capacity["headroom"] is not None and capacity["headroom"] < 2:
+        warns.append(dict(what=f"the pairs fill {1 / capacity['headroom']:.0%} of the room DuckDB has", fix="a larger file may not fit: give it more memory or spill disk"))
+    either = {f for group in run.pipeline.fields.one_of for f in group}  # a person's or a company's name: each filled only for its kind
+    for f in fields:
+        if f["filled"] is not None and f["filled"] < 0.3 and f["field"] not in either:
+            warns.append(dict(what=f"{f['field']} is {f['filled']:.0%} filled", fix="matching leans on it less: map a fuller column if the file has one"))
+        if f["looks_right"] is not None and f["filled"] and f["looks_right"] < 0.5:
+            warns.append(dict(what=f"only {f['looks_right']:.0%} of {f['field']}'s values look like it", fix=f"check the column it reads ({f['columns']})"))
+    if read and read["waiting"]:
+        warns.append(dict(what=f"repairs wait: {', '.join(f'{n:,} {k}' for k, n in read['waiting'].items())}", fix="see them in step 2, or describe records, then accept repairs KIND"))
+    if read and read["unread"]:
+        warns.append(dict(what=f"{read['unread']:,} rows couldn't be read", fix="they are in unread.parquet in the file's part: fix the file and load it again"))
+    if aside := run._count("set_aside"):
+        warns.append(dict(what=f"{aside:,} records are set aside (no ID, or one ID with different content)", fix="the run leaves them out: set_aside/ says why"))
+    return dict(ok=not stops, stops=stops, warns=warns)
 
 
 def list_columns(a: dict, emit: "Emit") -> dict:
@@ -649,6 +686,33 @@ def describe_matching_(a: dict, emit: "Emit") -> dict:
                     [dict(command=nayose("resolve", "records", "<file>", "--workspace", "<workspace>"), why="match records: the graph then holds their numbers")]}
 
 
+def rehearse_records(a: dict, emit: "Emit") -> dict:
+    from er import auto
+    s, _, pipeline = setup(a)
+    ws = Path(a["workspace"])
+    if not ws.is_dir():
+        raise InputError(f"no workspace at {ws}", fix="create it: nayose create workspace NAME")
+    src = a["input"] or next((str(x) for x in folder.parts(ws)[-1:]), None)  # its shape only: never copied in
+    if not src:
+        raise InputError(f"no records file in {ws}", fix=f"name one, or load it first: nayose load records FILE --workspace {ws}")
+    with readable(src, s) as path:
+        sh = auto.shape(s, path)
+    r = auto.rehearse(ws, sh, s, Path(a["pipeline"]) if a.get("pipeline") else None, emit.step)
+    if not r["ok"]:
+        raise InputError(f"a file of {r['records']:,} records stopped here: {r['error']}", fix=r["fix"] or "give the run more room: --compute memory_limit=… temp_directory=…")
+    return {**r, "next": [dict(command=nayose("resolve", "records", "--workspace", ws), why="the real file, now its size is known to fit")]}
+
+
+def describe_review(a: dict, emit: "Emit") -> dict:
+    s, p, _ = setup(a)
+    out = Path(a["workspace"])
+    if not (out / "gold.parquet").exists():
+        raise InputError(f"no run in {out}", fix="find matches first: nayose resolve records --workspace …")
+    per = number(a["seconds"], "--seconds", "seconds, for example 10") if a.get("seconds") else 10.0
+    return {**review_workload(connect(s.compute)[0], out, p, s.data.unique_id, per),
+            "next": [dict(command=nayose("list", "pairs", "--workspace", out, "--pending"), why="the pairs waiting now")]}
+
+
 def describe_method_(a: dict, emit: "Emit") -> dict:
     s, p, _ = setup(a)
     out, tuned = Path(a["workspace"]), setup(a, {})[1]  # the method as tuned: what this one leaves out, in words
@@ -790,6 +854,8 @@ DESCRIBED = {"records": "records", "columns": "each column of the file: column, 
              "offers": "new features the contents suggest: feature, type, script, column, share, why", "notes": "what the reader detected or fixed",
              "read": "what the reader found (er.intake): rows, values per encoding, fixed (controls, placeholders, numbers, damaged), proposed and waiting: repairs by kind (realign, garbled, encoding) for accept repairs, with examples; unread rows", "next": "the commands that usually follow"}
 CHECKED = {"records": "records read", "fields": "each field: filled, looks_right, top_value (shares), columns",
+           "capacity": "the room a run has: memory_limit_gb, spill_folder, spill_free_gb, pairs_needed (this file's, exactly), pairs_fit, headroom (fit ÷ needed)",
+           "ready": "ok, and each of stops (what would stop a run) and warns (what to look at first): what, fix",
            "turned_off": "rules, keys and levels a missing field turns off", "keys": "each key's pairs per record and largest block",
            "oversized_from": "the block size checked by sampling", "notes": "what the loader detected or fixed", "read": "what the reader found (er.intake): rows, values per encoding, fixed (controls, placeholders, numbers, damaged), proposed and waiting: repairs by kind (realign, garbled, encoding) for accept repairs, with examples; unread rows",
            "next": "the commands that usually follow"}
@@ -915,6 +981,23 @@ COMMANDS: tuple[Command, ...] = (
              Param("model", "a fitted model to score with instead of fitting one on the file (its JSON, or the file that holds it under 'model')", "path"),
              COMPUTE),
             RUN_RESULT, "nayose resolve records customers.parquet --workspace workspaces/customers", resolve_records),
+    Command("rehearse", "records", "Run a generated file of the same size and shape, and measure what this machine needs",
+            "The file's records and each field's share filled (no value kept); a file of that size and shape generated in "
+            "parts of 50,000 entities, each field filled at the file's share, a field it lacks left out; that file resolved "
+            "in a process of its own, under the same limits, its spill folder's size read every half second. Says the seconds "
+            "of each step, the peak memory, the peak spill, the pairs, and the generated shape beside the file's; if the run "
+            "stopped (memory, disk), why, as the real file would. Removes what it made; keeps rehearsal.json in the workspace. "
+            "Past 60,000 entities names repeat more than in a real file, so name keys make more pairs: check records counts "
+            "the file's own. O(N) to generate, O(a full run) to measure.",
+            (replace(INPUT, help=INPUT.help + ", its shape read, not copied in; without it, the file loaded into the workspace last", optional=True),
+             WORKSPACE, PIPELINE, COMPUTE),
+            {"ok": "whether the run went through", "records": "records generated", "generate_seconds": "seconds to generate and describe them",
+             "generate_peak_gb": "the peak memory of generating them, a process apart from the run's",
+             "seconds": "the run's seconds", "steps": "seconds of each step", "peak_memory_gb": "the run's peak memory (the process's)",
+             "peak_spill_gb": "the most it spilled to disk at once", "pairs": "the pairs its keys and rules listed",
+             "shape": "each field: its share filled in the file and in the rehearsal", "error": "why the run stopped, if it did",
+             "fix": "what to do then", "limit": "what a generated file can't show", "next": "the commands that usually follow"},
+            "nayose rehearse records --workspace workspaces/customers", rehearse_records),
     Command("add", "records", "Add new records to a run",
             "An increment: each new record compared with every stored one, with the run's model; it can join an existing "
             "entity. A record whose ID is already in the run is set aside, so adding the same file twice adds nothing. "
@@ -1043,6 +1126,22 @@ COMMANDS: tuple[Command, ...] = (
             show={"rounds": ("round", "matched", "audited", "false_found", "expected_false"), "bands": (), "decided": (),
                   "rules": ("name", "pairs", "below", "different"), "keys": ("name", "pairs", "seconds", "matched", "only"),
                   "steps": ("comparison", "level", "bits", "reached"), "proposals": ("change", "why"), "trials": ()}),
+    Command("describe", "review", "How much people must check, range by range of the trust line",
+            "From the run in the workspace, without labels: for each range of the trust line's steps, its pairs (the rules' "
+            "and the model's links), how many people decided and said different, the sample a range needs (checks, or all "
+            "of a smaller range), the false links the model expects in it, the chance its sample comes back clean, the false "
+            "rate a clean sample bounds, and the reviews left to merge it and every range above; then what waits whatever "
+            "the line, the spot-checks a round, the person/company sheet, and the hours at --seconds a pair (an assumption, "
+            "not a measure). Changes nothing. O(E + D) over the run's files and people's decisions.",
+            (WORKSPACE, PIPELINE, Param("seconds", "the seconds one pair takes people to decide, for the hours (default 10)")),
+            {"ranges": "each range: down_to, up_to (none: no top), pairs, checked, different, sample, expected_false, chance_clean, "
+                       "bound (the false rate a clean sample proves, at 95%), reviews_left, reviews_to_here (cumulative), if_not_clean",
+             "below_last_step": "pairs below the last step: they never merge by points", "unnamed": "the model's pairs with no name compared: people decide each",
+             "watch": "spot-checks a round of the pairs above the line", "kinds": "the person/company sheet: measure, decide, answered",
+             "seconds_per_pair": "the assumption the hours rest on", "hours": "to_each_line (cumulative, range by range), unnamed, kinds",
+             "next": "the commands that usually follow"},
+            "nayose describe review --workspace workspaces/customers", describe_review, quick=True,
+            show={"ranges": ("down_to", "up_to", "pairs", "checked", "different", "sample", "expected_false", "chance_clean", "reviews_left", "reviews_to_here")}),
     Command("try", "method", "Try a change of the method beside the method as it is",
             "Runs the workspace's method and the method with the change (a line; --drop: match rules and pair keys left "
             "out; --add: pair keys added, as describe method proposes them for the matches the probe found no key lists) on the workspace's files, both without people's decisions, so neither is judged on pairs it was told; both "

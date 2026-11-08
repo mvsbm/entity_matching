@@ -314,6 +314,50 @@ def carry_over(run: "Run", previous: pd.DataFrame, sheet: pd.DataFrame, out: Pat
     return pd.concat([decide, sheet[sheet["why"] == "audit"]], ignore_index=True)
 
 
+def review_workload(con: duckdb.DuckDBPyConnection, out: Path, p: Pipeline, uid: str, seconds_per_pair: float = 10.0) -> dict:
+    """How much people must check, without labels. Each range of the trust line's steps ([20, ∞), [12, 20), …, [0, 6)):
+    its pairs (the rules' and the model's links, as trust_state counts them), how many people decided and said
+    different, the sample it needs (checks, or all of a smaller range), the false links the model expects in it (the
+    sum of 1 − p of its weights), the chance its sample comes back clean, the false rate a clean sample bounds (rule of
+    three: 1 − 0.05^(1/sample)), the reviews left to merge it and every range above it, and the reviews if its sample
+    isn't clean (people then decide all of it). Then what waits whatever the line: the pairs below the last step, the
+    model's pairs with no name compared; the spot-checks a round; the person/company sheet; and the hours at
+    `seconds_per_pair`, an assumption, not a measure. O(E + D)."""
+    l, r = q(f"{uid}_l"), q(f"{uid}_r")
+    parts = [f"SELECT {l}, {r}, match_weight FROM read_parquet({lit(out / x / '*.parquet')}, union_by_name = true)"
+             for x in ("matches", "proposed", "rule_kept") if any((out / x).glob("*.parquet"))]
+    steps, trust = sorted(p.trust.steps, reverse=True), p.trust
+    tops = [math.inf, *steps[:-1]]
+    band = "CASE " + " ".join(f"WHEN x.match_weight >= {bits(lo)} THEN {i}" for i, lo in enumerate(steps)) + f" ELSE {len(steps)} END"
+    con.register("er_review_decided", applied(out, uid)[[f"{uid}_l", f"{uid}_r", "decision"]])
+    got = {b: (n, c, f, e) for b, n, c, f, e in con.execute(f"""SELECT {band} AS b, count(*), count(d.decision), count(*) FILTER (WHERE d.decision = 'no_match'),
+        sum(1 / (1 + pow(2, least(x.match_weight, 60)))) FROM (SELECT DISTINCT ON ({l}, {r}) * FROM ({' UNION ALL '.join(parts)})) x
+        LEFT JOIN er_review_decided d USING ({l}, {r}) GROUP BY 1""").fetchall()} if parts else {}
+    sheet = out / "review.parquet"
+    unnamed = con.execute(f"""SELECT count(*) FROM read_parquet({lit(sheet)}) s WHERE s.why = 'decide' AND NOT EXISTS
+        (SELECT 1 FROM ({' UNION ALL '.join(parts)}) x WHERE x.{l} = s.{l} AND x.{r} = s.{r})""").fetchall()[0][0] if parts and sheet.exists() else 0
+    con.unregister("er_review_decided")
+    ranges, total = [], 0
+    for i, (lo, hi) in enumerate(zip(steps, tops)):
+        pairs, checked, different, expected = got.get(i, (0, 0, 0, 0.0))
+        sample = min(trust.checks, pairs)
+        rate = expected / pairs if pairs else 0.0
+        left = int(pairs - checked) if different else max(sample - checked, 0)  # one said different: the range stays with people, all of it
+        total += left
+        ranges.append(dict(down_to=lo, up_to=None if math.isinf(hi) else hi, pairs=int(pairs), checked=int(checked), different=int(different), sample=sample,
+                           expected_false=round(float(expected), 1), chance_clean=round((1 - rate) ** sample, 3) if sample else None,
+                           bound=round(1 - 0.05 ** (1 / sample), 4) if sample else None, reviews_left=left, reviews_to_here=total,
+                           if_not_clean=int(pairs - checked)))
+    below = int(got.get(len(steps), (0,))[0])
+    kinds = out / "kind_review.parquet"
+    k = con.execute(f"""SELECT count(*) FILTER (WHERE why = 'measure'), count(*) FILTER (WHERE why = 'decide'), count(kind)
+        FROM read_parquet({lit(kinds)})""").fetchall()[0] if kinds.exists() else (0, 0, 0)
+    hours = lambda n: round(n * seconds_per_pair / 3600, 1)
+    return dict(ranges=ranges, below_last_step=below, unnamed=int(unnamed), watch=trust.watch,
+                kinds=dict(measure=int(k[0]), decide=int(k[1]), answered=int(k[2])), seconds_per_pair=seconds_per_pair,
+                hours=dict(to_each_line=[hours(x["reviews_to_here"]) for x in ranges], unnamed=hours(unnamed), kinds=hours(k[0] + k[1] - k[2])))
+
+
 def review_sheet(run: "Run", pairs: pd.DataFrame) -> pd.DataFrame:
     """Scored pairs as people judge them, in the order given: both records' compared fields side by side, and per
     comparison the level the pair landed in and the bits it earned, which with the prior sum to its weight; whether the

@@ -512,6 +512,7 @@ dialog:has(.dlg-body.wide) { width: min(960px, calc(100vw - 32px)); }
    "strip": ["score", "accept", "people", "group"],
    "uses": [{"command": "list pairs", "args": {"workspace": "@workspace", "pending": true}, "reads": ["pairs", "counts"]},
             {"command": "describe workspace", "args": {"workspace": "@workspace"}, "reads": ["trust"]},
+            {"command": "describe review", "args": {"workspace": "@workspace"}, "reads": ["ranges", "hours", "seconds_per_pair", "unnamed"]},
             {"command": "lower trust", "args": {"workspace": "@workspace", "compute": "@compute"}, "form": [], "reads": ["summary"]},
             {"command": "raise trust", "args": {"workspace": "@workspace", "compute": "@compute"}, "form": [], "reads": ["summary"]},
             {"command": "decide pair", "args": {"first": "@first", "second": "@second", "decision": "@decision", "workspace": "@workspace"}, "reads": ["decision"]},
@@ -2850,16 +2851,35 @@ function kindCard(r, at, of) {  // the name; what the engine thinks of it, and w
     <details class="fold-line"><summary>Where the engine and the name place it</summary>${slider(r)}</details></div>`;
 }
 
+// How many pairs people must check before each range of the trust line can merge: the answer in a line, the ranges folded.
+function showWorkload(box, d) {
+  if (d.event === "error") { box.innerHTML = banner(d); return; }
+  const at = (x) => x.up_to === null ? `${fmt(x.down_to)}+` : `${fmt(x.down_to)}–${fmt(x.up_to)}`, all = d.ranges[d.ranges.length - 1];
+  const first = d.ranges.find((x) => x.pairs);
+  box.innerHTML = `<p class="answer">${first ? `To let pairs scoring ${esc(at(first))} merge: ${plural(first.reviews_to_here, "pair")}. Every range: ${plural(all.reviews_to_here, "pair")}, about ${
+    fmt(d.hours.to_each_line[d.ranges.length - 1])} hours at ${fmt(d.seconds_per_pair)} s a pair${d.unnamed ? `, and ${plural(d.unnamed, "pair")} with no name compared` : ""}.` : "Nothing to check yet."}</p><div class="workload-grid"></div>`;
+  grid(box.querySelector(".workload-grid"), d.ranges, ["range", "pairs", "sample", "chance_clean", "reviews_to_here"], {filter: false,
+       labels: {range: "points", sample: "to check", chance_clean: "chance the check is clean", reviews_to_here: "checks, down to here"},
+       cell: (r, c) => c === "range" ? esc(at(r)) : c === "chance_clean" ? (r[c] === null ? "—" : `${Math.round(100 * r[c])}%`) : esc(fmt(r[c]))});
+}
+
 // A review page: the queue as a table, the picked row in a card beside it, answered by keyboard, one answer at a time.
 async function review(el, which, note = "", pattern = null) {  // pattern: comparison → step, the sheet's rows of one pattern
   const q = QUEUES[which];
   el.innerHTML = head(which, `<button class="btn" id="refresh">${icon("refresh")}Refresh</button>`) +  // the item asked about first and wide (#right), the queue after (#left)
     `<div id="note">${note}</div><div class="split item-first"><div id="right" class="panel-sticky"></div>
       <div class="queue"><div class="card progress"><div id="done-line" class="answer"></div><div id="trust"></div>
-        <div class="actions" style="margin-top:10px"><button class="btn outlined" id="apply">${icon("check")}${q.applyLabel} <span class="badge" id="written">0</span></button></div></div>
+        <div class="actions" style="margin-top:10px"><button class="btn outlined" id="apply">${icon("check")}${q.applyLabel} <span class="badge" id="written">0</span></button></div>
+        ${which === "pairs" ? '<details class="fold-line" id="workload"><summary>How many pairs must people check?</summary><div class="workload"></div></details>' : ""}</div>
         <div id="some"></div><div id="left" class="faint">Loading…</div></div></div><div id="flow"></div>${stepFoot(which)}`;
   $("refresh").onclick = () => go(which);
   $("apply").disabled = true;
+  if ($("workload")) $("workload").ontoggle = async () => {  // read once it is opened: the whole run's pairs, range by range
+    const box = $("workload").querySelector(".workload");
+    if (!$("workload").open || box.dataset.done) return;
+    box.dataset.done = "1";
+    showWorkload(box, await run(which, "describe review"));
+  };
   if (!state.workspace) { $("left").innerHTML = emptyRun(); return; }
   let [d, , w] = await Promise.all([run(which, q.list), flowOf(which, $("flow")), which === "pairs" ? run(which, "describe workspace") : null]);  // flowOf sets graph
   if (d.event === "error") { $("left").innerHTML = banner(d); return; }
