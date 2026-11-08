@@ -15,6 +15,7 @@ from typing import get_args
 
 from er.config import Data, Derived, InputError, Normalizer, Pipeline, Standardization, check_fields, checked, legal_pattern, restrict, sources_text, toml_of
 from er.intake import InputSpec
+from er.io import replace_text
 
 SPECIAL = ("id", "entity")  # single columns, used under their own names: the record id and the truth
 COLUMNS = "columns.toml"  # a workspace's own [columns] and [kind]: which of its files' columns hold each field
@@ -108,14 +109,12 @@ def set_columns(path: Path, mapping: dict[str, tuple[tuple[str, ...], ...]], opt
             end += 1
         else:
             lines[at] = line
-    tmp = path.with_name(path.name + ".tmp")
-    tmp.write_text("".join(lines), encoding="utf-8")
-    try:
-        load_settings(tmp) if "paths" in tomllib.loads(text) else load_settings(columns=tmp)  # a workspace's file: over the project's
-    except Exception as e:  # what load_settings checks: say it, and keep the old file
-        tmp.unlink()
-        raise InputError(f"{path}: [columns] would not load: {e}", fix="give each field existing columns; id names one column") from None
-    os.replace(tmp, path)
+    def loads(new: Path) -> None:  # what load_settings checks: said, and the old file kept
+        try:
+            load_settings(new) if "paths" in tomllib.loads(text) else load_settings(columns=new)  # a workspace's file: over the project's
+        except Exception as e:
+            raise InputError(f"{path}: [columns] would not load: {e}", fix="give each field existing columns; id names one column") from None
+    replace_text(path, "".join(lines), loads)
 
 
 # ---------- a workspace's features: groups › features › parts, each with its columns, compiled into [columns] ----------
@@ -225,10 +224,7 @@ def write_added(path: Path, added: Mapping[str, dict]) -> None:
         toml = lambda v: json.dumps(v, ensure_ascii=False)
         text += "\n[features]                                       # features added in this workspace: nayose add feature\n" + "".join(
             f"{k} = {{ {', '.join(f'{a} = {toml(b)}' for a, b in v.items() if b is not None)} }}\n" for k, v in added.items())
-    tmp = path.with_name(path.name + ".tmp")
-    tmp.write_text(text, encoding="utf-8")
-    load_settings(columns=tmp)
-    os.replace(tmp, path)
+    replace_text(path, text, lambda new: load_settings(columns=new))
 
 
 def add_feature(workspace: str | Path, path: str, kind: str, script: str | None = None, column: str | None = None) -> list[dict]:
@@ -266,7 +262,7 @@ def remove_feature(workspace: str | Path, path: str) -> list[dict]:
         raise InputError(f"{path}: not a feature added here", fix="only an added feature can be removed; take a default one's columns off instead")
     fields = {f["field"], given_field(f["field"])} if f["type"] == "person name" else {f["field"]}
     lines = (ws / COLUMNS).read_text(encoding="utf-8").splitlines(keepends=True)
-    (ws / COLUMNS).write_text("".join(x for x in lines if not any(re.match(rf"{re.escape(n)}\s*=", x) for n in fields)), encoding="utf-8")
+    replace_text(ws / COLUMNS, "".join(x for x in lines if not any(re.match(rf"{re.escape(n)}\s*=", x) for n in fields)))
     write_added(ws / COLUMNS, {k: v for k, v in added_of(ws).items() if k != f["field"]})
     return features_of(ws)
 

@@ -198,8 +198,10 @@ def check_text(r: dict) -> str:
 
 # ---------- what each command does ----------
 
-def settings_for(a: dict):  # the settings, with the named workspace's own mapping when it keeps one
-    return load_settings(columns=columns_file(a.get("workspace")))
+def settings_for(a: dict):  # the settings, with the named workspace's own mapping when it keeps one; an earlier nayose's workspace refused
+    if (ws := a.get("workspace")) and Path(ws).is_dir():
+        folder.current(Path(ws))
+    return load_settings(columns=columns_file(ws))
 
 
 def setup(a: dict, method: dict | None = None):
@@ -602,9 +604,8 @@ def describe_entity_(a: dict, emit: "Emit") -> dict:
     s, out = settings_for(a), Path(a["workspace"])
     uid = s.data.unique_id
     d = describe_entity(connect(s.compute)[0], out, uid, a["id"], [f for f in s.columns if f not in SPECIAL])
-    rename = lambda xs: [{{uid: "id", f"{uid}_l": "id_l", f"{uid}_r": "id_r"}.get(k, k): v for k, v in x.items()} for x in xs]
-    inside = entity_pairs(out, s, [x[uid] for x in d["records"]], d["links"])
-    return dict(record=d["record"], entity=d["entity"], records=rename(d["records"]), links=rename(d["links"]), **inside,
+    inside = entity_pairs(out, s, d["records"][uid].tolist(), rows(d["links"]))
+    return dict(record=d["record"], entity=d["entity"], size=d["size"], records=rows(ids(d["records"], uid)), links=rows(ids(d["links"], uid)), **inside,
                 next=[dict(command=nayose("explain", "pair", "<ID>", "<ID>", "--workspace", out), why="how one pair was scored"),
                       dict(command=nayose("list", "pairs", "--workspace", out), why="the pairs for people")])
 
@@ -686,19 +687,18 @@ def list_pairs(a: dict, emit: "Emit") -> dict:
 def split_entity(a: dict, emit: "Emit") -> dict:
     """An entity split at a link that alone holds it together: that pair decided different (Run.decide stores it with
     people's decisions), then a full run, which never accepts a pair people called different."""
-    import tempfile
     s, p, _ = setup(a)
     out, uid = Path(a["workspace"]), s.data.unique_id
     if len(a["between"] or []) != 2:
         raise InputError("--between takes the two records of the link", fix="nayose split entity ID --between A B --workspace …")
     first, second = sorted(map(str, a["between"]))
     d = describe_entity(connect(s.compute)[0], out, uid, a["id"], [f for f in s.columns if f not in SPECIAL])
-    ids = [x[uid] for x in d["records"]]
-    if not {first, second} <= set(ids):
-        raise InputError(f"{first} and {second}: not both records of the entity of {a['id']}", fix="see its records: nayose describe entity ID --workspace …")
-    inside = entity_pairs(out, s, ids, d["links"])
+    held = d["records"][uid].tolist()
+    inside = entity_pairs(out, s, held, rows(d["links"]))
     if inside["capped"]:
-        raise InputError(f"the entity of {a['id']} holds {len(ids):,} records: too many to find where it splits", fix="decide its pairs in step 4 instead")
+        raise InputError(f"the entity of {a['id']} holds {d['size']:,} records: too many to find where it splits", fix="decide its pairs in step 4 instead")
+    if not {first, second} <= set(held):
+        raise InputError(f"{first} and {second}: not both records of the entity of {a['id']}", fix="see its records: nayose describe entity ID --workspace …")
     if dict(id_l=first, id_r=second) not in inside["weakest"]:
         raise InputError(f"{first} – {second} doesn't hold the entity together: other links still join them",
                          fix="split it at one of its weakest links: nayose describe entity ID --workspace … lists them")
@@ -947,10 +947,11 @@ COMMANDS: tuple[Command, ...] = (
             "nayose describe workspace workspaces/customers", describe_workspace_, quick=True,
             show={"largest": ("entity", "records"), "runs": ("at", "what", "seconds"), "inputs": ("name", "files", "bytes", "read")}),
     Command("describe", "entity", "One record's entity, and what joined it",
-            "The entity of the record ID: each of its records with its fields and kind, and every link between them: a rule, "
-            "the model with its weight in bits, or people. O(N) in SQL.",
+            "The entity of the record ID: its size, each of its records (the first 200, the ID among them) with its fields and "
+            "kind, and every link between them: a rule, the model with its weight in bits, or people. O(N) in SQL.",
             (Param("id", "a record ID, as the run wrote it", positional=True, metavar="ID"), WORKSPACE),
-            {"record": "the ID asked for", "entity": "its entity (the cluster_id)", "records": "each of the entity's records",
+            {"record": "the ID asked for", "entity": "its entity (the cluster_id)", "size": "how many records it holds",
+             "records": "each of the entity's records, the first 200",
              "links": "each link between them: id_l, id_r, by, weight",
              "pairs": "of an entity of up to 50 records, every pair inside it scored: id_l, id_r, weight, by (none: joined through others), comparisons (comparison, reached, bits)",
              "weakest": "the links whose loss would split the entity: id_l, id_r", "capped": "true: too many records to score every pair",

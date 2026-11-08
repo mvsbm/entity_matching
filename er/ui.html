@@ -52,7 +52,6 @@ button { font: inherit; color: inherit; }
            cursor: pointer; text-align: left; color: var(--ink); font-weight: 500; }
 .navitem:hover { background: var(--hover); }
 .navitem[aria-current="page"] { background: var(--sel); color: var(--sel-ink); }
-.navitem .count { margin-left: auto; font-size: 12px; color: var(--faint); }
 body.collapsed .sidenav { width: 72px; }
 body.collapsed .sidenav h3, body.collapsed .navitem span { display: none; }
 body.collapsed main { margin-left: 72px; }
@@ -74,11 +73,6 @@ main { margin: 56px 0 0 256px; padding: 0 24px 120px; min-height: calc(100% - 56
 .card h2 { display: flex; align-items: center; gap: 8px; font-size: 16px; font-weight: 500; margin: 0 0 12px; }
 .muted { color: var(--muted); }
 .faint { color: var(--faint); }
-.tile { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 14px 18px; }
-.tile[data-go] { cursor: pointer; }
-.tile[data-go]:hover { box-shadow: var(--shadow); }
-.tile .k { color: var(--muted); font-size: 13px; }
-.tile .v { font-size: 28px; font-weight: 400; margin-top: 4px; font-variant-numeric: tabular-nums; }
 .split { display: grid; grid-template-columns: minmax(0, 2fr) minmax(0, 3fr); gap: 16px; align-items: start; }
 .split.item-first { grid-template-columns: minmax(0, 62fr) minmax(0, 38fr); } .queue th, .queue td { padding: 8px 10px; }
 .queue .progress { padding: 12px 16px; } .queue .progress .answer { font-size: 14px; } .queue .progress .pn-seg { margin-top: 8px; height: 8px; }
@@ -117,7 +111,6 @@ tbody tr.pick { cursor: pointer; }
 tbody tr.pick:hover { background: var(--hover); }
 tbody tr[aria-selected="true"] { background: var(--sel); color: var(--sel-ink); }
 .tablefoot { padding: 8px 16px; color: var(--faint); font-size: 12px; }
-tr.differ td.v { background: var(--mark); color: var(--mark-ink); }
 
 /* status, banners, chips */
 .chip { display: inline-flex; align-items: center; gap: 4px; height: 24px; padding: 0 10px; border-radius: 12px; font-size: 12px; font-weight: 500; background: var(--hover); color: var(--muted); }
@@ -140,14 +133,11 @@ tr.differ td.v { background: var(--mark); color: var(--mark-ink); }
 .field { display: block; margin: 0 0 16px; }
 .field .lab { display: block; font-size: 12px; color: var(--muted); margin-bottom: 4px; }
 .field input[type=text], .field select { font: inherit; width: 100%; padding: 10px 12px; border: 1px solid var(--outline); border-radius: 4px; background: var(--surface); color: var(--ink); }
-.field .help { font-size: 12px; color: var(--faint); margin-top: 4px; }
 .check { display: flex; gap: 10px; align-items: flex-start; margin: 0 0 16px; }
 .big { font-size: 26px; margin: 4px 0 12px; }
 .keys { color: var(--faint); font-size: 12px; }
 kbd { border: 1px solid var(--outline); border-bottom-width: 2px; border-radius: 4px; padding: 0 5px; font: 11px ui-monospace, Menlo, monospace; }
 .actions { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-top: 12px; }
-a.link { color: var(--primary); cursor: pointer; text-decoration: none; font-weight: 500; }
-a.link:hover { text-decoration: underline; }
 .empty { text-align: center; padding: 48px 16px; }
 .empty > .ic { width: 48px; height: 48px; color: var(--faint); stroke-width: 1.2; }
 .empty h2 { justify-content: center; }
@@ -280,7 +270,6 @@ body.collapsed .navitem .stack, body.collapsed .rail li::before { display: none;
 .bars .val { font-variant-numeric: tabular-nums; color: var(--faint); text-align: right; }
 .bar { display: block; height: 10px; border-radius: 5px; background: var(--primary); min-width: 2px; }
 .bar.rule { background: var(--rule); } .bar.people { background: var(--people); } .bar.neg { background: var(--neg); } .bar.good { background: var(--good); }
-.bar.pick { cursor: pointer; } .bar.pick:hover { filter: brightness(1.15); }
 .tag { display: inline-flex; align-items: center; height: 20px; padding: 0 7px; border-radius: 10px; font-size: 11px; background: var(--hover); color: var(--muted); margin: 0 3px 0 0; white-space: nowrap; }
 .diff { background: var(--mark); color: var(--mark-ink); border-radius: 3px; padding: 0 1px; }
 .diff.gap { display: inline-block; width: 2px; height: 1em; padding: 0; margin: 0 1px; vertical-align: -0.1em; background: var(--mark-ink); }  /* where the other value holds more */
@@ -333,7 +322,7 @@ button.fx { cursor: pointer; } button.fx:hover, .scene-on { border-color: var(--
 .pn-r > * { min-width: 0; } .pn-r .fx { margin: 1px 4px 1px 0; }
 .pn-r.h { border-top: 0; color: var(--faint); font-size: 12px; padding-bottom: 2px; }
 button.pn-r, a.pn-r { cursor: pointer; border-radius: 6px; } button.pn-r:hover, a.pn-r:hover { background: var(--hover); }
-.pn-r.picked { background: var(--mark); color: var(--mark-ink); } .pn-r.total { font-weight: 500; }
+.pn-r.picked { background: var(--mark); color: var(--mark-ink); }
 .pn-r .num, .pn-table .num { text-align: right; font-variant-numeric: tabular-nums; } .pn-r .c { text-align: center; }
 .ellip { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .pn-sec { padding: 12px 4px 2px; font-size: 11px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); }
@@ -358,7 +347,6 @@ button.pn-r, a.pn-r { cursor: pointer; border-radius: 6px; } button.pn-r:hover, 
                white-space: nowrap; overflow: hidden; }
 .pn-wbar > * + * { border-left: 2px solid var(--surface); }
 .pn-wbar > button { cursor: pointer; } .pn-wbar > button:hover { filter: brightness(1.08); }
-.pn-wbar.one > :not(.pick) { opacity: .3; } .pn-wbar .pick { box-shadow: inset 0 0 0 3px var(--ink); }
 .pn-comp { border-top: 1px solid var(--line); } .pn-comp > summary { display: grid; grid-template-columns: 110px 1fr; gap: 12px; align-items: center; padding: 8px 4px; cursor: pointer; list-style: none; }
 .pn-comp > summary::-webkit-details-marker { display: none; } .pn-comp[open] > summary b::after { content: " ▾"; color: var(--faint); } .pn-comp > summary b { font-weight: 500; }
 .pn-comp > .stair { margin: 4px 0 12px; }
@@ -423,7 +411,6 @@ dialog:has(.dlg-body.wide) { width: min(960px, calc(100vw - 32px)); }
 .path span { display: inline-flex; align-items: center; gap: 4px; }
 .path span:last-of-type { color: var(--ink); font-weight: 500; }
 .path i { font-style: normal; color: var(--faint); }
-.empty .flow { justify-content: center; margin: 20px 0 24px; }
 .welcome .example { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin: 18px 0 4px; }
 .welcome .example .node { min-width: 0; max-width: none; } .welcome .example .n { font-size: 18px; } .welcome .example .faint { font-size: 12px; }
 .welcome .example .one { border-color: var(--primary); } .welcome .example .one .top { color: var(--primary); }
@@ -464,7 +451,6 @@ dialog:has(.dlg-body.wide) { width: min(960px, calc(100vw - 32px)); }
 .addform { gap: 6px; } .addform input { font: inherit; font-size: 13px; padding: 5px 8px; border: 1px solid var(--outline); border-radius: 6px; background: var(--surface); color: var(--ink); min-width: 0; }
 .addform select { font: inherit; font-size: 13px; } .frow .addnote { grid-column: span 3; font-size: 12px; }
 @media (max-width: 860px) { .frow { grid-template-columns: 1fr; gap: 4px; } }
-@media (max-width: 600px) { .empty .flow { flex-direction: column; align-items: center; } .empty .flow .arrow { transform: rotate(90deg); } }
 </style>
 </head>
 <body>
@@ -552,7 +538,7 @@ dialog:has(.dlg-body.wide) { width: min(960px, calc(100vw - 32px)); }
   {"id": "results", "title": "View entities", "icon": "customers", "what": "Every entity, and what joined its records.",
    "strip": ["group", "customers"],
    "uses": [{"command": "describe workspace", "args": {"workspace": "@workspace"}, "reads": ["summary", "largest"]},
-            {"command": "describe entity", "args": {"id": "@id", "workspace": "@workspace"}, "reads": ["record", "entity", "records", "links", "pairs", "weakest", "capped"]},
+            {"command": "describe entity", "args": {"id": "@id", "workspace": "@workspace"}, "reads": ["record", "entity", "size", "records", "links", "pairs", "weakest", "capped"]},
             {"command": "split entity", "args": {"id": "@id", "between": "@between", "workspace": "@workspace", "compute": "@compute"}, "form": [], "reads": ["summary"]},
             {"command": "compare records", "args": {"first": "@first", "others": "@others", "workspace": "@workspace"}, "reads": ["first", "records", "candidates"]},
             {"command": "explain pair", "args": {"first": "@first", "second": "@second", "workspace": "@workspace"}, "reads": ["weight", "prior", "pairs_all", "pairs_same", "common", "same_customer", "records", "comparisons", "tests", "found", "group_a", "group_b", "across"]},
@@ -839,7 +825,7 @@ const level = (l) => LEVEL[l] || l;
 const comp = (c) => ({cif: "customer ID", birth: "birth date"})[c] || c;
 const ARROW = '<span class="arrow"><svg viewBox="0 0 26 14" aria-hidden="true"><path d="M1 7h20M16 2l6 5-6 5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg></span>';
 
-function strip(box, graph, ids, open = null) {
+function strip(box, graph, ids) {
   const nodes = Object.fromEntries(graph.nodes.map((x) => [x.id, x])), all = nodes.records.count;
   box.className = "zone all";
   box.innerHTML = `${scope("stack", all === null ? "All records" : `All ${plural(all, "record")}`)}<div class="flow">${ids.map((id, i) => {
@@ -862,14 +848,12 @@ function strip(box, graph, ids, open = null) {
     if (c) go("results", c.dataset.example);
     if (p) explainDialog(current, ...JSON.parse(p.dataset.explain));
   };
-  if (open) show(open);
 }
 
 const bars = (rows, opts = {}) => {  // label, a bar whose length is the value, the value
   const max = Math.max(1, ...rows.map((r) => Math.abs(r.value ?? 0)));
   return `<div class="bars">${rows.map((r) => `<span class="lab" title="${esc(r.title || r.label)}">${esc(r.label)}</span>
-    <span><span class="bar ${r.tone || opts.tone || ""} ${r.example ? "pick" : ""}" ${r.example ? `data-example="${esc(r.example)}" title="see a pair it found"` : ""}
-      style="width:${r.value === null || r.value === undefined ? 0 : Math.max(1, 100 * Math.abs(r.value) / max)}%"></span></span>
+    <span><span class="bar ${r.tone || opts.tone || ""}" style="width:${r.value === null || r.value === undefined ? 0 : Math.max(1, 100 * Math.abs(r.value) / max)}%"></span></span>
     <span class="val">${r.text ?? fmt(r.value)}</span>`).join("")}</div>`;
 };
 const NORM = {nfkc: "same width", strip_spaces: "no spaces", kana_fold: "kana folded", strip_legal_form: "no legal form", reverse: "reversed",
@@ -877,8 +861,6 @@ const NORM = {nfkc: "same width", strip_spaces: "no spaces", kana_fold: "kana fo
 const norm = (list) => list.map((n) => NORM[n] || words(n));
 const SHAPE = {reverse: "reversed", initial: "initial", first3: "first 3"};  // the ones that change what a key compares
 const keyName = (k) => `${words(k.field)}${k.normalize.filter((n) => SHAPE[n]).map((n) => ` ${SHAPE[n]}`).join("")}`;
-const METHOD = {jaro_winkler: "≈", levenshtein: "edits", damerau_levenshtein: "edits", hamming: "digits off", exact: "="};
-const test = (t) => `${words(t.field)} ${METHOD[t.function] || t.function}${t.threshold !== null && t.threshold !== undefined ? ` ${t.function === "jaro_winkler" ? "≥" : "≤"} ${t.threshold}` : ""}`;
 const tags = (list) => list.map((x) => `<span class="tag">${esc(x)}</span>`).join("");
 
 function highlight(a, b) {  // two values, the part where they differ marked in each
@@ -942,16 +924,16 @@ function staircase(c, x) {
 }
 
 // a comparison's pairs, by the step they stopped at, as one bar: blue for, orange against, grey not on both; `pick`, one pair's step
-function stepBar(c, x, pick = null) {
-  const all = x.pairs || 1, scenes = can("list patterns") && can("explain pair") && pick === null;
+function stepBar(c, x) {
+  const all = x.pairs || 1, scenes = can("list patterns") && can("explain pair");
   const parts = [["missing", c.missing, null], ...c.levels.map((lv) => [lv.label, lv.pairs, lv.bits])];
-  return `<span class="pn-wbar ${pick !== null ? "one" : ""}">${parts.filter(([lab, n]) => n || lab === pick).map(([lab, n, bits]) => {
+  return `<span class="pn-wbar">${parts.filter(([, n]) => n).map(([lab, n, bits]) => {
     const share = 100 * (n || 0) / all, name = lab === "missing" ? "not on both" : level(lab);
     const color = bits === null ? "var(--outline)" : bits < 0 ? "var(--against)" : `color-mix(in srgb, var(--for) ${Math.round(30 + Math.min(70, 4.5 * bits))}%, var(--surface))`;
     const dark = bits === null || (bits >= 0 && bits < 7);  // light fills take ink
     const text = share >= 14 ? `${name} ${share.toFixed(0)}%` : share >= 6 ? `${share.toFixed(0)}%` : "";
     const title = `${name}: ${fmt(n || 0)} pairs, ${share.toFixed(1)}%${bits === null ? "" : `, ${signed(bits)} points`}`;
-    const attrs = `class="${lab === pick ? "pick" : ""}" style="flex:${Math.max(share, 0.8)};background:${color};color:${dark ? "var(--ink)" : "#fff"}" title="${esc(title)}"`;
+    const attrs = `style="flex:${Math.max(share, 0.8)};background:${color};color:${dark ? "var(--ink)" : "#fff"}" title="${esc(title)}"`;
     return scenes ? `<button type="button" ${attrs} data-step="${esc(`${c.name}|${lab}`)}" data-click>${esc(text)}</button>` : `<i ${attrs}>${esc(text)}</i>`;
   }).join("")}</span>`;
 }
@@ -1395,11 +1377,6 @@ function chip(status, written = "decided") {
   const kind = {open: "", "written in": "warn", applied: "good", decide: "info"}[status] ?? "";
   return `<span class="chip ${kind}">${esc(WHY[status] || (status === "written in" ? written : status))}</span>`;
 }
-function summary(rows) {
-  if (!rows || !rows.length) return "";
-  return `<div class="tablecard"><table><tbody>${rows.map(([w, v]) => `<tr><th style="width:9em">${esc(w)}</th><td class="wrap">${esc(v)}</td></tr>`).join("")}</tbody></table></div>`;
-}
-
 // A table in a card, with a filter bar; rows the person can pick when onPick is given.
 function grid(box, rows, cols, opts = {}) {
   const labels = {id_l: "record A", id_r: "record B", ...opts.labels}, cellOf = opts.cell || ((r, c) => esc(fmt(r[c]))), most = opts.most || 500;
@@ -1492,11 +1469,11 @@ function action(id, command, label, done, onEvent = null, opts = {}) {  // opts:
   dlg.showModal();
 }
 
-async function flowOf(id, box, open = null) {  // the step's part of the pipeline: from describe matching
+async function flowOf(id, box) {  // the step's part of the pipeline: from describe matching
   const g = await run(id, "describe matching");
   if (g.event === "error") { box.innerHTML = banner(g); graph = null; return null; }  // no other workspace's words
   graph = g;  // every page's cards and words read it: keys and rules by what they look at
-  strip(box, g, screen(id).strip, open);
+  strip(box, g, screen(id).strip);
   if (id !== "run" && id !== "records") box.classList.add("foot");  // step 3's strip answers how it found matches, the Overview's is the whole pipeline; elsewhere it says where the step sits, at the foot
   where();
   return g;
@@ -1769,7 +1746,8 @@ const SCREENS = {
         ? `<div class="checks"><div class="ok">Looks right: every link scores ${fmt(line)} points or more</div></div>`
         : `<div class="checks"><div class="warn">Check this link: ${esc(low.id_l)} ↔ ${esc(low.id_r)} scores ${signed(low.weight)}${bridge ? " and alone holds the entity together" : ""}
             ${bridge && can("split entity") ? `<button type="button" class="btn" data-split="${idList(low.id_l, low.id_r)}">Split here</button>` : ""}</div></div>`;
-      $("right").innerHTML = `<div class="card one">${scope("customers", `Entity ${d.entity}`)}<div class="qa"><div class="q"><h2 class="question">${d.records.length > 1 ? `Why are these ${d.records.length} records one entity?` : "One record, matched to no other"}</h2></div>
+      $("right").innerHTML = `<div class="card one">${scope("customers", `Entity ${d.entity}`)}<div class="qa"><div class="q"><h2 class="question">${d.size > 1 ? `Why are these ${fmt(d.size)} records one entity?` : "One record, matched to no other"}</h2>${
+          d.size > d.records.length ? `<p class="answer">The first ${fmt(d.records.length)} of them are shown here</p>` : ""}</div>
           ${rest.length ? `<button type="button" class="btn outlined" data-compare data-first="${esc(d.record)}" data-others="${idList(...rest)}">Compare all ${fmt(rest.length + 1)}</button>` : ""}</div>
         ${why}${d.records.length > 1 ? web(d.records, d.links, d.pairs, d.weakest) : ""}${side}
         ${right ? `<h3 class="zq">Is it right?</h3>${right}` : ""}
@@ -2069,7 +2047,6 @@ function waterfallOf(r, x) {  // how the pair scored: from where any two records
     if (t.function === "exact") return `<span class="faint">${esc(x.tests.some((o) => o.comparison === s.c && o.field !== t.field) ? testText(x, s.c, t) : s.what)}</span> ${why}`;
     return `<span class="faint">${esc(s.what)}</span> ${why}<div class="faint" style="font-size:12px">${esc(testText(x, s.c, t))}</div>`;
   };
-  const signed = (v) => `${v >= -0.05 ? "+" : ""}${Math.abs(v) < 0.05 ? "0.0" : v.toFixed(1)}`;
   return `<div class="wf-grid"><span></span><span></span><div class="wf-axis"><span style="left:${X(0)}%;transform:translateX(${X(0) > 70 ? -100 : X(0) < 30 ? 0 : -50}%)">different ← 0 → same</span></div><span class="val faint">points</span><span class="tot">total</span>
     ${steps.map((s) => `<span class="lab">${esc(s.lab)}</span><span class="what">${how(s)}</span>
       ${track(s.bits ? `<rect class="${s.bits >= 0 ? "for" : "against"}" x="${X(Math.min(s.a, s.b))}" y="2.5" height="5" width="${Math.max(0.4, Math.abs(X(s.b) - X(s.a)))}"/>` : "")}

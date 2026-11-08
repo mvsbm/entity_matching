@@ -8,7 +8,6 @@ fixed-size sample; describe() says what a file holds, for mapping its columns, i
 """
 import difflib
 import functools
-import hashlib
 import json
 import re
 import unicodedata
@@ -20,20 +19,14 @@ import duckdb
 import pandas as pd
 
 from er import intake
-from er.candidates import q
-from er.config import InputError
+from er.config import InputError, lit, q
+from er.settings import norm_name
 
 CONVERT = "give it to nayose as it is (load records, or any command that takes records): it reads CSV, TSV and Parquet"
 NESTED = ("STRUCT", "MAP", "UNION", "[]")  # DuckDB types a field's column can't hold
 NUMBER = re.compile(r"^(U?(TINY|SMALL|BIG|HUGE)?INT(EGER)?|FLOAT|DOUBLE|DECIMAL|REAL)")
 
 
-def lit(path: str | Path) -> str:  # a path as an SQL string literal
-    return "'" + str(path).replace("'", "''") + "'"
-
-
-def norm(name: str) -> str:  # a column name as people mean it: width, case and separators aside
-    return re.sub(r"[\s_\-・.]+", "", unicodedata.normalize("NFKC", name).casefold())
 
 
 @dataclass
@@ -71,10 +64,8 @@ def check_parquet(f: Path) -> None:
         head = h.read(4)
         h.seek(max(0, f.stat().st_size - 4))
         tail = h.read(4)
-    if head == tail == b"PAR1":
+    if intake.parquet(f, head, tail):
         return
-    if head == b"PAR1":
-        raise InputError(f"{f}: a Parquet file cut short (it doesn't end as Parquet does)", fix="copy it again, or write it again from its source")
     kind = "a ZIP or Excel file" if head[:2] == b"PK" else "text, perhaps a CSV" if head and all(b >= 9 for b in head) else "not Parquet"
     raise InputError(f"{f}: not a Parquet file; it looks like {kind}", fix=CONVERT)
 
@@ -105,10 +96,10 @@ def open_source(path: str | Path | list[Path], con: duckdb.DuckDBPyConnection, e
     expected = list(dict.fromkeys(expected))
     by_norm: dict[str, list[str]] = {}
     for c in types:
-        by_norm.setdefault(norm(c), []).append(c)
+        by_norm.setdefault(norm_name(c), []).append(c)
     rename = {}
     for e in expected:
-        found = by_norm.get(norm(e), [])
+        found = by_norm.get(norm_name(e), [])
         if e in types or not found:
             continue
         if len(found) > 1:
@@ -133,12 +124,12 @@ def open_source(path: str | Path | list[Path], con: duckdb.DuckDBPyConnection, e
                   columns=[rename.get(c, c) for c in types], notes=notes, files=files, ordered=ordered)
 
 
-FILLED = " \t\n\r\u3000"  # what a blank value is made of: blank is missing, as the run reads it (er.standardize.prepare)
+FILLED = "".join(ch for ch in map(chr, range(0x3001)) if ch.isspace())  # what a blank value is made of, as Python's \s: blank is missing, as the run reads it (er.standardize.prepare)
 
 
-def filled(c: str) -> str:  # SQL: the column holds a value; trimmed only when its first byte is blank (CASE: a sixth of the cost)
-    starts = " OR ".join(f"prefix({q(c)}, '{ch}')" for ch in FILLED)
-    return f"({q(c)} <> '' AND CASE WHEN {starts} THEN trim({q(c)}, '{FILLED}') <> '' ELSE true END)"
+def filled(c: str) -> str:  # SQL: the column holds a value, never NULL itself; trimmed only when its first character is blank (CASE: a sixth of the cost)
+    return (f"coalesce({q(c)} <> '' AND CASE WHEN unicode({q(c)}) IN ({', '.join(str(ord(ch)) for ch in FILLED)}) THEN trim({q(c)}, {lit(FILLED)}) <> '' "
+            f"ELSE true END, false)")
 
 
 def fit(con: duckdb.DuckDBPyConnection, table: str, columns: list[str], fields: Iterable[str], patterns: Mapping[str, str]) -> dict[str, dict[str, float]]:
@@ -203,20 +194,20 @@ def describe(path: str | Path, con: duckdb.DuckDBPyConnection, columns: Mapping[
                          f"FROM (SELECT {', '.join(f'{filled(c)} AS {b[c]}' for c in cols)} FROM {src.sql})").fetchall()[0]
     n, share = counts[0], dict(zip(keys, (x / max(1, counts[0]) for x in counts[1:])))
     con.execute(f"CREATE OR REPLACE TEMP TABLE er_described AS SELECT * FROM {src.sql} USING SAMPLE reservoir({rows} ROWS) REPEATABLE (0)")
-    pattern = {f: x.replace("'", "''") for f, x in {**patterns, **{f"slot:{k}": v for k, v in (slot_patterns or {}).items()}}.items() if f in here}
-    looks = lambda f, v: f"coalesce(avg(regexp_matches({v}, '{pattern[f]}')::INT) FILTER (WHERE {v} IS NOT NULL), 0)" if f in pattern else "NULL"
+    pattern = {f: x for f, x in {**patterns, **{f"slot:{k}": v for k, v in (slot_patterns or {}).items()}}.items() if f in here}
+    looks = lambda f, v: f"coalesce(avg(regexp_matches({v}, {lit(pattern[f])})::INT) FILTER (WHERE {v} IS NOT NULL), 0)" if f in pattern else "NULL"
     seen = con.execute(f"SELECT {', '.join(f'first({shown[k]}) FILTER (WHERE {shown[k]} IS NOT NULL), ' + (looks(k[1], shown[k]) if k[0] != 'column' else 'NULL') for k in keys)} "
                        f"FROM er_described").fetchall()[0]
     example, looks_right = dict(zip(keys, seen[0::2])), dict(zip(keys, seen[1::2]))
     fits = fit(con, "er_described", cols, fields, patterns)
     sample = con.execute(f"SELECT {', '.join(q(c) for c in cols)} FROM er_described").fetchall()
     profile = profiled({c: [r[i] for r in sample] for i, c in enumerate(cols)}, lex) if lex else {}  # row by row: columns compared on the same records
-    norms, suggested = {norm(c): c for c in cols}, []
-    unique = lambda c: con.execute(f"SELECT count(DISTINCT {q(c)}) = count(*) FROM {src.sql} WHERE {filled(c)}").fetchall()[0][0]
+    norms, suggested = {norm_name(c): c for c in cols}, []
+    unique = lambda c: con.execute(f"SELECT count(DISTINCT {q(c)}) = count(*) FROM er_described WHERE {filled(c)}").fetchall()[0][0]  # on the sample: a hint, never a scan of the file
     for f in fields:
         if here[f]:
             continue
-        if (c := norms.get(norm(f))) is not None:
+        if (c := norms.get(norm_name(f))) is not None:
             suggested.append(dict(field=f, column=c, why="its name"))
         elif f in fits and (c := max(fits[f], key=fits[f].get, default=None)) and fits[f][c] >= (0.99 if f == "id" else 0.5) and (f != "id" or unique(c)):
             suggested.append(dict(field=f, column=c, why=f"{fits[f][c]:.0%} " + ("filled, each value once" if f == "id" else f"look like {f.replace('_', ' ')}")))
@@ -291,15 +282,10 @@ def profiled(values: Mapping[str, list[str]], lex: Lexicon) -> dict[str, dict]:
     return out
 
 
-def sha256(f: Path) -> str:
-    with open(f, "rb") as fh:
-        return hashlib.file_digest(fh, "sha256").hexdigest()
-
-
 def file_facts(files: list[Path], role: str) -> list[dict]:
     """Each file read: its path, what it is (records, decisions, answers, the name model), size and SHA-256, so a run
     says exactly what went in, and a rerun finds its records again. O(bytes)."""
-    return [dict(file=str(Path(f).resolve()), role=role, bytes=Path(f).stat().st_size, sha256=sha256(Path(f))) for f in files]
+    return [dict(file=str(Path(f).resolve()), role=role, bytes=Path(f).stat().st_size, sha256=intake.sha256(Path(f))) for f in files]
 
 
 def answers(path: str | Path, con: duckdb.DuckDBPyConnection, uid: str) -> pd.DataFrame:
@@ -311,13 +297,13 @@ def answers(path: str | Path, con: duckdb.DuckDBPyConnection, uid: str) -> pd.Da
         raise InputError(f"{path}: needs the columns {uid} and kind; it has {sorted(src.columns)}",
                          fix="give back kind_review.parquet with kind filled in: 1 person, 2 company, 0 can't tell")
     rows = con.sql(f"SELECT * FROM {src.sql}").df().astype("string")
-    given, kind = rows["kind"].str.strip().replace("", pd.NA), pd.to_numeric(rows["kind"], errors="coerce")
+    given, kind = rows["kind"].str.strip(FILLED).replace("", pd.NA), pd.to_numeric(rows["kind"], errors="coerce")
     if len(bad := sorted(set(given[given.notna() & ~kind.isin([0, 1, 2])]))):
         raise InputError(f"{path}: a kind is 1, 2 or 0, not {bad[:5]}", fix="write 1 person, 2 company or 0 can't tell, or leave it empty")
     rows = rows[kind.isin([0, 1, 2]).to_numpy()].reset_index(drop=True)
     if rows.empty:
         raise InputError(f"{path}: no row is answered", fix="answer records first (nayose answer kind ID company), or write 1 person, 2 company or 0 can't tell in the sheet's kind column")
-    if (blank := int(rows[uid].str.strip().fillna("").eq("").sum())):
+    if (blank := int(rows[uid].str.strip(FILLED).fillna("").eq("").sum())):
         raise InputError(f"{path}: {blank:,} answered rows have no {uid}", fix="fill in each answered row's ID, or clear its answer")
     return rows
 
@@ -332,8 +318,8 @@ def decisions(path: str | Path, con: duckdb.DuckDBPyConnection, l: str, r: str, 
     if {l, r, "decision"} - set(src.columns):  # say what is wrong, row by row where it can
         raise InputError(f"{path}: needs the columns {l}, {r} and decision; it has {sorted(src.columns)}",
                          fix="give back review.parquet with decision filled in, or a file with those three columns")
-    decided = f"FROM {src.sql} WHERE nullif(trim(decision), '') IS NOT NULL"
-    if (blank := con.execute(f"SELECT count(*) {decided} AND (nullif(trim({q(l)}), '') IS NULL OR nullif(trim({q(r)}), '') IS NULL)").fetchall()[0][0]):
+    decided = f"FROM {src.sql} WHERE {filled('decision')}"
+    if (blank := con.execute(f"SELECT count(*) {decided} AND NOT ({filled(l)} AND {filled(r)})").fetchall()[0][0]):
         raise InputError(f"{path}: {blank:,} decided rows lack an ID", fix="fill in both IDs of each decided row, or clear its decision")
     why = "nullif(trim(why), '')" if "why" in src.columns else "NULL::VARCHAR"  # the sheet's row kind: an audit stays known as one
     con.execute(f"""CREATE OR REPLACE TABLE {q(into)} AS SELECT least({q(l)}, {q(r)}) AS {q(l)}, greatest({q(l)}, {q(r)}) AS {q(r)},

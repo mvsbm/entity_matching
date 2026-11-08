@@ -184,14 +184,20 @@ def fits(profile: Counter, v: str | None) -> float:  # how likely a column holds
 
 # ---------- a file as rows of text ----------
 
+def parquet(f: Path, head: bytes, tail: bytes) -> bool:  # whether the file is Parquet, by its first and last bytes; one cut short is refused
+    if head[:4] != b"PAR1":
+        return False
+    if tail != b"PAR1":
+        raise InputError(f"{f}: a Parquet file cut short (it doesn't end as Parquet does)", fix="copy it again, or write it again from its source")
+    return True
+
+
 def sniff(f: Path) -> tuple[str, str | None, bool]:  # (format, its delimiter, whether it quotes): by the bytes, never the name
     with f.open("rb") as h:
         head = h.read(1 << 20)
         h.seek(max(0, f.stat().st_size - 4))
         tail = h.read(4)
-    if head[:4] == b"PAR1":
-        if tail != b"PAR1":
-            raise InputError(f"{f}: a Parquet file cut short (it doesn't end as Parquet does)", fix="copy it again, or write it again from its source")
+    if parquet(f, head, tail):
         return "parquet", None, False
     if head[:2] == b"PK":
         raise InputError(f"{f}: a ZIP or Excel file, not records", fix="save it as CSV (UTF-8 or Shift-JIS) or Parquet, and give that")
@@ -456,7 +462,8 @@ def read_one(f: Path, out: Path, spec: InputSpec, m: Model, accepted: frozenset[
 def realign(odd: list[tuple[int, list]], width: int, profile: list[Counter], delimiter: str, spec: InputSpec) -> list[tuple[list[int], list] | None]:
     """Each row that doesn't line up, re-split if one reading fits its columns far better than any other: too many
     fields, adjacent ones joined back (the delimiter was in a value); too few, joined with the next short row when the
-    two make one (a line break was in a value). (the columns joined, the row) or None. O(rows · width · extra)."""
+    two make one (a line break was in a value). (the columns joined, the row) or None. O(rows · C(width + extra − 1, extra)):
+    every way of joining the extra fields is tried, which [input] max_extra keeps small."""
     decode = lambda x: (decodings(x, spec.encodings) or [("", x)])[0][1] if x else x
     out: list = [None] * len(odd)
     i = 0
@@ -493,11 +500,8 @@ def realign(odd: list[tuple[int, list]], width: int, profile: list[Counter], del
 # ---------- a part: every file given, read ----------
 
 def sha256(f: Path) -> str:
-    h = hashlib.sha256()
-    with f.open("rb") as x:
-        for block in iter(lambda: x.read(1 << 20), b""):
-            h.update(block)
-    return h.hexdigest()
+    with open(f, "rb") as fh:
+        return hashlib.file_digest(fh, "sha256").hexdigest()
 
 
 def take(part: Path, given: dict[Path, str], spec: InputSpec, reference: Path, accepted: frozenset[str] = frozenset(), strict: bool = False) -> dict:
@@ -539,7 +543,7 @@ def take(part: Path, given: dict[Path, str], spec: InputSpec, reference: Path, a
     return report
 
 
-def report(part: Path) -> dict | None:  # what the intake found in a part, or None for a part read before there was one
+def report(part: Path) -> dict | None:  # what the intake found in a part, or None for a path that is no part
     return json.loads((part / REPORT).read_text(encoding="utf-8")) if (part / REPORT).is_file() else None
 
 

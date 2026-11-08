@@ -14,3 +14,6 @@ build-backend = "setuptools.build_meta"
 [tool.setuptools]
 packages = ["er"]
 package-data = { er = ["ui.html"] }  # the page nayose open ui serves
+
+[tool.ruff.lint]
+select = ["F", "B904", "UP017"]  # names unused or never defined; an error re-raised without its cause; datetime.UTC

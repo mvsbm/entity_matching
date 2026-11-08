@@ -5,7 +5,7 @@ import duckdb
 from splink import DuckDBAPI
 from splink.clustering import cluster_pairwise_predictions_at_threshold
 
-from er.candidates import q
+from er.config import q
 
 
 def merge(con: duckdb.DuckDBPyConnection, db: DuckDBAPI, base: str, edges: str, into: str, uid: str) -> None:

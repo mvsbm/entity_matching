@@ -23,6 +23,18 @@ class InputError(ValueError):
         self.fix, self.hints = fix, hints or {}
 
 
+def q(name: str) -> str:  # a quoted SQL identifier
+    return '"' + name.replace('"', '""') + '"'
+
+
+def lit(value: object) -> str:  # a value, a path or text, as an SQL string literal
+    return "'" + str(value).replace("'", "''") + "'"
+
+
+def bits(v: float) -> str:  # a weight in SQL; the trust line above everything is infinity
+    return "'Infinity'::DOUBLE" if math.isinf(v) else repr(float(v))
+
+
 def toml_of(path: Path | str) -> dict:  # a TOML file people edit, or the mistake in it as an InputError
     try:
         return tomllib.loads(Path(path).read_text(encoding="utf-8-sig"))  # with or without the mark an editor may put first
@@ -112,7 +124,7 @@ class Comparator:
     def sql(self, base: str, level: bool = False) -> str:
         """Blocking-rule SQL (l."c" / r."c"), or with level=True Splink comparison-level SQL ("c_l" / "c_r")."""
         c = self.column(base)
-        a, b = (f'"{c}_l"', f'"{c}_r"') if level else (f'l."{c}"', f'r."{c}"')
+        a, b = (q(f"{c}_l"), q(f"{c}_r")) if level else (f"l.{q(c)}", f"r.{q(c)}")
         if self.function == "exact":
             return f"{a} = {b}"
         test = f'cl_{self.function}({a}, {b}) {">=" if FUNCTIONS[self.function].similarity else "<="} {self.threshold}'

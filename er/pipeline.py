@@ -15,8 +15,9 @@ import pandas as pd
 import pyarrow as pa
 from splink import DuckDBAPI
 
-from er.candidates import estimate, found_by, generate, q
+from er.candidates import estimate, found_by, generate
 from er.cluster import merge
+from er.config import q
 from er.config import (Blocker, Budget, Data, DeletionKeys, FSSpec, Key, KeyBlocker, OverBudget, Pipeline, RulesSpec,
                        SortedNeighbourhood, TfidfNeighbours, ThresholdRule, keys_of)
 from er.evaluate import (average_precision, candidate_metrics, cluster_metrics, edge_metrics, fp_upper, missed_pairs,

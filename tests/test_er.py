@@ -1153,7 +1153,7 @@ def test_a_workspace_keeps_its_own_mapping_and_a_copy_of_its_files(tmp_path, pop
     from er import folder
     from er.cli import main
     from er.settings import settings_path
-    from er.source import sha256
+    from er.intake import sha256
     s, p, g = population
     g.df.rename(columns={s.data.unique_id: "customer_no"}).to_parquet(tmp_path / "theirs.parquet", index=False)  # their own ID column
     monkeypatch.chdir(tmp_path)  # workspaces/, in the folder nayose starts from
@@ -1668,12 +1668,12 @@ def test_a_run_sets_aside_what_it_cannot_resolve_and_suggests_a_mapping(tmp_path
     uid = s.data.unique_id
     df = g.df.copy()
     df = pd.concat([df, df.iloc[[0]], df.iloc[[1]].assign(PHONE_NUM_4="9999")], ignore_index=True)  # an exact copy; a clash
-    df.loc[2, uid] = " "  # no ID
+    df.loc[2, uid], df.loc[3, uid], df.loc[4, uid], df.loc[5, uid] = " ", "\t", "\xa0", "\u3000"  # no ID: blank in any of its forms
     df.to_parquet(tmp_path / "in.parquet", index=False)
     run = Run(p, s).full(tmp_path / "in.parquet", tmp_path / "run")
     aside = pd.read_parquet(tmp_path / "run" / "set_aside")
-    assert sorted(aside["reason"]) == ["no ID", "the same ID with different content", "the same ID with different content"]
-    assert run.n == len(g.df) - 2 and any("kept once" in x for x in run.notes)
+    assert sorted(aside["reason"]) == ["no ID"] * 4 + ["the same ID with different content"] * 2
+    assert run.n == len(g.df) - 5 and any("kept once" in x for x in run.notes)
 
     g.df.rename(columns={uid: "customer_no"}).to_parquet(tmp_path / "renamed.parquet", index=False)
     with pytest.raises(InputError, match="lacks a field every run needs") as e:
@@ -1995,7 +1995,10 @@ def test_describe_says_what_a_run_folder_holds_and_what_joined_an_entity(tmp_pat
     big = d["largest"][0]
     e = describe_entity(run.con, out, uid, big["entity"], run.fields)
     assert len(e["records"]) == big["records"] and len(e["links"]) >= big["records"] - 1  # a cluster is joined by its links
-    assert {x["by"] for x in e["links"]} <= {*(r.name for _, _, r in p.rules.each()), "fs"}
+    last = e["records"][uid].max()  # an entity past the cap: its first records, the one asked for among them, and its size
+    few = describe_entity(run.con, out, uid, last, run.fields, most=1)
+    assert big["records"] > 1 and few["records"][uid].tolist() == [last] and few["size"] == big["records"]
+    assert set(e["links"]["by"]) <= {*(r.name for _, _, r in p.rules.each()), "fs"} and e["size"] == big["records"]
     with pytest.raises(InputError, match="no record of the run"):
         describe_entity(run.con, out, uid, "nobody", run.fields)
 
@@ -2438,11 +2441,21 @@ def test_answers_add_up_over_sheets_each_kept_as_given_and_a_blank_row_erases_no
     gold = pd.read_parquet(tmp_path / "run" / "gold.parquet").set_index(uid)
     assert not (gold.loc[sheet[uid][half:], "kind_by"] == "people").any()
 
-    os_ = tmp_path / "run" / "state" / "kind_labels.parquet"  # a folder that keeps its answers in state/
-    shutil.move(parts[0], os_)
-    shutil.rmtree(answers)
-    Run(p, s).full(tmp_path / "all.parquet", tmp_path / "run", overwrite=True)
-    assert set(pd.read_parquet(answers / "part-00000.parquet")[uid]) == set(sheet[uid][:half]) and not os_.exists()  # kept, not lost
+    from er import folder
+    from er.cli import main
+    shutil.move(parts[0], tmp_path / "run" / "state" / "kind_labels.parquet")  # answers where an earlier nayose kept them: refused, never half read
+    assert main(["list", "pairs", "--workspace", str(tmp_path / "run"), "--format", "json"]) == 2
+    with pytest.raises(InputError, match="an earlier nayose wrote .people's answers in state/"):
+        folder.current(tmp_path / "run")
+    old = tmp_path / "old"
+    (old / "inputs" / "0001-theirs").mkdir(parents=True)  # a part the reader never described
+    with pytest.raises(InputError, match="0001-theirs read before the reader described its files"):
+        folder.current(old)
+    (old / "inputs" / "0001-theirs").rmdir()
+    (old / "rule_kept").mkdir()
+    pd.DataFrame({f"{uid}_l": ["1"], f"{uid}_r": ["2"], "rule": ["X1"]}).to_parquet(old / "rule_kept" / "part-00000.parquet")  # rules' pairs without merged
+    with pytest.raises(InputError, match="don't say whether they merged"):
+        folder.current(old)
 
 
 def test_a_record_people_can_t_tell_stays_out_of_name_matching_and_off_the_next_sheet(tmp_path, kind_population):
@@ -2809,7 +2822,6 @@ def test_the_page_answers_once_per_key_shows_any_row_and_says_when_the_server_is
         page.wait_for_selector("[data-act='add records']:not([disabled])", timeout=120_000)
         page.click("[data-act='rerun records']")  # started, then left: back on step 3 once it ends, its buttons are free again
         page.click("dialog .dlg-foot .btn.filled")
-        page.wait_for_selector("#out .steps-card")
         page.click(".navitem[data-screen=results]")
         page.wait_for_selector("#snack:has-text('Done')", timeout=120_000)
         page.click(".navitem[data-screen=run]")

@@ -550,7 +550,7 @@ One record's entity, and what joined it.
 nayose describe entity ID --workspace WORKSPACE [--format text|json]
 ```
 
-The entity of the record ID: each of its records with its fields and kind, and every link between them: a rule, the model with its weight in bits, or people. O(N) in SQL.
+The entity of the record ID: its size, each of its records (the first 200, the ID among them) with its fields and kind, and every link between them: a rule, the model with its weight in bits, or people. O(N) in SQL.
 
 | Parameter | |
 |---|---|
@@ -561,7 +561,8 @@ The entity of the record ID: each of its records with its fields and kind, and e
 |---|---|
 | `record` | the ID asked for |
 | `entity` | its entity (the cluster_id) |
-| `records` | each of the entity's records |
+| `size` | how many records it holds |
+| `records` | each of the entity's records, the first 200 |
 | `links` | each link between them: id_l, id_r, by, weight |
 | `pairs` | of an entity of up to 50 records, every pair inside it scored: id_l, id_r, weight, by (none: joined through others), comparisons (comparison, reached, bits) |
 | `weakest` | the links whose loss would split the entity: id_l, id_r |

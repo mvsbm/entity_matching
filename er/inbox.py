@@ -23,12 +23,11 @@ import subprocess
 import sys
 import time
 from collections.abc import Callable
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 from er import intake
 from er.config import InputError
-from er.source import sha256
 
 KINDS = ("batches", "decisions", "answers")
 
@@ -41,7 +40,7 @@ def ledger(run: Path) -> list[dict]:
 def record(run: Path, **entry: object) -> None:
     run.mkdir(parents=True, exist_ok=True)
     with (run / "jobs.jsonl").open("a", encoding="utf-8") as f:
-        f.write(json.dumps({"at": datetime.now(timezone.utc).isoformat(timespec="seconds"), **entry}, ensure_ascii=False) + "\n")
+        f.write(json.dumps({"at": datetime.now(UTC).isoformat(timespec="seconds"), **entry}, ensure_ascii=False) + "\n")
 
 
 def move(f: Path, folder: Path) -> Path:  # a stamp in front: the same name may arrive again with other content
@@ -92,7 +91,7 @@ def one_pass(run: Path, inbox: Path, retries: int, compute: list[str], say: Call
     tasks = sorted(((f.stat().st_mtime, f.name, kind, f) for kind in KINDS if (inbox / kind).is_dir() for f in (inbox / kind).iterdir()
                     if f.suffix.lower() in intake.SUFFIXES and now - f.stat().st_mtime >= settle))
     for _, name, kind, f in tasks:
-        digest = sha256(f)
+        digest = intake.sha256(f)
         if digest in done_before:
             record(run, file=name, kind=kind, sha256=digest, outcome="done", note="the same content was done before")
             say(f"{kind}/{name}: done before (the same content), moved to done/", file=name, kind=kind, outcome="done")
