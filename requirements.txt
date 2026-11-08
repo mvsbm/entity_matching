@@ -11,6 +11,7 @@ optuna-dashboard==0.21.0  # localhost web UI for the study
 rapidfuzz==3.14.6  # character-level string metrics; DuckDB's jaro_winkler/jaccard/damerau compare UTF-8 bytes
 scikit-learn==1.9.1  # TF-IDF char n-gram candidates; the person-or-company name model and combiner (er.kind)
 pytest==9.2.0  # tests/: engine self-checks
+pytest-xdist==3.8.0  # tests/: on every core at once (-n auto)
 ruff==0.17.0  # CI: the rules in pyproject.toml [tool.ruff]
 sqlglot==30.25.0  # tests/test_design.py: the tables each step's SQL makes and reads (Splink installs it too)
 matplotlib==3.11.2  # notebooks/demo.ipynb: the charts (static, so the PDF keeps them)

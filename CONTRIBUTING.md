@@ -38,7 +38,8 @@ pipelines is marked `slow`, and one that opens the page in Chromium `browser`, b
 .venv/bin/python -m pytest -m "not slow and not browser"   # the fast checks: about 20 s
 .venv/bin/python -m pytest -m "slow and not browser"       # whole runs on a generated population: minutes
 .venv/bin/python -m pytest -m browser                      # the page in Chromium (once: python -m playwright install chromium)
-.venv/bin/python -m pytest                                 # all of them (CI runs the browser ones on 3.14)
+.venv/bin/python -m pytest                                 # all of them (CI runs the browser ones on 3.12)
+.venv/bin/python -m pytest -n auto                         # any of these, on every core at once, as CI runs them
 ```
 
 Without Chromium the browser tests skip; under CI (`CI` set) they fail instead, so a broken install never passes.
