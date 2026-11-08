@@ -178,6 +178,8 @@ def test_nayose_takes_a_file_from_the_check_to_people_s_answers(tmp_path, popula
     assert len(matched["records"]) == len(g.df) - half and set(matched["counts"]) <= {"joins an entity", "a new entity"}
     added = say("add", "records", tmp_path / "new.parquet", "--workspace", run)
     assert added["summary"][0][1].startswith(f"{len(g.df):,}")
+    again = say("match", "records", tmp_path / "new.parquet", "--workspace", run)  # every record in the run already: each said so
+    assert set(again["counts"]) == {"already in the run"} and len(again["records"]) == len(g.df) - half
     assert say("describe", "workspace", run)["records"] == len(g.df)
     graph = say("describe", "matching", "--workspace", run)
     assert {n["id"] for n in graph["nodes"]} >= {"rules", "candidates", "score", "group"} and graph["edges"]
@@ -714,3 +716,29 @@ def test_a_result_s_nested_numbers_print_plainly_and_a_settings_folder_is_said(t
     assert cell({"file": 0.5, "peak_gb": 2}) == "file 0.50 peak gb 2"
     with pytest.raises(InputError, match="can't be read"):
         toml_of(tmp_path)
+
+
+def test_a_run_in_a_workspace_on_a_file_without_a_needed_field_says_to_map_it_there(say, tmp_path, population, monkeypatch):
+    s, p, g = population
+    g.df.rename(columns={s.data.unique_id: "customer_no"}).to_parquet(tmp_path / "theirs.parquet", index=False)
+    monkeypatch.chdir(tmp_path)
+    say("create", "workspace", "w")
+    code, e = say("resolve", "records", "theirs.parquet", "--workspace", "workspaces/w")
+    assert code == 2 and e["fix"].startswith("map it in the workspace") and "nayose set columns id=customer_no --workspace workspaces/w" in e["fix"]
+    g.df.rename(columns={s.data.unique_id: "id"}).to_parquet(tmp_path / "ids.parquet", index=False)  # its ID column named as the field: read as id_2
+    code, e = say("resolve", "records", "ids.parquet", "--workspace", "workspaces/w", "--overwrite")
+    assert code == 2 and "set columns id=id --workspace" in e["fix"] and "id_2" not in e["error"] + e["fix"]  # the file's own name for it
+
+
+def test_a_file_with_columns_named_as_the_run_names_its_own_runs(say, tmp_path, population):
+    s, p, g = population
+    df = g.df.assign(KIND=(["Person", "Company"] * len(g.df))[:len(g.df)], Address="somewhere")  # unmapped, named as fields and kinds are
+    df.to_parquet(tmp_path / "theirs.parquet", index=False)
+    code, r = say("resolve", "records", tmp_path / "theirs.parquet", "--workspace", tmp_path / "run")
+    notes = [v for w, v in r["summary"] if w == "note"]
+    assert code == 0 and any("column KIND read as KIND_2" in n for n in notes) and any("column Address read as Address_2" in n for n in notes)
+    flag = s.columns["kind_flag"][0][0]
+    df.assign(KIND=df[flag] if flag in df else "1").to_parquet(tmp_path / "flagged.parquet", index=False)
+    say("create", "workspace", "w", "--home", tmp_path)
+    assert say("set", "columns", "kind_flag=KIND", "--workspace", tmp_path / "w")[0] == 0  # the person/company flag, mapped, named as the run's kind
+    assert say("resolve", "records", tmp_path / "flagged.parquet", "--workspace", tmp_path / "w")[0] == 0

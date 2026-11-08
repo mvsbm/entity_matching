@@ -36,6 +36,7 @@ class Source:
     notes: list[str] = field(default_factory=list)  # what was detected or fixed, for the run's summary
     files: list[Path] = field(default_factory=list)  # the files read
     ordered: bool = False                     # a list of files in order: sql holds er_file, each row's file by position
+    given: dict[str, str] = field(default_factory=dict)  # a column read under another name (KIND_2) → its name in the file
 
 
 def find(path: str | Path) -> list[Path]:
@@ -51,8 +52,10 @@ def find(path: str | Path) -> list[Path]:
                        and not any(x.startswith(".") or x == "__MACOSX" for x in f.relative_to(p).parts)) if p.is_dir() else [p] if p.is_file() else []
     if files:
         return files
+    if p.is_dir():
+        raise InputError(f"{path} holds no CSV, TSV or Parquet file", fix="name a records file, or a folder that holds some")
     folder = p.parent
-    names = {f.stem: f.name for f in folder.iterdir()} if folder.is_dir() else {}  # by stem: a close name, whatever its suffix
+    names = {f.stem: f.name for f in folder.iterdir() if f != p} if folder.is_dir() else {}  # by stem: a close name, whatever its suffix
     near = [names[s] for s in difflib.get_close_matches(p.stem, names, n=3)]
     raise InputError(f"no file matches {path}", fix=f"did you mean {' or '.join(str(folder / n) for n in near)}?" if near
                      else f"check the path: {folder} {'holds no file like it' if folder.is_dir() else 'does not exist'}")
@@ -70,10 +73,12 @@ def check_parquet(f: Path) -> None:
     raise InputError(f"{f}: not a Parquet file; it looks like {kind}", fix=CONVERT)
 
 
-def open_source(path: str | Path | list[Path], con: duckdb.DuckDBPyConnection, expected: Iterable[str]) -> Source:
+def open_source(path: str | Path | list[Path], con: duckdb.DuckDBPyConnection, expected: Iterable[str], reserved: Iterable[str] = ()) -> Source:
     """The files `path` names as one relation of text columns; a list of files is read in order, and each row keeps
     its file's position (er_file). A column whose name matches an `expected` one but for case, width or separators is
-    given the expected name; one stored as a number is read as text, with a note."""
+    given the expected name; one stored as a number is read as text, with a note. One no field reads whose name, in
+    any case, is a `reserved` one (a column the run writes itself: a field, kind) or begins with one and __, is read
+    under another (KIND_2), with a note: SQL names don't tell case apart."""
     ordered = isinstance(path, list)
     files = [x for p in path for x in find(p)] if ordered else find(path)
     for f in files:
@@ -106,6 +111,16 @@ def open_source(path: str | Path | list[Path], con: duckdb.DuckDBPyConnection, e
             raise InputError(f"columns {', '.join(found)} could each be {e}", fix="rename all but one, or map the field to one of them in config/settings.toml [columns]")
         rename[found[0]] = e
         notes.append(f"column {found[0]} read as {e}")
+    taken, own = {rename.get(c, c).casefold() for c in types}, {x.casefold() for x in reserved}
+    for c in types:
+        if c in rename or c in expected or not (c.casefold() in own or c.casefold().split("__")[0] in own and "__" in c):
+            continue
+        k = 2
+        while f"{c}_{k}".casefold() in taken | own:
+            k += 1
+        rename[c] = f"{c}_{k}"
+        taken.add(rename[c].casefold())
+        notes.append(f"column {c} read as {rename[c]}: the run writes a {c.casefold()} of its own")
     cols = []
     for c, kind in types.items():
         name = rename.get(c, c)
@@ -121,7 +136,8 @@ def open_source(path: str | Path | list[Path], con: duckdb.DuckDBPyConnection, e
     if ordered:
         cols.append(f"list_position([{paths}], er_path) AS er_file")
     return Source(sql=f"(SELECT {', '.join(cols)} FROM read_parquet([{paths}], union_by_name = true{", filename = 'er_path'" if ordered else ''}))",
-                  columns=[rename.get(c, c) for c in types], notes=notes, files=files, ordered=ordered)
+                  columns=[rename.get(c, c) for c in types], notes=notes, files=files, ordered=ordered,
+                  given={rename[c]: c for c in rename if rename[c] not in expected})
 
 
 FILLED = "".join(ch for ch in map(chr, range(0x3001)) if ch.isspace())  # what a blank value is made of, as Python's \s: blank is missing, as the run reads it (er.standardize.prepare)

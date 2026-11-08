@@ -372,3 +372,87 @@ def test_auto_mode_runs_from_the_first_screen_and_its_report_waits_on_the_overvi
     page.click("dialog button[value=run]")
     page.wait_for_function(f"() => document.querySelector('#auto .report') && document.querySelector('#picker').innerText !== {first!r}", timeout=120_000)
     assert "✗ check" in page.inner_text("#auto .report") and not page.query_selector("#auto .banner")  # its report, not a bare exit code
+
+
+def test_the_page_keeps_its_step_through_back_reload_and_a_run_and_says_what_was_decided(ui_page, tmp_path, population):
+    s, p, g = population
+    g.df.to_parquet(tmp_path / "all.parquet", index=False)
+    page, server, httpd = ui_page(None, str(tmp_path / "workspaces"))
+    page.wait_for_selector(".welcome")
+    page.click(".navitem[data-screen=pairs]")  # a step that follows a run, before a workspace: the way in, across the page
+    page.wait_for_selector("#screen .welcome")
+    assert not page.query_selector("#screen .split") and page.url.endswith("#pairs")
+    page.click("#picker")
+    page.fill("#new-name", "w")
+    page.click("#create")
+    page.wait_for_selector("h1:has-text('Prepare your data')")
+    (tmp_path / "workspaces" / "w" / "method.toml").unlink()  # the method as tuned: pairs on the sheet to decide
+    page.fill("#cin", str(tmp_path / "all.parquet"))
+    page.click("#load")
+    page.wait_for_selector("#loaded a[data-go=run]", timeout=60_000)
+    page.click(".navitem[data-screen=pairs]")  # before a run: the next step, not an error
+    page.wait_for_selector("#screen .card.empty a[data-go=run]")
+    assert not page.query_selector("#screen .banner.error, #screen .split")
+    page.go_back()  # Back walks the steps
+    page.wait_for_selector("h1:has-text('Prepare your data')")
+    page.click(".navitem[data-screen=run]")
+    page.wait_for_selector("[data-first]")
+    page.click("[data-first]")
+    page.click("dialog button[value=run]")
+    page.wait_for_selector(".steps-card")
+    page.reload()  # mid-run: the step it was on, the run followed to its end
+    page.wait_for_selector("h1:has-text('Find matches')")
+    page.wait_for_selector(".spin", timeout=10_000)
+    page.wait_for_selector("h2.question.big", timeout=120_000)  # the run's result, drawn when it ended
+    page.click(".navitem[data-screen=pairs]")
+    page.wait_for_selector("[data-a=no_match]")
+    page.keyboard.press("n")  # different, then back to it
+    page.wait_for_function("() => document.querySelector('#written').textContent === '1'")
+    page.keyboard.press("ArrowUp")
+    page.wait_for_selector("#right .chip:has-text('decided · different')")
+    assert page.get_attribute("#right [data-a=no_match]", "aria-pressed") == "true" and page.get_attribute("#right [data-a=match]", "aria-pressed") == "false"
+    said = page.evaluate("""() => hurts([{field: "phone", filled: null}, {field: "person_name", filled: 0.2}, {field: "company_name", filled: 0.15}, {field: "birth_date", filled: 0.1}],
+        ["level phone: exact (needs ['phone'])", "comparison phone", "prior rule ['full_name', 'address_code', 'phone']", "EM rule ['phone']", "probe phone (needs ['phone'])",
+         "generator phone_initial (needs ['phone'])"],
+        "", {}, [["person_name", "company_name"]]).map((x) => x.replace(/<[^>]+>/g, ""))""")
+    assert said == ["Birth date is 10% filled: matching leans on it less",  # a person's and a company's name, filled together: no warning
+                    "No column is mapped to phone: 1 way of finding pairs, 1 comparison step, 3 checks turned off"], said  # every check, in words
+    verdict = page.evaluate("""() => [trialCard({trial: 1, method: {}, base: {matched: 2, expected_false: 0, entities: 9}, variant: {matched: 2, expected_false: 0, entities: 9},
+        different_joined: {base: 1, variant: 1}, same_apart: {base: 0, variant: 0}, fixed: [{}], broken: [{}], apart: 1, together: 1}),
+        trialCard({trial: 2, method: {}, base: {matched: 2}, variant: {matched: 1}, different_joined: {base: 1, variant: 0}, same_apart: {base: 0, variant: 0}, fixed: [{}], broken: [], apart: 1, together: 0})]
+        .map((h) => [h.includes("Worse"), h.includes("Better"), h.includes('btn filled" data-adopt')])""")
+    assert verdict == [[True, False, False], [False, True, True]]  # one it sets wrong is worse, however the totals net out; Adopt stands out only when better
+    box = page.evaluate("""() => { const b = document.createElement("div"); showWorkload(b, {ranges: [
+        {down_to: 20, up_to: null, pairs: 3, checked: 3, different: 1, sample: 3, chance_clean: null, reviews_left: 0, reviews_to_here: 0},
+        {down_to: 12, up_to: 20, pairs: 40, checked: 0, different: 0, sample: 40, chance_clean: null, reviews_left: 40, reviews_to_here: 40}],
+        hours: {to_each_line: [0, 0.1]}, seconds_per_pair: 10, unnamed: 0}); return b.querySelector(".answer").textContent; }""")
+    assert box.startswith("Pairs scoring 20+ and below stay with you"), box  # not "to let 12–20 merge": nothing below a false pair merges by points
+    box = page.evaluate("""() => { const b = document.createElement("div"); showWorkload(b, {ranges: [
+        {down_to: 20, up_to: null, pairs: 3, checked: 0, different: 0, sample: 3, chance_clean: 1, reviews_left: 0, reviews_to_here: 0},
+        {down_to: 12, up_to: 20, pairs: 40, checked: 0, different: 0, sample: 30, chance_clean: 0.9, reviews_left: 30, reviews_to_here: 30},
+        {down_to: 8, up_to: 12, pairs: 60, checked: 1, different: 1, sample: 60, chance_clean: null, reviews_left: 59, reviews_to_here: 89}],
+        hours: {to_each_line: [0, 0.1, 0.2]}, seconds_per_pair: 10, unnamed: 0}); return b.querySelector(".answer").textContent; }""")
+    assert "8–12 and below stay with you" in box and "To let pairs scoring 12–20 merge: 30 pairs" in box, box  # both: what can merge, and what can't
+    page.click(".navitem[data-screen=kinds]")
+    page.wait_for_selector("[data-a=person]")
+    page.keyboard.press("1")
+    page.wait_for_function("() => document.querySelector('#written').textContent === '1'")
+    page.reload()  # the answer as the server keeps it: a code, said in words
+    page.wait_for_selector("[data-a=person]")
+    page.keyboard.press("ArrowUp")
+    page.wait_for_selector("#right .chip:has-text('answered · person')")
+    assert page.get_attribute("#right [data-a=person]", "aria-pressed") == "true"
+    from er.cli import main
+    phone = s.columns["phone"][0][0]
+    assert main(["set", "columns", "phone=", "--workspace", str(tmp_path / "workspaces" / "w")]) == 0  # an empty slot
+    page.click(".navitem[data-screen=columns]")
+    page.wait_for_selector(".drop[data-slot*='hone'] .hole", state="attached", timeout=60_000)
+    group = page.query_selector("details.fgroup:has(.drop[data-slot*='hone'] .hole)")
+    if not group.get_attribute("open"):
+        group.query_selector("summary").click()  # its group, opened
+    hole = page.wait_for_selector(".drop[data-slot*='hone'] .hole")
+    hole.focus()
+    page.keyboard.press("Enter")  # by keyboard: the file's columns in a list
+    page.select_option(".drop select", phone)
+    page.wait_for_function("() => !document.querySelector('.drop select')", timeout=30_000)
+    assert phone in (tmp_path / "workspaces" / "w" / "columns.toml").read_text(encoding="utf-8").split("phone =", 1)[1].split("\n", 1)[0]  # saved

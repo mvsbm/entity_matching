@@ -99,5 +99,6 @@ def prepare(std: Standardization, records: pd.DataFrame, normalized: Iterable[tu
     missing = set(used) - set(df.columns)
     if missing:
         raise ValueError(f"input lacks columns the configuration uses: {sorted(missing)}")
-    # DuckDB names ignore case: a source column named like its field (BIRTH_DATE → birth_date) would shadow the field there
-    return df.drop(columns=[c for c in records.columns for d in std.derived if c != d.name and c.casefold() == d.name.casefold()])
+    # DuckDB names ignore case: a source column named like a column made here (BIRTH_DATE → birth_date, KIND → kind) would shadow it there
+    made = {x.casefold() for x in df.columns if x not in records.columns}
+    return df.drop(columns=[c for c in records.columns if c.casefold() in made])

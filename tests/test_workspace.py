@@ -260,19 +260,23 @@ def test_describe_method_scores_people_s_pairs_again_and_an_audit_stays_one_acro
     yes, no = sheet[sheet["why"] == "decide"].index[0], sheet[sheet["why"] == "audit"].index[0]
     sheet.loc[yes, "decision"], sheet.loc[no, "decision"] = "match", "no_match"
     sheet.to_parquet(tmp_path / "reviewed.parquet")
-    rule_pair = pd.read_parquet(ws / "rule_kept").iloc[0]
-    pd.DataFrame({l: [rule_pair[l]], r: [rule_pair[r]], "decision": ["no_match"]}).to_parquet(tmp_path / "rule.parquet")  # no why: a file of one's own
+    kept = pd.read_parquet(ws / "rule_kept").sort_values("match_weight")
+    rule_pair = kept.iloc[0]  # one the model scores lowest: only its rule joins it
+    sure = kept[(kept["rule"] != rule_pair["rule"]) & (kept["match_weight"] >= p.fs.min_match_weight + 4)].iloc[-1]  # one the model links anyway
+    assert rule_pair["match_weight"] < p.fs.min_match_weight
+    pd.DataFrame({l: [rule_pair[l], sure[l]], r: [rule_pair[r], sure[r]], "decision": ["no_match"] * 2}).to_parquet(tmp_path / "rule.parquet")  # no why: a file of one's own
     Run(p, s).decide(tmp_path / "reviewed.parquet", ws)
     Run(p, s).decide(tmp_path / "rule.parquet", ws)
 
     d = describe_method(ws, p, s)
     assert d["round"] == 1 and d["method"] == {} and d["rounds"][0]["matched"] == next(x for x in run.steps if x["step"] == "cluster")["accepted"]
-    assert d["audits"]["checked"] == d["audits"]["false"] == d["rounds"][0]["false_found"] == 1 and d["rounds"][0]["decided"] == 3
+    assert d["audits"]["checked"] == d["audits"]["false"] == d["rounds"][0]["false_found"] == 1 and d["rounds"][0]["decided"] == 4
     weights = {(x["id_l"], x["id_r"]): x["weight"] for x in d["decided"]}
     for i in (yes, no):  # scored again: as the run scored them
         assert weights[tuple(sheet.loc[i, [l, r]])] == pytest.approx(sheet.loc[i, "match_weight"], abs=0.01)
     flagged = next(x for x in d["rules"] if x["name"] == rule_pair["rule"])
     assert flagged["different"] == 1 and {"drop_rules": [rule_pair["rule"]]} in [x["change"] for x in d["proposals"]]
+    assert {"drop_rules": [sure["rule"]]} not in [x["change"] for x in d["proposals"]]  # leaving out its rule would join that pair all the same
     keys = {x["name"]: x for x in d["keys"]}
     assert all(keys[c["drop_keys"][0]]["only"] == 0 < keys[c["drop_keys"][0]]["pairs"] for x in d["proposals"] if "drop_keys" in (c := x["change"]))
     scored = run.con.execute("SELECT count(*) FROM scores").fetchall()[0][0]
@@ -507,6 +511,12 @@ def test_the_loader_reads_parquet_by_column_name_and_says_what_is_wrong(tmp_path
     with pytest.raises(InputError, match="no file matches") as e:
         open_source(tmp_path / "aa.parquet", con, [])
     assert "a.parquet" in e.value.fix  # did you mean
+    pd.DataFrame({"CONT_ID": ["1"], "KIND": ["Person"], "Phone": ["x"], "phone__x": ["y"], "kind_2": ["z"]}).to_parquet(tmp_path / "k.parquet")
+    named = open_source(tmp_path / "k.parquet", con, ["CONT_ID"], reserved=["kind", "phone"])  # names the run writes itself, in another case
+    assert named.columns == ["CONT_ID", "KIND_3", "Phone_2", "phone__x_2", "kind_2"] and any("column KIND read as KIND_3" in n for n in named.notes)
+    (tmp_path / "empty").mkdir()
+    with pytest.raises(InputError, match="holds no CSV, TSV or Parquet file"):  # a folder with no records file: said so, not "did you mean" itself
+        open_source(tmp_path / "empty", con, [])
     (tmp_path / "c.parquet").write_text("CONT_ID,name\n1,x\n")
     with pytest.raises(InputError, match="looks like text"):
         open_source(tmp_path / "c.parquet", con, [])
