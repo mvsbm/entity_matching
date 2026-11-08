@@ -839,6 +839,7 @@ def test_a_name_added_in_another_script_is_compared_beside_the_kana_one(tmp_path
 
 
 def test_the_reader_reads_each_value_as_it_comes_and_proposes_only_what_it_would_guess(tmp_path):
+    import gzip
     import zipfile
     import pyarrow as pa
     from er import intake
@@ -885,6 +886,16 @@ def test_the_reader_reads_each_value_as_it_comes_and_proposes_only_what_it_would
     assert rows.loc["1", "name"] == "ヤマダ, タロウ" and rows.loc["2", "name"] == '"別府' and r["files"][0]["quotes"]
     r, rows, *_ = read("stray.csv", u('id,name,phone\n1,"別府,1234\n2,ヤマダ,5678\n'))  # one that never does: a stray quote is text
     assert rows.loc["1", "name"] == '"別府' and rows.loc["2", "phone"] == "5678" and not r["files"][0]["quotes"]
+    base = "id,name,address\n1,ヤマダ　タロウ,東京都港区1-2\n2,サトウ,大阪府北区3\n"
+    for name, data in (("euc.csv", base.encode("euc-jp")), ("le.csv", base.encode("utf-16-le")), ("jis.csv", base.encode("iso2022_jp")),
+                       ("titled.csv", u("顧客一覧 2026-11\n" + base)), ("trailing.csv", u("id,name,address\n1,ヤマダ　タロウ,東京都港区1-2,\n2,サトウ,大阪府北区3,\n"))):
+        r, rows, proposed, unread = read(name, data)  # one encoding for the whole file, UTF-16 without its BOM, JIS; a title above the header; a delimiter at a record's end
+        assert (rows.loc["1", "name"], rows.loc["2", "address"]) == ("ヤマダ　タロウ", "大阪府北区3") and not proposed and not unread, name
+    assert any("above the header" in n for n in read("titled.csv", u("顧客一覧 2026-11\n" + base))[0]["notes"])
+    (tmp_path / "headless.csv").write_bytes(u(base.split("\n", 1)[1]))
+    assert any("header may be missing" in n for n in intake.take(tmp_path, {tmp_path / "headless.csv": "headless.csv"}, spec, ref)["notes"])
+    with pytest.raises(InputError, match="gzip"):
+        read("in.csv.gz", gzip.compress(u(base)))
     r, rows, *_ = read("utf16.tsv", "id\tname\n1\tヤマモト\n".encode("utf-16"))
     assert rows.loc["1", "name"] == "ヤマモト" and r["files"][0]["delimiter"] == "\t"
     book = io.BytesIO()
