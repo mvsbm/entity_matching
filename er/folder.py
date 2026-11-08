@@ -287,7 +287,7 @@ def take_in(ws: Path, path: str | Path, spec: intake.InputSpec, reference: Path)
         for part in parts(ws):
             if sorted(sums(part).values()) == given:
                 return part, False
-        p = Path(path)
+        p = Path(path).expanduser()
         root = p if p.is_dir() else None
         stem = p.parent.name if any(c in str(p) for c in "*?[") else p.name if root else p.stem
         n = max((int(x.name.split("-", 1)[0]) for x in parts(ws)), default=0) + 1

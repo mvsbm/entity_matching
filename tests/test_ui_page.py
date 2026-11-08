@@ -472,6 +472,9 @@ def test_a_file_loaded_after_a_run_is_offered_to_the_run_first(ui_page, tmp_path
     page.click(".navitem[data-screen=run]")
     page.wait_for_selector(".card.ready [data-add]")
     assert "Replace the run" in page.inner_text(".card.ready")  # matching it alone is said for what it does
+    page.click(".card.ready [data-first]")
+    page.wait_for_function("() => document.querySelector('#equiv-line').textContent.endsWith('--overwrite')")  # what it says: the run's results go
+    page.keyboard.press("Escape")
     page.click(".card.ready [data-add]")
     assert "batch.parquet" in page.inner_text("dialog .about")
     page.click("dialog button[value=run]")

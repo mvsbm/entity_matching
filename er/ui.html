@@ -745,7 +745,7 @@ async function rejoin() {  // a long command that began before this page was dra
   const mine = !r.workspace || r.workspace === state.workspace;  // another workspace's run: its buttons wait here, its card shows there
   longRun = {command: r.command, visit: -1, workspace: r.workspace, page: mine ? (LAYOUT.screens.find((s) => s.uses.some((u) => u.command === r.command)) || {id: current}).id : null};
   if ([longRun.page, "run", "records"].includes(current)) go(current);  // drawn again, as running, or its buttons waiting
-  await watch(r.job, r.command, `nayose ${r.command}`, null);
+  await watch(r.job, r.command, `nayose ${r.command}`, (e) => { if (e.workspace && longRun) longRun.workspace = e.workspace; });  // auto mode names its workspace as it goes
 }
 
 // ---------- the workflow: six steps, each one's state read from the workspace ----------
@@ -1124,7 +1124,7 @@ const missedWords = (strata) => strata.some((m) => m.hits)  // the probe's answe
 const DETAIL_Q = {
   records: (x, all) => {
     if (x.count === null || x.count === undefined) return ask(STAGE_Q.records, "Nothing yet: the records are read when matching runs.");
-    const files = (x.files || []).map((f) => fileName(f.split("/").pop())).join(", "), k = x.kinds || {};
+    const files = (x.files || []).map((f) => f.split("/").pop().replace(/(\.\w+)\.parquet$/, "$1")).join(", "), k = x.kinds || {};
     const lines = [`<div class="ok">${plural(x.count, "record")} read${x.columns ? `, ${fmt(x.columns)} columns` : ""}${x.seconds !== null && x.seconds !== undefined ? `, in ${lasts(x.seconds)}` : ""}</div>`,
       ...hurts(all.prepare.fields, x.turned_off, ' <a class="btn" data-go="columns">Map it</a>'),
       k.unsure ? `<div class="ok">${fmt(k.company)} companies by their legal form; ${plural(k.unsure, "record")} not sure yet as person or company <a class="btn" data-go="kinds">Answer some</a></div>` : ""].filter(Boolean);
@@ -1716,7 +1716,7 @@ const SCREENS = {
     if (!state.workspace) return;
     const graph_ = flowOf("run", $("flow"));
     let file = null;  // the file a first run reads: the one loaded last
-    const hold = () => el.querySelectorAll("[data-act], [data-first]").forEach((b) => b.disabled = !!longRun);
+    const hold = () => el.querySelectorAll("[data-act], [data-first], [data-add]").forEach((b) => b.disabled = !!longRun);
     const start = (command, label, opts = null) => {
       const done = (d) => {
         longRun = null; hold();
@@ -1783,7 +1783,8 @@ const SCREENS = {
       <p class="answer">${esc(matched)}${next ? ` · ${esc(next)}` : ""}</p></div>${next ? `<a class="btn filled" data-go="pairs">${waiting ? "Review them" : "Go to step 4"}</a>` : ""}</div></div>${
       file && !file.read ? `<div class="card ready">${icon("records")}<div><b>${esc(nameOf(file))}</b><span class="muted"> · ${plural(file.rows, "record")}, not matched yet</span></div>
         <span class="grow"></span><button class="btn filled" data-add>${icon("add")}Add them to this run</button><button class="btn" data-first>Replace the run with them</button></div>` : ""}`;  // a file loaded since: added, or matched alone
-    $("out").querySelector("[data-first]")?.addEventListener("click", () => start("resolve records", "Replace the run with them"));
+    $("out").querySelector("[data-first]")?.addEventListener("click", () => start("resolve records", "Replace the run with them",
+      {form: [], about: `${nameOf(file)} · ${plural(file.rows, "record")}: this run's results go`, extra: {overwrite: true}}));
     $("out").querySelector("[data-add]")?.addEventListener("click", () => start("add records", "Add them to this run", {form: [], about: `${nameOf(file)} · ${plural(file.rows, "record")}`, extra: {input: file.path}}));
     hold();
     return w;
