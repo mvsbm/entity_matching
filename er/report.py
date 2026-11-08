@@ -320,7 +320,8 @@ def review_workload(con: duckdb.DuckDBPyConnection, out: Path, p: Pipeline, uid:
     different, the sample it needs (checks, or all of a smaller range), the false links the model expects in it (the
     sum of 1 − p of its weights), the chance its sample comes back clean, the false rate a clean sample bounds (rule of
     three: 1 − 0.05^(1/sample)), the reviews left to merge it and every range above it, and the reviews if its sample
-    isn't clean (people then decide all of it). Then what waits whatever the line: the pairs below the last step, the
+    isn't clean (people then decide all of it): none for a range above the line, which merges; all of a range found
+    false and of every range below it, since the line never steps past it. Then what waits whatever the line: the pairs below the last step, the
     model's pairs with no name compared; the spot-checks a round; the person/company sheet; and the hours at
     `seconds_per_pair`, an assumption, not a measure. O(E + D)."""
     l, r = q(f"{uid}_l"), q(f"{uid}_r")
@@ -335,17 +336,19 @@ def review_workload(con: duckdb.DuckDBPyConnection, out: Path, p: Pipeline, uid:
         LEFT JOIN er_review_decided d USING ({l}, {r}) GROUP BY 1""").fetchall()} if parts else {}
     sheet = out / "review.parquet"
     unnamed = con.execute(f"""SELECT count(*) FROM read_parquet({lit(sheet)}) s WHERE s.why = 'decide' AND NOT EXISTS
-        (SELECT 1 FROM ({' UNION ALL '.join(parts)}) x WHERE x.{l} = s.{l} AND x.{r} = s.{r})""").fetchall()[0][0] if parts and sheet.exists() else 0
+        (SELECT 1 FROM ({' UNION ALL '.join(parts)}) x WHERE x.{l} = s.{l} AND x.{r} = s.{r})
+        AND NOT EXISTS (SELECT 1 FROM er_review_decided d WHERE d.{l} = s.{l} AND d.{r} = s.{r})""").fetchall()[0][0] if parts and sheet.exists() else 0
     con.unregister("er_review_decided")
-    ranges, total = [], 0
+    ranges, total, stuck = [], 0, False
     for i, (lo, hi) in enumerate(zip(steps, tops)):
         pairs, checked, different, expected = got.get(i, (0, 0, 0, 0.0))
         sample = min(trust.checks, pairs)
         rate = expected / pairs if pairs else 0.0
-        left = int(pairs - checked) if different else max(sample - checked, 0)  # one said different: the range stays with people, all of it
+        stuck |= bool(different)  # the line never steps past a range found false: it and every range below stay with people, all of them
+        left = 0 if trust.line is not None and lo >= trust.line else int(pairs - checked) if stuck else max(sample - checked, 0)  # above the line: merging
         total += left
         ranges.append(dict(down_to=lo, up_to=None if math.isinf(hi) else hi, pairs=int(pairs), checked=int(checked), different=int(different), sample=sample,
-                           expected_false=round(float(expected), 1), chance_clean=round((1 - rate) ** sample, 3) if sample else None,
+                           expected_false=round(float(expected), 1), chance_clean=round((1 - rate) ** sample, 3) if sample and not stuck else None,
                            bound=round(1 - 0.05 ** (1 / sample), 4) if sample else None, reviews_left=left, reviews_to_here=total,
                            if_not_clean=int(pairs - checked)))
     below = int(got.get(len(steps), (0,))[0])

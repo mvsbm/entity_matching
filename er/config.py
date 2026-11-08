@@ -40,6 +40,8 @@ def toml_of(path: Path | str) -> dict:  # a TOML file people edit, or the mistak
         return tomllib.loads(Path(path).read_text(encoding="utf-8-sig"))  # with or without the mark an editor may put first
     except FileNotFoundError:
         raise InputError(f"{path}: no such file", fix="check the path") from None
+    except OSError as e:  # a folder, or a file this user can't read
+        raise InputError(f"{path}: can't be read ({e.strerror})", fix="name a TOML file you can read") from None
     except UnicodeDecodeError:
         raise InputError(f"{path}: not UTF-8 text", fix="save it as UTF-8 (in Notepad or Excel: Save As, UTF-8)") from None
     except tomllib.TOMLDecodeError as e:
