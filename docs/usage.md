@@ -25,11 +25,11 @@ Each matching job lives in a workspace: a folder that keeps your records file, h
 .venv/bin/nayose list workspaces                                                   # every workspace, the latest active first
 ```
 
-`load records` copies the file into the workspace's `inputs/` (`inputs/0001-customers/`), so its runs read the copy and the original can move or go. The same content loaded twice is copied once. Until the original is deleted, every file is on disk twice. It reads the copy as it comes ([below](#files-as-they-come)), then describes it, as `nayose describe records FILE` does for any file, without preparing a record: each column's share filled and an example, each field's columns with their own shares and the share that looks like the field, and for a field the file holds none of, the column its name or values suggest. On a million records the reading takes about 15 seconds, the description about one.
+`load records` copies the file into the workspace's `inputs/` (`inputs/0001-customers/`), so its runs read the copy and the original can move or go. The same content loaded twice is copied once. Until the original is deleted, every file is on disk three times: the original, the copy, and the reader's Parquet of it beside the copy (four while `accept repairs` reads it again). It reads the copy as it comes ([below](#files-as-they-come)), then describes it, as `nayose describe records FILE` does for any file, without preparing a record: each column's share filled and an example, each field's columns with their own shares and the share that looks like the field, and for a field the file holds none of, the column its name or values suggest. On a million records the reading takes about 15 seconds, the description about one.
 
 ### Files as they come
 
-A records file can be CSV, TSV or Parquet, named anything: the reader goes by its bytes (`er.intake`). A CSV's delimiter is the one its lines hold steadily, and each value is decoded on its own, so one file may mix encodings by column or by row: a value is read in the one of `[input] encodings` (UTF-8, CP932, EUC-JP) that decodes it strictly, UTF-8 first when it reads as Japanese text; one that several read is read in its column's. A file in UTF-16 (with or without a BOM) or in JIS (ISO-2022-JP) is decoded whole first; a column whose values no other encoding rules out reads in the file's encoding. Lines may end in CRLF, LF or CR; blank lines are skipped; a title line above the header, far narrower, is skipped and said; a delimiter every record ends with is dropped; a file that never quotes a value reads a quote as text. Not read: a gzip file (decompress it first), Excel (save it as CSV or Parquet), and quotes escaped with a backslash (`\"`: in CP932 a backslash byte can be half of a kanji, so write quotes doubled, `""`, as CSV does). A first line of numbers is said to look like a record: the header may be missing. What loses nothing is fixed by itself and counted: control bytes, NULs, zero-width characters and BOMs inside values removed; placeholders (`[input] nulls`: NULL, \N, NaN, N/A, -, …) made missing; a number a spreadsheet wrote as `5851.0` read as `5851`, and one it cut short (`1.23E+11`, its digits gone) made missing, since two IDs cut alike would otherwise agree.
+A records file can be CSV, TSV or Parquet, named anything: the reader goes by its bytes (`er.intake`). A CSV's delimiter is the one its lines hold steadily, and each value is decoded on its own, so one file may mix encodings by column or by row: a value is read in the one of `[input] encodings` (UTF-8, CP932, EUC-JP) that decodes it strictly, UTF-8 first when it reads as Japanese text; one that several read is read in its column's. A file in UTF-16 (with or without a BOM) or in JIS (ISO-2022-JP) is decoded whole first, and so is a file delimited by `|` whose first MiB reads as CP932 and not as UTF-8 (`|` is the second byte of some CP932 characters); a column whose values no other encoding rules out reads in the file's encoding. A file where more than 1,000 records, and more than a tenth of those read, don't line up with its header is refused, judged once a chunk of 200,000 is read or on the whole of a smaller file: its delimiter or its header is wrong. A header that repeats a name keeps every column, the repeats numbered past the names it gives (`TEL, TEL, TEL_2` read as `TEL, TEL_3, TEL_2`); a file of a header alone reads as no records, and a run refuses it. Lines may end in CRLF, LF or CR; blank lines are skipped; a title line above the header, far narrower, is skipped and said; a delimiter every record ends with is dropped; a file that never quotes a value reads a quote as text. Not read: a gzip file (decompress it first), Excel (save it as CSV or Parquet), and quotes escaped with a backslash (`\"`: in CP932 a backslash byte can be half of a kanji, so write quotes doubled, `""`, as CSV does). A first line of numbers is said to look like a record: the header may be missing. What loses nothing is fixed by itself and counted: control bytes, NULs, zero-width characters and BOMs inside values removed; placeholders (`[input] nulls`: NULL, \N, NaN, N/A, -, …) made missing; a number a spreadsheet wrote as `5851.0` read as `5851`, and one it cut short (`1.23E+11`, `1E+11`: its digits gone) made missing, since two IDs cut alike would otherwise agree. A value no `[input]` encoding decodes is made missing too, counted as damaged: reading it would be a guess with nothing to propose. In a file decoded whole, bytes its encoding can't decode read as �.
 
 What would be a guess is proposed, never applied, until people accept its kind with `nayose accept repairs KIND --workspace W` (step 2 shows each with its values, as given and repaired):
 
@@ -102,16 +102,39 @@ It prints each field, its fill rate and the columns it comes from, what would be
 
 | Parameter | Does |
 |---|---|
-| `INPUT` | a CSV, TSV or Parquet file, a quoted glob (`'data/in/*.csv'`) or a folder of them, read as they come; several files are read together by column name. Copied into the workspace first, as `load records` does; left out, the file loaded into it last |
+| `INPUT` | a CSV, TSV or Parquet file, a quoted glob (`'data/in/*.csv'`) or a folder of them (hidden files and `__MACOSX` left out), read as they come; several files are read together by column name. Copied into the workspace first, as `load records` does; left out, the file loaded into it last |
 | `--workspace` | the workspace: the folder that keeps one matching job. A full run refuses one that already holds a run |
 | `--overwrite` | replaces the run in `--workspace`; people's decisions and answers in it stand |
 | `--compute KEY=VALUE …` | DuckDB limits for this run, overriding `config/settings.toml` `[compute]`: `memory_limit=8GB`, `threads=4`, `temp_directory=<folder>`. Past the memory limit, DuckDB spills to that folder |
 | `--pipeline` | another pipeline file. Default: `config/final.toml` |
 | `--model` | a model fitted before, used instead of fitting on this file; an increment scores with the model of the run it adds to |
 
-`[compute]` in `config/settings.toml` sets the same three for every run. Left empty, each keeps DuckDB's default: all cores, 80% of the memory, and spilling to `.tmp/` under the folder the run starts in. Before any join, a full run checks that the pairs fit in memory plus the room DuckDB may spill to: 90% of that disk's free space. An increment checks the blocks of 64 or more records its batch reaches; its other pairs all touch the batch.
+`[compute]` in `config/settings.toml` sets the same three for every run. Left empty, each keeps DuckDB's default, all cores and 80% of the memory, and spills to a folder of the person's own, readable only by them, in the system's temporary folder. Before any join, a full run checks that the pairs fit in memory plus the room DuckDB may spill to: 90% of that disk's free space. An increment checks the blocks of 64 or more records its batch reaches; its other pairs all touch the batch.
 
 The run needs no labels: it fits its model on the file itself. It prints each step as it finishes, with its time and what it did, then a summary: records, entities, who joined them (the rules, the model, people), the model's links and how many of them it expects to be false, the pairs to decide, the records' and customers' kinds, where the kinds come from (no answers yet; or the answers, the lines and how often the flag is wrong on those drawn at random), how many records are held back, how often a sure kind contradicts the flag, and notes. The expected false links are the sum of 1 − match probability over the model's links: the model's own estimate, with no labels. A bigger file holds more people who share a name and an address, so at a fixed threshold the count grows with the file: on generated files, 0.84 at 12,532 records, 4.38 at 74,959 (1 and 3 found) and 30.11 at a million ([benchmark](../reports/benchmark.md)). A note says what the loader fixed, a field filled in under 5% of records (often a mapping mistake), a part turned off, or what the fit couldn't learn from. Last, `next` lists the commands that usually follow: the pairs and the records left to people, and the folder at a glance. What each step does, and what it costs: [architecture, the run](architecture.md#4--the-run).
+
+### Before a run on your file
+
+A first run on a file of your own, in this order:
+
+1. **Map and check the columns.** `nayose describe records FILE --workspace W` shows each column's share filled and an
+   example, which columns each field reads and how many of its values look like it; `nayose check records FILE
+   --workspace W` prepares every record and counts every key's pairs, as a run's first steps do. Map until nothing
+   needed is missing and no field reads a column of another kind (step 2 of the page warns of both).
+2. **Give DuckDB its limits.** Set `[compute]` `memory_limit` below the machine's memory, leaving room for Python, and
+   `temp_directory` on a disk with room for about 350 bytes per pair that `check records` counts: past the limit DuckDB spills there. A million
+   records peak at about 6.6 GB under an 8 GB limit ([performance.md](performance.md)).
+3. **Keep the workspace strict.** A new workspace starts with `trust = "none"`: nothing merges by points until people
+   have checked a sample of each range of points ([section 6](#the-trust-line)). Lower the line only as the samples
+   prove it.
+4. **Load, then look at what the reader did.** `nayose load records FILE --workspace W` copies the file in and reads it;
+   its answer, and step 2 of the page, say what it fixed by itself, what waits for a repair, and the rows it couldn't
+   read (`unread.parquet` in the part). Accept a kind of repair once its examples look right.
+5. **After the run, read the probe.** The summary's `missed` estimates the matches no pair key lists; `describe method`
+   proposes a key for them, and a trial measures it before you adopt it ([section 6](#improve-the-method)).
+6. **Drop inbox files by moving them in.** `serve inbox` leaves a file changed in the last `--settle` seconds for the
+   next pass: copy a file next to the inbox, then move it in once it is complete.
+7. **To ask for help, send `report.txt`.** It holds no record's value ([section 7](#7--when-something-is-wrong)).
 
 ## 4 · Read the outputs
 
@@ -135,7 +158,7 @@ Everything is in the workspace. A run also reads `config/kind_names.npz`, the na
 | `review.parquet` | pair for people | `why` (`decide` or `audit`); an empty `decision`; both records' compared fields; per comparison, the level reached and its bits; `accepted`, whether the run joined the pair | decide the next range below the trust line and audit above it, or, with no line, decide the pairs just below the threshold and those above it with no name compared, and audit those just above ([section 6](#6--review-and-decide)) |
 | `kind_review.parquet` | record for people | `why` (`decide` or `measure`), `reason` in words, `engine_says`, `name_says`, `flag` and `birth_date` if the file has them, the name; `engine` and `engine_p` (the engine's kind and its probability of a company), `name_p`, `drawn`; an empty `kind` | answer 1 person, 2 company or 0 can't tell ([section 6](#6--review-and-decide)) |
 | `decisions/` | decided pair | both IDs and `decision`; `why` (`decide`, `audit`, or `split` from `split entity`) when there is one; `round`, the round it was decided in; one part per file people gave back | what people decided; a full run applies it again |
-| `method.toml` | | the workspace's changes to the tuned method: `trust` (the trust line), `line`, `drop_rules`, `drop_keys` | every command on the workspace runs the method it says ([section 6](#the-trust-line)) |
+| `method.toml` | | the workspace's changes to the tuned method: `trust` (the trust line), `line`, `drop_rules`, `drop_keys`, `add_keys` | every command on the workspace runs the method it says ([section 6](#the-trust-line)) |
 | `rounds.json` | round | per method the workspace ran: its `config` hash, `method`, when, the links it made and the false links the model expects | see each round's results side by side |
 | `trials/` | trial | each trial's result (`<n>.json`, the last 5); the clusters of the method it was tried against (`base.parquet`, `base.json`) | `adopt method --trial n` |
 | `kind_answers/` | answered record | the answered rows of each `kind_review.parquet` given back, one part per sheet, as given | what people answered; every later run reads it |
@@ -237,7 +260,7 @@ Try a change before you take it, adopt it, and decide the new round's pairs:
 ```
 
 - **`try method`** runs the method as it is and the method with the change on the workspace's files, both without people's decisions, so neither is judged on pairs it was told. It says what the change does to the pairs people decided (those they said are different yet joined: false merges; those they said are the same yet apart) and, without labels, to the links, the false links expected, the entities, and the pairs of records it puts apart or together. Only `trials/` is written: the last 5 trials, and the clusters of the method as it is, kept for the next trial.
-- **`adopt method`** writes the trial's method into the workspace's `method.toml` (`line = 9.0`, `drop_rules = ["F3_NAME~_CIF"]`, `drop_keys = ["sn_person_name_reversed"]`) and finds matches again with it; if that run fails, `method.toml` stays as it was. Every command on the workspace then runs that method, an increment included. A new method is a new round. `reset method` goes back to the tuned one.
+- **`adopt method`** writes the trial's method into the workspace's `method.toml` (`line = 9.0`, `drop_rules = ["F3_NAME~_CIF"]`, `drop_keys = ["sn_person_name_reversed"]`) and finds matches again with it; if that run fails, `method.toml` stays as it was. Every command on the workspace then runs that method, an increment included. A new method is a new round. `reset method` goes back to the tuned one, keeping the trust line people earned, unless `method.toml` doesn't read, or its trust line isn't a step of the pipeline: then it keeps nothing.
 - **`draw pairs`** adds audit rows to `review.parquet`: links, the model's and the rules', that nobody has decided, spread over the weight bands. No false link in many audits is what says the links are right: at 50 audits with none false, the false rate is under 6% at 95% confidence (`describe method`, `audits`).
 
 ### Persons and companies
@@ -296,6 +319,11 @@ What stops it: two lines, what is wrong and how to fix it, and exit code 2:
 | `no record has an ID in column …` | `id` is mapped to the wrong column |
 | `the normal blocks alone would make … pairs, more than fit` | the file's pairs would not fit in memory and the temp disk: give DuckDB more room (`--compute memory_limit=… temp_directory=…`) or split the file |
 | `… already holds a run` | `resolve records` into a used folder: add `--overwrite`, or pick another folder |
+| `… a workspace an earlier nayose wrote` | answers, input parts or rules' pairs in a layout this nayose doesn't read: create the workspace again and load its files (`--overwrite` replaces an old run's rules' pairs) |
+| `out of memory` | past `--compute memory_limit`: raise it, or give `temp_directory` a disk with more room |
+| `… don't line up with its header` | a wrong delimiter or header: more than 1,000 records, and over a tenth of them, don't fit its columns |
+| `… both read …: the model would count one value twice` | one column mapped to two compared fields: map each to a column of its own |
+| `--compute …`, `not valid TOML`, `not UTF-8 text`, `… not a number` | a limit, a settings file or an option to correct, as the fix says |
 | `the model was fitted on other comparison levels` | `--model` was fitted on another pipeline, or on a file with other fields |
 | `the file has a column named …, which is also the name of a field` | a column named like a field it doesn't map to |
 | `no rule can run`, `no candidate generator can run`, `no prior rule can run`, `no EM blocking rule can run` | the file lacks every field they read: map them, or give the file those columns |
@@ -313,7 +341,7 @@ A workspace another job is writing to stops the run with `another job is writing
 
 Pairs are counted before any join, so a run that couldn't fit stops within seconds instead of running out of memory or disk.
 
-**To ask for help, send `report.txt`** from the workspace. It holds field and column names, counts, shares, times and the model's parameters, and no record's value: no ID, name, phone or address. The notes that quote a value (a placeholder phone, a customer ID a rule doesn't trust) are only in the terminal and `qa.md`. For a run that stopped, send the two lines it printed, and the output of `nayose check records`.
+**To ask for help, send `report.txt`** from the workspace. It holds field and column names, counts, shares, times and the model's parameters, and no record's value: no ID, name, phone or address. The notes that quote a value (a placeholder phone, a customer ID a rule doesn't trust) are only in the terminal and `qa.md`; `steps.json` holds record IDs (the probe's pairs, up to 200 a group), and the workspace's other files hold the records themselves. For a run that stopped, send the two lines it printed, and the output of `nayose check records`.
 
 ## 8 · Run it on a schedule
 
@@ -322,6 +350,7 @@ Pairs are counted before any join, so a run that couldn't fit stops within secon
 ```bash
 .venv/bin/nayose serve inbox inbox --workspace workspaces/customers                # one pass; cron can call it
 .venv/bin/nayose serve inbox inbox --workspace workspaces/customers --every 300    # a pass every 5 minutes
+.venv/bin/nayose serve inbox inbox --workspace workspaces/customers --settle 120   # a file changed in the last 2 minutes waits for the next pass (default 60)
 ```
 
 ```

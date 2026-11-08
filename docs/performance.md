@@ -25,21 +25,24 @@
 | F, D, T | folds (3), decision variants (5 for the rules, 23 for the model), Optuna trials |
 
 **A full run** (`er.run.Run.full`, which `nayose resolve records` calls), with the times measured on 1,000,338 generated records by
-`scripts/benchmark.py`, in a process of its own under an 8 GB DuckDB memory limit (peak 6.23 GB, Python included):
+`scripts/benchmark.py`, in a process of its own under an 8 GB DuckDB memory limit (peak 6.64 GB, Python included). The reader
+reads the file before these steps, about 15 s a million records ([below](#reading-a-file-as-it-comes)):
 
 | # | Step | Code | Cost | Grows like | At 1M |
 |---|---|---|---|---|---|
-| 1 | load: read in chunks, check the fields, standardize each chunk, and tell persons from companies | `Run.load`, `er.standardize.prepare`, `er.kind` | O(N·L) | N | 10.87 s |
-| 2 | budget: every rule's and generator's pairs, exactly, before any join | `Run.budget`, `er.candidates.estimate` | O(N) per rule and generator, a group-by | N | 1.85 s |
-| 3 | fit: λ, and m by EM, on a sample of whole postal areas (EM's own u from 10⁶ pairs); then u measured on this file: value counts for the leading exact levels, one-deletion keys for a one-edit level after them (so cif, phone and birth are counted exactly), S pairs for name, company and address | `Run.fit`, `er.match.train_fs`, `exact_u`, `scored_sample`, `assemble_u` | O(n + S·K + P_em·K) + O(N + S·K) | **constant**, plus N | 9.32 s |
-| 4 | rules: one plain SQL join per rule (the first rule wins a pair), fuzzy checks on the joined pairs only, then the cascade's clusters | `Run.rules`, `er.match.rule_edges`, `er.cluster.merge` | O(N + Σ P_r·L²) + O(E·d + N) | N; ≤ 0.14 pairs per record per rule at 1M | 2.23 s |
-| 5 | candidates: every generator as one SQL join or window, merged by bitmask, only pairs touching a record the rules left alone; oversized blocks checked on a sample scored with the file's u | `Run.candidates`, `er.candidates.candidates` | O(N·L + Σ P_g) | N; ≤ 1.75 pairs per record per key at 1M, 3 per sorted window | 6.38 s |
-| 6 | score: every candidate, with the u the fit measured | `Run.score`, `er.match.score_fs` | O(C·K·L²) | C | 15.75 s |
+| 1 | load: read in chunks, check the fields, standardize each chunk, and tell persons from companies | `Run.load`, `er.standardize.prepare`, `er.kind` | O(N·L) | N | 10.73 s |
+| 2 | budget: every rule's and generator's pairs, exactly, before any join | `Run.budget`, `er.candidates.estimate` | O(N) per rule and generator, a group-by | N | 1.96 s |
+| 3 | fit: λ, and m by EM, on a sample of whole postal areas (EM's own u from 10⁶ pairs); then u measured on this file: value counts for the leading exact levels, one-deletion keys for a one-edit level after them (so cif, phone and birth are counted exactly), S pairs for name, company and address | `Run.fit`, `er.match.train_fs`, `exact_u`, `scored_sample`, `assemble_u` | O(n + S·K + P_em·K) + O(N + S·K) | **constant**, plus N | 9.40 s |
+| 4 | rules: one plain SQL join per rule (the first rule wins a pair), fuzzy checks on the joined pairs only, then the cascade's clusters | `Run.rules`, `er.match.rule_edges`, `er.cluster.merge` | O(N + Σ P_r·L²) + O(E·d + N) | N; ≤ 0.14 pairs per record per rule at 1M | 2.57 s |
+| 5 | candidates: every generator as one SQL join or window, merged by bitmask, only pairs touching a record the rules left alone; oversized blocks checked on a sample scored with the file's u | `Run.candidates`, `er.candidates.candidates` | O(N·L + Σ P_g) | N; ≤ 1.75 pairs per record per key at 1M, 3 per sorted window | 6.53 s |
+| 6 | score: every candidate, with the u the fit measured | `Run.score`, `er.match.score_fs` | O(C·K·L²) | C | 16.05 s |
 | 7 | cluster: accept at the threshold, connected components with the rules' pairs (each rule cluster one node), gold | `Run.cluster`, `er.cluster.merge` | O(C + E·d + N) | N | 0.34 s |
-| 8 | write: gold, matches, the rules' pairs and the state for increments, as Parquet | `Run.write` | O(N + C) | N | 1.00 s |
-| | **total** | | | | **47.7 s** |
+| 7b | probe: a hash-stable draw of the records in each `[probe]` group, each paired with its group and scored: the matches no key lists ([below](#the-probe-the-matches-no-key-lists)) | `Run.probe`, `er.probe.missed` | O(N + P·K + L) | N; P about `[probe] pairs` a group | 3.52 s |
+| 8 | write: gold, matches, the rules' pairs and the state for increments, as Parquet | `Run.write` | O(N + C) | N | 1.07 s |
+| 9 | report: qa.md, report.txt and the review sheet, built before the write and landing with it | `Run.report` | O(review pairs) + O(N) | N | 0.78 s |
+| | **total** | | | | **53.0 s** |
 
-At a million records, scoring the candidates (15.75 s) and the fit (9.32 s) take more than half the time. The fit costs
+At a million records, scoring the candidates (16.05 s) and the fit (9.40 s) take nearly half the time. The fit costs
 nearly the same at any size: it learns on n records, and its u sample of the file is S pairs for each of name, company
 and address, whatever the file's size; cif, phone and birth are counted exactly, in O(N). The score grows with the
 candidates.
@@ -69,10 +72,10 @@ decisions, plus O(N) to rewrite gold: each `match` pair merges two stored cluste
 **Measured:** into the million-record run, an increment of 1,000 records takes about 4 s, with a peak of 2.25 GB.
 
 **Memory.** Records, pairs, scores and clusters are DuckDB tables. Past `memory_limit` (config/settings.toml `[compute]`,
-or `--compute memory_limit=8GB` on a command), DuckDB spills them to `temp_directory`: by default `.tmp/` under
-the folder the run starts in. The budget counts the room DuckDB may spill to: 90% of that disk's free space, DuckDB's
+or `--compute memory_limit=8GB` on a command), DuckDB spills them to `temp_directory`: by default a folder of the
+person's own, readable only by them, in the system's temporary folder. The budget counts the room DuckDB may spill to: 90% of that disk's free space, DuckDB's
 own cap (`max_temp_directory_size`). Python holds one chunk of `load` (200,000 records), the fitting sample (n records)
-and small summaries. DuckDB keeps in memory what fits under its limit and spills the rest, so the 6.23 GB peak at a
+and small summaries. DuckDB keeps in memory what fits under its limit and spills the rest, so the 6.64 GB peak at a
 million records shows what it chose to keep under 8 GB. The deletion-key tables hold only the IDs and the key columns.
 
 ## The cost checks before a run
@@ -159,17 +162,19 @@ on the file itself, without labels ([reports/benchmark.md](../reports/benchmark.
 
 | Records | Seconds | Peak memory | fit | score | everything else |
 |---|---|---|---|---|---|
-| 12,532 | 8.3 | 0.8 GB | 7.36 | 0.24 | 0.70 |
-| 24,955 | 9.3 | 0.9 GB | 7.82 | 0.35 | 1.13 |
-| 50,116 | 10.3 | 1.02 GB | 7.83 | 0.57 | 1.90 |
-| 74,959 | 11.7 | 1.19 GB | 8.19 | 0.80 | 2.71 |
-| 1,000,338 | 47.7 | 6.23 GB | 9.32 | 15.75 | 22.63 |
+| 12,532 | 8.9 | 0.96 GB | 7.26 | 0.26 | 1.38 |
+| 24,955 | 10.7 | 1.08 GB | 7.81 | 0.38 | 2.51 |
+| 50,116 | 13.1 | 1.44 GB | 7.85 | 0.76 | 4.49 |
+| 74,959 | 15.4 | 1.66 GB | 8.03 | 1.16 | 6.21 |
+| 1,000,338 | 53.0 | 6.64 GB | 9.40 | 16.05 | 27.55 |
 
-Over these sizes, time grows like N^0.42. `fit` costs nearly the same at every size, 7.36 s at 12,532 records and 9.32 s
+Over these sizes, time grows like N^0.42. `fit` costs nearly the same at every size, 7.26 s at 12,532 records and 9.40 s
 at a million: it learns on 30,000 records, its u sample of the file is 10⁷ pairs for each of name, company and address
 whatever the file's size, and cif, phone and birth are counted exactly. So it is nearly all of a small file's time.
-Everything else goes from 2.71 s at 74,959 records to 22.63 s at a million: 13 times the records, 8 times the time.
-Scoring the candidates, `score`, grows from 0.80 s to 15.75 s, the largest step at a million records.
+Everything else goes from 6.21 s at 74,959 records to 27.55 s at a million: 13 times the records, 4.4 times the time,
+since the probe scores about `[probe] pairs` in each group once a group has that many, as the postal area does
+already at 74,959 records (3.04 s there, 3.52 s at a million). Scoring the candidates, `score`, grows from 1.16 s to 16.05 s, the largest
+step at a million records.
 
 ## Reading a file as it comes
 
@@ -179,15 +184,15 @@ columns written as CSV, clean and damaged ([reports/benchmark_intake.md](../repo
 | File | Seconds | Read back | Changed, never damaged |
 |---|---|---|---|
 | clean UTF-8 CSV | 14.8 | every value | 0 |
-| damaged CSV, every proposal accepted | 28.0 | each kind of damage: 100.0% of its values | 0 |
+| damaged CSV, every proposal accepted | 26.8 | each kind of damage: 100.0% of its values | 0 |
 
 The damaged file holds values in CP932 (10% of rows) and EUC-JP (2%), zero-width characters and NULs, placeholders,
 spreadsheet numbers, names garbled upstream and unquoted commas inside addresses. Most values take the fast path: ASCII
 as it is, UTF-8 that reads as Japanese text decoded once; only the others are tried in every encoding and judged, so a
-damaged file costs about twice a clean one. A Parquet file of the same records reads in about 13 s.
+damaged file costs about twice a clean one.
 
 ## The probe: the matches no key lists
 
 At the end of a full run, `Run.probe` scores about `[probe] pairs` (a million) pairs in each of its groups, drawn at
-random among the pairs that share a phone or a postal area. On a million records it scored 987,595 of the 50,094,600
-pairs that share a phone and 939,233 of the 875,394,123 that share a postal area, in 3.5 s for both: 5% of the run.
+random among the pairs that share a phone or a postal area. On a million records it scored 989,900 of the 50,094,600
+pairs that share a phone and 1,026,781 of the 894,794,914 that share a postal area, in 3.5 s for both: 7% of the run.

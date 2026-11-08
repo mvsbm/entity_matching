@@ -462,7 +462,7 @@ def read_one(f: Path, out: Path, spec: InputSpec, m: Model, accepted: frozenset[
 def realign(odd: list[tuple[int, list]], width: int, profile: list[Counter], delimiter: str, spec: InputSpec) -> list[tuple[list[int], list] | None]:
     """Each row that doesn't line up, re-split if one reading fits its columns far better than any other: too many
     fields, adjacent ones joined back (the delimiter was in a value); too few, joined with the next short row when the
-    two make one (a line break was in a value). (the columns joined, the row) or None. O(rows · C(width + extra − 1, extra)):
+    two make one (a line break was in a value). (the columns joined, the row) or None. O(rows · width · C(width + extra − 1, extra)):
     every way of joining the extra fields is tried, which [input] max_extra keeps small."""
     decode = lambda x: (decodings(x, spec.encodings) or [("", x)])[0][1] if x else x
     out: list = [None] * len(odd)
