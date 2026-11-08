@@ -278,9 +278,10 @@ def values(part: Path, s: Settings) -> set[str]:
     return out
 
 
-def scrub(text: str, found: set[str], names: set[str]) -> tuple[str, int]:
+def scrub(text: str, found: set[str], names: set[str], ours: frozenset[str] = frozenset()) -> tuple[str, int]:
     """`text` with each value of `found` in it, each run of six digits or more and each run of kana or kanji no
-    column name (`names`) holds put as [redacted], and how many: a value in ASCII only where it stands as a word.
+    column name (`names`) holds put as [redacted], and how many: a value in ASCII only where it stands as a word; a
+    run of digits that is one of `ours` (the code's commit, which can be all digits) is the report's own.
     O(|text| · L) lookups, L the lengths the values come in."""
     lengths = sorted({len(v) for v in found if len(v) <= 256}, reverse=True)
     out, i, n, hits = [], 0, len(text), 0
@@ -303,8 +304,13 @@ def scrub(text: str, found: set[str], names: set[str]) -> tuple[str, int]:
         hits += 1
         return HIDDEN
     text = JAPANESE.sub(japanese, text)
-    text, digits = DIGITS.subn(HIDDEN, text)
-    return text, hits + digits
+    def digits(m: re.Match) -> str:
+        nonlocal hits
+        if m.group() in ours:
+            return m.group()
+        hits += 1
+        return HIDDEN
+    return DIGITS.sub(digits, text), hits
 
 
 def cleaned(x: object, clean: Callable[[str], str]) -> object:  # every text in a result put through `clean`; numbers stay
@@ -486,6 +492,7 @@ def written(r: dict, file: str, s: Settings) -> dict:
     exact = {k: v for k, v in sorted(exact.items(), key=lambda x: -len(x[0])) if len(Path(k).parts) > 2}  # "/" or "/Users" would garble every path
     tokens = {f.name for f in given if len(f.name) >= 4} | ({Path(file).name} if Path(file).suffix and len(Path(file).name) >= 4 else set())  # files' names; a folder's is in its path
     part = Path(r["part"]).name if r.get("part") else None  # inputs/0001-<the file's name, as the workspace wrote it>
+    ours = frozenset(facts["machine"]["code"].split()[:1])  # the commit's short hash: 1572846 is no ID
     hits = 0
 
     def clean(text: str) -> str:
@@ -496,7 +503,7 @@ def written(r: dict, file: str, s: Settings) -> dict:
             text = re.sub(rf"(?<![\w.-]){re.escape(x)}(?![\w-])", "<file>", text)
         if part:
             text = text.replace(part, "<part>")
-        text, n = scrub(text, found, names)
+        text, n = scrub(text, found, names, ours)
         hits += n
         return text
 
