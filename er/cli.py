@@ -643,7 +643,9 @@ def describe_workspace_(a: dict, emit: "Emit") -> dict:
             [dict(command=nayose("load", "records", "<file>", "--workspace", out), why="give it your records file")])
     then = [dict(command=nayose("describe", "records", f["path"], "--workspace", out), why=f"{f['waiting']:,} repairs wait in {f['name']}: see them, then accept repairs")
             for f in files if f.get("waiting")] + then
-    return {**d, "inputs": files, "columns": "own" if columns_file(out) else "project", "next": then}
+    told = out / "auto" / "report.md"  # the last auto mode's report, to send
+    auto = dict(report=str(told), markdown=told.read_text(encoding="utf-8")) if told.is_file() else None
+    return {**d, "inputs": files, "columns": "own" if columns_file(out) else "project", "auto": auto, "next": then}
 
 
 def describe_entity_(a: dict, emit: "Emit") -> dict:
@@ -710,6 +712,22 @@ def rehearse_records(a: dict, emit: "Emit") -> dict:
     if not r["ok"]:
         raise InputError(f"a file of {r['records']:,} records stopped here: {r['error']}", fix=r["fix"] or "give the run more room: --compute memory_limit=… temp_directory=…")
     return {**r, "next": [dict(command=nayose("resolve", "records", *([a["input"]] if a["input"] else []), "--workspace", ws), why="the real file, now its size is known to fit")]}
+
+
+def try_everything(a: dict, emit: "Emit") -> dict:
+    from er import auto
+    trials = int(number(a["trials"], "--trials", "a count, for example 3")) if a.get("trials") else 3
+    home = Path(a["home"] or "workspaces")
+    r = auto.everything(a["input"], home, max(trials, 0), a["compute"] or [], a.get("pipeline"), emit.step)
+    if r["workspace"] is None:
+        failed = r["facts"]["steps"][-1]
+        raise InputError(failed["error"] or "the workspace could not be made", fix=failed.get("fix") or "")
+    done = auto.written(r, a["input"], settings_for({"workspace": str(r["workspace"])}))
+    steps = [{k: x[k] for k in ("step", "ok", "seconds", "error")} for x in r["facts"]["steps"]]
+    return dict(workspace=str(r["workspace"]), ok=r["exit_code"] == 0, steps=steps, report=done["report"], values=done["values"],
+                redacted=done["redacted"], markdown=done["markdown"], exit_code=r["exit_code"],
+                next=[dict(command=f"cat {shlex.quote(done['report'])}", why="the report to send: it holds no record's value"),
+                      dict(command=nayose("describe", "workspace", r["workspace"]), why="the workspace it made")])
 
 
 def describe_review(a: dict, emit: "Emit") -> dict:
@@ -1040,9 +1058,10 @@ COMMANDS: tuple[Command, ...] = (
              "round": "the round now: one per method the workspace ran (rounds.json)", "audits": "this round's audits people decided: checked, false",
              "trust": TRUST,
              "inputs": "the records files given to it, each in inputs/: name, path, files, bytes, rows, read (by a run, as it is now), waiting (repairs proposed, for people), unread (rows)",
-             "columns": "own: its columns.toml; project: config/settings.toml's", "next": "the commands that usually follow"},
+             "columns": "own: its columns.toml; project: config/settings.toml's",
+             "auto": "the report try everything wrote, to send: report (its path), markdown", "next": "the commands that usually follow"},
             "nayose describe workspace workspaces/customers", describe_workspace_, quick=True,
-            show={"largest": ("entity", "records"), "runs": ("at", "what", "seconds"), "inputs": ("name", "files", "bytes", "read")}),
+            show={"largest": ("entity", "records"), "runs": ("at", "what", "seconds"), "inputs": ("name", "files", "bytes", "read"), "auto": ()}),
     Command("describe", "entity", "One record's entity, and what joined it",
             "The entity of the record ID: its size, each of its records (the first 200, the ID among them) with its fields and "
             "kind, and every link between them: a rule, the model with its weight in bits, or people. O(N) in SQL.",
@@ -1160,7 +1179,7 @@ COMMANDS: tuple[Command, ...] = (
             show={"ranges": ("down_to", "up_to", "pairs", "checked", "different", "sample", "expected_false", "chance_clean", "reviews_left", "reviews_to_here")}),
     Command("try", "method", "Try a change of the method beside the method as it is",
             "Runs the workspace's method and the method with the change (a line; --drop: match rules and pair keys left "
-            "out; --add: pair keys added, as describe method proposes them for the matches the probe found no key lists) on the workspace's files, both without people's decisions, so neither is judged on pairs it was told; both "
+            "out; --add: pair keys added, as describe method proposes them for the matches the probe found no key lists) on the workspace's files, both without people's decisions, so neither is judged on pairs it was told, and at the method's own line with the trust line set aside; both "
             "keep the run's fitted model and people's person/company answers. Says what the change does to the pairs people "
             "decided (those they said are different yet joined: false merges; those they said are the same yet apart) and, "
             "without labels, to the links, the false links the model expects, the entities, and the pairs of records it puts "
@@ -1180,6 +1199,24 @@ COMMANDS: tuple[Command, ...] = (
              "next": "the commands that usually follow"},
             "nayose try method --workspace workspaces/customers --line 9 --drop F3_NAME~_CIF", try_method,
             show={"method": (), "fixed": ("id_l", "id_r", "decision"), "broken": ("id_l", "id_r", "decision")}),
+    Command("try", "everything", "Try everything on a file, and write a report to send that holds no record's value",
+            "Auto mode: the commands a person would run on the file, in order, each in a process of its own: create workspace "
+            "(auto-<month><day>-<time> in HOME, strict: nothing merges before people check), load records, set feature with "
+            "what its contents suggest, check records, rehearse records (a stop there stops before the real run), resolve "
+            "records, describe method, list patterns, try method for each change it proposes (--trials of them), the names "
+            "in another script the file holds in a workspace of their own (auto/offers), and describe review. A step that "
+            "fails is kept with its error and fix, and the steps that need it are skipped. Then auto/report.md, to send, and "
+            "auto/report.json, its facts: counts, shares, seconds and the names of columns, fields, rules and keys, each taken "
+            "field by field; checked against every value of a sample of 20,000 records, every run of six digits or more and "
+            "every run of kana or kanji that is no column name, each found redacted and counted. Never lowers the trust line "
+            "or adopts a method. Exit 0 once the run went through, 2 if a step stopped it, 75 if a workspace was busy; the "
+            "report is written either way. O(the commands it runs): about 15 minutes a million records.",
+            (INPUT, HOME, Param("trials", "how many of the changes describe method proposes to try (default 3)", metavar="N"),
+             PIPELINE, COMPUTE),
+            {"workspace": "the workspace it made", "ok": "whether the run went through", "steps": "each step: step, ok, seconds, error",
+             "report": "auto/report.md: the report to send", "values": "the values of the sample the report was checked against",
+             "redacted": "what the check found and redacted (0: none)", "markdown": "the report itself", "next": "the commands that usually follow"},
+            "nayose try everything customers.parquet", try_everything, show={"markdown": ()}),
     Command("adopt", "method", "Adopt a method tried, and find matches with it",
             "Writes the trial's method into the workspace's method.toml, then runs the workspace's files again with it, as "
             "rerun records does; method.toml is left as it was if the run fails. Every later command on the workspace runs "

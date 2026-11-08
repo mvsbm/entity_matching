@@ -156,6 +156,7 @@ dialog::backdrop { background: rgba(0,0,0,.32); }
 .dlg-foot .grow { flex: 1; }
 .equiv { margin: 0 0 16px; background: var(--hover); border-radius: 8px; padding: 6px 6px 6px 12px; display: flex; gap: 8px; align-items: center; }
 .equiv code { flex: 1; overflow-wrap: anywhere; }
+.report { margin: 12px 0 8px; max-height: 50vh; overflow: auto; background: var(--hover); border-radius: 8px; padding: 12px; font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; white-space: pre; color: var(--ink); }
 .cmdline summary { cursor: pointer; font-size: 12px; color: var(--faint); margin: 4px 0 8px; }
 
 /* the command drawer, at the bottom: every command the page ran */
@@ -481,7 +482,8 @@ dialog:has(.dlg-body.wide) { width: min(960px, calc(100vw - 32px)); }
  "screens": [
   {"id": "records", "title": "Overview", "icon": "overview", "what": "The whole workflow, and what it did with your records.",
    "strip": ["records", "prepare", "rules", "candidates", "score", "accept", "people", "group", "customers"],
-   "uses": [{"command": "describe workspace", "args": {"workspace": "@workspace"}, "reads": ["records", "entities", "runs", "pairs", "kinds", "set_aside", "write_owed", "inputs", "round", "audits", "trust"]},
+   "uses": [{"command": "describe workspace", "args": {"workspace": "@workspace"}, "reads": ["records", "entities", "runs", "pairs", "kinds", "set_aside", "write_owed", "inputs", "round", "audits", "trust", "auto"]},
+            {"command": "try everything", "args": {"input": "@input", "home": "@home"}, "form": ["input"], "reads": ["workspace", "ok", "steps", "report", "markdown", "redacted"]},
             {"command": "describe key", "args": {"name": "@name", "workspace": "@workspace"}, "reads": ["name", "pairs", "matched", "only", "examples", "sizes", "largest", "group", "around"]},
             {"command": "describe matching", "args": {"workspace": "@workspace"}, "reads": ["nodes", "edges"]},
             {"command": "list workspaces", "args": {"home": "@home"}, "reads": ["home", "workspaces"]},
@@ -1496,9 +1498,11 @@ const SCREENS = {
       });
       return;
     }
-    el.innerHTML = head("records", `<button class="btn" id="refresh">${icon("refresh")}Refresh</button>`) + `<div id="next"></div><div id="out"></div><div id="flow"></div>`;
+    el.innerHTML = head("records", `<button class="btn" data-auto>${icon("wand")}Auto mode</button><button class="btn" id="refresh">${icon("refresh")}Refresh</button>`) +
+      `<div id="next"></div><div id="auto"></div><div id="out"></div><div id="flow"></div>`;
     $("refresh").onclick = () => go("records");
     const [d] = await Promise.all([run("records", "describe workspace"), flowOf("records", $("flow"))]);
+    if (d.auto) sendCard($("auto"), d.auto);
     if (d.event === "error" || !d.records) { $("out").innerHTML = d.event === "error" ? banner(d) : emptyRun(d); return d; }
     const p = progress(d), s = p.steps[p.next];
     $("next").innerHTML = `<div class="next">${icon(s.state === "attention" ? "person" : "run")}<span><b>Next: ${ORDER.includes(p.next) ? `${ORDER.indexOf(p.next) + 1} · ` : ""}${esc(STEP[p.next])}</b>
@@ -1865,7 +1869,7 @@ const tryBtn = (c, label = "Try") => `<button class="btn" data-try='${esc(JSON.s
 function trialCard(x) {  // a trial beside the method as it is: on people's decisions first, then without labels
   const was = x.base, now = x.variant, cell = (k, v) => `<div><span class="lab">${esc(k)}</span><b>${v}</b></div>`;
   const change = (k, worse) => `<span class="${x[k].variant > x[k].base ? worse : x[k].variant < x[k].base ? "ink-good" : ""}">${fmt(x[k].base)} → ${fmt(x[k].variant)}</span>`;
-  return `<div class="card trial"><h2>${icon("loop")}Trial ${fmt(x.trial)}: ${esc(methodText(x.method))}</h2><p class="muted">Both run without people's decisions: the method now → this trial</p><div class="nums">${
+  return `<div class="card trial"><h2>${icon("loop")}Trial ${fmt(x.trial)}: ${esc(methodText(x.method))}</h2><p class="muted">Both run without people's decisions or the trust line: the method now → this trial</p><div class="nums">${
     cell("Joined, people said different", change("different_joined", "ink-bad"))}${cell("Apart, people said same", change("same_apart", ""))}${
     cell("Links", `${fmt(was.matched)} → ${fmt(now.matched)}`)}${cell("Expected false", `${fmt(was.expected_false)} → ${fmt(now.expected_false)}`)}${
     cell("Entities", `${fmt(was.entities)} → ${fmt(now.entities)}`)}${cell("Pairs of records", `${fmt(x.apart)} apart · ${fmt(x.together)} together`)}${
@@ -2959,13 +2963,60 @@ const EXAMPLE = [["ヤマモトマサヒゴ", "熊本県天草市有明町大浦
 function emptyRun(d) {  // d: the workspace described, when the page has it
   if (!state.workspace) return `<div class="card welcome"><div class="qa"><div class="q"><h2 class="question">Give each entity one ID</h2>
       <p class="answer">Records of one person or company, written differently, are found and joined under one ID.</p></div>
-      <button class="btn filled" data-pick>${icon("add")}Create a workspace</button></div>
+      <span class="actions" style="margin-top:0"><button class="btn outlined" data-auto>${icon("wand")}Auto mode</button><button class="btn filled" data-pick>${icon("add")}Create a workspace</button></span></div>
     <div class="example">${EXAMPLE.map(([name, more]) => `<span class="node static"><span class="n">${esc(name)}</span><span class="faint">${esc(more)}</span></span>`).join("")}
       ${ARROW}<span class="node static one"><span class="top">${icon("customers")}one entity</span><span class="n">0000262688</span></span></div>
-    <div class="faint" style="font-size:12px">example</div></div><div id="continue"></div>`;
+    <div class="faint" style="font-size:12px">example</div></div><div id="auto"></div><div id="continue"></div>`;
   return `<div class="card empty">${icon("folder")}<h2>Nothing matched in ${esc(state.workspace.split("/").filter(Boolean).pop())} yet</h2>
     <div class="actions" style="justify-content:center">${d && d.inputs && d.inputs.length ? '<a class="btn filled" data-go="run">3 · Find matches</a>'
       : '<a class="btn filled" data-go="columns">2 · Prepare your data</a>'}</div></div>`;
+}
+
+// Auto mode: every step on one file, in a workspace of its own (try everything), then the report to send.
+const AUTO = {workspace: "making a workspace", load: "reading the file", place: "placing the columns its contents suggest", describe: "describing the file again",
+              check: "checking a run will go through", rehearse: "rehearsing at the file's size", resolve: "finding matches", method: "reading what the run shows",
+              patterns: "counting the patterns", review: "counting the checks people need"};
+const AUTO_NEXT = {workspace: "load", load: "check", place: "describe", describe: "check", check: "rehearse", rehearse: "resolve", resolve: "method", method: "patterns"};
+const autoSays = (s) => AUTO[s] || (s.startsWith("trial") ? "trying a change of method" : s.startsWith("offers") ? "trying the names in another script" : s);
+async function autoMode() {
+  if (current !== "records" || !$("auto")) await go("records");
+  const box = $("auto");
+  let t0 = 0, now = "", clock = 0;
+  const say = () => {
+    const a = box.querySelector(".steps-card .answer");
+    if (!a) { clearInterval(clock); return; }
+    a.textContent = `${Math.round((Date.now() - t0) / 1000)} s · now: ${now}`;
+  };
+  const step = (e) => {
+    if (e.event === "start") {
+      t0 = Date.now(); now = autoSays("workspace");
+      box.innerHTML = `<div class="card steps-card"><div class="qa"><div class="q"><h2 class="question"><span class="spin" style="border-color:var(--primary);border-right-color:transparent"></span>Auto mode…</h2>
+        <p class="answer"></p></div></div><ul class="steps"></ul></div>`;
+      clearInterval(clock); clock = setInterval(say, 1000); say();
+      return;
+    }
+    if (e.event !== "step") return;
+    const [top, sub] = e.step.split(": ");
+    if (sub === undefined) {  // one of its steps ended
+      box.querySelector(".steps")?.insertAdjacentHTML("beforeend", `<li>${icon(e.ok === false ? "error" : "check")}${esc(e.step)} <span class="faint">${e.seconds.toFixed(1)} s</span></li>`);
+      if (e.workspace) useWorkspace(e.workspace);  // the page opens it from now on, should the person go elsewhere meanwhile
+      now = AUTO_NEXT[top] ? autoSays(AUTO_NEXT[top]) : "the next step";
+    } else now = `${autoSays(top)} · ${DOING[sub] || sub}`;
+    say();
+  };
+  action("records", "try everything", "Run auto mode", (d) => {
+    clearInterval(clock);
+    if (d.event === "error") { box.innerHTML = banner(d); return; }
+    setWorkspace(d.workspace);  // its Overview: the report to send
+  }, step, {about: "A new workspace, every step on your file, and a report to send"});
+}
+function sendCard(box, a) {  // the auto mode report: what to send, and a way to copy it
+  box.innerHTML = `<div class="card"><div class="qa"><div class="q"><h2 class="question">What should I send?</h2><p class="answer">This report: it holds no record's value</p></div>
+      <button class="btn filled" id="copy-report">${icon("copy")}Copy the report</button></div>
+    <pre class="report" tabindex="0">${esc(a.markdown)}</pre><p class="faint" style="margin:0;font-size:12px;overflow-wrap:anywhere">${esc(a.report)}</p></div>`;
+  const pre = box.querySelector(".report"), copied = () => snack(`${icon("check")}<span class="msg">Copied the report</span>`, 4000);
+  const select = () => { getSelection().selectAllChildren(pre); pre.focus(); snack(`<span class="msg">Selected: press ⌘C or Ctrl-C to copy</span>`, 6000); };  // no clipboard here: the person copies
+  $("copy-report").onclick = () => navigator.clipboard ? navigator.clipboard.writeText(a.markdown).then(copied, select) : select();
 }
 
 // The workspace picker, as a console's project picker: the workspaces on disk (list workspaces), or a new one.
@@ -2992,10 +3043,13 @@ async function pick() {
   dlg.returnValue = "";
   dlg.showModal();
 }
-function setWorkspace(r) {
+function useWorkspace(r) {  // the workspace every page reads from now on
   state.workspace = r;
   store("workspace", r);  // per viewer: the workspace this browser opens with
   $("picker").innerHTML = `${icon("folder")}<span title="${esc(r)}">${esc(r ? `Workspace: ${r.split("/").filter(Boolean).pop()}` : "Choose a workspace")}</span>${icon("down")}`;
+}
+function setWorkspace(r) {
+  useWorkspace(r);
   go(current);
 }
 
@@ -3022,6 +3076,7 @@ document.addEventListener("click", (e) => {
   const a = e.target.closest("[data-go]");
   if (a) { e.preventDefault(); go(a.dataset.go); }
   if (e.target.closest("[data-pick]")) pick();
+  if (e.target.closest("[data-auto]")) autoMode();
 });
 document.addEventListener("keydown", (e) => {
   if (e.target.matches("input, select, textarea") || e.metaKey || e.ctrlKey || e.altKey || $("dlg").open) return;

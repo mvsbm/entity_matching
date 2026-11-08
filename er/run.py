@@ -810,7 +810,8 @@ def run_config(p: Pipeline, s: Settings) -> str:  # what decides the answer: the
 
 def trial(ws: Path, base: Pipeline, variant: Pipeline, method: dict, s: Settings, echo: Callable[[dict], None] | None = None) -> dict:
     """The workspace's method (`base`) and a variant of it (`method`, as method.toml would say it), each run on the
-    workspace's files without people's decisions, so neither is judged on pairs it was told; both keep the run's
+    workspace's files without people's decisions, so neither is judged on pairs it was told, and at its own line, the
+    trust line set aside, so a change shows what the method does rather than what merges yet; both keep the run's
     fitted model and people's person/company answers. Compared on the pairs people decided, each method's two kinds of
     mistake (different_joined: pairs people said are different, in one customer: a false merge; same_apart: pairs
     they said are the same, apart), with the pairs the variant sets right and wrong; and without labels: links, the
@@ -818,6 +819,7 @@ def trial(ws: Path, base: Pipeline, variant: Pipeline, method: dict, s: Settings
     kept for the next trial of the same method on the same files (trials/base.parquet); each trial's result in
     trials/<n>.json. Two trials of one workspace take turns. O(two full runs without the fit) + O(N + D)."""
     trials, uid = ws / folder.TRIALS, s.data.unique_id
+    base, variant = (replace(x, trust=replace(x.trust, line=None)) for x in (base, variant))  # a trust line would hide what each does
     trials.mkdir(exist_ok=True)
     model, files = json.loads((ws / "state" / "model.json").read_text(encoding="utf-8")), folder.inputs(ws)
 

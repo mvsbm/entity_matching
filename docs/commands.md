@@ -39,6 +39,7 @@ Written by `scripts/document_commands.py` from the declarations in `er/cli.py`; 
 | [`describe method`](#nayose-describe-method) | What the run shows about its method, and the changes worth trying |
 | [`describe review`](#nayose-describe-review) | How much people must check, range by range of the trust line |
 | [`try method`](#nayose-try-method) | Try a change of the method beside the method as it is |
+| [`try everything`](#nayose-try-everything) | Try everything on a file, and write a report to send that holds no record's value |
 | [`adopt method`](#nayose-adopt-method) | Adopt a method tried, and find matches with it |
 | [`reset method`](#nayose-reset-method) | Go back to the tuned method, and find matches with it |
 | [`lower trust`](#nayose-lower-trust) | Merge the next range of scores without people, once its sample is clean |
@@ -578,6 +579,7 @@ Records and entities, the largest entities, each run so far, the pairs and kinds
 | `trust` | the trust line (none: the method as tuned): line (none: above every step), next (the range checked next: down_to, up_to), its pairs, checked, false, needed, may_lower; above (the pairs above the line: pairs, checked, false); checks |
 | `inputs` | the records files given to it, each in inputs/: name, path, files, bytes, rows, read (by a run, as it is now), waiting (repairs proposed, for people), unread (rows) |
 | `columns` | own: its columns.toml; project: config/settings.toml's |
+| `auto` | the report try everything wrote, to send: report (its path), markdown |
 | `next` | the commands that usually follow |
 
 ```bash
@@ -824,7 +826,7 @@ Try a change of the method beside the method as it is.
 nayose try method --workspace WORKSPACE [--line BITS] [--drop NAME …] [--add FIELDS …] [--pipeline PIPELINE] [--compute KEY=VALUE …] [--format text|json]
 ```
 
-Runs the workspace's method and the method with the change (a line; --drop: match rules and pair keys left out; --add: pair keys added, as describe method proposes them for the matches the probe found no key lists) on the workspace's files, both without people's decisions, so neither is judged on pairs it was told; both keep the run's fitted model and people's person/company answers. Says what the change does to the pairs people decided (those they said are different yet joined: false merges; those they said are the same yet apart) and, without labels, to the links, the false links the model expects, the entities, and the pairs of records it puts apart or together. Writes only trials/ in the workspace: each trial's result (the last 5 kept) and the clusters of the method as it is, kept for the next trial. O(two full runs without the fit); one when the method and the files are those of the last trial.
+Runs the workspace's method and the method with the change (a line; --drop: match rules and pair keys left out; --add: pair keys added, as describe method proposes them for the matches the probe found no key lists) on the workspace's files, both without people's decisions, so neither is judged on pairs it was told, and at the method's own line with the trust line set aside; both keep the run's fitted model and people's person/company answers. Says what the change does to the pairs people decided (those they said are different yet joined: false merges; those they said are the same yet apart) and, without labels, to the links, the false links the model expects, the entities, and the pairs of records it puts apart or together. Writes only trials/ in the workspace: each trial's result (the last 5 kept) and the clusters of the method as it is, kept for the next trial. O(two full runs without the fit); one when the method and the files are those of the last trial.
 
 | Parameter | |
 |---|---|
@@ -852,6 +854,39 @@ Runs the workspace's method and the method with the change (a line; --drop: matc
 
 ```bash
 nayose try method --workspace workspaces/customers --line 9 --drop F3_NAME~_CIF
+```
+
+## nayose try everything
+
+Try everything on a file, and write a report to send that holds no record's value.
+
+```
+nayose try everything INPUT [--home HOME] [--trials N] [--pipeline PIPELINE] [--compute KEY=VALUE …] [--format text|json]
+```
+
+Auto mode: the commands a person would run on the file, in order, each in a process of its own: create workspace (auto-<month><day>-<time> in HOME, strict: nothing merges before people check), load records, set feature with what its contents suggest, check records, rehearse records (a stop there stops before the real run), resolve records, describe method, list patterns, try method for each change it proposes (--trials of them), the names in another script the file holds in a workspace of their own (auto/offers), and describe review. A step that fails is kept with its error and fix, and the steps that need it are skipped. Then auto/report.md, to send, and auto/report.json, its facts: counts, shares, seconds and the names of columns, fields, rules and keys, each taken field by field; checked against every value of a sample of 20,000 records, every run of six digits or more and every run of kana or kanji that is no column name, each found redacted and counted. Never lowers the trust line or adopts a method. Exit 0 once the run went through, 2 if a step stopped it, 75 if a workspace was busy; the report is written either way. O(the commands it runs): about 15 minutes a million records.
+
+| Parameter | |
+|---|---|
+| `INPUT` | the records: a CSV, TSV or Parquet file, a quoted glob ('in/*.csv') or a folder of them, read as they come and together by column name |
+| `--home HOME` | the folder that holds the workspaces (default: workspaces, in the current folder) |
+| `--trials N` | how many of the changes describe method proposes to try (default 3) |
+| `--pipeline PIPELINE` | the pipeline file (default: config/final.toml) |
+| `--compute KEY=VALUE` | DuckDB limits for this run, over config/settings.toml [compute]: memory_limit=8GB, threads=4, temp_directory=<folder> (past the memory limit DuckDB spills there) |
+
+| Result | |
+|---|---|
+| `workspace` | the workspace it made |
+| `ok` | whether the run went through |
+| `steps` | each step: step, ok, seconds, error |
+| `report` | auto/report.md: the report to send |
+| `values` | the values of the sample the report was checked against |
+| `redacted` | what the check found and redacted (0: none) |
+| `markdown` | the report itself |
+| `next` | the commands that usually follow |
+
+```bash
+nayose try everything customers.parquet
 ```
 
 ## nayose adopt method
