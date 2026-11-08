@@ -529,7 +529,7 @@ dialog:has(.dlg-body.wide) { width: min(960px, calc(100vw - 32px)); }
   {"id": "improve", "title": "Improve matching", "icon": "loop", "what": "What people's decisions say about the method: try a change, adopt it, and review the new round.",
    "strip": ["rules", "candidates", "score", "accept", "people"],
    "uses": [{"command": "describe method", "args": {"workspace": "@workspace"}, "reads": ["line", "method", "round", "rounds", "audits", "bands", "decided", "rules", "keys", "steps", "proposals", "trials"]},
-            {"command": "try method", "args": {"workspace": "@workspace", "line": "@line", "drop": "@drop", "compute": "@compute"}, "reads": ["trial"]},
+            {"command": "try method", "args": {"workspace": "@workspace", "line": "@line", "drop": "@drop", "add": "@add", "compute": "@compute"}, "reads": ["trial"]},
             {"command": "adopt method", "args": {"workspace": "@workspace", "trial": "@trial", "compute": "@compute"}, "reads": ["summary"]},
             {"command": "reset method", "args": {"workspace": "@workspace", "compute": "@compute"}, "reads": ["summary"]},
             {"command": "draw pairs", "args": {"workspace": "@workspace", "count": "50"}, "reads": ["drawn"]},
@@ -1050,7 +1050,8 @@ const waits = (r) => {  // what waits for a repair, in the answer to Did your fi
 };
 
 const missedWords = (strata) => strata.some((m) => m.hits)  // the probe's answer, from the last full run: matches no key lists, found by sampling
-  ? `Yes, some: a sample of the pairs, scored, ${strata.map((m) => m.hits ? `holds about <b>${fmt(m.missed)}</b> the run didn't join among those that share a ${esc(words(m.stratum))} (${fmt(m.low)}–${fmt(m.high)})`
+  ? `Yes, some: a sample of the pairs, scored, ${strata.map((m) => m.hits ? `holds about <b>${fmt(m.missed)}</b> the run didn't join among those that share a ${esc(words(m.stratum))} (${fmt(m.low)}–${fmt(m.high)})${
+        m.between_rules ? `, ${m.keys_missed ? `about ${fmt(m.keys_missed)} that no key lists, the others` : "all"} between two entities the rules formed` : ""}`
       : `none among those that share a ${esc(words(m.stratum))} (at most ${fmt(m.high)})`).join("; ")}.`
   : `None found: scored, ${strata.map((m) => `${fmt(m.scored)} pairs that share a ${esc(words(m.stratum))} hold no match the run didn't join`).join("; ")}.`;
 
@@ -1756,6 +1757,7 @@ const SCREENS = {
       const key = x.change.drop_keys && gens.find((k) => k.name === x.change.drop_keys[0]);
       if (key) return `Stop looking for “${esc(keyWords(key))}”: ${listed ? `${Math.round(100 * key.pairs / listed)}% less work` : "less work"}; no match relies on it alone`;
       if (x.change.line !== undefined) return `Draw the line at ${fmt(x.change.line)} points: ${esc(x.why)}`;
+      if (x.change.add_keys) return `Also pair records with the same ${esc(keyText(x.change.add_keys[0]))}: it ${esc(x.why)}`;
       return `${esc(methodText(x.change))}: ${esc(x.why)}`;
     };
     const verdict = !a.checked ? [`<b>Not known yet:</b> no matched pair has been checked by people.`, `<button class="btn filled" id="draw">${icon("add")}Check ${AUDITS} matched pairs</button>`]
@@ -1816,8 +1818,10 @@ const SCREENS = {
 // A change of method in words, and what try method takes for it.
 const methodText = (m) => !m || !Object.keys(m).length ? "as tuned"
   : [...(m.trust !== undefined ? [m.trust === "none" ? "nothing merges by points" : `${fmt(m.trust)}+ merge`] : []),
-     ...(m.line !== undefined ? [`line at ${fmt(m.line)}`] : []), ...[...(m.drop_rules || []), ...(m.drop_keys || [])].map((x) => `without ${x}`)].join(" · ");
-const tryArgs = (c) => c.line !== undefined ? {line: String(c.line)} : {drop: [...(c.drop_rules || []), ...(c.drop_keys || [])]};
+     ...(m.line !== undefined ? [`line at ${fmt(m.line)}`] : []), ...[...(m.drop_rules || []), ...(m.drop_keys || [])].map((x) => `without ${x}`),
+     ...(m.add_keys || []).map((k) => `with a key on ${keyText(k)}`)].join(" · ");
+const keyText = (k) => k.map((f) => { const [field, ...n] = f.split(":"); return words(field) + (n.includes("first3") ? " area" : n.includes("initial") ? " initial" : ""); }).join(" + ");  // an added key's fields, in words
+const tryArgs = (c) => c.line !== undefined ? {line: String(c.line)} : c.add_keys ? {add: c.add_keys.map((k) => k.join("+"))} : {drop: [...(c.drop_rules || []), ...(c.drop_keys || [])]};
 const tryBtn = (c, label = "Try") => `<button class="btn" data-try='${esc(JSON.stringify(c))}'>${esc(label)}</button>`;
 
 function trialCard(x) {  // a trial beside the method as it is: on people's decisions first, then without labels
@@ -1826,7 +1830,8 @@ function trialCard(x) {  // a trial beside the method as it is: on people's deci
   return `<div class="card trial"><h2>${icon("loop")}Trial ${fmt(x.trial)}: ${esc(methodText(x.method))}</h2><div class="nums">${
     cell("Joined, people said different", change("different_joined", "ink-bad"))}${cell("Apart, people said same", change("same_apart", ""))}${
     cell("Links", `${fmt(was.matched)} → ${fmt(now.matched)}`)}${cell("Expected false", `${fmt(was.expected_false)} → ${fmt(now.expected_false)}`)}${
-    cell("Entities", `${fmt(was.entities)} → ${fmt(now.entities)}`)}${cell("Pairs of records", `${fmt(x.apart)} apart · ${fmt(x.together)} together`)}</div>
+    cell("Entities", `${fmt(was.entities)} → ${fmt(now.entities)}`)}${cell("Pairs of records", `${fmt(x.apart)} apart · ${fmt(x.together)} together`)}${
+    was.missed && now.missed ? Object.keys(now.missed).map((k) => cell(`Matches no key lists, sharing a ${words(k)}`, `${fmt(was.missed[k] ?? 0)} → ${fmt(now.missed[k] ?? 0)}`)).join("") : ""}</div>
     <div class="row"><button class="btn filled" data-adopt="${esc(x.trial)}">${icon("check")}Adopt and find matches</button><button class="btn" data-discard>Discard</button></div></div>`;
 }
 

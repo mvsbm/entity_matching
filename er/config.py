@@ -7,7 +7,7 @@ import tomllib
 from collections.abc import Iterable, Iterator, Mapping
 from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import Literal
+from typing import Literal, get_args
 
 from er.strings import FUNCTIONS, Function
 
@@ -575,13 +575,19 @@ def widen(p: "Pipeline", added: Iterable[tuple[str, str]]) -> "Pipeline":
                    fs=replace(p.fs, model=model, blockers=p.fs.blockers + tuple(c for b in p.fs.blockers for c in copies.get(b.name, ()))))
 
 
-METHOD_KEYS = ("line", "drop_rules", "drop_keys", "trust")
+METHOD_KEYS = ("line", "drop_rules", "drop_keys", "trust", "add_keys")
+
+
+def added_key(fields: list[str]) -> KeyBlocker:  # a pair key a workspace adds (method.toml add_keys): each field as `field` or `field:normalizer`
+    keys = tuple(Key(f, tuple(n)) for f, *n in (x.split(":") for x in fields))
+    return KeyBlocker(name="added_" + "_".join(k.name for k in keys), keys=keys)
 
 
 def adjust(p: "Pipeline", method: Mapping[str, object]) -> "Pipeline":
     """The pipeline with a workspace's changes to the tuned method (method.toml): `line`, the weight pairs are accepted
     at; `drop_rules`, match rules left out; `drop_keys`, pair keys left out, each with the copies widen made of it
-    (name@field); `trust`, the trust line (TrustRule): "none" (nothing merges without people) or one of its steps.
+    (name@field); `trust`, the trust line (TrustRule): "none" (nothing merges without people) or one of its steps;
+    `add_keys`, pair keys added, each a list of fields (`field` or `field:normalizer`), as describe method proposes them.
     Nothing changed: the same pipeline, so the same config hash. O(rules + generators)."""
     if not method:
         return p
@@ -599,6 +605,13 @@ def adjust(p: "Pipeline", method: Mapping[str, object]) -> "Pipeline":
         raise InputError(f"method.toml: no rule or pair key named {sorted(bad)}", fix)
     stages = tuple(s for s in (replace(s, rules=tuple(r for r in s.rules if r.name not in rules)) for s in p.rules.stages) if s.rules)
     blockers = tuple(b for b in p.fs.blockers if b.name not in keys and b.name.split("@")[0] not in keys)
+    added = method.get("add_keys", [])
+    if not isinstance(added, list) or not all(isinstance(k, list) and k and all(isinstance(f, str) for f in k) for k in added):
+        raise InputError("method.toml: add_keys is a list of pair keys, each a list of fields (field or field:normalizer)", fix)
+    new = [added_key(k) for k in added]
+    if bad := sorted({k.column for b in new for k in b.keys} - p.fields.declared()) + sorted({n for b in new for k in b.keys for n in k.normalize} - set(get_args(Normalizer))):
+        raise InputError(f"method.toml: add_keys names {bad}: not a field the pipeline declares, nor a normalizer", fix)
+    blockers += tuple(b for b in new if b.name not in {x.name for x in blockers})
     if not stages or not blockers:
         raise InputError(f"method.toml leaves no {'match rule' if not stages else 'pair key'}", fix)
     return replace(p, rules=replace(p.rules, stages=stages), fs=replace(p.fs, blockers=blockers, min_match_weight=float(line)),

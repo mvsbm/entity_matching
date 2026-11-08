@@ -1003,6 +1003,33 @@ def test_the_probe_counts_the_matches_no_key_lists_as_the_truth_does(tmp_path, p
     assert all(x["hits"] <= by[x["stratum"]]["hits"] for x in full)  # the tuned method's keys miss no more
 
 
+def test_a_key_for_the_matches_the_probe_found_is_proposed_tried_and_adopted(tmp_path, population, capsys):
+    import tomllib
+    from er.cli import main
+    s, p, g = population
+    g.df.to_parquet(tmp_path / "all.parquet", index=False)
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    few = [b.name for b in p.fs.blockers if b.name not in ("cif", "person_name", "company_name")]
+    (ws / "method.toml").write_text(f"drop_keys = {json.dumps(few)}\n", encoding="utf-8")  # a method that misses matches
+
+    def say(*words: object) -> tuple[int, dict]:
+        code = main([*map(str, words), "--format", "json"])
+        return code, json.loads(capsys.readouterr().out.splitlines()[-1])
+    assert say("resolve", "records", tmp_path / "all.parquet", "--workspace", ws)[0] == 0
+    code, d = say("describe", "method", "--workspace", ws)
+    adds = [x for x in d["proposals"] if "add_keys" in x["change"]]
+    assert code == 0 and adds and adds[0]["adds"]["lists"] > 0  # a key that lists matches the probe found no key lists
+    key = adds[0]["change"]["add_keys"][0]
+    code, t = say("try", "method", "--add", "+".join(key), "--workspace", ws)
+    assert code == 0 and t["method"]["add_keys"] == [key] and sum(t["variant"]["missed"].values()) < sum(t["base"]["missed"].values())
+    assert say("try", "method", "--add", "nope", "--workspace", ws)[0] == 2  # a field the pipeline doesn't declare: refused
+    assert say("adopt", "method", "--trial", t["trial"], "--workspace", ws)[0] == 0
+    assert tomllib.loads((ws / "method.toml").read_text(encoding="utf-8"))["add_keys"] == [key]
+    log = json.loads((ws / "steps.json").read_text(encoding="utf-8"))["runs"][-1]["steps"]
+    assert sum(x["keys_missed"] for x in next(x for x in log if x["step"] == "probe")["strata"]) == sum(t["variant"]["missed"].values())
+
+
 def test_a_workspace_keeps_its_own_mapping_and_a_copy_of_its_files(tmp_path, population, capsys, monkeypatch):
     import threading
     from er import folder
