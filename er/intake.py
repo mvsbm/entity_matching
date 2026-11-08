@@ -217,9 +217,12 @@ def sniff(f: Path) -> tuple[str, str | None, bool]:  # (format, its delimiter, w
         return (share / len(lines) if n else 0.0, n)
     d = max(DELIMITERS, key=steady)
     d = d if steady(d)[1] else ","
-    reads = lambda enc: not _fails(head[: head.rfind(b"\n") + 1] or head, enc)  # the head's whole lines: no character cut in two
-    if not wide and d == "|" and not reads("utf-8") and reads("cp932"):  # | is the second byte of 36 CP932 characters (ポ is 83 7C): decoded first
-        wide = "cp932"
+    lines = head.splitlines()[:-1] if len(head) == 1 << 20 else head.splitlines()  # whole lines, however they end: the last cut off when the head was
+    foreign = [x for x in lines if not x.isascii()]
+    not_utf8 = [x for x in foreign if _fails(x, "utf-8")]
+    cp932 = sum(not _fails(x, "cp932") and _fails(x, "euc-jp") for x in not_utf8)  # UTF-8 and EUC-JP read as CP932 too; CP932's kana and kanji leads are no EUC-JP's
+    if not wide and d == "|" and len(not_utf8) > len(foreign) / 2 and cp932 >= 0.9 * len(not_utf8):
+        wide = "cp932"  # | is the second byte of some CP932 characters (ポ is 83 7C): a file mostly in CP932 is decoded first; any other is read by value
     return (wide or "csv"), d, quoted(f, d, wide)
 
 
@@ -343,6 +346,9 @@ def read_one(f: Path, out: Path, spec: InputSpec, m: Model, accepted: frozenset[
     writer = None
     def value(j: int, v: str | None, line: int) -> str | None:  # one field: decoded, then what loses nothing
         if not v:
+            return None
+        if "\xef\xbf\xbd" in v:  # U+FFFD: bytes the file's encoding can't decode (a file decoded whole), or damage upstream
+            count("fixed", "damaged")
             return None
         if not v.isascii() and spec.encodings[0] == "utf-8":  # most text: UTF-8, with nothing a wrong decoding makes
             try:

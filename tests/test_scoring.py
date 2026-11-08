@@ -26,6 +26,21 @@ def test_string_functions_are_character_level_and_null_safe(con_db):
                    "cl_levenshtein('サトウ', NULL) is null").fetchall() == [(0.844, 1.0, True)]
 
 
+@pytest.mark.skipif(not hasattr(__import__("os"), "getuid"), reason="POSIX owners and modes")
+def test_the_spill_folder_is_the_person_s_own_or_refused(tmp_path, monkeypatch):
+    import getpass
+    import tempfile
+    from er.config import InputError
+    monkeypatch.setattr(tempfile, "tempdir", str(tmp_path))
+    con = connect()[0]
+    spill = tmp_path / f"nayose-spill-{getpass.getuser()}"
+    assert con.execute("SELECT current_setting('temp_directory')").fetchall()[0][0] == str(spill) and spill.stat().st_mode & 0o777 == 0o700
+    spill.chmod(0o755)  # open to others: spilled records could be read
+    with pytest.raises(InputError, match="isn't yours alone"):
+        connect()
+    assert connect({"temp_directory": str(tmp_path / "mine")})[0]  # a folder given: used as it is
+
+
 def test_typed_addresses_normalize_to_one_key():
     typed = pd.Series(["東京都千代田区丸の内1丁目3番17号", "千代田区丸の内１－３－１７", "東京都千代田区丸の内1-3-17　サクラハイツ101"],
                       dtype="string")

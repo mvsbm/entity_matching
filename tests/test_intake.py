@@ -279,6 +279,17 @@ def test_the_reader_takes_the_files_real_systems_write_and_refuses_one_it_cannot
     assert len(got) == 30 and not r["unread"] and got["name"][0] == "ニッポン　ショウジ0" and r["files"][0]["format"] == "cp932"
     r, got = read("flag.txt", "".join(f"{x}\n" for x in ["id|name|kind", *(f"{i}|ヤマダ|{i % 2}" for i in range(30))]).encode("cp932"))  # ダ just before the last field
     assert r["files"][0]["format"] == "cp932" and list(got["name"].unique()) == ["ヤマダ"]
+    rows = ["id|name|kind", *(f"{i}|ヤマダ　タロウ|{i % 2}" for i in range(50))]  # mostly UTF-8, one CP932 row: read by value, never decoded whole as CP932
+    r, got = read("mixed.txt", "".join(f"{x}\n" for x in rows).encode("utf-8") + "51|ポーラ|1\n".encode("cp932"))
+    assert r["files"][0]["format"] == "csv" and set(got["name"]) == {"ヤマダ　タロウ"} and r["proposed"] == {"realign": 1}  # ポ's | split it: proposed
+    r, got = read("stray.txt", "".join(f"{x}\n" for x in rows[:-1]).replace("ヤマダ", "ニッポン").encode("cp932") + b"49|\x81 x|1\n")
+    assert r["files"][0]["format"] == "cp932" and got["name"].iloc[0] == "ニッポン　タロウ"  # one line CP932 can't read: still CP932
+    assert r["fixed"].get("damaged") == 1  # that line's value, bytes CP932 can't read: made missing, counted
+    names = ["サトウ　ハナコ", "ワタナベ　タロウ"]  # EUC-JP reads as CP932 too, but is no CP932 file: read by value, right
+    r, got = read("euc.txt", "".join(f"{x}\n" for x in ["id|name|kind", *(f"{i}|{names[i % 10 == 0]}|{i % 2}" for i in range(30))]).encode("euc-jp"))
+    assert r["files"][0]["format"] == "csv" and set(got["name"]) == set(names)
+    r, got = read("cr.txt", "id|name|kind\r1|ニッポン|1\r2|ポーラ|0".encode("cp932"))  # CR line ends, no final line end
+    assert r["files"][0]["format"] == "cp932" and list(got["name"]) == ["ニッポン", "ポーラ"]
     r, got = read("memo.txt", 'id\tmemo\r\n1\t"1行目\n2行目"\r\n2\tなし\r\n'.encode("utf-16"))  # Excel's Unicode text: a quoted cell with a line break
     assert list(got["memo"]) == ["1行目 2行目", "なし"] and not r["unread"]  # read whole; its line break a space, as in any value
     r, got = read("cr.csv", "id,name\r1,ヤマダ\r2,サトウ\r".encode("utf-16"))  # UTF-16, lines ended by CR alone
