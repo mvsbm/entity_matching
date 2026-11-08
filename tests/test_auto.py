@@ -142,6 +142,13 @@ def test_auto_mode_writes_its_report_when_a_step_stops_and_waits_out_no_busy_wor
     monkeypatch.setattr(auto, "nayose", other)
     code, e = say("try", "everything", "bare.parquet")
     assert code == 75 and [x["step"] for x in e["steps"]] == ["workspace", "load"] and taken[0].is_dir() and Path(e["workspace"]).name != taken[0].name
+    def crash(words, step, emit):  # the check crashes: its words go to a log beside the report, never into it
+        return (1, dict(event="error", error="crashed: KeyError", fix="its own words are in auto/check.log in the workspace"), ["KeyError: '0012345678'"]) \
+            if step == "check" else real(words, step, emit)
+    monkeypatch.setattr(auto, "nayose", crash)
+    code, e = say("try", "everything", "bare.parquet")
+    ws = Path(e["workspace"])
+    assert code == 2 and "0012345678" in (ws / "auto" / "check.log").read_text() and "0012345678" not in Path(e["report"]).read_text(encoding="utf-8")
     def stop(words, step, emit):  # Ctrl-C while it loads: what ran is reported
         if step == "load":
             raise KeyboardInterrupt
@@ -159,6 +166,7 @@ def test_a_command_that_crashes_says_its_kind_alone_and_one_that_can_t_report_is
     monkeypatch.setattr(auto.sys, "executable", str(fake))
     code, e, said = auto.nayose(["check", "records", "x"], "check", lambda e: None)
     assert code == 1 and e["error"] == "crashed: KeyError" and "0012345678" not in json.dumps(e) and "0012345678" in said[-1]  # its words, for the log only
+    assert e["fix"] == "its own words are in auto/check.log in the workspace"
     fake.write_text(f'#!/bin/sh\necho $$ > {tmp_path}/pid\necho \'{{"event": "step", "step": "load", "seconds": 1.0}}\'\nexec sleep 60\n')
     def emit(e):
         raise BrokenPipeError("the page is gone")
@@ -177,15 +185,43 @@ def test_a_file_without_a_header_puts_no_value_in_the_report_through_its_column_
     rows = lambda first: [first] + [f"{i:07d},{rnd.choice(family)}{rnd.choice(given)},サトウハナコ,大阪府大阪市北区{rnd.randint(1, 9)}-{rnd.randint(1, 9)},"
                                     f"06-{rnd.randint(1000, 9999)}-{rnd.randint(1000, 9999)},19{rnd.randint(50, 99)}/0{rnd.randint(1, 9)}/1{rnd.randint(0, 9)}" for i in range(2, 300)]
     planted = ["0000001", "山田太郎", "ヤマダタロウ", "東京都千代田区丸の内1-2-3", "03-1234-5678", "1980/01/02"]
+    plain = ["C0000001", "Taro Yamada", "taro@example.com", "株式会社ヤマダ", "S55.1.2", "〒100-0001"]  # no cell of numbers alone: the reader says nothing
     (tmp_path / "in").mkdir()
     (tmp_path / "in" / "nohead.csv").write_text("\n".join(rows(",".join(planted))) + "\n", encoding="utf-8")  # the reader says a header may be missing
     (tmp_path / "words.csv").write_text("\n".join(r.split(",", 1)[1] for r in rows(",".join(planted))) + "\n", encoding="utf-8")  # no number in its first line
+    (tmp_path / "plain.csv").write_text("\n".join(rows(",".join(plain))) + "\n", encoding="utf-8")
     monkeypatch.chdir(tmp_path / "in")
-    for given_as in (".", str(tmp_path / "words.csv")):  # a folder named ".", a file named in full
+    for given_as in (".", str(tmp_path / "words.csv"), str(tmp_path / "plain.csv")):  # a folder named ".", a file named in full
         code, r = say("try", "everything", given_as, "--home", str(tmp_path / "home"))
         ws = Path(r["workspace"])
         text, facts = (ws / "auto" / "report.md").read_text(encoding="utf-8"), (ws / "auto" / "report.json").read_text(encoding="utf-8")
         assert code == 2 and r["redacted"] > 0 and "## Privacy check" in text
-        assert not any(v in text or v in facts for v in planted), [v for v in planted if v in text or v in facts]  # nor in a key of the JSON
+        assert not any(v in text or v in facts for v in planted + plain), [v for v in planted + plain if v in text or v in facts]
         assert re.search(r"took \d+ min \d+ s", text) and "<file>" not in text.split("## Steps")[0]  # the path put aside, no word garbled
-        assert "nohead.csv" not in text + facts and "words.csv" not in text + facts and str(tmp_path) not in text + facts
+        assert "nohead.csv" not in text + facts and "words.csv" not in text + facts and "plain.csv" not in text + facts and str(tmp_path) not in text + facts
+
+
+def test_a_report_keeps_the_names_a_real_file_gives_its_columns_and_its_own_words(say, tmp_path, population, monkeypatch):
+    s, p, g = population
+    df = g.df.copy()
+    name = s.columns["full_name"][0][0]
+    for c in ("姓", "名", "セイ", "メイ", "カナ", "フリガナ", "郵便番号"):  # names Japanese files give their columns
+        df[c] = df[name]
+    df["NOTE"] = (["file", "true", "false", "records", "workspace"] * len(df))[:len(df)]  # plain words, as a flag column holds them
+    (tmp_path / "Yamada Shoji list.csv").write_text(df.to_csv(index=False) + "x,y\n", encoding="utf-8")  # a row it can't read: its part named in a note
+    monkeypatch.chdir(tmp_path)
+    code, r = say("try", "everything", "Yamada Shoji list.csv", "--trials", "0")
+    text = Path(r["report"]).read_text(encoding="utf-8")
+    facts = (Path(r["workspace"]) / "auto" / "report.json").read_text(encoding="utf-8")
+    assert code == 0 and r["redacted"] == 0, r["redacted"]  # nothing of the report's own taken for a value
+    assert all(f"| {c} |" in text for c in ("姓", "名", "セイ", "メイ", "カナ", "フリガナ", "郵便番号", "NOTE"))  # each column by its name
+    assert "Yamada" not in text + facts and "<part>" in facts  # the file's name, and its part's, put aside
+    monkeypatch.setattr("er.auto.nayose", lambda words, step, emit: (_ for _ in ()).throw(KeyboardInterrupt))
+    from er.cli import main
+    assert main(["try", "everything", "Yamada Shoji list.csv", "--format", "json"]) == 130  # stopped as its workspace was being made: said, no report
+
+
+def test_the_value_check_catches_ids_beside_kana_and_values_beside_kanji():
+    from er.auto import HIDDEN, scrub
+    out, n = scrub("番号0012345678 · ＩＤ１２３４５６７ · 山田Taro · 𠮷田 · " + "長" * 200, {"Taro", "長" * 200}, {"番号", "ＩＤ", "山田"})
+    assert out == f"番号{HIDDEN} · ＩＤ{HIDDEN} · 山田{HIDDEN} · {HIDDEN} · {HIDDEN}" and n == 5, out
