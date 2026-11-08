@@ -237,6 +237,8 @@ def handler(server: Server):
 def serve(port: int, workspace: str | None, home: str, say, open_browser: bool = True) -> None:
     """Serve the page on 127.0.0.1:port until stopped (Ctrl-C)."""
     server = Server(workspace, home)
+    gc.collect()
+    gc.freeze()  # what the server imported never goes: each command's collection walks only what it made
     httpd = ThreadingHTTPServer(("127.0.0.1", port), handler(server))
     link = f"http://127.0.0.1:{httpd.server_address[1]}/?token={server.token}"
     say(f"open {link}\n  only this machine can reach it, and only with this link; Ctrl-C stops it", link=link)

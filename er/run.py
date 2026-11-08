@@ -151,7 +151,8 @@ class Run:
         self.notes, self.inputs = list(src.notes), file_facts(src.files, "records")
         present = self.present = present_fields(self.settings, src.columns)
         hints = suggest(src, self.con, [f for f in self.settings.columns if f not in present and f != "entity"], self.settings.detect)
-        hints = {f: (src.given.get(c, c), share, why) for f, (c, share, why) in hints.items() if share >= (0.99 if f == "id" else 0.5)}  # a likely column, by the name it has in the file
+        needed = {*self.pipeline.fields.mandatory, *(f for g in self.pipeline.fields.one_of for f in g)}  # those a run stops without
+        hints = {f: (src.given.get(c, c), share, why) for f, (c, share, why) in hints.items() if share >= (0.99 if f == "id" else 0.5) and f in needed}  # a likely column, by the name it has in the file
         try:
             self.pipeline, self.disabled = fit_to_file(self.pipeline, self.settings, src.columns)
         except InputError as e:

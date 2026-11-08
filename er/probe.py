@@ -59,7 +59,7 @@ def missed(con: duckdb.DuckDBPyConnection, db: object, model: dict, fs: FSSpec, 
             hits = con.execute(f"""SELECT s.{l}, s.{r}, round(s.match_weight, 2), CASE WHEN {between} THEN 'rules' ELSE 'keys' END
                 FROM er_pr_scores s JOIN er_pr_joined a ON a.{u} = s.{l}
                 JOIN er_pr_joined b ON b.{u} = s.{r} WHERE s.match_weight >= {bits(fs.min_match_weight)} AND {named_sql(fs)}
-                AND a.cluster_id <> b.cluster_id {f"AND NOT EXISTS (SELECT 1 FROM ({apart}) x WHERE x.{l} = s.{l} AND x.{r} = s.{r} OR x.{l} = s.{r} AND x.{r} = s.{l})" if apart else ""}
+                AND a.cluster_id <> b.cluster_id {f"AND NOT EXISTS (SELECT 1 FROM ({apart}) x WHERE x.{l} = s.{l} AND x.{r} = s.{r})" if apart else ""}
                 ORDER BY hash(s.{l}, s.{r})""").fetchall()  # in hash order: the first are a random sample of them
         drawn = 1 - (1 - f) ** 2  # a pair is drawn when either of its records is
         h = len(hits)

@@ -382,7 +382,8 @@ def test_the_trust_line_merges_only_ranges_people_proved_and_steps_down_one_at_a
     l, r = f"{uid}_l", f"{uid}_r"
     dump_pipeline(replace(p, trust=replace(p.trust, checks=8, watch=3)), s.chains, tmp_path / "small.toml")  # a sample of 8, to test on 492 records
     g.df.iloc[:400].to_parquet(tmp_path / "theirs.parquet", index=False)
-    g.df.iloc[400:].to_parquet(tmp_path / "batch.parquet", index=False)
+    g.df.iloc[400:446].to_parquet(tmp_path / "early.parquet", index=False)
+    g.df.iloc[446:].to_parquet(tmp_path / "batch.parquet", index=False)
     monkeypatch.chdir(tmp_path)
     ws, pipe = tmp_path / "workspaces" / "w", ("--workspace", "workspaces/w", "--pipeline", "small.toml")
     truth = g.truth.set_index(uid)[ent]
@@ -444,7 +445,11 @@ def test_the_trust_line_merges_only_ranges_people_proved_and_steps_down_one_at_a
     assert len(one) and say("apply", "decisions", "--file", "false.parquet", *pipe)[0] == 0 and say("rerun", "records", *pipe)[0] == 0
     left = pd.read_parquet(ws / "review.parquet").query("why == 'decide'")
     assert (left["match_weight"] < 8).any()  # the line can't pass it: it, and every range below, to people one by one
-    assert say("describe", "workspace", "workspaces/w", "--pipeline", "small.toml")[1]["trust"]["false"] == 1
+    stuck = say("describe", "workspace", "workspaces/w", "--pipeline", "small.toml")[1]["trust"]
+    assert stuck["false"] == 1 and stuck["needed"] == stuck["pairs"]  # every pair of it goes to people: "N of all" checked
+    assert say("add", "records", "early.parquet", *pipe)[0] == 0  # a batch then: its pairs below go to people one by one too
+    early, sheet = set(g.df.iloc[400:446][uid].astype(str)), pd.read_parquet(ws / "review.parquet")
+    assert (sheet[(sheet["why"] == "decide") & (sheet[l].isin(early) | sheet[r].isin(early))]["match_weight"] < 8).any()
 
     pair = kept[kept["merged"]].iloc[0]  # people say a merged rule pair is no match: it stays apart from then on
     pd.DataFrame({l: [pair[l]], r: [pair[r]], "decision": ["no_match"]}).to_parquet(tmp_path / "no.parquet")
@@ -454,7 +459,7 @@ def test_the_trust_line_merges_only_ranges_people_proved_and_steps_down_one_at_a
 
     status = {x["id"]: x["status"] for x in say("match", "records", "batch.parquet", *pipe)[1]["records"]}
     assert say("add", "records", "batch.parquet", *pipe)[0] == 0  # a batch: above the line merges, below waits
-    sheet, new = pd.read_parquet(ws / "review.parquet"), set(g.df.iloc[400:][uid].astype(str))
+    sheet, new = pd.read_parquet(ws / "review.parquet"), set(g.df.iloc[446:][uid].astype(str))
     asked = {x for x in pd.concat([sheet[l], sheet[r]]) if x in new}
     assert asked and {status[x] for x in asked} <= {"joins an entity", "waits for people"}  # as the preview said: none of them a new entity
     assert "waits for people" in status.values()
@@ -465,7 +470,7 @@ def test_the_trust_line_merges_only_ranges_people_proved_and_steps_down_one_at_a
     assert say("raise", "trust", *pipe)[0] == 0 and folder.method(ws) == {"trust": 20.0}  # a step up
     assert say("raise", "trust", *pipe)[0] == 0 and folder.method(ws) == {"trust": "none"}  # back to people for everything
     runs = say("describe", "workspace", "workspaces/w", "--pipeline", "small.toml")[1]["runs"]  # the activity: every run, though a full run starts steps.json again
-    assert sum(x["what"] == "full run" for x in runs) > 3 and {Path(f).name for x in runs for f in x["files"]} == {"theirs.parquet", "batch.parquet"}
+    assert sum(x["what"] == "full run" for x in runs) > 3 and {Path(f).name for x in runs for f in x["files"]} == {"theirs.parquet", "early.parquet", "batch.parquet"}
     gold = pd.read_parquet(ws / "gold.parquet").set_index(uid)
     joined = gold.groupby("cluster_id").filter(lambda x: len(x) > 1)
     assert joined["resolved_by"].eq("review").all()  # only what people said is the same
@@ -503,7 +508,7 @@ def test_an_increment_counts_exact_u_again_and_samples_only_a_drifted_comparison
                 assert lv["u_probability"] == pytest.approx(exact[c["output_column_name"]][lv["label_for_charts"]])
 
 
-def test_the_loader_reads_parquet_by_column_name_and_says_what_is_wrong(tmp_path, con_db):
+def test_the_loader_reads_parquet_by_column_name_and_says_what_is_wrong(tmp_path, con_db, monkeypatch):
     from er.source import open_source
     con, _ = con_db
     pd.DataFrame({"cont_id": ["1", "2"], "Phone-Num 4": [599, 1234], "x": ["a", "b"]}).to_parquet(tmp_path / "a.parquet", index=False)
@@ -521,6 +526,13 @@ def test_the_loader_reads_parquet_by_column_name_and_says_what_is_wrong(tmp_path
     pd.DataFrame({"CONT_ID": ["1"], "KIND": ["Person"], "Phone": ["x"], "phone__x": ["y"], "kind_2": ["z"]}).to_parquet(tmp_path / "k.parquet")
     named = open_source(tmp_path / "k.parquet", con, ["CONT_ID"], reserved=["kind", "phone"])  # names the run writes itself, in another case
     assert named.columns == ["CONT_ID", "KIND_3", "Phone_2", "phone__x_2", "kind_2"] and any("column KIND read as KIND_3" in n for n in named.notes)
+    for d in ("a", "b"):  # a folder named from the home folder: every file in it, kept apart
+        (tmp_path / "home" / "exports" / d).mkdir(parents=True)
+        pd.DataFrame({"CONT_ID": [f"{d}{i}" for i in range(3)]}).to_parquet(tmp_path / "home" / "exports" / d / "part.parquet")
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    from er import folder as folders, intake
+    part, _ = folders.take_in(tmp_path / "ws_home", "~/exports", intake.InputSpec(), load_settings().paths["reference"])
+    assert intake.report(part)["rows"] == 6
     (tmp_path / "empty").mkdir()
     with pytest.raises(InputError, match="holds no CSV, TSV or Parquet file"):  # a folder with no records file: said so, not "did you mean" itself
         open_source(tmp_path / "empty", con, [])

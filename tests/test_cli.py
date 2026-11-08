@@ -187,6 +187,15 @@ def test_nayose_takes_a_file_from_the_check_to_people_s_answers(tmp_path, popula
     assert main(["add", "records", str(tmp_path / "renamed.parquet"), "--workspace", str(run), "--format", "json"]) == 2
     e = json.loads(capsys.readouterr().out.splitlines()[-1])
     assert f"write customer_no as {uid} in it" in e["fix"] and folder.parts(run) == before  # a batch has the run's columns; the run's file stays the last
+    name = s.columns["person_name"][0][0]
+    g.df.head(50).rename(columns={uid: "customer_no", name: "name_kana"}).to_parquet(tmp_path / "renamed2.parquet", index=False)
+    assert main(["match", "records", str(tmp_path / "renamed2.parquet"), "--workspace", str(run), "--format", "json"]) == 2  # a preview: the same advice
+    fix = json.loads(capsys.readouterr().out.splitlines()[-1])["fix"]
+    assert fix.count(f"customer_no as {uid}") == 1 and "name_kana" not in fix and "set columns" not in fix  # what a run needs and lacks, once: a name it reads elsewhere isn't
+    assert say("load", "records", tmp_path / "new.parquet", "--workspace", run)  # loaded again, as step 2 does: every record of it in the run
+    loaded = folder.parts(run)[-1]
+    assert say("add", "records", loaded, "--workspace", run)["summary"][0] == ["nothing new", "every record of new.parquet is already in the run"]
+    assert folder.parts(run) == before  # loaded, never read, adding nothing: not kept
     assert say("describe", "workspace", run)["records"] == len(g.df)
     graph = say("describe", "matching", "--workspace", run)
     assert {n["id"] for n in graph["nodes"]} >= {"rules", "candidates", "score", "group"} and graph["edges"]

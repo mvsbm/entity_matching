@@ -348,7 +348,7 @@ def everything(file: str, home: Path, trials: int, compute: list[str], pipeline:
     part loaded, and the exit code: 0 once the run went through, 75 if a workspace was busy, 130 if it was stopped
     (Ctrl-C, or its progress couldn't be passed on: the steps so far kept), else 2. A step that crashed keeps its own
     words in auto/<step>.log in the workspace, never in the report."""
-    t0, now = time.perf_counter(), datetime.now()
+    t0, now, file = time.perf_counter(), datetime.now(), str(Path(file).expanduser())
     limits, pipe = (["--compute", *compute] if compute else []), (["--pipeline", pipeline] if pipeline else [])
     files = find(file)
     facts: dict = dict(at=now.isoformat(timespec="seconds"), machine=machine(compute), steps=[],

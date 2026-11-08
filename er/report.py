@@ -69,7 +69,7 @@ def qa(run: "Run", fields: list[str] | None = None, review: int = 50, previous: 
     largest = con.sql("SELECT cluster_id, count(*) AS records FROM gold GROUP BY 1 ORDER BY 2 DESC, 1 LIMIT 10").df()
     con.execute(f"CREATE TABLE IF NOT EXISTS er_decisions ({l} VARCHAR, {r} VARCHAR, decision VARCHAR)")
     if run.pipeline.trust.line is not None:  # with a trust line: the next range's sample, and spot-checks above the line
-        decide, audit = trust_sheet(run)
+        decide, audit = trust_sheet(run, previous.parent if previous is not None else None)
         lo, t = run.pipeline.trust.below() or (run.pipeline.trust.line, run.pipeline.trust.line)
     else:
         decide = con.sql(f"""SELECT * EXCLUDE (k1, k2) FROM (
@@ -239,14 +239,15 @@ def report_text(run: "Run", tables: dict[str, pd.DataFrame], pipeline: Path) -> 
 
 
 
-def trust_sheet(run: "Run") -> tuple[pd.DataFrame, pd.DataFrame]:
+def trust_sheet(run: "Run", out: Path | None = None) -> tuple[pd.DataFrame, pd.DataFrame]:
     """With a trust line: the next range's links (the rules' pairs and the model's named ones, from its next step down
     to the line) that people have not decided, in a fixed random order (hash), as many as `checks` less those of the
     range they decided already; once they found one of its links false, the line can't step past it, so its open
     links and every range's below go to people one by one instead, best first, `checks` at a time; and the model's
     pairs above its threshold with no name compared, which no line joins; and `watch` spot-checks of the links at the
-    line or above. O(E)."""
-    con, l, r, trust = run.con, q(run.l), q(run.r), run.pipeline.trust
+    line or above. An increment (`out`, its workspace) counts the false pairs the workspace holds: its own links are
+    the batch's. O(E)."""
+    con, l, r, trust, u = run.con, q(run.l), q(run.r), run.pipeline.trust, q(run.uid)
     links = f"""SELECT * FROM (SELECT s.* EXCLUDE (named, keep) FROM ({run.scored()}) s WHERE s.named AND s.keep
                 UNION ALL BY NAME SELECT x.*, k.rule AS sources FROM rule_kept k JOIN rule_scores x USING ({l}, {r}))
                 QUALIFY row_number() OVER (PARTITION BY {l}, {r} ORDER BY sources) = 1"""
@@ -256,7 +257,9 @@ def trust_sheet(run: "Run") -> tuple[pd.DataFrame, pd.DataFrame]:
         within = f"x.match_weight >= {bits(span[0])} AND x.match_weight < {bits(span[1])}"
         done, false = con.execute(f"""SELECT count(*) FILTER (WHERE NOT {open_}), count(*) FILTER (WHERE EXISTS (SELECT 1 FROM er_decisions d
             WHERE d.{l} = x.{l} AND d.{r} = x.{r} AND d.decision = 'no_match')) FROM ({links}) x WHERE {within}""").fetchall()[0]
-        decide = con.sql(f"""SELECT * FROM ({links}) x WHERE x.match_weight >= {bits(min(trust.steps))} AND x.match_weight < {bits(span[1])} AND {open_}
+        false = (trust_state(con, out, run.pipeline, run.uid) or {}).get("false", 0) if out is not None else false
+        decide = con.sql(f"""SELECT x.* FROM ({links}) x JOIN gold ga ON ga.{u} = x.{l} JOIN gold gb ON gb.{u} = x.{r}
+            WHERE x.match_weight >= {bits(min(trust.steps))} AND x.match_weight < {bits(span[1])} AND {open_} AND ga.cluster_id <> gb.cluster_id
             ORDER BY x.match_weight DESC, x.{l}, x.{r} LIMIT {trust.checks}""").df() if false else \
             con.sql(f"SELECT * FROM ({links}) x WHERE {within} AND {open_} ORDER BY hash(x.{l}, x.{r}) LIMIT {max(0, trust.checks - done)}").df()
     audit = con.sql(f"SELECT * FROM ({links}) x WHERE x.match_weight >= {bits(trust.line)} AND {open_} ORDER BY hash(x.{l}, x.{r}) LIMIT {trust.watch}").df()
@@ -291,7 +294,7 @@ def trust_state(con: duckdb.DuckDBPyConnection, out: Path, p: Pipeline, uid: str
     near = count(f"x.match_weight >= {bits(span[0])} AND x.match_weight < {bits(span[1])}") if span else dict(pairs=0, checked=0, false=0)
     above = count(f"x.match_weight >= {bits(trust.line)}")
     con.unregister("er_trust_decided")
-    needed = min(trust.checks, near["pairs"])
+    needed = near["pairs"] if near["false"] else min(trust.checks, near["pairs"])  # found false: every pair goes to people
     return dict(line="none" if math.isinf(trust.line) else trust.line,
                 next=dict(down_to=span[0], up_to=None if math.isinf(span[1]) else span[1]) if span else None,
                 **near, needed=needed, may_lower=span is not None and near["checked"] >= needed and not near["false"],

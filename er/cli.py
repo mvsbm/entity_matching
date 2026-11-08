@@ -378,7 +378,7 @@ def readable(path: str, s, strict: bool = False):
     """A path as the door reads it: a workspace's part, as its intake read it; any other file or files, read for this
     command alone into a folder that goes once it ends (er.intake); people's files strictly: one that needs a repair is
     refused."""
-    p = Path(path)
+    p = Path(path).expanduser()
     if p.is_dir() and intake.report(p):
         yield str(p)
         return
@@ -516,16 +516,15 @@ def add_records(a: dict, emit: "Emit") -> dict:
     try:
         run = Run(p, s, echo=emit.step).increment(part, out, pipeline_file=pipeline)
     except InputError as e:
-        if copied:
+        if copied and not isinstance(e, Busy):  # another job may hold it now
             shutil.rmtree(part, ignore_errors=True)
-        if not e.hints:
-            raise
-        named = ", ".join(f"{c} as {s.columns[f][0][0]}" for f, c in e.hints.items() if s.columns.get(f) and s.columns[f][0])
-        raise InputError(str(e), fix=f"a batch has the run's columns: write {named} in it, then add it again" if named else e.fix) from None
+        raise
     if run.added == 0:
-        if copied:
+        mine = next((x for x in folder.loaded(out) if Path(x["path"]).resolve() == part.resolve()), {})
+        if copied or not mine.get("read", True):  # copied for this, or loaded and never read: it holds nothing the run lacks
             shutil.rmtree(part, ignore_errors=True)
-        return dict(summary=[["nothing new", f"every record of {a['input'] or part.name} is already in the run"]], next=next_after(out, run.uid))
+        return dict(summary=[["nothing new", f"every record of {mine.get('given') or Path(a['input'] or part).name} is already in the run"]],
+                    next=next_after(out, run.uid))
     return after_run(run, out)
 
 
@@ -1437,6 +1436,10 @@ def perform(c: Command, a: dict, emit: Emit) -> dict:
     except InputError as e:
         if isinstance(e, Busy) or not (a.get("workspace") and e.hints):
             raise
+        if c.name in ("add records", "match records"):  # a batch for a run: its columns take the run's names, the mapping stays
+            s = settings_for(a)
+            named = dict.fromkeys(f"{col} as {' + '.join(s.columns[f][0])}" for f, col in e.hints.items() if s.columns.get(f) and s.columns[f][0])
+            raise InputError(str(e), fix=f"a batch has the run's columns: write {', '.join(named)} in it (check them first), then try again", hints=e.hints) from None
         raise InputError(str(e), fix=f"map it in the workspace, once the values look right: "
                          f"{nayose('set', 'columns', *(f'{f}={c}' for f, c in e.hints.items()), '--workspace', a['workspace'])}", hints=e.hints) from None
 
