@@ -275,7 +275,7 @@ The gap is not cosmetic. Our model treats Jaro–Winkler at or above 0.95 as "ve
 - `config/settings.toml`: `[locale]` (the folding table, legal forms, address rules, normalization chains) and `[columns]` (each field's source columns, and the NFKC and space removal of the name fields)
 - `er/standardize.py`: `normalize` (apply named normalizers), `prepare` (derive and normalize the columns a stage uses)
 - `er/strings.py`: `cl_*` functions, `connect()`
-- `tests/test_er.py`: character-level and NULL-safe functions; the three address formats give one key
+- `tests/test_scoring.py`: character-level and NULL-safe functions; the three address formats give one key
 
 ## Further reading
 
