@@ -31,7 +31,7 @@ data/artifacts/optuna/*.db                  the Optuna studies, with --optuna
 data/artifacts/benchmark/, demo/            workspaces of scripts/benchmark.py and the demo
 ```
 
-A workspace is the same wherever it is written, by `scripts/choose.py` here or by `nayose resolve records` anywhere: `gold.parquet`, `matches/`, `rule_kept/`, `steps.json` and `state/`. `nayose` adds `qa.md`, `report.txt`, `review.parquet` and, on a full run, `kind_review.parquet`; `decisions/`, `set_aside/` and `kind_answers/` (people's person/company answers) appear when there are any. A workspace made with `nayose create workspace` also keeps its own mapping, `columns.toml`, and a copy of every records file given to it, in `inputs/` ([architecture](architecture.md#the-workspace)).
+A workspace is the same wherever it is written, by `scripts/choose.py` here or by `nayose resolve records` anywhere: `gold.parquet`, `matches/`, `proposed/`, `rule_kept/`, `steps.json`, `rounds.json` and `state/`. `nayose` adds `qa.md`, `report.txt`, `review.parquet` and, on a full run, `kind_review.parquet`; `decisions/`, `set_aside/` and `kind_answers/` (people's person/company answers) appear when there are any. A workspace made with `nayose create workspace` also keeps its own mapping, `columns.toml`, and a copy of every records file given to it, in `inputs/` ([architecture](architecture.md#the-workspace)).
 
 ## Reference data: `data/reference/`
 
@@ -52,7 +52,7 @@ Two traps in the sources:
 
 ## Synthetic data: `scripts/generate.py`
 
-All parameters live in `config/generator.toml`: `[population]` (`er.generate.Spec`) and `[split]` (shares and seed). `er.generate.generate` builds the population, `check` asserts its invariants, and `scripts/generate.py` writes `medallion/bronze/<split>.parquet` and `labels/<split>.parquet` (`--entities`, `--seed` and `--out` write another population, unsplit).
+All parameters live in `config/generator.toml`: `[population]` (`er.generate.Spec`) and `[split]` (shares and seed). `er.generate.generate` builds the population, `check` asserts its invariants, and `scripts/generate.py` writes `medallion/bronze/<split>.parquet` and `labels/<split>.parquet` (`--entities` and `--seed` change the population; `--out` writes it there, unsplit, instead of the splits).
 
 - **Entities:** 40,000, 20% companies. Each entity has `1 + Poisson(0.25)` records.
   - **Persons** are sampled personas, each at most once, with realistic surname frequencies (サトウ, スズキ, タカハシ …). Their addresses lie in the persona's prefecture. Sampling with replacement would make clones (same name, same prefecture) that no matcher can tell apart, so same-name pairs come only from the persona file itself.

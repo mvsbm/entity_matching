@@ -28,13 +28,14 @@ import numpy as np
 import pandas as pd
 
 from er import folder, inbox
-from er.config import InputError, adjust, load_pipeline, sources_text, widen
+from er.config import InputError, adjust, load_pipeline, restrict, sources_text, widen
 from er.folder import Busy
-from er.report import applied, describe_entity, describe_matching, describe_method, describe_workspace, fill_rates, trust_state
+from er.report import (applied, compare_records, describe_entity, describe_key, describe_matching, describe_method, describe_workspace, entity_pairs, explain_pair, fill_rates,
+                       list_patterns, trust_state)
 from er.source import describe, lexicon
 from er.run import Run, trial
 from er.settings import (COLUMNS, SPECIAL, add_feature, added_of, beside, columns_file, features_of, load_settings, offers, own_columns,
-                         placements, remove_feature, set_columns, set_features, settings_path, slots)
+                         placements, present_fields, remove_feature, set_columns, set_features, settings_path, slots)
 
 
 @dataclass(frozen=True)
@@ -328,8 +329,12 @@ def describe_records(a: dict, emit: "Emit") -> dict:
     d = describe(a["input"], duckdb.connect(), s.columns, s.detect, lex=lexicon(s.paths["reference"], tuple(s.standardize.kana_fold.items())),
                  slots={path: x["columns"] for path, x in slots(feats)},
                  slot_patterns={path: s.detect[f] for path, x in slots(feats) if (f := field(path, x)) in s.detect})
+    try:  # what a run of this file would turn off, as the run decides it: from the mapping, no record read
+        off = restrict(p, set(present_fields(s, [c["column"] for c in d["columns"]])))[1]
+    except InputError as e:
+        off = [str(e)]
     d = {**d, "features": feats, "placements": placements(feats, d["profile"], d["fit"]), "offers": offers(feats, d["profile"]),
-         "needed": dict(every=list(p.fields.mandatory), one_of=[list(g) for g in p.fields.one_of])}
+         "needed": dict(every=list(p.fields.mandatory), one_of=[list(g) for g in p.fields.one_of]), "turned_off": off}
     found = [f"{x['feature']}={x['column']}" for x in d["placements"]]
     return {**d, "next": ([dict(command=nayose("set", "feature", *found, *there), why="place what the file's contents suggest")] if found and there else []) +
             [dict(command=nayose("resolve", "records", *there) if there else nayose("check", "records", a["input"]),
@@ -416,7 +421,7 @@ def try_method(a: dict, emit: "Emit") -> dict:
     ws, now = Path(a["workspace"]), folder.method(Path(a["workspace"]))
     rules, keys = {r.name for _, _, r in p.rules.each()}, {b.name for b in p.fs.blockers}
     if bad := [x for x in a.get("drop") or [] if x not in rules | keys]:
-        raise InputError(f"--drop {' '.join(bad)}: no sure-match rule or pair key of the method has that name", fix="see them: nayose describe method --workspace …")
+        raise InputError(f"--drop {' '.join(bad)}: no match rule or pair key of the method has that name", fix="see them: nayose describe method --workspace …")
     method = {**now, **({"line": number(a["line"], "--line")} if a.get("line") else {})}
     for name, among in (("drop_rules", rules), ("drop_keys", keys)):
         if dropped := sorted({*now.get(name, []), *(x for x in a.get("drop") or [] if x in among)}):
@@ -516,8 +521,41 @@ def describe_entity_(a: dict, emit: "Emit") -> dict:
     uid = s.data.unique_id
     d = describe_entity(duckdb.connect(), out, uid, a["id"], [f for f in s.columns if f not in SPECIAL])
     rename = lambda xs: [{{uid: "id", f"{uid}_l": "id_l", f"{uid}_r": "id_r"}.get(k, k): v for k, v in x.items()} for x in xs]
-    return dict(record=d["record"], entity=d["entity"], records=rename(d["records"]), links=rename(d["links"]),
-                next=[dict(command=nayose("list", "pairs", "--workspace", out), why="the pairs for people")])
+    inside = entity_pairs(out, s, [x[uid] for x in d["records"]], d["links"])
+    return dict(record=d["record"], entity=d["entity"], records=rename(d["records"]), links=rename(d["links"]), **inside,
+                next=[dict(command=nayose("explain", "pair", "<ID>", "<ID>", "--workspace", out), why="how one pair was scored"),
+                      dict(command=nayose("list", "pairs", "--workspace", out), why="the pairs for people")])
+
+
+def explain_pair_(a: dict, emit: "Emit") -> dict:
+    s, p, _ = setup(a)
+    out = Path(a["workspace"])
+    d = explain_pair(out, p, s, a["first"], a["second"])
+    return {**d, "next": [dict(command=nayose("decide", "pair", d["id_l"], d["id_r"], "match", "--workspace", out), why="decide it, if it is on the sheet"),
+                          dict(command=nayose("describe", "entity", d["id_l"], "--workspace", out), why="the customer of the first")]}
+
+
+def describe_key_(a: dict, emit: "Emit") -> dict:
+    s, p, _ = setup(a)
+    out = Path(a["workspace"])
+    d = describe_key(out, p, s, a["name"])
+    return {**d, "next": [dict(command=nayose("explain", "pair", x[0], x[1], "--workspace", out), why="a link only this key found") for x in d["examples"][:1]]}
+
+
+def compare_records_(a: dict, emit: "Emit") -> dict:
+    s, p, _ = setup(a)
+    out = Path(a["workspace"])
+    d = compare_records(out, p, s, a["first"], a["others"])
+    return {**d, "next": [dict(command=nayose("explain", "pair", d["first"], x["id"], "--workspace", out), why="how one of them scored")
+                          for x in d["candidates"][:1]]}
+
+
+def list_patterns_(a: dict, emit: "Emit") -> dict:
+    s, p, _ = setup(a)
+    out = Path(a["workspace"])
+    if not (out / "gold.parquet").exists():
+        raise InputError(f"no run in {out}", fix="find matches first: nayose resolve records --workspace …")
+    return {**list_patterns(out, p), "next": [dict(command=nayose("explain", "pair", "<ID>", "<ID>", "--workspace", out), why="one of a pattern's pairs")]}
 
 
 def describe_matching_(a: dict, emit: "Emit") -> dict:
@@ -556,6 +594,32 @@ def list_pairs(a: dict, emit: "Emit") -> dict:
     pairs.insert(1, "status", np.where(done.notna() & (done == pairs["decision"]), "applied", np.where(pairs["decision"].notna(), "written in", "open")))
     return dict(counts=counts(pairs), pairs=rows(ids(picked(pairs, a["why"], a["open"]), uid)), next=[dict(command=nayose("decide", "pair", "<ID>", "<ID>", "match", "--workspace", out), why="decide one"),
                                                     dict(command=nayose("apply", "decisions", "--workspace", out), why="apply the decisions written in")])
+
+
+def split_entity(a: dict, emit: "Emit") -> dict:
+    """An entity split at a link that alone holds it together: that pair decided different (Run.decide stores it with
+    people's decisions), then a full run, which never accepts a pair people called different."""
+    import tempfile
+    s, p, _ = setup(a)
+    out, uid = Path(a["workspace"]), s.data.unique_id
+    if len(a["between"] or []) != 2:
+        raise InputError("--between takes the two records of the link", fix="nayose split entity ID --between A B --workspace …")
+    first, second = sorted(map(str, a["between"]))
+    d = describe_entity(duckdb.connect(), out, uid, a["id"], [f for f in s.columns if f not in SPECIAL])
+    ids = [x[uid] for x in d["records"]]
+    if not {first, second} <= set(ids):
+        raise InputError(f"{first} and {second}: not both records of the entity of {a['id']}", fix="see its records: nayose describe entity ID --workspace …")
+    inside = entity_pairs(out, s, ids, d["links"])
+    if inside["capped"]:
+        raise InputError(f"the entity of {a['id']} holds {len(ids):,} records: too many to find where it splits", fix="decide its pairs in step 4 instead")
+    if dict(id_l=first, id_r=second) not in inside["weakest"]:
+        raise InputError(f"{first} – {second} doesn't hold the entity together: other links still join them",
+                         fix="split it at one of its weakest links: nayose describe entity ID --workspace … lists them")
+    with tempfile.TemporaryDirectory() as tmp:
+        f = Path(tmp) / "split.parquet"
+        pd.DataFrame({f"{uid}_l": [first], f"{uid}_r": [second], "decision": ["no_match"], "why": ["split"]}).to_parquet(f, index=False)
+        Run(p, s, echo=emit.step).decide(f, out)
+    return rerun_records(a, emit)
 
 
 def decide_pair(a: dict, emit: "Emit") -> dict:
@@ -627,6 +691,7 @@ DESCRIBED = {"records": "records", "columns": "each column of the file: column, 
              "fit": "for each field, each column's fit: the share of its values that look like the field (id: filled, each value once)",
              "suggested": "for each field the file holds none of: field, column, why",
              "needed": "the fields a run stops without: every (each of them), one_of (at least one of each group)",
+             "turned_off": "rules, keys and levels a run of this file would turn off: a field they read is missing",
              "slots": "each feature and part: feature (its path), sources, filled, example, looks_right, and each of its alternatives",
              "features": "the structure: groups › features › parts, each with type and columns",
              "profile": "each column's script (kanji, kana, romaji) and the shares of its values that are known family names, given names, full names, addresses",
@@ -686,7 +751,7 @@ COMMANDS: tuple[Command, ...] = (
             "company name, in a script (kana, kanji or romaji: how its values are prepared). Its fields are numbered beside "
             "the ones it stands with (person_name_2, given_name_2; company_name_2) in the workspace's columns.toml. A run then "
             "compares it with them: each step of the name comparison is reached when either name agrees, as one piece of "
-            "evidence, and pairs are also found on it; the sure-match rules stay as they are. The steps' thresholds were "
+            "evidence, and pairs are also found on it; the match rules stay as they are. The steps' thresholds were "
             "tuned on kana; their weights are fitted on each run's file. O(the file).",
             (Param("path", "Name/<its name>", positional=True, metavar="PATH"),
              Param("type", "person name or company name", "choice", ("person name", "company name"), required=True),
@@ -704,7 +769,8 @@ COMMANDS: tuple[Command, ...] = (
             "Each column's share filled and an example; each field's columns as the mapping reads them (a later one where the "
             "earlier are empty, a joined one where every part is filled), each with its share filled, an example and the share "
             "of its values that look like the field; how well each column fits each field; and, for a field the file holds "
-            "none of, the column its name or values suggest, never applied: set columns applies it. Shares filled cover the "
+            "none of, the column its name or values suggest, never applied: set columns applies it; and what a run would turn "
+            "off, a field they read missing. Shares filled cover the "
             "file; the rest a sample of 2,000 records. O(N·C) in one scan, plus the sample.",
             (INPUT, OWN), DESCRIBED, "nayose describe records customers.parquet --workspace workspaces/acme", describe_records, quick=True,
             show={"columns": ("column", "filled", "example"), "fields": ("field", "filled", "looks_right"), "fit": (), "features": (), "profile": (),
@@ -777,13 +843,66 @@ COMMANDS: tuple[Command, ...] = (
             "the model with its weight in bits, or people. O(N) in SQL.",
             (Param("id", "a record ID, as the run wrote it", positional=True, metavar="ID"), WORKSPACE),
             {"record": "the ID asked for", "entity": "its entity (the cluster_id)", "records": "each of the entity's records",
-             "links": "each link between them: id_l, id_r, by, weight", "next": "the commands that usually follow"},
+             "links": "each link between them: id_l, id_r, by, weight",
+             "pairs": "of an entity of up to 50 records, every pair inside it scored: id_l, id_r, weight, by (none: joined through others), comparisons (comparison, reached, bits)",
+             "weakest": "the links whose loss would split the entity: id_l, id_r", "capped": "true: too many records to score every pair",
+             "next": "the commands that usually follow"},
             "nayose describe entity 0000000151 --workspace workspaces/customers", describe_entity_, quick=True,
             show={"records": ("id", "resolved_by", "kind", "person_name", "company_name", "address", "postal_code", "phone", "customer_id", "birth_date"),
-                  "links": ("id_l", "id_r", "by", "weight")}),
+                  "links": ("id_l", "id_r", "by", "weight"), "pairs": ("id_l", "id_r", "weight", "by"), "weakest": ("id_l", "id_r")}),
+    Command("explain", "pair", "How the model scored one pair, and what found it",
+            "Two record IDs of the run, scored again as the run scored: per comparison, each step's tests, the values each "
+            "compared after its normalization, the function, its threshold and the score it gave; the step each comparison "
+            "reached and its points; the starting points for two records, and the total. What found the pair: a match "
+            "rule, the pair keys, people; and whether it merged. When the two are in different customers and one of them holds "
+            "more records, both customers and every pair across them (at most 400), scored. O(400·K).",
+            (Param("first", "one record ID", positional=True, metavar="ID"), Param("second", "the other", positional=True, metavar="ID"), WORKSPACE, PIPELINE),
+            {"id_l": "the lower ID", "id_r": "the other", "weight": "the pair's points (bits)", "probability": "the model's chance they are one",
+             "prior": "the points two records start from", "pairs_all": "the pairs of records the run's file holds",
+             "pairs_same": "of them, those the model expects are one customer: the start is their ratio",
+             "common": "the points term frequencies add (0 without them)",
+             "line": "the trust line (none: above every step; null: the method as tuned)", "threshold": "the weight the method accepts at",
+             "same_customer": "the two are in one customer", "records": "both records: id and fields",
+             "comparisons": "comparison, reached (its step), bits",
+             "tests": "each step's tests: comparison, step, field, function, threshold, normalize, raw (the values as written), "
+                      "prep (each normalizer step: step, a, b), a, b, score, passed",
+             "found": "rule (a match rule's name), keys (the pair keys that listed it), people (a decision), merged",
+             "group_a": "the first's customer, when the two are apart and one customer holds more", "group_b": "the second's",
+             "across": "each pair across the two customers: id_l, id_r, weight", "next": "the commands that usually follow"},
+            "nayose explain pair 0000000151 0000000377 --workspace workspaces/customers", explain_pair_, quick=True,
+            show={"records": (), "comparisons": ("comparison", "reached", "bits"),
+                  "tests": ("comparison", "step", "field", "function", "threshold", "a", "b", "score", "passed"),
+                  "group_a": ("id",), "group_b": ("id",), "across": ("id_l", "id_r", "weight")}),
+    Command("describe", "key", "One pair key: what it lists, how big its groups are, and what only it found",
+            "A pair key of the run's method lists two records as a pair to compare when they share its value; it matches nothing "
+            "itself. This shows the pairs it listed, the links of the run among them and those no other key listed (up to 3, "
+            "to explain). For a key of equal values or of one-letter deletions: how many records share each value (1 to 9, "
+            "10 or more), its largest values, and one group: the records sharing the value behind one of those links (at most "
+            "12). For sorted neighbours: the records around such a link in the key's order. O(N), O(N·L) with deletions.",
+            (Param("name", "the pair key, as describe matching names it", positional=True, metavar="KEY"), WORKSPACE, PIPELINE),
+            {"name": "the key", "method": "KeyBlocker (equal values), SortedNeighbourhood, DeletionKeys or TfidfNeighbours",
+             "keys": "the fields it reads: field, normalize", "pairs": "the pairs it listed", "matched": "links of the run it listed",
+             "only": "links no other key listed", "examples": "up to 3 of them: id_l, id_r, weight",
+             "sizes": "records per value: records (10: 10 or more), values", "largest": "its 3 largest values: value, records",
+             "group": "one value's records: value, pair (the link behind it), records, more",
+             "around": "sorted neighbours: window, pair, the records around it in order (sorted_as)", "next": "the commands that usually follow"},
+            "nayose describe key person_name --workspace workspaces/customers", describe_key_, quick=True,
+            show={"sizes": ("records", "values"), "largest": ("value", "records"), "examples": ()}),
+    Command("compare", "records", "One record against others: every comparison's steps, test by test, for each",
+            "The first record of the run against each of the others (at most 50), every pair scored again as the run scored: "
+            "per other, its points, the step each comparison reached and every step's tests, with the values each compared as "
+            "written, after each normalizer and as compared, the first record's side first. For a record's candidates: "
+            "another customer's records, or the rest of its own. O(50·K).",
+            (Param("first", "the record to compare", positional=True, metavar="ID"), Param("others", "the records to compare it with", "many", positional=True, metavar="ID"),
+             WORKSPACE, PIPELINE),
+            {"first": "the record compared", "records": "the first, then each other: id and fields",
+             "candidates": "each other: id, weight (the pair's points), comparisons (comparison, reached, bits), tests (as explain pair's)",
+             "next": "the commands that usually follow"},
+            "nayose compare records 0000000151 0000000377 0000000412 --workspace workspaces/customers", compare_records_, quick=True,
+            show={"records": (), "candidates": ("id", "weight")}),
     Command("describe", "matching", "How records are matched: every method, on which fields, with its numbers",
             "The pipeline as a graph: records, how each field is made comparable, the rules, the ways pairs are listed, the "
-            "comparisons and what each level is worth in bits, the line pairs are accepted at, the pairs left to people, and "
+            "comparisons, what each level is worth in bits and the pairs that stopped at it, the line pairs are accepted at, the pairs left to people, and "
             "how linked records become customers. With --workspace, each part also holds that run's numbers and a real example. "
             "O(E + R + N) in SQL over the run's files.",
             (Param("workspace", "a workspace: its numbers and examples (without it, the methods only)", "path"), PIPELINE),
@@ -794,7 +913,7 @@ COMMANDS: tuple[Command, ...] = (
             "From the run in the workspace and people's decisions: each round so far (a round per method the workspace "
             "ran: the tuned one, then each change of method.toml), with the links it made and the audits people decided in "
             "it; the line pairs are accepted at, the weight bands, and every pair people decided, scored again with the "
-            "run's model; each sure-match rule's pairs, those scoring below the line, and those people said are different; "
+            "run's model; each match rule's pairs, those scoring below the line, and those people said are different; "
             "each pair key's pairs, seconds, links, and links only it found; each comparison step's bits and the pairs that "
             "reached it; and proposals: a line in the band people review that sets right decided pairs without setting any "
             "wrong, a rule people found different pairs in, a key no link needs. Changes nothing. O((D + R)·K) to score the "
@@ -815,7 +934,7 @@ COMMANDS: tuple[Command, ...] = (
                   "rules": ("name", "pairs", "below", "different"), "keys": ("name", "pairs", "seconds", "matched", "only"),
                   "steps": ("comparison", "level", "bits", "reached"), "proposals": ("change", "why"), "trials": ()}),
     Command("try", "method", "Try a change of the method beside the method as it is",
-            "Runs the workspace's method and the method with the change (a line; --drop: sure-match rules and pair keys left "
+            "Runs the workspace's method and the method with the change (a line; --drop: match rules and pair keys left "
             "out) on the workspace's files, both without people's decisions, so neither is judged on pairs it was told; both "
             "keep the run's fitted model and people's person/company answers. Says what the change does to the pairs people "
             "decided (those they said are different yet joined: false merges; those they said are the same yet apart) and, "
@@ -824,7 +943,7 @@ COMMANDS: tuple[Command, ...] = (
             "last 5 kept) and the clusters of the method as it is, kept for the next trial. O(two full runs without the fit); "
             "one when the method and the files are those of the last trial.",
             (WORKSPACE, Param("line", "the weight to accept pairs at, in bits", metavar="BITS"),
-             Param("drop", "sure-match rules and pair keys to leave out, by name", "many", metavar="NAME"), PIPELINE, COMPUTE),
+             Param("drop", "match rules and pair keys to leave out, by name", "many", metavar="NAME"), PIPELINE, COMPUTE),
             {"trial": "its number, for adopt method", "at": "when", "method": "the method tried, as method.toml would say it",
              "base": "the method as it is: matched, expected_false, rule_pairs, entities", "variant": "the method tried: the same",
              "different_joined": "pairs people said are different, in one customer (false merges): base, variant",
@@ -855,6 +974,12 @@ COMMANDS: tuple[Command, ...] = (
             "before people check), then runs the workspace's files again; method.toml is left as it was if the run fails. "
             "For when a spot-check above the line finds a false link. O(a full run).",
             (WORKSPACE, PIPELINE, COMPUTE), RUN_RESULT, "nayose raise trust --workspace workspaces/customers", raise_trust),
+    Command("split", "entity", "Split an entity at a link that alone holds it together",
+            "The two records of the link are decided different, kept with people's decisions, and the workspace's files run "
+            "again, which never joins a pair people called different: the entity becomes the two parts that link held together. "
+            "Refused for a link other links stand in for, so a split always splits. O(n²·K) to check, then O(a full run).",
+            (Param("id", "a record of the entity", positional=True, metavar="ID"), Param("between", "the link's two records", "many", metavar="ID"), WORKSPACE, PIPELINE, COMPUTE),
+            RUN_RESULT, "nayose split entity 0000262688 --between 0000262688 0000312261 --workspace workspaces/customers", split_entity),
     Command("draw", "pairs", "More links on the review sheet, to audit",
             "Adds audit rows to review.parquet: links, the model's and the rules', that people have not decided and the sheet "
             "does not hold, spread evenly over 1-bit weight bands, a rule's pairs scored as the model scores them. No false "
@@ -871,6 +996,17 @@ COMMANDS: tuple[Command, ...] = (
              "next": "the commands that usually follow"},
             "nayose list pairs --workspace workspaces/customers --open", list_pairs, quick=True,
             show={"pairs": ("why", "status", "id_l", "id_r", "match_weight", "accepted")}),
+    Command("list", "patterns", "The model's pairs as patterns: what each comparison said, and what became of them",
+            "Every pair the model scored, by its pattern (the step each comparison reached): the pairs, their mean points, how "
+            "many merged, are on the review sheet for people (wait), were in its band but not asked (held: already one customer, "
+            "another pair of the same two customers asked, or outside a trust line's sample) or stayed apart, and three to explain. "
+            "From the score steps the full run and its increments logged (steps.json), and the sheet. O(P + S).",
+            (WORKSPACE, PIPELINE),
+            {"fields": "the comparisons, in pattern order", "pairs": "the pairs scored", "threshold": "the weight the method accepts at",
+             "patterns": "key, steps (comparison → step), bits (comparison → its points), pairs, points, merged, wait, held, apart, examples (id_l, id_r)",
+             "next": "the commands that usually follow"},
+            "nayose list patterns --workspace workspaces/customers", list_patterns_, quick=True,
+            show={"patterns": ("key", "pairs", "points", "merged", "wait", "held", "apart")}),
     Command("decide", "pair", "Decide one pair: match or no match",
             "Writes the decision into the workspace's review.parquet; nothing is applied until apply decisions. clear takes "
             "it back. O(sheet rows).",

@@ -88,7 +88,7 @@ Splink 5 was read against this code, and each overlap measured on the same data,
 | threshold curves | ours | the same counts as Splink's truth-space table at every weight, faster, and with folds, bounds and the name check, none of which Splink has |
 | cluster metrics, intervals, the paired test | ours | Splink has no cluster-level accuracy |
 | λ at the file's size, exact u from value counts | ours | Splink has neither; a 10⁷-pair sample can't see an agreement rarer than one in 10⁹ pairs |
-| increments: merging into stored clusters, stable names | ours | Splink 5 has no incremental clustering; `predict_between`, which replaced `find_matches_to_new_records`, scores only |
+| increments: merging into stored clusters, stable names | ours | Splink 5 has no incremental clustering; `predict_between` scores only |
 | string similarity | ours (`cl_*`) | DuckDB's built-ins, which Splink's comparison libraries call, compare bytes: タナカ / タカナ get Jaro–Winkler 0.956 from them, 0.556 by character |
 
 Not used, and why: chunked prediction (refuses given pairs, and only bounds memory); salting (ignored in Splink 5); Parquet materialisation (1.05–1.67× slower here); `cluster_using_single_best_links` (for sources without duplicates); `DateOfBirthComparison` (birth dates that aren't dates, and no extra true pair); m from people's review decisions (rows chosen by their score bias m by up to 3.8 bits; the decisions are applied as merges instead).
@@ -199,7 +199,7 @@ Writes each table as Parquet under a temporary name, with the reports (9). Once 
 
 - **Why:** the margin holds pairs that were clean on cross-validated train, held back in case of noise: on the synthetic val split, 112 pairs from 6 to 8 bits, all true; one grid step lower, at 4 bits, val's first false pair appears. So people decide them. Without labels, the audit rows and the largest clusters are how a person catches over-merging.
 - **Code:** `Run.report` → `report.qa` (`report.fill_rates`, `match.review_floor`, `report.review_sheet`, `report.carry_over`, `match.pattern_coverage`), `report.report_text`, `kind.kind_review_sheet` (its rows picked in DuckDB, so only they reach Python), `io.markdown`
-- **From a written folder:** `report.describe_workspace` (what the folder holds), `report.describe_entity` (one record's customer and what joined it), and `report.describe_matching`: the pipeline as a graph, each stage with its method, parameters and fields, and the run's numbers (pairs per rule and per generator, each level's m, u and bits, the weight bands, customers) with a real example. `nayose describe workspace`, `describe entity` and `describe matching` print them, and `nayose open ui` draws them.
+- **From a written folder:** `report.describe_workspace` (what the folder holds), `report.describe_entity` (one record's entity and what joined it), and `report.describe_matching`: the pipeline as a graph, each stage with its method, parameters and fields, and the run's numbers (pairs per rule and how the model scores them, per generator its pairs, links and those only it found, each level's m, u, bits and pairs, the weight bands with what happened in each, the review sheet's patterns, entities and where to look first) with real examples; `report.describe_key` inspects one pair key (records per value, one group). `nayose describe workspace`, `describe entity`, `describe matching` and `describe key` print them, and `nayose open ui` draws them.
 - **Increment:** the same for the pairs the batch made, plus the previous sheet's rows still open: a run keeps no scores, so a row dropped from the sheet could never come back. No `kind_review.parquet`: a record an increment holds back is on the next full run's sheet.
 
 ## 5 · An increment
@@ -260,7 +260,7 @@ Kept on disk. Steps are numbered as in [the run](#4--the-run); the diagram above
 
 | File | Written by step | Read by | Holds |
 |---|---|---|---|
-| `columns.toml` | `nayose create workspace`; `set columns --workspace` | every command given the workspace | its own mapping, `[columns]` and `[kind]`, over `config/settings.toml`'s; a workspace without one reads the project's |
+| `columns.toml` | `nayose create workspace`; `set columns`, `set feature`, `add feature`, `remove feature` with `--workspace` | every command given the workspace | its own mapping, `[columns]` and `[kind]`, over `config/settings.toml`'s; a workspace without one reads the project's |
 | `inputs/NNNN-<name>/` | `nayose load records`, and `resolve records` or `add records` given a file (`folder.take_in`) | its runs; a rerun | each records file given to it, copied in whole, with `.sha256`: each file's SHA-256, so content given twice is copied once |
 | `gold.parquet` | 8, rewritten each run and by decisions | you; the next increment | record → `cluster_id`, `resolved_stage`, `resolved_by`; its `kind`, `kind_p`, `kind_by`, `kind_held`, and its entity's `customer_kind` |
 | `matches/part-n.parquet` | 8, one part per run | you | accepted pairs: weight, probability, generators |

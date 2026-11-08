@@ -30,6 +30,9 @@ Written by `scripts/document_commands.py` from the declarations in `er/cli.py`; 
 | [`rerun records`](#nayose-rerun-records) | A full run again, on the run's own files |
 | [`describe workspace`](#nayose-describe-workspace) | What a workspace holds |
 | [`describe entity`](#nayose-describe-entity) | One record's entity, and what joined it |
+| [`explain pair`](#nayose-explain-pair) | How the model scored one pair, and what found it |
+| [`describe key`](#nayose-describe-key) | One pair key: what it lists, how big its groups are, and what only it found |
+| [`compare records`](#nayose-compare-records) | One record against others: every comparison's steps, test by test, for each |
 | [`describe matching`](#nayose-describe-matching) | How records are matched: every method, on which fields, with its numbers |
 | [`describe method`](#nayose-describe-method) | What the run shows about its method, and the changes worth trying |
 | [`try method`](#nayose-try-method) | Try a change of the method beside the method as it is |
@@ -37,8 +40,10 @@ Written by `scripts/document_commands.py` from the declarations in `er/cli.py`; 
 | [`reset method`](#nayose-reset-method) | Go back to the tuned method, and find matches with it |
 | [`lower trust`](#nayose-lower-trust) | Merge the next range of scores without people, once its sample is clean |
 | [`raise trust`](#nayose-raise-trust) | Take a range of scores back to people |
+| [`split entity`](#nayose-split-entity) | Split an entity at a link that alone holds it together |
 | [`draw pairs`](#nayose-draw-pairs) | More links on the review sheet, to audit |
 | [`list pairs`](#nayose-list-pairs) | The pairs for people to decide and to audit |
+| [`list patterns`](#nayose-list-patterns) | The model's pairs as patterns: what each comparison said, and what became of them |
 | [`decide pair`](#nayose-decide-pair) | Decide one pair: match or no match |
 | [`apply decisions`](#nayose-apply-decisions) | Apply people's decisions to the run |
 | [`list kinds`](#nayose-list-kinds) | The records for people to answer person or company |
@@ -118,6 +123,7 @@ Copies the records into a part of the workspace's own (inputs/0001-customers/), 
 | `fit` | for each field, each column's fit: the share of its values that look like the field (id: filled, each value once) |
 | `suggested` | for each field the file holds none of: field, column, why |
 | `needed` | the fields a run stops without: every (each of them), one_of (at least one of each group) |
+| `turned_off` | rules, keys and levels a run of this file would turn off: a field they read is missing |
 | `slots` | each feature and part: feature (its path), sources, filled, example, looks_right, and each of its alternatives |
 | `features` | the structure: groups › features › parts, each with type and columns |
 | `profile` | each column's script (kanji, kana, romaji) and the shares of its values that are known family names, given names, full names, addresses |
@@ -189,7 +195,7 @@ Add a feature: a name in another script, or another company name.
 nayose add feature PATH --type person name|company name [--script kana|kanji|romaji] [--column COLUMN] --workspace WORKSPACE [--format text|json]
 ```
 
-Adds a feature to the Name group (PATH: Name/<its name>): a person's name, with its family and given names, or a company name, in a script (kana, kanji or romaji: how its values are prepared). Its fields are numbered beside the ones it stands with (person_name_2, given_name_2; company_name_2) in the workspace's columns.toml. A run then compares it with them: each step of the name comparison is reached when either name agrees, as one piece of evidence, and pairs are also found on it; the sure-match rules stay as they are. The steps' thresholds were tuned on kana; their weights are fitted on each run's file. O(the file).
+Adds a feature to the Name group (PATH: Name/<its name>): a person's name, with its family and given names, or a company name, in a script (kana, kanji or romaji: how its values are prepared). Its fields are numbered beside the ones it stands with (person_name_2, given_name_2; company_name_2) in the workspace's columns.toml. A run then compares it with them: each step of the name comparison is reached when either name agrees, as one piece of evidence, and pairs are also found on it; the match rules stay as they are. The steps' thresholds were tuned on kana; their weights are fitted on each run's file. O(the file).
 
 | Parameter | |
 |---|---|
@@ -242,7 +248,7 @@ What a file holds, for mapping its columns: in a second, nothing prepared.
 nayose describe records INPUT [--workspace WORKSPACE] [--format text|json]
 ```
 
-Each column's share filled and an example; each field's columns as the mapping reads them (a later one where the earlier are empty, a joined one where every part is filled), each with its share filled, an example and the share of its values that look like the field; how well each column fits each field; and, for a field the file holds none of, the column its name or values suggest, never applied: set columns applies it. Shares filled cover the file; the rest a sample of 2,000 records. O(N·C) in one scan, plus the sample.
+Each column's share filled and an example; each field's columns as the mapping reads them (a later one where the earlier are empty, a joined one where every part is filled), each with its share filled, an example and the share of its values that look like the field; how well each column fits each field; and, for a field the file holds none of, the column its name or values suggest, never applied: set columns applies it; and what a run would turn off, a field they read missing. Shares filled cover the file; the rest a sample of 2,000 records. O(N·C) in one scan, plus the sample.
 
 | Parameter | |
 |---|---|
@@ -257,6 +263,7 @@ Each column's share filled and an example; each field's columns as the mapping r
 | `fit` | for each field, each column's fit: the share of its values that look like the field (id: filled, each value once) |
 | `suggested` | for each field the file holds none of: field, column, why |
 | `needed` | the fields a run stops without: every (each of them), one_of (at least one of each group) |
+| `turned_off` | rules, keys and levels a run of this file would turn off: a field they read is missing |
 | `slots` | each feature and part: feature (its path), sources, filled, example, looks_right, and each of its alternatives |
 | `features` | the structure: groups › features › parts, each with type and columns |
 | `profile` | each column's script (kanji, kana, romaji) and the shares of its values that are known family names, given names, full names, addresses |
@@ -522,10 +529,119 @@ The entity of the record ID: each of its records with its fields and kind, and e
 | `entity` | its entity (the cluster_id) |
 | `records` | each of the entity's records |
 | `links` | each link between them: id_l, id_r, by, weight |
+| `pairs` | of an entity of up to 50 records, every pair inside it scored: id_l, id_r, weight, by (none: joined through others), comparisons (comparison, reached, bits) |
+| `weakest` | the links whose loss would split the entity: id_l, id_r |
+| `capped` | true: too many records to score every pair |
 | `next` | the commands that usually follow |
 
 ```bash
 nayose describe entity 0000000151 --workspace workspaces/customers
+```
+
+## nayose explain pair
+
+How the model scored one pair, and what found it.
+
+```
+nayose explain pair ID ID --workspace WORKSPACE [--pipeline PIPELINE] [--format text|json]
+```
+
+Two record IDs of the run, scored again as the run scored: per comparison, each step's tests, the values each compared after its normalization, the function, its threshold and the score it gave; the step each comparison reached and its points; the starting points for two records, and the total. What found the pair: a match rule, the pair keys, people; and whether it merged. When the two are in different customers and one of them holds more records, both customers and every pair across them (at most 400), scored. O(400·K).
+
+| Parameter | |
+|---|---|
+| `ID` | one record ID |
+| `ID` | the other |
+| `--workspace WORKSPACE` | the workspace: the folder that keeps one matching job (required) |
+| `--pipeline PIPELINE` | the pipeline file (default: config/final.toml) |
+
+| Result | |
+|---|---|
+| `id_l` | the lower ID |
+| `id_r` | the other |
+| `weight` | the pair's points (bits) |
+| `probability` | the model's chance they are one |
+| `prior` | the points two records start from |
+| `pairs_all` | the pairs of records the run's file holds |
+| `pairs_same` | of them, those the model expects are one customer: the start is their ratio |
+| `common` | the points term frequencies add (0 without them) |
+| `line` | the trust line (none: above every step; null: the method as tuned) |
+| `threshold` | the weight the method accepts at |
+| `same_customer` | the two are in one customer |
+| `records` | both records: id and fields |
+| `comparisons` | comparison, reached (its step), bits |
+| `tests` | each step's tests: comparison, step, field, function, threshold, normalize, raw (the values as written), prep (each normalizer step: step, a, b), a, b, score, passed |
+| `found` | rule (a match rule's name), keys (the pair keys that listed it), people (a decision), merged |
+| `group_a` | the first's customer, when the two are apart and one customer holds more |
+| `group_b` | the second's |
+| `across` | each pair across the two customers: id_l, id_r, weight |
+| `next` | the commands that usually follow |
+
+```bash
+nayose explain pair 0000000151 0000000377 --workspace workspaces/customers
+```
+
+## nayose describe key
+
+One pair key: what it lists, how big its groups are, and what only it found.
+
+```
+nayose describe key KEY --workspace WORKSPACE [--pipeline PIPELINE] [--format text|json]
+```
+
+A pair key of the run's method lists two records as a pair to compare when they share its value; it matches nothing itself. This shows the pairs it listed, the links of the run among them and those no other key listed (up to 3, to explain). For a key of equal values or of one-letter deletions: how many records share each value (1 to 9, 10 or more), its largest values, and one group: the records sharing the value behind one of those links (at most 12). For sorted neighbours: the records around such a link in the key's order. O(N), O(N·L) with deletions.
+
+| Parameter | |
+|---|---|
+| `KEY` | the pair key, as describe matching names it |
+| `--workspace WORKSPACE` | the workspace: the folder that keeps one matching job (required) |
+| `--pipeline PIPELINE` | the pipeline file (default: config/final.toml) |
+
+| Result | |
+|---|---|
+| `name` | the key |
+| `method` | KeyBlocker (equal values), SortedNeighbourhood, DeletionKeys or TfidfNeighbours |
+| `keys` | the fields it reads: field, normalize |
+| `pairs` | the pairs it listed |
+| `matched` | links of the run it listed |
+| `only` | links no other key listed |
+| `examples` | up to 3 of them: id_l, id_r, weight |
+| `sizes` | records per value: records (10: 10 or more), values |
+| `largest` | its 3 largest values: value, records |
+| `group` | one value's records: value, pair (the link behind it), records, more |
+| `around` | sorted neighbours: window, pair, the records around it in order (sorted_as) |
+| `next` | the commands that usually follow |
+
+```bash
+nayose describe key person_name --workspace workspaces/customers
+```
+
+## nayose compare records
+
+One record against others: every comparison's steps, test by test, for each.
+
+```
+nayose compare records ID ID … --workspace WORKSPACE [--pipeline PIPELINE] [--format text|json]
+```
+
+The first record of the run against each of the others (at most 50), every pair scored again as the run scored: per other, its points, the step each comparison reached and every step's tests, with the values each compared as written, after each normalizer and as compared, the first record's side first. For a record's candidates: another customer's records, or the rest of its own. O(50·K).
+
+| Parameter | |
+|---|---|
+| `ID` | the record to compare |
+| `ID` | the records to compare it with |
+| `--workspace WORKSPACE` | the workspace: the folder that keeps one matching job (required) |
+| `--pipeline PIPELINE` | the pipeline file (default: config/final.toml) |
+
+| Result | |
+|---|---|
+| `first` | the record compared |
+| `records` | the first, then each other: id and fields |
+| `candidates` | each other: id, weight (the pair's points), comparisons (comparison, reached, bits), tests (as explain pair's) |
+| `next` | the commands that usually follow |
+
+```bash
+nayose compare records 0000000151 0000000377 0000000412 --workspace workspaces/customers
 ```
 
 ## nayose describe matching
@@ -536,7 +652,7 @@ How records are matched: every method, on which fields, with its numbers.
 nayose describe matching [--workspace WORKSPACE] [--pipeline PIPELINE] [--format text|json]
 ```
 
-The pipeline as a graph: records, how each field is made comparable, the rules, the ways pairs are listed, the comparisons and what each level is worth in bits, the line pairs are accepted at, the pairs left to people, and how linked records become customers. With --workspace, each part also holds that run's numbers and a real example. O(E + R + N) in SQL over the run's files.
+The pipeline as a graph: records, how each field is made comparable, the rules, the ways pairs are listed, the comparisons, what each level is worth in bits and the pairs that stopped at it, the line pairs are accepted at, the pairs left to people, and how linked records become customers. With --workspace, each part also holds that run's numbers and a real example. O(E + R + N) in SQL over the run's files.
 
 | Parameter | |
 |---|---|
@@ -561,7 +677,7 @@ What the run shows about its method, and the changes worth trying.
 nayose describe method --workspace WORKSPACE [--pipeline PIPELINE] [--format text|json]
 ```
 
-From the run in the workspace and people's decisions: each round so far (a round per method the workspace ran: the tuned one, then each change of method.toml), with the links it made and the audits people decided in it; the line pairs are accepted at, the weight bands, and every pair people decided, scored again with the run's model; each sure-match rule's pairs, those scoring below the line, and those people said are different; each pair key's pairs, seconds, links, and links only it found; each comparison step's bits and the pairs that reached it; and proposals: a line in the band people review that sets right decided pairs without setting any wrong, a rule people found different pairs in, a key no link needs. Changes nothing. O((D + R)·K) to score the decided and rule pairs again, + O(E) over the run's files.
+From the run in the workspace and people's decisions: each round so far (a round per method the workspace ran: the tuned one, then each change of method.toml), with the links it made and the audits people decided in it; the line pairs are accepted at, the weight bands, and every pair people decided, scored again with the run's model; each match rule's pairs, those scoring below the line, and those people said are different; each pair key's pairs, seconds, links, and links only it found; each comparison step's bits and the pairs that reached it; and proposals: a line in the band people review that sets right decided pairs without setting any wrong, a rule people found different pairs in, a key no link needs. Changes nothing. O((D + R)·K) to score the decided and rule pairs again, + O(E) over the run's files.
 
 | Parameter | |
 |---|---|
@@ -599,13 +715,13 @@ Try a change of the method beside the method as it is.
 nayose try method --workspace WORKSPACE [--line BITS] [--drop NAME …] [--pipeline PIPELINE] [--compute KEY=VALUE …] [--format text|json]
 ```
 
-Runs the workspace's method and the method with the change (a line; --drop: sure-match rules and pair keys left out) on the workspace's files, both without people's decisions, so neither is judged on pairs it was told; both keep the run's fitted model and people's person/company answers. Says what the change does to the pairs people decided (those they said are different yet joined: false merges; those they said are the same yet apart) and, without labels, to the links, the false links the model expects, the entities, and the pairs of records it puts apart or together. Writes only trials/ in the workspace: each trial's result (the last 5 kept) and the clusters of the method as it is, kept for the next trial. O(two full runs without the fit); one when the method and the files are those of the last trial.
+Runs the workspace's method and the method with the change (a line; --drop: match rules and pair keys left out) on the workspace's files, both without people's decisions, so neither is judged on pairs it was told; both keep the run's fitted model and people's person/company answers. Says what the change does to the pairs people decided (those they said are different yet joined: false merges; those they said are the same yet apart) and, without labels, to the links, the false links the model expects, the entities, and the pairs of records it puts apart or together. Writes only trials/ in the workspace: each trial's result (the last 5 kept) and the clusters of the method as it is, kept for the next trial. O(two full runs without the fit); one when the method and the files are those of the last trial.
 
 | Parameter | |
 |---|---|
 | `--workspace WORKSPACE` | the workspace: the folder that keeps one matching job (required) |
 | `--line BITS` | the weight to accept pairs at, in bits |
-| `--drop NAME` | sure-match rules and pair keys to leave out, by name |
+| `--drop NAME` | match rules and pair keys to leave out, by name |
 | `--pipeline PIPELINE` | the pipeline file (default: config/final.toml) |
 | `--compute KEY=VALUE` | DuckDB limits for this run, over config/settings.toml [compute]: memory_limit=8GB, threads=4, temp_directory=<folder> (past the memory limit DuckDB spills there) |
 
@@ -737,6 +853,35 @@ Raises the trust line one step (or starts one, above every step, on a workspace 
 nayose raise trust --workspace workspaces/customers
 ```
 
+## nayose split entity
+
+Split an entity at a link that alone holds it together.
+
+```
+nayose split entity ID [--between ID …] --workspace WORKSPACE [--pipeline PIPELINE] [--compute KEY=VALUE …] [--format text|json]
+```
+
+The two records of the link are decided different, kept with people's decisions, and the workspace's files run again, which never joins a pair people called different: the entity becomes the two parts that link held together. Refused for a link other links stand in for, so a split always splits. O(n²·K) to check, then O(a full run).
+
+| Parameter | |
+|---|---|
+| `ID` | a record of the entity |
+| `--between ID` | the link's two records |
+| `--workspace WORKSPACE` | the workspace: the folder that keeps one matching job (required) |
+| `--pipeline PIPELINE` | the pipeline file (default: config/final.toml) |
+| `--compute KEY=VALUE` | DuckDB limits for this run, over config/settings.toml [compute]: memory_limit=8GB, threads=4, temp_directory=<folder> (past the memory limit DuckDB spills there) |
+
+| Result | |
+|---|---|
+| `summary` | the run in words: records, entities, who joined them, the model's links, what is left to people |
+| `seconds` | the run's time |
+| `wrote` | the files written |
+| `next` | the commands that usually follow |
+
+```bash
+nayose split entity 0000262688 --between 0000262688 0000312261 --workspace workspaces/customers
+```
+
 ## nayose draw pairs
 
 More links on the review sheet, to audit.
@@ -786,6 +931,33 @@ The run's review.parquet: decide rows (the pairs just below the threshold, and t
 
 ```bash
 nayose list pairs --workspace workspaces/customers --open
+```
+
+## nayose list patterns
+
+The model's pairs as patterns: what each comparison said, and what became of them.
+
+```
+nayose list patterns --workspace WORKSPACE [--pipeline PIPELINE] [--format text|json]
+```
+
+Every pair the model scored, by its pattern (the step each comparison reached): the pairs, their mean points, how many merged, are on the review sheet for people (wait), were in its band but not asked (held: already one customer, another pair of the same two customers asked, or outside a trust line's sample) or stayed apart, and three to explain. From the score steps the full run and its increments logged (steps.json), and the sheet. O(P + S).
+
+| Parameter | |
+|---|---|
+| `--workspace WORKSPACE` | the workspace: the folder that keeps one matching job (required) |
+| `--pipeline PIPELINE` | the pipeline file (default: config/final.toml) |
+
+| Result | |
+|---|---|
+| `fields` | the comparisons, in pattern order |
+| `pairs` | the pairs scored |
+| `threshold` | the weight the method accepts at |
+| `patterns` | key, steps (comparison → step), bits (comparison → its points), pairs, points, merged, wait, held, apart, examples (id_l, id_r) |
+| `next` | the commands that usually follow |
+
+```bash
+nayose list patterns --workspace workspaces/customers
 ```
 
 ## nayose decide pair
