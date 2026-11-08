@@ -120,6 +120,7 @@ def test_the_report_check_redacts_any_value_long_digits_and_kana_no_column_holds
     out, n = scrub(text, {"ヤマダタロウ", "Sato"}, {"FULL_NAME_KANA", "サトウ様"})
     assert out == f"stopped at {HIDDEN} (sample 1,234,567) · FULL_NAME_KANA: {HIDDEN} said サトウ · {HIDDEN} and Satoshi · code a1234567b" and n == 3
     assert scrub("カナ", set(), set()) == (HIDDEN, 1)  # kana no column name holds: a value it can't tell from one
+    assert scrub("code 1572846 · id 1572846", set(), set(), frozenset({"1572846"})) == ("code 1572846 · id 1572846", 0)  # a commit all digits: the report's own
 
 
 def test_auto_mode_writes_its_report_when_a_step_stops_and_waits_out_no_busy_workspace(say, tmp_path, monkeypatch):
