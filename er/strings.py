@@ -4,6 +4,7 @@ DuckDB's built-in jaro_winkler_similarity, jaccard and damerau_levenshtein compa
 per character, which inflates similarity between unrelated names (サトウヒロシ / サトウタカシ: 0.897 instead of 0.844).
 """
 import getpass
+import os
 import tempfile
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -74,7 +75,14 @@ def connect(compute: dict | None = None) -> tuple[duckdb.DuckDBPyConnection, Duc
     con.execute("SET enable_progress_bar = false")  # a long query's bar would land in stdout, between the JSON lines
     limits = {k: v for k, v in (compute or {}).items() if v not in ("", None)}
     if "temp_directory" not in limits:  # a folder of each person's, only theirs: spilled records stay private, and no one else's blocks it
-        (spill := Path(tempfile.gettempdir()) / f"nayose-spill-{getpass.getuser()}").mkdir(mode=0o700, exist_ok=True)
+        try:
+            who = getpass.getuser()
+        except (KeyError, OSError):  # a uid with no name, as in a container
+            who = str(os.getuid()) if hasattr(os, "getuid") else "user"
+        (spill := Path(tempfile.gettempdir()) / f"nayose-spill-{who}").mkdir(mode=0o700, exist_ok=True)
+        if hasattr(os, "getuid") and ((st := spill.lstat()).st_uid != os.getuid() or st.st_mode & 0o077):  # made before, by someone else, open to them, or a link
+            raise InputError(f"{spill}: the spill folder isn't yours alone, so spilled records could be read by others",
+                             fix="give --compute temp_directory=<a folder of your own> (or [compute] temp_directory), or remove that folder")
         limits["temp_directory"] = str(spill)
     where = "--compute, or config/settings.toml [compute]"
     for key, value in limits.items():
