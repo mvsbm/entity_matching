@@ -1110,6 +1110,11 @@ def test_a_run_says_what_is_wrong_in_words_people_can_act_on(tmp_path, populatio
     (tmp_path / "w2").mkdir()
     _mapping(tmp_path / "w2", s, postal_code=phone)  # the page's step 2 says what the run would refuse
     assert any("both read" in x for x in say("describe", "records", tmp_path / "all.parquet", "--workspace", tmp_path / "w2")[1]["turned_off"])
+    (tmp_path / "w3").mkdir()
+    _mapping(tmp_path / "w3", s, kind_flag=s.columns["company_name"][0][0])  # a name column in the person/company flag: warned
+    slots = say("describe", "records", tmp_path / "all.parquet", "--workspace", tmp_path / "w3")[1]["slots"]
+    flag = [x["looks_right"] for x in slots if x["feature"].endswith("/Person or company")]
+    assert flag and flag[0] < 0.5
     (tmp_path / "ws").mkdir()
     (tmp_path / "ws" / "method.toml").write_text('trust = "none\n', encoding="utf-8")
     code, e = say("describe", "method", "--workspace", tmp_path / "ws")
@@ -1535,6 +1540,15 @@ def test_the_trust_line_merges_only_ranges_people_proved_and_steps_down_one_at_a
     assert say("resolve", "records", *pipe)[0] == 0
     gold = pd.read_parquet(ws / "gold.parquet")
     assert gold["cluster_id"].nunique() == len(gold) and not pd.read_parquet(ws / "rule_kept")["merged"].any()  # nothing merged
+    keys = say("describe", "method", *pipe)[1]["keys"]
+    assert any(k["matched"] for k in keys)  # the keys' likely links count, though none merged: no key looks idle
+    busy = max(keys, key=lambda k: k["matched"])
+    assert say("describe", "key", busy["name"], *pipe)[1]["matched"] == busy["matched"]  # its drawer counts what its row counts
+    kept = (ws / "method.toml").read_text(encoding="utf-8")
+    (ws / "method.toml").write_text(kept + f'drop_keys = ["{busy["name"]}"]\n', encoding="utf-8")
+    left = say("describe", "method", *pipe)[1]["dropped"]["keys"]  # what the method leaves out, still in words for the page
+    assert [x["name"] for x in left] == [busy["name"]] and left[0]["method"] and left[0]["keys"]
+    (ws / "method.toml").write_text(kept, encoding="utf-8")
     trust = say("describe", "workspace", "workspaces/w", "--pipeline", "small.toml")[1]["trust"]
     assert trust["line"] == "none" and trust["next"] == {"down_to": 20.0, "up_to": None}
     assert trust["pairs"] == trust["needed"] == 0 and trust["may_lower"]  # nothing scores 20 on 492 records: nothing there can be false
@@ -1542,6 +1556,11 @@ def test_the_trust_line_merges_only_ranges_people_proved_and_steps_down_one_at_a
     assert say("lower", "trust", *pipe)[0] == 0 and folder.method(ws) == {"trust": 20.0}
     trust = say("describe", "workspace", "workspaces/w", "--pipeline", "small.toml")[1]["trust"]
     assert trust["next"] == {"down_to": 12.0, "up_to": 20.0} and trust["checked"] == 0 < trust["needed"] <= 8
+    rules, sheet = [r.name for _, _, r in p.rules.each()], pd.read_parquet(ws / "review.parquet")  # the rules' pairs wait on the sheet too, with the model's levels
+    model = sheet[(sheet["why"] == "decide") & ~sheet["sources"].isin(rules)]
+    pd.concat([sheet, *[model.head(1).assign(sources=rules[0])] * 50]).to_parquet(ws / "review.parquet")
+    assert len(model) and all(min(x["wait"], x["held"], x["apart"]) >= 0 for x in say("list", "patterns", *pipe)[1]["patterns"])  # no pattern's count below 0
+    sheet.to_parquet(ws / "review.parquet")
     assert say("lower", "trust", *pipe)[0] == 2  # not proven yet
     sheet = pd.read_parquet(ws / "review.parquet")
     sample = sheet[sheet["why"] == "decide"]
@@ -1566,13 +1585,20 @@ def test_the_trust_line_merges_only_ranges_people_proved_and_steps_down_one_at_a
     again = pd.read_parquet(ws / "rule_kept").set_index([l, r])
     assert not again.loc[(pair[l], pair[r]), "merged"]
 
+    status = {x["id"]: x["status"] for x in say("match", "records", "batch.parquet", *pipe)[1]["records"]}
     assert say("add", "records", "batch.parquet", *pipe)[0] == 0  # a batch: above the line merges, below waits
+    sheet, new = pd.read_parquet(ws / "review.parquet"), set(g.df.iloc[400:][uid].astype(str))
+    asked = {x for x in pd.concat([sheet[l], sheet[r]]) if x in new}
+    assert asked and {status[x] for x in asked} <= {"joins an entity", "waits for people"}  # as the preview said: none of them a new entity
+    assert "waits for people" in status.values()
     part = sorted((ws / "rule_kept").glob("part-*.parquet"))[-1]
     batch = pd.read_parquet(part)
     assert (batch["merged"] == (batch["match_weight"] >= 12)).all()
 
     assert say("raise", "trust", *pipe)[0] == 0 and folder.method(ws) == {"trust": 20.0}  # a step up
     assert say("raise", "trust", *pipe)[0] == 0 and folder.method(ws) == {"trust": "none"}  # back to people for everything
+    runs = say("describe", "workspace", "workspaces/w", "--pipeline", "small.toml")[1]["runs"]  # the activity: every run, though a full run starts steps.json again
+    assert sum(x["what"] == "full run" for x in runs) > 3 and {Path(f).name for x in runs for f in x["files"]} == {"theirs.parquet", "batch.parquet"}
     gold = pd.read_parquet(ws / "gold.parquet").set_index(uid)
     joined = gold.groupby("cluster_id").filter(lambda x: len(x) > 1)
     assert joined["resolved_by"].eq("review").all()  # only what people said is the same
@@ -1704,13 +1730,20 @@ def test_nayose_takes_a_file_from_the_check_to_people_s_answers(tmp_path, popula
     assert say("resolve", "records", tmp_path / "first.parquet", "--workspace", run)["summary"][0][0] == "records"
     pair = say("list", "pairs", "--workspace", run, "--open")["pairs"][0]
     say("decide", "pair", pair["id_r"], pair["id_l"], "match", "--workspace", run)  # either order
+    pending = lambda: {(x["id_l"], x["id_r"]) for x in say("list", "pairs", "--workspace", run, "--pending")["pairs"]}
+    assert (pair["id_l"], pair["id_r"]) in pending()  # written in, not applied: still listed
     assert say("apply", "decisions", "--workspace", run)["matches"] == 1
+    assert (pair["id_l"], pair["id_r"]) not in pending()
     assert say("apply", "decisions", "--workspace", run)["decisions"] == 0  # given twice: nothing new
     gold = pd.read_parquet(run / "gold.parquet").set_index(uid)
     assert gold.loc[pair["id_l"], "cluster_id"] == gold.loc[pair["id_r"], "cluster_id"]
     record = say("list", "kinds", "--workspace", run, "--open")["kinds"][0]["id"]
     say("answer", "kind", record, "company", "--workspace", run)
+    assert record in {x["id"] for x in say("list", "kinds", "--workspace", run, "--pending")["kinds"]}  # written in, not applied: still listed
+    assert record not in {x["id"] for x in say("list", "kinds", "--workspace", run, "--open")["kinds"]}
     say("apply", "answers", "--workspace", run)
+    kinds = say("list", "kinds", "--workspace", run, "--pending")
+    assert kinds["applied"] == 1 and record not in {x["id"] for x in kinds["kinds"]}  # applied: off the sheet a rerun drew, counted
     assert pd.read_parquet(run / "gold.parquet").set_index(uid).loc[record, ["kind", "kind_by"]].tolist() == [2, "people"]
     entity = say("describe", "entity", pair["id_l"], "--workspace", run)
     assert {pair["id_l"], pair["id_r"]} <= {x["id"] for x in entity["records"]} and any(x["by"] == "people: match" for x in entity["links"])
@@ -1738,7 +1771,7 @@ def test_nayose_takes_a_file_from_the_check_to_people_s_answers(tmp_path, popula
     scored = next(x for x in json.loads((run / "steps.json").read_text())["runs"][0]["steps"] if x["step"] == "score")
     assert patterns["pairs"] == sum(scored["reached"][patterns["fields"][0]].values())
     assert sum(x["merged"] for x in patterns["patterns"]) == len(pd.read_parquet(run / "matches"))  # no decision yet said no
-    assert all(x["merged"] + x["wait"] + x["held"] + x["apart"] == x["pairs"] and 0 < len(x["examples"]) <= 3 for x in patterns["patterns"])
+    assert all(x["merged"] + x["wait"] + x["held"] + x["apart"] == x["pairs"] and min(x["wait"], x["held"], x["apart"]) >= 0 and 0 < len(x["examples"]) <= 3 for x in patterns["patterns"])
     sheet = pd.read_parquet(run / "review.parquet")
     assert sum(x["wait"] for x in patterns["patterns"]) == (sheet["why"] == "decide").sum()  # what waits is what the sheet asks
     matched = say("match", "records", tmp_path / "new.parquet", "--workspace", run)
@@ -2592,6 +2625,7 @@ def test_the_page_answers_once_per_key_shows_any_row_and_says_when_the_server_is
         page.wait_for_selector(".next")
         page.evaluate("setWorkspace('')")  # the first screen of a new user: no workspace
         page.wait_for_selector(".welcome .example .node.static")  # what it does, by an example, before anything else
+        assert not page.is_visible("#lost")  # the lost-server banner, only once it is lost
         assert page.inner_text("h1").endswith("Choose a workspace") and page.get_attribute(".rail li:first-child .navitem", "aria-current") == "page"
         assert page.get_attribute(".navitem[data-screen=records]", "aria-current") == "false"  # the highlight is where you are
         assert all(b.is_disabled() for b in page.query_selector_all("[data-loop]")) and page.is_disabled("#search")  # off until the first run
@@ -2605,11 +2639,17 @@ def test_the_page_answers_once_per_key_shows_any_row_and_says_when_the_server_is
         page.fill("#cin", str(tmp_path / "theirs.parquet"))
         page.click("#load")  # copied into it, then described
         page.wait_for_selector("details.fgroup[data-g='ID'][open]", timeout=60_000)  # the ID it can't find opens its group
-        assert page.text_content("#files").startswith("0001-theirs") and "Record ID needed" in page.inner_text("details.fgroup[data-g='ID'] summary")
+        assert page.text_content("#files").startswith("theirs ·") and "Record ID needed" in page.inner_text("details.fgroup[data-g='ID'] summary")
         assert page.inner_text("#loaded h2.question") == "Did your file load?" and page.inner_text("#loaded .answer").startswith("Not yet")  # its question first
         loaded, groups = page.query_selector("#loaded").bounding_box(), page.query_selector("#out").bounding_box()
         assert loaded["y"] + loaded["height"] <= groups["y"]  # did it load, then the columns by field: in reading order
         columns = tmp_path / "workspaces" / "fresh" / "columns.toml"
+        assert page.evaluate("""async () => {  // a group whose only suggestion is a feature to add, a kanji name: no Keep all beside it
+            const w = await run("columns", "describe workspace"), d = await run("columns", "describe records", {loaded: w.inputs.slice(-1)[0].path});
+            const box = document.createElement("div");
+            box.innerHTML = features({...d, placements: d.placements.filter((x) => !x.feature.startsWith("Name/"))}, {toggled: new Map(), ghosts: new Set(["Name"])});
+            const g = box.querySelector("details.fgroup[data-g='Name']");
+            return !!g.querySelector(".frow.offer") && !g.querySelector("[data-keepall]"); }""")
         page.click("[data-suggest='ID']")  # what the file's contents place there, shown, then kept
         page.click(".drop[data-slot='ID/Record ID'] [data-keep]")
         page.wait_for_function("() => !document.querySelector('.colchip.ghost')")
@@ -2714,6 +2754,8 @@ def test_the_page_answers_once_per_key_shows_any_row_and_says_when_the_server_is
         page.wait_for_selector(".scene:popover-open .stage text", timeout=30_000)  # replayed on a pair of this run
         page.click(".navitem[data-screen=pairs]")
         page.wait_for_selector("[data-a=match]")
+        page.wait_for_function("() => document.querySelector('#written').textContent === '1'")  # the pair written in before: still listed, and can be applied
+        assert not page.is_disabled("#apply")
         assert page.query_selector(".wf-grid .wf rect.for")  # each comparison moves the total, from the start, toward the line
         assert not page.query_selector(".scene:popover-open")  # another page: the replay closed with the one it was on
         page.wait_for_selector(".wf-grid [data-how]")  # then the test that set each step, and what found the pair
@@ -2759,10 +2801,26 @@ def test_the_page_answers_once_per_key_shows_any_row_and_says_when_the_server_is
             const t = grid(box, Array.from({length: 2000}, (_, n) => ({n})), ["n"], {selected: 0});
             t.select(1500);
             return box.querySelector('tr[data-i="1500"]')?.getAttribute("aria-selected") === "true"; }""")
+        page.click(".navitem[data-screen=run]")
+        page.click("[data-act='rerun records']")
+        page.click("dialog .dlg-foot .btn.filled")
+        page.wait_for_selector("#out .steps-card")  # one long command at a time: the others wait for it, on this page
+        assert page.is_disabled("[data-act='add records']") and page.is_disabled("[data-act='match records']")
+        page.wait_for_selector("[data-act='add records']:not([disabled])", timeout=120_000)
+        page.click("[data-act='rerun records']")  # started, then left: back on step 3 once it ends, its buttons are free again
+        page.click("dialog .dlg-foot .btn.filled")
+        page.wait_for_selector("#out .steps-card")
+        page.click(".navitem[data-screen=results]")
+        page.wait_for_selector("#snack:has-text('Done')", timeout=120_000)
+        page.click(".navitem[data-screen=run]")
+        page.wait_for_selector("[data-act='add records']:not([disabled])", timeout=10_000)
         httpd.shutdown()
         httpd.server_close()
+        nav = page.inner_text("#nav")
         lost = page.evaluate("() => run('pairs', 'list pairs')")
         assert lost["event"] == "error" and lost["error"].startswith("Lost the server")
+        page.evaluate("() => refresh()")  # the stepper as it was, the loss said once above the page
+        assert page.is_visible("#lost") and page.inner_text("#nav") == nav and "Lost the server" not in page.inner_text("#screen")
         browser.close()
 
 

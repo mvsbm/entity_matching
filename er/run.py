@@ -510,6 +510,7 @@ class Run:
         texts = [(json.dumps(self.model, ensure_ascii=False), state / "model.json"), (self.config, state / "config.txt")] if part == 0 else []
         if self.basis:  # the u this run scored with, and what an increment needs to tell when they go stale
             texts.append((json.dumps(dict(model=self.scoring, basis=self.basis), ensure_ascii=False), state / "scoring.json"))
+        earlier = folder.history(out) if part == 0 else None  # the runs before: read before the old log goes with the old run
         sheets, n = [], folder.next_part(out / folder.KIND_ANSWERS)
         if n == 0 and (old := out / folder.OLD_ANSWERS).exists():  # a folder that keeps its answers in state/: its first sheet
             sheets, n = [(f"SELECT * FROM read_parquet({lit(old)})", out / folder.KIND_ANSWERS / "part-00000.parquet")], 1
@@ -523,17 +524,17 @@ class Run:
                                      (f"SELECT * FROM {'records' if part == 0 else 'new_records'}", state / "records" / name), *aside, *sheets],
                      texts + people, replace, frames)
         self._done("write", "O(N + C)", f"O({self.n:,} + {self._count('matches'):,})", t)
-        self._log(out, part > 0, part=part, disabled=self.disabled)
+        self._log(out, part > 0, earlier, part=part, disabled=self.disabled)
         if part == 0:  # the round this method is in, and how it did
             linked = next(x for x in reversed(self.steps) if x["step"] == "cluster")
             folder.round_ran(out, dict(config=self.config, method=folder.method(out), at=datetime.now().isoformat(timespec="seconds"),
                                        matched=linked["accepted"], expected_false=linked["expected_false"]))
 
-    def _log(self, out: Path, append: bool, **entry: object) -> None:
+    def _log(self, out: Path, append: bool, earlier: list[dict] | None = None, **entry: object) -> None:
         """This run's entry in steps.json (folder.log): when, the code and config that ran, the files read with their
-        SHA-256, and each step."""
+        SHA-256, and each step; a full run's, after `earlier` (folder.history)."""
         folder.log(out, dict(at=datetime.now().isoformat(timespec="seconds"), code=code_version(self.settings.root), config=self.config,
-                             inputs=self.inputs, **entry, steps=self.steps), append)
+                             inputs=self.inputs, **entry, steps=self.steps), append, earlier)
 
     def report(self, path: str | Path, out: Path, pipeline: Path) -> tuple[list[tuple[str, Path]], list[tuple[pd.DataFrame, Path]]]:
         """Step 9, for people: qa.md (the label-free checks, qa), report.txt (the run on a page with no record's value in
@@ -572,18 +573,21 @@ class Run:
     def match(self, path: str | Path, out: Path) -> pd.DataFrame:
         """Which entity each record of `path` would join in the run in `out`, and by what, writing nothing: the
         increment's steps without its write. One row per record read: its ID; `entity`, the cluster_id it would have;
-        `status` (joins an entity, a new entity, already in the run, or set aside and why); `by`, the rule or `fs` that
-        linked it most strongly, and `weight`, its best model link in bits. O(an increment) less its write."""
+        `status` (joins an entity; waits for people, a pair of it below the trust line, so it joins only once people
+        check; a new entity; already in the run; or set aside and why); `by`, the rule or `fs` that linked it most
+        strongly, and `weight`, its best model link in bits, or its best pair waiting. O(an increment) less its write."""
         u = q(self.uid)
         if self._join(path, out):
             self.con.execute(f"""CREATE OR REPLACE TABLE er_match AS WITH
                 ends AS (SELECT {q(self.l)} AS id, rule, NULL::DOUBLE AS w FROM rule_kept WHERE merged UNION ALL SELECT {q(self.r)}, rule, NULL FROM rule_kept WHERE merged
                          UNION ALL SELECT {q(self.l)}, 'fs', match_weight FROM matches UNION ALL SELECT {q(self.r)}, 'fs', match_weight FROM matches),
                 best AS (SELECT id, arg_max(rule, coalesce(w, 1e9)) AS by, max(w) AS weight FROM ends GROUP BY 1),
+                waits AS (SELECT id, max(w) AS w FROM (SELECT {q(self.l)} AS id, match_weight AS w FROM proposed UNION ALL SELECT {q(self.r)}, match_weight FROM proposed
+                          UNION ALL SELECT {q(self.l)}, match_weight FROM rule_kept WHERE NOT merged UNION ALL SELECT {q(self.r)}, match_weight FROM rule_kept WHERE NOT merged) GROUP BY 1),
                 old AS (SELECT DISTINCT g.cluster_id FROM gold g JOIN gold_old o USING ({u}))
                 SELECT n.{u}, g.cluster_id AS entity, CASE WHEN g.cluster_id IN (SELECT cluster_id FROM old) THEN 'joins an entity'
-                       ELSE 'a new entity' END AS status, b.by, b.weight
-                FROM new_ids n JOIN gold g USING ({u}) LEFT JOIN best b ON b.id = n.{u}""")
+                       WHEN wt.id IS NOT NULL THEN 'waits for people' ELSE 'a new entity' END AS status, b.by, coalesce(b.weight, wt.w) AS weight
+                FROM new_ids n JOIN gold g USING ({u}) LEFT JOIN best b ON b.id = n.{u} LEFT JOIN waits wt ON wt.id = n.{u}""")
         else:
             self.con.execute(f"CREATE OR REPLACE TABLE er_match AS SELECT {u}, NULL::VARCHAR AS entity, '' AS status, NULL::VARCHAR AS by, NULL::DOUBLE AS weight WHERE FALSE")
         return self.con.execute(f"""SELECT * FROM er_match UNION ALL BY NAME

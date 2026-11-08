@@ -33,7 +33,7 @@ from er import folder, inbox, intake
 from er.config import InputError, adjust, load_pipeline, restrict, sources_text, toml_of, widen
 from er.folder import Busy
 from er.report import (applied, compare_records, describe_entity, describe_key, describe_matching, describe_method, describe_workspace, entity_pairs, explain_pair, fill_rates,
-                       list_patterns, trust_state)
+                       key_how, list_patterns, rule_how, trust_state)
 from er.source import describe, find, lexicon
 from er.strings import connect
 from er.run import Run, trial
@@ -326,6 +326,7 @@ def given(a: dict) -> str:
     return str(parts[-1])
 
 
+FLAG = r"^\s*\S{1,6}\s*$"  # what a person/company flag's values look like, a short code (1, P, 法人, PERSON), padded or not: to warn of a wrong column, never to suggest one
 SLOT_FIELD = {"person name": "person_name", "family": "person_name", "given": "given_name", "company name": "company_name"}  # a slot without a field of its own: whose pattern its values should match
 
 
@@ -373,7 +374,8 @@ def described(a: dict) -> dict:
         return (None if x.get("added") else x.get("field")) or SLOT_FIELD.get(x.get("role") or x.get("type"))
     d = describe(a["input"], connect(s.compute)[0], s.columns, s.detect, lex=lexicon(s.paths["reference"], tuple(s.standardize.kana_fold.items())),
                  slots={path: x["columns"] for path, x in slots(feats)},
-                 slot_patterns={path: s.detect[f] for path, x in slots(feats) if (f := field(path, x)) in s.detect})
+                 slot_patterns={**{path: s.detect[f] for path, x in slots(feats) if (f := field(path, x)) in s.detect},
+                                **{path: FLAG for path, x in slots(feats) if x.get("type") == "flag"}})
     try:  # what a run of this file would turn off, as the run decides it: from the mapping, no record read
         counted_once(p, present := present_fields(s, [c["column"] for c in d["columns"]]))
         off = restrict(p, set(present))[1]
@@ -648,16 +650,21 @@ def describe_matching_(a: dict, emit: "Emit") -> dict:
 
 def describe_method_(a: dict, emit: "Emit") -> dict:
     s, p, _ = setup(a)
-    out = Path(a["workspace"])
-    return {**describe_method(out, p, s), "next": [dict(command=nayose("list", "pairs", "--workspace", out, "--open"), why="the pairs left to decide")]}
+    out, tuned = Path(a["workspace"]), setup(a, {})[1]  # the method as tuned: what this one leaves out, in words
+    have, keys = {x.name for _, _, x in p.rules.each()}, {b.name for b in p.fs.blockers}
+    dropped = dict(rules=[dict(name=x.name, **rule_how(st, x)) for _, st, x in tuned.rules.each() if x.name not in have],
+                   keys=[dict(name=b.name, **key_how(b)) for b in tuned.fs.blockers if b.name not in keys])
+    return {**describe_method(out, p, s), "dropped": dropped, "next": [dict(command=nayose("list", "pairs", "--workspace", out, "--open"), why="the pairs left to decide")]}
 
 
-def picked(frame: pd.DataFrame, why: str | None, only_open: bool) -> pd.DataFrame:
+def picked(frame: pd.DataFrame, a: dict) -> pd.DataFrame:  # the sheet's rows --why, --open and --pending ask for
     keep = pd.Series(True, index=frame.index)
-    if why:
-        keep &= frame["why"] == why
-    if only_open:
+    if a["why"]:
+        keep &= frame["why"] == a["why"]
+    if a["open"]:
         keep &= frame["status"] == "open"
+    if a["pending"]:
+        keep &= frame["status"] != "applied"
     return frame[keep]
 
 
@@ -672,7 +679,7 @@ def list_pairs(a: dict, emit: "Emit") -> dict:
         raise InputError(f"no run in {out}", fix="resolve records into that folder first")
     done = pairs.merge(applied(out, uid), on=[f"{uid}_l", f"{uid}_r"], how="left", suffixes=("", "_applied"))["decision_applied"]
     pairs.insert(1, "status", np.where(done.notna() & (done == pairs["decision"]), "applied", np.where(pairs["decision"].notna(), "written in", "open")))
-    return dict(counts=counts(pairs), pairs=rows(ids(picked(pairs, a["why"], a["open"]), uid)), next=[dict(command=nayose("decide", "pair", "<ID>", "<ID>", "match", "--workspace", out), why="decide one"),
+    return dict(counts=counts(pairs), pairs=rows(ids(picked(pairs, a), uid)), next=[dict(command=nayose("decide", "pair", "<ID>", "<ID>", "match", "--workspace", out), why="decide one"),
                                                     dict(command=nayose("apply", "decisions", "--workspace", out), why="apply the decisions written in")])
 
 
@@ -729,7 +736,8 @@ def list_kinds(a: dict, emit: "Emit") -> dict:
     if kinds is None:
         raise InputError(f"{out}: no kind_review.parquet", fix="a full run that tells persons from companies writes it: nayose resolve records …")
     kinds.insert(2, "status", np.where(kinds["kind"].notna(), "written in", "open"))
-    return dict(counts=counts(kinds), kinds=rows(ids(picked(kinds, a["why"], a["open"]), uid)), next=[dict(command=nayose("answer", "kind", "<ID>", "company", "--workspace", out), why="answer one"),
+    answered = {x for f in folder.answer_parts(out) for x in pd.read_parquet(f, columns=[uid])[uid].astype("string")}  # applied answers leave the sheet a rerun draws
+    return dict(counts=counts(kinds), applied=len(answered), kinds=rows(ids(picked(kinds, a), uid)), next=[dict(command=nayose("answer", "kind", "<ID>", "company", "--workspace", out), why="answer one"),
                                                     dict(command=nayose("apply", "answers", "--workspace", out), why="apply the answers written in: a rerun")])
 
 
@@ -789,6 +797,7 @@ COMPUTE = Param("compute", "DuckDB limits for this run, over config/settings.tom
                 "temp_directory=<folder> (past the memory limit DuckDB spills there)", "many", metavar="KEY=VALUE")
 PIPELINE = Param("pipeline", "the pipeline file (default: config/final.toml)", "path")
 OPEN = Param("open", "only the rows nobody has answered", "flag")
+PENDING = Param("pending", "only the rows not yet applied: open, or written in", "flag")
 FILE = lambda what: Param("file", f"{what} (default: the workspace's own sheet, with the answers written in)", "path")
 RUN_RESULT = {"summary": "the run in words: records, entities, who joined them, the model's links, what is left to people",
               "seconds": "the run's time", "wrote": "the files written", "next": "the commands that usually follow"}
@@ -928,7 +937,7 @@ COMMANDS: tuple[Command, ...] = (
             "in, records set aside, a write still owed, the last summary, the round with its audits, and the trust line. O(N) in SQL.",
             (Param("workspace", "the workspace", "path", positional=True), PIPELINE),
             {"workspace": "the workspace", "records": "records", "entities": "entities", "largest": "the 10 largest entities",
-             "runs": "each run so far: at, what, files, seconds", "pairs": "open pairs to decide and audit, and decisions written in",
+             "runs": "each run so far: at, what, the record files it read, seconds", "pairs": "open pairs to decide and audit, and decisions written in",
              "kinds": "open records to decide and to measure, and answers written in", "set_aside": "records set aside",
              "write_owed": "a write cut short, finished by the next one", "summary": "the last run's summary",
              "round": "the round now: one per method the workspace ran (rounds.json)", "audits": "this round's audits people decided: checked, false",
@@ -1022,6 +1031,7 @@ COMMANDS: tuple[Command, ...] = (
              "method": "the workspace's changes to the tuned method (method.toml)", "round": "the round now (0: no round recorded)",
              "rounds": "round, method, at, matched, expected_false, decided, audited, false_found",
              "audits": "this round's audits: checked, false, at_most (the false rate's 95% upper bound)",
+             "dropped": "the rules and pair keys the method leaves out, each as describe matching words it (rules: exact, fuzzy; keys: method, keys)",
              "to_decide": "pairs left to decide", "bands": "weight_from, pairs, accepted",
              "decided": "each pair people decided: id_l, id_r, decision, why, round, weight, named, rule",
              "rules": "name, pairs, below (scored below the line), different (people said)",
@@ -1093,7 +1103,7 @@ COMMANDS: tuple[Command, ...] = (
             "The run's review.parquet: decide rows (the pairs just below the threshold, and those above it with no name "
             "compared) and audit rows (accepted pairs just above it), each with both records' fields, each comparison's level "
             "and bits, and a status: open, written in, or applied. O(sheet rows).",
-            (WORKSPACE, Param("why", "decide or audit only", "choice", ("decide", "audit")), OPEN),
+            (WORKSPACE, Param("why", "decide or audit only", "choice", ("decide", "audit")), OPEN, PENDING),
             {"counts": "rows by why and status", "pairs": "each pair: why, status, decision, id_l, id_r, match_weight, accepted, fields, levels",
              "next": "the commands that usually follow"},
             "nayose list pairs --workspace workspaces/customers --open", list_pairs, quick=True,
@@ -1127,8 +1137,8 @@ COMMANDS: tuple[Command, ...] = (
             "The run's kind_review.parquet: decide rows (where the engine and the file's flag disagree, and the flag's likely "
             "errors) and measure rows (a random draw that places the engine's lines), each with what the engine, the name and "
             "the flag say, and why it is there. O(sheet rows).",
-            (WORKSPACE, Param("why", "decide or measure only", "choice", ("decide", "measure")), OPEN),
-            {"counts": "rows by why and status", "kinds": "each record: id, why, status, reason, engine_says, name_says, name, kind",
+            (WORKSPACE, Param("why", "decide or measure only", "choice", ("decide", "measure")), OPEN, PENDING),
+            {"counts": "rows by why and status", "applied": "the records answered in earlier rounds: applied, they leave the sheet", "kinds": "each record: id, why, status, reason, engine_says, name_says, name, kind",
              "next": "the commands that usually follow"},
             "nayose list kinds --workspace workspaces/customers --open", list_kinds, quick=True,
             show={"kinds": ("id", "why", "status", "name", "engine_says", "name_says", "flag")}),

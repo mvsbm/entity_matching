@@ -108,6 +108,9 @@ h3.zq { font-size: 15px; font-weight: 500; margin: 16px 0 6px; }  /* the item as
 table { border-collapse: collapse; width: 100%; }
 th, td { text-align: left; padding: 9px 16px; border-bottom: 1px solid var(--line); vertical-align: middle; white-space: nowrap; }
 td.wrap { white-space: normal; }
+table.repairs { table-layout: fixed; width: 100%; } table.repairs th:first-child { width: 72px; } table.repairs th:nth-child(2) { width: 20%; }
+table.repairs td { overflow-wrap: anywhere; white-space: normal; }  /* a whole row as given: both values in view, side by side */
+.clip { display: inline-block; max-width: 11em; overflow: hidden; text-overflow: ellipsis; vertical-align: bottom; }  /* a long value: the columns after it stay in view */
 thead th { position: sticky; top: 0; background: var(--surface); font-weight: 500; font-size: 12px; color: var(--muted); z-index: 1; }
 td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
 tbody tr.pick { cursor: pointer; }
@@ -126,6 +129,8 @@ tr.differ td.v { background: var(--mark); color: var(--mark-ink); }
 .banner.bad { background: var(--bad-bg); color: var(--bad); }
 .banner.warn { background: var(--warn-bg); color: var(--warn); }
 .banner.info { background: var(--primary-soft); color: var(--ink); }
+#lost[hidden] { display: none; }  /* .banner's flex would show it empty */
+#lost { position: fixed; top: 68px; left: 50%; transform: translateX(-50%); z-index: 30; width: min(640px, calc(100% - 32px)); box-shadow: 0 2px 8px rgb(0 0 0 / 0.2); }
 .banner b { display: block; }
 .banner .fix { color: var(--ink); margin-top: 2px; }
 .meter { display: inline-block; width: 64px; height: 6px; border-radius: 3px; background: var(--line); vertical-align: middle; margin-right: 8px; overflow: hidden; }
@@ -189,6 +194,7 @@ body.term-open main { padding-bottom: 300px; }
 @keyframes spin { to { transform: rotate(360deg); } }
 @media (prefers-reduced-motion: reduce) { .spin { animation: none; } }
 
+@media (max-width: 1320px) { .split.item-first { grid-template-columns: minmax(0, 56fr) minmax(0, 44fr); } .queue th, .queue td { padding: 8px 8px; } .queue .clip { max-width: 6em; } }  /* the queue's columns whole */
 @media (max-width: 1100px) { .split, .split.item-first { grid-template-columns: minmax(0, 1fr); } .panel-sticky { position: static; } }
 @media (max-width: 860px) {
   .sidenav { transform: translateX(-100%); transition: transform .2s; width: 256px; box-shadow: var(--shadow); }
@@ -277,6 +283,7 @@ body.collapsed .navitem .stack, body.collapsed .rail li::before { display: none;
 .bar.pick { cursor: pointer; } .bar.pick:hover { filter: brightness(1.15); }
 .tag { display: inline-flex; align-items: center; height: 20px; padding: 0 7px; border-radius: 10px; font-size: 11px; background: var(--hover); color: var(--muted); margin: 0 3px 0 0; white-space: nowrap; }
 .diff { background: var(--mark); color: var(--mark-ink); border-radius: 3px; padding: 0 1px; }
+.diff.gap { display: inline-block; width: 2px; height: 1em; padding: 0; margin: 0 1px; vertical-align: -0.1em; background: var(--mark-ink); }  /* where the other value holds more */
 .chain { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; }
 .chain .to { color: var(--faint); }
 .wf-grid { display: grid; grid-template-columns: minmax(80px, max-content) minmax(120px, max-content) minmax(160px, 1fr) 48px 52px; gap: 0 10px; align-items: center; font-size: 13px; margin-top: 14px; }
@@ -471,6 +478,7 @@ dialog:has(.dlg-body.wide) { width: min(960px, calc(100vw - 32px)); }
 </header>
 <nav class="sidenav" id="nav" aria-label="Pages"></nav>
 <main id="screen" aria-live="polite"></main>
+<div id="lost" class="banner bad" role="alert" hidden></div>
 <section class="term" id="term" hidden aria-label="Commands run">
   <div class="term-bar"><span id="term-ic"></span><b>nayose</b><span class="faint">every button runs one of these; each can be typed in a terminal as it is</span>
     <span style="flex:1"></span><button class="iconbtn" id="term-clear" aria-label="Clear"></button><button class="iconbtn" id="term-close" aria-label="Close"></button></div>
@@ -516,7 +524,7 @@ dialog:has(.dlg-body.wide) { width: min(960px, calc(100vw - 32px)); }
             {"command": "describe matching", "args": {"workspace": "@workspace"}, "reads": ["nodes"]}]},
   {"id": "pairs", "title": "Review possible matches", "icon": "pairs", "what": "Close calls, just below the line, and pairs with no name compared: you decide.",
    "strip": ["score", "accept", "people", "group"],
-   "uses": [{"command": "list pairs", "args": {"workspace": "@workspace", "open": true}, "reads": ["pairs", "counts"]},
+   "uses": [{"command": "list pairs", "args": {"workspace": "@workspace", "pending": true}, "reads": ["pairs", "counts"]},
             {"command": "describe workspace", "args": {"workspace": "@workspace"}, "reads": ["trust"]},
             {"command": "lower trust", "args": {"workspace": "@workspace", "compute": "@compute"}, "form": [], "reads": ["summary"]},
             {"command": "raise trust", "args": {"workspace": "@workspace", "compute": "@compute"}, "form": [], "reads": ["summary"]},
@@ -528,7 +536,7 @@ dialog:has(.dlg-body.wide) { width: min(960px, calc(100vw - 32px)); }
             {"command": "describe matching", "args": {"workspace": "@workspace"}, "reads": ["nodes"]}]},
   {"id": "improve", "title": "Improve matching", "icon": "loop", "what": "What people's decisions say about the method: try a change, adopt it, and review the new round.",
    "strip": ["rules", "candidates", "score", "accept", "people"],
-   "uses": [{"command": "describe method", "args": {"workspace": "@workspace"}, "reads": ["line", "method", "round", "rounds", "audits", "bands", "decided", "rules", "keys", "steps", "proposals", "trials"]},
+   "uses": [{"command": "describe method", "args": {"workspace": "@workspace"}, "reads": ["line", "method", "round", "rounds", "audits", "bands", "decided", "rules", "keys", "steps", "proposals", "trials", "trust", "dropped"]},
             {"command": "try method", "args": {"workspace": "@workspace", "line": "@line", "drop": "@drop", "add": "@add", "compute": "@compute"}, "reads": ["trial"]},
             {"command": "adopt method", "args": {"workspace": "@workspace", "trial": "@trial", "compute": "@compute"}, "reads": ["summary"]},
             {"command": "reset method", "args": {"workspace": "@workspace", "compute": "@compute"}, "reads": ["summary"]},
@@ -537,7 +545,7 @@ dialog:has(.dlg-body.wide) { width: min(960px, calc(100vw - 32px)); }
             {"command": "describe matching", "args": {"workspace": "@workspace"}, "reads": ["nodes"]}]},
   {"id": "kinds", "title": "Confirm person or company", "icon": "kinds", "what": "Records the engine holds back, and a sample that sharpens it: person or company?",
    "strip": ["records", "kind", "score"],
-   "uses": [{"command": "list kinds", "args": {"workspace": "@workspace", "open": true}, "reads": ["kinds", "counts"]},
+   "uses": [{"command": "list kinds", "args": {"workspace": "@workspace", "pending": true}, "reads": ["kinds", "counts"]},
             {"command": "answer kind", "args": {"id": "@id", "kind": "@kind", "workspace": "@workspace"}, "reads": ["kind"]},
             {"command": "apply answers", "args": {"workspace": "@workspace", "compute": "@compute"}, "form": [], "reads": ["summary"]},
             {"command": "describe matching", "args": {"workspace": "@workspace"}, "reads": ["nodes"]}]},
@@ -561,7 +569,10 @@ const fmt = (v) => v === null || v === undefined ? "—" : typeof v === "number"
 const pct = (v) => v === null || v === undefined ? "—" : `${Math.round(v * 100)}%`;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const store = (k, v) => { try { if (v !== undefined) localStorage.setItem(`nayose.${k}`, v); return localStorage.getItem(`nayose.${k}`); } catch { return null; } };
-const words = (s) => String(s).replaceAll("_", " ");
+const FIELD_WORDS = {kind_flag: "person or company (flag)"};
+const fileName = (n) => String(n).replace(/^\d+-/, "");  // a workspace's copy of a file, by the name it came with
+const kindSays = (s) => String(s ?? "").replace(/^\d+ /, "");  // "2 company", the engine's code first, as people read it: company  // a field whose name says nothing to people
+const words = (s) => FIELD_WORDS[s] ?? String(s).replaceAll("_", " ");
 
 // Line icons, drawn here: nothing comes from the network.
 const ICON = {
@@ -602,12 +613,17 @@ const icon = (name) => `<svg class="ic" viewBox="0 0 24 24" aria-hidden="true">$
 let COMMANDS = {}, current = "records", keyHandler = null, steps = {};
 const state = {};
 
-async function api(path, body) {  // the page's one network call: a lost server is a value, never a throw
+async function api(path, body) {  // the page's one network call: a lost server is a value, never a throw, said once above the page
+  const lost = {error: "Lost the server: is nayose open ui still running?", fix: "Start it again, then reload this page."};
   try {
     const r = await fetch(path, {method: body ? "POST" : "GET", headers: {"X-Token": token, "Content-Type": "application/json"}, body: body ? JSON.stringify(body) : undefined});
-    return await r.json();
+    const j = await r.json();
+    $("lost").hidden = true;
+    return j;
   } catch {
-    return {error: "Lost the server: is nayose open ui still running?", fix: "Start it again, then reload this page."};
+    $("lost").innerHTML = `${icon("error")}<div><b>${esc(lost.error)}</b><div class="fix">${esc(lost.fix)}</div></div>`;
+    $("lost").hidden = false;
+    return {...lost, lost: true};
   }
 }
 const screen = (id) => LAYOUT.screens.find((s) => s.id === id);
@@ -662,6 +678,7 @@ function snack(html, ms = 0) {
 // command runs draws nothing from it: its events and its result go nowhere, and the command runs on.
 const inflight = new Map();
 let visit = 0;  // one per page drawn (go)
+let longRun = null;  // the long command step 3 started ({command, visit}), while it runs: its buttons wait, on this page and when it is drawn again
 function run(id, command, extra = {}, onEvent = null) {
   const args = argsFor(id, command, extra), key = JSON.stringify([command, args]), mine = visit;
   const here = () => mine === visit;
@@ -670,7 +687,7 @@ function run(id, command, extra = {}, onEvent = null) {
 }
 
 async function runOnce(command, args, onEvent, tries = 10) {
-  const quick = COMMANDS[command].quick, failed = (j) => ({event: "error", error: j.error, fix: j.fix || ""});
+  const quick = COMMANDS[command].quick, failed = (j) => ({event: "error", error: j.error, fix: j.fix || "", lost: j.lost});
   const started = await api("/api/run", {command, args});
   if (started.error) return failed(started);
   const entry = term.add(started.command);
@@ -680,15 +697,19 @@ async function runOnce(command, args, onEvent, tries = 10) {
     const j = await api(`/api/job/${started.job}?from=${from}`);
     if (j.error) {  // the server is gone: the command ends here, the page never waits forever
       entry.end(failed(j), 1);
-      snack(`${icon("error")}<span class="msg">${esc(j.error)}</span>`, 6000);
       return failed(j);
     }
     for (const e of j.events) { last = e; if (e.event === "step") entry.step(e); if (onEvent) onEvent(e); }
     from += j.events.length;
     if (j.done) {
       entry.end(last, j.exit);
+      if (longRun && longRun.command === command) {  // step 3's run ended: its buttons free, its page drawn again if it was left and opened since
+        const from = longRun.visit;
+        longRun = null;
+        if (current === "run" && visit !== from) go("run");
+      }
       if (quick && j.exit === 75 && tries > 1) { await sleep(1000); return runOnce(command, args, onEvent, tries - 1); }  // busy: once it's done
-      if (!quick && j.exit === 0) refresh();  // the stepper, whichever page is open now
+      if (!quick && j.exit === 0) { memoAt = -1; refresh(); }  // the stepper, whichever page is open now; no answer kept from before the write
       if (!quick) snack(j.exit === 0 ? `${icon("check")}<span class="msg">Done <code>${esc(command)}</code></span>`
                                      : `${icon("error")}<span class="msg">Failed <code>${esc(command)}</code></span><button class="btn" data-term>View</button>`, 6000);
       return last;
@@ -711,9 +732,9 @@ const STATE_WORD = {done: "done", current: "next", attention: "needs you", optio
 function progress(d) {
   const ran = d && d.event !== "error" && d.records > 0, s = {};
   s.workspace = state.workspace ? {state: "done", line: state.workspace.split("/").filter(Boolean).pop()} : {state: "current", line: "choose one"};
-  const files = (d && d.inputs) || [], last = files.length ? files[files.length - 1].name.replace(/^\d+-/, "") : "";
+  const files = (d && d.inputs) || [], last = files.length ? fileName(files[files.length - 1].name) : "";
   s.columns = ran || last ? {state: "done", line: last ? `${last} loaded` : "ready"} : {state: state.workspace ? "current" : "later", line: "load your file"};
-  s.run = ran ? {state: "done", line: `${fmt(d.records)} → ${fmt(d.entities)} entities`} : {state: last ? "current" : "later", line: last ? "ready to run" : "not yet"};
+  s.run = ran ? {state: "done", line: `${fmt(d.records)} → ${plural(d.entities, "entity", "entities")}`} : {state: last ? "current" : "later", line: last ? "ready to run" : "not yet"};
   if (!ran) {
     for (const k of ["pairs", "kinds", "results"]) s[k] = {state: "later", line: "after matching"};
   } else {
@@ -724,10 +745,10 @@ function progress(d) {
     s.kinds = k.decide ? {state: "attention", line: `${fmt(k.decide)} to decide`}
       : k.written_in ? {state: "attention", line: `${fmt(k.written_in)} answered, to apply`}
       : {state: "optional", line: k.measure ? `${fmt(k.measure)} to check` : "nothing to check"};
-    s.results = d.entities < d.records ? {state: "done", line: `${fmt(d.entities)} entities`} : {state: "later", line: "none joined yet"};
+    s.results = d.entities < d.records ? {state: "done", line: `${plural(d.entities, "entity", "entities")}`} : {state: "later", line: "none joined yet"};
     const a = d.audits || {checked: 0, false: 0}, r = `round ${d.round || 1}`;
-    s.improve = tr ? (tr.above.false ? {state: "attention", line: `${fmt(tr.above.false)} different above the trust line`}  // the line is the proof
-                                     : {state: "done", line: `${r} · ${tr.line === "none" ? "nothing merges by itself" : `${fmt(tr.line)}+ merge by themselves`}`})
+    s.improve = tr ? (tr.above.false + tr.false ? {state: "attention", line: `${fmt(tr.above.false + tr.false)} said different`}  // the line and its sample are the proof, as Improve counts them
+                                     : {state: "done", line: `${r} · ${tr.line === "none" ? "nothing merges by points yet" : `pairs scoring ${fmt(tr.line)}+ merge`}`})
       : a.false ? {state: "attention", line: `${r} · ${fmt(a.false)} false found`}
       : a.checked >= AUDITS ? {state: "done", line: `${r} · none false in ${fmt(a.checked)}`} : {state: "optional", line: `${r} · ${fmt(a.checked)} of ${AUDITS} checked`};
   }
@@ -760,11 +781,16 @@ function rail() {  // the stepper: the navigation, in the order the work is done
 
 async function refresh(d) {  // the stepper, from the page's own describe workspace when it made one, else from one of its own
   if (d === undefined && state.workspace) d = await run("records", "describe workspace");
+  if (d && d.lost) return;  // the stepper as it was: the workspace is still there
   steps = progress(state.workspace ? d : null);
   rail();
   const ran = steps.steps.run.state === "done";
   $("search").disabled = !ran;
   $("search").placeholder = ran ? "Look up a record ID" : "Look up a record ID, after the first run";
+  stepChip();
+}
+
+function stepChip() {  // the heading's chip: its step as the stepper has it
   const s = steps.steps[current], chip = $("stepchip");
   if (s && chip) { chip.className = `chip ${s.state === "done" ? "good" : s.state === "attention" ? "warn" : "info"}`; chip.textContent = `${STATE_WORD[s.state]} · ${s.line}`; }
 }
@@ -816,13 +842,14 @@ const ARROW = '<span class="arrow"><svg viewBox="0 0 26 14" aria-hidden="true"><
 function strip(box, graph, ids, open = null) {
   const nodes = Object.fromEntries(graph.nodes.map((x) => [x.id, x])), all = nodes.records.count;
   box.className = "zone all";
-  box.innerHTML = `${scope("stack", all === null ? "All records" : `All ${fmt(all)} records`)}<div class="flow">${ids.map((id, i) => {
+  box.innerHTML = `${scope("stack", all === null ? "All records" : `All ${plural(all, "record")}`)}<div class="flow">${ids.map((id, i) => {
     const x = nodes[id], k = NODE[id], n = k.n(x);
     return `${i ? ARROW : ""}<button class="node ${k.tone || ""} ${n === null || n === undefined ? "dim" : ""}" data-node="${id}" aria-expanded="false" title="${esc(x.name)}: ${esc(x.method || "")}">
-      <span class="top">${icon(k.icon)}${esc(k.name)}</span>${n === null || n === undefined ? "" : `<span class="n">${fmt(n)}<span class="u">${esc(k.word)}</span></span>`}</button>`;  // not run yet: its name alone
+      <span class="top">${icon(k.icon)}${esc(k.name)}</span>${n === null || n === undefined ? "" : `<span class="n"><span class="v">${fmt(n)}</span><span class="u">${esc(k.word)}</span></span>`}</button>`;  // not run yet: its name alone
   }).join("")}</div><div class="slot"></div>`;
   const slot = box.querySelector(".slot");
   const show = (id) => {
+    sceneClose();  // a scene pinned from the panel going away goes with it
     box.querySelectorAll(".node").forEach((b) => b.setAttribute("aria-expanded", String(b.dataset.node === id && slot.dataset.open !== id)));
     if (slot.dataset.open === id) { slot.innerHTML = ""; slot.dataset.open = ""; return; }
     slot.dataset.open = id;
@@ -833,7 +860,7 @@ function strip(box, graph, ids, open = null) {
   slot.onclick = (e) => {  // a panel's links, drawn now or later: a customer, a pair
     const c = e.target.closest("[data-example]"), p = e.target.closest("[data-explain]");
     if (c) go("results", c.dataset.example);
-    if (p) explainDialog(current, ...p.dataset.explain.split(" "));
+    if (p) explainDialog(current, ...JSON.parse(p.dataset.explain));
   };
   if (open) show(open);
 }
@@ -859,7 +886,8 @@ function highlight(a, b) {  // two values, the part where they differ marked in 
   let i = 0, j = 0;
   while (i < a.length && i < b.length && a[i] === b[i]) i++;
   while (j < a.length - i && j < b.length - i && a[a.length - 1 - j] === b[b.length - 1 - j]) j++;
-  const mark = (s) => `${esc(s.slice(0, i))}<span class="diff">${esc(s.slice(i, s.length - j))}</span>${esc(s.slice(s.length - j))}`;
+  const mark = (s) => i < s.length - j ? `${esc(s.slice(0, i))}<span class="diff">${esc(s.slice(i, s.length - j))}</span>${esc(s.slice(s.length - j))}`
+    : `${esc(s.slice(0, i))}<span class="diff gap" title="the other holds more here"></span>${esc(s.slice(i))}`;  // nothing of its own: a caret where the other's part is, not a marked letter
   return a === b ? [esc(a), esc(b)] : [mark(a), mark(b)];
 }
 
@@ -886,7 +914,8 @@ const FAMILY = (f) => ({jaro_winkler: "jw", jaro: "jw", jaccard: "ng", levenshte
 const said = (t) => t.function === "exact" ? `same ${words(t.field)}` : `${words(t.field)} ${["jaro_winkler", "jaro", "jaccard"].includes(t.function) ? `≈ ${t.threshold}` : t.function === "hamming" ? `${t.threshold} digit off` : `≤ ${t.threshold} edit${t.threshold > 1 ? "s" : ""}`}`;
 const signed = (v) => v === null || v === undefined ? "—" : Math.abs(v) < 0.05 ? "0.0" : `${v > 0 ? "+" : ""}${v.toFixed(1)}`;
 const seg = (parts) => `<span class="pn-seg">${parts.filter(([n]) => n > 0).map(([n, color, title]) => `<i style="flex:${n};background:${color}" title="${esc(title)}"></i>`).join("")}</span>`;
-const pairLink = (a, b, text) => can("explain pair") ? `<button type="button" class="linkbtn" data-explain="${esc(`${a} ${b}`)}">${esc(text)}</button>` : esc(text);
+const idList = (...xs) => esc(JSON.stringify(xs));  // record IDs in a data attribute, as a list: an ID may hold a space
+const pairLink = (a, b, text) => can("explain pair") ? `<button type="button" class="linkbtn" data-explain="${idList(a, b)}">${esc(text)}</button>` : esc(text);
 const customerLink = (id) => `<button type="button" class="linkbtn" data-example="${esc(id)}">${esc(id)}</button>`;
 
 // a comparison as a staircase: every pair stops at the first step it passes; a step's test replays on a pair of this run
@@ -968,12 +997,12 @@ const DETAIL = {
           title="${b.keys}${b.keys === 11 ? " or more" : ""} key${b.keys > 1 ? "s" : ""}: ${fmt(b.links)} links"></i>`).join("")}</span>
         <div class="pn-ends"><span>1 key: ${fmt((x.by_keys.find((b) => b.keys === 1) || {links: 0}).links)}</span><span>${x.by_keys.length ? `${x.by_keys[x.by_keys.length - 1].keys}${x.by_keys[x.by_keys.length - 1].keys === 11 ? " or more" : ""}: ${fmt(x.by_keys[x.by_keys.length - 1].links)}` : ""}</span></div>` : ""}
       <div class="pn-table" style="--cols:30px minmax(260px,1.6fr) minmax(100px,1fr) 88px 80px 64px 56px">
-        <div class="pn-r h"><span></span><span>lists two records when they share</span><span>pairs listed</span><span></span><span class="num">links found</span><span class="num">only this key</span><span class="num">time</span></div>
+        <div class="pn-r h"><span></span><span>lists two records when they share</span><span>pairs listed</span><span></span><span class="num">likely links</span><span class="num">only this key</span><span class="num">time</span></div>
         ${table(sorted.slice(0, 10))}
         ${sorted.length > 10 ? `<details class="pn-more"><summary>${fmt(sorted.length - 10)} more pair keys</summary>${table(sorted.slice(10))}</details>` : ""}
         ${off.length ? `<details class="pn-more"><summary>${fmt(off.length)} turned off: a field they read isn't in the file</summary>${off.map((g) => `<div class="pn-r"><span></span><span>${esc(looks(g))}</span></div>`).join("")}</details>` : ""}
         ${x.skipped && x.skipped.blocks ? `<details class="pn-more"><summary>${fmt(x.skipped.blocks)} big groups skipped: none of their sampled pairs came close</summary>
-          ${x.skipped.largest.map((b) => `<div class="pn-r" style="--cols:minmax(160px,1fr) minmax(160px,1fr) 1fr"><span>${esc(b.value)}</span><span class="faint">${esc(b.key)}</span><span>${fmt(b.records)} records · ${fmt(b.pairs)} pairs</span></div>`).join("")}</details>` : ""}</div>`;
+          ${x.skipped.largest.map((b) => `<div class="pn-r" style="--cols:minmax(160px,1fr) minmax(160px,1fr) 1fr"><span>${esc(b.value)}</span><span class="faint">${esc(b.key)}</span><span>${plural(b.records, "record")} · ${plural(b.pairs, "pair")}</span></div>`).join("")}</details>` : ""}</div>`;
   },
   people: (x) => {  // the details under Which pairs did it leave for me?: what most of them look like
     const shownComps = x.comparisons.filter((c) => x.patterns.some((p) => (p.steps[c] ?? "missing") !== "missing"));
@@ -992,7 +1021,7 @@ const DETAIL = {
     return `<div class="pn-cap">joined by · records</div>${seg([[j.rules, "var(--rule)", `rules: ${fmt(j.rules)}`], [j.model, "var(--model)", `the model: ${fmt(j.model)}`], [j.people, "var(--people)", `people: ${fmt(j.people)}`]])}
       <div class="pn-legend"><span style="color:var(--rule)">rules ${fmt(j.rules)}</span><span style="color:var(--model)">the model ${fmt(j.model)}</span><span style="color:var(--people)">people ${fmt(j.people)}</span></div>
       <div class="pn-two"><div><div class="pn-cap">entities by records</div><div class="pn-table" style="--cols:84px minmax(100px,1fr) 84px 120px">
-          ${multi.map((s) => `<div class="pn-r"><span>${fmt(s.records)} records</span><span><span class="pn-bar" style="width:${(100 * s.customers / top).toFixed(1)}%;background:var(--primary)"></span></span>
+          ${multi.map((s) => `<div class="pn-r"><span>${plural(s.records, "record")}</span><span><span class="pn-bar" style="width:${(100 * s.customers / top).toFixed(1)}%;background:var(--primary)"></span></span>
             <span class="num">${fmt(s.customers)}</span><span class="num">${s.example ? customerLink(s.example) : ""}</span></div>`).join("")}
           ${x.sizes.filter((s) => s.records === 1).map((s) => `<div class="pn-r"><span>1 record</span><span class="faint">matched to no other</span><span class="num">${fmt(s.customers)}</span><span></span></div>`).join("")}</div></div>
         <div><div class="pn-cap">where to look first</div><div class="pn-table" style="--cols:minmax(0,1fr) 70px">
@@ -1014,7 +1043,7 @@ const STAGE_Q = {
 };
 const ask = (q, answer, picture = "", act = "", more = "", label = "Details") => `<div class="qa"><div class="q"><h2 class="question pq">${esc(q)}</h2><p class="answer">${answer}</p></div>${act}</div>
   ${picture ? `<div class="pq-pic">${picture}</div>` : ""}${more ? `<details class="fold-line pq-more"><summary>${esc(label)}</summary><div class="pq-body">${more}</div></details>` : ""}`;
-const lasts = (s) => s < 90 ? `${Math.round(s)} seconds` : s < 5400 ? `${Math.round(s / 60)} minutes` : s < 172800 ? `${Math.round(s / 3600)} hours` : s < 63072000 ? `${Math.round(s / 86400)} days` : `${Math.round(s / 31536000)} years`;
+const lasts = (s) => s < 1 ? "under a second" : s < 1.5 ? "a second" : s < 90 ? `${Math.round(s)} seconds` : s < 5400 ? `${Math.round(s / 60)} minutes` : s < 172800 ? `${Math.round(s / 3600)} hours` : s < 63072000 ? `${Math.round(s / 86400)} days` : `${Math.round(s / 31536000)} years`;
 const plural = (n, one, many = `${one}s`) => `${fmt(n)} ${n === 1 ? one : many}`;
 function said_of(pair) {  // what a pair's comparisons said, in words: the ones for it, then those against
   const named = (c) => {
@@ -1029,15 +1058,19 @@ function said_of(pair) {  // what a pair's comparisons said, in words: the ones 
 
 // what may hurt the matching, as the engine says it: fields mostly empty, and what a missing field turns off (turned_off,
 // "generator X (needs ['f'])", "rule …", "level …"), by field: rules and pair keys find pairs, levels are comparison steps
-function hurts(fields, off, fix = "") {
+const addedNames = (features) => Object.fromEntries(features.flatMap((g) => g.features.filter((f) => f.added && f.field).flatMap((f) => {  // an added feature's fields, by its name
+  const n = (f.field.match(/_(\d+)$/) || [])[1];
+  return [[f.field, f.name], ...(n && f.type === "person name" ? [[`given_name_${n}`, `${f.name}, given name`]] : [])];
+})));
+function hurts(fields, off, fix = "", names = {}) {
   const sparse = fields.filter((f) => f.filled !== null && f.filled !== undefined && f.filled < 0.3).sort((a, b) => a.filled - b.filled), by = new Map();
   for (const d of off || []) {
     const [, what, need] = d.match(/^(rule|generator|level) .*\(needs \[([^\]]*)\]\)$/) || [];
     if (!what) { by.set(d, null); continue; }  // no run can start: the engine's own words
     for (const f of need.match(/[^', ]+/g) || []) { const n = by.get(f) || {ways: 0, steps: 0}; n[what === "level" ? "steps" : "ways"]++; by.set(f, n); }
   }
-  return [sparse.length ? `<div class="warn">${esc(sparse.map((f) => `${words(f.field)} is ${pct(f.filled)} filled`).join(", ").replace(/^./, (c) => c.toUpperCase()))}: matching leans on ${sparse.length > 1 ? "them" : "it"} less</div>` : "",
-    ...[...by].map(([f, n]) => `<div class="warn">${n ? `No column is mapped to ${esc(words(f))}: ${[n.ways && `${plural(n.ways, "way")} of finding pairs`, n.steps && plural(n.steps, "comparison step")].filter(Boolean).join(" and ")} turned off` : esc(f)}${fix}</div>`)].filter(Boolean);
+  return [sparse.length ? `<div class="warn">${esc(sparse.map((f) => `${words(names[f.field] ?? f.field)} is ${pct(f.filled)} filled`).join(", ").replace(/^./, (c) => c.toUpperCase()))}: matching leans on ${sparse.length > 1 ? "them" : "it"} less</div>` : "",
+    ...[...by].map(([f, n]) => `<div class="warn">${n ? `No column is mapped to ${esc(words(names[f] ?? f))}: ${[n.ways && `${plural(n.ways, "way")} of finding pairs`, n.steps && plural(n.steps, "comparison step")].filter(Boolean).join(" and ")} turned off` : esc(f)}${fix}</div>`)].filter(Boolean);
 }
 
 const REPAIR = {realign: ["row", "rows", "whose fields don't line up: re-split where every value fits its column"],  // a kind of repair the reader proposes, in words
@@ -1050,19 +1083,19 @@ const waits = (r) => {  // what waits for a repair, in the answer to Did your fi
 };
 
 const missedWords = (strata) => strata.some((m) => m.hits)  // the probe's answer, from the last full run: matches no key lists, found by sampling
-  ? `Yes, some: a sample of the pairs, scored, ${strata.map((m) => m.hits ? `holds about <b>${fmt(m.missed)}</b> the run didn't join among those that share a ${esc(words(m.stratum))} (${fmt(m.low)}–${fmt(m.high)})${
+  ? `Yes, some: a sample of the pairs, scored, ${strata.map((m) => m.hits ? `holds about <b>${fmt(m.missed)}</b> the method missed among those that share a ${esc(words(m.stratum))} (${fmt(m.low)}–${fmt(m.high)})${
         m.between_rules ? `, ${m.keys_missed ? `about ${fmt(m.keys_missed)} that no key lists, the others` : "all"} between two entities the rules formed` : ""}`
       : `none among those that share a ${esc(words(m.stratum))} (at most ${fmt(m.high)})`).join("; ")}.`
-  : `None found: scored, ${strata.map((m) => `${fmt(m.scored)} pairs that share a ${esc(words(m.stratum))} hold no match the run didn't join`).join("; ")}.`;
+  : `None found: scored, ${strata.map((m) => `${plural(m.scored, "pair")} that share a ${esc(words(m.stratum))} hold no match the method missed`).join("; ")}.`;
 
 const DETAIL_Q = {
   records: (x, all) => {
     if (x.count === null || x.count === undefined) return ask(STAGE_Q.records, "Nothing yet: the records are read when matching runs.");
     const files = (x.files || []).map((f) => f.split("/").pop()).join(", "), k = x.kinds || {};
-    const lines = [`<div class="ok">${fmt(x.count)} records read${x.columns ? `, ${fmt(x.columns)} columns` : ""}${x.seconds !== null && x.seconds !== undefined ? `, in ${lasts(x.seconds)}` : ""}</div>`,
+    const lines = [`<div class="ok">${plural(x.count, "record")} read${x.columns ? `, ${fmt(x.columns)} columns` : ""}${x.seconds !== null && x.seconds !== undefined ? `, in ${lasts(x.seconds)}` : ""}</div>`,
       ...hurts(all.prepare.fields, x.turned_off, ' <a class="btn" data-go="columns">Map it</a>'),
-      k.unsure ? `<div class="ok">${fmt(k.company)} companies by their legal form; ${fmt(k.unsure)} records not sure yet as person or company <a class="btn" data-go="kinds">Answer some</a></div>` : ""].filter(Boolean);
-    return ask(STAGE_Q.records, `<b>${fmt(x.count)} records</b> from ${esc(files)}, ${x.set_aside ? `${plural(x.set_aside, "record")} set aside: their IDs are used twice` : "none set aside"}.`,
+      k.unsure ? `<div class="ok">${fmt(k.company)} companies by their legal form; ${plural(k.unsure, "record")} not sure yet as person or company <a class="btn" data-go="kinds">Answer some</a></div>` : ""].filter(Boolean);
+    return ask(STAGE_Q.records, `<b>${plural(x.count, "record")}</b> from ${esc(files)}, ${x.set_aside ? `${plural(x.set_aside, "record")} set aside: their IDs are used twice` : "none set aside"}.`,
       `<div class="checks">${lines.join("")}</div>`, "", DETAIL.records(x, all), "How full each field is");
   },
   rules: (x, all) => {
@@ -1081,11 +1114,11 @@ const DETAIL_Q = {
     const on = x.generators.filter((g) => !g.off && g.pairs !== null), links = x.by_keys.reduce((s, b) => s + b.links, 0), one = (x.by_keys.find((b) => b.keys === 1) || {links: 0}).links;
     const all_s = all.score.seconds && x.pairs ? all.score.seconds * x.possible / x.pairs : null;
     const answer = `${all_s ? `Comparing all ${esc(big(x.possible))} possible pairs would take about <b>${lasts(all_s)}</b>, so only` : "Only"} records that share something (a name, a phone number, an address) were compared:
-      <b>${fmt(x.pairs)} pairs</b>${x.seconds ? `, listed in ${lasts(x.seconds)}` : ""}. ${x.missed && x.missed.length ? missedWords(x.missed)
+      <b>${plural(x.pairs, "pair")}</b>${x.seconds ? `, listed in ${lasts(x.seconds)}` : ""}. ${x.missed && x.missed.length ? missedWords(x.missed)
         : `A match is missed only when two records share none of the ${fmt(on.length)} things looked for${links ? `; matches usually share several: only ${fmt(one)} of ${fmt(links)} were found through one alone` : ""}.`}`;
-    const found = (x.missed || []).flatMap((m) => m.examples).slice(0, 12);  // [id, id, points, why: keys (none listed it) or rules (two of their entities)]
+    const found = [...new Map((x.missed || []).flatMap((m) => m.examples).map((e) => [`${e[0]}\u0001${e[1]}`, e])).values()].slice(0, 12);  // a pair two samples found: once  // [id, id, points, why: keys (none listed it) or rules (two of their entities)]
     const pic = `<div class="pq-big"><div><span class="n">${fmt(x.possible)}</span><span class="w">possible pairs</span></div>${ARROW}<div><span class="n">${fmt(x.pairs)}</span><span class="w">compared: they share something</span></div></div>
-      ${found.length ? `<div class="pn-cap">matches the run didn't join, found by sampling the pairs</div><div class="pn-found">${found.map(([a, z, w, why]) => `<span>${pairLink(a, z, `${a} ↔ ${z}`)} <span class="faint">${w} points${why === "rules" ? " · two entities the rules formed" : ""}</span></span>`).join("")}</div>` : ""}`;
+      ${found.length ? `<div class="pn-cap">matches the method missed, found by sampling the pairs</div><div class="pn-found">${found.map(([a, z, w, why]) => `<span>${pairLink(a, z, `${a} ↔ ${z}`)} <span class="faint">${w} points${why === "rules" ? " · two entities the rules formed" : ""}</span></span>`).join("")}</div>` : ""}`;
     return ask(STAGE_Q.candidates, answer, pic, "", DETAIL.candidates(x), "What is looked for, and what each found");
   },
   score: (x) => {
@@ -1118,10 +1151,10 @@ const DETAIL_Q = {
     const look = x.look, multi = x.sizes.filter((s) => s.records > 1), held = multi.reduce((s, z) => s + z.customers, 0), largest = look.largest[0] ? look.largest[0].records : 1;
     const eg = (list) => list.length ? ` ${list.slice(0, 3).map(customerLink).join(" ")}` : "";
     const lines = [largest > 20 ? `<div class="warn">${plural(look.largest.filter((c) => c.records > 20).length, "entity", "entities")} hold more than 20 records: check them${eg(look.largest.filter((c) => c.records > 20).map((c) => c.customer))}</div>`
-                                : `<div class="ok">No entity is unusually large: the largest holds ${fmt(largest)} records</div>`,
-      look.mixed.customers ? `<div class="warn">${plural(look.mixed.customers, "entity", "entities")} join a person and a company${eg(look.mixed.examples)}</div>` : `<div class="ok">No entity joins a person and a company</div>`,
-      look.weak_rule.customers ? `<div class="warn">${plural(look.weak_rule.customers, "entity", "entities")} were joined by a rule the scoring disagrees with${eg(look.weak_rule.examples)}</div>` : ""].filter(Boolean);
-    const answer = `Records linked by a match become one entity, also through other records: <b>${fmt(all.records.count)} records → ${fmt(x.customers)} entities</b>; ${fmt(held)} hold 2 or more.`;
+                                : `<div class="ok">No entity is unusually large: the largest holds ${plural(largest, "record")}</div>`,
+      look.mixed.customers ? `<div class="warn">${plural(look.mixed.customers, "entity", "entities")} ${look.mixed.customers === 1 ? "joins" : "join"} a person and a company${eg(look.mixed.examples)}</div>` : `<div class="ok">No entity joins a person and a company</div>`,
+      look.weak_rule.customers ? `<div class="warn">${plural(look.weak_rule.customers, "entity", "entities")} ${look.weak_rule.customers === 1 ? "was" : "were"} joined by a rule the scoring disagrees with${eg(look.weak_rule.examples)}</div>` : ""].filter(Boolean);
+    const answer = `Records linked by a match become one entity, also through other records: <b>${plural(all.records.count, "record")} → ${plural(x.customers, "entity", "entities")}</b>; ${fmt(held)} hold 2 or more.`;
     return ask(STAGE_Q.group, answer, `<div class="checks">${lines.join("")}</div>`, `<a class="btn filled" data-go="results">View entities</a>`, DETAIL.group(x, all), "Entities by size, and who joined them");
   },  customers: (x, all) => DETAIL_Q.group(all.group, all),
 };
@@ -1146,13 +1179,15 @@ function histogram(x, all) {  // pairs by points: each band split into matched, 
       <line x1="${X0}" x2="${W - 16}" y1="${H}" y2="${H}" stroke="var(--muted)"/>${ticks}<text x="${(X0 + W) / 2}" y="${H + 32}" text-anchor="middle" class="faint">points</text>
       ${line === "none" ? "" : `<line x1="${X(line)}" x2="${X(line)}" y1="4" y2="${H + 4}" stroke="var(--ink)" stroke-width="2"/><text x="${X(line) + 6}" y="14">matched from ${line} points →</text>`}</svg><div class="pn-tip" hidden></div></div>
     <div class="pn-legend"><span><i style="background:var(--model)"></i>matched</span><span><i style="background:var(--people)"></i>waiting for you</span><span><i style="background:var(--outline)"></i>not matched</span>
-      ${below ? `<span class="faint">${esc(big(below))} more pairs scored below ${lo}: not matched</span>` : ""}<span class="faint">click a bar for its pairs</span></div><div class="pn-picked"></div>`;
+      ${below ? `<span class="faint">${esc(plural(below, "more pair"))} scored below ${lo}: not matched</span>` : ""}<span class="faint">click a bar for its pairs</span></div><div class="pn-picked"></div>`;
 }
 
 function mostCounts(x) {  // every step of every comparison, ranked by its points: what counts most for and against
   const steps = x.comparisons.flatMap((c) => c.levels.filter((lv) => lv.bits !== null && lv.bits !== undefined && Math.abs(lv.bits) >= 0.5).map((lv) => ({c: c.name, label: lv.label, bits: lv.bits})))
     .sort((a, b) => b.bits - a.bits);
-  const most = Math.max(1, ...steps.map((s) => Math.abs(s.bits))), top = steps[0], bottom = steps[steps.length - 1];
+  const strictest = x.comparisons.map((c) => { const lv = c.levels.find((v) => v.label !== "missing" && v.bits !== null && v.bits !== undefined); return lv && {c: c.name, label: lv.label, bits: lv.bits}; })
+    .filter(Boolean).sort((a, b) => b.bits - a.bits);  // the headline: each comparison by its strictest step, not a step the fit happened to rate higher
+  const most = Math.max(1, ...steps.map((s) => Math.abs(s.bits))), top = strictest[0], bottom = steps[steps.length - 1];
   const name = (s) => `${comp(s.c)}: ${level(s.label)}`;
   return `<p class="answer">${top ? `${esc(name(top))} counts most for a match` : ""}${bottom && bottom.bits < 0 ? `; ${esc(name(bottom))} counts most against` : ""}.</p>
     <div class="pn-table" style="--cols:220px minmax(120px,1fr) 64px;max-width:820px">${steps.map((s) => `<div class="pn-r"><span>${esc(name(s))}</span>
@@ -1223,7 +1258,7 @@ const WIRE = {
       const from = Number(g.dataset.band), b = of(from);
       g.onmousemove = (e) => {
         const o = wrap.getBoundingClientRect();
-        tip.innerHTML = `${from} to ${from + 2} points · ${fmt(b.pairs)} pairs: ${fmt(b.merged)} matched · ${fmt(b.review)} waiting for you · ${fmt(Math.max(0, b.pairs - b.merged - b.review))} not matched${rules[from] ? ` · ${fmt(rules[from])} rule pairs` : ""}`;
+        tip.innerHTML = `${from} to ${from + 2} points · ${plural(b.pairs, "pair")}: ${fmt(b.merged)} matched · ${fmt(b.review)} waiting for you · ${fmt(Math.max(0, b.pairs - b.merged - b.review))} not matched${rules[from] ? ` · ${fmt(rules[from])} rule pairs` : ""}`;
         tip.hidden = false;
         tip.style.left = `${Math.min(e.clientX - o.left + 12, o.width - tip.offsetWidth - 4)}px`; tip.style.top = `${e.clientY - o.top - 40}px`;
       };
@@ -1249,7 +1284,7 @@ function keyDrawer(d) {  // describe key: its groups, one real group, and what o
     ${d.largest.length ? `<div class="pn-cap" style="margin-top:6px">largest: ${d.largest.map((l) => `${esc(l.value)} ${fmt(l.records)}`).join(" · ")}</div>` : ""}</div>` : "";
   const group = d.group ? `<div><div class="pn-cap">one group: ${esc(d.group.value)} · ${fmt(d.group.records.length)}${d.group.more ? "+" : ""} records</div>${table(d.group.records)}</div>`
     : d.around ? `<div><div class="pn-cap">in its order: the records around one of its links (window ${d.around.window})</div>${table(d.around.records)}</div>` : "";
-  return `<h4>${esc(d.name)} · ${fmt(d.pairs)} pairs listed · ${fmt(d.matched)} links found · ${fmt(d.only)} only by this key</h4>
+  return `<h4>${esc(d.name)} · ${plural(d.pairs, "pair")} listed · ${fmt(d.matched)} likely links · ${fmt(d.only)} only by this key</h4>
     <div class="pn-two">${sizes}${group}</div>
     ${d.examples.length ? `<div class="pn-cap" style="margin-top:8px">only this key listed</div>${d.examples.map(([a, z, w]) => `<div>${pairLink(a, z, `${a} ↔ ${z}`)} <span class="faint">· ${w} points</span></div>`).join("")}` : ""}`;
 }
@@ -1285,7 +1320,7 @@ function web(records, links, pairs = [], weakest = []) {
     ${records.map((x, i) => `<circle cx="${pos[x.id][0]}" cy="${pos[x.id][1]}" r="9" fill="var(--surface)" stroke="var(--ink)" stroke-width="2"/>
       <text ${label(i)}>${esc(x.id)}</text>`).join("")}</svg>`;
 }
-const joinedBy = (by) => by.length ? by.map((b) => b === "fs" ? "the model" : b === "people: match" ? "a person: same" : b === "people: no_match" ? "a person: different" : b).join(", ") : "through others";
+const joinedBy = (by) => by.length ? by.map((b) => b === "fs" ? "the model" : b === "people: match" ? "a person: same" : b === "people: no_match" ? "a person: different" : ruleSays(b)).join("; ") : "through others";
 
 function slider(r) {  // where the engine and the name alone place a record, from person to company
   const at = (p) => 3 + 94 * p, e = Number(r.engine_p), n = Number(r.name_p), same = Math.abs(e - n) < 0.06;
@@ -1340,7 +1375,7 @@ function features(d, view) {
       const mine = d.placements.filter((x) => x.feature.startsWith(`${g.group}/`)).length + offered.length;
       return `<details class="fgroup" data-g="${esc(g.group)}" ${(view.toggled.has(g.group) ? view.toggled.get(g.group) : cls !== "") ? "open" : ""}>
         <summary><b>${esc(g.group)}</b>${mine ? `<button class="mini" data-suggest="${esc(g.group)}">✦ ${shown ? "Hide" : "Suggest"}</button>` : ""}${
-          shown && mine ? `<button class="mini" data-keepall="${esc(g.group)}">Keep all</button>` : ""}<span class="gstat ${cls}">${esc(text)}</span></summary>
+          shown && d.placements.some((x) => x.feature.startsWith(`${g.group}/`)) ? `<button class="mini" data-keepall="${esc(g.group)}">Keep all</button>` : ""}<span class="gstat ${cls}">${esc(text)}</span></summary>
         ${g.features.map((f) => row(`${g.group}/${f.name}`, f, 0, false, shown) + (f.parts || []).map((p, i, all) =>
           row(`${g.group}/${f.name}/${p.name}`, p, 1, i === all.length - 1, shown)).join("")).join("")}${
         shown ? offered.map((x) => `<div class="frow offer" title="${esc(x.why)}"><span class="flab">✦ ${esc(x.feature.split("/").pop())} <span class="tag">${esc(x.script)}</span></span>
@@ -1352,7 +1387,7 @@ function features(d, view) {
 // ---------- pieces every page draws with ----------
 
 function banner(e, kind = "bad") {
-  if (!e || e.event !== "error") return "";
+  if (!e || e.event !== "error" || e.lost) return "";  // a lost server: said once, above the page
   return `<div class="banner ${kind}" role="alert">${icon(kind === "bad" ? "error" : "info")}<div><b>${esc(e.error)}</b>${e.fix ? `<div class="fix">${esc(e.fix)}</div>` : ""}</div></div>`;
 }
 const WHY = {decide: "to decide", audit: "spot-check", measure: "sample"};
@@ -1372,14 +1407,19 @@ function grid(box, rows, cols, opts = {}) {
     <div class="tablewrap"><table><thead><tr>${cols.map((c) => `<th${typeof (rows[0] || {})[c] === "number" ? ' class="num"' : ""}>${esc(labels[c] ?? c.replaceAll("_", " "))}</th>`).join("")}</tr></thead><tbody></tbody></table></div>
     <div class="tablefoot"></div></div>`;
   const body = box.querySelector("tbody"), foot = box.querySelector(".tablefoot"), filter = box.querySelector(".filterbar input");
+  let texts = new WeakMap();  // each row as it reads, for the filter: built once, again only when the rows change (redraw)
+  const said = (r) => {
+    if (!texts.has(r)) { const t = document.createElement("template"); t.innerHTML = cols.map((c) => cellOf(r, c)).join(" "); texts.set(r, t.content.textContent.toLowerCase()); }
+    return texts.get(r);
+  };
   const draw = () => {
     const q = filter ? filter.value.trim().toLowerCase() : "";
-    const shown = rows.map((r, i) => [r, i]).filter(([r]) => !q || cols.some((c) => String(r[c] ?? "").toLowerCase().includes(q)));
+    const shown = rows.map((r, i) => [r, i]).filter(([r]) => !q || said(r).includes(q));
     const at = Math.max(0, Math.min(shown.findIndex(([, i]) => i === opts.selected) - 50, shown.length - most));  // the window holds the picked row
     body.innerHTML = shown.slice(at, at + most).map(([r, i]) => `<tr data-i="${i}" class="${opts.onPick ? "pick" : ""}" aria-selected="${i === opts.selected}">` +
       cols.map((c) => `<td${typeof r[c] === "number" ? ' class="num"' : ""}>${cellOf(r, c)}</td>`).join("") + "</tr>").join("") ||
       `<tr><td colspan="${cols.length}" class="faint">No rows</td></tr>`;
-    foot.textContent = `${shown.length.toLocaleString()} of ${rows.length.toLocaleString()} rows` + (shown.length > most ? ` · ${(at + 1).toLocaleString()}–${(at + most).toLocaleString()} shown` : "");
+    foot.textContent = `${fmt(shown.length)} of ${plural(rows.length, "row")}` + (shown.length > most ? ` · ${(at + 1).toLocaleString()}–${(at + most).toLocaleString()} shown` : "");
     if (opts.onPick) body.querySelectorAll("tr[data-i]").forEach((tr) => tr.onclick = () => opts.onPick(Number(tr.dataset.i)));
   };
   if (filter) filter.oninput = draw;
@@ -1394,16 +1434,20 @@ function grid(box, rows, cols, opts = {}) {
       const r = tr.getBoundingClientRect(), w = wrap.getBoundingClientRect(), top = w.top + box.querySelector("thead").offsetHeight;
       if (r.top < top) wrap.scrollTop -= top - r.top; else if (r.bottom > w.bottom) wrap.scrollTop += r.bottom - w.bottom;
     },
-    redraw: draw,
+    redraw: () => { texts = new WeakMap(); draw(); },
   };
 }
 
 // A parameter's input, built from its declaration: a flag a checkbox, a choice a list, the rest a text box.
 const FIELD = {input: "Records file"};  // a parameter's name on the page, where its own name says less
 const LIT = {load: ["records", "records"], rules: ["rules", "pairs"], candidates: ["candidates", "candidates"], cluster: ["accept", "accepted"]};  // a run's step, the stage it fills in
-const RUN_STEPS = ["load", "budget", "fit", "rules", "candidates", "score", "cluster", "report", "write"];  // a run's steps, in the order they end
+const RUN_STEPS = ["load", "budget", "fit", "rules", "candidates", "score", "cluster", "probe", "report", "write"];  // a full run's steps, in the order they end
+const STEPS_OF = {"add records": ["load", "fit", "rules", "candidates", "score", "cluster", "report", "write"],  // an increment's: no plan, no probe
+                  "match records": ["load", "fit", "rules", "candidates", "score", "cluster"]};  // a preview writes nothing
+const BUSY = {"resolve records": "Finding matches", "rerun records": "Matching again", "add records": "Adding the new records", "match records": "Previewing the new records"};
 const DOING = {load: "reading the records", budget: "planning the work", fit: "learning what matches look like", rules: "applying the match rules",
-               candidates: "listing pairs to compare", score: "scoring the pairs", cluster: "forming entities", report: "writing the report", write: "saving"};
+               candidates: "listing pairs to compare", score: "scoring the pairs", cluster: "forming entities", probe: "looking for matches it missed",
+               report: "writing the report", write: "saving"};
 const LIT_NODE = {load: "records", rules: "rules", candidates: "candidates", score: "score", cluster: "group"};  // the stage a step works on
 const took = (rows) => { const s = Math.max(10, Math.round(rows * 6e-5 / 10) * 10); return s < 60 ? `${s} seconds` : s < 90 ? "a minute" : `${Math.round(s / 60)} minutes`; };  // about a minute a million records
 const NEW_FILE = ["add records", "match records"];  // their file is a new one: the file loaded last is matched already
@@ -1450,7 +1494,8 @@ function action(id, command, label, done, onEvent = null, opts = {}) {  // opts:
 
 async function flowOf(id, box, open = null) {  // the step's part of the pipeline: from describe matching
   const g = await run(id, "describe matching");
-  if (g.event === "error") { box.innerHTML = banner(g); return null; }
+  if (g.event === "error") { box.innerHTML = banner(g); graph = null; return null; }  // no other workspace's words
+  graph = g;  // every page's cards and words read it: keys and rules by what they look at
   strip(box, g, screen(id).strip, open);
   if (id !== "run" && id !== "records") box.classList.add("foot");  // step 3's strip answers how it found matches, the Overview's is the whole pipeline; elsewhere it says where the step sits, at the foot
   where();
@@ -1483,13 +1528,13 @@ const SCREENS = {
     $("out").innerHTML = (d.write_owed ? banner({event: "error", error: "A write was cut short", fix: "The next command that writes to this workspace finishes it."}, "warn") : "") +
       `<div class="card"><h2>Activity</h2><div id="runs"></div></div>`;
     grid($("runs"), d.runs.slice().reverse(), ["at", "what", "files", "seconds"],
-         {filter: false, cell: (r, c) => c === "files" ? esc(r.files.map((f) => f.split("/").pop()).join(", ")) : esc(fmt(r[c]))});
+         {filter: false, cell: (r, c) => c === "files" ? esc(r.files.map((f) => f.split("/").pop().replace(/(\.\w+)\.parquet$/, "$1")).join(", ")) : esc(fmt(r[c]))});
     return d;  // go() draws the stepper from it
   },
 
   async columns(el) {
     const box = `<label class="field" style="margin:0"><span class="lab">Records file</span>
-        <span class="loadrow"><input type="text" id="cin" placeholder="path to a .parquet file"><button class="btn filled" id="load">${icon("add")}Load</button></span></label>
+        <span class="loadrow"><input type="text" id="cin" placeholder="path to a CSV, TSV or Parquet file, or a folder of them"><button class="btn filled" id="load">${icon("add")}Load</button></span></label>
         <div id="files" class="chips" style="margin-top:10px"></div>`;
     el.innerHTML = head("columns") + `<div class="card" id="loaded"><div class="qa"><div class="q"><h2 class="question">Which file holds your records?</h2></div></div>${box}</div>
       <div id="repairs"></div><div id="watch"></div><div id="out"></div><div id="flow"></div>${stepFoot("columns")}`;
@@ -1499,13 +1544,13 @@ const SCREENS = {
       const missing = [...d.needed.every.filter(lost), ...d.needed.one_of.filter((grp) => grp.every(lost)).map((grp) => grp.join(" or "))];
       $("loaded").innerHTML = `<div class="qa"><div class="q"><h2 class="question">Did your file load?</h2><p class="answer">${missing.length
           ? `<b>Not yet:</b> ${esc(missing.map(words).join(", "))} ${missing.length > 1 ? "are" : "is"} needed`
-          : `<b>Yes</b> · ${fmt(d.records)} records from ${esc(last.name.replace(/^\d+-/, ""))} · ${fmt(d.columns.length)} columns${waits(d.read)}`}</p></div>
+          : `<b>Yes</b> · ${plural(d.records, "record")} from ${esc(fileName(last.name))} · ${fmt(d.columns.length)} columns${waits(d.read)}`}</p></div>
         ${missing.length ? (d.placements.length ? `<button type="button" class="btn filled" id="suggest-now">✦ Suggest the columns</button>` : "") : `<a class="btn filled" data-go="run">Next: 3 Find matches →</a>`}</div>
         <details class="fold-line"><summary>Load another file</summary><div style="margin-top:10px">${box}</div></details>`;
       wireLoad();
-      $("files").innerHTML = (w.inputs || []).map((f) => `<span class="tag" title="${esc(f.path)}">${esc(f.name)} · ${fmt(Math.ceil(f.bytes / 1e6))} MB · ${f.read ? "matched" : "not run yet"}${f.waiting ? ` · ${fmt(f.waiting)} repairs wait` : ""}</span>`).join("");
+      $("files").innerHTML = (w.inputs || []).map((f) => `<span class="tag" title="${esc(f.path)}">${esc(fileName(f.name))} · ${fmt(Math.ceil(f.bytes / 1e6))} MB · ${f.read ? "matched" : "not run yet"}${f.waiting ? ` · ${fmt(f.waiting)} repairs wait` : ""}</span>`).join("");
       repairs(d.read);
-      const lines = hurts(d.fields, d.turned_off);
+      const lines = hurts(d.fields, d.turned_off, "", addedNames(d.features));
       $("watch").innerHTML = lines.length && !missing.length ? `<div class="card"><h3 style="font-size:15px;font-weight:500;margin:0 0 8px">Watch out</h3><div class="checks">${lines.join("")}</div></div>` : "";  // once what is needed is mapped
       $("suggest-now")?.addEventListener("click", () => $("out").querySelector("[data-suggest='*']")?.click());
     };
@@ -1514,19 +1559,19 @@ const SCREENS = {
       const rows = (k) => (r.examples[k] || []).map((x) => `<tr><td class="num">${fmt(x.line)}</td><td>${esc(x.column)}</td><td class="wrap">${esc(x.before)}</td><td class="wrap">${esc(x.after)}</td></tr>`).join("");
       $("repairs").innerHTML = r && (Object.keys(wait).length || cannot > 0) ? `<div class="card">${Object.keys(wait).length ? `<h3 style="font-size:15px;font-weight:500;margin:0 0 4px">Repairs to accept</h3>` : ""}
         ${Object.entries(wait).map(([k, n]) => `<details class="fold-line"><summary>${plural(n, REPAIR[k][0], REPAIR[k][1])} ${esc(REPAIR[k][2])}</summary>
-          <div class="tablecard" style="margin:8px 0"><table><thead><tr><th class="num">line</th><th>column</th><th>as given</th><th>repaired</th></tr></thead><tbody>${rows(k)}</tbody></table></div>
+          <div class="tablecard" style="margin:8px 0"><table class="repairs"><thead><tr><th class="num">line</th><th>column</th><th>as given</th><th>repaired</th></tr></thead><tbody>${rows(k)}</tbody></table></div>
           ${n > (r.examples[k] || []).length ? `<p class="faint" style="margin:0 0 8px">the first ${fmt((r.examples[k] || []).length)} of ${fmt(n)}</p>` : ""}
           <button type="button" class="btn outlined" data-accept="${k}">Accept these ${fmt(n)}</button></details>`).join("")}
         ${fixed ? `<details class="fold-line"><summary>Fixed by themselves: ${plural(fixed, "value")}</summary><div class="checks">${Object.entries(r.fixed).map(([k, n]) => `<div class="ok">${fmt(n)} ${esc(FIXED[k] || k)}</div>`).join("")}</div></details>` : ""}
         ${cannot > 0 ? `<details class="fold-line"><summary>${plural(cannot, "row")} can't be read: kept aside</summary><div class="checks">${(r.examples.unread || []).filter((x) => !x.reason.includes("a repair waits")).map((x) => `<div class="warn">line ${fmt(x.line)}: ${esc(x.reason)}</div>`).join("")}</div></details>` : ""}</div>` : "";
       $("repairs").querySelectorAll("[data-accept]").forEach((b) => b.onclick = () => action("columns", "accept repairs", `Accept ${plural(wait[b.dataset.accept], "repair")}`,
-        (e) => e.event === "error" ? $("repairs").insertAdjacentHTML("afterbegin", banner(e)) : draw(), null, {about: `${r.part}: ${REPAIR[b.dataset.accept][2]}`, extra: {kind: b.dataset.accept, part: r.part}}));
+        (e) => e.event === "error" ? $("repairs").insertAdjacentHTML("afterbegin", banner(e)) : draw(), null, {about: `${fileName(r.part)}: ${REPAIR[b.dataset.accept][2]}`, extra: {kind: b.dataset.accept, part: r.part}}));
     };
     const view = {toggled: new Map(), ghosts: new Set()};  // groups opened or closed, groups showing their suggestions: kept as the page redraws
     const draw = async (d) => {  // d: a description just made; else the file loaded last is described
       const [w] = await Promise.all([run("columns", "describe workspace"), flowOf("columns", $("flow"))]);
       const files = w.inputs || [], last = files[files.length - 1];
-      $("files").innerHTML = files.map((f) => `<span class="tag" title="${esc(f.path)}">${esc(f.name)} · ${fmt(Math.ceil(f.bytes / 1e6))} MB · ${f.read ? "matched" : "not run yet"}</span>`).join("");
+      $("files").innerHTML = files.map((f) => `<span class="tag" title="${esc(f.path)}">${esc(fileName(f.name))} · ${fmt(Math.ceil(f.bytes / 1e6))} MB · ${f.read ? "matched" : "not run yet"}</span>`).join("");
       if (d === undefined && last) d = await run("columns", "describe records", {loaded: last.path});
       if (!d) return;
       if (d.event !== "error" && last) answer(d, w, last);
@@ -1608,7 +1653,12 @@ const SCREENS = {
         b.disabled = true; b.textContent = "Reading…";  // a big file takes seconds: read as it comes
         const e = await run("columns", "load records", {input});
         if (b.isConnected) { b.disabled = false; b.innerHTML = was; }
-        if (e.event !== "error") $("cin").value = "";
+        if (e.event === "error") {  // the mapping stays: the refusal above it
+          $("out").querySelector(":scope > .banner")?.remove();
+          $("out").insertAdjacentHTML("afterbegin", banner(e));
+          return;
+        }
+        $("cin").value = "";
         draw(e);
         refresh();
       };
@@ -1626,8 +1676,10 @@ const SCREENS = {
     if (!state.workspace) return;
     const graph_ = flowOf("run", $("flow"));
     let file = null;  // the file a first run reads: the one loaded last
+    const hold = () => el.querySelectorAll("[data-act], [data-first]").forEach((b) => b.disabled = !!longRun);
     const start = (command, label) => {
       const done = (d) => {
+        longRun = null; hold();
         $("out").querySelector(".steps-card")?.remove();
         if (d.event === "error") { $("out").insertAdjacentHTML("beforeend", banner(d)); return; }
         if (command !== "match records") { refresh().then(() => go("run")); return; }  // the page again, from the workspace as it is now: its result, and the actions a run brings
@@ -1635,35 +1687,36 @@ const SCREENS = {
         if (d.records) grid($("matched"), d.records, ["id", "entity", "status", "by", "weight"], {cell: (r, c) => c === "status" ? chip(r.status) : esc(fmt(r[c]))});
       };
       let n = 0, t0 = 0, last = null, clock = 0;
-      const total = command === "add records" ? 8 : 9, rows = file ? file.rows : null;
+      const order = STEPS_OF[command] || RUN_STEPS, rows = file ? file.rows : null;
       const say = () => {
         const card = $("out").querySelector(".steps-card");
         if (!card) { clearInterval(clock); return; }
-        const next = RUN_STEPS[RUN_STEPS.indexOf(last) + 1] || RUN_STEPS[0], secs = Math.round((Date.now() - t0) / 1000);
+        const next = order[order.indexOf(last) + 1] || order[0], secs = Math.round((Date.now() - t0) / 1000);
         card.querySelector(".answer").innerHTML = `${secs} s${rows ? ` of about ${took(rows)}` : ""} · now: ${esc(DOING[next] || next)}`;
         $("flow").querySelectorAll(".node").forEach((b) => b.classList.toggle("now", (LIT_NODE[next] || "") === b.dataset.node));
       };
       const step = (e) => {  // the run as it goes: what it does now, the time taken, each stage filled in as its step ends
         if (e.event === "start" || !$("out").querySelector(".steps-card")) {
-          t0 = t0 || Date.now();
-          $("out").innerHTML = `<div class="card steps-card"><div class="qa"><div class="q"><h2 class="question"><span class="spin" style="border-color:var(--primary);border-right-color:transparent"></span>${esc(label === "Find matches" ? "Finding matches" : label)}…</h2>
+          t0 = t0 || Date.now(); longRun = {command, visit}; hold();
+          $("out").innerHTML = `<div class="card steps-card"><div class="qa"><div class="q"><h2 class="question"><span class="spin" style="border-color:var(--primary);border-right-color:transparent"></span>${esc(BUSY[command] || label)}…</h2>
             <p class="answer"></p></div></div><span class="meter wide"><i style="width:0"></i></span></div>`;
           clearInterval(clock); clock = setInterval(say, 1000); say();
         }
         if (e.event !== "step") return;
         last = e.step;
-        $("out").querySelector(".steps-card .meter i").style.width = `${Math.min(100, 100 * ++n / total)}%`;
+        $("out").querySelector(".steps-card .meter i").style.width = `${Math.min(100, 100 * ++n / order.length)}%`;
         const [node, fact] = LIT[e.step] || [];
         const b = node && $("flow").querySelector(`.node[data-node=${node}]`);
         if (b && e[fact] !== undefined) {
           if (!b.querySelector(".n")) b.insertAdjacentHTML("beforeend", `<span class="n"><span class="v"></span><span class="u">${esc(NODE[node].word)}</span></span>`);
-          (b.querySelector(".n .v") || b.querySelector(".n")).textContent = fmt(e[fact]); b.classList.remove("dim");
+          b.querySelector(".n .v").textContent = fmt(e[fact]); b.classList.remove("dim");
         }
         say();
       };
-      action("run", command, label, done, step, command === "resolve records" && !ran && file ? {form: [], about: `${file.name.replace(/^\d+-/, "")} · ${fmt(file.rows)} records`} : {});
+      action("run", command, label, done, step, command === "resolve records" && !ran && file ? {form: [], about: `${fileName(file.name)} · ${plural(file.rows, "record")}`} : {});
     };
     el.querySelectorAll("[data-act]").forEach((b) => b.onclick = () => start(b.dataset.act, b.dataset.label));
+    hold();
     if (loop) el.querySelector(`[data-act="${loop.via[loop.via.length - 1]}"]`)?.focus();
     const w = await run("run", "describe workspace");
     if (w.event === "error") { $("out").innerHTML = banner(w); return; }
@@ -1671,21 +1724,23 @@ const SCREENS = {
     if ($("out").querySelector(".steps-card")) return;  // a run started meanwhile: it draws its own
     if (!w.records) {  // nothing run yet: how long it will take, and the one button; how it will find them, below
       $("flowq").textContent = "How it will find them";
-      $("out").innerHTML = file ? `<div class="card"><div class="qa"><div class="q"><h2 class="question">Ready to find matches in ${fmt(file.rows)} records</h2>
-          <p class="answer">${esc(file.name.replace(/^\d+-/, ""))} · about ${took(file.rows)}</p></div><button class="btn filled" data-first>${icon("run")}Find matches</button></div></div>` : emptyRun(w);
+      $("out").innerHTML = file ? `<div class="card"><div class="qa"><div class="q"><h2 class="question">Ready to find matches in ${plural(file.rows, "record")}</h2>
+          <p class="answer">${esc(fileName(file.name))} · about ${took(file.rows)}</p></div><button class="btn filled" data-first>${icon("run")}Find matches</button></div></div>` : emptyRun(w);
       $("out").querySelector("[data-first]")?.addEventListener("click", () => start("resolve records", "Find matches"));
+      hold();
       return w;
     }
     $("flowq").textContent = "How did it find matches?";
     const g = await graph_, accept = g ? g.nodes.find((x) => x.id === "accept") : null;
     const joined = w.records - w.entities, waiting = w.pairs.decide, tr = w.trust;  // what the run did, in a sentence, and what is next
-    const next = waiting ? `${fmt(waiting)} pairs wait for you` : tr && tr.may_lower ? `${span(tr.next)} can merge now` : "";
-    const matched = accept && accept.accepted ? `${fmt(accept.accepted)} pairs matched` : tr && tr.line === "none" ? "Nothing merged by points yet: you check pairs first" : joined ? `${fmt(joined)} records joined others` : "Nothing merged";
-    $("out").innerHTML = `<div class="card"><div class="qa"><div class="q"><h2 class="question big">${fmt(w.records)} records → ${fmt(w.entities)} entities</h2>
+    const next = waiting ? `${plural(waiting, "pair")} ${waiting === 1 ? "waits" : "wait"} for you` : tr && tr.may_lower ? `${span(tr.next)} can merge now` : "";
+    const matched = accept && accept.accepted ? `${plural(accept.accepted, "pair")} matched` : tr && tr.line === "none" ? "Nothing merged by points yet: you check pairs first" : joined ? `${plural(joined, "record")} joined others` : "Nothing merged";
+    $("out").innerHTML = `<div class="card"><div class="qa"><div class="q"><h2 class="question big">${plural(w.records, "record")} → ${plural(w.entities, "entity", "entities")}</h2>
       <p class="answer">${esc(matched)}${next ? ` · ${esc(next)}` : ""}</p></div>${next ? `<a class="btn filled" data-go="pairs">${waiting ? "Review them" : "Go to step 4"}</a>` : ""}</div></div>${
-      file && !file.read ? `<div class="card ready">${icon("records")}<div><b>${esc(file.name.replace(/^\d+-/, ""))}</b><span class="muted"> · ${fmt(file.rows)} records, not matched yet</span></div>
+      file && !file.read ? `<div class="card ready">${icon("records")}<div><b>${esc(fileName(file.name))}</b><span class="muted"> · ${plural(file.rows, "record")}, not matched yet</span></div>
         <span class="grow"></span><button class="btn" data-first>${icon("run")}Find matches</button></div>` : ""}`;  // a file loaded since: matching it replaces this run
     $("out").querySelector("[data-first]")?.addEventListener("click", () => start("resolve records", "Find matches"));
+    hold();
     return w;
   },
 
@@ -1713,18 +1768,18 @@ const SCREENS = {
       const right = d.records.length < 2 ? "" : !low ? "" : low.weight >= line
         ? `<div class="checks"><div class="ok">Looks right: every link scores ${fmt(line)} points or more</div></div>`
         : `<div class="checks"><div class="warn">Check this link: ${esc(low.id_l)} ↔ ${esc(low.id_r)} scores ${signed(low.weight)}${bridge ? " and alone holds the entity together" : ""}
-            ${bridge && can("split entity") ? `<button type="button" class="btn" data-split="${esc(`${low.id_l} ${low.id_r}`)}">Split here</button>` : ""}</div></div>`;
+            ${bridge && can("split entity") ? `<button type="button" class="btn" data-split="${idList(low.id_l, low.id_r)}">Split here</button>` : ""}</div></div>`;
       $("right").innerHTML = `<div class="card one">${scope("customers", `Entity ${d.entity}`)}<div class="qa"><div class="q"><h2 class="question">${d.records.length > 1 ? `Why are these ${d.records.length} records one entity?` : "One record, matched to no other"}</h2></div>
-          ${rest.length ? `<button type="button" class="btn outlined" data-compare data-first="${esc(d.record)}" data-others="${esc(rest.join(" "))}">Compare all ${fmt(rest.length + 1)}</button>` : ""}</div>
+          ${rest.length ? `<button type="button" class="btn outlined" data-compare data-first="${esc(d.record)}" data-others="${idList(...rest)}">Compare all ${fmt(rest.length + 1)}</button>` : ""}</div>
         ${why}${d.records.length > 1 ? web(d.records, d.links, d.pairs, d.weakest) : ""}${side}
         ${right ? `<h3 class="zq">Is it right?</h3>${right}` : ""}
         ${d.pairs.length ? '<details class="fold-line"><summary>Every pair inside it</summary><div id="epairs" style="margin-top:8px"></div></details>' : d.capped ? '<p class="faint">Too many records to score every pair.</p>' : ""}</div>`;
       if (d.pairs.length) grid($("epairs"), d.pairs, ["id_l", "id_r", "weight", "by"], {filter: false, labels: {weight: "points", by: "joined by"},
         cell: (r, c) => c === "by" ? esc(joinedBy(r.by)) : c === "weight" ? `<span class="pts ${r.weight >= 0 ? "for" : "against"}">${r.weight.toFixed(1)}</span>` : esc(fmt(r[c])),
         onPick: (i) => explainDialog("results", d.pairs[i].id_l, d.pairs[i].id_r)});
-      $("right").querySelectorAll("[data-explain]").forEach((b) => b.onclick = () => explainDialog("results", ...b.dataset.explain.split(" ")));
+      $("right").querySelectorAll("[data-explain]").forEach((b) => b.onclick = () => explainDialog("results", ...JSON.parse(b.dataset.explain)));
       $("right").querySelector("[data-split]")?.addEventListener("click", (e) => {
-        const between = e.currentTarget.dataset.split.split(" ");
+        const between = JSON.parse(e.currentTarget.dataset.split);
         action("results", "split entity", "Split here", (x) => x.event === "error" ? $("note").innerHTML = banner(x)
           : go("results", id), null, {about: `${between.join(" and ")} become different: the entity splits where they meet, and matching runs again`, extra: {id, between}});
       });
@@ -1751,6 +1806,7 @@ const SCREENS = {
     if (!state.workspace) { $("out").innerHTML = emptyRun(); return; }
     const [d, g] = await Promise.all([run("improve", "describe method"), flowOf("improve", $("flow"))]);
     if (d.event === "error") { $("out").innerHTML = banner(d); return; }
+    dropped = d.dropped;
     const a = d.audits, latest = d.trials.filter((x) => !d.rounds.length || x.at >= d.rounds[d.rounds.length - 1].at).pop();
     const gens = g ? (g.nodes.find((x) => x.id === "candidates") || {generators: []}).generators : [], listed = gens.reduce((s, x) => s + (x.pairs || 0), 0);
     const plainly = (x) => {  // a proposal in words: what changes, and what it would do
@@ -1760,14 +1816,18 @@ const SCREENS = {
       if (x.change.add_keys) return `Also pair records with the same ${esc(keyText(x.change.add_keys[0]))}: it ${esc(x.why)}`;
       return `${esc(methodText(x.change))}: ${esc(x.why)}`;
     };
-    const verdict = !a.checked ? [`<b>Not known yet:</b> no matched pair has been checked by people.`, `<button class="btn filled" id="draw">${icon("add")}Check ${AUDITS} matched pairs</button>`]
-      : !a.false ? [`<b>So far, yes:</b> none of the ${fmt(a.checked)} matched pairs people checked was wrong.`, `<button class="btn outlined" id="draw">${icon("add")}Check ${AUDITS} more</button>`]
-      : [`<b>Not yet:</b> ${fmt(a.false)} of the ${fmt(a.checked)} matched pairs people checked ${a.false > 1 ? "were" : "was"} wrong.`, `<a class="btn filled" data-go="pairs">Look at them</a>`];
+    const t = d.trust, seen = t ? {checked: t.above.checked + t.checked, false: t.above.false + t.false} : a;  // with a trust line: the merged links people checked, and its sample
+    const draw = (label, cls) => t && !t.above.pairs ? `<span class="muted">Nothing has merged yet to spot-check</span>`
+      : `<button class="btn ${cls}" id="draw">${icon("add")}${label}</button>`;
+    const verdict = !seen.checked ? [`<b>Not known yet:</b> people haven't checked a pair.`, draw(`Check ${AUDITS} matched pairs`, "filled")]
+      : !seen.false ? [`<b>So far, yes:</b> none of the ${plural(seen.checked, "pair")} people checked was wrong.`, draw(`Check ${AUDITS} more`, "outlined")]
+      : [`<b>Not yet:</b> ${fmt(seen.false)} of the ${plural(seen.checked, "pair")} people checked ${seen.false > 1 ? "were" : "was"} wrong.`, `<a class="btn filled" data-go="pairs">Look at them</a>`];
+    const changed = Object.fromEntries(Object.entries(d.method).filter(([k]) => k !== "trust"));  // the trust line is people's, not the method's
     $("out").className = "";
     $("out").innerHTML = `<div class="card"><div class="qa"><div class="q"><h2 class="question">Is the matching good enough yet?</h2><p class="answer">${verdict[0]}</p></div>${verdict[1]}</div></div>` +
       `<div class="card"><h3 style="font-size:15px;font-weight:500;margin:0 0 10px">What could be better</h3>${latest ? trialCard(latest) : ""}${
         d.proposals.length ? d.proposals.map((x) => `<div class="offer">${icon("wand")}<span>${plainly(x)}</span>${tryBtn(x.change)}</div>`).join("") : '<p class="muted" style="margin:0">Nothing to try yet: people\'s decisions show what to change.</p>'}
-        ${Object.keys(d.method).length ? `<p class="muted">The method is changed: ${esc(methodText(d.method))} · <button class="mini" id="reset">Back to the tuned method</button></p>` : ""}
+        ${Object.keys(changed).length ? `<p class="muted">The method is changed: ${esc(methodText(changed))} · <button class="mini" id="reset">Back to the tuned method</button></p>` : ""}
         <details class="fold-line"><summary>Where to draw the line</summary><div id="line" style="margin-top:10px"></div></details></div>
        <details class="card fold"><summary><h2>Rounds so far</h2></summary><div id="rounds"></div></details>
        <details class="card fold"><summary><h2>Match rules</h2></summary><div id="rules"></div></details>
@@ -1778,18 +1838,18 @@ const SCREENS = {
           cell: (r, c) => c === "method" ? esc(methodText(r.method)) : c === "false_found" && r[c] ? `<span class="chip warn">${fmt(r[c])}</span>` : esc(fmt(r[c]))});
     lineView($("line"), d);
     const without = (key) => (r) => r.pairs ? tryBtn({[key]: [r.name]}, "Try without") : "";
-    grid($("rules"), d.rules, ["name", "pairs", "below", "different", "try"], {filter: false, labels: {below: "below the line", different: "said different", try: ""},
-         cell: (r, c) => c === "try" ? without("drop_rules")(r) : c === "different" && r[c] ? `<span class="chip warn">${fmt(r[c])}</span>` : esc(fmt(r[c]))});
-    grid($("keys"), d.keys, ["name", "pairs", "seconds", "matched", "only", "try"], {filter: false, labels: {matched: "links", only: "only it finds", try: ""},
-         cell: (r, c) => c === "try" ? without("drop_keys")(r) : esc(fmt(r[c]))});
+    grid($("rules"), d.rules, ["name", "pairs", "below", "different", "try"], {filter: false, labels: {name: "rule", below: "below the line", different: "said different", try: ""},
+         cell: (r, c) => c === "name" ? esc(ruleSays(r.name).replace(/^a rule: /, "")) : c === "try" ? without("drop_rules")(r) : c === "different" && r[c] ? `<span class="chip warn">${fmt(r[c])}</span>` : esc(fmt(r[c]))});
+    grid($("keys"), d.keys, ["name", "pairs", "seconds", "matched", "only", "try"], {filter: false, labels: {name: "looks for", matched: "likely links", only: "only it finds", try: ""},
+         cell: (r, c) => c === "name" ? esc(looks(r.name)) : c === "try" ? without("drop_keys")(r) : esc(fmt(r[c]))});
     grid($("steps"), d.steps, ["comparison", "level", "bits", "reached"], {filter: false, labels: {level: "step", bits: "points", reached: "pairs"},
-         cell: (r, c) => c === "bits" && r.reached && Math.abs(r.bits) < 0.5 && r.level !== "missing" ? `${esc(fmt(r.bits))} <span class="chip warn">about 0</span>`
+         cell: (r, c) => c === "comparison" ? esc(comp(r.comparison)) : c === "level" ? esc(level(r.level)) : c === "bits" && r.reached && Math.abs(r.bits) < 0.5 && r.level !== "missing" ? `${esc(fmt(r.bits))} <span class="chip warn">about 0</span>`
            : c === "reached" && !r.reached ? '<span class="chip warn">never</span>' : esc(fmt(r[c]))});
     where();
     const busy = (label) => {  // one long command at a time: its steps as they finish, every action off until it ends
       el.querySelectorAll("[data-try], [data-adopt], #draw, #reset").forEach((b) => { b.disabled = true; });
       $("busy").innerHTML = `<div class="card steps-card"><h2><span class="spin" style="border-color:var(--primary);border-right-color:transparent"></span>${esc(label)}</h2><ul class="steps"></ul></div>`;
-      return (e) => { if (e.event === "step") $("busy").querySelector("ul")?.insertAdjacentHTML("beforeend", `<li>${icon("check")}${esc(e.step)} <span class="faint">${e.seconds.toFixed(1)} s</span></li>`); };
+      return (e) => { if (e.event === "step") $("busy").querySelector("ul")?.insertAdjacentHTML("beforeend", `<li>${icon("check")}${esc(DOING[e.step] || e.step)} <span class="faint">${e.seconds.toFixed(1)} s</span></li>`); };
     };
     const failed = (e) => { $("busy").innerHTML = banner(e); el.querySelectorAll("[data-try], [data-adopt], #draw, #reset").forEach((b) => { b.disabled = false; }); };
     const round = (e) => e.event === "error" ? failed(e)
@@ -1802,7 +1862,6 @@ const SCREENS = {
         run("improve", "try method", tryArgs(change), busy(`Trying ${methodText(change)}`)).then((r) => r.event === "error" ? failed(r) : go("improve"));
       } else if (b.dataset.adopt) run("improve", "adopt method", {trial: b.dataset.adopt}, busy("Adopting, and finding matches")).then(round);
       else if (b.id === "reset") run("improve", "reset method", {}, busy("Back to the tuned method, and finding matches")).then(round);
-      else if ("discard" in b.dataset) b.closest(".card").remove();
     };
     if ($("draw")) $("draw").onclick = async () => {  // only while there are matched pairs to check
       $("draw").disabled = true;
@@ -1818,7 +1877,7 @@ const SCREENS = {
 // A change of method in words, and what try method takes for it.
 const methodText = (m) => !m || !Object.keys(m).length ? "as tuned"
   : [...(m.trust !== undefined ? [m.trust === "none" ? "nothing merges by points" : `${fmt(m.trust)}+ merge`] : []),
-     ...(m.line !== undefined ? [`line at ${fmt(m.line)}`] : []), ...[...(m.drop_rules || []), ...(m.drop_keys || [])].map((x) => `without ${x}`),
+     ...(m.line !== undefined ? [`line at ${fmt(m.line)}`] : []), ...(m.drop_rules || []).map((x) => `without ${ruleSays(x)}`), ...(m.drop_keys || []).map((x) => `without “${looks(x)}”`),
      ...(m.add_keys || []).map((k) => `with a key on ${keyText(k)}`)].join(" · ");
 const keyText = (k) => k.map((f) => { const [field, ...n] = f.split(":"); return words(field) + (n.includes("first3") ? " area" : n.includes("initial") ? " initial" : ""); }).join(" + ");  // an added key's fields, in words
 const tryArgs = (c) => c.line !== undefined ? {line: String(c.line)} : c.add_keys ? {add: c.add_keys.map((k) => k.join("+"))} : {drop: [...(c.drop_rules || []), ...(c.drop_keys || [])]};
@@ -1827,12 +1886,12 @@ const tryBtn = (c, label = "Try") => `<button class="btn" data-try='${esc(JSON.s
 function trialCard(x) {  // a trial beside the method as it is: on people's decisions first, then without labels
   const was = x.base, now = x.variant, cell = (k, v) => `<div><span class="lab">${esc(k)}</span><b>${v}</b></div>`;
   const change = (k, worse) => `<span class="${x[k].variant > x[k].base ? worse : x[k].variant < x[k].base ? "ink-good" : ""}">${fmt(x[k].base)} → ${fmt(x[k].variant)}</span>`;
-  return `<div class="card trial"><h2>${icon("loop")}Trial ${fmt(x.trial)}: ${esc(methodText(x.method))}</h2><div class="nums">${
+  return `<div class="card trial"><h2>${icon("loop")}Trial ${fmt(x.trial)}: ${esc(methodText(x.method))}</h2><p class="muted">Both run without people's decisions: the method now → this trial</p><div class="nums">${
     cell("Joined, people said different", change("different_joined", "ink-bad"))}${cell("Apart, people said same", change("same_apart", ""))}${
     cell("Links", `${fmt(was.matched)} → ${fmt(now.matched)}`)}${cell("Expected false", `${fmt(was.expected_false)} → ${fmt(now.expected_false)}`)}${
     cell("Entities", `${fmt(was.entities)} → ${fmt(now.entities)}`)}${cell("Pairs of records", `${fmt(x.apart)} apart · ${fmt(x.together)} together`)}${
     was.missed && now.missed ? Object.keys(now.missed).map((k) => cell(`Matches no key lists, sharing a ${words(k)}`, `${fmt(was.missed[k] ?? 0)} → ${fmt(now.missed[k] ?? 0)}`)).join("") : ""}</div>
-    <div class="row"><button class="btn filled" data-adopt="${esc(x.trial)}">${icon("check")}Adopt and find matches</button><button class="btn" data-discard>Discard</button></div></div>`;
+    <div class="row"><button class="btn filled" data-adopt="${esc(x.trial)}">${icon("check")}Adopt and find matches</button></div></div>`;
 }
 
 // The weight bands near the line, every pair people decided as a dot, the line, and a slider that moves it: what a
@@ -1844,12 +1903,14 @@ function lineView(box, d) {
   const stack = {}, MOST = 10, dots = [...pts].sort((a, b) => (a.decision === "match") - (b.decision === "match")).map((p) => {  // a column: different first, 10 dots, then a count
     const k = Math.round(x(p.weight) / 9), n = stack[k] = (stack[k] || 0) + 1;
     return n > MOST ? "" : `<circle cx="${x(p.weight)}" cy="${108 + n * 9}" r="4" class="${p.decision === "match" ? "same" : "diff"}"><title>${esc(p.id_l)} · ${esc(p.id_r)}: ${p.decision === "match" ? "same" : "different"}, ${fmt(p.weight)} points</title></circle>`; });
-  const more = Object.entries(stack).filter(([, n]) => n > MOST).map(([k, n]) => `<text x="${k * 9}" y="${108 + (MOST + 1) * 9 + 4}" class="tick">+${n - MOST}</text>`);
-  const H = 124 + 9 * Math.min(MOST + 1, Math.max(0, ...Object.values(stack)));
+  const more = Object.entries(stack).filter(([, n]) => n > MOST).map(([k, n]) => `<text x="${k * 9}" y="${108 + (MOST + 1) * 9 + 4 + (k % 2) * 12}" class="tick">+${n - MOST}</text>`);  // columns 9 px apart: every other count a line lower
+  const H = 136 + 9 * Math.min(MOST + 1, Math.max(0, ...Object.values(stack)));
   const ticks = Array.from({length: (hi - lo) / 2 + 1}, (_, i) => lo + i * 2);
-  box.innerHTML = `<svg class="hist" viewBox="0 0 ${W} ${H}" role="img" aria-label="Pairs by points, the line at ${fmt(d.line)}, and the pairs people decided">
+  const ruled = d.decided.length - pts.length, tl = d.trust && d.trust.line;
+  box.innerHTML = `${d.trust ? `<p class="muted" style="margin:0 0 8px">The trust line decides what merges now: ${tl === "none" ? "nothing by points yet" : `pairs scoring ${fmt(tl)} or more`}</p>` : ""}
+    <svg class="hist" viewBox="0 0 ${W} ${H}" role="img" aria-label="Pairs by points, the line at ${fmt(d.line)}, and the pairs people decided">
     ${bands.map((b) => { const h = Math.log2(b.pairs + 1) / top * 84, a = x(Math.max(lo, b.weight_from)), w = Math.max(1, x(Math.min(hi, b.weight_from + 2)) - a - 2);
-      return `<rect x="${a}" y="${96 - h}" width="${w}" height="${h}" rx="3" class="${b.accepted ? "acc" : ""}"><title>${fmt(b.pairs)} pairs, ${b.weight_from} to ${b.weight_from + 2} points</title></rect>`; }).join("")}
+      return `<rect x="${a}" y="${96 - h}" width="${w}" height="${h}" rx="3" class="${b.accepted ? "acc" : ""}"><title>${plural(b.pairs, "pair")}, ${b.weight_from} to ${b.weight_from + 2} points</title></rect>`; }).join("")}
     <line x1="0" x2="${W}" y1="96" y2="96" class="axis"/>${ticks.map((v) => `<text x="${x(v)}" y="110" class="tick">${v}</text>`).join("")}
     <line x1="${x(d.line)}" x2="${x(d.line)}" y1="4" y2="96" class="now"/><line id="at-line" x1="${x(d.line)}" x2="${x(d.line)}" y1="4" y2="96" class="at"/>${dots.join("")}${more.join("")}</svg>
     <div class="legend"><span><span class="sw same"></span>same</span><span><span class="sw diff"></span>different</span><span><span class="sw now"></span>the line, ${fmt(d.line)}</span></div>
@@ -1858,7 +1919,7 @@ function lineView(box, d) {
     const at = Number($("at").value), right = (p, line) => (p.named && p.weight >= line) === (p.decision === "match");
     const fixes = pts.filter((p) => right(p, at) && !right(p, d.line)).length, breaks = pts.filter((p) => right(p, d.line) && !right(p, at)).length;
     box.querySelector("#at-line").setAttribute("x1", x(at)); box.querySelector("#at-line").setAttribute("x2", x(at));
-    $("at-says").innerHTML = at === d.line ? `${fmt(pts.length)} pairs people decided` :
+    $("at-says").innerHTML = at === d.line ? `${plural(pts.length, "pair")} people decided${ruled ? ` · ${plural(ruled, "rule pair")} aside: no line moves them` : ""}` :
       `At ${fmt(at)}: ${fmt(fixes)} set right · <span class="${breaks ? "ink-bad" : ""}">${fmt(breaks)} set wrong</span> ${tryBtn({line: at}, `Try ${fmt(at)}`)}`;
   };
   $("at").oninput = says;
@@ -1870,7 +1931,7 @@ function lineView(box, d) {
 async function patterns(box, trusted = false) {  // trusted: a trust line holds back what its sample hasn't proven
   const d = await run("run", "list patterns");
   if (d.event === "error" || !d.patterns.length) return;
-  box.innerHTML = `<p class="faint" style="margin:0 0 8px">${fmt(d.pairs)} pairs, in ${fmt(d.patterns.length)} patterns: the step each comparison reached, and what became of them</p><div id="ptable"></div><div id="pex" class="chips" style="margin-top:10px"></div>`;
+  box.innerHTML = `<p class="faint" style="margin:0 0 8px">${plural(d.pairs, "pair")}, in ${fmt(d.patterns.length)} patterns: the step each comparison reached, and what became of them</p><div id="ptable"></div><div id="pex" class="chips" style="margin-top:10px"></div>`;
   const tone = (label, bits) => label === "missing" ? "" : bits >= 5 ? "strong" : bits > 0 ? "for" : "against";
   const then = (r) => {
     const some = [["merged", "merged", "good"], ["wait", "to review", "info"], ["held", trusted ? "waits for a check" : "not asked", ""], ["apart", "apart", ""]].filter(([k]) => r[k]);
@@ -1881,8 +1942,8 @@ async function patterns(box, trusted = false) {  // trusted: a trust line holds 
       : c === "points" ? `<span class="pts ${r.points >= 0 ? "for" : "against"}">${r.points >= 0 ? "+" : ""}${r.points.toFixed(1)}</span>` : c === "then" ? then(r) : esc(fmt(r[c])),
     onPick: (i) => {
       t.select(i);
-      $("pex").innerHTML = d.patterns[i].examples.map((e) => `<button class="btn" data-x="${esc(e.id_l)} ${esc(e.id_r)}">${esc(e.id_l)} · ${esc(e.id_r)}</button>`).join("");
-      $("pex").querySelectorAll("[data-x]").forEach((b) => b.onclick = () => explainDialog("run", ...b.dataset.x.split(" ")));
+      $("pex").innerHTML = d.patterns[i].examples.map((e) => `<button class="btn" data-x="${idList(e.id_l, e.id_r)}">${esc(e.id_l)} · ${esc(e.id_r)}</button>`).join("");
+      $("pex").querySelectorAll("[data-x]").forEach((b) => b.onclick = () => explainDialog("run", ...JSON.parse(b.dataset.x)));
     }});
 }
 
@@ -1890,11 +1951,12 @@ async function patterns(box, trusted = false) {  // trusted: a trust line holds 
 // how answers are applied (decisions join entities at once; answers need a rerun, so the page reloads its new sheet).
 const QUEUES = {
   pairs: {title: "Pairs", list: "list pairs", one: "decide pair", apply: "apply decisions", applyLabel: "Apply decisions", written: "decided",
-          rows: (d) => d.pairs, cols: ["status", "why", "id_l", "id_r", "match_weight"], labels: {match_weight: "points"}, some: "pairs to review",
+          rows: (d) => d.pairs, cols: ["why", "id_l", "id_r", "match_weight"], labels: {why: "status", match_weight: "points"}, some: "pairs to review",
           keys: {m: "match", n: "no_match"}, answer: (r, value) => ({first: r.id_l, second: r.id_r, decision: value}), card: pairCard, after: explainCard,
-          applied: (e) => `<div class="banner info">${icon("check")}<div><b>${fmt(e.decisions)} decisions applied: ${fmt(e.clusters_joined)} entities joined.</b></div></div>`},
+          applied: (e) => `<div class="banner info">${icon("check")}<div><b>${plural(e.decisions, "decision")} applied: ${plural(e.clusters_joined, "entity", "entities")} joined${
+            e.decisions > e.matches ? `; ${plural(e.decisions - e.matches, "pair")} said different: kept apart from the next run on` : ""}.</b></div></div>`},
   kinds: {title: "Kinds", list: "list kinds", one: "answer kind", apply: "apply answers", applyLabel: "Apply answers", rerun: true, written: "answered",
-          rows: (d) => d.kinds, cols: ["status", "why", "id", "name", "engine_says"], labels: {engine_says: "engine"}, some: "records to check",
+          rows: (d) => d.kinds, cols: ["why", "id", "name", "engine_says"], labels: {why: "status", engine_says: "engine"}, some: "records to check",
           keys: {"1": "person", "2": "company", "0": "unsure"}, answer: (r, value) => ({id: r.id, kind: value}), card: kindCard},
 };
 
@@ -1907,8 +1969,8 @@ let graph = null;  // the run's describe matching, which the cards draw their la
 function pairCard(r, at, of) {  // the question, why it is asked, the pair as it scored (pairBody), and the answers
   const accept = graph && graph.nodes.find((n) => n.id === "accept"), line = accept ? accept.threshold : 8, next = trustNow && trustNow.next;
   const sampled = next && r.why === "decide" && r.match_weight >= next.down_to && (next.up_to === null || r.match_weight < next.up_to);
-  const why = r.why === "audit" ? (trustNow ? "A spot-check of a pair that merged by itself." : "A spot-check: the engine matched these two, and you confirm it.")
-    : sampled ? `Drawn from the pairs scoring ${span(next)}: if none of ${fmt(trustNow.needed)} is different, they all merge.`
+  const why = r.why === "audit" ? (trustNow ? "A spot-check of a pair that merged at the trust line." : "A spot-check: the engine matched these two, and you confirm it.")
+    : sampled ? `Drawn from the pairs scoring ${span(next)}: ${trustNow.false ? `${plural(trustNow.false, "was", "were")} said different, so they stay with you.` : `if none of ${fmt(trustNow.needed)} is different, they all merge.`}`
     : r.match_weight >= line ? "No name to compare, so the engine leaves this one to you." : `Close to the line: ${fmt(r.match_weight)} points, and ${line} are needed.`;
   return `<div class="card one">${cardHead(r, at, of, "decided", ["pairs", "This pair", "Same entity?"], why)}${recordsOf(r)}
     <div class="actions"><button class="btn filled" data-a="match">Same entity</button><button class="btn outlined" data-a="no_match">Different</button>
@@ -1956,14 +2018,19 @@ const decider = (x, c) => {  // the test that set a comparison's step: the first
 const testText = (x, c, t) => {
   if (!t) return "not on both";
   const on = x.tests.some((o) => o.comparison === c && o.field !== t.field) ? ` ${words(t.field)}` : "";
-  if (t.function === "exact") return `${t.passed ? "same" : "different"}${on || " value"}`;
+  if (t.function === "exact") return `${t.passed ? "same" : "different"}${on || " value"}${t.normalize ? ", spelling aside" : ""}`;  // a test on prepared values: their spelling may differ
   const similar = ["jaro_winkler", "jaro", "jaccard"].includes(t.function);
   return `${FN[t.function]}${on} ${similar ? t.score.toFixed(3) : fmt(t.score)} ${t.passed ? (similar ? "≥" : "≤") : (similar ? "<" : ">")} ${t.threshold}`;
 };
-const big = (n) => n < 10 ? n.toFixed(1) : new Intl.NumberFormat("en", {notation: "compact", compactDisplay: "long", maximumSignificantDigits: 2}).format(n);
+const big = (n) => n < 10 ? n.toFixed(1) : new Intl.NumberFormat("en", {notation: "compact", compactDisplay: "long", maximumSignificantDigits: 3}).format(n);  // odds: 2⁸ is 256, not 260
 const odds = (w) => `about ${big(2 ** Math.abs(w))} to 1 that they are ${w >= 0 ? "the same" : "different"}`;  // points as odds: each point doubles them
-const looks = (k) => { const g = graph && (graph.nodes.find((n) => n.id === "candidates") || {generators: []}).generators.find((x) => x.name === k); return g ? keyWords(g) : k; };
-const found = (f) => [f.rule && `the rule ${f.rule}`, f.keys && `${f.keys.slice(0, 2).map(looks).join(" · ")}${f.keys.length > 2 ? ` · ${f.keys.length - 2} more` : ""}`,
+let dropped = {rules: [], keys: []};  // what the workspace's method leaves out (describe method): no longer in the graph, still worded
+const looks = (k) => { const g = (graph && (graph.nodes.find((n) => n.id === "candidates") || {generators: []}).generators.find((x) => x.name === k)) || dropped.keys.find((x) => x.name === k); return g ? keyWords(g) : k; };
+const ruleSays = (name) => {  // a match rule by what it compares, not its name
+  const r = (graph && (graph.nodes.find((n) => n.id === "rules") || {rules: []}).rules.find((x) => x.name === name)) || dropped.rules.find((x) => x.name === name);
+  return r ? `a rule: ${[...r.exact.map((f) => `same ${words(f)}`), ...r.fuzzy.map(said)].join(", ")}` : name;
+};
+const found = (f) => [f.rule && ruleSays(f.rule), f.keys && `${f.keys.slice(0, 2).map(looks).join(" · ")}${f.keys.length > 2 ? ` · ${f.keys.length - 2} more` : ""}`,
                       f.people && `a person: ${f.people === "match" ? "same" : "different"}`].filter(Boolean).join(" and ");
 
 // A pair as it scored: both records, their differences marked; then a waterfall from the points two random records
@@ -2003,7 +2070,7 @@ function waterfallOf(r, x) {  // how the pair scored: from where any two records
     return `<span class="faint">${esc(s.what)}</span> ${why}<div class="faint" style="font-size:12px">${esc(testText(x, s.c, t))}</div>`;
   };
   const signed = (v) => `${v >= -0.05 ? "+" : ""}${Math.abs(v) < 0.05 ? "0.0" : v.toFixed(1)}`;
-  return `<div class="wf-grid"><span></span><span></span><div class="wf-axis"><span style="left:${X(0)}%">different ← 0 → same</span></div><span class="val faint">points</span><span class="tot">total</span>
+  return `<div class="wf-grid"><span></span><span></span><div class="wf-axis"><span style="left:${X(0)}%;transform:translateX(${X(0) > 70 ? -100 : X(0) < 30 ? 0 : -50}%)">different ← 0 → same</span></div><span class="val faint">points</span><span class="tot">total</span>
     ${steps.map((s) => `<span class="lab">${esc(s.lab)}</span><span class="what">${how(s)}</span>
       ${track(s.bits ? `<rect class="${s.bits >= 0 ? "for" : "against"}" x="${X(Math.min(s.a, s.b))}" y="2.5" height="5" width="${Math.max(0.4, Math.abs(X(s.b) - X(s.a)))}"/>` : "")}
       <span class="val ${s.bits >= 0 ? "for" : "against"}">${signed(s.bits)}</span><span class="tot">${signed(s.b)}</span>`).join("")}
@@ -2016,8 +2083,8 @@ function across(x) {  // a pair whose records are in two customers: both, and ev
   if (!x.group_a.length) return "";
   const w = Object.fromEntries(x.across.map((p) => [`${p.id_l} ${p.id_r}`, p.weight])), at = (a, b) => w[a < b ? `${a} ${b}` : `${b} ${a}`];
   const head = (rec) => `${esc(rec.id)}<div class="faint">${esc(rec.person_name || rec.company_name || "(no name)")}</div>`;
-  const all = `<button type="button" class="btn outlined" data-compare data-first="${esc(x.id_l)}" data-others="${esc(x.group_b.map((b) => b.id).join(" "))}">Compare all ${fmt(x.group_b.length)}</button>`;
-  return `<div class="groups"><h3>A “same” joins ${fmt(x.group_a.length)} + ${fmt(x.group_b.length)} records ${all}</h3><div class="tablecard"><div class="tablewrap"><table>
+  const all = `<button type="button" class="btn outlined" data-compare data-first="${esc(x.id_l)}" data-others="${idList(...x.group_b.map((b) => b.id))}">Compare all ${fmt(x.group_b.length)}</button>`;
+  return `<div class="groups"><h3>A “same” joins ${fmt(x.group_a.length)} + ${plural(x.group_b.length, "record")} ${all}</h3><div class="tablecard"><div class="tablewrap"><table>
     <thead><tr><th></th>${x.group_b.map((b) => `<th>${head(b)}</th>`).join("")}</tr></thead><tbody>${x.group_a.map((a) => `<tr><th>${head(a)}</th>${x.group_b.map((b) => {
       const v = at(a.id, b.id);
       return `<td class="num ${a.id === x.id_l && b.id === x.id_r ? "asked" : ""}">${v === undefined ? "—" : `<span class="pts ${v >= 0 ? "for" : "against"}">${v.toFixed(1)}</span>`}</td>`;
@@ -2447,9 +2514,10 @@ async function compareScene(svg, x, c, alive) {  // returns the step it stopped 
   const tests = x.tests.filter((t) => t.comparison === c), labels = [...new Set(tests.map((t) => t.step))];
   if (tests.every((t) => t.a === null || t.b === null)) {  // nothing to compare: the comparison gives no points either way
     const on = [x.id_l, x.id_r].filter((_, k) => tests.some((t) => [t.a, t.b][k] !== null));
-    put(svg, "text", {x: 16, y: 110, "font-size": 15}, `not on both: no ${comp(c)} to compare`);
-    put(svg, "text", {x: 16, y: 136, "font-size": 13, class: "faint"}, on.length ? `only ${on.join(" has one")} has one` : "neither has one");
-    put(svg, "text", {x: 16, y: 162, "font-size": 13, class: "faint"}, "this comparison adds 0 points");
+    svg.setAttribute("viewBox", "0 0 560 96");  // three lines: the scene as tall as what it says
+    put(svg, "text", {x: 16, y: 30, "font-size": 15}, `not on both: no ${comp(c)} to compare`);
+    put(svg, "text", {x: 16, y: 56, "font-size": 13, class: "faint"}, on.length ? `only ${on.join(" has one")} has one` : "neither has one");
+    put(svg, "text", {x: 16, y: 82, "font-size": 13, class: "faint"}, "this comparison adds 0 points");
     return "missing";
   }
   const reached = x.comparisons.find((r) => r.comparison === c);
@@ -2697,7 +2765,7 @@ async function playScene(a) {
   place();
   if (a.dataset.compare !== undefined) {  // Compare candidates: one record against the others, a row each
     const wait = say("comparing…");
-    const d = await run(current, "compare records", {first: a.dataset.first, others: a.dataset.others.split(" ")});
+    const d = await run(current, "compare records", {first: a.dataset.first, others: JSON.parse(a.dataset.others)});
     if (!alive()) return;
     wait.remove();
     if (d.event === "error") { say(d.error); return; }
@@ -2793,7 +2861,7 @@ function editOps(a, b, swaps) {  // the cheapest edits from a to b, as columns [
 }
 
 function kindCard(r, at, of) {  // the name; what the engine thinks of it, and why it asks; the answers, and what they do
-  const says = (s) => String(s ?? "").replace(/^\d+ /, ""), engine = says(r.engine_says), name = says(r.name_says);
+  const engine = kindSays(r.engine_says), name = kindSays(r.name_says);
   const thinks = engine === "not sure" ? `The engine isn't sure${name ? `; the name alone looks like ${name.startsWith("person") ? "a " : name.startsWith("company") ? "a " : ""}${esc(name)}` : ""}.`
     : `The engine says ${engine === "person" ? "a person" : engine === "company" ? "a company" : esc(engine)}.`;
   const why = r.why === "measure" ? `${thinks} This record was drawn at random to check it.` : `${thinks} ${esc(r.reason || "")}`;
@@ -2816,11 +2884,10 @@ async function review(el, which, note = "", pattern = null) {  // pattern: compa
   $("refresh").onclick = () => go(which);
   $("apply").disabled = true;
   if (!state.workspace) { $("left").innerHTML = emptyRun(); return; }
-  let [d, g, w] = await Promise.all([run(which, q.list), flowOf(which, $("flow")), which === "pairs" ? run(which, "describe workspace") : null]);
-  graph = g;
+  let [d, , w] = await Promise.all([run(which, q.list), flowOf(which, $("flow")), which === "pairs" ? run(which, "describe workspace") : null]);  // flowOf sets graph
   if (d.event === "error") { $("left").innerHTML = banner(d); return; }
   const every = q.rows(d), rows = pattern ? every.filter((x) => Object.entries(pattern).every(([c, v]) => (x[c] ?? "missing") === (v ?? "missing"))) : every;
-  if (pattern) $("note").innerHTML = `<div class="banner info">${icon("pairs")}<div><b>${fmt(rows.length)} of ${fmt(every.length)} pairs:</b> ${
+  if (pattern) $("note").innerHTML = `<div class="banner info">${icon("pairs")}<div><b>${fmt(rows.length)} of ${plural(every.length, "pair")}:</b> ${
     esc(Object.entries(pattern).filter(([, v]) => v && v !== "missing").map(([c, v]) => `${comp(c)} ${level(v)}`).join(" · "))}</div><a class="btn" data-go="pairs">Show all</a></div>`;
   const sample = () => {  // the trust line's sample, counted as answers go in: applied ones from the workspace, written ones here
     const t = trustNow, n = t && t.next;
@@ -2835,29 +2902,30 @@ async function review(el, which, note = "", pattern = null) {  // pattern: compa
     $("trust").innerHTML = `<div class="trustbar">${icon("check")}<span><b>${t.line === "none" ? "Nothing merges by points yet" : `Pairs scoring ${fmt(t.line)} or more merge`}</b>${
       n ? `<span class="muted"> · checking ${span(n)}: ${fmt(checked)} of ${fmt(t.needed)}${different ? `, <span class="ink-bad">${fmt(different)} different: these stay with you</span>` : ""}</span>
         ${seg([[checked, "var(--people)", "checked"], [Math.max(t.needed - checked, 0), "var(--line)", "to check"]])}` : ""}</span>
-      <span class="grow"></span>${t.may_lower ? `<button class="btn filled" data-trust="lower trust" data-label="Merge ${span(n)} automatically">${icon("check")}Merge ${span(n)} automatically</button>` : ""}${
+      <span class="grow"></span>${n && checked >= t.needed && t.checked < t.needed ? `<span class="muted">Apply your decisions to count them</span>` : ""}${t.may_lower ? `<button class="btn filled" data-trust="lower trust" data-label="Merge ${span(n)} automatically">${icon("check")}Merge ${span(n)} automatically</button>` : ""}${
       t.above.false ? `<button class="btn" data-trust="raise trust" data-label="Back to review">${fmt(t.above.false)} different above the line: back to review</button>` : ""}</div>`;
     $("trust").querySelectorAll("[data-trust]").forEach((b) => b.onclick = () => action(which, b.dataset.trust, b.dataset.label,
       (e) => e.event === "error" ? $("note").innerHTML = banner(e) : go(which, `<div class="banner info">${icon("check")}<div><b>Matched again with the new trust line.</b></div></div>`)));
   };
   trust();
   $("some").innerHTML = scope("records", `${fmt(rows.length)} ${q.some}`);
-  let i = Math.max(0, rows.findIndex((r) => r.status === "open")), written = 0, pending = false;
-  const tally = () => {
-    $("written").textContent = String(written); $("apply").disabled = !rows.some((r) => r.status === "written in");
+  let i = Math.max(0, rows.findIndex((r) => r.status === "open")), pending = false;
+  const tally = () => {  // the badge: rows written in, not key presses
+    const written = rows.filter((r) => r.status === "written in").length;
+    $("written").textContent = String(written); $("apply").disabled = !written;
     const main = rows.filter((r) => r.why !== "audit"), checks = rows.length - main.length, done = main.filter((r) => r.status !== "open").length;
     const n = which === "pairs" && trustNow && trustNow.next;  // with a trust line, what is left is its sample
-    $("done-line").innerHTML = n ? "" : `<b>${fmt(done)} of ${fmt(main.length)}</b> ${q.written}${checks ? ` · ${plural(checks, "spot-check")}` : ""}
+    $("done-line").innerHTML = n ? "" : `<b>${fmt(done)} of ${fmt(main.length)}</b> ${q.written}${checks ? ` · ${plural(checks, "spot-check")}` : ""}${d.applied ? ` · ${fmt(d.applied)} applied earlier` : ""}
       ${seg([[done, "var(--people)", q.written], [Math.max(main.length - done, 0), "var(--line)", "open"]])}`;
   };
-  const t = grid($("left"), rows, q.cols, {labels: q.labels, selected: i, cell: (r, c) => c === "status" || c === "why" ? chip(r[c], q.written) : esc(fmt(r[c])),
+  const t = grid($("left"), rows, q.cols, {labels: q.labels, selected: i, cell: (r, c) => c === "why" ? chip(r.status === "open" ? r.why : r.status, q.written) : c === "name" ? `<span class="clip" title="${esc(r.name)}">${esc(r.name)}</span>` : c === "engine_says" ? esc(kindSays(r[c])) : esc(fmt(r[c])),
                                            onPick: (k) => { i = k; show(); }});
   const move = (step) => { i = Math.min(rows.length - 1, Math.max(0, i + step)); show(); };
   const local = () => {  // the stepper's line, from the rows this page holds: no server call per answer
     const open = rows.filter((r) => r.why === "decide" && r.status === "open").length, w = rows.filter((r) => r.status === "written in").length;
     const n = which === "pairs" && trustNow && trustNow.next;  // with a trust line: how far its sample is
     const line = n ? `${span(n)}: ${fmt(sample().checked)} of ${fmt(trustNow.needed)} checked` : open ? `${fmt(open)} to decide` : `${fmt(w)} ${q.written}, to apply`;
-    if (steps.steps && (open || w)) { steps.steps[which] = {state: "attention", line}; rail(); }
+    if (steps.steps && (open || w)) { steps.steps[which] = {state: "attention", line}; rail(); stepChip(); }
   };
   const answer = async (value) => {
     if (pending) return;  // a key held down or pressed twice: one answer for the row, then the next row
@@ -2865,7 +2933,7 @@ async function review(el, which, note = "", pattern = null) {  // pattern: compa
     try {
       const r = rows[i], e = await run(which, q.one, q.answer(r, value));
       if (e.event === "error") { $("said").innerHTML = banner(e); return; }
-      r.status = "written in"; r.decision = value; written++; tally(); t.redraw(); local(); if (which === "pairs") trust();
+      r.status = "written in"; r.decision = value; tally(); t.redraw(); local(); if (which === "pairs") trust();
       const next = rows.findIndex((x, k) => k > i && x.status === "open");
       if (next >= 0) i = next;
       show();
@@ -2880,14 +2948,8 @@ async function review(el, which, note = "", pattern = null) {  // pattern: compa
     $("right").querySelectorAll("[data-a]").forEach((b) => b.onclick = () => answer(b.dataset.a));
     $("right").querySelector("[data-skip]").onclick = () => move(1);
   };
-  const applied = (e) => {
-    if (e.event === "error") { $("note").innerHTML = banner(e); return; }
-    if (q.rerun) return go(which, `<div class="banner info">${icon("check")}<div><b>Answers applied: matched again, and these are the records still open.</b></div></div>`);
-    $("note").innerHTML = q.applied(e);
-    rows.forEach((r) => { if (r.status === "written in") r.status = "applied"; });
-    written = 0; tally(); t.redraw(); refresh(); flowOf(which, $("flow"));
-    if (which === "pairs") run(which, "describe workspace").then((x) => { w = x; trust(); });
-  };
+  const applied = (e) => e.event === "error" ? $("note").innerHTML = banner(e)  // the page again: its rows, counts and lines as the workspace now says them
+    : go(which, q.rerun ? `<div class="banner info">${icon("check")}<div><b>Answers applied: matched again, and these are the records still open.</b></div></div>` : q.applied(e));
   $("apply").onclick = () => q.rerun ? action(which, q.apply, q.applyLabel, applied) : run(which, q.apply).then(applied);
   const keys = Object.fromEntries(Object.entries(q.keys).map(([k, value]) => [k, () => answer(value)]));
   keyHandler = (k) => ({...keys, s: () => move(1), ArrowDown: () => move(1), ArrowUp: () => move(-1), j: () => move(1), k: () => move(-1)})[k];
@@ -2920,6 +2982,7 @@ async function pick() {
     <div class="dlg-foot"><span class="grow"></span><button class="btn" value="cancel" formnovalidate>Cancel</button></div></form>`;
   dlg.querySelectorAll("[data-w]").forEach((tr) => tr.onclick = () => { dlg.close(); setWorkspace(tr.dataset.w); });
   $("create").onclick = async () => {
+    if (!$("new-name").value.trim()) { $("made").innerHTML = banner({event: "error", error: "Give it a name"}); $("new-name").focus(); return; }
     const d = await run("records", "create workspace", {name: $("new-name").value.trim()});
     if (d.event === "error") { $("made").innerHTML = banner(d); return; }
     dlg.close();
