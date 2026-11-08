@@ -109,6 +109,9 @@ def test_the_ui_layout_names_only_declared_commands_parameters_and_result_fields
     placed = {(s["id"], u["command"]) for s in layout["screens"] for u in s["uses"]}
     called = {(m.group(1), m.group(2)) for m in re.finditer(r'(?:run|action)\("(\w+)", "(\w+ \w+)"', html)}
     assert called and called <= placed  # every command the page runs, it runs as the layout places it
+    for sc in layout["screens"]:  # a stage's panel runs its commands on whichever page shows it
+        need = {"score": {"list patterns", "explain pair", "compare records"}, "candidates": {"describe key"}}
+        assert all({(sc["id"], c) for c in need.get(stage, ())} <= placed for stage in sc["strip"]), sc["id"]
     block = html.split("const QUEUES = {", 1)[1].split("\n};", 1)[0]
     named = {(q, c) for q, body in re.findall(r"\n  (\w+): \{title(.*?)(?=\n  \w+: \{title|$)", block, re.S)
              for c in re.findall(r'(?:list|one|apply): "(\w+ \w+)"', body)}
@@ -144,3 +147,22 @@ def test_a_value_like_an_option_stays_a_value_wherever_it_goes():
         a = cli.parser(ui.Refusing).parse_args(ui.as_json(ui.argv("split entity", args)))
         assert (a.id, a.between, a.workspace, a.format) == (*want, "w", "json")
     assert cli.parser().parse_args(["resolve", "records", "f", "--workspace", "w", "--compute", "threads=2", "memory_limit=1GB"]).compute == ["threads=2", "memory_limit=1GB"]
+
+
+def test_quick_commands_in_bursts_leave_no_threads_behind(tmp_path, population):
+    import os
+    import subprocess
+    import time
+    from er import cli, ui
+    s, p, g = population
+    g.df.to_parquet(tmp_path / "all.parquet", index=False)
+    assert cli.main(["resolve", "records", str(tmp_path / "all.parquet"), "--workspace", str(tmp_path / "run"), "--format", "json"]) == 0
+    task = Path("/proc/self/task")
+    threads = lambda: len(os.listdir(task)) if task.is_dir() else subprocess.run(["ps", "-M", str(os.getpid())], capture_output=True, text=True).stdout.count("\n") - 1
+    server, ws = ui.Server(str(tmp_path / "run")), str(tmp_path / "run")
+    start = threads()
+    for _ in range(8):  # a page's loads: several at once, again and again
+        jobs = [server.start(c, {"workspace": ws})[1] for c in ("describe workspace", "describe matching", "list pairs", "describe method", "describe review", "list patterns")]
+        while any(j.code is None for j in jobs):
+            time.sleep(0.05)
+    assert threads() < start + 60, (start, threads())  # each command's connections, and their worker threads, gone with it

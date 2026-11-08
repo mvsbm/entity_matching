@@ -17,6 +17,7 @@ last event) for a tab that polls late. The server binds 127.0.0.1; every request
 of 127.0.0.1 or localhost, so neither another user of the machine nor a web page elsewhere can use it.
 """
 import argparse
+import gc
 import json
 import secrets
 import shlex
@@ -132,6 +133,8 @@ class Server:
         except (Exception, SystemExit) as e:  # a bug, or argparse leaving (an ID typed as -h): its message, so the page doesn't hang
             oom = cli.out_of_memory(e)
             fail(job, str(oom), 2, oom.fix) if oom else fail(job, f"{type(e).__name__}: {e}", 1)
+        finally:  # a DuckDB connection caught in a reference cycle keeps its worker threads until the cycle is collected: now, not at
+            gc.collect()  # Python's leisure, or a page's bursts reach the system's thread limit
 
     def _long(self, job: Job, key: str | None = None) -> None:
         if not self.long.acquire(blocking=False):

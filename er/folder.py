@@ -239,7 +239,7 @@ def create(home: Path, name: str, columns: str) -> Path:
     """The new workspace home/name, with its own mapping (columns.toml, the text given) and its method (method.toml):
     a trust line above every step, so nothing merges before people check (config.TrustRule). O(1)."""
     if not NAME.fullmatch(name):
-        raise InputError(f"{name!r}: not a workspace name", fix="letters, digits, '.', '_' and '-', starting with a letter or digit, at most 64")
+        raise InputError(f"{name!r}: not a workspace name", fix="Latin letters (A–Z, a–z), digits, '.', '_' and '-', starting with a letter or digit, at most 64")
     ws = home / name
     try:
         ws.mkdir(parents=True)  # at once: two asking for one name, one gets it
@@ -312,13 +312,14 @@ def take_in(ws: Path, path: str | Path, spec: intake.InputSpec, reference: Path)
 
 
 def loaded(ws: Path) -> list[dict]:
-    """inputs/'s parts, oldest first: each one's name, path, files, bytes and rows (as the intake read them), the
-    repairs waiting for people and the rows unread, and whether a run has read all of it as it is now (steps.json, by
+    """inputs/'s parts, oldest first: each one's name, path, files, bytes and rows (as the intake read them), the name
+    of its file as given (one file), the repairs waiting for people and the rows unread, and whether a run has read all of it as it is now (steps.json, by
     SHA-256). O(parts + files + steps.json)."""
     read = {x["sha256"] for run in runs(ws) for x in run.get("inputs", []) if x.get("role") == "records"}
     def facts(part: Path) -> dict:  # a part's rows and whether a run read it, as the intake read it
         r = intake.report(part)
         waiting = sum(n for k, n in r["proposed"].items() if k not in r["accepted"])
-        return dict(rows=r["rows"], read=all(f["versions"][-1] in read for f in r["files"]), waiting=waiting, unread=r["unread"])
+        return dict(rows=r["rows"], read=all(f["versions"][-1] in read for f in r["files"]), waiting=waiting, unread=r["unread"],
+                    given=Path(r["files"][0]["given"]).name if len(r["files"]) == 1 else None)  # its file's own name, kana and kanji kept
     return [dict(name=part.name, path=str(part), files=len(own), bytes=sum((part / rel).stat().st_size for rel in own), **facts(part))
             for part in parts(ws) for own in [sums(part)]]

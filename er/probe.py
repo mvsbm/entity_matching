@@ -7,7 +7,7 @@ group, and the pairs are scored with the run's model.
 
 A hit is a pair at the model's line or above, with a name compared, whose records the model's likely links don't join,
 directly or through others: no key listed it, or (a method without bridge) it lies between two entities the rules formed. Those links are its matches, its pairs waiting at the line or above, the rules' pairs, and
-people's "same". A pair is drawn when either record is, so hits / (1 − (1 − f)²) estimates the hits among all the
+people's "same". A pair people said is different is no hit: they kept it apart. A pair is drawn when either record is, so hits / (1 − (1 − f)²) estimates the hits among all the
 stratum's pairs, with a Poisson interval. Pairs that share no stratum's group stay unmeasured: each estimate is a lower
 bound of the matches the keys miss.
 
@@ -26,12 +26,13 @@ EXAMPLES = 200  # hit pairs kept per stratum, for people to see
 
 
 def missed(con: duckdb.DuckDBPyConnection, db: object, model: dict, fs: FSSpec, spec: Probe, records: str, links: str, uid: str,
-           resolved: str | None = None) -> list[dict]:
+           resolved: str | None = None, apart: str | None = None) -> list[dict]:
     """Each stratum of `spec`, measured on `records` (the run's standardized records) with the run's `model`, against
     `links` (SQL: uid_l, uid_r, the model's likely links): its pairs, the share of records drawn, the pairs scored,
     the hits, the estimate with its interval, and the first hits (id_l, id_r, weight, why). `resolved` (SQL: the uids
     the rules joined to others) names the hits between two of the rules' entities, which a method without bridge never
-    joins: why "rules", not "keys", so a key can't find them."""
+    joins: why "rules", not "keys", so a key can't find them. `apart` (SQL: uid_l, uid_r) are pairs people said are
+    different: never hits."""
     u, l, r = q(uid), q(f"{uid}_l"), q(f"{uid}_r")
     have = {c for c, *_ in con.execute(f"DESCRIBE SELECT * FROM {records}").fetchall()}
     con.execute(f"CREATE OR REPLACE TABLE er_pr_single AS SELECT {u}, {u} AS cluster_id FROM {records}")
@@ -58,7 +59,8 @@ def missed(con: duckdb.DuckDBPyConnection, db: object, model: dict, fs: FSSpec, 
             hits = con.execute(f"""SELECT s.{l}, s.{r}, round(s.match_weight, 2), CASE WHEN {between} THEN 'rules' ELSE 'keys' END
                 FROM er_pr_scores s JOIN er_pr_joined a ON a.{u} = s.{l}
                 JOIN er_pr_joined b ON b.{u} = s.{r} WHERE s.match_weight >= {bits(fs.min_match_weight)} AND {named_sql(fs)}
-                AND a.cluster_id <> b.cluster_id ORDER BY hash(s.{l}, s.{r})""").fetchall()  # in hash order: the first are a random sample of them
+                AND a.cluster_id <> b.cluster_id {f"AND NOT EXISTS (SELECT 1 FROM ({apart}) x WHERE x.{l} = s.{l} AND x.{r} = s.{r} OR x.{l} = s.{r} AND x.{r} = s.{l})" if apart else ""}
+                ORDER BY hash(s.{l}, s.{r})""").fetchall()  # in hash order: the first are a random sample of them
         drawn = 1 - (1 - f) ** 2  # a pair is drawn when either of its records is
         h = len(hits)
         low, high = (max(h - 1.96 * math.sqrt(h), 0.0), h + 1.96 * math.sqrt(h)) if h else (0.0, 3.0)  # none: the rule of three

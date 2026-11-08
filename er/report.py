@@ -242,8 +242,10 @@ def report_text(run: "Run", tables: dict[str, pd.DataFrame], pipeline: Path) -> 
 def trust_sheet(run: "Run") -> tuple[pd.DataFrame, pd.DataFrame]:
     """With a trust line: the next range's links (the rules' pairs and the model's named ones, from its next step down
     to the line) that people have not decided, in a fixed random order (hash), as many as `checks` less those of the
-    range they decided already, and the model's pairs above its threshold with no name compared, which no line joins;
-    and `watch` spot-checks of the links at the line or above. O(E)."""
+    range they decided already; once they found one of its links false, the line can't step past it, so its open
+    links and every range's below go to people one by one instead, best first, `checks` at a time; and the model's
+    pairs above its threshold with no name compared, which no line joins; and `watch` spot-checks of the links at the
+    line or above. O(E)."""
     con, l, r, trust = run.con, q(run.l), q(run.r), run.pipeline.trust
     links = f"""SELECT * FROM (SELECT s.* EXCLUDE (named, keep) FROM ({run.scored()}) s WHERE s.named AND s.keep
                 UNION ALL BY NAME SELECT x.*, k.rule AS sources FROM rule_kept k JOIN rule_scores x USING ({l}, {r}))
@@ -252,8 +254,11 @@ def trust_sheet(run: "Run") -> tuple[pd.DataFrame, pd.DataFrame]:
     decide = pd.DataFrame()
     if (span := trust.below()) is not None:
         within = f"x.match_weight >= {bits(span[0])} AND x.match_weight < {bits(span[1])}"
-        done = con.execute(f"SELECT count(*) FROM ({links}) x WHERE {within} AND NOT {open_}").fetchall()[0][0]
-        decide = con.sql(f"SELECT * FROM ({links}) x WHERE {within} AND {open_} ORDER BY hash(x.{l}, x.{r}) LIMIT {max(0, trust.checks - done)}").df()
+        done, false = con.execute(f"""SELECT count(*) FILTER (WHERE NOT {open_}), count(*) FILTER (WHERE EXISTS (SELECT 1 FROM er_decisions d
+            WHERE d.{l} = x.{l} AND d.{r} = x.{r} AND d.decision = 'no_match')) FROM ({links}) x WHERE {within}""").fetchall()[0]
+        decide = con.sql(f"""SELECT * FROM ({links}) x WHERE x.match_weight >= {bits(min(trust.steps))} AND x.match_weight < {bits(span[1])} AND {open_}
+            ORDER BY x.match_weight DESC, x.{l}, x.{r} LIMIT {trust.checks}""").df() if false else \
+            con.sql(f"SELECT * FROM ({links}) x WHERE {within} AND {open_} ORDER BY hash(x.{l}, x.{r}) LIMIT {max(0, trust.checks - done)}").df()
     audit = con.sql(f"SELECT * FROM ({links}) x WHERE x.match_weight >= {bits(trust.line)} AND {open_} ORDER BY hash(x.{l}, x.{r}) LIMIT {trust.watch}").df()
     unnamed = con.sql(f"""SELECT * EXCLUDE (named, keep) FROM ({run.scored()}) x WHERE NOT x.named AND x.keep
         AND x.match_weight >= {run.pipeline.fs.min_match_weight} AND {open_} ORDER BY x.match_weight DESC""").df()  # no line joins them: people do

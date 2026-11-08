@@ -488,7 +488,10 @@ dialog:has(.dlg-body.wide) { width: min(960px, calc(100vw - 32px)); }
  "screens": [
   {"id": "records", "title": "Overview", "icon": "overview", "what": "The whole workflow, and what it did with your records.",
    "strip": ["records", "prepare", "rules", "candidates", "score", "accept", "people", "group", "customers"],
-   "uses": [{"command": "describe workspace", "args": {"workspace": "@workspace"}, "reads": ["records", "entities", "runs", "pairs", "kinds", "set_aside", "write_owed", "inputs", "round", "audits", "trust", "auto"]},
+   "uses": [{"command": "list patterns", "args": {"workspace": "@workspace"}, "reads": ["pairs", "fields", "patterns"]},
+            {"command": "explain pair", "args": {"first": "@first", "second": "@second", "workspace": "@workspace"}, "reads": ["weight", "prior", "pairs_all", "pairs_same", "common", "same_customer", "records", "comparisons", "tests", "found", "group_a", "group_b", "across"]},
+            {"command": "compare records", "args": {"first": "@first", "others": "@others", "workspace": "@workspace"}, "reads": ["first", "records", "candidates"]},
+            {"command": "describe workspace", "args": {"workspace": "@workspace"}, "reads": ["records", "entities", "runs", "pairs", "kinds", "set_aside", "write_owed", "inputs", "round", "audits", "trust", "auto"]},
             {"command": "try everything", "args": {"input": "@input", "home": "@home"}, "form": ["input"], "reads": ["workspace", "ok", "steps", "report", "markdown", "redacted"]},
             {"command": "describe key", "args": {"name": "@name", "workspace": "@workspace"}, "reads": ["name", "pairs", "matched", "only", "examples", "sizes", "largest", "group", "around"]},
             {"command": "describe matching", "args": {"workspace": "@workspace"}, "reads": ["nodes", "edges"]},
@@ -531,7 +534,10 @@ dialog:has(.dlg-body.wide) { width: min(960px, calc(100vw - 32px)); }
             {"command": "describe matching", "args": {"workspace": "@workspace"}, "reads": ["nodes"]}]},
   {"id": "improve", "title": "Improve matching", "icon": "loop", "what": "What people's decisions say about the method: try a change, adopt it, and review the new round.",
    "strip": ["rules", "candidates", "score", "accept", "people"],
-   "uses": [{"command": "describe method", "args": {"workspace": "@workspace"}, "reads": ["line", "method", "round", "rounds", "audits", "bands", "decided", "rules", "keys", "steps", "proposals", "trials", "trust", "dropped"]},
+   "uses": [{"command": "list patterns", "args": {"workspace": "@workspace"}, "reads": ["pairs", "fields", "patterns"]},
+            {"command": "explain pair", "args": {"first": "@first", "second": "@second", "workspace": "@workspace"}, "reads": ["weight", "prior", "pairs_all", "pairs_same", "common", "same_customer", "records", "comparisons", "tests", "found", "group_a", "group_b", "across"]},
+            {"command": "compare records", "args": {"first": "@first", "others": "@others", "workspace": "@workspace"}, "reads": ["first", "records", "candidates"]},
+            {"command": "describe method", "args": {"workspace": "@workspace"}, "reads": ["line", "method", "round", "rounds", "audits", "bands", "decided", "rules", "keys", "steps", "proposals", "trials", "trust", "dropped"]},
             {"command": "describe workspace", "args": {"workspace": "@workspace"}, "reads": ["records", "inputs"]},
             {"command": "try method", "args": {"workspace": "@workspace", "line": "@line", "drop": "@drop", "add": "@add", "compute": "@compute"}, "reads": ["trial"]},
             {"command": "adopt method", "args": {"workspace": "@workspace", "trial": "@trial", "compute": "@compute"}, "reads": ["summary"]},
@@ -541,7 +547,10 @@ dialog:has(.dlg-body.wide) { width: min(960px, calc(100vw - 32px)); }
             {"command": "describe matching", "args": {"workspace": "@workspace"}, "reads": ["nodes"]}]},
   {"id": "kinds", "title": "Confirm person or company", "icon": "kinds", "what": "Records the engine holds back, and a sample that sharpens it: person or company?",
    "strip": ["records", "kind", "score"],
-   "uses": [{"command": "list kinds", "args": {"workspace": "@workspace", "pending": true}, "reads": ["kinds", "counts"]},
+   "uses": [{"command": "list patterns", "args": {"workspace": "@workspace"}, "reads": ["pairs", "fields", "patterns"]},
+            {"command": "explain pair", "args": {"first": "@first", "second": "@second", "workspace": "@workspace"}, "reads": ["weight", "prior", "pairs_all", "pairs_same", "common", "same_customer", "records", "comparisons", "tests", "found", "group_a", "group_b", "across"]},
+            {"command": "compare records", "args": {"first": "@first", "others": "@others", "workspace": "@workspace"}, "reads": ["first", "records", "candidates"]},
+            {"command": "list kinds", "args": {"workspace": "@workspace", "pending": true}, "reads": ["kinds", "counts"]},
             {"command": "describe workspace", "args": {"workspace": "@workspace"}, "reads": ["records", "inputs"]},
             {"command": "answer kind", "args": {"id": "@id", "kind": "@kind", "workspace": "@workspace"}, "reads": ["kind"]},
             {"command": "apply answers", "args": {"workspace": "@workspace", "compute": "@compute"}, "form": [], "reads": ["summary"]},
@@ -568,6 +577,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const store = (k, v) => { try { if (v !== undefined) localStorage.setItem(`nayose.${k}`, v); return localStorage.getItem(`nayose.${k}`); } catch { return null; } };
 const FIELD_WORDS = {kind_flag: "person or company (flag)"};
 const fileName = (n) => String(n).replace(/^\d+-/, "").replace(/(\.\w+)\.parquet$/, "$1");  // a workspace's copy of a file, by the name it came with (not its reading's)
+const nameOf = (f) => f.given || fileName(f.name);  // a loaded file by the name it came with, kana and kanji kept
 const bytes = (n) => n < 1e3 ? `${fmt(n)} bytes` : n < 1e6 ? `${fmt(Math.ceil(n / 1e3))} KB` : `${fmt(Math.ceil(n / 1e6))} MB`;
 const kindSays = (s) => String(s ?? "").replace(/^\d+ /, "");  // "2 company", the engine's code first, as people read it: company  // a field whose name says nothing to people
 const words = (s) => FIELD_WORDS[s] ?? String(s).replaceAll("_", " ");
@@ -733,7 +743,7 @@ async function rejoin() {  // a long command that began before this page was dra
   const r = await api("/api/running");
   if (!r.job || longRun) return;
   const mine = !r.workspace || r.workspace === state.workspace;  // another workspace's run: its buttons wait here, its card shows there
-  longRun = {command: r.command, visit: -1, page: mine ? (LAYOUT.screens.find((s) => s.uses.some((u) => u.command === r.command)) || {id: current}).id : null};
+  longRun = {command: r.command, visit: -1, workspace: r.workspace, page: mine ? (LAYOUT.screens.find((s) => s.uses.some((u) => u.command === r.command)) || {id: current}).id : null};
   if ([longRun.page, "run", "records"].includes(current)) go(current);  // drawn again, as running, or its buttons waiting
   await watch(r.job, r.command, `nayose ${r.command}`, null);
 }
@@ -752,7 +762,7 @@ const STATE_WORD = {done: "done", current: "next", attention: "needs you", optio
 function progress(d) {
   const ran = d && d.event !== "error" && d.records > 0, s = {};
   s.workspace = state.workspace ? {state: "done", line: state.workspace.split("/").filter(Boolean).pop()} : {state: "current", line: "choose one"};
-  const files = (d && d.inputs) || [], last = files.length ? fileName(files[files.length - 1].name) : "";
+  const files = (d && d.inputs) || [], last = files.length ? nameOf(files[files.length - 1]) : "";
   const empty = files.length && !files[files.length - 1].rows;  // a file of a header alone, or nothing it could read
   s.columns = empty && !ran ? {state: "attention", line: `${last}: no records`} : ran || last ? {state: "done", line: last ? `${last} loaded` : "ready"} : {state: state.workspace ? "current" : "later", line: "load your file"};
   s.run = ran ? {state: "done", line: `${fmt(d.records)} → ${plural(d.entities, "entity", "entities")}`} : {state: last ? "current" : "later", line: last ? "ready to run" : "not yet"};
@@ -1114,7 +1124,7 @@ const missedWords = (strata) => strata.some((m) => m.hits)  // the probe's answe
 const DETAIL_Q = {
   records: (x, all) => {
     if (x.count === null || x.count === undefined) return ask(STAGE_Q.records, "Nothing yet: the records are read when matching runs.");
-    const files = (x.files || []).map((f) => f.split("/").pop()).join(", "), k = x.kinds || {};
+    const files = (x.files || []).map((f) => fileName(f.split("/").pop())).join(", "), k = x.kinds || {};
     const lines = [`<div class="ok">${plural(x.count, "record")} read${x.columns ? `, ${fmt(x.columns)} columns` : ""}${x.seconds !== null && x.seconds !== undefined ? `, in ${lasts(x.seconds)}` : ""}</div>`,
       ...hurts(all.prepare.fields, x.turned_off, ' <a class="btn" data-go="columns">Map it</a>'),
       k.unsure ? `<div class="ok">${fmt(k.company)} companies by their legal form; ${plural(k.unsure, "record")} not sure yet as person or company <a class="btn" data-go="kinds">Answer some</a></div>` : ""].filter(Boolean);
@@ -1164,7 +1174,8 @@ const DETAIL_Q = {
     const t = all.accept.threshold, trust = all.accept.trust, top = x.patterns[0], share = top ? top.pairs / Math.max(x.sheet, 1) : 0;
     const answer = trust === null || trust === undefined
       ? `<b>${plural(x.sheet, "pair")}</b>: ${fmt(x.below)} scored just below the line, ${fmt(x.unnamed)} had no name to compare. Nothing in them merges until you say same.${x.audits ? ` Plus <b>${fmt(x.audits)}</b> matched pairs to spot-check.` : ""}`
-      : `<b>${plural(x.sheet, "pair")}</b>, a random sample of the next range of scores: when people find none of them different, the whole range merges.${x.audits ? ` Plus <b>${fmt(x.audits)}</b> merged pairs to spot-check.` : ""}`;
+      : `${x.sheet ? `<b>${plural(x.sheet, "pair")}</b> below the trust line, or with no name to compare, for people to check` : "Nothing waits for people now"}.${
+           x.audits ? ` Plus <b>${fmt(x.audits)}</b> merged pairs to spot-check.` : ""}`;  // the range's sample, or, once one of it was false, every pair below
     const pic = `${seg([[x.answered, "var(--people)", "answered"], [Math.max(x.sheet - x.answered, 0), "var(--line)", "open"]])}<div class="pn-legend"><span>${fmt(x.answered)} of ${fmt(x.sheet)} answered</span></div>`;
     const act = `<a class="btn filled" data-go="pairs">Review them</a>${top && share >= 0.2 ? `<button type="button" class="btn outlined" data-pattern="0">Review the ${(100 * share).toFixed(0)}% alike first</button>` : ""}`;
     return ask(STAGE_Q.people, answer, pic, act, DETAIL.people(x, all), "What they look like");
@@ -1543,7 +1554,7 @@ const SCREENS = {
       `<div id="next"></div><div id="auto"></div><div id="out"></div><div id="flow"></div>`;
     $("refresh").onclick = () => go("records");
     const [d] = await Promise.all([run("records", "describe workspace"), flowOf("records", $("flow"))]);
-    if (longRun && longRun.page === "records") $("auto").innerHTML = runningCard(longRun.command);
+    if (runsHere() && longRun.page === "records") $("auto").innerHTML = runningCard(longRun);
     else if (d.auto) sendCard($("auto"), d.auto);
     if (d.event === "error" || !d.records) { $("out").innerHTML = d.event === "error" ? banner(d) : emptyRun(d); return d; }
     const p = progress(d), s = p.steps[p.next];
@@ -1567,13 +1578,13 @@ const SCREENS = {
       const lost = (f) => { const x = d.fields.find((y) => y.field === f); return !x || x.filled === null; };
       const missing = [...d.needed.every.filter(lost), ...d.needed.one_of.filter((grp) => grp.every(lost)).map((grp) => grp.join(" or "))];
       $("loaded").innerHTML = `<div class="qa"><div class="q"><h2 class="question">Did your file load?</h2><p class="answer">${!d.records
-          ? `<b>Not yet:</b> ${esc(fileName(last.name))} holds no records`
+          ? `<b>Not yet:</b> ${esc(nameOf(last))} holds no records`
           : missing.length ? `<b>Not yet:</b> ${esc(missing.map(words).join(", "))} ${missing.length > 1 ? "are" : "is"} needed`
-          : `<b>Yes</b> · ${plural(d.records, "record")} from ${esc(fileName(last.name))} · ${fmt(d.columns.length)} columns${waits(d.read)}`}</p></div>
+          : `<b>Yes</b> · ${plural(d.records, "record")} from ${esc(nameOf(last))} · ${fmt(d.columns.length)} columns${waits(d.read)}`}</p></div>
         ${!d.records ? "" : missing.length ? (d.placements.length ? `<button type="button" class="btn filled" id="suggest-now">✦ Suggest the columns</button>` : "") : `<a class="btn filled" data-go="run">Next: 3 Find matches →</a>`}</div>
         <details class="fold-line"><summary>Load another file</summary><div style="margin-top:10px">${box}</div></details>`;
       wireLoad();
-      $("files").innerHTML = (w.inputs || []).map((f) => `<span class="tag" title="${esc(f.path)}">${esc(fileName(f.name))} · ${bytes(f.bytes)} · ${f.read ? "matched" : "not run yet"}${f.waiting ? ` · ${fmt(f.waiting)} repairs wait` : ""}</span>`).join("");
+      $("files").innerHTML = (w.inputs || []).map((f) => `<span class="tag" title="${esc(f.path)}">${esc(nameOf(f))} · ${bytes(f.bytes)} · ${f.read ? "matched" : "not run yet"}${f.waiting ? ` · ${fmt(f.waiting)} repairs wait` : ""}</span>`).join("");
       repairs(d.read);
       const lines = hurts(d.fields, d.turned_off, "", addedNames(d.features), d.needed.one_of);
       $("watch").innerHTML = lines.length && !missing.length ? `<div class="card"><h3 style="font-size:15px;font-weight:500;margin:0 0 8px">Watch out</h3><div class="checks">${lines.join("")}</div></div>` : "";  // once what is needed is mapped
@@ -1596,7 +1607,7 @@ const SCREENS = {
     const draw = async (d) => {  // d: a description just made; else the file loaded last is described
       const [w] = await Promise.all([run("columns", "describe workspace"), flowOf("columns", $("flow"))]);
       const files = w.inputs || [], last = files[files.length - 1];
-      $("files").innerHTML = files.map((f) => `<span class="tag" title="${esc(f.path)}">${esc(fileName(f.name))} · ${bytes(f.bytes)} · ${f.read ? "matched" : "not run yet"}</span>`).join("");
+      $("files").innerHTML = files.map((f) => `<span class="tag" title="${esc(f.path)}">${esc(nameOf(f))} · ${bytes(f.bytes)} · ${f.read ? "matched" : "not run yet"}</span>`).join("");
       if (d === undefined && last) d = await run("columns", "describe records", {loaded: last.path});
       if (!d) return;
       if (d.event !== "error" && last) answer(d, w, last);
@@ -1706,12 +1717,13 @@ const SCREENS = {
     const graph_ = flowOf("run", $("flow"));
     let file = null;  // the file a first run reads: the one loaded last
     const hold = () => el.querySelectorAll("[data-act], [data-first]").forEach((b) => b.disabled = !!longRun);
-    const start = (command, label) => {
+    const start = (command, label, opts = null) => {
       const done = (d) => {
         longRun = null; hold();
         $("out").querySelector(".steps-card")?.remove();
         if (d.event === "error") { go("run").then(() => $("out")?.insertAdjacentHTML("afterbegin", banner(d))); return; }  // the page as it was, its buttons back, and why
-        if (command !== "match records") { refresh().then(() => go("run")); return; }  // the page again, from the workspace as it is now: its result, and the actions a run brings
+        const nothing = (d.summary || []).find(([w]) => w === "nothing new");  // a batch already in the run: said, nothing changed
+        if (command !== "match records") { refresh().then(() => go("run")).then(() => nothing && $("out")?.insertAdjacentHTML("afterbegin", `<div class="banner info">${icon("check")}<div><b>Nothing new:</b> ${esc(nothing[1])}</div></div>`)); return; }
         $("out").innerHTML = `<div class="card"><h2>What adding them would do</h2>${bars(Object.entries(d.counts).map(([k, n]) => ({label: k, value: n})))}</div><div id="matched"></div>`;
         if (d.records) grid($("matched"), d.records, ["id", "entity", "status", "by", "weight"], {cell: (r, c) => c === "status" ? chip(r.status) : esc(fmt(r[c]))});
       };
@@ -1726,7 +1738,7 @@ const SCREENS = {
       };
       const step = (e) => {  // the run as it goes: what it does now, the time taken, each stage filled in as its step ends
         if (e.event === "start" || !$("out").querySelector(".steps-card")) {
-          t0 = t0 || Date.now(); longRun = {command, visit, page: "run"}; hold();
+          t0 = t0 || Date.now(); longRun = {command, visit, page: "run", workspace: state.workspace}; hold();
           $("out").innerHTML = `<div class="card steps-card"><div class="qa"><div class="q"><h2 class="question"><span class="spin" style="border-color:var(--primary);border-right-color:transparent"></span>${esc(BUSY[command] || label)}…</h2>
             <p class="answer"></p></div></div><span class="meter wide"><i style="width:0"></i></span></div>`;
           clearInterval(clock); clock = setInterval(say, 1000); say();
@@ -1742,7 +1754,7 @@ const SCREENS = {
         }
         say();
       };
-      action("run", command, label, done, step, command === "resolve records" && !ran && file ? {form: [], about: `${fileName(file.name)} · ${plural(file.rows, "record")}`} : {});
+      action("run", command, label, done, step, opts || (command === "resolve records" && !ran && file ? {form: [], about: `${nameOf(file)} · ${plural(file.rows, "record")}`} : {}));
     };
     el.querySelectorAll("[data-act]").forEach((b) => b.onclick = () => start(b.dataset.act, b.dataset.label));
     hold();
@@ -1751,13 +1763,13 @@ const SCREENS = {
     if (w.event === "error") { $("out").innerHTML = banner(w); return; }
     file = (w.inputs || []).slice(-1)[0] || null;
     if ($("out").querySelector(".steps-card")) return;  // a run started meanwhile: it draws its own
-    if (longRun && longRun.page === "run") { $("out").innerHTML = runningCard(longRun.command); hold(); return w; }  // started before this page was drawn
+    if (runsHere()) { $("out").innerHTML = runningCard(longRun); hold(); return w; }  // started before this page was drawn, here or for the Overview
     if (!w.records) {  // nothing run yet: how long it will take, and the one button; how it will find them, below
       $("flowq").textContent = "How it will find them";
-      $("out").innerHTML = file && !file.rows ? `<div class="card"><div class="qa"><div class="q"><h2 class="question">${esc(fileName(file.name))} holds no records</h2>
+      $("out").innerHTML = file && !file.rows ? `<div class="card"><div class="qa"><div class="q"><h2 class="question">${esc(nameOf(file))} holds no records</h2>
           <p class="answer">Load a file that does</p></div><a class="btn filled" data-go="columns">2 · Prepare your data</a></div></div>`
         : file ? `<div class="card"><div class="qa"><div class="q"><h2 class="question">Ready to find matches in ${plural(file.rows, "record")}</h2>
-          <p class="answer">${esc(fileName(file.name))} · about ${took(file.rows)}</p></div><button class="btn filled" data-first>${icon("run")}Find matches</button></div></div>` : emptyRun(w);
+          <p class="answer">${esc(nameOf(file))} · about ${took(file.rows)}</p></div><button class="btn filled" data-first>${icon("run")}Find matches</button></div></div>` : emptyRun(w);
       $("out").querySelector("[data-first]")?.addEventListener("click", () => start("resolve records", "Find matches"));
       hold();
       return w;
@@ -1769,9 +1781,10 @@ const SCREENS = {
     const matched = accept && accept.accepted ? `${plural(accept.accepted, "pair")} matched` : tr && tr.line === "none" ? "Nothing merged by points yet: you check pairs first" : joined ? `${plural(joined, "record")} joined others` : "Nothing merged";
     $("out").innerHTML = `<div class="card"><div class="qa"><div class="q"><h2 class="question big">${plural(w.records, "record")} → ${plural(w.entities, "entity", "entities")}</h2>
       <p class="answer">${esc(matched)}${next ? ` · ${esc(next)}` : ""}</p></div>${next ? `<a class="btn filled" data-go="pairs">${waiting ? "Review them" : "Go to step 4"}</a>` : ""}</div></div>${
-      file && !file.read ? `<div class="card ready">${icon("records")}<div><b>${esc(fileName(file.name))}</b><span class="muted"> · ${plural(file.rows, "record")}, not matched yet</span></div>
-        <span class="grow"></span><button class="btn" data-first>${icon("run")}Find matches</button></div>` : ""}`;  // a file loaded since: matching it replaces this run
-    $("out").querySelector("[data-first]")?.addEventListener("click", () => start("resolve records", "Find matches"));
+      file && !file.read ? `<div class="card ready">${icon("records")}<div><b>${esc(nameOf(file))}</b><span class="muted"> · ${plural(file.rows, "record")}, not matched yet</span></div>
+        <span class="grow"></span><button class="btn filled" data-add>${icon("add")}Add them to this run</button><button class="btn" data-first>Replace the run with them</button></div>` : ""}`;  // a file loaded since: added, or matched alone
+    $("out").querySelector("[data-first]")?.addEventListener("click", () => start("resolve records", "Replace the run with them"));
+    $("out").querySelector("[data-add]")?.addEventListener("click", () => start("add records", "Add them to this run", {form: [], about: `${nameOf(file)} · ${plural(file.rows, "record")}`, extra: {input: file.path}}));
     hold();
     return w;
   },
@@ -1900,7 +1913,7 @@ const SCREENS = {
       $("draw").disabled = true;
       const e = await run("improve", "draw pairs");
       if (e.event === "error") failed(e);
-      else if (!e.drawn) { $("busy").innerHTML = `<div class="banner info">${icon("check")}<div><b>Every merged link has been checked already.</b></div></div>`; }  // nothing left to draw: said, the button off
+      else if (!e.drawn) $("busy").innerHTML = `<div class="banner info">${icon("check")}<div><b>Every merged link has been checked already.</b></div></div>`;  // nothing left to draw: said, the button stays off
       else go(LOOP.after, `<div class="banner info">${icon("check")}<div><b>${plural(e.drawn, "link")} to check, as spot-checks.</b></div></div>`);
     };
   },
@@ -1925,7 +1938,8 @@ function trialCard(x) {  // a trial beside the method as it is: on people's deci
   const many = (n) => n >= 50 ? `${fmt(n)} or more pairs` : plural(n, "pair");  // the lists stop at 50
   const verdict = worse ? `<b>Worse:</b> it sets wrong ${many(broken)} people decided${fixed ? `, and right ${many(fixed)}` : ""}` : better ? `<b>Better:</b> it sets right ${many(fixed)} people decided, and wrong none`
     : dj.base || sa.base ? "<b>No better:</b> it sets right none of the pairs people decided" : "";  // judged on people's answers first
-  return `<div class="card trial"><h2>${icon("loop")}Trial ${fmt(x.trial)}: ${esc(methodText(x.method))}</h2>${verdict ? `<p class="answer">${verdict}</p>` : ""}<p class="muted">Both run without people's decisions or the trust line: the method now → this trial</p><div class="nums">${
+  const {trust, ...tried} = x.method;  // a trial sets the trust line aside: its title says what it changes
+  return `<div class="card trial"><h2>${icon("loop")}Trial ${fmt(x.trial)}: ${esc(methodText(tried))}</h2>${verdict ? `<p class="answer">${verdict}</p>` : ""}<p class="muted">Both run without people's decisions or the trust line: the method now → this trial</p><div class="nums">${
     cell("Joined, people said different", change("different_joined", "ink-bad"))}${cell("Apart, people said same", change("same_apart", ""))}${
     cell("Links", `${fmt(was.matched)} → ${fmt(now.matched)}`)}${cell("Expected false", `${fmt(was.expected_false)} → ${fmt(now.expected_false)}`)}${
     cell("Entities", `${fmt(was.entities)} → ${fmt(now.entities)}`)}${cell("Pairs of records", `${fmt(x.apart)} apart · ${fmt(x.together)} together`)}${
@@ -3072,7 +3086,7 @@ async function autoMode() {
     const [top, sub] = e.step.split(": ");
     if (sub === undefined) {  // one of its steps ended
       box.querySelector(".steps")?.insertAdjacentHTML("beforeend", `<li>${icon(e.ok === false ? "error" : "check")}${esc(e.step)} <span class="faint">${e.seconds.toFixed(1)} s</span></li>`);
-      if (e.workspace) { useWorkspace(e.workspace); memoAt = -1; refresh(); }  // the page opens it from now on, should the person go elsewhere meanwhile
+      if (e.workspace) { useWorkspace(e.workspace); longRun.workspace = e.workspace; memoAt = -1; refresh(); }  // the page opens it from now on, should the person go elsewhere meanwhile
       now = AUTO_NEXT[top] ? autoSays(AUTO_NEXT[top]) : "the next step";
     } else now = `${autoSays(top)} · ${DOING[sub] || sub}`;
     say();
@@ -3084,8 +3098,10 @@ async function autoMode() {
     setWorkspace(d.workspace);  // its Overview: the report to send
   }, step, {about: "A new workspace, every step on your file, and a report to send"});
 }
-const runningCard = (command) => `<div class="card"><div class="qa"><div class="q"><h2 class="question"><span class="spin" style="border-color:var(--primary);border-right-color:transparent"></span>${
-  esc(BUSY[command] || (command === "try everything" ? "Auto mode" : command))}…</h2><p class="answer">It shows here when it ends</p></div></div></div>`;  // a long run this page didn't draw
+const runningCard = (run) => `<div class="card"><div class="qa"><div class="q"><h2 class="question"><span class="spin" style="border-color:var(--primary);border-right-color:transparent"></span>${
+  esc(BUSY[run.command] || (run.command === "try everything" ? "Auto mode" : run.command))}…</h2><p class="answer">${
+  run.page === current ? "It shows here when it ends" : `It shows on ${esc(screen(run.page).title)} when it ends`}</p></div></div></div>`;  // a long run this page didn't draw
+const runsHere = () => longRun && longRun.page && (!longRun.workspace || longRun.workspace === state.workspace);  // a long run of this workspace
 function sendCard(box, a) {  // the auto mode report: what to send, and a way to copy it
   box.innerHTML = `<div class="card"><div class="qa"><div class="q"><h2 class="question">What should I send?</h2><p class="answer">This report: it holds no record's value</p></div>
       <button class="btn filled" id="copy-report">${icon("copy")}Copy the report</button></div>
@@ -3120,6 +3136,7 @@ async function pick() {
   dlg.showModal();
 }
 function useWorkspace(r) {  // the workspace every page reads from now on
+  if (state.workspace !== r) $("search").value = "";  // a record ID of another workspace means nothing here
   state.workspace = r;
   store("workspace", r);  // per viewer: the workspace this browser opens with
   $("picker").innerHTML = `${icon("folder")}<span title="${esc(r)}">${esc(r ? `Workspace: ${r.split("/").filter(Boolean).pop()}` : "Choose a workspace")}</span>${icon("down")}`;

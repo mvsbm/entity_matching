@@ -192,6 +192,12 @@ def test_the_probe_counts_the_matches_no_key_lists_as_the_truth_does(tmp_path, p
     by = {x["stratum"]: x for x in probe}
     assert shared and by["phone"]["drawn"] == 1.0 and by["phone"]["hits"] == by["phone"]["missed"] == len(shared)  # every pair drawn: exactly the truth
     assert {tuple(x[:2]) for x in by["phone"]["examples"]} == shared
+    apart = sorted(shared)[0]  # people say one of them is different: no match missed, then
+    pd.DataFrame({l: [apart[0]], r: [apart[1]], "decision": ["no_match"]}).to_parquet(tmp_path / "apart.parquet")
+    Run(few, s).decide(tmp_path / "apart.parquet", out)
+    again = next(x for x in Run(few, s).full(tmp_path / "all.parquet", out, overwrite=True).steps if x["step"] == "probe")["strata"]
+    phone_again = next(x for x in again if x["stratum"] == "phone")
+    assert phone_again["hits"] == len(shared) - 1 and apart not in {tuple(x[:2]) for x in phone_again["examples"]}
     sampled = next(x for x in Run(replace(few, probe=replace(few.probe, pairs=200)), s).full(tmp_path / "all.parquet", tmp_path / "run2").steps
                    if x["step"] == "probe")["strata"][0]
     assert sampled["drawn"] < 1 and sampled["low"] <= len(shared) <= sampled["high"]  # a share drawn: its interval holds the truth
