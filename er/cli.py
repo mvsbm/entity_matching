@@ -507,11 +507,12 @@ def resolve_records(a: dict, emit: "Emit") -> dict:
 
 
 def add_records(a: dict, emit: "Emit") -> dict:
-    """A batch copied in, then added; one that adds nothing, or that is refused before anything is written (a column
-    the run reads, missing), is not kept, so the file the run read stays the file loaded last."""
+    """A batch copied in, then added; a copy that adds nothing, or that is refused before anything is written (a column
+    the run reads, missing), is not kept, so the file the run read stays the file loaded last. A file loaded before
+    is never removed."""
     s, p, pipeline = setup(a)
     out = Path(a["workspace"])
-    held = [x for x in folder.parts(out) if a["input"] and Path(a["input"]).resolve() == x.resolve()]  # a part loaded already: as it is
+    held = [x for x in folder.parts(out) if a["input"] and Path(a["input"]).expanduser().resolve() == x.resolve()]  # a part loaded already: as it is
     part, copied = (held[0], False) if held else folder.take_in(out, a["input"], s.input, s.paths["reference"]) if a["input"] else (Path(given(a)), False)
     try:
         run = Run(p, s, echo=emit.step).increment(part, out, pipeline_file=pipeline)
@@ -519,11 +520,11 @@ def add_records(a: dict, emit: "Emit") -> dict:
         if copied and not isinstance(e, Busy):  # another job may hold it now
             shutil.rmtree(part, ignore_errors=True)
         raise
-    if run.added == 0:
+    if run.added == 0:  # a copy made for this goes; a file loaded before stays, whatever it holds (its values may differ from the run's)
         mine = next((x for x in folder.loaded(out) if Path(x["path"]).resolve() == part.resolve()), {})
-        if copied or not mine.get("read", True):  # copied for this, or loaded and never read: it holds nothing the run lacks
+        if copied:
             shutil.rmtree(part, ignore_errors=True)
-        return dict(summary=[["nothing new", f"every record of {mine.get('given') or Path(a['input'] or part).name} is already in the run"]],
+        return dict(summary=[["nothing new", f"every ID of {mine.get('given') or Path(a['input'] or part).name} is in the run already"]],
                     next=next_after(out, run.uid))
     return after_run(run, out)
 
@@ -618,7 +619,10 @@ def lower_trust(a: dict, emit: "Emit") -> dict:
         raise InputError(f"{ws} has no trust line: it merges as tuned", fix="start one, and nothing merges before people check: nayose raise trust --workspace …")
     if not state["may_lower"]:
         span = state["next"]
-        raise InputError(f"the range below the line isn't proven yet: {state['checked']:,} of {state['needed']:,} checked, {state['false']:,} found false"
+        if span and state["false"]:  # proven false: no count of checks lowers it
+            raise InputError(f"people found {state['false']:,} pair{'s' if state['false'] > 1 else ''} of the range below the line different: the line stays",
+                             fix="decide its pairs, and those below, one by one: nayose list pairs --workspace … --open")
+        raise InputError(f"the range below the line isn't proven yet: {state['checked']:,} of {state['needed']:,} checked"
                          if span else "the trust line is at its last step", fix="check the range's pairs: nayose list pairs --workspace … --open" if span else "")
     return adopt(a, emit, {**folder.method(ws), "trust": state["next"]["down_to"]})
 
@@ -1439,7 +1443,8 @@ def perform(c: Command, a: dict, emit: Emit) -> dict:
         if c.name in ("add records", "match records"):  # a batch for a run: its columns take the run's names, the mapping stays
             s = settings_for(a)
             named = dict.fromkeys(f"{col} as {' + '.join(s.columns[f][0])}" for f, col in e.hints.items() if s.columns.get(f) and s.columns[f][0])
-            raise InputError(str(e), fix=f"a batch has the run's columns: write {', '.join(named)} in it (check them first), then try again", hints=e.hints) from None
+            if named:
+                raise InputError(str(e), fix=f"a batch has the run's columns: write {', '.join(named)} in it (check them first), then try again", hints=e.hints) from None
         raise InputError(str(e), fix=f"map it in the workspace, once the values look right: "
                          f"{nayose('set', 'columns', *(f'{f}={c}' for f, c in e.hints.items()), '--workspace', a['workspace'])}", hints=e.hints) from None
 

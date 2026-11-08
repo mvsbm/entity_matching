@@ -264,6 +264,8 @@ def test_a_file_loads_as_it_comes_and_a_run_reads_the_repairs_people_accept(say,
     assert say("accept", "repairs", "garbled", "--part", "0001", "--workspace", w)[0] == 0
     read = pd.read_parquet(w / "inputs" / "0001-dirty" / intake.READ / "dirty.csv.parquet").set_index(uid)
     assert read.loc[garbled[0], name] == garbled[1] and read.loc[spilled[0], address] == spilled[1]
+    code, e = say("add", "records", w / "inputs" / "0001-dirty", "--workspace", w)  # its records, repaired since the run: added as a batch
+    assert code == 0 and e["summary"][0][0] == "nothing new" and (w / "inputs" / "0001-dirty").is_dir()  # a file loaded before is never removed
     assert say("rerun", "records", "--workspace", w)[0] == 0
 
     (tmp_path / "decisions.csv").write_text(f"{uid}_l,{uid}_r,decision\n{df[uid][0]},{df[uid][1]},match,extra\n")  # people's file, a field too many

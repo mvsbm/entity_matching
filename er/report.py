@@ -291,10 +291,15 @@ def trust_state(con: duckdb.DuckDBPyConnection, out: Path, p: Pipeline, uid: str
             WHERE {where}""").fetchall()[0]
         return dict(pairs=pairs, checked=checked, false=false)
     span = trust.below()
-    near = count(f"x.match_weight >= {bits(span[0])} AND x.match_weight < {bits(span[1])}") if span else dict(pairs=0, checked=0, false=0)
+    within = f"x.match_weight >= {bits(span[0])} AND x.match_weight < {bits(span[1])}" if span else "FALSE"
+    near = count(within) if span else dict(pairs=0, checked=0, false=0)
     above = count(f"x.match_weight >= {bits(trust.line)}")
+    gold = lit(out / "gold.parquet")
+    askable = con.execute(f"""SELECT count(*) FROM (SELECT DISTINCT ON ({l}, {r}) * FROM ({' UNION ALL '.join(parts)})) x
+        LEFT JOIN er_trust_decided d USING ({l}, {r}) JOIN read_parquet({gold}) ga ON ga.{q(uid)} = x.{l} JOIN read_parquet({gold}) gb ON gb.{q(uid)} = x.{r}
+        WHERE {within} AND (d.decision IS NOT NULL OR ga.cluster_id <> gb.cluster_id)""").fetchall()[0][0] if near["false"] and parts else 0
     con.unregister("er_trust_decided")
-    needed = near["pairs"] if near["false"] else min(trust.checks, near["pairs"])  # found false: every pair goes to people
+    needed = askable if near["false"] else min(trust.checks, near["pairs"])  # found false: every pair people can still be asked
     return dict(line="none" if math.isinf(trust.line) else trust.line,
                 next=dict(down_to=span[0], up_to=None if math.isinf(span[1]) else span[1]) if span else None,
                 **near, needed=needed, may_lower=span is not None and near["checked"] >= needed and not near["false"],

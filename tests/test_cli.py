@@ -194,8 +194,8 @@ def test_nayose_takes_a_file_from_the_check_to_people_s_answers(tmp_path, popula
     assert fix.count(f"customer_no as {uid}") == 1 and "name_kana" not in fix and "set columns" not in fix  # what a run needs and lacks, once: a name it reads elsewhere isn't
     assert say("load", "records", tmp_path / "new.parquet", "--workspace", run)  # loaded again, as step 2 does: every record of it in the run
     loaded = folder.parts(run)[-1]
-    assert say("add", "records", loaded, "--workspace", run)["summary"][0] == ["nothing new", "every record of new.parquet is already in the run"]
-    assert folder.parts(run) == before  # loaded, never read, adding nothing: not kept
+    assert say("add", "records", loaded, "--workspace", run)["summary"][0] == ["nothing new", "every ID of new.parquet is in the run already"]
+    assert folder.parts(run) == before  # a file loaded before stays
     assert say("describe", "workspace", run)["records"] == len(g.df)
     graph = say("describe", "matching", "--workspace", run)
     assert {n["id"] for n in graph["nodes"]} >= {"rules", "candidates", "score", "group"} and graph["edges"]
