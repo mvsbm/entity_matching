@@ -185,7 +185,7 @@ def test_a_file_without_a_header_puts_no_value_in_the_report_through_its_column_
     rows = lambda first: [first] + [f"{i:07d},{rnd.choice(family)}{rnd.choice(given)},サトウハナコ,大阪府大阪市北区{rnd.randint(1, 9)}-{rnd.randint(1, 9)},"
                                     f"06-{rnd.randint(1000, 9999)}-{rnd.randint(1000, 9999)},19{rnd.randint(50, 99)}/0{rnd.randint(1, 9)}/1{rnd.randint(0, 9)}" for i in range(2, 300)]
     planted = ["0000001", "山田太郎", "ヤマダタロウ", "東京都千代田区丸の内1-2-3", "03-1234-5678", "1980/01/02"]
-    plain = ["C0000001", "Taro Yamada", "taro@example.com", "株式会社ヤマダ", "S55.1.2", "〒100-0001"]  # no cell of numbers alone: the reader says nothing
+    plain = ["10234", "Ito", "taro@example.com", "株式会社ヤマダ", "S55.1.2", "〒100-0001"]  # a short ID and name; the reader says nothing (no 7 digits alone)
     (tmp_path / "in").mkdir()
     (tmp_path / "in" / "nohead.csv").write_text("\n".join(rows(",".join(planted))) + "\n", encoding="utf-8")  # the reader says a header may be missing
     (tmp_path / "words.csv").write_text("\n".join(r.split(",", 1)[1] for r in rows(",".join(planted))) + "\n", encoding="utf-8")  # no number in its first line
@@ -208,12 +208,20 @@ def test_a_report_keeps_the_names_a_real_file_gives_its_columns_and_its_own_word
     for c in ("姓", "名", "セイ", "メイ", "カナ", "フリガナ", "郵便番号"):  # names Japanese files give their columns
         df[c] = df[name]
     df["NOTE"] = (["file", "true", "false", "records", "workspace"] * len(df))[:len(df)]  # plain words, as a flag column holds them
+    df["BALANCE"], df["VISIT_TIME"], df["CUST_TYPE"] = "12.34", "04:19", (["Person", "Company"] * len(df))[:len(df)]  # numbers and times like the report's own
+    df["taro.yamada@example.jp"] = "x"  # one header cell that is a value: it alone is put aside
     (tmp_path / "Yamada Shoji list.csv").write_text(df.to_csv(index=False) + "x,y\n", encoding="utf-8")  # a row it can't read: its part named in a note
     monkeypatch.chdir(tmp_path)
+    from er import auto
+    real = auto.nayose
+    monkeypatch.setattr(auto, "nayose", lambda words, step, emit: (2, dict(event="error", error="the project's mapping names columns the generator doesn't write", fix=""), [])
+                        if step == "rehearse" else real(words, step, emit))  # a rehearsal that can't start: the real run still goes
     code, r = say("try", "everything", "Yamada Shoji list.csv", "--trials", "0")
     text = Path(r["report"]).read_text(encoding="utf-8")
     facts = (Path(r["workspace"]) / "auto" / "report.json").read_text(encoding="utf-8")
-    assert code == 0 and r["redacted"] == 0, r["redacted"]  # nothing of the report's own taken for a value
+    assert code == 0 and [x["ok"] for x in r["steps"] if x["step"] in ("rehearse", "resolve")] == [False, True]
+    assert "taro.yamada@example.jp" not in text + facts and text.count("[redacted]") == r["redacted"] > 0  # that header alone
+    assert not re.search(r"\[redacted\][^|\n]*\[redacted\]", text.split("## Steps")[1].split("## The file")[0])  # the report's own numbers intact
     assert all(f"| {c} |" in text for c in ("姓", "名", "セイ", "メイ", "カナ", "フリガナ", "郵便番号", "NOTE"))  # each column by its name
     assert "Yamada" not in text + facts and "<part>" in facts  # the file's name, and its part's, put aside
     monkeypatch.setattr("er.auto.nayose", lambda words, step, emit: (_ for _ in ()).throw(KeyboardInterrupt))
