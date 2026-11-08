@@ -186,6 +186,15 @@ Accepts a pair at 8 bits or more (`[model] min_match_weight`), if it touches a r
 - **Code:** `Run._load_decisions` (people's decisions, from `decisions/`), `Run.cluster` → `Run._accept` (the threshold, `match.named_sql`; with a trust line, `config.TrustRule`, only the rules' and the model's pairs at the line or above, the model's others in `proposed`), `cluster.merge` (Splink's connected components from single records over the pairs that join, as in an increment), `Run._gold` (`run.customer_kinds`), `Run._expected_false`
 - **Increment:** the stored gold is the base, each stored cluster one node, and stored answers stand: `O(C_Δ + touched clusters)`.
 
+### 7b · Probe: the matches no key lists · `O(N + P·K + L)`
+
+Measures, without labels, the matches the pair keys miss. In each `[probe]` stratum (records with the same phone, the same postal area: groups matches tend to share), it draws a hash-stable random share `f` of the records, as many as make about `[probe] pairs` pairs (`f = pairs / Σ c²` over the stratum's group sizes `c`), pairs each with every record of its group, and scores the pairs with the run's model. A hit is a pair at the model's line, with a name compared, whose records the model's likely links don't join, directly or through others: its matches, its pairs waiting at the line or above, the rules' pairs people didn't call different, and people's "same". A hit is no key's (none listed it) or, in a method without `bridge`, the rules' (it lies between two entities the rules formed, which the model never joins), and says which. A pair is drawn when either record is, so hits / (1 − (1 − f)²) estimates the hits among the stratum's pairs, with a Poisson interval (none found: at most 3 / that, the rule of three). The summary, `describe matching` and step 3 carry the counts and up to 20 hit pairs.
+
+- **Why:** a match no key can find shares none of what the keys look at, so no count made from the links found (capture–recapture over the keys, by their fields) can see it: tried on generated data, every such estimate came out near zero where the truth was hundreds. Sampling the pairs directly can. On generated data with keys left out so the run missed 179 matches, drawing every record found exactly the truth among pairs sharing a phone (91), and a share of them gave intervals that held it. A pair sharing no stratum's group stays unmeasured, so each estimate is a lower bound.
+- **At a million records:** two strata of about a million pairs each take 3.5 s.
+- **Code:** `Run.probe` → `probe.missed` (the draw, `match.score_fs`, `cluster.merge` over the likely links, `match.named_sql`)
+- **Increment:** none: the last full run's probe stands, as `describe matching` says.
+
 ### 8 · Write the workspace · `O(N + C)`
 
 Writes each table as Parquet under a temporary name, with the reports (9). Once all are complete, it saves the moves still owed in `pending.json`, then does them; `steps.json` too is written whole, then renamed. A full run writes into `.full.tmp/`, and its moves replace the old run's files only then: an overwrite cut short leaves the old run, people's answers included.

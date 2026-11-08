@@ -140,6 +140,7 @@ def qa(run: "Run", fields: list[str] | None = None, review: int = 50, previous: 
                                       f"{b:,} sure 1 person flagged 2 (sent to decide in kind_review.parquet)"))
         if len(mixed):
             kind_rows.append(("note", f"{len(mixed):,} cluster{'s hold' if len(mixed) > 1 else ' holds'} a sure person and a sure company: see qa.md, mixed kinds"))
+    probed = next((x["strata"] for x in reversed(run.steps) if x["step"] == "probe"), [])  # er.probe: counts only
     summary = pd.DataFrame([
         ("records", f"{total:,}" + (f", {run.added:,} of them new" if run.added is not None else "") + (f"; {aside:,} set aside (set_aside/)" if aside else "")),
         ("entities", f"{entities:,}; the largest holds {biggest:,} records"),
@@ -147,6 +148,9 @@ def qa(run: "Run", fields: list[str] | None = None, review: int = 50, previous: 
         ("model links", f"{linked['accepted']:,}{' in this batch' if run.added is not None else ''}; about {linked['expected_false']:,.{1 if linked['expected_false'] >= 1 else 2}f} "
                         "of them false, as the model expects (the sum of 1 − match probability)"),
         ("to decide", f"{len(decide):,} pair{'' if len(decide) == 1 else 's'} in review.parquet (why = decide)"),
+        *(("missed", f"about {x['missed']:,} matches the run didn't join ({x['low']:,}–{x['high']:,}) among pairs that share {' + '.join(x['fields'])}: "
+                     f"{x['hits']:,} found in {x['scored']:,} of its {x['pairs']:,} pairs, scored" + (f"; {x['between_rules']:,} of them between two entities the rules formed (bridge off)"
+                     if x["between_rules"] else "")) for x in probed),
         *kind_rows,
         *(("note", f"{f} only {x:.1%} filled: check its mapping") for f, x in fill.loc[fill["flag"] != "", ["field", "filled"]].itertuples(index=False)),
         *(("note", f"turned off, a field it reads is missing: {d}") for d in run.disabled),
@@ -577,6 +581,7 @@ def describe_matching(con: duckdb.DuckDBPyConnection, out: Path | None, p: Pipel
     look = {k: v if k == "largest" else dict(customers=int(v[0]), examples=list(v[1] or [])) for k, v in look.items()}
     inputs = [f for run in log for f in run.get("inputs", []) if f.get("role") == "records"]
     load = [x for x in facts if x["step"] == "load"]
+    probed = [x for x in facts if x["step"] == "probe"]
     columns = None
     if inputs and Path(inputs[-1]["file"]).exists():
         import pyarrow.parquet as pq
@@ -591,7 +596,8 @@ def describe_matching(con: duckdb.DuckDBPyConnection, out: Path | None, p: Pipel
         dict(id="rules", name="Rules", method="certain cases first: exact, then fuzzy", rules=rules, pairs=rule_pairs, merged=rule_merged),
         dict(id="candidates", name="Candidates", method="list the pairs worth comparing", generators=generators, pairs=scored,
              possible=n * (n - 1) // 2 if n else None, listed=sum(listed.values()) if ran else None, by_keys=by_keys, seconds=took("candidates"),
-             skipped=dict(blocks=len(skipped), largest=[dict(key=x.generator, value=x.value, records=x.records, pairs=x.pairs) for x in skipped.head(5).itertuples()])),
+             skipped=dict(blocks=len(skipped), largest=[dict(key=x.generator, value=x.value, records=x.records, pairs=x.pairs) for x in skipped.head(5).itertuples()]),
+             missed=[{**x, "examples": x["examples"][:20]} for x in probed[-1]["strata"]] if probed else None),  # the last full run's probe (er.probe)
         dict(id="score", name="Score", method="Fellegi–Sunter: each comparison adds evidence, in bits", comparisons=comparisons,
              prior_bits=math.log2(lam / (1 - lam)) if lam else None, pairs=scored, seconds=took("score")),
         dict(id="accept", name="Accept", method="at the line, with a name compared", threshold=p.fs.min_match_weight, review_from=review_floor(p),

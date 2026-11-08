@@ -178,6 +178,10 @@ steps = [20.0, 12.0, 8.0, 6.0, 0.0]   # bits, high to low: the line steps down o
 checks = 300                      # answers on the next range down, none false, before the line may step down: ≤1% false at 95%
 watch = 20                        # spot-checks a run of the pairs above the line
 
+[probe]                           # the matches no pair key lists, measured: pairs sampled within groups matches tend to share (er.probe)
+pairs = 1000000                   # about this many pairs scored in each group: about 2 s a group at a million records
+strata = { phone = ["phone"], postal_area = [{ field = "postal_code", normalize = "first3" }] }   # each a group as a key names it
+
 [selection]
 cv_folds = 3                      # entity folds of train, for out-of-fold scores
 cv_seed = 0

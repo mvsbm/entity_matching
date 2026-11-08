@@ -9,7 +9,7 @@ Container(tools_design, "Design-time tools", "scripts/", "scripts/generate.py: s
 
 Component(run, "The run", "er/", "er/run.py: Run, its steps: load, budget, fit, rules, candidates, score, cluster, write, report; increment, decide\ner/folder.py: the workspace: one writer, staged writes, steps.json, part numbers\ner/report.py: the reports for people")
 Component(design, "Design time", "er/", "er/select.py: each change tested and adopted\ner/pipeline.py: the pipeline measured through er.run, threshold curves\ner/evaluate.py: metrics, intervals\ner/tune.py: Optuna\ner/generate.py: synthetic records and the truth")
-Component(steps, "The steps", "er/", "er/source.py: input files\ner/standardize.py: fields and normalized copies\ner/kind.py: person or company\ner/candidates.py: budgets and candidate pairs\ner/match.py: rules, the model, u\ner/cluster.py: clusters, for every run and design time")
+Component(steps, "The steps", "er/", "er/source.py: input files\ner/standardize.py: fields and normalized copies\ner/kind.py: person or company\ner/candidates.py: budgets and candidate pairs\ner/match.py: rules, the model, u\ner/cluster.py: clusters, for every run and design time\ner/probe.py: the matches no key lists, sampled")
 Component(configuration, "Foundation", "er/", "er/config.py: the pipeline's dataclasses, InputError\ner/settings.py: config/settings.toml\ner/intake.py: a records file as it comes, read into Parquet\ner/io.py: datasets, the leaderboard, tables\ner/strings.py: the connection and cl_* functions")
 
 Rel_D(tools_run, run, "")

@@ -19,7 +19,7 @@ from er.config import (Budget, Comparator, Comparison, DeletionKeys, FSModel, FS
                        Resolver, Rule, RulesSpec, SortedNeighbourhood, Stage, TfidfNeighbours, ThresholdRule, keys_sql)
 from er.evaluate import adopt, cluster_metrics, fp_upper, paired_test, predicted_pairs, true_pairs, wilson
 from er.io import load
-from er.match import exact_u, parameters, pattern_coverage, rule_edges, sample_u, score_fs, stale_u, train_fs, u_values, waterfall, scored_u
+from er.match import exact_u, named_sql, parameters, pattern_coverage, rule_edges, sample_u, score_fs, stale_u, train_fs, u_values, waterfall, scored_u
 from er.pipeline import (accept_curve, check_budget, clustered, entity_folds, grown_pairs, preflight, select_threshold,
                          window_only)
 from er.config import dump_pipeline, fields_read, legal_pattern, load_pipeline
@@ -969,6 +969,40 @@ def test_a_file_loads_as_it_comes_and_a_run_reads_the_repairs_people_accept(tmp_
     assert code == 2 and "decisions.csv" in e["error"] and "nayose-" not in e["error"]  # refused, said of their file
 
 
+def test_the_probe_counts_the_matches_no_key_lists_as_the_truth_does(tmp_path, population):
+    from er.cluster import merge
+    from er.config import adjust
+    from er.report import scored_again
+    from er.run import Run
+    s, p, g = population
+    uid, ent = s.data.unique_id, s.data.entity_id
+    l, r = f"{uid}_l", f"{uid}_r"
+    g.df.to_parquet(tmp_path / "all.parquet", index=False)
+    few = adjust(p, {"drop_keys": [b.name for b in p.fs.blockers if b.name not in ("cif", "person_name", "company_name")]})  # a method that misses
+    out = tmp_path / "run"
+    probe = next(x for x in Run(few, s).full(tmp_path / "all.parquet", out).steps if x["step"] == "probe")["strata"]
+    con, db = connect(s.compute)  # the truth: every true pair scored as the run scores, at its line, that its likely links don't join
+    truth = g.truth[[uid, ent]].merge(g.truth[[uid, ent]], on=ent).query(f"{uid}_x < {uid}_y")
+    con.register("er_t", truth.rename(columns={f"{uid}_x": l, f"{uid}_y": r})[[l, r]])
+    scored_again(con, db, out, uid, "er_t", "er_ts")
+    links = " UNION ALL ".join(f"SELECT {l}, {r} FROM read_parquet('{out / x}/*.parquet')" + (" WHERE match_weight >= 8" if x == "proposed" else "")
+                               for x in ("matches", "proposed", "rule_kept") if any((out / x).glob("*.parquet")))
+    con.execute(f"CREATE TABLE er_one AS SELECT {uid}, {uid} AS cluster_id FROM read_parquet('{out}/gold.parquet')")
+    merge(con, db, "er_one", f"({links})", "er_joined", uid)
+    missed = con.execute(f"""SELECT s.{l}, s.{r} FROM er_ts s JOIN er_joined a ON a.{uid} = s.{l} JOIN er_joined b ON b.{uid} = s.{r}
+        WHERE s.match_weight >= {few.fs.min_match_weight} AND {named_sql(few.fs)} AND a.cluster_id <> b.cluster_id""").fetchall()
+    phone = g.df.set_index(uid)[s.columns["phone"][0][0]]
+    shared = {(a, b) for a, b in missed if pd.notna(phone[a]) and phone[a] == phone[b]}
+    by = {x["stratum"]: x for x in probe}
+    assert shared and by["phone"]["drawn"] == 1.0 and by["phone"]["hits"] == by["phone"]["missed"] == len(shared)  # every pair drawn: exactly the truth
+    assert {tuple(x[:2]) for x in by["phone"]["examples"]} == shared
+    sampled = next(x for x in Run(replace(few, probe=replace(few.probe, pairs=200)), s).full(tmp_path / "all.parquet", tmp_path / "run2").steps
+                   if x["step"] == "probe")["strata"][0]
+    assert sampled["drawn"] < 1 and sampled["low"] <= len(shared) <= sampled["high"]  # a share drawn: its interval holds the truth
+    full = next(x for x in Run(p, s).full(tmp_path / "all.parquet", tmp_path / "run3").steps if x["step"] == "probe")["strata"]
+    assert all(x["hits"] <= by[x["stratum"]]["hits"] for x in full)  # the tuned method's keys miss no more
+
+
 def test_a_workspace_keeps_its_own_mapping_and_a_copy_of_its_files(tmp_path, population, capsys, monkeypatch):
     import threading
     from er import folder
@@ -1223,7 +1257,7 @@ def test_describe_method_scores_people_s_pairs_again_and_an_audit_stays_one_acro
     Run(p, s).decide(tmp_path / "rule.parquet", ws)
 
     d = describe_method(ws, p, s)
-    assert d["round"] == 1 and d["method"] == {} and d["rounds"][0]["matched"] == run.steps[-3]["accepted"]
+    assert d["round"] == 1 and d["method"] == {} and d["rounds"][0]["matched"] == next(x for x in run.steps if x["step"] == "cluster")["accepted"]
     assert d["audits"]["checked"] == d["audits"]["false"] == d["rounds"][0]["false_found"] == 1 and d["rounds"][0]["decided"] == 3
     weights = {(x["id_l"], x["id_r"]): x["weight"] for x in d["decided"]}
     for i in (yes, no):  # scored again: as the run scored them
@@ -1617,7 +1651,7 @@ def test_a_nearly_empty_field_is_kept_and_the_fit_skips_what_it_cannot_learn_fro
     sparse.to_parquet(tmp_path / "sparse.parquet", index=False)
     seen = []
     run = Run(p, s, echo=seen.append).full(tmp_path / "sparse.parquet", tmp_path / "run")
-    assert [x["step"] for x in seen] == ["load", "budget", "fit", "rules", "candidates", "score", "cluster", "write"]  # step by step
+    assert [x["step"] for x in seen] == ["load", "budget", "fit", "rules", "candidates", "score", "cluster", "probe", "write"]  # step by step
     assert "address" in run.model["er"]["skipped"] and any("sharing address" in x for x in run.notes)
     sparse.assign(PHONE_NUM_4=None).to_parquet(tmp_path / "bare.parquet", index=False)  # nothing left to learn from
     with pytest.raises(InputError, match="can't be estimated|share phone or address"):  # whichever check finds nothing first
@@ -1944,7 +1978,7 @@ def test_the_run_report_holds_no_record_value(tmp_path, population):
     assert not re.search(r"[\u3040-\u30ff\u3400-\u9fff\uff66-\uff9f]", text)  # no kana or kanji: no name, address or town
     assert not any(v in text for c in (uid, "CIF_ID") for v in df[c].dropna())  # no record ID, no customer ID
     expected = (1 - pd.read_parquet(tmp_path / "run" / "matches")["match_probability"]).sum()
-    assert run.steps[-2]["step"] == "cluster" and run.steps[-2]["expected_false"] == round(expected, 2)
+    assert next(x for x in run.steps if x["step"] == "cluster")["expected_false"] == round(expected, 2)
     assert f"about {expected:,.{1 if expected >= 1 else 2}f} of them false" in text and "MODEL" in text and "birth_date" in text
 
 
