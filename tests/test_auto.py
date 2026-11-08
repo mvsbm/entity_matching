@@ -1,6 +1,7 @@
 """The rehearsal (nayose rehearse records): a generated file of the same size and shape, run and measured."""
 import json
 import os
+import re
 import time
 from dataclasses import replace
 from pathlib import Path
@@ -136,8 +137,55 @@ def test_auto_mode_writes_its_report_when_a_step_stops_and_waits_out_no_busy_wor
             taken.append(Path(words[4]) / words[2])
             assert real(words, step, emit)[0] == 0
         if step == "load":
-            return 75, dict(event="error", error="another job is writing to it", fix="wait")
+            return 75, dict(event="error", error="another job is writing to it", fix="wait"), []
         return real(words, step, emit)
     monkeypatch.setattr(auto, "nayose", other)
     code, e = say("try", "everything", "bare.parquet")
     assert code == 75 and [x["step"] for x in e["steps"]] == ["workspace", "load"] and taken[0].is_dir() and Path(e["workspace"]).name != taken[0].name
+    def stop(words, step, emit):  # Ctrl-C while it loads: what ran is reported
+        if step == "load":
+            raise KeyboardInterrupt
+        return real(words, step, emit)
+    monkeypatch.setattr(auto, "nayose", stop)
+    code, e = say("try", "everything", "bare.parquet")
+    assert code == 130 and [x["step"] for x in e["steps"]] == ["workspace", "stopped"] and "✗ stopped" in Path(e["report"]).read_text(encoding="utf-8")
+
+
+def test_a_command_that_crashes_says_its_kind_alone_and_one_that_can_t_report_is_stopped(tmp_path, monkeypatch):
+    from er import auto
+    fake = tmp_path / "python"
+    fake.write_text('#!/bin/sh\necho "Traceback (most recent call last):"\necho "KeyError: \'0012345678\'"\nexit 1\n')
+    fake.chmod(0o755)
+    monkeypatch.setattr(auto.sys, "executable", str(fake))
+    code, e, said = auto.nayose(["check", "records", "x"], "check", lambda e: None)
+    assert code == 1 and e["error"] == "crashed: KeyError" and "0012345678" not in json.dumps(e) and "0012345678" in said[-1]  # its words, for the log only
+    fake.write_text(f'#!/bin/sh\necho $$ > {tmp_path}/pid\necho \'{{"event": "step", "step": "load", "seconds": 1.0}}\'\nexec sleep 60\n')
+    def emit(e):
+        raise BrokenPipeError("the page is gone")
+    t = time.perf_counter()
+    with pytest.raises(BrokenPipeError):
+        auto.nayose(["resolve", "records"], "resolve", emit)
+    assert time.perf_counter() - t < 20
+    with pytest.raises(ProcessLookupError):
+        os.kill(int((tmp_path / "pid").read_text()), 0)  # asked to stop, and gone
+
+
+def test_a_file_without_a_header_puts_no_value_in_the_report_through_its_column_names(say, tmp_path, monkeypatch):
+    import random
+    rnd = random.Random(1)
+    family, given = ["佐藤", "鈴木", "高橋", "田中", "伊藤", "渡辺"], ["花子", "一郎", "美咲", "大輔", "陽子", "健太"]
+    rows = lambda first: [first] + [f"{i:07d},{rnd.choice(family)}{rnd.choice(given)},サトウハナコ,大阪府大阪市北区{rnd.randint(1, 9)}-{rnd.randint(1, 9)},"
+                                    f"06-{rnd.randint(1000, 9999)}-{rnd.randint(1000, 9999)},19{rnd.randint(50, 99)}/0{rnd.randint(1, 9)}/1{rnd.randint(0, 9)}" for i in range(2, 300)]
+    planted = ["0000001", "山田太郎", "ヤマダタロウ", "東京都千代田区丸の内1-2-3", "03-1234-5678", "1980/01/02"]
+    (tmp_path / "in").mkdir()
+    (tmp_path / "in" / "nohead.csv").write_text("\n".join(rows(",".join(planted))) + "\n", encoding="utf-8")  # the reader says a header may be missing
+    (tmp_path / "words.csv").write_text("\n".join(r.split(",", 1)[1] for r in rows(",".join(planted))) + "\n", encoding="utf-8")  # no number in its first line
+    monkeypatch.chdir(tmp_path / "in")
+    for given_as in (".", str(tmp_path / "words.csv")):  # a folder named ".", a file named in full
+        code, r = say("try", "everything", given_as, "--home", str(tmp_path / "home"))
+        ws = Path(r["workspace"])
+        text, facts = (ws / "auto" / "report.md").read_text(encoding="utf-8"), (ws / "auto" / "report.json").read_text(encoding="utf-8")
+        assert code == 2 and r["redacted"] > 0 and "## Privacy check" in text
+        assert not any(v in text or v in facts for v in planted), [v for v in planted if v in text or v in facts]  # nor in a key of the JSON
+        assert re.search(r"took \d+ min \d+ s", text) and "<file>" not in text.split("## Steps")[0]  # the path put aside, no word garbled
+        assert "nohead.csv" not in text + facts and "words.csv" not in text + facts and str(tmp_path) not in text + facts

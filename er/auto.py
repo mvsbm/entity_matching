@@ -38,6 +38,7 @@ import os
 import platform
 import re
 import shutil
+import signal
 import subprocess
 import sys
 import threading
@@ -51,13 +52,13 @@ from pathlib import Path
 import duckdb
 import numpy as np
 
-from er.config import lit
+from er.config import InputError, lit
 from er.folder import method, runs
 from er.generate import generate, load_reference, load_spec
 from er.io import code_version, replace_text
 from er.run import peak_gb
 from er.settings import Settings, added_of, beside, load_settings
-from er.source import describe, find
+from er.source import describe, find, lexicon, profiled
 from er.strings import connect
 
 CHUNK = 50_000  # entities a generated part: generation's memory, whatever the file's size
@@ -67,8 +68,10 @@ LIMIT = ("past 60,000 entities the generator's people repeat, so names repeat mo
          "pairs: the real file's own pairs are in check records")
 SAMPLE = 20_000  # records whose values the report is checked against
 HIDDEN = "[redacted]"
-JAPANESE = re.compile(r"[\u3005\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff\uff66-\uff9f]+")  # kana, kanji, half-width kana
-DIGITS = re.compile(r"(?<![\w.,])\d{6,}(?![\w.,])")  # an ID, a postal code, a phone: the report writes its own counts 1,234,567
+JAPANESE = re.compile(r"[\u3005\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff\uff66-\uff9f\U00020000-\U0003134f]+")  # kana, kanji, half-width kana
+DIGITS = re.compile(r"(?<![\w.])\d{6,}(?!\w)")  # an ID, a postal code, a phone: the report writes its own counts 1,234,567
+CRASH = re.compile(r"^([A-Za-z_][\w.]*(?:Error|Exception|Interrupt|Exit))\b")  # a traceback's last line: the kind of crash, never its words
+FOUR = re.compile(r"[0-9０-９]{4}")  # four digits in a row: a phone, a postal code, a date, an ID, never a column's name
 
 
 def shape(s: Settings, path: str | Path) -> dict:
@@ -216,12 +219,15 @@ def rehearse(ws: Path, sh: dict, s: Settings, pipeline: Path | None, emit: Calla
 
 # ---------- auto mode ----------
 
-def nayose(words: list, step: str, emit: Callable[[dict], None]) -> tuple[int, dict]:
+def nayose(words: list, step: str, emit: Callable[[dict], None]) -> tuple[int, dict, list[str]]:
     """One command as python -m er.cli … --format json, in a process of its own: its steps passed on as `step: <its
-    step>`, and its exit code with its result, or its error (a crash's: the end of its traceback)."""
+    step>`; its exit code, its result or its error, and any other line it wrote (a crash's traceback). A crash's error
+    is its kind alone (its message may quote a value). Stopped (Ctrl-C, or the progress can't be passed on), the
+    command is stopped too: after Ctrl-C, which reached it as well, given 15 seconds to clean up; else asked to stop
+    the same way first."""
     child = subprocess.Popen([sys.executable, "-m", "er.cli", *map(str, words), "--format", "json"],
                              stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
-    last, other = {}, collections.deque(maxlen=20)
+    last, other = {}, collections.deque(maxlen=200)
     try:
         for line in child.stdout:  # stderr joins stdout: one pipe read to its end, so a long traceback can't fill it
             try:
@@ -229,19 +235,27 @@ def nayose(words: list, step: str, emit: Callable[[dict], None]) -> tuple[int, d
             except ValueError:
                 e = None
             if not isinstance(e, dict):
-                other.append(line.strip())
+                other.append(line.rstrip("\n"))
             elif e.get("event") == "step":
                 emit(dict(step=f"{step}: {e['step'].removeprefix(step + ' ')}", seconds=e.get("seconds", 0.0)))
             elif e.get("event") in ("result", "error"):
                 last = e
         code = child.wait()
-    finally:  # stopped, or its progress couldn't be passed on: the command goes with it
+    except BaseException as e:
         if child.poll() is None:
-            child.kill()
-            child.wait()
+            if not isinstance(e, KeyboardInterrupt):
+                child.send_signal(signal.SIGINT)
+            try:
+                child.wait(15)
+            except subprocess.TimeoutExpired:
+                child.kill()
+                child.wait()
+        raise
     if code and last.get("event") != "error":
-        last = dict(event="error", error=" ".join(x for x in other if x)[-300:] or f"exit {code}", fix="")
-    return code, last
+        kind = next((m.group(1) for x in reversed(other) if (m := CRASH.match(x.strip()))), None)
+        last = dict(event="error", error=f"crashed: {kind}" if kind else f"stopped: exit {code}" + (" (killed: out of memory?)" if code == -9 else ""),
+                    fix="its own words are in auto/<step>.log in the workspace" if other else "")
+    return code, last, list(other)
 
 
 def values(part: Path, s: Settings) -> set[str]:
@@ -261,9 +275,9 @@ def scrub(text: str, found: set[str], names: set[str]) -> tuple[str, int]:
     """`text` with each value of `found` in it, each run of six digits or more and each run of kana or kanji no
     column name (`names`) holds put as [redacted], and how many: a value in ASCII only where it stands as a word.
     O(|text| · L) lookups, L the lengths the values come in."""
-    lengths = sorted({len(v) for v in found if len(v) <= 80}, reverse=True)
+    lengths = sorted({len(v) for v in found if len(v) <= 256}, reverse=True)
     out, i, n, hits = [], 0, len(text), 0
-    word = lambda ch: ch.isalnum() or ch == "_"
+    word = lambda ch: ch.isascii() and (ch.isalnum() or ch == "_")
     while i < n:
         for k in lengths:  # the longest value first
             v = text[i:i + k]
@@ -287,8 +301,8 @@ def scrub(text: str, found: set[str], names: set[str]) -> tuple[str, int]:
 
 
 def cleaned(x: object, clean: Callable[[str], str]) -> object:  # every text in a result put through `clean`; numbers stay
-    if isinstance(x, dict):
-        return {k: cleaned(v, clean) for k, v in x.items()}
+    if isinstance(x, dict):  # its keys too: a column's name may be a value
+        return {clean(k) if isinstance(k, str) else k: cleaned(v, clean) for k, v in x.items()}
     if isinstance(x, list):
         return [cleaned(v, clean) for v in x]
     return clean(x) if isinstance(x, str) else x
@@ -317,81 +331,97 @@ def change_args(c: dict) -> list[str]:  # a proposal's change as try method's op
 
 
 def everything(file: str, home: Path, trials: int, compute: list[str], pipeline: str | None, emit: Callable[[dict], None]) -> dict:
-    """Auto mode on `file`: a new workspace in `home`, the steps above, and the report. Its facts, the report's path and
-    text, and the exit code: 0 once the run went through, 75 if a workspace was busy, else 2."""
-    t0, now, s0 = time.perf_counter(), datetime.now(), load_settings()
+    """Auto mode on `file`: a new workspace in `home`, the steps above, and the report. Its facts, the workspace, the
+    part loaded, and the exit code: 0 once the run went through, 75 if a workspace was busy, 130 if it was stopped
+    (Ctrl-C, or its progress couldn't be passed on: the steps so far kept), else 2. A step that crashed keeps its own
+    words in auto/<step>.log in the workspace, never in the report."""
+    t0, now = time.perf_counter(), datetime.now()
     limits, pipe = (["--compute", *compute] if compute else []), (["--pipeline", pipeline] if pipeline else [])
     files = find(file)
     facts: dict = dict(at=now.isoformat(timespec="seconds"), machine=machine(compute), steps=[],
                        file=dict(files=len(files), formats=sorted({f.suffix.lower().lstrip(".") for f in files}), bytes=sum(f.stat().st_size for f in files)))
-    busy = False
+    got: dict = dict(busy=False, ws=None, part=None)
 
     def do(name: str, words: list) -> dict | None:  # one step: its result, or None once it failed (kept, with its fix)
-        nonlocal busy
         t = time.perf_counter()
-        code, e = nayose(words, name, emit)
+        code, e, said = nayose(words, name, emit)
         seconds = round(time.perf_counter() - t, 1)
+        if code and said and got["ws"] and got["ws"].exists():  # a crash's own words: on this machine only
+            (got["ws"] / "auto").mkdir(exist_ok=True)
+            replace_text(got["ws"] / "auto" / f"{name.replace(' ', '-')}.log", "\n".join(said) + "\n")
         facts["steps"].append(dict(step=name, ok=code == 0, exit=code, seconds=seconds,
                                    error=e.get("error") if code else None, fix=e.get("fix") if code else None))
-        emit(dict(step=name, seconds=seconds, ok=code == 0, **({"workspace": str(ws)} if name == "workspace" and not code else {})))  # the page opens it
-        busy |= code == 75
+        emit(dict(step=name, seconds=seconds, ok=code == 0, **({"workspace": str(got["ws"])} if name == "workspace" and not code else {})))  # the page opens it
+        got["busy"] |= code == 75
         return e if code == 0 else None
 
-    base = f"auto-{now:%m%d-%H%M}"
-    for _ in range(5):  # another auto mode may take the same name this minute: then the next one free
-        name = next(n for n in (base, *(f"{base}-{i}" for i in range(2, 1000))) if not (home / n).exists())
-        ws = (home / name).resolve()
-        if (made := do("workspace", ["create", "workspace", name, "--home", home])) or not ws.exists():
-            break
-        facts["steps"].pop()
-    if not made:
-        return dict(facts=facts, workspace=None, exit_code=75 if busy else 2)
-    there = ["--workspace", ws]
-    if loaded := do("load", ["load", "records", Path(file).resolve() if Path(file).exists() else file, *there]):
-        part, described = loaded["loaded"], loaded
+    def steps() -> None:
+        base = f"auto-{now:%m%d-%H%M}"
+        for _ in range(5):  # another auto mode may take the same name this minute: then the next one free
+            name = next(n for n in (base, *(f"{base}-{i}" for i in range(2, 1000))) if not (home / n).exists())
+            got["ws"] = ws = (home / name).resolve()
+            if (made := do("workspace", ["create", "workspace", name, "--home", home])) or not ws.exists():
+                break
+            facts["steps"].pop()
+        if not made:
+            got["ws"] = None
+            return
+        there = ["--workspace", ws]
+        if not (loaded := do("load", ["load", "records", Path(file).resolve() if Path(file).exists() else file, *there])):
+            return
+        got["part"] = part = loaded["loaded"]
+        described = loaded
         if placed := [f"{x['feature']}={x['column']}" for x in loaded.get("placements", [])]:
             if do("place", ["set", "feature", *placed, *there]):
                 described = do("describe", ["describe", "records", part, *there]) or loaded
         facts.update(placed=kept(loaded.get("placements"), "feature", "column", "share", "why"), records=described["records"],
-                     columns=kept(described["columns"], "column", "filled"), profile=described.get("profile", {}),
+                     columns=kept(described["columns"], "column", "filled"), profile=described.get("profile", {}), notes=described.get("notes", []),
                      fields=[dict(kept([x], "field", "sources", "filled", "looks_right")[0], alternatives=kept(x.get("alternatives"), "columns", "found", "filled", "looks_right"))
                              for x in described["fields"]],
                      offers=kept(described.get("offers"), "feature", "type", "script", "column", "share", "why"),
                      needed=described.get("needed"), turned_off=described.get("turned_off"),
                      read={k: v for k, v in (loaded.get("read") or {}).items() if k not in ("part", "examples")})
-        checked = do("check", ["check", "records", part, *there, *limits, *pipe])
-        if checked:
-            facts["check"] = dict(capacity={k: v for k, v in checked["capacity"].items() if k != "spill_folder"}, ready=checked["ready"],
-                                  keys=checked["keys"], fields=kept(checked["fields"], "field", "filled", "looks_right", "top_value", "columns"),
-                                  turned_off=checked.get("turned_off"), notes=checked.get("notes"))
-        rehearsed = checked and do("rehearse", ["rehearse", "records", part, *there, *pipe, *limits])
+        if not (checked := do("check", ["check", "records", part, *there, *limits, *pipe])):
+            return
+        facts["check"] = dict(capacity={k: v for k, v in checked["capacity"].items() if k != "spill_folder"}, ready=checked["ready"],
+                              keys=checked["keys"], fields=kept(checked["fields"], "field", "filled", "looks_right", "top_value", "columns"),
+                              turned_off=checked.get("turned_off"), notes=checked.get("notes"))
+        rehearsed = do("rehearse", ["rehearse", "records", part, *there, *pipe, *limits])
         if (ws / "rehearsal.json").exists():
             facts["rehearsal"] = json.loads((ws / "rehearsal.json").read_text(encoding="utf-8"))
-        if rehearsed and do("resolve", ["resolve", "records", *there, *pipe, *limits]):
-            facts["run"] = dict(report=(ws / "report.txt").read_text(encoding="utf-8"),
-                                steps=[{k: v for k, v in x.items() if isinstance(v, int | float | str) and k != "big_o"} for x in runs(ws)[-1]["steps"]])
-            if method := do("method", ["describe", "method", *there, *pipe]):
-                facts["method"] = dict(line=method["line"], review_from=method["review_from"], trust=method["trust"], to_decide=method["to_decide"],
-                                       bands=method["bands"], rules=method["rules"], keys=method["keys"], steps=method["steps"],
-                                       proposals=kept(method["proposals"], "change", "why"), dropped=method["dropped"])
-                if patterns := do("patterns", ["list", "patterns", *there, *pipe]):
-                    near = [x for x in patterns["patterns"] if method["review_from"] <= x["points"] < method["line"] + 4]
-                    facts["patterns"] = dict(fields=patterns["fields"], pairs=patterns["pairs"], threshold=patterns["threshold"],
-                                             near=kept(sorted(near, key=lambda x: -x["pairs"])[:15], "steps", "points", "pairs", "merged", "wait", "held", "apart"))
-                order = ("add_keys", "line", "drop_keys", "drop_rules")  # what may find more first, then what costs less
-                proposals = sorted(method["proposals"], key=lambda x: min(order.index(k) for k in x["change"] if k in order))
-                facts["trials"] = []
-                for i, x in enumerate(proposals[:trials], 1):
-                    tried = do(f"trial {i}", ["try", "method", *there, *change_args(x["change"]), *pipe, *limits])
-                    facts["trials"].append(dict(change=x["change"], why=x["why"], ok=bool(tried),
-                                                **({k: tried[k] for k in ("base", "variant", "apart", "together")} if tried else {})))
-            if facts.get("offers"):
-                facts["with_offers"] = offered(ws, part, facts["offers"], do, pipe, limits)
-            if review := do("review", ["describe", "review", *there, *pipe]):
-                facts["review"] = {k: v for k, v in review.items() if k not in ("event", "command", "next")}
+        if not (rehearsed and do("resolve", ["resolve", "records", *there, *pipe, *limits])):
+            return
+        facts["run"] = dict(report=(ws / "report.txt").read_text(encoding="utf-8"),
+                            steps=[{k: v for k, v in x.items() if isinstance(v, int | float | str) and k != "big_o"} for x in runs(ws)[-1]["steps"]])
+        if method := do("method", ["describe", "method", *there, *pipe]):
+            facts["method"] = dict(line=method["line"], review_from=method["review_from"], trust=method["trust"], to_decide=method["to_decide"],
+                                   bands=method["bands"], rules=method["rules"], keys=method["keys"], steps=method["steps"],
+                                   proposals=kept(method["proposals"], "change", "why"), dropped=method["dropped"])
+            if patterns := do("patterns", ["list", "patterns", *there, *pipe]):
+                near = [x for x in patterns["patterns"] if method["review_from"] <= x["points"] < method["line"] + 4]
+                facts["patterns"] = dict(fields=patterns["fields"], pairs=patterns["pairs"], threshold=patterns["threshold"],
+                                         near=kept(sorted(near, key=lambda x: -x["pairs"])[:15], "steps", "points", "pairs", "merged", "wait", "held", "apart"))
+            order = ("add_keys", "line", "drop_keys", "drop_rules")  # what may find more first, then what costs less
+            proposals = sorted(method["proposals"], key=lambda x: min(order.index(k) for k in x["change"] if k in order))
+            facts["trials"] = []
+            for i, x in enumerate(proposals[:trials], 1):
+                tried = do(f"trial {i}", ["try", "method", *there, *change_args(x["change"]), *pipe, *limits])
+                facts["trials"].append(dict(change=x["change"], why=x["why"], ok=bool(tried),
+                                            **({k: tried[k] for k in ("base", "variant", "apart", "together")} if tried else {})))
+        if facts.get("offers"):
+            facts["with_offers"] = offered(ws, part, facts["offers"], do, pipe, limits)
+        if review := do("review", ["describe", "review", *there, *pipe]):
+            facts["review"] = {k: v for k, v in review.items() if k not in ("event", "command", "next")}
+
+    stopped = False
+    try:
+        steps()
+    except (KeyboardInterrupt, BrokenPipeError):  # Ctrl-C, or the page that asked is gone: what ran so far is reported
+        stopped = True
+        facts["steps"].append(dict(step="stopped", ok=False, exit=130, seconds=0.0, error="stopped before its end", fix="run it again"))
     facts["seconds"] = round(time.perf_counter() - t0, 1)
     ran = any(x["step"] == "resolve" and x["ok"] for x in facts["steps"])
-    return dict(facts=facts, workspace=ws, part=locals().get("part"), exit_code=0 if ran else 75 if busy else 2)
+    return dict(facts=facts, workspace=got["ws"], part=got["part"], exit_code=130 if stopped else 0 if ran else 75 if got["busy"] else 2)
 
 
 def offered(ws: Path, part: str, offers: list[dict], do: Callable, pipe: list, limits: list) -> dict:
@@ -422,25 +452,42 @@ def offered(ws: Path, part: str, offers: list[dict], do: Callable, pipe: list, l
 
 def written(r: dict, file: str, s: Settings) -> dict:
     """The report of `r` (everything's) in its workspace's auto/: report.json, the facts, and report.md, them in words,
-    both checked as scrub does against the values of the part loaded (the file's place and name put as <file>, the
-    workspace's as its name). The paths, the values checked against, and how many were redacted."""
+    both checked as scrub does against the values of the part loaded. A column's name stays, unless it reads like a
+    value (a known name or place, a phone number, four digits in a row; any, when the reader says the header may be
+    missing): then it is one of the values. The file's path and name are put as <file>, its part's as <part>, the
+    workspace's path as its name, the home folder as ~ and the current one as ".". The paths, the values checked
+    against, and how many were redacted."""
     ws, facts = r["workspace"], r["facts"]
     found = values(Path(r["part"]), s) if r.get("part") else set()
     names = {x["column"] for x in facts.get("columns", [])}
-    given = [str(Path(file).resolve()), file, Path(file).name, str(ws), str(Path.home()), os.getcwd()]
-    places = sorted({x for x in given if x}, key=len, reverse=True)
+    headless = any("a header may be missing" in n for n in facts.get("notes", []))
+    known = profiled({c: [c] for c in names}, lexicon(s.paths["reference"], tuple(s.standardize.kana_fold.items())))
+    alike = {c for c in names if headless or FOUR.search(c) or any(known[c][k] >= 1 for k in ("family", "given", "full", "address", "phone"))}
+    found, names = found | alike, names - alike
+    try:
+        given = find(file)
+    except InputError:
+        given = []
+    exact = {str(Path(file).resolve()): "<file>", str(ws): ws.name, str(Path.home()): "~", os.getcwd(): "."}
+    exact = {k: v for k, v in sorted(exact.items(), key=lambda x: -len(x[0])) if len(Path(k).parts) > 2}  # "/" or "/Users" would garble every path
+    tokens = {f.name for f in [*given, Path(file)] if len(f.name) >= 4}
+    stems = {f.stem for f in given if f.stem}
     hits = 0
 
     def clean(text: str) -> str:
         nonlocal hits
-        for x, to in ((x, "<file>" if x in given[:3] else ws.name if x == str(ws) else "~" if x == str(Path.home()) else ".") for x in places):
+        for x, to in exact.items():
             text = text.replace(x, to)
+        for x in tokens:  # a file's name as a word of its own, not inside another
+            text = re.sub(rf"(?<![\w.-]){re.escape(x)}(?![\w-])", "<file>", text)
+        for x in stems:  # its part in the workspace: inputs/0001-<its name>
+            text = re.sub(rf"\b\d{{4}}-{re.escape(x)}\b", "<part>", text)
         text, n = scrub(text, found, names)
         hits += n
         return text
 
     facts = cleaned(facts, clean)
-    text = clean(markdown(facts, ws.name))
+    text = clean(markdown(facts, ws.name))  # again on the whole page: whatever markdown() itself adds is checked too
     end = f"Checked against {len(found):,} values of a sample of {SAMPLE:,} records: {hits:,} redacted."
     text += f"\n## Privacy check\n\n{end}\n"
     out = ws / "auto"

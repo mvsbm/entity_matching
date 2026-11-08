@@ -99,3 +99,18 @@ def test_the_ui_layout_names_only_declared_commands_parameters_and_result_fields
     assert set(flow["steps"]) <= {*screens, "workspace"} and all(x in flow["steps"] for x in screens if x not in ("records", loop["screen"]))  # every page a step
     assert loop["screen"] in screens and {loop["after"], loop["back"]} <= set(flow["steps"])
     assert all(l["to"] in flow["steps"] and {(l["screen"], c) for c in l["via"]} <= placed for l in flow["loops"])
+
+
+def test_a_long_command_that_ends_with_its_result_and_exit_2_is_no_crash(tmp_path, monkeypatch):
+    from er import ui
+    fake = tmp_path / "python"  # a command that stopped on a mistake people fix, yet said its result (try everything does)
+    fake.write_text('#!/bin/sh\necho \'{"event": "step", "step": "load", "seconds": 1.0}\'\necho \'{"event": "result", "command": "try everything", "ok": false}\'\nexit 2\n')
+    fake.chmod(0o755)
+    monkeypatch.setattr(ui.sys, "executable", str(fake))
+    job = ui.Job(["try", "everything", "x.csv"])
+    ui.Server()._long(job)
+    assert job.code == 2 and [e["event"] for e in job.events] == ["step", "result"]  # its result, for the page to show
+    fake.write_text('#!/bin/sh\necho "Traceback (most recent call last):"\necho "KeyError: 1"\nexit 1\n')
+    job = ui.Job(["try", "everything", "x.csv"])
+    ui.Server()._long(job)
+    assert job.code == 1 and job.events[-1]["event"] == "error" and "KeyError" in job.events[-1]["error"]  # a crash: said

@@ -692,13 +692,13 @@ async function runOnce(command, args, onEvent, tries = 10) {
     from += j.events.length;
     if (j.done) {
       entry.end(last, j.exit);
-      if (longRun && longRun.command === command) {  // step 3's run ended: its buttons free, its page drawn again if it was left and opened since
-        const from = longRun.visit;
+      if (longRun && longRun.command === command) {  // a long run ended: its buttons free, its page drawn again if it was left and opened since
+        const {visit: from, page} = longRun;
         longRun = null;
-        if (current === "run" && visit !== from) go("run");
+        if (current === page && visit !== from) go(page);
       }
       if (quick && j.exit === 75 && tries > 1) { await sleep(1000); return runOnce(command, args, onEvent, tries - 1); }  // busy: once it's done
-      if (!quick && j.exit === 0) { memoAt = -1; refresh(); }  // the stepper, whichever page is open now; no answer kept from before the write
+      if (!quick && (j.exit === 0 || last.event === "result")) { memoAt = -1; refresh(); }  // the stepper, whichever page is open now; no answer kept from before the write
       if (!quick) snack(j.exit === 0 ? `${icon("check")}<span class="msg">Done <code>${esc(command)}</code></span>`
                                      : `${icon("error")}<span class="msg">Failed <code>${esc(command)}</code></span><button class="btn" data-term>View</button>`, 6000);
       return last;
@@ -1502,7 +1502,9 @@ const SCREENS = {
       `<div id="next"></div><div id="auto"></div><div id="out"></div><div id="flow"></div>`;
     $("refresh").onclick = () => go("records");
     const [d] = await Promise.all([run("records", "describe workspace"), flowOf("records", $("flow"))]);
-    if (d.auto) sendCard($("auto"), d.auto);
+    if (longRun && longRun.command === "try everything") $("auto").innerHTML = `<div class="card"><div class="qa"><div class="q"><h2 class="question">
+      <span class="spin" style="border-color:var(--primary);border-right-color:transparent"></span>Auto mode…</h2><p class="answer">Its report shows here when it ends</p></div></div></div>`;
+    else if (d.auto) sendCard($("auto"), d.auto);
     if (d.event === "error" || !d.records) { $("out").innerHTML = d.event === "error" ? banner(d) : emptyRun(d); return d; }
     const p = progress(d), s = p.steps[p.next];
     $("next").innerHTML = `<div class="next">${icon(s.state === "attention" ? "person" : "run")}<span><b>Next: ${ORDER.includes(p.next) ? `${ORDER.indexOf(p.next) + 1} · ` : ""}${esc(STEP[p.next])}</b>
@@ -1679,7 +1681,7 @@ const SCREENS = {
       };
       const step = (e) => {  // the run as it goes: what it does now, the time taken, each stage filled in as its step ends
         if (e.event === "start" || !$("out").querySelector(".steps-card")) {
-          t0 = t0 || Date.now(); longRun = {command, visit}; hold();
+          t0 = t0 || Date.now(); longRun = {command, visit, page: "run"}; hold();
           $("out").innerHTML = `<div class="card steps-card"><div class="qa"><div class="q"><h2 class="question"><span class="spin" style="border-color:var(--primary);border-right-color:transparent"></span>${esc(BUSY[command] || label)}…</h2>
             <p class="answer"></p></div></div><span class="meter wide"><i style="width:0"></i></span></div>`;
           clearInterval(clock); clock = setInterval(say, 1000); say();
@@ -2979,17 +2981,18 @@ const AUTO = {workspace: "making a workspace", load: "reading the file", place: 
 const AUTO_NEXT = {workspace: "load", load: "check", place: "describe", describe: "check", check: "rehearse", rehearse: "resolve", resolve: "method", method: "patterns"};
 const autoSays = (s) => AUTO[s] || (s.startsWith("trial") ? "trying a change of method" : s.startsWith("offers") ? "trying the names in another script" : s);
 async function autoMode() {
+  if (longRun) { snack(`<span class="msg">Wait for <code>${esc(longRun.command)}</code> to end</span>`, 4000); return; }  // one long command at a time
   if (current !== "records" || !$("auto")) await go("records");
   const box = $("auto");
   let t0 = 0, now = "", clock = 0;
   const say = () => {
     const a = box.querySelector(".steps-card .answer");
-    if (!a) { clearInterval(clock); return; }
+    if (!a || !box.isConnected) { clearInterval(clock); return; }  // the page was left: its card is gone
     a.textContent = `${Math.round((Date.now() - t0) / 1000)} s · now: ${now}`;
   };
   const step = (e) => {
     if (e.event === "start") {
-      t0 = Date.now(); now = autoSays("workspace");
+      t0 = Date.now(); now = autoSays("workspace"); longRun = {command: "try everything", visit, page: "records"};
       box.innerHTML = `<div class="card steps-card"><div class="qa"><div class="q"><h2 class="question"><span class="spin" style="border-color:var(--primary);border-right-color:transparent"></span>Auto mode…</h2>
         <p class="answer"></p></div></div><ul class="steps"></ul></div>`;
       clearInterval(clock); clock = setInterval(say, 1000); say();
@@ -3006,6 +3009,7 @@ async function autoMode() {
   };
   action("records", "try everything", "Run auto mode", (d) => {
     clearInterval(clock);
+    if (longRun && longRun.command === "try everything") longRun = null;  // ended, or never started (another long command runs)
     if (d.event === "error") { box.innerHTML = banner(d); return; }
     setWorkspace(d.workspace);  // its Overview: the report to send
   }, step, {about: "A new workspace, every step on your file, and a report to send"});
