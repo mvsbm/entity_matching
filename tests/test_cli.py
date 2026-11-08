@@ -180,6 +180,13 @@ def test_nayose_takes_a_file_from_the_check_to_people_s_answers(tmp_path, popula
     assert added["summary"][0][1].startswith(f"{len(g.df):,}")
     again = say("match", "records", tmp_path / "new.parquet", "--workspace", run)  # every record in the run already: each said so
     assert set(again["counts"]) == {"already in the run"} and len(again["records"]) == len(g.df) - half
+    from er import folder
+    before = folder.parts(run)
+    assert say("add", "records", tmp_path / "new.parquet", "--workspace", run)["summary"][0][0] == "nothing new" and folder.parts(run) == before  # no copy kept
+    g.df.head(50).rename(columns={uid: "customer_no"}).to_parquet(tmp_path / "renamed.parquet", index=False)
+    assert main(["add", "records", str(tmp_path / "renamed.parquet"), "--workspace", str(run), "--format", "json"]) == 2
+    e = json.loads(capsys.readouterr().out.splitlines()[-1])
+    assert f"write customer_no as {uid} in it" in e["fix"] and folder.parts(run) == before  # a batch has the run's columns; the run's file stays the last
     assert say("describe", "workspace", run)["records"] == len(g.df)
     graph = say("describe", "matching", "--workspace", run)
     assert {n["id"] for n in graph["nodes"]} >= {"rules", "candidates", "score", "group"} and graph["edges"]

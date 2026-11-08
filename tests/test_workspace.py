@@ -438,6 +438,13 @@ def test_the_trust_line_merges_only_ranges_people_proved_and_steps_down_one_at_a
     assert trust["line"] == 12.0 and trust["next"] == {"down_to": 8.0, "up_to": 12.0} and trust["above"]["pairs"] > 0
     audits = pd.read_parquet(ws / "review.parquet").query("why == 'audit'")["match_weight"]
     assert len(audits) and (audits >= 12).all()  # spot-checks above the line
+    sheet = pd.read_parquet(ws / "review.parquet")
+    one = sheet[(sheet["why"] == "decide") & sheet["match_weight"].between(8, 12, inclusive="left")].head(1)
+    one.assign(decision="no_match")[[l, r, "decision"]].to_parquet(tmp_path / "false.parquet")  # people find a false pair in the range below the line
+    assert len(one) and say("apply", "decisions", "--file", "false.parquet", *pipe)[0] == 0 and say("rerun", "records", *pipe)[0] == 0
+    left = pd.read_parquet(ws / "review.parquet").query("why == 'decide'")
+    assert (left["match_weight"] < 8).any()  # the line can't pass it: it, and every range below, to people one by one
+    assert say("describe", "workspace", "workspaces/w", "--pipeline", "small.toml")[1]["trust"]["false"] == 1
 
     pair = kept[kept["merged"]].iloc[0]  # people say a merged rule pair is no match: it stays apart from then on
     pd.DataFrame({l: [pair[l]], r: [pair[r]], "decision": ["no_match"]}).to_parquet(tmp_path / "no.parquet")

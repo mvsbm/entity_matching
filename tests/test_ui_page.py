@@ -36,7 +36,7 @@ def test_the_page_answers_once_per_key_shows_any_row_and_says_when_the_server_is
     page.fill("#cin", str(tmp_path / "theirs.parquet"))
     page.click("#load")  # copied into it, then described
     page.wait_for_selector("details.fgroup[data-g='ID'][open]", timeout=60_000)  # the ID it can't find opens its group
-    assert page.text_content("#files").startswith("theirs ·") and "Record ID needed" in page.inner_text("details.fgroup[data-g='ID'] summary")
+    assert page.text_content("#files").startswith("theirs.parquet ·") and "Record ID needed" in page.inner_text("details.fgroup[data-g='ID'] summary")
     assert page.inner_text("#loaded h2.question") == "Did your file load?" and page.inner_text("#loaded .answer").startswith("Not yet")  # its question first
     loaded, groups = page.query_selector("#loaded").bounding_box(), page.query_selector("#out").bounding_box()
     assert loaded["y"] + loaded["height"] <= groups["y"]  # did it load, then the columns by field: in reading order
@@ -80,7 +80,7 @@ def test_the_page_answers_once_per_key_shows_any_row_and_says_when_the_server_is
     assert "492 records" in page.inner_text("#out .card") and "theirs" in page.inner_text("#out .card") and not page.query_selector("[data-act='rerun records']")
     page.click("#out [data-first]")  # the file loaded last: nothing to type
     page.wait_for_function("() => document.querySelector('#equiv-line').textContent.includes('resolve records')")
-    assert not page.query_selector("#f-input") and "theirs · 492 records" in page.inner_text("dialog .about") and "theirs.parquet" not in page.inner_text("#equiv-line")
+    assert not page.query_selector("#f-input") and "theirs.parquet · 492 records" in page.inner_text("dialog .about") and "theirs.parquet" not in page.inner_text("#equiv-line")
     page.keyboard.press("Escape")
     page.click("#picker")
     page.wait_for_selector("tr[data-w]")
@@ -456,3 +456,25 @@ def test_the_page_keeps_its_step_through_back_reload_and_a_run_and_says_what_was
     page.select_option(".drop select", phone)
     page.wait_for_function("() => !document.querySelector('.drop select')", timeout=30_000)
     assert phone in (tmp_path / "workspaces" / "w" / "columns.toml").read_text(encoding="utf-8").split("phone =", 1)[1].split("\n", 1)[0]  # saved
+
+
+def test_a_file_loaded_after_a_run_is_offered_to_the_run_first(ui_page, tmp_path, population):
+    from er import cli, folder
+    s, p, g = population
+    half = len(g.df) // 2
+    g.df.iloc[:half].to_parquet(tmp_path / "first.parquet", index=False)
+    g.df.iloc[half:].to_parquet(tmp_path / "batch.parquet", index=False)
+    ws = tmp_path / "workspaces" / "w"
+    assert cli.main(["create", "workspace", "w", "--home", str(tmp_path / "workspaces")]) == 0
+    assert cli.main(["resolve", "records", str(tmp_path / "first.parquet"), "--workspace", str(ws)]) == 0
+    assert cli.main(["load", "records", str(tmp_path / "batch.parquet"), "--workspace", str(ws)]) == 0  # loaded on step 2, after the run
+    page, server, httpd = ui_page(str(ws), str(tmp_path / "workspaces"))
+    page.click(".navitem[data-screen=run]")
+    page.wait_for_selector(".card.ready [data-add]")
+    assert "Replace the run" in page.inner_text(".card.ready")  # matching it alone is said for what it does
+    page.click(".card.ready [data-add]")
+    assert "batch.parquet" in page.inner_text("dialog .about")
+    page.click("dialog button[value=run]")
+    page.wait_for_selector(".card.ready", state="detached", timeout=120_000)  # added: nothing left not matched
+    page.wait_for_selector("h2.question.big")
+    assert all(x["read"] for x in folder.loaded(ws))

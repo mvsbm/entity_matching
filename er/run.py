@@ -494,7 +494,8 @@ class Run:
         links = f"""SELECT {l}, {r} FROM matches UNION ALL SELECT {l}, {r} FROM proposed WHERE match_weight >= {bits(fs.min_match_weight)}
             UNION ALL SELECT {l}, {r} FROM rule_kept k WHERE NOT EXISTS (SELECT 1 FROM er_decisions d WHERE d.{l} = k.{l} AND d.{r} = k.{r} AND d.decision = 'no_match')
             UNION ALL SELECT {l}, {r} FROM er_decisions WHERE decision = 'match'"""
-        found = missed(self.con, self.db, self.scoring, fs, spec, "records", links, self.uid, None if fs.bridge else self._resolved("rule_clusters"))
+        found = missed(self.con, self.db, self.scoring, fs, spec, "records", links, self.uid, None if fs.bridge else self._resolved("rule_clusters"),
+                       apart=f"SELECT {l}, {r} FROM er_decisions WHERE decision = 'no_match'")
         self._done("probe", "O(N + P·K + L)", f"O({self.n:,} + {sum(x['scored'] for x in found):,}·K + L)", t, strata=found)
 
     def _expected_false(self) -> float:  # the false links the model expects among those it accepted: Σ (1 − match probability), O(E)

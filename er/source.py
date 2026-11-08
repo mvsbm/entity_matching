@@ -41,8 +41,8 @@ class Source:
 
 def find(path: str | Path) -> list[Path]:
     """The files a path names: one file, a glob, or a folder (its Parquet, CSV and TSV files, at any depth:
-    intake.SUFFIXES); a workspace's part, the files its intake read (er.intake)."""
-    p = Path(path)
+    intake.SUFFIXES); a workspace's part, the files its intake read (er.intake). ~ is the home folder."""
+    p = Path(path).expanduser()
     if p.is_dir() and (r := intake.report(p)):
         return [p / x["read"] for x in r["files"]]
     if any(c in str(p) for c in "*?["):

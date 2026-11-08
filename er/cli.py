@@ -18,6 +18,7 @@ import functools
 import json
 import math
 import shlex
+import shutil
 import sys
 import tempfile
 import unicodedata
@@ -506,11 +507,25 @@ def resolve_records(a: dict, emit: "Emit") -> dict:
 
 
 def add_records(a: dict, emit: "Emit") -> dict:
+    """A batch copied in, then added; one that adds nothing, or that is refused before anything is written (a column
+    the run reads, missing), is not kept, so the file the run read stays the file loaded last."""
     s, p, pipeline = setup(a)
     out = Path(a["workspace"])
-    run = Run(p, s, echo=emit.step).increment(path := given(a), out, pipeline_file=pipeline)
+    held = [x for x in folder.parts(out) if a["input"] and Path(a["input"]).resolve() == x.resolve()]  # a part loaded already: as it is
+    part, copied = (held[0], False) if held else folder.take_in(out, a["input"], s.input, s.paths["reference"]) if a["input"] else (Path(given(a)), False)
+    try:
+        run = Run(p, s, echo=emit.step).increment(part, out, pipeline_file=pipeline)
+    except InputError as e:
+        if copied:
+            shutil.rmtree(part, ignore_errors=True)
+        if not e.hints:
+            raise
+        named = ", ".join(f"{c} as {s.columns[f][0][0]}" for f, c in e.hints.items() if s.columns.get(f) and s.columns[f][0])
+        raise InputError(str(e), fix=f"a batch has the run's columns: write {named} in it, then add it again" if named else e.fix) from None
     if run.added == 0:
-        return dict(summary=[["nothing new", f"every record of {path} is already in the run"]], next=next_after(out, run.uid))
+        if copied:
+            shutil.rmtree(part, ignore_errors=True)
+        return dict(summary=[["nothing new", f"every record of {a['input'] or part.name} is already in the run"]], next=next_after(out, run.uid))
     return after_run(run, out)
 
 
@@ -1053,7 +1068,7 @@ COMMANDS: tuple[Command, ...] = (
              "write_owed": "a write cut short, finished by the next one", "summary": "the last run's summary",
              "round": "the round now: one per method the workspace ran (rounds.json)", "audits": "this round's audits people decided: checked, false",
              "trust": TRUST,
-             "inputs": "the records files given to it, each in inputs/: name, path, files, bytes, rows, read (by a run, as it is now), waiting (repairs proposed, for people), unread (rows)",
+             "inputs": "the records files given to it, each in inputs/: name, path, files, bytes, rows, read (by a run, as it is now), waiting (repairs proposed, for people), unread (rows), given (its file's own name, one file)",
              "columns": "own: its columns.toml; project: config/settings.toml's",
              "auto": "the report try everything wrote, to send: report (its path), markdown", "next": "the commands that usually follow"},
             "nayose describe workspace workspaces/customers", describe_workspace_, quick=True,
