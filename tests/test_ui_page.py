@@ -365,3 +365,10 @@ def test_auto_mode_runs_from_the_first_screen_and_its_report_waits_on_the_overvi
     assert page.inner_text("#auto h2.question") == "What should I send?" and page.inner_text("#auto .report").startswith("# nayose auto mode")
     page.click("#copy-report")  # no clipboard in this browser: the report is selected for the person to copy
     page.wait_for_function("() => getSelection().toString().startsWith('# nayose auto mode')")
+    first = page.inner_text("#picker")
+    pd.DataFrame({"CONT_ID": [f"{i:04d}" for i in range(50)], "NOTE": ["x"] * 50}).to_parquet(tmp_path / "bare.parquet", index=False)
+    page.click("#screen [data-auto]")  # again, from the Overview, on a file with no name: the check stops it
+    page.fill("#f-input", str(tmp_path / "bare.parquet"))
+    page.click("dialog button[value=run]")
+    page.wait_for_function(f"() => document.querySelector('#auto .report') && document.querySelector('#picker').innerText !== {first!r}", timeout=120_000)
+    assert "✗ check" in page.inner_text("#auto .report") and not page.query_selector("#auto .banner")  # its report, not a bare exit code

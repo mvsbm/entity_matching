@@ -132,7 +132,7 @@ class Server:
                 except json.JSONDecodeError:
                     other.append(line.strip())
             code = done.wait()
-            if code and not any(e.get("event") == "error" for e in job.events):  # a crash: the last line of its traceback
+            if code and not any(e.get("event") in ("error", "result") for e in job.events):  # a crash: the last line of its traceback
                 return fail(job, " ".join(x for x in other if x)[-300:] or f"exit {code}", code)
             job.code = code
         except OSError as e:  # the process didn't start

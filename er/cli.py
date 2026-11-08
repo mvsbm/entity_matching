@@ -1208,9 +1208,12 @@ COMMANDS: tuple[Command, ...] = (
             "fails is kept with its error and fix, and the steps that need it are skipped. Then auto/report.md, to send, and "
             "auto/report.json, its facts: counts, shares, seconds and the names of columns, fields, rules and keys, each taken "
             "field by field; checked against every value of a sample of 20,000 records, every run of six digits or more and "
-            "every run of kana or kanji that is no column name, each found redacted and counted. Never lowers the trust line "
-            "or adopts a method. Exit 0 once the run went through, 2 if a step stopped it, 75 if a workspace was busy; the "
-            "report is written either way. O(the commands it runs): about 15 minutes a million records.",
+            "every run of kana or kanji that is no column name, each found redacted and counted; a column name that reads like "
+            "a value (a known name or place, a phone, four digits in a row; any, when the file seems to have no header) is "
+            "one of the values. A step that crashed keeps its own words in auto/<step>.log, never in the report. Never lowers "
+            "the trust line or adopts a method. Exit 0 once the run went through, 2 if a step stopped it, 75 if a workspace "
+            "was busy, 130 if stopped (Ctrl-C); the report is written each time. O(the commands it runs): about 10 minutes "
+            "a million records.",
             (INPUT, HOME, Param("trials", "how many of the changes describe method proposes to try (default 3)", metavar="N"),
              PIPELINE, COMPUTE),
             {"workspace": "the workspace it made", "ok": "whether the run went through", "steps": "each step: step, ok, seconds, error",

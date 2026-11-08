@@ -127,8 +127,11 @@ steps that need it are skipped. It never lowers the trust line or adopts a metho
 `auto/report.md`, to send for help, and `auto/report.json`, the facts behind it: counts, shares, seconds and the names
 of columns, fields, rules and keys. No example, ID or path is taken into it, and it is then checked against every value
 of a sample of 20,000 records, every run of six digits or more and every run of kana or kanji that is no column name:
-anything found is redacted, and its last line says how many. About 15 minutes a million records. On the page: *Auto
-mode*, on the first screen and the Overview.
+anything found is redacted, and its last line says how many. A column name that reads like a value (a known name or
+place, a phone number, four digits in a row; every one, when the file seems to have no header line) counts as a value.
+A step that crashed keeps its own words in `auto/<step>.log` on the machine, never in the report. Stopped with Ctrl-C,
+it still writes the report of what ran. About 10 minutes a million records. On the page: *Auto mode*, on the first
+screen and the Overview.
 
 ### Before a run on your file
 
