@@ -53,7 +53,7 @@ button { font: inherit; color: inherit; }
 .navitem:hover { background: var(--hover); }
 .navitem[aria-current="page"] { background: var(--sel); color: var(--sel-ink); }
 body.collapsed .sidenav { width: 72px; }
-body.collapsed .sidenav h3, body.collapsed .navitem span { display: none; }
+body.collapsed .sidenav h3, body.collapsed .navitem span:not(.dot) { display: none; }  /* each step's dot stays: its number, ✓ or ! */
 body.collapsed main { margin-left: 72px; }
 
 /* the page */
@@ -119,6 +119,7 @@ tbody tr[aria-selected="true"] { background: var(--sel); color: var(--sel-ink); 
 .chip.info { background: var(--primary-soft); color: var(--primary); }
 .chips { display: flex; flex-wrap: wrap; gap: 6px; }
 .banner { display: flex; gap: 12px; align-items: flex-start; padding: 12px 16px; border-radius: 8px; margin-bottom: 16px; }
+.banner > div { min-width: 0; overflow-wrap: anywhere; }  /* a long path or name wraps inside it */
 .banner.bad { background: var(--bad-bg); color: var(--bad); }
 .banner.warn { background: var(--warn-bg); color: var(--warn); }
 .banner.info { background: var(--primary-soft); color: var(--ink); }
@@ -196,6 +197,8 @@ body.term-open main { padding-bottom: 300px; }
   .picker { max-width: 120px; }
   .appbar { gap: 4px; }
   #help { display: none; }
+  .how { overflow-x: auto; }  /* a pair's waterfall scrolls in its card, not the page */
+  .card.one .tablecard th, .card.one .tablecard td { white-space: normal; overflow-wrap: anywhere; padding: 8px 10px; }  /* the two records side by side, wrapped */
 }
 
 /* the workflow: who joined what, one color each, on every page */
@@ -441,6 +444,9 @@ dialog:has(.dlg-body.wide) { width: min(960px, calc(100vw - 32px)); }
 .frow .flab { color: var(--muted); white-space: nowrap; } .frow .need { color: var(--bad); font-weight: 500; font-size: 11px; }
 .drop { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; min-height: 32px; padding: 2px; border-radius: 8px; }
 .drop.over, .colchip.over { outline: 2px dashed var(--primary); outline-offset: 1px; }
+.drop .colchip.over::after, .drop.over:has(.colchip):not(:has(.colchip.over))::after { color: var(--primary); font-size: 12px; margin-left: 6px; }
+.drop .colchip.over::after { content: "+ joined to it"; }  /* what a drop will do, said before it is let go */
+.drop.over:has(.colchip):not(:has(.colchip.over))::after { content: "used where these are empty"; }
 .drop .hole { color: var(--faint); border: 1px dashed var(--outline); border-radius: 13px; padding: 3px 10px; font-size: 12px; cursor: pointer; }
 .drop .else, .drop .plus { color: var(--faint); font-size: 11px; }
 .drop select { font: inherit; font-size: 12px; padding: 3px 6px; border: 1px solid var(--outline); border-radius: 6px; background: var(--surface); color: var(--ink); }
@@ -526,6 +532,7 @@ dialog:has(.dlg-body.wide) { width: min(960px, calc(100vw - 32px)); }
   {"id": "improve", "title": "Improve matching", "icon": "loop", "what": "What people's decisions say about the method: try a change, adopt it, and review the new round.",
    "strip": ["rules", "candidates", "score", "accept", "people"],
    "uses": [{"command": "describe method", "args": {"workspace": "@workspace"}, "reads": ["line", "method", "round", "rounds", "audits", "bands", "decided", "rules", "keys", "steps", "proposals", "trials", "trust", "dropped"]},
+            {"command": "describe workspace", "args": {"workspace": "@workspace"}, "reads": ["records", "inputs"]},
             {"command": "try method", "args": {"workspace": "@workspace", "line": "@line", "drop": "@drop", "add": "@add", "compute": "@compute"}, "reads": ["trial"]},
             {"command": "adopt method", "args": {"workspace": "@workspace", "trial": "@trial", "compute": "@compute"}, "reads": ["summary"]},
             {"command": "reset method", "args": {"workspace": "@workspace", "compute": "@compute"}, "reads": ["summary"]},
@@ -535,6 +542,7 @@ dialog:has(.dlg-body.wide) { width: min(960px, calc(100vw - 32px)); }
   {"id": "kinds", "title": "Confirm person or company", "icon": "kinds", "what": "Records the engine holds back, and a sample that sharpens it: person or company?",
    "strip": ["records", "kind", "score"],
    "uses": [{"command": "list kinds", "args": {"workspace": "@workspace", "pending": true}, "reads": ["kinds", "counts"]},
+            {"command": "describe workspace", "args": {"workspace": "@workspace"}, "reads": ["records", "inputs"]},
             {"command": "answer kind", "args": {"id": "@id", "kind": "@kind", "workspace": "@workspace"}, "reads": ["kind"]},
             {"command": "apply answers", "args": {"workspace": "@workspace", "compute": "@compute"}, "form": [], "reads": ["summary"]},
             {"command": "describe matching", "args": {"workspace": "@workspace"}, "reads": ["nodes"]}]},
@@ -559,7 +567,8 @@ const pct = (v) => v === null || v === undefined ? "—" : `${Math.round(v * 100
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const store = (k, v) => { try { if (v !== undefined) localStorage.setItem(`nayose.${k}`, v); return localStorage.getItem(`nayose.${k}`); } catch { return null; } };
 const FIELD_WORDS = {kind_flag: "person or company (flag)"};
-const fileName = (n) => String(n).replace(/^\d+-/, "");  // a workspace's copy of a file, by the name it came with
+const fileName = (n) => String(n).replace(/^\d+-/, "").replace(/(\.\w+)\.parquet$/, "$1");  // a workspace's copy of a file, by the name it came with (not its reading's)
+const bytes = (n) => n < 1e3 ? `${fmt(n)} bytes` : n < 1e6 ? `${fmt(Math.ceil(n / 1e3))} KB` : `${fmt(Math.ceil(n / 1e6))} MB`;
 const kindSays = (s) => String(s ?? "").replace(/^\d+ /, "");  // "2 company", the engine's code first, as people read it: company  // a field whose name says nothing to people
 const words = (s) => FIELD_WORDS[s] ?? String(s).replaceAll("_", " ");
 
@@ -603,10 +612,15 @@ let COMMANDS = {}, current = "records", keyHandler = null, steps = {};
 const state = {};
 
 async function api(path, body) {  // the page's one network call: a lost server is a value, never a throw, said once above the page
-  const lost = {error: "Lost the server: is nayose open ui still running?", fix: "Start it again, then reload this page."};
+  const lost = {error: "Lost the server: is nayose open ui still running?", fix: "Start it again (nayose open ui), then open the new link it prints."};
   try {
     const r = await fetch(path, {method: body ? "POST" : "GET", headers: {"X-Token": token, "Content-Type": "application/json"}, body: body ? JSON.stringify(body) : undefined});
     const j = await r.json();
+    if (r.status === 403) {  // a server started since: its link is another
+      $("lost").innerHTML = `${icon("error")}<div><b>nayose open ui was started again</b><div class="fix">Open the new link it printed.</div></div>`;
+      $("lost").hidden = false;
+      return {error: "nayose open ui was started again", fix: "Open the new link it printed.", lost: true};
+    }
     $("lost").hidden = true;
     return j;
   } catch {
@@ -676,35 +690,52 @@ function run(id, command, extra = {}, onEvent = null) {
 }
 
 async function runOnce(command, args, onEvent, tries = 10) {
-  const quick = COMMANDS[command].quick, failed = (j) => ({event: "error", error: j.error, fix: j.fix || "", lost: j.lost});
   const started = await api("/api/run", {command, args});
-  if (started.error) return failed(started);
-  const entry = term.add(started.command);
+  if (started.error) return {event: "error", error: started.error, fix: started.fix || "", lost: started.lost};
+  const {last, exit} = await watch(started.job, command, started.command, onEvent);
+  if (COMMANDS[command].quick && exit === 75 && tries > 1) { await sleep(1000); return runOnce(command, args, onEvent, tries - 1); }  // busy: once it's done
+  return last;
+}
+
+async function watch(job, command, line, onEvent) {  // a job's events to its end, in the drawer and the snackbar: its last event and exit code
+  const quick = COMMANDS[command].quick, entry = term.add(line);
   if (!quick) snack(`<span class="spin"></span><span class="msg">Running <code>${esc(command)}</code></span>`);
   let from = 0, last = {};
   for (;;) {
-    const j = await api(`/api/job/${started.job}?from=${from}`);
+    const j = await api(`/api/job/${job}?from=${from}`);
     if (j.error) {  // the server is gone: the command ends here, the page never waits forever
-      entry.end(failed(j), 1);
-      return failed(j);
+      const e = {event: "error", error: j.error, fix: j.fix || "", lost: j.lost};
+      entry.end(e, 1);
+      if (!quick) snack(`${icon("error")}<span class="msg">Lost <code>${esc(command)}</code>: the server is gone</span>`, 6000);
+      ended(command);
+      return {last: e, exit: 1};
     }
     for (const e of j.events) { last = e; if (e.event === "step") entry.step(e); if (onEvent) onEvent(e); }
     from += j.events.length;
     if (j.done) {
       entry.end(last, j.exit);
-      if (longRun && longRun.command === command) {  // a long run ended: its buttons free, its page drawn again if it was left and opened since
-        const {visit: from, page} = longRun;
-        longRun = null;
-        if (current === page && visit !== from) go(page);
-      }
-      if (quick && j.exit === 75 && tries > 1) { await sleep(1000); return runOnce(command, args, onEvent, tries - 1); }  // busy: once it's done
+      ended(command);
       if (!quick && (j.exit === 0 || last.event === "result")) { memoAt = -1; refresh(); }  // the stepper, whichever page is open now; no answer kept from before the write
       if (!quick) snack(j.exit === 0 ? `${icon("check")}<span class="msg">Done <code>${esc(command)}</code></span>`
                                      : `${icon("error")}<span class="msg">Failed <code>${esc(command)}</code></span><button class="btn" data-term>View</button>`, 6000);
-      return last;
+      return {last, exit: j.exit};
     }
     await sleep(quick ? 120 : 300);
   }
+}
+function ended(command) {  // a long run ended: its buttons free, its page drawn again if it was left and opened since
+  if (!longRun || longRun.command !== command) return;
+  const {visit: from, page} = longRun;
+  longRun = null;
+  if (visit !== from && [page, "run", "records"].includes(current)) go(current);  // its page, or one whose buttons waited for it
+}
+async function rejoin() {  // a long command that began before this page was drawn (a reload, another tab): followed to its end
+  const r = await api("/api/running");
+  if (!r.job || longRun) return;
+  const mine = !r.workspace || r.workspace === state.workspace;  // another workspace's run: its buttons wait here, its card shows there
+  longRun = {command: r.command, visit: -1, page: mine ? (LAYOUT.screens.find((s) => s.uses.some((u) => u.command === r.command)) || {id: current}).id : null};
+  if ([longRun.page, "run", "records"].includes(current)) go(current);  // drawn again, as running, or its buttons waiting
+  await watch(r.job, r.command, `nayose ${r.command}`, null);
 }
 
 // ---------- the workflow: six steps, each one's state read from the workspace ----------
@@ -722,7 +753,8 @@ function progress(d) {
   const ran = d && d.event !== "error" && d.records > 0, s = {};
   s.workspace = state.workspace ? {state: "done", line: state.workspace.split("/").filter(Boolean).pop()} : {state: "current", line: "choose one"};
   const files = (d && d.inputs) || [], last = files.length ? fileName(files[files.length - 1].name) : "";
-  s.columns = ran || last ? {state: "done", line: last ? `${last} loaded` : "ready"} : {state: state.workspace ? "current" : "later", line: "load your file"};
+  const empty = files.length && !files[files.length - 1].rows;  // a file of a header alone, or nothing it could read
+  s.columns = empty && !ran ? {state: "attention", line: `${last}: no records`} : ran || last ? {state: "done", line: last ? `${last} loaded` : "ready"} : {state: state.workspace ? "current" : "later", line: "load your file"};
   s.run = ran ? {state: "done", line: `${fmt(d.records)} → ${plural(d.entities, "entity", "entities")}`} : {state: last ? "current" : "later", line: last ? "ready to run" : "not yet"};
   if (!ran) {
     for (const k of ["pairs", "kinds", "results"]) s[k] = {state: "later", line: "after matching"};
@@ -1047,15 +1079,21 @@ const addedNames = (features) => Object.fromEntries(features.flatMap((g) => g.fe
   const n = (f.field.match(/_(\d+)$/) || [])[1];
   return [[f.field, f.name], ...(n && f.type === "person name" ? [[`given_name_${n}`, `${f.name}, given name`]] : [])];
 })));
-function hurts(fields, off, fix = "", names = {}) {
-  const sparse = fields.filter((f) => f.filled !== null && f.filled !== undefined && f.filled < 0.3).sort((a, b) => a.filled - b.filled), by = new Map();
-  for (const d of off || []) {
-    const [, what, need] = d.match(/^(rule|generator|level) .*\(needs \[([^\]]*)\]\)$/) || [];
-    if (!what) { by.set(d, null); continue; }  // no run can start: the engine's own words
-    for (const f of need.match(/[^', ]+/g) || []) { const n = by.get(f) || {ways: 0, steps: 0}; n[what === "level" ? "steps" : "ways"]++; by.set(f, n); }
+function hurts(fields, off, fix = "", names = {}, groups = []) {  // groups: fields each filled for its own kind (a person's name, a company's), judged together
+  const either = new Set(groups.filter((g) => g.reduce((s, f) => s + ((fields.find((x) => x.field === f) || {}).filled || 0), 0) >= 0.3).flat());
+  const sparse = fields.filter((f) => f.filled !== null && f.filled !== undefined && f.filled < 0.3 && !either.has(f.field)).sort((a, b) => a.filled - b.filled), by = new Map();
+  const unmapped = new Set(fields.filter((f) => f.filled === null || f.filled === undefined).map((f) => f.field));
+  const KIND = {rule: "ways", generator: "ways", level: "steps", probe: "checks", "prior rule": "checks", "EM rule": "checks"};
+  for (const d of off || []) {  // what a run turns off, as the engine words it: each counted under the field it lacks
+    if (d.startsWith("comparison ")) continue;  // a comparison with no level left: its levels are counted, each under its field
+    const m = d.match(/^(rule|generator|level|probe) .*\(needs \[([^\]]*)\]\)$/) || d.match(/^(prior rule|EM rule) \[([^\]]*)\]$/);
+    if (!m) { by.set(d, null); continue; }  // no run can start: the engine's own words
+    const need = (m[2].match(/[^', ]+/g) || []).filter((f) => !m[1].endsWith("rule") || m[1] === "rule" || unmapped.has(f));  // a training rule names all its fields
+    for (const f of need) { const n = by.get(f) || {ways: 0, steps: 0, checks: 0}; n[KIND[m[1]]]++; by.set(f, n); }
   }
   return [sparse.length ? `<div class="warn">${esc(sparse.map((f) => `${words(names[f.field] ?? f.field)} is ${pct(f.filled)} filled`).join(", ").replace(/^./, (c) => c.toUpperCase()))}: matching leans on ${sparse.length > 1 ? "them" : "it"} less</div>` : "",
-    ...[...by].map(([f, n]) => `<div class="warn">${n ? `No column is mapped to ${esc(words(names[f] ?? f))}: ${[n.ways && `${plural(n.ways, "way")} of finding pairs`, n.steps && plural(n.steps, "comparison step")].filter(Boolean).join(" and ")} turned off` : esc(f)}${fix}</div>`)].filter(Boolean);
+    ...[...by].map(([f, n]) => `<div class="warn">${n ? `No column is mapped to ${esc(words(names[f] ?? f))}: ${[n.ways && `${plural(n.ways, "way")} of finding pairs`, n.steps && plural(n.steps, "comparison step"),
+      n.checks && plural(n.checks, "check")].filter(Boolean).join(", ")} turned off` : esc(f)}${fix}</div>`)].filter(Boolean);
 }
 
 const REPAIR = {realign: ["row", "rows", "whose fields don't line up: re-split where every value fits its column"],  // a kind of repair the reader proposes, in words
@@ -1168,11 +1206,12 @@ function histogram(x, all) {  // pairs by points: each band split into matched, 
 }
 
 function mostCounts(x) {  // every step of every comparison, ranked by its points: what counts most for and against
-  const steps = x.comparisons.flatMap((c) => c.levels.filter((lv) => lv.bits !== null && lv.bits !== undefined && Math.abs(lv.bits) >= 0.5).map((lv) => ({c: c.name, label: lv.label, bits: lv.bits})))
-    .sort((a, b) => b.bits - a.bits);
   const strictest = x.comparisons.map((c) => { const lv = c.levels.find((v) => v.label !== "missing" && v.bits !== null && v.bits !== undefined); return lv && {c: c.name, label: lv.label, bits: lv.bits}; })
     .filter(Boolean).sort((a, b) => b.bits - a.bits);  // the headline: each comparison by its strictest step, not a step the fit happened to rate higher
-  const most = Math.max(1, ...steps.map((s) => Math.abs(s.bits))), top = strictest[0], bottom = steps[steps.length - 1];
+  const rank = Object.fromEntries(strictest.map((s, i) => [s.c, i]));  // the bars in that order, each comparison's steps strict to loose: the first bar is the headline
+  const steps = x.comparisons.flatMap((c) => c.levels.map((lv, i) => ({c: c.name, label: lv.label, bits: lv.bits, i})).filter((s) => s.bits !== null && s.bits !== undefined && Math.abs(s.bits) >= 0.5))
+    .sort((a, b) => (rank[a.c] ?? 99) - (rank[b.c] ?? 99) || a.i - b.i);
+  const most = Math.max(1, ...steps.map((s) => Math.abs(s.bits))), top = strictest[0], bottom = steps.reduce((m, s) => !m || s.bits < m.bits ? s : m, null);
   const name = (s) => `${comp(s.c)}: ${level(s.label)}`;
   return `<p class="answer">${top ? `${esc(name(top))} counts most for a match` : ""}${bottom && bottom.bits < 0 ? `; ${esc(name(bottom))} counts most against` : ""}.</p>
     <div class="pn-table" style="--cols:220px minmax(120px,1fr) 64px;max-width:820px">${steps.map((s) => `<div class="pn-r"><span>${esc(name(s))}</span>
@@ -1336,7 +1375,7 @@ function features(d, view) {
     const g = shown && ghost[path];
     return `<div class="frow" data-depth="${depth}"><span class="flab">${depth ? (last ? "└ " : "├ ") : ""}${esc(x.name)}${x.script ? ` <span class="tag">${esc(x.script)}</span>` : ""}${
         needs(x) ? ' <b class="need">needed</b>' : ""}${x.added && !depth ? `<button class="x" data-remove="${esc(path)}" aria-label="Remove ${esc(x.name)}">✕</button>` : ""}</span>
-      <span class="drop" data-slot="${esc(path)}">${chips}${alts.length ? "" : '<span class="hole" tabindex="0">drop a column</span>'}${
+      <span class="drop" data-slot="${esc(path)}">${chips}${alts.length ? "" : '<span class="hole" tabindex="0" role="button">drop a column</span>'}${
         g ? `<span class="colchip ghost" title="${esc(g.why)}">✦ ${esc(g.column)}<button class="x keep" data-keep='${esc(JSON.stringify([path, g.column]))}' aria-label="Keep it">✓</button></span>` : ""}</span>
       <span class="fstat">${meter(s.filled)}</span><span class="fex faint">${esc(s.example ?? "")}</span>
       <span class="fwarn">${s.looks_right !== null && s.looks_right !== undefined && s.looks_right < FEW ? `⚠ ${pct(s.looks_right)} look right` : ""}</span></div>`;
@@ -1376,9 +1415,11 @@ function banner(e, kind = "bad") {
   return `<div class="banner ${kind}" role="alert">${icon(kind === "bad" ? "error" : "info")}<div><b>${esc(e.error)}</b>${e.fix ? `<div class="fix">${esc(e.fix)}</div>` : ""}</div></div>`;
 }
 const WHY = {decide: "to decide", audit: "spot-check", measure: "sample"};
-function chip(status, written = "decided") {
+const SAID = {match: "same entity", no_match: "different", person: "person", company: "company", unsure: "can't tell"};
+function chip(status, written = "decided", answer = null) {  // answer: what people said, for a row written in or applied
   const kind = {open: "", "written in": "warn", applied: "good", decide: "info"}[status] ?? "";
-  return `<span class="chip ${kind}">${esc(WHY[status] || (status === "written in" ? written : status))}</span>`;
+  const text = WHY[status] || (status === "written in" ? written : status);
+  return `<span class="chip ${kind}">${esc(answer && (status === "written in" || status === "applied") ? `${text} · ${SAID[answer] || answer}` : text)}</span>`;
 }
 // A table in a card, with a filter bar; rows the person can pick when onPick is given.
 function grid(box, rows, cols, opts = {}) {
@@ -1436,7 +1477,7 @@ function field(command, name) {
   const fresh = NEW_FILE.includes(command) && name === "input", needed = fresh || p.required || (p.positional && !p.optional);
   if (p.kind === "flag") return `<label class="check"><input type="checkbox" id="${id}"><span>${esc(p.help[0].toUpperCase() + p.help.slice(1))}</span></label>`;
   const control = p.choices.length ? `<select id="${id}">${p.choices.map((c) => `<option>${esc(c)}</option>`).join("")}</select>`
-    : `<input type="text" id="${id}" placeholder="${esc(fresh ? "the new records file" : p.optional ? "the file loaded last" : p.metavar)}" ${needed ? "required" : ""}>`;
+    : `<input type="text" id="${id}" placeholder="${esc(fresh ? "the new records file" : p.optional ? "the file loaded last" : name === "input" ? "path to a CSV, TSV or Parquet file, or a folder" : p.metavar)}" ${needed ? "required" : ""}>`;
   return `<label class="field"><span class="lab">${esc(FIELD[name] || words(name))}${needed ? " *" : ""}</span>${control}</label>`;
 }
 function formValues(command, form) {
@@ -1502,8 +1543,7 @@ const SCREENS = {
       `<div id="next"></div><div id="auto"></div><div id="out"></div><div id="flow"></div>`;
     $("refresh").onclick = () => go("records");
     const [d] = await Promise.all([run("records", "describe workspace"), flowOf("records", $("flow"))]);
-    if (longRun && longRun.command === "try everything") $("auto").innerHTML = `<div class="card"><div class="qa"><div class="q"><h2 class="question">
-      <span class="spin" style="border-color:var(--primary);border-right-color:transparent"></span>Auto mode…</h2><p class="answer">Its report shows here when it ends</p></div></div></div>`;
+    if (longRun && longRun.page === "records") $("auto").innerHTML = runningCard(longRun.command);
     else if (d.auto) sendCard($("auto"), d.auto);
     if (d.event === "error" || !d.records) { $("out").innerHTML = d.event === "error" ? banner(d) : emptyRun(d); return d; }
     const p = progress(d), s = p.steps[p.next];
@@ -1512,7 +1552,7 @@ const SCREENS = {
     $("out").innerHTML = (d.write_owed ? banner({event: "error", error: "A write was cut short", fix: "The next command that writes to this workspace finishes it."}, "warn") : "") +
       `<div class="card"><h2>Activity</h2><div id="runs"></div></div>`;
     grid($("runs"), d.runs.slice().reverse(), ["at", "what", "files", "seconds"],
-         {filter: false, cell: (r, c) => c === "files" ? esc(r.files.map((f) => f.split("/").pop().replace(/(\.\w+)\.parquet$/, "$1")).join(", ")) : esc(fmt(r[c]))});
+         {filter: false, cell: (r, c) => c === "files" ? esc(r.files.map((f) => f.split("/").pop().replace(/(\.\w+)\.parquet$/, "$1")).join(", ")) : c === "at" ? esc(String(r.at).replace("T", " ")) : esc(fmt(r[c]))});
     return d;  // go() draws the stepper from it
   },
 
@@ -1522,19 +1562,20 @@ const SCREENS = {
         <div id="files" class="chips" style="margin-top:10px"></div>`;
     el.innerHTML = head("columns") + `<div class="card" id="loaded"><div class="qa"><div class="q"><h2 class="question">Which file holds your records?</h2></div></div>${box}</div>
       <div id="repairs"></div><div id="watch"></div><div id="out"></div><div id="flow"></div>${stepFoot("columns")}`;
-    if (!state.workspace) { $("out").innerHTML = emptyRun(); return; }
+    if (!state.workspace) { $("loaded").remove(); $("out").innerHTML = emptyRun(); return; }  // a file goes into a workspace: choose one first
     const answer = (d, w, last) => {  // did the file load? then what may hurt the matching
       const lost = (f) => { const x = d.fields.find((y) => y.field === f); return !x || x.filled === null; };
       const missing = [...d.needed.every.filter(lost), ...d.needed.one_of.filter((grp) => grp.every(lost)).map((grp) => grp.join(" or "))];
-      $("loaded").innerHTML = `<div class="qa"><div class="q"><h2 class="question">Did your file load?</h2><p class="answer">${missing.length
-          ? `<b>Not yet:</b> ${esc(missing.map(words).join(", "))} ${missing.length > 1 ? "are" : "is"} needed`
+      $("loaded").innerHTML = `<div class="qa"><div class="q"><h2 class="question">Did your file load?</h2><p class="answer">${!d.records
+          ? `<b>Not yet:</b> ${esc(fileName(last.name))} holds no records`
+          : missing.length ? `<b>Not yet:</b> ${esc(missing.map(words).join(", "))} ${missing.length > 1 ? "are" : "is"} needed`
           : `<b>Yes</b> · ${plural(d.records, "record")} from ${esc(fileName(last.name))} · ${fmt(d.columns.length)} columns${waits(d.read)}`}</p></div>
-        ${missing.length ? (d.placements.length ? `<button type="button" class="btn filled" id="suggest-now">✦ Suggest the columns</button>` : "") : `<a class="btn filled" data-go="run">Next: 3 Find matches →</a>`}</div>
+        ${!d.records ? "" : missing.length ? (d.placements.length ? `<button type="button" class="btn filled" id="suggest-now">✦ Suggest the columns</button>` : "") : `<a class="btn filled" data-go="run">Next: 3 Find matches →</a>`}</div>
         <details class="fold-line"><summary>Load another file</summary><div style="margin-top:10px">${box}</div></details>`;
       wireLoad();
-      $("files").innerHTML = (w.inputs || []).map((f) => `<span class="tag" title="${esc(f.path)}">${esc(fileName(f.name))} · ${fmt(Math.ceil(f.bytes / 1e6))} MB · ${f.read ? "matched" : "not run yet"}${f.waiting ? ` · ${fmt(f.waiting)} repairs wait` : ""}</span>`).join("");
+      $("files").innerHTML = (w.inputs || []).map((f) => `<span class="tag" title="${esc(f.path)}">${esc(fileName(f.name))} · ${bytes(f.bytes)} · ${f.read ? "matched" : "not run yet"}${f.waiting ? ` · ${fmt(f.waiting)} repairs wait` : ""}</span>`).join("");
       repairs(d.read);
-      const lines = hurts(d.fields, d.turned_off, "", addedNames(d.features));
+      const lines = hurts(d.fields, d.turned_off, "", addedNames(d.features), d.needed.one_of);
       $("watch").innerHTML = lines.length && !missing.length ? `<div class="card"><h3 style="font-size:15px;font-weight:500;margin:0 0 8px">Watch out</h3><div class="checks">${lines.join("")}</div></div>` : "";  // once what is needed is mapped
       $("suggest-now")?.addEventListener("click", () => $("out").querySelector("[data-suggest='*']")?.click());
     };
@@ -1555,7 +1596,7 @@ const SCREENS = {
     const draw = async (d) => {  // d: a description just made; else the file loaded last is described
       const [w] = await Promise.all([run("columns", "describe workspace"), flowOf("columns", $("flow"))]);
       const files = w.inputs || [], last = files[files.length - 1];
-      $("files").innerHTML = files.map((f) => `<span class="tag" title="${esc(f.path)}">${esc(fileName(f.name))} · ${fmt(Math.ceil(f.bytes / 1e6))} MB · ${f.read ? "matched" : "not run yet"}</span>`).join("");
+      $("files").innerHTML = files.map((f) => `<span class="tag" title="${esc(f.path)}">${esc(fileName(f.name))} · ${bytes(f.bytes)} · ${f.read ? "matched" : "not run yet"}</span>`).join("");
       if (d === undefined && last) d = await run("columns", "describe records", {loaded: last.path});
       if (!d) return;
       if (d.event !== "error" && last) answer(d, w, last);
@@ -1587,12 +1628,16 @@ const SCREENS = {
         };
       });
       el.querySelectorAll("[data-x]").forEach((b) => b.onclick = () => { const c = b.closest(".colchip"); take(c.dataset.from, c.dataset.col); save([c.dataset.from]); });
-      el.querySelectorAll(".hole").forEach((h) => h.onclick = () => {  // without dragging: the file's columns in a list
-        const pick = document.createElement("select");
-        pick.innerHTML = `<option value="">pick a column</option>` + d.columns.map((c) => `<option>${esc(c.column)}</option>`).join("");
-        pick.onchange = () => pick.value && place(h.closest(".drop").dataset.slot, pick.value, null, null);
-        h.replaceWith(pick);
-        pick.focus();
+      el.querySelectorAll(".hole").forEach((h) => {  // without dragging: the file's columns in a list, by mouse or keyboard
+        h.onclick = () => {
+          const pick = document.createElement("select"), slot = h.closest(".drop").dataset.slot;  // read before the list takes its place
+          pick.setAttribute("aria-label", `A column for ${slot}`);
+          pick.innerHTML = `<option value="">pick a column</option>` + d.columns.map((c) => `<option>${esc(c.column)}</option>`).join("");
+          pick.onchange = () => pick.value && place(slot, pick.value, null, null);
+          h.replaceWith(pick);
+          pick.focus();
+        };
+        h.onkeydown = (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); h.click(); } };
       });
       el.querySelectorAll("[data-keep]").forEach((b) => b.onclick = () => { const [slot, col] = JSON.parse(b.dataset.keep); place(slot, col, null, null); });
       el.querySelectorAll("[data-keepall]").forEach((b) => b.onclick = () => {
@@ -1665,7 +1710,7 @@ const SCREENS = {
       const done = (d) => {
         longRun = null; hold();
         $("out").querySelector(".steps-card")?.remove();
-        if (d.event === "error") { $("out").insertAdjacentHTML("beforeend", banner(d)); return; }
+        if (d.event === "error") { go("run").then(() => $("out")?.insertAdjacentHTML("afterbegin", banner(d))); return; }  // the page as it was, its buttons back, and why
         if (command !== "match records") { refresh().then(() => go("run")); return; }  // the page again, from the workspace as it is now: its result, and the actions a run brings
         $("out").innerHTML = `<div class="card"><h2>What adding them would do</h2>${bars(Object.entries(d.counts).map(([k, n]) => ({label: k, value: n})))}</div><div id="matched"></div>`;
         if (d.records) grid($("matched"), d.records, ["id", "entity", "status", "by", "weight"], {cell: (r, c) => c === "status" ? chip(r.status) : esc(fmt(r[c]))});
@@ -1673,8 +1718,8 @@ const SCREENS = {
       let n = 0, t0 = 0, last = null, clock = 0;
       const order = STEPS_OF[command] || RUN_STEPS, rows = file ? file.rows : null;
       const say = () => {
-        const card = $("out").querySelector(".steps-card");
-        if (!card) { clearInterval(clock); return; }
+        const card = $("out")?.querySelector(".steps-card");
+        if (!card) { clearInterval(clock); return; }  // the page was left
         const next = order[order.indexOf(last) + 1] || order[0], secs = Math.round((Date.now() - t0) / 1000);
         card.querySelector(".answer").innerHTML = `${secs} s${rows ? ` of about ${took(rows)}` : ""} · now: ${esc(DOING[next] || next)}`;
         $("flow").querySelectorAll(".node").forEach((b) => b.classList.toggle("now", (LIT_NODE[next] || "") === b.dataset.node));
@@ -1706,9 +1751,12 @@ const SCREENS = {
     if (w.event === "error") { $("out").innerHTML = banner(w); return; }
     file = (w.inputs || []).slice(-1)[0] || null;
     if ($("out").querySelector(".steps-card")) return;  // a run started meanwhile: it draws its own
+    if (longRun && longRun.page === "run") { $("out").innerHTML = runningCard(longRun.command); hold(); return w; }  // started before this page was drawn
     if (!w.records) {  // nothing run yet: how long it will take, and the one button; how it will find them, below
       $("flowq").textContent = "How it will find them";
-      $("out").innerHTML = file ? `<div class="card"><div class="qa"><div class="q"><h2 class="question">Ready to find matches in ${plural(file.rows, "record")}</h2>
+      $("out").innerHTML = file && !file.rows ? `<div class="card"><div class="qa"><div class="q"><h2 class="question">${esc(fileName(file.name))} holds no records</h2>
+          <p class="answer">Load a file that does</p></div><a class="btn filled" data-go="columns">2 · Prepare your data</a></div></div>`
+        : file ? `<div class="card"><div class="qa"><div class="q"><h2 class="question">Ready to find matches in ${plural(file.rows, "record")}</h2>
           <p class="answer">${esc(fileName(file.name))} · about ${took(file.rows)}</p></div><button class="btn filled" data-first>${icon("run")}Find matches</button></div></div>` : emptyRun(w);
       $("out").querySelector("[data-first]")?.addEventListener("click", () => start("resolve records", "Find matches"));
       hold();
@@ -1740,7 +1788,7 @@ const SCREENS = {
       const line = ((g && g.nodes.find((x) => x.id === "accept")) || {threshold: 8}).threshold;
       const weak = new Set(d.weakest.map((w) => `${w.id_l} ${w.id_r}`)), rest = d.records.map((r) => r.id).filter((x) => x !== d.record);
       const links = d.pairs.filter((p) => p.by.length && p.by.some((b) => b !== "people: no_match")), through = d.pairs.filter((p) => !p.by.length);
-      const why = d.records.length < 2 ? "<p class=\"answer\">It matched no other record.</p>" : `<div class="links">${links.map((p) => `<div><b>${esc(p.id_l)} ↔ ${esc(p.id_r)}</b>: ${
+      const why = d.records.length < 2 ? "" : `<div class="links">${links.map((p) => `<div><b>${esc(p.id_l)} ↔ ${esc(p.id_r)}</b>: ${
           esc(p.comparisons && p.comparisons.length ? said_of(p) : joinedBy(p.by))} · ${pairLink(p.id_l, p.id_r, `${signed(p.weight)} points`)} <span class="faint">· ${esc(joinedBy(p.by))}</span></div>`).join("")}${
         through.map((p) => `<div class="faint">${esc(p.id_l)} ↔ ${esc(p.id_r)}: joined through the others · ${pairLink(p.id_l, p.id_r, `${signed(p.weight)} points`)}</div>`).join("")}</div>`;
       const shown = (k) => !["id", "cluster_id", "resolved_stage", "resolved_by", "kind", "kind_p", "kind_by", "kind_held", "customer_kind", "any_name"].includes(k) && d.records.some((r) => r[k] !== null && r[k] !== undefined);
@@ -1772,9 +1820,9 @@ const SCREENS = {
     };
     $("right").innerHTML = `<div class="card empty">${icon("customers")}<p class="muted">Pick an entity, or look up a record ID above</p></div>`;
     if (record) entity(record);
-    if (!state.workspace) { $("left").innerHTML = emptyRun(); return; }
+    if (!state.workspace) { await notYet(el, "results"); return; }
     const d = await run("results", "describe workspace");
-    if (d.event === "error" || !d.records) { $("left").innerHTML = d.event === "error" ? banner(d) : emptyRun(d); return d; }
+    if (d.event === "error" || !d.records) { await notYet(el, "results", d.event === "error" ? d : null); return d; }
     $("left").innerHTML = `${scope("records", `The ${fmt(d.largest.length)} largest entities`)}<div id="largest"></div>`;
     where();
     const t = grid($("largest"), d.largest, ["entity", "records"], {labels: {entity: "entity"}, filter: false, onPick: (i) => { t.select(i); entity(d.largest[i].entity); }});
@@ -1788,9 +1836,9 @@ const SCREENS = {
     el.innerHTML = head("improve", `<button class="btn" id="refresh">${icon("refresh")}Refresh</button>`) +
       `<div id="busy"></div><div id="out" class="faint">Loading…</div><div id="flow"></div>${foot}`;
     $("refresh").onclick = () => go("improve");
-    if (!state.workspace) { $("out").innerHTML = emptyRun(); return; }
+    if (!state.workspace) { await notYet(el, "improve"); return; }
     const [d, g] = await Promise.all([run("improve", "describe method"), flowOf("improve", $("flow"))]);
-    if (d.event === "error") { $("out").innerHTML = banner(d); return; }
+    if (d.event === "error") { await notYet(el, "improve", d); return; }
     dropped = d.dropped;
     const a = d.audits, latest = d.trials.filter((x) => !d.rounds.length || x.at >= d.rounds[d.rounds.length - 1].at).pop();
     const gens = g ? (g.nodes.find((x) => x.id === "candidates") || {generators: []}).generators : [], listed = gens.reduce((s, x) => s + (x.pairs || 0), 0);
@@ -1837,21 +1885,23 @@ const SCREENS = {
       return (e) => { if (e.event === "step") $("busy").querySelector("ul")?.insertAdjacentHTML("beforeend", `<li>${icon("check")}${esc(DOING[e.step] || e.step)} <span class="faint">${e.seconds.toFixed(1)} s</span></li>`); };
     };
     const failed = (e) => { $("busy").innerHTML = banner(e); el.querySelectorAll("[data-try], [data-adopt], #draw, #reset").forEach((b) => { b.disabled = false; }); };
-    const round = (e) => e.event === "error" ? failed(e)
-      : go(LOOP.after, `<div class="banner info">${icon("loop")}<div><b>Matched again with the new method: review this round's pairs.</b></div></div>`);
+    const round = (tuned) => (e) => e.event === "error" ? failed(e)
+      : go(LOOP.after, `<div class="banner info">${icon("loop")}<div><b>Matched again with the ${tuned ? "tuned" : "new"} method: review this round's pairs.</b></div></div>`);
     $("out").onclick = (e) => {  // the page's buttons, those the slider adds too
       const b = e.target.closest("button:not(:disabled)");
       if (!b) return;
       if (b.dataset.try) {
         const change = JSON.parse(b.dataset.try);
         run("improve", "try method", tryArgs(change), busy(`Trying ${methodText(change)}`)).then((r) => r.event === "error" ? failed(r) : go("improve"));
-      } else if (b.dataset.adopt) run("improve", "adopt method", {trial: b.dataset.adopt}, busy("Adopting, and finding matches")).then(round);
-      else if (b.id === "reset") run("improve", "reset method", {}, busy("Back to the tuned method, and finding matches")).then(round);
+      } else if (b.dataset.adopt) run("improve", "adopt method", {trial: b.dataset.adopt}, busy("Adopting, and finding matches")).then(round(false));
+      else if (b.id === "reset") run("improve", "reset method", {}, busy("Back to the tuned method, and finding matches")).then(round(true));
     };
     if ($("draw")) $("draw").onclick = async () => {  // only while there are matched pairs to check
       $("draw").disabled = true;
       const e = await run("improve", "draw pairs");
-      e.event === "error" ? failed(e) : go(LOOP.after, `<div class="banner info">${icon("check")}<div><b>${fmt(e.drawn)} links to check, as spot-checks.</b></div></div>`);
+      if (e.event === "error") failed(e);
+      else if (!e.drawn) { $("busy").innerHTML = `<div class="banner info">${icon("check")}<div><b>Every merged link has been checked already.</b></div></div>`; }  // nothing left to draw: said, the button off
+      else go(LOOP.after, `<div class="banner info">${icon("check")}<div><b>${plural(e.drawn, "link")} to check, as spot-checks.</b></div></div>`);
     };
   },
 
@@ -1871,12 +1921,16 @@ const tryBtn = (c, label = "Try") => `<button class="btn" data-try='${esc(JSON.s
 function trialCard(x) {  // a trial beside the method as it is: on people's decisions first, then without labels
   const was = x.base, now = x.variant, cell = (k, v) => `<div><span class="lab">${esc(k)}</span><b>${v}</b></div>`;
   const change = (k, worse) => `<span class="${x[k].variant > x[k].base ? worse : x[k].variant < x[k].base ? "ink-good" : ""}">${fmt(x[k].base)} → ${fmt(x[k].variant)}</span>`;
-  return `<div class="card trial"><h2>${icon("loop")}Trial ${fmt(x.trial)}: ${esc(methodText(x.method))}</h2><p class="muted">Both run without people's decisions or the trust line: the method now → this trial</p><div class="nums">${
+  const dj = x.different_joined, sa = x.same_apart, fixed = (x.fixed || []).length, broken = (x.broken || []).length, worse = broken > 0, better = !worse && fixed > 0;
+  const many = (n) => n >= 50 ? `${fmt(n)} or more pairs` : plural(n, "pair");  // the lists stop at 50
+  const verdict = worse ? `<b>Worse:</b> it sets wrong ${many(broken)} people decided${fixed ? `, and right ${many(fixed)}` : ""}` : better ? `<b>Better:</b> it sets right ${many(fixed)} people decided, and wrong none`
+    : dj.base || sa.base ? "<b>No better:</b> it sets right none of the pairs people decided" : "";  // judged on people's answers first
+  return `<div class="card trial"><h2>${icon("loop")}Trial ${fmt(x.trial)}: ${esc(methodText(x.method))}</h2>${verdict ? `<p class="answer">${verdict}</p>` : ""}<p class="muted">Both run without people's decisions or the trust line: the method now → this trial</p><div class="nums">${
     cell("Joined, people said different", change("different_joined", "ink-bad"))}${cell("Apart, people said same", change("same_apart", ""))}${
     cell("Links", `${fmt(was.matched)} → ${fmt(now.matched)}`)}${cell("Expected false", `${fmt(was.expected_false)} → ${fmt(now.expected_false)}`)}${
     cell("Entities", `${fmt(was.entities)} → ${fmt(now.entities)}`)}${cell("Pairs of records", `${fmt(x.apart)} apart · ${fmt(x.together)} together`)}${
     was.missed && now.missed ? Object.keys(now.missed).map((k) => cell(`Matches no key lists, sharing a ${words(k)}`, `${fmt(was.missed[k] ?? 0)} → ${fmt(now.missed[k] ?? 0)}`)).join("") : ""}</div>
-    <div class="row"><button class="btn filled" data-adopt="${esc(x.trial)}">${icon("check")}Adopt and find matches</button></div></div>`;
+    <div class="row"><button class="btn ${better && !worse ? "filled" : "outlined"}" data-adopt="${esc(x.trial)}">${icon("check")}Adopt and find matches</button></div></div>`;
 }
 
 // The weight bands near the line, every pair people decided as a dot, the line, and a slider that moves it: what a
@@ -1941,14 +1995,14 @@ const QUEUES = {
           applied: (e) => `<div class="banner info">${icon("check")}<div><b>${plural(e.decisions, "decision")} applied: ${plural(e.clusters_joined, "entity", "entities")} joined${
             e.decisions > e.matches ? `; ${plural(e.decisions - e.matches, "pair")} said different: kept apart from the next run on` : ""}.</b></div></div>`},
   kinds: {title: "Kinds", list: "list kinds", one: "answer kind", apply: "apply answers", applyLabel: "Apply answers", rerun: true, written: "answered",
-          rows: (d) => d.kinds, cols: ["why", "id", "name", "engine_says"], labels: {why: "status", engine_says: "engine"}, some: "records to check",
+          rows: (d) => d.kinds.map((r) => ({...r, decision: {1: "person", 2: "company", 0: "unsure"}[r.kind] ?? null})), cols: ["why", "id", "name", "engine_says"], labels: {why: "status", engine_says: "engine"}, some: "records to check",
           keys: {"1": "person", "2": "company", "0": "unsure"}, answer: (r, value) => ({id: r.id, kind: value}), card: kindCard},
 };
 
 const keyHint = (keys) => `<span class="keys">${keys.map(([k, what]) => `<kbd>${esc(k)}</kbd> ${esc(what)}`).join(" · ")} · <kbd>S</kbd> skip · <kbd>↑</kbd><kbd>↓</kbd> move</span>`;
 // A card's head: what it shows, one of the list; the question it asks; why this one is asked.
 const cardHead = (r, at, of, written, [ic, what, question], why) => `${scope(ic, `${what} · ${fmt(at + 1)} of ${fmt(of)}`)}
-  <h2 class="question">${esc(question)} ${chip(r.status, written)}</h2><p class="why">${esc(why)}</p>`;
+  <h2 class="question">${esc(question)} ${chip(r.status, written, r.decision)}</h2><p class="why">${esc(why)}</p>`;
 let graph = null;  // the run's describe matching, which the cards draw their ladders and the line from
 
 function pairCard(r, at, of) {  // the question, why it is asked, the pair as it scored (pairBody), and the answers
@@ -2862,11 +2916,14 @@ function showWorkload(box, d) {
   if (d.event === "error") { box.innerHTML = banner(d); return; }
   const at = (x) => x.up_to === null ? `${fmt(x.down_to)}+` : `${fmt(x.down_to)}–${fmt(x.up_to)}`, all = d.ranges[d.ranges.length - 1];
   const first = d.ranges.find((x) => x.reviews_left);  // the first range still to check: those above the line merge
-  box.innerHTML = `<p class="answer">${first ? `To let pairs scoring ${esc(at(first))} merge: ${plural(first.reviews_to_here, "pair")}. Every range: ${plural(all.reviews_to_here, "pair")}, about ${
+  const stuck = d.ranges.find((x) => x.different && x.chance_clean === null);  // people found a false pair: no range from it down merges by points
+  const held = stuck ? `Pairs scoring ${esc(at(stuck))} and below stay with you, one by one: ${plural(stuck.different, "pair was", "pairs were")} said different there.` : "";
+  box.innerHTML = `<p class="answer">${stuck && (!first || first.down_to <= stuck.down_to) ? `${held} ${plural(all.reviews_to_here, "pair")} left to decide.`
+    : first ? `${held ? `${held} ` : ""}To let pairs scoring ${esc(at(first))} merge: ${plural(first.reviews_to_here, "pair")}. Every range: ${plural(all.reviews_to_here, "pair")}, about ${
     fmt(d.hours.to_each_line[d.ranges.length - 1])} hours at ${fmt(d.seconds_per_pair)} s a pair${d.unnamed ? `, and ${plural(d.unnamed, "pair")} with no name compared` : ""}.`
     : d.unnamed ? `${plural(d.unnamed, "pair")} with no name compared: people decide each.` : "Nothing to check yet."}</p><div class="workload-grid"></div>`;
   grid(box.querySelector(".workload-grid"), d.ranges, ["range", "pairs", "sample", "chance_clean", "reviews_to_here"], {filter: false,
-       labels: {range: "points", sample: "to check", chance_clean: "chance the check is clean", reviews_to_here: "checks, down to here"},
+       labels: {range: "points", sample: "to check", chance_clean: "chance clean", reviews_to_here: "in all"},
        cell: (r, c) => c === "range" ? esc(at(r)) : c === "chance_clean" ? (r[c] === null ? "—" : `${Math.round(100 * r[c])}%`) : esc(fmt(r[c]))});
 }
 
@@ -2887,9 +2944,9 @@ async function review(el, which, note = "", pattern = null) {  // pattern: compa
     box.dataset.done = "1";
     showWorkload(box, await run(which, "describe review"));
   };
-  if (!state.workspace) { $("left").innerHTML = emptyRun(); return; }
+  if (!state.workspace) { await notYet(el, which); return; }
   let [d, , w] = await Promise.all([run(which, q.list), flowOf(which, $("flow")), which === "pairs" ? run(which, "describe workspace") : null]);  // flowOf sets graph
-  if (d.event === "error") { $("left").innerHTML = banner(d); return; }
+  if (d.event === "error") { await notYet(el, which, d); return; }
   const every = q.rows(d), rows = pattern ? every.filter((x) => Object.entries(pattern).every(([c, v]) => (x[c] ?? "missing") === (v ?? "missing"))) : every;
   if (pattern) $("note").innerHTML = `<div class="banner info">${icon("pairs")}<div><b>${fmt(rows.length)} of ${plural(every.length, "pair")}:</b> ${
     esc(Object.entries(pattern).filter(([, v]) => v && v !== "missing").map(([c, v]) => `${comp(c)} ${level(v)}`).join(" · "))}</div><a class="btn" data-go="pairs">Show all</a></div>`;
@@ -2922,7 +2979,7 @@ async function review(el, which, note = "", pattern = null) {  // pattern: compa
     $("done-line").innerHTML = n ? "" : `<b>${fmt(done)} of ${fmt(main.length)}</b> ${q.written}${checks ? ` · ${plural(checks, "spot-check")}` : ""}${d.applied ? ` · ${fmt(d.applied)} applied earlier` : ""}
       ${seg([[done, "var(--people)", q.written], [Math.max(main.length - done, 0), "var(--line)", "open"]])}`;
   };
-  const t = grid($("left"), rows, q.cols, {labels: q.labels, selected: i, cell: (r, c) => c === "why" ? chip(r.status === "open" ? r.why : r.status, q.written) : c === "name" ? `<span class="clip" title="${esc(r.name)}">${esc(r.name)}</span>` : c === "engine_says" ? esc(kindSays(r[c])) : esc(fmt(r[c])),
+  const t = grid($("left"), rows, q.cols, {labels: q.labels, selected: i, cell: (r, c) => c === "why" ? chip(r.status === "open" ? r.why : r.status, q.written, r.decision) : c === "name" ? `<span class="clip" title="${esc(r.name)}">${esc(r.name)}</span>` : c === "engine_says" ? esc(kindSays(r[c])) : esc(fmt(r[c])),
                                            onPick: (k) => { i = k; show(); }});
   const move = (step) => { i = Math.min(rows.length - 1, Math.max(0, i + step)); show(); };
   const local = () => {  // the stepper's line, from the rows this page holds: no server call per answer
@@ -2947,6 +3004,12 @@ async function review(el, which, note = "", pattern = null) {  // pattern: compa
     t.select(i);
     if (!rows[i]) { $("right").innerHTML = `<div class="card empty">${icon("empty")}<p class="muted">Nothing is open here.</p></div>`; where(); return; }
     $("right").innerHTML = q.card(rows[i], i, rows.length);
+    const said = rows[i].status !== "open" && rows[i].decision;  // answered: its answer shown pressed, the others not
+    if (said) $("right").querySelectorAll("[data-a]").forEach((b) => {
+      const on = b.dataset.a === said;
+      b.classList.toggle("filled", on); b.classList.toggle("outlined", !on); b.setAttribute("aria-pressed", String(on));
+      if (on) b.insertAdjacentHTML("afterbegin", icon("check"));
+    });
     if (q.after) q.after(rows[i]);
     where();
     $("right").querySelectorAll("[data-a]").forEach((b) => b.onclick = () => answer(b.dataset.a));
@@ -2974,6 +3037,12 @@ function emptyRun(d) {  // d: the workspace described, when the page has it
       : '<a class="btn filled" data-go="columns">2 · Prepare your data</a>'}</div></div>`;
 }
 
+async function notYet(el, id, failed = null) {  // a page whose work follows a run, before one (or a workspace): the next step, across the page; else why it failed
+  const w = state.workspace ? await run(id, "describe workspace") : null, box = el.querySelector(".split") || $("out") || $("left");
+  const html = !state.workspace || (w.event !== "error" && !w.records) ? emptyRun(w) : banner(failed || w);
+  if (box.classList.contains("split")) box.outerHTML = `<div>${html}</div>`; else box.innerHTML = html;
+}
+
 // Auto mode: every step on one file, in a workspace of its own (try everything), then the report to send.
 const AUTO = {workspace: "making a workspace", load: "reading the file", place: "placing the columns its contents suggest", describe: "describing the file again",
               check: "checking a run will go through", rehearse: "rehearsing at the file's size", resolve: "finding matches", method: "reading what the run shows",
@@ -2993,6 +3062,7 @@ async function autoMode() {
   const step = (e) => {
     if (e.event === "start") {
       t0 = Date.now(); now = autoSays("workspace"); longRun = {command: "try everything", visit, page: "records"};
+      for (const id of ["next", "out", "flow", "continue"]) if ($(id)) $(id).innerHTML = "";  // the workspace open before is not the one it makes
       box.innerHTML = `<div class="card steps-card"><div class="qa"><div class="q"><h2 class="question"><span class="spin" style="border-color:var(--primary);border-right-color:transparent"></span>Auto mode…</h2>
         <p class="answer"></p></div></div><ul class="steps"></ul></div>`;
       clearInterval(clock); clock = setInterval(say, 1000); say();
@@ -3002,7 +3072,7 @@ async function autoMode() {
     const [top, sub] = e.step.split(": ");
     if (sub === undefined) {  // one of its steps ended
       box.querySelector(".steps")?.insertAdjacentHTML("beforeend", `<li>${icon(e.ok === false ? "error" : "check")}${esc(e.step)} <span class="faint">${e.seconds.toFixed(1)} s</span></li>`);
-      if (e.workspace) useWorkspace(e.workspace);  // the page opens it from now on, should the person go elsewhere meanwhile
+      if (e.workspace) { useWorkspace(e.workspace); memoAt = -1; refresh(); }  // the page opens it from now on, should the person go elsewhere meanwhile
       now = AUTO_NEXT[top] ? autoSays(AUTO_NEXT[top]) : "the next step";
     } else now = `${autoSays(top)} · ${DOING[sub] || sub}`;
     say();
@@ -3014,6 +3084,8 @@ async function autoMode() {
     setWorkspace(d.workspace);  // its Overview: the report to send
   }, step, {about: "A new workspace, every step on your file, and a report to send"});
 }
+const runningCard = (command) => `<div class="card"><div class="qa"><div class="q"><h2 class="question"><span class="spin" style="border-color:var(--primary);border-right-color:transparent"></span>${
+  esc(BUSY[command] || (command === "try everything" ? "Auto mode" : command))}…</h2><p class="answer">It shows here when it ends</p></div></div></div>`;  // a long run this page didn't draw
 function sendCard(box, a) {  // the auto mode report: what to send, and a way to copy it
   box.innerHTML = `<div class="card"><div class="qa"><div class="q"><h2 class="question">What should I send?</h2><p class="answer">This report: it holds no record's value</p></div>
       <button class="btn filled" id="copy-report">${icon("copy")}Copy the report</button></div>
@@ -3068,6 +3140,7 @@ function help() {
 }
 
 async function go(id, arg) {
+  if (location.hash.slice(1) !== id) history[location.hash ? "pushState" : "replaceState"](null, "", `#${id}`);  // Back and Forward walk the steps; a reload keeps one
   current = id; keyHandler = null; visit++;
   sceneClose();
   document.body.classList.remove("nav-open");
@@ -3102,7 +3175,10 @@ document.addEventListener("keydown", (e) => {
   $("term-close").onclick = () => term.show(false);
   $("term-clear").onclick = () => { $("term-body").innerHTML = ""; };
   $("search").onkeydown = (e) => { if (e.key === "Enter" && $("search").value.trim()) { go("results", $("search").value.trim()); $("search").blur(); } };
+  if (SCREENS[location.hash.slice(1)]) current = location.hash.slice(1);  // reloaded: the step it was on
+  addEventListener("popstate", () => { const id = location.hash.slice(1); if (SCREENS[id] && id !== current) go(id); });
   setWorkspace(d.workspace || store("workspace") || "");
+  rejoin();
 })();
 </script>
 </body>

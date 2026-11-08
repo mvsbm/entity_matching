@@ -371,8 +371,10 @@ def read_one(f: Path, out: Path, spec: InputSpec, m: Model, accepted: frozenset[
         enc, text = found[0] if sure or len(found) == 1 else next(((e, t) for e, t in found if e == majority[j]), found[0])
         if not sure and len(found) > 1:  # each reading judged as text, and by what its column holds (its profile)
             judge = lambda t: plausible(t, m) * (len(t) + 1) + fits(profile[j], t)
+            filled = profile[j]["rows"] - profile[j]["empty"]
+            rare = lambda t: sum(profile[j][c] < 0.01 * filled for c in classes(t)[0])  # kinds of character the column all but never holds
             best = max(found, key=lambda x: judge(x[1]))
-            if best[0] != enc and (judge(best[1]) - judge(text)) / (len(text) + 1) >= spec.margin_text:
+            if best[0] != enc and rare(best[1]) <= rare(text) and (judge(best[1]) - judge(text)) / (len(text) + 1) >= spec.margin_text:
                 propose(dict(kind="encoding", line=line, column=names[j], before=text, after=best[1]))
                 if "encoding" in accepted:
                     enc, text = best

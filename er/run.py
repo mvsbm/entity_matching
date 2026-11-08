@@ -64,7 +64,7 @@ from er.candidates import candidates, estimate
 from er.cluster import merge
 from er.config import InputError, Pipeline, bits, lit, q
 from er.io import code_version, config_hash, markdown, replace_text
-from er.kind import NAME_MODEL, classifier as kind_classifier, kind_review_sheet, merge_answers
+from er.kind import KIND_COLUMNS, NAME_MODEL, classifier as kind_classifier, kind_review_sheet, merge_answers
 from er.match import ELSE, named_sql, refreshed_u, review_floor, rule_edges, score_fs, scored_u, train_fs, u_basis
 from er.probe import missed
 from er.report import applied, qa, report_text, review_sheet, scored_again
@@ -146,14 +146,16 @@ class Run:
         against config/pipeline.toml [fields]; set aside what can't be resolved (_set_aside); standardize each chunk with
         er.standardize.prepare (each record on its own, so chunking changes nothing) into the table `into`."""
         t = time.perf_counter()
-        src = open_source(path, self.con, {c for f, alts in self.settings.columns.items() if f != "entity" for alt in alts for c in alt})
+        src = open_source(path, self.con, {c for f, alts in self.settings.columns.items() if f != "entity" for alt in alts for c in alt},
+                          reserved={*self.settings.columns, *KIND_COLUMNS, "cluster_id", "resolved_stage", "resolved_by", "er_file", "er_path", "er_first"})
         self.notes, self.inputs = list(src.notes), file_facts(src.files, "records")
         present = self.present = present_fields(self.settings, src.columns)
         hints = suggest(src, self.con, [f for f in self.settings.columns if f not in present and f != "entity"], self.settings.detect)
+        hints = {f: (src.given.get(c, c), share, why) for f, (c, share, why) in hints.items() if share >= (0.99 if f == "id" else 0.5)}  # a likely column, by the name it has in the file
         try:
             self.pipeline, self.disabled = fit_to_file(self.pipeline, self.settings, src.columns)
         except InputError as e:
-            raise InputError(f"{e}. The file's columns: {', '.join(src.columns)}", e.fix + (
+            raise InputError(f"{e}. The file's columns: {', '.join(src.given.get(c, c) for c in src.columns)}", e.fix + (
                 ". Suggested from the file's values, check them first:\n  [columns]" + "".join(
                     f"\n  {f} = \"{c}\"   # {why}" for f, (c, _, why) in hints.items()) if hints else ""),
                 hints={f: c for f, (c, _, _) in hints.items()}) from None
@@ -589,7 +591,7 @@ class Run:
                        WHEN wt.id IS NOT NULL THEN 'waits for people' ELSE 'a new entity' END AS status, b.by, coalesce(b.weight, wt.w) AS weight
                 FROM new_ids n JOIN gold g USING ({u}) LEFT JOIN best b ON b.id = n.{u} LEFT JOIN waits wt ON wt.id = n.{u}""")
         else:
-            self.con.execute(f"CREATE OR REPLACE TABLE er_match AS SELECT {u}, NULL::VARCHAR AS entity, '' AS status, NULL::VARCHAR AS by, NULL::DOUBLE AS weight WHERE FALSE")
+            self.con.execute(f"CREATE OR REPLACE TABLE er_match AS SELECT NULL::VARCHAR AS {u}, NULL::VARCHAR AS entity, '' AS status, NULL::VARCHAR AS by, NULL::DOUBLE AS weight WHERE FALSE")
         return self.con.execute(f"""SELECT * FROM er_match UNION ALL BY NAME
             SELECT s.{u}, g.cluster_id AS entity, CASE WHEN s.reason = 'already in the run' THEN s.reason ELSE 'set aside: ' || s.reason END AS status
             FROM set_aside s LEFT JOIN read_parquet({lit(out / 'gold.parquet')}) g ON g.{u} = s.{u} AND s.reason = 'already in the run'

@@ -751,8 +751,9 @@ def describe_method(out: Path, p: Pipeline, s: "Settings") -> dict:
     scored = f"SELECT {q(l)}, {q(r)}, match_weight AS weight, {named_sql(fs)} AS named FROM er_scored s"
     decided = con.execute(f"""SELECT d.*, s.weight, s.named, d.decision = 'match' AS same, x.rule FROM er_decided d JOIN ({scored}) s USING ({q(l)}, {q(r)})
         LEFT JOIN (SELECT {q(l)}, {q(r)}, min(rule) AS rule FROM er_rule GROUP BY ALL) x USING ({q(l)}, {q(r)}) ORDER BY s.weight""").df()
-    rules = {name: (pairs, below, apart) for name, pairs, below, apart in con.execute(f"""SELECT x.rule, count(*), count(*) FILTER (WHERE s.weight < {t} OR NOT s.named),
-        count(d.decision) FILTER (WHERE d.decision = 'no_match') FROM er_rule x JOIN ({scored}) s USING ({q(l)}, {q(r)})
+    rules = {name: (pairs, below, apart, alone) for name, pairs, below, apart, alone in con.execute(f"""SELECT x.rule, count(*), count(*) FILTER (WHERE s.weight < {t} OR NOT s.named),
+        count(d.decision) FILTER (WHERE d.decision = 'no_match'), count(d.decision) FILTER (WHERE d.decision = 'no_match' AND (s.weight < {t} OR NOT s.named))
+        FROM er_rule x JOIN ({scored}) s USING ({q(l)}, {q(r)})
         LEFT JOIN er_decided d USING ({q(l)}, {q(r)}) GROUP BY 1""").fetchall()}
 
     # what the run's log and files say: the rounds, each key's pairs and seconds, each step's reach, the links by key
@@ -781,8 +782,9 @@ def describe_method(out: Path, p: Pipeline, s: "Settings") -> dict:
     proposals = []
     if line := line_change(decided[decided["rule"].isna()], t, review_floor(p), t + 4):  # within the band people decide and audit
         proposals.append(dict(change=dict(line=line[0]), why=f"sets right {line[1]:,} pair{'s' if line[1] > 1 else ''} people decided, and wrong none"))
-    proposals += [dict(change=dict(drop_rules=[name]), why=f"people said {apart:,} of its pairs {'are' if apart > 1 else 'is'} different")
-                  for name, (_, _, apart) in rules.items() if apart]
+    proposals += [dict(change=dict(drop_rules=[name]), why=f"people said {apart:,} of its pairs {'are' if apart > 1 else 'is'} different"
+                       + (f", {alone:,} of them joined by it alone" if alone < apart else ""))
+                  for name, (_, _, apart, alone) in rules.items() if alone]  # one the model links anyway stays joined without the rule
     total = sum(pairs for pairs, _ in listed.values())  # a key worth leaving out: a tenth of the pairs or more, and no link only it finds
     proposals += [dict(change=dict(drop_keys=[b.name]), why=f"{listed[b.name][0] / total:.0%} of the pairs, and no link only it finds")
                   for b in fs.blockers if listed.get(b.name, (0,))[0] >= total / 10 and not found.get(b.name, (0, 0))[1]]
@@ -801,8 +803,8 @@ def describe_method(out: Path, p: Pipeline, s: "Settings") -> dict:
         bands=[dict(weight_from=float(a), pairs=int(b), accepted=int(c)) for a, b, c in bands],
         decided=[dict(id_l=x[l], id_r=x[r], decision=x["decision"], why=x["why"], round=None if pd.isna(x["round"]) else int(x["round"]),
                       weight=round(float(x["weight"]), 2), named=bool(x["named"]), rule=x["rule"]) for x in decided.to_dict("records")],
-        rules=[dict(name=x.name, pairs=rules.get(x.name, (0, 0, 0))[0], below=rules.get(x.name, (0, 0, 0))[1],
-                    different=rules.get(x.name, (0, 0, 0))[2]) for _, _, x in p.rules.each()],
+        rules=[dict(name=x.name, pairs=rules.get(x.name, (0, 0, 0, 0))[0], below=rules.get(x.name, (0, 0, 0, 0))[1],
+                    different=rules.get(x.name, (0, 0, 0, 0))[2]) for _, _, x in p.rules.each()],
         keys=[dict(name=b.name, pairs=listed.get(b.name, (0, 0.0))[0], seconds=round(listed.get(b.name, (0, 0.0))[1], 2),
                    matched=found.get(b.name, (0, 0))[0], only=found.get(b.name, (0, 0))[1]) for b in fs.blockers],
         steps=[dict(comparison=c, level=label, bits=round(bits, 2), reached=reached.get((c, g), 0))

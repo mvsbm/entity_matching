@@ -261,13 +261,7 @@ def check_records(a: dict, emit: "Emit") -> dict:
 
 def checked(a: dict, s, p, path: str, emit: "Emit") -> dict:
     run = Run(p, s, echo=emit.step)
-    try:
-        run.load(path)
-    except InputError as e:
-        if not (a.get("workspace") and e.hints):
-            raise
-        raise InputError(str(e), fix=f"map it in the workspace, once the values look right: "
-                         f"{nayose('set', 'columns', *(f'{f}={c}' for f, c in e.hints.items()), '--workspace', a['workspace'])}", hints=e.hints) from None
+    run.load(path)
     plan = run.budget(stop=False)
     fill = fill_rates(run).set_index("field")
     shown = plan[(plan["oversized_blocks"] > 0) | plan["name"].isin(plan.nlargest(5, "per_record")["name"])].sort_values("per_record", ascending=False)
@@ -1364,6 +1358,8 @@ def parser(kind: type[argparse.ArgumentParser] = argparse.ArgumentParser) -> arg
                     kw["choices"] = p.choices
                 if p.kind == "many":
                     kw["nargs"] = "+" if p.positional else "*"
+                    if not p.positional:  # --between A B, or --between=A --between=B (a value like -h): one list
+                        kw["action"] = "extend"
                 if p.metavar and not p.choices:
                     kw["metavar"] = p.metavar
                 if p.positional:
@@ -1418,11 +1414,23 @@ def out_of_memory(e: BaseException) -> InputError | None:  # DuckDB's, raised as
                               "a folder with more free disk (config/settings.toml [compute] for every run)")
 
 
+def perform(c: Command, a: dict, emit: Emit) -> dict:
+    """A command run on its parameters; a field the file lacks, in a workspace, is mapped in the workspace's own
+    columns.toml, so its fix says so (set columns --workspace), with the columns the file's values suggest."""
+    try:
+        return c.run(a, emit)
+    except InputError as e:
+        if isinstance(e, Busy) or not (a.get("workspace") and e.hints):
+            raise
+        raise InputError(str(e), fix=f"map it in the workspace, once the values look right: "
+                         f"{nayose('set', 'columns', *(f'{f}={c}' for f, c in e.hints.items()), '--workspace', a['workspace'])}", hints=e.hints) from None
+
+
 def main(argv: list[str] | None = None) -> int:
     a = parser().parse_args(argv)
     c, emit = a.command, Emit(a.format)
     try:
-        result = c.run({p.name: getattr(a, p.name) for p in c.params}, emit)
+        result = perform(c, {p.name: getattr(a, p.name) for p in c.params}, emit)
     except InputError as e:
         code = 75 if isinstance(e, Busy) else 2
         emit.error(e, code)

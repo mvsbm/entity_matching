@@ -38,6 +38,8 @@ def test_the_ui_serves_only_its_own_link_and_runs_the_commands_as_nayose_does(tm
     try:
         assert call("GET", "/api/commands", token="wrong")[0] == 403  # another user of the machine: no link, no page
         assert call("GET", "/api/commands", host="example.com")[0] == 403  # a page elsewhere, through DNS rebinding
+        status, page = call("GET", "/", token="old")
+        assert status == 403 and "Open the link" in page  # an old link: a page in words
         status, d = call("GET", "/api/commands")
         assert status == 200 and [c["name"] for c in d["commands"]] == [c.name for c in cli.COMMANDS] and d["workspace"] == str(tmp_path / "run")
         assert call("GET", "/")[0] == 200
@@ -54,7 +56,26 @@ def test_the_ui_serves_only_its_own_link_and_runs_the_commands_as_nayose_does(tm
         assert call("POST", "/api/run", dict(command="delete everything", args={}))[0] == 400  # only declared commands
         _, j = job("describe entity", {"workspace": str(tmp_path / "run")})  # no ID: nayose's parser refuses it, as on the command line
         assert j["exit"] == 2 and "required" in j["events"][-1]["error"]
-        assert not server.jobs  # a job the page has read to its end is dropped
+        _, j = job("describe entity", {"id": "-h", "workspace": str(tmp_path / "run")})  # a value that looks like an option is a value
+        assert j["exit"] == 2 and "SystemExit" not in j["events"][-1]["error"] and "-h" in j["events"][-1]["error"]
+        assert server.jobs and all(j.read is not None for j in server.jobs.values())  # read to its end: kept a minute, for a page reloaded meanwhile
+        old = next(k for k, j in server.jobs.items() if j.code == 2)
+        for j in server.jobs.values():
+            j.read -= 61
+        _, j = job("list pairs", {"workspace": str(tmp_path / "run")})
+        assert len(server.jobs) == 1  # a minute on, the others are gone
+        late = call("GET", f"/api/job/{old}")[1]  # a tab that polls late: how it ended, kept
+        assert late["done"] and late["exit"] == 2 and late["events"][-1]["event"] == "error"
+        assert call("GET", "/api/running")[1] == {}
+        status, started = call("POST", "/api/run", dict(command="resolve records", args={"workspace": str(tmp_path / "run"), "overwrite": True}))
+        deadline = time.monotonic() + 30
+        while not (running := call("GET", "/api/running")[1]):  # a page drawn while it runs finds it
+            assert time.monotonic() < deadline
+            time.sleep(0.05)
+        assert running == {"job": started["job"], "command": "resolve records", "workspace": str(tmp_path / "run")}
+        while not call("GET", f"/api/job/{started['job']}")[1]["done"]:
+            time.sleep(0.1)
+        assert call("GET", "/api/running")[1] == {}
     finally:
         httpd.shutdown()
 
@@ -114,3 +135,12 @@ def test_a_long_command_that_ends_with_its_result_and_exit_2_is_no_crash(tmp_pat
     job = ui.Job(["try", "everything", "x.csv"])
     ui.Server()._long(job)
     assert job.code == 1 and job.events[-1]["event"] == "error" and "KeyError" in job.events[-1]["error"]  # a crash: said
+
+
+def test_a_value_like_an_option_stays_a_value_wherever_it_goes():
+    from er import cli, ui
+    for args, want in (({"id": "a", "between": ["-h", "y"], "workspace": "w"}, ("a", ["-h", "y"])),
+                       ({"id": "-A1", "between": ["x", "y"], "workspace": "w"}, ("-A1", ["x", "y"]))):
+        a = cli.parser(ui.Refusing).parse_args(ui.as_json(ui.argv("split entity", args)))
+        assert (a.id, a.between, a.workspace, a.format) == (*want, "w", "json")
+    assert cli.parser().parse_args(["resolve", "records", "f", "--workspace", "w", "--compute", "threads=2", "memory_limit=1GB"]).compute == ["threads=2", "memory_limit=1GB"]

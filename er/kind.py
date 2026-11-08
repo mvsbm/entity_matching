@@ -95,6 +95,7 @@ class NameModel:
         return cls(z["terms"].tolist(), z["coef"], float(z["intercept"]), int(z["ngram"]), compute) if str(z["key"]) == key else None
 
 
+KIND_COLUMNS = ("kind", "kind_p", "kind_by", "name_p", "kind_held", "kind_name", "customer_kind")  # what a run writes on each record and customer
 NAME_MODEL = Path("config") / "kind_names.npz"  # trained by scripts/train_name_model.py, tracked in git: every run loads it
 
 

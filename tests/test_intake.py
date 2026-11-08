@@ -199,6 +199,13 @@ def test_the_reader_reads_each_value_as_it_comes_and_proposes_only_what_it_would
     r3, rows, *_ = read("dirty.csv", dirty, ("realign",))
     assert rows.loc["904", "address"] == "大阪府北区3,4番" and rows.loc["905", "phone"] == "5555"
 
+    kana = "\n".join(["id,name_kana,phone", *(f"{i},{'ﾔﾏﾓﾄ ﾀﾛｳ' if i % 8 == 0 else 'ヤマモト　タロウ'},{1000 + i}" for i in range(200)), "900,ﾄｮﾀﾞﾐｴｺﾞ,1234"]) + "\n"
+    part = tmp_path / "halfwidth"
+    part.mkdir()
+    (part / "halfwidth.csv").write_bytes(kana.encode("cp932"))  # half-width kana in a kana column: its bytes read as kanji in EUC-JP too
+    r = intake.take(part, {part / "halfwidth.csv": "halfwidth.csv"}, replace(spec, margin_text=0.3), ref)  # a margin low enough that text alone would tip it
+    assert not r["proposed"]  # a column that holds no kanji is offered none
+
     table = pa.table({"id": ["1", "2", "3"], "name": ["ヤマモト", None, ""], "n": pa.array([1, 2, None], pa.int64()), "x": [1.5, 2.0, None],
                       "day": pa.array([None, 0, 1], pa.date32()), "b": pa.array([u("東京"), "大阪".encode("cp932"), None], pa.binary())})
     clean = io.BytesIO()
