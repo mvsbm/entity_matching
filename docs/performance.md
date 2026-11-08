@@ -185,3 +185,9 @@ The damaged file holds values in CP932 (10% of rows) and EUC-JP (2%), zero-width
 spreadsheet numbers, names garbled upstream and unquoted commas inside addresses. Most values take the fast path: ASCII
 as it is, UTF-8 that reads as Japanese text decoded once; only the others are tried in every encoding and judged, so a
 damaged file costs about twice a clean one. A Parquet file of the same records reads in about 13 s.
+
+## The probe: the matches no key lists
+
+At the end of a full run, `Run.probe` scores about `[probe] pairs` (a million) pairs in each of its groups, drawn at
+random among the pairs that share a phone or a postal area. On a million records it scored 987,595 of the 50,094,600
+pairs that share a phone and 939,233 of the 875,394,123 that share a postal area, in 3.5 s for both: 5% of the run.

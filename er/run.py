@@ -3,7 +3,7 @@ so memory stays bounded at any size (past config/settings.toml [compute] memory_
 step is a method of Run, called in order by full(), or one at a time by the demo notebook. Each records its Big-O,
 with the numbers filled in, and its time.
 
-    load        O(N·L)                           read through er.source (Parquet), check the fields, set aside what can't be
+    load        O(N·L)                           read through er.source (Parquet, as er.intake read it), check the fields, set aside what can't be
                                                  resolved, standardize each chunk, each record's kind (er.kind) → table records
     budget      O(N)                             exact block sizes per rule and generator, before any join; blocks of
                                                  64+ records flagged (a rule doesn't trust them; candidates sample them)
@@ -15,6 +15,8 @@ with the numbers filled in, and its time.
                                                  the review floor
     score       O(C·K·L²)                        every candidate scored
     cluster     O(C + E·d + N)                   accept at the threshold, then cluster with the rules' pairs
+    probe       O(N + P·K + L)                   the matches no key lists: pairs sampled within groups matches share, scored
+                                                 (er.probe), the hits the likely links don't join counted and scaled
     write       O(N + C)                         gold clusters and matches, as Parquet; the state for increments; and,
                                                  built first, the report
     report      O(review pairs) + O(N) in SQL    for people: qa.md, report.txt, review.parquet, kind_review.parquet
@@ -63,6 +65,7 @@ from er.config import InputError, Pipeline
 from er.io import code_version, config_hash, markdown
 from er.kind import NAME_MODEL, classifier as kind_classifier, kind_review_sheet, merge_answers
 from er.match import ELSE, named_sql, refreshed_u, review_floor, rule_edges, score_fs, scored_u, train_fs, u_basis
+from er.probe import missed
 from er.report import applied, bits, qa, report_text, review_sheet, scored_again
 from er.settings import SPECIAL, Settings, fit_to_file, present_fields
 from er.source import answers, decisions, file_facts, known, lit, open_source, suggest
@@ -178,7 +181,8 @@ class Run:
                 known(self.con, f"SELECT {q(self.uid)} AS id FROM er_given_ids", rows, self.uid, self.kind_labels, path)
                 self.con.unregister("er_given_ids")
             self.inputs += file_facts([self.settings.root / NAME_MODEL], "name model") + file_facts([self.kind_labels] if self.kind_labels else [], "answers")
-        normalized, used = [*rules.normalized(), *fs.normalized()], rules.used() | fs.used()
+        probe = self.pipeline.probe  # its groups are keys too: their columns are made with the rest
+        normalized, used = [*rules.normalized(), *fs.normalized(), *probe.normalized()], rules.used() | fs.used() | probe.used()
         reader = self.con.cursor().sql(f"SELECT * FROM {rows}").to_arrow_reader(self.chunk_rows)  # its own cursor: inserts go on alongside
         for i, batch in enumerate(reader):
             chunk = prepare(fs.standardize, batch.to_pandas().astype("string"), normalized, used, kind=self.classifier)
@@ -471,6 +475,21 @@ class Run:
         e = self._count("matches")
         self._done("cluster", "O(C + E·d + N)", f"O({self._count('scores'):,} + {e:,}·d + {self.n:,})", t, accepted=e,
                    expected_false=self._expected_false())
+
+    def probe(self) -> None:
+        """The matches no pair key lists, measured without labels (er.probe): in each [probe] stratum, pairs drawn at
+        random, scored, and those at the model's line its likely links don't join counted and scaled. The likely links:
+        its matches, its pairs waiting at the line or above, the rules' pairs people didn't call different, and
+        people's "same". O(N + P·K + L)."""
+        spec, fs, l, r = self.pipeline.probe, self.pipeline.fs, q(self.l), q(self.r)
+        if not spec.strata:
+            return
+        t = time.perf_counter()
+        links = f"""SELECT {l}, {r} FROM matches UNION ALL SELECT {l}, {r} FROM proposed WHERE match_weight >= {bits(fs.min_match_weight)}
+            UNION ALL SELECT {l}, {r} FROM rule_kept k WHERE NOT EXISTS (SELECT 1 FROM er_decisions d WHERE d.{l} = k.{l} AND d.{r} = k.{r} AND d.decision = 'no_match')
+            UNION ALL SELECT {l}, {r} FROM er_decisions WHERE decision = 'match'"""
+        found = missed(self.con, self.db, self.scoring, fs, spec, "records", links, self.uid, None if fs.bridge else self._resolved("rule_clusters"))
+        self._done("probe", "O(N + P·K + L)", f"O({self.n:,} + {sum(x['scored'] for x in found):,}·K + L)", t, strata=found)
 
     def _expected_false(self) -> float:  # the false links the model expects among those it accepted: Σ (1 − match probability), O(E)
         return round(self.con.execute("SELECT coalesce(sum(1 - match_probability), 0) FROM matches").fetchall()[0][0], 2)
@@ -766,6 +785,7 @@ class Run:
         self.score()
         self._load_decisions(decided)
         self.cluster()
+        self.probe()
         return self
 
     def rerun(self, out: Path, pipeline_file: Path | None = None) -> "Run":

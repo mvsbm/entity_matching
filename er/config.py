@@ -358,6 +358,21 @@ class TrustRule:
         return (max(lower), self.line) if lower else None
 
 
+@dataclass(frozen=True, kw_only=True)
+class Probe:
+    """Pairs no pair key lists, sampled within groups matches tend to share (er.probe): each stratum a group as a key
+    names it (records with the same phone, say), and about `pairs` pairs scored in each. It measures, without labels,
+    the matches the keys miss."""
+    strata: tuple[tuple[str, tuple[Key, ...]], ...] = ()
+    pairs: int = 1_000_000
+
+    def normalized(self) -> list[tuple[str, tuple[Normalizer, ...]]]:
+        return [(k.column, k.normalize) for _, keys in self.strata for k in keys if k.normalize]
+
+    def used(self) -> set[str]:
+        return {k.name for _, keys in self.strata for k in keys}
+
+
 @dataclass(frozen=True)
 class Candidate:
     function: Function
@@ -444,6 +459,7 @@ class Pipeline:
     fit_rows: int = 30_000                    # an unlabelled run fits on a sample of this many records (er.run)
     kind: KindSpec | None = None              # person or company, on every record; None: not told apart
     trust: TrustRule = TrustRule()            # what merges without people (er.run._accept)
+    probe: Probe = Probe()                    # how the matches no key lists are measured (er.probe)
 
 
 def _norm(value: object, chains: Mapping[str, tuple[Normalizer, ...]]) -> tuple[Normalizer, ...]:
@@ -519,7 +535,9 @@ def pipeline_from(cfg: dict, std: Standardization, chains: Mapping[str, tuple[No
                     cv_folds=sel["cv_folds"], cv_seed=sel["cv_seed"], decision_p=sel["decision_p"],
                     explain_show=tuple(d["explain_show"]), explain_filled=tuple(d["explain_filled"]), fit_rows=m.get("fit_rows", 30_000),
                     kind=KindSpec(**{k: tuple(v) if k == "grid" else v for k, v in cfg["kind"].items()}) if "kind" in cfg else None,
-                    trust=TrustRule(**{k: tuple(map(float, v)) if k == "steps" else v for k, v in cfg.get("trust", {}).items()}))
+                    trust=TrustRule(**{k: tuple(map(float, v)) if k == "steps" else v for k, v in cfg.get("trust", {}).items()}),
+                    probe=Probe(strata=tuple((n, tuple(_key(k, chains) for k in keys)) for n, keys in cfg["probe"]["strata"].items()),
+                                pairs=cfg["probe"].get("pairs", 1_000_000)) if "probe" in cfg else Probe())
 
 
 def widen(p: "Pipeline", added: Iterable[tuple[str, str]]) -> "Pipeline":
@@ -676,9 +694,11 @@ def restrict(p: Pipeline, present: set[str]) -> tuple[Pipeline, list[str]]:
     gone += [f"EM rule {[k.column for k in r]}" for r in m.em_rules if r not in em]
     model = replace(m, comparisons=tuple(comparisons), prior_rules=prior, em_rules=em)
     needs = tuple(n for n in p.fs.needs if n in {c.name for c in comparisons})  # [fields] one_of keeps a name comparison
+    strata = tuple((n, keys) for n, keys in p.probe.strata if has(k.column for k in keys))
+    gone += [f"probe {n} (needs {sorted({k.column for k in keys} - present)})" for n, keys in p.probe.strata if (n, keys) not in strata]
     return replace(p, rules=replace(p.rules, stages=tuple(stages)), fs=replace(p.fs, blockers=tuple(blockers), model=model, needs=needs),
                    explain_show=tuple(f for f in p.explain_show if f in present),
-                   explain_filled=tuple(f for f in p.explain_filled if f in present)), gone
+                   explain_filled=tuple(f for f in p.explain_filled if f in present), probe=replace(p.probe, strata=strata)), gone
 
 
 def pipeline_dict(p: Pipeline, chains: Mapping[str, tuple[Normalizer, ...]]) -> dict:
@@ -725,6 +745,7 @@ def pipeline_dict(p: Pipeline, chains: Mapping[str, tuple[Normalizer, ...]]) -> 
         **({"kind": {k: list(v) if k == "grid" else v for k, v in vars(p.kind).items()}} if p.kind else {}),
         "threshold": {"grid": list(t.grid), "max_fp": t.max_fp, "max_fp_rate_hi": t.max_fp_rate_hi, "margin_steps": t.margin_steps},
         "trust": {"steps": list(p.trust.steps), "checks": p.trust.checks, "watch": p.trust.watch},  # its line is the workspace's
+        **({"probe": {"pairs": p.probe.pairs, "strata": {n: [key(k) for k in keys] for n, keys in p.probe.strata}}} if p.probe.strata else {}),
         "selection": {"cv_folds": p.cv_folds, "cv_seed": p.cv_seed, "decision_p": p.decision_p},
         "display": {"explain_show": list(p.explain_show), "explain_filled": list(p.explain_filled)},
     }
