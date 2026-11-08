@@ -391,13 +391,24 @@ class Run:
         return f"(SELECT {q(self.uid)} FROM {clusters} WHERE cluster_id IN (SELECT cluster_id FROM {clusters} GROUP BY 1 HAVING count(*) = 1))"
 
     def score(self) -> None:
-        """Every candidate scored by Splink, with the model and u that fit() settled."""
-        t, k = time.perf_counter(), len(self.pipeline.fs.model.comparisons)
+        """Every candidate scored by Splink, with the model and u that fit() settled; and the patterns the pairs fall in,
+        one step per comparison: per pattern its pairs, their mean weight, how many merge and how many wait for people
+        as _accept will take them, and three of them (report.list_patterns)."""
+        t, fs, trust, l, r = time.perf_counter(), self.pipeline.fs, self.pipeline.trust, q(self.l), q(self.r)
+        k = len(fs.model.comparisons)
         score_fs(self.scoring, "records", "cands", self.db, self.uid, into="scores")
         reached: dict[str, dict[str, int]] = {}  # per comparison, the pairs at each level (gamma, as score_fs gives it): one scan
         for c, g, n in self.con.execute("SELECT c, g, count(*) FROM (UNPIVOT scores ON COLUMNS('^gamma_') INTO NAME c VALUE g) GROUP BY ALL").fetchall():
             reached.setdefault(c.removeprefix("gamma_"), {})[str(g)] = n
-        self._done("score", "O(C·K·L²)", f"O({self._count('scores'):,}·{k}·L²)", t, reached=reached)
+        gammas = [c for c, *_ in self.con.execute("DESCRIBE scores").fetchall() if c.startswith("gamma_")]
+        at = bits(fs.min_match_weight if trust.line is None else trust.line)
+        floor = bits(review_floor(self.pipeline) if trust.line is None else min(trust.steps))
+        rows = self.con.execute(f"""SELECT {', '.join(q(g) for g in gammas)}, count(*), round(avg(match_weight), 2),
+            count(*) FILTER (match_weight >= {at} AND {named_sql(fs)}),
+            count(*) FILTER (match_weight >= {floor} AND (match_weight < {at} OR NOT {named_sql(fs)})),
+            arg_min([{l}, {r}], hash({l} || ' ' || {r}), 3) FROM scores s GROUP BY ALL""").fetchall() if gammas else []
+        self._done("score", "O(C·K·L²)", f"O({self._count('scores'):,}·{k}·L²)", t, reached=reached,
+                   patterns=dict(fields=[g.removeprefix("gamma_") for g in gammas], rows=[list(x) for x in rows]))
 
     def scored(self) -> str:
         """Every scored pair with its generators (sources) and what acceptance reads besides the weight: named, a name

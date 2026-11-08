@@ -24,6 +24,7 @@ from er.io import code_version, table_after
 from er.kind import COMPANY, PERSON, SAYS, UNSURE
 from er.match import ELSE, levels, named_sql, parameters, pattern_coverage, review_floor, scaled_prior, score_fs
 from er.source import lit
+from er.standardize import prepared
 
 if TYPE_CHECKING:
     from er.run import Run
@@ -410,10 +411,20 @@ def describe_entity(con: duckdb.DuckDBPyConnection, out: Path, uid: str, record:
 GRAPH_NODES = ("records", "prepare", "rules", "candidates", "score", "accept", "people", "group", "kind", "customers")
 
 
+def reached_by_gamma(facts: list[dict]) -> dict[tuple[str, int], int]:
+    """The pairs that stopped at each comparison step, (comparison, gamma) → count, summed over the run log's score steps."""
+    reached: dict[tuple[str, int], int] = {}
+    for x in facts:
+        for c, by in x.get("reached", {}).items():
+            for g, k in by.items():
+                reached[(c, int(g))] = reached.get((c, int(g)), 0) + k
+    return reached
+
+
 def describe_matching(con: duckdb.DuckDBPyConnection, out: Path | None, p: Pipeline, s: "Settings") -> dict:
     """The pipeline as a graph, for people to see what is computed and how: one node per stage (GRAPH_NODES) with its
     method and parameters and the fields it reads, and the edges between them. With `out`, a written run, each node also
-    holds the run's numbers (records, pairs per rule and per generator, each level's m, u and bits, the weight bands,
+    holds the run's numbers (records, pairs per rule and per generator, each level's m, u, bits and pairs, the weight bands,
     accepted pairs, pairs for people, customers) and real examples. O(E + R + N) in SQL over the run's files."""
     uid, ran = s.data.unique_id, out is not None and (out / "gold.parquet").exists()
     l, r = q(f"{uid}_l"), q(f"{uid}_r")
@@ -421,6 +432,7 @@ def describe_matching(con: duckdb.DuckDBPyConnection, out: Path | None, p: Pipel
     parquet = lambda name: f"read_parquet({lit(out / name)}, union_by_name = true)" if ran else ""  # no run: nothing to read
     log = json.loads((out / "steps.json").read_text(encoding="utf-8"))["runs"] if ran and (out / "steps.json").exists() else []
     facts = [x for run in log for x in run["steps"]]
+    turned_off = list(log[-1].get("disabled", [])) if log else []  # what the last run turned off: a field it reads is missing
     key = lambda k: dict(field=k.column, normalize=list(k.normalize))
     n = rows(f"SELECT count(*) FROM {parquet('gold.parquet')}")[0][0] if ran else None
 
@@ -450,7 +462,15 @@ def describe_matching(con: duckdb.DuckDBPyConnection, out: Path | None, p: Pipel
     # rules: what each compares, how, and the pairs it kept
     kept = {name: (k, a, b, m) for name, k, a, b, m in rows(f"""SELECT rule, count(*), min({l}), arg_min({r}, {l}),
         count(*) FILTER (WHERE coalesce(merged, TRUE)) FROM {parquet('rule_kept/*.parquet')} GROUP BY 1""")}  # found, and merged: below a trust line, none until people check
-    rules = [dict(stage=st.name, name=x.name, exact=list(x.exact),
+    t = p.fs.min_match_weight
+    rule_cols = {c for c, in rows(f"SELECT column_name FROM (DESCRIBE SELECT * FROM {parquet('rule_kept/*.parquet')})")} if ran and any((out / "rule_kept").glob("*.parquet")) else set()
+    scored_rules = "match_weight" in rule_cols  # the model's points for a rule's pairs: a run's rules are scored (Run._rules)
+    split = {name: (hi, mid, lo) for name, hi, mid, lo in rows(f"""SELECT rule, count(*) FILTER (WHERE match_weight >= {t}),
+        count(*) FILTER (WHERE match_weight >= 0 AND match_weight < {t}), count(*) FILTER (WHERE match_weight < 0) FROM {parquet('rule_kept/*.parquet')} GROUP BY 1""")} if scored_rules else {}
+    lowest = {name: [[a, b, round(float(w), 1)] for a, b, w in got] for name, got in rows(f"""SELECT rule, list([{l}, {r}, match_weight::VARCHAR] ORDER BY match_weight)
+        FROM (SELECT *, row_number() OVER (PARTITION BY rule ORDER BY match_weight, {l}, {r}) AS k FROM {parquet('rule_kept/*.parquet')}) WHERE k <= 3 GROUP BY 1""")} if scored_rules else {}
+    rules = [dict(stage=st.name, name=x.name, exact=list(x.exact), scores=dict(zip(("high", "mid", "low"), split[x.name])) if x.name in split else None,
+                  lowest=lowest.get(x.name, []),
                   fuzzy=[dict(field=c, function=st.comparators[c].function, threshold=st.comparators[c].threshold,
                               normalize=list(st.comparators[c].normalize)) for c in x.fuzzy],
                   blocking=[key(k) for k in x.blocking], pairs=kept.get(x.name, (0,))[0] if ran else None,
@@ -466,6 +486,17 @@ def describe_matching(con: duckdb.DuckDBPyConnection, out: Path | None, p: Pipel
                                                               if ran and any((out / "proposed").glob("*.parquet")) else "")  # merged, or waiting for people
     found = {g: (k, a, b) for g, k, a, b in rows(f"""SELECT g, count(*), min(a), arg_min(b, a) FROM (SELECT unnest(string_split(sources, '+')) AS g,
         {l} AS a, {r} AS b FROM ({likely})) GROUP BY 1""")}
+    seconds: dict[str, float] = {}
+    for x in facts:
+        for g in x.get("generators", ()):
+            seconds[g["name"]] = seconds.get(g["name"], 0.0) + g["seconds"]
+    alone = dict(rows(f"SELECT sources, count(*) FROM ({likely}) WHERE NOT contains(sources, '+') GROUP BY 1"))
+    by_keys = [dict(keys=k, links=c) for k, c in rows(f"SELECT least(len(string_split(sources, '+')), 11) AS k, count(*) FROM ({likely}) GROUP BY 1 ORDER BY 1")]
+    off = {m.group(1) for d in turned_off for m in [re.match(r"generator (\S+)", d)] if m}
+    qa_text = (out / "qa.md").read_text(encoding="utf-8") if ran and (out / "qa.md").exists() else ""
+    section = qa_text.split("## oversized blocks", 1)[1].split("\n## ", 1)[0] if "## oversized blocks" in qa_text else ""
+    big = table_after(qa_text, "## oversized blocks") if "|" in section else pd.DataFrame()  # a run without one writes "none"
+    skipped = big[big["decision"].astype(str).str.startswith("skipped")].astype({"records": int, "pairs": int}).sort_values("records", ascending=False) if len(big) else big
     generators = []
     for b in p.fs.blockers:
         match b:
@@ -478,6 +509,7 @@ def describe_matching(con: duckdb.DuckDBPyConnection, out: Path | None, p: Pipel
             case DeletionKeys():
                 how = dict(method="one letter deleted", keys=[key(b.key)], within=[key(k) for k in b.within])
         generators.append(dict(name=b.name, **how, pairs=listed.get(b.name) if ran else None, matched=found.get(b.name, (0,))[0] if ran else None,
+                               only=alone.get(b.name, 0) if ran else None, seconds=round(seconds[b.name], 2) if b.name in seconds else None, off=b.name in off,
                                example=list(found[b.name][1:]) if b.name in found else None))
 
     # score: each comparison's levels, the tests behind each, and what the fitted model says each is worth
@@ -487,10 +519,14 @@ def describe_matching(con: duckdb.DuckDBPyConnection, out: Path | None, p: Pipel
         model = (json.loads(scoring.read_text(encoding="utf-8"))["model"] if scoring.exists()
                  else json.loads((out / "state" / "model.json").read_text(encoding="utf-8")))
     worth = {(x.comparison, x.level): (x.m, x.u, x.weight) for x in parameters(model).itertuples()} if model else {}
-    comparisons = [dict(name=c.name, levels=[dict(label=lv.label, tests=[dict(field=col, function=t.function, threshold=t.threshold,
-                                                                                normalize=list(t.normalize)) for col, t in lv.any_of],
-                                                   **dict(zip(("m", "u", "bits"), worth.get((c.name, lv.label), (None,) * 3))))
-                                              for lv in c.levels] + [dict(label=ELSE, tests=[], **dict(zip(("m", "u", "bits"), worth.get((c.name, ELSE), (None,) * 3))))])
+    reach, gamma = reached_by_gamma(facts), {(c, label): g for c, by in levels(model).items() for g, (label, _) in by.items()} if model else {}
+    pairs = lambda c, label: reach.get((c, gamma.get((c, label))), 0) if ran else None  # the pairs that stopped at this step
+    comparisons = [dict(name=c.name, missing=pairs(c.name, "missing"),
+                        levels=[dict(label=lv.label, tests=[dict(field=col, function=t.function, threshold=t.threshold,
+                                                                 normalize=list(t.normalize)) for col, t in lv.any_of],
+                                     **dict(zip(("m", "u", "bits"), worth.get((c.name, lv.label), (None,) * 3))), pairs=pairs(c.name, lv.label))
+                                for lv in c.levels] + [dict(label=ELSE, tests=[], **dict(zip(("m", "u", "bits"), worth.get((c.name, ELSE), (None,) * 3))),
+                                                            pairs=pairs(c.name, ELSE))])
                    for c in p.fs.model.comparisons]
     lam = scaled_prior(model, n) if model else None
     scored = sum(x.get("candidates", 0) for x in facts if x["step"] == "candidates") if ran else None
@@ -508,19 +544,66 @@ def describe_matching(con: duckdb.DuckDBPyConnection, out: Path | None, p: Pipel
     kinds = dict(rows(f"SELECT kind, count(*) FROM {parquet('gold.parquet')} GROUP BY 1")) if ran and "kind" in {
         c for c, in rows(f"SELECT column_name FROM (DESCRIBE SELECT * FROM {parquet('gold.parquet')})")} else {}
     open_ = int(((review["why"] == "decide") & review["decision"].isna()).sum()) if review is not None else None
+    decide = review[review["why"] == "decide"] if review is not None else pd.DataFrame(columns=["match_weight"])
+    band_of = lambda w: (w // 2 * 2).astype(int)
+    review_bands = [[int(k), int(c)] for k, c in band_of(decide["match_weight"]).value_counts().sort_index().items()] if len(decide) else []
+    rule_bands = [[int(k), int(c)] for k, c in rows(f"""SELECT floor(match_weight / 2) * 2, count(*) FROM {parquet('rule_kept/*.parquet')}
+        WHERE coalesce(merged, TRUE) GROUP BY 1 ORDER BY 1""")] if scored_rules else []
+    examples = {int(b): got for b, got in rows(f"""SELECT b, list([a, z, w, what] ORDER BY what, k) FROM (
+        SELECT *, row_number() OVER (PARTITION BY b, what ORDER BY hash(a || z)) AS k FROM (
+          SELECT floor(match_weight / 2) * 2 AS b, {l} AS a, {r} AS z, round(match_weight, 1)::VARCHAR AS w, 'merged' AS what FROM {parquet('matches/*.parquet')}
+          {f"UNION ALL SELECT floor(match_weight / 2) * 2, {l}, {r}, round(match_weight, 1)::VARCHAR, 'to review' FROM {parquet('review.parquet')} WHERE why = 'decide'" if review is not None else ""}))
+        WHERE k <= 2 GROUP BY 1""")}  # two of each kind per 2-point band: what a click on a bar shows
+    expected = sum(x.get("expected_false", 0) for x in facts if x["step"] == "cluster") if ran else None
+    comps_on = [c.name for c in p.fs.model.comparisons if review is not None and c.name in review.columns]
+    waiting = (decide.groupby(comps_on, dropna=False).size().sort_values(ascending=False) if comps_on and len(decide) else pd.Series(dtype=int))
+    patterns = [dict(steps={c: (None if pd.isna(v) else v) for c, v in zip(comps_on, key if isinstance(key, tuple) else (key,))}, pairs=int(k)) for key, k in waiting.head(5).items()]
+    gold, kept_rules = parquet("gold.parquet"), parquet("rule_kept/*.parquet")
+    model_name = p.fs.model.name
+    joined = dict(rows(f"""SELECT CASE WHEN resolved_by = '{model_name}' THEN 'model' WHEN resolved_by = 'review' THEN 'people' ELSE 'rules' END, count(*)
+        FROM {gold} WHERE resolved_by IS NOT NULL GROUP BY 1"""))
+    size_eg = {a: e for a, e in rows(f"SELECT n, min(cluster_id) FROM (SELECT cluster_id, count(*) AS n FROM {gold} GROUP BY 1) GROUP BY 1")}
+    links = [f"SELECT {l} AS a, {r} AS z FROM {parquet('matches/*.parquet')}"] + ([f"SELECT {l}, {r} FROM {kept_rules} WHERE coalesce(merged, TRUE)"] if rule_cols else []) + (
+        [f"SELECT {l}, {r} FROM {parquet(DECISIONS + '/*.parquet')} WHERE decision = 'match'"] if decided else [])
+    look = dict(
+        largest=[dict(customer=c, records=k) for c, k in rows(f"SELECT cluster_id, count(*) FROM {gold} GROUP BY 1 ORDER BY 2 DESC, 1 LIMIT 5")],
+        single_links=rows(f"""WITH g AS (SELECT {q(uid)} AS id, cluster_id AS c FROM {gold}), big AS (SELECT c, count(*) AS n FROM g GROUP BY 1 HAVING count(*) >= 3),
+            e AS (SELECT g.c, count(*) AS e FROM ({' UNION '.join(links)}) x JOIN g ON g.id = x.a GROUP BY 1)
+            SELECT count(*), list(c ORDER BY c)[:5] FROM big JOIN e USING (c) WHERE e.e = big.n - 1""")[0] if ran else (0, []),  # every link a bridge: one lost splits it
+        mixed=rows(f"""SELECT count(*), list(cluster_id ORDER BY cluster_id)[:5] FROM (SELECT cluster_id FROM {gold} GROUP BY 1
+            HAVING count(*) FILTER (WHERE kind = {PERSON}) > 0 AND count(*) FILTER (WHERE kind = {COMPANY}) > 0)""")[0] if ran and kinds else (0, []),
+        weak_rule=rows(f"""SELECT count(DISTINCT g.cluster_id), list(DISTINCT g.cluster_id ORDER BY g.cluster_id)[:5] FROM {kept_rules} x JOIN {gold} g ON g.{q(uid)} = x.{l}
+            WHERE coalesce(x.merged, TRUE) AND x.match_weight < 0""")[0] if scored_rules else (0, []))
+    look = {k: v if k == "largest" else dict(customers=int(v[0]), examples=list(v[1] or [])) for k, v in look.items()}
+    inputs = [f for run in log for f in run.get("inputs", []) if f.get("role") == "records"]
+    load = [x for x in facts if x["step"] == "load"]
+    columns = None
+    if inputs and Path(inputs[-1]["file"]).exists():
+        import pyarrow.parquet as pq
+        columns = len(pq.read_schema(inputs[-1]["file"]).names)
+    took = lambda step: round(sum(x["seconds"] for x in facts if x["step"] == step), 1) if ran else None  # a step's seconds, over the run and its increments
     nodes = [
-        dict(id="records", name="Records", count=n, files=[f["file"] for run in log for f in run.get("inputs", []) if f.get("role") == "records"]),
+        dict(id="records", name="Records", count=n, files=[f["file"] for f in inputs], bytes=sum(f.get("bytes", 0) for f in inputs) if inputs else None,
+             columns=columns, seconds=round(sum(x["seconds"] for x in load), 1) if load else None,
+             set_aside=sum(x.get("set_aside", 0) for x in load) if load else None, turned_off=turned_off,
+             kinds={"company": kinds.get(2, 0), "person": kinds.get(1, 0), "unsure": kinds.get(0, 0)} if kinds else None),
         dict(id="prepare", name="Make values comparable", method="normalizers per field", fields=fields),
         dict(id="rules", name="Rules", method="certain cases first: exact, then fuzzy", rules=rules, pairs=rule_pairs, merged=rule_merged),
-        dict(id="candidates", name="Candidates", method="list the pairs worth comparing", generators=generators, pairs=scored),
+        dict(id="candidates", name="Candidates", method="list the pairs worth comparing", generators=generators, pairs=scored,
+             possible=n * (n - 1) // 2 if n else None, listed=sum(listed.values()) if ran else None, by_keys=by_keys, seconds=took("candidates"),
+             skipped=dict(blocks=len(skipped), largest=[dict(key=x.generator, value=x.value, records=x.records, pairs=x.pairs) for x in skipped.head(5).itertuples()])),
         dict(id="score", name="Score", method="Fellegi–Sunter: each comparison adds evidence, in bits", comparisons=comparisons,
-             prior_bits=math.log2(lam / (1 - lam)) if lam else None, pairs=scored),
+             prior_bits=math.log2(lam / (1 - lam)) if lam else None, pairs=scored, seconds=took("score")),
         dict(id="accept", name="Accept", method="at the line, with a name compared", threshold=p.fs.min_match_weight, review_from=review_floor(p),
              trust=None if p.trust.line is None else "none" if math.isinf(p.trust.line) else p.trust.line,
-             needs=list(p.fs.needs), bands=bands, accepted=accepted),
-        dict(id="people", name="People decide", method="close calls go to people", to_decide=open_, decided=decided, joined=by.get("review", 0) if ran else None),
+             needs=list(p.fs.needs), bands=bands, accepted=accepted, review_bands=review_bands, rule_bands=rule_bands, examples=examples,
+             expected_false=round(expected, 1) if expected is not None else None),
+        dict(id="people", name="People decide", method="close calls go to people", to_decide=open_, decided=decided, joined=by.get("review", 0) if ran else None,
+             below=int((decide["match_weight"] < t).sum()), unnamed=int((decide["match_weight"] >= t).sum()),
+             audits=int((review["why"] == "audit").sum()) if review is not None else 0, sheet=len(decide), answered=int(decide["decision"].notna().sum()) if len(decide) else 0,
+             comparisons=comps_on, patterns=patterns),
         dict(id="group", name="Group", method="connected components: linked records are one customer", customers=customers,
-             sizes=[dict(records=a, customers=k) for a, k in sizes]),
+             sizes=[dict(records=a, customers=k, example=size_eg.get(a)) for a, k in sizes], joined=joined if ran else None, look=look if ran else None),
         dict(id="kind", name="Person or company", method="legal form, name model, combiner", on=p.kind is not None,
              legal_forms=len(s.standardize.legal_forms), ngram=p.kind.ngram if p.kind else None,
              counts={"company": kinds.get(2, 0), "person": kinds.get(1, 0), "unsure": kinds.get(0, 0)} if kinds else None),
@@ -576,7 +659,7 @@ def scored_again(con: duckdb.DuckDBPyConnection, db: object, out: Path, uid: str
 def describe_method(out: Path, p: Pipeline, s: "Settings") -> dict:
     """What the run in the workspace `out` shows about its method, for people improving it: each round so far
     (rounds.json), with the links it made and the audits people decided in it; the line, the weight bands, and each pair
-    people decided, scored again with the run's model; each sure-match rule's pairs, how many of them score below the
+    people decided, scored again with the run's model; each match rule's pairs, how many of them score below the
     line, and how many people said are different; each pair key's pairs and seconds, the links it found and those only
     it found; each comparison step's bits and the pairs that reached it; and the changes worth trying. Changes nothing.
     O((D + R)·K) to score the D decided pairs and the R rule pairs again, + O(E) over the run's files."""
@@ -609,14 +692,11 @@ def describe_method(out: Path, p: Pipeline, s: "Settings") -> dict:
     # what the run's log and files say: the rounds, each key's pairs and seconds, each step's reach, the links by key
     log = json.loads((out / "steps.json").read_text(encoding="utf-8"))["runs"] if (out / "steps.json").exists() else []
     facts = [x for run in log for x in run["steps"]]
-    listed, reached = {}, {}
+    listed, reached = {}, reached_by_gamma(facts)
     for x in facts:
         for g in x.get("generators", ()):
             pairs, seconds = listed.get(g["name"], (0, 0.0))
             listed[g["name"]] = (pairs + g["pairs"], seconds + g["seconds"])
-        for c, by in x.get("reached", {}).items():
-            for g, k in by.items():
-                reached[(c, int(g))] = reached.get((c, int(g)), 0) + k
     found = {g: (k, only) for g, k, only in con.execute(f"""SELECT g, count(*), count(*) FILTER (WHERE alone)
         FROM (SELECT unnest(string_split(sources, '+')) AS g, NOT contains(sources, '+') AS alone FROM {read('matches/*.parquet')}) GROUP BY 1""").fetchall()}
     ran = rounds(out)
@@ -657,3 +737,260 @@ def describe_method(out: Path, p: Pipeline, s: "Settings") -> dict:
                for c, by in by_gamma.items() for g, (label, bits) in sorted(by.items(), reverse=True)],
         proposals=proposals, trust=trust_state(con, out, p, uid),
         trials=sorted((json.loads(f.read_text(encoding="utf-8")) for f in (out / TRIALS).glob("*.json") if f.stem.isdigit()), key=lambda x: x["trial"]))
+
+
+# ---------- how a match was found: one pair, a customer's pairs, the patterns of the whole file ----------
+
+def explain_pair(out: Path, p: Pipeline, s: "Settings", first: str, second: str, cap: int = 400) -> dict:
+    """One pair of the run in `out`, as the model saw it: per comparison, each step top to bottom with its tests, the
+    values each compared (after its normalization), the function, threshold and the score it gave; the step the pair
+    reached and its points; the points two records start from (this file's pairs, and those the model expects are one
+    customer: their ratio) and the total. What found the pair (a rule, the keys, people), whether it
+    merged; and when its records are in different customers of which one holds more, both customers' records and every
+    pair across them (at most `cap`), scored: a "same" merges them all. O(cap·K)."""
+    from er.strings import connect
+    uid, read = s.data.unique_id, lambda name: f"read_parquet({lit(out / name)}, union_by_name = true)"
+    u, l, r = q(uid), q(f"{uid}_l"), q(f"{uid}_r")
+    shown = lambda v: None if pd.isna(v) else v  # a value as JSON carries it: no NaN
+    if not (out / "gold.parquet").exists():
+        raise InputError(f"no run in {out}", fix="find matches first: nayose resolve records --workspace …")
+    a, b = sorted((str(first), str(second)))
+    con, db = connect(s.compute)
+    gold = con.execute(f"""SELECT {u}, cluster_id FROM {read('gold.parquet')} WHERE cluster_id IN
+        (SELECT cluster_id FROM {read('gold.parquet')} WHERE {u} IN (?, ?))""", [a, b]).df()
+    cluster = dict(zip(gold[uid], gold["cluster_id"]))
+    if missing := [x for x in (a, b) if x not in cluster]:
+        raise InputError(f"{missing}: no record of the run in {out}", fix="check the IDs as the run wrote them: a spreadsheet may read 0000000151 as the number 151")
+    side = lambda x: sorted(gold.loc[gold["cluster_id"] == cluster[x], uid])
+    group_a, group_b = side(a), side(b)
+    across = cluster[a] != cluster[b] and (len(group_a) > 1 or len(group_b) > 1)
+    pairs = [(a, b)] + ([(min(x, y), max(x, y)) for x in group_a for y in group_b if {x, y} != {a, b}][:cap] if across else [])
+    con.register("er_xp_df", pd.DataFrame(pairs, columns=[f"{uid}_l", f"{uid}_r"]))
+    con.execute("CREATE TABLE er_xp AS SELECT * FROM er_xp_df")
+    model = scored_again(con, db, out, uid, "er_xp", "er_xs")
+    scores = con.execute("SELECT * FROM er_xs").df().set_index([f"{uid}_l", f"{uid}_r"])
+    me = scores.loc[(a, b)]
+    recs = con.execute("SELECT * FROM er_touched").df().set_index(uid)
+
+    comparisons, tests = pair_tests(p, s, recs, me, model, a, b)
+    reached = {c["comparison"]: (c["reached"], c["bits"]) for c in comparisons}
+    n = con.execute(f"SELECT count(*) FROM {read('gold.parquet')}").fetchall()[0][0]
+    lam = scaled_prior(model, n)
+    where = f"WHERE {l} = ? AND {r} = ?"
+    found = dict(rule=None, keys=None, people=None, merged=False)
+    if any((out / "rule_kept").glob("*.parquet")):
+        if hit := con.execute(f"SELECT rule, coalesce(merged, TRUE) FROM {read('rule_kept/*.parquet')} {where}", [a, b]).fetchall():
+            found.update(rule=hit[0][0], merged=bool(hit[0][1]))
+    for name, merged in (("matches", True), ("proposed", False)):
+        if any((out / name).glob("*.parquet")) and (hit := con.execute(f"SELECT sources FROM {read(name + '/*.parquet')} {where}", [a, b]).fetchall()):
+            found.update(keys=hit[0][0].split("+"), merged=found["merged"] or merged)
+    if not found["rule"] and not found["keys"] and (out / "review.parquet").exists():  # below the line with no trust line: only the sheet keeps them
+        if (hit := con.execute(f"SELECT sources FROM {read('review.parquet')} {where}", [a, b]).fetchall()) and hit[0][0]:
+            found["keys"] = hit[0][0].split("+")
+    decided = applied(out, uid)
+    if len(decided) and len(said := decided[(decided[f"{uid}_l"] == a) & (decided[f"{uid}_r"] == b)]):
+        found["people"] = said["decision"].iloc[-1]
+    fields = [f for f in s.columns if f not in ("id", "entity") and f in recs.columns]
+    record = lambda x: {"id": x, **{f: shown(recs.at[x, f]) for f in fields}} if x in recs.index else {"id": x}
+    groups = dict(group_a=[], group_b=[], across=[])
+    if across:
+        con.register("er_xg", pd.DataFrame({uid: sorted(set(group_a) | set(group_b))}))
+        stored = f"read_parquet({lit(out / 'state' / 'records' / '*.parquet')}, union_by_name = true)"
+        everyone = con.execute(f"SELECT * FROM {stored} WHERE {u} IN (SELECT {u} FROM er_xg)").df().set_index(uid)
+        show = lambda x: {"id": x, **{f: shown(everyone.at[x, f]) for f in fields if f in everyone.columns}}
+        groups = dict(group_a=[show(x) for x in group_a], group_b=[show(x) for x in group_b],
+                      across=[dict(id_l=x, id_r=y, weight=round(float(scores.at[(x, y), "match_weight"]), 2)) for x, y in pairs])
+    trust, weight, prior = p.trust.line, float(me["match_weight"]), math.log2(lam / (1 - lam))
+    return dict(id_l=a, id_r=b, weight=round(weight, 2), probability=float(me["match_probability"]), prior=round(prior, 2),
+                pairs_all=n * (n - 1) // 2, pairs_same=round(lam * n * (n - 1) / 2),  # the prior in counts: λ is their ratio
+                common=round(weight - prior - sum(bits for _, bits in reached.values()), 2),  # term frequencies: how common the values agreed on are
+                line=None if trust is None else "none" if math.isinf(trust) else trust, threshold=p.fs.min_match_weight,
+                same_customer=cluster[a] == cluster[b], records=[record(a), record(b)], comparisons=comparisons, tests=tests, found=found, **groups)
+
+
+def pair_tests(p: Pipeline, s: "Settings", recs: pd.DataFrame, me: pd.Series, model: dict, a: str, b: str) -> tuple[list[dict], list[dict]]:
+    """One scored pair (its row `me` of scored_again's table; `recs`, the records it touched), as people can follow it,
+    `a`'s side first: per comparison the step it reached and its bits; and every step's tests, top to bottom, with the
+    values each compared as written (raw), after each normalizer (prep) and as compared (a, b), its score and whether it
+    passed. The engine stops at a comparison's first test that passes; these are all of them. O(K·L)."""
+    from er.strings import FUNCTIONS
+    shown = lambda v: None if pd.isna(v) else v  # a value as JSON carries it: no NaN
+    by_gamma, comps = levels(model), [c for c in p.fs.model.comparisons if f"gamma_{c.name}" in me.index]
+
+    def test(c: object, step: str, col: str, comp: object) -> dict:
+        name = comp.column(col)
+        va, vb = (shown(recs.at[x, name]) if name in recs.columns else None for x in (a, b))
+        raw = [shown(recs.at[x, col]) if col in recs.columns else None for x in (a, b)]  # as written, before the normalizers
+        steps = [prepared(str(v), comp.normalize, s.standardize) if v is not None and comp.normalize else [] for v in raw]
+        chain = next((x for x in steps if x), [])  # both sides go through the same steps; a missing side has none
+        prep = [[step_, *(side[k][1] if side else None for side in steps)] for k, (step_, _) in enumerate(chain)]
+        if va is None or vb is None:
+            score, passed = None, False
+        elif comp.function == "exact":
+            score, passed = float(va == vb), va == vb
+        else:
+            f = FUNCTIONS[comp.function]
+            score = float(f.scorer(str(va), str(vb)))
+            passed = score >= comp.threshold if f.similarity else score <= comp.threshold
+        return dict(comparison=c.name, step=step, field=col, function=comp.function, threshold=comp.threshold, normalize=" ".join(comp.normalize),
+                    raw=raw, prep=prep, a=va, b=vb, score=None if score is None else round(score, 4), passed=bool(passed))
+    comparisons = [dict(comparison=c.name, reached=label, bits=round(bits, 2)) for c in comps for label, bits in [by_gamma[c.name][int(me[f"gamma_{c.name}"])]]]
+    return comparisons, [test(c, lv.label, col, comp) for c in comps for lv in c.levels for col, comp in lv.any_of]
+
+
+def describe_key(out: Path, p: Pipeline, s: "Settings", name: str, cap: int = 12) -> dict:
+    """One pair key of the run in `out`, to inspect: what it lists and on which fields; the pairs it listed, the links it
+    found and those only it found (up to 3, to explain). For a key of equal values or of one-letter deletions, how many
+    records share each of its values (1 … 9, 10 or more), its largest values, and one group: the records of the value
+    behind a link only it found (else any link it found), at most `cap`. For sorted neighbours, the records around such
+    a link in its sort order. O(N) for the sizes (O(N·L) with deletions), on the run's prepared records."""
+    from er.candidates import Records, _rows, block_cols
+    from er.config import keys_of
+    b = next((x for x in p.fs.blockers if x.name == name), None)
+    if b is None:
+        raise InputError(f"{name}: no pair key of the method has that name", fix="see them: nayose describe matching --workspace …")
+    if not (out / "gold.parquet").exists():
+        raise InputError(f"no run in {out}", fix="find matches first: nayose resolve records --workspace …")
+    uid, l, r = s.data.unique_id, q(f"{s.data.unique_id}_l"), q(f"{s.data.unique_id}_r")
+    read = lambda what: f"read_parquet({lit(out / what)}, union_by_name = true)"
+    con = duckdb.connect()
+    con.execute(f"CREATE TABLE er_dk AS SELECT * FROM {read('state/records/*.parquet')}")
+    have = {c for c, in con.execute("SELECT column_name FROM (DESCRIBE er_dk)").fetchall()}
+    keys = keys_of(b)
+    log = json.loads((out / "steps.json").read_text(encoding="utf-8"))["runs"] if (out / "steps.json").exists() else []
+    listed = sum(g["pairs"] for run in log for x in run["steps"] for g in x.get("generators", ()) if g["name"] == name)
+    links = f"SELECT {l} AS a, {r} AS z, match_weight, sources FROM {read('matches/*.parquet')}"
+    matched, only_n = con.execute(f"SELECT count(*) FILTER (WHERE list_contains(string_split(sources, '+'), ?)), count(*) FILTER (WHERE sources = ?) FROM ({links})",
+                                  [name, name]).fetchall()[0]
+    only = [[a, z, round(float(w), 1)] for a, z, w in con.execute(f"SELECT a, z, match_weight FROM ({links}) WHERE sources = ? ORDER BY hash(a || z) LIMIT 3", [name]).fetchall()]
+    pick = only[0][:2] if only else next(iter(con.execute(f"SELECT a, z FROM ({links}) WHERE list_contains(string_split(sources, '+'), ?) ORDER BY hash(a || z) LIMIT 1",
+                                                          [name]).fetchall()), None)
+    shown = [c for c in dict.fromkeys([*(k.column for k in keys), "full_name", "company_name", "address"]) if c in have]
+    row = lambda x: {"id": x[0], **{c: (None if pd.isna(v) else v) for c, v in zip(shown, x[1:])}}
+    cols = ", ".join([q(uid), *(q(c) for c in shown)])
+    out_ = dict(name=name, method=type(b).__name__, keys=[dict(field=k.column, normalize=list(k.normalize)) for k in keys], pairs=listed,
+                matched=matched, only=only_n, examples=only, sizes=None, largest=[], group=None, around=None)
+    if not all(k.name in have for k in keys):  # turned off: a field it reads is not in the file
+        return out_
+    rec = Records("er_dk", uid, con)
+    if isinstance(b, (KeyBlocker, DeletionKeys)):
+        bc = block_cols(b)
+        groups = f"SELECT {', '.join(bc)}, count(*) AS n FROM {_rows(b, rec)} GROUP BY ALL"
+        out_["sizes"] = [dict(records=a, values=c) for a, c in con.execute(f"SELECT least(n, 10), count(*) FROM ({groups}) GROUP BY 1 ORDER BY 1").fetchall()]
+        out_["largest"] = [dict(value=" · ".join(str(v) for v in x[:-1]), records=x[-1]) for x in con.execute(f"SELECT * FROM ({groups}) ORDER BY n DESC LIMIT 3").fetchall()]
+        if pick:
+            rows_ = _rows(b, rec)
+            ids = [x for x, in con.execute(f"""SELECT x.{q(uid)} FROM {rows_} x JOIN (SELECT {', '.join(bc)} FROM {rows_} WHERE {q(uid)} = ? INTERSECT
+                SELECT {', '.join(bc)} FROM {rows_} WHERE {q(uid)} = ? LIMIT 1) k USING ({', '.join(c.strip('"') for c in bc)}) ORDER BY 1 LIMIT {cap + 1}""", list(pick)).fetchall()]
+            got = {x[0]: x for x in con.execute(f"SELECT {cols} FROM er_dk WHERE {q(uid)} IN (SELECT unnest(?))", [ids]).fetchall()}
+            value = con.execute(f"""SELECT {', '.join(bc)} FROM {rows_} WHERE {q(uid)} = ? INTERSECT SELECT {', '.join(bc)} FROM {rows_} WHERE {q(uid)} = ? LIMIT 1""", list(pick)).fetchall()
+            out_["group"] = dict(value=" · ".join(str(v) for v in value[0]) if value else None, pair=list(pick), records=[row(got[x]) for x in ids[:cap] if x in got],
+                                 more=len(ids) > cap)
+    elif isinstance(b, SortedNeighbourhood) and pick:  # the records around the pair in the key's order
+        k = q(b.key.name)
+        at = con.execute(f"""SELECT min(pos), max(pos) FROM (SELECT {q(uid)}, row_number() OVER (ORDER BY {k}, {q(uid)}) AS pos FROM er_dk WHERE {k} IS NOT NULL)
+            WHERE {q(uid)} IN (?, ?)""", list(pick)).fetchall()[0]
+        if at[0] is not None:
+            got = con.execute(f"""SELECT {cols}, {k} FROM (SELECT *, row_number() OVER (ORDER BY {k}, {q(uid)}) AS pos FROM er_dk WHERE {k} IS NOT NULL)
+                WHERE pos BETWEEN ? AND ? ORDER BY pos""", [max(at[0] - 2, 1), at[1] + 2]).fetchall()
+            out_["around"] = dict(window=b.window, pair=list(pick), records=[{**row(x[:-1]), "sorted_as": x[-1]} for x in got])
+    rec.close()
+    return out_
+
+
+def compare_records(out: Path, p: Pipeline, s: "Settings", first: str, others: list[str], cap: int = 50) -> dict:
+    """One record of the run in `out` against others (at most `cap`), each pair scored as the run scores: the records,
+    and per other its points, each comparison's step and every test, `first`'s side first (pair_tests). For people to
+    compare a record's candidates: another customer's records, or the rest of its own. O(cap·K·L)."""
+    from er.strings import connect
+    uid, first = s.data.unique_id, str(first)
+    others = [x for x in dict.fromkeys(map(str, others)) if x != first][:cap]
+    if not (out / "gold.parquet").exists():
+        raise InputError(f"no run in {out}", fix="find matches first: nayose resolve records --workspace …")
+    if not others:
+        raise InputError("no other record to compare with", fix="give the first record's ID, then one or more others")
+    con, db = connect(s.compute)
+    known = {x for x, in con.execute(f"SELECT {q(uid)} FROM read_parquet({lit(out / 'gold.parquet')}) WHERE {q(uid)} IN (SELECT unnest(?))", [[first, *others]]).fetchall()}
+    if missing := [x for x in (first, *others) if x not in known]:
+        raise InputError(f"{missing}: no record of the run in {out}", fix="check the IDs as the run wrote them: a spreadsheet may read 0000000151 as the number 151")
+    pairs = [tuple(sorted((first, x))) for x in others]
+    con.register("er_cr_df", pd.DataFrame(pairs, columns=[f"{uid}_l", f"{uid}_r"]))
+    con.execute("CREATE TABLE er_cr AS SELECT * FROM er_cr_df")
+    model = scored_again(con, db, out, uid, "er_cr", "er_cs")
+    scores = con.execute("SELECT * FROM er_cs").df().set_index([f"{uid}_l", f"{uid}_r"])
+    recs = con.execute("SELECT * FROM er_touched").df().set_index(uid)
+    fields = [f for f in s.columns if f not in ("id", "entity") and f in recs.columns]
+    record = lambda x: {"id": x, **{f: None if pd.isna(recs.at[x, f]) else recs.at[x, f] for f in fields}}
+    candidates = []
+    for x, key in zip(others, pairs):
+        me = scores.loc[key]
+        comparisons, tests = pair_tests(p, s, recs, me, model, first, x)
+        candidates.append(dict(id=x, weight=round(float(me["match_weight"]), 2), comparisons=comparisons, tests=tests))
+    return dict(first=first, records=[record(x) for x in (first, *others)], candidates=candidates)
+
+
+def entity_pairs(out: Path, s: "Settings", ids: list[str], links: list[dict], cap: int = 50) -> dict:
+    """Inside an entity of 2 to `cap` records (describe_entity's, sorted): every pair scored as the run scores, with
+    what linked it directly (a rule, the model, people), none when only other records join it, and the step each
+    comparison reached with its bits; and its weakest links, those whose loss would split it. O(n²·K) to score,
+    O(E·(n + E)) for the weakest, n records and E links."""
+    from er.strings import connect
+    uid = s.data.unique_id
+    if not 2 <= len(ids) <= cap:
+        return dict(pairs=[], weakest=[], capped=len(ids) > cap)
+    con, db = connect(s.compute)
+    con.register("er_ep_df", pd.DataFrame([(x, y) for i, x in enumerate(ids) for y in ids[i + 1:]], columns=[f"{uid}_l", f"{uid}_r"]))
+    con.execute("CREATE TABLE er_ep AS SELECT * FROM er_ep_df")
+    model = scored_again(con, db, out, uid, "er_ep", "er_es")
+    by: dict[tuple, list] = {}
+    for x in links:
+        by.setdefault((x[f"{uid}_l"], x[f"{uid}_r"]), []).append(x["by"])
+    edges = [e for e, how in by.items() if any(h != "people: no_match" for h in how)]
+
+    def splits(without: tuple) -> bool:
+        seen, todo = {ids[0]}, [ids[0]]
+        while todo:
+            v = todo.pop()
+            for e in edges:
+                if e != without and v in e and (o := e[1] if e[0] == v else e[0]) not in seen:
+                    seen.add(o)
+                    todo.append(o)
+        return len(seen) < len(ids)
+    by_gamma = levels(model)
+    gammas = [c for c, *_ in con.execute("DESCRIBE er_es").fetchall() if c.startswith("gamma_") and c.removeprefix("gamma_") in by_gamma]
+    rows = con.execute(f"SELECT {q(uid + '_l')}, {q(uid + '_r')}, match_weight, {', '.join(q(g) for g in gammas) or 'NULL'} FROM er_es ORDER BY 1, 2").fetchall()
+    steps = lambda gs: [dict(comparison=g.removeprefix("gamma_"), reached=label, bits=round(bits, 2))
+                        for g, v in zip(gammas, gs) for label, bits in [by_gamma[g.removeprefix("gamma_")][int(v)]]]
+    return dict(pairs=[dict(id_l=x, id_r=y, weight=round(w, 2), by=by.get((x, y), []), comparisons=steps(gs)) for x, y, w, *gs in rows],
+                weakest=[dict(id_l=x, id_r=y) for x, y in edges if splits((x, y))], capped=False)
+
+
+def list_patterns(out: Path, p: Pipeline) -> dict:
+    """The model's pairs of the whole run as patterns, one step per comparison: per pattern its pairs and their mean
+    points, how many merged, how many are on the review sheet for people (wait), how many more were in its band but not
+    asked (held: their records are one customer already, another pair of the same two customers is asked, or, with a
+    trust line, they are outside its sample), how many stayed apart, and three of them to explain. From the score steps
+    in steps.json, the full run's and each increment's (Run.score), and the sheet. O(P + S) for P patterns, S sheet rows."""
+    log = json.loads((out / "steps.json").read_text(encoding="utf-8"))["runs"] if (out / "steps.json").exists() else []
+    acc: dict[tuple, list] = {}
+    fields: list[str] = []
+    for x in (x for run in log for x in run["steps"] if x.get("patterns")):
+        fields = x["patterns"]["fields"]
+        for *g, pairs, points, merged, wait, some in x["patterns"]["rows"]:
+            have = acc.setdefault(tuple(g), [0, 0.0, 0, 0, []])
+            have[:4] = [have[0] + pairs, have[1] + pairs * points, have[2] + merged, have[3] + wait]
+            have[4] = (have[4] + some)[:3]
+    by_gamma = levels(run_model(out)) if acc else {}
+    sheet = pd.read_parquet(out / "review.parquet") if acc and (out / "review.parquet").exists() else pd.DataFrame()
+    shown = [f for f in fields if f in sheet.columns]
+    asked = (sheet[sheet["why"] == "decide"].fillna({f: "missing" for f in shown}).groupby(shown).size().to_dict() if len(shown) == len(fields) and len(sheet) else {})
+    on_sheet = lambda steps: asked.get(tuple(steps[f] for f in fields) if len(fields) > 1 else steps[fields[0]], 0)
+    rows = []
+    for g, (n, total, merged, band, some) in acc.items():
+        steps = {f: by_gamma[f][v][0] for f, v in zip(fields, g) if f in by_gamma}
+        wait = on_sheet(steps) if asked else band
+        rows.append(dict(key=".".join(map(str, g)), steps=steps, bits={f: round(by_gamma[f][v][1], 1) for f, v in zip(fields, g) if f in by_gamma}, pairs=n,
+                         points=round(total / n, 2), merged=merged, wait=wait, held=max(band - wait, 0), apart=n - merged - max(band, wait),
+                         examples=[dict(id_l=a, id_r=b) for a, b in some]))
+    rows.sort(key=lambda x: -x["points"])
+    return dict(fields=fields, pairs=sum(x["pairs"] for x in rows), threshold=p.fs.min_match_weight, patterns=rows)

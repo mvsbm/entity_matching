@@ -858,7 +858,7 @@ def test_a_workspace_keeps_its_own_mapping_and_a_copy_of_its_files(tmp_path, pop
     a, b = Path("workspaces/a"), Path("workspaces/b")
 
     code, e = say("load", "records", "theirs.parquet", "--workspace", a)  # copied, then described: the ID is not where the mapping looks
-    assert code == 0 and [(x["field"], x["column"]) for x in e["suggested"]] == [("id", "customer_no")] and "turned_off" not in e  # nothing prepared
+    assert code == 0 and [(x["field"], x["column"]) for x in e["suggested"]] == [("id", "customer_no")]
     code, e = say("check", "records", a / "inputs" / "0001-theirs", "--workspace", a)  # the full check stops, and says the line to run
     assert code == 2 and e["hints"] == {"id": "customer_no"} and "set columns id=customer_no --workspace" in e["fix"]
     assert folder.sums(a / "inputs" / "0001-theirs") == {"theirs.parquet": sha256(tmp_path / "theirs.parquet")}
@@ -1391,6 +1391,9 @@ def test_nayose_takes_a_file_from_the_check_to_people_s_answers(tmp_path, popula
         return r
 
     assert say("check", "records", tmp_path / "first.parquet")["records"] == half
+    g.df.iloc[:half].drop(columns=["PHONE_NUM_4"]).to_parquet(tmp_path / "no_phone.parquet", index=False)
+    off = say("check", "records", tmp_path / "no_phone.parquet")["turned_off"]  # the full check: what a run would turn off
+    assert off and say("describe", "records", tmp_path / "no_phone.parquet")["turned_off"] == off  # the same, from the mapping alone
     assert say("resolve", "records", tmp_path / "first.parquet", "--workspace", run)["summary"][0][0] == "records"
     pair = say("list", "pairs", "--workspace", run, "--open")["pairs"][0]
     say("decide", "pair", pair["id_r"], pair["id_l"], "match", "--workspace", run)  # either order
@@ -1404,6 +1407,33 @@ def test_nayose_takes_a_file_from_the_check_to_people_s_answers(tmp_path, popula
     assert pd.read_parquet(run / "gold.parquet").set_index(uid).loc[record, ["kind", "kind_by"]].tolist() == [2, "people"]
     entity = say("describe", "entity", pair["id_l"], "--workspace", run)
     assert {pair["id_l"], pair["id_r"]} <= {x["id"] for x in entity["records"]} and any(x["by"] == "people: match" for x in entity["links"])
+    n = len(entity["records"])
+    assert len(entity["pairs"]) == n * (n - 1) // 2 and {(x["id_l"], x["id_r"]) for x in entity["weakest"]} <= {(x["id_l"], x["id_r"]) for x in entity["links"]}
+    why = say("explain", "pair", pair["id_r"], pair["id_l"], "--workspace", run)
+    assert (why["id_l"], why["id_r"]) == (pair["id_l"], pair["id_r"]) and why["same_customer"] and why["found"]["people"] == "match"
+    assert why["pairs_all"] == half * (half - 1) // 2 and abs(why["prior"] - math.log2(why["pairs_same"] / (why["pairs_all"] - why["pairs_same"]))) < 0.05  # the start, in counts
+    for c in why["comparisons"]:  # the step Python's scorers pass first is the step Splink's SQL reached
+        tests = [x for x in why["tests"] if x["comparison"] == c["comparison"]]
+        first = next((x["step"] for x in tests if x["passed"]), None)
+        assert c["reached"] == first or (first is None and c["reached"] in ("else", "missing")), (c, tests)
+    assert abs(why["weight"] - why["prior"] - why["common"] - sum(c["bits"] for c in why["comparisons"])) < 0.05
+    assert all(x["prep"][-1][1:] == [x["a"], x["b"]] for x in why["tests"] if x["prep"])  # each normalizer step shown ends at the value compared
+    ids = [x["id"] for x in entity["records"]]
+    compared = say("compare", "records", ids[0], *ids[1:], "--workspace", run)  # one record against the rest of its customer
+    assert [x["id"] for x in compared["candidates"]] == ids[1:] and compared["records"][0]["id"] == ids[0]
+    for k in compared["candidates"]:  # each comparison's step: the one its first passing test sets; the first record's side first
+        for c in k["comparisons"]:
+            tests = [x for x in k["tests"] if x["comparison"] == c["comparison"]]
+            first = next((x["step"] for x in tests if x["passed"]), None)
+            assert c["reached"] == first or (first is None and c["reached"] in ("else", "missing")), (c, tests)
+        assert all(x["raw"][0] == compared["records"][0][x["field"]] for x in k["tests"] if x["field"] in compared["records"][0])
+    patterns = say("list", "patterns", "--workspace", run)
+    scored = next(x for x in json.loads((run / "steps.json").read_text())["runs"][0]["steps"] if x["step"] == "score")
+    assert patterns["pairs"] == sum(scored["reached"][patterns["fields"][0]].values())
+    assert sum(x["merged"] for x in patterns["patterns"]) == len(pd.read_parquet(run / "matches"))  # no decision yet said no
+    assert all(x["merged"] + x["wait"] + x["held"] + x["apart"] == x["pairs"] and 0 < len(x["examples"]) <= 3 for x in patterns["patterns"])
+    sheet = pd.read_parquet(run / "review.parquet")
+    assert sum(x["wait"] for x in patterns["patterns"]) == (sheet["why"] == "decide").sum()  # what waits is what the sheet asks
     matched = say("match", "records", tmp_path / "new.parquet", "--workspace", run)
     assert len(matched["records"]) == len(g.df) - half and set(matched["counts"]) <= {"joins an entity", "a new entity"}
     added = say("add", "records", tmp_path / "new.parquet", "--workspace", run)
@@ -1411,6 +1441,39 @@ def test_nayose_takes_a_file_from_the_check_to_people_s_answers(tmp_path, popula
     assert say("describe", "workspace", run)["records"] == len(g.df)
     graph = say("describe", "matching", "--workspace", run)
     assert {n["id"] for n in graph["nodes"]} >= {"rules", "candidates", "score", "group"} and graph["edges"]
+
+
+def test_split_entity_splits_only_at_a_link_that_alone_holds_it_and_the_split_stays(tmp_path, population, capsys):
+    from er.cli import main
+    s, p, g = population
+    g.df.to_parquet(tmp_path / "all.parquet", index=False)
+    run = tmp_path / "run"
+
+    def say(*words: object) -> tuple[int, dict]:
+        code = main([*map(str, words), "--format", "json"])
+        return code, json.loads(capsys.readouterr().out.splitlines()[-1])
+
+    assert say("resolve", "records", tmp_path / "all.parquet", "--workspace", run)[0] == 0
+    gold = pd.read_parquet(run / "gold.parquet")
+    held, spare = None, None  # an entity a link alone holds together; one with a link others stand in for
+    for cluster in gold["cluster_id"].value_counts().loc[lambda n: n >= 2].index:  # two records: their one link holds them
+        _, e = say("describe", "entity", cluster, "--workspace", run)
+        inside, bridges = {(x["id_l"], x["id_r"]) for x in e["pairs"] if x["by"]}, {(x["id_l"], x["id_r"]) for x in e["weakest"]}
+        held = held or (bridges and (cluster, sorted(bridges)[0]))
+        spare = spare or (inside - bridges and (cluster, sorted(inside - bridges)[0]))
+    assert held, "no entity held by a single link"
+    if spare:
+        code, refused = say("split", "entity", spare[0], "--between", *spare[1], "--workspace", run)
+        assert code != 0 and "other links still join them" in refused["error"]  # it would split nothing
+    code, refused = say("split", "entity", held[0], "--between", held[1][0], "not-a-record", "--workspace", run)
+    assert code != 0 and "not both records of the entity" in refused["error"]
+    cluster, (a, b) = held
+    code, _ = say("split", "entity", cluster, "--between", a, b, "--workspace", run)
+    after = pd.read_parquet(run / "gold.parquet").set_index(s.data.unique_id)["cluster_id"]
+    assert code == 0 and after[a] != after[b]  # split where that link held it
+    assert say("rerun", "records", "--workspace", run)[0] == 0  # and it stays split: people's "different" is kept
+    again = pd.read_parquet(run / "gold.parquet").set_index(s.data.unique_id)["cluster_id"]
+    assert again[a] != again[b]
 
 
 def test_a_nearly_empty_field_is_kept_and_the_fit_skips_what_it_cannot_learn_from(tmp_path, population):
@@ -2221,7 +2284,7 @@ def test_the_page_answers_once_per_key_shows_any_row_and_says_when_the_server_is
         page.goto(f"http://127.0.0.1:{httpd.server_address[1]}/?token={server.token}")
         page.wait_for_selector(".next")
         page.evaluate("setWorkspace('')")  # the first screen of a new user: no workspace
-        page.wait_for_selector(".empty .node.static")
+        page.wait_for_selector(".welcome .example .node.static")  # what it does, by an example, before anything else
         assert page.inner_text("h1").endswith("Choose a workspace") and page.get_attribute(".rail li:first-child .navitem", "aria-current") == "page"
         assert page.get_attribute(".navitem[data-screen=records]", "aria-current") == "false"  # the highlight is where you are
         assert all(b.is_disabled() for b in page.query_selector_all("[data-loop]")) and page.is_disabled("#search")  # off until the first run
@@ -2235,7 +2298,10 @@ def test_the_page_answers_once_per_key_shows_any_row_and_says_when_the_server_is
         page.fill("#cin", str(tmp_path / "theirs.parquet"))
         page.click("#load")  # copied into it, then described
         page.wait_for_selector("details.fgroup[data-g='ID'][open]", timeout=60_000)  # the ID it can't find opens its group
-        assert page.inner_text("#files").startswith("0001-theirs") and "Record ID needed" in page.inner_text("details.fgroup[data-g='ID'] summary")
+        assert page.text_content("#files").startswith("0001-theirs") and "Record ID needed" in page.inner_text("details.fgroup[data-g='ID'] summary")
+        assert page.inner_text("#loaded h2.question") == "Did your file load?" and page.inner_text("#loaded .answer").startswith("Not yet")  # its question first
+        loaded, groups = page.query_selector("#loaded").bounding_box(), page.query_selector("#out").bounding_box()
+        assert loaded["y"] + loaded["height"] <= groups["y"]  # did it load, then the columns by field: in reading order
         columns = tmp_path / "workspaces" / "fresh" / "columns.toml"
         page.click("[data-suggest='ID']")  # what the file's contents place there, shown, then kept
         page.click(".drop[data-slot='ID/Record ID'] [data-keep]")
@@ -2262,13 +2328,13 @@ def test_the_page_answers_once_per_key_shows_any_row_and_says_when_the_server_is
         page.wait_for_function("() => !document.querySelector(\".drop[data-slot='Name/Kanji name']\")")
         assert "person_name_2" not in columns.read_text()
         page.click(".navitem[data-screen=columns]")
-        page.wait_for_selector("#files .tag")  # its description starts now
+        page.wait_for_selector("#files .tag", state="attached")  # its description starts now
         page.click(".navitem[data-screen=run]")
         page.wait_for_timeout(1500)
         assert not page.query_selector("details.fgroup")  # the page left draws nothing on the page now open
-        page.wait_for_selector(".card.ready [data-first]")  # before a first run: the file, its size, one button
-        assert page.inner_text(".card.ready").startswith("theirs · 492 records") and not page.query_selector("[data-act='rerun records']")
-        page.click("[data-act='resolve records']")  # the file loaded last: nothing to type
+        page.wait_for_selector("#out [data-first]")  # before a first run: how many records, how long, one button
+        assert "492 records" in page.inner_text("#out .card") and "theirs" in page.inner_text("#out .card") and not page.query_selector("[data-act='rerun records']")
+        page.click("#out [data-first]")  # the file loaded last: nothing to type
         page.wait_for_function("() => document.querySelector('#equiv-line').textContent.includes('resolve records')")
         assert not page.query_selector("#f-input") and "theirs · 492 records" in page.inner_text("dialog .about") and "theirs.parquet" not in page.inner_text("#equiv-line")
         page.keyboard.press("Escape")
@@ -2300,14 +2366,78 @@ def test_the_page_answers_once_per_key_shows_any_row_and_says_when_the_server_is
         page.click(".navitem[data-screen=run]")
         page.wait_for_selector(".node[data-node=candidates]")
         assert [n.get_attribute("data-node") for n in page.query_selector_all(".flow .node")] == ["records", "rules", "candidates", "score", "accept", "people", "group"]
+        questions = page.evaluate("STAGE_Q")
+        for node in ["records", "rules", "candidates", "score", "accept", "people", "group"]:  # each stage answers its question first
+            page.click(f".node[data-node={node}]")
+            page.wait_for_selector(".detail h2.question")
+            assert page.inner_text(".detail h2.question") == questions[node]
+            if node != "score":
+                assert page.inner_text(".detail .qa .answer").strip()  # and says its answer in a sentence
+        page.click(".node[data-node=rules]")
+        page.click(".detail .pq-more summary")  # its detail, folded: each rule opens its lowest-scoring pairs
+        page.click(".detail [data-rule]")
+        page.wait_for_selector(".detail .pn-drawer")
         page.click(".node[data-node=candidates]")
-        assert page.query_selector_all(".detail .bar")  # each generator drawn as a bar, its pairs as its length
+        assert "possible pairs" in page.inner_text(".detail .pq-pic")
+        page.click(".detail .pq-more summary")
+        page.click(".detail [data-key]")
+        page.wait_for_function("() => document.querySelector('.detail .pn-drawer')?.textContent.includes('pairs listed')", timeout=30_000)  # a key, inspected
+        page.click(".node[data-node=accept]")
+        page.click(".detail .pn-band >> nth=-1")
+        page.wait_for_selector(".detail .pn-picked .pn-drawer")  # a band of points opens what happened to its pairs
+        page.click(".detail .pq-more summary")
+        page.wait_for_selector("#ptable tr[data-i]")  # every pattern of what the comparisons said, in its detail
+        page.click(".node[data-node=group]")
+        assert "entities" in page.inner_text(".detail .qa .answer")
+        page.click(".node[data-node=score]")
+        page.wait_for_selector(".detail .pn-view .wf-grid", timeout=30_000)  # one pair first: how it scored, step by step
+        first = page.inner_text(".detail .pn-view .answer")
+        page.click(".detail [data-another]")
+        page.wait_for_function("(was) => { const p = document.querySelector('.detail .pn-view .answer'); return p && p.innerText !== was; }", arg=first, timeout=30_000)
+        page.click(".detail [data-view=most]")
+        assert page.query_selector(".detail .pn-view .pn-bar")  # what counts most
+        page.click(".detail .pq-more summary")
+        page.click(".detail .pn-comp summary b >> nth=0")  # every comparison: one opens its staircase (its bar's parts open a replay)
+        page.wait_for_selector(".stair button[data-step]")  # every step's test replayable
+        chips = page.query_selector_all(".stair button[data-step]")
+        chips[0].hover()
+        chips[1].hover()  # asked before the first one's pair is back: only the second plays, on a pair that stopped at its step
+        page.wait_for_function("(s) => document.querySelector('.scene:popover-open .scope')?.textContent.startsWith(`Why this match? · “${level(s.split('|')[1])}”`)",
+                               arg=chips[1].get_attribute("data-step"), timeout=30_000)
+        page.wait_for_selector(".scene:popover-open .stage text", timeout=30_000)  # replayed on a pair of this run
         page.click(".navitem[data-screen=pairs]")
         page.wait_for_selector("[data-a=match]")
-        assert page.query_selector(".ruler") and page.query_selector(".ladder i.on")  # the evidence against the line, each comparison's step
+        assert page.query_selector(".wf-grid .wf rect.for")  # each comparison moves the total, from the start, toward the line
+        assert not page.query_selector(".scene:popover-open")  # another page: the replay closed with the one it was on
+        page.wait_for_selector(".wf-grid [data-how]")  # then the test that set each step, and what found the pair
+        assert page.query_selector(".found-path .tag") and "points: about" in page.inner_text(".odds")
+        page.hover(".wf-grid [data-how]:not([disabled])")
+        page.wait_for_selector(".scene:popover-open .stage text")  # the test replayed over the page, on this pair's values
+        page.keyboard.press("Escape")
+        assert not page.query_selector(".scene:popover-open")
+        from er.standardize import normalize, prepared
+        from er.strings import FUNCTIONS
+        cases = [("jaro_winkler", "MARTHA", "MARHTA"), ("jaro_winkler", "DIXON", "DICKSONX"), ("jaro_winkler", "ハツトリソウタロウ", "ハツトリソウタ"),
+                 ("jaro_winkler", "服部蒼太朗", "服部聡太"), ("jaro_winkler", "ABC", "XYZ"), ("jaro", "CRATE", "TRACE"), ("levenshtein", "kitten", "sitting"),
+                 ("levenshtein", "大田区東蒲田1-9-19", "大田区東蒲田1-8-10"), ("damerau_levenshtein", "CA", "ABC"), ("damerau_levenshtein", "ab", "ba"),
+                 ("damerau_levenshtein", "1425055915260", "1425055945260"), ("hamming", "1649", "1149"), ("hamming", "1234", "123"), ("jaccard", "サトウ", "サイトウ")]
+        got = page.evaluate("(cs) => cs.map(([f, a, b]) => traceScore(f, a, b))", cases)  # what a scene ends on: the engine's own number
+        assert got == pytest.approx([FUNCTIONS[f].scorer(a, b) for f, a, b in cases]), list(zip(cases, got))
+        raws = [("ハッドリソウタ", ("kana_fold",)), ("東京都大田区東蒲田1丁目9番19号\u3000メゾン青葉806", ("address",)),
+                ("イガイカブシキガイシャ", ("nfkc", "strip_legal_form", "kana_fold"))]
+        chains = [prepared(v, steps, s.standardize) for v, steps in raws]
+        assert [c[-1][1] for c in chains] == [normalize(pd.Series([v]), steps, s.standardize).iloc[0] for v, steps in raws]
+        notes = page.evaluate("""(cs) => cs.map(([raw, steps]) => {  // each step replayed: the letters it leaves are the engine's
+            let v = raw, notes = [];
+            for (const [step, after] of steps) { if (after === v) continue; const t = stepTrace(v, after, step); if (t.result !== after) return null; notes.push(...t.notes); v = after; }
+            return notes; })""", [[v, c] for (v, _), c in zip(raws, chains)])
+        assert notes[0] == ["small kana → big", "゛ off"] and notes[2] == ["legal form dropped", "゛ off"]
+        assert notes[1] == ["full width → half", "丁目・番地・号 → -", "building and room dropped", "prefecture dropped"]
         path = page.inner_text("#path")  # how much each part covers: all the records, the pairs listed, the one shown
         assert re.fullmatch(r"All [\d,]+ records\s*›\s*[\d,]+ pairs to review\s*›\s*This pair · \d+ of [\d,]+", path), path
-        assert page.query_selector(".zone.all .flow") and page.inner_text(".card.one .question").startswith("Same customer?")
+        assert page.query_selector(".zone.all .flow") and page.inner_text(".card.one .question").startswith("Same entity?")
+        card, queue = page.query_selector("#right .card.one").bounding_box(), page.query_selector(".queue").bounding_box()
+        assert card["x"] < queue["x"] and card["width"] > queue["width"]  # the pair asked about first and wide, its queue after
         assert not page.query_selector(".stepfoot a.filled")  # pairs still open here: the way on doesn't stand out yet
         page.click(".stepfoot a[data-go=kinds]")
         page.wait_for_selector("h1:has-text('Confirm person or company')")
@@ -2353,8 +2483,11 @@ def test_the_improve_page_tries_a_line_once_adopts_it_and_opens_the_next_round(t
         assert "round 1" in page.inner_text(".rail li.loopstep .sub")  # the loop, under step 4
         page.click(".navitem[data-screen=pairs]")
         page.click(".stepfoot [data-go=improve]")  # from step 4's foot
+        page.wait_for_selector("#out h2.question")
+        assert page.inner_text("#out h2.question") == "Is the matching good enough yet?" and "Not known yet" in page.inner_text("#out .qa .answer")
+        assert page.inner_text("h1") == "Improve matching" and "as tuned" in page.text_content("#rounds")
+        page.click("details:has(#line) > summary")
         page.wait_for_selector("#line svg")
-        assert page.inner_text("h1") == "Improve matching" and "as tuned" in page.inner_text("#rounds")
         line = p.fs.min_match_weight
         page.fill("#at", f"{line + 2:g}")  # the line dragged: counted at once, and offered as a trial
         page.dispatch_event("#at", "input")
@@ -2368,7 +2501,7 @@ def test_the_improve_page_tries_a_line_once_adopts_it_and_opens_the_next_round(t
         assert page.inner_text("h1").endswith("Review possible matches") and folder.method(ws) == {"line": line + 2}
         page.wait_for_function("() => document.querySelector('.rail li.loopstep .sub').textContent.includes('round 2')")
         page.click(".navitem[data-screen=improve]")
-        page.wait_for_selector("#line svg")
+        page.wait_for_selector("#out h2.question")
         assert "Back to the tuned method" in page.inner_text("#out") and not page.query_selector(".trial")  # the trial adopted: no card
         browser.close()
     httpd.shutdown()
@@ -2401,17 +2534,30 @@ def test_step_4_shows_the_trust_line_lowers_it_and_an_answer_waits_out_a_busy_wo
         assert page.inner_text(".rail li:last-child .sub") == "none joined yet"  # step 6: nothing joined, nothing to see
         page.evaluate("scrollTo(0, 400)")
         page.click(".navitem[data-screen=run]")
-        page.wait_for_selector(".card.ready")  # step 3, opened at its top: what the run did, and what waits
-        said = page.inner_text(".card.ready")
-        assert page.evaluate("scrollY") == 0 and "Nothing merged yet: you check pairs first · 20+ can merge now" in said  # nothing scores 20 here
-        assert page.query_selector(".flow .node[data-node=people]") and page.query_selector(".card.ready [data-go=pairs]")
+        page.wait_for_selector("#out h2.question.big")  # step 3, opened at its top: what the run did, and what waits
+        said = page.inner_text("#out .card")
+        assert page.evaluate("scrollY") == 0 and "Nothing merged by points yet: you check pairs first · 20+ can merge now" in said  # nothing scores 20 here
+        assert page.query_selector(".flow .node[data-node=people]") and page.query_selector("#out .card [data-go=pairs]")
+        answer, strip_ = page.query_selector("#out .card").bounding_box(), page.query_selector("#flow").bounding_box()
+        assert answer["y"] + answer["height"] <= strip_["y"]  # what it found, then how: in reading order
         page.click("[data-act='add records']")  # a new file, never the one matched already
         page.wait_for_selector("#f-input")
         assert page.get_attribute("#f-input", "required") is not None and page.get_attribute("#f-input", "placeholder") == "the new records file"
         page.keyboard.press("Escape")
+        page.click(".node[data-node=accept]")
+        page.click(".detail .pq-more summary")
+        page.click("#ptable tr[data-i]")  # the run as patterns, in Matched's detail: one picked, its pairs to explain
+        page.click("#pex [data-x]")
+        page.wait_for_selector("dialog .wf-grid")
+        assert page.inner_text("dialog h2").startswith("Why these two scored")
+        page.click("dialog [data-how]")  # its steps, kept open over the dialog: the popup's own buttons answer there too
+        page.wait_for_selector(".scene:popover-open .stage text")
+        page.click(".scene [data-x]")
+        assert not page.query_selector(".scene:popover-open") and page.query_selector("dialog[open]")
+        page.keyboard.press("Escape")
         page.click(".navitem[data-screen=pairs]")
         page.wait_for_selector(".trustbar")
-        assert page.inner_text(".trustbar").startswith("Nothing merges by itself yet")
+        assert page.inner_text(".trustbar").startswith("Nothing merges by points yet")
         page.click("[data-trust='lower trust']")  # nothing scores 20 on this population: that range merges at once
         page.click("dialog button[value=run]")
         page.wait_for_selector("#note .banner", timeout=120_000)
@@ -2457,6 +2603,27 @@ def test_describe_matching_draws_the_pipeline_with_the_run_s_numbers(tmp_path, p
     assert nodes["accept"]["accepted"] == len(pd.read_parquet(out / "matches")) and nodes["customers"]["count"] == gold["cluster_id"].nunique()
     levels = [lv for c in nodes["score"]["comparisons"] for lv in c["levels"] if lv["m"]]
     assert levels and all(math.isclose(lv["bits"], math.log2(lv["m"] / lv["u"])) for lv in levels)  # each level's worth, as fitted
+    assert all(c["missing"] + sum(lv["pairs"] for lv in c["levels"]) == nodes["score"]["pairs"] for c in nodes["score"]["comparisons"])  # each pair stops at one step
+    for r in nodes["rules"]["rules"]:  # the model's points for each rule's pairs: every pair in one of three ranges
+        assert r["scores"] is None or sum(r["scores"].values()) == r["pairs"]
+    links = len(pd.read_parquet(out / "matches"))
+    assert sum(x["links"] for x in nodes["candidates"]["by_keys"]) == links and nodes["candidates"]["possible"] == len(gold) * (len(gold) - 1) // 2
+    sheet = pd.read_parquet(out / "review.parquet")
+    people = nodes["people"]
+    assert sum(n for _, n in nodes["accept"]["review_bands"]) == people["sheet"] == people["below"] + people["unnamed"] == (sheet["why"] == "decide").sum()
+    assert sum(p["pairs"] for p in people["patterns"]) <= people["sheet"]
+    group = nodes["group"]
+    assert sum(group["joined"].values()) == sum(z["records"] * z["customers"] for z in group["sizes"] if z["records"] > 1)  # who joined each joined record
+    assert group["look"]["single_links"]["customers"] <= sum(z["customers"] for z in group["sizes"] if z["records"] >= 3)
+    from er.report import describe_key
+    for name in [g["name"] for g in nodes["candidates"]["generators"] if g["method"] in ("same value", "sorted neighbours") and g["matched"]][:3]:
+        k = describe_key(out, p, s, name)
+        assert k["matched"] >= k["only"] and len(k["examples"]) <= 3
+        if k["sizes"] is not None:  # equal values: records per value, and one value's records, the link behind it among them
+            assert sum(z["records"] * z["values"] for z in k["sizes"] if z["records"] < 10) <= len(gold)
+            assert k["group"] is None or set(k["group"]["pair"]) <= {x["id"] for x in k["group"]["records"]} or k["group"]["more"]
+        else:  # sorted neighbours: the records around a link, in its order
+            assert k["around"] is None or [x["sorted_as"] for x in k["around"]["records"]] == sorted(x["sorted_as"] for x in k["around"]["records"])
     assert all(f["example"] for f in nodes["prepare"]["fields"] if f["filled"])  # a real value for every field the file fills
     bare = {n["id"]: n for n in describe_matching(duckdb.connect(), None, p, s)["nodes"]}  # no run yet: the methods only
     assert bare["records"]["count"] is None and bare["rules"]["rules"][0]["pairs"] is None and bare["score"]["comparisons"][0]["levels"][0]["bits"] is None

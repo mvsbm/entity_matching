@@ -562,7 +562,7 @@ METHOD_KEYS = ("line", "drop_rules", "drop_keys", "trust")
 
 def adjust(p: "Pipeline", method: Mapping[str, object]) -> "Pipeline":
     """The pipeline with a workspace's changes to the tuned method (method.toml): `line`, the weight pairs are accepted
-    at; `drop_rules`, sure-match rules left out; `drop_keys`, pair keys left out, each with the copies widen made of it
+    at; `drop_rules`, match rules left out; `drop_keys`, pair keys left out, each with the copies widen made of it
     (name@field); `trust`, the trust line (TrustRule): "none" (nothing merges without people) or one of its steps.
     Nothing changed: the same pipeline, so the same config hash. O(rules + generators)."""
     if not method:
@@ -582,7 +582,7 @@ def adjust(p: "Pipeline", method: Mapping[str, object]) -> "Pipeline":
     stages = tuple(s for s in (replace(s, rules=tuple(r for r in s.rules if r.name not in rules)) for s in p.rules.stages) if s.rules)
     blockers = tuple(b for b in p.fs.blockers if b.name not in keys and b.name.split("@")[0] not in keys)
     if not stages or not blockers:
-        raise InputError(f"method.toml leaves no {'sure-match rule' if not stages else 'pair key'}", fix)
+        raise InputError(f"method.toml leaves no {'match rule' if not stages else 'pair key'}", fix)
     return replace(p, rules=replace(p.rules, stages=stages), fs=replace(p.fs, blockers=blockers, min_match_weight=float(line)),
                    trust=p.trust if trust is None else replace(p.trust, line=math.inf if trust == "none" else float(trust)))
 

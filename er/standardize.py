@@ -1,7 +1,7 @@
 """Standardize: derived (fallback) columns, each record's kind and the name fields routed by it (er.kind), and the
 normalized copies of columns. O(N·L)."""
 import re
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -33,12 +33,31 @@ def normalize(s: pd.Series, steps: tuple[Normalizer, ...], std: Standardization)
             case "strip_legal_form":
                 s = s.str.replace(legal_pattern(std), "", regex=True)
             case "address":
-                s = s.str.normalize("NFKC")
-                for pattern, repl in std.address_replacements:
-                    s = s.str.replace(pattern, repl, regex=True)
-                s = s.str.split(std.address_cut_at).str[0]
-                s = s.str.replace(f"^(?:{'|'.join(map(re.escape, std.prefectures))})", "", regex=True)
+                for _, part in address_parts(std):
+                    s = part(s)
     return s.replace("", pd.NA)  # a value normalized away (a legal form alone) is missing, not one huge block of equal values
+
+
+def address_parts(std: Standardization) -> tuple[tuple[str, Callable[[pd.Series], pd.Series]], ...]:
+    """The address normalizer's parts, in order: normalize() applies them all, prepared() shows each."""
+    def rules(s: pd.Series) -> pd.Series:
+        for pattern, repl in std.address_replacements:
+            s = s.str.replace(pattern, repl, regex=True)
+        return s
+    return (("address:nfkc", lambda s: s.str.normalize("NFKC")), ("address:rules", rules),
+            ("address:cut", lambda s: s.str.split(std.address_cut_at).str[0]),
+            ("address:prefecture", lambda s: s.str.replace(f"^(?:{'|'.join(map(re.escape, std.prefectures))})", "", regex=True)))
+
+
+def prepared(value: str, steps: tuple[Normalizer, ...], std: Standardization) -> list[tuple[str, str | None]]:
+    """One value through each normalizer, the address one part by part: (step, the value after it). The last is what
+    normalize() gives; the steps between are for people to see what preparing a value did. O(steps·L)."""
+    s, out = pd.Series([value]), []
+    for step in steps:
+        for name, part in address_parts(std) if step == "address" else ((step, lambda x, one=(step,): normalize(x, one, std)),):
+            s = part(s)
+            out.append((name, None if pd.isna(s.iloc[0]) or s.iloc[0] == "" else str(s.iloc[0])))
+    return out
 
 
 def prepare(std: Standardization, records: pd.DataFrame, normalized: Iterable[tuple[str, tuple[Normalizer, ...]]],
