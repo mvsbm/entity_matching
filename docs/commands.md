@@ -525,7 +525,7 @@ Records and entities, the largest entities, each run so far, the pairs and kinds
 | `records` | records |
 | `entities` | entities |
 | `largest` | the 10 largest entities |
-| `runs` | each run so far: at, what, files, seconds |
+| `runs` | each run so far: at, what, the record files it read, seconds |
 | `pairs` | open pairs to decide and audit, and decisions written in |
 | `kinds` | open records to decide and to measure, and answers written in |
 | `set_aside` | records set aside |
@@ -726,6 +726,7 @@ From the run in the workspace and people's decisions: each round so far (a round
 | `round` | the round now (0: no round recorded) |
 | `rounds` | round, method, at, matched, expected_false, decided, audited, false_found |
 | `audits` | this round's audits: checked, false, at_most (the false rate's 95% upper bound) |
+| `dropped` | the rules and pair keys the method leaves out, each as describe matching words it (rules: exact, fuzzy; keys: method, keys) |
 | `to_decide` | pairs left to decide |
 | `bands` | weight_from, pairs, accepted |
 | `decided` | each pair people decided: id_l, id_r, decision, why, round, weight, named, rule |
@@ -947,7 +948,7 @@ nayose draw pairs --workspace workspaces/customers --count 50
 The pairs for people to decide and to audit.
 
 ```
-nayose list pairs --workspace WORKSPACE [--why decide|audit] [--open] [--format text|json]
+nayose list pairs --workspace WORKSPACE [--why decide|audit] [--open] [--pending] [--format text|json]
 ```
 
 The run's review.parquet: decide rows (the pairs just below the threshold, and those above it with no name compared) and audit rows (accepted pairs just above it), each with both records' fields, each comparison's level and bits, and a status: open, written in, or applied. O(sheet rows).
@@ -957,6 +958,7 @@ The run's review.parquet: decide rows (the pairs just below the threshold, and t
 | `--workspace WORKSPACE` | the workspace: the folder that keeps one matching job (required) |
 | `--why decide|audit` | decide or audit only |
 | `--open` | only the rows nobody has answered |
+| `--pending` | only the rows not yet applied: open, or written in |
 
 | Result | |
 |---|---|
@@ -1056,7 +1058,7 @@ nayose apply decisions --workspace workspaces/customers
 The records for people to answer person or company.
 
 ```
-nayose list kinds --workspace WORKSPACE [--why decide|measure] [--open] [--format text|json]
+nayose list kinds --workspace WORKSPACE [--why decide|measure] [--open] [--pending] [--format text|json]
 ```
 
 The run's kind_review.parquet: decide rows (where the engine and the file's flag disagree, and the flag's likely errors) and measure rows (a random draw that places the engine's lines), each with what the engine, the name and the flag say, and why it is there. O(sheet rows).
@@ -1066,10 +1068,12 @@ The run's kind_review.parquet: decide rows (where the engine and the file's flag
 | `--workspace WORKSPACE` | the workspace: the folder that keeps one matching job (required) |
 | `--why decide|measure` | decide or measure only |
 | `--open` | only the rows nobody has answered |
+| `--pending` | only the rows not yet applied: open, or written in |
 
 | Result | |
 |---|---|
 | `counts` | rows by why and status |
+| `applied` | the records answered in earlier rounds: applied, they leave the sheet |
 | `kinds` | each record: id, why, status, reason, engine_says, name_says, name, kind |
 | `next` | the commands that usually follow |
 

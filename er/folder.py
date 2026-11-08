@@ -116,13 +116,28 @@ def stage(con: duckdb.DuckDBPyConnection, out: Path, tables: list[tuple[str, Pat
     finish_writes(out)
 
 
-def log(out: Path, entry: dict, append: bool) -> None:
-    """steps.json: one entry per run, increment or set of decisions (a full run starts it again); written whole, then
-    renamed, so a write cut short leaves the old log."""
+EARLIER = 200  # runs before the current full run kept in steps.json, each in brief: what the workspace's activity lists
+
+
+def brief(x: dict) -> dict:  # a run of steps.json as the activity lists it: when, what, the record files it read, its seconds
+    return dict(at=x["at"], what="decisions" if "decisions" in x else "increment" if x.get("part") else "full run",
+                files=[f["file"] for f in x.get("inputs", []) if f.get("role") == "records"], seconds=round(sum(s["seconds"] for s in x["steps"]), 1))
+
+
+def history(out: Path) -> list[dict]:  # every run steps.json holds, in brief, the earliest first: the last EARLIER before the current full run, then its own
+    old = json.loads((out / "steps.json").read_text()) if (out / "steps.json").exists() else {}
+    return [*old.get("earlier", []), *map(brief, old.get("runs", []))]
+
+
+def log(out: Path, entry: dict, append: bool, earlier: list[dict] | None = None) -> None:
+    """steps.json: one entry per run, increment or set of decisions (a full run starts it again, with `earlier`, the
+    runs before it in brief: history, read before its write replaced the old log); written whole, then renamed, so a
+    write cut short leaves the old log."""
     path = out / "steps.json"
-    runs = json.loads(path.read_text())["runs"] if append and path.exists() else []
+    old = json.loads(path.read_text()) if append and path.exists() else {}
     tmp = path.with_name(path.name + ".tmp")
-    tmp.write_text(json.dumps(dict(runs=[*runs, entry]), indent=1, default=str))
+    tmp.write_text(json.dumps(dict(earlier=old.get("earlier", []) if append else (earlier or [])[-EARLIER:], runs=[*old.get("runs", []), entry]),
+                              indent=1, default=str))
     os.replace(tmp, path)
 
 
