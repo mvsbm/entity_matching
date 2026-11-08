@@ -26,6 +26,7 @@ Written by `scripts/document_commands.py` from the declarations in `er/cli.py`; 
 | [`list columns`](#nayose-list-columns) | Show which of a file's columns hold each field |
 | [`set columns`](#nayose-set-columns) | Map fields to a file's columns |
 | [`resolve records`](#nayose-resolve-records) | Resolve a file: one ID per person or company |
+| [`rehearse records`](#nayose-rehearse-records) | Run a generated file of the same size and shape, and measure what this machine needs |
 | [`add records`](#nayose-add-records) | Add new records to a run |
 | [`match records`](#nayose-match-records) | Which entity each record would join; nothing written |
 | [`rerun records`](#nayose-rerun-records) | A full run again, on the run's own files |
@@ -36,6 +37,7 @@ Written by `scripts/document_commands.py` from the declarations in `er/cli.py`; 
 | [`compare records`](#nayose-compare-records) | One record against others: every comparison's steps, test by test, for each |
 | [`describe matching`](#nayose-describe-matching) | How records are matched: every method, on which fields, with its numbers |
 | [`describe method`](#nayose-describe-method) | What the run shows about its method, and the changes worth trying |
+| [`describe review`](#nayose-describe-review) | How much people must check, range by range of the trust line |
 | [`try method`](#nayose-try-method) | Try a change of the method beside the method as it is |
 | [`adopt method`](#nayose-adopt-method) | Adopt a method tried, and find matches with it |
 | [`reset method`](#nayose-reset-method) | Go back to the tuned method, and find matches with it |
@@ -330,6 +332,8 @@ Reads the file through the door every input takes, maps its columns to the logic
 |---|---|
 | `records` | records read |
 | `fields` | each field: filled, looks_right, top_value (shares), columns |
+| `capacity` | the room a run has: memory_limit_gb, spill_folder, spill_free_gb, pairs_needed (this file's, exactly), pairs_fit, headroom (fit ÷ needed) |
+| `ready` | ok, and each of stops (what would stop a run) and warns (what to look at first): what, fix |
 | `turned_off` | rules, keys and levels a missing field turns off |
 | `keys` | each key's pairs per record and largest block |
 | `oversized_from` | the block size checked by sampling |
@@ -420,6 +424,44 @@ A full run, without labels: load, budget, fit, rules, candidates, score, cluster
 
 ```bash
 nayose resolve records customers.parquet --workspace workspaces/customers
+```
+
+## nayose rehearse records
+
+Run a generated file of the same size and shape, and measure what this machine needs.
+
+```
+nayose rehearse records [INPUT] --workspace WORKSPACE [--pipeline PIPELINE] [--compute KEY=VALUE …] [--format text|json]
+```
+
+The file's records and each field's share filled (no value kept); a file of that size and shape generated in parts of 50,000 entities, each field filled at the file's share, a field it lacks left out; that file resolved in a process of its own, under the same limits, its spill folder's size read every half second. Says the seconds of each step, the peak memory, the peak spill, the pairs, and the generated shape beside the file's; if the run stopped (memory, disk), why, as the real file would. Removes what it made; keeps rehearsal.json in the workspace. Past 60,000 entities names repeat more than in a real file, so name keys make more pairs: check records counts the file's own. O(N) to generate, O(a full run) to measure.
+
+| Parameter | |
+|---|---|
+| `INPUT` | the records: a CSV, TSV or Parquet file, a quoted glob ('in/*.csv') or a folder of them, read as they come and together by column name, its shape read, not copied in; without it, the file loaded into the workspace last |
+| `--workspace WORKSPACE` | the workspace: the folder that keeps one matching job (required) |
+| `--pipeline PIPELINE` | the pipeline file (default: config/final.toml) |
+| `--compute KEY=VALUE` | DuckDB limits for this run, over config/settings.toml [compute]: memory_limit=8GB, threads=4, temp_directory=<folder> (past the memory limit DuckDB spills there) |
+
+| Result | |
+|---|---|
+| `ok` | whether the run went through |
+| `records` | records generated |
+| `generate_seconds` | seconds to generate and describe them |
+| `generate_peak_gb` | the peak memory of generating them, a process apart from the run's |
+| `seconds` | the run's seconds |
+| `steps` | seconds of each step |
+| `peak_memory_gb` | the run's peak memory (the process's) |
+| `peak_spill_gb` | the most it spilled to disk at once |
+| `pairs` | the pairs its keys and rules listed |
+| `shape` | each field: its share filled in the file and in the rehearsal |
+| `error` | why the run stopped, if it did |
+| `fix` | what to do then |
+| `limit` | what a generated file can't show |
+| `next` | the commands that usually follow |
+
+```bash
+nayose rehearse records --workspace workspaces/customers
 ```
 
 ## nayose add records
@@ -741,6 +783,37 @@ From the run in the workspace and people's decisions: each round so far (a round
 
 ```bash
 nayose describe method --workspace workspaces/customers
+```
+
+## nayose describe review
+
+How much people must check, range by range of the trust line.
+
+```
+nayose describe review --workspace WORKSPACE [--pipeline PIPELINE] [--seconds SECONDS] [--format text|json]
+```
+
+From the run in the workspace, without labels: for each range of the trust line's steps, its pairs (the rules' and the model's links), how many people decided and said different, the sample a range needs (checks, or all of a smaller range), the false links the model expects in it, the chance its sample comes back clean, the false rate a clean sample bounds, and the reviews left to merge it and every range above; then what waits whatever the line, the spot-checks a round, the person/company sheet, and the hours at --seconds a pair (an assumption, not a measure). Changes nothing. O(E + D) over the run's files and people's decisions.
+
+| Parameter | |
+|---|---|
+| `--workspace WORKSPACE` | the workspace: the folder that keeps one matching job (required) |
+| `--pipeline PIPELINE` | the pipeline file (default: config/final.toml) |
+| `--seconds SECONDS` | the seconds one pair takes people to decide, for the hours (default 10) |
+
+| Result | |
+|---|---|
+| `ranges` | each range: down_to, up_to (none: no top), pairs, checked, different, sample, expected_false, chance_clean, bound (the false rate a clean sample proves, at 95%), reviews_left, reviews_to_here (cumulative), if_not_clean |
+| `below_last_step` | pairs below the last step: they never merge by points |
+| `unnamed` | the model's pairs with no name compared: people decide each |
+| `watch` | spot-checks a round of the pairs above the line |
+| `kinds` | the person/company sheet: measure, decide, answered |
+| `seconds_per_pair` | the assumption the hours rest on |
+| `hours` | to_each_line (cumulative, range by range), unnamed, kinds |
+| `next` | the commands that usually follow |
+
+```bash
+nayose describe review --workspace workspaces/customers
 ```
 
 ## nayose try method

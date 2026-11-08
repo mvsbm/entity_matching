@@ -247,11 +247,12 @@ class Run:
                        self.con.execute("SELECT reason, count(*) FROM set_aside GROUP BY 1 ORDER BY 1").fetchall()]
         return f"(SELECT * EXCLUDE (er_file, er_first) FROM er_in WHERE {keep})"
 
-    def budget(self) -> pd.DataFrame:
+    def budget(self, stop: bool = True) -> pd.DataFrame:
         """Exact block sizes on this file, per rule and generator, by group-by, before any join: pairs, pairs per record,
         the largest block, and the oversized blocks (budget.min_oversized() records or more). Those are never joined
         blind: a generator checks each on a sample first (er.candidates), and a rule never trusts their values
-        (_untrusted). The run stops only if the pairs of the normal blocks alone would not fit (capacity)."""
+        (_untrusted). The run stops only if the pairs of the normal blocks alone would not fit (capacity); `stop` False
+        (a check before a run) leaves that to the caller, which reads plan["normal"] against capacity()."""
         t, rows = time.perf_counter(), []
         m = self.pipeline.fs.budget.min_oversized()
         rules = self.pipeline.rules.blockers()
@@ -261,7 +262,7 @@ class Run:
                                          normal=lambda d: d["est_pairs"] - d["oversized_pairs"])
         self._done("budget", "O(N)", f"O({self.n:,}) per rule and generator", t, pairs=int(plan["est_pairs"].sum()),
                    oversized_blocks=int(plan["oversized_blocks"].sum()))
-        if (normal := int(plan["normal"].sum())) > (cap := self.capacity()):
+        if stop and (normal := int(plan["normal"].sum())) > (cap := self.capacity()):
             raise InputError(f"the normal blocks alone would make {normal:,} pairs, more than fit in memory and the temp disk "
                              f"({cap:,} pairs at about {BYTES_PER_PAIR} bytes each); the most: " +
                              ", ".join(f"{x.name} {x.normal:,}" for x in plan.nlargest(3, "normal").itertuples()),

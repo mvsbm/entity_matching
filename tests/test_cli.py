@@ -595,3 +595,36 @@ def test_test_is_counted_once_per_population(tmp_path):
     dev = replace(data, datasets=("train", "val"))
     append_leaderboard(dev, "fs:x", ("config", 4), "val", {})
     assert test_evaluations(dev).empty
+
+
+def test_check_records_says_whether_a_run_will_go_through_and_what_to_look_at_first(say, tmp_path, population, monkeypatch):
+    from er.run import Run
+    s, p, g = population
+    g.df.to_parquet(tmp_path / "all.parquet", index=False)
+    code, r = say("check", "records", tmp_path / "all.parquet")
+    c = r["capacity"]
+    assert code == 0 and r["ready"]["ok"] and not r["ready"]["stops"] and c["pairs_needed"] > 0 and c["pairs_fit"] >= c["pairs_needed"]
+    assert c["headroom"] == round(c["pairs_fit"] / c["pairs_needed"], 1) and c["memory_limit_gb"] > 0 and c["spill_folder"]
+    assert any(w["what"].startswith("birth_date is") for w in r["ready"]["warns"])  # a nearly empty field, said with what to do
+    assert not any(w["what"].startswith("company_name is") for w in r["ready"]["warns"])  # filled only for companies, by design
+    monkeypatch.setattr(Run, "capacity", lambda self: 10)  # room for 10 pairs: the file's won't fit
+    code, r = say("check", "records", tmp_path / "all.parquet")
+    assert code == 0 and not r["ready"]["ok"] and "more than fit in memory" in r["ready"]["stops"][0]["what"] and r["ready"]["stops"][0]["fix"]
+
+
+def test_describe_review_counts_what_people_must_check_range_by_range(say, tmp_path, population, monkeypatch):
+    s, p, g = population
+    g.df.to_parquet(tmp_path / "all.parquet", index=False)
+    monkeypatch.chdir(tmp_path)
+    assert say("create", "workspace", "w")[0] == 0  # strict: nothing merges by points
+    assert say("resolve", "records", "all.parquet", "--workspace", "workspaces/w")[0] == 0
+    trust = say("describe", "workspace", "workspaces/w")[1]["trust"]
+    code, r = say("describe", "review", "--workspace", "workspaces/w", "--seconds", "20")
+    top = r["ranges"][0]
+    assert code == 0 and (top["down_to"], top["up_to"]) == (20.0, None) and top["pairs"] == trust["pairs"]  # the range people check first, as the trust line counts it
+    assert [x["down_to"] for x in r["ranges"]] == sorted(p.trust.steps, reverse=True)
+    assert all(x["sample"] == min(p.trust.checks, x["pairs"]) and x["reviews_left"] == x["sample"] for x in r["ranges"])  # none decided yet
+    assert [x["reviews_to_here"] for x in r["ranges"]] == list(np.cumsum([x["reviews_left"] for x in r["ranges"]]))
+    assert all(x["bound"] is None or x["bound"] == round(1 - 0.05 ** (1 / x["sample"]), 4) for x in r["ranges"])  # what a clean sample proves
+    assert r["hours"]["to_each_line"][-1] == round(r["ranges"][-1]["reviews_to_here"] * 20 / 3600, 1) and r["kinds"]["measure"] > 0
+    assert say("describe", "review", "--workspace", "workspaces/w", "--seconds", "fast")[0] == 2  # not a number: said, not a traceback

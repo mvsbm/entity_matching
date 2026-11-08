@@ -38,6 +38,8 @@ def bits(v: float) -> str:  # a weight in SQL; the trust line above everything i
 def toml_of(path: Path | str) -> dict:  # a TOML file people edit, or the mistake in it as an InputError
     try:
         return tomllib.loads(Path(path).read_text(encoding="utf-8-sig"))  # with or without the mark an editor may put first
+    except FileNotFoundError:
+        raise InputError(f"{path}: no such file", fix="check the path") from None
     except UnicodeDecodeError:
         raise InputError(f"{path}: not UTF-8 text", fix="save it as UTF-8 (in Notepad or Excel: Save As, UTF-8)") from None
     except tomllib.TOMLDecodeError as e:

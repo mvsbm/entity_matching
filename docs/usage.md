@@ -119,22 +119,28 @@ A first run on a file of your own, in this order:
 
 1. **Map and check the columns.** `nayose describe records FILE --workspace W` shows each column's share filled and an
    example, which columns each field reads and how many of its values look like it; `nayose check records FILE
-   --workspace W` prepares every record and counts every key's pairs, as a run's first steps do. Map until nothing
+   --workspace W` prepares every record and counts every key's pairs, as a run's first steps do, and says whether a run
+   will go through (`ready`: what would stop it, and what to look at first, each with what to do). Map until nothing
    needed is missing and no field reads a column of another kind (step 2 of the page warns of both).
 2. **Give DuckDB its limits.** Set `[compute]` `memory_limit` below the machine's memory, leaving room for Python, and
-   `temp_directory` on a disk with room for about 350 bytes per pair that `check records` counts: past the limit DuckDB spills there. A million
-   records peak at about 6.6 GB under an 8 GB limit ([performance.md](performance.md)).
-3. **Keep the workspace strict.** A new workspace starts with `trust = "none"`: nothing merges by points until people
+   `temp_directory` on a disk with room for about 350 bytes per pair: past the limit DuckDB spills there. `check
+   records` gives the room the run has against the pairs this file needs (`capacity`: `headroom`, fit ÷ needed).
+3. **Rehearse at the file's size.** `nayose rehearse records --workspace W` runs a generated file of the same size and
+   shape under the same limits, in a process of its own, and says the seconds of each step, the peak memory and the
+   peak spill on this machine; a run that would stop here stops in the rehearsal first, with why. Past 60,000 entities
+   generated names repeat more than real ones, so its pairs run higher than the file's, which `check records` counts
+   exactly.
+4. **Keep the workspace strict.** A new workspace starts with `trust = "none"`: nothing merges by points until people
    have checked a sample of each range of points ([section 6](#the-trust-line)). Lower the line only as the samples
-   prove it.
-4. **Load, then look at what the reader did.** `nayose load records FILE --workspace W` copies the file in and reads it;
+   prove it. `nayose describe review --workspace W` says, after the run, how many pairs that takes, range by range.
+5. **Load, then look at what the reader did.** `nayose load records FILE --workspace W` copies the file in and reads it;
    its answer, and step 2 of the page, say what it fixed by itself, what waits for a repair, and the rows it couldn't
    read (`unread.parquet` in the part). Accept a kind of repair once its examples look right.
-5. **After the run, read the probe.** The summary's `missed` estimates the matches no pair key lists; `describe method`
+6. **After the run, read the probe.** The summary's `missed` estimates the matches no pair key lists; `describe method`
    proposes a key for them, and a trial measures it before you adopt it ([section 6](#improve-the-method)).
-6. **Drop inbox files by moving them in.** `serve inbox` leaves a file changed in the last `--settle` seconds for the
+7. **Drop inbox files by moving them in.** `serve inbox` leaves a file changed in the last `--settle` seconds for the
    next pass: copy a file next to the inbox, then move it in once it is complete.
-7. **To ask for help, send `report.txt`.** It holds no record's value ([section 7](#7--when-something-is-wrong)).
+8. **To ask for help, send `report.txt`.** It holds no record's value ([section 7](#7--when-something-is-wrong)).
 
 ## 4 · Read the outputs
 
@@ -206,6 +212,7 @@ A file comes with no answer sheet, so how often a score is right on it is not kn
 - **Lowering it.** When the sample's 300 are decided and applied (`apply decisions`) and none is false (at most 1% false, at 95% confidence; a range with fewer pairs is decided whole), `nayose lower trust --workspace W` moves the line down one step and runs the files again: the whole range joins. It refuses before then, and says how far the sample is.
 - **Watching above it.** Each run also puts 20 spot-checks (`watch`) of the pairs above the line on the sheet. One found false: `nayose raise trust --workspace W` moves the line back up a step, and that range waits for people again.
 - **Never by itself.** A rule's pair the model scores below the last step, and a model pair with no name compared, join only when people say so.
+- **How much is left.** `nayose describe review --workspace W` (step 4's *How many pairs must people check?*) gives, for each range, its pairs, the sample it needs, the false pairs the model expects in it and so the chance its sample comes back clean, the false rate a clean sample proves, and the checks left to reach that line from the top; then the pairs no line ever merges, the person/company sheet, and the hours at `--seconds` a pair (10 unless given: an assumption, not a measure).
 
 `nayose describe workspace W` says where the line is, the range checked next, how many of its pairs are decided and how many were found false. A workspace with no `trust` runs the method as tuned: every rule's pair, and the model's at 8 bits with a name compared.
 
