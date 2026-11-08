@@ -27,14 +27,14 @@ jobs:
       - run: pip install -r requirements.txt
       - run: ruff check .  # the rules in pyproject.toml [tool.ruff.lint]
       - run: sed -n '/<script>/,/<\/script>/p' er/ui.html | sed '1d;$d' > "$RUNNER_TEMP/page.js" && test -s "$RUNNER_TEMP/page.js" && node --check "$RUNNER_TEMP/page.js"  # the page's script, found and parsed
-      - run: python -m pytest -m "not slow and not browser"  # seconds: a broken engine fails here first
-      - run: python -m pytest -m "slow and not browser"  # whole runs on a generated population
-      - if: matrix.python == '3.14'  # the page runs the same on either Python: one browser run is enough
+      - run: python -m pytest -n auto -m "not slow and not browser"  # seconds: a broken engine fails here first; -n auto: a test a core
+      - run: python -m pytest -n auto -m "slow and not browser"  # whole runs on a generated population
+      - if: matrix.python == '3.12'  # the page runs the same on either Python: one browser run is enough, on the job that is otherwise shorter
         uses: actions/cache@v4
         with:
           path: ~/.cache/ms-playwright
           key: playwright-${{ runner.os }}-${{ hashFiles('requirements.txt') }}
-      - if: matrix.python == '3.14'
+      - if: matrix.python == '3.12'
         run: python -m playwright install --with-deps chromium
-      - if: matrix.python == '3.14'
-        run: python -m pytest -m browser  # CI is set: a missing browser fails, never skips
+      - if: matrix.python == '3.12'
+        run: python -m pytest -n auto -m browser  # CI is set: a missing browser fails, never skips
