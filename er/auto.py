@@ -71,6 +71,7 @@ HIDDEN = "[redacted]"
 JAPANESE = re.compile(r"[\u3005\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff\uff66-\uff9f\U00020000-\U0003134f]+")  # kana, kanji, half-width kana
 DIGITS = re.compile(r"(?<![A-Za-z0-9_.])\d{6,}(?![A-Za-z0-9_])")  # an ID, a postal code, a phone, even beside kana: the report writes its own counts 1,234,567
 CRASH = re.compile(r"^([A-Za-z_][\w.]*(?:Error|Exception|Interrupt|Exit))\b")  # a traceback's last line: the kind of crash, never its words
+PLAIN = re.compile(r"[-+]?\d+([.:]\d+)?")  # a number or a time, as a value
 RECORD = re.compile(r"[0-9０-９]{4}|@|株式会社|有限会社|合同会社|[(（]株[)）]|カブシキガイシャ|^[MTSHR]\d{1,2}[./]\d|\d[./-]\d{1,2}[./-]\d")  # a value, not a column's name
 
 
@@ -95,6 +96,9 @@ def generated(sh: dict, out: Path, emit: Callable[[dict], None]) -> int:
     O(CHUNK) memory."""
     s0 = load_settings()
     base, _ = load_spec(s0.root / "config" / "generator.toml")
+    if s0.data.unique_id not in {c.name for c in base.columns}:
+        raise InputError(f"the project's mapping (config/settings.toml [columns]) names columns the generator doesn't write ({s0.data.unique_id})",
+                         fix="a rehearsal maps the generator's columns as the project shipped them: rehearse from a copy with that mapping")
     persons, companies, towns = load_reference(s0.paths["reference"])
     company = sh.get("company")
     share = base.company_share if company is None else min(max(company, 0.01), 0.99) if company else 0.0
@@ -261,13 +265,15 @@ def nayose(words: list, step: str, emit: Callable[[dict], None]) -> tuple[int, d
 def values(part: Path, s: Settings) -> set[str]:
     """The distinct values of a sample of SAMPLE records of a loaded part, long enough to mean something: non-ASCII
     of 3 characters or more, digits of 6, other text of 4, but a plain lower-case word (true, file, none: a flag, the
-    report's own words; a name is written Sato or SATO); a column's name is none. O(SAMPLE · columns)."""
+    report's own words; a name is written Sato or SATO) or a number or time of fewer than 6 digits (12.34, 04:19);
+    a column's name is none. O(SAMPLE · columns)."""
     files = ", ".join(lit(str(f)) for f in find(part))
     df = connect(s.compute)[0].execute(f"SELECT * FROM read_parquet([{files}], union_by_name = true) USING SAMPLE {SAMPLE} ROWS").df()
     names, out = set(df.columns), set()
     for c in df.columns:
         for v in df[c].dropna().astype(str).str.strip().unique():
-            if v not in names and len(v) >= (3 if not v.isascii() else 6 if v.isdigit() else 4) and not (v.isascii() and v.isalpha() and v.islower()):
+            if v not in names and len(v) >= (3 if not v.isascii() else 6 if v.isdigit() else 4) and not (v.isascii() and v.isalpha() and v.islower()) \
+                    and not (PLAIN.fullmatch(v) and sum(ch.isdigit() for ch in v) < 6):  # a balance, a score, a time: the report's own numbers look alike
                 out.add(v)
     return out
 
@@ -388,10 +394,10 @@ def everything(file: str, home: Path, trials: int, compute: list[str], pipeline:
         facts["check"] = dict(capacity={k: v for k, v in checked["capacity"].items() if k != "spill_folder"}, ready=checked["ready"],
                               keys=checked["keys"], fields=kept(checked["fields"], "field", "filled", "looks_right", "top_value", "columns"),
                               turned_off=checked.get("turned_off"), notes=checked.get("notes"))
-        rehearsed = do("rehearse", ["rehearse", "records", part, *there, *pipe, *limits])
-        if (ws / "rehearsal.json").exists():
+        do("rehearse", ["rehearse", "records", part, *there, *pipe, *limits])
+        if (ws / "rehearsal.json").exists():  # its run ran: one that stopped (memory, disk) stops the real one too
             facts["rehearsal"] = json.loads((ws / "rehearsal.json").read_text(encoding="utf-8"))
-        if not (rehearsed and do("resolve", ["resolve", "records", *there, *pipe, *limits])):
+        if not facts.get("rehearsal", {}).get("ok", True) or not do("resolve", ["resolve", "records", *there, *pipe, *limits]):
             return
         facts["run"] = dict(report=(ws / "report.txt").read_text(encoding="utf-8"),
                             steps=[{k: v for k, v in x.items() if isinstance(v, int | float | str) and k != "big_o"} for x in runs(ws)[-1]["steps"]])
@@ -456,27 +462,29 @@ def offered(ws: Path, part: str, offers: list[dict], do: Callable, pipe: list, l
 
 def written(r: dict, file: str, s: Settings) -> dict:
     """The report of `r` (everything's) in its workspace's auto/: report.json, the facts, and report.md, them in words,
-    both checked as scrub does against the values of the part loaded. The columns' names stay, unless the first line
-    was a record (the reader says the header may be missing, or two of its names read like values: four digits, an
-    email, a legal form, a date, a known full name or address): then every name is one of the values. The file's path
+    both checked as scrub does against the values of the part loaded. A column's name stays, unless it reads like a
+    value (four digits, an email, a legal form, a date, a known full name or address): then it is one; and when the
+    first line was a record (the reader says the header may be missing, or two names read like values), every name
+    is. The names the mapping expects are the report's own. The file's path
     and name are put as <file>, its part's name as <part>, the workspace's path as its name, the home folder as ~ and
     the current one as ".". The paths, the values checked against, and how many were redacted."""
     ws, facts = r["workspace"], r["facts"]
     found = values(Path(r["part"]), s) if r.get("part") else set()
     names = {x["column"] for x in facts.get("columns", [])}
     known = profiled({c: [c] for c in names}, lexicon(s.paths["reference"], tuple(s.standardize.kana_fold.items())))
-    record = any("a header may be missing" in n for n in facts.get("notes", [])) or sum(
-        bool(RECORD.search(c)) or (len(c) >= 4 and max(known[c]["full"], known[c]["address"]) >= 1) for c in names) >= 2
-    if record:  # its names are values: each long enough to mean something is redacted, and no kana or kanji of them stays
-        found |= {c for c in names if len(c) >= (3 if not c.isascii() else 6 if c.isdigit() else 4)}
-        names = set()
+    odd = {c for c in names if RECORD.search(c) or (len(c) >= 4 and max(known[c]["full"], known[c]["address"]) >= 1)}
+    if any("a header may be missing" in n for n in facts.get("notes", [])) or len(odd) >= 2:  # the first line was a record: its names are values,
+        found |= {c for c in names if len(c) >= (2 if not c.isascii() else 4 if c.isdigit() else 3)}  # each long enough to mean anything, and no
+        names = set()                                                                                    # kana or kanji of them stays
+    else:  # one name that reads like a value is one; the names the mapping expects are the report's own
+        found, names = found | odd, (names | {c for alts in s.columns.values() for alt in alts for c in alt}) - odd
     try:
         given = find(file)
     except InputError:
         given = []
     exact = {str(Path(file).resolve()): "<file>", str(ws): ws.name, str(Path.home()): "~", os.getcwd(): "."}
     exact = {k: v for k, v in sorted(exact.items(), key=lambda x: -len(x[0])) if len(Path(k).parts) > 2}  # "/" or "/Users" would garble every path
-    tokens = {f.name for f in [*given, Path(file)] if len(f.name) >= 4 and f.suffix}  # a file's name; a folder's is in its path
+    tokens = {f.name for f in given if len(f.name) >= 4} | ({Path(file).name} if Path(file).suffix and len(Path(file).name) >= 4 else set())  # files' names; a folder's is in its path
     part = Path(r["part"]).name if r.get("part") else None  # inputs/0001-<the file's name, as the workspace wrote it>
     hits = 0
 
@@ -575,7 +583,7 @@ def markdown(f: dict, name: str) -> str:
                 *(f"- look first: {x['what']} · fix: {x['fix']}" for x in c["ready"]["warns"]), "",
                 *grid(c["keys"], ("key", "per_record", "largest_block", "oversized_blocks", "oversized_records")),
                 *grid(c["fields"], ("field", "filled", "looks_right", "top_value", "columns")),
-                *(f"- note: {x}" for x in c.get("notes") or []), ""]
+                *(f"- note: {cell(x)}" for x in c.get("notes") or []), ""]
     if h := f.get("rehearsal"):
         real = {x["step"]: x for x in f.get("run", {}).get("steps", [])}
         out += ["## The rehearsal, beside the real run", "",
@@ -624,6 +632,6 @@ def markdown(f: dict, name: str) -> str:
         out += ["## How much people must check (describe review)", "",
                 *grid(rv["ranges"], ("down_to", "up_to", "pairs", "sample", "expected_false", "chance_clean", "bound", "reviews_to_here")),
                 f"Below the last step: {rv['below_last_step']:,} · no name compared: {rv['unnamed']:,} · spot-checks a round: {rv['watch']:,}", "",
-                f"Person or company: {cell(rv['kinds'])}", "",
+                f"Kinds of record (the person/company sheet): {cell(rv['kinds'])}", "",
                 f"Hours at {rv['seconds_per_pair']:g} s a pair (an assumption): {cell(rv['hours'])}", ""]
     return "\n".join(out)
