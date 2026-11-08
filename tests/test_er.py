@@ -1,5 +1,6 @@
 """Self-checks for the er engine. Run from the project root: python -m pytest tests/
 Self-contained: small hand-made frames, the tracked config and reference data; no generated files needed."""
+import io
 import json
 import logging
 import math
@@ -9,6 +10,7 @@ from dataclasses import replace
 
 import numpy as np
 import pandas as pd
+import pyarrow.parquet as pq
 import pytest
 from splink import Linker
 
@@ -836,6 +838,126 @@ def test_a_name_added_in_another_script_is_compared_beside_the_kana_one(tmp_path
     assert not added_of("workspaces/kanji") and "person_name_2" not in (tmp_path / "workspaces" / "kanji" / "columns.toml").read_text()
 
 
+def test_the_reader_reads_each_value_as_it_comes_and_proposes_only_what_it_would_guess(tmp_path):
+    import zipfile
+    import pyarrow as pa
+    from er import intake
+    ref, spec = load_settings().paths["reference"], intake.InputSpec()
+
+    def read(name: str, data: bytes, accepted: tuple[str, ...] = ()) -> tuple[dict, pd.DataFrame, list[dict], list[dict]]:
+        part = tmp_path / name.replace(".", "_")
+        part.mkdir(exist_ok=True)
+        (part / name).write_bytes(data)
+        r = intake.take(part, {part / name: name}, spec, ref, frozenset(accepted))
+        return (r, pd.read_parquet(part / r["files"][0]["read"]).set_index("id"), pd.read_parquet(part / intake.PROPOSALS).to_dict("records"),
+                pd.read_parquet(part / intake.UNREAD).to_dict("records"))
+    u = lambda t: t.encode("utf-8")
+    good = [u(f"{i},ヤマモト　タロウ,東京都港区芝公園{i}-2,{1000 + i}") for i in range(60)]
+    dirty = b"\n".join([b"id,name,address,phone", *good,
+        b"900," + "サトウ　ジロウ".encode("cp932") + b"," + "大阪府北区".encode("cp932") + b",1234",  # another system's CP932
+        b"901," + "キムラ".encode("euc-jp") + b"," + "東京都".encode("euc-jp") + b",12.0",            # and EUC-JP; a number a spreadsheet wrote
+        b"902," + u("​タナカ") + b"\x00," + u("東京都") + b",NULL",                            # a zero-width character, a NUL, a placeholder
+        b"903," + u("譁ｰ縺励＞") + b"," + u("京都府") + b",1.23457E+11",                             # garbled upstream; a number cut short
+        b"904," + u("ナカムラ") + b"," + u("大阪府北区3,4番") + b",5678",                           # a comma inside a value
+        b"905," + u("イトウ") + b"," + u("東京都港"),                                             # a line break inside a value ...
+        u("区1") + b",5555",                                                                       # ... the rest of the row
+        b"906,a,b,c,d,e,f,g,h"]) + b"\n"                                                          # too many fields to re-split
+    r, rows, proposed, unread = read("dirty.csv", dirty)
+    assert rows.loc["900", "name"] == "サトウ　ジロウ" and rows.loc["901", "name"] == "キムラ" and r["decoded"]["cp932"] == 2 and r["decoded"]["euc-jp"] == 2
+    assert rows.loc["902", "name"] == "タナカ" and pd.isna(rows.loc["902", "phone"]) and rows.loc["901", "phone"] == "12" and pd.isna(rows.loc["903", "phone"])
+    assert r["fixed"] == {"controls": 1, "placeholders": 1, "numbers": 2}
+    assert rows.loc["903", "name"] == "譁ｰ縺励＞" and {"904", "905", "906"}.isdisjoint(rows.index)  # nothing guessed is applied before people accept it
+    assert {(x["kind"], x["after"]) for x in proposed} == {("garbled", "新しい"), ("realign", "東京都港 区1"), ("realign", "大阪府北区3,4番")}
+    assert [(x["line"], "waits" in x["reason"]) for x in unread] == [(66, True), (67, True), (69, False)] and r["unread"] == 3
+    r2, rows, proposed, unread = read("dirty.csv", dirty, ("realign", "garbled"))
+    assert rows.loc["903", "name"] == "新しい" and rows.loc["904", "address"] == "大阪府北区3,4番" and rows.loc["905", "phone"] == "5555"
+    assert [x["line"] for x in unread] == [69] and r2["files"][0]["versions"][0] == r["files"][0]["sha256"]  # what it replaced, kept by its hash
+
+    table = pa.table({"id": ["1", "2", "3"], "name": ["ヤマモト", None, ""], "n": pa.array([1, 2, None], pa.int64()), "x": [1.5, 2.0, None],
+                      "day": pa.array([None, 0, 1], pa.date32()), "b": pa.array([u("東京"), "大阪".encode("cp932"), None], pa.binary())})
+    clean = io.BytesIO()
+    pq.write_table(table, clean)
+    r, rows, proposed, unread = read("typed.parquet", clean.getvalue())
+    assert rows.astype(object).where(rows.notna(), None).to_dict("index") == {"1": {"name": "ヤマモト", "n": "1", "x": "1.5", "day": None, "b": "東京"}, "2": {"name": None, "n": "2", "x": "2", "day": "1970-01-01", "b": "大阪"},
+                                     "3": {"name": None, "n": None, "x": None, "day": "1970-01-02", "b": None}}  # text, as the door reads it; blank is missing
+    assert not proposed and not unread and r["fixed"] == {} and any("leading zeros" in n for n in r["notes"])
+    r, rows, *_ = read("quoted.csv", u('id,name\n1,"ヤマダ, タロウ"\n2,"""別府"\n'))  # a file that quotes: a comma and a quote inside values
+    assert rows.loc["1", "name"] == "ヤマダ, タロウ" and rows.loc["2", "name"] == '"別府' and r["files"][0]["quotes"]
+    r, rows, *_ = read("stray.csv", u('id,name,phone\n1,"別府,1234\n2,ヤマダ,5678\n'))  # one that never does: a stray quote is text
+    assert rows.loc["1", "name"] == '"別府' and rows.loc["2", "phone"] == "5678" and not r["files"][0]["quotes"]
+    r, rows, *_ = read("utf16.tsv", "id\tname\n1\tヤマモト\n".encode("utf-16"))
+    assert rows.loc["1", "name"] == "ヤマモト" and r["files"][0]["delimiter"] == "\t"
+    book = io.BytesIO()
+    with zipfile.ZipFile(book, "w") as z:
+        z.writestr("xl/workbook.xml", "")
+    with pytest.raises(InputError, match="Excel"):
+        read("book.xlsx", book.getvalue())
+    with pytest.raises(InputError, match="cut short"):
+        read("cut.parquet", clean.getvalue()[:-10])
+
+
+def dirty_csv(df: pd.DataFrame, name: str, address: str, path: Path) -> tuple[int, tuple[str, str], tuple[str, str, str]]:
+    """The records as a CSV another system wrote: some names in CP932, one unquoted comma between an address's street
+    and building, one name garbled upstream (its UTF-8 read as CP932, then saved). How many CP932 names, (id, the
+    address as written), (id, the name, the name garbled)."""
+    cols, cp932, spilled, garbled = list(df.columns), 0, None, None
+    lines = [",".join(cols).encode()]
+    for i, r in enumerate(df.itertuples(index=False)):
+        vals = ["" if pd.isna(v) else v for v in r]
+        cells = [v.encode("utf-8") for v in vals]
+        if i % 40 == 3 and vals[cols.index(name)]:
+            cells[cols.index(name)], cp932 = vals[cols.index(name)].encode("cp932"), cp932 + 1
+        elif spilled is None and "\u3000" in vals[cols.index(address)]:
+            spilled = (vals[0], vals[cols.index(address)].replace("\u3000", ","))
+            cells[cols.index(address)] = spilled[1].encode("utf-8")
+        elif garbled is None and i % 40 == 7:
+            try:
+                garbled = (vals[0], vals[cols.index(name)], vals[cols.index(name)].encode("utf-8").decode("cp932"))
+                cells[cols.index(name)] = garbled[2].encode("utf-8")
+            except UnicodeDecodeError:
+                pass
+        lines.append(b",".join(cells))
+    path.write_bytes(b"\n".join(lines) + b"\n")
+    assert spilled and garbled and cp932 > 5
+    return cp932, spilled, garbled
+
+
+def test_a_file_loads_as_it_comes_and_a_run_reads_the_repairs_people_accept(tmp_path, population, capsys, monkeypatch):
+    from er import intake
+    from er.cli import main
+    s, p, g = population
+    uid, name, address = s.data.unique_id, "FULL_NAME_KANA", "ORIGINAL_ADDRESS"
+    monkeypatch.chdir(tmp_path)
+
+    def say(*words: object) -> tuple[int, dict]:  # the exit code, and the last event
+        code = main([*map(str, words), "--format", "json"])
+        return code, json.loads(capsys.readouterr().out.splitlines()[-1])
+    df = g.df.astype("string")
+    cp932, spilled, garbled = dirty_csv(df, name, address, tmp_path / "dirty.csv")
+    assert say("create", "workspace", "w")[0] == 0
+    w = Path("workspaces/w")
+    code, e = say("load", "records", tmp_path / "dirty.csv", "--workspace", w)
+    assert code == 0 and e["read"]["waiting"] == {"realign": 1, "garbled": 1} and e["read"]["decoded"]["cp932"] == cp932 and e["read"]["rows"] == len(df) - 1
+    assert {x["after"] for x in e["read"]["examples"]["realign"]} == {spilled[1]} and e["read"]["examples"]["garbled"][0]["after"] == garbled[1]
+    assert e["next"][0]["command"].startswith("nayose accept repairs") and say("describe", "workspace", w)[1]["inputs"][0]["waiting"] == 2
+    assert say("resolve", "records", "--workspace", w)[0] == 0 and len(pd.read_parquet(w / "gold.parquet")) == len(df) - 1  # the row that waits is unread
+
+    code, e = say("accept", "repairs", "realign", "--workspace", w)
+    assert code == 0 and e["added"] == 1 and e["read"]["waiting"] == {"garbled": 1} and "rerun records" in e["next"][0]["command"]
+    assert say("accept", "repairs", "realign", "--workspace", w)[0] == 2  # nothing of that kind waits now
+    assert say("rerun", "records", "--workspace", w)[0] == 0  # it finds the file it read before, now repaired
+    gold = pd.read_parquet(w / "gold.parquet")
+    assert len(gold) == len(df) and spilled[0] in set(gold[uid])
+    assert say("accept", "repairs", "garbled", "--part", "0001", "--workspace", w)[0] == 0
+    read = pd.read_parquet(w / "inputs" / "0001-dirty" / intake.READ / "dirty.csv.parquet").set_index(uid)
+    assert read.loc[garbled[0], name] == garbled[1] and read.loc[spilled[0], address] == spilled[1]
+    assert say("rerun", "records", "--workspace", w)[0] == 0
+
+    (tmp_path / "decisions.csv").write_text(f"{uid}_l,{uid}_r,decision\n{df[uid][0]},{df[uid][1]},match,extra\n")  # people's file, a field too many
+    code, e = say("apply", "decisions", "--file", tmp_path / "decisions.csv", "--workspace", w)
+    assert code == 2 and "decisions.csv" in e["error"] and "nayose-" not in e["error"]  # refused, said of their file
+
+
 def test_a_workspace_keeps_its_own_mapping_and_a_copy_of_its_files(tmp_path, population, capsys, monkeypatch):
     import threading
     from er import folder
@@ -886,7 +1008,7 @@ def test_a_workspace_keeps_its_own_mapping_and_a_copy_of_its_files(tmp_path, pop
 
     def take(n: str) -> None:
         try:
-            said.append(folder.take_in(b, tmp_path / f"{n}.parquet")[0].name)
+            said.append(folder.take_in(b, tmp_path / f"{n}.parquet", s.input, s.paths["reference"])[0].name)
         except folder.Busy:  # one writer at a time: the others are told to try again
             said.append("busy")
     given = [threading.Thread(target=take, args=(n,)) for n in ("one", "two", "one")]  # at once
@@ -1712,7 +1834,7 @@ def test_the_scheduler_serves_the_inbox_in_order_and_parks_what_people_must_fix(
     g.df[~new].to_parquet(inbox / "batches" / "a_first.parquet", index=False)
     g.df[new].to_parquet(inbox / "batches" / "b_new.parquet", index=False)
     shutil.copy(inbox / "batches" / "b_new.parquet", inbox / "batches" / "c_again.parquet")  # the same content, twice
-    (inbox / "batches" / "d_bad.parquet").write_text("CONT_ID\n1\n")  # a CSV, named as Parquet
+    (inbox / "batches" / "d_bad.parquet").write_text("CONT_ID\n1\n")  # a CSV, named as Parquet: read as it comes, and short of fields
     for k, f in enumerate(sorted((inbox / "batches").iterdir())):
         os.utime(f, (1_000 + k, 1_000 + k))  # arrival order
     serve = lambda: nayose("serve", "inbox", inbox, "--workspace", run)
@@ -1722,7 +1844,7 @@ def test_the_scheduler_serves_the_inbox_in_order_and_parks_what_people_must_fix(
     assert jobs == [("a_first.parquet", "done"), ("b_new.parquet", "done"), ("c_again.parquet", "done"), ("d_bad.parquet", "failed")]
     assert len(pd.read_parquet(run / "gold.parquet")) == len(g.df)  # the first batch the full run, the second an increment
     parked = list((inbox / "failed" / "batches").glob("*.error.txt"))
-    assert len(parked) == 1 and "not a Parquet file" in parked[0].read_text()
+    assert len(parked) == 1 and "holds none of these fields" in parked[0].read_text()
     assert not list((inbox / "batches").glob("*.parquet"))
 
     sheet = pd.read_parquet(run / "review.parquet")
@@ -1731,7 +1853,7 @@ def test_the_scheduler_serves_the_inbox_in_order_and_parks_what_people_must_fix(
     assert serve().returncode == 0 and schedule.ledger(run)[-1]["outcome"] == "done"
     assert (run / "decisions").exists()
     from er.folder import inputs
-    assert [f.parent.name for f in inputs(run)] == ["0001-a_first", "0002-b_new"]  # copied into the workspace: found there, wherever the batch went
+    assert [f.parents[1].name for f in inputs(run)] == ["0001-a_first", "0002-b_new"]  # copied into the workspace and read there (part/read/): found there, wherever the batch went
     before = len(schedule.ledger(run))
     assert serve().returncode == 0 and len(schedule.ledger(run)) == before  # nothing waiting: nothing done
 
@@ -2457,6 +2579,48 @@ def test_the_page_answers_once_per_key_shows_any_row_and_says_when_the_server_is
         lost = page.evaluate("() => run('pairs', 'list pairs')")
         assert lost["event"] == "error" and lost["error"].startswith("Lost the server")
         browser.close()
+
+
+def test_step_2_shows_what_the_reader_proposes_and_a_click_accepts_one_kind(tmp_path, population):
+    import threading
+    from http.server import ThreadingHTTPServer
+    from er import cli, intake, ui
+    sync = pytest.importorskip("playwright.sync_api")
+    s, p, g = population
+    dirty_csv(g.df.astype("string"), "FULL_NAME_KANA", "ORIGINAL_ADDRESS", tmp_path / "dirty.csv")
+    home = tmp_path / "workspaces"
+    assert cli.main(["create", "workspace", "w", "--home", str(home), "--format", "json"]) == 0
+    server = ui.Server(str(home / "w"), str(home))
+    httpd = ThreadingHTTPServer(("127.0.0.1", 0), ui.handler(server))
+    threading.Thread(target=httpd.serve_forever, daemon=True).start()
+    with sync.sync_playwright() as pw:
+        try:
+            browser = pw.chromium.launch()
+        except sync.Error:
+            httpd.shutdown()
+            pytest.skip("no browser: .venv/bin/python -m playwright install chromium")
+        page = browser.new_page(viewport={"width": 1280, "height": 900})
+        page.goto(f"http://127.0.0.1:{httpd.server_address[1]}/?token={server.token}")
+        page.wait_for_selector(".rail")
+        page.evaluate(f"setWorkspace({json.dumps(str(home / 'w'))})")
+        page.click(".navitem[data-screen=columns]")
+        page.fill("#cin", str(tmp_path / "dirty.csv"))
+        page.click("#load")
+        page.wait_for_selector("#repairs [data-accept]", state="attached", timeout=60_000)
+        assert "1 row and 1 value wait for a repair" in page.inner_text("#loaded .answer")  # said where it is asked: did your file load?
+        assert page.locator("#repairs summary").all_inner_texts()[:2] == ["1 value garbled by a wrong decoding upstream: decoded back",
+                                                                          "1 row whose fields don't line up: re-split where every value fits its column"]
+        repairs, watch = page.query_selector("#repairs").bounding_box(), page.query_selector("#out").bounding_box()
+        assert repairs["y"] + repairs["height"] <= watch["y"]  # what waits for people, before the columns
+        page.click("#repairs details:has([data-accept=realign]) summary")
+        assert "," in page.inner_text("#repairs details:has([data-accept=realign]) table")  # before → after, to see first
+        page.click("[data-accept=realign]")
+        page.click("#dlg button[value=run]")
+        page.wait_for_function("() => (document.querySelector('#loaded .answer') || {innerText: 'row'}).innerText.includes('· 1 value wait for a repair')", timeout=60_000)
+        part = next((home / "w" / "inputs").iterdir())
+        assert intake.report(part)["accepted"] == ["realign"] and not page.query_selector("[data-accept=realign]")
+        browser.close()
+    httpd.shutdown()
 
 
 def test_the_improve_page_tries_a_line_once_adopts_it_and_opens_the_next_round(tmp_path, population):

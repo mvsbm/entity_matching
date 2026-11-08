@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import get_args
 
 from er.config import Data, Derived, InputError, Normalizer, Pipeline, Standardization, check_fields, legal_pattern, restrict
+from er.intake import InputSpec
 
 SPECIAL = ("id", "entity")  # single columns, used under their own names: the record id and the truth
 COLUMNS = "columns.toml"  # a workspace's own [columns] and [kind]: which of its files' columns hold each field
@@ -30,6 +31,7 @@ class Settings:
     compute: dict[str, str]                  # DuckDB settings: threads, memory_limit, temp_directory
     detect: dict[str, str]                   # field → what its values look like ([locale.detect]): suggestions only
     flag_company: tuple[str, ...] = ()       # the values of field kind_flag that say company ([kind])
+    input: InputSpec = InputSpec()           # how a records file is read, before anything else ([input], er.intake)
 
 
 def project_root(start: Path | None = None) -> Path:
@@ -405,7 +407,14 @@ def load_settings(path: Path | None = None, columns: Path | None = None) -> Sett
         compute={k: str(v) for k, v in cfg.get("compute", {}).items()},
         detect={**loc.get("detect", {}), "company_name": legal_pattern(std)},  # a company name holds a legal form: the run's own table
         flag_company=tuple(str(v) for v in cfg.get("kind", {}).get("flag_company", ())),
+        input=input_spec(cfg.get("input", {})),
     )
+
+
+def input_spec(cfg: dict) -> InputSpec:  # [input]: the encodings tried, the placeholders, how sure a proposed repair must be
+    unknown = set(cfg) - set(InputSpec.__dataclass_fields__)
+    assert not unknown, f"[input]: unknown keys {sorted(unknown)}"
+    return InputSpec(**{k: tuple(map(str, v)) if isinstance(v, list) else v for k, v in cfg.items()})
 
 
 def load_experiments(root: Path):  # config/experiments.py: the development variants, as a module

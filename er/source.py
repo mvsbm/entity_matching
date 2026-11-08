@@ -19,10 +19,11 @@ from pathlib import Path
 import duckdb
 import pandas as pd
 
+from er import intake
 from er.candidates import q
 from er.config import InputError
 
-CONVERT = "records come as Parquet; convert it first, e.g. duckdb -c \"COPY (FROM 'in.csv') TO 'in.parquet'\""
+CONVERT = "give it to nayose as it is (load records, or any command that takes records): it reads CSV, TSV and Parquet"
 NESTED = ("STRUCT", "MAP", "UNION", "[]")  # DuckDB types a field's column can't hold
 NUMBER = re.compile(r"^(U?(TINY|SMALL|BIG|HUGE)?INT(EGER)?|FLOAT|DOUBLE|DECIMAL|REAL)")
 
@@ -45,8 +46,11 @@ class Source:
 
 
 def find(path: str | Path) -> list[Path]:
-    """The files a path names: one file, a glob, or a folder (its Parquet files, at any depth)."""
+    """The files a path names: one file, a glob, or a folder (its Parquet files, at any depth); a workspace's part, the
+    files its intake read (er.intake)."""
     p = Path(path)
+    if p.is_dir() and (r := intake.report(p)):
+        return [p / x["read"] for x in r["files"]]
     if any(c in str(p) for c in "*?["):
         files = sorted(p.parent.glob(p.name)) if p.parent.exists() else []
     else:
@@ -92,7 +96,7 @@ def open_source(path: str | Path | list[Path], con: duckdb.DuckDBPyConnection, e
     for cols in schemas.values():
         for name, kind in cols:
             types.setdefault(name, kind)
-    notes = []
+    notes = intake.notes(files)
     if len(files) > 1:
         lacking = {f.name: sorted(set(types) - {n for n, _ in cols}) for f, cols in schemas.items()}
         notes.append(f"{len(files)} files read together by column name" +

@@ -112,3 +112,16 @@ kind_flag = "PERSON_ORG_CODE"                      # the file's own person/compa
 
 [kind]
 flag_company = ["2"]                               # the values of kind_flag that say company; any other value says person
+
+# How a records file is read, before anything else (er.intake): a CSV, TSV or Parquet, each value decoded on its own.
+# A value is read in the one of these encodings that decodes it strictly (UTF-8 that does is UTF-8); one several read
+# is read in its column's. A value written as one of `nulls` is missing. A guess (a row re-split where its fields don't
+# line up, a garbled value decoded back, a value another encoding reads better) is proposed, never applied, until
+# people accept its kind (nayose accept repairs); only one that reads at least e^margin likelier: margin_text per
+# character of a value, margin_row for a whole row. A row with more than max_extra fields too many stays unread.
+[input]
+encodings = ["utf-8", "cp932", "euc-jp"]
+nulls = ["NULL", "null", "Null", "\\N", "NaN", "nan", "None", "none", "N/A", "n/a", "#N/A", "-", "－"]
+margin_text = 0.75
+margin_row = 4.6
+max_extra = 3

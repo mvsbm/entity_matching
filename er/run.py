@@ -779,7 +779,7 @@ class Run:
 
 
 def run_config(p: Pipeline, s: Settings) -> str:  # what decides the answer: the pipeline and the settings that shape the records
-    return config_hash((p, s.columns, s.standardize, s.flag_company))  # an increment needs the full run's
+    return config_hash((p, s.columns, s.standardize, s.flag_company, s.input))  # an increment needs the full run's
 
 
 def trial(ws: Path, base: Pipeline, variant: Pipeline, method: dict, s: Settings, echo: Callable[[dict], None] | None = None) -> dict:

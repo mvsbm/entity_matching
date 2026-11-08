@@ -21,11 +21,25 @@ Each matching job lives in a workspace: a folder that keeps your records file, h
 
 ```bash
 .venv/bin/nayose create workspace customers                                        # workspaces/customers, with its own mapping
-.venv/bin/nayose load records customers.parquet --workspace workspaces/customers   # copied into it, then described
+.venv/bin/nayose load records customers.parquet --workspace workspaces/customers   # copied into it, read as it comes, then described
 .venv/bin/nayose list workspaces                                                   # every workspace, the latest active first
 ```
 
-`load records` copies the file into the workspace's `inputs/` (`inputs/0001-customers/`), so its runs read the copy and the original can move or go. The same content loaded twice is copied once. Until the original is deleted, every file is on disk twice. It then describes the copy, as `nayose describe records FILE` does for any file, without preparing a record: each column's share filled and an example, each field's columns with their own shares and the share that looks like the field, and for a field the file holds none of, the column its name or values suggest. On a million records that takes about a second.
+`load records` copies the file into the workspace's `inputs/` (`inputs/0001-customers/`), so its runs read the copy and the original can move or go. The same content loaded twice is copied once. Until the original is deleted, every file is on disk twice. It reads the copy as it comes ([below](#files-as-they-come)), then describes it, as `nayose describe records FILE` does for any file, without preparing a record: each column's share filled and an example, each field's columns with their own shares and the share that looks like the field, and for a field the file holds none of, the column its name or values suggest. On a million records the reading takes about 15 seconds, the description about one.
+
+### Files as they come
+
+A records file can be CSV, TSV or Parquet, named anything: the reader goes by its bytes (`er.intake`). A CSV's delimiter is the one its lines hold steadily, and each value is decoded on its own, so one file may mix encodings by column or by row: a value is read in the one of `[input] encodings` (UTF-8, CP932, EUC-JP) that decodes it strictly, UTF-8 first when it reads as Japanese text; one that several read is read in its column's. A UTF-16 file or a BOM is read as such. What loses nothing is fixed by itself and counted: control bytes, NULs, zero-width characters and BOMs inside values removed; placeholders (`[input] nulls`: NULL, \N, NaN, N/A, -, …) made missing; a number a spreadsheet wrote as `5851.0` read as `5851`, and one it cut short (`1.23E+11`, its digits gone) made missing, since two IDs cut alike would otherwise agree.
+
+What would be a guess is proposed, never applied, until people accept its kind with `nayose accept repairs KIND --workspace W` (step 2 shows each with its values, as given and repaired):
+
+| Kind | Proposed when | Until accepted |
+|---|---|---|
+| `realign` | a row has fields too many (at most `max_extra`, 3: a delimiter inside a value) or too few (a line break inside one), and one way to join them back fits every column far better than any other: each column's profile is what its values hold, digits, kana, kanji, and their lengths | the row is unread |
+| `garbled` | a value reads as text garbled by a wrong decoding upstream (UTF-8 read as CP932 or Latin-1, then saved), and decoding it back reads far more like Japanese names and addresses (`data/reference/`) | the value is as given |
+| `encoding` | several encodings read a value, and another than its column's reads far better, as text and as its column holds | the value in its column's encoding |
+
+"Far better" is at least e^`margin_text` likelier per character for a value, e^`margin_row` for a row (`config/settings.toml` `[input]`). A row nothing can read stays in `unread.parquet` in the part, with its line number, its bytes and why; fix the file and load it again. A batch read under other `[input]` settings than the full run is refused. People's files given as CSV (`apply decisions --file`, `apply answers --file`) are read the same way but strictly: one that needs a repair is refused, with its line. On damaged copies of a generated file ([reports/benchmark_intake.md](../reports/benchmark_intake.md)) every kind of damage read back in at least 99.9% of its values, and no value that was never damaged changed.
 
 The pipeline never names your columns. It works on logical fields, and the workspace's `columns.toml` says which of your columns hold each one. A new workspace copies it from `config/settings.toml` `[columns]` and `[kind]` (`ER_SETTINGS=<file>` points nayose at another settings file); a workspace without one reads the project's. `nayose list columns --workspace W` shows the mapping, and `nayose set columns … --workspace W` changes it, keeping every comment and option, and checking the file before it saves. Without `--workspace`, both work on the project's mapping, which new workspaces start from. People know their file as features, not fields, so a workspace shows its mapping as groups of them: ID (Record ID, Customer number), Name (Full name, with its Family name and Given name; Company name; Person or company), Address, Phone and Birth date. `nayose list features --workspace W` shows each with its columns; `nayose set feature "Name/Full name/Family name=SEI" --workspace W` puts a column in one and writes the fields it means: a full name fills `full_name` and `person_name`, its family and given names a joined fallback of `person_name` and `given_name`, and every name `any_name`. `describe records` places each feature whose columns the file lacks from the file's contents: known family and given names (`data/reference/individual.json`, in kanji and kana), a family name followed by a given name, a legal form, a prefecture or city followed by more, and the field patterns; a phone also by its column's name (phone, tel, mobile, 電話, 携帯; never a fax) when its values are 4 to 11 digits, dashes and brackets aside. Each placement says why, and none is applied without you.
 
@@ -88,7 +102,7 @@ It prints each field, its fill rate and the columns it comes from, what would be
 
 | Parameter | Does |
 |---|---|
-| `INPUT` | a Parquet file, a quoted glob (`'data/in/*.parquet'`) or a folder of them; several files are read together by column name. Copied into the workspace first, as `load records` does; left out, the file loaded into it last |
+| `INPUT` | a CSV, TSV or Parquet file, a quoted glob (`'data/in/*.csv'`) or a folder of them, read as they come; several files are read together by column name. Copied into the workspace first, as `load records` does; left out, the file loaded into it last |
 | `--workspace` | the workspace: the folder that keeps one matching job. A full run refuses one that already holds a run |
 | `--overwrite` | replaces the run in `--workspace`; people's decisions and answers in it stand |
 | `--compute KEY=VALUE …` | DuckDB limits for this run, overriding `config/settings.toml` `[compute]`: `memory_limit=8GB`, `threads=4`, `temp_directory=<folder>`. Past the memory limit, DuckDB spills to that folder |
@@ -273,7 +287,7 @@ What stops it: two lines, what is wrong and how to fix it, and exit code 2:
 | The message says | Why |
 |---|---|
 | `no file matches …` | a wrong path; it suggests the closest names in that folder |
-| `… not a Parquet file; it looks like …` | a CSV or an Excel file; it shows how to convert it |
+| `… a ZIP or Excel file, not records` | an Excel workbook; save it as CSV or Parquet |
 | `… a Parquet file cut short` | an interrupted copy |
 | `the file lacks a field every run needs` | `[columns]` points at a column the file lacks; it lists the file's columns and suggests a mapping |
 | `columns … could each be …` | two columns match one name loosely |
@@ -301,7 +315,7 @@ Pairs are counted before any join, so a run that couldn't fit stops within secon
 
 ## 8 · Run it on a schedule
 
-`nayose serve inbox` takes in every Parquet file dropped in an inbox, one at a time, in the order it arrived.
+`nayose serve inbox` takes in every file dropped in an inbox (Parquet, CSV or TSV), one at a time, in the order it arrived.
 
 ```bash
 .venv/bin/nayose serve inbox inbox --workspace workspaces/customers                # one pass; cron can call it
@@ -309,9 +323,9 @@ Pairs are counted before any join, so a run that couldn't fit stops within secon
 ```
 
 ```
-inbox/batches/*.parquet      new records: add records; into an empty workspace, the first batch is resolve records
-inbox/decisions/*.parquet    people's decisions: apply decisions (section 6)
-inbox/answers/*.parquet      people's person/company answers: apply answers, a rerun (section 6)
+inbox/batches/*              new records: add records; into an empty workspace, the first batch is resolve records
+inbox/decisions/*            people's decisions: apply decisions (section 6)
+inbox/answers/*              people's person/company answers: apply answers, a rerun (section 6)
 inbox/done/, inbox/failed/   where each file goes once it ran
 workspaces/customers/jobs.jsonl    one line per file per pass: file, SHA-256, outcome, exit code, attempts, seconds, error, where it went
 ```
@@ -338,7 +352,7 @@ The page runs the same commands, and nothing else. Every page answers the questi
 |---|---|---|
 | Overview, with a workspace open | *Where do I stand, and what is next?* The next step, with *Open*; what ran when; the whole pipeline, each stage opening its question as on step 3 | `describe workspace`, `describe matching`, `describe key` |
 | 1 Choose a workspace | *What will this do for me?* An example: three records written differently become one entity, one ID, and *Create a workspace*. *Can I pick up where I left off?* The latest workspaces, each with where it stands, and *Open* | `list workspaces`, `create workspace` |
-| 2 Prepare your data | *Did my file load?* Its records and columns, or what is still needed, with *Suggest the columns*. *Is anything going to hurt the matching?* Fields mostly empty, and fields no column is mapped to with the ways of finding pairs they turn off. *Did it pick the right columns?* Each group's features: the column in each, how full it is, a real example; *Suggest* shows what the file's contents place there, kept with ✓; the file's columns, to drag in, folded below | `load records`, `describe records`, `set feature`, `add feature`, `remove feature`, `describe workspace` |
+| 2 Prepare your data | *Did my file load?* Its records and columns, and what waits for a repair, or what is still needed, with *Suggest the columns*. *Which repairs do I accept?* Each kind the reader proposed, its values as given and repaired, with *Accept these N*; what it fixed by itself; the rows it can't read. *Is anything going to hurt the matching?* Fields mostly empty, and fields no column is mapped to with the ways of finding pairs they turn off. *Did it pick the right columns?* Each group's features: the column in each, how full it is, a real example; *Suggest* shows what the file's contents place there, kept with ✓; the file's columns, to drag in, folded below | `load records`, `describe records`, `accept repairs`, `set feature`, `add feature`, `remove feature`, `describe workspace` |
 | 3 Find matches | Before a run, *how long will it take?* The records and about how long, and *Find matches*. During it, *is it working?* What it is doing now, the seconds so far of about how long, and each stage filling in as its step ends. After it, *what did it find?* Records → entities, the pairs matched and those waiting for you, and *Review them*. Then *how did it find matches?* The stages in order, each opening its own question answered: *What did it read?* · *Which pairs did the rules match, and why?* (how the scoring rates the rules' pairs, and where it disagrees) · *Which pairs did it compare, and could a real match have been missed?* (all the possible pairs, how long comparing them all would take, the pairs compared, and how few matches one pair key alone found; each key opens `describe key`) · *How did it score each pair?* (one pair of the run as a waterfall, *Another pair*, and what counts most; every comparison's staircase folded) · *Where did it draw the line, and how many could be wrong?* (the line and its odds, the pairs matched and the wrong ones the model expects, pairs by points; every pattern folded) · *Which pairs did it leave for me, and why?* · *How did matched pairs become entities?* (with what to look at first) | `resolve records`, `add records`, `match records`, `rerun records`, `describe workspace`, `list patterns`, `explain pair`, `compare records`, `describe key` |
 | 4 Review possible matches | *Are these two the same entity?* The two records side by side, their differences marked. *Why is the engine unsure?* One line under the question. *What happens when I say same or different?* One line under the answers (<kbd>M</kbd> same entity, <kbd>N</kbd> different, <kbd>S</kbd> skip, <kbd>↑</kbd> <kbd>↓</kbd> move). Then how it scored, as a waterfall, with *Why?* beside each step ([Why this match?](#why-this-match)); what found it, and when it joins two entities, every pair across them and *Compare all N*. Beside it, *how many are left?* The decided of those to decide and the spot-checks, or with a trust line ([section 6](#the-trust-line)) how much of its sample is checked, with *Merge … automatically* once it is clean; *Apply decisions*; then the list | `list pairs`, `decide pair`, `apply decisions`, `describe workspace`, `lower trust`, `raise trust`, `list patterns`, `explain pair`, `compare records` |
 | *Improve matching*, under step 4 | *Is the matching good enough yet?* From the matched pairs people checked: not known yet, so far yes, or how many were wrong, with *Check 50 matched pairs*. *What could be better?* Each change worth trying in words, with what it would do, and *Try*; a trial tried, with *Adopt*; where to draw the line, folded; the rounds, rules, pair keys and comparison steps folded ([section 6](#improve-the-method)) | `describe method`, `try method`, `adopt method`, `reset method`, `draw pairs`, `describe key` |
