@@ -125,16 +125,13 @@ def test_the_ui_layout_names_only_declared_commands_parameters_and_result_fields
     assert all(l["to"] in flow["steps"] and {(l["screen"], c) for c in l["via"]} <= placed for l in flow["loops"])
 
 
-def test_a_long_command_that_ends_with_its_result_and_exit_2_is_no_crash(tmp_path, monkeypatch):
+def test_a_long_command_that_ends_with_its_result_and_exit_2_is_no_crash(tmp_path, fake_cli):
     from er import ui
-    fake = tmp_path / "python"  # a command that stopped on a mistake people fix, yet said its result (try everything does)
-    fake.write_text('#!/bin/sh\necho \'{"event": "step", "step": "load", "seconds": 1.0}\'\necho \'{"event": "result", "command": "try everything", "ok": false}\'\nexit 2\n')
-    fake.chmod(0o755)
-    monkeypatch.setattr(ui.sys, "executable", str(fake))
-    job = ui.Job(["try", "everything", "x.csv"])
+    fake_cli('print(json.dumps({"event": "step", "step": "load", "seconds": 1.0}))\nprint(json.dumps({"event": "result", "command": "try everything", "ok": False}))\nsys.exit(2)')
+    job = ui.Job(["try", "everything", "x.csv"])  # a command that stopped on a mistake people fix, yet said its result (try everything does)
     ui.Server()._long(job)
     assert job.code == 2 and [e["event"] for e in job.events] == ["step", "result"]  # its result, for the page to show
-    fake.write_text('#!/bin/sh\necho "Traceback (most recent call last):"\necho "KeyError: 1"\nexit 1\n')
+    fake_cli('print("Traceback (most recent call last):")\nprint("KeyError: 1")\nsys.exit(1)')
     job = ui.Job(["try", "everything", "x.csv"])
     ui.Server()._long(job)
     assert job.code == 1 and job.events[-1]["event"] == "error" and "KeyError" in job.events[-1]["error"]  # a crash: said
@@ -158,7 +155,26 @@ def test_quick_commands_in_bursts_leave_no_threads_behind(tmp_path, population):
     g.df.to_parquet(tmp_path / "all.parquet", index=False)
     assert cli.main(["resolve", "records", str(tmp_path / "all.parquet"), "--workspace", str(tmp_path / "run"), "--format", "json"]) == 0
     task = Path("/proc/self/task")
-    threads = lambda: len(os.listdir(task)) if task.is_dir() else subprocess.run(["ps", "-M", str(os.getpid())], capture_output=True, text=True).stdout.count("\n") - 1
+
+    def threads() -> int:  # the OS threads of this process: Linux's /proc, macOS's ps, Windows' thread snapshot
+        if task.is_dir():
+            return len(os.listdir(task))
+        if os.name != "nt":
+            return subprocess.run(["ps", "-M", str(os.getpid())], capture_output=True, text=True).stdout.count("\n") - 1
+        import ctypes
+        from ctypes import wintypes
+
+        class Entry(ctypes.Structure):  # THREADENTRY32
+            _fields_ = [("dwSize", wintypes.DWORD), ("cntUsage", wintypes.DWORD), ("th32ThreadID", wintypes.DWORD), ("th32OwnerProcessID", wintypes.DWORD),
+                        ("tpBasePri", wintypes.LONG), ("tpDeltaPri", wintypes.LONG), ("dwFlags", wintypes.DWORD)]
+        k = ctypes.windll.kernel32
+        snap, e, n = k.CreateToolhelp32Snapshot(4, 0), Entry(dwSize=ctypes.sizeof(Entry)), 0  # TH32CS_SNAPTHREAD
+        more = k.Thread32First(snap, ctypes.byref(e))
+        while more:
+            n += e.th32OwnerProcessID == os.getpid()
+            more = k.Thread32Next(snap, ctypes.byref(e))
+        k.CloseHandle(snap)
+        return n
     server, ws = ui.Server(str(tmp_path / "run")), str(tmp_path / "run")
     start = threads()
     for _ in range(8):  # a page's loads: several at once, again and again

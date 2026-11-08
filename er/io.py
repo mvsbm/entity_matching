@@ -20,6 +20,49 @@ import pandas as pd
 
 from er.config import Data
 
+if os.name == "nt":
+    import msvcrt
+else:
+    import fcntl
+
+
+def lock(f) -> bool:
+    """An exclusive lock on the open file `f`, held until it closes or the process ends, even if it dies: flock on
+    POSIX, a byte locked on Windows. False if another process holds it. O(1)."""
+    try:
+        if os.name == "nt":
+            msvcrt.locking(f.fileno(), msvcrt.LK_NBLCK, 1)
+        else:
+            fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        return True
+    except OSError:  # BlockingIOError on POSIX; PermissionError on Windows
+        return False
+
+
+def alive(pid: int) -> bool:
+    """Whether a process with this ID runs: os.kill(pid, 0) on POSIX, which sends nothing; on Windows os.kill would end
+    it, so its exit code is asked instead (259: still running). O(1)."""
+    if os.name == "nt":
+        import ctypes
+        k = ctypes.windll.kernel32
+        h = k.OpenProcess(0x1000, False, pid)  # PROCESS_QUERY_LIMITED_INFORMATION
+        if not h:
+            return False
+        code = ctypes.c_ulong()
+        running = k.GetExitCodeProcess(h, ctypes.byref(code)) and code.value == 259
+        k.CloseHandle(h)
+        return bool(running)
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:  # another user's
+        return True
+    return True
+
+
+CHILD = dict(encoding="utf-8", errors="replace")  # a nayose child's output: UTF-8 (cli.main writes it so), whatever the locale's code page
+
 def replace_text(path: Path, text: str, check: Callable[[Path], object] | None = None) -> None:
     """`path` written whole beside itself, then renamed over it, so a write cut short leaves the old file. `check` reads
     the new one first: if it raises, the new one goes and the old stays."""
@@ -42,7 +85,7 @@ def code_version(root: Path) -> str:
     """The commit of the code that ran, and the tracked files changed in this copy (the column mapping, say)."""
     def git(*args: str) -> str:
         try:
-            return subprocess.run(["git", "-C", str(root), *args], capture_output=True, text=True, timeout=10).stdout.strip()
+            return subprocess.run(["git", "-C", str(root), *args], capture_output=True, timeout=10, **CHILD).stdout.strip()
         except OSError:
             return ""
     changed = git("diff", "--name-only", "HEAD").splitlines()
@@ -74,7 +117,7 @@ def write_final(data: Data, name: str, config: object, model: dict | None = None
     data.models_dir.mkdir(parents=True, exist_ok=True)
     path = data.models_dir / f"{name}.json"
     path.write_text(json.dumps(dict(config=repr(config), config_hash=config_hash(config), model=model, **facts),
-                               ensure_ascii=False, indent=1))
+                               ensure_ascii=False, indent=1), encoding="utf-8")
     return path
 
 

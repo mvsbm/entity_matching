@@ -141,7 +141,7 @@ def test_an_increment_refuses_a_changed_pipeline_and_steps_json_says_what_went_i
     g.df[~new].to_parquet(tmp_path / "old.parquet", index=False)
     g.df[new].to_parquet(tmp_path / "new.parquet", index=False)
     Run(p, s).full(tmp_path / "old.parquet", tmp_path / "run")
-    entry = json.loads((tmp_path / "run" / "steps.json").read_text())["runs"][-1]
+    entry = json.loads((tmp_path / "run" / "steps.json").read_text(encoding="utf-8"))["runs"][-1]
     assert entry["inputs"][0]["sha256"] == hashlib.sha256((tmp_path / "old.parquet").read_bytes()).hexdigest() and entry["code"] and entry["config"]
     changed = replace(p, fs=replace(p.fs, min_match_weight=p.fs.min_match_weight + 1))
     with pytest.raises(InputError, match="changed since the full run"):
@@ -158,7 +158,7 @@ def test_answers_given_wrong_stop_the_run(tmp_path, population):
     pd.DataFrame({"kind": [1]}).to_parquet(tmp_path / "no_ids.parquet")
     with pytest.raises(InputError, match="needs the columns"):
         Run(p, s, kind_labels=tmp_path / "no_ids.parquet").full(tmp_path / "all.parquet", tmp_path / "run")
-    (tmp_path / "sheet.parquet").write_text(f"{s.data.unique_id},kind\n0000000001,1\n")  # a sheet saved as CSV: the same door as records
+    (tmp_path / "sheet.parquet").write_text(f"{s.data.unique_id},kind\n0000000001,1\n", encoding="utf-8")  # a sheet saved as CSV: the same door as records
     with pytest.raises(InputError, match="not a Parquet file"):
         Run(p, s, kind_labels=tmp_path / "sheet.parquet").full(tmp_path / "all.parquet", tmp_path / "run")
     with pytest.raises(InputError, match="no run in"):
@@ -247,7 +247,7 @@ def test_describe_matching_draws_the_pipeline_with_the_run_s_numbers(tmp_path, p
     assert list(nodes) == list(GRAPH_NODES)
     kept = pd.read_parquet(out / "rule_kept")["rule"].value_counts().to_dict()
     assert {r["name"]: r["pairs"] for r in nodes["rules"]["rules"] if r["pairs"]} == kept
-    step = next(x for x in json.loads((out / "steps.json").read_text())["runs"][0]["steps"] if x["step"] == "candidates")
+    step = next(x for x in json.loads((out / "steps.json").read_text(encoding="utf-8"))["runs"][0]["steps"] if x["step"] == "candidates")
     assert {x["name"]: x["pairs"] for x in nodes["candidates"]["generators"]} == {x["name"]: x["pairs"] for x in step["generators"]}
     gold = pd.read_parquet(out / "gold.parquet")
     assert nodes["accept"]["accepted"] == len(pd.read_parquet(out / "matches")) and nodes["customers"]["count"] == gold["cluster_id"].nunique()

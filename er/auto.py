@@ -55,7 +55,7 @@ import numpy as np
 from er.config import InputError, lit
 from er.folder import method, runs
 from er.generate import generate, load_reference, load_spec
-from er.io import code_version, replace_text
+from er.io import CHILD, alive, code_version, replace_text
 from er.run import peak_gb
 from er.settings import Settings, added_of, beside, load_settings
 from er.source import describe, find, lexicon, profiled
@@ -154,13 +154,10 @@ def rehearse(ws: Path, sh: dict, s: Settings, pipeline: Path | None, emit: Calla
     disk: the real file would stop there too), in its own words when it died without saying (the last lines it wrote)."""
     root, t = ws / "rehearsal", time.perf_counter()
     temp = Path(connect(s.compute)[0].execute("SELECT current_setting('temp_directory')").fetchall()[0][0])
-    for old in temp.glob("rehearsal-*") if os.name != "nt" else ():  # one a rehearsal killed outright left: its process is gone (os.kill tests that on POSIX only)
-        try:
-            os.kill(int(old.name.removeprefix("rehearsal-")), 0)
-        except ProcessLookupError:
+    for old in temp.glob("rehearsal-*"):  # one a rehearsal killed outright left: its process is gone
+        pid = old.name.removeprefix("rehearsal-")
+        if pid.isdigit() and not alive(int(pid)):
             shutil.rmtree(old, ignore_errors=True)
-        except (ValueError, OSError):
-            pass
     spill, child = temp / f"rehearsal-{os.getpid()}", None  # on the disk a real run spills to, and only this run's
     shutil.rmtree(root, ignore_errors=True)
     try:
@@ -176,7 +173,7 @@ def rehearse(ws: Path, sh: dict, s: Settings, pipeline: Path | None, emit: Calla
         limits = [f"{k}={v}" for k, v in {**s.compute, "temp_directory": str(spill)}.items() if v not in ("", None)]
         child = subprocess.Popen([sys.executable, "-m", "er.cli", "resolve", "records", str(root / "records"), "--workspace", str(root / "run"),
                                   "--format", "json", "--compute", *limits, *(["--pipeline", str(pipeline)] if pipeline else [])],
-                                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+                                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT, **CHILD)
         events, said, failed = [], collections.deque(maxlen=20), []
 
         def read() -> None:  # the run's steps, passed on as they end: progress while it runs; any other line, its last words
@@ -230,7 +227,7 @@ def nayose(words: list, step: str, emit: Callable[[dict], None]) -> tuple[int, d
     command is stopped too: after Ctrl-C, which reached it as well, given 15 seconds to clean up; else asked to stop
     the same way first."""
     child = subprocess.Popen([sys.executable, "-m", "er.cli", *map(str, words), "--format", "json"],
-                             stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
+                             stdout=subprocess.PIPE, stderr=subprocess.STDOUT, bufsize=1, **CHILD)
     last, other = {}, collections.deque(maxlen=200)
     try:
         for line in child.stdout:  # stderr joins stdout: one pipe read to its end, so a long traceback can't fill it
@@ -247,8 +244,8 @@ def nayose(words: list, step: str, emit: Callable[[dict], None]) -> tuple[int, d
         code = child.wait()
     except BaseException as e:
         if child.poll() is None:
-            if not isinstance(e, KeyboardInterrupt):
-                child.send_signal(signal.SIGINT)
+            if not isinstance(e, KeyboardInterrupt):  # asked to stop: Ctrl-C's signal on POSIX; Windows has none to send it, so it ends it
+                child.send_signal(signal.SIGINT) if os.name != "nt" else child.terminate()
             try:
                 child.wait(15)
             except subprocess.TimeoutExpired:

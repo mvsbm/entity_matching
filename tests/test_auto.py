@@ -9,8 +9,10 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
+from er.io import alive
 
-def test_a_rehearsal_runs_a_file_of_the_same_size_and_shape_and_measures_it(say, tmp_path, population, monkeypatch):
+
+def test_a_rehearsal_runs_a_file_of_the_same_size_and_shape_and_measures_it(say, tmp_path, population, monkeypatch, fake_cli):
     s, p, g = population
     g.df.to_parquet(tmp_path / "all.parquet", index=False)
     monkeypatch.chdir(tmp_path)
@@ -22,27 +24,25 @@ def test_a_rehearsal_runs_a_file_of_the_same_size_and_shape_and_measures_it(say,
     assert r["seconds"] > 0 and r["peak_memory_gb"] > 0 and r["peak_spill_gb"] >= 0 and r["pairs"] > 0 and {"load", "fit", "score", "write"} <= set(r["steps"])
     for f in ("full_name", "phone", "birth_date", "postal_code"):  # each field filled as the file is
         assert abs(r["shape"][f]["file"] - r["shape"][f]["rehearsal"]) < 0.05, (f, r["shape"][f])
-    assert not (ws / "rehearsal").exists() and json.loads((ws / "rehearsal.json").read_text())["records"] == r["records"]  # what it made, gone; its result, kept
+    assert not (ws / "rehearsal").exists() and json.loads((ws / "rehearsal.json").read_text(encoding="utf-8"))["records"] == r["records"]  # what it made, gone; its result, kept
     assert "names repeat" in r["limit"]
     from er import auto
-    fake = tmp_path / "python"  # a run that stops as one out of memory does: said, as the real file's would be
-    fake.write_text('#!/bin/sh\necho \'{"event": "error", "error": "out of memory: could not allocate", "fix": "raise --compute memory_limit"}\'\nexit 2\n')
-    fake.chmod(0o755)
-    monkeypatch.setattr(auto.sys, "executable", str(fake))
+    seen, run_dir = tmp_path / "seen.toml", 'sys.argv[sys.argv.index("--workspace") + 1]'
+    fake_cli('print(json.dumps({"event": "error", "error": "out of memory: could not allocate", "fix": "raise --compute memory_limit"}))\nsys.exit(2)')  # a run that stops as one out of memory does
     code, e = say("rehearse", "records", "--workspace", ws)
     assert code == 2 and "stopped here: out of memory" in e["error"] and e["fix"] == "raise --compute memory_limit" and not (ws / "rehearsal").exists()
-    fake.write_text(f'#!/bin/sh\ncp "$7/method.toml" {tmp_path}/seen.toml\necho \'{{"event": "step", "step": "load", "seconds": 1.0}}\'\n'
-                    'echo "Traceback (most recent call last):"\necho "duckdb.IOException: No space left on device"\nexit 1\n')
+    fake_cli(f'shutil.copy(os.path.join({run_dir}, "method.toml"), {str(seen)!r})\nprint(json.dumps({{"event": "step", "step": "load", "seconds": 1.0}}))\n'
+             'print("Traceback (most recent call last):")\nprint("duckdb.IOException: No space left on device")\nsys.exit(1)')
     code, e = say("rehearse", "records", "--workspace", ws)  # it died without saying why: its last words
-    assert code == 2 and "No space left on device" in e["error"] and (tmp_path / "seen.toml").read_text() == (ws / "method.toml").read_text()  # the workspace's method
-    fake.write_text('#!/bin/sh\necho \'{"event": "step", "step": "budget", "seconds": 0.1, "pairs": 7}\'\nexit 0\n')
+    assert code == 2 and "No space left on device" in e["error"] and (tmp_path / "seen.toml").read_text(encoding="utf-8") == (ws / "method.toml").read_text(encoding="utf-8")  # the workspace's method
+    fake_cli('print(json.dumps({"event": "step", "step": "budget", "seconds": 0.1, "pairs": 7}))')
     code, done = say("rehearse", "records", "all.parquet", "--workspace", ws)  # the file named: kept in what to run next
     assert code == 0 and done["pairs"] == 7 and "all.parquet" in done["next"][0]["command"]
     say("add", "feature", "Name/Kanji name", "--type", "person name", "--script", "kanji", "--workspace", ws)
     (ws / "method.toml").write_text('trust = "none"\nadd_keys = [["person_name_2"], ["phone", "birth_date"]]\n', encoding="utf-8")
-    fake.write_text(f'#!/bin/sh\ncp "$7/method.toml" {tmp_path}/seen.toml\nexit 0\n')
+    fake_cli(f'shutil.copy(os.path.join({run_dir}, "method.toml"), {str(seen)!r})')
     assert say("rehearse", "records", "--workspace", ws)[0] == 0  # a key on a name added to the workspace: the generated file holds none
-    assert (tmp_path / "seen.toml").read_text() == 'trust = "none"\nadd_keys = [["phone", "birth_date"]]\n'
+    assert (tmp_path / "seen.toml").read_text(encoding="utf-8") == 'trust = "none"\nadd_keys = [["phone", "birth_date"]]\n'
     monkeypatch.setattr(auto.subprocess, "Popen", lambda *a, **k: (_ for _ in ()).throw(OSError("no such program")))
     with pytest.raises(OSError):
         say("rehearse", "records", "--workspace", ws)
@@ -67,17 +67,15 @@ def test_a_generated_file_takes_the_shape_it_is_given_across_its_parts(tmp_path,
     assert 0.1 < auto.shape(load_settings(), tmp_path / "b")["fields"]["company_name"] < 0.35  # the generator's share of companies, not 90%
 
 
-def test_a_rehearsal_stopped_midway_leaves_nothing_behind(tmp_path, monkeypatch):
+def test_a_rehearsal_stopped_midway_leaves_nothing_behind(tmp_path, monkeypatch, fake_cli):
     from er import auto
     from er.settings import load_settings
     s = load_settings()
     temp = Path(auto.connect(s.compute)[0].execute("SELECT current_setting('temp_directory')").fetchall()[0][0])
     stale = temp / "rehearsal-999999"  # what a rehearsal killed outright left: its process is gone
     stale.mkdir(parents=True, exist_ok=True)
-    fake = tmp_path / "python"  # a run that goes on and on
-    fake.write_text(f'#!/bin/sh\necho $$ > {tmp_path}/pid\necho \'{{"event": "step", "step": "load", "seconds": 1.0}}\'\nexec sleep 60\n')
-    fake.chmod(0o755)
-    monkeypatch.setattr(auto.sys, "executable", str(fake))
+    pid = tmp_path / "pid"  # a run that goes on and on
+    fake_cli(f'open({str(pid)!r}, "w").write(str(os.getpid()))\nprint(json.dumps({{"event": "step", "step": "load", "seconds": 1.0}}), flush=True)\ntime.sleep(60)')
     def emit(e):  # the progress can't be passed on: the page that asked is gone
         if e["step"].startswith("rehearse"):
             raise BrokenPipeError("gone")
@@ -86,8 +84,7 @@ def test_a_rehearsal_stopped_midway_leaves_nothing_behind(tmp_path, monkeypatch)
     with pytest.raises(BrokenPipeError):
         auto.rehearse(ws, dict(records=300, fields={"full_name": 0.9}, company=0.0), s, None, emit)
     assert time.perf_counter() - t < 30 and not stale.exists() and not (ws / "rehearsal").exists() and not (ws / "rehearsal.json").exists()
-    with pytest.raises(ProcessLookupError):
-        os.kill(int((tmp_path / "pid").read_text()), 0)  # the run stopped with it
+    assert not alive(int(pid.read_text(encoding="utf-8")))  # the run stopped with it
 
 
 def test_auto_mode_tries_every_step_and_writes_a_report_that_holds_no_value(say, tmp_path, population, monkeypatch):
@@ -149,7 +146,7 @@ def test_auto_mode_writes_its_report_when_a_step_stops_and_waits_out_no_busy_wor
     monkeypatch.setattr(auto, "nayose", crash)
     code, e = say("try", "everything", "bare.parquet")
     ws = Path(e["workspace"])
-    assert code == 2 and "0012345678" in (ws / "auto" / "check.log").read_text() and "0012345678" not in Path(e["report"]).read_text(encoding="utf-8")
+    assert code == 2 and "0012345678" in (ws / "auto" / "check.log").read_text(encoding="utf-8") and "0012345678" not in Path(e["report"]).read_text(encoding="utf-8")
     def stop(words, step, emit):  # Ctrl-C while it loads: what ran is reported
         if step == "load":
             raise KeyboardInterrupt
@@ -159,24 +156,20 @@ def test_auto_mode_writes_its_report_when_a_step_stops_and_waits_out_no_busy_wor
     assert code == 130 and [x["step"] for x in e["steps"]] == ["workspace", "stopped"] and "✗ stopped" in Path(e["report"]).read_text(encoding="utf-8")
 
 
-def test_a_command_that_crashes_says_its_kind_alone_and_one_that_can_t_report_is_stopped(tmp_path, monkeypatch):
+def test_a_command_that_crashes_says_its_kind_alone_and_one_that_can_t_report_is_stopped(tmp_path, monkeypatch, fake_cli):
     from er import auto
-    fake = tmp_path / "python"
-    fake.write_text('#!/bin/sh\necho "Traceback (most recent call last):"\necho "KeyError: \'0012345678\'"\nexit 1\n')
-    fake.chmod(0o755)
-    monkeypatch.setattr(auto.sys, "executable", str(fake))
+    fake_cli('print("Traceback (most recent call last):")\nprint("KeyError: \'0012345678\'")\nsys.exit(1)')
     code, e, said = auto.nayose(["check", "records", "x"], "check", lambda e: None)
     assert code == 1 and e["error"] == "crashed: KeyError" and "0012345678" not in json.dumps(e) and "0012345678" in said[-1]  # its words, for the log only
     assert e["fix"] == "its own words are in auto/check.log in the workspace"
-    fake.write_text(f'#!/bin/sh\necho $$ > {tmp_path}/pid\necho \'{{"event": "step", "step": "load", "seconds": 1.0}}\'\nexec sleep 60\n')
+    pid = tmp_path / "pid"
+    fake_cli(f'open({str(pid)!r}, "w").write(str(os.getpid()))\nprint(json.dumps({{"event": "step", "step": "load", "seconds": 1.0}}), flush=True)\ntime.sleep(60)')
     def emit(e):
         raise BrokenPipeError("the page is gone")
     t = time.perf_counter()
     with pytest.raises(BrokenPipeError):
         auto.nayose(["resolve", "records"], "resolve", emit)
-    assert time.perf_counter() - t < 20
-    with pytest.raises(ProcessLookupError):
-        os.kill(int((tmp_path / "pid").read_text()), 0)  # asked to stop, and gone
+    assert time.perf_counter() - t < 20 and not alive(int(pid.read_text(encoding="utf-8")))  # asked to stop, and gone
 
 
 def test_a_file_without_a_header_puts_no_value_in_the_report_through_its_column_names(say, tmp_path, monkeypatch):

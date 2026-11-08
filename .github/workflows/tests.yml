@@ -1,5 +1,6 @@
 # Every pull request, and main, runs the tests: lint, the page's script, the fast checks, whole runs, the page in a
-# browser, and the design checked against the code. The job names are what branch protection requires: keep them.
+# browser, and the design checked against the code; and on Windows, set up as a person sets it up there. The job names
+# are what branch protection requires: keep them.
 name: tests
 on:
   push:
@@ -38,3 +39,22 @@ jobs:
         run: python -m playwright install --with-deps chromium
       - if: matrix.python == '3.12'
         run: python -m pytest -n auto -m browser  # CI is set: a missing browser fails, never skips
+  windows:  # the same tests on Windows, set up as a person sets it up there (setup_venv.ps1)
+    name: pytest (windows)
+    runs-on: windows-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+          cache: pip
+      - run: .\setup_venv.ps1
+      - run: .venv\Scripts\python -m pytest -n auto -m "not slow and not browser"
+      - run: .venv\Scripts\python -m pytest -n auto -m "slow and not browser"
+      - uses: actions/cache@v4
+        with:
+          path: ~\AppData\Local\ms-playwright
+          key: playwright-${{ runner.os }}-${{ hashFiles('requirements.txt') }}
+      - run: .venv\Scripts\python -m playwright install chromium
+      - run: .venv\Scripts\python -m pytest -n auto -m browser  # CI is set: a missing browser fails, never skips

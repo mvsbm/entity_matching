@@ -53,7 +53,7 @@ def population(spec) -> tuple[pd.DataFrame, pd.Series]:
 
 def links(run: Path) -> dict:
     """A written run's model links, and the false ones the model expects among them (the sum of 1 − match probability)."""
-    c = next(x for x in reversed(json.loads((run / "steps.json").read_text())["runs"][-1]["steps"]) if x["step"] == "cluster")
+    c = next(x for x in reversed(json.loads((run / "steps.json").read_text(encoding="utf-8"))["runs"][-1]["steps"]) if x["step"] == "cluster")
     return dict(model_links=c["accepted"], expected_false=c["expected_false"])
 
 
@@ -156,12 +156,12 @@ def cost(entities: list[int], memory_limit: str) -> pd.DataFrame:
         del records
         compute = [f"memory_limit={memory_limit}"] if memory_limit else []
         done = subprocess.run([sys.executable, "-m", "er.cli", "resolve", "records", str(d / "records.parquet"), "--workspace", str(d / "run"),
-                               "--overwrite", "--compute", *compute, f"temp_directory={OUT / 'spill'}"], cwd=S.root, capture_output=True, text=True)
+                               "--overwrite", "--compute", *compute, f"temp_directory={OUT / 'spill'}"], cwd=S.root, capture_output=True, encoding="utf-8", errors="replace")
         if done.returncode:
             print(f"{size:,} records: failed\n{done.stderr[-2000:]}", flush=True)
             rows.append(dict(records=size, seconds="failed: " + done.stderr.strip().splitlines()[-1][:120]))
             continue
-        steps = json.loads((d / "run" / "steps.json").read_text())["runs"][-1]["steps"]
+        steps = json.loads((d / "run" / "steps.json").read_text(encoding="utf-8"))["runs"][-1]["steps"]
         row = dict(records=size, seconds=round(sum(x["seconds"] for x in steps), 1), peak_memory_gb=max(x["peak_memory_gb"] for x in steps),
                    **{x["step"]: x["seconds"] for x in steps}, recall="—", false_merges="—", fp_rate_at_most="—", **links(d / "run"),
                    false_links="—")

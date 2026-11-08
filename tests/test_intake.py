@@ -147,7 +147,7 @@ def test_a_name_added_in_another_script_is_compared_beside_the_kana_one(say, tmp
     assert any(f.get("added") for f in features_of("workspaces/kanji")[1]["features"]) and not added_of("workspaces/kana")
     assert say("resolve", "records", "--workspace", "workspaces/kana")[0] == 0 and not joined("kana")  # kana alone: the names disagree
     assert say("resolve", "records", "--workspace", "workspaces/kanji")[0] == 0 and joined("kanji")  # the kanji name agrees: one person
-    run = json.loads((tmp_path / "workspaces" / "kanji" / "steps.json").read_text())["runs"][0]
+    run = json.loads((tmp_path / "workspaces" / "kanji" / "steps.json").read_text(encoding="utf-8"))["runs"][0]
     found = {x["name"]: x["pairs"] for x in next(x for x in run["steps"] if x["step"] == "candidates")["generators"]}
     assert any(n.endswith("@person_name_2") and v for n, v in found.items())  # pairs are found on the kanji name too
     gold = pd.read_parquet(tmp_path / "workspaces" / "kanji" / "gold.parquet")
@@ -155,7 +155,7 @@ def test_a_name_added_in_another_script_is_compared_beside_the_kana_one(say, tmp
     code_, e = say("add", "feature", "Address/Old address", "--type", "person name", "--workspace", "workspaces/kanji")
     assert code_ == 2  # only Name takes a feature here
     say("remove", "feature", "Name/Kanji name", "--workspace", "workspaces/kanji")
-    assert not added_of("workspaces/kanji") and "person_name_2" not in (tmp_path / "workspaces" / "kanji" / "columns.toml").read_text()
+    assert not added_of("workspaces/kanji") and "person_name_2" not in (tmp_path / "workspaces" / "kanji" / "columns.toml").read_text(encoding="utf-8")
 
 
 def test_the_reader_reads_each_value_as_it_comes_and_proposes_only_what_it_would_guess(tmp_path, monkeypatch):
@@ -268,7 +268,7 @@ def test_a_file_loads_as_it_comes_and_a_run_reads_the_repairs_people_accept(say,
     assert code == 0 and e["summary"][0][0] == "nothing new" and (w / "inputs" / "0001-dirty").is_dir()  # a file loaded before is never removed
     assert say("rerun", "records", "--workspace", w)[0] == 0
 
-    (tmp_path / "decisions.csv").write_text(f"{uid}_l,{uid}_r,decision\n{df[uid][0]},{df[uid][1]},match,extra\n")  # people's file, a field too many
+    (tmp_path / "decisions.csv").write_text(f"{uid}_l,{uid}_r,decision\n{df[uid][0]},{df[uid][1]},match,extra\n", encoding="utf-8")  # people's file, a field too many
     code, e = say("apply", "decisions", "--file", tmp_path / "decisions.csv", "--workspace", w)
     assert code == 2 and "decisions.csv" in e["error"] and "nayose-" not in e["error"]  # refused, said of their file
 

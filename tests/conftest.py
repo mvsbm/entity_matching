@@ -99,7 +99,7 @@ def dirty_csv(df: pd.DataFrame, name: str, address: str, path: Path) -> tuple[in
 def nayose(*words: object, check: bool = False, timeout: float = 600):  # the command line, as a user runs it, in a process of its own
     import subprocess
     import sys
-    return subprocess.run([sys.executable, "-m", "er.cli", *map(str, words)], capture_output=True, text=True, check=check, timeout=timeout)
+    return subprocess.run([sys.executable, "-m", "er.cli", *map(str, words)], capture_output=True, encoding="utf-8", errors="replace", check=check, timeout=timeout)
 
 
 @pytest.fixture
@@ -111,6 +111,23 @@ def say(capsys):
         code = main([*map(str, words), "--format", "json"])
         return code, json.loads(capsys.readouterr().out.splitlines()[-1])
     return run
+
+
+@pytest.fixture
+def fake_cli(tmp_path, monkeypatch):
+    """fake(code): the nayose commands the code under test starts (python -m er.cli WORDS) run `code` instead, a Python
+    script given WORDS as sys.argv[1:] (json, os, shutil, sys and time imported), in a process of its own, on any
+    system; any other process (git) runs as it is."""
+    import subprocess
+    import sys
+    real = subprocess.Popen
+
+    def fake(code: str) -> None:
+        script = tmp_path / "fake_cli.py"
+        script.write_text("import json, os, shutil, sys, time\n" + code, encoding="utf-8")
+        swap = lambda cmd: [sys.executable, str(script), *cmd[3:]] if list(cmd[1:3]) == ["-m", "er.cli"] else cmd
+        monkeypatch.setattr(subprocess, "Popen", lambda cmd, *a, **k: real(swap(cmd), *a, **k))
+    return fake
 
 
 @pytest.fixture
