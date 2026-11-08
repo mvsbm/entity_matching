@@ -103,7 +103,7 @@ def imports() -> set[tuple[str, str]]:
                     [a.name for a in node.names] if isinstance(node, ast.Import) else [])
             for m in mods:
                 if m.startswith("er.") and f.name != "__init__.py":
-                    out.add((str(f.relative_to(ROOT)), f"er/{m.split('.')[1]}.py"))
+                    out.add((f.relative_to(ROOT).as_posix(), f"er/{m.split('.')[1]}.py"))
     return out
 
 
@@ -271,7 +271,7 @@ def layers() -> dict[str, str]:
 def test_the_components_diagram_holds_every_module_once_and_draws_the_imports_between_its_layers():
     _, edges, _ = parse("components")
     layer = layers()
-    files = {f"er/{m}.py" for m in MODULES} | {str(f.relative_to(ROOT)) for f in (ROOT / "scripts").glob("*.py")}
+    files = {f"er/{m}.py" for m in MODULES} | {f.relative_to(ROOT).as_posix() for f in (ROOT / "scripts").glob("*.py")}
     assert files == set(layer), f"components.puml: modules to place {sorted(files - set(layer))}, to remove {sorted(set(layer) - files)}"
     code = {(layer[a], layer[b]) for a, b in imports() if layer[a] != layer[b]}
     drawn = {(a, b) for a, b in edges if a in layer.values() and b in layer.values()}
@@ -334,7 +334,7 @@ def test_the_data_diagram_holds_the_run_folder_s_files_and_columns(runs):
     s, out, _ = runs
     uid = s.data.unique_id
     elements, _, fields = parse("data")
-    norm = lambda p: re.sub(r"part-\d+", "part-n", str(p.relative_to(out)))
+    norm = lambda p: re.sub(r"part-\d+", "part-n", p.relative_to(out).as_posix())
     on_disk = {norm(f) for f in out.rglob("*") if f.is_file() and f.name != ".lock"}
     drawn = {label for kind, label in elements.values() if kind == "entity"} - TRANSIENT
     assert on_disk == drawn, f"data.puml: files to draw {sorted(on_disk - drawn)}, to remove {sorted(drawn - on_disk)}"

@@ -1,5 +1,6 @@
 """The page's server: its link, its commands, its layout against the declarations."""
 import json
+import shlex
 from pathlib import Path
 
 
@@ -44,7 +45,7 @@ def test_the_ui_serves_only_its_own_link_and_runs_the_commands_as_nayose_does(tm
         assert status == 200 and [c["name"] for c in d["commands"]] == [c.name for c in cli.COMMANDS] and d["workspace"] == str(tmp_path / "run")
         assert call("GET", "/")[0] == 200
         line, j = job("resolve records", {"input": str(tmp_path / "all.parquet"), "workspace": str(tmp_path / "run")})
-        assert line == f"nayose resolve records {tmp_path / 'all.parquet'} --workspace {tmp_path / 'run'}" and j["exit"] == 0
+        assert line == shlex.join(["nayose", "resolve", "records", str(tmp_path / "all.parquet"), "--workspace", str(tmp_path / "run")]) and j["exit"] == 0
         assert {e["event"] for e in j["events"]} == {"step", "result"}  # each step as it finished, then the result
         _, j = job("list pairs", {"workspace": str(tmp_path / "run"), "open": True})
         assert j["exit"] == 0 and j["events"][-1]["pairs"]
