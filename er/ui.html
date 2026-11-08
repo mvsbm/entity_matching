@@ -1124,7 +1124,7 @@ const missedWords = (strata) => strata.some((m) => m.hits)  // the probe's answe
 const DETAIL_Q = {
   records: (x, all) => {
     if (x.count === null || x.count === undefined) return ask(STAGE_Q.records, "Nothing yet: the records are read when matching runs.");
-    const files = (x.files || []).map((f) => f.split("/").pop().replace(/(\.\w+)\.parquet$/, "$1")).join(", "), k = x.kinds || {};
+    const files = (x.files || []).map((f) => f.split("/").pop().replace(/(\.(csv|tsv|txt))\.parquet$/i, "$1")).join(", "), k = x.kinds || {};
     const lines = [`<div class="ok">${plural(x.count, "record")} read${x.columns ? `, ${fmt(x.columns)} columns` : ""}${x.seconds !== null && x.seconds !== undefined ? `, in ${lasts(x.seconds)}` : ""}</div>`,
       ...hurts(all.prepare.fields, x.turned_off, ' <a class="btn" data-go="columns">Map it</a>'),
       k.unsure ? `<div class="ok">${fmt(k.company)} companies by their legal form; ${plural(k.unsure, "record")} not sure yet as person or company <a class="btn" data-go="kinds">Answer some</a></div>` : ""].filter(Boolean);
