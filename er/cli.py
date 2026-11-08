@@ -20,7 +20,6 @@ import math
 import shlex
 import sys
 import tempfile
-import tomllib
 import unicodedata
 from collections.abc import Callable
 from dataclasses import dataclass, replace
@@ -31,13 +30,14 @@ import numpy as np
 import pandas as pd
 
 from er import folder, inbox, intake
-from er.config import InputError, adjust, load_pipeline, restrict, sources_text, widen
+from er.config import InputError, adjust, load_pipeline, restrict, sources_text, toml_of, widen
 from er.folder import Busy
 from er.report import (applied, compare_records, describe_entity, describe_key, describe_matching, describe_method, describe_workspace, entity_pairs, explain_pair, fill_rates,
                        list_patterns, trust_state)
 from er.source import describe, find, lexicon
+from er.strings import connect
 from er.run import Run, trial
-from er.settings import (COLUMNS, SPECIAL, add_feature, added_of, beside, columns_file, features_of, load_settings, offers, own_columns,
+from er.settings import (COLUMNS, SPECIAL, add_feature, added_of, beside, columns_file, counted_once, features_of, load_settings, offers, own_columns,
                          placements, present_fields, remove_feature, set_columns, set_features, settings_path, slots)
 
 
@@ -274,7 +274,7 @@ def checked(a: dict, s, p, path: str, emit: "Emit") -> dict:
 def list_columns(a: dict, emit: "Emit") -> dict:
     path = columns_file(a.get("workspace")) or settings_path()
     found = []
-    for f, spec in tomllib.loads(path.read_text(encoding="utf-8"))["columns"].items():
+    for f, spec in toml_of(path)["columns"].items():
         src = spec["sources"] if isinstance(spec, dict) else spec
         alts = [[src]] if isinstance(src, str) else src
         options = " · ".join(f"{k} {v if isinstance(v, str) else ' '.join(v)}" for k, v in spec.items() if k != "sources") if isinstance(spec, dict) else ""
@@ -309,7 +309,10 @@ def set_columns_(a: dict, emit: "Emit") -> dict:
 def model_from(path: str | None) -> dict | None:
     if not path:
         return None
-    saved = json.loads(Path(path).read_text(encoding="utf-8"))
+    try:
+        saved = json.loads(Path(path).read_text(encoding="utf-8"))
+    except (OSError, ValueError) as e:
+        raise InputError(f"--model {path}: {e}", fix="give the JSON a run saved (state/model.json), or leave --model out to fit one on the file") from None
     return saved.get("model", saved)
 
 
@@ -368,11 +371,12 @@ def described(a: dict) -> dict:
         if script[path] not in (None, "kana"):
             return None
         return (None if x.get("added") else x.get("field")) or SLOT_FIELD.get(x.get("role") or x.get("type"))
-    d = describe(a["input"], duckdb.connect(), s.columns, s.detect, lex=lexicon(s.paths["reference"], tuple(s.standardize.kana_fold.items())),
+    d = describe(a["input"], connect(s.compute)[0], s.columns, s.detect, lex=lexicon(s.paths["reference"], tuple(s.standardize.kana_fold.items())),
                  slots={path: x["columns"] for path, x in slots(feats)},
                  slot_patterns={path: s.detect[f] for path, x in slots(feats) if (f := field(path, x)) in s.detect})
     try:  # what a run of this file would turn off, as the run decides it: from the mapping, no record read
-        off = restrict(p, set(present_fields(s, [c["column"] for c in d["columns"]])))[1]
+        counted_once(p, present := present_fields(s, [c["column"] for c in d["columns"]]))
+        off = restrict(p, set(present))[1]
     except InputError as e:
         off = [str(e)]
     d = {**d, "features": feats, "placements": placements(feats, d["profile"], d["fit"]), "offers": offers(feats, d["profile"]),
@@ -488,6 +492,9 @@ def try_method(a: dict, emit: "Emit") -> dict:
     if bad := [x for x in a.get("drop") or [] if x not in rules | keys]:
         raise InputError(f"--drop {' '.join(bad)}: no match rule or pair key of the method has that name", fix="see them: nayose describe method --workspace …")
     method = {**now, **({"line": number(a["line"], "--line")} if a.get("line") else {})}
+    declared = p.fields.declared()
+    if bad := [x for x in a.get("add") or [] if not all(f.split(":")[0] in declared for f in x.split("+"))]:
+        raise InputError(f"--add {' '.join(bad)}: a field the pipeline doesn't declare", fix=f"its fields: {', '.join(sorted(declared))}; join a key's fields with +")
     if a.get("add"):  # each a key's fields joined by +, as describe method proposes it
         method["add_keys"] = [list(k) for k in dict.fromkeys([*map(tuple, now.get("add_keys", [])), *(tuple(x.split("+")) for x in a["add"])])]
     for name, among in (("drop_rules", rules), ("drop_keys", keys)):
@@ -501,11 +508,11 @@ def try_method(a: dict, emit: "Emit") -> dict:
     return {**result, "next": [dict(command=nayose("adopt", "method", "--workspace", ws, "--trial", result["trial"]), why="adopt it, and find matches with it")]}
 
 
-def number(text: str, what: str) -> float:
+def number(text: str, what: str, fix: str = "a weight in bits, for example 9 or 9.5") -> float:
     try:
         return float(text)
     except ValueError:
-        raise InputError(f"{what} {text}: not a number", fix="a weight in bits, for example 9 or 9.5") from None
+        raise InputError(f"{what} {text}: not a number", fix=fix) from None
 
 
 def adopt(a: dict, emit: "Emit", method: dict) -> dict:
@@ -537,14 +544,18 @@ def adopt_method(a: dict, emit: "Emit") -> dict:
     return adopt(a, emit, json.loads(f.read_text(encoding="utf-8"))["method"])
 
 
-def reset_method(a: dict, emit: "Emit") -> dict:
-    return adopt(a, emit, {})
+def reset_method(a: dict, emit: "Emit") -> dict:  # the method as tuned; the trust line stays, since people earned it, unless it no longer reads or fits
+    try:
+        setup(a, kept := {k: v for k, v in folder.method(Path(a["workspace"])).items() if k == "trust"})
+    except InputError:  # the way out every refusal of method.toml names: nothing of it kept
+        kept = {}
+    return adopt(a, emit, kept)
 
 
 def lower_trust(a: dict, emit: "Emit") -> dict:
     s, p, _ = setup(a)
     ws = Path(a["workspace"])
-    state = trust_state(duckdb.connect(), ws, p, s.data.unique_id) if (ws / "gold.parquet").exists() else None
+    state = trust_state(connect(s.compute)[0], ws, p, s.data.unique_id) if (ws / "gold.parquet").exists() else None
     if state is None:
         raise InputError(f"{ws} has no trust line: it merges as tuned", fix="start one, and nothing merges before people check: nayose raise trust --workspace …")
     if not state["may_lower"]:
@@ -565,7 +576,7 @@ def raise_trust(a: dict, emit: "Emit") -> dict:
 
 def draw_pairs(a: dict, emit: "Emit") -> dict:
     s, p, _ = setup(a)
-    out, count = Path(a["workspace"]), int(number(a.get("count") or "50", "--count"))
+    out, count = Path(a["workspace"]), int(number(a.get("count") or "50", "--count", "a count of pairs, for example 50"))
     run = Run(p, s, echo=emit.step).draw(out, count)
     return dict(drawn=run.steps[-1]["drawn"], next=[dict(command=nayose("list", "pairs", "--workspace", out, "--why", "audit", "--open"), why="the audits to decide")])
 
@@ -573,8 +584,8 @@ def draw_pairs(a: dict, emit: "Emit") -> dict:
 def describe_workspace_(a: dict, emit: "Emit") -> dict:
     s, p, _ = setup(a)
     out = Path(a["workspace"])
-    d = describe_workspace(duckdb.connect(), out, s.data.unique_id)
-    d["trust"] = trust_state(duckdb.connect(), out, p, s.data.unique_id) if d["records"] else None
+    d = describe_workspace(connect(s.compute)[0], out, s.data.unique_id)
+    d["trust"] = trust_state(connect(s.compute)[0], out, p, s.data.unique_id) if d["records"] else None
     files = folder.loaded(out)
     then = (next_after(out, s.data.unique_id)[:-1] + [dict(command=nayose("describe", "entity", "<record ID>", "--workspace", out),
                                                            why="one record's entity, and what joined it")] if d["records"] else
@@ -588,7 +599,7 @@ def describe_workspace_(a: dict, emit: "Emit") -> dict:
 def describe_entity_(a: dict, emit: "Emit") -> dict:
     s, out = settings_for(a), Path(a["workspace"])
     uid = s.data.unique_id
-    d = describe_entity(duckdb.connect(), out, uid, a["id"], [f for f in s.columns if f not in SPECIAL])
+    d = describe_entity(connect(s.compute)[0], out, uid, a["id"], [f for f in s.columns if f not in SPECIAL])
     rename = lambda xs: [{{uid: "id", f"{uid}_l": "id_l", f"{uid}_r": "id_r"}.get(k, k): v for k, v in x.items()} for x in xs]
     inside = entity_pairs(out, s, [x[uid] for x in d["records"]], d["links"])
     return dict(record=d["record"], entity=d["entity"], records=rename(d["records"]), links=rename(d["links"]), **inside,
@@ -630,7 +641,7 @@ def list_patterns_(a: dict, emit: "Emit") -> dict:
 def describe_matching_(a: dict, emit: "Emit") -> dict:
     s, p, _ = setup(a)
     out = Path(a["workspace"]) if a["workspace"] else None
-    return {**describe_matching(duckdb.connect(), out, p, s),
+    return {**describe_matching(connect(s.compute)[0], out, p, s),
             "next": [dict(command=nayose("describe", "workspace", out), why="the workspace at a glance")] if out else
                     [dict(command=nayose("resolve", "records", "<file>", "--workspace", "<workspace>"), why="match records: the graph then holds their numbers")]}
 
@@ -674,7 +685,7 @@ def split_entity(a: dict, emit: "Emit") -> dict:
     if len(a["between"] or []) != 2:
         raise InputError("--between takes the two records of the link", fix="nayose split entity ID --between A B --workspace …")
     first, second = sorted(map(str, a["between"]))
-    d = describe_entity(duckdb.connect(), out, uid, a["id"], [f for f in s.columns if f not in SPECIAL])
+    d = describe_entity(connect(s.compute)[0], out, uid, a["id"], [f for f in s.columns if f not in SPECIAL])
     ids = [x[uid] for x in d["records"]]
     if not {first, second} <= set(ids):
         raise InputError(f"{first} and {second}: not both records of the entity of {a['id']}", fix="see its records: nayose describe entity ID --workspace …")
@@ -736,14 +747,15 @@ def apply_answers(a: dict, emit: "Emit") -> dict:
 
 
 def serve_inbox(a: dict, emit: "Emit") -> dict:
-    every = float(a["every"]) if a["every"] else None
-    ok = inbox.serve(Path(a["workspace"]), Path(a["inbox"]), every, int(a["retries"] or 2), a["compute"] or [], emit.line)
+    seconds = lambda name, default: number(a[name], f"--{name}", "seconds, for example 60") if a[name] else default
+    ok = inbox.serve(Path(a["workspace"]), Path(a["inbox"]), seconds("every", None), int(number(a["retries"] or "2", "--retries", "a count, for example 2")),
+                     a["compute"] or [], emit.line, seconds("settle", 60.0))
     return dict(stopped=not ok, exit_code=0 if ok else 1, next=[dict(command=nayose("describe", "workspace", a["workspace"]), why="the workspace at a glance")])
 
 
 def open_ui(a: dict, emit: "Emit") -> dict:
     from er import ui  # the page's server: it reads these declarations
-    ui.serve(int(a["port"] or 8765), a["workspace"], a["home"] or "workspaces", emit.line, open_browser=not a["link"])
+    ui.serve(int(number(a["port"] or "8765", "--port", "a port, for example 8765")), a["workspace"], a["home"] or "workspaces", emit.line, open_browser=not a["link"])
     return dict(next=[])
 
 
@@ -803,7 +815,7 @@ COMMANDS: tuple[Command, ...] = (
             "records does, with the workspace's mapping. Its runs read what was read, so the original can move or go. "
             "O(bytes) for the copy and the reading (about 15 s a million records), then the description's.",
             (INPUT, WORKSPACE), {**DESCRIBED, "loaded": "the part the records are in", "copied": "false: the workspace held them already"},
-            "nayose load records customers.parquet --workspace workspaces/acme", load_records, quick=True,
+            "nayose load records customers.parquet --workspace workspaces/acme", load_records,
             show={"columns": ("column", "filled", "example"), "fields": ("field", "filled", "looks_right"), "fit": (), "features": (), "profile": (),
                   "slots": ("feature", "filled", "looks_right"), "placements": ("feature", "column", "why"), "offers": ("feature", "column", "why")}),
     Command("accept", "repairs", "Accept one kind of repair the reader proposed for a loaded file",
@@ -816,7 +828,7 @@ COMMANDS: tuple[Command, ...] = (
              Param("part", "the loaded file, by its part (0001, or its name; default: the latest with this kind waiting)", metavar="PART"), WORKSPACE),
             {"part": "the part read again", "kind": "the kind accepted", "repaired": "the repairs applied", "rows": "the rows it now holds",
              "added": "rows that were unread", "read": "what the reader found (er.intake): rows, values per encoding, fixed (controls, placeholders, numbers, damaged), proposed and waiting: repairs by kind (realign, garbled, encoding) for accept repairs, with examples; unread rows", "next": "the commands that usually follow"},
-            "nayose accept repairs realign --workspace workspaces/acme", accept_repairs, quick=True),
+            "nayose accept repairs realign --workspace workspaces/acme", accept_repairs),
     Command("list", "features", "The features a workspace's columns fill: groups, features, parts",
             "The workspace's structure: each group, its features and their parts (a full name's family and given names), each "
             "with the columns that hold it, read from its mapping. Without --workspace, the project's. O(the file).",
@@ -1049,8 +1061,9 @@ COMMANDS: tuple[Command, ...] = (
             (WORKSPACE, Param("trial", "the trial's number (try method gives it)", required=True, metavar="N"), PIPELINE, COMPUTE),
             RUN_RESULT, "nayose adopt method --workspace workspaces/customers --trial 3", adopt_method),
     Command("reset", "method", "Go back to the tuned method, and find matches with it",
-            "Removes the workspace's method.toml, then runs the workspace's files again, as rerun records does; method.toml "
-            "is left as it was if the run fails. O(a full run).",
+            "Takes the workspace's changes to the method out of method.toml (the line, the rules and keys left out or added) "
+            "and keeps its trust line, which people earned; then runs the workspace's files again, as rerun records does. "
+            "method.toml is left as it was if the run fails. O(a full run).",
             (WORKSPACE, PIPELINE, COMPUTE), RUN_RESULT, "nayose reset method --workspace workspaces/customers", reset_method),
     Command("lower", "trust", "Merge the next range of scores without people, once its sample is clean",
             "The trust line (the workspace's method.toml trust): pairs scoring at or above it merge without people. It steps "
@@ -1106,7 +1119,7 @@ COMMANDS: tuple[Command, ...] = (
     Command("apply", "decisions", "Apply people's decisions to the run",
             "Each match pair joins its two entities at once, scoring nothing; no_match is kept, and a full run never accepts "
             "the pair. Decisions are kept in decisions/; one applied before changes nothing. O(D + touched clusters) + O(N).",
-            (WORKSPACE, FILE("a file of decisions: the two ID columns and decision"), PIPELINE),
+            (WORKSPACE, FILE("a file of decisions: the two ID columns and decision"), PIPELINE, COMPUTE),
             {"decisions": "decisions applied", "matches": "of them, match", "clusters_joined": "entities joined",
              "summary": "said when nothing was new", "next": "the commands that usually follow"},
             "nayose apply decisions --workspace workspaces/customers", apply_decisions),
@@ -1135,11 +1148,14 @@ COMMANDS: tuple[Command, ...] = (
             "inbox/batches/ (new records: add records; into an empty workspace, resolve records), inbox/decisions/ (apply "
             "decisions), inbox/answers/ (apply answers), oldest first, each as its nayose command in a process of its own. "
             "Done files go to inbox/done/, ones people must fix to inbox/failed/ with their error; any other failure is tried "
-            "again, then stops the pass with the file left in place. One pass, or one every --every seconds. Each file is a "
+            "again, then stops the pass with the file left in place. A file changed in the last --settle seconds waits for a "
+            "later pass: write a file elsewhere and move it in. One pass, or one every --every seconds. Each file is a "
             "line in <run>/jobs.jsonl.",
             (Param("inbox", "the inbox folder", "path", positional=True, metavar="INBOX"), WORKSPACE,
              Param("every", "seconds between passes; without it, one pass", "text", metavar="SECONDS"),
-             Param("retries", "attempts after an unexpected failure (default 2)", "text", metavar="N"), COMPUTE),
+             Param("retries", "attempts after an unexpected failure (default 2)", "text", metavar="N"),
+             Param("settle", "seconds a file must be left unchanged before it is taken, so one still being copied in waits (default 60)", "text", metavar="SECONDS"),
+             COMPUTE),
             {"stopped": "the pass stopped on a file that kept failing", "next": "the commands that usually follow"},
             "nayose serve inbox inbox --workspace workspaces/customers --every 300", serve_inbox),
     Command("open", "ui", "The commands in a browser, on this machine only",
@@ -1227,6 +1243,12 @@ def reference() -> str:
     return "\n".join(out)
 
 
+def out_of_memory(e: BaseException) -> InputError | None:  # DuckDB's, raised as it is or by Splink: a limit people set, which they can raise
+    oom = next((x for x in (e, e.__cause__) if isinstance(x, duckdb.OutOfMemoryException)), None)
+    return oom and InputError(f"out of memory: {str(oom).splitlines()[0]}", fix="raise --compute memory_limit, or give --compute temp_directory "
+                              "a folder with more free disk (config/settings.toml [compute] for every run)")
+
+
 def main(argv: list[str] | None = None) -> int:
     a = parser().parse_args(argv)
     c, emit = a.command, Emit(a.format)
@@ -1236,6 +1258,11 @@ def main(argv: list[str] | None = None) -> int:
         code = 75 if isinstance(e, Busy) else 2
         emit.error(e, code)
         return code
+    except Exception as e:
+        if not (oom := out_of_memory(e)):
+            raise
+        emit.error(oom, 2)
+        return 2
     except KeyboardInterrupt:  # Ctrl-C: nothing is half done, every write is staged
         return 130
     code = result.pop("exit_code", 0)

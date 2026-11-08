@@ -14,7 +14,6 @@ memory spike can't take the page down. A finished job is dropped once the page h
 of 127.0.0.1 or localhost, so neither another user of the machine nor a web page elsewhere can use it.
 """
 import argparse
-import contextlib
 import json
 import secrets
 import shlex
@@ -116,22 +115,28 @@ class Server:
             job.code = 0
         except InputError as e:  # the parser's refusal, or a mistake people fix
             fail(job, str(e), 75 if isinstance(e, cli.Busy) else 2, e.fix)
-        except Exception as e:  # a bug, not a mistake people fix: its message, so the page doesn't hang
-            fail(job, f"{type(e).__name__}: {e}", 1)
+        except (Exception, SystemExit) as e:  # a bug, or argparse leaving (an ID typed as -h): its message, so the page doesn't hang
+            oom = cli.out_of_memory(e)
+            fail(job, str(oom), 2, oom.fix) if oom else fail(job, f"{type(e).__name__}: {e}", 1)
 
     def _long(self, job: Job) -> None:
         if not self.long.acquire(blocking=False):
             return fail(job, "another long command is running", 75, "wait for it to finish")
-        try:
+        try:  # stderr joins stdout: one pipe, read to its end, so a long traceback can't fill a pipe no one reads
             done = subprocess.Popen([sys.executable, "-m", "er.cli", *job.words, "--format", "json"], stdout=subprocess.PIPE,
-                                    stderr=subprocess.PIPE, text=True, bufsize=1)
-            for line in done.stdout:  # each step as it finishes
-                with contextlib.suppress(json.JSONDecodeError):
+                                    stderr=subprocess.STDOUT, text=True, bufsize=1)
+            other = []
+            for line in done.stdout:  # each step as it finishes; anything else is a crash's traceback
+                try:
                     job.events.append(json.loads(line))
+                except json.JSONDecodeError:
+                    other.append(line.strip())
             code = done.wait()
             if code and not any(e.get("event") == "error" for e in job.events):  # a crash: the last line of its traceback
-                return fail(job, " ".join(done.stderr.read().strip().splitlines()[-1:]), code)
+                return fail(job, " ".join(x for x in other if x)[-300:] or f"exit {code}", code)
             job.code = code
+        except OSError as e:  # the process didn't start
+            fail(job, f"{type(e).__name__}: {e}", 1)
         finally:
             self.long.release()
 

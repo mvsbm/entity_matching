@@ -23,6 +23,20 @@ class InputError(ValueError):
         self.fix, self.hints = fix, hints or {}
 
 
+def toml_of(path: Path | str) -> dict:  # a TOML file people edit, or the mistake in it as an InputError
+    try:
+        return tomllib.loads(Path(path).read_text(encoding="utf-8-sig"))  # with or without the mark an editor may put first
+    except UnicodeDecodeError:
+        raise InputError(f"{path}: not UTF-8 text", fix="save it as UTF-8 (in Notepad or Excel: Save As, UTF-8)") from None
+    except tomllib.TOMLDecodeError as e:
+        raise InputError(f"{path}: not valid TOML ({e})", fix="correct that line; quote text, and write lists as [\"a\", \"b\"]") from None
+
+
+def checked(ok: object, message: str, path: Path | str = "config/settings.toml") -> None:  # a rule a settings file breaks, as an InputError
+    if not ok:
+        raise InputError(f"{path}: {message}", fix="correct it there")
+
+
 class OverBudget(InputError):
     """A rule or candidate generator would exceed the Budget; raised before any join runs."""
 
@@ -622,7 +636,7 @@ def load_pipeline(path: Path, std: Standardization, chains: Mapping[str, tuple[N
                   columns: Mapping[str, object]) -> Pipeline:
     """config/pipeline.toml (or a written FINAL) → typed config. Every field it reads must be declared in [fields]
     and mapped in config/settings.toml [columns]."""
-    p = pipeline_from(tomllib.loads(Path(path).read_text(encoding="utf-8")), std, chains)
+    p = pipeline_from(toml_of(path), std, chains)
     read, declared = fields_read(p), p.fields.declared()
     if read - declared:
         raise ValueError(f"{path}: fields read but not declared in [fields]: {sorted(read - declared)}")

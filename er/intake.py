@@ -17,7 +17,6 @@ the kinds accepted, so accepting one reads them again. O(bytes) in one pass, in 
 import csv
 import functools
 import hashlib
-import io
 import itertools
 import json
 import math
@@ -38,12 +37,15 @@ import pyarrow.parquet as pq
 from er.config import InputError
 
 REPORT, READ, PROPOSALS, UNREAD = "intake.json", "read", "proposals.parquet", "unread.parquet"
+SUFFIXES = (".parquet", ".csv", ".tsv", ".txt")  # the records files a folder or an inbox holds
 KINDS = ("realign", "garbled", "encoding")
+KEEP = 1000  # proposals of each kind kept to show
+ODD = 0.1  # past this share of records that don't line up, the file is refused: its delimiter or header is wrong
 CHUNK = 200_000  # shortcut: one Python pass, about 15 s a million records; past ~20M rows on one machine, split the file or decode per column in DuckDB
 CONTROL = re.compile("[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f​-‍⁠﻿]")
 BREAKS = re.compile("[\t\r\n]+")
 WHOLE = re.compile(r"^(-?\d+)\.0+$")  # a whole number a spreadsheet wrote as a float
-CUT = re.compile(r"^-?\d(\.\d+)?[eE]\+?\d+$")  # a number a spreadsheet wrote in E notation: its digits are gone
+CUT = re.compile(r"^-?\d(\.\d+)?[eE]\+\d+$")  # a number a spreadsheet wrote in E notation (1.23457E+11, 1E+11): its digits are gone
 DELIMITERS = (",", "\t", "|", ";")
 HALF, KANJI = re.compile("[\uff61-\uff9f]"), re.compile("[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]")
 # what text of these files is written in: UTF-8 that decodes into anything else may be other bytes it happens to read
@@ -209,19 +211,39 @@ def sniff(f: Path) -> tuple[str, str | None, bool]:  # (format, its delimiter, w
         return (share / len(lines) if n else 0.0, n)
     d = max(DELIMITERS, key=steady)
     d = d if steady(d)[1] else ","
+    reads = lambda enc: not _fails(head[: head.rfind(b"\n") + 1] or head, enc)  # the head's whole lines: no character cut in two
+    if not wide and d == "|" and not reads("utf-8") and reads("cp932"):  # | is the second byte of 36 CP932 characters (ポ is 83 7C): decoded first
+        wide = "cp932"
     return (wide or "csv"), d, quoted(f, d, wide)
+
+
+def _fails(raw: bytes, enc: str) -> bool:
+    try:
+        raw.decode(enc)
+        return False
+    except UnicodeDecodeError:
+        return True
 
 
 def quoted(f: Path, d: str, wide: str | None) -> bool:
     """Whether the file quotes its values: a value anywhere in it opens and closes with a quote, the quotes inside
     doubled. A file that never does reads a quote as text, so a stray one (\"Beppu) splits nothing. O(bytes), in C."""
-    if wide:  # decoded whole, as it will be read
-        return bool(re.search(f'(?:^|{re.escape(d)})"(?:[^"]|"")*"(?={re.escape(d)}|\r?$)', f.read_bytes().decode(wide, "replace"), re.M))
+    e = re.escape(d)
+    pattern = f'(?:^|(?<=\r)|{e})"(?:[^"]|"")*"(?={e}|\r|$)'  # a line ends in \n, \r\n or \r alone
+    if wide:  # decoded as it will be read, in blocks of whole lines: a quoted value may hold a line break
+        found, rest = re.compile(pattern, re.M), ""
+        with f.open(encoding=wide, errors="replace", newline="") as h:
+            while block := h.read(1 << 22):
+                text = rest + block
+                end = max(text.rfind("\n"), text.rfind("\r")) + 1
+                if found.search(text[:end]):
+                    return True
+                rest = text[end:]
+        return bool(found.search(rest))
     if f.stat().st_size == 0:
         return False
     with f.open("rb") as h, mmap.mmap(h.fileno(), 0, access=mmap.ACCESS_READ) as mm:
-        e = re.escape(d.encode())
-        return bool(re.search(b'(?:^|' + e + b')"(?:[^"]|"")*"(?=' + e + b'|\r?$)', mm, re.M))
+        return bool(re.search(pattern.encode(), mm, re.M))
 
 
 def view(x: str | None) -> str | None:  # real text as the latin-1 view of its UTF-8 bytes, as a CSV's fields come
@@ -231,7 +253,7 @@ def view(x: str | None) -> str | None:  # real text as the latin-1 view of its U
 def text_rows(f: Path, fmt: str, delimiter: str, quotes: bool):  # (line, fields) of a text file; fields hold bytes as latin-1 characters
     csv.field_size_limit(sys.maxsize)
     if fmt != "csv":  # an encoding of the whole file (UTF-16, JIS): decoded first
-        h = io.StringIO(f.read_bytes().decode(fmt, "replace"))
+        h = f.open(encoding=fmt, errors="replace", newline="")
     else:
         h = f.open(encoding="latin-1", newline="")
         if h.read(3) != "ï»¿":  # a UTF-8 BOM
@@ -282,11 +304,14 @@ def read_one(f: Path, out: Path, spec: InputSpec, m: Model, accepted: frozenset[
         rows = itertools.chain(lines[k + 1:], rows)
     except StopIteration:
         raise InputError(f"{f}: empty", fix="give a file with a header line and records") from None
-    names, seen = [], Counter()
-    for i, h in enumerate(header):
-        name = CONTROL.sub("", (decodings(h, spec.encodings) or [("", "")])[0][1]).strip() or f"column_{i + 1}"
-        seen[name] += 1
-        names.append(name if seen[name] == 1 else f"{name}_{seen[name]}")
+    given = [CONTROL.sub("", (decodings(h, spec.encodings) or [("", "")])[0][1]).strip() or f"column_{i + 1}" for i, h in enumerate(header)]
+    names: list[str] = []
+    for base in given:  # each column a name of its own: a blank one numbered, a repeat suffixed past every name the header gives
+        name, k = base, 1
+        while name in names or (k > 1 and name in given):
+            k += 1
+            name = f"{base}_{k}"
+        names.append(name)
     width, nulls = len(names), frozenset(spec.nulls)
     facts = dict(file=f.name, format=fmt, delimiter=delimiter, quotes=quotes, columns=width, rows=0, decoded={}, fixed={}, proposed={}, unread=0, notes=[])
     if above:
@@ -301,6 +326,14 @@ def read_one(f: Path, out: Path, spec: InputSpec, m: Model, accepted: frozenset[
     numeric = [False] * width
     profile: list[Counter] = [Counter() for _ in range(width)]
     count = lambda key, what, n=1: facts[key].__setitem__(what, facts[key].get(what, 0) + n)
+    def propose(p: dict) -> None:  # every proposal counted; the first KEEP of each kind kept, to see (accepting reads the file again)
+        count("proposed", p["kind"])
+        if facts["proposed"][p["kind"]] <= KEEP:
+            proposals.append(p)
+    def lined_up(seen: int) -> None:  # past 1,000 and a tenth of the records read, the delimiter or the header is wrong
+        if len(odd) > 1000 and len(odd) > ODD * seen:
+            raise InputError(f"{f}: {len(odd):,} of its first {seen:,} records don't line up with its header ({width} columns)",
+                             fix="check its delimiter and its header line, then give it again")
     writer = None
     def value(j: int, v: str | None, line: int) -> str | None:  # one field: decoded, then what loses nothing
         if not v:
@@ -328,13 +361,13 @@ def read_one(f: Path, out: Path, spec: InputSpec, m: Model, accepted: frozenset[
             judge = lambda t: plausible(t, m) * (len(t) + 1) + fits(profile[j], t)
             best = max(found, key=lambda x: judge(x[1]))
             if best[0] != enc and (judge(best[1]) - judge(text)) / (len(text) + 1) >= spec.margin_text:
-                proposals.append(dict(kind="encoding", line=line, column=names[j], before=text, after=best[1]))
+                propose(dict(kind="encoding", line=line, column=names[j], before=text, after=best[1]))
                 if "encoding" in accepted:
                     enc, text = best
         if enc != "ascii":
             count("decoded", enc)
         if not text.isascii() and not m.garbled.isdisjoint(text) and (back := ungarbled(text, m, spec.margin_text)):
-            proposals.append(dict(kind="garbled", line=line, column=names[j], before=text, after=back))
+            propose(dict(kind="garbled", line=line, column=names[j], before=text, after=back))
             if "garbled" in accepted:
                 text = back
         text, fixed = tidy(text, nulls, numeric[j])
@@ -383,6 +416,9 @@ def read_one(f: Path, out: Path, spec: InputSpec, m: Model, accepted: frozenset[
                 block = []
         else:
             odd.append((line, fields))
+            if len(odd) > 1000 and (seen := facts["rows"] + len(block) + len(odd)) >= CHUNK:  # judged on a chunk at least: a few bad rows at the top refuse nothing
+                lined_up(seen)
+    lined_up(facts["rows"] + len(block) + len(odd))
     if block or writer is None:
         flush(writer is None)
     realigned = realign(odd, width, profile, delimiter or ",", spec)
@@ -398,7 +434,7 @@ def read_one(f: Path, out: Path, spec: InputSpec, m: Model, accepted: frozenset[
             facts["unread"] += 1
             continue
         joined, row = fit
-        proposals.append(dict(kind="realign", line=line, column=", ".join(names[j] for j in joined), before=shown(raw),
+        propose(dict(kind="realign", line=line, column=", ".join(names[j] for j in joined), before=shown(raw),
                               after=" | ".join(shown(row[j] or "") for j in joined)))
         if "realign" in accepted:
             taken.append([value(j, v, line) for j, v in enumerate(row)])
@@ -410,8 +446,6 @@ def read_one(f: Path, out: Path, spec: InputSpec, m: Model, accepted: frozenset[
         write([list(c) for c in zip(*taken)])
         facts["rows"] += len(taken)
     writer.close()
-    for p in proposals:
-        count("proposed", p["kind"])
     if strict and (proposals or unread):
         first = (proposals or unread)[0]
         raise InputError(f"{f}: line {first['line']}: {'its fields do not line up' if first in unread else 'a value needs a repair'}",
@@ -534,5 +568,6 @@ def examples(part: Path, most: int = 20) -> dict[str, list[dict]]:  # each kind'
     p = pq.read_table(part / PROPOSALS).to_pylist() if (part / PROPOSALS).is_file() else []
     u = pq.read_table(part / UNREAD).to_pylist() if (part / UNREAD).is_file() else []
     out = {k: [x for x in p if x["kind"] == k][:most] for k in KINDS}
-    out["unread"] = [dict(file=x["file"], line=x["line"], reason=x["reason"], raw=x["raw"].decode("utf-8", "replace")) for x in u[:most]]
+    out["unread"] = [dict(file=x["file"], line=x["line"], reason=x["reason"], raw=(decodings(x["raw"].decode("latin-1"), InputSpec().encodings) or [("", x["raw"].decode("utf-8", "replace"))])[0][1])
+                     for x in u[:most]]  # its bytes read as a value is
     return {k: v for k, v in out.items() if v}

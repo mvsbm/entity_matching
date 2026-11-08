@@ -11,7 +11,6 @@ import os
 import re
 import shutil
 import threading
-import tomllib
 from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
@@ -21,9 +20,10 @@ import pandas as pd
 import pyarrow.parquet as pq
 
 from er import intake
-from er.config import InputError
+from er.config import InputError, toml_of
 from er.settings import COLUMNS
 from er.source import find, lit, sha256
+from er.strings import connect
 
 PENDING = "pending.json"  # the renames a write still owes, saved once every new file is complete
 RUN_FILES = ("gold.parquet", "steps.json", PENDING, "matches", "rule_kept", "proposed", "state", "set_aside",  # what a run writes in its folder
@@ -128,7 +128,7 @@ def log(out: Path, entry: dict, append: bool) -> None:
 
 def method(out: Path | str | None) -> dict:  # the workspace's method.toml, {} without one
     f = Path(out) / METHOD if out else None
-    return tomllib.loads(f.read_text(encoding="utf-8")) if f and f.exists() else {}
+    return toml_of(f) if f and f.exists() else {}
 
 
 def rounds(out: Path) -> list[dict]:
@@ -176,7 +176,7 @@ def type_in(out: Path, sheet: str, column: str, value: object, **keys: str) -> N
             raise InputError(f"{path}: no row for {', '.join(f'{k} {v}' for k, v in keys.items())}",
                              fix="answer a row the sheet holds, with the IDs as the run wrote them")
         frame.loc[rows, column] = pd.NA if value is None else value
-        stage(duckdb.connect(), out, [], frames=[(frame, path)])
+        stage(connect()[0], out, [], frames=[(frame, path)])
 
 
 def inputs(out: Path) -> list[Path]:

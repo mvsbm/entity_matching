@@ -3,8 +3,11 @@
 DuckDB's built-in jaro_winkler_similarity, jaccard and damerau_levenshtein compare UTF-8 bytes. Katakana is 3 bytes
 per character, which inflates similarity between unrelated names (サトウヒロシ / サトウタカシ: 0.897 instead of 0.844).
 """
+import getpass
+import tempfile
 from collections.abc import Callable
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Literal
 
 import duckdb
@@ -58,13 +61,29 @@ def udf(function: str) -> Callable[[pa.Array, pa.Array], pa.Array]:  # vectorize
     return f
 
 
+COMPUTE = ("threads", "memory_limit", "temp_directory", "max_temp_directory_size")  # the limits [compute] and --compute may set
+
+
 def connect(compute: dict | None = None) -> tuple[duckdb.DuckDBPyConnection, DuckDBAPI]:
     """A DuckDB connection with every cl_<function> registered, wrapped for Splink. `compute` (config/settings.toml
-    [compute]) sets threads, memory_limit and temp_directory: past the memory limit, DuckDB spills to that folder."""
+    [compute]) sets threads, memory_limit, temp_directory and max_temp_directory_size: past the memory limit, DuckDB
+    spills to that folder (none set: one of the person's own in the system's temporary folder, never the folder nayose starts from). A limit
+    nayose doesn't set, or one DuckDB refuses, is an InputError."""
+    from er.config import InputError  # here, not above: er.config reads this module's functions
     con = duckdb.connect()
-    for key, value in (compute or {}).items():
-        if value not in ("", None):
-            con.execute(f"SET {key} = '{value}'")
+    con.execute("SET enable_progress_bar = false")  # a long query's bar would land in stdout, between the JSON lines
+    limits = {k: v for k, v in (compute or {}).items() if v not in ("", None)}
+    if "temp_directory" not in limits:  # a folder of each person's, only theirs: spilled records stay private, and no one else's blocks it
+        (spill := Path(tempfile.gettempdir()) / f"nayose-spill-{getpass.getuser()}").mkdir(mode=0o700, exist_ok=True)
+        limits["temp_directory"] = str(spill)
+    where = "--compute, or config/settings.toml [compute]"
+    for key, value in limits.items():
+        if key not in COMPUTE:
+            raise InputError(f"{key}: not a limit nayose sets ({where})", fix=f"one of {', '.join(COMPUTE)}, as KEY=VALUE")
+        try:
+            con.execute(f"SET {key} = '{str(value).replace(chr(39), chr(39) * 2)}'")
+        except duckdb.Error as e:
+            raise InputError(f"{key}={value} ({where}): {str(e).splitlines()[0]}", fix="e.g. memory_limit=8GB threads=4 temp_directory=/a/folder/with/room") from None
     for name, info in FUNCTIONS.items():
         if info.scorer:
             con.create_function(f"cl_{name}", udf(name), ["VARCHAR", "VARCHAR"], "DOUBLE", type="arrow")

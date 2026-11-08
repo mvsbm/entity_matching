@@ -48,9 +48,12 @@ def missed(con: duckdb.DuckDBPyConnection, db: object, model: dict, fs: FSSpec, 
             continue
         filled, by = " AND ".join(f"{q(c)} IS NOT NULL" for c in cols), ", ".join(map(q, cols))
         squares, pairs = con.execute(f"SELECT coalesce(sum(c * c), 0), coalesce(sum(c * (c - 1) // 2), 0) FROM (SELECT count(*) AS c FROM {records} WHERE {filled} GROUP BY {by})").fetchall()[0]
-        f = min(1.0, spec.pairs / squares) if squares else 0.0
+        if not squares:  # no record holds the stratum's value: nothing to draw from
+            continue
+        cut = max(1, round(min(1.0, spec.pairs / squares) * 2**32))  # the share drawn, as the draw makes it: at any size at least one in 2³²
+        f = cut / 2**32
         con.execute(f"""CREATE OR REPLACE TABLE er_pr_pairs AS SELECT DISTINCT least(a.{u}, b.{u}) AS {l}, greatest(a.{u}, b.{u}) AS {r}
-            FROM (SELECT * FROM {records} WHERE {filled} AND hash({u}) % 1000000 < {round(f * 1_000_000)}) a
+            FROM (SELECT * FROM {records} WHERE {filled} AND hash({u}) % 4294967296 < {cut}) a
             JOIN {records} b USING ({by}) WHERE a.{u} <> b.{u}""")
         scored = con.execute("SELECT count(*) FROM er_pr_pairs").fetchall()[0][0]
         hits = []
@@ -65,7 +68,7 @@ def missed(con: duckdb.DuckDBPyConnection, db: object, model: dict, fs: FSSpec, 
         h = len(hits)
         low, high = (max(h - 1.96 * math.sqrt(h), 0.0), h + 1.96 * math.sqrt(h)) if h else (0.0, 3.0)  # none: the rule of three
         by_keys = sum(why == "keys" for *_, why in hits)
-        out.append(dict(stratum=name, fields=[k.column for k in keys], pairs=int(pairs), drawn=round(f, 6), scored=int(scored), hits=h,
+        out.append(dict(stratum=name, fields=[k.column for k in keys], pairs=int(pairs), drawn=f, scored=int(scored), hits=h,
                         between_rules=h - by_keys, keys_missed=round(by_keys / drawn) if drawn else None,
                         missed=round(h / drawn) if drawn else None, low=round(low / drawn) if drawn else None, high=round(high / drawn) if drawn else None,
                         examples=[[a, b, w, why] for a, b, w, why in hits[:EXAMPLES]]))

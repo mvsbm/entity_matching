@@ -13,7 +13,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import get_args
 
-from er.config import Data, Derived, InputError, Normalizer, Pipeline, Standardization, check_fields, legal_pattern, restrict
+from er.config import Data, Derived, InputError, Normalizer, Pipeline, Standardization, check_fields, checked, legal_pattern, restrict, sources_text, toml_of
 from er.intake import InputSpec
 
 SPECIAL = ("id", "entity")  # single columns, used under their own names: the record id and the truth
@@ -44,13 +44,13 @@ def project_root(start: Path | None = None) -> Path:
     raise FileNotFoundError(f"no pyproject.toml at or above {here}")
 
 
-def field(name: str, spec: object) -> Derived:
+def field(name: str, spec: object, where: Path | str = "config/settings.toml") -> Derived:
     """One [columns] entry: a column, a list of fallback column lists, or {sources, normalize, kind}."""
     sources, normalize = (spec["sources"], spec.get("normalize", ())) if isinstance(spec, dict) else (spec, ())
     sources = ((sources,),) if isinstance(sources, str) else tuple(tuple(alt) for alt in sources)
-    assert all(sources), f"[columns] {name}: an alternative with no column"  # no alternative at all: the field has no column, as in a file without it
+    checked(all(sources), f"[columns] {name}: an alternative with no column", where)  # no alternative at all: the field has no column, as in a file without it
     kind = spec.get("kind") if isinstance(spec, dict) else None
-    assert kind in (None, "person", "company"), f"[columns] {name}: kind is person or company"
+    checked(kind in (None, "person", "company"), f"[columns] {name}: kind is person or company", where)
     return Derived(name=name, sources=sources, normalize=tuple(normalize), kind=kind)
 
 
@@ -195,7 +195,7 @@ def compiled(features: list[dict]) -> dict[str, tuple[tuple[str, ...], ...]]:
 
 def added_of(workspace: str | Path | None) -> dict[str, dict]:  # the features added in a workspace: columns.toml's [features]
     f = columns_file(workspace)
-    return tomllib.loads(f.read_text(encoding="utf-8")).get("features", {}) if f else {}
+    return toml_of(f).get("features", {}) if f else {}
 
 
 def beside(added: Mapping[str, dict]) -> list[tuple[str, str]]:
@@ -367,25 +367,25 @@ def load_settings(path: Path | None = None, columns: Path | None = None) -> Sett
     [kind] replace the file's."""
     path = Path(path or settings_path())
     root = project_root(path.parent)
-    cfg = tomllib.loads(path.read_text(encoding="utf-8"))
+    cfg = toml_of(path)
     if columns:
-        own = tomllib.loads(Path(columns).read_text(encoding="utf-8"))
+        own = toml_of(columns)
         cfg = {**cfg, "columns": own["columns"], "kind": own.get("kind", {})}
     paths = {name: root / rel for name, rel in cfg["paths"].items()}
     steps = set(get_args(Normalizer))
 
     loc = cfg["locale"]
-    assert len(loc["kana_fold_from"]) == len(loc["kana_fold_to"]), "kana_fold_from / kana_fold_to must align character by character"
+    checked(len(loc["kana_fold_from"]) == len(loc["kana_fold_to"]), "kana_fold_from / kana_fold_to must align character by character", path)
     chains = {name: tuple(c) for name, c in loc.get("chains", {}).items()}
     unknown = {s for c in chains.values() for s in c} - steps
-    assert not unknown, f"[locale.chains]: unknown normalizers {unknown}"
+    checked(not unknown, f"[locale.chains]: unknown normalizers {unknown}", path)
 
     cols = cfg["columns"]
     for name in SPECIAL:
-        assert isinstance(cols.get(name), str), f"[columns] {name} must name one column"
-    fields = {name: field(name, spec) for name, spec in cols.items() if name not in SPECIAL}
+        checked(isinstance(cols.get(name), str), f"[columns] {name} must name one column", columns or path)
+    fields = {name: field(name, spec, columns or path) for name, spec in cols.items() if name not in SPECIAL}
     unknown = {s for d in fields.values() for s in d.normalize} - steps
-    assert not unknown, f"[columns]: unknown normalizers {unknown}"
+    checked(not unknown, f"[columns]: unknown normalizers {unknown}", columns or path)
     # a field that is its own single column, unnormalized, needs no copy
     derived = tuple(d for d in fields.values() if d.sources != ((d.name,),) or d.normalize)
 
@@ -413,7 +413,7 @@ def load_settings(path: Path | None = None, columns: Path | None = None) -> Sett
 
 def input_spec(cfg: dict) -> InputSpec:  # [input]: the encodings tried, the placeholders, how sure a proposed repair must be
     unknown = set(cfg) - set(InputSpec.__dataclass_fields__)
-    assert not unknown, f"[input]: unknown keys {sorted(unknown)}"
+    checked(not unknown, f"[input]: unknown keys {sorted(unknown)}")
     return InputSpec(**{k: tuple(map(str, v)) if isinstance(v, list) else v for k, v in cfg.items()})
 
 
@@ -430,10 +430,21 @@ def present_fields(s: Settings, file_columns: Iterable[str]) -> dict[str, tuple[
     return {name: alts for name, sources in s.columns.items() if (alts := tuple(a for a in sources if set(a) <= cols))}
 
 
+def counted_once(p: Pipeline, present: dict[str, tuple]) -> None:
+    """Refuses two compared fields that read the same columns (`present`: each field's sources): one value counted
+    twice, its weight inflated. The name fields share a column by design."""
+    seen: dict[tuple, str] = {}
+    for f in sorted({col for c in p.fs.model.comparisons for lv in c.levels for col, _ in lv.any_of if "name" not in col} & set(present)):
+        if (other := seen.setdefault(present[f], f)) != f:
+            raise InputError(f"{other} and {f} both read {sources_text(present[f])}: the model would count one value twice",
+                             fix=f"map each to a column of its own (nayose set columns {f}=… --workspace …), or leave one unmapped")
+
+
 def fit_to_file(p: Pipeline, s: Settings, file_columns: Iterable[str], labelled: bool = False) -> tuple[Pipeline, list[str]]:
     """The pipeline for one file: stops if a mandatory field (or every field of a one_of group) is absent; derives each
     field only from the sources the file has; disables whatever reads an absent optional field, and lists it."""
     present = present_fields(s, file_columns)
     check_fields(p.fields, set(present), s.columns, labelled)
+    counted_once(p, present)
     std = replace(s.standardize, derived=tuple(replace(d, sources=present[d.name]) for d in s.standardize.derived if d.name in present))
     return restrict(replace(p, rules=replace(p.rules, standardize=std), fs=replace(p.fs, standardize=std)), set(present))

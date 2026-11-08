@@ -10,7 +10,7 @@ A UTF-8 CSV of the records: read in 14.8 s (14.8 s a million records); 0 values 
 
 ## The damaged copy
 
-Read with every proposal accepted, in 28.0 s (28.0 s a million records). Before any is accepted, the reader proposed 96,595 encoding, 4,559 garbled, 548 realign; 0 rows were left unread.
+Read with every proposal accepted, in 26.8 s (26.8 s a million records). Before any is accepted, the reader proposed 96,595 encoding, 4,559 garbled, 548 realign; 0 rows were left unread.
 
 | damage | values | read_back | share | how |
 | --- | --- | --- | --- | --- |

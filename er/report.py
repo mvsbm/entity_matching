@@ -866,7 +866,8 @@ def describe_key(out: Path, p: Pipeline, s: "Settings", name: str, cap: int = 12
         raise InputError(f"no run in {out}", fix="find matches first: nayose resolve records --workspace …")
     uid, l, r = s.data.unique_id, q(f"{s.data.unique_id}_l"), q(f"{s.data.unique_id}_r")
     read = lambda what: f"read_parquet({lit(out / what)}, union_by_name = true)"
-    con = duckdb.connect()
+    from er.strings import connect
+    con = connect(s.compute)[0]
     con.execute(f"CREATE TABLE er_dk AS SELECT * FROM {read('state/records/*.parquet')}")
     have = {c for c, in con.execute("SELECT column_name FROM (DESCRIBE er_dk)").fetchall()}
     keys = keys_of(b)

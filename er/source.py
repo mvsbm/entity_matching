@@ -46,19 +46,20 @@ class Source:
 
 
 def find(path: str | Path) -> list[Path]:
-    """The files a path names: one file, a glob, or a folder (its Parquet files, at any depth); a workspace's part, the
-    files its intake read (er.intake)."""
+    """The files a path names: one file, a glob, or a folder (its Parquet, CSV and TSV files, at any depth:
+    intake.SUFFIXES); a workspace's part, the files its intake read (er.intake)."""
     p = Path(path)
     if p.is_dir() and (r := intake.report(p)):
         return [p / x["read"] for x in r["files"]]
     if any(c in str(p) for c in "*?["):
         files = sorted(p.parent.glob(p.name)) if p.parent.exists() else []
     else:
-        files = sorted(p.rglob("*.parquet")) if p.is_dir() else [p] if p.is_file() else []
+        files = sorted(f for f in p.rglob("*") if f.is_file() and f.suffix.lower() in intake.SUFFIXES  # a hidden file or folder (.DS_Store, __MACOSX) holds no records
+                       and not any(x.startswith(".") or x == "__MACOSX" for x in f.relative_to(p).parts)) if p.is_dir() else [p] if p.is_file() else []
     if files:
         return files
     folder = p.parent
-    names = {f.stem: f.name for f in folder.iterdir()} if folder.is_dir() else {}  # stems: every name shares .parquet
+    names = {f.stem: f.name for f in folder.iterdir()} if folder.is_dir() else {}  # by stem: a close name, whatever its suffix
     near = [names[s] for s in difflib.get_close_matches(p.stem, names, n=3)]
     raise InputError(f"no file matches {path}", fix=f"did you mean {' or '.join(str(folder / n) for n in near)}?" if near
                      else f"check the path: {folder} {'holds no file like it' if folder.is_dir() else 'does not exist'}")
@@ -143,18 +144,17 @@ def filled(c: str) -> str:  # SQL: the column holds a value; trimmed only when i
 def fit(con: duckdb.DuckDBPyConnection, table: str, columns: list[str], fields: Iterable[str], patterns: Mapping[str, str]) -> dict[str, dict[str, float]]:
     """For each field and each column of `table`, how well the column's values fit the field: for `id`, the share of
     rows filled with a value no other row holds; for another field, the share of filled values its [locale.detect]
-    pattern matches. A field with neither is left out. O(rows · columns · fields)."""
+    pattern matches. A field with neither is left out. O(rows · columns · fields) time; memory for the fields alone."""
     asked = [f for f in fields if f == "id" or f in patterns]
     if not asked or not columns:
         return {}
     n = max(1, con.execute(f"SELECT count(*) FROM {table}").fetchall()[0][0])
-    def share(f: str, c: str) -> str:
-        if f == "id":
-            return f"count(DISTINCT {q(c)}) FILTER (WHERE {filled(c)}) / {n}"
-        p = patterns[f].replace("'", "''")
-        return f"coalesce(avg(regexp_matches({q(c)}, '{p}')::INT) FILTER (WHERE {filled(c)}), 0)"
-    got = con.execute(f"SELECT {', '.join(share(f, c) for f in asked for c in columns)} FROM {table}").fetchall()[0]
-    return {f: dict(zip(columns, got[i * len(columns):(i + 1) * len(columns)])) for i, f in enumerate(asked)}
+    share = lambda f: (f"count(DISTINCT v) FILTER (WHERE {filled('v')}) / {n}" if f == "id"
+                       else f"coalesce(avg(regexp_matches(v, {lit(patterns[f])})::INT) FILTER (WHERE {filled('v')}), 0)")
+    # the sample long (one row per column and value), each pattern once over it: memory grows with the patterns, not columns × patterns
+    got = {c: x for c, *x in con.execute(f"""SELECT c, {', '.join(map(share, asked))} FROM (UNPIVOT (SELECT {', '.join(q(c) for c in columns)} FROM {table})
+        ON COLUMNS(*) INTO NAME c VALUE v) GROUP BY c""").fetchall()}
+    return {f: {c: got[c][i] if c in got else 0 for c in columns} for i, f in enumerate(asked)}
 
 
 def suggest(src: Source, con: duckdb.DuckDBPyConnection, fields: Iterable[str], patterns: Mapping[str, str],
