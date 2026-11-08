@@ -20,6 +20,7 @@ import duckdb
 import pandas as pd
 import pyarrow.parquet as pq
 
+from er import intake
 from er.config import InputError
 from er.settings import COLUMNS
 from er.source import find, lit, sha256
@@ -191,10 +192,13 @@ def inputs(out: Path) -> list[Path]:
     moved = {e["sha256"]: e["path"] for e in map(json.loads, jobs.read_text(encoding="utf-8").splitlines() if jobs.exists() else [])
              if e.get("path")}
     inside = {sha: part / rel for part in parts(out) for rel, sha in sums(part).items()}
+    read = [(part / f["read"], f["versions"]) for part in parts(out) if (r := intake.report(part)) for f in r["files"]]
+    inside |= {v: f for f, versions in read for v in versions}
+    replaced = {v: versions[-1] for _, versions in read for v in versions[:-1]}  # a read file a repair accepted later replaced
     files = []
     for x in named:
         here = [Path(p) for p in (x["file"], inside.get(x["sha256"]), moved.get(x["sha256"])) if p and Path(p).is_file()]
-        if not (found := next((p for p in here if sha256(p) == x["sha256"]), None)):
+        if not (found := next((p for p in here if sha256(p) in (x["sha256"], replaced.get(x["sha256"]))), None)):
             raise InputError(f"{x['file']}: {'changed' if here else 'gone'} since the run read it",
                              fix="give the files again with a full run that overwrites the folder")
         files.append(found)
@@ -247,11 +251,11 @@ def sums(part: Path) -> dict[str, str]:  # a part's files: path in the part → 
     return {rel: sha for sha, rel in (line.split("  ", 1) for line in (part / SUMS).read_text(encoding="utf-8").splitlines())}
 
 
-def take_in(ws: Path, path: str | Path) -> tuple[Path, bool]:
+def take_in(ws: Path, path: str | Path, spec: intake.InputSpec, reference: Path) -> tuple[Path, bool]:
     """Copy the files `path` names (a file, a glob or a folder: er.source.find) into the next part of the workspace's
-    inputs/, under its lock: into a hidden folder first, renamed into place once every file is complete, so a part is
-    whole or absent. Content the workspace already holds, file for file by SHA-256, is not copied again. The part, and
-    whether it is new. O(bytes)."""
+    inputs/, and read them (er.intake: read/, what was found, the repairs proposed), under its lock: into a hidden
+    folder first, renamed into place once every file is complete and read, so a part is whole or absent. Content the
+    workspace already holds, file for file by SHA-256, is not copied again. The part, and whether it is new. O(bytes)."""
     files = find(path)
     given = sorted(sha256(f) for f in files)
     with run_lock(ws):
@@ -265,23 +269,35 @@ def take_in(ws: Path, path: str | Path) -> tuple[Path, bool]:
         part = ws / INPUTS / f"{n:04d}-{re.sub(r'[^A-Za-z0-9._-]+', '_', stem)[:40] or 'records'}"
         tmp = part.with_name(f".{part.name}.tmp")
         shutil.rmtree(tmp, ignore_errors=True)  # a copy cut short before
-        lines = []
+        lines, copied = [], {}
         for f in files:
             rel = f.relative_to(root) if root else Path(f.name)
             (tmp / rel).parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(f, tmp / rel)
             lines.append(f"{sha256(tmp / rel)}  {rel.as_posix()}")
+            copied[tmp / rel] = rel.as_posix()
         (tmp / SUMS).write_text("\n".join(lines) + "\n", encoding="utf-8")
+        try:
+            intake.take(tmp, copied, spec, reference)
+        except BaseException:
+            shutil.rmtree(tmp, ignore_errors=True)
+            raise
         os.replace(tmp, part)
     return part, True
 
 
 def loaded(ws: Path) -> list[dict]:
-    """inputs/'s parts, oldest first: each one's name, path, files, bytes and rows (from the Parquet footers), and
-    whether a run has read all of it (steps.json, by SHA-256). O(parts + files + steps.json)."""
+    """inputs/'s parts, oldest first: each one's name, path, files, bytes and rows (as the intake read them), the
+    repairs waiting for people and the rows unread, and whether a run has read all of it as it is now (steps.json, by
+    SHA-256). O(parts + files + steps.json)."""
     log = ws / "steps.json"
     read = {x["sha256"] for run in (json.loads(log.read_text(encoding="utf-8"))["runs"] if log.is_file() else [])
             for x in run.get("inputs", []) if x.get("role") == "records"}
-    return [dict(name=part.name, path=str(part), files=len(own), bytes=sum((part / rel).stat().st_size for rel in own),
-                 rows=sum(pq.ParquetFile(part / rel).metadata.num_rows for rel in own), read=all(sha in read for sha in own.values()))
+    def facts(part: Path) -> dict:  # a part's rows and whether a run read it: as the intake read it, or (a part from before) its Parquet footers
+        if r := intake.report(part):
+            waiting = sum(n for k, n in r["proposed"].items() if k not in r["accepted"])
+            return dict(rows=r["rows"], read=all(f["versions"][-1] in read for f in r["files"]), waiting=waiting, unread=r["unread"])
+        own = sums(part)
+        return dict(rows=sum(pq.ParquetFile(part / rel).metadata.num_rows for rel in own), read=all(sha in read for sha in own.values()), waiting=0, unread=0)
+    return [dict(name=part.name, path=str(part), files=len(own), bytes=sum((part / rel).stat().st_size for rel in own), **facts(part))
             for part in parts(ws) for own in [sums(part)]]

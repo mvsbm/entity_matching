@@ -1,9 +1,9 @@
-"""Serve an inbox (nayose serve inbox): every Parquet file dropped in it goes into a run, one at a time, in the order
-it arrived.
+"""Serve an inbox (nayose serve inbox): every file dropped in it (Parquet, CSV or TSV) goes into a run, one at a time,
+in the order it arrived.
 
-    inbox/batches/*.parquet     new records: nayose add records, or, into an empty workspace, nayose resolve records
-    inbox/decisions/*.parquet   people's decisions: nayose apply decisions --file
-    inbox/answers/*.parquet     people's person/company answers: nayose apply answers --file (a rerun)
+    inbox/batches/*             new records (Parquet, CSV, TSV): nayose add records, or, into an empty workspace, nayose resolve records
+    inbox/decisions/*           people's decisions: nayose apply decisions --file
+    inbox/answers/*             people's person/company answers: nayose apply answers --file (a rerun)
 
 Each file runs as its nayose command in a process of its own, so a crash or a memory spike can't take the scheduler
 down. What happens to a file, by how its process ends:
@@ -29,6 +29,7 @@ from pathlib import Path
 from er.config import InputError
 from er.source import sha256
 
+TAKEN = (".parquet", ".csv", ".tsv", ".txt")  # what the inbox picks up: every file a command takes (er.intake)
 KINDS = ("batches", "decisions", "answers")
 
 
@@ -86,7 +87,7 @@ def events(out: str) -> list[dict]:  # the command's JSON events; a line that is
 def one_pass(run: Path, inbox: Path, retries: int, compute: list[str], say: Callable[..., None]) -> bool:
     """Every waiting file, oldest first. False if the pass stopped on a file that kept failing."""
     done_before = {e["sha256"] for e in ledger(run) if e["outcome"] == "done"}
-    tasks = sorted(((f.stat().st_mtime, f.name, kind, f) for kind in KINDS for f in (inbox / kind).glob("*.parquet")))
+    tasks = sorted(((f.stat().st_mtime, f.name, kind, f) for kind in KINDS if (inbox / kind).is_dir() for f in (inbox / kind).iterdir() if f.suffix.lower() in TAKEN))
     for _, name, kind, f in tasks:
         digest = sha256(f)
         if digest in done_before:

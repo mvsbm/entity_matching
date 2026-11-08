@@ -15,12 +15,13 @@ Written by `scripts/document_commands.py` from the declarations in `er/cli.py`; 
 |---|---|
 | [`create workspace`](#nayose-create-workspace) | Start a workspace: the folder for one matching job |
 | [`list workspaces`](#nayose-list-workspaces) | The workspaces, the latest active first |
-| [`load records`](#nayose-load-records) | Copy a file into a workspace, then describe it |
+| [`load records`](#nayose-load-records) | Copy a file into a workspace, read it as it comes, then describe it |
+| [`accept repairs`](#nayose-accept-repairs) | Accept one kind of repair the reader proposed for a loaded file |
 | [`list features`](#nayose-list-features) | The features a workspace's columns fill: groups, features, parts |
 | [`set feature`](#nayose-set-feature) | Put columns into features |
 | [`add feature`](#nayose-add-feature) | Add a feature: a name in another script, or another company name |
 | [`remove feature`](#nayose-remove-feature) | Remove a feature added to a workspace |
-| [`describe records`](#nayose-describe-records) | What a file holds, for mapping its columns: in a second, nothing prepared |
+| [`describe records`](#nayose-describe-records) | What a file holds, for mapping its columns: nothing prepared |
 | [`check records`](#nayose-check-records) | Read, map and check a file, in seconds; resolve nothing |
 | [`list columns`](#nayose-list-columns) | Show which of a file's columns hold each field |
 | [`set columns`](#nayose-set-columns) | Map fields to a file's columns |
@@ -102,17 +103,17 @@ nayose list workspaces
 
 ## nayose load records
 
-Copy a file into a workspace, then describe it.
+Copy a file into a workspace, read it as it comes, then describe it.
 
 ```
 nayose load records INPUT --workspace WORKSPACE [--format text|json]
 ```
 
-Copies the records into a part of the workspace's own (inputs/0001-customers/), unless it holds the same content already, then describes the copy as describe records does, with the workspace's mapping. Its runs read the copy, so the original can move or go. O(bytes) for the copy, then the description's.
+Copies the records into a part of the workspace's own (inputs/0001-customers/), unless it holds the same content already, and reads it as it comes (er.intake): a CSV, TSV or Parquet, each value in its own encoding; control bytes, placeholders and spreadsheet numbers fixed; a row whose fields don't line up, a garbled value or another encoding's reading proposed, for people to see and accept (accept repairs). Then describes it as describe records does, with the workspace's mapping. Its runs read what was read, so the original can move or go. O(bytes) for the copy and the reading (about 15 s a million records), then the description's.
 
 | Parameter | |
 |---|---|
-| `INPUT` | the records: a Parquet file, a quoted glob ('in/*.parquet') or a folder of them, read together by column name |
+| `INPUT` | the records: a CSV, TSV or Parquet file, a quoted glob ('in/*.csv') or a folder of them, read as they come and together by column name |
 | `--workspace WORKSPACE` | the workspace: the folder that keeps one matching job (required) |
 
 | Result | |
@@ -130,12 +131,43 @@ Copies the records into a part of the workspace's own (inputs/0001-customers/), 
 | `placements` | for each feature with no column: feature, column, share, why (the file's contents) |
 | `offers` | new features the contents suggest: feature, type, script, column, share, why |
 | `notes` | what the reader detected or fixed |
+| `read` | what the reader found (er.intake): rows, values per encoding, fixed (controls, placeholders, numbers, damaged), proposed and waiting: repairs by kind (realign, garbled, encoding) for accept repairs, with examples; unread rows |
 | `next` | the commands that usually follow |
 | `loaded` | the part the records are in |
 | `copied` | false: the workspace held them already |
 
 ```bash
 nayose load records customers.parquet --workspace workspaces/acme
+```
+
+## nayose accept repairs
+
+Accept one kind of repair the reader proposed for a loaded file.
+
+```
+nayose accept repairs realign|garbled|encoding [--part PART] --workspace WORKSPACE [--format text|json]
+```
+
+Reads the file again with that kind applied: realign, each row whose fields don't line up re-split where every value fits its column (unread until then); garbled, each value a wrong decoding garbled upstream decoded back; encoding, each value another encoding reads far better read in it. Each was proposed only when it read at least e^margin likelier ([input]). describe records shows them first, in read.examples. When a run read the file already, run matching again to use them. O(the file).
+
+| Parameter | |
+|---|---|
+| `realign|garbled|encoding` | realign, garbled or encoding |
+| `--part PART` | the loaded file, by its part (0001, or its name; default: the latest with this kind waiting) |
+| `--workspace WORKSPACE` | the workspace: the folder that keeps one matching job (required) |
+
+| Result | |
+|---|---|
+| `part` | the part read again |
+| `kind` | the kind accepted |
+| `repaired` | the repairs applied |
+| `rows` | the rows it now holds |
+| `added` | rows that were unread |
+| `read` | what the reader found (er.intake): rows, values per encoding, fixed (controls, placeholders, numbers, damaged), proposed and waiting: repairs by kind (realign, garbled, encoding) for accept repairs, with examples; unread rows |
+| `next` | the commands that usually follow |
+
+```bash
+nayose accept repairs realign --workspace workspaces/acme
 ```
 
 ## nayose list features
@@ -242,17 +274,17 @@ nayose remove feature "Name/Kanji name" --workspace workspaces/acme
 
 ## nayose describe records
 
-What a file holds, for mapping its columns: in a second, nothing prepared.
+What a file holds, for mapping its columns: nothing prepared.
 
 ```
 nayose describe records INPUT [--workspace WORKSPACE] [--format text|json]
 ```
 
-Each column's share filled and an example; each field's columns as the mapping reads them (a later one where the earlier are empty, a joined one where every part is filled), each with its share filled, an example and the share of its values that look like the field; how well each column fits each field; and, for a field the file holds none of, the column its name or values suggest, never applied: set columns applies it; and what a run would turn off, a field they read missing. Shares filled cover the file; the rest a sample of 2,000 records. O(N·C) in one scan, plus the sample.
+Each column's share filled and an example; each field's columns as the mapping reads them (a later one where the earlier are empty, a joined one where every part is filled), each with its share filled, an example and the share of its values that look like the field; how well each column fits each field; and, for a field the file holds none of, the column its name or values suggest, never applied: set columns applies it; and what a run would turn off, a field they read missing. Shares filled cover the file; the rest a sample of 2,000 records. A file not loaded into a workspace is read as it comes first, for this command alone (read: what the reader found). O(N·C) in one scan, plus the sample, plus the reading.
 
 | Parameter | |
 |---|---|
-| `INPUT` | the records: a Parquet file, a quoted glob ('in/*.parquet') or a folder of them, read together by column name |
+| `INPUT` | the records: a CSV, TSV or Parquet file, a quoted glob ('in/*.csv') or a folder of them, read as they come and together by column name |
 | `--workspace WORKSPACE` | a workspace, for its own mapping (without it, the project's: config/settings.toml) |
 
 | Result | |
@@ -270,6 +302,7 @@ Each column's share filled and an example; each field's columns as the mapping r
 | `placements` | for each feature with no column: feature, column, share, why (the file's contents) |
 | `offers` | new features the contents suggest: feature, type, script, column, share, why |
 | `notes` | what the reader detected or fixed |
+| `read` | what the reader found (er.intake): rows, values per encoding, fixed (controls, placeholders, numbers, damaged), proposed and waiting: repairs by kind (realign, garbled, encoding) for accept repairs, with examples; unread rows |
 | `next` | the commands that usually follow |
 
 ```bash
@@ -288,7 +321,7 @@ Reads the file through the door every input takes, maps its columns to the logic
 
 | Parameter | |
 |---|---|
-| `INPUT` | the records: a Parquet file, a quoted glob ('in/*.parquet') or a folder of them, read together by column name |
+| `INPUT` | the records: a CSV, TSV or Parquet file, a quoted glob ('in/*.csv') or a folder of them, read as they come and together by column name |
 | `--workspace WORKSPACE` | a workspace, for its own mapping (without it, the project's: config/settings.toml) |
 | `--compute KEY=VALUE` | DuckDB limits for this run, over config/settings.toml [compute]: memory_limit=8GB, threads=4, temp_directory=<folder> (past the memory limit DuckDB spills there) |
 | `--pipeline PIPELINE` | the pipeline file (default: config/final.toml) |
@@ -301,6 +334,7 @@ Reads the file through the door every input takes, maps its columns to the logic
 | `keys` | each key's pairs per record and largest block |
 | `oversized_from` | the block size checked by sampling |
 | `notes` | what the loader detected or fixed |
+| `read` | what the reader found (er.intake): rows, values per encoding, fixed (controls, placeholders, numbers, damaged), proposed and waiting: repairs by kind (realign, garbled, encoding) for accept repairs, with examples; unread rows |
 | `next` | the commands that usually follow |
 
 ```bash
@@ -370,7 +404,7 @@ A full run, without labels: load, budget, fit, rules, candidates, score, cluster
 
 | Parameter | |
 |---|---|
-| `INPUT` | the records: a Parquet file, a quoted glob ('in/*.parquet') or a folder of them, read together by column name; copied into the workspace first. Without it, the file loaded into it last |
+| `INPUT` | the records: a CSV, TSV or Parquet file, a quoted glob ('in/*.csv') or a folder of them, read as they come and together by column name; copied into the workspace first. Without it, the file loaded into it last |
 | `--workspace WORKSPACE` | the workspace: the folder that keeps one matching job (required) |
 | `--overwrite` | replace the results it holds |
 | `--pipeline PIPELINE` | the pipeline file (default: config/final.toml) |
@@ -400,7 +434,7 @@ An increment: each new record compared with every stored one, with the run's mod
 
 | Parameter | |
 |---|---|
-| `INPUT` | the records: a Parquet file, a quoted glob ('in/*.parquet') or a folder of them, read together by column name; copied into the workspace first. Without it, the file loaded into it last |
+| `INPUT` | the records: a CSV, TSV or Parquet file, a quoted glob ('in/*.csv') or a folder of them, read as they come and together by column name; copied into the workspace first. Without it, the file loaded into it last |
 | `--workspace WORKSPACE` | the workspace: the folder that keeps one matching job (required) |
 | `--pipeline PIPELINE` | the pipeline file (default: config/final.toml) |
 | `--compute KEY=VALUE` | DuckDB limits for this run, over config/settings.toml [compute]: memory_limit=8GB, threads=4, temp_directory=<folder> (past the memory limit DuckDB spills there) |
@@ -428,7 +462,7 @@ An increment's steps without its write: for each record, the entity it would joi
 
 | Parameter | |
 |---|---|
-| `INPUT` | the records: a Parquet file, a quoted glob ('in/*.parquet') or a folder of them, read together by column name |
+| `INPUT` | the records: a CSV, TSV or Parquet file, a quoted glob ('in/*.csv') or a folder of them, read as they come and together by column name |
 | `--workspace WORKSPACE` | the workspace: the folder that keeps one matching job (required) |
 | `--pipeline PIPELINE` | the pipeline file (default: config/final.toml) |
 | `--compute KEY=VALUE` | DuckDB limits for this run, over config/settings.toml [compute]: memory_limit=8GB, threads=4, temp_directory=<folder> (past the memory limit DuckDB spills there) |
@@ -500,7 +534,7 @@ Records and entities, the largest entities, each run so far, the pairs and kinds
 | `round` | the round now: one per method the workspace ran (rounds.json) |
 | `audits` | this round's audits people decided: checked, false |
 | `trust` | the trust line (none: the method as tuned): line (none: above every step), next (the range checked next: down_to, up_to), its pairs, checked, false, needed, may_lower; above (the pairs above the line: pairs, checked, false); checks |
-| `inputs` | the records files given to it, each in inputs/: name, path, files, bytes, rows, read (by a run) |
+| `inputs` | the records files given to it, each in inputs/: name, path, files, bytes, rows, read (by a run, as it is now), waiting (repairs proposed, for people), unread (rows) |
 | `columns` | own: its columns.toml; project: config/settings.toml's |
 | `next` | the commands that usually follow |
 

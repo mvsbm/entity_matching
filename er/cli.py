@@ -13,10 +13,13 @@ names the commands that usually come next. Exit codes: 0; 2, a mistake people fi
 how to fix it); 75, the workspace is busy: try again later; 1, a pass of serve inbox stopped on a file.
 """
 import argparse
+import contextlib
+import functools
 import json
 import math
 import shlex
 import sys
+import tempfile
 import tomllib
 import unicodedata
 from collections.abc import Callable
@@ -27,12 +30,12 @@ import duckdb
 import numpy as np
 import pandas as pd
 
-from er import folder, inbox
+from er import folder, inbox, intake
 from er.config import InputError, adjust, load_pipeline, restrict, sources_text, widen
 from er.folder import Busy
 from er.report import (applied, compare_records, describe_entity, describe_key, describe_matching, describe_method, describe_workspace, entity_pairs, explain_pair, fill_rates,
                        list_patterns, trust_state)
-from er.source import describe, lexicon
+from er.source import describe, find, lexicon
 from er.run import Run, trial
 from er.settings import (COLUMNS, SPECIAL, add_feature, added_of, beside, columns_file, features_of, load_settings, offers, own_columns,
                          placements, present_fields, remove_feature, set_columns, set_features, settings_path, slots)
@@ -243,9 +246,14 @@ def after_run(run: Run, out: Path) -> dict:
 
 def check_records(a: dict, emit: "Emit") -> dict:
     s, p, _ = setup(a)
+    with readable(a["input"], s) as path:
+        return checked(a, s, p, path, emit)
+
+
+def checked(a: dict, s, p, path: str, emit: "Emit") -> dict:
     run = Run(p, s, echo=emit.step)
     try:
-        run.load(a["input"])
+        run.load(path)
     except InputError as e:
         if not (a.get("workspace") and e.hints):
             raise
@@ -259,7 +267,7 @@ def check_records(a: dict, emit: "Emit") -> dict:
               for f in run.fields]
     keys = [dict(key=x.name, per_record=x.per_record, largest_block=x.largest_block, oversized_blocks=x.oversized_blocks,
                  oversized_records=x.oversized_records) for x in shown.itertuples()]
-    return plain(dict(records=run.n, fields=fields, turned_off=run.disabled, keys=keys, oversized_from=p.fs.budget.min_oversized(), notes=run.notes,
+    return plain(dict(records=run.n, fields=fields, turned_off=run.disabled, keys=keys, oversized_from=p.fs.budget.min_oversized(), notes=run.notes, read=read_of(Path(path)),
                       next=[dict(command=nayose("resolve", "records", a["input"], "--workspace", "<workspace>"), why="ready: resolve them")]))
 
 
@@ -307,9 +315,9 @@ def model_from(path: str | None) -> dict | None:
 
 def given(a: dict) -> str:
     """The records a run reads: the file named, copied into the workspace first; without one, the file loaded last."""
-    ws = Path(a["workspace"])
+    ws, s = Path(a["workspace"]), settings_for(a)
     if a["input"]:
-        return str(folder.take_in(ws, a["input"])[0])
+        return str(folder.take_in(ws, a["input"], s.input, s.paths["reference"])[0])
     if not (parts := folder.parts(ws)):
         raise InputError(f"no records file in {ws}", fix=f"load one: nayose load records FILE --workspace {ws}; or name it here")
     return str(parts[-1])
@@ -318,7 +326,41 @@ def given(a: dict) -> str:
 SLOT_FIELD = {"person name": "person_name", "family": "person_name", "given": "given_name", "company name": "company_name"}  # a slot without a field of its own: whose pattern its values should match
 
 
+@contextlib.contextmanager
+def readable(path: str, s, strict: bool = False):
+    """A path as the door reads it: a workspace's part, as its intake read it; any other file or files, read for this
+    command alone into a folder that goes once it ends (er.intake); people's files strictly: one that needs a repair is
+    refused."""
+    p = Path(path)
+    if p.is_dir() and intake.report(p):
+        yield str(p)
+        return
+    files, root = find(path), p if p.is_dir() else None
+    with tempfile.TemporaryDirectory(prefix="nayose-") as t:
+        named = {f: (f.relative_to(root) if root else Path(f.name)).as_posix() for f in files}
+        back = [*((str(Path(t) / (x["read"])), str(f)) for f, x in zip(named, intake.take(Path(t), named, s.input, s.paths["reference"], strict=strict)["files"])), (t, str(path))]
+        try:
+            yield t
+        except InputError as e:  # said of the files people gave, not of the folder they were read into
+            say = lambda text: functools.reduce(lambda x, pair: x.replace(*pair), back, text)
+            raise InputError(say(str(e)), say(e.fix), e.hints) from None
+
+
+def read_of(part: Path) -> dict | None:  # what the reader found in a part: counts, the repairs waiting with their first examples, rows unread
+    if not (r := intake.report(part)):
+        return None
+    return dict(part=part.name, rows=r["rows"], decoded=r["decoded"], fixed=r["fixed"], proposed=r["proposed"], accepted=r["accepted"],
+                waiting={k: n for k, n in r["proposed"].items() if k not in r["accepted"]}, unread=r["unread"], seconds=r["seconds"],
+                examples=intake.examples(part))
+
+
 def describe_records(a: dict, emit: "Emit") -> dict:
+    with readable(a["input"], settings_for(a)) as path:
+        d = described({**a, "given": a["input"], "input": path})
+        return {**d, "read": read_of(Path(path))}
+
+
+def described(a: dict) -> dict:
     (s, p, _), there = setup(a), ["--workspace", a["workspace"]] if a.get("workspace") else []
     feats = features_of(a.get("workspace"))
     script = {path: f.get("script") for g in feats for f in g["features"] for path, _ in slots([dict(g, features=[f])])}
@@ -336,14 +378,16 @@ def describe_records(a: dict, emit: "Emit") -> dict:
     d = {**d, "features": feats, "placements": placements(feats, d["profile"], d["fit"]), "offers": offers(feats, d["profile"]),
          "needed": dict(every=list(p.fields.mandatory), one_of=[list(g) for g in p.fields.one_of]), "turned_off": off}
     found = [f"{x['feature']}={x['column']}" for x in d["placements"]]
-    return {**d, "next": ([dict(command=nayose("set", "feature", *found, *there), why="place what the file's contents suggest")] if found and there else []) +
-            [dict(command=nayose("resolve", "records", *there) if there else nayose("check", "records", a["input"]),
+    waiting = (intake.report(Path(a["input"])) or {}).get("proposed", {}) if there else {}
+    return {**d, "next": [dict(command=nayose("accept", "repairs", k, *there), why=f"{n:,} proposed: see them first, in read.examples") for k, n in waiting.items()] +
+            ([dict(command=nayose("set", "feature", *found, *there), why="place what the file's contents suggest")] if found and there else []) +
+            [dict(command=nayose("resolve", "records", *there) if there else nayose("check", "records", a["given"]),
                   why="find matches in it" if there else "the full check: every record prepared, every key counted")]}
 
 
 def load_records(a: dict, emit: "Emit") -> dict:
-    ws = Path(a["workspace"])
-    part, copied = folder.take_in(ws, a["input"])
+    ws, s = Path(a["workspace"]), settings_for(a)
+    part, copied = folder.take_in(ws, a["input"], s.input, s.paths["reference"])
     return {**describe_records({**a, "input": str(part)}, emit), "loaded": str(part), "copied": copied}
 
 
@@ -376,6 +420,26 @@ def remove_feature_(a: dict, emit: "Emit") -> dict:
     return list_features(a, emit)
 
 
+def accept_repairs(a: dict, emit: "Emit") -> dict:
+    s, ws, kind = settings_for(a), Path(a["workspace"]), a["kind"]
+    have = [(p, r) for p in folder.parts(ws) if (r := intake.report(p))]
+    pick = ([(p, r) for p, r in have if a["part"] in (p.name, p.name.split("-", 1)[0], p.name.split("-", 1)[0].lstrip("0"))] if a["part"]
+            else [(p, r) for p, r in have if r["proposed"].get(kind) and kind not in r["accepted"]][-1:])
+    if not pick:
+        raise InputError(f"{ws}: no loaded file {a['part']}" if a["part"] else f"{ws}: no loaded file has {kind} repairs waiting",
+                         fix=f"the files loaded, and what waits in each: {nayose('describe', 'workspace', ws)}")
+    part, r = pick[0]
+    if kind in r["accepted"] or not r["proposed"].get(kind):
+        raise InputError(f"{part.name}: {'its ' + kind + ' repairs are accepted already' if kind in r['accepted'] else 'no ' + kind + ' repair waits'}",
+                         fix=f"what waits: {nayose('describe', 'records', part, '--workspace', ws)}")
+    with folder.run_lock(ws):
+        new = intake.accept(part, kind, s.input, s.paths["reference"])
+    again = (ws / "gold.parquet").is_file()
+    return dict(part=part.name, kind=kind, repaired=r["proposed"][kind], rows=new["rows"], added=new["rows"] - r["rows"], read=read_of(part),
+                next=[dict(command=nayose("rerun", "records", "--workspace", ws), why="a run read the file before: run it again to use them") if again
+                      else dict(command=nayose("resolve", "records", "--workspace", ws), why="find matches")])
+
+
 def create_workspace(a: dict, emit: "Emit") -> dict:
     ws = folder.create(Path(a["home"] or "workspaces"), a["name"], own_columns(settings_path()))
     return dict(workspace=str(ws), next=[dict(command=nayose("load", "records", "<file>", "--workspace", ws), why="give it your records file")])
@@ -405,7 +469,8 @@ def add_records(a: dict, emit: "Emit") -> dict:
 def match_records(a: dict, emit: "Emit") -> dict:
     s, p, _ = setup(a)
     out = Path(a["workspace"])
-    found = Run(p, s, echo=emit.step).match(a["input"], out)
+    with readable(a["input"], s) as path:
+        found = Run(p, s, echo=emit.step).match(path, out)
     return dict(counts={k: int(v) for k, v in found["status"].value_counts().items()}, records=rows(ids(found, s.data.unique_id)),
                 next=[dict(command=nayose("add", "records", a["input"], "--workspace", out), why="add them to the run")])
 
@@ -513,6 +578,8 @@ def describe_workspace_(a: dict, emit: "Emit") -> dict:
                                                            why="one record's entity, and what joined it")] if d["records"] else
             [dict(command=nayose("resolve", "records", "--workspace", out), why="find matches in the file loaded last")] if files else
             [dict(command=nayose("load", "records", "<file>", "--workspace", out), why="give it your records file")])
+    then = [dict(command=nayose("describe", "records", f["path"], "--workspace", out), why=f"{f['waiting']:,} repairs wait in {f['name']}: see them, then accept repairs")
+            for f in files if f.get("waiting")] + then
     return {**d, "inputs": files, "columns": "own" if columns_file(out) else "project", "next": then}
 
 
@@ -632,7 +699,8 @@ def decide_pair(a: dict, emit: "Emit") -> dict:
 def apply_decisions(a: dict, emit: "Emit") -> dict:
     s, p, _ = setup(a)
     out = Path(a["workspace"])
-    run = Run(p, s, echo=emit.step).decide(a["file"] or out / "review.parquet", out)
+    with readable(a["file"], s, strict=True) if a["file"] else contextlib.nullcontext(out / "review.parquet") as path:
+        run = Run(p, s, echo=emit.step).decide(path, out)
     x = run.steps[-1]
     return dict(decisions=x["decisions"], matches=x["matches"], clusters_joined=x["clusters_joined"],
                 summary=[["nothing new", "every decision was applied before"]] if not x["decisions"] else [],
@@ -661,7 +729,8 @@ def answer_kind(a: dict, emit: "Emit") -> dict:
 def apply_answers(a: dict, emit: "Emit") -> dict:
     s, p, pipeline = setup(a)
     out = Path(a["workspace"])
-    return after_run(Run(p, s, echo=emit.step, kind_labels=Path(a["file"] or out / "kind_review.parquet")).rerun(out, pipeline_file=pipeline), out)
+    with readable(a["file"], s, strict=True) if a["file"] else contextlib.nullcontext(out / "kind_review.parquet") as path:
+        return after_run(Run(p, s, echo=emit.step, kind_labels=find(path)[0]).rerun(out, pipeline_file=pipeline), out)
 
 
 def serve_inbox(a: dict, emit: "Emit") -> dict:
@@ -678,7 +747,7 @@ def open_ui(a: dict, emit: "Emit") -> dict:
 
 # ---------- the declarations ----------
 
-INPUT = Param("input", "the records: a Parquet file, a quoted glob ('in/*.parquet') or a folder of them, read together by column name",
+INPUT = Param("input", "the records: a CSV, TSV or Parquet file, a quoted glob ('in/*.csv') or a folder of them, read as they come and together by column name",
               "path", positional=True)
 WORKSPACE = Param("workspace", "the workspace: the folder that keeps one matching job", "path", required=True)
 TRUST = ("the trust line (none: the method as tuned): line (none: above every step), next (the range checked next: down_to, "
@@ -697,10 +766,11 @@ DESCRIBED = {"records": "records", "columns": "each column of the file: column, 
              "profile": "each column's script (kanji, kana, romaji) and the shares of its values that are known family names, given names, full names, addresses",
              "placements": "for each feature with no column: feature, column, share, why (the file's contents)",
              "offers": "new features the contents suggest: feature, type, script, column, share, why", "notes": "what the reader detected or fixed",
-             "next": "the commands that usually follow"}
+             "read": "what the reader found (er.intake): rows, values per encoding, fixed (controls, placeholders, numbers, damaged), proposed and waiting: repairs by kind (realign, garbled, encoding) for accept repairs, with examples; unread rows", "next": "the commands that usually follow"}
 CHECKED = {"records": "records read", "fields": "each field: filled, looks_right, top_value (shares), columns",
            "turned_off": "rules, keys and levels a missing field turns off", "keys": "each key's pairs per record and largest block",
-           "oversized_from": "the block size checked by sampling", "notes": "what the loader detected or fixed", "next": "the commands that usually follow"}
+           "oversized_from": "the block size checked by sampling", "notes": "what the loader detected or fixed", "read": "what the reader found (er.intake): rows, values per encoding, fixed (controls, placeholders, numbers, damaged), proposed and waiting: repairs by kind (realign, garbled, encoding) for accept repairs, with examples; unread rows",
+           "next": "the commands that usually follow"}
 COMPUTE = Param("compute", "DuckDB limits for this run, over config/settings.toml [compute]: memory_limit=8GB, threads=4, "
                 "temp_directory=<folder> (past the memory limit DuckDB spills there)", "many", metavar="KEY=VALUE")
 PIPELINE = Param("pipeline", "the pipeline file (default: config/final.toml)", "path")
@@ -723,14 +793,28 @@ COMMANDS: tuple[Command, ...] = (
             (HOME,), {"home": "the folder listed", "workspaces": "each one: name, workspace, files, ran, last",
                       "next": "the commands that usually follow"},
             "nayose list workspaces", list_workspaces, quick=True, show={"workspaces": ("name", "files", "ran", "last")}),
-    Command("load", "records", "Copy a file into a workspace, then describe it",
+    Command("load", "records", "Copy a file into a workspace, read it as it comes, then describe it",
             "Copies the records into a part of the workspace's own (inputs/0001-customers/), unless it holds the same content "
-            "already, then describes the copy as describe records does, with the workspace's mapping. Its runs read the copy, "
-            "so the original can move or go. O(bytes) for the copy, then the description's.",
+            "already, and reads it as it comes (er.intake): a CSV, TSV or Parquet, each value in its own encoding; control "
+            "bytes, placeholders and spreadsheet numbers fixed; a row whose fields don't line up, a garbled value or another "
+            "encoding's reading proposed, for people to see and accept (accept repairs). Then describes it as describe "
+            "records does, with the workspace's mapping. Its runs read what was read, so the original can move or go. "
+            "O(bytes) for the copy and the reading (about 15 s a million records), then the description's.",
             (INPUT, WORKSPACE), {**DESCRIBED, "loaded": "the part the records are in", "copied": "false: the workspace held them already"},
             "nayose load records customers.parquet --workspace workspaces/acme", load_records, quick=True,
             show={"columns": ("column", "filled", "example"), "fields": ("field", "filled", "looks_right"), "fit": (), "features": (), "profile": (),
                   "slots": ("feature", "filled", "looks_right"), "placements": ("feature", "column", "why"), "offers": ("feature", "column", "why")}),
+    Command("accept", "repairs", "Accept one kind of repair the reader proposed for a loaded file",
+            "Reads the file again with that kind applied: realign, each row whose fields don't line up re-split where every "
+            "value fits its column (unread until then); garbled, each value a wrong decoding garbled upstream decoded back; "
+            "encoding, each value another encoding reads far better read in it. Each was proposed only when it read at least "
+            "e^margin likelier ([input]). describe records shows them first, in read.examples. When a run read the file "
+            "already, run matching again to use them. O(the file).",
+            (Param("kind", "realign, garbled or encoding", "choice", intake.KINDS, positional=True),
+             Param("part", "the loaded file, by its part (0001, or its name; default: the latest with this kind waiting)", metavar="PART"), WORKSPACE),
+            {"part": "the part read again", "kind": "the kind accepted", "repaired": "the repairs applied", "rows": "the rows it now holds",
+             "added": "rows that were unread", "read": "what the reader found (er.intake): rows, values per encoding, fixed (controls, placeholders, numbers, damaged), proposed and waiting: repairs by kind (realign, garbled, encoding) for accept repairs, with examples; unread rows", "next": "the commands that usually follow"},
+            "nayose accept repairs realign --workspace workspaces/acme", accept_repairs, quick=True),
     Command("list", "features", "The features a workspace's columns fill: groups, features, parts",
             "The workspace's structure: each group, its features and their parts (a full name's family and given names), each "
             "with the columns that hold it, read from its mapping. Without --workspace, the project's. O(the file).",
@@ -765,13 +849,14 @@ COMMANDS: tuple[Command, ...] = (
             (Param("path", "GROUP/FEATURE", positional=True, metavar="PATH"), WORKSPACE),
             {"features": "the structure, without it", "slots": "each feature and part: feature (its path), columns", "next": "the commands that usually follow"},
             "nayose remove feature \"Name/Kanji name\" --workspace workspaces/acme", remove_feature_, quick=True, show={"features": ()}),
-    Command("describe", "records", "What a file holds, for mapping its columns: in a second, nothing prepared",
+    Command("describe", "records", "What a file holds, for mapping its columns: nothing prepared",
             "Each column's share filled and an example; each field's columns as the mapping reads them (a later one where the "
             "earlier are empty, a joined one where every part is filled), each with its share filled, an example and the share "
             "of its values that look like the field; how well each column fits each field; and, for a field the file holds "
             "none of, the column its name or values suggest, never applied: set columns applies it; and what a run would turn "
             "off, a field they read missing. Shares filled cover the "
-            "file; the rest a sample of 2,000 records. O(N·C) in one scan, plus the sample.",
+            "file; the rest a sample of 2,000 records. A file not loaded into a workspace is read as it comes first, for "
+            "this command alone (read: what the reader found). O(N·C) in one scan, plus the sample, plus the reading.",
             (INPUT, OWN), DESCRIBED, "nayose describe records customers.parquet --workspace workspaces/acme", describe_records, quick=True,
             show={"columns": ("column", "filled", "example"), "fields": ("field", "filled", "looks_right"), "fit": (), "features": (), "profile": (),
                   "slots": ("feature", "filled", "looks_right"), "placements": ("feature", "column", "why"), "offers": ("feature", "column", "why")}),
@@ -834,7 +919,7 @@ COMMANDS: tuple[Command, ...] = (
              "write_owed": "a write cut short, finished by the next one", "summary": "the last run's summary",
              "round": "the round now: one per method the workspace ran (rounds.json)", "audits": "this round's audits people decided: checked, false",
              "trust": TRUST,
-             "inputs": "the records files given to it, each in inputs/: name, path, files, bytes, rows, read (by a run)",
+             "inputs": "the records files given to it, each in inputs/: name, path, files, bytes, rows, read (by a run, as it is now), waiting (repairs proposed, for people), unread (rows)",
              "columns": "own: its columns.toml; project: config/settings.toml's", "next": "the commands that usually follow"},
             "nayose describe workspace workspaces/customers", describe_workspace_, quick=True,
             show={"largest": ("entity", "records"), "runs": ("at", "what", "seconds"), "inputs": ("name", "files", "bytes", "read")}),

@@ -170,3 +170,18 @@ at a million: it learns on 30,000 records, its u sample of the file is 10⁷ pai
 whatever the file's size, and cif, phone and birth are counted exactly. So it is nearly all of a small file's time.
 Everything else goes from 2.71 s at 74,959 records to 22.63 s at a million: 13 times the records, 8 times the time.
 Scoring the candidates, `score`, grows from 0.80 s to 15.75 s, the largest step at a million records.
+
+## Reading a file as it comes
+
+`scripts/benchmark_intake.py`: the reader (`er.intake`, before every run) on a generated file of 1,000,338 records × 25
+columns written as CSV, clean and damaged ([reports/benchmark_intake.md](../reports/benchmark_intake.md)):
+
+| File | Seconds | Read back | Changed, never damaged |
+|---|---|---|---|
+| clean UTF-8 CSV | 14.8 | every value | 0 |
+| damaged CSV, every proposal accepted | 28.0 | each kind of damage: 100.0% of its values | 0 |
+
+The damaged file holds values in CP932 (10% of rows) and EUC-JP (2%), zero-width characters and NULs, placeholders,
+spreadsheet numbers, names garbled upstream and unquoted commas inside addresses. Most values take the fast path: ASCII
+as it is, UTF-8 that reads as Japanese text decoded once; only the others are tried in every encoding and judged, so a
+damaged file costs about twice a clean one. A Parquet file of the same records reads in about 13 s.

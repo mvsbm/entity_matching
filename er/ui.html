@@ -493,8 +493,9 @@ dialog:has(.dlg-body.wide) { width: min(960px, calc(100vw - 32px)); }
             {"command": "create workspace", "args": {"name": "@name", "home": "@home"}, "reads": ["workspace"]}]},
   {"id": "columns", "title": "Prepare your data", "icon": "columns", "what": "Which of your columns hold each field, and how each value is made comparable.",
    "strip": ["records", "prepare"],
-   "uses": [{"command": "load records", "args": {"input": "@input", "workspace": "@workspace"}, "reads": ["records", "columns", "slots", "features", "placements", "offers", "fields", "needed", "turned_off", "loaded"]},
-            {"command": "describe records", "args": {"input": "@loaded", "workspace": "@workspace"}, "reads": ["records", "columns", "slots", "features", "placements", "offers", "fields", "needed", "turned_off"]},
+   "uses": [{"command": "load records", "args": {"input": "@input", "workspace": "@workspace"}, "reads": ["records", "columns", "slots", "features", "placements", "offers", "fields", "needed", "turned_off", "read", "loaded"]},
+            {"command": "describe records", "args": {"input": "@loaded", "workspace": "@workspace"}, "reads": ["records", "columns", "slots", "features", "placements", "offers", "fields", "needed", "turned_off", "read"]},
+            {"command": "accept repairs", "args": {"kind": "@kind", "part": "@part", "workspace": "@workspace"}, "form": [], "reads": ["repaired", "added", "read"]},
             {"command": "set feature", "args": {"mapping": "@mapping", "workspace": "@workspace"}, "reads": ["slots"]},
             {"command": "add feature", "args": {"path": "@path", "type": "@type", "script": "@script", "column": "@column", "workspace": "@workspace"}, "reads": ["slots"]},
             {"command": "remove feature", "args": {"path": "@path", "workspace": "@workspace"}, "reads": ["slots"]},
@@ -1038,6 +1039,15 @@ function hurts(fields, off, fix = "") {
     ...[...by].map(([f, n]) => `<div class="warn">${n ? `No column is mapped to ${esc(words(f))}: ${[n.ways && `${plural(n.ways, "way")} of finding pairs`, n.steps && plural(n.steps, "comparison step")].filter(Boolean).join(" and ")} turned off` : esc(f)}${fix}</div>`)].filter(Boolean);
 }
 
+const REPAIR = {realign: ["row", "rows", "whose fields don't line up: re-split where every value fits its column"],  // a kind of repair the reader proposes, in words
+                garbled: ["value", "values", "garbled by a wrong decoding upstream: decoded back"], encoding: ["value", "values", "another encoding reads far better"]};
+const FIXED = {controls: "control or invisible characters removed", placeholders: "placeholders such as NULL or - made missing",
+               numbers: "spreadsheet numbers: 12.0 read as 12, 1.2E+11 made missing (its digits are gone)", damaged: "values no encoding reads, made missing"};
+const waits = (r) => {  // what waits for a repair, in the answer to Did your file load?
+  const w = r ? r.waiting : {}, rows = w.realign || 0, values = (w.garbled || 0) + (w.encoding || 0);
+  return rows || values ? ` · <b>${[rows && plural(rows, "row"), values && plural(values, "value")].filter(Boolean).join(" and ")} wait for a repair</b>` : "";
+};
+
 const DETAIL_Q = {
   records: (x, all) => {
     if (x.count === null || x.count === undefined) return ask(STAGE_Q.records, "Nothing yet: the records are read when matching runs.");
@@ -1473,21 +1483,35 @@ const SCREENS = {
         <span class="loadrow"><input type="text" id="cin" placeholder="path to a .parquet file"><button class="btn filled" id="load">${icon("add")}Load</button></span></label>
         <div id="files" class="chips" style="margin-top:10px"></div>`;
     el.innerHTML = head("columns") + `<div class="card" id="loaded"><div class="qa"><div class="q"><h2 class="question">Which file holds your records?</h2></div></div>${box}</div>
-      <div id="watch"></div><div id="out"></div><div id="flow"></div>${stepFoot("columns")}`;
+      <div id="repairs"></div><div id="watch"></div><div id="out"></div><div id="flow"></div>${stepFoot("columns")}`;
     if (!state.workspace) { $("out").innerHTML = emptyRun(); return; }
     const answer = (d, w, last) => {  // did the file load? then what may hurt the matching
       const lost = (f) => { const x = d.fields.find((y) => y.field === f); return !x || x.filled === null; };
       const missing = [...d.needed.every.filter(lost), ...d.needed.one_of.filter((grp) => grp.every(lost)).map((grp) => grp.join(" or "))];
       $("loaded").innerHTML = `<div class="qa"><div class="q"><h2 class="question">Did your file load?</h2><p class="answer">${missing.length
           ? `<b>Not yet:</b> ${esc(missing.map(words).join(", "))} ${missing.length > 1 ? "are" : "is"} needed`
-          : `<b>Yes</b> · ${fmt(d.records)} records from ${esc(last.name.replace(/^\d+-/, ""))} · ${fmt(d.columns.length)} columns`}</p></div>
+          : `<b>Yes</b> · ${fmt(d.records)} records from ${esc(last.name.replace(/^\d+-/, ""))} · ${fmt(d.columns.length)} columns${waits(d.read)}`}</p></div>
         ${missing.length ? (d.placements.length ? `<button type="button" class="btn filled" id="suggest-now">✦ Suggest the columns</button>` : "") : `<a class="btn filled" data-go="run">Next: 3 Find matches →</a>`}</div>
         <details class="fold-line"><summary>Load another file</summary><div style="margin-top:10px">${box}</div></details>`;
       wireLoad();
-      $("files").innerHTML = (w.inputs || []).map((f) => `<span class="tag" title="${esc(f.path)}">${esc(f.name)} · ${fmt(Math.ceil(f.bytes / 1e6))} MB · ${f.read ? "matched" : "not run yet"}</span>`).join("");
+      $("files").innerHTML = (w.inputs || []).map((f) => `<span class="tag" title="${esc(f.path)}">${esc(f.name)} · ${fmt(Math.ceil(f.bytes / 1e6))} MB · ${f.read ? "matched" : "not run yet"}${f.waiting ? ` · ${fmt(f.waiting)} repairs wait` : ""}</span>`).join("");
+      repairs(d.read);
       const lines = hurts(d.fields, d.turned_off);
       $("watch").innerHTML = lines.length && !missing.length ? `<div class="card"><h3 style="font-size:15px;font-weight:500;margin:0 0 8px">Watch out</h3><div class="checks">${lines.join("")}</div></div>` : "";  // once what is needed is mapped
       $("suggest-now")?.addEventListener("click", () => $("out").querySelector("[data-suggest='*']")?.click());
+    };
+    const repairs = (r) => {  // what the reader proposed, kind by kind, to see and accept; what it fixed by itself; the rows it can't read
+      const wait = r ? r.waiting : {}, fixed = r ? Object.values(r.fixed).reduce((a, b) => a + b, 0) : 0, cannot = r ? r.unread - (wait.realign || 0) : 0;
+      const rows = (k) => (r.examples[k] || []).map((x) => `<tr><td class="num">${fmt(x.line)}</td><td>${esc(x.column)}</td><td class="wrap">${esc(x.before)}</td><td class="wrap">${esc(x.after)}</td></tr>`).join("");
+      $("repairs").innerHTML = r && (Object.keys(wait).length || fixed || cannot > 0) ? `<div class="card">${Object.keys(wait).length ? `<h3 style="font-size:15px;font-weight:500;margin:0 0 4px">Repairs to accept</h3>` : ""}
+        ${Object.entries(wait).map(([k, n]) => `<details class="fold-line"><summary>${plural(n, REPAIR[k][0], REPAIR[k][1])} ${esc(REPAIR[k][2])}</summary>
+          <div class="tablecard" style="margin:8px 0"><table><thead><tr><th class="num">line</th><th>column</th><th>as given</th><th>repaired</th></tr></thead><tbody>${rows(k)}</tbody></table></div>
+          ${n > (r.examples[k] || []).length ? `<p class="faint" style="margin:0 0 8px">the first ${fmt((r.examples[k] || []).length)} of ${fmt(n)}</p>` : ""}
+          <button type="button" class="btn outlined" data-accept="${k}">Accept these ${fmt(n)}</button></details>`).join("")}
+        ${fixed ? `<details class="fold-line"><summary>Fixed by themselves: ${plural(fixed, "value")}</summary><div class="checks">${Object.entries(r.fixed).map(([k, n]) => `<div class="ok">${fmt(n)} ${esc(FIXED[k] || k)}</div>`).join("")}</div></details>` : ""}
+        ${cannot > 0 ? `<details class="fold-line"><summary>${plural(cannot, "row")} can't be read: kept aside</summary><div class="checks">${(r.examples.unread || []).filter((x) => !x.reason.includes("a repair waits")).map((x) => `<div class="warn">line ${fmt(x.line)}: ${esc(x.reason)}</div>`).join("")}</div></details>` : ""}</div>` : "";
+      $("repairs").querySelectorAll("[data-accept]").forEach((b) => b.onclick = () => action("columns", "accept repairs", `Accept ${plural(wait[b.dataset.accept], "repair")}`,
+        (e) => e.event === "error" ? $("repairs").insertAdjacentHTML("afterbegin", banner(e)) : draw(), null, {about: `${r.part}: ${REPAIR[b.dataset.accept][2]}`, extra: {kind: b.dataset.accept, part: r.part}}));
     };
     const view = {toggled: new Map(), ghosts: new Set()};  // groups opened or closed, groups showing their suggestions: kept as the page redraws
     const draw = async (d) => {  // d: a description just made; else the file loaded last is described
@@ -1571,7 +1595,10 @@ const SCREENS = {
       $("load").onclick = async () => {
         const input = $("cin").value.trim();
         if (!input) { $("cin").focus(); return; }
+        const b = $("load"), was = b.innerHTML;
+        b.disabled = true; b.textContent = "Reading…";  // a big file takes seconds: read as it comes
         const e = await run("columns", "load records", {input});
+        if (b.isConnected) { b.disabled = false; b.innerHTML = was; }
         if (e.event !== "error") $("cin").value = "";
         draw(e);
         refresh();

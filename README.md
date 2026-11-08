@@ -37,13 +37,14 @@ Real data may differ, and only a run on it can tell ([limits](#limits)).
 ```bash
 ./setup_venv.sh
 .venv/bin/nayose create workspace customers                                        # workspaces/customers: one matching job
-.venv/bin/nayose load records customers.parquet --workspace workspaces/customers   # copied in, then described: what each field reads, in a second
+.venv/bin/nayose load records customers.csv --workspace workspaces/customers       # CSV, TSV or Parquet: copied in, read as it comes, then described
+# repairs it would have to guess (a row whose fields don't line up, a garbled value) wait for you: nayose accept repairs …
 # a field it can't find: the check prints the line, nayose set columns id=CUSTOMER_NO --workspace workspaces/customers
 .venv/bin/nayose resolve records --workspace workspaces/customers
 .venv/bin/nayose open ui                                                           # or the six steps in a browser, on this machine only
 ```
 
-The workspace holds your file (`inputs/`, copied in), its mapping (`columns.toml`), `gold.parquet` (each record and its entity's ID, and each one's kind: 1 person, 2 company, 0 not sure), `review.parquet` (pairs for a person to decide or audit), `kind_review.parquet` (records for a person to decide person or company), `qa.md` (checks that need no labels) and `report.txt` (the run on one page with no record's value in it, to send when asking for help). New records join the run later (`nayose add records`). A new workspace joins nothing before people check: its trust line (`nayose lower trust`) comes down one score range at a time, as each range's random sample proves clean. People decide the pairs (`nayose list pairs`, `decide pair`, `apply decisions`) and answer person or company (`list kinds`, `answer kind`, `apply answers`); `nayose serve inbox` takes batches, decisions and answers from an inbox, one file at a time. `nayose` (名寄せ, gathering one customer's records) reads as a sentence, verb then noun: every step is in [usage](docs/usage.md), every command in [commands](docs/commands.md).
+The workspace holds your file (`inputs/`, copied in, and as it was read: each value in its own encoding, control bytes and placeholders fixed, what would be a guess proposed for you to accept), its mapping (`columns.toml`), `gold.parquet` (each record and its entity's ID, and each one's kind: 1 person, 2 company, 0 not sure), `review.parquet` (pairs for a person to decide or audit), `kind_review.parquet` (records for a person to decide person or company), `qa.md` (checks that need no labels) and `report.txt` (the run on one page with no record's value in it, to send when asking for help). New records join the run later (`nayose add records`). A new workspace joins nothing before people check: its trust line (`nayose lower trust`) comes down one score range at a time, as each range's random sample proves clean. People decide the pairs (`nayose list pairs`, `decide pair`, `apply decisions`) and answer person or company (`list kinds`, `answer kind`, `apply answers`); `nayose serve inbox` takes batches, decisions and answers from an inbox, one file at a time. `nayose` (名寄せ, gathering one customer's records) reads as a sentence, verb then noun: every step is in [usage](docs/usage.md), every command in [commands](docs/commands.md).
 
 ## Read next
 
