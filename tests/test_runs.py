@@ -221,6 +221,8 @@ def test_a_key_for_the_matches_the_probe_found_is_proposed_tried_and_adopted(say
     log = json.loads((ws / "steps.json").read_text(encoding="utf-8"))["runs"][-1]["steps"]
     assert sum(x["keys_missed"] for x in next(x for x in log if x["step"] == "probe")["strata"]) == sum(t["variant"]["missed"].values())
     (ws / "method.toml").write_text((ws / "method.toml").read_text(encoding="utf-8") + 'trust = "none"\n', encoding="utf-8")
+    code, t = say("try", "method", "--line", 14, "--workspace", ws)  # nothing merges by itself, yet a trial shows what the method does
+    assert code == 0 and t["base"]["matched"] > t["variant"]["matched"] > 0
     assert say("reset", "method", "--workspace", ws)[0] == 0
     assert tomllib.loads((ws / "method.toml").read_text(encoding="utf-8")) == {"trust": "none"}  # the method as tuned; the trust line people earned stays
     (ws / "method.toml").write_text('trust = "none\n', encoding="utf-8")  # a method.toml that doesn't read: reset is still the way out

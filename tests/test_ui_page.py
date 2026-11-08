@@ -344,3 +344,24 @@ def test_step_4_shows_the_trust_line_lowers_it_and_an_answer_waits_out_a_busy_wo
     page.wait_for_function("() => document.querySelector('#written').textContent === '2'", timeout=15_000)
     assert not page.query_selector("#said .banner") and "1 different" in page.inner_text(".trustbar")
     assert "12–20" in page.inner_text(".rail li.attention .sub")
+
+
+def test_auto_mode_runs_from_the_first_screen_and_its_report_waits_on_the_overview(ui_page, tmp_path, population):
+    s, p, g = population
+    g.df.to_parquet(tmp_path / "all.parquet", index=False)
+    page, server, httpd = ui_page(None, str(tmp_path / "workspaces"))
+    page.wait_for_selector(".welcome [data-auto]")  # beside creating a workspace, before anything else
+    page.click(".welcome [data-auto]")
+    page.fill("#f-input", str(tmp_path / "all.parquet"))
+    page.wait_for_function("() => document.querySelector('#equiv-line').textContent.startsWith('nayose try everything')")  # the command line it runs
+    page.click("dialog button[value=run]")
+    page.wait_for_selector(".steps-card li:has-text('workspace')", timeout=60_000)  # each step as it ends; the new workspace opened
+    assert page.inner_text("#picker").startswith("Workspace: auto-")
+    page.click("[data-screen=columns]")  # the person goes elsewhere while it runs
+    page.wait_for_selector("h1:has-text('Prepare your data')")
+    page.wait_for_function("() => !document.querySelector('.snack .spin')", timeout=300_000)  # it ends
+    page.click(".navitem[data-screen=records]")  # back on the Overview: the report to send
+    page.wait_for_selector("#copy-report")
+    assert page.inner_text("#auto h2.question") == "What should I send?" and page.inner_text("#auto .report").startswith("# nayose auto mode")
+    page.click("#copy-report")  # no clipboard in this browser: the report is selected for the person to copy
+    page.wait_for_function("() => getSelection().toString().startsWith('# nayose auto mode')")

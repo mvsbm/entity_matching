@@ -142,7 +142,7 @@ def qa(run: "Run", fields: list[str] | None = None, review: int = 50, previous: 
     probed = next((x["strata"] for x in reversed(run.steps) if x["step"] == "probe"), [])  # er.probe: counts only
     summary = pd.DataFrame([
         ("records", f"{total:,}" + (f", {run.added:,} of them new" if run.added is not None else "") + (f"; {aside:,} set aside (set_aside/)" if aside else "")),
-        ("entities", f"{entities:,}; the largest holds {biggest:,} records"),
+        ("entities", f"{entities:,}; the largest holds {biggest:,} record{'s' * (biggest != 1)}"),
         ("joined by", f"the rules {by_rules:,} · the model {by_model:,} · people {by_people:,} records"),
         ("model links", f"{linked['accepted']:,}{' in this batch' if run.added is not None else ''}; about {linked['expected_false']:,.{1 if linked['expected_false'] >= 1 else 2}f} "
                         "of them false, as the model expects (the sum of 1 − match probability)"),

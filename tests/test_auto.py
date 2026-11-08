@@ -87,3 +87,57 @@ def test_a_rehearsal_stopped_midway_leaves_nothing_behind(tmp_path, monkeypatch)
     assert time.perf_counter() - t < 30 and not stale.exists() and not (ws / "rehearsal").exists() and not (ws / "rehearsal.json").exists()
     with pytest.raises(ProcessLookupError):
         os.kill(int((tmp_path / "pid").read_text()), 0)  # the run stopped with it
+
+
+def test_auto_mode_tries_every_step_and_writes_a_report_that_holds_no_value(say, tmp_path, population, monkeypatch):
+    s, p, g = population
+    uid, name = s.data.unique_id, s.columns["full_name"][0][0]
+    df = g.df.copy()
+    planted = {uid: "0004815162342", name: "ヤマモトマサヒコ", s.columns["phone"][0][0]: "090-4815-1623"}  # an ID, a kana name, a phone
+    for c, v in planted.items():
+        df.loc[0, c] = v
+    df.to_parquet(tmp_path / "all.parquet", index=False)
+    monkeypatch.chdir(tmp_path)
+    code, r = say("try", "everything", "all.parquet", "--trials", "1")
+    ws = Path(r["workspace"])
+    text = (ws / "auto" / "report.md").read_text(encoding="utf-8")
+    assert code == 0 and r["ok"] and all(x["ok"] for x in r["steps"]) and r["redacted"] == 0 and r["values"] > 0 and text == r["markdown"]
+    assert [x["step"] for x in r["steps"]][:5] == ["workspace", "load", "check", "rehearse", "resolve"] and "review" in [x["step"] for x in r["steps"]]
+    for section in ("## Steps", "## The file", "## Will a run go through", "## The rehearsal, beside the real run", "## The run (report.txt)",
+                    "## The method", "## How much people must check", "## Privacy check"):
+        assert section in text, section
+    assert not any(v in text for v in planted.values()) and str(tmp_path) not in text and "all.parquet" not in text  # no value, no path, no file name
+    facts = json.loads((ws / "auto" / "report.json").read_text(encoding="utf-8"))
+    assert facts["privacy"] == {"values": r["values"], "redacted": 0} and not any(v in json.dumps(facts, ensure_ascii=False) for v in planted.values())
+    assert (ws / "method.toml").read_text(encoding="utf-8").strip() == 'trust = "none"'  # strict as made: it never lowers the line or adopts a method
+    assert say("describe", "workspace", ws)[1]["auto"]["markdown"] == text  # the page's Overview shows it
+
+
+def test_the_report_check_redacts_any_value_long_digits_and_kana_no_column_holds():
+    from er.auto import HIDDEN, scrub
+    text = "stopped at 0012345678 (sample 1,234,567) · FULL_NAME_KANA: ヤマダタロウ said サトウ · Sato and Satoshi · code a1234567b"
+    out, n = scrub(text, {"ヤマダタロウ", "Sato"}, {"FULL_NAME_KANA", "サトウ様"})
+    assert out == f"stopped at {HIDDEN} (sample 1,234,567) · FULL_NAME_KANA: {HIDDEN} said サトウ · {HIDDEN} and Satoshi · code a1234567b" and n == 3
+    assert scrub("カナ", set(), set()) == (HIDDEN, 1)  # kana no column name holds: a value it can't tell from one
+
+
+def test_auto_mode_writes_its_report_when_a_step_stops_and_waits_out_no_busy_workspace(say, tmp_path, monkeypatch):
+    from er import auto
+    monkeypatch.chdir(tmp_path)
+    pd.DataFrame({"CONT_ID": [f"{i:04d}" for i in range(50)], "NOTE": ["x"] * 50}).to_parquet(tmp_path / "bare.parquet", index=False)
+    code, e = say("try", "everything", "bare.parquet")  # no name of any kind: the check stops it
+    ws = next((tmp_path / "workspaces").glob("auto-*"))
+    text = (ws / "auto" / "report.md").read_text(encoding="utf-8")
+    assert code == 2 and not e["ok"] and [x["step"] for x in e["steps"]] == ["workspace", "load", "check"] and not e["steps"][-1]["ok"]
+    assert "✗ check" in text and "fix:" in text and "## Privacy check" in text
+    real, taken = auto.nayose, []
+    def other(words, step, emit):  # another auto mode takes the name first; then the workspace this one makes is busy
+        if step == "workspace" and not taken:
+            taken.append(Path(words[4]) / words[2])
+            assert real(words, step, emit)[0] == 0
+        if step == "load":
+            return 75, dict(event="error", error="another job is writing to it", fix="wait")
+        return real(words, step, emit)
+    monkeypatch.setattr(auto, "nayose", other)
+    code, e = say("try", "everything", "bare.parquet")
+    assert code == 75 and [x["step"] for x in e["steps"]] == ["workspace", "load"] and taken[0].is_dir() and Path(e["workspace"]).name != taken[0].name

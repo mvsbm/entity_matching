@@ -113,9 +113,27 @@ It prints each field, its fill rate and the columns it comes from, what would be
 
 The run needs no labels: it fits its model on the file itself. It prints each step as it finishes, with its time and what it did, then a summary: records, entities, who joined them (the rules, the model, people), the model's links and how many of them it expects to be false, the pairs to decide, the records' and customers' kinds, where the kinds come from (no answers yet; or the answers, the lines and how often the flag is wrong on those drawn at random), how many records are held back, how often a sure kind contradicts the flag, and notes. The expected false links are the sum of 1 − match probability over the model's links: the model's own estimate, with no labels. A bigger file holds more people who share a name and an address, so at a fixed threshold the count grows with the file: on generated files, 0.84 at 12,532 records, 4.38 at 74,959 (1 and 3 found) and 30.11 at a million ([benchmark](../reports/benchmark.md)). A note says what the loader fixed, a field filled in under 5% of records (often a mapping mistake), a part turned off, or what the fit couldn't learn from. Last, `next` lists the commands that usually follow: the pairs and the records left to people, and the folder at a glance. What each step does, and what it costs: [architecture, the run](architecture.md#4--the-run).
 
+### Auto mode
+
+```bash
+.venv/bin/nayose try everything customers.parquet                     # workspaces/auto-<month><day>-<time>, then auto/report.md
+```
+
+`try everything` runs, on one file, the commands a person would, each in a process of its own: it makes a strict
+workspace, loads the file and places the columns its contents suggest, checks it, rehearses a file of its size, runs
+it, reads the method, tries the changes `describe method` proposes (`--trials`, 3), tries the names in another script
+the file holds in a workspace of their own, and counts the reviews. A step that fails is kept with its fix, and the
+steps that need it are skipped. It never lowers the trust line or adopts a method. At the end it writes
+`auto/report.md`, to send for help, and `auto/report.json`, the facts behind it: counts, shares, seconds and the names
+of columns, fields, rules and keys. No example, ID or path is taken into it, and it is then checked against every value
+of a sample of 20,000 records, every run of six digits or more and every run of kana or kanji that is no column name:
+anything found is redacted, and its last line says how many. About 15 minutes a million records. On the page: *Auto
+mode*, on the first screen and the Overview.
+
 ### Before a run on your file
 
-A first run on a file of your own, in this order:
+`try everything` does all of this at once ([above](#auto-mode)). A first run on a file of your own, by hand, in this
+order:
 
 1. **Map and check the columns.** `nayose describe records FILE --workspace W` shows each column's share filled and an
    example, which columns each field reads and how many of its values look like it; `nayose check records FILE
@@ -140,7 +158,8 @@ A first run on a file of your own, in this order:
    proposes a key for them, and a trial measures it before you adopt it ([section 6](#improve-the-method)).
 7. **Drop inbox files by moving them in.** `serve inbox` leaves a file changed in the last `--settle` seconds for the
    next pass: copy a file next to the inbox, then move it in once it is complete.
-8. **To ask for help, send `report.txt`.** It holds no record's value ([section 7](#7--when-something-is-wrong)).
+8. **To ask for help, send `report.txt`,** or auto mode's `auto/report.md`. Neither holds a record's value
+   ([section 7](#7--when-something-is-wrong)).
 
 ## 4 · Read the outputs
 
@@ -389,8 +408,8 @@ The page runs the same commands, and nothing else. Every page answers the questi
 
 | Step | Its questions, answered in this order | Runs |
 |---|---|---|
-| Overview, with a workspace open | *Where do I stand, and what is next?* The next step, with *Open*; every run, when, and the record files it read; the whole pipeline, each stage opening its question as on step 3 | `describe workspace`, `describe matching`, `describe key` |
-| 1 Choose a workspace | *What will this do for me?* An example: three records written differently become one entity, one ID, and *Create a workspace*. *Can I pick up where I left off?* The latest workspaces, each with where it stands, and *Open* | `list workspaces`, `create workspace` |
+| Overview, with a workspace open | *Where do I stand, and what is next?* The next step, with *Open*. In a workspace auto mode made, *what should I send?* Its report, with *Copy the report*. Every run, when, and the record files it read; the whole pipeline, each stage opening its question as on step 3 | `describe workspace`, `describe matching`, `describe key`, `try everything` |
+| 1 Choose a workspace | *What will this do for me?* An example: three records written differently become one entity, one ID, and *Create a workspace*, or *Auto mode*: every step on one file, each listed as it ends. *Can I pick up where I left off?* The latest workspaces, each with where it stands, and *Open* | `list workspaces`, `create workspace`, `try everything` |
 | 2 Prepare your data | *Did my file load?* Its records and columns, and what waits for a repair, or what is still needed, with *Suggest the columns*. *Which repairs do I accept?* Each kind the reader proposed, its values as given and repaired, with *Accept these N*; what it fixed by itself; the rows it can't read. *Is anything going to hurt the matching?* Fields mostly empty, and fields no column is mapped to with the ways of finding pairs they turn off. *Did it pick the right columns?* Each group's features: the column in each, how full it is, a real example; *Suggest* shows what the file's contents place there, kept with ✓; the file's columns, to drag in, folded below | `load records`, `describe records`, `accept repairs`, `set feature`, `add feature`, `remove feature`, `describe workspace` |
 | 3 Find matches | Before a run, *how long will it take?* The records and about how long, and *Find matches*. During it, *is it working?* What it is doing now, the seconds so far of about how long, and each stage filling in as its step ends. After it, *what did it find?* Records → entities, the pairs matched and those waiting for you, and *Review them*. Then *how did it find matches?* The stages in order, each opening its own question answered: *What did it read?* · *Which pairs did the rules match, and why?* (how the scoring rates the rules' pairs, and where it disagrees) · *Which pairs did it compare, and could a real match have been missed?* (all the possible pairs, how long comparing them all would take, the pairs compared; then a sample of the pairs that share a phone or a postal area, scored: the matches the method missed, with their estimate and the pairs found; each key opens `describe key`) · *How did it score each pair?* (one pair of the run as a waterfall, *Another pair*, and what counts most; every comparison's staircase folded) · *Where did it draw the line, and how many could be wrong?* (the line and its odds, the pairs matched and the wrong ones the model expects, pairs by points; every pattern folded) · *Which pairs did it leave for me, and why?* · *How did matched pairs become entities?* (with what to look at first) | `resolve records`, `add records`, `match records`, `rerun records`, `describe workspace`, `list patterns`, `explain pair`, `compare records`, `describe key` |
 | 4 Review possible matches | *Are these two the same entity?* The two records side by side, their differences marked. *Why is the engine unsure?* One line under the question. *What happens when I say same or different?* One line under the answers (<kbd>M</kbd> same entity, <kbd>N</kbd> different, <kbd>S</kbd> skip, <kbd>↑</kbd> <kbd>↓</kbd> move). Then how it scored, as a waterfall, with *Why?* beside each step ([Why this match?](#why-this-match)); what found it, and when it joins two entities, every pair across them and *Compare all N*. Beside it, *how many are left?* The decided of those to decide and the spot-checks, or with a trust line ([section 6](#the-trust-line)) how much of its sample is checked, with *Merge … automatically* once it is clean; *Apply decisions*; then the list | `list pairs`, `decide pair`, `apply decisions`, `describe workspace`, `lower trust`, `raise trust`, `list patterns`, `explain pair`, `compare records` |
