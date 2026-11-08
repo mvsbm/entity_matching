@@ -15,7 +15,7 @@ skinparam file {
 }
 
 package "inputs" {
-  file "the input: Parquet files (~--input)" as f_input
+  file "the input: the files given, read as they come (inputs/)" as f_input
   file "config/final.toml · config/settings.toml" as f_config
   file "config/kind_names.npz: the name model" as f_names
   file "apply answers · kind_answers/part-n.parquet" as f_answers

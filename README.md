@@ -28,7 +28,7 @@ These numbers come from synthetic records built from real Japanese names, compan
 - **The data is hard on purpose.** About 1% of true pairs are direct matches (the same customer ID and name, or the same name, address code and phone), and 11.5% share nothing usable, so no method finds them all ([data](docs/data.md#how-hard-it-is)).
 - **It merged no two different customers:** 0 false merges on test, so the rate is at most 0.28%.
 - **It tells persons from companies without trusting the file's flag:** on generated files with one name column for both, and company names held out of its name model's training, it called no person a company, against 304 to 2,362 by the flag alone; recall is 41.4–46.8%, against 39.0–45.5% by the flag, with fewer false merges. With a poor flag it calls few persons surely persons: the rest stay 0, not sure ([chapter 7](docs/guide/07-person-or-company.md)).
-- **A million records take 47.7 seconds,** with peak memory 6.23 GB under an 8 GB limit. Every step's work grows about linearly with the file.
+- **A million records take 53 seconds,** with peak memory 6.64 GB under an 8 GB limit, and about 15 seconds before that for the reader to read the file as it comes. Every step's work grows about linearly with the file.
 
 Real data may differ, and only a run on it can tell ([limits](#limits)).
 
@@ -50,7 +50,7 @@ The workspace holds your file (`inputs/`, copied in, and as it was read: each va
 
 | To | Read |
 |---|---|
-| run it on your records | [usage](docs/usage.md) |
+| run it on your records | [usage](docs/usage.md), and [before a run on your file](docs/usage.md#before-a-run-on-your-file) |
 | look up a command | [commands](docs/commands.md) |
 | change the code: the rules, and what checks each | [contributing](CONTRIBUTING.md) |
 | see every step on a small file, with charts | [the demo](notebooks/pdf/demo.pdf) |
