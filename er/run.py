@@ -820,8 +820,9 @@ def trial(ws: Path, base: Pipeline, variant: Pipeline, method: dict, s: Settings
         run.labels = run._answers(ws)
         run.resolve(files, None)
         gold = run.con.execute(f"SELECT {q(uid)}, cluster_id FROM gold").df()
+        probed = next((x["strata"] for x in run.steps if x["step"] == "probe"), [])  # the matches no key lists, as its probe estimates them
         numbers = dict(matched=run._count("matches"), expected_false=run._expected_false(), rule_pairs=run._count("rule_kept WHERE merged"),
-                       entities=int(gold["cluster_id"].nunique()))
+                       entities=int(gold["cluster_id"].nunique()), missed={x["stratum"]: x["keys_missed"] for x in probed})
         run.con.close()
         return gold, numbers
 

@@ -488,11 +488,13 @@ def try_method(a: dict, emit: "Emit") -> dict:
     if bad := [x for x in a.get("drop") or [] if x not in rules | keys]:
         raise InputError(f"--drop {' '.join(bad)}: no match rule or pair key of the method has that name", fix="see them: nayose describe method --workspace …")
     method = {**now, **({"line": number(a["line"], "--line")} if a.get("line") else {})}
+    if a.get("add"):  # each a key's fields joined by +, as describe method proposes it
+        method["add_keys"] = [list(k) for k in dict.fromkeys([*map(tuple, now.get("add_keys", [])), *(tuple(x.split("+")) for x in a["add"])])]
     for name, among in (("drop_rules", rules), ("drop_keys", keys)):
         if dropped := sorted({*now.get(name, []), *(x for x in a.get("drop") or [] if x in among)}):
             method[name] = dropped
     if method == now:
-        raise InputError("nothing to try: that is the method as it is", fix="give --line, or --drop with rules or keys to leave out")
+        raise InputError("nothing to try: that is the method as it is", fix="give --line, --drop with rules or keys to leave out, or --add with a key to add")
     if not (ws / "gold.parquet").exists():
         raise InputError(f"no run in {ws} to try a method against", fix="find matches first: nayose resolve records --workspace …")
     result = trial(ws, p, setup(a, method)[1], method, s, echo=emit.step)
@@ -1020,7 +1022,7 @@ COMMANDS: tuple[Command, ...] = (
                   "steps": ("comparison", "level", "bits", "reached"), "proposals": ("change", "why"), "trials": ()}),
     Command("try", "method", "Try a change of the method beside the method as it is",
             "Runs the workspace's method and the method with the change (a line; --drop: match rules and pair keys left "
-            "out) on the workspace's files, both without people's decisions, so neither is judged on pairs it was told; both "
+            "out; --add: pair keys added, as describe method proposes them for the matches the probe found no key lists) on the workspace's files, both without people's decisions, so neither is judged on pairs it was told; both "
             "keep the run's fitted model and people's person/company answers. Says what the change does to the pairs people "
             "decided (those they said are different yet joined: false merges; those they said are the same yet apart) and, "
             "without labels, to the links, the false links the model expects, the entities, and the pairs of records it puts "
@@ -1028,7 +1030,9 @@ COMMANDS: tuple[Command, ...] = (
             "last 5 kept) and the clusters of the method as it is, kept for the next trial. O(two full runs without the fit); "
             "one when the method and the files are those of the last trial.",
             (WORKSPACE, Param("line", "the weight to accept pairs at, in bits", metavar="BITS"),
-             Param("drop", "match rules and pair keys to leave out, by name", "many", metavar="NAME"), PIPELINE, COMPUTE),
+             Param("drop", "match rules and pair keys to leave out, by name", "many", metavar="NAME"),
+             Param("add", "pair keys to add, each its fields joined by + (field or field:normalizer), as describe method proposes them", "many", metavar="FIELDS"),
+             PIPELINE, COMPUTE),
             {"trial": "its number, for adopt method", "at": "when", "method": "the method tried, as method.toml would say it",
              "base": "the method as it is: matched, expected_false, rule_pairs, entities", "variant": "the method tried: the same",
              "different_joined": "pairs people said are different, in one customer (false merges): base, variant",

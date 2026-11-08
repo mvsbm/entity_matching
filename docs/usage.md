@@ -223,12 +223,14 @@ The method (pair keys, comparison steps, match rules, the line) is tuned on gene
 - **The line.** Every pair people decided, scored again with the run's model, beside the weight bands. A line within the band people review (from the lowest weight they decide to 4 bits above the line) that sets right decided pairs without setting any wrong is proposed.
 - **The rules.** Each match rule's pairs, those that score below the line, and those people said are different: a no_match keeps only that pair apart, and the rule still joins pairs like it, so such a rule is proposed to leave out.
 - **The pair keys.** Each key's pairs and seconds, the links it found, and those no other key found. A key with a tenth of the pairs or more and no link of its own is proposed to leave out.
+- **A key to add.** The full run's probe finds matches the run didn't join among pairs that share a phone or a postal area (`[probe]`), and says of each whether no key listed it. For those, a key of one or two fields (phone, postal area, city, prefecture, town, address code, name initial, given name, person name, birth date) on which both records of at least a fifth of them agree is proposed, within the pairs per record the budget allows (`[budget] max_pairs_per_record`), with the share it lists, about how many matches it would find, and its cost. Trying it reports the probe's count before and after.
 - **The comparison steps.** Each step's bits and the pairs that reached it.
 
 Try a change before you take it, adopt it, and decide the new round's pairs:
 
 ```bash
 .venv/bin/nayose try method --workspace workspaces/customers --line 9 --drop F3_NAME~_CIF
+.venv/bin/nayose try method --workspace workspaces/customers --add phone+city          # a key added: its fields joined by + (field:normalizer)
 .venv/bin/nayose adopt method --workspace workspaces/customers --trial 1
 .venv/bin/nayose draw pairs --workspace workspaces/customers --count 50
 .venv/bin/nayose reset method --workspace workspaces/customers      # back to the tuned method

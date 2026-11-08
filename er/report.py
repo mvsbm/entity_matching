@@ -23,6 +23,7 @@ from er.folder import DECISIONS, PENDING, TRIALS, method, rounds
 from er.io import code_version, table_after
 from er.kind import COMPANY, PERSON, SAYS, UNSURE
 from er.match import ELSE, levels, named_sql, parameters, pattern_coverage, review_floor, scaled_prior, score_fs
+from er.probe import keys_for
 from er.source import lit
 from er.standardize import prepared
 
@@ -726,6 +727,12 @@ def describe_method(out: Path, p: Pipeline, s: "Settings") -> dict:
     total = sum(pairs for pairs, _ in listed.values())  # a key worth leaving out: a tenth of the pairs or more, and no link only it finds
     proposals += [dict(change=dict(drop_keys=[b.name]), why=f"{listed[b.name][0] / total:.0%} of the pairs, and no link only it finds")
                   for b in fs.blockers if listed.get(b.name, (0,))[0] >= total / 10 and not found.get(b.name, (0, 0))[1]]
+    probed = [x for x in facts if x["step"] == "probe"]  # a key for the matches the probe found no key lists (er.probe)
+    if probed and (out / "state" / "records").is_dir():
+        have = [k.keys for k in fs.blockers if isinstance(k, KeyBlocker)]
+        proposals += [dict(change=dict(add_keys=[k["keys"]]), adds=k, why=f"lists {k['lists']:,} of the {k['of']:,} matches the run didn't join that the probe found, "
+                           f"about {k['finds']:,} in all; {k['pairs_per_record']:g} more pairs a record")
+                      for k in keys_for(con, read("state/records/*.parquet"), uid, probed[-1]["strata"], have, fs.budget.max_pairs_per_record)]
     by_gamma = levels(model)
     return dict(
         line=t, review_from=review_floor(p), method=method(out), round=now, rounds=ran,

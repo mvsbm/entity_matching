@@ -746,16 +746,17 @@ nayose describe method --workspace workspaces/customers
 Try a change of the method beside the method as it is.
 
 ```
-nayose try method --workspace WORKSPACE [--line BITS] [--drop NAME …] [--pipeline PIPELINE] [--compute KEY=VALUE …] [--format text|json]
+nayose try method --workspace WORKSPACE [--line BITS] [--drop NAME …] [--add FIELDS …] [--pipeline PIPELINE] [--compute KEY=VALUE …] [--format text|json]
 ```
 
-Runs the workspace's method and the method with the change (a line; --drop: match rules and pair keys left out) on the workspace's files, both without people's decisions, so neither is judged on pairs it was told; both keep the run's fitted model and people's person/company answers. Says what the change does to the pairs people decided (those they said are different yet joined: false merges; those they said are the same yet apart) and, without labels, to the links, the false links the model expects, the entities, and the pairs of records it puts apart or together. Writes only trials/ in the workspace: each trial's result (the last 5 kept) and the clusters of the method as it is, kept for the next trial. O(two full runs without the fit); one when the method and the files are those of the last trial.
+Runs the workspace's method and the method with the change (a line; --drop: match rules and pair keys left out; --add: pair keys added, as describe method proposes them for the matches the probe found no key lists) on the workspace's files, both without people's decisions, so neither is judged on pairs it was told; both keep the run's fitted model and people's person/company answers. Says what the change does to the pairs people decided (those they said are different yet joined: false merges; those they said are the same yet apart) and, without labels, to the links, the false links the model expects, the entities, and the pairs of records it puts apart or together. Writes only trials/ in the workspace: each trial's result (the last 5 kept) and the clusters of the method as it is, kept for the next trial. O(two full runs without the fit); one when the method and the files are those of the last trial.
 
 | Parameter | |
 |---|---|
 | `--workspace WORKSPACE` | the workspace: the folder that keeps one matching job (required) |
 | `--line BITS` | the weight to accept pairs at, in bits |
 | `--drop NAME` | match rules and pair keys to leave out, by name |
+| `--add FIELDS` | pair keys to add, each its fields joined by + (field or field:normalizer), as describe method proposes them |
 | `--pipeline PIPELINE` | the pipeline file (default: config/final.toml) |
 | `--compute KEY=VALUE` | DuckDB limits for this run, over config/settings.toml [compute]: memory_limit=8GB, threads=4, temp_directory=<folder> (past the memory limit DuckDB spills there) |
 
