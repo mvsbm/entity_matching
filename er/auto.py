@@ -69,9 +69,9 @@ LIMIT = ("past 60,000 entities the generator's people repeat, so names repeat mo
 SAMPLE = 20_000  # records whose values the report is checked against
 HIDDEN = "[redacted]"
 JAPANESE = re.compile(r"[\u3005\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff\uff66-\uff9f\U00020000-\U0003134f]+")  # kana, kanji, half-width kana
-DIGITS = re.compile(r"(?<![\w.])\d{6,}(?!\w)")  # an ID, a postal code, a phone: the report writes its own counts 1,234,567
+DIGITS = re.compile(r"(?<![A-Za-z0-9_.])\d{6,}(?![A-Za-z0-9_])")  # an ID, a postal code, a phone, even beside kana: the report writes its own counts 1,234,567
 CRASH = re.compile(r"^([A-Za-z_][\w.]*(?:Error|Exception|Interrupt|Exit))\b")  # a traceback's last line: the kind of crash, never its words
-FOUR = re.compile(r"[0-9０-９]{4}")  # four digits in a row: a phone, a postal code, a date, an ID, never a column's name
+RECORD = re.compile(r"[0-9０-９]{4}|@|株式会社|有限会社|合同会社|[(（]株[)）]|カブシキガイシャ|^[MTSHR]\d{1,2}[./]\d|\d[./-]\d{1,2}[./-]\d")  # a value, not a column's name
 
 
 def shape(s: Settings, path: str | Path) -> dict:
@@ -254,19 +254,20 @@ def nayose(words: list, step: str, emit: Callable[[dict], None]) -> tuple[int, d
     if code and last.get("event") != "error":
         kind = next((m.group(1) for x in reversed(other) if (m := CRASH.match(x.strip()))), None)
         last = dict(event="error", error=f"crashed: {kind}" if kind else f"stopped: exit {code}" + (" (killed: out of memory?)" if code == -9 else ""),
-                    fix="its own words are in auto/<step>.log in the workspace" if other else "")
+                    fix=f"its own words are in auto/{step.replace(' ', '-')}.log in the workspace" if other else "")
     return code, last, list(other)
 
 
 def values(part: Path, s: Settings) -> set[str]:
     """The distinct values of a sample of SAMPLE records of a loaded part, long enough to mean something: non-ASCII
-    of 3 characters or more, digits of 6, other text of 4; a column's name is none. O(SAMPLE · columns)."""
+    of 3 characters or more, digits of 6, other text of 4, but a plain lower-case word (true, file, none: a flag, the
+    report's own words; a name is written Sato or SATO); a column's name is none. O(SAMPLE · columns)."""
     files = ", ".join(lit(str(f)) for f in find(part))
     df = connect(s.compute)[0].execute(f"SELECT * FROM read_parquet([{files}], union_by_name = true) USING SAMPLE {SAMPLE} ROWS").df()
     names, out = set(df.columns), set()
     for c in df.columns:
         for v in df[c].dropna().astype(str).str.strip().unique():
-            if v not in names and len(v) >= (3 if not v.isascii() else 6 if v.isdigit() else 4):
+            if v not in names and len(v) >= (3 if not v.isascii() else 6 if v.isdigit() else 4) and not (v.isascii() and v.isalpha() and v.islower()):
                 out.add(v)
     return out
 
@@ -301,8 +302,8 @@ def scrub(text: str, found: set[str], names: set[str]) -> tuple[str, int]:
 
 
 def cleaned(x: object, clean: Callable[[str], str]) -> object:  # every text in a result put through `clean`; numbers stay
-    if isinstance(x, dict):  # its keys too: a column's name may be a value
-        return {clean(k) if isinstance(k, str) else k: cleaned(v, clean) for k, v in x.items()}
+    if isinstance(x, dict):  # its keys are the report's own names: a column's name is a value in a row (profile), never a key
+        return {k: cleaned(v, clean) for k, v in x.items()}
     if isinstance(x, list):
         return [cleaned(v, clean) for v in x]
     return clean(x) if isinstance(x, str) else x
@@ -375,7 +376,8 @@ def everything(file: str, home: Path, trials: int, compute: list[str], pipeline:
             if do("place", ["set", "feature", *placed, *there]):
                 described = do("describe", ["describe", "records", part, *there]) or loaded
         facts.update(placed=kept(loaded.get("placements"), "feature", "column", "share", "why"), records=described["records"],
-                     columns=kept(described["columns"], "column", "filled"), profile=described.get("profile", {}), notes=described.get("notes", []),
+                     columns=kept(described["columns"], "column", "filled"), profile=[dict(column=c, **x) for c, x in described.get("profile", {}).items()],
+                     notes=described.get("notes", []),
                      fields=[dict(kept([x], "field", "sources", "filled", "looks_right")[0], alternatives=kept(x.get("alternatives"), "columns", "found", "filled", "looks_right"))
                              for x in described["fields"]],
                      offers=kept(described.get("offers"), "feature", "type", "script", "column", "share", "why"),
@@ -418,6 +420,8 @@ def everything(file: str, home: Path, trials: int, compute: list[str], pipeline:
         steps()
     except (KeyboardInterrupt, BrokenPipeError):  # Ctrl-C, or the page that asked is gone: what ran so far is reported
         stopped = True
+        if got["ws"] and not got["ws"].is_dir():  # stopped while it was being made: nowhere to report
+            got["ws"] = None
         facts["steps"].append(dict(step="stopped", ok=False, exit=130, seconds=0.0, error="stopped before its end", fix="run it again"))
     facts["seconds"] = round(time.perf_counter() - t0, 1)
     ran = any(x["step"] == "resolve" and x["ok"] for x in facts["steps"])
@@ -452,26 +456,28 @@ def offered(ws: Path, part: str, offers: list[dict], do: Callable, pipe: list, l
 
 def written(r: dict, file: str, s: Settings) -> dict:
     """The report of `r` (everything's) in its workspace's auto/: report.json, the facts, and report.md, them in words,
-    both checked as scrub does against the values of the part loaded. A column's name stays, unless it reads like a
-    value (a known name or place, a phone number, four digits in a row; any, when the reader says the header may be
-    missing): then it is one of the values. The file's path and name are put as <file>, its part's as <part>, the
-    workspace's path as its name, the home folder as ~ and the current one as ".". The paths, the values checked
-    against, and how many were redacted."""
+    both checked as scrub does against the values of the part loaded. The columns' names stay, unless the first line
+    was a record (the reader says the header may be missing, or two of its names read like values: four digits, an
+    email, a legal form, a date, a known full name or address): then every name is one of the values. The file's path
+    and name are put as <file>, its part's name as <part>, the workspace's path as its name, the home folder as ~ and
+    the current one as ".". The paths, the values checked against, and how many were redacted."""
     ws, facts = r["workspace"], r["facts"]
     found = values(Path(r["part"]), s) if r.get("part") else set()
     names = {x["column"] for x in facts.get("columns", [])}
-    headless = any("a header may be missing" in n for n in facts.get("notes", []))
     known = profiled({c: [c] for c in names}, lexicon(s.paths["reference"], tuple(s.standardize.kana_fold.items())))
-    alike = {c for c in names if headless or FOUR.search(c) or any(known[c][k] >= 1 for k in ("family", "given", "full", "address", "phone"))}
-    found, names = found | alike, names - alike
+    record = any("a header may be missing" in n for n in facts.get("notes", [])) or sum(
+        bool(RECORD.search(c)) or (len(c) >= 4 and max(known[c]["full"], known[c]["address"]) >= 1) for c in names) >= 2
+    if record:  # its names are values: each long enough to mean something is redacted, and no kana or kanji of them stays
+        found |= {c for c in names if len(c) >= (3 if not c.isascii() else 6 if c.isdigit() else 4)}
+        names = set()
     try:
         given = find(file)
     except InputError:
         given = []
     exact = {str(Path(file).resolve()): "<file>", str(ws): ws.name, str(Path.home()): "~", os.getcwd(): "."}
     exact = {k: v for k, v in sorted(exact.items(), key=lambda x: -len(x[0])) if len(Path(k).parts) > 2}  # "/" or "/Users" would garble every path
-    tokens = {f.name for f in [*given, Path(file)] if len(f.name) >= 4}
-    stems = {f.stem for f in given if f.stem}
+    tokens = {f.name for f in [*given, Path(file)] if len(f.name) >= 4 and f.suffix}  # a file's name; a folder's is in its path
+    part = Path(r["part"]).name if r.get("part") else None  # inputs/0001-<the file's name, as the workspace wrote it>
     hits = 0
 
     def clean(text: str) -> str:
@@ -480,8 +486,8 @@ def written(r: dict, file: str, s: Settings) -> dict:
             text = text.replace(x, to)
         for x in tokens:  # a file's name as a word of its own, not inside another
             text = re.sub(rf"(?<![\w.-]){re.escape(x)}(?![\w-])", "<file>", text)
-        for x in stems:  # its part in the workspace: inputs/0001-<its name>
-            text = re.sub(rf"\b\d{{4}}-{re.escape(x)}\b", "<part>", text)
+        if part:
+            text = text.replace(part, "<part>")
         text, n = scrub(text, found, names)
         hits += n
         return text
@@ -557,7 +563,7 @@ def markdown(f: dict, name: str) -> str:
     if "fields" in f:
         out += ["", "## The file", "", "Columns:", "", *grid(f["columns"], ("column", "filled")),
                 "Each column's script and the shares that look like each kind of value (a sample of 2,000 records):", "",
-                *grid([dict(column=c, **x) for c, x in f["profile"].items()], ("column", "script", "full", "family", "given", "address", "phone", "same")),
+                *grid(f["profile"], ("column", "script", "full", "family", "given", "address", "phone", "same")),
                 "Fields, as the workspace maps them:", "", *grid(f["fields"], ("field", "sources", "filled", "looks_right")),
                 "Placed by auto mode (what the contents suggest):", "", *grid(f["placed"], ("feature", "column", "share", "why")),
                 "Offered, a name in another script:", "", *grid(f["offers"], ("feature", "type", "script", "column", "share", "why")),

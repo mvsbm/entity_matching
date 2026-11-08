@@ -720,6 +720,8 @@ def try_everything(a: dict, emit: "Emit") -> dict:
     home = Path(a["home"] or "workspaces")
     r = auto.everything(a["input"], home, max(trials, 0), a["compute"] or [], a.get("pipeline"), emit.step)
     if r["workspace"] is None:
+        if r["exit_code"] == 130:  # stopped before its workspace was made: nothing to report
+            raise KeyboardInterrupt
         failed = r["facts"]["steps"][-1]
         raise InputError(failed["error"] or "the workspace could not be made", fix=failed.get("fix") or "")
     done = auto.written(r, a["input"], settings_for({"workspace": str(r["workspace"])}))
@@ -1208,12 +1210,13 @@ COMMANDS: tuple[Command, ...] = (
             "fails is kept with its error and fix, and the steps that need it are skipped. Then auto/report.md, to send, and "
             "auto/report.json, its facts: counts, shares, seconds and the names of columns, fields, rules and keys, each taken "
             "field by field; checked against every value of a sample of 20,000 records, every run of six digits or more and "
-            "every run of kana or kanji that is no column name, each found redacted and counted; a column name that reads like "
-            "a value (a known name or place, a phone, four digits in a row; any, when the file seems to have no header) is "
-            "one of the values. A step that crashed keeps its own words in auto/<step>.log, never in the report. Never lowers "
-            "the trust line or adopts a method. Exit 0 once the run went through, 2 if a step stopped it, 75 if a workspace "
-            "was busy, 130 if stopped (Ctrl-C); the report is written each time. O(the commands it runs): about 10 minutes "
-            "a million records.",
+            "every run of kana or kanji that is no column name, each found redacted and counted. When the file's first line "
+            "was a record (the reader says the header may be missing, or two of its names read like values: four digits, an "
+            "email, a legal form, a date, a known full name or address), every column name is one of the values. A step that "
+            "crashed keeps its own words in auto/<step>.log, never in the report. Never lowers the trust line or adopts a "
+            "method. Exit 0 once the run went through, 2 if a step stopped it, 75 if a workspace was busy, 130 if stopped "
+            "(Ctrl-C); the report is written each time, once its workspace is made. O(the commands it runs): about 10 "
+            "minutes a million records.",
             (INPUT, HOME, Param("trials", "how many of the changes describe method proposes to try (default 3)", metavar="N"),
              PIPELINE, COMPUTE),
             {"workspace": "the workspace it made", "ok": "whether the run went through", "steps": "each step: step, ok, seconds, error",
@@ -1392,7 +1395,7 @@ def reference() -> str:
            "\"command\": …, …}` with the fields listed below, or `{\"event\": \"error\", \"error\": …, \"fix\": …, \"hints\": …, "
            "\"exit\": …}`. IDs are `id`, `id_l`, `id_r`, whatever the file calls them.",
            "- **Exit codes:** 0; 2, a mistake people fix (two lines: what is wrong, and the fix); 75, the workspace is busy: "
-           "try again later; 1, a pass of `serve inbox` stopped on a file.",
+           "try again later; 1, a pass of `serve inbox` stopped on a file; 130, stopped with Ctrl-C.",
            "- **`next`**, in every result: the commands that usually follow, each with why.", "",
            "| Command | Does |", "|---|---|", *(f"| [`{c.name}`](#nayose-{c.verb}-{c.noun}) | {c.help} |" for c in COMMANDS), ""]
     for c in COMMANDS:
