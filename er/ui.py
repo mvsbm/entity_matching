@@ -33,6 +33,7 @@ from urllib.parse import parse_qs, urlparse
 
 from er import cli
 from er.config import InputError
+from er.io import CHILD
 
 PAGE = Path(__file__).with_name("ui.html")
 
@@ -142,7 +143,7 @@ class Server:
         self.running = key
         try:  # stderr joins stdout: one pipe, read to its end, so a long traceback can't fill a pipe no one reads
             done = subprocess.Popen([sys.executable, "-m", "er.cli", *as_json(job.words)], stdout=subprocess.PIPE,
-                                    stderr=subprocess.STDOUT, text=True, bufsize=1)
+                                    stderr=subprocess.STDOUT, bufsize=1, **CHILD)
             other = []
             for line in done.stdout:  # each step as it finishes; anything else is a crash's traceback
                 try:

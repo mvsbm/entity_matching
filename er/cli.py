@@ -383,7 +383,7 @@ def readable(path: str, s, strict: bool = False):
         yield str(p)
         return
     files, root = find(path), p if p.is_dir() else None
-    with tempfile.TemporaryDirectory(prefix="nayose-") as t:
+    with tempfile.TemporaryDirectory(prefix="nayose-", ignore_cleanup_errors=True) as t:  # Windows: a file DuckDB still holds can't go yet
         named = {f: (f.relative_to(root) if root else Path(f.name)).as_posix() for f in files}
         back = [*((str(Path(t) / (x["read"])), str(f)) for f, x in zip(named, intake.take(Path(t), named, s.input, s.paths["reference"], strict=strict)["files"])), (t, str(path))]
         try:
@@ -811,7 +811,7 @@ def split_entity(a: dict, emit: "Emit") -> dict:
     if dict(id_l=first, id_r=second) not in inside["weakest"]:
         raise InputError(f"{first} – {second} doesn't hold the entity together: other links still join them",
                          fix="split it at one of its weakest links: nayose describe entity ID --workspace … lists them")
-    with tempfile.TemporaryDirectory() as tmp:
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
         f = Path(tmp) / "split.parquet"
         pd.DataFrame({f"{uid}_l": [first], f"{uid}_r": [second], "decision": ["no_match"], "why": ["split"]}).to_parquet(f, index=False)
         Run(p, s, echo=emit.step).decide(f, out)
@@ -1450,6 +1450,9 @@ def perform(c: Command, a: dict, emit: Emit) -> dict:
 
 
 def main(argv: list[str] | None = None) -> int:
+    for stream in (sys.stdout, sys.stderr):  # UTF-8 wherever it goes: a pipe or a file on Windows would take the locale's code page
+        if hasattr(stream, "reconfigure") and stream.encoding.replace("-", "").lower() != "utf8":
+            stream.reconfigure(encoding="utf-8", errors="replace")
     a = parser().parse_args(argv)
     c, emit = a.command, Emit(a.format)
     try:

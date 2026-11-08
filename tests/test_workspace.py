@@ -48,7 +48,7 @@ def test_a_workspace_keeps_its_own_mapping_and_a_copy_of_its_files(say, tmp_path
     say("load", "records", "theirs.parquet", "--workspace", a)
     assert [x.name for x in folder.parts(a)] == ["0001-theirs"]  # the same content again: not copied again
     assert say("set", "columns", "id=customer_no", "--workspace", a)[0] == 0
-    assert settings_path().read_text(encoding="utf-8") == project and 'id = "CONT_ID"' in (b / "columns.toml").read_text()  # a's alone
+    assert settings_path().read_text(encoding="utf-8") == project and 'id = "CONT_ID"' in (b / "columns.toml").read_text(encoding="utf-8")  # a's alone
     code, e = say("resolve", "records", "--workspace", b)
     assert code == 2 and e["error"].startswith("no records file")
     assert say("resolve", "records", "--workspace", a)[1]["summary"][0][1].startswith(f"{len(g.df):,}")  # the file loaded last
@@ -220,7 +220,7 @@ def test_a_workspace_s_method_changes_the_tuned_one_only_where_it_says(tmp_path)
     p = load_pipeline(s.root / "config" / "final.toml", s.standardize, s.chains, s.columns)
     assert adjust(p, {}) is p and setup(dict(workspace=str(tmp_path)))[1] == p  # no method.toml: the tuned method, the same hash
     rule = p.rules.stages[-1].rules[0].name
-    (tmp_path / "method.toml").write_text(f'line = 9.5\ndrop_rules = ["{rule}"]\ndrop_keys = ["cif"]\n')
+    (tmp_path / "method.toml").write_text(f'line = 9.5\ndrop_rules = ["{rule}"]\ndrop_keys = ["cif"]\n', encoding="utf-8")
     q = setup(dict(workspace=str(tmp_path)))[1]  # every command on the workspace: increments compare this hash
     assert q.fs.min_match_weight == 9.5 and rule not in {r.name for _, _, r in q.rules.each()}
     assert [b.name for b in q.fs.blockers] == [b.name for b in p.fs.blockers if b.name != "cif"]
@@ -284,9 +284,9 @@ def test_describe_method_scores_people_s_pairs_again_and_an_audit_stays_one_acro
         assert sum(x["reached"] for x in d["steps"] if x["comparison"] == c.name) == scored
 
     again = Run(p, s, model=run.model).rerun(ws, pipeline_file=final)  # the same method: the same round, and the audit is still one
-    assert describe_method(ws, p, s)["rounds"][0]["false_found"] == 1 and len(json.loads((ws / "rounds.json").read_text())) == 1
+    assert describe_method(ws, p, s)["rounds"][0]["false_found"] == 1 and len(json.loads((ws / "rounds.json").read_text(encoding="utf-8"))) == 1
     assert not pd.read_parquet(ws / "review.parquet").set_index([l, r]).index.isin(list(weights)).any()  # decided pairs: never asked again
-    (ws / "method.toml").write_text(f"line = {p.fs.min_match_weight + 1}\n")
+    (ws / "method.toml").write_text(f"line = {p.fs.min_match_weight + 1}\n", encoding="utf-8")
     q = adjust(p, {"line": p.fs.min_match_weight + 1})
     Run(q, s, model=again.model).rerun(ws, pipeline_file=final)
     d = describe_method(ws, q, s)
@@ -313,7 +313,7 @@ def test_a_bad_rule_is_found_tried_and_left_out_and_audits_reach_every_kind_of_l
     (ws / "method.toml").unlink()  # the method as tuned: this is about improving it, not the trust line
     say("load", "records", "theirs.parquet", "--workspace", "workspaces/w")
     assert say("resolve", "records", *pipe)[0] == 0
-    tuned = (ws / "state" / "config.txt").read_text()
+    tuned = (ws / "state" / "config.txt").read_text(encoding="utf-8")
     entity = g.truth.set_index(uid)[ent]
     kept = pd.read_parquet(ws / "rule_kept")
     wrong = kept[(kept["rule"] == bad.name) & (kept[l].map(entity) != kept[r].map(entity))].head(3)
@@ -338,7 +338,7 @@ def test_a_bad_rule_is_found_tried_and_left_out_and_audits_reach_every_kind_of_l
     monkeypatch.undo()
     monkeypatch.chdir(tmp_path)
     assert say("adopt", "method", "--trial", tried["trial"], *pipe)[0] == 0
-    assert folder.method(ws) == {"drop_rules": [bad.name]} and (ws / "state" / "config.txt").read_text() != tuned
+    assert folder.method(ws) == {"drop_rules": [bad.name]} and (ws / "state" / "config.txt").read_text(encoding="utf-8") != tuned
     code_, d = say("describe", "method", *pipe)
     assert d["round"] == 2 and bad.name not in [x["name"] for x in d["rules"]] and d["rounds"][0]["decided"] == 4
 
@@ -370,7 +370,7 @@ def test_a_bad_rule_is_found_tried_and_left_out_and_audits_reach_every_kind_of_l
     assert sorted(int(f.stem) for f in (ws / "trials").glob("*.json") if f.stem.isdigit()) == list(range(3, 8))  # bounded: the last 5
 
     assert say("reset", "method", *pipe)[0] == 0
-    assert not (ws / "method.toml").exists() and (ws / "state" / "config.txt").read_text() == tuned
+    assert not (ws / "method.toml").exists() and (ws / "state" / "config.txt").read_text(encoding="utf-8") == tuned
     assert len(folder.rounds(ws)) == 3
 
 
@@ -412,7 +412,7 @@ def test_the_trust_line_merges_only_ranges_people_proved_and_steps_down_one_at_a
     trust = say("describe", "workspace", "workspaces/w", "--pipeline", "small.toml")[1]["trust"]
     assert trust["line"] == "none" and trust["next"] == {"down_to": 20.0, "up_to": None}
     assert trust["pairs"] == trust["needed"] == 0 and trust["may_lower"]  # nothing scores 20 on 492 records: nothing there can be false
-    tuned = (ws / "state" / "config.txt").read_text()
+    tuned = (ws / "state" / "config.txt").read_text(encoding="utf-8")
     assert say("lower", "trust", *pipe)[0] == 0 and folder.method(ws) == {"trust": 20.0}
     trust = say("describe", "workspace", "workspaces/w", "--pipeline", "small.toml")[1]["trust"]
     assert trust["next"] == {"down_to": 12.0, "up_to": 20.0} and trust["checked"] == 0 < trust["needed"] <= 8
@@ -434,7 +434,7 @@ def test_the_trust_line_merges_only_ranges_people_proved_and_steps_down_one_at_a
     kept = pd.read_parquet(ws / "rule_kept")
     assert kept["merged"].any() and (kept.loc[kept["merged"], "match_weight"] >= 12).all() and (kept.loc[~kept["merged"], "match_weight"] < 12).all()
     assert (pd.read_parquet(ws / "matches")["match_weight"] >= 12).all() and (pd.read_parquet(ws / "proposed")["match_weight"] < 12).all()
-    assert (ws / "state" / "config.txt").read_text() != tuned and len(folder.rounds(ws)) == 3
+    assert (ws / "state" / "config.txt").read_text(encoding="utf-8") != tuned and len(folder.rounds(ws)) == 3
     trust = say("describe", "workspace", "workspaces/w", "--pipeline", "small.toml")[1]["trust"]
     assert trust["line"] == 12.0 and trust["next"] == {"down_to": 8.0, "up_to": 12.0} and trust["above"]["pairs"] > 0
     audits = pd.read_parquet(ws / "review.parquet").query("why == 'audit'")["match_weight"]
@@ -486,7 +486,7 @@ def test_an_increment_counts_exact_u_again_and_samples_only_a_drifted_comparison
     g.df[~new].to_parquet(tmp_path / "old.parquet", index=False)
     g.df[new].to_parquet(tmp_path / "new.parquet", index=False)
     full = Run(p, s).full(tmp_path / "old.parquet", tmp_path / "c")
-    basis = json.loads((tmp_path / "c" / "state" / "scoring.json").read_text())["basis"]
+    basis = json.loads((tmp_path / "c" / "state" / "scoring.json").read_text(encoding="utf-8"))["basis"]
     model = p.fs.model
     same = stale_u(model, basis, {name: b["exact"] for name, b in basis.items()}, full.n)
     assert all(x["drift_bits"] == 0 for x in same.values())  # nothing moved: nothing is stale
@@ -498,7 +498,7 @@ def test_an_increment_counts_exact_u_again_and_samples_only_a_drifted_comparison
     sampled, real = [], M.sample_u
     monkeypatch.setattr(M, "sample_u", lambda m, comps, *a: sampled.extend(c.name for c in comps) or real(m, comps, *a))
     inc = Run(p, s).increment(tmp_path / "new.parquet", tmp_path / "c")
-    after = json.loads((tmp_path / "c" / "state" / "scoring.json").read_text())["basis"]
+    after = json.loads((tmp_path / "c" / "state" / "scoring.json").read_text(encoding="utf-8"))["basis"]
     stale = [k for k, b in after.items() if b["last_check"]["drift_bits"] > (b["last_check"]["se_bits"] or math.inf)]
     assert sampled == stale  # sampled again exactly where drift outgrew the sampling error
     exact = exact_u(model, "records", inc.db)  # the exact levels are always counted on every record
@@ -530,13 +530,14 @@ def test_the_loader_reads_parquet_by_column_name_and_says_what_is_wrong(tmp_path
         (tmp_path / "home" / "exports" / d).mkdir(parents=True)
         pd.DataFrame({"CONT_ID": [f"{d}{i}" for i in range(3)]}).to_parquet(tmp_path / "home" / "exports" / d / "part.parquet")
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path / "home"))  # Windows' home folder
     from er import folder as folders, intake
     part, _ = folders.take_in(tmp_path / "ws_home", "~/exports", intake.InputSpec(), load_settings().paths["reference"])
     assert intake.report(part)["rows"] == 6
     (tmp_path / "empty").mkdir()
     with pytest.raises(InputError, match="holds no CSV, TSV or Parquet file"):  # a folder with no records file: said so, not "did you mean" itself
         open_source(tmp_path / "empty", con, [])
-    (tmp_path / "c.parquet").write_text("CONT_ID,name\n1,x\n")
+    (tmp_path / "c.parquet").write_text("CONT_ID,name\n1,x\n", encoding="utf-8")
     with pytest.raises(InputError, match="looks like text"):
         open_source(tmp_path / "c.parquet", con, [])
     (tmp_path / "d.parquet").write_bytes((tmp_path / "a.parquet").read_bytes()[:-10])

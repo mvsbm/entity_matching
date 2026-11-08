@@ -5,7 +5,6 @@ answer people give, written into a sheet (type_in); the record files a run read 
 own mapping (create), listed (workspaces), and given records files, each copied into inputs/ (take_in, loaded). What a
 run writes there, and what people keep there (decisions/, kind_answers/): docs/architecture.md, the workspace.
 """
-import fcntl
 import json
 import os
 import re
@@ -21,7 +20,7 @@ import pyarrow.parquet as pq
 
 from er import intake
 from er.config import InputError, lit, toml_of
-from er.io import replace_text
+from er.io import lock, replace_text
 from er.settings import COLUMNS
 from er.source import find
 from er.strings import connect
@@ -52,17 +51,15 @@ def run_lock(out: Path):
     """One writer per workspace: an OS lock on <out>/.lock for as long as a run, an increment or a set of decisions
     writes there. The system releases it when the process ends, even if it dies, so it never goes stale. A thread that
     holds it may take it again; another thread or process can't.
-    shortcut: flock holds on a local disk, not on network or object storage; there, run one job per folder at a time."""
+    shortcut: the lock (io.lock) holds on a local disk, not on network or object storage; there, run one job per folder at a time."""
     out.mkdir(parents=True, exist_ok=True)
     held, key = _held.__dict__.setdefault("folders", set()), out.resolve()
     if key in held:
         yield
         return
     with open(out / ".lock", "w") as f:
-        try:
-            fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError:
-            raise Busy(f"another job is writing to {out}", fix="wait for it to finish: a workspace takes one writer at a time") from None
+        if not lock(f):
+            raise Busy(f"another job is writing to {out}", fix="wait for it to finish: a workspace takes one writer at a time")
         held.add(key)
         try:
             yield

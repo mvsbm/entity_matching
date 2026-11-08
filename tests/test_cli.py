@@ -78,7 +78,7 @@ def test_a_run_says_what_is_wrong_in_words_people_can_act_on(say, tmp_path, popu
     g.df.iloc[200:].to_csv(folder / "b.tsv", sep="\t", index=False)
     (folder / "__MACOSX").mkdir()
     (folder / "__MACOSX" / "._a.csv").write_bytes(b"\x00\x05\x16\x07 junk")
-    (folder / ".a.csv.swp").write_text("x,y\n1,2\n")
+    (folder / ".a.csv.swp").write_text("x,y\n1,2\n", encoding="utf-8")
     assert say("check", "records", folder)[1]["records"] == len(g.df)  # a folder of CSV and TSV files, read together; hidden ones left alone
     box = tmp_path / "inbox"
     (box / "batches").mkdir(parents=True)
@@ -168,7 +168,7 @@ def test_nayose_takes_a_file_from_the_check_to_people_s_answers(tmp_path, popula
             assert c["reached"] == first or (first is None and c["reached"] in ("else", "missing")), (c, tests)
         assert all(x["raw"][0] == compared["records"][0][x["field"]] for x in k["tests"] if x["field"] in compared["records"][0])
     patterns = say("list", "patterns", "--workspace", run)
-    scored = next(x for x in json.loads((run / "steps.json").read_text())["runs"][0]["steps"] if x["step"] == "score")
+    scored = next(x for x in json.loads((run / "steps.json").read_text(encoding="utf-8"))["runs"][0]["steps"] if x["step"] == "score")
     assert patterns["pairs"] == sum(scored["reached"][patterns["fields"][0]].values())
     assert sum(x["merged"] for x in patterns["patterns"]) == len(pd.read_parquet(run / "matches"))  # no decision yet said no
     assert all(x["merged"] + x["wait"] + x["held"] + x["apart"] == x["pairs"] and min(x["wait"], x["held"], x["apart"]) >= 0 and 0 < len(x["examples"]) <= 3 for x in patterns["patterns"])
@@ -471,7 +471,7 @@ def test_the_scheduler_serves_the_inbox_in_order_and_parks_what_people_must_fix(
     g.df[~new].to_parquet(inbox / "batches" / "a_first.parquet", index=False)
     g.df[new].to_parquet(inbox / "batches" / "b_new.parquet", index=False)
     shutil.copy(inbox / "batches" / "b_new.parquet", inbox / "batches" / "c_again.parquet")  # the same content, twice
-    (inbox / "batches" / "d_bad.parquet").write_text("CONT_ID\n1\n")  # a CSV, named as Parquet: read as it comes, and short of fields
+    (inbox / "batches" / "d_bad.parquet").write_text("CONT_ID\n1\n", encoding="utf-8")  # a CSV, named as Parquet: read as it comes, and short of fields
     for k, f in enumerate(sorted((inbox / "batches").iterdir())):
         os.utime(f, (1_000 + k, 1_000 + k))  # arrival order
     serve = lambda: nayose("serve", "inbox", inbox, "--workspace", run, "--settle", "0")  # files written just now: taken at once
@@ -481,7 +481,7 @@ def test_the_scheduler_serves_the_inbox_in_order_and_parks_what_people_must_fix(
     assert jobs == [("a_first.parquet", "done"), ("b_new.parquet", "done"), ("c_again.parquet", "done"), ("d_bad.parquet", "failed")]
     assert len(pd.read_parquet(run / "gold.parquet")) == len(g.df)  # the first batch the full run, the second an increment
     parked = list((inbox / "failed" / "batches").glob("*.error.txt"))
-    assert len(parked) == 1 and "holds none of these fields" in parked[0].read_text()
+    assert len(parked) == 1 and "holds none of these fields" in parked[0].read_text(encoding="utf-8")
     assert not list((inbox / "batches").glob("*.parquet"))
 
     sheet = pd.read_parquet(run / "review.parquet")
@@ -509,7 +509,7 @@ def test_the_scheduler_serves_the_inbox_in_order_and_parks_what_people_must_fix(
         os.utime(next(inbox.rglob(f"{f}.parquet")), (2_000 + k, 2_000 + k))  # arrival order
     assert serve().returncode == 0
     assert [(e["file"], e["outcome"]) for e in schedule.ledger(run)[-2:]] == [("untouched.parquet", "failed"), ("three.parquet", "done")]
-    assert "no row has a decision" in next((inbox / "failed" / "decisions").glob("*untouched.parquet.error.txt")).read_text()
+    assert "no row has a decision" in next((inbox / "failed" / "decisions").glob("*untouched.parquet.error.txt")).read_text(encoding="utf-8")
     gold = pd.read_parquet(run / "gold.parquet").set_index(uid)
     assert (gold.loc[answers[uid], "kind_by"] == "people").all()  # the answers went in by a rerun
 

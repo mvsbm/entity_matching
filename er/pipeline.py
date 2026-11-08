@@ -325,7 +325,7 @@ def cross_validate_fs(pipeline: Pipeline, settings: Settings, train_model: Calla
     scores a model on the records it was fitted on. O(k · (fit + run on N/k records))."""
     uid, spec = settings.data.unique_id, pipeline.fs
     out = []
-    with tempfile.TemporaryDirectory() as tmp:
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
         for f in sorted(folds.unique()):
             hold = set(folds.index[folds == f])
             fit_rec, fit_truth = records[~records[uid].isin(hold)], truth[~truth[uid].isin(hold)]

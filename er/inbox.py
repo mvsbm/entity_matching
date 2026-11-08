@@ -16,7 +16,6 @@ A file whose content was done before (its SHA-256 in the ledger) is moved to don
 runs is a line in <run>/jobs.jsonl: its outcome, its attempts, and where a file that ran went, which a rerun reads.
 One scheduler serves an inbox at a time (inbox/.schedule.lock); a workspace takes one writer at a time.
 """
-import fcntl
 import json
 import os
 import subprocess
@@ -28,6 +27,7 @@ from pathlib import Path
 
 from er import intake
 from er.config import InputError
+from er.io import CHILD, lock
 
 KINDS = ("batches", "decisions", "answers")
 
@@ -67,7 +67,7 @@ def attempt(cmd: Callable[[], list[str]], retries: int, wait: float = 2.0) -> tu
     2·wait, …: a first batch whose full run was written before it failed goes again as an increment, which finds it
     done. Returns the last exit code, stdout, stderr and the attempts made."""
     for k in range(retries + 1):
-        done = subprocess.run(cmd(), capture_output=True, text=True)
+        done = subprocess.run(cmd(), capture_output=True, **CHILD)
         if done.returncode in (0, 2) or k == retries:
             return done.returncode, done.stdout, done.stderr, k + 1
         time.sleep(wait * 2 ** k)
@@ -133,11 +133,9 @@ def serve(run: Path, inbox: Path, every: float | None, retries: int, compute: li
     waiting file."""
     for kind in KINDS:
         (inbox / kind).mkdir(parents=True, exist_ok=True)
-    with open(inbox / ".schedule.lock", "w") as lock:
-        try:
-            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)  # released when this process ends, even if it dies
-        except BlockingIOError:
-            raise InputError(f"another scheduler serves {inbox}", fix="let it run: one scheduler per inbox") from None
+    with open(inbox / ".schedule.lock", "w") as held:
+        if not lock(held):  # released when this process ends, even if it dies
+            raise InputError(f"another scheduler serves {inbox}", fix="let it run: one scheduler per inbox")
         while True:
             ok = one_pass(run, inbox, retries, compute, say, settle)
             if every is None:

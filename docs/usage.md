@@ -11,7 +11,11 @@ Install it, start a workspace, load your file and map its columns, run it, read 
 .venv/bin/python -m pytest tests/       # engine checks, whole runs, the design against the code
 ```
 
-GitHub runs the same tests on Python 3.12 and 3.14 for every pull request (`.github/workflows/tests.yml`). `main` changes only through a pull request whose checks pass.
+On Windows, in PowerShell, `powershell -ExecutionPolicy Bypass -File setup_venv.ps1` does the same (the execution policy
+lets the script run once, without changing it), and every `.venv/bin/X` below is `.venv\Scripts\X`. Paths may use `\`
+or `/`; files and workspaces on a local disk (the workspace lock is a local one).
+
+GitHub runs the same tests on Python 3.12 and 3.14, and on Windows after `setup_venv.ps1`, for every pull request (`.github/workflows/tests.yml`). `main` changes only through a pull request whose checks pass.
 
 The setup installs `.venv/bin/nayose` (名寄せ, gathering one customer's records), the command line. It reads as a sentence, a verb then a noun: `nayose check records`, `nayose resolve records`, `nayose list pairs`. `nayose --help` lists every command, `nayose VERB NOUN --help` explains one, and [commands](commands.md) has them all. Each takes `--format json` for one JSON object per line, for programs. The development scripts run as `.venv/bin/python scripts/<name>.py`.
 

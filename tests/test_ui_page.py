@@ -50,7 +50,7 @@ def test_the_page_answers_once_per_key_shows_any_row_and_says_when_the_server_is
     page.click("[data-suggest='ID']")  # what the file's contents place there, shown, then kept
     page.click(".drop[data-slot='ID/Record ID'] [data-keep]")
     page.wait_for_function("() => !document.querySelector('.colchip.ghost')")
-    assert 'id = "customer_no"' in columns.read_text() and "Record ID needed" not in page.inner_text("details.fgroup[data-g='ID'] summary")
+    assert 'id = "customer_no"' in columns.read_text(encoding="utf-8") and "Record ID needed" not in page.inner_text("details.fgroup[data-g='ID'] summary")
     page.evaluate("document.querySelector(\"details.fgroup[data-g='Name']\").open = true")  # opened: it stays open as the page redraws
     page.click(f".drop[data-slot='Name/Company name'] .colchip[data-col='{company}'] [data-x]")  # taken off
     page.wait_for_function(f"() => !document.querySelector(\".drop[data-slot='Name/Company name'] .colchip[data-col='{company}']\")")
@@ -67,10 +67,10 @@ def test_the_page_answers_once_per_key_shows_any_row_and_says_when_the_server_is
     page.select_option(".addform select >> nth=1", "kanji")
     page.click(".addform .btn.filled")
     page.wait_for_selector(".drop[data-slot='Name/Kanji name/Family name']")  # with its parts
-    assert "person_name_2" in columns.read_text() and "kanji" in page.inner_text(".frow:has(.drop[data-slot='Name/Kanji name'])")
+    assert "person_name_2" in columns.read_text(encoding="utf-8") and "kanji" in page.inner_text(".frow:has(.drop[data-slot='Name/Kanji name'])")
     page.click("[data-remove='Name/Kanji name']")
     page.wait_for_function("() => !document.querySelector(\".drop[data-slot='Name/Kanji name']\")")
-    assert "person_name_2" not in columns.read_text()
+    assert "person_name_2" not in columns.read_text(encoding="utf-8")
     page.click(".navitem[data-screen=columns]")
     page.wait_for_selector("#files .tag", state="attached")  # its description starts now
     page.click(".navitem[data-screen=run]")
