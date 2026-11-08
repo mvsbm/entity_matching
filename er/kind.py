@@ -35,6 +35,7 @@ from sklearn.model_selection import StratifiedKFold, cross_val_predict
 
 from er.config import InputError, KindSpec, Standardization, legal_pattern
 from er.standardize import normalize
+from er.strings import connect
 
 VERSION = 2  # of the name model's training: a change here trains it again
 
@@ -55,9 +56,9 @@ class NameModel:
     DuckDB: every name's distinct n-grams in one query, joined to the weights, the same sums as scikit-learn's
     vectorizer builds one name at a time in Python, three times faster."""
 
-    def __init__(self, terms: list[str], coef: np.ndarray, intercept: float, ngram: int):
+    def __init__(self, terms: list[str], coef: np.ndarray, intercept: float, ngram: int, compute: dict | None = None):
         self.terms, self.coef, self.intercept, self.ngram = terms, coef, intercept, ngram
-        self.con = duckdb.connect()
+        self.con = connect(compute)[0]  # the run's limits: it scores every chunk's names
         self.con.register("er_weights", pd.DataFrame({"term": terms, "w": coef}))
         self.con.execute("CREATE TABLE weights AS SELECT * FROM er_weights")
         self.con.unregister("er_weights")
@@ -87,11 +88,11 @@ class NameModel:
         os.replace(tmp, path)
 
     @classmethod
-    def load(cls, path: Path, key: str) -> "NameModel | None":
+    def load(cls, path: Path, key: str, compute: dict | None = None) -> "NameModel | None":
         if not path.exists():
             return None
         z = np.load(path)
-        return cls(z["terms"].tolist(), z["coef"], float(z["intercept"]), int(z["ngram"])) if str(z["key"]) == key else None
+        return cls(z["terms"].tolist(), z["coef"], float(z["intercept"]), int(z["ngram"]), compute) if str(z["key"]) == key else None
 
 
 NAME_MODEL = Path("config") / "kind_names.npz"  # trained by scripts/train_name_model.py, tracked in git: every run loads it
@@ -107,7 +108,7 @@ def name_key(settings, spec: KindSpec) -> str:
 def name_model(settings, spec: KindSpec) -> NameModel:
     """The name model a run loads, config/kind_names.npz: trained once, on public data only, by
     scripts/train_name_model.py (er.generate.train_name_model). A run never trains it."""
-    if (m := NameModel.load(settings.root / NAME_MODEL, name_key(settings, spec))) is None:
+    if (m := NameModel.load(settings.root / NAME_MODEL, name_key(settings, spec), settings.compute)) is None:
         raise InputError(f"{NAME_MODEL}: missing, or trained under other settings (the legal forms, the kana folding or [kind] ngram)",
                          fix="run scripts/train_name_model.py and commit config/kind_names.npz")
     return m

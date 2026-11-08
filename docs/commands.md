@@ -815,7 +815,7 @@ Go back to the tuned method, and find matches with it.
 nayose reset method --workspace WORKSPACE [--pipeline PIPELINE] [--compute KEY=VALUE …] [--format text|json]
 ```
 
-Removes the workspace's method.toml, then runs the workspace's files again, as rerun records does; method.toml is left as it was if the run fails. O(a full run).
+Takes the workspace's changes to the method out of method.toml (the line, the rules and keys left out or added) and keeps its trust line, which people earned; then runs the workspace's files again, as rerun records does. method.toml is left as it was if the run fails. O(a full run).
 
 | Parameter | |
 |---|---|
@@ -1027,7 +1027,7 @@ nayose decide pair 0000000151 0000000152 match --workspace workspaces/customers
 Apply people's decisions to the run.
 
 ```
-nayose apply decisions --workspace WORKSPACE [--file FILE] [--pipeline PIPELINE] [--format text|json]
+nayose apply decisions --workspace WORKSPACE [--file FILE] [--pipeline PIPELINE] [--compute KEY=VALUE …] [--format text|json]
 ```
 
 Each match pair joins its two entities at once, scoring nothing; no_match is kept, and a full run never accepts the pair. Decisions are kept in decisions/; one applied before changes nothing. O(D + touched clusters) + O(N).
@@ -1037,6 +1037,7 @@ Each match pair joins its two entities at once, scoring nothing; no_match is kep
 | `--workspace WORKSPACE` | the workspace: the folder that keeps one matching job (required) |
 | `--file FILE` | a file of decisions: the two ID columns and decision (default: the workspace's own sheet, with the answers written in) |
 | `--pipeline PIPELINE` | the pipeline file (default: config/final.toml) |
+| `--compute KEY=VALUE` | DuckDB limits for this run, over config/settings.toml [compute]: memory_limit=8GB, threads=4, temp_directory=<folder> (past the memory limit DuckDB spills there) |
 
 | Result | |
 |---|---|
@@ -1135,10 +1136,10 @@ nayose apply answers --workspace workspaces/customers
 Take in every file dropped in an inbox, one at a time.
 
 ```
-nayose serve inbox INBOX --workspace WORKSPACE [--every SECONDS] [--retries N] [--compute KEY=VALUE …] [--format text|json]
+nayose serve inbox INBOX --workspace WORKSPACE [--every SECONDS] [--retries N] [--settle SECONDS] [--compute KEY=VALUE …] [--format text|json]
 ```
 
-inbox/batches/ (new records: add records; into an empty workspace, resolve records), inbox/decisions/ (apply decisions), inbox/answers/ (apply answers), oldest first, each as its nayose command in a process of its own. Done files go to inbox/done/, ones people must fix to inbox/failed/ with their error; any other failure is tried again, then stops the pass with the file left in place. One pass, or one every --every seconds. Each file is a line in <run>/jobs.jsonl.
+inbox/batches/ (new records: add records; into an empty workspace, resolve records), inbox/decisions/ (apply decisions), inbox/answers/ (apply answers), oldest first, each as its nayose command in a process of its own. Done files go to inbox/done/, ones people must fix to inbox/failed/ with their error; any other failure is tried again, then stops the pass with the file left in place. A file changed in the last --settle seconds waits for a later pass: write a file elsewhere and move it in. One pass, or one every --every seconds. Each file is a line in <run>/jobs.jsonl.
 
 | Parameter | |
 |---|---|
@@ -1146,6 +1147,7 @@ inbox/batches/ (new records: add records; into an empty workspace, resolve recor
 | `--workspace WORKSPACE` | the workspace: the folder that keeps one matching job (required) |
 | `--every SECONDS` | seconds between passes; without it, one pass |
 | `--retries N` | attempts after an unexpected failure (default 2) |
+| `--settle SECONDS` | seconds a file must be left unchanged before it is taken, so one still being copied in waits (default 60) |
 | `--compute KEY=VALUE` | DuckDB limits for this run, over config/settings.toml [compute]: memory_limit=8GB, threads=4, temp_directory=<folder> (past the memory limit DuckDB spills there) |
 
 | Result | |

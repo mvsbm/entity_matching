@@ -32,7 +32,7 @@ package "every matching step reads records" as matching {
   rectangle "<b>5 · Score</b>: score those pairs, on the records they touch\n<i>O(C_Δ·K·L²)</i>\n<size:10><color:#65717E>match.score_fs</color></size>" as score
   rectangle "<b>6 · Cluster</b>: accept and merge into the stored clusters, each one node; stored answers stand\n<i>O(C_Δ + touched clusters)</i>\n<size:10><color:#65717E>Run._accept · Run.scored · report.bits · match.named_sql · cluster.merge · Run._gold · run.customer_kinds · Run._expected_false</color></size>" as cluster
 }
-rectangle "<b>7 · Write</b>: add the new parts; rewrite gold and the rules' clusters\n<i>O(Δ + C_Δ) + O(N)</i>\n<size:10><color:#65717E>Run.write · folder.next_part · folder.stage · folder.finish_writes · Run._log · folder.log · io.code_version</color></size>\n<size:10><color:#65717E>the round, a full run's only: folder.round_ran · folder.rounds · folder.method</color></size>" as write
+rectangle "<b>7 · Write</b>: add the new parts; rewrite gold and the rules' clusters\n<i>O(Δ + C_Δ) + O(N)</i>\n<size:10><color:#65717E>Run.write · folder.next_part · folder.stage · folder.finish_writes · Run._log · folder.log · io.code_version</color></size>\n<size:10><color:#65717E>the round, a full run's only: folder.round_ran · folder.rounds · folder.method · config.toml_of</color></size>" as write
 rectangle "<b>8 · Report</b>: as a full run's, saved with the batch (7); the previous sheet's open rows stay (report.carry_over)\n<i>O(review pairs)</i>\n<size:10><color:#65717E>Run.report · report.qa · report.report_text</color></size>" as report
 database "old_records" as old_records
 database "new_records" as new_records

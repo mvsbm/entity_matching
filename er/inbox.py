@@ -26,10 +26,10 @@ from collections.abc import Callable
 from datetime import datetime, timezone
 from pathlib import Path
 
+from er import intake
 from er.config import InputError
 from er.source import sha256
 
-TAKEN = (".parquet", ".csv", ".tsv", ".txt")  # what the inbox picks up: every file a command takes (er.intake)
 KINDS = ("batches", "decisions", "answers")
 
 
@@ -55,7 +55,7 @@ def command(kind: str, f: Path, run: Path, compute: list[str]) -> list[str]:
     """The nayose command that takes the file in: run as python -m er.cli, so it needs nothing on PATH."""
     limits = ["--compute", *compute] if compute else []
     if kind == "decisions":
-        words = ["apply", "decisions", "--workspace", str(run), "--file", str(f)]
+        words = ["apply", "decisions", "--workspace", str(run), "--file", str(f), *limits]
     elif kind == "answers":
         words = ["apply", "answers", "--workspace", str(run), "--file", str(f), *limits]
     else:  # into an empty workspace, the first batch is the full run
@@ -84,10 +84,13 @@ def events(out: str) -> list[dict]:  # the command's JSON events; a line that is
     return [e for e in found if isinstance(e, dict)]
 
 
-def one_pass(run: Path, inbox: Path, retries: int, compute: list[str], say: Callable[..., None]) -> bool:
-    """Every waiting file, oldest first. False if the pass stopped on a file that kept failing."""
+def one_pass(run: Path, inbox: Path, retries: int, compute: list[str], say: Callable[..., None], settle: float = 60.0) -> bool:
+    """Every waiting file, oldest first; one changed in the last `settle` seconds may still be being copied in, and
+    waits for a later pass. False if the pass stopped on a file that kept failing."""
     done_before = {e["sha256"] for e in ledger(run) if e["outcome"] == "done"}
-    tasks = sorted(((f.stat().st_mtime, f.name, kind, f) for kind in KINDS if (inbox / kind).is_dir() for f in (inbox / kind).iterdir() if f.suffix.lower() in TAKEN))
+    now = time.time()
+    tasks = sorted(((f.stat().st_mtime, f.name, kind, f) for kind in KINDS if (inbox / kind).is_dir() for f in (inbox / kind).iterdir()
+                    if f.suffix.lower() in intake.SUFFIXES and now - f.stat().st_mtime >= settle))
     for _, name, kind, f in tasks:
         digest = sha256(f)
         if digest in done_before:
@@ -126,7 +129,7 @@ def one_pass(run: Path, inbox: Path, retries: int, compute: list[str], say: Call
     return True
 
 
-def serve(run: Path, inbox: Path, every: float | None, retries: int, compute: list[str], say: Callable[..., None]) -> bool:
+def serve(run: Path, inbox: Path, every: float | None, retries: int, compute: list[str], say: Callable[..., None], settle: float = 60.0) -> bool:
     """One pass, or one every `every` seconds until stopped, holding the inbox's lock. True if the last pass ran every
     waiting file."""
     for kind in KINDS:
@@ -137,7 +140,7 @@ def serve(run: Path, inbox: Path, every: float | None, retries: int, compute: li
         except BlockingIOError:
             raise InputError(f"another scheduler serves {inbox}", fix="let it run: one scheduler per inbox") from None
         while True:
-            ok = one_pass(run, inbox, retries, compute, say)
+            ok = one_pass(run, inbox, retries, compute, say, settle)
             if every is None:
                 return ok
             time.sleep(every)

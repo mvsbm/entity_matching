@@ -8,6 +8,7 @@ import re
 from pathlib import Path
 from dataclasses import replace
 
+import duckdb
 import numpy as np
 import pandas as pd
 import pyarrow.parquet as pq
@@ -838,7 +839,7 @@ def test_a_name_added_in_another_script_is_compared_beside_the_kana_one(tmp_path
     assert not added_of("workspaces/kanji") and "person_name_2" not in (tmp_path / "workspaces" / "kanji" / "columns.toml").read_text()
 
 
-def test_the_reader_reads_each_value_as_it_comes_and_proposes_only_what_it_would_guess(tmp_path):
+def test_the_reader_reads_each_value_as_it_comes_and_proposes_only_what_it_would_guess(tmp_path, monkeypatch):
     import gzip
     import zipfile
     import pyarrow as pa
@@ -873,6 +874,11 @@ def test_the_reader_reads_each_value_as_it_comes_and_proposes_only_what_it_would
     r2, rows, proposed, unread = read("dirty.csv", dirty, ("realign", "garbled"))
     assert rows.loc["903", "name"] == "新しい" and rows.loc["904", "address"] == "大阪府北区3,4番" and rows.loc["905", "phone"] == "5555"
     assert [x["line"] for x in unread] == [69] and r2["files"][0]["versions"][0] == r["files"][0]["sha256"]  # what it replaced, kept by its hash
+    monkeypatch.setattr(intake, "KEEP", 1)  # past KEEP of a kind, proposals are counted, not kept; accepting still repairs them all
+    r3, rows, proposed, _ = read("dirty.csv", dirty)
+    assert r3["proposed"]["realign"] == 2 and [x["kind"] for x in proposed].count("realign") == 1
+    r3, rows, *_ = read("dirty.csv", dirty, ("realign",))
+    assert rows.loc["904", "address"] == "大阪府北区3,4番" and rows.loc["905", "phone"] == "5555"
 
     table = pa.table({"id": ["1", "2", "3"], "name": ["ヤマモト", None, ""], "n": pa.array([1, 2, None], pa.int64()), "x": [1.5, 2.0, None],
                       "day": pa.array([None, 0, 1], pa.date32()), "b": pa.array([u("東京"), "大阪".encode("cp932"), None], pa.binary())})
@@ -1028,6 +1034,113 @@ def test_a_key_for_the_matches_the_probe_found_is_proposed_tried_and_adopted(tmp
     assert tomllib.loads((ws / "method.toml").read_text(encoding="utf-8"))["add_keys"] == [key]
     log = json.loads((ws / "steps.json").read_text(encoding="utf-8"))["runs"][-1]["steps"]
     assert sum(x["keys_missed"] for x in next(x for x in log if x["step"] == "probe")["strata"]) == sum(t["variant"]["missed"].values())
+    (ws / "method.toml").write_text((ws / "method.toml").read_text(encoding="utf-8") + 'trust = "none"\n', encoding="utf-8")
+    assert say("reset", "method", "--workspace", ws)[0] == 0
+    assert tomllib.loads((ws / "method.toml").read_text(encoding="utf-8")) == {"trust": "none"}  # the method as tuned; the trust line people earned stays
+    (ws / "method.toml").write_text('trust = "none\n', encoding="utf-8")  # a method.toml that doesn't read: reset is still the way out
+    assert say("reset", "method", "--workspace", ws)[0] == 0 and not (ws / "method.toml").exists()
+
+
+def test_the_reader_takes_the_files_real_systems_write_and_refuses_one_it_cannot_line_up(tmp_path, monkeypatch):
+    from er import intake
+    ref, spec = load_settings().paths["reference"], intake.InputSpec()
+
+    def read(name: str, data: bytes) -> tuple[dict, pd.DataFrame]:
+        part = tmp_path / name.replace(".", "_")
+        part.mkdir()
+        (part / name).write_bytes(data)
+        r = intake.take(part, {part / name: name}, spec, ref)
+        return r, pd.read_parquet(part / r["files"][0]["read"])
+    rows = ["id|name|phone", *(f"{i}|ニッポン　ショウジ{i}|{1000 + i}" for i in range(30))]
+    r, got = read("pipe.txt", "\n".join(rows).encode("cp932"))  # | is the second byte of ポ in CP932: decoded whole first
+    assert len(got) == 30 and not r["unread"] and got["name"][0] == "ニッポン　ショウジ0" and r["files"][0]["format"] == "cp932"
+    r, got = read("flag.txt", "".join(f"{x}\n" for x in ["id|name|kind", *(f"{i}|ヤマダ|{i % 2}" for i in range(30))]).encode("cp932"))  # ダ just before the last field
+    assert r["files"][0]["format"] == "cp932" and list(got["name"].unique()) == ["ヤマダ"]
+    r, got = read("memo.txt", 'id\tmemo\r\n1\t"1行目\n2行目"\r\n2\tなし\r\n'.encode("utf-16"))  # Excel's Unicode text: a quoted cell with a line break
+    assert list(got["memo"]) == ["1行目 2行目", "なし"] and not r["unread"]  # read whole; its line break a space, as in any value
+    r, got = read("cr.csv", "id,name\r1,ヤマダ\r2,サトウ\r".encode("utf-16"))  # UTF-16, lines ended by CR alone
+    assert list(got["name"]) == ["ヤマダ", "サトウ"]
+    r, got = read("dup.csv", b"A,A,A_2\n1,2,3\n")  # a repeated header: every column kept, each its own name
+    assert list(got.columns) == ["A", "A_3", "A_2"] and list(got.iloc[0]) == ["1", "2", "3"]  # A_2 stays the header's own
+    r, got = read("ids.csv", b"id,code\n1,1E0001\n2,1.23457E+11\n3,7\n4,1E+11\n")  # only a spreadsheet's E notation is a number cut short
+    assert list(got["code"].fillna("·")) == ["1E0001", "·", "7", "·"]
+    monkeypatch.setattr(intake, "CHUNK", 20_000)  # a few bad rows at the top of a long file: set aside, not refused
+    r, got = read("top.csv", "\n".join(["id,name,city", *(f"{i},Ito, Inc.,Oita" for i in range(1100)), *(f"{i},Ito,Oita" for i in range(1100, 22_000))]).encode())
+    assert len(got) == 20_900 and r["unread"] == 1100
+    with pytest.raises(InputError, match="don't line up"):  # a wrong delimiter: refused, not 99% unread
+        read("bad.csv", "\n".join(["a,b,c", *(f"{i},x,y,z" if i % 3 == 0 else f"{i},x,y" for i in range(6000))]).encode())
+
+
+def test_a_run_says_what_is_wrong_in_words_people_can_act_on(tmp_path, population, capsys, monkeypatch):
+    from splink.internals.exceptions import SplinkException
+
+    from er import folder, inbox
+    from er.cli import main
+    from er.run import Run
+    s, p, g = population
+    monkeypatch.chdir(tmp_path)
+
+    def say(*words: object) -> tuple[int, dict]:
+        code = main([*map(str, words), "--format", "json"])
+        return code, json.loads(capsys.readouterr().out.splitlines()[-1])
+    phone, postal = s.columns["phone"][0][0], [c for alt in s.columns["postal_code"] for c in alt]
+    g.df.assign(**{c: None for c in postal}).to_parquet(tmp_path / "nopostal.parquet", index=False)  # mapped, but never filled
+    run = Run(p, s).full(tmp_path / "nopostal.parquet", tmp_path / "run")
+    assert [x["stratum"] for x in next(x for x in run.steps if x["step"] == "probe")["strata"]] == ["phone"]  # an empty group: nothing to draw
+    g.df.head(0).to_parquet(tmp_path / "empty.parquet", index=False)
+    with pytest.raises(InputError, match="no record, only its header"):
+        Run(p, s).full(tmp_path / "empty.parquet", tmp_path / "run0")
+    with pytest.raises(InputError, match="both read"):  # one column for two compared fields: one value counted twice
+        Run(p, load_settings(columns=_mapping(tmp_path, s, postal_code=phone))).full(tmp_path / "nopostal.parquet", tmp_path / "run1")
+    g.df.to_parquet(tmp_path / "all.parquet", index=False)
+    for words in (("check", "records", tmp_path / "all.parquet", "--compute", "memory_limit=lots"), ("check", "records", tmp_path / "all.parquet", "--compute", "memroy_limit=8GB"),
+                  ("resolve", "records", tmp_path / "all.parquet", "--workspace", tmp_path / "w", "--model", tmp_path / "none.json"),
+                  ("serve", "inbox", tmp_path / "box", "--workspace", tmp_path / "w", "--settle", "1m")):
+        code, e = say(*words)
+        assert code == 2 and e["fix"], words  # a mistake people fix: two lines, never a traceback
+    def short(*_, **__):  # out of memory inside Splink, which wraps DuckDB's error in its own
+        try:
+            raise duckdb.OutOfMemoryException("Out of Memory Error: failed to allocate")
+        except duckdb.OutOfMemoryException as inner:
+            raise SplinkException("Error executing the following sql") from inner
+    with monkeypatch.context() as m:
+        m.setattr(Run, "full", short)
+        code, e = say("resolve", "records", tmp_path / "all.parquet", "--workspace", tmp_path / "w")
+        assert code == 2 and "out of memory" in e["error"] and "memory_limit" in e["fix"]
+    (tmp_path / "w2").mkdir()
+    _mapping(tmp_path / "w2", s, postal_code=phone)  # the page's step 2 says what the run would refuse
+    assert any("both read" in x for x in say("describe", "records", tmp_path / "all.parquet", "--workspace", tmp_path / "w2")[1]["turned_off"])
+    (tmp_path / "ws").mkdir()
+    (tmp_path / "ws" / "method.toml").write_text('trust = "none\n', encoding="utf-8")
+    code, e = say("describe", "method", "--workspace", tmp_path / "ws")
+    assert code == 2 and "not valid TOML" in e["error"]
+    (tmp_path / "ws" / "method.toml").write_text('trust = "none"  # 人が確かめる\n', encoding="cp932")
+    code, e = say("describe", "method", "--workspace", tmp_path / "ws")
+    assert code == 2 and "not UTF-8" in e["error"]
+    (tmp_path / "ws" / "method.toml").write_text('trust = "none"\n', encoding="utf-8-sig")  # as Notepad saves it
+    assert folder.method(tmp_path / "ws") == {"trust": "none"}
+    folder = tmp_path / "csvs"
+    folder.mkdir()
+    g.df.iloc[:200].to_csv(folder / "a.csv", index=False)
+    g.df.iloc[200:].to_csv(folder / "b.tsv", sep="\t", index=False)
+    (folder / "__MACOSX").mkdir()
+    (folder / "__MACOSX" / "._a.csv").write_bytes(b"\x00\x05\x16\x07 junk")
+    (folder / ".a.csv.swp").write_text("x,y\n1,2\n")
+    assert say("check", "records", folder)[1]["records"] == len(g.df)  # a folder of CSV and TSV files, read together; hidden ones left alone
+    box = tmp_path / "inbox"
+    (box / "batches").mkdir(parents=True)
+    g.df.iloc[:10].to_csv(box / "batches" / "new.csv", index=False)  # just written: perhaps still being copied in
+    said = []
+    assert inbox.one_pass(tmp_path / "run", box, 0, [], lambda *a, **k: said.append(a), settle=60) and not said
+    assert inbox.one_pass(tmp_path / "run", box, 0, [], lambda *a, **k: said.append(a), settle=0) and said
+
+
+def _mapping(tmp_path: Path, s, **fields: str) -> Path:  # the project's mapping with some fields mapped to other columns, as a workspace's columns.toml
+    from er.settings import set_columns, own_columns, settings_path
+    f = tmp_path / "columns.toml"
+    f.write_text(own_columns(settings_path()), encoding="utf-8")
+    set_columns(f, {k: [[v]] for k, v in fields.items()})  # each field one column
+    return f
 
 
 def test_a_workspace_keeps_its_own_mapping_and_a_copy_of_its_files(tmp_path, population, capsys, monkeypatch):
@@ -1909,7 +2022,7 @@ def test_the_scheduler_serves_the_inbox_in_order_and_parks_what_people_must_fix(
     (inbox / "batches" / "d_bad.parquet").write_text("CONT_ID\n1\n")  # a CSV, named as Parquet: read as it comes, and short of fields
     for k, f in enumerate(sorted((inbox / "batches").iterdir())):
         os.utime(f, (1_000 + k, 1_000 + k))  # arrival order
-    serve = lambda: nayose("serve", "inbox", inbox, "--workspace", run)
+    serve = lambda: nayose("serve", "inbox", inbox, "--workspace", run, "--settle", "0")  # files written just now: taken at once
     done = serve()
     assert done.returncode == 0, done.stderr
     jobs = [(e["file"], e["outcome"]) for e in schedule.ledger(run)]
@@ -1932,7 +2045,7 @@ def test_the_scheduler_serves_the_inbox_in_order_and_parks_what_people_must_fix(
     from er.folder import run_lock
     g.df[~new].head(10).to_parquet(inbox / "batches" / "e_busy.parquet", index=False)  # records the run holds: nothing new
     with run_lock(run):  # someone runs nayose on the folder by hand
-        busy = nayose("serve", "inbox", inbox, "--workspace", run, "--retries", "0")
+        busy = nayose("serve", "inbox", inbox, "--workspace", run, "--retries", "0", "--settle", "0")
     assert busy.returncode != 0 and (schedule.ledger(run)[-1]["outcome"], schedule.ledger(run)[-1]["exit"]) == ("stopped", 75)
     assert (inbox / "batches" / "e_busy.parquet").exists()  # it waits in the inbox, not parked in failed/
     assert serve().returncode == 0 and schedule.ledger(run)[-1]["outcome"] == "done"

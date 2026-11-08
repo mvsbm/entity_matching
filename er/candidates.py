@@ -27,6 +27,7 @@ import numpy as np
 import pandas as pd
 
 from er.config import Blocker, Budget, DeletionKeys, KeyBlocker, SortedNeighbourhood, TfidfNeighbours, keys_of
+from er.strings import connect
 
 _CON: duckdb.DuckDBPyConnection | None = None  # for pandas input when the caller passes no connection
 
@@ -42,7 +43,7 @@ class Records:
     def __init__(self, records: pd.DataFrame | str, uid: str, con: duckdb.DuckDBPyConnection | None = None,
                  query: Iterable[str] | None = None, clusters: pd.Series | str | None = None, columns: Iterable[str] | None = None):
         global _CON
-        self.con = con or (_CON := _CON or duckdb.connect())
+        self.con = con or (_CON := _CON or connect()[0])
         self.uid, self.views = uid, []
         self.frame = records if isinstance(records, pd.DataFrame) else None
         base = self._view(records) if isinstance(records, pd.DataFrame) else q(records)

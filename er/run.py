@@ -90,7 +90,7 @@ def locked(method: Callable) -> Callable:  # the workspace (the method's `out`) 
 
 def size_bytes(text: str) -> int:  # one of DuckDB's sizes: "8.0 GiB", "512.0 MiB", "1.5 GB"
     num, unit = re.match(r"([\d.]+)\s*([A-Za-z]*)", text).groups()
-    scale = {"": 1, "b": 1, "bytes": 1, "kb": 1e3, "mb": 1e6, "gb": 1e9, "tb": 1e12, "kib": 2**10, "mib": 2**20, "gib": 2**30, "tib": 2**40}
+    scale = {"": 1, "b": 1, "bytes": 1, "kb": 1e3, "mb": 1e6, "gb": 1e9, "tb": 1e12, "pb": 1e15, "kib": 2**10, "mib": 2**20, "gib": 2**30, "tib": 2**40, "pib": 2**50}
     return int(float(num) * scale[unit.lower()])
 
 
@@ -168,6 +168,8 @@ class Run:
         self.con.execute(f"DROP TABLE IF EXISTS {into}")
         self.n = 0
         if not self._count(rows):
+            if stored is None and not self._count(src.sql):
+                raise InputError(f"{path}: holds no record, only its header", fix="give the file with its records")
             if stored is None:
                 raise InputError(f"{path}: no record left to resolve ({'; '.join(self.notes)})", fix="give the records IDs, one per record")
             return
