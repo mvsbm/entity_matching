@@ -659,3 +659,58 @@ def test_describe_review_counts_what_people_must_check_range_by_range(say, tmp_p
     assert all(x["reviews_left"] == x["pairs"] - x["checked"] for x in after["ranges"])  # the line never passes a range found false: all of it, and below
     (ws / "method.toml").unlink()
     assert say("describe", "review", "--workspace", "workspaces/w")[0] == 2  # no trust line: it merges as tuned, said
+
+
+def test_describe_review_sees_a_false_pair_above_the_line_as_the_line_does(tmp_path):
+    """The line steps down once the range just below it is clean: a false pair above it holds back no range below,
+    a false pair below it holds back that range and every one under it; a range above the line merges, none left."""
+    from er.config import adjust, load_pipeline
+    from er.report import review_workload, trust_state
+    from er.strings import connect
+    s = load_settings()
+    uid = s.data.unique_id
+    l, r = f"{uid}_l", f"{uid}_r"
+    p = adjust(load_pipeline(s.root / "config" / "final.toml", s.standardize, s.chains, s.columns), {"trust": 12.0})
+    (tmp_path / "matches").mkdir()
+    (tmp_path / "decisions").mkdir()
+    w = np.r_[np.full(400, 25.0), np.full(400, 15.0), np.full(1000, 10.0), np.full(1000, 7.0), np.full(500, 3.0)]
+    m = pd.DataFrame({l: [f"{i:08d}" for i in range(len(w))], r: [f"{10_000_000 + i:08d}" for i in range(len(w))], "match_weight": w})
+    m.to_parquet(tmp_path / "matches" / "part-00000.parquet", index=False)
+    decide = lambda rows: rows[[l, r]].assign(decision="no_match").to_parquet(tmp_path / "decisions" / "part-00000.parquet", index=False)
+    con = connect(s.compute)[0]
+
+    decide(m.head(1))  # an audit above the line said different
+    st, got = trust_state(con, tmp_path, p, uid), review_workload(con, tmp_path, p, uid)
+    by = {x["down_to"]: x for x in got["ranges"]}
+    assert st["next"]["down_to"] == 8.0 and by[8.0]["reviews_left"] == st["needed"] - st["checked"] == 300  # as the line counts it
+    assert by[20.0]["reviews_left"] == by[12.0]["reviews_left"] == 0  # above the line: merging
+    assert by[8.0]["chance_clean"] is not None and by[6.0]["reviews_left"] == 300 and by[0.0]["reviews_left"] == 300
+
+    decide(m[m["match_weight"] == 10.0].head(1))  # one below the line: that range and every one under it, whole
+    got = review_workload(con, tmp_path, p, uid)
+    by = {x["down_to"]: x for x in got["ranges"]}
+    assert (by[8.0]["reviews_left"], by[6.0]["reviews_left"], by[0.0]["reviews_left"]) == (999, 1000, 500) and by[8.0]["chance_clean"] is None
+    assert by[8.0]["reviews_to_here"] == 999 and got["ranges"][-1]["reviews_to_here"] == 2499
+
+
+def test_check_records_judges_a_person_s_and_a_company_s_name_together_once_per_column():
+    from types import SimpleNamespace
+    from er.cli import ready_for
+    room = dict(pairs_needed=10, pairs_fit=100)
+    run = lambda person, company: SimpleNamespace(pipeline=SimpleNamespace(fields=SimpleNamespace(one_of=(("person_name", "company_name"),))),
+                                                  present={"person_name": person, "company_name": company}, _count=lambda t: 0)
+    field = lambda f, x: dict(field=f, filled=x, looks_right=1.0, columns="")
+    both = [field("person_name", 0.2), field("company_name", 0.15)]
+    said = lambda r: [w["what"] for w in ready_for(r, both, None, room, None)["warns"]]
+    assert not said(run((("NAME",),), (("CORP",),)))  # each filled for its kind: 35% together, enough
+    assert said(run((("NAME",),), (("NAME",),))) == ["person_name and company_name are 20% filled together"]  # one column: counted once
+    alone = [field("person_name", 0.1)]
+    assert [w["what"] for w in ready_for(run((("NAME",),), ()), alone, None, room, None)["warns"]] == ["person_name is 10% filled"]  # the only name, nearly empty
+
+
+def test_a_result_s_nested_numbers_print_plainly_and_a_settings_folder_is_said(tmp_path):
+    from er.cli import cell
+    from er.config import toml_of
+    assert cell({"file": 0.5, "peak_gb": 2}) == "file 0.50 peak gb 2"
+    with pytest.raises(InputError, match="can't be read"):
+        toml_of(tmp_path)

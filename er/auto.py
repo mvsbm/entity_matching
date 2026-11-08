@@ -29,7 +29,8 @@ import numpy as np
 from er.generate import generate, load_reference, load_spec
 from er.io import replace_text
 from er.run import peak_gb
-from er.settings import Settings, load_settings
+from er.folder import method
+from er.settings import Settings, added_of, beside, load_settings
 from er.source import describe
 from er.strings import connect
 
@@ -116,7 +117,7 @@ def rehearse(ws: Path, sh: dict, s: Settings, pipeline: Path | None, emit: Calla
     disk: the real file would stop there too), in its own words when it died without saying (the last lines it wrote)."""
     root, t = ws / "rehearsal", time.perf_counter()
     temp = Path(connect(s.compute)[0].execute("SELECT current_setting('temp_directory')").fetchall()[0][0])
-    for old in temp.glob("rehearsal-*"):  # one a rehearsal killed outright left: its process is gone
+    for old in temp.glob("rehearsal-*") if os.name != "nt" else ():  # one a rehearsal killed outright left: its process is gone (os.kill tests that on POSIX only)
         try:
             os.kill(int(old.name.removeprefix("rehearsal-")), 0)
         except ProcessLookupError:
@@ -130,33 +131,39 @@ def rehearse(ws: Path, sh: dict, s: Settings, pipeline: Path | None, emit: Calla
         made, made_seconds, made_gb = shape(load_settings(), root / "records"), round(time.perf_counter() - t, 1), peak_gb()  # this process's, before the run's own
         spill.mkdir(mode=0o700, parents=True, exist_ok=True)
         (root / "run").mkdir()
-        if (ws / "method.toml").exists():  # the workspace's method: its trust line, the keys and rules people changed
-            shutil.copyfile(ws / "method.toml", root / "run" / "method.toml")
+        m, added = method(ws), {f for f, _ in beside(added_of(ws))}  # the workspace's method: its trust line, the keys and rules people changed,
+        m["add_keys"] = [k for k in m.get("add_keys", []) if not {f.split(":")[0] for f in k} & added]  # but a key on an added name: the file
+        m["drop_keys"] = [k for k in m.get("drop_keys", []) if k.partition("@")[2] not in added]          # generated holds none
+        if m := {k: v for k, v in m.items() if v != []}:
+            replace_text(root / "run" / "method.toml", "".join(f"{k} = {json.dumps(v, ensure_ascii=False)}\n" for k, v in m.items()))
         limits = [f"{k}={v}" for k, v in {**s.compute, "temp_directory": str(spill)}.items() if v not in ("", None)]
         child = subprocess.Popen([sys.executable, "-m", "er.cli", "resolve", "records", str(root / "records"), "--workspace", str(root / "run"),
                                   "--format", "json", "--compute", *limits, *(["--pipeline", str(pipeline)] if pipeline else [])],
                                  stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
-        events, said = [], collections.deque(maxlen=20)
+        events, said, failed = [], collections.deque(maxlen=20), []
 
         def read() -> None:  # the run's steps, passed on as they end: progress while it runs; any other line, its last words
-            for line in child.stdout:
-                try:
-                    e = json.loads(line)
-                except ValueError:
-                    e = None
-                if not isinstance(e, dict):
-                    said.append(line.strip())
-                    continue
-                events.append(e)
-                if e.get("event") == "step":
-                    emit(dict(step=f"rehearse {e['step']}", seconds=e.get("seconds", 0.0)))
+            try:
+                for line in child.stdout:
+                    try:
+                        e = json.loads(line)
+                    except ValueError:
+                        e = None
+                    if not isinstance(e, dict):
+                        said.append(line.strip())
+                        continue
+                    events.append(e)
+                    if e.get("event") == "step":
+                        emit(dict(step=f"rehearse {e['step']}", seconds=e.get("seconds", 0.0)))
+            except Exception as e:  # passing progress on failed: said by the rehearsal, which stops the run
+                failed.append(e)
         reader, peak = threading.Thread(target=read, daemon=True), 0
         reader.start()
         while child.poll() is None and reader.is_alive():  # a reader gone (its emit failed) can't drain the pipe: the run is stopped below
             peak = max(peak, size_of(spill))
             time.sleep(POLL)
         if child.poll() is None:
-            raise RuntimeError("the rehearsal's progress could not be passed on")
+            raise failed[0] if failed else RuntimeError("the rehearsal's progress could not be passed on")
         reader.join(30)
         steps = [e for e in events if e.get("event") == "step"]
         last = next((e for e in reversed(events) if e.get("event") == "error"), {})

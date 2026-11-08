@@ -300,8 +300,11 @@ def ready_for(run: Run, fields: list[dict], plan: pd.DataFrame, capacity: dict, 
         warns.append(dict(what=f"the pairs fill {needed / fit:.0%} of the room DuckDB has", fix="a larger file may not fit: give it more memory or spill disk"))
     filled = {f["field"]: f["filled"] for f in fields if f["filled"] is not None}
     either = {f for group in run.pipeline.fields.one_of for f in group}  # a person's or a company's name: each filled only for its kind, so together
+    columns = lambda f: {c for alt in run.present.get(f) or () for c in alt}
     for group in [*run.pipeline.fields.one_of, *([f] for f in filled if f not in either)]:
-        if (have := [f for f in group if f in filled]) and (share := sum(filled[f] for f in have)) < 0.3:
+        have = [f for f in group if f in filled]
+        apart = len(set().union(*map(columns, have))) == sum(len(columns(f)) for f in have)  # one column for both: counted once
+        if have and (share := (sum if apart else max)(filled[f] for f in have)) < 0.3:
             warns.append(dict(what=f"{' and '.join(have)} {'are' if len(have) > 1 else 'is'} {share:.0%} filled" + (" together" if len(have) > 1 else ""),
                               fix="matching leans on it less: map a fuller column if the file has one"))
     for f in fields:
@@ -994,7 +997,8 @@ COMMANDS: tuple[Command, ...] = (
     Command("rehearse", "records", "Run a generated file of the same size and shape, and measure what this machine needs",
             "The file's records and each field's share filled (no value kept); a file of that size and shape generated in "
             "parts of 50,000 entities, each field filled at the file's share, a field it lacks left out; that file resolved "
-            "in a process of its own, under the same limits, its spill folder's size read every half second. Says the seconds "
+            "in a process of its own, under the same limits and the workspace's method (method.toml; a key on a name feature "
+            "added to the workspace left out: the generated file holds none), its spill folder's size read every half second. Says the seconds "
             "of each step, the peak memory, the peak spill, the pairs, and the generated shape beside the file's; if the run "
             "stopped (memory, disk), why, as the real file would. Removes what it made; keeps rehearsal.json in the workspace. "
             "Past 60,000 entities names repeat more than in a real file, so name keys make more pairs: check records counts "
