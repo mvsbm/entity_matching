@@ -193,10 +193,13 @@ def sniff(f: Path) -> tuple[str, str | None, bool]:  # (format, its delimiter, w
         return "parquet", None, False
     if head[:2] == b"PK":
         raise InputError(f"{f}: a ZIP or Excel file, not records", fix="save it as CSV (UTF-8 or Shift-JIS) or Parquet, and give that")
-    if head[:2] in (b"\xff\xfe", b"\xfe\xff"):
-        text = head.decode("utf-16", "ignore")
-    else:
-        text = head.decode("latin-1")
+    if head[:2] == b"\x1f\x8b":
+        raise InputError(f"{f}: a gzip file", fix=f"decompress it first (gunzip {f.name}), then give the file inside")
+    wide = (("utf-16" if head[:2] in (b"\xff\xfe", b"\xfe\xff") else  # UTF-16: by its BOM, or without one by where its NULs fall
+             "utf-16-le" if head[1:4096:2].count(0) > 0.3 * len(head[1:4096:2]) > 0 and head[0:4096:2].count(0) < 0.05 * len(head[0:4096:2]) else
+             "utf-16-be" if head[0:4096:2].count(0) > 0.3 * len(head[0:4096:2]) > 0 and head[1:4096:2].count(0) < 0.05 * len(head[1:4096:2]) else
+             "iso2022_jp" if re.search(rb"\x1b\$[@B]", head) else None))  # JIS: Japanese in seven bits, a comma among them, so decoded whole first
+    text = head.decode(wide, "ignore") if wide else head.decode("latin-1")
     lines = [x for x in text.splitlines()[:50] if x.strip()]
     if not lines:
         raise InputError(f"{f}: empty", fix="give a file with a header line and records")
@@ -206,15 +209,14 @@ def sniff(f: Path) -> tuple[str, str | None, bool]:  # (format, its delimiter, w
         return (share / len(lines) if n else 0.0, n)
     d = max(DELIMITERS, key=steady)
     d = d if steady(d)[1] else ","
-    utf16 = head[:2] in (b"\xff\xfe", b"\xfe\xff")
-    return ("utf-16" if utf16 else "csv"), d, quoted(f, d, utf16)
+    return (wide or "csv"), d, quoted(f, d, wide)
 
 
-def quoted(f: Path, d: str, utf16: bool) -> bool:
+def quoted(f: Path, d: str, wide: str | None) -> bool:
     """Whether the file quotes its values: a value anywhere in it opens and closes with a quote, the quotes inside
     doubled. A file that never does reads a quote as text, so a stray one (\"Beppu) splits nothing. O(bytes), in C."""
-    if utf16:
-        return bool(re.search(f'(?:^|{re.escape(d)})"(?:[^"]|"")*"(?={re.escape(d)}|\r?$)', f.read_bytes().decode("utf-16", "replace"), re.M))
+    if wide:  # decoded whole, as it will be read
+        return bool(re.search(f'(?:^|{re.escape(d)})"(?:[^"]|"")*"(?={re.escape(d)}|\r?$)', f.read_bytes().decode(wide, "replace"), re.M))
     if f.stat().st_size == 0:
         return False
     with f.open("rb") as h, mmap.mmap(h.fileno(), 0, access=mmap.ACCESS_READ) as mm:
@@ -228,8 +230,8 @@ def view(x: str | None) -> str | None:  # real text as the latin-1 view of its U
 
 def text_rows(f: Path, fmt: str, delimiter: str, quotes: bool):  # (line, fields) of a text file; fields hold bytes as latin-1 characters
     csv.field_size_limit(sys.maxsize)
-    if fmt == "utf-16":
-        h = io.StringIO(f.read_bytes().decode("utf-16", "replace"))
+    if fmt != "csv":  # an encoding of the whole file (UTF-16, JIS): decoded first
+        h = io.StringIO(f.read_bytes().decode(fmt, "replace"))
     else:
         h = f.open(encoding="latin-1", newline="")
         if h.read(3) != "ï»¿":  # a UTF-8 BOM
@@ -237,8 +239,8 @@ def text_rows(f: Path, fmt: str, delimiter: str, quotes: bool):  # (line, fields
     with h:
         reader = csv.reader(h, delimiter=delimiter, quoting=csv.QUOTE_MINIMAL if quotes else csv.QUOTE_NONE, strict=False)
         for fields in reader:
-            if fields:  # UTF-16 already decoded: as the bytes of its UTF-8, so every file reads alike from here
-                yield reader.line_num, [view(x) for x in fields] if fmt == "utf-16" else fields
+            if fields:  # a file decoded whole: as the bytes of its UTF-8, so every file reads alike from here
+                yield reader.line_num, [view(x) for x in fields] if fmt != "csv" else fields
 
 
 def parquet_rows(f: Path):  # (line, fields) of a Parquet file: text as its bytes (latin-1 characters), the rest as text
@@ -272,7 +274,12 @@ def read_one(f: Path, out: Path, spec: InputSpec, m: Model, accepted: frozenset[
     fmt, delimiter, quotes = sniff(f)
     rows = parquet_rows(f) if fmt == "parquet" else text_rows(f, fmt, delimiter, quotes)
     try:
-        _, header = next(rows)
+        lines = [next(rows), *(itertools.islice(rows, 20) if fmt != "parquet" else ())]
+        wide = Counter(len(x) for _, x in lines[1:]).most_common(1)[0][0] if len(lines) > 1 else len(lines[0][1])
+        k = next((i for i, (_, x) in enumerate(lines[:10]) if len(x) > wide / 2), 0)  # a title line above the header, far narrower, is skipped, and said
+        above, header = lines[:k], lines[k][1]
+        trailing = sum(len(x) == len(header) + 1 and not x[-1] for _, x in lines[k + 1:]) > len(lines[k + 1:]) / 2  # a writer that ends every record with a delimiter
+        rows = itertools.chain(lines[k + 1:], rows)
     except StopIteration:
         raise InputError(f"{f}: empty", fix="give a file with a header line and records") from None
     names, seen = [], Counter()
@@ -282,8 +289,12 @@ def read_one(f: Path, out: Path, spec: InputSpec, m: Model, accepted: frozenset[
         names.append(name if seen[name] == 1 else f"{name}_{seen[name]}")
     width, nulls = len(names), frozenset(spec.nulls)
     facts = dict(file=f.name, format=fmt, delimiter=delimiter, quotes=quotes, columns=width, rows=0, decoded={}, fixed={}, proposed={}, unread=0, notes=[])
+    if above:
+        facts["notes"].append(f"{f.name}: {len(above)} line{'s' if len(above) > 1 else ''} above the header skipped")
+    if any(h.strip().isdigit() for h in header):  # a column named by a number: more likely a record than names
+        facts["notes"].append(f"{f.name}: its first line holds numbers, not names: a header may be missing")
     if fmt == "parquet":
-        facts["notes"] = [f"column {x.name} is stored as a number ({x.type}): read as text, but leading zeros (0599) may already be lost upstream"
+        facts["notes"] += [f"column {x.name} is stored as a number ({x.type}): read as text, but leading zeros (0599) may already be lost upstream"
                           for x in pq.read_schema(f) if pa.types.is_integer(x.type) or pa.types.is_floating(x.type) or pa.types.is_decimal(x.type)]
     proposals, unread, odd = [], [], []
     majority: list[str | None] = [None] * width
@@ -342,24 +353,29 @@ def read_one(f: Path, out: Path, spec: InputSpec, m: Model, accepted: frozenset[
         lines = [line for line, _ in block]
         cols = list(zip(*(r for _, r in block))) if block else [()] * width
         done = []
+        encs = [Counter() for _ in cols]
+        for j, col in enumerate(cols if first else ()):  # the first chunk learns each column from the values it reads for sure: what they look like, their encoding, whether they are numbers
+            for k, v in enumerate(col):
+                found = [("ascii", v)] if not v or v.isascii() else decodings(v, spec.encodings)
+                if len(found) == 1 and found[0][0] not in ("ascii", "utf-8"):
+                    encs[j][found[0][0]] += 1
+                if k < 50_000 and found and (len(found) == 1 or (found[0][0] == "utf-8" and JAPANESE.fullmatch(found[0][1]))):
+                    learn(profile[j], found[0][1] or None)
+            vals = [x for v in col[:50_000] if v and (x := v.strip())]
+            numeric[j] = bool(vals) and sum(x.replace(".", "", 1).replace("E+", "").replace("e+", "").lstrip("-").isdigit() for x in vals) >= 0.5 * len(vals)
+        if first:  # a column's own encoding, else the file's: a column whose values no other encoding rules out reads as the rest of the file
+            whole = sum(encs, Counter())
+            for j, e in enumerate(encs):
+                majority[j] = (e or whole).most_common(1)[0][0] if (e or whole) else None
         for j, col in enumerate(cols):
-            if first:  # the first chunk learns each column from the values it reads for sure: what they look like, their encoding, whether they are numbers
-                encs = Counter()
-                for k, v in enumerate(col):
-                    found = [("ascii", v)] if not v or v.isascii() else decodings(v, spec.encodings)
-                    if len(found) == 1 and found[0][0] not in ("ascii", "utf-8"):
-                        encs[found[0][0]] += 1
-                    if k < 50_000 and (len(found) == 1 or (found[0][0] == "utf-8" and JAPANESE.fullmatch(found[0][1]))):
-                        learn(profile[j], found[0][1] or None)
-                majority[j] = encs.most_common(1)[0][0] if encs else None
-                vals = [x for v in col[:50_000] if v and (x := v.strip())]
-                numeric[j] = bool(vals) and sum(x.replace(".", "", 1).replace("E+", "").replace("e+", "").lstrip("-").isdigit() for x in vals) >= 0.5 * len(vals)
             num = numeric[j]
             done.append([None if not v else v if v.isascii() and v.isprintable() and v[0] != " " and v[-1] != " " and v not in nulls
                          and not (num and ("." in v or "e" in v or "E" in v)) else value(j, v, line) for v, line in zip(col, lines)])  # most values: as they are
         write(done)
         facts["rows"] += len(lines)
     for line, fields in rows:
+        if trailing and len(fields) == width + 1 and not fields[-1]:  # the delimiter its writer ends records with: an empty field, nothing lost
+            fields = fields[:-1]
         if len(fields) == width:
             block.append((line, fields))
             if len(block) == CHUNK:

@@ -1503,7 +1503,7 @@ const SCREENS = {
     const repairs = (r) => {  // what the reader proposed, kind by kind, to see and accept; what it fixed by itself; the rows it can't read
       const wait = r ? r.waiting : {}, fixed = r ? Object.values(r.fixed).reduce((a, b) => a + b, 0) : 0, cannot = r ? r.unread - (wait.realign || 0) : 0;
       const rows = (k) => (r.examples[k] || []).map((x) => `<tr><td class="num">${fmt(x.line)}</td><td>${esc(x.column)}</td><td class="wrap">${esc(x.before)}</td><td class="wrap">${esc(x.after)}</td></tr>`).join("");
-      $("repairs").innerHTML = r && (Object.keys(wait).length || fixed || cannot > 0) ? `<div class="card">${Object.keys(wait).length ? `<h3 style="font-size:15px;font-weight:500;margin:0 0 4px">Repairs to accept</h3>` : ""}
+      $("repairs").innerHTML = r && (Object.keys(wait).length || cannot > 0) ? `<div class="card">${Object.keys(wait).length ? `<h3 style="font-size:15px;font-weight:500;margin:0 0 4px">Repairs to accept</h3>` : ""}
         ${Object.entries(wait).map(([k, n]) => `<details class="fold-line"><summary>${plural(n, REPAIR[k][0], REPAIR[k][1])} ${esc(REPAIR[k][2])}</summary>
           <div class="tablecard" style="margin:8px 0"><table><thead><tr><th class="num">line</th><th>column</th><th>as given</th><th>repaired</th></tr></thead><tbody>${rows(k)}</tbody></table></div>
           ${n > (r.examples[k] || []).length ? `<p class="faint" style="margin:0 0 8px">the first ${fmt((r.examples[k] || []).length)} of ${fmt(n)}</p>` : ""}
