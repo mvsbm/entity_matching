@@ -33,7 +33,7 @@ from sklearn.feature_extraction.text import CountVectorizer
 from sklearn.linear_model import LogisticRegression
 from sklearn.model_selection import StratifiedKFold, cross_val_predict
 
-from er.config import InputError, KindSpec, Standardization, legal_pattern
+from er.config import InputError, KindSpec, Standardization, legal_pattern, lit, q
 from er.standardize import normalize
 from er.strings import connect
 
@@ -267,9 +267,9 @@ def kind_review_sheet(con: duckdb.DuckDBPyConnection, records: str, uid: str, sp
     The rows are picked in DuckDB, so only they reach Python. Each says in words why it is there (reason), what the
     engine says, what the name alone says and what the flag says; people write kind: 1 person, 2 company, 0 can't tell.
     O(N) in SQL, O(rows) in Python."""
-    u, cols = f'"{uid}"', {c for c, *_ in con.execute(f"DESCRIBE {records}").fetchall()}
+    u, cols = q(uid), {c for c, *_ in con.execute(f"DESCRIBE {records}").fetchall()}
     flagged, dated = "kind_flag" in cols, "birth_date" in cols
-    says = ", ".join("'" + v.replace("'", "''") + "'" for v in flag_company) or "NULL"
+    says = ", ".join(map(lit, flag_company)) or "NULL"
     code = f"CASE WHEN kind_flag IS NULL THEN NULL WHEN kind_flag IN ({says}) THEN {COMPANY} ELSE {PERSON} END" if flagged else "NULL::INT"
     con.register("er_answered", pd.DataFrame({uid: pd.Series(list(answered), dtype="string").dropna()}))  # one NULL: NOT IN keeps no row
     rows = con.sql(f"""WITH r AS (

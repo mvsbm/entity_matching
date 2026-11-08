@@ -24,8 +24,9 @@ every pull request gets. Where code can check a rule, it does.
 | 12 | **A control that can't act yet is off, and says when it will.** A button or box that needs a workspace or a result is disabled, with the reason beside it; a page can always be opened, and says what it needs | a click that does nothing, or fails, teaches a person nothing | the browser test in `tests/test_er.py`, before and after the first run |
 | 13 | **A word a person hasn't learned is explained where it first appears**, in the page's own words: a workspace, a point of evidence, a rule match | a person meets the page before the docs | review: a walk of each page as a new user |
 
-The other checks: each module's layer and the diagrams against the code (`tests/test_design.py`), unused imports and
-names never defined (`ruff check --select F .`), and the commands' reference against their declarations
+The other checks: each module's layer and the diagrams against the code (`tests/test_design.py`), the lint rules in
+`pyproject.toml` (`ruff check .`: names unused or never defined, an error re-raised without its cause), and the
+commands' reference against their declarations
 (`scripts/document_commands.py` writes `docs/commands.md`).
 
 ## Docs

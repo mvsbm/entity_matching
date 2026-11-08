@@ -18,16 +18,11 @@ import math
 
 import duckdb
 
-from er.candidates import q
 from er.cluster import merge
-from er.config import FSSpec, Key, Probe
+from er.config import FSSpec, Key, Probe, bits, q
 from er.match import named_sql, score_fs
 
 EXAMPLES = 200  # hit pairs kept per stratum, for people to see
-
-
-def bits(v: float) -> str:
-    return repr(float(v))
 
 
 def missed(con: duckdb.DuckDBPyConnection, db: object, model: dict, fs: FSSpec, spec: Probe, records: str, links: str, uid: str,

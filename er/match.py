@@ -18,8 +18,8 @@ import splink.comparison_level_library as cll
 import splink.comparison_library as cl
 from splink import DuckDBAPI, Linker, SettingsCreator
 
-from er.candidates import deletions_sql, q
-from er.config import Comparator, Comparison, DeletionKeys, FSModel, FSSpec, InputError, Key, KeyBlocker, Pipeline, RulesSpec, keys_sql
+from er.candidates import deletions_sql
+from er.config import Comparator, Comparison, DeletionKeys, FSModel, FSSpec, InputError, Key, KeyBlocker, Pipeline, RulesSpec, keys_sql, q
 
 
 def rule_edges(spec: RulesSpec, records: "Records", db: DuckDBAPI, uid: str, batch: str | None = None,
@@ -30,7 +30,7 @@ def rule_edges(spec: RulesSpec, records: "Records", db: DuckDBAPI, uid: str, bat
     in order), a condition its record `l` must meet (values it doesn't trust left out: the keys are equal on both
     sides). With `into`, a table in db's connection, else a frame. Also returns each rule's seconds.
     Plain SQL, not Splink's deterministic_link, which joins every column of both records back only for us to drop them."""
-    l, r, u, con = f'"{uid}_l"', f'"{uid}_r"', f'"{uid}"', db.duckdb_con
+    l, r, u, con = q(f"{uid}_l"), q(f"{uid}_r"), q(uid), db.duckdb_con
     name = records if isinstance(records, str) else f"er_rules_{abs(hash(id(records)))}"
     if not isinstance(records, str):
         con.register(name, records)
@@ -121,7 +121,7 @@ def exact_u(model: FSModel, records: Records, db: DuckDBAPI) -> U:
     if isinstance(records, pd.DataFrame):
         name = f"er_u_{abs(hash(id(records)))}"
         con.register(name, records)
-    t = f'"{name or records}"'
+    t = q(name or records)
     try:
         n = con.execute(f"SELECT count(*) FROM {t}").fetchall()[0][0]
         pairs = n * (n - 1) / 2
@@ -129,8 +129,8 @@ def exact_u(model: FSModel, records: Records, db: DuckDBAPI) -> U:
 
         def agree(cols: frozenset) -> float:  # distinct pairs equal on every one of these columns (all filled)
             if cols not in agree_cache:
-                c = ", ".join(f'"{x}"' for x in sorted(cols))
-                filled = " AND ".join(f'"{x}" IS NOT NULL' for x in sorted(cols))
+                c = ", ".join(q(x) for x in sorted(cols))
+                filled = " AND ".join(f"{q(x)} IS NOT NULL" for x in sorted(cols))
                 agree_cache[cols] = float(con.execute(f"SELECT coalesce(sum(c * (c - 1) / 2), 0) FROM (SELECT count(*) AS c FROM {t} "
                                                       f"WHERE {filled} GROUP BY {c})").fetchall()[0][0])
             return agree_cache[cols]
@@ -396,7 +396,7 @@ def score_fs(model_json: dict, df: Records, pairs: pd.DataFrame | str, db: DuckD
     predictions = linker.inference.predict()
     rel = predictions.as_duckdbpyrelation()
     keep = [l, r, "match_weight", "match_probability", *(c for c in rel.columns if c.startswith("gamma_"))]
-    projected = rel.project(", ".join(f'"{c}"' for c in keep))  # memory: the matching columns never reach pandas
+    projected = rel.project(", ".join(q(c) for c in keep))  # memory: the matching columns never reach pandas
     if into is not None:
         con.execute(f'DROP TABLE IF EXISTS "{into}"')
         projected.to_table(into)

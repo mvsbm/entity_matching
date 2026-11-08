@@ -157,7 +157,7 @@ class RulesChooser:
             try:
                 res = self.rules_run(spec, "train", self.train_truth)  # a trial runs once: not kept
             except OverBudget as e:
-                raise optuna.TrialPruned(str(e))
+                raise optuna.TrialPruned(str(e)) from e
             m = res.metrics.iloc[-1]
             for k, v in dict(P=res.plan["P"].sum(), recall_lo=m["recall_lo"], recall_hi=m["recall_hi"], fp_rate_hi=m["fp_rate_hi"],
                              seconds=round(res.seconds, 2)).items():
@@ -429,7 +429,7 @@ class FSChooser:
             try:
                 weight = self.threshold_of(spec)
             except OverBudget as e:
-                raise optuna.TrialPruned(str(e))
+                raise optuna.TrialPruned(str(e)) from e
             at = cv_threshold_curve(self.cv(spec), spec, self.train_truth, self.folds, self.data, [weight]).iloc[0]
             for x, v in dict(min_match_weight=weight, recall_lo=at["recall_lo"], recall_hi=at["recall_hi"], candidates=summed(self.cv(spec))["candidates"]).items():
                 trial.set_user_attr(x, plain(v))

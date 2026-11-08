@@ -9,14 +9,30 @@ data/artifacts/experiments/leaderboard.parquet   one row per (experiment, datase
 """
 import hashlib
 import json
+import os
 import subprocess
 import time
+from collections.abc import Callable
 from itertools import takewhile
 from pathlib import Path
 
 import pandas as pd
 
 from er.config import Data
+
+def replace_text(path: Path, text: str, check: Callable[[Path], object] | None = None) -> None:
+    """`path` written whole beside itself, then renamed over it, so a write cut short leaves the old file. `check` reads
+    the new one first: if it raises, the new one goes and the old stays."""
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(text, encoding="utf-8")
+    try:
+        if check:
+            check(tmp)
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
+    os.replace(tmp, path)
+
 
 def config_hash(config: object) -> str:
     return hashlib.sha1(repr(config).encode()).hexdigest()[:10]

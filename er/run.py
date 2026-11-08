@@ -56,19 +56,20 @@ from dataclasses import dataclass, field, replace
 from datetime import datetime
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 
 from er import folder
-from er.candidates import candidates, estimate, q
+from er.candidates import candidates, estimate
 from er.cluster import merge
-from er.config import InputError, Pipeline
-from er.io import code_version, config_hash, markdown
+from er.config import InputError, Pipeline, bits, lit, q
+from er.io import code_version, config_hash, markdown, replace_text
 from er.kind import NAME_MODEL, classifier as kind_classifier, kind_review_sheet, merge_answers
 from er.match import ELSE, named_sql, refreshed_u, review_floor, rule_edges, score_fs, scored_u, train_fs, u_basis
 from er.probe import missed
-from er.report import applied, bits, qa, report_text, review_sheet, scored_again
+from er.report import applied, qa, report_text, review_sheet, scored_again
 from er.settings import SPECIAL, Settings, fit_to_file, present_fields
-from er.source import answers, decisions, file_facts, known, lit, open_source, suggest
+from er.source import answers, decisions, file_facts, filled, known, open_source, suggest
 from er.standardize import prepare
 from er.strings import connect
 
@@ -207,7 +208,7 @@ class Run:
         from the first file that holds it once, earlier ones held different content, later ones were already in the
         run. O(N) to count; the rest only when something is off."""
         u = q(self.uid)
-        blank, known = f"nullif(trim({u}), '') IS NULL", f"{u} IN (SELECT {u} FROM {stored})" if stored else "FALSE"
+        blank, known = f"NOT {filled(self.uid)}", f"{u} IN (SELECT {u} FROM {stored})" if stored else "FALSE"  # blank as describe reads it
         if ordered:
             return self._set_aside_in_order(src, blank)
         n, ids, empty, clash = self.con.execute(f"""SELECT count(*), count(DISTINCT {u}), count(*) FILTER (WHERE {blank}),
@@ -512,8 +513,6 @@ class Run:
             texts.append((json.dumps(dict(model=self.scoring, basis=self.basis), ensure_ascii=False), state / "scoring.json"))
         earlier = folder.history(out) if part == 0 else None  # the runs before: read before the old log goes with the old run
         sheets, n = [], folder.next_part(out / folder.KIND_ANSWERS)
-        if n == 0 and (old := out / folder.OLD_ANSWERS).exists():  # a folder that keeps its answers in state/: its first sheet
-            sheets, n = [(f"SELECT * FROM read_parquet({lit(old)})", out / folder.KIND_ANSWERS / "part-00000.parquet")], 1
         if self.given is not None and len(self.given):  # the sheet given, kept as it came: the next run reads it again
             self.con.register("er_given", self.given)
             sheets.append(("SELECT * FROM er_given", out / folder.KIND_ANSWERS / f"part-{n:05d}.parquet"))
@@ -742,7 +741,7 @@ class Run:
             if not sheet.exists():
                 raise InputError(f"no review sheet in {out}", fix="find matches first: nayose resolve records --workspace …")
             self.con.execute(f"""CREATE OR REPLACE TABLE er_rule AS SELECT {l}, {r}, min(rule) AS rule FROM {read('rule_kept/*.parquet')}
-                WHERE coalesce(merged, TRUE) GROUP BY ALL""")  # a part written before merged was: every pair merged
+                WHERE merged GROUP BY ALL""")
             scored_again(self.con, self.db, out, self.uid, "er_rule", "er_rule_scores")
             self.con.execute(f"""CREATE OR REPLACE TABLE matches AS SELECT {l}, {r}, match_weight, match_probability, sources FROM {read('matches/*.parquet')}
                 UNION ALL SELECT x.{l}, x.{r}, s.match_weight, s.match_probability, x.rule FROM er_rule x JOIN er_rule_scores s USING ({l}, {r})
@@ -821,45 +820,49 @@ def trial(ws: Path, base: Pipeline, variant: Pipeline, method: dict, s: Settings
     trials.mkdir(exist_ok=True)
     model, files = json.loads((ws / "state" / "model.json").read_text(encoding="utf-8")), folder.inputs(ws)
 
-    def resolved(p: Pipeline) -> tuple[pd.DataFrame, dict]:  # each record's cluster, and the numbers people compare
+    def resolved(p: Pipeline, into: Path) -> dict:  # each record's cluster, written to `into`; and the numbers people compare
         run = Run(p, s, model=model, echo=echo)
         run.labels = run._answers(ws)
         run.resolve(files, None)
-        gold = run.con.execute(f"SELECT {q(uid)}, cluster_id FROM gold").df()
+        run.con.execute(f"COPY (SELECT {q(uid)}, cluster_id FROM gold) TO {lit(into)} (FORMAT parquet)")
         probed = next((x["strata"] for x in run.steps if x["step"] == "probe"), [])  # the matches no key lists, as its probe estimates them
         numbers = dict(matched=run._count("matches"), expected_false=run._expected_false(), rule_pairs=run._count("rule_kept WHERE merged"),
-                       entities=int(gold["cluster_id"].nunique()), missed={x["stratum"]: x["keys_missed"] for x in probed})
+                       entities=run._count("(SELECT DISTINCT cluster_id FROM gold)"), missed={x["stratum"]: x["keys_missed"] for x in probed})
         run.con.close()
-        return gold, numbers
+        return numbers
 
     with folder.run_lock(trials):
         key = dict(config=run_config(base, s), files=[str(f) for f in files])
         kept = json.loads((trials / "base.json").read_text(encoding="utf-8")) if (trials / "base.json").exists() else {}
         if kept.get("key") == key and (trials / "base.parquet").exists():
-            old, before = pd.read_parquet(trials / "base.parquet"), kept["numbers"]
+            before = kept["numbers"]
         else:
-            old, before = resolved(base)
-            old.to_parquet(trials / "base.parquet", index=False)
-            (trials / "base.json").write_text(json.dumps(dict(key=key, numbers=before)), encoding="utf-8")
-        new, after = resolved(variant)
-        l, r = f"{uid}_l", f"{uid}_r"
-        decided = applied(ws, uid)
+            before = resolved(base, trials / "base.parquet")
+            replace_text(trials / "base.json", json.dumps(dict(key=key, numbers=before)))
+        after = resolved(variant, trials / "variant.parquet")
+        l, r, u = f"{uid}_l", f"{uid}_r", q(uid)
+        decided = applied(ws, uid)[[l, r, "decision"]].reset_index(drop=True)
+        con = connect(s.compute)[0]  # the two runs' clusters compared in SQL: O(N) rows never reach pandas
+        con.execute(f"""CREATE TABLE o AS SELECT * FROM read_parquet({lit(trials / 'base.parquet')});
+                        CREATE TABLE v AS SELECT * FROM read_parquet({lit(trials / 'variant.parquet')})""")
+        con.register("er_decided", decided.assign(k=range(len(decided))))
+        joined_before, joined_after = (np.array(x, dtype=bool) for x in zip(*con.execute(f"""SELECT coalesce(ol.cluster_id = orr.cluster_id, false),
+            coalesce(vl.cluster_id = vr.cluster_id, false) FROM er_decided d LEFT JOIN o ol ON ol.{u} = d.{q(l)} LEFT JOIN o orr ON orr.{u} = d.{q(r)}
+            LEFT JOIN v vl ON vl.{u} = d.{q(l)} LEFT JOIN v vr ON vr.{u} = d.{q(r)} ORDER BY d.k""").fetchall())) if len(decided) else (np.zeros(0, bool),) * 2
         same = (decided["decision"] == "match").to_numpy()
-        together = lambda gold: (decided[l].map(gold.set_index(uid)["cluster_id"]) == decided[r].map(gold.set_index(uid)["cluster_id"])).to_numpy()
-        joined_before, joined_after = together(old), together(new)
         was, now = joined_before == same, joined_after == same
         pairs = lambda rows: decided.loc[rows, [l, r, "decision"]].head(50).rename(columns={l: "id_l", r: "id_r"}).to_dict("records")
-        both = old.merge(new, on=uid, suffixes=("_base", "_variant"))
-        c2 = lambda sizes: int((sizes * (sizes - 1) // 2).sum())  # pairs of records inside clusters of these sizes
-        kept_together = c2(both.groupby(["cluster_id_base", "cluster_id_variant"]).size())
+        c2 = lambda by: con.execute(f"SELECT coalesce(sum(c * (c - 1) // 2), 0) FROM (SELECT count(*) AS c FROM o JOIN v USING ({u}) GROUP BY {by})").fetchall()[0][0]  # pairs inside groups
+        kept_together, base_pairs, variant_pairs = int(c2("o.cluster_id, v.cluster_id")), int(c2("o.cluster_id")), int(c2("v.cluster_id"))
+        con.close()
+        (trials / "variant.parquet").unlink()
         n = max((int(f.stem) for f in trials.glob("*.json") if f.stem.isdigit()), default=0) + 1
         result = dict(trial=n, at=datetime.now().isoformat(timespec="seconds"), method=method, base=before, variant=after,
                       different_joined=dict(base=int((joined_before & ~same).sum()), variant=int((joined_after & ~same).sum())),
                       same_apart=dict(base=int((~joined_before & same).sum()), variant=int((~joined_after & same).sum())),
                       fixed=pairs(now & ~was), broken=pairs(was & ~now),
-                      apart=c2(both["cluster_id_base"].value_counts()) - kept_together, together=c2(both["cluster_id_variant"].value_counts()) - kept_together)
-        (trials / f"{n}.json.tmp").write_text(json.dumps(result, ensure_ascii=False, default=str), encoding="utf-8")
-        os.replace(trials / f"{n}.json.tmp", trials / f"{n}.json")
+                      apart=base_pairs - kept_together, together=variant_pairs - kept_together)
+        replace_text(trials / f"{n}.json", json.dumps(result, ensure_ascii=False, default=str))
         for f in trials.glob("*.json"):  # bounded: the last 5 trials
             if f.stem.isdigit() and int(f.stem) <= n - 5:
                 f.unlink()

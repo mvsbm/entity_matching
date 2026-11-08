@@ -20,18 +20,19 @@ import pandas as pd
 import pyarrow.parquet as pq
 
 from er import intake
-from er.config import InputError, toml_of
+from er.config import InputError, lit, toml_of
+from er.io import replace_text
 from er.settings import COLUMNS
-from er.source import find, lit, sha256
+from er.source import find
 from er.strings import connect
 
 PENDING = "pending.json"  # the renames a write still owes, saved once every new file is complete
-RUN_FILES = ("gold.parquet", "steps.json", PENDING, "matches", "rule_kept", "proposed", "state", "set_aside",  # what a run writes in its folder
+STEPS = "steps.json"  # the run's log: one entry per run, increment or set of decisions (log, runs)
+RUN_FILES = ("gold.parquet", STEPS, PENDING, "matches", "rule_kept", "proposed", "state", "set_aside",  # what a run writes in its folder
              "qa.md", "report.txt", "review.parquet", "kind_review.parquet")
 DECISIONS = "decisions"  # people's decisions: not a run file, so a full run with overwrite keeps and applies them
 KIND_ANSWERS = "kind_answers"  # people's person/company answers, a part per sheet as given: kept as decisions are
 FULL_TMP = ".full.tmp"  # a full run's new files, until they replace the old run's
-OLD_ANSWERS = Path("state") / "kind_labels.parquet"  # where a folder kept people's answers before kind_answers/: read, and moved by the next write
 METHOD = "method.toml"  # the workspace's changes to the tuned method (config.adjust); none: the method as tuned
 ROUNDS = "rounds.json"  # one entry per method a full run used, in order: not a run file, so the history outlasts each run;
 # bounded: one entry per change of method people make, each a full run
@@ -111,8 +112,7 @@ def stage(con: duckdb.DuckDBPyConnection, out: Path, tables: list[tuple[str, Pat
     if replace is not None:
         new = sorted({d.relative_to(out).parts[0] for d in dests if whole(d)})
         staged += [[None, str(x)] for x in replace if x.name not in new] + [[str(out / FULL_TMP / x), str(out / x)] for x in new]
-    (out / (PENDING + ".tmp")).write_text(json.dumps(staged), encoding="utf-8")
-    os.replace(out / (PENDING + ".tmp"), out / PENDING)  # from here on the write is done, whatever happens next
+    replace_text(out / PENDING, json.dumps(staged))  # from here on the write is done, whatever happens next
     finish_writes(out)
 
 
@@ -125,7 +125,7 @@ def brief(x: dict) -> dict:  # a run of steps.json as the activity lists it: whe
 
 
 def history(out: Path) -> list[dict]:  # every run steps.json holds, in brief, the earliest first: the last EARLIER before the current full run, then its own
-    old = json.loads((out / "steps.json").read_text()) if (out / "steps.json").exists() else {}
+    old = json.loads((out / STEPS).read_text(encoding="utf-8")) if (out / STEPS).exists() else {}
     return [*old.get("earlier", []), *map(brief, old.get("runs", []))]
 
 
@@ -133,17 +133,20 @@ def log(out: Path, entry: dict, append: bool, earlier: list[dict] | None = None)
     """steps.json: one entry per run, increment or set of decisions (a full run starts it again, with `earlier`, the
     runs before it in brief: history, read before its write replaced the old log); written whole, then renamed, so a
     write cut short leaves the old log."""
-    path = out / "steps.json"
-    old = json.loads(path.read_text()) if append and path.exists() else {}
-    tmp = path.with_name(path.name + ".tmp")
-    tmp.write_text(json.dumps(dict(earlier=old.get("earlier", []) if append else (earlier or [])[-EARLIER:], runs=[*old.get("runs", []), entry]),
-                              indent=1, default=str))
-    os.replace(tmp, path)
+    path = out / STEPS
+    old = json.loads(path.read_text(encoding="utf-8")) if append and path.exists() else {}
+    replace_text(path, json.dumps(dict(earlier=old.get("earlier", []) if append else (earlier or [])[-EARLIER:], runs=[*old.get("runs", []), entry]),
+                                  indent=1, default=str))
 
 
 def method(out: Path | str | None) -> dict:  # the workspace's method.toml, {} without one
     f = Path(out) / METHOD if out else None
     return toml_of(f) if f and f.exists() else {}
+
+
+def runs(out: Path) -> list[dict]:  # steps.json's runs: the current full run's, then each increment and set of decisions; none before a run
+    f = Path(out) / STEPS
+    return json.loads(f.read_text(encoding="utf-8"))["runs"] if f.is_file() else []
 
 
 def rounds(out: Path) -> list[dict]:
@@ -155,9 +158,7 @@ def round_ran(out: Path, entry: dict) -> None:
     again on new answers or files; a new method opens the next round. Written whole, then renamed."""
     kept = rounds(out)
     kept = [*kept[:-1], entry] if kept and kept[-1]["config"] == entry["config"] else [*kept, entry]
-    tmp = out / (ROUNDS + ".tmp")
-    tmp.write_text(json.dumps(kept, indent=1, ensure_ascii=False, default=str), encoding="utf-8")
-    os.replace(tmp, out / ROUNDS)
+    replace_text(out / ROUNDS, json.dumps(kept, indent=1, ensure_ascii=False, default=str))
 
 
 def next_part(folder: Path) -> int:  # one past the highest part-n.parquet: a part deleted by hand frees no number to write over
@@ -168,9 +169,19 @@ def held(out: Path) -> list[Path]:  # the run files a folder holds: what resolve
     return [out / f for f in RUN_FILES if (out / f).exists()]
 
 
-def answer_parts(out: Path) -> list[Path]:
-    """People's answer sheets the folder keeps, newest first; a folder that keeps them in state/, that one file."""
-    return sorted((out / KIND_ANSWERS).glob("part-*.parquet"), reverse=True) or [f for f in [out / OLD_ANSWERS] if f.exists()]
+def answer_parts(out: Path) -> list[Path]:  # people's answer sheets the folder keeps, newest first
+    return sorted((out / KIND_ANSWERS).glob("part-*.parquet"), reverse=True)
+
+
+def current(out: Path) -> None:
+    """Refuses a workspace an earlier nayose wrote, in a layout this one no longer reads: answers kept in state/, an
+    input part the reader never described (no intake.json), or rules' pairs written before they said whether each
+    merged. O(parts) to look."""
+    old = ["people's answers in state/" if (out / "state" / "kind_labels.parquet").exists() else None,
+           next((f"{p.name} read before the reader described its files" for p in parts(out) if not intake.report(p)), None),
+           next(("rules' pairs that don't say whether they merged" for f in (out / "rule_kept").glob("part-*.parquet") if "merged" not in pq.read_schema(f).names), None)]
+    if what := [x for x in old if x]:
+        raise InputError(f"{out}: a workspace an earlier nayose wrote ({'; '.join(what)})", fix="create it again: nayose create workspace NAME, then load its files")
 
 
 def type_in(out: Path, sheet: str, column: str, value: object, **keys: str) -> None:
@@ -198,22 +209,20 @@ def inputs(out: Path) -> list[Path]:
     """The record files the run in `out` read, in order: the full run's, then each increment's (steps.json). Each
     must still hold what was read, by its SHA-256, where it was read, in the workspace's own inputs/ (wherever the
     workspace now is, and whatever folder nayose starts from), or where the scheduler moved it (jobs.jsonl). O(bytes)."""
-    log = out / "steps.json"
-    named = [x for run in (json.loads(log.read_text(encoding="utf-8"))["runs"] if log.exists() else [])
-             for x in run.get("inputs", []) if x.get("role") == "records"]
+    named = [x for run in runs(out) for x in run.get("inputs", []) if x.get("role") == "records"]
     if not named:
         raise InputError(f"{out}: steps.json names no record file", fix="give the files again with a full run that overwrites the folder")
     jobs = out / "jobs.jsonl"
     moved = {e["sha256"]: e["path"] for e in map(json.loads, jobs.read_text(encoding="utf-8").splitlines() if jobs.exists() else [])
              if e.get("path")}
     inside = {sha: part / rel for part in parts(out) for rel, sha in sums(part).items()}
-    read = [(part / f["read"], f["versions"]) for part in parts(out) if (r := intake.report(part)) for f in r["files"]]
+    read = [(part / f["read"], f["versions"]) for part in parts(out) for f in intake.report(part)["files"]]
     inside |= {v: f for f, versions in read for v in versions}
     replaced = {v: versions[-1] for _, versions in read for v in versions[:-1]}  # a read file a repair accepted later replaced
     files = []
     for x in named:
         here = [Path(p) for p in (x["file"], inside.get(x["sha256"]), moved.get(x["sha256"])) if p and Path(p).is_file()]
-        if not (found := next((p for p in here if sha256(p) in (x["sha256"], replaced.get(x["sha256"]))), None)):
+        if not (found := next((p for p in here if intake.sha256(p) in (x["sha256"], replaced.get(x["sha256"]))), None)):
             raise InputError(f"{x['file']}: {'changed' if here else 'gone'} since the run read it",
                              fix="give the files again with a full run that overwrites the folder")
         files.append(found)
@@ -250,9 +259,9 @@ def workspaces(home: Path) -> list[dict]:
     read. O(workspaces)."""
     found = []
     for ws in (p for p in home.iterdir() if p.is_dir() and not p.name.startswith(".")) if home.is_dir() else ():
-        if not ((ws / COLUMNS).is_file() or (ws / "steps.json").is_file()):
+        if not ((ws / COLUMNS).is_file() or (ws / STEPS).is_file()):
             continue
-        log = json.loads((ws / "steps.json").read_text(encoding="utf-8"))["runs"] if (ws / "steps.json").is_file() else []
+        log = runs(ws)
         found.append(dict(name=ws.name, workspace=str(ws), files=len(parts(ws)), ran=(ws / "gold.parquet").is_file(),
                           last=log[-1]["at"] if log else datetime.fromtimestamp(ws.stat().st_mtime).isoformat(timespec="seconds")))
     return sorted(found, key=lambda w: w["last"], reverse=True)
@@ -272,7 +281,7 @@ def take_in(ws: Path, path: str | Path, spec: intake.InputSpec, reference: Path)
     folder first, renamed into place once every file is complete and read, so a part is whole or absent. Content the
     workspace already holds, file for file by SHA-256, is not copied again. The part, and whether it is new. O(bytes)."""
     files = find(path)
-    given = sorted(sha256(f) for f in files)
+    given = sorted(intake.sha256(f) for f in files)
     with run_lock(ws):
         for part in parts(ws):
             if sorted(sums(part).values()) == given:
@@ -289,7 +298,7 @@ def take_in(ws: Path, path: str | Path, spec: intake.InputSpec, reference: Path)
             rel = f.relative_to(root) if root else Path(f.name)
             (tmp / rel).parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(f, tmp / rel)
-            lines.append(f"{sha256(tmp / rel)}  {rel.as_posix()}")
+            lines.append(f"{intake.sha256(tmp / rel)}  {rel.as_posix()}")
             copied[tmp / rel] = rel.as_posix()
         (tmp / SUMS).write_text("\n".join(lines) + "\n", encoding="utf-8")
         try:
@@ -305,14 +314,10 @@ def loaded(ws: Path) -> list[dict]:
     """inputs/'s parts, oldest first: each one's name, path, files, bytes and rows (as the intake read them), the
     repairs waiting for people and the rows unread, and whether a run has read all of it as it is now (steps.json, by
     SHA-256). O(parts + files + steps.json)."""
-    log = ws / "steps.json"
-    read = {x["sha256"] for run in (json.loads(log.read_text(encoding="utf-8"))["runs"] if log.is_file() else [])
-            for x in run.get("inputs", []) if x.get("role") == "records"}
-    def facts(part: Path) -> dict:  # a part's rows and whether a run read it: as the intake read it, or (a part from before) its Parquet footers
-        if r := intake.report(part):
-            waiting = sum(n for k, n in r["proposed"].items() if k not in r["accepted"])
-            return dict(rows=r["rows"], read=all(f["versions"][-1] in read for f in r["files"]), waiting=waiting, unread=r["unread"])
-        own = sums(part)
-        return dict(rows=sum(pq.ParquetFile(part / rel).metadata.num_rows for rel in own), read=all(sha in read for sha in own.values()), waiting=0, unread=0)
+    read = {x["sha256"] for run in runs(ws) for x in run.get("inputs", []) if x.get("role") == "records"}
+    def facts(part: Path) -> dict:  # a part's rows and whether a run read it, as the intake read it
+        r = intake.report(part)
+        waiting = sum(n for k, n in r["proposed"].items() if k not in r["accepted"])
+        return dict(rows=r["rows"], read=all(f["versions"][-1] in read for f in r["files"]), waiting=waiting, unread=r["unread"])
     return [dict(name=part.name, path=str(part), files=len(own), bytes=sum((part / rel).stat().st_size for rel in own), **facts(part))
             for part in parts(ws) for own in [sums(part)]]

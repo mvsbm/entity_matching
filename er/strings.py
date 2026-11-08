@@ -69,7 +69,7 @@ def connect(compute: dict | None = None) -> tuple[duckdb.DuckDBPyConnection, Duc
     [compute]) sets threads, memory_limit, temp_directory and max_temp_directory_size: past the memory limit, DuckDB
     spills to that folder (none set: one of the person's own in the system's temporary folder, never the folder nayose starts from). A limit
     nayose doesn't set, or one DuckDB refuses, is an InputError."""
-    from er.config import InputError  # here, not above: er.config reads this module's functions
+    from er.config import InputError, lit  # here, not above: er.config reads this module's functions
     con = duckdb.connect()
     con.execute("SET enable_progress_bar = false")  # a long query's bar would land in stdout, between the JSON lines
     limits = {k: v for k, v in (compute or {}).items() if v not in ("", None)}
@@ -81,7 +81,7 @@ def connect(compute: dict | None = None) -> tuple[duckdb.DuckDBPyConnection, Duc
         if key not in COMPUTE:
             raise InputError(f"{key}: not a limit nayose sets ({where})", fix=f"one of {', '.join(COMPUTE)}, as KEY=VALUE")
         try:
-            con.execute(f"SET {key} = '{str(value).replace(chr(39), chr(39) * 2)}'")
+            con.execute(f"SET {key} = {lit(value)}")
         except duckdb.Error as e:
             raise InputError(f"{key}={value} ({where}): {str(e).splitlines()[0]}", fix="e.g. memory_limit=8GB threads=4 temp_directory=/a/folder/with/room") from None
     for name, info in FUNCTIONS.items():

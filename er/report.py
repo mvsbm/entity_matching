@@ -17,14 +17,12 @@ import duckdb
 import numpy as np
 import pandas as pd
 
-from er.candidates import q
-from er.config import DeletionKeys, InputError, Key, KeyBlocker, Pipeline, SortedNeighbourhood, TfidfNeighbours, sources_text
-from er.folder import DECISIONS, PENDING, TRIALS, history, method, rounds
+from er.config import DeletionKeys, InputError, Key, KeyBlocker, Pipeline, SortedNeighbourhood, TfidfNeighbours, bits, lit, q, sources_text
+from er.folder import DECISIONS, PENDING, TRIALS, history, method, rounds, runs
 from er.io import code_version, table_after
 from er.kind import COMPANY, PERSON, SAYS, UNSURE
 from er.match import ELSE, levels, named_sql, parameters, pattern_coverage, review_floor, scaled_prior, score_fs
 from er.probe import keys_for
-from er.source import lit
 from er.standardize import prepared
 
 if TYPE_CHECKING:
@@ -44,8 +42,8 @@ def fill_rates(run: "Run", fields: list[str] | None = None, sample: int = 10_000
     filled = run.con.execute(f"SELECT {', '.join(f'avg(({q(f)} IS NOT NULL)::INT)' for f in fs)} FROM records").fetchall()[0]
     run.con.execute(f"CREATE OR REPLACE TEMP TABLE er_fill_sample AS SELECT {', '.join(f'{q(f)}::VARCHAR AS {q(f)}' for f in fs)} "
                     f"FROM records USING SAMPLE reservoir({sample} ROWS) REPEATABLE (0)")
-    pattern = {f: run.settings.detect[f].replace("'", "''") for f in fs if f in run.settings.detect}
-    looks = dict(zip(pattern, run.con.execute("SELECT " + ", ".join(f"avg(regexp_matches({q(f)}, '{p}')::INT)" for f, p in pattern.items())
+    pattern = {f: run.settings.detect[f] for f in fs if f in run.settings.detect}
+    looks = dict(zip(pattern, run.con.execute("SELECT " + ", ".join(f"avg(regexp_matches({q(f)}, {lit(p)})::INT)" for f, p in pattern.items())
                                               + " FROM er_fill_sample").fetchall()[0])) if pattern else {}
     top = dict(run.con.execute("""SELECT field, max(n) / sum(n) FROM (SELECT field, v, count(*) AS n FROM
         (UNPIVOT er_fill_sample ON COLUMNS(*) INTO NAME field VALUE v) GROUP BY ALL) GROUP BY field""").fetchall())
@@ -134,7 +132,7 @@ def qa(run: "Run", fields: list[str] | None = None, review: int = 50, previous: 
             how += f"; the flag wrong on {c.flag_error:.1%} of {c.flag_checked:,} answers drawn at random"
         kind_rows += [("kinds from", how)] if c is not None else []
         if c is not None and not c.spec.trust_flag and "kind_flag" in run.columns():  # the flag's likely errors, for its owners
-            says = "x.kind_flag IN (" + ", ".join(f"'{v}'" for v in c.flag_company) + ")"
+            says = "x.kind_flag IN (" + ", ".join(map(lit, c.flag_company)) + ")"
             a, b = con.execute(f"""SELECT count(*) FILTER (WHERE g.kind = 2 AND NOT {says}), count(*) FILTER (WHERE g.kind = 1 AND {says})
                                    FROM gold g JOIN records x USING ({u}) WHERE x.kind_flag IS NOT NULL""").fetchall()[0]
             kind_rows.append(("flag", f"a sure kind contradicts it on {a + b:,} records: {a:,} sure 2 company flagged 1, "
@@ -239,8 +237,6 @@ def report_text(run: "Run", tables: dict[str, pd.DataFrame], pipeline: Path) -> 
     return "\n".join(out) + "\n"
 
 
-def bits(v: float) -> str:  # a weight in SQL; the trust line above everything is infinity
-    return "'Infinity'::DOUBLE" if math.isinf(v) else repr(float(v))
 
 
 def trust_sheet(run: "Run") -> tuple[pd.DataFrame, pd.DataFrame]:
@@ -362,7 +358,7 @@ def describe_workspace(con: duckdb.DuckDBPyConnection, out: Path, uid: str) -> d
     ran = (out / "gold.parquet").exists()
     records, entities = con.execute(f"SELECT count(*), count(DISTINCT cluster_id) FROM {gold}").fetchall()[0] if ran else (0, 0)
     largest = con.execute(f"SELECT cluster_id AS entity, count(*) AS records FROM {gold} GROUP BY 1 ORDER BY 2 DESC, 1 LIMIT 10").fetchall() if ran else []
-    runs = history(out)
+    activity = history(out)
 
     def queue(sheet: str, answer: str, whys: tuple[str, ...]) -> dict:  # each kind of row still open, and the answers written in, not yet applied
         rows = pd.read_parquet(out / sheet) if (out / sheet).exists() else pd.DataFrame(columns=["why", answer])
@@ -375,7 +371,7 @@ def describe_workspace(con: duckdb.DuckDBPyConnection, out: Path, uid: str) -> d
     summary = table_after((out / "qa.md").read_text(encoding="utf-8"), "## summary") if (out / "qa.md").exists() else pd.DataFrame()
     now, decided = len(rounds(out)), applied(out, uid)
     audits = decided[(decided["why"] == "audit") & (decided["round"] == now)] if {"why", "round"} <= set(decided) else decided.iloc[:0]  # this round's
-    return dict(workspace=str(out), records=records, entities=entities, largest=[dict(entity=e, records=n) for e, n in largest], runs=runs,
+    return dict(workspace=str(out), records=records, entities=entities, largest=[dict(entity=e, records=n) for e, n in largest], runs=activity,
                 round=now, audits=dict(checked=len(audits), false=int((audits["decision"] == "no_match").sum())),
                 pairs=queue("review.parquet", "decision", ("decide", "audit")), kinds=queue("kind_review.parquet", "kind", ("decide", "measure")),
                 set_aside=con.execute(f"SELECT count(*) FROM read_parquet({lit(aside / '*.parquet')})").fetchall()[0][0]
@@ -383,9 +379,10 @@ def describe_workspace(con: duckdb.DuckDBPyConnection, out: Path, uid: str) -> d
                 write_owed=(out / PENDING).exists(), summary=summary.values.tolist())
 
 
-def describe_entity(con: duckdb.DuckDBPyConnection, out: Path, uid: str, record: str, fields: list[str]) -> dict:
-    """The entity of `record` in the workspace `out`: each of its records with its fields and kind, and every link
-    between them, from a rule (rule_kept), the model (matches, with its weight) or people (decisions). O(N) in SQL."""
+def describe_entity(con: duckdb.DuckDBPyConnection, out: Path, uid: str, record: str, fields: list[str], most: int = 200) -> dict:
+    """The entity of `record` in the workspace `out`: its size, and of its first `most` records (`record` among them)
+    each with its fields and kind, and every link between them, from a rule (rule_kept), the model (matches, with its
+    weight) or people (decisions), as frames. O(N) in SQL."""
     u, l, r = q(uid), q(f"{uid}_l"), q(f"{uid}_r")
     gold = f"read_parquet({lit(out / 'gold.parquet')})"
     if not (out / "gold.parquet").exists():
@@ -394,20 +391,21 @@ def describe_entity(con: duckdb.DuckDBPyConnection, out: Path, uid: str, record:
         raise InputError(f"{record}: no record of the run in {out}",
                          fix="check the ID as the run wrote it: a spreadsheet may read 0000000151 as the number 151")
     entity = hit[0][0]
-    con.execute(f"CREATE OR REPLACE TEMP TABLE er_entity AS SELECT * FROM {gold} WHERE cluster_id = ?", [entity])
+    size = con.execute(f"SELECT count(*) FROM {gold} WHERE cluster_id = ?", [entity]).fetchall()[0][0]
+    con.execute(f"CREATE OR REPLACE TEMP TABLE er_entity AS SELECT * FROM {gold} WHERE cluster_id = ? ORDER BY {u} = ? DESC, {u} LIMIT {most}",
+                [entity, record])  # an over-merge of thousands: the page draws a few hundred, and says so
     stored = f"read_parquet({lit(out / 'state' / 'records' / '*.parquet')}, union_by_name = true)"
     have = [f for f, in con.execute(f"SELECT column_name FROM (DESCRIBE SELECT * FROM {stored})").fetchall() if f in fields]
     rows = con.execute(f"SELECT e.*, {', '.join(f's.{q(f)}' for f in have) or 'NULL AS none'} FROM er_entity e "
                        f"JOIN {stored} s USING ({u}) ORDER BY e.{u}").df()
     among = f"WHERE {l} IN (SELECT {u} FROM er_entity) AND {r} IN (SELECT {u} FROM er_entity)"
     links = [f"""SELECT {l}, {r}, rule AS by, NULL::DOUBLE AS weight FROM read_parquet({lit(out / 'rule_kept' / '*.parquet')}, union_by_name = true)
-                 {among} AND coalesce(merged, TRUE)""",  # a part written before merged was: every pair merged
+                 {among} AND merged""",
              f"SELECT {l}, {r}, 'fs' AS by, match_weight AS weight FROM read_parquet({lit(out / 'matches' / '*.parquet')}) {among}"]
     if any((out / DECISIONS).glob("*.parquet")):
         links.append(f"SELECT {l}, {r}, 'people: ' || decision AS by, NULL FROM read_parquet({lit(out / DECISIONS / '*.parquet')}) {among}")
     found = con.execute(" UNION ALL ".join(links) + " ORDER BY 1, 2").df()
-    plain = lambda d: d.astype(object).where(d.notna(), None).to_dict("records")  # JSON has no NaN
-    return dict(record=record, entity=entity, records=plain(rows), links=plain(found))
+    return dict(record=record, entity=entity, size=size, records=rows, links=found)
 
 
 GRAPH_NODES = ("records", "prepare", "rules", "candidates", "score", "accept", "people", "group", "kind", "customers")
@@ -432,7 +430,7 @@ def describe_matching(con: duckdb.DuckDBPyConnection, out: Path | None, p: Pipel
     l, r = q(f"{uid}_l"), q(f"{uid}_r")
     rows = lambda sql: con.execute(sql).fetchall() if ran else []
     parquet = lambda name: f"read_parquet({lit(out / name)}, union_by_name = true)" if ran else ""  # no run: nothing to read
-    log = json.loads((out / "steps.json").read_text(encoding="utf-8"))["runs"] if ran and (out / "steps.json").exists() else []
+    log = runs(out) if ran else []
     facts = [x for run in log for x in run["steps"]]
     turned_off = list(log[-1].get("disabled", [])) if log else []  # what the last run turned off: a field it reads is missing
     n = rows(f"SELECT count(*) FROM {parquet('gold.parquet')}")[0][0] if ran else None
@@ -462,7 +460,7 @@ def describe_matching(con: duckdb.DuckDBPyConnection, out: Path | None, p: Pipel
 
     # rules: what each compares, how, and the pairs it kept
     kept = {name: (k, a, b, m) for name, k, a, b, m in rows(f"""SELECT rule, count(*), min({l}), arg_min({r}, {l}),
-        count(*) FILTER (WHERE coalesce(merged, TRUE)) FROM {parquet('rule_kept/*.parquet')} GROUP BY 1""")}  # found, and merged: below a trust line, none until people check
+        count(*) FILTER (WHERE merged) FROM {parquet('rule_kept/*.parquet')} GROUP BY 1""")}  # found, and merged: below a trust line, none until people check
     t = p.fs.min_match_weight
     rule_cols = {c for c, in rows(f"SELECT column_name FROM (DESCRIBE SELECT * FROM {parquet('rule_kept/*.parquet')})")} if ran and any((out / "rule_kept").glob("*.parquet")) else set()
     scored_rules = "match_weight" in rule_cols  # the model's points for a rule's pairs: a run's rules are scored (Run._rules)
@@ -537,7 +535,7 @@ def describe_matching(con: duckdb.DuckDBPyConnection, out: Path | None, p: Pipel
     band_of = lambda w: (w // 2 * 2).astype(int)
     review_bands = [[int(k), int(c)] for k, c in band_of(decide["match_weight"]).value_counts().sort_index().items()] if len(decide) else []
     rule_bands = [[int(k), int(c)] for k, c in rows(f"""SELECT floor(match_weight / 2) * 2, count(*) FROM {parquet('rule_kept/*.parquet')}
-        WHERE coalesce(merged, TRUE) GROUP BY 1 ORDER BY 1""")] if scored_rules else []
+        WHERE merged GROUP BY 1 ORDER BY 1""")] if scored_rules else []
     examples = {int(b): got for b, got in rows(f"""SELECT b, list([a, z, w, what] ORDER BY what, k) FROM (
         SELECT *, row_number() OVER (PARTITION BY b, what ORDER BY hash(a || z)) AS k FROM (
           SELECT floor(match_weight / 2) * 2 AS b, {l} AS a, {r} AS z, round(match_weight, 1)::VARCHAR AS w, 'merged' AS what FROM {parquet('matches/*.parquet')}
@@ -552,7 +550,7 @@ def describe_matching(con: duckdb.DuckDBPyConnection, out: Path | None, p: Pipel
     joined = dict(rows(f"""SELECT CASE WHEN resolved_by = '{model_name}' THEN 'model' WHEN resolved_by = 'review' THEN 'people' ELSE 'rules' END, count(*)
         FROM {gold} WHERE resolved_by IS NOT NULL GROUP BY 1"""))
     size_eg = {a: e for a, e in rows(f"SELECT n, min(cluster_id) FROM (SELECT cluster_id, count(*) AS n FROM {gold} GROUP BY 1) GROUP BY 1")}
-    links = [f"SELECT {l} AS a, {r} AS z FROM {parquet('matches/*.parquet')}"] + ([f"SELECT {l}, {r} FROM {kept_rules} WHERE coalesce(merged, TRUE)"] if rule_cols else []) + (
+    links = [f"SELECT {l} AS a, {r} AS z FROM {parquet('matches/*.parquet')}"] + ([f"SELECT {l}, {r} FROM {kept_rules} WHERE merged"] if rule_cols else []) + (
         [f"SELECT {l}, {r} FROM {parquet(DECISIONS + '/*.parquet')} WHERE decision = 'match'"] if decided else [])
     look = dict(
         largest=[dict(customer=c, records=k) for c, k in rows(f"SELECT cluster_id, count(*) FROM {gold} GROUP BY 1 ORDER BY 2 DESC, 1 LIMIT 5")],
@@ -710,7 +708,7 @@ def describe_method(out: Path, p: Pipeline, s: "Settings") -> dict:
         LEFT JOIN er_decided d USING ({q(l)}, {q(r)}) GROUP BY 1""").fetchall()}
 
     # what the run's log and files say: the rounds, each key's pairs and seconds, each step's reach, the links by key
-    log = json.loads((out / "steps.json").read_text(encoding="utf-8"))["runs"] if (out / "steps.json").exists() else []
+    log = runs(out)
     facts = [x for run in log for x in run["steps"]]
     listed, reached = {}, reached_by_gamma(facts)
     for x in facts:
@@ -805,7 +803,7 @@ def explain_pair(out: Path, p: Pipeline, s: "Settings", first: str, second: str,
     where = f"WHERE {l} = ? AND {r} = ?"
     found = dict(rule=None, keys=None, people=None, merged=False)
     if any((out / "rule_kept").glob("*.parquet")):
-        if hit := con.execute(f"SELECT rule, coalesce(merged, TRUE) FROM {read('rule_kept/*.parquet')} {where}", [a, b]).fetchall():
+        if hit := con.execute(f"SELECT rule, merged FROM {read('rule_kept/*.parquet')} {where}", [a, b]).fetchall():
             found.update(rule=hit[0][0], merged=bool(hit[0][1]))
     for name, merged in (("matches", True), ("proposed", False)):
         if any((out / name).glob("*.parquet")) and (hit := con.execute(f"SELECT sources FROM {read(name + '/*.parquet')} {where}", [a, b]).fetchall()):
@@ -884,7 +882,7 @@ def describe_key(out: Path, p: Pipeline, s: "Settings", name: str, cap: int = 12
     con.execute(f"CREATE TABLE er_dk AS SELECT * FROM {read('state/records/*.parquet')}")
     have = {c for c, in con.execute("SELECT column_name FROM (DESCRIBE er_dk)").fetchall()}
     keys = keys_of(b)
-    log = json.loads((out / "steps.json").read_text(encoding="utf-8"))["runs"] if (out / "steps.json").exists() else []
+    log = runs(out)
     listed = sum(g["pairs"] for run in log for x in run["steps"] for g in x.get("generators", ()) if g["name"] == name)
     links = f"SELECT {l} AS a, {r} AS z, match_weight, sources FROM ({likely_links(out, p)})"  # as describe matching counts them
     matched, only_n = con.execute(f"SELECT count(*) FILTER (WHERE list_contains(string_split(sources, '+'), ?)), count(*) FILTER (WHERE sources = ?) FROM ({links})",
@@ -998,7 +996,7 @@ def list_patterns(out: Path, p: Pipeline) -> dict:
     asked (held: their records are one customer already, another pair of the same two customers is asked, or, with a
     trust line, they are outside its sample), how many stayed apart, and three of them to explain. From the score steps
     in steps.json, the full run's and each increment's (Run.score), and the sheet. O(P + S) for P patterns, S sheet rows."""
-    log = json.loads((out / "steps.json").read_text(encoding="utf-8"))["runs"] if (out / "steps.json").exists() else []
+    log = runs(out)
     acc: dict[tuple, list] = {}
     fields: list[str] = []
     for x in (x for run in log for x in run["steps"] if x.get("patterns")):
