@@ -1,0 +1,150 @@
+"""What the tests share: small hand-made frames, a generated population for whole runs, nayose as a user runs it (in
+this process, and in its own), and the page in a browser. A test that uses a whole-run fixture is marked slow; one
+that uses the browser, browser: run the fast ones with -m "not slow and not browser"."""
+import contextlib
+import json
+import os
+from dataclasses import replace
+from pathlib import Path
+
+import numpy as np
+import pandas as pd
+import pytest
+
+from er.config import Comparator, Comparison, FSModel, Key, Level, load_pipeline
+from er.settings import load_settings
+from er.strings import connect
+
+UID = "uid"
+PAIR = pd.DataFrame({"uid_l": ["001a"], "uid_r": ["001b"]}, dtype="string")  # same name, in 4 of the 120 records
+SLOW = {"population", "kind_population", "wide_band", "runs"}  # fixtures that run whole pipelines (runs: test_design.py's)
+
+
+def pytest_collection_modifyitems(items):
+    for item in items:
+        if SLOW & set(item.fixturenames):
+            item.add_marker(pytest.mark.slow)
+        if "ui_page" in item.fixturenames:
+            item.add_marker(pytest.mark.browser)
+
+
+@pytest.fixture(scope="session")
+def con_db():
+    return connect()
+
+
+@pytest.fixture(scope="session")
+def records() -> pd.DataFrame:
+    """60 entities, two records each: same phone, the second name sometimes with one kana changed."""
+    rng = np.random.default_rng(0)
+    names = ["サトウヒロシ", "スズキケイコ", "タカハシアキラ", "タナカユウコ", "イトウタロウ", "ワタナベミホ"]
+    rows = []
+    for e in range(60):
+        name, phone = names[e % len(names)] + "アイウエオ"[e // 12], f"{rng.integers(10_000):04d}"
+        rows.append(dict(uid=f"{e:03d}a", name=name, phone=phone, entity=f"E{e}"))
+        rows.append(dict(uid=f"{e:03d}b", name=name[:-1] + "カ" if e % 3 == 0 else name, phone=phone, entity=f"E{e}"))
+    return pd.DataFrame(rows).astype("string")
+
+
+def model(m_method: str = "em", tf: bool = False, extra_name_levels: tuple[Level, ...] = ()) -> FSModel:
+    return FSModel(
+        name="test",
+        comparisons=(
+            Comparison(name="name", null_if_missing=("name",), tf=Key("name") if tf else None, levels=(
+                Level(label="exact", any_of=(("name", Comparator("exact")),), tf=tf),
+                Level(label="close", any_of=(("name", Comparator("jaro_winkler", 0.9)),)), *extra_name_levels)),
+            Comparison(name="phone", null_if_missing=("phone",), levels=(
+                Level(label="exact", any_of=(("phone", Comparator("exact")),)),)),
+        ),
+        prior_rules=((Key("name"), Key("phone")),), prior_recall=0.9, u_max_pairs=1e4, m_method=m_method,
+        em_rules=((Key("phone"),),), seed=0)
+
+
+@pytest.fixture(scope="session")
+def population():
+    """A small generated population and the final pipeline, for whole runs: made once for every test that runs one."""
+    from er.generate import generate as make, load_reference, load_spec
+    s = load_settings()
+    p = load_pipeline(s.root / "config" / "final.toml", s.standardize, s.chains, s.columns)
+    g = make(replace(load_spec(s.root / "config" / "generator.toml")[0], entities=400), *load_reference(s.paths["reference"]))
+    return s, p, g
+
+
+def dirty_csv(df: pd.DataFrame, name: str, address: str, path: Path) -> tuple[int, tuple[str, str], tuple[str, str, str]]:
+    """The records as a CSV another system wrote: some names in CP932, one unquoted comma between an address's street
+    and building, one name garbled upstream (its UTF-8 read as CP932, then saved). How many CP932 names, (id, the
+    address as written), (id, the name, the name garbled)."""
+    cols, cp932, spilled, garbled = list(df.columns), 0, None, None
+    lines = [",".join(cols).encode()]
+    for i, r in enumerate(df.itertuples(index=False)):
+        vals = ["" if pd.isna(v) else v for v in r]
+        cells = [v.encode("utf-8") for v in vals]
+        if i % 40 == 3 and vals[cols.index(name)]:
+            cells[cols.index(name)], cp932 = vals[cols.index(name)].encode("cp932"), cp932 + 1
+        elif spilled is None and "　" in vals[cols.index(address)]:
+            spilled = (vals[0], vals[cols.index(address)].replace("　", ","))
+            cells[cols.index(address)] = spilled[1].encode("utf-8")
+        elif garbled is None and i % 40 == 7:
+            try:
+                garbled = (vals[0], vals[cols.index(name)], vals[cols.index(name)].encode("utf-8").decode("cp932"))
+                cells[cols.index(name)] = garbled[2].encode("utf-8")
+            except UnicodeDecodeError:
+                pass
+        lines.append(b",".join(cells))
+    path.write_bytes(b"\n".join(lines) + b"\n")
+    assert spilled and garbled and cp932 > 5
+    return cp932, spilled, garbled
+
+
+def nayose(*words: object, check: bool = False, timeout: float = 600):  # the command line, as a user runs it, in a process of its own
+    import subprocess
+    import sys
+    return subprocess.run([sys.executable, "-m", "er.cli", *map(str, words)], capture_output=True, text=True, check=check, timeout=timeout)
+
+
+@pytest.fixture
+def say(capsys):
+    """nayose in this process, as a user runs it: say(*words) → (its exit code, its last event)."""
+    from er.cli import main
+
+    def run(*words: object) -> tuple[int, dict]:
+        code = main([*map(str, words), "--format", "json"])
+        return code, json.loads(capsys.readouterr().out.splitlines()[-1])
+    return run
+
+
+@pytest.fixture
+def ui_page():
+    """open(workspace, home, viewport=None) → (page, server, httpd): the page on a server of its own, in Chromium, at
+    its link. Everything opened is closed after the test, whatever happens in it. No browser: skipped, except under CI,
+    where the browser tests must run, so it fails."""
+    import threading
+    from http.server import ThreadingHTTPServer
+    from er import ui
+    if os.environ.get("CI"):
+        import playwright.sync_api as sync
+    else:
+        sync = pytest.importorskip("playwright.sync_api")
+    with contextlib.ExitStack() as opened:  # each thing closed after the test, the last opened first, even when one close fails
+        pw = []
+
+        def open_(workspace: str | None, home: str, viewport: dict | None = None):
+            server = ui.Server(workspace, home)
+            httpd = ThreadingHTTPServer(("127.0.0.1", 0), ui.handler(server))
+            threading.Thread(target=httpd.serve_forever, daemon=True).start()
+            opened.callback(httpd.server_close)
+            opened.callback(httpd.shutdown)
+            if not pw:  # started once the test asks for a page: the test's own setup runs outside Playwright's loop
+                pw.append(sync.sync_playwright().start())
+                opened.callback(pw[0].stop)
+            try:
+                browser = pw[0].chromium.launch()
+            except sync.Error:
+                if os.environ.get("CI"):
+                    raise
+                pytest.skip("no browser: .venv/bin/python -m playwright install chromium")
+            opened.callback(browser.close)
+            page = browser.new_page(**({"viewport": viewport} if viewport else {}))
+            page.goto(f"http://127.0.0.1:{httpd.server_address[1]}/?token={server.token}")
+            return page, server, httpd
+        yield open_

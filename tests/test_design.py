@@ -229,13 +229,13 @@ def runs(tmp_path_factory):
 
 
 def logged_runs(tmp: Path) -> tuple:
-    """The population of tests/test_er.py through a full run and its report, an increment and its report, and a set of
+    """The tests' population (tests/conftest.py) through a full run and its report, an increment and its report, and a set of
     decisions, each with its query log."""
     from er.config import load_pipeline
     from er.generate import generate, load_reference, load_spec
     from er.run import Run
     from er.settings import load_settings
-    s = load_settings()  # the population of tests/test_er.py
+    s = load_settings()  # the tests' population (tests/conftest.py)
     p = load_pipeline(s.root / "config" / "final.toml", s.standardize, s.chains, s.columns)
     g = generate(replace(load_spec(s.root / "config" / "generator.toml")[0], entities=400), *load_reference(s.paths["reference"]))
     batch = np.random.default_rng(0).random(len(g.df)) < 0.2

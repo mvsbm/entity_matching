@@ -1061,7 +1061,7 @@ const FIXED = {controls: "control or invisible characters removed", placeholders
                numbers: "spreadsheet numbers: 12.0 read as 12, 1.2E+11 made missing (its digits are gone)", damaged: "values no encoding reads, made missing"};
 const waits = (r) => {  // what waits for a repair, in the answer to Did your file load?
   const w = r ? r.waiting : {}, rows = w.realign || 0, values = (w.garbled || 0) + (w.encoding || 0);
-  return rows || values ? ` · <b>${[rows && plural(rows, "row"), values && plural(values, "value")].filter(Boolean).join(" and ")} wait for a repair</b>` : "";
+  return rows || values ? ` · <b>${[rows && plural(rows, "row"), values && plural(values, "value")].filter(Boolean).join(" and ")} ${rows + values === 1 ? "waits" : "wait"} for a repair</b>` : "";
 };
 
 const missedWords = (strata) => strata.some((m) => m.hits)  // the probe's answer, from the last full run: matches no key lists, found by sampling

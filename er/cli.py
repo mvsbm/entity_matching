@@ -200,7 +200,7 @@ def check_text(r: dict) -> str:
 
 def settings_for(a: dict):  # the settings, with the named workspace's own mapping when it keeps one; an earlier nayose's workspace refused
     if (ws := a.get("workspace")) and Path(ws).is_dir():
-        folder.current(Path(ws))
+        folder.current(Path(ws), replacing=bool(a.get("overwrite")))  # a run --overwrite writes the rules' pairs anew
     return load_settings(columns=columns_file(ws))
 
 

@@ -17,3 +17,9 @@ package-data = { er = ["ui.html"] }  # the page nayose open ui serves
 
 [tool.ruff.lint]
 select = ["F", "B904", "UP017"]  # names unused or never defined; an error re-raised without its cause; datetime.UTC
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra --strict-markers --durations=10"
+markers = ["slow: runs whole pipelines on a generated population (marked by its fixture, tests/conftest.py)",
+           "browser: the page in Chromium (marked by the ui_page fixture)"]

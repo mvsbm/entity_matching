@@ -173,13 +173,14 @@ def answer_parts(out: Path) -> list[Path]:  # people's answer sheets the folder 
     return sorted((out / KIND_ANSWERS).glob("part-*.parquet"), reverse=True)
 
 
-def current(out: Path) -> None:
+def current(out: Path, replacing: bool = False) -> None:
     """Refuses a workspace an earlier nayose wrote, in a layout this one no longer reads: answers kept in state/, an
     input part the reader never described (no intake.json), or rules' pairs written before they said whether each
-    merged. O(parts) to look."""
+    merged, unless a full run is `replacing` them (--overwrite). O(parts) to look."""
     old = ["people's answers in state/" if (out / "state" / "kind_labels.parquet").exists() else None,
            next((f"{p.name} read before the reader described its files" for p in parts(out) if not intake.report(p)), None),
-           next(("rules' pairs that don't say whether they merged" for f in (out / "rule_kept").glob("part-*.parquet") if "merged" not in pq.read_schema(f).names), None)]
+           None if replacing else next(("rules' pairs that don't say whether they merged" for f in (out / "rule_kept").glob("part-*.parquet")
+                                        if "merged" not in pq.read_schema(f).names), None)]
     if what := [x for x in old if x]:
         raise InputError(f"{out}: a workspace an earlier nayose wrote ({'; '.join(what)})", fix="create it again: nayose create workspace NAME, then load its files")
 
