@@ -606,10 +606,17 @@ def test_check_records_says_whether_a_run_will_go_through_and_what_to_look_at_fi
     assert code == 0 and r["ready"]["ok"] and not r["ready"]["stops"] and c["pairs_needed"] > 0 and c["pairs_fit"] >= c["pairs_needed"]
     assert c["headroom"] == round(c["pairs_fit"] / c["pairs_needed"], 1) and c["memory_limit_gb"] > 0 and c["spill_folder"]
     assert any(w["what"].startswith("birth_date is") for w in r["ready"]["warns"])  # a nearly empty field, said with what to do
-    assert not any(w["what"].startswith("company_name is") for w in r["ready"]["warns"])  # filled only for companies, by design
+    assert not any("company_name" in w["what"] for w in r["ready"]["warns"])  # filled only for companies, by design: with the person's name, it is full
+    needed = c["pairs_needed"]
     monkeypatch.setattr(Run, "capacity", lambda self: 10)  # room for 10 pairs: the file's won't fit
     code, r = say("check", "records", tmp_path / "all.parquet")
     assert code == 0 and not r["ready"]["ok"] and "more than fit in memory" in r["ready"]["stops"][0]["what"] and r["ready"]["stops"][0]["fix"]
+    monkeypatch.setattr(Run, "capacity", lambda self: int(needed / 1.04))  # its headroom rounds to 1.0, yet the run would stop
+    code, r = say("check", "records", tmp_path / "all.parquet")
+    assert r["capacity"]["headroom"] == 1.0 and not r["ready"]["ok"]
+    monkeypatch.setattr(Run, "capacity", lambda self: int(needed * 1.5))
+    code, r = say("check", "records", tmp_path / "all.parquet")
+    assert r["ready"]["ok"] and any(w["what"] == "the pairs fill 67% of the room DuckDB has" for w in r["ready"]["warns"])
 
 
 def test_describe_review_counts_what_people_must_check_range_by_range(say, tmp_path, population, monkeypatch):
@@ -628,3 +635,27 @@ def test_describe_review_counts_what_people_must_check_range_by_range(say, tmp_p
     assert all(x["bound"] is None or x["bound"] == round(1 - 0.05 ** (1 / x["sample"]), 4) for x in r["ranges"])  # what a clean sample proves
     assert r["hours"]["to_each_line"][-1] == round(r["ranges"][-1]["reviews_to_here"] * 20 / 3600, 1) and r["kinds"]["measure"] > 0
     assert say("describe", "review", "--workspace", "workspaces/w", "--seconds", "fast")[0] == 2  # not a number: said, not a traceback
+    assert say("describe", "review", "--workspace", "workspaces/w", "--seconds", "inf")[0] == 2 and say("describe", "review", "--workspace", "workspaces/w", "--seconds", "0")[0] == 2
+
+    ws, uid = tmp_path / "workspaces" / "w", s.data.unique_id
+    l, r_ = f"{uid}_l", f"{uid}_r"
+    pairs = pd.concat([pd.read_parquet(ws / x)[[l, r_, "match_weight"]] for x in ("matches", "proposed", "rule_kept") if any((ws / x).glob("*.parquet"))])
+    sheet = pd.read_parquet(ws / "review.parquet")
+    paired = set(pairs[l]) | set(pairs[r_])
+    alone = sorted(set(pd.read_parquet(ws / "gold.parquet")[uid]) - paired)[:2]  # two records no method paired: a pair with no name compared, planted
+    sheet = pd.concat([sheet, pd.DataFrame({l: [alone[0]], r_: [alone[1]], "why": ["decide"]})]).astype({l: "string", r_: "string"})
+    sheet.to_parquet(ws / "review.parquet", index=False)
+    unnamed = sheet[(sheet["why"] == "decide") & ~sheet.set_index([l, r_]).index.isin(pairs.set_index([l, r_]).index)]
+    assert len(unnamed) == say("describe", "review", "--workspace", "workspaces/w")[1]["unnamed"] > 0
+    r = say("describe", "review", "--workspace", "workspaces/w")[1]
+    first = next(i for i, x in enumerate(r["ranges"]) if x["pairs"])  # the highest range with pairs: one of them people say is different
+    lo, hi = r["ranges"][first]["down_to"], r["ranges"][first]["up_to"] or math.inf
+    false = pairs[(pairs["match_weight"] >= lo) & (pairs["match_weight"] < hi)].head(1)
+    pd.concat([false[[l, r_]].assign(decision="no_match"), unnamed[[l, r_]].head(1).assign(decision="match")]).to_parquet(tmp_path / "decided.parquet")
+    assert say("apply", "decisions", "--file", "decided.parquet", "--workspace", "workspaces/w")[0] == 0
+    code, after = say("describe", "review", "--workspace", "workspaces/w")
+    top = after["ranges"][first]
+    assert code == 0 and (top["checked"], top["different"], top["chance_clean"]) == (1, 1, None) and after["unnamed"] == r["unnamed"] - 1  # a decided pair waits no more
+    assert all(x["reviews_left"] == x["pairs"] - x["checked"] for x in after["ranges"])  # the line never passes a range found false: all of it, and below
+    (ws / "method.toml").unlink()
+    assert say("describe", "review", "--workspace", "workspaces/w")[0] == 2  # no trust line: it merges as tuned, said

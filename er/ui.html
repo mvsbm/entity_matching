@@ -2855,7 +2855,7 @@ function kindCard(r, at, of) {  // the name; what the engine thinks of it, and w
 function showWorkload(box, d) {
   if (d.event === "error") { box.innerHTML = banner(d); return; }
   const at = (x) => x.up_to === null ? `${fmt(x.down_to)}+` : `${fmt(x.down_to)}–${fmt(x.up_to)}`, all = d.ranges[d.ranges.length - 1];
-  const first = d.ranges.find((x) => x.pairs);
+  const first = d.ranges.find((x) => x.reviews_left);  // the first range still to check: those above the line merge
   box.innerHTML = `<p class="answer">${first ? `To let pairs scoring ${esc(at(first))} merge: ${plural(first.reviews_to_here, "pair")}. Every range: ${plural(all.reviews_to_here, "pair")}, about ${
     fmt(d.hours.to_each_line[d.ranges.length - 1])} hours at ${fmt(d.seconds_per_pair)} s a pair${d.unnamed ? `, and ${plural(d.unnamed, "pair")} with no name compared` : ""}.` : "Nothing to check yet."}</p><div class="workload-grid"></div>`;
   grid(box.querySelector(".workload-grid"), d.ranges, ["range", "pairs", "sample", "chance_clean", "reviews_to_here"], {filter: false,

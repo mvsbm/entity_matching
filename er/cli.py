@@ -135,6 +135,8 @@ def cell(v: object) -> str:
         return f"{v:,.2f}"
     if isinstance(v, list):
         return ", ".join(map(cell, v))
+    if isinstance(v, dict):
+        return " ".join(f"{k.replace('_', ' ')} {cell(x)}" for k, x in v.items())
     return str(v)
 
 
@@ -289,16 +291,20 @@ def ready_for(run: Run, fields: list[dict], plan: pd.DataFrame, capacity: dict, 
     look at first (a field nearly empty, or whose values don't look like it; repairs waiting; rows unread; records
     set aside; little room to spare). Each a sentence, with what to do."""
     stops, warns = [], []
-    if capacity["headroom"] is not None and capacity["headroom"] < 1:
+    needed, fit = capacity["pairs_needed"], capacity["pairs_fit"]
+    if needed > fit:  # the numbers themselves: the headroom shown is rounded
         most = ", ".join(f"{x.name} {x.normal:,}" for x in plan.nlargest(3, "normal").itertuples())
         stops.append(dict(what=f"the pairs ({capacity['pairs_needed']:,}) are more than fit in memory and the spill disk ({capacity['pairs_fit']:,}); the most: {most}",
                           fix="give DuckDB more room: --compute memory_limit=… temp_directory=<a disk with space>"))
-    elif capacity["headroom"] is not None and capacity["headroom"] < 2:
-        warns.append(dict(what=f"the pairs fill {1 / capacity['headroom']:.0%} of the room DuckDB has", fix="a larger file may not fit: give it more memory or spill disk"))
-    either = {f for group in run.pipeline.fields.one_of for f in group}  # a person's or a company's name: each filled only for its kind
+    elif 2 * needed > fit:
+        warns.append(dict(what=f"the pairs fill {needed / fit:.0%} of the room DuckDB has", fix="a larger file may not fit: give it more memory or spill disk"))
+    filled = {f["field"]: f["filled"] for f in fields if f["filled"] is not None}
+    either = {f for group in run.pipeline.fields.one_of for f in group}  # a person's or a company's name: each filled only for its kind, so together
+    for group in [*run.pipeline.fields.one_of, *([f] for f in filled if f not in either)]:
+        if (have := [f for f in group if f in filled]) and (share := sum(filled[f] for f in have)) < 0.3:
+            warns.append(dict(what=f"{' and '.join(have)} {'are' if len(have) > 1 else 'is'} {share:.0%} filled" + (" together" if len(have) > 1 else ""),
+                              fix="matching leans on it less: map a fuller column if the file has one"))
     for f in fields:
-        if f["filled"] is not None and f["filled"] < 0.3 and f["field"] not in either:
-            warns.append(dict(what=f"{f['field']} is {f['filled']:.0%} filled", fix="matching leans on it less: map a fuller column if the file has one"))
         if f["looks_right"] is not None and f["filled"] and f["looks_right"] < 0.5:
             warns.append(dict(what=f"only {f['looks_right']:.0%} of {f['field']}'s values look like it", fix=f"check the column it reads ({f['columns']})"))
     if read and read["waiting"]:
@@ -700,7 +706,7 @@ def rehearse_records(a: dict, emit: "Emit") -> dict:
     r = auto.rehearse(ws, sh, s, Path(a["pipeline"]) if a.get("pipeline") else None, emit.step)
     if not r["ok"]:
         raise InputError(f"a file of {r['records']:,} records stopped here: {r['error']}", fix=r["fix"] or "give the run more room: --compute memory_limit=… temp_directory=…")
-    return {**r, "next": [dict(command=nayose("resolve", "records", "--workspace", ws), why="the real file, now its size is known to fit")]}
+    return {**r, "next": [dict(command=nayose("resolve", "records", *([a["input"]] if a["input"] else []), "--workspace", ws), why="the real file, now its size is known to fit")]}
 
 
 def describe_review(a: dict, emit: "Emit") -> dict:
@@ -709,6 +715,10 @@ def describe_review(a: dict, emit: "Emit") -> dict:
     if not (out / "gold.parquet").exists():
         raise InputError(f"no run in {out}", fix="find matches first: nayose resolve records --workspace …")
     per = number(a["seconds"], "--seconds", "seconds, for example 10") if a.get("seconds") else 10.0
+    if not 0 < per < math.inf:
+        raise InputError(f"--seconds {a['seconds']}: not a time a pair takes", fix="seconds above 0, for example 10")
+    if p.trust.line is None:
+        raise InputError(f"{out} has no trust line: it merges as tuned", fix="start one, and nothing merges before people check: nayose raise trust --workspace …")
     return {**review_workload(connect(s.compute)[0], out, p, s.data.unique_id, per),
             "next": [dict(command=nayose("list", "pairs", "--workspace", out, "--pending"), why="the pairs waiting now")]}
 
@@ -1132,7 +1142,9 @@ COMMANDS: tuple[Command, ...] = (
             "of a smaller range), the false links the model expects in it, the chance its sample comes back clean, the false "
             "rate a clean sample bounds, and the reviews left to merge it and every range above; then what waits whatever "
             "the line, the spot-checks a round, the person/company sheet, and the hours at --seconds a pair (an assumption, "
-            "not a measure). Changes nothing. O(E + D) over the run's files and people's decisions.",
+            "not a measure). A range above the line merges: none left there; a range people found a false pair in, and every "
+            "range below it, need all their pairs, since the line never steps past it. A workspace with no trust line merges "
+            "as tuned, and is refused. Changes nothing. O(E + D) over the run's files and people's decisions.",
             (WORKSPACE, PIPELINE, Param("seconds", "the seconds one pair takes people to decide, for the hours (default 10)")),
             {"ranges": "each range: down_to, up_to (none: no top), pairs, checked, different, sample, expected_false, chance_clean, "
                        "bound (the false rate a clean sample proves, at 95%), reviews_left, reviews_to_here (cumulative), if_not_clean",
