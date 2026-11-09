@@ -209,6 +209,14 @@ def test_the_page_answers_once_per_key_shows_any_row_and_says_when_the_server_is
     page.click("[data-act='rerun records']")  # started, then left: back on step 3 once it ends, its buttons are free again
     page.click("dialog .dlg-foot .btn.filled")
     page.click(".navitem[data-screen=results]")
+    page.wait_for_function("() => task.steps.length >= 1 && task.done === null", timeout=60_000)  # a step has ended; the run goes on
+    page.wait_for_function("() => (document.querySelector('.rail li.running[data-busy=run] .run-line') || {textContent: ''}).textContent.includes('left')")  # its step turns, saying how far
+    page.click(".navitem[data-screen=records]")  # the Overview: what runs now, and the way to it
+    page.wait_for_selector("#auto a[data-go=run]", timeout=10_000)
+    assert page.inner_text("#auto h2").startswith("Matching again")
+    page.click("#auto a[data-go=run]")  # back while it runs: its card, and the stages its steps have filled in, as they stand
+    page.wait_for_selector("#out .steps-card .answer:has-text('now:')", timeout=10_000)
+    page.wait_for_selector(".node[data-node=records] .n .v", timeout=10_000)
     page.wait_for_selector("#task:has-text('Matching again: done')", timeout=120_000)  # its progress, on whichever page is open
     page.click(".navitem[data-screen=run]")
     page.wait_for_selector("[data-act='add records']:not([disabled])", timeout=10_000)
@@ -331,13 +339,17 @@ def test_a_long_command_shows_how_far_it_is_in_a_panel_that_folds_and_closes_and
     assert page.inner_text("#task-title") == "Loading your file · about 40 seconds left"
     page.evaluate("task.end(false, 'no file at x.csv', 'j1')")
     assert page.inner_text("#task-title") == "Loading your file: failed"
-    assert page.evaluate("[runLeft(RUN_STEPS, null, 0, 5, null), runLeft(RUN_STEPS, null, 0, 5, 60), runLeft(RUN_STEPS, 'load', 20, 25, null), runLeft(RUN_STEPS, null, 0, 30, 20)]") == [
-        None, 55, pytest.approx(25 / 0.23 - 25), 120]  # nothing yet; the guess; the steps so far; never less than the step it is in implies
+    pace = page.evaluate("[[null, 0, 5, null], [null, 0, 5, 60], ['load', 20, 25, null], [null, 0, 30, 20], [null, 0, 300, 20]].map(([e, at, now, prior]) => runPace(RUN_STEPS, e, at, now, prior))")
+    assert pace[0] == {"done": 0, "left": None, "over": False} and pace[1]["left"] == pytest.approx(55)  # nothing says yet; the guess before it began
+    assert pace[2]["over"] and pace[2]["left"] is None  # budget past its time at the pace load set: said so, no number made up
+    assert pace[3]["over"] and pace[3]["left"] is None and pace[3]["done"] == pace[4]["done"] < 0.2  # a step running long: the bar holds, the estimate doesn't grow
+    assert page.evaluate("paceLine(runPace(RUN_STEPS, null, 0, 300, 20), 300)") == "longer than usual, 5 minutes so far"
     page.evaluate("() => { task.start('resolve records', 'j3'); task.event({event: 'step', step: 'candidates'}, 'j3'); task.event({event: 'progress', done: 2e6, total: 8e6, unit: 'pairs', likely: 1234}, 'j3'); }")
     assert page.inner_text("#task-title").startswith("Finding matches · ")  # scoring, slice by slice: how far, and the matches so far
     page.click("#task-fold")
     assert page.inner_text("#task-line").startswith("2,000,000 of 8,000,000 pairs scored · 1,234 likely matches so far · ")
-    assert page.evaluate("runLeft(RUN_STEPS, 'candidates', 100, 200, null, 0.25)") == pytest.approx(300 + 500 * (1 - 0.87) / 0.87)  # its own pace, then the rest at their share
+    scoring = page.evaluate("runPace(RUN_STEPS, 'candidates', 100, 200, null, 0.25)")  # scoring says how far it is: its own pace, then the steps after it
+    assert scoring["left"] == pytest.approx(300 + 100 / 0.57 * (1 - 0.87)) and scoring["done"] == pytest.approx(0.57 + 0.30 * 0.25)
     page.evaluate("snack('<span class=msg>Copied the report</span>')")
     page.click("#snack .x")  # a notice closed by its ✕
     assert page.is_hidden("#snack")
