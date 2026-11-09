@@ -130,6 +130,21 @@ def test_candidate_generators_respect_query_window_and_cosine():
     assert found_by(named, ["person_name"]).tolist() == [True, False, True]  # whole names only
 
 
+def test_a_deletion_keys_normal_pairs_hold_the_pairs_its_join_lists_and_never_go_below_zero():
+    import duckdb
+    names = ["JOHNSMITH"] * 200 + [f"N{i:05d}" for i in range(2000)]  # one value on 200 records: each of its keys an oversized block
+    df = pd.DataFrame({"uid": [f"{i:05d}" for i in range(len(names))], "name": names}, dtype="string")
+    b, budget = DeletionKeys(name="d", key=Key("name")), Budget(max_pairs_per_record=1000, max_block_size=1000, target_rows=10, benchmark_pairs=10)
+    est = estimate(b, df, len(df), uid="uid", oversized_from=budget.min_oversized())
+    con = duckdb.connect()  # a gate that keeps no oversized block: the join lists the normal blocks' pairs only
+    union, _ = candidates((b,), df, "uid", None, budget, con=con, gate=lambda t: con.execute(f"CREATE OR REPLACE TABLE g AS SELECT *, -99.0 AS match_weight FROM {t}") and "g")
+    assert est["oversized_blocks"] and est["est_pairs"] - est["oversized_pairs"] < 0 <= len(union) <= est["normal_pairs"] < est["est_pairs"]
+    few = pd.DataFrame({"uid": list("0123"), "name": ["ABC", "ABC", "ABX", "ABX"]}, dtype="string")  # block AB oversized; each value's other keys normal
+    tight = Budget(max_pairs_per_record=1000, max_block_size=1000, target_rows=10, benchmark_pairs=10, sample_pairs=3)
+    union, _ = candidates((b,), few, "uid", None, tight, con=con, gate=lambda t: con.execute(f"CREATE OR REPLACE TABLE g AS SELECT *, -99.0 AS match_weight FROM {t}") and "g")
+    assert estimate(b, few, 4, uid="uid", oversized_from=tight.min_oversized())["normal_pairs"] == len(union) == 2  # a value's pair once, in one of its normal blocks
+
+
 def test_preflight_counts_block_pairs_and_the_budget_stops_a_run():
     df = pd.DataFrame({"uid": list("ABCDE"), "phone": ["1", "1", "1", "2", "2"]}, dtype="string")
     spec = RulesSpec(standardize=load_settings().standardize, resolver=Resolver(method="connected_components"),
