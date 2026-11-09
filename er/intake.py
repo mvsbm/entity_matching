@@ -28,6 +28,7 @@ import sys
 import time
 import unicodedata
 from collections import Counter
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -298,10 +299,24 @@ def parquet_rows(f: Path):  # (line, fields) of a Parquet file: text as its byte
         raise InputError(f"{f}: can't be read as Parquet ({str(e).splitlines()[0]})", fix="copy it again, or write it again from its source") from None
 
 
+def rows_in(f: Path) -> int:  # about how many records a file holds, for progress: Parquet's own count; text, its first megabyte's lines, scaled to its size
+    try:
+        with f.open("rb") as h:
+            head = h.read(1 << 20)
+        if head[:4] == b"PAR1":  # by its bytes, as sniff knows it, without sniff's pass over the whole file
+            return pq.ParquetFile(f).metadata.num_rows
+        lines = head.count(b"\n") or head.count(b"\r")  # a file whose lines end in \r alone
+        return max(0, round(lines * f.stat().st_size / max(1, len(head))) - 1)  # its header aside
+    except (OSError, pa.ArrowException):  # its reading says why
+        return 0
+
+
 # ---------- one file read ----------
 
-def read_one(f: Path, out: Path, spec: InputSpec, m: Model, accepted: frozenset[str], strict: bool) -> tuple[dict, list[dict], list[dict]]:
-    """One file into `out` (Parquet, every column text): its facts (counts only), its proposals, its unread rows."""
+def read_one(f: Path, out: Path, spec: InputSpec, m: Model, accepted: frozenset[str], strict: bool,
+             progress: Callable[[int], None] | None = None) -> tuple[dict, list[dict], list[dict]]:
+    """One file into `out` (Parquet, every column text): its facts (counts only), its proposals, its unread rows;
+    `progress` told the rows read after each chunk."""
     fmt, delimiter, quotes = sniff(f)
     rows = parquet_rows(f) if fmt == "parquet" else text_rows(f, fmt, delimiter, quotes)
     try:
@@ -420,6 +435,8 @@ def read_one(f: Path, out: Path, spec: InputSpec, m: Model, accepted: frozenset[
                          and not (num and ("." in v or "e" in v or "E" in v)) else value(j, v, line) for v, line in zip(col, lines)])  # most values: as they are
         write(done)
         facts["rows"] += len(lines)
+        if progress:
+            progress(facts["rows"])
     for line, fields in rows:
         if trailing and len(fields) == width + 1 and not fields[-1]:  # the delimiter its writer ends records with: an empty field, nothing lost
             fields = fields[:-1]
@@ -512,11 +529,14 @@ def sha256(f: Path) -> str:
         return hashlib.file_digest(fh, "sha256").hexdigest()
 
 
-def take(part: Path, given: dict[Path, str], spec: InputSpec, reference: Path, accepted: frozenset[str] = frozenset(), strict: bool = False) -> dict:
+def take(part: Path, given: dict[Path, str], spec: InputSpec, reference: Path, accepted: frozenset[str] = frozenset(), strict: bool = False,
+         progress: Callable[[int, int], None] | None = None) -> dict:
     """Read every file given (file → its name in the part) into part/read/, and write what was found: intake.json,
     proposals.parquet, unread.parquet. Read again (with more kinds accepted), each read file keeps the SHA-256 of what
-    it replaced, so a run that read the earlier one still finds its file (er.folder.inputs). The report. O(bytes)."""
+    it replaced, so a run that read the earlier one still finds its file (er.folder.inputs). `progress` told the rows
+    read and about how many there are, as each chunk is read. The report. O(bytes)."""
     t, m = time.time(), model(reference)
+    whole, seen = sum(map(rows_in, given)) if progress else 0, 0
     old = json.loads((part / REPORT).read_text(encoding="utf-8")) if (part / REPORT).is_file() else {}
     before = {x["read"]: x.get("versions", []) for x in old.get("files", [])}
     tmp = part / ".read.tmp"
@@ -525,12 +545,15 @@ def take(part: Path, given: dict[Path, str], spec: InputSpec, reference: Path, a
     for f, name in given.items():
         rel = Path(name)
         rel = rel if rel.suffix == ".parquet" else rel.with_name(rel.name + ".parquet")
-        facts, p, u = read_one(f, tmp / READ / rel, spec, m, accepted, strict)
+        facts, p, u = read_one(f, tmp / READ / rel, spec, m, accepted, strict, progress and (lambda n, b=seen: progress(b + n, max(whole, b + n))))
+        seen += facts["rows"]
         sha = sha256(tmp / READ / rel)
         files.append(dict(facts, given=name, read=(Path(READ) / rel).as_posix(), sha256=sha,
                           versions=list(dict.fromkeys([*before.get((Path(READ) / rel).as_posix(), []), sha]))))
         proposals += p
         unread += u
+    if progress and seen < whole:  # fewer than the estimate (quoted newlines, rows unread): the reading is done all the same
+        progress(seen, seen)
     pq.write_table(pa.Table.from_pylist(proposals, pa.schema([("kind", pa.string()), ("file", pa.string()), ("line", pa.int64()), ("column", pa.string()),
                                                                ("before", pa.string()), ("after", pa.string())])), tmp / PROPOSALS)
     pq.write_table(pa.Table.from_pylist(unread, pa.schema([("file", pa.string()), ("line", pa.int64()), ("raw", pa.binary()), ("reason", pa.string())])), tmp / UNREAD)

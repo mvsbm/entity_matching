@@ -7,7 +7,7 @@ Written by `scripts/document_commands.py` from the declarations in `er/cli.py`; 
 `nayose` (名寄せ: gathering each customer's records under one name) reads as a sentence: a verb, a noun, then the parameters. Every command takes `--help` and `--format`.
 
 - **`--format text`**, the default: each step on a line as it finishes, then the result, for a person.
-- **`--format json`**: one JSON object per line: `{"event": "step", …}` per step, then `{"event": "result", "command": …, …}` with the fields listed below, or `{"event": "error", "error": …, "fix": …, "hints": …, "exit": …}`. IDs are `id`, `id_l`, `id_r`, whatever the file calls them.
+- **`--format json`**: one JSON object per line: `{"event": "step", …}` per step (a file being read: `{"event": "progress", "done": …, "total": …, "unit": "rows"}` as it goes, the total about), then `{"event": "result", "command": …, …}` with the fields listed below, or `{"event": "error", "error": …, "fix": …, "hints": …, "exit": …}`. IDs are `id`, `id_l`, `id_r`, whatever the file calls them.
 - **Exit codes:** 0; 2, a mistake people fix (two lines: what is wrong, and the fix); 75, the workspace is busy: try again later; 1, a pass of `serve inbox` stopped on a file; 130, stopped with Ctrl-C.
 - **`next`**, in every result: the commands that usually follow, each with why.
 
@@ -577,7 +577,7 @@ Records and entities, the largest entities, each run so far, the pairs and kinds
 | `round` | the round now: one per method the workspace ran (rounds.json) |
 | `audits` | this round's audits people decided: checked, false |
 | `trust` | the trust line (none: the method as tuned): line (none: above every step), next (the range checked next: down_to, up_to), its pairs, checked, false, needed, may_lower; above (the pairs above the line: pairs, checked, false); checks |
-| `inputs` | the records files given to it, each in inputs/: name, path, files, bytes, rows, read (by a run, as it is now), waiting (repairs proposed, for people), unread (rows), given (its file's own name, one file) |
+| `inputs` | the records files given to it, each in inputs/: name, path, files, bytes, rows, read (by a run, as it is now), waiting (repairs proposed, for people), unread (rows), given (its file's own name, one file), seconds (its reading took), columns |
 | `columns` | own: its columns.toml; project: config/settings.toml's |
 | `auto` | the report try everything wrote, to send: report (its path), markdown |
 | `next` | the commands that usually follow |

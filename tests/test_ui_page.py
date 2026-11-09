@@ -209,7 +209,7 @@ def test_the_page_answers_once_per_key_shows_any_row_and_says_when_the_server_is
     page.click("[data-act='rerun records']")  # started, then left: back on step 3 once it ends, its buttons are free again
     page.click("dialog .dlg-foot .btn.filled")
     page.click(".navitem[data-screen=results]")
-    page.wait_for_selector("#snack:has-text('Done')", timeout=120_000)
+    page.wait_for_selector("#task:has-text('Matching again: done')", timeout=120_000)  # its progress, on whichever page is open
     page.click(".navitem[data-screen=run]")
     page.wait_for_selector("[data-act='add records']:not([disabled])", timeout=10_000)
     httpd.shutdown()
@@ -306,6 +306,49 @@ def test_step_2_shows_each_change_at_once_writes_them_in_turn_and_a_refused_one_
             break
         page.wait_for_timeout(100)
     assert columns()["phone"] == ()
+
+
+def test_a_long_command_shows_how_far_it_is_in_a_panel_that_folds_and_closes_and_the_drawer_keeps_its_height(ui_page, tmp_path, population):
+    from er import cli
+    s, p, g = population
+    g.df.to_parquet(tmp_path / "all.parquet", index=False)
+    home = tmp_path / "workspaces"
+    assert cli.main(["create", "workspace", "w", "--home", str(home), "--format", "json"]) == 0
+    page, server, httpd = ui_page(str(home / "w"), str(home), viewport={"width": 1280, "height": 900})
+    page.click(".navitem[data-screen=columns]")
+    page.fill("#cin", str(tmp_path / "all.parquet"))
+    page.click("#load")
+    assert page.inner_text("#out .waiting") == "Reading all.parquet…"  # the columns, once read: something says so meanwhile
+    page.wait_for_selector("#task:has-text('Loading your file: done')", timeout=60_000)
+    page.wait_for_selector("details.fgroup", state="attached")
+    page.click("#task-close")
+    assert page.is_hidden("#task")
+    page.evaluate("() => { task.start('load records', 'j1', Date.now() / 1000 - 10); task.start('add records', 'j2'); task.event({event: 'progress', done: 200, total: 1000, unit: 'rows'}, 'j1'); }")
+    assert page.inner_text("#task-line") == "200 of 1,000 rows · about 40 seconds left" and page.get_attribute("#task-bar", "style") == "width: 20%;"
+    page.click("#task-fold")  # folded: what it does and how long is left, in its title
+    assert page.is_hidden("#task-line") and page.inner_text("#task-title") == "Loading your file · about 40 seconds left"
+    page.evaluate("task.end(false, 'refused', 'j2')")  # a second command, refused at once: the panel stays the first's
+    assert page.inner_text("#task-title") == "Loading your file · about 40 seconds left"
+    page.evaluate("task.end(false, 'no file at x.csv', 'j1')")
+    assert page.inner_text("#task-title") == "Loading your file: failed"
+    assert page.evaluate("[runLeft(RUN_STEPS, null, 0, 5, null), runLeft(RUN_STEPS, null, 0, 5, 60), runLeft(RUN_STEPS, 'load', 20, 25, null), runLeft(RUN_STEPS, null, 0, 30, 20)]") == [
+        None, 55, pytest.approx(25 / 0.23 - 25), 120]  # nothing yet; the guess; the steps so far; never less than the step it is in implies
+    page.evaluate("snack('<span class=msg>Copied the report</span>')")
+    page.click("#snack .x")  # a notice closed by its ✕
+    assert page.is_hidden("#snack")
+    page.click("#term-toggle")
+    grip = page.locator("#term-grip").bounding_box()
+    page.mouse.move(grip["x"] + 300, grip["y"] + 4)
+    page.mouse.down()
+    page.mouse.move(grip["x"] + 300, grip["y"] - 196, steps=4)  # the drawer, taller by its top edge
+    page.mouse.up()
+    tall = page.evaluate("document.getElementById('term').offsetHeight")
+    assert tall >= 440
+    page.reload()
+    page.click("#term-toggle")
+    assert page.evaluate("document.getElementById('term').offsetHeight") == tall  # as it was left
+    page.click(".navitem[data-screen=run]")
+    assert re.fullmatch(r"all\.parquet · about \d+ seconds", page.inner_text("#out .answer", timeout=60_000))  # before a run: about how long, from this machine's reading of the file
 
 
 def test_step_2_shows_what_the_reader_proposes_and_a_click_accepts_one_kind(ui_page, tmp_path, population):
@@ -448,7 +491,7 @@ def test_auto_mode_runs_from_the_first_screen_and_its_report_waits_on_the_overvi
     assert page.inner_text("#picker").startswith("Workspace: auto-")
     page.click("[data-screen=columns]")  # the person goes elsewhere while it runs
     page.wait_for_selector("h1:has-text('Prepare your data')")
-    page.wait_for_function("() => !document.querySelector('.snack .spin')", timeout=300_000)  # it ends
+    page.wait_for_selector("#task:has-text('Auto mode: done')", timeout=300_000)  # it ends
     page.click(".navitem[data-screen=records]")  # back on the Overview: the report to send
     page.wait_for_selector("#copy-report")
     assert page.inner_text("#auto h2.question") == "What should I send?" and page.inner_text("#auto .report").startswith("# nayose auto mode")
