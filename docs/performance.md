@@ -26,7 +26,7 @@
 
 **A full run** (`er.run.Run.full`, which `nayose resolve records` calls), with the times measured on 1,000,338 generated records by
 `scripts/benchmark.py`, in a process of its own under an 8 GB DuckDB memory limit (peak 6.64 GB, Python included). The reader
-reads the file before these steps, about 15 s a million records ([below](#reading-a-file-as-it-comes)):
+reads the file before these steps, about 15 s a million records from CSV, 7 s from Parquet ([below](#reading-a-file-as-it-comes)):
 
 | # | Step | Code | Cost | Grows like | At 1M |
 |---|---|---|---|---|---|
@@ -197,7 +197,10 @@ columns written as CSV, clean and damaged ([reports/benchmark_intake.md](../repo
 The damaged file holds values in CP932 (10% of rows) and EUC-JP (2%), zero-width characters and NULs, placeholders,
 spreadsheet numbers, names garbled upstream and unquoted commas inside addresses. Most values take the fast path: ASCII
 as it is, UTF-8 that reads as Japanese text decoded once; only the others are tried in every encoding and judged, so a
-damaged file costs about twice a clean one.
+damaged file costs about twice a clean one. A Parquet file is read by column: the first chunk learns each column from
+its values one by one (a text column's first 50,000; past them, UTF-8 values tell nothing), then each chunk's values
+that reading keeps as they are are settled in Arrow, the rest read one by one as in a CSV; the same file, byte for
+byte, in about half the time (7.1 s against 14.8 s on the million records as Parquet).
 
 ## The probe: the matches no key lists
 

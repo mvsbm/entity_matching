@@ -32,7 +32,9 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
+import numpy as np
 import pyarrow as pa
+import pyarrow.compute as pc
 import pyarrow.parquet as pq
 
 from er.config import InputError
@@ -42,7 +44,7 @@ SUFFIXES = (".parquet", ".csv", ".tsv", ".txt")  # the records files a folder or
 KINDS = ("realign", "garbled", "encoding")
 KEEP = 1000  # proposals of each kind kept to show
 ODD = 0.1  # past this share of records that don't line up, the file is refused: its delimiter or header is wrong
-CHUNK = 200_000  # shortcut: one Python pass, about 15 s a million records; past ~20M rows on one machine, split the file or decode per column in DuckDB
+CHUNK = 200_000  # shortcut: a CSV in one Python pass, about 15 s a million records (a Parquet file by column, about 7 s); past ~20M rows on one machine, split the file
 CONTROL = re.compile("[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f​-‍⁠﻿]")
 BREAKS = re.compile("[\t\r\n]+")
 WHOLE = re.compile(r"^(-?\d+)\.0+$")  # a whole number a spreadsheet wrote as a float
@@ -119,6 +121,14 @@ def ungarbled(text: str, m: Model, margin: float) -> str | None:  # a garbled va
 
 
 # ---------- one value: its decodings, and what loses nothing ----------
+
+def decodes(v: str) -> bool:  # a value's bytes (latin-1 characters) are UTF-8
+    try:
+        v.encode("latin-1").decode("utf-8")
+        return True
+    except UnicodeDecodeError:
+        return False
+
 
 def decodings(v: str, order: tuple[str, ...]) -> list[tuple[str, str]]:  # each encoding a value's bytes decode in strictly
     if v.isascii():
@@ -275,28 +285,55 @@ def text_rows(f: Path, fmt: str, delimiter: str, quotes: bool):  # (line, fields
                 yield reader.line_num, [view(x) for x in fields] if fmt != "csv" else fields
 
 
-def parquet_rows(f: Path):  # (line, fields) of a Parquet file: text as its bytes (latin-1 characters), the rest as text
+def parquet_chunks(f: Path):  # a Parquet file's header (its columns' names), then its records a chunk at a time, by column: text as Arrow text, bytes and nested values as they are, the rest cast to text
     try:
         pf = pq.ParquetFile(f)
-        yield 0, [view(n) for n in pf.schema_arrow.names]
-        line = 0
+        yield [view(n) for n in pf.schema_arrow.names]
         for batch in pf.iter_batches(batch_size=CHUNK):
-            cols = []
+            arrays = []
             for a in batch.columns:
-                if pa.types.is_dictionary(a.type):
-                    a = a.dictionary_decode()
+                a = a.dictionary_decode() if pa.types.is_dictionary(a.type) else a
                 t = a.type
-                if pa.types.is_string(t) or pa.types.is_large_string(t) or pa.types.is_binary(t) or pa.types.is_large_binary(t):
-                    cols.append([None if b is None else b.decode("latin-1") for b in a.cast(pa.large_binary()).to_pylist()])
-                elif pa.types.is_nested(t):
-                    cols.append([None if x is None else view(json.dumps(x, ensure_ascii=False, default=str)) for x in a.to_pylist()])
-                else:
-                    cols.append([view(x) for x in a.cast(pa.string()).to_pylist()])
-            for row in zip(*cols):
-                line += 1
-                yield line, list(row)
+                bytes_ = pa.types.is_binary(t) or pa.types.is_large_binary(t)
+                arrays.append(a if bytes_ or pa.types.is_nested(t) else a.cast(pa.large_string()))
+            yield arrays
     except (OSError, pa.ArrowException) as e:
         raise InputError(f"{f}: can't be read as Parquet ({str(e).splitlines()[0]})", fix="copy it again, or write it again from its source") from None
+
+
+def views(a: pa.Array) -> list[str | None]:  # a Parquet column's values as a CSV's fields come: text as its bytes (latin-1 characters), nested values as JSON
+    if pa.types.is_nested(a.type):
+        return [None if x is None else view(json.dumps(x, ensure_ascii=False, default=str)) for x in a.to_pylist()]
+    return [None if b is None else b.decode("latin-1") for b in a.cast(pa.large_binary()).to_pylist()]
+
+
+def re2(chars: str) -> str:  # a character class's members (ranges kept) for RE2, Arrow's regex: each by its code point
+    return "".join(c if c == "-" else f"\\x{{{ord(c):x}}}" for c in chars)
+
+
+PLAIN_RE2 = "^[!-~](?:[ -~]*[!-~])?$"  # printable ASCII, no space at either end: what reading keeps as it is
+JAPANESE_RE2 = f"^[{re2(JAPANESE.pattern[1:-2])}]*$"
+SOLID_RE2 = "[^\\x{20}\\x{2000}-\\x{200a}\\x{2028}\\x{2029}\\x{202f}\\x{205f}\\x{3000}]"  # a character not a space: JAPANESE's spaces, controls and breaks aside
+
+
+def settled(a: pa.Array, numeric: bool, nulls: pa.Array, utf8: bool, garbled: frozenset[str]) -> tuple[np.ndarray, np.ndarray]:
+    """Which values of a text column reading keeps as they are, decided in Arrow, and which of those are UTF-8 (counted
+    as decoded): plain ASCII (printable, no space at either end, not a placeholder, not a number to fix); with UTF-8 read
+    first, text in JAPANESE with nothing to fix (no control character or line break, none a wrong decoding makes, not
+    spaces alone, not a placeholder, not a number to fix). Only what value() would return unchanged: every other value
+    is read one by one, as before. O(values · length) in Arrow."""
+    has = lambda pattern: pc.fill_null(pc.match_substring_regex(a, pattern), False).to_numpy(zero_copy_only=False)
+    number = has("[.eE]") if numeric else np.zeros(len(a), bool)
+    plain = has(PLAIN_RE2) & ~pc.fill_null(pc.is_in(a, value_set=nulls), False).to_numpy(zero_copy_only=False) & ~number
+    if not utf8:
+        return plain, np.zeros(len(a), bool)
+    bad = f"[{re2(CONTROL.pattern[1:-1])}{re2(BREAKS.pattern[1:-2])}{re2(''.join(sorted(garbled)))}]"
+    stripped = pc.fill_null(pc.is_in(pc.utf8_trim(a, " \u3000"), value_set=nulls), False).to_numpy(zero_copy_only=False)
+    text = ~pc.fill_null(pc.string_is_ascii(a), True).to_numpy(zero_copy_only=False) & has(JAPANESE_RE2) & ~has(bad) & has(SOLID_RE2) & ~stripped & ~number
+    return plain | text, text
+
+
+# ---------- one file read ----------
 
 
 def rows_in(f: Path) -> int:  # about how many records a file holds, for progress: Parquet's own count; text, its first megabyte's lines, scaled to its size
@@ -318,7 +355,8 @@ def read_one(f: Path, out: Path, spec: InputSpec, m: Model, accepted: frozenset[
     """One file into `out` (Parquet, every column text): its facts (counts only), its proposals, its unread rows;
     `progress` told the rows read after each chunk."""
     fmt, delimiter, quotes = sniff(f)
-    rows = parquet_rows(f) if fmt == "parquet" else text_rows(f, fmt, delimiter, quotes)
+    chunks = parquet_chunks(f) if fmt == "parquet" else iter(())  # a Parquet file's records come by chunk, by column
+    rows = iter([(0, next(chunks))]) if fmt == "parquet" else text_rows(f, fmt, delimiter, quotes)
     try:
         lines = [next(rows), *(itertools.islice(rows, 20) if fmt != "parquet" else ())]
         wide = Counter(len(x) for _, x in lines[1:]).most_common(1)[0][0] if len(lines) > 1 else len(lines[0][1])
@@ -337,6 +375,7 @@ def read_one(f: Path, out: Path, spec: InputSpec, m: Model, accepted: frozenset[
             name = f"{base}_{k}"
         names.append(name)
     width, nulls = len(names), frozenset(spec.nulls)
+    null_set, utf8 = pa.array(sorted(nulls), pa.large_string()), spec.encodings[0] == "utf-8"
     facts = dict(file=f.name, format=fmt, delimiter=delimiter, quotes=quotes, columns=width, rows=0, decoded={}, fixed={}, proposed={}, unread=0, notes=[])
     if above:
         facts["notes"].append(f"{f.name}: {len(above)} line{'s' if len(above) > 1 else ''} above the header skipped")
@@ -403,21 +442,22 @@ def read_one(f: Path, out: Path, spec: InputSpec, m: Model, accepted: frozenset[
         if fixed:
             count("fixed", fixed)
         return text
-    def write(cols: list[list[str | None]]) -> None:
+    def plain(j: int, v: str) -> bool:  # kept as it is, undecoded: printable ASCII, no space at either end, not a placeholder, not a number to fix
+        return v.isascii() and v.isprintable() and v[0] != " " and v[-1] != " " and v not in nulls and not (numeric[j] and ("." in v or "e" in v or "E" in v))
+    def write(cols: list) -> None:  # each column a list of values, or Arrow text
         nonlocal writer
-        table = pa.table({n: pa.array(c, pa.string()) for n, c in zip(names, cols)})
+        table = pa.table({n: c.cast(pa.string()) if isinstance(c, pa.Array) else pa.array(c, pa.string()) for n, c in zip(names, cols)})
         if writer is None:
             out.parent.mkdir(parents=True, exist_ok=True)
             writer = pq.ParquetWriter(out, table.schema)
         writer.write_table(table)
     block: list[tuple[int, list]] = []
-    def flush(first: bool) -> None:
-        lines = [line for line, _ in block]
-        cols = list(zip(*(r for _, r in block))) if block else [()] * width
-        done = []
+    def study(cols: list) -> None:  # the first chunk learns each column from the values it reads for sure: what they look like, their encoding, whether they are numbers
         encs = [Counter() for _ in cols]
-        for j, col in enumerate(cols if first else ()):  # the first chunk learns each column from the values it reads for sure: what they look like, their encoding, whether they are numbers
+        for j, col in enumerate(cols):
             for k, v in enumerate(col):
+                if k >= 50_000 and (not v or v.isascii() or (utf8 and decodes(v))):  # past what is learned, only a value UTF-8 can't read counts
+                    continue
                 found = [("ascii", v)] if not v or v.isascii() else decodings(v, spec.encodings)
                 if len(found) == 1 and found[0][0] not in ("ascii", "utf-8"):
                     encs[j][found[0][0]] += 1
@@ -425,18 +465,44 @@ def read_one(f: Path, out: Path, spec: InputSpec, m: Model, accepted: frozenset[
                     learn(profile[j], found[0][1] or None)
             vals = [x for v in col[:50_000] if v and (x := v.strip())]
             numeric[j] = bool(vals) and sum(x.replace(".", "", 1).replace("E+", "").replace("e+", "").lstrip("-").isdigit() for x in vals) >= 0.5 * len(vals)
-        if first:  # a column's own encoding, else the file's: a column whose values no other encoding rules out reads as the rest of the file
-            whole = sum(encs, Counter())
-            for j, e in enumerate(encs):
-                majority[j] = (e or whole).most_common(1)[0][0] if (e or whole) else None
+        whole = sum(encs, Counter())  # a column's own encoding, else the file's: a column whose values no other encoding rules out reads as the rest of the file
+        for j, e in enumerate(encs):
+            majority[j] = (e or whole).most_common(1)[0][0] if (e or whole) else None
+    def flush(first: bool) -> None:
+        lines = [line for line, _ in block]
+        cols = list(zip(*(r for _, r in block))) if block else [()] * width
+        if first:
+            study(cols)
+        done = []
         for j, col in enumerate(cols):
-            num = numeric[j]
-            done.append([None if not v else v if v.isascii() and v.isprintable() and v[0] != " " and v[-1] != " " and v not in nulls
-                         and not (num and ("." in v or "e" in v or "E" in v)) else value(j, v, line) for v, line in zip(col, lines)])  # most values: as they are
+            done.append([None if not v else v if plain(j, v) else value(j, v, line) for v, line in zip(col, lines)])  # most values: as they are
         write(done)
         facts["rows"] += len(lines)
         if progress:
             progress(facts["rows"])
+    def quick(arrays: list[pa.Array]) -> None:  # a Parquet chunk: what reading keeps as it is, settled per column in Arrow; the rest one by one, as flush reads them
+        first, n, done = facts["rows"] + 1, len(arrays[0]) if arrays else 0, []
+        for j, a in enumerate(arrays):
+            if not pa.types.is_large_string(a.type):  # bytes, or nested values: one by one
+                done.append([None if not v else v if plain(j, v) else value(j, v, first + i) for i, v in enumerate(views(a))])
+                continue
+            keep, text = settled(a, numeric[j], null_set, utf8, m.garbled)
+            filled = pc.fill_null(pc.greater(pc.binary_length(a), 0), False).to_numpy(zero_copy_only=False)
+            slow = np.flatnonzero(filled & ~keep)
+            got = [value(j, view(v), first + int(i)) for i, v in zip(slow, a.take(pa.array(slow, pa.int64())).to_pylist())]
+            mask = pa.array(filled & ~keep)
+            col = pc.if_else(pa.array(keep), a, pa.scalar(None, pa.large_string()))
+            done.append(pc.replace_with_mask(col, mask, pa.array(got, pa.large_string())) if len(slow) else col)
+            if text.any():
+                count("decoded", "utf-8", int(text.sum()))
+        write(done)
+        facts["rows"] += n
+        if progress:
+            progress(facts["rows"])
+    for arrays in chunks:
+        if writer is None:  # the first: each column learned from its values, one by one; a text column's past 50,000 are UTF-8, which tells nothing
+            study([views(a.slice(0, 50_000)) if utf8 and pa.types.is_large_string(a.type) else views(a) for a in arrays])
+        quick(arrays)
     for line, fields in rows:
         if trailing and len(fields) == width + 1 and not fields[-1]:  # the delimiter its writer ends records with: an empty field, nothing lost
             fields = fields[:-1]
