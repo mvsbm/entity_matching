@@ -285,7 +285,7 @@ class Run:
         for kind, x in [*(("rule", k) for k in rules), *(("generator", g) for g in self.pipeline.fs.blockers)]:
             rows.append(dict(kind=kind, name=x.name, **estimate(x, "records", 0 if kind == "rule" else self.n, self.con, oversized_from=m)))
         plan = pd.DataFrame(rows).assign(per_record=lambda d: (d["est_pairs"] / max(self.n, 1)).round(2),
-                                         normal=lambda d: d["est_pairs"] - d["oversized_pairs"])
+                                         normal=lambda d: d["normal_pairs"])
         self._done("budget", "O(N)", f"O({self.n:,}) per rule and generator", t, pairs=int(plan["est_pairs"].sum()),
                    oversized_blocks=int(plan["oversized_blocks"].sum()))
         if stop and (normal := int(plan["normal"].sum())) > (cap := self.capacity()):
@@ -413,7 +413,7 @@ class Run:
         if not self.told:
             return None
         plan = self.plan[self.plan["kind"] == "generator"] if self.plan is not None else None
-        w = [1] * len(self.pipeline.fs.blockers) if plan is None else [self.n + max(0, int(x)) for x in plan["normal"]]  # normal: a deletion key's pairs less its repeats, which may be below its oversized blocks'
+        w = [1] * len(self.pipeline.fs.blockers) if plan is None else [self.n + int(x) for x in plan["normal"]]
         more = plan is None or bool(plan["oversized_blocks"].sum())
         return lambda i, n, unit: self.told(sum(w[:i]), sum(w), unit, more=more)
 

@@ -205,9 +205,10 @@ def _tfidf(b: TfidfNeighbours, r: Records) -> pd.DataFrame:  # N² by design: de
 
 
 def estimate(b: Blocker, records: pd.DataFrame | str, n_query: int, con: duckdb.DuckDBPyConnection | None = None,
-             uid: str | None = None, oversized_from: int = 2**62) -> dict[str, object]:
+             uid: str | None = None, oversized_from: int = 2**62, normal: bool = True) -> dict[str, object]:
     """Work before any join: candidate pairs (an upper bound) and the largest block, by group-by; and the blocks of
-    `oversized_from` records or more: how many, their records and their pairs. O(N)."""
+    `oversized_from` records or more: how many, their records and their pairs; and normal_pairs, those the join lists
+    with the oversized blocks left out (an upper bound too; a deletion key's only with `normal`, a scan more). O(N)."""
     m = oversized_from
     over = f"count(*) FILTER (WHERE c >= {m}), coalesce(sum(c) FILTER (WHERE c >= {m}), 0), coalesce(sum(c * (c - 1) // 2) FILTER (WHERE c >= {m}), 0)"
     none = dict(oversized_blocks=0, oversized_records=0, oversized_pairs=0)
@@ -219,11 +220,12 @@ def estimate(b: Blocker, records: pd.DataFrame | str, n_query: int, con: duckdb.
                 cols = ", ".join(q(k.name) for k in b.keys)
                 p, big, *o = r.con.execute(f"SELECT coalesce(sum(c * (c - 1) // 2), 0), coalesce(max(c), 0), {over} FROM "
                                            f"(SELECT count(*) AS c FROM {t} WHERE {_filled(k.name for k in b.keys)} GROUP BY {cols})").fetchall()[0]
-                return dict(big_o="O(N + P)", filled=f"O({n:,} + {int(p):,})", est_pairs=int(p), largest_block=int(big), **dict(zip(none, map(int, o))))
+                return dict(big_o="O(N + P)", filled=f"O({n:,} + {int(p):,})", est_pairs=int(p), largest_block=int(big), **dict(zip(none, map(int, o))),
+                            normal_pairs=int(p) - int(o[2]))
             case SortedNeighbourhood():
                 m = r.con.execute(f"SELECT count({q(b.key.name)}) FROM {t}").fetchall()[0][0]
                 return dict(big_o="O(N log N + N·w)", filled=f"O({m:,}·log {m:,} + {m:,}·{b.window})",
-                            est_pairs=m * (b.window - 1), largest_block=b.window, **none)
+                            est_pairs=m * (b.window - 1), largest_block=b.window, **none, normal_pairs=m * (b.window - 1))
             case DeletionKeys():  # Σ C(k,2) over the key blocks, less the repeats: identical values share all their d keys
                 v, within = r.variants(b), [q(w.name) for w in b.within]
                 p, big, *o = r.con.execute(f"""
@@ -231,12 +233,22 @@ def estimate(b: Blocker, records: pd.DataFrame | str, n_query: int, con: duckdb.
                          same AS (SELECT count(*) AS c, count(DISTINCT __dk) AS d FROM {v} GROUP BY {', '.join(['__v', *within])}),
                          agg AS (SELECT coalesce(sum(c * (c - 1) // 2), 0) AS p, coalesce(max(c), 0) AS big, {over} FROM blocks)
                     SELECT agg.p - (SELECT coalesce(sum((d - 1) * (c // d) * (c // d - 1) // 2), 0) FROM same), agg.* EXCLUDE (p) FROM agg""").fetchall()[0]
-                return dict(big_o="O(N·L + P)", filled=f"O({n:,}·L + {int(p):,})", est_pairs=int(p), largest_block=int(big), **dict(zip(none, map(int, o))))
+                pairs = int(p) if not o[0] else None
+                if o[0] and normal:  # the repeats taken off only where they are joined: a value's pairs once, if one of its d blocks is normal
+                    keys = ", ".join(["__dk", *within])
+                    pairs = r.con.execute(f"""
+                        WITH blocks AS (SELECT {keys}, count(*) AS __c FROM {v} GROUP BY {keys}),
+                             same AS (SELECT count(*) AS __c, count(DISTINCT __dk) AS d, count(DISTINCT __dk) FILTER (WHERE b.__c < {m}) AS dn
+                                      FROM {v} JOIN blocks b USING ({keys}) GROUP BY {', '.join(['__v', *within])})
+                        SELECT (SELECT coalesce(sum(__c * (__c - 1) // 2) FILTER (WHERE __c < {m}), 0) FROM blocks)
+                             - (SELECT coalesce(sum(greatest(dn - 1, 0) * (__c // d) * (__c // d - 1) // 2), 0) FROM same)""").fetchall()[0][0]
+                return dict(big_o="O(N·L + P)", filled=f"O({n:,}·L + {int(p):,})", est_pairs=int(p), largest_block=int(big), **dict(zip(none, map(int, o))),
+                            normal_pairs=pairs)
             case TfidfNeighbours():
                 m, length = r.con.execute(f"SELECT count({q(b.key.name)}), avg(length({q(b.key.name)})) FROM {t}").fetchall()[0]
                 per = (length or 0) * (b.ngram[1] - b.ngram[0] + 1)  # n-grams per record, roughly
                 return dict(big_o="O(N·L + U·N·q)", filled=f"O({m:,}·L + {n_query:,}·{m:,}·{per:.0f})",
-                            est_pairs=n_query * b.k, largest_block=b.k + 1, **none)
+                            est_pairs=n_query * b.k, largest_block=b.k + 1, **none, normal_pairs=n_query * b.k)
     finally:
         if r is not records:
             r.close()
@@ -312,7 +324,7 @@ def candidates(blockers: tuple[Blocker, ...], records: pd.DataFrame | str, uid: 
         if told:
             told(0, len(blockers), "keys")
         for i, b in enumerate(blockers):
-            est = estimate_touching(b, r) if touching else estimate(b, r, n_query, oversized_from=m)
+            est = estimate_touching(b, r) if touching else estimate(b, r, n_query, oversized_from=m, normal=False)  # the budget's count: not read here
             t = time.perf_counter()
             if isinstance(b, TfidfNeighbours):
                 pairs = _tfidf(b, r)

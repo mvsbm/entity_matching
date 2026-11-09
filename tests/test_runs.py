@@ -298,8 +298,8 @@ def test_scoring_in_slices_gives_the_scores_scoring_all_at_once_gives_and_each_l
     assert counts["records"][-1][0] == whole.n and counts["rules"][-1][0] == len(list(p.rules.each())) and len(counts["records"]) > 2  # from 0, a chunk at a time
     weighed = []
     probe = Run(p, s, told=lambda *a, **k: weighed.append((*a, k["more"])))
-    probe.n, g = 1000, len(p.fs.blockers)  # a deletion key's normal pairs (its repeats taken off) below its oversized blocks': below 0
-    probe.plan = pd.DataFrame(dict(kind=["rule", *["generator"] * g], normal=[5, -114_800, *[10] * (g - 1)], oversized_blocks=[0, 1, *[0] * (g - 1)]))
+    probe.n, g = 1000, len(p.fs.blockers)  # the joins weighed by the budget's pairs: a generator whose blocks are all oversized lists none
+    probe.plan = pd.DataFrame(dict(kind=["rule", *["generator"] * g], normal=[5, 0, *[10] * (g - 1)], oversized_blocks=[0, 1, *[0] * (g - 1)]))
     for i in range(g + 1):
         probe._joined()(i, g, "keys")
     assert [x[0] for x in weighed] == sorted(x[0] for x in weighed) and weighed[0][0] == 0 and weighed[-1][0] == weighed[-1][1] > 0 and all(x[3] for x in weighed)
