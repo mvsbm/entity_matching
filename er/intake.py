@@ -294,7 +294,7 @@ def parquet_chunks(f: Path):  # a Parquet file's header (its columns' names), th
             held, n = [*held, batch], n + len(batch)
             while n >= CHUNK:
                 whole = held[0] if len(held) == 1 else pa.concat_batches(held)  # one batch of a chunk, as most files come: no copy
-                held, n = [whole.slice(CHUNK)], n - CHUNK
+                held, n = ([whole.slice(CHUNK)] if n > CHUNK else []), n - CHUNK  # nothing left: nothing held, so the next batch isn't copied
                 yield texts(whole.slice(0, CHUNK))
         if n:
             yield texts(pa.concat_batches(held))

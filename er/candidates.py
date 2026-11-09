@@ -145,7 +145,7 @@ def pairs_sql(b: Blocker, r: Records, skip: str | None = None, only: str | None 
         case KeyBlocker():
             on = " AND ".join(f"a.{q(k.name)} = b.{q(k.name)}" for k in b.keys)
             if r.query:  # the query's rows against all: O(|Q|·b) plus a scan, whatever N
-                once = f"(a.{u} < b.{u} OR b.{u} NOT IN (SELECT {u} FROM {r.query}))"  # a pair of two asked records: once, not both ways round
+                once = f"(a.{u} < b.{u} OR b.{u} NOT IN (SELECT {u} FROM {r.query} WHERE {u} IS NOT NULL))"  # a pair of two asked records: once, not both ways round
                 return (f"SELECT least(a.{u}, b.{u}) AS l, greatest(a.{u}, b.{u}) AS r FROM {r.asked(t)} a JOIN {t} b "
                         f"ON {on} AND a.{u} <> b.{u} AND {once} WHERE {r.filters('a', 'b', query=False)} AND {_in(bcols, 'a', blocks, keep)}")
             return (f"SELECT a.{u} AS l, b.{u} AS r FROM {t} a JOIN {t} b ON {on} AND a.{u} < b.{u} "
