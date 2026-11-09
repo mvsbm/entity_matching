@@ -421,3 +421,9 @@ def test_a_part_s_description_is_kept_and_made_again_only_when_what_it_rests_on_
     assert describe() == fresh and made == [1]  # and kept again
     (Path(part) / cli.KEPT).write_text(json.dumps({"key": "other", "described": {}}), encoding="utf-8")
     assert describe() == fresh and made == [1, 1]  # a description kept for something else is never given
+    (ws / "method.toml").write_text('drop_rules = ["X1_CIF_PERSON_NAME"]\n', encoding="utf-8")  # a method adopted: what a run would turn off may change
+    describe()
+    assert made == [1, 1, 1]
+    (Path(part) / cli.KEPT).write_text("{not json", encoding="utf-8")  # a kept copy cut short: made again, never a failure
+    describe()
+    assert made == [1, 1, 1, 1] and json.loads((Path(part) / cli.KEPT).read_text(encoding="utf-8"))["key"]

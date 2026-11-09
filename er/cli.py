@@ -410,23 +410,25 @@ def read_of(part: Path) -> dict | None:  # what the reader found in a part: coun
 KEPT = "described.json"  # a part's description, kept with it: one, replaced when what it rests on changes
 
 
-@functools.lru_cache(maxsize=1)  # bounded: the one copy of the code a process runs
-def describing_code() -> str:  # the code a description comes from, as a hash: a description made by other code is made again
-    here = Path(__file__).parent
-    return hashlib.sha256(b"".join((here / f).read_bytes() for f in ("cli.py", "source.py", "settings.py", "intake.py", "config.py"))).hexdigest()
+# the code a description comes from, as it was when this process started, with the libraries it leans on (DuckDB's
+# sample, Python's Unicode tables): a description made by other code is made again
+DESCRIBING = hashlib.sha256(b"".join([*((Path(__file__).parent / f).read_bytes() for f in ("cli.py", "source.py", "settings.py", "intake.py", "config.py")),
+                                      duckdb.__version__.encode(), unicodedata.unidata_version.encode()])).hexdigest()
 
 
 def described_key(a: dict, part: Path) -> str | None:
     """All a workspace part's description rests on, as one hash: the part's files as read (their SHA-256, and the repairs
-    accepted), the workspace's mapping, the settings, the reference names and places, the command's words and the code.
+    accepted), the workspace's mapping and method, the settings and the pipeline, the reference names and places, the
+    command's words, the code and its libraries.
     None for anything but a workspace's part: a file read for one command alone is read again anyway."""
     r, ws = intake.report(part), a.get("workspace")
     if not r or not ws or not Path(a["input"]).expanduser().is_dir():
         return None
     s = settings_for(a)
     ref = sorted((f.name, f.stat().st_size, f.stat().st_mtime_ns) for f in Path(s.paths["reference"]).glob("*") if f.is_file())
-    words = json.dumps([[x["sha256"], x.get("versions")] for x in r["files"]] + [r["accepted"], str(a["input"]), str(ws), ref, describing_code()])
-    rests = [words.encode(), *(f.read_bytes() for f in (settings_path(), columns_file(ws)) if f and Path(f).is_file())]
+    words = json.dumps([[x["sha256"], x.get("versions")] for x in r["files"]] + [r["accepted"], str(a["input"]), str(ws), ref, DESCRIBING])
+    files = (settings_path(), columns_file(ws), Path(a.get("pipeline") or s.root / "config" / "final.toml"), Path(ws) / folder.METHOD)
+    rests = [words.encode(), *(Path(f).read_bytes() if f and Path(f).is_file() else b"" for f in files)]  # each in its place: one missing is never another
     return hashlib.sha256(b"\0".join(rests)).hexdigest()
 
 
@@ -436,13 +438,17 @@ def describe_records(a: dict, emit: "Emit") -> dict:
     with readable(a["input"], settings_for(a)) as path:
         part = Path(path)
         key, kept = described_key(a, part), part / KEPT
-        old = json.loads(kept.read_text(encoding="utf-8")) if key and kept.is_file() else {}
+        try:  # a copy kept never fails the command: unreadable, it is made again
+            old = json.loads(kept.read_text(encoding="utf-8")) if key and kept.is_file() else {}
+        except (OSError, ValueError):
+            old = {}
         if key and old.get("key") == key:
             d = old["described"]
         else:
             d = plain(described({**a, "given": a["input"], "input": path}))
-            if key:
-                replace_text(kept, json.dumps({"key": key, "described": d}, ensure_ascii=False))
+            if key and described_key(a, part) == key:  # nothing changed while it was read (another client's mapping), and the part is still there
+                with contextlib.suppress(OSError):  # another describe writing it, a folder people can only read: kept another time
+                    replace_text(kept, json.dumps({"key": key, "described": d}, ensure_ascii=False))
         return {**d, "read": read_of(part)}
 
 

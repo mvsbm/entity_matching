@@ -251,9 +251,13 @@ class Lexicon:
     fold: dict[int, str]
 
 
-@functools.lru_cache(maxsize=1)  # bounded: the one reference folder a process reads
 def lexicon(folder: Path, kana_fold: tuple[tuple[str, str], ...]) -> Lexicon:
-    """The reference lists as sets, read once per process. O(reference rows)."""
+    """The reference lists as sets, read once per process while its files are as they were. O(reference rows)."""
+    return _lexicon(folder, kana_fold, tuple(sorted((f.name, f.stat().st_size, f.stat().st_mtime_ns) for f in Path(folder).glob("*") if f.is_file())))
+
+
+@functools.lru_cache(maxsize=1)  # bounded: the one reference folder a process reads, as it is now
+def _lexicon(folder: Path, kana_fold: tuple[tuple[str, str], ...], stamp: tuple) -> Lexicon:
     fold = str.maketrans(dict(kana_fold))
     people = json.loads((folder / "individual.json").read_text(encoding="utf-8"))
     places = json.loads((folder / "addresses.json").read_text(encoding="utf-8"))
