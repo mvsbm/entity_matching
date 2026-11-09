@@ -21,5 +21,6 @@ select = ["F", "B904", "UP017"]  # names unused or never defined; an error re-ra
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-ra --strict-markers --durations=10"
+faulthandler_timeout = 300  # a test still running after 5 minutes prints every thread's stack: a hang says where it is
 markers = ["slow: runs whole pipelines on a generated population (marked by its fixture, tests/conftest.py)",
            "browser: the page in Chromium (marked by the ui_page fixture)"]
