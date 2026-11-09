@@ -565,3 +565,91 @@ def test_a_run_sets_aside_what_it_cannot_resolve_and_suggests_a_mapping(tmp_path
     with pytest.raises(InputError, match="lacks a field every run needs") as e:
         Run(p, s).load(tmp_path / "renamed.parquet")
     assert 'id = "customer_no"' in e.value.fix  # suggested from its values: filled and unique
+
+
+def test_a_run_s_pairs_rows_and_entities_are_read_without_a_run_and_its_merge_conditions_need_none(say, tmp_path, population, monkeypatch):
+    """Results, Review and Explore read the run's own files: every pair at 0 points or more with each comparison's level
+    (scored/), each record's full row as the file gave it, the entities. Merge conditions join pairs without a run, as a
+    run would; turned off, they part only what they joined: people's answers stand, and their "different" never merges."""
+    import shutil
+    from er import folder
+    s, p, g = population
+    uid = s.data.unique_id
+    g.df.to_parquet(tmp_path / "theirs.parquet", index=False)
+    monkeypatch.chdir(tmp_path)
+    ws, at = tmp_path / "workspaces" / "w", ("--workspace", "workspaces/w")
+    say("create", "workspace", "w")  # strict: nothing merges without people
+    assert say("resolve", "records", "theirs.parquet", *at)[0] == 0
+    entities = lambda: set(pd.read_parquet(ws / "gold.parquet").groupby("cluster_id")[uid].agg(frozenset))
+    assert all(len(e) == 1 for e in entities())
+
+    _, d = say("describe", "results", *at)
+    index = pd.read_parquet(ws / "scored")
+    rules_alone = int((index["rule"].notna() & index["sources"].isna()).sum())
+    listed = next(x["candidates"] for x in json.loads((ws / "steps.json").read_text(encoding="utf-8"))["runs"][0]["steps"] if x["step"] == "candidates")
+    assert d["joined"] == 0 and sum(x["pairs"] for x in d["scores"]) == d["candidates"] == listed + rules_alone  # every pair compared: the keys' and the rules' own
+    assert ((index["match_weight"] >= 0) | index["rule"].notna()).all()  # 0 or more; the rules' pairs whatever they score
+    _, one = say("list", "scored", *at, "--count", 5)
+    _, two = say("list", "scored", *at, "--count", 5, "--page", 2)
+    points = [x["points"] for x in one["pairs"] + two["pairs"]]
+    assert one["total"] == len(index) and len(one["pairs"]) == 5 and points == sorted(points, reverse=True)  # best first, across pages
+    assert say("list", "scored", *at, "--status", "waiting", "--from", d["review_from"])[1]["total"] == sum(x["pairs"] for x in d["waiting"])
+    best = one["pairs"][0]
+    assert set(best["compared"]) == {c.name for c in p.fs.model.comparisons}  # each comparison's level and points
+    _, rows = say("show", "records", best["first"], best["second"], "nope", *at)
+    given = g.df.set_index(uid, drop=False)
+    assert [c["column"] for c in rows["columns"]] == list(g.df.columns) and [x["id"] for x in rows["records"]] == [best["first"], best["second"], "nope"]
+    for x in rows["records"][:2]:  # every column as the file gave it
+        assert {k: v for k, v in x["row"].items() if v not in (None, "")} == {k: str(v) for k, v in given.loc[x["id"]].items() if pd.notna(v) and str(v) != ""}
+    assert rows["records"][2]["row"] is None
+
+    same, apart = (best["first"], best["second"]), (one["pairs"][1]["first"], one["pairs"][1]["second"])
+    for (a, b), said in ((same, "match"), (apart, "no_match")):
+        assert say("decide", "pair", a, b, said, *at)[0] == 0
+    assert say("apply", "decisions", *at)[0] == 0
+    people = entities()
+    assert {*same} <= next(e for e in people if same[0] in e)
+    name = next(c for c in p.fs.model.comparisons if c.name == "name")
+    rule = index["rule"].dropna().iloc[0]
+    count = lambda m: say("describe", "merging", *at, "--conditions", json.dumps(m))[1]["pairs"]
+    high, by_rule, alike = count({"when": [{"points": 12}]}), count({"when": [{"rules": [rule]}]}), count({"when": [{"fields": {"name": name.levels[1].label}}]})
+    assert count({"join": "and", "when": [{"points": 12}, {"fields": {"name": name.levels[1].label}}]}) <= min(high, alike)
+    either = {"join": "or", "when": [{"points": 12}, {"rules": [rule]}]}
+    assert max(high, by_rule) <= count(either) <= high + by_rule
+    _, on = say("set", "merging", *at, "--conditions", json.dumps(either))
+    merged, said = entities(), pd.read_parquet(ws / "gold.parquet")
+    assert on["entities"] > 0 and folder.method(ws)["merge"]["join"] == "or" and merged != people
+    assert on["merged"] == count(either) and on["merged"] > len(index[index["match_weight"] >= 12]) // 2  # merged as previewed: undecided pairs counted
+    assert not any({*apart} <= e for e in merged if len(e) == 2)  # their "different" never merges by the conditions
+    assert say("set", "merging", *at, "--conditions", json.dumps({"when": [{"fields": {"name": "no such step"}}]}))[0] == 2
+    assert folder.method(ws)["merge"] == either  # refused before anything changed: the conditions as they were
+    from er.report import run_model
+    from er.results import merge_where
+    assert merge_where({"when": [{"fields": {"gone": "exact"}}]}, run_model(ws), p) == "(FALSE)"  # a comparison the run lacks: never met, no crash
+    assert say("reset", "method", *at)[0] == 0  # back to the tuned method, by a run: people's conditions kept
+    assert folder.method(ws)["merge"] == either and entities() == merged  # a run takes the same conditions: the same entities
+    pd.testing.assert_frame_equal(pd.read_parquet(ws / "gold.parquet")[said.columns], said)  # and says the same of what joined each record
+    a, b = sorted(next(e for e in merged if len(e) == 2 and e != frozenset(same)))  # two records only the conditions joined
+    assert say("decide", "pair", a, b, "no_match", *at)[0] == 0 and say("apply", "decisions", *at)[0] == 0
+    assert not any({a, b} <= e for e in entities())  # said different and applied: apart at once, the conditions still on
+    assert say("set", "merging", *at, "--conditions", json.dumps({"when": []}))[0] == 0
+    assert entities() == people and "merge" not in folder.method(ws)  # off: what the conditions joined parts; people's answer stands
+
+    g.df.iloc[:440].to_parquet(tmp_path / "first.parquet", index=False)
+    g.df.iloc[440:].to_parquet(tmp_path / "batch.parquet", index=False)
+    tuned, off = tmp_path / "tuned", ("set", "merging", "--workspace", "tuned", "--conditions", json.dumps({"when": []}))
+    assert say("resolve", "records", "first.parquet", "--workspace", "tuned")[0] == 0  # the method as tuned: rules and the model merge by themselves
+    run = pd.read_parquet(tuned / "gold.parquet")
+    assert say(*off)[0] == 0
+    pd.testing.assert_frame_equal(pd.read_parquet(tuned / "gold.parquet"), run)  # no conditions: what the method merges, as its run did
+    shutil.rmtree(tuned / "scored")  # a run written before scored/ existed, then a batch: the batch adds no part to an index it lacks
+    assert say("add", "records", "batch.parquet", "--workspace", "tuned")[0] == 0 and not (tuned / "scored").exists()
+    grouped = lambda: set(pd.read_parquet(tuned / "gold.parquet").groupby("cluster_id")[uid].agg(frozenset))
+    added = grouped()
+    assert say(*off)[0] == 0 and grouped() == added  # indexed whole, from every part stored: nothing the run or the batch merged lost
+
+    shutil.rmtree(ws / "scored")  # a workspace its run wrote before scored/ existed: indexed once, from the pairs it stored
+    assert say("list", "scored", *at)[1]["total"] > 0
+    part = next((ws / "scored").glob("part-*.parquet"))
+    built = part.stat().st_mtime_ns
+    assert say("describe", "results", *at)[0] == 0 and part.stat().st_mtime_ns == built

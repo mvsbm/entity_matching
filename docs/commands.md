@@ -47,6 +47,12 @@ Written by `scripts/document_commands.py` from the declarations in `er/cli.py`; 
 | [`split entity`](#nayose-split-entity) | Split an entity at a link that alone holds it together |
 | [`draw pairs`](#nayose-draw-pairs) | More links on the review sheet, to audit; and the pairs of the range people check next |
 | [`list pairs`](#nayose-list-pairs) | The pairs for people to decide and to audit |
+| [`describe results`](#nayose-describe-results) | What the run found, at a glance |
+| [`list scored`](#nayose-list-scored) | The pairs the run scored, best first, a page at a time |
+| [`list entities`](#nayose-list-entities) | The entities, largest first |
+| [`show records`](#nayose-show-records) | Records' full rows, as the file gave them |
+| [`describe merging`](#nayose-describe-merging) | What merge conditions would merge, before they apply |
+| [`set merging`](#nayose-set-merging) | Merge pairs without people, by conditions you set |
 | [`list patterns`](#nayose-list-patterns) | The model's pairs as patterns: what each comparison said, and what became of them |
 | [`decide pair`](#nayose-decide-pair) | Decide one pair: match or no match |
 | [`apply decisions`](#nayose-apply-decisions) | Apply people's decisions to the run |
@@ -594,7 +600,7 @@ One record's entity, and what joined it.
 nayose describe entity ID --workspace WORKSPACE [--format text|json]
 ```
 
-The entity of the record ID: its size, each of its records (the first 200, the ID among them) with its fields and kind, and every link between them: a rule, the model with its weight in bits, or people. O(N) in SQL.
+The entity of the record ID: its size, each of its records (the first 200, the ID among them) with its fields and kind, and every link between them: a rule, the model with its weight in bits, people, or the workspace's merge conditions (auto). O(N) in SQL.
 
 | Parameter | |
 |---|---|
@@ -897,7 +903,7 @@ Adopt a method tried, and find matches with it.
 nayose adopt method --workspace WORKSPACE --trial N [--pipeline PIPELINE] [--compute KEY=VALUE …] [--format text|json]
 ```
 
-Writes the trial's method into the workspace's method.toml, then runs the workspace's files again with it, as rerun records does; method.toml is left as it was if the run fails. Every later command on the workspace runs this method. O(a full run).
+Writes the trial's method into the workspace's method.toml, its merge conditions as they are now, then runs the workspace's files again with it, as rerun records does; method.toml is left as it was if the run fails. Every later command on the workspace runs this method. O(a full run).
 
 | Parameter | |
 |---|---|
@@ -925,7 +931,7 @@ Go back to the tuned method, and find matches with it.
 nayose reset method --workspace WORKSPACE [--pipeline PIPELINE] [--compute KEY=VALUE …] [--format text|json]
 ```
 
-Takes the workspace's changes to the method out of method.toml (the line, the rules and keys left out or added) and keeps its trust line, which people earned; then runs the workspace's files again, as rerun records does. method.toml is left as it was if the run fails. O(a full run).
+Takes the workspace's changes to the method out of method.toml (the line, the rules and keys left out or added) and keeps its trust line, which people earned, and their merge conditions; then runs the workspace's files again, as rerun records does. method.toml is left as it was if the run fails. O(a full run).
 
 | Parameter | |
 |---|---|
@@ -1080,6 +1086,187 @@ The run's review.parquet: decide rows (the pairs just below the threshold, and t
 nayose list pairs --workspace workspaces/customers --open
 ```
 
+## nayose describe results
+
+What the run found, at a glance.
+
+```
+nayose describe results --workspace WORKSPACE [--from POINTS] [--pipeline PIPELINE] [--format text|json]
+```
+
+How the scores came out (every scored pair, by points: exact, from the run's patterns), the pairs waiting for people from --from points up, by range, what merged and how, entities by size, the merge conditions, whether matches could be missed (the probe), the groups too big to compare, and the person/company answers to give. Reads the workspace only: no run. The first read of a run written before runs kept their pairs' levels makes that index once (scored/), from the pairs it stored. O(N + P + E).
+
+| Parameter | |
+|---|---|
+| `--workspace WORKSPACE` | the workspace: the folder that keeps one matching job (required) |
+| `--from POINTS` | review from these points (default: the review floor) |
+| `--pipeline PIPELINE` | the pipeline file (default: config/final.toml) |
+
+| Result | |
+|---|---|
+| `records` | records |
+| `entities` | entities |
+| `joined` | entities of two records or more |
+| `sizes` | entities by size: label, entities |
+| `scores` | every scored pair by points: down_to, up_to, pairs |
+| `candidates` | pairs compared |
+| `review_from` | the points people review from |
+| `waiting` | pairs waiting for people, by range: down_to, up_to, pairs |
+| `pairs` | the pairs kept (0 points or more), by status |
+| `merged_by` | records by what joined them: you, model, rule, or none |
+| `merging` | the merge conditions: join, when; own: what the method merges by itself when there are none (line, rules), or null |
+| `missed` | the probe's strata: stratum, fields, pairs, scored, missed, low, high |
+| `too_big` | groups too big to compare: skipped, kept |
+| `kinds` | person/company answers to give: to_answer |
+| `next` | the commands that usually follow |
+
+```bash
+nayose describe results --workspace workspaces/customers
+```
+
+## nayose list scored
+
+The pairs the run scored, best first, a page at a time.
+
+```
+nayose list scored --workspace WORKSPACE [--from POINTS] [--to POINTS] [--source rules|model] [--status waiting|merged|same|different|open] [--record ID] [--page N] [--count N] [--pipeline PIPELINE] [--format text|json]
+```
+
+Every pair the run scored at 0 points or more and every rule pair, best first: both IDs, points, how each was found (keys, rule), its status (waiting, merged, same, different: people's), each comparison's level and points, and both records' compared fields; filtered by points, by how found, by status or by a record ID; with the total the filters keep. O(E log E) + O(page·F).
+
+| Parameter | |
+|---|---|
+| `--workspace WORKSPACE` | the workspace: the folder that keeps one matching job (required) |
+| `--from POINTS` | from these points |
+| `--to POINTS` | below these points |
+| `--source rules|model` | found by a rule, or by the model's keys |
+| `--status waiting|merged|same|different|open` | one status only; open: waiting, or decided and not applied yet |
+| `--record ID` | pairs of this record ID |
+| `--page N` | the page (default 1) |
+| `--count N` | pairs a page (default 100) |
+| `--pipeline PIPELINE` | the pipeline file (default: config/final.toml) |
+
+| Result | |
+|---|---|
+| `total` | pairs the filters keep |
+| `typed` | of them, decided and not applied yet |
+| `page` | this page |
+| `count` | pairs a page |
+| `pairs` | each pair: first, second, points, sources, rule, status, said, applied, compared (comparison: level, points), fields (field: [first, second]) |
+
+```bash
+nayose list scored --workspace workspaces/customers --status waiting --from 6
+```
+
+## nayose list entities
+
+The entities, largest first.
+
+```
+nayose list entities --workspace WORKSPACE [--smallest N] [--record ID] [--page N] [--count N] [--format text|json]
+```
+
+Entities of --smallest records or more (default 2), largest first: how many records each holds, what joined it, and up to three names; the one holding --record. O(N).
+
+| Parameter | |
+|---|---|
+| `--workspace WORKSPACE` | the workspace: the folder that keeps one matching job (required) |
+| `--smallest N` | entities of this many records or more (default 2) |
+| `--record ID` | the entity of this record ID |
+| `--page N` | the page (default 1) |
+| `--count N` | entities a page (default 100) |
+
+| Result | |
+|---|---|
+| `total` | entities the filters keep |
+| `page` | this page |
+| `count` | entities a page |
+| `entities` | each entity: entity, records, joined_by (you, model or rule), names |
+
+```bash
+nayose list entities --workspace workspaces/customers
+```
+
+## nayose show records
+
+Records' full rows, as the file gave them.
+
+```
+nayose show records ID … --workspace WORKSPACE [--format text|json]
+```
+
+Each record's full row: every column of the records file, in its order, from the workspace's copy of it (inputs/…/read/), with the fields each column feeds; a record set aside says why. Side by side for people to compare. O(N), a scan of the ID column.
+
+| Parameter | |
+|---|---|
+| `ID` | record IDs |
+| `--workspace WORKSPACE` | the workspace: the folder that keeps one matching job (required) |
+
+| Result | |
+|---|---|
+| `columns` | the file's columns in order: column, fields (those it feeds) |
+| `records` | each record: id, row (column: value), set_aside |
+
+```bash
+nayose show records 0000102855 0000905311 --workspace workspaces/customers
+```
+
+## nayose describe merging
+
+What merge conditions would merge, before they apply.
+
+```
+nayose describe merging --workspace WORKSPACE [--conditions JSON] [--pipeline PIPELINE] [--format text|json]
+```
+
+The pairs the conditions merge without people (--conditions, else the workspace's), condition by condition and together, pairs people said differ left apart, and the entities of two records or more that would then hold; with none, what the method merges by itself. Conditions: points (at least), rules (found by one of them), fields (each comparison at least at a level), joined by and or or. No run. O(E + N).
+
+| Parameter | |
+|---|---|
+| `--workspace WORKSPACE` | the workspace: the folder that keeps one matching job (required) |
+| `--conditions JSON` | as JSON: {"join": "or", "when": [{"points": 12}, {"rules": ["…"]}, {"fields": {"name": "…"}}]} |
+| `--pipeline PIPELINE` | the pipeline file (default: config/final.toml) |
+
+| Result | |
+|---|---|
+| `join` | and or or |
+| `when` | the conditions |
+| `each` | per condition: condition, pairs |
+| `pairs` | pairs merged, all together |
+| `entities` | entities of two records or more then |
+
+```bash
+nayose describe merging --workspace workspaces/customers --conditions '{"when": [{"points": 12}]}'
+```
+
+## nayose set merging
+
+Merge pairs without people, by conditions you set.
+
+```
+nayose set merging --workspace WORKSPACE --conditions JSON [--pipeline PIPELINE] [--format text|json]
+```
+
+Keeps the conditions in the workspace (method.toml merge) and rebuilds the entities at once from people's applied answers and the pairs the conditions merge (none: the pairs the method merges by itself, as a run does; in a new workspace, none); a condition taken off parts what it joined. No run: the stored pairs. Runs after this one merge by the same conditions. O(E + N).
+
+| Parameter | |
+|---|---|
+| `--workspace WORKSPACE` | the workspace: the folder that keeps one matching job (required) |
+| `--conditions JSON` | as JSON: {"join": "and", "when": [...]}; {} for none (required) |
+| `--pipeline PIPELINE` | the pipeline file (default: config/final.toml) |
+
+| Result | |
+|---|---|
+| `join` | and or or |
+| `when` | the conditions |
+| `entities` | entities of two records or more |
+| `merged` | pairs the conditions merged |
+| `next` | the commands that usually follow |
+
+```bash
+nayose set merging --workspace workspaces/customers --conditions '{"join": "or", "when": [{"points": 14}]}'
+```
+
 ## nayose list patterns
 
 The model's pairs as patterns: what each comparison said, and what became of them.
@@ -1142,7 +1329,7 @@ Apply people's decisions to the run.
 nayose apply decisions --workspace WORKSPACE [--file FILE] [--pipeline PIPELINE] [--compute KEY=VALUE …] [--format text|json]
 ```
 
-Each match pair joins its two entities at once, scoring nothing; no_match is kept, and a full run never accepts the pair. Decisions are kept in decisions/; one applied before changes nothing. O(D + touched clusters) + O(N).
+Each match pair joins its two entities at once, scoring nothing; no_match is kept, and a full run never accepts the pair. With merge conditions set (set merging), the entities are then rebuilt from the stored pairs, so a no_match pair the conditions joined parts at once. Decisions are kept in decisions/; one applied before changes nothing. O(D + touched clusters) + O(N).
 
 | Parameter | |
 |---|---|

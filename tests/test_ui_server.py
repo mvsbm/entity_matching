@@ -119,14 +119,15 @@ def test_the_ui_layout_names_only_declared_commands_parameters_and_result_fields
     block = html.split("const QUEUES = {", 1)[1].split("\n};", 1)[0]
     named = {(q, c) for q, body in re.findall(r"\n  (\w+): \{title(.*?)(?=\n  \w+: \{title|$)", block, re.S)
              for c in re.findall(r'(?:list|one|apply): "(\w+ \w+)"', body)}
-    assert len(named) == 6 and named <= placed  # each review queue's commands, placed on its own page
+    assert len(named) == 3 and named <= placed  # the queue's commands (person or company), placed on its own page
     from er.report import GRAPH_NODES
     screens, flow = {sc["id"]: sc for sc in layout["screens"]}, layout["workflow"]
     assert all(set(sc["strip"]) <= set(GRAPH_NODES) for sc in screens.values())  # each page's flow strip: stages describe matching gives
     loop = flow["improve"]  # the loop's page: after a step, and back to the one that runs the method again
-    assert set(flow["steps"]) <= {*screens, "workspace"} and all(x in flow["steps"] for x in screens if x not in ("records", loop["screen"]))  # every page a step
-    assert loop["screen"] in screens and {loop["after"], loop["back"]} <= set(flow["steps"])
-    assert all(l["to"] in flow["steps"] and {(l["screen"], c) for c in l["via"]} <= placed for l in flow["loops"])
+    places = {"records", "pairs", "kinds", "results"}  # after a first run: Results, Review (its second tab, kinds) and Explore
+    assert set(flow["steps"]) <= {*screens, "workspace"} and all(x in flow["steps"] or x in places for x in screens if x != loop["screen"])  # every page a setup step or a place
+    assert loop["screen"] in screens and loop["after"] in places and loop["back"] in flow["steps"]
+    assert all(l["to"] in places and {(l["screen"], c) for c in l["via"]} <= placed for l in flow["loops"])
 
 
 def test_a_long_command_that_ends_with_its_result_and_exit_2_is_no_crash(tmp_path, fake_cli):

@@ -19,7 +19,7 @@ def test_the_page_answers_once_per_key_shows_any_row_and_says_when_the_server_is
     run = tmp_path / "run"
     assert cli.main(["resolve", "records", str(tmp_path / "all.parquet"), "--workspace", str(run), "--format", "json"]) == 0
     page, server, httpd = ui_page(str(run), str(tmp_path / "workspaces"))
-    page.wait_for_selector(".next")
+    page.wait_for_selector(".tiles")
     page.evaluate("setWorkspace('')")  # the first screen of a new user: no workspace
     page.wait_for_selector(".welcome .example .node.static")  # what it does, by an example, before anything else
     assert not page.is_visible("#lost")  # the lost-server banner, only once it is lost
@@ -90,7 +90,7 @@ def test_the_page_answers_once_per_key_shows_any_row_and_says_when_the_server_is
     page.keyboard.press("Escape")
     page.click(".navitem[data-screen=records]")
     page.evaluate(f"setWorkspace({json.dumps(str(run))})")
-    page.wait_for_selector(".next")
+    page.wait_for_selector(".tiles")
     assert not any(b.is_disabled() for b in page.query_selector_all("[data-loop]")) and not page.is_disabled("#search")
     page.click(".navitem[data-screen=pairs]")
     page.wait_for_selector("[data-a=match]")
@@ -100,20 +100,20 @@ def test_the_page_answers_once_per_key_shows_any_row_and_says_when_the_server_is
     page.wait_for_timeout(600)
     assert page.inner_text("#written") == "1" and not page.query_selector("#said .banner")  # one answer, no busy folder
     assert "nayose decide pair" in page.inner_text("#term-body")  # the command line it ran
-    states = page.evaluate("""() => {  // each step's state, read from the workspace as describe workspace gives it
-        const run = (pairs, kinds, audits = {checked: 0, false: 0}) => ({records: 9, entities: 7, round: 1, audits,
-          pairs: {decide: 0, audit: 0, written_in: 0, ...pairs}, kinds: {decide: 0, measure: 0, written_in: 0, ...kinds}});
-        const at = (d) => { const p = progress(d); return [p.next, p.steps.pairs.state, p.steps.kinds.state]; };
-        return [at({event: "error", error: "no run"}), at(run({decide: 3}, {measure: 20})), at(run({}, {measure: 20})), at(run({}, {written_in: 2})),
-                at(run({}, {measure: 20}, {checked: 50, false: 0})), at(run({}, {written_in: 2}, {checked: 12, false: 1}))]; }""")
-    assert states == [["columns", "later", "later"], ["pairs", "attention", "optional"], ["improve", "done", "optional"], ["kinds", "done", "attention"],
-                      ["results", "done", "optional"], ["improve", "done", "attention"]]  # the loop until audits hold; a false one first
-    assert page.query_selector(".rail li.attention .sub").inner_text().endswith("to decide")  # the stepper points at the open pairs
+    states = page.evaluate("""() => {  // each place's state, from describe workspace and the pairs describe results says wait
+        const kept = resultsNow, run = (pairs, kinds) => ({records: 9, entities: 7, round: 1, pairs: {written_in: 0, ...pairs}, kinds: {decide: 0, written_in: 0, ...kinds}});
+        const at = (d, waiting = 0) => { resultsNow = {waiting: [{down_to: 6, up_to: null, pairs: waiting}]}; const p = progress(d); return [p.next, p.steps.pairs.state, p.steps.kinds.state]; };
+        const said = [at({event: "error", error: "no run"}), at(run({}, {}), 3), at(run({}, {})), at(run({written_in: 2}, {})), at(run({}, {decide: 4}))];
+        resultsNow = kept;
+        return said; }""")
+    assert states == [["columns", "later", "later"], ["pairs", "attention", "optional"], ["records", "done", "optional"], ["pairs", "attention", "optional"],
+                      ["records", "done", "attention"]]  # pairs waiting, or decided and not applied: Review; else Results
+    assert page.query_selector(".rail li.attention .sub").inner_text().endswith("waiting")  # the rail points at the pairs still open
     page.click(".navitem[data-screen=run]")
     page.wait_for_selector(".node[data-node=candidates]")
-    assert [n.get_attribute("data-node") for n in page.query_selector_all(".flow .node")] == ["records", "rules", "candidates", "score", "accept", "people", "group"]
+    assert [n.get_attribute("data-node") for n in page.query_selector_all(".flow .node")] == ["records", "rules", "candidates", "score", "accept", "group"]
     questions = page.evaluate("STAGE_Q")
-    for node in ["records", "rules", "candidates", "score", "accept", "people", "group"]:  # each stage answers its question first
+    for node in ["records", "rules", "candidates", "score", "accept", "group"]:  # each stage answers its question first
         page.click(f".node[data-node={node}]")
         page.wait_for_selector(".detail h2.question")
         assert page.inner_text(".detail h2.question") == questions[node]
@@ -155,10 +155,12 @@ def test_the_page_answers_once_per_key_shows_any_row_and_says_when_the_server_is
     page.wait_for_selector("[data-a=match]")
     page.wait_for_function("() => document.querySelector('#written').textContent === '1'")  # the pair written in before: still listed, and can be applied
     assert not page.is_disabled("#apply")
-    assert page.query_selector(".wf-grid .wf rect.for")  # each comparison moves the total, from the start, toward the line
     assert not page.query_selector(".scene:popover-open")  # another page: the replay closed with the one it was on
-    page.wait_for_selector(".wf-grid [data-how]")  # then the test that set each step, and what found the pair
-    assert page.query_selector(".found-path .tag") and "points: about" in page.inner_text(".odds")
+    page.wait_for_selector("#right .fullrows tbody tr")  # both full rows, each compared column with how it was compared
+    compared = [c.inner_text() for c in page.query_selector_all("#right .fullrows tbody td:last-child")]
+    assert any(re.search(r"[+-]\d+\.\d$", c) for c in compared), compared  # what it gave, in points
+    page.click("#right details.fold-line summary")  # how it scored, step by step: folded under them
+    assert page.query_selector(".wf-grid .wf rect.for")  # each comparison moves the total, from the start
     page.hover(".wf-grid [data-how]:not([disabled])")
     page.wait_for_selector(".scene:popover-open .stage text")  # the test replayed over the page, on this pair's values
     page.keyboard.press("Escape")
@@ -181,18 +183,16 @@ def test_the_page_answers_once_per_key_shows_any_row_and_says_when_the_server_is
         return notes; })""", [[v, c] for (v, _), c in zip(raws, chains)])
     assert notes[0] == ["small kana → big", "゛ off"] and notes[2] == ["legal form dropped", "゛ off"]
     assert notes[1] == ["full width → half", "丁目・番地・号 → -", "building and room dropped", "prefecture dropped"]
-    path = page.inner_text("#path")  # how much each part covers: all the records, the pairs listed, the one shown
-    assert re.fullmatch(r"All [\d,]+ records\s*›\s*[\d,]+ pairs to review\s*›\s*This pair · \d+ of [\d,]+", path), path
-    assert page.query_selector(".zone.all .flow") and page.inner_text(".card.one .question").startswith("Same entity?")
+    assert page.inner_text(".card.one .question").startswith("Same customer?")
     card, queue = page.query_selector("#right .card.one").bounding_box(), page.query_selector(".queue").bounding_box()
     assert card["x"] < queue["x"] and card["width"] > queue["width"]  # the pair asked about first and wide, its queue after
-    assert not page.query_selector(".stepfoot a.filled")  # pairs still open here: the way on doesn't stand out yet
-    page.click(".stepfoot a[data-go=kinds]")
-    page.wait_for_selector("h1:has-text('Confirm person or company')")
+    page.click(".tab[data-go=kinds]")  # Review's second tab
+    page.wait_for_selector(".tab[data-go=kinds][aria-selected=true]")
+    assert page.inner_text("h1") == "Review"
     twice = page.evaluate("""async () => {  // the same command asked twice at once runs once
-        const lines = () => [...document.querySelectorAll("#term-body .cmd")].filter((c) => c.textContent.startsWith("nayose list pairs")).length;
+        const lines = () => [...document.querySelectorAll("#term-body .cmd")].filter((c) => c.textContent.startsWith("nayose list scored")).length;
         const before = lines();
-        await Promise.all([run("pairs", "list pairs"), run("pairs", "list pairs")]);
+        await Promise.all([run("pairs", "list scored", {status: "waiting"}), run("pairs", "list scored", {status: "waiting"})]);
         return lines() - before; }""")
     assert twice == 1
     assert page.evaluate("""() => {  // a row far past the table's 500 drawn is drawn once picked
@@ -223,7 +223,7 @@ def test_the_page_answers_once_per_key_shows_any_row_and_says_when_the_server_is
     httpd.shutdown()
     httpd.server_close()
     nav = page.inner_text("#nav")
-    lost = page.evaluate("() => run('pairs', 'list pairs')")
+    lost = page.evaluate("() => run('pairs', 'list scored')")
     assert lost["event"] == "error" and lost["error"].startswith("Lost the server")
     page.evaluate("() => refresh()")  # the stepper as it was, the loss said once above the page
     assert page.is_visible("#lost") and page.inner_text("#nav") == nav and "Lost the server" not in page.inner_text("#screen")
@@ -422,13 +422,12 @@ def test_the_improve_page_tries_a_line_once_adopts_it_and_opens_the_next_round(u
     ws = tmp_path / "run"
     assert cli.main(["resolve", "records", str(tmp_path / "all.parquet"), "--workspace", str(ws), "--format", "json"]) == 0
     page, server, httpd = ui_page(str(ws), str(tmp_path / "workspaces"), viewport={"width": 1280, "height": 900})
-    page.wait_for_selector(".next")
-    assert "round 1" in page.inner_text(".rail li.loopstep .sub")  # the loop, under step 4
-    page.click(".navitem[data-screen=pairs]")
-    page.click(".stepfoot [data-go=improve]")  # from step 4's foot
+    page.wait_for_selector(".tiles")
+    page.click(".navitem[data-screen=improve]")  # Setup → Method
     page.wait_for_selector("#out h2.question")
     assert page.inner_text("#out h2.question") == "Is the matching good enough yet?" and "Not known yet" in page.inner_text("#out .qa .answer")
-    assert page.inner_text("h1") == "Improve matching" and "as tuned" in page.text_content("#rounds")
+    assert page.query_selector("#out .qa a[data-go=pairs]")  # the way to know: review pairs
+    assert page.inner_text("h1") == "Method" and "as tuned" in page.text_content("#rounds")
     page.click("details:has(#line) > summary")
     page.wait_for_selector("#line svg")
     line = p.fs.min_match_weight
@@ -441,31 +440,31 @@ def test_the_improve_page_tries_a_line_once_adopts_it_and_opens_the_next_round(u
     assert "Joined, people said different" in page.inner_text(".trial") and len([*(ws / "trials").glob("[0-9]*.json")]) == 1
     page.click("[data-adopt]")
     page.wait_for_selector("#note .banner", timeout=120_000)  # matched again: the next round's pairs
-    assert page.inner_text("h1").endswith("Review possible matches") and folder.method(ws) == {"line": line + 2}
-    page.wait_for_function("() => document.querySelector('.rail li.loopstep .sub').textContent.includes('round 2')")
+    assert page.inner_text("h1") == "Review" and folder.method(ws) == {"line": line + 2}
     page.click(".navitem[data-screen=improve]")
     page.wait_for_selector("#out h2.question")
     assert "Back to the tuned method" in page.inner_text("#out") and not page.query_selector(".trial")  # the trial adopted: no card
 
 
-def test_step_4_shows_the_trust_line_lowers_it_and_an_answer_waits_out_a_busy_workspace(ui_page, tmp_path, population, capsys, monkeypatch):
+def test_review_counts_down_an_answer_waits_out_a_busy_workspace_and_auto_merge_turns_off_to_the_same_entities(ui_page, tmp_path, population, capsys, monkeypatch):
     from er import cli, folder
     s, p, g = population
+    uid = s.data.unique_id
     g.df.to_parquet(tmp_path / "all.parquet", index=False)
     monkeypatch.chdir(tmp_path)
-    assert cli.main(["create", "workspace", "w", "--format", "json"]) == 0  # a new workspace: nothing merges by itself
+    assert cli.main(["create", "workspace", "w", "--format", "json"]) == 0  # a new workspace: nothing merges without people
     ws = tmp_path / "workspaces" / "w"
     assert cli.main(["resolve", "records", "all.parquet", "--workspace", str(ws), "--format", "json"]) == 0
     capsys.readouterr()
     page, server, httpd = ui_page(str(ws), str(tmp_path / "workspaces"), viewport={"width": 1280, "height": 900})
-    page.wait_for_selector(".next")
-    assert page.inner_text(".rail li:last-child .sub") == "none joined yet"  # step 6: nothing joined, nothing to see
+    page.wait_for_selector(".tiles")
+    assert page.inner_text("h1") == "Results" and "you decide every pair" in page.inner_text("#out .card .answer")
+    waiting = int(re.search(r"[\d,]+", page.inner_text("a.tile[data-go=pairs]:not([data-merge]) .num")).group().replace(",", ""))
+    assert waiting > 2 and page.inner_text(".rail li.attention .sub") == f"{waiting:,} waiting"  # the tile and the rail say one number
     page.evaluate("scrollTo(0, 400)")
     page.click(".navitem[data-screen=run]")
-    page.wait_for_selector("#out h2.question.big")  # step 3, opened at its top: what the run did, and what waits
-    said = page.inner_text("#out .card")
-    assert page.evaluate("scrollY") == 0 and "Nothing merged by points yet: you check pairs first · 19 pairs wait for you" in said  # nothing scores 20 here: that range is passed
-    assert page.query_selector(".flow .node[data-node=people]") and page.query_selector("#out .card [data-go=pairs]")
+    page.wait_for_selector("#out h2.question.big")  # step 3, opened at its top: what the last run did, and the way to its results
+    assert page.evaluate("scrollY") == 0 and page.query_selector("#out .card a[data-go=records]")
     answer, strip_ = page.query_selector("#out .card").bounding_box(), page.query_selector("#flow").bounding_box()
     assert answer["y"] + answer["height"] <= strip_["y"]  # what it found, then how: in reading order
     page.click("[data-act='add records']")  # a new file, never the one matched already
@@ -484,16 +483,11 @@ def test_step_4_shows_the_trust_line_lowers_it_and_an_answer_waits_out_a_busy_wo
     assert not page.query_selector(".scene:popover-open") and page.query_selector("dialog[open]")
     page.keyboard.press("Escape")
     page.click(".navitem[data-screen=pairs]")
-    page.wait_for_selector(".trustbar")
-    assert page.inner_text(".trustbar").startswith("Nothing merges by points yet")
-    page.click("#workload summary")  # how many pairs people must check, range by range: read once opened
-    page.wait_for_selector("#workload .answer")
-    assert page.inner_text("#workload .answer").startswith(("To let pairs scoring", "Nothing to check")) and page.query_selector("#workload tr[data-i]")
-    assert not page.query_selector("[data-trust='lower trust']")  # nothing scores 20 on this population: that range is passed, 12+ is checked first
-    page.wait_for_function("() => document.querySelector('.trustbar')?.textContent.includes('checking 12+: 0 of')")
-    assert "Drawn from the pairs scoring 12+" in page.inner_text("#right")
+    page.wait_for_selector("#right .fullrows tbody tr")  # the best pair first, both full rows
+    assert page.inner_text("#done-line").startswith(f"{waiting:,} pairs waiting from")
     page.keyboard.press("m")
-    page.wait_for_function("() => document.querySelector('.trustbar')?.textContent.includes('checking 12+: 1 of')")
+    page.wait_for_function("() => document.querySelector('#written').textContent === '1'")
+    assert page.inner_text("#done-line").startswith(f"{waiting - 1:,} pair") and page.query_selector("#left tr[data-k='0'] .ink-good")  # decided: marked in the queue
     held, go = threading.Event(), threading.Event()
     def other_job():  # another job writes to the workspace for a moment
         with folder.run_lock(ws):
@@ -508,8 +502,26 @@ def test_step_4_shows_the_trust_line_lowers_it_and_an_answer_waits_out_a_busy_wo
     other.join(30)
     assert not other.is_alive()
     page.wait_for_function("() => document.querySelector('#written').textContent === '2'", timeout=15_000)
-    assert not page.query_selector("#said .banner") and "1 different" in page.inner_text(".trustbar")
-    assert "12+" in page.inner_text(".rail li.attention .sub")
+    assert not page.query_selector("#said .banner") and page.inner_text(".rail li.attention .sub") == f"{waiting - 2:,} waiting"
+    entities = lambda: set(pd.read_parquet(ws / "gold.parquet").groupby("cluster_id")[uid].agg(frozenset))
+    before = entities()
+    page.click("#merge")  # merge without people, by their own conditions: no run
+    page.click("dialog [data-add]")
+    page.fill("dialog [data-v=points]", "")  # a condition half set is never applied as another
+    page.wait_for_function("() => document.querySelector('dialog [data-set]').disabled")
+    page.fill("dialog [data-v=points]", "12")
+    page.wait_for_function("() => /would merge/.test(document.querySelector('dialog .preview').textContent)", timeout=30_000)
+    page.click("dialog [data-set]")
+    assert page.inner_text("dialog h2") == "Merge by these conditions"
+    page.click("dialog .dlg-foot .btn.filled")
+    page.wait_for_selector("#note .banner:has-text('Merged by your conditions')", timeout=60_000)
+    assert folder.method(ws)["merge"] == {"join": "and", "when": [{"points": 12}]} and entities() != before
+    page.click("#merge")
+    page.click("dialog [data-none]")
+    page.click("dialog [data-set]")
+    page.click("dialog .dlg-foot .btn.filled")
+    page.wait_for_selector("#note .banner:has-text('Nothing merges without you now')", timeout=60_000)
+    assert "merge" not in folder.method(ws) and entities() == before  # turned off: what it merged, apart again
 
 
 def test_auto_mode_runs_from_the_first_screen_and_its_report_waits_on_the_overview(ui_page, tmp_path, population):
@@ -545,7 +557,7 @@ def test_the_page_keeps_its_step_through_back_reload_and_a_run_and_says_what_was
     g.df.to_parquet(tmp_path / "all.parquet", index=False)
     page, server, httpd = ui_page(None, str(tmp_path / "workspaces"))
     page.wait_for_selector(".welcome")
-    page.click(".navitem[data-screen=pairs]")  # a step that follows a run, before a workspace: the way in, across the page
+    page.evaluate("go('pairs')")  # a place that follows a run, before a workspace: the way in, across the page
     page.wait_for_selector("#screen .welcome")
     assert not page.query_selector("#screen .split") and page.url.endswith("#pairs")
     page.click("#picker")
@@ -556,7 +568,7 @@ def test_the_page_keeps_its_step_through_back_reload_and_a_run_and_says_what_was
     page.fill("#cin", str(tmp_path / "all.parquet"))
     page.click("#load")
     page.wait_for_selector("#loaded a[data-go=run]", timeout=60_000)
-    page.click(".navitem[data-screen=pairs]")  # before a run: the next step, not an error
+    page.evaluate("go('pairs')")  # before a run: the next step, not an error
     page.wait_for_selector("#screen .card.empty a[data-go=run]")
     assert not page.query_selector("#screen .banner.error, #screen .split")
     page.go_back()  # Back walks the steps
@@ -575,7 +587,7 @@ def test_the_page_keeps_its_step_through_back_reload_and_a_run_and_says_what_was
     page.keyboard.press("n")  # different, then back to it
     page.wait_for_function("() => document.querySelector('#written').textContent === '1'")
     page.keyboard.press("ArrowUp")
-    page.wait_for_selector("#right .chip:has-text('decided · different')")
+    page.wait_for_selector("#right .chip:has-text('you: different')")
     assert page.get_attribute("#right [data-a=no_match]", "aria-pressed") == "true" and page.get_attribute("#right [data-a=match]", "aria-pressed") == "false"
     said = page.evaluate("""() => hurts([{field: "phone", filled: null}, {field: "person_name", filled: 0.2}, {field: "company_name", filled: 0.15}, {field: "birth_date", filled: 0.1}],
         ["level phone: exact (needs ['phone'])", "comparison phone", "prior rule ['full_name', 'address_code', 'phone']", "EM rule ['phone']", "probe phone (needs ['phone'])",
@@ -588,18 +600,7 @@ def test_the_page_keeps_its_step_through_back_reload_and_a_run_and_says_what_was
         trialCard({trial: 2, method: {}, base: {matched: 2}, variant: {matched: 1}, different_joined: {base: 1, variant: 0}, same_apart: {base: 0, variant: 0}, fixed: [{}], broken: [], apart: 1, together: 0})]
         .map((h) => [h.includes("Worse"), h.includes("Better"), h.includes('btn filled" data-adopt')])""")
     assert verdict == [[True, False, False], [False, True, True]]  # one it sets wrong is worse, however the totals net out; Adopt stands out only when better
-    box = page.evaluate("""() => { const b = document.createElement("div"); showWorkload(b, {ranges: [
-        {down_to: 20, up_to: null, pairs: 3, checked: 3, different: 1, sample: 3, chance_clean: null, reviews_left: 0, reviews_to_here: 0},
-        {down_to: 12, up_to: 20, pairs: 40, checked: 0, different: 0, sample: 40, chance_clean: null, reviews_left: 40, reviews_to_here: 40}],
-        hours: {to_each_line: [0, 0.1]}, seconds_per_pair: 10, unnamed: 0}); return b.querySelector(".answer").textContent; }""")
-    assert box.startswith("Pairs scoring 20+ and below stay with you"), box  # not "to let 12–20 merge": nothing below a false pair merges by points
-    box = page.evaluate("""() => { const b = document.createElement("div"); showWorkload(b, {ranges: [
-        {down_to: 20, up_to: null, pairs: 3, checked: 0, different: 0, sample: 3, chance_clean: 1, reviews_left: 0, reviews_to_here: 0},
-        {down_to: 12, up_to: 20, pairs: 40, checked: 0, different: 0, sample: 30, chance_clean: 0.9, reviews_left: 30, reviews_to_here: 30},
-        {down_to: 8, up_to: 12, pairs: 60, checked: 1, different: 1, sample: 60, chance_clean: null, reviews_left: 59, reviews_to_here: 89}],
-        hours: {to_each_line: [0, 0.1, 0.2]}, seconds_per_pair: 10, unnamed: 0}); return b.querySelector(".answer").textContent; }""")
-    assert "8–12 and below stay with you" in box and "To let pairs scoring 12–20 merge: 30 pairs" in box, box  # both: what can merge, and what can't
-    page.click(".navitem[data-screen=kinds]")
+    page.click(".tab[data-go=kinds]")  # Review's second tab
     page.wait_for_selector("[data-a=person]")
     page.keyboard.press("1")
     page.wait_for_function("() => document.querySelector('#written').textContent === '1'")

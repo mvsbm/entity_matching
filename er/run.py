@@ -73,6 +73,7 @@ from er.kind import KIND_COLUMNS, NAME_MODEL, classifier as kind_classifier, kin
 from er.match import ELSE, fs_settings, named_sql, read_by, refreshed_u, review_floor, rule_edges, score_fs, scored_u, train_fs, u_basis
 from er.probe import missed
 from er.report import applied, qa, report_text, review_sheet, scored_again, trust_state
+from er.results import check_merging, merge_where
 from er.settings import SPECIAL, Settings, fit_to_file, present_fields
 from er.source import answers, decisions, file_facts, filled, known, open_source, suggest
 from er.standardize import prepare
@@ -140,6 +141,7 @@ class Run:
         self.part = 0                         # the part an increment writes: one past the run's highest
         self.gated = pd.DataFrame()           # the oversized blocks the candidates checked, and what was decided
         self.keep: Path | None = None         # the workspace whose cleaned records a full run reads again (folder.prepared), if any
+        self.merge: dict = {}                 # the workspace's merge conditions (method.toml merge): none, the trust line decides
         self._spent = spent()  # the comparison functions' time when the last step ended (_done)
         self.gate_seconds, self.gate_pairs = 0.0, 0  # the oversized blocks' samples scored (_gate): how long, how many
         self.plan: pd.DataFrame | None = None  # the budget's pairs per rule and generator (budget()); an increment has none
@@ -552,15 +554,42 @@ class Run:
         return f"""SELECT s.*, c.sources, {named_sql(fs)} AS named, {keep} AS keep FROM scores s JOIN cands c USING ({l}, {r})
             JOIN rule_clusters a ON a.{u} = s.{l} JOIN rule_clusters b ON b.{u} = s.{r}"""
 
+    def _links(self) -> str:
+        """Every pair scored at 0 points or more and every rule pair, as scored/ keeps them for people (er.results): its
+        points, how it was found (sources: the keys; rule: the rule), named, keep, and one gamma per comparison."""
+        fs, l, r = self.pipeline.fs, q(self.l), q(self.r)
+        gammas = [c for c, *_ in self.con.execute("DESCRIBE scores").fetchall() if c.startswith("gamma_")]
+        rule = f"(SELECT {l}, {r}, min(rule) AS rule FROM rule_kept GROUP BY ALL)"
+        model = f"""SELECT s.{l}, s.{r}, s.match_weight, s.match_probability, s.sources, k.rule, s.named, s.keep, {', '.join(f's.{q(g)}' for g in gammas)}
+            FROM ({self.scored()}) s LEFT JOIN {rule} k USING ({l}, {r}) WHERE s.match_weight >= 0 OR k.rule IS NOT NULL"""
+        if not self.con.execute("SELECT count(*) FROM duckdb_tables() WHERE table_name = 'rule_scores'").fetchall()[0][0]:
+            return model
+        return f"""{model} UNION ALL BY NAME SELECT x.{l}, x.{r}, x.match_weight, x.match_probability, NULL::VARCHAR AS sources, k.rule,
+            {named_sql(fs, 'x')} AS named, TRUE AS keep, {', '.join(f'x.{q(g)}' for g in gammas)} FROM rule_scores x JOIN {rule} k USING ({l}, {r})
+            WHERE NOT EXISTS (SELECT 1 FROM scores s WHERE s.{l} = x.{l} AND s.{r} = x.{r})"""
+
     def _accept(self) -> None:
         """What merges into customers (kept): the rules' pairs and the model's (matches), less the pairs people decided
         are no match, and the pairs they decided are a match (er_decisions, loaded by full() from the workspace; empty
         otherwise). With no trust line (TrustRule.line None), every rule pair and the model's named and kept pairs
         (scored) at its threshold or above; with one, only the pairs scoring at or above the line, the rules' and the
-        model's alike: the rest wait for people, the model's in proposed. rule_kept says which of its pairs merged."""
+        model's alike: the rest wait for people, the model's in proposed. rule_kept says which of its pairs merged. With
+        the workspace's merge conditions (method.toml merge, er.results.merge_where), those alone decide, the rules'
+        pairs and the model's alike, as apply merging decides on the stored pairs."""
         fs, l, r, line = self.pipeline.fs, q(self.l), q(self.r), self.pipeline.trust.line
         self.con.execute(f"CREATE TABLE IF NOT EXISTS er_decisions ({l} VARCHAR, {r} VARCHAR, decision VARCHAR)")
         no = lambda x: f"NOT EXISTS (SELECT 1 FROM er_decisions d WHERE d.{l} = {x}.{l} AND d.{r} = {x}.{r} AND d.decision = 'no_match')"
+        if self.merge.get("when"):
+            hit = merge_where(self.merge, self.scoring, self.pipeline)
+            self.con.execute(f"CREATE OR REPLACE TABLE er_links AS {self._links()}")
+            pick = f"SELECT x.{l}, x.{r}, x.match_weight, x.match_probability, x.sources FROM er_links x WHERE x.rule IS NULL"
+            self.con.execute(f"CREATE OR REPLACE TABLE matches AS {pick} AND {hit} AND {no('x')}")
+            self.con.execute(f"CREATE OR REPLACE TABLE proposed AS {pick} AND NOT ({hit})")
+            self.con.execute(f"""CREATE OR REPLACE TABLE rule_kept AS SELECT k.* EXCLUDE (merged), EXISTS (SELECT 1 FROM er_links x WHERE x.{l} = k.{l}
+                AND x.{r} = k.{r} AND x.rule IS NOT NULL AND {hit}) AND {no('k')} AS merged FROM (SELECT *, NULL AS merged FROM rule_kept) k""")
+            self.con.execute(f"""CREATE OR REPLACE TABLE kept AS SELECT {l}, {r} FROM rule_kept WHERE merged UNION ALL SELECT {l}, {r} FROM matches
+                UNION ALL SELECT {l}, {r} FROM er_decisions WHERE decision = 'match'""")
+            return
         model = f"SELECT s.{l}, s.{r}, s.match_weight, s.match_probability, s.sources FROM ({self.scored()}) s WHERE s.named AND s.keep"
         at = fs.min_match_weight if line is None else line
         self.con.execute(f"CREATE OR REPLACE TABLE matches AS SELECT * FROM ({model}) s WHERE s.match_weight >= {bits(at)} AND {no('s')}")
@@ -642,8 +671,10 @@ class Run:
         if self.given is not None and len(self.given):  # the sheet given, kept as it came: the next run reads it again
             self.con.register("er_given", self.given)
             sheets.append(("SELECT * FROM er_given", out / folder.KIND_ANSWERS / f"part-{n:05d}.parquet"))
+        # an increment adds to the pair index its full run began; a run written before it had none gets it whole, once (results.pair_index)
+        scored = [(self._links(), out / folder.SCORED / name)] if part == 0 or (out / folder.SCORED / "part-00000.parquet").exists() else []
         folder.stage(self.con, out, [("SELECT * FROM rule_kept", out / "rule_kept" / name), ("SELECT * FROM matches", out / "matches" / name),
-                                     ("SELECT * FROM proposed", out / "proposed" / name),
+                                     ("SELECT * FROM proposed", out / "proposed" / name), *scored,
                                      (f"SELECT * FROM gold ORDER BY {q(self.uid)}", out / "gold.parquet"),
                                      ("SELECT * FROM rule_clusters", state / "rule_clusters.parquet"),
                                      (f"SELECT * FROM {'records' if part == 0 else 'new_records'}", state / "records" / name), *aside, *sheets],
@@ -735,6 +766,7 @@ class Run:
         parts = ", ".join(lit(x) for x in sorted((state / "records").glob("part-*.parquet")))  # not a glob: this run's own part comes later
         self.con.execute(f"CREATE OR REPLACE VIEW old_records AS SELECT * FROM read_parquet([{parts}], union_by_name = true)")
         self.labels = self._answers(out)  # the batch's kinds rest on the run's answers, and any given with it
+        self.merge = check_merging(folder.method(out).get("merge") or {}, self.pipeline)
         self.load(path, into="new_records", stored="old_records")  # a record already in the run is set aside: a retry adds nothing twice
         self.added = self.n
         if not self.added:
@@ -917,6 +949,7 @@ class Run:
         if held and not overwrite:
             raise InputError(f"{out} already holds a run", fix="choose another folder, or replace the run: nayose resolve records … --overwrite")
         self.labels = self._answers(out)  # read before the folder's old state goes
+        self.merge = check_merging(folder.method(out).get("merge") or {}, self.pipeline)
         self.keep = out
         self.resolve(path, out)
         self.write(out, replace=held, report=(path, pipeline_file) if pipeline_file else None)  # the old run goes only once the new one is complete
