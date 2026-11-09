@@ -273,11 +273,12 @@ def sums(part: Path) -> dict[str, str]:  # a part's files: path in the part → 
     return {rel: sha for sha, rel in (line.split("  ", 1) for line in (part / SUMS).read_text(encoding="utf-8").splitlines())}
 
 
-def take_in(ws: Path, path: str | Path, spec: intake.InputSpec, reference: Path) -> tuple[Path, bool]:
+def take_in(ws: Path, path: str | Path, spec: intake.InputSpec, reference: Path, progress=None) -> tuple[Path, bool]:
     """Copy the files `path` names (a file, a glob or a folder: er.source.find) into the next part of the workspace's
     inputs/, and read them (er.intake: read/, what was found, the repairs proposed), under its lock: into a hidden
     folder first, renamed into place once every file is complete and read, so a part is whole or absent. Content the
-    workspace already holds, file for file by SHA-256, is not copied again. The part, and whether it is new. O(bytes)."""
+    workspace already holds, file for file by SHA-256, is not copied again. `progress`: intake.take's. The part, and
+    whether it is new. O(bytes)."""
     files = find(path)
     given = sorted(intake.sha256(f) for f in files)
     with run_lock(ws):
@@ -300,7 +301,7 @@ def take_in(ws: Path, path: str | Path, spec: intake.InputSpec, reference: Path)
             copied[tmp / rel] = rel.as_posix()
         (tmp / SUMS).write_text("\n".join(lines) + "\n", encoding="utf-8")
         try:
-            intake.take(tmp, copied, spec, reference)
+            intake.take(tmp, copied, spec, reference, progress=progress)
         except BaseException:
             shutil.rmtree(tmp, ignore_errors=True)
             raise
@@ -310,13 +311,13 @@ def take_in(ws: Path, path: str | Path, spec: intake.InputSpec, reference: Path)
 
 def loaded(ws: Path) -> list[dict]:
     """inputs/'s parts, oldest first: each one's name, path, files, bytes and rows (as the intake read them), the name
-    of its file as given (one file), the repairs waiting for people and the rows unread, and whether a run has read all of it as it is now (steps.json, by
-    SHA-256). O(parts + files + steps.json)."""
+    of its file as given (one file), the repairs waiting for people and the rows unread, whether a run has read all of it as it is now (steps.json, by
+    SHA-256), and the seconds its reading took and its columns (this machine's pace: the page's estimate of a run). O(parts + files + steps.json)."""
     read = {x["sha256"] for run in runs(ws) for x in run.get("inputs", []) if x.get("role") == "records"}
     def facts(part: Path) -> dict:  # a part's rows and whether a run read it, as the intake read it
         r = intake.report(part)
         waiting = sum(n for k, n in r["proposed"].items() if k not in r["accepted"])
-        return dict(rows=r["rows"], read=all(f["versions"][-1] in read for f in r["files"]), waiting=waiting, unread=r["unread"],
+        return dict(rows=r["rows"], read=all(f["versions"][-1] in read for f in r["files"]), waiting=waiting, unread=r["unread"], seconds=r.get("seconds"), columns=max((x["columns"] for x in r["files"]), default=0),
                     given=Path(r["files"][0]["given"]).name if len(r["files"]) == 1 else None)  # its file's own name, kana and kanji kept
     return [dict(name=part.name, path=str(part), files=len(own), bytes=sum((part / rel).stat().st_size for rel in own), **facts(part))
             for part in parts(ws) for own in [sums(part)]]

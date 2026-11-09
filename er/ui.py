@@ -6,7 +6,7 @@ their results. The server knows nothing of the screens. It serves the page and t
     POST /api/run               {"command": "list pairs", "args": {...}} → the job, and the nayose command it runs;
                                 with "dry": true, the command only, for the page to show before it runs
     GET  /api/job/<id>?from=n   the job's events from the n-th on, whether it ended, and its exit code
-    GET  /api/running           the long command running now, if any: {job, command, workspace}, for a page drawn since it began
+    GET  /api/running           the long command running now, if any: {job, command, workspace, since}, for a page drawn since it began
 
 Each job is parsed by nayose's own parser, built to raise a refusal rather than print it and exit: quick jobs run in
 threads, which can't share the process's stderr. A quick command (a list, a describe, one answer) runs in this
@@ -81,6 +81,7 @@ class Job:
     events: list[dict] = field(default_factory=list)
     code: int | None = None                   # None while it runs
     read: float | None = None                 # when a page first read its end
+    begun: float = field(default_factory=time.time)  # a page drawn while it runs says how long it has run
 
 
 class Collect(cli.Emit):  # a quick command's events, kept for the page as JSON would carry them
@@ -215,7 +216,7 @@ def handler(server: Server):
                 key = server.running
                 job = server.jobs.get(key) if key else None
                 at = job.words[job.words.index("--workspace") + 1] if job and "--workspace" in job.words[:-1] else None  # the workspace it writes
-                self._send(200, dict(job=key, command=" ".join(job.words[:2]), workspace=at) if job else {})
+                self._send(200, dict(job=key, command=" ".join(job.words[:2]), workspace=at, since=job.begun) if job else {})
             else:
                 self._send(404, {"error": "no such page"})
 

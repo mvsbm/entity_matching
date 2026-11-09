@@ -7,8 +7,8 @@ then a noun, then its parameters.
 
 Each command is declared once, in COMMANDS: its verb and noun, what it does, its parameters, the fields of its result,
 an example, and the function that runs it. The parser, the reference (docs/commands.md, reference()) and the UI's
-forms are all built from those declarations. A command emits events: each step as it finishes, then one result, or an
-error. --format text renders them for a person; --format json writes each as one JSON object per line. Every result
+forms are all built from those declarations. A command emits events: each step as it finishes (and, as JSON, how far a
+file has been read: progress), then one result, or an error. --format text renders them for a person; --format json writes each as one JSON object per line. Every result
 names the commands that usually come next. Exit codes: 0; 2, a mistake people fix, in two lines (what is wrong, and
 how to fix it); 75, the workspace is busy: try again later; 1, a pass of serve inbox stopped on a file.
 """
@@ -111,6 +111,10 @@ class Emit:
 
     def step(self, x: dict) -> None:
         self._json("step", x) if self.fmt == "json" else print(step_text(x), file=self.out, flush=True)
+
+    def progress(self, done: int, total: int, unit: str) -> None:  # how far a long command has gone, for the page: JSON only
+        if self.fmt == "json":
+            self._json("progress", {"done": done, "total": total, "unit": unit})
 
     def line(self, text: str, **data: object) -> None:  # a running note: serve inbox's files
         self._json("line", {"text": text, **data}) if self.fmt == "json" else print(text, file=self.out, flush=True)
@@ -436,7 +440,7 @@ def described(a: dict) -> dict:
 
 def load_records(a: dict, emit: "Emit") -> dict:
     ws, s = Path(a["workspace"]), settings_for(a)
-    part, copied = folder.take_in(ws, a["input"], s.input, s.paths["reference"])
+    part, copied = folder.take_in(ws, a["input"], s.input, s.paths["reference"], progress=lambda n, whole: emit.progress(n, whole, "rows"))
     return {**describe_records({**a, "input": str(part)}, emit), "loaded": str(part), "copied": copied}
 
 
@@ -513,7 +517,7 @@ def add_records(a: dict, emit: "Emit") -> dict:
     s, p, pipeline = setup(a)
     out = Path(a["workspace"])
     held = [x for x in folder.parts(out) if a["input"] and Path(a["input"]).expanduser().resolve() == x.resolve()]  # a part loaded already: as it is
-    part, copied = (held[0], False) if held else folder.take_in(out, a["input"], s.input, s.paths["reference"]) if a["input"] else (Path(given(a)), False)
+    part, copied = (held[0], False) if held else folder.take_in(out, a["input"], s.input, s.paths["reference"], progress=lambda n, whole: emit.progress(n, whole, "rows")) if a["input"] else (Path(given(a)), False)
     try:
         run = Run(p, s, echo=emit.step).increment(part, out, pipeline_file=pipeline)
     except InputError as e:
@@ -1071,7 +1075,7 @@ COMMANDS: tuple[Command, ...] = (
              "write_owed": "a write cut short, finished by the next one", "summary": "the last run's summary",
              "round": "the round now: one per method the workspace ran (rounds.json)", "audits": "this round's audits people decided: checked, false",
              "trust": TRUST,
-             "inputs": "the records files given to it, each in inputs/: name, path, files, bytes, rows, read (by a run, as it is now), waiting (repairs proposed, for people), unread (rows), given (its file's own name, one file)",
+             "inputs": "the records files given to it, each in inputs/: name, path, files, bytes, rows, read (by a run, as it is now), waiting (repairs proposed, for people), unread (rows), given (its file's own name, one file), seconds (its reading took), columns",
              "columns": "own: its columns.toml; project: config/settings.toml's",
              "auto": "the report try everything wrote, to send: report (its path), markdown", "next": "the commands that usually follow"},
             "nayose describe workspace workspaces/customers", describe_workspace_, quick=True,
@@ -1405,7 +1409,7 @@ def reference() -> str:
            "the two differ.", "", "`nayose` (名寄せ: gathering each customer's records under one name) reads as a sentence: a "
            "verb, a noun, then the parameters. Every command takes `--help` and `--format`.", "",
            "- **`--format text`**, the default: each step on a line as it finishes, then the result, for a person.",
-           "- **`--format json`**: one JSON object per line: `{\"event\": \"step\", …}` per step, then `{\"event\": \"result\", "
+           "- **`--format json`**: one JSON object per line: `{\"event\": \"step\", …}` per step (a file being read: `{\"event\": \"progress\", \"done\": …, \"total\": …, \"unit\": \"rows\"}` as it goes, the total about), then `{\"event\": \"result\", "
            "\"command\": …, …}` with the fields listed below, or `{\"event\": \"error\", \"error\": …, \"fix\": …, \"hints\": …, "
            "\"exit\": …}`. IDs are `id`, `id_l`, `id_r`, whatever the file calls them.",
            "- **Exit codes:** 0; 2, a mistake people fix (two lines: what is wrong, and the fix); 75, the workspace is busy: "

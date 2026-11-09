@@ -73,7 +73,8 @@ def test_the_ui_serves_only_its_own_link_and_runs_the_commands_as_nayose_does(tm
         while not (running := call("GET", "/api/running")[1]):  # a page drawn while it runs finds it
             assert time.monotonic() < deadline
             time.sleep(0.05)
-        assert running == {"job": started["job"], "command": "resolve records", "workspace": str(tmp_path / "run")}
+        since = running.pop("since")  # when it began: a page drawn now says how long it has run
+        assert running == {"job": started["job"], "command": "resolve records", "workspace": str(tmp_path / "run")} and time.time() - 60 < since <= time.time()
         while not call("GET", f"/api/job/{started['job']}")[1]["done"]:
             time.sleep(0.1)
         assert call("GET", "/api/running")[1] == {}

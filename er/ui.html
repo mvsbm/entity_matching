@@ -161,7 +161,8 @@ dialog::backdrop { background: rgba(0,0,0,.32); }
 .cmdline summary { cursor: pointer; font-size: 12px; color: var(--faint); margin: 4px 0 8px; }
 
 /* the command drawer, at the bottom: every command the page ran */
-.term { position: fixed; left: 0; right: 0; bottom: 0; z-index: 6; height: 260px; display: flex; flex-direction: column; background: var(--term); color: var(--term-ink); box-shadow: 0 -2px 8px rgba(0,0,0,.25); }
+:root { --term-h: 260px; }  /* the drawer's height: dragged by its top edge */
+.term { position: fixed; left: 0; right: 0; bottom: 0; z-index: 6; height: var(--term-h); display: flex; flex-direction: column; background: var(--term); color: var(--term-ink); box-shadow: 0 -2px 8px rgba(0,0,0,.25); }
 .term[hidden] { display: none; }
 .term-bar { display: flex; align-items: center; gap: 10px; height: 40px; padding: 0 8px 0 16px; border-bottom: 1px solid #3c4043; font-size: 13px; }
 .term-bar .faint { color: var(--term-dim); }
@@ -173,7 +174,10 @@ dialog::backdrop { background: rgba(0,0,0,.32); }
 .term-body .ok { color: var(--term-ok); }
 .term-body .bad { color: var(--term-bad); white-space: pre-wrap; }
 .term-body .faint { color: var(--term-dim); }
-body.term-open main { padding-bottom: 300px; }
+.term-grip { position: absolute; left: 0; right: 0; top: -4px; height: 8px; cursor: ns-resize; touch-action: none; }
+.term-grip::after { content: ""; position: absolute; left: 50%; top: 2px; width: 36px; height: 4px; margin-left: -18px; border-radius: 2px; background: var(--term-dim); opacity: .5; }
+body.term-open main { padding-bottom: calc(var(--term-h) + 40px); }
+body.term-open .snack, body.term-open .task { bottom: calc(var(--term-h) + 16px); }
 
 /* the snackbar */
 .snack { position: fixed; left: 24px; bottom: 24px; z-index: 7; display: flex; align-items: center; gap: 12px; min-width: 288px; max-width: 560px; padding: 12px 16px; border-radius: 4px;
@@ -184,7 +188,22 @@ body.term-open main { padding-bottom: 300px; }
 .snack .btn { color: #a8c7fa; height: 32px; padding: 0 8px; }
 .spin { width: 18px; height: 18px; border-radius: 50%; border: 2px solid #a8c7fa; border-right-color: transparent; animation: spin .8s linear infinite; flex: none; }
 @keyframes spin { to { transform: rotate(360deg); } }
-@media (prefers-reduced-motion: reduce) { .spin { animation: none; } }
+@media (prefers-reduced-motion: reduce) { .spin { animation-duration: 2.4s; } }  /* slowed, never stopped: a still wheel reads as a page that hung */
+.spin.ink { border-color: var(--primary); border-right-color: transparent; } .waiting { display: flex; align-items: center; gap: 12px; color: var(--muted); }
+.snack .x { color: #c4c7c5; width: 32px; height: 32px; margin-right: -8px; }
+
+/* a long command's progress, bottom right, as a download panel: what it does, how far, about how long; folded or closed */
+.task { position: fixed; right: 24px; bottom: 24px; z-index: 7; width: 360px; max-width: calc(100vw - 32px); background: var(--surface); color: var(--ink);
+        border-radius: 12px; box-shadow: 0 4px 16px rgba(0,0,0,.24); overflow: hidden; font-size: 14px; }
+.task[hidden] { display: none; }
+.task-head { display: flex; align-items: center; gap: 10px; padding: 6px 6px 6px 16px; background: var(--hover); }
+.task-head b { font-weight: 500; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.task-head .iconbtn { width: 32px; height: 32px; }
+.task-head .spin { border-color: var(--primary); border-right-color: transparent; }
+.task-body { padding: 12px 16px 14px; display: grid; gap: 8px; }
+.task.folded .task-body { display: none; } .task.folded #task-fold svg { transform: rotate(180deg); }
+.task-line { color: var(--muted); font-size: 13px; }
+@media (max-width: 860px) { .task { right: 16px; left: 16px; width: auto; bottom: 88px; } }
 
 @media (max-width: 1320px) { .split.item-first { grid-template-columns: minmax(0, 56fr) minmax(0, 44fr); } .queue th, .queue td { padding: 8px 8px; } .queue .clip { max-width: 6em; } }  /* the queue's columns whole */
 @media (max-width: 1100px) { .split, .split.item-first { grid-template-columns: minmax(0, 1fr); } .panel-sticky { position: static; } }
@@ -450,7 +469,7 @@ dialog:has(.dlg-body.wide) { width: min(960px, calc(100vw - 32px)); }
 .drop .hole { color: var(--faint); border: 1px dashed var(--outline); border-radius: 13px; padding: 3px 10px; font-size: 12px; cursor: pointer; }
 .drop .colchip.in { cursor: pointer; } .frow:has(.drop.over) { background: var(--primary-soft); }
 .tray { position: sticky; bottom: 0; z-index: 2; } .tray[open] .chips { max-height: 30vh; overflow: auto; }  /* in reach of every row while dragging */
-body.term-open .tray { bottom: 260px; }  /* above the command drawer */
+body.term-open .tray { bottom: var(--term-h); }  /* above the command drawer */
 #out[inert] .fgroup { opacity: .6; } #out[aria-busy] .colhead h3::after { content: "saving…"; margin-left: 8px; color: var(--faint); font-size: 12px; font-weight: 400; }
 .drop .else, .drop .plus { color: var(--faint); font-size: 11px; }
 .drop select { font: inherit; font-size: 12px; padding: 3px 6px; border: 1px solid var(--outline); border-radius: 6px; background: var(--surface); color: var(--ink); }
@@ -477,11 +496,15 @@ body.term-open .tray { bottom: 260px; }  /* above the command drawer */
 <main id="screen" aria-live="polite"></main>
 <div id="lost" class="banner bad" role="alert" hidden></div>
 <section class="term" id="term" hidden aria-label="Commands run">
+  <div class="term-grip" id="term-grip" role="separator" aria-orientation="horizontal" aria-label="Drag to resize" tabindex="0"></div>
   <div class="term-bar"><span id="term-ic"></span><b>nayose</b><span class="faint">every button runs one of these; each can be typed in a terminal as it is</span>
     <span style="flex:1"></span><button class="iconbtn" id="term-clear" aria-label="Clear"></button><button class="iconbtn" id="term-close" aria-label="Close"></button></div>
   <div class="term-body" id="term-body"></div>
 </section>
 <div class="snack" id="snack" hidden role="status"></div>
+<div class="task" id="task" hidden role="status" aria-live="polite"><div class="task-head"><span id="task-ic"></span><b id="task-title"></b>
+  <button class="iconbtn" id="task-fold" aria-label="Fold" aria-expanded="true"></button><button class="iconbtn" id="task-close" aria-label="Close"></button></div>
+  <div class="task-body"><div class="task-line" id="task-line"></div><span class="meter wide"><i id="task-bar" style="width:0"></i></span></div></div>
 <dialog id="dlg"></dialog>
 
 <script type="application/json" id="layout">
@@ -682,10 +705,11 @@ const term = {
   },
 };
 let snackTimer = null;
-function snack(html, ms = 0) {
+function snack(html, ms = 0) {  // a short notice, bottom left, closed by its ✕ or after ms
   clearTimeout(snackTimer);
-  $("snack").innerHTML = html;
+  $("snack").innerHTML = `${html}<button class="iconbtn x" aria-label="Close">${icon("close")}</button>`;
   $("snack").hidden = false;
+  $("snack").querySelector(".x").onclick = () => { clearTimeout(snackTimer); $("snack").hidden = true; };
   const view = $("snack").querySelector("[data-term]");
   if (view) view.onclick = () => term.show(true);
   if (ms) snackTimer = setTimeout(() => { $("snack").hidden = true; }, ms);
@@ -712,27 +736,88 @@ async function runOnce(command, args, onEvent, tries = 10) {
   return last;
 }
 
-async function watch(job, command, line, onEvent) {  // a job's events to its end, in the drawer and the snackbar: its last event and exit code
+// A long command's progress, bottom right on every page, as a download panel: what it does, how far, about how long is
+// left. Folded or closed by the person, the command runs on; the next one opens it again.
+const RUNS = ["resolve records", "rerun records", "add records", "match records"];  // a run's steps say how far it is
+const FRAC = {load: .2, budget: .23, fit: .41, rules: .45, candidates: .57, score: .87, cluster: .88, probe: .95, report: .98, write: 1};  // a run's share of its time, done as each step ends (a million records)
+const priors = {};  // a run's seconds as guessed before it starts (step 3), by command: until its steps say more
+function runLeft(order, ended, at, now, prior) {  // seconds left, about: the whole run as its steps so far say, never less than the step it is in implies; null before anything says
+  const share = (s) => FRAC[s] / FRAC[order[order.length - 1]], next = order[order.indexOf(ended) + 1];
+  let whole = ended ? at / share(ended) : prior;
+  if (whole === null || whole === undefined) return null;
+  if (next) whole = Math.max(whole, now / share(next));
+  return Math.max(0, whole - now);
+}
+const task = {
+  start(command, job, since) {  // since: when it began, for a page drawn while it runs (seconds since the epoch)
+    if (this.job && this.done === null) return;  // one at a time: a second, refused at once, doesn't take the panel
+    Object.assign(this, {command, job, t0: since ? since * 1000 : Date.now(), ended: null, at: 0, p: null, done: null, prior: priors[command] ?? null});
+    delete priors[command];
+    clearTimeout(this.hide); clearInterval(this.clock);
+    this.clock = setInterval(() => this.draw(), 1000);
+    $("task").hidden = false;
+    this.draw();
+  },
+  event(e, job) {
+    if (job !== this.job) return;
+    if (e.event === "progress") this.p = e;
+    else if (e.event === "step") { this.ended = e.step; this.at = (Date.now() - this.t0) / 1000; }
+    else return;
+    this.draw();
+  },
+  end(ok, why, job) {
+    if (job !== this.job) return;
+    clearInterval(this.clock);
+    this.done = ok; this.why = why;
+    this.draw();
+    if (ok) this.hide = setTimeout(() => { $("task").hidden = true; }, 8000);
+  },
+  draw() {
+    const secs = (Date.now() - this.t0) / 1000, order = STEPS_OF[this.command] || RUN_STEPS, p = this.p;
+    let left = null, now = "";
+    if (RUNS.includes(this.command)) {
+      left = runLeft(order, this.ended, this.at, secs, this.prior);
+      now = DOING[order[order.indexOf(this.ended) + 1]] || "";
+    } else if (p && p.total) {
+      left = p.done >= p.total ? 0 : p.done ? secs * (p.total - p.done) / p.done : null;
+      now = p.done < p.total ? `${fmt(p.done)} of ${fmt(p.total)} ${p.unit}` : "reading the columns";
+    }
+    const title = BUSY[this.command] || `Running ${this.command}`, soon = left === null ? `${Math.round(secs)} s` : left < 2 ? "almost done" : `about ${lasts(left)} left`;
+    $("task").setAttribute("aria-busy", String(this.done === null));  // read out at its start and end, not each second
+    $("task-ic").innerHTML = this.done === null ? '<span class="spin"></span>' : icon(this.done ? "check" : "error");
+    $("task-title").textContent = this.done === null ? (this.folded ? `${title} · ${soon}` : title) : `${title}: ${this.done ? "done" : "failed"}`;
+    $("task-line").innerHTML = this.done === false ? `${esc(this.why)} <button class="btn" data-term>View</button>` : this.done ? `${Math.round(secs)} s` : esc([now, soon].filter(Boolean).join(" · "));
+    $("task-line").querySelector("[data-term]")?.addEventListener("click", () => term.show(true));
+    $("task-bar").style.width = `${this.done ? 100 : left === null ? 0 : Math.round(100 * secs / (secs + left))}%`;
+  },
+  fold() { this.folded = !this.folded; $("task").classList.toggle("folded", this.folded); $("task-fold").setAttribute("aria-expanded", String(!this.folded)); if (this.t0) this.draw(); },
+};
+
+async function watch(job, command, line, onEvent, since = null) {  // a job's events to its end, in the drawer and the progress panel: its last event and exit code
   const quick = COMMANDS[command].quick, entry = term.add(line);
-  if (!quick) snack(`<span class="spin"></span><span class="msg">Running <code>${esc(command)}</code></span>`);
+  if (!quick) task.start(command, job, since);
   let from = 0, last = {};
   for (;;) {
     const j = await api(`/api/job/${job}?from=${from}`);
     if (j.error) {  // the server is gone: the command ends here, the page never waits forever
       const e = {event: "error", error: j.error, fix: j.fix || "", lost: j.lost};
       entry.end(e, 1);
-      if (!quick) snack(`${icon("error")}<span class="msg">Lost <code>${esc(command)}</code>: the server is gone</span>`, 6000);
+      if (!quick) task.end(false, "the server is gone", job);
       ended(command);
       return {last: e, exit: 1};
     }
-    for (const e of j.events) { last = e; if (e.event === "step") entry.step(e); if (onEvent) onEvent(e); }
+    for (const e of j.events) {
+      if (e.event !== "progress") last = e;
+      if (e.event === "step") entry.step(e);
+      if (!quick) task.event(e, job);
+      if (onEvent) onEvent(e);
+    }
     from += j.events.length;
     if (j.done) {
       entry.end(last, j.exit);
       ended(command);
       if (!quick && (j.exit === 0 || last.event === "result")) { memoAt = -1; refresh(); }  // the stepper, whichever page is open now; no answer kept from before the write
-      if (!quick) snack(j.exit === 0 ? `${icon("check")}<span class="msg">Done <code>${esc(command)}</code></span>`
-                                     : `${icon("error")}<span class="msg">Failed <code>${esc(command)}</code></span><button class="btn" data-term>View</button>`, 6000);
+      if (!quick) task.end(j.exit === 0, last.error || "", job);
       return {last, exit: j.exit};
     }
     await sleep(quick ? 120 : 300);
@@ -750,7 +835,7 @@ async function rejoin() {  // a long command that began before this page was dra
   const mine = !r.workspace || r.workspace === state.workspace;  // another workspace's run: its buttons wait here, its card shows there
   longRun = {command: r.command, visit: -1, workspace: r.workspace, page: mine ? (LAYOUT.screens.find((s) => s.uses.some((u) => u.command === r.command)) || {id: current}).id : null};
   if ([longRun.page, "run", "records"].includes(current)) go(current);  // drawn again, as running, or its buttons waiting
-  await watch(r.job, r.command, `nayose ${r.command}`, (e) => { if (e.workspace && longRun) longRun.workspace = e.workspace; });  // auto mode names its workspace as it goes
+  await watch(r.job, r.command, `nayose ${r.command}`, (e) => { if (e.workspace && longRun) longRun.workspace = e.workspace; }, r.since);  // auto mode names its workspace as it goes
 }
 
 // ---------- the workflow: six steps, each one's state read from the workspace ----------
@@ -1482,12 +1567,18 @@ const LIT = {load: ["records", "records"], rules: ["rules", "pairs"], candidates
 const RUN_STEPS = ["load", "budget", "fit", "rules", "candidates", "score", "cluster", "probe", "report", "write"];  // a full run's steps, in the order they end
 const STEPS_OF = {"add records": ["load", "fit", "rules", "candidates", "score", "cluster", "report", "write"],  // an increment's: no plan, no probe
                   "match records": ["load", "fit", "rules", "candidates", "score", "cluster"]};  // a preview writes nothing
-const BUSY = {"resolve records": "Finding matches", "rerun records": "Matching again", "add records": "Adding the new records", "match records": "Previewing the new records"};
+const BUSY = {"resolve records": "Finding matches", "rerun records": "Matching again", "add records": "Adding the new records", "match records": "Previewing the new records",
+              "load records": "Loading your file", "accept repairs": "Accepting the repairs", "try everything": "Auto mode", "try method": "Trying a method"};
 const DOING = {load: "reading the records", budget: "planning the work", fit: "learning what matches look like", rules: "applying the match rules",
                candidates: "listing pairs to compare", score: "scoring the pairs", cluster: "forming entities", probe: "looking for matches it missed",
                report: "writing the report", write: "saving"};
 const LIT_NODE = {load: "records", rules: "rules", candidates: "candidates", score: "score", cluster: "group"};  // the stage a step works on
-const took = (rows) => { const s = Math.max(10, Math.round(rows * 6e-5 / 10) * 10); return s < 60 ? `${s} seconds` : s < 90 ? "a minute" : `${Math.round(s / 60)} minutes`; };  // about a minute a million records
+const guess = (rows, w) => {  // a run's seconds, about, before it starts: this workspace's last full run, scaled to these records; else this machine's reading of the file, per column, times four; else a minute a million records
+  const r = (w.runs || []).filter((x) => x.what === "full run").slice(-1)[0], f = (w.inputs || []).slice(-1)[0];
+  const wide = f && f.columns ? Math.min(1, 25 / f.columns) : 1;  // its reading checks every column, a run reads the ones mapped: a wide file reads slower than it runs
+  return r && w.records ? 5 + r.seconds * rows / w.records : f && f.seconds && f.rows ? 10 + 4 * wide * f.seconds * rows / f.rows : 10 + rows * 6e-5;
+};
+const about = (s) => s < 90 ? `${Math.max(10, Math.round(s / 10) * 10)} seconds` : lasts(s);
 const NEW_FILE = ["add records", "match records"];  // their file is a new one: the file loaded last is matched already
 function field(command, name) {
   const p = COMMANDS[command].params.find((x) => x.name === name), id = `f-${name}`;
@@ -1627,7 +1718,10 @@ const SCREENS = {
         const files = w.inputs || [];
         last = files[files.length - 1];
         $("files").innerHTML = files.map((f) => `<span class="tag" title="${esc(f.path)}">${esc(nameOf(f))} · ${bytes(f.bytes)} · ${f.read ? "matched" : "not run yet"}</span>`).join("");
-        if (d === undefined && last) d = await run("columns", "describe records", {loaded: last.path});
+        if (d === undefined && last) {
+          if (!$("out").querySelector(".fgroup")) $("out").innerHTML = `<div class="card waiting"><span class="spin ink"></span>Reading the columns of ${esc(nameOf(last))}…</div>`;
+          d = await run("columns", "describe records", {loaded: last.path});
+        }
         if (d && at === edits) show(d);  // else a change since: its own reading shows it
       });
     };
@@ -1757,11 +1851,12 @@ const SCREENS = {
         const input = $("cin").value.trim();
         if (!input) { $("cin").focus(); return; }
         const b = $("load"), was = b.innerHTML, at = edits;
-        b.disabled = true; b.textContent = "Reading…";  // a big file takes seconds: read as it comes
+        b.disabled = true; b.textContent = "Reading…";  // a big file takes minutes: how far, and how long is left, in the panel
+        if (!$("out").querySelector(".fgroup")) $("out").innerHTML = `<div class="card waiting"><span class="spin ink"></span>Reading ${esc(baseName(input))}…</div>`;
         const e = await run("columns", "load records", {input});
         if (b.isConnected) { b.disabled = false; b.innerHTML = was; }
         if (e.event === "error") {  // the mapping stays: the refusal above it
-          $("out").querySelector(":scope > .banner")?.remove();
+          $("out").querySelectorAll(":scope > .banner, :scope > .waiting").forEach((x) => x.remove());
           $("out").insertAdjacentHTML("afterbegin", banner(e));
           return;
         }
@@ -1782,7 +1877,7 @@ const SCREENS = {
       `<div id="out">${state.workspace ? "" : emptyRun()}</div><h3 class="flowq" id="flowq"></h3><div id="flow"></div>${stepFoot("run")}`;
     if (!state.workspace) return;
     const graph_ = flowOf("run", $("flow"));
-    let file = null;  // the file a first run reads: the one loaded last
+    let file = null, w0 = null;  // the file a first run reads: the one loaded last; the workspace, once described
     const hold = () => el.querySelectorAll("[data-act], [data-first], [data-add]").forEach((b) => b.disabled = !!longRun);
     const start = (command, label, opts = null) => {
       const done = (d) => {
@@ -1794,13 +1889,16 @@ const SCREENS = {
         $("out").innerHTML = `<div class="card"><h2>What adding them would do</h2>${bars(Object.entries(d.counts).map(([k, n]) => ({label: k, value: n})))}</div><div id="matched"></div>`;
         if (d.records) grid($("matched"), d.records, ["id", "entity", "status", "by", "weight"], {cell: (r, c) => c === "status" ? chip(r.status) : esc(fmt(r[c]))});
       };
-      let n = 0, t0 = 0, last = null, clock = 0;
-      const order = STEPS_OF[command] || RUN_STEPS, rows = file ? file.rows : null;
+      let t0 = 0, last = null, at = 0, clock = 0;
+      const order = STEPS_OF[command] || RUN_STEPS, rows = command === "resolve records" && file ? file.rows : command === "rerun records" && w0 ? w0.records : null;
+      const prior = rows && w0 ? guess(rows, w0) : null;  // a new batch's size is unknown until it is read: its steps say
+      priors[command] = prior;
       const say = () => {
         const card = $("out")?.querySelector(".steps-card");
         if (!card) { clearInterval(clock); return; }  // the page was left
-        const next = order[order.indexOf(last) + 1] || order[0], secs = Math.round((Date.now() - t0) / 1000);
-        card.querySelector(".answer").innerHTML = `${secs} s${rows ? ` of about ${took(rows)}` : ""} · now: ${esc(DOING[next] || next)}`;
+        const next = order[order.indexOf(last) + 1] || order[0], secs = (Date.now() - t0) / 1000, left = runLeft(order, last, at, secs, prior);
+        card.querySelector(".answer").innerHTML = `${Math.round(secs)} s${left === null ? "" : left < 2 ? " · almost done" : ` · about ${lasts(left)} left`} · now: ${esc(DOING[next] || next)}`;
+        card.querySelector(".meter i").style.width = `${left === null ? 0 : Math.round(100 * secs / (secs + left))}%`;
         $("flow").querySelectorAll(".node").forEach((b) => b.classList.toggle("now", (LIT_NODE[next] || "") === b.dataset.node));
       };
       const step = (e) => {  // the run as it goes: what it does now, the time taken, each stage filled in as its step ends
@@ -1812,7 +1910,7 @@ const SCREENS = {
         }
         if (e.event !== "step") return;
         last = e.step;
-        $("out").querySelector(".steps-card .meter i").style.width = `${Math.min(100, 100 * ++n / order.length)}%`;
+        at = (Date.now() - t0) / 1000;
         const [node, fact] = LIT[e.step] || [];
         const b = node && $("flow").querySelector(`.node[data-node=${node}]`);
         if (b && e[fact] !== undefined) {
@@ -1828,6 +1926,7 @@ const SCREENS = {
     if (loop) el.querySelector(`[data-act="${loop.via[loop.via.length - 1]}"]`)?.focus();
     const w = await run("run", "describe workspace");
     if (w.event === "error") { $("out").innerHTML = banner(w); return; }
+    w0 = w;
     file = (w.inputs || []).slice(-1)[0] || null;
     if ($("out").querySelector(".steps-card")) return;  // a run started meanwhile: it draws its own
     if (runsHere()) { $("out").innerHTML = runningCard(longRun); hold(); return w; }  // started before this page was drawn, here or for the Overview
@@ -1836,7 +1935,7 @@ const SCREENS = {
       $("out").innerHTML = file && !file.rows ? `<div class="card"><div class="qa"><div class="q"><h2 class="question">${esc(nameOf(file))} holds no records</h2>
           <p class="answer">Load a file that does</p></div><a class="btn filled" data-go="columns">2 · Prepare your data</a></div></div>`
         : file ? `<div class="card"><div class="qa"><div class="q"><h2 class="question">Ready to find matches in ${plural(file.rows, "record")}</h2>
-          <p class="answer">${esc(nameOf(file))} · about ${took(file.rows)}</p></div><button class="btn filled" data-first>${icon("run")}Find matches</button></div></div>` : emptyRun(w);
+          <p class="answer">${esc(nameOf(file))} · about ${about(guess(file.rows, w))}</p></div><button class="btn filled" data-first>${icon("run")}Find matches</button></div></div>` : emptyRun(w);
       $("out").querySelector("[data-first]")?.addEventListener("click", () => start("resolve records", "Find matches"));
       hold();
       return w;
@@ -3248,7 +3347,7 @@ document.addEventListener("keydown", (e) => {
 });
 
 (async () => {
-  for (const [id, name] of [["menu", "menu"], ["search-ic", "search"], ["term-toggle", "terminal"], ["help", "help"], ["term-ic", "terminal"], ["term-clear", "clear"], ["term-close", "close"]]) $(id).innerHTML = icon(name);
+  for (const [id, name] of [["menu", "menu"], ["search-ic", "search"], ["term-toggle", "terminal"], ["help", "help"], ["term-ic", "terminal"], ["term-clear", "clear"], ["term-close", "close"], ["task-fold", "down"], ["task-close", "close"]]) $(id).innerHTML = icon(name);
   const d = await api("/api/commands");
   if (!d.commands) { $("screen").innerHTML = `<div style="padding:24px">${banner({event: "error", error: d.error || "This page needs the link nayose open ui printed"})}</div>`; return; }
   COMMANDS = Object.fromEntries(d.commands.map((c) => [c.name, c]));
@@ -3259,6 +3358,17 @@ document.addEventListener("keydown", (e) => {
   $("term-toggle").onclick = () => term.show($("term").hidden);
   $("term-close").onclick = () => term.show(false);
   $("term-clear").onclick = () => { $("term-body").innerHTML = ""; };
+  $("task-fold").onclick = () => task.fold();
+  $("task-close").onclick = () => { $("task").hidden = true; };  // the command runs on; the next one opens it again
+  const tall = (h) => document.documentElement.style.setProperty("--term-h", `${Math.round(Math.min(innerHeight * 0.85, Math.max(120, h)))}px`);
+  const keep = () => { try { localStorage.setItem("term-h", String($("term").offsetHeight)); } catch { /* not kept: the next visit starts at the default */ } };
+  try { const h = Number(localStorage.getItem("term-h")); if (h) tall(h); } catch { /* the default */ }
+  $("term-grip").onpointerdown = (e) => {  // the drawer's height, dragged by its top edge, kept for the next visit
+    $("term-grip").setPointerCapture(e.pointerId);
+    $("term-grip").onpointermove = (m) => tall(innerHeight - m.clientY);
+  };
+  $("term-grip").onpointerup = () => { $("term-grip").onpointermove = null; keep(); };
+  $("term-grip").onkeydown = (e) => { if (e.key === "ArrowUp" || e.key === "ArrowDown") { e.preventDefault(); tall($("term").offsetHeight + (e.key === "ArrowUp" ? 40 : -40)); keep(); } };
   $("search").onkeydown = (e) => { if (e.key === "Enter" && $("search").value.trim()) { go("results", $("search").value.trim()); $("search").blur(); } };
   if (SCREENS[location.hash.slice(1)]) current = location.hash.slice(1);  // reloaded: the step it was on
   addEventListener("popstate", () => { const id = location.hash.slice(1); if (SCREENS[id] && id !== current) go(id); });

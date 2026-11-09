@@ -312,3 +312,25 @@ def test_the_reader_takes_the_files_real_systems_write_and_refuses_one_it_cannot
     assert len(got) == 20_900 and r["unread"] == 1100
     with pytest.raises(InputError, match="don't line up"):  # a wrong delimiter: refused, not 99% unread
         read("bad.csv", "\n".join(["a,b,c", *(f"{i},x,y,z" if i % 3 == 0 else f"{i},x,y" for i in range(6000))]).encode())
+
+
+def test_a_load_says_how_far_it_has_read_and_the_workspace_keeps_how_long_it_took(tmp_path, monkeypatch, capsys):
+    from er import cli, intake
+    monkeypatch.setattr(intake, "CHUNK", 2)  # a progress each two rows
+    pd.DataFrame({"ID": [f"R{i}" for i in range(5)], "NAME": ["ヤマダタロウ"] * 5}).to_parquet(tmp_path / "a.parquet", index=False)
+    (tmp_path / "b.csv").write_text("ID,NAME\n" + "".join(f"S{i},スズキ\n" for i in range(5)), encoding="utf-8")
+    assert cli.main(["create", "workspace", "w", "--home", str(tmp_path), "--format", "json"]) == 0
+    for f in ("a.parquet", "b.csv"):  # Parquet counts its rows; text, its lines
+        capsys.readouterr()
+        assert cli.main(["load", "records", str(tmp_path / f), "--workspace", str(tmp_path / "w"), "--format", "json"]) == 0
+        events = [json.loads(x) for x in capsys.readouterr().out.splitlines()]
+        assert [(e["done"], e["total"]) for e in events if e["event"] == "progress"] == [(2, 5), (4, 5), (5, 5)], f
+    (tmp_path / "c.csv").write_bytes(b"ID,NOTE\n" + b"".join(b'T%d,"two\nlines"\n' % i for i in range(3)))  # a newline inside a value: more lines than rows
+    capsys.readouterr()
+    assert cli.main(["load", "records", str(tmp_path / "c.csv"), "--workspace", str(tmp_path / "w"), "--format", "json"]) == 0
+    progress = [(e["done"], e["total"]) for e in map(json.loads, capsys.readouterr().out.splitlines()) if e["event"] == "progress"]
+    assert progress[-1] == (3, 3) and all(t > 0 for _, t in progress)  # counted on, then done at the rows it holds, whatever the estimate said
+    capsys.readouterr()
+    assert cli.main(["describe", "workspace", str(tmp_path / "w"), "--format", "json"]) == 0
+    inputs = json.loads(capsys.readouterr().out.splitlines()[-1])["inputs"]
+    assert [x["columns"] for x in inputs] == [2, 2, 2] and all(x["seconds"] >= 0 for x in inputs)  # this machine's pace, for the page's estimate of a run
