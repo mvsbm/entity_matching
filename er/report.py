@@ -668,6 +668,7 @@ def describe_matching(con: duckdb.DuckDBPyConnection, out: Path | None, p: Pipel
              prior_bits=math.log2(lam / (1 - lam)) if lam else None, pairs=scored, seconds=took("score")),
         dict(id="accept", name="Accept", method="at the line, with a name compared", threshold=p.fs.min_match_weight, review_from=review_floor(p),
              trust=None if p.trust.line is None else "none" if math.isinf(p.trust.line) else p.trust.line,
+             merge=method(out).get("merge") if out else None,  # people's merge conditions (er.results): they decide in place of the line
              needs=list(p.fs.needs), bands=bands, accepted=accepted, review_bands=review_bands, rule_bands=rule_bands, examples=examples,
              expected_false=round(expected, 1) if expected is not None else None),
         dict(id="people", name="People decide", method="close calls go to people", to_decide=open_, decided=decided, joined=by.get("review", 0) if ran else None,

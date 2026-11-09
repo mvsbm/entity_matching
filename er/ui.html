@@ -78,7 +78,6 @@ main { margin: 56px 0 0 256px; padding: 0 24px 120px; min-height: calc(100% - 56
 .queue .progress { padding: 12px 16px; } .queue .progress .answer { font-size: 14px; } .queue .progress .pn-seg { margin-top: 8px; height: 8px; }
 p.then { font-size: 12px; color: var(--muted); margin: 6px 0 0; }
 .card .links { display: flex; flex-direction: column; gap: 4px; font-size: 14px; margin: 6px 0 10px; } .card .links b { font-weight: 500; }
-h3.zq { font-size: 15px; font-weight: 500; margin: 16px 0 6px; }  /* the item asked about first and wide, the list it comes from after */
 /* zone A: the page's question, its answer in a sentence, and the action at the row's end; later zones smaller, the detail folded last */
 .qa { display: flex; align-items: center; gap: 12px 20px; flex-wrap: wrap; }
 .qa > .q { flex: 1 1 420px; min-width: 0; }
@@ -311,7 +310,7 @@ body.collapsed .navitem .stack, body.collapsed .rail li::before { display: none;
 .node[aria-expanded="true"] { border-color: var(--primary); box-shadow: 0 0 0 1px var(--primary); }
 .node .top { display: flex; align-items: center; gap: 6px; color: var(--muted); font-size: 12px; }
 .node .n { font-size: 20px; font-variant-numeric: tabular-nums; color: var(--ink); }
-.node.rule .top { color: var(--rule); } .node.model .top { color: var(--model); } .node.people .top { color: var(--people); }
+.node.rule .top { color: var(--rule); } .node.model .top { color: var(--model); }
 .node.dim { opacity: .55; }
 .arrow { display: flex; align-items: center; color: var(--outline); padding: 0 2px; }
 .arrow svg { width: 26px; height: 14px; }
@@ -324,7 +323,7 @@ body.collapsed .navitem .stack, body.collapsed .rail li::before { display: none;
 .bars .lab { color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .bars .val { font-variant-numeric: tabular-nums; color: var(--faint); text-align: right; }
 .bar { display: block; height: 10px; border-radius: 5px; background: var(--primary); min-width: 2px; }
-.bar.rule { background: var(--rule); } .bar.people { background: var(--people); } .bar.neg { background: var(--neg); } .bar.good { background: var(--good); }
+.bar.rule { background: var(--rule); } .bar.neg { background: var(--neg); } .bar.good { background: var(--good); }
 .tag { display: inline-flex; align-items: center; height: 20px; padding: 0 7px; border-radius: 10px; font-size: 11px; background: var(--hover); color: var(--muted); margin: 0 3px 0 0; white-space: nowrap; }
 .diff { background: var(--mark); color: var(--mark-ink); border-radius: 3px; padding: 0 1px; }
 .diff.gap { display: inline-block; width: 2px; height: 1em; padding: 0; margin: 0 1px; vertical-align: -0.1em; background: var(--mark-ink); }  /* where the other value holds more */
@@ -432,8 +431,6 @@ dialog:has(.dlg-body.wide) { width: min(960px, calc(100vw - 32px)); }
 .slider .pin.engine { background: var(--ink); } .slider .pin.name { background: var(--surface); border: 3px solid var(--faint); }
 .slider .ends { position: absolute; left: 0; right: 0; top: 36px; display: flex; justify-content: space-between; font-size: 12px; color: var(--muted); }
 .slider .pin span { position: absolute; top: -16px; left: 50%; transform: translateX(-50%); font-size: 11px; color: var(--faint); white-space: nowrap; }
-.web { width: 100%; max-width: 460px; height: 240px; display: block; margin: 0 auto 8px; }
-.web text { font: 11px system-ui, sans-serif; fill: var(--muted); paint-order: stroke; stroke: var(--surface); stroke-width: 4px; }
 .legend { display: flex; gap: 14px; font-size: 12px; color: var(--muted); margin: 0 0 8px; }
 .legend i { display: inline-block; width: 18px; height: 3px; border-radius: 2px; vertical-align: middle; margin-right: 5px; }
 .stepfoot { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 24px 0 0; padding-top: 16px; border-top: 1px solid var(--line); }
@@ -546,7 +543,7 @@ body.term-open .tray { bottom: var(--term-h); }  /* above the command drawer */
   "improve": {"screen": "improve", "after": "pairs", "back": "run"}},
  "screens": [
   {"id": "records", "title": "Overview", "icon": "overview", "what": "The whole workflow, and what it did with your records.",
-   "strip": ["records", "prepare", "rules", "candidates", "score", "accept", "people", "group", "customers"],
+   "strip": ["records", "prepare", "rules", "candidates", "score", "accept", "group"],
    "uses": [{"command": "list patterns", "args": {"workspace": "@workspace"}, "reads": ["pairs", "fields", "patterns"]},
             {"command": "explain pair", "args": {"first": "@first", "second": "@second", "workspace": "@workspace"}, "reads": ["weight", "prior", "pairs_all", "pairs_same", "common", "same_customer", "records", "comparisons", "tests", "found", "group_a", "group_b", "across"]},
             {"command": "compare records", "args": {"first": "@first", "others": "@others", "workspace": "@workspace"}, "reads": ["first", "records", "candidates"]},
@@ -580,7 +577,7 @@ body.term-open .tray { bottom: var(--term-h); }  /* above the command drawer */
             {"command": "describe key", "args": {"name": "@name", "workspace": "@workspace"}, "reads": ["name", "pairs", "matched", "only", "examples", "sizes", "largest", "group", "around"]},
             {"command": "describe matching", "args": {"workspace": "@workspace"}, "reads": ["nodes"]}]},
   {"id": "pairs", "title": "Review", "icon": "pairs", "what": "The pairs waiting for you, best first: both full rows side by side, then same or different.",
-   "strip": ["score", "accept", "people", "group"],
+   "strip": ["score", "accept", "group"],
    "uses": [{"command": "list scored", "args": {"workspace": "@workspace", "status": "@status", "from": "@from", "to": "@to", "source": "@source", "record": "@record", "page": "@page", "count": "@count"}, "reads": ["total", "typed", "page", "count", "pairs"]},
             {"command": "show records", "args": {"ids": "@ids", "workspace": "@workspace"}, "reads": ["columns", "records"]},
             {"command": "describe results", "args": {"workspace": "@workspace"}, "reads": ["records", "entities", "joined", "sizes", "scores", "candidates", "review_from", "waiting", "pairs", "merged_by", "merging", "missed", "too_big", "kinds"]},
@@ -594,7 +591,7 @@ body.term-open .tray { bottom: var(--term-h); }  /* above the command drawer */
             {"command": "explain pair", "args": {"first": "@first", "second": "@second", "workspace": "@workspace"}, "reads": ["weight", "prior", "pairs_all", "pairs_same", "common", "same_customer", "records", "comparisons", "tests", "found", "group_a", "group_b", "across"]},
             {"command": "describe matching", "args": {"workspace": "@workspace"}, "reads": ["nodes"]}]},
   {"id": "improve", "title": "Method", "icon": "loop", "what": "What people's decisions say about the method: try a change, adopt it, and review the new round.",
-   "strip": ["rules", "candidates", "score", "accept", "people"],
+   "strip": ["rules", "candidates", "score", "accept"],
    "uses": [{"command": "list patterns", "args": {"workspace": "@workspace"}, "reads": ["pairs", "fields", "patterns"]},
             {"command": "explain pair", "args": {"first": "@first", "second": "@second", "workspace": "@workspace"}, "reads": ["weight", "prior", "pairs_all", "pairs_same", "common", "same_customer", "records", "comparisons", "tests", "found", "group_a", "group_b", "across"]},
             {"command": "compare records", "args": {"first": "@first", "others": "@others", "workspace": "@workspace"}, "reads": ["first", "records", "candidates"]},
@@ -1044,10 +1041,8 @@ const NODE = {  // each stage in everyday words; describe matching's own name an
   candidates: {icon: "fan", name: "Compared", word: "pairs", n: (x) => x.pairs},
   score: {icon: "scale", name: "Weighed", word: "pairs", n: (x) => x.pairs},
   accept: {icon: "check", name: "Matched", word: "pairs", tone: "model", n: (x) => x.accepted},
-  people: {icon: "person", name: "To review", word: "pairs", tone: "people", n: (x) => x.to_decide},
   group: {icon: "group", name: "Entities formed", word: "entities", n: (x) => x.customers},
   kind: {icon: "kinds", name: "Person or company", word: "told apart", n: (x) => x.counts ? x.counts.company + x.counts.person : null},
-  customers: {icon: "customers", name: "Entities", word: "entities", n: (x) => x.count},
 };
 const LEVEL = {exact: "same", "fold exact": "same, spelling aside", "fold JW high": "very similar", "JW high": "very similar", "given name": "same given name", "same address": "same",
                "fold JW low": "somewhat similar", "JW low": "somewhat similar", "address close": "nearly the same", "same postal": "same postal code",
@@ -1217,16 +1212,6 @@ const DETAIL = {
         ${x.skipped && x.skipped.blocks ? `<details class="pn-more"><summary>${fmt(x.skipped.blocks)} big groups skipped: none of their sampled pairs came close</summary>
           ${x.skipped.largest.map((b) => `<div class="pn-r" style="--cols:minmax(160px,1fr) minmax(160px,1fr) 1fr"><span>${esc(b.value)}</span><span class="faint">${esc(b.key)}</span><span>${plural(b.records, "record")} · ${plural(b.pairs, "pair")}</span></div>`).join("")}</details>` : ""}</div>`;
   },
-  people: (x) => {  // the details under Which pairs did it leave for me?: what most of them look like
-    const shownComps = x.comparisons.filter((c) => x.patterns.some((p) => (p.steps[c] ?? "missing") !== "missing"));
-    const chipOf = (label) => !label || label === "missing" ? '<span class="faint">—</span>' : `<span class="chip ${label === "else" ? "against" : "for"}">${esc(level(label))}</span>`;
-    return `${x.patterns.length ? `<div class="pn-cap">what most of them look like</div>
-        <div class="pn-table" style="--cols:${shownComps.map(() => "150px").join(" ")} minmax(120px,1fr) 52px 64px">
-          <div class="pn-r h">${shownComps.map((c) => `<span>${esc(comp(c))}</span>`).join("")}<span>share</span><span></span><span></span></div>
-          ${x.patterns.map((p) => `<div class="pn-r">${shownComps.map((c) => `<span>${chipOf(p.steps[c])}</span>`).join("")}
-            <span><span class="pn-bar" style="width:${(100 * p.pairs / x.patterns[0].pairs).toFixed(0)}%;background:var(--people)"></span></span>
-            <span class="num">${(100 * p.pairs / Math.max(x.sheet, 1)).toFixed(0)}%</span><span class="num faint">${fmt(p.pairs)}</span></div>`).join("")}</div>` : ""}`;
-  },
   group: (x) => {  // the details under How did matched pairs become entities?: who joined them, sizes, where to look
     const multi = x.sizes.filter((s) => s.records > 1);
     const j = {rules: x.joined.rules || 0, model: x.joined.model || 0, people: x.joined.people || 0}, top = Math.max(1, ...multi.map((s) => s.customers));
@@ -1251,7 +1236,7 @@ const DETAIL = {
 // the detail is folded after.
 const STAGE_Q = {
   records: "What did it read?", rules: "Which pairs did the rules match, and why?", candidates: "Which pairs did it compare, and could a real match have been missed?",
-  score: "How did it score each pair?", accept: "Where did it draw the line, and how many could be wrong?", people: "Which pairs did it leave for me, and why?",
+  score: "How did it score each pair?", accept: "Where did it draw the line, and how many could be wrong?",
   group: "How did matched pairs become entities?",
 };
 const ask = (q, answer, picture = "", act = "", more = "", label = "Details") => `<div class="qa"><div class="q"><h2 class="question pq">${esc(q)}</h2><p class="answer">${answer}</p></div>${act}</div>
@@ -1350,21 +1335,11 @@ const DETAIL_Q = {
   accept: (x, all) => {
     if (!x.bands.length) return ask(STAGE_Q.accept, "Nothing yet: pairs are matched when matching runs.");
     const line = x.trust === null || x.trust === undefined ? x.threshold : x.trust;
-    const answer = line === "none" ? `<b>Nothing merges by points yet:</b> a range of scores merges once people have checked a sample of it, in step 4. Until then only people's “same” joins entities: the rules' pairs wait too.`
+    const answer = x.merge && x.merge.when && x.merge.when.length ? `<b>Pairs merge by your conditions:</b> ${esc(mergingText(x.merge))}. The rest wait for you in Review.`
+      : line === "none" ? `<b>Nothing merges by points:</b> you decide every pair in Review, or set your own conditions there (Auto-merge). Until then only your “same” joins entities: the rules' pairs wait too.`
       : `At <b>${line} points</b>: odds of at least ${esc(big(2 ** line))} to 1 that both records are one entity. <b>${fmt(x.accepted ?? 0)} pairs</b> were matched${
         x.expected_false !== null && x.expected_false !== undefined ? `; the model expects about <b>${fmt(Math.round(x.expected_false))}</b> of them to be wrong` : ""}.`;
     return ask(STAGE_Q.accept, answer, histogram(x, all), "", `<div id="patterns" class="pq-patterns"></div>`, "Every pattern of what the comparisons said");
-  },
-  people: (x, all) => {
-    if (x.sheet === undefined) return ask(STAGE_Q.people, "Nothing yet: pairs are left for people when matching runs.");
-    const trust = all.accept.trust;
-    const answer = trust === null || trust === undefined
-      ? `<b>${plural(x.sheet, "pair")}</b>: ${fmt(x.below)} scored just below the line, ${fmt(x.unnamed)} had no name to compare. Nothing in them merges until you say same.${x.audits ? ` Plus <b>${fmt(x.audits)}</b> matched pairs to spot-check.` : ""}`
-      : `${x.sheet ? `<b>${plural(x.sheet, "pair")}</b> below the trust line, or with no name to compare, for people to check` : "Nothing waits for people now"}.${
-           x.audits ? ` Plus <b>${fmt(x.audits)}</b> merged pairs to spot-check.` : ""}`;  // the range's sample, or, once one of it was false, every pair below
-    const pic = `${seg([[x.answered, "var(--people)", "answered"], [Math.max(x.sheet - x.answered, 0), "var(--line)", "open"]])}<div class="pn-legend"><span>${fmt(x.answered)} of ${fmt(x.sheet)} answered</span></div>`;
-    const act = `<a class="btn filled" data-go="pairs">Review them</a>`;
-    return ask(STAGE_Q.people, answer, pic, act, DETAIL.people(x, all), "What they look like");
   },
   group: (x, all) => {
     if (!x.joined) return ask(STAGE_Q.group, "Nothing yet: entities are formed when matching runs.");
@@ -1375,8 +1350,8 @@ const DETAIL_Q = {
       look.mixed.customers ? `<div class="warn">${plural(look.mixed.customers, "entity", "entities")} ${look.mixed.customers === 1 ? "joins" : "join"} a person and a company${eg(look.mixed.examples)}</div>` : `<div class="ok">No entity joins a person and a company</div>`,
       look.weak_rule.customers ? `<div class="warn">${plural(look.weak_rule.customers, "entity", "entities")} ${look.weak_rule.customers === 1 ? "was" : "were"} joined by a rule the scoring disagrees with${eg(look.weak_rule.examples)}</div>` : ""].filter(Boolean);
     const answer = `Records linked by a match become one entity, also through other records: <b>${plural(all.records.count, "record")} → ${plural(x.customers, "entity", "entities")}</b>; ${fmt(held)} hold 2 or more.`;
-    return ask(STAGE_Q.group, answer, `<div class="checks">${lines.join("")}</div>`, `<a class="btn filled" data-go="results">View entities</a>`, DETAIL.group(x, all), "Entities by size, and who joined them");
-  },  customers: (x, all) => DETAIL_Q.group(all.group, all),
+    return ask(STAGE_Q.group, answer, `<div class="checks">${lines.join("")}</div>`, `<a class="btn filled" data-go="results" data-tab="entities">View entities</a>`, DETAIL.group(x, all), "Entities by size, and who joined them");
+  },
 };
 
 function histogram(x, all) {  // pairs by points: each band split into matched, to review and not matched; the line and its odds
@@ -1583,7 +1558,7 @@ function banner(e, kind = "bad") {
   if (!e || e.event !== "error" || e.lost) return "";  // a lost server: said once, above the page
   return `<div class="banner ${kind}" role="alert">${icon(kind === "bad" ? "error" : "info")}<div><b>${esc(e.error)}</b>${e.fix ? `<div class="fix">${esc(e.fix)}</div>` : ""}</div></div>`;
 }
-const WHY = {decide: "to decide", audit: "spot-check", measure: "sample"};
+const WHY = {decide: "to decide", measure: "sample"};
 const SAID = {match: "same entity", no_match: "different", person: "person", company: "company", unsure: "can't tell"};
 function chip(status, written = "decided", answer = null) {  // answer: what people said, for a row written in or applied
   const kind = {open: "", "written in": "warn", applied: "good", decide: "info"}[status] ?? "";
@@ -1798,7 +1773,6 @@ async function pairDialog(page, p) {  // a pair from a list: its full rows, how 
       <p class="muted">${esc(foundBy(p) ? `Found by ${foundBy(p)}` : "")} · ${statusChip(p.status)}</p><div class="fr"></div><div class="how faint">Reading how it scored…</div></div>
     <div class="dlg-foot"><span class="grow"></span>${p.status === "waiting" ? `<a class="btn" data-go="pairs" data-record="${esc(p.first)}">Review it</a>` : ""}<button class="btn" value="close">Close</button></div></form>`;
   dlg.onclose = null; dlg.returnValue = ""; dlg.showModal();
-  dlg.querySelector("[data-record]")?.addEventListener("click", (e) => { e.preventDefault(); dlg.close(); go("pairs", {record: e.currentTarget.dataset.record}); });
   const x = await run(page, "explain pair", {first: p.first, second: p.second});
   if (!dlg.open) return;
   fullRows(dlg.querySelector(".fr"), page, [p.first, p.second], x.event === "error" ? null : x);
@@ -1832,8 +1806,6 @@ async function resultsPage(el, d) {  // what the run found, as tiles: one questi
           "", `a sample of each scored first; ${fmt(r.too_big.kept)} kept because a sampled pair could match`) : ""}
       ${r.kinds.to_answer ? tile('data-go="kinds"', "Person or company?", fmt(r.kinds.to_answer), " to answer", "", "applied by running matching again") : ""}
     </div>`;
-  el.querySelectorAll(".tile[data-tab]").forEach((a) => a.onclick = (e) => { e.preventDefault(); go("results", {tab: a.dataset.tab}); });
-  el.querySelector(".tile[data-merge]")?.addEventListener("click", (e) => { e.preventDefault(); go("pairs", {merge: true}); });
 }
 
 async function mergeDialog(page, done) {  // the conditions that merge pairs without people: rows, and or or, what they'd merge, then set
@@ -3441,9 +3413,9 @@ async function review(el, which, note = "") {  // Review's person-or-company tab
   const tally = () => {  // the badge: rows written in, not key presses
     const written = rows.filter((r) => r.status === "written in").length;
     $("written").textContent = String(written); $("apply").disabled = !written;
-    const main = rows.filter((r) => r.why !== "audit"), checks = rows.length - main.length, done = main.filter((r) => r.status !== "open").length;
-    $("done-line").innerHTML = `<b>${fmt(done)} of ${fmt(main.length)}</b> ${q.written}${checks ? ` · ${plural(checks, "spot-check")}` : ""}${d.applied ? ` · ${fmt(d.applied)} applied earlier` : ""}
-      ${seg([[done, "var(--people)", q.written], [Math.max(main.length - done, 0), "var(--line)", "open"]])}`;
+    const done = rows.filter((r) => r.status !== "open").length;
+    $("done-line").innerHTML = `<b>${fmt(done)} of ${fmt(rows.length)}</b> ${q.written}${d.applied ? ` · ${fmt(d.applied)} applied earlier` : ""}
+      ${seg([[done, "var(--people)", q.written], [Math.max(rows.length - done, 0), "var(--line)", "open"]])}`;
   };
   const t = grid($("left"), rows, q.cols, {labels: q.labels, selected: i, cell: (r, c) => c === "why" ? chip(r.status === "open" ? r.why : r.status, q.written, r.decision) : c === "name" ? `<span class="clip" title="${esc(r.name)}">${esc(r.name)}</span>` : c === "engine_says" ? esc(kindSays(r[c])) : esc(fmt(r[c])),
                                            onPick: (k) => { i = k; show(); }});
@@ -3619,7 +3591,11 @@ async function go(id, arg) {
 
 document.addEventListener("click", (e) => {
   const a = e.target.closest("[data-go]");
-  if (a) { e.preventDefault(); go(a.dataset.go); }
+  if (a) {  // a link to a page: with the tab, the record or the dialog it opens there
+    e.preventDefault(); a.closest("dialog")?.close();
+    const {go: to, tab, record} = a.dataset;
+    go(to, tab ? {tab} : record ? {record} : "merge" in a.dataset ? {merge: true} : undefined);
+  }
   if (e.target.closest("[data-pick]")) pick();
   if (e.target.closest("[data-auto]")) autoMode();
 });

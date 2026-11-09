@@ -286,7 +286,7 @@ List the open pairs, decide each, then apply the decisions:
 .venv/bin/nayose apply decisions --workspace workspaces/customers
 ```
 
-Each decision is written into the workspace's `review.parquet` (its `decision` column) and applied by `apply decisions`. `list pairs` marks each row open, written in, or applied. A sheet filled in elsewhere, any file with the two ID columns and `decision`, goes back with `apply decisions --file reviewed.parquet`.
+Each decision is written into the workspace's `review.parquet` (its `decision` column) and applied by `apply decisions`. `list pairs` marks each row open, written in, or applied. Any pair the run kept can be decided, not only the sheet's: `list scored` lists them all, and a pair the sheet lacks joins it when decided. A sheet filled in elsewhere, any file with the two ID columns and `decision`, goes back with `apply decisions --file reviewed.parquet`.
 
 - **`match`** joins the two clusters at once, scoring nothing. A record joined only this way gets `resolved_by` = `review`.
 - **`no_match`** splits nothing at once. It is kept, and a full run never joins the pair, by the model or by a rule. It applies to that pair only: a third record can still join the two.
