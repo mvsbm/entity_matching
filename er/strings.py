@@ -74,15 +74,25 @@ def udf(function: str, cut: bool = False) -> Callable[..., pa.Array]:  # vectori
 COMPUTE = ("threads", "memory_limit", "temp_directory", "max_temp_directory_size")  # the limits [compute] and --compute may set
 
 
+def available_gb() -> float | None:  # the memory free now, other programs aside; None where it can't be read
+    try:
+        import psutil
+        return psutil.virtual_memory().available / 2**30
+    except (ImportError, OSError, RuntimeError):
+        return None
+
+
 def connect(compute: dict | None = None) -> tuple[duckdb.DuckDBPyConnection, DuckDBAPI]:
     """A DuckDB connection with every cl_<function> registered, wrapped for Splink. `compute` (config/settings.toml
     [compute]) sets threads, memory_limit, temp_directory and max_temp_directory_size: past the memory limit, DuckDB
-    spills to that folder (none set: one of the person's own in the system's temporary folder, never the folder nayose starts from). A limit
+    spills to that folder (none set: 60% of the memory free when it connects, so other programs' memory never pages) (none set: one of the person's own in the system's temporary folder, never the folder nayose starts from). A limit
     nayose doesn't set, or one DuckDB refuses, is an InputError."""
     from er.config import InputError, lit  # here, not above: er.config reads this module's functions
     con = duckdb.connect()
     con.execute("SET enable_progress_bar = false")  # a long query's bar would land in stdout, between the JSON lines
     limits = {k: v for k, v in (compute or {}).items() if v not in ("", None)}
+    if "memory_limit" not in limits and (free := available_gb()):  # DuckDB's own: 80% of the machine's memory, free or not; held by other programs, the system pages instead of DuckDB spilling
+        limits["memory_limit"] = f"{max(1, int(0.6 * free))}GB"  # the rest: Python, Arrow and the comparisons, outside DuckDB's count
     if "temp_directory" not in limits:  # a folder of each person's, only theirs: spilled records stay private, and no one else's blocks it
         try:
             who = getpass.getuser()
