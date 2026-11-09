@@ -148,6 +148,21 @@ trained once and its signals computed once; a combination fits only its combiner
   is known (rapidfuzz's `score_cutoff`): the same pairs pass and fail, with the same score where they pass, and an edit
   distance on long values is no longer worked out in full. On addresses of about 150 characters, the fit's 10 million
   sampled pairs take a third of the time.
+- **A linker reads only the columns it compares** (`match.narrowed`, `match.read_by`). Splink carries every column of its
+  input through its joins, two copies per pair; a wide file's other columns (80 of them, long text) made scoring a
+  million records 428 s instead of 63 s. Each linker gets the ID and the columns its levels, blocking rules and term
+  frequencies read; one it reads and lacks still fails loudly. The fit's sample is read the same way.
+- **An edit distance tested on the lengths first.** A Levenshtein, Damerau–Levenshtein or Hamming distance is never
+  less than the lengths' difference, so `abs(length(a) - length(b)) <= t` goes before the Python call: the same pairs
+  pass, and on long values most pairs never reach Python.
+- **DuckDB's memory limit from the memory free.** With none set, 60% of what is free when it connects, not DuckDB's own
+  80% of the machine's: where other programs hold most of it, DuckDB spills to its folder rather than the system paging.
+- **The oversized blocks' samples scored a slice at a time, in DuckDB** (`Run._gate`, `Run._scored`), not all at once
+  through pandas: thousands of placeholder blocks no longer need their every sampled pair compared in one call.
+- **A rule's untrusted values tested before its join** (in WHERE, not ON): a placeholder's block is no longer joined
+  and compared in full before it is left out.
+- **Each candidate pair listed once**: a key's join over the query keeps one order of a pair of two queried records
+  instead of both and a DISTINCT; the union's parts are freed as soon as it is made.
 - **Scoring in slices** (`Run.score_pairs`, a million pairs at a time). A pair's score depends on it alone, so the slices
   score as the whole would; each slice says how far scoring is (pairs scored, and those at the model's line so far), and
   the step's peak memory is one slice's, not every pair's. Each slice costs about 0.3 s of setting up.

@@ -83,9 +83,10 @@ class Records:
         self.views.append(("table", name))
         return name
 
-    def close(self) -> None:
-        for kind, name in reversed(self.views):
+    def close(self, keep: frozenset[str] = frozenset()) -> None:  # every view and table made, but those kept: freed
+        for kind, name in reversed([x for x in self.views if x[1] not in keep]):
             self.con.unregister(name) if kind == "view" else self.con.execute(f"DROP TABLE IF EXISTS {name}")
+        self.views = [x for x in self.views if x[1] in keep]
 
     def asked(self, t: str) -> str:  # the query's rows of t
         return f"(SELECT * FROM {t} WHERE {q(self.uid)} IN (SELECT {q(self.uid)} FROM {self.query}))"
@@ -144,8 +145,9 @@ def pairs_sql(b: Blocker, r: Records, skip: str | None = None, only: str | None 
         case KeyBlocker():
             on = " AND ".join(f"a.{q(k.name)} = b.{q(k.name)}" for k in b.keys)
             if r.query:  # the query's rows against all: O(|Q|·b) plus a scan, whatever N
-                return (f"SELECT DISTINCT least(a.{u}, b.{u}) AS l, greatest(a.{u}, b.{u}) AS r FROM {r.asked(t)} a JOIN {t} b "
-                        f"ON {on} AND a.{u} <> b.{u} WHERE {r.filters('a', 'b', query=False)} AND {_in(bcols, 'a', blocks, keep)}")
+                once = f"(a.{u} < b.{u} OR b.{u} NOT IN (SELECT {u} FROM {r.query}))"  # a pair of two asked records: once, not both ways round
+                return (f"SELECT least(a.{u}, b.{u}) AS l, greatest(a.{u}, b.{u}) AS r FROM {r.asked(t)} a JOIN {t} b "
+                        f"ON {on} AND a.{u} <> b.{u} AND {once} WHERE {r.filters('a', 'b', query=False)} AND {_in(bcols, 'a', blocks, keep)}")
             return (f"SELECT a.{u} AS l, b.{u} AS r FROM {t} a JOIN {t} b ON {on} AND a.{u} < b.{u} "
                     f"WHERE {r.filters('a', 'b')} AND {_in(bcols, 'a', blocks, keep)}")
         case SortedNeighbourhood():
@@ -157,7 +159,7 @@ def pairs_sql(b: Blocker, r: Records, skip: str | None = None, only: str | None 
             touch = [f"(x.a IN (SELECT {u} FROM {r.query}) OR x.b IN (SELECT {u} FROM {r.query}))"] if r.query else []
             cond = " AND ".join(touch + (["x.ca <> x.cb"] if r.cluster else [])) or "TRUE"
             return (f"WITH s AS (SELECT {u}{cl}, {leads} FROM {t} WHERE {k} IS NOT NULL WINDOW w AS (ORDER BY {k}, {u})) "
-                    f"SELECT DISTINCT least(x.a, x.b) AS l, greatest(x.a, x.b) AS r FROM ({arms}) x WHERE {cond}") if b.window > 1 else \
+                    f"SELECT least(x.a, x.b) AS l, greatest(x.a, x.b) AS r FROM ({arms}) x WHERE {cond}") if b.window > 1 else \
                 "SELECT NULL::VARCHAR AS l, NULL::VARCHAR AS r WHERE FALSE"
         case DeletionKeys():
             v = r.variants(b)
@@ -285,13 +287,13 @@ def found_by(cands: pd.DataFrame, names: Iterable[str]) -> np.ndarray:  # the pa
 
 def candidates(blockers: tuple[Blocker, ...], records: pd.DataFrame | str, uid: str, query: Iterable[str] | str | None,
                budget: Budget, clusters: pd.Series | str | None = None, con: duckdb.DuckDBPyConnection | None = None,
-               into: str | None = None, touching: bool = False, gate: Callable[[pd.DataFrame], pd.DataFrame] | None = None,
+               into: str | None = None, touching: bool = False, gate: Callable[[str], str] | None = None,
                floor: float = 0.0, capacity: int | None = None) -> tuple[pd.DataFrame | str, pd.DataFrame]:
     """The union of all generators, with the generators that found each pair in `sources`, and a per-generator report.
     With `into`, the union is written to that table in `con` and its name returned instead of a frame, so nothing of
     size C reaches pandas. `touching` (an increment, with `query` the batch): the estimates count only the blocks the
     batch reaches. Oversized blocks (budget.min_oversized() records or more) are left out of each generator's join.
-    With a `gate` (it scores a frame of pairs, uid_l / uid_r, and returns them with match_weight), a sample of each such
+    With a `gate` (it scores a table of pairs, uid_l / uid_r, into a table it names, with match_weight), a sample of each such
     block's pairs that no other block listed is scored, and the block joined only if a sampled pair reaches `floor`;
     with `capacity`, at most that many pairs in all, the highest-yield blocks first. Without a gate they are joined in
     full. report.attrs["gated"] has one row per oversized block: its value, records, pairs, sample and decision."""
@@ -327,6 +329,7 @@ def candidates(blockers: tuple[Blocker, ...], records: pd.DataFrame | str, uid: 
             report[i]["pairs"] += extra
         union = f"SELECT l, r, bit_or(bit) AS bits FROM ({' UNION ALL '.join(parts)}) GROUP BY l, r"
         bits = r._temp(union)
+        r.close(keep=frozenset({bits}))  # the parts, blocks and samples the union was made of: freed before the result is written
         names = {m: "+".join(g.name for i, g in enumerate(blockers) if m >> i & 1)
                  for (m,) in r.con.execute(f"SELECT DISTINCT bits FROM {bits}").fetchall()}
         cases = " ".join(f"WHEN {m} THEN '{s}'" for m, s in names.items())
@@ -358,10 +361,11 @@ def _gate(blockers: tuple[Blocker, ...], r: Records, big: dict[int, str], parts:
         sample = r._temp(" UNION ALL ".join(
             f"SELECT s.l, s.r, s.__b AS b, {i} AS g FROM ({sample_sql(blockers[i], r, table, rows)}) s "
             f"WHERE NOT EXISTS (SELECT 1 FROM {listed} x WHERE x.l = s.l AND x.r = s.r)" for i, table in big.items()))
-        pairs = r.con.execute(f"SELECT DISTINCT l, r FROM {sample}").df().set_axis(list(names), axis=1).astype("string")
-        scored = gate(pairs)[[*names, "match_weight"]].set_axis(["l", "r", "w"], axis=1) if len(pairs) else pd.DataFrame(columns=["l", "r", "w"])
+        pairs = r._temp(f'SELECT DISTINCT l AS "{names[0]}", r AS "{names[1]}" FROM {sample}')  # scored in DuckDB, a slice at a time: never all at once through pandas
+        scored = gate(pairs)
         stats = r.con.execute(f"""SELECT s.g, s.b, count(*) AS sampled, max(w.w) AS best, count(*) FILTER (WHERE w.w >= {floor}) AS hits
-                                  FROM {sample} s JOIN {r._view(scored)} w USING (l, r) GROUP BY 1, 2""").df()
+                                  FROM {sample} s JOIN (SELECT "{names[0]}" AS l, "{names[1]}" AS r, match_weight AS w FROM {scored}) w USING (l, r) GROUP BY 1, 2""").df()
+        r.con.execute(f"DROP TABLE IF EXISTS {scored}")
         info = info.merge(stats, on=["g", "b"], how="left").fillna({"sampled": 0, "hits": 0})
         info["decision"] = np.where(info["hits"] > 0, "kept", np.where(info["sampled"] == 0, "skipped: other keys list its sampled pairs",
                                                                          "skipped: no sampled pair reaches the floor"))
