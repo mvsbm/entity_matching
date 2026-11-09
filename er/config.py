@@ -11,7 +11,7 @@ from typing import Literal, get_args
 
 from er.strings import FUNCTIONS, Function
 
-Normalizer = Literal["nfkc", "strip_spaces", "kana_fold", "strip_legal_form", "address", "initial", "first3", "reverse", "casefold"]
+Normalizer = Literal["nfkc", "strip_spaces", "kana_fold", "strip_legal_form", "address", "initial", "first3", "reverse", "casefold", "one_byte"]
 
 
 class InputError(ValueError):
@@ -125,16 +125,45 @@ class Comparator:
     def column(self, base: str) -> str:       # the (derived) column the SQL compares
         return column_name(base, self.normalize)
 
+    def copy(self, base: str) -> str | None:  # a similarity's column with each katakana one byte (er.standardize, one_byte): DuckDB compares it
+        return column_name(base, (*self.normalize, "one_byte")) if self.function in ("jaro", "jaro_winkler") else None
+
     def sql(self, base: str, level: bool = False) -> str:
-        """Blocking-rule SQL (l."c" / r."c"), or with level=True Splink comparison-level SQL ("c_l" / "c_r")."""
+        """Blocking-rule SQL (l."c" / r."c"), or with level=True Splink comparison-level SQL ("c_l" / "c_r"). DuckDB's own
+        Jaro, Jaro–Winkler and Hamming are rapidfuzz's C++, so on characters of one byte each (ASCII, or the one-byte
+        copy) they give the Python function's score, on every thread and without Python; an edit distance of 1 is
+        failed there first where two values of one length differ in more places than one edit makes. Whatever else,
+        the Python function, pair by pair. Each guard is a CASE: DuckDB may reorder AND and OR, never a CASE."""
         c = self.column(base)
-        a, b = (q(f"{c}_l"), q(f"{c}_r")) if level else (f"l.{q(c)}", f"r.{q(c)}")
+        side = (lambda x: (q(f"{x}_l"), q(f"{x}_r"))) if level else (lambda x: (f"l.{q(x)}", f"r.{q(x)}"))
+        a, b = side(c)
         if self.function == "exact":
             return f"{a} = {b}"
-        test = f'cl_{self.function}_cut({a}, {b}, {self.threshold}) {">=" if FUNCTIONS[self.function].similarity else "<="} {self.threshold}'  # stops once it knows
-        if self.function in ("levenshtein", "damerau_levenshtein", "hamming"):  # never less than the lengths' difference: a pair that can't pass, without the Python call
-            test = f"abs(length({a}) - length({b})) <= {self.threshold} AND {test}"
+        test = self.test(a, b, *(side(self.copy(base)) if self.copy(base) else ()))
         return test if level else f"({a} = {b} OR {test})"  # a rule: equal values pass without the Python call
+
+    def test(self, a: str, b: str, a1: str | None = None, b1: str | None = None) -> str:
+        """Whether values a and b pass, as SQL (sql's, with their one-byte copies a1 and b1 if any)."""
+        f, t = self.function, self.threshold
+        python = f"cl_{f}_cut({a}, {b}, {t})"  # stops once it knows
+        # bytes = characters, and none empty (DuckDB: '' and '' are 0 apart for rapidfuzz's 1, and hamming refuses them)
+        ascii_, same = f"strlen({a}) = length({a}) AND strlen({b}) = length({b}) AND strlen({a}) > 0 AND strlen({b}) > 0", f"length({a}) = length({b})"
+        if f in ("jaro", "jaro_winkler"):
+            native = lambda x, y: f"CAST(CAST({f}_similarity({x}, {y}) AS FLOAT) AS DOUBLE)"  # rapidfuzz's score is a float32
+            copied = f"WHEN {a1} IS NOT NULL AND {b1} IS NOT NULL THEN {native(a1, b1)} " if a1 else ""
+            test = f"(CASE {copied}WHEN {ascii_} THEN {native(a, b)} ELSE {python} END) >= {t}"
+        elif f == "hamming":
+            test = (f"(CASE WHEN abs(length({a}) - length({b})) > {t} THEN FALSE WHEN {ascii_} AND {same} THEN hamming({a}, {b}) <= {t} "
+                    f"ELSE {python} <= {t} END)")
+        elif f in ("levenshtein", "damerau_levenshtein") and t == 1:  # one edit keeping the length: a substitution, or (Damerau) a swap of two
+            most = 2 if f == "damerau_levenshtein" else 1
+            test = (f"(CASE WHEN abs(length({a}) - length({b})) > 1 THEN FALSE WHEN {ascii_} AND {same} THEN "
+                    f"(CASE WHEN hamming({a}, {b}) > {most} THEN FALSE ELSE {python} <= 1 END) ELSE {python} <= 1 END)")
+        else:
+            test = f'{python} {">=" if FUNCTIONS[f].similarity else "<="} {t}'
+            if f in ("levenshtein", "damerau_levenshtein"):  # never less than the lengths' difference: a pair that can't pass, without the Python call
+                test = f"abs(length({a}) - length({b})) <= {t} AND {test}"
+        return test
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -213,6 +242,7 @@ class RulesSpec:
 
     def normalized(self) -> list[tuple[str, tuple[Normalizer, ...]]]:
         return ([(c, comp.normalize) for s in self.stages for c, comp in s.comparators.items() if comp.normalize]
+                + [(c, (*comp.normalize, "one_byte")) for s in self.stages for c, comp in s.comparators.items() if comp.copy(c)]
                 + [(k.column, k.normalize) for s in self.stages for r in s.rules for k in r.blocking if k.normalize])
 
     def used(self) -> set[str]:
@@ -301,6 +331,7 @@ class FSModel:
 
     def normalized(self) -> list[tuple[str, tuple[Normalizer, ...]]]:
         out = [(col, comp.normalize) for c in self.comparisons for lv in c.levels for col, comp in lv.any_of if comp.normalize]
+        out += [(col, (*comp.normalize, "one_byte")) for c in self.comparisons for lv in c.levels for col, comp in lv.any_of if comp.copy(col)]
         keys = [k for c in self.comparisons if c.tf for k in [c.tf]] + [k for rule in (*self.prior_rules, *self.em_rules) for k in rule]
         return out + [(k.column, k.normalize) for k in keys if k.normalize]
 
@@ -641,7 +672,7 @@ def adjust(p: "Pipeline", method: Mapping[str, object]) -> "Pipeline":
     if not isinstance(added, list) or not all(isinstance(k, list) and k and all(isinstance(f, str) for f in k) for k in added):
         raise InputError("method.toml: add_keys is a list of pair keys, each a list of fields (field or field:normalizer)", fix)
     new = [added_key(k) for k in added]
-    if bad := sorted({k.column for b in new for k in b.keys} - p.fields.declared()) + sorted({n for b in new for k in b.keys for n in k.normalize} - set(get_args(Normalizer))):
+    if bad := sorted({k.column for b in new for k in b.keys} - p.fields.declared()) + sorted({n for b in new for k in b.keys for n in k.normalize} - (set(get_args(Normalizer)) - {"one_byte"})):  # one_byte: the comparisons' own copy, no key's
         raise InputError(f"method.toml: add_keys names {bad}: not a field the pipeline declares, nor a normalizer", fix)
     blockers += tuple(b for b in new if b.name not in {x.name for x in blockers})
     if not stages or not blockers:

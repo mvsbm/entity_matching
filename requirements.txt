@@ -8,7 +8,7 @@ pyarrow==26.0.0  # the reader's casts and every Parquet written (er.intake); spl
 scipy==1.18.1  # beta and binomial bounds on false rates (er.evaluate, er.kind, er.report); scikit-learn brings it, unpinned
 optuna==5.0.0
 optuna-dashboard==0.21.0  # localhost web UI for the study
-rapidfuzz==3.14.6  # character-level string metrics; DuckDB's jaro_winkler/jaccard/damerau compare UTF-8 bytes
+rapidfuzz==3.14.6  # character-level string metrics where DuckDB's own (bytes) can't be asked: values beyond one byte a character
 scikit-learn==1.9.1  # TF-IDF char n-gram candidates; the person-or-company name model and combiner (er.kind)
 pytest==9.2.0  # tests/: engine self-checks
 pytest-xdist==3.8.0  # tests/: on every core at once (-n auto)

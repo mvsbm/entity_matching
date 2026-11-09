@@ -109,7 +109,9 @@ def test_registered_pairs_score_like_splink_blocking(con_db, records):
     _, db = con_db
     model_json = train_fs(model(), records, db, UID)
     splink_json = {k: v for k, v in model_json.items() if k != "er"}
-    native = Linker(db.register(records), {**splink_json, "blocking_rules_to_generate_predictions": [keys_sql((Key("phone"),))]},
+    from er.standardize import normalize
+    copied = records.assign(name__one_byte=normalize(records["name"], ("one_byte",), None))  # as er.standardize prepares them: Splink's own linker reads every column
+    native = Linker(db.register(copied), {**splink_json, "blocking_rules_to_generate_predictions": [keys_sql((Key("phone"),))]},
                     log_level=logging.ERROR).inference.predict().as_pandas_dataframe().astype({"uid_l": "string", "uid_r": "string"})
     ours = score_fs(model_json, records, native[["uid_l", "uid_r"]], db, UID)
     both = native.merge(ours, on=["uid_l", "uid_r"], suffixes=("_native", "_registered"))
@@ -232,3 +234,41 @@ def test_a_comparison_told_its_threshold_passes_and_fails_the_pairs_the_full_sco
             cut = np.asarray(udf(function, cut=True)(a, b, pa.array([float(t)] * len(a))))
             passes = (lambda x: x >= t) if FUNCTIONS[function].similarity else (lambda x: x <= t)
             assert (passes(full) == passes(cut)).all() and (full[passes(full)] == cut[passes(full)]).all(), (function, t)
+
+
+def test_a_comparison_asked_of_duckdb_first_passes_the_pairs_the_python_function_does():
+    import random
+    from er.config import Comparator
+    from er.standardize import normalize
+    from er.strings import connect, spent
+    rnd = random.Random(1)
+    kata, roman, digits, kanji = "アイウエオカキクケコサシスセソタチツテトナニヌネノハヒフヘホマミムメモヤユヨラリルレロワヲンガギグゲゴヴァィゥェォャュョッー・", "ABCDEFGHIJKLMNOPQRSTUVWXYZ abc", "0123456789", "東京大阪市区町村一二三丁目番地号"
+    word = lambda letters: "".join(rnd.choice(letters) for _ in range(rnd.choice([1, 2, 3, 4, 6, 8, 12, 40, 90])))
+    def near(x: str) -> str:  # one edit away: a substitution, a swap of two, an insertion or a deletion
+        i = rnd.randrange(len(x))
+        return rnd.choice([x[:i] + rnd.choice(x) + x[i + 1:], x[:i] + x[i + 1:i + 2] + x[i:i + 1] + x[i + 2:], x[:i] + rnd.choice(x) + x[i:], x[:i] + x[i + 1:] or x])
+    left, right = [], []
+    for letters in (kata, roman, digits, kanji, kata + roman, kata + kanji):
+        for _ in range(1500):
+            x = word(letters)
+            left.append(x); right.append(rnd.choice([word(letters), near(x), near(near(x)), x, word(kata), word(digits), None]))
+    left += [None, "アイ", "", "ア"]; right += ["アイ", None, "ア", ""]
+    con, _ = connect()
+    df = pd.DataFrame({"x_l": left, "x_r": right}, dtype="string")  # '' kept: records not prepared by er.standardize may hold it
+    for side in ("l", "r"):
+        df[f"x__one_byte_{side}"] = normalize(df[f"x_{side}"], ("one_byte",), None)
+    copies = df["x__one_byte_l"].dropna()
+    assert len(copies) > 1500 and (copies.str.len() == copies.map(lambda v: len(v.encode("utf-8")))).all()  # one byte each
+    con.register("er_pairs", df.assign(i=range(len(df))))
+    con.execute("CREATE TABLE pairs AS SELECT * FROM er_pairs")
+    for function, thresholds in {"jaro_winkler": [0.95, 0.9, 0.8, 0.75, 0, 1, 1.5], "jaro": [0.9, 0.7], "hamming": [1, 0, 2],
+                                 "damerau_levenshtein": [1, 2], "levenshtein": [1, 2]}.items():
+        for t in thresholds:
+            comp = Comparator(function=function, threshold=t)
+            plain = f'coalesce(cl_{function}_cut("x_l", "x_r", {t}) {">=" if function.startswith("jaro") else "<="} {t}, FALSE)'
+            before = spent().get(function, (0, 0))[1]
+            fast, slow = con.execute(f"SELECT list(coalesce({comp.sql('x', level=True)}, FALSE) ORDER BY i), list({plain} ORDER BY i) FROM pairs").fetchall()[0]
+            assert fast == slow, (function, t, [(df.x_l[i], df.x_r[i]) for i, (p, q) in enumerate(zip(fast, slow)) if p != q][:3])
+            assert function not in ("jaro_winkler", "hamming") or spent()[function][1] - before < 1.5 * len(df), (function, t)  # most pairs never reach Python
+    rule = Comparator(function="jaro_winkler", threshold=0.8).sql("x")  # a rule's form: equal values pass too
+    assert "jaro_winkler_similarity" in rule and rule.startswith('(l."x" = r."x" OR')

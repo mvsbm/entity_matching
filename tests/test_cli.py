@@ -411,7 +411,7 @@ def test_describe_says_what_a_run_folder_holds_and_what_joined_an_entity(tmp_pat
     assert d["runs"][0]["records"] == len(gold) and {"load", "fit", "score"} <= set(d["runs"][0]["steps"])  # each step's seconds: the next run's estimate
     step = {x["step"]: x for x in run.steps}  # where the time went: the fit's two parts, the gate, each string function's seconds and values
     assert {"sample_seconds", "file_u_seconds"} <= set(step["fit"]) and {"gate_seconds", "gate_pairs"} <= set(step["candidates"])
-    assert step["score"]["compared"]["jaro_winkler"]["values"] > 0 and step["fit"]["compared"]["all"]["wall"] > 0
+    assert step["fit"]["compared"]["all"]["wall"] > 0 and "jaro_winkler" not in step["score"].get("compared", {})  # names: compared by DuckDB itself
     section = (out / "report.txt").read_text(encoding="utf-8").split("TIME IN COMPARISONS")[1].split("MODEL")[0]
     assert re.search(r"^\s+fit\s+all of them\s", section, re.M)  # the fit's time in string functions, whatever the machine's speed
     from er import strings
