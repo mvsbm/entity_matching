@@ -189,7 +189,7 @@ def _tfidf(b: TfidfNeighbours, r: Records) -> pd.DataFrame:  # N² by design: de
     from sklearn.neighbors import NearestNeighbors
     uid = r.uid
     base = (r.frame if r.frame is not None else r.con.sql(f"SELECT * FROM {r.table}").df()).dropna(subset=[b.key.name])
-    base = base[[uid, b.key.name]].reset_index(drop=True)
+    base = base[[uid, b.key.name]].sort_values(uid, kind="stable").reset_index(drop=True)  # by ID: the neighbours a tie gives don't follow the rows' order
     query = set(r.con.sql(f"SELECT {q(uid)} FROM {r.query}").df()[uid]) if r.query else None
     qi = np.arange(len(base)) if query is None else np.flatnonzero(base[uid].isin(query).to_numpy())
     if not len(qi) or len(base) < 2:

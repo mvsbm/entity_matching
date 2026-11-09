@@ -10,6 +10,7 @@ import os
 import re
 import shutil
 import threading
+from collections.abc import Callable
 from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
@@ -20,7 +21,7 @@ import pyarrow.parquet as pq
 
 from er import intake
 from er.config import InputError, lit, toml_of
-from er.io import lock, replace_text
+from er.io import alive, lock, replace_text
 from er.settings import COLUMNS
 from er.source import find
 from er.strings import connect
@@ -36,6 +37,9 @@ METHOD = "method.toml"  # the workspace's changes to the tuned method (config.ad
 ROUNDS = "rounds.json"  # one entry per method a full run used, in order: not a run file, so the history outlasts each run;
 # bounded: one entry per change of method people make, each a full run
 TRIALS = "trials"  # trials of a method (er.run.trial): the last 5 results, and the clusters of the method they were tried against
+PREPARED = "prepared"  # the records as a run loads them, cleaned (er.run.Run.load), a folder per what they were made from:
+# not a run file, so a full run reads them again; bounded: the last KEEP_PREPARED used
+KEEP_PREPARED = 2  # the method and a trial of another that cleans other columns: neither replaces the other's
 
 
 class Busy(InputError):
@@ -158,6 +162,52 @@ def round_ran(out: Path, entry: dict) -> None:
     kept = rounds(out)
     kept = [*kept[:-1], entry] if kept and kept[-1]["config"] == entry["config"] else [*kept, entry]
     replace_text(out / ROUNDS, json.dumps(kept, indent=1, ensure_ascii=False, default=str))
+
+
+def prepared(ws: Path, key: str) -> Path | None:
+    """The records cleaned under `key`, if the workspace keeps them: a folder is there only once complete (keep_prepared
+    renames it into place). Marked as the last used."""
+    slot = ws / PREPARED / key
+    try:
+        os.utime(slot)  # a trial in another process may have just let it go
+    except FileNotFoundError:
+        return None
+    return slot / "records.parquet" if (slot / "records.parquet").is_file() else None
+
+
+def keep_prepared(ws: Path, key: str, write: Callable[[Path], None]) -> None:
+    """Keeps records cleaned under `key`: `write` writes them into a folder of its own, renamed into place once complete,
+    so a run cut short leaves nothing read for whole; then only the last KEEP_PREPARED used stay. Never fails the run: a
+    copy that can't be written (a full disk) is left out. O(the records)."""
+    root = ws / PREPARED
+    root.mkdir(exist_ok=True)
+    for old in root.glob(".*.tmp"):  # a copy a run cut short (killed, out of memory) left half written: its process is gone
+        pid = old.name.split(".")[-2]
+        if pid.isdigit() and not alive(int(pid)):
+            shutil.rmtree(old, ignore_errors=True)
+    tmp = root / f".{key}.{os.getpid()}.tmp"
+    shutil.rmtree(tmp, ignore_errors=True)
+    try:
+        tmp.mkdir()
+        write(tmp / "records.parquet")
+        os.rename(tmp, root / key)
+    except (OSError, duckdb.Error):  # no room, or another run kept the same records first
+        shutil.rmtree(tmp, ignore_errors=True)
+    except BaseException:
+        shutil.rmtree(tmp, ignore_errors=True)
+        raise
+    def used(p: Path) -> float:  # 0: gone, a trial in another process let it go
+        try:
+            return p.stat().st_mtime
+        except FileNotFoundError:
+            return 0.0
+    kept = sorted((p for p in root.iterdir() if not p.name.startswith(".")), key=used, reverse=True)
+    for old in kept[KEEP_PREPARED:]:
+        shutil.rmtree(old, ignore_errors=True)
+
+
+def forget_prepared(ws: Path, key: str) -> None:  # a kept copy that can't be read: made again
+    shutil.rmtree(ws / PREPARED / key, ignore_errors=True)
 
 
 def next_part(folder: Path) -> int:  # one past the highest part-n.parquet: a part deleted by hand frees no number to write over

@@ -43,7 +43,7 @@ def fill_rates(run: "Run", fields: list[str] | None = None, sample: int = 10_000
         return pd.DataFrame(columns=["field", "filled", "looks_right", "top_value", "no_letters", "length", "longest", "flag"])
     filled = run.con.execute(f"SELECT {', '.join(f'avg(({q(f)} IS NOT NULL)::INT)' for f in fs)} FROM records").fetchall()[0]
     run.con.execute(f"CREATE OR REPLACE TEMP TABLE er_fill_sample AS SELECT {', '.join(f'{q(f)}::VARCHAR AS {q(f)}' for f in fs)} "
-                    f"FROM records USING SAMPLE reservoir({sample} ROWS) REPEATABLE (0)")
+                    f"FROM records ORDER BY hash({q(run.uid)}) LIMIT {sample}")  # by ID: the same sample whatever the rows' order
     pattern = {f: run.settings.detect[f] for f in fs if f in run.settings.detect}
     looks = dict(zip(pattern, run.con.execute("SELECT " + ", ".join(f"avg(regexp_matches({q(f)}, {lit(p)})::INT)" for f, p in pattern.items())
                                               + " FROM er_fill_sample").fetchall()[0])) if pattern else {}

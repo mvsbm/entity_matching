@@ -310,3 +310,52 @@ def test_scoring_in_slices_gives_the_scores_scoring_all_at_once_gives_and_each_l
     assert pd.read_parquet(tmp_path / "b" / "gold.parquet").equals(pd.read_parquet(tmp_path / "c" / "gold.parquet"))
     views = lambda run: run._count("duckdb_views() WHERE NOT internal")
     assert views(sliced) == views(whole)  # each slice's lookups released: memory doesn't grow with the slices
+
+
+def test_a_full_run_reads_the_records_it_cleaned_again_until_anything_they_rest_on_changes(tmp_path, population):
+    from er import folder
+    from er.run import Run
+    s, p, g = population
+    g.df.to_parquet(tmp_path / "all.parquet", index=False)
+    ws = tmp_path / "ws"
+    load = lambda run: next(x for x in run.steps if x["step"] == "load")["prepared"]
+    rows = lambda run: run.con.execute(f"SELECT * FROM records ORDER BY {run.uid}").df()
+    first = Run(p, s).full(tmp_path / "all.parquet", ws)
+    gold = pd.read_parquet(ws / "gold.parquet")
+    again = Run(p, s).full(tmp_path / "all.parquet", ws, overwrite=True)
+    assert (load(first), load(again)) == ("made", "kept")
+    pd.testing.assert_frame_equal(rows(first), rows(again))  # as cleaning them again would make them
+    pd.testing.assert_frame_equal(gold, pd.read_parquet(ws / "gold.parquet"))
+    assert load(Run(p, s).rerun(ws)) == "kept"  # the run's one file, read again in order: the same records
+    pd.testing.assert_frame_equal(gold, pd.read_parquet(ws / "gold.parquet"))
+    (kept,) = (ws / folder.PREPARED).iterdir()
+    (kept / "records.parquet").write_bytes(b"not parquet")  # a copy that can't be read: made again
+    assert load(Run(p, s).full(tmp_path / "all.parquet", ws, overwrite=True)) == "made"
+    for n in (1, 2):  # other records: other cleaned records, the last two kept
+        g.df.iloc[n:].to_parquet(tmp_path / f"less{n}.parquet", index=False)
+        assert load(Run(p, s).full(tmp_path / f"less{n}.parquet", ws, overwrite=True)) == "made"
+    assert len(list((ws / folder.PREPARED).iterdir())) == folder.KEEP_PREPARED
+    assert load(Run(p, s).full(tmp_path / "less1.parquet", ws, overwrite=True)) == "kept"  # read: the last used
+    g.df.iloc[3:].to_parquet(tmp_path / "less3.parquet", index=False)
+    assert load(Run(p, s).full(tmp_path / "less3.parquet", ws, overwrite=True)) == "made"
+    assert load(Run(p, s).full(tmp_path / "less1.parquet", ws, overwrite=True)) == "kept"  # less2's went: used longest ago
+    import duckdb
+    def full_disk(f):
+        raise duckdb.IOException("no space left on device")
+    (ws / folder.PREPARED / ".k.2147483646.tmp").mkdir()  # left half written by a run long gone
+    folder.keep_prepared(ws, "k", full_disk)  # a copy that can't be written: left out, the run goes on
+    assert not [x for x in (ws / folder.PREPARED).iterdir() if x.name.startswith(".") or x.name == "k"]
+    from dataclasses import replace
+    base = first._prepared_key([], set(), False)
+    first.settings = replace(s, compute={"threads": "1"})
+    assert first._prepared_key([], set(), False) == base  # the compute limits change no record
+    first.settings = replace(s, columns={**s.columns, "phone": (("another_column",),)})
+    assert first._prepared_key([], set(), False) != base  # another mapping: cleaned again
+    first.settings = replace(s, flag_company=("X",))
+    assert first._prepared_key([], set(), False) != base  # another cleaning setting
+    first.settings = s
+    assert first._prepared_key([], set(), True) == base  # one file read in order: the rows read at once
+    first.inputs = [*first.inputs, {**first.inputs[0], "sha256": "0" * 64}]
+    assert first._prepared_key([], set(), True) != first._prepared_key([], set(), False)  # files in order: set aside as increments would
+    first.labels = pd.DataFrame({first.uid: ["1"], "kind": ["2"]})
+    assert first._prepared_key([], set(), False) != base  # people's person/company answers: cleaned again
