@@ -760,14 +760,14 @@ function runPace(order, ended, at, now, prior, within = 0) {
     return {done: before + span * within, left: rest + (whole ? whole * (1 - share(next)) : rest * (1 - share(next)) / span), over: false};
   }
   if (!whole) return {done: before, left: null, over: false};
-  const expected = whole * span, over = inStep > expected;
-  return {done: before + span * Math.min(0.95, inStep / expected), left: over ? null : expected - inStep + whole * (1 - share(next)), over};
+  const expected = whole * span, over = inStep > expected + 15;  // a step of a few seconds is late only once it is well past them
+  return {done: before + span * Math.min(0.95, inStep / expected), left: over ? null : Math.max(0, expected - inStep) + whole * (1 - share(next)), over};
 }
 const paceLine = (pace, inStep) => pace.over ? `longer than usual, ${lasts(inStep)} so far` : pace.left === null ? "" : pace.left < 2 ? "almost done" : `about ${lasts(pace.left)} left`;
 const task = {
   start(command, job, since) {  // since: when it began, for a page drawn while it runs (seconds since the epoch)
     if (this.job && this.done === null) return;  // one at a time: a second, refused at once, doesn't take the panel
-    Object.assign(this, {command, job, t0: since ? since * 1000 : Date.now(), ended: null, at: 0, p: null, done: null, prior: priors[command] ?? null, steps: []});
+    Object.assign(this, {command, job, t0: since ? since * 1000 : Date.now(), ended: null, at: 0, p: null, done: null, prior: priors[command] ?? null, steps: [], most: 0});
     delete priors[command];
     clearTimeout(this.hide); clearInterval(this.clock);
     this.clock = setInterval(() => this.draw(), 1000);
@@ -804,6 +804,7 @@ const task = {
     }
     const title = BUSY[this.command] || `Running ${this.command}`;
     soon = soon || (left === null ? `${Math.round(secs)} s` : left < 2 ? "almost done" : `about ${lasts(left)} left`);
+    if (done !== null) done = this.most = Math.max(this.most, done);  // never back: scoring's own count may say less than time did
     $("task").setAttribute("aria-busy", String(this.done === null));  // read out at its start and end, not each second
     $("task-ic").innerHTML = this.done === null ? '<span class="spin"></span>' : icon(this.done ? "check" : "error");
     $("task-title").textContent = this.done === null ? (this.folded ? `${title} · ${soon}` : title) : `${title}: ${this.done ? "done" : "failed"}`;
@@ -815,7 +816,7 @@ const task = {
     railBusy();
   },
   busy() {  // the page whose command runs now (as the layout places it), while it runs
-    return this.t0 && this.done === null ? (LAYOUT.screens.find((s) => s.uses.some((u) => u.command === this.command)) || {}).id || null : null;
+    return this.t0 && this.done === null && (!longRun || runsHere()) ? (LAYOUT.screens.find((s) => s.uses.some((u) => u.command === this.command)) || {}).id || null : null;  // another workspace's: none of this one's
   },
   fold() { this.folded = !this.folded; $("task").classList.toggle("folded", this.folded); $("task-fold").setAttribute("aria-expanded", String(!this.folded)); if (this.t0) this.draw(); },
 };
@@ -824,9 +825,9 @@ const task = {
 // left and opened again while it runs shows it as it is, not as it was when the page was left.
 const stepsCard = (command) => `<div class="card steps-card"><div class="qa"><div class="q"><h2 class="question"><span class="spin" style="border-color:var(--primary);border-right-color:transparent"></span>${
   esc(BUSY[command] || command)}…</h2><p class="answer"></p></div></div><span class="meter wide"><i style="width:0"></i></span></div>`;
+let railShown = null;  // the page the step list last marked as running: drawn again only when that changes
 function railBusy() {  // the step a long command runs for: its dot turning, its line and the Overview's card saying how far
-  const busy = task.busy(), shown = $("nav")?.querySelector(".running");
-  if ((shown ? shown.dataset.busy : null) !== busy) rail();
+  if (railShown !== task.busy()) rail();
   document.querySelectorAll(".run-line").forEach((x) => { x.textContent = task.line || ""; });
 }
 function runCard() {
@@ -836,7 +837,7 @@ function runCard() {
   const next = order[order.indexOf(task.ended) + 1] || order[0], scoring = p && p.unit === "pairs" && next === "score" && p.total;
   const pace = runPace(order, task.ended, task.at, secs, task.prior, scoring ? p.done / p.total : 0), soon = paceLine(pace, secs - task.at);
   card.querySelector(".answer").innerHTML = `${lasts(secs)} so far${soon ? ` · ${soon}` : ""} · now: ${esc(scoring ? scored(p) : DOING[next] || next)}`;
-  card.querySelector(".meter i").style.width = `${Math.round(100 * Math.min(1, pace.done))}%`;  // the work done, not the time spent
+  card.querySelector(".meter i").style.width = `${Math.round(100 * Math.min(1, task.most))}%`;  // the work done, not the time spent: as the panel has it, never back
   for (const e of task.steps) {  // each stage its step has filled in
     const [node, fact] = LIT[e.step] || [], b = node && $("flow")?.querySelector(`.node[data-node=${node}]`);
     if (!b || e[fact] === undefined) continue;
@@ -937,15 +938,16 @@ function rail() {  // the stepper: the navigation, in the order the work is done
   const p = steps.steps || {}, ran = p.run && p.run.state === "done";
   const here = !state.workspace && current === "records" ? "workspace" : current;  // with no workspace, the Overview is step 1
   const at = (id) => `aria-current="${id === here ? "page" : "false"}"`;
-  const busy = task.busy(), live = '<span class="sub run-line"></span>';
+  const busy = railShown = task.busy(), live = `<span class="sub run-line">${esc(task.line || "")}</span>`;
   $("nav").innerHTML = `<button class="navitem ${busy === "records" ? "running" : ""}" data-screen="records" ${busy === "records" ? 'data-busy="records"' : ""} ${at("records")}>${
     icon("overview")}<span class="stack"><span>Overview</span>${busy === "records" ? live : ""}</span>${busy === "records" ? '<span class="spin ink"></span>' : ""}</button><ol class="rail">${ORDER.map((id, n) => {
     const s = p[id] || {state: "later", line: ""};
     const dot = s.state === "done" ? icon("tick") : s.state === "attention" ? "!" : n + 1;
     const go = id === "workspace" ? "data-pick" : `data-screen="${id}"`;
-    const loop = id === LOOP.after && p.improve ? `<li class="${p.improve.state} loopstep"><button class="navitem step" data-screen="${LOOP.screen}" ${at(LOOP.screen)}
-      title="${esc(STEP.improve)}: ${esc(STATE_WORD[p.improve.state])}"><span class="dot">${icon("loop")}</span><span class="stack"><span>${esc(STEP.improve)}</span>
-      <span class="sub">${esc(p.improve.line)}</span></span></button></li>` : "";
+    const looping = busy === LOOP.screen;  // a trial, an adoption: the loop's step turns as the others do
+    const loop = id === LOOP.after && p.improve ? `<li class="${p.improve.state} loopstep${looping ? " running" : ""}" ${looping ? `data-busy="${LOOP.screen}"` : ""}><button class="navitem step" data-screen="${LOOP.screen}" ${at(LOOP.screen)}
+      title="${esc(STEP.improve)}: ${esc(looping ? "running" : STATE_WORD[p.improve.state])}"><span class="dot">${icon("loop")}</span><span class="stack"><span>${esc(STEP.improve)}</span>
+      ${looping ? live : `<span class="sub">${esc(p.improve.line)}</span>`}</span></button></li>` : "";
     const running = busy === id;  // its command runs now: the dot turns, the line says how far
     return `<li class="${s.state}${running ? " running" : ""}" ${running ? `data-busy="${id}"` : ""}><button class="navitem step" ${go} ${at(id)} title="${esc(STEP[id])}: ${esc(running ? "running" : STATE_WORD[s.state])}">
       <span class="dot">${dot}</span><span class="stack"><span>${n + 1} · ${esc(STEP[id])}</span>${running ? live : `<span class="sub">${esc(s.line)}</span>`}</span></button></li>${loop}`;
@@ -1707,7 +1709,8 @@ const SCREENS = {
       `<div id="next"></div><div id="auto"></div><div id="out"></div><div id="flow"></div>`;
     $("refresh").onclick = () => go("records");
     const [d] = await Promise.all([run("records", "describe workspace"), flowOf("records", $("flow"))]);
-    if (runsHere()) $("auto").innerHTML = runningCard(longRun);  // whatever runs now, and where it shows
+    const live = runsHere() ? longRun : !longRun && task.busy() ? {command: task.command, page: task.busy()} : null;  // whatever runs now, and where it shows
+    if (live) $("auto").innerHTML = runningCard(live);
     else if (d.auto) sendCard($("auto"), d.auto);
     if (d.event === "error" || !d.records) { $("out").innerHTML = d.event === "error" ? banner(d) : emptyRun(d); return d; }
     const p = progress(d), s = p.steps[p.next];
