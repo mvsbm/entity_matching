@@ -243,6 +243,10 @@ body.term-open .snack, body.term-open .task { bottom: calc(var(--term-h) + 16px)
 .attention .dot { border-color: var(--warn); background: var(--warn-bg); color: var(--warn); }
 .attention .sub { color: var(--warn); font-weight: 500; }
 .optional .dot { border-style: dashed; }
+.rail li.running .dot { position: relative; border-color: var(--primary); color: var(--primary); }
+.rail li.running .dot::after { content: ""; position: absolute; inset: -5px; border-radius: 50%; border: 2px solid transparent; border-top-color: var(--primary); animation: spin 1s linear infinite; }
+@media (prefers-reduced-motion: reduce) { .rail li.running .dot::after { animation-duration: 2.4s; } }
+.navitem.running .spin { margin-left: auto; }
 .loopitem { font-weight: 400; height: auto; min-height: 36px; }
 .rail li.loopstep .dot { width: 24px; height: 24px; margin: 2px; }
 .rail li.loopstep .dot .ic { width: 16px; height: 16px; }
@@ -742,21 +746,28 @@ const RUNS = ["resolve records", "rerun records", "add records", "match records"
 const FRAC = {load: .2, budget: .23, fit: .41, rules: .45, candidates: .57, score: .87, cluster: .88, probe: .95, report: .98, write: 1};  // a run's share of its time, done as each step ends (a million records)
 const priors = {};  // a run's seconds as guessed before it starts (step 3), by command: until its steps say more
 const scored = (p) => `${fmt(p.done)} of ${fmt(p.total)} pairs scored · ${plural(p.likely, "likely match", "likely matches")} so far`;  // scoring, slice by slice
-function runLeft(order, ended, at, now, prior, within = 0) {  // seconds left, about: the whole run as its steps so far say, never less than the step it is in implies; null before anything says
+function runPace(order, ended, at, now, prior, within = 0) {
+  // How far a run is (done: 0 to 1, the steps ended by their usual share, and the one under way) and about how long is
+  // left (left, seconds; null when nothing says yet). The run's pace comes from the steps ended (else the guess before it
+  // began); a step past its own expected time is `over`: no number is made up for it, and the bar holds instead of
+  // stretching the whole run. Scoring says how far it is itself (within): its own pace.
   const share = (s) => FRAC[s] / FRAC[order[order.length - 1]], next = order[order.indexOf(ended) + 1];
-  if (next && within > 0) {  // the step it is in says how far it is (scoring, slice by slice): its own pace, then the steps after it at their share
-    const rest = (now - at) * (1 - within) / within;
-    return rest + (now + rest) * (1 - share(next)) / share(next);
+  if (!next) return {done: 1, left: 0, over: false};
+  const before = ended ? share(ended) : 0, span = share(next) - before, inStep = now - at;
+  const whole = ended ? at / before : prior;  // the whole run at the pace of the steps ended
+  if (within > 0) {
+    const rest = inStep * (1 - within) / within;
+    return {done: before + span * within, left: rest + (whole ? whole * (1 - share(next)) : rest * (1 - share(next)) / span), over: false};
   }
-  let whole = ended ? at / share(ended) : prior;
-  if (whole === null || whole === undefined) return null;
-  if (next) whole = Math.max(whole, now / share(next));
-  return Math.max(0, whole - now);
+  if (!whole) return {done: before, left: null, over: false};
+  const expected = whole * span, over = inStep > expected;
+  return {done: before + span * Math.min(0.95, inStep / expected), left: over ? null : expected - inStep + whole * (1 - share(next)), over};
 }
+const paceLine = (pace, inStep) => pace.over ? `longer than usual, ${lasts(inStep)} so far` : pace.left === null ? "" : pace.left < 2 ? "almost done" : `about ${lasts(pace.left)} left`;
 const task = {
   start(command, job, since) {  // since: when it began, for a page drawn while it runs (seconds since the epoch)
     if (this.job && this.done === null) return;  // one at a time: a second, refused at once, doesn't take the panel
-    Object.assign(this, {command, job, t0: since ? since * 1000 : Date.now(), ended: null, at: 0, p: null, done: null, prior: priors[command] ?? null});
+    Object.assign(this, {command, job, t0: since ? since * 1000 : Date.now(), ended: null, at: 0, p: null, done: null, prior: priors[command] ?? null, steps: []});
     delete priors[command];
     clearTimeout(this.hide); clearInterval(this.clock);
     this.clock = setInterval(() => this.draw(), 1000);
@@ -766,7 +777,7 @@ const task = {
   event(e, job) {
     if (job !== this.job) return;
     if (e.event === "progress") this.p = e;
-    else if (e.event === "step") { this.ended = e.step; this.at = (Date.now() - this.t0) / 1000; }
+    else if (e.event === "step") { this.ended = e.step; this.at = (Date.now() - this.t0) / 1000; this.steps.push(e); }
     else return;
     this.draw();
   },
@@ -779,25 +790,61 @@ const task = {
   },
   draw() {
     const secs = (Date.now() - this.t0) / 1000, order = STEPS_OF[this.command] || RUN_STEPS, p = this.p;
-    let left = null, now = "";
+    let left = null, now = "", done = null, soon = "";
     if (RUNS.includes(this.command)) {
       const scoring = p && p.unit === "pairs" && order[order.indexOf(this.ended) + 1] === "score";
-      left = runLeft(order, this.ended, this.at, secs, this.prior, scoring && p.total ? p.done / p.total : 0);
+      const pace = runPace(order, this.ended, this.at, secs, this.prior, scoring && p.total ? p.done / p.total : 0);
+      ({left, done} = pace);
+      soon = paceLine(pace, secs - this.at) || `${Math.round(secs)} s`;
       now = scoring ? scored(p) : DOING[order[order.indexOf(this.ended) + 1]] || "";
     } else if (p && p.total) {
       left = p.done >= p.total ? 0 : p.done ? secs * (p.total - p.done) / p.done : null;
+      done = p.done / p.total;
       now = p.done < p.total ? `${fmt(p.done)} of ${fmt(p.total)} ${p.unit}` : "reading the columns";
     }
-    const title = BUSY[this.command] || `Running ${this.command}`, soon = left === null ? `${Math.round(secs)} s` : left < 2 ? "almost done" : `about ${lasts(left)} left`;
+    const title = BUSY[this.command] || `Running ${this.command}`;
+    soon = soon || (left === null ? `${Math.round(secs)} s` : left < 2 ? "almost done" : `about ${lasts(left)} left`);
     $("task").setAttribute("aria-busy", String(this.done === null));  // read out at its start and end, not each second
     $("task-ic").innerHTML = this.done === null ? '<span class="spin"></span>' : icon(this.done ? "check" : "error");
     $("task-title").textContent = this.done === null ? (this.folded ? `${title} · ${soon}` : title) : `${title}: ${this.done ? "done" : "failed"}`;
     $("task-line").innerHTML = this.done === false ? `${esc(this.why)} <button class="btn" data-term>View</button>` : this.done ? `${Math.round(secs)} s` : esc([now, soon].filter(Boolean).join(" · "));
     $("task-line").querySelector("[data-term]")?.addEventListener("click", () => term.show(true));
-    $("task-bar").style.width = `${this.done ? 100 : left === null ? 0 : Math.round(100 * secs / (secs + left))}%`;
+    $("task-bar").style.width = `${this.done ? 100 : done === null ? 0 : Math.round(100 * Math.min(1, done))}%`;  // the work done, not the time spent
+    this.line = [now, soon].filter(Boolean).join(" · ");
+    runCard();
+    railBusy();
+  },
+  busy() {  // the page whose command runs now (as the layout places it), while it runs
+    return this.t0 && this.done === null ? (LAYOUT.screens.find((s) => s.uses.some((u) => u.command === this.command)) || {}).id || null : null;
   },
   fold() { this.folded = !this.folded; $("task").classList.toggle("folded", this.folded); $("task-fold").setAttribute("aria-expanded", String(!this.folded)); if (this.t0) this.draw(); },
 };
+
+// Step 3's card for the run going on, and the stages its steps have filled in: drawn from the panel's state, so the page
+// left and opened again while it runs shows it as it is, not as it was when the page was left.
+const stepsCard = (command) => `<div class="card steps-card"><div class="qa"><div class="q"><h2 class="question"><span class="spin" style="border-color:var(--primary);border-right-color:transparent"></span>${
+  esc(BUSY[command] || command)}…</h2><p class="answer"></p></div></div><span class="meter wide"><i style="width:0"></i></span></div>`;
+function railBusy() {  // the step a long command runs for: its dot turning, its line and the Overview's card saying how far
+  const busy = task.busy(), shown = $("nav")?.querySelector(".running");
+  if ((shown ? shown.dataset.busy : null) !== busy) rail();
+  document.querySelectorAll(".run-line").forEach((x) => { x.textContent = task.line || ""; });
+}
+function runCard() {
+  const card = current === "run" && $("out")?.querySelector(".steps-card");
+  if (!card || !task.t0 || task.done !== null || !RUNS.includes(task.command)) return;
+  const order = STEPS_OF[task.command] || RUN_STEPS, secs = (Date.now() - task.t0) / 1000, p = task.p;
+  const next = order[order.indexOf(task.ended) + 1] || order[0], scoring = p && p.unit === "pairs" && next === "score" && p.total;
+  const pace = runPace(order, task.ended, task.at, secs, task.prior, scoring ? p.done / p.total : 0), soon = paceLine(pace, secs - task.at);
+  card.querySelector(".answer").innerHTML = `${lasts(secs)} so far${soon ? ` · ${soon}` : ""} · now: ${esc(scoring ? scored(p) : DOING[next] || next)}`;
+  card.querySelector(".meter i").style.width = `${Math.round(100 * Math.min(1, pace.done))}%`;  // the work done, not the time spent
+  for (const e of task.steps) {  // each stage its step has filled in
+    const [node, fact] = LIT[e.step] || [], b = node && $("flow")?.querySelector(`.node[data-node=${node}]`);
+    if (!b || e[fact] === undefined) continue;
+    if (!b.querySelector(".n")) b.insertAdjacentHTML("beforeend", `<span class="n"><span class="v"></span><span class="u">${esc(NODE[node].word)}</span></span>`);
+    b.querySelector(".n .v").textContent = fmt(e[fact]); b.classList.remove("dim");
+  }
+  $("flow")?.querySelectorAll(".node").forEach((b) => b.classList.toggle("now", (LIT_NODE[next] || "") === b.dataset.node));
+}
 
 async function watch(job, command, line, onEvent, since = null) {  // a job's events to its end, in the drawer and the progress panel: its last event and exit code
   const quick = COMMANDS[command].quick, entry = term.add(line);
@@ -890,15 +937,18 @@ function rail() {  // the stepper: the navigation, in the order the work is done
   const p = steps.steps || {}, ran = p.run && p.run.state === "done";
   const here = !state.workspace && current === "records" ? "workspace" : current;  // with no workspace, the Overview is step 1
   const at = (id) => `aria-current="${id === here ? "page" : "false"}"`;
-  $("nav").innerHTML = `<button class="navitem" data-screen="records" ${at("records")}>${icon("overview")}<span>Overview</span></button><ol class="rail">${ORDER.map((id, n) => {
+  const busy = task.busy(), live = '<span class="sub run-line"></span>';
+  $("nav").innerHTML = `<button class="navitem ${busy === "records" ? "running" : ""}" data-screen="records" ${busy === "records" ? 'data-busy="records"' : ""} ${at("records")}>${
+    icon("overview")}<span class="stack"><span>Overview</span>${busy === "records" ? live : ""}</span>${busy === "records" ? '<span class="spin ink"></span>' : ""}</button><ol class="rail">${ORDER.map((id, n) => {
     const s = p[id] || {state: "later", line: ""};
     const dot = s.state === "done" ? icon("tick") : s.state === "attention" ? "!" : n + 1;
     const go = id === "workspace" ? "data-pick" : `data-screen="${id}"`;
     const loop = id === LOOP.after && p.improve ? `<li class="${p.improve.state} loopstep"><button class="navitem step" data-screen="${LOOP.screen}" ${at(LOOP.screen)}
       title="${esc(STEP.improve)}: ${esc(STATE_WORD[p.improve.state])}"><span class="dot">${icon("loop")}</span><span class="stack"><span>${esc(STEP.improve)}</span>
       <span class="sub">${esc(p.improve.line)}</span></span></button></li>` : "";
-    return `<li class="${s.state}"><button class="navitem step" ${go} ${at(id)} title="${esc(STEP[id])}: ${esc(STATE_WORD[s.state])}">
-      <span class="dot">${dot}</span><span class="stack"><span>${n + 1} · ${esc(STEP[id])}</span><span class="sub">${esc(s.line)}</span></span></button></li>${loop}`;
+    const running = busy === id;  // its command runs now: the dot turns, the line says how far
+    return `<li class="${s.state}${running ? " running" : ""}" ${running ? `data-busy="${id}"` : ""}><button class="navitem step" ${go} ${at(id)} title="${esc(STEP[id])}: ${esc(running ? "running" : STATE_WORD[s.state])}">
+      <span class="dot">${dot}</span><span class="stack"><span>${n + 1} · ${esc(STEP[id])}</span>${running ? live : `<span class="sub">${esc(s.line)}</span>`}</span></button></li>${loop}`;
   }).join("")}</ol><h3>When things change</h3>${LAYOUT.workflow.loops.map((l, n) =>
     `<button class="navitem loopitem" data-loop="${n}" ${ran ? "" : "disabled"}>${icon(l.icon)}<span class="stack"><span>${esc(l.name)}</span>${
       ran ? "" : '<span class="sub">after the first run</span>'}</span></button>`).join("")}`;
@@ -1657,7 +1707,7 @@ const SCREENS = {
       `<div id="next"></div><div id="auto"></div><div id="out"></div><div id="flow"></div>`;
     $("refresh").onclick = () => go("records");
     const [d] = await Promise.all([run("records", "describe workspace"), flowOf("records", $("flow"))]);
-    if (runsHere() && longRun.page === "records") $("auto").innerHTML = runningCard(longRun);
+    if (runsHere()) $("auto").innerHTML = runningCard(longRun);  // whatever runs now, and where it shows
     else if (d.auto) sendCard($("auto"), d.auto);
     if (d.event === "error" || !d.records) { $("out").innerHTML = d.event === "error" ? banner(d) : emptyRun(d); return d; }
     const p = progress(d), s = p.steps[p.next];
@@ -1895,37 +1945,14 @@ const SCREENS = {
         $("out").innerHTML = `<div class="card"><h2>What adding them would do</h2>${bars(Object.entries(d.counts).map(([k, n]) => ({label: k, value: n})))}</div><div id="matched"></div>`;
         if (d.records) grid($("matched"), d.records, ["id", "entity", "status", "by", "weight"], {cell: (r, c) => c === "status" ? chip(r.status) : esc(fmt(r[c]))});
       };
-      let t0 = 0, last = null, at = 0, clock = 0, p = null;
-      const order = STEPS_OF[command] || RUN_STEPS, rows = command === "resolve records" && file ? file.rows : command === "rerun records" && w0 ? w0.records : null;
-      const prior = rows && w0 ? guess(rows, w0) : null;  // a new batch's size is unknown until it is read: its steps say
-      priors[command] = prior;
-      const say = () => {
-        const card = $("out")?.querySelector(".steps-card");
-        if (!card) { clearInterval(clock); return; }  // the page was left
-        const next = order[order.indexOf(last) + 1] || order[0], secs = (Date.now() - t0) / 1000, scoring = p && next === "score" && p.total;
-        const left = runLeft(order, last, at, secs, prior, scoring ? p.done / p.total : 0);
-        card.querySelector(".answer").innerHTML = `${Math.round(secs)} s${left === null ? "" : left < 2 ? " · almost done" : ` · about ${lasts(left)} left`} · now: ${esc(scoring ? scored(p) : DOING[next] || next)}`;
-        card.querySelector(".meter i").style.width = `${left === null ? 0 : Math.round(100 * secs / (secs + left))}%`;
-        $("flow").querySelectorAll(".node").forEach((b) => b.classList.toggle("now", (LIT_NODE[next] || "") === b.dataset.node));
-      };
-      const step = (e) => {  // the run as it goes: what it does now, the time taken, each stage filled in as its step ends
+      const rows = command === "resolve records" && file ? file.rows : command === "rerun records" && w0 ? w0.records : null;
+      priors[command] = rows && w0 ? guess(rows, w0) : null;  // a new batch's size is unknown until it is read: its steps say
+      const step = (e) => {  // the run as it goes: the panel keeps it (task), the card shows it (runCard)
         if (e.event === "start" || !$("out").querySelector(".steps-card")) {
-          t0 = t0 || Date.now(); longRun = {command, visit, page: "run", workspace: state.workspace}; hold();
-          $("out").innerHTML = `<div class="card steps-card"><div class="qa"><div class="q"><h2 class="question"><span class="spin" style="border-color:var(--primary);border-right-color:transparent"></span>${esc(BUSY[command] || label)}…</h2>
-            <p class="answer"></p></div></div><span class="meter wide"><i style="width:0"></i></span></div>`;
-          clearInterval(clock); clock = setInterval(say, 1000); say();
+          longRun = {command, visit, page: "run", workspace: state.workspace}; hold();
+          $("out").innerHTML = stepsCard(command);
         }
-        if (e.event === "progress" && e.unit === "pairs") { p = e; say(); return; }
-        if (e.event !== "step") return;
-        last = e.step;
-        at = (Date.now() - t0) / 1000;
-        const [node, fact] = LIT[e.step] || [];
-        const b = node && $("flow").querySelector(`.node[data-node=${node}]`);
-        if (b && e[fact] !== undefined) {
-          if (!b.querySelector(".n")) b.insertAdjacentHTML("beforeend", `<span class="n"><span class="v"></span><span class="u">${esc(NODE[node].word)}</span></span>`);
-          b.querySelector(".n .v").textContent = fmt(e[fact]); b.classList.remove("dim");
-        }
-        say();
+        runCard();
       };
       action("run", command, label, done, step, opts || (command === "resolve records" && !ran && file ? {form: [], about: `${nameOf(file)} · ${plural(file.rows, "record")}`} : {}));
     };
@@ -1937,7 +1964,11 @@ const SCREENS = {
     w0 = w;
     file = (w.inputs || []).slice(-1)[0] || null;
     if ($("out").querySelector(".steps-card")) return;  // a run started meanwhile: it draws its own
-    if (runsHere()) { $("out").innerHTML = runningCard(longRun); hold(); return w; }  // started before this page was drawn, here or for the Overview
+    if (runsHere()) {  // started before this page was drawn: a run of step 3, as it stands; the Overview's, a card saying where it shows
+      $("out").innerHTML = longRun.page === "run" && RUNS.includes(longRun.command) && task.command === longRun.command ? stepsCard(longRun.command) : runningCard(longRun);
+      hold(); runCard(); graph_.then(runCard);  // the stages filled in once the pipeline is drawn
+      return w;
+    }
     if (!w.records) {  // nothing run yet: how long it will take, and the one button; how it will find them, below
       $("flowq").textContent = "How it will find them";
       $("out").innerHTML = file && !file.rows ? `<div class="card"><div class="qa"><div class="q"><h2 class="question">${esc(nameOf(file))} holds no records</h2>
@@ -3274,8 +3305,8 @@ async function autoMode() {
   }, step, {about: "A new workspace, every step on your file, and a report to send"});
 }
 const runningCard = (run) => `<div class="card"><div class="qa"><div class="q"><h2 class="question"><span class="spin" style="border-color:var(--primary);border-right-color:transparent"></span>${
-  esc(BUSY[run.command] || (run.command === "try everything" ? "Auto mode" : run.command))}…</h2><p class="answer">${
-  run.page === current ? "It shows here when it ends" : `It shows on ${esc(screen(run.page).title)} when it ends`}</p></div></div></div>`;  // a long run this page didn't draw
+  esc(BUSY[run.command] || (run.command === "try everything" ? "Auto mode" : run.command))}…</h2><p class="answer"><span class="run-line">${esc(task.line || "")}</span>${
+  run.page === current ? " · it shows here when it ends" : ""}</p></div>${run.page && run.page !== current ? `<a class="btn filled" data-go="${run.page}">Open</a>` : ""}</div></div>`;  // a long run this page didn't draw: how far, and its page
 const runsHere = () => longRun && longRun.page && (!longRun.workspace || longRun.workspace === state.workspace);  // a long run of this workspace
 function sendCard(box, a) {  // the auto mode report: what to send, and a way to copy it
   box.innerHTML = `<div class="card"><div class="qa"><div class="q"><h2 class="question">What should I send?</h2><p class="answer">This report: it holds no record's value</p></div>
