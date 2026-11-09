@@ -89,6 +89,13 @@ package "state/, for increments: Run.write" {
   }
 }
 
+package "kept for the next run: Run.load" {
+  entity "prepared/<key>/records.parquet" as prepared {
+    * <id>
+    <the records as step 1 cleans them: the columns state/records/ holds>
+  }
+}
+
 package "for people: Run.report" {
   entity "review.parquet" as review {
     why : decide · audit
@@ -156,6 +163,7 @@ rule_kept }o--|| gold : <id>_l, <id>_r
 proposed }o--|| gold : <id>_l, <id>_r
 records ||--|| gold : <id>
 kind_answers }o--|| records : <id>
+prepared ||--|| records : <id>
 review }o--|| gold : <id>_l, <id>_r
 kind_review |o--|| records : <id>
 decisions }o--|| gold : <id>_l, <id>_r

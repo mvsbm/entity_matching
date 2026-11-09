@@ -155,6 +155,7 @@ def cost(entities: list[int], memory_limit: str) -> pd.DataFrame:
         size = len(records)
         del records
         compute = [f"memory_limit={memory_limit}"] if memory_limit else []
+        shutil.rmtree(d / "run", ignore_errors=True)  # every step measured: no cleaned records kept from the run before
         done = subprocess.run([sys.executable, "-m", "er.cli", "resolve", "records", str(d / "records.parquet"), "--workspace", str(d / "run"),
                                "--overwrite", "--compute", *compute, f"temp_directory={OUT / 'spill'}"], cwd=S.root, capture_output=True, encoding="utf-8", errors="replace")
         if done.returncode:

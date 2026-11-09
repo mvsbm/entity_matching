@@ -44,19 +44,25 @@ S sampled pairs for u, E accepted pairs, d cluster diameter (Splink's connected 
 the edges' records only: each existing cluster is one node, see er.cluster.merge).
 """
 import functools
+import hashlib
 import json
 import os
 import re
 import shutil
 import sys
 import time
+import unicodedata
 from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 from datetime import datetime
 from pathlib import Path
 
+import duckdb
 import numpy as np
 import pandas as pd
+import pyarrow as pa
+import scipy
+import sklearn
 
 from er import folder
 from er.candidates import candidates, estimate
@@ -92,6 +98,9 @@ def peak_gb() -> float:  # the process's peak resident memory so far (ru_maxrss:
 
 
 BYTES_PER_PAIR = 350  # shortcut: measured at 1M (candidate and score tables held together); measure again if those tables change
+PREPARING = hashlib.sha256(b"".join([*(f.read_bytes() for f in sorted(Path(__file__).parent.glob("*.py"))),  # every module: what cleans records and reads them
+                                     *(m.__version__.encode() for m in (duckdb, pd, pa, np, sklearn, scipy)), sys.version.encode(),
+                                     unicodedata.unidata_version.encode()])).hexdigest()  # sklearn, scipy: the person/company engine
 
 
 def locked(method: Callable) -> Callable:  # the workspace (the method's `out`) locked for the whole method
@@ -130,6 +139,7 @@ class Run:
         self.added: int | None = None         # an increment's new records (0: nothing new)
         self.part = 0                         # the part an increment writes: one past the run's highest
         self.gated = pd.DataFrame()           # the oversized blocks the candidates checked, and what was decided
+        self.keep: Path | None = None         # the workspace whose cleaned records a full run reads again (folder.prepared), if any
         self.plan: pd.DataFrame | None = None  # the budget's pairs per rule and generator (budget()); an increment has none
         self.present: dict = {}               # each field the file holds, and the source columns it is built from
         self.scoring: dict | None = None      # the model with u from this file (fit): what the gate and the scores use
@@ -205,18 +215,27 @@ class Run:
             self.inputs += file_facts([self.settings.root / NAME_MODEL], "name model") + file_facts([self.kind_labels] if self.kind_labels else [], "answers")
         probe = self.pipeline.probe  # its groups are keys too: their columns are made with the rest
         normalized, used = [*rules.normalized(), *fs.normalized(), *probe.normalized()], rules.used() | fs.used() | probe.used()
-        reader = self.con.cursor().sql(f"SELECT * FROM {rows}").to_arrow_reader(self.chunk_rows)  # its own cursor: inserts go on alongside
-        total, done = (self._count(rows) if self.told else 0), 0
+        total, done = self._count(rows), 0
         if self.told:
             self.told(0, total, "records")
-        for i, batch in enumerate(reader):
-            chunk = prepare(fs.standardize, batch.to_pandas().astype("string"), normalized, used, kind=self.classifier)
-            self.con.register("er_chunk", chunk)
-            self.con.execute(f"CREATE TABLE {into} AS SELECT * FROM er_chunk" if i == 0 else f"INSERT INTO {into} SELECT * FROM er_chunk")
-            self.con.unregister("er_chunk")
-            done += len(batch)
-            if self.told:
-                self.told(done, total, "records")
+        keep = self.keep if stored is None else None  # an increment's batch is new: nothing kept to read
+        key = self._prepared_key(normalized, used, src.ordered) if keep else None
+        if kept := keep and self._kept(folder.prepared(keep, key), into, total):
+            done = total
+        else:
+            reader = self.con.cursor().sql(f"SELECT * FROM {rows}").to_arrow_reader(self.chunk_rows)  # its own cursor: inserts go on alongside
+            for i, batch in enumerate(reader):
+                chunk = prepare(fs.standardize, batch.to_pandas().astype("string"), normalized, used, kind=self.classifier)
+                self.con.register("er_chunk", chunk)
+                self.con.execute(f"CREATE TABLE {into} AS SELECT * FROM er_chunk" if i == 0 else f"INSERT INTO {into} SELECT * FROM er_chunk")
+                self.con.unregister("er_chunk")
+                done += len(batch)
+                if self.told:
+                    self.told(done, total, "records")
+            if keep:
+                folder.keep_prepared(keep, key, lambda f: self.con.execute(f"COPY {into} TO {lit(f)} (FORMAT parquet, COMPRESSION zstd)"))  # a third of snappy's size, as fast
+        if self.told and kept:
+            self.told(done, total, "records")
         self.con.execute("DROP TABLE IF EXISTS er_in")  # the file kept once, read: a copy of it no step reads again
         self.n = self._count(into)
         kinds = {}
@@ -224,7 +243,31 @@ class Run:
             kinds = dict(self.con.execute(f"SELECT kind, count(*) FROM {into} GROUP BY 1").fetchall())
             kinds = {"companies": kinds.get(2, 0), "persons": kinds.get(1, 0), "not sure": kinds.get(0, 0),
                      "decided by people": self._count(f"{into} WHERE kind_by = 'people'"), "held back": self._count(f"{into} WHERE kind_held")}
-        self._done("load", "O(N·L)", f"O({self.n:,}·L)", t, records=self.n, disabled=len(self.disabled), set_aside=self._count("set_aside"), **kinds)
+        self._done("load", "O(N·L)", f"O({self.n:,}·L)", t, records=self.n, disabled=len(self.disabled), set_aside=self._count("set_aside"), **kinds,
+                   **({"prepared": "kept" if kept else "made"} if keep else {}))
+
+    def _prepared_key(self, normalized: list, used: set[str], ordered: bool) -> str:
+        """All the cleaned records rest on, as one hash: the records files (their SHA-256, in order) and how they are read
+        and matched to fields, the cleaning, the columns the method cleans and reads, the person/company engine (its
+        name model, people's answers), and the code. Not the compute limits: they change no record."""
+        s, files = self.settings, [f["sha256"] for f in self.inputs if f["role"] in ("records", "name model")]
+        answers = hashlib.sha256(self.labels.to_csv(index=False).encode()).hexdigest() if self.labels is not None else None
+        ordered = ordered and sum(f["role"] == "records" for f in self.inputs) > 1  # one file read in order sets aside what it would read at once: a rerun reads the first run's
+        return hashlib.sha256(repr((files, ordered, s.data, s.columns, s.input, s.standardize, s.flag_company, self.pipeline.fs.standardize,
+                                    normalized, sorted(used), self.pipeline.kind, answers, PREPARING)).encode()).hexdigest()[:16]
+
+    def _kept(self, path: Path | None, into: str, n: int) -> bool:  # the cleaned records kept, read into `into`; False if none, or one that can't be read whole
+        if path is None:
+            return False
+        try:
+            self.con.execute(f"CREATE TABLE {into} AS SELECT * FROM read_parquet({lit(path)})")
+            if self._count(into) == n:
+                return True
+        except duckdb.Error:
+            pass
+        self.con.execute(f"DROP TABLE IF EXISTS {into}")
+        folder.forget_prepared(path.parent.parent, path.parent.name)
+        return False
 
     def _set_aside(self, src: str, stored: str | None, ordered: bool = False) -> str:
         """The records a run can resolve. Rows identical in every column are kept once. Set aside, with the reason, in
@@ -847,6 +890,7 @@ class Run:
         if held and not overwrite:
             raise InputError(f"{out} already holds a run", fix="choose another folder, or replace the run: nayose resolve records … --overwrite")
         self.labels = self._answers(out)  # read before the folder's old state goes
+        self.keep = out
         self.resolve(path, out)
         self.write(out, replace=held, report=(path, pipeline_file) if pipeline_file else None)  # the old run goes only once the new one is complete
         return self
@@ -896,7 +940,7 @@ def trial(ws: Path, base: Pipeline, variant: Pipeline, method: dict, s: Settings
 
     def resolved(p: Pipeline, into: Path) -> dict:  # each record's cluster, written to `into`; and the numbers people compare
         run = Run(p, s, model=model, echo=echo)
-        run.labels = run._answers(ws)
+        run.labels, run.keep = run._answers(ws), ws
         run.resolve(files, None)
         run.con.execute(f"COPY (SELECT {q(uid)}, cluster_id FROM gold) TO {lit(into)} (FORMAT parquet)")
         probed = next((x["strata"] for x in run.steps if x["step"] == "probe"), [])  # the matches no key lists, as its probe estimates them

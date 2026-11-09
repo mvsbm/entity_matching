@@ -334,7 +334,7 @@ def test_the_data_diagram_holds_the_run_folder_s_files_and_columns(runs):
     s, out, _ = runs
     uid = s.data.unique_id
     elements, _, fields = parse("data")
-    norm = lambda p: re.sub(r"part-\d+", "part-n", p.relative_to(out).as_posix())
+    norm = lambda p: re.sub(r"part-\d+", "part-n", re.sub(r"^prepared/[0-9a-f]{16}/", "prepared/<key>/", p.relative_to(out).as_posix()))
     on_disk = {norm(f) for f in out.rglob("*") if f.is_file() and f.name != ".lock"}
     drawn = {label for kind, label in elements.values() if kind == "entity"} - TRANSIENT
     assert on_disk == drawn, f"data.puml: files to draw {sorted(on_disk - drawn)}, to remove {sorted(drawn - on_disk)}"
