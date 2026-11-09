@@ -1302,7 +1302,7 @@ Decide one pair: match or no match.
 nayose decide pair ID ID match|no_match|clear --workspace WORKSPACE [--format text|json]
 ```
 
-Writes the decision into the workspace's review.parquet; nothing is applied until apply decisions. clear takes it back. O(sheet rows).
+Writes the decision into the workspace's review.parquet; nothing is applied until apply decisions. clear takes it back. Any pair the run kept (list scored) can be decided: one the sheet lacks joins it. O(sheet rows), and O(E) over scored/ for a pair the sheet lacks.
 
 | Parameter | |
 |---|---|

@@ -856,7 +856,7 @@ def split_entity(a: dict, emit: "Emit") -> dict:
     held = d["records"][uid].tolist()
     inside = entity_pairs(out, s, held, rows(d["links"]))
     if inside["capped"]:
-        raise InputError(f"the entity of {a['id']} holds {d['size']:,} records: too many to find where it splits", fix="decide its pairs in step 4 instead")
+        raise InputError(f"the entity of {a['id']} holds {d['size']:,} records: too many to find where it splits", fix="decide its pairs in Review instead: nayose list scored --record ID, then decide pair")
     if not {first, second} <= set(held):
         raise InputError(f"{first} and {second}: not both records of the entity of {a['id']}", fix="see its records: nayose describe entity ID --workspace …")
     if dict(id_l=first, id_r=second) not in inside["weakest"]:
@@ -1491,7 +1491,8 @@ COMMANDS: tuple[Command, ...] = (
             show={"patterns": ("key", "pairs", "points", "merged", "wait", "held", "apart")}),
     Command("decide", "pair", "Decide one pair: match or no match",
             "Writes the decision into the workspace's review.parquet; nothing is applied until apply decisions. clear takes "
-            "it back. O(sheet rows).",
+            "it back. Any pair the run kept (list scored) can be decided: one the sheet lacks joins it. O(sheet rows), and "
+            "O(E) over scored/ for a pair the sheet lacks.",
             (Param("first", "one record ID of the pair", positional=True, metavar="ID"), Param("second", "the other", positional=True, metavar="ID"),
              Param("decision", "match, no_match, or clear", "choice", ("match", "no_match", "clear"), positional=True), WORKSPACE),
             {"pair": "the two IDs, lower first", "decision": "what was written", "next": "the commands that usually follow"},

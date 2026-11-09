@@ -461,6 +461,14 @@ def test_review_counts_down_an_answer_waits_out_a_busy_workspace_and_auto_merge_
     assert page.inner_text("h1") == "Results" and "you decide every pair" in page.inner_text("#out .card .answer")
     waiting = int(re.search(r"[\d,]+", page.inner_text("a.tile[data-go=pairs]:not([data-merge]) .num")).group().replace(",", ""))
     assert waiting > 2 and page.inner_text(".rail li.attention .sub") == f"{waiting:,} waiting"  # the tile and the rail say one number
+    page.click("a.tile[data-tab=entities]")  # a tile opens its own tab
+    page.wait_for_selector(".tab[data-tab=entities][aria-selected=true]")
+    page.wait_for_timeout(1000)
+    assert page.query_selector(".tab[data-tab=entities][aria-selected=true]") and page.inner_text("h1") == "Explore"
+    page.click(".navitem[data-screen=records]")
+    page.click("a.tile[data-merge]")  # and the one about merging, the dialog it is about
+    page.wait_for_selector("dialog[open] [data-add]")
+    page.keyboard.press("Escape")
     page.evaluate("scrollTo(0, 400)")
     page.click(".navitem[data-screen=run]")
     page.wait_for_selector("#out h2.question.big")  # step 3, opened at its top: what the last run did, and the way to its results
