@@ -400,8 +400,23 @@ class Run:
                    generators=listed(report))
         return report
 
-    def _gate(self, pairs: pd.DataFrame) -> pd.DataFrame:  # an oversized block's sampled pairs, scored as the candidates will be
-        return score_fs(self.scoring, "records", pairs, self.db, self.uid, n_records=self.n)
+    def _gate(self, pairs: str) -> str:  # the oversized blocks' sampled pairs (a table), scored as the candidates will be, a slice at a time
+        self._scored(pairs, "er_gate", n_records=self.n)
+        return "er_gate"
+
+    def _scored(self, pairs: str, into: str, n_records: int | None = None, each: Callable[[str], None] | None = None) -> None:
+        """Every pair of `pairs` (a table made fresh, its rowids dense; uid_l, uid_r) scored into `into`, score_pairs at a
+        time: a pair's score depends on it alone, so the slices score as the whole would, and only one slice's comparisons
+        are ever held. each(the slice's scores) after each slice."""
+        l, r = q(self.l), q(self.r)
+        for start in range(0, max(1, self._count(pairs)), self.score_pairs):
+            self.con.execute(f"CREATE OR REPLACE TABLE er_slice AS SELECT {l}, {r} FROM {pairs} WHERE rowid >= {start} AND rowid < {start + self.score_pairs}")
+            score_fs(self.scoring, "records", "er_slice", self.db, self.uid, into=into if not start else "er_scored", n_records=n_records)
+            if start:
+                self.con.execute(f"INSERT INTO {into} SELECT * FROM er_scored")
+            if each:
+                each(into if not start else "er_scored")
+        self.con.execute("DROP TABLE IF EXISTS er_slice; DROP TABLE IF EXISTS er_scored")
 
     def _gated(self, records: list[dict]) -> None:  # the oversized blocks' decisions, kept for qa and named in the summary
         self.gated = gated = pd.DataFrame(records)
@@ -427,17 +442,14 @@ class Run:
         k = len(fs.model.comparisons)
         at, model_line = bits(fs.min_match_weight if trust.line is None else trust.line), bits(fs.min_match_weight)
         total, done, likely = self._count("cands"), 0, 0  # likely: the pairs the model scores as matches, whatever trust lets merge
-        for start in range(0, max(1, total), self.score_pairs):  # a pair's score depends on it alone: slices score as the whole would
-            self.con.execute(f"CREATE OR REPLACE TABLE er_slice AS SELECT * FROM cands WHERE rowid >= {start} AND rowid < {start + self.score_pairs}")
-            score_fs(self.scoring, "records", "er_slice", self.db, self.uid, into="scores" if not start else "er_scored")
-            if start:
-                self.con.execute("INSERT INTO scores SELECT * FROM er_scored")
-            got, hit = self.con.execute(f"SELECT count(*), count(*) FILTER (match_weight >= {model_line} AND {named_sql(fs)}) FROM "
-                                        f"{'scores' if not start else 'er_scored'} s").fetchall()[0]
+
+        def each(scored: str) -> None:  # how far scoring is, after each slice
+            nonlocal done, likely
+            got, hit = self.con.execute(f"SELECT count(*), count(*) FILTER (match_weight >= {model_line} AND {named_sql(fs)}) FROM {scored} s").fetchall()[0]
             done, likely = done + got, likely + hit
             if self.told:
                 self.told(done, total, "pairs", likely=likely)
-        self.con.execute("DROP TABLE IF EXISTS er_slice; DROP TABLE IF EXISTS er_scored")
+        self._scored("cands", "scores", each=each)
         reached: dict[str, dict[str, int]] = {}  # per comparison, the pairs at each level (gamma, as score_fs gives it): one scan
         for c, g, n in self.con.execute("SELECT c, g, count(*) FROM (UNPIVOT scores ON COLUMNS('^gamma_') INTO NAME c VALUE g) GROUP BY ALL").fetchall():
             reached.setdefault(c.removeprefix("gamma_"), {})[str(g)] = n

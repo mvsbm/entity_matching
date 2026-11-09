@@ -41,7 +41,7 @@ def rule_edges(spec: RulesSpec, records: "Records", db: DuckDBAPI, uid: str, bat
     try:
         for i, s, rule in spec.each():
             t = time.perf_counter()
-            keep = f" AND {trust[i]}" if trust and i in trust else ""
+            keep = f" WHERE {trust[i]}" if trust and i in trust else ""  # in WHERE, tested before the join: in ON, after it, a placeholder's whole block joined and compared first
             con.execute(f'CREATE OR REPLACE TEMP TABLE er_rule_{i} AS SELECT least(l.{u}, r.{u}) AS {l}, greatest(l.{u}, r.{u}) AS {r} '
                         f'FROM "{left}" l JOIN "{name}" r ON {s.sql(rule)} AND l.{u} {order} r.{u}{keep}')
             seconds[rule.name] = time.perf_counter() - t
