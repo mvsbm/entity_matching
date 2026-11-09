@@ -576,6 +576,7 @@ const pct = (v) => v === null || v === undefined ? "—" : `${Math.round(v * 100
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const store = (k, v) => { try { if (v !== undefined) localStorage.setItem(`nayose.${k}`, v); return localStorage.getItem(`nayose.${k}`); } catch { return null; } };
 const FIELD_WORDS = {kind_flag: "person or company (flag)"};
+const baseName = (p) => String(p).split(/[\\/]/).filter(Boolean).pop() || "";  // a path's last part, / or \\ (Windows) between parts
 const fileName = (n) => String(n).replace(/^\d+-/, "").replace(/(\.\w+)\.parquet$/, "$1");  // a workspace's copy of a file, by the name it came with (not its reading's)
 const nameOf = (f) => f.given || fileName(f.name);  // a loaded file by the name it came with, kana and kanji kept
 const bytes = (n) => n < 1e3 ? `${fmt(n)} bytes` : n < 1e6 ? `${fmt(Math.ceil(n / 1e3))} KB` : `${fmt(Math.ceil(n / 1e6))} MB`;
@@ -761,7 +762,7 @@ const STATE_WORD = {done: "done", current: "next", attention: "needs you", optio
 // Each step's state (done, current, attention, optional, later) and one-line status, from describe workspace's result.
 function progress(d) {
   const ran = d && d.event !== "error" && d.records > 0, s = {};
-  s.workspace = state.workspace ? {state: "done", line: state.workspace.split("/").filter(Boolean).pop()} : {state: "current", line: "choose one"};
+  s.workspace = state.workspace ? {state: "done", line: baseName(state.workspace)} : {state: "current", line: "choose one"};
   const files = (d && d.inputs) || [], last = files.length ? nameOf(files[files.length - 1]) : "";
   const empty = files.length && !files[files.length - 1].rows;  // a file of a header alone, or nothing it could read
   s.columns = empty && !ran ? {state: "attention", line: `${last}: no records`} : ran || last ? {state: "done", line: last ? `${last} loaded` : "ready"} : {state: state.workspace ? "current" : "later", line: "load your file"};
@@ -1124,7 +1125,7 @@ const missedWords = (strata) => strata.some((m) => m.hits)  // the probe's answe
 const DETAIL_Q = {
   records: (x, all) => {
     if (x.count === null || x.count === undefined) return ask(STAGE_Q.records, "Nothing yet: the records are read when matching runs.");
-    const files = (x.files || []).map((f) => f.split("/").pop().replace(/(\.(csv|tsv|txt))\.parquet$/i, "$1")).join(", "), k = x.kinds || {};
+    const files = (x.files || []).map((f) => baseName(f).replace(/(\.(csv|tsv|txt))\.parquet$/i, "$1")).join(", "), k = x.kinds || {};
     const lines = [`<div class="ok">${plural(x.count, "record")} read${x.columns ? `, ${fmt(x.columns)} columns` : ""}${x.seconds !== null && x.seconds !== undefined ? `, in ${lasts(x.seconds)}` : ""}</div>`,
       ...hurts(all.prepare.fields, x.turned_off, ' <a class="btn" data-go="columns">Map it</a>'),
       k.unsure ? `<div class="ok">${fmt(k.company)} companies by their legal form; ${plural(k.unsure, "record")} not sure yet as person or company <a class="btn" data-go="kinds">Answer some</a></div>` : ""].filter(Boolean);
@@ -1563,7 +1564,7 @@ const SCREENS = {
     $("out").innerHTML = (d.write_owed ? banner({event: "error", error: "A write was cut short", fix: "The next command that writes to this workspace finishes it."}, "warn") : "") +
       `<div class="card"><h2>Activity</h2><div id="runs"></div></div>`;
     grid($("runs"), d.runs.slice().reverse(), ["at", "what", "files", "seconds"],
-         {filter: false, cell: (r, c) => c === "files" ? esc(r.files.map((f) => f.split("/").pop().replace(/(\.\w+)\.parquet$/, "$1")).join(", ")) : c === "at" ? esc(String(r.at).replace("T", " ")) : esc(fmt(r[c]))});
+         {filter: false, cell: (r, c) => c === "files" ? esc(r.files.map((f) => baseName(f).replace(/(\.\w+)\.parquet$/, "$1")).join(", ")) : c === "at" ? esc(String(r.at).replace("T", " ")) : esc(fmt(r[c]))});
     return d;  // go() draws the stepper from it
   },
 
@@ -3047,7 +3048,7 @@ function emptyRun(d) {  // d: the workspace described, when the page has it
     <div class="example">${EXAMPLE.map(([name, more]) => `<span class="node static"><span class="n">${esc(name)}</span><span class="faint">${esc(more)}</span></span>`).join("")}
       ${ARROW}<span class="node static one"><span class="top">${icon("customers")}one entity</span><span class="n">0000262688</span></span></div>
     <div class="faint" style="font-size:12px">example</div></div><div id="auto"></div><div id="continue"></div>`;
-  return `<div class="card empty">${icon("folder")}<h2>Nothing matched in ${esc(state.workspace.split("/").filter(Boolean).pop())} yet</h2>
+  return `<div class="card empty">${icon("folder")}<h2>Nothing matched in ${esc(baseName(state.workspace))} yet</h2>
     <div class="actions" style="justify-content:center">${d && d.inputs && d.inputs.length ? '<a class="btn filled" data-go="run">3 · Find matches</a>'
       : '<a class="btn filled" data-go="columns">2 · Prepare your data</a>'}</div></div>`;
 }
@@ -3140,7 +3141,7 @@ function useWorkspace(r) {  // the workspace every page reads from now on
   if (state.workspace !== r) $("search").value = "";  // a record ID of another workspace means nothing here
   state.workspace = r;
   store("workspace", r);  // per viewer: the workspace this browser opens with
-  $("picker").innerHTML = `${icon("folder")}<span title="${esc(r)}">${esc(r ? `Workspace: ${r.split("/").filter(Boolean).pop()}` : "Choose a workspace")}</span>${icon("down")}`;
+  $("picker").innerHTML = `${icon("folder")}<span title="${esc(r)}">${esc(r ? `Workspace: ${baseName(r)}` : "Choose a workspace")}</span>${icon("down")}`;
 }
 function setWorkspace(r) {
   useWorkspace(r);
