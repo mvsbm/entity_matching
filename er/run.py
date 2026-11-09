@@ -76,7 +76,7 @@ from er.report import applied, qa, report_text, review_sheet, scored_again
 from er.settings import SPECIAL, Settings, fit_to_file, present_fields
 from er.source import answers, decisions, file_facts, filled, known, open_source, suggest
 from er.standardize import prepare
-from er.strings import connect
+from er.strings import connect, spent
 
 
 def peak_gb() -> float:  # the process's peak resident memory so far (ru_maxrss: bytes on macOS, KB on Linux; Windows: its peak working set)
@@ -140,6 +140,8 @@ class Run:
         self.part = 0                         # the part an increment writes: one past the run's highest
         self.gated = pd.DataFrame()           # the oversized blocks the candidates checked, and what was decided
         self.keep: Path | None = None         # the workspace whose cleaned records a full run reads again (folder.prepared), if any
+        self._spent = spent()  # the comparison functions' time when the last step ended (_done)
+        self.gate_seconds, self.gate_pairs = 0.0, 0  # the oversized blocks' samples scored (_gate): how long, how many
         self.plan: pd.DataFrame | None = None  # the budget's pairs per rule and generator (budget()); an increment has none
         self.present: dict = {}               # each field the file holds, and the source columns it is built from
         self.scoring: dict | None = None      # the model with u from this file (fit): what the gate and the scores use
@@ -157,8 +159,13 @@ class Run:
                              fix='set resolver = { method = "connected_components" } in both stages of the pipeline')
 
     def _done(self, name: str, big_o: str, filled: str, t: float, **facts: object) -> None:
+        now = spent()  # the comparison functions' time since the step before: this step's
+        was = lambda k: self._spent.get(k, (0, 0, 0, 0))
+        compared = {k: dict(cpu=round(s - was(k)[0], 4), values=int(n - was(k)[1]), calls=int(c - was(k)[2]), wall=round(w - was(k)[3], 4))
+                    for k, (s, n, c, w) in now.items() if n > was(k)[1]}
+        self._spent = now
         self.steps.append(dict(step=name, big_o=big_o, filled=filled, seconds=round(time.perf_counter() - t, 2),
-                               peak_memory_gb=round(peak_gb(), 2), **facts))
+                               peak_memory_gb=round(peak_gb(), 2), **facts, **({"compared": compared} if compared else {})))
         if self.echo:
             self.echo(self.steps[-1])
 
@@ -387,11 +394,12 @@ class Run:
             self.model = train_fs(fs.model, sample, self.db, self.uid)
             self.notes += [f"the fit found no two records sharing {f} in its sample of {len(sample):,}, so it learned nothing from them"
                            for f in self.model["er"].get("skipped", [])]
-        self.scoring, self.basis = self.model, {}
+        self.scoring, self.basis, fitted = self.model, {}, time.perf_counter()
         if fs.model.u_from_scored:
             self.scoring, sampled, exact = scored_u(fs.model, self.model, "records", self.db, self.uid)
             self.basis = u_basis(fs.model, sampled, exact, "records", self.db)
-        self._done("fit", "O(n + S·K + P_em·K) + O(N + S·K)", f"n = {self.model['er']['fit_rows']:,}; u on {self.n:,} records", t)
+        self._done("fit", "O(n + S·K + P_em·K) + O(N + S·K)", f"n = {self.model['er']['fit_rows']:,}; u on {self.n:,} records", t,
+                   sample_seconds=round(fitted - t, 2), file_u_seconds=round(time.perf_counter() - fitted, 2))  # the fit on its sample, then u on this file
         return self.model
 
     def columns(self) -> set[str]:  # the records table's columns
@@ -447,7 +455,7 @@ class Run:
         self._done("candidates", "O(N·L + Σ P_g)", f"O({self.n:,}·L + {int(report['pairs'].sum()):,})", t, candidates=c,
                    oversized_kept=int((self.gated.get("decision", pd.Series(dtype=str)) == "kept").sum()),
                    oversized_skipped=int(self.gated.get("decision", pd.Series(dtype=str)).str.startswith("skipped").sum()),
-                   generators=listed(report))
+                   gate_seconds=round(self.gate_seconds, 2), gate_pairs=self.gate_pairs, generators=listed(report))  # the gate: its samples scored
         return report
 
     def _joined(self) -> Callable[..., None] | None:
@@ -461,7 +469,7 @@ class Run:
         return lambda i, n, unit: self.told(sum(w[:i]), sum(w), unit, more=more)
 
     def _gate(self, pairs: str) -> str:  # the oversized blocks' sampled pairs (a table), scored as the candidates will be, a slice at a time
-        total, done = self._count(pairs), 0
+        start, total, done = time.perf_counter(), self._count(pairs), 0
         if self.told:
             self.told(0, total, "sampled pairs")
 
@@ -471,6 +479,7 @@ class Run:
             if self.told:
                 self.told(done, total, "sampled pairs")
         self._scored(pairs, "er_gate", n_records=self.n, each=each)
+        self.gate_seconds, self.gate_pairs = self.gate_seconds + time.perf_counter() - start, self.gate_pairs + total
         return "er_gate"
 
     def _scored(self, pairs: str, into: str, n_records: int | None = None, each: Callable[[str], None] | None = None) -> None:
@@ -756,7 +765,8 @@ class Run:
                                clusters="rule_clusters" if fs.bridge else None, con=self.con, into="cands", touching=True,
                                gate=self._gate, floor=review_floor(self.pipeline), capacity=self.capacity(), told=self._joined())
         self._gated(report.attrs["gated"])
-        self._done("candidates", "O(|Δ|·Σ b + scan)", f"{self._count('cands'):,} pairs touching the batch", t, generators=listed(report))
+        self._done("candidates", "O(|Δ|·Σ b + scan)", f"{self._count('cands'):,} pairs touching the batch", t,
+                   gate_seconds=round(self.gate_seconds, 2), gate_pairs=self.gate_pairs, generators=listed(report))
 
         t = time.perf_counter()
         self.con.execute(f"""CREATE OR REPLACE TABLE touched AS SELECT * FROM records WHERE {u} IN

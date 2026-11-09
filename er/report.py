@@ -173,7 +173,7 @@ def report_text(run: "Run", tables: dict[str, pd.DataFrame], pipeline: Path) -> 
     quote one are run.examples, in qa.md only), so it can leave the machine that holds the records. `tables` is qa()'s.
     It shows what ran (the code, the tracked files changed in this copy, the pipeline, the machine's limits), the
     summary, each field's fill and shape, scores and accepted links by weight with the false links the model expects,
-    cluster sizes, each step's time and memory, the model (the prior, and m, u and bits per level), the costliest
+    cluster sizes, each step's time and memory, its time in each string comparison, the model (the prior, and m, u and bits per level), the costliest
     blocks, and the patterns no key pairs. O(C + E) over scores and matches."""
     con, fs = run.con, run.pipeline.fs
     t, lo = fs.min_match_weight, review_floor(run.pipeline)
@@ -222,6 +222,19 @@ def report_text(run: "Run", tables: dict[str, pd.DataFrame], pipeline: Path) -> 
 
     steps = tables["steps"]
     out += ["STEPS", *table(steps[["step", "seconds", "peak_memory_gb", "facts"]].rename(columns={"peak_memory_gb": "peak_gb"})), ""]
+
+    def row(x: dict, f: str, c: dict) -> dict:
+        every = f == "all"
+        return dict(step=x["step"], function="all of them" if every else f, wall=f"{c['wall']:,.2f}" if every else "",
+                    share=pct(min(1, c["wall"] / x["seconds"])) if every and x["seconds"] else "", cpu=f"{c['cpu']:,.2f}",
+                    cores=f"{c['cpu'] / c['wall']:,.1f}" if every and c["wall"] else "", values=f"{c['values']:,}",
+                    per_call=f"{c['values'] / c['calls']:,.0f}", us_per_value=f"{1e6 * c['cpu'] / c['values']:,.2f}")
+    spent = [row(x, f, c) for x in run.steps for f, c in sorted(x.get("compared", {}).items(), key=lambda fc: (fc[0] != "all", -fc[1]["cpu"]))
+             if c["cpu"] >= 0.05 or (f == "all" and c["wall"] >= 0.05)]
+    out += ["TIME IN COMPARISONS  (all of them: a step's wall seconds while any string function ran, its share of the step, and the cores "
+            "they kept busy on average (Python runs one at a time: about 1 means the others waited); per function: its CPU seconds, "
+            "from 0.05 s, the values it compared, per_call at a time, and CPU per value; the rest of a step is DuckDB's joins and sums)",
+            *table(pd.DataFrame(spent)), ""]
 
     lam, m = scaled_prior(run.scoring, run.n), run.scoring["er"]
     params = parameters(run.scoring)
