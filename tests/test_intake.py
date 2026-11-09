@@ -5,6 +5,7 @@ import math
 from pathlib import Path
 from dataclasses import replace
 
+import numpy as np
 import pandas as pd
 import pyarrow.parquet as pq
 import pytest
@@ -335,3 +336,34 @@ def test_a_load_says_how_far_it_has_read_and_the_workspace_keeps_how_long_it_too
     assert cli.main(["describe", "workspace", str(tmp_path / "w"), "--format", "json"]) == 0
     inputs = json.loads(capsys.readouterr().out.splitlines()[-1])["inputs"]
     assert [x["columns"] for x in inputs] == [2, 2, 2] and all(x["seconds"] >= 0 for x in inputs)  # this machine's pace, for the page's estimate of a run
+
+
+def test_a_parquet_file_read_by_column_reads_as_value_by_value_does(tmp_path, monkeypatch):
+    import pyarrow as pa
+    from er import intake
+    ref, spec = load_settings().paths["reference"], intake.InputSpec()
+    names = ["ヤマダタロウ", "ヤマダ　タロウ", " サトウ", "サトウ ", "　", "  ", "NULL", " NULL ", "－", "譁ｰ縺励＞", "abc\x01", "タ​ナカ", "a\tb",
+             "ﾔﾏﾀﾞ", "�", "", None, "東京" * 100, "①", "😀", "Ｓｕｚｕｋｉ", "plain", " plain", "１２.０", " ", "ア　"]  # every kind of value a reading treats apart
+    n = 6 * len(names)
+    table = pa.table({"id": [f"R{i}" for i in range(n)], "name": [names[i % len(names)] for i in range(n)],
+                      "amount": [["12345.0", "1.23457E+11", "100", "１２.０", "3.5", None][i % 6] for i in range(n)],
+                      "n": pa.array([i if i % 5 else None for i in range(n)], pa.int64()), "f": pa.array([[1.5, 2.0, None][i % 3] for i in range(n)]),
+                      "raw": pa.array([["ヤマダ".encode("cp932"), b"abc", None][i % 3] for i in range(n)], pa.binary()),
+                      "kind": pa.array([["法人", "個人", None][i % 3] for i in range(n)]).dictionary_encode()})
+    monkeypatch.setattr(intake, "CHUNK", 7)  # a first chunk to learn from, then many read by column
+
+    def read(where: str) -> tuple:
+        part = tmp_path / where
+        part.mkdir()
+        pq.write_table(table, part / "x.parquet")
+        r = intake.take(part, {part / "x.parquet": "x.parquet"}, spec, ref)
+        return ({k: v for k, v in r.items() if k != "seconds"}, pd.read_parquet(part / r["files"][0]["read"]),
+                pd.read_parquet(part / intake.PROPOSALS), pd.read_parquet(part / intake.UNREAD))
+    quick = read("quick")
+    monkeypatch.setattr(intake, "settled", lambda a, *_: (np.zeros(len(a), bool),) * 2)  # nothing settled in Arrow: every value read one by one
+    slow = read("slow")
+    assert {k: v for k, v in quick[0].items() if k != "files"} == {k: v for k, v in slow[0].items() if k != "files"}  # the same counts, fixes and proposals
+    assert [{k: v for k, v in x.items() if k not in ("sha256", "versions")} for x in quick[0]["files"]] == [{k: v for k, v in x.items() if k not in ("sha256", "versions")} for x in slow[0]["files"]]
+    for a, b in zip(quick[1:], slow[1:]):
+        pd.testing.assert_frame_equal(a, b)
+    assert quick[0]["decoded"]["utf-8"] > 0 and quick[0]["fixed"]["placeholders"] > 0  # both paths were taken

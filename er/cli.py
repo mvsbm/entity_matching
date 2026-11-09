@@ -937,7 +937,7 @@ COMMANDS: tuple[Command, ...] = (
             "bytes, placeholders and spreadsheet numbers fixed; a row whose fields don't line up, a garbled value or another "
             "encoding's reading proposed, for people to see and accept (accept repairs). Then describes it as describe "
             "records does, with the workspace's mapping. Its runs read what was read, so the original can move or go. "
-            "O(bytes) for the copy and the reading (about 15 s a million records), then the description's.",
+            "O(bytes) for the copy and the reading (about 7 s a million records from Parquet, 15 s from CSV), then the description's.",
             (INPUT, WORKSPACE), {**DESCRIBED, "loaded": "the part the records are in", "copied": "false: the workspace held them already"},
             "nayose load records customers.parquet --workspace workspaces/acme", load_records,
             show={"columns": ("column", "filled", "example"), "fields": ("field", "filled", "looks_right"), "fit": (), "features": (), "profile": (),

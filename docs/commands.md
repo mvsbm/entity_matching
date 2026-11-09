@@ -112,7 +112,7 @@ Copy a file into a workspace, read it as it comes, then describe it.
 nayose load records INPUT --workspace WORKSPACE [--format text|json]
 ```
 
-Copies the records into a part of the workspace's own (inputs/0001-customers/), unless it holds the same content already, and reads it as it comes (er.intake): a CSV, TSV or Parquet, each value in its own encoding; control bytes, placeholders and spreadsheet numbers fixed; a row whose fields don't line up, a garbled value or another encoding's reading proposed, for people to see and accept (accept repairs). Then describes it as describe records does, with the workspace's mapping. Its runs read what was read, so the original can move or go. O(bytes) for the copy and the reading (about 15 s a million records), then the description's.
+Copies the records into a part of the workspace's own (inputs/0001-customers/), unless it holds the same content already, and reads it as it comes (er.intake): a CSV, TSV or Parquet, each value in its own encoding; control bytes, placeholders and spreadsheet numbers fixed; a row whose fields don't line up, a garbled value or another encoding's reading proposed, for people to see and accept (accept repairs). Then describes it as describe records does, with the workspace's mapping. Its runs read what was read, so the original can move or go. O(bytes) for the copy and the reading (about 7 s a million records from Parquet, 15 s from CSV), then the description's.
 
 | Parameter | |
 |---|---|
