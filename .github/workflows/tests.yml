@@ -1,11 +1,12 @@
-# Every pull request, and main, runs the tests: lint, the page's script, the fast checks, whole runs, the page in a
-# browser, and the design checked against the code; and on Windows, set up as a person sets it up there. The job names
-# are what branch protection requires: keep them.
+# A pull request runs lint, the page's script and the fast checks, in minutes; its author runs every tier before pushing
+# (CONTRIBUTING.md). main, and a run started by hand on any branch, runs them all: whole runs, the page in a browser,
+# and on Windows, set up as a person sets it up there. The job names are what branch protection requires: keep them.
 name: tests
 on:
   push:
     branches: [main]  # a branch's pushes run as its pull request's
   pull_request:
+  workflow_dispatch:  # every tier on a branch, when a change needs them before it merges (Windows, the page)
 concurrency:
   group: tests-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}  # a newer push to a pull request makes this run moot; main's runs all finish
@@ -29,18 +30,20 @@ jobs:
       - run: ruff check .  # the rules in pyproject.toml [tool.ruff.lint]
       - run: sed -n '/<script>/,/<\/script>/p' er/ui.html | sed '1d;$d' > "$RUNNER_TEMP/page.js" && test -s "$RUNNER_TEMP/page.js" && node --check "$RUNNER_TEMP/page.js"  # the page's script, found and parsed
       - run: python -m pytest -n auto -m "not slow and not browser"  # seconds: a broken engine fails here first; -n auto: a test a core
-      - run: python -m pytest -n auto -m "slow and not browser"  # whole runs on a generated population
-      - if: matrix.python == '3.12'  # the page runs the same on either Python: one browser run is enough, on the job that is otherwise shorter
+      - if: github.event_name != 'pull_request'
+        run: python -m pytest -n auto -m "slow and not browser"  # whole runs on a generated population
+      - if: matrix.python == '3.12' && github.event_name != 'pull_request'  # the page runs the same on either Python: one browser run is enough
         uses: actions/cache@v4
         with:
           path: ~/.cache/ms-playwright
           key: playwright-${{ runner.os }}-${{ hashFiles('requirements.txt') }}
-      - if: matrix.python == '3.12'
+      - if: matrix.python == '3.12' && github.event_name != 'pull_request'
         run: python -m playwright install --with-deps chromium
-      - if: matrix.python == '3.12'
+      - if: matrix.python == '3.12' && github.event_name != 'pull_request'
         run: python -m pytest -n auto -m browser  # CI is set: a missing browser fails, never skips
   windows:  # the same tests on Windows, set up as a person sets it up there (setup_venv.ps1)
     name: pytest (windows)
+    if: github.event_name != 'pull_request'
     runs-on: windows-latest
     timeout-minutes: 40
     steps:

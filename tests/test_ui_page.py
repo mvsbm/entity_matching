@@ -49,23 +49,25 @@ def test_the_page_answers_once_per_key_shows_any_row_and_says_when_the_server_is
         return !!g.querySelector(".frow.offer") && !g.querySelector("[data-keepall]"); }""")
     page.click("[data-suggest='ID']")  # what the file's contents place there, shown, then kept
     page.click(".drop[data-slot='ID/Record ID'] [data-keep]")
-    page.wait_for_function("() => !document.querySelector('.colchip.ghost')")
+    page.wait_for_selector("#out:not([aria-busy]) details.fgroup", state="attached")  # shown at once; written, then the file described again
     assert 'id = "customer_no"' in columns.read_text(encoding="utf-8") and "Record ID needed" not in page.inner_text("details.fgroup[data-g='ID'] summary")
     page.evaluate("document.querySelector(\"details.fgroup[data-g='Name']\").open = true")  # opened: it stays open as the page redraws
     page.click(f".drop[data-slot='Name/Company name'] .colchip[data-col='{company}'] [data-x]")  # taken off
-    page.wait_for_function(f"() => !document.querySelector(\".drop[data-slot='Name/Company name'] .colchip[data-col='{company}']\")")
+    page.wait_for_selector("#out:not([aria-busy]) details.fgroup", state="attached")
+    assert not page.query_selector(f".drop[data-slot='Name/Company name'] .colchip[data-col='{company}']")
     assert load_settings(columns=columns).columns["company_name"] == () and page.query_selector("details.fgroup[data-g='Name'][open]")
     page.evaluate(f"""() => {{  // dragged back from the file's columns: the drag as the browser fires it
         const dt = new DataTransfer(), from = document.querySelector(".tray .colchip[data-col='{company}']");
         const to = document.querySelector(".drop[data-slot='Name/Company name']");
         from.dispatchEvent(new DragEvent("dragstart", {{dataTransfer: dt, bubbles: true}}));
         to.dispatchEvent(new DragEvent("drop", {{dataTransfer: dt, bubbles: true, cancelable: true}})); }}""")
-    page.wait_for_selector(f".drop[data-slot='Name/Company name'] .colchip[data-col='{company}']")
+    page.wait_for_selector(f"#out:not([aria-busy]) .drop[data-slot='Name/Company name'] .colchip[data-col='{company}']")
     assert load_settings(columns=columns).columns["company_name"] == ((company,),)
     page.click("[data-add='Name']")  # a feature of their own: named, what it is, its script
     page.fill(".addform input", "Kanji name")
     page.select_option(".addform select >> nth=1", "kanji")
     page.click(".addform .btn.filled")
+    assert page.get_attribute("#out", "inert") is not None and page.inner_text(".addform .btn.filled") == "Adding…"  # the page waits for its new shape
     page.wait_for_selector(".drop[data-slot='Name/Kanji name/Family name']")  # with its parts
     assert "person_name_2" in columns.read_text(encoding="utf-8") and "kanji" in page.inner_text(".frow:has(.drop[data-slot='Name/Kanji name'])")
     page.click("[data-remove='Name/Kanji name']")
@@ -217,6 +219,93 @@ def test_the_page_answers_once_per_key_shows_any_row_and_says_when_the_server_is
     assert lost["event"] == "error" and lost["error"].startswith("Lost the server")
     page.evaluate("() => refresh()")  # the stepper as it was, the loss said once above the page
     assert page.is_visible("#lost") and page.inner_text("#nav") == nav and "Lost the server" not in page.inner_text("#screen")
+
+
+def test_step_2_shows_each_change_at_once_writes_them_in_turn_and_a_refused_one_shows_the_workspace(ui_page, tmp_path, population):
+    from er import cli
+    s, p, g = population
+    named = {c: f"c{i:02d}" for i, c in enumerate(g.df.columns)}  # names the mapping doesn't know: every field placed from its values
+    g.df.rename(columns=named).to_parquet(tmp_path / "theirs.parquet", index=False)
+    home, ws = tmp_path / "workspaces", tmp_path / "workspaces" / "w"
+    assert cli.main(["create", "workspace", "w", "--home", str(home), "--format", "json"]) == 0
+    assert cli.main(["load", "records", str(tmp_path / "theirs.parquet"), "--workspace", str(ws), "--format", "json"]) == 0
+    page, server, httpd = ui_page(str(ws), str(home), viewport={"width": 1280, "height": 900})
+    posted, columns = [], lambda: load_settings(columns=ws / "columns.toml").columns
+    page.on("request", lambda r: r.method == "POST" and posted.append(json.loads(r.post_data)["command"]))
+    saved = lambda: page.wait_for_selector("#out:not([aria-busy]) details.fgroup", state="attached", timeout=60_000)
+    page.click(".navitem[data-screen=columns]")
+    page.click("#out [data-suggest='*']", timeout=60_000)
+    page.click("#out [data-keepall='*']")  # every suggestion kept, in one write
+    saved()
+    assert not page.query_selector("#out .banner.bad, #out .need, .drop[data-slot] .colchip.ghost") and columns()["phone"]
+    page.evaluate("document.querySelectorAll('details.fgroup').forEach((g) => g.open = true)")
+    slot, phone = ".drop[data-slot='Phone/Phone']", columns()["phone"][0][0]
+    other = next(c for c in named.values() if c != phone)
+    posted.clear()
+    page.click(f"{slot} .colchip.in")  # a column clicked: the file's columns in a list, its own chosen
+    assert page.eval_on_selector(f"{slot} select", "s => s.value") == phone
+    page.click("h1")  # left without a pick: the column as it was, nothing written
+    assert page.locator(f"{slot} .colchip.in[data-col='{phone}']").count() == 1 and not posted
+    page.click(f"{slot} .colchip.in")
+    page.select_option(f"{slot} select", other)
+    assert page.locator(f"{slot} .colchip.in[data-col='{other}']").count() == 1 and page.get_attribute("#out", "aria-busy") == "true"  # shown before it is written
+    page.click(f"{slot} .hole")  # +: another column, read where the ones before are empty
+    page.select_option(f"{slot} select", phone)
+    saved()
+    assert columns()["phone"] == ((other,), (phone,)) and posted[-1] == "describe records" and "describe workspace" not in posted
+    page.click(f"{slot} .colchip.in[data-col='{other}'] [data-x]")
+    page.click(f"{slot} .colchip.in[data-col='{phone}'] [data-x]")  # two quick changes: written in turn
+    saved()
+    assert columns()["phone"] == () and page.inner_text(f"{slot} .hole") == "choose a column"
+    page.click("details.tray > summary")
+    page.locator(f"details.tray .colchip[data-col='{phone}']").drag_to(page.locator(f".frow:has({slot}) .flab"))  # by mouse, onto the row's name
+    saved()
+    assert columns()["phone"] == ((phone,),)
+    page.focus(f"{slot} .colchip.in [data-x]")
+    page.keyboard.press("Enter")  # × by keyboard: taken off, no list
+    saved()
+    assert columns()["phone"] == () and not page.query_selector(f"{slot} select")
+    page.click("#loaded summary")  # another file, and a change made while it loads: shown as written, never the reading from before it
+    g.df.rename(columns=named).head(50).to_parquet(tmp_path / "more.parquet", index=False)
+    page.fill("#cin", str(tmp_path / "more.parquet"))
+    page.click("#load")
+    page.click(f"{slot} .hole")
+    page.select_option(f"{slot} select", phone)
+    page.wait_for_function("() => document.querySelectorAll('#files .tag').length === 2 && !document.querySelector('#out[aria-busy]')", timeout=60_000)
+    page.wait_for_timeout(1500)
+    assert columns()["phone"] == ((phone,),) and page.locator(f"{slot} .colchip.in[data-col='{phone}']").count() == 1
+    assert cli.main(["set", "feature", f"Phone/Phone=GONE,{phone}", "--workspace", str(ws), "--format", "json"]) == 0  # first, a column the file lacks
+    reopen = lambda: (page.evaluate("go('columns')"), page.wait_for_selector(f"{slot} .colchip.in", state="attached", timeout=60_000),
+                      page.evaluate("document.querySelectorAll('details.fgroup').forEach((g) => g.open = true)"))
+    reopen()
+    page.click(f"{slot} .colchip.in")
+    page.select_option(f"{slot} select", other)
+    saved()
+    assert columns()["phone"] == ((other,),)  # the column clicked, replaced; the one the file lacks gives way
+    page.click("[data-add='Name']")
+    posted.clear()
+    page.click("[data-cancel]")
+    assert not page.query_selector(".addform") and page.query_selector("[data-add='Name']") and not posted  # nothing to undo: nothing runs
+    assert cli.main(["add", "feature", "Name/Kanji name", "--type", "person name", "--script", "kanji", "--workspace", str(ws), "--format", "json"]) == 0
+    page.evaluate("go('columns')")
+    page.wait_for_selector(".drop[data-slot='Name/Kanji name'] .hole", state="attached")
+    page.evaluate("document.querySelector(\"details.fgroup[data-g='Name']\").open = true")
+    assert cli.main(["remove", "feature", "Name/Kanji name", "--workspace", str(ws), "--format", "json"]) == 0  # gone since the page showed it
+    page.click(".drop[data-slot='Name/Kanji name'] .hole")
+    page.select_option(".drop[data-slot='Name/Kanji name'] select", other)
+    saved()
+    assert "no feature Name/Kanji name" in page.inner_text("#out .banner.bad") and not page.query_selector(".drop[data-slot='Name/Kanji name']")  # refused: why, and the workspace as it is
+    assert cli.main(["set", "feature", f"Phone/Phone={phone},{other}", "--workspace", str(ws), "--format", "json"]) == 0
+    reopen()
+    page.evaluate(f"""() => {{  // two changes, and the page left while the first is written: the second is still written
+        document.querySelector("{slot} .colchip.in[data-col='{phone}'] [data-x]").click();
+        document.querySelector("{slot} .colchip.in[data-col='{other}'] [data-x]").click();
+        setTimeout(() => go("run"), 20); }}""")
+    for _ in range(300):
+        if columns()["phone"] == ():
+            break
+        page.wait_for_timeout(100)
+    assert columns()["phone"] == ()
 
 
 def test_step_2_shows_what_the_reader_proposes_and_a_click_accepts_one_kind(ui_page, tmp_path, population):
@@ -454,7 +543,7 @@ def test_the_page_keeps_its_step_through_back_reload_and_a_run_and_says_what_was
     hole.focus()
     page.keyboard.press("Enter")  # by keyboard: the file's columns in a list
     page.select_option(".drop select", phone)
-    page.wait_for_function("() => !document.querySelector('.drop select')", timeout=30_000)
+    page.wait_for_selector("#out:not([aria-busy]) details.fgroup", state="attached", timeout=30_000)
     assert phone in (tmp_path / "workspaces" / "w" / "columns.toml").read_text(encoding="utf-8").split("phone =", 1)[1].split("\n", 1)[0]  # saved
 
 

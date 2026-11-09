@@ -448,6 +448,10 @@ dialog:has(.dlg-body.wide) { width: min(960px, calc(100vw - 32px)); }
 .drop .colchip.over::after { content: "+ joined to it"; }  /* what a drop will do, said before it is let go */
 .drop.over:has(.colchip):not(:has(.colchip.over))::after { content: "used where these are empty"; }
 .drop .hole { color: var(--faint); border: 1px dashed var(--outline); border-radius: 13px; padding: 3px 10px; font-size: 12px; cursor: pointer; }
+.drop .colchip.in { cursor: pointer; } .frow:has(.drop.over) { background: var(--primary-soft); }
+.tray { position: sticky; bottom: 0; z-index: 2; } .tray[open] .chips { max-height: 30vh; overflow: auto; }  /* in reach of every row while dragging */
+body.term-open .tray { bottom: 260px; }  /* above the command drawer */
+#out[inert] .fgroup { opacity: .6; } #out[aria-busy] .colhead h3::after { content: "saving…"; margin-left: 8px; color: var(--faint); font-size: 12px; font-weight: 400; }
 .drop .else, .drop .plus { color: var(--faint); font-size: 11px; }
 .drop select { font: inherit; font-size: 12px; padding: 3px 6px; border: 1px solid var(--outline); border-radius: 6px; background: var(--surface); color: var(--ink); }
 .frow .fex { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; } .frow .fwarn { color: var(--warn); font-size: 12px; white-space: nowrap; }
@@ -1377,7 +1381,7 @@ function features(d, view) {
   const ADDABLE = ["Name"];  // the groups a feature can be added to: one compared with the ones beside it (add feature)
   const meter = (v) => v === null || v === undefined ? "" : `<span class="meter"><i style="width:${Math.round(v * 100)}%"></i></span>${pct(v)}`;
   const chipOf = (c, from, alt) => `<span class="colchip ${from ? "in" : used.has(c) ? "used" : ""} ${info[c] ? "" : "gone"}" draggable="true" data-col="${esc(c)}"
-    ${from ? `data-from="${esc(from)}" data-alt="${alt}"` : ""} title="${info[c] ? `${pct(info[c].filled)} filled · ${esc(info[c].example ?? "")}` : "not in this file"}">${esc(c)}${
+    ${from ? `data-from="${esc(from)}" data-alt="${alt}" tabindex="0" role="button"` : ""} title="${info[c] ? `${pct(info[c].filled)} filled · ${esc(info[c].example ?? "")}` : "not in this file"}">${esc(c)}${
       from ? `<button class="x" data-x aria-label="Take ${esc(c)} off">×</button>` : ""}</span>`;
   const needs = (x) => (x.field && d.needed.every.includes(x.field) && lost(x.field)) ||
     (x.type === "person name" || x.field === "company_name") && d.needed.one_of.some((g) => g.every(lost));
@@ -1387,7 +1391,8 @@ function features(d, view) {
     const g = shown && ghost[path];
     return `<div class="frow" data-depth="${depth}"><span class="flab">${depth ? (last ? "└ " : "├ ") : ""}${esc(x.name)}${x.script ? ` <span class="tag">${esc(x.script)}</span>` : ""}${
         needs(x) ? ' <b class="need">needed</b>' : ""}${x.added && !depth ? `<button class="x" data-remove="${esc(path)}" aria-label="Remove ${esc(x.name)}">✕</button>` : ""}</span>
-      <span class="drop" data-slot="${esc(path)}">${chips}${alts.length ? "" : '<span class="hole" tabindex="0" role="button">drop a column</span>'}${
+      <span class="drop" data-slot="${esc(path)}">${chips}${!alts.length ? '<span class="hole" tabindex="0" role="button">choose a column</span>'
+        : depth || x.field === "id" ? "" : `<span class="hole" tabindex="0" role="button" title="another column, read where these are empty" aria-label="Another column for ${esc(x.name)}">+</span>`}${
         g ? `<span class="colchip ghost" title="${esc(g.why)}">✦ ${esc(g.column)}<button class="x keep" data-keep='${esc(JSON.stringify([path, g.column]))}' aria-label="Keep it">✓</button></span>` : ""}</span>
       <span class="fstat">${meter(s.filled)}</span><span class="fex faint">${esc(s.example ?? "")}</span>
       <span class="fwarn">${s.looks_right !== null && s.looks_right !== undefined && s.looks_right < FEW ? `⚠ ${pct(s.looks_right)} look right` : ""}</span></div>`;
@@ -1605,55 +1610,114 @@ const SCREENS = {
         (e) => e.event === "error" ? $("repairs").insertAdjacentHTML("afterbegin", banner(e)) : draw(), null, {about: `${fileName(r.part)}: ${REPAIR[b.dataset.accept][2]}`, extra: {kind: b.dataset.accept, part: r.part}}));
     };
     const view = {toggled: new Map(), ghosts: new Set()};  // groups opened or closed, groups showing their suggestions: kept as the page redraws
-    const draw = async (d) => {  // d: a description just made; else the file loaded last is described
-      const [w] = await Promise.all([run("columns", "describe workspace"), flowOf("columns", $("flow"))]);
-      const files = w.inputs || [], last = files[files.length - 1];
-      $("files").innerHTML = files.map((f) => `<span class="tag" title="${esc(f.path)}">${esc(nameOf(f))} · ${bytes(f.bytes)} · ${f.read ? "matched" : "not run yet"}</span>`).join("");
-      if (d === undefined && last) d = await run("columns", "describe records", {loaded: last.path});
-      if (!d) return;
+    let w = {}, last = null, edits = 0, writes = Promise.resolve(), refused = null, held = null;  // the workspace, its file loaded last; changes, one after another
+    const queue = (job) => (writes = writes.then(job).catch((err) => console.error(err)));  // reads and writes in turn: a reading never misses a write before it
+    const show = (d) => {
+      $("out").inert = false;
+      held = null;
       if (d.event !== "error" && last) answer(d, w, last);
       $("out").innerHTML = d.event === "error" ? banner(d) : features(d, view);
       if (d.event !== "error") wire(d);
+      if (refused) { $("out").insertAdjacentHTML("afterbegin", banner(refused)); refused = null; }  // why, above the workspace as it is
     };
-    const wire = (d) => {  // every change is one set feature: the slots it touches, with their columns as they become
+    const draw = (d) => {  // d: a description just made; else the file loaded last is described
+      const at = edits;
+      return queue(async () => {
+        [w] = await Promise.all([run("columns", "describe workspace"), flowOf("columns", $("flow"))]);
+        const files = w.inputs || [];
+        last = files[files.length - 1];
+        $("files").innerHTML = files.map((f) => `<span class="tag" title="${esc(f.path)}">${esc(nameOf(f))} · ${bytes(f.bytes)} · ${f.read ? "matched" : "not run yet"}</span>`).join("");
+        if (d === undefined && last) d = await run("columns", "describe records", {loaded: last.path});
+        if (d && at === edits) show(d);  // else a change since: its own reading shows it
+      });
+    };
+    const reread = async () => {  // the file described again, shown unless the page changed since
+      const mine = edits, d = await run("columns", "describe records", {loaded: last.path});
+      if (mine !== edits) return;
+      $("out").removeAttribute("aria-busy");
+      if (!$("out").inert && $("out").querySelector(".addform, .drop select")) held = d;  // shown once the person has chosen or named
+      else show(d);
+    };
+    const commit = (command, args) => {  // a change, written after the ones before it; the file described again after the last
+      const mine = ++edits, words = argsFor("columns", command, args);
+      held = null;  // older than this change
+      $("out").setAttribute("aria-busy", "true");
+      queue(async () => {
+        const e = await runOnce(command, words);  // sent even if the page is left: the page showed it made
+        if (e.event === "error") refused = e;  // said once the page shows what the workspace holds
+        if (mine === edits) await reread();
+      });
+    };
+    const wire = (d) => {  // a change shows at once, then is written: one set feature, the slots it touches with their columns as they become
       const alts = Object.fromEntries(d.slots.map((x) => [x.feature, x.sources.map((a) => [...a])])), inFile = new Set(d.columns.map((c) => c.column));
       const single = new Set(d.features.flatMap((g) => g.features.filter((f) => f.field === "id").map((f) => `${g.group}/${f.name}`)));  // one column, no fallback
-      const save = async (paths) => {
-        const e = await run("columns", "set feature", {mapping: [...new Set(paths)].map((p) => `${p}=${alts[p].filter((a) => a.length).map((a) => a.join("+")).join(",")}`)});
-        if (e.event === "error") $("out").insertAdjacentHTML("afterbegin", banner(e)); else draw();
+      const redraw = (x) => { $("out").innerHTML = features(x, view); wire(x); };
+      const save = (paths) => {
+        paths = [...new Set(paths)].filter((p) => alts[p]);
+        const now = new Set(paths), mapped = (p) => alts[p].filter((a) => a.length), taken = new Set(paths.flatMap((p) => mapped(p).flat()));
+        const free = (x) => !now.has(x.feature) && !taken.has(x.column);  // a suggestion for a slot just filled, or of a column just placed: gone
+        redraw({...d, placements: d.placements.filter(free), offers: (d.offers || []).filter(free),  // its numbers once the file is described again
+                slots: d.slots.map((s) => now.has(s.feature) ? {...s, sources: mapped(s.feature), filled: null, example: null, looks_right: null,
+                  alternatives: mapped(s.feature).map((a) => ({columns: a, found: a.every((c) => inFile.has(c))}))} : s)});
+        commit("set feature", {mapping: paths.map((p) => `${p}=${mapped(p).map((a) => a.join("+")).join(",")}`)});
       };
-      const take = (from, col) => { alts[from] = alts[from].map((a) => a.filter((c) => c !== col)).filter((a) => a.length); };
+      const change = (command, args) => { $("out").inert = true; commit(command, args); };  // a feature added or removed: the page waits for its new shape
+      const here = (slot) => alts[slot].filter((a) => a.length && a.every((c) => inFile.has(c)));  // as the page shows it: data-alt counts these
+      const take = (from, col) => {  // in place: an alternative keeps its identity as a column leaves it
+        alts[from].forEach((a) => a.includes(col) && a.splice(a.indexOf(col), 1));
+        alts[from] = alts[from].filter((a) => a.length);
+      };
       const place = (to, col, join, from) => {  // into a slot: a fallback; onto a chip: joined to it; columns this file lacks give way
+        const onto = join === null ? undefined : here(to)[join];  // found before the column leaves where it was
+        if (from === to && onto?.includes(col)) return;  // dropped where it is
         if (from) take(from, col);
-        alts[to] = single.has(to) ? [] : alts[to].filter((a) => a.length && a.every((c) => inFile.has(c)));
-        join !== null && alts[to][join] ? alts[to][join].push(col) : alts[to].push([col]);
+        alts[to] = single.has(to) ? [] : here(to);
+        alts[to].includes(onto) ? onto.push(col) : alts[to].push([col]);
         save([to, ...(from && from !== to ? [from] : [])]);
       };
       el.querySelectorAll(".colchip[draggable]").forEach((c) => c.ondragstart = (e) => e.dataTransfer.setData("text/plain", JSON.stringify({col: c.dataset.col, from: c.dataset.from || null})));
-      el.querySelectorAll(".drop, .drop .colchip").forEach((t) => {
-        t.ondragover = (e) => { e.preventDefault(); t.classList.add("over"); };
-        t.ondragleave = () => t.classList.remove("over");
+      el.querySelectorAll(".frow:has(.drop[data-slot]), .drop[data-slot] .colchip.in").forEach((t) => {  // anywhere on a row; onto a chip: joined to it
+        const mark = t.matches(".frow") ? t.querySelector(".drop") : t;
+        t.ondragover = (e) => { e.preventDefault(); mark.classList.add("over"); };
+        t.ondragleave = () => mark.classList.remove("over");
         t.ondrop = (e) => {
-          e.preventDefault(); e.stopPropagation();
-          const {col, from} = JSON.parse(e.dataTransfer.getData("text/plain")), slot = t.closest(".drop").dataset.slot;
-          place(slot, col, t.classList.contains("colchip") ? Number(t.dataset.alt) : null, from);
+          e.preventDefault(); e.stopPropagation(); mark.classList.remove("over");
+          let moved = null;
+          try { moved = JSON.parse(e.dataTransfer.getData("text/plain")); } catch { /* text or a file from elsewhere */ }
+          if (typeof moved?.col !== "string") return;  // not one of the file's columns
+          place(t.closest(".frow").querySelector(".drop").dataset.slot, moved.col, t.matches(".colchip") ? Number(t.dataset.alt) : null, moved.from);
         };
       });
       el.querySelectorAll("[data-x]").forEach((b) => b.onclick = () => { const c = b.closest(".colchip"); take(c.dataset.from, c.dataset.col); save([c.dataset.from]); });
-      el.querySelectorAll(".hole").forEach((h) => {  // without dragging: the file's columns in a list, by mouse or keyboard
-        h.onclick = () => {
-          const pick = document.createElement("select"), slot = h.closest(".drop").dataset.slot;  // read before the list takes its place
-          pick.setAttribute("aria-label", `A column for ${slot}`);
-          pick.innerHTML = `<option value="">pick a column</option>` + d.columns.map((c) => `<option>${esc(c.column)}</option>`).join("");
-          pick.onchange = () => pick.value && place(slot, pick.value, null, null);
-          h.replaceWith(pick);
-          pick.focus();
-        };
-        h.onkeydown = (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); h.click(); } };
+      const choose = (spot, label, pick) => {  // without dragging: the file's columns in a list, in place of what was clicked, opened at once
+        const list = document.createElement("select");
+        let picked = false;
+        list.setAttribute("aria-label", label);
+        list.innerHTML = `<option value="">pick a column</option>` + d.columns.map((c) => `<option value="${esc(c.column)}"${c.column === spot.dataset.col ? " selected" : ""}>${esc(c.column)}</option>`).join("");
+        list.onchange = () => { if (list.value && list.value !== spot.dataset.col) { picked = true; pick(list.value); } };
+        list.onblur = () => picked || (held ? show(held) : list.replaceWith(spot));  // left as it was, or as described since
+        spot.replaceWith(list);
+        list.focus();
+        try { list.showPicker(); } catch { /* a browser without it: the list, focused, opens on the next click or key */ }
+      };
+      const byKey = (x) => { x.onkeydown = (e) => { if (e.target === x && (e.key === "Enter" || e.key === " ")) { e.preventDefault(); x.click(); } }; };  // × inside keeps its own keys
+      el.querySelectorAll(".hole").forEach((h) => {
+        const slot = h.closest(".drop").dataset.slot;
+        h.onclick = () => choose(h, `A column for ${slot}`, (col) => place(slot, col, null, null));
+        byKey(h);
+      });
+      el.querySelectorAll(".drop[data-slot] .colchip.in").forEach((c) => {  // a column clicked: another in its place
+        const slot = c.dataset.from, i = Number(c.dataset.alt), was = c.dataset.col;
+        c.onclick = (e) => e.target.closest("[data-x]") || choose(c, `In place of ${was}`, (col) => {
+          alts[slot] = here(slot);
+          alts[slot][i] = alts[slot][i].map((x) => x === was ? col : x);
+          save([slot]);
+        });
+        byKey(c);
       });
       el.querySelectorAll("[data-keep]").forEach((b) => b.onclick = () => { const [slot, col] = JSON.parse(b.dataset.keep); place(slot, col, null, null); });
       el.querySelectorAll("[data-keepall]").forEach((b) => b.onclick = () => {
-        const mine = d.placements.filter((x) => b.dataset.keepall === "*" || x.feature.startsWith(`${b.dataset.keepall}/`));
+        const mine = d.placements.filter((x) => alts[x.feature] && (b.dataset.keepall === "*" || x.feature.startsWith(`${b.dataset.keepall}/`)));
         mine.forEach((x) => { alts[x.feature] = [[x.column]]; });
         save(mine.map((x) => x.feature));
       });
@@ -1664,12 +1728,10 @@ const SCREENS = {
         g === "*" ? (view.ghosts.size ? view.ghosts.clear() : d.features.filter((x) => has(x.group)).forEach((x) => view.ghosts.add(x.group))) :
           view.ghosts.has(g) ? view.ghosts.delete(g) : view.ghosts.add(g);
         view.ghosts.forEach((x) => view.toggled.set(x, true));  // a group showing what it could hold is open
-        $("out").innerHTML = features(d, view);
-        wire(d);
+        redraw(d);
       });
       el.querySelectorAll("details.fgroup").forEach((g) => g.ontoggle = () => view.toggled.set(g.dataset.g, g.open));
       el.querySelectorAll("details.tray").forEach((t) => t.ontoggle = () => { view.tray = t.open; });
-      const change = async (command, args) => { const e = await run("columns", command, args); if (e.event === "error") $("out").insertAdjacentHTML("afterbegin", banner(e)); else draw(); };
       el.querySelectorAll("[data-remove]").forEach((b) => b.onclick = () => change("remove feature", {path: b.dataset.remove}));
       el.querySelectorAll("[data-offer]").forEach((b) => b.onclick = () => { const x = JSON.parse(b.dataset.offer); change("add feature", {path: x.feature, type: x.type, script: x.script, column: x.column}); });
       el.querySelectorAll("[data-add]").forEach((b) => b.onclick = () => {  // one line, in place: its name, what it is, its script
@@ -1681,16 +1743,20 @@ const SCREENS = {
           <span class="faint addnote">compared beside the kana name; its steps were tuned on kana</span>`;
         const [name, kind, script] = row.querySelectorAll("input, select");
         name.focus();
-        row.querySelector(".btn.filled").onclick = () => name.value.trim() ? change("add feature", {path: `${b.dataset.add}/${name.value.trim()}`, type: kind.value, script: script.value}) : name.focus();
-        name.onkeydown = (e) => { if (e.key === "Enter") row.querySelector(".btn.filled").click(); };
-        row.querySelector("[data-cancel]").onclick = () => draw();
+        row.querySelector(".btn.filled").onclick = (e) => {
+          if (!name.value.trim()) return name.focus();
+          e.target.textContent = "Adding…";
+          change("add feature", {path: `${b.dataset.add}/${name.value.trim()}`, type: kind.value, script: script.value});
+        };
+        name.onkeydown = (e) => { if (e.key === "Enter" && !e.isComposing) row.querySelector(".btn.filled").click(); };  // not the Enter that ends a kana-to-kanji conversion
+        row.querySelector("[data-cancel]").onclick = () => held ? show(held) : redraw(d);
       });
     };
     const wireLoad = () => {
       $("load").onclick = async () => {
         const input = $("cin").value.trim();
         if (!input) { $("cin").focus(); return; }
-        const b = $("load"), was = b.innerHTML;
+        const b = $("load"), was = b.innerHTML, at = edits;
         b.disabled = true; b.textContent = "Reading…";  // a big file takes seconds: read as it comes
         const e = await run("columns", "load records", {input});
         if (b.isConnected) { b.disabled = false; b.innerHTML = was; }
@@ -1700,7 +1766,7 @@ const SCREENS = {
           return;
         }
         $("cin").value = "";
-        draw(e);
+        draw(at === edits ? e : undefined);  // a change made while it loaded: the file described after it
         refresh();
       };
       $("cin").onkeydown = (e) => { if (e.key === "Enter") $("load").click(); };
