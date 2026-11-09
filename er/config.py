@@ -4,7 +4,7 @@ import json
 import math
 import re
 import tomllib
-from collections.abc import Iterable, Iterator, Mapping
+from collections.abc import Callable, Iterable, Iterator, Mapping
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Literal, get_args
@@ -414,11 +414,14 @@ class TrustRule:
     watch: int = 20                           # spot-checks a run of the pairs above the line
     line: float | None = None
 
-    def below(self) -> tuple[float, float] | None:  # the range people check next: [the next step down, the line); None at the last
+    def below(self, holds: Callable[[float, float], bool] | None = None) -> tuple[float, float] | None:
+        """The range people check next: [a step down, the line); None at the last. With `holds` (whether [step, line)
+        holds a link), the first step whose range holds one: lowering the line past ranges that hold none merges
+        nothing, so people never wait on an empty range."""
         if self.line is None:
             return None
-        lower = [s for s in self.steps if s < self.line]
-        return (max(lower), self.line) if lower else None
+        lower = sorted((s for s in self.steps if s < self.line), reverse=True)
+        return next(((s, self.line) for s in lower if holds is None or holds(s, self.line)), (lower[-1], self.line) if lower else None)
 
 
 @dataclass(frozen=True, kw_only=True)

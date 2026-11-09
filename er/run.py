@@ -72,7 +72,7 @@ from er.io import code_version, config_hash, markdown, replace_text
 from er.kind import KIND_COLUMNS, NAME_MODEL, classifier as kind_classifier, kind_review_sheet, merge_answers
 from er.match import ELSE, fs_settings, named_sql, read_by, refreshed_u, review_floor, rule_edges, score_fs, scored_u, train_fs, u_basis
 from er.probe import missed
-from er.report import applied, qa, report_text, review_sheet, scored_again
+from er.report import applied, qa, report_text, review_sheet, scored_again, trust_state
 from er.settings import SPECIAL, Settings, fit_to_file, present_fields
 from er.source import answers, decisions, file_facts, filled, known, open_source, suggest
 from er.standardize import prepare
@@ -859,8 +859,10 @@ class Run:
     def draw(self, out: Path, count: int) -> "Run":
         """`count` more audit rows on the review sheet of the run in `out`: links, the model's and the rules', that
         people have not decided and the sheet does not hold, spread evenly over 1-bit weight bands, a rule's pairs
-        scored as the model would score them. Audits of every kind of link say how few false ones are left. Under the
-        lock, and staged. O(N + (R + count)·K + E) + O(sheet)."""
+        scored as the model would score them. Audits of every kind of link say how few false ones are left. With a trust
+        line, first the next range's pairs people still have to check (trust_state), from the links the run kept for
+        them, while the sheet holds fewer: a sheet written before, or a range just reached, fills without a run. Under
+        the lock, and staged. O(N + (R + count)·K + E) + O(sheet)."""
         t, l, r, sheet = time.perf_counter(), q(self.l), q(self.r), out / "review.parquet"
         read = lambda name: f"read_parquet({lit(out / name)}, union_by_name = true)"
         with folder.run_lock(out):
@@ -881,16 +883,29 @@ class Run:
                 SELECT {l}, {r}, floor(match_weight) AS band, row_number() OVER (PARTITION BY floor(match_weight) ORDER BY hash({l}, {r})) AS k
                 FROM matches m WHERE NOT EXISTS (SELECT 1 FROM ({' UNION ALL '.join(asked)}) a WHERE a.{l} = m.{l} AND a.{r} = m.{r}))
                 ORDER BY k, band LIMIT {int(count)}""")
-            drawn = self._count("er_drawn")
+            self.con.execute(f"CREATE OR REPLACE TABLE er_pick AS SELECT d.{l}, d.{r}, m.sources, 'audit' AS why FROM er_drawn d JOIN matches m USING ({l}, {r})")
+            state, sheet_now = trust_state(self.con, out, self.pipeline, self.uid), pd.read_parquet(sheet)
+            if state and state["next"] and not state["false"]:  # the range people check next, filled to what they still need
+                lo, hi = state["next"]["down_to"], state["next"]["up_to"]
+                waiting = (sheet_now["why"] == "decide") & sheet_now["decision"].isna() if "why" in sheet_now else []
+                want = max(0, state["needed"] - state["checked"] - int(sum(waiting)))
+                left = ([f"SELECT {l}, {r}, match_weight, sources FROM {read('proposed/*.parquet')}"] if any((out / "proposed").glob("*.parquet")) else []) + \
+                       [f"SELECT {l}, {r}, match_weight, rule AS sources FROM {read('rule_kept/*.parquet')} WHERE NOT merged"]  # what the run left to people
+                below = f" AND x.match_weight < {bits(hi)}" if hi is not None else ""
+                self.con.execute(f"""INSERT INTO er_pick SELECT {l}, {r}, sources, 'decide' FROM (SELECT DISTINCT ON ({l}, {r}) * FROM ({' UNION ALL '.join(left)})) x
+                    WHERE x.match_weight >= {bits(lo)}{below} AND NOT EXISTS (SELECT 1 FROM ({' UNION ALL '.join(asked)}) a WHERE a.{l} = x.{l} AND a.{r} = x.{r})
+                    ORDER BY hash(x.{l}, x.{r}) LIMIT {want}""")
+            drawn = self._count("er_pick")
             if drawn:
-                self.scoring = scored_again(self.con, self.db, out, self.uid, "er_drawn", "er_drawn_scores")
+                self.scoring = scored_again(self.con, self.db, out, self.uid, "er_pick", "er_drawn_scores")
                 self.con.execute("CREATE OR REPLACE TABLE records AS SELECT * FROM er_touched")  # what review_sheet shows of each record
                 names = {c["output_column_name"] for c in self.scoring["comparisons"]}  # the comparisons the run could make
                 m = self.pipeline.fs.model
                 self.pipeline = replace(self.pipeline, fs=replace(self.pipeline.fs, model=replace(m, comparisons=tuple(c for c in m.comparisons if c.name in names))))
-                pairs = self.con.execute(f"SELECT s.*, m.sources, 'audit' AS why FROM er_drawn_scores s JOIN matches m USING ({l}, {r}) ORDER BY s.match_weight").df()
-                folder.stage(self.con, out, [], frames=[(pd.concat([pd.read_parquet(sheet), review_sheet(self, pairs)], ignore_index=True), sheet)])
-        self._done("draw", "O(N + (R + count)·K + E)", f"O({self._count('er_rule'):,} rule pairs + {self._count('matches'):,} links)", t, drawn=drawn)
+                pairs = self.con.execute(f"SELECT s.*, p.sources, p.why FROM er_drawn_scores s JOIN er_pick p USING ({l}, {r}) ORDER BY p.why DESC, s.match_weight DESC").df()
+                folder.stage(self.con, out, [], frames=[(pd.concat([sheet_now, review_sheet(self, pairs)], ignore_index=True), sheet)])
+        decide = self._count("er_pick WHERE why = 'decide'")
+        self._done("draw", "O(N + (R + count)·K + E)", f"O({self._count('er_rule'):,} rule pairs + {self._count('matches'):,} links)", t, drawn=drawn - decide, decide=decide)
         return self
 
     @locked

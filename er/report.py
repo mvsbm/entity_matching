@@ -273,7 +273,8 @@ def trust_sheet(run: "Run", out: Path | None = None) -> tuple[pd.DataFrame, pd.D
                 QUALIFY row_number() OVER (PARTITION BY {l}, {r} ORDER BY sources) = 1"""
     open_ = f"NOT EXISTS (SELECT 1 FROM er_decisions d WHERE d.{l} = x.{l} AND d.{r} = x.{r})"
     decide = pd.DataFrame()
-    if (span := trust.below()) is not None:
+    holds = lambda lo, hi: con.execute(f"SELECT count(*) > 0 FROM ({links}) x WHERE x.match_weight >= {bits(lo)} AND x.match_weight < {bits(hi)}").fetchall()[0][0]
+    if (span := trust.below(holds)) is not None:
         within = f"x.match_weight >= {bits(span[0])} AND x.match_weight < {bits(span[1])}"
         done, false = con.execute(f"""SELECT count(*) FILTER (WHERE NOT {open_}), count(*) FILTER (WHERE EXISTS (SELECT 1 FROM er_decisions d
             WHERE d.{l} = x.{l} AND d.{r} = x.{r} AND d.decision = 'no_match')) FROM ({links}) x WHERE {within}""").fetchall()[0]
@@ -310,7 +311,7 @@ def trust_state(con: duckdb.DuckDBPyConnection, out: Path, p: Pipeline, uid: str
             FROM (SELECT DISTINCT ON ({l}, {r}) * FROM ({' UNION ALL '.join(parts)})) x LEFT JOIN er_trust_decided d USING ({l}, {r})
             WHERE {where}""").fetchall()[0]
         return dict(pairs=pairs, checked=checked, false=false)
-    span = trust.below()
+    span = trust.below(lambda lo, hi: count(f"x.match_weight >= {bits(lo)} AND x.match_weight < {bits(hi)}")["pairs"] > 0)  # an empty range passed
     within = f"x.match_weight >= {bits(span[0])} AND x.match_weight < {bits(span[1])}" if span else "FALSE"
     near = count(within) if span else dict(pairs=0, checked=0, false=0)
     above = count(f"x.match_weight >= {bits(trust.line)}")
