@@ -382,7 +382,8 @@ def score_fs(model_json: dict, df: Records, pairs: pd.DataFrame | str, db: DuckD
             held.append(db.register(pd.DataFrame({col: list(tf), f"tf_{col}": list(tf.values())})))
             linker.table_management.register_term_frequency_lookup(held[-1], col)
         return _predict(linker, held, db, pairs, l, r, into)
-    finally:
+    finally:  # the db's cache first: it names the lookups, and a linker made later on this db would read them
+        linker.table_management.invalidate_cache()
         for x in held:
             con.unregister(x.physical_name)
 
