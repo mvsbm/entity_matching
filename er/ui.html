@@ -76,8 +76,7 @@ main { margin: 56px 0 0 256px; padding: 0 24px 120px; min-height: calc(100% - 56
 .split { display: grid; grid-template-columns: minmax(0, 2fr) minmax(0, 3fr); gap: 16px; align-items: start; }
 .split.item-first { grid-template-columns: minmax(0, 62fr) minmax(0, 38fr); } .queue th, .queue td { padding: 8px 10px; }
 .queue .progress { padding: 12px 16px; } .queue .progress .answer { font-size: 14px; } .queue .progress .pn-seg { margin-top: 8px; height: 8px; }
-.queue .progress .trustbar { margin: 0; padding: 0; border: 0; background: none; } .queue .progress .trustbar > .ic { display: none; }
-.queue .progress .trustbar > span { flex: 1 1 100%; } .queue .progress .trustbar .pn-seg { margin-top: 8px; } p.then { font-size: 12px; color: var(--muted); margin: 6px 0 0; }
+p.then { font-size: 12px; color: var(--muted); margin: 6px 0 0; }
 .card .links { display: flex; flex-direction: column; gap: 4px; font-size: 14px; margin: 6px 0 10px; } .card .links b { font-weight: 500; }
 h3.zq { font-size: 15px; font-weight: 500; margin: 16px 0 6px; }  /* the item asked about first and wide, the list it comes from after */
 /* zone A: the page's question, its answer in a sentence, and the action at the row's end; later zones smaller, the detail folded last */
@@ -111,6 +110,39 @@ tbody tr.pick { cursor: pointer; }
 tbody tr.pick:hover { background: var(--hover); }
 tbody tr[aria-selected="true"] { background: var(--sel); color: var(--sel-ink); }
 .tablefoot { padding: 8px 16px; color: var(--faint); font-size: 12px; }
+
+/* Results, Review, Explore: tiles that each answer a question, tabs, pages of pairs, two records' full rows side by side */
+.tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 16px; margin-bottom: 16px; }
+.tile { display: flex; flex-direction: column; gap: 8px; background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 16px 20px; color: var(--ink); text-decoration: none; cursor: pointer; }
+.tile:hover { border-color: var(--primary); box-shadow: var(--shadow); }
+.tile h3 { font-size: 15px; font-weight: 500; margin: 0; }
+.tile .num { font-size: 30px; line-height: 1.1; font-variant-numeric: tabular-nums; } .tile .num .unit { font-size: 14px; color: var(--muted); margin-left: 4px; }
+.tile p { margin: 0; font-size: 13px; } .tile .bars { margin: 0; }
+.bars .bar.muted { background: var(--outline); }
+.tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--line); margin: -8px 0 16px; overflow-x: auto; }
+.tab { border: 0; background: transparent; padding: 10px 16px; font: inherit; font-weight: 500; color: var(--muted); cursor: pointer; border-bottom: 3px solid transparent; white-space: nowrap; }
+.tab[aria-selected="true"] { color: var(--primary); border-bottom-color: var(--primary); } .tab:hover { background: var(--hover); }
+.pager { display: flex; align-items: center; gap: 4px; padding: 8px 12px; border-top: 1px solid var(--line); font-size: 13px; }
+.pager .grow, .fr-tools .grow { flex: 1; }
+.find { display: inline-flex; align-items: center; gap: 6px; border: 1px solid var(--outline); border-radius: 8px; padding: 6px 10px; background: var(--surface); color: var(--muted); }
+.find input { border: 0; outline: none; font: inherit; color: var(--ink); background: transparent; min-width: 120px; flex: 1; }
+.big-find { min-width: 280px; } .big-find input { font-size: 16px; }
+.from { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; margin-bottom: 8px; font-size: 14px; }
+.from input[type=number], .filters input[type=number] { width: 72px; font: inherit; padding: 6px 8px; border: 1px solid var(--outline); border-radius: 6px; background: var(--surface); color: var(--ink); }
+.filters { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; margin-bottom: 12px; font-size: 14px; }
+.filters select { font: inherit; padding: 6px 8px; border: 1px solid var(--outline); border-radius: 6px; background: var(--surface); color: var(--ink); }
+.fullrows { margin-top: 12px; } .fr-head { display: flex; flex-wrap: wrap; gap: 4px 12px; align-items: baseline; margin-bottom: 6px; } .fr-head b { font-weight: 500; }
+.fr-tools { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 16px; margin: 10px 0; font-size: 13px; } .fr-tools .check { margin: 0; align-items: center; }
+.fullrows td.col { font: 12px ui-monospace, Menlo, monospace; color: var(--muted); }
+.fullrows tr.fr-different td { background: color-mix(in srgb, var(--bad-bg) 45%, transparent); }
+.fullrows .tablewrap { max-height: 56vh; }
+.fullrows table { min-width: 560px; } .fullrows td.col { white-space: nowrap; }  /* a narrow screen scrolls the rows sideways: a column's name stays whole */
+.cond { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 8px; margin-bottom: 8px; }
+.cond select, .cond input { font: inherit; padding: 6px 8px; border: 1px solid var(--outline); border-radius: 6px; background: var(--surface); color: var(--ink); }
+.cond select[multiple] { min-width: 320px; min-height: 96px; } .cond .cond-body { display: flex; flex-wrap: wrap; gap: 8px 12px; align-items: center; flex: 1; }
+.fieldpick { display: inline-flex; gap: 6px; align-items: center; font-size: 13px; }
+.join { display: flex; gap: 16px; margin: 8px 0 12px; } .join .check { margin: 0; }
+.preview { margin-top: 12px; min-height: 22px; }
 
 /* status, banners, chips */
 .chip { display: inline-flex; align-items: center; gap: 4px; height: 24px; padding: 0 10px; border-radius: 12px; font-size: 12px; font-weight: 500; background: var(--hover); color: var(--muted); }
@@ -217,7 +249,7 @@ body.term-open .snack, body.term-open .task { bottom: calc(var(--term-h) + 16px)
   .appbar { gap: 4px; }
   #help { display: none; }
   .how { overflow-x: auto; }  /* a pair's waterfall scrolls in its card, not the page */
-  .card.one .tablecard th, .card.one .tablecard td { white-space: normal; overflow-wrap: anywhere; padding: 8px 10px; }  /* the two records side by side, wrapped */
+  .card.one .tablecard th, .card.one .tablecard td:not(.col) { white-space: normal; overflow-wrap: anywhere; padding: 8px 10px; }  /* the records side by side, their values wrapped; a column's name whole */
 }
 
 /* the workflow: who joined what, one color each, on every page */
@@ -248,15 +280,11 @@ body.term-open .snack, body.term-open .task { bottom: calc(var(--term-h) + 16px)
 @media (prefers-reduced-motion: reduce) { .rail li.running .dot::after { animation-duration: 2.4s; } }
 .navitem.running .spin { margin-left: auto; }
 .loopitem { font-weight: 400; height: auto; min-height: 36px; }
-.rail li.loopstep .dot { width: 24px; height: 24px; margin: 2px; }
-.rail li.loopstep .dot .ic { width: 16px; height: 16px; }
 .trial .nums { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; margin: 8px 0 14px; }
 .trial .nums .lab { display: block; font-size: 12px; color: var(--faint); }
 .trial h2 { display: flex; align-items: center; gap: 8px; }
 .trial .row { display: flex; gap: 8px; flex-wrap: wrap; }
 .ink-good { color: var(--good); } .ink-bad { color: var(--bad); }
-.trustbar { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; padding: 12px 16px; border-radius: 12px; background: var(--surface); border: 1px solid var(--line); margin-bottom: 16px; }
-.trustbar .grow { flex: 1; }
 .hist { width: 100%; max-width: 880px; height: auto; display: block; }  /* drawn at its own size: its labels stay small */
 .hist rect { fill: var(--outline); } .hist rect.acc { fill: var(--primary); }
 .hist .axis { stroke: var(--line); } .hist .tick { font-size: 11px; fill: var(--faint); text-anchor: middle; }
@@ -512,7 +540,7 @@ body.term-open .tray { bottom: var(--term-h); }  /* above the command drawer */
 <dialog id="dlg"></dialog>
 
 <script type="application/json" id="layout">
-{"workflow": {"steps": ["workspace", "columns", "run", "pairs", "kinds", "results"],
+{"workflow": {"steps": ["workspace", "columns", "run"],
   "loops": [{"name": "Add new records", "icon": "add", "screen": "run", "via": ["match records", "add records"], "to": "pairs"},
             {"name": "Run matching again", "icon": "refresh", "screen": "run", "via": ["rerun records"], "to": "pairs"}],
   "improve": {"screen": "improve", "after": "pairs", "back": "run"}},
@@ -525,6 +553,7 @@ body.term-open .tray { bottom: var(--term-h); }  /* above the command drawer */
             {"command": "describe workspace", "args": {"workspace": "@workspace"}, "reads": ["records", "entities", "runs", "pairs", "kinds", "set_aside", "write_owed", "inputs", "round", "audits", "trust", "auto"]},
             {"command": "try everything", "args": {"input": "@input", "home": "@home"}, "form": ["input"], "reads": ["workspace", "ok", "steps", "report", "markdown", "redacted"]},
             {"command": "describe key", "args": {"name": "@name", "workspace": "@workspace"}, "reads": ["name", "pairs", "matched", "only", "examples", "sizes", "largest", "group", "around"]},
+            {"command": "describe results", "args": {"workspace": "@workspace"}, "reads": ["records", "entities", "joined", "sizes", "scores", "candidates", "review_from", "waiting", "pairs", "merged_by", "merging", "missed", "too_big", "kinds"]},
             {"command": "describe matching", "args": {"workspace": "@workspace"}, "reads": ["nodes", "edges"]},
             {"command": "list workspaces", "args": {"home": "@home"}, "reads": ["home", "workspaces"]},
             {"command": "create workspace", "args": {"name": "@name", "home": "@home"}, "reads": ["workspace"]}]},
@@ -539,7 +568,7 @@ body.term-open .tray { bottom: var(--term-h); }  /* above the command drawer */
             {"command": "describe workspace", "args": {"workspace": "@workspace"}, "reads": ["inputs"]},
             {"command": "describe matching", "args": {"workspace": "@workspace"}, "reads": ["nodes"]}]},
   {"id": "run", "title": "Find matches", "icon": "run", "what": "Rules settle the certain pairs; the rest are listed, scored and accepted at the line; linked records become one entity.",
-   "strip": ["records", "rules", "candidates", "score", "accept", "people", "group"],
+   "strip": ["records", "rules", "candidates", "score", "accept", "group"],
    "uses": [{"command": "resolve records", "args": {"input": "@input", "workspace": "@workspace", "overwrite": "@overwrite", "compute": "@compute"}, "form": ["input", "overwrite"], "reads": ["summary", "seconds"]},
             {"command": "add records", "args": {"input": "@input", "workspace": "@workspace", "compute": "@compute"}, "form": ["input"], "reads": ["summary"]},
             {"command": "match records", "args": {"input": "@input", "workspace": "@workspace"}, "form": ["input"], "reads": ["counts", "records"]},
@@ -550,20 +579,21 @@ body.term-open .tray { bottom: var(--term-h); }  /* above the command drawer */
             {"command": "explain pair", "args": {"first": "@first", "second": "@second", "workspace": "@workspace"}, "reads": ["weight", "prior", "pairs_all", "pairs_same", "common", "same_customer", "records", "comparisons", "tests", "found", "group_a", "group_b", "across"]},
             {"command": "describe key", "args": {"name": "@name", "workspace": "@workspace"}, "reads": ["name", "pairs", "matched", "only", "examples", "sizes", "largest", "group", "around"]},
             {"command": "describe matching", "args": {"workspace": "@workspace"}, "reads": ["nodes"]}]},
-  {"id": "pairs", "title": "Review possible matches", "icon": "pairs", "what": "Close calls, just below the line, and pairs with no name compared: you decide.",
+  {"id": "pairs", "title": "Review", "icon": "pairs", "what": "The pairs waiting for you, best first: both full rows side by side, then same or different.",
    "strip": ["score", "accept", "people", "group"],
-   "uses": [{"command": "list pairs", "args": {"workspace": "@workspace", "pending": true}, "reads": ["pairs", "counts"]},
-            {"command": "describe workspace", "args": {"workspace": "@workspace"}, "reads": ["trust"]},
-            {"command": "describe review", "args": {"workspace": "@workspace"}, "reads": ["ranges", "hours", "seconds_per_pair", "unnamed"]},
-            {"command": "lower trust", "args": {"workspace": "@workspace", "compute": "@compute"}, "form": [], "reads": ["summary"]},
-            {"command": "raise trust", "args": {"workspace": "@workspace", "compute": "@compute"}, "form": [], "reads": ["summary"]},
+   "uses": [{"command": "list scored", "args": {"workspace": "@workspace", "status": "@status", "from": "@from", "to": "@to", "source": "@source", "record": "@record", "page": "@page", "count": "@count"}, "reads": ["total", "typed", "page", "count", "pairs"]},
+            {"command": "show records", "args": {"ids": "@ids", "workspace": "@workspace"}, "reads": ["columns", "records"]},
+            {"command": "describe results", "args": {"workspace": "@workspace"}, "reads": ["records", "entities", "joined", "sizes", "scores", "candidates", "review_from", "waiting", "pairs", "merged_by", "merging", "missed", "too_big", "kinds"]},
+            {"command": "describe workspace", "args": {"workspace": "@workspace"}, "reads": ["records", "pairs"]},
             {"command": "decide pair", "args": {"first": "@first", "second": "@second", "decision": "@decision", "workspace": "@workspace"}, "reads": ["decision"]},
             {"command": "apply decisions", "args": {"workspace": "@workspace"}, "reads": ["decisions", "matches", "clusters_joined", "summary"]},
+            {"command": "describe merging", "args": {"workspace": "@workspace", "conditions": "@conditions"}, "reads": ["join", "when", "each", "pairs", "entities"]},
+            {"command": "set merging", "args": {"workspace": "@workspace", "conditions": "@conditions"}, "form": [], "reads": ["join", "when", "entities", "merged"]},
             {"command": "list patterns", "args": {"workspace": "@workspace"}, "reads": ["pairs", "fields", "patterns"]},
             {"command": "compare records", "args": {"first": "@first", "others": "@others", "workspace": "@workspace"}, "reads": ["first", "records", "candidates"]},
             {"command": "explain pair", "args": {"first": "@first", "second": "@second", "workspace": "@workspace"}, "reads": ["weight", "prior", "pairs_all", "pairs_same", "common", "same_customer", "records", "comparisons", "tests", "found", "group_a", "group_b", "across"]},
             {"command": "describe matching", "args": {"workspace": "@workspace"}, "reads": ["nodes"]}]},
-  {"id": "improve", "title": "Improve matching", "icon": "loop", "what": "What people's decisions say about the method: try a change, adopt it, and review the new round.",
+  {"id": "improve", "title": "Method", "icon": "loop", "what": "What people's decisions say about the method: try a change, adopt it, and review the new round.",
    "strip": ["rules", "candidates", "score", "accept", "people"],
    "uses": [{"command": "list patterns", "args": {"workspace": "@workspace"}, "reads": ["pairs", "fields", "patterns"]},
             {"command": "explain pair", "args": {"first": "@first", "second": "@second", "workspace": "@workspace"}, "reads": ["weight", "prior", "pairs_all", "pairs_same", "common", "same_customer", "records", "comparisons", "tests", "found", "group_a", "group_b", "across"]},
@@ -573,7 +603,6 @@ body.term-open .tray { bottom: var(--term-h); }  /* above the command drawer */
             {"command": "try method", "args": {"workspace": "@workspace", "line": "@line", "drop": "@drop", "add": "@add", "compute": "@compute"}, "reads": ["trial"]},
             {"command": "adopt method", "args": {"workspace": "@workspace", "trial": "@trial", "compute": "@compute"}, "reads": ["summary"]},
             {"command": "reset method", "args": {"workspace": "@workspace", "compute": "@compute"}, "reads": ["summary"]},
-            {"command": "draw pairs", "args": {"workspace": "@workspace", "count": "50"}, "reads": ["drawn"]},
             {"command": "describe key", "args": {"name": "@name", "workspace": "@workspace"}, "reads": ["name", "pairs", "matched", "only", "examples", "sizes", "largest", "group", "around"]},
             {"command": "describe matching", "args": {"workspace": "@workspace"}, "reads": ["nodes"]}]},
   {"id": "kinds", "title": "Confirm person or company", "icon": "kinds", "what": "Records the engine holds back, and a sample that sharpens it: person or company?",
@@ -586,14 +615,19 @@ body.term-open .tray { bottom: var(--term-h); }  /* above the command drawer */
             {"command": "answer kind", "args": {"id": "@id", "kind": "@kind", "workspace": "@workspace"}, "reads": ["kind"]},
             {"command": "apply answers", "args": {"workspace": "@workspace", "compute": "@compute"}, "form": [], "reads": ["summary"]},
             {"command": "describe matching", "args": {"workspace": "@workspace"}, "reads": ["nodes"]}]},
-  {"id": "results", "title": "View entities", "icon": "customers", "what": "Every entity, and what joined its records.",
-   "strip": ["group", "customers"],
-   "uses": [{"command": "describe workspace", "args": {"workspace": "@workspace"}, "reads": ["summary", "largest"]},
-            {"command": "describe entity", "args": {"id": "@id", "workspace": "@workspace"}, "reads": ["record", "entity", "size", "records", "links", "pairs", "weakest", "capped"]},
-            {"command": "split entity", "args": {"id": "@id", "between": "@between", "workspace": "@workspace", "compute": "@compute"}, "form": [], "reads": ["summary"]},
+  {"id": "results", "title": "Explore", "icon": "customers", "what": "Every pair kept, every entity, any record's full row: page through and search.",
+   "strip": ["records", "prepare", "rules", "candidates", "score", "group"],
+   "uses": [{"command": "list scored", "args": {"workspace": "@workspace", "status": "@status", "from": "@from", "to": "@to", "source": "@source", "record": "@record", "page": "@page", "count": "@count"}, "reads": ["total", "page", "count", "pairs"]},
+            {"command": "list entities", "args": {"workspace": "@workspace", "smallest": "@smallest", "record": "@record", "page": "@page", "count": "@count"}, "reads": ["total", "page", "count", "entities"]},
+            {"command": "show records", "args": {"ids": "@ids", "workspace": "@workspace"}, "reads": ["columns", "records"]},
+            {"command": "describe results", "args": {"workspace": "@workspace"}, "reads": ["records", "entities", "joined", "sizes", "scores", "candidates", "review_from", "waiting", "pairs", "merged_by", "merging", "missed", "too_big", "kinds"]},
+            {"command": "describe workspace", "args": {"workspace": "@workspace"}, "reads": ["records"]},
+            {"command": "describe entity", "args": {"id": "@id", "workspace": "@workspace"}, "reads": ["record", "entity", "size", "records", "links"]},
+            {"command": "list patterns", "args": {"workspace": "@workspace"}, "reads": ["pairs", "fields", "patterns"]},
             {"command": "compare records", "args": {"first": "@first", "others": "@others", "workspace": "@workspace"}, "reads": ["first", "records", "candidates"]},
+            {"command": "describe key", "args": {"name": "@name", "workspace": "@workspace"}, "reads": ["name", "pairs", "matched", "only", "examples", "sizes", "largest", "group", "around"]},
             {"command": "explain pair", "args": {"first": "@first", "second": "@second", "workspace": "@workspace"}, "reads": ["weight", "prior", "pairs_all", "pairs_same", "common", "same_customer", "records", "comparisons", "tests", "found", "group_a", "group_b", "across"]},
-            {"command": "describe matching", "args": {"workspace": "@workspace"}, "reads": ["nodes"]}]}
+            {"command": "describe matching", "args": {"workspace": "@workspace"}, "reads": ["nodes", "edges"]}]}
 ]}
 </script>
 <script>
@@ -736,6 +770,7 @@ async function runOnce(command, args, onEvent, tries = 10) {
   const started = await api("/api/run", {command, args});
   if (started.error) return {event: "error", error: started.error, fix: started.fix || "", lost: started.lost};
   const {last, exit} = await watch(started.job, command, started.command, onEvent);
+  if (!/^(describe|list|show|explain|compare) /.test(command)) resultsNow = null;  // a command that writes: what the run holds is read again
   if (COMMANDS[command].quick && exit === 75 && tries > 1) { await sleep(1000); return runOnce(command, args, onEvent, tries - 1); }  // busy: once it's done
   return last;
 }
@@ -903,15 +938,14 @@ async function rejoin() {  // a long command that began before this page was dra
 
 // ---------- the workflow: six steps, each one's state read from the workspace ----------
 
-const STEP = {workspace: "Choose a workspace", columns: "Prepare your data", run: "Find matches", pairs: "Review possible matches",
-              kinds: "Confirm person or company", results: "View entities", improve: "Improve matching"};
-const LOOP = LAYOUT.workflow.improve, AUDITS = 50;
-const span = (r) => r.up_to === null ? `${fmt(r.down_to)}+` : `${fmt(r.down_to)}–${fmt(r.up_to)}`;  // a trust line's range of scores
-let trustNow = null;  // the workspace's trust line (describe workspace's trust), as step 4 last read it  // the loop's page, after step 4; this many audits with none false: the method holds
+const STEP = {workspace: "Choose a workspace", columns: "Prepare your data", run: "Find matches", pairs: "Review",
+              kinds: "Person or company?", results: "Explore", improve: "Method", records: "Results"};
+const LOOP = LAYOUT.workflow.improve;
 const ORDER = LAYOUT.workflow.steps;
 const STATE_WORD = {done: "done", current: "next", attention: "needs you", optional: "optional", later: "later"};
 
-// Each step's state (done, current, attention, optional, later) and one-line status, from describe workspace's result.
+// Each place's state (done, current, attention, optional, later) and one-line status, from describe workspace's result:
+// before a first run the three steps to it; after it Results, Review and Explore, and the setup behind them.
 function progress(d) {
   const ran = d && d.event !== "error" && d.records > 0, s = {};
   s.workspace = state.workspace ? {state: "done", line: baseName(state.workspace)} : {state: "current", line: "choose one"};
@@ -920,49 +954,40 @@ function progress(d) {
   s.columns = empty && !ran ? {state: "attention", line: `${last}: no records`} : ran || last ? {state: "done", line: last ? `${last} loaded` : "ready"} : {state: state.workspace ? "current" : "later", line: "load your file"};
   s.run = ran ? {state: "done", line: `${fmt(d.records)} → ${plural(d.entities, "entity", "entities")}`} : {state: last ? "current" : "later", line: last ? "ready to run" : "not yet"};
   if (!ran) {
-    for (const k of ["pairs", "kinds", "results"]) s[k] = {state: "later", line: "after matching"};
+    for (const k of ["pairs", "kinds", "results", "improve", "records"]) s[k] = {state: "later", line: "after matching"};
   } else {
-    const p = d.pairs, k = d.kinds, tr = d.trust;
-    s.pairs = tr && tr.may_lower ? {state: "attention", line: `${span(tr.next)}: ready to merge`}
-      : p.decide ? {state: "attention", line: tr && tr.next ? `${span(tr.next)}: ${fmt(tr.checked)} of ${fmt(tr.needed)} checked` : `${fmt(p.decide)} to decide`}
-      : p.written_in ? {state: "attention", line: `${fmt(p.written_in)} decided, to apply`} : {state: "done", line: "all decided"};
-    s.kinds = k.decide ? {state: "attention", line: `${fmt(k.decide)} to decide`}
-      : k.written_in ? {state: "attention", line: `${fmt(k.written_in)} answered, to apply`}
-      : {state: "optional", line: k.measure ? `${fmt(k.measure)} to check` : "nothing to check"};
-    s.results = d.entities < d.records ? {state: "done", line: `${plural(d.entities, "entity", "entities")}`} : {state: "later", line: "none joined yet"};
-    const a = d.audits || {checked: 0, false: 0}, r = `round ${d.round || 1}`;
-    s.improve = tr ? (tr.above.false + tr.false ? {state: "attention", line: `${fmt(tr.above.false + tr.false)} said different`}  // the line and its sample are the proof, as Improve counts them
-                                     : {state: "done", line: `${r} · ${tr.line === "none" ? "nothing merges by points yet" : `pairs scoring ${fmt(tr.line)}+ merge`}`})
-      : a.false ? {state: "attention", line: `${r} · ${fmt(a.false)} false found`}
-      : a.checked >= AUDITS ? {state: "done", line: `${r} · none false in ${fmt(a.checked)}`} : {state: "optional", line: `${r} · ${fmt(a.checked)} of ${AUDITS} checked`};
+    const waiting = resultsNow && resultsNow.event !== "error" ? resultsNow.waiting.reduce((a, x) => a + x.pairs, 0) : null, k = d.kinds;
+    s.records = {state: "done", line: `${plural(d.records - d.entities, "record")} joined others`};
+    s.pairs = waiting ? {state: "attention", line: `${fmt(waiting)} waiting`} : d.pairs.written_in ? {state: "attention", line: `${fmt(d.pairs.written_in)} decided, to apply`}
+      : {state: waiting === 0 ? "done" : "current", line: waiting === 0 ? "all decided" : "pairs to review"};
+    s.kinds = k.decide ? {state: "attention", line: `${fmt(k.decide)} to answer`} : k.written_in ? {state: "attention", line: `${fmt(k.written_in)} answered`} : {state: "optional", line: "nothing to answer"};
+    s.results = {state: "done", line: `${plural(d.entities, "entity", "entities")}`};
+    s.improve = {state: "optional", line: `round ${d.round || 1}`};
   }
-  let next = ORDER.find((id) => ["current", "attention"].includes(s[id].state)) || "results";
-  const loop = s.improve && ORDER.indexOf(next) > ORDER.indexOf(LOOP.after) ? s.improve.state : "done";  // the loop, until it holds: before
-  if (loop === "attention" || (loop !== "done" && s[next].state !== "attention")) next = LOOP.screen;   // a later step, unless that one needs you
+  const next = !ran ? ORDER.find((id) => ["current", "attention"].includes(s[id].state)) || "run" : s.pairs.state === "attention" ? "pairs" : "records";
   if (s[next].state !== "attention") s[next] = {...s[next], state: "current"};
   return {steps: s, next};
 }
 
-function rail() {  // the stepper: the navigation, in the order the work is done
+function rail() {  // the navigation: before a first run the steps to it, in order; after it the three places, then the setup
   const p = steps.steps || {}, ran = p.run && p.run.state === "done";
-  const here = !state.workspace && current === "records" ? "workspace" : current;  // with no workspace, the Overview is step 1
+  const here = !state.workspace && current === "records" ? "workspace" : current === "kinds" ? "pairs" : current;  // Review's second tab is Review
   const at = (id) => `aria-current="${id === here ? "page" : "false"}"`;
   const busy = railShown = task.busy(), live = `<span class="sub run-line">${esc(task.line || "")}</span>`;
-  $("nav").innerHTML = `<button class="navitem ${busy === "records" ? "running" : ""}" data-screen="records" ${busy === "records" ? 'data-busy="records"' : ""} ${at("records")}>${
-    icon("overview")}<span class="stack"><span>Overview</span>${busy === "records" ? live : ""}</span>${busy === "records" ? '<span class="spin ink"></span>' : ""}</button><ol class="rail">${ORDER.map((id, n) => {
-    const s = p[id] || {state: "later", line: ""};
-    const dot = s.state === "done" ? icon("tick") : s.state === "attention" ? "!" : n + 1;
-    const go = id === "workspace" ? "data-pick" : `data-screen="${id}"`;
-    const looping = busy === LOOP.screen;  // a trial, an adoption: the loop's step turns as the others do
-    const loop = id === LOOP.after && p.improve ? `<li class="${p.improve.state} loopstep${looping ? " running" : ""}" ${looping ? `data-busy="${LOOP.screen}"` : ""}><button class="navitem step" data-screen="${LOOP.screen}" ${at(LOOP.screen)}
-      title="${esc(STEP.improve)}: ${esc(looping ? "running" : STATE_WORD[p.improve.state])}"><span class="dot">${icon("loop")}</span><span class="stack"><span>${esc(STEP.improve)}</span>
-      ${looping ? live : `<span class="sub">${esc(p.improve.line)}</span>`}</span></button></li>` : "";
-    const running = busy === id;  // its command runs now: the dot turns, the line says how far
-    return `<li class="${s.state}${running ? " running" : ""}" ${running ? `data-busy="${id}"` : ""}><button class="navitem step" ${go} ${at(id)} title="${esc(STEP[id])}: ${esc(running ? "running" : STATE_WORD[s.state])}">
-      <span class="dot">${dot}</span><span class="stack"><span>${n + 1} · ${esc(STEP[id])}</span>${running ? live : `<span class="sub">${esc(s.line)}</span>`}</span></button></li>${loop}`;
-  }).join("")}</ol><h3>When things change</h3>${LAYOUT.workflow.loops.map((l, n) =>
-    `<button class="navitem loopitem" data-loop="${n}" ${ran ? "" : "disabled"}>${icon(l.icon)}<span class="stack"><span>${esc(l.name)}</span>${
-      ran ? "" : '<span class="sub">after the first run</span>'}</span></button>`).join("")}`;
+  const item = (id, ic, label, line, n = null) => {
+    const s = p[id] || {state: "later", line: ""}, running = busy === id, go = id === "workspace" ? "data-pick" : `data-screen="${id}"`;
+    const dot = n === null ? icon(ic) : s.state === "done" ? icon("tick") : s.state === "attention" ? "!" : n;
+    return `<li class="${s.state}${running ? " running" : ""}${n === null ? " place" : ""}" ${running ? `data-busy="${id}"` : ""}><button class="navitem step" ${go} ${at(id)} title="${esc(label)}: ${esc(running ? "running" : STATE_WORD[s.state])}">
+      <span class="dot">${dot}</span><span class="stack"><span>${n === null ? "" : `${n} · `}${esc(label)}</span>${running ? live : line === null ? "" : `<span class="sub">${esc(line ?? s.line)}</span>`}</span></button></li>`;
+  };
+  const loops = LAYOUT.workflow.loops.map((l, n) => `<button class="navitem loopitem" data-loop="${n}" ${ran ? "" : "disabled"}>${icon(l.icon)}<span class="stack"><span>${esc(l.name)}</span>${
+      ran ? "" : '<span class="sub">after the first run</span>'}</span></button>`).join("");
+  $("nav").innerHTML = ran
+    ? `<ol class="rail places">${item("records", "overview", "Results", null)}${item("pairs", "pairs", "Review")}${item("results", "customers", "Explore", null)}</ol>
+       <h3>Setup</h3><ol class="rail setup">${item("workspace", "folder", "Workspace", null)}${item("columns", "records", "Your data", null)}${item("run", "run", "Find matches", null)}${item("improve", "loop", "Method", null)}</ol>${loops}`
+    : `<button class="navitem ${busy === "records" ? "running" : ""}" data-screen="records" ${busy === "records" ? 'data-busy="records"' : ""} ${at("records")}>${
+        icon("overview")}<span class="stack"><span>Overview</span>${busy === "records" ? live : ""}</span>${busy === "records" ? '<span class="spin ink"></span>' : ""}</button>
+       <ol class="rail">${ORDER.map((id, n) => item(id, "", STEP[id], undefined, n + 1)).join("")}</ol><h3>When things change</h3>${loops}`;
   $("nav").querySelectorAll("[data-screen]").forEach((b) => b.onclick = () => go(b.dataset.screen));
   $("nav").querySelectorAll("[data-loop]").forEach((b) => b.onclick = () => go(LAYOUT.workflow.loops[b.dataset.loop].screen, LAYOUT.workflow.loops[b.dataset.loop]));
 }
@@ -972,6 +997,8 @@ async function refresh(d) {  // the stepper, from the page's own describe worksp
   if (d && d.lost) return;  // the stepper as it was: the workspace is still there
   steps = progress(state.workspace ? d : null);
   rail();
+  if (!resultsNow && state.workspace && d && d.records > 0)  // the Review line's count, once read: the rail first, then its number
+    run("records", "describe results").then((r) => { if (r.event === "error" || resultsNow) return; resultsNow = r; steps = progress(d); rail(); stepChip(); });
   const ran = steps.steps.run.state === "done";
   $("search").disabled = !ran;
   $("search").placeholder = ran ? "Look up a record ID" : "Look up a record ID, after the first run";
@@ -983,11 +1010,13 @@ function stepChip() {  // the heading's chip: its step as the stepper has it
   if (s && chip) { chip.className = `chip ${s.state === "done" ? "good" : s.state === "attention" ? "warn" : "info"}`; chip.textContent = `${STATE_WORD[s.state]} · ${s.line}`; }
 }
 
-const head = (id, actions = "") => {
-  const n = ORDER.indexOf(id), s = (steps.steps || {})[id];
-  return `<div class="pagehead"><h1>${n >= 0 ? `<span class="faint">Step ${n + 1} of ${ORDER.length} · </span>` : ""}${esc(screen(id) ? screen(id).title : STEP[id])}</h1>${
-    s ? `<span class="chip ${s.state === "done" ? "good" : s.state === "attention" ? "warn" : "info"}" id="stepchip">${esc(STATE_WORD[s.state])} · ${esc(s.line)}</span>` : ""}${actions}</div>
-    <nav class="path" id="path" aria-label="What this page shows"></nav>`;
+const head = (id, actions = "", under = "") => {  // under: the page's tabs, between its heading and its path
+  const s = (steps.steps || {})[id], ran = ((steps.steps || {}).run || {}).state === "done", n = ran ? -1 : ORDER.indexOf(id);
+  const place = ran && ["records", "pairs", "kinds", "results"].includes(id);  // Results, Review and Explore say their state in their own words
+  const title = id === "records" ? (ran ? "Results" : "Overview") : place && id === "kinds" ? "Review" : screen(id) ? screen(id).title : STEP[id];
+  return `<div class="pagehead"><h1>${n >= 0 ? `<span class="faint">Step ${n + 1} of ${ORDER.length} · </span>` : ""}${esc(title)}</h1>${
+    s && !place ? `<span class="chip ${s.state === "done" ? "good" : s.state === "attention" ? "warn" : "info"}" id="stepchip">${esc(STATE_WORD[s.state])} · ${esc(s.line)}</span>` : ""}${actions}</div>
+    ${under}<nav class="path" id="path" aria-label="What this page shows"></nav>`;
 };
 
 // How much each part of a page covers, as a label on it; the path under the heading strings them together, widest first.
@@ -998,11 +1027,11 @@ const where = () => {  // one part is the band's own label: a path once the page
   $("path").innerHTML = parts.length > 1 ? parts.join("<i>›</i>") : "";
 };
 
-function stepFoot(id) {  // back and next, in the workflow's order
-  const n = ORDER.indexOf(id), back = ORDER[n - 1], next = ORDER[n + 1];
+function stepFoot(id) {  // back and next, in the setup's order; after a run, the way to the results
+  const ran = ((steps.steps || {}).run || {}).state === "done", n = ORDER.indexOf(id), back = ORDER[n - 1], next = ORDER[n + 1];
   const link = (to, k, cls) => to === "workspace" ? `<button class="btn ${cls}" data-pick>${k}</button>` : `<a class="btn ${cls}" data-go="${to}">${k}</a>`;
-  const loop = id === LOOP.after && (steps.steps || {}).improve ? `<a class="btn" data-go="${LOOP.screen}">${icon("loop")}${esc(STEP.improve)}</a>` : "";
-  return `<div class="stepfoot">${back ? link(back, `← ${ORDER.indexOf(back) + 1} ${esc(STEP[back])}`, "") : ""}<span class="grow"></span>${loop}${
+  if (ran) return `<div class="stepfoot"><span class="grow"></span><a class="btn outlined" data-go="records">${icon("overview")}Results</a></div>`;
+  return `<div class="stepfoot">${back ? link(back, `← ${ORDER.indexOf(back) + 1} ${esc(STEP[back])}`, "") : ""}<span class="grow"></span>${
     next ? link(next, `Next: ${ORDER.indexOf(next) + 1} ${esc(STEP[next])} →`, ["done", "optional"].includes(((steps.steps || {})[id] || {}).state) ? "outlined" : "") : ""}</div>`;  // the way on shows once this step is done; the page's one filled button is its answer's
 }
 
@@ -1055,7 +1084,7 @@ function strip(box, graph, ids) {
 const bars = (rows, opts = {}) => {  // label, a bar whose length is the value, the value
   const max = Math.max(1, ...rows.map((r) => Math.abs(r.value ?? 0)));
   return `<div class="bars">${rows.map((r) => `<span class="lab" title="${esc(r.title || r.label)}">${esc(r.label)}</span>
-    <span><span class="bar ${r.tone || opts.tone || ""}" style="width:${r.value === null || r.value === undefined ? 0 : Math.max(1, 100 * Math.abs(r.value) / max)}%"></span></span>
+    <span>${r.value ? `<span class="bar ${r.tone || opts.tone || ""}" style="width:${Math.max(1, 100 * Math.abs(r.value) / max)}%"></span>` : ""}</span>
     <span class="val">${r.text ?? fmt(r.value)}</span>`).join("")}</div>`;
 };
 const NORM = {nfkc: "same width", strip_spaces: "no spaces", kana_fold: "kana folded", strip_legal_form: "no legal form", reverse: "reversed",
@@ -1194,9 +1223,9 @@ const DETAIL = {
     return `${x.patterns.length ? `<div class="pn-cap">what most of them look like</div>
         <div class="pn-table" style="--cols:${shownComps.map(() => "150px").join(" ")} minmax(120px,1fr) 52px 64px">
           <div class="pn-r h">${shownComps.map((c) => `<span>${esc(comp(c))}</span>`).join("")}<span>share</span><span></span><span></span></div>
-          ${x.patterns.map((p, i) => `<a class="pn-r" data-pattern="${i}">${shownComps.map((c) => `<span>${chipOf(p.steps[c])}</span>`).join("")}
+          ${x.patterns.map((p) => `<div class="pn-r">${shownComps.map((c) => `<span>${chipOf(p.steps[c])}</span>`).join("")}
             <span><span class="pn-bar" style="width:${(100 * p.pairs / x.patterns[0].pairs).toFixed(0)}%;background:var(--people)"></span></span>
-            <span class="num">${(100 * p.pairs / Math.max(x.sheet, 1)).toFixed(0)}%</span><span class="num faint">${fmt(p.pairs)}</span></a>`).join("")}</div>` : ""}`;
+            <span class="num">${(100 * p.pairs / Math.max(x.sheet, 1)).toFixed(0)}%</span><span class="num faint">${fmt(p.pairs)}</span></div>`).join("")}</div>` : ""}`;
   },
   group: (x) => {  // the details under How did matched pairs become entities?: who joined them, sizes, where to look
     const multi = x.sizes.filter((s) => s.records > 1);
@@ -1328,13 +1357,13 @@ const DETAIL_Q = {
   },
   people: (x, all) => {
     if (x.sheet === undefined) return ask(STAGE_Q.people, "Nothing yet: pairs are left for people when matching runs.");
-    const t = all.accept.threshold, trust = all.accept.trust, top = x.patterns[0], share = top ? top.pairs / Math.max(x.sheet, 1) : 0;
+    const trust = all.accept.trust;
     const answer = trust === null || trust === undefined
       ? `<b>${plural(x.sheet, "pair")}</b>: ${fmt(x.below)} scored just below the line, ${fmt(x.unnamed)} had no name to compare. Nothing in them merges until you say same.${x.audits ? ` Plus <b>${fmt(x.audits)}</b> matched pairs to spot-check.` : ""}`
       : `${x.sheet ? `<b>${plural(x.sheet, "pair")}</b> below the trust line, or with no name to compare, for people to check` : "Nothing waits for people now"}.${
            x.audits ? ` Plus <b>${fmt(x.audits)}</b> merged pairs to spot-check.` : ""}`;  // the range's sample, or, once one of it was false, every pair below
     const pic = `${seg([[x.answered, "var(--people)", "answered"], [Math.max(x.sheet - x.answered, 0), "var(--line)", "open"]])}<div class="pn-legend"><span>${fmt(x.answered)} of ${fmt(x.sheet)} answered</span></div>`;
-    const act = `<a class="btn filled" data-go="pairs">Review them</a>${top && share >= 0.2 ? `<button type="button" class="btn outlined" data-pattern="0">Review the ${(100 * share).toFixed(0)}% alike first</button>` : ""}`;
+    const act = `<a class="btn filled" data-go="pairs">Review them</a>`;
     return ask(STAGE_Q.people, answer, pic, act, DETAIL.people(x, all), "What they look like");
   },
   group: (x, all) => {
@@ -1463,7 +1492,6 @@ const WIRE = {
       };
     });
   },
-  people: (box, x) => box.querySelectorAll("[data-pattern]").forEach((a) => a.onclick = () => go("pairs", {pattern: x.patterns[a.dataset.pattern].steps})),
 };
 
 function keyDrawer(d) {  // describe key: its groups, one real group, and what only it found
@@ -1485,34 +1513,6 @@ function allPairs(x) {  // every comparison as one bar of where its pairs stop; 
   return `${x.comparisons.map((c) => `<details class="pn-comp"><summary><b>${esc(comp(c.name))}</b>${stepBar(c, x)}</summary>${staircase(c, x)}</details>`).join("")}`;
 }
 
-// A customer's records as dots, joined by what linked them: rule, model or person; with its pairs scored (describe
-// entity), a pair joined only through other records dashed, every pair's points, and the weakest link marked.
-function web(records, links, pairs = [], weakest = []) {
-  const n = records.length, r = n > 1 ? 85 : 0, turn = (i) => 2 * Math.PI * i / n - Math.PI / 2, at = (i, out) => [230 + out * Math.cos(turn(i)), 118 + out * Math.sin(turn(i))];
-  const pos = Object.fromEntries(records.map((x, i) => [x.id, at(i, r)])), key = (p) => `${p.id_l} ${p.id_r}`, thin = new Set(weakest.map(key));
-  const label = (i) => {  // outside the circle, so no link runs through it
-    if (!r) return `x="${pos[records[i].id][0]}" y="${pos[records[i].id][1] + 24}" text-anchor="middle"`;
-    const [x, y] = at(i, r + 18), c = Math.cos(turn(i));
-    return `x="${x}" y="${y + 4}" text-anchor="${c < -0.3 ? "end" : c > 0.3 ? "start" : "middle"}"`;
-  };
-  const tone = (by) => by === "fs" ? "var(--model)" : by.startsWith("people") ? "var(--people)" : "var(--rule)";
-  const ends = (p) => [pos[p.id_l], pos[p.id_r]], through = n <= 8 ? pairs.filter((p) => !p.by.length) : [];  // past 8 records the dashes would hide the links
-  const weights = pairs.length ? pairs : links.filter((l) => l.weight);
-  return `<div class="legend"><span><i style="background:var(--rule)"></i>a rule</span><span><i style="background:var(--model)"></i>the model's points</span><span><i style="background:var(--people)"></i>a person</span>${
-      through.length ? '<span><i style="background:repeating-linear-gradient(90deg,var(--faint) 0 4px,transparent 4px 7px)"></i>through others</span>' : ""}${
-      thin.size ? '<span><i style="background:var(--mark);height:7px"></i>weakest link</span>' : ""}</div>
-    <svg class="web" viewBox="0 0 460 240" role="img" aria-label="${n} records joined by ${links.length} links">
-    ${links.filter((l) => thin.has(key(l)) && pos[l.id_l] && pos[l.id_r]).map((l) => { const [a, b] = ends(l);
-      return `<line x1="${a[0]}" y1="${a[1]}" x2="${b[0]}" y2="${b[1]}" stroke="var(--mark)" stroke-width="11" stroke-linecap="round"/>`; }).join("")}
-    ${through.map((p) => { const [a, b] = ends(p); return `<line x1="${a[0]}" y1="${a[1]}" x2="${b[0]}" y2="${b[1]}" stroke="var(--faint)" stroke-width="1.5" stroke-dasharray="5 4"/>`; }).join("")}
-    ${links.filter((l) => pos[l.id_l] && pos[l.id_r]).map((l) => { const [a, b] = ends(l);
-      return `<line x1="${a[0]}" y1="${a[1]}" x2="${b[0]}" y2="${b[1]}" stroke="${tone(l.by)}" stroke-width="3"><title>${esc(l.by)}${l.weight ? ` · ${l.weight.toFixed(1)} points` : ""}</title></line>`; }).join("")}
-    ${weights.filter((p) => pos[p.id_l] && pos[p.id_r] && (p.by === undefined || p.by.length || through.includes(p))).map((p) => { const [a, b] = ends(p);
-      return `<text x="${(a[0] + b[0]) / 2}" y="${(a[1] + b[1]) / 2 - 4}" text-anchor="middle">${p.weight.toFixed(1)}</text>`; }).join("")}
-    ${records.map((x, i) => `<circle cx="${pos[x.id][0]}" cy="${pos[x.id][1]}" r="9" fill="var(--surface)" stroke="var(--ink)" stroke-width="2"/>
-      <text ${label(i)}>${esc(x.id)}</text>`).join("")}</svg>`;
-}
-const joinedBy = (by) => by.length ? by.map((b) => b === "fs" ? "the model" : b === "people: match" ? "a person: same" : b === "people: no_match" ? "a person: different" : ruleSays(b)).join("; ") : "through others";
 
 function slider(r) {  // where the engine and the name alone place a record, from person to company
   const at = (p) => 3 + 94 * p, e = Number(r.engine_p), n = Number(r.name_p), same = Math.abs(e - n) < 0.06;
@@ -1635,7 +1635,8 @@ const RUN_STEPS = ["load", "budget", "fit", "rules", "candidates", "score", "clu
 const STEPS_OF = {"add records": ["load", "fit", "rules", "candidates", "score", "cluster", "report", "write"],  // an increment's: no plan, no probe
                   "match records": ["load", "fit", "rules", "candidates", "score", "cluster"]};  // a preview writes nothing
 const BUSY = {"resolve records": "Finding matches", "rerun records": "Matching again", "add records": "Adding the new records", "match records": "Previewing the new records",
-              "load records": "Loading your file", "accept repairs": "Accepting the repairs", "try everything": "Auto mode", "try method": "Trying a method"};
+              "load records": "Loading your file", "accept repairs": "Accepting the repairs", "try everything": "Auto mode", "try method": "Trying a method",
+              "set merging": "Rebuilding the entities", "apply answers": "Matching again with your answers"};
 const DOING = {load: "reading the records", budget: "planning the work", fit: "learning what matches look like", rules: "applying the match rules",
                candidates: "listing pairs to compare", score: "scoring the pairs", cluster: "forming entities", probe: "looking for matches it missed",
                report: "writing the report", write: "saving"};
@@ -1703,6 +1704,372 @@ async function flowOf(id, box) {  // the step's part of the pipeline: from descr
   return g;
 }
 
+// ---------- Results, Review, Explore: what the run found, the pairs people decide, everything to look through ----------
+// After a first run the work is three places. Every list is a page of the workspace's own files (no run): the pairs the
+// run kept at 0 points or more (list scored), the entities (list entities), and any record's full row as the file gave
+// it (show records), the rows of two or more records side by side, each compared column with how it was compared.
+
+let resultsNow = null;  // describe results as a page last read it: the rail's Review line
+const readResults = async (page) => resultsNow && resultsNow.event !== "error" ? resultsNow : (resultsNow = await run(page, "describe results"));  // a failed read is asked again
+const BY = {fs: "the model", auto: "your conditions", "people: match": "you said same", "people: no_match": "you said different"};  // describe entity's links, in words
+const STATUS = {waiting: ["warn", "waiting"], merged: ["good", "merged"], same: ["good", "you: same"], different: ["", "you: different"]};
+const statusChip = (s) => `<span class="chip ${(STATUS[s] || ["", s])[0]}">${esc((STATUS[s] || [, s])[1])}</span>`;
+const NAMES = ["person_name", "company_name", "full_name", "any_name"];
+const nameIn = (p, k) => { for (const f of NAMES) if (p.fields && p.fields[f] && p.fields[f][k]) return p.fields[f][k]; return ""; };
+const foundBy = (p) => p.rule ? ruleSays(p.rule) : p.sources ? p.sources.split("+").slice(0, 2).map(looks).join(" · ") + (p.sources.split("+").length > 2 ? " …" : "") : "";
+const rangeOf = (r) => r.down_to === null ? `below ${fmt(r.up_to)}` : r.up_to === null ? `${fmt(r.down_to)}+` : `${fmt(r.down_to)} to ${fmt(r.up_to)}`;
+const pager = (total, page, count) => `<div class="pager"><span class="faint">${total ? `${fmt((page - 1) * count + 1)}–${fmt(Math.min(total, page * count))} of ${fmt(total)}` : "none"}</span>
+  <span class="grow"></span><button type="button" class="btn" data-page="${page - 1}" ${page <= 1 ? "disabled" : ""}>‹ Previous</button>
+  <button type="button" class="btn" data-page="${page + 1}" ${page * count >= total ? "disabled" : ""}>Next ›</button></div>`;
+const logBars = (rows) => {  // counts that span millions to tens: bar lengths on a log scale, so the small ones stay in view
+  const top = Math.log10(Math.max(2, ...rows.map((r) => r.value + 1)));
+  return `<div class="bars">${rows.map((r) => `<span class="lab">${esc(r.label)}</span><span>${r.value ? `<span class="bar ${r.tone || ""}" style="width:${Math.max(1, 100 * Math.log10(r.value + 1) / top)}%"></span>` : ""}</span>
+    <span class="val">${fmt(r.value)}</span>`).join("")}</div>`;
+};
+const scoreBars = (scores, from) => logBars(scores.slice().reverse().map((r) => ({label: rangeOf(r), value: r.pairs,
+  tone: r.down_to !== null && r.down_to >= from ? "" : "muted"})));
+const tabs = (items, on) => `<nav class="tabs" role="tablist">${items.map(([id, label, go]) => `<button type="button" role="tab" class="tab" aria-selected="${id === on}" ${go}>${esc(label)}</button>`).join("")}</nav>`;
+const reviewTabs = (on) => tabs([["pairs", "Same customer?", 'data-go="pairs"'], ["kinds", "Person or company?", 'data-go="kinds"']], on);
+const conditionText = (c) => c.points !== undefined ? `${fmt(c.points)} points or more` : c.rules ? `found by ${c.rules.map(ruleSays).join(" or ")}`
+  : Object.entries(c.fields).map(([f, lv]) => `${comp(f)} at least “${level(lv)}”`).join(" and ");
+const mergingText = (m) => m && m.when.length ? m.when.map(conditionText).join(m.join === "or" ? " · or " : " · and ") : "";
+const ownText = (o) => o.rules ? `the rules' pairs, and the model's at ${fmt(o.line)} points or more with a name compared` : `pairs at ${fmt(o.line)} points or more`;  // the method's own merging
+const JOINED = {you: "you", model: "the model", rule: "a rule"};  // describe results' merged_by, list entities' joined_by
+
+// Both or more records' full rows side by side, every column of the file, the different ones first; a column that a
+// comparison reads says how it was compared (explain pair's tests): method, score against its threshold, step, points.
+async function fullRows(box, page, ids, x = null) {
+  box.innerHTML = '<div class="faint">Reading their rows…</div>';
+  const d = await run(page, "show records", {ids});
+  if (!box.isConnected) return;
+  if (d.event === "error") { box.innerHTML = banner(d); return; }
+  const recs = d.records.filter((r) => r.row), cols = d.columns;
+  if (!recs.length) { box.innerHTML = `<p class="faint">${esc(ids.join(", "))}: not in the file's copy</p>`; return; }
+  const how = (c) => {  // the comparisons this column feeds, as this pair was compared: an exact test says its step itself
+    if (!x || !c.fields.length) return c.fields.map(words).join(", ");
+    return x.comparisons.filter((k) => x.tests.some((t) => t.comparison === k.comparison && c.fields.includes(t.field.split("__")[0])))
+      .map((k) => { const t = decider(x, k.comparison); return `${comp(k.comparison)}: ${testText(x, k.comparison, t)}${t && t.function !== "exact" ? ` → ${level(k.reached)}` : ""} · ${signed(k.bits)}`; })
+      .join("; ") || c.fields.map(words).join(", ");
+  };
+  const one = recs.length === 1;
+  const rows = cols.map((c, n) => {
+    const v = recs.map((r) => r.row[c.column]), filled = v.filter((s) => s !== null && s !== "");
+    const kind = one ? (filled.length ? "same" : "empty") : filled.length < 2 ? "empty" : filled.every((s) => s === filled[0]) && filled.length === v.length ? "same" : "different";
+    return {c, n, v, kind};
+  });
+  const counts = {same: 0, different: 0, empty: 0};
+  rows.forEach((r) => counts[r.kind]++);
+  const state = {only: false, hideEmpty: false, order: false, find: ""};
+  box.innerHTML = `<div class="fullrows"><div class="fr-head"><b>${one ? "Its full row" : recs.length > 2 ? `${recs.length} records' full rows` : "Their full rows"}</b>
+      <span class="muted">${one ? `${fmt(cols.length)} columns · ${fmt(counts.same)} filled` : `${fmt(cols.length)} columns: <span class="ink-good">${fmt(counts.same)} the same</span> · <span class="ink-bad">${fmt(counts.different)} different</span> · ${fmt(counts.empty)} empty on one side or both`}</span></div>
+    ${one ? "" : seg([[counts.same, "var(--good)", "same"], [counts.different, "var(--bad)", "different"], [counts.empty, "var(--line)", "empty"]])}
+    <div class="fr-tools"><label class="find">${icon("search")}<input type="text" placeholder="Find a column" aria-label="Find a column"></label>
+      ${one ? "" : '<label class="check"><input type="checkbox" data-t="only"><span>Only different</span></label>'}<label class="check"><input type="checkbox" data-t="hideEmpty"><span>Hide empty</span></label>
+      <label class="check"><input type="checkbox" data-t="order"><span>The file's order</span></label></div>
+    <div class="tablecard"><div class="tablewrap"><table><thead><tr><th>Column</th>${recs.map((r) => `<th>${esc(r.id)}</th>`).join("")}<th>${x ? "Compared as" : "Used for"}</th></tr></thead><tbody></tbody></table></div></div>
+    ${d.records.filter((r) => !r.row).map((r) => `<p class="faint">${esc(r.id)}: not in the file's copy</p>`).join("")}</div>`;
+  const draw = () => {
+    const rank = {different: 0, same: 1, empty: 2}, q = state.find.toLowerCase();
+    const shown = rows.filter((r) => (!state.only || r.kind === "different") && (!state.hideEmpty || r.kind !== "empty") && (!q || r.c.column.toLowerCase().includes(q)))
+      .sort((a, b) => state.order ? a.n - b.n : rank[a.kind] - rank[b.kind] || a.n - b.n);
+    box.querySelector("tbody").innerHTML = shown.map((r) => `<tr class="fr-${r.kind}"><td class="col">${esc(r.c.column)}</td>${r.v.map((s, k) => s === null || s === ""
+        ? '<td class="faint">—</td>' : `<td class="wrap">${k && r.kind === "different" ? highlight(r.v[0], s)[1] : r.kind === "different" && r.v[1] ? highlight(s, r.v[1])[0] : esc(s)}</td>`).join("")}
+      <td class="wrap faint">${esc(how(r.c))}</td></tr>`).join("") || `<tr><td colspan="${recs.length + 2}" class="faint">No column shown</td></tr>`;
+  };
+  box.querySelector(".fr-tools input[type=text]").oninput = (e) => { state.find = e.target.value.trim(); draw(); };
+  box.querySelectorAll("[data-t]").forEach((c) => c.onchange = () => { state[c.dataset.t] = c.checked; draw(); });
+  draw();
+}
+
+function pairTable(box, pairs, total, page, count, opts) {  // a page of scored pairs: both records, points, how found, status; compact: Review's queue
+  const wide = !opts.compact;
+  box.innerHTML = `<div class="tablecard"><div class="tablewrap"><table><thead><tr><th class="num">#</th><th>Record A</th><th>Record B</th><th class="num">Points</th>${wide ? "<th>Found by</th><th>Status</th>" : ""}</tr></thead><tbody>${
+    pairs.map((p, k) => `<tr class="pick" data-k="${k}" aria-selected="${k === opts.selected}"><td class="num faint">${fmt((page - 1) * count + k + 1)}</td>
+      <td><div>${esc(p.first)}</div><small class="muted clip" title="${esc(nameIn(p, 0))}">${esc(nameIn(p, 0))}</small></td><td><div>${esc(p.second)}</div><small class="muted clip" title="${esc(nameIn(p, 1))}">${esc(nameIn(p, 1))}</small></td>
+      <td class="num">${wide || !p.said ? "" : `<span class="${p.said === "match" ? "ink-good" : "ink-bad"}" title="${esc(STATUS[p.status][1])}">${p.said === "match" ? "✓" : "✗"}</span> `}<span class="pts ${p.points >= 0 ? "for" : "against"}">${p.points.toFixed(1)}</span></td>${wide ? `<td class="wrap muted">${esc(foundBy(p))}</td><td>${statusChip(p.status)}</td>` : ""}</tr>`).join("")
+    || `<tr><td colspan="${wide ? 6 : 4}" class="faint">No pairs</td></tr>`}</tbody></table></div>${pager(total, page, count)}</div>`;
+  box.querySelectorAll("tr[data-k]").forEach((tr) => tr.onclick = () => opts.onPick(Number(tr.dataset.k)));
+  box.querySelectorAll("[data-page]").forEach((b) => b.onclick = () => opts.onPage(Number(b.dataset.page)));
+}
+
+async function pairDialog(page, p) {  // a pair from a list: its full rows, how it scored, and how it was found
+  const dlg = $("dlg");
+  dlg.innerHTML = `<form method="dialog"><div class="dlg-body wide"><h2>${esc(p.first)} · ${esc(p.second)} · ${p.points.toFixed(1)} points</h2>
+      <p class="muted">${esc(foundBy(p) ? `Found by ${foundBy(p)}` : "")} · ${statusChip(p.status)}</p><div class="fr"></div><div class="how faint">Reading how it scored…</div></div>
+    <div class="dlg-foot"><span class="grow"></span>${p.status === "waiting" ? `<a class="btn" data-go="pairs" data-record="${esc(p.first)}">Review it</a>` : ""}<button class="btn" value="close">Close</button></div></form>`;
+  dlg.onclose = null; dlg.returnValue = ""; dlg.showModal();
+  dlg.querySelector("[data-record]")?.addEventListener("click", (e) => { e.preventDefault(); dlg.close(); go("pairs", {record: e.currentTarget.dataset.record}); });
+  const x = await run(page, "explain pair", {first: p.first, second: p.second});
+  if (!dlg.open) return;
+  fullRows(dlg.querySelector(".fr"), page, [p.first, p.second], x.event === "error" ? null : x);
+  dlg.querySelector(".how").outerHTML = x.event === "error" ? banner(x) : `<details class="fold-line"><summary>How it scored, step by step</summary>${waterfallOf(rowOf(x), remember(x))}</details>`;
+}
+
+async function resultsPage(el, d) {  // what the run found, as tiles: one question, one number, one chart, a way to its data
+  const r = resultsNow = await run("records", "describe results");
+  if (r.event === "error") { el.querySelector("#out").innerHTML = banner(r); return; }
+  const waiting = r.waiting.reduce((a, x) => a + x.pairs, 0), merged = r.merging.when.length, own = merged ? null : r.merging.own;
+  const sentence = `${plural(r.records, "record")} → ${plural(r.entities, "entity", "entities")}`;
+  const now = r.joined ? `${plural(r.joined, "entity", "entities")} of two records or more` : "Nothing has joined yet";
+  const why = merged ? `pairs merge without you when ${mergingText(r.merging)}` : own ? `${ownText(own)} merge without you` : "you decide every pair: nothing merges without you";
+  const tile = (go, q, num, unit, chart, more = "") => `<a class="tile" ${go}><h3>${esc(q)}</h3><div class="num">${num}<span class="unit">${esc(unit)}</span></div>${chart}${more ? `<p class="muted">${more}</p>` : ""}</a>`;
+  const at = r.scores ? r.scores.filter((x) => x.down_to !== null && x.down_to >= r.review_from).reduce((a, x) => a + x.pairs, 0) : r.pairs.kept;
+  const probe = r.missed.length ? r.missed.reduce((a, x) => ({missed: a.missed + x.missed, high: a.high + x.high, scored: a.scored + x.scored}), {missed: 0, high: 0, scored: 0}) : null;
+  el.querySelector("#out").innerHTML = `<div class="card"><div class="qa"><div class="q"><h2 class="question big">${sentence}</h2><p class="answer">${esc(now)} · ${esc(why)}</p></div>
+      ${waiting ? `<a class="btn filled" data-go="pairs">${icon("pairs")}Review ${plural(waiting, "pair")}</a>` : ""}</div></div>
+    <div class="tiles">
+      ${r.scores ? tile('data-go="results" data-tab="pairs"', "How did the scores come out?", fmt(at), ` pairs at ${fmt(r.review_from)}+ points`,
+          scoreBars(r.scores, r.review_from), `of ${fmt(r.candidates)} pairs compared; below 0, two different people almost surely`) : ""}
+      ${tile('data-go="pairs"', "What is waiting for you?", fmt(waiting), " pairs", waiting ? logBars(r.waiting.map((x) => ({label: `${rangeOf(x)} points`, value: x.pairs}))) : "",
+          waiting ? `about ${waiting * 20 < 3600 ? `${Math.ceil(waiting / 3)} minutes` : `${(Math.round(waiting / 18) / 10).toFixed(1)} hours`} at 20 seconds a pair` : "nothing waits: every pair from your review points is decided")}
+      ${tile('data-go="results" data-tab="entities"', "What has joined?", fmt(r.joined), " entities of 2+", logBars(r.sizes.map((x) => ({label: x.label, value: x.entities}))),
+          `by ${Object.entries(r.merged_by).filter(([k]) => k !== "none").map(([k, n]) => `${JOINED[k] || k}: ${fmt(n)} records`).join(" · ") || "nobody yet"}`)}
+      ${tile('data-go="pairs" data-merge', "Does anything merge without you?", merged || own ? "yes" : "no", "", "",
+          merged ? esc(mergingText(r.merging)) : own ? `${esc(ownText(own))}; your own conditions in Review` : "Set conditions in Review: points, rules, fields")}
+      ${probe ? tile('data-go="results" data-tab="how"', "Could it miss a real match?", `about ${fmt(probe.missed)}`, " missed",
+          "", `checked ${fmt(probe.scored)} pairs no key listed (${r.missed.map((x) => x.fields.map(words).join(" + ")).join(", ")}); at most ${fmt(probe.high)}`) : ""}
+      ${r.too_big.skipped || r.too_big.kept ? tile('data-go="results" data-tab="how"', "Were any groups too big to compare?", fmt(r.too_big.skipped), " skipped",
+          "", `a sample of each scored first; ${fmt(r.too_big.kept)} kept because a sampled pair could match`) : ""}
+      ${r.kinds.to_answer ? tile('data-go="kinds"', "Person or company?", fmt(r.kinds.to_answer), " to answer", "", "applied by running matching again") : ""}
+    </div>`;
+  el.querySelectorAll(".tile[data-tab]").forEach((a) => a.onclick = (e) => { e.preventDefault(); go("results", {tab: a.dataset.tab}); });
+  el.querySelector(".tile[data-merge]")?.addEventListener("click", (e) => { e.preventDefault(); go("pairs", {merge: true}); });
+}
+
+async function mergeDialog(page, done) {  // the conditions that merge pairs without people: rows, and or or, what they'd merge, then set
+  const g = graph || await flowOf(page, document.createElement("div"));
+  const comps = ((g && g.nodes.find((n) => n.id === "score")) || {comparisons: []}).comparisons, rules = ((g && g.nodes.find((n) => n.id === "rules")) || {rules: []}).rules;
+  const read = await readResults(page), now = read.event !== "error" ? read.merging : {join: "and", when: [], own: null}, dlg = $("dlg"), none = now.own ? `the method merges by itself: ${ownText(now.own)}` : "you decide every pair";
+  let m = {join: now.join, when: now.when.map((c) => JSON.parse(JSON.stringify(c)))};
+  const row = (c, k) => {
+    const kind = c.points !== undefined ? "points" : c.rules ? "rules" : "fields";
+    const body = kind === "points" ? `<input type="number" step="0.5" value="${esc(c.points)}" data-v="points" aria-label="points"> points or more`
+      : kind === "rules" ? `<select multiple data-v="rules" aria-label="rules">${rules.map((x) => `<option value="${esc(x.name)}" ${c.rules.includes(x.name) ? "selected" : ""}>${esc(ruleSays(x.name))}</option>`).join("")}</select>`
+      : comps.map((x) => `<label class="fieldpick">${esc(comp(x.name))} <select data-f="${esc(x.name)}"><option value="">any</option>${x.levels.filter((lv) => !["else", "missing"].includes(lv.label)).map((lv) => `<option value="${esc(lv.label)}" ${c.fields[x.name] === lv.label ? "selected" : ""}>${esc(level(lv.label))}</option>`).join("")}</select></label>`).join("");
+    return `<div class="cond" data-k="${k}"><select data-kind aria-label="kind of condition"><option value="points" ${kind === "points" ? "selected" : ""}>Points</option>
+      <option value="rules" ${kind === "rules" ? "selected" : ""}>Found by a rule</option><option value="fields" ${kind === "fields" ? "selected" : ""}>Fields agree</option></select>
+      <span class="cond-body">${body}</span><button type="button" class="btn" data-drop aria-label="Remove this condition">Remove</button></div>`;
+  };
+  const draw = () => {
+    dlg.innerHTML = `<form method="dialog"><div class="dlg-body wide"><h2>Merge pairs without you</h2>
+        <p class="muted">A pair merges if it meets ${m.join === "or" ? "any" : "all"} of these. Pairs you said differ never merge; with none, ${esc(none)}.</p>
+        <div class="join">${["and", "or"].map((j) => `<label class="check"><input type="radio" name="join" value="${j}" ${m.join === j ? "checked" : ""}><span>${j === "and" ? "All of them (and)" : "Any of them (or)"}</span></label>`).join("")}</div>
+        <div class="conds">${m.when.map(row).join("") || `<p class="faint">No conditions: ${esc(none)}.</p>`}</div>
+        <button type="button" class="btn outlined" data-add>${icon("add")}Add a condition</button>
+        <div class="preview muted" aria-live="polite"></div></div>
+      <div class="dlg-foot"><button type="button" class="btn" data-none>Turn off</button><span class="grow"></span><button class="btn" value="close">Cancel</button><button type="button" class="btn filled" data-set>Apply</button></div></form>`;
+    dlg.querySelectorAll("[name=join]").forEach((b) => b.onchange = () => { m.join = b.value; draw(); });  // its sentence says all or any
+    dlg.querySelectorAll(".cond").forEach((box) => {
+      const c = m.when[Number(box.dataset.k)];
+      box.querySelector("[data-kind]").onchange = (e) => { m.when[Number(box.dataset.k)] = e.target.value === "points" ? {points: 12} : e.target.value === "rules" ? {rules: []} : {fields: {}}; draw(); };
+      box.querySelector("[data-v=points]")?.addEventListener("input", (e) => { c.points = e.target.value.trim() === "" ? NaN : Number(e.target.value); preview(); });
+      box.querySelector("[data-v=rules]")?.addEventListener("change", (e) => { c.rules = [...e.target.selectedOptions].map((o) => o.value); preview(); });
+      box.querySelectorAll("[data-f]").forEach((s) => s.onchange = () => { if (s.value) c.fields[s.dataset.f] = s.value; else delete c.fields[s.dataset.f]; preview(); });
+      box.querySelector("[data-drop]").onclick = () => { m.when.splice(Number(box.dataset.k), 1); draw(); };
+    });
+    dlg.querySelector("[data-add]").onclick = () => { m.when.push({points: 12}); draw(); };
+    dlg.querySelector("[data-none]").onclick = () => { m = {join: m.join, when: []}; draw(); };
+    dlg.querySelector("[data-set]").onclick = () => set();
+    preview();
+  };
+  const ready = () => m.when.filter((c) => c.points !== undefined ? Number.isFinite(c.points) : c.rules ? c.rules.length : Object.keys(c.fields).length);
+  let asked = 0, pause = null;
+  const preview = () => { clearTimeout(pause); pause = setTimeout(count, 300); };  // one count once the typing stops
+  const count = async () => {
+    const box = dlg.querySelector(".preview"), n = ++asked, when = ready();
+    if (!box) return;
+    dlg.querySelector("[data-set]").disabled = when.length !== m.when.length;  // a condition half set is never dropped silently
+    if (when.length !== m.when.length) { box.textContent = "Finish each condition, or remove it."; return; }
+    if (!when.length) { box.textContent = `With none, ${none}.`; return; }
+    box.textContent = "Counting…";
+    const x = await run(page, "describe merging", {conditions: JSON.stringify({join: m.join, when})});
+    if (n !== asked || !box.isConnected) return;
+    box.innerHTML = x.event === "error" ? banner(x) : `<b>${plural(x.pairs, "pair")}</b> would merge, into <b>${plural(x.entities, "entity", "entities")}</b> of two records or more`
+      + (x.each.length > 1 ? `: ${x.each.map((e) => `${esc(conditionText(e.condition))} ${fmt(e.pairs)}`).join(" · ")}` : "");
+  };
+  const set = () => {
+    const conditions = JSON.stringify({join: m.join, when: ready()});
+    dlg.close();
+    action(page, "set merging", ready().length ? "Merge by these conditions" : "Turn off auto-merge", (e) => done(e.event === "error" ? e : {...e, own: now.own}), null, {form: [], about: ready().length ? `merge when ${mergingText({join: m.join, when: ready()})}` : `no conditions: ${none}`, extra: {conditions}});
+  };
+  draw();
+  dlg.onclose = null; dlg.returnValue = ""; dlg.showModal();
+}
+
+async function pairsPage(el, arg = {}) {  // Review: the pairs waiting for a person, best first, a page at a time; each with both full rows
+  arg = typeof arg === "object" && arg ? arg : {note: arg || ""};
+  el.innerHTML = head("pairs", `<button class="btn" id="merge">${icon("wand")}Auto-merge</button><button class="btn" id="refresh">${icon("refresh")}Refresh</button>`, reviewTabs("pairs")) +
+    `<div id="note">${arg.note || ""}</div><div class="split item-first"><div id="right" class="panel-sticky"></div>
+      <div class="queue"><div class="card progress"><div class="from"><label>Review from <input type="number" step="0.5" id="from" aria-label="Review from these points"> points</label>
+        <label class="find">${icon("search")}<input type="text" id="record" placeholder="A record ID" aria-label="Pairs of a record ID"></label></div>
+        <div id="done-line" class="answer"></div><div class="actions" style="margin-top:10px"><button class="btn outlined" id="apply">${icon("check")}Apply decisions <span class="badge" id="written">0</span></button></div></div>
+      <div id="left" class="faint">Loading…</div></div></div>`;
+  $("refresh").onclick = () => go("pairs");
+  const merged = (e) => {  // the merge dialog's end, from the button or the Results tile
+    if (e.event === "error") { $("note").innerHTML = banner(e); return; }
+    const said = e.when && e.when.length ? `Merged by your conditions: ${plural(e.entities, "entity", "entities")} of two records or more`
+      : e.own ? `No conditions: the method's own merging, ${plural(e.entities, "entity", "entities")} of two records or more` : "Nothing merges without you now";
+    resultsNow = null;  // read again: what merged has changed
+    go("pairs", {note: `<div class="banner info">${icon("check")}<div><b>${said}.</b></div></div>`});
+  };
+  $("merge").onclick = () => mergeDialog("pairs", merged);
+  $("apply").disabled = true;
+  if (!state.workspace) { await notYet(el, "pairs"); return; }
+  const [w] = await Promise.all([run("pairs", "describe workspace"), flowOf("pairs", document.createElement("div"))]);  // flowOf sets graph
+  if (w.event === "error" || !w.records) { await notYet(el, "pairs", w.event === "error" ? w : null); return w; }
+  await readResults("pairs");
+  if (arg.merge) mergeDialog("pairs", merged);
+  let from = resultsNow && resultsNow.event !== "error" ? resultsNow.review_from : 6;
+  try { const kept = localStorage.getItem("nayose.reviewFrom"); if (kept !== null && Number.isFinite(Number(kept))) from = Number(kept); } catch {}
+  $("from").value = from; $("record").value = arg.record || "";
+  let page = 1, rows = [], total = 0, left = 0, i = 0, pending = false, written = w.pairs.written_in || 0;  // left: total less what this page decided since
+  const count = 100;
+  const tally = () => { $("written").textContent = String(written); $("apply").disabled = !written;
+    $("done-line").innerHTML = `<b>${plural(left, "pair")}</b> waiting from ${fmt(from)} points${written ? ` · ${fmt(written)} decided, to apply` : ""}`;
+    if (steps.steps && steps.steps.pairs) { steps.steps.pairs = {state: left || written ? "attention" : "done", line: left ? `${fmt(left)} waiting` : written ? `${fmt(written)} decided, to apply` : "all decided"}; rail(); } };
+  const load = async () => {
+    $("left").innerHTML = '<div class="faint">Loading…</div>';
+    const x = await run("pairs", "list scored", {status: "open", from: String(from), page: String(page), count: String(count), record: $("record").value.trim()});
+    if (x.event === "error") { $("left").innerHTML = banner(x); return; }
+    rows = x.pairs; total = x.total; left = x.total - x.typed; i = Math.max(0, rows.findIndex((p) => !p.said)); tally(); draw(); show();
+  };
+  const draw = () => pairTable($("left"), rows, total, page, count, {compact: true, selected: i, onPick: (k) => { i = k; draw(); show(); }, onPage: (n) => { page = n; load(); }});
+  const show = () => {
+    const p = rows[i];
+    if (!p) { $("right").innerHTML = `<div class="card empty">${icon("empty")}<p class="muted">${total ? "Pick a pair" : `No pair waits from ${fmt(from)} points`}</p></div>`; where(); return; }
+    $("right").innerHTML = `<div class="card one">${scope("pairs", `Pair ${fmt((page - 1) * count + i + 1)} of ${fmt(total)}`)}
+      <h2 class="question">Same customer? ${p.said ? statusChip(p.status) : ""}</h2>
+      <p class="why">${p.points.toFixed(1)} points (${esc(odds(p.points))})${foundBy(p) ? ` · found by ${esc(foundBy(p))}` : ""}</p>
+      <div class="actions"><button class="btn filled" data-a="match">Same</button><button class="btn outlined" data-a="no_match">Different</button>
+        <button class="btn" data-skip>Not sure</button>${keyHint([["M", "same"], ["N", "different"]])}</div>
+      <p class="then">Same: one entity once you apply your decisions. Different: kept apart for good.</p><div id="said"></div>
+      <div class="fr"><div class="faint">Reading their rows…</div></div><div class="how faint"></div></div>`;
+    const box = $("right").querySelector(".fr"), here = `${p.first} ${p.second}`;
+    box.dataset.pair = here;
+    run("pairs", "explain pair", {first: p.first, second: p.second}).then((x) => {
+      if (box.dataset.pair !== here || !box.isConnected) return;
+      fullRows(box, "pairs", [p.first, p.second], x.event === "error" ? null : x);
+      $("right").querySelector(".how").outerHTML = x.event === "error" ? "" : `<details class="fold-line"><summary>How it scored, step by step</summary>${waterfallOf(rowOf(x), remember(x))}</details>`;
+    });
+    $("right").querySelectorAll("[data-a]").forEach((b) => {  // decided: its answer pressed
+      if (p.said) { const on = b.dataset.a === p.said; b.classList.toggle("filled", on); b.classList.toggle("outlined", !on); b.setAttribute("aria-pressed", String(on)); }
+      b.onclick = () => answer(b.dataset.a);
+    });
+    $("right").querySelector("[data-skip]").onclick = () => move(1);
+    where();
+  };
+  const move = (step) => { if (!rows.length) return; i = Math.min(rows.length - 1, Math.max(0, i + step)); draw(); show(); };
+  const answer = async (value) => {
+    if (pending || !rows[i]) return;
+    pending = true;
+    try {
+      const p = rows[i], e = await run("pairs", "decide pair", {first: p.first, second: p.second, decision: value});
+      if (e.event === "error") { $("said").innerHTML = banner(e); return; }
+      if (!p.said) { written++; left--; }
+      p.said = value; p.status = value === "match" ? "same" : "different"; tally();
+      i = Math.min(rows.length - 1, i + 1); draw(); show();
+    } finally { pending = false; }
+  };
+  $("from").onchange = () => { const v = Number($("from").value); if (!Number.isFinite(v)) return; from = v; try { localStorage.setItem("nayose.reviewFrom", String(v)); } catch {} page = 1; load(); };
+  $("record").onchange = () => { page = 1; load(); };
+  $("apply").onclick = () => { $("apply").disabled = true; run("pairs", "apply decisions").then((e) => e.event === "error" ? ($("note").innerHTML = banner(e), tally())
+    : go("pairs", {note: `<div class="banner info">${icon("check")}<div><b>${plural(e.decisions, "decision")} applied: ${plural(e.clusters_joined, "entity", "entities")} joined.</b></div></div>`})); };
+  keyHandler = (k) => ({m: () => answer("match"), n: () => answer("no_match"), s: () => move(1), ArrowDown: () => move(1), ArrowUp: () => move(-1), j: () => move(1), k: () => move(-1)})[k];
+  await load();
+  return w;
+}
+
+async function explorePage(el, arg) {  // Explore: every pair kept, every entity, any record: lists to page through and search
+  const want = typeof arg === "string" ? {tab: "records", record: arg} : arg && typeof arg === "object" ? arg : {};
+  const tab = want.tab || "pairs";
+  el.innerHTML = head("results", `<button class="btn" id="refresh">${icon("refresh")}Refresh</button>`, tabs([["pairs", "Pairs", 'data-tab="pairs"'], ["entities", "Entities", 'data-tab="entities"'],
+    ["records", "Records", 'data-tab="records"'], ["how", "How it works", 'data-tab="how"']], tab)) + `<div id="note"></div><div id="tabbody"></div>`;
+  $("refresh").onclick = () => go("results", want);
+  el.querySelectorAll(".tab[data-tab]").forEach((b) => b.onclick = () => go("results", {tab: b.dataset.tab}));
+  if (!state.workspace) { await notYet(el, "results"); return; }
+  const w = await run("results", "describe workspace");
+  if (w.event === "error" || !w.records) { await notYet(el, "results", w.event === "error" ? w : null); return w; }
+  const body = $("tabbody");
+  if (tab === "how") { body.innerHTML = '<h3 class="flowq">How did it find matches?</h3><div id="flow"></div>'; await flowOf("results", $("flow")); return w; }
+  if (tab === "records") {
+    body.innerHTML = `<div class="card"><div class="qa"><div class="q"><h2 class="question">Which record?</h2><p class="answer">Its full row as your file gives it, its entity, and the pairs it is in</p></div>
+      <label class="find big-find">${icon("search")}<input type="text" id="rid" placeholder="A record ID" aria-label="A record ID" value="${esc(want.record || "")}"></label></div></div><div id="rec"></div>`;
+    let asked = 0;
+    const lookup = async (id) => {
+      const n = ++asked, now = () => n === asked && $("ent");  // a later lookup's answers only
+      if (!id) return;
+      $("rec").innerHTML = `<div class="card"><div class="fr"></div></div><div class="card"><h2>Its entity</h2><div id="ent" class="faint">Reading…</div></div><div class="card"><h2>The pairs it is in</h2><div id="its"></div></div>`;
+      fullRows($("rec").querySelector(".fr"), "results", [id]);
+      run("results", "list entities", {record: id, smallest: "1"}).then((e) => { if (!now()) return;
+        const x = e.entities && e.entities[0];
+        $("ent").innerHTML = e.event === "error" ? banner(e) : !x ? "Not in the run" : x.records > 1 ? `${plural(x.records, "record")} · joined by ${esc(JOINED[x.joined_by] || "")} <a class="btn" data-ent="${esc(x.entity)}">Open it</a>` : "On its own: no other record has joined it";
+        $("ent").querySelector("[data-ent]")?.addEventListener("click", () => go("results", {tab: "entities", entity: x.entity})); });
+      const its = await run("results", "list scored", {record: id, count: "100"});
+      if (!now()) return;
+      if (its.event === "error") { $("its").innerHTML = banner(its); return; }
+      pairTable($("its"), its.pairs, its.total, 1, 100, {onPick: (k) => pairDialog("results", its.pairs[k]), onPage: () => {}});
+    };
+    $("rid").onchange = () => { want.record = $("rid").value.trim(); lookup(want.record); };
+    lookup(want.record);
+    return w;
+  }
+  if (tab === "entities") {
+    const r = await readResults("results");
+    if (r.event === "error") { body.innerHTML = banner(r); return w; }
+    body.innerHTML = `<div class="card"><div class="qa"><div class="q"><h2 class="question">Which records became one customer?</h2>
+        <p class="answer">${r.joined ? `${plural(r.joined, "entity", "entities")} ${r.joined === 1 ? "holds" : "hold"} two records or more` : "None yet: every record is its own entity until you say two are the same, or your conditions merge them"}</p></div>
+        <label class="find">${icon("search")}<input type="text" id="eid" placeholder="A record ID" aria-label="The entity of a record ID" value="${esc(want.entity || "")}"></label></div>
+        ${logBars(r.sizes.map((x) => ({label: x.label, value: x.entities})))}</div><div class="split item-first"><div id="right" class="panel-sticky"></div><div class="queue"><div id="left"></div></div></div>`;
+    let page = 1;
+    const open = async (id) => {
+      $("right").innerHTML = '<div class="card faint">Reading…</div>';
+      const d = await run("results", "describe entity", {id});
+      if (d.event === "error") { $("right").innerHTML = banner(d); return; }
+      $("right").innerHTML = `<div class="card one">${scope("customers", `Entity ${d.entity}`)}<h2 class="question">${d.size > 1 ? `Why are these ${fmt(d.size)} records one entity?` : "One record, joined to no other"}</h2>
+        <div class="links">${d.links.map((l) => `<div><b>${esc(l.id_l)} ↔ ${esc(l.id_r)}</b> · ${esc(BY[l.by] || ruleSays(l.by))}${l.weight !== null && l.weight !== undefined ? ` · ${signed(l.weight)} points` : ""}</div>`).join("")}</div>
+        <div class="fr"></div></div>`;
+      const ids = d.records.map((x) => x.id), x = ids.length === 2 ? await run("results", "explain pair", {first: ids[0], second: ids[1]}) : null;
+      if ($("right").querySelector(".fr")) fullRows($("right").querySelector(".fr"), "results", ids, x && x.event !== "error" ? x : null);
+    };
+    const load = async () => {
+      const x = await run("results", "list entities", {page: String(page), record: $("eid").value.trim()});
+      if (x.event === "error") { $("left").innerHTML = banner(x); return; }
+      $("left").innerHTML = `${scope("customers", `${fmt(x.total)} entities of two records or more`)}<div class="tablecard"><div class="tablewrap"><table><thead><tr><th>Entity</th><th class="num">Records</th><th>Names</th><th>Joined by</th></tr></thead><tbody>${
+        x.entities.map((e, k) => `<tr class="pick" data-k="${k}"><td>${esc(e.entity)}</td><td class="num">${fmt(e.records)}</td><td><span class="clip" title="${esc(e.names.join(" · "))}">${esc(e.names.join(" · "))}</span></td><td>${esc(JOINED[e.joined_by] || "")}</td></tr>`).join("")
+        || '<tr><td colspan="4" class="faint">None yet</td></tr>'}</tbody></table></div>${pager(x.total, page, x.count)}</div>`;
+      $("left").querySelectorAll("tr[data-k]").forEach((tr) => tr.onclick = () => open(x.entities[Number(tr.dataset.k)].entity));
+      $("left").querySelectorAll("[data-page]").forEach((b) => b.onclick = () => { page = Number(b.dataset.page); load(); });
+      if (x.entities.length && !$("right").innerHTML) open(want.entity || x.entities[0].entity);
+    };
+    $("eid").onchange = () => { page = 1; $("right").innerHTML = ""; load(); };
+    if (want.entity) open(want.entity);
+    await load();
+    return w;
+  }
+  const r = resultsNow = await run("results", "describe results");
+  if (r.event === "error") { body.innerHTML = banner(r); return w; }
+  const f = {from: want.from ?? 0, to: want.to ?? null, source: want.source || "", status: want.status || "", record: want.record || ""};
+  body.innerHTML = `<div class="card"><div class="qa"><div class="q"><h2 class="question">Which pairs scored highest?</h2>
+      <p class="answer">${r.scores ? `Every pair compared, by points; below 0, two different people almost surely. The ${fmt(r.pairs.kept)} at 0 or more are listed below, best first.` : `${fmt(r.pairs.kept)} pairs at 0 points or more, best first.`}</p></div></div>
+    ${r.scores ? scoreBars(r.scores, 0) : ""}</div>
+    <div class="filters"><label>From <input type="number" step="0.5" id="ffrom" value="${esc(f.from)}" aria-label="From these points"></label>
+      <label>Below <input type="number" step="0.5" id="fto" value="${esc(f.to ?? "")}" aria-label="Below these points"></label>
+      <select id="fsource" aria-label="Found by"><option value="">found by anything</option><option value="rules">by a rule</option><option value="model">by the model's keys</option></select>
+      <select id="fstatus" aria-label="Status"><option value="">any status</option>${Object.keys(STATUS).map((s) => `<option value="${s}">${esc(STATUS[s][1])}</option>`).join("")}</select>
+      <label class="find">${icon("search")}<input type="text" id="frecord" placeholder="A record ID" aria-label="Pairs of a record ID" value="${esc(f.record)}"></label></div><div id="plist"></div>`;
+  $("fsource").value = f.source; $("fstatus").value = f.status;
+  let page = 1;
+  const load = async () => {
+    const x = await run("results", "list scored", {from: String($("ffrom").value || ""), to: String($("fto").value || ""), source: $("fsource").value, status: $("fstatus").value,
+      record: $("frecord").value.trim(), page: String(page), count: "100"});
+    if (x.event === "error") { $("plist").innerHTML = banner(x); return; }
+    pairTable($("plist"), x.pairs, x.total, page, x.count, {onPick: (k) => pairDialog("results", x.pairs[k]), onPage: (n) => { page = n; load(); }});
+  };
+  ["ffrom", "fto", "fsource", "fstatus", "frecord"].forEach((id) => $(id).onchange = () => { page = 1; load(); });
+  await load();
+  return w;
+}
+
 // ---------- the pages: what each places, and how it draws the results ----------
 
 const SCREENS = {
@@ -1724,17 +2091,16 @@ const SCREENS = {
     $("refresh").onclick = () => go("records");
     const live = runsHere() ? longRun : !longRun && task.busy() ? {command: task.command, page: task.busy()} : null;  // whatever runs now, and where it shows
     if (live) $("auto").innerHTML = runningCard(live);  // at once: the workspace it runs on answers once it is done
-    const [d] = await Promise.all([run("records", "describe workspace"), flowOf("records", $("flow"))]);
+    const d = await run("records", "describe workspace");
     if (!live && d.auto) sendCard($("auto"), d.auto);
-    if (d.event === "error" || !d.records) { $("out").innerHTML = d.event === "error" ? banner(d) : emptyRun(d); return d; }
-    const p = progress(d), s = p.steps[p.next];
-    $("next").innerHTML = `<div class="next">${icon(s.state === "attention" ? "person" : "run")}<span><b>Next: ${ORDER.includes(p.next) ? `${ORDER.indexOf(p.next) + 1} · ` : ""}${esc(STEP[p.next])}</b>
-      <span class="muted"> · ${esc(s.line)}</span></span><span class="grow" style="flex:1"></span>${p.next === "workspace" ? '<button class="btn filled" data-pick>Open</button>' : `<a class="btn filled" data-go="${p.next}">Open</a>`}</div>`;
-    $("out").innerHTML = (d.write_owed ? banner({event: "error", error: "A write was cut short", fix: "The next command that writes to this workspace finishes it."}, "warn") : "") +
-      `<div class="card"><h2>Activity</h2><div id="runs"></div></div>`;
+    if (d.event === "error" || !d.records) { await flowOf("records", $("flow")); $("out").innerHTML = d.event === "error" ? banner(d) : emptyRun(d); return d; }
+    if (d.write_owed) $("next").innerHTML = banner({event: "error", error: "A write was cut short", fix: "The next command that writes to this workspace finishes it."}, "warn");
+    el.querySelector(".pagehead h1").textContent = "Results";  // drawn before the stepper knew a run is done
+    await resultsPage(el, d);
+    $("out").insertAdjacentHTML("beforeend", `<details class="fold-line"><summary>Every run so far</summary><div id="runs" style="margin-top:8px"></div></details>`);
     grid($("runs"), d.runs.slice().reverse(), ["at", "what", "files", "seconds"],
          {filter: false, cell: (r, c) => c === "files" ? esc(r.files.map((f) => baseName(f).replace(/(\.\w+)\.parquet$/, "$1")).join(", ")) : c === "at" ? esc(String(r.at).replace("T", " ")) : esc(fmt(r[c]))});
-    return d;  // go() draws the stepper from it
+    return d;
   },
 
   async columns(el) {
@@ -1751,7 +2117,7 @@ const SCREENS = {
           ? `<b>Not yet:</b> ${esc(nameOf(last))} holds no records`
           : missing.length ? `<b>Not yet:</b> ${esc(missing.map(words).join(", "))} ${missing.length > 1 ? "are" : "is"} needed`
           : `<b>Yes</b> · ${plural(d.records, "record")} from ${esc(nameOf(last))} · ${fmt(d.columns.length)} columns${waits(d.read)}`}</p></div>
-        ${!d.records ? "" : missing.length ? (d.placements.length ? `<button type="button" class="btn filled" id="suggest-now">✦ Suggest the columns</button>` : "") : `<a class="btn filled" data-go="run">Next: 3 Find matches →</a>`}</div>
+        ${!d.records ? "" : missing.length ? (d.placements.length ? `<button type="button" class="btn filled" id="suggest-now">✦ Suggest the columns</button>` : "") : ((steps.steps || {}).run || {}).state === "done" ? "" : `<a class="btn filled" data-go="run">Next: 3 Find matches →</a>`}</div>
         <details class="fold-line"><summary>Load another file</summary><div style="margin-top:10px">${box}</div></details>`;
       wireLoad();
       $("files").innerHTML = (w.inputs || []).map((f) => `<span class="tag" title="${esc(f.path)}">${esc(nameOf(f))} · ${bytes(f.bytes)} · ${f.read ? "matched" : "not run yet"}${f.waiting ? ` · ${fmt(f.waiting)} repairs wait` : ""}</span>`).join("");
@@ -1997,12 +2363,8 @@ const SCREENS = {
       return w;
     }
     $("flowq").textContent = "How did it find matches?";
-    const g = await graph_, accept = g ? g.nodes.find((x) => x.id === "accept") : null;
-    const joined = w.records - w.entities, waiting = w.pairs.decide, tr = w.trust;  // what the run did, in a sentence, and what is next
-    const next = waiting ? `${plural(waiting, "pair")} ${waiting === 1 ? "waits" : "wait"} for you` : tr && tr.may_lower ? `${span(tr.next)} can merge now` : "";
-    const matched = accept && accept.accepted ? `${plural(accept.accepted, "pair")} matched` : tr && tr.line === "none" ? "Nothing merged by points yet: you check pairs first" : joined ? `${plural(joined, "record")} joined others` : "Nothing merged";
     $("out").innerHTML = `<div class="card"><div class="qa"><div class="q"><h2 class="question big">${plural(w.records, "record")} → ${plural(w.entities, "entity", "entities")}</h2>
-      <p class="answer">${esc(matched)}${next ? ` · ${esc(next)}` : ""}</p></div>${next ? `<a class="btn filled" data-go="pairs">${waiting ? "Review them" : "Go to step 4"}</a>` : ""}</div></div>${
+      <p class="answer">The last run: what it found is on Results, the pairs waiting for you on Review</p></div><a class="btn filled" data-go="records">${icon("overview")}Results</a></div></div>${
       file && !file.read ? `<div class="card ready">${icon("records")}<div><b>${esc(nameOf(file))}</b><span class="muted"> · ${plural(file.rows, "record")}, not matched yet</span></div>
         <span class="grow"></span><button class="btn filled" data-add>${icon("add")}Add them to this run</button><button class="btn" data-first>Replace the run with them</button></div>` : ""}`;  // a file loaded since: added, or matched alone
     $("out").querySelector("[data-first]")?.addEventListener("click", () => start("resolve records", "Replace the run with them",
@@ -2012,63 +2374,11 @@ const SCREENS = {
     return w;
   },
 
-  async results(el, record) {
-    el.innerHTML = head("results", `<button class="btn" id="refresh">${icon("refresh")}Refresh</button>`) +  // the entity asked about first and wide (#right), the list after (#left)
-      `<div id="note"></div><div class="split item-first"><div id="right" class="panel-sticky"></div><div class="queue"><div id="left" class="faint">Loading…</div></div></div><div id="flow"></div>${stepFoot("results")}`;
-    $("refresh").onclick = () => go("results", record);
-    const flow = state.workspace ? flowOf("results", $("flow")) : Promise.resolve(null);
-    const entity = async (id) => {
-      $("right").innerHTML = `<div class="card faint">Loading ${esc(id)}…</div>`;
-      const [d, g] = await Promise.all([run("results", "describe entity", {id}), flow]);
-      if (d.event === "error") { $("right").innerHTML = banner(d); return; }
-      const line = ((g && g.nodes.find((x) => x.id === "accept")) || {threshold: 8}).threshold;
-      const weak = new Set(d.weakest.map((w) => `${w.id_l} ${w.id_r}`)), rest = d.records.map((r) => r.id).filter((x) => x !== d.record);
-      const links = d.pairs.filter((p) => p.by.length && p.by.some((b) => b !== "people: no_match")), through = d.pairs.filter((p) => !p.by.length);
-      const why = d.records.length < 2 ? "" : `<div class="links">${links.map((p) => `<div><b>${esc(p.id_l)} ↔ ${esc(p.id_r)}</b>: ${
-          esc(p.comparisons && p.comparisons.length ? said_of(p) : joinedBy(p.by))} · ${pairLink(p.id_l, p.id_r, `${signed(p.weight)} points`)} <span class="faint">· ${esc(joinedBy(p.by))}</span></div>`).join("")}${
-        through.map((p) => `<div class="faint">${esc(p.id_l)} ↔ ${esc(p.id_r)}: joined through the others · ${pairLink(p.id_l, p.id_r, `${signed(p.weight)} points`)}</div>`).join("")}</div>`;
-      const shown = (k) => !["id", "cluster_id", "resolved_stage", "resolved_by", "kind", "kind_p", "kind_by", "kind_held", "customer_kind", "any_name"].includes(k) && d.records.some((r) => r[k] !== null && r[k] !== undefined);
-      const fields = Object.keys(d.records[0]).filter(shown), first = d.records[0];
-      const side = `<div class="tablecard"><table><thead><tr><th></th>${d.records.map((r) => `<th>${esc(r.id)}</th>`).join("")}</tr></thead><tbody>${fields.map((f) =>
-        `<tr><td class="faint">${esc(words(f))}</td>${d.records.map((r, k) => { const v = r[f]; if (v === null || v === undefined) return '<td class="faint">—</td>';
-          return `<td class="wrap">${k ? highlight(first[f], v)[1] : esc(v)}</td>`; }).join("")}</tr>`).join("")}</tbody></table></div>`;
-      const low = links.slice().sort((a, b) => a.weight - b.weight)[0], bridge = low && weak.has(`${low.id_l} ${low.id_r}`);
-      const right = d.records.length < 2 ? "" : !low ? "" : low.weight >= line
-        ? `<div class="checks"><div class="ok">Looks right: every link scores ${fmt(line)} points or more</div></div>`
-        : `<div class="checks"><div class="warn">Check this link: ${esc(low.id_l)} ↔ ${esc(low.id_r)} scores ${signed(low.weight)}${bridge ? " and alone holds the entity together" : ""}
-            ${bridge && can("split entity") ? `<button type="button" class="btn" data-split="${idList(low.id_l, low.id_r)}">Split here</button>` : ""}</div></div>`;
-      $("right").innerHTML = `<div class="card one">${scope("customers", `Entity ${d.entity}`)}<div class="qa"><div class="q"><h2 class="question">${d.size > 1 ? `Why are these ${fmt(d.size)} records one entity?` : "One record, matched to no other"}</h2>${
-          d.size > d.records.length ? `<p class="answer">The first ${fmt(d.records.length)} of them are shown here</p>` : ""}</div>
-          ${rest.length ? `<button type="button" class="btn outlined" data-compare data-first="${esc(d.record)}" data-others="${idList(...rest)}">Compare all ${fmt(rest.length + 1)}</button>` : ""}</div>
-        ${why}${d.records.length > 1 ? web(d.records, d.links, d.pairs, d.weakest) : ""}${side}
-        ${right ? `<h3 class="zq">Is it right?</h3>${right}` : ""}
-        ${d.pairs.length ? '<details class="fold-line"><summary>Every pair inside it</summary><div id="epairs" style="margin-top:8px"></div></details>' : d.capped ? '<p class="faint">Too many records to score every pair.</p>' : ""}</div>`;
-      if (d.pairs.length) grid($("epairs"), d.pairs, ["id_l", "id_r", "weight", "by"], {filter: false, labels: {weight: "points", by: "joined by"},
-        cell: (r, c) => c === "by" ? esc(joinedBy(r.by)) : c === "weight" ? `<span class="pts ${r.weight >= 0 ? "for" : "against"}">${r.weight.toFixed(1)}</span>` : esc(fmt(r[c])),
-        onPick: (i) => explainDialog("results", d.pairs[i].id_l, d.pairs[i].id_r)});
-      $("right").querySelectorAll("[data-explain]").forEach((b) => b.onclick = () => explainDialog("results", ...JSON.parse(b.dataset.explain)));
-      $("right").querySelector("[data-split]")?.addEventListener("click", (e) => {
-        const between = JSON.parse(e.currentTarget.dataset.split);
-        action("results", "split entity", "Split here", (x) => x.event === "error" ? $("note").innerHTML = banner(x)
-          : go("results", id), null, {about: `${between.join(" and ")} become different: the entity splits where they meet, and matching runs again`, extra: {id, between}});
-      });
-      where();
-    };
-    $("right").innerHTML = `<div class="card empty">${icon("customers")}<p class="muted">Pick an entity, or look up a record ID above</p></div>`;
-    if (record) entity(record);
-    if (!state.workspace) { await notYet(el, "results"); return; }
-    const d = await run("results", "describe workspace");
-    if (d.event === "error" || !d.records) { await notYet(el, "results", d.event === "error" ? d : null); return d; }
-    $("left").innerHTML = `${scope("records", `The ${fmt(d.largest.length)} largest entities`)}<div id="largest"></div>`;
-    where();
-    const t = grid($("largest"), d.largest, ["entity", "records"], {labels: {entity: "entity"}, filter: false, onPick: (i) => { t.select(i); entity(d.largest[i].entity); }});
-    return d;
-  },
+  results: (el, arg) => explorePage(el, arg),
 
   async improve(el) {  // the loop: what people's decisions say about the method; a change tried, adopted, and the new round reviewed
-    const foot = `<div class="stepfoot"><a class="btn" data-go="${LOOP.after}">← ${ORDER.indexOf(LOOP.after) + 1} ${esc(STEP[LOOP.after])}</a><span class="grow"></span>
-      <a class="btn" data-go="${LOOP.back}">${icon("run")}${ORDER.indexOf(LOOP.back) + 1} ${esc(STEP[LOOP.back])}</a>
-      <a class="btn outlined" data-go="${ORDER[ORDER.indexOf(LOOP.after) + 1]}">Next: ${ORDER.indexOf(LOOP.after) + 2} ${esc(STEP[ORDER[ORDER.indexOf(LOOP.after) + 1]])} →</a></div>`;
+    const foot = `<div class="stepfoot"><a class="btn" data-go="pairs">← Review</a><span class="grow"></span>
+      <a class="btn" data-go="run">${icon("run")}Find matches</a><a class="btn outlined" data-go="records">Results →</a></div>`;
     el.innerHTML = head("improve", `<button class="btn" id="refresh">${icon("refresh")}Refresh</button>`) +
       `<div id="busy"></div><div id="out" class="faint">Loading…</div><div id="flow"></div>${foot}`;
     $("refresh").onclick = () => go("improve");
@@ -2086,12 +2396,11 @@ const SCREENS = {
       return `${esc(methodText(x.change))}: ${esc(x.why)}`;
     };
     const t = d.trust, seen = t ? {checked: t.above.checked + t.checked, false: t.above.false + t.false} : a;  // with a trust line: the merged links people checked, and its sample
-    const draw = (label, cls) => t && !t.above.pairs ? `<span class="muted">Nothing has merged yet to spot-check</span>`
-      : `<button class="btn ${cls}" id="draw">${icon("add")}${label}</button>`;
-    const verdict = !seen.checked ? [`<b>Not known yet:</b> people haven't checked a pair.`, draw(`Check ${AUDITS} matched pairs`, "filled")]
-      : !seen.false ? [`<b>So far, yes:</b> none of the ${plural(seen.checked, "pair")} people checked was wrong.`, draw(`Check ${AUDITS} more`, "outlined")]
-      : [`<b>Not yet:</b> ${fmt(seen.false)} of the ${plural(seen.checked, "pair")} people checked ${seen.false > 1 ? "were" : "was"} wrong.`, `<a class="btn filled" data-go="pairs">Look at them</a>`];
-    const changed = Object.fromEntries(Object.entries(d.method).filter(([k]) => k !== "trust"));  // the trust line is people's, not the method's
+    const review = `<a class="btn outlined" data-go="pairs">${icon("pairs")}Review pairs</a>`;
+    const verdict = !seen.checked ? [`<b>Not known yet:</b> people haven't checked a pair.`, review]
+      : !seen.false ? [`<b>So far, yes:</b> none of the ${plural(seen.checked, "pair")} people checked was wrong.`, review]
+      : [`<b>Not yet:</b> ${fmt(seen.false)} of the ${plural(seen.checked, "pair")} people checked ${seen.false > 1 ? "were" : "was"} wrong.`, `<a class="btn filled" id="wrong">Look at them</a>`];
+    const changed = Object.fromEntries(Object.entries(d.method).filter(([k]) => !["trust", "merge"].includes(k)));  // the trust line and the merge conditions are people's, not the method's
     $("out").className = "";
     $("out").innerHTML = `<div class="card"><div class="qa"><div class="q"><h2 class="question">Is the matching good enough yet?</h2><p class="answer">${verdict[0]}</p></div>${verdict[1]}</div></div>` +
       `<div class="card"><h3 style="font-size:15px;font-weight:500;margin:0 0 10px">What could be better</h3>${latest ? trialCard(latest) : ""}${
@@ -2116,11 +2425,11 @@ const SCREENS = {
            : c === "reached" && !r.reached ? '<span class="chip warn">never</span>' : esc(fmt(r[c]))});
     where();
     const busy = (label) => {  // one long command at a time: its steps as they finish, every action off until it ends
-      el.querySelectorAll("[data-try], [data-adopt], #draw, #reset").forEach((b) => { b.disabled = true; });
+      el.querySelectorAll("[data-try], [data-adopt], #reset").forEach((b) => { b.disabled = true; });
       $("busy").innerHTML = `<div class="card steps-card"><h2><span class="spin" style="border-color:var(--primary);border-right-color:transparent"></span>${esc(label)}</h2><ul class="steps"></ul></div>`;
       return (e) => { if (e.event === "step") $("busy").querySelector("ul")?.insertAdjacentHTML("beforeend", `<li>${icon("check")}${esc(DOING[e.step] || e.step)} <span class="faint">${e.seconds.toFixed(1)} s</span></li>`); };
     };
-    const failed = (e) => { $("busy").innerHTML = banner(e); el.querySelectorAll("[data-try], [data-adopt], #draw, #reset").forEach((b) => { b.disabled = false; }); };
+    const failed = (e) => { $("busy").innerHTML = banner(e); el.querySelectorAll("[data-try], [data-adopt], #reset").forEach((b) => { b.disabled = false; }); };
     const round = (tuned) => (e) => e.event === "error" ? failed(e)
       : go(LOOP.after, `<div class="banner info">${icon("loop")}<div><b>Matched again with the ${tuned ? "tuned" : "new"} method: review this round's pairs.</b></div></div>`);
     $("out").onclick = (e) => {  // the page's buttons, those the slider adds too
@@ -2132,16 +2441,10 @@ const SCREENS = {
       } else if (b.dataset.adopt) run("improve", "adopt method", {trial: b.dataset.adopt}, busy("Adopting, and finding matches")).then(round(false));
       else if (b.id === "reset") run("improve", "reset method", {}, busy("Back to the tuned method, and finding matches")).then(round(true));
     };
-    if ($("draw")) $("draw").onclick = async () => {  // only while there are matched pairs to check
-      $("draw").disabled = true;
-      const e = await run("improve", "draw pairs");
-      if (e.event === "error") failed(e);
-      else if (!e.drawn) $("busy").innerHTML = `<div class="banner info">${icon("check")}<div><b>Every merged link has been checked already.</b></div></div>`;  // nothing left to draw: said, the button stays off
-      else go(LOOP.after, `<div class="banner info">${icon("check")}<div><b>${plural(e.drawn, "link")} to check, as spot-checks.</b></div></div>`);
-    };
+    $("wrong")?.addEventListener("click", () => go("results", {tab: "pairs", status: "different"}));  // the pairs people said differ, in Explore
   },
 
-  pairs: (el, arg) => review(el, "pairs", typeof arg === "object" && arg ? "" : arg, arg && arg.pattern),
+  pairs: (el, arg) => pairsPage(el, arg),
   kinds: (el, note) => review(el, "kinds", note),
 };
 
@@ -2226,11 +2529,6 @@ async function patterns(box, trusted = false) {  // trusted: a trust line holds 
 // The two review queues, and what differs between them: their commands, columns, keys, the card a row is shown in, and
 // how answers are applied (decisions join entities at once; answers need a rerun, so the page reloads its new sheet).
 const QUEUES = {
-  pairs: {title: "Pairs", list: "list pairs", one: "decide pair", apply: "apply decisions", applyLabel: "Apply decisions", written: "decided",
-          rows: (d) => d.pairs, cols: ["why", "id_l", "id_r", "match_weight"], labels: {why: "status", match_weight: "points"}, some: "pairs to review",
-          keys: {m: "match", n: "no_match"}, answer: (r, value) => ({first: r.id_l, second: r.id_r, decision: value}), card: pairCard, after: explainCard,
-          applied: (e) => `<div class="banner info">${icon("check")}<div><b>${plural(e.decisions, "decision")} applied: ${plural(e.clusters_joined, "entity", "entities")} joined${
-            e.decisions > e.matches ? `; ${plural(e.decisions - e.matches, "pair")} said different: kept apart from the next run on` : ""}.</b></div></div>`},
   kinds: {title: "Kinds", list: "list kinds", one: "answer kind", apply: "apply answers", applyLabel: "Apply answers", rerun: true, written: "answered",
           rows: (d) => d.kinds.map((r) => ({...r, decision: {1: "person", 2: "company", 0: "unsure"}[r.kind] ?? null})), cols: ["why", "id", "name", "engine_says"], labels: {why: "status", engine_says: "engine"}, some: "records to check",
           keys: {"1": "person", "2": "company", "0": "unsure"}, answer: (r, value) => ({id: r.id, kind: value}), card: kindCard},
@@ -2241,30 +2539,6 @@ const keyHint = (keys) => `<span class="keys">${keys.map(([k, what]) => `<kbd>${
 const cardHead = (r, at, of, written, [ic, what, question], why) => `${scope(ic, `${what} · ${fmt(at + 1)} of ${fmt(of)}`)}
   <h2 class="question">${esc(question)} ${chip(r.status, written, r.decision)}</h2><p class="why">${esc(why)}</p>`;
 let graph = null;  // the run's describe matching, which the cards draw their ladders and the line from
-
-function pairCard(r, at, of) {  // the question, why it is asked, the pair as it scored (pairBody), and the answers
-  const accept = graph && graph.nodes.find((n) => n.id === "accept"), line = accept ? accept.threshold : 8, next = trustNow && trustNow.next;
-  const sampled = next && r.why === "decide" && r.match_weight >= next.down_to && (next.up_to === null || r.match_weight < next.up_to);
-  const why = r.why === "audit" ? (trustNow ? "A spot-check of a pair that merged at the trust line." : "A spot-check: the engine matched these two, and you confirm it.")
-    : sampled ? `Drawn from the pairs scoring ${span(next)}: ${trustNow.false ? `${plural(trustNow.false, "was", "were")} said different, so they stay with you.` : `if none of ${fmt(trustNow.needed)} is different, they all merge.`}`
-    : r.match_weight >= line ? "No name to compare, so the engine leaves this one to you." : `Close to the line: ${fmt(r.match_weight)} points, and ${line} are needed.`;
-  return `<div class="card one">${cardHead(r, at, of, "decided", ["pairs", "This pair", "Same entity?"], why)}${recordsOf(r)}
-    <div class="actions"><button class="btn filled" data-a="match">Same entity</button><button class="btn outlined" data-a="no_match">Different</button>
-      <button class="btn" data-skip>Skip</button>${keyHint([["M", "same entity"], ["N", "different"]])}</div>
-    <p class="then">Same: they become one entity when you apply your decisions. Different: they are kept apart for good.</p><div id="said"></div>
-    <details class="fold-line" open><summary>How it scored</summary><div class="how" data-pair="${esc(`${r.id_l} ${r.id_r}`)}">${waterfallOf(r, null)}</div></details></div>`;
-}
-
-let explaining = 0;  // a card asks how its pair scored a moment after it shows: moving down the list asks once
-function explainCard(r) {
-  clearTimeout(explaining);
-  explaining = setTimeout(async () => {
-    const x = await run("pairs", "explain pair", {first: r.id_l, second: r.id_r}), box = document.querySelector("#right .how");
-    if (x.event === "error" || !box || box.dataset.pair !== `${r.id_l} ${r.id_r}`) return;  // another pair shows by now
-    box.innerHTML = waterfallOf(r, remember(x)) + pairExtra(x);
-    if (x.group_a.length) document.querySelector('#right [data-a="match"]').textContent = `Same: merge ${fmt(x.group_a.length + x.group_b.length)} records`;
-  }, 250);
-}
 
 async function explainDialog(id, first, second) {  // how any pair of the run scored, from step 3's patterns or a customer's pairs
   const dlg = $("dlg");
@@ -3148,72 +3422,27 @@ function kindCard(r, at, of) {  // the name; what the engine thinks of it, and w
     <details class="fold-line"><summary>Where the engine and the name place it</summary>${slider(r)}</details></div>`;
 }
 
-// How many pairs people must check before each range of the trust line can merge: the answer in a line, the ranges folded.
-function showWorkload(box, d) {
-  if (d.event === "error") { box.innerHTML = banner(d); return; }
-  const at = (x) => x.up_to === null ? `${fmt(x.down_to)}+` : `${fmt(x.down_to)}–${fmt(x.up_to)}`, all = d.ranges[d.ranges.length - 1];
-  const first = d.ranges.find((x) => x.reviews_left);  // the first range still to check: those above the line merge
-  const stuck = d.ranges.find((x) => x.different && x.chance_clean === null);  // people found a false pair: no range from it down merges by points
-  const held = stuck ? `Pairs scoring ${esc(at(stuck))} and below stay with you, one by one: ${plural(stuck.different, "pair was", "pairs were")} said different there.` : "";
-  box.innerHTML = `<p class="answer">${stuck && (!first || first.down_to <= stuck.down_to) ? `${held} ${plural(all.reviews_to_here, "pair")} left to decide.`
-    : first ? `${held ? `${held} ` : ""}To let pairs scoring ${esc(at(first))} merge: ${plural(first.reviews_to_here, "pair")}. Every range: ${plural(all.reviews_to_here, "pair")}, about ${
-    fmt(d.hours.to_each_line[d.ranges.length - 1])} hours at ${fmt(d.seconds_per_pair)} s a pair${d.unnamed ? `, and ${plural(d.unnamed, "pair")} with no name compared` : ""}.`
-    : d.unnamed ? `${plural(d.unnamed, "pair")} with no name compared: people decide each.` : "Nothing to check yet."}</p><div class="workload-grid"></div>`;
-  grid(box.querySelector(".workload-grid"), d.ranges, ["range", "pairs", "sample", "chance_clean", "reviews_to_here"], {filter: false,
-       labels: {range: "points", sample: "to check", chance_clean: "chance clean", reviews_to_here: "in all"},
-       cell: (r, c) => c === "range" ? esc(at(r)) : c === "chance_clean" ? (r[c] === null ? "—" : `${Math.round(100 * r[c])}%`) : esc(fmt(r[c]))});
-}
-
 // A review page: the queue as a table, the picked row in a card beside it, answered by keyboard, one answer at a time.
-async function review(el, which, note = "", pattern = null) {  // pattern: comparison → step, the sheet's rows of one pattern
+async function review(el, which, note = "") {  // Review's person-or-company tab
   const q = QUEUES[which];
-  el.innerHTML = head(which, `<button class="btn" id="refresh">${icon("refresh")}Refresh</button>`) +  // the item asked about first and wide (#right), the queue after (#left)
+  el.innerHTML = head(which, `<button class="btn" id="refresh">${icon("refresh")}Refresh</button>`, reviewTabs(which)) +  // the item asked about first and wide (#right), the queue after (#left)
     `<div id="note">${note}</div><div class="split item-first"><div id="right" class="panel-sticky"></div>
-      <div class="queue"><div class="card progress"><div id="done-line" class="answer"></div><div id="trust"></div>
-        <div class="actions" style="margin-top:10px"><button class="btn outlined" id="apply">${icon("check")}${q.applyLabel} <span class="badge" id="written">0</span></button></div>
-        ${which === "pairs" ? '<details class="fold-line" id="workload"><summary>How many pairs must people check?</summary><div class="workload"></div></details>' : ""}</div>
-        <div id="some"></div><div id="left" class="faint">Loading…</div></div></div><div id="flow"></div>${stepFoot(which)}`;
+      <div class="queue"><div class="card progress"><div id="done-line" class="answer"></div>
+        <div class="actions" style="margin-top:10px"><button class="btn outlined" id="apply">${icon("check")}${q.applyLabel} <span class="badge" id="written">0</span></button></div></div>
+        <div id="some"></div><div id="left" class="faint">Loading…</div></div></div>`;
   $("refresh").onclick = () => go(which);
   $("apply").disabled = true;
-  if ($("workload")) $("workload").ontoggle = async () => {  // read once it is opened: the whole run's pairs, range by range
-    const box = $("workload").querySelector(".workload");
-    if (!$("workload").open || box.dataset.done) return;
-    box.dataset.done = "1";
-    showWorkload(box, await run(which, "describe review"));
-  };
   if (!state.workspace) { await notYet(el, which); return; }
-  let [d, , w] = await Promise.all([run(which, q.list), flowOf(which, $("flow")), which === "pairs" ? run(which, "describe workspace") : null]);  // flowOf sets graph
+  const d = await run(which, q.list);
   if (d.event === "error") { await notYet(el, which, d); return; }
-  const every = q.rows(d), rows = pattern ? every.filter((x) => Object.entries(pattern).every(([c, v]) => (x[c] ?? "missing") === (v ?? "missing"))) : every;
-  if (pattern) $("note").innerHTML = `<div class="banner info">${icon("pairs")}<div><b>${fmt(rows.length)} of ${plural(every.length, "pair")}:</b> ${
-    esc(Object.entries(pattern).filter(([, v]) => v && v !== "missing").map(([c, v]) => `${comp(c)} ${level(v)}`).join(" · "))}</div><a class="btn" data-go="pairs">Show all</a></div>`;
-  const sample = () => {  // the trust line's sample, counted as answers go in: applied ones from the workspace, written ones here
-    const t = trustNow, n = t && t.next;
-    const written = n ? rows.filter((x) => x.status === "written in" && x.why === "decide" && x.match_weight >= n.down_to && (n.up_to === null || x.match_weight < n.up_to)) : [];
-    return {checked: t ? Math.min(t.needed, t.checked + written.length) : 0, different: t ? t.false + written.filter((x) => x.decision === "no_match").length : 0};
-  };
-  const trust = () => {  // the trust line, and its button once its sample is clean
-    trustNow = w && w.event !== "error" ? w.trust : null;
-    const t = trustNow, n = t && t.next;
-    if (!t) return;
-    const {checked, different} = sample();
-    $("trust").innerHTML = `<div class="trustbar">${icon("check")}<span><b>${t.line === "none" ? "Nothing merges by points yet" : `Pairs scoring ${fmt(t.line)} or more merge`}</b>${
-      n ? `<span class="muted"> · checking ${span(n)}: ${fmt(checked)} of ${fmt(t.needed)}${different ? `, <span class="ink-bad">${fmt(different)} different: these stay with you</span>` : ""}</span>
-        ${seg([[checked, "var(--people)", "checked"], [Math.max(t.needed - checked, 0), "var(--line)", "to check"]])}` : ""}</span>
-      <span class="grow"></span>${n && checked >= t.needed && t.checked < t.needed ? `<span class="muted">Apply your decisions to count them</span>` : ""}${t.may_lower ? `<button class="btn filled" data-trust="lower trust" data-label="Merge ${span(n)} automatically">${icon("check")}Merge ${span(n)} automatically</button>` : ""}${
-      t.above.false ? `<button class="btn" data-trust="raise trust" data-label="Back to review">${fmt(t.above.false)} different above the line: back to review</button>` : ""}</div>`;
-    $("trust").querySelectorAll("[data-trust]").forEach((b) => b.onclick = () => action(which, b.dataset.trust, b.dataset.label,
-      (e) => e.event === "error" ? $("note").innerHTML = banner(e) : go(which, `<div class="banner info">${icon("check")}<div><b>Matched again with the new trust line.</b></div></div>`)));
-  };
-  trust();
+  const rows = q.rows(d);
   $("some").innerHTML = scope("records", `${fmt(rows.length)} ${q.some}`);
   let i = Math.max(0, rows.findIndex((r) => r.status === "open")), pending = false;
   const tally = () => {  // the badge: rows written in, not key presses
     const written = rows.filter((r) => r.status === "written in").length;
     $("written").textContent = String(written); $("apply").disabled = !written;
     const main = rows.filter((r) => r.why !== "audit"), checks = rows.length - main.length, done = main.filter((r) => r.status !== "open").length;
-    const n = which === "pairs" && trustNow && trustNow.next;  // with a trust line, what is left is its sample
-    $("done-line").innerHTML = n ? "" : `<b>${fmt(done)} of ${fmt(main.length)}</b> ${q.written}${checks ? ` · ${plural(checks, "spot-check")}` : ""}${d.applied ? ` · ${fmt(d.applied)} applied earlier` : ""}
+    $("done-line").innerHTML = `<b>${fmt(done)} of ${fmt(main.length)}</b> ${q.written}${checks ? ` · ${plural(checks, "spot-check")}` : ""}${d.applied ? ` · ${fmt(d.applied)} applied earlier` : ""}
       ${seg([[done, "var(--people)", q.written], [Math.max(main.length - done, 0), "var(--line)", "open"]])}`;
   };
   const t = grid($("left"), rows, q.cols, {labels: q.labels, selected: i, cell: (r, c) => c === "why" ? chip(r.status === "open" ? r.why : r.status, q.written, r.decision) : c === "name" ? `<span class="clip" title="${esc(r.name)}">${esc(r.name)}</span>` : c === "engine_says" ? esc(kindSays(r[c])) : esc(fmt(r[c])),
@@ -3221,9 +3450,8 @@ async function review(el, which, note = "", pattern = null) {  // pattern: compa
   const move = (step) => { i = Math.min(rows.length - 1, Math.max(0, i + step)); show(); };
   const local = () => {  // the stepper's line, from the rows this page holds: no server call per answer
     const open = rows.filter((r) => r.why === "decide" && r.status === "open").length, w = rows.filter((r) => r.status === "written in").length;
-    const n = which === "pairs" && trustNow && trustNow.next;  // with a trust line: how far its sample is
-    const line = n ? `${span(n)}: ${fmt(sample().checked)} of ${fmt(trustNow.needed)} checked` : open ? `${fmt(open)} to decide` : `${fmt(w)} ${q.written}, to apply`;
-    if (steps.steps && (open || w)) { steps.steps[which] = {state: "attention", line}; rail(); stepChip(); }
+    const line = open ? `${fmt(open)} to answer` : `${fmt(w)} ${q.written}, to apply`;
+    if (steps.steps && (open || w)) { steps.steps[which] = {state: "attention", line}; stepChip(); }
   };
   const answer = async (value) => {
     if (pending) return;  // a key held down or pressed twice: one answer for the row, then the next row
@@ -3231,7 +3459,7 @@ async function review(el, which, note = "", pattern = null) {  // pattern: compa
     try {
       const r = rows[i], e = await run(which, q.one, q.answer(r, value));
       if (e.event === "error") { $("said").innerHTML = banner(e); return; }
-      r.status = "written in"; r.decision = value; tally(); t.redraw(); local(); if (which === "pairs") trust();
+      r.status = "written in"; r.decision = value; tally(); t.redraw(); local();
       const next = rows.findIndex((x, k) => k > i && x.status === "open");
       if (next >= 0) i = next;
       show();

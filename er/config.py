@@ -641,7 +641,7 @@ def widen(p: "Pipeline", added: Iterable[tuple[str, str]]) -> "Pipeline":
                    fs=replace(p.fs, model=model, blockers=p.fs.blockers + tuple(c for b in p.fs.blockers for c in copies.get(b.name, ()))))
 
 
-METHOD_KEYS = ("line", "drop_rules", "drop_keys", "trust", "add_keys")
+METHOD_KEYS = ("line", "drop_rules", "drop_keys", "trust", "add_keys", "merge")
 
 
 def added_key(fields: list[str]) -> KeyBlocker:  # a pair key a workspace adds (method.toml add_keys): each field as `field` or `field:normalizer`
@@ -653,6 +653,7 @@ def adjust(p: "Pipeline", method: Mapping[str, object]) -> "Pipeline":
     """The pipeline with a workspace's changes to the tuned method (method.toml): `line`, the weight pairs are accepted
     at; `drop_rules`, match rules left out; `drop_keys`, pair keys left out, each with the copies widen made of it
     (name@field); `trust`, the trust line (TrustRule): "none" (nothing merges without people) or one of its steps;
+    `merge`, the conditions that merge pairs without people (er.results.check_merging), read by runs and set merging;
     `add_keys`, pair keys added, each a list of fields (`field` or `field:normalizer`), as describe method proposes them.
     Nothing changed: the same pipeline, so the same config hash. O(rules + generators)."""
     if not method:

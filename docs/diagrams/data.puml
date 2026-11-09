@@ -46,6 +46,17 @@ package "the answer: Run.write" {
     match_probability
     sources : the generators that found the pair
   }
+  entity "scored/part-n.parquet" as scored {
+    * <id>_l
+    * <id>_r
+    match_weight : bits
+    match_probability
+    sources : the generators that found the pair (none: a rule alone)
+    rule : the rule that found it
+    named : a name compared
+    keep : bridges two rule clusters or touches a record the rules left alone
+    gamma_<comparison> : the level each comparison reached
+  }
   entity "set_aside/part-n.parquet" as set_aside {
     <the input's columns>
     reason : no ID · the same ID with different content · already in the run
@@ -161,6 +172,7 @@ gold }o--|| rule_clusters : <id>
 matches }o--|| gold : <id>_l, <id>_r
 rule_kept }o--|| gold : <id>_l, <id>_r
 proposed }o--|| gold : <id>_l, <id>_r
+scored }o--|| gold : <id>_l, <id>_r
 records ||--|| gold : <id>
 kind_answers }o--|| records : <id>
 prepared ||--|| records : <id>

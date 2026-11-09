@@ -28,7 +28,8 @@ from er.strings import connect
 
 PENDING = "pending.json"  # the renames a write still owes, saved once every new file is complete
 STEPS = "steps.json"  # the run's log: one entry per run, increment or set of decisions (log, runs)
-RUN_FILES = ("gold.parquet", STEPS, PENDING, "matches", "rule_kept", "proposed", "state", "set_aside",  # what a run writes in its folder
+SCORED = "scored"  # every pair scored at 0 points or more and every rule pair, each comparison's level with it: what people browse (er.results)
+RUN_FILES = ("gold.parquet", STEPS, PENDING, "matches", "rule_kept", "proposed", SCORED, "state", "set_aside",  # what a run writes in its folder
              "qa.md", "report.txt", "review.parquet", "kind_review.parquet")
 DECISIONS = "decisions"  # people's decisions: not a run file, so a full run with overwrite keeps and applies them
 KIND_ANSWERS = "kind_answers"  # people's person/company answers, a part per sheet as given: kept as decisions are
@@ -142,6 +143,15 @@ def log(out: Path, entry: dict, append: bool, earlier: list[dict] | None = None)
                                   indent=1, default=str))
 
 
+def write_method(out: Path, method: dict) -> None:  # method.toml as `method` says, each value in TOML (tables inline)
+    from er.config import _toml
+    path = out / METHOD
+    if method:
+        path.write_text("".join(f"{k} = {_toml(v, inline=True)}\n" for k, v in method.items()), encoding="utf-8")
+    else:
+        path.unlink(missing_ok=True)
+
+
 def method(out: Path | str | None) -> dict:  # the workspace's method.toml, {} without one
     f = Path(out) / METHOD if out else None
     return toml_of(f) if f and f.exists() else {}
@@ -234,9 +244,10 @@ def current(out: Path, replacing: bool = False) -> None:
         raise InputError(f"{out}: a workspace an earlier nayose wrote ({'; '.join(what)})", fix="create it again: nayose create workspace NAME, then load its files")
 
 
-def type_in(out: Path, sheet: str, column: str, value: object, **keys: str) -> None:
+def type_in(out: Path, sheet: str, column: str, value: object, append: dict | None = None, **keys: str) -> None:
     """One answer people give, written into the workspace's sheet (review.parquet's decision, kind_review.parquet's
-    kind) on the row whose `keys` columns hold those values, as a person would type it in; None clears it. Nothing is
+    kind) on the row whose `keys` columns hold those values, as a person would type it in; None clears it. With
+    `append`, a row the sheet lacks is added with those values (a stored pair people chose to decide). Nothing is
     applied: the sheet is given back later (Run.decide, a rerun with the answers). Under the lock, and staged as every
     run file is. O(sheet rows)."""
     path = out / sheet
@@ -248,6 +259,10 @@ def type_in(out: Path, sheet: str, column: str, value: object, **keys: str) -> N
         rows = pd.Series(True, index=frame.index)
         for k, v in keys.items():
             rows &= frame[k].astype("string").eq(str(v)).fillna(False)
+        if not rows.any() and append is not None:
+            frame = pd.concat([frame, pd.DataFrame([{**keys, **append}])], ignore_index=True)
+            rows = pd.Series(False, index=frame.index)
+            rows.iloc[-1] = True
         if not rows.any():
             raise InputError(f"{path}: no row for {', '.join(f'{k} {v}' for k, v in keys.items())}",
                              fix="answer a row the sheet holds, with the IDs as the run wrote them")

@@ -33,11 +33,13 @@ import pandas as pd
 
 from er import folder, inbox, intake
 from er.io import replace_text
-from er.config import InputError, adjust, load_pipeline, restrict, sources_text, toml_of, widen
+from er.config import InputError, adjust, lit, load_pipeline, q, restrict, sources_text, toml_of, widen
 from er.folder import Busy
 from er.report import (applied, compare_records, describe_entity, describe_key, describe_matching, describe_method, describe_workspace, entity_pairs, explain_pair, fill_rates,
-                       key_how, list_patterns, review_workload, rule_how, trust_state)
+                       key_how, list_patterns, review_workload, rule_how, run_model, trust_state)
 from er.source import describe, find, lexicon
+from er.match import review_floor
+from er.results import apply_merging, check_merging, describe_merging, describe_results, list_entities, list_scored, merged_links, save_merging, show_records
 from er.strings import connect
 from er.run import Run, size_bytes, trial
 from er.settings import (COLUMNS, SPECIAL, add_feature, added_of, beside, columns_file, counted_once, features_of, load_settings, offers, own_columns,
@@ -626,10 +628,7 @@ def adopt(a: dict, emit: "Emit", method: dict) -> dict:
     path, old = ws / folder.METHOD, (ws / folder.METHOD).read_text(encoding="utf-8") if (ws / folder.METHOD).exists() else None
     with folder.run_lock(ws):  # held through the run: no other writer sees the new method before its run
         setup(a, method)  # a method that no longer fits the pipeline is refused before anything changes
-        if method:
-            path.write_text("".join(f"{k} = {json.dumps(v, ensure_ascii=False)}\n" for k, v in method.items()), encoding="utf-8")
-        else:
-            path.unlink(missing_ok=True)
+        folder.write_method(ws, method)
         try:
             return rerun_records(a, emit)
         except BaseException:
@@ -645,12 +644,13 @@ def adopt_method(a: dict, emit: "Emit") -> dict:
     f = ws / folder.TRIALS / f"{a['trial']}.json"
     if not f.exists():
         raise InputError(f"no trial {a['trial']} in {ws}", fix="try it first: nayose try method --workspace …; the last 5 trials are kept")
-    return adopt(a, emit, json.loads(f.read_text(encoding="utf-8"))["method"])
+    tried, merge = json.loads(f.read_text(encoding="utf-8"))["method"], folder.method(ws).get("merge")  # people's merge conditions as they are now, not as at the trial
+    return adopt(a, emit, {**{k: v for k, v in tried.items() if k != "merge"}, **({"merge": merge} if merge else {})})
 
 
-def reset_method(a: dict, emit: "Emit") -> dict:  # the method as tuned; the trust line stays, since people earned it, unless it no longer reads or fits
+def reset_method(a: dict, emit: "Emit") -> dict:  # the method as tuned; people's trust line and merge conditions stay, unless they no longer read or fit
     try:
-        setup(a, kept := {k: v for k, v in folder.method(Path(a["workspace"])).items() if k == "trust"})
+        setup(a, kept := {k: v for k, v in folder.method(Path(a["workspace"])).items() if k in ("trust", "merge")})
     except InputError:  # the way out every refusal of method.toml names: nothing of it kept
         kept = {}
     return adopt(a, emit, kept)
@@ -709,7 +709,12 @@ def describe_workspace_(a: dict, emit: "Emit") -> dict:
 def describe_entity_(a: dict, emit: "Emit") -> dict:
     s, out = settings_for(a), Path(a["workspace"])
     uid = s.data.unique_id
-    d = describe_entity(connect(s.compute)[0], out, uid, a["id"], [f for f in s.columns if f not in SPECIAL])
+    con, db = connect(s.compute)
+    d = describe_entity(con, out, uid, a["id"], [f for f in s.columns if f not in SPECIAL])
+    if folder.method(out).get("merge"):  # merged by the workspace's conditions since the run: the links its files don't hold
+        more, pair = merged_links(con, db, out, s, setup(a)[1], d["records"][uid].tolist()), [f"{uid}_l", f"{uid}_r"]
+        more = more[~more.set_index(pair).index.isin(d["links"].set_index(pair).index)]
+        d["links"] = pd.concat([d["links"], more], ignore_index=True)
     inside = entity_pairs(out, s, d["records"][uid].tolist(), rows(d["links"]))
     return dict(record=d["record"], entity=d["entity"], size=d["size"], records=rows(ids(d["records"], uid)), links=rows(ids(d["links"], uid)), **inside,
                 next=[dict(command=nayose("explain", "pair", "<ID>", "<ID>", "--workspace", out), why="how one pair was scored"),
@@ -867,8 +872,83 @@ def split_entity(a: dict, emit: "Emit") -> dict:
 def decide_pair(a: dict, emit: "Emit") -> dict:
     uid, out = settings_for(a).data.unique_id, Path(a["workspace"])
     first, second = sorted([a["first"], a["second"]])  # the sheet holds each pair lower ID first
-    folder.type_in(out, "review.parquet", "decision", None if a["decision"] == "clear" else a["decision"], **{f"{uid}_l": first, f"{uid}_r": second})
+    keys = {f"{uid}_l": first, f"{uid}_r": second}
+    sheet, con, stored = out / "review.parquet", duckdb.connect(), None
+    on = sheet.exists() and con.execute(f"SELECT count(*) FROM read_parquet({lit(sheet)}) WHERE {q(f'{uid}_l')} = ? AND {q(f'{uid}_r')} = ?", [first, second]).fetchall()[0][0]
+    if not on and any((out / folder.SCORED).glob("*.parquet")):  # any pair the run kept may be decided: one the sheet lacks joins it
+        stored = con.execute(f"""SELECT match_weight, sources FROM read_parquet({lit(out / folder.SCORED / '*.parquet')}, union_by_name = true)
+            WHERE {q(f'{uid}_l')} = ? AND {q(f'{uid}_r')} = ? LIMIT 1""", [first, second]).fetchall()
+    append = dict(why="decide", match_weight=stored[0][0], sources=stored[0][1]) if stored else None
+    folder.type_in(out, "review.parquet", "decision", None if a["decision"] == "clear" else a["decision"], append, **keys)
     return dict(pair=[first, second], decision=a["decision"], next=[dict(command=nayose("apply", "decisions", "--workspace", out), why="apply them")])
+
+
+def counted(a: dict, name: str, default: int) -> int:  # a page or a count: a whole number from 1
+    v = a.get(name)
+    if v in (None, ""):
+        return default
+    if not str(v).isdigit() or int(v) < 1:
+        raise InputError(f"--{name} {v}: a whole number from 1", fix=f"for example --{name} {default}")
+    return int(v)
+
+
+def conditions(a: dict) -> dict | None:  # --conditions as JSON: {"join": "and"|"or", "when": [...]}
+    if not a.get("conditions"):
+        return None
+    try:
+        return json.loads(a["conditions"])
+    except json.JSONDecodeError as e:
+        raise InputError(f"--conditions: not JSON ({e.msg})", fix='for example --conditions \'{"join": "or", "when": [{"points": 12}]}\'') from None
+
+
+def describe_results_(a: dict, emit: "Emit") -> dict:
+    s, p, _ = setup(a)
+    con, db = connect(s.compute)
+    out = Path(a["workspace"])
+    frm = number(a["from"], "--from") if a.get("from") else review_floor(p)
+    return {**describe_results(con, db, out, s, p, frm), "next": [dict(command=nayose("list", "scored", "--workspace", out, "--status", "waiting"), why="the pairs waiting for you")]}
+
+
+def list_scored_(a: dict, emit: "Emit") -> dict:
+    s, p, _ = setup(a)
+    con, db = connect(s.compute)
+    num = lambda k: number(a[k], f"--{k}") if a.get(k) not in (None, "") else None
+    return list_scored(con, db, Path(a["workspace"]), s, p, num("from"), num("to"), a.get("source"), a.get("status"), a.get("record") or None,
+                       counted(a, "page", 1), counted(a, "count", 100))
+
+
+def list_entities_(a: dict, emit: "Emit") -> dict:
+    s, p, _ = setup(a)
+    return list_entities(connect(s.compute)[0], Path(a["workspace"]), s, p, counted(a, "smallest", 2), a.get("record") or None,
+                         counted(a, "page", 1), counted(a, "count", 100))
+
+
+def show_records_(a: dict, emit: "Emit") -> dict:
+    s = settings_for(a)
+    return show_records(connect(s.compute)[0], Path(a["workspace"]), s, list(dict.fromkeys(a["ids"])))
+
+
+def describe_merging_(a: dict, emit: "Emit") -> dict:
+    s, p, _ = setup(a)
+    con, db = connect(s.compute)
+    out, m = Path(a["workspace"]), conditions(a)
+    return describe_merging(con, db, out, s, p, None if m is None else check_merging(m, p, run_model(out)))
+
+
+def set_merging(a: dict, emit: "Emit") -> dict:
+    s, p, _ = setup(a)
+    out = Path(a["workspace"])
+    m = check_merging(conditions(a) or {}, p, run_model(out))  # the run's own comparisons: a field the file lacks has none
+    con, db = connect(s.compute)
+    with folder.run_lock(out):
+        old = folder.method(out)
+        save_merging(out, m)
+        try:
+            r = apply_merging(con, db, out, s, p)
+        except BaseException:  # the method and the entities always agree: the conditions as they were
+            folder.write_method(out, old)
+            raise
+    return {**r, "next": [dict(command=nayose("describe", "results", "--workspace", out), why="what now merges")]}
 
 
 def apply_decisions(a: dict, emit: "Emit") -> dict:
@@ -876,6 +956,9 @@ def apply_decisions(a: dict, emit: "Emit") -> dict:
     out = Path(a["workspace"])
     with readable(a["file"], s, strict=True) if a["file"] else contextlib.nullcontext(out / "review.parquet") as path:
         run = Run(p, s, echo=emit.step, told=emit.progress).decide(path, out)
+    if folder.method(out).get("merge"):  # merged by people's conditions: rebuilt, so a pair said different parts at once
+        con, db = connect(s.compute)
+        apply_merging(con, db, out, s, p)
     x = run.steps[-1]
     return dict(decisions=x["decisions"], matches=x["matches"], clusters_joined=x["clusters_joined"],
                 summary=[["nothing new", "every decision was applied before"]] if not x["decisions"] else [],
@@ -1124,7 +1207,8 @@ COMMANDS: tuple[Command, ...] = (
             show={"largest": ("entity", "records"), "runs": ("at", "what", "seconds"), "inputs": ("name", "files", "bytes", "read"), "auto": ()}),
     Command("describe", "entity", "One record's entity, and what joined it",
             "The entity of the record ID: its size, each of its records (the first 200, the ID among them) with its fields and "
-            "kind, and every link between them: a rule, the model with its weight in bits, or people. O(N) in SQL.",
+            "kind, and every link between them: a rule, the model with its weight in bits, people, or the workspace's merge "
+            "conditions (auto). O(N) in SQL.",
             (Param("id", "a record ID, as the run wrote it", positional=True, metavar="ID"), WORKSPACE),
             {"record": "the ID asked for", "entity": "its entity (the cluster_id)", "size": "how many records it holds",
              "records": "each of the entity's records, the first 200",
@@ -1282,14 +1366,14 @@ COMMANDS: tuple[Command, ...] = (
              "redacted": "what the check found and redacted (0: none)", "markdown": "the report itself", "next": "the commands that usually follow"},
             "nayose try everything customers.parquet", try_everything, show={"markdown": ()}),
     Command("adopt", "method", "Adopt a method tried, and find matches with it",
-            "Writes the trial's method into the workspace's method.toml, then runs the workspace's files again with it, as "
+            "Writes the trial's method into the workspace's method.toml, its merge conditions as they are now, then runs the workspace's files again with it, as "
             "rerun records does; method.toml is left as it was if the run fails. Every later command on the workspace runs "
             "this method. O(a full run).",
             (WORKSPACE, Param("trial", "the trial's number (try method gives it)", required=True, metavar="N"), PIPELINE, COMPUTE),
             RUN_RESULT, "nayose adopt method --workspace workspaces/customers --trial 3", adopt_method),
     Command("reset", "method", "Go back to the tuned method, and find matches with it",
             "Takes the workspace's changes to the method out of method.toml (the line, the rules and keys left out or added) "
-            "and keeps its trust line, which people earned; then runs the workspace's files again, as rerun records does. "
+            "and keeps its trust line, which people earned, and their merge conditions; then runs the workspace's files again, as rerun records does. "
             "method.toml is left as it was if the run fails. O(a full run).",
             (WORKSPACE, PIPELINE, COMPUTE), RUN_RESULT, "nayose reset method --workspace workspaces/customers", reset_method),
     Command("lower", "trust", "Merge the next range of scores without people, once its sample is clean",
@@ -1326,6 +1410,74 @@ COMMANDS: tuple[Command, ...] = (
              "next": "the commands that usually follow"},
             "nayose list pairs --workspace workspaces/customers --open", list_pairs, quick=True,
             show={"pairs": ("why", "status", "id_l", "id_r", "match_weight", "accepted")}),
+    Command("describe", "results", "What the run found, at a glance",
+            "How the scores came out (every scored pair, by points: exact, from the run's patterns), the pairs waiting for "
+            "people from --from points up, by range, what merged and how, entities by size, the merge conditions, whether "
+            "matches could be missed (the probe), the groups too big to compare, and the person/company answers to give. "
+            "Reads the workspace only: no run. The first read of a run written before runs kept their pairs' levels makes "
+            "that index once (scored/), from the pairs it stored. O(N + P + E).",
+            (WORKSPACE, Param("from", "review from these points (default: the review floor)", metavar="POINTS"), PIPELINE),
+            {"records": "records", "entities": "entities", "joined": "entities of two records or more",
+             "sizes": "entities by size: label, entities", "scores": "every scored pair by points: down_to, up_to, pairs",
+             "candidates": "pairs compared", "review_from": "the points people review from",
+             "waiting": "pairs waiting for people, by range: down_to, up_to, pairs", "pairs": "the pairs kept (0 points or more), by status",
+             "merged_by": "records by what joined them: you, model, rule, or none",
+             "merging": "the merge conditions: join, when; own: what the method merges by itself when there are none (line, rules), or null",
+             "missed": "the probe's strata: stratum, fields, pairs, scored, missed, low, high",
+             "too_big": "groups too big to compare: skipped, kept", "kinds": "person/company answers to give: to_answer",
+             "next": "the commands that usually follow"},
+            "nayose describe results --workspace workspaces/customers", describe_results_, quick=True),
+    Command("list", "scored", "The pairs the run scored, best first, a page at a time",
+            "Every pair the run scored at 0 points or more and every rule pair, best first: both IDs, points, how each was "
+            "found (keys, rule), its status (waiting, merged, same, different: people's), each comparison's level and "
+            "points, and both records' compared fields; filtered by points, by how found, by status or by a record ID; "
+            "with the total the filters keep. O(E log E) + O(page·F).",
+            (WORKSPACE, Param("from", "from these points", metavar="POINTS"), Param("to", "below these points", metavar="POINTS"),
+             Param("source", "found by a rule, or by the model's keys", "choice", ("rules", "model")),
+             Param("status", "one status only; open: waiting, or decided and not applied yet", "choice", ("waiting", "merged", "same", "different", "open")),
+             Param("record", "pairs of this record ID", metavar="ID"), Param("page", "the page (default 1)", metavar="N"),
+             Param("count", "pairs a page (default 100)", metavar="N"), PIPELINE),
+            {"total": "pairs the filters keep", "typed": "of them, decided and not applied yet", "page": "this page", "count": "pairs a page",
+             "pairs": "each pair: first, second, points, sources, rule, status, said, applied, compared (comparison: level, points), fields (field: [first, second])"},
+            "nayose list scored --workspace workspaces/customers --status waiting --from 6", list_scored_, quick=True,
+            show={"pairs": ("first", "second", "points", "status", "rule")}),
+    Command("list", "entities", "The entities, largest first",
+            "Entities of --smallest records or more (default 2), largest first: how many records each holds, what joined "
+            "it, and up to three names; the one holding --record. O(N).",
+            (WORKSPACE, Param("smallest", "entities of this many records or more (default 2)", metavar="N"),
+             Param("record", "the entity of this record ID", metavar="ID"), Param("page", "the page (default 1)", metavar="N"),
+             Param("count", "entities a page (default 100)", metavar="N")),
+            {"total": "entities the filters keep", "page": "this page", "count": "entities a page",
+             "entities": "each entity: entity, records, joined_by (you, model or rule), names"},
+            "nayose list entities --workspace workspaces/customers", list_entities_, quick=True,
+            show={"entities": ("entity", "records", "joined_by")}),
+    Command("show", "records", "Records' full rows, as the file gave them",
+            "Each record's full row: every column of the records file, in its order, from the workspace's copy of it "
+            "(inputs/…/read/), with the fields each column feeds; a record set aside says why. Side by side for people to "
+            "compare. O(N), a scan of the ID column.",
+            (Param("ids", "record IDs", "many", positional=True, metavar="ID"), WORKSPACE),
+            {"columns": "the file's columns in order: column, fields (those it feeds)", "records": "each record: id, row (column: value), set_aside"},
+            "nayose show records 0000102855 0000905311 --workspace workspaces/customers", show_records_, quick=True),
+    Command("describe", "merging", "What merge conditions would merge, before they apply",
+            "The pairs the conditions merge without people (--conditions, else the workspace's), condition by condition and "
+            "together, pairs people said differ left apart, and the entities of two records or more that would then hold; "
+            "with none, what the method merges by itself. "
+            "Conditions: points (at least), rules (found by one of them), fields (each comparison at least at a level), "
+            "joined by and or or. No run. O(E + N).",
+            (WORKSPACE, Param("conditions", 'as JSON: {"join": "or", "when": [{"points": 12}, {"rules": ["…"]}, {"fields": {"name": "…"}}]}',
+                              metavar="JSON"), PIPELINE),
+            {"join": "and or or", "when": "the conditions", "each": "per condition: condition, pairs", "pairs": "pairs merged, all together",
+             "entities": "entities of two records or more then"},
+            "nayose describe merging --workspace workspaces/customers --conditions '{\"when\": [{\"points\": 12}]}'", describe_merging_, quick=True),
+    Command("set", "merging", "Merge pairs without people, by conditions you set",
+            "Keeps the conditions in the workspace (method.toml merge) and rebuilds the entities at once from people's "
+            "applied answers and the pairs the conditions merge (none: the pairs the method merges by itself, as a run does; "
+            "in a new workspace, none); a condition taken off "
+            "parts what it joined. No run: the stored pairs. Runs after this one merge by the same conditions. O(E + N).",
+            (WORKSPACE, Param("conditions", 'as JSON: {"join": "and", "when": [...]}; {} for none', metavar="JSON", required=True), PIPELINE),
+            {"join": "and or or", "when": "the conditions", "entities": "entities of two records or more", "merged": "pairs the conditions merged",
+             "next": "the commands that usually follow"},
+            "nayose set merging --workspace workspaces/customers --conditions '{\"join\": \"or\", \"when\": [{\"points\": 14}]}'", set_merging),
     Command("list", "patterns", "The model's pairs as patterns: what each comparison said, and what became of them",
             "Every pair the model scored, by its pattern (the step each comparison reached): the pairs, their mean points, how "
             "many merged, are on the review sheet for people (wait), were in its band but not asked (held: already one customer, "
@@ -1346,7 +1498,9 @@ COMMANDS: tuple[Command, ...] = (
             "nayose decide pair 0000000151 0000000152 match --workspace workspaces/customers", decide_pair, quick=True),
     Command("apply", "decisions", "Apply people's decisions to the run",
             "Each match pair joins its two entities at once, scoring nothing; no_match is kept, and a full run never accepts "
-            "the pair. Decisions are kept in decisions/; one applied before changes nothing. O(D + touched clusters) + O(N).",
+            "the pair. With merge conditions set (set merging), the entities are then rebuilt from the stored pairs, so a "
+            "no_match pair the conditions joined parts at once. Decisions are kept in decisions/; one applied before "
+            "changes nothing. O(D + touched clusters) + O(N).",
             (WORKSPACE, FILE("a file of decisions: the two ID columns and decision"), PIPELINE, COMPUTE),
             {"decisions": "decisions applied", "matches": "of them, match", "clusters_joined": "entities joined",
              "summary": "said when nothing was new", "next": "the commands that usually follow"},

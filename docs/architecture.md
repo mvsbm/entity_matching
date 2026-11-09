@@ -95,9 +95,9 @@ Not used, and why: chunked prediction (refuses given pairs, and only bounds memo
 
 ## 3 · Components
 
-![HLD 3, components: the run-time and design-time tools on top; design time (select, pipeline, evaluate, tune, generate), the run (er/run.py, er/folder.py, er/report.py), the steps (source, standardize, kind, candidates, match, cluster) and the foundation (config, settings, io, strings), with an arrow wherever one layer imports another](diagrams/components.svg)
+![HLD 3, components: the run-time and design-time tools on top; design time (select, pipeline, evaluate, tune, generate), the run (er/run.py, er/folder.py, er/report.py, er/results.py), the steps (source, standardize, kind, candidates, match, cluster) and the foundation (config, settings, io, strings), with an arrow wherever one layer imports another](diagrams/components.svg)
 
-Every module sits in one layer: the tools (`nayose`: `er/cli.py`, `er/inbox.py`, `er/auto.py`, `er/ui.py`; and `scripts/`), design time, the run (`er/run.py`, the steps of a run; `er/folder.py`, the workspace on disk; `er/report.py`, the reports for people), the steps, and the foundation. Each layer imports only the layers below it; `tests/test_design.py` fails on an import that goes up or across.
+Every module sits in one layer: the tools (`nayose`: `er/cli.py`, `er/inbox.py`, `er/auto.py`, `er/ui.py`; and `scripts/`), design time, the run (`er/run.py`, the steps of a run; `er/folder.py`, the workspace on disk; `er/report.py`, the reports for people; `er/results.py`, what a run holds, read for people without a run, and merging by people's conditions), the steps, and the foundation. Each layer imports only the layers below it; `tests/test_design.py` fails on an import that goes up or across.
 
 ## 4 · The run
 
@@ -180,10 +180,10 @@ Scores every candidate, with the u step 3 measured on this file: for each field,
 
 ### 7 · Cluster: from pairs to entities · `O(C + E·d + N)`
 
-Accepts a pair at 8 bits or more (`[model] min_match_weight`), if it touches a record the rules left alone (with `[model] bridge`, also if it joins two rule clusters), if a name was compared (`[model] needs`: the person names or the company names, filled on both sides), and if people haven't decided it is no match. Then it clusters the accepted pairs with the rules' pairs and the pairs people decided are a match (connected components: a run refuses a pipeline that asks for another resolver), and records, for each record, its cluster, the stage that resolved it, and the rule (`fs` for the model, `review` for people), with its kind and its customer's ([7](#7--person-or-company)). A cluster is named after its smallest record ID.
+Accepts a pair at 8 bits or more (`[model] min_match_weight`), if it touches a record the rules left alone (with `[model] bridge`, also if it joins two rule clusters), if a name was compared (`[model] needs`: the person names or the company names, filled on both sides), and if people haven't decided it is no match. Then it clusters the accepted pairs with the rules' pairs and the pairs people decided are a match (connected components: a run refuses a pipeline that asks for another resolver), and records, for each record, its cluster, the stage that resolved it, and the rule (`fs` for the model, `review` for people), with its kind and its customer's ([7](#7--person-or-company)). A cluster is named after its smallest record ID. A workspace with merge conditions (`method.toml` `merge`) accepts by them instead, the rules' pairs and the model's alike, as `set merging` does on the stored pairs ([6](#6--decisions)), so a run and that command give the same entities.
 
 - **Why:** pairs must become entities: if A matches B and B matches C, all three are one. Recording what resolved each record makes every merge auditable, and naming a cluster by its smallest ID makes an increment name it as a full run would. A household shares address and phone, and those two alone reach the threshold; so do a person and a company at one address. Without a name compared, people decide.
-- **Code:** `Run._load_decisions` (people's decisions, from `decisions/`), `Run.cluster` → `Run._accept` (the threshold, `match.named_sql`; with a trust line, `config.TrustRule`, only the rules' and the model's pairs at the line or above, the model's others in `proposed`), `cluster.merge` (Splink's connected components from single records over the pairs that join, as in an increment), `Run._gold` (`run.customer_kinds`), `Run._expected_false`
+- **Code:** `Run._load_decisions` (people's decisions, from `decisions/`), `Run.cluster` → `Run._accept` (the threshold, `match.named_sql`; with a trust line, `config.TrustRule`, only the rules' and the model's pairs at the line or above, the model's others in `proposed`; with merge conditions, `Run._links` and `results.merge_where`), `cluster.merge` (Splink's connected components from single records over the pairs that join, as in an increment), `Run._gold` (`run.customer_kinds`), `Run._expected_false`
 - **Increment:** the stored gold is the base, each stored cluster one node, and stored answers stand: `O(C_Δ + touched clusters)`.
 
 ### 7b · Probe: the matches no key lists · `O(N + P·K + L)`
@@ -198,7 +198,7 @@ Measures, without labels, the matches the pair keys miss. In each `[probe]` stra
 
 ### 8 · Write the workspace · `O(N + C)`
 
-Writes each table as Parquet under a temporary name, with the reports (9). Once all are complete, it saves the moves still owed in `pending.json`, then does them; `steps.json` too is written whole, then renamed; a full run starts it again, keeping the runs before it in brief (the last 200) for the workspace's activity. A full run writes into `.full.tmp/`, and its moves replace the old run's files only then: an overwrite cut short leaves the old run, people's answers included.
+Writes each table as Parquet under a temporary name, with the reports (9), and `scored/`: every pair at 0 points or more and every rule's pair, with the level each comparison reached (`Run._links`), so people can list, read and merge pairs without a run. Once all are complete, it saves the moves still owed in `pending.json`, then does them; `steps.json` too is written whole, then renamed; a full run starts it again, keeping the runs before it in brief (the last 200) for the workspace's activity. A full run writes into `.full.tmp/`, and its moves replace the old run's files only then: an overwrite cut short leaves the old run, people's answers included.
 
 - **Why:** an interruption must never leave half a run. A write cut before `pending.json` leaves the run as it was; one cut after it is finished by the next run, increment or set of decisions. A run lands with its reports or not at all: a retry finds nothing new, so it could not make them again. A new part takes the number after the highest (`folder.next_part`), so a part deleted by hand, a sheet of answers undone, frees no number to write over.
 - **Code:** `Run.write` → `folder.next_part`, `folder.stage`, `folder.finish_writes`, `Run._log` → `folder.log`
@@ -234,6 +234,8 @@ Writes each table as Parquet under a temporary name, with the reports (9). Once 
 - **Why:** people's work must change the answer at once, and must survive a full re-run. `decisions/` is not a run file, so `--overwrite` keeps it and the full run applies it again. `qa.md`, `report.txt` and the sheets describe the run before the decisions until the next run or increment writes them again.
 - **One at a time:** an answer can also be written into the workspace's sheet, a decision into `review.parquet`, a kind into `kind_review.parquet`, under the lock and staged as every run file is (`folder.type_in`). Nothing is applied until the sheet is given back; an increment keeps the decisions written in.
 - **Code:** `Run.decide` → `source.decisions` (the columns, a decided row without both IDs, a sheet with no decision, the values, a pair decided both ways), `source.known` (every ID a record of the run), `cluster.merge`, `run.customer_kinds`, `folder.stage`
+- **By people's conditions:** `nayose set merging` saves the conditions under which pairs merge without people (`method.toml` `merge`: points, rules, the step each comparison reached; all or any of them) and rebuilds `gold.parquet` from `scored/`: connected components over people's applied matches and the pairs the conditions take, less people's `no_match`, from single records. No run: `O(E·d + N)`. Off again, what they joined parts; people's answers stand.
+- **Code:** `results.apply_merging` → `results._regroup` (`results.merge_where`, `cluster.merge`), `run.customer_kinds`, `folder.stage`; `results.describe_merging` counts what they would merge first
 
 ## 7 · Person or company
 
@@ -277,6 +279,7 @@ Kept on disk. Steps are numbered as in [the run](#4--the-run); the diagram above
 | `matches/part-n.parquet` | 8, one part per run | you | accepted pairs: weight, probability, generators |
 | `rule_kept/part-n.parquet` | 8, one part per run | you | the rules' pairs, with the model's bits for each and whether it joined (`merged`) |
 | `proposed/part-n.parquet` | 8, one part per run | `describe workspace`, `lower trust` | the model's pairs below the trust line, waiting for people |
+| `scored/part-n.parquet` | 8, one part per run; once, on first use, for a run that wrote none (`results.pair_index`, from the pairs it stored, scored again) | `describe results`, `list scored`, `describe merging`, `set merging` | every pair at 0 points or more and every rule's pair: weight, how it was found, the level each comparison reached |
 | `state/records/part-n.parquet` | 8, one part per run | increments | the standardized records: the silver layer |
 | `state/rule_clusters.parquet` | 8, rewritten each run | increments | record → rule cluster |
 | `state/model.json` | 8, full runs only | increments | the fitted model: λ, and m and u per level |
@@ -292,7 +295,7 @@ Kept on disk. Steps are numbered as in [the run](#4--the-run); the diagram above
 | `report.txt` | 9 | whoever helps with the run | the run on one page, with no record's value in it |
 | `kind_review.parquet` | 9, full runs | people | records to decide 1 person or 2 company, and a draw to measure the engine and the flag |
 | `decisions/part-n.parquet` | decisions, one part per file | full runs; `describe method` | the pairs people decided: both IDs and `match` or `no_match`, the sheet's `why` and the `round` |
-| `method.toml` | `create workspace` (`trust = "none"`), `adopt method`, `reset method`, `lower trust`, `raise trust` | every command given the workspace (`config.adjust`) | its changes to the tuned method: `trust` (the trust line, `config.TrustRule`), `line`, `drop_rules`, `drop_keys`, `add_keys`; `reset method` keeps only `trust` |
+| `method.toml` | `create workspace` (`trust = "none"`), `adopt method`, `reset method`, `lower trust`, `raise trust`, `set merging` | every command given the workspace (`config.adjust`) | its changes to the tuned method: `trust` (the trust line, `config.TrustRule`), `merge` (people's merge conditions, `results.check_merging`), `line`, `drop_rules`, `drop_keys`, `add_keys`; `reset method` keeps only `trust` and `merge` |
 | `rounds.json` | 8, full runs | `describe method`; decisions | one entry per method run: config hash, method, when, links, expected false links. A run of the same method replaces the last entry. Kept, like `decisions/`, by `--overwrite` |
 | `trials/` | `try method` (`run.trial`) | `adopt method`; the next trial | each trial's result, the last 5; the clusters of the method tried against, with the method's config hash and files, reused while they are the same |
 | `set_aside/part-n.parquet` | 8, one part per run | you | records not resolved, and why: no ID; the same ID with different content; already in the run |
