@@ -168,7 +168,10 @@ def test_quick_commands_in_bursts_leave_no_threads_behind(tmp_path, population):
         class Entry(ctypes.Structure):  # THREADENTRY32
             _fields_ = [("dwSize", wintypes.DWORD), ("cntUsage", wintypes.DWORD), ("th32ThreadID", wintypes.DWORD), ("th32OwnerProcessID", wintypes.DWORD),
                         ("tpBasePri", wintypes.LONG), ("tpDeltaPri", wintypes.LONG), ("dwFlags", wintypes.DWORD)]
-        k = ctypes.windll.kernel32
+        k = ctypes.WinDLL("kernel32")
+        k.CreateToolhelp32Snapshot.restype = wintypes.HANDLE  # pointer-wide handles
+        k.Thread32First.argtypes = k.Thread32Next.argtypes = [wintypes.HANDLE, ctypes.POINTER(Entry)]
+        k.CloseHandle.argtypes = [wintypes.HANDLE]
         snap, e, n = k.CreateToolhelp32Snapshot(4, 0), Entry(dwSize=ctypes.sizeof(Entry)), 0  # TH32CS_SNAPTHREAD
         more = k.Thread32First(snap, ctypes.byref(e))
         while more:

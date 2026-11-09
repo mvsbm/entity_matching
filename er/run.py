@@ -82,9 +82,11 @@ def peak_gb() -> float:  # the process's peak resident memory so far (ru_maxrss:
             _fields_ = [("cb", wintypes.DWORD), ("PageFaultCount", wintypes.DWORD), *((x, ctypes.c_size_t) for x in (
                 "PeakWorkingSetSize", "WorkingSetSize", "QuotaPeakPagedPoolUsage", "QuotaPagedPoolUsage", "QuotaPeakNonPagedPoolUsage",
                 "QuotaNonPagedPoolUsage", "PagefileUsage", "PeakPagefileUsage"))]
+        k = ctypes.WinDLL("kernel32")
+        k.GetCurrentProcess.restype = wintypes.HANDLE  # a handle is pointer-wide: as a C int it would be cut short on 64 bits
+        k.K32GetProcessMemoryInfo.argtypes, k.K32GetProcessMemoryInfo.restype = [wintypes.HANDLE, ctypes.POINTER(Counters), wintypes.DWORD], wintypes.BOOL
         c = Counters(cb=ctypes.sizeof(Counters))
-        ctypes.windll.psapi.GetProcessMemoryInfo(ctypes.windll.kernel32.GetCurrentProcess(), ctypes.byref(c), c.cb)
-        return c.PeakWorkingSetSize / 1e9
+        return c.PeakWorkingSetSize / 1e9 if k.K32GetProcessMemoryInfo(k.GetCurrentProcess(), ctypes.byref(c), c.cb) else 0.0
     import resource
     return resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / (1e9 if sys.platform == "darwin" else 1e6)
 

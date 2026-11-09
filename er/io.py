@@ -44,11 +44,15 @@ def alive(pid: int) -> bool:
     it, so its exit code is asked instead (259: still running). O(1)."""
     if os.name == "nt":
         import ctypes
-        k = ctypes.windll.kernel32
+        from ctypes import wintypes
+        k = ctypes.WinDLL("kernel32")
+        k.OpenProcess.argtypes, k.OpenProcess.restype = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD], wintypes.HANDLE  # pointer-wide handles
+        k.GetExitCodeProcess.argtypes, k.GetExitCodeProcess.restype = [wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD)], wintypes.BOOL
+        k.CloseHandle.argtypes = [wintypes.HANDLE]
         h = k.OpenProcess(0x1000, False, pid)  # PROCESS_QUERY_LIMITED_INFORMATION
         if not h:
             return False
-        code = ctypes.c_ulong()
+        code = wintypes.DWORD()
         running = k.GetExitCodeProcess(h, ctypes.byref(code)) and code.value == 259
         k.CloseHandle(h)
         return bool(running)
