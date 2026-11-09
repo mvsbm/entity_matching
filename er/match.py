@@ -5,9 +5,11 @@ rules           a pair is accepted when every condition of one rule holds (score
 fellegi_sunter  Splink's Fellegi–Sunter model: λ from near-certain rules, u counted on the file where a level can be
                 (exact_u) and sampled where it can't, m by EM or from labels; scores any registered candidate table, so candidates and scoring stay independent
 """
+import contextlib
 import copy
 import logging
 import math
+import re
 import time
 from collections.abc import Iterable, Mapping
 from dataclasses import replace
@@ -88,15 +90,45 @@ def u_values(model_json: dict) -> U:
             for c in model_json["comparisons"]}
 
 
+def read_by(settings: dict | SettingsCreator, *rules: str) -> set[str]:
+    """The columns a linker reads: each comparison level's ("x_l", "x_r"), each blocking rule's (l."x"), each term
+    frequency's: all its records need to hold."""
+    s = settings.create_settings_dict("duckdb") if isinstance(settings, SettingsCreator) else settings
+    levels = [lv for c in s["comparisons"] for lv in c["comparison_levels"]]
+    blocking = [b["blocking_rule"] if isinstance(b, dict) else b for b in s.get("blocking_rules_to_generate_predictions", [])]
+    text = " ".join([*(lv.get("sql_condition", "") for lv in levels), *blocking, *rules])
+    return set(re.findall(r'"([^"]+)_[lr]"', text)) | set(re.findall(r'\b[lr]\."([^"]+)"', text)) | {lv["tf_adjustment_column"] for lv in levels if lv.get("tf_adjustment_column")}
+
+
+@contextlib.contextmanager
+def narrowed(df: "Records", db: DuckDBAPI, keep: set[str]):
+    """The records as a linker reads them, registered: only the columns in `keep`, so a wide file's others never travel
+    with each pair through its joins (the same scores; a column it reads and lacks fails loudly). Released after, the
+    db's cache first (it may name them)."""
+    if isinstance(df, pd.DataFrame):
+        x = db.register(df[[c for c in df.columns if c in keep]])
+    else:
+        cols = [c for c, *_ in db.duckdb_con.execute(f'DESCRIBE "{df}"').fetchall() if c in keep]
+        x = db.register(db.duckdb_con.sql(f'SELECT {", ".join(q(c) for c in cols)} FROM "{df}"'))
+    try:
+        yield x
+    finally:
+        db.duckdb_con.unregister(x.physical_name)
+
+
 def sample_u(model: FSModel, comparisons: list[Comparison], df: pd.DataFrame, db: DuckDBAPI, uid: str) -> U:
     """Splink's random sampling for just these comparisons. The sample depends only on the records, the size and the
     seed, so this equals sampling them inside the full model (tests/). O(max_pairs · comparisons)."""
     if not comparisons:
         return {}
-    linker = Linker(db.register(df), fs_settings(replace(model, comparisons=tuple(comparisons)), uid), log_level=logging.ERROR)
-    # every one of max_pairs: Splink would stop once each level has 100 hits, while u_basis and u_bound count on them all
-    linker.training.estimate_u_using_random_sampling(max_pairs=model.u_max_pairs, seed=model.seed, min_count_per_level=None)
-    return u_values(linker.misc.save_model_to_json())
+    settings = fs_settings(replace(model, comparisons=tuple(comparisons)), uid)
+    with narrowed(df, db, read_by(settings) | {uid}) as records:
+        linker = Linker(records, settings, log_level=logging.ERROR)
+        # every one of max_pairs: Splink would stop once each level has 100 hits, while u_basis and u_bound count on them all
+        linker.training.estimate_u_using_random_sampling(max_pairs=model.u_max_pairs, seed=model.seed, min_count_per_level=None)
+        model_json = linker.misc.save_model_to_json()
+        linker.table_management.invalidate_cache()
+    return u_values(model_json)
 
 
 Records = pd.DataFrame | str  # a frame, or the name of a table in the DuckDB connection behind `db`
@@ -338,13 +370,16 @@ def train_fs(model: FSModel, df: pd.DataFrame, db: DuckDBAPI, uid: str, labels: 
     if model.m_method == "em" and not em:
         raise InputError(f"no two records of the {len(t):,} the fit samples share {' or '.join(map(fields, model.em_rules))}, "
                          "the pairs it learns from", fix="map those fields to filled columns, or give a model fitted before with --model")
-    linker = Linker(db.register(t), fs_settings(model, uid, u), log_level=logging.ERROR)  # unestimated levels: handled here
-    linker.training.estimate_probability_two_random_records_match([keys_sql(r) for r in prior], recall=model.prior_recall)
-    for rule in em:
-        linker.training.estimate_parameters_using_expectation_maximisation(keys_sql(rule))
-    if model.m_method == "labels":
-        linker.training.estimate_m_from_label_column("__label__")
-    model_json = linker.misc.save_model_to_json()
+    settings = fs_settings(model, uid, u)  # unestimated levels: handled here
+    with narrowed(t, db, read_by(settings, *(keys_sql(r) for r in prior)) | {uid, "__label__"}) as records:
+        linker = Linker(records, settings, log_level=logging.ERROR)
+        linker.training.estimate_probability_two_random_records_match([keys_sql(r) for r in prior], recall=model.prior_recall)
+        for rule in em:
+            linker.training.estimate_parameters_using_expectation_maximisation(keys_sql(rule))
+        if model.m_method == "labels":
+            linker.training.estimate_m_from_label_column("__label__")
+        model_json = linker.misc.save_model_to_json()
+        linker.table_management.invalidate_cache()
     filled_m = []
     for c in model_json["comparisons"]:
         for lv in c["comparison_levels"]:
@@ -374,18 +409,19 @@ def score_fs(model_json: dict, df: Records, pairs: pd.DataFrame | str, db: DuckD
     fit = model_json["er"]
     lam = scaled_prior(model_json, n_records or rows(df, db))
     settings = {k: v for k, v in model_json.items() if k != "er"} | {"probability_two_random_records_match": lam}
-    linker = Linker(db.register(df), settings, log_level=logging.WARNING)
-    linker.table_management.invalidate_cache()  # the cache lives on the shared db, keyed by table name only
-    con, held = db.duckdb_con, []  # what it registers, released once scored: a run calls it once a slice
-    try:
-        for col, tf in fit["tf"].items():
-            held.append(db.register(pd.DataFrame({col: list(tf), f"tf_{col}": list(tf.values())})))
-            linker.table_management.register_term_frequency_lookup(held[-1], col)
-        return _predict(linker, held, db, pairs, l, r, into)
-    finally:  # the db's cache first: it names the lookups, and a linker made later on this db would read them
-        linker.table_management.invalidate_cache()
-        for x in held:
-            con.unregister(x.physical_name)
+    with narrowed(df, db, read_by(settings) | {uid}) as records:
+        linker = Linker(records, settings, log_level=logging.WARNING)
+        linker.table_management.invalidate_cache()  # the cache lives on the shared db, keyed by table name only
+        con, held = db.duckdb_con, []  # what it registers, released once scored: a run calls it once a slice
+        try:
+            for col, tf in fit["tf"].items():
+                held.append(db.register(pd.DataFrame({col: list(tf), f"tf_{col}": list(tf.values())})))
+                linker.table_management.register_term_frequency_lookup(held[-1], col)
+            return _predict(linker, held, db, pairs, l, r, into)
+        finally:  # the db's cache first: it names the lookups, and a linker made later on this db would read them
+            linker.table_management.invalidate_cache()
+            for x in held:
+                con.unregister(x.physical_name)
 
 
 def _predict(linker: Linker, held: list, db: DuckDBAPI, pairs: pd.DataFrame | str, l: str, r: str, into: str | None) -> pd.DataFrame | str:
