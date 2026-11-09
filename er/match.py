@@ -11,7 +11,7 @@ import logging
 import math
 import re
 import time
-from collections.abc import Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import replace
 from itertools import combinations, product
 
@@ -25,27 +25,32 @@ from er.config import Comparator, Comparison, DeletionKeys, FSModel, FSSpec, Inp
 
 
 def rule_edges(spec: RulesSpec, records: "Records", db: DuckDBAPI, uid: str, batch: str | None = None,
-               trust: Mapping[int, str] | None = None, into: str | None = None) -> tuple[pd.DataFrame | str, dict[str, float]]:
+               trust: Mapping[int, str] | None = None, into: str | None = None, told: Callable[..., None] | None = None) -> tuple[pd.DataFrame | str, dict[str, float]]:
     """Every rule's pairs, uid_l < uid_r, with the rule and stage that found it (the first rule in order wins a pair)
     and score 1.0: one equi-join per rule, its fuzzy conditions checked on the joined pairs only. `batch`: a table of
     records joined against all of them (an increment), O(|batch|·b) instead of every pair; `trust`: per rule (its index
     in order), a condition its record `l` must meet (values it doesn't trust left out: the keys are equal on both
-    sides). With `into`, a table in db's connection, else a frame. Also returns each rule's seconds.
+    sides). With `into`, a table in db's connection, else a frame. Also returns each rule's seconds. `told(done, total,
+    "rules")` after each rule: how far it is.
     Plain SQL, not Splink's deterministic_link, which joins every column of both records back only for us to drop them."""
     l, r, u, con = q(f"{uid}_l"), q(f"{uid}_r"), q(uid), db.duckdb_con
     name = records if isinstance(records, str) else f"er_rules_{abs(hash(id(records)))}"
     if not isinstance(records, str):
         con.register(name, records)
     left, order = (batch, "<>") if batch else (name, "<")  # a batch pair can come both ways round: DISTINCT ON keeps one
-    seconds, parts = {}, []
+    seconds, parts, every = {}, [], list(spec.each())
+    if told:
+        told(0, len(every), "rules")
     try:
-        for i, s, rule in spec.each():
+        for i, s, rule in every:
             t = time.perf_counter()
             keep = f" WHERE {trust[i]}" if trust and i in trust else ""  # in WHERE, tested before the join: in ON, after it, a placeholder's whole block joined and compared first
             con.execute(f'CREATE OR REPLACE TEMP TABLE er_rule_{i} AS SELECT least(l.{u}, r.{u}) AS {l}, greatest(l.{u}, r.{u}) AS {r} '
                         f'FROM "{left}" l JOIN "{name}" r ON {s.sql(rule)} AND l.{u} {order} r.{u}{keep}')
             seconds[rule.name] = time.perf_counter() - t
             parts.append(f"SELECT {l}, {r}, '{rule.name}' AS rule, '{s.name}' AS stage, {i} AS i FROM er_rule_{i}")
+            if told:
+                told(len(parts), len(every), "rules")
         sql = f'SELECT DISTINCT ON ({l}, {r}) {l}, {r}, rule, stage, 1.0 AS score FROM ({" UNION ALL ".join(parts)}) ORDER BY {l}, {r}, i'
         if into:
             con.execute(f'CREATE OR REPLACE TABLE "{into}" AS {sql}')

@@ -743,32 +743,38 @@ async function runOnce(command, args, onEvent, tries = 10) {
 // A long command's progress, bottom right on every page, as a download panel: what it does, how far, about how long is
 // left. Folded or closed by the person, the command runs on; the next one opens it again.
 const RUNS = ["resolve records", "rerun records", "add records", "match records"];  // a run's steps say how far it is
-const FRAC = {load: .2, budget: .23, fit: .41, rules: .45, candidates: .57, score: .87, cluster: .88, probe: .95, report: .98, write: 1};  // a run's share of its time, done as each step ends (a million records)
-const priors = {};  // a run's seconds as guessed before it starts (step 3), by command: until its steps say more
+const FRAC = {load: .2, budget: .23, fit: .41, rules: .45, candidates: .57, score: .87, cluster: .88, probe: .95, report: .98, write: 1};  // a run's share of its work, done as each step ends (a million records): the bar's, until a run here measured its own
+const lastRuns = {};  // by command: the steps of this workspace's last full run, in seconds, at the records about to run (step 3)
 const scored = (p) => `${fmt(p.done)} of ${fmt(p.total)} pairs scored · ${plural(p.likely, "likely match", "likely matches")} so far`;  // scoring, slice by slice
-function runPace(order, ended, at, now, prior, within = 0) {
-  // How far a run is (done: 0 to 1, the steps ended by their usual share, and the one under way) and about how long is
-  // left (left, seconds; null when nothing says yet). The run's pace comes from the steps ended (else the guess before it
-  // began); a step past its own expected time is `over`: no number is made up for it, and the bar holds instead of
-  // stretching the whole run. Scoring says how far it is itself (within): its own pace.
-  const share = (s) => FRAC[s] / FRAC[order[order.length - 1]], next = order[order.indexOf(ended) + 1];
-  if (!next) return {done: 1, left: 0, over: false};
-  const before = ended ? share(ended) : 0, span = share(next) - before, inStep = now - at;
-  const whole = ended ? at / before : prior;  // the whole run at the pace of the steps ended
-  if (within > 0) {
-    const rest = inStep * (1 - within) / within;
-    return {done: before + span * within, left: rest + (whole ? whole * (1 - share(next)) : rest * (1 - share(next)) / span), over: false};
+function runPace(order, ended, at, now, last, p = null, pAt = at) {
+  // How far a run is (done, 0 to 1) and how long is left (left, in seconds; null when nothing measured says), only from
+  // what this machine measured on this file: the step under way by its own count (p, counting since pAt), else by its
+  // seconds in the last full run here (last, by step); the steps after it by the last run. A part no measure covers
+  // makes the time a floor (least); a step past its last time is `over`, and only the steps after it are counted.
+  const i = order.indexOf(ended) + 1, next = order[i];
+  if (!next) return {done: 1, left: 0, least: false, over: false};
+  const share = (s) => last ? last[s] || 0 : FRAC[s] - (FRAC[RUN_STEPS[RUN_STEPS.indexOf(s) - 1]] || 0);  // a step's part of the work
+  const inStep = now - at, after = order.slice(i + 1);
+  let here = null, within = 0, over = false, least = false;
+  if (p && p.total && p.done && p.done < p.total) {  // its pace so far: the time per unit done, for the units left (all counted: what follows in the step, by last time)
+    within = Math.min(1, p.done / p.total); here = (now - pAt) * (p.total - p.done) / p.done; least = !!p.more;
+  } else if (last && next in last) {
+    over = inStep > last[next] + 15;  // a step of a few seconds is late only once it is well past them
+    within = Math.min(0.95, inStep / Math.max(last[next], 1)); here = over ? null : Math.max(0, last[next] - inStep);
   }
-  if (!whole) return {done: before, left: null, over: false};
-  const expected = whole * span, over = inStep > expected + 15;  // a step of a few seconds is late only once it is well past them
-  return {done: before + span * Math.min(0.95, inStep / expected), left: over ? null : Math.max(0, expected - inStep) + whole * (1 - share(next)), over};
+  const rest = last && after.every((s) => s in last) ? after.reduce((a, s) => a + last[s], 0) : null;
+  const done = (order.slice(0, i).reduce((a, s) => a + share(s), 0) + share(next) * within) / (order.reduce((a, s) => a + share(s), 0) || 1);
+  if (here === null && rest === null) return {done, left: null, least: false, over};
+  return {done, left: (here || 0) + (rest || 0), least: least || here === null || rest === null, over};
 }
-const paceLine = (pace, inStep) => pace.over ? `longer than usual, ${lasts(inStep)} so far` : pace.left === null ? "" : pace.left < 2 ? "almost done" : `about ${lasts(pace.left)} left`;
+const paceLine = (pace) => [pace.over ? "longer than last time" : "",
+  pace.left === null || (pace.least && pace.left < 2) ? "" : pace.left < 2 ? "almost done" : `${pace.least ? "at least" : "about"} ${lasts(pace.left)} left`].filter(Boolean).join(" · ");
 const task = {
   start(command, job, since) {  // since: when it began, for a page drawn while it runs (seconds since the epoch)
     if (this.job && this.done === null) return;  // one at a time: a second, refused at once, doesn't take the panel
-    Object.assign(this, {command, job, t0: since ? since * 1000 : Date.now(), ended: null, at: 0, p: null, done: null, prior: priors[command] ?? null, steps: [], most: 0});
-    delete priors[command];
+    Object.assign(this, {command, job, t0: since ? since * 1000 : Date.now(), ended: null, at: 0, p: null, pAt: 0, pLast: 0, done: null,
+                         last: lastRuns[command] ?? null, steps: [], most: 0, soon: "", doing: ""});
+    delete lastRuns[command];
     clearTimeout(this.hide); clearInterval(this.clock);
     this.clock = setInterval(() => this.draw(), 1000);
     $("task").hidden = false;
@@ -776,9 +782,15 @@ const task = {
   },
   event(e, job) {
     if (job !== this.job) return;
-    if (e.event === "progress") this.p = e;
-    else if (e.event === "step") { this.ended = e.step; this.at = (Date.now() - this.t0) / 1000; this.steps.push(e); }
-    else return;
+    const t = e.t ?? (Date.now() - this.t0) / 1000;  // when it came, as the server stamped it: events read again later keep their times
+    if (e.event === "progress") {
+      if (!this.p || this.p.unit !== e.unit || this.p.total !== e.total) this.pAt = this.p ? this.pLast : this.at;  // a new count: paced from where the last one ended
+      if (e.done === 0) this.pAt = t;  // or from when it said it began: what came before isn't its units' time
+      this.p = e; this.pLast = t;
+    } else if (e.event === "step") {
+      Object.assign(this, {ended: e.step, at: t}); this.steps.push(e);
+      if (RUNS.includes(this.command)) this.p = null;  // a run's counts are its step's
+    } else return;
     this.draw();
   },
   end(ok, why, job) {
@@ -792,11 +804,10 @@ const task = {
     const secs = (Date.now() - this.t0) / 1000, order = STEPS_OF[this.command] || RUN_STEPS, p = this.p;
     let left = null, now = "", done = null, soon = "";
     if (RUNS.includes(this.command)) {
-      const scoring = p && p.unit === "pairs" && order[order.indexOf(this.ended) + 1] === "score";
-      const pace = runPace(order, this.ended, this.at, secs, this.prior, scoring && p.total ? p.done / p.total : 0);
+      const next = order[order.indexOf(this.ended) + 1], pace = runPace(order, this.ended, this.at, secs, this.last, p, this.pAt);
       ({left, done} = pace);
-      soon = paceLine(pace, secs - this.at) || `${Math.round(secs)} s`;
-      now = scoring ? scored(p) : DOING[order[order.indexOf(this.ended) + 1]] || "";
+      this.soon = paceLine(pace); soon = this.soon || `${Math.round(secs)} s`;
+      this.doing = now = p && p.unit === "pairs" ? scored(p) : DOING[next] || next || "";
     } else if (p && p.total) {
       left = p.done >= p.total ? 0 : p.done ? secs * (p.total - p.done) / p.done : null;
       done = p.done / p.total;
@@ -833,10 +844,8 @@ function railBusy() {  // the step a long command runs for: its dot turning, its
 function runCard() {
   const card = current === "run" && $("out")?.querySelector(".steps-card");
   if (!card || !task.t0 || task.done !== null || !RUNS.includes(task.command)) return;
-  const order = STEPS_OF[task.command] || RUN_STEPS, secs = (Date.now() - task.t0) / 1000, p = task.p;
-  const next = order[order.indexOf(task.ended) + 1] || order[0], scoring = p && p.unit === "pairs" && next === "score" && p.total;
-  const pace = runPace(order, task.ended, task.at, secs, task.prior, scoring ? p.done / p.total : 0), soon = paceLine(pace, secs - task.at);
-  card.querySelector(".answer").innerHTML = `${lasts(secs)} so far${soon ? ` · ${soon}` : ""} · now: ${esc(scoring ? scored(p) : DOING[next] || next)}`;
+  const order = STEPS_OF[task.command] || RUN_STEPS, secs = (Date.now() - task.t0) / 1000, next = order[order.indexOf(task.ended) + 1] || order[0];
+  card.querySelector(".answer").innerHTML = `${lasts(secs)} so far${task.soon ? ` · ${task.soon}` : ""} · now: ${esc(task.doing)}`;  // as the panel last drew it
   card.querySelector(".meter i").style.width = `${Math.round(100 * Math.min(1, task.most))}%`;  // the work done, not the time spent: as the panel has it, never back
   for (const e of task.steps) {  // each stage its step has filled in
     const [node, fact] = LIT[e.step] || [], b = node && $("flow")?.querySelector(`.node[data-node=${node}]`);
@@ -1636,6 +1645,11 @@ const guess = (rows, w) => {  // a run's seconds, about, before it starts: this 
   const wide = f && f.columns ? Math.min(1, 25 / f.columns) : 1;  // its reading checks every column, a run reads the ones mapped: a wide file reads slower than it runs
   return r && w.records ? 5 + r.seconds * rows / w.records : f && f.seconds && f.rows ? 10 + 4 * wide * f.seconds * rows / f.rows : 10 + rows * 6e-5;
 };
+const lastRun = (rows, w) => {  // the steps of this workspace's last full run, in seconds, at `rows` records
+  // shortcut: scaled linearly by records; exact for the same file, rough for another size (pairs grow faster, the fit's sample not at all)
+  const r = (w.runs || []).filter((x) => x.what === "full run" && x.steps && x.records).slice(-1)[0];
+  return r ? Object.fromEntries(Object.entries(r.steps).map(([s, t]) => [s, t * rows / r.records])) : null;
+};
 const about = (s) => s < 90 ? `${Math.max(10, Math.round(s / 10) * 10)} seconds` : lasts(s);
 const NEW_FILE = ["add records", "match records"];  // their file is a new one: the file loaded last is matched already
 function field(command, name) {
@@ -1708,10 +1722,10 @@ const SCREENS = {
     el.innerHTML = head("records", `<button class="btn" data-auto>${icon("wand")}Auto mode</button><button class="btn" id="refresh">${icon("refresh")}Refresh</button>`) +
       `<div id="next"></div><div id="auto"></div><div id="out"></div><div id="flow"></div>`;
     $("refresh").onclick = () => go("records");
-    const [d] = await Promise.all([run("records", "describe workspace"), flowOf("records", $("flow"))]);
     const live = runsHere() ? longRun : !longRun && task.busy() ? {command: task.command, page: task.busy()} : null;  // whatever runs now, and where it shows
-    if (live) $("auto").innerHTML = runningCard(live);
-    else if (d.auto) sendCard($("auto"), d.auto);
+    if (live) $("auto").innerHTML = runningCard(live);  // at once: the workspace it runs on answers once it is done
+    const [d] = await Promise.all([run("records", "describe workspace"), flowOf("records", $("flow"))]);
+    if (!live && d.auto) sendCard($("auto"), d.auto);
     if (d.event === "error" || !d.records) { $("out").innerHTML = d.event === "error" ? banner(d) : emptyRun(d); return d; }
     const p = progress(d), s = p.steps[p.next];
     $("next").innerHTML = `<div class="next">${icon(s.state === "attention" ? "person" : "run")}<span><b>Next: ${ORDER.includes(p.next) ? `${ORDER.indexOf(p.next) + 1} · ` : ""}${esc(STEP[p.next])}</b>
@@ -1949,7 +1963,7 @@ const SCREENS = {
         if (d.records) grid($("matched"), d.records, ["id", "entity", "status", "by", "weight"], {cell: (r, c) => c === "status" ? chip(r.status) : esc(fmt(r[c]))});
       };
       const rows = command === "resolve records" && file ? file.rows : command === "rerun records" && w0 ? w0.records : null;
-      priors[command] = rows && w0 ? guess(rows, w0) : null;  // a new batch's size is unknown until it is read: its steps say
+      lastRuns[command] = rows && w0 ? lastRun(rows, w0) : null;  // a new batch's size is unknown until it is read: its own counts say
       const step = (e) => {  // the run as it goes: the panel keeps it (task), the card shows it (runCard)
         if (e.event === "start" || !$("out").querySelector(".steps-card")) {
           longRun = {command, visit, page: "run", workspace: state.workspace}; hold();

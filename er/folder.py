@@ -118,7 +118,9 @@ EARLIER = 200  # runs before the current full run kept in steps.json, each in br
 
 def brief(x: dict) -> dict:  # a run of steps.json as the activity lists it: when, what, the record files it read, its seconds
     return dict(at=x["at"], what="decisions" if "decisions" in x else "increment" if x.get("part") else "full run",
-                files=[f["file"] for f in x.get("inputs", []) if f.get("role") == "records"], seconds=round(sum(s["seconds"] for s in x["steps"]), 1))
+                files=[f["file"] for f in x.get("inputs", []) if f.get("role") == "records"], seconds=round(sum(s["seconds"] for s in x["steps"]), 1),
+                records=next((s.get("records") for s in x["steps"] if s["step"] == "load"), None),
+                steps={k: round(sum(s["seconds"] for s in x["steps"] if s["step"] == k), 1) for k in dict.fromkeys(s["step"] for s in x["steps"])})  # each step's seconds: the next run's estimate, on this machine and file
 
 
 def history(out: Path) -> list[dict]:  # every run steps.json holds, in brief, the earliest first: the last EARLIER before the current full run, then its own

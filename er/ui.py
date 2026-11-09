@@ -147,9 +147,9 @@ class Server:
                                     stderr=subprocess.STDOUT, bufsize=1, **CHILD)
             other = []
             for line in done.stdout:  # each step as it finishes; anything else is a crash's traceback
-                try:
-                    job.events.append(json.loads(line))
-                except json.JSONDecodeError:
+                try:  # t: when it came, in seconds since the job began, so a page drawn later paces the run as it went
+                    job.events.append({**json.loads(line), "t": round(time.time() - job.begun, 1)})
+                except (json.JSONDecodeError, TypeError):
                     other.append(line.strip())
             code = done.wait()
             if code and not any(e.get("event") in ("error", "result") for e in job.events):  # a crash: the last line of its traceback
