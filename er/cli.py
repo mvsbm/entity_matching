@@ -15,6 +15,7 @@ how to fix it); 75, the workspace is busy: try again later; 1, a pass of serve i
 import argparse
 import contextlib
 import functools
+import hashlib
 import json
 import math
 import shlex
@@ -31,6 +32,7 @@ import numpy as np
 import pandas as pd
 
 from er import folder, inbox, intake
+from er.io import replace_text
 from er.config import InputError, adjust, load_pipeline, restrict, sources_text, toml_of, widen
 from er.folder import Busy
 from er.report import (applied, compare_records, describe_entity, describe_key, describe_matching, describe_method, describe_workspace, entity_pairs, explain_pair, fill_rates,
@@ -405,10 +407,43 @@ def read_of(part: Path) -> dict | None:  # what the reader found in a part: coun
                 examples=intake.examples(part))
 
 
+KEPT = "described.json"  # a part's description, kept with it: one, replaced when what it rests on changes
+
+
+@functools.lru_cache(maxsize=1)  # bounded: the one copy of the code a process runs
+def describing_code() -> str:  # the code a description comes from, as a hash: a description made by other code is made again
+    here = Path(__file__).parent
+    return hashlib.sha256(b"".join((here / f).read_bytes() for f in ("cli.py", "source.py", "settings.py", "intake.py", "config.py"))).hexdigest()
+
+
+def described_key(a: dict, part: Path) -> str | None:
+    """All a workspace part's description rests on, as one hash: the part's files as read (their SHA-256, and the repairs
+    accepted), the workspace's mapping, the settings, the reference names and places, the command's words and the code.
+    None for anything but a workspace's part: a file read for one command alone is read again anyway."""
+    r, ws = intake.report(part), a.get("workspace")
+    if not r or not ws or not Path(a["input"]).expanduser().is_dir():
+        return None
+    s = settings_for(a)
+    ref = sorted((f.name, f.stat().st_size, f.stat().st_mtime_ns) for f in Path(s.paths["reference"]).glob("*") if f.is_file())
+    words = json.dumps([[x["sha256"], x.get("versions")] for x in r["files"]] + [r["accepted"], str(a["input"]), str(ws), ref, describing_code()])
+    rests = [words.encode(), *(f.read_bytes() for f in (settings_path(), columns_file(ws)) if f and Path(f).is_file())]
+    return hashlib.sha256(b"\0".join(rests)).hexdigest()
+
+
 def describe_records(a: dict, emit: "Emit") -> dict:
+    """A workspace part's description is kept with it (KEPT) and given again while nothing it rests on changed
+    (described_key): opening step 2 reads no record. Anything else is described as it comes. O(1) kept; else describe's."""
     with readable(a["input"], settings_for(a)) as path:
-        d = described({**a, "given": a["input"], "input": path})
-        return {**d, "read": read_of(Path(path))}
+        part = Path(path)
+        key, kept = described_key(a, part), part / KEPT
+        old = json.loads(kept.read_text(encoding="utf-8")) if key and kept.is_file() else {}
+        if key and old.get("key") == key:
+            d = old["described"]
+        else:
+            d = plain(described({**a, "given": a["input"], "input": path}))
+            if key:
+                replace_text(kept, json.dumps({"key": key, "described": d}, ensure_ascii=False))
+        return {**d, "read": read_of(part)}
 
 
 def described(a: dict) -> dict:

@@ -397,3 +397,27 @@ def test_a_parquet_file_reads_alike_whatever_its_row_groups_and_text_that_isn_t_
         r = intake.take(part, {part / "y.parquet": "y.parquet"}, spec, ref)
         texts[name] = (r["decoded"], pd.read_parquet(part / r["files"][0]["read"])["name"].tolist())
     assert texts["text"] == texts["bytes"] and texts["text"][1][:2] == ["ヤマダ", "東京都"]  # read one by one, in its own encoding
+
+
+def test_a_part_s_description_is_kept_and_made_again_only_when_what_it_rests_on_changes(tmp_path, monkeypatch, capsys):
+    from er import cli
+    pd.DataFrame({"CONT_ID": [f"R{i}" for i in range(6)], "TEL": ["0312345678"] * 6, "NAME": ["ヤマダタロウ", "サトウハナコ"] * 3}).to_parquet(tmp_path / "a.parquet", index=False)
+    ws = tmp_path / "w"
+    assert cli.main(["create", "workspace", "w", "--home", str(tmp_path), "--format", "json"]) == 0
+    assert cli.main(["load", "records", str(tmp_path / "a.parquet"), "--workspace", str(ws), "--format", "json"]) == 0
+    part = str(next((ws / "inputs").iterdir()))
+    made, real = [], cli.described
+    monkeypatch.setattr(cli, "described", lambda a: made.append(1) or real(a))
+
+    def describe() -> dict:
+        capsys.readouterr()
+        assert cli.main(["describe", "records", part, "--workspace", str(ws), "--format", "json"]) == 0
+        return json.loads(capsys.readouterr().out.splitlines()[-1])
+    kept = describe()
+    assert not made and kept["records"] == 6  # as the load left it: no record read
+    assert cli.main(["set", "feature", "Phone/Phone=TEL", "--workspace", str(ws), "--format", "json"]) == 0
+    fresh = describe()
+    assert made == [1] and fresh["slots"] != kept["slots"]  # the mapping changed: described again
+    assert describe() == fresh and made == [1]  # and kept again
+    (Path(part) / cli.KEPT).write_text(json.dumps({"key": "other", "described": {}}), encoding="utf-8")
+    assert describe() == fresh and made == [1, 1]  # a description kept for something else is never given
