@@ -112,9 +112,9 @@ class Emit:
     def step(self, x: dict) -> None:
         self._json("step", x) if self.fmt == "json" else print(step_text(x), file=self.out, flush=True)
 
-    def progress(self, done: int, total: int, unit: str) -> None:  # how far a long command has gone, for the page: JSON only
+    def progress(self, done: int, total: int, unit: str, **facts: object) -> None:  # how far a long command has gone, for the page: JSON only
         if self.fmt == "json":
-            self._json("progress", {"done": done, "total": total, "unit": unit})
+            self._json("progress", {"done": done, "total": total, "unit": unit, **facts})
 
     def line(self, text: str, **data: object) -> None:  # a running note: serve inbox's files
         self._json("line", {"text": text, **data}) if self.fmt == "json" else print(text, file=self.out, flush=True)
@@ -265,7 +265,7 @@ def check_records(a: dict, emit: "Emit") -> dict:
 
 
 def checked(a: dict, s, p, path: str, emit: "Emit") -> dict:
-    run = Run(p, s, echo=emit.step)
+    run = Run(p, s, echo=emit.step, told=emit.progress)
     run.load(path)
     plan = run.budget(stop=False)
     fill = fill_rates(run).set_index("field")
@@ -507,7 +507,7 @@ def list_workspaces(a: dict, emit: "Emit") -> dict:
 def resolve_records(a: dict, emit: "Emit") -> dict:
     s, p, pipeline = setup(a)
     out = Path(a["workspace"])
-    return after_run(Run(p, s, model=model_from(a["model"]), echo=emit.step).full(given(a), out, overwrite=a["overwrite"], pipeline_file=pipeline), out)
+    return after_run(Run(p, s, model=model_from(a["model"]), echo=emit.step, told=emit.progress).full(given(a), out, overwrite=a["overwrite"], pipeline_file=pipeline), out)
 
 
 def add_records(a: dict, emit: "Emit") -> dict:
@@ -519,7 +519,7 @@ def add_records(a: dict, emit: "Emit") -> dict:
     held = [x for x in folder.parts(out) if a["input"] and Path(a["input"]).expanduser().resolve() == x.resolve()]  # a part loaded already: as it is
     part, copied = (held[0], False) if held else folder.take_in(out, a["input"], s.input, s.paths["reference"], progress=lambda n, whole: emit.progress(n, whole, "rows")) if a["input"] else (Path(given(a)), False)
     try:
-        run = Run(p, s, echo=emit.step).increment(part, out, pipeline_file=pipeline)
+        run = Run(p, s, echo=emit.step, told=emit.progress).increment(part, out, pipeline_file=pipeline)
     except InputError as e:
         if copied and not isinstance(e, Busy):  # another job may hold it now
             shutil.rmtree(part, ignore_errors=True)
@@ -537,7 +537,7 @@ def match_records(a: dict, emit: "Emit") -> dict:
     s, p, _ = setup(a)
     out = Path(a["workspace"])
     with readable(a["input"], s) as path:
-        found = Run(p, s, echo=emit.step).match(path, out)
+        found = Run(p, s, echo=emit.step, told=emit.progress).match(path, out)
     return dict(counts={k: int(v) for k, v in found["status"].value_counts().items()}, records=rows(ids(found, s.data.unique_id)),
                 next=[dict(command=nayose("add", "records", a["input"], "--workspace", out), why="add them to the run")])
 
@@ -545,7 +545,7 @@ def match_records(a: dict, emit: "Emit") -> dict:
 def rerun_records(a: dict, emit: "Emit") -> dict:
     s, p, pipeline = setup(a)
     out = Path(a["workspace"])
-    return after_run(Run(p, s, echo=emit.step).rerun(out, pipeline_file=pipeline), out)
+    return after_run(Run(p, s, echo=emit.step, told=emit.progress).rerun(out, pipeline_file=pipeline), out)
 
 
 def try_method(a: dict, emit: "Emit") -> dict:
@@ -643,7 +643,7 @@ def raise_trust(a: dict, emit: "Emit") -> dict:
 def draw_pairs(a: dict, emit: "Emit") -> dict:
     s, p, _ = setup(a)
     out, count = Path(a["workspace"]), int(number(a.get("count") or "50", "--count", "a count of pairs, for example 50"))
-    run = Run(p, s, echo=emit.step).draw(out, count)
+    run = Run(p, s, echo=emit.step, told=emit.progress).draw(out, count)
     return dict(drawn=run.steps[-1]["drawn"], next=[dict(command=nayose("list", "pairs", "--workspace", out, "--why", "audit", "--open"), why="the audits to decide")])
 
 
@@ -818,7 +818,7 @@ def split_entity(a: dict, emit: "Emit") -> dict:
     with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
         f = Path(tmp) / "split.parquet"
         pd.DataFrame({f"{uid}_l": [first], f"{uid}_r": [second], "decision": ["no_match"], "why": ["split"]}).to_parquet(f, index=False)
-        Run(p, s, echo=emit.step).decide(f, out)
+        Run(p, s, echo=emit.step, told=emit.progress).decide(f, out)
     return rerun_records(a, emit)
 
 
@@ -833,7 +833,7 @@ def apply_decisions(a: dict, emit: "Emit") -> dict:
     s, p, _ = setup(a)
     out = Path(a["workspace"])
     with readable(a["file"], s, strict=True) if a["file"] else contextlib.nullcontext(out / "review.parquet") as path:
-        run = Run(p, s, echo=emit.step).decide(path, out)
+        run = Run(p, s, echo=emit.step, told=emit.progress).decide(path, out)
     x = run.steps[-1]
     return dict(decisions=x["decisions"], matches=x["matches"], clusters_joined=x["clusters_joined"],
                 summary=[["nothing new", "every decision was applied before"]] if not x["decisions"] else [],
@@ -864,7 +864,7 @@ def apply_answers(a: dict, emit: "Emit") -> dict:
     s, p, pipeline = setup(a)
     out = Path(a["workspace"])
     with readable(a["file"], s, strict=True) if a["file"] else contextlib.nullcontext(out / "kind_review.parquet") as path:
-        return after_run(Run(p, s, echo=emit.step, kind_labels=find(path)[0]).rerun(out, pipeline_file=pipeline), out)
+        return after_run(Run(p, s, echo=emit.step, told=emit.progress, kind_labels=find(path)[0]).rerun(out, pipeline_file=pipeline), out)
 
 
 def serve_inbox(a: dict, emit: "Emit") -> dict:
@@ -1409,7 +1409,7 @@ def reference() -> str:
            "the two differ.", "", "`nayose` (名寄せ: gathering each customer's records under one name) reads as a sentence: a "
            "verb, a noun, then the parameters. Every command takes `--help` and `--format`.", "",
            "- **`--format text`**, the default: each step on a line as it finishes, then the result, for a person.",
-           "- **`--format json`**: one JSON object per line: `{\"event\": \"step\", …}` per step (a file being read: `{\"event\": \"progress\", \"done\": …, \"total\": …, \"unit\": \"rows\"}` as it goes, the total about), then `{\"event\": \"result\", "
+           "- **`--format json`**: one JSON object per line: `{\"event\": \"step\", …}` per step (a file being read: `{\"event\": \"progress\", \"done\": …, \"total\": …, \"unit\": \"rows\"}` as it goes, the total about; a run's scoring, `\"unit\": \"pairs\"` with `\"likely\"`, the pairs at the model's line so far), then `{\"event\": \"result\", "
            "\"command\": …, …}` with the fields listed below, or `{\"event\": \"error\", \"error\": …, \"fix\": …, \"hints\": …, "
            "\"exit\": …}`. IDs are `id`, `id_l`, `id_r`, whatever the file calls them.",
            "- **Exit codes:** 0; 2, a mistake people fix (two lines: what is wrong, and the fix); 75, the workspace is busy: "

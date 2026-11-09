@@ -33,12 +33,14 @@ if TYPE_CHECKING:
 def fill_rates(run: "Run", fields: list[str] | None = None, sample: int = 10_000) -> pd.DataFrame:
     """Each field's share of filled records, flagged under 5%: a field almost never filled is often a mapping mistake.
     Then, on a random sample of `sample` records, the share of filled values that look like the field ([locale.detect];
-    a low share is a wrong column or a format the comparisons don't expect), and the share held by its most common
-    value (a placeholder such as 0000 counts as an agreement between the records that hold it). O(N·F + sample·F)."""
+    a low share is a wrong column or a format the comparisons don't expect), the share held by its most common
+    value (a placeholder such as 0000 counts as an agreement between the records that hold it), the share with no
+    letter or digit (a placeholder such as ＊ or ---), and its values' mean and longest length (a comparison's cost grows
+    with both lengths). Numbers only: no value. O(N·F + sample·F)."""
     cols = run.columns()
     fs = [f for f in (run.fields if fields is None else fields) if f in cols]
     if not fs:
-        return pd.DataFrame(columns=["field", "filled", "looks_right", "top_value", "flag"])
+        return pd.DataFrame(columns=["field", "filled", "looks_right", "top_value", "no_letters", "length", "longest", "flag"])
     filled = run.con.execute(f"SELECT {', '.join(f'avg(({q(f)} IS NOT NULL)::INT)' for f in fs)} FROM records").fetchall()[0]
     run.con.execute(f"CREATE OR REPLACE TEMP TABLE er_fill_sample AS SELECT {', '.join(f'{q(f)}::VARCHAR AS {q(f)}' for f in fs)} "
                     f"FROM records USING SAMPLE reservoir({sample} ROWS) REPEATABLE (0)")
@@ -47,7 +49,10 @@ def fill_rates(run: "Run", fields: list[str] | None = None, sample: int = 10_000
                                               + " FROM er_fill_sample").fetchall()[0])) if pattern else {}
     top = dict(run.con.execute("""SELECT field, max(n) / sum(n) FROM (SELECT field, v, count(*) AS n FROM
         (UNPIVOT er_fill_sample ON COLUMNS(*) INTO NAME field VALUE v) GROUP BY ALL) GROUP BY field""").fetchall())
-    return pd.DataFrame(dict(field=fs, filled=filled, looks_right=[looks.get(f) for f in fs], top_value=[top.get(f) for f in fs])).assign(
+    shape = run.con.execute("SELECT " + ", ".join(f"avg((NOT regexp_matches({q(f)}, '[\\pL\\pN]'))::INT), avg(length({q(f)})), max(length({q(f)}))" for f in fs)
+                            + " FROM er_fill_sample").fetchall()[0]
+    return pd.DataFrame(dict(field=fs, filled=filled, looks_right=[looks.get(f) for f in fs], top_value=[top.get(f) for f in fs],
+                             no_letters=shape[0::3], length=shape[1::3], longest=shape[2::3])).assign(
         flag=lambda d: np.where(d["filled"] < 0.05, "under 5%", ""))
 
 
@@ -197,9 +202,10 @@ def report_text(run: "Run", tables: dict[str, pd.DataFrame], pipeline: Path) -> 
     out += ["SUMMARY", *(f"  {what:<12} {value}" for what, value in summary.itertuples(index=False)), ""]
 
     fill = tables["fill"]
-    out += ["FIELDS  (looks right, top value: on a sample of 10,000 records)", *table(pd.DataFrame(dict(
+    out += ["FIELDS  (looks right, top value, no letters, length: on a sample of 10,000 records)", *table(pd.DataFrame(dict(
         field=fill["field"], filled=fill["filled"].map(pct), looks_right=fill["looks_right"].map(pct), top_value=fill["top_value"].map(pct),
-        columns=[sources_text(run.present.get(f)) for f in fill["field"]]))), ""]
+        no_letters=fill["no_letters"].map(pct), length=fill["length"].map(lambda x: "" if pd.isna(x) else f"{x:.0f}"),
+        longest=fill["longest"].map(lambda x: "" if pd.isna(x) else f"{int(x):,}"), columns=[sources_text(run.present.get(f)) for f in fill["field"]]))), ""]
 
     edges = sorted({-20, -10, 0, lo, t, t + 2, t + 4, t + 8, t + 12})
     band = "CASE " + " ".join(f"WHEN match_weight < {b} THEN {i}" for i, b in enumerate(edges)) + f" ELSE {len(edges)} END"

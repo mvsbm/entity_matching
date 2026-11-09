@@ -333,6 +333,11 @@ def test_a_long_command_shows_how_far_it_is_in_a_panel_that_folds_and_closes_and
     assert page.inner_text("#task-title") == "Loading your file: failed"
     assert page.evaluate("[runLeft(RUN_STEPS, null, 0, 5, null), runLeft(RUN_STEPS, null, 0, 5, 60), runLeft(RUN_STEPS, 'load', 20, 25, null), runLeft(RUN_STEPS, null, 0, 30, 20)]") == [
         None, 55, pytest.approx(25 / 0.23 - 25), 120]  # nothing yet; the guess; the steps so far; never less than the step it is in implies
+    page.evaluate("() => { task.start('resolve records', 'j3'); task.event({event: 'step', step: 'candidates'}, 'j3'); task.event({event: 'progress', done: 2e6, total: 8e6, unit: 'pairs', likely: 1234}, 'j3'); }")
+    assert page.inner_text("#task-title").startswith("Finding matches · ")  # scoring, slice by slice: how far, and the matches so far
+    page.click("#task-fold")
+    assert page.inner_text("#task-line").startswith("2,000,000 of 8,000,000 pairs scored · 1,234 likely matches so far · ")
+    assert page.evaluate("runLeft(RUN_STEPS, 'candidates', 100, 200, null, 0.25)") == pytest.approx(300 + 500 * (1 - 0.87) / 0.87)  # its own pace, then the rest at their share
     page.evaluate("snack('<span class=msg>Copied the report</span>')")
     page.click("#snack .x")  # a notice closed by its ✕
     assert page.is_hidden("#snack")

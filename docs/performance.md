@@ -143,6 +143,14 @@ trained once and its signals computed once; a combination fits only its combiner
 - **String functions on one thread per DuckDB call** (`er.strings.udf`). DuckDB already calls them on its threads, a
   vector of about 2,000 rows at a time, so a thread pool per call costs more than it saves. Damerau–Levenshtein, whose
   work per pair dominates on long values (a customer ID), uses every core.
+- **A comparison told its threshold** (`cl_<function>_cut`). Every condition asks whether a pair is within a threshold
+  (a Jaro–Winkler of 0.9 or more, an edit distance of 2 or less), so the function is given it and stops once the answer
+  is known (rapidfuzz's `score_cutoff`): the same pairs pass and fail, with the same score where they pass, and an edit
+  distance on long values is no longer worked out in full. On addresses of about 150 characters, the fit's 10 million
+  sampled pairs take a third of the time.
+- **Scoring in slices** (`Run.score_pairs`, a million pairs at a time). A pair's score depends on it alone, so the slices
+  score as the whole would; each slice says how far scoring is (pairs scored, and those at the model's line so far), and
+  the step's peak memory is one slice's, not every pair's. Each slice costs about 0.3 s of setting up.
 - **Threshold rule without clustering** (`accept_curve`). The rule reads only accepted and false accepted pairs per
   weight, so decision variants resolve clusters at the chosen weight only.
 - **Run cache.** Identical runs (same configuration, dataset and threshold) are computed once, in both stages.

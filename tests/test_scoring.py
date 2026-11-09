@@ -213,3 +213,22 @@ def test_settings_resolve_paths_from_any_working_folder(monkeypatch):
     root = load_settings().root
     monkeypatch.chdir(root / "notebooks")
     assert load_settings().data.bronze_dir == root / "data" / "medallion" / "bronze"
+
+
+def test_a_comparison_told_its_threshold_passes_and_fails_the_pairs_the_full_score_does():
+    import random
+    import pyarrow as pa
+    from er.strings import FUNCTIONS, udf
+    rnd = random.Random(0)
+    letters = "アイウエオカキクケコサシスセソタチツテトナニヌネノハヒフヘホ東京大阪市区町村一二三丁目番地号ビル0123456789"
+    word = lambda: "".join(rnd.choice(letters) for _ in range(rnd.choice([0, 1, 2, 3, 4, 6, 12, 40, 150, 300])))
+    base = [word() for _ in range(4000)]
+    a = pa.array(base + base[:2000])
+    b = pa.array([word() for _ in range(4000)] + [x[:-1] + rnd.choice(letters) if x else x for x in base[:2000]])  # unrelated, and one edit apart
+    for function, thresholds in {"jaro_winkler": [0.95, 0.9, 0.8, 0.75, 0, 1, 1.5], "jaro": [0.9], "levenshtein": [1, 2, 1.5, 0, -1],
+                                 "damerau_levenshtein": [1, 2], "hamming": [1]}.items():  # past the ends: every pair passes, or none, as before
+        full = np.asarray(udf(function)(a, b))
+        for t in thresholds:  # 0.8 included: a full score just under it is stored as float32 at it, and passes
+            cut = np.asarray(udf(function, cut=True)(a, b, pa.array([float(t)] * len(a))))
+            passes = (lambda x: x >= t) if FUNCTIONS[function].similarity else (lambda x: x <= t)
+            assert (passes(full) == passes(cut)).all() and (full[passes(full)] == cut[passes(full)]).all(), (function, t)

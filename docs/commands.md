@@ -7,7 +7,7 @@ Written by `scripts/document_commands.py` from the declarations in `er/cli.py`; 
 `nayose` (名寄せ: gathering each customer's records under one name) reads as a sentence: a verb, a noun, then the parameters. Every command takes `--help` and `--format`.
 
 - **`--format text`**, the default: each step on a line as it finishes, then the result, for a person.
-- **`--format json`**: one JSON object per line: `{"event": "step", …}` per step (a file being read: `{"event": "progress", "done": …, "total": …, "unit": "rows"}` as it goes, the total about), then `{"event": "result", "command": …, …}` with the fields listed below, or `{"event": "error", "error": …, "fix": …, "hints": …, "exit": …}`. IDs are `id`, `id_l`, `id_r`, whatever the file calls them.
+- **`--format json`**: one JSON object per line: `{"event": "step", …}` per step (a file being read: `{"event": "progress", "done": …, "total": …, "unit": "rows"}` as it goes, the total about; a run's scoring, `"unit": "pairs"` with `"likely"`, the pairs at the model's line so far), then `{"event": "result", "command": …, …}` with the fields listed below, or `{"event": "error", "error": …, "fix": …, "hints": …, "exit": …}`. IDs are `id`, `id_l`, `id_r`, whatever the file calls them.
 - **Exit codes:** 0; 2, a mistake people fix (two lines: what is wrong, and the fix); 75, the workspace is busy: try again later; 1, a pass of `serve inbox` stopped on a file; 130, stopped with Ctrl-C.
 - **`next`**, in every result: the commands that usually follow, each with why.
 
