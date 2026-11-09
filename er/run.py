@@ -61,10 +61,10 @@ import pandas as pd
 from er import folder
 from er.candidates import candidates, estimate
 from er.cluster import merge
-from er.config import InputError, Pipeline, bits, lit, q
+from er.config import InputError, Pipeline, bits, keys_sql, lit, q
 from er.io import code_version, config_hash, markdown, replace_text
 from er.kind import KIND_COLUMNS, NAME_MODEL, classifier as kind_classifier, kind_review_sheet, merge_answers
-from er.match import ELSE, named_sql, refreshed_u, review_floor, rule_edges, score_fs, scored_u, train_fs, u_basis
+from er.match import ELSE, fs_settings, named_sql, read_by, refreshed_u, review_floor, rule_edges, score_fs, scored_u, train_fs, u_basis
 from er.probe import missed
 from er.report import applied, qa, report_text, review_sheet, scored_again
 from er.settings import SPECIAL, Settings, fit_to_file, present_fields
@@ -210,6 +210,7 @@ class Run:
             self.con.register("er_chunk", chunk)
             self.con.execute(f"CREATE TABLE {into} AS SELECT * FROM er_chunk" if i == 0 else f"INSERT INTO {into} SELECT * FROM er_chunk")
             self.con.unregister("er_chunk")
+        self.con.execute("DROP TABLE IF EXISTS er_in")  # the file kept once, read: a copy of it no step reads again
         self.n = self._count(into)
         kinds = {}
         if self.classifier is not None:  # how many records each kind holds
@@ -330,7 +331,9 @@ class Run:
             n = self.pipeline.fit_rows
             area = q("postal_code__first3") if "postal_code__first3" in self.columns() else None
             order = f"hash({area}), hash({q(self.uid)})" if area else f"hash({q(self.uid)})"
-            sample = self.con.execute(f"SELECT * FROM records ORDER BY {order} LIMIT {n}").df().astype("string")
+            reads = read_by(fs_settings(fs.model, self.uid), *(keys_sql(r) for r in fs.model.prior_rules)) | {self.uid}  # the columns the fit reads, not the file's every one
+            cols = ", ".join(q(c) for c in self.columns() if c in reads)
+            sample = self.con.execute(f"SELECT {cols} FROM records ORDER BY {order} LIMIT {n}").df().astype("string")
             self.model = train_fs(fs.model, sample, self.db, self.uid)
             self.notes += [f"the fit found no two records sharing {f} in its sample of {len(sample):,}, so it learned nothing from them"
                            for f in self.model["er"].get("skipped", [])]

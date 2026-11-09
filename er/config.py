@@ -132,6 +132,8 @@ class Comparator:
         if self.function == "exact":
             return f"{a} = {b}"
         test = f'cl_{self.function}_cut({a}, {b}, {self.threshold}) {">=" if FUNCTIONS[self.function].similarity else "<="} {self.threshold}'  # stops once it knows
+        if self.function in ("levenshtein", "damerau_levenshtein", "hamming"):  # never less than the lengths' difference: a pair that can't pass, without the Python call
+            test = f"abs(length({a}) - length({b})) <= {self.threshold} AND {test}"
         return test if level else f"({a} = {b} OR {test})"  # a rule: equal values pass without the Python call
 
 

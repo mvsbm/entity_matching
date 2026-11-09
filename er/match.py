@@ -125,7 +125,8 @@ def sample_u(model: FSModel, comparisons: list[Comparison], df: pd.DataFrame, db
     with narrowed(df, db, read_by(settings) | {uid}) as records:
         linker = Linker(records, settings, log_level=logging.ERROR)
         # every one of max_pairs: Splink would stop once each level has 100 hits, while u_basis and u_bound count on them all
-        linker.training.estimate_u_using_random_sampling(max_pairs=model.u_max_pairs, seed=model.seed, min_count_per_level=None)
+        # in 40 chunks: the same pairs, split finer, so a chunk's comparisons (long values) never spike the memory
+        linker.training.estimate_u_using_random_sampling(max_pairs=model.u_max_pairs, seed=model.seed, min_count_per_level=None, num_chunks=40)
         model_json = linker.misc.save_model_to_json()
         linker.table_management.invalidate_cache()
     return u_values(model_json)
