@@ -86,19 +86,16 @@ def udf(function: str, cut: bool = False) -> Callable[..., pa.Array]:  # vectori
     passes and fails exactly the same pairs, in less time on long values."""
     info = FUNCTIONS[function]
     scorer = info.scorer
-    # DuckDB already calls this on its threads, a vector of ~2,000 rows at a time: a thread pool per call costs more than
-    # it saves, except for Damerau–Levenshtein on long values (a customer ID), where the work per pair dominates
-    workers = -1 if function == "damerau_levenshtein" else 1
-
-    clock = time.perf_counter if workers != 1 else time.thread_time  # its work on rapidfuzz's threads: the calling thread's time would miss it
+    # one thread per call: DuckDB already calls this on all its threads, and a pool per call costs more than it saves
+    # (Damerau–Levenshtein on 1M records: rules 15 s → 4 s, its calls of ~20 values each starting a pool)
 
     def f(a: pa.Array, b: pa.Array, threshold: pa.Array | None) -> pa.Array:
         _enter((function, "all"), time.perf_counter())
-        start = clock()
+        start = time.thread_time()  # this thread's own: not its wait for Python's lock
         try:
             return run(a, b, threshold)
         finally:
-            _leave((function, "all"), clock() - start, time.perf_counter(), len(a))
+            _leave((function, "all"), time.thread_time() - start, time.perf_counter(), len(a))
 
     def run(a: pa.Array, b: pa.Array, threshold: pa.Array | None) -> pa.Array:
         null = pc.or_(a.is_null(), b.is_null())
@@ -110,7 +107,7 @@ def udf(function: str, cut: bool = False) -> Callable[..., pa.Array]:  # vectori
         if scorer is char_jaccard:
             scores = np.array([char_jaccard(p, q) if p or q else 0.0 for p, q in zip(x, y)])
         else:
-            scores = process.cpdist(x, y, scorer=scorer, workers=workers, **early)
+            scores = process.cpdist(x, y, scorer=scorer, **early)
         return pa.array(np.asarray(scores, dtype=float), mask=null.to_numpy(zero_copy_only=False))  # NULL never satisfies a condition
     return (lambda a, b, threshold: f(a, b, threshold)) if cut else (lambda a, b: f(a, b, None))  # DuckDB counts the parameters
 
