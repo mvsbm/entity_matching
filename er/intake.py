@@ -293,25 +293,25 @@ def parquet_chunks(f: Path):  # a Parquet file's header (its columns' names), th
         for batch in pf.iter_batches(batch_size=CHUNK):
             held, n = [*held, batch], n + len(batch)
             while n >= CHUNK:
-                whole = pa.concat_batches(held)
-                yield texts(whole.slice(0, CHUNK))
+                whole = held[0] if len(held) == 1 else pa.concat_batches(held)  # one batch of a chunk, as most files come: no copy
                 held, n = [whole.slice(CHUNK)], n - CHUNK
+                yield texts(whole.slice(0, CHUNK))
         if n:
             yield texts(pa.concat_batches(held))
     except (OSError, pa.ArrowException) as e:
         raise InputError(f"{f}: can't be read as Parquet ({str(e).splitlines()[0]})", fix="copy it again, or write it again from its source") from None
 
 
-def texts(batch: pa.RecordBatch) -> list[pa.Array]:  # a chunk's columns: text as Arrow text, bytes (and text a writer stored that isn't UTF-8) and nested values as they are, the rest cast to text
+def texts(batch: pa.RecordBatch) -> list[pa.Array]:  # a chunk's columns: text as Arrow text (pa.string), bytes (and text a writer stored that isn't UTF-8) and nested values as they are, the rest cast to text
     arrays = []
     for a in batch.columns:
         a = a.dictionary_decode() if pa.types.is_dictionary(a.type) else a
         if not (pa.types.is_binary(a.type) or pa.types.is_large_binary(a.type) or pa.types.is_nested(a.type)):
-            a = a.cast(pa.large_string())
+            a = a if pa.types.is_string(a.type) else a.cast(pa.string())  # Parquet's own text as it comes: no copy
             try:
                 a.validate(full=True)
             except pa.ArrowInvalid:  # bytes stored as text that aren't UTF-8: read one by one, as bytes
-                a = a.cast(pa.large_binary())
+                a = a.cast(pa.binary())
         arrays.append(a)
     return arrays
 
@@ -390,7 +390,7 @@ def read_one(f: Path, out: Path, spec: InputSpec, m: Model, accepted: frozenset[
             name = f"{base}_{k}"
         names.append(name)
     width, nulls = len(names), frozenset(spec.nulls)
-    null_set, utf8 = pa.array(sorted(nulls), pa.large_string()), spec.encodings[0] == "utf-8"
+    null_set, utf8 = pa.array(sorted(nulls), pa.string()), spec.encodings[0] == "utf-8"
     facts = dict(file=f.name, format=fmt, delimiter=delimiter, quotes=quotes, columns=width, rows=0, decoded={}, fixed={}, proposed={}, unread=0, notes=[])
     if above:
         facts["notes"].append(f"{f.name}: {len(above)} line{'s' if len(above) > 1 else ''} above the header skipped")
@@ -498,7 +498,7 @@ def read_one(f: Path, out: Path, spec: InputSpec, m: Model, accepted: frozenset[
     def quick(arrays: list[pa.Array]) -> None:  # a Parquet chunk: what reading keeps as it is, settled per column in Arrow; the rest one by one, as flush reads them
         first, n, done = facts["rows"] + 1, len(arrays[0]) if arrays else 0, []
         for j, a in enumerate(arrays):
-            if not pa.types.is_large_string(a.type):  # bytes, or nested values: one by one
+            if not pa.types.is_string(a.type):  # bytes, or nested values: one by one
                 done.append([None if not v else v if plain(j, v) else value(j, v, first + i) for i, v in enumerate(views(a))])
                 continue
             keep, text = settled(a, numeric[j], null_set, utf8, m.garbled)
@@ -510,8 +510,8 @@ def read_one(f: Path, out: Path, spec: InputSpec, m: Model, accepted: frozenset[
                     facts["decoded"].setdefault("utf-8", 0)
                 got.append(value(j, view(v), first + int(i)))
             mask = pa.array(filled & ~keep)
-            col = pc.if_else(pa.array(keep), a, pa.scalar(None, pa.large_string()))
-            done.append(pc.replace_with_mask(col, mask, pa.array(got, pa.large_string())) if len(slow) else col)
+            col = pc.if_else(pa.array(keep), a, pa.scalar(None, pa.string()))
+            done.append(pc.replace_with_mask(col, mask, pa.array(got, pa.string())) if len(slow) else col)
             if text.any():
                 count("decoded", "utf-8", int(text.sum()))
         write(done)
@@ -520,7 +520,7 @@ def read_one(f: Path, out: Path, spec: InputSpec, m: Model, accepted: frozenset[
             progress(facts["rows"])
     for arrays in chunks:
         if writer is None:  # the first: each column learned from its values, one by one; a text column's past 50,000 are UTF-8, which tells nothing
-            study([views(a.slice(0, 50_000)) if utf8 and pa.types.is_large_string(a.type) else views(a) for a in arrays])
+            study([views(a.slice(0, 50_000)) if utf8 and pa.types.is_string(a.type) else views(a) for a in arrays])
         quick(arrays)
     for line, fields in rows:
         if trailing and len(fields) == width + 1 and not fields[-1]:  # the delimiter its writer ends records with: an empty field, nothing lost
