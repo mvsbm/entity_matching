@@ -289,16 +289,31 @@ def parquet_chunks(f: Path):  # a Parquet file's header (its columns' names), th
     try:
         pf = pq.ParquetFile(f)
         yield [view(n) for n in pf.schema_arrow.names]
+        held, n = [], 0  # a dictionary column's batches end where its row groups do: gathered back into chunks of CHUNK rows
         for batch in pf.iter_batches(batch_size=CHUNK):
-            arrays = []
-            for a in batch.columns:
-                a = a.dictionary_decode() if pa.types.is_dictionary(a.type) else a
-                t = a.type
-                bytes_ = pa.types.is_binary(t) or pa.types.is_large_binary(t)
-                arrays.append(a if bytes_ or pa.types.is_nested(t) else a.cast(pa.large_string()))
-            yield arrays
+            held, n = [*held, batch], n + len(batch)
+            while n >= CHUNK:
+                whole = pa.concat_batches(held)
+                yield texts(whole.slice(0, CHUNK))
+                held, n = [whole.slice(CHUNK)], n - CHUNK
+        if n:
+            yield texts(pa.concat_batches(held))
     except (OSError, pa.ArrowException) as e:
         raise InputError(f"{f}: can't be read as Parquet ({str(e).splitlines()[0]})", fix="copy it again, or write it again from its source") from None
+
+
+def texts(batch: pa.RecordBatch) -> list[pa.Array]:  # a chunk's columns: text as Arrow text, bytes (and text a writer stored that isn't UTF-8) and nested values as they are, the rest cast to text
+    arrays = []
+    for a in batch.columns:
+        a = a.dictionary_decode() if pa.types.is_dictionary(a.type) else a
+        if not (pa.types.is_binary(a.type) or pa.types.is_large_binary(a.type) or pa.types.is_nested(a.type)):
+            a = a.cast(pa.large_string())
+            try:
+                a.validate(full=True)
+            except pa.ArrowInvalid:  # bytes stored as text that aren't UTF-8: read one by one, as bytes
+                a = a.cast(pa.large_binary())
+        arrays.append(a)
+    return arrays
 
 
 def views(a: pa.Array) -> list[str | None]:  # a Parquet column's values as a CSV's fields come: text as its bytes (latin-1 characters), nested values as JSON
@@ -489,7 +504,11 @@ def read_one(f: Path, out: Path, spec: InputSpec, m: Model, accepted: frozenset[
             keep, text = settled(a, numeric[j], null_set, utf8, m.garbled)
             filled = pc.fill_null(pc.greater(pc.binary_length(a), 0), False).to_numpy(zero_copy_only=False)
             slow = np.flatnonzero(filled & ~keep)
-            got = [value(j, view(v), first + int(i)) for i, v in zip(slow, a.take(pa.array(slow, pa.int64())).to_pylist())]
+            t0, got = int(np.argmax(text)) if text.any() else len(a), []
+            for i, v in zip(slow, a.take(pa.array(slow, pa.int64())).to_pylist()):
+                if i > t0:  # a UTF-8 value settled before this one: counted first, as one by one would (the report's order)
+                    facts["decoded"].setdefault("utf-8", 0)
+                got.append(value(j, view(v), first + int(i)))
             mask = pa.array(filled & ~keep)
             col = pc.if_else(pa.array(keep), a, pa.scalar(None, pa.large_string()))
             done.append(pc.replace_with_mask(col, mask, pa.array(got, pa.large_string())) if len(slow) else col)

@@ -367,3 +367,33 @@ def test_a_parquet_file_read_by_column_reads_as_value_by_value_does(tmp_path, mo
     for a, b in zip(quick[1:], slow[1:]):
         pd.testing.assert_frame_equal(a, b)
     assert quick[0]["decoded"]["utf-8"] > 0 and quick[0]["fixed"]["placeholders"] > 0  # both paths were taken
+
+
+def test_a_parquet_file_reads_alike_whatever_its_row_groups_and_text_that_isn_t_utf8_reads_as_bytes(tmp_path, monkeypatch):
+    import pyarrow as pa
+    from er import intake
+    ref, spec = load_settings().paths["reference"], intake.InputSpec()
+    monkeypatch.setattr(intake, "CHUNK", 20)
+    table = pa.table({"id": [f"R{i}" for i in range(50)], "kind": pa.array(["法人", "個人"] * 25).dictionary_encode(),  # a category: its batches end with its row groups
+                      "amount": ["abc"] * 4 + ["12345.0"] * 46})  # the first chunk of 20 says: numbers, written by a spreadsheet
+
+    def read(where: str, **write) -> tuple:
+        part = tmp_path / where
+        part.mkdir()
+        pq.write_table(table, part / "x.parquet", **write)
+        r = intake.take(part, {part / "x.parquet": "x.parquet"}, spec, ref)
+        return ({k: v for k, v in r.items() if k != "seconds"}, (part / r["files"][0]["read"]).read_bytes())
+    whole, groups = read("whole"), read("groups", row_group_size=4)
+    assert whole == groups and whole[0]["fixed"] == {"numbers": 46}  # the same chunks, so the same first chunk learned from: byte for byte
+    cp932 = [x.encode("cp932") for x in ("ヤマダ", "東京都")] + [b"abc"]
+    data = b"".join(cp932)
+    offsets = pa.py_buffer(np.cumsum([0, *map(len, cp932)]).astype(np.int32).tobytes())
+    stored = pa.Array.from_buffers(pa.string(), len(cp932), [None, offsets, pa.py_buffer(data)])  # bytes a writer stored as text, unchecked
+    texts = {}
+    for name, column in (("text", stored), ("bytes", pa.array(cp932, pa.binary()))):
+        part = tmp_path / name
+        part.mkdir()
+        pq.write_table(pa.table({"id": ["a", "b", "c"], "name": column}), part / "y.parquet")
+        r = intake.take(part, {part / "y.parquet": "y.parquet"}, spec, ref)
+        texts[name] = (r["decoded"], pd.read_parquet(part / r["files"][0]["read"])["name"].tolist())
+    assert texts["text"] == texts["bytes"] and texts["text"][1][:2] == ["ヤマダ", "東京都"]  # read one by one, in its own encoding
