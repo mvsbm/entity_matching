@@ -140,9 +140,11 @@ trained once and its signals computed once; a combination fits only its combiner
   does, each cluster one node, so connected components run over the clusters the pairs touch, not over every record.
 - **An increment's records in one table**: the stored parts and the batch are read once, into `records`, which every
   later step reads.
-- **String functions on one thread per DuckDB call** (`er.strings.udf`). DuckDB already calls them on its threads, a
-  vector of about 2,000 rows at a time, so a thread pool per call costs more than it saves. Damerau–Levenshtein, whose
-  work per pair dominates on long values (a customer ID), uses every core.
+- **String functions on one thread per DuckDB call** (`er.strings.udf`). DuckDB already calls them on all its threads,
+  so a thread pool per call costs more than it saves: the rules call Damerau–Levenshtein about 20 values at a time, and
+  on a million records a pool per call made the rules take 15 s instead of 4 s. Running the functions in worker
+  processes instead was slower (the fit 21 s instead of 12 s): a value takes 0.2 to 1 µs to compare, and passing a batch
+  to another process costs more than that.
 - **A comparison told its threshold** (`cl_<function>_cut`). Every condition asks whether a pair is within a threshold
   (a Jaro–Winkler of 0.9 or more, an edit distance of 2 or less), so the function is given it and stops once the answer
   is known (rapidfuzz's `score_cutoff`): the same pairs pass and fail, with the same score where they pass, and an edit
