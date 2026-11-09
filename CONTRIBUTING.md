@@ -3,7 +3,8 @@
 # Contributing
 
 A change reaches `main` through a pull request whose checks pass (`.github/workflows/tests.yml`, on Python 3.12 and
-3.14), rebased onto it. Each rule below says why it holds and what checks it: a test, the pipeline, or the review
+3.14: lint, the page's script and the fast tests), rebased onto it. Its author runs every tier first; `main` runs them
+all after it merges, on Windows too, and so does a run started by hand on a branch (`gh workflow run tests.yml --ref BRANCH`). Each rule below says why it holds and what checks it: a test, the pipeline, or the review
 every pull request gets. Where code can check a rule, it does.
 
 ## The rules
@@ -18,7 +19,7 @@ every pull request gets. Where code can check a rule, it does.
 | 6 | **A write is sent once.** The same command with the same arguments, asked again while it runs, is that run; a review answer given while the one before is being written is ignored | a key held down, a button clicked twice | the browser tests in `tests/test_ui_page.py` |
 | 7 | **Declared once, read by everything.** Commands in `er/cli.py` `COMMANDS`; what each page runs, in its layout; what differs between the review queues, in `QUEUES`. Things are looked up by name, never by position | a second copy drifts from the first | `tests/test_design.py`: the reference against the declarations; `tests/test_ui_server.py`: the layout against the declarations |
 | 8 | **One owner per job.** The workspace is `er/folder.py`'s, every input `er/source.py`'s, a command's events `er/cli.py`'s `Emit` | two writers of one thing disagree | the layer and diagram checks in `tests/test_design.py`; review |
-| 9 | **The unhappy paths are tested, at the real size:** two requests at once, an input given twice, the real data size (a kinds sheet holds up to 3,000 records), a server that stops. A check done by hand becomes a test | a careful walk that waits after every step never meets a race | review; CI runs the browser tests with Chromium installed |
+| 9 | **The unhappy paths are tested, at the real size:** two requests at once, an input given twice, the real data size (a kinds sheet holds up to 3,000 records), a server that stops. A check done by hand becomes a test | a careful walk that waits after every step never meets a race | review; the browser tests, run before a push and on `main` with Chromium installed |
 | 10 | **Every pull request is reviewed before it merges**, its checklist ticked | an author's own walk follows the paths the author thought of | `.github/workflows/checklist.yml` fails while a box of `.github/pull_request_template.md` is unticked |
 | 11 | **The highlight is where you are.** The highlighted item in the page's left column is the step the page serves: with no workspace, the Overview is step 1 | a person reads the highlight, not the heading, to know where they are | the browser tests in `tests/test_ui_page.py`, on the first screen |
 | 12 | **A control that can't act yet is off, and says when it will.** A button or box that needs a workspace or a result is disabled, with the reason beside it; a page can always be opened, and says what it needs | a click that does nothing, or fails, teaches a person nothing | the browser tests in `tests/test_ui_page.py`, before and after the first run |
@@ -38,7 +39,7 @@ pipelines is marked `slow`, and one that opens the page in Chromium `browser`, b
 .venv/bin/python -m pytest -m "not slow and not browser"   # the fast checks: about 20 s
 .venv/bin/python -m pytest -m "slow and not browser"       # whole runs on a generated population: minutes
 .venv/bin/python -m pytest -m browser                      # the page in Chromium (once: python -m playwright install chromium)
-.venv/bin/python -m pytest                                 # all of them (CI runs the browser ones on 3.12)
+.venv/bin/python -m pytest                                 # all of them: before every push (a pull request's CI runs the fast ones)
 .venv/bin/python -m pytest -n auto                         # any of these, on every core at once, as CI runs them
 ```
 
