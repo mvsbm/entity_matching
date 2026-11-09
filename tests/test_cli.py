@@ -407,6 +407,7 @@ def test_describe_says_what_a_run_folder_holds_and_what_joined_an_entity(tmp_pat
     gold = pd.read_parquet(out / "gold.parquet")
     d = describe_workspace(run.con, out, uid)
     assert (d["records"], d["entities"]) == (len(gold), gold["cluster_id"].nunique()) and d["runs"][0]["what"] == "full run"
+    assert d["runs"][0]["records"] == len(gold) and {"load", "fit", "score"} <= set(d["runs"][0]["steps"])  # each step's seconds: the next run's estimate
     assert d["pairs"]["decide"] + d["pairs"]["audit"] == len(pd.read_parquet(out / "review.parquet")) and not d["write_owed"]
     assert d["summary"][0][0] == "records"
     big = d["largest"][0]

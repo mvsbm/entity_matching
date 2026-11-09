@@ -7,7 +7,7 @@ Written by `scripts/document_commands.py` from the declarations in `er/cli.py`; 
 `nayose` (名寄せ: gathering each customer's records under one name) reads as a sentence: a verb, a noun, then the parameters. Every command takes `--help` and `--format`.
 
 - **`--format text`**, the default: each step on a line as it finishes, then the result, for a person.
-- **`--format json`**: one JSON object per line: `{"event": "step", …}` per step (a file being read: `{"event": "progress", "done": …, "total": …, "unit": "rows"}` as it goes, the total about; a run's scoring, `"unit": "pairs"` with `"likely"`, the pairs at the model's line so far), then `{"event": "result", "command": …, …}` with the fields listed below, or `{"event": "error", "error": …, "fix": …, "hints": …, "exit": …}`. IDs are `id`, `id_l`, `id_r`, whatever the file calls them.
+- **`--format json`**: one JSON object per line: `{"event": "step", …}` per step (a file being read: `{"event": "progress", "done": …, "total": …, "unit": "rows"}` as it goes, the total about; a run's long steps, each its own count: `"records"` loaded, `"rules"` applied, `"keys"` joined (weighed by the pairs each lists, with `"more"` when oversized blocks wait for the gate), `"sampled pairs"` the gate scored, and `"pairs"` scored with `"likely"`, the pairs at the model's line so far), then `{"event": "result", "command": …, …}` with the fields listed below, or `{"event": "error", "error": …, "fix": …, "hints": …, "exit": …}`. IDs are `id`, `id_l`, `id_r`, whatever the file calls them.
 - **Exit codes:** 0; 2, a mistake people fix (two lines: what is wrong, and the fix); 75, the workspace is busy: try again later; 1, a pass of `serve inbox` stopped on a file; 130, stopped with Ctrl-C.
 - **`next`**, in every result: the commands that usually follow, each with why.
 
@@ -568,7 +568,7 @@ Records and entities, the largest entities, each run so far, the pairs and kinds
 | `records` | records |
 | `entities` | entities |
 | `largest` | the 10 largest entities |
-| `runs` | each run so far: at, what, the record files it read, seconds |
+| `runs` | each run so far: at, what, the record files it read, seconds, records loaded, each step's seconds |
 | `pairs` | open pairs to decide and audit, and decisions written in |
 | `kinds` | open records to decide and to measure, and answers written in |
 | `set_aside` | records set aside |

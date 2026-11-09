@@ -279,16 +279,31 @@ def test_describe_matching_draws_the_pipeline_with_the_run_s_numbers(tmp_path, p
     assert bare["records"]["count"] is None and bare["rules"]["rules"][0]["pairs"] is None and bare["score"]["comparisons"][0]["levels"][0]["bits"] is None
 
 
-def test_scoring_in_slices_gives_the_scores_scoring_all_at_once_gives_and_says_how_far_it_is(tmp_path, population):
+def test_scoring_in_slices_gives_the_scores_scoring_all_at_once_gives_and_each_long_step_says_how_far_it_is(tmp_path, population):
     from er.run import Run
     s, p, g = population
     g.df.to_parquet(tmp_path / "all.parquet", index=False)
     first = Run(p, s).full(tmp_path / "all.parquet", tmp_path / "a")
     told = []
     whole = Run(p, s, model=first.model).full(tmp_path / "all.parquet", tmp_path / "b")
-    sliced = Run(p, s, model=first.model, score_pairs=300, told=lambda *a, **k: told.append((*a, k["likely"]))).full(tmp_path / "all.parquet", tmp_path / "c")
+    sliced = Run(p, s, model=first.model, score_pairs=300, chunk_rows=100, told=lambda *a, **k: told.append((*a, k))).full(tmp_path / "all.parquet", tmp_path / "c")
     scores = [r.con.execute(f"SELECT * FROM scores ORDER BY {r.l}, {r.r}").df() for r in (whole, sliced)]
     pd.testing.assert_frame_equal(*scores, rtol=1e-9)  # a pair's score depends on it alone: the same in a slice as in the whole
+    counts = {}
+    for done, of, unit, _ in told:
+        counts.setdefault(unit, []).append((done, of))
+    assert {"records", "rules", "keys", "pairs"} <= set(counts)  # load, rules, candidates' joins, scoring: each counts its own work
+    for unit, seen in counts.items():  # up to its total, never back
+        assert [d for d, _ in seen] == sorted(d for d, _ in seen) and seen[-1][0] == seen[-1][1] == seen[0][1], unit
+    assert counts["records"][-1][0] == whole.n and counts["rules"][-1][0] == len(list(p.rules.each())) and len(counts["records"]) > 2  # from 0, a chunk at a time
+    weighed = []
+    probe = Run(p, s, told=lambda *a, **k: weighed.append((*a, k["more"])))
+    probe.n, g = 1000, len(p.fs.blockers)  # a deletion key's normal pairs (its repeats taken off) below its oversized blocks': below 0
+    probe.plan = pd.DataFrame(dict(kind=["rule", *["generator"] * g], normal=[5, -114_800, *[10] * (g - 1)], oversized_blocks=[0, 1, *[0] * (g - 1)]))
+    for i in range(g + 1):
+        probe._joined()(i, g, "keys")
+    assert [x[0] for x in weighed] == sorted(x[0] for x in weighed) and weighed[0][0] == 0 and weighed[-1][0] == weighed[-1][1] > 0 and all(x[3] for x in weighed)
+    told = [(*x[:3], x[3]["likely"]) for x in told if x[2] == "pairs"]
     total = whole._count("cands")
     assert len(told) == -(-total // 300) > 1 and [x[0] for x in told] == sorted({min(total, 300 * (i + 1)) for i in range(len(told))})
     assert {x[1:3] for x in told} == {(total, "pairs")} and told[-1][3] == whole._count(f"scores s WHERE match_weight >= {bits(p.fs.min_match_weight)} AND {named_sql(p.fs)}")

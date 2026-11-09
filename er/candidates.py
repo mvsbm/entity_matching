@@ -288,7 +288,7 @@ def found_by(cands: pd.DataFrame, names: Iterable[str]) -> np.ndarray:  # the pa
 def candidates(blockers: tuple[Blocker, ...], records: pd.DataFrame | str, uid: str, query: Iterable[str] | str | None,
                budget: Budget, clusters: pd.Series | str | None = None, con: duckdb.DuckDBPyConnection | None = None,
                into: str | None = None, touching: bool = False, gate: Callable[[str], str] | None = None,
-               floor: float = 0.0, capacity: int | None = None) -> tuple[pd.DataFrame | str, pd.DataFrame]:
+               floor: float = 0.0, capacity: int | None = None, told: Callable[..., None] | None = None) -> tuple[pd.DataFrame | str, pd.DataFrame]:
     """The union of all generators, with the generators that found each pair in `sources`, and a per-generator report.
     With `into`, the union is written to that table in `con` and its name returned instead of a frame, so nothing of
     size C reaches pandas. `touching` (an increment, with `query` the batch): the estimates count only the blocks the
@@ -296,7 +296,8 @@ def candidates(blockers: tuple[Blocker, ...], records: pd.DataFrame | str, uid: 
     With a `gate` (it scores a table of pairs, uid_l / uid_r, into a table it names, with match_weight), a sample of each such
     block's pairs that no other block listed is scored, and the block joined only if a sampled pair reaches `floor`;
     with `capacity`, at most that many pairs in all, the highest-yield blocks first. Without a gate they are joined in
-    full. report.attrs["gated"] has one row per oversized block: its value, records, pairs, sample and decision."""
+    full. report.attrs["gated"] has one row per oversized block: its value, records, pairs, sample and decision.
+    `told(done, total, "keys")` as the joins begin and after each generator: how far they are."""
     if not blockers:
         raise ValueError("no candidate generator")
     assert len(blockers) < 63, "one bit per generator"
@@ -308,6 +309,8 @@ def candidates(blockers: tuple[Blocker, ...], records: pd.DataFrame | str, uid: 
         n_query = r.con.execute(f"SELECT count(*) FROM {r.query or r.table}").fetchall()[0][0]
         m = budget.min_oversized()
         report, parts, big = [], [], {}
+        if told:
+            told(0, len(blockers), "keys")
         for i, b in enumerate(blockers):
             est = estimate_touching(b, r) if touching else estimate(b, r, n_query, oversized_from=m)
             t = time.perf_counter()
@@ -324,6 +327,8 @@ def candidates(blockers: tuple[Blocker, ...], records: pd.DataFrame | str, uid: 
             n = r.con.execute(f"SELECT count(*) FROM {table}").fetchall()[0][0]
             report.append(dict(generator=b.name, **est, pairs=n, seconds=round(time.perf_counter() - t, 3)))
             parts.append(f"SELECT l, r, {1 << i}::BIGINT AS bit FROM {table}")
+            if told:
+                told(i + 1, len(blockers), "keys")
         gated, added = _gate(blockers, r, big, parts, gate, floor, capacity, m, (l, rr)) if big else (pd.DataFrame(), {})
         for i, extra in added.items():
             report[i]["pairs"] += extra

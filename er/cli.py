@@ -1111,7 +1111,7 @@ COMMANDS: tuple[Command, ...] = (
             "in, records set aside, a write still owed, the last summary, the round with its audits, and the trust line. O(N) in SQL.",
             (Param("workspace", "the workspace", "path", positional=True), PIPELINE),
             {"workspace": "the workspace", "records": "records", "entities": "entities", "largest": "the 10 largest entities",
-             "runs": "each run so far: at, what, the record files it read, seconds", "pairs": "open pairs to decide and audit, and decisions written in",
+             "runs": "each run so far: at, what, the record files it read, seconds, records loaded, each step's seconds", "pairs": "open pairs to decide and audit, and decisions written in",
              "kinds": "open records to decide and to measure, and answers written in", "set_aside": "records set aside",
              "write_owed": "a write cut short, finished by the next one", "summary": "the last run's summary",
              "round": "the round now: one per method the workspace ran (rounds.json)", "audits": "this round's audits people decided: checked, false",
@@ -1450,7 +1450,7 @@ def reference() -> str:
            "the two differ.", "", "`nayose` (名寄せ: gathering each customer's records under one name) reads as a sentence: a "
            "verb, a noun, then the parameters. Every command takes `--help` and `--format`.", "",
            "- **`--format text`**, the default: each step on a line as it finishes, then the result, for a person.",
-           "- **`--format json`**: one JSON object per line: `{\"event\": \"step\", …}` per step (a file being read: `{\"event\": \"progress\", \"done\": …, \"total\": …, \"unit\": \"rows\"}` as it goes, the total about; a run's scoring, `\"unit\": \"pairs\"` with `\"likely\"`, the pairs at the model's line so far), then `{\"event\": \"result\", "
+           "- **`--format json`**: one JSON object per line: `{\"event\": \"step\", …}` per step (a file being read: `{\"event\": \"progress\", \"done\": …, \"total\": …, \"unit\": \"rows\"}` as it goes, the total about; a run's long steps, each its own count: `\"records\"` loaded, `\"rules\"` applied, `\"keys\"` joined (weighed by the pairs each lists, with `\"more\"` when oversized blocks wait for the gate), `\"sampled pairs\"` the gate scored, and `\"pairs\"` scored with `\"likely\"`, the pairs at the model's line so far), then `{\"event\": \"result\", "
            "\"command\": …, …}` with the fields listed below, or `{\"event\": \"error\", \"error\": …, \"fix\": …, \"hints\": …, "
            "\"exit\": …}`. IDs are `id`, `id_l`, `id_r`, whatever the file calls them.",
            "- **Exit codes:** 0; 2, a mistake people fix (two lines: what is wrong, and the fix); 75, the workspace is busy: "

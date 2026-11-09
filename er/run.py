@@ -130,6 +130,7 @@ class Run:
         self.added: int | None = None         # an increment's new records (0: nothing new)
         self.part = 0                         # the part an increment writes: one past the run's highest
         self.gated = pd.DataFrame()           # the oversized blocks the candidates checked, and what was decided
+        self.plan: pd.DataFrame | None = None  # the budget's pairs per rule and generator (budget()); an increment has none
         self.present: dict = {}               # each field the file holds, and the source columns it is built from
         self.scoring: dict | None = None      # the model with u from this file (fit): what the gate and the scores use
         self.basis: dict = {}                 # what an increment needs to tell whether those u went stale (er.match.u_basis)
@@ -205,11 +206,17 @@ class Run:
         probe = self.pipeline.probe  # its groups are keys too: their columns are made with the rest
         normalized, used = [*rules.normalized(), *fs.normalized(), *probe.normalized()], rules.used() | fs.used() | probe.used()
         reader = self.con.cursor().sql(f"SELECT * FROM {rows}").to_arrow_reader(self.chunk_rows)  # its own cursor: inserts go on alongside
+        total, done = (self._count(rows) if self.told else 0), 0
+        if self.told:
+            self.told(0, total, "records")
         for i, batch in enumerate(reader):
             chunk = prepare(fs.standardize, batch.to_pandas().astype("string"), normalized, used, kind=self.classifier)
             self.con.register("er_chunk", chunk)
             self.con.execute(f"CREATE TABLE {into} AS SELECT * FROM er_chunk" if i == 0 else f"INSERT INTO {into} SELECT * FROM er_chunk")
             self.con.unregister("er_chunk")
+            done += len(batch)
+            if self.told:
+                self.told(done, total, "records")
         self.con.execute("DROP TABLE IF EXISTS er_in")  # the file kept once, read: a copy of it no step reads again
         self.n = self._count(into)
         kinds = {}
@@ -370,7 +377,7 @@ class Run:
         for i, st, rule in rules.each():
             if (untrusted := self._untrusted(i, rule.name, st.keys(rule), within=batch)):
                 trust[i] = f"NOT EXISTS (SELECT 1 FROM {untrusted} z WHERE {' AND '.join(f'z.{q(c)} = l.{q(c)}' for c in st.keys(rule))})"
-        _, self.rule_seconds = rule_edges(rules, "records", self.db, self.uid, batch=batch, trust=trust, into="rule_edges")
+        _, self.rule_seconds = rule_edges(rules, "records", self.db, self.uid, batch=batch, trust=trust, into="rule_edges", told=self.told)
         if self.scoring is None:  # design time measures the rules alone, before any model is fitted: no trust line reads them
             self.con.execute("CREATE OR REPLACE TABLE rule_edges AS SELECT *, NULL::DOUBLE AS match_weight FROM rule_edges")
         else:
@@ -391,7 +398,7 @@ class Run:
             self.con.execute(f"CREATE OR REPLACE TABLE er_query AS SELECT * FROM {self._singletons('rule_clusters')}")
         _, report = candidates(fs.blockers, "records", self.uid, None if fs.bridge else "er_query", fs.budget,
                                clusters="rule_clusters" if fs.bridge else None, con=self.con, into="cands",
-                               gate=self._gate, floor=review_floor(self.pipeline), capacity=self.capacity())
+                               gate=self._gate, floor=review_floor(self.pipeline), capacity=self.capacity(), told=self._joined())
         self._gated(report.attrs["gated"])
         c = self._count("cands")
         self._done("candidates", "O(N·L + Σ P_g)", f"O({self.n:,}·L + {int(report['pairs'].sum()):,})", t, candidates=c,
@@ -400,8 +407,27 @@ class Run:
                    generators=listed(report))
         return report
 
+    def _joined(self) -> Callable[..., None] | None:
+        """told for candidates' joins, each generator weighed as the budget counted it (the records it reads, the pairs
+        it lists; an increment has no budget: alike), with `more` while the gate on oversized blocks may follow."""
+        if not self.told:
+            return None
+        plan = self.plan[self.plan["kind"] == "generator"] if self.plan is not None else None
+        w = [1] * len(self.pipeline.fs.blockers) if plan is None else [self.n + max(0, int(x)) for x in plan["normal"]]  # normal: a deletion key's pairs less its repeats, which may be below its oversized blocks'
+        more = plan is None or bool(plan["oversized_blocks"].sum())
+        return lambda i, n, unit: self.told(sum(w[:i]), sum(w), unit, more=more)
+
     def _gate(self, pairs: str) -> str:  # the oversized blocks' sampled pairs (a table), scored as the candidates will be, a slice at a time
-        self._scored(pairs, "er_gate", n_records=self.n)
+        total, done = self._count(pairs), 0
+        if self.told:
+            self.told(0, total, "sampled pairs")
+
+        def each(scored: str) -> None:
+            nonlocal done
+            done += self._count(scored)
+            if self.told:
+                self.told(done, total, "sampled pairs")
+        self._scored(pairs, "er_gate", n_records=self.n, each=each)
         return "er_gate"
 
     def _scored(self, pairs: str, into: str, n_records: int | None = None, each: Callable[[str], None] | None = None) -> None:
@@ -685,7 +711,7 @@ class Run:
         t = time.perf_counter()
         _, report = candidates(fs.blockers, "records", self.uid, "new_ids", fs.budget,
                                clusters="rule_clusters" if fs.bridge else None, con=self.con, into="cands", touching=True,
-                               gate=self._gate, floor=review_floor(self.pipeline), capacity=self.capacity())
+                               gate=self._gate, floor=review_floor(self.pipeline), capacity=self.capacity(), told=self._joined())
         self._gated(report.attrs["gated"])
         self._done("candidates", "O(|Δ|·Σ b + scan)", f"{self._count('cands'):,} pairs touching the batch", t, generators=listed(report))
 
