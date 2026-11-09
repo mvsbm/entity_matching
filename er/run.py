@@ -114,9 +114,11 @@ class Run:
     settings: Settings
     model: dict | None = None                 # a fitted model (Splink JSON from train_fs); None: fit on this file
     chunk_rows: int = 200_000
+    score_pairs: int = 1_000_000              # pairs scored at a time: each slice says how far scoring is, and bounds its memory
     steps: list[dict] = field(default_factory=list)
     disabled: list[str] = field(default_factory=list)
     echo: Callable[[dict], None] | None = None  # called with each step as it finishes: progress for people (nayose)
+    told: Callable[..., None] | None = None   # called as a long step goes (done, total, unit, facts): how far it is, for people
     kind_labels: Path | None = None           # people's person/company labels (a filled-in kind_review.parquet); an increment keeps the run's
 
     def __post_init__(self) -> None:
@@ -420,12 +422,23 @@ class Run:
         as _accept will take them, and three of them (report.list_patterns)."""
         t, fs, trust, l, r = time.perf_counter(), self.pipeline.fs, self.pipeline.trust, q(self.l), q(self.r)
         k = len(fs.model.comparisons)
-        score_fs(self.scoring, "records", "cands", self.db, self.uid, into="scores")
+        at, model_line = bits(fs.min_match_weight if trust.line is None else trust.line), bits(fs.min_match_weight)
+        total, done, likely = self._count("cands"), 0, 0  # likely: the pairs the model scores as matches, whatever trust lets merge
+        for start in range(0, max(1, total), self.score_pairs):  # a pair's score depends on it alone: slices score as the whole would
+            self.con.execute(f"CREATE OR REPLACE TABLE er_slice AS SELECT * FROM cands WHERE rowid >= {start} AND rowid < {start + self.score_pairs}")
+            score_fs(self.scoring, "records", "er_slice", self.db, self.uid, into="scores" if not start else "er_scored")
+            if start:
+                self.con.execute("INSERT INTO scores SELECT * FROM er_scored")
+            got, hit = self.con.execute(f"SELECT count(*), count(*) FILTER (match_weight >= {model_line} AND {named_sql(fs)}) FROM "
+                                        f"{'scores' if not start else 'er_scored'} s").fetchall()[0]
+            done, likely = done + got, likely + hit
+            if self.told:
+                self.told(done, total, "pairs", likely=likely)
+        self.con.execute("DROP TABLE IF EXISTS er_slice; DROP TABLE IF EXISTS er_scored")
         reached: dict[str, dict[str, int]] = {}  # per comparison, the pairs at each level (gamma, as score_fs gives it): one scan
         for c, g, n in self.con.execute("SELECT c, g, count(*) FROM (UNPIVOT scores ON COLUMNS('^gamma_') INTO NAME c VALUE g) GROUP BY ALL").fetchall():
             reached.setdefault(c.removeprefix("gamma_"), {})[str(g)] = n
         gammas = [c for c, *_ in self.con.execute("DESCRIBE scores").fetchall() if c.startswith("gamma_")]
-        at = bits(fs.min_match_weight if trust.line is None else trust.line)
         floor = bits(review_floor(self.pipeline) if trust.line is None else min(trust.steps))
         rows = self.con.execute(f"""SELECT {', '.join(q(g) for g in gammas)}, count(*), round(avg(match_weight), 2),
             count(*) FILTER (match_weight >= {at} AND {named_sql(fs)}),

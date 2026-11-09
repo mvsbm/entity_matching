@@ -3,7 +3,7 @@
 A CSV or TSV is split on its own bytes (Python's csv over a latin-1 view, which keeps every byte as one character), so
 each value, in whatever encoding, survives to be decoded on its own: in the one of [input] encodings it decodes in
 strictly, else in its column's. What loses nothing is fixed at once: control bytes, zero-width characters and BOMs
-removed, placeholder nulls ([input] nulls) and numbers a spreadsheet cut short (1.23E+11) made missing, 12345.0 read
+removed, placeholder nulls ([input] nulls), values of spaces alone and numbers a spreadsheet cut short (1.23E+11) made missing, 12345.0 read
 as 12345. What would be a guess is proposed, and applies once people accept its kind (`nayose accept repairs`):
 - realign: a row whose fields don't line up, re-split where every value fits its column;
 - garbled: a value a wrong decoding upstream garbled (mojibake), decoded back;
@@ -140,7 +140,7 @@ def tidy(v: str | None, nulls: frozenset[str], numeric: bool) -> tuple[str | Non
         w = BREAKS.sub(" ", CONTROL.sub("", v))
         fixed, v = ("controls" if w != v else None), w
     s = v.strip(" 　")
-    if s in nulls:
+    if s in nulls or not v.strip():  # spaces alone (any width, tabs) say nothing: two such records would agree on nothing
         return None, "placeholders"
     if numeric and ("." in s or "e" in s or "E" in s):
         if m := WHOLE.match(s):

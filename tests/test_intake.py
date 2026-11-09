@@ -182,11 +182,12 @@ def test_the_reader_reads_each_value_as_it_comes_and_proposes_only_what_it_would
         b"904," + u("ナカムラ") + b"," + u("大阪府北区3,4番") + b",5678",                           # a comma inside a value
         b"905," + u("イトウ") + b"," + u("東京都港"),                                             # a line break inside a value ...
         u("区1") + b",5555",                                                                       # ... the rest of the row
-        b"906,a,b,c,d,e,f,g,h"]) + b"\n"                                                          # too many fields to re-split
+        b"906,a,b,c,d,e,f,g,h",                                                                    # too many fields to re-split
+        b"907," + u("\u3000 ") + b"," + u("京都府") + b",4321"]) + b"\n"                            # a name of spaces alone: missing
     r, rows, proposed, unread = read("dirty.csv", dirty)
     assert rows.loc["900", "name"] == "サトウ　ジロウ" and rows.loc["901", "name"] == "キムラ" and r["decoded"]["cp932"] == 2 and r["decoded"]["euc-jp"] == 2
     assert rows.loc["902", "name"] == "タナカ" and pd.isna(rows.loc["902", "phone"]) and rows.loc["901", "phone"] == "12" and pd.isna(rows.loc["903", "phone"])
-    assert r["fixed"] == {"controls": 1, "placeholders": 1, "numbers": 2}
+    assert r["fixed"] == {"controls": 1, "placeholders": 2, "numbers": 2} and pd.isna(rows.loc["907", "name"]) and rows.loc["907", "phone"] == "4321"
     assert rows.loc["903", "name"] == "譁ｰ縺励＞" and {"904", "905", "906"}.isdisjoint(rows.index)  # nothing guessed is applied before people accept it
     assert {(x["kind"], x["after"]) for x in proposed} == {("garbled", "新しい"), ("realign", "東京都港 区1"), ("realign", "大阪府北区3,4番")}
     assert [(x["line"], "waits" in x["reason"]) for x in unread] == [(66, True), (67, True), (69, False)] and r["unread"] == 3

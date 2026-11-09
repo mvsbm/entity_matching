@@ -46,7 +46,7 @@ def test_the_ui_serves_only_its_own_link_and_runs_the_commands_as_nayose_does(tm
         assert call("GET", "/")[0] == 200
         line, j = job("resolve records", {"input": str(tmp_path / "all.parquet"), "workspace": str(tmp_path / "run")})
         assert line == shlex.join(["nayose", "resolve", "records", str(tmp_path / "all.parquet"), "--workspace", str(tmp_path / "run")]) and j["exit"] == 0
-        assert {e["event"] for e in j["events"]} == {"step", "result"}  # each step as it finished, then the result
+        assert {e["event"] for e in j["events"]} == {"step", "progress", "result"}  # each step as it finished, how far scoring is, then the result
         _, j = job("list pairs", {"workspace": str(tmp_path / "run"), "open": True})
         assert j["exit"] == 0 and j["events"][-1]["pairs"]
         _, j = job("describe entity", {"id": "nobody", "workspace": str(tmp_path / "run")})

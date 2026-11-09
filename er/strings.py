@@ -45,21 +45,30 @@ FUNCTIONS: dict[str, FunctionInfo] = {
 }
 
 
-def udf(function: str) -> Callable[[pa.Array, pa.Array], pa.Array]:  # vectorized, character-level, NULL-safe
-    scorer = FUNCTIONS[function].scorer
+def udf(function: str, cut: bool = False) -> Callable[..., pa.Array]:  # vectorized, character-level, NULL-safe
+    """cl_<function>(a, b), and cl_<function>_cut(a, b, threshold): the same score wherever it passes the threshold
+    (a similarity at or above it, a distance at or below), and a value that fails it elsewhere, found without finishing
+    the work (rapidfuzz's score_cutoff: an edit distance stops once it is past the threshold), so a condition on it
+    passes and fails exactly the same pairs, in less time on long values."""
+    info = FUNCTIONS[function]
+    scorer = info.scorer
     # DuckDB already calls this on its threads, a vector of ~2,000 rows at a time: a thread pool per call costs more than
     # it saves, except for Damerau–Levenshtein on long values (a customer ID), where the work per pair dominates
     workers = -1 if function == "damerau_levenshtein" else 1
 
-    def f(a: pa.Array, b: pa.Array) -> pa.Array:
+    def f(a: pa.Array, b: pa.Array, threshold: pa.Array | None) -> pa.Array:
         null = pc.or_(a.is_null(), b.is_null())
         x, y = pc.fill_null(a, "").to_pylist(), pc.fill_null(b, "").to_pylist()
+        # a similarity's cut a hair below its threshold: the scores are float32, which round a value just under it up to it
+        # kept in rapidfuzz's range: no similarity is past 0 to 1, no distance under 0, so a threshold outside passes or fails as before
+        t = None if threshold is None or not len(threshold) else threshold[0].as_py()
+        early = {} if t is None else {"score_cutoff": min(max(t - 1e-6, 0.0), 1.0) if info.similarity else max(int(t), 0)}
         if scorer is char_jaccard:
             scores = np.array([char_jaccard(p, q) if p or q else 0.0 for p, q in zip(x, y)])
         else:
-            scores = process.cpdist(x, y, scorer=scorer, workers=workers)
+            scores = process.cpdist(x, y, scorer=scorer, workers=workers, **early)
         return pa.array(np.asarray(scores, dtype=float), mask=null.to_numpy(zero_copy_only=False))  # NULL never satisfies a condition
-    return f
+    return (lambda a, b, threshold: f(a, b, threshold)) if cut else (lambda a, b: f(a, b, None))  # DuckDB counts the parameters
 
 
 COMPUTE = ("threads", "memory_limit", "temp_directory", "max_temp_directory_size")  # the limits [compute] and --compute may set
@@ -95,6 +104,7 @@ def connect(compute: dict | None = None) -> tuple[duckdb.DuckDBPyConnection, Duc
     for name, info in FUNCTIONS.items():
         if info.scorer:
             con.create_function(f"cl_{name}", udf(name), ["VARCHAR", "VARCHAR"], "DOUBLE", type="arrow")
+            con.create_function(f"cl_{name}_cut", udf(name, cut=True), ["VARCHAR", "VARCHAR", "DOUBLE"], "DOUBLE", type="arrow")
     # self-check: character-level (the byte-level built-in gives 0.897 here) and NULL-safe
     assert con.sql("select round(cl_jaro_winkler('サトウヒロシ', 'サトウタカシ'), 3), "
                    "cl_levenshtein('サトウ', NULL) is null").fetchall() == [(0.844, True)]

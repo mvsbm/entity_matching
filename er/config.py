@@ -131,7 +131,7 @@ class Comparator:
         a, b = (q(f"{c}_l"), q(f"{c}_r")) if level else (f"l.{q(c)}", f"r.{q(c)}")
         if self.function == "exact":
             return f"{a} = {b}"
-        test = f'cl_{self.function}({a}, {b}) {">=" if FUNCTIONS[self.function].similarity else "<="} {self.threshold}'
+        test = f'cl_{self.function}_cut({a}, {b}, {self.threshold}) {">=" if FUNCTIONS[self.function].similarity else "<="} {self.threshold}'  # stops once it knows
         return test if level else f"({a} = {b} OR {test})"  # a rule: equal values pass without the Python call
 
 

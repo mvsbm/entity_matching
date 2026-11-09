@@ -741,8 +741,13 @@ async function runOnce(command, args, onEvent, tries = 10) {
 const RUNS = ["resolve records", "rerun records", "add records", "match records"];  // a run's steps say how far it is
 const FRAC = {load: .2, budget: .23, fit: .41, rules: .45, candidates: .57, score: .87, cluster: .88, probe: .95, report: .98, write: 1};  // a run's share of its time, done as each step ends (a million records)
 const priors = {};  // a run's seconds as guessed before it starts (step 3), by command: until its steps say more
-function runLeft(order, ended, at, now, prior) {  // seconds left, about: the whole run as its steps so far say, never less than the step it is in implies; null before anything says
+const scored = (p) => `${fmt(p.done)} of ${fmt(p.total)} pairs scored · ${plural(p.likely, "likely match", "likely matches")} so far`;  // scoring, slice by slice
+function runLeft(order, ended, at, now, prior, within = 0) {  // seconds left, about: the whole run as its steps so far say, never less than the step it is in implies; null before anything says
   const share = (s) => FRAC[s] / FRAC[order[order.length - 1]], next = order[order.indexOf(ended) + 1];
+  if (next && within > 0) {  // the step it is in says how far it is (scoring, slice by slice): its own pace, then the steps after it at their share
+    const rest = (now - at) * (1 - within) / within;
+    return rest + (now + rest) * (1 - share(next)) / share(next);
+  }
   let whole = ended ? at / share(ended) : prior;
   if (whole === null || whole === undefined) return null;
   if (next) whole = Math.max(whole, now / share(next));
@@ -776,8 +781,9 @@ const task = {
     const secs = (Date.now() - this.t0) / 1000, order = STEPS_OF[this.command] || RUN_STEPS, p = this.p;
     let left = null, now = "";
     if (RUNS.includes(this.command)) {
-      left = runLeft(order, this.ended, this.at, secs, this.prior);
-      now = DOING[order[order.indexOf(this.ended) + 1]] || "";
+      const scoring = p && p.unit === "pairs" && order[order.indexOf(this.ended) + 1] === "score";
+      left = runLeft(order, this.ended, this.at, secs, this.prior, scoring && p.total ? p.done / p.total : 0);
+      now = scoring ? scored(p) : DOING[order[order.indexOf(this.ended) + 1]] || "";
     } else if (p && p.total) {
       left = p.done >= p.total ? 0 : p.done ? secs * (p.total - p.done) / p.done : null;
       now = p.done < p.total ? `${fmt(p.done)} of ${fmt(p.total)} ${p.unit}` : "reading the columns";
@@ -1198,7 +1204,7 @@ function hurts(fields, off, fix = "", names = {}, groups = []) {  // groups: fie
 
 const REPAIR = {realign: ["row", "rows", "whose fields don't line up: re-split where every value fits its column"],  // a kind of repair the reader proposes, in words
                 garbled: ["value", "values", "garbled by a wrong decoding upstream: decoded back"], encoding: ["value", "values", "another encoding reads far better"]};
-const FIXED = {controls: "control or invisible characters removed", placeholders: "placeholders such as NULL or - made missing",
+const FIXED = {controls: "control or invisible characters removed", placeholders: "placeholders such as NULL or - and blanks made missing",
                numbers: "spreadsheet numbers: 12.0 read as 12, 1.2E+11 made missing (its digits are gone)", damaged: "values no encoding reads, made missing"};
 const waits = (r) => {  // what waits for a repair, in the answer to Did your file load?
   const w = r ? r.waiting : {}, rows = w.realign || 0, values = (w.garbled || 0) + (w.encoding || 0);
@@ -1889,15 +1895,16 @@ const SCREENS = {
         $("out").innerHTML = `<div class="card"><h2>What adding them would do</h2>${bars(Object.entries(d.counts).map(([k, n]) => ({label: k, value: n})))}</div><div id="matched"></div>`;
         if (d.records) grid($("matched"), d.records, ["id", "entity", "status", "by", "weight"], {cell: (r, c) => c === "status" ? chip(r.status) : esc(fmt(r[c]))});
       };
-      let t0 = 0, last = null, at = 0, clock = 0;
+      let t0 = 0, last = null, at = 0, clock = 0, p = null;
       const order = STEPS_OF[command] || RUN_STEPS, rows = command === "resolve records" && file ? file.rows : command === "rerun records" && w0 ? w0.records : null;
       const prior = rows && w0 ? guess(rows, w0) : null;  // a new batch's size is unknown until it is read: its steps say
       priors[command] = prior;
       const say = () => {
         const card = $("out")?.querySelector(".steps-card");
         if (!card) { clearInterval(clock); return; }  // the page was left
-        const next = order[order.indexOf(last) + 1] || order[0], secs = (Date.now() - t0) / 1000, left = runLeft(order, last, at, secs, prior);
-        card.querySelector(".answer").innerHTML = `${Math.round(secs)} s${left === null ? "" : left < 2 ? " · almost done" : ` · about ${lasts(left)} left`} · now: ${esc(DOING[next] || next)}`;
+        const next = order[order.indexOf(last) + 1] || order[0], secs = (Date.now() - t0) / 1000, scoring = p && next === "score" && p.total;
+        const left = runLeft(order, last, at, secs, prior, scoring ? p.done / p.total : 0);
+        card.querySelector(".answer").innerHTML = `${Math.round(secs)} s${left === null ? "" : left < 2 ? " · almost done" : ` · about ${lasts(left)} left`} · now: ${esc(scoring ? scored(p) : DOING[next] || next)}`;
         card.querySelector(".meter i").style.width = `${left === null ? 0 : Math.round(100 * secs / (secs + left))}%`;
         $("flow").querySelectorAll(".node").forEach((b) => b.classList.toggle("now", (LIT_NODE[next] || "") === b.dataset.node));
       };
@@ -1908,6 +1915,7 @@ const SCREENS = {
             <p class="answer"></p></div></div><span class="meter wide"><i style="width:0"></i></span></div>`;
           clearInterval(clock); clock = setInterval(say, 1000); say();
         }
+        if (e.event === "progress" && e.unit === "pairs") { p = e; say(); return; }
         if (e.event !== "step") return;
         last = e.step;
         at = (Date.now() - t0) / 1000;

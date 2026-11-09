@@ -146,7 +146,7 @@ def exact_u(model: FSModel, records: Records, db: DuckDBAPI) -> U:
                 WITH v AS (SELECT "{col}" AS x, count(*) AS n FROM {t} WHERE "{col}" IS NOT NULL GROUP BY 1),
                      k AS (SELECT x, n, unnest({deletions_sql('x')}) AS dk FROM v),
                      p AS (SELECT DISTINCT a.x AS x, b.x AS y, a.n * b.n AS nn FROM k a JOIN k b ON a.dk = b.dk AND a.x < b.x)
-                SELECT coalesce(sum(nn), 0) FROM p WHERE cl_{comp.function}(x, y) <= {comp.threshold}""").fetchall()[0][0])
+                SELECT coalesce(sum(nn), 0) FROM p WHERE cl_{comp.function}_cut(x, y, {comp.threshold}) <= {comp.threshold}""").fetchall()[0][0])
 
         out: U = {}
         for c in model.comparisons:
@@ -376,9 +376,18 @@ def score_fs(model_json: dict, df: Records, pairs: pd.DataFrame | str, db: DuckD
     settings = {k: v for k, v in model_json.items() if k != "er"} | {"probability_two_random_records_match": lam}
     linker = Linker(db.register(df), settings, log_level=logging.WARNING)
     linker.table_management.invalidate_cache()  # the cache lives on the shared db, keyed by table name only
-    for col, tf in fit["tf"].items():
-        lookup = pd.DataFrame({col: list(tf), f"tf_{col}": list(tf.values())})
-        linker.table_management.register_term_frequency_lookup(db.register(lookup), col)
+    con, held = db.duckdb_con, []  # what it registers, released once scored: a run calls it once a slice
+    try:
+        for col, tf in fit["tf"].items():
+            held.append(db.register(pd.DataFrame({col: list(tf), f"tf_{col}": list(tf.values())})))
+            linker.table_management.register_term_frequency_lookup(held[-1], col)
+        return _predict(linker, held, db, pairs, l, r, into)
+    finally:
+        for x in held:
+            con.unregister(x.physical_name)
+
+
+def _predict(linker: Linker, held: list, db: DuckDBAPI, pairs: pd.DataFrame | str, l: str, r: str, into: str | None) -> pd.DataFrame | str:
     con = db.duckdb_con
     if isinstance(pairs, pd.DataFrame):
         if pairs.empty:
@@ -392,6 +401,7 @@ def score_fs(model_json: dict, df: Records, pairs: pd.DataFrame | str, db: DuckD
         blocked = db.register(pd.DataFrame({"match_key": "0", "join_key_l": pairs[l].to_numpy(), "join_key_r": pairs[r].to_numpy()}))
     else:
         blocked = db.register(con.sql(f'SELECT \'0\' AS match_key, "{l}" AS join_key_l, "{r}" AS join_key_r FROM "{pairs}"'))
+    held.append(blocked)
     linker.table_management.register_blocked_pairs_for_predict(blocked)
     predictions = linker.inference.predict()
     rel = predictions.as_duckdbpyrelation()

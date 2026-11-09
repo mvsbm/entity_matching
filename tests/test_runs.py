@@ -7,7 +7,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from er.config import (InputError, Resolver)
+from er.config import (InputError, Resolver, bits)
 from er.match import named_sql
 from er.strings import connect
 
@@ -277,3 +277,21 @@ def test_describe_matching_draws_the_pipeline_with_the_run_s_numbers(tmp_path, p
     assert all(f["example"] for f in nodes["prepare"]["fields"] if f["filled"])  # a real value for every field the file fills
     bare = {n["id"]: n for n in describe_matching(duckdb.connect(), None, p, s)["nodes"]}  # no run yet: the methods only
     assert bare["records"]["count"] is None and bare["rules"]["rules"][0]["pairs"] is None and bare["score"]["comparisons"][0]["levels"][0]["bits"] is None
+
+
+def test_scoring_in_slices_gives_the_scores_scoring_all_at_once_gives_and_says_how_far_it_is(tmp_path, population):
+    from er.run import Run
+    s, p, g = population
+    g.df.to_parquet(tmp_path / "all.parquet", index=False)
+    first = Run(p, s).full(tmp_path / "all.parquet", tmp_path / "a")
+    told = []
+    whole = Run(p, s, model=first.model).full(tmp_path / "all.parquet", tmp_path / "b")
+    sliced = Run(p, s, model=first.model, score_pairs=300, told=lambda *a, **k: told.append((*a, k["likely"]))).full(tmp_path / "all.parquet", tmp_path / "c")
+    scores = [r.con.execute(f"SELECT * FROM scores ORDER BY {r.l}, {r.r}").df() for r in (whole, sliced)]
+    pd.testing.assert_frame_equal(*scores, rtol=1e-9)  # a pair's score depends on it alone: the same in a slice as in the whole
+    total = whole._count("cands")
+    assert len(told) == -(-total // 300) > 1 and [x[0] for x in told] == sorted({min(total, 300 * (i + 1)) for i in range(len(told))})
+    assert {x[1:3] for x in told} == {(total, "pairs")} and told[-1][3] == whole._count(f"scores s WHERE match_weight >= {bits(p.fs.min_match_weight)} AND {named_sql(p.fs)}")
+    assert pd.read_parquet(tmp_path / "b" / "gold.parquet").equals(pd.read_parquet(tmp_path / "c" / "gold.parquet"))
+    views = lambda run: run._count("duckdb_views() WHERE NOT internal")
+    assert views(sliced) == views(whole)  # each slice's lookups released: memory doesn't grow with the slices
