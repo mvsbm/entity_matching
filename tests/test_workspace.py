@@ -409,19 +409,19 @@ def test_the_trust_line_merges_only_ranges_people_proved_and_steps_down_one_at_a
     left = say("describe", "method", *pipe)[1]["dropped"]["keys"]  # what the method leaves out, still in words for the page
     assert [x["name"] for x in left] == [busy["name"]] and left[0]["method"] and left[0]["keys"]
     (ws / "method.toml").write_text(kept, encoding="utf-8")
-    trust = say("describe", "workspace", "workspaces/w", "--pipeline", "small.toml")[1]["trust"]
-    assert trust["line"] == "none" and trust["next"] == {"down_to": 20.0, "up_to": None}
-    assert trust["pairs"] == trust["needed"] == 0 and trust["may_lower"]  # nothing scores 20 on 492 records: nothing there can be false
+    trust = say("describe", "workspace", "workspaces/w", "--pipeline", "small.toml")[1]["trust"]  # nothing scores 20 on 492 records: that range is passed
+    assert trust["line"] == "none" and trust["next"] == {"down_to": 12.0, "up_to": None} and trust["checked"] == 0 < trust["needed"] <= 8
     tuned = (ws / "state" / "config.txt").read_text(encoding="utf-8")
-    assert say("lower", "trust", *pipe)[0] == 0 and folder.method(ws) == {"trust": 20.0}
-    trust = say("describe", "workspace", "workspaces/w", "--pipeline", "small.toml")[1]["trust"]
-    assert trust["next"] == {"down_to": 12.0, "up_to": 20.0} and trust["checked"] == 0 < trust["needed"] <= 8
     rules, sheet = [r.name for _, _, r in p.rules.each()], pd.read_parquet(ws / "review.parquet")  # the rules' pairs wait on the sheet too, with the model's levels
     model = sheet[(sheet["why"] == "decide") & ~sheet["sources"].isin(rules)]
     pd.concat([sheet, *[model.head(1).assign(sources=rules[0])] * 50]).to_parquet(ws / "review.parquet")
     assert len(model) and all(min(x["wait"], x["held"], x["apart"]) >= 0 for x in say("list", "patterns", *pipe)[1]["patterns"])  # no pattern's count below 0
     sheet.to_parquet(ws / "review.parquet")
     assert say("lower", "trust", *pipe)[0] == 2  # not proven yet
+    full = pd.read_parquet(ws / "review.parquet")
+    full[full["why"] != "decide"].to_parquet(ws / "review.parquet")  # a sheet with none of the range's pairs (written before empty ranges were passed)
+    drew = say("draw", "pairs", "--count", "0", *pipe)[1]
+    assert drew["decide"] == trust["needed"] and drew["drawn"] == 0  # filled from the pairs the run kept for people: no run
     sheet = pd.read_parquet(ws / "review.parquet")
     sample = sheet[sheet["why"] == "decide"]
     assert len(sample) == trust["needed"] and sample["match_weight"].between(12, 20, inclusive="left").all() and not sample.duplicated([l, r]).any()
@@ -434,7 +434,7 @@ def test_the_trust_line_merges_only_ranges_people_proved_and_steps_down_one_at_a
     kept = pd.read_parquet(ws / "rule_kept")
     assert kept["merged"].any() and (kept.loc[kept["merged"], "match_weight"] >= 12).all() and (kept.loc[~kept["merged"], "match_weight"] < 12).all()
     assert (pd.read_parquet(ws / "matches")["match_weight"] >= 12).all() and (pd.read_parquet(ws / "proposed")["match_weight"] < 12).all()
-    assert (ws / "state" / "config.txt").read_text(encoding="utf-8") != tuned and len(folder.rounds(ws)) == 3
+    assert (ws / "state" / "config.txt").read_text(encoding="utf-8") != tuned and len(folder.rounds(ws)) == 2
     trust = say("describe", "workspace", "workspaces/w", "--pipeline", "small.toml")[1]["trust"]
     assert trust["line"] == 12.0 and trust["next"] == {"down_to": 8.0, "up_to": 12.0} and trust["above"]["pairs"] > 0
     audits = pd.read_parquet(ws / "review.parquet").query("why == 'audit'")["match_weight"]

@@ -464,7 +464,7 @@ def test_step_4_shows_the_trust_line_lowers_it_and_an_answer_waits_out_a_busy_wo
     page.click(".navitem[data-screen=run]")
     page.wait_for_selector("#out h2.question.big")  # step 3, opened at its top: what the run did, and what waits
     said = page.inner_text("#out .card")
-    assert page.evaluate("scrollY") == 0 and "Nothing merged by points yet: you check pairs first · 20+ can merge now" in said  # nothing scores 20 here
+    assert page.evaluate("scrollY") == 0 and "Nothing merged by points yet: you check pairs first · 19 pairs wait for you" in said  # nothing scores 20 here: that range is passed
     assert page.query_selector(".flow .node[data-node=people]") and page.query_selector("#out .card [data-go=pairs]")
     answer, strip_ = page.query_selector("#out .card").bounding_box(), page.query_selector("#flow").bounding_box()
     assert answer["y"] + answer["height"] <= strip_["y"]  # what it found, then how: in reading order
@@ -489,14 +489,11 @@ def test_step_4_shows_the_trust_line_lowers_it_and_an_answer_waits_out_a_busy_wo
     page.click("#workload summary")  # how many pairs people must check, range by range: read once opened
     page.wait_for_selector("#workload .answer")
     assert page.inner_text("#workload .answer").startswith(("To let pairs scoring", "Nothing to check")) and page.query_selector("#workload tr[data-i]")
-    page.click("[data-trust='lower trust']")  # nothing scores 20 on this population: that range merges at once
-    page.click("dialog button[value=run]")
-    page.wait_for_selector("#note .banner", timeout=120_000)
-    assert folder.method(ws) == {"trust": 20.0}
-    page.wait_for_function("() => document.querySelector('.trustbar')?.textContent.includes('checking 12–20: 0 of')")
-    assert "Drawn from the pairs scoring 12–20" in page.inner_text("#right")
+    assert not page.query_selector("[data-trust='lower trust']")  # nothing scores 20 on this population: that range is passed, 12+ is checked first
+    page.wait_for_function("() => document.querySelector('.trustbar')?.textContent.includes('checking 12+: 0 of')")
+    assert "Drawn from the pairs scoring 12+" in page.inner_text("#right")
     page.keyboard.press("m")
-    page.wait_for_function("() => document.querySelector('.trustbar')?.textContent.includes('checking 12–20: 1 of')")
+    page.wait_for_function("() => document.querySelector('.trustbar')?.textContent.includes('checking 12+: 1 of')")
     held, go = threading.Event(), threading.Event()
     def other_job():  # another job writes to the workspace for a moment
         with folder.run_lock(ws):
@@ -512,7 +509,7 @@ def test_step_4_shows_the_trust_line_lowers_it_and_an_answer_waits_out_a_busy_wo
     assert not other.is_alive()
     page.wait_for_function("() => document.querySelector('#written').textContent === '2'", timeout=15_000)
     assert not page.query_selector("#said .banner") and "1 different" in page.inner_text(".trustbar")
-    assert "12–20" in page.inner_text(".rail li.attention .sub")
+    assert "12+" in page.inner_text(".rail li.attention .sub")
 
 
 def test_auto_mode_runs_from_the_first_screen_and_its_report_waits_on_the_overview(ui_page, tmp_path, population):

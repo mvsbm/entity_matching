@@ -685,7 +685,8 @@ def draw_pairs(a: dict, emit: "Emit") -> dict:
     s, p, _ = setup(a)
     out, count = Path(a["workspace"]), int(number(a.get("count") or "50", "--count", "a count of pairs, for example 50"))
     run = Run(p, s, echo=emit.step, told=emit.progress).draw(out, count)
-    return dict(drawn=run.steps[-1]["drawn"], next=[dict(command=nayose("list", "pairs", "--workspace", out, "--why", "audit", "--open"), why="the audits to decide")])
+    step = run.steps[-1]
+    return dict(drawn=step["drawn"], decide=step["decide"], next=[dict(command=nayose("list", "pairs", "--workspace", out, "--open"), why="the pairs to decide and audit")])
 
 
 def describe_workspace_(a: dict, emit: "Emit") -> dict:
@@ -1308,12 +1309,13 @@ COMMANDS: tuple[Command, ...] = (
             "Refused for a link other links stand in for, so a split always splits. O(n²·K) to check, then O(a full run).",
             (Param("id", "a record of the entity", positional=True, metavar="ID"), Param("between", "the link's two records", "many", metavar="ID"), WORKSPACE, PIPELINE, COMPUTE),
             RUN_RESULT, "nayose split entity 0000262688 --between 0000262688 0000312261 --workspace workspaces/customers", split_entity),
-    Command("draw", "pairs", "More links on the review sheet, to audit",
+    Command("draw", "pairs", "More links on the review sheet, to audit; and the pairs of the range people check next",
             "Adds audit rows to review.parquet: links, the model's and the rules', that people have not decided and the sheet "
             "does not hold, spread evenly over 1-bit weight bands, a rule's pairs scored as the model scores them. No false "
-            "link in many audits is what says the links are right. O(N + (R + count)·K + E).",
-            (WORKSPACE, Param("count", "how many (default 50)", metavar="N"), PIPELINE),
-            {"drawn": "rows added", "next": "the commands that usually follow"},
+            "link in many audits is what says the links are right. With a trust line, first the pairs of the range people "
+            "check next that the sheet lacks, from those the run kept for people: no run. O(N + (R + count)·K + E).",
+            (WORKSPACE, Param("count", "how many audits (default 50)", metavar="N"), PIPELINE),
+            {"drawn": "audit rows added", "decide": "rows of the range people check next added", "next": "the commands that usually follow"},
             "nayose draw pairs --workspace workspaces/customers --count 50", draw_pairs, quick=True),
     Command("list", "pairs", "The pairs for people to decide and to audit",
             "The run's review.parquet: decide rows (the pairs just below the threshold, and those above it with no name "

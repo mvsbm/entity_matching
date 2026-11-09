@@ -657,7 +657,8 @@ def test_describe_review_counts_what_people_must_check_range_by_range(say, tmp_p
     trust = say("describe", "workspace", "workspaces/w")[1]["trust"]
     code, r = say("describe", "review", "--workspace", "workspaces/w", "--seconds", "20")
     top = r["ranges"][0]
-    assert code == 0 and (top["down_to"], top["up_to"]) == (20.0, None) and top["pairs"] == trust["pairs"]  # the range people check first, as the trust line counts it
+    assert code == 0 and (top["down_to"], top["up_to"]) == (20.0, None)  # every range, the empty ones too
+    assert sum(x["pairs"] for x in r["ranges"] if x["down_to"] >= trust["next"]["down_to"]) == trust["pairs"] > 0  # what people check first, as the trust line counts it: past the empty 20+
     assert [x["down_to"] for x in r["ranges"]] == sorted(p.trust.steps, reverse=True)
     assert all(x["sample"] == min(p.trust.checks, x["pairs"]) and x["reviews_left"] == x["sample"] for x in r["ranges"])  # none decided yet
     assert [x["reviews_to_here"] for x in r["ranges"]] == list(np.cumsum([x["reviews_left"] for x in r["ranges"]]))

@@ -45,7 +45,7 @@ Written by `scripts/document_commands.py` from the declarations in `er/cli.py`; 
 | [`lower trust`](#nayose-lower-trust) | Merge the next range of scores without people, once its sample is clean |
 | [`raise trust`](#nayose-raise-trust) | Take a range of scores back to people |
 | [`split entity`](#nayose-split-entity) | Split an entity at a link that alone holds it together |
-| [`draw pairs`](#nayose-draw-pairs) | More links on the review sheet, to audit |
+| [`draw pairs`](#nayose-draw-pairs) | More links on the review sheet, to audit; and the pairs of the range people check next |
 | [`list pairs`](#nayose-list-pairs) | The pairs for people to decide and to audit |
 | [`list patterns`](#nayose-list-patterns) | The model's pairs as patterns: what each comparison said, and what became of them |
 | [`decide pair`](#nayose-decide-pair) | Decide one pair: match or no match |
@@ -1029,23 +1029,24 @@ nayose split entity 0000262688 --between 0000262688 0000312261 --workspace works
 
 ## nayose draw pairs
 
-More links on the review sheet, to audit.
+More links on the review sheet, to audit; and the pairs of the range people check next.
 
 ```
 nayose draw pairs --workspace WORKSPACE [--count N] [--pipeline PIPELINE] [--format text|json]
 ```
 
-Adds audit rows to review.parquet: links, the model's and the rules', that people have not decided and the sheet does not hold, spread evenly over 1-bit weight bands, a rule's pairs scored as the model scores them. No false link in many audits is what says the links are right. O(N + (R + count)·K + E).
+Adds audit rows to review.parquet: links, the model's and the rules', that people have not decided and the sheet does not hold, spread evenly over 1-bit weight bands, a rule's pairs scored as the model scores them. No false link in many audits is what says the links are right. With a trust line, first the pairs of the range people check next that the sheet lacks, from those the run kept for people: no run. O(N + (R + count)·K + E).
 
 | Parameter | |
 |---|---|
 | `--workspace WORKSPACE` | the workspace: the folder that keeps one matching job (required) |
-| `--count N` | how many (default 50) |
+| `--count N` | how many audits (default 50) |
 | `--pipeline PIPELINE` | the pipeline file (default: config/final.toml) |
 
 | Result | |
 |---|---|
-| `drawn` | rows added |
+| `drawn` | audit rows added |
+| `decide` | rows of the range people check next added |
 | `next` | the commands that usually follow |
 
 ```bash
