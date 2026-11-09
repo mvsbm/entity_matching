@@ -1,6 +1,7 @@
 """nayose: each command as a user runs it, mistakes in words, the scheduler, the run's reports."""
 import json
 import math
+import re
 from pathlib import Path
 from dataclasses import replace
 
@@ -408,6 +409,15 @@ def test_describe_says_what_a_run_folder_holds_and_what_joined_an_entity(tmp_pat
     d = describe_workspace(run.con, out, uid)
     assert (d["records"], d["entities"]) == (len(gold), gold["cluster_id"].nunique()) and d["runs"][0]["what"] == "full run"
     assert d["runs"][0]["records"] == len(gold) and {"load", "fit", "score"} <= set(d["runs"][0]["steps"])  # each step's seconds: the next run's estimate
+    step = {x["step"]: x for x in run.steps}  # where the time went: the fit's two parts, the gate, each string function's seconds and values
+    assert {"sample_seconds", "file_u_seconds"} <= set(step["fit"]) and {"gate_seconds", "gate_pairs"} <= set(step["candidates"])
+    assert step["score"]["compared"]["jaro_winkler"]["values"] > 0 and step["fit"]["compared"]["all"]["wall"] > 0
+    section = (out / "report.txt").read_text(encoding="utf-8").split("TIME IN COMPARISONS")[1].split("MODEL")[0]
+    assert re.search(r"^\s+fit\s+all of them\s", section, re.M)  # the fit's time in string functions, whatever the machine's speed
+    from er import strings
+    strings._enter(("t",), 0); strings._enter(("t",), 1)  # two calls at once, 0–2 and 1–3: three seconds of wall, not four
+    strings._leave(("t",), 1.5, 2, 5); strings._leave(("t",), 1.5, 3, 5)
+    assert strings.SPENT.pop("t") == [3.0, 10, 2, 3.0]
     assert d["pairs"]["decide"] + d["pairs"]["audit"] == len(pd.read_parquet(out / "review.parquet")) and not d["write_owed"]
     assert d["summary"][0][0] == "records"
     big = d["largest"][0]
