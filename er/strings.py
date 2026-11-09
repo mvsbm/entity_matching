@@ -1,7 +1,9 @@
 """Character-level string metrics, registered in DuckDB as cl_<name>.
 
 DuckDB's built-in jaro_winkler_similarity, jaccard and damerau_levenshtein compare UTF-8 bytes. Katakana is 3 bytes
-per character, which inflates similarity between unrelated names (サトウヒロシ / サトウタカシ: 0.897 instead of 0.844).
+per character, which inflates similarity between unrelated names (サトウヒロシ / サトウタカシ: 0.897 instead of 0.844). So
+er.config.Comparator asks DuckDB's own only of values one byte a character (ASCII, or the one-byte copy), and these
+for the rest.
 """
 import getpass
 import os

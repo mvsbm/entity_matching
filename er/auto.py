@@ -275,6 +275,9 @@ def values(part: Path, s: Settings) -> set[str]:
     return out
 
 
+OWN_TIME = re.compile(r"(?<=RUN REPORT · )\d{4}-\d{2}-\d{2} \d{2}:\d{2}|(?<=\*\*When:\*\* )\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}")  # when it ran, as the reports write it
+
+
 def scrub(text: str, found: set[str], names: set[str], ours: frozenset[str] = frozenset()) -> tuple[str, int]:
     """`text` with each value of `found` in it, each run of six digits or more and each run of kana or kanji no
     column name (`names`) holds put as [redacted], and how many: a value in ASCII only where it stands as a word; a
@@ -500,9 +503,10 @@ def written(r: dict, file: str, s: Settings) -> dict:
             text = re.sub(rf"(?<![\w.-]){re.escape(x)}(?![\w-])", "<file>", text)
         if part:
             text = text.replace(part, "<part>")
-        text, n = scrub(text, found, names, ours)
+        stamps = OWN_TIME.findall(text)  # the report's own times: a value of the file's may read like part of one (11-10 on 10 November)
+        text, n = scrub(OWN_TIME.sub("\x00", text), found, names, ours)
         hits += n
-        return text
+        return re.sub("\x00", lambda _: stamps.pop(0), text)
 
     facts = cleaned(facts, clean)
     text = clean(markdown(facts, ws.name))  # again on the whole page: whatever markdown() itself adds is checked too

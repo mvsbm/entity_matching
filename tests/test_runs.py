@@ -359,3 +359,14 @@ def test_a_full_run_reads_the_records_it_cleaned_again_until_anything_they_rest_
     assert first._prepared_key([], set(), True) != first._prepared_key([], set(), False)  # files in order: set aside as increments would
     first.labels = pd.DataFrame({first.uid: ["1"], "kind": ["2"]})
     assert first._prepared_key([], set(), False) != base  # people's person/company answers: cleaned again
+
+
+def test_a_file_s_columns_no_field_reads_never_enter_the_run(tmp_path, population):
+    from er.run import Run
+    s, p, g = population
+    g.df.to_parquet(tmp_path / "all.parquet", index=False)
+    g.df.assign(NOTE="x" * 50, MEMO="y").to_parquet(tmp_path / "wide.parquet", index=False)  # columns no field is mapped to
+    Run(p, s).full(tmp_path / "all.parquet", tmp_path / "a")
+    wide = Run(p, s).full(tmp_path / "wide.parquet", tmp_path / "b")
+    assert {"NOTE", "MEMO"}.isdisjoint(wide.columns()) and {"NOTE", "MEMO"}.isdisjoint(pd.read_parquet(tmp_path / "b" / "state" / "records").columns)
+    pd.testing.assert_frame_equal(pd.read_parquet(tmp_path / "a" / "gold.parquet"), pd.read_parquet(tmp_path / "b" / "gold.parquet"))

@@ -13,6 +13,9 @@ if TYPE_CHECKING:
     from er.kind import Classifier
 
 
+ONE_BYTE = str.maketrans({chr(0x30A0 + i): chr(1 + i) for i in range(96)})  # the katakana block, each character one byte: 0x01–0x60
+
+
 def normalize(s: pd.Series, steps: tuple[Normalizer, ...], std: Standardization) -> pd.Series:
     for step in steps:
         match step:
@@ -26,6 +29,8 @@ def normalize(s: pd.Series, steps: tuple[Normalizer, ...], std: Standardization)
                 s = s.str[:3]
             case "reverse":  # a second sort key: names that end alike sort together, so an early typo doesn't split them
                 s = s.str[::-1]
+            case "one_byte":  # all katakana: each one byte, so DuckDB's similarity (bytes) compares it as characters; else none
+                s = s.where(s.str.fullmatch("[\u30a0-\u30ff]+").fillna(False)).str.translate(ONE_BYTE)
             case "casefold":  # romaji: TANAKA and tanaka are one name
                 s = s.str.casefold()
             case "kana_fold":
@@ -94,8 +99,9 @@ def prepare(std: Standardization, records: pd.DataFrame, normalized: Iterable[tu
             if d.kind:  # a held record (the engine and the flag disagree) goes to neither side until a person decides
                 df[d.name] = df[d.name].where((lean == d.kind) & ~k["kind_held"].to_numpy())
     for col, steps in normalized:
-        if column_name(col, steps) not in df:
-            df[column_name(col, steps)] = normalize(df[col], steps, std)
+        if column_name(col, steps) not in df:  # a one-byte copy from the column it copies, if made: not the chain again
+            done = steps[-1:] == ("one_byte",) and column_name(col, steps[:-1]) in df
+            df[column_name(col, steps)] = normalize(df[column_name(col, steps[:-1])], ("one_byte",), std) if done else normalize(df[col], steps, std)
     missing = set(used) - set(df.columns)
     if missing:
         raise ValueError(f"input lacks columns the configuration uses: {sorted(missing)}")

@@ -230,7 +230,9 @@ class Run:
         if kept := keep and self._kept(folder.prepared(keep, key), into, total):
             done = total
         else:
-            reader = self.con.cursor().sql(f"SELECT * FROM {rows}").to_arrow_reader(self.chunk_rows)  # its own cursor: inserts go on alongside
+            reads = {self.uid, *(c for d in fs.standardize.derived for cols in d.sources for c in cols), *used}  # what cleaning reads: a wide file's other columns never enter the run
+            cols = ", ".join(q(c) for c, *_ in self.con.execute(f"DESCRIBE SELECT * FROM {rows}").fetchall() if c in reads)
+            reader = self.con.cursor().sql(f"SELECT {cols} FROM {rows}").to_arrow_reader(self.chunk_rows)  # its own cursor: inserts go on alongside
             for i, batch in enumerate(reader):
                 chunk = prepare(fs.standardize, batch.to_pandas().astype("string"), normalized, used, kind=self.classifier)
                 self.con.register("er_chunk", chunk)

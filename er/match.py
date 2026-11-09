@@ -35,8 +35,9 @@ def rule_edges(spec: RulesSpec, records: "Records", db: DuckDBAPI, uid: str, bat
     Plain SQL, not Splink's deterministic_link, which joins every column of both records back only for us to drop them."""
     l, r, u, con = q(f"{uid}_l"), q(f"{uid}_r"), q(uid), db.duckdb_con
     name = records if isinstance(records, str) else f"er_rules_{abs(hash(id(records)))}"
-    if not isinstance(records, str):
-        con.register(name, records)
+    if not isinstance(records, str):  # a frame not prepared by er.standardize has no one-byte copy: the Python function compares its pairs
+        copies = {comp.copy(c) for s in spec.stages for c, comp in s.comparators.items() if comp.copy(c)} - set(records.columns)
+        con.register(name, records.assign(**{c: pd.Series(pd.NA, index=records.index, dtype="string") for c in copies}))
     left, order = (batch, "<>") if batch else (name, "<")  # a batch pair can come both ways round: DISTINCT ON keeps one
     seconds, parts, every = {}, [], list(spec.each())
     if told:
@@ -108,13 +109,16 @@ def read_by(settings: dict | SettingsCreator, *rules: str) -> set[str]:
 @contextlib.contextmanager
 def narrowed(df: "Records", db: DuckDBAPI, keep: set[str]):
     """The records as a linker reads them, registered: only the columns in `keep`, so a wide file's others never travel
-    with each pair through its joins (the same scores; a column it reads and lacks fails loudly). Released after, the
-    db's cache first (it may name them)."""
+    with each pair through its joins (the same scores; a column it reads and lacks fails loudly, but a one-byte copy:
+    records not prepared by er.standardize lack it, and the Python function then compares every pair). Released after,
+    the db's cache first (it may name them)."""
     if isinstance(df, pd.DataFrame):
-        x = db.register(df[[c for c in df.columns if c in keep]])
+        x = db.register(df[[c for c in df.columns if c in keep]].assign(**{c: pd.Series(pd.NA, index=df.index, dtype="string")
+                                                                           for c in keep - set(df.columns) if c.endswith("one_byte")}))
     else:
-        cols = [c for c, *_ in db.duckdb_con.execute(f'DESCRIBE "{df}"').fetchall() if c in keep]
-        x = db.register(db.duckdb_con.sql(f'SELECT {", ".join(q(c) for c in cols)} FROM "{df}"'))
+        have = [c for c, *_ in db.duckdb_con.execute(f'DESCRIBE "{df}"').fetchall()]
+        cols = [q(c) for c in have if c in keep] + [f"NULL::VARCHAR AS {q(c)}" for c in sorted(keep - set(have)) if c.endswith("one_byte")]
+        x = db.register(db.duckdb_con.sql(f'SELECT {", ".join(cols)} FROM "{df}"'))
     try:
         yield x
     finally:
@@ -184,7 +188,7 @@ def exact_u(model: FSModel, records: Records, db: DuckDBAPI) -> U:
                 WITH v AS (SELECT "{col}" AS x, count(*) AS n FROM {t} WHERE "{col}" IS NOT NULL GROUP BY 1),
                      k AS (SELECT x, n, unnest({deletions_sql('x')}) AS dk FROM v),
                      p AS (SELECT DISTINCT a.x AS x, b.x AS y, a.n * b.n AS nn FROM k a JOIN k b ON a.dk = b.dk AND a.x < b.x)
-                SELECT coalesce(sum(nn), 0) FROM p WHERE cl_{comp.function}_cut(x, y, {comp.threshold}) <= {comp.threshold}""").fetchall()[0][0])
+                SELECT coalesce(sum(nn), 0) FROM p WHERE {comp.test("x", "y")}""").fetchall()[0][0])
 
         out: U = {}
         for c in model.comparisons:

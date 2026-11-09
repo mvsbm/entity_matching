@@ -230,10 +230,11 @@ def report_text(run: "Run", tables: dict[str, pd.DataFrame], pipeline: Path) -> 
                     cores=f"{c['cpu'] / c['wall']:,.1f}" if every and c["wall"] else "", values=f"{c['values']:,}",
                     per_call=f"{c['values'] / c['calls']:,.0f}", us_per_value=f"{1e6 * c['cpu'] / c['values']:,.2f}")
     spent = [row(x, f, c) for x in run.steps for f, c in sorted(x.get("compared", {}).items(), key=lambda fc: (fc[0] != "all", -fc[1]["cpu"]))
-             if c["cpu"] >= 0.05 or (f == "all" and c["wall"] >= 0.05)]
+             if c["cpu"] >= 0.05 or (f == "all" and c["wall"] >= 0.01)]
     out += ["TIME IN COMPARISONS  (all of them: a step's wall seconds while any string function ran, its share of the step, and the cores "
             "they kept busy on average (Python runs one at a time: about 1 means the others waited); per function: its CPU seconds, "
-            "from 0.05 s, the values it compared, per_call at a time, and CPU per value; the rest of a step is DuckDB's joins and sums)",
+            "from 0.05 s, the values it compared, per_call at a time, and CPU per value; the rest of a step is DuckDB's joins and sums, "
+            "and the comparisons DuckDB makes itself)",
             *table(pd.DataFrame(spent)), ""]
 
     lam, m = scaled_prior(run.scoring, run.n), run.scoring["er"]
@@ -520,7 +521,8 @@ def describe_matching(con: duckdb.DuckDBPyConnection, out: Path | None, p: Pipel
     have = {c for c, in rows(f"SELECT column_name FROM (DESCRIBE SELECT * FROM {stored})")}
     variants = {}
     for col, norm in [*p.rules.normalized(), *p.fs.normalized()]:
-        variants.setdefault(col, set()).add(norm)
+        if norm[-1:] != ("one_byte",):  # the comparisons' own copy, not a way people's values are made comparable
+            variants.setdefault(col, set()).add(norm)
     shown_fields = [f for f in s.columns if f not in ("id", "entity") and f in have]
     filled = dict(zip(shown_fields, rows(f"SELECT {', '.join(f'avg(({q(f)} IS NOT NULL)::DOUBLE)' for f in shown_fields)} FROM {stored}")[0])) if shown_fields else {}
     fields = []  # one scan for every field's fill rate, then one row per field for its example

@@ -65,7 +65,7 @@ The SQL is written to move: joins, group-bys, window functions and `CREATE TABLE
 
 | Piece | Where | DuckDB form |
 |---|---|---|
-| character-level similarity (`cl_jaro_winkler`, `cl_levenshtein`, …) | `er.strings` | Python UDFs over Arrow (rapidfuzz); DuckDB's own compare bytes, and katakana is 3 bytes a character |
+| character-level similarity (`cl_jaro_winkler`, `cl_levenshtein`, …) | `er.strings`, `er.config.Comparator.test` | DuckDB's own Jaro, Jaro–Winkler and Hamming (rapidfuzz's C++, on bytes) where each character is one byte: ASCII, or katakana copied one byte each at load (`one_byte`); an edit distance of 1 failed there first where equal-length ASCII values differ in more places than one edit makes; else Python UDFs over Arrow (rapidfuzz) |
 | one-character deletions of a value | `er.candidates`, `er.match` | `list_transform` + `unnest` |
 | a pair's generators as bits | `er.candidates` | `bit_or`, then a `CASE` per bit |
 | the first rule that pairs two records | `er.match`, `er.run` | `DISTINCT ON`, `arg_min` |

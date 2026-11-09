@@ -368,7 +368,7 @@ def load_settings(path: Path | None = None, columns: Path | None = None) -> Sett
         own = toml_of(columns)
         cfg = {**cfg, "columns": own["columns"], "kind": own.get("kind", {})}
     paths = {name: root / rel for name, rel in cfg["paths"].items()}
-    steps = set(get_args(Normalizer))
+    steps = set(get_args(Normalizer)) - {"one_byte"}  # the comparisons' own copy (er.config.Comparator.copy): not a key's
 
     loc = cfg["locale"]
     checked(len(loc["kana_fold_from"]) == len(loc["kana_fold_to"]), "kana_fold_from / kana_fold_to must align character by character", path)
