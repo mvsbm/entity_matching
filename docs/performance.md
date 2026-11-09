@@ -155,8 +155,6 @@ trained once and its signals computed once; a combination fits only its combiner
 - **An edit distance tested on the lengths first.** A Levenshtein, Damerau–Levenshtein or Hamming distance is never
   less than the lengths' difference, so `abs(length(a) - length(b)) <= t` goes before the Python call: the same pairs
   pass, and on long values most pairs never reach Python.
-- **DuckDB's memory limit from the memory free.** With none set, 60% of what is free when it connects, not DuckDB's own
-  80% of the machine's: where other programs hold most of it, DuckDB spills to its folder rather than the system paging.
 - **The oversized blocks' samples scored a slice at a time, in DuckDB** (`Run._gate`, `Run._scored`), not all at once
   through pandas: thousands of placeholder blocks no longer need their every sampled pair compared in one call.
 - **A rule's untrusted values tested before its join** (in WHERE, not ON): a placeholder's block is no longer joined

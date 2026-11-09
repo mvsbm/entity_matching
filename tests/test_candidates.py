@@ -111,6 +111,8 @@ def test_candidate_generators_respect_query_window_and_cosine():
     query = {"0", "5"}
     keys = generate(KeyBlocker(name="k", keys=(Key("phone"),)), df, UID, query)
     assert set(map(tuple, keys.to_numpy())) == {("0", "1"), ("0", "2"), ("5", "6"), ("5", "7")}  # only pairs touching a query
+    for asked, pairs in ((["0", "1"], [("0", "1"), ("0", "2"), ("1", "2")]), (["2", None], [("0", "2"), ("1", "2")])):  # two asked in a block; a NULL among them
+        assert sorted(map(tuple, generate(KeyBlocker(name="k", keys=(Key("phone"),)), df, UID, asked).to_numpy())) == pairs  # each pair once, none lost
     sn = generate(SortedNeighbourhood(name="s", key=Key("name"), window=2), df, UID, query)
     order = df.sort_values(["name", "uid"])["uid"].tolist()
     assert all(abs(order.index(a) - order.index(b)) == 1 and query & {a, b} for a, b in sn.to_numpy())
