@@ -90,20 +90,20 @@ birth_date = '^((19|20)?[0-9]{2})[-/.]?[01][0-9][-/.]?[0-3][0-9]$'   # 1993-05-2
 [columns]
 id = "CONT_ID"
 entity = "ENTITY_ID"                               # the truth, in labels/: read only by labelled runs
-full_name = { sources = [["FULL_NAME_KANA"]], normalize = ["nfkc", "strip_spaces"] }   # half-width or spaced: the same name
-person_name = { sources = [["FULL_NAME_KANA"], ["O_PERSON_NAME_KANA"], ["LAST_NAME_KANA", "GIVEN_NAME_KANA"]], normalize = ["nfkc", "strip_spaces"] }
-given_name = { sources = [["GIVEN_NAME_KANA"]], normalize = ["nfkc", "strip_spaces"] }
-company_name = { sources = [["NYS_CNV_P_NAME_KANA"]], normalize = ["nfkc", "strip_spaces"] }
-any_name = { sources = [["FULL_NAME_KANA"], ["O_PERSON_NAME_KANA"], ["LAST_NAME_KANA", "GIVEN_NAME_KANA"], ["NYS_CNV_P_NAME_KANA"]], normalize = ["strip_spaces", "nfkc", "strip_legal_form", "kana_fold"] }   # person or company
+full_name = { sources = [["FULL_NAME_KANA"]], normalize = ["nfkc", "katakana", "strip_spaces"] }   # half-width, hiragana or spaced: the same name
+person_name = { sources = [["FULL_NAME_KANA"], ["O_PERSON_NAME_KANA"], ["LAST_NAME_KANA", "GIVEN_NAME_KANA"]], normalize = ["nfkc", "katakana", "strip_spaces"] }
+given_name = { sources = [["GIVEN_NAME_KANA"]], normalize = ["nfkc", "katakana", "strip_spaces"] }
+company_name = { sources = [["NYS_CNV_P_NAME_KANA"]], normalize = ["nfkc", "katakana", "strip_spaces"] }
+any_name = { sources = [["FULL_NAME_KANA"], ["O_PERSON_NAME_KANA"], ["LAST_NAME_KANA", "GIVEN_NAME_KANA"], ["NYS_CNV_P_NAME_KANA"]], normalize = ["strip_spaces", "nfkc", "katakana", "strip_legal_form", "kana_fold"] }   # person or company
 address = [["STD_ADDRESS"], ["ORIGINAL_ADDRESS"]]
 address_code = "SOURCE_ADDR_CD"
-postal_code = [["POST_CD"], ["POST_CD_KANA"]]
+postal_code = { sources = [["POST_CD"], ["POST_CD_KANA"]], normalize = ["nfkc", "strip_separators"] }   # 100-0001 or full-width: the same code
 prefecture = "ADDRESS_ONE"
 town_code = "ADDR_CD"                               # municipality + town + chome (住所コード)
 city = "ADDRESS_TWO"
-phone = "PHONE_NUM_4"
-customer_id = "CIF_ID"                             # the ID the CIF system assigns
-birth_date = "BIRTH_DATE"                          # one format throughout (YYYYMMDD here), so equal dates are equal strings
+phone = { sources = [["PHONE_NUM_4"]], normalize = ["nfkc", "strip_separators"] }
+customer_id = { sources = [["CIF_ID"]], normalize = ["nfkc", "strip_separators"] }   # the ID the CIF system assigns
+birth_date = { sources = [["BIRTH_DATE"]], normalize = ["nfkc", "strip_separators"] }   # one order throughout (YYYYMMDD here): 1993-05-25 and 19930525 alike
 kind_flag = "PERSON_ORG_CODE"                      # the file's own person/company flag, if it has one; values in [kind]
 # One column holding every name, a person's or a company's? Give full_name, person_name, company_name and any_name
 # that column, and add kind = "person" to full_name and person_name, kind = "company" to company_name: each record's

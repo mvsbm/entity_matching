@@ -172,6 +172,16 @@ def test_a_lookup_lists_and_scores_the_pairs_an_increment_of_the_record_would_an
     rules_alone = int((kept_pairs["rule"].notna() & kept_pairs["sources"].isna()).sum())
     assert at_zero == int((kept_pairs["match_weight"] >= 0).sum())  # at 0 or more: the pairs Explore lists
     assert sum(x["pairs"] for x in d["scores"]) == by_keys + rules_alone and len(runs) == 2  # every pair compared: the increment's with the full run's
+    log = (ws / "steps.json").read_text(encoding="utf-8")
+    older = json.loads(log)
+    for run in older["runs"]:
+        for x in run["steps"]:
+            x.pop("bands", None)
+    (ws / "steps.json").write_text(json.dumps(older), encoding="utf-8")  # a run logged before each counted its own bands
+    d = cli.describe_results_({"workspace": str(ws)}, None)
+    assert d["uncounted"] == len(first) and d["listed"] == int((kept_pairs["match_weight"] >= 0).sum()) and d["scores"]  # what the chart leaves out, said; the list counted whole
+    (ws / "steps.json").write_text(log, encoding="utf-8")
+    assert cli.describe_results_({"workspace": str(ws)}, None)["uncounted"] == 0
     review = pd.read_parquet(ws / "review.parquet")
     stored_pair = review[~review[f"{uid}_l"].isin(first[uid]) & ~review[f"{uid}_r"].isin(first[uid])].iloc[0]
     assert cli.main(["decide", "pair", stored_pair[f"{uid}_l"], stored_pair[f"{uid}_r"], "match", "--workspace", str(ws)]) == 0
@@ -229,8 +239,10 @@ def test_a_search_finds_records_by_the_start_of_any_value_and_says_one_too_commo
     common = df["PHONE_NUM_4"].value_counts().index[0]
     said = cli.search_records({"workspace": str(ws), "values": [f"PHONE_NUM_4={common}"], "from": None, "count": "5"}, None)
     assert said["over"] == [dict(field="phone", value=common)] and said["entities"] == []  # too many to list: said, to be narrowed
-    with pytest.raises(InputError, match="no value given"):
-        cli.search_records({"workspace": str(ws), "values": ["PHONE_NUM_4="], "from": None, "count": None}, None)
+    said = cli.search_records({"workspace": str(ws), "values": ["PHONE_NUM_4=-", "FULL_NAME_KANA=NULL"], "from": None, "count": None}, None)
+    assert said["typed"] == [] and said["missing"] == ["FULL_NAME_KANA", "PHONE_NUM_4"] and said["entities"] == []  # placeholders alone: nothing to search by
+    with pytest.raises(InputError, match="FULL_NAME_KANA=-: read as missing"):  # looked up: said in words a person reads
+        cli.match_record({"workspace": str(ws), "values": ["FULL_NAME_KANA=-"], "record": None, "from": None, "count": None}, None)
 
 
 def _records(ws, uid: str, entity: str) -> set[str]:  # an entity's records, as the run holds them

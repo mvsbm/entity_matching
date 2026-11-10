@@ -25,6 +25,7 @@ Written by `scripts/document_commands.py` from the declarations in `er/cli.py`; 
 | [`describe records`](#nayose-describe-records) | What a file holds, for mapping its columns: nothing prepared |
 | [`check records`](#nayose-check-records) | Read, map and check a file, in seconds; resolve nothing |
 | [`list columns`](#nayose-list-columns) | Show which of a file's columns hold each field |
+| [`set preparation`](#nayose-set-preparation) | Set how a field's values are prepared |
 | [`set columns`](#nayose-set-columns) | Map fields to a file's columns |
 | [`resolve records`](#nayose-resolve-records) | Resolve a file: one ID per person or company |
 | [`rehearse records`](#nayose-rehearse-records) | Run a generated file of the same size and shape, and measure what this machine needs |
@@ -202,6 +203,7 @@ The workspace's structure: each group, its features and their parts (a full name
 |---|---|
 | `features` | the structure: groups › features › parts, each with type and columns |
 | `slots` | each feature and part: feature (its path), columns |
+| `rerun_owed` | the run read its records with another mapping, method or pipeline: it reads them so once it runs again |
 | `next` | the commands that usually follow |
 
 ```bash
@@ -227,6 +229,7 @@ Sets each named feature's or part's columns, by its path: GROUP/FEATURE=COLUMN, 
 |---|---|
 | `features` | the structure, as set |
 | `slots` | each feature and part: feature (its path), columns |
+| `rerun_owed` | the run read its records with another mapping, method or pipeline: it reads them so once it runs again |
 | `next` | the commands that usually follow |
 
 ```bash
@@ -252,6 +255,7 @@ by-kind: a person's name is compared only with people's names, a company's only 
 |---|---|
 | `names` | by-kind or as-mapped |
 | `mapping` | the name lines of columns.toml, as written |
+| `rerun_owed` | the run read its records with another mapping, method or pipeline: it reads them so once it runs again |
 | `next` | the commands that usually follow |
 
 ```bash
@@ -280,6 +284,7 @@ Adds a feature to the Name group (PATH: Name/<its name>): a person's name, with 
 |---|---|
 | `features` | the structure, with it |
 | `slots` | each feature and part: feature (its path), columns |
+| `rerun_owed` | the run read its records with another mapping, method or pipeline: it reads them so once it runs again |
 | `next` | the commands that usually follow |
 
 ```bash
@@ -305,6 +310,7 @@ Its fields leave the workspace's columns.toml; the defaults stay (take their col
 |---|---|
 | `features` | the structure, without it |
 | `slots` | each feature and part: feature (its path), columns |
+| `rerun_owed` | the run read its records with another mapping, method or pipeline: it reads them so once it runs again |
 | `next` | the commands that usually follow |
 
 ```bash
@@ -402,10 +408,38 @@ Reads the workspace's columns.toml, or without one config/settings.toml [columns
 | `settings` | the file read |
 | `own` | true: the workspace's own mapping |
 | `columns` | each field: columns, options |
+| `rerun_owed` | the run read its records with another mapping, method or pipeline: it reads them so once it runs again |
 | `next` | the commands that usually follow |
 
 ```bash
 nayose list columns --workspace workspaces/acme
+```
+
+## nayose set preparation
+
+Set how a field's values are prepared.
+
+```
+nayose set preparation FIELD=STEPS … [--workspace WORKSPACE] [--format text|json]
+```
+
+Rewrites the named fields' normalize steps in [columns]: FIELD=STEP,STEP, applied in order (FIELD= for none), the field's columns as they are. Among the steps: nfkc (full-width as half-width, half-width kana as full), katakana (hiragana as katakana), strip_separators (03-1234-5678 as 0312345678, letters kept), strip_spaces, kana_fold. With --workspace, the workspace's columns.toml; else the project's, which new workspaces start from. A run reads the values so once it runs again. O(the file).
+
+| Parameter | |
+|---|---|
+| `FIELD=STEPS` | one or more FIELD=STEPS |
+| `--workspace WORKSPACE` | a workspace, for its own mapping (without it, the project's: config/settings.toml) |
+
+| Result | |
+|---|---|
+| `settings` | the file written |
+| `own` | true: the workspace's own mapping |
+| `columns` | each field: columns, options |
+| `rerun_owed` | the run read its records with another mapping, method or pipeline: it reads them so once it runs again |
+| `next` | the commands that usually follow |
+
+```bash
+nayose set preparation phone=nfkc,strip_separators --workspace workspaces/acme
 ```
 
 ## nayose set columns
@@ -428,6 +462,7 @@ Rewrites the named fields' lines in [columns]: FIELD=COLUMN, FIELD=A,B (B where 
 | `settings` | the file written |
 | `own` | true: the workspace's own mapping |
 | `columns` | each field: columns, options |
+| `rerun_owed` | the run read its records with another mapping, method or pipeline: it reads them so once it runs again |
 | `next` | the commands that usually follow |
 
 ```bash
@@ -652,6 +687,7 @@ Values by the file's column names, any of them (finding nothing as given, read a
 | `listed` | records whose values start with those given |
 | `candidates` | of them, scored |
 | `typed` | the fields searched |
+| `missing` | the columns given, when every value read as missing: nothing to search by |
 | `over` | each value that starts too many records to list: field, value |
 | `seconds` | each part |
 | `index` | built_at, records |
@@ -723,6 +759,7 @@ Records and entities, the largest entities, each run so far, the pairs and kinds
 | `inputs` | the records files given to it, each in inputs/: name, path, files, bytes, rows, read (by a run, as it is now), waiting (repairs proposed, for people), unread (rows), given (its file's own name, one file), seconds (its reading took), columns |
 | `columns` | own: its columns.toml; project: config/settings.toml's |
 | `auto` | the report try everything wrote, to send: report (its path), markdown |
+| `rerun_owed` | the mapping, the method or the pipeline changed since the run: it reads the records so once it runs again |
 | `index` | the lookup's index: built_at, records, added (of them, since it was built), stale (what changed since, or null; built_at null: none yet), columns (each a lookup reads: column, field, main: in the field's first alternative) |
 | `next` | the commands that usually follow |
 
@@ -1258,6 +1295,8 @@ How the scores came out (every pair the run scored, the full run's and each incr
 | `sizes` | entities by size: label, entities |
 | `scores` | every scored pair by points: down_to, up_to, pairs |
 | `candidates` | pairs compared |
+| `uncounted` | the records added since the full run whose pairs scores leaves out (a run logged before each counted its own) |
+| `listed` | the pairs kept at 0 points or more: those list scored lists from 0 |
 | `review_from` | the points people review from |
 | `waiting` | pairs waiting for people, by range: down_to, up_to, pairs |
 | `pairs` | the pairs kept (0 points or more), by status |
