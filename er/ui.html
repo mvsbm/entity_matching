@@ -881,6 +881,7 @@ const task = {
     this.done = ok; this.why = why;
     this.draw();
     if (ok) this.hide = setTimeout(() => { $("task").hidden = true; }, 8000);
+    else $("task").hidden = false;  // a failure said wherever the person is, its page's own command too
   },
   draw() {
     const secs = (Date.now() - this.t0) / 1000, order = STEPS_OF[this.command] || RUN_STEPS, p = this.p;
@@ -2453,13 +2454,13 @@ const SCREENS = {
     const ix = w.index, ready = ix.built_at && !ix.stale;
     const input = (c) => `<label class="field"><span class="lab">${esc(words(c.field))}</span><input type="text" name="${esc(c.column)}" placeholder="${esc(c.column)}" autocomplete="off"></label>`;
     const building = task.busy() === "lookup";  // its build runs: said here, in the card
-    const says = (x) => !ix.built_at ? "Build the index once, from the run: then each look-up takes well under a second"
-      : ix.stale ? `The index is out of date: ${esc(ix.stale)}`
+    const says = !ix.built_at ? "Build the index once, from the run: then each look-up takes well under a second"
+      : ix.stale ? `The index is out of date: ${ix.stale}`
       : `Index of ${plural(ix.records, "record")}, built ${String(ix.built_at).replace("T", " ").slice(0, 16)}${ix.added ? `, ${fmt(ix.added)} added since` : ""}`;
-    const held = longRun && longRun.command !== "build index";  // a run writes the workspace: the index waits for it
-    const buildLine = `Building the index · <span class="run-line">${esc(task.line || "")}</span>`, buildBtn = `${spinner()}Building…`;
+    const held = longRun && !building;  // another long command, or another workspace's build: the index waits for it
+    const buildLine = (line) => `Building the index · <span class="run-line">${esc(line)}</span>`, buildBtn = `${spinner()}Building…`;
     const top = Number(store("lookupTop")) || 10, from = store("lookupFrom") ?? "";  // this browser's, as it left them
-    $("out").innerHTML = `<div class="card">${ask("Is this customer already here?", building ? buildLine : says(), "",
+    $("out").innerHTML = `<div class="card">${ask("Is this customer already here?", building ? buildLine(task.line || "") : esc(says), "",
         `<span class="lu-build">${held ? '<span class="muted">after the run</span>' : ""}<button type="button" class="btn ${ready ? "outlined" : "filled"}" id="build" ${held || building ? "disabled" : ""}>${
           building ? buildBtn : `${icon("refresh")}${ix.built_at ? "Rebuild index" : "Build index"}`}</button></span>`)}
       <form id="lu" ${ready ? "" : "inert"}><div class="lu-grid">${ix.columns.filter((c) => c.main).map(input).join("")}</div>
@@ -2472,11 +2473,11 @@ const SCREENS = {
     $("build").onclick = () => {  // how far, in the card's line; the page drawn again when it ends, here or on coming back (ended)
       longRun = {command: "build index", visit, page: "lookup", workspace: state.workspace};
       $("build").disabled = true; $("build").innerHTML = buildBtn;
-      $("out").querySelector(".answer").innerHTML = buildLine;
+      $("out").querySelector(".answer").innerHTML = buildLine("");
       run("lookup", "build index").then(async (r) => {
         if (longRun && longRun.command === "build index") longRun = null;  // refused before it ran: nothing ended it
         await go("lookup");
-        if (r.event === "error") $("note").innerHTML = banner(r);
+        if (r.event === "error" && !r.lost) $("note").innerHTML = banner(r);  // a lost server is said above the page already
       });
     };
     const settings = () => {  // Show and From points, kept in this browser
