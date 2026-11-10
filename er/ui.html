@@ -850,6 +850,7 @@ function runPace(order, ended, at, now, last, p = null, pAt = at) {
 }
 const paceLine = (pace) => [pace.over ? "longer than last time" : "",
   pace.left === null || (pace.least && pace.left < 2) ? "" : pace.left < 2 ? "almost done" : `${pace.least ? "at least" : "about"} ${lasts(pace.left)} left`].filter(Boolean).join(" · ");
+const OWN_PAGE = new Set(["build index"]);  // long commands their own page says the progress of, where the person is looking: no panel over it
 const task = {
   start(command, job, since) {  // since: when it began, for a page drawn while it runs (seconds since the epoch)
     if (this.job && this.done === null) return;  // one at a time: a second, refused at once, doesn't take the panel
@@ -858,7 +859,7 @@ const task = {
     delete lastRuns[command];
     clearTimeout(this.hide); clearInterval(this.clock);
     this.clock = setInterval(() => this.draw(), 1000);
-    $("task").hidden = false;
+    $("task").hidden = OWN_PAGE.has(command);
     this.draw();
   },
   event(e, job) {
@@ -2451,14 +2452,16 @@ const SCREENS = {
     if (w.event === "error" || !w.records) { await notYet(el, "lookup", w.event === "error" ? w : null); return w; }
     const ix = w.index, ready = ix.built_at && !ix.stale;
     const input = (c) => `<label class="field"><span class="lab">${esc(words(c.field))}</span><input type="text" name="${esc(c.column)}" placeholder="${esc(c.column)}" autocomplete="off"></label>`;
-    const says = !ix.built_at ? "Build the index once, from the run: then each look-up takes well under a second"
-      : ix.stale ? `The index is out of date: ${ix.stale}`
+    const building = task.busy() === "lookup";  // its build runs: said here, in the card
+    const says = (x) => !ix.built_at ? "Build the index once, from the run: then each look-up takes well under a second"
+      : ix.stale ? `The index is out of date: ${esc(ix.stale)}`
       : `Index of ${plural(ix.records, "record")}, built ${String(ix.built_at).replace("T", " ").slice(0, 16)}${ix.added ? `, ${fmt(ix.added)} added since` : ""}`;
     const held = longRun && longRun.command !== "build index";  // a run writes the workspace: the index waits for it
+    const buildLine = `Building the index · <span class="run-line">${esc(task.line || "")}</span>`, buildBtn = `${spinner()}Building…`;
     const top = Number(store("lookupTop")) || 10, from = store("lookupFrom") ?? "";  // this browser's, as it left them
-    $("out").innerHTML = `<div class="card">${ask("Is this customer already here?", esc(says), "",
-        `<span class="lu-build">${held ? '<span class="muted">after the run</span>' : ""}<button type="button" class="btn ${ready ? "outlined" : "filled"}" id="build" ${held ? "disabled" : ""}>${
-          icon("refresh")}${ix.built_at ? "Rebuild index" : "Build index"}</button></span>`)}
+    $("out").innerHTML = `<div class="card">${ask("Is this customer already here?", building ? buildLine : says(), "",
+        `<span class="lu-build">${held ? '<span class="muted">after the run</span>' : ""}<button type="button" class="btn ${ready ? "outlined" : "filled"}" id="build" ${held || building ? "disabled" : ""}>${
+          building ? buildBtn : `${icon("refresh")}${ix.built_at ? "Rebuild index" : "Build index"}`}</button></span>`)}
       <form id="lu" ${ready ? "" : "inert"}><div class="lu-grid">${ix.columns.filter((c) => c.main).map(input).join("")}</div>
         ${ix.columns.some((c) => !c.main) ? `<details class="fold-line"><summary>More columns</summary><div class="lu-grid">${ix.columns.filter((c) => !c.main).map(input).join("")}</div></details>` : ""}
         <div class="lu-act"><label class="field"><span class="lab">or a record's ID, as if it were new</span><input type="text" id="lu-id" autocomplete="off"></label>
@@ -2466,7 +2469,16 @@ const SCREENS = {
           <label class="field lu-n"><span class="lab">From points</span><input type="number" id="lu-from" step="any" placeholder="any" value="${esc(from)}"></label>
           <button class="btn filled" type="submit" ${ready ? "" : "disabled"}>${icon("search")}Look up</button>${ready ? "" : '<span class="muted">once the index is built</span>'}</div></form></div>
       <div id="found"></div><div id="suggest"></div>`;
-    $("build").onclick = () => run("lookup", "build index").then((r) => r.event === "error" ? ($("note").innerHTML = banner(r)) : go("lookup"));
+    $("build").onclick = () => {  // how far, in the card's line; the page drawn again when it ends, here or on coming back (ended)
+      longRun = {command: "build index", visit, page: "lookup", workspace: state.workspace};
+      $("build").disabled = true; $("build").innerHTML = buildBtn;
+      $("out").querySelector(".answer").innerHTML = buildLine;
+      run("lookup", "build index").then(async (r) => {
+        if (longRun && longRun.command === "build index") longRun = null;  // refused before it ran: nothing ended it
+        await go("lookup");
+        if (r.event === "error") $("note").innerHTML = banner(r);
+      });
+    };
     const settings = () => {  // Show and From points, kept in this browser
       const k = Math.min(200, Math.max(1, Math.round(Number($("lu-top").value)) || 10)), p = $("lu-from").value.trim(), points = p !== "" && Number.isFinite(Number(p));
       $("lu-top").value = k;
