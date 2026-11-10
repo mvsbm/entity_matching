@@ -32,7 +32,7 @@ A *normalizer* maps every variant of one fact to one standard form. We use four.
 | コバヤシ | コハヤシ |
 | サトー | サトウ |
 
-**Address parsing** turns any typed address into one key. It converts full-width characters to normal ones, drops the prefecture, rewrites 丁目, 番 and 号 as dashes, and cuts off the building. All three addresses above become `千代田区丸の内1-3-17`.
+**Address parsing** turns any typed address into one key. It converts full-width characters to normal ones, drops the prefecture, rewrites 丁目, 番 and 号 as dashes, and cuts off the building: what follows the first space past the street number. A space before the number, between the city and the town, is dropped and cuts nothing. All three addresses above become `千代田区丸の内1-3-17`.
 
 **Company names** lose their legal form before comparing, wherever it stands and however it is written: カブシキガイシャカネコカイソウテン, カネコカイソウテン(カ) and ｶﾌﾞｼｷｶﾞｲｼｬｶﾈｺｶｲｿｳﾃﾝ all become カネコカイソウテン.
 

@@ -314,6 +314,27 @@ def test_step_2_shows_each_change_at_once_writes_them_in_turn_and_a_refused_one_
             break
         page.wait_for_timeout(100)
     assert columns()["phone"] == ()
+    page.wait_for_function("() => inflight.size === 0", timeout=60_000)  # the left page's last description read: a change made here after it is drawn
+    assert cli.main(["set", "feature", f"Phone/Phone={phone},{other}", "--workspace", str(ws), "--format", "json"]) == 0
+    reopen()
+    held = []  # the file described again after a change, held while a second change waits behind it and the page is left
+    page.route("**/api/run", lambda route: held.append(route) if json.loads(route.request.post_data)["command"] == "describe records" else route.continue_())
+    take_off = lambda col: page.evaluate(f"document.querySelector(\"{slot} .colchip.in[data-col='{col}'] [data-x]\").click()")
+    take_off(phone)
+    for _ in range(300):
+        if held:
+            break
+        page.wait_for_timeout(50)
+    take_off(other)
+    page.evaluate("go('run')")
+    while held:  # each description asked meanwhile, let go
+        held.pop().continue_()
+    page.unroute("**/api/run")
+    for _ in range(300):
+        if columns()["phone"] == ():
+            break
+        page.wait_for_timeout(100)
+    assert columns()["phone"] == ()  # the page that asked for the description is gone: the change queued behind it is written all the same
 
 
 def test_a_long_command_shows_how_far_it_is_in_a_panel_that_folds_and_closes_and_the_drawer_keeps_its_height(ui_page, tmp_path, population):
@@ -438,6 +459,11 @@ def test_step_2_says_what_a_column_holds_instead_and_its_button_sets_it_right(ui
     page.wait_for_selector(f"{row('Name/Company name')} .fhint.info", timeout=60_000)  # done, and said as done
     assert 'kind = "company"' in (home / "w" / "columns.toml").read_text(encoding="utf-8") and not page.query_selector("[data-hint='Name/Company name']")
     page.click("[data-hint='Phone/Phone']")
+    assert not page.query_selector("[data-hint='Phone/Phone']")  # done: its button goes at once, so a second click sends nothing
+    field = lambda f, filled, *alts: dict(field=f, filled=filled, alternatives=[dict(columns=a, found=True) for a in alts])
+    together = lambda *fields: page.evaluate("(f) => hurts(f, [], '', {}, [['person_name', 'company_name']]).join(' ')", list(fields))
+    assert "Person name is 20% filled" in together(field("person_name", 0.2, ["NAME"]), field("company_name", 0.2, ["NAME"]))  # one column for both: counted once
+    assert "Person name" not in together(field("person_name", 0.2, ["SEI", "MEI"], ["SEI", "MEI"]), field("company_name", 0.15, ["CO"]))  # its columns once each: 35%, as check records counts
     page.wait_for_selector(f"{row('Address/Postal code')} .colchip.in[data-col=POST_CD]", state="attached", timeout=60_000)  # in its group, folded: nothing there needs a look
     page.wait_for_function(f"() => !document.querySelector(\"{row('Phone/Phone')} .fhint\")", timeout=60_000)
     assert not page.query_selector(f"{row('Phone/Phone')} .colchip.in")
@@ -491,6 +517,9 @@ def test_review_counts_down_an_answer_waits_out_a_busy_workspace_and_auto_merge_
         return asked.then(() => [during, bar.hidden]); }""") == [True, True]  # the app bar's line: on while the page reads, off once it has its answer
     waiting = int(re.search(r"[\d,]+", page.inner_text("a.tile[data-go=pairs]:not([data-merge]) .num")).group().replace(",", ""))
     assert waiting > 2 and page.inner_text(".rail li.attention .sub") == f"{waiting:,} waiting"  # the tile and the rail say one number
+    minutes = -(-waiting * 20 // 60)
+    assert page.inner_text("a.tile[data-go=pairs]:not([data-merge]) p.muted") == f"about {minutes} minute{'s' * (minutes != 1)} to review them all, if each pair takes 20 seconds"
+    assert page.evaluate("[reviewTime(5400), reviewTime(129.7 * 3600)]") == ["1.5 hours", "130 hours"]  # how long, then what it rests on
     page.click("a.tile[data-tab=entities]")  # a tile opens its own tab
     page.wait_for_selector(".tab[data-tab=entities][aria-selected=true]")
     page.wait_for_timeout(1000)

@@ -417,9 +417,11 @@ def file_lines(r: dict) -> list[str]:  # a file described: the fields found, and
     filled = {f["field"]: f["filled"] for f in found}
     groups = [g for g in needed.get("one_of", []) if any(f in filled for f in g)]  # a person's or a company's name: together, as check records counts them
     either = {f for g in groups for f in g}
+    cols = {f["field"]: {c for a in f.get("alternatives") or [] if a["found"] for c in a["columns"]} for f in found}
     for g in [*groups, *([f] for f in filled if f not in either)]:
         have = [f for f in g if f in filled]
-        if (share := sum(filled[f] for f in have)) < 0.3:
+        apart = len(set().union(*(cols[f] for f in have))) == sum(len(cols[f]) for f in have)  # one column for both: counted once, as check records does
+        if (share := (sum if apart else max)(filled[f] for f in have)) < 0.3:
             out.append(f"  ! {' and '.join(map(word, have))} {'are' if len(have) > 1 else 'is'} {share:.0%} filled" + (" together" if len(have) > 1 else ""))
     for f in found:  # what its values say is off, else how few look right
         if h := f.get("hint"):
@@ -615,7 +617,7 @@ def rows(frame: pd.DataFrame) -> list[dict]:
     return plain(frame.astype(object).where(frame.notna(), None).to_dict("records"))
 
 
-def next_after(out: Path, uid: str, waiting: int | None = None) -> list[dict]:
+def next_after(out: Path, waiting: int | None = None) -> list[dict]:
     """What usually follows a run: the pairs waiting for people, the person/company answers open, then what it found."""
     found = [dict(command=nayose("open", "ui", "--workspace", out), why=f"review the {waiting:,} pairs in the browser"),
              dict(command=nayose("list", "scored", "--workspace", out, "--status", "waiting"), why="or list them here, best first")] if waiting else []
@@ -642,7 +644,7 @@ def after_run(run: Run, out: Path) -> dict:
              "matches/", "state/"]
     facts = run_facts(run, out)
     return dict(summary=run.tables["summary"].values.tolist(), seconds=round(sum(x["seconds"] for x in run.steps), 1), facts=facts,
-                wrote=[str(out / f) for f in wrote], next=next_after(out, run.uid, facts and facts["waiting"]))
+                wrote=[str(out / f) for f in wrote], next=next_after(out, facts and facts["waiting"]))
 
 
 def loaded(a: dict, verb: str) -> dict:  # a command's file: the one named, else the workspace's file loaded last
@@ -753,9 +755,10 @@ def set_columns_(a: dict, emit: "Emit") -> dict:
     ws = a.get("workspace")
     if ws and not Path(ws).is_dir():
         raise InputError(f"no workspace at {ws}", fix="create it: nayose create workspace NAME")
-    if ws and not columns_file(ws):  # a workspace made before it kept its own mapping starts from the project's
-        (Path(ws) / COLUMNS).write_text(own_columns(settings_path()), encoding="utf-8")
-    set_columns(columns_file(ws) or settings_path(), mapping)
+    with folder.writing(Path(ws) / COLUMNS if ws else settings_path()):
+        if ws and not columns_file(ws):  # a workspace made before it kept its own mapping starts from the project's
+            (Path(ws) / COLUMNS).write_text(own_columns(settings_path()), encoding="utf-8")
+        set_columns(columns_file(ws) or settings_path(), mapping)
     return {**list_columns(a, emit), "next": [dict(command=nayose("check", "records", "<file>"), why="check a file with the new mapping")]}
 
 
@@ -961,11 +964,13 @@ def hints(d: dict, con, s, p, feats: list[dict], ws: str | None, field_of: Calla
         if pick:
             share, g, target = pick
             name, says = target.split("/")[-1], f"values look like {target.split('/')[-1].lower()} ({share:.0%})"
+            fam = path.removesuffix("/Given name") + "/Family name"  # a family name is read joined to the given name: it goes with the last of it
+            also = [f"{fam}="] if path.endswith("/Given name") and not alts(e, col) and any(slot.get(fam, {}).get("sources") or []) else []
             out[path] = (dict(level="warn", says=f"{says}, which reads this column already", fix=f"take it off {x['name']}", act="off", column=col,
-                              button="Take it off", command=nayose("set", "feature", f"{path}={alts(e, col)}", *there) if ws else None)
+                              button="Take it off", command=nayose("set", "feature", f"{path}={alts(e, col)}", *also, *there) if ws else None)
                          if [col] in slot[target]["sources"] else
                          dict(level="warn", says=says, fix=f"read this column as {name}", act="move", to=target, column=col, button=f"Move to {name}",
-                              command=nayose("set", "feature", f"{target}={','.join(filter(None, (col, alts(slot[target], col))))}", f"{path}={alts(e, col)}", *there)
+                              command=nayose("set", "feature", f"{target}={','.join(filter(None, (col, alts(slot[target], col))))}", f"{path}={alts(e, col)}", *also, *there)
                               if ws else None)
                          if not found(slot[target]) or (slot[target].get("looks_right") or 0) < WARN else
                          dict(level="warn", says=says, fix=f"check the column ({col})"))
@@ -995,7 +1000,8 @@ def set_feature(a: dict, emit: "Emit") -> dict:
             raise InputError(f"{item}: write GROUP/FEATURE=COLUMNS", fix="for example \"Name/Full name/Family name=SEI\": a comma between "
                              "fallbacks, + between columns joined, nothing after = for no column")
         values[path] = tuple(tuple(c.strip() for c in alt.split("+")) for alt in cols.split(",")) if cols else ()
-    set_features(a["workspace"], values)
+    with folder.writing(Path(a["workspace"]) / COLUMNS):
+        set_features(a["workspace"], values)
     return {**list_features(a, emit), "next": [dict(command=nayose("describe", "records", "<file>", "--workspace", a["workspace"]), why="see how the file fills them")]}
 
 
@@ -1003,19 +1009,22 @@ def set_names(a: dict, emit: "Emit") -> dict:
     ws = Path(a["workspace"])
     if not (f := columns_file(ws)):
         raise InputError(f"{ws} keeps no mapping of its own", fix=f"create it as a workspace first: nayose create workspace {ws.name}")
-    set_name_kinds(f, a["how"] == "by-kind")
+    with folder.writing(f):
+        set_name_kinds(f, a["how"] == "by-kind")
     lines = [x for x in f.read_text(encoding="utf-8").splitlines() if x.split("=")[0].strip() in ("full_name", "person_name", "company_name")]
     return dict(names=a["how"], mapping=lines, next=[dict(command=nayose("describe", "records", "--workspace", ws), why="see the names checked again"),
                                                     dict(command=nayose("resolve", "records", "--workspace", ws), why="match with it")])
 
 
 def add_feature_(a: dict, emit: "Emit") -> dict:
-    add_feature(a["workspace"], a["path"], a["type"], a["script"], a["column"])
+    with folder.writing(Path(a["workspace"]) / COLUMNS):
+        add_feature(a["workspace"], a["path"], a["type"], a["script"], a["column"])
     return {**list_features(a, emit), "next": [dict(command=nayose("describe", "records", "<file>", "--workspace", a["workspace"]), why="see how the file fills it")]}
 
 
 def remove_feature_(a: dict, emit: "Emit") -> dict:
-    remove_feature(a["workspace"], a["path"])
+    with folder.writing(Path(a["workspace"]) / COLUMNS):
+        remove_feature(a["workspace"], a["path"])
     return list_features(a, emit)
 
 
@@ -1076,7 +1085,7 @@ def add_records(a: dict, emit: "Emit") -> dict:
         if copied:
             shutil.rmtree(part, ignore_errors=True)
         return dict(summary=[["nothing new", f"every ID of {mine.get('given') or Path(a['input'] or part).name} is in the run already"]],
-                    next=next_after(out, run.uid))
+                    next=next_after(out))
     return after_run(run, out)
 
 
@@ -1844,7 +1853,7 @@ COMMANDS: tuple[Command, ...] = (
             "and the model's links), how many people decided and said different, the sample a range needs (checks, or all "
             "of a smaller range), the false links the model expects in it, the chance its sample comes back clean, the false "
             "rate a clean sample bounds, and the reviews left to merge it and every range above; then what waits whatever "
-            "the line, the spot-checks a round, the person/company sheet, and the hours at --seconds a pair (an assumption, "
+            "the line, the spot-checks a round, the person/company sheet, and the hours they take if each pair takes --seconds (an assumption, "
             "not a measure). A range above the line merges: none left there; a range people found a false pair in, and every "
             "range below it, need all their pairs, since the line never steps past it. A workspace with no trust line merges "
             "as tuned, and is refused. Changes nothing. O(E + D) over the run's files and people's decisions.",

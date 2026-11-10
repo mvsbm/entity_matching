@@ -42,7 +42,7 @@ import pyarrow.parquet as pq
 from er.config import InputError
 
 REPORT, READ, PROPOSALS, UNREAD = "intake.json", "read", "proposals.parquet", "unread.parquet"
-READER = 2  # what reads a part: one an older reader read is read again (er.folder.fresh). 2: lists read as their item
+READER = 3  # what reads a part: one an older reader read is read again (er.folder.fresh). 2: lists read as their item; 3: whole floats as digits, names apart case aside
 SUFFIXES = (".parquet", ".csv", ".tsv", ".txt")  # the records files a folder or an inbox holds
 KINDS = ("realign", "garbled", "encoding")
 KEEP = 1000  # proposals of each kind kept to show
@@ -165,7 +165,7 @@ def unlisted(v: str) -> tuple[str | None, str] | None:
     except ValueError:
         try:  # quoted with ' (a Python list written out): strings only
             items = ast.literal_eval(v)
-        except (ValueError, SyntaxError, MemoryError, RecursionError):
+        except (ValueError, TypeError, SyntaxError, MemoryError, RecursionError):  # TypeError: an unhashable item, [{[]}]
             return None
         if not isinstance(items, list) or not all(isinstance(x, str) for x in items):
             return None
@@ -349,6 +349,10 @@ def texts(batch: pa.RecordBatch) -> list[pa.Array]:  # a chunk's columns: text a
     for a in batch.columns:
         a = a.dictionary_decode() if pa.types.is_dictionary(a.type) else a
         if not (pa.types.is_binary(a.type) or pa.types.is_large_binary(a.type) or pa.types.is_nested(a.type)):
+            if pa.types.is_floating(a.type):  # a whole number as its digits: Arrow writes 9e+10, which reads as one cut short
+                a = a.cast(pa.float64()) if a.type == pa.float16() else a  # Arrow has no floor of a half float
+                whole = pc.and_(pc.equal(pc.floor(a), a), pc.less(pc.abs(a), 9e18))
+                a = pc.if_else(whole, a.cast(pa.int64(), safe=False).cast(pa.string()), a.cast(pa.string()))
             a = a if pa.types.is_string(a.type) else a.cast(pa.string())  # Parquet's own text as it comes: no copy
             try:
                 a.validate(full=True)
@@ -425,13 +429,14 @@ def read_one(f: Path, out: Path, spec: InputSpec, m: Model, accepted: frozenset[
     except StopIteration:
         raise InputError(f"{f}: empty", fix="give a file with a header line and records") from None
     given = [CONTROL.sub("", (decodings(h, spec.encodings) or [("", "")])[0][1]).strip() or f"column_{i + 1}" for i, h in enumerate(header)]
-    names: list[str] = []
-    for base in given:  # each column a name of its own: a blank one numbered, a repeat suffixed past every name the header gives
+    names, seen, low = [], set(), {g.casefold() for g in given}
+    for base in given:  # each column a name of its own: a blank one numbered, a repeat suffixed past every name the header gives, case aside as DuckDB reads names
         name, k = base, 1
-        while name in names or (k > 1 and name in given):
+        while name.casefold() in seen or (k > 1 and name.casefold() in low):
             k += 1
             name = f"{base}_{k}"
         names.append(name)
+        seen.add(name.casefold())
     width, nulls = len(names), frozenset(spec.nulls)
     null_set, utf8 = pa.array(sorted(nulls), pa.string()), spec.encodings[0] == "utf-8"
     facts = dict(file=f.name, format=fmt, delimiter=delimiter, quotes=quotes, columns=width, rows=0, decoded={}, fixed={}, proposed={}, unread=0, notes=[])
@@ -565,6 +570,8 @@ def read_one(f: Path, out: Path, spec: InputSpec, m: Model, accepted: frozenset[
     for arrays in chunks:
         if writer is None:  # the first: each column learned from its values, one by one; a text column's past 50,000 are UTF-8, which tells nothing
             study([views(a.slice(0, 50_000)) if utf8 and pa.types.is_string(a.type) else views(a) for a in arrays])
+            for j, a in enumerate(arrays):
+                majority[j] = "utf-8" if pa.types.is_string(a.type) else majority[j]  # Arrow text is valid UTF-8: never read in another column's encoding
         quick(arrays)
     for line, fields in rows:
         if trailing and len(fields) == width + 1 and not fields[-1]:  # the delimiter its writer ends records with: an empty field, nothing lost
@@ -675,6 +682,9 @@ def take(part: Path, given: dict[Path, str], spec: InputSpec, reference: Path, a
     for f, name in given.items():
         rel = Path(name)
         rel = rel if rel.suffix == ".parquet" else rel.with_name(rel.name + ".parquet")
+        if any(x["read"] == (Path(READ) / rel).as_posix() for x in files):  # x.csv and x.csv.parquet: one would overwrite the other
+            raise InputError(f"{name} and {next(x['given'] for x in files if x['read'] == (Path(READ) / rel).as_posix())} would be read into one file",
+                             fix="rename one of them, then give them again")
         facts, p, u = read_one(f, tmp / READ / rel, spec, m, accepted, strict, progress and (lambda n, b=seen: progress(b + n, max(whole, b + n))))
         seen += facts["rows"]
         sha = sha256(tmp / READ / rel)
@@ -691,18 +701,33 @@ def take(part: Path, given: dict[Path, str], spec: InputSpec, reference: Path, a
     total = lambda key: dict(sum((Counter(x[key]) for x in files), Counter()))
     report = dict(files=files, rows=sum(x["rows"] for x in files), decoded=total("decoded"), fixed=total("fixed"), proposed=total("proposed"),
                   unread=sum(x["unread"] for x in files), accepted=sorted(accepted), notes=[n for x in files for n in x["notes"]],
-                  seconds=round(time.time() - t, 2), reader=READER, older_reader=older)
+                  seconds=round(time.time() - t, 2), reader=READER, input=read_as(spec), older_reader=older)
     (tmp / REPORT).write_text(json.dumps(report, ensure_ascii=False, indent=1), encoding="utf-8")
-    gone = part / ".read.old"
-    shutil.rmtree(gone, ignore_errors=True)
-    if (part / READ).exists():
-        os.replace(part / READ, gone)
-    os.replace(tmp / READ, part / READ)
-    shutil.rmtree(gone, ignore_errors=True)
-    for name in (PROPOSALS, UNREAD, REPORT):  # the report last: a part with a report is whole
-        os.replace(tmp / name, part / name)
-    shutil.rmtree(tmp, ignore_errors=True)
+    settle(part)
     return report
+
+
+def read_as(spec: InputSpec) -> str:  # the [input] settings a part was read with, as intake.json keeps them
+    return hashlib.sha256(repr(spec).encode()).hexdigest()[:16]
+
+
+def settle(part: Path) -> None:
+    """A reading's moves, once its files are complete (.read.tmp holds its report): read/ swapped in, then the sheets,
+    the report last, since a part with a report is whole. A reading cut short in its moves is done by the next
+    (er.folder.fresh); done twice, the same as once. Nothing without a complete reading."""
+    tmp, gone = part / ".read.tmp", part / ".read.old"
+    if not (tmp / REPORT).is_file():
+        return
+    if (tmp / READ).exists():
+        shutil.rmtree(gone, ignore_errors=True)
+        if (part / READ).exists():
+            os.replace(part / READ, gone)
+        os.replace(tmp / READ, part / READ)
+        shutil.rmtree(gone, ignore_errors=True)
+    for name in (PROPOSALS, UNREAD, REPORT):
+        if (tmp / name).exists():
+            os.replace(tmp / name, part / name)
+    shutil.rmtree(tmp, ignore_errors=True)
 
 
 def report(part: Path) -> dict | None:  # what the intake found in a part, or None for a path that is no part

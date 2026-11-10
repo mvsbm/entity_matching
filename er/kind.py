@@ -115,15 +115,20 @@ def name_model(settings, spec: KindSpec) -> NameModel:
     return m
 
 
-CENTURY = 30  # a birth date's 2-digit year: up to this, 20yy; past it, 19yy. Fixed, so a run reads a date alike whenever it runs
+CENTURY = 26  # a birth date's 2-digit year: up to this, 20yy; past it, 19yy. Fixed, so a run reads a date alike whenever it runs; shortcut: no one is born after this year, raise it as years pass
 
 
-def birth_year(birth: pd.Series) -> np.ndarray:  # 1993-05-25, 19930525, 1993/05/25 → 1993; 93-05-25, 930525 → 1993; else NaN
+def birth_year(birth: pd.Series) -> np.ndarray:
+    """The year of a date that starts with it: 1993-05-25, 19930525, 1993/5/2 → 1993; a 2-digit one, 93-05-25 or 930525,
+    by CENTURY; 199305, its month past 12 as yymmdd, → 1993; a day or month first, 25/05/1993, its 4-digit year. Else NaN
+    (H05.05.25: an era's year). O(N)."""
     s = birth.astype("string")
-    digits = s.str.replace(r"\D", "", regex=True)
-    yy = pd.to_numeric(digits.str[:2], errors="coerce").to_numpy(dtype=float, na_value=np.nan)
-    short = (digits.str.len() == 6).fillna(False).to_numpy(dtype=bool)
-    return np.where(short, yy + np.where(yy <= CENTURY, 2000, 1900), pd.to_numeric(s.str[:4], errors="coerce").to_numpy(dtype=float, na_value=np.nan))
+    lead, four = s.str.extract(r"^\s*(\d+)", expand=False), s.str.extract(r"(?:^|\D)(\d{4})(?:\D|$)", expand=False)
+    n = lead.str.len().fillna(0).to_numpy(dtype=int)
+    num = lambda x: pd.to_numeric(x, errors="coerce").to_numpy(dtype=float, na_value=np.nan)
+    yy, month, later = num(lead.str[:2]), num(lead.str[2:4]), num(four)
+    short = (((n == 2) & np.isnan(later)) | ((n == 6) & ~(np.isin(yy, (19, 20)) & (month > 12))))
+    return np.where(short, yy + np.where(yy <= CENTURY, 2000, 1900), np.where(n >= 4, num(lead.str[:4]), later))
 
 
 PERSON, COMPANY, UNSURE = 1, 2, 0  # the codes of kind, customer_kind and people's answers: as a person/company flag writes them
@@ -252,6 +257,8 @@ def classifier(settings, spec: KindSpec, labels: pd.DataFrame | None = None) -> 
     c.labels, c.measured = len(lab), int(measure.sum())
     # no line without 50 answers drawn to measure, of both kinds: a combiner then would call nothing, so the legal form decides
     if spec.trust_flag or c.measured < 50 or y[measure].all() or not y[measure].any():
+        return c
+    if "name" not in lab:  # a file of IDs and kinds: they stand for their records, and teach the engine nothing without a name
         return c
     X = c.features(lab["name"], flag, col("birth_date"))
     c.blank = np.isnan(X).all(axis=0)

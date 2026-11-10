@@ -786,7 +786,7 @@ function snack(html, ms = 0) {  // a short notice, bottom left, closed by its �
 // with the same arguments, asked again while it runs, is that run: a write is never sent twice. A page left while its
 // command runs draws nothing from it: its events and its result go nowhere, and the command runs on.
 const inflight = new Map();
-let visit = 0;  // one per page drawn (go)
+let visit = 0, leave = () => {}, left = new Promise((r) => { leave = r; });  // one per page drawn (go); left settles once it is left
 let longRun = null;  // the long command step 3 started ({command, visit}), while it runs: its buttons wait, on this page and when it is drawn again
 let readingNow = 0;  // the quick commands under way: the app bar's line moves while any is
 const reading = (step) => { readingNow += step; $("busybar").hidden = readingNow === 0; };  // its 250 ms delay is CSS's: a quick answer never shows it
@@ -1283,6 +1283,7 @@ const ask = (q, answer, picture = "", act = "", more = "", label = "Details") =>
   ${picture ? `<div class="pq-pic">${picture}</div>` : ""}${more ? `<details class="fold-line pq-more"><summary>${esc(label)}</summary><div class="pq-body">${more}</div></details>` : ""}`;
 const lasts = (s) => s < 1 ? "under a second" : s < 1.5 ? "a second" : s < 90 ? `${Math.round(s)} seconds` : s < 5400 ? `${Math.round(s / 60)} minutes` : s < 172800 ? `${Math.round(s / 3600)} hours` : s < 63072000 ? `${Math.round(s / 86400)} days` : `${Math.round(s / 31536000)} years`;
 const plural = (n, one, many = `${one}s`) => `${fmt(n)} ${n === 1 ? one : many}`;
+const reviewTime = (s) => s < 3600 ? plural(Math.ceil(s / 60), "minute") : s < 36000 ? `${(s / 3600).toFixed(1)} hours` : plural(Math.round(s / 3600), "hour");  // a few minutes, 1.5 hours, 130 hours
 function said_of(pair) {  // what a pair's comparisons said, in words: the ones for it, then those against
   const named = (c) => {
     const l = level(c.reached), what = comp(c.comparison);
@@ -1301,7 +1302,12 @@ const addedNames = (features) => Object.fromEntries(features.flatMap((g) => g.fe
   return [[f.field, f.name], ...(n && f.type === "person name" ? [[`given_name_${n}`, `${f.name}, given name`]] : [])];
 })));
 function hurts(fields, off, fix = "", names = {}, groups = []) {  // groups: fields each filled for its own kind (a person's name, a company's), judged together
-  const either = new Set(groups.filter((g) => g.reduce((s, f) => s + ((fields.find((x) => x.field === f) || {}).filled || 0), 0) >= 0.3).flat());
+  const of = (f) => fields.find((x) => x.field === f) || {}, cols = (f) => [...new Set((of(f).alternatives || []).filter((a) => a.found).flatMap((a) => a.columns))];
+  const together = (g) => {  // one column for both: counted once, as check records does
+    const shares = g.map((f) => of(f).filled || 0), apart = new Set(g.flatMap(cols)).size === g.reduce((n, f) => n + cols(f).length, 0);
+    return apart ? shares.reduce((a, b) => a + b, 0) : Math.max(...shares);
+  };
+  const either = new Set(groups.filter((g) => together(g) >= 0.3).flat());
   const sparse = fields.filter((f) => f.filled !== null && f.filled !== undefined && f.filled < 0.3 && !either.has(f.field)).sort((a, b) => a.filled - b.filled), by = new Map();
   const unmapped = new Set(fields.filter((f) => f.filled === null || f.filled === undefined).map((f) => f.field));
   const KIND = {rule: "ways", generator: "ways", level: "steps", probe: "checks", "prior rule": "checks", "EM rule": "checks"};
@@ -1840,7 +1846,7 @@ async function resultsPage(el, d) {  // what the run found, as tiles: one questi
       ${r.scores ? tile('data-go="results" data-tab="pairs"', "How did the scores come out?", fmt(at), ` pairs at ${fmt(r.review_from)}+ points`,
           scoreBars(r.scores, r.review_from), `of ${fmt(r.candidates)} pairs compared; below 0, two different people almost surely`) : ""}
       ${tile('data-go="pairs"', "What is waiting for you?", fmt(waiting), " pairs", waiting ? logBars(r.waiting.map((x) => ({label: `${rangeOf(x)} points`, value: x.pairs}))) : "",
-          waiting ? `about ${waiting * 20 < 3600 ? `${Math.ceil(waiting / 3)} minutes` : `${(Math.round(waiting / 18) / 10).toFixed(1)} hours`} at 20 seconds a pair` : "nothing waits: every pair from your review points is decided")}
+          waiting ? `about ${reviewTime(waiting * 20)} to review them all, if each pair takes 20 seconds` : "nothing waits: every pair from your review points is decided")}
       ${tile('data-go="results" data-tab="entities"', "What has joined?", fmt(r.joined), " entities of 2+", logBars(r.sizes.map((x) => ({label: x.label, value: x.entities}))),
           `by ${Object.entries(r.merged_by).filter(([k]) => k !== "none").map(([k, n]) => `${JOINED[k] || k}: ${fmt(n)} records`).join(" · ") || "nobody yet"}`)}
       ${tile('data-go="pairs" data-merge', "Does anything merge without you?", merged || own ? "yes" : "no", "", "",
@@ -2164,6 +2170,7 @@ const SCREENS = {
     const view = {toggled: new Map(), ghosts: new Set()};  // groups opened or closed, groups showing their suggestions: kept as the page redraws
     let w = {}, last = null, edits = 0, writes = Promise.resolve(), refused = null, held = null;  // the workspace, its file loaded last; changes, one after another
     const queue = (job) => (writes = writes.then(job).catch((err) => console.error(err)));  // reads and writes in turn: a reading never misses a write before it
+    const away = left, here = (p) => Promise.race([p, away.then(() => undefined)]);  // a reading in the queue, given up once the page is left: the writes after it still go
     const show = (d) => {
       $("out").inert = false;
       held = null;
@@ -2175,20 +2182,22 @@ const SCREENS = {
     const draw = (d) => {  // d: a description just made; else the file loaded last is described
       const at = edits;
       return queue(async () => {
-        [w] = await Promise.all([run("columns", "describe workspace"), flowOf("columns", $("flow"))]);
+        const got = await here(Promise.all([run("columns", "describe workspace"), flowOf("columns", $("flow"))]));
+        if (!got) return;
+        [w] = got;
         const files = w.inputs || [];
         last = files[files.length - 1];
         $("files").innerHTML = files.map((f) => `<span class="tag" title="${esc(f.path)}">${esc(nameOf(f))} · ${bytes(f.bytes)} · ${f.read ? "matched" : "not run yet"}</span>`).join("");
         if (d === undefined && last) {
           if (!$("out").querySelector(".fgroup")) $("out").innerHTML = `<div class="card waiting">${spinner()}Reading the columns of ${esc(nameOf(last))}…</div>`;
-          d = await run("columns", "describe records", {loaded: last.path});
+          d = await here(run("columns", "describe records", {loaded: last.path}));
         }
         if (d && at === edits) show(d);  // else a change since: its own reading shows it
       });
     };
     const reread = async () => {  // the file described again, shown unless the page changed since
-      const mine = edits, d = await run("columns", "describe records", {loaded: last.path});
-      if (mine !== edits) return;
+      const mine = edits, d = await here(run("columns", "describe records", {loaded: last.path}));
+      if (mine !== edits || d === undefined) return;
       $("out").removeAttribute("aria-busy");
       if (!$("out").inert && $("out").querySelector(".addform, .drop select")) held = d;  // shown once the person has chosen or named
       else show(d);
@@ -2212,7 +2221,7 @@ const SCREENS = {
         const now = new Set(paths), mapped = (p) => alts[p].filter((a) => a.length), taken = new Set(paths.flatMap((p) => mapped(p).flat()));
         const free = (x) => !now.has(x.feature) && !taken.has(x.column);  // a suggestion for a slot just filled, or of a column just placed: gone
         redraw({...d, placements: d.placements.filter(free), offers: (d.offers || []).filter(free),  // its numbers once the file is described again
-                slots: d.slots.map((s) => now.has(s.feature) ? {...s, sources: mapped(s.feature), filled: null, example: null, looks_right: null,
+                slots: d.slots.map((s) => now.has(s.feature) ? {...s, sources: mapped(s.feature), filled: null, example: null, looks_right: null, hint: null,
                   alternatives: mapped(s.feature).map((a) => ({columns: a, found: a.every((c) => inFile.has(c))}))} : s)});
         commit("set feature", {mapping: paths.map((p) => `${p}=${mapped(p).map((a) => a.join("+")).join(",")}`)});
       };
@@ -2277,7 +2286,9 @@ const SCREENS = {
         const other = (a) => !(a.length === 1 && a[0] === h.column);  // the column alone: a join holding it is judged whole, and stays
         alts[path] = alts[path].filter(other);  // its other columns stay
         if (h.act === "move") alts[h.to] = [[h.column], ...alts[h.to].filter(other)];  // the target's own, after it
-        save(h.act === "move" ? [h.to, path] : [path]);
+        const fam = path.replace(/\/Given name$/, "/Family name"), also = fam !== path && alts[fam] && !alts[path].some((a) => a.length) ? [fam] : [];
+        also.forEach((p) => { alts[p] = []; });  // a family name is read joined to the given name: it goes with the last of it, as the CLI's command says
+        save([...(h.act === "move" ? [h.to, path] : [path]), ...also]);
       });
       el.querySelectorAll("[data-keepall]").forEach((b) => b.onclick = () => {
         const mine = d.placements.filter((x) => alts[x.feature] && (b.dataset.keepall === "*" || x.feature.startsWith(`${b.dataset.keepall}/`)));
@@ -3639,7 +3650,7 @@ function help() {
 
 async function go(id, arg) {
   if (location.hash.slice(1) !== id) history[location.hash ? "pushState" : "replaceState"](null, "", `#${id}`);  // Back and Forward walk the steps; a reload keeps one
-  current = id; keyHandler = null; visit++;
+  current = id; keyHandler = null; visit++; leave(); left = new Promise((r) => { leave = r; });
   sceneClose();
   document.body.classList.remove("nav-open");
   scrollTo(0, 0);  // a page opens at its top, not where the last one was left

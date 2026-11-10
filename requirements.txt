@@ -1,12 +1,12 @@
 # pinned: the seeded synthetic data is only reproducible with the same numpy/pandas
 numpy==2.4.4
 pandas==3.0.3
-ipykernel==7.4.0
-splink==5.0.0
+ipykernel==7.4.0  # notebooks/: the kernel VS Code and scripts/export_pdfs.py run them on
+splink==5.0.0  # the model's training and scoring, and the clustering (er.match, er.cluster)
 duckdb==2.0.0  # the engine of every run; 2.0 changed fetching and lambdas (docs/lessons.md)
 pyarrow==26.0.0  # the reader's casts and every Parquet written (er.intake); splink brings it, unpinned
 scipy==1.18.1  # beta and binomial bounds on false rates (er.evaluate, er.kind, er.report); scikit-learn brings it, unpinned
-optuna==5.0.0
+optuna==5.0.0  # scripts/choose.py --optuna: the comparator searches (er.tune, er.select)
 optuna-dashboard==0.21.0  # localhost web UI for the study
 rapidfuzz==3.14.6  # character-level string metrics where DuckDB's own (bytes) can't be asked: values beyond one byte a character
 scikit-learn==1.9.1  # TF-IDF char n-gram candidates; the person-or-company name model and combiner (er.kind)

@@ -338,6 +338,16 @@ def test_the_kind_problems_name_no_company_the_name_model_trains_on():
 
 
 def test_a_birth_year_reads_from_four_digits_or_two():
-    from er.kind import birth_year
-    got = birth_year(pd.Series(["1993-05-25", "19930525", "1993/05/25", "93-05-25", "930525", "05-01-02", None, "abc"], dtype="string"))
-    assert got[:6].tolist() == [1993] * 5 + [2005] and np.isnan(got[6:]).all()  # a 2-digit year by a fixed century, never today's date
+    from er.kind import CENTURY, birth_year
+    got = birth_year(pd.Series(["1993-05-25", "19930525", "1993/05/25", "1993/5/2", "199305", "93-05-25", "930525", "25/05/1993", "05-01-02", None, "abc",
+                                "H05.05.25"], dtype="string"))
+    assert got[:9].tolist() == [1993] * 8 + [2005] and np.isnan(got[9:]).all()  # a 2-digit year by a fixed century, never today's date; an era's, none
+    assert birth_year(pd.Series([f"{CENTURY + 1}0101"], dtype="string")).tolist() == [1900 + CENTURY + 1]  # past the century: 19yy, never a year to come
+
+
+def test_answers_of_ids_and_kinds_alone_stand_and_train_nothing():
+    from er.kind import COMPANY, PERSON, classifier
+    s = load_settings()
+    labels = pd.DataFrame({s.data.unique_id: [str(i) for i in range(60)], "kind": [PERSON, COMPANY] * 30})  # as answers() takes a file: no name
+    c = classifier(s, load_pipeline(s.root / "config" / "final.toml", s.standardize, s.chains, s.columns).kind, labels)
+    assert c.decided["0"] == PERSON and c.fitted is None  # each stands for its record; with no name, nothing to learn from

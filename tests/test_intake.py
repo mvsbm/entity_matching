@@ -456,3 +456,62 @@ def test_a_value_written_as_a_list_reads_as_its_item_and_a_part_an_older_reader_
     seconds = (part / intake.REPORT).stat().st_mtime_ns
     folder.fresh(part, spec, ref)
     assert (part / intake.REPORT).stat().st_mtime_ns == seconds  # read again once: then as it is
+
+
+def test_the_reader_reads_its_edge_cases_alike_and_a_part_reads_again_under_new_settings_or_after_a_cut(tmp_path, monkeypatch):
+    import os
+    import pyarrow as pa
+    from er import folder, intake
+    from er.source import find
+    ref, spec = load_settings().paths["reference"], intake.InputSpec()
+
+    def read(name: str, write) -> tuple[dict, pd.DataFrame]:
+        part = tmp_path / name.replace(".", "_")
+        part.mkdir()
+        write(part / name)
+        r = intake.take(part, {part / name: name}, spec, ref)
+        return r, pd.read_parquet(part / r["files"][0]["read"])
+    _, got = read("case.csv", lambda f: f.write_text("id,TEL,tel,name\n1,0311112222,09033334444,[{[]}]\n", encoding="utf-8"))
+    assert list(got.columns) == ["id", "TEL", "tel_2", "name"] and got["tel_2"][0] == "09033334444"  # DuckDB reads names case aside: tel apart from TEL
+    assert got["name"][0] == "[{[]}]"  # brackets that hold no plain list: as written, no crash
+    table = pa.table({"id": ["1", "2", "3", "4", "5"], "code": [9e10, 1.23e11, 1e16, 0.5, 12345.0], "half": pa.array([1, 2.5, None, 4, 5], pa.float16()),
+                      "old": pa.array(["ヤマダ".encode("cp932")] * 5, pa.binary()), "name": ["𠮷野家", "山田花子", None, "𠮷田", "東京"]})
+    r, got = read("float.parquet", lambda f: pq.write_table(table, f))
+    assert got["code"].tolist() == ["90000000000", "123000000000", "10000000000000000", "0.5", "12345"] and "numbers" not in r["fixed"]
+    assert got["half"].tolist()[:2] == ["1", "2.5"]  # a half float too  # never 9e+10, read as cut short
+    assert got["name"].tolist()[:2] == ["𠮷野家", "山田花子"] and got["old"][0] == "ヤマダ"  # Parquet text is UTF-8, whatever its other columns' encoding
+    both = tmp_path / "both"
+    both.mkdir()
+    pd.DataFrame({"id": ["1"]}).to_csv(both / "x.csv", index=False)
+    pd.DataFrame({"id": ["2"]}).to_parquet(both / "x.csv.parquet")
+    with pytest.raises(InputError, match="read into one file"):  # one would overwrite the other
+        folder.take_in(tmp_path / "ws_both", both, spec, ref)
+
+    (tmp_path / "customers[2024].csv").write_text("id\n1\n", encoding="utf-8")
+    (tmp_path / "customers2.csv").write_text("id\n2\n", encoding="utf-8")
+    assert find(tmp_path / "customers[2024].csv") == [tmp_path / "customers[2024].csv"]  # a file that exists is itself, [ in its name or not
+    exports = tmp_path / "exports"
+    (exports / "archive").mkdir(parents=True)
+    (exports / ".DS_Store").write_bytes(b"\0")
+    (exports / "a.csv").write_text("id\n1\n", encoding="utf-8")
+    assert find(exports / "*") == [exports / "a.csv"]  # a pattern's files, as a folder's: no folder, no hidden file
+
+    ws = tmp_path / "ws"
+    (tmp_path / "f.csv").write_text("id,code\n1,-\n2,N/A\n3,A1\n", encoding="utf-8")
+    part, _ = folder.take_in(ws, tmp_path / "f.csv", spec, ref)
+    codes = lambda: [x if isinstance(x, str) else None for x in pd.read_parquet(part / intake.report(part)["files"][0]["read"])["code"]]
+    assert codes() == [None, None, "A1"]
+    folder.fresh(part, replace(spec, nulls=("NULL",)), ref)
+    assert codes() == ["-", "N/A", "A1"]  # [input] changed: read again under it
+    replace_ = os.replace
+    def cut(a, b):  # the process stops as a reading again is about to move its report into place
+        if Path(b).name == intake.REPORT:
+            raise KeyboardInterrupt
+        replace_(a, b)
+    monkeypatch.setattr(intake.os, "replace", cut)
+    with pytest.raises(KeyboardInterrupt):
+        intake.take(part, {part / "f.csv": "f.csv"}, spec, ref)
+    monkeypatch.undo()
+    assert intake.report(part)["input"] == intake.read_as(replace(spec, nulls=("NULL",)))  # read/ new, the report old
+    folder.fresh(part, spec, ref)  # the next to open it finishes the moves: the reading was complete
+    assert codes() == [None, None, "A1"] and intake.report(part)["input"] == intake.read_as(spec) and not (part / ".read.tmp").exists()

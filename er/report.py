@@ -327,25 +327,42 @@ def trust_state(con: duckdb.DuckDBPyConnection, out: Path, p: Pipeline, uid: str
                 above=above, checks=trust.checks)
 
 
-def carry_over(run: "Run", previous: pd.DataFrame, sheet: pd.DataFrame, out: Path) -> pd.DataFrame:
-    """The open review queue across increments: the previous sheet's decide rows that nobody gave back yet (none in
-    decisions/) and whose records are still in different clusters, or that hold a decision typed in but not given back,
-    with this run's new rows; this run's audit rows only. O(previous rows)."""
+def carry_over(run: "Run", previous: pd.DataFrame, sheet: pd.DataFrame, out: Path, full: bool = False) -> pd.DataFrame:
+    """The review queue across runs: the previous sheet's rows holding a decision typed in and not given back (one other
+    than the pair's latest in decisions/: the sheet keeps what was applied), and, across increments, its decide rows
+    nobody gave back whose records are still in different clusters; a full run (`full`) makes the rest again. Those
+    rows as they were, with this run's other rows. O(previous rows)."""
     l, r, u = q(run.l), q(run.r), q(run.uid)
-    prev = previous[previous["why"] == "decide"] if "why" in previous else previous.iloc[:0]  # a sheet from before the queue: nothing to keep
+    prev = previous if "why" in previous else previous.iloc[:0]  # a sheet from before the queue: nothing to keep
     if prev.empty:
         return sheet
-    run.con.register("er_prev", prev[[run.l, run.r, "decision"]])
-    stored = (f"SELECT {l}, {r} FROM read_parquet({lit(out / DECISIONS / 'part-*.parquet')})"
-              if any((out / DECISIONS).glob("part-*.parquet")) else f"SELECT NULL AS {l}, NULL AS {r} WHERE FALSE")
+    run.con.register("er_prev", prev[[run.l, run.r, "decision", "why"]])
+    run.con.register("er_stored", applied(out, run.uid)[[run.l, run.r, "decision"]].astype("string"))
     keep = run.con.execute(f"""SELECT p.{l}, p.{r} FROM er_prev p JOIN gold a ON a.{u} = p.{l} JOIN gold b ON b.{u} = p.{r}
-        WHERE (p.decision IS NOT NULL OR a.cluster_id <> b.cluster_id)
-          AND NOT EXISTS (SELECT 1 FROM ({stored}) d WHERE d.{l} = p.{l} AND d.{r} = p.{r})""").df()
+        WHERE (p.decision IS NOT NULL OR ({'FALSE' if full else 'TRUE'} AND p.why = 'decide' AND a.cluster_id <> b.cluster_id))
+          AND NOT EXISTS (SELECT 1 FROM er_stored d WHERE d.{l} = p.{l} AND d.{r} = p.{r} AND (p.decision IS NULL OR d.decision = p.decision))""").df()
     run.con.unregister("er_prev")
-    kept = prev.merge(keep, on=[run.l, run.r])
-    new = sheet[(sheet["why"] == "decide") & ~sheet.set_index([run.l, run.r]).index.isin(kept.set_index([run.l, run.r]).index)]
-    decide = pd.concat([new, kept[sheet.columns]], ignore_index=True).sort_values("match_weight", ascending=False, ignore_index=True)
-    return pd.concat([decide, sheet[sheet["why"] == "audit"]], ignore_index=True)
+    run.con.unregister("er_stored")
+    kept = prev.merge(keep, on=[run.l, run.r]).reindex(columns=sheet.columns)  # a column this run's sheet lacks goes, one it adds is empty
+    both = pd.concat([sheet[~sheet.set_index([run.l, run.r]).index.isin(kept.set_index([run.l, run.r]).index)], kept], ignore_index=True)
+    decide = both[both["why"] == "decide"].sort_values("match_weight", ascending=False, ignore_index=True)
+    return pd.concat([decide, both[both["why"] != "decide"]], ignore_index=True)
+
+
+def carry_kinds(run: "Run", sheet: pd.DataFrame, previous: Path) -> pd.DataFrame:
+    """The person/company sheet a full run makes again, with the previous one's rows holding a kind typed in and not
+    given back (none of run.labels) on records the run still holds, as they were; the rest new. O(sheet rows)."""
+    old = pd.read_parquet(previous) if previous.exists() else sheet.iloc[:0]
+    typed = old[old["kind"].notna()] if "kind" in old else old.iloc[:0]
+    if run.labels is not None:
+        typed = typed[~typed[run.uid].astype("string").isin(run.labels[run.uid].astype("string"))]
+    if typed.empty:
+        return sheet
+    run.con.register("er_typed", typed[[run.uid]].astype("string"))
+    held = {x for (x,) in run.con.execute(f"SELECT {q(run.uid)} FROM records WHERE {q(run.uid)} IN (SELECT {q(run.uid)} FROM er_typed)").fetchall()}
+    run.con.unregister("er_typed")
+    typed = typed[typed[run.uid].astype("string").isin(held)].reindex(columns=sheet.columns)
+    return pd.concat([sheet[~sheet[run.uid].astype("string").isin(typed[run.uid].astype("string"))], typed], ignore_index=True)
 
 
 def review_workload(con: duckdb.DuckDBPyConnection, out: Path, p: Pipeline, uid: str, seconds_per_pair: float = 10.0) -> dict:
@@ -947,6 +964,7 @@ def pair_tests(p: Pipeline, s: "Settings", recs: pd.DataFrame, me: pd.Series, mo
         else:
             f = FUNCTIONS[comp.function]
             score = float(f.scorer(str(va), str(vb)))
+            score = float(np.float32(score)) if comp.function in ("jaro", "jaro_winkler") else score  # as the engine tests it: rapidfuzz's score is a float32
             passed = score >= comp.threshold if f.similarity else score <= comp.threshold
         return dict(comparison=c.name, step=step, field=col, function=comp.function, threshold=comp.threshold, normalize=" ".join(comp.normalize),
                     raw=raw, prep=prep, a=va, b=vb, score=None if score is None else round(score, 4), passed=bool(passed))

@@ -10,6 +10,7 @@ import os
 import re
 import shutil
 import threading
+import time
 from collections.abc import Callable
 from contextlib import contextmanager
 from datetime import datetime
@@ -23,7 +24,7 @@ from er import intake
 from er.config import InputError, lit, toml_of
 from er.io import alive, lock, replace_text
 from er.settings import COLUMNS
-from er.source import find
+from er.source import find, globbed
 from er.strings import connect
 
 PENDING = "pending.json"  # the renames a write still owes, saved once every new file is complete
@@ -72,6 +73,23 @@ def run_lock(out: Path):
             held.discard(key)
 
 
+@contextmanager
+def writing(path: Path, wait: float = 10.0):
+    """One change of a mapping (a workspace's columns.toml, the project's settings.toml) at a time: each reads the file,
+    changes it and replaces it whole, so two at once would lose one. Apart from run_lock: a mapping may change while a
+    run runs, for the next. An OS lock on a file beside it; a change takes milliseconds, so another waits up to `wait` s."""
+    if not path.parent.is_dir():  # no workspace: what writes says so
+        yield
+        return
+    with open(path.with_name(f".{path.name}.lock"), "w") as f:
+        until = time.monotonic() + wait
+        while not lock(f):
+            if time.monotonic() > until:
+                raise Busy(f"another change is writing {path}", fix="try again once it is written")
+            time.sleep(0.02)
+        yield
+
+
 def finish_writes(out: Path) -> None:
     """Complete the moves of a write that was interrupted after its new files were complete; nothing otherwise. Each
     move [new, dest] replaces dest, a file or a folder, if new is still there; [None, dest] deletes dest. So done
@@ -90,12 +108,13 @@ def finish_writes(out: Path) -> None:
         pending.unlink()
 
 
-def stage(con: duckdb.DuckDBPyConnection, out: Path, tables: list[tuple[str, Path]], texts: list[tuple[str, Path]] = (),
+def stage(con: duckdb.DuckDBPyConnection, out: Path, tables: list[tuple[str, Path]], texts: list[tuple[str | Callable[[], str], Path]] = (),
           replace: list[Path] | None = None, frames: list[tuple[pd.DataFrame, Path]] = ()) -> None:
     """Write every file under a temporary name; once all are complete, save the moves still owed (pending.json),
     then do them. An interruption before that leaves the folder as it was; one after it, finish_writes completes.
     With `replace` (a full run), the new run files are written in FULL_TMP, and each of its entries replaces the old
-    run's; the old entries the new run doesn't write go. A file outside the run files (people's work) is only added."""
+    run's; the old entries the new run doesn't write go. A file outside the run files (people's work) is only added.
+    A text may be a function, called once the tables are written: the log, with the time they took."""
     if replace is not None:
         shutil.rmtree(out / FULL_TMP, ignore_errors=True)  # the files of a full run cut short before its moves
     whole = lambda d: replace is not None and d.relative_to(out).parts[0] in RUN_FILES
@@ -105,7 +124,7 @@ def stage(con: duckdb.DuckDBPyConnection, out: Path, tables: list[tuple[str, Pat
         con.execute(f"COPY ({sql}) TO {lit(tmp(dest))} (FORMAT parquet)")
     for text, dest in texts:
         tmp(dest).parent.mkdir(parents=True, exist_ok=True)
-        tmp(dest).write_text(text, encoding="utf-8")
+        tmp(dest).write_text(text() if callable(text) else text, encoding="utf-8")
     for frame, dest in frames:  # sheets for people: pandas keeps their empty answer columns typed
         tmp(dest).parent.mkdir(parents=True, exist_ok=True)
         frame.to_parquet(tmp(dest))
@@ -133,14 +152,13 @@ def history(out: Path) -> list[dict]:  # every run steps.json holds, in brief, t
     return [*old.get("earlier", []), *map(brief, old.get("runs", []))]
 
 
-def log(out: Path, entry: dict, append: bool, earlier: list[dict] | None = None) -> None:
-    """steps.json: one entry per run, increment or set of decisions (a full run starts it again, with `earlier`, the
-    runs before it in brief: history, read before its write replaced the old log); written whole, then renamed, so a
-    write cut short leaves the old log."""
+def log(out: Path, entry: dict, append: bool, earlier: list[dict] | None = None) -> str:
+    """steps.json with this entry: one per run, increment or set of decisions (a full run starts it again, with `earlier`,
+    the runs before it in brief: history, read before its write replaced the old log). The text, for stage to write with
+    the files it names: a run never lands without its entry, nor an entry without its run."""
     path = out / STEPS
     old = json.loads(path.read_text(encoding="utf-8")) if append and path.exists() else {}
-    replace_text(path, json.dumps(dict(earlier=old.get("earlier", []) if append else (earlier or [])[-EARLIER:], runs=[*old.get("runs", []), entry]),
-                                  indent=1, default=str))
+    return json.dumps(dict(earlier=old.get("earlier", []) if append else (earlier or [])[-EARLIER:], runs=[*old.get("runs", []), entry]), indent=1, default=str)
 
 
 def write_method(out: Path, method: dict) -> None:  # method.toml as `method` says, each value in TOML (tables inline)
@@ -352,13 +370,16 @@ def read_by_older(out: Path) -> bool:
 
 
 def fresh(part: Path, spec: intake.InputSpec, reference: Path, progress=None) -> Path:
-    """A part as this code reads it: one an older reader read (intake.READER) is read again, once, under its
-    workspace's lock, with the repairs people accepted, as accepting one reads it; a run that read the old one still
-    finds its file (intake.json versions). O(bytes) once; O(1) after."""
-    if (r := intake.report(part)) is None or r.get("reader", 1) >= intake.READER:
+    """A part as this code and these [input] settings read it: one an older reader read (intake.READER), or under other
+    settings, is read again, once, under its workspace's lock, with the repairs people accepted, as accepting one reads
+    it; a run that read the old one still finds its file (intake.json versions). A reading cut short in its moves is
+    finished first. O(bytes) once; O(1) after."""
+    stale = lambda r: r.get("reader", 1) < intake.READER or r.get("input") != intake.read_as(spec)
+    if not (part / ".read.tmp" / intake.REPORT).is_file() and ((r := intake.report(part)) is None or not stale(r)):
         return part
     with run_lock(part.parent.parent):
-        if (r := intake.report(part)).get("reader", 1) < intake.READER:  # another job may have read it meanwhile
+        intake.settle(part)
+        if (r := intake.report(part)) is not None and stale(r):  # another job may have read it meanwhile
             intake.take(part, {part / x["given"]: x["given"] for x in r["files"]}, spec, reference, frozenset(r["accepted"]), progress=progress)
     return part
 
@@ -377,7 +398,7 @@ def take_in(ws: Path, path: str | Path, spec: intake.InputSpec, reference: Path,
                 return fresh(part, spec, reference, progress), False
         p = Path(path).expanduser()
         root = p if p.is_dir() else None
-        stem = p.parent.name if any(c in str(p) for c in "*?[") else p.name if root else p.stem
+        stem = p.parent.name if globbed(p) else p.name if root else p.stem
         n = max((int(x.name.split("-", 1)[0]) for x in parts(ws)), default=0) + 1
         part = ws / INPUTS / f"{n:04d}-{re.sub(r'[^A-Za-z0-9._-]+', '_', stem)[:40] or 'records'}"
         tmp = part.with_name(f".{part.name}.tmp")

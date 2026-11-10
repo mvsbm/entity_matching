@@ -57,7 +57,7 @@ class RulesChooser:
     def __post_init__(self) -> None:
         self.data = self.settings.data
         self.train, self.train_truth = load(self.data, "train")
-        self.val_records, self.val_truth = load(self.data, "val")
+        _, self.val_truth = load(self.data, "val")
         self.train_true, self.val_true = truth_set(self.train_truth, self.data), truth_set(self.val_truth, self.data)
         self.runs: dict[tuple[str, str], Result] = {}
 
@@ -213,7 +213,7 @@ class FSChooser:
         p, self.data = self.pipeline, self.settings.data
         self.rule: ThresholdRule = p.threshold
         self.train_records, self.train_truth = load(self.data, "train")
-        self.val_records, self.val_truth = load(self.data, "val")
+        _, self.val_truth = load(self.data, "val")
         rules = run_rules(self.pipe(self.spec), self.settings, self.data.bronze_dir / "train.parquet", self.train_truth)  # where this stage starts
         self.train_prev_resolved = rules.records[[self.data.unique_id, "CLUSTER_ID"]].set_axis([self.data.unique_id, "cluster_id"], axis=1)
         self.folds = entity_folds(self.train_truth, self.data, p.cv_folds, p.cv_seed)

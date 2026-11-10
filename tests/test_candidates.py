@@ -6,7 +6,7 @@ import pandas as pd
 import pytest
 
 from er.candidates import candidates, estimate, found_by, generate
-from er.config import (Budget, Comparator, DeletionKeys, FSSpec, Key, KeyBlocker, OverBudget,
+from er.config import (Budget, Comparator, DeletionKeys, FSSpec, InputError, Key, KeyBlocker, OverBudget,
                        Resolver, Rule, RulesSpec, SortedNeighbourhood, Stage, TfidfNeighbours)
 from er.evaluate import cluster_metrics, predicted_pairs, true_pairs
 from er.io import load
@@ -130,6 +130,16 @@ def test_candidate_generators_respect_query_window_and_cosine():
     assert found_by(named, ["person_name"]).tolist() == [True, False, True]  # whole names only
 
 
+def test_candidates_with_no_pair_give_none_and_more_generators_than_bits_are_refused():
+    df = pd.DataFrame({"uid": ["1", "2", "3"], "phone": ["1", "2", None]}, dtype="string")
+    budget = Budget(max_pairs_per_record=100, max_block_size=100, target_rows=10, benchmark_pairs=10)
+    union, _ = candidates((KeyBlocker(name="k", keys=(Key("phone"),)),), df, UID, None, budget)
+    assert union.empty and "sources" in union  # no two records share a phone: no pair, no SQL error
+    many = tuple(KeyBlocker(name=f"k{i}", keys=(Key("phone"),)) for i in range(64))
+    with pytest.raises(InputError, match="at most 63"):  # one bit per generator in a BIGINT
+        candidates(many, df, UID, None, budget)
+
+
 def test_a_deletion_keys_normal_pairs_hold_the_pairs_its_join_lists_and_never_go_below_zero():
     import duckdb
     names = ["JOHNSMITH"] * 200 + [f"N{i:05d}" for i in range(2000)]  # one value on 200 records: each of its keys an oversized block
@@ -184,6 +194,10 @@ def test_blocking_normalizers():
     assert normalize(s, ("initial",), std).tolist()[:1] == ["マ"] and normalize(s, ("initial",), std).isna().tolist()[1:] == [True, True]
     assert normalize(pd.Series(["1000033"], dtype="string"), ("first3",), std).tolist() == ["100"]
     assert normalize(pd.Series(["サトウ"], dtype="string"), ("reverse",), std).tolist() == ["ウトサ"]
+    addresses = pd.Series(["東京都千代田区丸の内1丁目1番1号 丸の内ビル3F", "東京都千代田区 丸の内1丁目1番1号", "東京都千代田区\u3000霞が関2丁目3番4号",
+                           "　東京都港区六本木6丁目10番1号", "北海道札幌市中央区大通"], dtype="string")
+    assert normalize(addresses, ("address",), std).tolist() == ["千代田区丸の内1-1-1", "千代田区丸の内1-1-1", "千代田区霞が関2-3-4", "港区六本木6-10-1",
+                                                               "札幌市中央区大通"]  # the building after the street number goes; a space before it, never the address
 
 
 def test_legal_forms_go_wherever_banks_write_them_and_the_generator_s_names_lose_exactly_its_forms():

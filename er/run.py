@@ -64,7 +64,7 @@ import pyarrow as pa
 import scipy
 import sklearn
 
-from er import folder
+from er import folder, intake
 from er.candidates import candidates, estimate
 from er.cluster import merge
 from er.config import InputError, Pipeline, bits, keys_sql, lit, q
@@ -72,7 +72,7 @@ from er.io import code_version, config_hash, markdown, replace_text
 from er.kind import KIND_COLUMNS, NAME_MODEL, classifier as kind_classifier, kind_review_sheet, merge_answers
 from er.match import ELSE, fs_settings, named_sql, read_by, refreshed_u, review_floor, rule_edges, score_fs, scored_u, train_fs, u_basis
 from er.probe import missed
-from er.report import applied, qa, report_text, review_sheet, scored_again, trust_state
+from er.report import applied, carry_kinds, carry_over, qa, report_text, review_sheet, scored_again, trust_state
 from er.results import check_merging, merge_where
 from er.settings import SPECIAL, Settings, fit_to_file, present_fields
 from er.source import answers, decisions, file_facts, filled, known, open_source, suggest
@@ -673,23 +673,24 @@ class Run:
             sheets.append(("SELECT * FROM er_given", out / folder.KIND_ANSWERS / f"part-{n:05d}.parquet"))
         # an increment adds to the pair index its full run began; a run written before it had none gets it whole, once (results.pair_index)
         scored = [(self._links(), out / folder.SCORED / name)] if part == 0 or (out / folder.SCORED / "part-00000.parquet").exists() else []
+        def logged() -> str:  # once the files are written: the write's time, in the entry that lands with them
+            self._done("write", "O(N + C)", f"O({self.n:,} + {self._count('matches'):,})", t)
+            return self._log(out, part > 0, earlier, part=part, disabled=self.disabled)
         folder.stage(self.con, out, [("SELECT * FROM rule_kept", out / "rule_kept" / name), ("SELECT * FROM matches", out / "matches" / name),
                                      ("SELECT * FROM proposed", out / "proposed" / name), *scored,
                                      (f"SELECT * FROM gold ORDER BY {q(self.uid)}", out / "gold.parquet"),
                                      ("SELECT * FROM rule_clusters", state / "rule_clusters.parquet"),
                                      (f"SELECT * FROM {'records' if part == 0 else 'new_records'}", state / "records" / name), *aside, *sheets],
-                     texts + people, replace, frames)
-        self._done("write", "O(N + C)", f"O({self.n:,} + {self._count('matches'):,})", t)
-        self._log(out, part > 0, earlier, part=part, disabled=self.disabled)
+                     [*texts, *people, (logged, out / folder.STEPS)], replace, frames)
         if part == 0:  # the round this method is in, and how it did
             linked = next(x for x in reversed(self.steps) if x["step"] == "cluster")
             folder.round_ran(out, dict(config=self.config, method=folder.method(out), at=datetime.now().isoformat(timespec="seconds"),
                                        matched=linked["accepted"], expected_false=linked["expected_false"]))
 
-    def _log(self, out: Path, append: bool, earlier: list[dict] | None = None, **entry: object) -> None:
-        """This run's entry in steps.json (folder.log): when, the code and config that ran, the files read with their
+    def _log(self, out: Path, append: bool, earlier: list[dict] | None = None, **entry: object) -> str:
+        """steps.json with this run's entry (folder.log): when, the code and config that ran, the files read with their
         SHA-256, and each step; a full run's, after `earlier` (folder.history)."""
-        folder.log(out, dict(at=datetime.now().isoformat(timespec="seconds"), code=code_version(self.settings.root), config=self.config,
+        return folder.log(out, dict(at=datetime.now().isoformat(timespec="seconds"), code=code_version(self.settings.root), config=self.config,
                              inputs=self.inputs, **entry, steps=self.steps), append, earlier)
 
     def report(self, path: str | Path, out: Path, pipeline: Path) -> tuple[list[tuple[str, Path]], list[tuple[pd.DataFrame, Path]]]:
@@ -702,14 +703,17 @@ class Run:
         named in the reports. Keeps qa's tables, the summary first, in self.tables."""
         t = time.perf_counter()
         tables = qa(self, previous=out / "review.parquet" if self.added is not None else None)
-        frames = [(tables.pop("review_sheet"), out / "review.parquet")]
+        sheet = tables.pop("review_sheet")
+        if self.added is None and (out / "review.parquet").exists():  # a full run makes the queue again: what people typed in and haven't given back stays
+            sheet = carry_over(self, pd.read_parquet(out / "review.parquet"), sheet, out, full=True)
+        frames = [(sheet, out / "review.parquet")]
         text = ["# Run checks", "", f"Input: `{path}` · {self.n:,} records", ""]
         for name, table in tables.items():
             text += [f"## {name.replace('_', ' ')}", "", markdown(table.round(4)) if len(table) else "none", ""]
         if self.classifier is not None and self.added is None:
             answered = self.labels[self.uid].astype("string") if self.labels is not None else ()
-            frames.append((kind_review_sheet(self.con, "records", self.uid, self.pipeline.kind, self.settings.flag_company, answered),
-                           out / "kind_review.parquet"))
+            frames.append((carry_kinds(self, kind_review_sheet(self.con, "records", self.uid, self.pipeline.kind, self.settings.flag_company, answered),
+                                       out / "kind_review.parquet"), out / "kind_review.parquet"))
         self.tables = tables
         texts = [("\n".join(text), out / "qa.md"), (report_text(self, tables, pipeline), out / "report.txt")]
         self._done("report", "O(review pairs) + O(N)", f"O({len(frames[0][0]):,} review pairs + {self.n:,})", t)
@@ -887,8 +891,8 @@ class Run:
         parts.mkdir(exist_ok=True)
         folder.stage(self.con, out, [(f"SELECT * FROM gold ORDER BY {u}", out / "gold.parquet"),
                                      (f"SELECT *, {len(folder.rounds(out)) or 'NULL'}::INTEGER AS round FROM er_decisions",
-                                      parts / f"part-{folder.next_part(parts):05d}.parquet")])
-        self._log(out, True, decisions=str(path))
+                                      parts / f"part-{folder.next_part(parts):05d}.parquet")],
+                     [(self._log(out, True, decisions=str(path)), out / folder.STEPS)])
         return self
 
     def draw(self, out: Path, count: int) -> "Run":
@@ -1013,7 +1017,8 @@ def trial(ws: Path, base: Pipeline, variant: Pipeline, method: dict, s: Settings
         return numbers
 
     with folder.run_lock(trials):
-        key = dict(config=run_config(base, s), files=[str(f) for f in files])
+        key = dict(config=run_config(base, s), files=[intake.sha256(f) for f in files], model=config_hash(model), code=code_version(s.root),  # all the base's clusters rest on
+                   answers=[intake.sha256(f) for f in folder.answer_parts(ws)])
         kept = json.loads((trials / "base.json").read_text(encoding="utf-8")) if (trials / "base.json").exists() else {}
         if kept.get("key") == key and (trials / "base.parquet").exists():
             before = kept["numbers"]

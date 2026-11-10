@@ -311,8 +311,10 @@ def describe_merging(con: duckdb.DuckDBPyConnection, db: object, out: Path, s: S
     applied "different" left apart; and the entities that would then hold two records or more. O(E + N)."""
     m = check_merging(m, p) if m is not None else merging_of(out, p)
     model, uid = run_model(out), s.data.unique_id
-    rows = _status_sql(con, out, uid, pair_index(con, db, out, s, p))
-    count = lambda where: con.execute(f"SELECT count(*) FROM ({rows}) x WHERE {where} AND NOT coalesce(x.said = 'no_match' AND x.applied, FALSE)").fetchall()[0][0]  # as _regroup: applied answers
+    l, r, index = q(f"{uid}_l"), q(f"{uid}_r"), pair_index(con, db, out, s, p)
+    con.register("er_applied", applied(out, uid)[[f"{uid}_l", f"{uid}_r", "decision"]])
+    count = lambda where: con.execute(f"""SELECT count(*) FROM {index} x WHERE {where}
+        AND NOT EXISTS (SELECT 1 FROM er_applied d WHERE d.{l} = x.{l} AND d.{r} = x.{r} AND d.decision = 'no_match')""").fetchall()[0][0]  # as _regroup: the applied answers, a newer one typed in waits
     each = [dict(condition=c, pairs=count(merge_where(dict(join="and", when=[c]), model, p))) for c in m["when"]]
     _regroup(con, db, out, s, p, m, model)
     entities = con.execute("SELECT count(*) FROM (SELECT cluster_id FROM gold_new GROUP BY 1 HAVING count(*) > 1)").fetchall()[0][0]
