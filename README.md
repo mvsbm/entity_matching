@@ -57,6 +57,7 @@ The workspace holds your file (`inputs/`, copied in, and as it was read: each va
 | look up a command | [commands](docs/commands.md) |
 | change the code: the rules, and what checks each | [contributing](CONTRIBUTING.md) |
 | see every step on a small file, with charts | [the demo](notebooks/pdf/demo.pdf) |
+| see what each optimization saves | [the optimizations notebook](notebooks/speedups.ipynb) |
 | see how it is built | [architecture](docs/architecture.md) |
 | understand each method, and why it was chosen | [the guide](docs/guide/01-entity-resolution-and-our-task.md), seven chapters |
 | look up a term | [the glossary](docs/guide/01-entity-resolution-and-our-task.md#words-used-in-this-guide) |

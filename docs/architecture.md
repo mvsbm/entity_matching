@@ -50,6 +50,7 @@ The system turns a file of customer records into one ID per person or company. I
 | `data/` | records, labels, workspaces and artifacts, all Parquet. Only `data/reference/` is in git; the scripts rebuild the rest |
 | `reports/` | what `choose.py`, `choose_kind.py` and `benchmark.py` measured on synthetic data, kept in git; never real records |
 | `notebooks/demo.ipynb` | every step of a run on 3,758 records, charted; no logic of its own |
+| `notebooks/speedups.ipynb` | name matching run eight times, one optimization added each time; each result checked against the baseline, timed, and projected to 1,000,000 records and to a full run |
 | `docs/diagrams/` | the diagrams on this page, as PlantUML |
 | `tests/` | engine checks, whole runs, and the design's checks |
 
