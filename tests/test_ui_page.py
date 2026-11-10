@@ -766,3 +766,98 @@ def test_a_file_loaded_after_a_run_is_offered_to_the_run_first(ui_page, tmp_path
     page.wait_for_selector(".card.ready", state="detached", timeout=120_000)  # added: nothing left not matched
     page.wait_for_selector("h2.question.big")
     assert all(x["read"] for x in folder.loaded(ws))
+
+
+def test_look_up_and_the_score_chart_behave_as_a_person_uses_them(ui_page, tmp_path, population, say, monkeypatch):
+    """By keyboard and mouse: a name typed in hiragana, a phone in full-width digits and a placeholder each answered as a
+    person expects; Show kept; a chart that leaves an increment out says so, with the action that counts it; a file's
+    values written two ways offered as one on Your data, in one click."""
+    import json
+    from er import cli
+    s, p, g = population
+    uid = s.data.unique_id
+    monkeypatch.chdir(tmp_path)
+    df = g.df.copy()
+    batch = df.sample(40, random_state=3)
+    df.drop(batch.index).to_parquet("first.parquet", index=False)
+    batch.to_parquet("batch.parquet", index=False)
+    say("create", "workspace", "w")
+    ws, at = tmp_path / "workspaces" / "w", ("--workspace", "workspaces/w")
+    assert say("resolve", "records", "first.parquet", *at)[0] == 0 and say("build", "index", *at)[0] == 0
+    assert say("add", "records", "batch.parquet", *at)[0] == 0  # the index kept up to date by it
+    one = df.drop(batch.index).dropna(subset=["FULL_NAME_KANA", "PHONE_NUM_4"]).iloc[0]
+    hira = "".join(chr(ord(c) - 0x60) if "ァ" <= c <= "ヶ" else c for c in one["FULL_NAME_KANA"])
+    wide = "".join(chr(ord(c) + 0xFEE0) for c in one["PHONE_NUM_4"])
+    page, server, httpd = ui_page(str(ws), str(tmp_path / "workspaces"), {"width": 1440, "height": 900})
+    shot = lambda name: page.screenshot(path=str(tmp_path / f"{name}.png"), full_page=True)
+
+    page.click("#nav [data-screen=lookup]")
+    page.wait_for_selector("#lu:not([inert])", timeout=60_000)
+    name = page.locator("#lu input[name='FULL_NAME_KANA']")
+    name.click()
+    page.keyboard.type(hira, delay=40)  # in hiragana, as an IME leaves it
+    page.wait_for_selector("#suggest .lu-hit", timeout=30_000)
+    shown = lambda: [x.get_attribute("data-record") for x in page.query_selector_all("#suggest .lu-hit [data-record]")]
+    page.wait_for_function("(r) => [...document.querySelectorAll('#suggest .lu-hit [data-record]')].some((x) => x.dataset.record === r)", arg=one[uid], timeout=30_000)
+    shot("hiragana")
+    name.fill("")
+    page.wait_for_function("() => document.querySelector('#suggest').innerHTML === ''", timeout=30_000)  # nothing typed: nothing suggested
+    page.locator("#lu input[name='PHONE_NUM_4']").click()
+    page.keyboard.type(wide, delay=40)  # full-width digits
+    page.wait_for_function("(r) => [...document.querySelectorAll('#suggest .lu-hit')].some((c) => c.querySelector(`[data-record='${r}']`) && /phone/.test(c.textContent))",
+                           arg=one[uid], timeout=30_000)
+    shot("full-width")
+    page.locator("#lu input[name='PHONE_NUM_4']").fill("")
+    name.click()
+    page.keyboard.type("-")  # a placeholder alone: nothing to search by, no error
+    page.wait_for_function("() => /Nothing to search by yet/.test(document.querySelector('#suggest')?.textContent || '')", timeout=30_000)
+    assert not page.query_selector("#suggest .banner")
+    page.keyboard.press("Enter")  # looked up: refused in words a person reads
+    page.wait_for_selector("#found .banner", timeout=30_000)
+    assert "read as missing" in page.inner_text("#found .banner") and "COLUMN=VALUE" not in page.inner_text("#found .banner")
+    shot("placeholder")
+    page.fill("#lu-top", "1")
+    page.dispatch_event("#lu-top", "change")
+    name.fill(one["FULL_NAME_KANA"][:2])
+    page.wait_for_function("() => document.querySelectorAll('#suggest .lu-hit').length === 1", timeout=30_000)
+    page.reload()
+    page.wait_for_selector("#lu-top")
+    assert page.input_value("#lu-top") == "1" and shown() == []
+
+    log = json.loads((ws / "steps.json").read_text(encoding="utf-8"))  # a run logged before each counted its own bands
+    for run in log["runs"]:
+        for x in run["steps"]:
+            x.pop("bands", None)
+    (ws / "steps.json").write_text(json.dumps(log), encoding="utf-8")
+    page.click("#nav [data-screen=records]")
+    page.wait_for_selector(".tile:has-text('How did the scores come out?')", timeout=60_000)
+    assert "the 40 records added since aren't in it" in page.inner_text(".tile:has-text('How did the scores come out?')")
+    shot("results-uncounted")
+    page.click("#nav [data-screen=results]")
+    page.wait_for_selector("#rerun-count", timeout=60_000)
+    total = cli.describe_results_({"workspace": str(ws)}, None)["listed"]
+    page.wait_for_function("(n) => document.querySelector('#screen').innerText.includes(`of ${n.toLocaleString('en-US')}`)", arg=total, timeout=30_000)
+    assert f"The {total:,} at 0 or more" in page.inner_text("#screen")  # the count its list shows
+    shot("explore-uncounted")
+    page.click("#rerun-count")  # the one action: matching run again, as the rail's
+    page.wait_for_selector("h1:has-text('Find matches')", timeout=30_000)
+
+    say("create", "workspace", "plain")
+    plain = ("--workspace", "workspaces/plain")
+    say("set", "preparation", "phone=", *plain)  # a workspace whose mapping reads phones as written
+    pd.concat([df, df.iloc[[0]].assign(**{uid: "9" * len(df[uid].iloc[0]), "PHONE_NUM_4": "12-34"})]).to_parquet("hyphens.parquet", index=False)
+    assert say("resolve", "records", "hyphens.parquet", *plain)[0] == 0  # it has run: a change of its mapping owes the run again
+    page.click("#picker")
+    page.click("text=plain")
+    page.click("#nav [data-screen=columns]")
+    page.wait_for_selector("button.mini:has-text('Read as one')", timeout=60_000)
+    shot("your-data-hint")
+    page.click("button.mini:has-text('Read as one')")
+    page.wait_for_function("() => ![...document.querySelectorAll('button.mini')].some((b) => b.textContent.includes('Read as one'))", timeout=60_000)
+    assert '"strip_separators"' in (tmp_path / "workspaces" / "plain" / "columns.toml").read_text(encoding="utf-8")
+    page.wait_for_selector("#rerun-owed", timeout=30_000)  # said where the person is, with the one action
+    assert "changed since the last run" in page.inner_text("#loaded .answer")
+    shot("your-data-fixed")
+    page.click("#rerun-owed")
+    page.wait_for_selector("h1:has-text('Find matches')", timeout=30_000)
+    page.wait_for_function("() => /changed: run again/.test(document.querySelector('.pagehead')?.textContent || '')", timeout=30_000)  # its step says so too

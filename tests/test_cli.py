@@ -592,8 +592,8 @@ def test_set_columns_rewrites_the_fields_lines_and_keeps_the_rest(tmp_path):
     assert s.columns["phone"] == (("TEL4",),) and s.columns["person_name"] == (("NAME",), ("SEI", "MEI")) and s.columns["birth_date"] == ()  # no column, still declared
     after = f.read_text(encoding="utf-8")
     line = lambda name: next(x for x in after.split("\n[columns]\n", 1)[1].splitlines() if x.startswith(f"{name} ="))
-    assert 'normalize = ["nfkc", "strip_spaces"]' in line("person_name") and "# municipality + town + chome" in line("town_code")  # options, comments stay
-    assert len(after.splitlines()) == len(before.splitlines()) and line("birth_date").startswith("birth_date = []") and "#" in line("birth_date")
+    assert 'normalize = ["nfkc", "katakana", "strip_spaces"]' in line("person_name") and "# municipality + town + chome" in line("town_code")  # options, comments stay
+    assert len(after.splitlines()) == len(before.splitlines()) and 'sources = []' in line("birth_date") and "#" in line("birth_date")
     with pytest.raises(InputError, match="id must name one column"):
         set_columns(f, {"id": (("A",), ("B",))})
     assert f.read_text(encoding="utf-8") == after and not (tmp_path / "config" / "settings.toml.tmp").exists()

@@ -72,7 +72,7 @@ The SQL is written to move: joins, group-bys, window functions and `CREATE TABLE
 | the first rule that pairs two records | `er.match`, `er.run` | `DISTINCT ON`, `arg_min` |
 | sampling whole postal areas for the fit | `er.run` | `ORDER BY hash(…)` |
 | reading and writing files | `er.source`, `er.run` | `read_parquet(…, union_by_name = true)`, `COPY … (FORMAT parquet)`, `UNION ALL BY NAME` |
-| standardization (NFKC, kana folding, the address chain) | `er.standardize` | pandas, per chunk: DuckDB has no NFKC |
+| standardization (NFKC, hiragana as katakana, separators dropped, kana folding, the address chain) | `er.standardize` | pandas, per chunk: DuckDB has no NFKC |
 
 Splink writes the training, scoring and clustering SQL for each engine it supports.
 

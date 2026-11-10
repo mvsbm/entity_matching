@@ -11,7 +11,8 @@ from typing import Literal, get_args
 
 from er.strings import FUNCTIONS, Function
 
-Normalizer = Literal["nfkc", "strip_spaces", "kana_fold", "strip_legal_form", "address", "initial", "first3", "reverse", "casefold", "one_byte"]
+Normalizer = Literal["nfkc", "strip_spaces", "kana_fold", "strip_legal_form", "address", "initial", "first3", "reverse", "casefold", "one_byte",
+                     "katakana", "strip_separators"]
 
 
 class InputError(ValueError):

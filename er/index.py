@@ -457,7 +457,13 @@ def look_up(ws: Path, s: Settings, p: Pipeline, values: dict[str, str] | None = 
 
 def search(ws: Path, s: Settings, p: Pipeline, values: dict[str, str], at_least: float | None = None, most: int = 10) -> dict:
     """_search on the values as given; when they list nothing, on them as people type what records hold otherwise
-    (_typed): full-width digits, 100-0001, a name in hiragana. Each found as given first, as a file might hold it."""
+    (_typed): full-width digits, 100-0001, a name in hiragana. Each found as given first, as a file might hold it. Blanks
+    and placeholders alone (-, NULL: [input] nulls) are nothing to search by, as nothing typed is."""
+    nulls = frozenset(s.input.nulls)
+    if all(tidy(str(v), nulls, False)[0] is None for v in values.values()):
+        m = _open(ws, s, p)[0]
+        return dict(record={}, entities=[], found=0, listed=0, candidates=0, typed=[], missing=sorted(values), over=[], seconds={},
+                    index=dict(built_at=m["built_at"], records=m["records"] + m["added"]))
     found = _search(ws, s, p, values, at_least, most)
     names = {c for f, alts in s.columns.items() if f.endswith("name") for alt in alts for c in alt}
     folded = {c: _typed(v, c in names) for c, v in values.items()}
@@ -552,7 +558,9 @@ def _query(con: duckdb.DuckDBPyConnection, s: Settings, p: Pipeline, values: dic
     nulls = frozenset(s.input.nulls)
     row = pd.DataFrame({uid: [QUERY], **{c: [tidy(str(v), nulls, False)[0] if (v := (values or {}).get(c)) not in (None, "") else None] for c in sources}}, dtype="string")
     if row.drop(columns=uid).isna().all(axis=1).iloc[0]:
-        raise InputError("no value given", fix="give at least a name or a phone, as COLUMN=VALUE")
+        given = [f"{c}={v}" for c, v in (values or {}).items() if v not in (None, "")]
+        raise InputError(f"{', '.join(given)}: read as missing, as a file's would be" if given else "no value given",
+                         fix="give a value a record holds: a name, a phone, a postal code")
     rules, fs, probe = p.rules, p.fs, p.probe
     normalized, used = [*rules.normalized(), *fs.normalized(), *probe.normalized()], rules.used() | fs.used() | probe.used()
     return prepare(fs.standardize, row, normalized, used, kind=kind).astype("string")

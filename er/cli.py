@@ -30,6 +30,7 @@ import unicodedata
 from collections.abc import Callable
 from dataclasses import dataclass, replace
 from pathlib import Path
+from typing import get_args
 
 import duckdb
 import numpy as np
@@ -37,7 +38,7 @@ import pandas as pd
 
 from er import folder, inbox, index, intake
 from er.io import replace_text
-from er.config import InputError, adjust, lit, load_pipeline, q, restrict, sources_text, toml_of, widen
+from er.config import InputError, Normalizer, adjust, lit, load_pipeline, q, restrict, sources_text, toml_of, widen
 from er.folder import Busy
 from er.report import (applied, compare_records, describe_entity, describe_key, describe_matching, describe_method, describe_workspace, entity_pairs, explain_pair, fill_rates,
                        key_how, list_patterns, review_workload, rule_how, run_model, trust_state)
@@ -46,9 +47,10 @@ from er.kind import sheet_parts
 from er.match import review_floor
 from er.results import apply_merging, check_merging, describe_merging, describe_results, list_entities, list_scored, merged_links, save_merging, show_records
 from er.strings import connect
-from er.run import Run, size_bytes, trial
+from er.run import Run, run_config, size_bytes, trial
 from er.settings import (COLUMNS, SPECIAL, add_feature, added_of, beside, columns_file, counted_once, features_of, load_settings, names_by_kind, offers,
                          own_columns, placements, present_fields, remove_feature, set_columns, set_features, set_name_kinds, settings_path, slots)
+from er.standardize import SEPARATORS
 
 
 @dataclass(frozen=True)
@@ -583,6 +585,7 @@ def brief_match_record(r: dict) -> list[str]:  # the entities it may belong to, 
 def brief_search_records(r: dict) -> list[str]:  # the entities best first, each in a line with the fields that agree; a value too common to list
     out = [f"✓ {r['found']:,} entit{'ies' if r['found'] != 1 else 'y'} of {r['listed']:,} records listed in {sum(r['seconds'].values()) * 1000:,.0f} ms"]
     out += [f"  ! {x['field']} {x['value']}: too many records start with it to list: give more of it" for x in r["over"]]
+    out += [f"  nothing to search by: {', '.join(r['missing'])} read as missing"] if r.get("missing") else []
     out += [f"  {'●' if e['likely'] else '○'} {num(e['points']):>6} pts  {e['entity']}  {shown_record(e['shown'])}  ({', '.join(e['fields'])})" for e in r["entities"]]
     return out + nexts(r)
 
@@ -764,7 +767,7 @@ def list_columns(a: dict, emit: "Emit") -> dict:
         options = " · ".join(f"{k} {v if isinstance(v, str) else ' '.join(v)}" for k, v in spec.items() if k != "sources") if isinstance(spec, dict) else ""
         found.append(dict(field=f, columns=", ".join(" + ".join(x) for x in alts), options=options))
     there = ["--workspace", a["workspace"]] if a.get("workspace") else []
-    return dict(settings=str(path), own=path.name == COLUMNS, columns=found,
+    return dict(settings=str(path), own=path.name == COLUMNS, columns=found, rerun_owed=rerun_owed(a),
                 next=[dict(command=nayose("set", "columns", "FIELD=COLUMN", *there), why="map a field to other columns"),
                                                          dict(command=nayose("check", "records", "<file>"), why="check a file with this mapping")])
 
@@ -781,14 +784,35 @@ def set_columns_(a: dict, emit: "Emit") -> dict:
         if f not in known:
             raise InputError(f"{f}: no such field", fix=f"the fields: {', '.join(sorted(known))}")
         mapping[f] = tuple(tuple(c.strip() for c in alt.split("+")) for alt in cols.split(",")) if cols else ()
-    ws = a.get("workspace")
+    write_mapping(a.get("workspace"), mapping)
+    return {**list_columns(a, emit), "next": [dict(command=nayose("check", "records", "<file>"), why="check a file with the new mapping")]}
+
+
+def write_mapping(ws: str | None, mapping: dict, update: dict | None = None) -> None:  # the workspace's own mapping (else the project's), rewritten by settings.set_columns
     if ws and not Path(ws).is_dir():
         raise InputError(f"no workspace at {ws}", fix="create it: nayose create workspace NAME")
     with folder.writing(Path(ws) / COLUMNS if ws else settings_path()):
         if ws and not columns_file(ws):  # a workspace made before it kept its own mapping starts from the project's
             (Path(ws) / COLUMNS).write_text(own_columns(settings_path()), encoding="utf-8")
-        set_columns(columns_file(ws) or settings_path(), mapping)
-    return {**list_columns(a, emit), "next": [dict(command=nayose("check", "records", "<file>"), why="check a file with the new mapping")]}
+        set_columns(columns_file(ws) or settings_path(), mapping, update=update)
+
+
+def set_preparation(a: dict, emit: "Emit") -> dict:
+    s, steps, mapping, update = settings_for(a), [x for x in get_args(Normalizer) if x != "one_byte"], {}, {}  # one_byte: a comparison's own copy
+    for item in a["mapping"]:
+        f, sep, said = item.partition("=")
+        chosen = [x.strip() for x in said.split(",") if x.strip()]
+        if not sep or not f:
+            raise InputError(f"{item}: write FIELD=STEPS", fix="for example phone=nfkc,strip_separators: the steps in order, nothing after = for none")
+        if f not in s.columns or f in SPECIAL:
+            raise InputError(f"{f}: no field the mapping prepares", fix=f"its fields: {', '.join(x for x in s.columns if x not in SPECIAL)}")
+        if bad := [x for x in chosen if x not in steps]:
+            raise InputError(f"{', '.join(bad)}: no such step", fix=f"the steps: {', '.join(steps)}")
+        mapping[f], update[f] = s.columns[f], {"normalize": chosen or None}
+    ws = a.get("workspace")
+    write_mapping(ws, mapping, update)
+    return {**list_columns(a, emit), "next": [dict(command=nayose("rerun", "records", "--workspace", ws), why="match again, its values prepared so")] if ws else
+            [dict(command=nayose("check", "records", "<file>"), why="check a file with the new preparation")]}
 
 
 def model_from(path: str | None) -> dict | None:
@@ -936,12 +960,37 @@ def described(a: dict) -> dict:
 WARN = 0.5  # under this share of a slot's values that look like it, its column likely holds something else: a hint says what
 
 
+WRITTEN = (("strip_separators", re.compile(f"{SEPARATORS}|[０-９]"), ("phone", "postal_code", "customer_id", "birth_date"), "with separators or full-width digits"),
+           ("katakana", re.compile("[\u3041-\u3096]"), None, "in hiragana"))  # a step, what it prepares as one, the fields it is for (None: names), in words
+
+
+def prepared_one_way(col: str, fld: str | None, prep: dict, sampled: Callable[[str], list[str]], there: list[str]) -> dict | None:
+    """The hint that a column's sampled values are written two ways that a step would prepare as one, with the step added
+    to every field that reads the column and lacks it (after nfkc), or None. O(sampled values)."""
+    for step, pattern, fields, how in WRITTEN:
+        ok = (lambda f: f in fields) if fields else (lambda f: f.endswith("name"))
+        lack = [x for x in prep.values() if ok(x.name) and step not in x.normalize and any(col in alt for alt in x.sources)]
+        if not lack or not (fld is None or ok(fld)):
+            continue
+        values = sampled(col)
+        if not (odd := [v for v in values if pattern.search(v)]):
+            continue
+        steps = lambda d: [*(s := list(d.normalize) if "nfkc" in d.normalize else ["nfkc", *d.normalize])[:s.index("nfkc") + 1], step, *s[s.index("nfkc") + 1:]]
+        mapping = [f"{x.name}={','.join(steps(x))}" for x in lack]
+        return dict(level="warn", says=f"{len(odd):,} of {len(values):,} sampled written {how}: the same value written two ways won't match",
+                    example=odd[0], fix="read them as one", act="prepare", prepare=mapping, button="Read as one",
+                    command=nayose("set", "preparation", *mapping, *there) if there else None)
+    return None
+
+
 def hints(d: dict, con, s, p, feats: list[dict], ws: str | None, field_of: Callable[[str, dict], str | None]) -> dict[str, dict]:
     """What each slot's sampled values say is off, and what sets it right (a note to act on, never applied by itself),
     the first that holds, by slot path:
     - a name slot holding the other kind's names (the name model, and legal forms, on the sample): compare each
       record's name on its own side (set names by-kind); so set already, said as info;
-    - a birth date written more than one way (its shapes, digits as 9): the same date won't match;
+    - values written two ways that a step would prepare as one (WRITTEN: 03-1234-5678 beside 0312345678, a name in
+      hiragana) where the fields reading the column lack it: set preparation, the step added to each;
+    - a birth date written more than one way (its shapes, digits as 9) once separators go: the same date won't match;
     - values that look like one other field: read the column there, the target's own columns kept after it, or take
       it off when that field reads it already (set feature);
     - else how few look right, with one that doesn't.
@@ -956,6 +1005,7 @@ def hints(d: dict, con, s, p, feats: list[dict], ws: str | None, field_of: Calla
     except InputError:  # no name model here: the other notes still hold
         model = None
     found = lambda e: [alt["columns"] for alt in e.get("alternatives") or [] if alt.get("found")]
+    prep = {d.name: d for d in s.standardize.derived}
     sampled = lambda col: [v for (v,) in con.execute(f"SELECT {q(col)} FROM er_described WHERE {filled(col)}").fetchall()]
     alts = lambda e, col: ",".join("+".join(alt) for alt in e["sources"] if alt != [col])  # a slot's other alternatives, as set feature writes them
     out = {}
@@ -975,10 +1025,17 @@ def hints(d: dict, con, s, p, feats: list[dict], ws: str | None, field_of: Calla
                                   fix="compare each record's name on its own side, by its kind", act="names", button="Compare by kind",
                                   command=nayose("set", "names", "by-kind", *there) if ws else None))
                 continue
+        if col and (said := prepared_one_way(col, fld, prep, sampled, there)):
+            out[path] = said
+            continue
         if fld == "birth_date" and col:  # 1993-05-25 beside 93-05-25: equal dates, unequal strings
-            shapes = pd.Series([re.sub(r"\d", "9", v.strip()) for v in sampled(col)]).value_counts(normalize=True)
+            gone = "strip_separators" in (prep[fld].normalize if fld in prep else ())  # prepared without them: they make no other way
+            shape = lambda v: re.sub(r"\d", "9", re.sub(SEPARATORS, "", v) if gone else v)
+            written = pd.DataFrame({"as": [re.sub(r"\d", "9", v.strip()) for v in sampled(col)], "is": [shape(v.strip()) for v in sampled(col)]})
+            shapes = written["is"].value_counts(normalize=True)
             if len(ways := shapes[shapes >= 0.05]) > 1:
-                out[path] = dict(level="warn", says=f"written {len(ways)} ways ({', '.join(ways.index[:3])}): the same date written two ways won't match",
+                shown = [written.loc[written["is"] == w, "as"].mode()[0] for w in ways.index[:3]]  # each way as it is written
+                out[path] = dict(level="warn", says=f"written {len(ways)} ways ({', '.join(shown)}): the same date written two ways won't match",
                                  fix="write every date one way in the file")
                 continue
         looks = e.get("looks_right")
@@ -1014,9 +1071,19 @@ def load_records(a: dict, emit: "Emit") -> dict:
     return {**describe_records({**a, "input": str(part)}, emit), "loaded": str(part), "copied": copied}
 
 
+def rerun_owed(a: dict) -> bool:
+    """Whether the workspace's run read its records with another mapping, method or pipeline than these now (its
+    state/config.txt, as an increment checks it): the run reads them so once it runs again. No run: False."""
+    ran_with = Path(a["workspace"]) / "state" / "config.txt" if a.get("workspace") else None
+    if ran_with is None or not ran_with.is_file():
+        return False
+    s, p, _ = setup(a)
+    return ran_with.read_text(encoding="utf-8") != run_config(p, s)
+
+
 def list_features(a: dict, emit: "Emit") -> dict:
     feats = features_of(a.get("workspace"))
-    return dict(features=feats, slots=[dict(feature=path, columns=sources_text(x["columns"])) for path, x in slots(feats)],
+    return dict(features=feats, slots=[dict(feature=path, columns=sources_text(x["columns"])) for path, x in slots(feats)], rerun_owed=rerun_owed(a),
                 next=[dict(command=nayose("set", "feature", "GROUP/FEATURE=COLUMN", *(["--workspace", a["workspace"]] if a.get("workspace") else [])),
                            why="put a column into a feature")])
 
@@ -1041,7 +1108,7 @@ def set_names(a: dict, emit: "Emit") -> dict:
     with folder.writing(f):
         set_name_kinds(f, a["how"] == "by-kind")
     lines = [x for x in f.read_text(encoding="utf-8").splitlines() if x.split("=")[0].strip() in ("full_name", "person_name", "company_name")]
-    return dict(names=a["how"], mapping=lines, next=[dict(command=nayose("describe", "records", "--workspace", ws), why="see the names checked again"),
+    return dict(names=a["how"], mapping=lines, rerun_owed=rerun_owed(a), next=[dict(command=nayose("describe", "records", "--workspace", ws), why="see the names checked again"),
                                                     dict(command=nayose("resolve", "records", "--workspace", ws), why="match with it")])
 
 
@@ -1282,9 +1349,11 @@ def describe_workspace_(a: dict, emit: "Emit") -> dict:
             [dict(command=nayose("load", "records", "<file>", "--workspace", out), why="give it your records file")])
     then = [dict(command=nayose("describe", "records", f["path"], "--workspace", out), why=f"{f['waiting']:,} repairs wait in {f['name']}: see them, then accept repairs")
             for f in files if f.get("waiting")] + then
+    owed = bool(d["records"]) and rerun_owed(a)
+    then = [dict(command=nayose("rerun", "records", "--workspace", out), why="the mapping or the method changed since the run: match again to read the records so")] * owed + then
     told = out / "auto" / "report.md"  # the last auto mode's report, to send
     auto = dict(report=str(told), markdown=told.read_text(encoding="utf-8")) if told.is_file() else None
-    return {**d, "inputs": files, "columns": "own" if columns_file(out) else "project", "auto": auto, "index": index.status(out, s), "next": then}
+    return {**d, "inputs": files, "columns": "own" if columns_file(out) else "project", "auto": auto, "index": index.status(out, s), "rerun_owed": owed, "next": then}
 
 
 def describe_entity_(a: dict, emit: "Emit") -> dict:
@@ -1682,7 +1751,7 @@ COMMANDS: tuple[Command, ...] = (
     Command("list", "features", "The features a workspace's columns fill: groups, features, parts",
             "The workspace's structure: each group, its features and their parts (a full name's family and given names), each "
             "with the columns that hold it, read from its mapping. Without --workspace, the project's. O(the file).",
-            (OWN,), {"features": "the structure: groups › features › parts, each with type and columns", "slots": "each feature and part: feature (its path), columns",
+            (OWN,), {"features": "the structure: groups › features › parts, each with type and columns", "slots": "each feature and part: feature (its path), columns", "rerun_owed": "the run read its records with another mapping, method or pipeline: it reads them so once it runs again",
                      "next": "the commands that usually follow"},
             "nayose list features --workspace workspaces/acme", list_features, quick=True, show={"features": ()}),
     Command("set", "feature", "Put columns into features",
@@ -1691,7 +1760,7 @@ COMMANDS: tuple[Command, ...] = (
             "columns.toml, checked before it replaces the old: Name/Full name fills full_name and person_name, its Family name "
             "and Given name a joined fallback of person_name and given_name, and every name, any_name. O(the file).",
             (Param("mapping", "one or more GROUP/FEATURE=COLUMNS", "many", positional=True, metavar="PATH=COLUMNS"), WORKSPACE),
-            {"features": "the structure, as set", "slots": "each feature and part: feature (its path), columns", "next": "the commands that usually follow"},
+            {"features": "the structure, as set", "slots": "each feature and part: feature (its path), columns", "rerun_owed": "the run read its records with another mapping, method or pipeline: it reads them so once it runs again", "next": "the commands that usually follow"},
             "nayose set feature \"Name/Full name/Family name=SEI\" \"Name/Full name/Given name=MEI\" --workspace workspaces/acme", set_feature, quick=True,
             show={"features": ()}),
     Command("set", "names", "Compare each record's name on its own side, by its kind, or as mapped",
@@ -1702,7 +1771,7 @@ COMMANDS: tuple[Command, ...] = (
             "engine and the flag disagree, compares no name until people answer it (list kinds). as-mapped takes it back. "
             "The next run reads it. O(the file).",
             (Param("how", "by-kind or as-mapped", "choice", ("by-kind", "as-mapped"), positional=True), WORKSPACE),
-            {"names": "by-kind or as-mapped", "mapping": "the name lines of columns.toml, as written", "next": "the commands that usually follow"},
+            {"names": "by-kind or as-mapped", "mapping": "the name lines of columns.toml, as written", "rerun_owed": "the run read its records with another mapping, method or pipeline: it reads them so once it runs again", "next": "the commands that usually follow"},
             "nayose set names by-kind --workspace workspaces/acme", set_names, quick=True),
     Command("add", "feature", "Add a feature: a name in another script, or another company name",
             "Adds a feature to the Name group (PATH: Name/<its name>): a person's name, with its family and given names, or a "
@@ -1715,13 +1784,13 @@ COMMANDS: tuple[Command, ...] = (
              Param("type", "person name or company name", "choice", ("person name", "company name"), required=True),
              Param("script", "kana, kanji or romaji (default kana)", "choice", ("kana", "kanji", "romaji")),
              Param("column", "the column that holds it, if you know it", metavar="COLUMN"), WORKSPACE),
-            {"features": "the structure, with it", "slots": "each feature and part: feature (its path), columns", "next": "the commands that usually follow"},
+            {"features": "the structure, with it", "slots": "each feature and part: feature (its path), columns", "rerun_owed": "the run read its records with another mapping, method or pipeline: it reads them so once it runs again", "next": "the commands that usually follow"},
             "nayose add feature \"Name/Kanji name\" --type \"person name\" --script kanji --column SHIMEI --workspace workspaces/acme", add_feature_,
             quick=True, show={"features": ()}),
     Command("remove", "feature", "Remove a feature added to a workspace",
             "Its fields leave the workspace's columns.toml; the defaults stay (take their columns off instead). O(the file).",
             (Param("path", "GROUP/FEATURE", positional=True, metavar="PATH"), WORKSPACE),
-            {"features": "the structure, without it", "slots": "each feature and part: feature (its path), columns", "next": "the commands that usually follow"},
+            {"features": "the structure, without it", "slots": "each feature and part: feature (its path), columns", "rerun_owed": "the run read its records with another mapping, method or pipeline: it reads them so once it runs again", "next": "the commands that usually follow"},
             "nayose remove feature \"Name/Kanji name\" --workspace workspaces/acme", remove_feature_, quick=True, show={"features": ()}),
     Command("describe", "records", "What a file holds, for mapping its columns: nothing prepared",
             "Each column's share filled and an example; each field's columns as the mapping reads them (a later one where the "
@@ -1747,16 +1816,26 @@ COMMANDS: tuple[Command, ...] = (
     Command("list", "columns", "Show which of a file's columns hold each field",
             "Reads the workspace's columns.toml, or without one config/settings.toml [columns] (or the ER_SETTINGS file): each "
             "field, its columns (a comma between fallbacks, + between columns joined) and its options. O(the file).",
-            (OWN,), {"settings": "the file read", "own": "true: the workspace's own mapping", "columns": "each field: columns, options",
+            (OWN,), {"settings": "the file read", "own": "true: the workspace's own mapping", "columns": "each field: columns, options", "rerun_owed": "the run read its records with another mapping, method or pipeline: it reads them so once it runs again",
                      "next": "the commands that usually follow"},
             "nayose list columns --workspace workspaces/acme", list_columns, quick=True),
+    Command("set", "preparation", "Set how a field's values are prepared",
+            "Rewrites the named fields' normalize steps in [columns]: FIELD=STEP,STEP, applied in order (FIELD= for none), the field's "
+            "columns as they are. Among the steps: nfkc (full-width as half-width, half-width kana as full), katakana (hiragana as "
+            "katakana), strip_separators (03-1234-5678 as 0312345678, letters kept), strip_spaces, kana_fold. With --workspace, the "
+            "workspace's columns.toml; else the project's, which new workspaces start from. A run reads the values so once it runs "
+            "again. O(the file).",
+            (Param("mapping", "one or more FIELD=STEPS", "many", positional=True, metavar="FIELD=STEPS"), OWN),
+            {"settings": "the file written", "own": "true: the workspace's own mapping", "columns": "each field: columns, options", "rerun_owed": "the run read its records with another mapping, method or pipeline: it reads them so once it runs again",
+             "next": "the commands that usually follow"},
+            "nayose set preparation phone=nfkc,strip_separators --workspace workspaces/acme", set_preparation, quick=True),
     Command("set", "columns", "Map fields to a file's columns",
             "Rewrites the named fields' lines in [columns]: FIELD=COLUMN, FIELD=A,B (B where A is empty), FIELD=A+B (A and B "
             "joined), FIELD= (no column: whatever reads it is turned off). Every other line, each line's comment and a field's options stay; the new file "
             "is checked before it replaces the old. With --workspace, the workspace's columns.toml; else the project's, which "
             "new workspaces start from. O(the file).",
             (Param("mapping", "one or more FIELD=COLUMNS", "many", positional=True, metavar="FIELD=COLUMNS"), OWN),
-            {"settings": "the file written", "own": "true: the workspace's own mapping", "columns": "each field: columns, options",
+            {"settings": "the file written", "own": "true: the workspace's own mapping", "columns": "each field: columns, options", "rerun_owed": "the run read its records with another mapping, method or pipeline: it reads them so once it runs again",
              "next": "the commands that usually follow"},
             "nayose set columns phone=TEL4 person_name=NAME_KANA,SEI+MEI --workspace workspaces/acme", set_columns_, quick=True),
     Command("resolve", "records", "Resolve a file: one ID per person or company",
@@ -1837,7 +1916,8 @@ COMMANDS: tuple[Command, ...] = (
              WORKSPACE, PIPELINE, COMPUTE),
             {"record": "the values as compared: their fields and kind", "entities": "each: entity, record, points, likely, fields (those that agree), compared, records, shown",
              "found": "entities at --from or more", "listed": "records whose values start with those given", "candidates": "of them, scored",
-             "typed": "the fields searched", "over": "each value that starts too many records to list: field, value", "seconds": "each part",
+             "typed": "the fields searched", "missing": "the columns given, when every value read as missing: nothing to search by",
+             "over": "each value that starts too many records to list: field, value", "seconds": "each part",
              "index": "built_at, records", "next": "the commands that usually follow"},
             "nayose search records FULL_NAME_KANA=ヤマダ PHONE_NUM_4=1234 --workspace workspaces/customers", search_records, quick=True),
     Command("rerun", "records", "A full run again, on the run's own files",
@@ -1858,6 +1938,7 @@ COMMANDS: tuple[Command, ...] = (
              "inputs": "the records files given to it, each in inputs/: name, path, files, bytes, rows, read (by a run, as it is now), waiting (repairs proposed, for people), unread (rows), given (its file's own name, one file), seconds (its reading took), columns",
              "columns": "own: its columns.toml; project: config/settings.toml's",
              "auto": "the report try everything wrote, to send: report (its path), markdown",
+             "rerun_owed": "the mapping, the method or the pipeline changed since the run: it reads the records so once it runs again",
              "index": "the lookup's index: built_at, records, added (of them, since it was built), stale (what changed since, or null; built_at null: none yet), columns (each a lookup reads: column, field, main: in the field's first alternative)",
              "next": "the commands that usually follow"},
             "nayose describe workspace workspaces/customers", describe_workspace_, quick=True,
@@ -2076,7 +2157,8 @@ COMMANDS: tuple[Command, ...] = (
             (WORKSPACE, Param("from", "review from these points (default: the review floor)", metavar="POINTS"), PIPELINE),
             {"records": "records", "entities": "entities", "joined": "entities of two records or more",
              "sizes": "entities by size: label, entities", "scores": "every scored pair by points: down_to, up_to, pairs",
-             "candidates": "pairs compared", "review_from": "the points people review from",
+             "candidates": "pairs compared", "uncounted": "the records added since the full run whose pairs scores leaves out (a run logged before each counted its own)",
+             "listed": "the pairs kept at 0 points or more: those list scored lists from 0", "review_from": "the points people review from",
              "waiting": "pairs waiting for people, by range: down_to, up_to, pairs", "pairs": "the pairs kept (0 points or more), by status",
              "merged_by": "records by what joined them: you, model, rule, or none",
              "merging": "the merge conditions: join, when; own: what the method merges by itself when there are none (line, rules), or null",
@@ -2215,7 +2297,7 @@ COMMANDS: tuple[Command, ...] = (
 
 GROUPS = (  # the top-level help's commands, by task
     ("Set up", ("create workspace", "list workspaces", "load records", "accept repairs", "check records", "describe records", "list columns",
-                "set columns", "list features", "set feature", "set names", "add feature", "remove feature")),
+                "set columns", "set preparation", "list features", "set feature", "set names", "add feature", "remove feature")),
     ("Run", ("resolve records", "add records", "match records", "rerun records", "rehearse records", "try everything", "serve inbox")),
     ("Review", ("open ui", "describe results", "list scored", "show records", "decide pair", "apply decisions", "list kinds", "answer kind",
                 "apply answers", "describe merging", "set merging", "list entities", "describe entity", "split entity")),

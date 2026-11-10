@@ -663,3 +663,50 @@ def test_a_run_s_pairs_rows_and_entities_are_read_without_a_run_and_its_merge_co
     part = next((ws / "scored").glob("part-*.parquet"))
     built = part.stat().st_mtime_ns
     assert say("describe", "results", *at)[0] == 0 and part.stat().st_mtime_ns == built
+
+
+def test_a_value_written_two_ways_is_one_once_prepared_so_and_describe_records_offers_the_step(say, tmp_path, population, monkeypatch):
+    """A name in hiragana, a customer ID and phone in full-width digits, a postal code written 100-0001: the same person
+    once the mapping prepares them as one (the project's does), two people when it doesn't; a workspace whose mapping
+    doesn't is told so on its file, with the command that adds the step."""
+    import shlex
+    s, p, g = population
+    uid = s.data.unique_id
+    monkeypatch.chdir(tmp_path)
+    hira = lambda v: v if pd.isna(v) else "".join(chr(ord(c) - 0x60) if "ァ" <= c <= "ヶ" else c for c in v)
+    wide = lambda v: "".join(chr(ord(c) + 0xFEE0) if c.isdigit() else c for c in v)
+    one = g.df[g.df[["FULL_NAME_KANA", "CIF_ID", "PHONE_NUM_4", "POST_CD"]].notna().all(axis=1)].iloc[0]
+    twin = one.copy()
+    twin[uid] = "9" * len(one[uid])
+    for c in ("FULL_NAME_KANA", "O_PERSON_NAME_KANA", "LAST_NAME_KANA", "GIVEN_NAME_KANA"):
+        twin[c] = hira(one[c])
+    twin["CIF_ID"], twin["PHONE_NUM_4"], twin["POST_CD"] = wide(one["CIF_ID"]), wide(one["PHONE_NUM_4"]), f"{one['POST_CD'][:3]}-{one['POST_CD'][3:]}"
+    pd.concat([g.df, twin.to_frame().T], ignore_index=True).astype({c: "string" for c in g.df.columns}).to_parquet("all.parquet", index=False)
+    def same(ws: str) -> bool:  # the two found as one: joined by a rule, or at the line (a workspace merges nothing before people check)
+        pairs = pd.read_parquet(Path(ws) / "scored")
+        pair = pairs[(pairs[f"{uid}_l"] == min(one[uid], twin[uid])) & (pairs[f"{uid}_r"] == max(one[uid], twin[uid]))]
+        return bool(len(pair)) and bool(pair["rule"].notna().any() or (pair["match_weight"] >= p.fs.min_match_weight).any())
+
+    say("create", "workspace", "folds")
+    assert say("resolve", "records", "all.parquet", "--workspace", "workspaces/folds")[0] == 0
+    assert same("workspaces/folds")  # the project's mapping: written two ways, read as one
+
+    say("create", "workspace", "plain")
+    at = ("--workspace", "workspaces/plain")
+    assert say("set", "preparation", "phone=nope", *at)[1]["error"] == "nope: no such step"
+    steps = {d.name: d.normalize for d in s.standardize.derived}
+    names, digits = ("full_name", "person_name", "given_name", "company_name", "any_name"), ("phone", "postal_code", "customer_id", "birth_date")
+    assert say("set", "preparation", *(f"{f}={','.join(x for x in steps[f] if x != 'katakana')}" for f in names), *(f"{f}=" for f in digits), *at)[0] == 0  # as written
+    assert say("resolve", "records", "all.parquet", *at)[0] == 0
+    assert not same("workspaces/plain")  # prepared as they are written: two people
+    say("load", "records", "all.parquet", *at)
+    for _ in range(10):  # each of the file's columns written two ways: its fix, as a person would paste it
+        hint = next((x["hint"] for x in say("describe", "records", *at)[1]["slots"] if (x.get("hint") or {}).get("act") == "prepare"), None)
+        if hint is None:
+            break
+        assert hint["says"].endswith("the same value written two ways won't match") and hint["button"] == "Read as one" and hint["example"]
+        assert say(*shlex.split(hint["command"])[1:])[0] == 0
+    columns = Path("workspaces/plain/columns.toml").read_text(encoding="utf-8")
+    assert '"strip_separators"' in columns and '"katakana"' in columns and hint is None
+    assert say("rerun", "records", *at)[0] == 0
+    assert same("workspaces/plain")  # its mapping set right, by the file's own hints: one person

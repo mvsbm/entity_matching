@@ -593,6 +593,7 @@ body.term-open .tray { bottom: var(--term-h); }  /* above the command drawer */
             {"command": "accept repairs", "args": {"kind": "@kind", "part": "@part", "workspace": "@workspace"}, "form": [], "reads": ["repaired", "added", "read"]},
             {"command": "set feature", "args": {"mapping": "@mapping", "workspace": "@workspace"}, "reads": ["slots"]},
             {"command": "set names", "args": {"how": "@how", "workspace": "@workspace"}, "reads": ["names", "mapping"]},
+            {"command": "set preparation", "args": {"mapping": "@mapping", "workspace": "@workspace"}, "reads": ["columns"]},
             {"command": "add feature", "args": {"path": "@path", "type": "@type", "script": "@script", "column": "@column", "workspace": "@workspace"}, "reads": ["slots"]},
             {"command": "remove feature", "args": {"path": "@path", "workspace": "@workspace"}, "reads": ["slots"]},
             {"command": "describe workspace", "args": {"workspace": "@workspace"}, "reads": ["inputs"]},
@@ -1002,7 +1003,7 @@ function progress(d) {
   const files = (d && d.inputs) || [], last = files.length ? nameOf(files[files.length - 1]) : "";
   const empty = files.length && !files[files.length - 1].rows;  // a file of a header alone, or nothing it could read
   s.columns = empty && !ran ? {state: "attention", line: `${last}: no records`} : ran || last ? {state: "done", line: last ? `${last} loaded` : "ready"} : {state: state.workspace ? "current" : "later", line: "load your file"};
-  s.run = ran ? {state: "done", line: `${fmt(d.records)} → ${plural(d.entities, "entity", "entities")}`} : {state: last ? "current" : "later", line: last ? "ready to run" : "not yet"};
+  s.run = ran ? {state: "done", line: d.rerun_owed ? "changed: run again" : `${fmt(d.records)} → ${plural(d.entities, "entity", "entities")}`} : {state: last ? "current" : "later", line: last ? "ready to run" : "not yet"};
   if (!ran) {
     for (const k of ["pairs", "kinds", "results", "improve", "records"]) s[k] = {state: "later", line: "after matching"};
     s.lookup = {state: "later", line: "after the first run"};
@@ -1299,6 +1300,7 @@ const STAGE_Q = {
 };
 const ask = (q, answer, picture = "", act = "", more = "", label = "Details") => `<div class="qa"><div class="q"><h2 class="question pq">${esc(q)}</h2><p class="answer">${answer}</p></div>${act}</div>
   ${picture ? `<div class="pq-pic">${picture}</div>` : ""}${more ? `<details class="fold-line pq-more"><summary>${esc(label)}</summary><div class="pq-body">${more}</div></details>` : ""}`;
+const uncounted = (r) => `the chart counts the last full run's pairs: the ${plural(r.uncounted, "record")} added since aren't in it, until matching runs again`;
 const lasts = (s) => s < 1 ? "under a second" : s < 1.5 ? "a second" : s < 90 ? `${Math.round(s)} seconds` : s < 5400 ? `${Math.round(s / 60)} minutes` : s < 172800 ? `${Math.round(s / 3600)} hours` : s < 63072000 ? `${Math.round(s / 86400)} days` : `${Math.round(s / 31536000)} years`;
 const plural = (n, one, many = `${one}s`) => `${fmt(n)} ${n === 1 ? one : many}`;
 const reviewTime = (s) => s < 3600 ? plural(Math.ceil(s / 60), "minute") : s < 36000 ? `${(s / 3600).toFixed(1)} hours` : plural(Math.round(s / 3600), "hour");  // a few minutes, 1.5 hours, 130 hours
@@ -1862,7 +1864,7 @@ async function resultsPage(el, d) {  // what the run found, as tiles: one questi
       ${waiting ? `<a class="btn filled" data-go="pairs">${icon("pairs")}Review ${plural(waiting, "pair")}</a>` : ""}</div></div>
     <div class="tiles">
       ${r.scores ? tile('data-go="results" data-tab="pairs"', "How did the scores come out?", fmt(at), ` pairs at ${fmt(r.review_from)}+ points`,
-          scoreBars(r.scores, r.review_from), `of ${fmt(r.candidates)} pairs compared; below 0, two different people almost surely`) : ""}
+          scoreBars(r.scores, r.review_from), `of ${fmt(r.candidates)} pairs compared; below 0, two different people almost surely${r.uncounted ? ` · ${uncounted(r)}` : ""}`) : ""}
       ${tile('data-go="pairs"', "What is waiting for you?", fmt(waiting), " pairs", waiting ? logBars(r.waiting.map((x) => ({label: `${rangeOf(x)} points`, value: x.pairs}))) : "",
           waiting ? `about ${reviewTime(waiting * 20)} to review them all, if each pair takes 20 seconds` : "nothing waits: every pair from your review points is decided")}
       ${tile('data-go="results" data-tab="entities"', "What has joined?", fmt(r.joined), " entities of 2+", logBars(r.sizes.map((x) => ({label: x.label, value: x.entities}))),
@@ -2105,14 +2107,16 @@ async function explorePage(el, arg) {  // Explore: every pair kept, every entity
   if (r.event === "error") { body.innerHTML = banner(r); return w; }
   const f = {from: want.from ?? 0, to: want.to ?? null, source: want.source || "", status: want.status || "", record: want.record || ""};
   body.innerHTML = `<div class="card"><div class="qa"><div class="q"><h2 class="question">Which pairs scored highest?</h2>
-      <p class="answer">${r.scores ? `Every pair compared, by points; below 0, two different people almost surely. The ${fmt(r.scores.filter((x) => x.down_to !== null && x.down_to >= 0).reduce((a, x) => a + x.pairs, 0))} at 0 or more are listed below, best first.` : `${fmt(r.pairs.kept)} pairs kept, best first.`}</p></div></div>
-    ${r.scores ? scoreBars(r.scores, 0) : ""}</div>
+      <p class="answer">${r.scores ? `Every pair compared, by points; below 0, two different people almost surely. The ${fmt(r.listed)} at 0 or more are listed below, best first.` : `${fmt(r.listed)} pairs at 0 points or more, best first.`}</p></div>${
+        r.uncounted ? '<button class="btn" id="rerun-count">' + icon("refresh") + "Run matching again</button>" : ""}</div>
+    ${r.scores ? scoreBars(r.scores, 0) : ""}${r.uncounted ? `<p class="muted">${uncounted(r).replace(/^./, (c) => c.toUpperCase())}</p>` : ""}</div>
     <div class="filters"><label>From <input type="number" step="0.5" id="ffrom" value="${esc(f.from)}" aria-label="From these points"></label>
       <label>Below <input type="number" step="0.5" id="fto" value="${esc(f.to ?? "")}" aria-label="Below these points"></label>
       <select id="fsource" aria-label="Found by"><option value="">found by anything</option><option value="rules">by a rule</option><option value="model">by the model's keys</option></select>
       <select id="fstatus" aria-label="Status"><option value="">any status</option>${Object.keys(STATUS).map((s) => `<option value="${s}">${esc(STATUS[s][1])}</option>`).join("")}</select>
       <label class="find">${icon("search")}<input type="text" id="frecord" placeholder="A record ID" aria-label="Pairs of a record ID" value="${esc(f.record)}"></label></div><div id="plist"></div>`;
   $("fsource").value = f.source; $("fstatus").value = f.status;
+  $("rerun-count")?.addEventListener("click", () => { const l = LAYOUT.workflow.loops.find((x) => x.via.includes("rerun records")); go(l.screen, l); });  // as the rail's
   let page = 1;
   const load = async () => {
     const x = await run("results", "list scored", {from: String($("ffrom").value || ""), to: String($("fto").value || ""), source: $("fsource").value, status: $("fstatus").value,
@@ -2171,10 +2175,14 @@ const SCREENS = {
       $("loaded").innerHTML = `<div class="qa"><div class="q"><h2 class="question">Did your file load?</h2><p class="answer">${!d.records
           ? `<b>Not yet:</b> ${esc(nameOf(last))} holds no records`
           : missing.length ? `<b>Not yet:</b> ${esc(missing.map(words).join(", "))} ${missing.length > 1 ? "are" : "is"} needed`
-          : `<b>Yes</b> · ${plural(d.records, "record")} from ${esc(nameOf(last))} · ${fmt(d.columns.length)} columns${waits(d.read)}`}</p></div>
-        ${!d.records ? "" : missing.length ? (d.placements.length ? `<button type="button" class="btn filled" id="suggest-now">✦ Suggest the columns</button>` : "") : ((steps.steps || {}).run || {}).state === "done" ? "" : `<a class="btn filled" data-go="run">Next: 3 Find matches →</a>`}</div>
+          : `<b>Yes</b> · ${plural(d.records, "record")} from ${esc(nameOf(last))} · ${fmt(d.columns.length)} columns${waits(d.read)}${
+            w.rerun_owed ? " · <b>changed since the last run</b>: matching reads the records so once it runs again" : ""}`}</p></div>
+        ${!d.records ? "" : missing.length ? (d.placements.length ? `<button type="button" class="btn filled" id="suggest-now">✦ Suggest the columns</button>` : "")
+          : w.rerun_owed ? `<button type="button" class="btn filled" id="rerun-owed">${icon("refresh")}Run matching again</button>`
+          : ((steps.steps || {}).run || {}).state === "done" ? "" : `<a class="btn filled" data-go="run">Next: 3 Find matches →</a>`}</div>
         <details class="fold-line"><summary>Load another file</summary><div style="margin-top:10px">${box}</div></details>`;
       wireLoad();
+      $("rerun-owed")?.addEventListener("click", () => { const l = LAYOUT.workflow.loops.find((x) => x.via.includes("rerun records")); go(l.screen, l); });  // as the rail's
       $("files").innerHTML = (w.inputs || []).map((f) => `<span class="tag" title="${esc(f.path)}">${esc(nameOf(f))} · ${bytes(f.bytes)} · ${f.read ? "matched" : "not run yet"}${f.waiting ? ` · ${fmt(f.waiting)} repairs wait` : ""}</span>`).join("");
       repairs(d.read);
       const lines = hurts(d.fields, d.turned_off, "", addedNames(d.features), d.needed.one_of);
@@ -2238,6 +2246,7 @@ const SCREENS = {
       queue(async () => {
         const e = await runOnce(command, words);  // sent even if the page is left: the page showed it made
         if (e.event === "error") refused = e;  // said once the page shows what the workspace holds
+        else if (e.rerun_owed !== undefined) w = {...w, rerun_owed: e.rerun_owed};  // the run read its records otherwise: said at the top
         if (mine === edits) await reread();
       });
     };
@@ -2312,6 +2321,7 @@ const SCREENS = {
       el.querySelectorAll("[data-hint]").forEach((b) => b.onclick = () => {  // what the hint says, done: the same command the CLI's next names
         const path = b.dataset.hint, h = d.slots.find((x) => x.feature === path).hint;
         if (h.act === "names") return change("set names", {how: "by-kind"});
+        if (h.act === "prepare") return change("set preparation", {mapping: h.prepare});  // each field that reads the column, the step added
         const other = (a) => !(a.length === 1 && a[0] === h.column);  // the column alone: a join holding it is judged whole, and stays
         alts[path] = alts[path].filter(other);  // its other columns stay
         if (h.act === "move") alts[h.to] = [[h.column], ...alts[h.to].filter(other)];  // the target's own, after it
