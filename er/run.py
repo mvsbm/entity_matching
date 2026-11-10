@@ -758,6 +758,9 @@ class Run:
         folder.finish_writes(out)
         if not (state / "model.json").exists():
             raise InputError(f"no run in {out} to add records to", fix="resolve records into that folder first: nayose resolve records …")
+        if folder.read_by_older(out):  # a list read as text then, as its item now: the two would never agree
+            raise InputError(f"the run in {out} read its records with an earlier version of the reader: new records would not compare alike with them",
+                             fix=f"run it again first, then add these: nayose rerun records --workspace {out}")
         if (state / "config.txt").exists() and (state / "config.txt").read_text(encoding="utf-8") != self.config:
             raise InputError(f"the pipeline or the column mapping changed since the full run in {out}: an increment would resolve its batch otherwise",
                              fix="resolve all of them again (nayose rerun records), or add these with the pipeline and config/settings.toml that run used")
@@ -976,7 +979,7 @@ class Run:
         files."""
         out = Path(out)
         with folder.run_lock(out):  # the files named inside the lock: no increment lands between
-            return self.full(folder.inputs(out), out, overwrite=True, pipeline_file=pipeline_file)
+            return self.full(folder.inputs(out, self.settings.input, self.settings.paths["reference"]), out, overwrite=True, pipeline_file=pipeline_file)
 
 
 def run_config(p: Pipeline, s: Settings) -> str:  # what decides the answer: the pipeline and the settings that shape the records
@@ -996,7 +999,7 @@ def trial(ws: Path, base: Pipeline, variant: Pipeline, method: dict, s: Settings
     trials, uid = ws / folder.TRIALS, s.data.unique_id
     base, variant = (replace(x, trust=replace(x.trust, line=None)) for x in (base, variant))  # a trust line would hide what each does
     trials.mkdir(exist_ok=True)
-    model, files = json.loads((ws / "state" / "model.json").read_text(encoding="utf-8")), folder.inputs(ws)
+    model, files = json.loads((ws / "state" / "model.json").read_text(encoding="utf-8")), folder.inputs(ws, s.input, s.paths["reference"])
 
     def resolved(p: Pipeline, into: Path) -> dict:  # each record's cluster, written to `into`; and the numbers people compare
         run = Run(p, s, model=model, echo=echo)

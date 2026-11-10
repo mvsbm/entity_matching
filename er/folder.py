@@ -270,10 +270,13 @@ def type_in(out: Path, sheet: str, column: str, value: object, append: dict | No
         stage(connect()[0], out, [], frames=[(frame, path)])
 
 
-def inputs(out: Path) -> list[Path]:
+def inputs(out: Path, spec: intake.InputSpec | None = None, reference: Path | None = None) -> list[Path]:
     """The record files the run in `out` read, in order: the full run's, then each increment's (steps.json). Each
     must still hold what was read, by its SHA-256, where it was read, in the workspace's own inputs/ (wherever the
-    workspace now is, and whatever folder nayose starts from), or where the scheduler moved it (jobs.jsonl). O(bytes)."""
+    workspace now is, and whatever folder nayose starts from), or where the scheduler moved it (jobs.jsonl). With the
+    reader's settings, a part an older reader read is read again first (fresh). O(bytes)."""
+    for part in parts(out) if spec else []:
+        fresh(part, spec, reference)
     named = [x for run in runs(out) for x in run.get("inputs", []) if x.get("role") == "records"]
     if not named:
         raise InputError(f"{out}: steps.json names no record file", fix="give the files again with a full run that overwrites the folder")
@@ -340,6 +343,26 @@ def sums(part: Path) -> dict[str, str]:  # a part's files: path in the part → 
     return {rel: sha for sha, rel in (line.split("  ", 1) for line in (part / SUMS).read_text(encoding="utf-8").splitlines())}
 
 
+def read_by_older(out: Path) -> bool:
+    """Whether the run in `out` read a file an earlier version of the reader read (intake.READER): its records were
+    prepared otherwise than a batch read now is, so the two wouldn't compare alike until a rerun. O(parts)."""
+    older = {sha for part in parts(out) if (r := intake.report(part))
+             for sha in [*r.get("older_reader", []), *(x["sha256"] for x in r["files"] if r.get("reader", 1) < intake.READER)]}
+    return bool(older) and any(x.get("sha256") in older for run in runs(out) for x in run.get("inputs", []) if x.get("role") == "records")
+
+
+def fresh(part: Path, spec: intake.InputSpec, reference: Path, progress=None) -> Path:
+    """A part as this code reads it: one an older reader read (intake.READER) is read again, once, under its
+    workspace's lock, with the repairs people accepted, as accepting one reads it; a run that read the old one still
+    finds its file (intake.json versions). O(bytes) once; O(1) after."""
+    if (r := intake.report(part)) is None or r.get("reader", 1) >= intake.READER:
+        return part
+    with run_lock(part.parent.parent):
+        if (r := intake.report(part)).get("reader", 1) < intake.READER:  # another job may have read it meanwhile
+            intake.take(part, {part / x["given"]: x["given"] for x in r["files"]}, spec, reference, frozenset(r["accepted"]), progress=progress)
+    return part
+
+
 def take_in(ws: Path, path: str | Path, spec: intake.InputSpec, reference: Path, progress=None) -> tuple[Path, bool]:
     """Copy the files `path` names (a file, a glob or a folder: er.source.find) into the next part of the workspace's
     inputs/, and read them (er.intake: read/, what was found, the repairs proposed), under its lock: into a hidden
@@ -351,7 +374,7 @@ def take_in(ws: Path, path: str | Path, spec: intake.InputSpec, reference: Path,
     with run_lock(ws):
         for part in parts(ws):
             if sorted(sums(part).values()) == given:
-                return part, False
+                return fresh(part, spec, reference, progress), False
         p = Path(path).expanduser()
         root = p if p.is_dir() else None
         stem = p.parent.name if any(c in str(p) for c in "*?[") else p.name if root else p.stem

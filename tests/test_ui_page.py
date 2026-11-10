@@ -415,6 +415,34 @@ def test_step_2_shows_what_the_reader_proposes_and_a_click_accepts_one_kind(ui_p
     assert intake.report(part)["accepted"] == ["realign"] and not page.query_selector("[data-accept=realign]")
 
 
+def test_step_2_says_what_a_column_holds_instead_and_its_button_sets_it_right(ui_page, tmp_path, population):
+    from er import cli
+    s, p, g = population
+    person = g.df["NYS_CNV_P_NAME_KANA"].isna() & g.df["FULL_NAME_KANA"].notna()
+    g.df.assign(NYS_CNV_P_NAME_KANA=g.df["NYS_CNV_P_NAME_KANA"].where(~person, g.df["FULL_NAME_KANA"])).to_parquet(tmp_path / "shared.parquet", index=False)
+    home = tmp_path / "workspaces"
+    assert cli.main(["create", "workspace", "w", "--home", str(home), "--format", "json"]) == 0
+    assert cli.main(["set", "feature", "Phone/Phone=POST_CD", "Address/Postal code=", "--workspace", str(home / "w"), "--format", "json"]) == 0  # postal codes read as the phone
+    page, server, httpd = ui_page(str(home / "w"), str(home), viewport={"width": 1440, "height": 900})
+    page.wait_for_selector(".rail")
+    page.evaluate(f"setWorkspace({json.dumps(str(home / 'w'))})")
+    page.click(".navitem[data-screen=columns]")
+    page.fill("#cin", str(tmp_path / "shared.parquet"))
+    page.click("#load")
+    row = lambda slot: f".frow:has(.drop[data-slot='{slot}'])"
+    page.wait_for_selector(f"{row('Name/Company name')} .fhint", timeout=60_000)
+    assert "people's names" in page.inner_text(f"{row('Name/Company name')} .fhint") and not page.inner_text(f"{row('Name/Company name')} .fwarn")  # said once, under it
+    assert "look like postal code" in page.inner_text(f"{row('Phone/Phone')} .fhint")
+    assert "Company name" in page.inner_text(".fgroup[data-g=Name] .gstat")  # the group says which needs a look
+    page.click("[data-hint='Name/Company name']")
+    page.wait_for_selector(f"{row('Name/Company name')} .fhint.info", timeout=60_000)  # done, and said as done
+    assert 'kind = "company"' in (home / "w" / "columns.toml").read_text(encoding="utf-8") and not page.query_selector("[data-hint='Name/Company name']")
+    page.click("[data-hint='Phone/Phone']")
+    page.wait_for_selector(f"{row('Address/Postal code')} .colchip.in[data-col=POST_CD]", state="attached", timeout=60_000)  # in its group, folded: nothing there needs a look
+    page.wait_for_function(f"() => !document.querySelector(\"{row('Phone/Phone')} .fhint\")", timeout=60_000)
+    assert not page.query_selector(f"{row('Phone/Phone')} .colchip.in")
+
+
 def test_the_improve_page_tries_a_line_once_adopts_it_and_opens_the_next_round(ui_page, tmp_path, population):
     from er import cli, folder
     s, p, g = population

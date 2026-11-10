@@ -19,6 +19,7 @@ Written by `scripts/document_commands.py` from the declarations in `er/cli.py`; 
 | [`accept repairs`](#nayose-accept-repairs) | Accept one kind of repair the reader proposed for a loaded file |
 | [`list features`](#nayose-list-features) | The features a workspace's columns fill: groups, features, parts |
 | [`set feature`](#nayose-set-feature) | Put columns into features |
+| [`set names`](#nayose-set-names) | Compare each record's name on its own side, by its kind, or as mapped |
 | [`add feature`](#nayose-add-feature) | Add a feature: a name in another script, or another company name |
 | [`remove feature`](#nayose-remove-feature) | Remove a feature added to a workspace |
 | [`describe records`](#nayose-describe-records) | What a file holds, for mapping its columns: nothing prepared |
@@ -134,13 +135,14 @@ Copies the records into a part of the workspace's own (inputs/0001-customers/), 
 | `suggested` | for each field the file holds none of: field, column, why |
 | `needed` | the fields a run stops without: every (each of them), one_of (at least one of each group) |
 | `turned_off` | rules, keys and levels a run of this file would turn off: a field they read is missing |
-| `slots` | each feature and part: feature (its path), sources, filled, example, looks_right, and each of its alternatives |
+| `slots` | each feature and part: feature (its path), sources, filled, example, looks_right, odd (a value that doesn't look right), hint (what its values say is off: level warn or info, says, example (a value that doesn't look right), fix, and with a workspace the command and button that fix it), and each of its alternatives |
+| `names_by_kind` | whether each record's name is compared on the side its kind leans to (set names) |
 | `features` | the structure: groups › features › parts, each with type and columns |
 | `profile` | each column's script (kanji, kana, romaji) and the shares of its values that are known family names, given names, full names, addresses |
 | `placements` | for each feature with no column: feature, column, share, why (the file's contents) |
 | `offers` | new features the contents suggest: feature, type, script, column, share, why |
 | `notes` | what the reader detected or fixed |
-| `read` | what the reader found (er.intake): rows, values per encoding, fixed (controls, placeholders, numbers, damaged), proposed and waiting: repairs by kind (realign, garbled, encoding) for accept repairs, with examples; unread rows |
+| `read` | what the reader found (er.intake): rows, values per encoding, fixed (controls, placeholders, numbers, damaged, lists, first of several), proposed and waiting: repairs by kind (realign, garbled, encoding) for accept repairs, with examples; unread rows |
 | `next` | the commands that usually follow |
 | `loaded` | the part the records are in |
 | `copied` | false: the workspace held them already |
@@ -172,7 +174,7 @@ Reads the file again with that kind applied: realign, each row whose fields don'
 | `repaired` | the repairs applied |
 | `rows` | the rows it now holds |
 | `added` | rows that were unread |
-| `read` | what the reader found (er.intake): rows, values per encoding, fixed (controls, placeholders, numbers, damaged), proposed and waiting: repairs by kind (realign, garbled, encoding) for accept repairs, with examples; unread rows |
+| `read` | what the reader found (er.intake): rows, values per encoding, fixed (controls, placeholders, numbers, damaged, lists, first of several), proposed and waiting: repairs by kind (realign, garbled, encoding) for accept repairs, with examples; unread rows |
 | `next` | the commands that usually follow |
 
 ```bash
@@ -226,6 +228,31 @@ Sets each named feature's or part's columns, by its path: GROUP/FEATURE=COLUMN, 
 
 ```bash
 nayose set feature "Name/Full name/Family name=SEI" "Name/Full name/Given name=MEI" --workspace workspaces/acme
+```
+
+## nayose set names
+
+Compare each record's name on its own side, by its kind, or as mapped.
+
+```
+nayose set names by-kind|as-mapped --workspace WORKSPACE [--format text|json]
+```
+
+by-kind: a person's name is compared only with people's names, a company's only with companies' (kind = person on full_name and person_name, kind = company on company_name, in the workspace's columns.toml): for a file whose name columns hold both kinds' names, which a run would otherwise score twice, as a person's name and as a company's. Each record goes to the side its kind leans to (er.kind); one whose kind is unsure, where the engine and the flag disagree, compares no name until people answer it (list kinds). as-mapped takes it back. The next run reads it. O(the file).
+
+| Parameter | |
+|---|---|
+| `by-kind|as-mapped` | by-kind or as-mapped |
+| `--workspace WORKSPACE` | the workspace: the folder that keeps one matching job (required) |
+
+| Result | |
+|---|---|
+| `names` | by-kind or as-mapped |
+| `mapping` | the name lines of columns.toml, as written |
+| `next` | the commands that usually follow |
+
+```bash
+nayose set names by-kind --workspace workspaces/acme
 ```
 
 ## nayose add feature
@@ -286,14 +313,14 @@ nayose remove feature "Name/Kanji name" --workspace workspaces/acme
 What a file holds, for mapping its columns: nothing prepared.
 
 ```
-nayose describe records INPUT [--workspace WORKSPACE] [--format text|json]
+nayose describe records [INPUT] [--workspace WORKSPACE] [--format text|json]
 ```
 
-Each column's share filled and an example; each field's columns as the mapping reads them (a later one where the earlier are empty, a joined one where every part is filled), each with its share filled, an example and the share of its values that look like the field; how well each column fits each field; and, for a field the file holds none of, the column its name or values suggest, never applied: set columns applies it; and what a run would turn off, a field they read missing. Shares filled cover the file; the rest a sample of 2,000 records. A file not loaded into a workspace is read as it comes first, for this command alone (read: what the reader found). O(N·C) in one scan, plus the sample, plus the reading.
+Each column's share filled and an example; each field's columns as the mapping reads them (a later one where the earlier are empty, a joined one where every part is filled), each with its share filled, an example and the share of its values that look like the field; how well each column fits each field; and, for a field the file holds none of, the column its name or values suggest, never applied: set columns applies it; and what a run would turn off, a field they read missing; and for a feature whose values don't look like it, what they say is off and what sets it right (hint): a name column holding the other kind's names too (set names by-kind), values that look like another field (set feature), or a value that doesn't look right. Shares filled cover the file; the rest a sample of 2,000 records. A file not loaded into a workspace is read as it comes first, for this command alone (read: what the reader found). O(N·C) in one scan, plus the sample, plus the reading.
 
 | Parameter | |
 |---|---|
-| `INPUT` | the records: a CSV, TSV or Parquet file, a quoted glob ('in/*.csv') or a folder of them, read as they come and together by column name |
+| `INPUT` | the records: a CSV, TSV or Parquet file, a quoted glob ('in/*.csv') or a folder of them, read as they come and together by column name; without it, the workspace's file loaded last |
 | `--workspace WORKSPACE` | a workspace, for its own mapping (without it, the project's: config/settings.toml) |
 
 | Result | |
@@ -305,13 +332,14 @@ Each column's share filled and an example; each field's columns as the mapping r
 | `suggested` | for each field the file holds none of: field, column, why |
 | `needed` | the fields a run stops without: every (each of them), one_of (at least one of each group) |
 | `turned_off` | rules, keys and levels a run of this file would turn off: a field they read is missing |
-| `slots` | each feature and part: feature (its path), sources, filled, example, looks_right, and each of its alternatives |
+| `slots` | each feature and part: feature (its path), sources, filled, example, looks_right, odd (a value that doesn't look right), hint (what its values say is off: level warn or info, says, example (a value that doesn't look right), fix, and with a workspace the command and button that fix it), and each of its alternatives |
+| `names_by_kind` | whether each record's name is compared on the side its kind leans to (set names) |
 | `features` | the structure: groups › features › parts, each with type and columns |
 | `profile` | each column's script (kanji, kana, romaji) and the shares of its values that are known family names, given names, full names, addresses |
 | `placements` | for each feature with no column: feature, column, share, why (the file's contents) |
 | `offers` | new features the contents suggest: feature, type, script, column, share, why |
 | `notes` | what the reader detected or fixed |
-| `read` | what the reader found (er.intake): rows, values per encoding, fixed (controls, placeholders, numbers, damaged), proposed and waiting: repairs by kind (realign, garbled, encoding) for accept repairs, with examples; unread rows |
+| `read` | what the reader found (er.intake): rows, values per encoding, fixed (controls, placeholders, numbers, damaged, lists, first of several), proposed and waiting: repairs by kind (realign, garbled, encoding) for accept repairs, with examples; unread rows |
 | `next` | the commands that usually follow |
 
 ```bash
@@ -345,7 +373,7 @@ Reads the file through the door every input takes, maps its columns to the logic
 | `keys` | each key's pairs per record and largest block |
 | `oversized_from` | the block size checked by sampling |
 | `notes` | what the loader detected or fixed |
-| `read` | what the reader found (er.intake): rows, values per encoding, fixed (controls, placeholders, numbers, damaged), proposed and waiting: repairs by kind (realign, garbled, encoding) for accept repairs, with examples; unread rows |
+| `read` | what the reader found (er.intake): rows, values per encoding, fixed (controls, placeholders, numbers, damaged, lists, first of several), proposed and waiting: repairs by kind (realign, garbled, encoding) for accept repairs, with examples; unread rows |
 | `next` | the commands that usually follow |
 
 ```bash

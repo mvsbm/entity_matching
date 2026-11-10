@@ -170,6 +170,77 @@ def test_the_commands_that_read_a_run_say_when_the_workspace_holds_none(say, tmp
         assert code == 2 and e["error"] == "workspaces/w holds no run to read" and e["fix"], words  # never a traceback
 
 
+def test_describe_records_says_what_a_column_holds_instead_and_its_one_command_sets_it_right(say, tmp_path, monkeypatch):
+    import shlex
+    monkeypatch.chdir(tmp_path)
+    people, n = ["ヤマダタロウ", "サトウハナコ", "スズキイチロウ", "タナカミドリ", "イシイカホ", "ワタナベケン", "コバヤシユミ", "カトウマコト"], 400
+    df = pd.DataFrame({"CONT_ID": [f"{i:08d}" for i in range(n)], "FULL_NAME_KANA": [people[i % 8] for i in range(n)],
+                  "NYS_CNV_P_NAME_KANA": [people[i % 8].replace("イイ", "イー") for i in range(n)],  # each record's own name, converted: no company's
+                  "PHONE_NUM_4": [f"{i * 37 % 10_000:04d}" for i in range(n)], "POST_CD": [f"{i * 7919 % 10**7:07d}" for i in range(n)],
+                  "SOURCE_ADDR_CD": [f"{9_000_000_000 + i}" for i in range(n)],
+                  "BIRTH_DATE": [f"{60 + i % 40}-{1 + i % 12:02d}-{1 + i % 28:02d}" for i in range(n)]})
+    df.to_parquet("f.parquet", index=False)
+    say("create", "workspace", "w")
+    at = ("--workspace", "workspaces/w")
+    hint = lambda r: {x["feature"]: x["hint"] for x in r["slots"]}
+    code, r = say("load", "records", "f.parquet", *at)
+    h = hint(r)
+    assert h["Name/Company name"]["act"] == "names" and h["Name/Company name"]["says"].startswith("mostly people's names")
+    assert any(w["fix"] == "nayose set names by-kind --workspace workspaces/w" for w in say("check", "records", *at)[1]["ready"]["warns"])  # check records says it too
+    assert r["next"][0]["command"] == "nayose set names by-kind --workspace workspaces/w"  # the fix first
+    assert h["Birth date/Birth date"] is None and h["Name/Full name"] is None  # 93-05-25 is a birth date; people's names where people's go
+    assert say("set", "names", "by-kind", *at)[1]["names"] == "by-kind" and 'kind = "company"' in Path("workspaces/w/columns.toml").read_text(encoding="utf-8")
+    assert not any("set names" in w["fix"] for w in say("check", "records", *at)[1]["ready"]["warns"])  # the description kept from before: not said again
+    assert hint(say("describe", "records", *at)[1])["Name/Company name"]["level"] == "info"  # said, and nothing left to do
+    say("set", "feature", "Phone/Phone=POST_CD", "Address/Postal code=", *at)  # postal codes read as the phone
+    h = hint(say("describe", "records", *at)[1])["Phone/Phone"]
+    assert h["act"] == "move" and h["to"] == "Address/Postal code" and h["says"].startswith("values look like postal code")
+    assert say(*shlex.split(h["command"])[1:])[0] == 0  # the command it names, as a person would paste it
+    slots = {x["feature"]: x["columns"] for x in say("list", "features", *at)[1]["slots"]}
+    assert slots["Address/Postal code"] == "POST_CD" and slots["Phone/Phone"].startswith("no column")
+    assert not any(x["hint"] for x in say("describe", "records", *at)[1]["slots"] if x["feature"] != "Name/Company name")
+    say("set", "feature", "Phone/Phone=POST_CD+PHONE_NUM_4", *at)  # joined: judged whole, no one column of it moved
+    h = hint(say("describe", "records", *at)[1])["Phone/Phone"]
+    assert h["says"].startswith("only 0% look right") and h["example"] and "act" not in h and h["example"] not in h["says"]  # a value, apart from what reports carry
+    df.assign(BIRTH_DATE=[("19" if i % 2 else "") + x for i, x in enumerate(df["BIRTH_DATE"])]).to_parquet("mixed.parquet", index=False)
+    assert hint(say("describe", "records", "mixed.parquet", *at)[1])["Birth date/Birth date"]["says"].startswith("written 2 ways (99-99-99, 9999-99-99)")
+
+
+def test_a_name_column_both_kinds_share_is_scored_once_when_names_go_by_kind(say, tmp_path, population, monkeypatch):
+    s, p, g = population
+    monkeypatch.chdir(tmp_path)
+    person, u = g.df["NYS_CNV_P_NAME_KANA"].isna() & g.df["FULL_NAME_KANA"].notna(), s.data.unique_id
+    g.df.assign(NYS_CNV_P_NAME_KANA=g.df["NYS_CNV_P_NAME_KANA"].where(~person, g.df["FULL_NAME_KANA"])).to_parquet("shared.parquet", index=False)  # every person's name in the company column too
+    con = duckdb.connect()
+    con.register("truth", g.truth)
+    said = {}
+    for how in ("as-mapped", "by-kind"):
+        say("create", "workspace", how)
+        say("set", "names", how, "--workspace", f"workspaces/{how}")
+        assert say("resolve", "records", "shared.parquet", "--workspace", f"workspaces/{how}")[0] == 0
+        said[how] = con.execute(f"""SELECT count(*) FILTER (WHERE x.ENTITY_ID <> y.ENTITY_ID AND s.match_weight >= 6), avg(s.match_weight) FILTER (WHERE x.ENTITY_ID = y.ENTITY_ID)
+            FROM read_parquet('workspaces/{how}/scored/*.parquet') s JOIN truth x ON x.CONT_ID = s.{u}_l JOIN truth y ON y.CONT_ID = s.{u}_r""").fetchall()[0]
+    assert said["by-kind"][0] == 0 and said["by-kind"][1] < said["as-mapped"][1] - 2  # a person's name scored once, not as a company's too
+
+
+def test_a_run_an_earlier_reader_read_takes_no_batch_until_it_runs_again(say, tmp_path, population, monkeypatch):
+    from er import folder, intake
+    s, p, g = population
+    monkeypatch.chdir(tmp_path)
+    g.df.iloc[:440].assign(PHONE_NUM_4=[f'["{x}"]' if isinstance(x, str) else x for x in g.df["PHONE_NUM_4"].iloc[:440]]).to_parquet("first.parquet", index=False)
+    g.df.iloc[440:].to_parquet("batch.parquet", index=False)
+    say("create", "workspace", "w")
+    at = ("--workspace", "workspaces/w")
+    with monkeypatch.context() as m:  # the run read as the reader before this one: phones kept as ["1201"]
+        m.setattr(intake, "READER", 1)
+        m.setattr(intake, "unlisted", lambda v: None)
+        assert say("resolve", "records", "first.parquet", *at)[0] == 0
+    code, e = say("add", "records", "batch.parquet", *at)  # its phones read 1201: they would never agree with the run's
+    assert code == 2 and "rerun records" in e["fix"] and len(folder.parts(Path("workspaces/w"))) == 1  # the batch not kept
+    assert say("rerun", "records", *at)[0] == 0 and intake.report(folder.parts(Path("workspaces/w"))[0])["fixed"].get("lists")  # read again, once: the lists as their item
+    assert say("add", "records", "batch.parquet", *at)[0] == 0
+
+
 def test_every_command_has_its_help(capsys):
     from er.cli import COMMANDS, parser
     for c in COMMANDS:

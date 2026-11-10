@@ -335,3 +335,9 @@ def test_the_kind_problems_name_no_company_the_name_model_trains_on():
     assert len(names) and not names.str.contains("ヰ").any()  # only the held-out company is ever written
     _, _, train, held = name_model_split(load_reference(s.paths["reference"])[0], registry)
     assert set(train["reading"]) == {"ヰヱヰヱ"} and set(held["reading"]) == {"アオイ"}
+
+
+def test_a_birth_year_reads_from_four_digits_or_two():
+    from er.kind import birth_year
+    got = birth_year(pd.Series(["1993-05-25", "19930525", "1993/05/25", "93-05-25", "930525", "05-01-02", None, "abc"], dtype="string"))
+    assert got[:6].tolist() == [1993] * 5 + [2005] and np.isnan(got[6:]).all()  # a 2-digit year by a fixed century, never today's date
