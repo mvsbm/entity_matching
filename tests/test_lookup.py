@@ -221,6 +221,7 @@ def test_a_search_finds_records_by_the_start_of_any_value_and_says_one_too_commo
                          (dict(POST_CD=f"{r['POST_CD'][:3]}-{r['POST_CD'][3:]}"), dict(POST_CD=r["POST_CD"])),  # a postal code as written
                          (dict(FULL_NAME_KANA=hira), dict(FULL_NAME_KANA=r["FULL_NAME_KANA"][:3]))):  # hiragana
         assert index.search(ws, s2, p2, typed, most=50)["entities"] == index.search(ws, s2, p2, plain, most=50)["entities"], typed  # as people type them, found alike
+    assert index._typed("さいたま市３－１", False) == "さいたま市3-1" and index._typed("さとう", True) == "サトウ"  # hiragana a name's alone
     monkeypatch.setattr(index, "CAP", 3)
     name = df["FULL_NAME_KANA"].dropna().str[:1].value_counts().index[0]
     said = index.search(ws, s2, p2, dict(FULL_NAME_KANA=name))

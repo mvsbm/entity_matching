@@ -1826,8 +1826,8 @@ COMMANDS: tuple[Command, ...] = (
              "index": "built_at, records", "next": "the commands that usually follow"},
             'nayose match record FULL_NAME_KANA="ヤマダ タロウ" PHONE_NUM_4=1234 --workspace workspaces/customers', match_record, quick=True),
     Command("search", "records", "The stored records whose values start with those given, any of them; nothing written",
-            "Values by the file's column names, any of them, as people type them (full-width, hiragana, 100-0001 read as the records hold "
-            "them), each prepared as a run prepares it and read by its start in the index "
+            "Values by the file's column names, any of them (finding nothing as given, read again as people type them: full-width, a "
+            "name's hiragana, 100-0001), each prepared as a run prepares it and read by its start in the index "
             "(a name also by its end): the records sharing the most of them, scored with the run's model, a column not given counting "
             "as missing. The entities at --from points or more (default: any), best first, each with its best record, its points and "
             "the fields that agree. A value that starts too many records to list is said, to be given further. "
@@ -2068,7 +2068,7 @@ COMMANDS: tuple[Command, ...] = (
             "nayose list pairs --workspace workspaces/customers --open", list_pairs, quick=True,
             show={"pairs": ("why", "status", "id_l", "id_r", "match_weight", "accepted")}),
     Command("describe", "results", "What the run found, at a glance",
-            "How the scores came out (every scored pair, by points: exact, from the run's patterns), the pairs waiting for "
+            "How the scores came out (every pair the run scored, the full run's and each increment's, by its points), the pairs waiting for "
             "people from --from points up, by range, what merged and how, entities by size, the merge conditions, whether "
             "matches could be missed (the probe), the groups too big to compare, and the person/company answers to give. "
             "Reads the workspace only: no run. The first read of a run written before runs kept their pairs' levels makes "

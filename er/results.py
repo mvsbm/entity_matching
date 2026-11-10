@@ -20,6 +20,10 @@ from er.report import applied, no_run, run_model, scored_again
 from er.settings import Settings, norm_name
 
 BANDS = (-20, -10, 0, 6, 8, 10, 12, 16, 20)  # the score chart's edges, in points: as report.txt's SCORES
+
+
+def banded(col: str = "match_weight") -> str:  # the SQL of a weight's band in the score chart: 0 below BANDS[0], len(BANDS) at its last edge or above
+    return "CASE " + " ".join(f"WHEN {col} < {e} THEN {i}" for i, e in enumerate(BANDS)) + f" ELSE {len(BANDS)} END"
 SIZES = ((1, 1, "1 record"), (2, 2, "2 records"), (3, 9, "3–9"), (10, 49, "10–49"), (50, None, "50 or more"))
 
 
@@ -196,30 +200,31 @@ def _read_files(out: Path) -> list[Path]:
     return found or sorted((out / folder.INPUTS).glob("*/read/**/*.parquet"))
 
 
-def _patterns(out: Path) -> list[dict]:  # the patterns of every pair the run scored: the full run's, and each increment's since (Run._patterns)
-    return [x["patterns"] for run in folder.runs(out) for x in run.get("steps", []) if x["step"] == "score" and x.get("patterns")]
+def _full_run_patterns(out: Path) -> dict | None:
+    full = [x for run in folder.runs(out) if not run.get("part") for x in run.get("steps", []) if x["step"] == "score" and x.get("patterns")]
+    return full[-1]["patterns"] if full else None
 
 
 def describe_results(con: duckdb.DuckDBPyConnection, db: object, out: Path, s: Settings, p: Pipeline, review_from: float = 6.0) -> dict:
-    """What the run found, for the Results page: how the scores came out (every scored pair, by points: exact from the
-    run's patterns, each pattern one weight), the pairs waiting for people from `review_from` up, by range, what
+    """What the run found, for the Results page: how the scores came out (every pair the run scored, each by its own
+    points: the full run's and each increment's bands, as they logged them; a run logged before them, the full run's
+    patterns, each pattern at its mean weight; the rules' own pairs from the pair index), the pairs waiting for people from `review_from` up, by range, what
     merged and how, entities by size, the merge conditions and what they merge, whether matches could be missed (the
     probe), the groups too big to compare by the key that made them, and person or company: the records flagged (the
     engine sure against the file's flag), those still open on the sheet, and the measuring draw's open rows. O(N + P + E)."""
     uid, gold = s.data.unique_id, read(out, "gold.parquet")
-    pats, index = _patterns(out), pair_index(con, db, out, s, p)
-    chart = None
-    if pats:  # at 0 or more, every pair, from the index, which keeps them all; below, the keys' from the patterns, the rules' own from the index
-        edges = [float("-inf"), *BANDS, float("inf")]
-        counts = [0] * (len(edges) - 1)
-        for pat in pats:
-            k = len(pat["fields"])
-            for row in pat["rows"]:
-                if (w := float(row[k + 1])) < 0:
-                    counts[next(i for i in range(len(counts)) if edges[i] <= w < edges[i + 1])] += int(row[k])
-        band = "CASE " + " ".join(f"WHEN match_weight < {e} THEN {i}" for i, e in enumerate(BANDS)) + f" ELSE {len(BANDS)} END"
-        for i, n in con.execute(f"SELECT {band}, count(*) FROM {index} WHERE match_weight >= 0 OR (rule IS NOT NULL AND sources IS NULL) GROUP BY 1").fetchall():
+    index, chart, counts = pair_index(con, db, out, s, p), None, None
+    scored = [x for run in folder.runs(out) for x in run.get("steps", []) if x["step"] == "score"]
+    if scored and all("bands" in x for x in scored):  # the keys' pairs, each by its own weight: the full run's and each increment's
+        counts = [sum(n) for n in zip(*(x["bands"] for x in scored))]
+    elif pats := _full_run_patterns(out):  # logged before the bands: the full run's patterns, each at its mean weight
+        counts, k = [0] * (len(BANDS) + 1), len(pats["fields"])
+        for row in pats["rows"]:
+            counts[sum(float(row[k + 1]) >= e for e in BANDS)] += int(row[k])
+    if counts is not None:  # and the rules' pairs the keys did not list, from the index
+        for i, n in con.execute(f"SELECT {banded()}, count(*) FROM {index} WHERE rule IS NOT NULL AND sources IS NULL GROUP BY 1").fetchall():
             counts[i] += n
+        edges = [float("-inf"), *BANDS, float("inf")]
         chart = [dict(down_to=None if edges[i] == float("-inf") else edges[i], up_to=None if edges[i + 1] == float("inf") else edges[i + 1], pairs=n)
                  for i, n in enumerate(counts)]
     rows = _status_sql(con, out, uid, index)

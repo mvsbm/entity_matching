@@ -456,6 +456,15 @@ def look_up(ws: Path, s: Settings, p: Pipeline, values: dict[str, str] | None = 
 
 
 def search(ws: Path, s: Settings, p: Pipeline, values: dict[str, str], at_least: float | None = None, most: int = 10) -> dict:
+    """_search on the values as given; when they list nothing, on them as people type what records hold otherwise
+    (_typed): full-width digits, 100-0001, a name in hiragana. Each found as given first, as a file might hold it."""
+    found = _search(ws, s, p, values, at_least, most)
+    names = {c for f, alts in s.columns.items() if f.endswith("name") for alt in alts for c in alt}
+    folded = {c: _typed(v, c in names) for c, v in values.items()}
+    return _search(ws, s, p, folded, at_least, most) if not found["listed"] and not found["over"] and folded != values else found
+
+
+def _search(ws: Path, s: Settings, p: Pipeline, values: dict[str, str], at_least: float | None = None, most: int = 10) -> dict:
     """The stored records whose values start with what was typed, any of the file's columns, best first: by how many of
     the searched fields agree (a name also by its end), then by the run's points for the two, a field not typed being
     missing. Each entity at `at_least` points or more (default: any) with its best record, its points, the fields that
@@ -463,7 +472,7 @@ def search(ws: Path, s: Settings, p: Pipeline, values: dict[str, str], at_least:
     is said (over), to be narrowed; of the records listed, the SCORED sharing the most values are scored.
     O(F·(log N + CAP) + SCORED·K·L²)."""
     ws, uid, clock, t = Path(ws), s.data.unique_id, {}, time.perf_counter()
-    with _asking(ws, s, p, {c: _typed(v) for c, v in values.items()}, None) as (m, fitted, model, con, query):
+    with _asking(ws, s, p, values, None) as (m, fitted, model, con, query):
         typed = {c: v for c in m["searched"] if c in query and pd.notna(v := query[c].iloc[0])}
         clock["prepare"] = time.perf_counter() - t
         t = time.perf_counter()
@@ -500,10 +509,11 @@ def search(ws: Path, s: Settings, p: Pipeline, values: dict[str, str], at_least:
                 seconds={k: round(v, 4) for k, v in clock.items()}, index=dict(built_at=m["built_at"], records=m["records"] + m["added"]))
 
 
-def _typed(v: str) -> str:
-    """A value as a person types it, as the records hold it: full-width as half-width and half-width kana as full (NFKC),
-    hiragana as katakana; digits alone without what is written between them (100-0001)."""
-    v = unicodedata.normalize("NFKC", str(v)).translate(KANA)
+def _typed(v: str, name: bool) -> str:
+    """A value as a person types it, as records hold it most often: full-width as half-width and half-width kana as full
+    (NFKC), a name's hiragana as katakana; digits alone without what is written between them (100-0001)."""
+    v = unicodedata.normalize("NFKC", str(v))
+    v = v.translate(KANA) if name else v
     return APART.sub("", v) if any(ch.isdigit() for ch in v) and not APART.sub("", v).strip("0123456789") else v
 
 
