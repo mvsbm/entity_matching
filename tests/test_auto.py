@@ -72,6 +72,7 @@ def test_generated_records_go_into_a_workspace_as_a_file_does_and_the_same_twice
     from er import folder
     assert say("create", "workspace", "w", "--home", tmp_path)[0] == 0
     ws = tmp_path / "w"
+    (ws / ".synthetic-999999999" / "synthetic-easy-1000").mkdir(parents=True)  # what a process killed outright left: its process is gone
     code, r = say("generate", "records", "--records", "1000", "--difficulty", "easy", "--workspace", ws)
     filled = {f["field"]: f["filled"] for f in r["fields"]}
     assert code == 0 and r["records"] == 1000 and r["copied"] and Path(r["loaded"]).name == "0001-synthetic-easy-1000"

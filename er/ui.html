@@ -2398,7 +2398,7 @@ const SCREENS = {
       };
       $("gen").onclick = () => take($("gen"), "Generating", `${$("gsize").selectedOptions[0].text} records`, "generate records", {records: $("gsize").value, difficulty: $("glevel").value});
       $("cin").onkeydown = (e) => { if (e.key === "Enter") $("load").click(); };
-      if (taking) both().forEach((x) => { x.disabled = true; });
+      if (taking || task.busy()) both().forEach((x) => { x.disabled = true; });  // drawn again while one runs, here or after leaving and coming back
     };
     wireLoad();
     draw();

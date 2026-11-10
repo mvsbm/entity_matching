@@ -19,6 +19,7 @@ import gc
 import hashlib
 import json
 import math
+import os
 import re
 import shlex
 import shutil
@@ -37,7 +38,7 @@ import numpy as np
 import pandas as pd
 
 from er import folder, inbox, index, intake
-from er.io import replace_text
+from er.io import alive, replace_text
 from er.config import InputError, Normalizer, adjust, lit, load_pipeline, q, restrict, sources_text, toml_of, widen
 from er.folder import Busy
 from er.report import (applied, compare_records, describe_entity, describe_key, describe_matching, describe_method, describe_workspace, entity_pairs, explain_pair, fill_rates,
@@ -1088,7 +1089,12 @@ def generate_records(a: dict, emit: "Emit") -> dict:
     if not text.isdecimal() or int(text) < 1:
         raise InputError(f"--records {a['records']}: not a whole number of 1 or more", fix="a whole number, for example 100000")
     n, level = int(text), a.get("difficulty") or "medium"
-    tmp = Path(tempfile.mkdtemp(prefix=".synthetic-", dir=ws))  # on the workspace's disk; gone whatever happens
+    for old in ws.glob(".synthetic-*"):  # one a process killed outright left
+        if not old.name.rpartition("-")[2].isdigit() or not alive(int(old.name.rpartition("-")[2])):
+            shutil.rmtree(old, ignore_errors=True)
+    tmp = ws / f".synthetic-{os.getpid()}"  # on the workspace's disk; gone whatever happens
+    shutil.rmtree(tmp, ignore_errors=True)
+    tmp.mkdir()
     try:
         out = tmp / f"synthetic-{level}-{n}"
         auto.synthetic(settings_for(a), n, level, out, lambda done: emit.progress(done, n, "records"))
