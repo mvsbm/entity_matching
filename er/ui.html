@@ -158,7 +158,8 @@ tbody tr[aria-selected="true"] { background: var(--sel); color: var(--sel-ink); 
 #lost { position: fixed; top: 68px; left: 50%; transform: translateX(-50%); z-index: 30; width: min(640px, calc(100% - 32px)); box-shadow: 0 2px 8px rgb(0 0 0 / 0.2); }
 .banner b { display: block; }
 .banner .fix { color: var(--ink); margin-top: 2px; }
-.meter { display: inline-block; width: 64px; height: 6px; border-radius: 3px; background: var(--line); vertical-align: middle; margin-right: 8px; overflow: hidden; }
+.meter { display: inline-block; width: 64px; height: 4px; border-radius: 2px; background: color-mix(in srgb, var(--primary) 22%, transparent); vertical-align: middle; margin-right: 8px; overflow: hidden; }
+.meter[hidden], .lin[hidden] { display: none; } .steps-card .lin, .task-body .lin { border-radius: 2px; max-width: 480px; margin: 4px 0 2px; }
 .meter i { display: block; height: 100%; background: var(--primary); }
 .meter.wide { display: block; width: 100%; max-width: 480px; margin: 4px 0 2px; } .meter.wide i { transition: width .3s; }
 .card.ready { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; } .card.ready .grow { flex: 1; }
@@ -217,10 +218,36 @@ body.term-open .snack, body.term-open .task { bottom: calc(var(--term-h) + 16px)
 .snack code { overflow-wrap: anywhere; }
 .snack .msg { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
 .snack .btn { color: #a8c7fa; height: 32px; padding: 0 8px; }
-.spin { width: 18px; height: 18px; border-radius: 50%; border: 2px solid #a8c7fa; border-right-color: transparent; animation: spin .8s linear infinite; flex: none; }
-@keyframes spin { to { transform: rotate(360deg); } }
-@media (prefers-reduced-motion: reduce) { .spin { animation-duration: 2.4s; } }  /* slowed, never stopped: a still wheel reads as a page that hung */
-.spin.ink { border-color: var(--primary); border-right-color: transparent; } .waiting { display: flex; align-items: center; gap: 12px; color: var(--muted); }
+/* Loading, as Material draws it: the circular indicator (its arc grows and shrinks as it turns) where one thing is
+   read; the linear one where an area is; a placeholder shows only past 300 ms, so a quick answer never flashes */
+.spin { width: 20px; height: 20px; flex: none; animation: spin-turn 1568ms linear infinite; }
+.spin circle { fill: none; stroke: var(--primary); stroke-width: 4.5; stroke-linecap: round; stroke-dasharray: 1 200; animation: spin-arc 1333ms cubic-bezier(.4, 0, .2, 1) infinite; }
+@keyframes spin-turn { to { transform: rotate(360deg); } }
+@keyframes spin-arc { 0% { stroke-dasharray: 1 200; stroke-dashoffset: 0; } 50% { stroke-dasharray: 89 200; stroke-dashoffset: -35; } 100% { stroke-dasharray: 89 200; stroke-dashoffset: -124; } }
+.lin { position: relative; height: 4px; overflow: hidden; background: color-mix(in srgb, var(--primary) 22%, transparent); }
+.lin > span { position: absolute; inset: 0; transform-origin: top left; animation: 2s linear infinite; }
+.lin > span > i { position: absolute; inset: 0; background: var(--primary); animation: 2s linear infinite; }
+.lin .b1 { left: -145.166611%; animation-name: lin-b1; } .lin .b1 > i { animation-name: lin-b1-scale; }
+.lin .b2 { left: -54.888891%; animation-name: lin-b2; } .lin .b2 > i { animation-name: lin-b2-scale; }
+@keyframes lin-b1 { 0%, 20% { transform: translateX(0); animation-timing-function: cubic-bezier(.5, 0, .701732, .495819); }
+  59.15% { transform: translateX(83.67142%); animation-timing-function: cubic-bezier(.302435, .381352, .55, .956352); } 100% { transform: translateX(200.611057%); } }
+@keyframes lin-b1-scale { 0%, 36.65% { transform: scaleX(.08); animation-timing-function: cubic-bezier(.334731, .12482, .785844, 1); }
+  69.15% { transform: scaleX(.661479); animation-timing-function: cubic-bezier(.06, .11, .6, 1); } 100% { transform: scaleX(.08); } }
+@keyframes lin-b2 { 0% { transform: translateX(0); animation-timing-function: cubic-bezier(.15, 0, .515058, .409685); }
+  25% { transform: translateX(37.651913%); animation-timing-function: cubic-bezier(.31033, .284058, .8, .733712); }
+  48.35% { transform: translateX(84.386165%); animation-timing-function: cubic-bezier(.4, .627035, .6, .902026); } 100% { transform: translateX(160.277782%); } }
+@keyframes lin-b2-scale { 0% { transform: scaleX(.08); animation-timing-function: cubic-bezier(.205028, .057051, .57661, .453971); }
+  19.15% { transform: scaleX(.457104); animation-timing-function: cubic-bezier(.152313, .196432, .648374, 1.004315); }
+  44.15% { transform: scaleX(.72796); animation-timing-function: cubic-bezier(.257759, -.003163, .211762, 1.38179); } 100% { transform: scaleX(.08); } }
+@media (prefers-reduced-motion: reduce) { .spin, .spin circle, .lin > span, .lin > span > i { animation-duration: 4s; } }  /* slowed, never stopped: a still wheel reads as a page that hung */
+.loading { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; min-height: 160px; color: var(--muted); font-size: 13px;
+            animation: loading-in .2s ease-out .3s both; } .loading .spin { width: 36px; height: 36px; }  /* an area being read: the indicator at its centre */
+.loading.small { flex-direction: row; justify-content: flex-start; min-height: 0; padding: 8px 0; font-size: inherit; } .loading.small .spin { width: 20px; height: 20px; }  /* a line of it */
+@keyframes loading-in { from { opacity: 0; } }
+.busybar { position: absolute; left: 0; right: 0; bottom: 0; animation: loading-in .2s ease-out .25s both; } .busybar[hidden] { display: none; }
+.waiting { display: flex; align-items: center; gap: 12px; color: var(--muted); }
+.btn .spin { width: 18px; height: 18px; } .btn .spin circle { stroke: currentColor; }  /* a button at work: the indicator in its own ink, where its icon was */
+.steps-card > h2 { display: flex; align-items: center; gap: 10px; }
 .snack .x { color: #c4c7c5; width: 32px; height: 32px; margin-right: -8px; }
 
 /* a long command's progress, bottom right, as a download panel: what it does, how far, about how long; folded or closed */
@@ -230,7 +257,6 @@ body.term-open .snack, body.term-open .task { bottom: calc(var(--term-h) + 16px)
 .task-head { display: flex; align-items: center; gap: 10px; padding: 6px 6px 6px 16px; background: var(--hover); }
 .task-head b { font-weight: 500; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .task-head .iconbtn { width: 32px; height: 32px; }
-.task-head .spin { border-color: var(--primary); border-right-color: transparent; }
 .task-body { padding: 12px 16px 14px; display: grid; gap: 8px; }
 .task.folded .task-body { display: none; } .task.folded #task-fold svg { transform: rotate(180deg); }
 .task-line { color: var(--muted); font-size: 13px; }
@@ -275,8 +301,7 @@ body.term-open .snack, body.term-open .task { bottom: calc(var(--term-h) + 16px)
 .attention .sub { color: var(--warn); font-weight: 500; }
 .optional .dot { border-style: dashed; }
 .rail li.running .dot { position: relative; border-color: var(--primary); color: var(--primary); }
-.rail li.running .dot::after { content: ""; position: absolute; inset: -5px; border-radius: 50%; border: 2px solid transparent; border-top-color: var(--primary); animation: spin 1s linear infinite; }
-@media (prefers-reduced-motion: reduce) { .rail li.running .dot::after { animation-duration: 2.4s; } }
+.rail li.running .dot .spin.ring { position: absolute; left: -6px; top: -6px; width: calc(100% + 12px); height: calc(100% + 12px); }  /* the step at work: the indicator round its dot */
 .navitem.running .spin { margin-left: auto; }
 .loopitem { font-weight: 400; height: auto; min-height: 36px; }
 .trial .nums { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; margin: 8px 0 14px; }
@@ -520,6 +545,7 @@ body.term-open .tray { bottom: var(--term-h); }  /* above the command drawer */
   <label class="search"><span id="search-ic"></span><input id="search" type="search" placeholder="Look up a record ID" aria-label="Look up a record ID"><kbd>/</kbd></label>
   <button class="iconbtn" id="term-toggle" aria-label="Show the commands run" aria-pressed="false"></button>
   <button class="iconbtn" id="help" aria-label="Every command"></button>
+<div class="busybar" id="busybar" hidden role="progressbar" aria-label="Loading"><div class="lin"><span class="b1"><i></i></span><span class="b2"><i></i></span></div></div>
 </header>
 <nav class="sidenav" id="nav" aria-label="Pages"></nav>
 <main id="screen" aria-live="polite"></main>
@@ -533,7 +559,8 @@ body.term-open .tray { bottom: var(--term-h); }  /* above the command drawer */
 <div class="snack" id="snack" hidden role="status"></div>
 <div class="task" id="task" hidden role="status" aria-live="polite"><div class="task-head"><span id="task-ic"></span><b id="task-title"></b>
   <button class="iconbtn" id="task-fold" aria-label="Fold" aria-expanded="true"></button><button class="iconbtn" id="task-close" aria-label="Close"></button></div>
-  <div class="task-body"><div class="task-line" id="task-line"></div><span class="meter wide"><i id="task-bar" style="width:0"></i></span></div></div>
+  <div class="task-body"><div class="task-line" id="task-line"></div><span class="meter wide"><i id="task-bar" style="width:0"></i></span>
+    <div class="lin" id="task-lin" hidden><span class="b1"><i></i></span><span class="b2"><i></i></span></div></div></div>
 <dialog id="dlg"></dialog>
 
 <script type="application/json" id="layout">
@@ -680,6 +707,9 @@ const ICON = {
   stack: '<path d="M12 4l9 4.5-9 4.5-9-4.5z"/><path d="M3 12.5l9 4.5 9-4.5M3 16.5l9 4.5 9-4.5"/>',
 };
 const icon = (name) => `<svg class="ic" viewBox="0 0 24 24" aria-hidden="true">${ICON[name]}</svg>`;
+const spinner = (cls = "") => `<svg class="spin ${cls}" viewBox="0 0 48 48" aria-hidden="true"><circle cx="24" cy="24" r="20"/></svg>`;  // Material's circular indicator
+const linear = () => '<div class="lin" aria-hidden="true"><span class="b1"><i></i></span><span class="b2"><i></i></span></div>';  // and its linear one
+const loading = (label = "", small = false) => `<div class="loading${small ? " small" : ""}" role="status" aria-label="${esc(label || "Loading")}">${spinner()}${label ? `<span>${esc(label)}</span>` : ""}</div>`;  // a part still being read
 
 let COMMANDS = {}, current = "records", keyHandler = null, steps = {};
 const state = {};
@@ -756,10 +786,16 @@ function snack(html, ms = 0) {  // a short notice, bottom left, closed by its �
 const inflight = new Map();
 let visit = 0;  // one per page drawn (go)
 let longRun = null;  // the long command step 3 started ({command, visit}), while it runs: its buttons wait, on this page and when it is drawn again
+let readingNow = 0;  // the quick commands under way: the app bar's line moves while any is
+const reading = (step) => { readingNow += step; $("busybar").hidden = readingNow === 0; };  // its 250 ms delay is CSS's: a quick answer never shows it
 function run(id, command, extra = {}, onEvent = null) {
   const args = argsFor(id, command, extra), key = JSON.stringify([command, args]), mine = visit;
   const here = () => mine === visit;
-  if (!inflight.has(key)) inflight.set(key, runOnce(command, args, onEvent && ((e) => here() && onEvent(e))).finally(() => inflight.delete(key)));
+  if (!inflight.has(key)) {
+    const quick = COMMANDS[command].quick;  // a long command shows in its own panel
+    if (quick) reading(1);
+    inflight.set(key, runOnce(command, args, onEvent && ((e) => here() && onEvent(e))).finally(() => { inflight.delete(key); if (quick) reading(-1); }));
+  }
   return inflight.get(key).then((r) => here() ? r : new Promise(() => {}));  // never settles: the page that asked is gone
 }
 
@@ -849,11 +885,12 @@ const task = {
     soon = soon || (left === null ? `${Math.round(secs)} s` : left < 2 ? "almost done" : `about ${lasts(left)} left`);
     if (done !== null) done = this.most = Math.max(this.most, done);  // never back: scoring's own count may say less than time did
     $("task").setAttribute("aria-busy", String(this.done === null));  // read out at its start and end, not each second
-    $("task-ic").innerHTML = this.done === null ? '<span class="spin"></span>' : icon(this.done ? "check" : "error");
+    $("task-ic").innerHTML = this.done === null ? spinner() : icon(this.done ? "check" : "error");
     $("task-title").textContent = this.done === null ? (this.folded ? `${title} · ${soon}` : title) : `${title}: ${this.done ? "done" : "failed"}`;
     $("task-line").innerHTML = this.done === false ? `${esc(this.why)} <button class="btn" data-term>View</button>` : this.done ? `${Math.round(secs)} s` : esc([now, soon].filter(Boolean).join(" · "));
     $("task-line").querySelector("[data-term]")?.addEventListener("click", () => term.show(true));
-    $("task-bar").style.width = `${this.done ? 100 : done === null ? 0 : Math.round(100 * Math.min(1, done))}%`;  // the work done, not the time spent
+    $("task-bar").style.width = `${this.done ? 100 : done === null ? 0 : Math.round(100 * Math.min(1, done))}%`;
+    $("task-lin").hidden = !(this.done === null && done === null); $("task-bar").parentElement.hidden = !$("task-lin").hidden;  // nothing measured yet: the moving line  // the work done, not the time spent
     this.line = [now, soon].filter(Boolean).join(" · ");
     runCard();
     railBusy();
@@ -866,8 +903,8 @@ const task = {
 
 // Step 3's card for the run going on, and the stages its steps have filled in: drawn from the panel's state, so the page
 // left and opened again while it runs shows it as it is, not as it was when the page was left.
-const stepsCard = (command) => `<div class="card steps-card"><div class="qa"><div class="q"><h2 class="question"><span class="spin" style="border-color:var(--primary);border-right-color:transparent"></span>${
-  esc(BUSY[command] || command)}…</h2><p class="answer"></p></div></div><span class="meter wide"><i style="width:0"></i></span></div>`;
+const stepsCard = (command) => `<div class="card steps-card"><div class="qa"><div class="q"><h2 class="question">${spinner()}${
+  esc(BUSY[command] || command)}…</h2><p class="answer"></p></div></div><span class="meter wide" hidden><i style="width:0"></i></span>${linear()}</div>`;
 let railShown = null;  // the page the step list last marked as running: drawn again only when that changes
 function railBusy() {  // the step a long command runs for: its dot turning, its line and the Overview's card saying how far
   if (railShown !== task.busy()) rail();
@@ -878,7 +915,8 @@ function runCard() {
   if (!card || !task.t0 || task.done !== null || !RUNS.includes(task.command)) return;
   const order = STEPS_OF[task.command] || RUN_STEPS, secs = (Date.now() - task.t0) / 1000, next = order[order.indexOf(task.ended) + 1] || order[0];
   card.querySelector(".answer").innerHTML = `${lasts(secs)} so far${task.soon ? ` · ${task.soon}` : ""} · now: ${esc(task.doing)}`;  // as the panel last drew it
-  card.querySelector(".meter i").style.width = `${Math.round(100 * Math.min(1, task.most))}%`;  // the work done, not the time spent: as the panel has it, never back
+  card.querySelector(".meter i").style.width = `${Math.round(100 * Math.min(1, task.most))}%`;
+  card.querySelector(".meter").hidden = !task.most; card.querySelector(".lin").hidden = !!task.most;  // the moving line until a step says how far  // the work done, not the time spent: as the panel has it, never back
   for (const e of task.steps) {  // each stage its step has filled in
     const [node, fact] = LIT[e.step] || [], b = node && $("flow")?.querySelector(`.node[data-node=${node}]`);
     if (!b || e[fact] === undefined) continue;
@@ -975,7 +1013,7 @@ function rail() {  // the navigation: before a first run the steps to it, in ord
     const s = p[id] || {state: "later", line: ""}, running = busy === id, go = id === "workspace" ? "data-pick" : `data-screen="${id}"`;
     const dot = n === null ? icon(ic) : s.state === "done" ? icon("tick") : s.state === "attention" ? "!" : n;
     return `<li class="${s.state}${running ? " running" : ""}${n === null ? " place" : ""}" ${running ? `data-busy="${id}"` : ""}><button class="navitem step" ${go} ${at(id)} title="${esc(label)}: ${esc(running ? "running" : STATE_WORD[s.state])}">
-      <span class="dot">${dot}</span><span class="stack"><span>${n === null ? "" : `${n} · `}${esc(label)}</span>${running ? live : line === null ? "" : `<span class="sub">${esc(line ?? s.line)}</span>`}</span></button></li>`;
+      <span class="dot">${dot}${running ? spinner("ring") : ""}</span><span class="stack"><span>${n === null ? "" : `${n} · `}${esc(label)}</span>${running ? live : line === null ? "" : `<span class="sub">${esc(line ?? s.line)}</span>`}</span></button></li>`;
   };
   const loops = LAYOUT.workflow.loops.map((l, n) => `<button class="navitem loopitem" data-loop="${n}" ${ran ? "" : "disabled"}>${icon(l.icon)}<span class="stack"><span>${esc(l.name)}</span>${
       ran ? "" : '<span class="sub">after the first run</span>'}</span></button>`).join("");
@@ -983,7 +1021,7 @@ function rail() {  // the navigation: before a first run the steps to it, in ord
     ? `<ol class="rail places">${item("records", "overview", "Results", null)}${item("pairs", "pairs", "Review")}${item("results", "customers", "Explore", null)}</ol>
        <h3>Setup</h3><ol class="rail setup">${item("workspace", "folder", "Workspace", null)}${item("columns", "records", "Your data", null)}${item("run", "run", "Find matches", null)}${item("improve", "loop", "Method", null)}</ol>${loops}`
     : `<button class="navitem ${busy === "records" ? "running" : ""}" data-screen="records" ${busy === "records" ? 'data-busy="records"' : ""} ${at("records")}>${
-        icon("overview")}<span class="stack"><span>Overview</span>${busy === "records" ? live : ""}</span>${busy === "records" ? '<span class="spin ink"></span>' : ""}</button>
+        icon("overview")}<span class="stack"><span>Overview</span>${busy === "records" ? live : ""}</span>${busy === "records" ? spinner() : ""}</button>
        <ol class="rail">${ORDER.map((id, n) => item(id, "", STEP[id], undefined, n + 1)).join("")}</ol><h3>When things change</h3>${loops}`;
   $("nav").querySelectorAll("[data-screen]").forEach((b) => b.onclick = () => go(b.dataset.screen));
   $("nav").querySelectorAll("[data-loop]").forEach((b) => b.onclick = () => go(LAYOUT.workflow.loops[b.dataset.loop].screen, LAYOUT.workflow.loops[b.dataset.loop]));
@@ -1714,7 +1752,7 @@ const JOINED = {you: "you", model: "the model", rule: "a rule"};  // describe re
 // Both or more records' full rows side by side, every column of the file, the different ones first; a column that a
 // comparison reads says how it was compared (explain pair's tests): method, score against its threshold, step, points.
 async function fullRows(box, page, ids, x = null) {
-  box.innerHTML = '<div class="faint">Reading their rows…</div>';
+  box.innerHTML = loading("Reading their rows");
   const d = await run(page, "show records", {ids});
   if (!box.isConnected) return;
   if (d.event === "error") { box.innerHTML = banner(d); return; }
@@ -1770,7 +1808,7 @@ function pairTable(box, pairs, total, page, count, opts) {  // a page of scored 
 async function pairDialog(page, p) {  // a pair from a list: its full rows, how it scored, and how it was found
   const dlg = $("dlg");
   dlg.innerHTML = `<form method="dialog"><div class="dlg-body wide"><h2>${esc(p.first)} · ${esc(p.second)} · ${p.points.toFixed(1)} points</h2>
-      <p class="muted">${esc(foundBy(p) ? `Found by ${foundBy(p)}` : "")} · ${statusChip(p.status)}</p><div class="fr"></div><div class="how faint">Reading how it scored…</div></div>
+      <p class="muted">${esc(foundBy(p) ? `Found by ${foundBy(p)}` : "")} · ${statusChip(p.status)}</p><div class="fr"></div><div class="how">${loading("Reading how it scored", true)}</div></div>
     <div class="dlg-foot"><span class="grow"></span>${p.status === "waiting" ? `<a class="btn" data-go="pairs" data-record="${esc(p.first)}">Review it</a>` : ""}<button class="btn" value="close">Close</button></div></form>`;
   dlg.onclose = null; dlg.returnValue = ""; dlg.showModal();
   const x = await run(page, "explain pair", {first: p.first, second: p.second});
@@ -1853,7 +1891,7 @@ async function mergeDialog(page, done) {  // the conditions that merge pairs wit
     dlg.querySelector("[data-set]").disabled = when.length !== m.when.length;  // a condition half set is never dropped silently
     if (when.length !== m.when.length) { box.textContent = "Finish each condition, or remove it."; return; }
     if (!when.length) { box.textContent = `With none, ${none}.`; return; }
-    box.textContent = "Counting…";
+    box.innerHTML = loading("Counting", true);
     const x = await run(page, "describe merging", {conditions: JSON.stringify({join: m.join, when})});
     if (n !== asked || !box.isConnected) return;
     box.innerHTML = x.event === "error" ? banner(x) : `<b>${plural(x.pairs, "pair")}</b> would merge, into <b>${plural(x.entities, "entity", "entities")}</b> of two records or more`
@@ -1875,7 +1913,8 @@ async function pairsPage(el, arg = {}) {  // Review: the pairs waiting for a per
       <div class="queue"><div class="card progress"><div class="from"><label>Review from <input type="number" step="0.5" id="from" aria-label="Review from these points"> points</label>
         <label class="find">${icon("search")}<input type="text" id="record" placeholder="A record ID" aria-label="Pairs of a record ID"></label></div>
         <div id="done-line" class="answer"></div><div class="actions" style="margin-top:10px"><button class="btn outlined" id="apply">${icon("check")}Apply decisions <span class="badge" id="written">0</span></button></div></div>
-      <div id="left" class="faint">Loading…</div></div></div>`;
+      <div id="left"></div></div></div>`;
+  $("right").innerHTML = loading();
   $("refresh").onclick = () => go("pairs");
   const merged = (e) => {  // the merge dialog's end, from the button or the Results tile
     if (e.event === "error") { $("note").innerHTML = banner(e); return; }
@@ -1900,7 +1939,7 @@ async function pairsPage(el, arg = {}) {  // Review: the pairs waiting for a per
     $("done-line").innerHTML = `<b>${plural(left, "pair")}</b> waiting from ${fmt(from)} points${written ? ` · ${fmt(written)} decided, to apply` : ""}`;
     if (steps.steps && steps.steps.pairs) { steps.steps.pairs = {state: left || written ? "attention" : "done", line: left ? `${fmt(left)} waiting` : written ? `${fmt(written)} decided, to apply` : "all decided"}; rail(); } };
   const load = async () => {
-    $("left").innerHTML = '<div class="faint">Loading…</div>';
+    if (rows.length) $("left").innerHTML = loading();  // another page of the queue; the first one waits under the pair's
     const x = await run("pairs", "list scored", {status: "open", from: String(from), page: String(page), count: String(count), record: $("record").value.trim()});
     if (x.event === "error") { $("left").innerHTML = banner(x); return; }
     rows = x.pairs; total = x.total; left = x.total - x.typed; i = Math.max(0, rows.findIndex((p) => !p.said)); tally(); draw(); show();
@@ -1915,7 +1954,7 @@ async function pairsPage(el, arg = {}) {  // Review: the pairs waiting for a per
       <div class="actions"><button class="btn filled" data-a="match">Same</button><button class="btn outlined" data-a="no_match">Different</button>
         <button class="btn" data-skip>Not sure</button>${keyHint([["M", "same"], ["N", "different"]])}</div>
       <p class="then">Same: one entity once you apply your decisions. Different: kept apart for good.</p><div id="said"></div>
-      <div class="fr"><div class="faint">Reading their rows…</div></div><div class="how faint"></div></div>`;
+      <div class="fr">${loading("Reading their rows")}</div><div class="how faint"></div></div>`;
     const box = $("right").querySelector(".fr"), here = `${p.first} ${p.second}`;
     box.dataset.pair = here;
     run("pairs", "explain pair", {first: p.first, second: p.second}).then((x) => {
@@ -1944,7 +1983,9 @@ async function pairsPage(el, arg = {}) {  // Review: the pairs waiting for a per
   };
   $("from").onchange = () => { const v = Number($("from").value); if (!Number.isFinite(v)) return; from = v; try { localStorage.setItem("nayose.reviewFrom", String(v)); } catch {} page = 1; load(); };
   $("record").onchange = () => { page = 1; load(); };
-  $("apply").onclick = () => { $("apply").disabled = true; run("pairs", "apply decisions").then((e) => e.event === "error" ? ($("note").innerHTML = banner(e), tally())
+  $("apply").onclick = () => {
+    $("apply").disabled = true; $("apply").querySelector("svg").outerHTML = spinner();
+    run("pairs", "apply decisions").then((e) => e.event === "error" ? ($("note").innerHTML = banner(e), $("apply").querySelector("svg").outerHTML = icon("check"), tally())
     : go("pairs", {note: `<div class="banner info">${icon("check")}<div><b>${plural(e.decisions, "decision")} applied: ${plural(e.clusters_joined, "entity", "entities")} joined.</b></div></div>`})); };
   keyHandler = (k) => ({m: () => answer("match"), n: () => answer("no_match"), s: () => move(1), ArrowDown: () => move(1), ArrowUp: () => move(-1), j: () => move(1), k: () => move(-1)})[k];
   await load();
@@ -1955,7 +1996,7 @@ async function explorePage(el, arg) {  // Explore: every pair kept, every entity
   const want = typeof arg === "string" ? {tab: "records", record: arg} : arg && typeof arg === "object" ? arg : {};
   const tab = want.tab || "pairs";
   el.innerHTML = head("results", `<button class="btn" id="refresh">${icon("refresh")}Refresh</button>`, tabs([["pairs", "Pairs", 'data-tab="pairs"'], ["entities", "Entities", 'data-tab="entities"'],
-    ["records", "Records", 'data-tab="records"'], ["how", "How it works", 'data-tab="how"']], tab)) + `<div id="note"></div><div id="tabbody"></div>`;
+    ["records", "Records", 'data-tab="records"'], ["how", "How it works", 'data-tab="how"']], tab)) + `<div id="note"></div><div id="tabbody">${loading()}</div>`;
   $("refresh").onclick = () => go("results", want);
   el.querySelectorAll(".tab[data-tab]").forEach((b) => b.onclick = () => go("results", {tab: b.dataset.tab}));
   if (!state.workspace) { await notYet(el, "results"); return; }
@@ -1970,7 +2011,7 @@ async function explorePage(el, arg) {  // Explore: every pair kept, every entity
     const lookup = async (id) => {
       const n = ++asked, now = () => n === asked && $("ent");  // a later lookup's answers only
       if (!id) return;
-      $("rec").innerHTML = `<div class="card"><div class="fr"></div></div><div class="card"><h2>Its entity</h2><div id="ent" class="faint">Reading…</div></div><div class="card"><h2>The pairs it is in</h2><div id="its"></div></div>`;
+      $("rec").innerHTML = `<div class="card"><div class="fr"></div></div><div class="card"><h2>Its entity</h2><div id="ent" class="faint">${loading("", true)}</div></div><div class="card"><h2>The pairs it is in</h2><div id="its"></div></div>`;
       fullRows($("rec").querySelector(".fr"), "results", [id]);
       run("results", "list entities", {record: id, smallest: "1"}).then((e) => { if (!now()) return;
         const x = e.entities && e.entities[0];
@@ -1994,7 +2035,7 @@ async function explorePage(el, arg) {  // Explore: every pair kept, every entity
         ${logBars(r.sizes.map((x) => ({label: x.label, value: x.entities})))}</div><div class="split item-first"><div id="right" class="panel-sticky"></div><div class="queue"><div id="left"></div></div></div>`;
     let page = 1;
     const open = async (id) => {
-      $("right").innerHTML = '<div class="card faint">Reading…</div>';
+      $("right").innerHTML = `<div class="card">${loading()}</div>`;
       const d = await run("results", "describe entity", {id});
       if (d.event === "error") { $("right").innerHTML = banner(d); return; }
       $("right").innerHTML = `<div class="card one">${scope("customers", `Entity ${d.entity}`)}<h2 class="question">${d.size > 1 ? `Why are these ${fmt(d.size)} records one entity?` : "One record, joined to no other"}</h2>
@@ -2059,7 +2100,7 @@ const SCREENS = {
       return;
     }
     el.innerHTML = head("records", `<button class="btn" data-auto>${icon("wand")}Auto mode</button><button class="btn" id="refresh">${icon("refresh")}Refresh</button>`) +
-      `<div id="next"></div><div id="auto"></div><div id="out"></div><div id="flow"></div>`;
+      `<div id="next"></div><div id="auto"></div><div id="out">${loading()}</div><div id="flow"></div>`;
     $("refresh").onclick = () => go("records");
     const live = runsHere() ? longRun : !longRun && task.busy() ? {command: task.command, page: task.busy()} : null;  // whatever runs now, and where it shows
     if (live) $("auto").innerHTML = runningCard(live);  // at once: the workspace it runs on answers once it is done
@@ -2130,7 +2171,7 @@ const SCREENS = {
         last = files[files.length - 1];
         $("files").innerHTML = files.map((f) => `<span class="tag" title="${esc(f.path)}">${esc(nameOf(f))} · ${bytes(f.bytes)} · ${f.read ? "matched" : "not run yet"}</span>`).join("");
         if (d === undefined && last) {
-          if (!$("out").querySelector(".fgroup")) $("out").innerHTML = `<div class="card waiting"><span class="spin ink"></span>Reading the columns of ${esc(nameOf(last))}…</div>`;
+          if (!$("out").querySelector(".fgroup")) $("out").innerHTML = `<div class="card waiting">${spinner()}Reading the columns of ${esc(nameOf(last))}…</div>`;
           d = await run("columns", "describe records", {loaded: last.path});
         }
         if (d && at === edits) show(d);  // else a change since: its own reading shows it
@@ -2250,7 +2291,7 @@ const SCREENS = {
         name.focus();
         row.querySelector(".btn.filled").onclick = (e) => {
           if (!name.value.trim()) return name.focus();
-          e.target.textContent = "Adding…";
+          e.target.innerHTML = `${spinner()}Adding…`;
           change("add feature", {path: `${b.dataset.add}/${name.value.trim()}`, type: kind.value, script: script.value});
         };
         name.onkeydown = (e) => { if (e.key === "Enter" && !e.isComposing) row.querySelector(".btn.filled").click(); };  // not the Enter that ends a kana-to-kanji conversion
@@ -2262,8 +2303,8 @@ const SCREENS = {
         const input = $("cin").value.trim();
         if (!input) { $("cin").focus(); return; }
         const b = $("load"), was = b.innerHTML, at = edits;
-        b.disabled = true; b.textContent = "Reading…";  // a big file takes minutes: how far, and how long is left, in the panel
-        if (!$("out").querySelector(".fgroup")) $("out").innerHTML = `<div class="card waiting"><span class="spin ink"></span>Reading ${esc(baseName(input))}…</div>`;
+        b.disabled = true; b.innerHTML = `${spinner()}Reading…`;  // a big file takes minutes: how far, and how long is left, in the panel
+        if (!$("out").querySelector(".fgroup")) $("out").innerHTML = `<div class="card waiting">${spinner()}Reading ${esc(baseName(input))}…</div>`;
         const e = await run("columns", "load records", {input});
         if (b.isConnected) { b.disabled = false; b.innerHTML = was; }
         if (e.event === "error") {  // the mapping stays: the refusal above it
@@ -2285,7 +2326,7 @@ const SCREENS = {
     const ran = ((steps.steps || {}).run || {}).state === "done";  // before a first run: one thing to do
     const act = (command, label, ic, filled) => `<button class="btn${filled ? " filled" : ""}" data-act="${command}" data-label="${label}">${ic ? icon(ic) : ""}${label}</button>`;
     el.innerHTML = head("run", ran ? act("rerun records", "Run matching again", "refresh") + act("add records", "Add new records", "add") + act("match records", "Preview new records") : "") +
-      `<div id="out">${state.workspace ? "" : emptyRun()}</div><h3 class="flowq" id="flowq"></h3><div id="flow"></div>${stepFoot("run")}`;
+      `<div id="out">${state.workspace ? loading() : emptyRun()}</div><h3 class="flowq" id="flowq"></h3><div id="flow"></div>${stepFoot("run")}`;
     if (!state.workspace) return;
     const graph_ = flowOf("run", $("flow"));
     let file = null, w0 = null;  // the file a first run reads: the one loaded last; the workspace, once described
@@ -2352,7 +2393,7 @@ const SCREENS = {
     const foot = `<div class="stepfoot"><a class="btn" data-go="pairs">← Review</a><span class="grow"></span>
       <a class="btn" data-go="run">${icon("run")}Find matches</a><a class="btn outlined" data-go="records">Results →</a></div>`;
     el.innerHTML = head("improve", `<button class="btn" id="refresh">${icon("refresh")}Refresh</button>`) +
-      `<div id="busy"></div><div id="out" class="faint">Loading…</div><div id="flow"></div>${foot}`;
+      `<div id="busy"></div><div id="out">${loading()}</div><div id="flow"></div>${foot}`;
     $("refresh").onclick = () => go("improve");
     if (!state.workspace) { await notYet(el, "improve"); return; }
     const [d, g] = await Promise.all([run("improve", "describe method"), flowOf("improve", $("flow"))]);
@@ -2398,7 +2439,7 @@ const SCREENS = {
     where();
     const busy = (label) => {  // one long command at a time: its steps as they finish, every action off until it ends
       el.querySelectorAll("[data-try], [data-adopt], #reset").forEach((b) => { b.disabled = true; });
-      $("busy").innerHTML = `<div class="card steps-card"><h2><span class="spin" style="border-color:var(--primary);border-right-color:transparent"></span>${esc(label)}</h2><ul class="steps"></ul></div>`;
+      $("busy").innerHTML = `<div class="card steps-card"><h2>${spinner()}${esc(label)}</h2><ul class="steps"></ul></div>`;
       return (e) => { if (e.event === "step") $("busy").querySelector("ul")?.insertAdjacentHTML("beforeend", `<li>${icon("check")}${esc(DOING[e.step] || e.step)} <span class="faint">${e.seconds.toFixed(1)} s</span></li>`); };
     };
     const failed = (e) => { $("busy").innerHTML = banner(e); el.querySelectorAll("[data-try], [data-adopt], #reset").forEach((b) => { b.disabled = false; }); };
@@ -2514,7 +2555,7 @@ let graph = null;  // the run's describe matching, which the cards draw their la
 
 async function explainDialog(id, first, second) {  // how any pair of the run scored, from step 3's patterns or a customer's pairs
   const dlg = $("dlg");
-  dlg.innerHTML = `<form method="dialog"><div class="dlg-body wide"><h2>${esc(first)} · ${esc(second)}</h2><div class="faint">Loading…</div></div>
+  dlg.innerHTML = `<form method="dialog"><div class="dlg-body wide"><h2>${esc(first)} · ${esc(second)}</h2>${loading()}</div>
     <div class="dlg-foot"><span class="grow"></span><button class="btn" value="close">Close</button></div></form>`;
   const box = dlg.querySelector(".dlg-body div");
   dlg.onclose = null;
@@ -3401,7 +3442,7 @@ async function review(el, which, note = "") {  // Review's person-or-company tab
     `<div id="note">${note}</div><div class="split item-first"><div id="right" class="panel-sticky"></div>
       <div class="queue"><div class="card progress"><div id="done-line" class="answer"></div>
         <div class="actions" style="margin-top:10px"><button class="btn outlined" id="apply">${icon("check")}${q.applyLabel} <span class="badge" id="written">0</span></button></div></div>
-        <div id="some"></div><div id="left" class="faint">Loading…</div></div></div>`;
+        <div id="some"></div><div id="left">${loading()}</div></div></div>`;
   $("refresh").onclick = () => go(which);
   $("apply").disabled = true;
   if (!state.workspace) { await notYet(el, which); return; }
@@ -3500,7 +3541,7 @@ async function autoMode() {
     if (e.event === "start") {
       t0 = Date.now(); now = autoSays("workspace"); longRun = {command: "try everything", visit, page: "records"};
       for (const id of ["next", "out", "flow", "continue"]) if ($(id)) $(id).innerHTML = "";  // the workspace open before is not the one it makes
-      box.innerHTML = `<div class="card steps-card"><div class="qa"><div class="q"><h2 class="question"><span class="spin" style="border-color:var(--primary);border-right-color:transparent"></span>Auto mode…</h2>
+      box.innerHTML = `<div class="card steps-card"><div class="qa"><div class="q"><h2 class="question">${spinner()}Auto mode…</h2>
         <p class="answer"></p></div></div><ul class="steps"></ul></div>`;
       clearInterval(clock); clock = setInterval(say, 1000); say();
       return;
@@ -3521,7 +3562,7 @@ async function autoMode() {
     setWorkspace(d.workspace);  // its Overview: the report to send
   }, step, {about: "A new workspace, every step on your file, and a report to send"});
 }
-const runningCard = (run) => `<div class="card"><div class="qa"><div class="q"><h2 class="question"><span class="spin" style="border-color:var(--primary);border-right-color:transparent"></span>${
+const runningCard = (run) => `<div class="card"><div class="qa"><div class="q"><h2 class="question">${spinner()}${
   esc(BUSY[run.command] || (run.command === "try everything" ? "Auto mode" : run.command))}…</h2><p class="answer"><span class="run-line">${esc(task.line || "")}</span>${
   run.page === current ? " · it shows here when it ends" : ""}</p></div>${run.page && run.page !== current ? `<a class="btn filled" data-go="${run.page}">Open</a>` : ""}</div></div>`;  // a long run this page didn't draw: how far, and its page
 const runsHere = () => longRun && longRun.page && (!longRun.workspace || longRun.workspace === state.workspace);  // a long run of this workspace

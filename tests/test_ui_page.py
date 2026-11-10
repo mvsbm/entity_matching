@@ -459,6 +459,8 @@ def test_review_counts_down_an_answer_waits_out_a_busy_workspace_and_auto_merge_
     page, server, httpd = ui_page(str(ws), str(tmp_path / "workspaces"), viewport={"width": 1280, "height": 900})
     page.wait_for_selector(".tiles")
     assert page.inner_text("h1") == "Results" and "you decide every pair" in page.inner_text("#out .card .answer")
+    assert page.evaluate("""() => { const bar = document.querySelector("#busybar"), asked = run("records", "describe results"), during = !bar.hidden;
+        return asked.then(() => [during, bar.hidden]); }""") == [True, True]  # the app bar's line: on while the page reads, off once it has its answer
     waiting = int(re.search(r"[\d,]+", page.inner_text("a.tile[data-go=pairs]:not([data-merge]) .num")).group().replace(",", ""))
     assert waiting > 2 and page.inner_text(".rail li.attention .sub") == f"{waiting:,} waiting"  # the tile and the rail say one number
     page.click("a.tile[data-tab=entities]")  # a tile opens its own tab
