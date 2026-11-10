@@ -14,3 +14,6 @@ data/artifacts/
 
 # People's workspaces (nayose create workspace): their records and results, never committed
 workspaces/
+
+# a mapping change in progress (er.folder.writing)
+.*.lock

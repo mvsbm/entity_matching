@@ -11,6 +11,7 @@ import hashlib
 import json
 import os
 import subprocess
+import threading
 import time
 from collections.abc import Callable
 from itertools import takewhile
@@ -70,7 +71,7 @@ CHILD = dict(encoding="utf-8", errors="replace")  # a nayose child's output: UTF
 def replace_text(path: Path, text: str, check: Callable[[Path], object] | None = None) -> None:
     """`path` written whole beside itself, then renamed over it, so a write cut short leaves the old file. `check` reads
     the new one first: if it raises, the new one goes and the old stays."""
-    tmp = path.with_name(path.name + ".tmp")
+    tmp = path.with_name(f"{path.name}.{os.getpid()}.{threading.get_ident()}.tmp")  # a writer's own: two at once never share one
     tmp.write_text(text, encoding="utf-8")
     try:
         if check:

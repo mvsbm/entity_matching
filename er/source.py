@@ -39,14 +39,18 @@ class Source:
     given: dict[str, str] = field(default_factory=dict)  # a column read under another name (KIND_2) → its name in the file
 
 
+def globbed(p: Path) -> bool:  # a pattern of names (*.csv, part-?.csv); a file or folder that exists is itself, [ in its name or not
+    return not p.exists() and any(c in p.name for c in "*?[")
+
+
 def find(path: str | Path) -> list[Path]:
     """The files a path names: one file, a glob, or a folder (its Parquet, CSV and TSV files, at any depth:
     intake.SUFFIXES); a workspace's part, the files its intake read (er.intake). ~ is the home folder."""
     p = Path(path).expanduser()
     if p.is_dir() and (r := intake.report(p)):
         return [p / x["read"] for x in r["files"]]
-    if any(c in str(p) for c in "*?["):
-        files = sorted(p.parent.glob(p.name)) if p.parent.exists() else []
+    if globbed(p):  # its files, as a folder's: no folder, no hidden file
+        files = sorted(f for f in p.parent.glob(p.name) if f.is_file() and not f.name.startswith(".")) if p.parent.exists() else []
     else:
         files = sorted(f for f in p.rglob("*") if f.is_file() and f.suffix.lower() in intake.SUFFIXES  # a hidden file or folder (.DS_Store, __MACOSX) holds no records
                        and not any(x.startswith(".") or x == "__MACOSX" for x in f.relative_to(p).parts)) if p.is_dir() else [p] if p.is_file() else []

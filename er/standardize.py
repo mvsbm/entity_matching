@@ -50,8 +50,15 @@ def address_parts(std: Standardization) -> tuple[tuple[str, Callable[[pd.Series]
             s = s.str.replace(pattern, repl, regex=True)
         return s
     return (("address:nfkc", lambda s: s.str.normalize("NFKC")), ("address:rules", rules),
-            ("address:cut", lambda s: s.str.split(std.address_cut_at).str[0]),
+            ("address:cut", lambda s: cut(s, std.address_cut_at)),
             ("address:prefecture", lambda s: s.str.replace(f"^(?:{'|'.join(map(re.escape, std.prefectures))})", "", regex=True)))
+
+
+def cut(s: pd.Series, at: str) -> pd.Series:
+    """An address up to its street number: the building and room after the first `at` that follows a digit go, then
+    any `at` left (between the city and the town, say); an address with no digit before one keeps all but those."""
+    c = re.escape(at)
+    return s.str.strip().str.replace(rf"^(.*?[0-9][^{c}]*){c}.*$", r"\1", regex=True).str.replace(at, "", regex=False)
 
 
 def prepared(value: str, steps: tuple[Normalizer, ...], std: Standardization) -> list[tuple[str, str | None]]:

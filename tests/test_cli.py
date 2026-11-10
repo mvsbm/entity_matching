@@ -202,8 +202,68 @@ def test_describe_records_says_what_a_column_holds_instead_and_its_one_command_s
     say("set", "feature", "Phone/Phone=POST_CD+PHONE_NUM_4", *at)  # joined: judged whole, no one column of it moved
     h = hint(say("describe", "records", *at)[1])["Phone/Phone"]
     assert h["says"].startswith("only 0% look right") and h["example"] and "act" not in h and h["example"] not in h["says"]  # a value, apart from what reports carry
+    say("set", "feature", "Name/Full name/Given name=POST_CD", "Name/Full name/Family name=FULL_NAME_KANA", *at)  # postal codes as the given name, a family name joined to it
+    h = hint(say("describe", "records", *at)[1])["Name/Full name/Given name"]
+    assert h["act"] == "off" and say(*shlex.split(h["command"])[1:])[0] == 0  # the family name goes with it: the command takes both off
+    slots = {x["feature"]: x["columns"] for x in say("list", "features", *at)[1]["slots"]}
+    assert slots["Name/Full name/Given name"].startswith("no column") and slots["Name/Full name/Family name"].startswith("no column")
     df.assign(BIRTH_DATE=[("19" if i % 2 else "") + x for i, x in enumerate(df["BIRTH_DATE"])]).to_parquet("mixed.parquet", index=False)
     assert hint(say("describe", "records", "mixed.parquet", *at)[1])["Birth date/Birth date"]["says"].startswith("written 2 ways (99-99-99, 9999-99-99)")
+
+
+def test_a_mapping_reads_back_as_written_and_two_changes_at_once_both_land(say, tmp_path, monkeypatch):
+    import threading
+    import time
+    from er import cli, settings
+    from er.settings import COLUMNS, load_settings, own_columns, set_columns
+    monkeypatch.chdir(tmp_path)
+    say("create", "workspace", "w")
+    at, ws = ("--workspace", "workspaces/w"), tmp_path / "workspaces" / "w"
+    cols = lambda: load_settings(columns=ws / COLUMNS).columns
+    say("set", "feature", "Name/Full name=SEI+MEI", "Name/Full name/Family name=", "Name/Full name/Given name=", *at)  # a full name of two columns, no parts
+    say("set", "feature", "Phone/Phone=TEL", *at)
+    assert cols()["full_name"] == (("SEI", "MEI"),) and cols()["given_name"] == ()  # read back as one full name, through a change elsewhere
+    code, e = say("set", "feature", "Name/Full name/Family name=SEI", *at)
+    assert code == 2 and "joined to the given name" in e["error"]  # no given name to join it to: refused, never dropped
+    assert say("set", "feature", "Name/Full name/Given name=MEI", "Name/Full name/Family name=SEI,SEI2", *at)[0] == 2  # one column: a second would be dropped
+    assert say("set", "feature", "Name/Full name/Given name=MEI", "Name/Full name/Family name=SEI", *at)[0] == 0
+    assert cols()["person_name"][-1] == ("SEI", "MEI") and cols()["given_name"] == (("MEI",),)
+    assert say("set", "feature", "Name/Full name/Given name=", *at)[0] == 2  # the family name would lose what it is joined to: refused
+    say("set", "feature", "Name/Full name/Family name=", *at)
+    say("set", "feature", "Phone/Phone=TEL", *at)
+    assert cols()["full_name"] == (("SEI", "MEI"),) and cols()["given_name"] == (("MEI",),)  # a full name of two columns beside a given name: still the full name
+
+    real = settings.replace_text
+    def slow(*a, **k):  # each change read the file before the other wrote it
+        time.sleep(0.3)
+        real(*a, **k)
+    monkeypatch.setattr(settings, "replace_text", slow)
+    go = threading.Barrier(2)
+    def change(mapping: str) -> None:
+        go.wait()
+        assert cli.main(["set", "feature", mapping, *at, "--format", "json"]) == 0
+    threads = [threading.Thread(target=change, args=(m,)) for m in ("Phone/Phone=TEL_NEW", "Address/City=CITY_NEW")]
+    [t.start() for t in threads]
+    [t.join() for t in threads]
+    assert cols()["phone"] == (("TEL_NEW",),) and cols()["city"] == (("CITY_NEW",),)  # one at a time: neither lost
+    monkeypatch.undo()
+
+    project = tmp_path / "settings.toml"  # an array written over several lines: its lines are no header
+    project.write_text(settings.settings_path().read_text(encoding="utf-8").replace('address = [["STD_ADDRESS"], ["ORIGINAL_ADDRESS"]]',
+                                                                                  'address = [\n  ["STD_ADDRESS"],\n  ["ORIGINAL_ADDRESS"]\n]')
+                       .replace('kind_flag = "PERSON_ORG_CODE"', 'kind_flag = [\n  ["PERSON_ORG_CODE"],\n]'), encoding="utf-8")
+    mine = tmp_path / "mine.toml"
+    mine.write_text(own_columns(project), encoding="utf-8")
+    assert load_settings(columns=mine).columns["address"] == (("STD_ADDRESS",), ("ORIGINAL_ADDRESS",))
+    set_columns(mine, {"phone": (("TEL",),)})
+    set_columns(mine, {"address": (("ADDR",),)})  # every line of its value replaced
+    assert load_settings(columns=mine).columns["address"] == (("ADDR",),) and load_settings(columns=mine).columns["phone"] == (("TEL",),)
+    mine.write_text("".join(x for x in mine.read_text(encoding="utf-8").splitlines(keepends=True) if not x.startswith("birth_date")), encoding="utf-8")
+    set_columns(mine, {"birth_date": (("DOB",),)})  # a new field: after every line of the last one's value
+    assert load_settings(columns=mine).columns["birth_date"] == (("DOB",),) and load_settings(columns=mine).columns["kind_flag"] == (("PERSON_ORG_CODE",),)
+
+    shared = [dict(field=f, filled=0.2, looks_right=0.9, alternatives=[dict(columns=["NAME"], found=True)]) for f in ("person_name", "company_name")]
+    assert "  ! person name and company name are 20% filled together" in cli.file_lines(dict(fields=shared, needed=dict(one_of=[["person_name", "company_name"]])))  # one column: counted once, as check records does
 
 
 def test_a_name_column_both_kinds_share_is_scored_once_when_names_go_by_kind(say, tmp_path, population, monkeypatch):
@@ -540,11 +600,13 @@ def test_set_columns_rewrites_the_fields_lines_and_keeps_the_rest(tmp_path):
 
 
 def test_describe_says_what_a_run_folder_holds_and_what_joined_an_entity(tmp_path, population):
+    from er import match
     from er.report import describe_entity, describe_workspace
     from er.run import Run
     s, p, g = population
     uid = s.data.unique_id
     g.df.to_parquet(tmp_path / "all.parquet", index=False)
+    match.SCORED_U.clear()  # the fit samples u itself, as a first run in a process does: an earlier test's run left it nothing to compare
     out = tmp_path / "run"
     run = Run(p, s).full(tmp_path / "all.parquet", out, pipeline_file=s.root / "config" / "final.toml")
     gold = pd.read_parquet(out / "gold.parquet")
@@ -555,7 +617,8 @@ def test_describe_says_what_a_run_folder_holds_and_what_joined_an_entity(tmp_pat
     assert {"sample_seconds", "file_u_seconds"} <= set(step["fit"]) and {"gate_seconds", "gate_pairs"} <= set(step["candidates"])
     assert step["fit"]["compared"]["all"]["wall"] > 0 and "jaro_winkler" not in step["score"].get("compared", {})  # names: compared by DuckDB itself
     section = (out / "report.txt").read_text(encoding="utf-8").split("TIME IN COMPARISONS")[1].split("MODEL")[0]
-    assert re.search(r"^\s+fit\s+all of them\s", section, re.M)  # the fit's time in string functions, whatever the machine's speed
+    shown = bool(re.search(r"^\s+fit\s+all of them\s", section, re.M))
+    assert shown == (step["fit"]["compared"]["all"]["wall"] >= 0.01)  # the fit's time in string functions, from a hundredth of a second, whatever the machine's speed
     from er import strings
     strings._enter(("t",), 0); strings._enter(("t",), 1)  # two calls at once, 0–2 and 1–3: three seconds of wall, not four
     strings._leave(("t",), 1.5, 2, 5); strings._leave(("t",), 1.5, 3, 5)

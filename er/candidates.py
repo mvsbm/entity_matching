@@ -26,7 +26,7 @@ import duckdb
 import numpy as np
 import pandas as pd
 
-from er.config import Blocker, Budget, DeletionKeys, KeyBlocker, SortedNeighbourhood, TfidfNeighbours, keys_of, q
+from er.config import Blocker, Budget, DeletionKeys, InputError, KeyBlocker, SortedNeighbourhood, TfidfNeighbours, keys_of, q
 from er.strings import connect
 
 _CON: duckdb.DuckDBPyConnection | None = None  # for pandas input when the caller passes no connection
@@ -101,8 +101,8 @@ def deletions_sql(col: str) -> str:  # the value and each one-character deletion
     return f"list_distinct(list_prepend({col}, list_transform(range(1, length({col}) + 1), lambda i: {col}[:i - 1] || {col}[i + 1:])))"
 
 
-def _filled(cols: Iterable[str], alias: str = "") -> str:
-    return " AND ".join(f"{alias}{q(c)} IS NOT NULL" for c in cols) or "TRUE"
+def _filled(cols: Iterable[str]) -> str:
+    return " AND ".join(f"{q(c)} IS NOT NULL" for c in cols) or "TRUE"
 
 
 def block_cols(b: Blocker) -> list[str]:  # the columns naming a generator's block; none for windows and TF-IDF
@@ -312,7 +312,8 @@ def candidates(blockers: tuple[Blocker, ...], records: pd.DataFrame | str, uid: 
     `told(done, total, "keys")` as the joins begin and after each generator: how far they are."""
     if not blockers:
         raise ValueError("no candidate generator")
-    assert len(blockers) < 63, "one bit per generator"
+    if len(blockers) > 63:  # one bit per generator in a BIGINT
+        raise InputError(f"{len(blockers)} candidate generators: a run takes at most 63", fix="add fewer name features: each adds its own")
     assert query is not None or not touching, "touching needs the batch as the query"
     r = Records(records, uid, con, query, clusters, columns=[k.name for b in blockers for k in keys_of(b)])
     r.touching = touching
@@ -350,7 +351,7 @@ def candidates(blockers: tuple[Blocker, ...], records: pd.DataFrame | str, uid: 
         names = {m: "+".join(g.name for i, g in enumerate(blockers) if m >> i & 1)
                  for (m,) in r.con.execute(f"SELECT DISTINCT bits FROM {bits}").fetchall()}
         cases = " ".join(f"WHEN {m} THEN '{s}'" for m, s in names.items())
-        out = f"SELECT l AS {q(l)}, r AS {q(rr)}, CASE bits {cases} END AS sources FROM {bits}"
+        out = f"SELECT l AS {q(l)}, r AS {q(rr)}, {f'CASE bits {cases} END' if cases else 'NULL::VARCHAR'} AS sources FROM {bits}"  # no pair: no case
         if into:  # unordered: whoever reads the table joins it or orders it
             r.con.execute(f"CREATE OR REPLACE TABLE {q(into)} AS {out}")
             result = into

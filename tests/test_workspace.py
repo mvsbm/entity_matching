@@ -331,6 +331,8 @@ def test_a_bad_rule_is_found_tried_and_left_out_and_audits_reach_every_kind_of_l
     assert len(tried["fixed"]) >= 3 and tried["apart"] >= 3
     entities = pd.read_parquet(ws / "gold.parquet")["cluster_id"].nunique()
     assert tried["base"]["entities"] == entities + 1  # the trial ran without people's decisions: the pair they joined is apart
+    key = json.loads((ws / "trials" / "base.json").read_text(encoding="utf-8"))["key"]
+    assert {"config", "files", "model", "code", "answers"} <= set(key) and all(len(x) == 64 for x in key["files"])  # all the base's clusters rest on, files by what they hold: never stale
     assert say("try", "method", "--drop", "nope", *pipe)[0] == 2 and say("try", "method", *pipe)[0] == 2
 
     monkeypatch.setattr(cli, "rerun_records", lambda a, emit: (_ for _ in ()).throw(InputError("the disk is full")))
@@ -616,11 +618,13 @@ def test_a_run_s_pairs_rows_and_entities_are_read_without_a_run_and_its_merge_co
     assert count({"join": "and", "when": [{"points": 12}, {"fields": {"name": name.levels[1].label}}]}) <= min(high, alike)
     either = {"join": "or", "when": [{"points": 12}, {"rules": [rule]}]}
     assert max(high, by_rule) <= count(either) <= high + by_rule
+    assert say("decide", "pair", *apart, "match", *at)[0] == 0  # typed over the applied "different", not applied: it waits, as merging does
     _, on = say("set", "merging", *at, "--conditions", json.dumps(either))
     merged, said = entities(), pd.read_parquet(ws / "gold.parquet")
     assert on["entities"] > 0 and folder.method(ws)["merge"]["join"] == "or" and merged != people
     assert on["merged"] == count(either) and on["merged"] > len(index[index["match_weight"] >= 12]) // 2  # merged as previewed: undecided pairs counted
     assert not any({*apart} <= e for e in merged if len(e) == 2)  # their "different" never merges by the conditions
+    assert say("decide", "pair", *apart, "no_match", *at)[0] == 0  # typed back as applied
     assert say("set", "merging", *at, "--conditions", json.dumps({"when": [{"fields": {"name": "no such step"}}]}))[0] == 2
     assert folder.method(ws)["merge"] == either  # refused before anything changed: the conditions as they were
     from er.report import run_model

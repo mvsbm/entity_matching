@@ -75,6 +75,7 @@ def test_an_interrupted_increment_completes_when_run_again(tmp_path, population,
     g.df[new].to_parquet(tmp_path / "new.parquet", index=False)
     Run(p, s).full(tmp_path / "old.parquet", tmp_path / "clean")
     shutil.copytree(tmp_path / "clean", tmp_path / "cut")
+    shutil.copytree(tmp_path / "clean", tmp_path / "unlogged")
     Run(p, s).increment(tmp_path / "new.parquet", tmp_path / "clean")
 
     renames, replace_ = [], os.replace
@@ -91,6 +92,36 @@ def test_an_interrupted_increment_completes_when_run_again(tmp_path, population,
     assert again.added == 0  # so the batch is in the run already: nothing to add
     pd.testing.assert_frame_equal(*(pd.read_parquet(tmp_path / d / "gold.parquet") for d in ("clean", "cut")))
     assert not list((tmp_path / "cut").rglob("*.tmp"))
+
+    from er import folder
+    before = (tmp_path / "unlogged" / "steps.json").read_text(encoding="utf-8")
+    monkeypatch.setattr(folder, "log", lambda *a, **k: (_ for _ in ()).throw(KeyboardInterrupt))  # dies as its log is made: nothing lands
+    with pytest.raises(KeyboardInterrupt):
+        Run(p, s).increment(tmp_path / "new.parquet", tmp_path / "unlogged")
+    monkeypatch.undo()
+    assert (tmp_path / "unlogged" / "steps.json").read_text(encoding="utf-8") == before  # the log and the files it names land together
+    assert Run(p, s).increment(tmp_path / "new.parquet", tmp_path / "unlogged").added == len(g.df[new])  # so the batch goes in again, whole
+    Run(p, s).rerun(tmp_path / "unlogged")
+    assert len(pd.read_parquet(tmp_path / "unlogged" / "gold.parquet")) == len(g.df)  # and a rerun reads every file the log names
+
+
+def test_a_full_run_keeps_the_decisions_and_kinds_people_typed_in_and_have_not_given_back(tmp_path, population):
+    from er import folder
+    from er.run import Run
+    s, p, g = population
+    uid, ws = s.data.unique_id, tmp_path / "ws"
+    g.df.to_parquet(tmp_path / "all.parquet", index=False)
+    Run(p, s).full(tmp_path / "all.parquet", ws, pipeline_file=s.root / "config" / "final.toml")  # with its reports: the sheets
+    sheet = pd.read_parquet(ws / "review.parquet")
+    row = sheet[sheet["why"] == "decide"].iloc[0]
+    keys = {f"{uid}_l": row[f"{uid}_l"], f"{uid}_r": row[f"{uid}_r"]}
+    folder.type_in(ws, "review.parquet", "decision", "no_match", **keys)  # nayose decide pair, not applied
+    record = pd.read_parquet(ws / "kind_review.parquet")[uid].iloc[0]
+    folder.type_in(ws, "kind_review.parquet", "kind", 2, **{uid: record})  # nayose answer kind, not applied
+    Run(p, s).rerun(ws, pipeline_file=s.root / "config" / "final.toml")  # a full run makes both sheets again
+    after, kinds = pd.read_parquet(ws / "review.parquet"), pd.read_parquet(ws / "kind_review.parquet")
+    assert after[(after[f"{uid}_l"] == keys[f"{uid}_l"]) & (after[f"{uid}_r"] == keys[f"{uid}_r"])]["decision"].tolist() == ["no_match"]
+    assert kinds.loc[kinds[uid] == record, "kind"].tolist() == [2] and kinds[uid].is_unique
 
 
 def test_an_overwrite_cut_short_keeps_the_old_run_and_people_s_answers(tmp_path, population, monkeypatch):

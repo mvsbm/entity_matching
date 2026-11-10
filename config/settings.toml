@@ -53,7 +53,7 @@ prefectures = [
   "香川県", "愛媛県", "高知県", "福岡県", "佐賀県", "長崎県", "熊本県", "大分県", "宮崎県", "鹿児島県", "沖縄県",
 ]
 address_replacements = [['(\d+)丁目', '\1-'], ['(\d+)番地?', '\1-'], ['(\d+)号', '\1']]  # regex → replacement, after NFKC
-address_cut_at = " "                             # drop the building / room after the first space
+address_cut_at = " "                             # drop the building / room after the first space past the street number
 
 # Named normalization chains, used by config/pipeline.toml (steps: er.config.Normalizer)
 [locale.chains]

@@ -249,14 +249,13 @@ def stage_rows(res: FSResult, spec: FSSpec, accepted: pd.DataFrame, clusters: pd
                  **edge_metrics(pd.concat([res.rule_pairs, accepted]), entity, uid))]
 
 
-def run_fs(pipeline: Pipeline, settings: Settings, path: Path, truth: pd.DataFrame, model_json: dict,
-           min_match_weight: float | None = None) -> FSResult:
+def run_fs(pipeline: Pipeline, settings: Settings, path: Path, truth: pd.DataFrame, model_json: dict) -> FSResult:
     """The pipeline on the file at `path` with this fitted model, run by er.run.Run (u measured on the file when the
-    model asks), accepting at min_match_weight (default the pipeline's), measured against the truth."""
+    model asks), accepting at the pipeline's min_match_weight, measured against the truth."""
     t0, uid = time.perf_counter(), settings.data.unique_id
     l, r = f"{uid}_l", f"{uid}_r"
-    spec = pipeline.fs if min_match_weight is None else replace(pipeline.fs, min_match_weight=min_match_weight)
-    run = Run(replace(pipeline, fs=spec), settings, model=model_json)
+    spec = pipeline.fs
+    run = Run(pipeline, settings, model=model_json)
     run.load(path)
     run.fit()
     run.rules()
@@ -320,7 +319,7 @@ def entity_folds(truth: pd.DataFrame, data: Data, k: int, seed: int) -> pd.Serie
 
 
 def cross_validate_fs(pipeline: Pipeline, settings: Settings, train_model: Callable[[FSSpec, pd.DataFrame, pd.DataFrame, int], dict],
-                      records: pd.DataFrame, truth: pd.DataFrame, folds: pd.Series, min_match_weight: float | None = None) -> list[FSResult]:
+                      records: pd.DataFrame, truth: pd.DataFrame, folds: pd.Series) -> list[FSResult]:
     """Out-of-fold results: for each fold, fit FS on the other folds and run only the held-out fold, so tuning never
     scores a model on the records it was fitted on. O(k · (fit + run on N/k records))."""
     uid, spec = settings.data.unique_id, pipeline.fs
@@ -332,7 +331,7 @@ def cross_validate_fs(pipeline: Pipeline, settings: Settings, train_model: Calla
             model = train_model(spec, fit_rec, fit_truth, int(f))
             path = Path(tmp) / f"fold_{f}.parquet"
             records[records[uid].isin(hold)].to_parquet(path, index=False)
-            out.append(run_fs(pipeline, settings, path, truth[truth[uid].isin(hold)], model, min_match_weight))
+            out.append(run_fs(pipeline, settings, path, truth[truth[uid].isin(hold)], model))
     return out
 
 

@@ -88,11 +88,14 @@ def columns_file(workspace: str | Path | None) -> Path | None:  # a workspace's 
     return f if f and f.is_file() else None
 
 
+HEADER = re.compile(r"\s*\[\[?\s*[\w.\- ]+\s*\]\]?\s*(#.*)?$")  # a table's header line: one of an array written over several lines starts with [ too
+
+
 def own_columns(path: Path) -> str:
     """A new workspace's columns.toml: the [columns] and [kind] sections of the settings file at `path`, comments kept."""
     keep, out = False, ["# This workspace's mapping: which of its files' columns hold each field. nayose set columns --workspace changes it.\n"]
     for line in path.read_text(encoding="utf-8").splitlines(keepends=True):
-        if line.lstrip().startswith("["):
+        if HEADER.match(line):
             keep = line.split("#")[0].strip() in ("[columns]", "[kind]")
             out += ["\n"] if keep else []
         out += [line] if keep else []
@@ -109,7 +112,7 @@ def set_columns(path: Path, mapping: dict[str, tuple[tuple[str, ...], ...]], opt
     text = path.read_text(encoding="utf-8")
     lines, current = text.splitlines(keepends=True), tomllib.loads(text)["columns"]
     start = next(i for i, x in enumerate(lines) if x.strip() == "[columns]")
-    end = next((i for i in range(start + 1, len(lines)) if lines[i].lstrip().startswith("[")), len(lines))
+    end = next((i for i in range(start + 1, len(lines)) if HEADER.match(lines[i])), len(lines))
     toml = lambda v: json.dumps(v, ensure_ascii=False)  # a string or a list of strings: the same in TOML
     for name, sources in mapping.items():
         at = next((i for i in range(start + 1, end) if re.match(rf"{re.escape(name)}\s*=", lines[i])), None)
@@ -122,17 +125,28 @@ def set_columns(path: Path, mapping: dict[str, tuple[tuple[str, ...], ...]], opt
         line = f"{name} = {value}"
         line += (" " * max(1, comment.start(1) - len(line)) + comment.group(1) if comment else "") + "\n"  # the comment in its column
         if at is None:  # a new field: after the section's last one
-            at = max(i for i in range(start, end) if re.match(r"\w+\s*=", lines[i])) + 1
+            last = max(i for i in range(start, end) if re.match(r"\w+\s*=", lines[i]))
+            at = next(k for k in range(last + 1, end + 1) if _complete("".join(lines[last:k])))  # past every line of its value
             lines.insert(at, line)
             end += 1
         else:
-            lines[at] = line
+            span = next(k for k in range(at + 1, end + 1) if _complete("".join(lines[at:k])))  # a value written over several lines: all of them
+            lines[at:span] = [line]
+            end -= span - at - 1
     def loads(new: Path) -> None:  # what load_settings checks: said, and the old file kept
         try:
             load_settings(new) if "paths" in tomllib.loads(text) else load_settings(columns=new)  # a workspace's file: over the project's
         except Exception as e:
             raise InputError(f"{path}: [columns] would not load: {e}", fix="give each field existing columns; id names one column") from None
     replace_text(path, "".join(lines), loads)
+
+
+def _complete(text: str) -> bool:  # whether these lines hold a whole key = value
+    try:
+        tomllib.loads(text)
+        return True
+    except tomllib.TOMLDecodeError:
+        return False
 
 
 # ---------- a workspace's features: groups › features › parts, each with its columns, compiled into [columns] ----------
@@ -166,11 +180,12 @@ def features_from(columns: Mapping[str, tuple[tuple[str, ...], ...]], added: Map
     alts = lambda f: [list(a) for a in columns.get(f, ())]
 
     def person(f: dict, name: str, given: str) -> dict:
-        full = alts(name)
-        joined = full[-1] if full and len(full[-1]) > 1 else None
+        full, first = alts(name), alts(given)[:1]
+        whole = name == "person_name" and alts("full_name") == full  # full_name holds the first full name, so a lone one is it
+        joined = full[-1] if full and len(full[-1]) > 1 and first == [full[-1][-1:]] and not whole else None  # the parts, as compiled() joins them; else a full name of several columns
         return {**{k: v for k, v in f.items() if k != "parts"}, "columns": full[:-1] if joined else full,
                 "parts": [dict(name="Family name", role="family", columns=[joined[:-1]] if joined else []),
-                          dict(name="Given name", role="given", columns=alts(given) or ([joined[-1:]] if joined else []))]}
+                          dict(name="Given name", role="given", columns=alts(given))]}
     out = []
     for group, feats in DEFAULT_FEATURES:
         mine = [person(f, "person_name", "given_name") if f["type"] == "person name" else {**f, "columns": alts(f["field"])} for f in feats]
@@ -235,7 +250,7 @@ def write_added(path: Path, added: Mapping[str, dict]) -> None:
     name first, checked to load, then renamed. O(the file)."""
     lines = path.read_text(encoding="utf-8").splitlines(keepends=True)
     if (start := next((i for i, x in enumerate(lines) if x.split("#")[0].strip() == "[features]"), None)) is not None:
-        end = next((i for i in range(start + 1, len(lines)) if lines[i].lstrip().startswith("[")), len(lines))
+        end = next((i for i in range(start + 1, len(lines)) if HEADER.match(lines[i])), len(lines))
         del lines[start:end]
     text = "".join(lines).rstrip("\n") + "\n"
     if added:
@@ -297,10 +312,13 @@ def set_features(workspace: str | Path, values: Mapping[str, tuple[tuple[str, ..
         if path not in found:
             raise InputError(f"no feature {path}", fix="the features: " + ", ".join(found))
         found[path]["columns"] = [list(a) for a in alternatives]
+    for path, x in found.items():  # a family name is read joined to the given name's first column: one, with a given name
+        if x.get("role") == "family" and x["columns"] and (len(x["columns"]) > 1 or not found[path.rsplit("/", 1)[0] + "/Given name"]["columns"]):
+            raise InputError(f"{path}: a family name is read joined to the given name, one column", fix="give it one column, and the given name its own")
     if not columns_file(ws):
         (ws / COLUMNS).write_text(own_columns(settings_path()), encoding="utf-8")
     set_columns(ws / COLUMNS, compiled(feats))
-    return feats
+    return features_of(ws)
 
 
 PHONE_NAME = re.compile(r"phone|tel|mobile|cell|keitai|denwa|電話|携帯")  # a column named for a phone (not a fax: it doesn't take calls)
