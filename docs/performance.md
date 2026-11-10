@@ -72,13 +72,18 @@ decisions, plus O(N) to rewrite gold: each `match` pair merges two stored cluste
 **Measured:** into the million-record run, an increment of 1,000 records takes about 4 s, with a peak of 2.25 GB.
 
 **A lookup** (`index.look_up`, `nayose match record`): one record against the run's index costs
-**O(G·(log N + b) + C·K·L²)**, N only inside log N: each of its keys reads one row group of its table, sorted by the
-key's hash, and a sorted window's place is a bisect in every 1,024th key. Building the index (`index.build`,
-`nayose build index`) costs **O(N·(G + R + D·L) + N log N)** once a run: every key of every record, hashed and sorted,
-read from the run's own files. **Measured** on a million generated records ([reports/benchmark_lookup.md](../reports/benchmark_lookup.md)):
-built in about 7 s, 0.9 GB on disk; a lookup at p50 about 200 ms and p95 about 230 ms, a third of it preparing the record
-and loading the classifier's name model, a third scoring; the pairs and weights equal to an increment of that record alone
-on every record checked.
+**O(G·(log N + b) + C·K·L²)**, N only inside log N: each of its keys reads a few row groups of its table, sorted by the
+key's hash, and a sorted window's place is a bisect in every 1,024th key. **A search** (`index.search`, `nayose search
+records`) costs **O(F·(log N + 2,000) + 500·K·L²)**: each value given read by its start from its column's sorted table,
+at most 2,000 records listed and 500 scored. Building the index (`index.build`, `nayose build index`) costs
+**O(N·(G + R + D·L + F) + N log N)**: every key and searched value of every record, sorted, read from the run's own
+files. Keeping it up to date after an increment, decisions or merging conditions (`index.update`) costs
+**O(Δ·(G + R + D·L + F) + N)** for Δ records added, the N one pass over two columns for the entities that moved.
+**Measured** on a million generated records ([reports/benchmark_lookup.md](../reports/benchmark_lookup.md)): built in
+about 7 s, 0.85 GB on disk; with the index kept open, a lookup at p50 about 100 ms and p95 about 125 ms, a search at p50
+about 70 ms and p95 about 115 ms; 1,000 records added, the index up to date in 0.3 s, against 7 s to build it again. The
+pairs and weights equal to an increment of that record alone on every record checked, and the index kept up to date
+answering every lookup and search as one built again.
 
 **Memory.** Records, pairs, scores and clusters are DuckDB tables. Past `memory_limit` (config/settings.toml `[compute]`,
 or `--compute memory_limit=8GB` on a command), DuckDB spills them to `temp_directory`: by default a folder of the

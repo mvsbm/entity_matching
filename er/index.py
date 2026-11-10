@@ -1,25 +1,37 @@
-"""Look up: one record against a workspace's run, in well under a second, whatever the number of records stored.
+"""Look up: one record against a workspace's run, in well under a second, whatever the number of records stored; and
+search: the stored records whose values start with what a person typed, in any field, as they type.
 
 build() reads the written run once (state/records, already standardized; gold; the model it scored with) and writes
-<workspace>/index/: a DuckDB database holding every key of every record, each table sorted by a hash of its key so a
-lookup reads one row group of it; the person/company classifier's fitted part; and a manifest of what it rests on.
+<workspace>/index/: a DuckDB database holding every key of every record and every searched value, each table sorted by
+its key in row groups small enough that a lookup reads little of it; a second database of what changed since, empty
+when built; the person/company classifier's fitted part; and manifest.json, which names them and what they rest on.
+update() writes the second again after a change to the run: the records added since the build, with every key and
+value of theirs, and the records whose entity or rule cluster moved; anything else changed builds the index again.
 look_up() prepares a record as a run prepares one, looks each of its keys up, gates an oversized block as a run does,
-scores the candidates with the run's model and groups them by entity. It writes nothing.
+scores the candidates with the run's model and groups them by entity. search() reads each value typed by its prefix
+and scores the records that share the most. Neither writes.
 
-    build      O(N·(G + R + D·L) + N log N)   every key of every record, hashed, sorted: DuckDB, in parallel
-    look_up    O(G·(log N + b) + C·K·L²)      N only in log N: a key's rows are one row group of its sorted table
+    build      O(N·(G + R + D·L + F) + N log N)   every key of every record, hashed, sorted: DuckDB, in parallel
+    update     O(Δ·(G + R + D·L + F) + N)         the records added since the build; one narrow pass for what moved
+    look_up    O(G·(log N + b) + C·K·L²)          N only in log N: a key's rows are a few row groups of its sorted table
+    search     O(F·(log N + CAP) + SCORED·K·L²)
 
-N stored records, G generators, R rules, D deletion generators, L a value's length, b a block's size, C candidates,
-K comparisons. A lookup lists the pairs an increment of that one record lists (er.candidates) and scores them as
-er.match.score_fs scores them with the run's model; an increment, unlike it, counts u again on every record.
+N stored records, Δ added since the build, G generators, R rules, D deletion generators, F searched columns, L a
+value's length, b a block's size, C candidates, K comparisons. A lookup lists the pairs an increment of that one record
+lists (er.candidates) and scores them as er.match.score_fs scores them with the run's model; an increment, unlike it,
+counts u again on every record.
 """
+import contextlib
 import hashlib
 import json
 import os
 import pickle
+import secrets
 import shutil
+import threading
 import time
 from bisect import bisect_left
+from collections import Counter
 from pathlib import Path
 
 import duckdb
@@ -31,7 +43,6 @@ import sklearn
 from er import folder
 from er.candidates import deletions_sql
 from er.config import DeletionKeys, InputError, KeyBlocker, Pipeline, SortedNeighbourhood, lit, q
-from er.folder import Busy
 from er.intake import tidy
 from er.kind import Classifier, classifier, merge_answers, name_model
 from er.match import levels, read_by, review_floor, scaled_prior
@@ -43,15 +54,28 @@ from er.strings import connect
 
 INDEX = "index"
 SPARSE = 1024  # a sorted generator keeps every this many keys apart: a bisect there, then one read of at most this many rows
-SHOWN = ("full_name", "company_name", "address", "postal_code", "phone", "birth_date", "customer_id")  # a record, as a person reads it
+ROWS = 2048  # a row group's rows in the records' database: a lookup reads whole row groups of each column it fetches, so small ones read little
+SHOWN = ("full_name", "person_name", "company_name", "address", "postal_code", "phone", "birth_date", "customer_id")  # a record, as a person reads it
+SEARCHED = {"any_name": "name", "given_name__kana_fold": "name", "address__address": "address", "postal_code": "postal_code", "phone": "phone",
+            "customer_id": "customer_id", "birth_date": "birth_date", "address_code": "address_code"}  # shortcut: the columns config/final.toml's standardizing writes that a search reads by prefix, each with its field; another method's are added here
+REVERSED = ("any_name",)  # also read by its end: a given name typed alone, the family name before it
+CAP = 2000  # shortcut: a value typed that starts this many records' or more lists none of them, said to be narrowed; raise it as scoring gets faster
+SCORED = 500  # shortcut: the records scored for a search, those sharing the most values typed; raise it as scoring gets faster
+REBUILD = 0.1  # shortcut: the records added since the build reaching this share of it build it again, so the delta stays small; lower it if lookups slow
+OPEN = 2  # shortcut: the indexes kept open, each with its DuckDB connection and classifier, for a server's next lookup; raise it when people look up in more workspaces at once
 QUERY = "\x7flookup"  # the ID of a record typed in: no record's, and after every one in order
+LAST = chr(0x10FFFF)  # after every character: a prefix's range ends at it
+MOVES = ("gold.parquet", "state/rule_clusters.parquet", "state/scoring.json", folder.METHOD)  # what a delta carries: entities, rules' clusters, the u an increment counts again, merging conditions
 INDEXING = hashlib.sha256(b"".join((Path(__file__).parent / f"{m}.py").read_bytes() for m in ("index", "candidates", "config", "standardize", "match", "kind"))
                           + duckdb.__version__.encode() + sklearn.__version__.encode()).hexdigest()[:12]  # what reads and writes an index (kind.pkl pickles a scikit-learn model): another version builds it again
+
+_OPENED: dict[str, tuple] = {}  # bounded: OPEN workspaces, the oldest dropped; each its manifest, connection, classifier and the classifier's lock
+_OPENING = threading.Lock()
 
 
 def _stamp(ws: Path) -> dict[str, list[int]]:  # what an index rests on: each file of the run, the method and the mapping, by size and time
     files = [*sorted((ws / "state" / "records").glob("part-*.parquet")), ws / "gold.parquet", ws / "state" / "scoring.json", ws / "state" / "model.json",
-             ws / "state" / "config.txt", ws / folder.METHOD, ws / COLUMNS, *folder.answer_parts(ws)]
+             ws / "state" / "config.txt", ws / "state" / "rule_clusters.parquet", ws / folder.METHOD, ws / COLUMNS, *folder.answer_parts(ws)]
     return {f.relative_to(ws).as_posix(): [f.stat().st_size, f.stat().st_mtime_ns] for f in files if f.exists()}
 
 
@@ -62,6 +86,14 @@ def _pipeline(ws: Path, s: Settings, p: Pipeline, columns: list[str]) -> Pipelin
                          fix=f"run it again first: nayose rerun records --workspace {ws}")
     folded = {c.casefold() for c in columns}  # a source column named as its field but for case (BIRTH_DATE) gave way to it (standardize.prepare)
     return fit_to_file(p, s, [*columns, *(c for alts in s.columns.values() for alt in alts for c in alt if c not in columns and c.casefold() in folded)])[0]
+
+
+def _scorable(ws: Path) -> dict:  # the run's model, refused if a lookup can't score as it does
+    model = run_model(ws)
+    if model["er"]["tf"]:
+        raise InputError(f"the model of the run in {ws} adjusts levels by term frequency, which a lookup doesn't",
+                         fix="index a run of config/final.toml's method, which adjusts none")
+    return model
 
 
 def _tables(p: Pipeline) -> list[tuple[str, object]]:  # each index table of keys, by name: its generator or (stage, rule)
@@ -91,89 +123,186 @@ def _keys(x: object) -> list[str]:  # the columns a table's rows must all hold
     return list(st.keys(rule))
 
 
-def _rows(x: object, table: str, uid: str) -> str:  # the rows a table of keys holds, from records in `table`: hash, uid, the uid's hash
+def _rows(x: object, table: str, uid: str) -> str:  # the rows a table of keys holds, from records in `table`: the key's hash, the uid
     u = q(uid)
     if isinstance(x, DeletionKeys):
         within = ", ".join(q(w.name) for w in x.within)
-        return (f"SELECT {_hashed(x)} AS h, {u} AS uid, hash({u}) AS hu FROM (SELECT {u}{', ' + within if within else ''}, "
+        return (f"SELECT {_hashed(x)} AS h, {u} AS uid FROM (SELECT {u}{', ' + within if within else ''}, "
                 f"unnest({deletions_sql(q(x.key.name))}) AS __dk FROM {table} WHERE {_filled(_keys(x))})")
-    return f"SELECT {_hashed(x)} AS h, {u} AS uid, hash({u}) AS hu FROM {table} WHERE {_filled(_keys(x))}"
+    return f"SELECT {_hashed(x)} AS h, {u} AS uid FROM {table} WHERE {_filled(_keys(x))}"
+
+
+def _entities(ws: Path, uid: str) -> str:  # each record's entity, and whether the rules joined it to another, as the run holds them now
+    u = q(uid)
+    return (f"(SELECT g.{u}, g.cluster_id AS entity, coalesce(c.n >= 2, FALSE) AS resolved FROM read_parquet({lit(ws / 'gold.parquet')}) g LEFT JOIN "
+            f"(SELECT {u}, count(*) OVER (PARTITION BY cluster_id) AS n FROM read_parquet({lit(ws / 'state' / 'rule_clusters.parquet')})) c USING ({u}))")
+
+
+def _write(con: duckdb.DuckDBPyConnection, into: str, src: str, p: Pipeline, ws: Path, uid: str, searched: list[str], records: str | None = None) -> dict[str, list]:
+    """The index's tables in the database `into`, of the records in `src`: the records (each with its entity and whether
+    the rules joined it; in the database `records`, else `into`), each key's (hash, uid), each window's (pos, key, uid)
+    with every SPARSE-th, each searched column's (value, uid), each sorted. Each table's [rows, seconds]."""
+    u, jobs, records = q(uid), {}, records or into
+    jobs["records"] = [f"CREATE TABLE {records}.records AS SELECT hash(s.{u}) AS h, s.*, e.entity, coalesce(e.resolved, FALSE) AS resolved "
+                       f"FROM {src} s LEFT JOIN {_entities(ws, uid)} e USING ({u}) ORDER BY h"]
+    for name, x in _tables(p):
+        if isinstance(x, SortedNeighbourhood):  # positions in the run's own window order: key, then uid
+            k = q(x.key.name)
+            jobs[name] = [f"CREATE TABLE {into}.{name} AS SELECT row_number() OVER (ORDER BY {k}, {u}) AS pos, {k} AS key, {u} AS uid FROM {src} WHERE {k} IS NOT NULL ORDER BY pos",
+                          f"CREATE TABLE {into}.{name}_sparse AS SELECT pos, key, uid FROM {into}.{name} WHERE (pos - 1) % {SPARSE} = 0 ORDER BY pos"]
+        else:
+            jobs[name] = [f"CREATE TABLE {into}.{name} AS {_rows(x, src, uid)} ORDER BY h"]
+    for c in searched:
+        for t, v in ((f"f_{c}", q(c)), *(((f"f_{c}_reverse", f"reverse({q(c)})"),) if c in REVERSED else ())):
+            jobs[t] = [f"CREATE TABLE {into}.{q(t)} AS SELECT {v} AS v, {u} AS uid FROM {src} WHERE {q(c)} IS NOT NULL ORDER BY v"]
+
+    made = {}
+    for name, sqls in jobs.items():
+        t = time.perf_counter()
+        for sql in sqls:
+            con.execute(sql)
+        made[name] = [con.execute(f"SELECT count(*) FROM {records if name == 'records' else into}.{q(name)}").fetchall()[0][0], round(time.perf_counter() - t, 3)]
+    return made
+
+
+def _scratch(ws: Path) -> Path:  # a folder of this process's in the index's, for files written before they are moved into place
+    tmp = ws / INDEX / f".build-{os.getpid()}"
+    shutil.rmtree(tmp, ignore_errors=True)
+    tmp.mkdir(parents=True)
+    return tmp
+
+
+def _publish(ws: Path, tmp: Path, m: dict) -> None:
+    """The files in `tmp` moved into the index, then its manifest, which names them; then the files it doesn't name
+    removed (one held open on Windows, at a later write). A reader open on them reads on; one about to open them, from
+    the manifest before, reads the new one (_open)."""
+    dest = ws / INDEX
+    for f in tmp.iterdir():
+        os.replace(f, dest / f.name)
+    (tmp / "manifest.json").write_text(json.dumps(m, ensure_ascii=False, indent=1), encoding="utf-8")
+    os.replace(tmp / "manifest.json", dest / "manifest.json")
+    keep = {"manifest.json", *(f for f in m["files"].values() if f)}
+    for f in dest.iterdir():
+        if f.is_file() and f.name not in keep:
+            with contextlib.suppress(OSError):
+                f.unlink()
 
 
 def build(ws: Path, s: Settings, p: Pipeline) -> dict:
-    """The index of the run in `ws`, written to ws/index/ under the workspace's lock: built in a folder of its own,
-    then renamed into place, so one cut short leaves the last whole. O(N·(G + R + D·L) + N log N)."""
+    """The index of the run in `ws`, written to ws/index/ under the workspace's lock: its files written aside, then
+    moved into place and named by a new manifest, so one cut short leaves the last whole. O(N·(G + R + D·L + F) + N log N)."""
+    ws = Path(ws)
+    with folder.run_lock(ws):
+        folder.finish_writes(ws)
+        return _build(ws, s, p, _stamp(ws))
+
+
+def _build(ws: Path, s: Settings, p: Pipeline, stamp: dict) -> dict:
+    t0, uid = time.perf_counter(), s.data.unique_id
+    parts = sorted((ws / "state" / "records").glob("part-*.parquet"))
+    if not parts or not (ws / "gold.parquet").exists():
+        raise InputError(f"{ws} holds no run to index", fix=f"find matches first: nayose resolve records <file> --workspace {ws}")
+    src = f"read_parquet([{', '.join(lit(x) for x in parts)}], union_by_name = true)"
+    have = list(dict.fromkeys(c for f in parts for c in pq.read_schema(f).names))  # as union_by_name orders them
+    fitted, model = _pipeline(ws, s, p, have), _scorable(ws)
+    tables, searched = _tables(fitted), [c for c in SEARCHED if c in have]
+    reads = {uid, *read_by(model), *(c for _, x in tables for c in _keys(x)), *(c for c in SHOWN if c in have), *searched,
+             *(c for _, x in tables if isinstance(x, tuple) for c in _rule_reads(x, have))}
+    con, _ = connect(s.compute)
+    tmp, key = _scratch(ws), secrets.token_hex(6)
+    try:
+        con.execute(f"ATTACH {lit(tmp / f'{key}.duckdb')} AS ix")
+        con.execute(f"ATTACH {lit(tmp / f'{key}.records.duckdb')} AS ixr (ROW_GROUP_SIZE {ROWS})")
+        con.execute(f"ATTACH {lit(tmp / f'{key}-0.duckdb')} AS dx (ROW_GROUP_SIZE {ROWS})")
+        t = time.perf_counter()
+        con.execute(f"CREATE TEMP TABLE src AS SELECT {', '.join(q(c) for c in have if c in reads)} FROM {src}")  # read once: every table reads it
+        made = {"read": [None, round(time.perf_counter() - t, 3)], **_write(con, "ix", "src", fitted, ws, uid, searched, records="ixr")}
+        _write(con, "dx", "(SELECT * FROM src LIMIT 0)", fitted, ws, uid, searched)  # what changed since: nothing yet
+        con.execute(f"CREATE TABLE dx.moved AS SELECT {q(uid)}, entity, resolved FROM ixr.records LIMIT 0")
+        for db in ("ix", "ixr", "dx"):
+            con.execute(f"DETACH {db}")
+        spec, kind = fitted.kind, None
+        if spec and spec.name_field in present_fields(s, have):  # its fitted part: the name model, which holds a connection, is loaded again by a lookup
+            answers = [pd.read_parquet(f).astype({uid: "string"}) for f in folder.answer_parts(ws)]
+            c = classifier(s, spec, merge_answers(pd.concat(answers, ignore_index=True) if answers else None, None, uid))
+            (tmp / (kind := f"{key}.kind.pkl")).write_bytes(pickle.dumps({k: v for k, v in vars(c).items() if k != "names"}))
+        of = {n: f"rule {x[1].name}" if isinstance(x, tuple) else x.name for n, x in tables} | {f"f_{c}": f"search by {SEARCHED[c]}" for c in searched} | {f"f_{c}_reverse": f"search by {SEARCHED[c]}, its end" for c in REVERSED if c in searched}
+        m = dict(id=key, built_at=time.strftime("%Y-%m-%dT%H:%M:%S"), records=made["records"][0], added=0, moved=0, columns=have, searched=searched,
+                 indexing=INDEXING, stamp=stamp, built_on=stamp, updates=0,
+                 files=dict(keys=f"{key}.duckdb", records=f"{key}.records.duckdb", delta=f"{key}-0.duckdb", kind=kind),
+                 tables={k: dict(of=of.get(k, k), rows=r, seconds=v) for k, (r, v) in made.items()}, seconds=round(time.perf_counter() - t0, 2))
+        _publish(ws, tmp, m)
+    finally:
+        con.close()
+        shutil.rmtree(tmp, ignore_errors=True)
+    return dict(index=str(ws / INDEX), records=m["records"], tables=m["tables"], seconds=m["seconds"])
+
+
+def update(ws: Path, s: Settings, p: Pipeline) -> dict:
+    """The index of `ws` brought up to date with its run, under the workspace's lock: what changed since the build
+    written again, from the records added since (new parts of state/records) and the records whose entity or rule
+    cluster moved (gold, the rules' clusters). Anything else changed (a full run, the mapping, the method's keys,
+    people's person/company answers, the code), a column of the added records read as another type, or the records added
+    or moved reaching REBUILD of the index, builds it again (rebuilt: why). O(Δ·(G + R + D·L + F) + N)."""
     ws, t0, uid = Path(ws), time.perf_counter(), s.data.unique_id
     with folder.run_lock(ws):
         folder.finish_writes(ws)
-        parts = sorted((ws / "state" / "records").glob("part-*.parquet"))
-        if not parts or not (ws / "gold.parquet").exists():
-            raise InputError(f"{ws} holds no run to index", fix=f"find matches first: nayose resolve records <file> --workspace {ws}")
+        m, now = manifest(ws), _stamp(ws)
+        new = [ws / f for f in now if m and f.startswith("state/records/") and f not in m["built_on"]]
+        why = _since(m, now)
+        if why is None and sum(pq.ParquetFile(f).metadata.num_rows for f in new) >= REBUILD * m["records"]:
+            why = f"the records added since reach {REBUILD:.0%} of it"
+        if why is not None:
+            return {**_build(ws, s, p, now), "added": 0, "moved": 0, "rebuilt": why}
+        if now == m["stamp"]:  # nothing changed since the last write
+            return dict(index=str(ws / INDEX), records=m["records"] + m["added"], added=m["added"], moved=m["moved"], seconds=0.0, rebuilt=None)
+        fitted, n = _pipeline(ws, s, p, m["columns"]), m["updates"] + 1
+        _scorable(ws)
         con, _ = connect(s.compute)
-        src = f"read_parquet([{', '.join(lit(x) for x in parts)}], union_by_name = true)"
-        have = [c for c, *_ in con.execute(f"DESCRIBE SELECT * FROM {src}").fetchall()]
-        fitted, model = _pipeline(ws, s, p, have), run_model(ws)
-        if model["er"]["tf"]:
-            raise InputError(f"the model of the run in {ws} adjusts levels by term frequency, which a lookup doesn't",
-                             fix="index a run of config/final.toml's method, which adjusts none")
-        tables = _tables(fitted)
-        reads = {uid, *read_by(model), *(c for _, x in tables for c in _keys(x)), *(c for c in SHOWN if c in have),
-                 *(c for _, x in tables if isinstance(x, tuple) for c in _rule_reads(x, have))}
-        tmp, dest = ws / INDEX / f".build-{os.getpid()}", ws / INDEX
-        shutil.rmtree(tmp, ignore_errors=True)
-        tmp.mkdir(parents=True)
-        seconds, rows = {}, {}
-
-        def table(name: str, sql: str) -> None:
-            t = time.perf_counter()
-            con.execute(f"CREATE TABLE ix.{q(name)} AS {sql}")
-            seconds[name], rows[name] = round(time.perf_counter() - t, 3), con.execute(f"SELECT count(*) FROM ix.{q(name)}").fetchall()[0][0]
-
+        tmp, delta = _scratch(ws), f"{m['id']}-{n}.duckdb"
         try:
-            con.execute(f"ATTACH {lit(tmp / 'index.duckdb')} AS ix")
-            t = time.perf_counter()
-            con.execute(f"CREATE TEMP TABLE src AS SELECT {', '.join(q(c) for c in have if c in reads)} FROM {src}")  # read once: every table reads it
-            seconds["read"] = round(time.perf_counter() - t, 3)
-            rc = ws / "state" / "rule_clusters.parquet"  # a record the rules joined to another: a later stage's rule pair of two such is left out
-            table("records", f"SELECT hash(s.{q(uid)}) AS h, s.*, g.cluster_id AS entity, coalesce(c.n >= 2, FALSE) AS resolved FROM src s "
-                             f"LEFT JOIN read_parquet({lit(ws / 'gold.parquet')}) g USING ({q(uid)}) "
-                             f"LEFT JOIN (SELECT {q(uid)}, count(*) OVER (PARTITION BY cluster_id) AS n FROM read_parquet({lit(rc)})) c USING ({q(uid)}) ORDER BY h")
-            m = fitted.fs.budget.min_oversized()
-            big = []
-            for name, x in tables:
-                if isinstance(x, SortedNeighbourhood):  # positions in the run's own window order: key, then uid
-                    k = q(x.key.name)
-                    table(name, f"SELECT row_number() OVER (ORDER BY {k}, {q(uid)}) AS pos, {k} AS key, {q(uid)} AS uid FROM src WHERE {k} IS NOT NULL ORDER BY pos")
-                    table(f"{name}_sparse", f"SELECT pos, key, uid FROM ix.{name} WHERE (pos - 1) % {SPARSE} = 0 ORDER BY pos")
+            con.execute(f"ATTACH {lit(ws / INDEX / m['files']['keys'])} AS ix (READ_ONLY)")
+            con.execute(f"ATTACH {lit(ws / INDEX / m['files']['records'])} AS ixr (READ_ONLY)")
+            con.execute(f"ATTACH {lit(tmp / delta)} AS dx (ROW_GROUP_SIZE {ROWS})")
+            stored = {c: t for c, t, *_ in con.execute("DESCRIBE ixr.records").fetchall() if c not in ("h", "entity", "resolved")}
+            src = f"read_parquet([{', '.join(lit(x) for x in new)}], union_by_name = true)"
+            there = {c: t for c, t, *_ in con.execute(f"DESCRIBE SELECT * FROM {src}").fetchall()} if new else {}
+            if retyped := sorted(c for c, t in there.items() if c in stored and t != stored[c]):  # a key hashed as another type meets none of the index's
+                why = f"{', '.join(retyped[:3])} read as another type"
+            else:
+                con.execute(f"CREATE TEMP TABLE src AS SELECT {', '.join(q(c) if c in there else f'NULL::{t} AS {q(c)}' for c, t in stored.items())} FROM {src}" if new
+                            else "CREATE TEMP TABLE src AS SELECT * EXCLUDE (h, entity, resolved) FROM ixr.records LIMIT 0")  # the base's columns, in its order
+                _write(con, "dx", "src", fitted, ws, uid, m["searched"])
+                u = q(uid)
+                con.execute(f"""CREATE TABLE dx.moved AS SELECT b.{u}, e.entity, coalesce(e.resolved, FALSE) AS resolved FROM ixr.records b
+                    LEFT JOIN {_entities(ws, uid)} e USING ({u}) WHERE e.entity IS DISTINCT FROM b.entity OR coalesce(e.resolved, FALSE) <> b.resolved""")
+                added, moved = (con.execute(f"SELECT count(*) FROM dx.{t}").fetchall()[0][0] for t in ("records", "moved"))
+                if added + moved >= REBUILD * m["records"]:  # every read joins what moved: kept small
+                    why = f"the records added or moved since reach {REBUILD:.0%} of it"
                 else:
-                    table(name, f"{_rows(x, 'src', uid)} ORDER BY h")
-                    big.append(f"SELECT '{name}' AS t, h, count(*) AS n FROM ix.{name} GROUP BY h HAVING count(*) >= {m - 1}")  # with the record looked up: m
-            table("big", f"{' UNION ALL '.join(big) or 'SELECT NULL AS t, NULL::UBIGINT AS h, 0 AS n WHERE FALSE'} ORDER BY t, h")
-            con.execute("DETACH ix")
-            spec, present = fitted.kind, present_fields(s, have)
-            if spec and spec.name_field in present:  # its fitted part: the name model, which holds a connection, is loaded again by a lookup
-                answers = [pd.read_parquet(f).astype({uid: "string"}) for f in folder.answer_parts(ws)]
-                c = classifier(s, spec, merge_answers(pd.concat(answers, ignore_index=True) if answers else None, None, uid))
-                (tmp / "kind.pkl").write_bytes(pickle.dumps({k: v for k, v in vars(c).items() if k != "names"}))
-            of = {n: f"rule {x[1].name}" if isinstance(x, tuple) else x.name for n, x in tables} | {f"{n}_sparse": f"{x.name}, every {SPARSE:,}th" for n, x in tables
-                                                                                                 if isinstance(x, SortedNeighbourhood)}
-            manifest = dict(built_at=time.strftime("%Y-%m-%dT%H:%M:%S"), records=rows["records"], columns=have, indexing=INDEXING,
-                            stamp=_stamp(ws), tables={k: dict(of=of.get(k, k), rows=rows.get(k), seconds=v) for k, v in seconds.items()},
-                            seconds=round(time.perf_counter() - t0, 2))
-            (tmp / "manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=1), encoding="utf-8")
-            try:  # the database first, the manifest last: an index with a manifest is whole
-                os.replace(tmp / "index.duckdb", dest / "index.duckdb")
-            except PermissionError:  # Windows: a lookup holds the old one open
-                raise Busy(f"a lookup is reading the index of {ws}", fix="try again in a moment") from None
-            if (tmp / "kind.pkl").exists():
-                os.replace(tmp / "kind.pkl", dest / "kind.pkl")
-            else:  # a run that tells no kind: none kept from before
-                (dest / "kind.pkl").unlink(missing_ok=True)
-            os.replace(tmp / "manifest.json", dest / "manifest.json")
+                    for db in ("ix", "ixr", "dx"):
+                        con.execute(f"DETACH {db}")
+                    _publish(ws, tmp, {**m, "stamp": now, "added": added, "moved": moved, "files": {**m["files"], "delta": delta}, "updates": n,
+                                       "updated_at": time.strftime("%Y-%m-%dT%H:%M:%S")})
         finally:
             con.close()
             shutil.rmtree(tmp, ignore_errors=True)
-    return dict(index=str(dest), records=manifest["records"], tables=manifest["tables"], seconds=manifest["seconds"])
+        if why is not None:
+            return {**_build(ws, s, p, now), "added": 0, "moved": 0, "rebuilt": why}
+    return dict(index=str(ws / INDEX), records=m["records"] + added, added=added, moved=moved, seconds=round(time.perf_counter() - t0, 2), rebuilt=None)
+
+
+def _since(m: dict | None, now: dict) -> str | None:
+    """Why the run as stamped `now` needs its index built again, rather than what changed since written, or None: what
+    changed carries records added (new parts) and the files in MOVES; anything else changed is a full run, the mapping,
+    the method's keys, people's answers."""
+    if m is None:
+        return "no index yet"
+    if m.get("indexing") != INDEXING:
+        return "built by another version of nayose"
+    was = m["built_on"]
+    changed = sorted(f for f in set(was) | set(now) if f not in MOVES and was.get(f) != now.get(f) and not (f.startswith("state/records/") and f not in was))
+    return f"{', '.join(changed[:3])}{' …' if len(changed) > 3 else ''} changed" if changed else None
 
 
 def _rule_reads(x: tuple, have: list[str]) -> list[str]:  # the columns a rule's SQL reads, of those the records hold
@@ -188,9 +317,9 @@ def manifest(ws: Path) -> dict | None:  # the index's manifest, or None without 
 
 
 def status(ws: Path, s: Settings) -> dict:
-    """The index as a page shows it: when it was built, on how many records, what changed since (None: up to date),
-    and the columns a lookup reads, each with its field and whether it is in the field's first alternative (main),
-    in the mapping's order. O(files)."""
+    """The index as a page shows it: when it was built, on how many records (of them, added since), what changed since
+    (None: up to date), and the columns a lookup reads, each with its field and whether it is in the field's first
+    alternative (main), in the mapping's order. O(files)."""
     m, parts = manifest(ws), sorted((Path(ws) / "state" / "records").glob("part-*.parquet"))
     have = m["columns"] if m else pq.read_schema(parts[0]).names if parts else []
     folded = {c.casefold() for c in have}  # a source column named as its field but for case gave way to it (standardize.prepare)
@@ -202,12 +331,13 @@ def status(ws: Path, s: Settings) -> dict:
                 if field not in ("id", "entity") and c not in seen:
                     seen.add(c)
                     columns.append(dict(column=c, field=field, main=k == 0 and field != "kind_flag"))
-    return dict(built_at=m and m["built_at"], records=m and m["records"], stale=stale(ws, m) if m else None, columns=columns)
+    return dict(built_at=m and m["built_at"], records=m and m["records"] + m.get("added", 0), added=m and m.get("added", 0),
+                stale=stale(ws, m) if m else None, columns=columns)
 
 
 def stale(ws: Path, m: dict | None = None) -> str | None:
-    """What changed in the run since its index was built (a file of it, the method, the mapping, people's answers, the
-    code that reads it), or None. O(files)."""
+    """What changed in the run since its index was last written (a file of it, the method, the mapping, people's
+    answers, the code that reads it), or None. O(files)."""
     m = m or manifest(ws)
     if m is None:
         return "no index yet"
@@ -218,9 +348,66 @@ def stale(ws: Path, m: dict | None = None) -> str | None:
     return f"{', '.join(changed[:3])}{' …' if len(changed) > 3 else ''} changed since it was built" if changed else None
 
 
-def _classifier(ws: Path, s: Settings, p: Pipeline) -> Classifier | None:  # the run's, as the index keeps it, with the name model loaded again
-    f = Path(ws) / INDEX / "kind.pkl"
-    return Classifier(**pickle.loads(f.read_bytes()), names=name_model(s, p.kind)) if f.exists() and p.kind else None
+def _attach(con: duckdb.DuckDBPyConnection, ws: Path, m: dict) -> None:  # the index the manifest names: its keys as ix, its records as ixr, what changed since as dx
+    for db, f in (("ix", "keys"), ("ixr", "records"), ("dx", "delta")):
+        con.execute(f"ATTACH {lit(Path(ws) / INDEX / m['files'][f])} AS {db} (READ_ONLY)")
+
+
+def _classifier(ws: Path, s: Settings, p: Pipeline, m: dict) -> Classifier | None:  # the run's, as the index keeps it, with the name model loaded again
+    return Classifier(**pickle.loads((Path(ws) / INDEX / m["files"]["kind"]).read_bytes()), names=name_model(s, p.kind)) if m["files"]["kind"] and p.kind else None
+
+
+def _open(ws: Path, s: Settings, p: Pipeline) -> tuple[dict, Pipeline, duckdb.DuckDBPyConnection, Classifier | None, threading.Lock]:
+    """The index of `ws` as its manifest names it now, refused when out of date: the manifest, the fitted pipeline, a
+    connection with both databases attached and the classifier, kept open for the next call (OPEN at most). Each
+    caller reads through a cursor of its own, and prepares under the lock: the classifier's name model holds a
+    connection of its own. Files a write removed between reading the manifest and opening them: the manifest read again."""
+    for again in (True, False):
+        m = manifest(ws)
+        if (why := stale(ws, m)) is not None:
+            raise InputError(f"the index of {ws}: {why}", fix=f"build it: nayose build index --workspace {ws}")
+        fitted, key = _pipeline(ws, s, p, m["columns"]), str(Path(ws).resolve())
+        try:
+            with _OPENING:
+                o = _OPENED[key] = _OPENED.pop(key, None)  # the last asked, last: the least asked goes first
+                if o is None or o[0]["files"] != m["files"]:
+                    _OPENED.pop(key, None)
+                    while len(_OPENED) >= OPEN:
+                        _OPENED.pop(next(iter(_OPENED)))
+                    con, _ = connect(s.compute)
+                    _attach(con, ws, m)
+                    o = _OPENED[key] = (m, con, _classifier(ws, s, fitted, m), threading.Lock())
+            return m, fitted, o[1], o[2], o[3]
+        except (duckdb.IOException, FileNotFoundError):
+            if not again:
+                raise
+
+
+@contextlib.contextmanager
+def _asking(ws: Path, s: Settings, p: Pipeline, values: dict | None, record: str | None):
+    """The index opened, and the record asked about prepared into the cursor's table qry: the manifest, the fitted
+    pipeline, the run's model, the cursor and the record."""
+    m, fitted, con, kind, lock = _open(ws, s, p)
+    cur = con.cursor()
+    try:
+        with lock:
+            query = _query(cur, s, fitted, values, record, kind)
+        cur.register("er_q", query)
+        cur.execute("CREATE TEMP TABLE qry AS SELECT * FROM er_q")
+        cur.unregister("er_q")
+        yield m, fitted, run_model(ws), cur, query
+    finally:
+        cur.close()
+
+
+def _both(t: str, where: str, cols: str = "*") -> str:  # a table's rows that hold `where`, of the index and of what changed since
+    return f"(SELECT {cols} FROM {'ixr' if t == 'records' else 'ix'}.{q(t)} WHERE {where} UNION ALL BY NAME SELECT {cols} FROM dx.{q(t)} WHERE {where})"
+
+
+def _records(where: str, uid: str) -> str:  # the records that hold `where` as the run holds them now: those added since, each entity and rule cluster where it moved
+    u = q(uid)
+    return (f"(SELECT r.* REPLACE (CASE WHEN m.{u} IS NULL THEN r.entity ELSE m.entity END AS entity, CASE WHEN m.{u} IS NULL THEN r.resolved ELSE m.resolved END AS resolved) "
+            f"FROM {_both('records', where)} r LEFT JOIN dx.moved m ON m.{u} = r.{u})")
 
 
 def look_up(ws: Path, s: Settings, p: Pipeline, values: dict[str, str] | None = None, record: str | None = None,
@@ -230,69 +417,108 @@ def look_up(ws: Path, s: Settings, p: Pipeline, values: dict[str, str] | None = 
     entity at `at_least` points or more (default: the review floor) with its best record, its points, each comparison's
     level, the rule that would join it, and the keys that listed it; at most `most`. Also the record as compared, and
     what was looked up, how, and how long each part took. O(G·(log N + b) + C·K·L²)."""
-    ws, uid, clock = Path(ws), s.data.unique_id, {}
-    m = manifest(ws)
-    if (why := stale(ws, m)) is not None:
-        raise InputError(f"the index of {ws}: {why}", fix=f"build it: nayose build index --workspace {ws}")
-    t = time.perf_counter()
-    fitted, model = _pipeline(ws, s, p, m["columns"]), run_model(ws)
-    con, _ = connect(s.compute)
-    try:
-        con.execute(f"ATTACH {lit(ws / INDEX / 'index.duckdb')} AS ix (READ_ONLY)")
-        clock["open"] = time.perf_counter() - t
-        t = time.perf_counter()
-        query = _query(con, ws, s, fitted, values, record)
-        con.register("er_q", query)
-        con.execute("CREATE TEMP TABLE qry AS SELECT * FROM er_q")
-        con.unregister("er_q")
+    ws, uid, clock, t = Path(ws), s.data.unique_id, {}, time.perf_counter()
+    with _asking(ws, s, p, values, record) as (m, fitted, model, con, query):
         me, extra = query[uid].iloc[0], 0 if record is not None else 1  # a stored record as new: the store holds it once already
+        n = m["records"] + m["added"] + extra
         clock["prepare"] = time.perf_counter() - t
         t = time.perf_counter()
         found, checked = _candidates(con, fitted, uid, me, extra)
         clock["keys"] = time.perf_counter() - t
         t = time.perf_counter()
-        gated = _gate(con, fitted, model, uid, me, found, checked, m["records"] + extra)
-        found = {**found, **gated}
+        found = {**found, **_gate(con, fitted, model, uid, me, found, checked, n)}
         rules = _rules(con, fitted, uid, me, checked, extra)
         clock["rules"] = time.perf_counter() - t
         t = time.perf_counter()
         ids = sorted({*found, *rules} - {me})
-        scored = _scored(con, model, uid, me, ids, m["records"] + extra)
+        scored = _scored(con, model, uid, me, ids, n)
         clock["score"] = time.perf_counter() - t
-    finally:
-        con.close()
-    line, floor = fitted.fs.min_match_weight, review_floor(fitted) if at_least is None else at_least
-    rows = []
+    floor, rows = review_floor(fitted) if at_least is None else at_least, []
     if len(scored):
-        named = np.zeros(len(scored), dtype=bool) if fitted.fs.needs else np.ones(len(scored), dtype=bool)
-        for c in fitted.fs.needs:  # the name check (named_sql): a name compared on both sides
-            named |= (scored[f"gamma_{c}"] >= 0).to_numpy()
-        scored = scored.assign(named=named, keys=[sorted(found.get(x, ())) for x in scored["uid"]])
-        joins = {}  # each entity's rule: one that joins any of its records, the first in order (a dict: a frame column would hold a truthy NaN)
+        scored = scored.assign(likely=_likely(scored, fitted), keys=[sorted(found.get(x, ())) for x in scored["uid"]])
+        joins, size = {}, scored["entity"].value_counts()  # each entity's rule: one that joins any of its records, the first in order (a dict: a frame column would hold a truthy NaN)
         for x in scored.itertuples():
             if x.uid in rules and (x.entity not in joins or rules[x.uid][0] < joins[x.entity][0]):
                 joins[x.entity] = rules[x.uid]
-        best = scored.sort_values(["weight", "uid"], ascending=[False, True]).drop_duplicates("entity")
-        for x in best.itertuples():
+        for x in scored.sort_values(["weight", "uid"], ascending=[False, True]).drop_duplicates("entity").itertuples():
             rule = joins[x.entity][1] if x.entity in joins else None
             if x.weight < floor and not rule:
                 continue
-            rows.append(dict(entity=x.entity, record=x.uid, points=round(float(x.weight), 2), likely=bool(x.weight >= line and x.named) or rule is not None,
-                             rule=rule, keys=x.keys, compared=x.compared, records=int((scored["entity"] == x.entity).sum()), shown=x.shown))
+            rows.append(dict(entity=x.entity, record=x.uid, points=round(float(x.weight), 2), likely=bool(x.likely) or rule is not None,
+                             rule=rule, keys=x.keys, compared=x.compared, records=int(size[x.entity]), shown=x.shown))
     rows.sort(key=lambda r: (-(r["rule"] is not None), -r["points"]))
+    return dict(record=_view(query, uid), entities=rows[:most], found=len(rows), candidates=len(ids), likely=sum(r["likely"] for r in rows),
+                checked=checked, seconds={k: round(v, 4) for k, v in clock.items()}, index=dict(built_at=m["built_at"], records=n - extra))
+
+
+def search(ws: Path, s: Settings, p: Pipeline, values: dict[str, str], at_least: float | None = None, most: int = 10) -> dict:
+    """The stored records whose values start with what was typed, any of the file's columns, best first: by how many of
+    the searched fields agree (a name also by its end), then by the run's points for the two, a field not typed being
+    missing. Each entity at `at_least` points or more (default: any) with its best record, its points, the fields that
+    agree and each comparison's level; at most `most`. A value that starts CAP records or more lists none of them, and
+    is said (over), to be narrowed; of the records listed, the SCORED sharing the most values are scored.
+    O(F·(log N + CAP) + SCORED·K·L²)."""
+    ws, uid, clock, t = Path(ws), s.data.unique_id, {}, time.perf_counter()
+    with _asking(ws, s, p, values, None) as (m, fitted, model, con, query):
+        typed = {c: v for c in m["searched"] if c in query and pd.notna(v := query[c].iloc[0])}
+        clock["prepare"] = time.perf_counter() - t
+        t = time.perf_counter()
+        listed, over = {}, {}
+        for c, v in typed.items():
+            reads = [(f"f_{c}", v), *(((f"f_{c}_reverse", con.execute(f"SELECT reverse({q(c)}) FROM qry").fetchall()[0][0]),) if c in REVERSED else ())]
+            for table, x in reads:
+                rows = con.execute(f"SELECT uid FROM {_both(table, f'v >= {lit(x)} AND v < {lit(x + LAST)}', 'uid')} LIMIT {CAP}").fetchall()
+                if len(rows) == CAP:  # too many to list; said for a value's start, the end read alongside it
+                    if table == f"f_{c}":
+                        over.setdefault(SEARCHED[c], v)
+                else:
+                    listed.setdefault(SEARCHED[c], set()).update(u for (u,) in rows)
+        shared = Counter(u for us in listed.values() for u in us)
+        ids = sorted(shared, key=lambda u: (-shared[u], u))[:SCORED]
+        clock["values"] = time.perf_counter() - t
+        t = time.perf_counter()
+        scored = _scored(con, model, uid, QUERY, ids, m["records"] + m["added"] + 1)
+        agree = _agree(con, uid, typed) if len(scored) else {}
+        clock["score"] = time.perf_counter() - t
+    rows = []
+    if len(scored):
+        scored = scored.assign(likely=_likely(scored, fitted), fields=[agree.get(u, []) for u in scored["uid"]])
+        scored["agreed"], size = scored["fields"].map(len), scored["entity"].value_counts()
+        for x in scored.sort_values(["agreed", "weight", "uid"], ascending=[False, False, True]).drop_duplicates("entity").itertuples():
+            if at_least is None or x.weight >= at_least:
+                rows.append(dict(entity=x.entity, record=x.uid, points=round(float(x.weight), 2), likely=bool(x.likely), fields=x.fields,
+                                 compared=x.compared, records=int(size[x.entity]), shown=x.shown))
+    return dict(record=_view(query, uid), entities=rows[:most], found=len(rows), listed=len(shared), candidates=len(ids),
+                typed=sorted({SEARCHED[c] for c in typed}), over=[dict(field=f, value=v) for f, v in over.items()],
+                seconds={k: round(v, 4) for k, v in clock.items()}, index=dict(built_at=m["built_at"], records=m["records"] + m["added"]))
+
+
+def _view(query: pd.DataFrame, uid: str) -> dict:  # the record asked about, as compared: its fields and kind
     view = query.iloc[0]
-    return dict(record={k: (None if pd.isna(view.get(k)) else str(view.get(k))) for k in (uid, *SHOWN, "kind") if k in view},
-                entities=rows[:most], found=len(rows), candidates=len(ids), likely=sum(r["likely"] for r in rows),
-                checked=checked, seconds={k: round(v, 4) for k, v in clock.items()},
-                index=dict(built_at=m["built_at"], records=m["records"]))
+    return {k: (None if pd.isna(view.get(k)) else str(view.get(k))) for k in (uid, *SHOWN, "kind") if k in view}
 
 
-def _query(con: duckdb.DuckDBPyConnection, ws: Path, s: Settings, p: Pipeline, values: dict | None, record: str | None) -> pd.DataFrame:
+def _likely(scored: pd.DataFrame, p: Pipeline) -> np.ndarray:  # at the line or above, a name compared on both sides (match.named_sql)
+    named = np.zeros(len(scored), dtype=bool) if p.fs.needs else np.ones(len(scored), dtype=bool)
+    for c in p.fs.needs:
+        named |= (scored[f"gamma_{c}"] >= 0).to_numpy()
+    return (scored["weight"] >= p.fs.min_match_weight).to_numpy() & named
+
+
+def _agree(con: duckdb.DuckDBPyConnection, uid: str, typed: dict[str, str]) -> dict[str, list[str]]:
+    """Each record _scored read (er_c), with the searched fields whose value starts with what was typed (a name also:
+    ends with it)."""
+    checks = [*((SEARCHED[c], f"starts_with(c.{q(c)}, q.{q(c)})") for c in typed), *((SEARCHED[c], f"suffix(c.{q(c)}, q.{q(c)})") for c in typed if c in REVERSED)]
+    rows = con.execute(f"SELECT c.{q(uid)}, {', '.join(f'coalesce({x}, FALSE)' for _, x in checks)} FROM er_c c, qry q").fetchall()
+    return {r[0]: sorted({f for (f, _), ok in zip(checks, r[1:]) if ok}) for r in rows}
+
+
+def _query(con: duckdb.DuckDBPyConnection, s: Settings, p: Pipeline, values: dict | None, record: str | None, kind: Classifier | None) -> pd.DataFrame:
     """The record looked up, as a run prepares it: a stored one's row as the index holds it, or the values given, by the
-    file's column names, read as the reader reads a value and prepared with the run's classifier."""
+    file's column names, read as the reader reads a value and prepared with the run's classifier `kind`."""
     uid = s.data.unique_id
     if record is not None:
-        row = con.execute(f"SELECT * EXCLUDE (h, entity, resolved) FROM ix.records WHERE h = hash(?::VARCHAR) AND {q(uid)} = ?", [record, record]).df()
+        row = con.execute(f"SELECT * EXCLUDE (h, entity, resolved) FROM {_both('records', f'h = hash({lit(record)}::VARCHAR) AND {q(uid)} = {lit(record)}')}").df()
         if row.empty:
             raise InputError(f"{record}: no record of the run has that ID", fix="give a record ID the run holds, or the record's values")
         return row.astype("string")
@@ -305,7 +531,7 @@ def _query(con: duckdb.DuckDBPyConnection, ws: Path, s: Settings, p: Pipeline, v
         raise InputError("no value given", fix="give at least a name or a phone, as COLUMN=VALUE")
     rules, fs, probe = p.rules, p.fs, p.probe
     normalized, used = [*rules.normalized(), *fs.normalized(), *probe.normalized()], rules.used() | fs.used() | probe.used()
-    return prepare(fs.standardize, row, normalized, used, kind=_classifier(ws, s, p)).astype("string")
+    return prepare(fs.standardize, row, normalized, used, kind=kind).astype("string")
 
 
 def _candidates(con: duckdb.DuckDBPyConnection, p: Pipeline, uid: str, me: str, extra: int = 1) -> tuple[dict[str, set[str]], list[dict]]:
@@ -317,9 +543,9 @@ def _candidates(con: duckdb.DuckDBPyConnection, p: Pipeline, uid: str, me: str, 
     tables = dict(_tables(p))
     for name, x in tables.items():
         if isinstance(x, (KeyBlocker, DeletionKeys)):
-            sql = _rows(x, "qry", uid)
-            hashes[name] = [h for (h,) in con.execute(f"SELECT DISTINCT h FROM ({sql})").fetchall()]
-    sizes = {(t, h): n for t, h, n in con.execute(f"SELECT t, h, n FROM ix.big WHERE {' OR '.join(f'(t = {lit(t)} AND h IN ({', '.join(map(str, hs))}))' for t, hs in hashes.items() if hs) or 'FALSE'}").fetchall()}
+            hashes[name] = [h for (h,) in con.execute(f"SELECT DISTINCT h FROM ({_rows(x, 'qry', uid)})").fetchall()]
+    sizes = {(t, h): n for t, hs in hashes.items() if hs  # each block's records, counted in its sorted rows: a block too big is gated
+             for h, n in con.execute(f"SELECT h, count(*) FROM {_both(t, f'h IN ({', '.join(map(str, hs))})', 'h')} GROUP BY h").fetchall()}
     m = p.fs.budget.min_oversized()
     for name, x in tables.items():
         if isinstance(x, tuple):
@@ -336,7 +562,7 @@ def _candidates(con: duckdb.DuckDBPyConnection, p: Pipeline, uid: str, me: str, 
             continue
         normal = [h for h in hs if sizes.get((name, h), 0) + extra < m]
         big = [h for h in hs if sizes.get((name, h), 0) + extra >= m]
-        rows = con.execute(f"SELECT DISTINCT uid FROM ix.{name} WHERE h IN ({', '.join(map(str, normal))})").fetchall() if normal else []
+        rows = con.execute(f"SELECT DISTINCT uid FROM {_both(name, f'h IN ({', '.join(map(str, normal))})', 'uid')}").fetchall() if normal else []
         for (v,) in rows:
             if v != me:
                 found.setdefault(v, set()).add(x.name)
@@ -350,21 +576,29 @@ def _held(con: duckdb.DuckDBPyConnection, x: SortedNeighbourhood) -> bool:  # wh
 
 def _window(con: duckdb.DuckDBPyConnection, name: str, x: SortedNeighbourhood, me: str, key: str | None) -> list[str]:
     """The window-1 records on each side of the record in (key, uid) order, as the run's window places it among them:
-    a bisect in the sparse table, then one read of the rows between two of its keys. O(log N + SPARSE)."""
+    the nearest of the index's and of what changed since, merged. O(log N + SPARSE)."""
     if key is None or x.window < 2:
         return []
-    sparse = con.execute(f"SELECT pos, key, uid FROM ix.{name}_sparse ORDER BY pos").fetchall()
+    w, before, after = x.window - 1, [], []
+    for db in ("ix", "dx"):
+        b, a = _near(con, db, name, me, key, w)
+        before += b
+        after += a
+    return [u for _, u in sorted(before)[-w:]] + [u for _, u in sorted(after)[:w]]
+
+
+def _near(con: duckdb.DuckDBPyConnection, db: str, name: str, me: str, key: str, w: int) -> tuple[list[tuple], list[tuple]]:
+    """The w (key, uid) rows of one database's window table before the record and the w after it: a bisect in the
+    sparse table, then one read of the rows between two of its keys. O(log N + SPARSE)."""
+    sparse = con.execute(f"SELECT pos, key, uid FROM {db}.{name}_sparse ORDER BY pos").fetchall()
     at = bisect_left([(k, u) for _, k, u in sparse], (key, me))  # the first sparse row at or after the record
     lo = sparse[at - 1][0] if at else 1
     hi = sparse[at][0] if at < len(sparse) else lo + SPARSE
-    block = con.execute(f"SELECT pos, key, uid FROM ix.{name} WHERE pos BETWEEN {lo} AND {hi} ORDER BY pos").fetchall()
+    block = con.execute(f"SELECT pos, key, uid FROM {db}.{name} WHERE pos BETWEEN {lo} AND {hi} ORDER BY pos").fetchall()
     start = next((pos for pos, k, u in block if (k, u) >= (key, me)), block[-1][0] + 1 if block else lo)  # its place: before the first row past it, else after the last
-    w = x.window - 1
-    rows = con.execute(f"SELECT key, uid FROM ix.{name} WHERE pos BETWEEN {start - w - 1} AND {start + w} ORDER BY pos").fetchall()
+    rows = con.execute(f"SELECT key, uid FROM {db}.{name} WHERE pos BETWEEN {start - w - 1} AND {start + w} ORDER BY pos").fetchall()
     rows = [(k, u) for k, u in rows if u != me]  # a stored record looked up as new: the window as if it weren't there
-    before = [u for k, u in rows if (k, u) < (key, me)][-w:]
-    after = [u for k, u in rows if (k, u) > (key, me)][:w]
-    return before + after
+    return [r for r in rows if r < (key, me)][-w:], [r for r in rows if r > (key, me)][:w]
 
 
 def _gate(con: duckdb.DuckDBPyConnection, p: Pipeline, model: dict, uid: str, me: str, found: dict[str, set[str]],
@@ -377,15 +611,15 @@ def _gate(con: duckdb.DuckDBPyConnection, p: Pipeline, model: dict, uid: str, me
     mine = con.execute("SELECT hash(?::VARCHAR)", [me]).fetchall()[0][0]
     for c in checked:
         for b in c.get("big", ()):
-            t = names[c["key"]]
-            rows = con.execute(f"SELECT DISTINCT uid, hu FROM ix.{t} WHERE h = {b['h']} ORDER BY hu LIMIT {m}").fetchall()
+            block = _both(names[c["key"]], f"h = {b['h']}", "uid")
+            rows = con.execute(f"SELECT DISTINCT uid, hash(uid) AS hu FROM {block} ORDER BY hu LIMIT {m}").fetchall()
             ranked = sorted([*(r for r in rows if r[0] != me), (me, mine)], key=lambda r: r[1])[:m]  # the block's lowest hashes, the record among them once
             sample = [u for u, hu in ranked if u != me and u not in found]
             scored = _scored(con, model, uid, me, sample, n)
             b.update(sampled=len(sample), best=round(float(scored["weight"].max()), 2) if len(scored) else None)
             if len(sample) and (scored["weight"] >= floor).any():
                 b["decision"] = "kept"
-                for (v,) in con.execute(f"SELECT DISTINCT uid FROM ix.{t} WHERE h = {b['h']}").fetchall():
+                for (v,) in con.execute(f"SELECT DISTINCT uid FROM {block}").fetchall():
                     if v != me:
                         added.setdefault(v, set()).add(c["key"])
             else:
@@ -403,12 +637,12 @@ def _rules(con: duckdb.DuckDBPyConnection, p: Pipeline, uid: str, me: str, check
         h = con.execute(f"SELECT {_hashed((st, rule))} FROM qry WHERE {_filled(st.keys(rule))}").fetchall()
         if not h:
             continue
-        size = con.execute(f"SELECT coalesce(max(n), 0) FROM ix.big WHERE t = {lit(name)} AND h = {h[0][0]}").fetchall()[0][0]
+        size = con.execute(f"SELECT count(*) FROM {_both(name, f'h = {h[0][0]}', 'h')}").fetchall()[0][0]
         if size + extra >= m:
             checked.append(dict(key=f"rule {rule.name}", found=0, why=f"its value is on {size + extra:,} records: the rule doesn't trust it"))
             continue
-        hus = [hu for (hu,) in con.execute(f"SELECT hu FROM ix.{name} WHERE h = {h[0][0]}").fetchall()]  # literals: the records table read by its zone maps
-        hits = con.execute(f"""SELECT r.{q(uid)}, r.resolved FROM qry l JOIN (SELECT * FROM ix.records WHERE h IN ({', '.join(map(str, hus))})) r
+        hus = [hu for (hu,) in con.execute(f"SELECT DISTINCT hash(uid) FROM {_both(name, f'h = {h[0][0]}', 'uid')}").fetchall()]  # literals: the records table read by its zone maps
+        hits = con.execute(f"""SELECT r.{q(uid)}, r.resolved FROM qry l JOIN {_records(f"h IN ({', '.join(map(str, hus))})", uid)} r
             ON {st.sql(rule)} AND r.{q(uid)} <> l.{q(uid)}""").fetchall() if hus else []
         for v, resolved in hits:
             out.setdefault(v, (order[name], rule.name, st.name, bool(resolved)))
@@ -424,12 +658,13 @@ def _rules(con: duckdb.DuckDBPyConnection, p: Pipeline, uid: str, me: str, check
 def _scored(con: duckdb.DuckDBPyConnection, model: dict, uid: str, me: str, ids: list[str], n: int) -> pd.DataFrame:
     """The record against each of these stored records, scored as er.match.score_fs scores a pair with the run's
     model: each comparison's level by its own SQL, the pair oriented uid_l < uid_r, its bits summed with the prior at
-    n records. With each its entity, its levels in words, and the fields a person reads. O(|ids|·K·L²)."""
+    n records. With each its entity, its levels in words, and the fields a person reads; the records read stay in
+    er_c. O(|ids|·K·L²)."""
     if not ids:
         return pd.DataFrame(columns=["uid", "entity", "weight", "compared", "shown"])
     cols, u = sorted(read_by(model)), q(uid)
     hashes = [h for (h,) in con.execute("SELECT hash(x) FROM unnest(?::VARCHAR[]) t(x)", [ids]).fetchall()]
-    con.execute(f"CREATE OR REPLACE TEMP TABLE er_c AS SELECT * EXCLUDE (h) FROM ix.records WHERE h IN ({', '.join(map(str, hashes))})")
+    con.execute(f"CREATE OR REPLACE TEMP TABLE er_c AS SELECT * EXCLUDE (h) FROM {_records(f'h IN ({', '.join(map(str, hashes))})', uid)}")
     side = lambda c, a, b: f"CASE WHEN q.{u} < c.{u} THEN {a}.{q(c)} ELSE {b}.{q(c)} END"
     pairs = ", ".join(f'{side(c, "q", "c")} AS {q(c + "_l")}, {side(c, "c", "q")} AS {q(c + "_r")}' for c in cols)
     by = levels(model)
