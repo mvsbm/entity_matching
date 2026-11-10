@@ -31,13 +31,13 @@ package "people's answers" {
 }
 
 package "every chunk of the load (LLD 1, step 1)" {
-  rectangle "standardize.prepare → Classifier.classify\nkind 2 company · 1 person · 0 not sure; kind_p, kind_by, name_p, kind_held, kind_name\npeople's answers stand; 0 keeps the record held\nthe name routed: person_name and full_name where kind_p leans person, company_name where it leans company;\nheld back (the engine and the flag disagree, or people can't tell): neither side" as classify
+  rectangle "standardize.prepare → Classifier.classify\nkind: the engine's sure call (its lines; without answers, a legal form or a name past name_line), else the flag, else 0 not sure\nkind_p, kind_by, name_p, kind_flagged (sure against the flag), kind_held, kind_name; people's answers stand\nthe name routed by its kind: person_name and full_name for a person, company_name for a company; not sure, where kind_p leans;\npeople can't tell (0): neither side" as classify
   database "records" as records
 }
 
 rectangle "Run._gold · run.customer_kinds\neach record's kind; each customer's: 2 if any record is surely 2,\n1 if none leans company and one is surely 1, else 0" as gold
 file "gold.parquet" as f_gold
-rectangle "Run.report → kind.kind_review_sheet\npicked in DuckDB: decide (held back, then the flag's likely errors, at most review_max);\nmeasure (labels_to_draw drawn at random by hash of the ID); each row in words" as sheet
+rectangle "Run.report → kind.kind_review_sheet\npicked in DuckDB: decide (flagged, surest first, at most review_max);\nmeasure, optional (labels_to_draw drawn at random by hash of the ID); each row in words" as sheet
 file "kind_review.parquet" as f_sheet
 actor "people: 1 person, 2 company, 0 can't tell" as people
 

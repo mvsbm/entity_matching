@@ -586,6 +586,12 @@ def test_a_run_s_pairs_rows_and_entities_are_read_without_a_run_and_its_merge_co
     assert all(len(e) == 1 for e in entities())
 
     _, d = say("describe", "results", *at)
+    gold, kinds = pd.read_parquet(ws / "gold.parquet"), pd.read_parquet(ws / "kind_review.parquet")
+    from er.kind import sheet_parts
+    part = sheet_parts(kinds)
+    assert d["kinds"] == dict(flagged=int(gold["kind_flagged"].sum()), to_check=int((part == "decide").sum()), to_teach=int((part == "measure").sum()))
+    assert set(gold.loc[gold["kind_flagged"], "kind_by"]) <= {"engine"}  # flagged: the engine sure against the flag, nobody answered yet
+    assert d["too_big"]["min"] == p.fs.budget.min_oversized() and sum(d["too_big"]["by"].values()) == d["too_big"]["skipped"]  # skipped groups, by the key that made them
     index = pd.read_parquet(ws / "scored")
     rules_alone = int((index["rule"].notna() & index["sources"].isna()).sum())
     listed = next(x["candidates"] for x in json.loads((ws / "steps.json").read_text(encoding="utf-8"))["runs"][0]["steps"] if x["step"] == "candidates")

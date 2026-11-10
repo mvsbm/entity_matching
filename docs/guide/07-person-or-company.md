@@ -24,16 +24,16 @@ None of these rates is known for a given file. So the choice must hold across th
 1. **A legal form says company.** Written where banks write one (the readings, and the bank abbreviations at the front or the end), a legal form makes a company near certain.
 2. **The name says where a record leans.** A logistic regression on the name's character 1–3-grams, legal forms and spaces removed, trained once on public data: the registry's real company readings and the personas' names. It needs no label from the file. It learns what company stems look like: …ショウテン, …クリニック, …コウギョウ.
 3. **People's answers weigh the rest.** A combiner, gradient-boosted trees of depth 2, weighs the name's score, the file's flag, the birth year and the legal form, fitted on people's answers. It learns how far to trust this file's flag.
-4. **Correct first: a line per side.** Each record gets 2 company or 1 person only above that side's line, else 0 not sure. The company line: the lowest with no answer of a person above it, then two grid steps stricter; three when fewer answers than the 2,000 drawn to measure are given back. The person line: the lowest where the answers above it say, at 95% confidence, that at most 1% of the calls above it are wrong; with none wrong, that takes 300 answers above it. A wrong share measured on a few dozen answers looks safe when it isn't: placed that way, the line broke its budget in 4 of 60 trials.
-5. **Disagreements wait for people.** Where the engine leans one way and the flag says the other, the record is held back from matching: its name goes to neither the person side nor the company side. Everywhere else the name goes to the side it leans to, and a pair of a person and a company has no name compared, so the model's name check (`[model] needs`, [chapter 5](05-uncertain-evidence-fellegi-sunter.md)) leaves it to people.
-6. **People see why.** `kind_review.parquet` lists the held records and the flag's likely errors (why = decide), and a random draw that measures the flag and the engine (why = measure). Each row says in words what the engine, the name alone and the flag say. People answer 1, 2 or 0; their answers stand for their records.
+4. **Correct first: a line per side.** The engine calls 2 company or 1 person only above that side's line; below both, the file's flag decides, and with no flag the record is 0, not sure. The company line: the lowest with no answer of a person above it, then two grid steps stricter; three when fewer answers than the 2,000 drawn to measure are given back. The person line: the lowest where the answers above it say, at 95% confidence, that at most 1% of the calls above it are wrong; with none wrong, that takes 300 answers above it. A wrong share measured on a few dozen answers looks safe when it isn't: placed that way, the line broke its budget in 4 of 60 trials.
+5. **Disagreements are flagged, not held.** Where the engine is sure and the flag says the other kind, the record is flagged and matched as the engine says. Each name goes to the side of its kind, and a pair of a person and a company has no name compared, so the model's name check (`[model] needs`, [chapter 5](05-uncertain-evidence-fellegi-sunter.md)) leaves it to people.
+6. **People see why.** `kind_review.parquet` lists the flagged records, surest first (why = decide), and an optional random draw that measures the flag and the engine (why = measure). Each row says in words what the engine, the name alone and the flag say. People answer 1, 2 or 0; their answers stand for their records, and a 0 keeps the record's name out of matching.
 
-A customer's kind follows from its records: 2 if any record surely is a company, 1 if none leans company and one surely is a person, else 0.
+A customer's kind follows from its records: 2 if any record is a company, 1 if none leans company and one is a person, else 0.
 
 ### Why this solution
 
 - **The flag alone isn't enough, and neither is the name.** The flag is wrong where the cases are hard; the name can't see a company under a person's name. The combiner uses both, weighted by this file's answers.
-- **No labels needed to start.** Without answers the engine calls a company only where a legal form is written, and never surely a person. The name model is trained on public data, so a run works on day one, and gets better as people answer.
+- **No labels needed to start.** Without answers the engine calls a company where a legal form is written, and either kind where the name model is at least 99% sure; the flag decides the rest. The name model is trained on public data, so a run works on day one, and gets better as people answer.
 - **The measuring draw is random.** Records sent to people because they look wrong would make every error rate look worse than it is. A draw stratified to hold more of the surest records puts more of them above each line than the file has, so the error measured above the line is not the file's. On the scenarios the two draws trade places by size (below); only the random draw measures the file as it is.
 - **Held back, not guessed.** A company sent to the person side can merge into its representative's own records. Holding the disagreements back costs some recall until people answer, and spares those merges.
 
@@ -62,18 +62,18 @@ The name model it judges is the run's own: trained on `er.generate.kind_training
 
 | Flag | Routed by | Recall | False merges | Person–company clusters | Persons called 2 | Companies called 1 | Persons called 1 |
 |---|---|---|---|---|---|---|---|
-| any | the truth | 46.2% | 1 | 0 | 0 | 0 | 98.5% |
-| good | the flag alone | 45.5% | 21 | 20 | 304 | 83 | 97.0% |
-| good | the kind step | 46.8% | 20 | 19 | 0 | 40 | 98.3% |
-| medium | the flag alone | 44.2% | 62 | 54 | 832 | 244 | 94.4% |
-| medium | the kind step | 46.5% | 53 | 46 | 0 | 0 | 12.1% |
-| poor | the flag alone | 39.0% | 84 | 72 | 2,362 | 571 | 86.7% |
-| poor | the kind step | 41.4% | 75 | 63 | 0 | 0 | 11.5% |
+| any | the truth | 46.2% | 1 | 0 | 0 | 0 | 100.0% |
+| good | the flag alone | 45.5% | 21 | 20 | 308 | 103 | 98.5% |
+| good | the kind step | 46.1% | 21 | 20 | 180 | 63 | 99.1% |
+| medium | the flag alone | 44.2% | 62 | 54 | 840 | 296 | 95.8% |
+| medium | the kind step | 45.6% | 54 | 47 | 486 | 172 | 97.6% |
+| poor | the flag alone | 39.0% | 84 | 72 | 2,398 | 687 | 88.0% |
+| poor | the kind step | 42.6% | 76 | 64 | 1,641 | 322 | 91.8% |
 
-- **Recall** is 1.2–2.4 points higher by the kind step than by the flag alone.
-- **No person is called a company** by the kind step; the flag alone calls 304 to 2,362. It also calls fewer companies persons: 0 to 40, against 83 to 571.
-- **False merges** are fewer than the flag's on every flag: 20, 53 and 75 against 21, 62 and 84. Routed by the truth there is one, between two persons: the others come from names sent to the wrong side. A company record under its representative's name, at the representative's address and phone and flagged person, goes to the person side by either route, and can merge into the representative's own records.
-- **Few persons are surely persons** where the flag is medium or poor: 12.1% and 11.5%. The person line, placed on the 2,000 answers drawn to measure, sits high there, so most persons stay 0, not sure. A record that is not sure still sends its name to the side it leans to, unless it is held back, so matching uses it; only its kind waits for more answers. With a good flag, 98.3%.
+- **Recall** is 0.6–3.6 points higher by the kind step than by the flag alone.
+- **Fewer wrong kinds than the flag's:** persons called companies 180 to 1,641, against 308 to 2,398; companies called persons 63 to 322, against 103 to 687. Where the engine is not sure, the flag's word stands, so the flag's mistakes there remain; the engine corrects those it is sure of.
+- **False merges** are no more than the flag's on every flag: 21, 54 and 76 against 21, 62 and 84. Routed by the truth there is one, between two persons: the others come from names sent to the wrong side. A company record under its representative's name, at the representative's address and phone and flagged person, goes to the person side by either route, and can merge into the representative's own records.
+- **Nearly every record has a kind:** 91.8–99.1% of persons and 93.5–98.7% of companies. Calling the records the engine isn't sure of 0, not sure, with their names sent where they lean and none held back, called no person a company but merged more: 75 and 91 where the flag is medium and poor.
 
 ## What it can't do
 

@@ -640,6 +640,6 @@ def markdown(f: dict, name: str) -> str:
         out += ["## How much people must check (describe review)", "",
                 *grid(rv["ranges"], ("down_to", "up_to", "pairs", "sample", "expected_false", "chance_clean", "bound", "reviews_to_here")),
                 f"Below the last step: {rv['below_last_step']:,} · no name compared: {rv['unnamed']:,} · spot-checks a round: {rv['watch']:,}", "",
-                f"Kinds of record (the person/company sheet): {cell(rv['kinds'])}", "",
-                f"Hours at {rv['seconds_per_pair']:g} s a pair (an assumption): {cell(rv['hours'])}", ""]
+                f"Kinds of record (the person/company sheet: decide, the flagged; measure, optional): {cell(rv['kinds'])}", "",
+                f"Hours to review, if each pair takes {rv['seconds_per_pair']:g} s (an assumption): {cell(rv['hours'])}", ""]
     return "\n".join(out)

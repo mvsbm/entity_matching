@@ -87,7 +87,7 @@ def test_the_kind_problems_change_names_dates_and_the_flag_only(kind_population)
     assert 0.02 < (flag_company != g.truth["KIND"].eq("company")).mean() < 0.1  # the flag is wrong, now and then
 
 
-def test_without_labels_only_a_legal_form_makes_a_company_and_a_person_company_pair_goes_to_people(tmp_path, kind_population):
+def test_without_answers_the_engine_calls_what_it_is_sure_of_the_flag_the_rest_and_a_person_company_pair_goes_to_people(tmp_path, kind_population):
     from er.report import qa
     from er.run import Run
     s, p, g = kind_population
@@ -99,13 +99,16 @@ def test_without_labels_only_a_legal_form_makes_a_company_and_a_person_company_p
     firm[[uid, "NAME_KANA", "PERSON_ORG_CODE"]] = ["9" * len(home[uid]), "カブシキガイシャテスト", "2"]
     pd.concat([g.df, firm.to_frame().T.astype(g.df.dtypes)], ignore_index=True).to_parquet(tmp_path / "all.parquet", index=False)
     run = Run(replace(p, fs=replace(p.fs, min_match_weight=4.0)), s).full(tmp_path / "all.parquet", tmp_path / "run")
-    rec = run.con.sql(f'SELECT "{uid}", person_name, company_name, kind FROM records').df().set_index(uid)
+    rec = run.con.sql(f'SELECT "{uid}", person_name, company_name, kind, name_p, kind_flag, kind_flagged FROM records').df().set_index(uid)
     assert rec.loc[firm[uid], "kind"] == 2 and pd.isna(rec.loc[firm[uid], "person_name"]) and rec.loc[firm[uid], "company_name"] == "カブシキガイシャテスト"
     assert pd.notna(rec.loc[home[uid], "person_name"]) and pd.isna(rec.loc[home[uid], "company_name"])
     named = rec[rec.index.isin(g.df[uid])].join(g.df.set_index(uid)["NAME_KANA"])
     written = named["NAME_KANA"].str.normalize("NFKC").str.replace("[ 　]", "", regex=True).str.contains(legal_pattern(s.standardize))
-    assert set(named["kind"]) == {2, 0}  # 2 company or 0 not sure: never a sure person without answers
-    assert ((named["kind"] == 2) == written.fillna(False)).all()  # a company exactly where a legal form is written
+    line = p.kind.name_line
+    sure = np.where(written.fillna(False) | (named["name_p"] >= line), 2, np.where(named["name_p"] <= 1 - line, 1, 0))
+    flag = np.where(named["kind_flag"].isna(), 0, np.where(named["kind_flag"].isin(s.flag_company), 2, 1))
+    assert (named["kind"].to_numpy() == np.where(sure > 0, sure, flag)).all() and set(named["kind"]) == {1, 2}  # a legal form or a sure name; else the flag
+    assert (named["kind_flagged"].to_numpy() == ((sure > 0) & (flag > 0) & (sure != flag))).all() and named["kind_flagged"].any()  # sure against the flag
     pair = (home[uid], firm[uid])
     assert run.con.execute(f'SELECT count(*) FROM matches WHERE "{l}" = ? AND "{r}" = ?', list(pair)).fetchall()[0][0] == 0
     sheet = qa(run, [f for f in s.columns if f not in ("id", "entity")])["review_sheet"]
@@ -121,14 +124,15 @@ def test_the_review_sheet_says_in_words_why_each_record_is_there(tmp_path, kind_
     assert set(sheet["why"]) == {"decide", "measure"} and sheet[uid].is_unique and sheet["kind"].isna().all()
     decide = sheet[sheet["why"] == "decide"]
     assert len(decide) <= 200 and (decide["reason"].str.contains("the flag says")).all()
-    assert decide["reason"].str.startswith(("the engine is sure it is", "the engine is not sure", "the name looks like")).all()
+    assert decide["reason"].str.startswith("the engine is sure it is").all() and decide["reason"].str.endswith("matched as the engine says").all()
     assert set(sheet["engine_says"]) <= {"2 company", "1 person", "0 not sure"} and sheet["name_says"].str.match(r"[12] (company|person) \(").all()
     measure = sheet[sheet["why"] == "measure"]
-    assert len(measure) == 300 and set(measure["drawn"]) == {"at random"} and measure["reason"].str.startswith("drawn at random").all()
+    assert len(measure) == 300 and set(measure["drawn"]) == {"at random"} and measure[~measure["flagged"]]["reason"].str.startswith("drawn at random").all()
+    assert measure[measure["flagged"]]["reason"].str.startswith("the engine is sure").all()  # a flagged record drawn: said as flagged
     flags = g.df.set_index(uid).loc[decide[uid], "PERSON_ORG_CODE"].astype(int).to_numpy()
-    sure = decide["reason"].str.startswith("the engine is sure").to_numpy()
-    assert sure.any() and (decide["engine"].to_numpy()[sure] != flags[sure]).all()  # held: the engine's sure kind against the flag
-    assert decide["reason"].str.endswith("held back from matching until you decide").sum() >= sure.sum()
+    assert len(decide) and (decide["engine"].to_numpy() != flags).all()  # flagged: the engine's sure kind against the flag
+    surest = (decide["engine_p"] - 0.5).abs().to_numpy()
+    assert (surest[:-1] >= surest[1:]).all()  # surest first
 
 
 def test_with_answers_the_kinds_are_the_same_every_run_people_s_stand_and_a_customer_takes_its_surest_record(tmp_path, kind_population):
@@ -155,24 +159,43 @@ def test_with_answers_the_kinds_are_the_same_every_run_people_s_stand_and_a_cust
     expect = np.where(by.any_company, 2, np.where((by.leans.fillna(0) < 0.5) & by.any_person, 1, 0))
     assert (by.customer.to_numpy() == expect).all()
     wrong = ga.set_index(uid).join(g.truth.set_index("CONT_ID")["KIND"])
-    assert not ((wrong["kind"] == 2) & (wrong["KIND"] != "company")).any()  # no sure company that isn't one
+    sure = (wrong["kind_by"] == "engine") & (wrong["kind_p"] >= a.classifier.fitted.line_company)
+    assert not (sure & (wrong["KIND"] != "company")).any()  # no sure company that isn't one: a wrong one is the flag's
 
 
-def test_answers_without_a_measuring_draw_keep_the_legal_form_rule(tmp_path, kind_population):
+def test_answers_without_a_measuring_draw_keep_the_engine_s_own_rule(tmp_path, kind_population):
     from er.run import Run
     s, p, g = kind_population
     uid = s.data.unique_id
     g.df.to_parquet(tmp_path / "all.parquet", index=False)
     sheet = kind_sheet_for(Run(p, s).full(tmp_path / "all.parquet", tmp_path / "free"), s, p, 600)
-    decide = (sheet["why"] == "decide").to_numpy()  # the top of the sheet: answered first
+    decide = np.arange(len(sheet)) < 60  # the first rows people chose to answer, none of them drawn to measure
     truth = np.where(g.truth.set_index("CONT_ID").loc[sheet[uid], "KIND"].eq("company"), 2, 1)
-    sheet.assign(kind=pd.array(np.where(decide, truth, pd.NA), dtype="Int8")).to_parquet(tmp_path / "top.parquet")
+    sheet.assign(why="decide", kind=pd.array(np.where(decide, truth, pd.NA), dtype="Int8")).to_parquet(tmp_path / "top.parquet")
     run = Run(p, s, kind_labels=tmp_path / "top.parquet").full(tmp_path / "all.parquet", tmp_path / "run")
     assert run.classifier.labels == decide.sum() >= 50 and run.classifier.measured == 0 and run.classifier.fitted is None
     before, after = (pd.read_parquet(tmp_path / x / "gold.parquet").set_index(uid) for x in ("free", "run"))
     engine = after.index[after["kind_by"] == "engine"]
     assert (before.loc[engine, "kind"] == 2).any() and after.loc[engine, "kind"].equals(before.loc[engine, "kind"])  # a legal form still decides
     assert (after.loc[sheet[uid][decide], "kind"].to_numpy() == truth[decide]).all()  # and people's answers stand
+
+
+def test_results_count_the_flagged_and_a_gold_written_before_flags_still_reads(tmp_path, kind_population):
+    from er.kind import sheet_parts
+    from er.results import describe_merging, describe_results
+    from er.run import Run
+    from er.strings import connect
+    s, p, g = kind_population
+    out = tmp_path / "run"
+    g.df.to_parquet(tmp_path / "all.parquet", index=False)
+    Run(p, s).full(tmp_path / "all.parquet", out, pipeline_file=s.root / "config" / "final.toml")
+    con, db = connect(s.compute)
+    gold, sheet = pd.read_parquet(out / "gold.parquet"), pd.read_parquet(out / "kind_review.parquet")
+    k, part = describe_results(con, db, out, s, p)["kinds"], sheet_parts(sheet)
+    assert k == dict(flagged=int(gold["kind_flagged"].sum()), to_check=int((part == "decide").sum()), to_teach=int((part == "measure").sum()))
+    assert k["flagged"] and int(sheet["flagged"].sum()) == k["to_check"]  # every flagged record on the sheet is to check, drawn at random or not
+    gold.drop(columns="kind_flagged").to_parquet(out / "gold.parquet")  # as a run written before flags left it
+    assert describe_merging(con, db, out, s, p, {"when": [{"points": 12}]})["pairs"] >= 0  # it still reads: none of its records flagged
 
 
 def test_a_sheet_s_ids_must_name_records_of_the_file(tmp_path, kind_population):
@@ -303,7 +326,7 @@ def test_an_increment_classifies_its_batch_on_the_run_s_answers(tmp_path, kind_p
     gold = pd.read_parquet(tmp_path / "run" / "gold.parquet").set_index(uid)
     assert (gold.loc[sheet[uid], "kind_by"] == "people").all()  # the stored records' answers stand
     new = gold.loc[g.df.loc[batch, uid]]
-    assert new["kind"].notna().all() and (new["kind_by"] == "engine").all()  # the batch: kinds from the same engine
+    assert new["kind"].notna().all() and set(new["kind_by"]) == {"engine", "flag"}  # the batch: the same engine's calls, the flag's where it isn't sure
 
 
 def test_the_kind_problems_are_the_same_in_every_process(tmp_path):

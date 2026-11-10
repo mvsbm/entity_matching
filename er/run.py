@@ -253,7 +253,8 @@ class Run:
         if self.classifier is not None:  # how many records each kind holds
             kinds = dict(self.con.execute(f"SELECT kind, count(*) FROM {into} GROUP BY 1").fetchall())
             kinds = {"companies": kinds.get(2, 0), "persons": kinds.get(1, 0), "not sure": kinds.get(0, 0),
-                     "decided by people": self._count(f"{into} WHERE kind_by = 'people'"), "held back": self._count(f"{into} WHERE kind_held")}
+                     "decided by people": self._count(f"{into} WHERE kind_by = 'people'"), "flagged": self._count(f"{into} WHERE kind_flagged"),
+                     "held back": self._count(f"{into} WHERE kind_held")}
         self._done("load", "O(N·L)", f"O({self.n:,}·L)", t, records=self.n, disabled=len(self.disabled), set_aside=self._count("set_aside"), **kinds,
                    **({"prepared": "kept" if kept else "made"} if keep else {}))
 
@@ -459,6 +460,8 @@ class Run:
         self._done("candidates", "O(N·L + Σ P_g)", f"O({self.n:,}·L + {int(report['pairs'].sum()):,})", t, candidates=c,
                    oversized_kept=int((self.gated.get("decision", pd.Series(dtype=str)) == "kept").sum()),
                    oversized_skipped=int(self.gated.get("decision", pd.Series(dtype=str)).str.startswith("skipped").sum()),
+                   skipped_by={g: int(n) for g, n in self.gated[self.gated["decision"].str.startswith("skipped")].groupby("generator").size().items()}
+                   if len(self.gated) else {},  # by the key that made them
                    gate_seconds=round(self.gate_seconds, 2), gate_pairs=self.gate_pairs, generators=listed(report))  # the gate: its samples scored
         return report
 
@@ -617,7 +620,7 @@ class Run:
                  size AS (SELECT cluster_id, count(*) AS n FROM clusters GROUP BY 1),
                  matched AS (SELECT {l} AS id FROM matches UNION SELECT {r} FROM matches)
                  {f", customer AS ({customer_kinds('clusters', 'records', u)})" if kinds else ""}
-            SELECT k.{u}, k.cluster_id, {stage} AS resolved_stage, {by} AS resolved_by{", x.kind, x.kind_p, x.kind_by, x.kind_held, c.customer_kind" if kinds else ""}
+            SELECT k.{u}, k.cluster_id, {stage} AS resolved_stage, {by} AS resolved_by{", x.kind, x.kind_p, x.kind_by, x.kind_flagged, x.kind_held, c.customer_kind" if kinds else ""}
             FROM clusters k JOIN size z USING (cluster_id) LEFT JOIN first f ON f.id = k.{u} LEFT JOIN matched m ON m.id = k.{u} {f"LEFT JOIN {old} o USING ({u})" if old else ""}
                  {f"JOIN records x USING ({u}) JOIN customer c USING (cluster_id)" if kinds else ""}
             ORDER BY k.{u}""")
@@ -875,12 +878,14 @@ class Run:
         self.con.execute(f"CREATE OR REPLACE TABLE er_base AS SELECT {u}, cluster_id FROM gold_old")
         self.con.execute(f"CREATE OR REPLACE TABLE er_review AS SELECT {l}, {r} FROM er_decisions WHERE decision = 'match'")
         merge(self.con, self.db, "er_base", "er_review", "clusters", self.uid)
-        kinds = "kind" in {c[0] for c in self.con.execute("DESCRIBE gold_old").fetchall()}  # each record's kind stands; its customer's follows the merge
+        have = {c[0] for c in self.con.execute("DESCRIBE gold_old").fetchall()}
+        kinds = "kind" in have  # each record's kind stands; its customer's follows the merge
+        flagged = "o.kind_flagged" if "kind_flagged" in have else "FALSE AS kind_flagged"  # a run written before flags: none
         self.con.execute(f"""CREATE OR REPLACE TABLE gold AS WITH size AS (SELECT cluster_id, count(*) AS n FROM clusters GROUP BY 1)
                  {f", customer AS ({customer_kinds('clusters', 'gold_old', u)})" if kinds else ""}
             SELECT c.{u}, c.cluster_id, coalesce(o.resolved_stage, CASE WHEN z.n > 1 THEN 'review' END) AS resolved_stage,
                    coalesce(o.resolved_by, CASE WHEN z.n > 1 THEN 'review' END) AS resolved_by
-                   {", o.kind, o.kind_p, o.kind_by, o.kind_held, k.customer_kind" if kinds else ""}
+                   {f", o.kind, o.kind_p, o.kind_by, {flagged}, o.kind_held, k.customer_kind" if kinds else ""}
             FROM clusters c JOIN size z USING (cluster_id) JOIN gold_old o USING ({u}) {"JOIN customer k USING (cluster_id)" if kinds else ""}
             ORDER BY c.{u}""")
         d, m = self._count("er_decisions"), self._count("er_review")
@@ -1061,6 +1066,7 @@ def listed(report: pd.DataFrame) -> list[dict]:  # each generator's pairs and se
 
 def customer_kinds(clusters: str, kinds: str, u: str) -> str:
     """Each cluster's customer_kind, from its records' kind and kind_p (`kinds`: a table holding both): 2 company if any
-    record surely is one; 1 person if no record leans company and one surely is a person; else 0 not sure. O(N)."""
+    record is one (kind 2: the engine's call, the flag's or people's); 1 person if no record leans company and one is a
+    person; else 0 not sure. O(N)."""
     return f"""SELECT k.cluster_id, CASE WHEN bool_or(x.kind = 2) THEN 2 WHEN coalesce(max(x.kind_p), 0) < 0.5 AND bool_or(x.kind = 1)
                THEN 1 ELSE 0 END::TINYINT AS customer_kind FROM {clusters} k JOIN {kinds} x USING ({u}) GROUP BY 1"""

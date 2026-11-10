@@ -20,7 +20,7 @@ import pandas as pd
 from er.config import DeletionKeys, InputError, Key, KeyBlocker, Pipeline, SortedNeighbourhood, TfidfNeighbours, bits, lit, q, sources_text
 from er.folder import DECISIONS, PENDING, TRIALS, history, method, rounds, runs
 from er.io import code_version, table_after
-from er.kind import COMPANY, PERSON, SAYS, UNSURE
+from er.kind import COMPANY, PERSON, SAYS, UNSURE, sheet_parts
 from er.match import ELSE, levels, named_sql, parameters, pattern_coverage, review_floor, scaled_prior, score_fs
 from er.probe import keys_for
 from er.standardize import prepared
@@ -122,15 +122,16 @@ def qa(run: "Run", fields: list[str] | None = None, review: int = 50, previous: 
             side = lambda line, at: at if line <= 1 else "never (no line holds its budget)"
             how = (f"{c.labels:,} answers ({c.measured:,} drawn to measure): company {side(f.line_company, f'at P ≥ {f.line_company:g}')}, "
                    f"person {side(f.line_person, f'at P ≤ {1 - f.line_person:.4g}, its labelled error {f.person_error:.2%}' if f.person_error is not None else '')}")
-        else:  # no line placed: a written legal form decides
+        else:  # no line placed: a written legal form, or a name the model is sure of
             how = ((f"{c.labels:,} answers, {c.measured:,} of them drawn to measure: a line needs 50 drawn to measure, of both kinds"
                     if c is not None and c.labels else "no answers yet")
-                   + "; 2 company only where a legal form is written; answer them (nayose list kinds), then nayose apply answers")
+                   + (f"; the engine's own: a written legal form, or a name {c.spec.name_line:.0%} sure; else the flag" if c is not None else ""))
         if c is not None and c.decided:
             how += f"; people decided {len(c.decided):,} records"
-        held, unknown = con.execute("SELECT count(*) FILTER (WHERE kind_held AND kind_by <> 'people'), count(*) FILTER (WHERE kind_held AND kind_by = 'people') FROM gold").fetchall()[0]
-        if held:
-            kind_rows.append(("held back", f"{held:,} records from matching: the engine and the flag disagree; decide them in kind_review.parquet"))
+        flagged, unknown = con.execute("SELECT count(*) FILTER (WHERE kind_flagged), count(*) FILTER (WHERE kind_held AND kind_by = 'people') FROM gold").fetchall()[0]  # held by the engine: a record an older run held
+        if flagged:
+            kind_rows.append(("flagged", f"{flagged:,} records the engine is sure of against the flag: matched as the engine says; "
+                                         "answer them in kind_review.parquet if you want, surest first"))
         if unknown:
             kind_rows.append(("held back", f"{unknown:,} records people can't tell: their names stay out of matching, and their pairs come to review.parquet"))
         if c is not None and c.flag_error is not None:
@@ -140,8 +141,8 @@ def qa(run: "Run", fields: list[str] | None = None, review: int = 50, previous: 
             says = "x.kind_flag IN (" + ", ".join(map(lit, c.flag_company)) + ")"
             a, b = con.execute(f"""SELECT count(*) FILTER (WHERE g.kind = 2 AND NOT {says}), count(*) FILTER (WHERE g.kind = 1 AND {says})
                                    FROM gold g JOIN records x USING ({u}) WHERE x.kind_flag IS NOT NULL""").fetchall()[0]
-            kind_rows.append(("flag", f"a sure kind contradicts it on {a + b:,} records: {a:,} sure 2 company flagged 1, "
-                                      f"{b:,} sure 1 person flagged 2 (sent to decide in kind_review.parquet)"))
+            kind_rows.append(("flag", f"a kind the engine or people are sure of contradicts it on {a + b:,} records: {a:,} 2 company flagged 1, "
+                                      f"{b:,} 1 person flagged 2"))
         if len(mixed):
             kind_rows.append(("note", f"{len(mixed):,} cluster{'s hold' if len(mixed) > 1 else ' holds'} a sure person and a sure company: see qa.md, mixed kinds"))
     probed = next((x["strata"] for x in reversed(run.steps) if x["step"] == "probe"), [])  # er.probe: counts only
@@ -404,13 +405,12 @@ def review_workload(con: duckdb.DuckDBPyConnection, out: Path, p: Pipeline, uid:
                            bound=round(1 - 0.05 ** (1 / sample), 4) if sample else None, reviews_left=left, reviews_to_here=total,
                            if_not_clean=int(pairs - checked)))
     below = int(got.get(len(steps), (0,))[0])
-    kinds = out / "kind_review.parquet"
-    k = con.execute(f"""SELECT count(*) FILTER (WHERE why = 'measure'), count(*) FILTER (WHERE why = 'decide'), count(kind)
-        FROM read_parquet({lit(kinds)})""").fetchall()[0] if kinds.exists() else (0, 0, 0)
+    sheet = pd.read_parquet(out / "kind_review.parquet") if (out / "kind_review.parquet").exists() else pd.DataFrame(columns=["why", "kind"])
+    part, open_ = sheet_parts(sheet) if len(sheet) else sheet["why"], sheet["kind"].isna()
     hours = lambda n: round(n * seconds_per_pair / 3600, 1)
     return dict(ranges=ranges, below_last_step=below, unnamed=int(unnamed), watch=trust.watch,
-                kinds=dict(measure=int(k[0]), decide=int(k[1]), answered=int(k[2])), seconds_per_pair=seconds_per_pair,
-                hours=dict(to_each_line=[hours(x["reviews_to_here"]) for x in ranges], unnamed=hours(unnamed), kinds=hours(k[0] + k[1] - k[2])))
+                kinds=dict(measure=int((part == "measure").sum()), decide=int((part == "decide").sum()), answered=int((~open_).sum())), seconds_per_pair=seconds_per_pair,
+                hours=dict(to_each_line=[hours(x["reviews_to_here"]) for x in ranges], unnamed=hours(unnamed), kinds=hours(int(((part == "decide") & open_).sum()))))
 
 
 def review_sheet(run: "Run", pairs: pd.DataFrame) -> pd.DataFrame:
@@ -461,6 +461,7 @@ def describe_workspace(con: duckdb.DuckDBPyConnection, out: Path, uid: str) -> d
 
     def queue(sheet: str, answer: str, whys: tuple[str, ...]) -> dict:  # each kind of row still open, and the answers written in, not yet applied
         rows = pd.read_parquet(out / sheet) if (out / sheet).exists() else pd.DataFrame(columns=["why", answer])
+        rows = rows.assign(why=sheet_parts(rows)) if answer == "kind" and len(rows) else rows  # a flagged record drawn at random is to decide
         written = rows[answer].notna()
         if answer == "decision" and len(rows):  # a decision applied since stays in the sheet until the next run writes it
             done = rows.merge(applied(out, uid), on=[f"{uid}_l", f"{uid}_r"], how="left", suffixes=("", "_applied"))["decision_applied"]

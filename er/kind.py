@@ -8,13 +8,14 @@
                  drawn to measure: what its lines are placed on
     lines        company: no labelled error above it (out of fold), then margin_steps stricter, one more on fewer
                  answers than a measuring draw; person: the labelled
-                 error above it within its budget at 95% confidence. Without them: a company only where a legal
-                 form is written, never a sure person.
+                 error above it within its budget at 95% confidence. Without them: a written legal form, or a name
+                 past name_line either way.
 
-Each record gets kind (2 company, 1 person, 0 not sure: the codes a person/company flag uses), kind_p (the probability
-of a company), kind_by (engine, or people: their answer stands) and name_p (what its name alone says). A name routed by
-kind (er.standardize.prepare) goes to the side kind_p leans to. The review sheet (kind_review_sheet) sends people the
-records where the engine or the name disagrees with the file's flag, and a draw that measures both.
+Each record gets kind (2 company, 1 person, 0 not sure: the codes a person/company flag uses): the engine's call where
+it is sure, else the file's flag. kind_p (the probability of a company), kind_by (engine, flag, or people: their
+answer stands), name_p (what its name alone says), kind_flagged (the engine sure against the flag). A name routed by kind
+(er.standardize.prepare) goes to the side of its kind. The review sheet (kind_review_sheet) lists people the flagged
+records, and an optional draw that measures the flag and the engine.
 scripts/choose_kind.py chose these parts. O(N·L·g) to score N records (g n-gram lengths), O(T·L·g) once to train on T reference names,
 O(Λ·trees) for Λ labels.
 """
@@ -95,7 +96,7 @@ class NameModel:
         return cls(z["terms"].tolist(), z["coef"], float(z["intercept"]), int(z["ngram"]), compute) if str(z["key"]) == key else None
 
 
-KIND_COLUMNS = ("kind", "kind_p", "kind_by", "name_p", "kind_held", "kind_name", "customer_kind")  # what a run writes on each record and customer
+KIND_COLUMNS = ("kind", "kind_p", "kind_by", "name_p", "kind_flagged", "kind_held", "kind_name", "customer_kind")  # what a run writes on each record and customer
 NAME_MODEL = Path("config") / "kind_names.npz"  # trained by scripts/train_name_model.py, tracked in git: every run loads it
 
 
@@ -150,7 +151,7 @@ class Classifier:
     flag_company: tuple[str, ...]
     names: NameModel
     uid: str = ""
-    fitted: Fitted | None = None              # None: no line placed, so a written legal form decides
+    fitted: Fitted | None = None              # None: no line placed, so the engine's own rule decides (classify)
     labels: int = 0                           # people's answers, 1 or 2: what the combiner rests on
     measured: int = 0                         # ... of them drawn to measure: the lines and error rates rest on these only
     decided: dict[str, int] | None = None     # record → people's answer, 1 or 2: it stands, whatever the engine says
@@ -171,38 +172,36 @@ class Classifier:
 
     def classify(self, name: pd.Series, flag: pd.Series | None = None, birth: pd.Series | None = None,
                  ids: pd.Series | None = None) -> pd.DataFrame:
-        """Per record: kind (2 company, 1 person, 0 not sure), kind_p (the probability of a company), kind_by (engine or
-        people), name_p (what the name and its legal form alone say, the flag aside: the review sheet's other view) and
-        kind_held: the engine leans one way, the file's flag says the other, and no person has decided; or a person
-        looked and can't tell (0). A held record's name goes to neither side (er.standardize.prepare): a company sent to
-        the person side could merge into its representative's own records, and nothing tells which of the two is
-        right. Its pairs then have no name compared, so they go to people."""
+        """Per record: kind (2 company, 1 person, 0 not sure), kind_p (the probability of a company), kind_by (engine,
+        flag or people), name_p (what the name and its legal form alone say, the flag aside: the review sheet's other view),
+        kind_flagged and kind_held. The engine calls a kind it is sure of: past its lines, fitted on people's answers;
+        without them, a written legal form or a name past spec.name_line. Else the file's flag decides; with none, not
+        sure. kind_flagged: the engine's sure call against the flag, no person has answered: matched as the engine says,
+        and listed for people (kind_review_sheet). kind_held: people looked and can't tell (0): the name goes to neither
+        side (er.standardize.prepare), so its pairs have no name compared and go to people."""
         X = self.features(name, flag, birth)
         name_p = np.where(X[:, 3] == 1, 1.0, 1 / (1 + np.exp(-X[:, 0])))
-        if self.spec.trust_flag:
-            p = X[:, 1]
-            kind = np.where(p == 1, COMPANY, np.where(p == 0, PERSON, UNSURE))
-        elif (f := self.fitted) is not None:
+        flag_code = X[:, 1] + 1  # 2 company, 1 person, NaN none
+        if (f := self.fitted) is not None:
             p = f.combiner.predict_proba(np.where(self.blank, 0.0, X))[:, 1]
-            kind = np.where(p >= f.line_company, COMPANY, np.where(1 - p >= f.line_person, PERSON, UNSURE))
-        else:  # no labels: a written legal form decides; the name model only says where a name leans
-            p = name_p
-            kind = np.where(X[:, 3] == 1, COMPANY, UNSURE)
-        nameless = name.isna().to_numpy()  # nothing a person could judge, nor a line was placed on: not sure, no lean
-        kind, p = np.where(nameless, UNSURE, kind), np.where(nameless, np.nan, p)
-        by, unknown = np.full(len(name), "engine", dtype=object), np.zeros(len(name), dtype=bool)
+            sure = np.where(p >= f.line_company, COMPANY, np.where(1 - p >= f.line_person, PERSON, UNSURE))
+        else:  # no answers: a written legal form, or a name the model is sure of
+            p, line = name_p, self.spec.name_line
+            sure = np.where((X[:, 3] == 1) | (p >= line), COMPANY, np.where(p <= 1 - line, PERSON, UNSURE))
+        nameless = name.isna().to_numpy()  # nothing to judge, nor a line was placed on: the flag alone, no lean
+        p = X[:, 1] if self.spec.trust_flag else p  # the flag taken as it is: it is the engine's word
+        sure, p = np.where(nameless | self.spec.trust_flag, UNSURE, sure), np.where(nameless, np.nan, p)
+        kind = np.where(sure != UNSURE, sure, np.nan_to_num(flag_code, nan=UNSURE))
+        by = np.where((sure == UNSURE) & ~np.isnan(flag_code), "flag", "engine").astype(object)  # where the kind came from
+        unknown = np.zeros(len(name), dtype=bool)
         if self.decided and ids is not None:  # people's answers stand; 0, they can't tell, keeps the engine's lean
             said = ids.map(self.decided).to_numpy(dtype=float)
             hit, unknown = ~np.isnan(said), said == UNSURE
             kind, by = np.where(hit, said, kind), np.where(hit, "people", by)
             p = np.where(hit & ~unknown, said == COMPANY, p).astype(float)
-        flag_code = X[:, 1] + 1
-        disagree = (by != "people") & ~np.isnan(flag_code) & (np.where(p >= 0.5, COMPANY, PERSON) != flag_code)
-        held = ~nameless & (disagree | unknown)
-        if self.spec.trust_flag:
-            held[:] = False
-        return pd.DataFrame({"kind": kind.astype(np.int8), "kind_p": p, "kind_by": by, "name_p": name_p, "kind_held": held,
-                             "kind_name": name.astype("string").to_numpy()}, index=name.index)
+        flagged = (by != "people") & (sure != UNSURE) & ~np.isnan(flag_code) & (sure != np.nan_to_num(flag_code))
+        return pd.DataFrame({"kind": kind.astype(np.int8), "kind_p": p, "kind_by": by, "name_p": name_p, "kind_flagged": flagged,
+                             "kind_held": ~nameless & unknown, "kind_name": name.astype("string").to_numpy()}, index=name.index)
 
 
 def merge_answers(kept: pd.DataFrame | None, given: pd.DataFrame | None, uid: str) -> pd.DataFrame | None:
@@ -255,7 +254,7 @@ def classifier(settings, spec: KindSpec, labels: pd.DataFrame | None = None) -> 
         c.flag_error, c.flag_checked = float((c.flag_code(flag[d], int(d.sum())) != lab["kind"].to_numpy()[d]).mean()), int(d.sum())
     y = (lab["kind"] == COMPANY).to_numpy()
     c.labels, c.measured = len(lab), int(measure.sum())
-    # no line without 50 answers drawn to measure, of both kinds: a combiner then would call nothing, so the legal form decides
+    # no line without 50 answers drawn to measure, of both kinds: a combiner then would call nothing, so the engine's own rule decides
     if spec.trust_flag or c.measured < 50 or y[measure].all() or not y[measure].any():
         return c
     if "name" not in lab:  # a file of IDs and kinds: they stand for their records, and teach the engine nothing without a name
@@ -272,13 +271,13 @@ def classifier(settings, spec: KindSpec, labels: pd.DataFrame | None = None) -> 
 def kind_review_sheet(con: duckdb.DuckDBPyConnection, records: str, uid: str, spec: KindSpec, flag_company: tuple[str, ...],
                       answered: Iterable[str] = ()) -> pd.DataFrame:
     """Records for people, as matching's review sheet holds pairs, from the table `records` (each record's kind, kind_p,
-    kind_by, name_p, kind_held and kind_name, the name as written; kind_flag and birth_date if the file has them). Two
+    kind_by, name_p, kind_flagged and kind_name, the name as written; kind_flag and birth_date if the file has them). Two
     kinds of row, none already answered (`answered`) or decided by people:
 
-        decide    the engine and the file's flag disagree: the record is held back from matching until a person decides
-                  (sure contradictions first); then records the engine and the flag agree on but the name alone says
-                  the other kind (name_p beyond spec.name_line), the flag's likely errors. At most spec.review_max.
-        measure   spec.labels_to_draw records drawn at random, to measure the flag and the engine: not stratified, since
+        decide    flagged: the engine is sure of a kind the file's flag contradicts; the record is matched as the engine
+                  says, and an answer sets it right if the engine is wrong. Surest first, at most spec.review_max.
+        measure   optional: spec.labels_to_draw records drawn at random, a flagged one among them flagged too (sheet_parts), to measure the flag and the engine, and to
+                  place the engine's lines on this file (Classifier.fitted) once 50 hold both kinds: not stratified, since
                   a draw that over-represents the records the engine is surest of makes the error above a line look
                   smaller than it is (reports/choose_kind.md). The draw follows a hash of the record ID: the same file
                   gives the same sheet. A record without a name has nothing to judge: it is left out.
@@ -287,39 +286,36 @@ def kind_review_sheet(con: duckdb.DuckDBPyConnection, records: str, uid: str, sp
     engine says, what the name alone says and what the flag says; people write kind: 1 person, 2 company, 0 can't tell.
     O(N) in SQL, O(rows) in Python."""
     u, cols = q(uid), {c for c, *_ in con.execute(f"DESCRIBE {records}").fetchall()}
-    flagged, dated = "kind_flag" in cols, "birth_date" in cols
+    has_flag, dated = "kind_flag" in cols, "birth_date" in cols
     says = ", ".join(map(lit, flag_company)) or "NULL"
-    code = f"CASE WHEN kind_flag IS NULL THEN NULL WHEN kind_flag IN ({says}) THEN {COMPANY} ELSE {PERSON} END" if flagged else "NULL::INT"
+    code = f"CASE WHEN kind_flag IS NULL THEN NULL WHEN kind_flag IN ({says}) THEN {COMPANY} ELSE {PERSON} END" if has_flag else "NULL::INT"
     con.register("er_answered", pd.DataFrame({uid: pd.Series(list(answered), dtype="string").dropna()}))  # one NULL: NOT IN keeps no row
     rows = con.sql(f"""WITH r AS (
-            SELECT {u}, kind_name AS name, {"kind_flag, " if flagged else ""}{"birth_date, " if dated else ""}kind, kind_p, name_p,
-                   coalesce(kind_held, FALSE) AS held, {code} AS flag_code, hash({u}) AS h,
-                   CASE WHEN name_p >= {spec.name_line} THEN {COMPANY} WHEN name_p <= {1 - spec.name_line} THEN {PERSON} ELSE {UNSURE} END AS name_code
+            SELECT {u}, kind_name AS name, {"kind_flag, " if has_flag else ""}{"birth_date, " if dated else ""}kind, kind_p, name_p,
+                   coalesce(kind_flagged, FALSE) AS flagged, {code} AS flag_code, hash({u}) AS h
             FROM {records} WHERE kind_name IS NOT NULL AND kind_by <> 'people' AND {u} NOT IN (SELECT {u} FROM er_answered)),
-        s AS (SELECT *, NOT held AND name_code <> {UNSURE} AND flag_code IS NOT NULL AND name_code <> flag_code AS against FROM r),
-        m AS (SELECT 'measure' AS why, *, row_number() OVER (ORDER BY h) AS k FROM s ORDER BY h LIMIT {spec.labels_to_draw}),
-        d AS (SELECT 'decide' AS why, *, row_number() OVER (ORDER BY 2 * held::INT + (held AND kind IN ({PERSON}, {COMPANY}))::INT
-                                                         + abs(coalesce(name_p, 0.5) - 0.5) DESC, h) AS k
-              FROM s WHERE (held OR against) AND {u} NOT IN (SELECT {u} FROM m))
+        m AS (SELECT 'measure' AS why, *, row_number() OVER (ORDER BY h) AS k FROM r ORDER BY h LIMIT {spec.labels_to_draw}),
+        d AS (SELECT 'decide' AS why, *, row_number() OVER (ORDER BY abs(coalesce(kind_p, 0.5) - 0.5) DESC, h) AS k
+              FROM r WHERE flagged AND {u} NOT IN (SELECT {u} FROM m))
         SELECT * FROM m UNION ALL SELECT * FROM d WHERE k <= {spec.review_max} ORDER BY why, k""").df()  # decide first
     con.unregister("er_answered")
     pct = lambda x: f"{max(x, 1 - x):.1%}"
     flag = rows["flag_code"].fillna(0).astype(int)
-    held, sure = rows["held"].to_numpy(dtype=bool), rows["kind"].isin([PERSON, COMPANY]).to_numpy()
-    lean = np.where(rows["kind_p"] >= 0.5, COMPANY, PERSON)
-    reason = np.select(
-        [held & sure, held, rows["against"].to_numpy(dtype=bool)],
-        [[f"the engine is sure it is {SAYS[k]}, the flag says {f}: held back from matching until you decide" for k, f in zip(rows["kind"], flag)],
-         [f"the engine is not sure, it leans to {SAYS[n]} ({pct(x)}); the flag says {f}: held back from matching until you decide"
-          for n, x, f in zip(lean, rows["kind_p"], flag)],
-         [f"the name looks like {SAYS[n]} ({pct(x)}), the flag says {f}; the engine says {SAYS[k]}"
-          for n, x, f, k in zip(rows["name_code"], rows["name_p"], flag, rows["kind"])]], "")
+    reason = np.where(rows["flagged"].to_numpy(dtype=bool),
+                      [f"the engine is sure it is {SAYS[k]} ({pct(x)}), the flag says {SAYS[f] if f else f}: matched as the engine says" for k, x, f in zip(rows["kind"], rows["kind_p"], flag)], "")
     words = "drawn at random, to measure the flag and the engine"
     measure = (rows["why"] == "measure").to_numpy()
-    rows["reason"] = np.where(measure, np.where(reason != "", words + "; also: " + reason, words), reason)
+    rows["reason"] = np.where(reason != "", reason, words)  # a flagged record says why it is flagged, drawn or not (drawn says that)
     rows["drawn"] = np.where(measure, "at random", "")
     rows["engine_says"] = rows["kind"].map(SAYS)
     rows["name_says"] = [f"{SAYS[COMPANY if x >= 0.5 else PERSON]} ({pct(x)})" if pd.notna(x) else "" for x in rows["name_p"]]
     sheet = rows.rename(columns={"kind": "engine", "kind_p": "engine_p", "kind_flag": "flag"})
-    front = ["why", "reason", "engine_says", "name_says", *(["flag"] if flagged else []), "name", *(["birth_date"] if dated else [])]
-    return sheet[[uid, *front, "engine", "engine_p", "name_p", "drawn"]].assign(kind=pd.Series(pd.NA, index=sheet.index, dtype="Int8"))
+    front = ["why", "reason", "engine_says", "name_says", *(["flag"] if has_flag else []), "name", *(["birth_date"] if dated else [])]
+    return sheet[[uid, *front, "engine", "engine_p", "name_p", "drawn", "flagged"]].assign(kind=pd.Series(pd.NA, index=sheet.index, dtype="Int8"))
+
+
+def sheet_parts(sheet: pd.DataFrame) -> pd.Series:
+    """Each row of a person/company sheet by what it asks of people: decide, a flagged record, drawn at random or not;
+    measure, one drawn at random only, optional. O(rows)."""
+    flagged = sheet["flagged"].fillna(False).astype(bool) if "flagged" in sheet else sheet["why"].eq("decide")
+    return pd.Series(np.where(flagged, "decide", sheet["why"]), index=sheet.index)
