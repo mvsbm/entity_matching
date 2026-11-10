@@ -651,7 +651,7 @@ One record, by the file's column names (or a stored one's ID, as if it were new)
 | `found` | entities at --from or more |
 | `at_least` | the points listed from: --from, else the review floor |
 | `closest` | none at --from or more: the nearest record compared (record, entity, points, shown), else null |
-| `read_as` | the values as read, when they were typed otherwise than records hold them (a name in hiragana, 03-1234-5678) and so read find more |
+| `read_as` | the values as read, when they were typed otherwise than records hold them (a name in hiragana, 03-1234-5678) and so read find more or come closer |
 | `candidates` | records compared |
 | `likely` | of them, at the line or joined by a rule |
 | `checked` | each key: found, or why not; a block too big: its records and the gate's decision |
@@ -690,8 +690,9 @@ Values by the file's column names, any of them (finding nothing as given, read a
 | `listed` | records whose values start with those given |
 | `candidates` | of them, scored |
 | `typed` | the fields searched |
+| `read_as` | the values as read, when they were typed otherwise than records hold them and so read agree on more |
 | `missing` | the columns given, when every value read as missing: nothing to search by |
-| `over` | each value that starts too many records to list: field, value, records (how many start with it) |
+| `over` | each value that starts too many records to list them all: field, value, records (how many start with it, counted to 100,000: more true past it), listed (its first by value listed: no other value lists its own) |
 | `seconds` | each part |
 | `index` | built_at, records |
 | `next` | the commands that usually follow |

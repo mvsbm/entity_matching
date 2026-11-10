@@ -146,7 +146,7 @@ def test_text_says_a_result_in_short_and_verbose_says_all_of_it(tmp_path, popula
     g.df.to_parquet(tmp_path / "all.parquet", index=False)
     monkeypatch.chdir(tmp_path)
     said = lambda *words: (main([*map(str, words)]), capsys.readouterr().out.splitlines())[1]
-    assert said("create", "workspace", "w")[:2] == ["✓ created workspaces/w", "next"]
+    assert said("create", "workspace", "w")[:2] == [f"✓ created {Path('workspaces/w')}", "next"]  # as the system writes a path
     said("load", "records", "all.parquet", "--workspace", "workspaces/w")
     out = said("check", "records", "--workspace", "workspaces/w")  # its own file: none given
     assert out[0] == "check records · workspaces/w" and next(x for x in out if x.startswith("✓ ")).startswith(f"✓ ready: {len(g.df):,} records") and any(x.split()[:5] == ["nayose", "resolve", "records", "--workspace", "workspaces/w"] for x in out)
@@ -167,7 +167,7 @@ def test_the_commands_that_read_a_run_say_when_the_workspace_holds_none(say, tmp
     say("create", "workspace", "w")
     for words in (("describe", "results"), ("list", "scored"), ("list", "entities"), ("describe", "merging"), ("set", "merging", "--conditions", '{"when": []}')):
         code, e = say(*words, "--workspace", "workspaces/w")
-        assert code == 2 and e["error"] == "workspaces/w holds no run to read" and e["fix"], words  # never a traceback
+        assert code == 2 and e["error"] == f"{Path('workspaces/w')} holds no run to read" and e["fix"], words  # never a traceback
 
 
 def test_describe_records_says_what_a_column_holds_instead_and_its_one_command_sets_it_right(say, tmp_path, monkeypatch):

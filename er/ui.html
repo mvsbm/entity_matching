@@ -1300,6 +1300,7 @@ const STAGE_Q = {
 };
 const ask = (q, answer, picture = "", act = "", more = "", label = "Details") => `<div class="qa"><div class="q"><h2 class="question pq">${esc(q)}</h2><p class="answer">${answer}</p></div>${act}</div>
   ${picture ? `<div class="pq-pic">${picture}</div>` : ""}${more ? `<details class="fold-line pq-more"><summary>${esc(label)}</summary><div class="pq-body">${more}</div></details>` : ""}`;
+const or = (xs) => xs.length > 1 ? `${xs.slice(0, -1).join(", ")} or ${xs[xs.length - 1]}` : xs.join("");  // a, b or c
 const uncounted = (r) => `the chart counts the last full run's pairs: the ${plural(r.uncounted, "record")} added since aren't in it, until matching runs again`;
 const lasts = (s) => s < 1 ? "under a second" : s < 1.5 ? "a second" : s < 90 ? `${Math.round(s)} seconds` : s < 5400 ? `${Math.round(s / 60)} minutes` : s < 172800 ? `${Math.round(s / 3600)} hours` : s < 63072000 ? `${Math.round(s / 86400)} days` : `${Math.round(s / 31536000)} years`;
 const plural = (n, one, many = `${one}s`) => `${fmt(n)} ${n === 1 ? one : many}`;
@@ -2535,17 +2536,21 @@ const SCREENS = {
       const x = r.record, given = [x.full_name || x.person_name || x.company_name, x.address, x.postal_code, x.phone, x.birth_date, x.customer_id].filter(Boolean).length;  // a name once
       const said = r.found ? `${plural(r.found, "possible match", "possible matches")}${r.likely ? `, ${fmt(r.likely)} likely the same` : ""}`
         : r.closest ? `None reaches ${fmt(r.at_least)} points: the closest, ${shown(r.closest.shown) || esc(r.closest.record)}, has ${r.closest.points.toFixed(1)}${
-            given < 2 ? ". One value alone weighs too little: add a phone, a postal code or a birth date" : ""}`
+            given < 2 ? `. One value alone weighs too little: add ${or([["a name", x.full_name || x.person_name || x.company_name], ["a phone", x.phone], ["a postal code", x.postal_code],
+                                                                     ["a birth date", x.birth_date]].filter(([, v]) => !v).map(([w]) => w))}` : ""}`
         : "No record shares a key with it: none would be compared";
       const read = Object.values(r.read_as || {}).map(esc).join(", ");  // typed one way, read as the records hold it
       return `<div class="card">${ask("What would the run do with it?", `${said} <span class="faint">${read ? `· read as ${read} ` : ""}· ${plural(r.candidates, "record")} compared in ${fmt(ms)} ms</span>`)}</div>` + r.entities.map((e) => card(e,
         (e.likely ? '<span class="chip good">likely the same</span>' : '<span class="chip info">possible</span>') + (e.rule ? `<span class="chip good">rule ${esc(e.rule)}</span>` : ""))).join("");
     };
     const suggestions = (r) => {
-      const over = r.over.map((x) => `${plural(x.records, "record")} start with ${esc(x.value)}, too many to list: ${x.field === "name" ? "add the given name, or a phone or postal code beside it" : "type more of it, or a name beside it"}`).join(" · ");
-      const said = !r.typed.length ? "Nothing to search by yet: type more of it" : r.found ? `${plural(r.listed, "record")} start with what you typed${over ? ` · ${over}` : ""}`
-        : over ? over[0].toUpperCase() + over.slice(1) : r.listed ? `None of the ${plural(r.listed, "record")} that start with it reaches ${esc($("lu-from").value)} points` : "No record starts with what you typed";
-      return `<div class="card">${ask("Who could it be?", said)}</div>` + r.entities.map((e) => card({...e, compared: null},
+      const over = r.over.filter((x) => x.listed).map((x) => `${fmt(x.records)}${x.more ? "+" : ""} records start with ${esc(x.value)}: ${r.found ? `the first by ${x.field === "name" ? "name" : "value"} below. ` : ""}${
+        x.field === "name" ? "Add the given name, or a phone or postal code beside it, to narrow" : "Type more of it, or a name beside it, to narrow"}`).join(" · ");  // one only agreeing beside another: no need to say
+      const said = !r.typed.length ? "Nothing to search by yet: type more of it" : over && !r.found && r.listed ? `${over} · none reaches ${esc($("lu-from").value)} points`
+        : over ? over : r.found ? `${plural(r.listed, "record")} start with what you typed`
+        : r.listed ? `None of the ${plural(r.listed, "record")} that start with it reaches ${esc($("lu-from").value)} points` : "No record starts with what you typed";
+      const read = Object.values(r.read_as || {}).map(esc).join(", ");
+      return `<div class="card">${ask("Who could it be?", `${said}${read ? ` <span class="faint">· read as ${read}</span>` : ""}`)}</div>` + r.entities.map((e) => card({...e, compared: null},
         (e.likely ? '<span class="chip good">likely the same</span>' : "") + e.fields.map((f) => `<span class="chip">${esc(words(f))}</span>`).join(""))).join("");
     };
     return w;

@@ -588,8 +588,10 @@ def brief_match_record(r: dict) -> list[str]:  # the entities it may belong to, 
 
 def brief_search_records(r: dict) -> list[str]:  # the entities best first, each in a line with the fields that agree; a value too common to list
     out = [f"✓ {r['found']:,} entit{'ies' if r['found'] != 1 else 'y'} of {r['listed']:,} records listed in {sum(r['seconds'].values()) * 1000:,.0f} ms"]
-    out += [f"  ! {x['field']} {x['value']}: {x['records']:,} records start with it, too many to list: give more of it, or another value beside it" for x in r["over"]]
+    out += [f"  ! {x['field']} {x['value']}: {x['records']:,}{'+' if x['more'] else ''} records start with it: the first by value below; give more of it, or another value beside it, to narrow"
+            for x in r["over"] if x["listed"]]
     out += [f"  nothing to search by: {', '.join(r['missing'])} read as missing"] if r.get("missing") else []
+    out += [f"  read as {', '.join(r['read_as'].values())}"] if r.get("read_as") else []
     out += [f"  {'●' if e['likely'] else '○'} {num(e['points']):>6} pts  {e['entity']}  {shown_record(e['shown'])}  ({', '.join(e['fields'])})" for e in r["entities"]]
     return out + nexts(r)
 
@@ -1917,7 +1919,7 @@ COMMANDS: tuple[Command, ...] = (
             {"record": "the record as compared: its fields and kind", "entities": "each: entity, record, points, likely, rule, keys, compared, records, shown",
              "found": "entities at --from or more", "at_least": "the points listed from: --from, else the review floor",
              "closest": "none at --from or more: the nearest record compared (record, entity, points, shown), else null",
-             "read_as": "the values as read, when they were typed otherwise than records hold them (a name in hiragana, 03-1234-5678) and so read find more",
+             "read_as": "the values as read, when they were typed otherwise than records hold them (a name in hiragana, 03-1234-5678) and so read find more or come closer",
              "candidates": "records compared", "likely": "of them, at the line or joined by a rule",
              "checked": "each key: found, or why not; a block too big: its records and the gate's decision", "seconds": "each part",
              "index": "built_at, records", "next": "the commands that usually follow"},
@@ -1934,8 +1936,8 @@ COMMANDS: tuple[Command, ...] = (
              WORKSPACE, PIPELINE, COMPUTE),
             {"record": "the values as compared: their fields and kind", "entities": "each: entity, record, points, likely, fields (those that agree), compared, records, shown",
              "found": "entities at --from or more", "listed": "records whose values start with those given", "candidates": "of them, scored",
-             "typed": "the fields searched", "missing": "the columns given, when every value read as missing: nothing to search by",
-             "over": "each value that starts too many records to list: field, value, records (how many start with it)", "seconds": "each part",
+             "typed": "the fields searched", "read_as": "the values as read, when they were typed otherwise than records hold them and so read agree on more", "missing": "the columns given, when every value read as missing: nothing to search by",
+             "over": "each value that starts too many records to list them all: field, value, records (how many start with it, counted to 100,000: more true past it), listed (its first by value listed: no other value lists its own)", "seconds": "each part",
              "index": "built_at, records", "next": "the commands that usually follow"},
             "nayose search records FULL_NAME_KANA=ヤマダ PHONE_NUM_4=1234 --workspace workspaces/customers", search_records, quick=True),
     Command("rerun", "records", "A full run again, on the run's own files",

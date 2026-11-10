@@ -60,9 +60,10 @@ ROWS = 2048  # a row group's rows in the records' database: a lookup reads whole
 SHOWN = ("full_name", "person_name", "company_name", "address", "postal_code", "phone", "birth_date", "customer_id")  # a record, as a person reads it
 SEARCHED = {"any_name": "name", "given_name__kana_fold": "name", "address__address": "address", "postal_code": "postal_code", "phone": "phone",
             "customer_id": "customer_id", "birth_date": "birth_date", "address_code": "address_code"}  # shortcut: the columns config/final.toml's standardizing writes that a search reads by prefix, each with its field; another method's are added here
-REVERSED = ("any_name",)
-DIGITS = ("phone", "postal_code", "customer_id")  # fields held as digits: what a person writes between them (_typed), as the project's mapping drops it  # also read by its end: a given name typed alone, the family name before it
-CAP = 2000  # shortcut: a value typed that starts this many records' or more lists none of them, said to be narrowed; raise it as scoring gets faster
+REVERSED = ("any_name",)  # also read by its end: a given name typed alone, the family name before it
+DIGITS = ("phone", "postal_code", "customer_id")  # fields held as digits: what a person writes between them (_typed), as the project's mapping drops it
+CAP = 2000  # shortcut: a value typed that starts this many records or more is too common to list whole: said, its first by value listed; raise it as scoring gets faster
+COUNTED = 100_000  # shortcut: a value that common is counted this far (said "100,000+"), so a first keystroke reads a bounded range; raise it if people need the exact count
 SCORED = 500  # shortcut: the records scored for a search, those sharing the most values typed; raise it as scoring gets faster
 REBUILD = 0.1  # shortcut: the records added since the build reaching this share of it build it again, so the delta stays small; lower it if lookups slow
 OPEN = 2  # shortcut: the indexes kept open, each with its DuckDB connection and classifier, for a server's next lookup; raise it when people look up in more workspaces at once
@@ -416,11 +417,15 @@ def _records(where: str, uid: str) -> str:  # the records that hold `where` as t
 def look_up(ws: Path, s: Settings, p: Pipeline, values: dict[str, str] | None = None, record: str | None = None,
             at_least: float | None = None, most: int = 20) -> dict:
     """_look_up on the values as given; when none reaches `at_least`, on them as people type what records hold otherwise
-    (_folded: a name in hiragana, full-width or hyphenated digits), kept if it finds more or comes closer, and said
-    (read_as: each value so read). Each looked up as given first, as a file holds it."""
+    (_folded: a name in hiragana, full-width or hyphenated digits, where the mapping doesn't prepare them so), kept if
+    it finds more or comes closer, and then said (read_as: each value so read). Each looked up as given first, as a file
+    holds it."""
     found = _look_up(ws, s, p, values, record, at_least, most)
     if values and not found["found"] and (folded := _folded(s, values)) != values:
-        again = _look_up(ws, s, p, folded, None, at_least, most)
+        try:
+            again = _look_up(ws, s, p, folded, None, at_least, most)
+        except InputError:  # read so, it says nothing (ＮＵＬＬ as NULL): the answer as given
+            return found
         if again["found"] or (again["closest"] and (not found["closest"] or again["closest"]["points"] > found["closest"]["points"])):
             return {**again, "read_as": {c: v for c, v in folded.items() if v != values[c]}}
     return found
@@ -475,8 +480,9 @@ def _look_up(ws: Path, s: Settings, p: Pipeline, values: dict[str, str] | None =
 
 
 def search(ws: Path, s: Settings, p: Pipeline, values: dict[str, str], at_least: float | None = None, most: int = 10) -> dict:
-    """_search on the values as given; when they list nothing, on them as people type what records hold otherwise
-    (_typed): full-width digits, 100-0001, a name in hiragana. Each found as given first, as a file might hold it. Blanks
+    """_search on the values as given, and on them as people type what records hold otherwise (_folded: full-width
+    digits, 100-0001, a name in hiragana) when that reads them otherwise: the answer whose best agree on more of what was
+    typed, as given when alike, a file holding them as typed; the other said (read_as). Blanks
     and placeholders alone (-, NULL: [input] nulls) are nothing to search by, as nothing typed is."""
     nulls = frozenset(s.input.nulls)
     if all(tidy(str(v), nulls, False)[0] is None for v in values.values()):
@@ -484,38 +490,56 @@ def search(ws: Path, s: Settings, p: Pipeline, values: dict[str, str], at_least:
         _sources(fitted, values)
         return dict(record={}, entities=[], found=0, listed=0, candidates=0, typed=[], missing=sorted(values), over=[], seconds={},
                     index=dict(built_at=m["built_at"], records=m["records"] + m["added"]))
-    found = _search(ws, s, p, values, at_least, most)
-    folded = _folded(s, values)
-    return _search(ws, s, p, folded, at_least, most) if not found["listed"] and not found["over"] and folded != values else found
+    found, folded = _search(ws, s, p, values, at_least, most), _folded(s, values)
+    if folded == values:
+        return found
+    try:
+        again = _search(ws, s, p, folded, at_least, most)  # as records hold them most often: kept if its best agree on more of what was typed, else lists where as given lists none
+    except InputError:  # read so, it says nothing: the answer as given
+        return found
+    agreed = lambda r: (max((len(e["fields"]) for e in r["entities"]), default=0), bool(r["listed"]))
+    return {**again, "read_as": {c: v for c, v in folded.items() if v != values[c]}} if agreed(again) > agreed(found) else found
 
 
 def _search(ws: Path, s: Settings, p: Pipeline, values: dict[str, str], at_least: float | None = None, most: int = 10) -> dict:
     """The stored records whose values start with what was typed, any of the file's columns, best first: by how many of
     the searched fields agree (a name also by its end), then by the run's points for the two, a field not typed being
     missing. Each entity at `at_least` points or more (default: any) with its best record, its points, the fields that
-    agree and each comparison's level; at most `most`. A value that starts CAP records or more lists none of them, and
-    is said (over), to be narrowed; of the records listed, the SCORED sharing the most values are scored.
+    agree and each comparison's level; at most `most`, ties in the order the values were read. A value that starts CAP
+    records or more is said (over: how many) and lists the first SCORED of them by value, to be narrowed; of the records
+    listed, the SCORED sharing the most values are scored.
     O(F·(log N + CAP) + SCORED·K·L²)."""
     ws, uid, clock, t = Path(ws), s.data.unique_id, {}, time.perf_counter()
     with _asking(ws, s, p, values, None) as (m, fitted, model, con, query):
         typed = {c: v for c in m["searched"] if c in query and pd.notna(v := query[c].iloc[0])}
         clock["prepare"] = time.perf_counter() - t
         t = time.perf_counter()
-        listed, over = {}, {}
+        listed, over, first = {}, {}, {}  # first: each record's place in the order its value was read (by value): ties go by it
         for c, v in typed.items():
             field = SEARCHED[c]
             if field in over:
                 continue
             reads = [(f"f_{c}", v), *(((f"f_{c}_reverse", con.execute(f"SELECT reverse({q(c)}) FROM qry").fetchall()[0][0]),) if c in REVERSED else ())]
             for table, x in reads:
-                rows = con.execute(f"SELECT uid FROM {_both(table, f'v >= {lit(x)} AND v < {lit(x + LAST)}', 'uid')} LIMIT {CAP}").fetchall()
-                if len(rows) < CAP:
-                    listed.setdefault(field, set()).update(u for (u,) in rows)
-                elif table == f"f_{c}" and field not in listed:  # its field's first value starts too many: the field lists none, and says how many
-                    over[field] = dict(value=v, records=con.execute(f"SELECT count(*) FROM {_both(table, f'v >= {lit(x)} AND v < {lit(x + LAST)}', 'uid')}").fetchall()[0][0])
+                within = _both(table, f"v >= {lit(x)} AND v < {lit(x + LAST)}", "v, uid")
+                rows = con.execute(f"SELECT uid FROM {within} ORDER BY v, uid LIMIT {CAP}").fetchall()
+                if len(rows) == CAP and table == f"f_{c}" and field not in listed:  # its field's first value starts too many: how many, and the first by value
+                    n = con.execute(f"SELECT count(*) FROM (SELECT 1 FROM {within} LIMIT {COUNTED})").fetchall()[0][0]
+                    over[field] = dict(value=v, records=n, more=n >= COUNTED)
+                    rows = rows[:SCORED]
+                elif len(rows) == CAP:  # another read of a field listed already: too many to add to it
+                    continue
+                listed.setdefault(field, set()).update(u for (u,) in rows)
+                for (u,) in rows:
+                    first.setdefault(u, len(first))
+                if field in over:
                     break
+        if any(us for f, us in listed.items() if f not in over):  # another value lists its own: the common one only agrees, its first by value left out
+            listed = {f: us for f, us in listed.items() if f not in over}
+        for f in over:
+            over[f]["listed"] = f in listed
         shared = Counter(u for us in listed.values() for u in us)
-        ids = sorted(shared, key=lambda u: (-shared[u], u))[:SCORED]
+        ids = sorted(shared, key=lambda u: (-shared[u], first[u]))[:SCORED]
         clock["values"] = time.perf_counter() - t
         t = time.perf_counter()
         scored = _scored(con, model, uid, QUERY, ids, m["records"] + m["added"] + 1)
@@ -525,7 +549,8 @@ def _search(ws: Path, s: Settings, p: Pipeline, values: dict[str, str], at_least
     if len(scored):
         scored = scored.assign(likely=_likely(scored, fitted), fields=[agree.get(u, []) for u in scored["uid"]])
         scored["agreed"], size = scored["fields"].map(len), scored["entity"].value_counts()
-        for x in scored.sort_values(["agreed", "weight", "uid"], ascending=[False, False, True]).drop_duplicates("entity").itertuples():
+        scored["first"] = scored["uid"].map(first)
+        for x in scored.sort_values(["agreed", "weight", "first"], ascending=[False, False, True]).drop_duplicates("entity").itertuples():
             if at_least is None or x.weight >= at_least:
                 rows.append(dict(entity=x.entity, record=x.uid, points=round(float(x.weight), 2), likely=bool(x.likely), fields=x.fields,
                                  compared=x.compared, records=int(size[x.entity]), shown=x.shown))
@@ -534,10 +559,19 @@ def _search(ws: Path, s: Settings, p: Pipeline, values: dict[str, str], at_least
                 seconds={k: round(v, 4) for k, v in clock.items()}, index=dict(built_at=m["built_at"], records=m["records"] + m["added"]))
 
 
-def _folded(s: Settings, values: dict[str, str]) -> dict[str, str]:  # values as people type them, read as records hold them most often, by each column's field (_typed)
-    kind = {c: "name" if f.rstrip("_0123456789").endswith("name") else "digits" if f in DIGITS else None
-            for f, alts in s.columns.items() for alt in alts for c in alt}
-    return {c: _typed(v, kind.get(c)) for c, v in values.items()}
+def _folded(s: Settings, values: dict[str, str]) -> dict[str, str]:
+    """Values as people type them, read as records hold them most often (_typed), by each column's field: only a column
+    some field reading it doesn't prepare so already (its normalize lacks katakana, or strip_separators), as a
+    workspace mapped before those steps; else the run prepares them alike, and a second reading would change nothing."""
+    steps = {d.name: d.normalize for d in s.standardize.derived}
+    kind, lacks = {}, set()
+    for f, alts in s.columns.items():
+        k = "name" if f.rstrip("_0123456789").endswith("name") else "digits" if f in DIGITS else None
+        for c in (c for alt in alts for c in alt):
+            kind.setdefault(c, k)
+            if k and ("katakana" if k == "name" else "strip_separators") not in steps.get(f, ()):
+                lacks.add(c)
+    return {c: _typed(v, kind.get(c)) if c in lacks else v for c, v in values.items()}
 
 
 def _typed(v: str, kind: str | None) -> str:
@@ -547,8 +581,8 @@ def _typed(v: str, kind: str | None) -> str:
     other value as it is: a birth date keeps its separators (1993-1-12 isn't 1993-11-2)."""
     if kind is None:
         return v
-    v = unicodedata.normalize("NFKC", str(v))
-    return v.translate(KATAKANA) if kind == "name" else re.sub(SEPARATORS, "", v)
+    w = unicodedata.normalize("NFKC", str(v))
+    return w.translate(KATAKANA) if kind == "name" else re.sub(SEPARATORS, "", w) or v  # 〒 alone: as typed, not nothing
 
 
 def _view(query: pd.DataFrame, uid: str) -> dict:  # the record asked about, as compared: its fields and kind
