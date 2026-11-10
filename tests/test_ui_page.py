@@ -598,6 +598,7 @@ def test_review_counts_down_an_answer_waits_out_a_busy_workspace_and_auto_merge_
     assert page.is_disabled("#lu button[type=submit]") and page.get_attribute("#lu", "inert") is not None
     page.click("#build")
     page.wait_for_selector("#lu:not([inert]) button[type=submit]:not([disabled])", timeout=120_000)
+    assert page.is_hidden("#task") and page.inner_text("#out .card .answer").startswith("Index of")  # its progress said in the card, no panel over the results
     rec = pd.read_parquet(tmp_path / "all.parquet").iloc[5]
     for c in ("FULL_NAME_KANA", "PHONE_NUM_4", "POST_CD"):
         if isinstance(rec[c], str):
