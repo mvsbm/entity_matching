@@ -129,7 +129,7 @@ tbody tr[aria-selected="true"] { background: var(--sel); color: var(--sel-ink); 
 .lu-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 0 16px; margin-top: 16px; }
 .lu-act { display: flex; gap: 16px; align-items: flex-end; flex-wrap: wrap; margin-top: 12px; } .lu-act .field { flex: 0 1 320px; margin: 0; }
 .lu-top { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; } .lu-top .pts { font-size: 20px; font-weight: 500; min-width: 64px; }
-.lu-who { color: var(--ink); } .lu-hit .chips { margin-top: 8px; }
+.lu-who { color: var(--ink); } .lu-hit .chips { margin-top: 8px; } .lu-build { display: inline-flex; gap: 10px; align-items: center; }
 .from { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; margin-bottom: 8px; font-size: 14px; }
 .from input[type=number], .filters input[type=number] { width: 72px; font: inherit; padding: 6px 8px; border: 1px solid var(--outline); border-radius: 6px; background: var(--surface); color: var(--ink); }
 .filters { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; margin-bottom: 12px; font-size: 14px; }
@@ -971,7 +971,7 @@ function ended(command) {  // a long run ended: its buttons free, its page drawn
   if (!longRun || longRun.command !== command) return;
   const {visit: from, page} = longRun;
   longRun = null;
-  if (visit !== from && [page, "run", "records"].includes(current)) go(current);  // its page, or one whose buttons waited for it
+  if (visit !== from && [page, "run", "records", "lookup"].includes(current)) go(current);  // its page, or one whose buttons waited for it
 }
 async function rejoin() {  // a long command that began before this page was drawn (a reload, another tab): followed to its end
   const r = await api("/api/running");
@@ -2451,8 +2451,10 @@ const SCREENS = {
     const input = (c) => `<label class="field"><span class="lab">${esc(words(c.field))}</span><input type="text" name="${esc(c.column)}" placeholder="${esc(c.column)}" autocomplete="off"></label>`;
     const says = !ix.built_at ? "Build the index once, from the run: then each look-up takes well under a second"
       : ix.stale ? `The index is out of date: ${ix.stale}` : `Index of ${plural(ix.records, "record")}, built ${String(ix.built_at).replace("T", " ").slice(0, 16)}`;
+    const held = longRun && longRun.command !== "build index";  // a run writes the workspace: the index waits for it
     $("out").innerHTML = `<div class="card">${ask("Is this customer already here?", esc(says), "",
-        `<button type="button" class="btn ${ready ? "outlined" : "filled"}" id="build">${icon("refresh")}${ix.built_at ? "Rebuild index" : "Build index"}</button>`)}
+        `<span class="lu-build">${held ? '<span class="muted">after the run</span>' : ""}<button type="button" class="btn ${ready ? "outlined" : "filled"}" id="build" ${held ? "disabled" : ""}>${
+          icon("refresh")}${ix.built_at ? "Rebuild index" : "Build index"}</button></span>`)}
       <form id="lu" ${ready ? "" : "inert"}><div class="lu-grid">${ix.columns.filter((c) => c.main).map(input).join("")}</div>
         ${ix.columns.some((c) => !c.main) ? `<details class="fold-line"><summary>More columns</summary><div class="lu-grid">${ix.columns.filter((c) => !c.main).map(input).join("")}</div></details>` : ""}
         <div class="lu-act"><label class="field"><span class="lab">or a record's ID, as if it were new</span><input type="text" id="lu-id" autocomplete="off"></label>
