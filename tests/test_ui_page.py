@@ -607,6 +607,32 @@ def test_review_counts_down_an_answer_waits_out_a_busy_workspace_and_auto_merge_
     assert page.locator("#found .lu-hit").first.locator("[data-record]").get_attribute("data-record") in set(pd.read_parquet(ws / "gold.parquet").set_index(uid).loc[[rec[uid]], "cluster_id"]) | {rec[uid]}
     assert "ms" in page.inner_text("#found .card .answer") and "ready" in page.inner_text("#nav [data-screen=lookup]")
 
+    named = pd.read_parquet(tmp_path / "all.parquet").dropna(subset=["FULL_NAME_KANA"])  # as one types: suggestions, no Enter
+    first, second = named["FULL_NAME_KANA"].iloc[0][:3], next(n[:3] for n in named["FULL_NAME_KANA"] if n[:3] != named["FULL_NAME_KANA"].iloc[0][:3])
+    for c in ("FULL_NAME_KANA", "PHONE_NUM_4", "POST_CD"):
+        page.fill(f"#lu input[name='{c}']", "")
+    page.locator("#lu input[name='FULL_NAME_KANA']").press_sequentially(first, delay=60)
+    page.wait_for_selector("#suggest .lu-hit", timeout=30_000)
+    assert "start with what you typed" in page.inner_text("#suggest .card .answer") and page.locator("#suggest .lu-hit .chip:has-text('name')").count()
+    page.fill("#lu-top", "1")  # Show: how many, kept in this browser
+    page.dispatch_event("#lu-top", "change")
+    page.wait_for_function("() => document.querySelectorAll('#suggest .lu-hit').length === 1", timeout=30_000)
+    page.reload()
+    page.wait_for_selector("#lu-top")
+    assert page.input_value("#lu-top") == "1"
+    page.evaluate("""(slow) => { const real = window.fetch; window.fetch = async (u, o) => {  // the first answer arrives after the second
+        if (o && o.body && o.body.includes(slow)) await new Promise((r) => setTimeout(r, 1500)); return real(u, o); }; }""", f"FULL_NAME_KANA={first}")
+    name = page.locator("#lu input[name='FULL_NAME_KANA']")
+    name.fill(first)
+    name.dispatch_event("input")
+    page.wait_for_timeout(300)  # its search asked, its answer held back
+    name.fill(second)
+    name.dispatch_event("input")
+    page.wait_for_selector("#suggest .lu-hit", timeout=30_000)
+    later = page.inner_html("#suggest")
+    page.wait_for_timeout(2500)  # the first answer has arrived meanwhile: it never replaces the second's
+    assert page.inner_html("#suggest") == later
+
 
 def test_auto_mode_runs_from_the_first_screen_and_its_report_waits_on_the_overview(ui_page, tmp_path, population):
     s, p, g = population

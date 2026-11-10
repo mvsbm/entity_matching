@@ -127,9 +127,9 @@ tbody tr[aria-selected="true"] { background: var(--sel); color: var(--sel-ink); 
 .find input { border: 0; outline: none; font: inherit; color: var(--ink); background: transparent; min-width: 120px; flex: 1; }
 .big-find { min-width: 280px; } .big-find input { font-size: 16px; }
 .lu-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 0 16px; margin-top: 16px; }
-.lu-act { display: flex; gap: 16px; align-items: flex-end; flex-wrap: wrap; margin-top: 12px; } .lu-act .field { flex: 0 1 320px; margin: 0; }
+.lu-act { display: flex; gap: 16px; align-items: flex-end; flex-wrap: wrap; margin-top: 12px; } .lu-act .field { flex: 0 1 320px; margin: 0; } .lu-act .lu-n { flex: 0 0 104px; }
 .lu-top { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; } .lu-top .pts { font-size: 20px; font-weight: 500; min-width: 64px; }
-.lu-who { color: var(--ink); } .lu-hit .chips { margin-top: 8px; } .lu-build { display: inline-flex; gap: 10px; align-items: center; }
+.lu-who { color: var(--ink); } .lu-hit .chips { margin-top: 8px; } .lu-top .grow { flex: 1; } .lu-build { display: inline-flex; gap: 10px; align-items: center; }
 .from { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; margin-bottom: 8px; font-size: 14px; }
 .from input[type=number], .filters input[type=number] { width: 72px; font: inherit; padding: 6px 8px; border: 1px solid var(--outline); border-radius: 6px; background: var(--surface); color: var(--ink); }
 .filters { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; margin-bottom: 12px; font-size: 14px; }
@@ -169,7 +169,7 @@ tbody tr[aria-selected="true"] { background: var(--sel); color: var(--sel-ink); 
 .card.ready { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; } .card.ready .grow { flex: 1; }
 .field { display: block; margin: 0 0 16px; }
 .field .lab { display: block; font-size: 12px; color: var(--muted); margin-bottom: 4px; }
-.field input[type=text], .field select { font: inherit; width: 100%; padding: 10px 12px; border: 1px solid var(--outline); border-radius: 4px; background: var(--surface); color: var(--ink); }
+.field input[type=text], .field input[type=number], .field select { font: inherit; width: 100%; padding: 10px 12px; border: 1px solid var(--outline); border-radius: 4px; background: var(--surface); color: var(--ink); }
 .check { display: flex; gap: 10px; align-items: flex-start; margin: 0 0 16px; }
 .big { font-size: 26px; margin: 4px 0 12px; }
 .keys { color: var(--faint); font-size: 12px; }
@@ -658,11 +658,12 @@ body.term-open .tray { bottom: var(--term-h); }  /* above the command drawer */
             {"command": "describe key", "args": {"name": "@name", "workspace": "@workspace"}, "reads": ["name", "pairs", "matched", "only", "examples", "sizes", "largest", "group", "around"]},
             {"command": "explain pair", "args": {"first": "@first", "second": "@second", "workspace": "@workspace"}, "reads": ["weight", "prior", "pairs_all", "pairs_same", "common", "same_customer", "records", "comparisons", "tests", "found", "group_a", "group_b", "across"]},
             {"command": "describe matching", "args": {"workspace": "@workspace"}, "reads": ["nodes", "edges"]}]},
-  {"id": "lookup", "title": "Look up", "icon": "search", "what": "One record against everything the run holds, from its index: the entities it may belong to, best first.",
+  {"id": "lookup", "title": "Look up", "icon": "search", "what": "A record against everything the run holds, from its index: found as you type any of its values, and the entities it may belong to, best first.",
    "strip": [],
    "uses": [{"command": "describe workspace", "args": {"workspace": "@workspace"}, "reads": ["records", "index"]},
             {"command": "build index", "args": {"workspace": "@workspace", "compute": "@compute"}, "form": [], "reads": ["records", "seconds"]},
-            {"command": "match record", "args": {"values": "@values", "record": "@record", "workspace": "@workspace"}, "reads": ["record", "entities", "found", "candidates", "likely", "seconds"]}]}
+            {"command": "match record", "args": {"values": "@values", "record": "@record", "count": "@count", "from": "@from", "workspace": "@workspace"}, "reads": ["record", "entities", "found", "candidates", "likely", "seconds"]},
+            {"command": "search records", "args": {"values": "@values", "count": "@count", "from": "@from", "workspace": "@workspace"}, "reads": ["entities", "found", "listed", "typed", "over"]}]}
 ]}
 </script>
 <script>
@@ -762,6 +763,7 @@ const term = {
     const div = document.createElement("div");
     div.innerHTML = `<div class="cmd">${esc(line)}</div><div class="out"></div><div class="state faint">running…</div>`;
     $("term-body").append(div);
+    while ($("term-body").childElementCount > 300) $("term-body").firstElementChild.remove();  // bounded: a search per keystroke adds one each
     $("term-body").scrollTop = $("term-body").scrollHeight;
     return {
       step: (e) => { div.querySelector(".out").textContent += `${e.step.padEnd(11)} ${e.seconds.toFixed(1).padStart(6)} s\n`; },
@@ -814,7 +816,7 @@ async function runOnce(command, args, onEvent, tries = 10) {
   const started = await api("/api/run", {command, args});
   if (started.error) return {event: "error", error: started.error, fix: started.fix || "", lost: started.lost};
   const {last, exit} = await watch(started.job, command, started.command, onEvent);
-  if (!/^(describe|list|show|explain|compare) /.test(command)) resultsNow = null;  // a command that writes: what the run holds is read again
+  if (!/^(describe|list|show|explain|compare|match|search) /.test(command)) resultsNow = null;  // a command that writes: what the run holds is read again
   if (COMMANDS[command].quick && exit === 75 && tries > 1) { await sleep(1000); return runOnce(command, args, onEvent, tries - 1); }  // busy: once it's done
   return last;
 }
@@ -940,7 +942,7 @@ function runCard() {
 async function watch(job, command, line, onEvent, since = null) {  // a job's events to its end, in the drawer and the progress panel: its last event and exit code
   const quick = COMMANDS[command].quick, entry = term.add(line);
   if (!quick) task.start(command, job, since);
-  let from = 0, last = {};
+  let from = 0, last = {}, polls = 0;
   for (;;) {
     const j = await api(`/api/job/${job}?from=${from}`);
     if (j.error) {  // the server is gone: the command ends here, the page never waits forever
@@ -964,7 +966,7 @@ async function watch(job, command, line, onEvent, since = null) {  // a job's ev
       if (!quick) task.end(j.exit === 0, last.error || "", job);
       return {last, exit: j.exit};
     }
-    await sleep(quick ? 120 : 300);
+    await sleep(quick ? (++polls < 4 ? 25 : 120) : 300);  // a quick answer, often in tens of milliseconds, read as soon as it is there
   }
 }
 function ended(command) {  // a long run ended: its buttons free, its page drawn again if it was left and opened since
@@ -2442,7 +2444,7 @@ const SCREENS = {
 
   results: (el, arg) => explorePage(el, arg),
 
-  async lookup(el) {  // one record against the run's index: the entities it may belong to, best first
+  async lookup(el) {  // as one types, the records whose values start with it; on Look up, the entities the run would join it to, best first
     el.innerHTML = head("lookup") + `<div id="note"></div><div id="out">${loading()}</div>`;
     if (!state.workspace) { await notYet(el, "lookup"); return; }
     const w = await run("lookup", "describe workspace");
@@ -2450,39 +2452,70 @@ const SCREENS = {
     const ix = w.index, ready = ix.built_at && !ix.stale;
     const input = (c) => `<label class="field"><span class="lab">${esc(words(c.field))}</span><input type="text" name="${esc(c.column)}" placeholder="${esc(c.column)}" autocomplete="off"></label>`;
     const says = !ix.built_at ? "Build the index once, from the run: then each look-up takes well under a second"
-      : ix.stale ? `The index is out of date: ${ix.stale}` : `Index of ${plural(ix.records, "record")}, built ${String(ix.built_at).replace("T", " ").slice(0, 16)}`;
+      : ix.stale ? `The index is out of date: ${ix.stale}`
+      : `Index of ${plural(ix.records, "record")}, built ${String(ix.built_at).replace("T", " ").slice(0, 16)}${ix.added ? `, ${fmt(ix.added)} added since` : ""}`;
     const held = longRun && longRun.command !== "build index";  // a run writes the workspace: the index waits for it
+    const top = Number(store("lookupTop")) || 10, from = store("lookupFrom") ?? "";  // this browser's, as it left them
     $("out").innerHTML = `<div class="card">${ask("Is this customer already here?", esc(says), "",
         `<span class="lu-build">${held ? '<span class="muted">after the run</span>' : ""}<button type="button" class="btn ${ready ? "outlined" : "filled"}" id="build" ${held ? "disabled" : ""}>${
           icon("refresh")}${ix.built_at ? "Rebuild index" : "Build index"}</button></span>`)}
       <form id="lu" ${ready ? "" : "inert"}><div class="lu-grid">${ix.columns.filter((c) => c.main).map(input).join("")}</div>
         ${ix.columns.some((c) => !c.main) ? `<details class="fold-line"><summary>More columns</summary><div class="lu-grid">${ix.columns.filter((c) => !c.main).map(input).join("")}</div></details>` : ""}
         <div class="lu-act"><label class="field"><span class="lab">or a record's ID, as if it were new</span><input type="text" id="lu-id" autocomplete="off"></label>
+          <label class="field lu-n"><span class="lab">Show</span><input type="number" id="lu-top" min="1" max="200" step="1" value="${top}"></label>
+          <label class="field lu-n"><span class="lab">From points</span><input type="number" id="lu-from" step="any" placeholder="any" value="${esc(from)}"></label>
           <button class="btn filled" type="submit" ${ready ? "" : "disabled"}>${icon("search")}Look up</button>${ready ? "" : '<span class="muted">once the index is built</span>'}</div></form></div>
-      <div id="found"></div>`;
+      <div id="found"></div><div id="suggest"></div>`;
     $("build").onclick = () => run("lookup", "build index").then((r) => r.event === "error" ? ($("note").innerHTML = banner(r)) : go("lookup"));
-    let asked = 0;
+    const settings = () => {  // Show and From points, kept in this browser
+      const k = Math.min(200, Math.max(1, Math.round(Number($("lu-top").value)) || 10)), p = $("lu-from").value.trim(), points = p !== "" && Number.isFinite(Number(p));
+      $("lu-top").value = k;
+      store("lookupTop", String(k)); store("lookupFrom", points ? p : "");
+      return {count: String(k), from: points ? p : undefined};
+    };
+    const values = () => [...new FormData($("lu"))].map(([k, v]) => [k, v.trim()]).filter(([, v]) => v).map(([k, v]) => `${k}=${v}`);  // the ID's input has no name: the columns only
+    let asked = 0, sought = 0, pause = null;
+    const suggest = async () => {
+      const n = ++sought, typed = values();
+      if (!typed.length) { $("suggest").innerHTML = ""; return; }
+      const r = await run("lookup", "search records", {values: typed, ...settings()});
+      if (n !== sought) return;  // a later keystroke's answer only
+      $("suggest").innerHTML = r.event === "error" ? banner(r) : suggestions(r);
+    };
+    $("lu").addEventListener("input", (e) => {  // once the typing pauses; a look-up's answer was for the values before
+      if (!e.target.name) return;
+      asked++; $("found").innerHTML = "";
+      clearTimeout(pause); pause = setTimeout(suggest, 200);
+    });
+    for (const id of ["lu-top", "lu-from"]) $(id).onchange = () => { suggest(); if ($("found").innerHTML) $("lu").requestSubmit(); };
     $("lu").onsubmit = async (e) => {
       e.preventDefault();
-      const n = ++asked, record = $("lu-id").value.trim();  // the ID's input has no name: FormData holds the columns only
-      const values = [...new FormData($("lu"))].map(([k, v]) => [k, v.trim()]).filter(([, v]) => v).map(([k, v]) => `${k}=${v}`);
-      if (!record && !values.length) { $("found").innerHTML = banner({event: "error", error: "Give a value or a record's ID", fix: ""}, "warn"); return; }
+      const n = ++asked, record = $("lu-id").value.trim(), typed = values();
+      if (!record && !typed.length) { $("found").innerHTML = banner({event: "error", error: "Give a value or a record's ID", fix: ""}, "warn"); return; }
       $("found").innerHTML = `<div class="card">${loading()}</div>`;
-      const r = await run("lookup", "match record", record ? {record} : {values});
+      const r = await run("lookup", "match record", {...(record ? {record} : {values: typed}), ...settings()});
       if (n !== asked) return;  // a later look-up's answer only
       $("found").innerHTML = r.event === "error" ? banner(r) : found(r);
     };
-    const shown = (x) => ["full_name", "company_name", "address", "phone", "birth_date"].filter((k) => x[k]).map((k) => `<span>${esc(x[k])}</span>`).join(" · ");
+    const shown = (x) => [x.full_name || x.person_name, x.company_name, x.address, x.phone, x.birth_date].filter(Boolean).map((v) => `<span>${esc(v)}</span>`).join(" · ");
+    const card = (e, chips) => `<div class="card lu-hit">
+        <div class="lu-top"><span class="pts ${e.points >= 0 ? "for" : "against"}">${e.points >= 0 ? "+" : ""}${e.points.toFixed(1)}</span>${chips}
+          <span class="lu-who">${shown(e.shown) || esc(e.record)}</span><span class="grow"></span>
+          <a class="btn" data-go="results" data-record="${esc(e.record)}">Open in Explore</a></div>
+        ${e.compared ? `<div class="chips">${Object.entries(e.compared).filter(([, v]) => v !== "else" && v !== "missing").map(([k, v]) => `<span class="chip">${esc(words(k))}: ${esc(v)}</span>`).join("")}</div>` : ""}
+        ${e.records > 1 ? `<p class="faint">${plural(e.records, "record")} of this entity compared</p>` : ""}</div>`;
     const found = (r) => {
       const ms = Math.round(Object.values(r.seconds).reduce((a, b) => a + b, 0) * 1000);
       const said = r.found ? `${plural(r.found, "possible match", "possible matches")}${r.likely ? `, ${fmt(r.likely)} likely the same` : ""}` : "None here looks like it";
-      return `<div class="card">${ask(said, `${plural(r.candidates, "record")} compared in ${fmt(ms)} ms`)}</div>` + r.entities.map((e) => `<div class="card lu-hit">
-        <div class="lu-top"><span class="pts ${e.points >= 0 ? "for" : "against"}">${e.points >= 0 ? "+" : ""}${e.points.toFixed(1)}</span>
-          ${e.likely ? '<span class="chip good">likely the same</span>' : '<span class="chip info">possible</span>'}${e.rule ? `<span class="chip good">rule ${esc(e.rule)}</span>` : ""}
-          <span class="lu-who">${shown(e.shown) || esc(e.record)}</span><span class="grow"></span>
-          <a class="btn" data-go="results" data-record="${esc(e.record)}">Open in Explore</a></div>
-        <div class="chips">${Object.entries(e.compared).filter(([, v]) => v !== "else" && v !== "missing").map(([k, v]) => `<span class="chip">${esc(words(k))}: ${esc(v)}</span>`).join("")}</div>
-        ${e.records > 1 ? `<p class="faint">${plural(e.records, "record")} of this entity compared</p>` : ""}</div>`).join("");
+      return `<div class="card">${ask("What would the run do with it?", `${said} <span class="faint">· ${plural(r.candidates, "record")} compared in ${fmt(ms)} ms</span>`)}</div>` + r.entities.map((e) => card(e,
+        (e.likely ? '<span class="chip good">likely the same</span>' : '<span class="chip info">possible</span>') + (e.rule ? `<span class="chip good">rule ${esc(e.rule)}</span>` : ""))).join("");
+    };
+    const suggestions = (r) => {
+      const over = r.over.map((x) => `too many records start with ${esc(x.value)}: type more of it`).join(" · ");
+      const said = !r.typed.length ? "Type a name, phone, postal code, address or ID" : r.found ? `${plural(r.listed, "record")} start with what you typed${over ? ` · ${over}` : ""}`
+        : over ? over[0].toUpperCase() + over.slice(1) : r.listed ? `None of the ${plural(r.listed, "record")} that start with it reaches ${esc($("lu-from").value)} points` : "No record starts with what you typed";
+      return `<div class="card">${ask("Who could it be?", said)}</div>` + r.entities.map((e) => card({...e, compared: null},
+        (e.likely ? '<span class="chip good">likely the same</span>' : "") + e.fields.map((f) => `<span class="chip">${esc(words(f))}</span>`).join(""))).join("");
     };
     return w;
   },
