@@ -633,7 +633,7 @@ The stored records whose values start with those given, any of them; nothing wri
 nayose search records COLUMN=VALUE … [--from POINTS] [--count N] --workspace WORKSPACE [--pipeline PIPELINE] [--compute KEY=VALUE …] [--format text|json]
 ```
 
-Values by the file's column names, any of them, as people type them (full-width, hiragana, 100-0001 read as the records hold them), each prepared as a run prepares it and read by its start in the index (a name also by its end): the records sharing the most of them, scored with the run's model, a column not given counting as missing. The entities at --from points or more (default: any), best first, each with its best record, its points and the fields that agree. A value that starts too many records to list is said, to be given further. O(F·(log N + 2,000) + 500·K·L²): F the fields given, N only in log N.
+Values by the file's column names, any of them (finding nothing as given, read again as people type them: full-width, a name's hiragana, 100-0001), each prepared as a run prepares it and read by its start in the index (a name also by its end): the records sharing the most of them, scored with the run's model, a column not given counting as missing. The entities at --from points or more (default: any), best first, each with its best record, its points and the fields that agree. A value that starts too many records to list is said, to be given further. O(F·(log N + 2,000) + 500·K·L²): F the fields given, N only in log N.
 
 | Parameter | |
 |---|---|
@@ -1242,7 +1242,7 @@ What the run found, at a glance.
 nayose describe results --workspace WORKSPACE [--from POINTS] [--pipeline PIPELINE] [--format text|json]
 ```
 
-How the scores came out (every scored pair, by points: exact, from the run's patterns), the pairs waiting for people from --from points up, by range, what merged and how, entities by size, the merge conditions, whether matches could be missed (the probe), the groups too big to compare, and the person/company answers to give. Reads the workspace only: no run. The first read of a run written before runs kept their pairs' levels makes that index once (scored/), from the pairs it stored. O(N + P + E).
+How the scores came out (every pair the run scored, the full run's and each increment's, by its points), the pairs waiting for people from --from points up, by range, what merged and how, entities by size, the merge conditions, whether matches could be missed (the probe), the groups too big to compare, and the person/company answers to give. Reads the workspace only: no run. The first read of a run written before runs kept their pairs' levels makes that index once (scored/), from the pairs it stored. O(N + P + E).
 
 | Parameter | |
 |---|---|

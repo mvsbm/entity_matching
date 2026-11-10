@@ -73,7 +73,7 @@ from er.kind import KIND_COLUMNS, NAME_MODEL, classifier as kind_classifier, kin
 from er.match import ELSE, fs_settings, named_sql, read_by, refreshed_u, review_floor, rule_edges, score_fs, scored_u, train_fs, u_basis
 from er.probe import missed
 from er.report import applied, carry_kinds, carry_over, qa, report_text, review_sheet, scored_again, trust_state
-from er.results import check_merging, merge_where
+from er.results import BANDS, banded, check_merging, merge_where
 from er.settings import SPECIAL, Settings, fit_to_file, present_fields
 from er.source import answers, decisions, file_facts, filled, known, open_source, suggest
 from er.standardize import prepare
@@ -536,7 +536,11 @@ class Run:
         reached: dict[str, dict[str, int]] = {}  # per comparison, the pairs at each level (gamma, as score_fs gives it): one scan
         for c, g, n in self.con.execute("SELECT c, g, count(*) FROM (UNPIVOT scores ON COLUMNS('^gamma_') INTO NAME c VALUE g) GROUP BY ALL").fetchall():
             reached.setdefault(c.removeprefix("gamma_"), {})[str(g)] = n
-        self._done("score", "O(C·K·L²)", f"O({self._count('scores'):,}·{k}·L²)", t, reached=reached, patterns=self._patterns())
+        self._done("score", "O(C·K·L²)", f"O({self._count('scores'):,}·{k}·L²)", t, reached=reached, patterns=self._patterns(), bands=self._bands())
+
+    def _bands(self) -> list[int]:  # the pairs in `scores` by the score chart's bands (results.BANDS), each by its own weight
+        n = dict(self.con.execute(f"SELECT {banded()}, count(*) FROM scores GROUP BY 1").fetchall())
+        return [n.get(i, 0) for i in range(len(BANDS) + 1)]
 
     def _patterns(self) -> dict:
         """The patterns the pairs in `scores` fall in, one step per comparison: per pattern its pairs, their mean weight,
@@ -821,7 +825,7 @@ class Run:
         self.con.execute(f"""CREATE OR REPLACE TABLE touched AS SELECT * FROM records WHERE {u} IN
             (SELECT {l} FROM cands UNION SELECT {r} FROM cands)""")
         score_fs(self.scoring, "touched", "cands", self.db, self.uid, into="scores", n_records=self.n)
-        self._done("score", "O(C_Δ·K·L²)", f"O({self._count('cands'):,}·{len(fs.model.comparisons)}·L²)", t, patterns=self._patterns())
+        self._done("score", "O(C_Δ·K·L²)", f"O({self._count('cands'):,}·{len(fs.model.comparisons)}·L²)", t, patterns=self._patterns(), bands=self._bands())
 
         t = time.perf_counter()
         self._accept()
