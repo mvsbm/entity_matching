@@ -115,6 +115,17 @@ def name_model(settings, spec: KindSpec) -> NameModel:
     return m
 
 
+CENTURY = 30  # a birth date's 2-digit year: up to this, 20yy; past it, 19yy. Fixed, so a run reads a date alike whenever it runs
+
+
+def birth_year(birth: pd.Series) -> np.ndarray:  # 1993-05-25, 19930525, 1993/05/25 → 1993; 93-05-25, 930525 → 1993; else NaN
+    s = birth.astype("string")
+    digits = s.str.replace(r"\D", "", regex=True)
+    yy = pd.to_numeric(digits.str[:2], errors="coerce").to_numpy(dtype=float, na_value=np.nan)
+    short = (digits.str.len() == 6).fillna(False).to_numpy(dtype=bool)
+    return np.where(short, yy + np.where(yy <= CENTURY, 2000, 1900), pd.to_numeric(s.str[:4], errors="coerce").to_numpy(dtype=float, na_value=np.nan))
+
+
 PERSON, COMPANY, UNSURE = 1, 2, 0  # the codes of kind, customer_kind and people's answers: as a person/company flag writes them
 SAYS = {PERSON: "1 person", COMPANY: "2 company", UNSURE: "0 not sure"}
 
@@ -150,7 +161,7 @@ class Classifier:
     def features(self, name: pd.Series, flag: pd.Series | None, birth: pd.Series | None) -> np.ndarray:
         """Per record: the name model's log-odds, the flag (1 company, 0 person), the birth year, a legal form."""
         n = len(name)
-        year = np.full(n, np.nan) if birth is None else pd.to_numeric(birth.astype("string").str[:4], errors="coerce").to_numpy(dtype=float)
+        year = np.full(n, np.nan) if birth is None else birth_year(birth)
         return np.column_stack([self.names.logit(text(name, self.std)), self.flag_code(flag, n) - 1, year, legal(name, self.std).astype(float)])
 
     def classify(self, name: pd.Series, flag: pd.Series | None = None, birth: pd.Series | None = None,

@@ -343,7 +343,8 @@ def test_a_parquet_file_read_by_column_reads_as_value_by_value_does(tmp_path, mo
     from er import intake
     ref, spec = load_settings().paths["reference"], intake.InputSpec()
     names = ["ヤマダタロウ", "ヤマダ　タロウ", " サトウ", "サトウ ", "　", "  ", "NULL", " NULL ", "－", "譁ｰ縺励＞", "abc\x01", "タ​ナカ", "a\tb",
-             "ﾔﾏﾀﾞ", "�", "", None, "東京" * 100, "①", "😀", "Ｓｕｚｕｋｉ", "plain", " plain", "１２.０", " ", "ア　"]  # every kind of value a reading treats apart
+             "ﾔﾏﾀﾞ", "�", "", None, "東京" * 100, "①", "😀", "Ｓｕｚｕｋｉ", "plain", " plain", "１２.０", " ", "ア　",
+             '["大分県"]', '　["大分県"]　', "[1] ", "[株]", '["a", "b"]', "[]"]  # every kind of value a reading treats apart
     n = 6 * len(names)
     table = pa.table({"id": [f"R{i}" for i in range(n)], "name": [names[i % len(names)] for i in range(n)],
                       "amount": [["12345.0", "1.23457E+11", "100", "１２.０", "3.5", None][i % 6] for i in range(n)],
@@ -427,3 +428,31 @@ def test_a_part_s_description_is_kept_and_made_again_only_when_what_it_rests_on_
     (Path(part) / cli.KEPT).write_text("{not json", encoding="utf-8")  # a kept copy cut short: made again, never a failure
     describe()
     assert made == [1, 1, 1, 1] and json.loads((Path(part) / cli.KEPT).read_text(encoding="utf-8"))["key"]
+
+
+def test_a_value_written_as_a_list_reads_as_its_item_and_a_part_an_older_reader_read_is_read_again_once(tmp_path, monkeypatch):
+    import pyarrow as pa
+    from er import folder, intake
+    ref, spec = load_settings().paths["reference"], intake.InputSpec()
+    table = pa.table({"id": ["1", "2", "3", "4", "5"],
+                      "postal": pa.array([["0708612"], [], [None], ["8700848", "8700849"], None], pa.list_(pa.string())),  # a Parquet list column
+                      "phone": pa.array([[1201], [3344], None, [], [7.0]], pa.list_(pa.float64())),
+                      "text": ['["大分県"]', "['大分市']", "[株]", "[0708612]", ' ["x"] ']})  # lists a CSV or a text column holds
+    part = tmp_path / "ws" / "inputs" / "0001-x"
+    part.mkdir(parents=True)
+    pq.write_table(table, part / "x.parquet")
+    as_text = lambda r: [{c: x if isinstance(x, str) else None for c, x in row.items()} for row in pd.read_parquet(part / r["files"][0]["read"]).to_dict("records")]
+    with monkeypatch.context() as m:  # as the reader before this one read it: lists kept as JSON
+        m.setattr(intake, "READER", 1)
+        m.setattr(intake, "unlisted", lambda v: None)
+        old = intake.take(part, {part / "x.parquet": "x.parquet"}, spec, ref)
+    assert old["reader"] == 1 and as_text(old)[0]["postal"] == '["0708612"]'
+    r = intake.report(folder.fresh(part, spec, ref))
+    got = as_text(r)
+    assert [x["postal"] for x in got] == ["0708612", None, None, "8700848", None]  # the first of several; an empty list or one of nulls, missing
+    assert [x["phone"] for x in got] == ["1201", "3344", None, None, "7"] and [x["text"] for x in got] == ["大分県", "大分市", "[株]", "0708612", "x"]
+    assert r["reader"] == intake.READER and r["fixed"] == {"lists": 11, "first of several": 1}  # counted: one loses nothing, the other the rest
+    assert r["files"][0]["versions"][0] == old["files"][0]["sha256"] and r["older_reader"] == [old["files"][0]["sha256"]]  # a run that read the old one still finds its file, and is known to have
+    seconds = (part / intake.REPORT).stat().st_mtime_ns
+    folder.fresh(part, spec, ref)
+    assert (part / intake.REPORT).stat().st_mtime_ns == seconds  # read again once: then as it is

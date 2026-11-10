@@ -185,7 +185,7 @@ def describe(path: str | Path, con: duckdb.DuckDBPyConnection, columns: Mapping[
     filled and an example; each field's sources (`columns`: its alternatives, each one column or several joined, as a
     run reads them: a later one where the earlier are empty, a joined one only where every part is filled), with each
     one's share filled, an example, and the share of its values that look like the field, and the same for the field
-    as a whole; for each field and column, how well the column fits (`fit`: the order to offer them in); and for a
+    as a whole, with a value that doesn't (odd); for each field and column, how well the column fits (`fit`: the order to offer them in); and for a
     field the file holds none of, the column whose name or values suggest it. Shares filled cover the file; examples
     and fits come from a sample of `rows` records. Suggestions only: a wrong guess applied silently would corrupt
     results. With `slots` (a workspace's features, by path, er.settings.slots), the same numbers for each, in the same
@@ -212,9 +212,10 @@ def describe(path: str | Path, con: duckdb.DuckDBPyConnection, columns: Mapping[
     con.execute(f"CREATE OR REPLACE TEMP TABLE er_described AS SELECT * FROM {src.sql} USING SAMPLE reservoir({rows} ROWS) REPEATABLE (0)")
     pattern = {f: x for f, x in {**patterns, **{f"slot:{k}": v for k, v in (slot_patterns or {}).items()}}.items() if f in here}
     looks = lambda f, v: f"coalesce(avg(regexp_matches({v}, {lit(pattern[f])})::INT) FILTER (WHERE {v} IS NOT NULL), 0)" if f in pattern else "NULL"
-    seen = con.execute(f"SELECT {', '.join(f'first({shown[k]}) FILTER (WHERE {shown[k]} IS NOT NULL), ' + (looks(k[1], shown[k]) if k[0] != 'column' else 'NULL') for k in keys)} "
+    odd = lambda f, v: f"first({v}) FILTER (WHERE NOT regexp_matches({v}, {lit(pattern[f])}))" if f in pattern else "NULL"  # a value that doesn't look like it
+    seen = con.execute(f"SELECT {', '.join(f'first({shown[k]}) FILTER (WHERE {shown[k]} IS NOT NULL), ' + (f'{looks(k[1], shown[k])}, {odd(k[1], shown[k])}' if k[0] != 'column' else 'NULL, NULL') for k in keys)} "
                        f"FROM er_described").fetchall()[0]
-    example, looks_right = dict(zip(keys, seen[0::2])), dict(zip(keys, seen[1::2]))
+    example, looks_right, unlike = dict(zip(keys, seen[0::3])), dict(zip(keys, seen[1::3])), dict(zip(keys, seen[2::3]))
     fits = fit(con, "er_described", cols, fields, patterns)
     sample = con.execute(f"SELECT {', '.join(q(c) for c in cols)} FROM er_described").fetchall()
     profile = profiled({c: [r[i] for r in sample] for i, c in enumerate(cols)}, lex) if lex else {}  # row by row: columns compared on the same records
@@ -229,6 +230,7 @@ def describe(path: str | Path, con: duckdb.DuckDBPyConnection, columns: Mapping[
             suggested.append(dict(field=f, column=c, why=f"{fits[f][c]:.0%} " + ("filled, each value once" if f == "id" else f"look like {f.replace('_', ' ')}")))
     def entry(f: str, alts: tuple[tuple[str, ...], ...]) -> dict:  # a field's or a slot's numbers, and each of its alternatives'
         return dict(sources=[list(a) for a in alts], filled=share.get(("field", f)), example=example.get(("field", f)), looks_right=looks_right.get(("field", f)),
+                    odd=unlike.get(("field", f)),
                     alternatives=[dict(columns=list(a), found=set(a) <= set(cols),
                                        **({k: v for k, v in zip(("filled", "example", "looks_right"), (share[key], example[key], looks_right[key]))}
                                           if (key := ("alt", f, here[f].index(a)) if a in here[f] else None) else

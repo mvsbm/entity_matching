@@ -81,7 +81,7 @@ town_code = '^[0-9]{11}$'
 city = '[市区町村郡]$'
 phone = '^[0-9]{4}$'
 customer_id = '^[0-9]{8,}$'
-birth_date = '^(19|20)[0-9]{2}-?[01][0-9]-?[0-3][0-9]$'
+birth_date = '^((19|20)?[0-9]{2})[-/.]?[01][0-9][-/.]?[0-3][0-9]$'   # 1993-05-25, 19930525, 93-05-25, 1993/05/25
 
 # Which of the file's columns hold each field. The pipeline reads fields only, never a file's column names.
 # A string is one column. A list of lists gives fallbacks: the first whose columns are all filled wins, concatenated.

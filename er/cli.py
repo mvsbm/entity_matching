@@ -18,6 +18,7 @@ import functools
 import hashlib
 import json
 import math
+import re
 import shlex
 import shutil
 import sys
@@ -39,13 +40,13 @@ from er.config import InputError, adjust, lit, load_pipeline, q, restrict, sourc
 from er.folder import Busy
 from er.report import (applied, compare_records, describe_entity, describe_key, describe_matching, describe_method, describe_workspace, entity_pairs, explain_pair, fill_rates,
                        key_how, list_patterns, review_workload, rule_how, run_model, trust_state)
-from er.source import describe, find, lexicon
+from er.source import describe, filled, find, lexicon
 from er.match import review_floor
 from er.results import apply_merging, check_merging, describe_merging, describe_results, list_entities, list_scored, merged_links, save_merging, show_records
 from er.strings import connect
 from er.run import Run, size_bytes, trial
-from er.settings import (COLUMNS, SPECIAL, add_feature, added_of, beside, columns_file, counted_once, features_of, load_settings, offers, own_columns,
-                         placements, present_fields, remove_feature, set_columns, set_features, settings_path, slots)
+from er.settings import (COLUMNS, SPECIAL, add_feature, added_of, beside, columns_file, counted_once, features_of, load_settings, names_by_kind, offers,
+                         own_columns, placements, present_fields, remove_feature, set_columns, set_features, set_name_kinds, settings_path, slots)
 
 
 @dataclass(frozen=True)
@@ -420,8 +421,14 @@ def file_lines(r: dict) -> list[str]:  # a file described: the fields found, and
         have = [f for f in g if f in filled]
         if (share := sum(filled[f] for f in have)) < 0.3:
             out.append(f"  ! {' and '.join(map(word, have))} {'are' if len(have) > 1 else 'is'} {share:.0%} filled" + (" together" if len(have) > 1 else ""))
-    out += [f"  ! only {f['looks_right']:.0%} of {word(f['field'])} values look right" for f in found if f.get("looks_right") is not None and f["looks_right"] < 0.5]
+    for f in found:  # what its values say is off, else how few look right
+        if h := f.get("hint"):
+            out.append(f"  {'! ' if h['level'] == 'warn' else ''}{word(f['field'])}: {h['says']}" + (f", e.g. {h['example']}" if h.get("example") else ""))
+        elif f.get("looks_right") is not None and f["looks_right"] < WARN:
+            out.append(f"  ! only {f['looks_right']:.0%} of {word(f['field'])} values look right")
     read = r.get("read") or {}
+    if several := (read.get("fixed") or {}).get("first of several"):
+        out.append(f"  ! {several:,} values listed several items: the first is read")
     if read.get("waiting"):
         out.append(f"  ! {sum(read['waiting'].values()):,} values wait for a repair you accept: nayose accept repairs")
     if read.get("unread"):
@@ -559,7 +566,7 @@ BRIEF: dict[str, Callable[[dict], list[str]]] = {
     "load records": brief_load,
     "describe records": brief_describe_records,
     "check records": brief_check,
-    "resolve records": brief_run, "rerun records": brief_run, "add records": brief_run, "apply answers": brief_run, **dict.fromkeys(("adopt method", "reset method", "lower trust", "raise trust", "split entity"), brief_run),
+    "resolve records": brief_run, "rerun records": brief_run, "add records": brief_run, "set names": lambda r: [f"✓ names compared {'each on its own side, by kind' if r['names'] == 'by-kind' else 'as mapped'}"] + nexts(r), "apply answers": brief_run, **dict.fromkeys(("adopt method", "reset method", "lower trust", "raise trust", "split entity"), brief_run),
     "describe workspace": brief_workspace,
     "describe results": brief_results,
     "list scored": brief_scored,
@@ -638,13 +645,18 @@ def after_run(run: Run, out: Path) -> dict:
                 wrote=[str(out / f) for f in wrote], next=next_after(out, run.uid, facts and facts["waiting"]))
 
 
+def loaded(a: dict, verb: str) -> dict:  # a command's file: the one named, else the workspace's file loaded last
+    if a["input"]:
+        return a
+    if not a.get("workspace") or not (parts := folder.parts(Path(a["workspace"]))):
+        raise InputError(f"no file to {verb}", fix=f"name one: nayose {verb} records FILE; or load one into the workspace first")
+    return {**a, "input": str(parts[-1])}
+
+
 def check_records(a: dict, emit: "Emit") -> dict:
     s, p, _ = setup(a)
-    if not a["input"]:  # the file loaded into the workspace last
-        if not a.get("workspace") or not (parts := folder.parts(Path(a["workspace"]))):
-            raise InputError("no file to check", fix="name one: nayose check records FILE; or load one into the workspace first")
-        a = {**a, "input": str(parts[-1])}
-    with readable(a["input"], s) as path:
+    a = loaded(a, "check")
+    with readable(a["input"], s, emit=emit) as path:
         return checked(a, s, p, path, emit)
 
 
@@ -665,17 +677,22 @@ def checked(a: dict, s, p, path: str, emit: "Emit") -> dict:
     needed, fit, read = int(plan["normal"].sum()), run.capacity(), read_of(Path(path))
     capacity = dict(memory_limit_gb=round(size_bytes(limit) / 2**30, 2), spill_folder=spill, spill_free_gb=round(run.spill_room() / 2**30, 1),
                     pairs_needed=needed, pairs_fit=fit, headroom=round(fit / needed, 1) if needed else None)
+    try:  # what describe records said of the file's fields, kept with a workspace's file: its hints, while nothing they rest on changed
+        k = json.loads((Path(path) / KEPT).read_text(encoding="utf-8"))
+        kept = {f["field"]: f.get("hint") for f in k["described"]["fields"]} if k["key"] == described_key(a, Path(path)) else {}
+    except (OSError, ValueError, KeyError, TypeError):
+        kept = {}
     return plain(dict(records=run.n, fields=fields, turned_off=run.disabled, keys=keys, oversized_from=p.fs.budget.min_oversized(), notes=run.notes, read=read,
-                      capacity=capacity, ready=ready_for(run, fields, plan, capacity, read),
+                      capacity=capacity, ready=ready_for(run, fields, plan, capacity, read, kept),
                       next=[dict(command=nayose("resolve", "records", *([] if own else [a["input"]]), "--workspace", a.get("workspace") or "<workspace>"),
                                  why="find matches")]))
 
 
-def ready_for(run: Run, fields: list[dict], plan: pd.DataFrame, capacity: dict, read: dict | None) -> dict:
+def ready_for(run: Run, fields: list[dict], plan: pd.DataFrame, capacity: dict, read: dict | None, hints: dict | None = None) -> dict:
     """Whether a run of the file checked would go through, and what may hurt it: what would stop it (its pairs over
     the room DuckDB has; a mistake in the file or the mapping stops the check itself, with its fix), and what to
-    look at first (a field nearly empty, or whose values don't look like it; repairs waiting; rows unread; records
-    set aside; little room to spare). Each a sentence, with what to do."""
+    look at first (a field nearly empty, or whose values don't look like it, said as describe records' hint where it
+    gave one; repairs waiting; rows unread; records set aside; little room to spare). Each a sentence, with what to do."""
     stops, warns = [], []
     needed, fit = capacity["pairs_needed"], capacity["pairs_fit"]
     if needed > fit:  # the numbers themselves: the headroom shown is rounded
@@ -694,7 +711,9 @@ def ready_for(run: Run, fields: list[dict], plan: pd.DataFrame, capacity: dict, 
             warns.append(dict(what=f"{' and '.join(map(word, have))} {'are' if len(have) > 1 else 'is'} {share:.0%} filled" + (" together" if len(have) > 1 else ""),
                               fix="map a fuller column, if the file has one"))
     for f in fields:
-        if f["looks_right"] is not None and f["filled"] and f["looks_right"] < 0.5:
+        if (h := (hints or {}).get(f["field"])) and h["level"] == "warn" and f["filled"]:
+            warns.append(dict(what=f"{word(f['field'])}: {h['says']}", fix=h.get("command") or h["fix"]))
+        elif f["looks_right"] is not None and f["filled"] and f["looks_right"] < WARN:
             warns.append(dict(what=f"only {f['looks_right']:.0%} of {word(f['field'])} values look right", fix=f"check its column ({f['columns']})"))
     if read and read["waiting"]:
         warns.append(dict(what=f"repairs wait: {', '.join(f'{n:,} {k}' for k, n in read['waiting'].items())}", fix="see them with describe records, then accept repairs KIND"))
@@ -750,14 +769,19 @@ def model_from(path: str | None) -> dict | None:
     return saved.get("model", saved)
 
 
-def given(a: dict) -> str:
-    """The records a run reads: the file named, copied into the workspace first; without one, the file loaded last."""
-    ws, s = Path(a["workspace"]), settings_for(a)
+def given(a: dict, emit: "Emit | None" = None) -> str:
+    """The records a run reads: the file named, copied into the workspace first; without one, the file loaded last,
+    read again first if an older reader read it (folder.fresh)."""
+    ws, s, told = Path(a["workspace"]), settings_for(a), rows_told(emit)
     if a["input"]:
-        return str(folder.take_in(ws, a["input"], s.input, s.paths["reference"])[0])
+        return str(folder.take_in(ws, a["input"], s.input, s.paths["reference"], progress=told)[0])
     if not (parts := folder.parts(ws)):
         raise InputError(f"no records file in {ws}", fix=f"load one: nayose load records FILE --workspace {ws}; or name it here")
-    return str(parts[-1])
+    return str(folder.fresh(parts[-1], s.input, s.paths["reference"], told))
+
+
+def rows_told(emit: "Emit | None"):  # the rows read so far, for a file being read
+    return emit and (lambda n, whole: emit.progress(n, whole, "rows"))
 
 
 FLAG = r"^\s*\S{1,6}\s*$"  # what a person/company flag's values look like, a short code (1, P, 法人, PERSON), padded or not: to warn of a wrong column, never to suggest one
@@ -765,13 +789,13 @@ SLOT_FIELD = {"person name": "person_name", "family": "person_name", "given": "g
 
 
 @contextlib.contextmanager
-def readable(path: str, s, strict: bool = False):
-    """A path as the door reads it: a workspace's part, as its intake read it; any other file or files, read for this
-    command alone into a folder that goes once it ends (er.intake); people's files strictly: one that needs a repair is
-    refused."""
+def readable(path: str, s, strict: bool = False, emit: "Emit | None" = None):
+    """A path as the door reads it: a workspace's part, as its intake read it (read again first if an older reader
+    read it: folder.fresh); any other file or files, read for this command alone into a folder that goes once it ends
+    (er.intake); people's files strictly: one that needs a repair is refused."""
     p = Path(path).expanduser()
     if p.is_dir() and intake.report(p):
-        yield str(p)
+        yield str(folder.fresh(p, s.input, s.paths["reference"], rows_told(emit)))
         return
     files, root = find(path), p if p.is_dir() else None
     with tempfile.TemporaryDirectory(prefix="nayose-", ignore_cleanup_errors=True) as t:  # Windows: a file DuckDB still holds can't go yet
@@ -820,7 +844,8 @@ def described_key(a: dict, part: Path) -> str | None:
 def describe_records(a: dict, emit: "Emit") -> dict:
     """A workspace part's description is kept with it (KEPT) and given again while nothing it rests on changed
     (described_key): opening step 2 reads no record. Anything else is described as it comes. O(1) kept; else describe's."""
-    with readable(a["input"], settings_for(a)) as path:
+    a = loaded(a, "describe")
+    with readable(a["input"], settings_for(a), emit=emit) as path:
         part = Path(path)
         key, kept = described_key(a, part), part / KEPT
         try:  # a copy kept never fails the command: unreadable, it is made again
@@ -845,7 +870,8 @@ def described(a: dict) -> dict:
         if script[path] not in (None, "kana"):
             return None
         return (None if x.get("added") else x.get("field")) or SLOT_FIELD.get(x.get("role") or x.get("type"))
-    d = describe(a["input"], connect(s.compute)[0], s.columns, s.detect, lex=lexicon(s.paths["reference"], tuple(s.standardize.kana_fold.items())),
+    con = connect(s.compute)[0]
+    d = describe(a["input"], con, s.columns, s.detect, lex=lexicon(s.paths["reference"], tuple(s.standardize.kana_fold.items())),
                  slots={path: x["columns"] for path, x in slots(feats)},
                  slot_patterns={**{path: s.detect[f] for path, x in slots(feats) if (f := field(path, x)) in s.detect},
                                 **{path: FLAG for path, x in slots(feats) if x.get("type") == "flag"}})
@@ -854,14 +880,98 @@ def described(a: dict) -> dict:
         off = restrict(p, set(present))[1]
     except InputError as e:
         off = [str(e)]
+    said = hints(d, con, s, p, feats, a.get("workspace"), field)
+    for x in d["slots"]:
+        x["hint"] = said.get(x["feature"])
+    by_field = {}
+    for path, x in slots(feats):
+        if said.get(path) and (f := field(path, x)):
+            by_field.setdefault(f, said[path])
+    for x in d["fields"]:
+        x["hint"] = by_field.get(x["field"])
     d = {**d, "features": feats, "placements": placements(feats, d["profile"], d["fit"]), "offers": offers(feats, d["profile"]),
-         "needed": dict(every=list(p.fields.mandatory), one_of=[list(g) for g in p.fields.one_of]), "turned_off": off}
+         "needed": dict(every=list(p.fields.mandatory), one_of=[list(g) for g in p.fields.one_of]), "turned_off": off, "names_by_kind": names_by_kind(s)}
     found = [f"{x['feature']}={x['column']}" for x in d["placements"]]
     waiting = (intake.report(Path(a["input"])) or {}).get("proposed", {}) if there else {}
-    return {**d, "next": [dict(command=nayose("accept", "repairs", k, *there), why=f"{n:,} proposed: see them first, in read.examples") for k, n in waiting.items()] +
+    fixes = list({h["command"]: h for h in said.values() if h.get("command")}.values())  # one fix a line, the slots' order
+    return {**d, "next": [dict(command=h["command"], why=h["fix"]) for h in fixes] +
+            [dict(command=nayose("accept", "repairs", k, *there), why=f"{n:,} proposed: see them first, in read.examples") for k, n in waiting.items()] +
             ([dict(command=nayose("set", "feature", *found, *there), why="place what the file's contents suggest")] if found and there else []) +
             [dict(command=nayose("resolve", "records", *there) if there else nayose("check", "records", a["given"]),
                   why="find matches in it" if there else "the full check: every record prepared, every key counted")]}
+
+
+WARN = 0.5  # under this share of a slot's values that look like it, its column likely holds something else: a hint says what
+
+
+def hints(d: dict, con, s, p, feats: list[dict], ws: str | None, field_of: Callable[[str, dict], str | None]) -> dict[str, dict]:
+    """What each slot's sampled values say is off, and what sets it right (a note to act on, never applied by itself),
+    the first that holds, by slot path:
+    - a name slot holding the other kind's names (the name model, and legal forms, on the sample): compare each
+      record's name on its own side (set names by-kind); so set already, said as info;
+    - a birth date written more than one way (its shapes, digits as 9): the same date won't match;
+    - values that look like one other field: read the column there, the target's own columns kept after it, or take
+      it off when that field reads it already (set feature);
+    - else how few look right, with one that doesn't.
+    A slot read from columns joined is judged whole: no one column of it is moved or named. Each: level (warn, info),
+    says (no record's value: check records' warnings reach reports), fix; a value that doesn't look right (example);
+    with a fix to apply, act (names; move, to and column; off and column), the page's button, and with a workspace the
+    command. O(slots + the sample's names)."""
+    from er.kind import legal, name_model, text as name_text
+    slot, paths, there, by_kind = {x["feature"]: x for x in d["slots"]}, list(slots(feats)), (["--workspace", ws] if ws else []), names_by_kind(s)
+    try:
+        model = name_model(s, p.kind) if p.kind else None
+    except InputError:  # no name model here: the other notes still hold
+        model = None
+    found = lambda e: [alt["columns"] for alt in e.get("alternatives") or [] if alt.get("found")]
+    sampled = lambda col: [v for (v,) in con.execute(f"SELECT {q(col)} FROM er_described WHERE {filled(col)}").fetchall()]
+    alts = lambda e, col: ",".join("+".join(alt) for alt in e["sources"] if alt != [col])  # a slot's other alternatives, as set feature writes them
+    out = {}
+    for path, x in paths:
+        e, fld = slot[path], field_of(path, x)
+        if not e.get("filled") or not (first := next(iter(found(e)), None)):
+            continue
+        col, side = first[0] if len(first) == 1 else None, "company" if fld == "company_name" else "person" if x.get("type") == "person name" and fld else None
+        if side and model and col:
+            names = pd.Series(sampled(col), dtype="string")
+            company = (model.logit(name_text(names, s.standardize)) >= 0) | legal(names, s.standardize)
+            other = float((~company if side == "company" else company).mean()) if len(names) else 0.0
+            if other >= 0.2:
+                whose = "people's names" if side == "company" else "company names"
+                out[path] = (dict(level="info", says=f"{whose} too ({other:.0%}): each compared on its own side", fix=None) if by_kind else
+                             dict(level="warn", says=f"mostly {whose} ({other:.0%})" if other >= 0.5 else f"{whose} too ({other:.0%})",
+                                  fix="compare each record's name on its own side, by its kind", act="names", button="Compare by kind",
+                                  command=nayose("set", "names", "by-kind", *there) if ws else None))
+                continue
+        if fld == "birth_date" and col:  # 1993-05-25 beside 93-05-25: equal dates, unequal strings
+            shapes = pd.Series([re.sub(r"\d", "9", v.strip()) for v in sampled(col)]).value_counts(normalize=True)
+            if len(ways := shapes[shapes >= 0.05]) > 1:
+                out[path] = dict(level="warn", says=f"written {len(ways)} ways ({', '.join(ways.index[:3])}): the same date written two ways won't match",
+                                 fix="write every date one way in the file")
+                continue
+        looks = e.get("looks_right")
+        if looks is None or looks >= WARN:
+            continue
+        fits = sorted(((share, g) for g, cols in d["fit"].items() if g not in ("id", fld) and (share := cols.get(col) or 0) >= WARN), reverse=True) if col else []
+        target_of = lambda g: next((tp for tp, tx in paths if tp.count("/") == 1 and field_of(tp, tx) == g), None)
+        close = [(share, g, tp) for share, g in fits if share >= fits[0][0] - 0.2 and (tp := target_of(g))]  # 7 digits fit a postal code and an address code alike
+        pick = (next((c for c in close if [col] in slot[c[2]]["sources"]), None)  # the feature that reads this column already
+                or (close[0] if len(close) == 1 else None)
+                or (empty[0] if len(empty := [c for c in close if not found(slot[c[2]])]) == 1 else None))  # else the one feature with no column
+        if pick:
+            share, g, target = pick
+            name, says = target.split("/")[-1], f"values look like {target.split('/')[-1].lower()} ({share:.0%})"
+            out[path] = (dict(level="warn", says=f"{says}, which reads this column already", fix=f"take it off {x['name']}", act="off", column=col,
+                              button="Take it off", command=nayose("set", "feature", f"{path}={alts(e, col)}", *there) if ws else None)
+                         if [col] in slot[target]["sources"] else
+                         dict(level="warn", says=says, fix=f"read this column as {name}", act="move", to=target, column=col, button=f"Move to {name}",
+                              command=nayose("set", "feature", f"{target}={','.join(filter(None, (col, alts(slot[target], col))))}", f"{path}={alts(e, col)}", *there)
+                              if ws else None)
+                         if not found(slot[target]) or (slot[target].get("looks_right") or 0) < WARN else
+                         dict(level="warn", says=says, fix=f"check the column ({col})"))
+            continue
+        out[path] = dict(level="warn", says=f"only {looks:.0%} look right", example=e.get("odd"), fix=f"check the column ({'+'.join(first)})")  # a value: shown here, never in a report
+    return out
 
 
 def load_records(a: dict, emit: "Emit") -> dict:
@@ -887,6 +997,16 @@ def set_feature(a: dict, emit: "Emit") -> dict:
         values[path] = tuple(tuple(c.strip() for c in alt.split("+")) for alt in cols.split(",")) if cols else ()
     set_features(a["workspace"], values)
     return {**list_features(a, emit), "next": [dict(command=nayose("describe", "records", "<file>", "--workspace", a["workspace"]), why="see how the file fills them")]}
+
+
+def set_names(a: dict, emit: "Emit") -> dict:
+    ws = Path(a["workspace"])
+    if not (f := columns_file(ws)):
+        raise InputError(f"{ws} keeps no mapping of its own", fix=f"create it as a workspace first: nayose create workspace {ws.name}")
+    set_name_kinds(f, a["how"] == "by-kind")
+    lines = [x for x in f.read_text(encoding="utf-8").splitlines() if x.split("=")[0].strip() in ("full_name", "person_name", "company_name")]
+    return dict(names=a["how"], mapping=lines, next=[dict(command=nayose("describe", "records", "--workspace", ws), why="see the names checked again"),
+                                                    dict(command=nayose("resolve", "records", "--workspace", ws), why="match with it")])
 
 
 def add_feature_(a: dict, emit: "Emit") -> dict:
@@ -933,7 +1053,7 @@ def list_workspaces(a: dict, emit: "Emit") -> dict:
 def resolve_records(a: dict, emit: "Emit") -> dict:
     s, p, pipeline = setup(a)
     out = Path(a["workspace"])
-    return after_run(Run(p, s, model=model_from(a["model"]), echo=emit.step, told=emit.progress).full(given(a), out, overwrite=a["overwrite"], pipeline_file=pipeline), out)
+    return after_run(Run(p, s, model=model_from(a["model"]), echo=emit.step, told=emit.progress).full(given(a, emit), out, overwrite=a["overwrite"], pipeline_file=pipeline), out)
 
 
 def add_records(a: dict, emit: "Emit") -> dict:
@@ -943,7 +1063,8 @@ def add_records(a: dict, emit: "Emit") -> dict:
     s, p, pipeline = setup(a)
     out = Path(a["workspace"])
     held = [x for x in folder.parts(out) if a["input"] and Path(a["input"]).expanduser().resolve() == x.resolve()]  # a part loaded already: as it is
-    part, copied = (held[0], False) if held else folder.take_in(out, a["input"], s.input, s.paths["reference"], progress=lambda n, whole: emit.progress(n, whole, "rows")) if a["input"] else (Path(given(a)), False)
+    part, copied = ((folder.fresh(held[0], s.input, s.paths["reference"], rows_told(emit)), False) if held else
+                    folder.take_in(out, a["input"], s.input, s.paths["reference"], progress=rows_told(emit)) if a["input"] else (Path(given(a, emit)), False))
     try:
         run = Run(p, s, echo=emit.step, told=emit.progress).increment(part, out, pipeline_file=pipeline)
     except InputError as e:
@@ -962,7 +1083,7 @@ def add_records(a: dict, emit: "Emit") -> dict:
 def match_records(a: dict, emit: "Emit") -> dict:
     s, p, _ = setup(a)
     out = Path(a["workspace"])
-    with readable(a["input"], s) as path:
+    with readable(a["input"], s, emit=emit) as path:
         found = Run(p, s, echo=emit.step, told=emit.progress).match(path, out)
     return dict(counts={k: int(v) for k, v in found["status"].value_counts().items()}, records=rows(ids(found, s.data.unique_id)),
                 next=[dict(command=nayose("add", "records", a["input"], "--workspace", out), why="add them to the run")])
@@ -1419,17 +1540,20 @@ DESCRIBED = {"records": "records", "columns": "each column of the file: column, 
              "suggested": "for each field the file holds none of: field, column, why",
              "needed": "the fields a run stops without: every (each of them), one_of (at least one of each group)",
              "turned_off": "rules, keys and levels a run of this file would turn off: a field they read is missing",
-             "slots": "each feature and part: feature (its path), sources, filled, example, looks_right, and each of its alternatives",
+             "slots": "each feature and part: feature (its path), sources, filled, example, looks_right, odd (a value that doesn't look right), "
+                      "hint (what its values say is off: level warn or info, says, example (a value that doesn't look right), fix, and with a workspace the command and button that fix it), "
+                      "and each of its alternatives",
+             "names_by_kind": "whether each record's name is compared on the side its kind leans to (set names)",
              "features": "the structure: groups › features › parts, each with type and columns",
              "profile": "each column's script (kanji, kana, romaji) and the shares of its values that are known family names, given names, full names, addresses",
              "placements": "for each feature with no column: feature, column, share, why (the file's contents)",
              "offers": "new features the contents suggest: feature, type, script, column, share, why", "notes": "what the reader detected or fixed",
-             "read": "what the reader found (er.intake): rows, values per encoding, fixed (controls, placeholders, numbers, damaged), proposed and waiting: repairs by kind (realign, garbled, encoding) for accept repairs, with examples; unread rows", "next": "the commands that usually follow"}
+             "read": "what the reader found (er.intake): rows, values per encoding, fixed (controls, placeholders, numbers, damaged, lists, first of several), proposed and waiting: repairs by kind (realign, garbled, encoding) for accept repairs, with examples; unread rows", "next": "the commands that usually follow"}
 CHECKED = {"records": "records read", "fields": "each field: filled, looks_right, top_value (shares), columns",
            "capacity": "the room a run has: memory_limit_gb, spill_folder, spill_free_gb, pairs_needed (this file's, exactly), pairs_fit, headroom (fit ÷ needed)",
            "ready": "ok, and each of stops (what would stop a run) and warns (what to look at first): what, fix",
            "turned_off": "rules, keys and levels a missing field turns off", "keys": "each key's pairs per record and largest block",
-           "oversized_from": "the block size checked by sampling", "notes": "what the loader detected or fixed", "read": "what the reader found (er.intake): rows, values per encoding, fixed (controls, placeholders, numbers, damaged), proposed and waiting: repairs by kind (realign, garbled, encoding) for accept repairs, with examples; unread rows",
+           "oversized_from": "the block size checked by sampling", "notes": "what the loader detected or fixed", "read": "what the reader found (er.intake): rows, values per encoding, fixed (controls, placeholders, numbers, damaged, lists, first of several), proposed and waiting: repairs by kind (realign, garbled, encoding) for accept repairs, with examples; unread rows",
            "next": "the commands that usually follow"}
 COMPUTE = Param("compute", "DuckDB limits for this run, over config/settings.toml [compute]: memory_limit=8GB, threads=4, "
                 "temp_directory=<folder> (past the memory limit DuckDB spills there)", "many", metavar="KEY=VALUE")
@@ -1475,7 +1599,7 @@ COMMANDS: tuple[Command, ...] = (
             (Param("kind", "realign, garbled or encoding", "choice", intake.KINDS, positional=True),
              Param("part", "the loaded file, by its part (0001, or its name; default: the latest with this kind waiting)", metavar="PART"), WORKSPACE),
             {"part": "the part read again", "kind": "the kind accepted", "repaired": "the repairs applied", "rows": "the rows it now holds",
-             "added": "rows that were unread", "read": "what the reader found (er.intake): rows, values per encoding, fixed (controls, placeholders, numbers, damaged), proposed and waiting: repairs by kind (realign, garbled, encoding) for accept repairs, with examples; unread rows", "next": "the commands that usually follow"},
+             "added": "rows that were unread", "read": "what the reader found (er.intake): rows, values per encoding, fixed (controls, placeholders, numbers, damaged, lists, first of several), proposed and waiting: repairs by kind (realign, garbled, encoding) for accept repairs, with examples; unread rows", "next": "the commands that usually follow"},
             "nayose accept repairs realign --workspace workspaces/acme", accept_repairs),
     Command("list", "features", "The features a workspace's columns fill: groups, features, parts",
             "The workspace's structure: each group, its features and their parts (a full name's family and given names), each "
@@ -1492,6 +1616,16 @@ COMMANDS: tuple[Command, ...] = (
             {"features": "the structure, as set", "slots": "each feature and part: feature (its path), columns", "next": "the commands that usually follow"},
             "nayose set feature \"Name/Full name/Family name=SEI\" \"Name/Full name/Given name=MEI\" --workspace workspaces/acme", set_feature, quick=True,
             show={"features": ()}),
+    Command("set", "names", "Compare each record's name on its own side, by its kind, or as mapped",
+            "by-kind: a person's name is compared only with people's names, a company's only with companies' (kind = person "
+            "on full_name and person_name, kind = company on company_name, in the workspace's columns.toml): for a file whose "
+            "name columns hold both kinds' names, which a run would otherwise score twice, as a person's name and as a "
+            "company's. Each record goes to the side its kind leans to (er.kind); one whose kind is unsure, where the "
+            "engine and the flag disagree, compares no name until people answer it (list kinds). as-mapped takes it back. "
+            "The next run reads it. O(the file).",
+            (Param("how", "by-kind or as-mapped", "choice", ("by-kind", "as-mapped"), positional=True), WORKSPACE),
+            {"names": "by-kind or as-mapped", "mapping": "the name lines of columns.toml, as written", "next": "the commands that usually follow"},
+            "nayose set names by-kind --workspace workspaces/acme", set_names, quick=True),
     Command("add", "feature", "Add a feature: a name in another script, or another company name",
             "Adds a feature to the Name group (PATH: Name/<its name>): a person's name, with its family and given names, or a "
             "company name, in a script (kana, kanji or romaji: how its values are prepared). Its fields are numbered beside "
@@ -1516,10 +1650,12 @@ COMMANDS: tuple[Command, ...] = (
             "earlier are empty, a joined one where every part is filled), each with its share filled, an example and the share "
             "of its values that look like the field; how well each column fits each field; and, for a field the file holds "
             "none of, the column its name or values suggest, never applied: set columns applies it; and what a run would turn "
-            "off, a field they read missing. Shares filled cover the "
+            "off, a field they read missing; and for a feature whose values don't look like it, what they say is off and "
+            "what sets it right (hint): a name column holding the other kind's names too (set names by-kind), values that "
+            "look like another field (set feature), or a value that doesn't look right. Shares filled cover the "
             "file; the rest a sample of 2,000 records. A file not loaded into a workspace is read as it comes first, for "
             "this command alone (read: what the reader found). O(N·C) in one scan, plus the sample, plus the reading.",
-            (INPUT, OWN), DESCRIBED, "nayose describe records customers.parquet --workspace workspaces/acme", describe_records, quick=True,
+            (replace(INPUT, help=INPUT.help + "; without it, the workspace's file loaded last", optional=True), OWN), DESCRIBED, "nayose describe records customers.parquet --workspace workspaces/acme", describe_records, quick=True,
             show={"columns": ("column", "filled", "example"), "fields": ("field", "filled", "looks_right"), "fit": (), "features": (), "profile": (),
                   "slots": ("feature", "filled", "looks_right"), "placements": ("feature", "column", "why"), "offers": ("feature", "column", "why")}),
     Command("check", "records", "Read, map and check a file, in seconds; resolve nothing",
@@ -1957,7 +2093,7 @@ COMMANDS: tuple[Command, ...] = (
 
 GROUPS = (  # the top-level help's commands, by task
     ("Set up", ("create workspace", "list workspaces", "load records", "accept repairs", "check records", "describe records", "list columns",
-                "set columns", "list features", "set feature", "add feature", "remove feature")),
+                "set columns", "list features", "set feature", "set names", "add feature", "remove feature")),
     ("Run", ("resolve records", "add records", "match records", "rerun records", "rehearse records", "try everything", "serve inbox")),
     ("Review", ("open ui", "describe results", "list scored", "show records", "decide pair", "apply decisions", "list kinds", "answer kind",
                 "apply answers", "describe merging", "set merging", "list entities", "describe entity", "split entity")),

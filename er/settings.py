@@ -58,10 +58,25 @@ def field(name: str, spec: object, where: Path | str = "config/settings.toml") -
 def shared_name(s: "Settings", column: str) -> "Settings":
     """The settings for a file whose one column holds every name, a person's or a company's: the name fields all read
     it, and full_name, person_name and company_name keep it only on records that lean their kind (er.kind)."""
-    kinds = {"full_name": "person", "person_name": "person", "company_name": "company", "any_name": None}
+    kinds = {**NAME_KINDS, "any_name": None}
     derived = tuple(replace(d, sources=((column,),), kind=kinds[d.name]) if d.name in kinds else d for d in s.standardize.derived)
     columns = {f: (((column,),) if f in kinds else src) for f, src in s.columns.items()}
     return replace(s, standardize=replace(s.standardize, derived=derived), columns=columns)
+
+
+NAME_KINDS = {"full_name": "person", "person_name": "person", "company_name": "company"}  # the name fields a record's kind routes (er.kind)
+
+
+def set_name_kinds(path: Path, by_kind: bool) -> None:
+    """Each name field kept only on the records that lean its kind (by_kind: kind written on full_name, person_name and
+    company_name), or on every record, as mapped (kind taken off), in the [columns] of the file at `path`. O(the file)."""
+    current = tomllib.loads(path.read_text(encoding="utf-8"))["columns"]
+    have = {f: field(f, current[f], path).sources for f in NAME_KINDS if f in current}
+    set_columns(path, have, update={f: {"kind": NAME_KINDS[f] if by_kind else None} for f in have})
+
+
+def names_by_kind(s: "Settings") -> bool:  # whether a record's name goes only to the side its kind leans to
+    return any(d.kind for d in s.standardize.derived if d.name in NAME_KINDS)
 
 
 def settings_path() -> Path:  # the settings file a run reads
@@ -84,12 +99,13 @@ def own_columns(path: Path) -> str:
     return "".join(out)
 
 
-def set_columns(path: Path, mapping: dict[str, tuple[tuple[str, ...], ...]], options: Mapping[str, dict] | None = None) -> None:
+def set_columns(path: Path, mapping: dict[str, tuple[tuple[str, ...], ...]], options: Mapping[str, dict] | None = None,
+                update: Mapping[str, dict] | None = None) -> None:
     """Rewrite the [columns] lines of the fields in `mapping` in the settings file at `path`: each field's source
     alternatives, tried in order, each one column or several joined (none: the field has no column, and whatever reads it
     is turned off, as for a file that lacks it; the field stays declared, so the pipeline still loads). Every other line, each
-    line's comment, and a field's options (normalize, kind) stay; a new field takes its `options`. The new text is loaded
-    and validated before it replaces the old. O(the file)."""
+    line's comment, and a field's options (normalize, kind) stay; a new field takes its `options`; `update` merges
+    options into a field's (None takes one off). The new text is loaded and validated before it replaces the old. O(the file)."""
     text = path.read_text(encoding="utf-8")
     lines, current = text.splitlines(keepends=True), tomllib.loads(text)["columns"]
     start = next(i for i, x in enumerate(lines) if x.strip() == "[columns]")
@@ -98,6 +114,8 @@ def set_columns(path: Path, mapping: dict[str, tuple[tuple[str, ...], ...]], opt
     for name, sources in mapping.items():
         at = next((i for i in range(start + 1, end) if re.match(rf"{re.escape(name)}\s*=", lines[i])), None)
         old, alts = current.get(name, (options or {}).get(name)), [list(a) for a in sources]
+        if name in (update or {}):
+            old = {k: v for k, v in {**(old if isinstance(old, dict) else {}), **update[name]}.items() if v is not None}
         value = (f"{{ {', '.join(f'{k} = {toml(v)}' for k, v in {**old, 'sources': alts}.items())} }}" if isinstance(old, dict)
                  else toml(alts[0][0]) if alts and alts == [alts[0][:1]] else toml(alts))
         comment = re.search(r'^[^"#]*(?:"[^"]*"[^"#]*)*\s(#.*)$', lines[at].rstrip("\n")) if at is not None else None

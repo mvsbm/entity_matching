@@ -4,7 +4,8 @@ A CSV or TSV is split on its own bytes (Python's csv over a latin-1 view, which 
 each value, in whatever encoding, survives to be decoded on its own: in the one of [input] encodings it decodes in
 strictly, else in its column's. What loses nothing is fixed at once: control bytes, zero-width characters and BOMs
 removed, placeholder nulls ([input] nulls), values of spaces alone and numbers a spreadsheet cut short (1.23E+11) made missing, 12345.0 read
-as 12345. What would be a guess is proposed, and applies once people accept its kind (`nayose accept repairs`):
+as 12345, a value written as a list (a Parquet list column, or text like ["8700848"]) read as its item: the first, when
+it lists several, counted apart. What would be a guess is proposed, and applies once people accept its kind (`nayose accept repairs`):
 - realign: a row whose fields don't line up, re-split where every value fits its column;
 - garbled: a value a wrong decoding upstream garbled (mojibake), decoded back;
 - encoding: a value that several encodings read, read in another than its column's.
@@ -14,6 +15,7 @@ A part holds what was given, `read/` (what runs read), intake.json (counts only:
 unread.parquet (the values, which stay in the workspace). The intake is a function of the files given, [input] and
 the kinds accepted, so accepting one reads them again. O(bytes) in one pass, in chunks of 200,000 rows.
 """
+import ast
 import csv
 import functools
 import hashlib
@@ -40,6 +42,7 @@ import pyarrow.parquet as pq
 from er.config import InputError
 
 REPORT, READ, PROPOSALS, UNREAD = "intake.json", "read", "proposals.parquet", "unread.parquet"
+READER = 2  # what reads a part: one an older reader read is read again (er.folder.fresh). 2: lists read as their item
 SUFFIXES = (".parquet", ".csv", ".tsv", ".txt")  # the records files a folder or an inbox holds
 KINDS = ("realign", "garbled", "encoding")
 KEEP = 1000  # proposals of each kind kept to show
@@ -142,13 +145,52 @@ def decodings(v: str, order: tuple[str, ...]) -> list[tuple[str, str]]:  # each 
     return found
 
 
+class _Number(str):  # a number as a list wrote it, its own text kept: the number rules read it as they read a bare one
+    pass
+
+
+def _refuse(_: str) -> None:  # NaN, Infinity: no list of plain items
+    raise ValueError
+
+
+def unlisted(v: str) -> tuple[str | None, str] | None:
+    """A value written as a list of plain items (["8700848"], ['大分県'], [8700848], [0708612], [], ["a", "b"]): its
+    first filled item, and the fix (lists: nothing lost; first of several: the rest dropped). Items are strings, or
+    numbers kept as written (a whole one written 12345.0 read as 12345, one cut short like 1.23E+11 made missing, as a
+    bare one is). None for anything else in brackets ([株], [true], a list of lists), which stays as it is."""
+    if digits := re.fullmatch(r"\[\s*(\d+)\s*\]", v):  # a code with leading zeros, unquoted: no parser keeps them
+        return digits.group(1), "lists"
+    try:
+        items = json.loads(v, parse_int=_Number, parse_float=_Number, parse_constant=_refuse, strict=False)  # a line break inside: the controls fix takes it
+    except ValueError:
+        try:  # quoted with ' (a Python list written out): strings only
+            items = ast.literal_eval(v)
+        except (ValueError, SyntaxError, MemoryError, RecursionError):
+            return None
+        if not isinstance(items, list) or not all(isinstance(x, str) for x in items):
+            return None
+    if not isinstance(items, list) or not all(x is None or isinstance(x, str) for x in items):  # true, false, nested: not plain items
+        return None
+    items = [x for x in items if x is not None and x.strip()]
+    if not items:
+        return None, "lists"
+    first, several = items[0], len(items) > 1
+    if isinstance(first, _Number):
+        first = None if CUT.match(first) else (m.group(1) if (m := WHOLE.match(first)) else str(first))
+    return first, "first of several" if several else "lists"
+
+
 def tidy(v: str | None, nulls: frozenset[str], numeric: bool) -> tuple[str | None, str | None]:  # the value, and what was fixed
     if v is None:
         return None, None
     fixed = None
+    if (s := v.strip())[:1] == "[" and s[-1:] == "]" and (listed := unlisted(s)):  # first: its item gets every fix below
+        v, fixed = listed
+        if v is None:
+            return None, fixed
     if not v.isprintable():
         w = BREAKS.sub(" ", CONTROL.sub("", v))
-        fixed, v = ("controls" if w != v else None), w
+        fixed, v = ("controls" if w != v else fixed), w
     s = v.strip(" 　")
     if s in nulls or not v.strip():  # spaces alone (any width, tabs) say nothing: two such records would agree on nothing
         return None, "placeholders"
@@ -339,6 +381,7 @@ def settled(a: pa.Array, numeric: bool, nulls: pa.Array, utf8: bool, garbled: fr
     is read one by one, as before. O(values · length) in Arrow."""
     has = lambda pattern: pc.fill_null(pc.match_substring_regex(a, pattern), False).to_numpy(zero_copy_only=False)
     number = has("[.eE]") if numeric else np.zeros(len(a), bool)
+    number |= has(r"\[.*\]")  # perhaps written as a list, spaces around it or not: read one by one, as tidy() decides
     plain = has(PLAIN_RE2) & ~pc.fill_null(pc.is_in(a, value_set=nulls), False).to_numpy(zero_copy_only=False) & ~number
     if not utf8:
         return plain, np.zeros(len(a), bool)
@@ -458,7 +501,8 @@ def read_one(f: Path, out: Path, spec: InputSpec, m: Model, accepted: frozenset[
             count("fixed", fixed)
         return text
     def plain(j: int, v: str) -> bool:  # kept as it is, undecoded: printable ASCII, no space at either end, not a placeholder, not a number to fix
-        return v.isascii() and v.isprintable() and v[0] != " " and v[-1] != " " and v not in nulls and not (numeric[j] and ("." in v or "e" in v or "E" in v))
+        return (v.isascii() and v.isprintable() and v[0] != " " and v[-1] != " " and v not in nulls and not (numeric[j] and ("." in v or "e" in v or "E" in v))
+                and not (v[0] == "[" and v[-1] == "]"))
     def write(cols: list) -> None:  # each column a list of values, or Arrow text
         nonlocal writer
         table = pa.table({n: c.cast(pa.string()) if isinstance(c, pa.Array) else pa.array(c, pa.string()) for n, c in zip(names, cols)})
@@ -624,6 +668,7 @@ def take(part: Path, given: dict[Path, str], spec: InputSpec, reference: Path, a
     whole, seen = sum(map(rows_in, given)) if progress else 0, 0
     old = json.loads((part / REPORT).read_text(encoding="utf-8")) if (part / REPORT).is_file() else {}
     before = {x["read"]: x.get("versions", []) for x in old.get("files", [])}
+    older = old.get("older_reader", []) + ([x["sha256"] for x in old.get("files", [])] if old and old.get("reader", 1) < READER else [])  # what an earlier reader read
     tmp = part / ".read.tmp"
     shutil.rmtree(tmp, ignore_errors=True)
     files, proposals, unread = [], [], []
@@ -642,10 +687,11 @@ def take(part: Path, given: dict[Path, str], spec: InputSpec, reference: Path, a
     pq.write_table(pa.Table.from_pylist(proposals, pa.schema([("kind", pa.string()), ("file", pa.string()), ("line", pa.int64()), ("column", pa.string()),
                                                                ("before", pa.string()), ("after", pa.string())])), tmp / PROPOSALS)
     pq.write_table(pa.Table.from_pylist(unread, pa.schema([("file", pa.string()), ("line", pa.int64()), ("raw", pa.binary()), ("reason", pa.string())])), tmp / UNREAD)
+    older = [x for x in older if x not in {f["sha256"] for f in files}]  # read again to the same bytes: nothing an earlier reader read differently
     total = lambda key: dict(sum((Counter(x[key]) for x in files), Counter()))
     report = dict(files=files, rows=sum(x["rows"] for x in files), decoded=total("decoded"), fixed=total("fixed"), proposed=total("proposed"),
                   unread=sum(x["unread"] for x in files), accepted=sorted(accepted), notes=[n for x in files for n in x["notes"]],
-                  seconds=round(time.time() - t, 2))
+                  seconds=round(time.time() - t, 2), reader=READER, older_reader=older)
     (tmp / REPORT).write_text(json.dumps(report, ensure_ascii=False, indent=1), encoding="utf-8")
     gone = part / ".read.old"
     shutil.rmtree(gone, ignore_errors=True)

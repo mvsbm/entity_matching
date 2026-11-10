@@ -528,13 +528,14 @@ body.term-open .tray { bottom: var(--term-h); }  /* above the command drawer */
 .drop .else, .drop .plus { color: var(--faint); font-size: 11px; }
 .drop select { font: inherit; font-size: 12px; padding: 3px 6px; border: 1px solid var(--outline); border-radius: 6px; background: var(--surface); color: var(--ink); }
 .frow .fex { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; } .frow .fwarn { color: var(--warn); font-size: 12px; white-space: nowrap; }
+.frow .fhint { grid-column: 2 / -1; margin-top: -4px; font-size: 12px; color: var(--warn); } .frow .fhint.info { color: var(--muted); }  /* what the values say is off, under them */
 .mini { border: 0; background: transparent; color: var(--primary); cursor: pointer; font: inherit; font-size: 12px; padding: 2px 6px; border-radius: 6px; white-space: nowrap; }
 .mini:hover { background: var(--primary-soft); }
 .flab .x { border: 0; background: transparent; color: var(--faint); cursor: pointer; margin-left: 6px; font: inherit; }
 .frow.offer { background: var(--primary-soft); } .frow.offer .flab { color: var(--primary); }
 .addform { gap: 6px; } .addform input { font: inherit; font-size: 13px; padding: 5px 8px; border: 1px solid var(--outline); border-radius: 6px; background: var(--surface); color: var(--ink); min-width: 0; }
 .addform select { font: inherit; font-size: 13px; } .frow .addnote { grid-column: span 3; font-size: 12px; }
-@media (max-width: 860px) { .frow { grid-template-columns: 1fr; gap: 4px; } }
+@media (max-width: 860px) { .frow { grid-template-columns: 1fr; gap: 4px; } .frow .fhint { grid-column: 1 / -1; margin-top: 0; } }
 </style>
 </head>
 <body>
@@ -587,6 +588,7 @@ body.term-open .tray { bottom: var(--term-h); }  /* above the command drawer */
             {"command": "describe records", "args": {"input": "@loaded", "workspace": "@workspace"}, "reads": ["records", "columns", "slots", "features", "placements", "offers", "fields", "needed", "turned_off", "read"]},
             {"command": "accept repairs", "args": {"kind": "@kind", "part": "@part", "workspace": "@workspace"}, "form": [], "reads": ["repaired", "added", "read"]},
             {"command": "set feature", "args": {"mapping": "@mapping", "workspace": "@workspace"}, "reads": ["slots"]},
+            {"command": "set names", "args": {"how": "@how", "workspace": "@workspace"}, "reads": ["names", "mapping"]},
             {"command": "add feature", "args": {"path": "@path", "type": "@type", "script": "@script", "column": "@column", "workspace": "@workspace"}, "reads": ["slots"]},
             {"command": "remove feature", "args": {"path": "@path", "workspace": "@workspace"}, "reads": ["slots"]},
             {"command": "describe workspace", "args": {"workspace": "@workspace"}, "reads": ["inputs"]},
@@ -1318,7 +1320,8 @@ function hurts(fields, off, fix = "", names = {}, groups = []) {  // groups: fie
 const REPAIR = {realign: ["row", "rows", "whose fields don't line up: re-split where every value fits its column"],  // a kind of repair the reader proposes, in words
                 garbled: ["value", "values", "garbled by a wrong decoding upstream: decoded back"], encoding: ["value", "values", "another encoding reads far better"]};
 const FIXED = {controls: "control or invisible characters removed", placeholders: "placeholders such as NULL or - and blanks made missing",
-               numbers: "spreadsheet numbers: 12.0 read as 12, 1.2E+11 made missing (its digits are gone)", damaged: "values no encoding reads, made missing"};
+               numbers: "spreadsheet numbers: 12.0 read as 12, 1.2E+11 made missing (its digits are gone)", damaged: "values no encoding reads, made missing",
+               lists: 'lists such as ["8700848"] read as their item', "first of several": "lists of several items: the first read"};
 const waits = (r) => {  // what waits for a repair, in the answer to Did your file load?
   const w = r ? r.waiting : {}, rows = w.realign || 0, values = (w.garbled || 0) + (w.encoding || 0);
   return rows || values ? ` · <b>${[rows && plural(rows, "row"), values && plural(values, "value")].filter(Boolean).join(" and ")} ${rows + values === 1 ? "waits" : "wait"} for a repair</b>` : "";
@@ -1535,14 +1538,17 @@ function slider(r) {  // where the engine and the name alone place a record, fro
 }
 
 // Step 2: the file's columns as chips, and each group's features and their parts as slots to drop them into. A slot shows
-// its columns (else: read where the ones before are empty; +: joined), its share filled, an example, and a warning when
-// few of its values look like it; ✦ Suggest shows what the file's contents place there, kept with ✓.
+// its columns (else: read where the ones before are empty; +: joined), its share filled, an example, and under it what its
+// values say is off (hint), with the button that sets it right, or a warning when few look like it; ✦ Suggest shows what
+// the file's contents place there, kept with ✓.
 function features(d, view) {
   const slot = Object.fromEntries(d.slots.map((x) => [x.feature, x])), info = Object.fromEntries(d.columns.map((c) => [c.column, c]));
   const field = Object.fromEntries(d.fields.map((f) => [f.field, f])), lost = (f) => !field[f] || field[f].filled === null;
   const used = new Set(d.slots.flatMap((x) => x.alternatives.filter((a) => a.found).flatMap((a) => a.columns)));
   const ghost = Object.fromEntries(d.placements.map((x) => [x.feature, x]));
   const FEW = 0.5;  // under this share of values that look like the slot, the column is likely the wrong one
+  const few = (s) => s.looks_right !== null && s.looks_right !== undefined && s.looks_right < FEW;
+  const warned = (s) => s.hint ? s.hint.level === "warn" : few(s);  // a hint says what is off, and may say a column is fine (info)
   const ADDABLE = ["Name"];  // the groups a feature can be added to: one compared with the ones beside it (add feature)
   const meter = (v) => v === null || v === undefined ? "" : `<span class="meter"><i style="width:${Math.round(v * 100)}%"></i></span>${pct(v)}`;
   const chipOf = (c, from, alt) => `<span class="colchip ${from ? "in" : used.has(c) ? "used" : ""} ${info[c] ? "" : "gone"}" draggable="true" data-col="${esc(c)}"
@@ -1560,12 +1566,13 @@ function features(d, view) {
         : depth || x.field === "id" ? "" : `<span class="hole" tabindex="0" role="button" title="another column, read where these are empty" aria-label="Another column for ${esc(x.name)}">+</span>`}${
         g ? `<span class="colchip ghost" title="${esc(g.why)}">✦ ${esc(g.column)}<button class="x keep" data-keep='${esc(JSON.stringify([path, g.column]))}' aria-label="Keep it">✓</button></span>` : ""}</span>
       <span class="fstat">${meter(s.filled)}</span><span class="fex faint">${esc(s.example ?? "")}</span>
-      <span class="fwarn">${s.looks_right !== null && s.looks_right !== undefined && s.looks_right < FEW ? `⚠ ${pct(s.looks_right)} look right` : ""}</span></div>`;
+      <span class="fwarn">${!s.hint && few(s) ? `⚠ ${pct(s.looks_right)} look right` : ""}</span>${s.hint ? `<span class="fhint ${s.hint.level}">${
+        s.hint.level === "info" ? "✓" : "⚠"} ${esc(s.hint.says)}${s.hint.example ? `, e.g. ${esc(s.hint.example)}` : ""}${s.hint.act ? ` <button class="mini" data-hint="${esc(path)}">${esc(s.hint.button)}</button>` : ""}</span>` : ""}</div>`;
   };
   const status = (g) => {
     const need = g.features.filter(needs);
     const paths = g.features.flatMap((f) => [`${g.group}/${f.name}`, ...(f.parts || []).map((p) => `${g.group}/${f.name}/${p.name}`)]);
-    const bad = paths.filter((p) => slot[p].looks_right !== null && slot[p].looks_right !== undefined && slot[p].looks_right < FEW);
+    const bad = paths.filter((p) => warned(slot[p]));
     const found = paths.filter((p) => slot[p].filled !== null).length;
     const either = need.every((f) => f.type === "person name" || f.field === "company_name");  // a run needs one of them
     return need.length ? ["bad", `✗ ${need.map((f) => f.name).join(either ? " or " : ", ")} needed`] : bad.length ? ["warn", `⚠ ${bad.map((p) => p.split("/").pop()).join(", ")}`]
@@ -2136,6 +2143,8 @@ const SCREENS = {
       $("files").innerHTML = (w.inputs || []).map((f) => `<span class="tag" title="${esc(f.path)}">${esc(nameOf(f))} · ${bytes(f.bytes)} · ${f.read ? "matched" : "not run yet"}${f.waiting ? ` · ${fmt(f.waiting)} repairs wait` : ""}</span>`).join("");
       repairs(d.read);
       const lines = hurts(d.fields, d.turned_off, "", addedNames(d.features), d.needed.one_of);
+      const several = ((d.read || {}).fixed || {})["first of several"];  // the rest of each list is left out: said where it hurts
+      if (several) lines.push(`<div class="warn">${plural(several, "value")} listed several items: the first is read</div>`);
       $("watch").innerHTML = lines.length && !missing.length ? `<div class="card"><h3 style="font-size:15px;font-weight:500;margin:0 0 8px">Watch out</h3><div class="checks">${lines.join("")}</div></div>` : "";  // once what is needed is mapped
       $("suggest-now")?.addEventListener("click", () => $("out").querySelector("[data-suggest='*']")?.click());
     };
@@ -2262,6 +2271,14 @@ const SCREENS = {
         byKey(c);
       });
       el.querySelectorAll("[data-keep]").forEach((b) => b.onclick = () => { const [slot, col] = JSON.parse(b.dataset.keep); place(slot, col, null, null); });
+      el.querySelectorAll("[data-hint]").forEach((b) => b.onclick = () => {  // what the hint says, done: the same command the CLI's next names
+        const path = b.dataset.hint, h = d.slots.find((x) => x.feature === path).hint;
+        if (h.act === "names") return change("set names", {how: "by-kind"});
+        const other = (a) => !(a.length === 1 && a[0] === h.column);  // the column alone: a join holding it is judged whole, and stays
+        alts[path] = alts[path].filter(other);  // its other columns stay
+        if (h.act === "move") alts[h.to] = [[h.column], ...alts[h.to].filter(other)];  // the target's own, after it
+        save(h.act === "move" ? [h.to, path] : [path]);
+      });
       el.querySelectorAll("[data-keepall]").forEach((b) => b.onclick = () => {
         const mine = d.placements.filter((x) => alts[x.feature] && (b.dataset.keepall === "*" || x.feature.startsWith(`${b.dataset.keepall}/`)));
         mine.forEach((x) => { alts[x.feature] = [[x.column]]; });
