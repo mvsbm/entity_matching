@@ -243,9 +243,8 @@ def describe_results(con: duckdb.DuckDBPyConnection, db: object, out: Path, s: S
     open_ = sheet[sheet["kind"].isna()].assign(why=sheet_parts(sheet[sheet["kind"].isna()]))  # a flagged record drawn at random is to check
     has = {c for c, *_ in con.execute(f"DESCRIBE SELECT * FROM {gold}").fetchall()}
     flagged = con.execute(f"SELECT count(*) FROM {gold} WHERE kind_flagged").fetchall()[0][0] if "kind_flagged" in has else 0
-    uncounted = 0 if chart is None or all("bands" in x for x in scored) else sum(  # the records an increment added that the chart leaves out
-        next((x.get("records") or 0 for x in run["steps"] if x["step"] == "load"), 0) for run in folder.runs(out)
-        if run.get("part") and not any("bands" in x for x in run["steps"] if x["step"] == "score"))
+    uncounted = 0 if chart is None or all("bands" in x for x in scored) else sum(  # from the full run's patterns: every increment's records left out
+        next((x.get("records") or 0 for x in run["steps"] if x["step"] == "load"), 0) for run in folder.runs(out) if run.get("part"))
     listed = con.execute(f"SELECT count(*) FROM {index} WHERE match_weight >= 0").fetchall()[0][0]  # as list scored lists them from 0
     return dict(records=sum(c * n for n, c in sizes), entities=sum(c for _, c in sizes), joined=size_of(2, None),
                 sizes=[dict(label=label, entities=size_of(lo, hi)) for lo, hi, label in SIZES],

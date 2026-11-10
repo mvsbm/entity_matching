@@ -94,3 +94,13 @@ def test_blank_values_are_missing_and_full_width_spaces_are_stripped():
     assert df["person_name"].tolist()[:1] == ["ヤマダタロウ"] and df["full_name"].isna().all()
     assert df["person_name"].isna().tolist()[1:] == [True, True]
     assert df["company_name__nfkc_strip_legal_form_kana_fold"].isna().all()
+
+
+def test_katakana_and_strip_separators_read_one_value_written_two_ways_as_one_and_keep_others_apart():
+    from er.standardize import normalize
+    std = load_settings().standardize
+    digits = normalize(pd.Series(["03-1234-5678", "０３（１２３４）５６７８", "〒100-0001", "100 0001", "AB-123", "XY-123", None], dtype="string"), ("nfkc", "strip_separators"), std)
+    assert digits.tolist()[:6] == ["0312345678", "0312345678", "1000001", "1000001", "AB123", "XY123"] and pd.isna(digits.iloc[6])  # letters stay: two IDs stay two
+    names = normalize(pd.Series(["さとう　ひろし", "サトウヒロシ", "ｻﾄｳﾋﾛｼ"], dtype="string"), ("nfkc", "katakana", "strip_spaces"), std)
+    assert names.nunique() == 1
+    assert "strip_separators" not in dict((d.name, d.normalize) for d in std.derived).get("birth_date", ())  # 1993-1-12 and 1993-11-2 would be one date

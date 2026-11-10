@@ -180,6 +180,11 @@ def test_a_lookup_lists_and_scores_the_pairs_an_increment_of_the_record_would_an
     (ws / "steps.json").write_text(json.dumps(older), encoding="utf-8")  # a run logged before each counted its own bands
     d = cli.describe_results_({"workspace": str(ws)}, None)
     assert d["uncounted"] == len(first) and d["listed"] == int((kept_pairs["match_weight"] >= 0).sum()) and d["scores"]  # what the chart leaves out, said; the list counted whole
+    older = json.loads(log)
+    for x in older["runs"][0]["steps"]:  # the full run logged before the bands, an increment after
+        x.pop("bands", None)
+    (ws / "steps.json").write_text(json.dumps(older), encoding="utf-8")
+    assert cli.describe_results_({"workspace": str(ws)}, None)["uncounted"] == len(first)  # read from the full run's patterns: the increment left out, said
     (ws / "steps.json").write_text(log, encoding="utf-8")
     assert cli.describe_results_({"workspace": str(ws)}, None)["uncounted"] == 0
     review = pd.read_parquet(ws / "review.parquet")

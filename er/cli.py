@@ -960,7 +960,7 @@ def described(a: dict) -> dict:
 WARN = 0.5  # under this share of a slot's values that look like it, its column likely holds something else: a hint says what
 
 
-WRITTEN = (("strip_separators", re.compile(f"{SEPARATORS}|[０-９]"), ("phone", "postal_code", "customer_id", "birth_date"), "with separators or full-width digits"),
+WRITTEN = (("strip_separators", re.compile(f"{SEPARATORS}|[０-９]"), ("phone", "postal_code", "customer_id"), "with separators or full-width digits"),
            ("katakana", re.compile("[\u3041-\u3096]"), None, "in hiragana"))  # a step, what it prepares as one, the fields it is for (None: names), in words
 
 
@@ -968,12 +968,12 @@ def prepared_one_way(col: str, fld: str | None, prep: dict, sampled: Callable[[s
     """The hint that a column's sampled values are written two ways that a step would prepare as one, with the step added
     to every field that reads the column and lacks it (after nfkc), or None. O(sampled values)."""
     for step, pattern, fields, how in WRITTEN:
-        ok = (lambda f: f in fields) if fields else (lambda f: f.endswith("name"))
+        ok = (lambda f: f in fields) if fields else (lambda f: f.rstrip("_0123456789").endswith("name"))  # person_name_2, a feature added
         lack = [x for x in prep.values() if ok(x.name) and step not in x.normalize and any(col in alt for alt in x.sources)]
         if not lack or not (fld is None or ok(fld)):
             continue
         values = sampled(col)
-        if not (odd := [v for v in values if pattern.search(v)]):
+        if not 0 < len(odd := [v for v in values if pattern.search(v)]) < len(values):  # written both ways in the file; one way throughout matches itself
             continue
         steps = lambda d: [*(s := list(d.normalize) if "nfkc" in d.normalize else ["nfkc", *d.normalize])[:s.index("nfkc") + 1], step, *s[s.index("nfkc") + 1:]]
         mapping = [f"{x.name}={','.join(steps(x))}" for x in lack]
@@ -988,9 +988,10 @@ def hints(d: dict, con, s, p, feats: list[dict], ws: str | None, field_of: Calla
     the first that holds, by slot path:
     - a name slot holding the other kind's names (the name model, and legal forms, on the sample): compare each
       record's name on its own side (set names by-kind); so set already, said as info;
-    - values written two ways that a step would prepare as one (WRITTEN: 03-1234-5678 beside 0312345678, a name in
-      hiragana) where the fields reading the column lack it: set preparation, the step added to each;
-    - a birth date written more than one way (its shapes, digits as 9) once separators go: the same date won't match;
+    - a birth date written more than one way (its shapes, digits as 9; once separators go, when the field drops them):
+      the same date won't match;
+    - values that look right, written two ways that a step would prepare as one (WRITTEN: 03-1234-5678 beside
+      0312345678, a name in hiragana) where the fields reading the column lack it: set preparation, the step added to each;
     - values that look like one other field: read the column there, the target's own columns kept after it, or take
       it off when that field reads it already (set feature);
     - else how few look right, with one that doesn't.
@@ -1025,9 +1026,6 @@ def hints(d: dict, con, s, p, feats: list[dict], ws: str | None, field_of: Calla
                                   fix="compare each record's name on its own side, by its kind", act="names", button="Compare by kind",
                                   command=nayose("set", "names", "by-kind", *there) if ws else None))
                 continue
-        if col and (said := prepared_one_way(col, fld, prep, sampled, there)):
-            out[path] = said
-            continue
         if fld == "birth_date" and col:  # 1993-05-25 beside 93-05-25: equal dates, unequal strings
             gone = "strip_separators" in (prep[fld].normalize if fld in prep else ())  # prepared without them: they make no other way
             shape = lambda v: re.sub(r"\d", "9", re.sub(SEPARATORS, "", v) if gone else v)
@@ -1039,6 +1037,9 @@ def hints(d: dict, con, s, p, feats: list[dict], ws: str | None, field_of: Calla
                                  fix="write every date one way in the file")
                 continue
         looks = e.get("looks_right")
+        if col and (looks is None or looks >= WARN) and (said := prepared_one_way(col, fld, prep, sampled, there)):  # values of the field: a step reads them as one
+            out[path] = said
+            continue
         if looks is None or looks >= WARN:
             continue
         fits = sorted(((share, g) for g, cols in d["fit"].items() if g not in ("id", fld) and (share := cols.get(col) or 0) >= WARN), reverse=True) if col else []
@@ -1071,13 +1072,21 @@ def load_records(a: dict, emit: "Emit") -> dict:
     return {**describe_records({**a, "input": str(part)}, emit), "loaded": str(part), "copied": copied}
 
 
+def run_pipeline(ws: str | Path | None) -> str | None:  # the pipeline file the workspace's full run used, as its log says (none said: before it did)
+    return next((r.get("pipeline") for r in folder.runs(Path(ws)) if not r.get("part")), None) if ws and Path(ws).is_dir() else None
+
+
 def rerun_owed(a: dict) -> bool:
-    """Whether the workspace's run read its records with another mapping, method or pipeline than these now (its
-    state/config.txt, as an increment checks it): the run reads them so once it runs again. No run: False."""
+    """Whether the workspace's run read its records with another mapping or method than these now, under the pipeline
+    it ran (its state/config.txt, as an increment checks it): the run reads them so once it runs again. No run, or a
+    workspace or method refused where it is read: False."""
     ran_with = Path(a["workspace"]) / "state" / "config.txt" if a.get("workspace") else None
     if ran_with is None or not ran_with.is_file():
         return False
-    s, p, _ = setup(a)
+    try:
+        s, p, _ = setup({**a, "pipeline": a.get("pipeline") or run_pipeline(a["workspace"])})
+    except InputError:
+        return False
     return ran_with.read_text(encoding="utf-8") != run_config(p, s)
 
 
@@ -1350,7 +1359,9 @@ def describe_workspace_(a: dict, emit: "Emit") -> dict:
     then = [dict(command=nayose("describe", "records", f["path"], "--workspace", out), why=f"{f['waiting']:,} repairs wait in {f['name']}: see them, then accept repairs")
             for f in files if f.get("waiting")] + then
     owed = bool(d["records"]) and rerun_owed(a)
-    then = [dict(command=nayose("rerun", "records", "--workspace", out), why="the mapping or the method changed since the run: match again to read the records so")] * owed + then
+    used = run_pipeline(out)
+    again = ["--pipeline", used] if used and Path(used) != Path(s.root / "config" / "final.toml").resolve() else []  # the run's own, not the default
+    then = [dict(command=nayose("rerun", "records", "--workspace", out, *again), why="the mapping or the method changed since the run: match again to read the records so")] * owed + then
     told = out / "auto" / "report.md"  # the last auto mode's report, to send
     auto = dict(report=str(told), markdown=told.read_text(encoding="utf-8")) if told.is_file() else None
     return {**d, "inputs": files, "columns": "own" if columns_file(out) else "project", "auto": auto, "index": index.status(out, s), "rerun_owed": owed, "next": then}
