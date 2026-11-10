@@ -30,6 +30,8 @@ Written by `scripts/document_commands.py` from the declarations in `er/cli.py`; 
 | [`rehearse records`](#nayose-rehearse-records) | Run a generated file of the same size and shape, and measure what this machine needs |
 | [`add records`](#nayose-add-records) | Add new records to a run |
 | [`match records`](#nayose-match-records) | Which entity each record would join; nothing written |
+| [`build index`](#nayose-build-index) | The index a record is looked up in, from the run |
+| [`match record`](#nayose-match-record) | The entities one record may belong to, from the index; nothing written |
 | [`rerun records`](#nayose-rerun-records) | A full run again, on the run's own files |
 | [`describe workspace`](#nayose-describe-workspace) | What a workspace holds |
 | [`describe entity`](#nayose-describe-entity) | One record's entity, and what joined it |
@@ -556,6 +558,70 @@ An increment's steps without its write: for each record, the entity it would joi
 nayose match records new.parquet --workspace workspaces/customers
 ```
 
+## nayose build index
+
+The index a record is looked up in, from the run.
+
+```
+nayose build index --workspace WORKSPACE [--pipeline PIPELINE] [--compute KEY=VALUE …] [--format text|json]
+```
+
+Every key of every record the run holds, hashed and sorted, in the workspace's index/ (a DuckDB database), with the person/company classifier and what it was built from. Read once from the run's own files, nothing standardized again; built beside the last index, which stays until the new one is whole. A run, an increment, decisions or a new mapping make it out of date. O(N·(G + R + D·L) + N log N): N records, G pair keys, R rules, D deletion keys, L a value's length.
+
+| Parameter | |
+|---|---|
+| `--workspace WORKSPACE` | the workspace: the folder that keeps one matching job (required) |
+| `--pipeline PIPELINE` | the pipeline file (default: config/final.toml) |
+| `--compute KEY=VALUE` | DuckDB limits for this run, over config/settings.toml [compute]: memory_limit=8GB, threads=4, temp_directory=<folder> (past the memory limit DuckDB spills there) |
+
+| Result | |
+|---|---|
+| `index` | its folder |
+| `records` | the records it holds |
+| `tables` | each table: of (its key or rule), rows, seconds |
+| `seconds` | in all |
+| `next` | the commands that usually follow |
+
+```bash
+nayose build index --workspace workspaces/customers
+```
+
+## nayose match record
+
+The entities one record may belong to, from the index; nothing written.
+
+```
+nayose match record [COLUMN=VALUE …] [--record ID] [--from POINTS] [--count N] --workspace WORKSPACE [--pipeline PIPELINE] [--compute KEY=VALUE …] [--format text|json]
+```
+
+One record, by the file's column names (or a stored one's ID, as if it were new), prepared as a run prepares it, looked up by each of its keys in the index (nayose build index), and scored with the run's model: the entities at --from points or more, best first, each with its best record, its points, each comparison's level and the rule that would join it; likely ones at the line or above. The pairs an increment of that record alone would list, scored alike. O(G·(log N + b) + C·K·L²): N only in log N.
+
+| Parameter | |
+|---|---|
+| `COLUMN=VALUE` | the record's values, by the file's column names |
+| `--record ID` | a stored record's ID, looked up as if it were new |
+| `--from POINTS` | from these points (default: the review floor) |
+| `--count N` | the most entities (default 20) |
+| `--workspace WORKSPACE` | the workspace: the folder that keeps one matching job (required) |
+| `--pipeline PIPELINE` | the pipeline file (default: config/final.toml) |
+| `--compute KEY=VALUE` | DuckDB limits for this run, over config/settings.toml [compute]: memory_limit=8GB, threads=4, temp_directory=<folder> (past the memory limit DuckDB spills there) |
+
+| Result | |
+|---|---|
+| `record` | the record as compared: its fields and kind |
+| `entities` | each: entity, record, points, likely, rule, keys, compared, records, shown |
+| `found` | entities at --from or more |
+| `candidates` | records compared |
+| `likely` | of them, at the line or joined by a rule |
+| `checked` | each key: found, or why not; a block too big: its records and the gate's decision |
+| `seconds` | each part |
+| `index` | built_at, records |
+| `next` | the commands that usually follow |
+
+```bash
+nayose match record FULL_NAME_KANA="ヤマダ タロウ" PHONE_NUM_4=1234 --workspace workspaces/customers
+```
+
 ## nayose rerun records
 
 A full run again, on the run's own files.
@@ -617,6 +683,7 @@ Records and entities, the largest entities, each run so far, the pairs and kinds
 | `inputs` | the records files given to it, each in inputs/: name, path, files, bytes, rows, read (by a run, as it is now), waiting (repairs proposed, for people), unread (rows), given (its file's own name, one file), seconds (its reading took), columns |
 | `columns` | own: its columns.toml; project: config/settings.toml's |
 | `auto` | the report try everything wrote, to send: report (its path), markdown |
+| `index` | the lookup's index: built_at, records, stale (what changed since, or null; built_at null: none yet), columns (each a lookup reads: column, field, main: in the field's first alternative) |
 | `next` | the commands that usually follow |
 
 ```bash
