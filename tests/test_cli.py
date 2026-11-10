@@ -91,12 +91,83 @@ def test_a_run_says_what_is_wrong_in_words_people_can_act_on(say, tmp_path, popu
 
 def test_nayose_prints_a_mistake_as_two_lines_and_exits_with_2(tmp_path):
     done = nayose("check", "records", tmp_path / "none.parquet")
-    assert done.returncode == 2 and done.stderr.splitlines()[0].startswith("error: no file matches")
-    assert done.stderr.splitlines()[1].startswith("fix: ") and "Traceback" not in done.stderr
+    assert done.returncode == 2 and done.stderr.splitlines()[0].startswith("✗ no file matches")
+    assert done.stderr.splitlines()[1].lstrip().startswith("fix: ") and "Traceback" not in done.stderr
     done = nayose("check", "records", tmp_path / "none.parquet", "--format", "json")
     error = json.loads(done.stdout.splitlines()[-1])
     assert done.returncode == 2 and error["event"] == "error" and error["exit"] == 2 and error["fix"]
     assert nayose("resolve", "records", tmp_path / "x.parquet").returncode == 2  # --workspace missing: the parser says so
+
+
+def test_a_long_command_shows_each_step_as_it_ends_and_how_long_is_left(monkeypatch):
+    import io
+    from er import cli
+    clock = [100.0]
+    monkeypatch.setattr(cli.time, "monotonic", lambda: clock[0])
+    out = io.StringIO()  # not a terminal: a line every 30 seconds, never redrawn
+    e = cli.Emit(out=out, title="resolve records · workspaces/w", order=("load", "score", "write"), last={"load": 10, "score": 100, "write": 5}, last_records=1000)
+    e.step(dict(step="load", seconds=12.0, records=2000, set_aside=0))
+    for gap, done in ((10, 100), (10, 200), (25, 450)):  # 10 pairs a second since the first count; the last 45 s into the step
+        clock[0] += gap
+        e.progress(done, 1000, "pairs")
+    e.step(dict(step="score", seconds=45.0, pairs=1000))
+    e.close()
+    lines = out.getvalue().splitlines()
+    assert lines[0] == "resolve records · workspaces/w" and lines[1].split() == ["✓", "load", "12s", "2,000", "records"]  # no zero said
+    assert lines[2].split(None, 3)[1:3] == ["score", "45s"] and lines[2].endswith(
+        "scoring the pairs · 450 of 1,000 pairs · about 55s left · about 1m 05s left in all")  # its own pace; write as last run's, at twice the records
+    assert lines[3].split() == ["✓", "score", "45s", "pairs", "1,000"] and len(lines) == 4 and "\r" not in out.getvalue()
+    out = io.StringIO()
+    e = cli.Emit(out=out, title="resolve records", order=cli.RUN_ORDER)  # a first run: nothing to measure the rest by
+    e.step(dict(step="load", seconds=1.0, records=10))
+    clock[0] += 31
+    e.progress(5, 10, "pairs")
+    assert out.getvalue().splitlines()[-1].endswith("counting the pairs · 5 of 10 pairs")  # one count gives no pace: no time left said
+    out = io.StringIO()
+    e = cli.Emit(out=out, order=("load", "probe"))  # try method: the steps twice
+    for step in ("load", "probe", "generate"):  # and one outside them
+        e.step(dict(step=step, seconds=1.0))
+    clock[0] += 31
+    e.progress(5, 10, "records")
+    assert out.getvalue().splitlines()[-1].split()[1:4] == ["load", "0.0s", "reading"]  # a count after the last step: the steps again
+    e = cli.Emit(out=out, order=())  # a command whose steps aren't known: each as it ends, and what is under way unnamed
+    e.step(dict(step="generate", seconds=1.0))
+    clock[0] += 31
+    e.progress(5, 10, "rows")
+    assert out.getvalue().splitlines()[-1].endswith("working · 5 of 10 rows")
+    assert cli.step_facts(dict(step="rules", seconds=1.0, kept=23)) == "kept 23"  # a batch's steps carry other facts: said as they are
+    assert cli.step_facts(dict(step="candidates", seconds=1.0, gate_pairs=0, gate_seconds=0.1, generators=[])) == ""
+
+
+def test_text_says_a_result_in_short_and_verbose_says_all_of_it(tmp_path, population, capsys, monkeypatch):
+    from er import folder
+    from er.cli import COMMANDS, main, text
+    s, p, g = population
+    g.df.to_parquet(tmp_path / "all.parquet", index=False)
+    monkeypatch.chdir(tmp_path)
+    said = lambda *words: (main([*map(str, words)]), capsys.readouterr().out.splitlines())[1]
+    assert said("create", "workspace", "w")[:2] == ["✓ created workspaces/w", "next"]
+    said("load", "records", "all.parquet", "--workspace", "workspaces/w")
+    out = said("check", "records", "--workspace", "workspaces/w")  # its own file: none given
+    assert out[0] == "check records · workspaces/w" and next(x for x in out if x.startswith("✓ ")).startswith(f"✓ ready: {len(g.df):,} records") and any(x.split()[:5] == ["nayose", "resolve", "records", "--workspace", "workspaces/w"] for x in out)
+    out = said("resolve", "records", "--workspace", "workspaces/w")
+    ran = [x["step"] for x in folder.runs(Path("workspaces/w"))[-1]["steps"]]
+    assert out[0] == "resolve records · workspaces/w" and [x.split()[1] for x in out if x.startswith("  ✓ ")] == ran  # each step once, in order
+    at = next(i for i, x in enumerate(out) if x.startswith(f"✓ {len(g.df):,} records → "))
+    assert out.index("next") - at <= 7 and len(out) - out.index("next") - 1 <= 3  # the result in a few lines, then at most 3 commands
+    c = next(c for c in COMMANDS if c.name == "describe workspace")
+    main(["describe", "workspace", "workspaces/w", "--format", "json"])
+    r = {k: v for k, v in json.loads(capsys.readouterr().out.splitlines()[-1]).items() if k not in ("event", "command")}
+    full = said("describe", "workspace", "workspaces/w", "--verbose")
+    assert full == text(c, r).splitlines() and len(full) > len(said("describe", "workspace", "workspaces/w"))
+
+
+def test_the_commands_that_read_a_run_say_when_the_workspace_holds_none(say, tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    say("create", "workspace", "w")
+    for words in (("describe", "results"), ("list", "scored"), ("list", "entities"), ("describe", "merging"), ("set", "merging", "--conditions", '{"when": []}')):
+        code, e = say(*words, "--workspace", "workspaces/w")
+        assert code == 2 and e["error"] == "workspaces/w holds no run to read" and e["fix"], words  # never a traceback
 
 
 def test_every_command_has_its_help(capsys):
@@ -634,8 +705,8 @@ def test_check_records_says_whether_a_run_will_go_through_and_what_to_look_at_fi
     c = r["capacity"]
     assert code == 0 and r["ready"]["ok"] and not r["ready"]["stops"] and c["pairs_needed"] > 0 and c["pairs_fit"] >= c["pairs_needed"]
     assert c["headroom"] == round(c["pairs_fit"] / c["pairs_needed"], 1) and c["memory_limit_gb"] > 0 and c["spill_folder"]
-    assert any(w["what"].startswith("birth_date is") for w in r["ready"]["warns"])  # a nearly empty field, said with what to do
-    assert not any("company_name" in w["what"] for w in r["ready"]["warns"])  # filled only for companies, by design: with the person's name, it is full
+    assert any(w["what"].startswith("birth date is") for w in r["ready"]["warns"])  # a nearly empty field, said with what to do
+    assert not any("company name" in w["what"] for w in r["ready"]["warns"])  # filled only for companies, by design: with the person's name, it is full
     needed = c["pairs_needed"]
     monkeypatch.setattr(Run, "capacity", lambda self: 10)  # room for 10 pairs: the file's won't fit
     code, r = say("check", "records", tmp_path / "all.parquet")
@@ -733,9 +804,9 @@ def test_check_records_judges_a_person_s_and_a_company_s_name_together_once_per_
     both = [field("person_name", 0.2), field("company_name", 0.15)]
     said = lambda r: [w["what"] for w in ready_for(r, both, None, room, None)["warns"]]
     assert not said(run((("NAME",),), (("CORP",),)))  # each filled for its kind: 35% together, enough
-    assert said(run((("NAME",),), (("NAME",),))) == ["person_name and company_name are 20% filled together"]  # one column: counted once
+    assert said(run((("NAME",),), (("NAME",),))) == ["person name and company name are 20% filled together"]  # one column: counted once
     alone = [field("person_name", 0.1)]
-    assert [w["what"] for w in ready_for(run((("NAME",),), ()), alone, None, room, None)["warns"]] == ["person_name is 10% filled"]  # the only name, nearly empty
+    assert [w["what"] for w in ready_for(run((("NAME",),), ()), alone, None, room, None)["warns"]] == ["person name is 10% filled"]  # the only name, nearly empty
 
 
 def test_a_result_s_nested_numbers_print_plainly_and_a_settings_folder_is_said(tmp_path):

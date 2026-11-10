@@ -15,7 +15,7 @@ from er import folder
 from er.cluster import merge
 from er.config import InputError, Pipeline, bits, lit, q
 from er.match import levels, named_sql
-from er.report import applied, run_model, scored_again
+from er.report import applied, no_run, run_model, scored_again
 from er.settings import Settings, norm_name
 
 BANDS = (-20, -10, 0, 6, 8, 10, 12, 16, 20)  # the score chart's edges, in points: as report.txt's SCORES
@@ -53,7 +53,7 @@ def _index(con: duckdb.DuckDBPyConnection, db: object, out: Path, s: Settings, p
     if (out / "review.parquet").exists():
         parts.append(f"SELECT {l}, {r}, match_weight, sources, NULL::VARCHAR AS rule, 'sheet' AS part FROM read_parquet({lit(out / 'review.parquet')}) WHERE why = 'decide'")
     if not parts:
-        raise InputError(f"{out} holds no run to read", fix="find matches first: nayose resolve records --workspace …")
+        raise no_run(out)
     # the sheet names a rule pair's rule where a model pair's keys go: a rule pair's keys come from the model's files alone
     con.execute(f"""CREATE OR REPLACE TABLE er_index AS SELECT {l}, {r}, max(match_weight) AS match_weight, coalesce(max(sources) FILTER (WHERE part = 'model'),
         CASE WHEN bool_or(part = 'rule') THEN NULL ELSE max(sources) END) AS sources, max(rule) AS rule
@@ -136,6 +136,8 @@ def list_entities(con: duckdb.DuckDBPyConnection, out: Path, s: Settings, p: Pip
                     page: int = 1, count: int = 100) -> dict:
     """Entities of `min_size` records or more, largest first: each one's records, what joined most of them (you, the
     model or a rule: joined_by), and a name to know it by. O(N)."""
+    if not (out / "gold.parquet").exists():
+        raise no_run(out)
     u, gold = q(s.data.unique_id), read(out, "gold.parquet")
     where = f"cluster_id IN (SELECT cluster_id FROM {gold} WHERE {u} = {lit(record)})" if record else "TRUE"
     sizes = f"SELECT cluster_id, count(*) AS records, mode({joined_by(p)}) AS joined_by FROM {gold} GROUP BY 1 HAVING count(*) >= {int(min_size)}"

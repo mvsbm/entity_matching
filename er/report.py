@@ -712,9 +712,15 @@ def line_change(decided: pd.DataFrame, t: float, lo: float = -math.inf, hi: floa
     return best
 
 
+def no_run(out: Path) -> InputError:
+    return InputError(f"{out} holds no run to read", fix="find matches first: nayose resolve records --workspace …")
+
+
 def run_model(out: Path) -> dict:  # the model the run in `out` scored with: its u from the file, else as fitted
-    scoring = out / "state" / "scoring.json"
-    return json.loads(scoring.read_text(encoding="utf-8"))["model"] if scoring.exists() else json.loads((out / "state" / "model.json").read_text(encoding="utf-8"))
+    scoring, fitted = out / "state" / "scoring.json", out / "state" / "model.json"
+    if not fitted.exists():
+        raise no_run(out)
+    return json.loads(scoring.read_text(encoding="utf-8"))["model"] if scoring.exists() else json.loads(fitted.read_text(encoding="utf-8"))
 
 
 def scored_again(con: duckdb.DuckDBPyConnection, db: object, out: Path, uid: str, pairs: str, into: str) -> dict:
