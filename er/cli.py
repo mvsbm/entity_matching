@@ -1826,7 +1826,8 @@ COMMANDS: tuple[Command, ...] = (
              "index": "built_at, records", "next": "the commands that usually follow"},
             'nayose match record FULL_NAME_KANA="ヤマダ タロウ" PHONE_NUM_4=1234 --workspace workspaces/customers', match_record, quick=True),
     Command("search", "records", "The stored records whose values start with those given, any of them; nothing written",
-            "Values by the file's column names, any of them, each prepared as a run prepares it and read by its start in the index "
+            "Values by the file's column names, any of them, as people type them (full-width, hiragana, 100-0001 read as the records hold "
+            "them), each prepared as a run prepares it and read by its start in the index "
             "(a name also by its end): the records sharing the most of them, scored with the run's model, a column not given counting "
             "as missing. The entities at --from points or more (default: any), best first, each with its best record, its points and "
             "the fields that agree. A value that starts too many records to list is said, to be given further. "

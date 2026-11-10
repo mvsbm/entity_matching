@@ -165,6 +165,13 @@ def test_a_lookup_lists_and_scores_the_pairs_an_increment_of_the_record_would_an
     monkeypatch.setattr(index, "REBUILD", 1.0)  # each change written beside the same index, one after another
     m = kept("add", "records", str(tmp_path / "first_new.parquet"))
     assert m["added"] == len(first) and m["updates"] == 1 and m["records"] == (~held).sum()  # written beside the index, not built again
+    d, kept_pairs = cli.describe_results_({"workspace": str(ws)}, None), pd.read_parquet(ws / "scored")
+    at_zero = sum(x["pairs"] for x in d["scores"] if x["down_to"] is not None and x["down_to"] >= 0)
+    runs = json.loads((ws / "steps.json").read_text(encoding="utf-8"))["runs"]
+    by_keys = sum(row[len(x["patterns"]["fields"])] for run in runs for x in run["steps"] if x.get("patterns") for row in x["patterns"]["rows"])
+    rules_alone = int((kept_pairs["rule"].notna() & kept_pairs["sources"].isna()).sum())
+    assert at_zero == int((kept_pairs["match_weight"] >= 0).sum())  # at 0 or more: the pairs Explore lists
+    assert sum(x["pairs"] for x in d["scores"]) == by_keys + rules_alone and len(runs) == 2  # every pair compared: the increment's with the full run's
     review = pd.read_parquet(ws / "review.parquet")
     stored_pair = review[~review[f"{uid}_l"].isin(first[uid]) & ~review[f"{uid}_r"].isin(first[uid])].iloc[0]
     assert cli.main(["decide", "pair", stored_pair[f"{uid}_l"], stored_pair[f"{uid}_r"], "match", "--workspace", str(ws)]) == 0
@@ -208,7 +215,16 @@ def test_a_search_finds_records_by_the_start_of_any_value_and_says_one_too_commo
                            (dict(FULL_NAME_KANA=r["FULL_NAME_KANA"][-3:]), "name")):  # any one value alone, a name also by its end
             found = index.search(ws, s2, p2, one, most=10**6)
             assert r[uid] in {x for e in found["entities"] for x in _records(ws, uid, e["entity"])} and all(field in e["fields"] for e in found["entities"]), one
+    r = people.iloc[0]
+    hira = "".join(chr(ord(ch) - 0x60) if "ァ" <= ch <= "ヶ" else ch for ch in r["FULL_NAME_KANA"][:3])
+    for typed, plain in ((dict(PHONE_NUM_4="".join(chr(ord(d) + 0xFEE0) for d in r["PHONE_NUM_4"])), dict(PHONE_NUM_4=r["PHONE_NUM_4"])),  # full-width digits
+                         (dict(POST_CD=f"{r['POST_CD'][:3]}-{r['POST_CD'][3:]}"), dict(POST_CD=r["POST_CD"])),  # a postal code as written
+                         (dict(FULL_NAME_KANA=hira), dict(FULL_NAME_KANA=r["FULL_NAME_KANA"][:3]))):  # hiragana
+        assert index.search(ws, s2, p2, typed, most=50)["entities"] == index.search(ws, s2, p2, plain, most=50)["entities"], typed  # as people type them, found alike
     monkeypatch.setattr(index, "CAP", 3)
+    name = df["FULL_NAME_KANA"].dropna().str[:1].value_counts().index[0]
+    said = index.search(ws, s2, p2, dict(FULL_NAME_KANA=name))
+    assert said["over"] == [dict(field="name", value=name)] and said["entities"] == []  # a field too common to list says so, and lists none of it
     common = df["PHONE_NUM_4"].value_counts().index[0]
     said = cli.search_records({"workspace": str(ws), "values": [f"PHONE_NUM_4={common}"], "from": None, "count": "5"}, None)
     assert said["over"] == [dict(field="phone", value=common)] and said["entities"] == []  # too many to list: said, to be narrowed
