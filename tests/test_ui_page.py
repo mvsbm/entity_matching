@@ -885,3 +885,27 @@ def test_look_up_and_the_score_chart_behave_as_a_person_uses_them(ui_page, tmp_p
     page.click("#rerun-owed")
     page.wait_for_selector("h1:has-text('Find matches')", timeout=30_000)
     page.wait_for_function("() => /changed: run again/.test(document.querySelector('.pagehead')?.textContent || '')", timeout=30_000)  # its step says so too
+
+
+def test_step_2_generates_synthetic_records_by_size_and_difficulty_once_per_click(ui_page, tmp_path):
+    from er import cli, folder
+    home, ws = tmp_path / "workspaces", tmp_path / "workspaces" / "w"
+    assert cli.main(["create", "workspace", "w", "--home", str(home), "--format", "json"]) == 0
+    page, server, httpd = ui_page(str(ws), str(home), viewport={"width": 1280, "height": 900})
+    posted = []
+    page.on("request", lambda r: r.method == "POST" and not json.loads(r.post_data).get("dry") and posted.append(json.loads(r.post_data)))
+    page.click(".navitem[data-screen=columns]")
+    page.select_option("#gsize", "1000")
+    page.select_option("#glevel", "hard")
+    page.click("#gen")
+    assert page.is_disabled("#gen") and page.is_disabled("#load")  # one at a time, either way
+    page.click("#gen", force=True)  # a second click while it runs: nothing
+    page.wait_for_selector("h2.question:text('Did your file load?')", timeout=120_000)
+    assert [x for x in posted if x["command"] == "generate records"] == [{"command": "generate records", "args": {"records": "1000", "difficulty": "hard", "workspace": str(ws)}}]
+    assert "Yes · 1,000 records from synthetic-hard-1000.parquet" in page.inner_text("#loaded") and page.is_visible("#loaded [data-go=run]")
+    page.click("#loaded details.fold-line > summary")  # Load another file: synthetic records there too
+    page.select_option("#gsize", "1000")
+    page.select_option("#glevel", "hard")
+    page.click("#gen")
+    page.wait_for_function("() => { const b = document.querySelector('#gen'); return b && !b.disabled && b.textContent === 'Generate'; }", timeout=120_000)
+    assert len(folder.parts(ws)) == 1 and not page.query_selector("#out .banner.bad")  # the same records: held already, nothing copied

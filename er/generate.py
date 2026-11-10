@@ -363,10 +363,11 @@ def profile(g: Generated) -> pd.Series:
                       "direct (exact rules)": ((cif & name) | (name & code & phone)).mean(), "nothing in common": (~shared & ~close).mean()})
 
 
-def load_spec(path: Path) -> tuple[Spec, Split]:
-    """config/generator.toml → the population spec and the split."""
+def load_spec(path: Path, difficulty: str | None = None) -> tuple[Spec, Split]:
+    """config/generator.toml → the population spec and the split; with `difficulty`, its [difficulty] level's changes to
+    [population]."""
     cfg = tomllib.loads(path.read_text(encoding="utf-8"))
-    p = dict(cfg["population"])
+    p = dict(cfg["population"]) | (cfg["difficulty"][difficulty] if difficulty else {})
     spec = Spec(**{**p, "multi_lambda": {a: dict(v) for a, v in p["multi_lambda"].items()}, "phone_prefixes": tuple(p["phone_prefixes"]),
                    "legal_forms_written": tuple(map(tuple, p["legal_forms_written"])), "branches": tuple(p["branches"]),
                    "kana_confusions": tuple(map(tuple, p["kana_confusions"])), "nesting": dict(p["nesting"]),

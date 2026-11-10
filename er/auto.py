@@ -34,6 +34,7 @@ more (its counts are written 1,234,567) and every run of kana or kanji that is n
 """
 import collections
 import json
+import math
 import os
 import platform
 import re
@@ -113,24 +114,51 @@ def generated(sh: dict, out: Path, emit: Callable[[dict], None]) -> int:
     keep = {c for f in sh["fields"] for c in (s0.columns.get(f) or ((),))[0]} | {s0.data.unique_id}  # a field's first columns: its share is theirs
     unused = {c for alts in s0.columns.values() for alt in alts for c in alt} - keep
     with_rates = lambda r: replace(base, company_share=share, columns=tuple(replace(c, rate=r[c.name]) if c.name in r else c for c in base.columns))
-    entities, uid, records = max(1, round(sh["records"] / (1 + base.dup_lambda))), s0.data.unique_id, 0
+    entities, uid = max(1, round(sh["records"] / (1 + base.dup_lambda))), s0.data.unique_id
     pilot = generate(replace(with_rates(rate), entities=min(PILOT, entities), seed=base.seed + 10_000), persons, companies, towns).df
     filled = lambda c: float((pilot[c].notna() & pilot[c].astype("string").str.strip().ne("")).mean())  # a share as the file's is read
     rate = {c: min(1.0, r * target[c] / got) if (got := filled(c)) else r for c, r in rate.items()}  # measured on a pilot, then set right
     keep_built = {c: min(1.0, v / got) if (got := filled(c)) else 1.0 for c, v in built.items()}
-    spec = with_rates(rate)
+    return _parts(with_rates(rate), entities, out, (persons, companies, towns), uid,
+                  lambda n: emit(dict(step="generate", records=n, seconds=0.0)), unused, keep_built)
+
+
+def synthetic(s: Settings, records: int, difficulty: str, out: Path, done: Callable[[int], None]) -> int:
+    """Parquet parts in `out` of `records` generated records at `difficulty` (config/generator.toml [difficulty]), every
+    column the generator writes, for a workspace whose mapping `s` reads them: a tenth more entities than the records
+    need on average, the rows past `records` left out (the generator shuffles them, so those are any). O(N) time,
+    O(CHUNK) memory."""
+    spec, _ = load_spec(s.root / "config" / "generator.toml", difficulty)
+    if s.data.unique_id not in {c.name for c in spec.columns}:
+        raise InputError(f"this workspace's mapping reads other columns than the generator writes (its ID column, {s.data.unique_id})",
+                         fix="generate into a new workspace: nayose create workspace NAME")
+    entities = math.ceil(records / (1 + spec.dup_lambda) * 1.1) + 10
+    n = _parts(spec, entities, out, load_reference(s.paths["reference"]), s.data.unique_id, done, limit=records)
+    if len(files := list(out.glob("*.parquet"))) == 1:
+        files[0].rename(out / f"{out.name}.parquet")  # one file: named as the records it holds, as a loaded file is shown
+    return n
+
+
+def _parts(spec, entities: int, out: Path, ref: tuple, uid: str, done: Callable[[int], None],
+           unused: set[str] = frozenset(), keep_built: dict[str, float] | None = None, limit: int | None = None) -> int:
+    """`entities` generated in parts of CHUNK, each with its own seed and the record IDs numbered on across them; the
+    `unused` columns left out, each of `keep_built` blanked at random to keep that share; none past `limit` records.
+    The records written."""
     out.mkdir(parents=True, exist_ok=True)
+    records = 0
     for i, start in enumerate(range(0, entities, CHUNK)):
-        g = generate(replace(spec, entities=min(CHUNK, entities - start), seed=base.seed + i), persons, companies, towns)
-        df = g.df.drop(columns=[c for c in unused if c in g.df.columns])
-        rng = np.random.default_rng(base.seed + 20_000 + i)
-        for c, keep in keep_built.items():
+        if limit is not None and records >= limit:
+            break
+        g = generate(replace(spec, entities=min(CHUNK, entities - start), seed=spec.seed + i), *ref)
+        df = g.df.drop(columns=[c for c in unused if c in g.df.columns]).iloc[: None if limit is None else limit - records]
+        rng = np.random.default_rng(spec.seed + 20_000 + i)
+        for c, keep in (keep_built or {}).items():
             df.loc[rng.random(len(df)) >= keep, c] = None
         width = len(df[uid].iloc[0])
         df[uid] = [f"{records + j + 1:0{width}d}" for j in range(len(df))]  # one ID per record across the parts
         df.to_parquet(out / f"part-{i:05d}.parquet", index=False)
         records += len(df)
-        emit(dict(step="generate", records=records, seconds=0.0))
+        done(records)
     return records
 
 
