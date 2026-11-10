@@ -14,7 +14,7 @@ if TYPE_CHECKING:
 
 
 KATAKANA = str.maketrans({chr(c): chr(c + 0x60) for c in range(0x3041, 0x3097)})  # hiragana as katakana
-SEPARATORS = "[\\s\u3000\\-\u2010-\u2015\u2212\u30fc/.()]"  # spaces, hyphens and dashes, the long-vowel mark typed for one, / . ( )
+SEPARATORS = "[\\s\u3000\\-\u2010-\u2015\u2212\u30fc/.()〒]"  # spaces, hyphens and dashes, the long-vowel mark typed for one, / . ( ), 〒
 ONE_BYTE = str.maketrans({chr(0x30A0 + i): chr(1 + i) for i in range(96)})  # the katakana block, each character one byte: 0x01–0x60
 
 

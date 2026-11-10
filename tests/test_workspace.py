@@ -670,6 +670,7 @@ def test_a_value_written_two_ways_is_one_once_prepared_so_and_describe_records_o
     once the mapping prepares them as one (the project's does), two people when it doesn't; a workspace whose mapping
     doesn't is told so on its file, with the command that adds the step."""
     import shlex
+    from er import cli
     s, p, g = population
     uid = s.data.unique_id
     monkeypatch.chdir(tmp_path)
@@ -699,6 +700,7 @@ def test_a_value_written_two_ways_is_one_once_prepared_so_and_describe_records_o
     assert say("set", "preparation", *(f"{f}={','.join(x for x in steps[f] if x != 'katakana')}" for f in names), *(f"{f}=" for f in digits), *at)[0] == 0  # as written
     assert say("resolve", "records", "all.parquet", *at)[0] == 0
     assert not same("workspaces/plain")  # prepared as they are written: two people
+    assert say("describe", "workspace", "workspaces/plain")[1]["rerun_owed"] is False and cli.run_pipeline("workspaces/plain").endswith("final.toml")
     say("load", "records", "all.parquet", *at)
     for _ in range(10):  # each of the file's columns written two ways: its fix, as a person would paste it
         hint = next((x["hint"] for x in say("describe", "records", *at)[1]["slots"] if (x.get("hint") or {}).get("act") == "prepare"), None)
@@ -708,5 +710,8 @@ def test_a_value_written_two_ways_is_one_once_prepared_so_and_describe_records_o
         assert say(*shlex.split(hint["command"])[1:])[0] == 0
     columns = Path("workspaces/plain/columns.toml").read_text(encoding="utf-8")
     assert '"strip_separators"' in columns and '"katakana"' in columns and hint is None
+    told = say("describe", "workspace", "workspaces/plain")[1]
+    assert told["rerun_owed"] is True and told["next"][0]["command"].startswith("nayose rerun records")  # changed since the run: said first
     assert say("rerun", "records", *at)[0] == 0
+    assert say("describe", "workspace", "workspaces/plain")[1]["rerun_owed"] is False
     assert same("workspaces/plain")  # its mapping set right, by the file's own hints: one person

@@ -167,7 +167,7 @@ DEFAULT_FEATURES = (
 )
 
 
-SCRIPTS = {"kana": ["nfkc", "strip_spaces"], "kanji": ["nfkc", "strip_spaces"], "romaji": ["nfkc", "strip_spaces", "casefold"]}  # how a name's script is prepared
+SCRIPTS = {"kana": ["nfkc", "katakana", "strip_spaces"], "kanji": ["nfkc", "strip_spaces"], "romaji": ["nfkc", "strip_spaces", "casefold"]}  # how a name's script is prepared
 ADDED = {"person name": ("person_name", "given_name"), "company name": ("company_name",)}  # an added feature's fields stand beside these
 
 

@@ -51,7 +51,7 @@ from er.match import levels, read_by, review_floor, scaled_prior
 from er.report import run_model
 from er.run import run_config
 from er.settings import COLUMNS, Settings, fit_to_file, present_fields
-from er.standardize import prepare
+from er.standardize import KATAKANA, SEPARATORS, prepare
 from er.strings import connect
 
 INDEX = "index"
@@ -67,8 +67,6 @@ REBUILD = 0.1  # shortcut: the records added since the build reaching this share
 OPEN = 2  # shortcut: the indexes kept open, each with its DuckDB connection and classifier, for a server's next lookup; raise it when people look up in more workspaces at once
 QUERY = "\x7flookup"  # the ID of a record typed in: no record's, and after every one in order
 LAST = chr(0x10FFFF)  # after every character: a prefix's range ends at it
-KANA = str.maketrans({chr(c): chr(c + 0x60) for c in range(0x3041, 0x3097)})  # hiragana as katakana: the kana a person types, as the records hold it
-APART = re.compile(r"[\s\-‐/.ー]")  # what people write between digits: 100-0001, 1980/05/19
 MOVES = ("gold.parquet", "state/rule_clusters.parquet", "state/scoring.json", folder.METHOD)  # what a delta carries: entities, rules' clusters, the u an increment counts again, merging conditions
 INDEXING = hashlib.sha256(b"".join((Path(__file__).parent / f"{m}.py").read_bytes() for m in ("index", "candidates", "config", "standardize", "match", "kind"))
                           + duckdb.__version__.encode() + sklearn.__version__.encode()).hexdigest()[:12]  # what reads and writes an index (kind.pkl pickles a scikit-learn model): another version builds it again
@@ -461,11 +459,12 @@ def search(ws: Path, s: Settings, p: Pipeline, values: dict[str, str], at_least:
     and placeholders alone (-, NULL: [input] nulls) are nothing to search by, as nothing typed is."""
     nulls = frozenset(s.input.nulls)
     if all(tidy(str(v), nulls, False)[0] is None for v in values.values()):
-        m = _open(ws, s, p)[0]
+        m, fitted = _open(ws, s, p)[:2]
+        _sources(fitted, values)
         return dict(record={}, entities=[], found=0, listed=0, candidates=0, typed=[], missing=sorted(values), over=[], seconds={},
                     index=dict(built_at=m["built_at"], records=m["records"] + m["added"]))
     found = _search(ws, s, p, values, at_least, most)
-    names = {c for f, alts in s.columns.items() if f.endswith("name") for alt in alts for c in alt}
+    names = {c for f, alts in s.columns.items() if f.rstrip("_0123456789").endswith("name") for alt in alts for c in alt}
     folded = {c: _typed(v, c in names) for c, v in values.items()}
     return _search(ws, s, p, folded, at_least, most) if not found["listed"] and not found["over"] and folded != values else found
 
@@ -519,8 +518,9 @@ def _typed(v: str, name: bool) -> str:
     """A value as a person types it, as records hold it most often: full-width as half-width and half-width kana as full
     (NFKC), a name's hiragana as katakana; digits alone without what is written between them (100-0001)."""
     v = unicodedata.normalize("NFKC", str(v))
-    v = v.translate(KANA) if name else v
-    return APART.sub("", v) if any(ch.isdigit() for ch in v) and not APART.sub("", v).strip("0123456789") else v
+    v = v.translate(KATAKANA) if name else v
+    bare = re.sub(SEPARATORS, "", v)
+    return bare if any(ch.isdigit() for ch in v) and not bare.strip("0123456789") else v
 
 
 def _view(query: pd.DataFrame, uid: str) -> dict:  # the record asked about, as compared: its fields and kind
@@ -552,9 +552,7 @@ def _query(con: duckdb.DuckDBPyConnection, s: Settings, p: Pipeline, values: dic
         if row.empty:
             raise InputError(f"{record}: no record of the run has that ID", fix="give a record ID the run holds, or the record's values")
         return row.astype("string")
-    sources = sorted({c for d in p.fs.standardize.derived for alt in d.sources for c in alt})
-    if unknown := sorted(set(values or {}) - set(sources)):
-        raise InputError(f"{', '.join(unknown)}: no field reads that column", fix=f"the columns a field reads: {', '.join(sources)}")
+    sources = _sources(p, values)
     nulls = frozenset(s.input.nulls)
     row = pd.DataFrame({uid: [QUERY], **{c: [tidy(str(v), nulls, False)[0] if (v := (values or {}).get(c)) not in (None, "") else None] for c in sources}}, dtype="string")
     if row.drop(columns=uid).isna().all(axis=1).iloc[0]:
@@ -564,6 +562,13 @@ def _query(con: duckdb.DuckDBPyConnection, s: Settings, p: Pipeline, values: dic
     rules, fs, probe = p.rules, p.fs, p.probe
     normalized, used = [*rules.normalized(), *fs.normalized(), *probe.normalized()], rules.used() | fs.used() | probe.used()
     return prepare(fs.standardize, row, normalized, used, kind=kind).astype("string")
+
+
+def _sources(p: Pipeline, values: dict | None) -> list[str]:  # the columns a field reads; a value given for another refused
+    sources = sorted({c for d in p.fs.standardize.derived for alt in d.sources for c in alt})
+    if unknown := sorted(set(values or {}) - set(sources)):
+        raise InputError(f"{', '.join(unknown)}: no field reads that column", fix=f"the columns a field reads: {', '.join(sources)}")
+    return sources
 
 
 def _candidates(con: duckdb.DuckDBPyConnection, p: Pipeline, uid: str, me: str, extra: int = 1) -> tuple[dict[str, set[str]], list[dict]]:

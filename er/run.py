@@ -687,7 +687,7 @@ class Run:
         scored = [(self._links(), out / folder.SCORED / name)] if part == 0 or (out / folder.SCORED / "part-00000.parquet").exists() else []
         def logged() -> str:  # once the files are written: the write's time, in the entry that lands with them
             self._done("write", "O(N + C)", f"O({self.n:,} + {self._count('matches'):,})", t)
-            return self._log(out, part > 0, earlier, part=part, disabled=self.disabled)
+            return self._log(out, part > 0, earlier, part=part, disabled=self.disabled, pipeline=str(Path(report[1]).resolve()) if report else None)
         folder.stage(self.con, out, [("SELECT * FROM rule_kept", out / "rule_kept" / name), ("SELECT * FROM matches", out / "matches" / name),
                                      ("SELECT * FROM proposed", out / "proposed" / name), *scored,
                                      (f"SELECT * FROM gold ORDER BY {q(self.uid)}", out / "gold.parquet"),

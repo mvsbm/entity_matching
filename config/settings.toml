@@ -103,7 +103,7 @@ town_code = "ADDR_CD"                               # municipality + town + chom
 city = "ADDRESS_TWO"
 phone = { sources = [["PHONE_NUM_4"]], normalize = ["nfkc", "strip_separators"] }
 customer_id = { sources = [["CIF_ID"]], normalize = ["nfkc", "strip_separators"] }   # the ID the CIF system assigns
-birth_date = { sources = [["BIRTH_DATE"]], normalize = ["nfkc", "strip_separators"] }   # one order throughout (YYYYMMDD here): 1993-05-25 and 19930525 alike
+birth_date = "BIRTH_DATE"                          # one format throughout (YYYYMMDD here), so equal dates are equal strings
 kind_flag = "PERSON_ORG_CODE"                      # the file's own person/company flag, if it has one; values in [kind]
 # One column holding every name, a person's or a company's? Give full_name, person_name, company_name and any_name
 # that column, and add kind = "person" to full_name and person_name, kind = "company" to company_name: each record's
