@@ -236,14 +236,14 @@ def test_a_search_finds_records_by_the_start_of_any_value_and_says_one_too_commo
                          (dict(POST_CD=f"{r['POST_CD'][:3]}-{r['POST_CD'][3:]}"), dict(POST_CD=r["POST_CD"])),  # a postal code as written
                          (dict(FULL_NAME_KANA=hira), dict(FULL_NAME_KANA=r["FULL_NAME_KANA"][:3]))):  # hiragana
         assert index.search(ws, s2, p2, typed, most=50)["entities"] == index.search(ws, s2, p2, plain, most=50)["entities"], typed  # as people type them, found alike
-    assert index._typed("さいたま市３－１", False) == "さいたま市3-1" and index._typed("さとう", True) == "サトウ"  # hiragana a name's alone
+    assert index._typed("さいたま市３－１", None) == "さいたま市３－１" and index._typed("さとう", "name") == "サトウ" and index._typed("〒１００－０００１", "digits") == "1000001"
     monkeypatch.setattr(index, "CAP", 3)
     name = df["FULL_NAME_KANA"].dropna().str[:1].value_counts().index[0]
     said = index.search(ws, s2, p2, dict(FULL_NAME_KANA=name))
-    assert said["over"] == [dict(field="name", value=name)] and said["entities"] == []  # a field too common to list says so, and lists none of it
+    assert [{k: x[k] for k in ("field", "value")} for x in said["over"]] == [dict(field="name", value=name)] and said["over"][0]["records"] >= 3 and said["entities"] == []  # too common to list: said, with how many
     common = df["PHONE_NUM_4"].value_counts().index[0]
     said = cli.search_records({"workspace": str(ws), "values": [f"PHONE_NUM_4={common}"], "from": None, "count": "5"}, None)
-    assert said["over"] == [dict(field="phone", value=common)] and said["entities"] == []  # too many to list: said, to be narrowed
+    assert said["over"] == [dict(field="phone", value=common, records=int((df["PHONE_NUM_4"] == common).sum()))] and said["entities"] == []  # too many to list: said, how many
     said = cli.search_records({"workspace": str(ws), "values": ["PHONE_NUM_4=-", "FULL_NAME_KANA=NULL"], "from": None, "count": None}, None)
     assert said["typed"] == [] and said["missing"] == ["FULL_NAME_KANA", "PHONE_NUM_4"] and said["entities"] == []  # placeholders alone: nothing to search by
     with pytest.raises(InputError, match="FULL_NAME_KANA=-: read as missing"):  # looked up: said in words a person reads
@@ -253,3 +253,26 @@ def test_a_search_finds_records_by_the_start_of_any_value_and_says_one_too_commo
 def _records(ws, uid: str, entity: str) -> set[str]:  # an entity's records, as the run holds them
     gold = pd.read_parquet(ws / "gold.parquet")
     return set(gold.loc[gold["cluster_id"] == entity, uid])
+
+
+def test_a_look_up_that_reaches_nothing_says_how_near_it_came_and_reads_values_typed_otherwise_as_records_hold_them(tmp_path, population, monkeypatch):
+    from er import cli, index
+    s, p, g = population
+    df = g.df.dropna(subset=["FULL_NAME_KANA"])
+    g.df.to_parquet(tmp_path / "all.parquet", index=False)
+    ws = tmp_path / "ws"
+    assert cli.main(["resolve", "records", str(tmp_path / "all.parquet"), "--workspace", str(ws), "--format", "json"]) == 0
+    assert cli.main(["build", "index", "--workspace", str(ws), "--format", "json"]) == 0
+    s2, p2, _ = cli.setup({"workspace": str(ws)})
+    name = df["FULL_NAME_KANA"].iloc[0]
+    r = index.look_up(ws, s2, p2, values={"FULL_NAME_KANA": name}, at_least=1e9)
+    assert r["found"] == 0 and r["at_least"] == 1e9 and r["closest"]["points"] == max(x["points"] for x in index.look_up(ws, s2, p2, values={"FULL_NAME_KANA": name}, at_least=-1e9, most=10**6)["entities"])
+    assert r["closest"]["shown"].get("full_name", "").startswith(name[:2])  # of those tied, one named as typed
+    assert index._folded(s2, {"FULL_NAME_KANA": "まつもと", "PHONE_NUM_4": "１２-３４", "BIRTH_DATE": "93-05-25"}) == {"FULL_NAME_KANA": "マツモト", "PHONE_NUM_4": "1234", "BIRTH_DATE": "93-05-25"}
+    real = index._look_up
+    answer = lambda found, points: dict(found=found, closest=None if found else dict(points=points), entities=[])
+    monkeypatch.setattr(index, "_look_up", lambda ws, s, p, values, record, at_least, most: answer(0, -20) if values["FULL_NAME_KANA"] == "まつもと" else answer(1, None))
+    assert index.look_up(ws, s2, p2, values={"FULL_NAME_KANA": "まつもと"})["read_as"] == {"FULL_NAME_KANA": "マツモト"}  # as given nothing; as records hold it, found: said
+    monkeypatch.setattr(index, "_look_up", lambda ws, s, p, values, record, at_least, most: answer(0, -10 if values["FULL_NAME_KANA"] == "まつもと" else -30))
+    assert "read_as" not in index.look_up(ws, s2, p2, values={"FULL_NAME_KANA": "まつもと"})  # read otherwise, no nearer: as given
+    monkeypatch.setattr(index, "_look_up", real)

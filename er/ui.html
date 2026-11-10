@@ -2506,11 +2506,13 @@ const SCREENS = {
       if (n !== sought) return;  // a later keystroke's answer only
       $("suggest").innerHTML = r.event === "error" ? banner(r) : suggestions(r);
     };
-    $("lu").addEventListener("input", (e) => {  // once the typing pauses; a look-up's answer was for the values before
-      if (!e.target.name) return;
+    const typing = (e) => {  // once the typing pauses, and an IME's word is chosen (まt is no value); a look-up's answer was for the values before
+      if (!e.target.name || e.isComposing) return;
       asked++; $("found").innerHTML = "";
       clearTimeout(pause); pause = setTimeout(suggest, 200);
-    });
+    };
+    $("lu").addEventListener("input", typing);
+    $("lu").addEventListener("compositionend", typing);
     for (const id of ["lu-top", "lu-from"]) $(id).onchange = () => { suggest(); if ($("found").innerHTML) $("lu").requestSubmit(); };
     $("lu").onsubmit = async (e) => {
       e.preventDefault();
@@ -2530,12 +2532,17 @@ const SCREENS = {
         ${e.records > 1 ? `<p class="faint">${plural(e.records, "record")} of this entity compared</p>` : ""}</div>`;
     const found = (r) => {
       const ms = Math.round(Object.values(r.seconds).reduce((a, b) => a + b, 0) * 1000);
-      const said = r.found ? `${plural(r.found, "possible match", "possible matches")}${r.likely ? `, ${fmt(r.likely)} likely the same` : ""}` : "None here looks like it";
-      return `<div class="card">${ask("What would the run do with it?", `${said} <span class="faint">· ${plural(r.candidates, "record")} compared in ${fmt(ms)} ms</span>`)}</div>` + r.entities.map((e) => card(e,
+      const x = r.record, given = [x.full_name || x.person_name || x.company_name, x.address, x.postal_code, x.phone, x.birth_date, x.customer_id].filter(Boolean).length;  // a name once
+      const said = r.found ? `${plural(r.found, "possible match", "possible matches")}${r.likely ? `, ${fmt(r.likely)} likely the same` : ""}`
+        : r.closest ? `None reaches ${fmt(r.at_least)} points: the closest, ${shown(r.closest.shown) || esc(r.closest.record)}, has ${r.closest.points.toFixed(1)}${
+            given < 2 ? ". One value alone weighs too little: add a phone, a postal code or a birth date" : ""}`
+        : "No record shares a key with it: none would be compared";
+      const read = Object.values(r.read_as || {}).map(esc).join(", ");  // typed one way, read as the records hold it
+      return `<div class="card">${ask("What would the run do with it?", `${said} <span class="faint">${read ? `· read as ${read} ` : ""}· ${plural(r.candidates, "record")} compared in ${fmt(ms)} ms</span>`)}</div>` + r.entities.map((e) => card(e,
         (e.likely ? '<span class="chip good">likely the same</span>' : '<span class="chip info">possible</span>') + (e.rule ? `<span class="chip good">rule ${esc(e.rule)}</span>` : ""))).join("");
     };
     const suggestions = (r) => {
-      const over = r.over.map((x) => `too many records start with ${esc(x.value)}: type more of it`).join(" · ");
+      const over = r.over.map((x) => `${plural(x.records, "record")} start with ${esc(x.value)}, too many to list: ${x.field === "name" ? "add the given name, or a phone or postal code beside it" : "type more of it, or a name beside it"}`).join(" · ");
       const said = !r.typed.length ? "Nothing to search by yet: type more of it" : r.found ? `${plural(r.listed, "record")} start with what you typed${over ? ` · ${over}` : ""}`
         : over ? over[0].toUpperCase() + over.slice(1) : r.listed ? `None of the ${plural(r.listed, "record")} that start with it reaches ${esc($("lu-from").value)} points` : "No record starts with what you typed";
       return `<div class="card">${ask("Who could it be?", said)}</div>` + r.entities.map((e) => card({...e, compared: null},
