@@ -60,7 +60,8 @@ ROWS = 2048  # a row group's rows in the records' database: a lookup reads whole
 SHOWN = ("full_name", "person_name", "company_name", "address", "postal_code", "phone", "birth_date", "customer_id")  # a record, as a person reads it
 SEARCHED = {"any_name": "name", "given_name__kana_fold": "name", "address__address": "address", "postal_code": "postal_code", "phone": "phone",
             "customer_id": "customer_id", "birth_date": "birth_date", "address_code": "address_code"}  # shortcut: the columns config/final.toml's standardizing writes that a search reads by prefix, each with its field; another method's are added here
-REVERSED = ("any_name",)  # also read by its end: a given name typed alone, the family name before it
+REVERSED = ("any_name",)
+DIGITS = ("phone", "postal_code", "customer_id")  # fields held as digits: what a person writes between them (_typed), as the project's mapping drops it  # also read by its end: a given name typed alone, the family name before it
 CAP = 2000  # shortcut: a value typed that starts this many records' or more lists none of them, said to be narrowed; raise it as scoring gets faster
 SCORED = 500  # shortcut: the records scored for a search, those sharing the most values typed; raise it as scoring gets faster
 REBUILD = 0.1  # shortcut: the records added since the build reaching this share of it build it again, so the delta stays small; lower it if lookups slow
@@ -414,6 +415,19 @@ def _records(where: str, uid: str) -> str:  # the records that hold `where` as t
 
 def look_up(ws: Path, s: Settings, p: Pipeline, values: dict[str, str] | None = None, record: str | None = None,
             at_least: float | None = None, most: int = 20) -> dict:
+    """_look_up on the values as given; when none reaches `at_least`, on them as people type what records hold otherwise
+    (_folded: a name in hiragana, full-width or hyphenated digits), kept if it finds more or comes closer, and said
+    (read_as: each value so read). Each looked up as given first, as a file holds it."""
+    found = _look_up(ws, s, p, values, record, at_least, most)
+    if values and not found["found"] and (folded := _folded(s, values)) != values:
+        again = _look_up(ws, s, p, folded, None, at_least, most)
+        if again["found"] or (again["closest"] and (not found["closest"] or again["closest"]["points"] > found["closest"]["points"])):
+            return {**again, "read_as": {c: v for c, v in folded.items() if v != values[c]}}
+    return found
+
+
+def _look_up(ws: Path, s: Settings, p: Pipeline, values: dict[str, str] | None = None, record: str | None = None,
+             at_least: float | None = None, most: int = 20) -> dict:
     """The entities a record would be compared with, as an increment of it alone compares it, best first: `values` by
     the file's column names, or `record`, a stored record's ID, looked up as if it were new (itself left out). Each
     entity at `at_least` points or more (default: the review floor) with its best record, its points, each comparison's
@@ -434,6 +448,8 @@ def look_up(ws: Path, s: Settings, p: Pipeline, values: dict[str, str] | None = 
         t = time.perf_counter()
         ids = sorted({*found, *rules} - {me})
         scored = _scored(con, model, uid, me, ids, n)
+        typed = {c: v for c in m["searched"] if c in query and pd.notna(v := query[c].iloc[0])}
+        agree = _agree(con, uid, typed) if len(scored) and typed else {}  # the values that start alike: of records tied, the nearest
         clock["score"] = time.perf_counter() - t
     floor, rows = review_floor(fitted) if at_least is None else at_least, []
     if len(scored):
@@ -449,7 +465,12 @@ def look_up(ws: Path, s: Settings, p: Pipeline, values: dict[str, str] | None = 
             rows.append(dict(entity=x.entity, record=x.uid, points=round(float(x.weight), 2), likely=bool(x.likely) or rule is not None,
                              rule=rule, keys=x.keys, compared=x.compared, records=int(size[x.entity]), shown=x.shown))
     rows.sort(key=lambda r: (-(r["rule"] is not None), -r["points"]))
-    return dict(record=_view(query, uid), entities=rows[:most], found=len(rows), candidates=len(ids), likely=sum(r["likely"] for r in rows),
+    said = next((v for k in ("full_name", "person_name", "company_name") if (v := _view(query, uid).get(k))), None)  # the name as typed, prepared
+    named = lambda x: bool(said) and (x.get("full_name") or x.get("person_name") or x.get("company_name") or "").startswith(said)
+    near = (scored.assign(alike=[-len(agree.get(u, [])) - named(x) for u, x in zip(scored["uid"], scored["shown"])])  # none reaches it: how near the nearest came,
+            .sort_values(["weight", "alike", "uid"], ascending=[False, True, True]).iloc[0] if len(scored) and not rows else None)  # of those tied, one named as typed
+    closest = dict(record=near["uid"], entity=near["entity"], points=round(float(near["weight"]), 2), shown=near["shown"]) if near is not None else None
+    return dict(record=_view(query, uid), entities=rows[:most], found=len(rows), at_least=floor, closest=closest, candidates=len(ids), likely=sum(r["likely"] for r in rows),
                 checked=checked, seconds={k: round(v, 4) for k, v in clock.items()}, index=dict(built_at=m["built_at"], records=n - extra))
 
 
@@ -464,8 +485,7 @@ def search(ws: Path, s: Settings, p: Pipeline, values: dict[str, str], at_least:
         return dict(record={}, entities=[], found=0, listed=0, candidates=0, typed=[], missing=sorted(values), over=[], seconds={},
                     index=dict(built_at=m["built_at"], records=m["records"] + m["added"]))
     found = _search(ws, s, p, values, at_least, most)
-    names = {c for f, alts in s.columns.items() if f.rstrip("_0123456789").endswith("name") for alt in alts for c in alt}
-    folded = {c: _typed(v, c in names) for c, v in values.items()}
+    folded = _folded(s, values)
     return _search(ws, s, p, folded, at_least, most) if not found["listed"] and not found["over"] and folded != values else found
 
 
@@ -491,8 +511,8 @@ def _search(ws: Path, s: Settings, p: Pipeline, values: dict[str, str], at_least
                 rows = con.execute(f"SELECT uid FROM {_both(table, f'v >= {lit(x)} AND v < {lit(x + LAST)}', 'uid')} LIMIT {CAP}").fetchall()
                 if len(rows) < CAP:
                     listed.setdefault(field, set()).update(u for (u,) in rows)
-                elif table == f"f_{c}" and field not in listed:  # its field's first value starts too many: the field lists none, and says so
-                    over[field] = v
+                elif table == f"f_{c}" and field not in listed:  # its field's first value starts too many: the field lists none, and says how many
+                    over[field] = dict(value=v, records=con.execute(f"SELECT count(*) FROM {_both(table, f'v >= {lit(x)} AND v < {lit(x + LAST)}', 'uid')}").fetchall()[0][0])
                     break
         shared = Counter(u for us in listed.values() for u in us)
         ids = sorted(shared, key=lambda u: (-shared[u], u))[:SCORED]
@@ -510,17 +530,25 @@ def _search(ws: Path, s: Settings, p: Pipeline, values: dict[str, str], at_least
                 rows.append(dict(entity=x.entity, record=x.uid, points=round(float(x.weight), 2), likely=bool(x.likely), fields=x.fields,
                                  compared=x.compared, records=int(size[x.entity]), shown=x.shown))
     return dict(record=_view(query, uid), entities=rows[:most], found=len(rows), listed=len(shared), candidates=len(ids),
-                typed=sorted({SEARCHED[c] for c in typed}), over=[dict(field=f, value=v) for f, v in over.items()],
+                typed=sorted({SEARCHED[c] for c in typed}), over=[dict(field=f, **v) for f, v in over.items()],
                 seconds={k: round(v, 4) for k, v in clock.items()}, index=dict(built_at=m["built_at"], records=m["records"] + m["added"]))
 
 
-def _typed(v: str, name: bool) -> str:
-    """A value as a person types it, as records hold it most often: full-width as half-width and half-width kana as full
-    (NFKC), a name's hiragana as katakana; digits alone without what is written between them (100-0001)."""
+def _folded(s: Settings, values: dict[str, str]) -> dict[str, str]:  # values as people type them, read as records hold them most often, by each column's field (_typed)
+    kind = {c: "name" if f.rstrip("_0123456789").endswith("name") else "digits" if f in DIGITS else None
+            for f, alts in s.columns.items() for alt in alts for c in alt}
+    return {c: _typed(v, kind.get(c)) for c, v in values.items()}
+
+
+def _typed(v: str, kind: str | None) -> str:
+    """A value as a person types it, as records hold it most often: a name (kind "name") full-width as half-width and
+    half-width kana as full (NFKC), hiragana as katakana; a phone, postal code or customer ID ("digits") NFKC and
+    without what is written between characters (03-1234-5678, 〒100-0001), as the project's mapping prepares them. Any
+    other value as it is: a birth date keeps its separators (1993-1-12 isn't 1993-11-2)."""
+    if kind is None:
+        return v
     v = unicodedata.normalize("NFKC", str(v))
-    v = v.translate(KATAKANA) if name else v
-    bare = re.sub(SEPARATORS, "", v)
-    return bare if any(ch.isdigit() for ch in v) and not bare.strip("0123456789") else v
+    return v.translate(KATAKANA) if kind == "name" else re.sub(SEPARATORS, "", v)
 
 
 def _view(query: pd.DataFrame, uid: str) -> dict:  # the record asked about, as compared: its fields and kind

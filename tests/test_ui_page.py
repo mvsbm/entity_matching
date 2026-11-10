@@ -812,10 +812,24 @@ def test_look_up_and_the_score_chart_behave_as_a_person_uses_them(ui_page, tmp_p
     page.keyboard.type("-")  # a placeholder alone: nothing to search by, no error
     page.wait_for_function("() => /Nothing to search by yet/.test(document.querySelector('#suggest')?.textContent || '')", timeout=30_000)
     assert not page.query_selector("#suggest .banner")
+    sent = []
+    page.on("request", lambda q: q.url.endswith("/api/run") and "search records" in (q.post_data or "") and sent.append(q.post_data))
+    page.evaluate("""() => { const i = document.querySelector("#lu input[name='FULL_NAME_KANA']"); i.value = "まt";  // an IME converting: no value yet
+        i.dispatchEvent(new InputEvent("input", {bubbles: true, isComposing: true})); }""")
+    page.wait_for_timeout(800)
+    assert not sent  # nothing searched while the word is chosen
+    page.evaluate("""() => { const i = document.querySelector("#lu input[name='FULL_NAME_KANA']"); i.value = "-"; i.dispatchEvent(new CompositionEvent("compositionend", {bubbles: true})); }""")
+    page.wait_for_timeout(800)  # past the pause
+    assert sent  # searched once it is chosen
     page.keyboard.press("Enter")  # looked up: refused in words a person reads
     page.wait_for_selector("#found .banner", timeout=30_000)
     assert "read as missing" in page.inner_text("#found .banner") and "COLUMN=VALUE" not in page.inner_text("#found .banner")
     shot("placeholder")
+    name.fill(one["FULL_NAME_KANA"])  # a name alone: none reaches the line, and the page says how near the nearest came
+    page.keyboard.press("Enter")
+    page.wait_for_function("() => /None reaches/.test(document.querySelector('#found')?.textContent || '')", timeout=30_000)
+    assert "One value alone weighs too little" in page.inner_text("#found") and "None here looks like it" not in page.inner_text("#found")
+    shot("name-alone")
     page.fill("#lu-top", "1")
     page.dispatch_event("#lu-top", "change")
     name.fill(one["FULL_NAME_KANA"][:2])
