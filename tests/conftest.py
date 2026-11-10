@@ -70,6 +70,10 @@ def population():
     return s, p, g
 
 
+def flag_wrong(df: pd.DataFrame) -> pd.DataFrame:  # a person/company flag that says person on every record: the engine flags the companies it is sure of
+    return df.assign(PERSON_ORG_CODE=pd.Series("1", index=df.index, dtype="string"))
+
+
 def dirty_csv(df: pd.DataFrame, name: str, address: str, path: Path) -> tuple[int, tuple[str, str], tuple[str, str, str]]:
     """The records as a CSV another system wrote: some names in CP932, one unquoted comma between an address's street
     and building, one name garbled upstream (its UTF-8 read as CP932, then saved). How many CP932 names, (id, the

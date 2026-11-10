@@ -41,6 +41,7 @@ from er.folder import Busy
 from er.report import (applied, compare_records, describe_entity, describe_key, describe_matching, describe_method, describe_workspace, entity_pairs, explain_pair, fill_rates,
                        key_how, list_patterns, review_workload, rule_how, run_model, trust_state)
 from er.source import describe, filled, find, lexicon
+from er.kind import sheet_parts
 from er.match import review_floor
 from er.results import apply_merging, check_merging, describe_merging, describe_results, list_entities, list_scored, merged_links, save_merging, show_records
 from er.strings import connect
@@ -466,11 +467,11 @@ def brief_run(r: dict) -> list[str]:  # resolve, rerun, add records, apply answe
     if f.get("merging"):
         out.append(f"  {f['merging']}")
     if f.get("missed") is not None:
-        out.append(f"  missed matches: about {f['missed']:,} (at most {f['missed_high']:,}, by sampling)")
+        out.append(f"  matches no key listed: about {f['missed']:,} (at most {f['missed_high']:,}), among the pairs the probe checked")
     if f.get("too_big"):
         out.append(f"  ! {f['too_big']:,} groups too big to compare were skipped: see report.txt")
     if f.get("kinds"):
-        out.append(f"  person or company: {f['kinds']:,} records to answer")
+        out.append(f"  person or company: {f['kinds']:,} flagged, matched as the engine says: nayose list kinds --open")
     out.append(f"  details: {f['report']}")
     return out + nexts(r)
 
@@ -504,11 +505,13 @@ def brief_results(r: dict) -> list[str]:
         out.append("    " + " · ".join(f"{b}: {x['pairs']:,}" for b, x in zip(bands, r["waiting"])))
     out.append(f"  {merging_words(r.get('merging'))}")
     if r.get("missed"):
-        out.append(f"  missed matches: about {sum(x['missed'] for x in r['missed']):,} (at most {sum(x['high'] for x in r['missed']):,}, by sampling)")
+        out.append(f"  matches no key listed: about {sum(x['missed'] for x in r['missed']):,} (at most {sum(x['high'] for x in r['missed']):,}) "
+                   f"among pairs sharing {' or '.join(word(f) for x in r['missed'] for f in x['fields'])}")
     if (r.get("too_big") or {}).get("skipped"):
-        out.append(f"  ! {r['too_big']['skipped']:,} groups too big to compare were skipped")
-    if (r.get("kinds") or {}).get("to_answer"):
-        out.append(f"  person or company: {r['kinds']['to_answer']:,} records to answer")
+        by = " · ".join(f"{k} {n:,}" for k, n in sorted(r["too_big"].get("by", {}).items(), key=lambda kv: -kv[1])[:3])
+        out.append(f"  ! {r['too_big']['skipped']:,} groups too big to compare were skipped" + (f" ({by})" if by else ""))
+    if (k := r.get("kinds") or {}).get("flagged"):
+        out.append(f"  person or company: {k['flagged']:,} flagged, matched as the engine says" + (f"; the surest {k['to_check']:,} to check" if k["to_check"] < k["flagged"] else ""))
     return out + nexts(r)
 
 
@@ -621,8 +624,8 @@ def next_after(out: Path, waiting: int | None = None) -> list[dict]:
     """What usually follows a run: the pairs waiting for people, the person/company answers open, then what it found."""
     found = [dict(command=nayose("open", "ui", "--workspace", out), why=f"review the {waiting:,} pairs in the browser"),
              dict(command=nayose("list", "scored", "--workspace", out, "--status", "waiting"), why="or list them here, best first")] if waiting else []
-    if (kinds := sheet(out, "kind_review.parquet")) is not None and (n := int(kinds["kind"].isna().sum())):
-        found.append(dict(command=nayose("list", "kinds", "--workspace", out, "--open"), why=f"{n:,} records to answer person or company"))
+    if (kinds := sheet(out, "kind_review.parquet")) is not None and (n := int(((sheet_parts(kinds) == "decide") & kinds["kind"].isna()).sum())):
+        found.append(dict(command=nayose("list", "kinds", "--workspace", out, "--open"), why=f"{n:,} flagged person or company to check, surest first"))
     return found + [dict(command=nayose("describe", "results", "--workspace", out), why="what the run found")]
 
 
@@ -635,7 +638,7 @@ def run_facts(run: Run, out: Path) -> dict | None:  # what a person reads first 
         return None
     return dict(records=r["records"], entities=r["entities"], joined=r["joined"], waiting=sum(x["pairs"] for x in r["waiting"]), review_from=r["review_from"],
                 merging=merging_words(r["merging"]), missed=sum(x["missed"] for x in r["missed"]) if r["missed"] else None,
-                missed_high=sum(x["high"] for x in r["missed"]) if r["missed"] else None, too_big=r["too_big"]["skipped"], kinds=r["kinds"]["to_answer"],
+                missed_high=sum(x["high"] for x in r["missed"]) if r["missed"] else None, too_big=r["too_big"]["skipped"], kinds=r["kinds"]["flagged"],
                 report=str(out / "report.txt"))
 
 
@@ -1501,6 +1504,7 @@ def list_kinds(a: dict, emit: "Emit") -> dict:
     kinds = sheet(out, "kind_review.parquet")
     if kinds is None:
         raise InputError(f"{out}: no kind_review.parquet", fix="a full run that tells persons from companies writes it: nayose resolve records …")
+    kinds = kinds.assign(why=sheet_parts(kinds))  # a flagged record drawn at random is to decide, as everywhere
     kinds.insert(2, "status", np.where(kinds["kind"].notna(), "written in", "open"))
     answered = {x for f in folder.answer_parts(out) for x in pd.read_parquet(f, columns=[uid])[uid].astype("string")}  # applied answers leave the sheet a rerun draws
     return dict(counts=counts(kinds), applied=len(answered), kinds=rows(ids(picked(kinds, a), uid)), next=[dict(command=nayose("answer", "kind", "<ID>", "company", "--workspace", out), why="answer one"),
@@ -1571,7 +1575,7 @@ OPEN = Param("open", "only the rows nobody has answered", "flag")
 PENDING = Param("pending", "only the rows not yet applied: open, or written in", "flag")
 FILE = lambda what: Param("file", f"{what} (default: the workspace's own sheet, with the answers written in)", "path")
 RUN_RESULT = {"summary": "the run in words: records, entities, who joined them, the model's links, what is left to people",
-              "facts": "what to read first: records, entities, joined, waiting (pairs for people from review_from points), merging, missed and missed_high (the probe), too_big, kinds (to answer), report",
+              "facts": "what to read first: records, entities, joined, waiting (pairs for people from review_from points), merging, missed and missed_high (the probe), too_big, kinds (flagged person or company), report",
               "seconds": "the run's time", "wrote": "the files written", "next": "the commands that usually follow"}
 COMMANDS: tuple[Command, ...] = (
     Command("create", "workspace", "Start a workspace: the folder for one matching job",
@@ -1741,7 +1745,7 @@ COMMANDS: tuple[Command, ...] = (
             (Param("workspace", "the workspace", "path", positional=True), PIPELINE),
             {"workspace": "the workspace", "records": "records", "entities": "entities", "largest": "the 10 largest entities",
              "runs": "each run so far: at, what, the record files it read, seconds, records loaded, each step's seconds", "pairs": "open pairs to decide and audit, and decisions written in",
-             "kinds": "open records to decide and to measure, and answers written in", "set_aside": "records set aside",
+             "kinds": "open records to decide (flagged, drawn or not) and to measure (optional), and answers written in", "set_aside": "records set aside",
              "write_owed": "a write cut short, finished by the next one", "summary": "the last run's summary",
              "round": "the round now: one per method the workspace ran (rounds.json)", "audits": "this round's audits people decided: checked, false",
              "trust": TRUST,
@@ -1969,7 +1973,8 @@ COMMANDS: tuple[Command, ...] = (
              "merged_by": "records by what joined them: you, model, rule, or none",
              "merging": "the merge conditions: join, when; own: what the method merges by itself when there are none (line, rules), or null",
              "missed": "the probe's strata: stratum, fields, pairs, scored, missed, low, high",
-             "too_big": "groups too big to compare: skipped, kept", "kinds": "person/company answers to give: to_answer",
+             "too_big": "groups too big to compare: skipped, kept, by (the key that made them → how many skipped)",
+             "kinds": "person or company: flagged (the engine sure against the file's flag, matched as the engine says), to_check (those open on the sheet), to_teach (the measuring draw's open rows: optional)",
              "next": "the commands that usually follow"},
             "nayose describe results --workspace workspaces/customers", describe_results_, quick=True),
     Command("list", "scored", "The pairs the run scored, best first, a page at a time",
@@ -2052,10 +2057,10 @@ COMMANDS: tuple[Command, ...] = (
              "summary": "said when nothing was new", "next": "the commands that usually follow"},
             "nayose apply decisions --workspace workspaces/customers", apply_decisions),
     Command("list", "kinds", "The records for people to answer person or company",
-            "The run's kind_review.parquet: decide rows (where the engine and the file's flag disagree, and the flag's likely "
-            "errors) and measure rows (a random draw that places the engine's lines), each with what the engine, the name and "
-            "the flag say, and why it is there. O(sheet rows).",
-            (WORKSPACE, Param("why", "decide or measure only", "choice", ("decide", "measure")), OPEN, PENDING),
+            "The run's kind_review.parquet: decide rows (flagged: the engine sure against the file's flag, surest first, drawn "
+            "at random or not) and measure rows (optional: a random draw that places the engine's lines), each with what the "
+            "engine, the name and the flag say, and why it is there. O(sheet rows).",
+            (WORKSPACE, Param("why", "decide (flagged) or measure (optional) only", "choice", ("decide", "measure")), OPEN, PENDING),
             {"counts": "rows by why and status", "applied": "the records answered in earlier rounds: applied, they leave the sheet", "kinds": "each record: id, why, status, reason, engine_says, name_says, name, kind",
              "next": "the commands that usually follow"},
             "nayose list kinds --workspace workspaces/customers --open", list_kinds, quick=True,

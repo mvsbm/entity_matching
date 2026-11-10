@@ -99,12 +99,13 @@ def prepare(std: Standardization, records: pd.DataFrame, normalized: Iterable[tu
             raw = out  # the name as written: its legal form still in it
     if kind is not None and raw is not None:
         k = kind.classify(raw, df.get("kind_flag"), df.get("birth_date"), ids=df.get(kind.uid))
-        for c in ("kind", "kind_p", "kind_by", "name_p", "kind_held", "kind_name"):
+        for c in ("kind", "kind_p", "kind_by", "name_p", "kind_flagged", "kind_held", "kind_name"):
             df[c] = k[c].to_numpy()
-        lean = np.where(k["kind_p"].to_numpy() >= 0.5, "company", "person")
+        kind_, lean = k["kind"].to_numpy(), np.where(k["kind_p"].to_numpy() >= 0.5, "company", "person")
+        side = np.where(kind_ == 2, "company", np.where(kind_ == 1, "person", lean))  # its kind; not sure, where it leans
         for d in derived:
-            if d.kind:  # a held record (the engine and the flag disagree) goes to neither side until a person decides
-                df[d.name] = df[d.name].where((lean == d.kind) & ~k["kind_held"].to_numpy())
+            if d.kind:  # a record people can't tell goes to neither side
+                df[d.name] = df[d.name].where((side == d.kind) & ~k["kind_held"].to_numpy())
     for col, steps in normalized:
         if column_name(col, steps) not in df:  # a one-byte copy from the column it copies, if made: not the chain again
             done = steps[-1:] == ("one_byte",) and column_name(col, steps[:-1]) in df

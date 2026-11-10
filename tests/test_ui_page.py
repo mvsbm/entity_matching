@@ -9,7 +9,7 @@ import pytest
 
 from er.settings import load_settings
 
-from conftest import dirty_csv
+from conftest import dirty_csv, flag_wrong
 
 
 def test_the_page_answers_once_per_key_shows_any_row_and_says_when_the_server_is_gone(ui_page, tmp_path, population):
@@ -504,7 +504,7 @@ def test_review_counts_down_an_answer_waits_out_a_busy_workspace_and_auto_merge_
     from er import cli, folder
     s, p, g = population
     uid = s.data.unique_id
-    g.df.to_parquet(tmp_path / "all.parquet", index=False)
+    flag_wrong(g.df).to_parquet(tmp_path / "all.parquet", index=False)  # every record flagged person: the engine flags the companies it is sure of
     monkeypatch.chdir(tmp_path)
     assert cli.main(["create", "workspace", "w", "--format", "json"]) == 0  # a new workspace: nothing merges without people
     ws = tmp_path / "workspaces" / "w"
@@ -517,6 +517,9 @@ def test_review_counts_down_an_answer_waits_out_a_busy_workspace_and_auto_merge_
         return asked.then(() => [during, bar.hidden]); }""") == [True, True]  # the app bar's line: on while the page reads, off once it has its answer
     waiting = int(re.search(r"[\d,]+", page.inner_text("a.tile[data-go=pairs]:not([data-merge]) .num")).group().replace(",", ""))
     assert waiting > 2 and page.inner_text(".rail li.attention .sub") == f"{waiting:,} waiting"  # the tile and the rail say one number
+    tiles = {page.inner_text(f"{t} h3"): page.inner_text(t) for t in [f"a.tile:nth-child({k})" for k in range(1, page.locator("a.tile").count() + 1)]}
+    assert " found" in tiles["Could it miss a real match?"] and "isn't checked" in tiles["Could it miss a real match?"]  # what was checked, never "about 0 missed"
+    assert "flagged" in tiles["Person or company?"] and "matched as the engine says" in tiles["Person or company?"]
     minutes = -(-waiting * 20 // 60)
     assert page.inner_text("a.tile[data-go=pairs]:not([data-merge]) p.muted") == f"about {minutes} minute{'s' * (minutes != 1)} to review them all, if each pair takes 20 seconds"
     assert page.evaluate("[reviewTime(5400), reviewTime(129.7 * 3600)]") == ["1.5 hours", "130 hours"]  # how long, then what it rests on
@@ -621,7 +624,7 @@ def test_auto_mode_runs_from_the_first_screen_and_its_report_waits_on_the_overvi
 
 def test_the_page_keeps_its_step_through_back_reload_and_a_run_and_says_what_was_decided(ui_page, tmp_path, population):
     s, p, g = population
-    g.df.to_parquet(tmp_path / "all.parquet", index=False)
+    flag_wrong(g.df).to_parquet(tmp_path / "all.parquet", index=False)  # every record flagged person: the engine flags the companies it is sure of
     page, server, httpd = ui_page(None, str(tmp_path / "workspaces"))
     page.wait_for_selector(".welcome")
     page.evaluate("go('pairs')")  # a place that follows a run, before a workspace: the way in, across the page
@@ -669,8 +672,15 @@ def test_the_page_keeps_its_step_through_back_reload_and_a_run_and_says_what_was
     assert verdict == [[True, False, False], [False, True, True]]  # one it sets wrong is worse, however the totals net out; Adopt stands out only when better
     page.click(".tab[data-go=kinds]")  # Review's second tab
     page.wait_for_selector("[data-a=person]")
+    assert page.get_attribute("#some [data-part=flagged]", "aria-selected") == "true" and "Flagged" in page.inner_text("#some")  # the flagged records first
+    assert {r.strip() for r in page.locator("#left tbody tr td:first-child").all_inner_texts()} == {"flagged"}  # drawn at random or not
     page.keyboard.press("1")
     page.wait_for_function("() => document.querySelector('#written').textContent === '1'")
+    page.click("#some [data-part=measure]")  # the draw that teaches the engine: optional, apart
+    page.wait_for_selector("#some [data-part=measure][aria-selected=true]")
+    assert "optional" in page.inner_text("#some") and page.inner_text("#written") == "1"  # an answer from the other part still counts to apply
+    page.click("#some [data-part=flagged]")
+    page.wait_for_selector("#some [data-part=flagged][aria-selected=true]")
     page.reload()  # the answer as the server keeps it: a code, said in words
     page.wait_for_selector("[data-a=person]")
     page.keyboard.press("ArrowUp")

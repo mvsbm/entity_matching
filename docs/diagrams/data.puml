@@ -19,8 +19,9 @@ package "the answer: Run.write" {
     resolved_by : the rule, fs or review
     kind : 2 company · 1 person · 0 not sure
     kind_p : the probability of a company
-    kind_by : engine · people
-    kind_held : the name kept from matching
+    kind_by : engine · flag · people
+    kind_flagged : sure against the file's flag
+    kind_held : people can't tell: its name kept from matching
     customer_kind : its cluster's kind
   }
   entity "matches/part-n.parquet" as matches {
@@ -82,6 +83,7 @@ package "state/, for increments: Run.write" {
     kind_p
     kind_by
     name_p
+    kind_flagged
     kind_held
     kind_name : the name as written
   }
@@ -135,6 +137,7 @@ package "for people: Run.report" {
     engine_p
     name_p
     drawn
+    flagged : the engine sure against the flag
     kind : 1 · 2 · 0, to fill in
   }
   entity "qa.md" as qa {

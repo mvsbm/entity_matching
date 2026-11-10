@@ -453,7 +453,7 @@ A full run, without labels: load, budget, fit, rules, candidates, score, cluster
 | Result | |
 |---|---|
 | `summary` | the run in words: records, entities, who joined them, the model's links, what is left to people |
-| `facts` | what to read first: records, entities, joined, waiting (pairs for people from review_from points), merging, missed and missed_high (the probe), too_big, kinds (to answer), report |
+| `facts` | what to read first: records, entities, joined, waiting (pairs for people from review_from points), merging, missed and missed_high (the probe), too_big, kinds (flagged person or company), report |
 | `seconds` | the run's time |
 | `wrote` | the files written |
 | `next` | the commands that usually follow |
@@ -520,7 +520,7 @@ An increment: each new record compared with every stored one, with the run's mod
 | Result | |
 |---|---|
 | `summary` | the run in words: records, entities, who joined them, the model's links, what is left to people |
-| `facts` | what to read first: records, entities, joined, waiting (pairs for people from review_from points), merging, missed and missed_high (the probe), too_big, kinds (to answer), report |
+| `facts` | what to read first: records, entities, joined, waiting (pairs for people from review_from points), merging, missed and missed_high (the probe), too_big, kinds (flagged person or company), report |
 | `seconds` | the run's time |
 | `wrote` | the files written |
 | `next` | the commands that usually follow |
@@ -575,7 +575,7 @@ Reads the record files the run read, the full run's and each increment's, in ord
 | Result | |
 |---|---|
 | `summary` | the run in words: records, entities, who joined them, the model's links, what is left to people |
-| `facts` | what to read first: records, entities, joined, waiting (pairs for people from review_from points), merging, missed and missed_high (the probe), too_big, kinds (to answer), report |
+| `facts` | what to read first: records, entities, joined, waiting (pairs for people from review_from points), merging, missed and missed_high (the probe), too_big, kinds (flagged person or company), report |
 | `seconds` | the run's time |
 | `wrote` | the files written |
 | `next` | the commands that usually follow |
@@ -607,7 +607,7 @@ Records and entities, the largest entities, each run so far, the pairs and kinds
 | `largest` | the 10 largest entities |
 | `runs` | each run so far: at, what, the record files it read, seconds, records loaded, each step's seconds |
 | `pairs` | open pairs to decide and audit, and decisions written in |
-| `kinds` | open records to decide and to measure, and answers written in |
+| `kinds` | open records to decide (flagged, drawn or not) and to measure (optional), and answers written in |
 | `set_aside` | records set aside |
 | `write_owed` | a write cut short, finished by the next one |
 | `summary` | the last run's summary |
@@ -946,7 +946,7 @@ Writes the trial's method into the workspace's method.toml, its merge conditions
 | Result | |
 |---|---|
 | `summary` | the run in words: records, entities, who joined them, the model's links, what is left to people |
-| `facts` | what to read first: records, entities, joined, waiting (pairs for people from review_from points), merging, missed and missed_high (the probe), too_big, kinds (to answer), report |
+| `facts` | what to read first: records, entities, joined, waiting (pairs for people from review_from points), merging, missed and missed_high (the probe), too_big, kinds (flagged person or company), report |
 | `seconds` | the run's time |
 | `wrote` | the files written |
 | `next` | the commands that usually follow |
@@ -974,7 +974,7 @@ Takes the workspace's changes to the method out of method.toml (the line, the ru
 | Result | |
 |---|---|
 | `summary` | the run in words: records, entities, who joined them, the model's links, what is left to people |
-| `facts` | what to read first: records, entities, joined, waiting (pairs for people from review_from points), merging, missed and missed_high (the probe), too_big, kinds (to answer), report |
+| `facts` | what to read first: records, entities, joined, waiting (pairs for people from review_from points), merging, missed and missed_high (the probe), too_big, kinds (flagged person or company), report |
 | `seconds` | the run's time |
 | `wrote` | the files written |
 | `next` | the commands that usually follow |
@@ -1002,7 +1002,7 @@ The trust line (the workspace's method.toml trust): pairs scoring at or above it
 | Result | |
 |---|---|
 | `summary` | the run in words: records, entities, who joined them, the model's links, what is left to people |
-| `facts` | what to read first: records, entities, joined, waiting (pairs for people from review_from points), merging, missed and missed_high (the probe), too_big, kinds (to answer), report |
+| `facts` | what to read first: records, entities, joined, waiting (pairs for people from review_from points), merging, missed and missed_high (the probe), too_big, kinds (flagged person or company), report |
 | `seconds` | the run's time |
 | `wrote` | the files written |
 | `next` | the commands that usually follow |
@@ -1030,7 +1030,7 @@ Raises the trust line one step (or starts one, above every step, on a workspace 
 | Result | |
 |---|---|
 | `summary` | the run in words: records, entities, who joined them, the model's links, what is left to people |
-| `facts` | what to read first: records, entities, joined, waiting (pairs for people from review_from points), merging, missed and missed_high (the probe), too_big, kinds (to answer), report |
+| `facts` | what to read first: records, entities, joined, waiting (pairs for people from review_from points), merging, missed and missed_high (the probe), too_big, kinds (flagged person or company), report |
 | `seconds` | the run's time |
 | `wrote` | the files written |
 | `next` | the commands that usually follow |
@@ -1060,7 +1060,7 @@ The two records of the link are decided different, kept with people's decisions,
 | Result | |
 |---|---|
 | `summary` | the run in words: records, entities, who joined them, the model's links, what is left to people |
-| `facts` | what to read first: records, entities, joined, waiting (pairs for people from review_from points), merging, missed and missed_high (the probe), too_big, kinds (to answer), report |
+| `facts` | what to read first: records, entities, joined, waiting (pairs for people from review_from points), merging, missed and missed_high (the probe), too_big, kinds (flagged person or company), report |
 | `seconds` | the run's time |
 | `wrote` | the files written |
 | `next` | the commands that usually follow |
@@ -1152,8 +1152,8 @@ How the scores came out (every scored pair, by points: exact, from the run's pat
 | `merged_by` | records by what joined them: you, model, rule, or none |
 | `merging` | the merge conditions: join, when; own: what the method merges by itself when there are none (line, rules), or null |
 | `missed` | the probe's strata: stratum, fields, pairs, scored, missed, low, high |
-| `too_big` | groups too big to compare: skipped, kept |
-| `kinds` | person/company answers to give: to_answer |
+| `too_big` | groups too big to compare: skipped, kept, by (the key that made them → how many skipped) |
+| `kinds` | person or company: flagged (the engine sure against the file's flag, matched as the engine says), to_check (those open on the sheet), to_teach (the measuring draw's open rows: optional) |
 | `next` | the commands that usually follow |
 
 ```bash
@@ -1394,12 +1394,12 @@ The records for people to answer person or company.
 nayose list kinds --workspace WORKSPACE [--why decide|measure] [--open] [--pending] [--format text|json]
 ```
 
-The run's kind_review.parquet: decide rows (where the engine and the file's flag disagree, and the flag's likely errors) and measure rows (a random draw that places the engine's lines), each with what the engine, the name and the flag say, and why it is there. O(sheet rows).
+The run's kind_review.parquet: decide rows (flagged: the engine sure against the file's flag, surest first, drawn at random or not) and measure rows (optional: a random draw that places the engine's lines), each with what the engine, the name and the flag say, and why it is there. O(sheet rows).
 
 | Parameter | |
 |---|---|
 | `--workspace WORKSPACE` | the workspace: the folder that keeps one matching job (required) |
-| `--why decide|measure` | decide or measure only |
+| `--why decide|measure` | decide (flagged) or measure (optional) only |
 | `--open` | only the rows nobody has answered |
 | `--pending` | only the rows not yet applied: open, or written in |
 
@@ -1460,7 +1460,7 @@ The answers stand for their records, teach the engine, and the draw to measure p
 | Result | |
 |---|---|
 | `summary` | the run in words: records, entities, who joined them, the model's links, what is left to people |
-| `facts` | what to read first: records, entities, joined, waiting (pairs for people from review_from points), merging, missed and missed_high (the probe), too_big, kinds (to answer), report |
+| `facts` | what to read first: records, entities, joined, waiting (pairs for people from review_from points), merging, missed and missed_high (the probe), too_big, kinds (flagged person or company), report |
 | `seconds` | the run's time |
 | `wrote` | the files written |
 | `next` | the commands that usually follow |

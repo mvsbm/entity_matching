@@ -14,6 +14,7 @@ import pandas as pd
 from er import folder
 from er.cluster import merge
 from er.config import InputError, Pipeline, bits, lit, q
+from er.kind import sheet_parts
 from er.match import levels, named_sql
 from er.report import applied, no_run, run_model, scored_again
 from er.settings import Settings, norm_name
@@ -204,7 +205,8 @@ def describe_results(con: duckdb.DuckDBPyConnection, db: object, out: Path, s: S
     """What the run found, for the Results page: how the scores came out (every scored pair, by points: exact from the
     run's patterns, each pattern one weight), the pairs waiting for people from `review_from` up, by range, what
     merged and how, entities by size, the merge conditions and what they merge, whether matches could be missed (the
-    probe), the groups too big to compare, and the person/company answers to give. O(N + P + E)."""
+    probe), the groups too big to compare by the key that made them, and person or company: the records flagged (the
+    engine sure against the file's flag), those still open on the sheet, and the measuring draw's open rows. O(N + P + E)."""
     uid, gold = s.data.unique_id, read(out, "gold.parquet")
     pats, index = _full_run_patterns(out), pair_index(con, db, out, s, p)
     chart = None
@@ -232,16 +234,18 @@ def describe_results(con: duckdb.DuckDBPyConnection, db: object, out: Path, s: S
     probe = [dict(stratum=x["stratum"], fields=x["fields"], pairs=x["pairs"], scored=x["scored"], missed=x["missed"], low=x["low"], high=x["high"])
              for x in steps.get("probe", {}).get("strata", [])]
     cand = steps.get("candidates", {})
-    kinds = out / "kind_review.parquet"
-    to_answer = int(pd.read_parquet(kinds, columns=["kind"])["kind"].isna().sum()) if kinds.exists() else 0
+    sheet = pd.read_parquet(out / "kind_review.parquet") if (out / "kind_review.parquet").exists() else pd.DataFrame(columns=["why", "kind"])
+    open_ = sheet[sheet["kind"].isna()].assign(why=sheet_parts(sheet[sheet["kind"].isna()]))  # a flagged record drawn at random is to check
+    has = {c for c, *_ in con.execute(f"DESCRIBE SELECT * FROM {gold}").fetchall()}
+    flagged = con.execute(f"SELECT count(*) FROM {gold} WHERE kind_flagged").fetchall()[0][0] if "kind_flagged" in has else 0
     return dict(records=sum(c * n for n, c in sizes), entities=sum(c for _, c in sizes), joined=size_of(2, None),
                 sizes=[dict(label=label, entities=size_of(lo, hi)) for lo, hi, label in SIZES],
                 scores=chart, candidates=sum(x["pairs"] for x in chart) if chart else cand.get("candidates"),
                 review_from=review_from, waiting=[dict(down_to=cuts[i], up_to=cuts[i - 1] if i else None, pairs=n) for i, n in waiting],
                 pairs=dict(kept=sum(by_status.values()), **by_status), merged_by=joined,
                 merging=merging_of(out, p), missed=probe,
-                too_big=dict(skipped=cand.get("oversized_skipped", 0), kept=cand.get("oversized_kept", 0)),
-                kinds=dict(to_answer=to_answer))
+                too_big=dict(skipped=cand.get("oversized_skipped", 0), kept=cand.get("oversized_kept", 0), by=cand.get("skipped_by", {}), min=p.fs.budget.min_oversized()),
+                kinds=dict(flagged=int(flagged), to_check=int((open_["why"] == "decide").sum()), to_teach=int((open_["why"] == "measure").sum())))
 
 
 # ---------- merging without people ----------
@@ -360,7 +364,7 @@ def apply_merging(con: duckdb.DuckDBPyConnection, db: object, out: Path, s: Sett
             SELECT c.{u}, c.cluster_id,
                    CASE WHEN f.id IS NOT NULL THEN {lit(fs.previous_stage)} WHEN m.id IS NOT NULL THEN {lit(fs.stage)} WHEN z.n > 1 THEN 'review' END AS resolved_stage,
                    CASE WHEN f.id IS NOT NULL THEN f.rule WHEN m.id IS NOT NULL THEN {lit(fs.model.name)} WHEN z.n > 1 THEN 'review' END AS resolved_by
-                   {", o.kind, o.kind_p, o.kind_by, o.kind_held, k.customer_kind" if kinds else ""}
+                   {f", o.kind, o.kind_p, o.kind_by, {'o.kind_flagged' if 'kind_flagged' in cols else 'FALSE AS kind_flagged'}, o.kind_held, k.customer_kind" if kinds else ""}
             FROM gold_new c JOIN size z USING (cluster_id) JOIN {old} o USING ({u}) LEFT JOIN first f ON f.id = c.{u} LEFT JOIN model m ON m.id = c.{u}
             {"JOIN customer k USING (cluster_id)" if kinds else ""} ORDER BY c.{u}""")
         joined = con.execute("SELECT count(*) FROM (SELECT cluster_id FROM gold GROUP BY 1 HAVING count(*) > 1)").fetchall()[0][0]

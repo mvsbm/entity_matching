@@ -5,7 +5,7 @@ HIDE_STEREOTYPE()
 title HLD 1 · Context: who uses the system, and what crosses its edges
 
 Person(owner, "Data owner", "maps the file's columns once (config/settings.toml [columns]), then runs the resolution")
-Person(reviewer, "Reviewer", "decides the pairs in the margin and the records held back; audits the pairs above; answers 1 person, 2 company or 0 can't tell")
+Person(reviewer, "Reviewer", "decides the pairs in the margin; audits the pairs above; answers 1 person, 2 company or 0 can't tell for the records flagged")
 Person(developer, "Developer", "proposes changes to the matching; the decision rule on synthetic data judges them")
 
 System_Ext(files, "Customer files", "Parquet, columns of any name: a file, a glob or a folder; new batches later")

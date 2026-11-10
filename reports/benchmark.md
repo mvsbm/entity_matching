@@ -22,15 +22,15 @@ Populations with one name column for every kind (`er.generate.kind_problems`): r
 
 | flag | routed_by | recall | false_merges | person_company_clusters | pairs_to_decide | sure_companies | wrong_companies | sure_persons | wrong_persons | seconds |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| good (1% wrong at random, 20% on representatives) | the truth | 0.4618 | 1 | 0 | 573 | 83.7% | 0 | 98.5% | 0 | 7.4 |
-| good (1% wrong at random, 20% on representatives) | the flag alone | 0.4553 | 21 | 20 | 532 | 82.0% | 304 | 97.0% | 83 | 7.3 |
-| good (1% wrong at random, 20% on representatives) | the kind step, 2,000 labels | 0.4677 | 20 | 19 | 513 | 64.5% | 0 | 98.3% | 40 | 7.7 |
-| medium (3%, 50%) | the truth | 0.4618 | 1 | 0 | 573 | 83.7% | 0 | 98.5% | 0 | 3.7 |
-| medium (3%, 50%) | the flag alone | 0.4417 | 62 | 54 | 500 | 78.8% | 832 | 94.4% | 244 | 7.2 |
-| medium (3%, 50%) | the kind step, 2,000 labels | 0.4652 | 53 | 46 | 483 | 63.9% | 0 | 12.1% | 0 | 7.7 |
-| poor (10%, 80%) | the truth | 0.4618 | 1 | 0 | 573 | 83.7% | 0 | 98.5% | 0 | 3.8 |
-| poor (10%, 80%) | the flag alone | 0.3899 | 84 | 72 | 528 | 72.1% | 2362 | 86.7% | 571 | 7.3 |
-| poor (10%, 80%) | the kind step, 2,000 labels | 0.4142 | 75 | 63 | 530 | 63.7% | 0 | 11.5% | 0 | 7.6 |
+| good (1% wrong at random, 20% on representatives) | the truth | 0.4618 | 1 | 0 | 573 | 100.0% | 0 | 100.0% | 0 | 5.7 |
+| good (1% wrong at random, 20% on representatives) | the flag alone | 0.4553 | 21 | 20 | 532 | 97.9% | 308 | 98.5% | 103 | 6.3 |
+| good (1% wrong at random, 20% on representatives) | the kind step, 2,000 labels | 0.4614 | 21 | 20 | 521 | 98.7% | 180 | 99.1% | 63 | 7.2 |
+| medium (3%, 50%) | the truth | 0.4618 | 1 | 0 | 573 | 100.0% | 0 | 100.0% | 0 | 3.5 |
+| medium (3%, 50%) | the flag alone | 0.4417 | 62 | 54 | 500 | 94.0% | 840 | 95.8% | 296 | 6.4 |
+| medium (3%, 50%) | the kind step, 2,000 labels | 0.4564 | 54 | 47 | 494 | 96.5% | 486 | 97.6% | 172 | 7.3 |
+| poor (10%, 80%) | the truth | 0.4618 | 1 | 0 | 573 | 100.0% | 0 | 100.0% | 0 | 3.4 |
+| poor (10%, 80%) | the flag alone | 0.3899 | 84 | 72 | 528 | 86.1% | 2398 | 88.0% | 687 | 6.4 |
+| poor (10%, 80%) | the kind step, 2,000 labels | 0.426 | 76 | 64 | 499 | 93.5% | 1641 | 91.8% | 322 | 7.4 |
 
 ## Cost: files of growing size (time grows like N^0.42)
 
