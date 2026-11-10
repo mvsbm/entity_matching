@@ -837,6 +837,16 @@ def test_look_up_and_the_score_chart_behave_as_a_person_uses_them(ui_page, tmp_p
     page.reload()
     page.wait_for_selector("#lu-top")
     assert page.input_value("#lu-top") == "1" and shown() == []
+    from er import index
+    cap = index.CAP
+    monkeypatch.setattr(index, "CAP", 3)  # a name too common to list whole: how many, and its first by name, still shown
+    page.fill("#lu-top", "5")
+    page.dispatch_event("#lu-top", "change")
+    page.locator("#lu input[name='FULL_NAME_KANA']").fill(df["FULL_NAME_KANA"].dropna().str[0].value_counts().index[0])
+    page.wait_for_function("() => /records start with .*: the first by name below/.test(document.querySelector('#suggest')?.textContent || '')", timeout=30_000)
+    assert page.locator("#suggest .lu-hit").count() >= 1
+    shot("too-common")
+    monkeypatch.setattr(index, "CAP", cap)
 
     log = json.loads((ws / "steps.json").read_text(encoding="utf-8"))  # a run logged before each counted its own bands
     for run in log["runs"]:
