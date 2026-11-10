@@ -196,9 +196,8 @@ def _read_files(out: Path) -> list[Path]:
     return found or sorted((out / folder.INPUTS).glob("*/read/**/*.parquet"))
 
 
-def _full_run_patterns(out: Path) -> dict | None:
-    full = [x for run in folder.runs(out) if not run.get("part") for x in run.get("steps", []) if x["step"] == "score" and x.get("patterns")]
-    return full[-1]["patterns"] if full else None
+def _patterns(out: Path) -> list[dict]:  # the patterns of every pair the run scored: the full run's, and each increment's since (Run._patterns)
+    return [x["patterns"] for run in folder.runs(out) for x in run.get("steps", []) if x["step"] == "score" and x.get("patterns")]
 
 
 def describe_results(con: duckdb.DuckDBPyConnection, db: object, out: Path, s: Settings, p: Pipeline, review_from: float = 6.0) -> dict:
@@ -208,18 +207,19 @@ def describe_results(con: duckdb.DuckDBPyConnection, db: object, out: Path, s: S
     probe), the groups too big to compare by the key that made them, and person or company: the records flagged (the
     engine sure against the file's flag), those still open on the sheet, and the measuring draw's open rows. O(N + P + E)."""
     uid, gold = s.data.unique_id, read(out, "gold.parquet")
-    pats, index = _full_run_patterns(out), pair_index(con, db, out, s, p)
+    pats, index = _patterns(out), pair_index(con, db, out, s, p)
     chart = None
-    if pats:  # the keys' pairs, from the patterns; the rules' pairs the keys did not list, from the index
+    if pats:  # at 0 or more, every pair, from the index, which keeps them all; below, the keys' from the patterns, the rules' own from the index
         edges = [float("-inf"), *BANDS, float("inf")]
         counts = [0] * (len(edges) - 1)
-        def add(w: float, n: int) -> None:
-            counts[next(i for i in range(len(counts)) if edges[i] <= w < edges[i + 1])] += n
-        k = len(pats["fields"])
-        for row in pats["rows"]:
-            add(float(row[k + 1]), int(row[k]))
-        for (w,) in con.execute(f"SELECT match_weight FROM {index} WHERE rule IS NOT NULL AND sources IS NULL").fetchall():
-            add(float(w), 1)
+        for pat in pats:
+            k = len(pat["fields"])
+            for row in pat["rows"]:
+                if (w := float(row[k + 1])) < 0:
+                    counts[next(i for i in range(len(counts)) if edges[i] <= w < edges[i + 1])] += int(row[k])
+        band = "CASE " + " ".join(f"WHEN match_weight < {e} THEN {i}" for i, e in enumerate(BANDS)) + f" ELSE {len(BANDS)} END"
+        for i, n in con.execute(f"SELECT {band}, count(*) FROM {index} WHERE match_weight >= 0 OR (rule IS NOT NULL AND sources IS NULL) GROUP BY 1").fetchall():
+            counts[i] += n
         chart = [dict(down_to=None if edges[i] == float("-inf") else edges[i], up_to=None if edges[i + 1] == float("inf") else edges[i + 1], pairs=n)
                  for i, n in enumerate(counts)]
     rows = _status_sql(con, out, uid, index)

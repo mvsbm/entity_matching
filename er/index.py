@@ -26,10 +26,12 @@ import hashlib
 import json
 import os
 import pickle
+import re
 import secrets
 import shutil
 import threading
 import time
+import unicodedata
 from bisect import bisect_left
 from collections import Counter
 from pathlib import Path
@@ -65,6 +67,8 @@ REBUILD = 0.1  # shortcut: the records added since the build reaching this share
 OPEN = 2  # shortcut: the indexes kept open, each with its DuckDB connection and classifier, for a server's next lookup; raise it when people look up in more workspaces at once
 QUERY = "\x7flookup"  # the ID of a record typed in: no record's, and after every one in order
 LAST = chr(0x10FFFF)  # after every character: a prefix's range ends at it
+KANA = str.maketrans({chr(c): chr(c + 0x60) for c in range(0x3041, 0x3097)})  # hiragana as katakana: the kana a person types, as the records hold it
+APART = re.compile(r"[\s\-‐/.ー]")  # what people write between digits: 100-0001, 1980/05/19
 MOVES = ("gold.parquet", "state/rule_clusters.parquet", "state/scoring.json", folder.METHOD)  # what a delta carries: entities, rules' clusters, the u an increment counts again, merging conditions
 INDEXING = hashlib.sha256(b"".join((Path(__file__).parent / f"{m}.py").read_bytes() for m in ("index", "candidates", "config", "standardize", "match", "kind"))
                           + duckdb.__version__.encode() + sklearn.__version__.encode()).hexdigest()[:12]  # what reads and writes an index (kind.pkl pickles a scikit-learn model): another version builds it again
@@ -459,20 +463,23 @@ def search(ws: Path, s: Settings, p: Pipeline, values: dict[str, str], at_least:
     is said (over), to be narrowed; of the records listed, the SCORED sharing the most values are scored.
     O(F·(log N + CAP) + SCORED·K·L²)."""
     ws, uid, clock, t = Path(ws), s.data.unique_id, {}, time.perf_counter()
-    with _asking(ws, s, p, values, None) as (m, fitted, model, con, query):
+    with _asking(ws, s, p, {c: _typed(v) for c, v in values.items()}, None) as (m, fitted, model, con, query):
         typed = {c: v for c in m["searched"] if c in query and pd.notna(v := query[c].iloc[0])}
         clock["prepare"] = time.perf_counter() - t
         t = time.perf_counter()
         listed, over = {}, {}
         for c, v in typed.items():
+            field = SEARCHED[c]
+            if field in over:
+                continue
             reads = [(f"f_{c}", v), *(((f"f_{c}_reverse", con.execute(f"SELECT reverse({q(c)}) FROM qry").fetchall()[0][0]),) if c in REVERSED else ())]
             for table, x in reads:
                 rows = con.execute(f"SELECT uid FROM {_both(table, f'v >= {lit(x)} AND v < {lit(x + LAST)}', 'uid')} LIMIT {CAP}").fetchall()
-                if len(rows) == CAP:  # too many to list; said for a value's start, the end read alongside it
-                    if table == f"f_{c}":
-                        over.setdefault(SEARCHED[c], v)
-                else:
-                    listed.setdefault(SEARCHED[c], set()).update(u for (u,) in rows)
+                if len(rows) < CAP:
+                    listed.setdefault(field, set()).update(u for (u,) in rows)
+                elif table == f"f_{c}" and field not in listed:  # its field's first value starts too many: the field lists none, and says so
+                    over[field] = v
+                    break
         shared = Counter(u for us in listed.values() for u in us)
         ids = sorted(shared, key=lambda u: (-shared[u], u))[:SCORED]
         clock["values"] = time.perf_counter() - t
@@ -491,6 +498,13 @@ def search(ws: Path, s: Settings, p: Pipeline, values: dict[str, str], at_least:
     return dict(record=_view(query, uid), entities=rows[:most], found=len(rows), listed=len(shared), candidates=len(ids),
                 typed=sorted({SEARCHED[c] for c in typed}), over=[dict(field=f, value=v) for f, v in over.items()],
                 seconds={k: round(v, 4) for k, v in clock.items()}, index=dict(built_at=m["built_at"], records=m["records"] + m["added"]))
+
+
+def _typed(v: str) -> str:
+    """A value as a person types it, as the records hold it: full-width as half-width and half-width kana as full (NFKC),
+    hiragana as katakana; digits alone without what is written between them (100-0001)."""
+    v = unicodedata.normalize("NFKC", str(v)).translate(KANA)
+    return APART.sub("", v) if any(ch.isdigit() for ch in v) and not APART.sub("", v).strip("0123456789") else v
 
 
 def _view(query: pd.DataFrame, uid: str) -> dict:  # the record asked about, as compared: its fields and kind

@@ -2105,7 +2105,7 @@ async function explorePage(el, arg) {  // Explore: every pair kept, every entity
   if (r.event === "error") { body.innerHTML = banner(r); return w; }
   const f = {from: want.from ?? 0, to: want.to ?? null, source: want.source || "", status: want.status || "", record: want.record || ""};
   body.innerHTML = `<div class="card"><div class="qa"><div class="q"><h2 class="question">Which pairs scored highest?</h2>
-      <p class="answer">${r.scores ? `Every pair compared, by points; below 0, two different people almost surely. The ${fmt(r.pairs.kept)} at 0 or more are listed below, best first.` : `${fmt(r.pairs.kept)} pairs at 0 points or more, best first.`}</p></div></div>
+      <p class="answer">${r.scores ? `Every pair compared, by points; below 0, two different people almost surely. The ${fmt(r.scores.filter((x) => x.down_to !== null && x.down_to >= 0).reduce((a, x) => a + x.pairs, 0))} at 0 or more are listed below, best first.` : `${fmt(r.pairs.kept)} pairs kept, best first.`}</p></div></div>
     ${r.scores ? scoreBars(r.scores, 0) : ""}</div>
     <div class="filters"><label>From <input type="number" step="0.5" id="ffrom" value="${esc(f.from)}" aria-label="From these points"></label>
       <label>Below <input type="number" step="0.5" id="fto" value="${esc(f.to ?? "")}" aria-label="Below these points"></label>
@@ -2481,7 +2481,8 @@ const SCREENS = {
       });
     };
     const settings = () => {  // Show and From points, kept in this browser
-      const k = Math.min(200, Math.max(1, Math.round(Number($("lu-top").value)) || 10)), p = $("lu-from").value.trim(), points = p !== "" && Number.isFinite(Number(p));
+      const n = Math.round(Number($("lu-top").value)), p = $("lu-from").value.trim(), points = p !== "" && Number.isFinite(Number(p));
+      const k = $("lu-top").value.trim() !== "" && Number.isFinite(n) ? Math.min(200, Math.max(1, n)) : 10;
       $("lu-top").value = k;
       store("lookupTop", String(k)); store("lookupFrom", points ? p : "");
       return {count: String(k), from: points ? p : undefined};
@@ -2525,7 +2526,7 @@ const SCREENS = {
     };
     const suggestions = (r) => {
       const over = r.over.map((x) => `too many records start with ${esc(x.value)}: type more of it`).join(" · ");
-      const said = !r.typed.length ? "Type a name, phone, postal code, address or ID" : r.found ? `${plural(r.listed, "record")} start with what you typed${over ? ` · ${over}` : ""}`
+      const said = !r.typed.length ? "Nothing to search by yet: type more of it" : r.found ? `${plural(r.listed, "record")} start with what you typed${over ? ` · ${over}` : ""}`
         : over ? over[0].toUpperCase() + over.slice(1) : r.listed ? `None of the ${plural(r.listed, "record")} that start with it reaches ${esc($("lu-from").value)} points` : "No record starts with what you typed";
       return `<div class="card">${ask("Who could it be?", said)}</div>` + r.entities.map((e) => card({...e, compared: null},
         (e.likely ? '<span class="chip good">likely the same</span>' : "") + e.fields.map((f) => `<span class="chip">${esc(words(f))}</span>`).join(""))).join("");
