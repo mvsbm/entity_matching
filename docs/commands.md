@@ -6,7 +6,7 @@ Written by `scripts/document_commands.py` from the declarations in `er/cli.py`; 
 
 `nayose` (名寄せ: gathering each customer's records under one name) reads as a sentence: a verb, a noun, then the parameters. Every command takes `--help` and `--format`.
 
-- **`--format text`**, the default: each step on a line as it finishes, then the result, for a person.
+- **`--format text`**, the default, for a person: a long command shows each step as it ends and, on a terminal, one line for the step under way (what it does, how far, how long is left, measured on the step's own pace and on the workspace's last run of the same kind); elsewhere that line every 30 seconds. Then the result in short: what it found first, then what to look at, then the commands that usually follow. `--verbose` writes every field of the result, and every fact of each step.
 - **`--format json`**: one JSON object per line: `{"event": "step", …}` per step (a file being read: `{"event": "progress", "done": …, "total": …, "unit": "rows"}` as it goes, the total about; a run's long steps, each its own count: `"records"` loaded, `"rules"` applied, `"keys"` joined (weighed by the pairs each lists, with `"more"` when oversized blocks wait for the gate), `"sampled pairs"` the gate scored, and `"pairs"` scored with `"likely"`, the pairs at the model's line so far), then `{"event": "result", "command": …, …}` with the fields listed below, or `{"event": "error", "error": …, "fix": …, "hints": …, "exit": …}`. IDs are `id`, `id_l`, `id_r`, whatever the file calls them.
 - **Exit codes:** 0; 2, a mistake people fix (two lines: what is wrong, and the fix); 75, the workspace is busy: try again later; 1, a pass of `serve inbox` stopped on a file; 130, stopped with Ctrl-C.
 - **`next`**, in every result: the commands that usually follow, each with why.
@@ -323,14 +323,14 @@ nayose describe records customers.parquet --workspace workspaces/acme
 Read, map and check a file, in seconds; resolve nothing.
 
 ```
-nayose check records INPUT [--workspace WORKSPACE] [--compute KEY=VALUE …] [--pipeline PIPELINE] [--format text|json]
+nayose check records [INPUT] [--workspace WORKSPACE] [--compute KEY=VALUE …] [--pipeline PIPELINE] [--format text|json]
 ```
 
 Reads the file through the door every input takes, maps its columns to the logical fields (config/settings.toml [columns]), and counts each key's pairs before any join. Shows each field's fill rate, the share of values that look like it and the share of its most common value, what would be turned off, and the blocks the run will check on a sample. A field the run needs and the file lacks stops it, with the column whose values look most like it. O(N) for the counts; a sample of 10,000 records for the shares.
 
 | Parameter | |
 |---|---|
-| `INPUT` | the records: a CSV, TSV or Parquet file, a quoted glob ('in/*.csv') or a folder of them, read as they come and together by column name |
+| `INPUT` | the records: a CSV, TSV or Parquet file, a quoted glob ('in/*.csv') or a folder of them, read as they come and together by column name; without it, the workspace's file loaded last |
 | `--workspace WORKSPACE` | a workspace, for its own mapping (without it, the project's: config/settings.toml) |
 | `--compute KEY=VALUE` | DuckDB limits for this run, over config/settings.toml [compute]: memory_limit=8GB, threads=4, temp_directory=<folder> (past the memory limit DuckDB spills there) |
 | `--pipeline PIPELINE` | the pipeline file (default: config/final.toml) |
@@ -425,6 +425,7 @@ A full run, without labels: load, budget, fit, rules, candidates, score, cluster
 | Result | |
 |---|---|
 | `summary` | the run in words: records, entities, who joined them, the model's links, what is left to people |
+| `facts` | what to read first: records, entities, joined, waiting (pairs for people from review_from points), merging, missed and missed_high (the probe), too_big, kinds (to answer), report |
 | `seconds` | the run's time |
 | `wrote` | the files written |
 | `next` | the commands that usually follow |
@@ -491,6 +492,7 @@ An increment: each new record compared with every stored one, with the run's mod
 | Result | |
 |---|---|
 | `summary` | the run in words: records, entities, who joined them, the model's links, what is left to people |
+| `facts` | what to read first: records, entities, joined, waiting (pairs for people from review_from points), merging, missed and missed_high (the probe), too_big, kinds (to answer), report |
 | `seconds` | the run's time |
 | `wrote` | the files written |
 | `next` | the commands that usually follow |
@@ -545,6 +547,7 @@ Reads the record files the run read, the full run's and each increment's, in ord
 | Result | |
 |---|---|
 | `summary` | the run in words: records, entities, who joined them, the model's links, what is left to people |
+| `facts` | what to read first: records, entities, joined, waiting (pairs for people from review_from points), merging, missed and missed_high (the probe), too_big, kinds (to answer), report |
 | `seconds` | the run's time |
 | `wrote` | the files written |
 | `next` | the commands that usually follow |
@@ -915,6 +918,7 @@ Writes the trial's method into the workspace's method.toml, its merge conditions
 | Result | |
 |---|---|
 | `summary` | the run in words: records, entities, who joined them, the model's links, what is left to people |
+| `facts` | what to read first: records, entities, joined, waiting (pairs for people from review_from points), merging, missed and missed_high (the probe), too_big, kinds (to answer), report |
 | `seconds` | the run's time |
 | `wrote` | the files written |
 | `next` | the commands that usually follow |
@@ -942,6 +946,7 @@ Takes the workspace's changes to the method out of method.toml (the line, the ru
 | Result | |
 |---|---|
 | `summary` | the run in words: records, entities, who joined them, the model's links, what is left to people |
+| `facts` | what to read first: records, entities, joined, waiting (pairs for people from review_from points), merging, missed and missed_high (the probe), too_big, kinds (to answer), report |
 | `seconds` | the run's time |
 | `wrote` | the files written |
 | `next` | the commands that usually follow |
@@ -969,6 +974,7 @@ The trust line (the workspace's method.toml trust): pairs scoring at or above it
 | Result | |
 |---|---|
 | `summary` | the run in words: records, entities, who joined them, the model's links, what is left to people |
+| `facts` | what to read first: records, entities, joined, waiting (pairs for people from review_from points), merging, missed and missed_high (the probe), too_big, kinds (to answer), report |
 | `seconds` | the run's time |
 | `wrote` | the files written |
 | `next` | the commands that usually follow |
@@ -996,6 +1002,7 @@ Raises the trust line one step (or starts one, above every step, on a workspace 
 | Result | |
 |---|---|
 | `summary` | the run in words: records, entities, who joined them, the model's links, what is left to people |
+| `facts` | what to read first: records, entities, joined, waiting (pairs for people from review_from points), merging, missed and missed_high (the probe), too_big, kinds (to answer), report |
 | `seconds` | the run's time |
 | `wrote` | the files written |
 | `next` | the commands that usually follow |
@@ -1025,6 +1032,7 @@ The two records of the link are decided different, kept with people's decisions,
 | Result | |
 |---|---|
 | `summary` | the run in words: records, entities, who joined them, the model's links, what is left to people |
+| `facts` | what to read first: records, entities, joined, waiting (pairs for people from review_from points), merging, missed and missed_high (the probe), too_big, kinds (to answer), report |
 | `seconds` | the run's time |
 | `wrote` | the files written |
 | `next` | the commands that usually follow |
@@ -1424,6 +1432,7 @@ The answers stand for their records, teach the engine, and the draw to measure p
 | Result | |
 |---|---|
 | `summary` | the run in words: records, entities, who joined them, the model's links, what is left to people |
+| `facts` | what to read first: records, entities, joined, waiting (pairs for people from review_from points), merging, missed and missed_high (the probe), too_big, kinds (to answer), report |
 | `seconds` | the run's time |
 | `wrote` | the files written |
 | `next` | the commands that usually follow |

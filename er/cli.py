@@ -22,6 +22,8 @@ import shlex
 import shutil
 import sys
 import tempfile
+import threading
+import time
 import unicodedata
 from collections.abc import Callable
 from dataclasses import dataclass, replace
@@ -84,12 +86,6 @@ def nayose(*words: object) -> str:  # a command line, quoted for a shell
     return shlex.join(["nayose", *map(str, words)])
 
 
-def step_text(x: dict) -> str:  # one line per step, as it finishes: what it did, and how long it took
-    base = ("event", "step", "big_o", "filled", "seconds", "peak_memory_gb")
-    facts = " · ".join(f"{k.replace('_', ' ')} {v:,}" for k, v in x.items() if k not in base and isinstance(v, int | float) and not isinstance(v, bool))
-    return f"  {x['step']:<11} {x['seconds']:>6.1f} s  {facts}"
-
-
 def plain(x: object) -> object:
     """A value JSON can carry: numpy and pandas scalars as Python ones, NaN and NA as null."""
     if isinstance(x, dict):
@@ -103,34 +99,189 @@ def plain(x: object) -> object:
     return x if isinstance(x, str | int | float | bool) or x is None else str(x)
 
 
-class Emit:
-    """Where a command's events go: text for a person (steps and the result on stdout, an error on stderr), or JSON,
-    one object per line, all on stdout."""
+DOING = {"load": "reading the records", "budget": "counting the pairs", "fit": "fitting the model", "rules": "applying the rules",
+         "candidates": "listing the pairs to compare", "score": "scoring the pairs", "cluster": "forming entities",
+         "probe": "looking for missed matches", "report": "writing the reports", "write": "saving", "decide": "applying the decisions"}
+RUN_ORDER = ("load", "budget", "fit", "rules", "candidates", "score", "cluster", "probe", "report", "write")  # a full run's steps
+BATCH_ORDER = ("load", "fit", "rules", "candidates", "score", "cluster", "report", "write")  # a batch added: no budget, no probe
 
-    def __init__(self, fmt: str = "text", out=None, err=None):
-        self.fmt, self.out, self.err = fmt, out or sys.stdout, err or sys.stderr
+
+def took(seconds: float) -> str:  # 0.3s, 45s, 1m 12s, 2h 05m
+    s = max(seconds, 0)
+    return f"{s:.1f}s" if s < 9.95 else f"{s:.0f}s" if s < 59.5 else f"{int(s // 60)}m {int(s % 60):02d}s" if s < 3600 else f"{int(s // 3600)}h {int(s % 3600 // 60):02d}m"
+
+
+def count(n: float) -> str:  # 4.1M, 118.8M, 12,532
+    return f"{n / 1e9:.1f}B" if n >= 1e9 else f"{n / 1e6:.1f}M" if n >= 1e6 else f"{n:,.0f}"
+
+
+def step_facts(x: dict) -> str:  # the one or two facts of a finished step that a person reads; none that are zero
+    f = lambda k: x.get(k) or 0
+    needs = {"load": "records", "budget": "pairs", "rules": "pairs", "candidates": "candidates", "cluster": "accepted", "decide": "decisions"}
+    said = None if needs.get(x["step"]) not in x else {"load": [f"{f('records'):,} records", f"{f('set_aside'):,} set aside" if f("set_aside") else ""],
+            "budget": [f"{f('pairs'):,} pairs by the keys", f"{f('oversized_blocks'):,} groups too big: checked by sampling" if f("oversized_blocks") else ""],
+            "rules": [f"{f('pairs'):,} pairs matched by rules"],
+            "candidates": [f"{f('candidates'):,} pairs to compare", f"{f('oversized_skipped'):,} big groups skipped" if f("oversized_skipped") else ""],
+            "cluster": [f"{f('accepted'):,} pairs merged by the model" if f("accepted") else ""],
+            "decide": [f"{f('decisions'):,} decisions", f"{f('clusters_joined'):,} entities joined" if f("clusters_joined") else ""]}.get(x["step"])
+    if said is None:  # any other step: its counts that aren't zero
+        said = [f"{k.replace('_', ' ')} {v:,}" for k, v in x.items() if k not in ("seconds", "peak_memory_gb") and isinstance(v, int) and not isinstance(v, bool) and v]
+    return " · ".join(s for s in said if s)
+
+
+def step_text(x: dict) -> str:  # --verbose: one line per step, every fact
+    base = ("event", "step", "big_o", "filled", "seconds", "peak_memory_gb")
+    facts = " · ".join(f"{k.replace('_', ' ')} {v:,}" for k, v in x.items() if k not in base and isinstance(v, int | float) and not isinstance(v, bool))
+    return f"  {x['step']:<11} {x['seconds']:>6.1f} s  {facts}"
+
+
+class Live:
+    """A long command's steps for a person: a line per finished step, and one line for the step under way (what it
+    does, how far, how long is left), redrawn on a terminal and written every 30 seconds elsewhere (a log, a pipe).
+    Time left: the step's own pace once it reports how far it is; for the steps after it, the workspace's last run of
+    the same kind, scaled to the records; nothing where neither says."""
+    FRAMES = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
+
+    def __init__(self, out, title: str, order: tuple[str, ...], last: dict[str, float] | None, last_records: int | None):
+        self.out, self.tty, self.order, self.last, self.last_records = out, out.isatty(), order, last or {}, last_records
+        self.records, self.step, self.p, self.lock, self.stop = None, (order[0] if order else None), None, threading.Lock(), threading.Event()
+        self.t = self.said = time.monotonic()
+        self.frame, self.shown = 0, False
+        print(title, file=out, flush=True)
+        if self.tty:
+            threading.Thread(target=self._tick, daemon=True).start()
+
+    def _tick(self) -> None:
+        while not self.stop.wait(0.15):
+            with self.lock:
+                if self.stop.is_set():
+                    return
+                self.frame += 1
+                self._draw()
+
+    def _clear(self) -> None:
+        if self.shown:
+            self.out.write("\r\033[K")
+            self.shown = False
+
+    def _draw(self) -> None:
+        line = self._line(self.FRAMES[self.frame % len(self.FRAMES)])
+        width = shutil.get_terminal_size((100, 20)).columns - 1
+        self.out.write("\r\033[K" + (line if len(line) <= width else line[:width - 1] + "…"))
+        self.out.flush()
+        self.shown = True
+
+    def _left(self) -> tuple[float | None, float | None]:  # this step's time left, and all of it, where something measured says
+        now, here = time.monotonic(), None
+        if self.p and self.p[0] > self.p[3] and now - self.p[4] >= 3:
+            done, total, _, first, since = self.p
+            here = (total - done) * (now - since) / (done - first)
+        if not self.last or self.step not in self.order:
+            return here, None
+        scale = self.records / self.last_records if self.records and self.last_records else 1.0
+        later = sum(self.last.get(s, 0) for s in self.order[self.order.index(self.step) + 1:]) * scale
+        mine = here if here is not None else max(self.last.get(self.step, 0) * scale - (now - self.t), 0)
+        return here, mine + later
+
+    def _line(self, mark: str) -> str:
+        here, everything = self._left()
+        parts = [f"  {mark} {self.step or '':<10} {took(time.monotonic() - self.t):>7}  {DOING.get(self.step, 'working')}"]
+        if self.p and self.p[1]:
+            parts.append(f"{count(self.p[0])} of {count(self.p[1])} {self.p[2]}")
+        if here is not None:
+            parts.append(f"about {took(here)} left")
+        if everything is not None and (here is None or everything > here + 5):
+            parts.append(f"about {took(everything)} left in all")
+        return " · ".join(parts)
+
+    def done(self, x: dict, verbose: bool) -> None:
+        with self.lock:
+            self._clear()
+            print(step_text(x) if verbose else f"  ✓ {x['step']:<10} {took(x['seconds']):>7}  {step_facts(x)}".rstrip(), file=self.out, flush=True)
+            if x["step"] == "load" and x.get("records"):
+                self.records = x["records"]
+            at = self.order.index(x["step"]) if x["step"] in self.order else None
+            self.step = self.order[at + 1] if at is not None and at + 1 < len(self.order) else None
+            self.t = self.said = time.monotonic()
+            self.p = None
+
+    def progress(self, done: int, total: int, unit: str) -> None:
+        with self.lock:
+            now = time.monotonic()
+            if self.step is None and self.order:  # a count after the last step: the steps again
+                self.step, self.t = self.order[0], now
+            if self.p is None or self.p[1] != total or self.p[2] != unit:  # a new count: its pace from here
+                self.p = (done, total, unit, done, now)
+            else:
+                self.p = (done, total, unit, self.p[3], self.p[4])
+            if not self.tty and now - self.said >= 30:
+                print(self._line("…"), file=self.out, flush=True)
+                self.said = now
+
+    def say(self, text: str) -> None:
+        with self.lock:
+            self._clear()
+            print(text, file=self.out, flush=True)
+
+    def close(self) -> None:
+        self.stop.set()
+        with self.lock:
+            self._clear()
+            self.out.flush()
+
+
+class Emit:
+    """Where a command's events go: text for a person (the steps as they go, then the result in short, or every
+    field with verbose; an error on stderr), or JSON, one object per line, all on stdout."""
+
+    def __init__(self, fmt: str = "text", out=None, err=None, verbose: bool = False, title: str = "", order: tuple[str, ...] = RUN_ORDER,
+                 last: dict[str, float] | None = None, last_records: int | None = None):
+        self.fmt, self.out, self.err, self.verbose = fmt, out or sys.stdout, err or sys.stderr, verbose
+        self.title, self.order, self.last, self.last_records, self.live = title, order, last, last_records, None
 
     def _json(self, event: str, x: dict) -> None:
         print(json.dumps({"event": event, **plain(x)}, ensure_ascii=False), file=self.out, flush=True)
 
-    def step(self, x: dict) -> None:
-        self._json("step", x) if self.fmt == "json" else print(step_text(x), file=self.out, flush=True)
+    def _live(self) -> Live:  # made at the first step or count: a quick command shows none
+        if self.live is None:
+            self.live = Live(self.out, self.title, self.order, self.last, self.last_records)
+        return self.live
 
-    def progress(self, done: int, total: int, unit: str, **facts: object) -> None:  # how far a long command has gone, for the page: JSON only
+    def step(self, x: dict) -> None:
+        self._json("step", x) if self.fmt == "json" else self._live().done(x, self.verbose)
+
+    def progress(self, done: int, total: int, unit: str, **facts: object) -> None:  # how far a long command has gone
         if self.fmt == "json":
             self._json("progress", {"done": done, "total": total, "unit": unit, **facts})
+        else:
+            self._live().progress(done, total, unit)
 
-    def line(self, text: str, **data: object) -> None:  # a running note: serve inbox's files
-        self._json("line", {"text": text, **data}) if self.fmt == "json" else print(text, file=self.out, flush=True)
+    def line(self, text: str, **data: object) -> None:  # a running note: serve inbox's files, open ui's link
+        if self.fmt == "json":
+            self._json("line", {"text": text, **data})
+        elif self.live:
+            self.live.say(text)
+        else:
+            print(text, file=self.out, flush=True)
+
+    def close(self) -> None:
+        if self.live:
+            self.live.close()
 
     def result(self, c: Command, r: dict) -> None:
-        self._json("result", {"command": c.name, **r}) if self.fmt == "json" else print(text(c, r), file=self.out, flush=True)
+        self.close()
+        if self.fmt == "json":
+            self._json("result", {"command": c.name, **r})
+        else:
+            brief = None if self.verbose else BRIEF.get(c.name)
+            print(text(c, r) if brief is None else "\n".join(brief(r)), file=self.out, flush=True)
 
     def error(self, e: InputError, code: int) -> None:
+        self.close()
         if self.fmt == "json":
             self._json("error", {"error": str(e), "fix": e.fix, "hints": e.hints, "exit": code})
         else:
-            print(f"error: {e}" + (f"\nfix: {e.fix}" if e.fix else ""), file=self.err, flush=True)
+            print(f"✗ {e}" + (f"\n  fix: {e.fix}" if e.fix else ""), file=self.err, flush=True)
 
 
 def cell(v: object) -> str:
@@ -212,6 +363,218 @@ def check_text(r: dict) -> str:
     return "\n".join(out + ["next"] + [f"  {x['command']}    # {x['why']}" for x in r["next"]])
 
 
+# ---------- results in short, for a person (--verbose: every field, as text() writes it) ----------
+
+WORDS = {"customer_id": "customer ID", "id": "ID", "kind_flag": "person/company flag"}
+word = lambda f: WORDS.get(f, f.replace("_", " "))
+num = lambda v: f"{v:g}" if isinstance(v, float) else f"{v:,}"
+
+
+def nexts(r: dict, most: int = 3) -> list[str]:  # the commands that usually follow, each with why, aligned
+    rows = (r.get("next") or [])[:most]
+    if not rows:
+        return []
+    w = min(max(len(x["command"]) for x in rows), 76)
+    return ["next"] + [f"  {x['command']:<{w}}  {x.get('why') or ''}".rstrip() for x in rows]
+
+
+def grid(rows: list[dict], cols: dict[str, str], most: int = 20) -> list[str]:  # rows as a table: columns by key, headed in words
+    if not rows:
+        return []
+    cells = [[cell(r.get(k)) for k in cols] for r in rows[:most]]
+    width = [max(wide(h), *(wide(x[i]) for x in cells)) for i, h in enumerate(cols.values())]
+    pad = lambda x, w: x + " " * (w - wide(x))
+    return ["  " + "  ".join(pad(h, w) for h, w in zip(cols.values(), width)).rstrip()] + \
+           ["  " + "  ".join(pad(x, w) for x, w in zip(row, width)).rstrip() for row in cells]
+
+
+def merging_words(m: dict | None) -> str:  # what merges without people, as describe results' merging says
+    if not m:
+        return ""
+    if m.get("when"):
+        said = []
+        for c in m["when"]:
+            (k, v), = c.items()
+            said.append(f"{num(v)} points or more" if k == "points" else f"found by {', '.join(v)}" if k == "rules"
+                        else " and ".join(f"{word(f)} at least {lv}" for f, lv in v.items()))
+        return "pairs merge without you when " + f" {m.get('join', 'and')} ".join(said)
+    own = m.get("own")
+    if not own:
+        return "nothing merges without you"
+    return (f"the rules' pairs, and the model's at {num(own['line'])}+ points, merge without you" if own.get("rules")
+            else f"pairs at {num(own['line'])}+ points merge without you")
+
+
+def file_lines(r: dict) -> list[str]:  # a file described: the fields found, and what needs a look
+    fields = [f for f in r.get("fields") or [] if f["field"] != "id"]
+    found = [f for f in fields if f.get("filled") is not None]
+    out = [f"  {len(found)} of {len(fields)} fields found"] if fields else []
+    needed = r.get("needed") or {}
+    lost = lambda f: not any(x["field"] == f and x.get("filled") is not None for x in r.get("fields") or [])
+    missing = [word(f) for f in needed.get("every", []) if lost(f)] + [" or ".join(map(word, g)) for g in needed.get("one_of", []) if all(lost(f) for f in g)]
+    out += [f"  ✗ needed: {m}" for m in missing]
+    filled = {f["field"]: f["filled"] for f in found}
+    groups = [g for g in needed.get("one_of", []) if any(f in filled for f in g)]  # a person's or a company's name: together, as check records counts them
+    either = {f for g in groups for f in g}
+    for g in [*groups, *([f] for f in filled if f not in either)]:
+        have = [f for f in g if f in filled]
+        if (share := sum(filled[f] for f in have)) < 0.3:
+            out.append(f"  ! {' and '.join(map(word, have))} {'are' if len(have) > 1 else 'is'} {share:.0%} filled" + (" together" if len(have) > 1 else ""))
+    out += [f"  ! only {f['looks_right']:.0%} of {word(f['field'])} values look right" for f in found if f.get("looks_right") is not None and f["looks_right"] < 0.5]
+    read = r.get("read") or {}
+    if read.get("waiting"):
+        out.append(f"  ! {sum(read['waiting'].values()):,} values wait for a repair you accept: nayose accept repairs")
+    if read.get("unread"):
+        out.append(f"  ! {read['unread']:,} rows can't be read: kept aside")
+    return out
+
+
+def brief_load(r: dict) -> list[str]:
+    name = Path(r["loaded"]).name.split("-", 1)[-1] if r.get("loaded") else "the file"
+    return [f"✓ {name}: {r['records']:,} records, {len(r.get('columns') or []):,} columns"] + file_lines(r) + nexts(r)
+
+
+def brief_describe_records(r: dict) -> list[str]:
+    return [f"{r['records']:,} records, {len(r.get('columns') or []):,} columns"] + file_lines(r) + nexts(r)
+
+
+def brief_check(r: dict) -> list[str]:
+    ready, c = r["ready"], r["capacity"]
+    out = [f"{'✓ ready' if ready['ok'] else '✗ not ready'}: {r['records']:,} records · {c['pairs_needed']:,} pairs to compare"
+           + (f" ({r['records'] and c['pairs_needed'] / r['records']:.1f} per record)" if r["records"] else "")]
+    out += [f"  ✗ {x['what']}: {x['fix']}" for x in ready["stops"]] + [f"  ! {x['what']}: {x['fix']}" for x in ready["warns"]]
+    big = [k for k in r.get("keys") or [] if k.get("oversized_blocks")]
+    out += [f"  {len(big)} keys have groups of {r['oversized_from']}+ records: checked by sampling"] if big else []
+    return out + nexts(r)
+
+
+def brief_run(r: dict) -> list[str]:  # resolve, rerun, add records, apply answers: what the run found, and what waits
+    f = r.get("facts")
+    if not f:
+        return [f"✓ {x[1]}" for x in r.get("summary") or []] + nexts(r)
+    out = [f"✓ {f['records']:,} records → {f['entities']:,} entities in {took(r.get('seconds') or 0)}"]
+    out.append(f"  {f['waiting']:,} pairs wait for your review ({num(f['review_from'])}+ points)" if f["waiting"] else "  no pair waits for your review")
+    if f.get("merging"):
+        out.append(f"  {f['merging']}")
+    if f.get("missed") is not None:
+        out.append(f"  missed matches: about {f['missed']:,} (at most {f['missed_high']:,}, by sampling)")
+    if f.get("too_big"):
+        out.append(f"  ! {f['too_big']:,} groups too big to compare were skipped: see report.txt")
+    if f.get("kinds"):
+        out.append(f"  person or company: {f['kinds']:,} records to answer")
+    out.append(f"  details: {f['report']}")
+    return out + nexts(r)
+
+
+def brief_workspace(r: dict) -> list[str]:
+    out = [f"{r['workspace']}: " + (f"{r['records']:,} records → {r['entities']:,} entities" if r.get("records") else "no run yet")]
+    files = r.get("inputs") or []
+    if files:
+        out.append("  files: " + ", ".join(f"{x['name'].split('-', 1)[-1]}" for x in files))
+    runs = [x for x in r.get("runs") or [] if x.get("what") != "decisions"]
+    if runs:
+        x = runs[-1]
+        out.append(f"  last run: {str(x['at']).replace('T', ' ')[:16]} · {took(x.get('seconds') or 0)}")
+    if (r.get("pairs") or {}).get("written_in"):
+        out.append(f"  {r['pairs']['written_in']:,} decisions written, not applied: nayose apply decisions")
+    if (r.get("kinds") or {}).get("written_in"):
+        out.append(f"  {r['kinds']['written_in']:,} person/company answers written, not applied: nayose apply answers")
+    if r.get("set_aside"):
+        out.append(f"  ! {r['set_aside']:,} records set aside: see set_aside/")
+    if r.get("write_owed"):
+        out.append("  ! a write was cut short: the next command that writes finishes it")
+    return out + nexts(r)
+
+
+def brief_results(r: dict) -> list[str]:
+    waiting = sum(x["pairs"] for x in r.get("waiting") or [])
+    out = [f"{r['records']:,} records → {r['entities']:,} entities · " + (f"{r['joined']:,} of two records or more" if r["joined"] else "nothing joined yet"),
+           f"  {waiting:,} pairs wait for your review ({num(r['review_from'])}+ points)" if waiting else "  no pair waits for your review"]
+    bands = [f"{num(x['down_to'])}+" if x["up_to"] is None else f"{num(x['down_to'])}–{num(x['up_to'])}" for x in r.get("waiting") or []]
+    if waiting:
+        out.append("    " + " · ".join(f"{b}: {x['pairs']:,}" for b, x in zip(bands, r["waiting"])))
+    out.append(f"  {merging_words(r.get('merging'))}")
+    if r.get("missed"):
+        out.append(f"  missed matches: about {sum(x['missed'] for x in r['missed']):,} (at most {sum(x['high'] for x in r['missed']):,}, by sampling)")
+    if (r.get("too_big") or {}).get("skipped"):
+        out.append(f"  ! {r['too_big']['skipped']:,} groups too big to compare were skipped")
+    if (r.get("kinds") or {}).get("to_answer"):
+        out.append(f"  person or company: {r['kinds']['to_answer']:,} records to answer")
+    return out + nexts(r)
+
+
+def page_line(r: dict, what: str) -> str:  # 1–100 of 1,963 · next: --page 2
+    first, last = (r["page"] - 1) * r["count"] + 1, min(r["total"], r["page"] * r["count"])
+    return (f"  {first:,}–{last:,} of {r['total']:,} {what}" + (f" · more: --page {r['page'] + 1}" if last < r["total"] else "")) if r["total"] else f"  no {what}"
+
+
+def brief_scored(r: dict) -> list[str]:
+    name = lambda p, k: next((p["fields"][f][k] for f in ("person_name", "company_name", "full_name") if (p.get("fields") or {}).get(f) and p["fields"][f][k]), "")
+    rows = [dict(a=p["first"], an=name(p, 0), b=p["second"], bn=name(p, 1), points=f"{p['points']:.1f}", by=p.get("found") or "", status=p["status"]) for p in r["pairs"]]
+    return grid(rows, {"a": "record", "an": "name", "b": "record", "bn": "name", "points": "points", "by": "found by", "status": "status"}, most=len(rows)) + [page_line(r, "pairs")]
+
+
+def brief_entities(r: dict) -> list[str]:
+    rows = [dict(e=x["entity"], n=x["records"], by={"you": "you", "model": "the model", "rule": "a rule"}.get(x.get("joined_by"), ""), names=" · ".join(x.get("names") or []))
+            for x in r["entities"]]
+    return grid(rows, {"e": "entity", "n": "records", "by": "joined by", "names": "names"}, most=len(rows)) + [page_line(r, "entities")]
+
+
+def brief_show(r: dict) -> list[str]:  # the full rows side by side: the columns that differ first, empty ones left out
+    recs = [x for x in r["records"] if x.get("row")]
+    out = [f"  {x['id']}: not in the file's copy" for x in r["records"] if not x.get("row")]
+    if not recs:
+        return out
+    rows = []
+    for c in r["columns"]:
+        vals = [x["row"].get(c["column"]) for x in recs]
+        if all(v in (None, "") for v in vals):
+            continue
+        filled = [v for v in vals if v not in (None, "")]
+        differ = len(recs) > 1 and len(set(filled)) > 1 and "id" not in (c.get("fields") or [])  # IDs always differ
+        rows.append(dict(column=c["column"], **{f"r{k}": v for k, v in enumerate(vals)}, mark="≠" if differ else ""))
+    rows.sort(key=lambda x: x["mark"] != "≠")
+    return grid(rows, {"column": "column", **{f"r{k}": x["id"] for k, x in enumerate(recs)}, "mark": ""}, most=len(rows)) + out
+
+
+def brief_merging(r: dict) -> list[str]:
+    m = {"join": r.get("join"), "when": r.get("when")}
+    if not r.get("when"):
+        return [f"{r.get('pairs', 0):,} pairs merge without you → {r['entities']:,} entities of two records or more"]
+    out = [f"{r['pairs']:,} pairs would merge → {r['entities']:,} entities of two records or more", f"  {merging_words(m)}"]
+    if len(r.get("each") or []) > 1:
+        out += [f"    {merging_words({'when': [x['condition']]}).removeprefix('pairs merge without you when ')}: {x['pairs']:,}" for x in r["each"]]
+    return out
+
+
+def brief_set_merging(r: dict) -> list[str]:
+    said = merging_words({"join": r.get("join"), "when": r.get("when"), "own": None}) if r.get("when") else "conditions off"
+    return [f"✓ {said}", f"  {r['entities']:,} entities of two records or more"] + nexts(r)
+
+
+BRIEF: dict[str, Callable[[dict], list[str]]] = {
+    "create workspace": lambda r: [f"✓ created {r['workspace']}"] + nexts(r),
+    "list workspaces": lambda r: (grid([dict(n=x["name"], f=x.get("files"), ran="yes" if x.get("ran") else "", last=str(x.get("last") or "")[:10]) for x in r["workspaces"]],
+                                       {"n": "workspace", "f": "files", "ran": "matched", "last": "last"}) or [f"  no workspace in {r['home']}"]) + nexts(r),
+    "load records": brief_load,
+    "describe records": brief_describe_records,
+    "check records": brief_check,
+    "resolve records": brief_run, "rerun records": brief_run, "add records": brief_run, "apply answers": brief_run, **dict.fromkeys(("adopt method", "reset method", "lower trust", "raise trust", "split entity"), brief_run),
+    "describe workspace": brief_workspace,
+    "describe results": brief_results,
+    "list scored": brief_scored,
+    "list entities": brief_entities,
+    "show records": brief_show,
+    "describe merging": brief_merging,
+    "set merging": brief_set_merging,
+    "decide pair": lambda r: [f"✓ {' · '.join(r['pair'])}: {r['decision'].replace('no_match', 'different').replace('match', 'same')} (written; applied by apply decisions)"] + nexts(r),
+    "apply decisions": lambda r: ([f"✓ {r['decisions']:,} decisions applied" + (f": {r['clusters_joined']:,} entities joined" if r.get("clusters_joined") else "")]
+                                  if r.get("decisions") else ["✓ nothing new: every decision was applied before"]) + nexts(r),
+    "answer kind": lambda r: [f"✓ {r['record']}: {r['kind'] or 'cleared'} (written; applied by apply answers)"] + nexts(r),
+    "open ui": lambda r: [],
+}
+
+
 # ---------- what each command does ----------
 
 def settings_for(a: dict):  # the settings, with the named workspace's own mapping when it keeps one; an earlier nayose's workspace refused
@@ -245,30 +608,49 @@ def rows(frame: pd.DataFrame) -> list[dict]:
     return plain(frame.astype(object).where(frame.notna(), None).to_dict("records"))
 
 
-def next_after(out: Path, uid: str) -> list[dict]:
-    """What usually follows a run: the pairs and the kinds still open, then the folder at a glance."""
-    found = []
-    if (pairs := sheet(out, "review.parquet")) is not None and (n := int(((pairs["why"] == "decide") & pairs["decision"].isna()).sum())):
-        found.append(dict(command=nayose("list", "pairs", "--workspace", out, "--open"), why=f"{n:,} pairs for people to decide"))
+def next_after(out: Path, uid: str, waiting: int | None = None) -> list[dict]:
+    """What usually follows a run: the pairs waiting for people, the person/company answers open, then what it found."""
+    found = [dict(command=nayose("open", "ui", "--workspace", out), why=f"review the {waiting:,} pairs in the browser"),
+             dict(command=nayose("list", "scored", "--workspace", out, "--status", "waiting"), why="or list them here, best first")] if waiting else []
     if (kinds := sheet(out, "kind_review.parquet")) is not None and (n := int(kinds["kind"].isna().sum())):
         found.append(dict(command=nayose("list", "kinds", "--workspace", out, "--open"), why=f"{n:,} records to answer person or company"))
-    return found + [dict(command=nayose("describe", "workspace", out), why="the workspace at a glance")]
+    return found + [dict(command=nayose("describe", "results", "--workspace", out), why="what the run found")]
+
+
+def run_facts(run: Run, out: Path) -> dict | None:  # what a person reads first after a run; none if it can't be read (the run stands either way)
+    if not any((out / folder.SCORED).glob("part-*.parquet")):  # a run from before the index: building it here would add minutes no one asked for
+        return None
+    try:
+        r = describe_results(run.con, run.db, out, run.settings, run.pipeline, review_floor(run.pipeline))
+    except (InputError, duckdb.Error, OSError):
+        return None
+    return dict(records=r["records"], entities=r["entities"], joined=r["joined"], waiting=sum(x["pairs"] for x in r["waiting"]), review_from=r["review_from"],
+                merging=merging_words(r["merging"]), missed=sum(x["missed"] for x in r["missed"]) if r["missed"] else None,
+                missed_high=sum(x["high"] for x in r["missed"]) if r["missed"] else None, too_big=r["too_big"]["skipped"], kinds=r["kinds"]["to_answer"],
+                report=str(out / "report.txt"))
 
 
 def after_run(run: Run, out: Path) -> dict:
     wrote = ["gold.parquet", "review.parquet", "qa.md", "report.txt", *(["kind_review.parquet"] if (out / "kind_review.parquet").exists() and run.added is None else []),
              "matches/", "state/"]
-    return dict(summary=run.tables["summary"].values.tolist(), seconds=round(sum(x["seconds"] for x in run.steps), 1),
-                wrote=[str(out / f) for f in wrote], next=next_after(out, run.uid))
+    facts = run_facts(run, out)
+    return dict(summary=run.tables["summary"].values.tolist(), seconds=round(sum(x["seconds"] for x in run.steps), 1), facts=facts,
+                wrote=[str(out / f) for f in wrote], next=next_after(out, run.uid, facts and facts["waiting"]))
 
 
 def check_records(a: dict, emit: "Emit") -> dict:
     s, p, _ = setup(a)
+    if not a["input"]:  # the file loaded into the workspace last
+        if not a.get("workspace") or not (parts := folder.parts(Path(a["workspace"]))):
+            raise InputError("no file to check", fix="name one: nayose check records FILE; or load one into the workspace first")
+        a = {**a, "input": str(parts[-1])}
     with readable(a["input"], s) as path:
         return checked(a, s, p, path, emit)
 
 
 def checked(a: dict, s, p, path: str, emit: "Emit") -> dict:
+    parts = folder.parts(Path(a["workspace"])) if a.get("workspace") else []
+    own = bool(parts) and Path(a["input"]).resolve() == parts[-1].resolve()  # the file a run given none reads
     run = Run(p, s, echo=emit.step, told=emit.progress)
     run.load(path)
     plan = run.budget(stop=False)
@@ -285,7 +667,8 @@ def checked(a: dict, s, p, path: str, emit: "Emit") -> dict:
                     pairs_needed=needed, pairs_fit=fit, headroom=round(fit / needed, 1) if needed else None)
     return plain(dict(records=run.n, fields=fields, turned_off=run.disabled, keys=keys, oversized_from=p.fs.budget.min_oversized(), notes=run.notes, read=read,
                       capacity=capacity, ready=ready_for(run, fields, plan, capacity, read),
-                      next=[dict(command=nayose("resolve", "records", a["input"], "--workspace", "<workspace>"), why="ready: resolve them")]))
+                      next=[dict(command=nayose("resolve", "records", *([] if own else [a["input"]]), "--workspace", a.get("workspace") or "<workspace>"),
+                                 why="find matches")]))
 
 
 def ready_for(run: Run, fields: list[dict], plan: pd.DataFrame, capacity: dict, read: dict | None) -> dict:
@@ -308,13 +691,13 @@ def ready_for(run: Run, fields: list[dict], plan: pd.DataFrame, capacity: dict, 
         have = [f for f in group if f in filled]
         apart = len(set().union(*map(columns, have))) == sum(len(columns(f)) for f in have)  # one column for both: counted once
         if have and (share := (sum if apart else max)(filled[f] for f in have)) < 0.3:
-            warns.append(dict(what=f"{' and '.join(have)} {'are' if len(have) > 1 else 'is'} {share:.0%} filled" + (" together" if len(have) > 1 else ""),
-                              fix="matching leans on it less: map a fuller column if the file has one"))
+            warns.append(dict(what=f"{' and '.join(map(word, have))} {'are' if len(have) > 1 else 'is'} {share:.0%} filled" + (" together" if len(have) > 1 else ""),
+                              fix="map a fuller column, if the file has one"))
     for f in fields:
         if f["looks_right"] is not None and f["filled"] and f["looks_right"] < 0.5:
-            warns.append(dict(what=f"only {f['looks_right']:.0%} of {f['field']}'s values look like it", fix=f"check the column it reads ({f['columns']})"))
+            warns.append(dict(what=f"only {f['looks_right']:.0%} of {word(f['field'])} values look right", fix=f"check its column ({f['columns']})"))
     if read and read["waiting"]:
-        warns.append(dict(what=f"repairs wait: {', '.join(f'{n:,} {k}' for k, n in read['waiting'].items())}", fix="see them in step 2, or describe records, then accept repairs KIND"))
+        warns.append(dict(what=f"repairs wait: {', '.join(f'{n:,} {k}' for k, n in read['waiting'].items())}", fix="see them with describe records, then accept repairs KIND"))
     if read and read["unread"]:
         warns.append(dict(what=f"{read['unread']:,} rows couldn't be read", fix="they are in unread.parquet in the file's part: fix the file and load it again"))
     if aside := run._count("set_aside"):
@@ -695,8 +1078,8 @@ def describe_workspace_(a: dict, emit: "Emit") -> dict:
     d = describe_workspace(connect(s.compute)[0], out, s.data.unique_id)
     d["trust"] = trust_state(connect(s.compute)[0], out, p, s.data.unique_id) if d["records"] else None
     files = folder.loaded(out)
-    then = (next_after(out, s.data.unique_id)[:-1] + [dict(command=nayose("describe", "entity", "<record ID>", "--workspace", out),
-                                                           why="one record's entity, and what joined it")] if d["records"] else
+    then = ([dict(command=nayose("describe", "results", "--workspace", out), why="what the run found, and what waits for you"),
+             dict(command=nayose("open", "ui", "--workspace", out), why="review in the browser")] if d["records"] else
             [dict(command=nayose("resolve", "records", "--workspace", out), why="find matches in the file loaded last")] if files else
             [dict(command=nayose("load", "records", "<file>", "--workspace", out), why="give it your records file")])
     then = [dict(command=nayose("describe", "records", f["path"], "--workspace", out), why=f"{f['waiting']:,} repairs wait in {f['name']}: see them, then accept repairs")
@@ -913,8 +1296,23 @@ def list_scored_(a: dict, emit: "Emit") -> dict:
     s, p, _ = setup(a)
     con, db = connect(s.compute)
     num = lambda k: number(a[k], f"--{k}") if a.get(k) not in (None, "") else None
-    return list_scored(con, db, Path(a["workspace"]), s, p, num("from"), num("to"), a.get("source"), a.get("status"), a.get("record") or None,
-                       counted(a, "page", 1), counted(a, "count", 100))
+    r = list_scored(con, db, Path(a["workspace"]), s, p, num("from"), num("to"), a.get("source"), a.get("status"), a.get("record") or None,
+                    counted(a, "page", 1), counted(a, "count", 100))
+    for x in r["pairs"]:
+        x["found"] = found_words(p, x)
+    return r
+
+
+def found_words(p, pair: dict) -> str:  # how a pair was found, in words: its rule's tests, else its first keys
+    if pair.get("rule"):
+        for _, st, rule in p.rules.each():
+            if rule.name == pair["rule"]:
+                test = lambda c: {"exact": f"same {word(c)}", "jaro_winkler": f"{word(c)} similar", "hamming": f"{word(c)} 1 digit off"}.get(
+                    st.comparators[c].function, f"{word(c)} ≤ {num(st.comparators[c].threshold)} edits")
+                return "rule: " + ", ".join([*(f"same {word(c)}" for c in rule.exact), *map(test, rule.fuzzy)])
+        return f"rule {pair['rule']}"
+    keys = (pair.get("sources") or "").split("+")
+    return "keys: " + ", ".join(k.replace("sn_", "sorted ").replace("_", " ") for k in keys[:2]) + (" …" if len(keys) > 2 else "") if keys[0] else ""
 
 
 def list_entities_(a: dict, emit: "Emit") -> dict:
@@ -1040,6 +1438,7 @@ OPEN = Param("open", "only the rows nobody has answered", "flag")
 PENDING = Param("pending", "only the rows not yet applied: open, or written in", "flag")
 FILE = lambda what: Param("file", f"{what} (default: the workspace's own sheet, with the answers written in)", "path")
 RUN_RESULT = {"summary": "the run in words: records, entities, who joined them, the model's links, what is left to people",
+              "facts": "what to read first: records, entities, joined, waiting (pairs for people from review_from points), merging, missed and missed_high (the probe), too_big, kinds (to answer), report",
               "seconds": "the run's time", "wrote": "the files written", "next": "the commands that usually follow"}
 COMMANDS: tuple[Command, ...] = (
     Command("create", "workspace", "Start a workspace: the folder for one matching job",
@@ -1129,7 +1528,8 @@ COMMANDS: tuple[Command, ...] = (
             "look like it and the share of its most common value, what would be turned off, and the blocks the run will check "
             "on a sample. A field the run needs and the file lacks stops it, with the column whose values look most like it. "
             "O(N) for the counts; a sample of 10,000 records for the shares.",
-            (INPUT, OWN, COMPUTE, PIPELINE), CHECKED, "nayose check records customers.parquet", check_records),
+            (replace(INPUT, help=INPUT.help + "; without it, the workspace's file loaded last", optional=True), OWN, COMPUTE, PIPELINE), CHECKED,
+            "nayose check records customers.parquet", check_records),
     Command("list", "columns", "Show which of a file's columns hold each field",
             "Reads the workspace's columns.toml, or without one config/settings.toml [columns] (or the ER_SETTINGS file): each "
             "field, its columns (a comma between fallbacks, + between columns joined) and its options. O(the file).",
@@ -1555,20 +1955,33 @@ COMMANDS: tuple[Command, ...] = (
 
 # ---------- the parser and the reference, from the declarations ----------
 
+GROUPS = (  # the top-level help's commands, by task
+    ("Set up", ("create workspace", "list workspaces", "load records", "accept repairs", "check records", "describe records", "list columns",
+                "set columns", "list features", "set feature", "add feature", "remove feature")),
+    ("Run", ("resolve records", "add records", "match records", "rerun records", "rehearse records", "try everything", "serve inbox")),
+    ("Review", ("open ui", "describe results", "list scored", "show records", "decide pair", "apply decisions", "list kinds", "answer kind",
+                "apply answers", "describe merging", "set merging", "list entities", "describe entity", "split entity")),
+    ("Look inside", ("describe workspace", "describe matching", "describe key", "list patterns", "explain pair", "compare records")),
+    ("Method", ("describe method", "try method", "adopt method", "reset method", "describe review", "lower trust", "raise trust", "draw pairs", "list pairs")),
+)
+
+
 def parser(kind: type[argparse.ArgumentParser] = argparse.ArgumentParser) -> argparse.ArgumentParser:
     """The parser, from the declarations; `kind` its class, which every subcommand's parser takes too."""
     raw = argparse.RawDescriptionHelpFormatter
-    top = kind(prog="nayose", description=__doc__.split("\n\n")[0], formatter_class=raw,
-                                  epilog="commands:\n" + "\n".join(f"  {c.name:<18} {c.help}" for c in COMMANDS) +
-                                         "\n\nnayose VERB NOUN --help says what one does; docs/commands.md has them all.")
-    verbs = top.add_subparsers(dest="verb", required=True, metavar="VERB")
+    by = {c.name: c for c in COMMANDS}
+    assert set(by) == {n for _, names in GROUPS for n in names}, "every command in one group of the help, and no other name"
+    listed = "\n".join(f"\n{group}\n" + "\n".join(f"  {n:<20} {by[n].help}" for n in names) for group, names in GROUPS)
+    top = kind(prog="nayose", usage="nayose VERB NOUN [options]", description="nayose: gather each customer's records under one ID.", formatter_class=raw,
+               epilog=listed.lstrip("\n") + "\n\nnayose VERB NOUN --help for one command; docs/commands.md for all.")
+    verbs = top.add_subparsers(dest="verb", required=True, metavar="VERB", help=argparse.SUPPRESS)
     for verb in dict.fromkeys(c.verb for c in COMMANDS):
         mine = [c for c in COMMANDS if c.verb == verb]
         vp = verbs.add_parser(verb, help=", ".join(c.noun for c in mine), formatter_class=raw,
                               description="\n".join(f"{c.name}: {c.help}" for c in mine))
         nouns = vp.add_subparsers(dest="noun", required=True, metavar="NOUN")
         for c in mine:
-            cp = nouns.add_parser(c.noun, help=c.help, description=f"{c.help}.\n\n{c.about}", epilog=f"example:\n  {c.example}", formatter_class=raw)
+            cp = nouns.add_parser(c.noun, help=c.help, description=f"{c.help}.", epilog=f"example:\n  {c.example}\n\nmore: docs/commands.md", formatter_class=raw)
             for p in c.params:
                 kw = dict(help=p.help)
                 if p.kind == "flag":
@@ -1587,6 +2000,7 @@ def parser(kind: type[argparse.ArgumentParser] = argparse.ArgumentParser) -> arg
                 else:
                     cp.add_argument(f"--{p.name}", required=p.required, **kw)
             cp.add_argument("--format", choices=("text", "json"), default="text", help="text for people (the default); json: one object per line")
+            cp.add_argument("--verbose", "-v", action="store_true", help="every field of the result, and every fact of each step")
             cp.set_defaults(command=c)
     return top
 
@@ -1606,7 +2020,10 @@ def reference() -> str:
            "Written by `scripts/document_commands.py` from the declarations in `er/cli.py`; `tests/test_design.py` fails when "
            "the two differ.", "", "`nayose` (名寄せ: gathering each customer's records under one name) reads as a sentence: a "
            "verb, a noun, then the parameters. Every command takes `--help` and `--format`.", "",
-           "- **`--format text`**, the default: each step on a line as it finishes, then the result, for a person.",
+           "- **`--format text`**, the default, for a person: a long command shows each step as it ends and, on a terminal, one line for "
+           "the step under way (what it does, how far, how long is left, measured on the step's own pace and on the workspace's last "
+           "run of the same kind); elsewhere that line every 30 seconds. Then the result in short: what it found first, then what to "
+           "look at, then the commands that usually follow. `--verbose` writes every field of the result, and every fact of each step.",
            "- **`--format json`**: one JSON object per line: `{\"event\": \"step\", …}` per step (a file being read: `{\"event\": \"progress\", \"done\": …, \"total\": …, \"unit\": \"rows\"}` as it goes, the total about; a run's long steps, each its own count: `\"records\"` loaded, `\"rules\"` applied, `\"keys\"` joined (weighed by the pairs each lists, with `\"more\"` when oversized blocks wait for the gate), `\"sampled pairs\"` the gate scored, and `\"pairs\"` scored with `\"likely\"`, the pairs at the model's line so far), then `{\"event\": \"result\", "
            "\"command\": …, …}` with the fields listed below, or `{\"event\": \"error\", \"error\": …, \"fix\": …, \"hints\": …, "
            "\"exit\": …}`. IDs are `id`, `id_l`, `id_r`, whatever the file calls them.",
@@ -1651,12 +2068,39 @@ def perform(c: Command, a: dict, emit: Emit) -> dict:
                          f"{nayose('set', 'columns', *(f'{f}={c}' for f, c in e.hints.items()), '--workspace', a['workspace'])}", hints=e.hints) from None
 
 
+STEPS_OF = {"check records": ("load", "budget"), "apply decisions": ("decide",), "load records": ("load",),
+            "try method": RUN_ORDER[:8]}  # the steps of a command that isn't a run: try method's two runs write nothing
+FULL_RUNS = ("resolve records", "rerun records", "apply answers", "adopt method", "reset method", "lower trust", "raise trust", "split entity")
+
+
+def last_run(ws: str | None, name: str) -> dict:
+    """The steps a command runs and, for a run, the workspace's last run of the same kind (a full run, or a batch
+    added): its seconds per step and its records, which the time left is measured against. No steps known: none."""
+    batch = name in ("add records", "match records")
+    if name not in FULL_RUNS and not batch:
+        return dict(order=STEPS_OF.get(name, ()))
+    try:
+        runs = [r for r in folder.runs(Path(ws)) if bool(r.get("part")) == batch and r.get("steps") and r["steps"][0]["step"] == "load"] if ws else []
+        steps = runs[-1]["steps"] if runs else []
+        last, records = {s["step"]: float(s["seconds"]) for s in steps}, steps[0].get("records") if steps else None
+    except (OSError, ValueError, KeyError, TypeError, AttributeError):  # an odd steps.json: no estimate, the command still runs
+        steps, last, records = [], {}, None
+    order = tuple(last) or (BATCH_ORDER if batch else RUN_ORDER)
+    if name == "match records":  # a batch's steps, up to its entities: it writes nothing
+        order = tuple(s for s in order if s not in ("report", "write"))
+    if name == "split entity":  # the split decided, then a full run
+        order = ("decide", *order)
+    return dict(order=order, last=last or None, last_records=records)
+
+
 def main(argv: list[str] | None = None) -> int:
     for stream in (sys.stdout, sys.stderr):  # UTF-8 wherever it goes: a pipe or a file on Windows would take the locale's code page
         if hasattr(stream, "reconfigure") and stream.encoding.replace("-", "").lower() != "utf8":
             stream.reconfigure(encoding="utf-8", errors="replace")
     a = parser().parse_args(argv)
-    c, emit = a.command, Emit(a.format)
+    c = a.command
+    emit = Emit(a.format, verbose=a.verbose, title=f"{c.name} · {getattr(a, 'workspace', None) or getattr(a, 'input', None) or ''}".rstrip(" ·"),
+                **({} if a.format == "json" or c.quick else last_run(getattr(a, "workspace", None), c.name)))
     try:
         result = perform(c, {p.name: getattr(a, p.name) for p in c.params}, emit)
     except InputError as e:
@@ -1665,10 +2109,12 @@ def main(argv: list[str] | None = None) -> int:
         return code
     except Exception as e:
         if not (oom := out_of_memory(e)):
+            emit.close()
             raise
         emit.error(oom, 2)
         return 2
     except KeyboardInterrupt:  # Ctrl-C: nothing is half done, every write is staged
+        emit.close()
         return 130
     code = result.pop("exit_code", 0)
     emit.result(c, result)
