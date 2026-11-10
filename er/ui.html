@@ -498,7 +498,7 @@ dialog:has(.dlg-body.wide) { width: min(960px, calc(100vw - 32px)); }
 .continue .pick { cursor: pointer; } .continue .pick:hover { background: var(--hover); }
 .node.static { cursor: default; max-width: 210px; }
 .node.static:hover { box-shadow: none; }
-.loadrow { display: flex; gap: 8px; } .loadrow input { flex: 1; min-width: 0; }
+.loadrow { display: flex; gap: 8px; } .loadrow input { flex: 1; min-width: 0; } .loadrow select { flex: 0 0 auto; width: auto; }
 .tray .trayhead { display: flex; align-items: center; gap: 10px; cursor: pointer; list-style: none; } .tray[open] .trayhead { margin-bottom: 10px; }
 .tray .trayhead::before { content: "▸"; color: var(--faint); } .tray[open] .trayhead::before { content: "▾"; }
 .colhead { display: flex; align-items: center; gap: 10px; margin: 4px 0 10px; } .colhead h3 { font-size: 15px; font-weight: 500; margin: 0; flex: 1; }
@@ -590,6 +590,7 @@ body.term-open .tray { bottom: var(--term-h); }  /* above the command drawer */
    "strip": ["records", "prepare"],
    "uses": [{"command": "load records", "args": {"input": "@input", "workspace": "@workspace"}, "reads": ["records", "columns", "slots", "features", "placements", "offers", "fields", "needed", "turned_off", "read", "loaded"]},
             {"command": "describe records", "args": {"input": "@loaded", "workspace": "@workspace"}, "reads": ["records", "columns", "slots", "features", "placements", "offers", "fields", "needed", "turned_off", "read"]},
+            {"command": "generate records", "args": {"records": "@records", "difficulty": "@difficulty", "workspace": "@workspace"}, "reads": ["records", "columns", "slots", "features", "placements", "offers", "fields", "needed", "turned_off", "read", "loaded"]},
             {"command": "accept repairs", "args": {"kind": "@kind", "part": "@part", "workspace": "@workspace"}, "form": [], "reads": ["repaired", "added", "read"]},
             {"command": "set feature", "args": {"mapping": "@mapping", "workspace": "@workspace"}, "reads": ["slots"]},
             {"command": "set names", "args": {"how": "@how", "workspace": "@workspace"}, "reads": ["names", "mapping"]},
@@ -1682,7 +1683,7 @@ const RUN_STEPS = ["load", "budget", "fit", "rules", "candidates", "score", "clu
 const STEPS_OF = {"add records": ["load", "fit", "rules", "candidates", "score", "cluster", "report", "write"],  // an increment's: no plan, no probe
                   "match records": ["load", "fit", "rules", "candidates", "score", "cluster"]};  // a preview writes nothing
 const BUSY = {"resolve records": "Finding matches", "rerun records": "Matching again", "add records": "Adding the new records", "match records": "Previewing the new records",
-              "load records": "Loading your file", "accept repairs": "Accepting the repairs", "try everything": "Auto mode", "try method": "Trying a method",
+              "load records": "Loading your file", "generate records": "Generating records", "accept repairs": "Accepting the repairs", "try everything": "Auto mode", "try method": "Trying a method",
               "set merging": "Rebuilding the entities", "apply answers": "Matching again with your answers"};
 const DOING = {load: "reading the records", budget: "planning the work", fit: "learning what matches look like", rules: "applying the match rules",
                candidates: "listing pairs to compare", score: "scoring the pairs", cluster: "forming entities", probe: "looking for matches it missed",
@@ -2166,6 +2167,10 @@ const SCREENS = {
   async columns(el) {
     const box = `<label class="field" style="margin:0"><span class="lab">Records file</span>
         <span class="loadrow"><input type="text" id="cin" placeholder="path to a CSV, TSV or Parquet file, or a folder of them"><button class="btn filled" id="load">${icon("add")}Load</button></span></label>
+        <div class="field" style="margin:12px 0 0"><span class="lab">Synthetic records</span>
+        <span class="loadrow" style="flex-wrap:wrap"><select id="gsize" aria-label="How many records">${[1000, 10000, 100000, 1000000].map((n) => `<option value="${n}"${n === 10000 ? " selected" : ""}>${fmt(n)}</option>`).join("")}</select>
+          <select id="glevel" aria-label="How hard to match">${["easy", "medium", "hard"].map((x) => `<option value="${x}"${x === "medium" ? " selected" : ""}>${x[0].toUpperCase() + x.slice(1)}</option>`).join("")}</select>
+          <button class="btn" id="gen">Generate</button></span></div>
         <div id="files" class="chips" style="margin-top:10px"></div>`;
     el.innerHTML = head("columns") + `<div class="card" id="loaded"><div class="qa"><div class="q"><h2 class="question">Which file holds your records?</h2></div></div>${box}</div>
       <div id="repairs"></div><div id="watch"></div><div id="out"></div><div id="flow"></div>${stepFoot("columns")}`;
@@ -2366,25 +2371,34 @@ const SCREENS = {
         row.querySelector("[data-cancel]").onclick = () => held ? show(held) : redraw(d);
       });
     };
+    let taking = false;  // a file read or records generated: one at a time, whichever box is drawn meanwhile
     const wireLoad = () => {
-      $("load").onclick = async () => {
-        const input = $("cin").value.trim();
-        if (!input) { $("cin").focus(); return; }
-        const b = $("load"), was = b.innerHTML, at = edits;
-        b.disabled = true; b.innerHTML = `${spinner()}Reading…`;  // a big file takes minutes: how far, and how long is left, in the panel
-        if (!$("out").querySelector(".fgroup")) $("out").innerHTML = `<div class="card waiting">${spinner()}Reading ${esc(baseName(input))}…</div>`;
-        const e = await run("columns", "load records", {input});
-        if (b.isConnected) { b.disabled = false; b.innerHTML = was; }
+      const both = () => [$("load"), $("gen")].filter(Boolean);
+      const take = async (b, doing, what, command, args, done) => {  // either way the same result, drawn the same
+        const was = b.innerHTML, at = edits;
+        taking = true; both().forEach((x) => { x.disabled = true; });
+        b.innerHTML = `${spinner()}${doing}…`;  // a big file takes minutes: how far, and how long is left, in the panel
+        if (!$("out").querySelector(".fgroup")) $("out").innerHTML = `<div class="card waiting">${spinner()}${doing} ${esc(what)}…</div>`;
+        const e = await run("columns", command, args);
+        taking = false; both().forEach((x) => { x.disabled = false; });
+        if (b.isConnected) b.innerHTML = was;
         if (e.event === "error") {  // the mapping stays: the refusal above it
           $("out").querySelectorAll(":scope > .banner, :scope > .waiting").forEach((x) => x.remove());
           $("out").insertAdjacentHTML("afterbegin", banner(e));
           return;
         }
-        $("cin").value = "";
+        done?.();
         draw(at === edits ? e : undefined);  // a change made while it loaded: the file described after it
         refresh();
       };
+      $("load").onclick = () => {
+        const input = $("cin").value.trim();
+        if (!input) { $("cin").focus(); return; }
+        take($("load"), "Reading", baseName(input), "load records", {input}, () => { $("cin").value = ""; });
+      };
+      $("gen").onclick = () => take($("gen"), "Generating", `${$("gsize").selectedOptions[0].text} records`, "generate records", {records: $("gsize").value, difficulty: $("glevel").value});
       $("cin").onkeydown = (e) => { if (e.key === "Enter") $("load").click(); };
+      if (taking) both().forEach((x) => { x.disabled = true; });
     };
     wireLoad();
     draw();

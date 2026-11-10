@@ -148,3 +148,31 @@ rate = 0.6
 [split]
 seed = 0
 shares = { train = 0.6, val = 0.2, test = 0.2 }   # by entity; the names must match config/settings.toml [datasets]
+
+# generate records --difficulty: each level's changes to [population], as generate.profile measures them on 10,000 entities
+# (direct: the true pairs exact rules settle; nothing in common: those no method can find)
+[difficulty.easy]                 # direct 21%, nothing in common 0.5%
+name_typo_rate = 0.05
+kanji_variant_rate = 0.02
+halfwidth_rate = 0.05
+phone_typo_rate = 0.02
+address_typo_rate = 0.02
+birth_typo_rate = 0.02
+cif_typo_rate = 0.02
+cif_keep = 0.3
+rate_end = 0.9
+multi_lambda = { phone = { person = 0.5, company = 0.75 }, address = { person = 0.5, company = 0.75 }, name = { person = 0.1, company = 0.3 } }
+
+[difficulty.medium]               # [population] as it is: direct 1.1%, nothing in common 11%
+
+[difficulty.hard]                 # direct 0.2%, nothing in common 24%
+name_typo_rate = 0.5
+kanji_variant_rate = 0.2
+halfwidth_rate = 0.3
+phone_typo_rate = 0.2
+address_typo_rate = 0.2
+birth_typo_rate = 0.2
+cif_typo_rate = 0.2
+cif_keep = 0.01
+rate_end = 0.5
+multi_lambda = { phone = { person = 3.0, company = 4.0 }, address = { person = 3.0, company = 4.0 }, name = { person = 0.5, company = 1.5 } }

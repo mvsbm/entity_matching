@@ -16,6 +16,7 @@ Written by `scripts/document_commands.py` from the declarations in `er/cli.py`; 
 | [`create workspace`](#nayose-create-workspace) | Start a workspace: the folder for one matching job |
 | [`list workspaces`](#nayose-list-workspaces) | The workspaces, the latest active first |
 | [`load records`](#nayose-load-records) | Copy a file into a workspace, read it as it comes, then describe it |
+| [`generate records`](#nayose-generate-records) | Generate synthetic records into a workspace, then load them as a file |
 | [`accept repairs`](#nayose-accept-repairs) | Accept one kind of repair the reader proposed for a loaded file |
 | [`list features`](#nayose-list-features) | The features a workspace's columns fill: groups, features, parts |
 | [`set feature`](#nayose-set-feature) | Put columns into features |
@@ -153,6 +154,47 @@ Copies the records into a part of the workspace's own (inputs/0001-customers/), 
 
 ```bash
 nayose load records customers.parquet --workspace workspaces/acme
+```
+
+## nayose generate records
+
+Generate synthetic records into a workspace, then load them as a file.
+
+```
+nayose generate records [--records N] [--difficulty easy|medium|hard] --workspace WORKSPACE [--format text|json]
+```
+
+People and companies from the reference names, companies and towns (config/generator.toml), each under one or more records with typos, other notations, moves and missing values, as hard to match as --difficulty says ([difficulty]); written in parts of 50,000 entities, each with its own seed, exactly N records, then loaded as load records loads a file. The same size and difficulty give the same records, so a second time copies nothing. The workspace's mapping must read the generator's columns, as the project's does. Past 60,000 entities names repeat more than in a real file, so name keys make more pairs. O(N) to generate (about 100 s a million records), memory of 50,000 entities, then load records'.
+
+| Parameter | |
+|---|---|
+| `--records N` | how many (default 10000) |
+| `--difficulty easy|medium|hard` | easy, medium or hard (default medium) |
+| `--workspace WORKSPACE` | the workspace: the folder that keeps one matching job (required) |
+
+| Result | |
+|---|---|
+| `records` | records |
+| `columns` | each column of the file: column, filled, example |
+| `fields` | each field: field, sources, filled, example, looks_right, and each of its alternatives (columns, found, filled, example, looks_right) |
+| `fit` | for each field, each column's fit: the share of its values that look like the field (id: filled, each value once) |
+| `suggested` | for each field the file holds none of: field, column, why |
+| `needed` | the fields a run stops without: every (each of them), one_of (at least one of each group) |
+| `turned_off` | rules, keys and levels a run of this file would turn off: a field they read is missing |
+| `slots` | each feature and part: feature (its path), sources, filled, example, looks_right, odd (a value that doesn't look right), hint (what its values say is off: level warn or info, says, example (a value that doesn't look right), fix, and with a workspace the command and button that fix it), and each of its alternatives |
+| `names_by_kind` | whether each record's name is compared on the side its kind leans to (set names) |
+| `features` | the structure: groups › features › parts, each with type and columns |
+| `profile` | each column's script (kanji, kana, romaji) and the shares of its values that are known family names, given names, full names, addresses |
+| `placements` | for each feature with no column: feature, column, share, why (the file's contents) |
+| `offers` | new features the contents suggest: feature, type, script, column, share, why |
+| `notes` | what the reader detected or fixed |
+| `read` | what the reader found (er.intake): rows, values per encoding, fixed (controls, placeholders, numbers, damaged, lists, first of several), proposed and waiting: repairs by kind (realign, garbled, encoding) for accept repairs, with examples; unread rows |
+| `next` | the commands that usually follow |
+| `loaded` | the part the records are in |
+| `copied` | false: the workspace held them already |
+
+```bash
+nayose generate records --records 100000 --difficulty hard --workspace workspaces/acme
 ```
 
 ## nayose accept repairs

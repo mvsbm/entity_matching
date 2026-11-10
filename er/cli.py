@@ -601,6 +601,7 @@ BRIEF: dict[str, Callable[[dict], list[str]]] = {
     "list workspaces": lambda r: (grid([dict(n=x["name"], f=x.get("files"), ran="yes" if x.get("ran") else "", last=str(x.get("last") or "")[:10]) for x in r["workspaces"]],
                                        {"n": "workspace", "f": "files", "ran": "matched", "last": "last"}) or [f"  no workspace in {r['home']}"]) + nexts(r),
     "load records": brief_load,
+    "generate records": brief_load,
     "describe records": brief_describe_records,
     "check records": brief_check,
     "resolve records": brief_run, "rerun records": brief_run, "add records": brief_run, "set names": lambda r: [f"✓ names compared {'each on its own side, by kind' if r['names'] == 'by-kind' else 'as mapped'}"] + nexts(r), "apply answers": brief_run, **dict.fromkeys(("adopt method", "reset method", "lower trust", "raise trust", "split entity"), brief_run),
@@ -1076,6 +1077,24 @@ def load_records(a: dict, emit: "Emit") -> dict:
     ws, s = Path(a["workspace"]), settings_for(a)
     part, copied = folder.take_in(ws, a["input"], s.input, s.paths["reference"], progress=lambda n, whole: emit.progress(n, whole, "rows"))
     return {**describe_records({**a, "input": str(part)}, emit), "loaded": str(part), "copied": copied}
+
+
+def generate_records(a: dict, emit: "Emit") -> dict:
+    from er import auto
+    ws = Path(a["workspace"])
+    if not ws.is_dir():
+        raise InputError(f"no workspace at {ws}", fix="create it: nayose create workspace NAME")
+    text = (a.get("records") or "10000").replace(",", "")
+    if not text.isdecimal() or int(text) < 1:
+        raise InputError(f"--records {a['records']}: not a whole number of 1 or more", fix="a whole number, for example 100000")
+    n, level = int(text), a.get("difficulty") or "medium"
+    tmp = Path(tempfile.mkdtemp(prefix=".synthetic-", dir=ws))  # on the workspace's disk; gone whatever happens
+    try:
+        out = tmp / f"synthetic-{level}-{n}"
+        auto.synthetic(settings_for(a), n, level, out, lambda done: emit.progress(done, n, "records"))
+        return load_records({**a, "input": str(out)}, emit)
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
 
 
 def run_pipeline(ws: str | Path | None) -> str | None:  # the pipeline file the workspace's full run used, as its log says (none said: before it did)
@@ -1754,6 +1773,20 @@ COMMANDS: tuple[Command, ...] = (
             "nayose load records customers.parquet --workspace workspaces/acme", load_records,
             show={"columns": ("column", "filled", "example"), "fields": ("field", "filled", "looks_right"), "fit": (), "features": (), "profile": (),
                   "slots": ("feature", "filled", "looks_right"), "placements": ("feature", "column", "why"), "offers": ("feature", "column", "why")}),
+    Command("generate", "records", "Generate synthetic records into a workspace, then load them as a file",
+            "People and companies from the reference names, companies and towns (config/generator.toml), each under one or "
+            "more records with typos, other notations, moves and missing values, as hard to match as --difficulty says "
+            "([difficulty]); written in parts of 50,000 entities, each with its own seed, exactly N records, then loaded as "
+            "load records loads a file. The same size and difficulty give the same records, so a second time copies nothing. The "
+            "workspace's mapping must read the generator's columns, as the project's does. Past 60,000 entities names repeat "
+            "more than in a real file, so name keys make more pairs. O(N) to generate (about 100 s a million records), "
+            "memory of 50,000 entities, then load records'.",
+            (Param("records", "how many (default 10000)", metavar="N"),
+             Param("difficulty", "easy, medium or hard (default medium)", "choice", ("easy", "medium", "hard")), WORKSPACE),
+            {**DESCRIBED, "loaded": "the part the records are in", "copied": "false: the workspace held them already"},
+            "nayose generate records --records 100000 --difficulty hard --workspace workspaces/acme", generate_records,
+            show={"columns": ("column", "filled", "example"), "fields": ("field", "filled", "looks_right"), "fit": (), "features": (), "profile": (),
+                  "slots": ("feature", "filled", "looks_right"), "placements": ("feature", "column", "why"), "offers": ("feature", "column", "why")}),
     Command("accept", "repairs", "Accept one kind of repair the reader proposed for a loaded file",
             "Reads the file again with that kind applied: realign, each row whose fields don't line up re-split where every "
             "value fits its column (unread until then); garbled, each value a wrong decoding garbled upstream decoded back; "
@@ -2316,7 +2349,7 @@ COMMANDS: tuple[Command, ...] = (
 # ---------- the parser and the reference, from the declarations ----------
 
 GROUPS = (  # the top-level help's commands, by task
-    ("Set up", ("create workspace", "list workspaces", "load records", "accept repairs", "check records", "describe records", "list columns",
+    ("Set up", ("create workspace", "list workspaces", "load records", "generate records", "accept repairs", "check records", "describe records", "list columns",
                 "set columns", "set preparation", "list features", "set feature", "set names", "add feature", "remove feature")),
     ("Run", ("resolve records", "add records", "match records", "rerun records", "rehearse records", "try everything", "serve inbox")),
     ("Review", ("open ui", "describe results", "list scored", "show records", "decide pair", "apply decisions", "list kinds", "answer kind",
@@ -2442,7 +2475,7 @@ def indexed(a: dict) -> dict:  # the workspace's index brought up to date with i
         return dict(error=str(said), fix=said.fix)
 
 
-STEPS_OF = {"check records": ("load", "budget"), "apply decisions": ("decide",), "load records": ("load",),
+STEPS_OF = {"check records": ("load", "budget"), "apply decisions": ("decide",), "load records": ("load",), "generate records": ("load",),
             "try method": RUN_ORDER[:8]}  # the steps of a command that isn't a run: try method's two runs write nothing
 FULL_RUNS = ("resolve records", "rerun records", "apply answers", "adopt method", "reset method", "lower trust", "raise trust", "split entity")
 INDEXED = (*FULL_RUNS, "add records", "apply decisions", "set merging")  # the commands that change a run: its index is kept up to date after them

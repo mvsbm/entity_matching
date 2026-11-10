@@ -43,7 +43,7 @@ The system turns a file of customer records into one ID per person or company. I
 
 | Part | Holds |
 |---|---|
-| `nayose` | the run-time entry point, `er/cli.py`: every command declared once, the parser and [the reference](commands.md) built from the declarations; `er/inbox.py` serves an inbox through it; `er/auto.py` rehearses a file at its size (`rehearse records`) and runs auto mode (`try everything`), each command in a process of its own; `er/ui.py` and `er/ui.html`, the same commands in a browser (`nayose open ui`): the page places commands and draws their results, its forms built from the declarations |
+| `nayose` | the run-time entry point, `er/cli.py`: every command declared once, the parser and [the reference](commands.md) built from the declarations; `er/inbox.py` serves an inbox through it; `er/auto.py` rehearses a file at its size (`rehearse records`), generates synthetic records into a workspace (`generate records`) and runs auto mode (`try everything`), each command in a process of its own; `er/ui.py` and `er/ui.html`, the same commands in a browser (`nayose open ui`): the page places commands and draws their results, its forms built from the declarations |
 | `scripts/` | the design-time entry points: generate, choose, choose_kind, train_name_model, benchmark, export_pdfs, document_commands |
 | `er/` | the engine: every computation, tested. It names no column, except the synthetic generator (`er/generate.py`) |
 | `config/` | every setting: `settings.toml` (paths, `[datasets]`, `[columns]`, `[locale]`, `[compute]`, `[kind]`, `[input]`), `pipeline.toml` (the matching, in logical fields), `final.toml` (what was chosen), and for design time `generator.toml` and `experiments.py` |

@@ -3,6 +3,7 @@ import json
 import os
 import re
 import time
+import tomllib
 from dataclasses import replace
 from pathlib import Path
 
@@ -65,6 +66,41 @@ def test_a_generated_file_takes_the_shape_it_is_given_across_its_parts(tmp_path,
     assert auto.shape(shared, tmp_path / "a")["company"] is None and auto.shape(s0, tmp_path / "a")["company"] == 0.0
     auto.generated(dict(sh, fields={**sh["fields"], "company_name": 0.9}, company=None), tmp_path / "b", lambda e: None)
     assert 0.1 < auto.shape(load_settings(), tmp_path / "b")["fields"]["company_name"] < 0.35  # the generator's share of companies, not 90%
+
+
+def test_generated_records_go_into_a_workspace_as_a_file_does_and_the_same_twice_copies_nothing(say, tmp_path):
+    from er import folder
+    assert say("create", "workspace", "w", "--home", tmp_path)[0] == 0
+    ws = tmp_path / "w"
+    code, r = say("generate", "records", "--records", "1000", "--difficulty", "easy", "--workspace", ws)
+    filled = {f["field"]: f["filled"] for f in r["fields"]}
+    assert code == 0 and r["records"] == 1000 and r["copied"] and Path(r["loaded"]).name == "0001-synthetic-easy-1000"
+    assert all(filled.get(f) for f in r["needed"]["every"]) and all(any(filled.get(f) for f in grp) for grp in r["needed"]["one_of"])  # a run can start
+    assert folder.loaded(ws)[0]["given"] == "synthetic-easy-1000.parquet" and not list(ws.glob(".synthetic-*"))  # one file, named for what it holds; nothing else left
+    code, again = say("generate", "records", "--records", "1000", "--difficulty", "easy", "--workspace", ws)
+    assert code == 0 and not again["copied"] and len(folder.parts(ws)) == 1  # the same records: held already
+    for bad in ("0", "ten", "1.5"):
+        code, e = say("generate", "records", "--records", bad, "--workspace", ws)
+        assert code == 2 and "whole number" in e["error"]
+    assert say("create", "workspace", "theirs", "--home", tmp_path)[0] == 0
+    mapping = tmp_path / "theirs" / "columns.toml"
+    mapping.write_text(mapping.read_text(encoding="utf-8").replace('id = "CONT_ID"', 'id = "REC_NO"'), encoding="utf-8")  # mapped to a file of their own
+    code, e = say("generate", "records", "--records", "1000", "--workspace", tmp_path / "theirs")
+    assert code == 2 and "other columns" in e["error"] and not list((tmp_path / "theirs").glob(".synthetic-*")) and not folder.parts(tmp_path / "theirs")
+
+
+def test_each_difficulty_is_harder_to_match_than_the_one_before():
+    from er import cli
+    from er.generate import generate, load_reference, load_spec, profile
+    from er.settings import load_settings
+    s = load_settings()
+    path, ref = s.root / "config" / "generator.toml", load_reference(s.paths["reference"])
+    levels = next(p.choices for c in cli.COMMANDS if (c.verb, c.noun) == ("generate", "records") for p in c.params if p.name == "difficulty")
+    assert set(levels) == set(tomllib.loads(path.read_text(encoding="utf-8"))["difficulty"])  # the command offers the levels the generator has
+    got = [profile(generate(replace(load_spec(path, x)[0], entities=2000), *ref)) for x in levels]
+    direct, lost = [x["direct (exact rules)"] for x in got], [x["nothing in common"] for x in got]
+    assert direct == sorted(direct, reverse=True) and lost == sorted(lost) and len(set(direct)) == len(set(lost)) == len(levels), (direct, lost)
+    assert load_spec(path, "medium")[0] == load_spec(path)[0]  # medium: the generator as calibrated
 
 
 def test_a_rehearsal_stopped_midway_leaves_nothing_behind(tmp_path, monkeypatch, fake_cli):
