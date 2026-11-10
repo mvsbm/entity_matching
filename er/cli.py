@@ -34,7 +34,7 @@ import duckdb
 import numpy as np
 import pandas as pd
 
-from er import folder, inbox, intake
+from er import folder, inbox, index, intake
 from er.io import replace_text
 from er.config import InputError, adjust, lit, load_pipeline, q, restrict, sources_text, toml_of, widen
 from er.folder import Busy
@@ -564,6 +564,15 @@ def brief_set_merging(r: dict) -> list[str]:
     return [f"✓ {said}", f"  {r['entities']:,} entities of two records or more"] + nexts(r)
 
 
+def brief_match_record(r: dict) -> list[str]:  # the entities it may belong to, best first, each in a line; how long it took
+    shown = lambda x: " · ".join(v for k in ("full_name", "company_name", "address", "phone") if (v := x.get(k)))
+    out = [f"✓ {r['found']:,} possible match{'es' * (r['found'] != 1)}, {r['likely']:,} likely, of {r['candidates']:,} records compared "
+           f"in {sum(r['seconds'].values()) * 1000:,.0f} ms"]
+    out += [f"  {'●' if e['likely'] else '○'} {num(e['points']):>6} pts  {e['entity']}  {shown(e['shown'])}" + (f"  (rule {e['rule']})" if e["rule"] else "")
+            for e in r["entities"]]
+    return out + nexts(r)
+
+
 BRIEF: dict[str, Callable[[dict], list[str]]] = {
     "create workspace": lambda r: [f"✓ created {r['workspace']}"] + nexts(r),
     "list workspaces": lambda r: (grid([dict(n=x["name"], f=x.get("files"), ran="yes" if x.get("ran") else "", last=str(x.get("last") or "")[:10]) for x in r["workspaces"]],
@@ -577,6 +586,8 @@ BRIEF: dict[str, Callable[[dict], list[str]]] = {
     "list scored": brief_scored,
     "list entities": brief_entities,
     "show records": brief_show,
+    "match record": brief_match_record,
+    "build index": lambda r: [f"✓ index of {r['records']:,} records built in {took(r['seconds'])}: {r['index']}"] + nexts(r),
     "describe merging": brief_merging,
     "set merging": brief_set_merging,
     "decide pair": lambda r: [f"✓ {' · '.join(r['pair'])}: {r['decision'].replace('no_match', 'different').replace('match', 'same')} (written; applied by apply decisions)"] + nexts(r),
@@ -1101,6 +1112,31 @@ def match_records(a: dict, emit: "Emit") -> dict:
                 next=[dict(command=nayose("add", "records", a["input"], "--workspace", out), why="add them to the run")])
 
 
+def build_index(a: dict, emit: "Emit") -> dict:
+    s, p, _ = setup(a)
+    ws = Path(a["workspace"])
+    return {**index.build(ws, s, p), "next": [dict(command=nayose("match", "record", "COLUMN=VALUE", "--workspace", ws), why="look a record up"),
+                                              dict(command=nayose("open", "ui", "--workspace", ws), why="or look up in the browser")]}
+
+
+def match_record(a: dict, emit: "Emit") -> dict:
+    s, p, _ = setup(a)
+    ws, values = Path(a["workspace"]), {}
+    for item in a["values"] or []:
+        column, sep, value = item.partition("=")
+        if not sep or not column:
+            raise InputError(f"{item}: write COLUMN=VALUE", fix='for example FULL_NAME_KANA="ヤマダ タロウ" PHONE_NUM_4=1234, by the file\'s column names')
+        values[column] = value
+    if bool(values) == bool(a["record"]):
+        raise InputError("give a record's values, or --record ID, one of them", fix="for example: nayose match record PHONE_NUM_4=1234 --workspace W")
+    try:
+        at_least, most = float(a["from"]) if a["from"] else None, int(a["count"] or 20)
+    except ValueError:
+        raise InputError(f"--from {a['from']} --count {a['count']}: numbers", fix="for example --from 6 --count 20") from None
+    found = index.look_up(ws, s, p, values=values or None, record=a["record"], at_least=at_least, most=most)
+    return {**found, "next": [dict(command=nayose("show", "records", found["entities"][0]["record"], "--workspace", ws), why="its full row")] if found["entities"] else []}
+
+
 def rerun_records(a: dict, emit: "Emit") -> dict:
     s, p, pipeline = setup(a)
     out = Path(a["workspace"])
@@ -1219,7 +1255,7 @@ def describe_workspace_(a: dict, emit: "Emit") -> dict:
             for f in files if f.get("waiting")] + then
     told = out / "auto" / "report.md"  # the last auto mode's report, to send
     auto = dict(report=str(told), markdown=told.read_text(encoding="utf-8")) if told.is_file() else None
-    return {**d, "inputs": files, "columns": "own" if columns_file(out) else "project", "auto": auto, "next": then}
+    return {**d, "inputs": files, "columns": "own" if columns_file(out) else "project", "auto": auto, "index": index.status(out, s), "next": then}
 
 
 def describe_entity_(a: dict, emit: "Emit") -> dict:
@@ -1734,6 +1770,30 @@ COMMANDS: tuple[Command, ...] = (
             {"counts": "records by status", "records": "each record: id, entity, status, by, weight", "next": "the commands that usually follow"},
             "nayose match records new.parquet --workspace workspaces/customers", match_records,
             show={"records": ("id", "entity", "status", "by", "weight")}),
+    Command("build", "index", "The index a record is looked up in, from the run",
+            "Every key of every record the run holds, hashed and sorted, in the workspace's index/ (a DuckDB database), with "
+            "the person/company classifier and what it was built from. Read once from the run's own files, nothing standardized "
+            "again; built beside the last index, which stays until the new one is whole. A run, an increment, decisions or a new "
+            "mapping make it out of date. O(N·(G + R + D·L) + N log N): N records, G pair keys, R rules, D deletion keys, L a value's length.",
+            (WORKSPACE, PIPELINE, COMPUTE),
+            {"index": "its folder", "records": "the records it holds", "tables": "each table: of (its key or rule), rows, seconds", "seconds": "in all",
+             "next": "the commands that usually follow"},
+            "nayose build index --workspace workspaces/customers", build_index),
+    Command("match", "record", "The entities one record may belong to, from the index; nothing written",
+            "One record, by the file's column names (or a stored one's ID, as if it were new), prepared as a run prepares it, "
+            "looked up by each of its keys in the index (nayose build index), and scored with the run's model: the entities at "
+            "--from points or more, best first, each with its best record, its points, each comparison's level and the rule that "
+            "would join it; likely ones at the line or above. The pairs an increment of that record alone would list, scored "
+            "alike. O(G·(log N + b) + C·K·L²): N only in log N.",
+            (Param("values", "the record's values, by the file's column names", "many", positional=True, metavar="COLUMN=VALUE", optional=True),
+             Param("record", "a stored record's ID, looked up as if it were new", metavar="ID"),
+             Param("from", "from these points (default: the review floor)", metavar="POINTS"), Param("count", "the most entities (default 20)", metavar="N"),
+             WORKSPACE, PIPELINE, COMPUTE),
+            {"record": "the record as compared: its fields and kind", "entities": "each: entity, record, points, likely, rule, keys, compared, records, shown",
+             "found": "entities at --from or more", "candidates": "records compared", "likely": "of them, at the line or joined by a rule",
+             "checked": "each key: found, or why not; a block too big: its records and the gate's decision", "seconds": "each part",
+             "index": "built_at, records", "next": "the commands that usually follow"},
+            'nayose match record FULL_NAME_KANA="ヤマダ タロウ" PHONE_NUM_4=1234 --workspace workspaces/customers', match_record, quick=True),
     Command("rerun", "records", "A full run again, on the run's own files",
             "Reads the record files the run read, the full run's and each increment's, in order (steps.json; a scheduled batch "
             "found where the scheduler moved it), each checked by its SHA-256, and resolves them again in one full run: every "
@@ -1751,9 +1811,11 @@ COMMANDS: tuple[Command, ...] = (
              "trust": TRUST,
              "inputs": "the records files given to it, each in inputs/: name, path, files, bytes, rows, read (by a run, as it is now), waiting (repairs proposed, for people), unread (rows), given (its file's own name, one file), seconds (its reading took), columns",
              "columns": "own: its columns.toml; project: config/settings.toml's",
-             "auto": "the report try everything wrote, to send: report (its path), markdown", "next": "the commands that usually follow"},
+             "auto": "the report try everything wrote, to send: report (its path), markdown",
+             "index": "the lookup's index: built_at, records, stale (what changed since, or null; built_at null: none yet), columns (each a lookup reads: column, field, main: in the field's first alternative)",
+             "next": "the commands that usually follow"},
             "nayose describe workspace workspaces/customers", describe_workspace_, quick=True,
-            show={"largest": ("entity", "records"), "runs": ("at", "what", "seconds"), "inputs": ("name", "files", "bytes", "read"), "auto": ()}),
+            show={"largest": ("entity", "records"), "runs": ("at", "what", "seconds"), "inputs": ("name", "files", "bytes", "read"), "auto": (), "index": ()}),
     Command("describe", "entity", "One record's entity, and what joined it",
             "The entity of the record ID: its size, each of its records (the first 200, the ID among them) with its fields and "
             "kind, and every link between them: a rule, the model with its weight in bits, people, or the workspace's merge "
@@ -2111,6 +2173,7 @@ GROUPS = (  # the top-level help's commands, by task
     ("Run", ("resolve records", "add records", "match records", "rerun records", "rehearse records", "try everything", "serve inbox")),
     ("Review", ("open ui", "describe results", "list scored", "show records", "decide pair", "apply decisions", "list kinds", "answer kind",
                 "apply answers", "describe merging", "set merging", "list entities", "describe entity", "split entity")),
+    ("Look up", ("build index", "match record")),
     ("Look inside", ("describe workspace", "describe matching", "describe key", "list patterns", "explain pair", "compare records")),
     ("Method", ("describe method", "try method", "adopt method", "reset method", "describe review", "lower trust", "raise trust", "draw pairs", "list pairs")),
 )
@@ -2140,13 +2203,13 @@ def parser(kind: type[argparse.ArgumentParser] = argparse.ArgumentParser) -> arg
                 if p.choices:
                     kw["choices"] = p.choices
                 if p.kind == "many":
-                    kw["nargs"] = "+" if p.positional else "*"
+                    kw["nargs"] = "+" if p.positional and not p.optional else "*"
                     if not p.positional:  # --between A B, or --between=A --between=B (a value like -h): one list
                         kw["action"] = "extend"
                 if p.metavar and not p.choices:
                     kw["metavar"] = p.metavar
                 if p.positional:
-                    cp.add_argument(p.name, **kw, **({"nargs": "?"} if p.optional else {}))
+                    cp.add_argument(p.name, **kw, **({"nargs": "?"} if p.optional and p.kind != "many" else {}))
                 else:
                     cp.add_argument(f"--{p.name}", required=p.required, **kw)
             cp.add_argument("--format", choices=("text", "json"), default="text", help="text for people (the default); json: one object per line")

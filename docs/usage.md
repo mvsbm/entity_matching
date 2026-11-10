@@ -202,6 +202,7 @@ None of these runs anything: they read the workspace's files.
 | `method.toml` | | the workspace's changes to the tuned method: `trust` (the trust line), `merge` (the conditions under which pairs merge without people), `line`, `drop_rules`, `drop_keys`, `add_keys` | every command on the workspace runs the method it says ([section 6](#the-trust-line)) |
 | `rounds.json` | round | per method the workspace ran: its `config` hash, `method`, when, the links it made and the false links the model expects | see each round's results side by side |
 | `trials/` | trial | each trial's result (`<n>.json`, the last 5); the clusters of the method it was tried against (`base.parquet`, `base.json`) | `adopt method --trial n` |
+| `index/` | key of a record | every key of every record, hashed and sorted (`index.duckdb`); the person/company classifier's fitted part (`kind.pkl`); what it was built from (`manifest.json`) | `match record`, the *Look up* page |
 | `kind_answers/` | answered record | the answered rows of each `kind_review.parquet` given back, one part per sheet, as given | what people answered; every later run reads it |
 | `set_aside/` | record not resolved | the record as read, and `reason`: no ID; the same ID with different content; already in the run | fix them and add them with `nayose add records` |
 | `steps.json` | run, increment or set of decisions | when; the code's commit; the config hash; each file read with what it is, its size and SHA-256; each step's Big-O with the numbers filled in, seconds, peak memory | see the cost; say exactly what went into the run; `nayose rerun records` reads its files again |
@@ -236,6 +237,20 @@ WHERE o.cluster_id IS DISTINCT FROM n.cluster_id;
 - **New records only.** A record whose ID is already in the run is set aside: an increment adds, it doesn't update. So running the same batch twice is harmless; the second time prints "nothing new".
 - **Safe to interrupt.** An interrupted write is finished by the next increment.
 - **Match without adding.** `nayose match records` runs the increment's steps and writes nothing: for each record, the entity it would join, whether it waits for people (a pair of it below the trust line), or a new one, and the rule or the model's best weight that links it.
+
+### Look up one record
+
+```bash
+.venv/bin/nayose build index --workspace workspaces/customers      # once after each run
+.venv/bin/nayose match record FULL_NAME_KANA="ヤマダ タロウ" PHONE_NUM_4=1234 POST_CD=1000001 --workspace workspaces/customers
+.venv/bin/nayose match record --record 0000000151 --workspace workspaces/customers   # a stored record, as if it were new
+```
+
+- **Is this customer already here?** `match record` takes one record by the file's column names. It answers with the entities it may belong to, best first, at the review floor (6 points) or above: each with its points, how each field compared, the rule that would join it, and whether it is likely the same (at the line, or joined by a rule).
+- **The same pairs as an increment.** The record is prepared as a run prepares one. Each of its keys is looked up, a key value on too many records is gated as a run gates it, and the records found are scored with the run's model. So it lists and scores the pairs an increment of that record alone would. It writes nothing and adds nothing: `add records` does.
+- **The index.** `build index` reads the run's own files once and writes the workspace's `index/`: every key of every record, hashed and sorted, so a lookup reads only the rows its keys name. On a million records it is built in about 7 s and takes 0.9 GB; a lookup takes about 0.2 s, and grows only with the log of the run's size ([performance](performance.md)).
+- **Out of date.** A run, an increment, applied decisions, merging conditions or a new mapping make the index out of date. A lookup then refuses until it is built again.
+- **In the browser:** *Look up*, above Setup.
 
 ## 6 · Review and decide
 

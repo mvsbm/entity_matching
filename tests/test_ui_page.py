@@ -593,6 +593,20 @@ def test_review_counts_down_an_answer_waits_out_a_busy_workspace_and_auto_merge_
     page.wait_for_selector("#note .banner:has-text('Nothing merges without you now')", timeout=60_000)
     assert "merge" not in folder.method(ws) and entities() == before  # turned off: what it merged, apart again
 
+    page.click("#nav [data-screen=lookup]")  # Look up: off until the index is built, then a record typed in, its entities best first
+    page.wait_for_selector("#build")
+    assert page.is_disabled("#lu button[type=submit]") and page.get_attribute("#lu", "inert") is not None
+    page.click("#build")
+    page.wait_for_selector("#lu:not([inert]) button[type=submit]:not([disabled])", timeout=120_000)
+    rec = pd.read_parquet(tmp_path / "all.parquet").iloc[5]
+    for c in ("FULL_NAME_KANA", "PHONE_NUM_4", "POST_CD"):
+        if isinstance(rec[c], str):
+            page.fill(f"#lu input[name='{c}']", rec[c])
+    page.keyboard.press("Enter")
+    page.wait_for_selector("#found .lu-hit", timeout=60_000)  # the record itself is in the run: it is found first
+    assert page.locator("#found .lu-hit").first.locator("[data-record]").get_attribute("data-record") in set(pd.read_parquet(ws / "gold.parquet").set_index(uid).loc[[rec[uid]], "cluster_id"]) | {rec[uid]}
+    assert "ms" in page.inner_text("#found .card .answer") and "ready" in page.inner_text("#nav [data-screen=lookup]")
+
 
 def test_auto_mode_runs_from_the_first_screen_and_its_report_waits_on_the_overview(ui_page, tmp_path, population):
     s, p, g = population

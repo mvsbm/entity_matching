@@ -124,7 +124,7 @@ def test_the_ui_layout_names_only_declared_commands_parameters_and_result_fields
     screens, flow = {sc["id"]: sc for sc in layout["screens"]}, layout["workflow"]
     assert all(set(sc["strip"]) <= set(GRAPH_NODES) for sc in screens.values())  # each page's flow strip: stages describe matching gives
     loop = flow["improve"]  # the loop's page: after a step, and back to the one that runs the method again
-    places = {"records", "pairs", "kinds", "results"}  # after a first run: Results, Review (its second tab, kinds) and Explore
+    places = {"records", "pairs", "kinds", "results", "lookup"}  # after a first run: Results, Review (its second tab, kinds), Explore and Look up
     assert set(flow["steps"]) <= {*screens, "workspace"} and all(x in flow["steps"] or x in places for x in screens if x != loop["screen"])  # every page a setup step or a place
     assert loop["screen"] in screens and loop["after"] in places and loop["back"] in flow["steps"]
     assert all(l["to"] in places and {(l["screen"], c) for c in l["via"]} <= placed for l in flow["loops"])

@@ -71,6 +71,15 @@ decisions, plus O(N) to rewrite gold: each `match` pair merges two stored cluste
 
 **Measured:** into the million-record run, an increment of 1,000 records takes about 4 s, with a peak of 2.25 GB.
 
+**A lookup** (`index.look_up`, `nayose match record`): one record against the run's index costs
+**O(G·(log N + b) + C·K·L²)**, N only inside log N: each of its keys reads one row group of its table, sorted by the
+key's hash, and a sorted window's place is a bisect in every 1,024th key. Building the index (`index.build`,
+`nayose build index`) costs **O(N·(G + R + D·L) + N log N)** once a run: every key of every record, hashed and sorted,
+read from the run's own files. **Measured** on a million generated records ([reports/benchmark_lookup.md](../reports/benchmark_lookup.md)):
+built in about 7 s, 0.9 GB on disk; a lookup at p50 about 200 ms and p95 about 230 ms, a third of it preparing the record
+and loading the classifier's name model, a third scoring; the pairs and weights equal to an increment of that record alone
+on every record checked.
+
 **Memory.** Records, pairs, scores and clusters are DuckDB tables. Past `memory_limit` (config/settings.toml `[compute]`,
 or `--compute memory_limit=8GB` on a command), DuckDB spills them to `temp_directory`: by default a folder of the
 person's own, readable only by them, in the system's temporary folder. The budget counts the room DuckDB may spill to: 90% of that disk's free space, DuckDB's
