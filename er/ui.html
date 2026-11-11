@@ -2424,6 +2424,7 @@ const SCREENS = {
         into.insertAdjacentHTML("afterbegin", banner(e));
         return;
       }
+      into.querySelectorAll(":scope > .banner").forEach((x) => x.remove());  // a refusal before it: answered
       done?.();
       draw(records && at === edits ? e : undefined);  // a change made while it loaded: the file described after it; a details file's result describes no records
       refresh();
@@ -2447,15 +2448,18 @@ const SCREENS = {
       $("din").onkeydown = (e) => { if (e.key === "Enter" && !e.isComposing) $("dload").click(); };
       $("dcols")?.querySelectorAll("[data-col]").forEach((c) => c.onclick = () => {
         c.setAttribute("aria-pressed", String(c.getAttribute("aria-pressed") !== "true"));
-        queue(async () => {  // in turn, each sending the chips as they are then: the last click wins
-          const r = await run("columns", "set details", {details_shown: [...$("dcols").querySelectorAll("[aria-pressed=true]")].map((x) => x.dataset.col)});
-          if (r.event === "error") { $("details").querySelector(".banner")?.remove(); $("details").insertAdjacentHTML("afterbegin", banner(r)); drawnDetails = null; return; }
-          drawnDetails = JSON.stringify(r);
-          $("details").querySelector(".answer").innerHTML = detailsLine(r);
+        const box = $("details"), words = argsFor("columns", "set details", {details_shown: [...$("dcols").querySelectorAll("[aria-pressed=true]")].map((x) => x.dataset.col)});
+        queue(async () => {  // in turn, each as the chips were at its click: the last click wins, sent even if the page is left
+          const r = await runOnce("set details", words);
+          if (!box.isConnected) return;
+          if (r.event === "error") { box.querySelector(".banner")?.remove(); box.insertAdjacentHTML("afterbegin", banner(r)); drawnDetails = null; return; }
+          const {event, command, ...dt} = r;  // as describe workspace gives it, so the card isn't drawn again for nothing
+          drawnDetails = JSON.stringify(dt);
+          box.querySelector(".answer").innerHTML = detailsLine(dt);
         });
       });
       if (longRun) both().forEach((x) => { x.disabled = true; });
-      if (longRun?.page === "columns" && longRun.command === "load details") { $("din").value = longRun.args.details_file; $("dkey").value = longRun.args.details_key || ""; $("dload").innerHTML = `${spinner()}Reading…`; $("details").querySelector("details")?.setAttribute("open", ""); }
+      if (longRun?.page === "columns" && longRun.command === "load details" && longRun.args) { $("din").value = longRun.args.details_file; $("dkey").value = longRun.args.details_key || ""; $("dload").innerHTML = `${spinner()}Reading…`; $("details").querySelector("details")?.setAttribute("open", ""); }
     };
     const wireLoad = () => {
       $("load").onclick = () => {
