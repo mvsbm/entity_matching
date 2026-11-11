@@ -1,6 +1,9 @@
-# A pull request runs lint, the page's script and the fast checks, in minutes; its author runs every tier before pushing
-# (CONTRIBUTING.md). main, and a run started by hand on any branch, runs them all: whole runs, the page in a browser,
-# and on Windows, set up as a person sets it up there. The job names are what branch protection requires: keep them.
+# A pull request runs lint, the page's script and the fast checks, in about two minutes; its author runs every tier
+# before pushing (CONTRIBUTING.md). main, and a run started by hand on any branch, runs them all: whole runs, the page in
+# a browser, and on Windows, set up as a person sets it up there. Each tier is a job of its own and the long ones are
+# split by their recorded times (tests/durations.json, pytest-split), all at once: the set takes about as long as its
+# longest part. 15 jobs at most at once, under the 20 a free account runs. The job names pytest (3.12) and pytest (3.14)
+# are what branch protection requires: keep them.
 name: tests
 on:
   push:
@@ -15,7 +18,7 @@ permissions:
 jobs:
   pytest:
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
@@ -25,27 +28,74 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python }}
-          cache: pip
-      - run: pip install -r requirements.txt
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2  # v10.3.3: installs in seconds, from its cache
+        with:
+          enable-cache: true
+          cache-dependency-glob: requirements.txt
+      - run: uv pip install --system -r requirements.txt
       - run: ruff check .  # the rules in pyproject.toml [tool.ruff.lint]
       - run: sed -n '/<script>/,/<\/script>/p' er/ui.html | sed '1d;$d' > "$RUNNER_TEMP/page.js" && test -s "$RUNNER_TEMP/page.js" && node --check "$RUNNER_TEMP/page.js"  # the page's script, found and parsed
-      - run: python -m pytest -n auto -m "not slow and not browser"  # seconds: a broken engine fails here first; -n auto: a test a core
-      - if: github.event_name != 'pull_request'
-        run: python -m pytest -n auto -m "slow and not browser"  # whole runs on a generated population
-      - if: matrix.python == '3.12' && github.event_name != 'pull_request'  # the page runs the same on either Python: one browser run is enough
-        uses: actions/cache@v4
+      - run: python -m pytest -n auto -m "not slow and not browser"  # a broken engine fails here first; -n auto: a test a core
+  whole:  # whole runs on a generated population, in three parts of about equal time
+    name: whole runs (${{ matrix.python }}, ${{ matrix.group }}/3)
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.12", "3.14"]
+        group: [1, 2, 3]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2  # v10.3.3
+        with:
+          enable-cache: true
+          cache-dependency-glob: requirements.txt
+      - run: uv pip install --system -r requirements.txt
+      - run: python -m pytest -n auto -m "slow and not browser" --splits 3 --group ${{ matrix.group }} --durations-path tests/durations.json --splitting-algorithm least_duration
+  browser:  # the page runs the same on either Python: one, in two parts
+    name: browser (${{ matrix.group }}/2)
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        group: [1, 2]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2  # v10.3.3
+        with:
+          enable-cache: true
+          cache-dependency-glob: requirements.txt
+      - run: uv pip install --system -r requirements.txt
+      - uses: actions/cache@v4
         with:
           path: ~/.cache/ms-playwright
           key: playwright-${{ runner.os }}-${{ hashFiles('requirements.txt') }}
-      - if: matrix.python == '3.12' && github.event_name != 'pull_request'
-        run: python -m playwright install --with-deps chromium
-      - if: matrix.python == '3.12' && github.event_name != 'pull_request'
-        run: python -m pytest -n auto -m browser  # CI is set: a missing browser fails, never skips
-  windows:  # the same tests on Windows, set up as a person sets it up there (setup_venv.ps1)
-    name: pytest (windows)
+      - run: python -m playwright install --with-deps chromium
+      - run: python -m pytest -n auto -m browser --splits 2 --group ${{ matrix.group }} --durations-path tests/durations.json --splitting-algorithm least_duration  # CI is set: a missing browser fails, never skips
+  windows:  # every tier on Windows, set up as a person sets it up there (setup_venv.ps1)
+    name: windows (${{ matrix.part }})
     if: github.event_name != 'pull_request'
     runs-on: windows-latest
     timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {part: fast, marks: "not slow and not browser", split: ""}
+          - {part: whole 1/2, marks: "slow and not browser", split: "--splits 2 --group 1"}
+          - {part: whole 2/2, marks: "slow and not browser", split: "--splits 2 --group 2"}
+          - {part: browser 1/2, marks: browser, split: "--splits 2 --group 1", browser: true}
+          - {part: browser 2/2, marks: browser, split: "--splits 2 --group 2", browser: true}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -53,15 +103,11 @@ jobs:
           python-version: "3.14"
           cache: pip
       - run: .\setup_venv.ps1
-      - run: .venv\Scripts\python -m pytest -n auto -m "not slow and not browser"
-      - if: success() || failure()  # each tier says what fails on Windows, whatever the one before said
-        run: .venv\Scripts\python -m pytest -n auto -m "slow and not browser"
-      - if: success() || failure()
+      - if: matrix.browser
         uses: actions/cache@v4
         with:
           path: ~\AppData\Local\ms-playwright
           key: playwright-${{ runner.os }}-${{ hashFiles('requirements.txt') }}
-      - if: success() || failure()
+      - if: matrix.browser
         run: .venv\Scripts\python -m playwright install chromium
-      - if: success() || failure()
-        run: .venv\Scripts\python -m pytest -n auto -m browser  # CI is set: a missing browser fails, never skips
+      - run: .venv\Scripts\python -m pytest -n auto -m "${{ matrix.marks }}" ${{ matrix.split }} --durations-path tests/durations.json --splitting-algorithm least_duration
