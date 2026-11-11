@@ -47,32 +47,32 @@ def test_the_page_answers_once_per_key_shows_any_row_and_says_when_the_server_is
         const box = document.createElement("div");
         box.innerHTML = features({...d, placements: d.placements.filter((x) => !x.feature.startsWith("Name/"))}, {toggled: new Map(), ghosts: new Set(["Name"])});
         const g = box.querySelector("details.fgroup[data-g='Name']");
-        return !!g.querySelector(".frow.offer") && !g.querySelector("[data-keepall]"); }""")
+        return !!g.querySelector(".feat.offer") && !g.querySelector("[data-keepall]"); }""")
     page.click("[data-suggest='ID']")  # what the file's contents place there, shown, then kept
-    page.click(".drop[data-slot='ID/Record ID'] [data-keep]")
+    page.click(".feat[data-slot='ID/Record ID'] [data-keep]")
     page.wait_for_selector("#out:not([aria-busy]) details.fgroup", state="attached")  # shown at once; written, then the file described again
     assert 'id = "customer_no"' in columns.read_text(encoding="utf-8") and "Record ID needed" not in page.inner_text("details.fgroup[data-g='ID'] summary")
     page.evaluate("document.querySelector(\"details.fgroup[data-g='Name']\").open = true")  # opened: it stays open as the page redraws
-    page.click(f".drop[data-slot='Name/Company name'] .colchip[data-col='{company}'] [data-x]")  # taken off
+    page.click(f".feat[data-slot='Name/Company name'] .colchip[data-col='{company}'] [data-x]")  # taken off
     page.wait_for_selector("#out:not([aria-busy]) details.fgroup", state="attached")
-    assert not page.query_selector(f".drop[data-slot='Name/Company name'] .colchip[data-col='{company}']")
+    assert not page.query_selector(f".feat[data-slot='Name/Company name'] .colchip[data-col='{company}']")
     assert load_settings(columns=columns).columns["company_name"] == () and page.query_selector("details.fgroup[data-g='Name'][open]")
     page.evaluate(f"""() => {{  // dragged back from the file's columns: the drag as the browser fires it
         const dt = new DataTransfer(), from = document.querySelector(".tray .colchip[data-col='{company}']");
-        const to = document.querySelector(".drop[data-slot='Name/Company name']");
+        const to = document.querySelector(".feat[data-slot='Name/Company name']");
         from.dispatchEvent(new DragEvent("dragstart", {{dataTransfer: dt, bubbles: true}}));
         to.dispatchEvent(new DragEvent("drop", {{dataTransfer: dt, bubbles: true, cancelable: true}})); }}""")
-    page.wait_for_selector(f"#out:not([aria-busy]) .drop[data-slot='Name/Company name'] .colchip[data-col='{company}']")
+    page.wait_for_selector(f"#out:not([aria-busy]) .feat[data-slot='Name/Company name'] .colchip[data-col='{company}']")
     assert load_settings(columns=columns).columns["company_name"] == ((company,),)
     page.click("[data-add='Name']")  # a feature of their own: named, what it is, its script
     page.fill(".addform input", "Kanji name")
     page.select_option(".addform select >> nth=1", "kanji")
     page.click(".addform .btn.filled")
     assert page.get_attribute("#out", "inert") is not None and page.inner_text(".addform .btn.filled") == "Adding…"  # the page waits for its new shape
-    page.wait_for_selector(".drop[data-slot='Name/Kanji name/Family name']")  # with its parts
-    assert "person_name_2" in columns.read_text(encoding="utf-8") and "kanji" in page.inner_text(".frow:has(.drop[data-slot='Name/Kanji name'])")
+    page.wait_for_selector(".feat[data-slot='Name/Kanji name/Family name']")  # with its parts
+    assert "person_name_2" in columns.read_text(encoding="utf-8") and "kanji" in page.inner_text(".feat[data-slot='Name/Kanji name']")
     page.click("[data-remove='Name/Kanji name']")
-    page.wait_for_function("() => !document.querySelector(\".drop[data-slot='Name/Kanji name']\")")
+    page.wait_for_function("() => !document.querySelector(\".feat[data-slot='Name/Kanji name']\")")
     assert "person_name_2" not in columns.read_text(encoding="utf-8")
     page.click(".navitem[data-screen=columns]")
     page.wait_for_selector("#files .tag", state="attached")  # its description starts now
@@ -246,9 +246,9 @@ def test_step_2_shows_each_change_at_once_writes_them_in_turn_and_a_refused_one_
     page.click("#out [data-suggest='*']", timeout=60_000)
     page.click("#out [data-keepall='*']")  # every suggestion kept, in one write
     saved()
-    assert not page.query_selector("#out .banner.bad, #out .need, .drop[data-slot] .colchip.ghost") and columns()["phone"]
+    assert not page.query_selector("#out .banner.bad, #out .need, .feat[data-slot] .colchip.ghost") and columns()["phone"]
     page.evaluate("document.querySelectorAll('details.fgroup').forEach((g) => g.open = true)")
-    slot, phone = ".drop[data-slot='Phone/Phone']", columns()["phone"][0][0]
+    slot, phone = ".feat[data-slot='Phone/Phone']", columns()["phone"][0][0]
     other = next(c for c in named.values() if c != phone)
     posted.clear()
     page.click(f"{slot} .colchip.in")  # a column clicked: the file's columns in a list, its own chosen
@@ -266,15 +266,35 @@ def test_step_2_shows_each_change_at_once_writes_them_in_turn_and_a_refused_one_
     page.click(f"{slot} .colchip.in[data-col='{phone}'] [data-x]")  # two quick changes: written in turn
     saved()
     assert columns()["phone"] == () and page.inner_text(f"{slot} .hole") == "choose a column"
-    page.click("details.tray > summary")
-    page.locator(f"details.tray .colchip[data-col='{phone}']").drag_to(page.locator(f".frow:has({slot}) .flab"))  # by mouse, onto the row's name
+    page.locator(f"details.tray .colchip[data-col='{phone}']").drag_to(page.locator(f"{slot} .flab"))  # by mouse, from the other columns onto the feature's name
     saved()
     assert columns()["phone"] == ((phone,),)
     page.focus(f"{slot} .colchip.in [data-x]")
     page.keyboard.press("Enter")  # × by keyboard: taken off, no list
     saved()
     assert columns()["phone"] == () and not page.query_selector(f"{slot} select")
-    page.click("#loaded summary")  # another file, and a change made while it loads: shown as written, never the reading from before it
+    assert cli.main(["set", "feature", f"Phone/Phone={phone},{other}", "--workspace", str(ws), "--format", "json"]) == 0
+    page.evaluate("go('columns')")
+    page.wait_for_selector(f"{slot} .mrow[data-alt='1']", state="attached", timeout=60_000)
+    page.evaluate("document.querySelectorAll('details.fgroup').forEach((g) => g.open = true)")
+    page.focus(f"{slot} .mrow[data-alt='1']")
+    page.keyboard.press("Alt+ArrowUp")  # read first now, the keyboard staying on it as the file is described again
+    saved()
+    assert columns()["phone"] == ((other,), (phone,)) and page.evaluate("document.activeElement.dataset.cols") == other
+    page.fill("#mfind", other)  # one search, every group: the rows holding it
+    assert {r.get_attribute("data-cols") for r in page.locator("#mlist .mrow[data-cols]:visible").all()} == {other}
+    page.fill("#mfind", "")
+    drop = lambda what, onto, y: page.evaluate(f"""() => {{  // the drag as the browser fires it, let go at its height in the row
+        const dt = new DataTransfer(), to = document.querySelector("{onto}"), b = to.getBoundingClientRect(), at = {{dataTransfer: dt, bubbles: true, cancelable: true, clientY: b.top + b.height * {y}}};
+        document.querySelector("{what}").dispatchEvent(new DragEvent("dragstart", {{dataTransfer: dt, bubbles: true}}));
+        to.dispatchEvent(new DragEvent("dragover", at)); to.dispatchEvent(new DragEvent("drop", at)); }}""")
+    drop(f"{slot} .mrow[data-alt='1']", f"{slot} .mrow[data-alt='0']", 0.5)  # onto the middle of a row: joined to it
+    saved()
+    assert columns()["phone"] == ((other, phone),)
+    drop(f"{slot} .mrow[data-alt='0']", "#mlist .tray > summary", 0.5)  # down among the other columns: taken off
+    saved()
+    assert columns()["phone"] == () and page.locator(f"#mlist .tray .mrow[data-cols='{phone}']").count() == 1
+    page.click("#another > summary")  # another file, and a change made while it loads: shown as written, never the reading from before it
     g.df.rename(columns=named).head(50).to_parquet(tmp_path / "more.parquet", index=False)
     page.fill("#cin", str(tmp_path / "more.parquet"))
     page.click("#load")
@@ -297,13 +317,13 @@ def test_step_2_shows_each_change_at_once_writes_them_in_turn_and_a_refused_one_
     assert not page.query_selector(".addform") and page.query_selector("[data-add='Name']") and not posted  # nothing to undo: nothing runs
     assert cli.main(["add", "feature", "Name/Kanji name", "--type", "person name", "--script", "kanji", "--workspace", str(ws), "--format", "json"]) == 0
     page.evaluate("go('columns')")
-    page.wait_for_selector(".drop[data-slot='Name/Kanji name'] .hole", state="attached")
+    page.wait_for_selector(".feat[data-slot='Name/Kanji name'] .hole", state="attached")
     page.evaluate("document.querySelector(\"details.fgroup[data-g='Name']\").open = true")
     assert cli.main(["remove", "feature", "Name/Kanji name", "--workspace", str(ws), "--format", "json"]) == 0  # gone since the page showed it
-    page.click(".drop[data-slot='Name/Kanji name'] .hole")
-    page.select_option(".drop[data-slot='Name/Kanji name'] select", other)
+    page.click(".feat[data-slot='Name/Kanji name'] .hole")
+    page.select_option(".feat[data-slot='Name/Kanji name'] select", other)
     saved()
-    assert "no feature Name/Kanji name" in page.inner_text("#out .banner.bad") and not page.query_selector(".drop[data-slot='Name/Kanji name']")  # refused: why, and the workspace as it is
+    assert "no feature Name/Kanji name" in page.inner_text("#out .banner.bad") and not page.query_selector(".feat[data-slot='Name/Kanji name']")  # refused: why, and the workspace as it is
     assert cli.main(["set", "feature", f"Phone/Phone={phone},{other}", "--workspace", str(ws), "--format", "json"]) == 0
     reopen()
     page.evaluate(f"""() => {{  // two changes, and the page left while the first is written: the second is still written
@@ -451,7 +471,7 @@ def test_step_2_says_what_a_column_holds_instead_and_its_button_sets_it_right(ui
     page.click(".navitem[data-screen=columns]")
     page.fill("#cin", str(tmp_path / "shared.parquet"))
     page.click("#load")
-    row = lambda slot: f".frow:has(.drop[data-slot='{slot}'])"
+    row = lambda slot: f".feat[data-slot='{slot}']"
     page.wait_for_selector(f"{row('Name/Company name')} .fhint", timeout=60_000)
     assert "people's names" in page.inner_text(f"{row('Name/Company name')} .fhint") and not page.inner_text(f"{row('Name/Company name')} .fwarn")  # said once, under it
     assert "look like postal code" in page.inner_text(f"{row('Phone/Phone')} .fhint")
@@ -732,14 +752,14 @@ def test_the_page_keeps_its_step_through_back_reload_and_a_run_and_says_what_was
     phone = s.columns["phone"][0][0]
     assert main(["set", "columns", "phone=", "--workspace", str(tmp_path / "workspaces" / "w")]) == 0  # an empty slot
     page.click(".navitem[data-screen=columns]")
-    page.wait_for_selector(".drop[data-slot*='hone'] .hole", state="attached", timeout=60_000)
-    group = page.query_selector("details.fgroup:has(.drop[data-slot*='hone'] .hole)")
+    page.wait_for_selector(".feat[data-slot*='hone'] .hole", state="attached", timeout=60_000)
+    group = page.query_selector("details.fgroup:has(.feat[data-slot*='hone'] .hole)")
     if not group.get_attribute("open"):
         group.query_selector("summary").click()  # its group, opened
-    hole = page.wait_for_selector(".drop[data-slot*='hone'] .hole")
+    hole = page.wait_for_selector(".feat[data-slot*='hone'] .hole")
     hole.focus()
     page.keyboard.press("Enter")  # by keyboard: the file's columns in a list
-    page.select_option(".drop select", phone)
+    page.select_option(".feat select", phone)
     page.wait_for_selector("#out:not([aria-busy]) details.fgroup", state="attached", timeout=30_000)
     assert phone in (tmp_path / "workspaces" / "w" / "columns.toml").read_text(encoding="utf-8").split("phone =", 1)[1].split("\n", 1)[0]  # saved
 
@@ -912,8 +932,8 @@ def test_step_2_generates_synthetic_records_by_size_and_difficulty_once_per_clic
     page.wait_for_selector("#loaded .answer:has-text('10,000 records')", timeout=120_000)
     assert [x for x in posted if x["command"] == "generate records"] == [{"command": "generate records", "args": {"records": "10000", "difficulty": "hard", "workspace": str(ws)}}]
     assert "synthetic-hard-10000.parquet · 10,000 records" in page.inner_text("#loaded") and page.is_visible("#loaded [data-go=run]")
-    page.click("#loaded details.fold-line > summary")  # Load another file: synthetic records there too
-    page.click("#loaded #synth > summary")
+    page.click("#another > summary")  # Load another file: synthetic records there too
+    page.click("#synth > summary")
     assert not page.is_disabled("#gen") and not page.is_disabled("#load")
     page.select_option("#gsize", "10000")
     page.select_option("#glevel", "hard")
@@ -922,7 +942,7 @@ def test_step_2_generates_synthetic_records_by_size_and_difficulty_once_per_clic
     assert len(folder.parts(ws)) == 1 and not page.query_selector("#out .banner.bad")  # the same records: held already, nothing copied
     free = "() => { const b = document.querySelector('#gen'); return b && !b.disabled && b.textContent === 'Generate'; }"
     for size, level in (("1000", "easy"), ("10000", "hard")):  # another, then the first again: held already, and the one a run reads
-        page.evaluate("document.querySelectorAll('#loaded details').forEach((d) => { d.open = true; })")
+        page.evaluate("document.querySelectorAll('#more details').forEach((d) => { d.open = true; })")
         page.select_option("#gsize", size)
         page.select_option("#glevel", level)
         page.click("#gen")
