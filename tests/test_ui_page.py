@@ -1234,3 +1234,38 @@ def test_a_file_dropped_on_a_card_or_chosen_is_sent_and_loaded_and_the_line_betw
     page.reload()
     page.wait_for_selector("#dlist .drow.on", timeout=60_000)
     assert wider > before + 150 and abs(page.locator("#details").bounding_box()["width"] - wider) < 8 and not errors  # the next visit too
+
+
+def test_a_file_shows_its_columns_as_it_is_read_then_its_first_rows_then_the_whole_of_it(ui_page, tmp_path, fake_cli):
+    from er import cli
+    uid = load_settings().data.unique_id
+    rows = [f"{uid},FULL_NAME_KANA,TEL"] + [f"{i:04d},ヤマダタロウ,{1000 + i}" for i in range(30)]
+    (tmp_path / "r.csv").write_text("\n".join(rows) + "\n", encoding="utf-8")
+    home, ws = tmp_path / "workspaces", tmp_path / "workspaces" / "w"
+    assert cli.main(["create", "workspace", "w", "--home", str(home), "--format", "json"]) == 0
+    fake_cli(f"""import er.cli as cli
+real = cli.Emit.line
+def line(self, text, **data):  # the real load, held after each thing it says early until the test lets it go on
+    real(self, text, **data)
+    if "early" in data:
+        go = os.path.join({str(tmp_path)!r}, "go1" if data["early"]["records"] is None else "go2")
+        while not os.path.exists(go):
+            time.sleep(0.05)
+cli.Emit.line = line
+sys.exit(cli.main(sys.argv[1:]))
+""")
+    page, server, httpd = ui_page(str(ws), str(home), viewport={"width": 1280, "height": 900})
+    errors = []
+    page.on("pageerror", lambda e: errors.append(str(e)))
+    page.click(".navitem[data-screen=columns]")
+    page.fill("#cin", str(tmp_path / "r.csv"))
+    page.click("#load")
+    page.wait_for_selector("#out[data-reading='reading…'] #mlist", timeout=60_000)  # its columns' names, before any value is read
+    assert page.get_attribute("#out", "inert") is not None and page.inner_text("#out .colhead .reading") == "reading…"
+    assert not page.inner_text("#mlist .fgroup[data-g='ID'] .gstat")  # nothing found yet, nothing missing yet
+    (tmp_path / "go1").touch()
+    page.wait_for_selector("#out[data-reading^='from the first'] #mlist", timeout=60_000)  # each column's share filled in its first rows
+    assert page.inner_text("#mlist .fgroup[data-g='ID'] .gstat") == "1 of 2 found" and page.get_attribute("#out", "inert") is not None
+    (tmp_path / "go2").touch()
+    page.wait_for_selector("#loaded .answer:has-text('30 records')", timeout=60_000)  # the whole of it: changes allowed again
+    assert page.get_attribute("#out", "data-reading") is None and page.get_attribute("#out", "inert") is None and not errors
