@@ -927,6 +927,49 @@ def test_step_2_generates_synthetic_records_by_size_and_difficulty_once_per_clic
     assert len(folder.parts(ws)) == 2 and "synthetic-hard-10000.parquet" in page.inner_text("#out")  # the file given last, not the newest copy
 
 
+def test_a_details_file_shows_above_each_record_people_review_every_row_and_the_columns_chosen(ui_page, tmp_path, population):
+    from er import cli
+    s, p, g = population
+    uid = s.data.unique_id
+    g.df.to_parquet(tmp_path / "all.parquet", index=False)
+    home, ws = tmp_path / "workspaces", tmp_path / "workspaces" / "w"
+    assert cli.main(["create", "workspace", "w", "--home", str(home), "--format", "json"]) == 0
+    assert cli.main(["resolve", "records", str(tmp_path / "all.parquet"), "--workspace", str(ws), "--format", "json"]) == 0
+    given = pd.DataFrame([{uid: int(i), "PLAN": f"plan {i}-{k}", "NOTE": "not shown"} for n, i in enumerate(g.df[uid]) for k in range(n % 3 + 1)])  # a number key, 1 to 3 rows each
+    given.to_parquet(tmp_path / "contracts.parquet", index=False)
+    plans = lambda i: list(given.loc[given[uid] == int(i), "PLAN"])
+    page, server, httpd = ui_page(str(ws), str(home), viewport={"width": 1280, "height": 900})
+    page.click(".navitem[data-screen=columns]")
+    page.wait_for_selector("#din")
+    assert page.inner_text("#details .answer") == "Nothing else yet"
+    page.fill("#din", str(tmp_path / "contracts.parquet"))
+    page.click("#dload")
+    page.wait_for_selector("#dcols [data-col=NOTE][aria-pressed=true]", timeout=60_000)
+    assert "100% of records have some · 2 of 2 columns shown" in page.inner_text("#details .answer")
+    page.click("#dcols [data-col=NOTE]")  # not shown to reviewers
+    page.wait_for_function("() => document.querySelector('#details .answer').innerText.includes('1 of 2 columns shown')", timeout=30_000)
+
+    page.click(".navitem[data-screen=pairs]")
+    page.wait_for_selector("#right .details-of", timeout=60_000)
+    pair = page.locator("#right .fullrows thead th").all_inner_texts()[1:3]
+    blocks = page.locator("#right .details-of > div")
+    assert blocks.count() == 2 and page.locator("#right .det-box + .fullrows").count() == 1  # above the full rows
+    for k, i in enumerate(pair):  # each record's own rows, every one, the column turned off left out
+        b = blocks.nth(k)
+        assert i in b.locator(".fr-head").inner_text() and b.locator("thead th").all_inner_texts() == ["PLAN"]
+        assert b.locator("tbody td").all_inner_texts() == plans(i)
+
+    page.evaluate("location.hash = '#kinds'")  # a record asked person or company: its rows too
+    page.wait_for_selector("#right .details-of", timeout=60_000)
+    asked = page.locator("#right .details-of .fr-head").inner_text()
+    assert page.locator("#right .details-of tbody td").all_inner_texts() == plans(re.search(r"\d+", asked.split("\n")[-1]).group())
+
+    one = str(g.df[uid].iloc[4])
+    page.evaluate(f"go('results', {{tab: 'records', record: {json.dumps(one)}}})")  # Explore's one record
+    page.wait_for_selector("#rec .details-of", timeout=60_000)
+    assert page.locator("#rec .details-of > div").count() == 1 and page.locator("#rec .details-of tbody td").all_inner_texts() == plans(one)
+
+
 def test_a_command_the_server_started_without_says_start_it_again_and_frees_its_buttons(ui_page, tmp_path, monkeypatch):
     from er import cli, folder, ui
     home, ws = tmp_path / "workspaces", tmp_path / "workspaces" / "w"

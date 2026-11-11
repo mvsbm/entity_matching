@@ -139,6 +139,9 @@ tbody tr[aria-selected="true"] { background: var(--sel); color: var(--sel-ink); 
 .fullrows td.col { font: 12px ui-monospace, Menlo, monospace; color: var(--muted); }
 .fullrows tr.fr-different td { background: color-mix(in srgb, var(--bad-bg) 45%, transparent); }
 .fullrows .tablewrap { max-height: 56vh; }
+.details-of { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 12px; margin: 14px 0; }  /* a pair's side by side; stacked when narrow */
+.details-of .tablewrap { max-height: 300px; }  /* about 8 rows, then it scrolls */
+#dcols .chip { border: 0; cursor: pointer; } #dcols .chip[aria-pressed="true"] { background: var(--sel); color: var(--sel-ink); }
 .fullrows table { min-width: 560px; } .fullrows td.col { white-space: nowrap; }  /* a narrow screen scrolls the rows sideways: a column's name stays whole */
 .cond { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 8px; margin-bottom: 8px; }
 .cond select, .cond input { font: inherit; padding: 6px 8px; border: 1px solid var(--outline); border-radius: 6px; background: var(--surface); color: var(--ink); }
@@ -591,13 +594,15 @@ body.term-open .tray { bottom: var(--term-h); }  /* above the command drawer */
    "uses": [{"command": "load records", "args": {"input": "@input", "workspace": "@workspace"}, "reads": ["records", "columns", "slots", "features", "placements", "offers", "fields", "needed", "turned_off", "read", "loaded"]},
             {"command": "describe records", "args": {"input": "@loaded", "workspace": "@workspace"}, "reads": ["records", "columns", "slots", "features", "placements", "offers", "fields", "needed", "turned_off", "read"]},
             {"command": "generate records", "args": {"records": "@records", "difficulty": "@difficulty", "workspace": "@workspace"}, "reads": ["records", "columns", "slots", "features", "placements", "offers", "fields", "needed", "turned_off", "read", "loaded"]},
+            {"command": "load details", "args": {"file": "@details_file", "key": "@details_key", "workspace": "@workspace"}, "reads": ["file", "rows", "ids", "unkeyed", "key", "columns", "shown", "linked", "records"]},
+            {"command": "set details", "args": {"columns": "@details_shown", "workspace": "@workspace"}, "reads": ["file", "rows", "key", "columns", "shown", "linked", "records"]},
             {"command": "accept repairs", "args": {"kind": "@kind", "part": "@part", "workspace": "@workspace"}, "form": [], "reads": ["repaired", "added", "read"]},
             {"command": "set feature", "args": {"mapping": "@mapping", "workspace": "@workspace"}, "reads": ["slots"]},
             {"command": "set names", "args": {"how": "@how", "workspace": "@workspace"}, "reads": ["names", "mapping"]},
             {"command": "set preparation", "args": {"mapping": "@mapping", "workspace": "@workspace"}, "reads": ["columns"]},
             {"command": "add feature", "args": {"path": "@path", "type": "@type", "script": "@script", "column": "@column", "workspace": "@workspace"}, "reads": ["slots"]},
             {"command": "remove feature", "args": {"path": "@path", "workspace": "@workspace"}, "reads": ["slots"]},
-            {"command": "describe workspace", "args": {"workspace": "@workspace"}, "reads": ["inputs"]},
+            {"command": "describe workspace", "args": {"workspace": "@workspace"}, "reads": ["inputs", "details"]},
             {"command": "describe matching", "args": {"workspace": "@workspace"}, "reads": ["nodes"]}]},
   {"id": "run", "title": "Find matches", "icon": "run", "what": "Rules settle the certain pairs; the rest are listed, scored and accepted at the line; linked records become one entity.",
    "strip": ["records", "rules", "candidates", "score", "accept", "group"],
@@ -615,6 +620,7 @@ body.term-open .tray { bottom: var(--term-h); }  /* above the command drawer */
    "strip": ["score", "accept", "group"],
    "uses": [{"command": "list scored", "args": {"workspace": "@workspace", "status": "@status", "from": "@from", "to": "@to", "source": "@source", "record": "@record", "page": "@page", "count": "@count"}, "reads": ["total", "typed", "page", "count", "pairs"]},
             {"command": "show records", "args": {"ids": "@ids", "workspace": "@workspace"}, "reads": ["columns", "records"]},
+            {"command": "show details", "args": {"ids": "@ids", "workspace": "@workspace"}, "reads": ["file", "columns", "records"]},
             {"command": "describe results", "args": {"workspace": "@workspace"}, "reads": ["records", "entities", "joined", "sizes", "scores", "candidates", "review_from", "waiting", "pairs", "merged_by", "merging", "missed", "too_big", "kinds"]},
             {"command": "describe workspace", "args": {"workspace": "@workspace"}, "reads": ["records", "pairs"]},
             {"command": "decide pair", "args": {"first": "@first", "second": "@second", "decision": "@decision", "workspace": "@workspace"}, "reads": ["decision"]},
@@ -643,6 +649,7 @@ body.term-open .tray { bottom: var(--term-h); }  /* above the command drawer */
             {"command": "explain pair", "args": {"first": "@first", "second": "@second", "workspace": "@workspace"}, "reads": ["weight", "prior", "pairs_all", "pairs_same", "common", "same_customer", "records", "comparisons", "tests", "found", "group_a", "group_b", "across"]},
             {"command": "compare records", "args": {"first": "@first", "others": "@others", "workspace": "@workspace"}, "reads": ["first", "records", "candidates"]},
             {"command": "list kinds", "args": {"workspace": "@workspace", "pending": true}, "reads": ["kinds", "counts"]},
+            {"command": "show details", "args": {"ids": "@ids", "workspace": "@workspace"}, "reads": ["file", "columns", "records"]},
             {"command": "describe workspace", "args": {"workspace": "@workspace"}, "reads": ["records", "inputs"]},
             {"command": "answer kind", "args": {"id": "@id", "kind": "@kind", "workspace": "@workspace"}, "reads": ["kind"]},
             {"command": "apply answers", "args": {"workspace": "@workspace", "compute": "@compute"}, "form": [], "reads": ["summary"]},
@@ -652,6 +659,7 @@ body.term-open .tray { bottom: var(--term-h); }  /* above the command drawer */
    "uses": [{"command": "list scored", "args": {"workspace": "@workspace", "status": "@status", "from": "@from", "to": "@to", "source": "@source", "record": "@record", "page": "@page", "count": "@count"}, "reads": ["total", "page", "count", "pairs"]},
             {"command": "list entities", "args": {"workspace": "@workspace", "smallest": "@smallest", "record": "@record", "page": "@page", "count": "@count"}, "reads": ["total", "page", "count", "entities"]},
             {"command": "show records", "args": {"ids": "@ids", "workspace": "@workspace"}, "reads": ["columns", "records"]},
+            {"command": "show details", "args": {"ids": "@ids", "workspace": "@workspace"}, "reads": ["file", "columns", "records"]},
             {"command": "describe results", "args": {"workspace": "@workspace"}, "reads": ["records", "entities", "joined", "sizes", "scores", "candidates", "review_from", "waiting", "pairs", "merged_by", "merging", "missed", "too_big", "kinds"]},
             {"command": "describe workspace", "args": {"workspace": "@workspace"}, "reads": ["records"]},
             {"command": "describe entity", "args": {"id": "@id", "workspace": "@workspace"}, "reads": ["record", "entity", "size", "records", "links"]},
@@ -1695,7 +1703,7 @@ const RUN_STEPS = ["load", "budget", "fit", "rules", "candidates", "score", "clu
 const STEPS_OF = {"add records": ["load", "fit", "rules", "candidates", "score", "cluster", "report", "write"],  // an increment's: no plan, no probe
                   "match records": ["load", "fit", "rules", "candidates", "score", "cluster"]};  // a preview writes nothing
 const BUSY = {"resolve records": "Finding matches", "rerun records": "Matching again", "add records": "Adding the new records", "match records": "Previewing the new records",
-              "load records": "Loading your file", "generate records": "Generating records", "accept repairs": "Accepting the repairs", "try everything": "Auto mode", "try method": "Trying a method",
+              "load records": "Loading your file", "generate records": "Generating records", "load details": "Loading the details file", "accept repairs": "Accepting the repairs", "try everything": "Auto mode", "try method": "Trying a method",
               "set merging": "Rebuilding the entities", "apply answers": "Matching again with your answers"};
 const DOING = {load: "reading the records", budget: "planning the work", fit: "learning what matches look like", rules: "applying the match rules",
                candidates: "listing pairs to compare", score: "scoring the pairs", cluster: "forming entities", probe: "looking for matches it missed",
@@ -1798,8 +1806,21 @@ const JOINED = {you: "you", model: "the model", rule: "a rule"};  // describe re
 
 // Both or more records' full rows side by side, every column of the file, the different ones first; a column that a
 // comparison reads says how it was compared (explain pair's tests): method, score against its threshold, step, points.
+async function detailsOf(box, got) {  // each record's rows in the details file, above it; none loaded, or no column shown: nothing
+  const d = await got;
+  if (!box.isConnected) return;
+  if (d.event === "error") { box.innerHTML = banner(d); return; }
+  if (!d.file || !d.columns.length) { box.innerHTML = ""; return; }
+  const name = esc(d.file.replace(/\.parquet$/i, ""));
+  box.innerHTML = `<div class="details-of">${d.records.map((r) => `<div><div class="fr-head"><b>${name}</b><span class="muted">${esc(r.id)} · ${r.total
+      ? `${plural(r.total, "row")}${r.total > r.rows.length ? ` · the first ${fmt(r.rows.length)}` : ""}` : `none in ${esc(d.file)}`}</span></div>${!r.rows.length ? ""
+      : `<div class="tablecard"><div class="tablewrap"><table><thead><tr>${d.columns.map((c) => `<th>${esc(c)}</th>`).join("")}</tr></thead><tbody>${r.rows.map((v) => `<tr>${
+        v.map((x) => x === null || x === "" ? '<td class="faint">—</td>' : `<td class="wrap">${esc(x)}</td>`).join("")}</tr>`).join("")}</tbody></table></div></div>`}</div>`).join("")}</div>`;
+}
+
 async function fullRows(box, page, ids, x = null) {
   box.innerHTML = loading("Reading their rows");
+  const det = run(page, "show details", {ids});  // read beside the rows, only the rows of these records
   const d = await run(page, "show records", {ids});
   if (!box.isConnected) return;
   if (d.event === "error") { box.innerHTML = banner(d); return; }
@@ -1820,7 +1841,7 @@ async function fullRows(box, page, ids, x = null) {
   const counts = {same: 0, different: 0, empty: 0};
   rows.forEach((r) => counts[r.kind]++);
   const state = {only: false, hideEmpty: false, order: false, find: ""};
-  box.innerHTML = `<div class="fullrows"><div class="fr-head"><b>${one ? "Its full row" : recs.length > 2 ? `${recs.length} records' full rows` : "Their full rows"}</b>
+  box.innerHTML = `<div class="det-box"></div><div class="fullrows"><div class="fr-head"><b>${one ? "Its full row" : recs.length > 2 ? `${recs.length} records' full rows` : "Their full rows"}</b>
       <span class="muted">${one ? `${fmt(cols.length)} columns · ${fmt(counts.same)} filled` : `${fmt(cols.length)} columns: <span class="ink-good">${fmt(counts.same)} the same</span> · <span class="ink-bad">${fmt(counts.different)} different</span> · ${fmt(counts.empty)} empty on one side or both`}</span></div>
     ${one ? "" : seg([[counts.same, "var(--good)", "same"], [counts.different, "var(--bad)", "different"], [counts.empty, "var(--line)", "empty"]])}
     <div class="fr-tools"><label class="find">${icon("search")}<input type="text" placeholder="Find a column" aria-label="Find a column"></label>
@@ -1836,6 +1857,7 @@ async function fullRows(box, page, ids, x = null) {
         ? '<td class="faint">—</td>' : `<td class="wrap">${k && r.kind === "different" ? highlight(r.v[0], s)[1] : r.kind === "different" && r.v[1] ? highlight(s, r.v[1])[0] : esc(s)}</td>`).join("")}
       <td class="wrap faint">${esc(how(r.c))}</td></tr>`).join("") || `<tr><td colspan="${recs.length + 2}" class="faint">No column shown</td></tr>`;
   };
+  detailsOf(box.querySelector(".det-box"), det);
   box.querySelector(".fr-tools input[type=text]").oninput = (e) => { state.find = e.target.value.trim(); draw(); };
   box.querySelectorAll("[data-t]").forEach((c) => c.onchange = () => { state[c.dataset.t] = c.checked; draw(); });
   draw();
@@ -2186,7 +2208,7 @@ const SCREENS = {
           <button class="btn" id="gen">Generate</button></span></div>
         <div id="files" class="chips" style="margin-top:10px"></div>`;
     el.innerHTML = head("columns") + `<div class="card" id="loaded"><div class="qa"><div class="q"><h2 class="question">Which file holds your records?</h2></div></div>${box}</div>
-      <div id="repairs"></div><div id="watch"></div><div id="out"></div><div id="flow"></div>${stepFoot("columns")}`;
+      <div id="repairs"></div><div id="watch"></div><div id="details"></div><div id="out"></div><div id="flow"></div>${stepFoot("columns")}`;
     if (!state.workspace) { $("loaded").remove(); $("out").innerHTML = emptyRun(); return; }  // a file goes into a workspace: choose one first
     const answer = (d, w, last) => {  // did the file load? then what may hurt the matching
       const lost = (f) => { const x = d.fields.find((y) => y.field === f); return !x || x.filled === null; };
@@ -2230,6 +2252,8 @@ const SCREENS = {
     const show = (d) => {
       $("out").inert = false;
       held = null;
+      const id = d.event !== "error" && (d.fields || []).find((x) => x.field === "id");
+      if (id && id.sources[0] && $("dkey")) $("dkey").placeholder = id.sources[0][0];  // a details file is found by the records' ID column unless told
       if (d.event !== "error" && last) answer(d, w, last);
       $("out").innerHTML = d.event === "error" ? banner(d) : features(d, view);
       if (d.event !== "error") wire(d);
@@ -2241,6 +2265,7 @@ const SCREENS = {
         const got = await here(Promise.all([run("columns", "describe workspace"), flowOf("columns", $("flow"))]));
         if (!got) return;
         [w] = got;
+        detailsCard(w.details);
         const files = w.inputs || [];
         last = lastFile(w);
         $("files").innerHTML = files.map((f) => `<span class="tag" title="${esc(f.path)}">${esc(nameOf(f))} · ${bytes(f.bytes)} · ${f.read ? "matched" : "not run yet"}</span>`).join("");
@@ -2384,26 +2409,55 @@ const SCREENS = {
         row.querySelector("[data-cancel]").onclick = () => held ? show(held) : redraw(d);
       });
     };
-    const wireLoad = () => {
-      const both = () => [$("load"), $("gen")].filter(Boolean);
-      const take = async (b, doing, what, command, args, done) => {  // either way the same result, drawn the same
-        const was = b.innerHTML, at = edits;
-        longRun = {command, visit, page: "columns", workspace: state.workspace, args}; both().forEach((x) => { x.disabled = true; });  // as step 3's run: ended() frees them, here or on step 2 drawn again
-        b.innerHTML = `${spinner()}${doing}…`;  // a big file takes minutes: how far, and how long is left, in the panel
-        if (!$("out").querySelector(".fgroup")) $("out").innerHTML = `<div class="card waiting">${spinner()}${doing} ${esc(what)}…</div>`;
-        const e = await run("columns", command, args);
-        if (longRun?.command === command) longRun = null;
-        both().forEach((x) => { x.disabled = false; });
-        if (b.isConnected) b.innerHTML = was;
-        if (e.event === "error") {  // the mapping stays: the refusal above it
-          $("out").querySelectorAll(":scope > .banner, :scope > .waiting").forEach((x) => x.remove());
-          $("out").insertAdjacentHTML("afterbegin", banner(e));
-          return;
-        }
-        done?.();
-        draw(at === edits ? e : undefined);  // a change made while it loaded: the file described after it
-        refresh();
+    const both = () => [$("load"), $("gen"), $("dload")].filter(Boolean);  // one long command at a time, whichever button
+    const take = async (b, doing, what, command, args, done) => {  // either way the same result, drawn the same
+      const was = b.innerHTML, at = edits, records = command !== "load details", into = records ? $("out") : $("details");
+      longRun = {command, visit, page: "columns", workspace: state.workspace, args}; both().forEach((x) => { x.disabled = true; });  // as step 3's run: ended() frees them, here or on step 2 drawn again
+      b.innerHTML = `${spinner()}${doing}…`;  // a big file takes minutes: how far, and how long is left, in the panel
+      if (records && !$("out").querySelector(".fgroup")) $("out").innerHTML = `<div class="card waiting">${spinner()}${doing} ${esc(what)}…</div>`;
+      const e = await run("columns", command, args);
+      if (longRun?.command === command) longRun = null;
+      both().forEach((x) => { x.disabled = false; });
+      if (b.isConnected) b.innerHTML = was;
+      if (e.event === "error") {  // the mapping stays: the refusal above it
+        into.querySelectorAll(":scope > .banner, :scope > .waiting").forEach((x) => x.remove());
+        into.insertAdjacentHTML("afterbegin", banner(e));
+        return;
+      }
+      done?.();
+      draw(records && at === edits ? e : undefined);  // a change made while it loaded: the file described after it; a details file's result describes no records
+      refresh();
+    };
+    const detailsLine = (dt) => `<b>${esc(dt.file)}</b> · ${plural(dt.rows, "row")}${dt.records ? ` · ${pct(dt.linked / dt.records)} of records have some` : ""} · ${fmt(dt.shown.length)} of ${fmt(dt.columns.length - 1)} columns shown`;
+    let drawnDetails;  // the details card as last drawn: drawn again only when it changed, so a path being typed stays
+    const detailsCard = (dt) => {  // the details file people see above each record: which, how many records it reaches, which columns
+      if (JSON.stringify(dt) === drawnDetails || !$("details")) return;
+      drawnDetails = JSON.stringify(dt);
+      const load = `<label class="field" style="margin:12px 0 0"><span class="lab">Details file</span><span class="loadrow"><input type="text" id="din" placeholder="a Parquet file, or a folder of them">
+          <input type="text" id="dkey" aria-label="Its column of record IDs" placeholder="${esc($("dkey")?.placeholder || "ID column")}" style="flex:0 0 150px"><button class="btn" id="dload">Load</button></span></label>`;
+      $("details").innerHTML = `<div class="card"><div class="qa"><div class="q"><h2 class="question">What do reviewers see beside each record?</h2><p class="answer">${!dt ? "Nothing else yet" : detailsLine(dt)}</p></div></div>
+        ${dt ? `<div class="chips" id="dcols">${dt.columns.filter((c) => c.column !== dt.key).map((c) => `<button type="button" class="chip" aria-pressed="${dt.shown.includes(c.column)}" data-col="${esc(c.column)}"
+          title="${pct(c.filled)} filled${c.example ? ` · ${esc(c.example)}` : ""}">${esc(c.column)}</button>`).join("")}</div>
+          <details class="fold-line"><summary>Load another details file</summary>${load}</details>` : load}</div>`;
+      $("dload").onclick = () => {
+        const file = $("din").value.trim();
+        if (!file) { $("din").focus(); return; }
+        take($("dload"), "Reading", baseName(file), "load details", {details_file: file, details_key: $("dkey").value.trim()});
       };
+      $("din").onkeydown = (e) => { if (e.key === "Enter" && !e.isComposing) $("dload").click(); };
+      $("dcols")?.querySelectorAll("[data-col]").forEach((c) => c.onclick = () => {
+        c.setAttribute("aria-pressed", String(c.getAttribute("aria-pressed") !== "true"));
+        queue(async () => {  // in turn, each sending the chips as they are then: the last click wins
+          const r = await run("columns", "set details", {details_shown: [...$("dcols").querySelectorAll("[aria-pressed=true]")].map((x) => x.dataset.col)});
+          if (r.event === "error") { $("details").querySelector(".banner")?.remove(); $("details").insertAdjacentHTML("afterbegin", banner(r)); drawnDetails = null; return; }
+          drawnDetails = JSON.stringify(r);
+          $("details").querySelector(".answer").innerHTML = detailsLine(r);
+        });
+      });
+      if (longRun) both().forEach((x) => { x.disabled = true; });
+      if (longRun?.page === "columns" && longRun.command === "load details") { $("din").value = longRun.args.details_file; $("dkey").value = longRun.args.details_key || ""; $("dload").innerHTML = `${spinner()}Reading…`; $("details").querySelector("details")?.setAttribute("open", ""); }
+    };
+    const wireLoad = () => {
       $("load").onclick = () => {
         const input = $("cin").value.trim();
         if (!input) { $("cin").focus(); return; }
@@ -3629,6 +3683,7 @@ function kindCard(r, at, of) {  // the name; what the engine thinks of it, and w
   const why = r.why === "measure" ? `${thinks} This record was drawn at random to check it.` : `${thinks} ${esc(r.reason || "")}`;
   return `<div class="card one">${cardHead(r, at, of, "answered", ["person", "This record", "Person or company?"], why)}<div class="big">${esc(r.name)}</div>
     <div class="chips" style="margin-top:8px">${["flag", "birth_date"].filter((k) => k in r && r[k] !== null).map((k) => `<span class="tag">${esc(words(k))}: ${esc(r[k])}</span>`).join("")}</div>
+    <div class="det-box" data-id="${esc(r.id)}" style="margin-top:12px"></div>
     <div class="actions"><button class="btn outlined" data-a="person">${icon("person")}Person</button><button class="btn outlined" data-a="company">${icon("kinds")}Company</button>
       <button class="btn" data-a="unsure">Can't tell</button><button class="btn" data-skip>Skip</button>${keyHint([["1", "person"], ["2", "company"], ["0", "can't tell"]])}</div>
     <p class="then">Your answer is used when you apply your answers: matching runs again, and the engine learns from it.</p><div id="said"></div>
@@ -3688,6 +3743,7 @@ async function review(el, which, note = "", part = null) {  // Review's person-o
     t.select(i);
     if (!rows[i]) { $("right").innerHTML = `<div class="card empty">${icon("empty")}<p class="muted">Nothing is open here.</p></div>`; where(); return; }
     $("right").innerHTML = q.card(rows[i], i, rows.length);
+    $("right").querySelectorAll(".det-box[data-id]").forEach((b) => detailsOf(b, run(which, "show details", {ids: [b.dataset.id]})));
     const said = rows[i].status !== "open" && rows[i].decision;  // answered: its answer shown pressed, the others not
     if (said) $("right").querySelectorAll("[data-a]").forEach((b) => {
       const on = b.dataset.a === said;
