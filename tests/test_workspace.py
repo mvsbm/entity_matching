@@ -730,18 +730,23 @@ def test_the_file_given_last_is_the_one_a_run_reads_even_one_the_workspace_held_
     assert code == 0 and not r["copied"] and folder.last(ws).name == "0001-a" and [x["last"] for x in folder.loaded(ws)] == [True, False]
     assert say("resolve", "records", "--workspace", ws)[0] == 0
     assert say("describe", "workspace", ws)[1]["records"] == cut  # A's records, as step 2 said
+    g.df.iloc[:10].to_parquet(tmp_path / "a_head.parquet", index=False)
+    code, r = say("add", "records", tmp_path / "a_head.parquet", "--workspace", ws)  # in the run already: its copy goes
+    assert code == 0 and r["summary"][0][0] == "nothing new" and len(folder.parts(ws)) == 2 and folder.last(ws).name == "0001-a"  # A, given before it, still the one a run reads
     (ws / "inputs" / "last").unlink()  # a workspace loaded before the part given last was kept: its newest
     assert folder.last(ws).name == "0002-b"
 
 
-def test_a_workspace_on_object_storage_is_refused_and_one_on_a_disk_is_not(tmp_path, monkeypatch):
+def test_a_workspace_on_object_storage_is_refused_and_one_on_a_disk_is_not(say, tmp_path, monkeypatch):
     from er import folder, io
     root = tmp_path.resolve()
     mounts = tmp_path / "mountinfo"
     mounts.write_text("\n".join(["22 1 8:1 / / rw,relatime - ext4 /dev/sda1 rw",
                                   f"40 22 0:50 / {root}/bucket rw,nosuid - fuse.gcsfuse my-bucket rw",
                                   f"41 22 0:51 / {root}/my\\040share rw - nfs4 server:/export rw",  # a space, as mountinfo writes it
-                                  f"42 40 0:52 / {root}/bucket/disk rw - ext4 /dev/sdb1 rw"]) + "\n", encoding="utf-8")
+                                  f"42 40 0:52 / {root}/bucket/disk rw - ext4 /dev/sdb1 rw",
+                                  f"43 22 0:53 / {root}/over rw - tmpfs tmpfs rw",
+                                  f"44 43 0:54 / {root}/over rw - fuse.s3fs s3fs rw"]) + "\n", encoding="utf-8")  # a bucket mounted over a disk: the bucket
     monkeypatch.setattr(io, "MOUNTS", mounts)
     with pytest.raises(InputError, match=r"object storage \(gcsfuse\)"):
         with folder.run_lock(root / "bucket" / "w"):
@@ -751,6 +756,9 @@ def test_a_workspace_on_object_storage_is_refused_and_one_on_a_disk_is_not(tmp_p
         with folder.writing(root / "bucket" / "v" / "columns.toml"):
             pass
     assert not (root / "bucket" / "w").exists()  # refused before anything is written
+    code, e = say("create", "workspace", "x", "--home", root / "bucket")
+    assert code == 2 and "object storage" in e["error"] and not (root / "bucket" / "x").exists()  # refused where it is made, not at its first write
+    assert io.object_store(root / "over" / "w") == "s3fs"
     for disk in (root / "my share" / "w", root / "local" / "w", root / "bucket" / "disk" / "w"):  # NFS, a local disk, a disk mounted inside the bucket
         with folder.run_lock(disk):
             pass

@@ -337,6 +337,7 @@ def create(home: Path, name: str, columns: str) -> Path:
     if not NAME.fullmatch(name):
         raise InputError(f"{name!r}: not a workspace name", fix="Latin letters (A–Z, a–z), digits, '.', '_' and '-', starting with a letter or digit, at most 64")
     ws = home / name
+    lockable(ws)  # refused here, not at the first command that writes to it
     try:
         ws.mkdir(parents=True)  # at once: two asking for one name, one gets it
     except FileExistsError:

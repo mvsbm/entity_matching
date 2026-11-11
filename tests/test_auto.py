@@ -109,7 +109,7 @@ def test_generating_into_a_busy_or_unfit_workspace_is_refused_before_any_record_
     mapping = ws / "columns.toml"
     mapping.write_text(re.sub(r"^(person_name|company_name) = .*$", r'\1 = "THEIR_NAME"', mapping.read_text(encoding="utf-8"), flags=re.M), encoding="utf-8")
     code, e = say("generate", "records", "--records", "1000", "--workspace", ws)  # names read from a column of their own: a run would stop
-    assert code == 2 and "person_name or company_name" in e["error"] and not folder.parts(ws) and not list(ws.glob(".synthetic-*"))
+    assert code == 2 and "person name or company name" in e["error"] and not folder.parts(ws) and not list(ws.glob(".synthetic-*"))
 
 
 def test_each_difficulty_is_harder_to_match_than_the_one_before():
