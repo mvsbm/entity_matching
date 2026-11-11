@@ -533,6 +533,7 @@ In *Review* the pair comes first (A, B), then every other pair waiting on the pa
 *Add new records*, under *Setup* after the first run, opens its dialog on *Find matches* (preview first); matching everything again is *Find matches*' own button. Every page also runs `describe matching`, for the stages it shows.
 
 - **Only this machine, only this link.** The page is served on `127.0.0.1`, and every request needs the random token in the link `open ui` prints, so another user of the machine can't use it, and a web page elsewhere can't reach it. It loads nothing from the network: the records never leave the machine.
+- **After an update, start it again.** The page is read from disk at each visit, but the commands only once, when `open ui` starts: a command added since is refused in words (*nayose open ui was started before an update*), never half run. Start it again and open the new link it prints.
 - **One long command at a time.** Lists, describes and single answers run at once, and one refused because another job is writing to the workspace is tried again for up to 10 seconds; a run, a rerun or applying the answers runs in a process of its own, so a crash can't take the page down, and a second one, asked while one runs, is refused: ask again once it ends. A workspace another job is writing to says so: answer again once it is done.
 
 ## Development scripts

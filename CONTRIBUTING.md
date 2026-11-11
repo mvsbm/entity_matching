@@ -3,8 +3,9 @@
 # Contributing
 
 A change reaches `main` through a pull request whose checks pass (`.github/workflows/tests.yml`, on Python 3.12 and
-3.14: lint, the page's script and the fast tests), rebased onto it. Its author runs every tier first; `main` runs them
-all after it merges, on Windows too, and so does a run started by hand on a branch (`gh workflow run tests.yml --ref BRANCH`). Each rule below says why it holds and what checks it: a test, the pipeline, or the review
+3.14: lint, the page's script and the fast tests, about two minutes), rebased onto it. Its author runs every tier first; `main` runs them
+all after it merges, on Windows too, and so does a run started by hand on a branch (`gh workflow run tests.yml --ref BRANCH`): each
+tier a job, the long ones split by their recorded times (`tests/durations.json`), all at once, about six minutes. Each rule below says why it holds and what checks it: a test, the pipeline, or the review
 every pull request gets. Where code can check a rule, it does.
 
 ## The rules
@@ -36,7 +37,7 @@ Each area of the engine has its own file in `tests/`; what they share is in `tes
 pipelines is marked `slow`, and one that opens the page in Chromium `browser`, by the fixtures it uses.
 
 ```bash
-.venv/bin/python -m pytest -m "not slow and not browser"   # the fast checks: about 20 s
+.venv/bin/python -m pytest -m "not slow and not browser"   # the fast checks: about a minute and a half, under one with -n auto
 .venv/bin/python -m pytest -m "slow and not browser"       # whole runs on a generated population: minutes
 .venv/bin/python -m pytest -m browser                      # the page in Chromium (once: python -m playwright install chromium)
 .venv/bin/python -m pytest                                 # all of them: before every push (a pull request's CI runs the fast ones)
