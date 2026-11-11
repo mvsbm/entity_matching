@@ -517,7 +517,8 @@ def test_the_reader_reads_its_edge_cases_alike_and_a_part_reads_again_under_new_
     assert codes() == [None, None, "A1"] and intake.report(part)["input"] == intake.read_as(spec) and not (part / ".read.tmp").exists()
 
 
-def test_a_csv_read_by_column_reads_as_value_by_value_does_its_odd_fields_and_encodings_too(tmp_path, monkeypatch):
+@pytest.mark.parametrize("ends", ["lf", "crlf"])
+def test_a_csv_read_by_column_reads_as_value_by_value_does_its_odd_fields_and_encodings_too(tmp_path, monkeypatch, ends):
     from er import intake
     ref, spec = load_settings().paths["reference"], intake.InputSpec()
     names = ["ヤマダタロウ", "ヤマダ　タロウ", " サトウ", "サトウ ", "　", "  ", "NULL", " NULL ", "－", "譁ｰ縺励＞", "abc\x01", "タ​ナカ", "a\tb",
@@ -529,7 +530,7 @@ def test_a_csv_read_by_column_reads_as_value_by_value_does_its_odd_fields_and_en
         kana = field("ヤマダ", "cp932") if i == 40 else field(names[(i * 7) % len(names)])  # one CP932 field: that chunk of that column read one by one
         rows.append(b",".join([field(f"R{i}"), field(names[i % len(names)]), field(["12345.0", "1.23457E+11", "100", "１２.０", "3.5", ""][i % 6]), kana]))
     rows.append(b"R-odd,only two")  # a row that doesn't line up
-    (tmp_path / "x.csv").write_bytes(b"\n".join(rows) + b"\n")
+    (tmp_path / "x.csv").write_bytes(b"\n".join(rows) + b"\n" if ends == "lf" else "\ufeff".encode() + b"\r\n".join(rows) + b"\r\n")  # as Unix writes it; as Windows does, with a BOM
     monkeypatch.setattr(intake, "CHUNK", 7)  # a first chunk to learn from, then many
 
     def read(where: str) -> tuple:
@@ -538,14 +539,18 @@ def test_a_csv_read_by_column_reads_as_value_by_value_does_its_odd_fields_and_en
         r = intake.take(part, {tmp_path / "x.csv": "x.csv"}, spec, ref)
         return ({k: v for k, v in r.items() if k != "seconds"}, (part / r["files"][0]["read"]).read_bytes(),
                 (part / intake.PROPOSALS).read_bytes(), (part / intake.UNREAD).read_bytes())
-    real, decoded = intake.as_text, []
-    monkeypatch.setattr(intake, "as_text", lambda fields: decoded.append(a := real(fields)) or a)
+    spied = {}
+    for name in ("plain_csv", "arrow_split", "as_text"):  # what each reading went through
+        monkeypatch.setattr(intake, name, (lambda real, name: lambda *a: spied.setdefault(name, []).append(x := real(*a)) or x)(getattr(intake, name), name))
+    by_arrow = read("by_arrow")
+    assert spied["plain_csv"][0] and any(x is not None for x in spied["arrow_split"]) and any(x is None for x in spied["arrow_split"])  # lines Python's csv read, Arrow's, and some that didn't line up
+    monkeypatch.setattr(intake, "plain_csv", lambda *a: None)  # Python's csv alone
     by_column = read("by_column")
-    assert any(a is not None for a in decoded) and any(a is None for a in decoded)  # both: columns decoded at once, the chunk with CP932 field by field
+    assert any(a is not None for a in spied["as_text"]) and any(a is None for a in spied["as_text"])  # columns decoded at once, the chunk with CP932 field by field
     monkeypatch.setattr(intake, "as_text", lambda fields: None)  # no column decoded at once: each field decoded as it comes
     monkeypatch.setattr(intake, "settled", lambda a, *_: (np.zeros(len(a), bool),) * 2)  # nothing settled in Arrow: every value read one by one
     one_by_one = read("one_by_one")
-    assert by_column == one_by_one  # byte for byte: the read file, its counts, fixes and proposals, the rows unread
+    assert by_arrow == by_column == one_by_one  # byte for byte: the read file, its counts, fixes and proposals, the rows unread
     assert by_column[0]["decoded"]["utf-8"] > 0 and by_column[0]["fixed"]["placeholders"] > 0 and by_column[0]["unread"] == 1
 
 
