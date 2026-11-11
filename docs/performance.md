@@ -136,14 +136,23 @@ on 3 scenarios, 49 s for the best quarter on 6, 55 s for the best quarter of tho
 trained once and its signals computed once; a combination fits only its combiner, on 1,000 records.
 
 **Work the code skips** (identical results, covered by tests/):
-- **Names scored in DuckDB** (`er.kind.NameModel.logit`): every name's distinct character n-grams in one query,
-  joined to the model's weights and summed in term order, so every run gives the same bits. The same sums as
-  scikit-learn's vectorizer, which builds the n-grams one name at a time in Python.
+- **Names scored in DuckDB** (`er.kind.NameModel.logit`): every distinct name's character n-grams in one query, once
+  however often the name repeats, joined to the model's weights and summed in term order, so every run gives the same
+  bits. The same sums as scikit-learn's vectorizer, which builds the n-grams one name at a time in Python.
+- **Each distinct value prepared once** (`er.standardize.normalize`): every step reads one value alone, so a column's
+  distinct values go through the steps and the column is made of them; 25 to 40 times faster on a column that repeats
+  (phones, postal codes, common names), and done value by value where most values are distinct.
+- **The budget's counts read again** (`er.candidates.candidates`, `known`): each generator's pairs and blocks are
+  counted once, by the budget, and step 4 reads them, not the records.
 - **One u sample per set of records** (`er.match.scored_sample`, `SCORED_U`). A comparison's u depends only on
   itself, the sample size, the seed (`FSModel.u_keys`) and the values it reads, since Splink picks the sampled pairs by
   a hash of the record ID. So the cache is keyed by the comparison and a fingerprint of those values, a frame and a
   table with the same rows alike: within one process, a model's variants and `choose.py`'s repeats of train share one
-  sample. The cache lives in the process: two runs of `nayose` each draw their own. cif, phone and birth need none: their levels are counted (`exact_u`, once per fit).
+  sample. A workspace keeps it too (`u_sampled.json`, keyed besides by the code and Splink's and DuckDB's versions), so
+  a rerun or a trial of a method comparing the same way reads it and draws no sample: 250,000 records' fit from 12.5 s
+  to 3.6 s. cif, phone and birth need none: their levels are counted (`exact_u`, once per fit). The sample is drawn in
+  chunks of about 256 MB of values compared (`CHUNK_BYTES`): the same pairs and counts as any other split, few chunks
+  where values are short, up to 40 where they are long, so the memory never spikes.
 - **Rules in plain SQL** (`er.match.rule_edges`): one equi-join per rule, for `choose.py`, full runs and increments
   alike. A fuzzy condition lets equal values through without calling the string function. Splink's
   `deterministic_link` would join every column of both records back first.

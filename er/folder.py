@@ -42,6 +42,7 @@ TRIALS = "trials"  # trials of a method (er.run.trial): the last 5 results, and 
 PREPARED = "prepared"  # the records as a run loads them, cleaned (er.run.Run.load), a folder per what they were made from:
 # not a run file, so a full run reads them again; bounded: the last KEEP_PREPARED used
 KEEP_PREPARED = 2  # the method and a trial of another that cleans other columns: neither replaces the other's
+U_SAMPLED = "u_sampled.json"  # the u each comparison's random pairs gave, by all it rests on (er.match.scored_sample): not a run file, so a rerun reads it again; bounded: match.U_KEPT
 
 
 class Busy(InputError):

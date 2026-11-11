@@ -139,6 +139,10 @@ def fs_changes(p: Pipeline) -> dict[str, Callable[[FSSpec], FSSpec]]:
         "birth_date_key": with_key("birth_date"),
         "given_name_phone_key": with_key("given_name_phone"),
         "birth_date_deletion_key": with_key("birth_date_deletions_prefecture"),
+        # what the keys miss most: one name, its long vowel written another way, in another postal area; a married
+        # name, its given name kept beside the phone, postal code or area that stay
+        "name_reading_key": with_key("name_reading"),
+        "given_tail_keys": lambda s: with_key("postal_area_given_tail")(with_key("postal_given_tail")(with_key("phone_given_tail")(s))),
         # a household shares address and phone, which alone reach the threshold: without a name compared, people decide
         "name_needed": lambda s: replace(s, needs=("name", "company")),
         # one edit apart, counted exactly through the values' one-deletion keys: a 10⁷-pair sample sees about one CIF
@@ -160,7 +164,8 @@ FS_DECISIONS = (("no_term_frequency", "better"), ("exact_keys_only", "cheaper"),
                 ("cif_deletion_key", "safer"), ("graded_address", "better"), ("birth_date", "better"),
                 ("birth_date_key", "safer"), ("given_name_phone_key", "safer"), ("birth_date_deletion_key", "safer"),
                 ("u_near_by_keys", "chosen"), ("fit_u_from_1e6_pairs", "cheaper"), ("company_without_jw_high", "cheaper"),
-                ("name_needed", "chosen"))  # its gain shows only at scale: train and val hold no such false pair
+                ("name_needed", "chosen"),  # its gain shows only at scale: train and val hold no such false pair
+                ("name_reading_key", "safer"), ("given_tail_keys", "safer"))
 
 
 def fs_tune(optuna_dir: Path) -> FSTune:

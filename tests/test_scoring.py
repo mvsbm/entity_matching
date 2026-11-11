@@ -66,6 +66,48 @@ def test_a_u_sample_is_drawn_once_per_set_of_records(con_db, records, monkeypatc
     assert sampled == ["name", "phone"] and parameters(fresh).fillna(0).round(12).equals(parameters(again).fillna(0).round(12))
 
 
+def test_a_u_sample_kept_by_a_workspace_is_read_again_and_drawn_again_once_what_it_rests_on_changes(con_db, records, monkeypatch, tmp_path):
+    import er.match as M
+    _, db = con_db
+    kept = tmp_path / "u_sampled.json"
+    M.SCORED_U.clear()
+    first = M.scored_sample(model(), records, db, UID, kept=kept)
+    assert kept.is_file() and len(json_loads(kept)) == len(model().comparisons)
+    sampled, real = [], M.sample_u
+    monkeypatch.setattr(M, "sample_u", lambda m, comps, *a: sampled.extend(c.name for c in comps) or real(m, comps, *a))
+    M.SCORED_U.clear()  # another process: nothing in memory
+    assert M.scored_sample(model(), records, db, UID, kept=kept) == first and sampled == []  # read, never drawn
+    monkeypatch.setattr(M, "U_CODE", "another")  # the code that samples changed: drawn again, the same u
+    M.SCORED_U.clear()
+    assert M.scored_sample(model(), records, db, UID, kept=kept) == first and sampled == ["name", "phone"]
+    kept.write_text("{cut short", encoding="utf-8")  # a copy that can't be read: drawn again, never a failure
+    M.SCORED_U.clear()
+    assert M.scored_sample(model(), records, db, UID, kept=kept) == first
+    monkeypatch.setattr(M, "U_KEPT", 2)
+    for seed in range(3):  # bounded: the newest U_KEPT
+        M.scored_sample(replace(model(), seed=seed), records, db, UID, kept=kept)
+    assert len(json_loads(kept)) == 2
+
+
+def json_loads(f):
+    import json
+    return json.loads(f.read_text(encoding="utf-8"))
+
+
+def test_each_distinct_value_normalized_once_gives_the_column_value_by_value_and_the_keys_normalizers_fold_as_said():
+    from er.standardize import _normalized
+    std = load_settings().standardize
+    values = ["ヤマダ　タロウ", "ｻﾄｳﾊﾅｺ", None, "すずき いちろう", "０３－１２３４－５６７８", "東京都港区1丁目2番3号 ビル5F", "(株)サトウ", "", "TANAKA"] * 50
+    s = pd.Series(values, dtype="string")
+    for steps in (("nfkc",), ("nfkc", "katakana", "strip_spaces"), ("nfkc", "strip_separators"), ("kana_fold", "one_byte"), ("address",),
+                  ("nfkc", "strip_legal_form", "kana_fold"), ("initial",), ("first3",), ("reverse",), ("casefold",), ("kana_fold", "long_vowel", "last3")):
+        got, one_by_one = normalize(s, steps, std), _normalized(s, steps, std)
+        assert got.equals(one_by_one) and got.dtype == one_by_one.dtype and got.index.equals(s.index), steps  # the same column, the same type
+    names = pd.Series(["サイトオトシオ", "サイトウトシオ", "サトー", "ケエコ", "ナカイサアヤ", "ヤマシタサアヤ", None], dtype="string")
+    assert list(normalize(names, ("kana_fold", "long_vowel"), std).fillna("")) == ["サイトウトシオ", "サイトウトシオ", "サトウ", "ケイコ", "ナカイサアヤ", "ヤマシタサアヤ", ""]
+    assert list(normalize(names, ("kana_fold", "long_vowel", "last3"), std).fillna(""))[4:] == ["サアヤ", "サアヤ", ""]  # a married name's end, kept
+
+
 def test_a_one_edit_level_is_counted_exactly_through_deletion_keys(con_db):
     from rapidfuzz.distance import DamerauLevenshtein, Hamming
     from er.match import counted

@@ -12,7 +12,7 @@ from typing import Literal, get_args
 from er.strings import FUNCTIONS, Function
 
 Normalizer = Literal["nfkc", "strip_spaces", "kana_fold", "strip_legal_form", "address", "initial", "first3", "reverse", "casefold", "one_byte",
-                     "katakana", "strip_separators"]
+                     "katakana", "strip_separators", "long_vowel", "last3"]
 
 
 class InputError(ValueError):

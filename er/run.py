@@ -66,7 +66,7 @@ import pyarrow as pa
 from er import folder, intake
 from er.candidates import candidates, estimate
 from er.cluster import merge
-from er.config import InputError, Pipeline, bits, keys_sql, lit, q
+from er.config import InputError, Pipeline, TfidfNeighbours, bits, keys_sql, lit, q
 from er.io import code_version, config_hash, markdown, replace_text
 from er.kind import KIND_COLUMNS, NAME_MODEL, century, classifier as kind_classifier, kind_review_sheet, merge_answers
 from er.match import ELSE, fs_settings, named_sql, read_by, refreshed_u, review_floor, rule_edges, score_fs, scored_u, train_fs, u_basis
@@ -337,8 +337,12 @@ class Run:
         t, rows = time.perf_counter(), []
         m = self.pipeline.fs.budget.min_oversized()
         rules = self.pipeline.rules.blockers()
+        self.estimates = {}  # each generator's, by name: candidates() reads them again, not the records
         for kind, x in [*(("rule", k) for k in rules), *(("generator", g) for g in self.pipeline.fs.blockers)]:
-            rows.append(dict(kind=kind, name=x.name, **estimate(x, "records", 0 if kind == "rule" else self.n, self.con, oversized_from=m)))
+            est = estimate(x, "records", 0 if kind == "rule" else self.n, self.con, oversized_from=m)
+            if kind == "generator" and not isinstance(x, TfidfNeighbours):  # TF-IDF's rests on the query, which the rules make
+                self.estimates[x.name] = est
+            rows.append(dict(kind=kind, name=x.name, **est))
         plan = pd.DataFrame(rows).assign(per_record=lambda d: (d["est_pairs"] / max(self.n, 1)).round(2),
                                          normal=lambda d: d["normal_pairs"])
         self._done("budget", "O(N)", f"O({self.n:,}) per rule and generator", t, pairs=int(plan["est_pairs"].sum()),
@@ -396,12 +400,12 @@ class Run:
             reads = read_by(fs_settings(fs.model, self.uid), *(keys_sql(r) for r in fs.model.prior_rules)) | {self.uid}  # the columns the fit reads, not the file's every one
             cols = ", ".join(q(c) for c in self.columns() if c in reads)
             sample = self.con.execute(f"SELECT {cols} FROM records ORDER BY {order} LIMIT {n}").df().astype("string")
-            self.model = train_fs(fs.model, sample, self.db, self.uid)
+            self.model = train_fs(fs.model, sample, self.db, self.uid, kept=self.keep and self.keep / folder.U_SAMPLED)
             self.notes += [f"the fit found no two records sharing {f} in its sample of {len(sample):,}, so it learned nothing from them"
                            for f in self.model["er"].get("skipped", [])]
         self.scoring, self.basis, fitted = self.model, {}, time.perf_counter()
         if fs.model.u_from_scored:
-            self.scoring, sampled, exact = scored_u(fs.model, self.model, "records", self.db, self.uid)
+            self.scoring, sampled, exact = scored_u(fs.model, self.model, "records", self.db, self.uid, kept=self.keep and self.keep / folder.U_SAMPLED)
             self.basis = u_basis(fs.model, sampled, exact, "records", self.db)
         self._done("fit", "O(n + S·K + P_em·K) + O(N + S·K)", f"n = {self.model['er']['fit_rows']:,}; u on {self.n:,} records", t,
                    sample_seconds=round(fitted - t, 2), file_u_seconds=round(time.perf_counter() - fitted, 2))  # the fit on its sample, then u on this file
@@ -454,7 +458,8 @@ class Run:
             self.con.execute(f"CREATE OR REPLACE TABLE er_query AS SELECT * FROM {self._singletons('rule_clusters')}")
         _, report = candidates(fs.blockers, "records", self.uid, None if fs.bridge else "er_query", fs.budget,
                                clusters="rule_clusters" if fs.bridge else None, con=self.con, into="cands",
-                               gate=self._gate, floor=review_floor(self.pipeline), capacity=self.capacity(), told=self._joined())
+                               gate=self._gate, floor=review_floor(self.pipeline), capacity=self.capacity(), told=self._joined(),
+                               known=getattr(self, "estimates", None))
         self._gated(report.attrs["gated"])
         c = self._count("cands")
         self._done("candidates", "O(N·L + Σ P_g)", f"O({self.n:,}·L + {int(report['pairs'].sum()):,})", t, candidates=c,

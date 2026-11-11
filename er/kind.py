@@ -71,13 +71,16 @@ class NameModel:
     def logit(self, texts: pd.Series) -> np.ndarray:  # log-odds of a company; NaN where there is no name
         has = texts.notna().to_numpy()
         out = np.where(has, self.intercept, np.nan)
-        if has.any():  # lower case and each n-gram once, as the vectorizer that trained it counts them
-            self.con.register("er_names", pd.DataFrame({"r": np.flatnonzero(has), "t": texts[has].str.lower().to_numpy()}))
+        if has.any():  # lower case and each n-gram once, as the vectorizer that trained it counts them; each distinct name once
+            codes, names = pd.factorize(texts[has].str.lower())
+            self.con.register("er_names", pd.DataFrame({"r": np.arange(len(names)), "t": np.asarray(names, dtype=object)}))
             sums = self.con.execute(f"""SELECT r, sum(w ORDER BY term) AS s FROM (SELECT DISTINCT r, substr(t, i, n) AS term FROM
                 (SELECT r, t, n, unnest(range(1, length(t) - n + 2)) AS i FROM er_names, (SELECT unnest(range(1, {self.ngram} + 1)) AS n)))
                 JOIN weights USING (term) GROUP BY r""").fetchnumpy()
             self.con.unregister("er_names")
-            out[sums["r"]] += sums["s"]  # summed in term order: the same bits every run
+            each = np.zeros(len(names))
+            each[sums["r"]] = sums["s"]  # summed in term order: the same bits every run
+            out[np.flatnonzero(has)] += each[codes]
         return out
 
     def save(self, path: Path, key: str) -> None:

@@ -102,10 +102,13 @@ package "state/, for increments: Run.write" {
   }
 }
 
-package "kept for the next run: Run.load" {
+package "kept for the next run: Run.load, Run.fit" {
   entity "prepared/<key>/records.parquet" as prepared {
     * <id>
     <the records as step 1 cleans them: the columns state/records/ holds>
+  }
+  entity "u_sampled.json" as usampled {
+    <hash of a comparison, its sample size and seed, the values it reads, the code> : each level's u from its random pairs
   }
 }
 
