@@ -1410,7 +1410,7 @@ def describe_workspace_(a: dict, emit: "Emit") -> dict:
     told = out / "auto" / "report.md"  # the last auto mode's report, to send
     auto = dict(report=str(told), markdown=told.read_text(encoding="utf-8")) if told.is_file() else None
     return {**d, "inputs": files, "columns": "own" if columns_file(out) else "project", "auto": auto, "index": index.status(out, s), "rerun_owed": owed,
-            "details": details.described(out), "next": then}
+            "details": details.described(out, s.data.unique_id, lambda: connect(s.compute)[0]), "next": then}
 
 
 def describe_entity_(a: dict, emit: "Emit") -> dict:

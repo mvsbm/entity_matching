@@ -1,5 +1,6 @@
 """The page in a browser (Chromium): every step, a lost server, a busy workspace."""
 import threading
+import time
 import json
 import re
 from pathlib import Path
@@ -968,6 +969,46 @@ def test_a_details_file_shows_above_each_record_people_review_every_row_and_the_
     page.evaluate(f"go('results', {{tab: 'records', record: {json.dumps(one)}}})")  # Explore's one record
     page.wait_for_selector("#rec .details-of", timeout=60_000)
     assert page.locator("#rec .details-of > div").count() == 1 and page.locator("#rec .details-of tbody td").all_inner_texts() == plans(one)
+
+
+def test_step_2_s_details_card_keeps_a_chip_clicked_just_before_leaving_and_a_reload_while_it_loads(ui_page, tmp_path, fake_cli):
+    from er import cli
+    uid = load_settings().data.unique_id
+    home, ws = tmp_path / "workspaces", tmp_path / "workspaces" / "w"
+    pd.DataFrame({uid: ["0001", "0002"], "FULL_NAME_KANA": ["ヤマダタロウ", "スズキハナコ"]}).to_parquet(tmp_path / "records.parquet", index=False)
+    pd.DataFrame({uid: [1, 1, 2], "PLAN": ["a", "b", "c"], "START": ["2020", "2021", "2022"]}).to_parquet(tmp_path / "contracts.parquet", index=False)
+    assert cli.main(["create", "workspace", "w", "--home", str(home), "--format", "json"]) == 0
+    for words in (["load", "records", str(tmp_path / "records.parquet")], ["load", "details", str(tmp_path / "contracts.parquet")]):
+        assert cli.main([*words, "--workspace", str(ws), "--format", "json"]) == 0
+    page, server, httpd = ui_page(str(ws), str(home), viewport={"width": 1280, "height": 900})
+    errors = []
+    page.on("pageerror", lambda e: errors.append(str(e)))
+    page.click(".navitem[data-screen=columns]")
+    page.wait_for_selector("#dcols [data-col=START][aria-pressed=true]")
+    page.evaluate("(() => { const real = runOnce; window.runOnce = (c, ...r) => c === 'describe records' ? new Promise((ok) => setTimeout(() => ok(real(c, ...r)), 3000)) : real(c, ...r); })()")
+    page.evaluate("go('columns')")  # drawn again, its file's description slow: a click waits behind it
+    page.wait_for_selector("#dcols [data-col=START]")
+    page.click("#dcols [data-col=START]")
+    page.evaluate("go('run')")  # left before the click is saved
+    deadline = time.time() + 15
+    while json.loads((ws / "details" / "details.json").read_text(encoding="utf-8"))["shown"] != ["PLAN"] and time.time() < deadline:
+        time.sleep(0.2)
+    assert json.loads((ws / "details" / "details.json").read_text(encoding="utf-8"))["shown"] == ["PLAN"] and not errors  # saved all the same
+
+    fake_cli("time.sleep(20)")  # a long load, as a big file's
+    page.reload()
+    page.click(".navitem[data-screen=columns]")
+    page.click("#details details.fold-line > summary")  # Load another details file
+    page.fill("#din", str(tmp_path / "contracts.parquet"))
+    page.click("#dload")
+    page.wait_for_selector("#dload:disabled")
+    deadline = time.time() + 15
+    while not server.running and time.time() < deadline:  # started, before the page goes
+        time.sleep(0.1)
+    page.reload()  # the page drawn again while it loads: followed, not broken
+    page.click(".navitem[data-screen=columns]")
+    page.wait_for_selector("#out .fgroup", timeout=30_000)
+    assert page.is_disabled("#load") and page.is_disabled("#gen") and not errors
 
 
 def test_a_command_the_server_started_without_says_start_it_again_and_frees_its_buttons(ui_page, tmp_path, monkeypatch):

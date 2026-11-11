@@ -53,14 +53,40 @@ def test_details_are_each_record_s_rows_in_the_file_s_order_found_by_its_id_what
     assert code == 2 and "has no column NOPE" in e["error"]
     assert say("set", "details", "--workspace", ws)[1]["shown"] == []  # none given: none shown
 
-    holder = subprocess.Popen([sys.executable, "-c", "import sys, time\nfrom er.io import lock\nf = open(sys.argv[1], 'w')\nassert lock(f)\nprint('held', flush=True)\ntime.sleep(60)",
-                               str(ws / ".lock")], stdout=subprocess.PIPE, text=True)
-    try:
-        assert holder.stdout.readline().strip() == "held"  # another job writes to the workspace, a run say
-        t = time.time()
-        code, e = say("load", "details", tmp_path / "details.parquet", "--workspace", ws)
-        assert code == 75 and "another job" in e["error"] and time.time() - t < 10
-        assert say("set", "details", "--columns", "PLAN", "--workspace", ws)[0] == 0  # the columns shown change while it runs
-    finally:
-        holder.kill()
-        holder.wait()
+    for held, refused in ((ws / ".lock", False), (ws / "details" / ".rows.lock", True)):  # a run's lock: a load goes on; another load's: refused
+        holder = subprocess.Popen([sys.executable, "-c", "import sys, time\nfrom er.io import lock\nf = open(sys.argv[1], 'w')\nassert lock(f)\nprint('held', flush=True)\ntime.sleep(60)",
+                                   str(held)], stdout=subprocess.PIPE, text=True)
+        try:
+            assert holder.stdout.readline().strip() == "held"
+            t = time.time()
+            code, e = say("load", "details", tmp_path / "details.parquet", "--workspace", ws)
+            assert (code, "another details file" in e.get("error", "")) == ((75, True) if refused else (0, False)) and time.time() - t < 10
+            assert say("set", "details", "--columns", "PLAN", "--workspace", ws)[0] == 0  # the columns shown change while either runs
+        finally:
+            holder.kill()
+            holder.wait()
+
+
+def test_details_of_several_files_keep_each_file_s_order_and_a_key_read_as_a_decimal_still_finds_its_records(say, tmp_path):
+    ids = [f"{i:06d}" for i in range(1, 7)]
+    pd.DataFrame({UID: ids, "FULL_NAME_KANA": ["ヤマダタロウ"] * 6}).to_parquet(tmp_path / "records.parquet", index=False)
+    assert say("create", "workspace", "w", "--home", tmp_path)[0] == 0
+    ws = tmp_path / "w"
+    (parts := tmp_path / "contracts").mkdir()
+    pd.DataFrame({UID: [2.0, 1.0, None, 2.0], "PLAN": ["b1", "a1", "lost", "b2"]}).to_parquet(parts / "1.parquet", index=False)  # a number key with a missing value: a decimal
+    pd.DataFrame({UID: [1.0, 2.0], "PLAN": ["a2", "b3"]}).to_parquet(parts / "2.parquet", index=False)
+    code, e = say("load", "details", parts / "*.parquet", "--workspace", ws)  # before the records: none counted yet
+    assert code == 0 and (e["file"], e["rows"], e["unkeyed"], e["linked"]) == ("contracts", 5, 1, None)
+    code, e = say("show", "details", ids[1], ids[0], "--workspace", ws)
+    assert [r["rows"] for r in e["records"]] == [[["b1"], ["b2"], ["b3"]], [["a1"], ["a2"]]]  # each file's rows in its order, then the next file's
+    assert say("load", "records", tmp_path / "records.parquet", "--workspace", ws)[0] == 0
+    d = say("describe", "workspace", ws)[1]["details"]
+    assert (d["linked"], d["records"]) == (2, 6)  # counted once the records came
+    pd.DataFrame({UID: ids[:2], "FULL_NAME_KANA": ["ヤマダタロウ"] * 2}).to_parquet(tmp_path / "fewer.parquet", index=False)
+    assert say("load", "records", tmp_path / "fewer.parquet", "--workspace", ws)[0] == 0
+    assert say("describe", "workspace", ws)[1]["details"]["records"] == 2  # counted again in the file given last
+
+    for own in ("__key", "file_row_number"):
+        pd.DataFrame({UID: [1], own: ["x"]}).to_parquet(tmp_path / "own.parquet", index=False)
+        code, e = say("load", "details", tmp_path / "own.parquet", "--workspace", ws)
+        assert code == 2 and f"has a column named {own}" in e["error"]
