@@ -352,8 +352,11 @@ def receive(ws: Path, name: str, size: int, read: Callable[[int], bytes], into: 
     up = ws / UPLOADS
     up.mkdir(exist_ok=True)
     for old in up.iterdir():
-        if time.time() - old.stat().st_mtime > STALE:
-            remove(old)
+        try:
+            if time.time() - old.stat().st_mtime > STALE:
+                remove(old)
+        except OSError:  # gone meanwhile: another upload's own sweep
+            pass
     if first:
         remove(up / names[0])
     if (free := shutil.disk_usage(up).free) < size:
@@ -361,10 +364,14 @@ def receive(ws: Path, name: str, size: int, read: Callable[[int], bytes], into: 
     out = up.joinpath(*names)
     out.parent.mkdir(exist_ok=True)
     part, left = out.with_name(f".{out.name}.part"), size
-    with open(part, "wb") as f:
-        while left and (got := read(min(left, 1 << 20))):
-            f.write(got)
-            left -= len(got)
+    try:
+        with open(part, "wb") as f:
+            while left and (got := read(min(left, 1 << 20))):
+                f.write(got)
+                left -= len(got)
+    except OSError as e:  # the disk filled, or the page went: nothing half written
+        part.unlink(missing_ok=True)
+        raise InputError(f"{name}: not written ({e.strerror or e})", fix="free some disk space, or send it again")
     if left:
         part.unlink(missing_ok=True)
         raise InputError(f"{name}: cut short, {size - left:,} of {size:,} bytes came", fix="send it again")

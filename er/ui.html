@@ -2740,7 +2740,7 @@ const SCREENS = {
       show();
       if (longRun) both().forEach((x) => { x.disabled = true; });
     };
-    const detailsArgs = (file) => ({details_file: file, details_key: $("dkey").value.trim()});
+    const detailsArgs = (file) => ({details_file: file, details_key: $("dkey")?.value.trim() || ""});  // the page left meanwhile: the records' own ID column
     const chooser = (id, args, command, b) => {  // the zone clicked, or Enter or Space on it: the system's file chooser
       $(`${id}pick`).onclick = () => $(`${id}file`).click();
       $(`${id}pick`).onkeydown = (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); $(`${id}file`).click(); } };
@@ -4219,7 +4219,7 @@ window.addEventListener("dragover", (e) => {
   document.body.classList.add("filedrag");
   document.querySelectorAll("[data-drop]").forEach((x) => x.classList.toggle("dropping", x === at));
   clearTimeout(fileDrag);
-  fileDrag = setTimeout(() => document.body.classList.remove("filedrag"), 150);  // no dragover since: it left the window
+  fileDrag = setTimeout(() => document.body.classList.remove("filedrag"), 700);  // no dragover since (a browser may send one only every 350 ms): it left the window
 });
 window.addEventListener("drop", (e) => {
   if (!e.dataTransfer?.types.includes("Files")) return;
