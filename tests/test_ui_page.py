@@ -995,7 +995,8 @@ def test_step_2_s_details_card_keeps_a_chip_clicked_just_before_leaving_and_a_re
         time.sleep(0.2)
     assert json.loads((ws / "details" / "details.json").read_text(encoding="utf-8"))["shown"] == ["PLAN"] and not errors  # saved all the same
 
-    fake_cli("time.sleep(20)")  # a long load, as a big file's
+    end = tmp_path / "end-the-load"  # a long load, as a big file's: until the test has looked
+    fake_cli(f"t = time.time()\nwhile not os.path.exists({str(end)!r}) and time.time() - t < 120:\n    time.sleep(0.1)")
     page.reload()
     page.click(".navitem[data-screen=columns]")
     page.click("#details details.fold-line > summary")  # Load another details file
@@ -1009,6 +1010,7 @@ def test_step_2_s_details_card_keeps_a_chip_clicked_just_before_leaving_and_a_re
     page.click(".navitem[data-screen=columns]")
     page.wait_for_selector("#out .fgroup", timeout=30_000)
     assert page.is_disabled("#load") and page.is_disabled("#gen") and not errors
+    end.touch()
 
 
 def test_a_command_the_server_started_without_says_start_it_again_and_frees_its_buttons(ui_page, tmp_path, monkeypatch):
@@ -1067,7 +1069,9 @@ def test_each_page_reads_its_own_workspace_and_every_tab_waits_out_a_long_comman
     other.wait_for_selector("[data-act='rerun records']", timeout=30_000)
     theirs = []
     other.on("request", lambda r: r.method == "POST" and json.loads(r.post_data).get("command") == "rerun records" and not json.loads(r.post_data).get("dry") and theirs.append(1))
-    fake_cli('print(json.dumps({"event": "step", "step": "load", "seconds": 0.1}), flush=True)\ntime.sleep(20)\n'
+    end = tmp_path / "end-the-run"  # the run lasts until the test ends it: never over before a slow machine has looked
+    fake_cli('print(json.dumps({"event": "step", "step": "load", "seconds": 0.1}), flush=True)\n'
+             f't = time.time()\nwhile not os.path.exists({str(end)!r}) and time.time() - t < 120:\n    time.sleep(0.1)\n'
              'print(json.dumps({"event": "result", "summary": [["records", "1"]]}), flush=True)')
     page.click(".navitem[data-screen=run]")
     page.click("[data-act='rerun records']")
@@ -1081,6 +1085,7 @@ def test_each_page_reads_its_own_workspace_and_every_tab_waits_out_a_long_comman
     other.click("[data-act='rerun records']")  # the other tab, never told: follows the run, never starts one beside it
     other.click("#dlg button[value=run]")
     other.wait_for_selector(".steps-card", timeout=30_000)  # the run as it goes, here too
+    end.touch()
     other.wait_for_selector("text=ran from another tab", timeout=60_000)  # and once it ends, said
     assert "decide pair" not in posted and not theirs
     page.wait_for_function("() => !document.querySelector('#right [data-a=match]')?.disabled", timeout=60_000)  # it ended: answers back
