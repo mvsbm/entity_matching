@@ -715,3 +715,44 @@ def test_a_value_written_two_ways_is_one_once_prepared_so_and_describe_records_o
     assert say("rerun", "records", *at)[0] == 0
     assert say("describe", "workspace", "workspaces/plain")[1]["rerun_owed"] is False
     assert same("workspaces/plain")  # its mapping set right, by the file's own hints: one person
+
+
+def test_the_file_given_last_is_the_one_a_run_reads_even_one_the_workspace_held_already(say, tmp_path, population):
+    from er import folder
+    s, p, g = population
+    cut = len(g.df) * 3 // 5  # two files of different sizes: which one a run read, told by its records
+    g.df.iloc[:cut].to_parquet(tmp_path / "a.parquet", index=False)
+    g.df.iloc[cut:].to_parquet(tmp_path / "b.parquet", index=False)
+    assert say("create", "workspace", "w", "--home", tmp_path)[0] == 0
+    ws = tmp_path / "w"
+    for f in ("a", "b", "a"):  # A again, after B: held already, copied nothing
+        code, r = say("load", "records", tmp_path / f"{f}.parquet", "--workspace", ws)
+    assert code == 0 and not r["copied"] and folder.last(ws).name == "0001-a" and [x["last"] for x in folder.loaded(ws)] == [True, False]
+    assert say("resolve", "records", "--workspace", ws)[0] == 0
+    assert say("describe", "workspace", ws)[1]["records"] == cut  # A's records, as step 2 said
+    (ws / "inputs" / "last").unlink()  # a workspace loaded before the part given last was kept: its newest
+    assert folder.last(ws).name == "0002-b"
+
+
+def test_a_workspace_on_object_storage_is_refused_and_one_on_a_disk_is_not(tmp_path, monkeypatch):
+    from er import folder, io
+    root = tmp_path.resolve()
+    mounts = tmp_path / "mountinfo"
+    mounts.write_text("\n".join(["22 1 8:1 / / rw,relatime - ext4 /dev/sda1 rw",
+                                  f"40 22 0:50 / {root}/bucket rw,nosuid - fuse.gcsfuse my-bucket rw",
+                                  f"41 22 0:51 / {root}/my\\040share rw - nfs4 server:/export rw",  # a space, as mountinfo writes it
+                                  f"42 40 0:52 / {root}/bucket/disk rw - ext4 /dev/sdb1 rw"]) + "\n", encoding="utf-8")
+    monkeypatch.setattr(io, "MOUNTS", mounts)
+    with pytest.raises(InputError, match=r"object storage \(gcsfuse\)"):
+        with folder.run_lock(root / "bucket" / "w"):
+            pass
+    (root / "bucket" / "v").mkdir(parents=True)
+    with pytest.raises(InputError, match="no lock holds there"):
+        with folder.writing(root / "bucket" / "v" / "columns.toml"):
+            pass
+    assert not (root / "bucket" / "w").exists()  # refused before anything is written
+    for disk in (root / "my share" / "w", root / "local" / "w", root / "bucket" / "disk" / "w"):  # NFS, a local disk, a disk mounted inside the bucket
+        with folder.run_lock(disk):
+            pass
+    monkeypatch.setattr(io, "MOUNTS", tmp_path / "none")  # no mountinfo (macOS, Windows): every folder a disk
+    assert io.object_store(root / "bucket") is None

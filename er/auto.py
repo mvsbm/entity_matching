@@ -123,14 +123,18 @@ def generated(sh: dict, out: Path, emit: Callable[[dict], None]) -> int:
                   lambda n: emit(dict(step="generate", records=n, seconds=0.0)), unused, keep_built)
 
 
-def synthetic(s: Settings, records: int, difficulty: str, out: Path, done: Callable[[int], None]) -> int:
+def synthetic(s: Settings, fields, records: int, difficulty: str, out: Path, done: Callable[[int], None]) -> int:
     """Parquet parts in `out` of `records` generated records at `difficulty` (config/generator.toml [difficulty]), every
-    column the generator writes, for a workspace whose mapping `s` reads them: a tenth more entities than the records
-    need on average, the rows past `records` left out (the generator shuffles them, so those are any). O(N) time,
-    O(CHUNK) memory."""
+    column the generator writes, for a workspace whose mapping `s` reads them for each field a run needs (`fields`, the
+    pipeline's: mandatory, one_of), else refused before any is made: a tenth more entities than the records need on
+    average, the rows past `records` left out (the generator shuffles them, so those are any). O(N) time, O(CHUNK)
+    memory."""
     spec, _ = load_spec(s.root / "config" / "generator.toml", difficulty)
-    if s.data.unique_id not in {c.name for c in spec.columns}:
-        raise InputError(f"this workspace's mapping reads other columns than the generator writes (its ID column, {s.data.unique_id})",
+    written = {c.name for c in spec.columns}
+    reads = lambda f: any(alt and all(c in written for c in alt) for alt in s.columns.get(f, ()))
+    lost = [f for f in fields.mandatory if not reads(f)] + [" or ".join(g) for g in fields.one_of if not any(map(reads, g))]
+    if lost:
+        raise InputError(f"this workspace's mapping reads no column the generator writes for {', '.join(lost)}",
                          fix="generate into a new workspace: nayose create workspace NAME")
     entities = math.ceil(records / (1 + spec.dup_lambda) * 1.1) + 10
     n = _parts(spec, entities, out, load_reference(s.paths["reference"]), s.data.unique_id, done, limit=records)

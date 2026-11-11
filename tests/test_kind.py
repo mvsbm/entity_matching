@@ -360,12 +360,16 @@ def test_the_kind_problems_name_no_company_the_name_model_trains_on():
     assert set(train["reading"]) == {"ヰヱヰヱ"} and set(held["reading"]) == {"アオイ"}
 
 
-def test_a_birth_year_reads_from_four_digits_or_two():
-    from er.kind import CENTURY, birth_year
+def test_a_birth_year_reads_from_four_digits_or_two_by_this_year(monkeypatch):
+    import datetime
+    from er import kind
+    from er.kind import birth_year
     got = birth_year(pd.Series(["1993-05-25", "19930525", "1993/05/25", "1993/5/2", "199305", "93-05-25", "930525", "25/05/1993", "05-01-02", None, "abc",
                                 "H05.05.25"], dtype="string"))
-    assert got[:9].tolist() == [1993] * 8 + [2005] and np.isnan(got[9:]).all()  # a 2-digit year by a fixed century, never today's date; an era's, none
-    assert birth_year(pd.Series([f"{CENTURY + 1}0101"], dtype="string")).tolist() == [1900 + CENTURY + 1]  # past the century: 19yy, never a year to come
+    assert got[:9].tolist() == [1993] * 8 + [2005] and np.isnan(got[9:]).all()  # an era's year: none
+    for year, read in ((2026, 1927), (2027, 2027)):  # 27: a year to come in 2026, this year in 2027
+        monkeypatch.setattr(kind, "date", type("D", (), {"today": staticmethod(lambda y=year: datetime.date(y, 1, 1))}))
+        assert birth_year(pd.Series(["27-03-15", "270315", "26-03-15"], dtype="string")).tolist() == [read, read, 2026]
 
 
 def test_answers_of_ids_and_kinds_alone_stand_and_train_nothing():

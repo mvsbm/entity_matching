@@ -660,6 +660,7 @@ Every key of every record the run holds and every value a search reads, sorted, 
 | `records` | the records it holds |
 | `tables` | each table: of (its key or rule), rows, seconds |
 | `seconds` | in all |
+| `unsearched` | the fields a search reads that this run's records don't hold: typed, they are said, not searched |
 | `next` | the commands that usually follow |
 
 ```bash
@@ -732,6 +733,7 @@ Values by the file's column names, any of them (finding nothing as given, read a
 | `listed` | records whose values start with those given |
 | `candidates` | of them, scored |
 | `typed` | the fields searched |
+| `unsearched` | the fields typed that this run can't be searched by: its records don't hold them |
 | `read_as` | the values as read, when they were typed otherwise than records hold them and so read agree on more |
 | `missing` | the columns given, when every value read as missing: nothing to search by |
 | `over` | each value that starts too many records to list them all: field, value, records (how many start with it, counted to 100,000: more true past it), listed (its first by value listed: no other value lists its own) |

@@ -10,6 +10,7 @@ data/artifacts/experiments/leaderboard.parquet   one row per (experiment, datase
 import hashlib
 import json
 import os
+import re
 import subprocess
 import threading
 import time
@@ -25,6 +26,29 @@ if os.name == "nt":
     import msvcrt
 else:
     import fcntl
+
+
+STORES = ("gcsfuse", "s3fs", "rclone", "goofys", "mountpoint-s3", "blobfuse", "blobfuse2")  # object storage mounted as files: no lock holds there
+MOUNTS = Path("/proc/self/mountinfo")  # Linux's mounts, as this process sees them
+
+
+def object_store(path: Path) -> str | None:
+    """The object store `path` is on (one of STORES, by the type or source of the mount that holds it, in MOUNTS), if
+    any; None on a disk, local or network (NFS, a Windows share: their locks hold), or where MOUNTS isn't. O(mounts)."""
+    try:
+        lines = MOUNTS.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return None
+    at, best, found = str(path.resolve()), -1, None
+    for line in lines:
+        left, _, right = line.partition(" - ")
+        mount, kind = left.split()[4:5], right.split()[:2]
+        if not mount or len(kind) < 2:
+            continue
+        point = re.sub(r"\\([0-7]{3})", lambda m: chr(int(m[1], 8)), mount[0])  # a space written \040
+        if (at == point or at.startswith(point.rstrip("/") + "/")) and len(point) > best:  # the deepest mount holding it
+            best, found = len(point), next((x for x in STORES if x in (kind[0].removeprefix("fuse."), kind[1])), None)
+    return found
 
 
 def lock(f) -> bool:

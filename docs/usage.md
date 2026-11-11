@@ -105,12 +105,12 @@ It prints each field, its fill rate and the columns it comes from, what would be
 ## 3 · Run
 
 ```bash
-.venv/bin/nayose resolve records --workspace workspaces/customers     # the file loaded last
+.venv/bin/nayose resolve records --workspace workspaces/customers     # the file given last
 ```
 
 | Parameter | Does |
 |---|---|
-| `INPUT` | a CSV, TSV or Parquet file (named as it is, `[` in its name or not), a quoted glob (`'data/in/*.csv'`, its files only) or a folder of them (hidden files and `__MACOSX` left out), read as they come; several files are read together by column name. Copied into the workspace first, as `load records` does; left out, the file loaded into it last |
+| `INPUT` | a CSV, TSV or Parquet file (named as it is, `[` in its name or not), a quoted glob (`'data/in/*.csv'`, its files only) or a folder of them (hidden files and `__MACOSX` left out), read as they come; several files are read together by column name. Copied into the workspace first, as `load records` does; left out, the file given to it last, a file it held already given again included (`inputs/last`) |
 | `--workspace` | the workspace: the folder that keeps one matching job. A full run refuses one that already holds a run |
 | `--overwrite` | replaces the run in `--workspace`; people's decisions and answers in it stand |
 | `--compute KEY=VALUE …` | DuckDB limits for this run, overriding `config/settings.toml` `[compute]`: `memory_limit=8GB`, `threads=4`, `temp_directory=<folder>`. Past the memory limit, DuckDB spills to that folder |
@@ -443,7 +443,7 @@ What stops it: two lines, what is wrong and how to fix it, and exit code 2:
 | `no row has a decision`, `no row is answered` | nothing decided or answered yet: `decide pair` or `answer kind` first, or fill in the sheet |
 | `answered rows have no …`, `decided rows lack an ID`, `a decision is match or no_match`, `a kind is 1, 2 or 0`, `pairs decided both ways` | a sheet to correct |
 
-A workspace another job is writing to stops the run with `another job is writing to …` and exit code 75: nothing to fix, try again once the other job is done. The lock and the renames that finish each write hold on a local disk: keep workspaces and inboxes on one. On network or object storage they don't, so there let one scheduler be a folder's only writer.
+A workspace another job is writing to stops the run with `another job is writing to …` and exit code 75: nothing to fix, try again once the other job is done. The lock and the renames that finish each write hold on a local disk and on a network one (NFS, Filestore, a Windows share). A workspace on object storage mounted as files (Cloud Storage FUSE, s3fs, rclone, blobfuse) is refused, `is on object storage (gcsfuse): no lock holds there`, before anything is written: no lock holds there, and a write's rename isn't atomic. In a cloud, keep workspaces on a persistent disk or Filestore.
 
 Pairs are counted before any join, so a run that couldn't fit stops within seconds instead of running out of memory or disk.
 

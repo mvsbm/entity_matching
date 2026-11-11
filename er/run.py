@@ -69,7 +69,7 @@ from er.candidates import candidates, estimate
 from er.cluster import merge
 from er.config import InputError, Pipeline, bits, keys_sql, lit, q
 from er.io import code_version, config_hash, markdown, replace_text
-from er.kind import KIND_COLUMNS, NAME_MODEL, classifier as kind_classifier, kind_review_sheet, merge_answers
+from er.kind import KIND_COLUMNS, NAME_MODEL, century, classifier as kind_classifier, kind_review_sheet, merge_answers
 from er.match import ELSE, fs_settings, named_sql, read_by, refreshed_u, review_floor, rule_edges, score_fs, scored_u, train_fs, u_basis
 from er.probe import missed
 from er.report import applied, carry_kinds, carry_over, qa, report_text, review_sheet, scored_again, trust_state
@@ -261,12 +261,13 @@ class Run:
     def _prepared_key(self, normalized: list, used: set[str], ordered: bool) -> str:
         """All the cleaned records rest on, as one hash: the records files (their SHA-256, in order) and how they are read
         and matched to fields, the cleaning, the columns the method cleans and reads, the person/company engine (its
-        name model, people's answers), and the code. Not the compute limits: they change no record."""
+        name model, people's answers), the code, and the century a 2-digit birth year falls in (kind.century: this
+        year's). Not the compute limits: they change no record."""
         s, files = self.settings, [f["sha256"] for f in self.inputs if f["role"] in ("records", "name model")]
         answers = hashlib.sha256(self.labels.to_csv(index=False).encode()).hexdigest() if self.labels is not None else None
         ordered = ordered and sum(f["role"] == "records" for f in self.inputs) > 1  # one file read in order sets aside what it would read at once: a rerun reads the first run's
         return hashlib.sha256(repr((files, ordered, s.data, s.columns, s.input, s.standardize, s.flag_company, self.pipeline.fs.standardize,
-                                    normalized, sorted(used), self.pipeline.kind, answers, PREPARING)).encode()).hexdigest()[:16]
+                                    normalized, sorted(used), self.pipeline.kind, answers, PREPARING, century())).encode()).hexdigest()[:16]
 
     def _kept(self, path: Path | None, into: str, n: int) -> bool:  # the cleaned records kept, read into `into`; False if none, or one that can't be read whole
         if path is None:
