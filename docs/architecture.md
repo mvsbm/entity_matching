@@ -98,7 +98,7 @@ Not used, and why: chunked prediction (refuses given pairs, and only bounds memo
 
 ![HLD 3, components: the run-time and design-time tools on top; design time (select, pipeline, evaluate, tune, generate), the run (er/run.py, er/folder.py, er/report.py, er/results.py, er/details.py), the steps (source, standardize, kind, candidates, match, cluster) and the foundation (config, settings, io, strings), with an arrow wherever one layer imports another](diagrams/components.svg)
 
-Every module sits in one layer: the tools (`nayose`: `er/cli.py`, `er/inbox.py`, `er/auto.py`, `er/ui.py`; and `scripts/`), design time, the run (`er/run.py`, the steps of a run; `er/folder.py`, the workspace on disk; `er/report.py`, the reports for people; `er/results.py`, what a run holds, read for people without a run, and merging by people's conditions; `er/details.py`, a details file's rows shown above each record people review, which matching never reads), the steps, and the foundation. Each layer imports only the layers below it; `tests/test_design.py` fails on an import that goes up or across.
+Every module sits in one layer: the tools (`nayose`: `er/cli.py`, `er/inbox.py`, `er/auto.py`, `er/ui.py`; and `scripts/`), design time, the run (`er/run.py`, the steps of a run; `er/folder.py`, the workspace on disk; `er/report.py`, the reports for people; `er/results.py`, what a run holds, read for people without a run, and merging by people's conditions; `er/details.py`, a details file's rows, read from the file itself into each record's full row, which matching never reads), the steps, and the foundation. Each layer imports only the layers below it; `tests/test_design.py` fails on an import that goes up or across.
 
 ## 4 · The run
 
