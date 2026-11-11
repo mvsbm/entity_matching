@@ -371,7 +371,7 @@ def receive(ws: Path, name: str, size: int, read: Callable[[int], bytes], into: 
                 left -= len(got)
     except OSError as e:  # the disk filled, or the page went: nothing half written
         part.unlink(missing_ok=True)
-        raise InputError(f"{name}: not written ({e.strerror or e})", fix="free some disk space, or send it again")
+        raise InputError(f"{name}: not written ({e.strerror or e})", fix="free some disk space, or send it again") from e
     if left:
         part.unlink(missing_ok=True)
         raise InputError(f"{name}: cut short, {size - left:,} of {size:,} bytes came", fix="send it again")
