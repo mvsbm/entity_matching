@@ -978,9 +978,14 @@ def test_policy_rows_sit_in_each_record_s_full_row_chosen_by_their_chips_with_th
     assert "100% of records have some" in page.inner_text("#details .answer")
     page.uncheck("#dlist input[data-col=NOTE]")  # not shown to reviewers
     deadline = time.time() + 15
-    while json.loads((ws / "details" / "details.json").read_text(encoding="utf-8"))["shown"] != ["PLAN"] and time.time() < deadline:
+    def shown():
+        try:
+            return json.loads((ws / "details" / "details.json").read_text(encoding="utf-8"))["shown"]
+        except PermissionError:  # Windows: read while the server replaces it
+            return None
+    while shown() != ["PLAN"] and time.time() < deadline:
         time.sleep(0.2)
-    assert json.loads((ws / "details" / "details.json").read_text(encoding="utf-8"))["shown"] == ["PLAN"]
+    assert shown() == ["PLAN"]
 
     page.click(".navitem[data-screen=pairs]")
     page.wait_for_selector("#right .fullrows tr.det-head", timeout=60_000)
@@ -1061,7 +1066,11 @@ def test_step_2_s_policy_columns_are_one_list_in_their_order_dragged_and_kept_ev
     assert cli.main(["create", "workspace", "w", "--home", str(home), "--format", "json"]) == 0
     for words in (["load", "records", str(tmp_path / "records.parquet")], ["load", "details", str(tmp_path / "contracts.parquet"), "--columns", "PLAN", "START"]):
         assert cli.main([*words, "--workspace", str(ws), "--format", "json"]) == 0
-    shown = lambda: json.loads((ws / "details" / "details.json").read_text(encoding="utf-8"))["shown"]
+    def shown():
+        try:
+            return json.loads((ws / "details" / "details.json").read_text(encoding="utf-8"))["shown"]
+        except PermissionError:  # Windows: read while the server replaces it
+            return None
     def until(want):
         deadline = time.time() + 15
         while shown() != want and time.time() < deadline:
