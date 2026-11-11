@@ -141,7 +141,7 @@ tbody tr[aria-selected="true"] { background: var(--sel); color: var(--sel-ink); 
 .fullrows tr.fr-different td { background: color-mix(in srgb, var(--bad-bg) 45%, transparent); }
 .fullrows .tablewrap { max-height: 56vh; }
 .data-top { display: grid; grid-template-columns: minmax(0, 3fr) minmax(0, 2fr); gap: 16px; align-items: start; margin-bottom: 16px; } .data-top > #details .card { margin: 0; }
-.data-left > :first-child .card, .data-left > .card:first-child { margin-top: 0; } #details { position: sticky; top: 72px; }  /* the policy columns in view while the customer's mapping scrolls */  /* step 2: the records and the details beside them */
+#customer { margin: 0; } #customer > :is(#repairs, #watch, #out):not(:empty) { margin-top: 16px; } #details { position: sticky; top: 72px; }  /* the policy columns in view while the customer's mapping scrolls */  /* step 2: the records and the details beside them */
 .data-top .answer { overflow-wrap: anywhere; }  /* a long file name wraps, never widens the card */
 @media (max-width: 1100px) { .data-top { grid-template-columns: minmax(0, 1fr); } #details { position: static; } }
 tr.det-head td, tr.sec-head td { background: var(--primary-soft); } .fullrows tr.sec-head td.col { font: inherit; background: var(--primary-soft); }
@@ -524,47 +524,44 @@ dialog:has(.dlg-body.wide) { width: min(960px, calc(100vw - 32px)); }
 .node.static { cursor: default; max-width: 210px; }
 .node.static:hover { box-shadow: none; }
 .loadrow { display: flex; gap: 8px; } .loadrow input { flex: 1; min-width: 0; } .loadrow select { flex: 0 0 auto; width: auto; }
-.tray .trayhead { display: flex; align-items: center; gap: 10px; cursor: pointer; list-style: none; } .tray[open] .trayhead { margin-bottom: 10px; }
-.tray .trayhead::before { content: "▸"; color: var(--faint); } .tray[open] .trayhead::before { content: "▾"; }
-.colhead { display: flex; align-items: center; gap: 10px; margin: 4px 0 10px; } .colhead h3 { font-size: 15px; font-weight: 500; margin: 0; flex: 1; }
-.colchip { display: inline-flex; align-items: center; gap: 4px; height: 26px; padding: 0 9px; border-radius: 13px; border: 1px solid var(--outline);
-           background: var(--surface); font-size: 12px; cursor: grab; white-space: nowrap; user-select: none; }
-.colchip.used { opacity: .45; } .colchip.in { background: var(--primary-soft); border-color: transparent; } .colchip.gone { text-decoration: line-through; opacity: .6; }
-.colchip.ghost { border-style: dashed; border-color: var(--primary); color: var(--primary); background: transparent; cursor: default; }
-.colchip .x { border: 0; background: transparent; color: var(--muted); cursor: pointer; font: inherit; padding: 0 0 0 2px; }
-.colchip .x.keep { color: var(--primary); font-weight: 600; }
-.fgroup { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; margin-bottom: 12px; overflow: hidden; }
-.fgroup summary { display: flex; align-items: center; gap: 10px; padding: 12px 16px; cursor: pointer; list-style: none; }
-.fgroup summary::-webkit-details-marker { display: none; }
-.fgroup summary::before { content: "▸"; color: var(--faint); width: 12px; }
-.fgroup[open] summary::before { content: "▾"; }
-.fgroup b { font-weight: 500; }
+.colhead { display: flex; flex-wrap: wrap; align-items: center; gap: 0 10px; } .colhead .find { margin-right: auto; }
+.csec h3 { font-size: 14px; font-weight: 500; margin: 0 0 4px; }  /* a part of the customer card: the repairs that wait */
+.mlist { max-height: min(72vh, 780px); overflow: auto; border: 1px solid var(--line); border-radius: 8px; }  /* one list, group by group: it scrolls, each group's name staying */
+.mlist .fgroup > summary { position: sticky; top: 0; z-index: 2; display: flex; align-items: center; gap: 8px; min-height: 32px; padding: 0 12px; cursor: pointer; list-style: none;
+                           background: var(--hover); border-bottom: 1px solid var(--line); }
+.mlist .fgroup > summary::-webkit-details-marker { display: none; }
+.mlist .fgroup > summary::before { content: "▸"; color: var(--faint); width: 10px; } .mlist .fgroup[open] > summary::before { content: "▾"; }
+.mlist .fgroup > summary b { font-size: 11px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); }
 .gstat { margin-left: auto; font-size: 12px; color: var(--faint); } .gstat.bad { color: var(--bad); } .gstat.warn { color: var(--warn); }
-.frow { display: grid; grid-template-columns: 180px minmax(220px, 1fr) 110px minmax(0, 200px) 120px; gap: 10px; align-items: center;
-        padding: 6px 16px; border-top: 1px solid var(--line); font-size: 13px; }
-.frow[data-depth="1"] .flab { padding-left: 14px; }
-.frow .flab { color: var(--muted); white-space: nowrap; } .frow .need { color: var(--bad); font-weight: 500; font-size: 11px; }
-.drop { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; min-height: 32px; padding: 2px; border-radius: 8px; }
-.drop.over, .colchip.over { outline: 2px dashed var(--primary); outline-offset: 1px; }
-.drop .colchip.over::after, .drop.over:has(.colchip):not(:has(.colchip.over))::after { color: var(--primary); font-size: 12px; margin-left: 6px; }
-.drop .colchip.over::after { content: "+ joined to it"; }  /* what a drop will do, said before it is let go */
-.drop.over:has(.colchip):not(:has(.colchip.over))::after { content: "used where these are empty"; }
-.drop .hole { color: var(--faint); border: 1px dashed var(--outline); border-radius: 13px; padding: 3px 10px; font-size: 12px; cursor: pointer; }
-.drop .colchip.in { cursor: pointer; } .frow:has(.drop.over) { background: var(--primary-soft); }
-.tray { position: sticky; bottom: 0; z-index: 2; } .tray[open] .chips { max-height: 30vh; overflow: auto; }  /* in reach of every row while dragging */
-body.term-open .tray { bottom: var(--term-h); }  /* above the command drawer */
-#out[inert] .fgroup { opacity: .6; } #out[aria-busy] .colhead h3::after { content: "saving…"; margin-left: 8px; color: var(--faint); font-size: 12px; font-weight: 400; }
-.drop .else, .drop .plus { color: var(--faint); font-size: 11px; }
-.drop select { font: inherit; font-size: 12px; padding: 3px 6px; border: 1px solid var(--outline); border-radius: 6px; background: var(--surface); color: var(--ink); }
-.frow .fex { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; } .frow .fwarn { color: var(--warn); font-size: 12px; white-space: nowrap; }
-.frow .fhint { grid-column: 2 / -1; margin-top: -4px; font-size: 12px; color: var(--warn); } .frow .fhint.info { color: var(--muted); }  /* what the values say is off, under them */
+.feat { padding: 6px 0 4px; border-bottom: 1px solid var(--line); }
+.fline { display: flex; align-items: center; gap: 8px; min-height: 26px; padding: 0 12px; font-size: 13px; }
+.flab { font-weight: 500; white-space: nowrap; } .feat[data-depth="1"] .flab { font-weight: 400; color: var(--muted); }
+.flab .need { color: var(--bad); font-weight: 500; font-size: 11px; } .flab .x { border: 0; background: transparent; color: var(--faint); cursor: pointer; margin-left: 6px; font: inherit; }
+.fwarn { margin-left: auto; color: var(--warn); font-size: 12px; white-space: nowrap; } .fstat { font-size: 12px; color: var(--muted); white-space: nowrap; }
+.fhint { padding: 0 12px 2px; font-size: 12px; color: var(--warn); } .fhint.info { color: var(--muted); }  /* what the values say is off, under the feature */
+.feat[data-depth="1"] .fline, .feat[data-depth="1"] .fhint { padding-left: 26px; }
+.mrow { display: flex; flex-wrap: wrap; align-items: center; gap: 0 6px; min-height: 30px; padding: 0 12px 0 20px; font-size: 13px; cursor: grab; }
+.feat[data-depth="1"] .mrow { padding-left: 34px; } .mrow[hidden] { display: none; }
+.tray .mrow { min-height: 34px; padding-left: 12px; border-bottom: 1px solid var(--line); }  /* as the policy file's other columns */
+.mrow:hover { background: var(--hover); } .mrow.dragging { opacity: .4; } .mrow:focus-visible { outline: 2px solid var(--primary); outline-offset: -2px; }
+.mrow.drop-above { box-shadow: inset 0 2px 0 var(--primary); } .mrow.drop-below { box-shadow: inset 0 -2px 0 var(--primary); }  /* where a dragged row lands */
+.mrow.drop-onto { background: var(--primary-soft); box-shadow: inset 0 0 0 2px var(--primary); } .mrow.drop-onto .meta::before { content: "+ joined to it · "; color: var(--primary); }  /* said before it is let go */
+.feat.over, .tray.over > summary { background: var(--primary-soft); }
+.mrow .grab { width: 14px; text-align: center; color: var(--faint); font-size: 14px; flex: none; }
+.mrow .meta { margin-left: auto; padding-left: 12px; font-size: 12px; color: var(--faint); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 55%; }
+.mrow .else, .mrow .plus { color: var(--faint); font-size: 11px; }
+.mrow.empty, .mrow.ghost { cursor: default; } .mrow.ghost { margin: 2px 12px 2px 20px; padding-left: 0; border: 1px dashed var(--primary); border-radius: 6px; }
+.colchip { white-space: nowrap; user-select: none; } .colchip.ghost { color: var(--primary); font-weight: 500; }
+.colchip.in { font-weight: 500; cursor: pointer; border-radius: 4px; padding: 1px 2px; } .colchip.in:hover { background: var(--primary-soft); }
+.colchip .x { border: 0; background: transparent; color: var(--faint); cursor: pointer; font: inherit; padding: 0 2px; }
+.hole { flex: none; color: var(--faint); border: 1px dashed var(--outline); border-radius: 13px; padding: 1px 10px; font-size: 12px; cursor: pointer; white-space: nowrap; }
+.feat select { font: inherit; font-size: 12px; padding: 3px 6px; border: 1px solid var(--outline); border-radius: 6px; background: var(--surface); color: var(--ink); }
+#out[inert] .mlist { opacity: .6; } #out[aria-busy] .colhead::after { content: "saving…"; color: var(--faint); font-size: 12px; }
 .mini { border: 0; background: transparent; color: var(--primary); cursor: pointer; font: inherit; font-size: 12px; padding: 2px 6px; border-radius: 6px; white-space: nowrap; }
 .mini:hover { background: var(--primary-soft); }
-.flab .x { border: 0; background: transparent; color: var(--faint); cursor: pointer; margin-left: 6px; font: inherit; }
-.frow.offer { background: var(--primary-soft); } .frow.offer .flab { color: var(--primary); }
-.addform { gap: 6px; } .addform input { font: inherit; font-size: 13px; padding: 5px 8px; border: 1px solid var(--outline); border-radius: 6px; background: var(--surface); color: var(--ink); min-width: 0; }
-.addform select { font: inherit; font-size: 13px; } .frow .addnote { grid-column: span 3; font-size: 12px; }
-@media (max-width: 860px) { .frow { grid-template-columns: 1fr; gap: 4px; } .frow .fhint { grid-column: 1 / -1; margin-top: 0; } }
+.feat.offer { background: var(--primary-soft); } .feat.offer .flab { color: var(--primary); }
+.addform { flex-wrap: wrap; gap: 6px; } .addform input { font: inherit; font-size: 13px; padding: 5px 8px; border: 1px solid var(--outline); border-radius: 6px; background: var(--surface); color: var(--ink); min-width: 0; }
+.addform select { font: inherit; font-size: 13px; } .addnote { padding: 2px 12px 0; font-size: 12px; }
 </style>
 </head>
 <body>
@@ -1605,10 +1602,11 @@ function slider(r) {  // where the engine and the name alone place a record, fro
     <span class="ends"><span>${icon("person")} person</span><span>company ${icon("kinds")}</span></span></div>`;
 }
 
-// Step 2: the file's columns as chips, and each group's features and their parts as slots to drop them into. A slot shows
-// its columns (else: read where the ones before are empty; +: joined), its share filled, an example, and under it what its
-// values say is off (hint), with the button that sets it right, or a warning when few look like it; ✦ Suggest shows what
-// the file's contents place there, kept with ✓.
+// Step 2: one list, group by group. A feature's columns are its rows in the order they are read (the first; where it is
+// empty, the next), each dragged by its dots: above or below another row, onto one to be joined to it (+), or down among
+// the other columns to be taken off. A feature says its share filled and, under it, what its values say is off (hint),
+// with the button that sets it right, or a warning when few look like it; ✦ Suggest shows what the file's contents place
+// there, kept with Keep.
 function features(d, view) {
   const slot = Object.fromEntries(d.slots.map((x) => [x.feature, x])), info = Object.fromEntries(d.columns.map((c) => [c.column, c]));
   const field = Object.fromEntries(d.fields.map((f) => [f.field, f])), lost = (f) => !field[f] || field[f].filled === null;
@@ -1619,23 +1617,25 @@ function features(d, view) {
   const warned = (s) => s.hint ? s.hint.level === "warn" : few(s);  // a hint says what is off, and may say a column is fine (info)
   const ADDABLE = ["Name"];  // the groups a feature can be added to: one compared with the ones beside it (add feature)
   const meter = (v) => v === null || v === undefined ? "" : `<span class="meter"><i style="width:${Math.round(v * 100)}%"></i></span>${pct(v)}`;
-  const chipOf = (c, from, alt) => `<span class="colchip ${from ? "in" : used.has(c) ? "used" : ""} ${info[c] ? "" : "gone"}" draggable="true" data-col="${esc(c)}"
-    ${from ? `data-from="${esc(from)}" data-alt="${alt}" tabindex="0" role="button"` : ""} title="${info[c] ? `${pct(info[c].filled)} filled · ${esc(info[c].example ?? "")}` : "not in this file"}">${esc(c)}${
-      from ? `<button class="x" data-x aria-label="Take ${esc(c)} off">×</button>` : ""}</span>`;
+  const meta = (c) => `${pct(info[c].filled)}${info[c].example === null || info[c].example === undefined ? "" : ` · ${esc(info[c].example)}`}`;
+  const token = (c, path, i) => `<span class="colchip in" data-col="${esc(c)}" data-from="${esc(path)}" data-alt="${i}" tabindex="0" role="button" title="${meta(c)}">${esc(c)}<button class="x" data-x aria-label="Take ${esc(c)} off">×</button></span>`;
   const needs = (x) => (x.field && d.needed.every.includes(x.field) && lost(x.field)) ||
     (x.type === "person name" || x.field === "company_name") && d.needed.one_of.some((g) => g.every(lost));
-  const row = (path, x, depth, last, shown) => {
-    const s = slot[path], alts = s.sources.filter((a) => a.every((c) => info[c]));  // a column this file lacks is no column here
-    const chips = alts.map((a, i) => (i ? '<span class="else">else</span>' : "") + a.map((c) => chipOf(c, path, i)).join('<span class="plus">+</span>')).join("");
-    const g = shown && ghost[path];
-    return `<div class="frow" data-depth="${depth}"><span class="flab">${depth ? (last ? "└ " : "├ ") : ""}${esc(x.name)}${x.script ? ` <span class="tag">${esc(x.script)}</span>` : ""}${
+  const feat = (path, x, depth, last, shown) => {
+    const s = slot[path], alts = s.sources.filter((a) => a.every((c) => info[c])), g = shown && ghost[path];  // a column this file lacks is no column here
+    const hole = !alts.length ? '<span class="hole" tabindex="0" role="button">choose a column</span>'
+      : depth || x.field === "id" ? "" : `<span class="hole" tabindex="0" role="button" title="another column, read where these are empty" aria-label="Another column for ${esc(x.name)}">+</span>`;
+    return `<div class="feat" data-slot="${esc(path)}" data-depth="${depth}"><div class="fline"><span class="flab">${depth ? (last ? "└ " : "├ ") : ""}${esc(x.name)}${x.script ? ` <span class="tag">${esc(x.script)}</span>` : ""}${
         needs(x) ? ' <b class="need">needed</b>' : ""}${x.added && !depth ? `<button class="x" data-remove="${esc(path)}" aria-label="Remove ${esc(x.name)}">✕</button>` : ""}</span>
-      <span class="drop" data-slot="${esc(path)}">${chips}${!alts.length ? '<span class="hole" tabindex="0" role="button">choose a column</span>'
-        : depth || x.field === "id" ? "" : `<span class="hole" tabindex="0" role="button" title="another column, read where these are empty" aria-label="Another column for ${esc(x.name)}">+</span>`}${
-        g ? `<span class="colchip ghost" title="${esc(g.why)}">✦ ${esc(g.column)}<button class="x keep" data-keep='${esc(JSON.stringify([path, g.column]))}' aria-label="Keep it">✓</button></span>` : ""}</span>
-      <span class="fstat">${meter(s.filled)}</span><span class="fex faint">${esc(s.example ?? "")}</span>
-      <span class="fwarn">${!s.hint && few(s) ? `⚠ ${pct(s.looks_right)} look right` : ""}</span>${s.hint ? `<span class="fhint ${s.hint.level}">${
-        s.hint.level === "info" ? "✓" : "⚠"} ${esc(s.hint.says)}${s.hint.example ? `, e.g. ${esc(s.hint.example)}` : ""}${s.hint.act ? ` <button class="mini" data-hint="${esc(path)}">${esc(s.hint.button)}</button>` : ""}</span>` : ""}</div>`;
+        <span class="fwarn">${!s.hint && few(s) ? `⚠ ${pct(s.looks_right)} look right` : ""}</span><span class="fstat">${meter(s.filled)}</span>${alts.length ? hole : ""}</div>${
+      s.hint ? `<div class="fhint ${s.hint.level}">${s.hint.level === "info" ? "✓" : "⚠"} ${esc(s.hint.says)}${s.hint.example ? `, e.g. ${esc(s.hint.example)}` : ""}${
+        s.hint.act ? ` <button class="mini" data-hint="${esc(path)}">${esc(s.hint.button)}</button>` : ""}</div>` : ""}${
+      alts.map((a, i) => `<div class="mrow" draggable="true" tabindex="0" data-alt="${i}" data-cols="${esc(a.join(" "))}" aria-label="${esc(a.join(" + "))}, ${i + 1} of ${alts.length}${alts.length > 1 ? ": Alt+↑ or ↓ moves it" : ""}">
+        <span class="grab" aria-hidden="true">⠿</span>${i ? '<span class="else">else</span>' : ""}${a.map((c) => token(c, path, i)).join('<span class="plus">+</span>')}
+        <span class="meta">${a.length === 1 ? meta(a[0]) : i ? "" : esc(s.example ?? "")}</span></div>`).join("")}${
+      alts.length ? "" : `<div class="mrow empty">${hole}</div>`}${
+      g ? `<div class="mrow ghost" title="${esc(g.why)}"><span class="grab"></span><span class="colchip ghost">✦ ${esc(g.column)}</span><span class="meta">${esc(g.why)}</span>
+        <button class="mini" data-keep='${esc(JSON.stringify([path, g.column]))}'>Keep</button></div>` : ""}</div>`;
   };
   const status = (g) => {
     const need = g.features.filter(needs);
@@ -1646,23 +1646,25 @@ function features(d, view) {
     return need.length ? ["bad", `✗ ${need.map((f) => f.name).join(either ? " or " : ", ")} needed`] : bad.length ? ["warn", `⚠ ${bad.map((p) => p.split("/").pop()).join(", ")}`]
       : ["", `${found} of ${paths.length} found`];
   };
-  const waiting = d.placements.length;
-  const tray = `<details class="card tray" ${view.tray ? "open" : ""}><summary class="trayhead"><b>Columns in your file</b><span class="faint">drag one into a feature</span></summary>
-      <div class="chips">${d.columns.map((c) => chipOf(c.column)).join("")}</div></details>`;
-  return `<div class="colhead"><h3>Your columns, by field</h3>${waiting ? `<button class="btn" data-suggest="*">✦ ${view.ghosts.size ? "Hide" : "Suggest all"}</button>` : ""}${
-        waiting && view.ghosts.size ? '<button class="btn filled" data-keepall="*">Keep all</button>' : ""}</div>` +
+  const waiting = d.placements.length, free = d.columns.map((c) => c.column).filter((c) => !used.has(c));
+  const opened = (g, look) => `data-look="${look ? 1 : 0}" ${(view.toggled.has(g) ? view.toggled.get(g) : look) ? "open" : ""}`;  // as the person left it, else open where something needs a look
+  return `<div class="colhead"><label class="find dfind">${icon("search")}<input type="text" id="mfind" placeholder="Find a column" aria-label="Find a column" value="${esc(view.q || "")}"></label>${
+        waiting ? `<button class="btn" data-suggest="*">✦ ${view.ghosts.size ? "Hide" : "Suggest all"}</button>` : ""}${waiting && view.ghosts.size ? '<button class="btn filled" data-keepall="*">Keep all</button>' : ""}</div>
+    <div class="mlist" id="mlist">` +
     d.features.map((g) => {
       const [cls, text] = status(g), shown = view.ghosts.has(g.group), offered = (d.offers || []).filter((x) => x.feature.startsWith(`${g.group}/`));
       const mine = d.placements.filter((x) => x.feature.startsWith(`${g.group}/`)).length + offered.length;
-      return `<details class="fgroup" data-g="${esc(g.group)}" ${(view.toggled.has(g.group) ? view.toggled.get(g.group) : cls !== "") ? "open" : ""}>
+      return `<details class="fgroup" data-g="${esc(g.group)}" ${opened(g.group, cls !== "")}>
         <summary><b>${esc(g.group)}</b>${mine ? `<button class="mini" data-suggest="${esc(g.group)}">✦ ${shown ? "Hide" : "Suggest"}</button>` : ""}${
           shown && d.placements.some((x) => x.feature.startsWith(`${g.group}/`)) ? `<button class="mini" data-keepall="${esc(g.group)}">Keep all</button>` : ""}<span class="gstat ${cls}">${esc(text)}</span></summary>
-        ${g.features.map((f) => row(`${g.group}/${f.name}`, f, 0, false, shown) + (f.parts || []).map((p, i, all) =>
-          row(`${g.group}/${f.name}/${p.name}`, p, 1, i === all.length - 1, shown)).join("")).join("")}${
-        shown ? offered.map((x) => `<div class="frow offer" title="${esc(x.why)}"><span class="flab">✦ ${esc(x.feature.split("/").pop())} <span class="tag">${esc(x.script)}</span></span>
-          <span class="drop"><span class="colchip ghost">${esc(x.column)}</span><button class="btn" data-offer='${esc(JSON.stringify(x))}'>Add</button></span></div>`).join("") : ""}${
-        ADDABLE.includes(g.group) ? `<div class="frow addrow"><span class="flab"></span><span class="drop"><button class="mini" data-add="${esc(g.group)}">+ Add a feature</button></span></div>` : ""}</details>`;
-    }).join("") + tray;
+        ${g.features.map((f) => feat(`${g.group}/${f.name}`, f, 0, false, shown) + (f.parts || []).map((p, i, all) =>
+          feat(`${g.group}/${f.name}/${p.name}`, p, 1, i === all.length - 1, shown)).join("")).join("")}${
+        shown ? offered.map((x) => `<div class="feat offer" title="${esc(x.why)}"><div class="fline"><span class="flab">✦ ${esc(x.feature.split("/").pop())} <span class="tag">${esc(x.script)}</span></span>
+          <span class="colchip ghost">${esc(x.column)}</span><button class="btn" data-offer='${esc(JSON.stringify(x))}'>Add</button></div></div>`).join("") : ""}${
+        ADDABLE.includes(g.group) ? `<div class="feat addrow"><div class="fline"><button class="mini" data-add="${esc(g.group)}">+ Add a feature</button></div></div>` : ""}</details>`;
+    }).join("") +
+    `<details class="fgroup tray" data-g="" ${opened("", true)}><summary><b>Other columns · ${fmt(free.length)}</b></summary>${
+      free.map((c) => `<div class="mrow" draggable="true" data-cols="${esc(c)}"><span class="grab" aria-hidden="true">⠿</span><span class="colchip" data-col="${esc(c)}">${esc(c)}</span><span class="meta">${meta(c)}</span></div>`).join("")}</details></div>`;
 }
 
 // ---------- pieces every page draws with ----------
@@ -2342,8 +2344,8 @@ const SCREENS = {
           <select id="glevel" aria-label="How hard to match">${["easy", "medium", "hard"].map((x) => `<option value="${x}"${x === "medium" ? " selected" : ""}>${x[0].toUpperCase() + x.slice(1)}</option>`).join("")}</select>
           <button class="btn" id="gen">Generate</button></span></details>
         <div id="files" class="chips" style="margin-top:10px"></div>`;
-    el.innerHTML = head("columns") + `<div class="data-top"><div class="data-left"><div class="card" id="loaded"><div class="qa"><div class="q"><h2 class="question">Customer information</h2></div></div>${box}</div>
-      <div id="repairs"></div><div id="watch"></div><div id="out"></div></div><div id="details"></div></div><div id="flow"></div>${stepFoot("columns")}`;
+    el.innerHTML = head("columns") + `<div class="data-top"><div class="card" id="customer"><div id="loaded"><div class="qa"><div class="q"><h2 class="question">Customer information</h2></div></div>${box}</div>
+      <div id="repairs"></div><div id="watch"></div><div id="out"></div><div id="more"></div></div><div id="details"></div></div><div id="flow"></div>${stepFoot("columns")}`;
     if (!state.workspace) { el.querySelector(".data-top").outerHTML = '<div id="out"></div>'; $("out").innerHTML = emptyRun(); return; }  // a file goes into a workspace: choose one first
     const answer = (d, w, last) => {  // did the file load? then what may hurt the matching
       const lost = (f) => { const x = d.fields.find((y) => y.field === f); return !x || x.filled === null; };
@@ -2355,8 +2357,8 @@ const SCREENS = {
             w.rerun_owed ? " · <b>changed since the last run</b>: matching reads the records so once it runs again" : ""}`}</p></div>
         ${!d.records ? "" : missing.length ? (d.placements.length ? `<button type="button" class="btn filled" id="suggest-now">✦ Suggest the columns</button>` : "")
           : w.rerun_owed ? `<button type="button" class="btn filled" id="rerun-owed">${icon("refresh")}Run matching again</button>`
-          : ((steps.steps || {}).run || {}).state === "done" ? "" : `<a class="btn filled" data-go="run">Next: 3 Find matches →</a>`}</div>
-        <details class="fold-line"><summary>Load another file</summary><div style="margin-top:10px">${box}</div></details>`;
+          : ((steps.steps || {}).run || {}).state === "done" ? "" : `<a class="btn filled" data-go="run">Next: 3 Find matches →</a>`}</div>`;
+      $("more").innerHTML = `<details class="fold-line" id="another"><summary>Load another file</summary><div style="margin-top:10px">${box}</div></details>`;
       wireLoad();
       $("rerun-owed")?.addEventListener("click", () => go("run", {via: ["rerun records"]}));  // its dialog, opened on Find matches
       $("files").innerHTML = (w.inputs || []).map((f) => `<span class="tag" title="${esc(f.path)}">${esc(nameOf(f))} · ${bytes(f.bytes)} · ${f.read ? "matched" : "not run yet"}${f.waiting ? ` · ${fmt(f.waiting)} repairs wait` : ""}</span>`).join("");
@@ -2364,13 +2366,13 @@ const SCREENS = {
       const lines = hurts(d.fields, d.turned_off, "", addedNames(d.features), d.needed.one_of);
       const several = ((d.read || {}).fixed || {})["first of several"];  // the rest of each list is left out: said where it hurts
       if (several) lines.push(`<div class="warn">${plural(several, "value")} listed several items: the first is read</div>`);
-      $("watch").innerHTML = lines.length && !missing.length ? `<div class="card"><h3 style="font-size:15px;font-weight:500;margin:0 0 8px">Watch out</h3><div class="checks">${lines.join("")}</div></div>` : "";  // once what is needed is mapped
+      $("watch").innerHTML = lines.length && !missing.length ? `<div class="csec checks">${lines.join("")}</div>` : "";  // once what is needed is mapped
       $("suggest-now")?.addEventListener("click", () => $("out").querySelector("[data-suggest='*']")?.click());
     };
     const repairs = (r) => {  // what the reader proposed, kind by kind, to see and accept; what it fixed by itself; the rows it can't read
       const wait = r ? r.waiting : {}, fixed = r ? Object.values(r.fixed).reduce((a, b) => a + b, 0) : 0, cannot = r ? r.unread - (wait.realign || 0) : 0;
       const rows = (k) => (r.examples[k] || []).map((x) => `<tr><td class="num">${fmt(x.line)}</td><td>${esc(x.column)}</td><td class="wrap">${esc(x.before)}</td><td class="wrap">${esc(x.after)}</td></tr>`).join("");
-      $("repairs").innerHTML = r && (Object.keys(wait).length || cannot > 0) ? `<div class="card">${Object.keys(wait).length ? `<h3 style="font-size:15px;font-weight:500;margin:0 0 4px">Repairs to accept</h3>` : ""}
+      $("repairs").innerHTML = r && (Object.keys(wait).length || cannot > 0) ? `<div class="csec">${Object.keys(wait).length ? `<h3>Repairs to accept</h3>` : ""}
         ${Object.entries(wait).map(([k, n]) => `<details class="fold-line"><summary>${plural(n, REPAIR[k][0], REPAIR[k][1])} ${esc(REPAIR[k][2])}</summary>
           <div class="tablecard" style="margin:8px 0"><table class="repairs"><thead><tr><th class="num">line</th><th>column</th><th>as given</th><th>repaired</th></tr></thead><tbody>${rows(k)}</tbody></table></div>
           ${n > (r.examples[k] || []).length ? `<p class="faint" style="margin:0 0 8px">the first ${fmt((r.examples[k] || []).length)} of ${fmt(n)}</p>` : ""}
@@ -2390,8 +2392,11 @@ const SCREENS = {
       const id = d.event !== "error" && (d.fields || []).find((x) => x.field === "id");
       if (id && id.sources[0] && $("dkey")) $("dkey").placeholder = id.sources[0][0];  // a details file is found by the records' ID column unless told
       if (d.event !== "error" && last) answer(d, w, last);
+      const at = document.activeElement, again = at?.id === "mfind" ? "#mfind"  // the search being typed, or the row just moved by keys: still where the keyboard is
+        : at?.matches(".mrow[data-alt]") ? `.feat[data-slot="${CSS.escape(at.closest(".feat").dataset.slot)}"] .mrow[data-alt="${at.dataset.alt}"]` : null;
       $("out").innerHTML = d.event === "error" ? banner(d) : features(d, view);
       if (d.event !== "error") wire(d);
+      if (again) $("out").querySelector(again)?.focus();
       if (refused) { $("out").insertAdjacentHTML("afterbegin", banner(refused)); refused = null; }  // why, above the workspace as it is
     };
     const draw = (d) => {  // d: a description just made; else the file loaded last is described
@@ -2405,7 +2410,7 @@ const SCREENS = {
         last = lastFile(w);
         $("files").innerHTML = files.map((f) => `<span class="tag" title="${esc(f.path)}">${esc(nameOf(f))} · ${bytes(f.bytes)} · ${f.read ? "matched" : "not run yet"}</span>`).join("");
         if (d === undefined && last) {
-          if (!$("out").querySelector(".fgroup")) $("out").innerHTML = `<div class="card waiting">${spinner()}Reading the columns of ${esc(nameOf(last))}…</div>`;
+          if (!$("out").querySelector(".fgroup")) $("out").innerHTML = `<div class="waiting">${spinner()}Reading the columns of ${esc(nameOf(last))}…</div>`;
           d = await here(run("columns", "describe records", {loaded: last.path}));
         }
         if (d && at === edits) show(d);  // else a change since: its own reading shows it
@@ -2415,7 +2420,7 @@ const SCREENS = {
       const mine = edits, d = await here(run("columns", "describe records", {loaded: last.path}));
       if (mine !== edits || d === undefined) return;
       $("out").removeAttribute("aria-busy");
-      if (!$("out").inert && $("out").querySelector(".addform, .drop select")) held = d;  // shown once the person has chosen or named
+      if (!$("out").inert && $("out").querySelector(".addform, .feat select")) held = d;  // shown once the person has chosen or named
       else show(d);
     };
     const commit = (command, args) => {  // a change, written after the ones before it; the file described again after the last
@@ -2448,27 +2453,75 @@ const SCREENS = {
         alts[from].forEach((a) => a.includes(col) && a.splice(a.indexOf(col), 1));
         alts[from] = alts[from].filter((a) => a.length);
       };
-      const place = (to, col, join, from) => {  // into a slot: a fallback; onto a chip: joined to it; columns this file lacks give way
-        const onto = join === null ? undefined : here(to)[join];  // found before the column leaves where it was
-        if (from === to && onto?.includes(col)) return;  // dropped where it is
-        if (from) take(from, col);
-        alts[to] = single.has(to) ? [] : here(to);
-        alts[to].includes(onto) ? onto.push(col) : alts[to].push([col]);
-        save([to, ...(from && from !== to ? [from] : [])]);
+      const move = (x, to, at = null, onto = null) => {  // x: a row ({from, alt}) or a column ({col}), into slot `to` before its row `at` (none: last) or joined onto its row `onto`; to null: taken off; columns this file lacks give way
+        const src = x.from ? here(x.from)[x.alt] : null, cols = src ? [...src] : [x.col], rows = to ? (single.has(to) ? [] : here(to)) : [], was = to && JSON.stringify(here(to));
+        const target = onto === null ? null : rows[onto], before = at === null ? null : rows[at];
+        if ((!to && !src) || (src && (target === src || before === src))) return;  // dropped where it is
+        if (src) alts[x.from] = here(x.from).filter((a) => a !== src);
+        if (to) {
+          const into = to === x.from ? alts[to] : rows, i = before ? into.indexOf(before) : -1;
+          target ? target.push(...cols.filter((c) => !target.includes(c))) : into.splice(i < 0 ? into.length : i, 0, cols);
+          alts[to] = into;
+          if (to === x.from && JSON.stringify(into) === was) return;
+        }
+        save([to, x.from].filter(Boolean));
       };
-      el.querySelectorAll(".colchip[draggable]").forEach((c) => c.ondragstart = (e) => e.dataTransfer.setData("text/plain", JSON.stringify({col: c.dataset.col, from: c.dataset.from || null})));
-      el.querySelectorAll(".frow:has(.drop[data-slot]), .drop[data-slot] .colchip.in").forEach((t) => {  // anywhere on a row; onto a chip: joined to it
-        const mark = t.matches(".frow") ? t.querySelector(".drop") : t;
-        t.ondragover = (e) => { e.preventDefault(); mark.classList.add("over"); };
-        t.ondragleave = () => mark.classList.remove("over");
-        t.ondrop = (e) => {
-          e.preventDefault(); e.stopPropagation(); mark.classList.remove("over");
-          let moved = null;
-          try { moved = JSON.parse(e.dataTransfer.getData("text/plain")); } catch { /* text or a file from elsewhere */ }
-          if (typeof moved?.col !== "string") return;  // not one of the file's columns
-          place(t.closest(".frow").querySelector(".drop").dataset.slot, moved.col, t.matches(".colchip") ? Number(t.dataset.alt) : null, moved.from);
-        };
-      });
+      const list = $("mlist");
+      let drag = null, spring = null, springOn = null;
+      const unmark = () => list.querySelectorAll(".drop-above, .drop-below, .drop-onto, .over").forEach((x) => x.classList.remove("drop-above", "drop-below", "drop-onto", "over"));
+      const spot = (e) => {  // where a drop lands, and what marks it: a row's top or bottom, its middle (joined), a feature (last), the other columns (taken off)
+        if (e.target.closest(".tray")) return {to: null, mark: list.querySelector(".tray"), cls: "over"};
+        const f = e.target.closest(".feat[data-slot]"), r = e.target.closest(".mrow[data-alt]");
+        if (!f) return null;
+        const to = f.dataset.slot;
+        if (!r || single.has(to)) return {to, mark: f, cls: "over"};
+        const b = r.getBoundingClientRect(), y = (e.clientY - b.top) / b.height, i = Number(r.dataset.alt);
+        return y < 0.3 ? {to, at: i, mark: r, cls: "drop-above"} : y > 0.7 ? {to, at: i + 1, mark: r, cls: "drop-below"} : {to, onto: i, mark: r, cls: "drop-onto"};
+      };
+      const done = () => { unmark(); drag = null; clearTimeout(spring); springOn = null; };
+      list.ondragstart = (e) => {
+        const r = e.target.closest(".mrow[draggable]"), f = r?.closest(".feat[data-slot]");
+        if (!r) return;
+        drag = f ? {from: f.dataset.slot, alt: Number(r.dataset.alt)} : {col: r.dataset.cols};
+        r.classList.add("dragging");
+        e.dataTransfer.effectAllowed = "move";
+        e.dataTransfer.setData("text/plain", r.dataset.cols);  // some browsers start a drag only with something in it
+      };
+      list.ondragover = (e) => {
+        const s = drag && spot(e), fold = e.target.closest("details.fgroup:not([open]) > summary")?.parentElement;
+        if (fold !== springOn) { clearTimeout(spring); springOn = fold; spring = fold && setTimeout(() => { fold.open = true; }, 500); }  // a folded group, held over: opened
+        unmark();
+        if (!s) return;
+        e.preventDefault();
+        s.mark.classList.add(s.cls);
+      };
+      list.ondrop = (e) => {
+        const x = drag, s = x && spot(e);
+        e.preventDefault();
+        done();
+        if (s) move(x, s.to, s.at ?? null, s.onto ?? null);
+      };
+      list.ondragend = () => { done(); list.querySelector(".dragging")?.classList.remove("dragging"); };
+      list.onkeydown = (e) => {  // Alt+↑ or ↓: a row moved one place in its feature, the keyboard staying on it
+        const r = e.target.closest(".mrow[data-alt]"), step = {ArrowUp: -1, ArrowDown: 1}[e.key];
+        if (!r || !step || !e.altKey) return;
+        e.preventDefault();
+        const from = r.closest(".feat").dataset.slot, rows = here(from), i = Number(r.dataset.alt), j = i + step;
+        if (j < 0 || j >= rows.length) return;
+        [rows[i], rows[j]] = [rows[j], rows[i]];
+        alts[from] = rows;
+        save([from]);
+        $("mlist").querySelector(`.feat[data-slot="${CSS.escape(from)}"] .mrow[data-alt="${j}"]`)?.focus();
+      };
+      const find = () => {  // the rows holding what is typed; a group holding one, opened while it is typed
+        const q = (view.q || "").trim().toLowerCase();
+        list.querySelectorAll(".mrow[data-cols]").forEach((r) => { r.hidden = !!q && !r.dataset.cols.toLowerCase().includes(q); });
+        list.querySelectorAll("details.fgroup").forEach((g) => {
+          g.open = q && g.querySelector(".mrow[data-cols]:not([hidden])") ? true : view.toggled.has(g.dataset.g) ? view.toggled.get(g.dataset.g) : g.dataset.look === "1";
+        });
+      };
+      $("mfind").oninput = () => { view.q = $("mfind").value; find(); };
+      find();
       el.querySelectorAll("[data-x]").forEach((b) => b.onclick = () => { const c = b.closest(".colchip"); take(c.dataset.from, c.dataset.col); save([c.dataset.from]); });
       const choose = (spot, label, pick) => {  // without dragging: the file's columns in a list, in place of what was clicked, opened at once
         const list = document.createElement("select");
@@ -2483,11 +2536,11 @@ const SCREENS = {
       };
       const byKey = (x) => { x.onkeydown = (e) => { if (e.target === x && (e.key === "Enter" || e.key === " ")) { e.preventDefault(); x.click(); } }; };  // × inside keeps its own keys
       el.querySelectorAll(".hole").forEach((h) => {
-        const slot = h.closest(".drop").dataset.slot;
-        h.onclick = () => choose(h, `A column for ${slot}`, (col) => place(slot, col, null, null));
+        const slot = h.closest(".feat").dataset.slot;
+        h.onclick = () => choose(h, `A column for ${slot}`, (col) => move({col}, slot));
         byKey(h);
       });
-      el.querySelectorAll(".drop[data-slot] .colchip.in").forEach((c) => {  // a column clicked: another in its place
+      el.querySelectorAll(".feat .colchip.in").forEach((c) => {  // a column clicked: another in its place
         const slot = c.dataset.from, i = Number(c.dataset.alt), was = c.dataset.col;
         c.onclick = (e) => e.target.closest("[data-x]") || choose(c, `In place of ${was}`, (col) => {
           alts[slot] = here(slot);
@@ -2496,7 +2549,7 @@ const SCREENS = {
         });
         byKey(c);
       });
-      el.querySelectorAll("[data-keep]").forEach((b) => b.onclick = () => { const [slot, col] = JSON.parse(b.dataset.keep); place(slot, col, null, null); });
+      el.querySelectorAll("[data-keep]").forEach((b) => b.onclick = () => { const [slot, col] = JSON.parse(b.dataset.keep); move({col}, slot); });
       el.querySelectorAll("[data-hint]").forEach((b) => b.onclick = () => {  // what the hint says, done: the same command the CLI's next names
         const path = b.dataset.hint, h = d.slots.find((x) => x.feature === path).hint;
         if (h.act === "names") return change("set names", {how: "by-kind"});
@@ -2522,17 +2575,16 @@ const SCREENS = {
         view.ghosts.forEach((x) => view.toggled.set(x, true));  // a group showing what it could hold is open
         redraw(d);
       });
-      el.querySelectorAll("details.fgroup").forEach((g) => g.ontoggle = () => view.toggled.set(g.dataset.g, g.open));
-      el.querySelectorAll("details.tray").forEach((t) => t.ontoggle = () => { view.tray = t.open; });
+      el.querySelectorAll("details.fgroup").forEach((g) => g.ontoggle = () => (view.q || "").trim() || view.toggled.set(g.dataset.g, g.open));  // opened by a search: left as it was
       el.querySelectorAll("[data-remove]").forEach((b) => b.onclick = () => change("remove feature", {path: b.dataset.remove}));
       el.querySelectorAll("[data-offer]").forEach((b) => b.onclick = () => { const x = JSON.parse(b.dataset.offer); change("add feature", {path: x.feature, type: x.type, script: x.script, column: x.column}); });
       el.querySelectorAll("[data-add]").forEach((b) => b.onclick = () => {  // one line, in place: its name, what it is, its script
-        const row = b.closest(".frow");
-        row.innerHTML = `<span class="flab"></span><span class="drop addform"><input type="text" placeholder="its name, e.g. Kanji name" aria-label="Its name">
+        const row = b.closest(".feat");
+        row.innerHTML = `<div class="fline addform"><input type="text" placeholder="its name, e.g. Kanji name" aria-label="Its name">
           <select aria-label="What it is"><option value="person name">person's name</option><option value="company name">company name</option></select>
           <select aria-label="Script"><option>kana</option><option>kanji</option><option>romaji</option></select>
-          <button class="btn filled">Add</button><button class="btn" data-cancel>Cancel</button></span>
-          <span class="faint addnote">compared beside the kana name; its steps were tuned on kana</span>`;
+          <button class="btn filled">Add</button><button class="btn" data-cancel>Cancel</button></div>
+          <div class="faint addnote">compared beside the kana name; its steps were tuned on kana</div>`;
         const [name, kind, script] = row.querySelectorAll("input, select");
         name.focus();
         row.querySelector(".btn.filled").onclick = (e) => {
@@ -2550,7 +2602,7 @@ const SCREENS = {
       const was = b.innerHTML, at = edits, records = command !== "load details", into = records ? $("out") : $("details");
       longRun = {command, visit, page: "columns", workspace: state.workspace, args}; both().forEach((x) => { x.disabled = true; });  // as step 3's run: ended() frees them, here or on step 2 drawn again
       b.innerHTML = `${spinner()}${doing}…`;  // a big file takes minutes: how far, and how long is left, in the panel
-      if (records && !$("out").querySelector(".fgroup")) $("out").innerHTML = `<div class="card waiting">${spinner()}${doing} ${esc(what)}…</div>`;
+      if (records && !$("out").querySelector(".fgroup")) $("out").innerHTML = `<div class="waiting">${spinner()}${doing} ${esc(what)}…</div>`;
       const e = await run("columns", command, args);
       if (longRun?.command === command) longRun = null;
       both().forEach((x) => { x.disabled = false; });
