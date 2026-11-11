@@ -805,6 +805,7 @@ let longRun = null;  // the long command step 3 started ({command, visit}), whil
 let readingNow = 0;  // the quick commands under way: the app bar's line moves while any is
 const reading = (step) => { readingNow += step; $("busybar").hidden = readingNow === 0; };  // its 250 ms delay is CSS's: a quick answer never shows it
 function run(id, command, extra = {}, onEvent = null) {
+  if (!COMMANDS[command]) return Promise.resolve({event: "error", error: `nayose open ui was started before an update: it has no ${command}`, fix: "Start it again (nayose open ui), then open the new link it prints."});  // the page is read at each visit, the commands once at start
   const args = argsFor(id, command, extra), key = JSON.stringify([command, args]), mine = visit;
   const here = () => mine === visit;
   if (!inflight.has(key)) {
