@@ -977,7 +977,7 @@ function ended(command) {  // a long run ended: its buttons free, its page drawn
   if (!longRun || longRun.command !== command) return;
   const {visit: from, page} = longRun;
   longRun = null;
-  if (visit !== from && [page, "run", "records", "lookup"].includes(current)) go(current);  // its page, or one whose buttons waited for it
+  if (visit !== from && [page, "run", "records", "lookup", "columns"].includes(current)) go(current);  // its page, or one whose buttons waited for it
 }
 async function rejoin() {  // a long command that began before this page was drawn (a reload, another tab): followed to its end
   const r = await api("/api/running");
@@ -2371,16 +2371,16 @@ const SCREENS = {
         row.querySelector("[data-cancel]").onclick = () => held ? show(held) : redraw(d);
       });
     };
-    let taking = false;  // a file read or records generated: one at a time, whichever box is drawn meanwhile
     const wireLoad = () => {
       const both = () => [$("load"), $("gen")].filter(Boolean);
       const take = async (b, doing, what, command, args, done) => {  // either way the same result, drawn the same
         const was = b.innerHTML, at = edits;
-        taking = true; both().forEach((x) => { x.disabled = true; });
+        longRun = {command, visit, page: "columns", workspace: state.workspace}; both().forEach((x) => { x.disabled = true; });  // as step 3's run: ended() frees them, here or on step 2 drawn again
         b.innerHTML = `${spinner()}${doing}…`;  // a big file takes minutes: how far, and how long is left, in the panel
         if (!$("out").querySelector(".fgroup")) $("out").innerHTML = `<div class="card waiting">${spinner()}${doing} ${esc(what)}…</div>`;
         const e = await run("columns", command, args);
-        taking = false; both().forEach((x) => { x.disabled = false; });
+        if (longRun?.command === command) longRun = null;
+        both().forEach((x) => { x.disabled = false; });
         if (b.isConnected) b.innerHTML = was;
         if (e.event === "error") {  // the mapping stays: the refusal above it
           $("out").querySelectorAll(":scope > .banner, :scope > .waiting").forEach((x) => x.remove());
@@ -2398,7 +2398,7 @@ const SCREENS = {
       };
       $("gen").onclick = () => take($("gen"), "Generating", `${$("gsize").selectedOptions[0].text} records`, "generate records", {records: $("gsize").value, difficulty: $("glevel").value});
       $("cin").onkeydown = (e) => { if (e.key === "Enter") $("load").click(); };
-      if (taking || task.busy()) both().forEach((x) => { x.disabled = true; });  // drawn again while one runs, here or after leaving and coming back
+      if (longRun) both().forEach((x) => { x.disabled = true; });  // drawn again while a long command runs: ended() draws it once more
     };
     wireLoad();
     draw();
