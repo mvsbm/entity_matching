@@ -952,9 +952,9 @@ def test_policy_rows_sit_in_each_record_s_full_row_chosen_by_their_chips_with_th
     assert page.inner_text("#details h2.question") == "Policy information" and not page.query_selector("#details .answer")
     page.fill("#din", str(tmp_path / "contracts.parquet"))
     page.click("#dload")
-    page.wait_for_selector("#dcols input[data-col=NOTE]:checked", timeout=60_000)
+    page.wait_for_selector("#dlist input[data-col=NOTE]:checked", timeout=60_000)
     assert "100% of records have some" in page.inner_text("#details .answer")
-    page.uncheck("#dcols input[data-col=NOTE]")  # not shown to reviewers
+    page.uncheck("#dlist input[data-col=NOTE]")  # not shown to reviewers
     deadline = time.time() + 15
     while json.loads((ws / "details" / "details.json").read_text(encoding="utf-8"))["shown"] != ["PLAN"] and time.time() < deadline:
         time.sleep(0.2)
@@ -1030,36 +1030,53 @@ def test_policy_rows_sit_in_each_record_s_full_row_chosen_by_their_chips_with_th
     assert wider > before + 100 and abs(page.locator("#right").bounding_box()["width"] - wider) < 8  # the next visit too
 
 
-def test_step_2_s_policy_columns_keep_a_choice_made_just_before_leaving(ui_page, tmp_path):
+def test_step_2_s_policy_columns_are_one_list_in_their_order_dragged_and_kept_even_just_before_leaving(ui_page, tmp_path):
     from er import cli
     uid = load_settings().data.unique_id
     home, ws = tmp_path / "workspaces", tmp_path / "workspaces" / "w"
     pd.DataFrame({uid: ["0001", "0002"], "FULL_NAME_KANA": ["ヤマダタロウ", "スズキハナコ"]}).to_parquet(tmp_path / "records.parquet", index=False)
-    pd.DataFrame({uid: [1, 1, 2], "PLAN": ["a", "b", "c"], "START": ["2020", "2021", "2022"]}).to_parquet(tmp_path / "contracts.parquet", index=False)
+    pd.DataFrame({uid: [1, 1, 2], "PLAN": ["a", "b", "c"], "START": ["2020", "2021", "2022"], "AGENT": ["x", "y", "z"]}).to_parquet(tmp_path / "contracts.parquet", index=False)
     assert cli.main(["create", "workspace", "w", "--home", str(home), "--format", "json"]) == 0
-    for words in (["load", "records", str(tmp_path / "records.parquet")], ["load", "details", str(tmp_path / "contracts.parquet")]):
+    for words in (["load", "records", str(tmp_path / "records.parquet")], ["load", "details", str(tmp_path / "contracts.parquet"), "--columns", "PLAN", "START"]):
         assert cli.main([*words, "--workspace", str(ws), "--format", "json"]) == 0
+    shown = lambda: json.loads((ws / "details" / "details.json").read_text(encoding="utf-8"))["shown"]
+    def until(want):
+        deadline = time.time() + 15
+        while shown() != want and time.time() < deadline:
+            time.sleep(0.2)
+        assert shown() == want
     page, server, httpd = ui_page(str(ws), str(home), viewport={"width": 1280, "height": 900})
     errors = []
     page.on("pageerror", lambda e: errors.append(str(e)))
     page.click(".navitem[data-screen=columns]")
-    page.wait_for_selector("#dcols input[data-col=START]:checked")
+    page.wait_for_selector("#dlist .drow.on")
+    on = lambda: [r.get_attribute("data-col") for r in page.locator("#dlist .drow.on").all()]
+    assert on() == ["PLAN", "START"] and page.locator("#dlist .drow:not(.on)[data-col]").count() == 1  # shown, in order; then the others
+    page.check("#dlist input[data-col=AGENT]")  # ticked: shown, last
+    until(["PLAN", "START", "AGENT"])
+    page.focus("#dlist .drow[data-col=AGENT]")
+    page.keyboard.press("Alt+ArrowUp")  # moved one place up, the keyboard staying on it
+    until(["PLAN", "AGENT", "START"])
+    assert page.evaluate("document.activeElement.dataset.col") == "AGENT"
+    rows = page.locator("#dlist .drow.on")
+    src, dst = rows.nth(2).bounding_box(), rows.nth(0).bounding_box()
+    page.mouse.move(src["x"] + 10, src["y"] + src["height"] / 2)
+    page.mouse.down()
+    page.mouse.move(dst["x"] + 10, dst["y"] + 4, steps=8)  # dragged by its dots above the first
+    page.mouse.up()
+    until(["START", "PLAN", "AGENT"])
+    assert "names each policy" in page.inner_text("#dlist .drow[data-col=START]")
+    page.fill("#dfind", "ag")
+    assert [r.get_attribute("data-col") for r in page.locator("#dlist .drow[data-col]").all()] == ["AGENT"]  # one search, both parts
+    page.fill("#dfind", "")
+
     page.evaluate("(() => { const real = runOnce; window.runOnce = (c, ...r) => c === 'describe records' ? new Promise((ok) => setTimeout(() => ok(real(c, ...r)), 3000)) : real(c, ...r); })()")
-    page.evaluate("go('columns')")  # drawn again, its file's description slow: a choice waits behind it
-    page.wait_for_selector("#dcols input[data-col=START]")
-    page.uncheck("#dcols input[data-col=START]")
-    page.evaluate("go('run')")  # left before the choice is saved
-    deadline = time.time() + 15
-    while json.loads((ws / "details" / "details.json").read_text(encoding="utf-8"))["shown"] != ["PLAN"] and time.time() < deadline:
-        time.sleep(0.2)
-    assert json.loads((ws / "details" / "details.json").read_text(encoding="utf-8"))["shown"] == ["PLAN"] and not errors  # saved all the same
-    page.click(".navitem[data-screen=columns]")
-    page.wait_for_selector("#dcols input[data-col=PLAN]")
-    page.click("#dall")  # every column at once
-    deadline = time.time() + 15
-    while json.loads((ws / "details" / "details.json").read_text(encoding="utf-8"))["shown"] != ["PLAN", "START"] and time.time() < deadline:
-        time.sleep(0.2)
-    assert page.is_checked("#dcols input[data-col=START]") and not errors
+    page.evaluate("go('columns')")  # drawn again, its file's description slow: a change waits behind it
+    page.wait_for_selector("#dlist input[data-col=PLAN]")
+    page.uncheck("#dlist input[data-col=PLAN]")
+    page.evaluate("go('run')")  # left before the change is saved
+    until(["START", "AGENT"])
+    assert not errors  # saved all the same
 
 
 def test_a_command_the_server_started_without_says_start_it_again_and_frees_its_buttons(ui_page, tmp_path, monkeypatch):

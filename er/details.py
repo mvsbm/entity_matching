@@ -115,10 +115,10 @@ def _counted(ws: Path, uid: str) -> str | None:  # what the records with a row w
     return part and f"{part.name} {uid}"
 
 
-def _known(columns: list[str], shown: list[str], name: str) -> list[str]:  # the file's columns named, in its order
+def _known(columns: list[str], shown: list[str], name: str) -> list[str]:  # the file's columns named, in the order given: the first names each row on its chip
     if unknown := [c for c in shown if c not in columns]:
         raise InputError(f"{name} has no column {', '.join(unknown)}", fix=f"one of {', '.join(columns)}")
-    return [c for c in columns if c in shown]
+    return list(dict.fromkeys(shown))
 
 
 def _here(a: dict) -> bool:
@@ -143,7 +143,7 @@ def _linked(con: duckdb.DuckDBPyConnection, ws: Path, uid: str, a: dict) -> dict
 
 
 def choose(ws: Path, shown: list[str]) -> dict:
-    """The columns people see, in the file's order. O(columns): matching reads none of it, so nothing runs again."""
+    """The columns people see, in the order given. O(columns): matching reads none of it, so nothing runs again."""
     with folder.writing(ws / DETAILS / ABOUT):
         a = about(ws)
         if a is None:

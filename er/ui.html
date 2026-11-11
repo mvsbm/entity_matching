@@ -140,16 +140,25 @@ tbody tr[aria-selected="true"] { background: var(--sel); color: var(--sel-ink); 
 .fullrows td.col { font: 12px ui-monospace, Menlo, monospace; color: var(--muted); }
 .fullrows tr.fr-different td { background: color-mix(in srgb, var(--bad-bg) 45%, transparent); }
 .fullrows .tablewrap { max-height: 56vh; }
-.data-top { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 16px; align-items: start; margin-bottom: 16px; } .data-top .card { margin: 0; }  /* step 2: the records and the details beside them */
+.data-top { display: grid; grid-template-columns: minmax(0, 3fr) minmax(0, 2fr); gap: 16px; align-items: start; margin-bottom: 16px; } .data-top > #details .card { margin: 0; }
+.data-left > :first-child .card, .data-left > .card:first-child { margin-top: 0; } #details { position: sticky; top: 72px; }  /* the policy columns in view while the customer's mapping scrolls */  /* step 2: the records and the details beside them */
 .data-top .answer { overflow-wrap: anywhere; }  /* a long file name wraps, never widens the card */
-@media (max-width: 1100px) { .data-top { grid-template-columns: minmax(0, 1fr); } }
+@media (max-width: 1100px) { .data-top { grid-template-columns: minmax(0, 1fr); } #details { position: static; } }
 tr.det-head td, tr.sec-head td { background: var(--primary-soft); } .fullrows tr.sec-head td.col { font: inherit; background: var(--primary-soft); }
 .sec { border: 0; background: none; padding: 0; font: inherit; font-weight: 600; color: var(--ink); cursor: pointer; white-space: nowrap; }  /* a section's name: a click folds it, or opens it */ .fullrows tr.det-head td.col { font: inherit; color: var(--ink); }  /* the section's name and its flag, in words, not a column's name */ tr.det-last td { border-bottom: 2px solid var(--line); }  /* the details file's rows, set apart from the record's own */
 td.det-v div { white-space: nowrap; overflow-wrap: normal; line-height: 24px; }
 .det-shared { background: var(--for-bg); color: var(--for); border-radius: 4px; padding: 1px 6px; font-weight: 500; }  /* a value the other record holds too: blue, as same is */
 .pdot { display: inline-block; width: 9px; height: 9px; border-radius: 3px; margin-right: 7px; vertical-align: 0; background: var(--pc, var(--faint)); flex: none; }  /* which chosen policy a line is */
 .det-pick { margin-top: 6px; } .det-pick .chip { border: 0; cursor: pointer; } .det-pick .chip[aria-pressed="true"] { background: var(--sel); color: var(--sel-ink); }  /* a row's values one to a line, so the same line is the same row in every column */
-#dcols td:first-child, #dcols th:first-child { width: 48px; }
+.dfind { margin: 10px 0 6px; } .dfind input { width: 100%; }
+.dlist { max-height: 440px; overflow: auto; border: 1px solid var(--line); border-radius: 8px; }  /* one list: the columns shown, in their order, then the others; it scrolls, the sections' names staying */
+.dsec { position: sticky; top: 0; z-index: 1; padding: 6px 12px; font-size: 11px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); background: var(--hover); border-bottom: 1px solid var(--line); }
+.drow { display: flex; align-items: center; gap: 8px; min-height: 34px; padding: 0 12px 0 6px; border-bottom: 1px solid var(--line); background: var(--surface); }
+.drow.on { cursor: grab; } .drow.on .name { font-weight: 500; } .drow.dragging { opacity: .4; } .drow:focus-visible { outline: 2px solid var(--primary); outline-offset: -2px; }
+.drow.drop-above { box-shadow: inset 0 2px 0 var(--primary); } .drow.drop-below { box-shadow: inset 0 -2px 0 var(--primary); }  /* where a dragged column lands */
+.drow .grab { width: 14px; text-align: center; color: var(--faint); font-size: 14px; flex: none; } .drow input { margin: 0; flex: none; }
+.drow .lead { font-size: 11px; color: var(--primary); background: var(--primary-soft); border-radius: 10px; padding: 1px 8px; white-space: nowrap; }
+.drow .meta { margin-left: auto; font-size: 12px; color: var(--faint); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 45%; }
 .fullrows table { min-width: 560px; } .fullrows td.col { white-space: nowrap; }
 .fullrows th:first-child, .fullrows td.col { position: sticky; left: 0; z-index: 1; background: var(--surface); }  /* the column's name stays as the records scroll by */
 .fullrows tr.fr-different td.col { background: color-mix(in srgb, var(--bad-bg) 45%, var(--surface)); } .fullrows tr.det-head td.col { background: var(--primary-soft); }
@@ -1817,22 +1826,47 @@ const JOINED = {you: "you", model: "the model", rule: "a rule"};  // describe re
 
 // Both or more records' full rows side by side, every column of the file, the different ones first; a column that a
 // comparison reads says how it was compared (explain pair's tests): method, score against its threshold, step, points.
-// A chosen policy's color, chosen to stand farthest from every color already in the table: of hues every 3° at two
-// lightnesses (OKLCH, chroma 0.15), the one whose least distance (OKLab) to those in use is largest. Any number of
-// policies gets one; the more there are, the closer the nearest two, never the same. One policy number, one color.
-const POL_TIERS = () => matchMedia("(prefers-color-scheme: dark)").matches ? [0.74, 0.62] : [0.52, 0.66];  // readable on the theme's surface
+// A chosen policy's color: each hue at its most vivid that a screen shows, at a lightness that reads on the theme's
+// surface (the page's own meanings, and a hue gone gray when dimmed, left out); of those, the one whose least distance
+// (OKLab) to every color already in the table, whichever record holds it, is largest. Any number of policies gets one;
+// the more there are, the closer the nearest two, never the same. One policy number, one color.
+const POL_MEANINGS = [28, 52, 147, 259];  // the hues of different's red, against's orange, people's green, same's blue (OKLCH)
+const polPools = {};
+function polPool() {
+  const dark = matchMedia("(prefers-color-scheme: dark)").matches, key = dark ? "dark" : "light";
+  if (polPools[key]) return polPools[key];
+  const rgb = (L, C, h) => {  // OKLCH to linear sRGB (Björn Ottosson's OKLab)
+    const a = C * Math.cos(h * Math.PI / 180), b = C * Math.sin(h * Math.PI / 180);
+    const l = (L + 0.3963377774 * a + 0.2158037573 * b) ** 3, m = (L - 0.1055613458 * a - 0.0638541728 * b) ** 3, s = (L - 0.0894841775 * a - 1.2914855480 * b) ** 3;
+    return [4.0767416621 * l - 3.3077115913 * m + 0.2309699292 * s, -1.2684380046 * l + 2.6097574011 * m - 0.3413193965 * s, -0.0041960863 * l - 0.7034186147 * m + 1.7076147010 * s];
+  };
+  const most = (L, h) => { let lo = 0, hi = 0.4; for (let i = 0; i < 20; i++) { const c = (lo + hi) / 2; if (rgb(L, c, h).every((x) => x >= -1e-4 && x <= 1.0001)) lo = c; else hi = c; } return lo; };
+  const band = dark ? [0.66, 0.82] : [0.56, 0.72], out = [];
+  for (let h = 0; h < 360; h += 2) {
+    if (POL_MEANINGS.some((m) => Math.abs(((h - m + 540) % 360) - 180) < 9)) continue;
+    let top = band[0], vivid = 0;
+    for (let L = band[0]; L <= band[1] + 1e-9; L += 0.02) { const c = most(L, h); if (c > vivid) { vivid = c; top = L; } }  // where the hue is most vivid
+    const yellow = h >= 65 && h <= 125;  // dimmed, a yellow goes olive: only its own lightness
+    for (const L of yellow ? [top] : [top, Math.min(band[1] + 0.06, Math.max(band[0] - 0.08, top + (top > (band[0] + band[1]) / 2 ? -0.14 : 0.14)))]) {
+      const C = Math.min(0.26, 0.94 * most(L, h));
+      if (C >= 0.13) out.push({css: `oklch(${L.toFixed(3)} ${C.toFixed(3)} ${h})`, lab: [L, C * Math.cos(h * Math.PI / 180), C * Math.sin(h * Math.PI / 180)], first: h === 290 && L === top});
+    }
+  }
+  return (polPools[key] = out);
+}
 function polColor(inUse) {
-  const lab = (L, h) => [L, 0.15 * Math.cos(h * Math.PI / 180), 0.15 * Math.sin(h * Math.PI / 180)];
   let best = null, far = -1;
-  for (const L of POL_TIERS()) for (let h = 0; h < 360; h += 3) {
-    const c = lab(L, (h + 290) % 360), near = Math.min(Infinity, ...inUse.map((u) => Math.hypot(c[0] - u[0], c[1] - u[1], c[2] - u[2])));
-    if (near > far) { far = near; best = {css: `oklch(${L} 0.15 ${(h + 290) % 360})`, lab: c}; }  // the first, violet; then each the farthest
+  for (const c of polPool()) {
+    const near = inUse.length ? Math.min(...inUse.map((u) => Math.hypot(c.lab[0] - u[0], c.lab[1] - u[1], c.lab[2] - u[2]))) : c.first ? 1 : 0;  // the first: violet
+    if (near > far) { far = near; best = c; }
   }
   return best;
 }
-const folds = {  // a full row's sections folded by this viewer: Policy information, Customer information; kept for the next visit
-  closed(k) { try { return localStorage.getItem(`fold-${k}`) === "1"; } catch { return false; } },
-  flip(k) { const was = this.closed(k); try { localStorage.setItem(`fold-${k}`, was ? "0" : "1"); } catch { /* not kept: open the next visit */ } },
+const folds = {  // the sections and lists this viewer folded: Policy information, Customer information, step 2's columns; kept for the next visit
+  saved(k) { try { return localStorage.getItem(`fold-${k}`); } catch { return null; } },  // null: never folded or opened here
+  closed(k, unset = false) { const v = this.saved(k); return v === null ? unset : v === "1"; },
+  set(k, closed) { try { localStorage.setItem(`fold-${k}`, closed ? "1" : "0"); } catch { /* not kept: open the next visit */ } },
+  flip(k) { this.set(k, !this.closed(k)); },
 };
 const secButton = (k, name) => `<button type="button" class="sec" data-sec="${k}" aria-expanded="${!folds.closed(k)}">${folds.closed(k) ? "▸" : "▾"} ${esc(name)}</button>`;
 function detailRows(det, ids, after = "", keep = () => true, chosen = {}) {
@@ -2308,9 +2342,9 @@ const SCREENS = {
           <select id="glevel" aria-label="How hard to match">${["easy", "medium", "hard"].map((x) => `<option value="${x}"${x === "medium" ? " selected" : ""}>${x[0].toUpperCase() + x.slice(1)}</option>`).join("")}</select>
           <button class="btn" id="gen">Generate</button></span></details>
         <div id="files" class="chips" style="margin-top:10px"></div>`;
-    el.innerHTML = head("columns") + `<div class="data-top"><div class="card" id="loaded"><div class="qa"><div class="q"><h2 class="question">Customer information</h2></div></div>${box}</div>
-      <div id="details"></div></div><div id="repairs"></div><div id="watch"></div><div id="out"></div><div id="flow"></div>${stepFoot("columns")}`;
-    if (!state.workspace) { el.querySelector(".data-top").remove(); $("out").innerHTML = emptyRun(); return; }  // a file goes into a workspace: choose one first
+    el.innerHTML = head("columns") + `<div class="data-top"><div class="data-left"><div class="card" id="loaded"><div class="qa"><div class="q"><h2 class="question">Customer information</h2></div></div>${box}</div>
+      <div id="repairs"></div><div id="watch"></div><div id="out"></div></div><div id="details"></div></div><div id="flow"></div>${stepFoot("columns")}`;
+    if (!state.workspace) { el.querySelector(".data-top").outerHTML = '<div id="out"></div>'; $("out").innerHTML = emptyRun(); return; }  // a file goes into a workspace: choose one first
     const answer = (d, w, last) => {  // did the file load? then what may hurt the matching
       const lost = (f) => { const x = d.fields.find((y) => y.field === f); return !x || x.filled === null; };
       const missing = [...d.needed.every.filter(lost), ...d.needed.one_of.filter((grp) => grp.every(lost)).map((grp) => grp.join(" or "))];
@@ -2533,16 +2567,13 @@ const SCREENS = {
     };
     const detailsLine = (dt) => `${esc(dt.file)} · ${plural(dt.rows, "row")}${dt.drawn ? ` · ${dt.drawn >= 2000 ? "about " : ""}${pct(dt.linked / dt.drawn)} of records have some` : ""}`;  // drawn: 2,000 records, or all of fewer
     let drawnDetails;  // the details card as last drawn: drawn again only when it changed, so a path being typed stays
-    const detailsCard = (dt) => {  // the details file people see above each record: which, how many records it reaches, which columns
+    const detailsCard = (dt) => {  // the policy file: which, how many records it reaches; one list of its columns, those shown first in their order
       if (JSON.stringify(dt) === drawnDetails || !$("details")) return;
       drawnDetails = JSON.stringify(dt);
       const load = `<label class="field" style="margin:12px 0 0"><span class="lab">Policy file</span><span class="loadrow"><input type="text" id="din" placeholder="a Parquet file, or a folder of them">
           <input type="text" id="dkey" aria-label="Its column of record IDs" placeholder="${esc($("dkey")?.placeholder || "ID column")}" style="flex:0 0 150px"><button class="btn" id="dload">Load</button></span></label>`;
-      const cols = dt && dt.columns.filter((c) => c.column !== dt.key);
-      $("details").innerHTML = `<div class="card"><div class="qa"><div class="q"><h2 class="question">Policy information</h2>${dt ? `<p class="answer">${detailsLine(dt)}</p>` : ""}</div></div>
-        ${dt ? `<div class="tablecard" style="margin-top:10px"><div class="tablewrap" style="max-height:320px"><table id="dcols"><thead><tr><th><input type="checkbox" id="dall" aria-label="Show every column"></th><th>Column</th><th class="num">Filled</th><th>Example</th></tr></thead>
-          <tbody><tr><td><span class="tag">key</span></td><td class="col">${esc(dt.key)}</td><td class="num">${pct((dt.columns.find((c) => c.column === dt.key) || {}).filled)}</td><td class="faint">the records' ID</td></tr>${cols.map((c) =>
-            `<tr><td><input type="checkbox" data-col="${esc(c.column)}" aria-label="Show ${esc(c.column)}"${dt.shown.includes(c.column) ? " checked" : ""}></td><td class="col">${esc(c.column)}</td><td class="num">${pct(c.filled)}</td><td class="wrap">${c.example === null ? '<span class="faint">—</span>' : esc(c.example)}</td></tr>`).join("")}</tbody></table></div></div>
+      $("details").innerHTML = `<div class="card"><div class="qa"><div class="q"><h2 class="question">Policy information</h2>${dt ? `<p class="answer">${detailsLine(dt)} · key ${esc(dt.key)}</p>` : ""}</div></div>
+        ${dt ? `<label class="find dfind">${icon("search")}<input type="text" id="dfind" placeholder="Find a column" aria-label="Find a column"></label><div class="dlist" id="dlist"></div>
           <details class="fold-line"><summary>Load another file</summary>${load}</details>` : load}</div>`;
       $("dload").onclick = () => {
         const file = $("din").value.trim();
@@ -2550,21 +2581,71 @@ const SCREENS = {
         take($("dload"), "Reading", baseName(file), "load details", {details_file: file, details_key: $("dkey").value.trim()});
       };
       $("din").onkeydown = (e) => { if (e.key === "Enter" && !e.isComposing) $("dload").click(); };
-      const each = () => [...($("dcols")?.querySelectorAll("input[data-col]") || [])];
-      const all = () => { const on = each().filter((x) => x.checked).length; $("dall").checked = on === each().length; $("dall").indeterminate = on > 0 && on < each().length; };
-      if ($("dall")) { all(); $("dall").onchange = () => { each().forEach((x) => { x.checked = $("dall").checked; }); save(); }; }
-      each().forEach((c) => c.onchange = () => { all(); save(); });
-      function save() {
-        const box = $("details"), words = argsFor("columns", "set details", {details_shown: each().filter((x) => x.checked).map((x) => x.dataset.col)});
-        queue(async () => {  // in turn, each as the chips were at its click: the last click wins, sent even if the page is left
+      if (!dt) { if (longRun) both().forEach((x) => { x.disabled = true; }); return; }
+      const info = Object.fromEntries(dt.columns.map((c) => [c.column, c])), all = dt.columns.map((c) => c.column).filter((c) => c !== dt.key);
+      let order = [...dt.shown], dragged = null;
+      const row = (c, n) => {  // a column: shown ones dragged by their dots, every one ticked or not
+        const i = info[c], on = n !== null;
+        return `<div class="drow${on ? " on" : ""}" data-col="${esc(c)}"${on ? ` draggable="true" tabindex="0" aria-label="${esc(c)}, ${n + 1} of ${order.length}: Alt+↑ or ↓ moves it"` : ""}>
+          <span class="grab" aria-hidden="true">${on ? "⠿" : ""}</span><input type="checkbox" data-col="${esc(c)}" aria-label="Show ${esc(c)}"${on ? " checked" : ""}>
+          <span class="name">${esc(c)}</span>${on && !n ? '<span class="lead">names each policy</span>' : ""}<span class="meta">${pct(i.filled)}${i.example === null ? "" : ` · ${esc(i.example)}`}</span></div>`;
+      };
+      const show = () => {  // the list as the order is now, the search kept
+        const q = $("dfind").value.trim().toLowerCase(), keep = (c) => !q || c.toLowerCase().includes(q), rest = all.filter((c) => !order.includes(c));
+        $("dlist").innerHTML = `<div class="dsec">Shown in reviews · ${fmt(order.length)}</div>${order.map((c, n) => keep(c) ? row(c, n) : "").join("") || '<div class="drow none faint">None yet: tick a column below</div>'}
+          <div class="dsec">Other columns · ${fmt(rest.length)}</div>${rest.map((c) => keep(c) ? row(c, null) : "").join("")}`;
+      };
+      const save = () => {  // in turn, each as the order was then: the last change wins, sent even if the page is left
+        show();
+        const box = $("details"), words = argsFor("columns", "set details", {details_shown: [...order]});
+        queue(async () => {
           const r = await runOnce("set details", words);
           if (!box.isConnected) return;
-          if (r.event === "error") { box.querySelector(".banner")?.remove(); box.insertAdjacentHTML("afterbegin", banner(r)); drawnDetails = null; return; }
+          box.querySelector(":scope > .banner")?.remove();
+          if (r.event === "error") { box.insertAdjacentHTML("afterbegin", banner(r)); drawnDetails = null; return; }
           const {event, command, ...dt} = r;  // as describe workspace gives it, so the card isn't drawn again for nothing
           drawnDetails = JSON.stringify(dt);
-          box.querySelector(".answer").innerHTML = detailsLine(dt);
         });
-      }
+      };
+      const list = $("dlist");
+      $("dfind").oninput = show;
+      list.onchange = (e) => {  // ticked: shown, last; unticked: back among the others
+        const x = e.target.closest("input[data-col]");
+        if (!x) return;
+        order = x.checked ? [...order, x.dataset.col] : order.filter((c) => c !== x.dataset.col);
+        save();
+      };
+      list.onkeydown = (e) => {  // Alt+↑ or ↓: a shown column moved one place, the keyboard staying on it
+        const r = e.target.closest(".drow.on"), step = {ArrowUp: -1, ArrowDown: 1}[e.key];
+        if (!r || !step || !e.altKey) return;
+        e.preventDefault();
+        const at = order.indexOf(r.dataset.col), to = at + step;
+        if (to < 0 || to >= order.length) return;
+        [order[at], order[to]] = [order[to], order[at]];
+        save();
+        list.querySelector(`.drow[data-col="${CSS.escape(r.dataset.col)}"]`)?.focus();
+      };
+      list.ondragstart = (e) => { const r = e.target.closest(".drow.on"); dragged = r?.dataset.col; r?.classList.add("dragging"); e.dataTransfer.effectAllowed = "move"; };
+      list.ondragend = () => { list.querySelector(".dragging")?.classList.remove("dragging"); list.querySelectorAll(".drop-above, .drop-below").forEach((x) => x.classList.remove("drop-above", "drop-below")); };
+      list.ondragover = (e) => {  // where it would land, marked
+        const r = e.target.closest(".drow.on");
+        if (!dragged || !r) return;
+        e.preventDefault();
+        const below = e.clientY > r.getBoundingClientRect().top + r.offsetHeight / 2;
+        list.querySelectorAll(".drop-above, .drop-below").forEach((x) => x.classList.remove("drop-above", "drop-below"));
+        if (r.dataset.col !== dragged) r.classList.add(below ? "drop-below" : "drop-above");
+      };
+      list.ondrop = (e) => {
+        e.preventDefault();
+        const r = e.target.closest(".drow.on");
+        if (!dragged || !r || r.dataset.col === dragged) return;
+        const below = e.clientY > r.getBoundingClientRect().top + r.offsetHeight / 2;
+        order = order.filter((c) => c !== dragged);
+        order.splice(order.indexOf(r.dataset.col) + (below ? 1 : 0), 0, dragged);
+        dragged = null;
+        save();
+      };
+      show();
       if (longRun) both().forEach((x) => { x.disabled = true; });
     };
     const wireLoad = () => {
