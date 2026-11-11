@@ -329,6 +329,52 @@ INPUTS = "inputs"  # the records files a workspace was given, each copied into a
 SUMS = ".sha256"  # in each part: each file's SHA-256 and its path in the part, so content given twice is known without reading it
 LAST = "last"  # in inputs/: the name of the part given last, held already or new, which a run given no file reads
 NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
+UPLOADS = ".uploads"  # files the page sent (nayose open ui), read once by the command they were sent for: taken in, or kept as the details file
+STALE = 3600  # seconds: an upload this old was never read, and goes at the next one
+
+
+def remove(p: Path) -> None:  # a file or a folder, as far as it goes: one held open elsewhere stays
+    try:
+        shutil.rmtree(p) if p.is_dir() else p.unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
+def receive(ws: Path, name: str, size: int, read: Callable[[int], bytes], into: str | None = None, first: bool = True) -> Path:
+    """The `size` bytes the page sends, read in pieces, written to the workspace's uploads as `name`, in the folder
+    `into` when several files are one (the first of them clearing it). A file is whole or absent: written beside, then
+    renamed. The file, or its folder. O(bytes)."""
+    if not (ws / "columns.toml").is_file():
+        raise InputError(f"no workspace at {ws}", fix="create it: nayose create workspace NAME")
+    names = [x for x in (into, name) if x is not None]
+    if not name or any(x != Path(x).name or x.startswith(".") for x in names):
+        raise InputError(f"{name!r}: not a file name", fix="send a file, or give its path")
+    up = ws / UPLOADS
+    up.mkdir(exist_ok=True)
+    for old in up.iterdir():
+        if time.time() - old.stat().st_mtime > STALE:
+            remove(old)
+    if first:
+        remove(up / names[0])
+    if (free := shutil.disk_usage(up).free) < size:
+        raise InputError(f"no room for {name}: {size:,} bytes, {free:,} free", fix="free some disk space, or give the file's path on this computer")
+    out = up.joinpath(*names)
+    out.parent.mkdir(exist_ok=True)
+    part, left = out.with_name(f".{out.name}.part"), size
+    with open(part, "wb") as f:
+        while left and (got := read(min(left, 1 << 20))):
+            f.write(got)
+            left -= len(got)
+    if left:
+        part.unlink(missing_ok=True)
+        raise InputError(f"{name}: cut short, {size - left:,} of {size:,} bytes came", fix="send it again")
+    os.replace(part, out)
+    return up / names[0]
+
+
+def uploaded(ws: Path, path: str | Path) -> Path | None:  # what the page sent that `path` names: a file or folder in the workspace's uploads
+    p = Path(path).expanduser()
+    return p.resolve() if p.exists() and p.resolve().parent == (ws / UPLOADS).resolve() else None
 
 
 def create(home: Path, name: str, columns: str) -> Path:

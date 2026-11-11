@@ -1,12 +1,15 @@
 """nayose open ui: the commands in a browser, on this machine only. The page (er/ui.html) holds the screens: which
 commands each one places, in which order, with which parameters taken from what the person typed, and how it draws
-their results. The server knows nothing of the screens. It serves the page and three endpoints:
+their results. The server knows nothing of the screens. It serves the page and these endpoints:
 
     GET  /api/commands          every command's declaration (er.cli.COMMANDS): the page builds its forms from them
     POST /api/run               {"command": "list pairs", "args": {...}} → the job, and the nayose command it runs;
                                 with "dry": true, the command only, for the page to show before it runs
     GET  /api/job/<id>?from=n   the job's events from the n-th on, whether it ended, and its exit code
     GET  /api/running           the long command running now, if any: {job, command, workspace, since}, for a page drawn since it began
+    POST /api/upload?workspace=W&name=N[&folder=F&first=0]
+                                a file dropped on the page, its bytes the body: into the workspace's uploads (er.folder.receive),
+                                for the load command the page runs next with the path it answers {path}
 
 Each job is parsed by nayose's own parser, built to raise a refusal rather than print it and exit: quick jobs run in
 threads, which can't share the process's stderr. A quick command (a list, a describe, one answer) runs in this
@@ -31,7 +34,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
-from er import cli
+from er import cli, folder
 from er.config import InputError
 from er.io import CHILD
 
@@ -223,6 +226,8 @@ def handler(server: Server):
         def do_POST(self) -> None:
             if not self._allowed():
                 return
+            if urlparse(self.path).path == "/api/upload":
+                return self._upload()
             if urlparse(self.path).path != "/api/run":
                 return self._send(404, {"error": "no such page"})
             try:
@@ -233,6 +238,16 @@ def handler(server: Server):
             except (InputError, json.JSONDecodeError) as e:
                 return self._send(400, {"error": str(e), "fix": getattr(e, "fix", "")})
             self._send(200, dict(job=key, command=shlex.join(["nayose", *job.words])))
+        def _upload(self) -> None:  # a browser gives a dropped file's bytes, never its path
+            q = {k: v[0] for k, v in parse_qs(urlparse(self.path).query).items()}
+            size = int(self.headers.get("Content-Length") or 0)
+            try:
+                top = folder.receive(Path(q.get("workspace", "")), q.get("name", ""), size, self.rfile.read, q.get("folder"), q.get("first", "1") == "1")
+            except InputError as e:
+                while size > 0 and (got := self.rfile.read(min(size, 1 << 20))):  # the rest read, so the browser hears why and not a reset
+                    size -= len(got)
+                return self._send(400, {"error": str(e), "fix": e.fix})
+            self._send(200, dict(path=str(top)))
     return Handler
 
 

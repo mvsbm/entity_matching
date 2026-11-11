@@ -1,6 +1,6 @@
 """A details file: rows about the records (any number for one record, found by its ID) that people see above it as
 they review, and that matching never reads. The workspace keeps where the file is, its key column and the columns
-shown (details/details.json), not a copy: loading reads the file's footer and first rows, and a card reads the file
+shown (details/details.json), not a copy (a file the page sent, it keeps there): loading reads the file's footer and first rows, and a card reads the file
 itself, only the rows of its records. Their IDs are compared as the file holds its key, so no row is changed to be
 compared: a number key by its value, a text one as given, without its leading zeros, or padded as the file pads."""
 import json
@@ -45,6 +45,15 @@ def load(ws: Path, path: str, key: str | None, shown: list[str] | None, uid: str
     with a row, on a sample of SAMPLE, one scan of the key column."""
     if not (ws / "columns.toml").is_file():
         raise InputError(f"no workspace at {ws}", fix="create it: nayose create workspace NAME")
+    sent = folder.uploaded(ws, path)  # sent by the page: the workspace's own once it loads, in details/; refused, gone
+    try:
+        return _load(ws, path, key, shown, uid, sent)
+    finally:
+        if sent:
+            folder.remove(sent)
+
+
+def _load(ws: Path, path: str, key: str | None, shown: list[str] | None, uid: str, sent: Path | None) -> dict:
     files, given = source.find(path), Path(path).expanduser()
     for f in files:
         source.check_parquet(f)
@@ -73,10 +82,18 @@ def load(ws: Path, path: str, key: str | None, shown: list[str] | None, uid: str
     a = dict(file=name, rows=rows, key=key, columns=[dict(column=c, filled=1 - nulls[c] / rows if rows else 0.0, example=example[c]) for c in columns],
              shown=shown, paths=[str(f.resolve()) for f in files], number=types[key].split("(")[0] in NUMBERS,
              pad=widths.pop() if len(widths) == 1 and all(k.isascii() and k.isdigit() for k in keys) else None)  # every ID digits of one width: the file pads them
-    a.update(_linked(con, ws, uid, a))
     (ws / DETAILS).mkdir(exist_ok=True)
+    if sent:  # moved, not copied: one rename on the workspace's disk
+        kept, inside = ws / DETAILS / sent.name, [f.resolve().relative_to(sent) for f in files] if sent.is_dir() else []
+        folder.remove(kept)
+        os.replace(sent, kept)
+        a["paths"] = [str((kept / f).resolve()) for f in inside] or [str(kept.resolve())]
+    a.update(_linked(con, ws, uid, a))
     with folder.writing(ws / DETAILS / ABOUT):
         replace_text(ws / DETAILS / ABOUT, json.dumps(a, ensure_ascii=False, indent=1))
+    for x in (ws / DETAILS).iterdir():  # a file the page sent that this one replaces
+        if x.name != ABOUT and not x.name.startswith(".") and not any(Path(p).resolve().is_relative_to(x.resolve()) for p in a["paths"]):
+            folder.remove(x)
     return described(ws)
 
 

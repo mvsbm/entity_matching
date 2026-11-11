@@ -1084,7 +1084,12 @@ def hints(d: dict, con, s, p, feats: list[dict], ws: str | None, field_of: Calla
 
 def load_records(a: dict, emit: "Emit") -> dict:
     ws, s = Path(a["workspace"]), settings_for(a)
-    part, copied = folder.take_in(ws, a["input"], s.input, s.paths["reference"], progress=lambda n, whole: emit.progress(n, whole, "rows"))
+    sent = folder.uploaded(ws, a["input"])  # sent by the page: read once, then gone, taken in or refused
+    try:
+        part, copied = folder.take_in(ws, a["input"], s.input, s.paths["reference"], progress=lambda n, whole: emit.progress(n, whole, "rows"))
+    finally:
+        if sent:
+            folder.remove(sent)
     return {**describe_records({**a, "input": str(part)}, emit), "loaded": str(part), "copied": copied}
 
 
