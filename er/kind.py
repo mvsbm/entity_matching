@@ -29,11 +29,6 @@ from pathlib import Path
 import duckdb
 import numpy as np
 import pandas as pd
-from scipy.stats import beta
-from sklearn.ensemble import HistGradientBoostingClassifier
-from sklearn.feature_extraction.text import CountVectorizer
-from sklearn.linear_model import LogisticRegression
-from sklearn.model_selection import StratifiedKFold, cross_val_predict
 
 from er.config import InputError, KindSpec, Standardization, legal_pattern, lit, q
 from er.standardize import normalize
@@ -67,6 +62,8 @@ class NameModel:
 
     @classmethod
     def fit(cls, texts: pd.Series, y: np.ndarray, ngram: int) -> "NameModel":
+        from sklearn.feature_extraction.text import CountVectorizer
+        from sklearn.linear_model import LogisticRegression
         vec = CountVectorizer(analyzer="char", ngram_range=(1, ngram), binary=True, min_df=2)
         m = LogisticRegression(C=1.0, max_iter=3000).fit(vec.fit_transform(texts.fillna("")), y)
         return cls(vec.get_feature_names_out().tolist(), m.coef_[0], float(m.intercept_[0]), ngram)
@@ -140,7 +137,7 @@ SAYS = {PERSON: "1 person", COMPANY: "2 company", UNSURE: "0 not sure"}
 
 @dataclass(frozen=True)
 class Fitted:  # the combiner and the lines placed on its out-of-fold answers: one without the other can't be
-    combiner: HistGradientBoostingClassifier
+    combiner: "HistGradientBoostingClassifier"  # noqa: F821 — scikit-learn and SciPy are imported where a model is fitted: a second off every command that fits none
     line_company: float                       # above 1: never
     line_person: float
     person_error: float | None                # the measured wrong share above the person line
@@ -220,6 +217,7 @@ def lines(p: np.ndarray, company: np.ndarray, spec: KindSpec) -> tuple[float, fl
     1,000 answers, 2 steps broke the budget in 4 of 60 trials); the person line the lowest whose labelled wrong share
     has a one-sided 95% upper bound (Clopper–Pearson) within person_wrong_at_most: with none wrong, 300 answers above
     it. A share measured on few answers can hide a rate over budget (reports/choose_kind.md). Above 1: never."""
+    from scipy.stats import beta
     grid = list(spec.grid)
     clean = [g for g in grid if not ((p >= g) & ~company).any() and (p >= g).any()]
     steps = spec.margin_steps + (len(p) < spec.labels_to_draw)  # fewer answers than the measuring draw: one step stricter
@@ -264,6 +262,8 @@ def classifier(settings, spec: KindSpec, labels: pd.DataFrame | None = None) -> 
     X = c.features(lab["name"], flag, col("birth_date"))
     c.blank = np.isnan(X).all(axis=0)
     X = np.where(c.blank, 0.0, X)
+    from sklearn.ensemble import HistGradientBoostingClassifier
+    from sklearn.model_selection import StratifiedKFold, cross_val_predict
     make = lambda: HistGradientBoostingClassifier(max_depth=spec.depth, max_iter=100, learning_rate=0.1, random_state=0)
     oof = cross_val_predict(make(), X, y, cv=StratifiedKFold(5, shuffle=True, random_state=0), method="predict_proba")[:, 1]
     c.fitted = Fitted(make().fit(X, y), *lines(oof[measure], y[measure], spec))

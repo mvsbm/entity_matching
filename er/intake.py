@@ -534,9 +534,10 @@ def rows_in(f: Path) -> int:  # about how many records a file holds, for progres
 # ---------- one file read ----------
 
 def read_one(f: Path, out: Path, spec: InputSpec, m: Model, accepted: frozenset[str], strict: bool,
-             progress: Callable[[int], None] | None = None) -> tuple[dict, list[dict], list[dict]]:
+             progress: Callable[[int], None] | None = None, shown: Callable[[str, object], None] | None = None) -> tuple[dict, list[dict], list[dict]]:
     """One file into `out` (Parquet, every column text): its facts (counts only), its proposals, its unread rows;
-    `progress` told the rows read after each chunk."""
+    `progress` told the rows read after each chunk; `shown` its columns' names ("columns") once its header is read,
+    then its first chunk as read ("first", an Arrow table), as each comes."""
     fmt, delimiter, quotes = sniff(f)
     chunks = parquet_chunks(f) if fmt == "parquet" else iter(())  # a Parquet file's records come by chunk, by column
     rows = iter([(0, next(chunks))]) if fmt == "parquet" else text_rows(f, fmt, delimiter, quotes)
@@ -560,6 +561,8 @@ def read_one(f: Path, out: Path, spec: InputSpec, m: Model, accepted: frozenset[
         names.append(name)
         seen.add(name.casefold())
     width, nulls = len(names), frozenset(spec.nulls)
+    if shown:
+        shown("columns", list(names))
     null_set, utf8 = pa.array(sorted(nulls), pa.string()), spec.encodings[0] == "utf-8"
     facts = dict(file=f.name, format=fmt, delimiter=delimiter, quotes=quotes, columns=width, rows=0, decoded={}, fixed={}, proposed={}, unread=0, notes=[])
     if above:
@@ -633,10 +636,13 @@ def read_one(f: Path, out: Path, spec: InputSpec, m: Model, accepted: frozenset[
     def write(cols: list) -> None:  # each column a list of values, or Arrow text
         nonlocal writer
         table = pa.table({n: c.cast(pa.string()) if isinstance(c, pa.Array) else pa.array(c, pa.string()) for n, c in zip(names, cols)})
-        if writer is None:
+        first = writer is None
+        if first:
             out.parent.mkdir(parents=True, exist_ok=True)
             writer = pq.ParquetWriter(out, table.schema)
         writer.write_table(table)
+        if first and shown and table.num_rows:
+            shown("first", table)
     block: list[tuple[int, list]] = []
     def study(cols: list, utf8s: list[bool] | None = None) -> None:  # the first chunk learns each column from the values it reads for sure: what they look like, their encoding, whether they are numbers
         encs = [Counter() for _ in cols]
@@ -875,7 +881,7 @@ def sha256(f: Path) -> str:
 
 
 def take(part: Path, given: dict[Path, str], spec: InputSpec, reference: Path, accepted: frozenset[str] = frozenset(), strict: bool = False,
-         progress: Callable[[int, int], None] | None = None) -> dict:
+         progress: Callable[[int, int], None] | None = None, shown: Callable[[str, object], None] | None = None) -> dict:
     """Read every file given (file → its name in the part) into part/read/, and write what was found: intake.json,
     proposals.parquet, unread.parquet. Read again (with more kinds accepted), each read file keeps the SHA-256 of what
     it replaced, so a run that read the earlier one still finds its file (er.folder.inputs). `progress` told the rows
@@ -894,7 +900,8 @@ def take(part: Path, given: dict[Path, str], spec: InputSpec, reference: Path, a
         if any(x["read"] == (Path(READ) / rel).as_posix() for x in files):  # x.csv and x.csv.parquet: one would overwrite the other
             raise InputError(f"{name} and {next(x['given'] for x in files if x['read'] == (Path(READ) / rel).as_posix())} would be read into one file",
                              fix="rename one of them, then give them again")
-        facts, p, u = read_one(f, tmp / READ / rel, spec, m, accepted, strict, progress and (lambda n, b=seen: progress(b + n, max(whole, b + n))))
+        facts, p, u = read_one(f, tmp / READ / rel, spec, m, accepted, strict, progress and (lambda n, b=seen: progress(b + n, max(whole, b + n))),
+                               None if files else shown)  # the first file's: what a person sees first
         seen += facts["rows"]
         sha = sha256(tmp / READ / rel)
         files.append(dict(facts, given=name, read=(Path(READ) / rel).as_posix(), sha256=sha,

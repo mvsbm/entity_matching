@@ -603,3 +603,20 @@ def test_a_part_s_columns_are_described_once_and_a_mapping_reads_only_what_it_ch
     assert describe() == describe(fresh=True) and sampled == [1, 1]
     (part / source.COLUMNS_KEPT).write_text("{cut short", encoding="utf-8")  # a kept copy unreadable: made again, never a failure
     assert describe()["records"] == first["records"]
+
+
+def test_a_load_says_its_columns_then_its_first_rows_counted_before_its_result(tmp_path, capsys):
+    from er import cli
+    uid = load_settings().data.unique_id
+    rows = [f"{uid},FULL_NAME_KANA,TEL"] + [f"{i:04d},{'ヤマダタロウ' if i % 3 else ''},{'NULL' if i % 4 == 0 else 1000 + i}" for i in range(40)]
+    (tmp_path / "r.csv").write_text("\n".join(rows) + "\n", encoding="utf-8")
+    assert cli.main(["create", "workspace", "w", "--home", str(tmp_path), "--format", "json"]) == 0
+    capsys.readouterr()
+    assert cli.main(["load", "records", str(tmp_path / "r.csv"), "--workspace", str(tmp_path / "w"), "--format", "json"]) == 0
+    events = [json.loads(x) for x in capsys.readouterr().out.splitlines()]
+    early = [e["early"] for e in events if e["event"] == "line" and "early" in e]
+    result = events[-1]
+    assert result["event"] == "result" and [d["records"] for d in early] == [None, 40]  # the names at once, then the first chunk counted, then the result
+    assert [c["column"] for c in early[0]["columns"]] == [c["column"] for c in result["columns"]] and all(c["filled"] is None for c in early[0]["columns"])
+    assert [(c["column"], c["filled"]) for c in early[1]["columns"]] == [(c["column"], c["filled"]) for c in result["columns"]]  # one chunk: its counts are the file's
+    assert {s["feature"]: s["filled"] for s in early[1]["slots"] if s["filled"] is not None} == {s["feature"]: s["filled"] for s in result["slots"] if s["filled"] is not None}
