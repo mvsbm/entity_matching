@@ -1,7 +1,9 @@
 """Any records file as it comes, read into one clean Parquet before the door (er.source): the intake.
 
-A CSV or TSV is split on its own bytes (Python's csv over a latin-1 view, which keeps every byte as one character), so
-each value, in whatever encoding, survives to be decoded on its own: in the one of [input] encodings it decodes in
+A CSV or TSV is split on its own bytes, so each value, in whatever encoding, survives to be decoded on its own: its
+plain lines by Arrow's parser, the lines that hold a quote, a NUL or nothing by Python's csv over a latin-1 view (which
+keeps every byte as one character), from each one until a record ends before a plain line: the records Python's csv
+alone would give. Each value is decoded in the one of [input] encodings it decodes in
 strictly, else in its column's. What loses nothing is fixed at once: control bytes, zero-width characters and BOMs
 removed, placeholder nulls ([input] nulls), values of spaces alone and numbers a spreadsheet cut short (1.23E+11) made missing, 12345.0 read
 as 12345, a value written as a list (a Parquet list column, or text like ["8700848"]) read as its item: the first, when
@@ -39,6 +41,7 @@ from pathlib import Path
 import numpy as np
 import pyarrow as pa
 import pyarrow.compute as pc
+import pyarrow.csv as pacsv
 import pyarrow.parquet as pq
 
 from er.config import InputError
@@ -49,7 +52,7 @@ SUFFIXES = (".parquet", ".csv", ".tsv", ".txt")  # the records files a folder or
 KINDS = ("realign", "garbled", "encoding")
 KEEP = 1000  # proposals of each kind kept to show
 ODD = 0.1  # past this share of records that don't line up, the file is refused: its delimiter or header is wrong
-CHUNK = 200_000  # shortcut: a CSV split in one Python pass (its values settled by column, as a Parquet file's), about 20 s a million records of 25 columns (Parquet about 11 s); past ~20M rows on one machine, split the file
+CHUNK = 200_000  # shortcut: about 10 s a million records of 25 columns from CSV, by column as from Parquet (about 9 s); past ~20M rows on one machine, split the file
 CACHE = Path(os.environ.get("XDG_CACHE_HOME") or Path.home() / ".cache") / "nayose"  # what is built from the reference files: once each time they or its code change, not once a process
 CODE = hashlib.sha256(Path(__file__).read_bytes()).hexdigest()[:16]  # this module as it is: a copy its older self built is built again
 CONTROL = re.compile("[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f​-‍⁠﻿]")
@@ -475,6 +478,47 @@ def as_text(fields: tuple[str, ...]) -> pa.Array | None:
     return a
 
 
+SPLIT = 1 << 26  # a CSV's plain lines handed to Arrow in stretches of about 64 MB, at line ends: memory bounded at any size
+ODD_LINES = 50  # past one line in this many holding a quote or a NUL, a CSV is read by Python's csv alone: Arrow's turns gain nothing
+
+
+def plain_csv(m: mmap.mmap, quotes: bool) -> list[int] | None:
+    """Where a CSV's lines that Python's csv must read itself start, sorted: those holding a quote (when the file
+    quotes), a NUL, or nothing; every other line is split on its delimiter by Python's csv and Arrow's alike. None
+    when Arrow can't take the rest: a CR alone (a line end only text mode reads), or more such lines than one in
+    ODD_LINES. O(bytes) in C, plus O(those lines)."""
+    if re.search(rb"\r(?!\n)", m):
+        return None
+    most, starts = max(1000, m.size() // 80 // ODD_LINES), set()  # lines of about 80 bytes at least: a cap found before the whole file is walked
+    for mark in ((b'"', b"\x00") if quotes else (b"\x00",)):
+        at = m.find(mark)
+        while at >= 0:
+            starts.add(m.rfind(b"\n", 0, at) + 1)
+            if len(starts) > most:
+                return None
+            at = m.find(mark, (m.find(b"\n", at) + 1) or m.size())
+    starts.update(x.end() for x in re.finditer(rb"\n(?=\r?\n)", m))  # an empty line: Python's csv gives no record, Arrow's a field
+    return sorted(starts)
+
+
+def arrow_split(buf: bytes, delimiter: str, width: int) -> list[pa.Array] | None:  # plain lines split by Arrow, each field its bytes; None when they don't line up as `width` fields
+    try:
+        t = pacsv.read_csv(pa.BufferReader(buf), read_options=pacsv.ReadOptions(autogenerate_column_names=True, block_size=1 << 24),
+                           parse_options=pacsv.ParseOptions(delimiter=delimiter, quote_char=False, double_quote=False, escape_char=False),
+                           convert_options=pacsv.ConvertOptions(column_types={f"f{i}": pa.binary() for i in range(width)}))
+    except pa.ArrowInvalid:  # a line of another width, or one longer than a block: Python splits them
+        return None
+    return [c.combine_chunks() for c in t.columns] if t.num_columns == width else None
+
+
+class Fields:  # a column of fields Arrow split, each as Python's csv gives it (its bytes as latin-1 characters), read one at a time
+    def __init__(self, a: pa.Array):
+        self.a = a
+
+    def __getitem__(self, i: int) -> str:
+        return self.a[int(i)].as_py().decode("latin-1")
+
+
 def rows_in(f: Path) -> int:  # about how many records a file holds, for progress: Parquet's own count; text, its first megabyte's lines, scaled to its size
     try:
         with f.open("rb") as h:
@@ -502,7 +546,8 @@ def read_one(f: Path, out: Path, spec: InputSpec, m: Model, accepted: frozenset[
         k = next((i for i, (_, x) in enumerate(lines[:10]) if len(x) > wide / 2), 0)  # a title line above the header, far narrower, is skipped, and said
         above, header = lines[:k], lines[k][1]
         trailing = sum(len(x) == len(header) + 1 and not x[-1] for _, x in lines[k + 1:]) > len(lines[k + 1:]) / 2  # a writer that ends every record with a delimiter
-        rows = itertools.chain(lines[k + 1:], rows)
+        head, last = lines[k + 1:], lines[-1][0]  # the records read already, and the line they end on
+        rows = itertools.chain(head, rows)
     except StopIteration:
         raise InputError(f"{f}: empty", fix="give a file with a header line and records") from None
     given = [CONTROL.sub("", (decodings(h, spec.encodings) or [("", "")])[0][1]).strip() or f"column_{i + 1}" for i, h in enumerate(header)]
@@ -628,6 +673,77 @@ def read_one(f: Path, out: Path, spec: InputSpec, m: Model, accepted: frozenset[
         if first:
             study(cols, [t for _, t in arrays])
         quick([a for a, _ in arrays], [t for _, t in arrays], cols, lines)
+    def by_arrow(mm: mmap.mmap, specials: list[int], head: list, line: int) -> None:
+        # The rest of a CSV past the lines read already (head, up to line `line`): plain lines split by Arrow, those
+        # Python's csv must read from each special line on, until a record of theirs ends before a plain line. The
+        # same records in the same order, the same lines, as Python's csv alone gives: chunks of CHUNK rows, odd rows apart.
+        parts, n = [], 0  # rows that line up, waiting for a chunk: (each column's fields, their lines)
+        def put(cols: list[pa.Array], at: np.ndarray) -> None:
+            nonlocal parts, n
+            parts.append((cols, at))
+            n += len(at)
+            while n >= CHUNK:
+                cols = [pa.concat_arrays([p[0][j] for p in parts]) for j in range(width)]
+                at = np.concatenate([p[1] for p in parts])
+                flush_split([c.slice(0, CHUNK) for c in cols], at[:CHUNK])
+                parts, n = ([([c.slice(CHUNK) for c in cols], at[CHUNK:])] if len(at) > CHUNK else []), n - CHUNK
+        def python(rows: list) -> None:  # rows Python's csv read: those that line up wait with the rest, the others are odd
+            good = [(at, x) for at, x in rows if len(x) == width]
+            odd.extend((at, x) for at, x in rows if len(x) != width)
+            if good:
+                put([pa.array([x[j].encode("latin-1") for _, x in good], pa.binary()) for j in range(width)], np.array([at for at, _ in good], np.int64))
+            if len(odd) > 1000 and (seen := facts["rows"] + n + len(odd)) >= CHUNK:  # judged on a chunk at least, as one by one is
+                lined_up(seen)
+        python(head)
+        pos, size, i = 0, mm.size(), 0
+        for _ in range(line):  # past the lines read already: no CR alone, so a line ends at its LF
+            pos = (mm.find(b"\n", pos) + 1) or size
+        while pos < size:
+            while i < len(specials) and specials[i] < pos:
+                i += 1
+            nxt = specials[i] if i < len(specials) else size
+            while pos < nxt:  # plain lines, a stretch at a time
+                end = nxt if nxt - pos <= SPLIT else (mm.find(b"\n", pos + SPLIT) + 1) or nxt
+                buf = mm[pos:end]
+                count = buf.count(b"\n") + (not buf.endswith(b"\n"))
+                cols = arrow_split(buf, delimiter, width)
+                if cols is not None and len(cols[0]) == count:
+                    put(cols, np.arange(line + 1, line + 1 + count, dtype=np.int64))
+                else:  # lines of another width among them: each split as Python's csv splits a line with no quote
+                    python([(line + 1 + j, x.rstrip(b"\r\n").decode("latin-1").split(delimiter)) for j, x in enumerate(buf.splitlines(keepends=True))])
+                line, pos = line + count, end
+            if pos >= size:
+                break
+            mm.seek(pos)  # from a special line on: Python's csv, a line at a time, until a record ends before a plain line
+            reader, got = csv.reader(iter(lambda: mm.readline().decode("latin-1"), ""), delimiter=delimiter, quoting=csv.QUOTE_MINIMAL if quotes else csv.QUOTE_NONE, strict=False), []
+            for x in reader:
+                if x:
+                    got.append((line + reader.line_num, x))
+                pos = mm.tell()
+                while i < len(specials) and specials[i] < pos:
+                    i += 1
+                if i >= len(specials) or specials[i] != pos:
+                    break
+            else:
+                pos = size
+            line += reader.line_num
+            python(got)
+        if parts:
+            flush_split([pa.concat_arrays([p[0][j] for p in parts]) for j in range(width)], np.concatenate([p[1] for p in parts]))
+    def flush_split(cols: list[pa.Array], lines: np.ndarray) -> None:  # a CSV chunk Arrow split: each column its fields' bytes, read as flush reads Python's
+        arrays, texts, given = [], [], []
+        for b in cols:
+            try:
+                a, text, fields = (b.cast(pa.string()), True, Fields(b)) if utf8 else (None, False, None)  # every field UTF-8: Arrow text of the same bytes
+            except pa.ArrowInvalid:
+                a = None
+            if a is None:  # one that isn't: each field as read
+                fields = [x.decode("latin-1") for x in b.to_pylist()]
+                a, text = pa.array(fields, pa.string()), False
+            arrays.append(a); texts.append(text); given.append(fields)
+        if writer is None:
+            study([[x.decode("latin-1") for x in b.slice(0, 50_000).to_pylist()] if t else g for b, t, g in zip(cols, texts, given)], texts)
+        quick(arrays, texts, given, lines.tolist())
     def quick(arrays: list[pa.Array], texts: list[bool] | None = None, given: list | None = None, lines: list[int] | None = None) -> None:
         # A chunk by column: what reading keeps as it is, settled per column in Arrow; the rest one by one. texts: which
         # arrays hold their values' own text (a CSV column that didn't decode at once holds its fields as read: only
@@ -661,7 +777,12 @@ def read_one(f: Path, out: Path, spec: InputSpec, m: Model, accepted: frozenset[
             for j, a in enumerate(arrays):
                 majority[j] = "utf-8" if pa.types.is_string(a.type) else majority[j]  # Arrow text is valid UTF-8: never read in another column's encoding
         quick(arrays)
-    for line, fields in rows:
+    specials = None
+    if fmt == "csv" and not trailing:
+        with f.open("rb") as h, mmap.mmap(h.fileno(), 0, access=mmap.ACCESS_READ) as mm:
+            if (specials := plain_csv(mm, quotes)) is not None:
+                by_arrow(mm, specials, head, last)
+    for line, fields in rows if specials is None else ():
         if trailing and len(fields) == width + 1 and not fields[-1]:  # the delimiter its writer ends records with: an empty field, nothing lost
             fields = fields[:-1]
         if len(fields) == width:
