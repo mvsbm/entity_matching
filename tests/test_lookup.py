@@ -252,9 +252,12 @@ def test_a_search_finds_records_by_the_start_of_any_value_and_says_one_too_commo
     with pytest.raises(InputError, match="FULL_NAME_KANA=-: read as missing"):  # looked up: said in words a person reads
         cli.match_record({"workspace": str(ws), "values": ["FULL_NAME_KANA=-"], "record": None, "from": None, "count": None}, None)
     assert set(json.loads((ws / "index" / "manifest.json").read_text(encoding="utf-8"))["searched"]) == set(index.SEARCHED)  # the method's run holds every column a search reads
-    monkeypatch.setattr(index, "SEARCHED", {**index.SEARCHED, "full_name": "full name"})  # a column a search would read that this run's index doesn't hold
-    said = index.search(ws, s2, p2, dict(FULL_NAME_KANA=r["FULL_NAME_KANA"][:3]))
-    assert said["unsearched"] == ["full name"] and said["typed"] == ["name"]  # said, not searched; the rest searched as before
+    town = df["ADDRESS_ONE"].dropna().iloc[0]  # the prefecture: a field no search reads
+    said = index.search(ws, s2, p2, dict(ADDRESS_ONE=town))
+    assert said["unsearched"] == ["prefecture"] and said["typed"] == [] and said["entities"] == []  # said, not "type more of it"
+    said = index.search(ws, s2, p2, dict(ADDRESS_ONE=town, FULL_NAME_KANA=r["FULL_NAME_KANA"][:3]))
+    assert said["unsearched"] == ["prefecture"] and said["typed"] == ["name"] and said["entities"]  # the rest searched as before
+    assert index.search(ws, s2, p2, dict(ADDRESS_ONE="-"))["unsearched"] == []  # a placeholder: nothing typed
 
 
 def _records(ws, uid: str, entity: str) -> set[str]:  # an entity's records, as the run holds them

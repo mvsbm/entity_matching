@@ -1204,10 +1204,15 @@ def resolve_records(a: dict, emit: "Emit") -> dict:
 
 def add_records(a: dict, emit: "Emit") -> dict:
     """A batch copied in, then added; a copy that adds nothing, or that is refused before anything is written (a column
-    the run reads, missing), is not kept, so the file the run read stays the file loaded last. A file loaded before
-    is never removed."""
+    the run reads, missing), is not kept, and the file given before it is again the one a run given none reads. A file
+    loaded before is never removed."""
     s, p, pipeline = setup(a)
     out = Path(a["workspace"])
+    before = folder.last(out)
+
+    def drop() -> None:  # the copy made for this, gone; the file given before it, given last again
+        shutil.rmtree(part, ignore_errors=True)
+        (replace_text(out / folder.INPUTS / folder.LAST, before.name) if before else (out / folder.INPUTS / folder.LAST).unlink(missing_ok=True))
     held = [x for x in folder.parts(out) if a["input"] and Path(a["input"]).expanduser().resolve() == x.resolve()]  # a part loaded already: as it is
     part, copied = ((folder.fresh(held[0], s.input, s.paths["reference"], rows_told(emit)), False) if held else
                     folder.take_in(out, a["input"], s.input, s.paths["reference"], progress=rows_told(emit)) if a["input"] else (Path(given(a, emit)), False))
@@ -1215,12 +1220,12 @@ def add_records(a: dict, emit: "Emit") -> dict:
         run = Run(p, s, echo=emit.step, told=emit.progress).increment(part, out, pipeline_file=pipeline)
     except InputError as e:
         if copied and not isinstance(e, Busy):  # another job may hold it now
-            shutil.rmtree(part, ignore_errors=True)
+            drop()
         raise
     if run.added == 0:  # a copy made for this goes; a file loaded before stays, whatever it holds (its values may differ from the run's)
         mine = next((x for x in folder.loaded(out) if Path(x["path"]).resolve() == part.resolve()), {})
         if copied:
-            shutil.rmtree(part, ignore_errors=True)
+            drop()
         return dict(summary=[["nothing new", f"every ID of {mine.get('given') or Path(a['input'] or part).name} is in the run already"]],
                     next=next_after(out))
     return after_run(run, out)

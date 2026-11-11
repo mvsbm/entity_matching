@@ -1002,8 +1002,8 @@ const STATE_WORD = {done: "done", current: "next", attention: "needs you", optio
 function progress(d) {
   const ran = d && d.event !== "error" && d.records > 0, s = {};
   s.workspace = state.workspace ? {state: "done", line: baseName(state.workspace)} : {state: "current", line: "choose one"};
-  const files = (d && d.inputs) || [], last = files.length ? nameOf(files[files.length - 1]) : "";
-  const empty = files.length && !files[files.length - 1].rows;  // a file of a header alone, or nothing it could read
+  const given = lastFile(d || {}), last = given ? nameOf(given) : "";  // the file a run reads: given last
+  const empty = given && !given.rows;  // a file of a header alone, or nothing it could read
   s.columns = empty && !ran ? {state: "attention", line: `${last}: no records`} : ran || last ? {state: "done", line: last ? `${last} loaded` : "ready"} : {state: state.workspace ? "current" : "later", line: "load your file"};
   s.run = ran ? {state: "done", line: d.rerun_owed ? "changed: run again" : `${fmt(d.records)} → ${plural(d.entities, "entity", "entities")}`} : {state: last ? "current" : "later", line: last ? "ready to run" : "not yet"};
   if (!ran) {
@@ -2230,7 +2230,7 @@ const SCREENS = {
         if (!got) return;
         [w] = got;
         const files = w.inputs || [];
-        last = files[files.length - 1];
+        last = lastFile(w);
         $("files").innerHTML = files.map((f) => `<span class="tag" title="${esc(f.path)}">${esc(nameOf(f))} · ${bytes(f.bytes)} · ${f.read ? "matched" : "not run yet"}</span>`).join("");
         if (d === undefined && last) {
           if (!$("out").querySelector(".fgroup")) $("out").innerHTML = `<div class="card waiting">${spinner()}Reading the columns of ${esc(nameOf(last))}…</div>`;
@@ -2376,7 +2376,7 @@ const SCREENS = {
       const both = () => [$("load"), $("gen")].filter(Boolean);
       const take = async (b, doing, what, command, args, done) => {  // either way the same result, drawn the same
         const was = b.innerHTML, at = edits;
-        longRun = {command, visit, page: "columns", workspace: state.workspace}; both().forEach((x) => { x.disabled = true; });  // as step 3's run: ended() frees them, here or on step 2 drawn again
+        longRun = {command, visit, page: "columns", workspace: state.workspace, args}; both().forEach((x) => { x.disabled = true; });  // as step 3's run: ended() frees them, here or on step 2 drawn again
         b.innerHTML = `${spinner()}${doing}…`;  // a big file takes minutes: how far, and how long is left, in the panel
         if (!$("out").querySelector(".fgroup")) $("out").innerHTML = `<div class="card waiting">${spinner()}${doing} ${esc(what)}…</div>`;
         const e = await run("columns", command, args);
@@ -2400,6 +2400,9 @@ const SCREENS = {
       $("gen").onclick = () => take($("gen"), "Generating", `${$("gsize").selectedOptions[0].text} records`, "generate records", {records: $("gsize").value, difficulty: $("glevel").value});
       $("cin").onkeydown = (e) => { if (e.key === "Enter") $("load").click(); };
       if (longRun) both().forEach((x) => { x.disabled = true; });  // drawn again while a long command runs: ended() draws it once more
+      const going = longRun?.page === "columns" && longRun.args;  // this step's own, left and opened again: as it was asked
+      if (going && longRun.command === "generate records") { $("gsize").value = going.records; $("glevel").value = going.difficulty; $("gen").innerHTML = `${spinner()}Generating…`; }
+      if (going && longRun.command === "load records") { $("cin").value = going.input; $("load").innerHTML = `${spinner()}Reading…`; }
     };
     wireLoad();
     draw();

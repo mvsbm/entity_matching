@@ -902,7 +902,7 @@ def test_step_2_generates_synthetic_records_by_size_and_difficulty_once_per_clic
     page.click("#gen", force=True)  # a second click while it runs: nothing
     page.click(".navitem[data-screen=records]")
     page.click(".navitem[data-screen=columns]")  # left and back while it runs: drawn waiting, then freed and drawn once it ends
-    assert page.is_disabled("#gen") and page.is_disabled("#load")
+    assert page.is_disabled("#gen") and page.is_disabled("#load") and page.input_value("#gsize") == "10000" and page.input_value("#glevel") == "hard"  # as it was asked
     page.wait_for_selector("h2.question:text('Did your file load?')", timeout=120_000)
     assert [x for x in posted if x["command"] == "generate records"] == [{"command": "generate records", "args": {"records": "10000", "difficulty": "hard", "workspace": str(ws)}}]
     assert "Yes · 10,000 records from synthetic-hard-10000.parquet" in page.inner_text("#loaded") and page.is_visible("#loaded [data-go=run]")
@@ -920,6 +920,8 @@ def test_step_2_generates_synthetic_records_by_size_and_difficulty_once_per_clic
         page.select_option("#glevel", level)
         page.click("#gen")
         page.wait_for_function(free, timeout=120_000)
+    page.wait_for_function("() => document.querySelector('#loaded .answer').innerText.includes('synthetic-hard-10000.parquet')", timeout=30_000)  # step 2: the file given last
+    assert "10,000 records" in page.inner_text("#loaded .answer") and "synthetic-hard-10000" in page.inner_text(".navitem[data-screen=columns]")  # its count, and the step list
     page.click(".navitem[data-screen=run]")
     page.wait_for_selector("[data-first]")
     assert len(folder.parts(ws)) == 2 and "synthetic-hard-10000.parquet" in page.inner_text("#out")  # the file given last, not the newest copy

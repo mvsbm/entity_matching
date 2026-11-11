@@ -489,7 +489,7 @@ def search(ws: Path, s: Settings, p: Pipeline, values: dict[str, str], at_least:
     if all(tidy(str(v), nulls, False)[0] is None for v in values.values()):
         m, fitted = _open(ws, s, p)[:2]
         _sources(fitted, values)
-        return dict(record={}, entities=[], found=0, listed=0, candidates=0, typed=[], missing=sorted(values), over=[], seconds={},
+        return dict(record={}, entities=[], found=0, listed=0, candidates=0, typed=[], missing=sorted(values), over=[], unsearched=[], seconds={},
                     index=dict(built_at=m["built_at"], records=m["records"] + m["added"]))
     found, folded = _search(ws, s, p, values, at_least, most), _folded(s, values)
     if folded == values:
@@ -513,7 +513,9 @@ def _search(ws: Path, s: Settings, p: Pipeline, values: dict[str, str], at_least
     ws, uid, clock, t = Path(ws), s.data.unique_id, {}, time.perf_counter()
     with _asking(ws, s, p, values, None) as (m, fitted, model, con, query):
         typed = {c: v for c in m["searched"] if c in query and pd.notna(v := query[c].iloc[0])}
-        unsearched = sorted({f for c, f in SEARCHED.items() if c not in m["searched"] and c in query and pd.notna(query[c].iloc[0])} - {SEARCHED[c] for c in typed})
+        feeds = {c: {d.name for d in fitted.fs.standardize.derived if any(c in alt for alt in d.sources)} for c in values}  # the fields each column typed fills
+        held, nulls = {c.split("__")[0] for c in m["searched"]}, frozenset(s.input.nulls)  # the fields the index searches, by their columns' names
+        unsearched = sorted({f for c, v in values.items() if tidy(str(v), nulls, False)[0] is not None and not feeds[c] & held for f in feeds[c]})  # typed, no column searched: said
         clock["prepare"] = time.perf_counter() - t
         t = time.perf_counter()
         listed, over, first = {}, {}, {}  # first: each record's place in the order its value was read (by value): ties go by it

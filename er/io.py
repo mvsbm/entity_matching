@@ -46,7 +46,7 @@ def object_store(path: Path) -> str | None:
         if not mount or len(kind) < 2:
             continue
         point = re.sub(r"\\([0-7]{3})", lambda m: chr(int(m[1], 8)), mount[0])  # a space written \040
-        if (at == point or at.startswith(point.rstrip("/") + "/")) and len(point) > best:  # the deepest mount holding it
+        if (at == point or at.startswith(point.rstrip("/") + "/")) and len(point) >= best:  # the deepest mount holding it; at one path, the last mounted
             best, found = len(point), next((x for x in STORES if x in (kind[0].removeprefix("fuse."), kind[1])), None)
     return found
 
