@@ -41,6 +41,7 @@ pipelines is marked `slow`, and one that opens the page in Chromium `browser`, b
 .venv/bin/python -m pytest -m browser                      # the page in Chromium (once: python -m playwright install chromium)
 .venv/bin/python -m pytest                                 # all of them: before every push (a pull request's CI runs the fast ones)
 .venv/bin/python -m pytest -n auto                         # any of these, on every core at once, as CI runs them
+.venv/bin/python -m pytest -n auto --store-durations --durations-path tests/durations.json  # the times CI splits the long tiers by: again once tests are added or grow
 ```
 
 Without Chromium the browser tests skip; under CI (`CI` set) they fail instead, so a broken install never passes.
