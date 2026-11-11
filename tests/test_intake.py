@@ -569,3 +569,37 @@ def test_what_is_built_from_the_reference_files_is_kept_on_disk_until_they_or_it
         assert intake.kept("other", ("files", 1), build(5)) == {"built": 5}  # a folder it can't write: built, not kept
     finally:
         (tmp_path / "cache").chmod(0o700)
+
+
+def test_a_part_s_columns_are_described_once_and_a_mapping_reads_only_what_it_changes_the_same_numbers_out(tmp_path, monkeypatch, capsys, population):
+    from er import cli, folder, source
+    s, p, g = population
+    g.df.to_parquet(tmp_path / "all.parquet", index=False)
+    ws = tmp_path / "w"
+    assert cli.main(["create", "workspace", "w", "--home", str(tmp_path), "--format", "json"]) == 0
+    assert cli.main(["load", "records", str(tmp_path / "all.parquet"), "--workspace", str(ws), "--format", "json"]) == 0
+    part = folder.parts(ws)[0]
+    sampled = []
+    real = source.profiled
+    monkeypatch.setattr(source, "profiled", lambda *a: sampled.append(1) or real(*a))  # the columns profiled: their sample read
+
+    def describe(fresh: bool = False) -> dict:  # fresh: nothing kept, every number made again
+        (part / cli.KEPT).unlink(missing_ok=True)
+        if fresh:
+            (part / source.COLUMNS_KEPT).unlink(missing_ok=True)
+        capsys.readouterr()
+        assert cli.main(["describe", "records", "--workspace", str(ws), "--format", "json"]) == 0
+        return json.loads(capsys.readouterr().out.splitlines()[-1])
+    phone = s.columns["phone"][0][0]
+    first = describe()
+    assert (part / source.COLUMNS_KEPT).is_file() and (part / source.SAMPLE_KEPT).is_file() and not sampled  # kept with the part since it loaded
+    for mapping in (f"Phone/Phone={phone},{s.columns['customer_id'][0][0]}", "Phone/Phone=", f"Phone/Phone={phone}"):
+        assert cli.main(["set", "feature", mapping, "--workspace", str(ws), "--format", "json"]) == 0
+        sampled.clear()
+        kept = describe()
+        assert not sampled and kept == describe(fresh=True) and sampled == [1]  # its sample never read again, and the same numbers as made from nothing
+    monkeypatch.setattr(source, "CODE", "another")  # what describes the columns changed: described again, never read back
+    sampled.clear()
+    assert describe() == describe(fresh=True) and sampled == [1, 1]
+    (part / source.COLUMNS_KEPT).write_text("{cut short", encoding="utf-8")  # a kept copy unreadable: made again, never a failure
+    assert describe()["records"] == first["records"]

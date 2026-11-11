@@ -943,7 +943,8 @@ def described(a: dict) -> dict:
             return None
         return (None if x.get("added") else x.get("field")) or SLOT_FIELD.get(x.get("role") or x.get("type"))
     con = connect(s.compute)[0]
-    d = describe(a["input"], con, s.columns, s.detect, lex=lexicon(s.paths["reference"], tuple(s.standardize.kana_fold.items())),
+    part = Path(a["input"]) if intake.report(Path(a["input"])) else None  # a workspace's part: its columns' own facts kept with it
+    d = describe(a["input"], con, s.columns, s.detect, lex=lexicon(s.paths["reference"], tuple(s.standardize.kana_fold.items())), keep=part,
                  slots={path: x["columns"] for path, x in slots(feats)},
                  slot_patterns={**{path: s.detect[f] for path, x in slots(feats) if (f := field(path, x)) in s.detect},
                                 **{path: FLAG for path, x in slots(feats) if x.get("type") == "flag"}})
