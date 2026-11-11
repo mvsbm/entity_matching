@@ -8,6 +8,7 @@ fixed-size sample; describe() says what a file holds, for mapping its columns, i
 """
 import difflib
 import functools
+import hashlib
 import json
 import re
 import unicodedata
@@ -263,7 +264,14 @@ def lexicon(folder: Path, kana_fold: tuple[tuple[str, str], ...]) -> Lexicon:
 
 
 @functools.lru_cache(maxsize=1)  # bounded: the one reference folder a process reads, as it is now
-def _lexicon(folder: Path, kana_fold: tuple[tuple[str, str], ...], stamp: tuple) -> Lexicon:
+def _lexicon(folder: Path, kana_fold: tuple[tuple[str, str], ...], stamp: tuple) -> Lexicon:  # kept on disk while the files and this code are as they are
+    return intake.kept("lexicon", (str(Path(folder).resolve()), kana_fold, stamp, CODE), lambda: _lists(folder, kana_fold))
+
+
+CODE = hashlib.sha256(Path(__file__).read_bytes()).hexdigest()[:16]  # this module as it is: a copy its older self built is built again
+
+
+def _lists(folder: Path, kana_fold: tuple[tuple[str, str], ...]) -> Lexicon:
     fold = str.maketrans(dict(kana_fold))
     people = json.loads((folder / "individual.json").read_text(encoding="utf-8"))
     places = json.loads((folder / "addresses.json").read_text(encoding="utf-8"))

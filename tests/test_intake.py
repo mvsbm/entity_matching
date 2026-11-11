@@ -515,3 +515,52 @@ def test_the_reader_reads_its_edge_cases_alike_and_a_part_reads_again_under_new_
     assert intake.report(part)["input"] == intake.read_as(replace(spec, nulls=("NULL",)))  # read/ new, the report old
     folder.fresh(part, spec, ref)  # the next to open it finishes the moves: the reading was complete
     assert codes() == [None, None, "A1"] and intake.report(part)["input"] == intake.read_as(spec) and not (part / ".read.tmp").exists()
+
+
+def test_a_csv_read_by_column_reads_as_value_by_value_does_its_odd_fields_and_encodings_too(tmp_path, monkeypatch):
+    from er import intake
+    ref, spec = load_settings().paths["reference"], intake.InputSpec()
+    names = ["ヤマダタロウ", "ヤマダ　タロウ", " サトウ", "サトウ ", "　", "  ", "NULL", " NULL ", "－", "譁ｰ縺励＞", "abc\x01", "タ​ナカ", "a\tb",
+             "ﾔﾏﾀﾞ", "�", "", "東京" * 100, "①", "😀", "Ｓｕｚｕｋｉ", "plain", " plain", "１２.０", " ", "ア　", "a,b", 'say "hi"', "two\nlines",
+             '["大分県"]', '　["大分県"]　', "[1] ", "[株]", '["a", "b"]', "[]"]  # every kind of value a reading treats apart
+    field = lambda v, enc="utf-8": ('"' + v.replace('"', '""') + '"' if any(c in v for c in ',"\n') else v).encode(enc)  # quoted as a CSV writer quotes
+    rows = [b"id,name,amount,kana"]
+    for i in range(6 * len(names)):
+        kana = field("ヤマダ", "cp932") if i == 40 else field(names[(i * 7) % len(names)])  # one CP932 field: that chunk of that column read one by one
+        rows.append(b",".join([field(f"R{i}"), field(names[i % len(names)]), field(["12345.0", "1.23457E+11", "100", "１２.０", "3.5", ""][i % 6]), kana]))
+    rows.append(b"R-odd,only two")  # a row that doesn't line up
+    (tmp_path / "x.csv").write_bytes(b"\n".join(rows) + b"\n")
+    monkeypatch.setattr(intake, "CHUNK", 7)  # a first chunk to learn from, then many
+
+    def read(where: str) -> tuple:
+        part = tmp_path / where
+        part.mkdir()
+        r = intake.take(part, {tmp_path / "x.csv": "x.csv"}, spec, ref)
+        return ({k: v for k, v in r.items() if k != "seconds"}, (part / r["files"][0]["read"]).read_bytes(),
+                (part / intake.PROPOSALS).read_bytes(), (part / intake.UNREAD).read_bytes())
+    real, decoded = intake.as_text, []
+    monkeypatch.setattr(intake, "as_text", lambda fields: decoded.append(a := real(fields)) or a)
+    by_column = read("by_column")
+    assert any(a is not None for a in decoded) and any(a is None for a in decoded)  # both: columns decoded at once, the chunk with CP932 field by field
+    monkeypatch.setattr(intake, "as_text", lambda fields: None)  # no column decoded at once: each field decoded as it comes
+    monkeypatch.setattr(intake, "settled", lambda a, *_: (np.zeros(len(a), bool),) * 2)  # nothing settled in Arrow: every value read one by one
+    one_by_one = read("one_by_one")
+    assert by_column == one_by_one  # byte for byte: the read file, its counts, fixes and proposals, the rows unread
+    assert by_column[0]["decoded"]["utf-8"] > 0 and by_column[0]["fixed"]["placeholders"] > 0 and by_column[0]["unread"] == 1
+
+
+def test_what_is_built_from_the_reference_files_is_kept_on_disk_until_they_or_its_code_change(tmp_path, monkeypatch):
+    from er import intake
+    monkeypatch.setattr(intake, "CACHE", tmp_path / "cache")
+    built = []
+    build = lambda x: lambda: built.append(x) or {"built": x}
+    assert intake.kept("lists", ("files", 1), build(1)) == {"built": 1} and intake.kept("lists", ("files", 1), build(2)) == {"built": 1}  # built once, then read
+    assert intake.kept("lists", ("files", 2), build(3)) == {"built": 3} and built == [1, 3]  # a file changed: built again
+    assert len(list((tmp_path / "cache").glob("lists-*.pickle"))) == 1  # the newest alone: nothing grows
+    next((tmp_path / "cache").glob("lists-*.pickle")).write_bytes(b"cut short")
+    assert intake.kept("lists", ("files", 2), build(4)) == {"built": 4}  # unreadable: built again, never a failure
+    (tmp_path / "cache").chmod(0o500)
+    try:
+        assert intake.kept("other", ("files", 1), build(5)) == {"built": 5}  # a folder it can't write: built, not kept
+    finally:
+        (tmp_path / "cache").chmod(0o700)
