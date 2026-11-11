@@ -927,6 +927,20 @@ def test_step_2_generates_synthetic_records_by_size_and_difficulty_once_per_clic
     assert len(folder.parts(ws)) == 2 and "synthetic-hard-10000.parquet" in page.inner_text("#out")  # the file given last, not the newest copy
 
 
+def test_a_command_the_server_started_without_says_start_it_again_and_frees_its_buttons(ui_page, tmp_path, monkeypatch):
+    from er import cli, folder, ui
+    home, ws = tmp_path / "workspaces", tmp_path / "workspaces" / "w"
+    assert cli.main(["create", "workspace", "w", "--home", str(home), "--format", "json"]) == 0
+    known = ui.declarations
+    monkeypatch.setattr(ui, "declarations", lambda: [c for c in known() if c["name"] != "generate records"])  # a server started before the update that added it
+    page, server, httpd = ui_page(str(ws), str(home))
+    page.click(".navitem[data-screen=columns]")
+    page.click("#gen")
+    page.wait_for_selector("#out .banner")
+    assert "started before an update" in page.inner_text("#out .banner") and not folder.parts(ws)
+    assert not page.is_disabled("#gen") and not page.is_disabled("#load") and page.inner_text("#gen") == "Generate"
+
+
 def test_each_page_reads_its_own_workspace_and_every_tab_waits_out_a_long_command(ui_page, tmp_path, population, fake_cli):
     from er import cli
     s, p, g = population
