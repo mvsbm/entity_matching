@@ -247,6 +247,10 @@ def test_a_file_the_page_sends_is_taken_in_once_by_load_records_and_kept_as_the_
         assert say("load", "details", got["path"], "--workspace", ws)[0] == 0
         assert sorted(f.name for f in (ws / "details").iterdir() if not f.name.startswith(".")) == ["details.json", "other.parquet"]  # the one it replaces, gone
 
+        c = http.client.HTTPConnection("127.0.0.1", port)  # no size said: refused in words
+        c.request("POST", "/api/upload?" + urlencode({"workspace": str(ws), "name": "x.csv"}), headers={"X-Token": server.token, "Host": f"127.0.0.1:{port}", "Transfer-Encoding": "chunked"}, body=iter([b"x"]))
+        r = c.getresponse()
+        assert r.status == 400 and "Content-Length" in json.loads(r.read())["error"]
         with pytest.raises(InputError, match="cut short"):  # the page closed midway: nothing half written
             folder.receive(ws, "half.csv", 100, io.BytesIO(b"x" * 10).read)
         assert not [f for f in (ws / folder.UPLOADS).iterdir() if "half" in f.name]

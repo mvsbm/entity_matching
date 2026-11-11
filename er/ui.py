@@ -240,7 +240,9 @@ def handler(server: Server):
             self._send(200, dict(job=key, command=shlex.join(["nayose", *job.words])))
         def _upload(self) -> None:  # a browser gives a dropped file's bytes, never its path
             q = {k: v[0] for k, v in parse_qs(urlparse(self.path).query).items()}
-            size = int(self.headers.get("Content-Length") or 0)
+            if not (self.headers.get("Content-Length") or "").isdigit():
+                return self._send(400, {"error": "a file's size (Content-Length) is needed", "fix": "send the file from the page"})
+            size = int(self.headers["Content-Length"])
             try:
                 top = folder.receive(Path(q.get("workspace", "")), q.get("name", ""), size, self.rfile.read, q.get("folder"), q.get("first", "1") == "1")
             except InputError as e:
