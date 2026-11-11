@@ -150,9 +150,18 @@ trained once and its signals computed once; a combination fits only its combiner
   table with the same rows alike: within one process, a model's variants and `choose.py`'s repeats of train share one
   sample. A workspace keeps it too (`u_sampled.json`, keyed besides by the code and Splink's and DuckDB's versions), so
   a rerun or a trial of a method comparing the same way reads it and draws no sample: 250,000 records' fit from 12.5 s
-  to 3.6 s. cif, phone and birth need none: their levels are counted (`exact_u`, once per fit). The sample is drawn in
-  chunks of about 256 MB of values compared (`CHUNK_BYTES`): the same pairs and counts as any other split, few chunks
-  where values are short, up to 40 where they are long, so the memory never spikes.
+  to 3.6 s. cif, phone and birth need none: their levels are counted (`exact_u`, once per fit).
+- **The u sample counted in one pass** (`er.match.sample_u`). The records and pairs are drawn as Splink draws them (a
+  hash of the ID and the seed), and every comparison's levels are counted in one pass over the pairs, where Splink's
+  estimate joins them again for each comparison, chunk by chunk: the same counts, so the same u to the last bit. The
+  pairs are written first as row numbers, 16 bytes a pair (160 MB for 10 million): the drawn records fill one row
+  group, and DuckDB would compare pairs read from it on one thread. Streamed into the counts, the compared values
+  never sit in memory. The fit's two samples of 250,000 records, 11.2 s to 3.5 s with the edit distances below.
+- **Scores in one query** (`er.match.predict_sql`). Splink's predict SQL as Splink writes it: each level's condition
+  in order, its weight the same `float8` literal, summed in the same order, so the same scores to the last bit (tests
+  compare them with Splink's), without the two copies of the records Splink makes first and its SQL built per call.
+  Scoring 250,000 records 4.8 s to 2.6 s, the probe's draws 5.1 s to 3.0 s. A model with term frequencies is scored
+  by Splink.
 - **Rules in plain SQL** (`er.match.rule_edges`): one equi-join per rule, for `choose.py`, full runs and increments
   alike. A fuzzy condition lets equal values through without calling the string function. Splink's
   `deterministic_link` would join every column of both records back first.
@@ -180,15 +189,26 @@ trained once and its signals computed once; a combination fits only its combiner
 - **An edit distance tested on the lengths first.** A Levenshtein, Damerau–Levenshtein or Hamming distance is never
   less than the lengths' difference, so `abs(length(a) - length(b)) <= t` goes before the Python call: the same pairs
   pass, and on long values most pairs never reach Python.
+- **Edit distances in DuckDB** (`er.config.Comparator.test`). On ASCII values DuckDB's Levenshtein and
+  Damerau–Levenshtein are rapidfuzz's (both unrestricted; tests compare them). Other text gets a copy at load with each
+  character one ASCII byte by its code point (`one_byte_hash`); two characters may share a byte but never the reverse,
+  so the copies are never farther apart than the values, and a pair past the threshold there can't pass. Python
+  checks only the pairs left: of 10 million sampled address pairs, 36,645 instead of 2.3 million. Records
+  prepared without the copy are bounded by the bytes instead: one character edited is at most 4 bytes edited.
 - **The oversized blocks' samples scored a slice at a time, in DuckDB** (`Run._gate`, `Run._scored`), not all at once
   through pandas: thousands of placeholder blocks no longer need their every sampled pair compared in one call.
 - **A rule's untrusted values tested before its join** (in WHERE, not ON): a placeholder's block is no longer joined
   and compared in full before it is left out.
 - **Each candidate pair listed once**: a key's join over the query keeps one order of a pair of two queried records
   instead of both and a DISTINCT; the union's parts are freed as soon as it is made.
-- **Scoring in slices** (`Run.score_pairs`, a million pairs at a time). A pair's score depends on it alone, so the slices
-  score as the whole would; each slice says how far scoring is (pairs scored, and those at the model's line so far), and
-  the step's peak memory is one slice's, not every pair's. Each slice costs about 0.3 s of setting up.
+- **Scoring in slices** (`Run.score_pairs`, 5 million pairs at a time). A pair's score depends on it alone, so the
+  slices score as the whole would; each slice says how far scoring is (pairs scored, and those at the model's line so
+  far), and bounds the step's memory. Each slice joins every record again, about 0.75 s at a million records: 9.3
+  million pairs in slices of a million took 13.8 s, in slices of 5 million 8.8 s, for 0.2 GB more at the peak.
+- **The trust sheet's links joined once** (`er.report.trust_sheet`). Every question the sheet asks (does a range
+  hold a link, how many people decided, the next range's sample, the spot-checks) reads the links from the lowest step
+  or the line up, written once to a table, not joined again from every scored pair each time: the report on a million
+  records 11.9 s to 5.5 s, on 250,000 3.4 s to 2.1 s.
 - **Threshold rule without clustering** (`accept_curve`). The rule reads only accepted and false accepted pairs per
   weight, so decision variants resolve clusters at the chosen weight only.
 - **Run cache.** Identical runs (same configuration, dataset and threshold) are computed once, in both stages.

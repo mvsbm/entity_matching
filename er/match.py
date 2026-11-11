@@ -71,6 +71,7 @@ def rule_edges(spec: RulesSpec, records: "Records", db: DuckDBAPI, uid: str, bat
 
 
 ELSE = "else"
+COPIES = ("one_byte", "one_byte_hash")  # the copies er.standardize makes for the comparisons (Comparator.copied): a table without them is compared without
 U = dict[str, dict[str, float]]  # comparison → level label → u probability
 
 
@@ -120,10 +121,10 @@ def narrowed(df: "Records", db: DuckDBAPI, keep: set[str]):
     the db's cache first (it may name them)."""
     if isinstance(df, pd.DataFrame):
         x = db.register(df[[c for c in df.columns if c in keep]].assign(**{c: pd.Series(pd.NA, index=df.index, dtype="string")
-                                                                           for c in keep - set(df.columns) if c.endswith("one_byte")}))
+                                                                           for c in keep - set(df.columns) if c.endswith(COPIES)}))
     else:
         have = [c for c, *_ in db.duckdb_con.execute(f'DESCRIBE "{df}"').fetchall()]
-        cols = [q(c) for c in have if c in keep] + [f"NULL::VARCHAR AS {q(c)}" for c in sorted(keep - set(have)) if c.endswith("one_byte")]
+        cols = [q(c) for c in have if c in keep] + [f"NULL::VARCHAR AS {q(c)}" for c in sorted(keep - set(have)) if c.endswith(COPIES)]
         x = db.register(db.duckdb_con.sql(f'SELECT {", ".join(cols)} FROM "{df}"'))
     try:
         yield x
@@ -132,22 +133,36 @@ def narrowed(df: "Records", db: DuckDBAPI, keep: set[str]):
 
 
 def sample_u(model: FSModel, comparisons: list[Comparison], df: pd.DataFrame, db: DuckDBAPI, uid: str) -> U:
-    """Splink's random sampling for just these comparisons. The sample depends only on the records, the size and the
-    seed, so this equals sampling them inside the full model (tests/). O(max_pairs · comparisons)."""
+    """Splink's random sampling for just these comparisons, its sample drawn as Splink draws it (the records whose
+    hash of ID and seed falls in the share that gives about max_pairs pairs, and every pair of them), every comparison's
+    levels counted in one pass over the pairs, where Splink joins them again for each comparison, chunk by chunk: the
+    same counts, so the same u, each a level's pairs over the pairs with both sides filled (a level none reached: none).
+    The sample depends only on the records, the size and the seed, so this equals sampling them inside the full model
+    (tests/). O(max_pairs · comparisons)."""
     if not comparisons:
         return {}
-    settings = fs_settings(replace(model, comparisons=tuple(comparisons)), uid)
+    settings = fs_settings(replace(model, comparisons=tuple(comparisons)), uid).create_settings_dict("duckdb")
+    con, u = db.duckdb_con, q(uid)
     with narrowed(df, db, read_by(settings) | {uid}) as records:
-        linker = Linker(records, settings, log_level=logging.ERROR)
-        # every one of max_pairs: Splink would stop once each level has 100 hits, while u_basis and u_bound count on them all;
-        # in chunks of about CHUNK_BYTES compared: the same pairs (the same counts, summed), so long values never spike the memory
-        cols = [c for c in read_by(settings) if c != uid]
-        size = db.duckdb_con.execute(f'SELECT {" + ".join(f"coalesce(avg(strlen({q(c)})), 0)" for c in cols) or "0"} FROM "{records.physical_name}"').fetchall()[0][0]
-        chunks = min(40, max(1, math.ceil(model.u_max_pairs * 2 * (size or 0) / CHUNK_BYTES)))
-        linker.training.estimate_u_using_random_sampling(max_pairs=model.u_max_pairs, seed=model.seed, min_count_per_level=None, num_chunks=chunks)
-        model_json = linker.misc.save_model_to_json()
-        linker.table_management.invalidate_cache()
-    return u_values(model_json)
+        t = q(records.physical_name)
+        share = 0.5 * ((8 * model.u_max_pairs + 1) ** 0.5 + 1) / max(con.execute(f"SELECT count(*) FROM {t}").fetchall()[0][0], 1)
+        key = u if model.seed is None else f"({u}) || '_{model.seed}'"
+        drawn = f"(SELECT * FROM {t} WHERE (((hash({key})) % 1000000000) + 1000000000) % 1000000000 < {max(1, round(share * 1_000_000_000))})" if share < 1 else t
+        # the pairs as row numbers first (16 bytes a pair): drawn from one row group of records, they'd be compared on one thread
+        con.execute(f"CREATE OR REPLACE TEMP TABLE er_u_drawn AS SELECT row_number() OVER () AS er_i, * FROM {drawn}")
+        con.execute(f"CREATE OR REPLACE TEMP TABLE er_u_pairs AS SELECT a.er_i AS i, b.er_i AS j FROM er_u_drawn a JOIN er_u_drawn b ON a.{u} < b.{u}")
+        try:
+            pairs = f"SELECT {_sides(settings, _columns(con, t))} FROM er_u_pairs p JOIN er_u_drawn a ON a.er_i = p.i JOIN er_u_drawn b ON b.er_i = p.j"
+            got = con.execute(f"SELECT c, g, count(*) FROM (UNPIVOT (SELECT {', '.join(_gammas(settings))} FROM ({pairs})) ON COLUMNS(*) INTO NAME c VALUE g) GROUP BY ALL").fetchall()
+        finally:
+            con.execute("DROP TABLE IF EXISTS er_u_pairs; DROP TABLE IF EXISTS er_u_drawn")
+    counts = {(c.removeprefix("gamma_"), g): n for c, g, n in got}
+    out: U = {}
+    for c in settings["comparisons"]:
+        name, ranked = c["output_column_name"], _ranked(c)
+        filled = sum(counts.get((name, g), 0) for g, _ in ranked if g >= 0)
+        out[name] = {lv["label_for_charts"]: counts[name, g] / filled for g, lv in ranked if g >= 0 and counts.get((name, g))}
+    return out
 
 
 Records = pd.DataFrame | str  # a frame, or the name of a table in the DuckDB connection behind `db`
@@ -252,7 +267,6 @@ def u_bound(model: FSModel, c: Comparison, records: Records, db: DuckDBAPI) -> f
 SCORED_U: dict[tuple[str, int], dict[str, float]] = {}  # (FSModel.u_keys() value, fingerprint of what it reads) → u per level
 # shortcut: one entry per comparison and file this process scores, never dropped; fine for a run or choose.py, a
 # process that scores file after file needs a limit (nayose open ui runs those in processes of their own)
-CHUNK_BYTES = 1 << 28  # what one chunk of the u sample compares at most, about: its pairs' values, both sides
 U_KEPT = 64  # sampled u a workspace keeps (folder.U_SAMPLED), the newest: one per comparison, sample and file, and a few of each
 U_CODE = hashlib.sha256(b"".join((Path(__file__).parent / f).read_bytes() for f in ("match.py", "strings.py", "config.py"))).hexdigest()[:16]
 
@@ -449,6 +463,8 @@ def score_fs(model_json: dict, df: Records, pairs: pd.DataFrame | str, db: DuckD
     fit = model_json["er"]
     lam = scaled_prior(model_json, n_records or rows(df, db))
     settings = {k: v for k, v in model_json.items() if k != "er"} | {"probability_two_random_records_match": lam}
+    if not fit["tf"]:
+        return _scored(settings, df, pairs, db, uid, into)
     with narrowed(df, db, read_by(settings) | {uid}) as records:
         linker = Linker(records, settings, log_level=logging.WARNING)
         linker.table_management.invalidate_cache()  # the cache lives on the shared db, keyed by table name only
@@ -462,6 +478,68 @@ def score_fs(model_json: dict, df: Records, pairs: pd.DataFrame | str, db: DuckD
             linker.table_management.invalidate_cache()
             for x in held:
                 con.unregister(x.physical_name)
+
+
+def _ranked(c: dict) -> list[tuple[int, dict]]:  # a comparison's levels with their gamma, as Splink numbers them: missing -1, the others down to the else level's 0
+    top = sum(not lv.get("is_null_level") for lv in c["comparison_levels"])
+    return [(-1, lv) if lv.get("is_null_level") else (top := top - 1, lv) for lv in c["comparison_levels"]]
+
+
+def _gammas(settings: dict) -> list[str]:  # each comparison's gamma from its levels' conditions in order, as Splink computes it on "<col>_l" and "<col>_r"
+    out = []
+    for c in settings["comparisons"]:
+        whens = " ".join(f"{lv['sql_condition']} {g}" if lv["sql_condition"].strip().upper() == "ELSE" else f"WHEN {lv['sql_condition']} THEN {g}" for g, lv in _ranked(c))
+        out.append(f"CASE {whens} END AS {q('gamma_' + c['output_column_name'])}")
+    return out
+
+
+def _columns(con: duckdb.DuckDBPyConnection, table: str) -> set[str]:
+    return {c for c, *_ in con.execute(f"DESCRIBE SELECT * FROM {table}").fetchall()}
+
+
+def _sides(settings: dict, have: set[str]) -> str:  # each column the comparisons read, of records a and b, as "<col>_l" and "<col>_r"; a one-byte copy the records lack is NULL, as narrowed() gives it
+    side = lambda c, x: f"{x}.{q(c)}" if c in have or not c.endswith(COPIES) else "NULL::VARCHAR"
+    return ", ".join(f"{side(c, 'a')} AS {q(c + '_l')}, {side(c, 'b')} AS {q(c + '_r')}" for c in sorted(read_by(settings)))
+
+
+def predict_sql(settings: dict, records: str, pairs: str, uid: str, have: set[str]) -> str:
+    """Splink's predict of the pairs in `pairs` (uid_l, uid_r), as Splink writes it, in one query: each comparison's
+    gamma (_gammas), its weight the same float8 literal of log2(m/u) (each clamped at 1e-300), and the match weight the
+    prior's and theirs summed in the same order: the same scores to the last bit, without the two copies of the records
+    Splink makes first. `have`: the columns `records` holds. No term frequencies: Splink scores a model with them."""
+    l, r = q(f"{uid}_l"), q(f"{uid}_r")
+    names, weights = [c["output_column_name"] for c in settings["comparisons"]], []
+    for name, c in zip(names, settings["comparisons"]):
+        bits = lambda g, lv: 0.0 if g < 0 else math.log2(max(lv["m_probability"], 1e-300) / max(lv["u_probability"], 1e-300))
+        weights.append(f"CASE {' '.join(f'WHEN {q("gamma_" + name)} = {g} THEN cast({bits(g, lv)} as float8)' for g, lv in _ranked(c))} END AS {q('mw_' + name)}")
+    lam = settings["probability_two_random_records_match"]
+    mw = f"cast({math.log2(lam / (1 - lam))} as float8) + " + " + ".join(q(f"mw_{n}") for n in names)
+    return f"""SELECT {l}, {r}, {mw} AS match_weight,
+        CASE WHEN ({mw}) >= 0 THEN 1.0 / (1.0 + POWER(cast(2 as float8), -({mw})))
+             ELSE POWER(cast(2 as float8), ({mw})) / (1.0 + POWER(cast(2 as float8), ({mw}))) END AS match_probability, {', '.join(q('gamma_' + n) for n in names)}
+        FROM (SELECT *, {', '.join(weights)} FROM (SELECT {l}, {r}, {', '.join(_gammas(settings))} FROM (
+              SELECT p.{l}, p.{r}, {_sides(settings, have)} FROM {pairs} p JOIN {records} a ON a.{q(uid)} = p.{l} JOIN {records} b ON b.{q(uid)} = p.{r})))"""
+
+
+def _scored(settings: dict, df: Records, pairs: pd.DataFrame | str, db: DuckDBAPI, uid: str, into: str | None) -> pd.DataFrame | str:
+    con, held = db.duckdb_con, []
+
+    def table(x: pd.DataFrame | str, name: str) -> str:
+        if isinstance(x, str):
+            return q(x)
+        con.register(name, x)
+        held.append(name)
+        return name
+    try:
+        records = table(df, "er_score_records")
+        sql = predict_sql(settings, records, table(pairs, "er_score_pairs"), uid, _columns(con, records))
+        if into is None:
+            return con.sql(sql).df().astype({f"{uid}_l": "string", f"{uid}_r": "string"})
+        con.execute(f"CREATE OR REPLACE TABLE {q(into)} AS {sql}")
+        return into
+    finally:
+        for x in held:
+            con.unregister(x)
 
 
 def _predict(linker: Linker, held: list, db: DuckDBAPI, pairs: pd.DataFrame | str, l: str, r: str, into: str | None) -> pd.DataFrame | str:

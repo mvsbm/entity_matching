@@ -66,6 +66,18 @@ def test_a_u_sample_is_drawn_once_per_set_of_records(con_db, records, monkeypatc
     assert sampled == ["name", "phone"] and parameters(fresh).fillna(0).round(12).equals(parameters(again).fillna(0).round(12))
 
 
+def test_a_u_sample_counted_in_one_pass_gives_splink_s_u_to_the_last_bit(con_db, records):
+    from er.match import fs_settings
+    _, db = con_db
+    gaps = records.assign(name=records["name"].mask(records.index % 7 == 0))  # a missing side: neither level's
+    for pairs in (1e4, 300):  # every pair, and the share of records a hash of their ID draws
+        m = replace(model(extra_name_levels=(Level(label="never", any_of=(("name", Comparator("jaro_winkler", 0.95)),)),)), u_max_pairs=pairs)
+        linker = Linker(db.register(gaps.assign(name__one_byte=normalize(gaps["name"], ("one_byte",), None))), fs_settings(m, UID), log_level=logging.ERROR)
+        linker.training.estimate_u_using_random_sampling(max_pairs=pairs, seed=m.seed, min_count_per_level=None, num_chunks=3)
+        splink_u, ours = u_values(linker.misc.save_model_to_json()), sample_u(m, list(m.comparisons), gaps, db, UID)
+        assert ours == splink_u and "never" not in ours["name"] and 0 < sum(ours["name"].values()) <= 1, pairs
+
+
 def test_a_u_sample_kept_by_a_workspace_is_read_again_and_drawn_again_once_what_it_rests_on_changes(con_db, records, monkeypatch, tmp_path):
     import er.match as M
     _, db = con_db
@@ -99,13 +111,17 @@ def test_each_distinct_value_normalized_once_gives_the_column_value_by_value_and
     std = load_settings().standardize
     values = ["ヤマダ　タロウ", "ｻﾄｳﾊﾅｺ", None, "すずき いちろう", "０３－１２３４－５６７８", "東京都港区1丁目2番3号 ビル5F", "(株)サトウ", "", "TANAKA"] * 50
     s = pd.Series(values, dtype="string")
-    for steps in (("nfkc",), ("nfkc", "katakana", "strip_spaces"), ("nfkc", "strip_separators"), ("kana_fold", "one_byte"), ("address",),
+    for steps in (("nfkc",), ("nfkc", "katakana", "strip_spaces"), ("nfkc", "strip_separators"), ("kana_fold", "one_byte"), ("one_byte_hash",), ("address",),
                   ("nfkc", "strip_legal_form", "kana_fold"), ("initial",), ("first3",), ("reverse",), ("casefold",), ("kana_fold", "long_vowel", "last3")):
         got, one_by_one = normalize(s, steps, std), _normalized(s, steps, std)
         assert got.equals(one_by_one) and got.dtype == one_by_one.dtype and got.index.equals(s.index), steps  # the same column, the same type
     names = pd.Series(["サイトオトシオ", "サイトウトシオ", "サトー", "ケエコ", "ナカイサアヤ", "ヤマシタサアヤ", None], dtype="string")
     assert list(normalize(names, ("kana_fold", "long_vowel"), std).fillna("")) == ["サイトウトシオ", "サイトウトシオ", "サトウ", "ケイコ", "ナカイサアヤ", "ヤマシタサアヤ", ""]
     assert list(normalize(names, ("kana_fold", "long_vowel", "last3"), std).fillna(""))[4:] == ["サアヤ", "サアヤ", ""]  # a married name's end, kept
+    texts = pd.Series(["東京都港区1丁目", "TANAKA", "", None, "𠀋😀ア"], dtype="string")  # 4-byte characters too
+    hashed = normalize(texts, ("one_byte_hash",), std)
+    assert hashed.isna().tolist() == [False, True, True, True, False]  # ASCII: none, DuckDB compares it as it is
+    assert all(len(h) == len(t) and h.isascii() for h, t in zip(hashed.dropna(), texts[hashed.notna()]))  # one byte a character
 
 
 def test_a_one_edit_level_is_counted_exactly_through_deletion_keys(con_db):
@@ -155,10 +171,11 @@ def test_registered_pairs_score_like_splink_blocking(con_db, records):
     copied = records.assign(name__one_byte=normalize(records["name"], ("one_byte",), None))  # as er.standardize prepares them: Splink's own linker reads every column
     native = Linker(db.register(copied), {**splink_json, "blocking_rules_to_generate_predictions": [keys_sql((Key("phone"),))]},
                     log_level=logging.ERROR).inference.predict().as_pandas_dataframe().astype({"uid_l": "string", "uid_r": "string"})
-    ours = score_fs(model_json, records, native[["uid_l", "uid_r"]], db, UID)
+    ours = score_fs(model_json, records, native[["uid_l", "uid_r"]], db, UID)  # Splink's SQL in one query of ours: the same to the last bit
     both = native.merge(ours, on=["uid_l", "uid_r"], suffixes=("_native", "_registered"))
-    assert len(both) == len(native) > 0
-    assert np.allclose(both["match_weight_native"], both["match_weight_registered"], atol=1e-9)
+    assert len(both) == len(native) > 0 and both["gamma_name_native"].nunique() > 1
+    for c in ("match_weight", "match_probability", "gamma_name", "gamma_phone"):
+        assert (both[f"{c}_native"] == both[f"{c}_registered"]).all(), c
 
 
 def test_waterfall_bits_sum_to_the_match_weight(con_db, records):
@@ -299,6 +316,7 @@ def test_a_comparison_asked_of_duckdb_first_passes_the_pairs_the_python_function
     df = pd.DataFrame({"x_l": left, "x_r": right}, dtype="string")  # '' kept: records not prepared by er.standardize may hold it
     for side in ("l", "r"):
         df[f"x__one_byte_{side}"] = normalize(df[f"x_{side}"], ("one_byte",), None)
+        df[f"x__one_byte_hash_{side}"] = normalize(df[f"x_{side}"], ("one_byte_hash",), None).where(df.index % 5 > 0)  # a record prepared without it: the bytes' bound
     copies = df["x__one_byte_l"].dropna()
     assert len(copies) > 1500 and (copies.str.len() == copies.map(lambda v: len(v.encode("utf-8")))).all()  # one byte each
     con.register("er_pairs", df.assign(i=range(len(df))))
@@ -311,6 +329,6 @@ def test_a_comparison_asked_of_duckdb_first_passes_the_pairs_the_python_function
             before = spent().get(function, (0, 0))[1]
             fast, slow = con.execute(f"SELECT list(coalesce({comp.sql('x', level=True)}, FALSE) ORDER BY i), list({plain} ORDER BY i) FROM pairs").fetchall()[0]
             assert fast == slow, (function, t, [(df.x_l[i], df.x_r[i]) for i, (p, q) in enumerate(zip(fast, slow)) if p != q][:3])
-            assert function not in ("jaro_winkler", "hamming") or spent()[function][1] - before < 1.5 * len(df), (function, t)  # most pairs never reach Python
+            assert function == "jaro" or spent()[function][1] - before < 1.5 * len(df), (function, t)  # the plain query's, and few of its: most pairs never reach Python
     rule = Comparator(function="jaro_winkler", threshold=0.8).sql("x")  # a rule's form: equal values pass too
     assert "jaro_winkler_similarity" in rule and rule.startswith('(l."x" = r."x" OR')

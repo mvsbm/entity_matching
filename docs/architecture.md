@@ -56,7 +56,7 @@ The system turns a file of customer records into one ID per person or company. I
 
 **One engine.** `nayose`, `benchmark.py`, the demo and `choose.py` all run `er.run.Run`. `choose.py` measures each configuration by running it (`er.pipeline.run_rules`, `run_fs`: the run's steps up to its clusters, nothing written) and joining the run's tables to the truth, so it judges exactly what runs, with the same gate on oversized blocks and the same untrusted values. It then writes each split's workspace through `er.run`.
 
-**Where Splink sits.** Splink does the model's training and scoring, and the clustering, on the run's DuckDB connection. Everything around it is the `er` package: the rules' joins and candidate generation as SQL, budgets, u from the scored file, the threshold rule, decisions, evaluation ([what we take from Splink, and why the rest is ours](#what-we-take-from-splink-and-what-we-do-ourselves)).
+**Where Splink sits.** Splink does the model's training (λ and EM) and the clustering, on the run's DuckDB connection; its scoring and u sample run as its own SQL, written by the `er` package in one query each. Everything around it is the `er` package: the rules' joins and candidate generation as SQL, budgets, u from the scored file, the threshold rule, decisions, evaluation ([what we take from Splink, and why the rest is ours](#what-we-take-from-splink-and-what-we-do-ourselves)).
 
 **Configured for any file.** The engine reads logical fields only. `config/settings.toml` `[columns]` maps each field to the file's columns, and `[fields]` in the pipeline says which are mandatory and which optional. A missing optional field turns off only what reads it ([usage](usage.md#2--map-your-columns)).
 
@@ -66,7 +66,7 @@ The SQL is written to move: joins, group-bys, window functions and `CREATE TABLE
 
 | Piece | Where | DuckDB form |
 |---|---|---|
-| character-level similarity (`cl_jaro_winkler`, `cl_levenshtein`, …) | `er.strings`, `er.config.Comparator.test` | DuckDB's own Jaro, Jaro–Winkler and Hamming (rapidfuzz's C++, on bytes) where each character is one byte: ASCII, or katakana copied one byte each at load (`one_byte`); an edit distance of 1 failed there first where equal-length ASCII values differ in more places than one edit makes; else Python UDFs over Arrow (rapidfuzz) |
+| character-level similarity (`cl_jaro_winkler`, `cl_levenshtein`, …) | `er.strings`, `er.config.Comparator.test` | DuckDB's own Jaro, Jaro–Winkler and Hamming (rapidfuzz's C++, on bytes) where each character is one byte: ASCII, or katakana copied one byte each at load (`one_byte`); DuckDB's Levenshtein and Damerau–Levenshtein on ASCII, and on other text a pair failed first on copies with each character hashed to one byte (`one_byte_hash`), never farther apart than the values; else Python UDFs over Arrow (rapidfuzz) |
 | one-character deletions of a value | `er.candidates`, `er.match` | `list_transform` + `unnest` |
 | a pair's generators as bits | `er.candidates` | `bit_or`, then a `CASE` per bit |
 | the first rule that pairs two records | `er.match`, `er.run` | `DISTINCT ON`, `arg_min` |
@@ -82,7 +82,8 @@ Splink 5 was read against this code, and each overlap measured on the same data,
 
 | Job | Ours or Splink's | Why |
 |---|---|---|
-| training (λ, EM), scoring, connected components | Splink's | its job; pairs are scored through `register_blocked_pairs_for_predict`, Splink 5's path for given pairs, which also prunes the records read |
+| training (λ, EM), connected components | Splink's | its job |
+| scoring, the u sample | Splink's SQL, run by ours (`match.predict_sql`, `match.sample_u`) | the same scores and u to the last bit (tests compare them with Splink's), in one query: Splink copies the records twice before scoring, and joins the u sample's pairs again for each comparison; a model with term frequencies is scored by Splink |
 | the rules' joins | ours, plain SQL | `deterministic_link` gives the same pairs but first joins every column of both records back: 1.35× slower at a million records, 17× at 10,000. Splink has no cascade (a later stage adding a pair only for a record still unresolved) |
 | merging the generators' pairs | ours | 1.56× faster at a million records, and every generator that found a pair is kept (`sources`); Splink keeps the first. Sorted windows aren't Splink blocking rules |
 | counting a key's pairs before any join | ours | one group-by, 5–6× faster than Splink's exact count |

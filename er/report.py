@@ -269,9 +269,11 @@ def trust_sheet(run: "Run", out: Path | None = None) -> tuple[pd.DataFrame, pd.D
     line or above. An increment (`out`, its workspace) counts the false pairs the workspace holds: its own links are
     the batch's. O(E)."""
     con, l, r, trust, u = run.con, q(run.l), q(run.r), run.pipeline.trust, q(run.uid)
-    links = f"""SELECT * FROM (SELECT s.* EXCLUDE (named, keep) FROM ({run.scored()}) s WHERE s.named AND s.keep
+    # once, those every question below reads (from the lowest step or the line up): each would join every scored pair again
+    con.execute(f"""CREATE OR REPLACE TEMP TABLE er_trust_links AS SELECT * FROM (SELECT s.* EXCLUDE (named, keep) FROM ({run.scored()}) s WHERE s.named AND s.keep
                 UNION ALL BY NAME SELECT x.*, k.rule AS sources FROM rule_kept k JOIN rule_scores x USING ({l}, {r}))
-                QUALIFY row_number() OVER (PARTITION BY {l}, {r} ORDER BY sources) = 1"""
+                QUALIFY row_number() OVER (PARTITION BY {l}, {r} ORDER BY sources) = 1 AND match_weight >= {bits(min((*trust.steps, trust.line)))}""")
+    links = "SELECT * FROM er_trust_links"
     open_ = f"NOT EXISTS (SELECT 1 FROM er_decisions d WHERE d.{l} = x.{l} AND d.{r} = x.{r})"
     decide = pd.DataFrame()
     holds = lambda lo, hi: con.execute(f"SELECT count(*) > 0 FROM ({links}) x WHERE x.match_weight >= {bits(lo)} AND x.match_weight < {bits(hi)}").fetchall()[0][0]
@@ -286,7 +288,8 @@ def trust_sheet(run: "Run", out: Path | None = None) -> tuple[pd.DataFrame, pd.D
             con.sql(f"SELECT * FROM ({links}) x WHERE {within} AND {open_} ORDER BY hash(x.{l}, x.{r}) LIMIT {max(0, trust.checks - done)}").df()
     audit = con.sql(f"SELECT * FROM ({links}) x WHERE x.match_weight >= {bits(trust.line)} AND {open_} ORDER BY hash(x.{l}, x.{r}) LIMIT {trust.watch}").df()
     unnamed = con.sql(f"""SELECT * EXCLUDE (named, keep) FROM ({run.scored()}) x WHERE NOT x.named AND x.keep
-        AND x.match_weight >= {run.pipeline.fs.min_match_weight} AND {open_} ORDER BY x.match_weight DESC""").df()  # no line joins them: people do
+        AND x.match_weight >= {run.pipeline.fs.min_match_weight} AND {open_} ORDER BY x.match_weight DESC, x.{l}, x.{r}""").df()  # no line joins them: people do
+    con.execute("DROP TABLE er_trust_links")
     return pd.concat([decide, unnamed], ignore_index=True).assign(why="decide"), audit.assign(why="audit")
 
 

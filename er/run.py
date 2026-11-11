@@ -123,7 +123,7 @@ class Run:
     settings: Settings
     model: dict | None = None                 # a fitted model (Splink JSON from train_fs); None: fit on this file
     chunk_rows: int = 200_000
-    score_pairs: int = 1_000_000              # pairs scored at a time: each slice says how far scoring is, and bounds its memory
+    score_pairs: int = 5_000_000              # pairs scored at a time: each slice says how far scoring is, and bounds its memory; each joins every record again
     steps: list[dict] = field(default_factory=list)
     disabled: list[str] = field(default_factory=list)
     echo: Callable[[dict], None] | None = None  # called with each step as it finishes: progress for people (nayose)
