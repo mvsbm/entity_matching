@@ -37,7 +37,7 @@ import duckdb
 import numpy as np
 import pandas as pd
 
-from er import folder, inbox, index, intake
+from er import details, folder, inbox, index, intake
 from er.io import alive, replace_text
 from er.config import InputError, Normalizer, adjust, lit, load_pipeline, q, restrict, sources_text, toml_of, widen
 from er.folder import Busy
@@ -556,6 +556,11 @@ def brief_show(r: dict) -> list[str]:  # the full rows side by side: the columns
     return grid(rows, {"column": "column", **{f"r{k}": x["id"] for k, x in enumerate(recs)}, "mark": ""}, most=len(rows)) + out
 
 
+def brief_details(r: dict) -> list[str]:
+    linked = f"; {r['linked']:,} of {r['records']:,} records have some" if r.get("records") else ""
+    return [f"✓ {r['file']}: {r['rows']:,} rows for {r['ids']:,} IDs, by {r['key']}{linked}", f"  shown: {', '.join(r['shown']) or 'none'}"]
+
+
 def brief_merging(r: dict) -> list[str]:
     m = {"join": r.get("join"), "when": r.get("when")}
     if not r.get("when"):
@@ -611,6 +616,9 @@ BRIEF: dict[str, Callable[[dict], list[str]]] = {
     "list scored": brief_scored,
     "list entities": brief_entities,
     "show records": brief_show,
+    "load details": brief_details, "set details": brief_details,
+    "show details": lambda r: [line for x in r["records"] for line in [f"  {x['id']}: {x['total']:,} row{'s' * (x['total'] != 1)} in {r['file']}"] + grid([dict(zip(r["columns"], v)) for v in x["rows"]], {c: c for c in r["columns"]}, most=len(x["rows"]))]
+                              if r["file"] else ["  no details file: nayose load details FILE --workspace …"],
     "match record": brief_match_record,
     "search records": brief_search_records,
     "build index": lambda r: [f"✓ index of {r['records']:,} records built in {took(r['seconds'])}: {r['index']}"] + nexts(r),
@@ -1401,7 +1409,8 @@ def describe_workspace_(a: dict, emit: "Emit") -> dict:
     then = [dict(command=nayose("rerun", "records", "--workspace", out, *again), why="the mapping or the method changed since the run: match again to read the records so")] * owed + then
     told = out / "auto" / "report.md"  # the last auto mode's report, to send
     auto = dict(report=str(told), markdown=told.read_text(encoding="utf-8")) if told.is_file() else None
-    return {**d, "inputs": files, "columns": "own" if columns_file(out) else "project", "auto": auto, "index": index.status(out, s), "rerun_owed": owed, "next": then}
+    return {**d, "inputs": files, "columns": "own" if columns_file(out) else "project", "auto": auto, "index": index.status(out, s), "rerun_owed": owed,
+            "details": details.described(out), "next": then}
 
 
 def describe_entity_(a: dict, emit: "Emit") -> dict:
@@ -1636,6 +1645,21 @@ def list_entities_(a: dict, emit: "Emit") -> dict:
                          counted(a, "page", 1), counted(a, "count", 100))
 
 
+def load_details(a: dict, emit: "Emit") -> dict:
+    s = settings_for(a)
+    return details.load(connect(s.compute)[0], Path(a["workspace"]), a["file"], a.get("key"), a.get("columns"), s.data.unique_id)
+
+
+def set_details(a: dict, emit: "Emit") -> dict:
+    settings_for(a)
+    return details.choose(Path(a["workspace"]), a.get("columns") or [])
+
+
+def show_details(a: dict, emit: "Emit") -> dict:
+    settings_for(a)
+    return details.show(duckdb.connect(), Path(a["workspace"]), a["ids"])
+
+
 def show_records_(a: dict, emit: "Emit") -> dict:
     s = settings_for(a)
     return show_records(connect(s.compute)[0], Path(a["workspace"]), s, list(dict.fromkeys(a["ids"])))
@@ -1750,6 +1774,9 @@ CHECKED = {"records": "records read", "fields": "each field: filled, looks_right
            "turned_off": "rules, keys and levels a missing field turns off", "keys": "each key's pairs per record and largest block",
            "oversized_from": "the block size checked by sampling", "notes": "what the loader detected or fixed", "read": "what the reader found (er.intake): rows, values per encoding, fixed (controls, placeholders, numbers, damaged, lists, first of several), proposed and waiting: repairs by kind (realign, garbled, encoding) for accept repairs, with examples; unread rows",
            "next": "the commands that usually follow"}
+DETAILED = {"file": "the file's name", "rows": "rows kept", "ids": "record IDs they name", "unkeyed": "rows without an ID, left out",
+            "key": "the column holding the records' IDs", "columns": "each column of the file: column, filled, example", "shown": "the columns people see, in the file's order",
+            "linked": "records, in the file given last, with a row (null: no records yet)", "records": "records in that file"}
 COMPUTE = Param("compute", "DuckDB limits for this run, over config/settings.toml [compute]: memory_limit=8GB, threads=4, "
                 "temp_directory=<folder> (past the memory limit DuckDB spills there)", "many", metavar="KEY=VALUE")
 PIPELINE = Param("pipeline", "the pipeline file (default: config/final.toml)", "path")
@@ -1785,6 +1812,23 @@ COMMANDS: tuple[Command, ...] = (
             "nayose load records customers.parquet --workspace workspaces/acme", load_records,
             show={"columns": ("column", "filled", "example"), "fields": ("field", "filled", "looks_right"), "fit": (), "features": (), "profile": (),
                   "slots": ("feature", "filled", "looks_right"), "placements": ("feature", "column", "why"), "offers": ("feature", "column", "why")}),
+    Command("load", "details", "Copy a details file into a workspace: rows people see above each record they review",
+            "Rows about the records, found by the record's ID (--key: the column holding it, by default the records' own ID "
+            "column), any number for one record, such as each contract a customer holds. Matching never reads them, so loading "
+            "them asks for no run. Kept in the workspace's details/, every row and column sorted by the ID, so a card reads only "
+            "its records' rows (show details); loading another replaces it. Parquet: a file, a quoted glob or a folder of them. "
+            "O(m log m) for m rows, once; the records linked to them O(n + m).",
+            (Param("file", "the details: a Parquet file, a quoted glob or a folder of them", "path", positional=True),
+             Param("key", "its column of record IDs (default: the records' ID column)", metavar="COLUMN"),
+             Param("columns", "the columns people see (default: all)", "many", metavar="COLUMN"), WORKSPACE),
+            DETAILED, "nayose load details contracts.parquet --workspace workspaces/acme", load_details,
+            show={"columns": ("column", "filled", "example")}),
+    Command("set", "details", "Choose the details file's columns people see",
+            "Which columns of the details file (load details) are shown above each record; none given: none. Matching reads "
+            "none of it, so it waits for no run and asks for none. O(columns).",
+            (Param("columns", "the columns to show", "many", metavar="COLUMN"), WORKSPACE),
+            DETAILED, "nayose set details --columns PLAN START_DATE --workspace workspaces/acme", set_details, quick=True,
+            show={"columns": ("column", "filled", "example")}),
     Command("generate", "records", "Generate synthetic records into a workspace, then load them as a file",
             "People and companies from the reference names, companies and towns (config/generator.toml), each under one or "
             "more records with typos, other notations, moves and missing values, as hard to match as --difficulty says "
@@ -2006,6 +2050,7 @@ COMMANDS: tuple[Command, ...] = (
              "auto": "the report try everything wrote, to send: report (its path), markdown",
              "rerun_owed": "the mapping, the method or the pipeline changed since the run: it reads the records so once it runs again",
              "index": "the lookup's index: built_at, records, added (of them, since it was built), stale (what changed since, or null; built_at null: none yet), columns (each a lookup reads: column, field, main: in the field's first alternative)",
+             "details": "the details file people see above each record (load details), or null",
              "next": "the commands that usually follow"},
             "nayose describe workspace workspaces/customers", describe_workspace_, quick=True,
             show={"largest": ("entity", "records"), "runs": ("at", "what", "seconds"), "inputs": ("name", "files", "bytes", "read"), "auto": (), "index": ()}),
@@ -2264,6 +2309,14 @@ COMMANDS: tuple[Command, ...] = (
             (Param("ids", "record IDs", "many", positional=True, metavar="ID"), WORKSPACE),
             {"columns": "the file's columns in order: column, fields (those it feeds)", "records": "each record: id, row (column: value), set_aside"},
             "nayose show records 0000102855 0000905311 --workspace workspaces/customers", show_records_, quick=True),
+    Command("show", "details", "Records' rows in the details file",
+            "Each record's rows in the workspace's details file (load details), the columns people see, in the file's order: "
+            "the first 1,000 and how many it has. Reads only the row groups whose ID range can hold them (32,768 rows each), "
+            "about 10 ms a card at 10 million rows. No details file: none.",
+            (Param("ids", "record IDs", "many", positional=True, metavar="ID"), WORKSPACE),
+            {"file": "the details file's name, or null: none loaded", "key": "its column of record IDs", "columns": "the columns shown",
+             "records": "each record: id, rows (each a list of values, as columns), total (its rows, all of them)"},
+            "nayose show details 0000102855 0000905311 --workspace workspaces/customers", show_details, quick=True),
     Command("describe", "merging", "What merge conditions would merge, before they apply",
             "The pairs the conditions merge without people (--conditions, else the workspace's), condition by condition and "
             "together, pairs people said differ left apart, and the entities of two records or more that would then hold; "
@@ -2362,10 +2415,10 @@ COMMANDS: tuple[Command, ...] = (
 # ---------- the parser and the reference, from the declarations ----------
 
 GROUPS = (  # the top-level help's commands, by task
-    ("Set up", ("create workspace", "list workspaces", "load records", "generate records", "accept repairs", "check records", "describe records", "list columns",
+    ("Set up", ("create workspace", "list workspaces", "load records", "generate records", "load details", "set details", "accept repairs", "check records", "describe records", "list columns",
                 "set columns", "set preparation", "list features", "set feature", "set names", "add feature", "remove feature")),
     ("Run", ("resolve records", "add records", "match records", "rerun records", "rehearse records", "try everything", "serve inbox")),
-    ("Review", ("open ui", "describe results", "list scored", "show records", "decide pair", "apply decisions", "list kinds", "answer kind",
+    ("Review", ("open ui", "describe results", "list scored", "show records", "show details", "decide pair", "apply decisions", "list kinds", "answer kind",
                 "apply answers", "describe merging", "set merging", "list entities", "describe entity", "split entity")),
     ("Look up", ("build index", "match record", "search records")),
     ("Look inside", ("describe workspace", "describe matching", "describe key", "list patterns", "explain pair", "compare records")),

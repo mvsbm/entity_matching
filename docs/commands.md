@@ -16,6 +16,8 @@ Written by `scripts/document_commands.py` from the declarations in `er/cli.py`; 
 | [`create workspace`](#nayose-create-workspace) | Start a workspace: the folder for one matching job |
 | [`list workspaces`](#nayose-list-workspaces) | The workspaces, the latest active first |
 | [`load records`](#nayose-load-records) | Copy a file into a workspace, read it as it comes, then describe it |
+| [`load details`](#nayose-load-details) | Copy a details file into a workspace: rows people see above each record they review |
+| [`set details`](#nayose-set-details) | Choose the details file's columns people see |
 | [`generate records`](#nayose-generate-records) | Generate synthetic records into a workspace, then load them as a file |
 | [`accept repairs`](#nayose-accept-repairs) | Accept one kind of repair the reader proposed for a loaded file |
 | [`list features`](#nayose-list-features) | The features a workspace's columns fill: groups, features, parts |
@@ -57,6 +59,7 @@ Written by `scripts/document_commands.py` from the declarations in `er/cli.py`; 
 | [`list scored`](#nayose-list-scored) | The pairs the run scored, best first, a page at a time |
 | [`list entities`](#nayose-list-entities) | The entities, largest first |
 | [`show records`](#nayose-show-records) | Records' full rows, as the file gave them |
+| [`show details`](#nayose-show-details) | Records' rows in the details file |
 | [`describe merging`](#nayose-describe-merging) | What merge conditions would merge, before they apply |
 | [`set merging`](#nayose-set-merging) | Merge pairs without people, by conditions you set |
 | [`list patterns`](#nayose-list-patterns) | The model's pairs as patterns: what each comparison said, and what became of them |
@@ -154,6 +157,70 @@ Copies the records into a part of the workspace's own (inputs/0001-customers/), 
 
 ```bash
 nayose load records customers.parquet --workspace workspaces/acme
+```
+
+## nayose load details
+
+Copy a details file into a workspace: rows people see above each record they review.
+
+```
+nayose load details FILE [--key COLUMN] [--columns COLUMN …] --workspace WORKSPACE [--format text|json]
+```
+
+Rows about the records, found by the record's ID (--key: the column holding it, by default the records' own ID column), any number for one record, such as each contract a customer holds. Matching never reads them, so loading them asks for no run. Kept in the workspace's details/, every row and column sorted by the ID, so a card reads only its records' rows (show details); loading another replaces it. Parquet: a file, a quoted glob or a folder of them. O(m log m) for m rows, once; the records linked to them O(n + m).
+
+| Parameter | |
+|---|---|
+| `FILE` | the details: a Parquet file, a quoted glob or a folder of them |
+| `--key COLUMN` | its column of record IDs (default: the records' ID column) |
+| `--columns COLUMN` | the columns people see (default: all) |
+| `--workspace WORKSPACE` | the workspace: the folder that keeps one matching job (required) |
+
+| Result | |
+|---|---|
+| `file` | the file's name |
+| `rows` | rows kept |
+| `ids` | record IDs they name |
+| `unkeyed` | rows without an ID, left out |
+| `key` | the column holding the records' IDs |
+| `columns` | each column of the file: column, filled, example |
+| `shown` | the columns people see, in the file's order |
+| `linked` | records, in the file given last, with a row (null: no records yet) |
+| `records` | records in that file |
+
+```bash
+nayose load details contracts.parquet --workspace workspaces/acme
+```
+
+## nayose set details
+
+Choose the details file's columns people see.
+
+```
+nayose set details [--columns COLUMN …] --workspace WORKSPACE [--format text|json]
+```
+
+Which columns of the details file (load details) are shown above each record; none given: none. Matching reads none of it, so it waits for no run and asks for none. O(columns).
+
+| Parameter | |
+|---|---|
+| `--columns COLUMN` | the columns to show |
+| `--workspace WORKSPACE` | the workspace: the folder that keeps one matching job (required) |
+
+| Result | |
+|---|---|
+| `file` | the file's name |
+| `rows` | rows kept |
+| `ids` | record IDs they name |
+| `unkeyed` | rows without an ID, left out |
+| `key` | the column holding the records' IDs |
+| `columns` | each column of the file: column, filled, example |
+| `shown` | the columns people see, in the file's order |
+| `linked` | records, in the file given last, with a row (null: no records yet) |
+| `records` | records in that file |
+
+```bash
+nayose set details --columns PLAN START_DATE --workspace workspaces/acme
 ```
 
 ## nayose generate records
@@ -809,6 +876,7 @@ Records and entities, the largest entities, each run so far, the pairs and kinds
 | `auto` | the report try everything wrote, to send: report (its path), markdown |
 | `rerun_owed` | the mapping, the method or the pipeline changed since the run: it reads the records so once it runs again |
 | `index` | the lookup's index: built_at, records, added (of them, since it was built), stale (what changed since, or null; built_at null: none yet), columns (each a lookup reads: column, field, main: in the field's first alternative) |
+| `details` | the details file people see above each record (load details), or null |
 | `next` | the commands that usually follow |
 
 ```bash
@@ -1444,6 +1512,32 @@ Each record's full row: every column of the records file, in its order, from the
 
 ```bash
 nayose show records 0000102855 0000905311 --workspace workspaces/customers
+```
+
+## nayose show details
+
+Records' rows in the details file.
+
+```
+nayose show details ID … --workspace WORKSPACE [--format text|json]
+```
+
+Each record's rows in the workspace's details file (load details), the columns people see, in the file's order: the first 1,000 and how many it has. Reads only the row groups whose ID range can hold them (32,768 rows each), about 10 ms a card at 10 million rows. No details file: none.
+
+| Parameter | |
+|---|---|
+| `ID` | record IDs |
+| `--workspace WORKSPACE` | the workspace: the folder that keeps one matching job (required) |
+
+| Result | |
+|---|---|
+| `file` | the details file's name, or null: none loaded |
+| `key` | its column of record IDs |
+| `columns` | the columns shown |
+| `records` | each record: id, rows (each a list of values, as columns), total (its rows, all of them) |
+
+```bash
+nayose show details 0000102855 0000905311 --workspace workspaces/customers
 ```
 
 ## nayose describe merging
