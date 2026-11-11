@@ -16,7 +16,7 @@ Written by `scripts/document_commands.py` from the declarations in `er/cli.py`; 
 | [`create workspace`](#nayose-create-workspace) | Start a workspace: the folder for one matching job |
 | [`list workspaces`](#nayose-list-workspaces) | The workspaces, the latest active first |
 | [`load records`](#nayose-load-records) | Copy a file into a workspace, read it as it comes, then describe it |
-| [`load details`](#nayose-load-details) | Copy a details file into a workspace: rows people see above each record they review |
+| [`load details`](#nayose-load-details) | Point a workspace at a details file: rows people see above each record they review |
 | [`set details`](#nayose-set-details) | Choose the details file's columns people see |
 | [`generate records`](#nayose-generate-records) | Generate synthetic records into a workspace, then load them as a file |
 | [`accept repairs`](#nayose-accept-repairs) | Accept one kind of repair the reader proposed for a loaded file |
@@ -161,13 +161,13 @@ nayose load records customers.parquet --workspace workspaces/acme
 
 ## nayose load details
 
-Copy a details file into a workspace: rows people see above each record they review.
+Point a workspace at a details file: rows people see above each record they review.
 
 ```
 nayose load details FILE [--key COLUMN] [--columns COLUMN …] --workspace WORKSPACE [--format text|json]
 ```
 
-Rows about the records, found by the record's ID (--key: the column holding it, by default the records' own ID column), any number for one record, such as each contract a customer holds. Matching never reads them, so loading them asks for no run. Kept in the workspace's details/, every row and column sorted by the ID, so a card reads only its records' rows (show details); loading another replaces it. Parquet: a file, a quoted glob or a folder of them. O(m log m) for m rows, once; the records linked to them O(n + m).
+Rows about the records, found by the record's ID (--key: the column holding it, by default the records' own ID column), any number for one record, such as each contract a customer holds. Matching never reads them, so loading them asks for no run. Nothing is copied: the workspace keeps where the file is, its key and the columns shown, and a card reads the file itself (show details), so the file must stay where it is; loading another replaces it. Parquet: a file, a quoted glob or a folder of them. Its footer and first 200 rows (milliseconds at any size), then 2,000 records drawn from the file given last, to say how many have a row: one scan of the key column.
 
 | Parameter | |
 |---|---|
@@ -179,14 +179,12 @@ Rows about the records, found by the record's ID (--key: the column holding it, 
 | Result | |
 |---|---|
 | `file` | the file's name |
-| `rows` | rows kept |
-| `ids` | record IDs they name |
-| `unkeyed` | rows without an ID, left out |
+| `rows` | its rows |
 | `key` | the column holding the records' IDs |
-| `columns` | each column of the file: column, filled, example |
+| `columns` | each column of the file: column, filled (from its footer), example (from its first rows) |
 | `shown` | the columns people see, in the file's order |
-| `linked` | records, in the file given last, with a row (null: no records yet) |
-| `records` | records in that file |
+| `linked` | of the records drawn, those with a row (null: no records yet, or no ID column) |
+| `drawn` | records drawn from the file given last: 2,000, or all of them if fewer |
 
 ```bash
 nayose load details contracts.parquet --workspace workspaces/acme
@@ -210,14 +208,12 @@ Which columns of the details file (load details) are shown above each record; no
 | Result | |
 |---|---|
 | `file` | the file's name |
-| `rows` | rows kept |
-| `ids` | record IDs they name |
-| `unkeyed` | rows without an ID, left out |
+| `rows` | its rows |
 | `key` | the column holding the records' IDs |
-| `columns` | each column of the file: column, filled, example |
+| `columns` | each column of the file: column, filled (from its footer), example (from its first rows) |
 | `shown` | the columns people see, in the file's order |
-| `linked` | records, in the file given last, with a row (null: no records yet) |
-| `records` | records in that file |
+| `linked` | of the records drawn, those with a row (null: no records yet, or no ID column) |
+| `drawn` | records drawn from the file given last: 2,000, or all of them if fewer |
 
 ```bash
 nayose set details --columns PLAN START_DATE --workspace workspaces/acme
@@ -1522,7 +1518,7 @@ Records' rows in the details file.
 nayose show details ID … --workspace WORKSPACE [--format text|json]
 ```
 
-Each record's rows in the workspace's details file (load details), the columns people see, in the file's order: the first 1,000 and how many it has. Reads only the row groups whose ID range can hold them (32,768 rows each), about 10 ms a card at 10 million rows. No details file: none.
+Each record's rows in the workspace's details file (load details), the columns people see, in the file's order: the first 1,000 and how many it has. Read from the file itself, its key compared as the file holds it: at most one scan of the key column, then the shown columns of the rows found, tens of milliseconds a card. No details file: none.
 
 | Parameter | |
 |---|---|

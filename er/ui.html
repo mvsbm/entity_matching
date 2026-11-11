@@ -58,7 +58,6 @@ body.collapsed main { margin-left: 72px; }
 
 /* the page */
 main { margin: 56px 0 0 256px; padding: 0 24px 120px; min-height: calc(100% - 56px); }
-#screen > :not(.pagehead) { max-width: 1280px; }  /* wide screens: content keeps a readable width; the page head spans */
 .pagehead { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; min-height: 64px; border-bottom: 1px solid var(--line); margin: 0 -24px 16px; padding: 8px 24px; background: var(--surface); }
 .pagehead h1 { font-size: 22px; font-weight: 400; margin: 0 16px 0 0; }
 .btn { display: inline-flex; align-items: center; gap: 6px; height: 36px; padding: 0 16px; border-radius: 18px; border: 1px solid transparent; background: transparent; cursor: pointer;
@@ -74,7 +73,9 @@ main { margin: 56px 0 0 256px; padding: 0 24px 120px; min-height: calc(100% - 56
 .muted { color: var(--muted); }
 .faint { color: var(--faint); }
 .split { display: grid; grid-template-columns: minmax(0, 2fr) minmax(0, 3fr); gap: 16px; align-items: start; }
-.split.item-first { grid-template-columns: minmax(0, 62fr) minmax(0, 38fr); } .queue th, .queue td { padding: 8px 10px; }
+.split.item-first { grid-template-columns: minmax(0, var(--sa, 62fr)) 12px minmax(0, var(--sb, 38fr)); column-gap: 2px; } .queue th, .queue td { padding: 8px 10px; }
+.grip-v { align-self: stretch; cursor: col-resize; border-radius: 6px; display: flex; justify-content: center; touch-action: none; }  /* the line between the item and its queue, dragged */
+.grip-v::before { content: ""; width: 4px; margin: 24px 0; border-radius: 2px; background: var(--line); } .grip-v:hover::before, .grip-v:focus-visible::before { background: var(--primary); }
 .queue .progress { padding: 12px 16px; } .queue .progress .answer { font-size: 14px; } .queue .progress .pn-seg { margin-top: 8px; height: 8px; }
 p.then { font-size: 12px; color: var(--muted); margin: 6px 0 0; }
 .card .links { display: flex; flex-direction: column; gap: 4px; font-size: 14px; margin: 6px 0 10px; } .card .links b { font-weight: 500; }
@@ -139,10 +140,21 @@ tbody tr[aria-selected="true"] { background: var(--sel); color: var(--sel-ink); 
 .fullrows td.col { font: 12px ui-monospace, Menlo, monospace; color: var(--muted); }
 .fullrows tr.fr-different td { background: color-mix(in srgb, var(--bad-bg) 45%, transparent); }
 .fullrows .tablewrap { max-height: 56vh; }
-.details-of { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 12px; margin: 14px 0; }  /* a pair's side by side; stacked when narrow */
-.details-of .tablewrap { max-height: 300px; }  /* about 8 rows, then it scrolls */
-#dcols .chip { border: 0; cursor: pointer; } #dcols .chip[aria-pressed="true"] { background: var(--sel); color: var(--sel-ink); }
-.fullrows table { min-width: 560px; } .fullrows td.col { white-space: nowrap; }  /* a narrow screen scrolls the rows sideways: a column's name stays whole */
+.data-top { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 16px; align-items: start; margin-bottom: 16px; } .data-top .card { margin: 0; }  /* step 2: the records and the details beside them */
+.data-top .answer { overflow-wrap: anywhere; }  /* a long file name wraps, never widens the card */
+@media (max-width: 1100px) { .data-top { grid-template-columns: minmax(0, 1fr); } }
+tr.det-head td, tr.sec-head td { background: var(--primary-soft); } .fullrows tr.sec-head td.col { font: inherit; background: var(--primary-soft); }
+.sec { border: 0; background: none; padding: 0; font: inherit; font-weight: 600; color: var(--ink); cursor: pointer; white-space: nowrap; }  /* a section's name: a click folds it, or opens it */ .fullrows tr.det-head td.col { font: inherit; color: var(--ink); }  /* the section's name and its flag, in words, not a column's name */ tr.det-last td { border-bottom: 2px solid var(--line); }  /* the details file's rows, set apart from the record's own */
+td.det-v div { white-space: nowrap; overflow-wrap: normal; line-height: 24px; }
+.det-shared { background: var(--for-bg); color: var(--for); border-radius: 4px; padding: 1px 6px; font-weight: 500; }  /* a value the other record holds too: blue, as same is */
+.pdot { display: inline-block; width: 9px; height: 9px; border-radius: 3px; margin-right: 7px; vertical-align: 0; background: var(--pc, var(--faint)); flex: none; }  /* which chosen policy a line is */
+.det-pick { margin-top: 6px; } .det-pick .chip { border: 0; cursor: pointer; } .det-pick .chip[aria-pressed="true"] { background: var(--sel); color: var(--sel-ink); }  /* a row's values one to a line, so the same line is the same row in every column */
+#dcols td:first-child, #dcols th:first-child { width: 48px; }
+.fullrows table { min-width: 560px; } .fullrows td.col { white-space: nowrap; }
+.fullrows th:first-child, .fullrows td.col { position: sticky; left: 0; z-index: 1; background: var(--surface); }  /* the column's name stays as the records scroll by */
+.fullrows tr.fr-different td.col { background: color-mix(in srgb, var(--bad-bg) 45%, var(--surface)); } .fullrows tr.det-head td.col { background: var(--primary-soft); }
+.fullrows table.many th:not(:first-child):not(:last-child), .fullrows table.many td.wrap, .fullrows table.many td.det-v { min-width: 170px; }  /* four records or more: each its width, the table scrolls sideways */
+.fullrows th .role { font-weight: 400; font-size: 12px; color: var(--muted); white-space: normal; margin-top: 2px; }  /* a narrow screen scrolls the rows sideways: a column's name stays whole */
 .cond { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 8px; margin-bottom: 8px; }
 .cond select, .cond input { font: inherit; padding: 6px 8px; border: 1px solid var(--outline); border-radius: 6px; background: var(--surface); color: var(--ink); }
 .cond select[multiple] { min-width: 320px; min-height: 96px; } .cond .cond-body { display: flex; flex-wrap: wrap; gap: 8px 12px; align-items: center; flex: 1; }
@@ -269,8 +281,8 @@ body.term-open .snack, body.term-open .task { bottom: calc(var(--term-h) + 16px)
 .task-line { color: var(--muted); font-size: 13px; }
 @media (max-width: 860px) { .task { right: 16px; left: 16px; width: auto; bottom: 88px; } }
 
-@media (max-width: 1320px) { .split.item-first { grid-template-columns: minmax(0, 56fr) minmax(0, 44fr); } .queue th, .queue td { padding: 8px 8px; } .queue .clip { max-width: 6em; } }  /* the queue's columns whole */
-@media (max-width: 1100px) { .split, .split.item-first { grid-template-columns: minmax(0, 1fr); } .panel-sticky { position: static; } }
+@media (max-width: 1320px) { .split.item-first { grid-template-columns: minmax(0, var(--sa, 56fr)) 12px minmax(0, var(--sb, 44fr)); } .queue th, .queue td { padding: 8px 8px; } .queue .clip { max-width: 6em; } }  /* the queue's columns whole */
+@media (max-width: 1100px) { .split, .split.item-first { grid-template-columns: minmax(0, 1fr); } .panel-sticky { position: static; } .grip-v { display: none; } }
 @media (max-width: 860px) {
   .sidenav { transform: translateX(-100%); transition: transform .2s; width: 256px; box-shadow: var(--shadow); }
   body.nav-open .sidenav { transform: none; }
@@ -287,7 +299,8 @@ body.term-open .snack, body.term-open .task { bottom: calc(var(--term-h) + 16px)
 /* the workflow: who joined what, one color each, on every page */
 :root { --rule: #00796b; --rule-bg: #e0f2f1; --model: #0b57d0; --model-bg: #e8f0fe; --people: #8e24aa; --people-bg: #f3e5f5; --neg: #c5221f;
         --for: #1a73e8; --for-bg: #e8f0fe; --against: #e8710a; --against-bg: #fdeee0; --against-ink: #a04a00;
-        --jw: #6250d6; --ed: #eda100; --ng: #e87ba4; }  /* the string functions' families: Jaro–Winkler, edits, letter chunks */
+        --jw: #6250d6; --ed: #eda100; --ng: #e87ba4;  /* the string functions' families: Jaro–Winkler, edits, letter chunks */
+}
 @media (prefers-color-scheme: dark) { :root { --rule: #4db6ac; --rule-bg: #10302d; --model: #a8c7fa; --model-bg: #1f3760; --people: #ce93d8; --people-bg: #3a1f40; --neg: #f28b82;
         --for: #4285f4; --for-bg: #1c2b45; --against: #d06a00; --against-bg: #3a2410; --against-ink: #ffb070; --jw: #9085e9; --ed: #c98500; --ng: #d55181; } }
 
@@ -573,8 +586,7 @@ body.term-open .tray { bottom: var(--term-h); }  /* above the command drawer */
 
 <script type="application/json" id="layout">
 {"workflow": {"steps": ["workspace", "columns", "run"],
-  "loops": [{"name": "Add new records", "icon": "add", "screen": "run", "via": ["match records", "add records"], "to": "pairs"},
-            {"name": "Run matching again", "icon": "refresh", "screen": "run", "via": ["rerun records"], "to": "pairs"}],
+  "loops": [{"name": "Add new records", "icon": "add", "screen": "run", "via": ["match records", "add records"], "to": "pairs"}],
   "improve": {"screen": "improve", "after": "pairs", "back": "run"}},
  "screens": [
   {"id": "records", "title": "Overview", "icon": "overview", "what": "The whole workflow, and what it did with your records.",
@@ -594,8 +606,8 @@ body.term-open .tray { bottom: var(--term-h); }  /* above the command drawer */
    "uses": [{"command": "load records", "args": {"input": "@input", "workspace": "@workspace"}, "reads": ["records", "columns", "slots", "features", "placements", "offers", "fields", "needed", "turned_off", "read", "loaded"]},
             {"command": "describe records", "args": {"input": "@loaded", "workspace": "@workspace"}, "reads": ["records", "columns", "slots", "features", "placements", "offers", "fields", "needed", "turned_off", "read"]},
             {"command": "generate records", "args": {"records": "@records", "difficulty": "@difficulty", "workspace": "@workspace"}, "reads": ["records", "columns", "slots", "features", "placements", "offers", "fields", "needed", "turned_off", "read", "loaded"]},
-            {"command": "load details", "args": {"file": "@details_file", "key": "@details_key", "workspace": "@workspace"}, "reads": ["file", "rows", "ids", "unkeyed", "key", "columns", "shown", "linked", "records"]},
-            {"command": "set details", "args": {"columns": "@details_shown", "workspace": "@workspace"}, "reads": ["file", "rows", "key", "columns", "shown", "linked", "records"]},
+            {"command": "load details", "args": {"file": "@details_file", "key": "@details_key", "workspace": "@workspace"}, "reads": ["file", "rows", "key", "columns", "shown", "linked", "drawn"]},
+            {"command": "set details", "args": {"columns": "@details_shown", "workspace": "@workspace"}, "reads": ["file", "rows", "key", "columns", "shown", "linked", "drawn"]},
             {"command": "accept repairs", "args": {"kind": "@kind", "part": "@part", "workspace": "@workspace"}, "form": [], "reads": ["repaired", "added", "read"]},
             {"command": "set feature", "args": {"mapping": "@mapping", "workspace": "@workspace"}, "reads": ["slots"]},
             {"command": "set names", "args": {"how": "@how", "workspace": "@workspace"}, "reads": ["names", "mapping"]},
@@ -1052,16 +1064,15 @@ function rail() {  // the navigation: before a first run the steps to it, in ord
     return `<li class="${s.state}${running ? " running" : ""}${n === null ? " place" : ""}" ${running ? `data-busy="${id}"` : ""}><button class="navitem step" ${go} ${at(id)} title="${esc(label)}: ${esc(running ? "running" : STATE_WORD[s.state])}">
       <span class="dot">${dot}${running ? spinner("ring") : ""}</span><span class="stack"><span>${n === null ? "" : `${n} · `}${esc(label)}</span>${running ? live : line === null ? "" : `<span class="sub">${esc(line ?? s.line)}</span>`}</span></button></li>`;
   };
-  const loops = LAYOUT.workflow.loops.map((l, n) => `<button class="navitem loopitem" data-loop="${n}" ${ran ? "" : "disabled"}>${icon(l.icon)}<span class="stack"><span>${esc(l.name)}</span>${
-      ran ? "" : '<span class="sub">after the first run</span>'}</span></button>`).join("");
-  $("nav").innerHTML = ran
-    ? `<ol class="rail places">${item("records", "overview", "Results", null)}${item("pairs", "pairs", "Review")}${item("results", "customers", "Explore", null)}</ol>
-       <ol class="rail places">${item("lookup", "search", "Look up")}</ol>
+  const loops = LAYOUT.workflow.loops.map((l, n) => `<button class="navitem loopitem" data-loop="${n}">${icon(l.icon)}<span class="stack"><span>${esc(l.name)}</span></span></button>`).join("");
+  $("nav").innerHTML = ran  // after a run: what it found and what waits for people first, then finding a record, then the setup and adding to it
+    ? `<h3>Matches</h3><ol class="rail places">${item("records", "overview", "Results", null)}${item("pairs", "pairs", "Review")}${item("results", "customers", "Explore", null)}</ol>
+       <h3>Search</h3><ol class="rail places">${item("lookup", "search", "Look up")}</ol>
        <h3>Setup</h3><ol class="rail setup">${item("workspace", "folder", "Workspace", null)}${item("columns", "records", "Your data", null)}${item("run", "run", "Find matches", null)}${item("improve", "loop", "Method", null)}</ol>${loops}`
     : `<button class="navitem ${busy === "records" ? "running" : ""}" data-screen="records" ${busy === "records" ? 'data-busy="records"' : ""} ${at("records")}>${
         icon("overview")}<span class="stack"><span>Overview</span>${busy === "records" ? live : ""}</span>${busy === "records" ? spinner() : ""}</button>
        <ol class="rail">${ORDER.map((id, n) => item(id, "", STEP[id], undefined, n + 1)).join("")}</ol>
-       <ol class="rail places">${item("lookup", "search", "Look up")}</ol><h3>When things change</h3>${loops}`;
+       <h3>Search</h3><ol class="rail places">${item("lookup", "search", "Look up")}</ol>`;
   $("nav").querySelectorAll("[data-screen]").forEach((b) => b.onclick = () => go(b.dataset.screen));
   $("nav").querySelectorAll("[data-loop]").forEach((b) => b.onclick = () => go(LAYOUT.workflow.loops[b.dataset.loop].screen, LAYOUT.workflow.loops[b.dataset.loop]));
 }
@@ -1703,7 +1714,7 @@ const RUN_STEPS = ["load", "budget", "fit", "rules", "candidates", "score", "clu
 const STEPS_OF = {"add records": ["load", "fit", "rules", "candidates", "score", "cluster", "report", "write"],  // an increment's: no plan, no probe
                   "match records": ["load", "fit", "rules", "candidates", "score", "cluster"]};  // a preview writes nothing
 const BUSY = {"resolve records": "Finding matches", "rerun records": "Matching again", "add records": "Adding the new records", "match records": "Previewing the new records",
-              "load records": "Loading your file", "generate records": "Generating records", "load details": "Loading the details file", "accept repairs": "Accepting the repairs", "try everything": "Auto mode", "try method": "Trying a method",
+              "load records": "Loading your file", "generate records": "Generating records", "accept repairs": "Accepting the repairs", "try everything": "Auto mode", "try method": "Trying a method",
               "set merging": "Rebuilding the entities", "apply answers": "Matching again with your answers"};
 const DOING = {load: "reading the records", budget: "planning the work", fit: "learning what matches look like", rules: "applying the match rules",
                candidates: "listing pairs to compare", score: "scoring the pairs", cluster: "forming entities", probe: "looking for matches it missed",
@@ -1806,22 +1817,75 @@ const JOINED = {you: "you", model: "the model", rule: "a rule"};  // describe re
 
 // Both or more records' full rows side by side, every column of the file, the different ones first; a column that a
 // comparison reads says how it was compared (explain pair's tests): method, score against its threshold, step, points.
-async function detailsOf(box, got) {  // each record's rows in the details file, above it; none loaded, or no column shown: nothing
-  const d = await got;
-  if (!box.isConnected) return;
-  if (d.event === "error") { box.innerHTML = banner(d); return; }
-  if (!d.file || !d.columns.length) { box.innerHTML = ""; return; }
-  const name = esc(d.file.replace(/\.parquet$/i, ""));
-  box.innerHTML = `<div class="details-of">${d.records.map((r) => `<div><div class="fr-head"><b>${name}</b><span class="muted">${esc(r.id)} · ${r.total
-      ? `${plural(r.total, "row")}${r.total > r.rows.length ? ` · the first ${fmt(r.rows.length)}` : ""}` : `none in ${esc(d.file)}`}</span></div>${!r.rows.length ? ""
-      : `<div class="tablecard"><div class="tablewrap"><table><thead><tr>${d.columns.map((c) => `<th>${esc(c)}</th>`).join("")}</tr></thead><tbody>${r.rows.map((v) => `<tr>${
-        v.map((x) => x === null || x === "" ? '<td class="faint">—</td>' : `<td class="wrap">${esc(x)}</td>`).join("")}</tr>`).join("")}</tbody></table></div></div>`}</div>`).join("")}</div>`;
+// A chosen policy's color, chosen to stand farthest from every color already in the table: of hues every 3° at two
+// lightnesses (OKLCH, chroma 0.15), the one whose least distance (OKLab) to those in use is largest. Any number of
+// policies gets one; the more there are, the closer the nearest two, never the same. One policy number, one color.
+const POL_TIERS = () => matchMedia("(prefers-color-scheme: dark)").matches ? [0.74, 0.62] : [0.52, 0.66];  // readable on the theme's surface
+function polColor(inUse) {
+  const lab = (L, h) => [L, 0.15 * Math.cos(h * Math.PI / 180), 0.15 * Math.sin(h * Math.PI / 180)];
+  let best = null, far = -1;
+  for (const L of POL_TIERS()) for (let h = 0; h < 360; h += 3) {
+    const c = lab(L, (h + 290) % 360), near = Math.min(Infinity, ...inUse.map((u) => Math.hypot(c[0] - u[0], c[1] - u[1], c[2] - u[2])));
+    if (near > far) { far = near; best = {css: `oklch(${L} 0.15 ${(h + 290) % 360})`, lab: c}; }  // the first, violet; then each the farthest
+  }
+  return best;
 }
+const folds = {  // a full row's sections folded by this viewer: Policy information, Customer information; kept for the next visit
+  closed(k) { try { return localStorage.getItem(`fold-${k}`) === "1"; } catch { return false; } },
+  flip(k) { const was = this.closed(k); try { localStorage.setItem(`fold-${k}`, was ? "0" : "1"); } catch { /* not kept: open the next visit */ } },
+};
+const secButton = (k, name) => `<button type="button" class="sec" data-sec="${k}" aria-expanded="${!folds.closed(k)}">${folds.closed(k) ? "▸" : "▾"} ${esc(name)}</button>`;
+function detailRows(det, ids, after = "", keep = () => true, chosen = {}) {
+  // The details file's shown columns as rows of a full rows' table, each record's under it: the policies chosen by
+  // their chips (the first, unless others are), each on a line of its own, with its policy number's color, on its chip
+  // too; a value another record's chosen policies hold too, marked; for a pair, whether they hold the same policies.
+  if (!det || det.event === "error" || !det.file || !det.columns.length) return "";
+  const of = Object.fromEntries(det.records.map((r) => [r.id, r])), recs = ids.map((i) => ({id: i, ...(of[i] || {rows: [], total: 0})}));
+  const cols = det.columns.map((c, k) => [c, k]).filter(([c]) => keep(c));
+  if (!cols.length) return "";
+  const label = (v) => String(v[0] ?? "—");  // a policy, by the first column shown
+  recs.forEach((r) => { if (!chosen[r.id] && r.rows.length) chosen[r.id] = new Set([0]); });
+  colorsFor(chosen, recs, label);
+  const picked = (r) => chosen[r.id] || new Set(), these = (r) => [...picked(r)].sort((a, b) => a - b).map((n) => r.rows[n]);
+  const dot = (v) => `<span class="pdot" style="--pc: ${chosen.colors.get(label(v)).css}"></span>`;
+  const count = (r) => r.total ? plural(r.total, "policy", "policies") + (r.total > r.rows.length ? `, the first ${fmt(r.rows.length)}` : "") : "none";
+  const shut = folds.closed("policy");
+  const headCell = (r) => `<td><span class="muted">${count(r)}</span>${r.rows.length > 1 && !shut ? `<div class="chips det-pick">${r.rows.map((v, n) =>
+      `<button type="button" class="chip" data-rec="${esc(r.id)}" data-policy="${n}" aria-pressed="${picked(r).has(n)}">${picked(r).has(n) ? dot(v) : ""}${esc(label(v))}</button>`).join("")}</div>` : ""}</td>`;
+  const cell = (r, k) => {
+    if (!r.rows.length) return '<td class="faint">—</td>';
+    const theirs = new Set(recs.filter((o) => o !== r).flatMap((o) => these(o).map((v) => v[k])).filter((x) => x !== null && x !== ""));
+    return `<td class="det-v">${these(r).map((v) => `<div>${dot(v)}${v[k] === null || v[k] === "" ? '<span class="faint">—</span>'
+      : `<span class="${theirs.has(v[k]) ? "det-shared" : ""}">${esc(v[k])}</span>`}</div>`).join("")}</td>`;
+  };
+  return `<tr class="det-head"><td class="col">${secButton("policy", "Policy information")}${samePolicies(recs, det.columns[0])}</td>${recs.map(headCell).join("")}${after}</tr>` + (shut ? "" :
+    cols.map(([c, k], i) => `<tr class="det-row${i === cols.length - 1 ? " det-last" : ""}"><td class="col">${esc(c)}</td>${recs.map((r) => cell(r, k)).join("")}${after}</tr>`).join(""));
+}
+function colorsFor(chosen, recs, label) {  // each chosen policy number's color: kept while chosen anywhere in the table, a new one the farthest from those
+  const colors = chosen.colors ||= new Map(), now = new Set(recs.flatMap((r) => [...(chosen[r.id] || [])].map((n) => label(r.rows[n]))));
+  for (const k of [...colors.keys()]) if (!now.has(k)) colors.delete(k);
+  for (const k of now) if (!colors.has(k)) colors.set(k, polColor([...colors.values()].map((c) => c.lab)));
+}
+function samePolicies(recs, by) {  // a pair: do its two records hold the same policies, by the first column shown? A fact of the pair, said as one
+  if (recs.length !== 2 || (!recs[0].rows.length && !recs[1].rows.length)) return "";
+  const [a, b] = recs.map((r) => new Set(r.rows.map((v) => String(v[0] ?? "")))), both = [...a].filter((x) => b.has(x)).length;
+  const say = !a.size || !b.size ? ["against", `only ${recs[a.size ? 0 : 1].id} has any`] : both === a.size && both === b.size ? ["for", "the same policies"]
+    : both ? ["for", `${fmt(both)} in common`] : ["against", "no policy in common"];
+  return `<div><span class="chip ${say[0]}" title="by ${esc(by)}">${esc(say[1])}</span></div>`;
+}
+const wireDetails = (box, chosen, draw) => box.addEventListener("click", (e) => {  // a chip: its policy shown or not, one always is; a section folded or opened
+  const f = e.target.closest("[data-sec]");
+  if (f) { folds.flip(f.dataset.sec); draw(); return; }
+  const b = e.target.closest("[data-policy]");
+  if (!b) return;
+  const m = chosen[b.dataset.rec], n = Number(b.dataset.policy);
+  if (m.has(n)) { if (m.size > 1) m.delete(n); } else m.add(n);
+  draw();
+});
 
-async function fullRows(box, page, ids, x = null) {
+async function fullRows(box, page, ids, x = null, roles = {}) {  // roles: a record's column, why it is there (role) and the pair it opens (open)
   box.innerHTML = loading("Reading their rows");
-  const det = run(page, "show details", {ids});  // read beside the rows, only the rows of these records
-  const d = await run(page, "show records", {ids});
+  const [d, det] = await Promise.all([run(page, "show records", {ids}), run(page, "show details", {ids})]);  // the details file's rows of these records alone, read beside them
   if (!box.isConnected) return;
   if (d.event === "error") { box.innerHTML = banner(d); return; }
   const recs = d.records.filter((r) => r.row), cols = d.columns;
@@ -1840,24 +1904,27 @@ async function fullRows(box, page, ids, x = null) {
   });
   const counts = {same: 0, different: 0, empty: 0};
   rows.forEach((r) => counts[r.kind]++);
-  const state = {only: false, hideEmpty: false, order: false, find: ""};
-  box.innerHTML = `<div class="det-box"></div><div class="fullrows"><div class="fr-head"><b>${one ? "Its full row" : recs.length > 2 ? `${recs.length} records' full rows` : "Their full rows"}</b>
+  const state = {only: false, hideEmpty: false, order: false, find: "", chosen: {}};
+  box.innerHTML = `${det.event === "error" ? banner(det) : ""}<div class="fullrows"><div class="fr-head"><b>${one ? "Its full row" : recs.length > 2 ? `${recs.length} records' full rows` : "Their full rows"}</b>
       <span class="muted">${one ? `${fmt(cols.length)} columns · ${fmt(counts.same)} filled` : `${fmt(cols.length)} columns: <span class="ink-good">${fmt(counts.same)} the same</span> · <span class="ink-bad">${fmt(counts.different)} different</span> · ${fmt(counts.empty)} empty on one side or both`}</span></div>
     ${one ? "" : seg([[counts.same, "var(--good)", "same"], [counts.different, "var(--bad)", "different"], [counts.empty, "var(--line)", "empty"]])}
     <div class="fr-tools"><label class="find">${icon("search")}<input type="text" placeholder="Find a column" aria-label="Find a column"></label>
       ${one ? "" : '<label class="check"><input type="checkbox" data-t="only"><span>Only different</span></label>'}<label class="check"><input type="checkbox" data-t="hideEmpty"><span>Hide empty</span></label>
       <label class="check"><input type="checkbox" data-t="order"><span>The file's order</span></label></div>
-    <div class="tablecard"><div class="tablewrap"><table><thead><tr><th>Column</th>${recs.map((r) => `<th>${esc(r.id)}</th>`).join("")}<th>${x ? "Compared as" : "Used for"}</th></tr></thead><tbody></tbody></table></div></div>
+    <div class="tablecard"><div class="tablewrap"><table class="${recs.length > 3 ? "many" : ""}"><thead><tr><th>Column</th>${recs.map((r) => `<th>${esc(r.id)}${roles[r.id] ? `<div class="role">${esc(roles[r.id].role)}${
+        roles[r.id].open !== undefined ? ` <button type="button" class="mini" data-open="${roles[r.id].open}">Open</button>` : ""}</div>` : ""}</th>`).join("")}<th>${x ? (recs.length > 2 ? "Compared as (A · B)" : "Compared as") : "Used for"}</th></tr></thead><tbody></tbody></table></div></div>
     ${d.records.filter((r) => !r.row).map((r) => `<p class="faint">${esc(r.id)}: not in the file's copy</p>`).join("")}</div>`;
   const draw = () => {
     const rank = {different: 0, same: 1, empty: 2}, q = state.find.toLowerCase();
     const shown = rows.filter((r) => (!state.only || r.kind === "different") && (!state.hideEmpty || r.kind !== "empty") && (!q || r.c.column.toLowerCase().includes(q)))
       .sort((a, b) => state.order ? a.n - b.n : rank[a.kind] - rank[b.kind] || a.n - b.n);
-    box.querySelector("tbody").innerHTML = shown.map((r) => `<tr class="fr-${r.kind}"><td class="col">${esc(r.c.column)}</td>${r.v.map((s, k) => s === null || s === ""
+    box.querySelector("tbody").innerHTML = detailRows(det, recs.map((r) => r.id), "<td></td>", (c) => !q || c.toLowerCase().includes(q), state.chosen)
+      + `<tr class="sec-head"><td class="col">${secButton("customer", "Customer information")}</td><td colspan="${recs.length + 1}" class="muted">${plural(shown.length, "column")}</td></tr>`
+      + (folds.closed("customer") ? "" : shown.map((r) => `<tr class="fr-${r.kind}"><td class="col">${esc(r.c.column)}</td>${r.v.map((s, k) => s === null || s === ""
         ? '<td class="faint">—</td>' : `<td class="wrap">${k && r.kind === "different" ? highlight(r.v[0], s)[1] : r.kind === "different" && r.v[1] ? highlight(s, r.v[1])[0] : esc(s)}</td>`).join("")}
-      <td class="wrap faint">${esc(how(r.c))}</td></tr>`).join("") || `<tr><td colspan="${recs.length + 2}" class="faint">No column shown</td></tr>`;
+      <td class="wrap faint">${esc(how(r.c))}</td></tr>`).join("") || `<tr><td colspan="${recs.length + 2}" class="faint">No column shown</td></tr>`);
   };
-  detailsOf(box.querySelector(".det-box"), det);
+  wireDetails(box, state.chosen, draw);
   box.querySelector(".fr-tools input[type=text]").oninput = (e) => { state.find = e.target.value.trim(); draw(); };
   box.querySelectorAll("[data-t]").forEach((c) => c.onchange = () => { state[c.dataset.t] = c.checked; draw(); });
   draw();
@@ -1975,10 +2042,31 @@ async function mergeDialog(page, done) {  // the conditions that merge pairs wit
   dlg.onclose = null; dlg.returnValue = ""; dlg.showModal();
 }
 
+const GRIP = `<div class="grip-v" role="separator" aria-orientation="vertical" aria-label="Drag to resize" tabindex="0"></div>`;
+const split = {  // the item's share of its split, as the person last dragged it: every split page, and the next visit
+  set(f) { f = Math.min(0.8, Math.max(0.3, f)); this.f = f; document.documentElement.style.setProperty("--sa", `${f * 100}fr`); document.documentElement.style.setProperty("--sb", `${(1 - f) * 100}fr`); },
+  keep() { try { localStorage.setItem("split", String(this.f)); } catch { /* not kept: the next visit starts at the default */ } },
+};
+try { const f = Number(localStorage.getItem("split")); if (f) split.set(f); } catch { /* the default */ }
+document.addEventListener("pointerdown", (e) => {
+  const g = e.target.closest(".grip-v");
+  if (!g) return;
+  e.preventDefault(); g.setPointerCapture(e.pointerId);
+  const box = g.parentElement.getBoundingClientRect();
+  g.onpointermove = (m) => split.set((m.clientX - box.left) / box.width);
+  g.onpointerup = () => { g.onpointermove = g.onpointerup = null; split.keep(); };
+});
+document.addEventListener("keydown", (e) => {
+  const g = e.target.closest?.(".grip-v");
+  if (!g || !["ArrowLeft", "ArrowRight"].includes(e.key)) return;
+  e.preventDefault(); e.stopPropagation();
+  split.set((split.f ?? g.previousElementSibling.offsetWidth / g.parentElement.offsetWidth) + (e.key === "ArrowLeft" ? -0.02 : 0.02)); split.keep();
+}, true);
+
 async function pairsPage(el, arg = {}) {  // Review: the pairs waiting for a person, best first, a page at a time; each with both full rows
   arg = typeof arg === "object" && arg ? arg : {note: arg || ""};
   el.innerHTML = head("pairs", `<button class="btn" id="merge">${icon("wand")}Auto-merge</button><button class="btn" id="refresh">${icon("refresh")}Refresh</button>`, reviewTabs("pairs")) +
-    `<div id="note">${arg.note || ""}</div><div class="split item-first"><div id="right" class="panel-sticky"></div>
+    `<div id="note">${arg.note || ""}</div><div class="split item-first"><div id="right" class="panel-sticky"></div>${GRIP}
       <div class="queue"><div class="card progress"><div class="from"><label>Review from <input type="number" step="0.5" id="from" aria-label="Review from these points"> points</label>
         <label class="find">${icon("search")}<input type="text" id="record" placeholder="A record ID" aria-label="Pairs of a record ID"></label></div>
         <div id="done-line" class="answer"></div><div class="actions" style="margin-top:10px"><button class="btn outlined" id="apply">${icon("check")}Apply decisions <span class="badge" id="written">0</span></button></div></div>
@@ -2028,7 +2116,20 @@ async function pairsPage(el, arg = {}) {  // Review: the pairs waiting for a per
     box.dataset.pair = here;
     run("pairs", "explain pair", {first: p.first, second: p.second}).then((x) => {
       if (box.dataset.pair !== here || !box.isConnected) return;
-      fullRows(box, "pairs", [p.first, p.second], x.event === "error" ? null : x);
+      const roles = {[p.first]: {role: "A"}, [p.second]: {role: "B"}}, more = [];
+      rows.forEach((q, k) => {  // every other pair of this page with A or B in it: the other record, a candidate too
+        if (k === i) return;
+        const side = [q.first, q.second].includes(p.first) ? "A" : [q.first, q.second].includes(p.second) ? "B" : null;
+        const other = side && (q.first === p.first || q.first === p.second ? q.second : q.first);
+        if (other && !roles[other]) { roles[other] = {role: `a candidate with ${side} · ${q.points.toFixed(1)} points`, open: k}; more.push(other); }
+      });
+      if (x.event !== "error") for (const [g, side] of [[x.group_a, "A"], [x.group_b, "B"]]) for (const r of g) if (!roles[r.id]) { roles[r.id] = {role: `in ${side}'s customer`}; more.push(r.id); }
+      const all = (n) => fullRows(box, "pairs", [p.first, p.second, ...more.slice(0, n)], x.event === "error" ? null : x, roles).then(() => {
+        box.querySelector(".fr-head")?.insertAdjacentHTML("beforeend", more.length > n ? ` <button type="button" class="mini" data-all>and ${plural(more.length - n, "more candidate")}</button>` : "");
+        box.querySelector("[data-all]")?.addEventListener("click", () => all(more.length));
+        box.querySelectorAll("[data-open]").forEach((b) => b.onclick = () => { i = Number(b.dataset.open); draw(); show(); });
+      });
+      all(4);  // the pair and four more at first: the rest one click away
       $("right").querySelector(".how").outerHTML = x.event === "error" ? "" : `<details class="fold-line"><summary>How it scored, step by step</summary>${waterfallOf(rowOf(x), remember(x))}</details>`;
     });
     $("right").querySelectorAll("[data-a]").forEach((b) => {  // decided: its answer pressed
@@ -2113,7 +2214,7 @@ async function explorePage(el, arg) {  // Explore: every pair kept, every entity
     body.innerHTML = `<div class="card"><div class="qa"><div class="q"><h2 class="question">Which records became one customer?</h2>
         <p class="answer">${r.joined ? `${plural(r.joined, "entity", "entities")} ${r.joined === 1 ? "holds" : "hold"} two records or more` : "None yet: every record is its own entity until you say two are the same, or your conditions merge them"}</p></div>
         <label class="find">${icon("search")}<input type="text" id="eid" placeholder="A record ID" aria-label="The entity of a record ID" value="${esc(want.entity || "")}"></label></div>
-        ${logBars(r.sizes.map((x) => ({label: x.label, value: x.entities})))}</div><div class="split item-first"><div id="right" class="panel-sticky"></div><div class="queue"><div id="left"></div></div></div>`;
+        ${logBars(r.sizes.map((x) => ({label: x.label, value: x.entities})))}</div><div class="split item-first"><div id="right" class="panel-sticky"></div>${GRIP}<div class="queue"><div id="left"></div></div></div>`;
     let page = 1;
     const open = async (id) => {
       $("right").innerHTML = `<div class="card">${loading()}</div>`;
@@ -2153,7 +2254,7 @@ async function explorePage(el, arg) {  // Explore: every pair kept, every entity
       <select id="fstatus" aria-label="Status"><option value="">any status</option>${Object.keys(STATUS).map((s) => `<option value="${s}">${esc(STATUS[s][1])}</option>`).join("")}</select>
       <label class="find">${icon("search")}<input type="text" id="frecord" placeholder="A record ID" aria-label="Pairs of a record ID" value="${esc(f.record)}"></label></div><div id="plist"></div>`;
   $("fsource").value = f.source; $("fstatus").value = f.status;
-  $("rerun-count")?.addEventListener("click", () => { const l = LAYOUT.workflow.loops.find((x) => x.via.includes("rerun records")); go(l.screen, l); });  // as the rail's
+  $("rerun-count")?.addEventListener("click", () => go("run", {via: ["rerun records"]}));  // its dialog, opened on Find matches
   let page = 1;
   const load = async () => {
     const x = await run("results", "list scored", {from: String($("ffrom").value || ""), to: String($("fto").value || ""), source: $("fsource").value, status: $("fstatus").value,
@@ -2202,28 +2303,28 @@ const SCREENS = {
   async columns(el) {
     const box = `<label class="field" style="margin:0"><span class="lab">Records file</span>
         <span class="loadrow"><input type="text" id="cin" placeholder="path to a CSV, TSV or Parquet file, or a folder of them"><button class="btn filled" id="load">${icon("add")}Load</button></span></label>
-        <div class="field" style="margin:12px 0 0"><span class="lab">Synthetic records</span>
-        <span class="loadrow" style="flex-wrap:wrap"><select id="gsize" aria-label="How many records">${[1000, 10000, 100000, 1000000].map((n) => `<option value="${n}"${n === 10000 ? " selected" : ""}>${fmt(n)}</option>`).join("")}</select>
+        <details class="fold-line" id="synth"><summary>Synthetic records</summary>
+        <span class="loadrow" style="flex-wrap:wrap;margin-top:8px"><select id="gsize" aria-label="How many records">${[1000, 10000, 100000, 1000000].map((n) => `<option value="${n}"${n === 10000 ? " selected" : ""}>${fmt(n)}</option>`).join("")}</select>
           <select id="glevel" aria-label="How hard to match">${["easy", "medium", "hard"].map((x) => `<option value="${x}"${x === "medium" ? " selected" : ""}>${x[0].toUpperCase() + x.slice(1)}</option>`).join("")}</select>
-          <button class="btn" id="gen">Generate</button></span></div>
+          <button class="btn" id="gen">Generate</button></span></details>
         <div id="files" class="chips" style="margin-top:10px"></div>`;
-    el.innerHTML = head("columns") + `<div class="card" id="loaded"><div class="qa"><div class="q"><h2 class="question">Which file holds your records?</h2></div></div>${box}</div>
-      <div id="repairs"></div><div id="watch"></div><div id="details"></div><div id="out"></div><div id="flow"></div>${stepFoot("columns")}`;
-    if (!state.workspace) { $("loaded").remove(); $("out").innerHTML = emptyRun(); return; }  // a file goes into a workspace: choose one first
+    el.innerHTML = head("columns") + `<div class="data-top"><div class="card" id="loaded"><div class="qa"><div class="q"><h2 class="question">Customer information</h2></div></div>${box}</div>
+      <div id="details"></div></div><div id="repairs"></div><div id="watch"></div><div id="out"></div><div id="flow"></div>${stepFoot("columns")}`;
+    if (!state.workspace) { el.querySelector(".data-top").remove(); $("out").innerHTML = emptyRun(); return; }  // a file goes into a workspace: choose one first
     const answer = (d, w, last) => {  // did the file load? then what may hurt the matching
       const lost = (f) => { const x = d.fields.find((y) => y.field === f); return !x || x.filled === null; };
       const missing = [...d.needed.every.filter(lost), ...d.needed.one_of.filter((grp) => grp.every(lost)).map((grp) => grp.join(" or "))];
-      $("loaded").innerHTML = `<div class="qa"><div class="q"><h2 class="question">Did your file load?</h2><p class="answer">${!d.records
+      $("loaded").innerHTML = `<div class="qa"><div class="q"><h2 class="question">Customer information</h2><p class="answer">${!d.records
           ? `<b>Not yet:</b> ${esc(nameOf(last))} holds no records`
           : missing.length ? `<b>Not yet:</b> ${esc(missing.map(words).join(", "))} ${missing.length > 1 ? "are" : "is"} needed`
-          : `<b>Yes</b> · ${plural(d.records, "record")} from ${esc(nameOf(last))} · ${fmt(d.columns.length)} columns${waits(d.read)}${
+          : `${esc(nameOf(last))} · ${plural(d.records, "record")} · ${fmt(d.columns.length)} columns${waits(d.read)}${
             w.rerun_owed ? " · <b>changed since the last run</b>: matching reads the records so once it runs again" : ""}`}</p></div>
         ${!d.records ? "" : missing.length ? (d.placements.length ? `<button type="button" class="btn filled" id="suggest-now">✦ Suggest the columns</button>` : "")
           : w.rerun_owed ? `<button type="button" class="btn filled" id="rerun-owed">${icon("refresh")}Run matching again</button>`
           : ((steps.steps || {}).run || {}).state === "done" ? "" : `<a class="btn filled" data-go="run">Next: 3 Find matches →</a>`}</div>
         <details class="fold-line"><summary>Load another file</summary><div style="margin-top:10px">${box}</div></details>`;
       wireLoad();
-      $("rerun-owed")?.addEventListener("click", () => { const l = LAYOUT.workflow.loops.find((x) => x.via.includes("rerun records")); go(l.screen, l); });  // as the rail's
+      $("rerun-owed")?.addEventListener("click", () => go("run", {via: ["rerun records"]}));  // its dialog, opened on Find matches
       $("files").innerHTML = (w.inputs || []).map((f) => `<span class="tag" title="${esc(f.path)}">${esc(nameOf(f))} · ${bytes(f.bytes)} · ${f.read ? "matched" : "not run yet"}${f.waiting ? ` · ${fmt(f.waiting)} repairs wait` : ""}</span>`).join("");
       repairs(d.read);
       const lines = hurts(d.fields, d.turned_off, "", addedNames(d.features), d.needed.one_of);
@@ -2409,7 +2510,8 @@ const SCREENS = {
         row.querySelector("[data-cancel]").onclick = () => held ? show(held) : redraw(d);
       });
     };
-    const both = () => [$("load"), $("gen"), $("dload")].filter(Boolean);  // one long command at a time, whichever button
+    const both = () => [$("load"), $("gen"), $("dload")].filter(Boolean);
+    const reveal = (x) => { for (let d = x.closest("details"); d; d = d.parentElement.closest("details")) d.open = true; };  // a button at work, out of its folds  // one long command at a time, whichever button
     const take = async (b, doing, what, command, args, done) => {  // either way the same result, drawn the same
       const was = b.innerHTML, at = edits, records = command !== "load details", into = records ? $("out") : $("details");
       longRun = {command, visit, page: "columns", workspace: state.workspace, args}; both().forEach((x) => { x.disabled = true; });  // as step 3's run: ended() frees them, here or on step 2 drawn again
@@ -2429,26 +2531,31 @@ const SCREENS = {
       draw(records && at === edits ? e : undefined);  // a change made while it loaded: the file described after it; a details file's result describes no records
       refresh();
     };
-    const detailsLine = (dt) => `<b>${esc(dt.file)}</b> · ${plural(dt.rows, "row")}${dt.records ? ` · ${pct(dt.linked / dt.records)} of records have some` : ""} · ${fmt(dt.shown.length)} of ${fmt(dt.columns.length - 1)} columns shown`;
+    const detailsLine = (dt) => `${esc(dt.file)} · ${plural(dt.rows, "row")}${dt.drawn ? ` · ${dt.drawn >= 2000 ? "about " : ""}${pct(dt.linked / dt.drawn)} of records have some` : ""}`;  // drawn: 2,000 records, or all of fewer
     let drawnDetails;  // the details card as last drawn: drawn again only when it changed, so a path being typed stays
     const detailsCard = (dt) => {  // the details file people see above each record: which, how many records it reaches, which columns
       if (JSON.stringify(dt) === drawnDetails || !$("details")) return;
       drawnDetails = JSON.stringify(dt);
-      const load = `<label class="field" style="margin:12px 0 0"><span class="lab">Details file</span><span class="loadrow"><input type="text" id="din" placeholder="a Parquet file, or a folder of them">
+      const load = `<label class="field" style="margin:12px 0 0"><span class="lab">Policy file</span><span class="loadrow"><input type="text" id="din" placeholder="a Parquet file, or a folder of them">
           <input type="text" id="dkey" aria-label="Its column of record IDs" placeholder="${esc($("dkey")?.placeholder || "ID column")}" style="flex:0 0 150px"><button class="btn" id="dload">Load</button></span></label>`;
-      $("details").innerHTML = `<div class="card"><div class="qa"><div class="q"><h2 class="question">What do reviewers see beside each record?</h2><p class="answer">${!dt ? "Nothing else yet" : detailsLine(dt)}</p></div></div>
-        ${dt ? `<div class="chips" id="dcols">${dt.columns.filter((c) => c.column !== dt.key).map((c) => `<button type="button" class="chip" aria-pressed="${dt.shown.includes(c.column)}" data-col="${esc(c.column)}"
-          title="${pct(c.filled)} filled${c.example ? ` · ${esc(c.example)}` : ""}">${esc(c.column)}</button>`).join("")}</div>
-          <details class="fold-line"><summary>Load another details file</summary>${load}</details>` : load}</div>`;
+      const cols = dt && dt.columns.filter((c) => c.column !== dt.key);
+      $("details").innerHTML = `<div class="card"><div class="qa"><div class="q"><h2 class="question">Policy information</h2>${dt ? `<p class="answer">${detailsLine(dt)}</p>` : ""}</div></div>
+        ${dt ? `<div class="tablecard" style="margin-top:10px"><div class="tablewrap" style="max-height:320px"><table id="dcols"><thead><tr><th><input type="checkbox" id="dall" aria-label="Show every column"></th><th>Column</th><th class="num">Filled</th><th>Example</th></tr></thead>
+          <tbody><tr><td><span class="tag">key</span></td><td class="col">${esc(dt.key)}</td><td class="num">${pct((dt.columns.find((c) => c.column === dt.key) || {}).filled)}</td><td class="faint">the records' ID</td></tr>${cols.map((c) =>
+            `<tr><td><input type="checkbox" data-col="${esc(c.column)}" aria-label="Show ${esc(c.column)}"${dt.shown.includes(c.column) ? " checked" : ""}></td><td class="col">${esc(c.column)}</td><td class="num">${pct(c.filled)}</td><td class="wrap">${c.example === null ? '<span class="faint">—</span>' : esc(c.example)}</td></tr>`).join("")}</tbody></table></div></div>
+          <details class="fold-line"><summary>Load another file</summary>${load}</details>` : load}</div>`;
       $("dload").onclick = () => {
         const file = $("din").value.trim();
         if (!file) { $("din").focus(); return; }
         take($("dload"), "Reading", baseName(file), "load details", {details_file: file, details_key: $("dkey").value.trim()});
       };
       $("din").onkeydown = (e) => { if (e.key === "Enter" && !e.isComposing) $("dload").click(); };
-      $("dcols")?.querySelectorAll("[data-col]").forEach((c) => c.onclick = () => {
-        c.setAttribute("aria-pressed", String(c.getAttribute("aria-pressed") !== "true"));
-        const box = $("details"), words = argsFor("columns", "set details", {details_shown: [...$("dcols").querySelectorAll("[aria-pressed=true]")].map((x) => x.dataset.col)});
+      const each = () => [...($("dcols")?.querySelectorAll("input[data-col]") || [])];
+      const all = () => { const on = each().filter((x) => x.checked).length; $("dall").checked = on === each().length; $("dall").indeterminate = on > 0 && on < each().length; };
+      if ($("dall")) { all(); $("dall").onchange = () => { each().forEach((x) => { x.checked = $("dall").checked; }); save(); }; }
+      each().forEach((c) => c.onchange = () => { all(); save(); });
+      function save() {
+        const box = $("details"), words = argsFor("columns", "set details", {details_shown: each().filter((x) => x.checked).map((x) => x.dataset.col)});
         queue(async () => {  // in turn, each as the chips were at its click: the last click wins, sent even if the page is left
           const r = await runOnce("set details", words);
           if (!box.isConnected) return;
@@ -2457,9 +2564,8 @@ const SCREENS = {
           drawnDetails = JSON.stringify(dt);
           box.querySelector(".answer").innerHTML = detailsLine(dt);
         });
-      });
+      }
       if (longRun) both().forEach((x) => { x.disabled = true; });
-      if (longRun?.page === "columns" && longRun.command === "load details" && longRun.args) { $("din").value = longRun.args.details_file; $("dkey").value = longRun.args.details_key || ""; $("dload").innerHTML = `${spinner()}Reading…`; $("details").querySelector("details")?.setAttribute("open", ""); }
     };
     const wireLoad = () => {
       $("load").onclick = () => {
@@ -2471,7 +2577,7 @@ const SCREENS = {
       $("cin").onkeydown = (e) => { if (e.key === "Enter" && !e.isComposing) $("load").click(); };
       if (longRun) both().forEach((x) => { x.disabled = true; });  // drawn again while a long command runs: ended() draws it once more
       const going = longRun?.page === "columns" && longRun.args;  // this step's own, left and opened again: as it was asked
-      if (going && longRun.command === "generate records") { $("gsize").value = going.records; $("glevel").value = going.difficulty; $("gen").innerHTML = `${spinner()}Generating…`; }
+      if (going && longRun.command === "generate records") { reveal($("gen")); $("gsize").value = going.records; $("glevel").value = going.difficulty; $("gen").innerHTML = `${spinner()}Generating…`; }
       if (going && longRun.command === "load records") { $("cin").value = going.input; $("load").innerHTML = `${spinner()}Reading…`; }
     };
     wireLoad();
@@ -2510,7 +2616,7 @@ const SCREENS = {
     };
     el.querySelectorAll("[data-act]").forEach((b) => b.onclick = () => start(b.dataset.act, b.dataset.label));
     hold();
-    if (loop) el.querySelector(`[data-act="${loop.via[loop.via.length - 1]}"]`)?.focus();
+    if (loop) el.querySelector(`[data-act="${loop.via[loop.via.length - 1]}"]`)?.click();  // what the link asked for, its dialog open
     const w = await run("run", "describe workspace");
     if (w.event === "error") { $("out").innerHTML = banner(w); return; }
     w0 = w;
@@ -3698,7 +3804,7 @@ function kindCard(r, at, of) {  // the name; what the engine thinks of it, and w
 async function review(el, which, note = "", part = null) {  // Review's person-or-company tab
   const q = QUEUES[which];
   el.innerHTML = head(which, `<button class="btn" id="refresh">${icon("refresh")}Refresh</button>`, reviewTabs(which)) +  // the item asked about first and wide (#right), the queue after (#left)
-    `<div id="note">${note}</div><div class="split item-first"><div id="right" class="panel-sticky"></div>
+    `<div id="note">${note}</div><div class="split item-first"><div id="right" class="panel-sticky"></div>${GRIP}
       <div class="queue"><div class="card progress"><div id="done-line" class="answer"></div>
         <div class="actions" style="margin-top:10px"><button class="btn outlined" id="apply">${icon("check")}${q.applyLabel} <span class="badge" id="written">0</span></button></div></div>
         <div id="some"></div><div id="left">${loading()}</div></div></div>`;
@@ -3747,7 +3853,11 @@ async function review(el, which, note = "", part = null) {  // Review's person-o
     t.select(i);
     if (!rows[i]) { $("right").innerHTML = `<div class="card empty">${icon("empty")}<p class="muted">Nothing is open here.</p></div>`; where(); return; }
     $("right").innerHTML = q.card(rows[i], i, rows.length);
-    $("right").querySelectorAll(".det-box[data-id]").forEach((b) => detailsOf(b, run(which, "show details", {ids: [b.dataset.id]})));
+    $("right").querySelectorAll(".det-box[data-id]").forEach((b) => run(which, "show details", {ids: [b.dataset.id]}).then((det) => {
+      const chosen = {}, draw = () => { const rows = detailRows(det, [b.dataset.id], "", () => true, chosen); b.innerHTML = det.event === "error" ? banner(det) : rows ? `<div class="tablecard"><div class="tablewrap"><table><tbody>${rows}</tbody></table></div></div>` : ""; };
+      if (!b.isConnected) return;
+      draw(); wireDetails(b, chosen, draw);
+    }));
     const said = rows[i].status !== "open" && rows[i].decision;  // answered: its answer shown pressed, the others not
     if (said) $("right").querySelectorAll("[data-a]").forEach((b) => {
       const on = b.dataset.a === said;

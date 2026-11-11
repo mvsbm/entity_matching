@@ -38,7 +38,7 @@ def test_the_page_answers_once_per_key_shows_any_row_and_says_when_the_server_is
     page.click("#load")  # copied into it, then described
     page.wait_for_selector("details.fgroup[data-g='ID'][open]", timeout=60_000)  # the ID it can't find opens its group
     assert page.text_content("#files").startswith("theirs.parquet ·") and "Record ID needed" in page.inner_text("details.fgroup[data-g='ID'] summary")
-    assert page.inner_text("#loaded h2.question") == "Did your file load?" and page.inner_text("#loaded .answer").startswith("Not yet")  # its question first
+    assert page.inner_text("#loaded h2.question") == "Customer information" and page.inner_text("#loaded .answer").startswith("Not yet")  # what is still needed, first
     loaded, groups = page.query_selector("#loaded").bounding_box(), page.query_selector("#out").bounding_box()
     assert loaded["y"] + loaded["height"] <= groups["y"]  # did it load, then the columns by field: in reading order
     columns = tmp_path / "workspaces" / "fresh" / "columns.toml"
@@ -864,8 +864,11 @@ def test_look_up_and_the_score_chart_behave_as_a_person_uses_them(ui_page, tmp_p
     page.wait_for_function("(n) => document.querySelector('#screen').innerText.includes(`of ${n.toLocaleString('en-US')}`)", arg=total, timeout=30_000)
     assert f"The {total:,} at 0 or more" in page.inner_text("#screen")  # the count its list shows
     shot("explore-uncounted")
-    page.click("#rerun-count")  # the one action: matching run again, as the rail's
+    page.click("#rerun-count")  # the one action: matching run again, its dialog open on Find matches
     page.wait_for_selector("h1:has-text('Find matches')", timeout=30_000)
+    page.wait_for_selector("#dlg[open]")
+    assert "Run matching again" in page.inner_text("#dlg")
+    page.keyboard.press("Escape")
 
     say("create", "workspace", "plain")
     plain = ("--workspace", "workspaces/plain")
@@ -896,6 +899,8 @@ def test_step_2_generates_synthetic_records_by_size_and_difficulty_once_per_clic
     posted = []
     page.on("request", lambda r: r.method == "POST" and not json.loads(r.post_data).get("dry") and posted.append(json.loads(r.post_data)))
     page.click(".navitem[data-screen=columns]")
+    assert not page.is_visible("#gsize")  # folded until asked for
+    page.click("#synth > summary")
     page.select_option("#gsize", "10000")
     page.select_option("#glevel", "hard")
     page.click("#gen")
@@ -904,10 +909,11 @@ def test_step_2_generates_synthetic_records_by_size_and_difficulty_once_per_clic
     page.click(".navitem[data-screen=records]")
     page.click(".navitem[data-screen=columns]")  # left and back while it runs: drawn waiting, then freed and drawn once it ends
     assert page.is_disabled("#gen") and page.is_disabled("#load") and page.input_value("#gsize") == "10000" and page.input_value("#glevel") == "hard"  # as it was asked
-    page.wait_for_selector("h2.question:text('Did your file load?')", timeout=120_000)
+    page.wait_for_selector("#loaded .answer:has-text('10,000 records')", timeout=120_000)
     assert [x for x in posted if x["command"] == "generate records"] == [{"command": "generate records", "args": {"records": "10000", "difficulty": "hard", "workspace": str(ws)}}]
-    assert "Yes · 10,000 records from synthetic-hard-10000.parquet" in page.inner_text("#loaded") and page.is_visible("#loaded [data-go=run]")
+    assert "synthetic-hard-10000.parquet · 10,000 records" in page.inner_text("#loaded") and page.is_visible("#loaded [data-go=run]")
     page.click("#loaded details.fold-line > summary")  # Load another file: synthetic records there too
+    page.click("#loaded #synth > summary")
     assert not page.is_disabled("#gen") and not page.is_disabled("#load")
     page.select_option("#gsize", "10000")
     page.select_option("#glevel", "hard")
@@ -916,7 +922,7 @@ def test_step_2_generates_synthetic_records_by_size_and_difficulty_once_per_clic
     assert len(folder.parts(ws)) == 1 and not page.query_selector("#out .banner.bad")  # the same records: held already, nothing copied
     free = "() => { const b = document.querySelector('#gen'); return b && !b.disabled && b.textContent === 'Generate'; }"
     for size, level in (("1000", "easy"), ("10000", "hard")):  # another, then the first again: held already, and the one a run reads
-        page.evaluate("document.querySelector('#loaded details.fold-line').open = true")
+        page.evaluate("document.querySelectorAll('#loaded details').forEach((d) => { d.open = true; })")
         page.select_option("#gsize", size)
         page.select_option("#glevel", level)
         page.click("#gen")
@@ -928,7 +934,7 @@ def test_step_2_generates_synthetic_records_by_size_and_difficulty_once_per_clic
     assert len(folder.parts(ws)) == 2 and "synthetic-hard-10000.parquet" in page.inner_text("#out")  # the file given last, not the newest copy
 
 
-def test_a_details_file_shows_above_each_record_people_review_every_row_and_the_columns_chosen(ui_page, tmp_path, population):
+def test_policy_rows_sit_in_each_record_s_full_row_chosen_by_their_chips_with_the_pair_s_other_candidates_beside_it(ui_page, tmp_path, population):
     from er import cli
     s, p, g = population
     uid = s.data.unique_id
@@ -939,39 +945,92 @@ def test_a_details_file_shows_above_each_record_people_review_every_row_and_the_
     given = pd.DataFrame([{uid: int(i), "PLAN": f"plan {i}-{k}", "NOTE": "not shown"} for n, i in enumerate(g.df[uid]) for k in range(n % 3 + 1)])  # a number key, 1 to 3 rows each
     given.to_parquet(tmp_path / "contracts.parquet", index=False)
     plans = lambda i: list(given.loc[given[uid] == int(i), "PLAN"])
-    page, server, httpd = ui_page(str(ws), str(home), viewport={"width": 1280, "height": 900})
+    lines = lambda cell: cell.locator("div").all_inner_texts()
+    page, server, httpd = ui_page(str(ws), str(home), viewport={"width": 1440, "height": 900})
     page.click(".navitem[data-screen=columns]")
     page.wait_for_selector("#din")
-    assert page.inner_text("#details .answer") == "Nothing else yet"
+    assert page.inner_text("#details h2.question") == "Policy information" and not page.query_selector("#details .answer")
     page.fill("#din", str(tmp_path / "contracts.parquet"))
     page.click("#dload")
-    page.wait_for_selector("#dcols [data-col=NOTE][aria-pressed=true]", timeout=60_000)
-    assert "100% of records have some · 2 of 2 columns shown" in page.inner_text("#details .answer")
-    page.click("#dcols [data-col=NOTE]")  # not shown to reviewers
-    page.wait_for_function("() => document.querySelector('#details .answer').innerText.includes('1 of 2 columns shown')", timeout=30_000)
+    page.wait_for_selector("#dcols input[data-col=NOTE]:checked", timeout=60_000)
+    assert "100% of records have some" in page.inner_text("#details .answer")
+    page.uncheck("#dcols input[data-col=NOTE]")  # not shown to reviewers
+    deadline = time.time() + 15
+    while json.loads((ws / "details" / "details.json").read_text(encoding="utf-8"))["shown"] != ["PLAN"] and time.time() < deadline:
+        time.sleep(0.2)
+    assert json.loads((ws / "details" / "details.json").read_text(encoding="utf-8"))["shown"] == ["PLAN"]
 
     page.click(".navitem[data-screen=pairs]")
-    page.wait_for_selector("#right .details-of", timeout=60_000)
-    pair = page.locator("#right .fullrows thead th").all_inner_texts()[1:3]
-    blocks = page.locator("#right .details-of > div")
-    assert blocks.count() == 2 and page.locator("#right .det-box + .fullrows").count() == 1  # above the full rows
-    for k, i in enumerate(pair):  # each record's own rows, every one, the column turned off left out
-        b = blocks.nth(k)
-        assert i in b.locator(".fr-head").inner_text() and b.locator("thead th").all_inner_texts() == ["PLAN"]
-        assert b.locator("tbody td").all_inner_texts() == plans(i)
+    page.wait_for_selector("#right .fullrows tr.det-head", timeout=60_000)
+    page.fill("#from", "0")
+    page.keyboard.press("Tab")  # every pair waiting: some share a record
+    page.wait_for_function("() => document.querySelector('#done-line, .progress').innerText.includes('from 0 points')", timeout=60_000)
+    page.wait_for_selector("#left tr.pick")
+    queue = [r.locator("td div").all_inner_texts()[:2] for r in page.locator("#left tr.pick").all()]
+    seen = {}
+    for k, ids in enumerate(queue):
+        for i in ids:
+            seen.setdefault(i, []).append(k)
+    twice = next(i for i, ks in seen.items() if len(ks) > 1)  # a record in two pairs: the other a candidate beside the pair
+    page.locator("#left tr.pick").nth(seen[twice][0]).click()
+    page.wait_for_function("() => document.querySelectorAll('#right .fullrows thead th').length >= 5", timeout=60_000)
+    heads = page.locator("#right .fullrows thead th").all_inner_texts()
+    assert "a candidate with" in heads[3] and page.locator("#right .fullrows thead [data-open]").count() >= 1
+    assert page.locator("#right .fullrows tbody tr").first.get_attribute("class") == "det-head"  # the policies first, then the record's own columns
+    assert page.locator("#right tr.det-row td.col").all_inner_texts() == ["PLAN"]  # the column turned off left out
+    ids = [h.split("\n")[0] for h in heads[1:-1]]
+    cells = page.locator("#right tr.det-row").first.locator("td.det-v")
+    assert [lines(cells.nth(k)) for k in range(len(ids))] == [plans(i)[:1] for i in ids]  # each record's first policy, unless others are chosen
+    a = ids[0]
+    for chip in page.locator(f"#right [data-rec='{a}'][aria-pressed=false]").all():
+        chip.click()
+    assert lines(page.locator("#right tr.det-row").first.locator("td.det-v").first) == plans(a)  # every one chosen: each on its own line, in the file's order
+    dots = page.locator("#right tr.det-row").first.locator("td.det-v").first.locator(".pdot")
+    assert len({d.get_attribute("style") for d in dots.all()}) == len(plans(a))  # a color each
+    assert "no policy in common" in page.inner_text("#right tr.det-head td.col") or len(ids) > 2  # the pair's flag: a fact of the two
+    for sec, rows in (("policy", "#right tr.det-row"), ("customer", "#right tr.fr-same, #right tr.fr-different, #right tr.fr-empty")):  # each section folded, then opened
+        page.click(f"#right [data-sec={sec}]")
+        assert page.locator(rows).count() == 0 and page.get_attribute(f"#right [data-sec={sec}]", "aria-expanded") == "false"
+        page.click(f"#right [data-sec={sec}]")
+        assert page.locator(rows).count() > 0
+    page.locator("#right .fullrows thead [data-open]").first.click()  # a candidate's own pair, opened
+    page.wait_for_function(f"() => document.querySelector('#right .fullrows thead')?.innerText.includes({json.dumps(twice)})", timeout=30_000)
+
+    assert page.evaluate(r"""() => {  // one policy number, one color, both sides; a new one, the farthest from those in use
+      const det = {file: "x", columns: ["P"], records: [{id: "a", rows: [["p1"], ["p2"]], total: 2}, {id: "b", rows: [["p2"], ["p3"]], total: 2}]};
+      const chosen = {a: new Set([0, 1]), b: new Set([0, 1])}, html = detailRows(det, ["a", "b"], "", () => true, chosen);
+      const colors = [...html.matchAll(/--pc: (oklch\([^)]*\))/g)].map((m) => m[1]);  // the chips', then the lines', each record's in turn
+      const many = [], used = [];
+      for (let n = 0; n < 50; n++) { const c = polColor(used); used.push(c.lab); many.push(c.css); }
+      return colors.includes(chosen.colors.get("p2").css) && new Set([...chosen.colors.values()].map((c) => c.css)).size === 3 && new Set(many).size === 50
+        && html.includes("1 in common");
+    }""")
 
     page.evaluate("location.hash = '#kinds'")  # a record asked person or company: its rows too
-    page.wait_for_selector("#right .details-of", timeout=60_000)
-    asked = page.locator("#right .details-of .fr-head").inner_text()
-    assert page.locator("#right .details-of tbody td").all_inner_texts() == plans(re.search(r"\d+", asked.split("\n")[-1]).group())
+    page.wait_for_selector("#right .det-box tr.det-head", timeout=60_000)
+    asked = page.get_attribute("#right .det-box", "data-id")
+    assert lines(page.locator("#right .det-box td.det-v").first) == plans(asked)[:1]
 
     one = str(g.df[uid].iloc[4])
     page.evaluate(f"go('results', {{tab: 'records', record: {json.dumps(one)}}})")  # Explore's one record
-    page.wait_for_selector("#rec .details-of", timeout=60_000)
-    assert page.locator("#rec .details-of > div").count() == 1 and page.locator("#rec .details-of tbody td").all_inner_texts() == plans(one)
+    page.wait_for_selector("#rec tr.det-head", timeout=60_000)
+    assert lines(page.locator("#rec td.det-v").first) == plans(one)[:1] and page.locator("#rec [data-policy]").count() == (len(plans(one)) if len(plans(one)) > 1 else 0)
+
+    page.click(".navitem[data-screen=pairs]")  # the line between the pair and its queue: dragged, kept
+    page.wait_for_selector(".grip-v")
+    grip = page.locator(".grip-v").bounding_box()
+    before = page.locator("#right").bounding_box()["width"]
+    page.mouse.move(grip["x"] + 6, grip["y"] + 100)
+    page.mouse.down()
+    page.mouse.move(grip["x"] + 160, grip["y"] + 100, steps=6)
+    page.mouse.up()
+    wider = page.locator("#right").bounding_box()["width"]
+    page.reload()
+    page.wait_for_selector("#right .fullrows")
+    assert wider > before + 100 and abs(page.locator("#right").bounding_box()["width"] - wider) < 8  # the next visit too
 
 
-def test_step_2_s_details_card_keeps_a_chip_clicked_just_before_leaving_and_a_reload_while_it_loads(ui_page, tmp_path, fake_cli):
+def test_step_2_s_policy_columns_keep_a_choice_made_just_before_leaving(ui_page, tmp_path):
     from er import cli
     uid = load_settings().data.unique_id
     home, ws = tmp_path / "workspaces", tmp_path / "workspaces" / "w"
@@ -984,33 +1043,23 @@ def test_step_2_s_details_card_keeps_a_chip_clicked_just_before_leaving_and_a_re
     errors = []
     page.on("pageerror", lambda e: errors.append(str(e)))
     page.click(".navitem[data-screen=columns]")
-    page.wait_for_selector("#dcols [data-col=START][aria-pressed=true]")
+    page.wait_for_selector("#dcols input[data-col=START]:checked")
     page.evaluate("(() => { const real = runOnce; window.runOnce = (c, ...r) => c === 'describe records' ? new Promise((ok) => setTimeout(() => ok(real(c, ...r)), 3000)) : real(c, ...r); })()")
-    page.evaluate("go('columns')")  # drawn again, its file's description slow: a click waits behind it
-    page.wait_for_selector("#dcols [data-col=START]")
-    page.click("#dcols [data-col=START]")
-    page.evaluate("go('run')")  # left before the click is saved
+    page.evaluate("go('columns')")  # drawn again, its file's description slow: a choice waits behind it
+    page.wait_for_selector("#dcols input[data-col=START]")
+    page.uncheck("#dcols input[data-col=START]")
+    page.evaluate("go('run')")  # left before the choice is saved
     deadline = time.time() + 15
     while json.loads((ws / "details" / "details.json").read_text(encoding="utf-8"))["shown"] != ["PLAN"] and time.time() < deadline:
         time.sleep(0.2)
     assert json.loads((ws / "details" / "details.json").read_text(encoding="utf-8"))["shown"] == ["PLAN"] and not errors  # saved all the same
-
-    end = tmp_path / "end-the-load"  # a long load, as a big file's: until the test has looked
-    fake_cli(f"t = time.time()\nwhile not os.path.exists({str(end)!r}) and time.time() - t < 120:\n    time.sleep(0.1)")
-    page.reload()
     page.click(".navitem[data-screen=columns]")
-    page.click("#details details.fold-line > summary")  # Load another details file
-    page.fill("#din", str(tmp_path / "contracts.parquet"))
-    page.click("#dload")
-    page.wait_for_selector("#dload:disabled")
+    page.wait_for_selector("#dcols input[data-col=PLAN]")
+    page.click("#dall")  # every column at once
     deadline = time.time() + 15
-    while not server.running and time.time() < deadline:  # started, before the page goes
-        time.sleep(0.1)
-    page.reload()  # the page drawn again while it loads: followed, not broken
-    page.click(".navitem[data-screen=columns]")
-    page.wait_for_selector("#out .fgroup", timeout=30_000)
-    assert page.is_disabled("#load") and page.is_disabled("#gen") and not errors
-    end.touch()
+    while json.loads((ws / "details" / "details.json").read_text(encoding="utf-8"))["shown"] != ["PLAN", "START"] and time.time() < deadline:
+        time.sleep(0.2)
+    assert page.is_checked("#dcols input[data-col=START]") and not errors
 
 
 def test_a_command_the_server_started_without_says_start_it_again_and_frees_its_buttons(ui_page, tmp_path, monkeypatch):
@@ -1021,6 +1070,7 @@ def test_a_command_the_server_started_without_says_start_it_again_and_frees_its_
     monkeypatch.setattr(ui, "declarations", lambda: [c for c in known() if c["name"] != "generate records"])  # a server started before the update that added it
     page, server, httpd = ui_page(str(ws), str(home))
     page.click(".navitem[data-screen=columns]")
+    page.click("#synth > summary")
     page.click("#gen")
     page.wait_for_selector("#out .banner")
     assert "started before an update" in page.inner_text("#out .banner") and not folder.parts(ws)

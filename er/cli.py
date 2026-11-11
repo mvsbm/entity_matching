@@ -557,8 +557,8 @@ def brief_show(r: dict) -> list[str]:  # the full rows side by side: the columns
 
 
 def brief_details(r: dict) -> list[str]:
-    linked = f"; {r['linked']:,} of {r['records']:,} records have some" if r.get("records") else ""
-    return [f"✓ {r['file']}: {r['rows']:,} rows for {r['ids']:,} IDs, by {r['key']}{linked}", f"  shown: {', '.join(r['shown']) or 'none'}"]
+    linked = f"; {r['linked']:,} of {r['drawn']:,} records drawn have some" if r.get("drawn") else ""
+    return [f"✓ {r['file']}: {r['rows']:,} rows, by {r['key']}{linked}", f"  shown: {', '.join(r['shown']) or 'none'}"]
 
 
 def brief_merging(r: dict) -> list[str]:
@@ -1410,7 +1410,7 @@ def describe_workspace_(a: dict, emit: "Emit") -> dict:
     told = out / "auto" / "report.md"  # the last auto mode's report, to send
     auto = dict(report=str(told), markdown=told.read_text(encoding="utf-8")) if told.is_file() else None
     return {**d, "inputs": files, "columns": "own" if columns_file(out) else "project", "auto": auto, "index": index.status(out, s), "rerun_owed": owed,
-            "details": details.described(out, s.data.unique_id, lambda: connect(s.compute)[0]), "next": then}
+            "details": details.described(out, s.data.unique_id), "next": then}
 
 
 def describe_entity_(a: dict, emit: "Emit") -> dict:
@@ -1647,7 +1647,7 @@ def list_entities_(a: dict, emit: "Emit") -> dict:
 
 def load_details(a: dict, emit: "Emit") -> dict:
     s = settings_for(a)
-    return details.load(connect(s.compute)[0], Path(a["workspace"]), a["file"], a.get("key"), a.get("columns"), s.data.unique_id)
+    return details.load(Path(a["workspace"]), a["file"], a.get("key"), a.get("columns"), s.data.unique_id)
 
 
 def set_details(a: dict, emit: "Emit") -> dict:
@@ -1657,7 +1657,7 @@ def set_details(a: dict, emit: "Emit") -> dict:
 
 def show_details(a: dict, emit: "Emit") -> dict:
     settings_for(a)
-    return details.show(duckdb.connect(), Path(a["workspace"]), a["ids"])
+    return details.show(Path(a["workspace"]), a["ids"])
 
 
 def show_records_(a: dict, emit: "Emit") -> dict:
@@ -1774,9 +1774,9 @@ CHECKED = {"records": "records read", "fields": "each field: filled, looks_right
            "turned_off": "rules, keys and levels a missing field turns off", "keys": "each key's pairs per record and largest block",
            "oversized_from": "the block size checked by sampling", "notes": "what the loader detected or fixed", "read": "what the reader found (er.intake): rows, values per encoding, fixed (controls, placeholders, numbers, damaged, lists, first of several), proposed and waiting: repairs by kind (realign, garbled, encoding) for accept repairs, with examples; unread rows",
            "next": "the commands that usually follow"}
-DETAILED = {"file": "the file's name", "rows": "rows kept", "ids": "record IDs they name", "unkeyed": "rows without an ID, left out",
-            "key": "the column holding the records' IDs", "columns": "each column of the file: column, filled, example", "shown": "the columns people see, in the file's order",
-            "linked": "records, in the file given last, with a row (null: no records yet)", "records": "records in that file"}
+DETAILED = {"file": "the file's name", "rows": "its rows", "key": "the column holding the records' IDs",
+            "columns": "each column of the file: column, filled (from its footer), example (from its first rows)", "shown": "the columns people see, in the file's order",
+            "linked": "of the records drawn, those with a row (null: no records yet, or no ID column)", "drawn": "records drawn from the file given last: 2,000, or all of them if fewer"}
 COMPUTE = Param("compute", "DuckDB limits for this run, over config/settings.toml [compute]: memory_limit=8GB, threads=4, "
                 "temp_directory=<folder> (past the memory limit DuckDB spills there)", "many", metavar="KEY=VALUE")
 PIPELINE = Param("pipeline", "the pipeline file (default: config/final.toml)", "path")
@@ -1812,16 +1812,17 @@ COMMANDS: tuple[Command, ...] = (
             "nayose load records customers.parquet --workspace workspaces/acme", load_records,
             show={"columns": ("column", "filled", "example"), "fields": ("field", "filled", "looks_right"), "fit": (), "features": (), "profile": (),
                   "slots": ("feature", "filled", "looks_right"), "placements": ("feature", "column", "why"), "offers": ("feature", "column", "why")}),
-    Command("load", "details", "Copy a details file into a workspace: rows people see above each record they review",
+    Command("load", "details", "Point a workspace at a details file: rows people see above each record they review",
             "Rows about the records, found by the record's ID (--key: the column holding it, by default the records' own ID "
             "column), any number for one record, such as each contract a customer holds. Matching never reads them, so loading "
-            "them asks for no run. Kept in the workspace's details/, every row and column sorted by the ID, so a card reads only "
-            "its records' rows (show details); loading another replaces it. Parquet: a file, a quoted glob or a folder of them. "
-            "O(m log m) for m rows, once; the records linked to them O(n + m).",
+            "them asks for no run. Nothing is copied: the workspace keeps where the file is, its key and the columns shown, and "
+            "a card reads the file itself (show details), so the file must stay where it is; loading another replaces it. "
+            "Parquet: a file, a quoted glob or a folder of them. Its footer and first 200 rows (milliseconds at any size), then "
+            "2,000 records drawn from the file given last, to say how many have a row: one scan of the key column.",
             (Param("file", "the details: a Parquet file, a quoted glob or a folder of them", "path", positional=True),
              Param("key", "its column of record IDs (default: the records' ID column)", metavar="COLUMN"),
              Param("columns", "the columns people see (default: all)", "many", metavar="COLUMN"), WORKSPACE),
-            DETAILED, "nayose load details contracts.parquet --workspace workspaces/acme", load_details,
+            DETAILED, "nayose load details contracts.parquet --workspace workspaces/acme", load_details, quick=True,
             show={"columns": ("column", "filled", "example")}),
     Command("set", "details", "Choose the details file's columns people see",
             "Which columns of the details file (load details) are shown above each record; none given: none. Matching reads "
@@ -2311,8 +2312,8 @@ COMMANDS: tuple[Command, ...] = (
             "nayose show records 0000102855 0000905311 --workspace workspaces/customers", show_records_, quick=True),
     Command("show", "details", "Records' rows in the details file",
             "Each record's rows in the workspace's details file (load details), the columns people see, in the file's order: "
-            "the first 1,000 and how many it has. Reads only the row groups whose ID range can hold them (32,768 rows each), "
-            "about 10 ms a card at 10 million rows. No details file: none.",
+            "the first 1,000 and how many it has. Read from the file itself, its key compared as the file holds it: at most one "
+            "scan of the key column, then the shown columns of the rows found, tens of milliseconds a card. No details file: none.",
             (Param("ids", "record IDs", "many", positional=True, metavar="ID"), WORKSPACE),
             {"file": "the details file's name, or null: none loaded", "key": "its column of record IDs", "columns": "the columns shown",
              "records": "each record: id, rows (each a list of values, as columns), total (its rows, all of them)"},
