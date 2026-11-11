@@ -2,7 +2,7 @@
 # before pushing (CONTRIBUTING.md). main, and a run started by hand on any branch, runs them all: whole runs, the page in
 # a browser, and on Windows, set up as a person sets it up there. Each tier is a job of its own and the long ones are
 # split by their recorded times (tests/durations.json, pytest-split), all at once: the set takes about as long as its
-# longest part. 15 jobs at most at once, under the 20 a free account runs. The job names pytest (3.12) and pytest (3.14)
+# longest part. 16 jobs at most at once, under the 20 a free account runs. The job names pytest (3.12) and pytest (3.14)
 # are what branch protection requires: keep them.
 name: tests
 on:
@@ -92,8 +92,9 @@ jobs:
       matrix:
         include:
           - {part: fast, marks: "not slow and not browser", split: ""}
-          - {part: whole 1/2, marks: "slow and not browser", split: "--splits 2 --group 1"}
-          - {part: whole 2/2, marks: "slow and not browser", split: "--splits 2 --group 2"}
+          - {part: whole 1/3, marks: "slow and not browser", split: "--splits 3 --group 1"}
+          - {part: whole 2/3, marks: "slow and not browser", split: "--splits 3 --group 2"}
+          - {part: whole 3/3, marks: "slow and not browser", split: "--splits 3 --group 3"}
           - {part: browser 1/2, marks: browser, split: "--splits 2 --group 1", browser: true}
           - {part: browser 2/2, marks: browser, split: "--splits 2 --group 2", browser: true}
     steps:
