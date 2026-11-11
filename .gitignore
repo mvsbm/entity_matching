@@ -1,9 +1,17 @@
 .venv/
-# DuckDB's spill folder, under wherever a run starts
+# a spill folder named here (--compute temp_directory=.tmp); by default DuckDB spills to the system's temporary folder
 .tmp/
 __pycache__/
 *.egg-info/
+.ipynb_checkpoints/
 .DS_Store
+Thumbs.db
+
+# pytest-split's times, when --store-durations is run without --durations-path tests/durations.json (CONTRIBUTING.md)
+.test_durations
+
+# a file written beside itself and renamed over it (er.io.replace_text, folder.stage), left by a write cut short
+*.tmp
 
 # Generated data: rebuilt by scripts/generate.py and scripts/choose.py.
 # data/reference/ stays tracked: the generator's frozen snapshot of public sources (see its SOURCES.md).
