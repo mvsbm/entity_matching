@@ -13,7 +13,8 @@ Until then a row that doesn't line up is unread, never dropped. A Parquet file's
 
 A part holds what was given, `read/` (what runs read), intake.json (counts only: no value), proposals.parquet and
 unread.parquet (the values, which stay in the workspace). The intake is a function of the files given, [input] and
-the kinds accepted, so accepting one reads them again. O(bytes) in one pass, in chunks of 200,000 rows.
+the kinds accepted, so accepting one reads them again. O(bytes) in one pass, in chunks of 200,000 rows, each by column:
+what reading keeps as it is settled in Arrow, the rest one value at a time.
 """
 import ast
 import csv
@@ -25,12 +26,13 @@ import math
 import mmap
 import os
 import re
+import pickle
 import shutil
 import sys
 import time
 import unicodedata
 from collections import Counter
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -47,7 +49,9 @@ SUFFIXES = (".parquet", ".csv", ".tsv", ".txt")  # the records files a folder or
 KINDS = ("realign", "garbled", "encoding")
 KEEP = 1000  # proposals of each kind kept to show
 ODD = 0.1  # past this share of records that don't line up, the file is refused: its delimiter or header is wrong
-CHUNK = 200_000  # shortcut: a CSV in one Python pass, about 15 s a million records (a Parquet file by column, about 7 s); past ~20M rows on one machine, split the file
+CHUNK = 200_000  # shortcut: a CSV split in one Python pass (its values settled by column, as a Parquet file's), about 20 s a million records of 25 columns (Parquet about 11 s); past ~20M rows on one machine, split the file
+CACHE = Path(os.environ.get("XDG_CACHE_HOME") or Path.home() / ".cache") / "nayose"  # what is built from the reference files: once each time they or its code change, not once a process
+CODE = hashlib.sha256(Path(__file__).read_bytes()).hexdigest()[:16]  # this module as it is: a copy its older self built is built again
 CONTROL = re.compile("[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f​-‍⁠﻿]")
 BREAKS = re.compile("[\t\r\n]+")
 WHOLE = re.compile(r"^(-?\d+)\.0+$")  # a whole number a spreadsheet wrote as a float
@@ -78,11 +82,46 @@ class Model:
     garbled: frozenset[str]   # characters a wrong decoding makes of the reference's own, which it never holds
 
 
+def kept(name: str, key: tuple, build: Callable[[], object]) -> object:
+    """build(), kept on disk (CACHE) while `key` holds: the files it is built from and the code that builds it. A copy
+    that can't be read is built again, one that can't be written isn't kept; each name keeps its newest copy alone."""
+    f = CACHE / f"{name}-{hashlib.sha256(repr(key).encode()).hexdigest()[:16]}.pickle"
+    try:
+        with f.open("rb") as h:
+            return pickle.load(h)
+    except Exception:  # none yet, cut short, or written by another Python: built again
+        pass
+    x = build()
+    try:
+        CACHE.mkdir(parents=True, exist_ok=True)
+        tmp = f.with_name(f".{f.name}.{os.getpid()}")
+        with tmp.open("wb") as h:
+            pickle.dump(x, h, protocol=pickle.HIGHEST_PROTOCOL)
+        os.replace(tmp, f)  # whole or absent: another process reads either
+        for old in CACHE.glob(f"{name}-*.pickle"):
+            if old != f:
+                old.unlink(missing_ok=True)
+    except OSError:  # a folder it can't write: built each time, as before
+        pass
+    return x
+
+
+def stamp(folder: Path, names: Iterable[str]) -> tuple:  # each file as it is now: its name, size and last change
+    return tuple((n, (folder / n).stat().st_size, (folder / n).stat().st_mtime_ns) for n in names if (folder / n).is_file())
+
+
+MODEL_FILES = ("individual.json", "companies.json", "addresses.json", "registry.json")
+
+
 @functools.lru_cache(maxsize=2)
-def model(folder: Path) -> Model:
+def model(folder: Path) -> Model:  # the reference's texts as letters and pairs of letters: kept on disk, read once a process
+    return kept("model", (str(Path(folder).resolve()), stamp(folder, MODEL_FILES), CODE), lambda: _model(folder))
+
+
+def _model(folder: Path) -> Model:
     texts = []
-    for name, keys in (("individual.json", ("surname", "given", "surname_kana", "given_kana")), ("companies.json", ("name", "name_kana")),
-                       ("addresses.json", ("pref", "city", "town", "pref_kana", "city_kana", "town_kana")), ("registry.json", ("reading",))):
+    for name, keys in zip(MODEL_FILES, (("surname", "given", "surname_kana", "given_kana"), ("name", "name_kana"),
+                                        ("pref", "city", "town", "pref_kana", "city_kana", "town_kana"), ("reading",))):
         if (folder / name).is_file():
             texts += [str(r[k]) for r in json.loads((folder / name).read_text(encoding="utf-8")) for k in keys if r.get(k)]
     texts = list(dict.fromkeys(texts))
@@ -202,12 +241,19 @@ def tidy(v: str | None, nulls: frozenset[str], numeric: bool) -> tuple[str | Non
     return v, fixed
 
 
+def klass(ch: str) -> str:  # a character's class: digit, other digit, Latin letter, katakana, hiragana, half-width kana, kanji, space, else
+    return ("d" if "0" <= ch <= "9" else "D" if ch.isdigit() else "a" if ch.isascii() and ch.isalpha() else "k" if "ァ" <= ch <= "ヺ" or ch == "ー"
+            else "h" if "ぁ" <= ch <= "ゖ" else "n" if "ｦ" <= ch <= "ﾟ" else "c" if "一" <= ch <= "鿿" or "㐀" <= ch <= "䶿" else "s" if ch.isspace() else "p")
+
+
+@functools.cache
+def _classed() -> str:  # klass of every character up to U+FFFF, by code point: a value's classes in one translate, not a call a character
+    return "".join(klass(chr(i)) for i in range(0x10000))
+
+
 def classes(v: str) -> tuple[frozenset[str], int]:  # the character classes a value holds, and its length class
-    held = set()
-    for ch in v[:60]:
-        held.add("d" if "0" <= ch <= "9" else "D" if ch.isdigit() else "a" if ch.isascii() and ch.isalpha() else "k" if "ァ" <= ch <= "ヺ" or ch == "ー"
-                 else "h" if "ぁ" <= ch <= "ゖ" else "n" if "ｦ" <= ch <= "ﾟ" else "c" if "一" <= ch <= "鿿" or "㐀" <= ch <= "䶿" else "s" if ch.isspace() else "p")
-    return frozenset(held), min(len(v).bit_length(), 7)
+    held = set(v[:60].translate(_classed()))  # a character past U+FFFF stays itself: classed one by one
+    return frozenset(c if c in CLASSES else klass(c) for c in held), min(len(v).bit_length(), 7)
 
 
 CLASSES = "dDakhncsp"
@@ -221,6 +267,16 @@ def learn(profile: Counter, v: str | None) -> None:  # one value of a column, co
     held, length = classes(v)
     profile.update(held)
     profile[("len", length)] += 1
+
+
+def learned(profile: Counter, values: list[str | None]) -> None:  # learn(), for many values at once: the same counts
+    profile["rows"] += len(values)
+    filled = [v for v in values if v]
+    if len(filled) < len(values):
+        profile["empty"] += len(values) - len(filled)
+    table = _classed()
+    profile.update(itertools.chain.from_iterable({c if c in CLASSES else klass(c) for c in set(v[:60].translate(table))} for v in filled))
+    profile.update(("len", min(len(v).bit_length(), 7)) for v in filled)
 
 
 def fits(profile: Counter, v: str | None) -> float:  # how likely a column holds the value: each class held or not, and its length (log)
@@ -383,19 +439,40 @@ def settled(a: pa.Array, numeric: bool, nulls: pa.Array, utf8: bool, garbled: fr
     first, text in JAPANESE with nothing to fix (no control character or line break, none a wrong decoding makes, not
     spaces alone, not a placeholder, not a number to fix). Only what value() would return unchanged: every other value
     is read one by one, as before. O(values · length) in Arrow."""
-    has = lambda pattern: pc.fill_null(pc.match_substring_regex(a, pattern), False).to_numpy(zero_copy_only=False)
-    number = has("[.eE]") if numeric else np.zeros(len(a), bool)
-    number |= has(r"\[.*\]")  # perhaps written as a list, spaces around it or not: read one by one, as tidy() decides
-    plain = has(PLAIN_RE2) & ~pc.fill_null(pc.is_in(a, value_set=nulls), False).to_numpy(zero_copy_only=False) & ~number
-    if not utf8:
+    def on(mask: np.ndarray, test) -> np.ndarray:  # a test run on the values `mask` picks alone, False elsewhere: each value is tested only as what it can be
+        out = np.zeros(len(a), bool)
+        if (where := np.flatnonzero(mask)).size:
+            out[where] = pc.fill_null(test(a.take(pa.array(where, pa.int64()))), False).to_numpy(zero_copy_only=False)
+        return out
+    has = lambda pattern: lambda x: pc.match_substring_regex(x, pattern)
+    ascii_ = pc.fill_null(pc.string_is_ascii(a), True).to_numpy(zero_copy_only=False)
+    number = on(np.ones(len(a), bool), has("[.eE]")) if numeric else np.zeros(len(a), bool)
+    number |= on(pc.fill_null(pc.match_substring(a, "["), False).to_numpy(zero_copy_only=False), has(r"\[.*\]"))  # perhaps written as a list, spaces around it or not: read one by one, as tidy() decides
+    plain = on(ascii_, lambda x: pc.and_(pc.match_substring_regex(x, PLAIN_RE2), pc.invert(pc.is_in(x, value_set=nulls)))) & ~number
+    if not utf8 or ascii_.all():
         return plain, np.zeros(len(a), bool)
     bad = f"[{re2(CONTROL.pattern[1:-1])}{re2(BREAKS.pattern[1:-2])}{re2(''.join(sorted(garbled)))}]"
-    stripped = pc.fill_null(pc.is_in(pc.utf8_trim(a, " \u3000"), value_set=nulls), False).to_numpy(zero_copy_only=False)
-    text = ~pc.fill_null(pc.string_is_ascii(a), True).to_numpy(zero_copy_only=False) & has(JAPANESE_RE2) & ~has(bad) & has(SOLID_RE2) & ~stripped & ~number
+    text = on(~ascii_ & ~number, lambda x: pc.and_(pc.and_(pc.match_substring_regex(x, JAPANESE_RE2), pc.invert(pc.match_substring_regex(x, bad))),
+                                                    pc.and_(pc.match_substring_regex(x, SOLID_RE2), pc.invert(pc.is_in(pc.utf8_trim(x, " \u3000"), value_set=nulls)))))
     return plain | text, text
 
 
 # ---------- one file read ----------
+
+
+def as_text(fields: tuple[str, ...]) -> pa.Array | None:
+    """CSV fields (each byte a latin-1 character) as Arrow text of their own bytes, when every one is UTF-8: checked in
+    Arrow, not one by one. None otherwise, or past 2 GB in one chunk (Arrow text's offsets). O(bytes) in C."""
+    data = "".join(fields).encode("latin-1")
+    if not fields or len(data) >= 1 << 31:
+        return None
+    ends = np.cumsum(np.fromiter(map(len, fields), np.int64, len(fields)))
+    a = pa.Array.from_buffers(pa.string(), len(fields), [None, pa.py_buffer(np.concatenate(([0], ends)).astype(np.int32)), pa.py_buffer(data)])
+    try:
+        a.validate(full=True)  # every field UTF-8
+    except pa.ArrowInvalid:
+        return None
+    return a
 
 
 def rows_in(f: Path) -> int:  # about how many records a file holds, for progress: Parquet's own count; text, its first megabyte's lines, scaled to its size
@@ -516,10 +593,19 @@ def read_one(f: Path, out: Path, spec: InputSpec, m: Model, accepted: frozenset[
             writer = pq.ParquetWriter(out, table.schema)
         writer.write_table(table)
     block: list[tuple[int, list]] = []
-    def study(cols: list) -> None:  # the first chunk learns each column from the values it reads for sure: what they look like, their encoding, whether they are numbers
+    def study(cols: list, utf8s: list[bool] | None = None) -> None:  # the first chunk learns each column from the values it reads for sure: what they look like, their encoding, whether they are numbers
         encs = [Counter() for _ in cols]
         for j, col in enumerate(cols):
-            for k, v in enumerate(col):
+            fast = bool(utf8s and utf8s[j])
+            if fast:  # every value UTF-8, read first: none tells another encoding, and past 50,000 none counts; one Japanese decodes no other way that matters
+                sure = []
+                for v in col[:50_000]:
+                    if not v or v.isascii():
+                        sure.append(v or None)
+                    elif JAPANESE.fullmatch(t := v.encode("latin-1").decode("utf-8")) or len(decodings(v, spec.encodings)) == 1:
+                        sure.append(t)
+                learned(profile[j], sure)
+            for k, v in enumerate(() if fast else col):
                 if k >= 50_000 and (not v or v.isascii() or (utf8 and decodes(v))):  # past what is learned, only a value UTF-8 can't read counts
                     continue
                 found = [("ascii", v)] if not v or v.isascii() else decodings(v, spec.encodings)
@@ -532,32 +618,34 @@ def read_one(f: Path, out: Path, spec: InputSpec, m: Model, accepted: frozenset[
         whole = sum(encs, Counter())  # a column's own encoding, else the file's: a column whose values no other encoding rules out reads as the rest of the file
         for j, e in enumerate(encs):
             majority[j] = (e or whole).most_common(1)[0][0] if (e or whole) else None
-    def flush(first: bool) -> None:
+    def column(col: tuple) -> tuple[pa.Array, bool]:  # a CSV column's fields as Arrow text: decoded when every one is UTF-8, else as read
+        a = as_text(col) if utf8 else None
+        return (a, True) if a is not None else (pa.array(col, pa.string()), False)
+    def flush(first: bool) -> None:  # a CSV chunk: by column, as a Parquet one, with each field as read for those read one by one
         lines = [line for line, _ in block]
         cols = list(zip(*(r for _, r in block))) if block else [()] * width
+        arrays = [column(c) for c in cols]
         if first:
-            study(cols)
-        done = []
-        for j, col in enumerate(cols):
-            done.append([None if not v else v if plain(j, v) else value(j, v, line) for v, line in zip(col, lines)])  # most values: as they are
-        write(done)
-        facts["rows"] += len(lines)
-        if progress:
-            progress(facts["rows"])
-    def quick(arrays: list[pa.Array]) -> None:  # a Parquet chunk: what reading keeps as it is, settled per column in Arrow; the rest one by one, as flush reads them
+            study(cols, [t for _, t in arrays])
+        quick([a for a, _ in arrays], [t for _, t in arrays], cols, lines)
+    def quick(arrays: list[pa.Array], texts: list[bool] | None = None, given: list | None = None, lines: list[int] | None = None) -> None:
+        # A chunk by column: what reading keeps as it is, settled per column in Arrow; the rest one by one. texts: which
+        # arrays hold their values' own text (a CSV column that didn't decode at once holds its fields as read: only
+        # plain ASCII is settled); given, lines: a CSV chunk's fields as read and their lines, for those read one by one.
         first, n, done = facts["rows"] + 1, len(arrays[0]) if arrays else 0, []
+        line = (lambda i: lines[i]) if lines is not None else (lambda i: first + i)
         for j, a in enumerate(arrays):
             if not pa.types.is_string(a.type):  # bytes, or nested values: one by one
-                done.append([None if not v else v if plain(j, v) else value(j, v, first + i) for i, v in enumerate(views(a))])
+                done.append([None if not v else v if plain(j, v) else value(j, v, line(i)) for i, v in enumerate(views(a))])
                 continue
-            keep, text = settled(a, numeric[j], null_set, utf8, m.garbled)
+            keep, text = settled(a, numeric[j], null_set, utf8 and (texts is None or texts[j]), m.garbled)
             filled = pc.fill_null(pc.greater(pc.binary_length(a), 0), False).to_numpy(zero_copy_only=False)
             slow = np.flatnonzero(filled & ~keep)
             t0, got = int(np.argmax(text)) if text.any() else len(a), []
-            for i, v in zip(slow, a.take(pa.array(slow, pa.int64())).to_pylist()):
+            for i, v in zip(slow, [given[j][i] for i in slow] if given is not None else map(view, a.take(pa.array(slow, pa.int64())).to_pylist())):
                 if i > t0:  # a UTF-8 value settled before this one: counted first, as one by one would (the report's order)
                     facts["decoded"].setdefault("utf-8", 0)
-                got.append(value(j, view(v), first + int(i)))
+                got.append(value(j, v, line(int(i))))
             mask = pa.array(filled & ~keep)
             col = pc.if_else(pa.array(keep), a, pa.scalar(None, pa.string()))
             done.append(pc.replace_with_mask(col, mask, pa.array(got, pa.string())) if len(slow) else col)
@@ -569,7 +657,7 @@ def read_one(f: Path, out: Path, spec: InputSpec, m: Model, accepted: frozenset[
             progress(facts["rows"])
     for arrays in chunks:
         if writer is None:  # the first: each column learned from its values, one by one; a text column's past 50,000 are UTF-8, which tells nothing
-            study([views(a.slice(0, 50_000)) if utf8 and pa.types.is_string(a.type) else views(a) for a in arrays])
+            study([views(a.slice(0, 50_000)) if utf8 and pa.types.is_string(a.type) else views(a) for a in arrays], [utf8 and pa.types.is_string(a.type) for a in arrays])
             for j, a in enumerate(arrays):
                 majority[j] = "utf-8" if pa.types.is_string(a.type) else majority[j]  # Arrow text is valid UTF-8: never read in another column's encoding
         quick(arrays)
