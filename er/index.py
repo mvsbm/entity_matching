@@ -21,6 +21,7 @@ value's length, b a block's size, C candidates, K comparisons. A lookup lists th
 lists (er.candidates) and scores them as er.match.score_fs scores them with the run's model; an increment, unlike it,
 counts u again on every record.
 """
+from importlib.metadata import version
 import contextlib
 import hashlib
 import json
@@ -40,7 +41,6 @@ import duckdb
 import numpy as np
 import pandas as pd
 import pyarrow.parquet as pq
-import sklearn
 
 from er import folder
 from er.candidates import deletions_sql
@@ -71,7 +71,7 @@ QUERY = "\x7flookup"  # the ID of a record typed in: no record's, and after ever
 LAST = chr(0x10FFFF)  # after every character: a prefix's range ends at it
 MOVES = ("gold.parquet", "state/rule_clusters.parquet", "state/scoring.json", folder.METHOD)  # what a delta carries: entities, rules' clusters, the u an increment counts again, merging conditions
 INDEXING = hashlib.sha256(b"".join((Path(__file__).parent / f"{m}.py").read_bytes() for m in ("index", "candidates", "config", "standardize", "match", "kind"))
-                          + duckdb.__version__.encode() + sklearn.__version__.encode()).hexdigest()[:12]  # what reads and writes an index (kind.pkl pickles a scikit-learn model): another version builds it again
+                          + duckdb.__version__.encode() + version("scikit-learn").encode()).hexdigest()[:12]  # what reads and writes an index (kind.pkl pickles a scikit-learn model): another version builds it again
 
 _OPENED: dict[str, tuple] = {}  # bounded: OPEN workspaces, the oldest dropped; each its manifest, connection, classifier and the classifier's lock
 _OPENING = threading.Lock()

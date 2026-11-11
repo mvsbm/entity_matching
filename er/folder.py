@@ -458,11 +458,11 @@ def fresh(part: Path, spec: intake.InputSpec, reference: Path, progress=None) ->
     return part
 
 
-def take_in(ws: Path, path: str | Path, spec: intake.InputSpec, reference: Path, progress=None) -> tuple[Path, bool]:
+def take_in(ws: Path, path: str | Path, spec: intake.InputSpec, reference: Path, progress=None, shown=None) -> tuple[Path, bool]:
     """Copy the files `path` names (a file, a glob or a folder: er.source.find) into the next part of the workspace's
     inputs/, and read them (er.intake: read/, what was found, the repairs proposed), under its lock: into a hidden
     folder first, renamed into place once every file is complete and read, so a part is whole or absent. Content the
-    workspace already holds, file for file by SHA-256, is not copied again. `progress`: intake.take's. The part, and
+    workspace already holds, file for file by SHA-256, is not copied again. `progress`, `shown`: intake.take's. The part, and
     whether it is new. O(bytes)."""
     files = find(path)
     given = sorted(intake.sha256(f) for f in files)
@@ -487,7 +487,7 @@ def take_in(ws: Path, path: str | Path, spec: intake.InputSpec, reference: Path,
             copied[tmp / rel] = rel.as_posix()
         (tmp / SUMS).write_text("\n".join(lines) + "\n", encoding="utf-8")
         try:
-            intake.take(tmp, copied, spec, reference, progress=progress)
+            intake.take(tmp, copied, spec, reference, progress=progress, shown=shown)
         except BaseException:
             shutil.rmtree(tmp, ignore_errors=True)
             raise

@@ -43,6 +43,7 @@ N records, L characters per value, P pairs in a rule's or generator's key blocks
 S sampled pairs for u, E accepted pairs, d cluster diameter (Splink's connected components take up to d rounds, over
 the edges' records only: each existing cluster is one node, see er.cluster.merge).
 """
+from importlib.metadata import version
 import functools
 import hashlib
 import json
@@ -61,8 +62,6 @@ import duckdb
 import numpy as np
 import pandas as pd
 import pyarrow as pa
-import scipy
-import sklearn
 
 from er import folder, intake
 from er.candidates import candidates, estimate
@@ -100,7 +99,7 @@ def peak_gb() -> float:  # the process's peak resident memory so far (ru_maxrss:
 
 BYTES_PER_PAIR = 350  # shortcut: measured at 1M (candidate and score tables held together); measure again if those tables change
 PREPARING = hashlib.sha256(b"".join([*(f.read_bytes() for f in sorted(Path(__file__).parent.glob("*.py"))),  # every module: what cleans records and reads them
-                                     *(m.__version__.encode() for m in (duckdb, pd, pa, np, sklearn, scipy)), sys.version.encode(),
+                                     *(v.encode() for v in (duckdb.__version__, pd.__version__, pa.__version__, np.__version__, version("scikit-learn"), version("scipy"))), sys.version.encode(),
                                      unicodedata.unidata_version.encode()])).hexdigest()  # sklearn, scipy: the person/company engine
 
 

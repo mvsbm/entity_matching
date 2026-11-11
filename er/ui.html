@@ -571,6 +571,7 @@ body.filedrag [data-drop].dropping::after { border-style: solid; background: var
 .hole { flex: none; color: var(--faint); border: 1px dashed var(--outline); border-radius: 13px; padding: 1px 10px; font-size: 12px; cursor: pointer; white-space: nowrap; }
 .feat select { font: inherit; font-size: 12px; padding: 3px 6px; border: 1px solid var(--outline); border-radius: 6px; background: var(--surface); color: var(--ink); }
 #out[inert] .mlist { opacity: .6; } #out[aria-busy] .colhead::after { content: "saving…"; color: var(--faint); font-size: 12px; }
+#out[data-reading] .mlist { opacity: .85; } .colhead .reading { font-size: 12px; color: var(--faint); }  /* a file as it is read: read only until it is whole */
 .mini { border: 0; background: transparent; color: var(--primary); cursor: pointer; font: inherit; font-size: 12px; padding: 2px 6px; border-radius: 6px; white-space: nowrap; }
 .mini:hover { background: var(--primary-soft); }
 .feat.offer { background: var(--primary-soft); } .feat.offer .flab { color: var(--primary); }
@@ -1676,6 +1677,7 @@ function features(d, view) {
         <button class="mini" data-keep='${esc(JSON.stringify([path, g.column]))}'>Keep</button></div>` : ""}</div>`;
   };
   const status = (g) => {
+    if (d.records === null) return ["", ""];  // its columns' names alone, as the file is read: nothing found yet, nothing missing
     const need = g.features.filter(needs);
     const paths = g.features.flatMap((f) => [`${g.group}/${f.name}`, ...(f.parts || []).map((p) => `${g.group}/${f.name}/${p.name}`)]);
     const bad = paths.filter((p) => warned(slot[p]));
@@ -2427,6 +2429,7 @@ const SCREENS = {
     const away = left, here = (p) => Promise.race([p, away.then(() => undefined)]);  // a reading in the queue, given up once the page is left: the writes after it still go
     const show = (d) => {
       $("out").inert = false;
+      delete $("out").dataset.reading;
       held = null;
       const id = d.event !== "error" && (d.fields || []).find((x) => x.field === "id");
       if (id && id.sources[0] && $("dkey")) $("dkey").placeholder = id.sources[0][0];  // a details file is found by the records' ID column unless told
@@ -2642,11 +2645,19 @@ const SCREENS = {
       longRun = {command, visit, page: "columns", workspace: state.workspace, args}; both().forEach((x) => { x.disabled = true; });  // as step 3's run: ended() frees them, here or on step 2 drawn again
       b.innerHTML = `${spinner()}${doing}…`;  // a big file takes minutes: how far, and how long is left, in the panel
       if (records && !$("out").querySelector(".fgroup")) $("out").innerHTML = `<div class="waiting">${spinner()}${doing} ${esc(what)}…</div>`;
-      const e = await run("columns", command, args);
+      const early = (ev) => {  // the file as it is read: its columns at once, then each one's share filled in its first rows; read only until it is read whole
+        if (ev.event !== "line" || !ev.early || !$("out")?.isConnected) return;
+        $("out").innerHTML = features(ev.early, view);
+        $("out").inert = true;
+        $("out").dataset.reading = ev.early.records ? `from the first ${fmt(ev.early.records)} rows` : "reading…";
+        $("out").querySelector(".colhead").insertAdjacentHTML("beforeend", `<span class="reading">${esc($("out").dataset.reading)}</span>`);
+      };
+      const e = await run("columns", command, args, records ? early : null);
       if (longRun?.command === command) longRun = null;
       both().forEach((x) => { x.disabled = false; });
       if (b.isConnected) b.innerHTML = was;
       if (e.event === "error") {  // the mapping stays: the refusal above it
+        if ($("out").dataset.reading) { $("out").inert = false; delete $("out").dataset.reading; draw(); }  // what it showed as it read: the workspace as it is again
         into.querySelectorAll(":scope > .banner, :scope > .waiting").forEach((x) => x.remove());
         into.insertAdjacentHTML("afterbegin", banner(e));
         return;

@@ -36,6 +36,7 @@ from typing import get_args
 import duckdb
 import numpy as np
 import pandas as pd
+import pyarrow.compute as pc
 
 from er import details, folder, inbox, index, intake
 from er.io import alive, replace_text
@@ -1087,11 +1088,38 @@ def load_records(a: dict, emit: "Emit") -> dict:
     ws, s = Path(a["workspace"]), settings_for(a)
     sent = folder.uploaded(ws, a["input"])  # sent by the page: read once, then gone, taken in or refused
     try:
-        part, copied = folder.take_in(ws, a["input"], s.input, s.paths["reference"], progress=lambda n, whole: emit.progress(n, whole, "rows"))
+        part, copied = folder.take_in(ws, a["input"], s.input, s.paths["reference"], progress=lambda n, whole: emit.progress(n, whole, "rows"),
+                                      shown=lambda kind, x: shown_early(a, emit, kind, x))
     finally:
         if sent:
             folder.remove(sent)
     return {**describe_records({**a, "input": str(part)}, emit), "loaded": str(part), "copied": copied}
+
+
+def shown_early(a: dict, emit: "Emit", kind: str, x) -> None:
+    """A file as it is read, before its result: its columns' names with the workspace's features around them, then
+    each column's and each feature's share filled and an example in its first chunk (x, as read: missing is null),
+    counted in Arrow, milliseconds. The rest (suggestions, hints, the whole file's numbers) comes with the result.
+    Never what fails a load: what can't be said waits for the result."""
+    try:
+        names = x if kind == "columns" else x.column_names
+        filled = {} if kind == "columns" else {c: pc.is_valid(x[c]).to_numpy(zero_copy_only=False) for c in names}
+        share = lambda mask: float(mask.mean()) if len(mask) else 0.0
+        example = lambda c: next((v for v in x[c].drop_null().slice(0, 1).to_pylist()), None) if c in filled else None
+        def alts(f: dict) -> list:  # a slot's alternatives as the page shows them, its numbers from the chunk where it has one
+            return [dict(columns=list(alt), found=set(alt) <= set(names), filled=share(np.logical_and.reduce([filled[c] for c in alt])) if filled and set(alt) <= set(names) else None,
+                         example=None, looks_right=None) for alt in f["columns"]]
+        def whole(f: dict) -> float | None:  # where any of its alternatives is filled
+            held = [np.logical_and.reduce([filled[c] for c in alt]) for alt in f["columns"] if set(alt) <= set(names)] if filled else []
+            return share(np.logical_or.reduce(held)) if held else None
+        feats = features_of(a["workspace"])
+        d = dict(records=None if kind == "columns" else x.num_rows, columns=[dict(column=c, filled=share(filled[c]) if filled else None, example=example(c)) for c in names],
+                 fields=[], features=feats, placements=[], offers=[], needed=dict(every=[], one_of=[]), turned_off=[], fit={}, profile={}, suggested=[], notes=[],
+                 slots=[dict(feature=path, sources=[list(alt) for alt in f["columns"]], filled=whole(f), example=None, looks_right=None, odd=None, hint=None, alternatives=alts(f))
+                        for path, f in slots(feats)])
+        emit.line(f"{len(names)} columns: {', '.join(names[:8])}{' …' if len(names) > 8 else ''}" if kind == "columns" else f"the first {x.num_rows:,} rows counted", early=d)
+    except Exception:  # a preview, never what fails the load
+        pass
 
 
 def generate_records(a: dict, emit: "Emit") -> dict:
