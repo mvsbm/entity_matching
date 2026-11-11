@@ -48,8 +48,9 @@ def test_details_are_each_record_s_rows_in_the_file_s_order_read_from_the_file_f
         assert r["rows"] == [[x] for x in theirs["PLAN"]] and r["total"] == len(theirs)  # every row, in the file's order
 
     code, e = say("set", "details", "--columns", "START", "PLAN", "--workspace", ws)
-    assert code == 0 and e["shown"] == ["PLAN", "START"]  # in the file's order
-    assert {r[1][:10] for r in say("show", "details", ids[3], "--workspace", ws)[1]["records"][0]["rows"]} == {"2020-01-01", "2020-01-02", "2020-01-03"}  # dates as text
+    assert code == 0 and e["shown"] == ["START", "PLAN"]  # in the order given: START names each row
+    shown = say("show", "details", ids[3], "--workspace", ws)[1]
+    assert shown["columns"] == ["START", "PLAN"] and {r[0][:10] for r in shown["records"][0]["rows"]} == {"2020-01-01", "2020-01-02", "2020-01-03"}  # dates as text
     code, e = say("set", "details", "--columns", "NOPE", "--workspace", ws)
     assert code == 2 and "has no column NOPE" in e["error"]
     assert say("set", "details", "--workspace", ws)[1]["shown"] == []  # none given: none shown

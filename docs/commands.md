@@ -173,7 +173,7 @@ Rows about the records, found by the record's ID (--key: the column holding it, 
 |---|---|
 | `FILE` | the details: a Parquet file, a quoted glob or a folder of them |
 | `--key COLUMN` | its column of record IDs (default: the records' ID column) |
-| `--columns COLUMN` | the columns people see (default: all) |
+| `--columns COLUMN` | the columns people see, in this order (default: all, in the file's) |
 | `--workspace WORKSPACE` | the workspace: the folder that keeps one matching job (required) |
 
 | Result | |
@@ -182,7 +182,7 @@ Rows about the records, found by the record's ID (--key: the column holding it, 
 | `rows` | its rows |
 | `key` | the column holding the records' IDs |
 | `columns` | each column of the file: column, filled (from its footer), example (from its first rows) |
-| `shown` | the columns people see, in the file's order |
+| `shown` | the columns people see, in their order: the first names each row on its chip |
 | `linked` | of the records drawn, those with a row (null: no records yet, or no ID column) |
 | `drawn` | records drawn from the file given last: 2,000, or all of them if fewer |
 
@@ -198,11 +198,11 @@ Choose the details file's columns people see.
 nayose set details [--columns COLUMN …] --workspace WORKSPACE [--format text|json]
 ```
 
-Which columns of the details file (load details) are shown above each record; none given: none. Matching reads none of it, so it waits for no run and asks for none. O(columns).
+Which columns of the details file (load details) are shown with each record, in the order given, the first naming each row on its chip; none given: none. Matching reads none of it, so it waits for no run and asks for none. O(columns).
 
 | Parameter | |
 |---|---|
-| `--columns COLUMN` | the columns to show |
+| `--columns COLUMN` | the columns to show, in this order |
 | `--workspace WORKSPACE` | the workspace: the folder that keeps one matching job (required) |
 
 | Result | |
@@ -211,7 +211,7 @@ Which columns of the details file (load details) are shown above each record; no
 | `rows` | its rows |
 | `key` | the column holding the records' IDs |
 | `columns` | each column of the file: column, filled (from its footer), example (from its first rows) |
-| `shown` | the columns people see, in the file's order |
+| `shown` | the columns people see, in their order: the first names each row on its chip |
 | `linked` | of the records drawn, those with a row (null: no records yet, or no ID column) |
 | `drawn` | records drawn from the file given last: 2,000, or all of them if fewer |
 
@@ -1518,7 +1518,7 @@ Records' rows in the details file.
 nayose show details ID … --workspace WORKSPACE [--format text|json]
 ```
 
-Each record's rows in the workspace's details file (load details), the columns people see, in the file's order: the first 1,000 and how many it has. Read from the file itself, its key compared as the file holds it: at most one scan of the key column, then the shown columns of the rows found, tens of milliseconds a card. No details file: none.
+Each record's rows in the workspace's details file (load details), the columns people see in their order, the rows in the file's: the first 1,000 and how many it has. Read from the file itself, its key compared as the file holds it: at most one scan of the key column, then the shown columns of the rows found, tens of milliseconds a card. No details file: none.
 
 | Parameter | |
 |---|---|

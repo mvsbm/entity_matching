@@ -1775,7 +1775,7 @@ CHECKED = {"records": "records read", "fields": "each field: filled, looks_right
            "oversized_from": "the block size checked by sampling", "notes": "what the loader detected or fixed", "read": "what the reader found (er.intake): rows, values per encoding, fixed (controls, placeholders, numbers, damaged, lists, first of several), proposed and waiting: repairs by kind (realign, garbled, encoding) for accept repairs, with examples; unread rows",
            "next": "the commands that usually follow"}
 DETAILED = {"file": "the file's name", "rows": "its rows", "key": "the column holding the records' IDs",
-            "columns": "each column of the file: column, filled (from its footer), example (from its first rows)", "shown": "the columns people see, in the file's order",
+            "columns": "each column of the file: column, filled (from its footer), example (from its first rows)", "shown": "the columns people see, in their order: the first names each row on its chip",
             "linked": "of the records drawn, those with a row (null: no records yet, or no ID column)", "drawn": "records drawn from the file given last: 2,000, or all of them if fewer"}
 COMPUTE = Param("compute", "DuckDB limits for this run, over config/settings.toml [compute]: memory_limit=8GB, threads=4, "
                 "temp_directory=<folder> (past the memory limit DuckDB spills there)", "many", metavar="KEY=VALUE")
@@ -1821,13 +1821,14 @@ COMMANDS: tuple[Command, ...] = (
             "2,000 records drawn from the file given last, to say how many have a row: one scan of the key column.",
             (Param("file", "the details: a Parquet file, a quoted glob or a folder of them", "path", positional=True),
              Param("key", "its column of record IDs (default: the records' ID column)", metavar="COLUMN"),
-             Param("columns", "the columns people see (default: all)", "many", metavar="COLUMN"), WORKSPACE),
+             Param("columns", "the columns people see, in this order (default: all, in the file's)", "many", metavar="COLUMN"), WORKSPACE),
             DETAILED, "nayose load details contracts.parquet --workspace workspaces/acme", load_details, quick=True,
             show={"columns": ("column", "filled", "example")}),
     Command("set", "details", "Choose the details file's columns people see",
-            "Which columns of the details file (load details) are shown above each record; none given: none. Matching reads "
+            "Which columns of the details file (load details) are shown with each record, in the order given, the first naming "
+            "each row on its chip; none given: none. Matching reads "
             "none of it, so it waits for no run and asks for none. O(columns).",
-            (Param("columns", "the columns to show", "many", metavar="COLUMN"), WORKSPACE),
+            (Param("columns", "the columns to show, in this order", "many", metavar="COLUMN"), WORKSPACE),
             DETAILED, "nayose set details --columns PLAN START_DATE --workspace workspaces/acme", set_details, quick=True,
             show={"columns": ("column", "filled", "example")}),
     Command("generate", "records", "Generate synthetic records into a workspace, then load them as a file",
@@ -2311,7 +2312,7 @@ COMMANDS: tuple[Command, ...] = (
             {"columns": "the file's columns in order: column, fields (those it feeds)", "records": "each record: id, row (column: value), set_aside"},
             "nayose show records 0000102855 0000905311 --workspace workspaces/customers", show_records_, quick=True),
     Command("show", "details", "Records' rows in the details file",
-            "Each record's rows in the workspace's details file (load details), the columns people see, in the file's order: "
+            "Each record's rows in the workspace's details file (load details), the columns people see in their order, the rows in the file's: "
             "the first 1,000 and how many it has. Read from the file itself, its key compared as the file holds it: at most one "
             "scan of the key column, then the shown columns of the rows found, tens of milliseconds a card. No details file: none.",
             (Param("ids", "record IDs", "many", positional=True, metavar="ID"), WORKSPACE),
