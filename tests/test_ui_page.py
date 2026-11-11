@@ -266,8 +266,10 @@ def test_step_2_shows_each_change_at_once_writes_them_in_turn_and_a_refused_one_
     page.click(f"{slot} .colchip.in[data-col='{phone}'] [data-x]")  # two quick changes: written in turn
     saved()
     assert columns()["phone"] == () and page.inner_text(f"{slot} .hole") == "choose a column"
-    page.locator(f"details.tray .colchip[data-col='{phone}']").drag_to(page.locator(f"{slot} .flab"))  # by mouse, from the other columns onto the feature's name
+    page.fill("#mfind", phone)  # found, then dragged by mouse from the other columns onto the feature's name
+    page.locator(f"details.tray .colchip[data-col='{phone}']").drag_to(page.locator(f"{slot} .flab"))
     saved()
+    page.fill("#mfind", "")
     assert columns()["phone"] == ((phone,),)
     page.focus(f"{slot} .colchip.in [data-x]")
     page.keyboard.press("Enter")  # × by keyboard: taken off, no list
@@ -1181,3 +1183,45 @@ def test_each_page_reads_its_own_workspace_and_every_tab_waits_out_a_long_comman
     narrow.goto(base)
     narrow.wait_for_selector("#picker span")
     assert narrow.inner_text("#picker").strip() == "ran"  # the workspace's own name, at phone width
+
+
+def test_a_file_dropped_on_a_card_or_chosen_is_sent_and_loaded_and_the_line_between_the_cards_is_dragged(ui_page, tmp_path):
+    from er import cli, folder
+    uid = load_settings().data.unique_id
+    home, ws = tmp_path / "workspaces", tmp_path / "workspaces" / "w"
+    assert cli.main(["create", "workspace", "w", "--home", str(home), "--format", "json"]) == 0
+    pd.DataFrame({uid: [1, 1, 2], "PLAN": ["a", "b", "c"]}).to_parquet(tmp_path / "contracts.parquet", index=False)
+    page, server, httpd = ui_page(str(ws), str(home), viewport={"width": 1440, "height": 900})
+    errors = []
+    page.on("pageerror", lambda e: errors.append(str(e)))
+    page.click(".navitem[data-screen=columns]")
+    page.wait_for_selector("#cpick")
+    drop = lambda target, name, text, kind="dragover": page.evaluate("""([target, name, text, kind]) => {  // a file dragged from the desktop, as the browser fires it
+        const dt = new DataTransfer(), at = document.querySelector(target);
+        dt.items.add(new File([text], name));
+        const e = new DragEvent(kind, {dataTransfer: dt, bubbles: true, cancelable: true});
+        at.dispatchEvent(e);
+        return e.defaultPrevented; }""", [target, name, text, kind])
+    assert drop("#customer h2", "customers.csv", "")  # over a card: it says it takes the file
+    assert page.evaluate("document.body.classList.contains('filedrag') && document.querySelector('#customer').classList.contains('dropping')")
+    assert drop("h1", "customers.csv", "", "drop")  # anywhere else: never opened in place of the page
+    assert drop("#customer h2", "customers.csv", f"{uid},FULL_NAME_KANA\n0001,ヤマダタロウ\n0002,スズキハナコ\n", "drop")
+    page.wait_for_selector("#loaded .answer:has-text('customers.csv')", timeout=60_000)
+    assert "2 records" in page.inner_text("#loaded .answer") and not list((ws / folder.UPLOADS).iterdir())  # taken in, the upload gone
+
+    drop("#details h2", "notes.parquet", "not a parquet file", "drop")  # loaded, refused: why, on its card
+    page.wait_for_selector("#details .banner", timeout=60_000)
+    assert "not a Parquet file" in page.inner_text("#details .banner") and not (ws / "details" / "details.json").exists()
+    page.set_input_files("#dfile", str(tmp_path / "contracts.parquet"))  # chosen
+    page.wait_for_selector("#dlist .drow.on", timeout=60_000)
+    assert not page.query_selector("#details .banner") and (ws / "details" / "contracts.parquet").is_file()
+
+    grip, before = page.locator(".data-top > .grip-v").bounding_box(), page.locator("#details").bounding_box()["width"]
+    page.mouse.move(grip["x"] + 6, grip["y"] + 60)
+    page.mouse.down()
+    page.mouse.move(grip["x"] - 200, grip["y"] + 60, steps=6)  # the policy information wider
+    page.mouse.up()
+    wider = page.locator("#details").bounding_box()["width"]
+    page.reload()
+    page.wait_for_selector("#dlist .drow.on", timeout=60_000)
+    assert wider > before + 150 and abs(page.locator("#details").bounding_box()["width"] - wider) < 8 and not errors  # the next visit too

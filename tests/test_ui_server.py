@@ -190,3 +190,65 @@ def test_quick_commands_in_bursts_leave_no_threads_behind(tmp_path, population):
         while any(j.code is None for j in jobs):
             time.sleep(0.05)
     assert threads() < start + 60, (start, threads())  # each command's connections, and their worker threads, gone with it
+
+
+def test_a_file_the_page_sends_is_taken_in_once_by_load_records_and_kept_as_the_details_file(tmp_path, say):
+    import http.client
+    import io
+    import threading
+    from http.server import ThreadingHTTPServer
+    from urllib.parse import urlencode
+    import pandas as pd
+    import pytest
+    from er import folder, ui
+    from er.config import InputError
+    from er.settings import load_settings
+    uid = load_settings().data.unique_id
+    home, ws = tmp_path / "workspaces", tmp_path / "workspaces" / "w"
+    assert say("create", "workspace", "w", "--home", home)[0] == 0
+    server = ui.Server(str(ws), str(home))
+    httpd = ThreadingHTTPServer(("127.0.0.1", 0), ui.handler(server))
+    threading.Thread(target=httpd.serve_forever, daemon=True).start()
+    port = httpd.server_address[1]
+
+    def send(name: str, body: bytes, token: str = server.token, **q: str) -> tuple[int, dict]:
+        c = http.client.HTTPConnection("127.0.0.1", port)
+        c.request("POST", "/api/upload?" + urlencode({"workspace": str(ws), "name": name, **q}), body=body, headers={"X-Token": token, "Host": f"127.0.0.1:{port}"})
+        r = c.getresponse()
+        return r.status, json.loads(r.read())
+
+    def parquet(df: pd.DataFrame) -> bytes:
+        b = io.BytesIO()
+        df.to_parquet(b, index=False)
+        return b.getvalue()
+
+    try:
+        records = f"{uid},FULL_NAME_KANA\n0001,ヤマダタロウ\n0002,スズキハナコ\n".encode()
+        assert send("r.csv", b"", token="wrong")[0] == 403  # the page's link only (refused unread: no body, or the socket may close under it)
+        for bad in ("../r.csv", ".hidden", ""):
+            assert send(bad, records)[0] == 400  # a name, never a path
+        status, got = send("r.csv", records)
+        assert status == 200 and Path(got["path"]) == ws / folder.UPLOADS / "r.csv" and Path(got["path"]).read_bytes() == records
+        code, e = say("load", "records", got["path"], "--workspace", ws)
+        assert code == 0 and e["records"] == 2 and not Path(got["path"]).exists()  # taken in, then gone
+
+        for i, part in enumerate((pd.DataFrame({uid: ["0001"], "PLAN": ["a"]}), pd.DataFrame({uid: ["0001", "0002"], "PLAN": ["b", "c"]}))):
+            status, got = send(f"{i}.parquet", parquet(part), folder="contracts", first="1" if i == 0 else "0")  # a folder dropped: its files as one
+        assert status == 200 and sorted(f.name for f in Path(got["path"]).iterdir()) == ["0.parquet", "1.parquet"]
+        code, e = say("load", "details", got["path"], "--workspace", ws)
+        assert code == 0 and e["file"] == "contracts" and e["rows"] == 3 and not Path(got["path"]).exists()  # moved into the workspace, not copied
+        assert sorted(f.name for f in (ws / "details" / "contracts").iterdir()) == ["0.parquet", "1.parquet"]
+        assert [r["rows"] for r in say("show", "details", "0001", "--workspace", ws)[1]["records"]] == [[["a"], ["b"]]]
+
+        status, got = send("bad.parquet", b"not a parquet file")
+        assert say("load", "details", got["path"], "--workspace", ws)[0] == 2 and not Path(got["path"]).exists()  # refused: gone, the one loaded kept
+        assert say("show", "details", "0002", "--workspace", ws)[1]["records"][0]["rows"] == [["c"]]
+        status, got = send("other.parquet", parquet(pd.DataFrame({uid: ["0002"], "PLAN": ["d"]})))
+        assert say("load", "details", got["path"], "--workspace", ws)[0] == 0
+        assert sorted(f.name for f in (ws / "details").iterdir() if not f.name.startswith(".")) == ["details.json", "other.parquet"]  # the one it replaces, gone
+
+        with pytest.raises(InputError, match="cut short"):  # the page closed midway: nothing half written
+            folder.receive(ws, "half.csv", 100, io.BytesIO(b"x" * 10).read)
+        assert not [f for f in (ws / folder.UPLOADS).iterdir() if "half" in f.name]
+    finally:
+        httpd.shutdown()

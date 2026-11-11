@@ -140,10 +140,14 @@ tbody tr[aria-selected="true"] { background: var(--sel); color: var(--sel-ink); 
 .fullrows td.col { font: 12px ui-monospace, Menlo, monospace; color: var(--muted); }
 .fullrows tr.fr-different td { background: color-mix(in srgb, var(--bad-bg) 45%, transparent); }
 .fullrows .tablewrap { max-height: 56vh; }
-.data-top { display: grid; grid-template-columns: minmax(0, 3fr) minmax(0, 2fr); gap: 16px; align-items: start; margin-bottom: 16px; } .data-top > #details .card { margin: 0; }
-#customer { margin: 0; } #customer > :is(#repairs, #watch, #out):not(:empty) { margin-top: 16px; } #details { position: sticky; top: 72px; }  /* the policy columns in view while the customer's mapping scrolls */  /* step 2: the records and the details beside them */
+.data-top { display: grid; grid-template-columns: minmax(0, var(--da, 60fr)) 12px minmax(0, var(--db, 40fr)); gap: 16px 2px; margin-bottom: 16px; }  /* the line between, dragged; the two cards one height */
+#customer, #details > .card { display: flex; flex-direction: column; } #details > .card { height: 100%; }
+#customer > #out:not(:empty) { flex: 1 1 auto; display: flex; flex-direction: column; min-height: 0; }
+.data-top .mlist, .data-top .dlist { flex: 1 1 0; min-height: min(56vh, 580px); max-height: none; }  /* each list as tall as its card leaves it */
+#more, #details .another { margin-top: auto; padding-top: 12px; }  /* Load another file, at the foot of each */ .data-top > #details .card { margin: 0; }
+#customer { margin: 0; } #customer > :is(#repairs, #watch, #out):not(:empty) { margin-top: 16px; }  /* step 2: the records and the details beside them */
 .data-top .answer { overflow-wrap: anywhere; }  /* a long file name wraps, never widens the card */
-@media (max-width: 1100px) { .data-top { grid-template-columns: minmax(0, 1fr); } #details { position: static; } }
+@media (max-width: 1100px) { .data-top { grid-template-columns: minmax(0, 1fr); } .data-top .mlist, .data-top .dlist { flex: none; min-height: 0; max-height: 60vh; } }
 tr.det-head td, tr.sec-head td { background: var(--primary-soft); } .fullrows tr.sec-head td.col { font: inherit; background: var(--primary-soft); }
 .sec { border: 0; background: none; padding: 0; font: inherit; font-weight: 600; color: var(--ink); cursor: pointer; white-space: nowrap; }  /* a section's name: a click folds it, or opens it */ .fullrows tr.det-head td.col { font: inherit; color: var(--ink); }  /* the section's name and its flag, in words, not a column's name */ tr.det-last td { border-bottom: 2px solid var(--line); }  /* the details file's rows, set apart from the record's own */
 td.det-v div { white-space: nowrap; overflow-wrap: normal; line-height: 24px; }
@@ -193,7 +197,7 @@ td.det-v div { white-space: nowrap; overflow-wrap: normal; line-height: 24px; }
 .card.ready { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; } .card.ready .grow { flex: 1; }
 .field { display: block; margin: 0 0 16px; }
 .field .lab { display: block; font-size: 12px; color: var(--muted); margin-bottom: 4px; }
-.field input[type=text], .field input[type=number], .field select { font: inherit; width: 100%; padding: 10px 12px; border: 1px solid var(--outline); border-radius: 4px; background: var(--surface); color: var(--ink); }
+.field input[type=text], .field input[type=number], .field select, .loadrow input[type=text] { font: inherit; width: 100%; padding: 10px 12px; border: 1px solid var(--outline); border-radius: 4px; background: var(--surface); color: var(--ink); }
 .check { display: flex; gap: 10px; align-items: flex-start; margin: 0 0 16px; }
 .big { font-size: 26px; margin: 4px 0 12px; }
 .keys { color: var(--faint); font-size: 12px; }
@@ -524,6 +528,16 @@ dialog:has(.dlg-body.wide) { width: min(960px, calc(100vw - 32px)); }
 .node.static { cursor: default; max-width: 210px; }
 .node.static:hover { box-shadow: none; }
 .loadrow { display: flex; gap: 8px; } .loadrow input { flex: 1; min-width: 0; } .loadrow select { flex: 0 0 auto; width: auto; }
+.loadrow input[type=text] { padding: 8px 12px; } .loadrow .btn { height: 38px; }  /* the box and its button one height */
+.loadpick { flex-wrap: wrap; margin: 14px 0 0; } .loadpick input[type=text] { flex: 1 1 140px; }
+.dropzone { display: inline-flex; align-items: center; gap: 6px; height: 38px; padding: 0 14px; border: 1px dashed var(--outline); border-radius: 19px; font-size: 13px;
+            color: var(--primary); font-weight: 500; white-space: nowrap; cursor: pointer; transition: background .15s, border-color .15s; }  /* a file dropped or chosen */
+.dropzone:hover, .dropzone:focus-visible { border-color: var(--primary); background: var(--primary-soft); outline: none; } .dropzone .ic { width: 16px; height: 16px; }
+[data-drop] { position: relative; }
+body.filedrag [data-drop]::after { content: attr(data-drop); position: absolute; inset: 0; z-index: 5; display: flex; justify-content: center; align-items: flex-start; padding-top: 72px;
+  border: 1.5px dashed var(--primary); border-radius: inherit; background: var(--surface); color: var(--primary); font-size: 15px; font-weight: 500; pointer-events: none; }
+body.filedrag [data-drop].dropping::after { border-style: solid; background: var(--primary-soft); }  /* the card the file would go to */
+.answer .ic { width: 18px; height: 18px; vertical-align: -3px; margin-right: 6px; color: var(--primary); }  /* the file loaded, as a file */
 .colhead { display: flex; flex-wrap: wrap; align-items: center; gap: 0 10px; } .colhead .find { margin-right: auto; }
 .csec h3 { font-size: 14px; font-weight: 500; margin: 0 0 4px; }  /* a part of the customer card: the repairs that wait */
 .mlist { max-height: min(72vh, 780px); overflow: auto; border: 1px solid var(--line); border-radius: 8px; }  /* one list, group by group: it scrolls, each group's name staying */
@@ -746,6 +760,8 @@ const ICON = {
   down: '<path d="M7 10l5 5 5-5"/>',
   empty: '<rect x="4" y="5" width="16" height="14" rx="2"/><path d="M4 10h16M9 14h6"/>',
   stack: '<path d="M12 4l9 4.5-9 4.5-9-4.5z"/><path d="M3 12.5l9 4.5 9-4.5M3 16.5l9 4.5 9-4.5"/>',
+  upload: '<path d="M12 15V4M7.5 8.5L12 4l4.5 4.5"/><path d="M5 15v3a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-3"/>',
+  file: '<path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5"/>',
 };
 const icon = (name) => `<svg class="ic" viewBox="0 0 24 24" aria-hidden="true">${ICON[name]}</svg>`;
 const spinner = (cls = "") => `<svg class="spin ${cls}" viewBox="0 0 48 48" aria-hidden="true"><circle cx="24" cy="24" r="20"/></svg>`;  // Material's circular indicator
@@ -773,6 +789,28 @@ async function api(path, body) {  // the page's one network call: a lost server 
     return {...lost, lost: true};
   }
 }
+function upload(file, q, onProgress) {  // a file's bytes to the server, into the workspace's uploads: {path} there, or why not
+  return new Promise((done) => {
+    const x = new XMLHttpRequest();
+    x.open("POST", `/api/upload?${new URLSearchParams(q)}`);
+    x.setRequestHeader("X-Token", token);
+    x.upload.onprogress = (e) => onProgress(e.loaded);
+    x.onload = () => { try { done(JSON.parse(x.responseText)); } catch { done({error: `the server answered ${x.status}`}); } };
+    x.onerror = () => done({error: "Lost the server: is nayose open ui still running?", fix: "Start it again (nayose open ui), then open the new link it prints."});
+    x.send(file);
+  });
+}
+const mb = (n) => Math.round(n / 1e5) / 10;
+async function dropFiles(dt) {  // the files a drop holds; a folder dropped, its files as one, by its name
+  const dir = dt.items?.length === 1 ? dt.items[0].webkitGetAsEntry?.() : null;  // read now: the drop's items are gone once it is handled
+  if (!dir?.isDirectory) return {files: [...dt.files]};
+  const reader = dir.createReader(), all = [];
+  for (let got; (got = await new Promise((ok, no) => reader.readEntries(ok, no))).length;) all.push(...got);  // in batches, until none come
+  return {folder: dir.name, files: await Promise.all(all.filter((x) => x.isFile && !x.name.startsWith(".")).map((x) => new Promise((ok, no) => x.file(ok, no))))};  // shortcut: its own files only, none in folders inside it; a folder of folders when one is needed
+}
+const picker = (id, accept, kinds, path, load) => `<span class="loadrow loadpick"><span class="dropzone" id="${id}pick" role="button" tabindex="0" title="${kinds}">${icon("upload")}Drop or choose a file</span>
+  <input type="text" id="${path}" placeholder="or a path on this computer" aria-label="A path on this computer"><button class="btn outlined" id="${load}">Load</button></span>
+  <input type="file" id="${id}file" accept="${accept}" multiple hidden>`;  // and the whole card takes a file dropped on it
 const screen = (id) => LAYOUT.screens.find((s) => s.id === id);
 const use = (id, command) => screen(id).uses.find((u) => u.command === command);
 
@@ -1725,7 +1763,7 @@ const RUN_STEPS = ["load", "budget", "fit", "rules", "candidates", "score", "clu
 const STEPS_OF = {"add records": ["load", "fit", "rules", "candidates", "score", "cluster", "report", "write"],  // an increment's: no plan, no probe
                   "match records": ["load", "fit", "rules", "candidates", "score", "cluster"]};  // a preview writes nothing
 const BUSY = {"resolve records": "Finding matches", "rerun records": "Matching again", "add records": "Adding the new records", "match records": "Previewing the new records",
-              "load records": "Loading your file", "generate records": "Generating records", "accept repairs": "Accepting the repairs", "try everything": "Auto mode", "try method": "Trying a method",
+              "load records": "Loading your file", "upload file": "Uploading your file", "generate records": "Generating records", "accept repairs": "Accepting the repairs", "try everything": "Auto mode", "try method": "Trying a method",
               "set merging": "Rebuilding the entities", "apply answers": "Matching again with your answers"};
 const DOING = {load: "reading the records", budget: "planning the work", fit: "learning what matches look like", rules: "applying the match rules",
                candidates: "listing pairs to compare", score: "scoring the pairs", cluster: "forming entities", probe: "looking for matches it missed",
@@ -2078,25 +2116,27 @@ async function mergeDialog(page, done) {  // the conditions that merge pairs wit
   dlg.onclose = null; dlg.returnValue = ""; dlg.showModal();
 }
 
-const GRIP = `<div class="grip-v" role="separator" aria-orientation="vertical" aria-label="Drag to resize" tabindex="0"></div>`;
-const split = {  // the item's share of its split, as the person last dragged it: every split page, and the next visit
-  set(f) { f = Math.min(0.8, Math.max(0.3, f)); this.f = f; document.documentElement.style.setProperty("--sa", `${f * 100}fr`); document.documentElement.style.setProperty("--sb", `${(1 - f) * 100}fr`); },
-  keep() { try { localStorage.setItem("split", String(this.f)); } catch { /* not kept: the next visit starts at the default */ } },
+const grip = (name) => `<div class="grip-v" data-split="${name}" role="separator" aria-orientation="vertical" aria-label="Drag to resize" tabindex="0"></div>`;
+const GRIP = grip("s");
+const split = {  // each split's first share, as the person last dragged it (s: an item and its queue; d: the customer and the policy information): every page, and the next visit
+  f: {},
+  set(f, name) { f = Math.min(0.8, Math.max(0.3, f)); this.f[name] = f; document.documentElement.style.setProperty(`--${name}a`, `${f * 100}fr`); document.documentElement.style.setProperty(`--${name}b`, `${(1 - f) * 100}fr`); },
+  keep(name) { try { localStorage.setItem(name === "s" ? "split" : `split-${name}`, String(this.f[name])); } catch { /* not kept: the next visit starts at the default */ } },
 };
-try { const f = Number(localStorage.getItem("split")); if (f) split.set(f); } catch { /* the default */ }
+for (const name of ["s", "d"]) try { const f = Number(localStorage.getItem(name === "s" ? "split" : `split-${name}`)); if (f) split.set(f, name); } catch { /* the default */ }
 document.addEventListener("pointerdown", (e) => {
   const g = e.target.closest(".grip-v");
   if (!g) return;
   e.preventDefault(); g.setPointerCapture(e.pointerId);
   const box = g.parentElement.getBoundingClientRect();
-  g.onpointermove = (m) => split.set((m.clientX - box.left) / box.width);
-  g.onpointerup = () => { g.onpointermove = g.onpointerup = null; split.keep(); };
+  g.onpointermove = (m) => split.set((m.clientX - box.left) / box.width, g.dataset.split);
+  g.onpointerup = () => { g.onpointermove = g.onpointerup = null; split.keep(g.dataset.split); };
 });
 document.addEventListener("keydown", (e) => {
-  const g = e.target.closest?.(".grip-v");
+  const g = e.target.closest?.(".grip-v"), name = g?.dataset.split;
   if (!g || !["ArrowLeft", "ArrowRight"].includes(e.key)) return;
   e.preventDefault(); e.stopPropagation();
-  split.set((split.f ?? g.previousElementSibling.offsetWidth / g.parentElement.offsetWidth) + (e.key === "ArrowLeft" ? -0.02 : 0.02)); split.keep();
+  split.set((split.f[name] ?? g.previousElementSibling.offsetWidth / g.parentElement.offsetWidth) + (e.key === "ArrowLeft" ? -0.02 : 0.02), name); split.keep(name);
 }, true);
 
 async function pairsPage(el, arg = {}) {  // Review: the pairs waiting for a person, best first, a page at a time; each with both full rows
@@ -2337,15 +2377,14 @@ const SCREENS = {
   },
 
   async columns(el) {
-    const box = `<label class="field" style="margin:0"><span class="lab">Records file</span>
-        <span class="loadrow"><input type="text" id="cin" placeholder="path to a CSV, TSV or Parquet file, or a folder of them"><button class="btn filled" id="load">${icon("add")}Load</button></span></label>
+    const box = `${picker("c", ".csv,.tsv,.txt,.parquet", "CSV, TSV or Parquet, or a folder of them", "cin", "load")}
         <details class="fold-line" id="synth"><summary>Synthetic records</summary>
         <span class="loadrow" style="flex-wrap:wrap;margin-top:8px"><select id="gsize" aria-label="How many records">${[1000, 10000, 100000, 1000000].map((n) => `<option value="${n}"${n === 10000 ? " selected" : ""}>${fmt(n)}</option>`).join("")}</select>
           <select id="glevel" aria-label="How hard to match">${["easy", "medium", "hard"].map((x) => `<option value="${x}"${x === "medium" ? " selected" : ""}>${x[0].toUpperCase() + x.slice(1)}</option>`).join("")}</select>
           <button class="btn" id="gen">Generate</button></span></details>
         <div id="files" class="chips" style="margin-top:10px"></div>`;
-    el.innerHTML = head("columns") + `<div class="data-top"><div class="card" id="customer"><div id="loaded"><div class="qa"><div class="q"><h2 class="question">Customer information</h2></div></div>${box}</div>
-      <div id="repairs"></div><div id="watch"></div><div id="out"></div><div id="more"></div></div><div id="details"></div></div><div id="flow"></div>${stepFoot("columns")}`;
+    el.innerHTML = head("columns") + `<div class="data-top"><div class="card" id="customer" data-drop="Drop to load it as the customer information"><div id="loaded"><div class="qa"><div class="q"><h2 class="question">Customer information</h2></div></div>${box}</div>
+      <div id="repairs"></div><div id="watch"></div><div id="out"></div><div id="more"></div></div>${grip("d")}<div id="details"></div></div><div id="flow"></div>${stepFoot("columns")}`;
     if (!state.workspace) { el.querySelector(".data-top").outerHTML = '<div id="out"></div>'; $("out").innerHTML = emptyRun(); return; }  // a file goes into a workspace: choose one first
     const answer = (d, w, last) => {  // did the file load? then what may hurt the matching
       const lost = (f) => { const x = d.fields.find((y) => y.field === f); return !x || x.filled === null; };
@@ -2353,7 +2392,7 @@ const SCREENS = {
       $("loaded").innerHTML = `<div class="qa"><div class="q"><h2 class="question">Customer information</h2><p class="answer">${!d.records
           ? `<b>Not yet:</b> ${esc(nameOf(last))} holds no records`
           : missing.length ? `<b>Not yet:</b> ${esc(missing.map(words).join(", "))} ${missing.length > 1 ? "are" : "is"} needed`
-          : `${esc(nameOf(last))} · ${plural(d.records, "record")} · ${fmt(d.columns.length)} columns${waits(d.read)}${
+          : `${icon("file")}<b>${esc(nameOf(last))}</b> · ${plural(d.records, "record")} · ${fmt(d.columns.length)} columns${waits(d.read)}${
             w.rerun_owed ? " · <b>changed since the last run</b>: matching reads the records so once it runs again" : ""}`}</p></div>
         ${!d.records ? "" : missing.length ? (d.placements.length ? `<button type="button" class="btn filled" id="suggest-now">✦ Suggest the columns</button>` : "")
           : w.rerun_owed ? `<button type="button" class="btn filled" id="rerun-owed">${icon("refresh")}Run matching again</button>`
@@ -2617,22 +2656,23 @@ const SCREENS = {
       draw(records && at === edits ? e : undefined);  // a change made while it loaded: the file described after it; a details file's result describes no records
       refresh();
     };
-    const detailsLine = (dt) => `${esc(dt.file)} · ${plural(dt.rows, "row")}${dt.drawn ? ` · ${dt.drawn >= 2000 ? "about " : ""}${pct(dt.linked / dt.drawn)} of records have some` : ""}`;  // drawn: 2,000 records, or all of fewer
+    const detailsLine = (dt) => `${icon("file")}<b>${esc(dt.file)}</b> · ${plural(dt.rows, "row")}${dt.drawn ? ` · ${dt.drawn >= 2000 ? "about " : ""}${pct(dt.linked / dt.drawn)} of records have some` : ""}`;  // drawn: 2,000 records, or all of fewer
     let drawnDetails;  // the details card as last drawn: drawn again only when it changed, so a path being typed stays
     const detailsCard = (dt) => {  // the policy file: which, how many records it reaches; one list of its columns, those shown first in their order
       if (JSON.stringify(dt) === drawnDetails || !$("details")) return;
       drawnDetails = JSON.stringify(dt);
-      const load = `<label class="field" style="margin:12px 0 0"><span class="lab">Policy file</span><span class="loadrow"><input type="text" id="din" placeholder="a Parquet file, or a folder of them">
-          <input type="text" id="dkey" aria-label="Its column of record IDs" placeholder="${esc($("dkey")?.placeholder || "ID column")}" style="flex:0 0 150px"><button class="btn" id="dload">Load</button></span></label>`;
-      $("details").innerHTML = `<div class="card"><div class="qa"><div class="q"><h2 class="question">Policy information</h2>${dt ? `<p class="answer">${detailsLine(dt)} · key ${esc(dt.key)}</p>` : ""}</div></div>
+      const load = `${picker("d", ".parquet", "Parquet, or a folder of them", "din", "dload")}<details class="fold-line"><summary>ID column</summary>
+          <span class="loadrow" style="margin-top:8px"><input type="text" id="dkey" aria-label="Its column of record IDs" placeholder="${esc($("dkey")?.placeholder || "ID column")}"></span></details>`;
+      $("details").innerHTML = `<div class="card" data-drop="Drop to load it as the policy information"><div class="qa"><div class="q"><h2 class="question">Policy information</h2>${dt ? `<p class="answer">${detailsLine(dt)} · key ${esc(dt.key)}</p>` : ""}</div></div>
         ${dt ? `<label class="find dfind">${icon("search")}<input type="text" id="dfind" placeholder="Find a column" aria-label="Find a column"></label><div class="dlist" id="dlist"></div>
-          <details class="fold-line"><summary>Load another file</summary>${load}</details>` : load}</div>`;
+          <details class="fold-line another"><summary>Load another file</summary>${load}</details>` : load}</div>`;
       $("dload").onclick = () => {
         const file = $("din").value.trim();
         if (!file) { $("din").focus(); return; }
-        take($("dload"), "Reading", baseName(file), "load details", {details_file: file, details_key: $("dkey").value.trim()});
+        take($("dload"), "Reading", baseName(file), "load details", detailsArgs(file));
       };
       $("din").onkeydown = (e) => { if (e.key === "Enter" && !e.isComposing) $("dload").click(); };
+      chooser("d", detailsArgs, "load details", "dload");
       if (!dt) { if (longRun) both().forEach((x) => { x.disabled = true; }); return; }
       const info = Object.fromEntries(dt.columns.map((c) => [c.column, c])), all = dt.columns.map((c) => c.column).filter((c) => c !== dt.key);
       let order = [...dt.shown], dragged = null;
@@ -2700,7 +2740,37 @@ const SCREENS = {
       show();
       if (longRun) both().forEach((x) => { x.disabled = true; });
     };
+    const detailsArgs = (file) => ({details_file: file, details_key: $("dkey").value.trim()});
+    const chooser = (id, args, command, b) => {  // the zone clicked, or Enter or Space on it: the system's file chooser
+      $(`${id}pick`).onclick = () => $(`${id}file`).click();
+      $(`${id}pick`).onkeydown = (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); $(`${id}file`).click(); } };
+      $(`${id}file`).onchange = () => { send({files: [...$(`${id}file`).files]}, command, $(b), args); $(`${id}file`).value = ""; };  // the same file chosen again is a change
+    };
+    const send = async ({files, folder: dir}, command, b, args) => {  // files dropped or chosen: into the workspace, how far in the panel; then loaded as a path typed
+      if (!files.length || b.disabled) return;
+      const many = dir || (files.length > 1 ? files[0].name.replace(/\.[^.]+$/, "") : null), total = files.reduce((n, f) => n + f.size, 0), job = `upload-${Date.now()}`, was = b.innerHTML;
+      both().forEach((x) => { x.disabled = true; });
+      reveal(b); b.innerHTML = `${spinner()}Uploading…`;
+      task.start("upload file", job);
+      let sent = 0, got = {};
+      for (const [i, f] of files.entries()) {
+        got = await upload(f, {workspace: state.workspace, name: f.name, ...(many ? {folder: many, first: i ? "0" : "1"} : {})}, (n) => task.event({event: "progress", done: mb(sent + n), total: mb(total), unit: "MB"}, job));
+        if (got.error) break;
+        sent += f.size;
+      }
+      task.end(!got.error, got.error || "", job);
+      both().forEach((x) => { x.disabled = false; });
+      b.innerHTML = was;
+      if (!b.isConnected) return got.error || run("columns", command, args(got.path));  // the page left meanwhile: loaded all the same, in the panel
+      const into = command === "load details" ? $("details") : $("out");
+      into.querySelectorAll(":scope > .banner").forEach((x) => x.remove());
+      if (got.error) return into.insertAdjacentHTML("afterbegin", banner({event: "error", ...got}));
+      take(b, "Reading", many || files[0].name, command, args(got.path));
+    };
+    [["customer", "load records", "load", (path) => ({input: path})], ["details", "load details", "dload", detailsArgs]].forEach(([box, command, b, args]) =>
+      $(box).addEventListener("drop", (e) => { if (e.dataTransfer.types.includes("Files")) { e.preventDefault(); dropFiles(e.dataTransfer).then((x) => send(x, command, $(b), args)); } }));
     const wireLoad = () => {
+      chooser("c", (path) => ({input: path}), "load records", "load");
       $("load").onclick = () => {
         const input = $("cin").value.trim();
         if (!input) { $("cin").focus(); return; }
@@ -4140,6 +4210,22 @@ async function go(id, arg) {
   await refresh(await SCREENS[id]($("screen"), arg));
 }
 
+let fileDrag;  // a file dragged over the page: the cards that take one say so; dropped anywhere else, the browser never opens it in place of the page
+window.addEventListener("dragover", (e) => {
+  if (!e.dataTransfer?.types.includes("Files")) return;
+  e.preventDefault();
+  const at = e.target.closest?.("[data-drop]");
+  e.dataTransfer.dropEffect = at ? "copy" : "none";
+  document.body.classList.add("filedrag");
+  document.querySelectorAll("[data-drop]").forEach((x) => x.classList.toggle("dropping", x === at));
+  clearTimeout(fileDrag);
+  fileDrag = setTimeout(() => document.body.classList.remove("filedrag"), 150);  // no dragover since: it left the window
+});
+window.addEventListener("drop", (e) => {
+  if (!e.dataTransfer?.types.includes("Files")) return;
+  e.preventDefault();
+  document.body.classList.remove("filedrag");
+});
 document.addEventListener("click", (e) => {
   const a = e.target.closest("[data-go]");
   if (a) {  // a link to a page: with the tab, the record or the dialog it opens there
