@@ -1,5 +1,5 @@
 # The chosen pipeline: config/pipeline.toml with config/experiments.py's adopted changes, written by scripts/choose.py.
-# Adopted: rules fold_levenshtein, f2_address_exact, f2_address_prefix, optuna_comparators; Fellegi–Sunter no_term_frequency, exact_keys_only, optuna_suggestion, compound_phone_keys, sorted_names_for_tfidf, name_keys, bounded_address_keys, u_from_scored_file, u_exact_by_counts, cif_one_digit_off, cif_deletion_key, graded_address, birth_date, birth_date_key, given_name_phone_key, birth_date_deletion_key, u_near_by_keys, fit_u_from_1e6_pairs, company_without_jw_high, name_needed.
+# Adopted: rules fold_levenshtein, f2_address_exact, f2_address_prefix, optuna_comparators; Fellegi–Sunter no_term_frequency, exact_keys_only, optuna_suggestion, compound_phone_keys, sorted_names_for_tfidf, name_keys, bounded_address_keys, u_from_scored_file, u_exact_by_counts, cif_one_digit_off, cif_deletion_key, graded_address, birth_date, birth_date_key, given_name_phone_key, birth_date_deletion_key, u_near_by_keys, fit_u_from_1e6_pairs, company_without_jw_high, name_needed, name_reading_key, given_tail_keys.
 # nayose runs it. It can be edited by hand; scripts/choose.py overwrites it.
 
 [fields]
@@ -68,11 +68,15 @@ given_name_address_code = { kind = "keys", keys = [{ field = "given_name", norma
 given_name_phone = { kind = "keys", keys = [{ field = "given_name", normalize = "fold" }, "phone"] }
 birth_date = { kind = "keys", keys = ["birth_date"] }
 birth_date_deletions_prefecture = { kind = "deletions", key = "birth_date", within = ["prefecture"] }
+name_reading = { kind = "keys", keys = [{ field = "person_name", normalize = "reading" }] }
+phone_given_tail = { kind = "keys", keys = ["phone", { field = "person_name", normalize = "given_tail" }] }
+postal_given_tail = { kind = "keys", keys = ["postal_code", { field = "person_name", normalize = "given_tail" }] }
+postal_area_given_tail = { kind = "keys", keys = [{ field = "postal_code", normalize = "first3" }, { field = "person_name", normalize = "given_tail" }] }
 
 [model]
 previous_stage = "deterministic"
 stage = "probabilistic"
-generators = ["cif", "sn_company_name", "phone_prefecture", "phone_postal_area", "phone_name_initial", "sn_person_name", "sn_person_name_reversed", "person_name", "company_name", "company_name_deletions", "person_name_deletions_postal_area", "given_name_postal", "address_phone", "address_code_phone", "address_name_initial", "address_code_name_initial", "given_name_address_code", "cif_deletions", "birth_date", "given_name_phone", "birth_date_deletions_prefecture"]
+generators = ["cif", "sn_company_name", "phone_prefecture", "phone_postal_area", "phone_name_initial", "sn_person_name", "sn_person_name_reversed", "person_name", "company_name", "company_name_deletions", "person_name_deletions_postal_area", "given_name_postal", "address_phone", "address_code_phone", "address_name_initial", "address_code_name_initial", "given_name_address_code", "cif_deletions", "birth_date", "given_name_phone", "birth_date_deletions_prefecture", "name_reading", "phone_given_tail", "postal_given_tail", "postal_area_given_tail"]
 min_match_weight = 8.0
 resolver = { method = "connected_components" }
 bridge = false

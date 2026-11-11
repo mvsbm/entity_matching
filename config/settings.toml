@@ -64,6 +64,8 @@ reversed = ["kana_fold", "reverse"]
 initial = ["initial"]
 first3 = ["first3"]
 address_first3 = ["address", "first3"]
+reading = ["kana_fold", "long_vowel"]   # keys: a name as it sounds, its long vowels written one way
+given_tail = ["kana_fold", "long_vowel", "last3"]  # keys: the end of a name as it sounds, where its given name is
 
 # What each field's values look like (RE2, matched against a sample of the file). Used to suggest a column for a field
 # no column is mapped to, a suggestion never applied without you, and for each field's "looks right" share (--check, qa.md). RE2's \s doesn't match the full-width space.

@@ -7,15 +7,21 @@ fellegi_sunter  Splink's Fellegi–Sunter model: λ from near-certain rules, u c
 """
 import contextlib
 import copy
+import hashlib
+import json
 import logging
 import math
+import os
 import re
 import time
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import replace
 from itertools import combinations, product
+from pathlib import Path
 
+import duckdb
 import pandas as pd
+import splink
 import splink.comparison_level_library as cll
 import splink.comparison_library as cl
 from splink import DuckDBAPI, Linker, SettingsCreator
@@ -133,9 +139,12 @@ def sample_u(model: FSModel, comparisons: list[Comparison], df: pd.DataFrame, db
     settings = fs_settings(replace(model, comparisons=tuple(comparisons)), uid)
     with narrowed(df, db, read_by(settings) | {uid}) as records:
         linker = Linker(records, settings, log_level=logging.ERROR)
-        # every one of max_pairs: Splink would stop once each level has 100 hits, while u_basis and u_bound count on them all
-        # in 40 chunks: the same pairs, split finer, so a chunk's comparisons (long values) never spike the memory
-        linker.training.estimate_u_using_random_sampling(max_pairs=model.u_max_pairs, seed=model.seed, min_count_per_level=None, num_chunks=40)
+        # every one of max_pairs: Splink would stop once each level has 100 hits, while u_basis and u_bound count on them all;
+        # in chunks of about CHUNK_BYTES compared: the same pairs (the same counts, summed), so long values never spike the memory
+        cols = [c for c in read_by(settings) if c != uid]
+        size = db.duckdb_con.execute(f'SELECT {" + ".join(f"coalesce(avg(strlen({q(c)})), 0)" for c in cols) or "0"} FROM "{records.physical_name}"').fetchall()[0][0]
+        chunks = min(40, max(1, math.ceil(model.u_max_pairs * 2 * (size or 0) / CHUNK_BYTES)))
+        linker.training.estimate_u_using_random_sampling(max_pairs=model.u_max_pairs, seed=model.seed, min_count_per_level=None, num_chunks=chunks)
         model_json = linker.misc.save_model_to_json()
         linker.table_management.invalidate_cache()
     return u_values(model_json)
@@ -243,6 +252,9 @@ def u_bound(model: FSModel, c: Comparison, records: Records, db: DuckDBAPI) -> f
 SCORED_U: dict[tuple[str, int], dict[str, float]] = {}  # (FSModel.u_keys() value, fingerprint of what it reads) → u per level
 # shortcut: one entry per comparison and file this process scores, never dropped; fine for a run or choose.py, a
 # process that scores file after file needs a limit (nayose open ui runs those in processes of their own)
+CHUNK_BYTES = 1 << 28  # what one chunk of the u sample compares at most, about: its pairs' values, both sides
+U_KEPT = 64  # sampled u a workspace keeps (folder.U_SAMPLED), the newest: one per comparison, sample and file, and a few of each
+U_CODE = hashlib.sha256(b"".join((Path(__file__).parent / f).read_bytes() for f in ("match.py", "strings.py", "config.py"))).hexdigest()[:16]
 
 
 def fingerprint(records: Records, cols: list[str], db: DuckDBAPI) -> int:
@@ -257,18 +269,36 @@ def fingerprint(records: Records, cols: list[str], db: DuckDBAPI) -> int:
             con.unregister(name)
 
 
-def scored_sample(model: FSModel, df: Records, db: DuckDBAPI, uid: str, comparisons: Iterable[Comparison] | None = None) -> U:
+def scored_sample(model: FSModel, df: Records, db: DuckDBAPI, uid: str, comparisons: Iterable[Comparison] | None = None, kept: Path | None = None) -> U:
     """u by random sampling on these records, per comparison (all, or these), cached (SCORED_U) by the comparison and
     the values it reads, within this process. Splink picks the sampled pairs by a hash of the record ID, so nothing else
     changes them: a model and its variant share one sample, and so do a fit on a whole small file and the run's u on it
     when both sample as many pairs (fit_u_max_pairs unset). O(N) per comparison for
-    the fingerprint, plus u_max_pairs per comparison not cached yet."""
+    the fingerprint, plus u_max_pairs per comparison not cached yet. With `kept` (a workspace's folder.U_SAMPLED), across
+    processes too: a rerun, or a trial of another method comparing the same way, reads its u, never samples it again,
+    while the comparison, the values, this code and Splink's and DuckDB's versions are as they were."""
     keys, wanted = model.u_keys(), list(model.comparisons if comparisons is None else comparisons)
     reads = {c.name: [uid, *sorted({comp.column(col) for lv in c.levels for col, comp in lv.any_of} | set(c.null_if_missing))] for c in wanted}
     prints = {c.name: fingerprint(df, reads[c.name], db) for c in wanted}
+    stable = lambda name: hashlib.sha256(repr((keys[name], prints[name], splink.__version__, duckdb.__version__, U_CODE)).encode()).hexdigest()
+    try:  # a copy kept never fails a run: unreadable, sampled again
+        on_disk = json.loads(kept.read_text(encoding="utf-8")) if kept and kept.is_file() else {}
+    except (OSError, ValueError):
+        on_disk = {}
+    for c in wanted:
+        if (keys[c.name], prints[c.name]) not in SCORED_U and stable(c.name) in on_disk:
+            SCORED_U[keys[c.name], prints[c.name]] = on_disk[stable(c.name)]
     todo = [c for c in wanted if (keys[c.name], prints[c.name]) not in SCORED_U]
-    for name, u in sample_u(model, todo, df, db, uid).items():
+    fresh = sample_u(model, todo, df, db, uid)
+    for name, u in fresh.items():
         SCORED_U[keys[name], prints[name]] = u
+        on_disk.pop(stable(name), None)
+        on_disk[stable(name)] = u  # the newest last
+    if kept and fresh:
+        with contextlib.suppress(OSError):  # a folder people can only read: sampled again next time
+            tmp = kept.with_name(f".{kept.name}.{os.getpid()}")
+            tmp.write_text(json.dumps(dict(list(on_disk.items())[-U_KEPT:])), encoding="utf-8")
+            os.replace(tmp, kept)
     return {c.name: SCORED_U[keys[c.name], prints[c.name]] for c in wanted}
 
 
@@ -289,13 +319,13 @@ def assemble_u(model: FSModel, model_json: dict, sampled: U, exact: U, df: Recor
     return out
 
 
-def scored_u(model: FSModel, model_json: dict, df: Records, db: DuckDBAPI, uid: str) -> tuple[dict, U, U]:
+def scored_u(model: FSModel, model_json: dict, df: Records, db: DuckDBAPI, uid: str, kept: Path | None = None) -> tuple[dict, U, U]:
     """model_json with u measured on the records to be scored, and the u sampled and counted for it (u_basis reads them).
     In a bigger file, a field whose value set grows with it (address, CIF ID) agrees by chance less often, so u fixed
     from the fitting set under-credits it. Needs no labels; O(N) counts and u_max_pairs sampled, whatever the file's size."""
     exact = exact_u(model, df, db)
     skip = counted(model, exact)
-    sampled = scored_sample(model, df, db, uid, [c for c in model.comparisons if c.name not in skip])
+    sampled = scored_sample(model, df, db, uid, [c for c in model.comparisons if c.name not in skip], kept)
     return assemble_u(model, model_json, sampled, exact, df, db), sampled, exact
 
 
@@ -349,7 +379,7 @@ def rule_pairs(df: pd.DataFrame, rule: tuple[Key, ...]) -> int:  # the pairs a b
     return int((sizes * (sizes - 1) // 2).sum())
 
 
-def train_fs(model: FSModel, df: pd.DataFrame, db: DuckDBAPI, uid: str, labels: pd.Series | None = None) -> dict:
+def train_fs(model: FSModel, df: pd.DataFrame, db: DuckDBAPI, uid: str, labels: pd.Series | None = None, kept: Path | None = None) -> dict:
     """Train on df; `labels` (entity per uid) is required for m_method="labels". Returns the Splink model JSON plus
     "er": what scoring needs (fitting-set size, term frequencies) and which levels had no estimate.
     u-sampling is ~97% of training time and depends only on each comparison and the records (FSModel.u_keys), not on
@@ -365,7 +395,7 @@ def train_fs(model: FSModel, df: pd.DataFrame, db: DuckDBAPI, uid: str, labels: 
         t["__label__"] = t[uid].map(labels)
     exact = exact_u(model, t, db) if model.u_exact_by_counts else {}  # the leading exact levels, exactly
     skip = counted(model, exact)
-    u = {**{c: {} for c in skip}, **scored_sample(model, t, db, uid, [c for c in model.comparisons if c.name not in skip])}
+    u = {**{c: {} for c in skip}, **scored_sample(model, t, db, uid, [c for c in model.comparisons if c.name not in skip], kept)}
     u = {c: {**levels, **exact.get(c, {})} for c, levels in u.items()}
     labels_of = {c.name: [*(lv.label for lv in c.levels), ELSE] for c in model.comparisons}
     filled_u = [[c.name, lv] for c in model.comparisons for lv in labels_of[c.name] if lv not in u[c.name]]

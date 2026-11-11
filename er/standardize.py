@@ -19,6 +19,16 @@ ONE_BYTE = str.maketrans({chr(0x30A0 + i): chr(1 + i) for i in range(96)})  # th
 
 
 def normalize(s: pd.Series, steps: tuple[Normalizer, ...], std: Standardization) -> pd.Series:
+    """Each step on each value, as `steps` lists them: every step reads one value alone, so each distinct value is
+    normalized once and the column made of them. O(N) to factorize, plus O(distinct values · steps · L)."""
+    codes, uniques = pd.factorize(s)  # a missing value: code -1
+    if len(uniques) > 0.8 * len(s):  # few repeats: mapping back would cost what it saves
+        return _normalized(s, steps, std)
+    done = _normalized(pd.Series(uniques, dtype=s.dtype), steps, std)
+    return pd.Series(done.array.take(codes, allow_fill=True), index=s.index)  # -1: missing
+
+
+def _normalized(s: pd.Series, steps: tuple[Normalizer, ...], std: Standardization) -> pd.Series:
     for step in steps:
         match step:
             case "nfkc":
@@ -39,6 +49,10 @@ def normalize(s: pd.Series, steps: tuple[Normalizer, ...], std: Standardization)
                 s = s.where(s.str.fullmatch("[\u30a0-\u30ff]+").fillna(False)).str.translate(ONE_BYTE)
             case "casefold":  # romaji: TANAKA and tanaka are one name
                 s = s.str.casefold()
+            case "long_vowel":  # keys, after kana_fold: a long vowel written either way (サトウ, サトオ, サトー) is one reading
+                s = s.str.replace("([オコソトノホモヨロ])[ウオ]", "\\1ウ", regex=True).str.replace("([エケセテネヘメレ])[イエ]", "\\1イ", regex=True)
+            case "last3":  # keys: a name's last three characters, its given name's, kept through a change of family name
+                s = s.str[-3:]
             case "kana_fold":
                 s = s.str.translate(str.maketrans(dict(std.kana_fold)))
             case "strip_legal_form":

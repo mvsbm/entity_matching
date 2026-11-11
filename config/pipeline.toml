@@ -78,6 +78,12 @@ address_name_initial = { kind = "keys", keys = [{ field = "address", normalize =
 address_code_name_initial = { kind = "keys", keys = ["address_code", { field = "any_name", normalize = "initial" }] }
 given_name_address_code = { kind = "keys", keys = [{ field = "given_name", normalize = "fold" }, "address_code"] }   # surname change
 given_name_phone = { kind = "keys", keys = [{ field = "given_name", normalize = "fold" }, "phone"] }   # surname change and a move
+# a long vowel written either way (サトウ, サトオ, サトー): one name; the name's end, its given name, kept through a change of
+# family name, with what stays when someone marries: the phone, the postal code, the postal area
+name_reading = { kind = "keys", keys = [{ field = "person_name", normalize = "reading" }] }
+phone_given_tail = { kind = "keys", keys = ["phone", { field = "person_name", normalize = "given_tail" }] }
+postal_given_tail = { kind = "keys", keys = ["postal_code", { field = "person_name", normalize = "given_tail" }] }
+postal_area_given_tail = { kind = "keys", keys = [{ field = "postal_code", normalize = "first3" }, { field = "person_name", normalize = "given_tail" }] }
 # the birth date: sparse, so few chance pairs; its deletions alone would pair too many dates one digit apart
 birth_date = { kind = "keys", keys = ["birth_date"] }
 birth_date_deletions_prefecture = { kind = "deletions", key = { field = "birth_date" }, within = ["prefecture"] }
