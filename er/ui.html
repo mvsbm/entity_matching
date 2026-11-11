@@ -274,7 +274,7 @@ body.term-open .snack, body.term-open .task { bottom: calc(var(--term-h) + 16px)
   main, body.collapsed main { margin-left: 0; padding: 0 16px 120px; }
   .pagehead { margin: 0 -16px 16px; padding: 8px 16px; }
   .logo .name, .search kbd { display: none; }
-  .picker { max-width: 120px; }
+  .picker { max-width: 120px; } .picker .pk-word { display: none; }
   .appbar { gap: 4px; }
   #help { display: none; }
   .how { overflow-x: auto; }  /* a pair's waterfall scrolls in its card, not the page */
@@ -816,6 +816,13 @@ function run(id, command, extra = {}, onEvent = null) {
 }
 
 async function runOnce(command, args, onEvent, tries = 10) {
+  if (!COMMANDS[command].quick) {  // another tab's long command: followed here to its end, as this one would have been, never started beside it
+    const r = await api("/api/running");
+    if (r.job) {
+      await watch(r.job, r.command, `nayose ${r.command}`, onEvent, r.since);
+      return {event: "error", error: `${BUSY[r.command] || r.command} ran from another tab`, fix: "what it did is shown here; run this again if it is still needed"};
+    }
+  }
   const started = await api("/api/run", {command, args});
   if (started.error) return {event: "error", error: started.error, fix: started.fix || "", lost: started.lost};
   const {last, exit} = await watch(started.job, command, started.command, onEvent);
@@ -978,7 +985,7 @@ function ended(command) {  // a long run ended: its buttons free, its page drawn
   if (!longRun || longRun.command !== command) return;
   const {visit: from, page} = longRun;
   longRun = null;
-  if (visit !== from && [page, "run", "records", "lookup", "columns"].includes(current)) go(current);  // its page, or one whose buttons waited for it
+  if (visit !== from && [page, "run", "records", "lookup", "columns", "pairs", "kinds"].includes(current)) go(current);  // its page, or one whose buttons waited for it
 }
 async function rejoin() {  // a long command that began before this page was drawn (a reload, another tab): followed to its end
   const r = await api("/api/running");
@@ -1050,9 +1057,12 @@ function rail() {  // the navigation: before a first run the steps to it, in ord
   $("nav").querySelectorAll("[data-loop]").forEach((b) => b.onclick = () => go(LAYOUT.workflow.loops[b.dataset.loop].screen, LAYOUT.workflow.loops[b.dataset.loop]));
 }
 
+let seen = null;  // the workspace as this page last read it: another tab's change shows when this one is looked at again
+const mark = (d) => JSON.stringify([d.records, (d.runs || []).length, (d.inputs || []).length, (d.inputs || []).map((f) => f.last)]);
 async function refresh(d) {  // the stepper, from the page's own describe workspace when it made one, else from one of its own
   if (d === undefined && state.workspace) d = await run("records", "describe workspace");
   if (d && d.lost) return;  // the stepper as it was: the workspace is still there
+  if (d && d.event !== "error" && state.workspace) seen = mark(d);
   steps = progress(state.workspace ? d : null);
   rail();
   if (!resultsNow && state.workspace && d && d.records > 0)  // the Review line's count, once read: the rail first, then its number
@@ -2001,13 +2011,14 @@ async function pairsPage(el, arg = {}) {  // Review: the pairs waiting for a per
     $("right").querySelectorAll("[data-a]").forEach((b) => {  // decided: its answer pressed
       if (p.said) { const on = b.dataset.a === p.said; b.classList.toggle("filled", on); b.classList.toggle("outlined", !on); b.setAttribute("aria-pressed", String(on)); }
       b.onclick = () => answer(b.dataset.a);
+      b.disabled = !!runsHere();  // a run of this workspace: ended() draws the page again
     });
     $("right").querySelector("[data-skip]").onclick = () => move(1);
     where();
   };
   const move = (step) => { if (!rows.length) return; i = Math.min(rows.length - 1, Math.max(0, i + step)); draw(); show(); };
   const answer = async (value) => {
-    if (pending || !rows[i]) return;
+    if (pending || !rows[i] || runsHere()) return;  // a run of this workspace writes its pairs: answers wait for it
     pending = true;
     try {
       const p = rows[i], e = await run("pairs", "decide pair", {first: p.first, second: p.second, decision: value});
@@ -2017,7 +2028,7 @@ async function pairsPage(el, arg = {}) {  // Review: the pairs waiting for a per
       i = Math.min(rows.length - 1, i + 1); draw(); show();
     } finally { pending = false; }
   };
-  $("from").onchange = () => { const v = Number($("from").value); if (!Number.isFinite(v)) return; from = v; try { localStorage.setItem("nayose.reviewFrom", String(v)); } catch {} page = 1; load(); };
+  $("from").onchange = () => { const v = Number($("from").value); if ($("from").value.trim() === "" || !Number.isFinite(v)) { $("from").value = from; return; } from = v; try { localStorage.setItem("nayose.reviewFrom", String(v)); } catch {} page = 1; load(); };  // emptied: as it was, never 0
   $("record").onchange = () => { page = 1; load(); };
   $("apply").onclick = () => {
     $("apply").disabled = true; $("apply").querySelector("svg").outerHTML = spinner();
@@ -2398,7 +2409,7 @@ const SCREENS = {
         take($("load"), "Reading", baseName(input), "load records", {input}, () => { $("cin").value = ""; });
       };
       $("gen").onclick = () => take($("gen"), "Generating", `${$("gsize").selectedOptions[0].text} records`, "generate records", {records: $("gsize").value, difficulty: $("glevel").value});
-      $("cin").onkeydown = (e) => { if (e.key === "Enter") $("load").click(); };
+      $("cin").onkeydown = (e) => { if (e.key === "Enter" && !e.isComposing) $("load").click(); };
       if (longRun) both().forEach((x) => { x.disabled = true; });  // drawn again while a long command runs: ended() draws it once more
       const going = longRun?.page === "columns" && longRun.args;  // this step's own, left and opened again: as it was asked
       if (going && longRun.command === "generate records") { $("gsize").value = going.records; $("glevel").value = going.difficulty; $("gen").innerHTML = `${spinner()}Generating…`; }
@@ -3661,7 +3672,7 @@ async function review(el, which, note = "", part = null) {  // Review's person-o
     if (steps.steps && (open || w)) { steps.steps[which] = {state: "attention", line}; stepChip(); }
   };
   const answer = async (value) => {
-    if (pending) return;  // a key held down or pressed twice: one answer for the row, then the next row
+    if (pending || runsHere()) return;  // a key held down or pressed twice: one answer for the row, then the next row; a run of this workspace: after it
     pending = true;
     try {
       const r = rows[i], e = await run(which, q.one, q.answer(r, value));
@@ -3684,7 +3695,7 @@ async function review(el, which, note = "", part = null) {  // Review's person-o
     });
     if (q.after) q.after(rows[i]);
     where();
-    $("right").querySelectorAll("[data-a]").forEach((b) => b.onclick = () => answer(b.dataset.a));
+    $("right").querySelectorAll("[data-a]").forEach((b) => { b.onclick = () => answer(b.dataset.a); b.disabled = !!runsHere(); });
     $("right").querySelector("[data-skip]").onclick = () => move(1);
   };
   const applied = (e) => e.event === "error" ? $("note").innerHTML = banner(e)  // the page again: its rows, counts and lines as the workspace now says them
@@ -3710,7 +3721,7 @@ function emptyRun(d) {  // d: the workspace described, when the page has it
 }
 
 async function notYet(el, id, failed = null) {  // a page whose work follows a run, before one (or a workspace): the next step, across the page; else why it failed
-  const w = state.workspace ? await run(id, "describe workspace") : null, box = el.querySelector(".split") || $("out") || $("left");
+  const w = state.workspace ? await run(id, "describe workspace") : null, box = el.querySelector(".split") || $("out") || $("left") || $("tabbody");
   const html = !state.workspace || (w.event !== "error" && !w.records) ? emptyRun(w) : banner(failed || w);
   if (box.classList.contains("split")) box.outerHTML = `<div>${html}</div>`; else box.innerHTML = html;
 }
@@ -3788,16 +3799,16 @@ async function pick() {
     current = "columns";  // a new workspace's next step
     setWorkspace(d.workspace);
   };
-  $("new-name").onkeydown = (e) => { if (e.key === "Enter") { e.preventDefault(); $("create").click(); } };
+  $("new-name").onkeydown = (e) => { if (e.key === "Enter" && !e.isComposing) { e.preventDefault(); $("create").click(); } };
   dlg.onclose = null;
   dlg.returnValue = "";
   dlg.showModal();
 }
 function useWorkspace(r) {  // the workspace every page reads from now on
-  if (state.workspace !== r) $("search").value = "";  // a record ID of another workspace means nothing here
+  if (state.workspace !== r) { $("search").value = ""; steps = {}; resultsNow = null; seen = null; }  // another workspace: nothing of this one's said there
   state.workspace = r;
   store("workspace", r);  // per viewer: the workspace this browser opens with
-  $("picker").innerHTML = `${icon("folder")}<span title="${esc(r)}">${esc(r ? `Workspace: ${baseName(r)}` : "Choose a workspace")}</span>${icon("down")}`;
+  $("picker").innerHTML = `${icon("folder")}<span title="${esc(r)}">${r ? `<span class="pk-word">Workspace: </span>${esc(baseName(r))}` : "Choose a workspace"}</span>${icon("down")}`;
 }
 function setWorkspace(r) {
   useWorkspace(r);
@@ -3817,6 +3828,7 @@ function help() {
 async function go(id, arg) {
   if (location.hash.slice(1) !== id) history[location.hash ? "pushState" : "replaceState"](null, "", `#${id}`);  // Back and Forward walk the steps; a reload keeps one
   current = id; keyHandler = null; visit++; leave(); left = new Promise((r) => { leave = r; });
+  if (!steps.steps && state.workspace) await refresh();  // opened at its address, or another workspace just picked: drawn from its own steps
   sceneClose();
   document.body.classList.remove("nav-open");
   scrollTo(0, 0);  // a page opens at its top, not where the last one was left
@@ -3864,7 +3876,14 @@ document.addEventListener("keydown", (e) => {
   };
   $("term-grip").onpointerup = () => { $("term-grip").onpointermove = null; keep(); };
   $("term-grip").onkeydown = (e) => { if (e.key === "ArrowUp" || e.key === "ArrowDown") { e.preventDefault(); tall($("term").offsetHeight + (e.key === "ArrowUp" ? 40 : -40)); keep(); } };
-  $("search").onkeydown = (e) => { if (e.key === "Enter" && $("search").value.trim()) { go("results", $("search").value.trim()); $("search").blur(); } };
+  $("search").onkeydown = (e) => { if (e.key === "Enter" && !e.isComposing && $("search").value.trim()) { go("results", $("search").value.trim()); $("search").blur(); } };
+  document.addEventListener("visibilitychange", async () => {  // looked at again: a command another tab ran shows here
+    if (document.hidden || !state.workspace || longRun || $("dlg").open) return;
+    await rejoin();
+    if (longRun || seen === null) return;
+    const d = await run("records", "describe workspace");
+    if (d.event !== "error" && !d.lost && mark(d) !== seen) go(current);
+  });
   if (SCREENS[location.hash.slice(1)]) current = location.hash.slice(1);  // reloaded: the step it was on
   addEventListener("popstate", () => { const id = location.hash.slice(1); if (SCREENS[id] && id !== current) go(id); });
   setWorkspace(d.workspace || store("workspace") || "");

@@ -925,3 +925,71 @@ def test_step_2_generates_synthetic_records_by_size_and_difficulty_once_per_clic
     page.click(".navitem[data-screen=run]")
     page.wait_for_selector("[data-first]")
     assert len(folder.parts(ws)) == 2 and "synthetic-hard-10000.parquet" in page.inner_text("#out")  # the file given last, not the newest copy
+
+
+def test_each_page_reads_its_own_workspace_and_every_tab_waits_out_a_long_command(ui_page, tmp_path, population, fake_cli):
+    from er import cli
+    s, p, g = population
+    g.df.to_parquet(tmp_path / "all.parquet", index=False)
+    g.df.iloc[: len(g.df) // 2].to_parquet(tmp_path / "half.parquet", index=False)
+    home = tmp_path / "workspaces"
+    for name in ("ran", "half", "fresh"):
+        assert cli.main(["create", "workspace", name, "--home", str(home), "--format", "json"]) == 0
+    for name, f in (("ran", "all"), ("half", "half")):
+        assert cli.main(["resolve", "records", str(tmp_path / f"{f}.parquet"), "--workspace", str(home / name), "--format", "json"]) == 0
+    page, server, httpd = ui_page(str(home / "ran"), str(home), viewport={"width": 1280, "height": 900})
+    base = page.url.split("#")[0]
+    page.goto(base + "#run")
+    page.reload()  # opened at its address: drawn from its own steps, as a run's page after a run
+    page.wait_for_selector("[data-act='rerun records']", timeout=30_000)
+    page.click(".navitem[data-screen=pairs]")
+    page.wait_for_selector("#right [data-a]", timeout=30_000)
+    ran_line, was = page.inner_text(".navitem[data-screen=pairs]"), page.input_value("#from")
+    page.fill("#from", "")
+    page.dispatch_event("#from", "change")  # emptied: as it was, never 0
+    assert was not in ("", "0") and page.input_value("#from") == was
+    page.evaluate(f"setWorkspace({json.dumps(str(home / 'half'))})")  # another workspace, on Review: its own line, never the last one's
+    page.wait_for_selector("#right [data-a]", timeout=30_000)
+    page.wait_for_function(f"() => document.querySelector('.navitem[data-screen=pairs]').innerText !== {json.dumps(ran_line)}", timeout=30_000)
+    page.evaluate(f"setWorkspace({json.dumps(str(home / 'fresh'))})")
+    page.click(".navitem[data-screen=results]")  # Explore before a run: what to do first, no endless wait
+    page.wait_for_selector("#tabbody .card", timeout=30_000)
+    page.wait_for_function("() => !document.querySelector('#screen .loading')", timeout=30_000)
+    page.click(".navitem[data-screen=columns]")
+    posted = []
+    page.on("request", lambda r: r.method == "POST" and posted.append(json.loads(r.post_data)["command"]))
+    page.fill("#cin", "/tmp/やまだ")
+    page.dispatch_event("#cin", "keydown", {"key": "Enter", "isComposing": True})  # the Enter that ends a kana-to-kanji conversion
+    page.wait_for_timeout(300)
+    assert "load records" not in posted
+    page.evaluate(f"setWorkspace({json.dumps(str(home / 'ran'))})")
+    page.wait_for_function(f"() => document.querySelector('.navitem[data-screen=pairs]')?.innerText === {json.dumps(ran_line)}", timeout=30_000)
+    other = page.context.browser.new_page()  # another tab, drawn before the long command starts
+    other.goto(base + "#run")
+    other.wait_for_selector("[data-act='rerun records']", timeout=30_000)
+    theirs = []
+    other.on("request", lambda r: r.method == "POST" and json.loads(r.post_data).get("command") == "rerun records" and not json.loads(r.post_data).get("dry") and theirs.append(1))
+    fake_cli('print(json.dumps({"event": "step", "step": "load", "seconds": 0.1}), flush=True)\ntime.sleep(6)\n'
+             'print(json.dumps({"event": "result", "summary": [["records", "1"]]}), flush=True)')
+    page.click(".navitem[data-screen=run]")
+    page.click("[data-act='rerun records']")
+    if page.is_visible("#dlg button[value=run]"):
+        page.click("#dlg button[value=run]")
+    page.wait_for_selector(".steps-card", timeout=30_000)
+    page.click(".navitem[data-screen=pairs]")  # Review while its workspace matches again: answers wait for it
+    page.wait_for_selector("#right [data-a]", timeout=30_000)
+    assert page.is_disabled("#right [data-a=match]")
+    posted.clear()
+    page.keyboard.press("m")
+    other.click("[data-act='rerun records']")  # the other tab, never told: follows the run, never starts one beside it
+    if other.is_visible("#dlg button[value=run]"):
+        other.click("#dlg button[value=run]")
+    other.wait_for_selector(".steps-card", timeout=30_000)  # the run as it goes, here too
+    other.wait_for_selector("text=ran from another tab", timeout=60_000)  # and once it ends, said
+    assert "decide pair" not in posted and not theirs
+    page.wait_for_function("() => !document.querySelector('#right [data-a=match]')?.disabled", timeout=60_000)  # it ended: answers back
+    narrow = page.context.browser.new_page()
+    narrow.set_viewport_size({"width": 390, "height": 800})
+    narrow.goto(base)
+    narrow.wait_for_selector("#picker span")
+    assert narrow.inner_text("#picker").strip() == "ran"  # the workspace's own name, at phone width
