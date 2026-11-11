@@ -1014,7 +1014,7 @@ def test_policy_rows_sit_in_each_record_s_full_row_chosen_by_their_chips_with_th
     one = str(g.df[uid].iloc[4])
     page.evaluate(f"go('results', {{tab: 'records', record: {json.dumps(one)}}})")  # Explore's one record
     page.wait_for_selector("#rec tr.det-head", timeout=60_000)
-    assert lines(page.locator("#rec td.det-v").first) == plans(one)[:1] and page.locator("#rec [data-policy]").count() == (len(plans(one)) if len(plans(one)) > 1 else 0)
+    assert lines(page.locator("#rec td.det-v").first) == plans(one)[:1] and page.locator("#rec [data-policy]").count() == len(plans(one))  # a chip each, one policy too
 
     page.click(".navitem[data-screen=pairs]")  # the line between the pair and its queue: dragged, kept
     page.wait_for_selector(".grip-v")

@@ -1850,7 +1850,7 @@ function detailRows(det, ids, after = "", keep = () => true, chosen = {}) {
   const dot = (v) => `<span class="pdot" style="--pc: ${chosen.colors.get(label(v)).css}"></span>`;
   const count = (r) => r.total ? plural(r.total, "policy", "policies") + (r.total > r.rows.length ? `, the first ${fmt(r.rows.length)}` : "") : "none";
   const shut = folds.closed("policy");
-  const headCell = (r) => `<td><span class="muted">${count(r)}</span>${r.rows.length > 1 && !shut ? `<div class="chips det-pick">${r.rows.map((v, n) =>
+  const headCell = (r) => `<td><span class="muted">${count(r)}</span>${r.rows.length && !shut ? `<div class="chips det-pick">${r.rows.map((v, n) =>
       `<button type="button" class="chip" data-rec="${esc(r.id)}" data-policy="${n}" aria-pressed="${picked(r).has(n)}">${picked(r).has(n) ? dot(v) : ""}${esc(label(v))}</button>`).join("")}</div>` : ""}</td>`;
   const cell = (r, k) => {
     if (!r.rows.length) return '<td class="faint">—</td>';
