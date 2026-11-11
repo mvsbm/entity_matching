@@ -1090,7 +1090,7 @@ def generate_records(a: dict, emit: "Emit") -> dict:
         raise InputError(f"--records {a['records']}: not a whole number of 1 or more", fix="a whole number, for example 100000")
     n, level = int(text), a.get("difficulty") or "medium"
     for old in ws.glob(".synthetic-*"):  # one a process killed outright left
-        if not old.name.rpartition("-")[2].isdigit() or not alive(int(old.name.rpartition("-")[2])):
+        if (pid := old.name.rpartition("-")[2]).isdigit() and not alive(int(pid)):
             shutil.rmtree(old, ignore_errors=True)
     tmp = ws / f".synthetic-{os.getpid()}"  # on the workspace's disk; gone whatever happens
     shutil.rmtree(tmp, ignore_errors=True)

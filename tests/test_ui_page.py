@@ -895,16 +895,20 @@ def test_step_2_generates_synthetic_records_by_size_and_difficulty_once_per_clic
     posted = []
     page.on("request", lambda r: r.method == "POST" and not json.loads(r.post_data).get("dry") and posted.append(json.loads(r.post_data)))
     page.click(".navitem[data-screen=columns]")
-    page.select_option("#gsize", "1000")
+    page.select_option("#gsize", "10000")
     page.select_option("#glevel", "hard")
     page.click("#gen")
     assert page.is_disabled("#gen") and page.is_disabled("#load")  # one at a time, either way
     page.click("#gen", force=True)  # a second click while it runs: nothing
+    page.click(".navitem[data-screen=records]")
+    page.click(".navitem[data-screen=columns]")  # left and back while it runs: drawn waiting, then freed and drawn once it ends
+    assert page.is_disabled("#gen") and page.is_disabled("#load")
     page.wait_for_selector("h2.question:text('Did your file load?')", timeout=120_000)
-    assert [x for x in posted if x["command"] == "generate records"] == [{"command": "generate records", "args": {"records": "1000", "difficulty": "hard", "workspace": str(ws)}}]
-    assert "Yes · 1,000 records from synthetic-hard-1000.parquet" in page.inner_text("#loaded") and page.is_visible("#loaded [data-go=run]")
+    assert [x for x in posted if x["command"] == "generate records"] == [{"command": "generate records", "args": {"records": "10000", "difficulty": "hard", "workspace": str(ws)}}]
+    assert "Yes · 10,000 records from synthetic-hard-10000.parquet" in page.inner_text("#loaded") and page.is_visible("#loaded [data-go=run]")
     page.click("#loaded details.fold-line > summary")  # Load another file: synthetic records there too
-    page.select_option("#gsize", "1000")
+    assert not page.is_disabled("#gen") and not page.is_disabled("#load")
+    page.select_option("#gsize", "10000")
     page.select_option("#glevel", "hard")
     page.click("#gen")
     page.wait_for_function("() => { const b = document.querySelector('#gen'); return b && !b.disabled && b.textContent === 'Generate'; }", timeout=120_000)
