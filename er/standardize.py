@@ -18,6 +18,16 @@ SEPARATORS = "[\\s\u3000\\-\u2010-\u2015\u2212\u30fc/.()〒]"  # spaces, hyphens
 ONE_BYTE = str.maketrans({chr(0x30A0 + i): chr(1 + i) for i in range(96)})  # the katakana block, each character one byte: 0x01–0x60
 
 
+def _hashed(s: pd.Series) -> pd.Series:  # each value's characters each one ASCII byte, 33 + its code point mod 94: one pass over the column's text
+    filled = s.notna().to_numpy()
+    values = s[filled].tolist()
+    ends = np.cumsum([len(v) for v in values], dtype=np.int64)
+    text = (33 + np.frombuffer("".join(values).encode("utf-32-le"), dtype=np.uint32) % 94).astype(np.uint8).tobytes().decode("ascii")
+    out = np.full(len(s), None, dtype=object)
+    out[filled] = [text[a:b] for a, b in zip(np.concatenate(([0], ends[:-1])), ends)]
+    return pd.Series(out, index=s.index, dtype="string")
+
+
 def normalize(s: pd.Series, steps: tuple[Normalizer, ...], std: Standardization) -> pd.Series:
     """Each step on each value, as `steps` lists them: every step reads one value alone, so each distinct value is
     normalized once and the column made of them. O(N) to factorize, plus O(distinct values · steps · L)."""
@@ -47,6 +57,8 @@ def _normalized(s: pd.Series, steps: tuple[Normalizer, ...], std: Standardizatio
                 s = s.str[::-1]
             case "one_byte":  # all katakana: each one byte, so DuckDB's similarity (bytes) compares it as characters; else none
                 s = s.where(s.str.fullmatch("[\u30a0-\u30ff]+").fillna(False)).str.translate(ONE_BYTE)
+            case "one_byte_hash":  # not all ASCII: each character one byte by its code point (two may share one), so DuckDB's edit distance of it is never more than theirs; else none
+                s = _hashed(s.where(~s.str.isascii().fillna(True)))
             case "casefold":  # romaji: TANAKA and tanaka are one name
                 s = s.str.casefold()
             case "long_vowel":  # keys, after kana_fold: a long vowel written either way (サトウ, サトオ, サトー) is one reading
@@ -128,8 +140,8 @@ def prepare(std: Standardization, records: pd.DataFrame, normalized: Iterable[tu
                 df[d.name] = df[d.name].where((side == d.kind) & ~k["kind_held"].to_numpy())
     for col, steps in normalized:
         if column_name(col, steps) not in df:  # a one-byte copy from the column it copies, if made: not the chain again
-            done = steps[-1:] == ("one_byte",) and column_name(col, steps[:-1]) in df
-            df[column_name(col, steps)] = normalize(df[column_name(col, steps[:-1])], ("one_byte",), std) if done else normalize(df[col], steps, std)
+            done = steps[-1] in ("one_byte", "one_byte_hash") and column_name(col, steps[:-1]) in df
+            df[column_name(col, steps)] = normalize(df[column_name(col, steps[:-1])], steps[-1:], std) if done else normalize(df[col], steps, std)
     missing = set(used) - set(df.columns)
     if missing:
         raise ValueError(f"input lacks columns the configuration uses: {sorted(missing)}")
