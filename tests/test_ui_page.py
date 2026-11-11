@@ -969,12 +969,11 @@ def test_each_page_reads_its_own_workspace_and_every_tab_waits_out_a_long_comman
     other.wait_for_selector("[data-act='rerun records']", timeout=30_000)
     theirs = []
     other.on("request", lambda r: r.method == "POST" and json.loads(r.post_data).get("command") == "rerun records" and not json.loads(r.post_data).get("dry") and theirs.append(1))
-    fake_cli('print(json.dumps({"event": "step", "step": "load", "seconds": 0.1}), flush=True)\ntime.sleep(6)\n'
+    fake_cli('print(json.dumps({"event": "step", "step": "load", "seconds": 0.1}), flush=True)\ntime.sleep(20)\n'
              'print(json.dumps({"event": "result", "summary": [["records", "1"]]}), flush=True)')
     page.click(".navitem[data-screen=run]")
     page.click("[data-act='rerun records']")
-    if page.is_visible("#dlg button[value=run]"):
-        page.click("#dlg button[value=run]")
+    page.click("#dlg button[value=run]")  # its dialog: waited for, as slow as a machine draws it
     page.wait_for_selector(".steps-card", timeout=30_000)
     page.click(".navitem[data-screen=pairs]")  # Review while its workspace matches again: answers wait for it
     page.wait_for_selector("#right [data-a]", timeout=30_000)
@@ -982,8 +981,7 @@ def test_each_page_reads_its_own_workspace_and_every_tab_waits_out_a_long_comman
     posted.clear()
     page.keyboard.press("m")
     other.click("[data-act='rerun records']")  # the other tab, never told: follows the run, never starts one beside it
-    if other.is_visible("#dlg button[value=run]"):
-        other.click("#dlg button[value=run]")
+    other.click("#dlg button[value=run]")
     other.wait_for_selector(".steps-card", timeout=30_000)  # the run as it goes, here too
     other.wait_for_selector("text=ran from another tab", timeout=60_000)  # and once it ends, said
     assert "decide pair" not in posted and not theirs

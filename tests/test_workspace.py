@@ -1,6 +1,7 @@
 """Workspaces: their own mapping and files, the review sheet, decisions, the method and the trust line."""
 import json
 import math
+import os
 from pathlib import Path
 from dataclasses import replace
 
@@ -737,6 +738,7 @@ def test_the_file_given_last_is_the_one_a_run_reads_even_one_the_workspace_held_
     assert folder.last(ws).name == "0002-b"
 
 
+@pytest.mark.skipif(os.name == "nt", reason="Linux's mount table and its paths: on Windows every folder is a disk (io.object_store)")
 def test_a_workspace_on_object_storage_is_refused_and_one_on_a_disk_is_not(say, tmp_path, monkeypatch):
     from er import folder, io
     root = tmp_path.resolve()
