@@ -690,9 +690,9 @@ def after_run(run: Run, out: Path) -> dict:
 def loaded(a: dict, verb: str) -> dict:  # a command's file: the one named, else the workspace's file loaded last
     if a["input"]:
         return a
-    if not a.get("workspace") or not (parts := folder.parts(Path(a["workspace"]))):
+    if not a.get("workspace") or not (part := folder.last(Path(a["workspace"]))):
         raise InputError(f"no file to {verb}", fix=f"name one: nayose {verb} records FILE; or load one into the workspace first")
-    return {**a, "input": str(parts[-1])}
+    return {**a, "input": str(part)}
 
 
 def check_records(a: dict, emit: "Emit") -> dict:
@@ -703,8 +703,8 @@ def check_records(a: dict, emit: "Emit") -> dict:
 
 
 def checked(a: dict, s, p, path: str, emit: "Emit") -> dict:
-    parts = folder.parts(Path(a["workspace"])) if a.get("workspace") else []
-    own = bool(parts) and Path(a["input"]).resolve() == parts[-1].resolve()  # the file a run given none reads
+    part = folder.last(Path(a["workspace"])) if a.get("workspace") else None
+    own = part is not None and Path(a["input"]).resolve() == part.resolve()  # the file a run given none reads
     run = Run(p, s, echo=emit.step, told=emit.progress)
     run.load(path)
     plan = run.budget(stop=False)
@@ -839,9 +839,9 @@ def given(a: dict, emit: "Emit | None" = None) -> str:
     ws, s, told = Path(a["workspace"]), settings_for(a), rows_told(emit)
     if a["input"]:
         return str(folder.take_in(ws, a["input"], s.input, s.paths["reference"], progress=told)[0])
-    if not (parts := folder.parts(ws)):
+    if not (part := folder.last(ws)):
         raise InputError(f"no records file in {ws}", fix=f"load one: nayose load records FILE --workspace {ws}; or name it here")
-    return str(folder.fresh(parts[-1], s.input, s.paths["reference"], told))
+    return str(folder.fresh(part, s.input, s.paths["reference"], told))
 
 
 def rows_told(emit: "Emit | None"):  # the rows read so far, for a file being read
@@ -1088,19 +1088,20 @@ def generate_records(a: dict, emit: "Emit") -> dict:
     text = (a.get("records") or "10000").replace(",", "")
     if not text.isdecimal() or int(text) < 1:
         raise InputError(f"--records {a['records']}: not a whole number of 1 or more", fix="a whole number, for example 100000")
-    n, level = int(text), a.get("difficulty") or "medium"
-    for old in ws.glob(".synthetic-*"):  # one a process killed outright left
-        if (pid := old.name.rpartition("-")[2]).isdigit() and not alive(int(pid)):
-            shutil.rmtree(old, ignore_errors=True)
-    tmp = ws / f".synthetic-{os.getpid()}"  # on the workspace's disk; gone whatever happens
-    shutil.rmtree(tmp, ignore_errors=True)
-    tmp.mkdir()
-    try:
-        out = tmp / f"synthetic-{level}-{n}"
-        auto.synthetic(settings_for(a), n, level, out, lambda done: emit.progress(done, n, "records"))
-        return load_records({**a, "input": str(out)}, emit)
-    finally:
+    n, level, (s, p, _) = int(text), a.get("difficulty") or "medium", setup(a)
+    with folder.run_lock(ws):  # a busy workspace refused before generating; load_records takes it again, as this thread holds it
+        for old in ws.glob(".synthetic-*"):  # one a process killed outright left
+            if (pid := old.name.rpartition("-")[2]).isdigit() and not alive(int(pid)):
+                shutil.rmtree(old, ignore_errors=True)
+        tmp = ws / f".synthetic-{os.getpid()}"  # on the workspace's disk; gone whatever happens
         shutil.rmtree(tmp, ignore_errors=True)
+        tmp.mkdir()
+        try:
+            out = tmp / f"synthetic-{level}-{n}"
+            auto.synthetic(s, p.fields, n, level, out, lambda done: emit.progress(done, n, "records"))
+            return load_records({**a, "input": str(out)}, emit)
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
 
 
 def run_pipeline(ws: str | Path | None) -> str | None:  # the pipeline file the workspace's full run used, as its log says (none said: before it did)
@@ -1458,7 +1459,7 @@ def rehearse_records(a: dict, emit: "Emit") -> dict:
     ws = Path(a["workspace"])
     if not ws.is_dir():
         raise InputError(f"no workspace at {ws}", fix="create it: nayose create workspace NAME")
-    src = a["input"] or next((str(x) for x in folder.parts(ws)[-1:]), None)  # its shape only: never copied in
+    src = a["input"] or (str(part) if (part := folder.last(ws)) else None)  # its shape only: never copied in
     if not src:
         raise InputError(f"no records file in {ws}", fix=f"name one, or load it first: nayose load records FILE --workspace {ws}")
     with readable(src, s) as path:
@@ -1943,6 +1944,7 @@ COMMANDS: tuple[Command, ...] = (
             "length, F searched columns.",
             (WORKSPACE, PIPELINE, COMPUTE),
             {"index": "its folder", "records": "the records it holds", "tables": "each table: of (its key or rule), rows, seconds", "seconds": "in all",
+             "unsearched": "the fields a search reads that this run's records don't hold: typed, they are said, not searched",
              "next": "the commands that usually follow"},
             "nayose build index --workspace workspaces/customers", build_index),
     Command("match", "record", "The entities one record may belong to, from the index; nothing written",
@@ -1975,7 +1977,7 @@ COMMANDS: tuple[Command, ...] = (
              WORKSPACE, PIPELINE, COMPUTE),
             {"record": "the values as compared: their fields and kind", "entities": "each: entity, record, points, likely, fields (those that agree), compared, records, shown",
              "found": "entities at --from or more", "listed": "records whose values start with those given", "candidates": "of them, scored",
-             "typed": "the fields searched", "read_as": "the values as read, when they were typed otherwise than records hold them and so read agree on more", "missing": "the columns given, when every value read as missing: nothing to search by",
+             "typed": "the fields searched", "unsearched": "the fields typed that this run can't be searched by: its records don't hold them", "read_as": "the values as read, when they were typed otherwise than records hold them and so read agree on more", "missing": "the columns given, when every value read as missing: nothing to search by",
              "over": "each value that starts too many records to list them all: field, value, records (how many start with it, counted to 100,000: more true past it), listed (its first by value listed: no other value lists its own)", "seconds": "each part",
              "index": "built_at, records", "next": "the commands that usually follow"},
             "nayose search records FULL_NAME_KANA=ヤマダ PHONE_NUM_4=1234 --workspace workspaces/customers", search_records, quick=True),

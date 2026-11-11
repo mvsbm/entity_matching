@@ -23,6 +23,7 @@ import hashlib
 import os
 from collections.abc import Iterable
 from dataclasses import dataclass
+from datetime import date
 from pathlib import Path
 
 import duckdb
@@ -116,12 +117,13 @@ def name_model(settings, spec: KindSpec) -> NameModel:
     return m
 
 
-CENTURY = 26  # a birth date's 2-digit year: up to this, 20yy; past it, 19yy. Fixed, so a run reads a date alike whenever it runs; shortcut: no one is born after this year, raise it as years pass
+def century() -> int:  # a birth date's 2-digit year: up to this year's two digits, 20yy; past them, 19yy: never a year to come
+    return date.today().year % 100
 
 
 def birth_year(birth: pd.Series) -> np.ndarray:
     """The year of a date that starts with it: 1993-05-25, 19930525, 1993/5/2 → 1993; a 2-digit one, 93-05-25 or 930525,
-    by CENTURY; 199305, its month past 12 as yymmdd, → 1993; a day or month first, 25/05/1993, its 4-digit year. Else NaN
+    by century(); 199305, its month past 12 as yymmdd, → 1993; a day or month first, 25/05/1993, its 4-digit year. Else NaN
     (H05.05.25: an era's year). O(N)."""
     s = birth.astype("string")
     lead, four = s.str.extract(r"^\s*(\d+)", expand=False), s.str.extract(r"(?:^|\D)(\d{4})(?:\D|$)", expand=False)
@@ -129,7 +131,7 @@ def birth_year(birth: pd.Series) -> np.ndarray:
     num = lambda x: pd.to_numeric(x, errors="coerce").to_numpy(dtype=float, na_value=np.nan)
     yy, month, later = num(lead.str[:2]), num(lead.str[2:4]), num(four)
     short = (((n == 2) & np.isnan(later)) | ((n == 6) & ~(np.isin(yy, (19, 20)) & (month > 12))))
-    return np.where(short, yy + np.where(yy <= CENTURY, 2000, 1900), np.where(n >= 4, num(lead.str[:4]), later))
+    return np.where(short, yy + np.where(yy <= century(), 2000, 1900), np.where(n >= 4, num(lead.str[:4]), later))
 
 
 PERSON, COMPANY, UNSURE = 1, 2, 0  # the codes of kind, customer_kind and people's answers: as a person/company flag writes them

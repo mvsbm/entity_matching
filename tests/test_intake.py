@@ -401,12 +401,12 @@ def test_a_parquet_file_reads_alike_whatever_its_row_groups_and_text_that_isn_t_
 
 
 def test_a_part_s_description_is_kept_and_made_again_only_when_what_it_rests_on_changes(tmp_path, monkeypatch, capsys):
-    from er import cli
+    from er import cli, folder
     pd.DataFrame({"CONT_ID": [f"R{i}" for i in range(6)], "TEL": ["0312345678"] * 6, "NAME": ["ヤマダタロウ", "サトウハナコ"] * 3}).to_parquet(tmp_path / "a.parquet", index=False)
     ws = tmp_path / "w"
     assert cli.main(["create", "workspace", "w", "--home", str(tmp_path), "--format", "json"]) == 0
     assert cli.main(["load", "records", str(tmp_path / "a.parquet"), "--workspace", str(ws), "--format", "json"]) == 0
-    part = str(next((ws / "inputs").iterdir()))
+    part = str(folder.parts(ws)[0])
     made, real = [], cli.described
     monkeypatch.setattr(cli, "described", lambda a: made.append(1) or real(a))
 

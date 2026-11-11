@@ -410,7 +410,7 @@ def test_a_long_command_shows_how_far_it_is_in_a_panel_that_folds_and_closes_and
 
 
 def test_step_2_shows_what_the_reader_proposes_and_a_click_accepts_one_kind(ui_page, tmp_path, population):
-    from er import cli, intake
+    from er import cli, folder, intake
     s, p, g = population
     dirty_csv(g.df.astype("string"), "FULL_NAME_KANA", "ORIGINAL_ADDRESS", tmp_path / "dirty.csv")
     home = tmp_path / "workspaces"
@@ -432,7 +432,7 @@ def test_step_2_shows_what_the_reader_proposes_and_a_click_accepts_one_kind(ui_p
     page.click("[data-accept=realign]")
     page.click("#dlg button[value=run]")
     page.wait_for_function("() => (document.querySelector('#loaded .answer') || {innerText: 'row'}).innerText.includes('· 1 value waits for a repair')", timeout=60_000)
-    part = next((home / "w" / "inputs").iterdir())
+    part = folder.parts(home / "w")[0]
     assert intake.report(part)["accepted"] == ["realign"] and not page.query_selector("[data-accept=realign]")
 
 
@@ -913,3 +913,13 @@ def test_step_2_generates_synthetic_records_by_size_and_difficulty_once_per_clic
     page.click("#gen")
     page.wait_for_function("() => { const b = document.querySelector('#gen'); return b && !b.disabled && b.textContent === 'Generate'; }", timeout=120_000)
     assert len(folder.parts(ws)) == 1 and not page.query_selector("#out .banner.bad")  # the same records: held already, nothing copied
+    free = "() => { const b = document.querySelector('#gen'); return b && !b.disabled && b.textContent === 'Generate'; }"
+    for size, level in (("1000", "easy"), ("10000", "hard")):  # another, then the first again: held already, and the one a run reads
+        page.evaluate("document.querySelector('#loaded details.fold-line').open = true")
+        page.select_option("#gsize", size)
+        page.select_option("#glevel", level)
+        page.click("#gen")
+        page.wait_for_function(free, timeout=120_000)
+    page.click(".navitem[data-screen=run]")
+    page.wait_for_selector("[data-first]")
+    assert len(folder.parts(ws)) == 2 and "synthetic-hard-10000.parquet" in page.inner_text("#out")  # the file given last, not the newest copy

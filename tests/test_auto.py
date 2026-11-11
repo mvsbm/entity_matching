@@ -87,7 +87,29 @@ def test_generated_records_go_into_a_workspace_as_a_file_does_and_the_same_twice
     mapping = tmp_path / "theirs" / "columns.toml"
     mapping.write_text(mapping.read_text(encoding="utf-8").replace('id = "CONT_ID"', 'id = "REC_NO"'), encoding="utf-8")  # mapped to a file of their own
     code, e = say("generate", "records", "--records", "1000", "--workspace", tmp_path / "theirs")
-    assert code == 2 and "other columns" in e["error"] and not list((tmp_path / "theirs").glob(".synthetic-*")) and not folder.parts(tmp_path / "theirs")
+    assert code == 2 and "generator writes for id" in e["error"] and not list((tmp_path / "theirs").glob(".synthetic-*")) and not folder.parts(tmp_path / "theirs")
+
+
+def test_generating_into_a_busy_or_unfit_workspace_is_refused_before_any_record_is_made(say, tmp_path):
+    import subprocess
+    import sys
+    from er import folder
+    assert say("create", "workspace", "w", "--home", tmp_path)[0] == 0
+    ws = tmp_path / "w"
+    holder = subprocess.Popen([sys.executable, "-c", "import sys, time\nfrom er.io import lock\nf = open(sys.argv[1], 'w')\nassert lock(f)\nprint('held', flush=True)\ntime.sleep(60)",
+                               str(ws / ".lock")], stdout=subprocess.PIPE, text=True)
+    try:
+        assert holder.stdout.readline().strip() == "held"  # another job writes to the workspace
+        t = time.time()
+        code, e = say("generate", "records", "--records", "100000", "--workspace", ws)
+        assert code == 75 and "another job" in e["error"] and time.time() - t < 10 and not folder.parts(ws) and not list(ws.glob(".synthetic-*"))
+    finally:
+        holder.kill()
+        holder.wait()
+    mapping = ws / "columns.toml"
+    mapping.write_text(re.sub(r"^(person_name|company_name) = .*$", r'\1 = "THEIR_NAME"', mapping.read_text(encoding="utf-8"), flags=re.M), encoding="utf-8")
+    code, e = say("generate", "records", "--records", "1000", "--workspace", ws)  # names read from a column of their own: a run would stop
+    assert code == 2 and "person_name or company_name" in e["error"] and not folder.parts(ws) and not list(ws.glob(".synthetic-*"))
 
 
 def test_each_difficulty_is_harder_to_match_than_the_one_before():

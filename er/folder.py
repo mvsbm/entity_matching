@@ -22,7 +22,7 @@ import pyarrow.parquet as pq
 
 from er import intake
 from er.config import InputError, lit, toml_of
-from er.io import alive, lock, replace_text
+from er.io import alive, lock, object_store, replace_text
 from er.settings import COLUMNS
 from er.source import find, globbed
 from er.strings import connect
@@ -56,8 +56,11 @@ _held = threading.local()  # the folders this thread holds: taking one again (a 
 def run_lock(out: Path):
     """One writer per workspace: an OS lock on <out>/.lock for as long as a run, an increment or a set of decisions
     writes there. The system releases it when the process ends, even if it dies, so it never goes stale. A thread that
-    holds it may take it again; another thread or process can't.
-    shortcut: the lock (io.lock) holds on a local disk, not on network or object storage; there, run one job per folder at a time."""
+    holds it may take it again; another thread or process can't. It holds on a local disk and on a network one (NFS,
+    a Windows share); a workspace on object storage mounted as files (io.object_store) is refused: no lock holds there.
+    shortcut: one lock per machine's view of a disk; a workspace on object storage itself needs a lease and writes that
+    don't rename (folder.stage does), a port of its own."""
+    lockable(out)
     out.mkdir(parents=True, exist_ok=True)
     held, key = _held.__dict__.setdefault("folders", set()), out.resolve()
     if key in held:
@@ -73,6 +76,12 @@ def run_lock(out: Path):
             held.discard(key)
 
 
+def lockable(path: Path) -> None:  # refused where no lock holds, before anything is written there
+    if kind := object_store(path):
+        raise InputError(f"{path} is on object storage ({kind}): no lock holds there, so two jobs could write it at once",
+                         fix="put the workspace on a local or network disk: a persistent disk, Filestore, NFS")
+
+
 @contextmanager
 def writing(path: Path, wait: float = 10.0):
     """One change of a mapping (a workspace's columns.toml, the project's settings.toml) at a time: each reads the file,
@@ -81,6 +90,7 @@ def writing(path: Path, wait: float = 10.0):
     if not path.parent.is_dir():  # no workspace: what writes says so
         yield
         return
+    lockable(path.parent)
     with open(path.with_name(f".{path.name}.lock"), "w") as f:
         until = time.monotonic() + wait
         while not lock(f):
@@ -317,6 +327,7 @@ def inputs(out: Path, spec: intake.InputSpec | None = None, reference: Path | No
 
 INPUTS = "inputs"  # the records files a workspace was given, each copied into a part of its own: inputs/NNNN-<name>/
 SUMS = ".sha256"  # in each part: each file's SHA-256 and its path in the part, so content given twice is known without reading it
+LAST = "last"  # in inputs/: the name of the part given last, held already or new, which a run given no file reads
 NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
 
 
@@ -357,6 +368,15 @@ def parts(ws: Path) -> list[Path]:  # inputs/'s parts, oldest first
     return sorted(p for p in (ws / INPUTS).glob("[0-9]*-*") if p.is_dir())
 
 
+def last(ws: Path) -> Path | None:
+    """The part given last (inputs/last), whether it was new or held already; a workspace given files before that was
+    kept: its newest part. None: no part. O(1) + O(parts)."""
+    named = ws / INPUTS / LAST
+    if named.is_file() and (part := ws / INPUTS / named.read_text(encoding="utf-8").strip()).is_dir():
+        return part
+    return next(iter(parts(ws)[-1:]), None)
+
+
 def sums(part: Path) -> dict[str, str]:  # a part's files: path in the part → SHA-256
     return {rel: sha for sha, rel in (line.split("  ", 1) for line in (part / SUMS).read_text(encoding="utf-8").splitlines())}
 
@@ -395,6 +415,7 @@ def take_in(ws: Path, path: str | Path, spec: intake.InputSpec, reference: Path,
     with run_lock(ws):
         for part in parts(ws):
             if sorted(sums(part).values()) == given:
+                replace_text(ws / INPUTS / LAST, part.name)  # given again: the one a run reads, as a new one would be
                 return fresh(part, spec, reference, progress), False
         p = Path(path).expanduser()
         root = p if p.is_dir() else None
@@ -417,18 +438,20 @@ def take_in(ws: Path, path: str | Path, spec: intake.InputSpec, reference: Path,
             shutil.rmtree(tmp, ignore_errors=True)
             raise
         os.replace(tmp, part)
+        replace_text(ws / INPUTS / LAST, part.name)
     return part, True
 
 
 def loaded(ws: Path) -> list[dict]:
     """inputs/'s parts, oldest first: each one's name, path, files, bytes and rows (as the intake read them), the name
     of its file as given (one file), the repairs waiting for people and the rows unread, whether a run has read all of it as it is now (steps.json, by
-    SHA-256), and the seconds its reading took and its columns (this machine's pace: the page's estimate of a run). O(parts + files + steps.json)."""
-    read = {x["sha256"] for run in runs(ws) for x in run.get("inputs", []) if x.get("role") == "records"}
+    SHA-256), the seconds its reading took and its columns (this machine's pace: the page's estimate of a run), and
+    whether it was given last (last: the one a run given no file reads). O(parts + files + steps.json)."""
+    read, given_last = {x["sha256"] for run in runs(ws) for x in run.get("inputs", []) if x.get("role") == "records"}, last(ws)
     def facts(part: Path) -> dict:  # a part's rows and whether a run read it, as the intake read it
         r = intake.report(part)
         waiting = sum(n for k, n in r["proposed"].items() if k not in r["accepted"])
         return dict(rows=r["rows"], read=all(f["versions"][-1] in read for f in r["files"]), waiting=waiting, unread=r["unread"], seconds=r.get("seconds"), columns=max((x["columns"] for x in r["files"]), default=0),
                     given=Path(r["files"][0]["given"]).name if len(r["files"]) == 1 else None)  # its file's own name, kana and kanji kept
-    return [dict(name=part.name, path=str(part), files=len(own), bytes=sum((part / rel).stat().st_size for rel in own), **facts(part))
+    return [dict(name=part.name, path=str(part), files=len(own), bytes=sum((part / rel).stat().st_size for rel in own), **facts(part), last=part == given_last)
             for part in parts(ws) for own in [sums(part)]]

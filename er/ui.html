@@ -682,6 +682,7 @@ const FIELD_WORDS = {kind_flag: "person or company (flag)"};
 const baseName = (p) => String(p).split(/[\\/]/).filter(Boolean).pop() || "";  // a path's last part, / or \\ (Windows) between parts
 const fileName = (n) => String(n).replace(/^\d+-/, "").replace(/(\.\w+)\.parquet$/, "$1");  // a workspace's copy of a file, by the name it came with (not its reading's)
 const nameOf = (f) => f.given || fileName(f.name);  // a loaded file by the name it came with, kana and kanji kept
+const lastFile = (w) => (w.inputs || []).find((f) => f.last) || (w.inputs || []).slice(-1)[0] || null;  // the file a run given none reads: given last, new or held already
 const bytes = (n) => n < 1e3 ? `${fmt(n)} bytes` : n < 1e6 ? `${fmt(Math.ceil(n / 1e3))} KB` : `${fmt(Math.ceil(n / 1e6))} MB`;
 const kindSays = (s) => String(s ?? "").replace(/^\d+ /, "");  // "2 company", the engine's code first, as people read it: company  // a field whose name says nothing to people
 const words = (s) => FIELD_WORDS[s] ?? String(s).replaceAll("_", " ");
@@ -1690,7 +1691,7 @@ const DOING = {load: "reading the records", budget: "planning the work", fit: "l
                report: "writing the report", write: "saving"};
 const LIT_NODE = {load: "records", rules: "rules", candidates: "candidates", score: "score", cluster: "group"};  // the stage a step works on
 const guess = (rows, w) => {  // a run's seconds, about, before it starts: this workspace's last full run, scaled to these records; else this machine's reading of the file, per column, times four; else a minute a million records
-  const r = (w.runs || []).filter((x) => x.what === "full run").slice(-1)[0], f = (w.inputs || []).slice(-1)[0];
+  const r = (w.runs || []).filter((x) => x.what === "full run").slice(-1)[0], f = lastFile(w);
   const wide = f && f.columns ? Math.min(1, 25 / f.columns) : 1;  // its reading checks every column, a run reads the ones mapped: a wide file reads slower than it runs
   return r && w.records ? 5 + r.seconds * rows / w.records : f && f.seconds && f.rows ? 10 + 4 * wide * f.seconds * rows / f.rows : 10 + rows * 6e-5;
 };
@@ -2440,7 +2441,7 @@ const SCREENS = {
     const w = await run("run", "describe workspace");
     if (w.event === "error") { $("out").innerHTML = banner(w); return; }
     w0 = w;
-    file = (w.inputs || []).slice(-1)[0] || null;
+    file = lastFile(w);
     if ($("out").querySelector(".steps-card")) return;  // a run started meanwhile: it draws its own
     if (runsHere()) {  // started before this page was drawn: a run of step 3, as it stands; the Overview's, a card saying where it shows
       $("out").innerHTML = longRun.page === "run" && RUNS.includes(longRun.command) && task.command === longRun.command ? stepsCard(longRun.command) : runningCard(longRun);
@@ -2560,9 +2561,10 @@ const SCREENS = {
     const suggestions = (r) => {
       const over = r.over.filter((x) => x.listed).map((x) => `${fmt(x.records)}${x.more ? "+" : ""} records start with ${esc(x.value)}: ${r.found ? `the first by ${x.field === "name" ? "name" : "value"} below. ` : ""}${
         x.field === "name" ? "Add the given name, or a phone or postal code beside it, to narrow" : "Type more of it, or a name beside it, to narrow"}`).join(" · ");  // one only agreeing beside another: no need to say
-      const said = !r.typed.length ? "Nothing to search by yet: type more of it" : over && !r.found && r.listed ? `${over} · none reaches ${esc($("lu-from").value)} points`
+      const cant = (r.unsearched || []).length ? `this run can't be searched by ${esc(r.unsearched.map(words).join(" or "))}` : "";  // typed, but its records don't hold it
+      const said = (!r.typed.length ? (cant ? cant[0].toUpperCase() + cant.slice(1) : "Nothing to search by yet: type more of it") : over && !r.found && r.listed ? `${over} · none reaches ${esc($("lu-from").value)} points`
         : over ? over : r.found ? `${plural(r.listed, "record")} start with what you typed`
-        : r.listed ? `None of the ${plural(r.listed, "record")} that start with it reaches ${esc($("lu-from").value)} points` : "No record starts with what you typed";
+        : r.listed ? `None of the ${plural(r.listed, "record")} that start with it reaches ${esc($("lu-from").value)} points` : "No record starts with what you typed") + (cant && r.typed.length ? ` · ${cant}` : "");
       const read = Object.values(r.read_as || {}).map(esc).join(", ");
       return `<div class="card">${ask("Who could it be?", `${said}${read ? ` <span class="faint">· read as ${read}</span>` : ""}`)}</div>` + r.entities.map((e) => card({...e, compared: null},
         (e.likely ? '<span class="chip good">likely the same</span>' : "") + e.fields.map((f) => `<span class="chip">${esc(words(f))}</span>`).join(""))).join("");

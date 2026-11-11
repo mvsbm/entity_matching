@@ -239,7 +239,8 @@ def _build(ws: Path, s: Settings, p: Pipeline, stamp: dict) -> dict:
     finally:
         con.close()
         shutil.rmtree(tmp, ignore_errors=True)
-    return dict(index=str(ws / INDEX), records=m["records"], tables=m["tables"], seconds=m["seconds"])
+    return dict(index=str(ws / INDEX), records=m["records"], tables=m["tables"], seconds=m["seconds"],
+                unsearched=sorted({f for c, f in SEARCHED.items() if c not in have} - {SEARCHED[c] for c in searched}))
 
 
 def update(ws: Path, s: Settings, p: Pipeline) -> dict:
@@ -512,6 +513,7 @@ def _search(ws: Path, s: Settings, p: Pipeline, values: dict[str, str], at_least
     ws, uid, clock, t = Path(ws), s.data.unique_id, {}, time.perf_counter()
     with _asking(ws, s, p, values, None) as (m, fitted, model, con, query):
         typed = {c: v for c in m["searched"] if c in query and pd.notna(v := query[c].iloc[0])}
+        unsearched = sorted({f for c, f in SEARCHED.items() if c not in m["searched"] and c in query and pd.notna(query[c].iloc[0])} - {SEARCHED[c] for c in typed})
         clock["prepare"] = time.perf_counter() - t
         t = time.perf_counter()
         listed, over, first = {}, {}, {}  # first: each record's place in the order its value was read (by value): ties go by it
@@ -555,7 +557,7 @@ def _search(ws: Path, s: Settings, p: Pipeline, values: dict[str, str], at_least
                 rows.append(dict(entity=x.entity, record=x.uid, points=round(float(x.weight), 2), likely=bool(x.likely), fields=x.fields,
                                  compared=x.compared, records=int(size[x.entity]), shown=x.shown))
     return dict(record=_view(query, uid), entities=rows[:most], found=len(rows), listed=len(shared), candidates=len(ids),
-                typed=sorted({SEARCHED[c] for c in typed}), over=[dict(field=f, **v) for f, v in over.items()],
+                typed=sorted({SEARCHED[c] for c in typed}), over=[dict(field=f, **v) for f, v in over.items()], unsearched=unsearched,
                 seconds={k: round(v, 4) for k, v in clock.items()}, index=dict(built_at=m["built_at"], records=m["records"] + m["added"]))
 
 
