@@ -86,13 +86,16 @@ def events(out: str) -> list[dict]:  # the command's JSON events; a line that is
 def one_pass(run: Path, inbox: Path, retries: int, compute: list[str], say: Callable[..., None], settle: float = 60.0) -> bool:
     """Every waiting file, oldest first; one changed in the last `settle` seconds may still be being copied in, and
     waits for a later pass. False if the pass stopped on a file that kept failing."""
-    done_before = {e["sha256"] for e in ledger(run) if e["outcome"] == "done"}
+    done = [e for e in ledger(run) if e["outcome"] == "done"]
+    done_before = {e["sha256"] for e in done if e.get("kind", "batches") == "batches"}  # a batch's records join once
+    last = {e.get("kind"): e["sha256"] for e in done}  # decisions or answers: only the last of their kind is done before; sent again after another, a sheet reverts it
+    seen = lambda kind, digest: digest in done_before if kind == "batches" else digest == last.get(kind)
     now = time.time()
     tasks = sorted(((f.stat().st_mtime, f.name, kind, f) for kind in KINDS if (inbox / kind).is_dir() for f in (inbox / kind).iterdir()
                     if f.suffix.lower() in intake.SUFFIXES and now - f.stat().st_mtime >= settle))
     for _, name, kind, f in tasks:
         digest = intake.sha256(f)
-        if digest in done_before:
+        if seen(kind, digest):
             record(run, file=name, kind=kind, sha256=digest, outcome="done", note="the same content was done before")
             say(f"{kind}/{name}: done before (the same content), moved to done/", file=name, kind=kind, outcome="done")
             move(f, inbox / "done" / kind)
@@ -106,7 +109,8 @@ def one_pass(run: Path, inbox: Path, retries: int, compute: list[str], say: Call
         if code == 0:
             outcome = "done"
             dest = move(f, inbox / "done" / kind)
-            done_before.add(digest)
+            done_before.add(digest) if kind == "batches" else None
+            last[kind] = digest
         elif code == 2:
             outcome = "failed"
             dest = move(f, inbox / "failed" / kind)

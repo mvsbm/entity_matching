@@ -766,3 +766,67 @@ def test_a_workspace_on_object_storage_is_refused_and_one_on_a_disk_is_not(say, 
             pass
     monkeypatch.setattr(io, "MOUNTS", tmp_path / "none")  # no mountinfo (macOS, Windows): every folder a disk
     assert io.object_store(root / "bucket") is None
+
+
+def test_people_s_line_and_decisions_stand_against_an_old_trial_an_old_sheet_a_late_write_and_a_file_sent_again(say, tmp_path, population, monkeypatch):
+    from er import folder, inbox
+    from er.config import dump_pipeline
+    from er.report import applied
+    s, p, g = population
+    uid, ent = s.data.unique_id, s.data.entity_id
+    l, r = f"{uid}_l", f"{uid}_r"
+    dump_pipeline(replace(p, trust=replace(p.trust, checks=8, watch=3)), s.chains, tmp_path / "small.toml")  # a sample of 8, to test on 492 records
+    g.df.to_parquet(tmp_path / "theirs.parquet", index=False)
+    monkeypatch.chdir(tmp_path)
+    ws, pipe, at = tmp_path / "workspaces" / "w", ("--workspace", "workspaces/w", "--pipeline", "small.toml"), ("--workspace", "workspaces/w")
+    truth = g.truth.set_index(uid)[ent]
+    latest = lambda a, b: applied(ws, uid).set_index([l, r])["decision"].get((a, b))
+    say("create", "workspace", "w")
+    say("load", "records", "theirs.parquet", *at)
+    assert say("resolve", "records", *pipe)[0] == 0
+    sample = pd.read_parquet(ws / "review.parquet").query("why == 'decide'")
+    sample.assign(decision=np.where(sample[l].map(truth) == sample[r].map(truth), "match", "no_match")).to_parquet(tmp_path / "decided.parquet")
+    assert say("apply", "decisions", "--file", "decided.parquet", *pipe)[0] == 0 and say("lower", "trust", *pipe)[0] == 0 and folder.method(ws)["trust"] == 12.0
+
+    below = pd.read_parquet(ws / "proposed").sort_values("match_weight").iloc[-1]  # the next range's best pair, not decided
+    assert say("decide", "pair", below[l], below[r], "no_match", *at)[0] == 0  # marked different on the sheet, not applied
+    code, said = say("lower", "trust", *pipe)
+    assert code == 2 and "marked different on the review sheet" in said["error"] and folder.method(ws)["trust"] == 12.0  # the line stays
+    assert say("decide", "pair", below[l], below[r], "clear", *at)[0] == 0
+
+    assert say("try", "method", "--line", "9", *pipe)[0] == 0  # trial 1: the method with today's line, 12
+    link = pd.read_parquet(ws / "matches").sort_values("match_weight").iloc[0]  # a link above the line, merged without people: a spot-check finds it false
+    pd.DataFrame({l: [link[l]], r: [link[r]], "decision": ["no_match"]}).to_parquet(tmp_path / "false.parquet")
+    assert say("apply", "decisions", "--file", "false.parquet", *pipe)[0] == 0
+    assert say("rerun", "records", *pipe)[0] == 0  # the pair is now in neither matches nor proposed: still counted
+    assert say("describe", "workspace", "workspaces/w", "--pipeline", "small.toml")[1]["trust"]["above"]["false"] == 1
+    assert say("raise", "trust", *pipe)[0] == 0 and folder.method(ws)["trust"] == 20.0
+    assert say("adopt", "method", "--trial", "1", *pipe)[0] == 0 and folder.method(ws)["trust"] == 20.0  # people's line, not the trial's
+
+    same = sample[sample[l].map(truth) == sample[r].map(truth)].iloc[0]  # a pair decided same, on the sheet as applied
+    assert say("decide", "pair", same[l], same[r], "match", *at)[0] == 0 and say("apply", "decisions", *pipe)[0] == 0
+    pd.DataFrame({l: [same[l]], r: [same[r]], "decision": ["no_match"]}).to_parquet(tmp_path / "other.parquet")  # another person: different
+    assert say("apply", "decisions", "--file", "other.parquet", *pipe)[0] == 0 and latest(same[l], same[r]) == "no_match"
+    assert say("apply", "decisions", *pipe)[0] == 0 and latest(same[l], same[r]) == "no_match"  # the sheet again: the old "same" never comes back
+    links = say("describe", "entity", same[l], *at)[1]["links"]
+    assert not [x for x in links if {x["id_l"], x["id_r"]} == {same[l], same[r]} and x["by"] == "people: match"]  # its latest only
+
+    m = {"join": "and", "when": [{"points": 12}]}
+    folder.write_method(ws, {**folder.method(ws), "merge": m})
+    assert folder.method(ws)["merge"] == m  # merge conditions are a table: written as one
+    before = (ws / folder.METHOD).read_text(encoding="utf-8")
+    real = folder.stage
+    monkeypatch.setattr(folder, "stage", lambda *a, **k: (_ for _ in ()).throw(OSError("disk full")))  # the write fails
+    with pytest.raises(OSError):
+        say("set", "merging", "--conditions", json.dumps({"join": "or", "when": [{"points": 20}]}), *pipe)
+    assert (ws / folder.METHOD).read_text(encoding="utf-8") == before  # the conditions and the entities still agree
+    monkeypatch.setattr(folder, "stage", real)
+
+    box = tmp_path / "inbox" / "decisions"
+    box.mkdir(parents=True)
+    for i, (name, decision) in enumerate((("a.csv", "match"), ("b.csv", "no_match"), ("a2.csv", "match"))):  # a, then b, then a's file again to undo b
+        f = box / name
+        f.write_text(f"{l},{r},decision\n{below[l]},{below[r]},{decision}\n", encoding="utf-8")
+        os.utime(f, (1_000_000 + i, 1_000_000 + i))
+        assert inbox.one_pass(ws, tmp_path / "inbox", 1, [], lambda *a, **k: None, settle=0)
+        assert latest(below[l], below[r]) == decision

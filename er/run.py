@@ -945,11 +945,14 @@ class Run:
         before, after = (self.con.execute(f"SELECT count(DISTINCT cluster_id) FROM {x}").fetchall()[0][0] for x in ("gold_old", "gold"))
         self._done("decide", "O(D + touched clusters) + O(N)", f"O({d:,} decisions + {self.n:,})", t,
                    decisions=d, matches=m, clusters_joined=before - after)
-        parts = out / folder.DECISIONS
+        parts, sheet = out / folder.DECISIONS, out / "review.parquet"
         parts.mkdir(exist_ok=True)
+        restamp = [(f"""SELECT s.* EXCLUDE (file_row_number) REPLACE (coalesce(d.decision, s.decision::VARCHAR) AS decision)
+            FROM read_parquet({lit(sheet)}, file_row_number = true) s LEFT JOIN er_decisions d ON d.{l} = s.{l} AND d.{r} = s.{r}
+            ORDER BY file_row_number""", sheet)] if sheet.exists() and Path(path).resolve() != sheet.resolve() else []  # the sheet shows each pair's latest: an answer given elsewhere never comes back from it
         folder.stage(self.con, out, [(f"SELECT * FROM gold ORDER BY {u}", out / "gold.parquet"),
                                      (f"SELECT *, {len(folder.rounds(out)) or 'NULL'}::INTEGER AS round FROM er_decisions",
-                                      parts / f"part-{folder.next_part(parts):05d}.parquet")],
+                                      parts / f"part-{folder.next_part(parts):05d}.parquet"), *restamp],
                      [(self._log(out, True, decisions=str(path)), out / folder.STEPS)])
         return self
 

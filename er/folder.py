@@ -172,13 +172,19 @@ def log(out: Path, entry: dict, append: bool, earlier: list[dict] | None = None)
     return json.dumps(dict(earlier=old.get("earlier", []) if append else (earlier or [])[-EARLIER:], runs=[*old.get("runs", []), entry]), indent=1, default=str)
 
 
-def write_method(out: Path, method: dict) -> None:  # method.toml as `method` says, each value in TOML (tables inline)
+PEOPLE = ("trust", "merge")  # the method's keys people set (their trust line, their merge conditions): a method adopted or reset keeps today's
+
+
+def method_text(method: dict) -> str:  # method.toml's text for `method`, each value in TOML (tables inline); "" for none
     from er.config import _toml
-    path = out / METHOD
+    return "".join(f"{k} = {_toml(v, inline=True)}\n" for k, v in method.items())
+
+
+def write_method(out: Path, method: dict) -> None:  # method.toml as `method` says, whole or not at all; none: no file
     if method:
-        path.write_text("".join(f"{k} = {_toml(v, inline=True)}\n" for k, v in method.items()), encoding="utf-8")
+        replace_text(out / METHOD, method_text(method))
     else:
-        path.unlink(missing_ok=True)
+        (out / METHOD).unlink(missing_ok=True)
 
 
 def method(out: Path | str | None) -> dict:  # the workspace's method.toml, {} without one

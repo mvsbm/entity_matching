@@ -17,7 +17,7 @@ from er.config import InputError, Pipeline, bits, lit, q
 from er.io import read_parquet
 from er.kind import sheet_parts
 from er.match import levels, named_sql
-from er.report import applied, no_run, run_model, scored_again
+from er.report import applied, no_run, run_model, said, scored_again
 from er.settings import Settings, norm_name
 
 BANDS = (-20, -10, 0, 6, 8, 10, 12, 16, 20)  # the score chart's edges, in points: as report.txt's SCORES
@@ -73,22 +73,10 @@ def _index(con: duckdb.DuckDBPyConnection, db: object, out: Path, s: Settings, p
     folder.stage(con, out, [("SELECT * FROM er_scored_index", out / folder.SCORED / "part-00000.parquet")])
 
 
-def _said(out: Path, uid: str) -> pd.DataFrame:
-    """Each pair's latest decision: applied (decisions/), else typed into the sheet and not applied yet."""
-    l, r = f"{uid}_l", f"{uid}_r"
-    done = applied(out, uid)[[l, r, "decision"]].assign(applied=True)
-    sheet = out / "review.parquet"
-    typed = read_parquet(sheet, columns=[l, r, "decision"]).dropna(subset=["decision"]).assign(applied=False) if sheet.exists() else done.iloc[:0]
-    kept = set(zip(done[l], done[r], done["decision"]))  # the sheet keeps what was applied: only a different answer is newer
-    typed = typed[[x not in kept for x in zip(typed[l], typed[r], typed["decision"])]]
-    both = pd.concat([typed, done], ignore_index=True).astype({l: "string", r: "string"})
-    return both.drop_duplicates([l, r], keep="first")  # a decision typed since overrides the applied one
-
-
 def _status_sql(con: duckdb.DuckDBPyConnection, out: Path, uid: str, index: str) -> str:
     """The index with each pair's status: same / different (people's), merged (one entity already), waiting."""
     l, r, u = q(f"{uid}_l"), q(f"{uid}_r"), q(uid)
-    con.register("er_said", _said(out, uid))
+    con.register("er_said", said(out, uid))
     return f"""SELECT x.*, d.decision AS said, d.applied, CASE WHEN d.decision = 'match' THEN 'same' WHEN d.decision = 'no_match' THEN 'different'
             WHEN ga.cluster_id = gb.cluster_id THEN 'merged' ELSE 'waiting' END AS status
         FROM {index} x LEFT JOIN er_said d USING ({l}, {r})
@@ -263,7 +251,11 @@ def merging_of(out: Path, p: Pipeline) -> dict:
     """The workspace's merge conditions (method.toml `merge`): {join: and|or, when: [...]}, none when unset; and what
     the method merges by itself when there are none (own): pairs at `line` points or more with a name compared, and
     with `rules` every rule's pair; None when nothing does (a trust line above every step)."""
-    m = folder.method(out).get("merge") or {}
+    return _merging(folder.method(out), p)
+
+
+def _merging(method: dict, p: Pipeline) -> dict:  # merging_of, for a method as given
+    m = method.get("merge") or {}
     return dict(join=m.get("join", "and"), when=list(m.get("when", [])), own=_own(p))
 
 
@@ -349,14 +341,16 @@ def _regroup(con: duckdb.DuckDBPyConnection, db: object, out: Path, s: Settings,
     merge(con, db, "er_base", "er_links", "gold_new", uid)
 
 
-def apply_merging(con: duckdb.DuckDBPyConnection, db: object, out: Path, s: Settings, p: Pipeline) -> dict:
+def apply_merging(con: duckdb.DuckDBPyConnection, db: object, out: Path, s: Settings, p: Pipeline, method: dict | None = None) -> dict:
     """gold.parquet rebuilt from people's applied "same" and the pairs the workspace's conditions merge (none: the pairs
     the method merges by itself), as a run would: a condition turned off parts what it joined, people's answers stand.
-    No run: O(E·d + N) on the stored pairs."""
+    `method`: method.toml as it becomes, written with gold, so the two never disagree. No run: O(E·d + N) on the
+    stored pairs."""
     from er.run import customer_kinds  # er.run reads merge_where from here
-    uid, m, model = s.data.unique_id, merging_of(out, p), run_model(out)
+    uid, model = s.data.unique_id, run_model(out)
     u = q(uid)
     with folder.run_lock(out):
+        m = merging_of(out, p) if method is None else _merging(method, p)
         folder.finish_writes(out)
         _regroup(con, db, out, s, p, m, model)
         old = read(out, "gold.parquet")
@@ -377,7 +371,8 @@ def apply_merging(con: duckdb.DuckDBPyConnection, db: object, out: Path, s: Sett
             FROM gold_new c JOIN size z USING (cluster_id) JOIN {old} o USING ({u}) LEFT JOIN first f ON f.id = c.{u} LEFT JOIN model m ON m.id = c.{u}
             {"JOIN customer k USING (cluster_id)" if kinds else ""} ORDER BY c.{u}""")
         joined = con.execute("SELECT count(*) FROM (SELECT cluster_id FROM gold GROUP BY 1 HAVING count(*) > 1)").fetchall()[0][0]
-        folder.stage(con, out, [(f"SELECT * FROM gold ORDER BY {u}", out / "gold.parquet")])
+        folder.stage(con, out, [(f"SELECT * FROM gold ORDER BY {u}", out / "gold.parquet")],
+                     [(folder.method_text(method), out / folder.METHOD)] if method is not None else [])
     return dict(join=m["join"], when=m["when"], entities=int(joined), merged=con.execute("SELECT count(*) FROM er_auto").fetchall()[0][0])
 
 
@@ -395,9 +390,6 @@ def merged_links(con: duckdb.DuckDBPyConnection, db: object, out: Path, s: Setti
         AND NOT EXISTS (SELECT 1 FROM er_no n WHERE n.{q(l)} = x.{q(l)} AND n.{q(r)} = x.{q(r)}) ORDER BY 1, 2""").df()
 
 
-def save_merging(out: Path, m: dict) -> None:
-    """method.toml's merge set to `m` (none: removed), the rest of the method as it was."""
-    method = {k: v for k, v in folder.method(out).items() if k != "merge"}
-    if m.get("when"):
-        method["merge"] = m
-    folder.write_method(out, method)
+def with_merging(out: Path, m: dict) -> dict:
+    """method.toml with its merge set to `m` (none: removed), the rest of the method as it is."""
+    return {**{k: v for k, v in folder.method(out).items() if k != "merge"}, **({"merge": m} if m.get("when") else {})}

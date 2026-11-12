@@ -47,7 +47,7 @@ from er.report import (applied, compare_records, describe_entity, describe_key, 
 from er.source import describe, filled, find, lexicon
 from er.kind import sheet_parts
 from er.match import review_floor
-from er.results import apply_merging, check_merging, describe_merging, describe_results, list_entities, list_scored, merged_links, save_merging, show_records
+from er.results import apply_merging, check_merging, describe_merging, describe_results, list_entities, list_scored, merged_links, show_records, with_merging
 from er.strings import connect
 from er.run import Run, run_config, size_bytes, trial
 from er.settings import (COLUMNS, SPECIAL, add_feature, added_of, beside, columns_file, counted_once, features_of, load_settings, names_by_kind, offers,
@@ -1371,7 +1371,7 @@ def adopt(a: dict, emit: "Emit", method: dict) -> dict:
             if old is None:
                 path.unlink(missing_ok=True)
             else:
-                path.write_text(old, encoding="utf-8")
+                replace_text(path, old)
             raise
 
 
@@ -1380,24 +1380,34 @@ def adopt_method(a: dict, emit: "Emit") -> dict:
     f = ws / folder.TRIALS / f"{a['trial']}.json"
     if not f.exists():
         raise InputError(f"no trial {a['trial']} in {ws}", fix="try it first: nayose try method --workspace …; the last 5 trials are kept")
-    tried, merge = json.loads(f.read_text(encoding="utf-8"))["method"], folder.method(ws).get("merge")  # people's merge conditions as they are now, not as at the trial
-    return adopt(a, emit, {**{k: v for k, v in tried.items() if k != "merge"}, **({"merge": merge} if merge else {})})
+    with folder.run_lock(ws):  # people's trust line and merge conditions as they are now, not as at the trial
+        tried, now = json.loads(f.read_text(encoding="utf-8"))["method"], folder.method(ws)
+        return adopt(a, emit, {**{k: v for k, v in tried.items() if k not in folder.PEOPLE}, **{k: now[k] for k in folder.PEOPLE if k in now}})
 
 
 def reset_method(a: dict, emit: "Emit") -> dict:  # the method as tuned; people's trust line and merge conditions stay, unless they no longer read or fit
-    try:
-        setup(a, kept := {k: v for k, v in folder.method(Path(a["workspace"])).items() if k in ("trust", "merge")})
-    except InputError:  # the way out every refusal of method.toml names: nothing of it kept
-        kept = {}
-    return adopt(a, emit, kept)
+    with folder.run_lock(Path(a["workspace"])):
+        try:
+            setup(a, kept := {k: v for k, v in folder.method(Path(a["workspace"])).items() if k in folder.PEOPLE})
+        except InputError:  # the way out every refusal of method.toml names: nothing of it kept
+            kept = {}
+        return adopt(a, emit, kept)
 
 
 def lower_trust(a: dict, emit: "Emit") -> dict:
+    with folder.run_lock(Path(a["workspace"])):  # checked and lowered as one: a decision written meanwhile is seen
+        return _lower_trust(a, emit)
+
+
+def _lower_trust(a: dict, emit: "Emit") -> dict:
     s, p, _ = setup(a)
     ws = Path(a["workspace"])
     state = trust_state(connect(s.compute)[0], ws, p, s.data.unique_id) if (ws / "gold.parquet").exists() else None
     if state is None:
         raise InputError(f"{ws} has no trust line: it merges as tuned", fix="start one, and nothing merges before people check: nayose raise trust --workspace …")
+    if state["typed_false"]:  # written in, not applied: the range isn't proven, and it would merge them
+        raise InputError(f"{state['typed_false']:,} pair{'s' if state['typed_false'] > 1 else ''} of the range below the line {'are' if state['typed_false'] > 1 else 'is'} "
+                         "marked different on the review sheet, not applied yet: the line stays", fix="apply them first: nayose apply decisions --workspace …")
     if not state["may_lower"]:
         span = state["next"]
         if span and state["false"]:  # proven false: no count of checks lowers it
@@ -1409,12 +1419,13 @@ def lower_trust(a: dict, emit: "Emit") -> dict:
 
 
 def raise_trust(a: dict, emit: "Emit") -> dict:
-    s, p, _ = setup(a)
-    ws, line = Path(a["workspace"]), p.trust.line
-    if line is not None and math.isinf(line):
-        raise InputError("the trust line is above every step already: nothing merges before people check", fix="")
-    up = [x for x in p.trust.steps if line is not None and x > line]
-    return adopt(a, emit, {**folder.method(ws), "trust": min(up) if up else "none"})
+    with folder.run_lock(Path(a["workspace"])):  # read and raised as one
+        s, p, _ = setup(a)
+        ws, line = Path(a["workspace"]), p.trust.line
+        if line is not None and math.isinf(line):
+            raise InputError("the trust line is above every step already: nothing merges before people check", fix="")
+        up = [x for x in p.trust.steps if line is not None and x > line]
+        return adopt(a, emit, {**folder.method(ws), "trust": min(up) if up else "none"})
 
 
 def draw_pairs(a: dict, emit: "Emit") -> dict:
@@ -1587,7 +1598,12 @@ def list_pairs(a: dict, emit: "Emit") -> dict:
 
 def split_entity(a: dict, emit: "Emit") -> dict:
     """An entity split at a link that alone holds it together: that pair decided different (Run.decide stores it with
-    people's decisions), then a full run, which never accepts a pair people called different."""
+    people's decisions), then a full run, which never accepts a pair people called different. One lock throughout."""
+    with folder.run_lock(Path(a["workspace"])):
+        return _split_entity(a, emit)
+
+
+def _split_entity(a: dict, emit: "Emit") -> dict:
     s, p, _ = setup(a)
     out, uid = Path(a["workspace"]), s.data.unique_id
     if len(a["between"] or []) != 2:
@@ -1711,25 +1727,19 @@ def set_merging(a: dict, emit: "Emit") -> dict:
     out = Path(a["workspace"])
     m = check_merging(conditions(a) or {}, p, run_model(out))  # the run's own comparisons: a field the file lacks has none
     con, db = connect(s.compute)
-    with folder.run_lock(out):
-        old = folder.method(out)
-        save_merging(out, m)
-        try:
-            r = apply_merging(con, db, out, s, p)
-        except BaseException:  # the method and the entities always agree: the conditions as they were
-            folder.write_method(out, old)
-            raise
+    with folder.run_lock(out):  # the conditions written with the entities they make, in one staged write
+        r = apply_merging(con, db, out, s, p, method=with_merging(out, m))
     return {**r, "next": [dict(command=nayose("describe", "results", "--workspace", out), why="what now merges")]}
 
 
 def apply_decisions(a: dict, emit: "Emit") -> dict:
     s, p, _ = setup(a)
     out = Path(a["workspace"])
-    with readable(a["file"], s, strict=True) if a["file"] else contextlib.nullcontext(out / "review.parquet") as path:
+    with folder.run_lock(out), readable(a["file"], s, strict=True) if a["file"] else contextlib.nullcontext(out / "review.parquet") as path:
         run = Run(p, s, echo=emit.step, told=emit.progress).decide(path, out)
-    if folder.method(out).get("merge"):  # merged by people's conditions: rebuilt, so a pair said different parts at once
-        con, db = connect(s.compute)
-        apply_merging(con, db, out, s, p)
+        if folder.method(out).get("merge"):  # merged by people's conditions: rebuilt, so a pair said different parts at once
+            con, db = connect(s.compute)
+            apply_merging(con, db, out, s, p)
     x = run.steps[-1]
     return dict(decisions=x["decisions"], matches=x["matches"], clusters_joined=x["clusters_joined"],
                 summary=[["nothing new", "every decision was applied before"]] if not x["decisions"] else [],

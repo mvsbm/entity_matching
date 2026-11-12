@@ -146,6 +146,9 @@ def qa(run: "Run", fields: list[str] | None = None, review: int = 50, previous: 
         if len(mixed):
             kind_rows.append(("note", f"{len(mixed):,} cluster{'s hold' if len(mixed) > 1 else ' holds'} a sure person and a sure company: see qa.md, mixed kinds"))
     probed = next((x["strata"] for x in reversed(run.steps) if x["step"] == "probe"), [])  # er.probe: counts only
+    apart = con.execute(f"""SELECT count(*) FROM er_decisions d JOIN gold a ON a.{u} = d.{q(run.l)} JOIN gold b ON b.{u} = d.{q(run.r)}
+        WHERE d.decision = 'no_match' AND a.cluster_id = b.cluster_id""").fetchall()[0][0] \
+        if con.execute("SELECT count(*) FROM duckdb_tables() WHERE table_name = 'er_decisions'").fetchall()[0][0] else 0  # kept apart, joined by others
     summary = pd.DataFrame([
         ("records", f"{total:,}" + (f", {run.added:,} of them new" if run.added is not None else "") + (f"; {aside:,} set aside (set_aside/)" if aside else "")),
         ("entities", f"{entities:,}; the largest holds {biggest:,} record{'s' * (biggest != 1)}"),
@@ -157,6 +160,8 @@ def qa(run: "Run", fields: list[str] | None = None, review: int = 50, previous: 
                      f"{x['hits']:,} found in {x['scored']:,} of its {x['pairs']:,} pairs, scored" + (f"; {x['between_rules']:,} of them between two entities the rules formed (bridge off)"
                      if x["between_rules"] else "")) for x in probed),
         *kind_rows,
+        *([("note", f"{apart:,} pair{'s' if apart > 1 else ''} people called different {'are' if apart > 1 else 'is'} in one entity through other links: "
+                    "see it with describe entity, part it with split entity")] if apart else []),
         *(("note", f"{f} only {x:.1%} filled: check its mapping") for f, x in fill.loc[fill["flag"] != "", ["field", "filled"]].itertuples(index=False)),
         *(("note", f"turned off, a field it reads is missing: {d}") for d in run.disabled),
         *(("note", note) for note in run.notes),
@@ -293,6 +298,18 @@ def trust_sheet(run: "Run", out: Path | None = None) -> tuple[pd.DataFrame, pd.D
     return pd.concat([decide, unnamed], ignore_index=True).assign(why="decide"), audit.assign(why="audit")
 
 
+def said(out: Path, uid: str) -> pd.DataFrame:
+    """Each pair's latest decision: applied (decisions/), else typed into the sheet and not applied yet (applied False)."""
+    l, r = f"{uid}_l", f"{uid}_r"
+    done = applied(out, uid)[[l, r, "decision"]].assign(applied=True)
+    sheet = out / "review.parquet"
+    typed = read_parquet(sheet, columns=[l, r, "decision"]).dropna(subset=["decision"]).assign(applied=False) if sheet.exists() else done.iloc[:0]
+    kept = set(zip(done[l], done[r], done["decision"]))  # the sheet keeps what was applied: only a different answer is newer
+    typed = typed[[x not in kept for x in zip(typed[l], typed[r], typed["decision"])]]
+    both = pd.concat([typed, done], ignore_index=True).astype({l: "string", r: "string"})
+    return both.drop_duplicates([l, r], keep="first")  # a decision typed since overrides the applied one
+
+
 def trust_state(con: duckdb.DuckDBPyConnection, out: Path, p: Pipeline, uid: str) -> dict | None:
     """The trust line of the run in `out` (p.trust, the workspace's method.toml), and how far people are: the range
     they check next (from the next step down to the line), its links (the rules' and the model's, in the run's
@@ -303,31 +320,36 @@ def trust_state(con: duckdb.DuckDBPyConnection, out: Path, p: Pipeline, uid: str
     if trust.line is None:
         return None
     l, r = q(f"{uid}_l"), q(f"{uid}_r")
-    parts = [f"SELECT {l}, {r}, match_weight FROM read_parquet({lit(out / x / '*.parquet')}, union_by_name = true)"
-             for x in ("matches", "proposed", "rule_kept") if any((out / x).glob("*.parquet"))]
     decided = applied(out, uid)[[f"{uid}_l", f"{uid}_r", "decision"]]
     con.register("er_trust_decided", decided)
+    typed = said(out, uid)
+    con.register("er_trust_typed", typed[~typed["applied"] & (typed["decision"] == "no_match")])  # marked different on the sheet, not applied yet
+    parts = [f"SELECT {l}, {r}, match_weight FROM read_parquet({lit(out / x / '*.parquet')}, union_by_name = true)"
+             for x in ("matches", "proposed", "rule_kept") if any((out / x).glob("*.parquet"))]
+    if parts and any((out / "scored").glob("*.parquet")):  # a pair people decided at the line or above is in neither matches nor proposed
+        parts.append(f"SELECT s.{l}, s.{r}, s.match_weight FROM read_parquet({lit(out / 'scored' / '*.parquet')}, union_by_name = true) s JOIN er_trust_decided USING ({l}, {r})")
 
     def count(where: str) -> dict:
         if not parts:
-            return dict(pairs=0, checked=0, false=0)
-        pairs, checked, false = con.execute(f"""SELECT count(*), count(d.decision), count(*) FILTER (WHERE d.decision = 'no_match')
+            return dict(pairs=0, checked=0, false=0, typed_false=0)
+        pairs, checked, false, typed_false = con.execute(f"""SELECT count(*), count(d.decision), count(*) FILTER (WHERE d.decision = 'no_match'), count(t.decision)
             FROM (SELECT DISTINCT ON ({l}, {r}) * FROM ({' UNION ALL '.join(parts)})) x LEFT JOIN er_trust_decided d USING ({l}, {r})
-            WHERE {where}""").fetchall()[0]
-        return dict(pairs=pairs, checked=checked, false=false)
+            LEFT JOIN er_trust_typed t USING ({l}, {r}) WHERE {where}""").fetchall()[0]
+        return dict(pairs=pairs, checked=checked, false=false, typed_false=typed_false)
     span = trust.below(lambda lo, hi: count(f"x.match_weight >= {bits(lo)} AND x.match_weight < {bits(hi)}")["pairs"] > 0)  # an empty range passed
     within = f"x.match_weight >= {bits(span[0])} AND x.match_weight < {bits(span[1])}" if span else "FALSE"
-    near = count(within) if span else dict(pairs=0, checked=0, false=0)
+    near = count(within) if span else dict(pairs=0, checked=0, false=0, typed_false=0)
     above = count(f"x.match_weight >= {bits(trust.line)}")
     gold = lit(out / "gold.parquet")
     askable = con.execute(f"""SELECT count(*) FROM (SELECT DISTINCT ON ({l}, {r}) * FROM ({' UNION ALL '.join(parts)})) x
         LEFT JOIN er_trust_decided d USING ({l}, {r}) JOIN read_parquet({gold}) ga ON ga.{q(uid)} = x.{l} JOIN read_parquet({gold}) gb ON gb.{q(uid)} = x.{r}
         WHERE {within} AND (d.decision IS NOT NULL OR ga.cluster_id <> gb.cluster_id)""").fetchall()[0][0] if near["false"] and parts else 0
     con.unregister("er_trust_decided")
+    con.unregister("er_trust_typed")
     needed = askable if near["false"] else min(trust.checks, near["pairs"])  # found false: every pair people can still be asked
     return dict(line="none" if math.isinf(trust.line) else trust.line,
                 next=dict(down_to=span[0], up_to=None if math.isinf(span[1]) else span[1]) if span else None,
-                **near, needed=needed, may_lower=span is not None and near["checked"] >= needed and not near["false"],
+                **near, needed=needed, may_lower=span is not None and near["checked"] >= needed and not near["false"] and not near["typed_false"],
                 above=above, checks=trust.checks)
 
 
@@ -386,6 +408,8 @@ def review_workload(con: duckdb.DuckDBPyConnection, out: Path, p: Pipeline, uid:
     tops = [math.inf, *steps[:-1]]
     band = "CASE " + " ".join(f"WHEN x.match_weight >= {bits(lo)} THEN {i}" for i, lo in enumerate(steps)) + f" ELSE {len(steps)} END"
     con.register("er_review_decided", applied(out, uid)[[f"{uid}_l", f"{uid}_r", "decision"]])
+    if parts and any((out / "scored").glob("*.parquet")):  # a pair people decided at the line or above, as trust_state counts it
+        parts.append(f"SELECT s.{l}, s.{r}, s.match_weight FROM read_parquet({lit(out / 'scored' / '*.parquet')}, union_by_name = true) s JOIN er_review_decided USING ({l}, {r})")
     got = {b: (n, c, f, e) for b, n, c, f, e in con.execute(f"""SELECT {band} AS b, count(*), count(d.decision), count(*) FILTER (WHERE d.decision = 'no_match'),
         sum(1 / (1 + pow(2, least(x.match_weight, 60)))) FROM (SELECT DISTINCT ON ({l}, {r}) * FROM ({' UNION ALL '.join(parts)})) x
         LEFT JOIN er_review_decided d USING ({l}, {r}) GROUP BY 1""").fetchall()} if parts else {}
@@ -505,9 +529,12 @@ def describe_entity(con: duckdb.DuckDBPyConnection, out: Path, uid: str, record:
     links = [f"""SELECT {l}, {r}, rule AS by, NULL::DOUBLE AS weight FROM read_parquet({lit(out / 'rule_kept' / '*.parquet')}, union_by_name = true)
                  {among} AND merged""",
              f"SELECT {l}, {r}, 'fs' AS by, match_weight AS weight FROM read_parquet({lit(out / 'matches' / '*.parquet')}) {among}"]
-    if any((out / DECISIONS).glob("*.parquet")):
-        links.append(f"SELECT {l}, {r}, 'people: ' || decision AS by, NULL FROM read_parquet({lit(out / DECISIONS / '*.parquet')}) {among}")
+    if len(latest := applied(out, uid)[[f"{uid}_l", f"{uid}_r", "decision"]]):  # each pair's latest: a "same" changed since is no link
+        con.register("er_entity_said", latest)
+        links.append(f"SELECT {l}, {r}, 'people: ' || decision AS by, NULL FROM er_entity_said {among}")
     found = con.execute(" UNION ALL ".join(links) + " ORDER BY 1, 2").df()
+    if len(latest):
+        con.unregister("er_entity_said")
     return dict(record=record, entity=entity, size=size, records=rows, links=found)
 
 
