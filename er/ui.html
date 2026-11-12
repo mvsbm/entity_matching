@@ -974,7 +974,8 @@ const task = {
     clearInterval(this.clock);
     this.done = ok; this.why = why;
     this.draw();
-    if (ok) this.hide = setTimeout(() => { $("task").hidden = true; }, 8000);
+    const home = (LAYOUT.screens.find((x) => x.uses.some((u) => u.command === this.command)) || {}).id;  // the page that shows what it did
+    if (ok) this.hide = setTimeout(() => { $("task").hidden = true; }, home === current ? 0 : 8000);  // there, drawn already: never over its buttons
     else $("task").hidden = false;  // a failure said wherever the person is, its page's own command too
   },
   draw() {
@@ -990,7 +991,7 @@ const task = {
       done = p.done / p.total;
       now = p.done < p.total ? `${fmt(p.done)} of ${fmt(p.total)} ${p.unit}` : "reading the columns";
     }
-    const title = BUSY[this.command] || `Running ${this.command}`;
+    const title = BUSY[this.command] || (COMMANDS[this.command] || {}).help || this.command;  // its own words: never "Running …"
     soon = soon || (left === null ? `${Math.round(secs)} s` : left < 2 ? "almost done" : `about ${lasts(left)} left`);
     if (done !== null) done = this.most = Math.max(this.most, done);  // never back: scoring's own count may say less than time did
     $("task").setAttribute("aria-busy", String(this.done === null));  // read out at its start and end, not each second
@@ -1016,7 +1017,7 @@ const stepsCard = (command) => `<div class="card steps-card"><div class="qa"><di
   esc(BUSY[command] || command)}…</h2><p class="answer"></p></div></div><span class="meter wide" hidden><i style="width:0"></i></span>${linear()}</div>`;
 let railShown = null;  // the page the step list last marked as running: drawn again only when that changes
 function railBusy() {  // the step a long command runs for: its dot turning, its line and the Overview's card saying how far
-  if (railShown !== task.busy()) rail();
+  if (railShown !== task.busy()) { rail(); stepChip(); }  // begun or ended: the heading says so too
   document.querySelectorAll(".run-line").forEach((x) => { x.textContent = task.line || ""; });
 }
 function runCard() {
@@ -1029,7 +1030,7 @@ function runCard() {
   for (const e of task.steps) {  // each stage its step has filled in
     const [node, fact] = LIT[e.step] || [], b = node && $("flow")?.querySelector(`.node[data-node=${node}]`);
     if (!b || e[fact] === undefined) continue;
-    if (!b.querySelector(".n")) b.insertAdjacentHTML("beforeend", `<span class="n"><span class="v"></span><span class="u">${esc(NODE[node].word)}</span></span>`);
+    if (!b.querySelector(".n")) b.insertAdjacentHTML("beforeend", `<span class="n"><span class="v"></span><span class="u">${esc(wordOf(node, null))}</span></span>`);
     b.querySelector(".n .v").textContent = fmt(e[fact]); b.classList.remove("dim");
   }
   $("flow")?.querySelectorAll(".node").forEach((b) => b.classList.toggle("now", (LIT_NODE[next] || "") === b.dataset.node));
@@ -1095,8 +1096,11 @@ function progress(d) {
   s.workspace = state.workspace ? {state: "done", line: baseName(state.workspace)} : {state: "current", line: "choose one"};
   const given = lastFile(d || {}), last = given ? nameOf(given) : "";  // the file a run reads: given last
   const empty = given && !given.rows;  // a file of a header alone, or nothing it could read
-  s.columns = empty && !ran ? {state: "attention", line: `${last}: no records`} : ran || last ? {state: "done", line: last ? `${last} loaded` : "ready"} : {state: state.workspace ? "current" : "later", line: "load your file"};
-  s.run = ran ? {state: "done", line: d.rerun_owed ? "changed: run again" : `${fmt(d.records)} → ${plural(d.entities, "entity", "entities")}`} : {state: last ? "current" : "later", line: last ? "ready to run" : "not yet"};
+  const can = !d || !d.ready || d.ready.run;  // the CLI's word: the file loaded last fits the method (describe workspace ready)
+  s.columns = empty && !ran ? {state: "attention", line: `${last}: no records`} : last && !ran && !can ? {state: "current", line: "a field is needed"}
+    : ran || last ? {state: "done", line: last ? `${last} loaded` : "ready"} : {state: state.workspace ? "current" : "later", line: "load your file"};
+  s.run = ran ? {state: "done", line: d.rerun_owed ? "changed: run again" : `${fmt(d.records)} → ${plural(d.entities, "entity", "entities")}`}
+    : {state: last && can ? "current" : "later", line: last && can ? "ready to run" : "not yet"};
   if (!ran) {
     for (const k of ["pairs", "kinds", "results", "improve", "records"]) s[k] = {state: "later", line: "after matching"};
     s.lookup = {state: "later", line: "after the first run"};
@@ -1156,8 +1160,9 @@ async function refresh(d) {  // the stepper, from the page's own describe worksp
   stepChip();
 }
 
-function stepChip() {  // the heading's chip: its step as the stepper has it
-  const s = steps.steps[current], chip = $("stepchip");
+function stepChip() {  // the heading's chip: its step as the stepper has it, or the long command running for it
+  const s = (steps.steps || {})[current], chip = $("stepchip"), busy = task.busy() === current && task.command;  // steps: none yet, just after a reload
+  if (chip && busy) { chip.className = "chip info"; chip.textContent = `running · ${BUSY[busy] || busy}`; return; }
   if (s && chip) { chip.className = `chip ${s.state === "done" ? "good" : s.state === "attention" ? "warn" : "info"}`; chip.textContent = `${STATE_WORD[s.state]} · ${s.line}`; }
 }
 
@@ -1194,10 +1199,11 @@ const NODE = {  // each stage in everyday words; describe matching's own name an
   rules: {icon: "rule", name: "Rule matches", word: "pairs", tone: "rule", n: (x) => x.pairs},
   candidates: {icon: "fan", name: "Compared", word: "pairs", n: (x) => x.pairs},
   score: {icon: "scale", name: "Weighed", word: "pairs", n: (x) => x.pairs},
-  accept: {icon: "check", name: "Matched", word: "pairs", tone: "model", n: (x) => x.accepted},
+  accept: {icon: "check", name: "Matched", word: (x) => x && !x.accepted && x.for_people ? `pairs · ${fmt(x.for_people)} wait for you` : "pairs", tone: "model", n: (x) => x.accepted},
   group: {icon: "group", name: "Entities formed", word: "entities", n: (x) => x.customers},
   kind: {icon: "kinds", name: "Person or company", word: "told apart", n: (x) => x.counts ? x.counts.company + x.counts.person : null},
 };
+const wordOf = (id, x) => typeof NODE[id].word === "function" ? NODE[id].word(x) : NODE[id].word;  // a stage's unit, with what it says of itself
 const LEVEL = {exact: "same", "fold exact": "same, spelling aside", "fold JW high": "very similar", "JW high": "very similar", "given name": "same given name", "same address": "same",
                "fold JW low": "somewhat similar", "JW low": "somewhat similar", "address close": "nearly the same", "same postal": "same postal code",
                "one digit off": "1 digit different", else: "different", missing: "not given"};
@@ -1211,7 +1217,7 @@ function strip(box, graph, ids) {
   box.innerHTML = `${scope("stack", all === null ? "All records" : `All ${plural(all, "record")}`)}<div class="flow">${ids.map((id, i) => {
     const x = nodes[id], k = NODE[id], n = k.n(x);
     return `${i ? ARROW : ""}<button class="node ${k.tone || ""} ${n === null || n === undefined ? "dim" : ""}" data-node="${id}" aria-expanded="false" title="${esc(x.name)}: ${esc(x.method || "")}">
-      <span class="top">${icon(k.icon)}${esc(k.name)}</span>${n === null || n === undefined ? "" : `<span class="n"><span class="v">${fmt(n)}</span><span class="u">${esc(k.word)}</span></span>`}</button>`;  // not run yet: its name alone
+      <span class="top">${icon(k.icon)}${esc(k.name)}</span>${n === null || n === undefined ? "" : `<span class="n"><span class="v">${fmt(n)}</span><span class="u">${esc(wordOf(id, x))}</span></span>`}</button>`;  // not run yet: its name alone
   }).join("")}</div><div class="slot"></div>`;
   const slot = box.querySelector(".slot");
   const show = (id) => {
@@ -1784,7 +1790,9 @@ const STEPS_OF = {"add records": ["load", "fit", "rules", "candidates", "score",
                   "match records": ["load", "fit", "rules", "candidates", "score", "cluster"]};  // a preview writes nothing
 const BUSY = {"resolve records": "Finding matches", "rerun records": "Matching again", "add records": "Adding the new records", "match records": "Previewing the new records",
               "load records": "Loading your file", "upload file": "Uploading your file", "generate records": "Generating records", "accept repairs": "Accepting the repairs", "try everything": "Auto mode", "try method": "Trying a method",
-              "set merging": "Rebuilding the entities", "apply answers": "Matching again with your answers"};
+              "set merging": "Rebuilding the entities", "apply answers": "Matching again with your answers", "apply decisions": "Applying your decisions",
+              "adopt method": "Matching with the method tried", "reset method": "Matching with the tuned method", "lower trust": "Lowering the trust line",
+              "raise trust": "Raising the trust line", "split entity": "Splitting the entity"};
 const DOING = {load: "reading the records", budget: "planning the work", fit: "learning what matches look like", rules: "applying the match rules",
                candidates: "listing pairs to compare", score: "scoring the pairs", cluster: "forming entities", probe: "looking for matches it missed",
                report: "writing the report", write: "saving"};
@@ -2869,6 +2877,8 @@ const SCREENS = {
       $("flowq").textContent = "How it will find them";
       $("out").innerHTML = file && !file.rows ? `<div class="card"><div class="qa"><div class="q"><h2 class="question">${esc(nameOf(file))} holds no records</h2>
           <p class="answer">Load a file that does</p></div><a class="btn filled" data-go="columns">2 · Prepare your data</a></div></div>`
+        : file && w.ready && !w.ready.run ? `<div class="card"><div class="qa"><div class="q"><h2 class="question">Not ready yet</h2>
+          <p class="answer">${esc(w.ready.why)}</p></div><a class="btn filled" data-go="columns">2 · Prepare your data</a></div></div>`
         : file ? `<div class="card"><div class="qa"><div class="q"><h2 class="question">Ready to find matches in ${plural(file.rows, "record")}</h2>
           <p class="answer">${esc(nameOf(file))} · about ${about(guess(file.rows, w))}</p></div><button class="btn filled" data-first>${icon("run")}Find matches</button></div></div>` : emptyRun(w);
       $("out").querySelector("[data-first]")?.addEventListener("click", () => start("resolve records", "Find matches"));
@@ -2957,8 +2967,8 @@ const SCREENS = {
       $("found").innerHTML = r.event === "error" ? banner(r) : found(r);
     };
     const shown = (x) => [x.full_name || x.person_name, x.company_name, x.address, x.phone, x.birth_date].filter(Boolean).map((v) => `<span>${esc(v)}</span>`).join(" · ");
-    const card = (e, chips) => `<div class="card lu-hit">
-        <div class="lu-top"><span class="pts ${e.points >= 0 ? "for" : "against"}">${e.points >= 0 ? "+" : ""}${e.points.toFixed(1)}</span>${chips}
+    const card = (e, chips, scored = true) => `<div class="card lu-hit">
+        <div class="lu-top">${scored ? `<span class="pts ${e.points >= 0 ? "for" : "against"}">${e.points >= 0 ? "+" : ""}${e.points.toFixed(1)}</span>` : ""}${chips}
           <span class="lu-who">${shown(e.shown) || esc(e.record)}</span><span class="grow"></span>
           <a class="btn" data-go="results" data-record="${esc(e.record)}">Open in Explore</a></div>
         ${e.compared ? `<div class="chips">${Object.entries(e.compared).filter(([, v]) => v !== "else" && v !== "missing").map(([k, v]) => `<span class="chip">${esc(words(k))}: ${esc(v)}</span>`).join("")}</div>` : ""}
@@ -2984,7 +2994,7 @@ const SCREENS = {
         : r.listed ? `None of the ${plural(r.listed, "record")} that start with it reaches ${esc($("lu-from").value)} points` : "No record starts with what you typed") + (cant && r.typed.length ? ` · ${cant}` : "");
       const read = Object.values(r.read_as || {}).map(esc).join(", ");
       return `<div class="card">${ask("Who could it be?", `${said}${read ? ` <span class="faint">· read as ${read}</span>` : ""}`)}</div>` + r.entities.map((e) => card({...e, compared: null},
-        (e.likely ? '<span class="chip good">likely the same</span>' : "") + e.fields.map((f) => `<span class="chip">${esc(words(f))}</span>`).join(""))).join("");
+        (e.likely ? '<span class="chip good">likely the same</span>' : "") + e.fields.map((f) => `<span class="chip">${esc(words(f))}</span>`).join(""), false)).join("");  // half typed: what it shares, not points
     };
     return w;
   },
@@ -4140,7 +4150,7 @@ const AUTO = {workspace: "making a workspace", load: "reading the file", place: 
               check: "checking a run will go through", rehearse: "rehearsing at the file's size", resolve: "finding matches", method: "reading what the run shows",
               patterns: "counting the patterns", review: "counting the checks people need"};
 const AUTO_NEXT = {workspace: "load", load: "check", place: "describe", describe: "check", check: "rehearse", rehearse: "resolve", resolve: "method", method: "patterns"};
-const autoSays = (s) => AUTO[s] || (s.startsWith("trial") ? "trying a change of method" : s.startsWith("offers") ? "trying the names in another script" : s);
+const autoSays = (s) => AUTO[s] || (s.startsWith("trial") ? "trying a change of method" : s.startsWith("offers") ? "trying the names in another script" : s.replaceAll("_", " "));
 async function autoMode() {
   if (longRun) { snack(`<span class="msg">Wait for <code>${esc(longRun.command)}</code> to end</span>`, 4000); return; }  // one long command at a time
   if (current !== "records" || !$("auto")) await go("records");
@@ -4163,8 +4173,9 @@ async function autoMode() {
     if (e.event !== "step") return;
     const [top, sub] = e.step.split(": ");
     if (sub === undefined) {  // one of its steps ended
-      box.querySelector(".steps")?.insertAdjacentHTML("beforeend", `<li>${icon(e.ok === false ? "error" : "check")}${esc(e.step)} <span class="faint">${e.seconds.toFixed(1)} s</span></li>`);
-      if (e.workspace) { useWorkspace(e.workspace); longRun.workspace = e.workspace; memoAt = -1; refresh(); }  // the page opens it from now on, should the person go elsewhere meanwhile
+      box.querySelector(".steps")?.insertAdjacentHTML("beforeend", `<li>${icon(e.ok === false ? "error" : "check")}${esc(autoSays(top))} <span class="faint">${e.seconds.toFixed(1)} s</span></li>`);  // in words, as the line above says it
+      if (e.workspace) { useWorkspace(e.workspace); longRun.workspace = e.workspace; memoAt = -1; }  // the page opens it from now on, should the person go elsewhere meanwhile
+      if (longRun && longRun.workspace) refresh();  // the steps on the left as each of its steps leaves them: the file read, matches found
       now = AUTO_NEXT[top] ? autoSays(AUTO_NEXT[top]) : "the next step";
     } else now = `${autoSays(top)} · ${DOING[sub] || sub}`;
     say();

@@ -741,6 +741,11 @@ def restrict(p: Pipeline, present: set[str]) -> tuple[Pipeline, list[str]]:
     several conditions keeps the conditions it can still check."""
     gone: list[str] = []
     has = lambda cols: all(c in present for c in cols)
+
+    def lacking(what: str, needs: set[str]) -> InputError:  # refused in words: which fields would let it run, and how to give one
+        missing = sorted(needs - present)
+        return InputError(f"{what}: each way reads a field this file lacks ({', '.join(missing)})",
+                          fix=f"map one to a column: in Your data, or nayose set columns {missing[0]}=COLUMN --workspace …; or give the file one")
     stages = []
     for s in p.rules.stages:
         keep = []
@@ -750,13 +755,13 @@ def restrict(p: Pipeline, present: set[str]) -> tuple[Pipeline, list[str]]:
         if keep:
             stages.append(replace(s, rules=tuple(keep), comparators={c: x for c, x in s.comparators.items() if c in present}))
     if not stages:
-        raise InputError("no rule can run: every rule reads a field this file lacks", fix="map the fields it reads in config/settings.toml [columns], or give the file those columns")
+        raise lacking("no match rule can run", {c for s in p.rules.stages for r in s.rules for c in (*r.exact, *r.fuzzy, *(k.column for k in r.blocking))})
     blockers = []
     for b in p.fs.blockers:
         cols = [k.column for k in keys_of(b)]
         (blockers.append(b) if has(cols) else gone.append(f"generator {b.name} (needs {sorted(set(cols) - present)})"))
     if not blockers:
-        raise InputError("no candidate generator can run: every one reads a field this file lacks", fix="map the fields it reads in config/settings.toml [columns], or give the file those columns")
+        raise lacking("no way of finding pairs can run", {k.column for b in p.fs.blockers for k in keys_of(b)})
     comparisons = []
     for c in p.fs.model.comparisons:
         levels = []
@@ -776,10 +781,10 @@ def restrict(p: Pipeline, present: set[str]) -> tuple[Pipeline, list[str]]:
     m = p.fs.model
     prior = tuple(r for r in m.prior_rules if has(k.column for k in r))
     em = tuple(r for r in m.em_rules if has(k.column for k in r))
-    if not prior:
-        raise InputError("no prior rule can run (λ needs one): every one reads a field this file lacks", fix="map the fields it reads in config/settings.toml [columns], or give the file those columns")
+    if not prior:  # λ, how often two records match, is first measured on near-certain pairs
+        raise lacking("the model can't start", {k.column for r in m.prior_rules for k in r})
     if m.m_method == "em" and not em:
-        raise InputError("no EM blocking rule can run: every one reads a field this file lacks", fix="map the fields it reads in config/settings.toml [columns], or give the file those columns")
+        raise lacking("the model can't be fitted", {k.column for r in m.em_rules for k in r})
     gone += [f"prior rule {[k.column for k in r]}" for r in m.prior_rules if r not in prior]
     gone += [f"EM rule {[k.column for k in r]}" for r in m.em_rules if r not in em]
     model = replace(m, comparisons=tuple(comparisons), prior_rules=prior, em_rules=em)

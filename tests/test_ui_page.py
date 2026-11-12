@@ -220,7 +220,8 @@ def test_the_page_answers_once_per_key_shows_any_row_and_says_when_the_server_is
     page.click("#auto a[data-go=run]")  # back while it runs: its card, and the stages its steps have filled in, as they stand
     page.wait_for_selector("#out .steps-card .answer:has-text('now:')", timeout=10_000)
     page.wait_for_selector(".node[data-node=records] .n .v", timeout=10_000)
-    page.wait_for_selector("#task:has-text('Matching again: done')", timeout=120_000)  # its progress, on whichever page is open
+    page.wait_for_selector("#out .steps-card", state="detached", timeout=120_000)  # ended: its result drawn on its own page,
+    assert page.is_hidden("#task")  # and the panel gone from over it
     page.click(".navitem[data-screen=run]")
     page.wait_for_selector("[data-act='add records']:not([disabled])", timeout=10_000)
     httpd.shutdown()
@@ -378,10 +379,8 @@ def test_a_long_command_shows_how_far_it_is_in_a_panel_that_folds_and_closes_and
     page.fill("#cin", str(tmp_path / "all.parquet"))
     page.click("#load")
     assert page.inner_text("#out .waiting") == "Reading all.parquet…"  # the columns, once read: something says so meanwhile
-    page.wait_for_selector("#task:has-text('Loading your file: done')", timeout=60_000)
-    page.wait_for_selector("details.fgroup", state="attached")
-    page.click("#task-close")
-    assert page.is_hidden("#task")
+    page.wait_for_selector("details.fgroup", state="attached", timeout=60_000)  # loaded, and shown on its own page:
+    page.wait_for_selector("#task", state="hidden", timeout=30_000)  # its panel goes, never left over the page's buttons
     page.evaluate("() => { task.start('load records', 'j1', Date.now() / 1000 - 100); task.start('add records', 'j2'); task.event({event: 'progress', done: 200, total: 1000, unit: 'rows'}, 'j1'); }")  # 400 s left: a slow second changes no word
     assert page.inner_text("#task-line") == "200 of 1,000 rows · about 7 minutes left" and page.get_attribute("#task-bar", "style") == "width: 20%;"
     page.click("#task-fold")  # folded: what it does and how long is left, in its title
@@ -645,6 +644,7 @@ def test_review_counts_down_an_answer_waits_out_a_busy_workspace_and_auto_merge_
     page.locator("#lu input[name='FULL_NAME_KANA']").press_sequentially(first, delay=60)
     page.wait_for_selector("#suggest .lu-hit", timeout=30_000)
     assert "start with what you typed" in page.inner_text("#suggest .card .answer") and page.locator("#suggest .lu-hit .chip:has-text('name')").count()
+    assert not page.query_selector("#suggest .lu-hit .pts")  # half typed: what each shares, no points read as against it
     page.fill("#lu-top", "1")  # Show: how many, kept in this browser
     page.dispatch_event("#lu-top", "change")
     page.wait_for_function("() => document.querySelectorAll('#suggest .lu-hit').length === 1", timeout=30_000)

@@ -874,6 +874,7 @@ Records and entities, the largest entities, each run so far, the pairs and kinds
 | `index` | the lookup's index: built_at, records, added (of them, since it was built), stale (what changed since, or null; built_at null: none yet), columns (each a lookup reads: column, field, main: in the field's first alternative) |
 | `details` | the details file people see above each record (load details), or null |
 | `stamp` | what people and runs change, by its files' sizes and times (sheets, decisions, answers, method, mapping, entities): a page coming back reads again when it moves |
+| `ready` | whether a run can start on the file loaded last: run (true or false), why not, and the fix |
 | `next` | the commands that usually follow |
 
 ```bash

@@ -139,11 +139,12 @@ def list_entities(con: duckdb.DuckDBPyConnection, out: Path, s: Settings, p: Pip
     rows = con.execute(f"""SELECT * FROM ({sizes}) WHERE {where} ORDER BY records DESC, cluster_id
         LIMIT {int(count)} OFFSET {(max(1, int(page)) - 1) * int(count)}""").df()
     stored = {c for c, *_ in con.execute(f"DESCRIBE SELECT * FROM {read(out, 'state/records/*.parquet')}").fetchall()}
-    name = next((f for f in ("full_name", "person_name", "company_name") if f in stored), None)  # one the run kept: a field the file lacks isn't
+    held = [f for f in ("full_name", "person_name", "company_name") if f in stored]  # the ones the run kept: a field the file lacks isn't
+    name = f"coalesce({', '.join(f'r.{q(f)}' for f in held)})" if held else None  # each record's own: a company's in company_name
     names = {}
     if len(rows) and name:
         con.register("er_ents", rows[["cluster_id"]])
-        got = con.execute(f"""SELECT g.cluster_id, list(DISTINCT r.{q(name)}) FILTER (WHERE r.{q(name)} IS NOT NULL)[1:3] AS names
+        got = con.execute(f"""SELECT g.cluster_id, list(DISTINCT {name}) FILTER (WHERE {name} IS NOT NULL)[1:3] AS names
             FROM {gold} g JOIN er_ents e USING (cluster_id) JOIN {read(out, 'state/records/*.parquet')} r USING ({u}) GROUP BY 1""").fetchall()
         con.unregister("er_ents")
         names = dict(got)

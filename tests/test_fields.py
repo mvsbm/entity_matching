@@ -34,7 +34,7 @@ def test_a_mandatory_field_or_an_empty_one_of_group_stops_the_run():
         fit_to_file(p, s, cols - names)
     with pytest.raises(ValueError, match="entity"):
         fit_to_file(p, s, cols, labelled=True)  # a labelled run needs the truth
-    with pytest.raises(InputError, match="can run: every .* reads a field this file lacks"):
+    with pytest.raises(InputError, match="can run: each way reads a field this file lacks"):
         fit_to_file(p, s, {"CONT_ID", "NYS_CNV_P_NAME_KANA"})  # a mistake to fix, not a traceback
     fit_to_file(p, s, cols | {"ENTITY_ID"}, labelled=True)
 
