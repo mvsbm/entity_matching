@@ -11,12 +11,11 @@ def test_the_ui_serves_only_its_own_link_and_runs_the_commands_as_nayose_does(tm
     import http.client
     import threading
     import time
-    from http.server import ThreadingHTTPServer
     from er import cli, ui
     s, p, g = population
     g.df.to_parquet(tmp_path / "all.parquet", index=False)
     server = ui.Server(str(tmp_path / "run"))
-    httpd = ThreadingHTTPServer(("127.0.0.1", 0), ui.handler(server))
+    httpd = ui.Listener(("127.0.0.1", 0), ui.handler(server))
     threading.Thread(target=httpd.serve_forever, daemon=True).start()
     port = httpd.server_address[1]
 
@@ -195,14 +194,13 @@ def test_quick_commands_in_bursts_leave_no_threads_behind(tmp_path, population):
 def test_an_upload_refused_partway_is_answered_and_the_rest_of_its_body_read(tmp_path, say, monkeypatch):
     import http.client
     import threading
-    from http.server import ThreadingHTTPServer
     from urllib.parse import urlencode
     from er import folder, ui
     from er.config import InputError
     home, ws = tmp_path / "workspaces", tmp_path / "workspaces" / "w"
     assert say("create", "workspace", "w", "--home", home)[0] == 0
     server = ui.Server(str(ws), str(home))
-    httpd = ThreadingHTTPServer(("127.0.0.1", 0), ui.handler(server))
+    httpd = ui.Listener(("127.0.0.1", 0), ui.handler(server))
     threading.Thread(target=httpd.serve_forever, daemon=True).start()
 
     def refused(ws, name, size, read, *rest):  # half the file read, then refused (a disk that fills midway)
@@ -223,7 +221,6 @@ def test_a_file_the_page_sends_is_taken_in_once_by_load_records_and_kept_as_the_
     import http.client
     import io
     import threading
-    from http.server import ThreadingHTTPServer
     from urllib.parse import urlencode
     import pandas as pd
     import pytest
@@ -234,7 +231,7 @@ def test_a_file_the_page_sends_is_taken_in_once_by_load_records_and_kept_as_the_
     home, ws = tmp_path / "workspaces", tmp_path / "workspaces" / "w"
     assert say("create", "workspace", "w", "--home", home)[0] == 0
     server = ui.Server(str(ws), str(home))
-    httpd = ThreadingHTTPServer(("127.0.0.1", 0), ui.handler(server))
+    httpd = ui.Listener(("127.0.0.1", 0), ui.handler(server))
     threading.Thread(target=httpd.serve_forever, daemon=True).start()
     port = httpd.server_address[1]
 
@@ -283,3 +280,16 @@ def test_a_file_the_page_sends_is_taken_in_once_by_load_records_and_kept_as_the_
         assert not [f for f in (ws / folder.UPLOADS).iterdir() if "half" in f.name]
     finally:
         httpd.shutdown()
+
+
+def test_a_burst_of_connections_waits_for_the_server_and_none_is_refused():
+    import socket
+    from er import ui
+    httpd = ui.Listener(("127.0.0.1", 0), ui.handler(ui.Server()))  # listening, and accepting none yet: a server busy elsewhere
+    try:
+        burst = [socket.create_connection(httpd.server_address, timeout=5) for _ in range(50)]  # a page's reads, a run and another tab's
+        assert len(burst) == 50  # Windows refuses past the listen backlog; socketserver's own is 5
+        for c in burst:
+            c.close()
+    finally:
+        httpd.server_close()

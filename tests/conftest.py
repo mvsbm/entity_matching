@@ -152,7 +152,6 @@ def ui_page(request):
     where the browser tests must run, so it fails. With ER_TRACES set (CI sets it), a failed test leaves each page's
     Playwright trace there: what it clicked, saw and asked, step by step (npx playwright show-trace FILE)."""
     import threading
-    from http.server import ThreadingHTTPServer
     from er import ui
     if os.environ.get("CI"):
         import playwright.sync_api as sync
@@ -167,7 +166,7 @@ def ui_page(request):
                 gc.freeze()
                 opened.callback(gc.unfreeze)
             server = ui.Server(workspace, home)
-            httpd = ThreadingHTTPServer(("127.0.0.1", 0), ui.handler(server))
+            httpd = ui.Listener(("127.0.0.1", 0), ui.handler(server))
             threading.Thread(target=httpd.serve_forever, daemon=True).start()
             opened.callback(httpd.server_close)
             opened.callback(httpd.shutdown)
