@@ -4289,6 +4289,7 @@ document.addEventListener("keydown", (e) => {
     await rejoin();
     if (longRun || seen === null) return;
     const d = await run("records", "describe workspace");
+    if (longRun || $("dlg").open) return;  // a run or a dialog begun while it read: never drawn over
     if (d.event !== "error" && !d.lost && mark(d) !== seen) go(current);
   });
   if (SCREENS[location.hash.slice(1)]) current = location.hash.slice(1);  // reloaded: the step it was on

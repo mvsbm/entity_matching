@@ -2,6 +2,7 @@
 this process, and in its own), and the page in a browser. A test that uses a whole-run fixture is marked slow; one
 that uses the browser, browser: run the fast ones with -m "not slow and not browser"."""
 import contextlib
+import gc
 import json
 import os
 from dataclasses import replace
@@ -160,6 +161,10 @@ def ui_page(request):
         pw, traced = [], []
 
         def open_(workspace: str | None, home: str, viewport: dict | None = None):
+            if not pw:  # as nayose open ui starts (ui.serve): what is there already never walked again by each command's collection
+                gc.collect()
+                gc.freeze()
+                opened.callback(gc.unfreeze)
             server = ui.Server(workspace, home)
             httpd = ThreadingHTTPServer(("127.0.0.1", 0), ui.handler(server))
             threading.Thread(target=httpd.serve_forever, daemon=True).start()
