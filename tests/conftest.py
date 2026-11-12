@@ -18,6 +18,9 @@ from er.strings import connect
 UID = "uid"
 PAIR = pd.DataFrame({"uid_l": ["001a"], "uid_r": ["001b"]}, dtype="string")  # same name, in 4 of the 120 records
 SLOW = {"population", "kind_population", "wide_band", "runs"}  # fixtures that run whole pipelines (runs: test_design.py's)
+ROOT = Path(__file__).resolve().parents[1]
+# the processes the tests start import this checkout's er: the venv's editable install names the one it was made from
+os.environ["PYTHONPATH"] = os.pathsep.join([str(ROOT), *filter(None, [os.environ.get("PYTHONPATH")])])
 
 
 def pytest_collection_modifyitems(items):
@@ -26,6 +29,12 @@ def pytest_collection_modifyitems(items):
             item.add_marker(pytest.mark.slow)
         if "ui_page" in item.fixturenames:
             item.add_marker(pytest.mark.browser)
+
+
+@pytest.hookimpl(hookwrapper=True)
+def pytest_runtest_makereport(item, call):  # each phase's report kept on the test, for a fixture to see how it went
+    report = (yield).get_result()
+    setattr(item, f"report_{report.when}", report)
 
 
 @pytest.fixture(scope="session")
@@ -135,10 +144,11 @@ def fake_cli(tmp_path, monkeypatch):
 
 
 @pytest.fixture
-def ui_page():
+def ui_page(request):
     """open(workspace, home, viewport=None) → (page, server, httpd): the page on a server of its own, in Chromium, at
     its link. Everything opened is closed after the test, whatever happens in it. No browser: skipped, except under CI,
-    where the browser tests must run, so it fails."""
+    where the browser tests must run, so it fails. With ER_TRACES set (CI sets it), a failed test leaves each page's
+    Playwright trace there: what it clicked, saw and asked, step by step (npx playwright show-trace FILE)."""
     import threading
     from http.server import ThreadingHTTPServer
     from er import ui
@@ -147,7 +157,7 @@ def ui_page():
     else:
         sync = pytest.importorskip("playwright.sync_api")
     with contextlib.ExitStack() as opened:  # each thing closed after the test, the last opened first, even when one close fails
-        pw = []
+        pw, traced = [], []
 
         def open_(workspace: str | None, home: str, viewport: dict | None = None):
             server = ui.Server(workspace, home)
@@ -165,7 +175,14 @@ def ui_page():
                     raise
                 pytest.skip("no browser: .venv/bin/python -m playwright install chromium")
             opened.callback(browser.close)
-            page = browser.new_page(**({"viewport": viewport} if viewport else {}))
+            context = browser.new_context(**({"viewport": viewport} if viewport else {}))
+            if traces := os.environ.get("ER_TRACES"):
+                context.tracing.start(snapshots=True)  # the page as it was at each step; no screenshots, which slow a busy machine
+                path = Path(traces) / f"{request.node.name}-{len(traced)}.zip"
+                traced.append(path)
+                failed = lambda: any(r.failed for r in (getattr(request.node, f"report_{w}", None) for w in ("setup", "call")) if r)
+                opened.callback(lambda: context.tracing.stop(**({"path": path} if failed() else {})))  # before the browser closes
+            page = context.new_page()
             page.goto(f"http://127.0.0.1:{httpd.server_address[1]}/?token={server.token}")
             return page, server, httpd
         yield open_

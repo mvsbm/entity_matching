@@ -46,6 +46,9 @@ pipelines is marked `slow`, and one that opens the page in Chromium `browser`, b
 ```
 
 Without Chromium the browser tests skip; under CI (`CI` set) they fail instead, so a broken install never passes.
+With `ER_TRACES=DIR` set, a failed browser test leaves each page's Playwright trace in DIR (`npx playwright show-trace
+FILE`: every click, request and screen, step by step); CI sets it and keeps the traces of a failed run as an artifact.
+The tests run this checkout's code, a git worktree's too: the processes they start get its root on `PYTHONPATH`.
 
 ## Docs
 

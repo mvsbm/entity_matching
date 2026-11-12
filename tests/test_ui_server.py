@@ -192,6 +192,33 @@ def test_quick_commands_in_bursts_leave_no_threads_behind(tmp_path, population):
     assert threads() < start + 60, (start, threads())  # each command's connections, and their worker threads, gone with it
 
 
+def test_an_upload_refused_partway_is_answered_and_the_rest_of_its_body_read(tmp_path, say, monkeypatch):
+    import http.client
+    import threading
+    from http.server import ThreadingHTTPServer
+    from urllib.parse import urlencode
+    from er import folder, ui
+    from er.config import InputError
+    home, ws = tmp_path / "workspaces", tmp_path / "workspaces" / "w"
+    assert say("create", "workspace", "w", "--home", home)[0] == 0
+    server = ui.Server(str(ws), str(home))
+    httpd = ThreadingHTTPServer(("127.0.0.1", 0), ui.handler(server))
+    threading.Thread(target=httpd.serve_forever, daemon=True).start()
+
+    def refused(ws, name, size, read, *rest):  # half the file read, then refused (a disk that fills midway)
+        read(size // 2)
+        raise InputError("refused partway", fix="send it again")
+    monkeypatch.setattr(folder, "receive", refused)
+    try:
+        c = http.client.HTTPConnection("127.0.0.1", httpd.server_address[1], timeout=30)  # a server reading past the body's end would hang here
+        c.request("POST", "/api/upload?" + urlencode({"workspace": str(ws), "name": "r.csv"}), body=b"x" * (4 << 20),
+                  headers={"X-Token": server.token, "Host": f"127.0.0.1:{httpd.server_address[1]}"})
+        r = c.getresponse()
+        assert r.status == 400 and json.loads(r.read())["error"] == "refused partway"
+    finally:
+        httpd.shutdown()
+
+
 def test_a_file_the_page_sends_is_taken_in_once_by_load_records_and_kept_as_the_details_file(tmp_path, say):
     import http.client
     import io
@@ -224,7 +251,7 @@ def test_a_file_the_page_sends_is_taken_in_once_by_load_records_and_kept_as_the_
 
     try:
         records = f"{uid},FULL_NAME_KANA\n0001,ヤマダタロウ\n0002,スズキハナコ\n".encode()
-        assert send("r.csv", b"", token="wrong")[0] == 403  # the page's link only (refused unread: no body, or the socket may close under it)
+        assert send("r.csv", b"x" * (8 << 20), token="wrong")[0] == 403  # the page's link only: refused, its body read, so the answer comes and not a reset
         for bad in ("../r.csv", ".hidden", ""):
             assert send(bad, records)[0] == 400  # a name, never a path
         status, got = send("r.csv", records)

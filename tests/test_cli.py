@@ -975,3 +975,10 @@ def test_a_file_with_columns_named_as_the_run_names_its_own_runs(say, tmp_path, 
     say("create", "workspace", "w", "--home", tmp_path)
     assert say("set", "columns", "kind_flag=KIND", "--workspace", tmp_path / "w")[0] == 0  # the person/company flag, mapped, named as the run's kind
     assert say("resolve", "records", tmp_path / "flagged.parquet", "--workspace", tmp_path / "w")[0] == 0
+
+
+def test_the_commands_the_tests_start_run_this_checkout_s_code(tmp_path):  # from a git worktree too, not the venv's checkout
+    import subprocess
+    import sys
+    got = subprocess.run([sys.executable, "-c", "import er; print(er.__file__)"], cwd=tmp_path, capture_output=True, encoding="utf-8", check=True).stdout
+    assert Path(got.strip()).resolve().is_relative_to(Path(__file__).resolve().parents[1])
