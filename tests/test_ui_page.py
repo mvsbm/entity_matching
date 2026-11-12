@@ -1125,6 +1125,52 @@ def test_a_command_the_server_started_without_says_start_it_again_and_frees_its_
     assert not page.is_disabled("#gen") and not page.is_disabled("#load") and page.inner_text("#gen") == "Generate"
 
 
+def test_a_late_error_never_covers_the_run_started_while_it_was_read(ui_page, tmp_path, population, fake_cli, monkeypatch):
+    from er import cli
+    from er.config import InputError
+    s, p, g = population
+    g.df.to_parquet(tmp_path / "all.parquet", index=False)
+    home, ws = tmp_path / "workspaces", tmp_path / "workspaces" / "w"
+    assert cli.main(["create", "workspace", "w", "--home", str(home), "--format", "json"]) == 0
+    assert cli.main(["resolve", "records", str(tmp_path / "all.parquet"), "--workspace", str(ws), "--format", "json"]) == 0
+    late, drawn, end = tmp_path / "late", tmp_path / "drawn", tmp_path / "end"
+    real = cli.describe_workspace
+
+    def described(*a, **k):  # read as a file is replaced (Windows refuses it): an error, answered once the run is drawn
+        if late.exists():
+            t = time.time()
+            while not drawn.exists() and time.time() - t < 30:
+                time.sleep(0.05)
+            raise InputError("the workspace was being written", fix="")
+        return real(*a, **k)
+    monkeypatch.setattr(cli, "describe_workspace", described)
+    fake_cli(f"""if sys.argv[1:3] == ["rerun", "records"]:  # a run that lasts until the test ends it
+    print(json.dumps({{"event": "step", "step": "load", "seconds": 0.1}}), flush=True)
+    t = time.time()
+    while not os.path.exists({str(end)!r}) and time.time() - t < 60:
+        time.sleep(0.1)
+    print(json.dumps({{"event": "result", "summary": [["records", "1"]]}}), flush=True)
+""")
+    page, server, httpd = ui_page(str(ws), str(home), viewport={"width": 1280, "height": 900})
+    page.click(".navitem[data-screen=run]")
+    page.wait_for_selector("[data-act='rerun records']:not([disabled])", timeout=30_000)
+    page.wait_for_function("() => !document.querySelector('#out .loading')", timeout=30_000)
+    late.touch()
+    page.click(".navitem[data-screen=pairs]")
+    page.click(".navitem[data-screen=run]")  # drawn again: its read answers late, with an error
+    page.click("[data-act='rerun records']")
+    page.click("#dlg button[value=run]")
+    page.wait_for_selector("#out .steps-card", timeout=10_000)
+    page.evaluate("""() => { window.covered = 0; new MutationObserver(() => { if (!document.querySelector('#out .steps-card')) window.covered++; })
+                             .observe(document.querySelector('#out'), {childList: true, subtree: true}); }""")
+    drawn.touch()
+    page.wait_for_timeout(1_500)  # the late error has come back
+    assert page.evaluate("window.covered") == 0 and not page.query_selector("#out .banner")  # the run as it goes, never covered, even for a moment
+    late.unlink()
+    end.touch()
+    page.wait_for_selector("#out .steps-card", state="detached", timeout=30_000)
+
+
 def test_each_page_reads_its_own_workspace_and_every_tab_waits_out_a_long_command(ui_page, tmp_path, population, fake_cli):
     from er import cli
     s, p, g = population

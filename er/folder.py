@@ -12,7 +12,7 @@ import shutil
 import threading
 import time
 from collections.abc import Callable
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from datetime import datetime
 from pathlib import Path
 
@@ -351,32 +351,33 @@ def receive(ws: Path, name: str, size: int, read: Callable[[int], bytes], into: 
     if not name or any(x != Path(x).name or x.startswith(".") for x in names):
         raise InputError(f"{name!r}: not a file name", fix="send a file, or give its path")
     up = ws / UPLOADS
-    up.mkdir(exist_ok=True)
-    for old in up.iterdir():
-        try:
-            if time.time() - old.stat().st_mtime > STALE:
-                remove(old)
-        except OSError:  # gone meanwhile: another upload's own sweep
-            pass
-    if first:
-        remove(up / names[0])
-    if (free := shutil.disk_usage(up).free) < size:
-        raise InputError(f"no room for {name}: {size:,} bytes, {free:,} free", fix="free some disk space, or give the file's path on this computer")
     out = up.joinpath(*names)
-    out.parent.mkdir(exist_ok=True)
     part, left = out.with_name(f".{out.name}.part"), size
     try:
+        up.mkdir(exist_ok=True)
+        for old in up.iterdir():
+            try:
+                if time.time() - old.stat().st_mtime > STALE:
+                    remove(old)
+            except OSError:  # gone meanwhile: another upload's own sweep
+                pass
+        if first:
+            remove(up / names[0])
+        if (free := shutil.disk_usage(up).free) < size:
+            raise InputError(f"no room for {name}: {size:,} bytes, {free:,} free", fix="free some disk space, or give the file's path on this computer")
+        out.parent.mkdir(exist_ok=True)
         with open(part, "wb") as f:
             while left and (got := read(min(left, 1 << 20))):
                 f.write(got)
                 left -= len(got)
-    except OSError as e:  # the disk filled, or the page went: nothing half written
-        part.unlink(missing_ok=True)
+        if left:
+            raise InputError(f"{name}: cut short, {size - left:,} of {size:,} bytes came", fix="send it again")
+        os.replace(part, out)
+    except OSError as e:  # the disk filled or refused, or the page went
         raise InputError(f"{name}: not written ({e.strerror or e})", fix="free some disk space, or send it again") from e
-    if left:
-        part.unlink(missing_ok=True)
-        raise InputError(f"{name}: cut short, {size - left:,} of {size:,} bytes came", fix="send it again")
-    os.replace(part, out)
+    finally:  # nothing half written: once renamed, there is no part left
+        with suppress(OSError):
+            part.unlink(missing_ok=True)
     return up / names[0]
 
 

@@ -80,8 +80,16 @@ jobs:
         with:
           path: ~/.cache/ms-playwright
           key: playwright-${{ runner.os }}-${{ hashFiles('requirements.txt') }}
-      - run: python -m playwright install --with-deps chromium
+      - run: for i in 1 2 3; do python -m playwright install --with-deps chromium && exit 0; sleep 30; done; exit 1  # the system packages' mirror sometimes doesn't answer: tried again
       - run: python -m pytest -n auto -m browser --splits 2 --group ${{ matrix.group }} --durations-path tests/durations.json --splitting-algorithm least_duration  # CI is set: a missing browser fails, never skips
+        env:
+          ER_TRACES: traces  # a failed test's Playwright traces (tests/conftest.py ui_page)
+      - if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: traces-linux-${{ matrix.group }}
+          path: traces/
+          if-no-files-found: ignore
   windows:  # every tier on Windows, set up as a person sets it up there (setup_venv.ps1)
     name: windows (${{ matrix.part }})
     if: github.event_name != 'pull_request'
@@ -112,3 +120,11 @@ jobs:
       - if: matrix.browser
         run: .venv\Scripts\python -m playwright install chromium
       - run: .venv\Scripts\python -m pytest -n auto -m "${{ matrix.marks }}" ${{ matrix.split }} --durations-path tests/durations.json --splitting-algorithm least_duration
+        env:
+          ER_TRACES: traces
+      - if: failure() && matrix.browser
+        uses: actions/upload-artifact@v4
+        with:
+          name: traces-windows-${{ strategy.job-index }}
+          path: traces/
+          if-no-files-found: ignore

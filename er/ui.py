@@ -24,6 +24,7 @@ import gc
 import json
 import secrets
 import shlex
+import socket
 import subprocess
 import sys
 import threading
@@ -189,6 +190,7 @@ def handler(server: Server):
             self.send_header("Content-Type", f"{kind}; charset=utf-8")
             self.send_header("Content-Security-Policy", "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'")
             self.send_header("Cache-Control", "no-store")
+            self.send_header("Content-Length", str(len(data)))  # the client reads the answer without waiting for the socket to close
             self.end_headers()
             self.wfile.write(data)
 
@@ -223,7 +225,34 @@ def handler(server: Server):
             else:
                 self._send(404, {"error": "no such page"})
 
+        def _read(self, n: int) -> bytes:  # up to n bytes of the body, never past its end
+            got = self.rfile.read(min(n, self.left))
+            self.left -= len(got)
+            return got
+
+        def _drain(self) -> None:
+            """The body's unread rest, read and dropped: a socket closed over unread bytes reaches the client as a reset,
+            not as the answer sent before it. A body of no stated size is read until the client stops sending."""
+            self.connection.settimeout(5)  # a client that stops midway: given up on
+            try:
+                while self.left and self._read(1 << 20):
+                    pass
+                if "Transfer-Encoding" in self.headers:
+                    self.connection.shutdown(socket.SHUT_WR)  # the answer is all sent: the client may close
+                    while self.connection.recv(1 << 16):
+                        pass
+            except OSError:
+                self.close_connection = True
+
         def do_POST(self) -> None:
+            length = self.headers.get("Content-Length") or ""
+            self.left = int(length) if length.isdigit() else 0
+            try:
+                self._post()
+            finally:
+                self._drain()
+
+        def _post(self) -> None:
             if not self._allowed():
                 return
             if urlparse(self.path).path == "/api/upload":
@@ -231,7 +260,7 @@ def handler(server: Server):
             if urlparse(self.path).path != "/api/run":
                 return self._send(404, {"error": "no such page"})
             try:
-                body = json.loads(self.rfile.read(int(self.headers.get("Content-Length") or 0)) or b"{}")
+                body = json.loads(self._read(self.left) or b"{}")
                 if body.get("dry"):  # the equivalent command line, from the code that runs it
                     return self._send(200, dict(command=shlex.join(["nayose", *argv(body.get("command", ""), body.get("args") or {})])))
                 key, job = server.start(body.get("command", ""), body.get("args") or {})
@@ -242,12 +271,9 @@ def handler(server: Server):
             q = {k: v[0] for k, v in parse_qs(urlparse(self.path).query).items()}
             if not (self.headers.get("Content-Length") or "").isdigit():
                 return self._send(400, {"error": "a file's size (Content-Length) is needed", "fix": "send the file from the page"})
-            size = int(self.headers["Content-Length"])
             try:
-                top = folder.receive(Path(q.get("workspace", "")), q.get("name", ""), size, self.rfile.read, q.get("folder"), q.get("first", "1") == "1")
-            except InputError as e:
-                while size > 0 and (got := self.rfile.read(min(size, 1 << 20))):  # the rest read, so the browser hears why and not a reset
-                    size -= len(got)
+                top = folder.receive(Path(q.get("workspace", "")), q.get("name", ""), self.left, self._read, q.get("folder"), q.get("first", "1") == "1")
+            except InputError as e:  # what it didn't read, do_POST reads after: the browser hears why, not a reset
                 return self._send(400, {"error": str(e), "fix": e.fix})
             self._send(200, dict(path=str(top)))
     return Handler
