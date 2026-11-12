@@ -1430,6 +1430,7 @@ def describe_workspace_(a: dict, emit: "Emit") -> dict:
     out = Path(a["workspace"])
     d = describe_workspace(connect(s.compute)[0], out, s.data.unique_id)
     d["trust"] = trust_state(connect(s.compute)[0], out, p, s.data.unique_id) if d["records"] else None
+    d["stamp"] = folder.stamp(out)  # what another tab's decision, answer or change moves: a page coming back reads again
     files = folder.loaded(out)
     then = ([dict(command=nayose("describe", "results", "--workspace", out), why="what the run found, and what waits for you"),
              dict(command=nayose("open", "ui", "--workspace", out), why="review in the browser")] if d["records"] else
@@ -2087,6 +2088,7 @@ COMMANDS: tuple[Command, ...] = (
              "rerun_owed": "the mapping, the method or the pipeline changed since the run: it reads the records so once it runs again",
              "index": "the lookup's index: built_at, records, added (of them, since it was built), stale (what changed since, or null; built_at null: none yet), columns (each a lookup reads: column, field, main: in the field's first alternative)",
              "details": "the details file people see above each record (load details), or null",
+             "stamp": "what people and runs change, by its files' sizes and times (sheets, decisions, answers, method, mapping, entities): a page coming back reads again when it moves",
              "next": "the commands that usually follow"},
             "nayose describe workspace workspaces/customers", describe_workspace_, quick=True,
             show={"largest": ("entity", "records"), "runs": ("at", "what", "seconds"), "inputs": ("name", "files", "bytes", "read"), "auto": (), "index": ()}),

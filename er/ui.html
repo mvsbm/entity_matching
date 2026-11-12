@@ -719,6 +719,7 @@ const fmt = (v) => v === null || v === undefined ? "—" : typeof v === "number"
 const pct = (v) => v === null || v === undefined ? "—" : `${Math.round(v * 100)}%`;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const store = (k, v) => { try { if (v !== undefined) localStorage.setItem(`nayose.${k}`, v); return localStorage.getItem(`nayose.${k}`); } catch { return null; } };
+const tabStore = (k, v) => { try { if (v !== undefined) sessionStorage.setItem(`nayose.${k}`, v); return sessionStorage.getItem(`nayose.${k}`); } catch { return null; } };  // this tab's own: a reload keeps it, another tab never reads it
 const FIELD_WORDS = {kind_flag: "person or company (flag)"};
 const baseName = (p) => String(p).split(/[\\/]/).filter(Boolean).pop() || "";  // a path's last part, / or \\ (Windows) between parts
 const fileName = (n) => String(n).replace(/^\d+-/, "").replace(/(\.\w+)\.parquet$/, "$1");  // a workspace's copy of a file, by the name it came with (not its reading's)
@@ -872,6 +873,14 @@ function snack(html, ms = 0) {  // a short notice, bottom left, closed by its �
 // with the same arguments, asked again while it runs, is that run: a write is never sent twice. A page left while its
 // command runs draws nothing from it: its events and its result go nowhere, and the command runs on.
 const inflight = new Map();
+let writing = Promise.resolve(), unwritten = 0;  // the page's writes, one after another, each sent once the one before is written; how many aren't yet
+function written(command, words) {  // a write sent in turn with the page's other writes, never behind a reading; leaving warns until it is written
+  unwritten++;
+  const done = writing.then(() => runOnce(command, words));
+  writing = done.catch(() => {}).finally(() => { unwritten--; });
+  return done;
+}
+addEventListener("beforeunload", (e) => { if (unwritten) e.preventDefault(); });  // a change shown as made, not written yet: the browser asks first
 let visit = 0, leave = () => {}, left = new Promise((r) => { leave = r; });  // one per page drawn (go); left settles once it is left
 let longRun = null;  // the long command step 3 started ({command, visit}), while it runs: its buttons wait, on this page and when it is drawn again
 let readingNow = 0;  // the quick commands under way: the app bar's line moves while any is
@@ -891,9 +900,11 @@ function run(id, command, extra = {}, onEvent = null) {
 async function runOnce(command, args, onEvent, tries = 10) {
   if (!COMMANDS[command].quick) {  // another tab's long command: followed here to its end, as this one would have been, never started beside it
     const r = await api("/api/running");
+    if (r.job && r.workspace && args.workspace && r.workspace !== args.workspace)  // one long command at a time, and that one is another workspace's
+      return {event: "error", error: `${BUSY[r.command] || r.command} runs on ${baseName(r.workspace)}`, fix: "one long command runs at a time: run this once it ends"};
     if (r.job) {
       await watch(r.job, r.command, `nayose ${r.command}`, onEvent, r.since);
-      return {event: "error", error: `${BUSY[r.command] || r.command} ran from another tab`, fix: "what it did is shown here; run this again if it is still needed"};
+      return {event: "error", error: `${BUSY[r.command] || r.command} ran from another tab`, fix: "what it did is shown here; run this again if it is still needed", followed: true};
     }
   }
   const started = await api("/api/run", {command, args});
@@ -1130,7 +1141,7 @@ function rail() {  // the navigation: before a first run the steps to it, in ord
 }
 
 let seen = null;  // the workspace as this page last read it: another tab's change shows when this one is looked at again
-const mark = (d) => JSON.stringify([d.records, (d.runs || []).length, (d.inputs || []).length, (d.inputs || []).map((f) => f.last)]);
+const mark = (d) => JSON.stringify([d.stamp, d.records, (d.runs || []).length, (d.inputs || []).length, (d.inputs || []).map((f) => f.last)]);  // stamp: decisions, answers, method, mapping
 async function refresh(d) {  // the stepper, from the page's own describe workspace when it made one, else from one of its own
   if (d === undefined && state.workspace) d = await run("records", "describe workspace");
   if (d && d.lost) return;  // the stepper as it was: the workspace is still there
@@ -2476,8 +2487,9 @@ const SCREENS = {
       const mine = ++edits, words = argsFor("columns", command, args);
       held = null;  // older than this change
       $("out").setAttribute("aria-busy", "true");
+      const sent = written(command, words);  // sent at once, after the changes before it, never behind a reading: the page showed it made
       queue(async () => {
-        const e = await runOnce(command, words);  // sent even if the page is left: the page showed it made
+        const e = await sent;
         if (e.event === "error") refused = e;  // said once the page shows what the workspace holds
         else if (e.rerun_owed !== undefined) w = {...w, rerun_owed: e.rerun_owed};  // the run read its records otherwise: said at the top
         if (mine === edits) await reread();
@@ -2645,7 +2657,7 @@ const SCREENS = {
         row.querySelector("[data-cancel]").onclick = () => held ? show(held) : redraw(d);
       });
     };
-    const both = () => [$("load"), $("gen"), $("dload")].filter(Boolean);
+    const both = () => [$("load"), $("gen"), $("dload"), $("cin"), $("din")].filter(Boolean);  // while a file loads: no other load, and the path boxes say so
     const reveal = (x) => { for (let d = x.closest("details"); d; d = d.parentElement.closest("details")) d.open = true; };  // a button at work, out of its folds  // one long command at a time, whichever button
     const take = async (b, doing, what, command, args, done) => {  // either way the same result, drawn the same
       const was = b.innerHTML, at = edits, records = command !== "load details", into = records ? $("out") : $("details");
@@ -2707,9 +2719,9 @@ const SCREENS = {
       };
       const save = () => {  // in turn, each as the order was then: the last change wins, sent even if the page is left
         show();
-        const box = $("details"), words = argsFor("columns", "set details", {details_shown: [...order]});
+        const box = $("details"), words = argsFor("columns", "set details", {details_shown: [...order]}), sent = written("set details", words);
         queue(async () => {
-          const r = await runOnce("set details", words);
+          const r = await sent;
           if (!box.isConnected) return;
           box.querySelector(":scope > .banner")?.remove();
           if (r.event === "error") { box.insertAdjacentHTML("afterbegin", banner(r)); drawnDetails = null; return; }
@@ -2779,7 +2791,13 @@ const SCREENS = {
       task.end(!got.error, got.error || "", job);
       both().forEach((x) => { x.disabled = false; });
       b.innerHTML = was;
-      if (!b.isConnected) return got.error || run("columns", command, args(got.path));  // the page left meanwhile: loaded all the same, in the panel
+      if (!b.isConnected) {  // the page left meanwhile: loaded all the same, in the panel, once a long command running ends; said if it can't be
+        const words = got.error ? null : argsFor("columns", command, args(got.path));
+        let r = got.error ? got : await runOnce(command, words);
+        if (r.followed) r = await runOnce(command, words);  // waited out: its turn now
+        if (r.error) snack(`<span class="msg">${esc(files[0].name)}: ${esc(r.error)}</span>`);
+        return;
+      }
       const into = command === "load details" ? $("details") : $("out");
       into.querySelectorAll(":scope > .banner").forEach((x) => x.remove());
       if (got.error) return into.insertAdjacentHTML("afterbegin", banner({event: "error", ...got}));
@@ -4198,7 +4216,8 @@ async function pick() {
 function useWorkspace(r) {  // the workspace every page reads from now on
   if (state.workspace !== r) { $("search").value = ""; steps = {}; resultsNow = null; seen = null; }  // another workspace: nothing of this one's said there
   state.workspace = r;
-  store("workspace", r);  // per viewer: the workspace this browser opens with
+  store("workspace", r);  // per viewer: the workspace a new tab opens with
+  tabStore("workspace", r);  // per tab: the one this tab opens again on a reload, whatever another tab chose since
   $("picker").innerHTML = `${icon("folder")}<span title="${esc(r)}">${r ? `<span class="pk-word">Workspace: </span>${esc(baseName(r))}` : "Choose a workspace"}</span>${icon("down")}`;
 }
 function setWorkspace(r) {
@@ -4255,6 +4274,7 @@ document.addEventListener("click", (e) => {
 });
 document.addEventListener("keydown", (e) => {
   if (e.target.matches("input, select, textarea") || e.metaKey || e.ctrlKey || e.altKey || $("dlg").open) return;
+  if (e.repeat && !e.key.startsWith("Arrow")) return;  // a key held down answers once: the next pair is never answered unseen
   if (e.key === "/") { e.preventDefault(); $("search").focus(); return; }
   const act = keyHandler && keyHandler(e.key.length === 1 ? e.key.toLowerCase() : e.key);
   if (act) { e.preventDefault(); act(); }
@@ -4294,7 +4314,7 @@ document.addEventListener("keydown", (e) => {
   });
   if (SCREENS[location.hash.slice(1)]) current = location.hash.slice(1);  // reloaded: the step it was on
   addEventListener("popstate", () => { const id = location.hash.slice(1); if (SCREENS[id] && id !== current) go(id); });
-  setWorkspace(d.workspace || store("workspace") || "");
+  setWorkspace(tabStore("workspace") ?? (d.workspace || store("workspace") || ""));
   rejoin();
 })();
 </script>
