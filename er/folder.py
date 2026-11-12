@@ -5,6 +5,7 @@ answer people give, written into a sheet (type_in); the record files a run read 
 own mapping (create), listed (workspaces), and given records files, each copied into inputs/ (take_in, loaded). What a
 run writes there, and what people keep there (decisions/, kind_answers/): docs/architecture.md, the workspace.
 """
+import hashlib
 import json
 import os
 import re
@@ -185,6 +186,14 @@ def write_method(out: Path, method: dict) -> None:  # method.toml as `method` sa
         replace_text(out / METHOD, method_text(method))
     else:
         (out / METHOD).unlink(missing_ok=True)
+
+
+def stamp(ws: Path) -> str:
+    """What people and runs change in the workspace `ws`, by each file's size and time: the sheets, decisions,
+    answers, method, mapping and entities. A page that sees it change reads the workspace again. O(files)."""
+    files = [ws / "review.parquet", ws / "kind_review.parquet", ws / METHOD, ws / COLUMNS, ws / "gold.parquet",
+             *sorted((ws / DECISIONS).glob("part-*.parquet")), *sorted((ws / KIND_ANSWERS).glob("part-*.parquet"))]
+    return hashlib.sha256(repr([(f.name, f.stat().st_size, f.stat().st_mtime_ns) for f in files if f.exists()]).encode()).hexdigest()[:12]
 
 
 def method(out: Path | str | None) -> dict:  # the workspace's method.toml, {} without one
