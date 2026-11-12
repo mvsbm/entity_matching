@@ -647,11 +647,15 @@ def describe_matching(con: duckdb.DuckDBPyConnection, out: Path | None, p: Pipel
                                                             pairs=pairs(c.name, ELSE))])
                    for c in p.fs.model.comparisons]
     lam = scaled_prior(model, n) if model else None
-    scored = sum(x.get("candidates", 0) for x in facts if x["step"] == "candidates") if ran else None
+    scored = sum(x.get("candidates", 0) for x in facts if x["step"] == "candidates") if ran else None  # the keys' pairs: the levels count these
+    compared = scored + rows(f"SELECT count(*) FROM {parquet('scored/*.parquet')} WHERE sources IS NULL")[0][0] \
+        if scored is not None and any((out / "scored").glob("*.parquet")) else scored  # and the rules' pairs no key listed, as describe results counts them
 
     # accept, people, group: the line, the band below it for people, and what joined into customers
     bands = table_after((out / "qa.md").read_text(encoding="utf-8"), "## weight bands").values.tolist() if ran and (out / "qa.md").exists() else []
     accepted = rows(f"SELECT count(*) FROM {parquet('matches/*.parquet')}")[0][0] if ran else None
+    for_people = (rows(f"SELECT count(*) FROM {parquet('proposed/*.parquet')}")[0][0] if any((out / "proposed").glob("*.parquet")) else 0) + \
+              (rows(f"SELECT count(*) FROM {parquet('rule_kept/*.parquet')} WHERE NOT merged")[0][0] if any((out / "rule_kept").glob("*.parquet")) else 0) if ran else None  # kept for people
     rule_pairs = sum(v[0] for v in kept.values()) if ran else None
     rule_merged = sum(v[3] for v in kept.values()) if ran else None
     review = read_parquet(out / "review.parquet") if ran and (out / "review.parquet").exists() else None
@@ -708,7 +712,7 @@ def describe_matching(con: duckdb.DuckDBPyConnection, out: Path | None, p: Pipel
              kinds={"company": kinds.get(2, 0), "person": kinds.get(1, 0), "unsure": kinds.get(0, 0)} if kinds else None),
         dict(id="prepare", name="Make values comparable", method="normalizers per field", fields=fields),
         dict(id="rules", name="Rules", method="certain cases first: exact, then fuzzy", rules=rules, pairs=rule_pairs, merged=rule_merged),
-        dict(id="candidates", name="Candidates", method="list the pairs worth comparing", generators=generators, pairs=scored,
+        dict(id="candidates", name="Candidates", method="list the pairs worth comparing", generators=generators, pairs=compared,
              possible=n * (n - 1) // 2 if n else None, listed=sum(listed.values()) if ran else None, by_keys=by_keys, seconds=took("candidates"),
              skipped=dict(blocks=len(skipped), largest=[dict(key=x.generator, value=x.value, records=x.records, pairs=x.pairs) for x in skipped.head(5).itertuples()]),
              missed=[{**x, "examples": x["examples"][:20]} for x in probed[-1]["strata"]] if probed else None),  # the last full run's probe (er.probe)
@@ -717,7 +721,7 @@ def describe_matching(con: duckdb.DuckDBPyConnection, out: Path | None, p: Pipel
         dict(id="accept", name="Accept", method="at the line, with a name compared", threshold=p.fs.min_match_weight, review_from=review_floor(p),
              trust=None if p.trust.line is None else "none" if math.isinf(p.trust.line) else p.trust.line,
              merge=method(out).get("merge") if out else None,  # people's merge conditions (er.results): they decide in place of the line
-             needs=list(p.fs.needs), bands=bands, accepted=accepted, review_bands=review_bands, rule_bands=rule_bands, examples=examples,
+             needs=list(p.fs.needs), bands=bands, accepted=accepted, for_people=for_people, review_bands=review_bands, rule_bands=rule_bands, examples=examples,
              expected_false=round(expected, 1) if expected is not None else None),
         dict(id="people", name="People decide", method="close calls go to people", to_decide=open_, decided=decided, joined=by.get("review", 0) if ran else None,
              below=int((decide["match_weight"] < t).sum()), unnamed=int((decide["match_weight"] >= t).sum()),

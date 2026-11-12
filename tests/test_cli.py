@@ -1000,3 +1000,27 @@ def test_the_commands_the_tests_start_run_this_checkout_s_code(tmp_path):  # fro
     import sys
     got = subprocess.run([sys.executable, "-c", "import er; print(er.__file__)"], cwd=tmp_path, capture_output=True, encoding="utf-8", check=True).stdout
     assert Path(got.strip()).resolve().is_relative_to(Path(__file__).resolve().parents[1])
+
+
+def test_the_page_s_state_is_the_cli_s_a_file_it_can_t_run_counts_said_once_and_each_entity_named(say, tmp_path, population):
+    s, p, g = population
+    uid = s.data.unique_id
+    home = tmp_path / "home"
+    assert say("create", "workspace", "short", "--home", home)[0] == 0
+    (tmp_path / "short.csv").write_text(f"{uid},NAME_X,TEL\n0001,ヤマダタロウ,1234\n0002,スズキハナコ,5678\n", encoding="utf-8")
+    assert say("load", "records", tmp_path / "short.csv", "--workspace", home / "short")[0] == 0  # read: its name column not mapped
+    ready = say("describe", "workspace", home / "short")[1]["ready"]
+    assert not ready["run"] and "name" in ready["why"] and ready["fix"]  # not ready, and why in its own words
+
+    g.df.to_parquet(tmp_path / "all.parquet", index=False)
+    assert say("create", "workspace", "w", "--home", home)[0] == 0
+    assert say("resolve", "records", tmp_path / "all.parquet", "--workspace", home / "w")[0] == 0
+    assert say("describe", "workspace", home / "w")[1]["ready"]["run"]
+    compared = say("describe", "results", "--workspace", home / "w")[1]["candidates"]
+    nodes = {x["id"]: x for x in say("describe", "matching", "--workspace", home / "w")[1]["nodes"]}
+    assert compared == nodes["candidates"]["pairs"]  # one number of pairs compared, wherever it is said
+    assert nodes["accept"]["accepted"] == 0 and nodes["accept"]["for_people"] > 0  # a new workspace: what waits for people, said
+    gold = pd.read_parquet(home / "w" / "gold.parquet")
+    company = gold[gold["kind"] == 2].groupby("cluster_id").filter(lambda c: len(c) == 1)[uid].iloc[0]
+    named = say("list", "entities", "--workspace", home / "w", "--record", company, "--smallest", "1")[1]["entities"]
+    assert named and named[0]["names"]  # a company's entity named by its company name

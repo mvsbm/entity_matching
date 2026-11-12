@@ -40,17 +40,17 @@ import pyarrow.compute as pc
 
 from er import details, folder, inbox, index, intake
 from er.io import alive, read_parquet, replace_text
-from er.config import InputError, Normalizer, adjust, lit, load_pipeline, q, restrict, sources_text, toml_of, widen
+from er.config import InputError, Normalizer, Pipeline, adjust, lit, load_pipeline, q, restrict, sources_text, toml_of, widen
 from er.folder import Busy
 from er.report import (applied, compare_records, describe_entity, describe_key, describe_matching, describe_method, describe_workspace, entity_pairs, explain_pair, fill_rates,
                        key_how, list_patterns, review_workload, rule_how, run_model, trust_state)
-from er.source import describe, filled, find, lexicon
+from er.source import describe, filled, find, lexicon, open_source
 from er.kind import sheet_parts
 from er.match import review_floor
 from er.results import apply_merging, check_merging, describe_merging, describe_results, list_entities, list_scored, merged_links, show_records, with_merging
 from er.strings import connect
 from er.run import Run, run_config, size_bytes, trial
-from er.settings import (COLUMNS, SPECIAL, add_feature, added_of, beside, columns_file, counted_once, features_of, load_settings, names_by_kind, offers,
+from er.settings import (COLUMNS, SPECIAL, Settings, add_feature, added_of, beside, columns_file, counted_once, features_of, fit_to_file, load_settings, names_by_kind, offers,
                          own_columns, placements, present_fields, remove_feature, set_columns, set_features, set_name_kinds, settings_path, slots)
 from er.standardize import SEPARATORS
 
@@ -1436,6 +1436,22 @@ def draw_pairs(a: dict, emit: "Emit") -> dict:
     return dict(drawn=step["drawn"], decide=step["decide"], next=[dict(command=nayose("list", "pairs", "--workspace", out, "--open"), why="the pairs to decide and audit")])
 
 
+def ready(s: Settings, p: Pipeline, files: list[dict]) -> dict:
+    """Whether a run can start on the file loaded last: it holds records, and the pipeline fits its columns (read from
+    its schema only), as Run.load would find. {run, why, fix}. O(files)."""
+    last = next((f for f in reversed(files) if f.get("last")), files[-1] if files else None)
+    if last is None:
+        return dict(run=False, why="no records file loaded yet", fix="load one: nayose load records FILE --workspace …")
+    if not last.get("rows"):
+        return dict(run=False, why=f"{last['name']} holds no records", fix="load the file with its records")
+    try:
+        src = open_source(last["path"], connect(s.compute)[0], {c for f, alts in s.columns.items() if f != "entity" for alt in alts for c in alt})
+        fit_to_file(p, s, src.columns)
+    except InputError as e:
+        return dict(run=False, why=str(e), fix=e.fix)
+    return dict(run=True, why="", fix="")
+
+
 def describe_workspace_(a: dict, emit: "Emit") -> dict:
     s, p, _ = setup(a)
     out = Path(a["workspace"])
@@ -1443,6 +1459,7 @@ def describe_workspace_(a: dict, emit: "Emit") -> dict:
     d["trust"] = trust_state(connect(s.compute)[0], out, p, s.data.unique_id) if d["records"] else None
     d["stamp"] = folder.stamp(out)  # what another tab's decision, answer or change moves: a page coming back reads again
     files = folder.loaded(out)
+    d["ready"] = ready(s, p, files)
     then = ([dict(command=nayose("describe", "results", "--workspace", out), why="what the run found, and what waits for you"),
              dict(command=nayose("open", "ui", "--workspace", out), why="review in the browser")] if d["records"] else
             [dict(command=nayose("resolve", "records", "--workspace", out), why="find matches in the file loaded last")] if files else
@@ -2099,6 +2116,7 @@ COMMANDS: tuple[Command, ...] = (
              "index": "the lookup's index: built_at, records, added (of them, since it was built), stale (what changed since, or null; built_at null: none yet), columns (each a lookup reads: column, field, main: in the field's first alternative)",
              "details": "the details file people see above each record (load details), or null",
              "stamp": "what people and runs change, by its files' sizes and times (sheets, decisions, answers, method, mapping, entities): a page coming back reads again when it moves",
+             "ready": "whether a run can start on the file loaded last: run (true or false), why not, and the fix",
              "next": "the commands that usually follow"},
             "nayose describe workspace workspaces/customers", describe_workspace_, quick=True,
             show={"largest": ("entity", "records"), "runs": ("at", "what", "seconds"), "inputs": ("name", "files", "bytes", "read"), "auto": (), "index": ()}),
