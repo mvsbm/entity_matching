@@ -1199,7 +1199,8 @@ const NODE = {  // each stage in everyday words; describe matching's own name an
   rules: {icon: "rule", name: "Rule matches", word: "pairs", tone: "rule", n: (x) => x.pairs},
   candidates: {icon: "fan", name: "Compared", word: "pairs", n: (x) => x.pairs},
   score: {icon: "scale", name: "Weighed", word: "pairs", n: (x) => x.pairs},
-  accept: {icon: "check", name: "Matched", word: (x) => x && !x.accepted && x.for_people ? `pairs · ${fmt(x.for_people)} wait for you` : "pairs", tone: "model", n: (x) => x.accepted},
+  accept: {icon: "check", name: "Matched", word: (x) => { const w = x && !x.accepted && resultsNow && resultsNow.event !== "error" ? resultsNow.waiting.reduce((a, y) => a + y.pairs, 0) : 0;
+    return w ? `pairs · ${fmt(w)} wait for you` : "pairs"; }, tone: "model", n: (x) => x.accepted},  // Review's own count (describe results), never a second one
   group: {icon: "group", name: "Entities formed", word: "entities", n: (x) => x.customers},
   kind: {icon: "kinds", name: "Person or company", word: "told apart", n: (x) => x.counts ? x.counts.company + x.counts.person : null},
 };

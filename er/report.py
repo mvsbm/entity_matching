@@ -654,8 +654,6 @@ def describe_matching(con: duckdb.DuckDBPyConnection, out: Path | None, p: Pipel
     # accept, people, group: the line, the band below it for people, and what joined into customers
     bands = table_after((out / "qa.md").read_text(encoding="utf-8"), "## weight bands").values.tolist() if ran and (out / "qa.md").exists() else []
     accepted = rows(f"SELECT count(*) FROM {parquet('matches/*.parquet')}")[0][0] if ran else None
-    for_people = (rows(f"SELECT count(*) FROM {parquet('proposed/*.parquet')}")[0][0] if any((out / "proposed").glob("*.parquet")) else 0) + \
-              (rows(f"SELECT count(*) FROM {parquet('rule_kept/*.parquet')} WHERE NOT merged")[0][0] if any((out / "rule_kept").glob("*.parquet")) else 0) if ran else None  # kept for people
     rule_pairs = sum(v[0] for v in kept.values()) if ran else None
     rule_merged = sum(v[3] for v in kept.values()) if ran else None
     review = read_parquet(out / "review.parquet") if ran and (out / "review.parquet").exists() else None
@@ -721,7 +719,7 @@ def describe_matching(con: duckdb.DuckDBPyConnection, out: Path | None, p: Pipel
         dict(id="accept", name="Accept", method="at the line, with a name compared", threshold=p.fs.min_match_weight, review_from=review_floor(p),
              trust=None if p.trust.line is None else "none" if math.isinf(p.trust.line) else p.trust.line,
              merge=method(out).get("merge") if out else None,  # people's merge conditions (er.results): they decide in place of the line
-             needs=list(p.fs.needs), bands=bands, accepted=accepted, for_people=for_people, review_bands=review_bands, rule_bands=rule_bands, examples=examples,
+             needs=list(p.fs.needs), bands=bands, accepted=accepted, review_bands=review_bands, rule_bands=rule_bands, examples=examples,
              expected_false=round(expected, 1) if expected is not None else None),
         dict(id="people", name="People decide", method="close calls go to people", to_decide=open_, decided=decided, joined=by.get("review", 0) if ran else None,
              below=int((decide["match_weight"] < t).sum()), unnamed=int((decide["match_weight"] >= t).sum()),

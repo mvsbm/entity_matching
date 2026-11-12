@@ -1019,7 +1019,6 @@ def test_the_page_s_state_is_the_cli_s_a_file_it_can_t_run_counts_said_once_and_
     compared = say("describe", "results", "--workspace", home / "w")[1]["candidates"]
     nodes = {x["id"]: x for x in say("describe", "matching", "--workspace", home / "w")[1]["nodes"]}
     assert compared == nodes["candidates"]["pairs"]  # one number of pairs compared, wherever it is said
-    assert nodes["accept"]["accepted"] == 0 and nodes["accept"]["for_people"] > 0  # a new workspace: what waits for people, said
     gold = pd.read_parquet(home / "w" / "gold.parquet")
     company = gold[gold["kind"] == 2].groupby("cluster_id").filter(lambda c: len(c) == 1)[uid].iloc[0]
     named = say("list", "entities", "--workspace", home / "w", "--record", company, "--smallest", "1")[1]["entities"]
