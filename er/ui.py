@@ -166,6 +166,10 @@ class Server:
             self.long.release()
 
 
+class Listener(ThreadingHTTPServer):
+    request_queue_size = 128  # connections waiting to be accepted: past socketserver's 5, Windows refuses a page's burst outright
+
+
 def handler(server: Server):
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, *args: object) -> None:  # quiet: the terminal shows the link only
@@ -284,7 +288,7 @@ def serve(port: int, workspace: str | None, home: str, say, open_browser: bool =
     server = Server(workspace, home)
     gc.collect()
     gc.freeze()  # what the server imported never goes: each command's collection walks only what it made
-    httpd = ThreadingHTTPServer(("127.0.0.1", port), handler(server))
+    httpd = Listener(("127.0.0.1", port), handler(server))
     link = f"http://127.0.0.1:{httpd.server_address[1]}/?token={server.token}"
     say(f"Open {link}   (Ctrl-C to stop)", link=link)
     if open_browser:
