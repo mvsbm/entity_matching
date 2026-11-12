@@ -54,7 +54,7 @@ import duckdb
 import numpy as np
 
 from er.config import InputError, lit
-from er.folder import method, runs
+from er.folder import method, runs, write_method
 from er.generate import generate, load_reference, load_spec
 from er.io import CHILD, alive, code_version, replace_text
 from er.run import peak_gb
@@ -201,8 +201,7 @@ def rehearse(ws: Path, sh: dict, s: Settings, pipeline: Path | None, emit: Calla
         m, added = method(ws), {f for f, _ in beside(added_of(ws))}  # the workspace's method: its trust line, the keys and rules people changed,
         m["add_keys"] = [k for k in m.get("add_keys", []) if not {f.split(":")[0] for f in k} & added]  # but a key on an added name: the file
         m["drop_keys"] = [k for k in m.get("drop_keys", []) if k.partition("@")[2] not in added]          # generated holds none
-        if m := {k: v for k, v in m.items() if v != []}:
-            replace_text(root / "run" / "method.toml", "".join(f"{k} = {json.dumps(v, ensure_ascii=False)}\n" for k, v in m.items()))
+        write_method(root / "run", {k: v for k, v in m.items() if v != []})  # in TOML: merge conditions are a table
         limits = [f"{k}={v}" for k, v in {**s.compute, "temp_directory": str(spill)}.items() if v not in ("", None)]
         child = subprocess.Popen([sys.executable, "-m", "er.cli", "resolve", "records", str(root / "records"), "--workspace", str(root / "run"),
                                   "--format", "json", "--compute", *limits, *(["--pipeline", str(pipeline)] if pipeline else [])],
