@@ -2843,7 +2843,7 @@ const SCREENS = {
     if ($("out").querySelector(".steps-card")) return;  // a run started meanwhile: it draws its own, and nothing read before covers it
     if (w.event === "error") { $("out").innerHTML = banner(w); return; }
     if (runsHere()) {  // started before this page was drawn: a run of step 3, as it stands; the Overview's, a card saying where it shows
-      $("out").innerHTML = longRun.page === "run" && RUNS.includes(longRun.command) && task.command === longRun.command ? stepsCard(longRun.command) : runningCard(longRun);
+      $("out").innerHTML = longRun.page === "run" && RUNS.includes(longRun.command) ? stepsCard(longRun.command) : runningCard(longRun);  // its own card whether or not the panel follows it yet: a run that says nothing more is never left covered
       hold(); runCard(); graph_.then(runCard);  // the stages filled in once the pipeline is drawn
       return w;
     }
