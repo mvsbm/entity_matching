@@ -128,7 +128,8 @@ class Comparator:
 
     def copied(self) -> tuple[Normalizer, ...] | None:  # the steps of the column with each character one byte (er.standardize) that DuckDB compares first:
         # a similarity's, katakana as they are (one_byte); an edit distance's, any character by a hash of it (one_byte_hash), never farther apart than they are
-        step = {"jaro": "one_byte", "jaro_winkler": "one_byte", "levenshtein": "one_byte_hash", "damerau_levenshtein": "one_byte_hash"}.get(self.function)
+        step = {"jaro": "one_byte", "jaro_winkler": "one_byte", "levenshtein_similarity": "one_byte", "levenshtein": "one_byte_hash",
+                "damerau_levenshtein": "one_byte_hash"}.get(self.function)
         return (*self.normalize, step) if step else None
 
     def copy(self, base: str) -> str | None:  # that column
@@ -138,7 +139,7 @@ class Comparator:
         """Blocking-rule SQL (l."c" / r."c"), or with level=True Splink comparison-level SQL ("c_l" / "c_r"). DuckDB's own
         Jaro, Jaro–Winkler and Hamming are rapidfuzz's C++, so on characters of one byte each (ASCII, or the one-byte
         copy) they give the Python function's score, on every thread and without Python, and so do its edit distances on
-        ASCII; on other text, its edit distance of the hashed copy (or of the bytes) fails a pair first that no edit of as
+        ASCII, and its Levenshtein similarity on both; on other text, its edit distance of the hashed copy (or of the bytes) fails a pair first that no edit of as
         few characters makes.
         Whatever else, the Python function, pair by pair. Each guard is a CASE: DuckDB may reorder AND and OR, never a CASE."""
         c = self.column(base)
@@ -159,6 +160,11 @@ class Comparator:
             native = lambda x, y: f"CAST(CAST({f}_similarity({x}, {y}) AS FLOAT) AS DOUBLE)"  # rapidfuzz's score is a float32
             copied = f"WHEN {a1} IS NOT NULL AND {b1} IS NOT NULL THEN {native(a1, b1)} " if a1 else ""
             test = f"(CASE {copied}WHEN {ascii_} THEN {native(a, b)} ELSE {python} END) >= {t}"
+        elif f == "levenshtein_similarity":  # 1 − edits / the longer length, as rapidfuzz's normalized_similarity, a float32 as it stores it
+            native = lambda x, y: f"CAST(CAST(1 - levenshtein({x}, {y}) / greatest(length({x}), length({y})) AS FLOAT) AS DOUBLE)"
+            bound = f"CAST(CAST(1 - abs(length({a}) - length({b})) / nullif(greatest(length({a}), length({b})), 0) AS FLOAT) AS DOUBLE)"  # no fewer edits than that
+            copied = f"WHEN {a1} IS NOT NULL AND {b1} IS NOT NULL THEN {native(a1, b1)} >= {t} " if a1 else ""
+            test = f"(CASE WHEN {bound} < {t} THEN FALSE {copied}WHEN {ascii_} THEN {native(a, b)} >= {t} ELSE {python} >= {t} END)"
         elif f == "hamming":
             test = (f"(CASE WHEN abs(length({a}) - length({b})) > {t} THEN FALSE WHEN {ascii_} AND {same} THEN hamming({a}, {b}) <= {t} "
                     f"ELSE {python} <= {t} END)")

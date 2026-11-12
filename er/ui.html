@@ -1288,8 +1288,9 @@ function memo(command, extra = {}) {  // one run per command and arguments while
 const keyWords = (g) => g.method === "sorted neighbours" ? `near in ${g.keys.map(keyName).join(" + ")} order` : g.method === "one letter deleted"  // what a pair key looks for
   ? `${g.keys.map(keyName).join(" + ")}, one letter dropped${g.within.length ? ` · same ${g.within.map(keyName).join(" + ")}` : ""}`
   : g.method === "TF-IDF nearest" ? `letter chunks of ${g.keys.map(keyName).join(" + ")}` : `same ${g.keys.map(keyName).join(" + ")}`;
-const FAMILY = (f) => ({jaro_winkler: "jw", jaro: "jw", jaccard: "ng", levenshtein: "ed", damerau_levenshtein: "ed", hamming: "ed"})[f] || "";
-const said = (t) => t.function === "exact" ? `same ${words(t.field)}` : `${words(t.field)} ${["jaro_winkler", "jaro", "jaccard"].includes(t.function) ? `≈ ${t.threshold}` : t.function === "hamming" ? `${t.threshold} digit off` : `≤ ${t.threshold} edit${t.threshold > 1 ? "s" : ""}`}`;
+const FAMILY = (f) => ({jaro_winkler: "jw", jaro: "jw", jaccard: "ng", levenshtein: "ed", levenshtein_similarity: "ed", damerau_levenshtein: "ed", hamming: "ed"})[f] || "";
+const SIMILAR = ["jaro_winkler", "jaro", "jaccard", "levenshtein_similarity"];  // scores from 0 to 1 that pass at or above their threshold; the rest count edits
+const said = (t) => t.function === "exact" ? `same ${words(t.field)}` : `${words(t.field)} ${SIMILAR.includes(t.function) ? `≈ ${t.threshold}` : t.function === "hamming" ? `${t.threshold} digit off` : `≤ ${t.threshold} edit${t.threshold > 1 ? "s" : ""}`}`;
 const signed = (v) => v === null || v === undefined ? "—" : Math.abs(v) < 0.05 ? "0.0" : `${v > 0 ? "+" : ""}${v.toFixed(1)}`;
 const seg = (parts) => `<span class="pn-seg">${parts.filter(([n]) => n > 0).map(([n, color, title]) => `<i style="flex:${n};background:${color}" title="${esc(title)}"></i>`).join("")}</span>`;
 const idList = (...xs) => esc(JSON.stringify(xs));  // record IDs in a data attribute, as a list: an ID may hold a space
@@ -1299,7 +1300,7 @@ const customerLink = (id) => `<button type="button" class="linkbtn" data-example
 // a comparison as a staircase: every pair stops at the first step it passes; a step's test replays on a pair of this run
 function staircase(c, x) {
   const scenes = can("list patterns") && can("explain pair"), all = (x.pairs - (x.unscored || 0)) || 0;  // of the pairs scored, as stepBar
-  const what = (t) => t.function === "exact" ? "=" : `${FN[t.function]} ${["jaro_winkler", "jaro", "jaccard"].includes(t.function) ? "≥" : "≤"} ${t.threshold}`;
+  const what = (t) => t.function === "exact" ? "=" : `${FN[t.function]} ${SIMILAR.includes(t.function) ? "≥" : "≤"} ${t.threshold}`;
   const chip = (lv, t) => {
     const text = `${words(t.field)} ${what(t)}`, step = [c.name, lv.label, t.field, t.function].join("|");
     return norm(t.normalize).map((n) => `<span class="fx prep">${esc(n)}</span>`).join("") + (scenes
@@ -3201,7 +3202,8 @@ const rowOf = (x) => Object.assign({id_l: x.id_l, id_r: x.id_r, match_weight: x.
   ...Object.keys(x.records[0]).filter((k) => k !== "id").map((k) => ({[`${k}_l`]: x.records[0][k], [`${k}_r`]: x.records[1][k]})),
   ...x.comparisons.map((c) => ({[c.comparison]: c.reached, [`${c.comparison}_bits`]: c.bits})));
 
-const FN = {jaro_winkler: "Jaro–Winkler", jaro: "Jaro", jaccard: "Jaccard", levenshtein: "Levenshtein", damerau_levenshtein: "Damerau–Levenshtein", hamming: "Hamming"};
+const FN = {jaro_winkler: "Jaro–Winkler", jaro: "Jaro", jaccard: "Jaccard", levenshtein: "Levenshtein", levenshtein_similarity: "Levenshtein similarity",
+  damerau_levenshtein: "Damerau–Levenshtein", hamming: "Hamming"};
 const decider = (x, c) => {  // the test that set a comparison's step: the first that passed, else the last that had both values
   const tests = x.tests.filter((t) => t.comparison === c);
   return tests.find((t) => t.passed) || tests.filter((t) => t.a !== null && t.b !== null).pop() || null;
@@ -3210,7 +3212,7 @@ const testText = (x, c, t) => {
   if (!t) return "not on both";
   const on = x.tests.some((o) => o.comparison === c && o.field !== t.field) ? ` ${words(t.field)}` : "";
   if (t.function === "exact") return `${t.passed ? "same" : "different"}${on || " value"}${t.normalize ? ", spelling aside" : ""}`;  // a test on prepared values: their spelling may differ
-  const similar = ["jaro_winkler", "jaro", "jaccard"].includes(t.function);
+  const similar = SIMILAR.includes(t.function);
   return `${FN[t.function]}${on} ${similar ? t.score.toFixed(3) : fmt(t.score)} ${t.passed ? (similar ? "≥" : "≤") : (similar ? "<" : ">")} ${t.threshold}`;
 };
 const big = (n) => n < 10 ? n.toFixed(1) : new Intl.NumberFormat("en", {notation: "compact", compactDisplay: "long", maximumSignificantDigits: 3}).format(n);  // odds: 2⁸ is 256, not 260
@@ -3335,6 +3337,7 @@ function traceScore(fn, a, b) {  // the number a scene ends on: a test holds it 
   if (fn === "jaro") return jaroTrace(a, b).J;
   if (fn === "jaccard") return jaccardTrace(a, b).score;
   if (fn === "exact") return a === b ? 1 : 0;
+  if (fn === "levenshtein_similarity") return 1 - editTrace(a, b, "levenshtein").n / Math.max(Array.from(a).length, Array.from(b).length, 1);
   return editTrace(a, b, fn).n;
 }
 
@@ -3604,6 +3607,7 @@ async function editsBeat(svg, t, alive, ids) {  // line the two up; each column 
     sweep.remove();
   }
   put(svg, "text", {x: 170, y: 194, "font-size": 13, class: "faint"}, {levenshtein: "Levenshtein: change, drop or add a letter", damerau_levenshtein: "Damerau–Levenshtein: a swap of two counts as one",
+                                                                         levenshtein_similarity: "1 − edits ÷ the longer one's letters",
                                                                          hamming: "Hamming: place by place"}[t.function]);
   return tr.n;
 }
@@ -3635,14 +3639,14 @@ async function sceneTest(svg, t, alive, ids = ["", ""]) {  // one test end to en
     await prepBeat(svg, t, alive);
     if (!alive()) return;
   }
-  const similar = ["jaro_winkler", "jaro", "jaccard"].includes(t.function);
+  const similar = SIMILAR.includes(t.function);
   const shown = await (t.function === "jaro_winkler" || t.function === "jaro" ? jaroBeat : t.function === "jaccard" ? jaccardBeat : t.function === "exact" ? sameBeat : editsBeat)(svg, t, alive, ids);
   if (!alive() || t.function === "exact" || shown === undefined) return;
-  const value = t.score, th = t.threshold, family = tok(similar ? (t.function === "jaccard" ? "ng" : "jw") : "ed");
+  const value = t.score, th = t.threshold, family = tok(FAMILY(t.function));
   if (similar) {  // a similarity: from 0–1, the line zooms to where the decision is
     const low = Math.min(value, th) - 0.05, step = low >= 0.7 ? 0.05 : 0.1, lo = Math.max(0, Number((Math.floor(low / step) * step).toFixed(2))), ticks = [];
     for (let k = 0; lo + k * step <= 1.0001; k++) ticks.push(Number((lo + k * step).toFixed(2)));
-    const two = (v) => v.toFixed(2);
+    const two = (v) => v.toFixed(v === th ? Math.max(2, (String(th).split(".")[1] || "").length) : 2);  // a threshold as written: 0.875, not 0.88
     if (lo > 0) { const wide = axis(svg, 308, 0, 1, [0, 0.5, 1], [], String); await showAxis(wide); if (!alive()) return; await zoomIn(svg, wide, lo, 1, family); }
     const ax = axis(svg, 308, lo, 1, ticks, [th], two);
     await showAxis(ax, lo === 0);
@@ -3666,7 +3670,7 @@ function differ(A, B, fn) {  // the letters of each value that are not the other
     a.forEach((_, i) => { if (!la.has(i)) ma.add(i); }); b.forEach((_, j) => { if (!lb.has(j)) mb.add(j); });
     return [ma, mb, tr.links];
   }
-  if (["levenshtein", "damerau_levenshtein", "hamming"].includes(fn)) {  // the letters in an edit
+  if (["levenshtein", "levenshtein_similarity", "damerau_levenshtein", "hamming"].includes(fn)) {  // the letters in an edit
     let i = 0, j = 0;
     for (const [x, y, kind] of editTrace(A, B, fn).cols) {
       if (kind !== "same") { if (x) ma.add(i); if (y) mb.add(j); }
@@ -3696,7 +3700,7 @@ function tick(svg, kind, cx, cy) {  // ✓, ✗ or –, drawn on its centre: a g
 function answer(t) {  // the step's question, answered in its own words
   if (t.a === null || t.b === null) return "not on both";
   if (t.function === "exact") return t.passed ? "yes" : "no";
-  const similar = ["jaro_winkler", "jaro", "jaccard"].includes(t.function);
+  const similar = SIMILAR.includes(t.function);
   return similar ? `${FN[t.function]} ${t.score.toFixed(3)}, needs ${t.threshold}` : `${t.score} edit${t.score === 1 ? "" : "s"}, allows ${t.threshold}`;
 }
 
@@ -4004,7 +4008,7 @@ async function playScene(a) {
   const deep = t || [...upto].reverse().find((o) => o.function !== "exact");  // a function's own working, one click deeper: only one it ran
   if (deep && alive()) {
     const b = foot.querySelector("[data-detail]");
-    b.textContent = `How ${FN[deep.function]} ${["jaro_winkler", "jaro", "jaccard"].includes(deep.function) ? deep.score.toFixed(3) : fmt(deep.score)}?`;
+    b.textContent = `How ${FN[deep.function]} ${SIMILAR.includes(deep.function) ? deep.score.toFixed(3) : fmt(deep.score)}?`;
     b.onclick = async () => { const own = ++sceneTok, live = () => own === sceneTok && pop.isConnected; scenePinned = a; pop.classList.add("pinned"); svg = fresh(); place(); await sceneTest(svg, deep, live, [x.id_l, x.id_r]); };
     foot.hidden = false;
   }

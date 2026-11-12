@@ -71,6 +71,7 @@ sn_person_name_reversed = { kind = "sorted", key = { field = "person_name", norm
 company_name_deletions = { kind = "deletions", key = { field = "company_name", normalize = "company" } }
 cif_deletions = { kind = "deletions", key = { field = "customer_id" } }   # two IDs one digit apart share a deletion
 person_name_deletions_postal_area = { kind = "deletions", key = { field = "person_name", normalize = "fold" }, within = [{ field = "postal_code", normalize = "first3" }] }   # alone: N^1.7
+person_name_deletions_address_code = { kind = "deletions", key = { field = "person_name", normalize = "fold" }, within = ["address_code"] }   # one edit, one address: a postal code typed differently or missing
 given_name_postal = { kind = "keys", keys = [{ field = "given_name", normalize = "fold" }, "postal_code"] }   # surname change
 # an address alone pairs everyone who shares it (households, a fixed pool of addresses): N²; with one more field, linear
 address_phone = { kind = "keys", keys = [{ field = "address", normalize = "address" }, "phone"] }

@@ -109,6 +109,28 @@ def fs_changes(p: Pipeline) -> dict[str, Callable[[FSSpec], FSSpec]]:
         return lambda s: replace(s, model=replace(s.model, comparisons=tuple(
             replace(c, levels=(*c.levels[:at(c)], new, *c.levels[at(c):])) if c.name == "name" else c for c in s.model.comparisons)))
 
+    def or_level(label: str, comp: Comparator, renamed: str | None = None) -> Callable[[FSSpec], FSSpec]:
+        """Name level `label` also given by `comp` on the person name: either measure reaching its threshold; named `renamed` if given."""
+        def level(lv: Level) -> Level:
+            if lv.label != label or ("person_name", comp) in lv.any_of:
+                return lv
+            return replace(lv, label=renamed or label, any_of=(*lv.any_of, ("person_name", comp)))
+        return lambda s: replace(s, model=replace(s.model, comparisons=tuple(
+            replace(c, levels=tuple(map(level, c.levels))) if c.name == "name" else c for c in s.model.comparisons)))
+
+    def name_similarity(close: float, near: float) -> Callable[[FSSpec], FSSpec]:
+        """The name's two similarity levels as Levenshtein similarity (1 − edits / the longer name) on its reading: one edit is
+        close only in a name long enough (ユウゴ / ユミコ in ヨコヤマ: 0.857), and a long vowel written another way is no edit."""
+        to = {"fold JW high": ("reading close", close), "reading close": ("reading close", close),
+              "fold JW low": ("reading near", near), "reading near": ("reading near", near)}
+        def level(lv: Level) -> Level:
+            if lv.label not in to:
+                return lv
+            label, t = to[lv.label]
+            return replace(lv, label=label, any_of=(("person_name", Comparator("levenshtein_similarity", t, READING)),))
+        return lambda s: replace(s, model=replace(s.model, comparisons=tuple(
+            replace(c, levels=tuple(map(level, c.levels))) if c.name == "name" else c for c in s.model.comparisons)))
+
     def given_comparison(*tail: tuple) -> Callable[[FSSpec], FSSpec]:
         """The given name compared on its own, where both records hold one: the same, one edit apart, else. A household
         shares the family name, address and phone, which reach the line together; its members' given names differ.
@@ -164,6 +186,29 @@ def fs_changes(p: Pipeline) -> dict[str, Callable[[FSSpec], FSSpec]]:
         # the pairs those keys list, scored as strangers: one name, its long vowel written another way; a married name
         "same_reading_level": name_level("same reading", "fold exact", READING),
         "same_given_tail_level": name_level("same given name", "given name", GIVEN_TAIL),
+        # a name one edit away at one address code, whatever the postal code says: the pairs Levenshtein ≤ 2 brings to the threshold
+        "name_deletion_address_code_key": with_key("person_name_deletions_address_code"),
+        # other measures in place of Jaro–Winkler or Levenshtein, each judged on top of the choice so far
+        # either measure: Jaro–Winkler keeps a swap across a letter and a long name's third edit, Levenshtein a first-letter typo;
+        # at the low level only, one edit in a short name (ユウコ / ユミコ) stays below the high level, as Jaro–Winkler has it
+        "jw_or_levenshtein_low": or_level("fold JW low", Comparator("levenshtein", 2, FOLD)),
+        # the high level's edit counted on the name as written: ゴ/コ and ュ/ユ are edits there (ユウゴ / ュミコ: three, not one)
+        "jw_or_raw_levenshtein_names": lambda s: or_level("fold JW high", Comparator("levenshtein", 1))(
+            or_level("fold JW low", Comparator("levenshtein", 2, FOLD))(s)),
+        "jw_or_levenshtein_names": lambda s: or_level("fold JW high", Comparator("levenshtein", 1, FOLD))(
+            or_level("fold JW low", Comparator("levenshtein", 2, FOLD))(s)),
+        # one measure for both: Levenshtein similarity on the name's reading, close and near at each pair of thresholds
+        **{f"name_similarity_{close * 1000:.0f}_{near * 100:.0f}": name_similarity(close, near) for close in (0.85, 0.875, 0.9) for near in (0.5, 0.6, 0.7)},
+        # Jaro–Winkler kept, and close also by Levenshtein similarity on the reading: a first-letter typo in a long name, a long vowel
+        # written another way; one edit in a short name stays below
+        **{f"jw_or_similarity_{close * 1000:.0f}": or_level("fold JW high", Comparator("levenshtein_similarity", close, READING), "fold close")
+           for close in (0.85, 0.875, 0.9)},
+        "damerau_names": lambda s: replace(s, model=with_level(with_level(s.model, "name", "fold JW high", function="damerau_levenshtein",
+                                                                          threshold=1), "name", "fold JW low", function="damerau_levenshtein", threshold=2)),
+        "jaccard_names": lambda s: replace(s, model=with_level(with_level(s.model, "name", "fold JW high", function="jaccard", threshold=0.8),
+                                                               "name", "fold JW low", function="jaccard", threshold=0.6)),
+        "levenshtein_company": lambda s: replace(s, model=with_level(s.model, "company", "JW low", function="levenshtein", threshold=2)),
+        "jaro_winkler_address": lambda s: replace(s, model=with_level(s.model, "address", "address close", function="jaro_winkler", threshold=0.9)),
         "given_comparison": given_comparison(),
         "given_or_tail_comparison": given_comparison(GIVEN_TAIL),
         # a household shares address and phone, which alone reach the threshold: without a name compared, people decide
@@ -189,7 +234,10 @@ FS_DECISIONS = (("no_term_frequency", "better"), ("exact_keys_only", "cheaper"),
                 ("u_near_by_keys", "chosen"), ("fit_u_from_1e6_pairs", "cheaper"), ("company_without_jw_high", "cheaper"),
                 ("name_needed", "chosen"),  # the owner's call: a pair with no name compared goes to people, whatever its score
                 ("name_reading_key", "safer"), ("given_tail_keys", "safer"), ("same_reading_level", "better"), ("same_given_tail_level", "better"),
-                ("given_comparison", "better"), ("given_or_tail_comparison", "better"))
+                ("given_comparison", "better"), ("given_or_tail_comparison", "better"),
+                ("name_deletion_address_code_key", "safer"),
+                ("jw_or_similarity_875", "better"),
+                ("levenshtein_company", "better"))
 
 
 def fs_tune(optuna_dir: Path) -> FSTune:

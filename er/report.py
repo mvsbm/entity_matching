@@ -1017,7 +1017,7 @@ def pair_tests(p: Pipeline, s: "Settings", recs: pd.DataFrame, me: pd.Series, mo
         else:
             f = FUNCTIONS[comp.function]
             score = float(f.scorer(str(va), str(vb)))
-            score = float(np.float32(score)) if comp.function in ("jaro", "jaro_winkler") else score  # as the engine tests it: rapidfuzz's score is a float32
+            score = float(np.float32(score)) if comp.function in ("jaro", "jaro_winkler", "levenshtein_similarity") else score  # as the engine tests it: rapidfuzz's score is a float32
             passed = score >= comp.threshold if f.similarity else score <= comp.threshold
         return dict(comparison=c.name, step=step, field=col, function=comp.function, threshold=comp.threshold, normalize=" ".join(comp.normalize),
                     raw=raw, prep=prep, a=va, b=vb, score=None if score is None else round(score, 4), passed=bool(passed))
