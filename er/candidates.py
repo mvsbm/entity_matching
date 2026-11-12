@@ -391,7 +391,7 @@ def _gate(blockers: tuple[Blocker, ...], r: Records, big: dict[int, str], parts:
                                                                          "skipped: no sampled pair reaches the floor"))
         if capacity is not None:  # the highest-yield blocks first, while they fit
             left = capacity - r.con.execute(f"SELECT count(*) FROM {listed}").fetchall()[0][0]
-            for k in info[info["decision"] == "kept"].assign(y=lambda d: d["hits"] / d["sampled"]).sort_values("y", ascending=False).index:
+            for k in info[info["decision"] == "kept"].assign(y=lambda d: d["hits"] / d["sampled"]).sort_values(["y", "generator", "value"], ascending=[False, True, True]).index:  # ties in a fixed order: the same blocks every run
                 if info.at[k, "pairs"] > left:
                     info.at[k, "decision"] = "skipped: over capacity"
                 else:

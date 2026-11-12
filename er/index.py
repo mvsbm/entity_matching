@@ -70,7 +70,7 @@ REBUILD = 0.1  # shortcut: the records added since the build reaching this share
 OPEN = 2  # shortcut: the indexes kept open, each with its DuckDB connection and classifier, for a server's next lookup; raise it when people look up in more workspaces at once
 QUERY = "\x7flookup"  # the ID of a record typed in: no record's, and after every one in order
 LAST = chr(0x10FFFF)  # after every character: a prefix's range ends at it
-MOVES = ("gold.parquet", "state/rule_clusters.parquet", "state/scoring.json", folder.METHOD)  # what a delta carries: entities, rules' clusters, the u an increment counts again, merging conditions
+MOVES = ("gold.parquet", "state/rule_clusters.parquet", "state/scoring.json", "state/placeholders.json", folder.METHOD)  # what a delta carries: entities, rules' clusters, the u an increment counts again, the values read as missing, merging conditions
 INDEXING = hashlib.sha256(b"".join((Path(__file__).parent / f"{m}.py").read_bytes() for m in ("index", "candidates", "config", "standardize", "match", "kind"))
                           + duckdb.__version__.encode() + version("scikit-learn").encode()).hexdigest()[:12]  # what reads and writes an index (kind.pkl pickles a scikit-learn model): another version builds it again
 
@@ -79,7 +79,7 @@ _OPENING = threading.Lock()
 
 
 def _stamp(ws: Path) -> dict[str, list[int]]:  # what an index rests on: each file of the run, the method and the mapping, by size and time
-    files = [*sorted((ws / "state" / "records").glob("part-*.parquet")), ws / "gold.parquet", ws / "state" / "scoring.json", ws / "state" / "model.json",
+    files = [*sorted((ws / "state" / "records").glob("part-*.parquet")), ws / "gold.parquet", ws / "state" / "scoring.json", ws / "state" / "placeholders.json", ws / "state" / "model.json",
              ws / "state" / "config.txt", ws / "state" / "rule_clusters.parquet", ws / folder.METHOD, ws / COLUMNS, *folder.answer_parts(ws)]
     return {f.relative_to(ws).as_posix(): [f.stat().st_size, f.stat().st_mtime_ns] for f in files if f.exists()}
 
@@ -398,6 +398,10 @@ def _asking(ws: Path, s: Settings, p: Pipeline, values: dict | None, record: str
     try:
         with lock:
             query = _query(cur, s, fitted, values, record, kind)
+        stored = ws / "state" / "placeholders.json"
+        for f, held in (json.loads(stored.read_text(encoding="utf-8")) if stored.exists() else {}).items():  # read as missing, as the run read them
+            if f in query and query[f].iloc[0] in held:
+                query.loc[:, [c for c in query.columns if c == f or c.startswith(f"{f}__")]] = pd.NA
         cur.register("er_q", query)
         cur.execute("CREATE TEMP TABLE qry AS SELECT * FROM er_q")
         cur.unregister("er_q")

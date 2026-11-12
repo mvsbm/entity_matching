@@ -498,6 +498,7 @@ class Fields:
     one_of: tuple[tuple[str, ...], ...]       # ... or if every field of one group is absent
     optional: tuple[str, ...]                 # absent: whatever reads it is disabled
     labels: tuple[str, ...]                   # read only by labelled runs (choosing, evaluation)
+    identifying: tuple[str, ...] = ()         # one entity's each (a customer ID): a value on many records is a placeholder, read as missing (Run.load)
 
     def declared(self) -> set[str]:
         return {*self.mandatory, *(f for g in self.one_of for f in g), *self.optional, *self.labels}
@@ -603,7 +604,7 @@ def pipeline_from(cfg: dict, std: Standardization, chains: Mapping[str, tuple[No
                   resolver=_resolver(m["resolver"]), budget=budget, bridge=m.get("bridge", False), needs=tuple(m.get("needs", ())))
     t, sel, d = cfg["threshold"], cfg["selection"], cfg["display"]
     return Pipeline(fields=Fields(mandatory=tuple(f["mandatory"]), one_of=tuple(map(tuple, f["one_of"])),
-                                  optional=tuple(f["optional"]), labels=tuple(f["labels"])),
+                                  optional=tuple(f["optional"]), labels=tuple(f["labels"]), identifying=tuple(f.get("identifying", ()))),
                     rules=rules, fs=fs, generators=generators,
                     threshold=ThresholdRule(grid=tuple(t["grid"]), max_fp=t["max_fp"], max_fp_rate_hi=t["max_fp_rate_hi"],
                                             margin_steps=t["margin_steps"]),
@@ -813,7 +814,8 @@ def pipeline_dict(p: Pipeline, chains: Mapping[str, tuple[Normalizer, ...]]) -> 
     fs, m = p.fs, p.fs.model
     f, t = p.fields, p.threshold
     return {
-        "fields": {"mandatory": list(f.mandatory), "one_of": [list(g) for g in f.one_of], "optional": list(f.optional), "labels": list(f.labels)},
+        "fields": {"mandatory": list(f.mandatory), "one_of": [list(g) for g in f.one_of], "optional": list(f.optional), "labels": list(f.labels),
+                   **({"identifying": list(f.identifying)} if f.identifying else {})},
         "budget": {"max_pairs_per_record": fs.budget.max_pairs_per_record, "max_block_size": fs.budget.max_block_size,
                    "target_rows": fs.budget.target_rows, "benchmark_pairs": fs.budget.benchmark_pairs, "sample_pairs": fs.budget.sample_pairs},
         "rules": {"resolver": resolver(p.rules.resolver), "stages": [

@@ -139,6 +139,7 @@ class Run:
         self.added: int | None = None         # an increment's new records (0: nothing new)
         self.part = 0                         # the part an increment writes: one past the run's highest
         self.gated = pd.DataFrame()           # the oversized blocks the candidates checked, and what was decided
+        self.placeholders: dict[str, list[str]] = {}  # each identifying field's values read as missing (_placeholders), kept with the run
         self.keep: Path | None = None         # the workspace whose cleaned records a full run reads again (folder.prepared), if any
         self.merge: dict = {}                 # the workspace's merge conditions (method.toml merge): none, the trust line decides
         self._spent = spent()  # the comparison functions' time when the last step ended (_done)
@@ -187,8 +188,9 @@ class Run:
         hints = suggest(src, self.con, [f for f in self.settings.columns if f not in present and f != "entity"], self.settings.detect)
         needed = {*self.pipeline.fields.mandatory, *(f for g in self.pipeline.fields.one_of for f in g)}  # those a run stops without
         hints = {f: (src.given.get(c, c), share, why) for f, (c, share, why) in hints.items() if share >= (0.99 if f == "id" else 0.5) and f in needed}  # a likely column, by the name it has in the file
+        extra = self._lacks(stored, src.columns) if stored else []  # an increment's batch is read as the run read its records
         try:
-            self.pipeline, self.disabled = fit_to_file(self.pipeline, self.settings, src.columns)
+            self.pipeline, self.disabled = fit_to_file(self.pipeline, self.settings, [*src.columns, *extra])
         except InputError as e:
             raise InputError(f"{e}. The file's columns: {', '.join(src.given.get(c, c) for c in src.columns)}", e.fix + (
                 ". Suggested from the file's values, check them first:\n  [columns]" + "".join(
@@ -232,7 +234,7 @@ class Run:
             done = total
         else:
             reads = {self.uid, *(c for d in fs.standardize.derived for cols in d.sources for c in cols), *used}  # what cleaning reads: a wide file's other columns never enter the run
-            cols = ", ".join(q(c) for c, *_ in self.con.execute(f"DESCRIBE SELECT * FROM {rows}").fetchall() if c in reads)
+            cols = ", ".join([*(q(c) for c, *_ in self.con.execute(f"DESCRIBE SELECT * FROM {rows}").fetchall() if c in reads), *(f"NULL::VARCHAR AS {q(c)}" for c in extra)])
             reader = self.con.cursor().sql(f"SELECT {cols} FROM {rows}").to_arrow_reader(self.chunk_rows)  # its own cursor: inserts go on alongside
             for i, batch in enumerate(reader):
                 chunk = prepare(fs.standardize, batch.to_pandas().astype("string"), normalized, used, kind=self.classifier)
@@ -248,6 +250,8 @@ class Run:
             self.told(done, total, "records")
         self.con.execute("DROP TABLE IF EXISTS er_in")  # the file kept once, read: a copy of it no step reads again
         self.n = self._count(into)
+        if stored is None:  # an increment's batch: read as missing with the run's records (_join)
+            self._placeholders(into)
         kinds = {}
         if self.classifier is not None:  # how many records each kind holds
             kinds = dict(self.con.execute(f"SELECT kind, count(*) FROM {into} GROUP BY 1").fetchall())
@@ -256,6 +260,37 @@ class Run:
                      "held back": self._count(f"{into} WHERE kind_held")}
         self._done("load", "O(N·L)", f"O({self.n:,}·L)", t, records=self.n, disabled=len(self.disabled), set_aside=self._count("set_aside"), **kinds,
                    **({"prepared": "kept" if kept else "made"} if keep else {}))
+
+    def _lacks(self, stored: str, columns: list[str]) -> list[str]:
+        """The columns an increment's batch reads as missing: the first source of each optional field the run's records
+        hold and the batch doesn't (a file without its birth dates), so it is read, prepared and compared as the run's
+        were. Never a column a field the run needs reads: a batch without its IDs or names is refused, as a file is."""
+        fields, have, given = self.pipeline.fields, {c for c, *_ in self.con.execute(f"DESCRIBE {stored}").fetchall()}, present_fields(self.settings, columns)
+        needed = {c for f in (*fields.mandatory, *(f for g in fields.one_of for f in g)) for alt in self.settings.columns.get(f, ()) for c in alt}
+        return list(dict.fromkeys(c for f, alts in self.settings.columns.items() if f in fields.optional and f in have and f not in given
+                                  for c in alts[0] if c not in columns and c not in needed))
+
+    def _placeholders(self, table: str, also: tuple[str, ...] = ()) -> None:
+        """Each identifying field's values ([fields] identifying: one entity's each, as a customer ID) that `table` holds
+        on min_oversized() records or more, with those the run already read as missing (self.placeholders): a
+        placeholder such as 00000000, not one customer's. Each is made missing in `table` and `also`, in the field and
+        every copy of it, so no rule, key, comparison or probe reads it as two records agreeing. O(N): a group-by and an
+        update per field."""
+        m, cols = self.pipeline.fs.budget.min_oversized(), {c for c, *_ in self.con.execute(f"DESCRIBE {table}").fetchall()}
+        for f in (f for f in self.pipeline.fields.identifying if f in cols):
+            new = [v for v, in self.con.execute(f"SELECT {q(f)} FROM {table} WHERE {q(f)} IS NOT NULL GROUP BY 1 HAVING count(*) >= {m} ORDER BY count(*) DESC, 1").fetchall()]
+            values = [*self.placeholders.get(f, []), *(v for v in new if v not in self.placeholders.get(f, []))]
+            if not values:
+                continue
+            for t in (table, *also):
+                copies = [c for c, *_ in self.con.execute(f"DESCRIBE {t}").fetchall() if c == f or c.startswith(f"{f}__")]
+                self.con.execute(f"UPDATE {t} SET {', '.join(f'{q(c)} = NULL' for c in copies)} WHERE {q(f)} IN ({', '.join(map(lit, values))})")
+            if new:
+                held = self.con.execute(f"SELECT count(*) FROM {table} WHERE {q(f)} IS NULL").fetchall()[0][0]
+                self.notes.append(f"{f}: {len(new):,} value{'s' if len(new) > 1 else ''} held by {m}+ records read as missing, a placeholder and not one "
+                                  f"entity's ({held:,} records without one)" + ("; pairs the run joined on it before stay until it runs again (nayose rerun records)" if also else ""))
+                self.examples.append(f"{f} = {new[0]}: a placeholder, read as missing")
+            self.placeholders[f] = values
 
     def _prepared_key(self, normalized: list, used: set[str], ordered: bool) -> str:
         """All the cleaned records rest on, as one hash: the records files (their SHA-256, in order) and how they are read
@@ -681,6 +716,7 @@ class Run:
         t, state, name = time.perf_counter(), out / "state", f"part-{part:05d}.parquet"
         aside = [("SELECT * FROM set_aside", out / "set_aside" / name)] if self._count("set_aside") else []
         texts = [(json.dumps(self.model, ensure_ascii=False), state / "model.json"), (self.config, state / "config.txt")] if part == 0 else []
+        texts.append((json.dumps(self.placeholders, ensure_ascii=False), state / "placeholders.json"))  # read as missing: an increment and a lookup read them so too
         if self.basis:  # the u this run scored with, and what an increment needs to tell when they go stale
             texts.append((json.dumps(dict(model=self.scoring, basis=self.basis), ensure_ascii=False), state / "scoring.json"))
         earlier = folder.history(out) if part == 0 else None  # the runs before: read before the old log goes with the old run
@@ -799,6 +835,9 @@ class Run:
                 raise InputError(f"{path}: no new record to add ({'; '.join(self.notes)})", fix="give the records set aside IDs, one per record")
             return False  # every record is already in the run: nothing to do
         self.con.execute("CREATE OR REPLACE TABLE records AS SELECT * FROM old_records UNION ALL BY NAME SELECT * FROM new_records")  # read by every step: once
+        stored = state / "placeholders.json"
+        self.placeholders = json.loads(stored.read_text(encoding="utf-8")) if stored.exists() else {}
+        self._placeholders("records", also=("new_records",))  # the run's own, and any the batch takes past the line
         self.con.execute(f"CREATE OR REPLACE TABLE new_ids AS SELECT {u} FROM new_records")
         self.n = self._count("records")
 
