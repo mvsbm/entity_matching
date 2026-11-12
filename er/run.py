@@ -69,7 +69,7 @@ from er.cluster import merge
 from er.config import InputError, Pipeline, TfidfNeighbours, bits, keys_sql, lit, q
 from er.io import code_version, config_hash, markdown, read_parquet, replace_text
 from er.kind import KIND_COLUMNS, NAME_MODEL, century, classifier as kind_classifier, kind_review_sheet, merge_answers
-from er.match import ELSE, fs_settings, named_sql, read_by, refreshed_u, review_floor, rule_edges, score_fs, scored_u, train_fs, u_basis
+from er.match import ELSE, cheap_comparisons, fs_settings, named_sql, read_by, refreshed_u, review_floor, rule_edges, score_fs, scored_u, train_fs, u_basis
 from er.probe import missed
 from er.report import applied, carry_kinds, carry_over, qa, report_text, review_sheet, scored_again, trust_state
 from er.results import BANDS, banded, check_merging, merge_where
@@ -520,27 +520,31 @@ class Run:
         if self.told:
             self.told(0, total, "sampled pairs")
 
-        def each(scored: str) -> None:
+        def each(scored: str, sliced: int) -> None:
             nonlocal done
-            done += self._count(scored)
+            done += sliced
             if self.told:
                 self.told(done, total, "sampled pairs")
-        self._scored(pairs, "er_gate", n_records=self.n, each=each)
+        self._scored(pairs, "er_gate", n_records=self.n, each=each, floor=review_floor(self.pipeline))  # a block is kept by a pair at its floor
         self.gate_seconds, self.gate_pairs = self.gate_seconds + time.perf_counter() - start, self.gate_pairs + total
         return "er_gate"
 
-    def _scored(self, pairs: str, into: str, n_records: int | None = None, each: Callable[[str], None] | None = None) -> None:
+    def _scored(self, pairs: str, into: str, n_records: int | None = None, each: Callable[[str, int], None] | None = None,
+                floor: float | None = None, exempt: str | None = None) -> None:
         """Every pair of `pairs` (a table made fresh, its rowids dense; uid_l, uid_r) scored into `into`, score_pairs at a
         time: a pair's score depends on it alone, so the slices score as the whole would, and only one slice's comparisons
-        are ever held. each(the slice's scores) after each slice."""
+        are ever held. each(the slice's scores, its pairs) after each slice. With `floor`, a pair that can't reach it is
+        left out, unless `exempt` (a table of pairs) holds it (score_fs)."""
         l, r = q(self.l), q(self.r)
+        exact = cheap_comparisons(self.pipeline.fs.model)
         for start in range(0, max(1, self._count(pairs)), self.score_pairs):
             self.con.execute(f"CREATE OR REPLACE TABLE er_slice AS SELECT {l}, {r} FROM {pairs} WHERE rowid >= {start} AND rowid < {start + self.score_pairs}")
-            score_fs(self.scoring, "records", "er_slice", self.db, self.uid, into=into if not start else "er_scored", n_records=n_records)
+            score_fs(self.scoring, "records", "er_slice", self.db, self.uid, into=into if not start else "er_scored", n_records=n_records,
+                     floor=floor, exact=exact, exempt=exempt)
             if start:
                 self.con.execute(f"INSERT INTO {into} SELECT * FROM er_scored")
             if each:
-                each(into if not start else "er_scored")
+                each(into if not start else "er_scored", self._count("er_slice"))
         self.con.execute("DROP TABLE IF EXISTS er_slice; DROP TABLE IF EXISTS er_scored")
 
     def _gated(self, records: list[dict]) -> None:  # the oversized blocks' decisions, kept for qa and named in the summary
@@ -560,23 +564,24 @@ class Run:
         return f"(SELECT {q(self.uid)} FROM {clusters} WHERE cluster_id IN (SELECT cluster_id FROM {clusters} GROUP BY 1 HAVING count(*) = 1))"
 
     def score(self) -> None:
-        """Every candidate scored by Splink, with the model and u that fit() settled; and the patterns the pairs fall in
-        (_patterns)."""
+        """Every candidate that can reach 0 points scored by Splink, with the model and u that fit() settled (the rest: a
+        bound settles it below 0, which nothing reads: unscored); and the patterns the scored pairs fall in (_patterns)."""
         t, fs = time.perf_counter(), self.pipeline.fs
         k, model_line = len(fs.model.comparisons), bits(fs.min_match_weight)
         total, done, likely = self._count("cands"), 0, 0  # likely: the pairs the model scores as matches, whatever trust lets merge
 
-        def each(scored: str) -> None:  # how far scoring is, after each slice
+        def each(scored: str, sliced: int) -> None:  # how far scoring is, after each slice
             nonlocal done, likely
-            got, hit = self.con.execute(f"SELECT count(*), count(*) FILTER (match_weight >= {model_line} AND {named_sql(fs)}) FROM {scored} s").fetchall()[0]
-            done, likely = done + got, likely + hit
+            hit = self.con.execute(f"SELECT count(*) FILTER (match_weight >= {model_line} AND {named_sql(fs)}) FROM {scored} s").fetchall()[0][0]
+            done, likely = done + sliced, likely + hit
             if self.told:
                 self.told(done, total, "pairs", likely=likely)
-        self._scored("cands", "scores", each=each)
+        self._scored("cands", "scores", each=each, floor=0.0, exempt="rule_kept")  # scored/ keeps 0 points and up, and every rule pair
         reached: dict[str, dict[str, int]] = {}  # per comparison, the pairs at each level (gamma, as score_fs gives it): one scan
         for c, g, n in self.con.execute("SELECT c, g, count(*) FROM (UNPIVOT scores ON COLUMNS('^gamma_') INTO NAME c VALUE g) GROUP BY ALL").fetchall():
             reached.setdefault(c.removeprefix("gamma_"), {})[str(g)] = n
-        self._done("score", "O(C·K·L²)", f"O({self._count('scores'):,}·{k}·L²)", t, reached=reached, patterns=self._patterns(), bands=self._bands())
+        self._done("score", "O(C·K·L²)", f"O({self._count('scores'):,}·{k}·L²)", t, reached=reached, patterns=self._patterns(), bands=self._bands(),
+                   unscored=total - self._count("scores"))
 
     def _bands(self) -> list[int]:  # the pairs in `scores` by the score chart's bands (results.BANDS), each by its own weight
         n = dict(self.con.execute(f"SELECT {banded()}, count(*) FROM scores GROUP BY 1").fetchall())
@@ -868,8 +873,10 @@ class Run:
         t = time.perf_counter()
         self.con.execute(f"""CREATE OR REPLACE TABLE touched AS SELECT * FROM records WHERE {u} IN
             (SELECT {l} FROM cands UNION SELECT {r} FROM cands)""")
-        score_fs(self.scoring, "touched", "cands", self.db, self.uid, into="scores", n_records=self.n)
-        self._done("score", "O(C_Δ·K·L²)", f"O({self._count('cands'):,}·{len(fs.model.comparisons)}·L²)", t, patterns=self._patterns(), bands=self._bands())
+        score_fs(self.scoring, "touched", "cands", self.db, self.uid, into="scores", n_records=self.n, floor=0.0,
+                 exact=cheap_comparisons(fs.model), exempt="rule_kept")  # as score(): what can't reach 0 is left out
+        self._done("score", "O(C_Δ·K·L²)", f"O({self._count('cands'):,}·{len(fs.model.comparisons)}·L²)", t, patterns=self._patterns(), bands=self._bands(),
+                   unscored=self._count("cands") - self._count("scores"))
 
         t = time.perf_counter()
         self._accept()

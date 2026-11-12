@@ -169,7 +169,8 @@ def test_a_lookup_lists_and_scores_the_pairs_an_increment_of_the_record_would_an
     d, kept_pairs = cli.describe_results_({"workspace": str(ws)}, None), pd.read_parquet(ws / "scored")
     at_zero = sum(x["pairs"] for x in d["scores"] if x["down_to"] is not None and x["down_to"] >= 0)
     runs = json.loads((ws / "steps.json").read_text(encoding="utf-8"))["runs"]
-    by_keys = sum(row[len(x["patterns"]["fields"])] for run in runs for x in run["steps"] if x.get("patterns") for row in x["patterns"]["rows"])
+    by_keys = sum(row[len(x["patterns"]["fields"])] for run in runs for x in run["steps"] if x.get("patterns") for row in x["patterns"]["rows"]) \
+        + sum(x.get("unscored", 0) for run in runs for x in run["steps"])  # scored, by pattern; and those a bound left below 0
     rules_alone = int((kept_pairs["rule"].notna() & kept_pairs["sources"].isna()).sum())
     assert at_zero == int((kept_pairs["match_weight"] >= 0).sum())  # at 0 or more: the pairs Explore lists
     assert sum(x["pairs"] for x in d["scores"]) == by_keys + rules_alone and len(runs) == 2  # every pair compared: the increment's with the full run's

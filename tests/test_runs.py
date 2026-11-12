@@ -284,7 +284,8 @@ def test_describe_matching_draws_the_pipeline_with_the_run_s_numbers(tmp_path, p
     assert nodes["accept"]["accepted"] == len(pd.read_parquet(out / "matches")) and nodes["customers"]["count"] == gold["cluster_id"].nunique()
     levels = [lv for c in nodes["score"]["comparisons"] for lv in c["levels"] if lv["m"]]
     assert levels and all(math.isclose(lv["bits"], math.log2(lv["m"] / lv["u"])) for lv in levels)  # each level's worth, as fitted
-    assert all(c["missing"] + sum(lv["pairs"] for lv in c["levels"]) == nodes["score"]["pairs"] for c in nodes["score"]["comparisons"])  # each pair stops at one step
+    assert all(c["missing"] + sum(lv["pairs"] for lv in c["levels"]) + nodes["score"]["unscored"] == nodes["score"]["pairs"]
+               for c in nodes["score"]["comparisons"])  # each pair stops at one step, or a bound leaves it below 0
     for r in nodes["rules"]["rules"]:  # the model's points for each rule's pairs: every pair in one of three ranges
         assert r["scores"] is None or sum(r["scores"].values()) == r["pairs"]
     links = len(pd.read_parquet(out / "matches"))

@@ -384,7 +384,8 @@ def _gate(blockers: tuple[Blocker, ...], r: Records, big: dict[int, str], parts:
         pairs = r._temp(f'SELECT DISTINCT l AS "{names[0]}", r AS "{names[1]}" FROM {sample}')  # scored in DuckDB, a slice at a time: never all at once through pandas
         scored = gate(pairs)
         stats = r.con.execute(f"""SELECT s.g, s.b, count(*) AS sampled, max(w.w) AS best, count(*) FILTER (WHERE w.w >= {floor}) AS hits
-                                  FROM {sample} s JOIN (SELECT "{names[0]}" AS l, "{names[1]}" AS r, match_weight AS w FROM {scored}) w USING (l, r) GROUP BY 1, 2""").df()
+                                  FROM {sample} s LEFT JOIN (SELECT "{names[0]}" AS l, "{names[1]}" AS r, match_weight AS w FROM {scored}) w USING (l, r)
+                                  GROUP BY 1, 2""").df()  # every sampled pair counted; the gate's scores hold only those that could reach the floor
         r.con.execute(f"DROP TABLE IF EXISTS {scored}")
         info = info.merge(stats, on=["g", "b"], how="left").fillna({"sampled": 0, "hits": 0})
         info["decision"] = np.where(info["hits"] > 0, "kept", np.where(info["sampled"] == 0, "skipped: other keys list its sampled pairs",

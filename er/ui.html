@@ -1322,9 +1322,9 @@ function staircase(c, x) {
 // a comparison's pairs, by the step they stopped at, as one bar: blue for, orange against, grey not on both; `pick`, one pair's step
 function stepBar(c, x) {
   const all = x.pairs || 1, scenes = can("list patterns") && can("explain pair");
-  const parts = [["missing", c.missing, null], ...c.levels.map((lv) => [lv.label, lv.pairs, lv.bits])];
+  const parts = [["missing", c.missing, null], ...c.levels.map((lv) => [lv.label, lv.pairs, lv.bits]), ["unscored", x.unscored, null]];
   return `<span class="pn-wbar">${parts.filter(([, n]) => n).map(([lab, n, bits]) => {
-    const share = 100 * (n || 0) / all, name = lab === "missing" ? "not on both" : level(lab);
+    const share = 100 * (n || 0) / all, name = lab === "missing" ? "not on both" : lab === "unscored" ? "can't reach 0" : level(lab);
     const color = bits === null ? "var(--outline)" : bits < 0 ? "var(--against)" : `color-mix(in srgb, var(--for) ${Math.round(30 + Math.min(70, 4.5 * bits))}%, var(--surface))`;
     const dark = bits === null || (bits >= 0 && bits < 7);  // light fills take ink
     const text = share >= 14 ? `${name} ${share.toFixed(0)}%` : share >= 6 ? `${share.toFixed(0)}%` : "";
