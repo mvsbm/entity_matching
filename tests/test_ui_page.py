@@ -1322,3 +1322,80 @@ sys.exit(cli.main(sys.argv[1:]))
     (tmp_path / "go2").touch()
     page.wait_for_selector("#loaded .answer:has-text('30 records')", timeout=60_000)  # the whole of it: changes allowed again
     assert page.get_attribute("#out", "data-reading") is None and page.get_attribute("#out", "inert") is None and not errors
+
+
+def test_the_page_acts_only_on_what_the_person_saw_and_keeps_what_they_did_through_reloads_and_other_tabs(ui_page, tmp_path, population, fake_cli, monkeypatch):
+    from er import cli, folder
+    s, p, g = population
+    g.df.to_parquet(tmp_path / "all.parquet", index=False)
+    home = tmp_path / "workspaces"
+    for name in ("w1", "w2"):
+        assert cli.main(["create", "workspace", name, "--home", str(home), "--format", "json"]) == 0
+        assert cli.main(["resolve", "records", str(tmp_path / "all.parquet"), "--workspace", str(home / name), "--format", "json"]) == 0
+    page, server, httpd = ui_page(str(home / "w1"), str(home), viewport={"width": 1280, "height": 900})
+    base = page.url.split("#")[0]
+    typed = lambda ws: pd.read_parquet(ws / "review.parquet")["decision"].notna().sum()
+
+    page.click(".navitem[data-screen=pairs]")
+    page.wait_for_selector("#right .fullrows tbody tr", timeout=60_000)
+    waiting = int(page.inner_text("#done-line").split(" ")[0].replace(",", ""))
+    for _ in range(20):  # M held down for a second and a half: one keydown, then the browser's repeats
+        page.keyboard.down("m")
+        page.wait_for_timeout(80)
+    page.keyboard.up("m")
+    page.wait_for_function("() => document.querySelector('#written').textContent === '1'")
+    page.wait_for_timeout(1_000)
+    assert typed(home / "w1") == 1  # the pair seen, and no other
+
+    other = page.context.new_page()  # another tab of this browser, on the same pairs
+    other.goto(base + "#pairs")
+    other.wait_for_selector("#right .fullrows tbody tr", timeout=60_000)
+    other.keyboard.press("n")  # it answers the next pair
+    other.wait_for_function("() => document.querySelector('#written').textContent === '1'")
+    page.bring_to_front()
+    page.evaluate("document.dispatchEvent(new Event('visibilitychange'))")  # this tab looked at again: it reads the workspace again
+    page.wait_for_function(f"() => document.querySelector('#done-line').textContent.startsWith('{waiting - 2:,} pair')", timeout=30_000)
+
+    other.evaluate(f"setWorkspace({json.dumps(str(home / 'w2'))})")  # the other tab picks w2; this one stays on w1 through a reload
+    other.wait_for_function("() => document.querySelector('#picker').textContent.includes('w2')")
+    page.reload()
+    page.wait_for_function("() => document.querySelector('#picker').textContent.includes('w1')")
+    other.reload()
+    other.wait_for_function("() => document.querySelector('#picker').textContent.includes('w2')")
+
+    end = tmp_path / "end"
+    fake_cli(f"""if sys.argv[1:3] == ["rerun", "records"]:  # w1's run, until the test ends it
+    print(json.dumps({{"event": "step", "step": "load", "seconds": 0.1}}), flush=True)
+    t = time.time()
+    while not os.path.exists({str(end)!r}) and time.time() - t < 60:
+        time.sleep(0.1)
+    print(json.dumps({{"event": "result", "summary": [["records", "1"]]}}), flush=True)
+    sys.exit(0)
+import er.cli
+sys.exit(er.cli.main(sys.argv[1:]))
+""")
+    page.click(".navitem[data-screen=run]")
+    page.click("[data-act='rerun records']")
+    page.click("#dlg button[value=run]")
+    page.wait_for_selector("#out .steps-card", timeout=30_000)
+    other.click(".navitem[data-screen=run]")
+    other.click("[data-act='rerun records']")
+    other.click("#dlg button[value=run]")
+    other.wait_for_selector("#out .banner:has-text('runs on w1')", timeout=30_000)  # w2 never shown w1's run as its own
+    end.touch()
+    page.wait_for_selector("#out .steps-card", state="detached", timeout=30_000)
+
+    held = []
+    other.route("**/api/upload**", lambda route: held.append(route))  # the upload still going when the person leaves
+    other.click(".navitem[data-screen=columns]")
+    other.wait_for_selector("#cpick")
+    other.evaluate("""() => { const dt = new DataTransfer(); dt.items.add(new File(["CONT_ID,FULL_NAME_KANA\\n0001,ヤマダタロウ\\n"], "late.csv"));
+        document.querySelector("#customer h2").dispatchEvent(new DragEvent("drop", {dataTransfer: dt, bubbles: true, cancelable: true})); }""")
+    while not held:
+        other.wait_for_timeout(50)
+    other.click(".navitem[data-screen=results]")  # left before it came
+    held[0].continue_()
+    t = time.time()
+    while not any(f["name"].endswith("late") for f in folder.loaded(home / "w2")) and time.time() - t < 60:
+        time.sleep(0.2)
+    assert any(f["name"].endswith("late") for f in folder.loaded(home / "w2"))  # loaded all the same
