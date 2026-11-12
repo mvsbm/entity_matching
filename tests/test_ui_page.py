@@ -742,7 +742,7 @@ def test_the_page_keeps_its_step_through_back_reload_and_a_run_and_says_what_was
         .map((h) => [h.includes("Worse"), h.includes("Better"), h.includes('btn filled" data-adopt')])""")
     assert verdict == [[True, False, False], [False, True, True]]  # one it sets wrong is worse, however the totals net out; Adopt stands out only when better
     page.click(".tab[data-go=kinds]")  # Review's second tab
-    page.wait_for_selector("[data-a=person]")
+    page.wait_for_selector("[data-a=person]:not([disabled])", timeout=60_000)  # answers open once the run before has ended
     assert page.get_attribute("#some [data-part=flagged]", "aria-selected") == "true" and "Flagged" in page.inner_text("#some")  # the flagged records first
     assert {r.strip() for r in page.locator("#left tbody tr td:first-child").all_inner_texts()} == {"flagged"}  # drawn at random or not
     page.keyboard.press("1")
