@@ -57,7 +57,7 @@ body.collapsed .sidenav h3, body.collapsed .navitem span:not(.dot) { display: no
 body.collapsed main { margin-left: 72px; }
 
 /* the page */
-main { margin: 56px 0 0 256px; padding: 0 24px 120px; min-height: calc(100% - 56px); }
+main { margin: 0 0 0 256px; padding: 56px 24px 120px; min-height: 100%; }  /* the app bar's room inside it, not a margin: a margin would pass through body and make every page 56 px taller than the window */
 .pagehead { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; min-height: 64px; border-bottom: 1px solid var(--line); margin: 0 -24px 16px; padding: 8px 24px; background: var(--surface); }
 .pagehead h1 { font-size: 22px; font-weight: 400; margin: 0 16px 0 0; }
 .btn { display: inline-flex; align-items: center; gap: 6px; height: 36px; padding: 0 16px; border-radius: 18px; border: 1px solid transparent; background: transparent; cursor: pointer;
@@ -187,7 +187,10 @@ td.det-v div { white-space: nowrap; overflow-wrap: normal; line-height: 24px; }
 .banner.warn { background: var(--warn-bg); color: var(--warn); }
 .banner.info { background: var(--primary-soft); color: var(--ink); }
 #lost[hidden] { display: none; }  /* .banner's flex would show it empty */
-#lost { position: fixed; top: 68px; left: 50%; transform: translateX(-50%); z-index: 30; width: min(640px, calc(100% - 32px)); box-shadow: 0 2px 8px rgb(0 0 0 / 0.2); }
+#lost { position: fixed; top: 56px; left: 256px; right: 0; z-index: 4; border-radius: 0; }  /* a bar under the app bar, the page pushed down below it: never over its buttons */
+body:has(#lost:not([hidden])) main { padding-top: 128px; }
+body.collapsed #lost { left: 72px; }
+form[inert] { opacity: 0.55; cursor: not-allowed; }  /* fields that wait (the look-up before its index): seen as waiting, not editable */
 .banner b { display: block; }
 .banner .fix { color: var(--ink); margin-top: 2px; }
 .meter { display: inline-block; width: 64px; height: 4px; border-radius: 2px; background: color-mix(in srgb, var(--primary) 22%, transparent); vertical-align: middle; margin-right: 8px; overflow: hidden; }
@@ -292,20 +295,26 @@ body.term-open .snack, body.term-open .task { bottom: calc(var(--term-h) + 16px)
 .task-body { padding: 12px 16px 14px; display: grid; gap: 8px; }
 .task.folded .task-body { display: none; } .task.folded #task-fold svg { transform: rotate(180deg); }
 .task-line { color: var(--muted); font-size: 13px; }
-@media (max-width: 860px) { .task { right: 16px; left: 16px; width: auto; bottom: 88px; } }
+@media (max-width: 860px) { .task { right: 16px; left: 16px; width: auto; bottom: 88px; } #lost, body.collapsed #lost { left: 0; } }
 
 @media (max-width: 1320px) { .split.item-first { grid-template-columns: minmax(0, var(--sa, 56fr)) 12px minmax(0, var(--sb, 44fr)); } .queue th, .queue td { padding: 8px 8px; } .queue .clip { max-width: 6em; } }  /* the queue's columns whole */
 @media (max-width: 1100px) { .split, .split.item-first { grid-template-columns: minmax(0, 1fr); } .panel-sticky { position: static; } .grip-v { display: none; } }
 @media (max-width: 860px) {
   .sidenav { transform: translateX(-100%); transition: transform .2s; width: 256px; box-shadow: var(--shadow); }
   body.nav-open .sidenav { transform: none; }
-  main, body.collapsed main { margin-left: 0; padding: 0 16px 120px; }
+  main, body.collapsed main { margin-left: 0; padding: 56px 16px 120px; }
   .pagehead { margin: 0 -16px 16px; padding: 8px 16px; }
   .logo .name, .search kbd { display: none; }
   .picker { max-width: 120px; } .picker .pk-word { display: none; }
   .appbar { gap: 4px; }
   #help { display: none; }
   .how { overflow-x: auto; }  /* a pair's waterfall scrolls in its card, not the page */
+  .continue td { white-space: normal; }  /* the workspaces to continue: wrapped, their Open on the screen */
+  .queue .clip { max-width: 5em; } .queue td:last-child, .queue th:last-child { white-space: nowrap; }  /* a name clipped before the engine's word is */
+  .fullrows table:not(.many) { table-layout: fixed; width: 100%; min-width: 0; }  /* a pair's records side by side, wrapped; four or more scroll, as wide */
+  .fullrows table:not(.many) :is(thead th, td.wrap, td.col) { white-space: normal; overflow-wrap: anywhere; } .fullrows table:not(.many) thead th:first-child { width: 34%; }
+  .fullrows table:not(.many) :is(th, td):last-child:not([colspan]) { display: none; }  /* how each column was compared: on a wider screen, or a pair's own explanation */
+  .fullrows table:not(.many) .sec-head td { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .card.one .tablecard th, .card.one .tablecard td:not(.col) { white-space: normal; overflow-wrap: anywhere; padding: 8px 10px; }  /* the records side by side, their values wrapped; a column's name whole */
 }
 
@@ -811,7 +820,7 @@ async function dropFiles(dt) {  // the files a drop holds; a folder dropped, its
   return {folder: dir.name, files: await Promise.all(all.filter((x) => x.isFile && !x.name.startsWith(".")).map((x) => new Promise((ok, no) => x.file(ok, no))))};  // shortcut: its own files only, none in folders inside it; a folder of folders when one is needed
 }
 const picker = (id, accept, kinds, path, load) => `<span class="loadrow loadpick"><span class="dropzone" id="${id}pick" role="button" tabindex="0" title="${kinds}">${icon("upload")}Drop or choose a file</span>
-  <input type="text" id="${path}" placeholder="or a path on this computer" aria-label="A path on this computer"><button class="btn outlined" id="${load}">Load</button></span>
+  <input type="text" id="${path}" placeholder="or a path" aria-label="A path on this computer"><button class="btn outlined" id="${load}">Load</button></span>
   <input type="file" id="${id}file" accept="${accept}" multiple hidden>`;  // and the whole card takes a file dropped on it
 const screen = (id) => LAYOUT.screens.find((s) => s.id === id);
 const use = (id, command) => screen(id).uses.find((u) => u.command === command);
@@ -1691,7 +1700,7 @@ function features(d, view) {
       : depth || x.field === "id" ? "" : `<span class="hole" tabindex="0" role="button" title="another column, read where these are empty" aria-label="Another column for ${esc(x.name)}">+</span>`;
     return `<div class="feat" data-slot="${esc(path)}" data-depth="${depth}"><div class="fline"><span class="flab">${depth ? (last ? "└ " : "├ ") : ""}${esc(x.name)}${x.script ? ` <span class="tag">${esc(x.script)}</span>` : ""}${
         needs(x) ? ' <b class="need">needed</b>' : ""}${x.added && !depth ? `<button class="x" data-remove="${esc(path)}" aria-label="Remove ${esc(x.name)}">✕</button>` : ""}</span>
-        <span class="fwarn">${!s.hint && few(s) ? `⚠ ${pct(s.looks_right)} look right` : ""}</span><span class="fstat">${meter(s.filled)}</span>${alts.length ? hole : ""}</div>${
+        <span class="fwarn">${!s.hint && few(s) ? (s.looks_right ? `⚠ ${pct(s.looks_right)} look right` : "⚠ none look right") : ""}</span><span class="fstat">${meter(s.filled)}</span>${alts.length ? hole : ""}</div>${
       s.hint ? `<div class="fhint ${s.hint.level}">${s.hint.level === "info" ? "✓" : "⚠"} ${esc(s.hint.says)}${s.hint.example ? `, e.g. ${esc(s.hint.example)}` : ""}${
         s.hint.act ? ` <button class="mini" data-hint="${esc(path)}">${esc(s.hint.button)}</button>` : ""}</div>` : ""}${
       alts.map((a, i) => `<div class="mrow" draggable="true" tabindex="0" data-alt="${i}" data-cols="${esc(a.join(" "))}" aria-label="${esc(a.join(" + "))}, ${i + 1} of ${alts.length}${alts.length > 1 ? ": Alt+↑ or ↓ moves it" : ""}">
@@ -1992,7 +2001,7 @@ async function fullRows(box, page, ids, x = null, roles = {}) {  // roles: a rec
   if (!box.isConnected) return;
   if (d.event === "error") { box.innerHTML = banner(d); return; }
   const recs = d.records.filter((r) => r.row), cols = d.columns;
-  if (!recs.length) { box.innerHTML = `<p class="faint">${esc(ids.join(", "))}: not in the file's copy</p>`; return; }
+  if (!recs.length) { box.innerHTML = `<p class="faint">No record ${esc(ids.join(", "))} in this workspace</p>`; return false; }
   const how = (c) => {  // the comparisons this column feeds, as this pair was compared: an exact test says its step itself
     if (!x || !c.fields.length) return c.fields.map(words).join(", ");
     return x.comparisons.filter((k) => x.tests.some((t) => t.comparison === k.comparison && c.fields.includes(t.field.split("__")[0])))
@@ -2002,7 +2011,8 @@ async function fullRows(box, page, ids, x = null, roles = {}) {  // roles: a rec
   const one = recs.length === 1;
   const rows = cols.map((c, n) => {
     const v = recs.map((r) => r.row[c.column]), filled = v.filter((s) => s !== null && s !== "");
-    const kind = one ? (filled.length ? "same" : "empty") : filled.length < 2 ? "empty" : filled.every((s) => s === filled[0]) && filled.length === v.length ? "same" : "different";
+    const kind = !one && c.fields.includes("id") ? "id"  // the record's own ID: different by definition, never counted against the pair
+      : one ? (filled.length ? "same" : "empty") : filled.length < 2 ? "empty" : filled.every((s) => s === filled[0]) && filled.length === v.length ? "same" : "different";
     return {c, n, v, kind};
   });
   const counts = {same: 0, different: 0, empty: 0};
@@ -2016,9 +2026,9 @@ async function fullRows(box, page, ids, x = null, roles = {}) {  // roles: a rec
       <label class="check"><input type="checkbox" data-t="order"><span>The file's order</span></label></div>
     <div class="tablecard"><div class="tablewrap"><table class="${recs.length > 3 ? "many" : ""}"><thead><tr><th>Column</th>${recs.map((r) => `<th>${esc(r.id)}${roles[r.id] ? `<div class="role">${esc(roles[r.id].role)}${
         roles[r.id].open !== undefined ? ` <button type="button" class="mini" data-open="${roles[r.id].open}">Open</button>` : ""}</div>` : ""}</th>`).join("")}<th>${x ? (recs.length > 2 ? "Compared as (A · B)" : "Compared as") : "Used for"}</th></tr></thead><tbody></tbody></table></div></div>
-    ${d.records.filter((r) => !r.row).map((r) => `<p class="faint">${esc(r.id)}: not in the file's copy</p>`).join("")}</div>`;
+    ${d.records.filter((r) => !r.row).map((r) => `<p class="faint">No record ${esc(r.id)} in this workspace</p>`).join("")}</div>`;
   const draw = () => {
-    const rank = {different: 0, same: 1, empty: 2}, q = state.find.toLowerCase();
+    const rank = {different: 0, same: 1, id: 1, empty: 2}, q = state.find.toLowerCase();
     const shown = rows.filter((r) => (!state.only || r.kind === "different") && (!state.hideEmpty || r.kind !== "empty") && (!q || r.c.column.toLowerCase().includes(q)))
       .sort((a, b) => state.order ? a.n - b.n : rank[a.kind] - rank[b.kind] || a.n - b.n);
     box.querySelector("tbody").innerHTML = detailRows(det, recs.map((r) => r.id), "<td></td>", (c) => !q || c.toLowerCase().includes(q), state.chosen)
@@ -2078,7 +2088,7 @@ async function resultsPage(el, d) {  // what the run found, as tiles: one questi
       ${tile('data-go="pairs" data-merge', "Does anything merge without you?", merged || own ? "yes" : "no", "", "",
           merged ? esc(mergingText(r.merging)) : own ? `${esc(ownText(own))}; your own conditions in Review` : "Set conditions in Review: points, rules, fields")}
       ${probe ? tile('data-go="results" data-tab="how" data-open="candidates"', "Could it miss a real match?", `${probe.scored < probe.pairs ? "about " : ""}${fmt(probe.missed)}`, " found",
-          "", `matches no key listed, in ${probe.scored < probe.pairs ? `${fmt(probe.scored)} of the ${fmt(probe.pairs)}` : `all ${fmt(probe.scored)}`} pairs sharing ${r.missed.map((x) => x.fields.map(words).join(" + ")).join(" or ")} (at most ${fmt(probe.high)}); a match sharing neither isn't checked`) : ""}
+          "", `matches no key listed, in ${probe.scored < probe.pairs ? `${fmt(probe.scored)} of the ${fmt(probe.pairs)}` : `all ${fmt(probe.scored)}`} pairs sharing ${r.missed.map((x) => x.fields.map(words).join(" + ")).join(" or ")}${probe.missed ? "" : ` (at most ${fmt(probe.high)})`}; a match sharing neither isn't checked`) : ""}
       ${r.too_big.skipped || r.too_big.kept ? tile('data-go="results" data-tab="how" data-open="skipped"', "Were any groups too big to compare?", fmt(r.too_big.skipped), " skipped",
           "", `values on ${fmt(r.too_big.min || 64)}+ records${Object.keys(r.too_big.by || {}).length ? ` (${Object.entries(r.too_big.by).sort((a, b) => b[1] - a[1]).slice(0, 3).map(([k, n]) => `${words(k)} ${fmt(n)}`).join(" · ")})` : ""}: a sample of each scored, none came close, so the rest weren't compared${r.too_big.kept ? `; ${fmt(r.too_big.kept)} kept: a sampled pair could match` : ""}`) : ""}
       ${r.kinds.flagged ? tile('data-go="kinds"', "Person or company?", fmt(r.kinds.flagged), " flagged", "", `the engine and the file's flag disagree; matched as the engine says until you answer${r.kinds.to_check < r.kinds.flagged ? `; the surest ${fmt(r.kinds.to_check)} are in Review` : ""}`) : ""}
@@ -2101,7 +2111,7 @@ async function mergeDialog(page, done) {  // the conditions that merge pairs wit
   };
   const draw = () => {
     dlg.innerHTML = `<form method="dialog"><div class="dlg-body wide"><h2>Merge pairs without you</h2>
-        <p class="muted">A pair merges if it meets ${m.join === "or" ? "any" : "all"} of these. Pairs you said differ never merge; with none, ${esc(none)}.</p>
+        <p class="muted">A pair merges if it meets ${m.join === "or" ? "any" : "all"} of these. Pairs you said differ never merge${m.when.length ? `; with none, ${esc(none)}` : ""}.</p>
         <div class="join">${["and", "or"].map((j) => `<label class="check"><input type="radio" name="join" value="${j}" ${m.join === j ? "checked" : ""}><span>${j === "and" ? "All of them (and)" : "Any of them (or)"}</span></label>`).join("")}</div>
         <div class="conds">${m.when.map(row).join("") || `<p class="faint">No conditions: ${esc(none)}.</p>`}</div>
         <button type="button" class="btn outlined" data-add>${icon("add")}Add a condition</button>
@@ -2214,7 +2224,7 @@ async function pairsPage(el, arg = {}) {  // Review: the pairs waiting for a per
       <h2 class="question">Same customer? ${p.said ? statusChip(p.status) : ""}</h2>
       <p class="why">${p.points.toFixed(1)} points (${esc(odds(p.points))})${foundBy(p) ? ` · found by ${esc(foundBy(p))}` : ""}</p>
       <div class="actions"><button class="btn filled" data-a="match">Same</button><button class="btn outlined" data-a="no_match">Different</button>
-        <button class="btn" data-skip>Not sure</button>${keyHint([["M", "same"], ["N", "different"]])}</div>
+        <button class="btn" data-skip>Skip</button>${keyHint([["M", "same"], ["N", "different"]])}</div>
       <p class="then">Same: one entity once you apply your decisions. Different: kept apart for good.</p><div id="said"></div>
       <div class="fr">${loading("Reading their rows")}</div><div class="how faint"></div></div>`;
     const box = $("right").querySelector(".fr"), here = `${p.first} ${p.second}`;
@@ -2299,7 +2309,8 @@ async function explorePage(el, arg) {  // Explore: every pair kept, every entity
       const n = ++asked, now = () => n === asked && $("ent");  // a later lookup's answers only
       if (!id) return;
       $("rec").innerHTML = `<div class="card"><div class="fr"></div></div><div class="card"><h2>Its entity</h2><div id="ent" class="faint">${loading("", true)}</div></div><div class="card"><h2>The pairs it is in</h2><div id="its"></div></div>`;
-      fullRows($("rec").querySelector(".fr"), "results", [id]);
+      fullRows($("rec").querySelector(".fr"), "results", [id]).then((found) => {  // no such record: no empty entity or pairs below it
+        if (found === false && n === asked) $("rec").querySelectorAll(":scope > .card:not(:first-child)").forEach((c) => c.remove()); });
       run("results", "list entities", {record: id, smallest: "1"}).then((e) => { if (!now()) return;
         const x = e.entities && e.entities[0];
         $("ent").innerHTML = e.event === "error" ? banner(e) : !x ? "Not in the run" : x.records > 1 ? `${plural(x.records, "record")} · joined by ${esc(JOINED[x.joined_by] || "")} <a class="btn" data-ent="${esc(x.entity)}">Open it</a>` : "On its own: no other record has joined it";
@@ -2463,7 +2474,9 @@ const SCREENS = {
       if (d.event !== "error" && last) answer(d, w, last);
       const at = document.activeElement, again = at?.id === "mfind" ? "#mfind"  // the search being typed, or the row just moved by keys: still where the keyboard is
         : at?.matches(".mrow[data-alt]") ? `.feat[data-slot="${CSS.escape(at.closest(".feat").dataset.slot)}"] .mrow[data-alt="${at.dataset.alt}"]` : null;
+      const top = $("mlist")?.scrollTop;  // the list drawn again where the person had it, not at its top
       $("out").innerHTML = d.event === "error" ? banner(d) : features(d, view);
+      if (top && $("mlist")) $("mlist").scrollTop = top;
       if (d.event !== "error") wire(d);
       if (again) $("out").querySelector(again)?.focus();
       if (refused) { $("out").insertAdjacentHTML("afterbegin", banner(refused)); refused = null; }  // why, above the workspace as it is
@@ -2507,7 +2520,7 @@ const SCREENS = {
     const wire = (d) => {  // a change shows at once, then is written: one set feature, the slots it touches with their columns as they become
       const alts = Object.fromEntries(d.slots.map((x) => [x.feature, x.sources.map((a) => [...a])])), inFile = new Set(d.columns.map((c) => c.column));
       const single = new Set(d.features.flatMap((g) => g.features.filter((f) => f.field === "id").map((f) => `${g.group}/${f.name}`)));  // one column, no fallback
-      const redraw = (x) => { $("out").innerHTML = features(x, view); wire(x); };
+      const redraw = (x) => { const top = $("mlist")?.scrollTop; $("out").innerHTML = features(x, view); if (top && $("mlist")) $("mlist").scrollTop = top; wire(x); };  // a change shown where it was made
       const save = (paths) => {
         paths = [...new Set(paths)].filter((p) => alts[p]);
         const now = new Set(paths), mapped = (p) => alts[p].filter((a) => a.length), taken = new Set(paths.flatMap((p) => mapped(p).flat()));
@@ -2844,7 +2857,6 @@ const SCREENS = {
     const start = (command, label, opts = null) => {
       const done = (d) => {
         longRun = null; hold();
-        $("out").querySelector(".steps-card")?.remove();
         if (d.event === "error") { go("run").then(() => $("out")?.insertAdjacentHTML("afterbegin", banner(d))); return; }  // the page as it was, its buttons back, and why
         const nothing = (d.summary || []).find(([w]) => w === "nothing new");  // a batch already in the run: said, nothing changed
         if (command !== "match records") { refresh().then(() => go("run")).then(() => nothing && $("out")?.insertAdjacentHTML("afterbegin", `<div class="banner info">${icon("check")}<div><b>Nothing new:</b> ${esc(nothing[1])}</div></div>`)); return; }
