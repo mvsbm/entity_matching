@@ -307,6 +307,7 @@ def set_features(workspace: str | Path, values: Mapping[str, tuple[tuple[str, ..
     ws, feats = Path(workspace), features_of(workspace)
     if not ws.is_dir():
         raise InputError(f"no workspace at {ws}", fix="create it: nayose create workspace NAME")
+    before = compiled(feats)  # what the slots compile to now: only the fields this change moves are written
     found = dict(slots(feats))
     for path, alternatives in values.items():
         if path not in found:
@@ -317,7 +318,8 @@ def set_features(workspace: str | Path, values: Mapping[str, tuple[tuple[str, ..
             raise InputError(f"{path}: a family name is read joined to the given name, one column", fix="give it one column, and the given name its own")
     if not columns_file(ws):
         (ws / COLUMNS).write_text(own_columns(settings_path()), encoding="utf-8")
-    set_columns(ws / COLUMNS, compiled(feats))
+    after = compiled(feats)  # a field set by set columns (full_name = another column) stays, unless this change moves it
+    set_columns(ws / COLUMNS, {f: v for f, v in after.items() if before.get(f) != v})
     return features_of(ws)
 
 

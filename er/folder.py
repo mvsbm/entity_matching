@@ -356,6 +356,8 @@ def receive(ws: Path, name: str, size: int, read: Callable[[int], bytes], into: 
     names = [x for x in (into, name) if x is not None]
     if not name or any(x != Path(x).name or x.startswith(".") for x in names):
         raise InputError(f"{name!r}: not a file name", fix="send a file, or give its path")
+    if Path(name).suffix.lower() not in intake.SUFFIXES:  # refused before a byte is written
+        raise InputError(f"{name}: not a records file", fix="send a CSV, TSV or Parquet file")
     up = ws / UPLOADS
     out = up.joinpath(*names)
     part, left = out.with_name(f".{out.name}.part"), size
@@ -472,15 +474,18 @@ def take_in(ws: Path, path: str | Path, spec: intake.InputSpec, reference: Path,
     folder first, renamed into place once every file is complete and read, so a part is whole or absent. Content the
     workspace already holds, file for file by SHA-256, is not copied again. `progress`, `shown`: intake.take's. The part, and
     whether it is new. O(bytes)."""
-    files = find(path)
+    p = Path(path).expanduser()
+    if p.is_dir() and (ws.resolve() == p.resolve() or p.resolve() in ws.resolve().parents):  # its own files, and itself, read as records
+        raise InputError(f"{path} holds this workspace", fix="give the folder that holds the records only")
+    files, root = find(path), p if p.is_dir() and not intake.report(p) else None  # a workspace part given: its read files, copied by name
+    if clash := next((f for f in files if (f.relative_to(root) if root else Path(f.name)).parts[0] in (intake.READ, intake.PROPOSALS, intake.UNREAD, intake.REPORT, SUMS)), None):
+        raise InputError(f"{clash}: named as the workspace's own reading of a file", fix="give the records under another name")
     given = sorted(intake.sha256(f) for f in files)
     with run_lock(ws):
         for part in parts(ws):
             if sorted(sums(part).values()) == given:
                 replace_text(ws / INPUTS / LAST, part.name)  # given again: the one a run reads, as a new one would be
                 return fresh(part, spec, reference, progress), False
-        p = Path(path).expanduser()
-        root = p if p.is_dir() else None
         stem = p.parent.name if globbed(p) else p.name if root else p.stem
         n = max((int(x.name.split("-", 1)[0]) for x in parts(ws)), default=0) + 1
         part = ws / INPUTS / f"{n:04d}-{re.sub(r'[^A-Za-z0-9._-]+', '_', stem)[:40] or 'records'}"

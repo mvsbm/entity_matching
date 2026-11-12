@@ -191,7 +191,7 @@ def test_the_reader_reads_each_value_as_it_comes_and_proposes_only_what_it_would
     assert r["fixed"] == {"controls": 1, "placeholders": 2, "numbers": 2} and pd.isna(rows.loc["907", "name"]) and rows.loc["907", "phone"] == "4321"
     assert rows.loc["903", "name"] == "譁ｰ縺励＞" and {"904", "905", "906"}.isdisjoint(rows.index)  # nothing guessed is applied before people accept it
     assert {(x["kind"], x["after"]) for x in proposed} == {("garbled", "新しい"), ("realign", "東京都港 区1"), ("realign", "大阪府北区3,4番")}
-    assert [(x["line"], "waits" in x["reason"]) for x in unread] == [(66, True), (67, True), (69, False)] and r["unread"] == 3
+    assert [(x["line"], "waits" in x["reason"]) for x in unread] == [(66, True), (67, True), (68, True), (69, False)] and r["unread"] == 4  # a split row's two lines wait together
     r2, rows, proposed, unread = read("dirty.csv", dirty, ("realign", "garbled"))
     assert rows.loc["903", "name"] == "新しい" and rows.loc["904", "address"] == "大阪府北区3,4番" and rows.loc["905", "phone"] == "5555"
     assert [x["line"] for x in unread] == [69] and r2["files"][0]["versions"][0] == r["files"][0]["sha256"]  # what it replaced, kept by its hash
@@ -201,6 +201,9 @@ def test_the_reader_reads_each_value_as_it_comes_and_proposes_only_what_it_would
     r3, rows, *_ = read("dirty.csv", dirty, ("realign",))
     assert rows.loc["904", "address"] == "大阪府北区3,4番" and rows.loc["905", "phone"] == "5555"
 
+    short = b"\n".join([b"id,name,address,phone", *good, b"100," + u("ヤマダタロウ"), b"101," + u("スズキハナコ,大阪府")]) + b"\n"  # a writer that leaves off empty fields
+    r4, rows, proposed, unread = read("short.csv", short, ("realign",))
+    assert not [x for x in proposed if x["kind"] == "realign"] and [x["line"] for x in unread] == [62, 63]  # two records, never glued into one
     kana = "\n".join(["id,name_kana,phone", *(f"{i},{'ﾔﾏﾓﾄ ﾀﾛｳ' if i % 8 == 0 else 'ヤマモト　タロウ'},{1000 + i}" for i in range(200)), "900,ﾄｮﾀﾞﾐｴｺﾞ,1234"]) + "\n"
     part = tmp_path / "halfwidth"
     part.mkdir()
@@ -620,3 +623,51 @@ def test_a_load_says_its_columns_then_its_first_rows_counted_before_its_result(t
     assert [c["column"] for c in early[0]["columns"]] == [c["column"] for c in result["columns"]] and all(c["filled"] is None for c in early[0]["columns"])
     assert [(c["column"], c["filled"]) for c in early[1]["columns"]] == [(c["column"], c["filled"]) for c in result["columns"]]  # one chunk: its counts are the file's
     assert {s["feature"]: s["filled"] for s in early[1]["slots"] if s["filled"] is not None} == {s["feature"]: s["filled"] for s in result["slots"] if s["filled"] is not None}
+
+
+def test_only_a_records_file_is_read_whole_and_as_it_was_written(say, tmp_path):
+    from er import folder, intake
+    from er.details import _forms
+    from er.settings import load_settings, set_features
+    from er.source import answers
+    from er.strings import connect
+    uid = load_settings().data.unique_id
+    home, ws = tmp_path / "home", tmp_path / "home" / "w"
+    assert say("create", "workspace", "w", "--home", home)[0] == 0
+    (tmp_path / "shot.png").write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 64)
+    (tmp_path / "walk.py").write_text("import json, os\nprint(1)\n", encoding="utf-8")
+    (tmp_path / "shot.csv").write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 64)  # a picture named as a CSV
+    for f in ("shot.png", "walk.py", "shot.csv"):
+        code, e = say("load", "records", tmp_path / f, "--workspace", ws)
+        assert code == 2 and ("not a records file" in e["error"] or "a PNG image" in e["error"]), f
+    with pytest.raises(InputError, match="not a records file"):
+        folder.receive(ws, "walk.py", 10, lambda n: b"x" * n)
+    assert not (ws / folder.UPLOADS).exists() or not list((ws / folder.UPLOADS).iterdir())  # refused before a byte is written
+    code, e = say("load", "records", home, "--workspace", ws)  # a folder that holds the workspace itself
+    assert code == 2 and "holds this workspace" in e["error"] and not folder.parts(ws)
+    (tmp_path / "given" / "read").mkdir(parents=True)
+    (tmp_path / "given" / "a.csv").write_text(f"{uid},FULL_NAME_KANA\n0001,ヤマダタロウ\n", encoding="utf-8")
+    (tmp_path / "given" / "read" / "b.csv").write_text(f"{uid},FULL_NAME_KANA\n0002,スズキハナコ\n", encoding="utf-8")
+    code, e = say("load", "records", tmp_path / "given", "--workspace", ws)
+    assert code == 2 and "named as the workspace's own reading" in e["error"]
+
+    (tmp_path / "r.csv").write_text(f"{uid},FULL_NAME_KANA,KANJI_NAME,TEL\n0001,ヤマダタロウ,山田太郎,1234\n", encoding="utf-8")
+    assert say("load", "records", tmp_path / "r.csv", "--workspace", ws)[0] == 0
+    assert say("set", "columns", "full_name=KANJI_NAME", "--workspace", ws)[0] == 0
+    set_features(ws, {"Phone/Phone": (("TEL",),)})  # another feature changed: the full name set by hand stays
+    assert load_settings(columns=ws / "columns.toml").columns["full_name"] == (("KANJI_NAME",),)
+
+    forms = _forms(["0151", "151"], {"number": False, "pad": 4})
+    assert forms["'151'"] == "151" and forms["'0151'"] == "0151"  # each ID's rows its own
+
+    rows = "\r\n".join(["id,name,address", *(f"{i},タナカタロウ,東京都千代田区丸の内{i}丁目" for i in range(50))]) + "\r\n"
+    (tmp_path / "wide.csv").write_bytes(rows.encode("utf-16-le"))  # UTF-16 without a BOM, mostly Japanese: few NULs
+    part = tmp_path / "wide_part"
+    part.mkdir()
+    (part / "wide.csv").write_bytes(rows.encode("utf-16-le"))
+    r = intake.take(part, {part / "wide.csv": "wide.csv"}, intake.InputSpec(), load_settings().paths["reference"], frozenset())
+    got = pd.read_parquet(part / r["files"][0]["read"])
+    assert got["name"].iloc[0] == "タナカタロウ" and got["address"].iloc[3] == "東京都千代田区丸の内3丁目"
+
+    pd.DataFrame({uid: ["0001", "0002"], "kind": [" 1", "２\u3000"]}).to_parquet(tmp_path / "kinds.parquet", index=False)
+    assert len(answers(tmp_path / "kinds.parquet", connect()[0], uid)) == 2  # both taken: a space or a full-width digit is no other kind
