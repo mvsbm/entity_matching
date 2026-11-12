@@ -754,19 +754,37 @@ def test_an_oversized_block_is_checked_on_a_sample_and_a_placeholder_is_skipped(
     assert (run.gated["decision"] == "kept").any()
 
 
-def test_a_rule_never_trusts_a_value_held_by_an_oversized_block(tmp_path, population):
+def test_a_customer_id_held_by_many_records_is_a_placeholder_every_step_and_the_lookup_read_as_missing(tmp_path, population):
+    from er import index
     from er.run import Run
     s, p, g = population
     uid = s.data.unique_id
     df = g.df.copy()
     many = df.index[:70]
-    df.loc[many, ["CIF_ID", "FULL_NAME_KANA"]] = ["9999999999999", "ヤマダタロウ"]  # one customer ID and name on 70 records
+    df.loc[many, "CIF_ID"] = "00000000"  # one customer ID on 70 people: a placeholder
+    df.loc[many, "PHONE_NUM_4"] = [f"{1000 + i % 7}" for i in range(len(many))]  # 7 phones: ID and phone together, blocks of 10
     df.to_parquet(tmp_path / "in.parquet", index=False)
     run = Run(p, s).full(tmp_path / "in.parquet", tmp_path / "run")
-    kept = pd.read_parquet(tmp_path / "run" / "rule_kept")
-    ids = set(df.loc[many, uid])
-    by_x1 = kept[(kept["rule"] == "X1_CIF_PERSON_NAME") & kept[f"{uid}_l"].isin(ids) & kept[f"{uid}_r"].isin(ids)]
-    assert by_x1.empty and any("X1_CIF_PERSON_NAME doesn't trust" in x for x in run.notes)
+    kept, ids = pd.read_parquet(tmp_path / "run" / "rule_kept"), set(df.loc[many, uid])
+    inside = kept[kept[f"{uid}_l"].isin(ids) & kept[f"{uid}_r"].isin(ids)]
+    assert not inside["rule"].str.contains("CIF").any()  # X1, X3, F3: none pairs them by it
+    assert any(x.startswith("customer_id: 1 value held by 64+ records read as missing") for x in run.notes)
+    assert json.loads((tmp_path / "run" / "state" / "placeholders.json").read_text(encoding="utf-8")) == {"customer_id": ["00000000"]}
+    stored = pd.read_parquet(tmp_path / "run" / "state" / "records")
+    assert stored.loc[stored[uid].isin(ids), [c for c in stored if c == "customer_id" or c.startswith("customer_id__")]].isna().all().all()
+    index.build(tmp_path / "run", s, p)
+    assert index.look_up(tmp_path / "run", s, p, values={"CIF_ID": "00000000", "PHONE_NUM_4": "9999"}, at_least=-1e9, most=10**6)["found"] == 0  # typed: missing too
+
+    first, batch = df.drop(index=many[40:]), df.loc[many[40:]].assign(CIF_ID="11111111")  # 40 hold 11111111 in the run; 30 more come
+    first.loc[many[:40], "CIF_ID"] = "11111111"
+    first.to_parquet(tmp_path / "first.parquet", index=False)
+    batch.drop(columns=["BIRTH_DATE"]).to_parquet(tmp_path / "batch.parquet", index=False)  # a batch without the birth dates the run compares
+    Run(p, s).full(tmp_path / "first.parquet", tmp_path / "inc")
+    added = Run(p, s).increment(tmp_path / "batch.parquet", tmp_path / "inc")
+    assert added.added == 30 and json.loads((tmp_path / "inc" / "state" / "placeholders.json").read_text(encoding="utf-8")) == {"customer_id": ["11111111"]}
+    assert any("pairs the run joined on it before stay until it runs again" in x for x in added.notes)
+    new = pd.read_parquet(sorted((tmp_path / "inc" / "state" / "records").glob("part-*.parquet"))[-1])
+    assert new["customer_id"].isna().all() and ("birth_date" not in new or new["birth_date"].isna().all())
 
 
 def test_the_run_report_holds_no_record_value(tmp_path, population):

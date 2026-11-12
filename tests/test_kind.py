@@ -229,6 +229,14 @@ def test_the_field_check_and_the_run_read_one_legal_form_table():
     assert normalize(pd.Series(names[6:], dtype="string"), ("nfkc", "strip_legal_form"), s.standardize).tolist() == ["ヤマダ", "ヤマダ", "ヤマダ商店"]
 
 
+def test_a_name_in_hiragana_reads_as_the_same_name_in_katakana():  # as the name fields read it
+    from er.kind import legal, text
+    std = load_settings().standardize
+    hira, kata = pd.Series(["かぶしきがいしゃ やまだしょうてん", "やまだ たろう"]), pd.Series(["カブシキガイシャ ヤマダショウテン", "ヤマダ タロウ"])
+    assert legal(hira, std).tolist() == legal(kata, std).tolist() == [True, False]
+    assert text(hira, std).tolist() == text(kata, std).tolist()
+
+
 def test_a_decision_keeps_each_record_s_kind_and_a_merged_customer_takes_its_surest(tmp_path, population):
     from er.run import Run
     s, p, g = population

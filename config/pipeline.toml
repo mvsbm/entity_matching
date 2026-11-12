@@ -12,6 +12,7 @@ mandatory = ["id"]
 one_of = [["person_name", "company_name"]]
 optional = ["full_name", "given_name", "any_name", "address", "address_code", "postal_code", "prefecture", "town_code", "city", "phone", "customer_id", "birth_date"]
 labels = ["entity"]
+identifying = ["customer_id"]  # one customer's each: a value held by many records (00000000) is a placeholder, read as missing
 
 [budget]
 max_pairs_per_record = 5.0        # design time: a key's pairs per record, now and projected to target_rows; above, choose.py refuses it

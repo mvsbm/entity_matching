@@ -39,13 +39,13 @@ VERSION = 2  # of the name model's training: a change here trains it again
 
 def legal(names: pd.Series, std: Standardization) -> np.ndarray:
     """Whether each name holds a legal form where banks write one."""
-    s = normalize(names.astype("string"), ("strip_spaces", "nfkc"), std)
+    s = normalize(names.astype("string"), ("strip_spaces", "nfkc", "katakana"), std)  # かぶしきがいしゃ is カブシキガイシャ
     return s.str.contains(legal_pattern(std), regex=True).fillna(False).to_numpy(dtype=bool)
 
 
 def text(names: pd.Series, std: Standardization) -> pd.Series:
     """What the name model reads: the name folded, without spaces or legal forms."""
-    return normalize(names.astype("string"), ("strip_spaces", "nfkc", "strip_legal_form", "kana_fold"), std)
+    return normalize(names.astype("string"), ("strip_spaces", "nfkc", "katakana", "strip_legal_form", "kana_fold"), std)  # as any_name reads it
 
 
 class NameModel:
