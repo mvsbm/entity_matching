@@ -850,6 +850,13 @@ const term = {
     if (open) $("term-body").scrollTop = $("term-body").scrollHeight;
   },
 };
+function keeping(box, draw) {  // a part of the page drawn again, keeping what the person opened and chose in it: open sections, values typed or picked
+  const open = [...box.querySelectorAll("details[id]")].filter((d) => d.open).map((d) => d.id);
+  const values = [...box.querySelectorAll("input[id], select[id]")].map((x) => [x.id, x.value]);
+  draw();
+  for (const id of open) { const d = box.querySelector(`#${CSS.escape(id)}`); if (d) d.open = true; }
+  for (const [id, v] of values) { const x = box.querySelector(`#${CSS.escape(id)}`); if (x && v) x.value = v; }
+}
 let snackTimer = null;
 function snack(html, ms = 0) {  // a short notice, bottom left, closed by its ✕ or after ms
   clearTimeout(snackTimer);
@@ -2391,15 +2398,15 @@ const SCREENS = {
     const answer = (d, w, last) => {  // did the file load? then what may hurt the matching
       const lost = (f) => { const x = d.fields.find((y) => y.field === f); return !x || x.filled === null; };
       const missing = [...d.needed.every.filter(lost), ...d.needed.one_of.filter((grp) => grp.every(lost)).map((grp) => grp.join(" or "))];
-      $("loaded").innerHTML = `<div class="qa"><div class="q"><h2 class="question">Customer information</h2><p class="answer">${!d.records
+      keeping($("loaded"), () => $("loaded").innerHTML = `<div class="qa"><div class="q"><h2 class="question">Customer information</h2><p class="answer">${!d.records
           ? `<b>Not yet:</b> ${esc(nameOf(last))} holds no records`
           : missing.length ? `<b>Not yet:</b> ${esc(missing.map(words).join(", "))} ${missing.length > 1 ? "are" : "is"} needed`
           : `${icon("file")}<b>${esc(nameOf(last))}</b> · ${plural(d.records, "record")} · ${fmt(d.columns.length)} columns${waits(d.read)}${
             w.rerun_owed ? " · <b>changed since the last run</b>: matching reads the records so once it runs again" : ""}`}</p></div>
         ${!d.records ? "" : missing.length ? (d.placements.length ? `<button type="button" class="btn filled" id="suggest-now">✦ Suggest the columns</button>` : "")
           : w.rerun_owed ? `<button type="button" class="btn filled" id="rerun-owed">${icon("refresh")}Run matching again</button>`
-          : ((steps.steps || {}).run || {}).state === "done" ? "" : `<a class="btn filled" data-go="run">Next: 3 Find matches →</a>`}</div>`;
-      $("more").innerHTML = `<details class="fold-line" id="another"><summary>Load another file</summary><div style="margin-top:10px">${box}</div></details>`;
+          : ((steps.steps || {}).run || {}).state === "done" ? "" : `<a class="btn filled" data-go="run">Next: 3 Find matches →</a>`}</div>`);
+      keeping($("more"), () => $("more").innerHTML = `<details class="fold-line" id="another"><summary>Load another file</summary><div style="margin-top:10px">${box}</div></details>`);
       wireLoad();
       $("rerun-owed")?.addEventListener("click", () => go("run", {via: ["rerun records"]}));  // its dialog, opened on Find matches
       $("files").innerHTML = (w.inputs || []).map((f) => `<span class="tag" title="${esc(f.path)}">${esc(nameOf(f))} · ${bytes(f.bytes)} · ${f.read ? "matched" : "not run yet"}${f.waiting ? ` · ${fmt(f.waiting)} repairs wait` : ""}</span>`).join("");

@@ -54,8 +54,10 @@ def test_the_page_answers_once_per_key_shows_any_row_and_says_when_the_server_is
     assert 'id = "customer_no"' in columns.read_text(encoding="utf-8") and "Record ID needed" not in page.inner_text("details.fgroup[data-g='ID'] summary")
     page.evaluate("document.querySelector(\"details.fgroup[data-g='Name']\").open = true")  # opened: it stays open as the page redraws
     page.click(f".feat[data-slot='Name/Company name'] .colchip[data-col='{company}'] [data-x]")  # taken off
-    page.wait_for_selector("#out:not([aria-busy]) details.fgroup", state="attached")
-    assert not page.query_selector(f".feat[data-slot='Name/Company name'] .colchip[data-col='{company}']")
+    page.wait_for_selector(f".feat[data-slot='Name/Company name'] .colchip[data-col='{company}']", state="detached", timeout=30_000)
+    t = time.time()
+    while load_settings(columns=columns).columns["company_name"] != () and time.time() - t < 30:  # written
+        time.sleep(0.1)
     assert load_settings(columns=columns).columns["company_name"] == () and page.query_selector("details.fgroup[data-g='Name'][open]")
     page.evaluate(f"""() => {{  // dragged back from the file's columns: the drag as the browser fires it
         const dt = new DataTransfer(), from = document.querySelector(".tray .colchip[data-col='{company}']");
@@ -247,6 +249,10 @@ def test_step_2_shows_each_change_at_once_writes_them_in_turn_and_a_refused_one_
     page.click("#out [data-keepall='*']")  # every suggestion kept, in one write
     saved()
     assert not page.query_selector("#out .banner.bad, #out .need, .feat[data-slot] .colchip.ghost") and columns()["phone"]
+    page.click("#another > summary")  # Load another file opened, a size picked, a path typed: each redraw below keeps them
+    page.click("#synth > summary")
+    page.select_option("#gsize", "1000")
+    page.fill("#cin", "next.csv")
     page.evaluate("document.querySelectorAll('details.fgroup').forEach((g) => g.open = true)")
     slot, phone = ".feat[data-slot='Phone/Phone']", columns()["phone"][0][0]
     other = next(c for c in named.values() if c != phone)
@@ -262,6 +268,7 @@ def test_step_2_shows_each_change_at_once_writes_them_in_turn_and_a_refused_one_
     page.select_option(f"{slot} select", phone)
     saved()
     assert columns()["phone"] == ((other,), (phone,)) and posted[-1] == "describe records" and "describe workspace" not in posted
+    assert page.is_visible("#gen") and page.input_value("#gsize") == "1000" and page.input_value("#cin") == "next.csv"  # drawn again, as left
     page.click(f"{slot} .colchip.in[data-col='{other}'] [data-x]")
     page.click(f"{slot} .colchip.in[data-col='{phone}'] [data-x]")  # two quick changes: written in turn
     saved()
@@ -375,12 +382,12 @@ def test_a_long_command_shows_how_far_it_is_in_a_panel_that_folds_and_closes_and
     page.wait_for_selector("details.fgroup", state="attached")
     page.click("#task-close")
     assert page.is_hidden("#task")
-    page.evaluate("() => { task.start('load records', 'j1', Date.now() / 1000 - 10); task.start('add records', 'j2'); task.event({event: 'progress', done: 200, total: 1000, unit: 'rows'}, 'j1'); }")
-    assert page.inner_text("#task-line") == "200 of 1,000 rows · about 40 seconds left" and page.get_attribute("#task-bar", "style") == "width: 20%;"
+    page.evaluate("() => { task.start('load records', 'j1', Date.now() / 1000 - 100); task.start('add records', 'j2'); task.event({event: 'progress', done: 200, total: 1000, unit: 'rows'}, 'j1'); }")  # 400 s left: a slow second changes no word
+    assert page.inner_text("#task-line") == "200 of 1,000 rows · about 7 minutes left" and page.get_attribute("#task-bar", "style") == "width: 20%;"
     page.click("#task-fold")  # folded: what it does and how long is left, in its title
-    assert page.is_hidden("#task-line") and page.inner_text("#task-title") == "Loading your file · about 40 seconds left"
+    assert page.is_hidden("#task-line") and page.inner_text("#task-title") == "Loading your file · about 7 minutes left"
     page.evaluate("task.end(false, 'refused', 'j2')")  # a second command, refused at once: the panel stays the first's
-    assert page.inner_text("#task-title") == "Loading your file · about 40 seconds left"
+    assert page.inner_text("#task-title") == "Loading your file · about 7 minutes left"
     page.evaluate("task.end(false, 'no file at x.csv', 'j1')")
     assert page.inner_text("#task-title") == "Loading your file: failed"
     page.evaluate("window.L = {load: 10, budget: 2, fit: 20, rules: 5, candidates: 30, score: 100, cluster: 1, probe: 10, report: 1, write: 1}")  # the last run's steps, 180 s
