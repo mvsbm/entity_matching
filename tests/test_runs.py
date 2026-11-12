@@ -401,3 +401,19 @@ def test_a_file_s_columns_no_field_reads_never_enter_the_run(tmp_path, populatio
     wide = Run(p, s).full(tmp_path / "wide.parquet", tmp_path / "b")
     assert {"NOTE", "MEMO"}.isdisjoint(wide.columns()) and {"NOTE", "MEMO"}.isdisjoint(pd.read_parquet(tmp_path / "b" / "state" / "records").columns)
     pd.testing.assert_frame_equal(pd.read_parquet(tmp_path / "a" / "gold.parquet"), pd.read_parquet(tmp_path / "b" / "gold.parquet"))
+
+
+def test_a_run_over_a_log_an_older_version_wrote_keeps_its_runs_without_their_time(tmp_path, population):
+    from er import folder
+    from er.run import Run
+    s, p, g = population
+    g.df.to_parquet(tmp_path / "in.parquet", index=False)
+    ws = tmp_path / "home" / "old"
+    Run(p, s).full(tmp_path / "in.parquet", ws)
+    log = json.loads((ws / "steps.json").read_text(encoding="utf-8"))
+    log["runs"] = [{k: v for k, v in x.items() if k in ("disabled", "part", "steps")} for x in log["runs"]]  # as an older version wrote it
+    (ws / "steps.json").write_text(json.dumps(log), encoding="utf-8")
+    assert folder.workspaces(tmp_path / "home")[0]["last"]  # the folder's own time, where the log has none
+    Run(p, s).full(tmp_path / "in.parquet", ws, overwrite=True)  # its write reads the old log into the new one's history
+    history = folder.history(ws)
+    assert [x["at"] for x in history][0] is None and history[-1]["at"]

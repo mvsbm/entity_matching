@@ -152,8 +152,8 @@ def stage(con: duckdb.DuckDBPyConnection, out: Path, tables: list[tuple[str, Pat
 EARLIER = 200  # runs before the current full run kept in steps.json, each in brief: what the workspace's activity lists
 
 
-def brief(x: dict) -> dict:  # a run of steps.json as the activity lists it: when, what, the record files it read, its seconds
-    return dict(at=x["at"], what="decisions" if "decisions" in x else "increment" if x.get("part") else "full run",
+def brief(x: dict) -> dict:  # a run of steps.json as the activity lists it: when (None: a log an older version wrote), what, the record files it read, its seconds
+    return dict(at=x.get("at"), what="decisions" if "decisions" in x else "increment" if x.get("part") else "full run",
                 files=[f["file"] for f in x.get("inputs", []) if f.get("role") == "records"], seconds=round(sum(s["seconds"] for s in x["steps"]), 1),
                 records=next((s.get("records") for s in x["steps"] if s["step"] == "load"), None),
                 steps={k: round(sum(s["seconds"] for s in x["steps"] if s["step"] == k), 1) for k in dict.fromkeys(s["step"] for s in x["steps"])})  # each step's seconds: the next run's estimate, on this machine and file
@@ -433,7 +433,7 @@ def workspaces(home: Path) -> list[dict]:
             continue
         log = runs(ws)
         found.append(dict(name=ws.name, workspace=str(ws), files=len(parts(ws)), ran=(ws / "gold.parquet").is_file(),
-                          last=log[-1]["at"] if log else datetime.fromtimestamp(ws.stat().st_mtime).isoformat(timespec="seconds")))
+                          last=(log[-1].get("at") if log else None) or datetime.fromtimestamp(ws.stat().st_mtime).isoformat(timespec="seconds")))
     return sorted(found, key=lambda w: w["last"], reverse=True)
 
 
