@@ -1351,7 +1351,10 @@ def test_the_page_acts_only_on_what_the_person_saw_and_keeps_what_they_did_throu
     other.goto(base + "#pairs")
     other.wait_for_selector("#right .fullrows tbody tr", timeout=60_000)
     other.keyboard.press("n")  # it answers the next pair
-    other.wait_for_function("() => document.querySelector('#written').textContent === '1'")
+    other.wait_for_function("() => document.querySelector('#written').textContent === '2'")  # the workspace's answers written in: the first tab's and its own
+    deadline = time.time() + 30
+    while typed(home / "w1") < 2 and time.time() < deadline:  # what the first tab reads: the answer on the sheet, not the badge counted before it is written
+        time.sleep(0.1)
     page.bring_to_front()
     page.evaluate("document.dispatchEvent(new Event('visibilitychange'))")  # this tab looked at again: it reads the workspace again
     page.wait_for_function(f"() => document.querySelector('#done-line').textContent.startsWith('{waiting - 2:,} pair')", timeout=30_000)
