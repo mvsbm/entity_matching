@@ -218,6 +218,10 @@ def report_text(run: "Run", tables: dict[str, pd.DataFrame], pipeline: Path) -> 
     scored = dict(con.execute(f"SELECT {band}, count(*) FROM scores GROUP BY 1").fetchall())
     accepted = {k: (n, x) for k, n, x in con.execute(f"SELECT {band}, count(*), sum(1 - match_probability) FROM matches GROUP BY 1").fetchall()}
     label = lambda i: f"below {edges[0]:g}" if i == 0 else f"{edges[-1]:g} and up" if i == len(edges) else f"{edges[i - 1]:g} to {edges[i]:g}"
+    if unscored := sum(x.get("unscored", 0) for x in run.steps if x["step"] == "score"):  # pairs a bound put below 0, never scored: one row below 0
+        below = [i for i in scored if i < len(edges) and edges[i] <= 0]
+        scored = {-1: sum(scored.pop(i) for i in below) + unscored, **scored}
+        label = (lambda f: lambda i: "below 0" if i == -1 else f(i))(label)
     out += [f"SCORES  (bits; review from {lo:g}, accept from {t:g}; expected false = the sum of 1 − match probability)", *table(pd.DataFrame(
         [dict(bits=label(i), candidates=f"{scored[i]:,}", accepted=f"{accepted.get(i, (0, 0))[0]:,}", expected_false=f"{accepted.get(i, (0, 0))[1]:.2f}")
          for i in sorted(scored)])), ""]
@@ -729,7 +733,8 @@ def describe_matching(con: duckdb.DuckDBPyConnection, out: Path | None, p: Pipel
              skipped=dict(blocks=len(skipped), largest=[dict(key=x.generator, value=x.value, records=x.records, pairs=x.pairs) for x in skipped.head(5).itertuples()]),
              missed=[{**x, "examples": x["examples"][:20]} for x in probed[-1]["strata"]] if probed else None),  # the last full run's probe (er.probe)
         dict(id="score", name="Score", method="Fellegi–Sunter: each comparison adds evidence, in bits", comparisons=comparisons,
-             prior_bits=math.log2(lam / (1 - lam)) if lam else None, pairs=scored, seconds=took("score")),
+             prior_bits=math.log2(lam / (1 - lam)) if lam else None, pairs=scored, seconds=took("score"),
+             unscored=sum(x.get("unscored", 0) for x in facts if x["step"] == "score") if ran else None),  # a bound left them below 0: no level counted
         dict(id="accept", name="Accept", method="at the line, with a name compared", threshold=p.fs.min_match_weight, review_from=review_floor(p),
              trust=None if p.trust.line is None else "none" if math.isinf(p.trust.line) else p.trust.line,
              merge=method(out).get("merge") if out else None,  # people's merge conditions (er.results): they decide in place of the line

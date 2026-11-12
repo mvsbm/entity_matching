@@ -472,18 +472,22 @@ def scaled_prior(model_json: dict, n_records: int) -> float:
 
 
 def score_fs(model_json: dict, df: Records, pairs: pd.DataFrame | str, db: DuckDBAPI, uid: str,
-             into: str | None = None, n_records: int | None = None) -> pd.DataFrame | str:
+             into: str | None = None, n_records: int | None = None, floor: float | None = None,
+             exact: frozenset[str] = frozenset(), exempt: str | None = None) -> pd.DataFrame | str:
     """Score exactly these candidate pairs (uid_l < uid_r) with a model from train_fs, so that a score doesn't depend
     on the size of the scored set: term frequencies come from the fitting records (a value unseen there gets no
     adjustment), and λ is rescaled to this set's size (scaled_prior). Records and pairs may be tables in db's
     connection; with `into`, the scores are written to that table and its name returned, so nothing of size C
-    reaches pandas. `n_records`: the size λ is rescaled to, when df holds only the records the pairs touch."""
+    reaches pandas. `n_records`: the size λ is rescaled to, when df holds only the records the pairs touch.
+    With `floor` (and no term frequencies), a pair whose score can't reach it is left out unscored (predict_sql):
+    `exact`, the comparisons cheap enough to settle first (cheap_comparisons); `exempt`, a table of pairs (uid_l, uid_r)
+    scored whatever their bound."""
     l, r = f"{uid}_l", f"{uid}_r"
     fit = model_json["er"]
     lam = scaled_prior(model_json, n_records or rows(df, db))
     settings = {k: v for k, v in model_json.items() if k != "er"} | {"probability_two_random_records_match": lam}
     if not fit["tf"]:
-        return _scored(settings, df, pairs, db, uid, into)
+        return _scored(settings, df, pairs, db, uid, into, floor, exact, exempt)
     with narrowed(df, db, read_by(settings) | {uid}) as records:
         linker = Linker(records, settings, log_level=logging.WARNING)
         linker.table_management.invalidate_cache()  # the cache lives on the shared db, keyed by table name only
@@ -521,26 +525,59 @@ def _sides(settings: dict, have: set[str]) -> str:  # each column the comparison
     return ", ".join(f"{side(c, 'a')} AS {q(c + '_l')}, {side(c, 'b')} AS {q(c + '_r')}" for c in sorted(read_by(settings)))
 
 
-def predict_sql(settings: dict, records: str, pairs: str, uid: str, have: set[str]) -> str:
+def _bits(g: int, lv: dict) -> float:  # a level's weight, as Splink writes it: log2(m/u), each clamped at 1e-300; the missing level 0
+    return 0.0 if g < 0 else math.log2(max(lv["m_probability"], 1e-300) / max(lv["u_probability"], 1e-300))
+
+
+def cheap_comparisons(model: FSModel) -> frozenset[str]:
+    """The comparisons whose every test is equality, Hamming or at most one edit: DuckDB settles them on short values in
+    C++ (er.config.Comparator.sql), so predict_sql's bound computes them exactly before the costly ones."""
+    cheap = lambda x: x.function in ("exact", "hamming") or (x.function in ("levenshtein", "damerau_levenshtein") and (x.threshold or 0) <= 1)
+    return frozenset(c.name for c in model.comparisons if all(cheap(x) for lv in c.levels for _, x in lv.any_of))
+
+
+def bound_sql(settings: dict, exact: frozenset[str]) -> str:
+    """An upper bound of a pair's match weight, over "<col>_l" and "<col>_r": the prior, each comparison in `exact` at
+    its own level's weight, and each other at its best level's, 0 where its fields are missing."""
+    lam, parts = settings["probability_two_random_records_match"], []
+    for c in settings["comparisons"]:
+        ranked = _ranked(c)
+        if c["output_column_name"] in exact:
+            whens = " ".join(f"ELSE cast({_bits(g, lv)} as float8)" if lv["sql_condition"].strip().upper() == "ELSE"
+                             else f"WHEN {lv['sql_condition']} THEN cast({_bits(g, lv)} as float8)" for g, lv in ranked)
+            parts.append(f"CASE {whens} END")
+        else:
+            null = next((lv["sql_condition"] for g, lv in ranked if g < 0), "FALSE")
+            parts.append(f"CASE WHEN {null} THEN cast(0 as float8) ELSE cast({max(_bits(g, lv) for g, lv in ranked if g >= 0)} as float8) END")
+    return " + ".join([f"cast({math.log2(lam / (1 - lam))} as float8)", *parts])
+
+
+def predict_sql(settings: dict, records: str, pairs: str, uid: str, have: set[str], floor: float | None = None,
+                exact: frozenset[str] = frozenset(), exempt: str | None = None) -> str:
     """Splink's predict of the pairs in `pairs` (uid_l, uid_r), as Splink writes it, in one query: each comparison's
     gamma (_gammas), its weight the same float8 literal of log2(m/u) (each clamped at 1e-300), and the match weight the
     prior's and theirs summed in the same order: the same scores to the last bit, without the two copies of the records
-    Splink makes first. `have`: the columns `records` holds. No term frequencies: Splink scores a model with them."""
+    Splink makes first. `have`: the columns `records` holds. No term frequencies: Splink scores a model with them.
+    With `floor`, only the pairs whose bound (bound_sql) reaches it, and those in `exempt`: the rest can't, and their
+    costly comparisons are never made. O(P·K_exact) for the bound, then today's work on the pairs left."""
     l, r = q(f"{uid}_l"), q(f"{uid}_r")
     names, weights = [c["output_column_name"] for c in settings["comparisons"]], []
     for name, c in zip(names, settings["comparisons"]):
-        bits = lambda g, lv: 0.0 if g < 0 else math.log2(max(lv["m_probability"], 1e-300) / max(lv["u_probability"], 1e-300))
-        weights.append(f"CASE {' '.join(f'WHEN {q("gamma_" + name)} = {g} THEN cast({bits(g, lv)} as float8)' for g, lv in _ranked(c))} END AS {q('mw_' + name)}")
+        weights.append(f"CASE {' '.join(f'WHEN {q("gamma_" + name)} = {g} THEN cast({_bits(g, lv)} as float8)' for g, lv in _ranked(c))} END AS {q('mw_' + name)}")
     lam = settings["probability_two_random_records_match"]
     mw = f"cast({math.log2(lam / (1 - lam))} as float8) + " + " + ".join(q(f"mw_{n}") for n in names)
+    sides = f"SELECT p.{l}, p.{r}, {_sides(settings, have)} FROM {pairs} p JOIN {records} a ON a.{q(uid)} = p.{l} JOIN {records} b ON b.{q(uid)} = p.{r}"
+    if floor is not None:  # a hair below: the bound sums its terms in another order than the weight, so it may round a last bit lower
+        kept = f" OR EXISTS (SELECT 1 FROM {exempt} k WHERE k.{l} = x.{l} AND k.{r} = x.{r})" if exempt else ""
+        sides = f"SELECT * FROM ({sides}) x WHERE ({bound_sql(settings, exact)}) >= {floor - 1e-9!r}{kept}"
     return f"""SELECT {l}, {r}, {mw} AS match_weight,
         CASE WHEN ({mw}) >= 0 THEN 1.0 / (1.0 + POWER(cast(2 as float8), -({mw})))
              ELSE POWER(cast(2 as float8), ({mw})) / (1.0 + POWER(cast(2 as float8), ({mw}))) END AS match_probability, {', '.join(q('gamma_' + n) for n in names)}
-        FROM (SELECT *, {', '.join(weights)} FROM (SELECT {l}, {r}, {', '.join(_gammas(settings))} FROM (
-              SELECT p.{l}, p.{r}, {_sides(settings, have)} FROM {pairs} p JOIN {records} a ON a.{q(uid)} = p.{l} JOIN {records} b ON b.{q(uid)} = p.{r})))"""
+        FROM (SELECT *, {', '.join(weights)} FROM (SELECT {l}, {r}, {', '.join(_gammas(settings))} FROM ({sides})))"""
 
 
-def _scored(settings: dict, df: Records, pairs: pd.DataFrame | str, db: DuckDBAPI, uid: str, into: str | None) -> pd.DataFrame | str:
+def _scored(settings: dict, df: Records, pairs: pd.DataFrame | str, db: DuckDBAPI, uid: str, into: str | None,
+            floor: float | None = None, exact: frozenset[str] = frozenset(), exempt: str | None = None) -> pd.DataFrame | str:
     con, held = db.duckdb_con, []
 
     def table(x: pd.DataFrame | str, name: str) -> str:
@@ -551,7 +588,7 @@ def _scored(settings: dict, df: Records, pairs: pd.DataFrame | str, db: DuckDBAP
         return name
     try:
         records = table(df, "er_score_records")
-        sql = predict_sql(settings, records, table(pairs, "er_score_pairs"), uid, _columns(con, records))
+        sql = predict_sql(settings, records, table(pairs, "er_score_pairs"), uid, _columns(con, records), floor, exact, exempt)
         if into is None:
             return con.sql(sql).df().astype({f"{uid}_l": "string", f"{uid}_r": "string"})
         con.execute(f"CREATE OR REPLACE TABLE {q(into)} AS {sql}")

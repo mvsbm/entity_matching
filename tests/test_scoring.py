@@ -347,3 +347,27 @@ def test_an_em_step_that_finds_no_likely_match_at_a_level_leaves_it_unestimated_
     assert level.m_probability == 0.25  # an m it can hold is taken as found
     _unseen_when_zero(set(), level, "name", {"name": {1: {"m_probability": float("nan"), "u_probability": 0.1}}})
     assert not level._m_is_trained  # no match at all in the comparison (0 / 0): Splink would take it, and every weight be NaN
+
+
+def test_a_floor_leaves_out_exactly_the_pairs_below_it_and_scores_the_rest_to_the_last_bit(tmp_path, population):
+    from er.match import cheap_comparisons
+    from er.run import Run
+    s, p, g = population
+    g.df.to_parquet(tmp_path / "in.parquet", index=False)
+    run = Run(p, s).full(tmp_path / "in.parquet", tmp_path / "run")
+    uid, con, db = s.data.unique_id, run.con, run.db
+    l, r = f"{uid}_l", f"{uid}_r"
+    con.execute(f"""CREATE OR REPLACE TABLE er_all AS SELECT a.{uid} AS {l}, b.{uid} AS {r} FROM (SELECT {uid} FROM records LIMIT 300) a
+        JOIN (SELECT {uid} FROM records LIMIT 300) b ON a.{uid} < b.{uid}""")  # every pair of 300 records: almost all below 0
+    every = score_fs(run.scoring, "records", "er_all", db, uid).set_index([l, r]).sort_index()
+    exact = cheap_comparisons(p.fs.model)
+    assert exact and exact < {c.name for c in p.fs.model.comparisons}  # some settled first, the costly ones bounded
+    for floor in (0.0, p.fs.min_match_weight):
+        kept = score_fs(run.scoring, "records", "er_all", db, uid, floor=floor, exact=exact).set_index([l, r]).sort_index()
+        pd.testing.assert_frame_equal(kept, every.loc[kept.index])  # each scored to the last bit
+        assert every.index[every["match_weight"] >= floor].isin(kept.index).all()  # none at the floor or above left out
+        left = every.drop(kept.index)
+        assert len(left) and (left["match_weight"] < floor).all()  # and every one left out below it
+    con.execute("CREATE OR REPLACE TABLE er_some AS SELECT * FROM er_all LIMIT 7")
+    held = score_fs(run.scoring, "records", "er_all", db, uid, floor=1e9, exact=exact, exempt="er_some")
+    assert len(held) == 7  # nothing reaches that floor: only the exempt pairs are scored

@@ -222,6 +222,9 @@ def describe_results(con: duckdb.DuckDBPyConnection, db: object, out: Path, s: S
         edges = [float("-inf"), *BANDS, float("inf")]
         chart = [dict(down_to=None if edges[i] == float("-inf") else edges[i], up_to=None if edges[i + 1] == float("inf") else edges[i + 1], pairs=n)
                  for i, n in enumerate(counts)]
+        if unscored := sum(x.get("unscored", 0) for x in scored):  # pairs a bound put below 0, never scored: below 0 is one band
+            chart = [dict(down_to=None, up_to=0, pairs=sum(x["pairs"] for x in chart if x["up_to"] is not None and x["up_to"] <= 0) + unscored),
+                     *(x for x in chart if x["up_to"] is None or x["up_to"] > 0)]
     rows = _status_sql(con, out, uid, index)
     cuts = sorted({review_from, *(c for c in (8.0, 12.0, 20.0) if c > review_from)}, reverse=True)  # the waiting pairs' ranges, from review_from up
     band = "CASE " + " ".join(f"WHEN match_weight >= {bits(c)} THEN {i}" for i, c in enumerate(cuts)) + " END"
