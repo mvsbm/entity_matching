@@ -237,7 +237,7 @@ Reading down each column shows what each function notices:
 | | | Jaro–Winkler ≥ 0.9 | a long shared start (city, town), with any difference at the end | rules |
 | phone (last 4) | one digit wrong | Hamming = 1 | fixed length, so one wrong digit is exactly distance 1 | both |
 | CIF ID, birth date | one digit wrong | exact, then Damerau–Levenshtein ≤ 1 | an identifier, retyped: one slip, a swap included | model |
-| address code, postal code, town, city, prefecture | none in the generator | exact | an identifier has no "nearly" | both |
+| address code, postal code | none in the generator | exact | an identifier has no "nearly" | both |
 
 **A risk we accept, and how we contain it.** "Close" addresses include neighbours. 福島市吉倉4-11 and 4-17 score 0.956 and are one edit apart, whether through a typo or because they are next door. So a close address is never enough on its own:
 - **In the rules,** a close address must come with a close name and the same phone.
@@ -247,7 +247,7 @@ Reading down each column shows what each function notices:
 
 - **Phonetic codes** such as Soundex give names that sound alike the same code. They were built for English, where spelling and sound often disagree. Katakana is already a phonetic script, and folding does the remaining work.
 - **Weighted edits** could make ガ → カ cost less than ガ → サ. Folding gets the same effect more simply: confusable kana become equal before any comparison.
-- **Character pieces with TF-IDF** compare names by shared fragments, weighting rare fragments more. They suit *finding* candidates, where speed over many names matters more than a precise score, and `scripts/choose.py` measures them there. Their search compares every name with every other, though, so the chosen pipeline finds such pairs by a second sort instead ([chapter 3](03-far-too-many-pairs.md#scaling-to-a-million-records)).
+- **Character pieces with TF-IDF** compare names by shared fragments, weighting rare fragments more. They suit *finding* candidates, where speed over many names matters more than a precise score, and `scripts/choose.py` measures them there. Their search compares every name with every other, though, so the chosen pipeline finds such pairs by keys instead, such as a name's one-character deletions within its postal area ([chapter 3](03-far-too-many-pairs.md#scaling-to-a-million-records)).
 
 **In short:** give each field the function whose idea of a small mistake matches how that field really goes wrong.
 

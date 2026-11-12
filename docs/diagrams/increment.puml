@@ -91,6 +91,7 @@ candidates --> cands
 cands --> score
 score --> scores
 new_ids --> cluster
+rule_clusters --> candidates
 rule_clusters --> cluster
 cands --> cluster
 scores --> cluster

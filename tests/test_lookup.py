@@ -189,8 +189,10 @@ def test_a_lookup_lists_and_scores_the_pairs_an_increment_of_the_record_would_an
     assert cli.describe_results_({"workspace": str(ws)}, None)["uncounted"] == len(first)  # read from the full run's patterns: the increment left out, said
     (ws / "steps.json").write_text(log, encoding="utf-8")
     assert cli.describe_results_({"workspace": str(ws)}, None)["uncounted"] == 0
-    review = pd.read_parquet(ws / "review.parquet")
-    stored_pair = review[~review[f"{uid}_l"].isin(first[uid]) & ~review[f"{uid}_r"].isin(first[uid])].iloc[0]
+    entity = pd.read_parquet(ws / "gold.parquet").set_index(uid)["cluster_id"]
+    pairs = pd.read_parquet(ws / "scored")  # a pair of stored records in two entities: a "same" joins them
+    stored_pair = pairs[~pairs[f"{uid}_l"].isin(first[uid]) & ~pairs[f"{uid}_r"].isin(first[uid])
+                        & (pairs[f"{uid}_l"].map(entity) != pairs[f"{uid}_r"].map(entity))].iloc[0]
     assert cli.main(["decide", "pair", stored_pair[f"{uid}_l"], stored_pair[f"{uid}_r"], "match", "--workspace", str(ws)]) == 0
     m = kept("apply", "decisions")
     assert m["moved"] >= 1 and m["added"] == len(first) and m["updates"] == 2  # the entity the decision joined, moved; the records added, still beside it

@@ -1,0 +1,196 @@
+# The chosen pipeline: config/pipeline.toml with config/experiments.py's adopted changes, written by scripts/choose.py.
+# Adopted: rules fold_levenshtein, f2_address_exact, f2_address_prefix, optuna_comparators; Fellegi–Sunter no_term_frequency, exact_keys_only, optuna_suggestion, compound_phone_keys, sorted_names_for_tfidf, name_keys, bounded_address_keys, u_from_scored_file, u_exact_by_counts, cif_one_digit_off, cif_deletion_key, graded_address, birth_date, birth_date_key, given_name_phone_key, birth_date_deletion_key, u_near_by_keys, fit_u_from_1e6_pairs, company_without_jw_high, name_needed, name_reading_key, given_tail_keys.
+# The tests' own copy (tests/conftest.py's population): what they count on stays when scripts/choose.py writes config/final.toml again.
+
+[fields]
+mandatory = ["id"]
+one_of = [["person_name", "company_name"]]
+optional = ["full_name", "given_name", "any_name", "address", "address_code", "postal_code", "prefecture", "town_code", "city", "phone", "customer_id", "birth_date"]
+labels = ["entity"]
+identifying = ["customer_id"]  # one customer's each: a value held by many records (00000000) is a placeholder, read as missing
+
+[budget]
+max_pairs_per_record = 5.0
+max_block_size = 5000
+target_rows = 1000000
+benchmark_pairs = 20000
+sample_pairs = 2000
+
+[rules]
+resolver = { method = "connected_components" }
+
+[[rules.stages]]
+name = "exact"
+rules = [
+  { name = "X1_CIF_PERSON_NAME", exact = ["customer_id", "full_name"] },
+  { name = "X2_CIF_COMPANY_NAME", exact = ["customer_id", "company_name"] },
+  { name = "X3_CIF_PHONE", exact = ["customer_id", "phone"] },
+  { name = "X4_PERSON_NAME_ADDRCD_PHONE", exact = ["full_name", "address_code", "phone"] },
+  { name = "X5_COMPANY_NAME_ADDRCD_PHONE", exact = ["company_name", "address_code", "phone"] },
+]
+
+[[rules.stages]]
+name = "fuzzy"
+comparators = { person_name = { function = "damerau_levenshtein", threshold = 2, normalize = "fold" }, company_name = { function = "levenshtein", threshold = 1, normalize = "company" }, address = { function = "jaro_winkler", threshold = 0.9, normalize = "address" }, phone = { function = "hamming", threshold = 1 } }
+rules = [
+  { name = "F1_NAME~_ADDRCD_PHONE", exact = ["address_code", "phone"], fuzzy = ["person_name"] },
+  { name = "F2_NAME~_ADDRESS~_PHONE", exact = ["phone"], fuzzy = ["person_name", "address"], blocking = [{ field = "address", normalize = "address_first3" }] },
+  { name = "F3_NAME~_CIF", exact = ["customer_id"], fuzzy = ["person_name"] },
+  { name = "F4_NAME_ADDRCD_PHONE~", exact = ["person_name", "address_code"], fuzzy = ["phone"] },
+  { name = "F5_COMPANY~_PHONE_POSTAL", exact = ["phone", "postal_code"], fuzzy = ["company_name"] },
+  { name = "F6_COMPANY~_ADDRCD_PHONE", exact = ["address_code", "phone"], fuzzy = ["company_name"] },
+  { name = "F7_GIVEN_ADDRCD_PHONE", exact = ["given_name", "address_code", "phone"] },
+]
+
+[generators]
+phone = { kind = "keys", keys = ["phone"] }
+address = { kind = "keys", keys = [{ field = "address", normalize = "address" }] }
+address_code = { kind = "keys", keys = ["address_code"] }
+cif = { kind = "keys", keys = ["customer_id"] }
+person_name = { kind = "keys", keys = [{ field = "person_name", normalize = "fold" }] }
+company_name = { kind = "keys", keys = [{ field = "company_name", normalize = "company" }] }
+sn_person_name = { kind = "sorted", key = { field = "person_name", normalize = "fold" }, window = 4 }
+sn_company_name = { kind = "sorted", key = { field = "company_name", normalize = "company" }, window = 4 }
+tfidf_person_name = { kind = "tfidf", key = { field = "person_name", normalize = "fold" }, ngram = [2, 3], k = 5, min_cosine = 0.5 }
+tfidf_company_name = { kind = "tfidf", key = { field = "company_name", normalize = "company" }, ngram = [2, 3], k = 5, min_cosine = 0.5 }
+phone_prefecture = { kind = "keys", keys = ["phone", "prefecture"] }
+phone_postal_area = { kind = "keys", keys = ["phone", { field = "postal_code", normalize = "first3" }] }
+phone_name_initial = { kind = "keys", keys = ["phone", { field = "any_name", normalize = "initial" }] }
+sn_person_name_reversed = { kind = "sorted", key = { field = "person_name", normalize = "reversed" }, window = 4 }
+company_name_deletions = { kind = "deletions", key = { field = "company_name", normalize = "company" } }
+cif_deletions = { kind = "deletions", key = "customer_id" }
+person_name_deletions_postal_area = { kind = "deletions", key = { field = "person_name", normalize = "fold" }, within = [{ field = "postal_code", normalize = "first3" }] }
+given_name_postal = { kind = "keys", keys = [{ field = "given_name", normalize = "fold" }, "postal_code"] }
+address_phone = { kind = "keys", keys = [{ field = "address", normalize = "address" }, "phone"] }
+address_code_phone = { kind = "keys", keys = ["address_code", "phone"] }
+address_name_initial = { kind = "keys", keys = [{ field = "address", normalize = "address" }, { field = "any_name", normalize = "initial" }] }
+address_code_name_initial = { kind = "keys", keys = ["address_code", { field = "any_name", normalize = "initial" }] }
+given_name_address_code = { kind = "keys", keys = [{ field = "given_name", normalize = "fold" }, "address_code"] }
+given_name_phone = { kind = "keys", keys = [{ field = "given_name", normalize = "fold" }, "phone"] }
+birth_date = { kind = "keys", keys = ["birth_date"] }
+birth_date_deletions_prefecture = { kind = "deletions", key = "birth_date", within = ["prefecture"] }
+name_reading = { kind = "keys", keys = [{ field = "person_name", normalize = "reading" }] }
+phone_given_tail = { kind = "keys", keys = ["phone", { field = "person_name", normalize = "given_tail" }] }
+postal_given_tail = { kind = "keys", keys = ["postal_code", { field = "person_name", normalize = "given_tail" }] }
+postal_area_given_tail = { kind = "keys", keys = [{ field = "postal_code", normalize = "first3" }, { field = "person_name", normalize = "given_tail" }] }
+
+[model]
+previous_stage = "deterministic"
+stage = "probabilistic"
+generators = ["cif", "sn_company_name", "phone_prefecture", "phone_postal_area", "phone_name_initial", "sn_person_name", "sn_person_name_reversed", "person_name", "company_name", "company_name_deletions", "person_name_deletions_postal_area", "given_name_postal", "address_phone", "address_code_phone", "address_name_initial", "address_code_name_initial", "given_name_address_code", "cif_deletions", "birth_date", "given_name_phone", "birth_date_deletions_prefecture", "name_reading", "phone_given_tail", "postal_given_tail", "postal_area_given_tail"]
+min_match_weight = 8.0
+resolver = { method = "connected_components" }
+bridge = false
+needs = ["name", "company"]
+name = "fs"
+prior_rules = [["customer_id", "full_name"], ["customer_id", "company_name"], ["full_name", "address_code", "phone"]]
+prior_recall = 0.0231
+u_max_pairs = 10000000.0
+m_method = "em"
+em_rules = [["phone"], [{ field = "address", normalize = "address" }]]
+seed = 0
+u_from_scored = true
+u_exact_by_counts = true
+u_near_by_keys = true
+fit_u_max_pairs = 1000000.0
+fit_rows = 30000
+
+[[model.comparisons]]
+name = "name"
+null_if_missing = ["person_name"]
+levels = [
+  { label = "exact", any_of = [{ field = "person_name", function = "exact" }] },
+  { label = "fold exact", any_of = [{ field = "person_name", function = "exact", normalize = "fold" }] },
+  { label = "fold JW high", any_of = [{ field = "person_name", function = "jaro_winkler", threshold = 0.95, normalize = "fold" }] },
+  { label = "given name", any_of = [{ field = "given_name", function = "exact", normalize = "fold" }] },
+  { label = "fold JW low", any_of = [{ field = "person_name", function = "jaro_winkler", threshold = 0.75, normalize = "fold" }] },
+]
+
+[[model.comparisons]]
+name = "company"
+null_if_missing = ["company_name"]
+levels = [
+  { label = "exact", any_of = [{ field = "company_name", function = "exact", normalize = "company" }] },
+  { label = "JW low", any_of = [{ field = "company_name", function = "jaro_winkler", threshold = 0.8, normalize = "company" }] },
+]
+
+[[model.comparisons]]
+name = "address"
+null_if_missing = ["address_code", "address", "postal_code", "town_code", "city", "prefecture"]
+levels = [
+  { label = "same address", any_of = [{ field = "address_code", function = "exact" }, { field = "address", function = "exact", normalize = "address" }] },
+  { label = "address close", any_of = [{ field = "address", function = "levenshtein", threshold = 2, normalize = "address" }] },
+  { label = "same postal", any_of = [{ field = "postal_code", function = "exact" }] },
+  { label = "same town", any_of = [{ field = "town_code", function = "exact" }] },
+  { label = "same city", any_of = [{ field = "city", function = "exact" }] },
+  { label = "same prefecture", any_of = [{ field = "prefecture", function = "exact" }] },
+]
+
+[[model.comparisons]]
+name = "phone"
+null_if_missing = ["phone"]
+levels = [
+  { label = "exact", any_of = [{ field = "phone", function = "exact" }] },
+  { label = "one digit off", any_of = [{ field = "phone", function = "hamming", threshold = 1 }] },
+]
+
+[[model.comparisons]]
+name = "cif"
+null_if_missing = ["customer_id"]
+levels = [
+  { label = "exact", any_of = [{ field = "customer_id", function = "exact" }] },
+  { label = "one digit off", any_of = [{ field = "customer_id", function = "damerau_levenshtein", threshold = 1 }] },
+]
+
+[[model.comparisons]]
+name = "birth"
+null_if_missing = ["birth_date"]
+levels = [
+  { label = "exact", any_of = [{ field = "birth_date", function = "exact" }] },
+  { label = "one digit off", any_of = [{ field = "birth_date", function = "damerau_levenshtein", threshold = 1 }] },
+]
+
+[kind]
+name_field = "any_name"
+ngram = 3
+depth = 2
+company_wrong_at_most = 0.001
+person_wrong_at_most = 0.01
+margin_steps = 2
+labels_to_draw = 2000
+review_max = 1000
+name_line = 0.99
+grid = [0.5, 0.8, 0.9, 0.95, 0.98, 0.99, 0.995, 0.998, 0.999, 0.9995, 0.9999]
+trust_flag = false
+
+[threshold]
+grid = [0, 2, 4, 6, 8, 10, 12, 14, 16]
+max_fp = 0
+max_fp_rate_hi = 0.05
+margin_steps = 1
+
+[trust]
+steps = [20.0, 12.0, 8.0, 6.0, 0.0]
+checks = 300
+watch = 20
+
+[probe]
+pairs = 1000000
+strata = { phone = ["phone"], postal_area = [{ field = "postal_code", normalize = "first3" }] }
+
+[household]
+shared = ["address_code", { field = "address", normalize = "address" }, "phone"]
+apart = [
+  { field = "given_name", function = "damerau_levenshtein", threshold = 1, normalize = "fold" },
+  { field = "person_name", function = "damerau_levenshtein", threshold = 2, normalize = "given_tail" },
+  { field = "birth_date", function = "damerau_levenshtein", threshold = 1 },
+]
+
+[selection]
+cv_folds = 3
+cv_seed = 0
+decision_p = 0.05
+
+[display]
+explain_show = ["full_name", "company_name", "address", "phone", "customer_id"]
+explain_filled = ["full_name", "address", "customer_id"]

@@ -15,7 +15,7 @@ flowchart LR
 1. **Standardize.** The same fact is written many ways: full-width digits, kana variants, addresses with or without the prefecture or the building. Each is rewritten in one form.
 2. **Rules.** Pairs that agree on strong evidence, such as the same customer ID and the same name, are matched at once. Rules are cheap and easy to audit.
 3. **Candidates.** Comparing every pair is impossible on a large file: a million records make 500 billion pairs. Shared keys, such as the same address and phone, or a name one letter apart in the same postal area, list about 5 pairs per record instead.
-4. **Score.** Each field adds evidence for or against, in bits. Each bit doubles the odds that the two records are one entity. A pair is accepted at 8 bits or more, if a name was compared; without one, a person decides.
+4. **Score.** Each field adds evidence for or against, in bits. Each bit doubles the odds that the two records are one entity. A pair is accepted at 6 bits or more, if a name was compared; without one, a person decides.
 5. **Cluster.** Records linked by accepted pairs become one entity. If A matches B and B matches C, all three are one.
 
 One pair, scored field by field: [chapter 5](docs/guide/05-uncertain-evidence-fellegi-sunter.md#solution-evidence-in-bits).
@@ -24,9 +24,9 @@ One pair, scored field by field: [chapter 5](docs/guide/05-uncertain-evidence-fe
 
 These numbers come from synthetic records built from real Japanese names, companies and addresses, where the truth is known:
 
-- **It finds almost half the duplicates:** 45.9% of the true pairs on test (95% interval 43.9–47.9%); the rules alone find 9.7%. Test is a split never used for any choice.
-- **The data is hard on purpose.** About 1% of true pairs are direct matches (the same customer ID and name, or the same name, address code and phone), and 11.5% share nothing usable, so no method finds them all ([data](docs/data.md#how-hard-it-is)).
-- **It merged no two different customers:** 0 false merges on test, so the rate is at most 0.28%.
+- **It finds almost half the duplicates:** 48.2% of the true pairs on test (95% interval 46.2–50.2%); the rules alone find 9.6%. Test is a split never used for any choice.
+- **The data is hard on purpose.** About 1% of true pairs are direct matches (the same customer ID and name, or the same name, address code and phone), and 11.3% share nothing usable, so no method finds them all ([data](docs/data.md#how-hard-it-is)).
+- **It merged no two unrelated customers:** 0 false merges on test, so the rate is at most 0.26%. Two people of one household (a spouse, a parent or a sibling at one address) can score as high as a duplicate; their pairs are counted apart, 45 on test. On val, people see 27 of the 32 such pairs it accepted labelled "maybe one household" ([usage](docs/usage.md#maybe-one-household)).
 - **It tells persons from companies better than the file's flag:** on generated files with one name column for both, and company names held out of its name model's training, it calls a kind where it is sure and takes the flag's elsewhere, flagging where they disagree. It called 180 to 1,641 persons companies, against 308 to 2,398 by the flag alone; recall is 42.6–46.1%, against 39.0–45.5% by the flag, with no more false merges ([chapter 7](docs/guide/07-person-or-company.md)).
 - **A million records take 53 seconds,** with peak memory 6.64 GB under an 8 GB limit, and about 15 seconds before that for the reader to read the file as it comes. Every step's work grows about linearly with the file.
 
@@ -73,5 +73,5 @@ The workspace holds your file (`inputs/`, copied in, and as it was read: each va
 - **Measured on synthetic data only.** Test comes from the same generator as the data the choices were made on. Other seeds, emptier fields, or a prior off by a factor of two keep recall between 41.7% and 49.3%; twice the typos lowers it to 33.4%. None of these made a false merge ([benchmark](reports/benchmark.md)). Real data has not been measured.
 - **False pairs appear on files fitted on themselves.** On the generated files of the cost benchmark, the run joined 2 false pairs at 12,532 records, through 1 false link, and 4 at 74,959, through 3. Each is a model link between 8.2 and 10.1 bits (the threshold is 8), between near-namesakes with a kana typo who share an address or a phone. The model expects them: the sum of 1 − match probability over its links, which every run reports without labels, is 0.84 at 12,532 records, 4.38 at 74,959, and 30.11 of 38,786 links at a million.
 - **A company that looks like its representative.** A company record under its representative's name, at the representative's address and phone and flagged person, looks like the person's own record in every column. Nothing tells them apart, so it can merge into the person ([chapter 7](docs/guide/07-person-or-company.md#what-it-cant-do)).
-- **Close names rely on other keys.** A Jaro–Winkler level guarantees no shared key, so two close but unequal names (or company names) are compared only if another key lists them. By the model's own bound, up to 11.9% of matches at a million records rest on such patterns; on labelled train, every pair that could reach the threshold shares a key.
+- **Close names rely on other keys.** A Jaro–Winkler level guarantees no shared key, so two close but unequal names (or company names) are compared only if another key lists them. By the model's own bound, up to 13.2% of matches at a million records rest on such patterns; on labelled train, every pair that could reach the threshold shares a key.
 - **Machine-read kana.** Given-name readings come from SudachiPy, and some differ from the intended reading.

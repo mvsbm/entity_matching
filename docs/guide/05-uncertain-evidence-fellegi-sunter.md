@@ -10,10 +10,10 @@ The rules in [chapter 4](04-certain-cases-first-rules.md) leave most true pairs 
 
 | | Name | Address | Phone | CIF ID |
 |---|---|---|---|---|
-| A | ウチダュリカ | 7-29-1 | 8521 | 2020638445481 |
-| B | オチダユリガ | 東京都足立区綾瀬7-29-1 | 8221 | 4623338689560 |
+| A | ミッマテルヤ | 20-2 | 3077 | 9991758286659 |
+| B | ミッマドウミョオ | 愛知県20-2 | 3077 | 2286801775966 |
 
-The surnames differ by one kana. The given names differ too, but only in ways folding removes: the small ュ becomes ユ and the voiced ガ becomes カ. A's address holds only the street number, but the postal codes agree, which is strong evidence. The phone almost agrees, which is weaker evidence. The CIF ID differs, which is weak evidence against. We need a way to **add up evidence of different strengths**, for and against, into one score we can act on.
+The surnames agree, but the given names don't: テルヤ and ドウミョオ, which is evidence against. A's address holds only the street number, but the two records share the address, which is strong evidence. The phone digits agree, which is strong evidence too. The CIF ID differs, which is weak evidence against. We need a way to **add up evidence of different strengths**, for and against, into one score we can act on.
 
 ## Solution: evidence in bits
 
@@ -26,9 +26,9 @@ The ratio m / u says how much more likely the observation is under "same" than u
 
 | Phone observation | m: same entity | u: different entities | Evidence |
 |---|---|---|---|
-| exactly equal | 0.264 | about 1 in 10,100 | +11.4 bits |
+| exactly equal | 0.261 | about 1 in 9,600 | +11.3 bits |
 | one digit off | 0.062 | about 1 in 280 | +4.1 bits |
-| different | 0.674 | 0.996 | −0.6 bits |
+| different | 0.677 | 0.996 | −0.6 bits |
 
 The report rounds u to three decimals; the "1 in" values follow from m and the weight. Both can be checked by counting:
 - **Exactly equal:** two strangers share a random last four digits about 1 time in 10,000.
@@ -49,20 +49,20 @@ Each term is a number of **bits**, and each bit doubles the odds. So +10 bits mu
 
 | Evidence | Observation | Bits |
 |---|---|---|
-| before looking | two random records match about 1 in 21,600 | −14.40 |
-| name | the same given name, after folding | +8.19 |
+| before looking | two random records match about 1 in 23,000 | −14.49 |
+| name | different | −3.19 |
 | company | missing (a person has no company name) | 0.00 |
-| address | the same postal code | +10.22 |
-| phone | one digit off | +4.10 |
+| address | the same address | +12.77 |
+| phone | exactly equal | +11.14 |
 | CIF ID | different | −0.03 |
 | birth date | missing | 0.00 |
-| **total** | | **+8.07** |
+| **total** | | **+6.19** |
 
 The total is the report's, from unrounded parts. Back from bits to a probability:
 
-$$p = \frac{2^{w}}{1 + 2^{w}} = \frac{2^{8.07}}{1 + 2^{8.07}} = 99.6\%$$
+$$p = \frac{2^{w}}{1 + 2^{w}} = \frac{2^{6.19}}{1 + 2^{6.19}} = 98.6\%$$
 
-That clears the 8-bit line (below) by 0.07 bits, so the model accepts the pair. A different CIF ID costs almost nothing: true pairs have different CIF IDs 98% of the time (m = 0.982), nearly as often as strangers.
+That clears the 6-bit line (below) by 0.19 bits, so the model accepts the pair. A different CIF ID costs almost nothing: true pairs have different CIF IDs 98.5% of the time (m = 0.985), nearly as often as strangers.
 
 ### Why this solution
 
@@ -79,14 +79,14 @@ So correlated fields form **one comparison** with ordered levels. The first leve
 
 | Comparison | Levels, strongest first |
 |---|---|
-| name | exact · exact after folding · very close (Jaro–Winkler ≥ 0.95 after folding) · same given name · close (≥ 0.75) · else |
+| name | exact · exact after folding · same reading · very close (Jaro–Winkler ≥ 0.95 after folding) · same given name · close (≥ 0.75) · else |
 | company | exact (legal form removed, kana folded) · close (Jaro–Winkler ≥ 0.8) · else |
-| address | same address code or address · address within 2 edits · same postal code · same town · same city · same prefecture · else |
+| address | same address code or address · address within 2 edits · same postal code · else |
 | phone | exact · one digit off · else |
 | CIF ID | exact · one edit off (a digit wrong, added or dropped, or two neighbours swapped) · else |
 | birth date | exact · one edit off (a digit wrong, added or dropped, or two neighbours swapped) · else |
 
-The "same given name" level catches a surname change after marriage. The town, city and prefecture levels give some credit for a move nearby.
+The "same reading" level catches a long vowel written another way (サトウ and サトオ). The "same given name" level catches a surname change after marriage.
 
 **In short:** every field adds evidence in bits; correlated fields share one comparison.
 
@@ -102,7 +102,7 @@ The other levels (a close name, a nearby address) come from 10 million random pa
 
 **u is measured on every file we score.** Some fields have more distinct values in a bigger file: there are more addresses and more CIF IDs. Two random records then agree on them less often, so u is smaller. A u measured on train would under-credit those agreements on a bigger file, and over-credit them on a smaller one. Measuring u on the whole file being scored keeps each weight right at any size. The scores and the check on oversized key blocks ([chapter 3](03-far-too-many-pairs.md)) use the same u. It needs no labels, and costs about the same at any size: the fit, with this measurement inside it, takes 7.4 seconds at 12,532 records and 9.3 at a million ([`reports/benchmark.md`](../../reports/benchmark.md)).
 
-**λ, from near-certain rules.** Pairs that agree on CIF ID and name, on CIF ID and company name, or on name, address code and phone are almost surely matches. Counting them, and dividing by the share of true pairs these rules find, gives λ. That share is measured on train's labels by `scripts/choose.py`: 2.3%, kept in `config/final.toml` for files without labels. The chance two random records match depends on the file's size, so λ is rescaled for each file. On val, a file of 9,966 records, it is about 1 in 21,600 pairs (−14.4 bits).
+**λ, from near-certain rules.** Pairs that agree on CIF ID and name, on CIF ID and company name, or on name, address code and phone are almost surely matches. Counting them, and dividing by the share of true pairs these rules find, gives λ. That share is measured on train's labels by `scripts/choose.py`: 2.2%, kept in `config/final.toml` for files without labels. The chance two random records match depends on the file's size, so λ is rescaled for each file. On val, a file of 10,496 records, it is about 1 in 23,000 pairs (−14.5 bits).
 
 **m, by expectation–maximization (EM).** Take the pairs that share a phone number. They are a mix of true pairs and strangers, in unknown proportions. EM alternates two steps until the numbers settle:
 
@@ -115,14 +115,15 @@ It runs once on pairs that share a phone and once on pairs that share an address
 
 | Level | EM | From labels |
 |---|---|---|
-| name exact | +15.61 | +15.66 |
-| name very close | +11.60 | +11.63 |
+| name exact | +15.55 | +15.79 |
+| name very close | +11.50 | +11.48 |
 | same address | +13.35 | +13.65 |
-| phone exact | +11.39 | +11.72 |
-| CIF ID different | −0.03 | −0.04 |
-| company different | −2.66 | −1.60 |
+| phone exact | +11.30 | +11.64 |
+| CIF ID different | −0.02 | −0.03 |
+| company different | −2.71 | −1.51 |
+| name different | −2.67 | −4.39 |
 
-The largest gap, about one bit, is a different company name.
+The largest gap, about 1.7 bits, is a different name.
 
 **What can go wrong.** A level may never occur in the sample, if its threshold is too strict, or if a lower level can never be reached because the level above it always catches the pair first. Splink then quietly uses default values, which can create strong evidence out of nothing. We use cautious bounds instead. A level no random pair reaches gets u at its 95% upper bound, and a level never seen in training counts 0 bits ([lessons](../lessons.md)). The company comparison has no "very close" level for that reason: no pair reaches it, in the sample or in EM, so it would add 0 bits for a second string comparison on every pair.
 
@@ -140,26 +141,26 @@ The company comparison above is *missing*: a person has no company name. Some co
 
 Sharing the name サトウ says less than sharing a rare name. That was Newcombe's 1959 insight. A **term-frequency adjustment** gives an exact match more bits when the value is rare.
 
-It is tested like any other change, and cross-validated train decides. Switching it off finds 12 more true pairs out-of-fold and loses none (15 more on val), so it is off.
+It is tested like any other change, and cross-validated train decides. Switching it off finds 33 more true pairs out-of-fold and loses none (13 more on val), so it is off.
 
 The adjustment carries a subtle trap. Frequencies must come from the training records and stay fixed when scoring, or a score would depend on which file is being scored. Splink caches them on the database connection by column name, so `score_fs` clears that cache and uses the frequencies stored with the model ([lessons](../lessons.md)).
 
 ## Challenge: where to draw the line?
 
-A score is not yet a decision. We accept a pair at **8 bits or more**, a probability of about 99.6%. On validation, the line trades recall against false merges like this:
+A score is not yet a decision. We accept a pair at **6 bits or more**, a probability of about 98.5%. On validation, the line trades recall against false merges like this:
 
 | Accept at or above | Pairs accepted | False pairs among them | Recall after grouping |
 |---|---|---|---|
-| 0 bits | 1,280 | 23 | 68.8% |
-| 2 bits | 1,180 | 12 | 64.8% |
-| 4 bits | 907 | 1 | 53.2% |
-| 6 bits | 877 | 0 | 51.7% |
-| **8 bits** | **765** | **0** | **46.3%** |
-| 10 bits | 518 | 0 | 34.6% |
+| 0 bits | 1,263 | 8 | 59.7% |
+| 2 bits | 1,195 | 5 | 58.2% |
+| 4 bits | 973 | 0 | 52.0% |
+| **6 bits** | **918** | **0** | **49.9%** |
+| 8 bits | 877 | 0 | 48.6% |
+| 10 bits | 416 | 0 | 28.8% |
 
 The line is not picked from this table, which would tune it on validation. It comes from a rule applied to train ([chapter 6](06-measuring-and-choosing.md)): the lowest weight with no false pair in cross-validation, plus one safety step.
 
-**The safety step goes to people.** The pairs between the lowest clean weight and the line, from 6 to 8 bits, are never wrong on cross-validated train, but are held back in case of noise. Every run lists them in `review.parquet` for people to decide ([usage](../usage.md#6--review-and-decide)). On val, the 6-bit row above accepts 112 more pairs, all true, and takes recall from 46.3% to 51.7%. The automatic line stays where the rule put it.
+**The safety step goes to people.** The pairs between the lowest clean weight and the line, from 4 to 6 bits, are never wrong on cross-validated train, but are held back in case of noise. Every run lists them in `review.parquet` for people to decide ([usage](../usage.md#6--review-and-decide)). On val, the 4-bit row above accepts 55 more pairs, none of them false, and takes recall from 49.9% to 52.0%. The automatic line stays where the rule put it.
 
 **A name must be compared.** A household shares an address and a phone, and those two alone can reach the line. So a pair is merged automatically only if a person name or a company name is filled on both sides. Without one, the pair goes on the review sheet (`why` = decide), whatever its score.
 
@@ -167,10 +168,10 @@ The line is not picked from this table, which would tune it on validation. It co
 
 | | Name | Address | Phone | CIF ID |
 |---|---|---|---|---|
-| C | タカハシユカ | 北海道名寄市東三条南2-15-21 | 2887 | 8900662733639 |
-| D | タカハジトモカ | 北海道登別市札内町12-22 | 2887 | 3517719009256 |
+| C | ャマノベタカユキ | 北海道岩見沢市日の出台10-26-24 | 2604 | 8852433827058 |
+| D | イナモチタカユキ | 大阪府泉北郡忠岡町 | 2604 | 7587446239261 |
 
-Same phone digits (+11.15). The surnames agree after folding (ジ becomes シ), but the given names differ, so the names are only close (+5.03). Different cities in the same prefecture (+3.71), and a different CIF ID (−0.03): **+5.46 bits, rejected**, below even the review band. Our example pair had a phone only one digit off, but its given names agreed and it shared a postal code; that is what lifted it to 8.07.
+Same phone digits (+11.14). The surnames differ, but the given names agree (タカユキ), worth +7.62. Different addresses (−0.58), and a different CIF ID (−0.03): **+3.66 bits, rejected**, below even the review band. Our example pair's names counted as different, but it shared the address as well as the phone; that is what lifted it to 6.19.
 
 ## Challenge: from pairs to groups
 
@@ -178,7 +179,7 @@ Accepted pairs must become groups. If A–B and B–C are accepted, then A, B an
 
 **Solution: connected components.** Records are points, accepted pairs are lines, and every connected set of points is one entity. The pairs from the rules and from this stage are grouped together.
 
-**Why, and the risk.** It is the natural reading of "same as", and it lets a record join a group that the rules already started. The risk is a **chain**: one false pair can join two whole groups. The strict 8-bit line is what keeps chains safe.
+**Why, and the risk.** It is the natural reading of "same as", and it lets a record join a group that the rules already started. The risk is a **chain**: one false pair can join two whole groups. The strict 6-bit line is what keeps chains safe.
 
 A cautious alternative would refuse a merge when the two groups hold different given names, but a typo in a given name looks like a conflict, so it loses true pairs. A run groups by connected components only (`er.cluster.merge`), and design time measures the run itself, so the choice is measured the way it runs.
 
@@ -186,11 +187,13 @@ A cautious alternative would refuse a merge when the two groups hold different g
 
 | Split | Recall: rules → + this stage | 95% interval | False merges | False-merge rate at most |
 |---|---|---|---|---|
-| train | 10.7% → 45.6% | 44.5–46.8% | 0 | 0.09% |
-| val | 9.7% → 46.3% | 44.3–48.4% | 0 | 0.29% |
-| **test** | 9.7% → **45.9%** | 43.9–47.9% | **0** | 0.28% |
+| train | 10.5% → 47.7% | 46.5–48.8% | 0 | 0.09% |
+| val | 11.9% → 49.9% | 47.9–51.8% | 0 | 0.24% |
+| **test** | 9.6% → **48.2%** | 46.2–50.2% | **0** | 0.26% |
 
-**In short:** weighing evidence lifts recall from about 10% to about 46%, with no false merge on any split. Most of the rest share too little to clear 8 bits ([data](../data.md#how-hard-it-is)).
+Pairs of two people of one household are counted apart, neither true nor false: 112 on train, 51 on val and 45 on test ([chapter 6](06-measuring-and-choosing.md#challenge-every-choice-can-overfit)).
+
+**In short:** weighing evidence lifts recall from about 10% to about 48%, with no false merge on any split. Most of the rest share too little to clear 6 bits ([data](../data.md#how-hard-it-is)).
 
 ## In the code
 

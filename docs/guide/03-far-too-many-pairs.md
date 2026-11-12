@@ -10,34 +10,34 @@ To find every duplicate, we would compare every record with every other one. The
 
 | Records | Pairs to compare |
 |---|---|
-| 9,966 (our validation file) | 49,655,595 |
+| 10,496 (our validation file) | 55,077,760 |
 | 1,000,000 (a large file) | 499,999,500,000 (5 × 10¹¹) |
 
-Only 2,215 of the 50 million validation pairs are true duplicates. Comparing all of them would waste almost all the work, and at a million records it would not finish in reasonable time.
+Only 2,494 of the 55 million validation pairs are true duplicates. Comparing all of them would waste almost all the work, and at a million records it would not finish in reasonable time.
 
 ## Solution: compare only promising pairs
 
-The standard answer is **blocking**: compare two records only if they already share something. We generate a short list of **candidate pairs** in three ways, then score only those. A fourth way serves only while choosing.
+The standard answer is **blocking**: compare two records only if they already share something. We generate a short list of **candidate pairs** in two ways, then score only those. Two more serve only while choosing.
 
 **Key blocks.** Records that agree exactly on a key, such as the last four phone digits, form a block, and only pairs inside a block are compared. A block of k records holds k(k−1)/2 pairs, so the work for a key is:
 
 $$P = \sum_{\text{blocks}} \binom{k}{2}$$
 
-A key can combine fields, such as the phone and the prefecture. The configuration offers 17 keys, built from the phone, the address, the address code, the CIF ID, the folded names, the postal code, the prefecture and the birth date.
+A key can combine fields, such as the phone and the prefecture. The configuration offers 21 keys, built from the phone, the address, the address code, the CIF ID, the folded names and their readings, the postal code, the prefecture and the birth date.
 
 **One-deletion keys.** Each record also emits its value with each single character deleted, so two values one edit apart always share a key ([below](#keeping-every-potential-match)).
 
-**Sorted neighbourhood.** Sort all records by a key, such as the folded name, and compare each record with the next three (a window of 4). A typo near the end of a name keeps the record close in the sorted order, so the pair is still found.
+**Sorted neighbourhood,** while choosing only. Sort all records by a key, such as the folded name, and compare each record with the next three (a window of 4). A typo near the end of a name keeps the record close in the sorted order, so the pair is still found. Its reach shrinks as the file grows, so the chosen pipeline leaves it out ([below](#keeping-every-potential-match)).
 
 **TF-IDF neighbours,** while choosing only. Cut each name into overlapping pieces of 2–3 characters, give rare pieces more weight, and compare each record with its 5 most similar names (a cosine similarity of at least 0.5). This finds typos anywhere in a name, even in the first character. It is also the one generator that compares every record with every other, so the chosen pipeline leaves it out ([below](#scaling-to-a-million-records)).
 
-**Only pairs the rules have not settled.** The rules in [chapter 4](04-certain-cases-first-rules.md) settle the clear cases first. A generator lists only pairs that touch a record the rules left alone. A pair between two of their clusters is not listed ([below](#keeping-every-potential-match)).
+**Only pairs the rules have not settled.** The rules in [chapter 4](04-certain-cases-first-rules.md) settle the clear cases first. A generator lists only pairs that touch a record the rules left alone, and pairs between two of their clusters ([below](#keeping-every-potential-match)).
 
 ### Why this solution
 
 - **Keys cost almost nothing.** A database hash join finds all pairs in a block in about O(N + P) time. One-deletion keys cost O(N·L + P), for values of L characters.
 - **The kinds catch different typos.** Keys need an exact agreement. One-deletion keys survive one typo anywhere. Sorted neighbourhood survives late typos, and sorting the reversed name too survives early ones.
-- **Every key is measured before use.** Before any join, a run counts P for every key. A block of 64 or more records sharing one value is checked on a sample of about 2,000 of its pairs first. The sample is scored as the candidates will be, with the model and the u measured on the file, and the block is joined in full only if a sampled pair reaches 6 bits, the review floor. A big block holds few true matches, and a placeholder's block (a dummy phone) holds none. While choosing, `scripts/choose.py` also projects every key to the target size, which keeps out keys that grow by many normal blocks ([below](#how-the-configuration-keeps-it-that-way)).
+- **Every key is measured before use.** Before any join, a run counts P for every key. A block of 64 or more records sharing one value is checked on a sample of about 2,000 of its pairs first. The sample is scored as the candidates will be, with the model and the u measured on the file, and the block is joined in full only if a sampled pair reaches 4 bits, the review floor. A big block holds few true matches, and a placeholder's block (a dummy phone) holds none. While choosing, `scripts/choose.py` also projects every key to the target size, which keeps out keys that grow by many normal blocks ([below](#how-the-configuration-keeps-it-that-way)).
 
 ## How do we know a candidate list is good?
 
@@ -46,18 +46,18 @@ Two numbers, which pull in opposite directions:
 - **Completeness:** the share of the true duplicates the list contains. A pair that is not on the list can never be found later.
 - **Reduction ratio:** the share of all pairs we skip.
 
-On train, for the 6,177 true pairs the rules missed. Each generator is listed with the pairs it makes, and the share of the missed pairs on the list so far:
+On train, for the 6,355 true pairs the rules missed. Each generator is listed with the pairs it makes, and the share of the missed pairs on the list so far:
 
 | Generators, added one by one | Pairs they make | Missed pairs on the list |
 |---|---|---|
-| phone | 46,675 | 27.0% |
-| + address, address code, CIF ID | 11,607 | 48.5% |
-| + folded person and company names | 4,397 | 79.5% |
-| + sorted neighbourhood (person, company) | 85,502 | 84.3% |
-| + TF-IDF (person, company) | 30,897 | 86.1% |
-| + the scalable generators and the birth date (below) | 83,154 | 88.8% |
+| phone | 50,939 | 27.0% |
+| + address, address code, CIF ID | 13,098 | 48.2% |
+| + folded person and company names | 4,492 | 79.5% |
+| + sorted neighbourhood (person, company) | 88,858 | 84.3% |
+| + TF-IDF (person, company) | 33,126 | 86.1% |
+| + the scalable generators, the name's reading and last sounds, and the birth date (below) | 96,672 | 89.2% |
 
-The folded names find the most for the pairs they make; the sorted windows make the most pairs. The chosen pipeline (`config/final.toml`) keeps 21 of these 26 generators. It leaves out the phone, the address and the address code alone, which grow with the square of the file, and TF-IDF, which compares every name with every other (next sections). On validation it lists **50,923 candidates holding 86.1% of the 2,000 true pairs the rules missed**, while still skipping 99.90% of all pairs. On train, every true pair that could reach the threshold shares one of its keys, at train's size and at a million records ([below](#keeping-every-potential-match)), so the pairs it leaves out lack the evidence to be accepted.
+The folded names find the most for the pairs they make; the sorted windows make the most pairs. The chosen pipeline (`config/final.toml`) keeps 22 of these 30 generators, all of them keys. It leaves out the phone, the address and the address code alone, which grow with the square of the file, TF-IDF, which compares every name with every other, and the sorted windows, whose reach shrinks as the file grows (next sections). On validation it lists **2,568 candidates holding 79.6% of the 2,198 true pairs the rules missed**, while skipping 99.995% of all pairs. On train, every true pair that could reach the threshold shares one of its keys, at train's size and at a million records ([below](#keeping-every-potential-match)), so the pairs it leaves out lack the evidence to be accepted.
 
 **In short:** a few cheap keys find most duplicates; the extra generators buy the last few points.
 
@@ -67,13 +67,13 @@ The phone key is useful but dangerous. The last four digits have only 10,000 pos
 
 $$P \approx \frac{N^2}{2 \times 10{,}000}$$
 
-On train (30,103 records) that gives about 45,300 chance pairs, and the count finds 45,079 pairs of different entities sharing a phone. Another 2,296 are true duplicates: 33.2% of train's 6,920 true pairs share a phone. Together they make the 47,375 pairs that `estimate` counts in the phone blocks.
+On train (31,226 records) that gives about 48,800 chance pairs, and the count finds 49,342 pairs of different entities sharing a phone. Another 2,359 are true duplicates: 33.2% of train's 7,102 true pairs share a phone. Together they make the 51,701 pairs that `estimate` counts in the phone blocks.
 
 At a million records, the same formula gives **50 million** chance pairs from the phone key alone. That's why every key is projected to the target size before it is used.
 
 Two more costs:
 
-- **A missed candidate is lost for good.** On val, 13.9% of the true pairs the rules missed are on no list, and the second stage can never find them. On train, every true pair that could reach the threshold shares a key, so the pairs left out are those without the evidence to be accepted.
+- **A missed candidate is lost for good.** On val, 20.4% of the true pairs the rules missed are on no list, and the second stage can never find them. On train, every true pair that could reach the threshold shares a key, so the pairs left out are those without the evidence to be accepted.
 - **Sorted neighbourhood fails on early typos.** A wrong first character moves a record far away in the sorted order. A second pass on the reversed name finds those, unless the name has typos at both ends.
 
 **In short:** blocking sets the ceiling on recall, and keys with few values blow up at scale.
@@ -90,11 +90,11 @@ For each key, `scale_check` splits its pairs on train into pairs of one entity, 
 |---|---|---|---|
 | load and standardize, persons and companies | O(N·L) | N | 10.73 s |
 | fit | O(n + S·K + P_em·K) + O(N + S·K) | a fixed sample, plus O(N) counts | 9.40 s |
-| rules | O(N + ΣP_r·L²) + O(E·d + N) | N^1.0 to N^1.16 per rule | ≤ 0.14 million pairs per rule; 2.57 s |
+| rules | O(N + ΣP_r·L²) + O(E·d + N) | N^1.0 to N^1.21 per rule | ≤ 0.18 million pairs per rule; 2.57 s |
 | **rule F2, joined on the phone alone** | O(N + P) | **N^1.95** | **50 million pairs**, the phone key's blocks |
 | key: **phone alone** | O(N + P) | **N^1.95** | **50 million pairs**, nearly all by chance |
-| keys: **address alone, address code alone** | O(N + P) | **N^1.84, N^1.72** | **5.4 and 5.3 pairs per record**, over the budget of 5 |
-| the chosen keys and one-deletion keys | O(N + P), O(N·L + P) | N^1.0 to N^1.82 | ≤ 1.7 million pairs each |
+| keys: **address alone, address code alone** | O(N + P) | **N^1.85, N^1.74** | **5.8 and 5.7 pairs per record**, over the budget of 5 |
+| the chosen keys and one-deletion keys | O(N + P), O(N·L + P) | N^1.0 to N^1.83 | ≤ 2.1 million pairs each |
 | sorted neighbourhood | O(N log N + N·w) | N | 3 million pairs per pass |
 | **TF-IDF neighbours** | O(N·L + U·N·q) | **N^2.0** | **10¹² similarities** |
 | candidates | O(N·L + ΣP_g) | as ΣP_g | 6.53 s |
@@ -108,7 +108,7 @@ Everything is near-linear except two kinds of step:
 1. **A key with a fixed pool of values.** The last four phone digits take only 10,000 values, however large the file. Chance collisions grow like N²/(2 × 10,000), while true duplicates grow only like N. Both the phone key and rule F2 on the phone rest on it. Addresses are such a pool too: households share them, and a country has only so many.
 2. **All-against-all similarity.** TF-IDF compares each record the rules left alone with every record, so its work grows like N².
 
-The chosen keys still grow faster than N in part, but from a far smaller constant: the largest, phone + name initial, projects to 1.7 pairs per record.
+The chosen keys still grow faster than N in part, but from a far smaller constant: the largest, phone + name initial, projects to 2.1 pairs per record.
 
 ### The fixes
 
@@ -120,20 +120,20 @@ Every fix passes the decision rule that judges every other change ([chapter 6](0
 - phone + postal area (the first 3 digits of the postal code),
 - phone + name initial (the first character of the person name, else the company name, folded, legal form removed).
 
-Each key splits the 10,000 phone values into hundreds of thousands of combinations or more. At a million records, the phone key alone projects to 50 million pairs; the three compound keys to 3.0 million together, each under the budget of 5 per record.
+Each key splits the 10,000 phone values into hundreds of thousands of combinations or more. At a million records, the phone key alone projects to 50 million pairs; the three compound keys to 3.6 million together, each under the budget of 5 per record.
 
-*Decision:* 0 true pairs gained or lost, on cross-validated train and on val. **Adopted.** These keys still grow faster than N (α = 1.47, 1.09 and 1.46), from a much smaller constant. The check below would flag them first if files grew well past a million.
+*Decision:* 0 true pairs gained or lost, on cross-validated train and on val. **Adopted.** These keys still grow faster than N (α = 1.52, 1.17 and 1.52), from a much smaller constant. The check below would flag them first if files grew well past a million.
 
 **Fix 2: TF-IDF becomes a second sorted pass.** TF-IDF earns its place by finding typos near the start of a name, which a sorted order misses. Drop the ト from サトウヒロシ, and サウヒロシ sorts far away, among the names that begin with サウ. Sorted by the **reversed** name, the two stay close (シロヒウサ, シロヒウトサ), because they end alike. Two sorted passes cost O(N log N) each, against TF-IDF's N².
 
-*Decision:* +1 true pair and 0 lost on cross-validated train; +4 and 0 on val. **Adopted.**
+*Decision:* +1 true pair and 0 lost on cross-validated train; 0 gained or lost on val. **Adopted.** Once keys reach every potential match, the sorted passes go too ([below](#keeping-every-potential-match)).
 
 **Fix 3: rule F2 joins on more than the phone.** F2 accepts a pair with a similar name, a similar address (Jaro–Winkler 0.9 or more) and the same phone. With the address fuzzy, the phone is its only exact key, so a join on the phone alone would inherit the phone's N² growth. So F2 joins on the phone and the first three characters of the normalized address (the start of the city, such as 福島市), and checks the name and the address on the joined pairs:
 
 | F2 joins on | Pairs at a million records | Train: true pairs lost | Val: lost | Adopted |
 |---|---|---|---|---|
 | phone alone | 50 million | — | — | over budget |
-| phone + first 3 characters of the normalized address | 0.14 million | 0 | 0 | **yes** |
+| phone + first 3 characters of the normalized address | 0.18 million | 0 | 0 | **yes** |
 
 An exact address would defeat F2's purpose, which is address typos. The first three characters survive typos later in the address.
 
@@ -153,9 +153,9 @@ The gate on oversized blocks and the scores both use these u. The fit costs O(n 
 
 ### Keeping every potential match
 
-The fixes above are judged by the pairs the chosen pipeline accepts. A stricter test asks about the pairs it *could* accept. Call a true pair a **potential match** if its fields, once compared, would reach the 8-bit threshold. Blocking must keep every potential match, at every file size. A pair that falls short with all its evidence counted can never be accepted, whatever list it is on.
+The fixes above are judged by the pairs the chosen pipeline accepts. A stricter test asks about the pairs it *could* accept. Call a true pair a **potential match** if its fields, once compared, would reach the 6-bit threshold. Blocking must keep every potential match, at every file size. A pair that falls short with all its evidence counted can never be accepted, whatever list it is on.
 
-What counts as potential depends on the file size. λ shrinks as the file grows, so the same evidence earns fewer bits: about log2(N / 30,000) fewer than on train. u moves too, because u is measured on each scored file ([chapter 5](05-uncertain-evidence-fellegi-sunter.md#challenge-learning-m-u-and-λ-without-labels)): on fields whose values grow with the file, strangers agree less often, so an agreement earns more. That makes every size testable on the training file. Score its true pairs once, then move λ to the target size, and u by the growth measured between half and all of train's entities. The pairs still at 8 bits or more are the potential matches at that size.
+What counts as potential depends on the file size. λ shrinks as the file grows, so the same evidence earns fewer bits: about log2(N / 30,000) fewer than on train. u moves too, because u is measured on each scored file ([chapter 5](05-uncertain-evidence-fellegi-sunter.md#challenge-learning-m-u-and-λ-without-labels)): on fields whose values grow with the file, strangers agree less often, so an agreement earns more. That makes every size testable on the training file. Score its true pairs once, then move λ to the target size, and u by the growth measured between half and all of train's entities. The pairs still at 6 bits or more are the potential matches at that size.
 
 **Challenge: a sorted window reaches less as the file grows.** A sorted neighbourhood compares each record with the next three in name order. In a bigger file, more records sort between two similar names, so fewer true pairs fall inside the window. The window needed grows with the file: a fixed window loses pairs, and a growing one costs N². Most of these pairs share another key anyway: an address, a CIF ID, a phone. A potential match that shares none is left to the window, and so to the file's size.
 
@@ -163,13 +163,13 @@ What counts as potential depends on the file size. λ shrinks as the file grows,
 
 | Key | What it guarantees | Pairs at a million records |
 |---|---|---|
-| person name, exact (folded) | every pair with the same name | 0.61 million |
-| company name, exact | every pair with the same company name | 0.35 million |
-| company name, one-deletion keys | every pair of company names one edit apart | 0.84 million |
-| person name, one-deletion keys within the postal area | every pair of names one edit apart in one postal area | 0.08 million |
+| person name, exact (folded) | every pair with the same name | 0.47 million |
+| company name, exact | every pair with the same company name | 0.36 million |
+| company name, one-deletion keys | every pair of company names one edit apart | 0.80 million |
+| person name, one-deletion keys within the postal area | every pair of names one edit apart in one postal area | 0.12 million |
 | given name + postal code | a surname change at the same postal code | 0.06 million |
 
-With them, **no potential match on train depends on a window**: 0 of 3,036 at train's size, and 0 of 2,960 at a million records. Without the windows, val loses 1 true pair (cross-validated train: none gained or lost), so the windows stay.
+With them, **no potential match on train depends on a window**: 0 of 3,278 at train's size, and 0 of 3,071 at a million records. Without the windows, no true pair is gained or lost, on cross-validated train or on val, so the windows go: the chosen pipeline lists pairs by keys alone.
 
 **One-deletion keys.** Each record emits its value, and the value with each single character deleted. サトウヒロシ gives サトウヒロシ, トウヒロシ, サウヒロシ, サトヒロシ, サトウロシ, サトウヒシ and サトウヒロ. Two names one edit apart always share one of these keys:
 
@@ -179,29 +179,29 @@ With them, **no potential match on train depends on a window**: 0 of 3,036 at tr
 
 A name of L characters emits L + 1 keys, so the work is O(N·L + P). Spelling correctors such as SymSpell use the same idea, called symmetric deletion. The keys are unnested once, into one table that the count, the join and the sample check of big blocks all read; an increment keeps only the blocks its batch reaches. The chosen pipeline uses them for company names, for person names within the postal area, for the CIF ID and for the birth date within the prefecture. The same idea counts u for the "one digit off" levels (Fix 4).
 
-**Why within the postal area?** Many short names differ from another person's by one kana. On their own, the person-name deletion keys would pair them across the whole country. Within the postal area they grow like N^1.01. A potential match whose names are one edit apart but whose postal areas differ needs strong evidence from another field, and that field has a key of its own. The coverage check below confirms this on train.
+**Why within the postal area?** Many short names differ from another person's by one kana. On their own, the person-name deletion keys would pair them across the whole country. Within the postal area they grow like N^1.03. A potential match whose names are one edit apart but whose postal areas differ needs strong evidence from another field, and that field has a key of its own. The coverage check below confirms this on train.
 
-**Two rule clusters of one entity.** The rules sometimes split one entity into two clusters. Candidates must touch a record the rules left alone, so no pair between two such clusters is scored. Scoring every pair across two clusters (`[model] bridge`) is an option. A false pair there would merge both clusters, so it must pass as *better*, with a significant gain. It gains no true pair on cross-validated train or on val, so it is not adopted.
+**Two rule clusters of one entity.** The rules sometimes split one entity into two clusters. A pair between two such clusters touches no record the rules left alone, so it is scored only if every pair across two clusters is (`[model] bridge`). A false pair there would merge both clusters, so it must pass as *better*, with a significant gain. It gains 8 true pairs on cross-validated train and loses none (p = 0.0078), and moves none on val, so it is adopted.
 
 | Change | Kind | Cross-validated train | Val | Adopted |
 |---|---|---|---|---|
-| the five name keys | safer | +1 / −0 true pairs, no false pair added | +0 / −0 | yes |
+| the five name keys | safer | +0 / −0 true pairs, no false pair added | +0 / −0 | yes |
 | the address only with another field (next) | cheaper | +0 / −0, no false pair added | +0 / −0 | yes |
-| no sorted windows | cheaper | +0 / −0 | +0 / −1 | no |
-| score every pair across two clusters | better | +0 / −0 | +0 / −0 | no |
+| no sorted windows | cheaper | +0 / −0 | +0 / −0 | yes |
+| score every pair across two clusters | better | +8 / −0 | +0 / −0 | yes |
 
 "Safer" is the cheaper test for a change that adds pairs: it may lose no true pair and add no false one. Its gain shows at scale, and the coverage check below measures it.
 
-**Challenge: an address alone grows with the square.** A key's pairs are of two kinds. Pairs of one entity grow like N: a bigger population of the same kind has proportionally more duplicated entities. Chance pairs between two entities grow like N², whenever the key's values come from a pool that doesn't grow with the file, because two entities then share a value with the same probability at any size. Addresses are such a pool: households share them, and a country has only so many. On train, 4,828 of the address key's 5,507 pairs join two different entities, and projected that way they reach **5.4 pairs per record at a million records**, over the budget of 5. The address code makes 5.3.
+**Challenge: an address alone grows with the square.** A key's pairs are of two kinds. Pairs of one entity grow like N: a bigger population of the same kind has proportionally more duplicated entities. Chance pairs between two entities grow like N², whenever the key's values come from a pool that doesn't grow with the file, because two entities then share a value with the same probability at any size. Addresses are such a pool: households share them, and a country has only so many. On train, 5,572 of the address key's 6,250 pairs join two different entities, and projected that way they reach **5.8 pairs per record at a million records**, over the budget of 5. The address code makes 5.7.
 
 **Solution: the address only with one more field.** A true pair that shares an address almost always shares something else with it: the phone digits, the name's first letter, or, after a marriage, the given name. Two households at one address rarely do. So the address and the address code are each combined with the phone and with the name's first letter, and the address code with the given name:
 
 | Key | Pairs per record at a million records |
 |---|---|
-| address alone, address code alone | 5.4 and 5.3 |
-| address + phone, address code + phone | 0.01 and 0.02 |
-| address + the name's first letter, address code + the name's first letter | 0.23 and 0.28 |
-| given name + address code | 0.03 |
+| address alone, address code alone | 5.8 and 5.7 |
+| address + phone, address code + phone | 0.05 and 0.10 |
+| address + the name's first letter, address code + the name's first letter | 0.40 and 0.60 |
+| given name + address code | 0.04 |
 
 With these five keys, every potential match on train still shares a key, at its size and at a million records. The decision rule adopted them as cheaper: no true pair lost or false pair added, on cross-validated train or on val.
 
@@ -209,9 +209,9 @@ With these five keys, every potential match on train still shares a key, at its 
 
 `scripts/choose.py` projects every key and rule of the chosen pipeline to `budget.target_rows` (a million records) and stops if one would exceed the budget of 5 pairs per record (`er.pipeline.scale_check`). It needs only the training file. For each key it counts the pairs of one entity, P_same, and the chance pairs, P_chance, and projects each by its own law: P(n) = P_same·n/N + P_chance·n(n − 1)/(N(N − 1)). That is what keeping a share of the entities would give on average, computed instead of sampled. Pairs between two members of a household count as chance, the safe side. Optuna trials that fail the check are pruned.
 
-For the chosen pipeline, the largest projection of a key is phone + name initial, at 1.7 pairs per record; each sorted window makes 3 per record by construction. The check also counts the potential matches on train that share no key, at train's size and at a million records (`window_only`), and stops if any is left. Here: 0 of 3,036, and 0 of 2,960.
+For the chosen pipeline, the largest projection of a key is phone + name initial, at 2.1 pairs per record; a sorted window, which it leaves out, would make 3 per record by construction. The check also counts the potential matches on train that share no key, at train's size and at a million records (`window_only`), and stops if any is left. Here: 0 of 3,278, and 0 of 3,071.
 
-Without labels, a run can check only the patterns: every combination of comparison levels that could reach the threshold must imply a shared key (`pattern_coverage`, in every run's QA report). A Jaro–Winkler level implies none, so a pattern built on close names counts as uncovered even when another key, in practice, joins it. For the chosen pipeline at a million records, 226 patterns are uncovered, and the model puts their share of matches at 11.9% at most. The largest pair a close company name with the same address or the same phone. On labelled train, every potential match shares a key (above).
+Without labels, a run can check only the patterns: every combination of comparison levels that could reach the threshold must imply a shared key (`pattern_coverage`, in every run's QA report). A Jaro–Winkler level implies none, so a pattern built on close names counts as uncovered even when another key, in practice, joins it. For the chosen pipeline at a million records, 190 patterns are uncovered, and the model puts their share of matches at 13.2% at most. The largest pair a very close name with the same address. On labelled train, every potential match shares a key (above).
 
 ### Measured: a whole run, up to a million records
 
@@ -248,10 +248,10 @@ Up to 75,000 records, every entity is still a distinct persona, so quality can b
 
 On train, every true pair that could reach the threshold shares a key, at its size and at a million records. Two things change as the file grows:
 
-- **False pairs appear.** A bigger file holds more pairs of different entities that look alike. The run joined 2 false pairs at 12,532 records, through 1 false link, and 4 at 74,959, through 3. Each is a model link between 8.2 and 10.1 bits (the threshold is 8), between near-namesakes with a kana typo who share an address or a phone. The model expects them: the sum of 1 − match probability over its links, which every run reports without labels, is 0.84 at 12,532 records, 4.38 at 74,959, and 30.11 of 38,786 links at a million. The bound on the false-merge rate is 0.48% at 12,532 records, above the 0.28% reported for test, and 0.06–0.12% at the larger sizes.
-- **Recall stays within two points,** between 44.2% and 46.0%. u is measured on each scored file, so an agreement on a field whose values grow with the file, such as the address or the CIF ID, earns the credit it has at that size ([lessons.md](../lessons.md#weights-fitted-at-one-file-size-used-at-another)). On the labelled splits, which are no bigger than train, this choice costs true pairs: 60 on cross-validated train and 12 on val (`u_from_scored_file`, adopted as "chosen", [chapter 6](06-measuring-and-choosing.md)).
+- **False pairs appear.** A bigger file holds more pairs of different entities that look alike. The run joined 2 false pairs at 12,532 records, through 1 false link, and 4 at 74,959, through 3. Each is a model link between 8.2 and 10.1 bits (the threshold is 8), between near-namesakes with a kana typo who share an address or a phone. The model expects them: the sum of 1 − match probability over its links, which every run reports without labels, is 0.84 at 12,532 records, 4.38 at 74,959, and 30.11 of 38,786 links at a million. The bound on the false-merge rate is 0.48% at 12,532 records, above the 0.26% reported for test, and 0.06–0.12% at the larger sizes.
+- **Recall stays within two points,** between 44.2% and 46.0%. u is measured on each scored file, so an agreement on a field whose values grow with the file, such as the address or the CIF ID, earns the credit it has at that size ([lessons.md](../lessons.md#weights-fitted-at-one-file-size-used-at-another)). On the labelled splits, which are no bigger than train, this choice costs true pairs: 700 on cross-validated train and 92 on val (`u_from_scored_file`, adopted as "chosen", [chapter 6](06-measuring-and-choosing.md)).
 
-**In short:** two kinds of step grow with the square of the file: keys whose values come from a fixed pool (the phone digits, the address), and all-against-all similarity. Compound keys, a reversed sorted pass and a narrower F2 join keep both in check. A sorted window reaches fewer pairs as the file grows, so five more keys make sure no potential match depends on one. A million records take 53 seconds, with peak memory 6.64 GB under an 8 GB limit, on DuckDB tables that spill to disk past it.
+**In short:** two kinds of step grow with the square of the file: keys whose values come from a fixed pool (the phone digits, the address), and all-against-all similarity. Compound keys, no TF-IDF and a narrower F2 join keep both in check. A sorted window reaches fewer pairs as the file grows, so five more keys make sure no potential match depends on one, and the chosen pipeline uses no window at all. A million records take 53 seconds, with peak memory 6.64 GB under an 8 GB limit, on DuckDB tables that spill to disk past it.
 
 ## In the code
 
