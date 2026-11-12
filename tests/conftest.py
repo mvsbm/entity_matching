@@ -76,7 +76,8 @@ def population():
     from er.generate import generate as make, load_reference, load_spec
     s = load_settings()
     p = load_pipeline(s.root / "config" / "final.toml", s.standardize, s.chains, s.columns)
-    g = make(replace(load_spec(s.root / "config" / "generator.toml")[0], entities=400), *load_reference(s.paths["reference"]))
+    g = make(replace(load_spec(s.root / "config" / "generator.toml")[0], entities=400, households={}),  # the tests count on this population; choose.py measures households
+             *load_reference(s.paths["reference"]))
     return s, p, g
 
 

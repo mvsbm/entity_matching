@@ -198,6 +198,12 @@ Each entry names a way an entity-resolution pipeline like this one goes wrong, a
 - **Guard:** only direct company types give real companies, and the prefecture codes are zero-padded.
 - **Check:** [data.md](data.md) records what each reference file holds, down to the towns in all 47 prefectures.
 
+## A household that scores as one customer
+- **Pitfall:** two people of one household, a spouse, a parent or a sibling, score as high as a duplicate, and no line keeps them apart without losing most true pairs. It shows as false pairs at every line on labelled data, so the threshold rule falls back to its strictest weight.
+- **Why:** they share the family name, the address and the phone. The name comparison credits a shared family name as a near match, and EM learns from pairs sharing a phone or an address, which is where households are, so a different given name costs a few bits against some thirty for the rest. A sibling whose given name is one edit from theirs looks exactly like a duplicate with a typo: only a birth date tells them apart, and few records hold one.
+- **Guard:** the pair is labelled for people instead (`[household]`): its records share an address or a phone, and their given names, the ends of their names or their birth dates differ. The label changes no score. The generator makes such households (`households`) and names each record's household in the labels (`HOUSEHOLD_ID`), and evaluation counts their pairs apart: a false pair joins two households.
+- **Check:** a test labels a household member and not a copy of a record; another recounts the household pairs by brute force. [`reports/choose.md`](../reports/choose.md) says how many accepted pairs join one household and how many of them people see labelled.
+
 ## Test that informs a choice
 - **Pitfall:** scoring test while developing turns it into another selection set, and its numbers stop being unbiased. Nothing in the numbers shows it.
 - **Why:** every look at test before the choices are final is a chance for a choice to follow it.

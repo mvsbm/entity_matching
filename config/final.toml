@@ -178,6 +178,14 @@ watch = 20
 pairs = 1000000
 strata = { phone = ["phone"], postal_area = [{ field = "postal_code", normalize = "first3" }] }
 
+[household]
+shared = ["address_code", { field = "address", normalize = "address" }, "phone"]
+apart = [
+  { field = "given_name", function = "damerau_levenshtein", threshold = 1, normalize = "fold" },
+  { field = "person_name", function = "damerau_levenshtein", threshold = 2, normalize = "given_tail" },
+  { field = "birth_date", function = "damerau_levenshtein", threshold = 1 },
+]
+
 [selection]
 cv_folds = 3
 cv_seed = 0

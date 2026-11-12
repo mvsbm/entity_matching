@@ -54,7 +54,7 @@ Two traps in the sources:
 
 All parameters live in `config/generator.toml`: `[population]` (`er.generate.Spec`) and `[split]` (shares and seed). `er.generate.generate` builds the population, `check` asserts its invariants, and `scripts/generate.py` writes `medallion/bronze/<split>.parquet` and `labels/<split>.parquet` (`--entities` and `--seed` change the population; `--out` writes it there, unsplit, instead of the splits).
 
-- **Entities:** 40,000, 20% companies. Each entity has `1 + Poisson(0.25)` records.
+- **Entities:** 40,000, 20% companies, and their household members (below). Each entity has `1 + Poisson(0.25)` records.
   - **Persons** are sampled personas, each at most once, with realistic surname frequencies (サトウ, スズキ, タカハシ …). Their addresses lie in the persona's prefecture. Sampling with replacement would make clones (same name, same prefecture) that no matcher can tell apart, so same-name pairs come only from the persona file itself.
   - **Companies** are sampled real names with a legal form before or after the name, written as each record's system writes it: カブシキガイシャ, (カ), カ), ｶﾌﾞｼｷｶﾞｲｼｬ or left out; one record in ten adds a branch (ホンシャ, トウキョウシテン …).
   - **Addresses** are real towns with random 番/号, and a real postal code and JIS code.
@@ -75,24 +75,29 @@ All parameters live in `config/generator.toml`: `[population]` (`er.generate.Spe
 - **Missingness:**
   - **Rates:** the non-null rate falls from 0.9999 to 0.6544 along the column order, counted where the column applies; BIRTH_DATE has its own rate, and STD_ADDRESS follows its parts.
   - **Correlation:** shared within the name, postal and address groups by `nesting` ρ.
-- **Households:** unrelated entities sometimes share an address, which gives look-alikes that must not be merged.
+- **Households:** unrelated entities sometimes share an address, which gives look-alikes that must not be merged. And 5% of persons have a household member, an entity of their own (`households`, entity ID `E…H`):
+  - they share the family name and every address, and the phones half the time (else their own);
+  - half are siblings, born 1 to 15 years apart, half of them with a given name that starts alike (ユウキ, ユウタ);
+  - the other half are a spouse or a parent, with an unrelated given name, born 1 to 35 years apart.
+
+  A household is never split across train, val and test. With `share = 0`, every record is drawn exactly as in a population without households.
 - **Persons and companies, made hard to tell apart** (`er.generate.kind_problems`, off unless asked for: the benchmark, the demo and the tests turn it on; `scripts/choose_kind.py` builds its own name-only populations). One name column for every kind, NAME_KANA; real company names from `registry.json`'s held-out companies, written as bank records write them (the legal form in full, abbreviated at the front, カ)〇〇, or the end, 〇〇(カ, or left out); company records under their representative's name, the representative a person of the file, half at that person's address and phone; sole traders (legally persons) named like a shop on most of their records; a date in BIRTH_DATE on 30% of company records; and PERSON_ORG_CODE, the file's flag (1 person, 2 company), wrong on 3% of records, on half the representative-named ones and on 30% of the sole traders'. Its own random stream: the records start as `generate` made them.
 - **Asserts** run on the whole population before it is split: exact rates, digit formats, kind consistency, CONT_ID unique, no CIF shared across entities, address code ↔ address 1:1.
 
 ### How hard it is
 
 Real data holds very few direct duplicates, so the generator is calibrated to make them rare. `er.generate.profile`
-measures it on the true pairs (two records of one entity; 11,472 in this population), and `scripts/generate.py` prints it:
+measures it on the true pairs (two records of one entity; 11,950 in this population), and `scripts/generate.py` prints it:
 
 | A true pair shares | Share |
 |---|---|
-| the customer ID | 2.2% |
-| the exact name, as written | 9.0% |
-| the phone digits | 33.1% |
-| the address code | 26.7% |
-| the standard address | 10.2% |
-| the birth date | 1.6% |
-| **direct**: the same customer ID and name, or the same name, address code and phone (what exact rules settle) | **1.0%** |
-| **nothing in common**: no field equal, and the names not even close (Jaro–Winkler under 0.75) | **11.5%** |
+| the customer ID | 2.3% |
+| the exact name, as written | 9.1% |
+| the phone digits | 33.2% |
+| the address code | 27.1% |
+| the standard address | 9.9% |
+| the birth date | 1.5% |
+| **direct**: the same customer ID and name, or the same name, address code and phone (what exact rules settle) | **1.1%** |
+| **nothing in common**: no field equal, and the names not even close (Jaro–Winkler under 0.75) | **11.3%** |
 
-The pairs with nothing in common can't be found by any method, so recall is read against the other 88.5%.
+The pairs with nothing in common can't be found by any method, so recall is read against the other 88.7%.

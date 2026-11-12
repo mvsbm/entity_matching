@@ -942,6 +942,7 @@ Two record IDs of the run, scored again as the run scored: per comparison, each 
 | `line` | the trust line (none: above every step; null: the method as tuned) |
 | `threshold` | the weight the method accepts at |
 | `same_customer` | the two are in one customer |
+| `household` | maybe two people of one household: an address or a phone shared, another given name or birth date |
 | `records` | both records: id and fields |
 | `comparisons` | comparison, reached (its step), bits |
 | `tests` | each step's tests: comparison, step, field, function, threshold, normalize, raw (the values as written), prep (each normalizer step: step, a, b), a, b, score, passed |
@@ -1453,7 +1454,7 @@ Every pair the run scored at 0 points or more and every rule pair, best first: b
 | `typed` | of them, decided and not applied yet |
 | `page` | this page |
 | `count` | pairs a page |
-| `pairs` | each pair: first, second, points, sources, rule, status, said, applied, compared (comparison: level, points), fields (field: [first, second]) |
+| `pairs` | each pair: first, second, points, sources, rule, status, said, applied, compared (comparison: level, points), fields (field: [first, second]), household (maybe two people of one household) |
 
 ```bash
 nayose list scored --workspace workspaces/customers --status waiting --from 6

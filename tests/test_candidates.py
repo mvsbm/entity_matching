@@ -8,7 +8,7 @@ import pytest
 from er.candidates import candidates, estimate, found_by, generate
 from er.config import (Budget, Comparator, DeletionKeys, FSSpec, InputError, Key, KeyBlocker, OverBudget,
                        Resolver, Rule, RulesSpec, SortedNeighbourhood, Stage, TfidfNeighbours)
-from er.evaluate import cluster_metrics, predicted_pairs, true_pairs
+from er.evaluate import cluster_metrics, edge_metrics, paired_test, predicted_pairs, true_pairs, truth_of
 from er.io import load
 from er.match import rule_edges, score_fs, train_fs, scored_u
 from er.pipeline import (check_budget, clustered, entity_folds, grown_pairs, preflight, window_only)
@@ -40,6 +40,19 @@ def test_pair_and_cluster_metrics_match_a_brute_force_recount():
     assert m["split"] == sum(cluster[entity == e].nunique() > 1 for e in entity.unique())
     bcubed = np.mean([((cluster == cluster[i]) & (entity == entity[i])).sum() / (cluster == cluster[i]).sum() for i in ids])
     assert m["bcubed_precision"] == pytest.approx(bcubed)
+
+    household = entity.astype(int) // 3  # three entities a household: a pair of two of them is neither true nor false
+    homes = brute_pairs(household.astype(str)) - truth
+    h = cluster_metrics(cluster, entity, household)
+    assert (h["TP"], h["FP"], h["FN"], h["household"]) == (len(truth & pred), len(pred - truth - homes), len(truth - pred), len(pred & homes))
+    labels = pd.DataFrame({"uid": ids, "entity": entity.to_numpy(), "home": household.to_numpy()})
+    t = truth_of(labels, replace(load_settings().data, unique_id="uid", entity_id="entity", household_id="home"))
+    assert t == truth and t.household == homes
+    test = paired_test(set(), pred, t)  # every pair the clusters join, against none
+    assert (test["TP_gains"], test["FP_added"]) == (len(truth & pred), len(pred - truth - homes))
+    edges = pd.DataFrame(sorted(pred), columns=["uid_l", "uid_r"])
+    e = edge_metrics(edges, entity, "uid", household)
+    assert (e["pairs_TP"], e["pairs_FP"], e["pairs_household"]) == (len(truth & pred), len(pred - truth - homes), len(pred & homes))
 
 
 def test_entity_folds_keep_every_entity_in_one_fold():
@@ -241,3 +254,4 @@ def test_a_blocking_key_limits_a_rule_join(con_db):
     s = spec((Key("name", ("initial",)),))
     blocked = set(map(tuple, rule_edges(s, prepare(std, df, s.normalized()), db, UID)[0][["uid_l", "uid_r"]].to_numpy()))
     assert plain == {("A", "B"), ("A", "C")} and blocked == {("A", "B")}  # カトウ starts differently: not joined
+

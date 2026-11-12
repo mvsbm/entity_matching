@@ -189,6 +189,16 @@ watch = 20                        # spot-checks a run of the pairs above the lin
 pairs = 1000000                   # about this many pairs scored in each group: about 2 s a group at a million records
 strata = { phone = ["phone"], postal_area = [{ field = "postal_code", normalize = "first3" }] }   # each a group as a key names it
 
+[household]                       # pairs people see labelled "maybe one household": the records agree on one of `shared`, and
+# both hold one of `apart` and fail its test: another given name, the end of another name (all of its last three
+# sounds), another birth date. A label only: no score, line or merge changes
+shared = ["address_code", { field = "address", normalize = "address" }, "phone"]
+apart = [
+  { field = "given_name", function = "damerau_levenshtein", threshold = 1, normalize = "fold" },
+  { field = "person_name", function = "damerau_levenshtein", threshold = 2, normalize = "given_tail" },
+  { field = "birth_date", function = "damerau_levenshtein", threshold = 1 },
+]
+
 [selection]
 cv_folds = 3                      # entity folds of train, for out-of-fold scores
 cv_seed = 0

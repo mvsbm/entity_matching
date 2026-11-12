@@ -14,9 +14,9 @@ import pandas as pd
 from splink import DuckDBAPI
 
 from er.candidates import candidates, estimate, found_by
-from er.config import (Data, FSSpec, FSTune, KeyBlocker, OverBudget, Pipeline, RulesSpec, ThresholdRule, Tune, with_comparators,
+from er.config import (FSSpec, FSTune, KeyBlocker, OverBudget, Pipeline, RulesSpec, ThresholdRule, Tune, with_comparators,
                        with_level)
-from er.evaluate import adopt, c2, candidate_metrics, missed_pairs, paired_test, predicted_pairs, true_pairs
+from er.evaluate import adopt, c2, candidate_metrics, missed_pairs, paired_test, predicted_pairs, truth_of
 from er.io import append_leaderboard, assert_test_scored_once, load, test_evaluations, write_final
 from er.match import parameters, pattern_coverage, train_fs, waterfall
 from er.pipeline import (FSResult, Result, accept_curve, automatic, complexity_summary, cross_validate_fs, cv_threshold_curve, entity_folds,
@@ -26,12 +26,8 @@ from er.settings import Settings
 from er.standardize import prepare
 from er.tune import new_study, pick_within_noise, plain, start_dashboard, suggest_comparators
 
-SHOW = ["stage", "TP", "FP", "recall", "recall_lo", "recall_hi", "fp_rate_hi", "pairs_FP", "overmerged", "dup_unresolved"]
+SHOW = ["stage", "TP", "FP", "household", "recall", "recall_lo", "recall_hi", "fp_rate_hi", "pairs_FP", "overmerged", "dup_unresolved"]
 Section = tuple[str, str, pd.DataFrame | None]  # heading, text, table
-
-
-def truth_set(truth: pd.DataFrame, data: Data) -> set[tuple[str, str]]:
-    return set(map(tuple, true_pairs(truth.set_index(data.unique_id)[data.entity_id], data.unique_id).to_numpy()))
 
 
 def verdict(name: str, kind: str, on_sel: dict, on_val: dict, p_max: float, prefix: str) -> dict:
@@ -58,7 +54,7 @@ class RulesChooser:
         self.data = self.settings.data
         self.train, self.train_truth = load(self.data, "train")
         _, self.val_truth = load(self.data, "val")
-        self.train_true, self.val_true = truth_set(self.train_truth, self.data), truth_set(self.val_truth, self.data)
+        self.train_true, self.val_true = truth_of(self.train_truth, self.data), truth_of(self.val_truth, self.data)
         self.runs: dict[tuple[str, str], Result] = {}
 
     def rules_run(self, spec: RulesSpec, dataset: str, truth: pd.DataFrame) -> Result:  # the rules as er.run.Run runs them
@@ -217,7 +213,7 @@ class FSChooser:
         rules = run_rules(self.pipe(self.spec), self.settings, self.data.bronze_dir / "train.parquet", self.train_truth)  # where this stage starts
         self.train_prev_resolved = rules.records[[self.data.unique_id, "CLUSTER_ID"]].set_axis([self.data.unique_id, "cluster_id"], axis=1)
         self.folds = entity_folds(self.train_truth, self.data, p.cv_folds, p.cv_seed)
-        self.train_true, self.val_true = truth_set(self.train_truth, self.data), truth_set(self.val_truth, self.data)
+        self.train_true, self.val_true = truth_of(self.train_truth, self.data), truth_of(self.val_truth, self.data)
         self.models, self.runs, self.cvs = {}, {}, {}
         self.growth: pd.DataFrame | None = None
         self.spec = replace(self.spec, model=replace(self.spec.model, prior_recall=self.prior_recall(self.spec)))
@@ -365,8 +361,13 @@ class FSChooser:
                     f"(rate ≤ {cv_at['stage_fp_rate_hi']:.2%}) · val {val_at['pairs_FP']:.0f} of {val_at['accepted']:.0f} ({val_rate:.2%})")
         assert val_rate <= cv_at["stage_fp_rate_hi"], "the threshold does not transfer from cross-validated train to val"
         cands = f"candidates {res.stage_metrics['candidates']:,} · they contain {res.stage_metrics['completeness_on_targets']:.1%} of the true pairs the rules missed"
+        at = res.scored[automatic(res.scored, f.min_match_weight)]
+        home = at[at["one_home"]]
+        homes = (f"at weight {f.min_match_weight}: {len(home):,} accepted pairs join two people of one household, counted apart from the false "
+                 f"pairs; people see {int(home['labelled'].sum()):,} of them labelled maybe one household, and {int(at.loc[~at['one_home'], 'labelled'].sum()):,} other accepted pairs")
         return [("FINAL's candidates on val", cands, res.report[["generator", "big_o", "filled", "pairs", "completeness_on_targets", "seconds"]].round(4)),
                 ("Evaluation on val", transfer, res.metrics[SHOW].round(4)),
+                ("Households on val", homes, None),
                 ("Threshold curve on val", "", val_curve[["min_match_weight", "accepted", "pairs_FP", "TP", "FP", "recall", "fp_rate_hi"]].round(4))]
 
     def why(self) -> list[Section]:

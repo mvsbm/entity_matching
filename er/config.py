@@ -399,6 +399,7 @@ class Data:
     unique_id: str
     entity_id: str                            # truth column
     synthetic: bool                           # True for generated data; real (personal) data must not be exported
+    household_id: str | None = None           # truth column naming each record's household: a pair of one household's people is neither true nor false
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -446,6 +447,31 @@ class Probe:
 
     def used(self) -> set[str]:
         return {k.name for _, keys in self.strata for k in keys}
+
+
+@dataclass(frozen=True, kw_only=True)
+class Household:
+    """A pair people see as maybe two people of one household: its records agree on one of `shared` and, filled on
+    both sides, fail one test of `apart` (another given name, another birth date). A label only: no score changes."""
+    shared: tuple[Key, ...] = ()
+    apart: tuple[tuple[str, Comparator], ...] = ()
+
+    def sql(self, have: set[str]) -> str:
+        """Over records l and r holding the columns `have`, those parts it can read; FALSE when it can read none of one kind."""
+        shared = [k for k in self.shared if k.name in have]
+        apart = [(col, comp) for col, comp in self.apart if comp.column(col) in have and (not comp.copy(col) or comp.copy(col) in have)]
+        if not shared or not apart:
+            return "FALSE"
+        share = " OR ".join(f'l."{k.name}" = r."{k.name}"' for k in shared)
+        differ = " OR ".join(f'(l."{c}" IS NOT NULL AND r."{c}" IS NOT NULL AND NOT {comp.sql(col)})' for col, comp in apart for c in [comp.column(col)])
+        return f"(({share}) AND ({differ}))"
+
+    def normalized(self) -> list[tuple[str, tuple[Normalizer, ...]]]:
+        return ([(k.column, k.normalize) for k in self.shared if k.normalize] + [(col, comp.normalize) for col, comp in self.apart if comp.normalize]
+                + [(col, comp.copied()) for col, comp in self.apart if comp.copied()])
+
+    def used(self) -> set[str]:
+        return {k.name for k in self.shared} | {comp.column(col) for col, comp in self.apart} | {comp.copy(col) for col, comp in self.apart if comp.copy(col)}
 
 
 @dataclass(frozen=True)
@@ -536,6 +562,7 @@ class Pipeline:
     kind: KindSpec | None = None              # person or company, on every record; None: not told apart
     trust: TrustRule = TrustRule()            # what merges without people (er.run._accept)
     probe: Probe = Probe()                    # how the matches no key lists are measured (er.probe)
+    household: Household = Household()        # which pairs people see labelled "maybe one household"
 
 
 def _norm(value: object, chains: Mapping[str, tuple[Normalizer, ...]]) -> tuple[Normalizer, ...]:
@@ -613,7 +640,9 @@ def pipeline_from(cfg: dict, std: Standardization, chains: Mapping[str, tuple[No
                     kind=KindSpec(**{k: tuple(v) if k == "grid" else v for k, v in cfg["kind"].items()}) if "kind" in cfg else None,
                     trust=TrustRule(**{k: tuple(map(float, v)) if k == "steps" else v for k, v in cfg.get("trust", {}).items()}),
                     probe=Probe(strata=tuple((n, tuple(_key(k, chains) for k in keys)) for n, keys in cfg["probe"]["strata"].items()),
-                                pairs=cfg["probe"].get("pairs", 1_000_000)) if "probe" in cfg else Probe())
+                                pairs=cfg["probe"].get("pairs", 1_000_000)) if "probe" in cfg else Probe(),
+                    household=Household(shared=tuple(_key(k, chains) for k in cfg["household"]["shared"]),
+                                        apart=tuple((d["field"], _comparator(d, chains)) for d in cfg["household"]["apart"])) if "household" in cfg else Household())
 
 
 def widen(p: "Pipeline", added: Iterable[tuple[str, str]]) -> "Pipeline":
@@ -716,6 +745,7 @@ def fields_read(p: Pipeline) -> set[str]:  # every field the rules, the generato
     out |= {col for c in m.comparisons for lv in c.levels for col, _ in lv.any_of} | {col for c in m.comparisons for col in c.null_if_missing}
     out |= {c.tf.column for c in m.comparisons if c.tf} | {k.column for rule in (*m.prior_rules, *m.em_rules) for k in rule}
     out |= {*p.explain_show, *p.explain_filled} | {c for s in r.stages for c in s.comparators}
+    out |= {k.column for k in p.household.shared} | {col for col, _ in p.household.apart}
     return out
 
 
@@ -791,9 +821,13 @@ def restrict(p: Pipeline, present: set[str]) -> tuple[Pipeline, list[str]]:
     needs = tuple(n for n in p.fs.needs if n in {c.name for c in comparisons})  # [fields] one_of keeps a name comparison
     strata = tuple((n, keys) for n, keys in p.probe.strata if has(k.column for k in keys))
     gone += [f"probe {n} (needs {sorted({k.column for k in keys} - present)})" for n, keys in p.probe.strata if (n, keys) not in strata]
+    h = p.household
+    household = Household(shared=tuple(k for k in h.shared if k.column in present), apart=tuple((c, x) for c, x in h.apart if c in present))
+    gone += [f"household label: {c}" for c in sorted({k.column for k in h.shared} | {c for c, _ in h.apart}) if c not in present]
     return replace(p, rules=replace(p.rules, stages=tuple(stages)), fs=replace(p.fs, blockers=tuple(blockers), model=model, needs=needs),
                    explain_show=tuple(f for f in p.explain_show if f in present),
-                   explain_filled=tuple(f for f in p.explain_filled if f in present), probe=replace(p.probe, strata=strata)), gone
+                   explain_filled=tuple(f for f in p.explain_filled if f in present), probe=replace(p.probe, strata=strata),
+                   household=household), gone
 
 
 def pipeline_dict(p: Pipeline, chains: Mapping[str, tuple[Normalizer, ...]]) -> dict:
@@ -842,6 +876,8 @@ def pipeline_dict(p: Pipeline, chains: Mapping[str, tuple[Normalizer, ...]]) -> 
         "threshold": {"grid": list(t.grid), "max_fp": t.max_fp, "max_fp_rate_hi": t.max_fp_rate_hi, "margin_steps": t.margin_steps},
         "trust": {"steps": list(p.trust.steps), "checks": p.trust.checks, "watch": p.trust.watch},  # its line is the workspace's
         **({"probe": {"pairs": p.probe.pairs, "strata": {n: [key(k) for k in keys] for n, keys in p.probe.strata}}} if p.probe.strata else {}),
+        **({"household": {"shared": [key(k) for k in p.household.shared], "apart": [{"field": col, **comp(x)} for col, x in p.household.apart]}}
+           if p.household.shared or p.household.apart else {}),
         "selection": {"cv_folds": p.cv_folds, "cv_seed": p.cv_seed, "decision_p": p.decision_p},
         "display": {"explain_show": list(p.explain_show), "explain_filled": list(p.explain_filled)},
     }

@@ -622,7 +622,7 @@ body.filedrag [data-drop].dropping::after { border-style: solid; background: var
   {"id": "records", "title": "Overview", "icon": "overview", "what": "The whole workflow, and what it did with your records.",
    "strip": ["records", "prepare", "rules", "candidates", "score", "accept", "group"],
    "uses": [{"command": "list patterns", "args": {"workspace": "@workspace"}, "reads": ["pairs", "fields", "patterns"]},
-            {"command": "explain pair", "args": {"first": "@first", "second": "@second", "workspace": "@workspace"}, "reads": ["weight", "prior", "pairs_all", "pairs_same", "common", "same_customer", "records", "comparisons", "tests", "found", "group_a", "group_b", "across"]},
+            {"command": "explain pair", "args": {"first": "@first", "second": "@second", "workspace": "@workspace"}, "reads": ["weight", "prior", "pairs_all", "pairs_same", "common", "same_customer", "household", "records", "comparisons", "tests", "found", "group_a", "group_b", "across"]},
             {"command": "compare records", "args": {"first": "@first", "others": "@others", "workspace": "@workspace"}, "reads": ["first", "records", "candidates"]},
             {"command": "describe workspace", "args": {"workspace": "@workspace"}, "reads": ["records", "entities", "runs", "pairs", "kinds", "set_aside", "write_owed", "inputs", "round", "audits", "trust", "auto"]},
             {"command": "try everything", "args": {"input": "@input", "home": "@home"}, "form": ["input"], "reads": ["workspace", "ok", "steps", "report", "markdown", "redacted"]},
@@ -655,7 +655,7 @@ body.filedrag [data-drop].dropping::after { border-style: solid; background: var
             {"command": "describe workspace", "args": {"workspace": "@workspace"}, "reads": ["records", "entities", "pairs", "trust", "inputs"]},
             {"command": "list patterns", "args": {"workspace": "@workspace"}, "reads": ["pairs", "fields", "patterns"]},
             {"command": "compare records", "args": {"first": "@first", "others": "@others", "workspace": "@workspace"}, "reads": ["first", "records", "candidates"]},
-            {"command": "explain pair", "args": {"first": "@first", "second": "@second", "workspace": "@workspace"}, "reads": ["weight", "prior", "pairs_all", "pairs_same", "common", "same_customer", "records", "comparisons", "tests", "found", "group_a", "group_b", "across"]},
+            {"command": "explain pair", "args": {"first": "@first", "second": "@second", "workspace": "@workspace"}, "reads": ["weight", "prior", "pairs_all", "pairs_same", "common", "same_customer", "household", "records", "comparisons", "tests", "found", "group_a", "group_b", "across"]},
             {"command": "describe key", "args": {"name": "@name", "workspace": "@workspace"}, "reads": ["name", "pairs", "matched", "only", "examples", "sizes", "largest", "group", "around"]},
             {"command": "describe matching", "args": {"workspace": "@workspace"}, "reads": ["nodes"]}]},
   {"id": "pairs", "title": "Review", "icon": "pairs", "what": "The pairs waiting for you, best first: both full rows side by side, then same or different.",
@@ -671,12 +671,12 @@ body.filedrag [data-drop].dropping::after { border-style: solid; background: var
             {"command": "set merging", "args": {"workspace": "@workspace", "conditions": "@conditions"}, "form": [], "reads": ["join", "when", "entities", "merged"]},
             {"command": "list patterns", "args": {"workspace": "@workspace"}, "reads": ["pairs", "fields", "patterns"]},
             {"command": "compare records", "args": {"first": "@first", "others": "@others", "workspace": "@workspace"}, "reads": ["first", "records", "candidates"]},
-            {"command": "explain pair", "args": {"first": "@first", "second": "@second", "workspace": "@workspace"}, "reads": ["weight", "prior", "pairs_all", "pairs_same", "common", "same_customer", "records", "comparisons", "tests", "found", "group_a", "group_b", "across"]},
+            {"command": "explain pair", "args": {"first": "@first", "second": "@second", "workspace": "@workspace"}, "reads": ["weight", "prior", "pairs_all", "pairs_same", "common", "same_customer", "household", "records", "comparisons", "tests", "found", "group_a", "group_b", "across"]},
             {"command": "describe matching", "args": {"workspace": "@workspace"}, "reads": ["nodes"]}]},
   {"id": "improve", "title": "Method", "icon": "loop", "what": "What people's decisions say about the method: try a change, adopt it, and review the new round.",
    "strip": ["rules", "candidates", "score", "accept"],
    "uses": [{"command": "list patterns", "args": {"workspace": "@workspace"}, "reads": ["pairs", "fields", "patterns"]},
-            {"command": "explain pair", "args": {"first": "@first", "second": "@second", "workspace": "@workspace"}, "reads": ["weight", "prior", "pairs_all", "pairs_same", "common", "same_customer", "records", "comparisons", "tests", "found", "group_a", "group_b", "across"]},
+            {"command": "explain pair", "args": {"first": "@first", "second": "@second", "workspace": "@workspace"}, "reads": ["weight", "prior", "pairs_all", "pairs_same", "common", "same_customer", "household", "records", "comparisons", "tests", "found", "group_a", "group_b", "across"]},
             {"command": "compare records", "args": {"first": "@first", "others": "@others", "workspace": "@workspace"}, "reads": ["first", "records", "candidates"]},
             {"command": "describe method", "args": {"workspace": "@workspace"}, "reads": ["line", "method", "round", "rounds", "audits", "bands", "decided", "rules", "keys", "steps", "proposals", "trials", "trust", "dropped"]},
             {"command": "describe workspace", "args": {"workspace": "@workspace"}, "reads": ["records", "inputs"]},
@@ -688,7 +688,7 @@ body.filedrag [data-drop].dropping::after { border-style: solid; background: var
   {"id": "kinds", "title": "Confirm person or company", "icon": "kinds", "what": "Records the engine holds back, and a sample that sharpens it: person or company?",
    "strip": ["records", "kind", "score"],
    "uses": [{"command": "list patterns", "args": {"workspace": "@workspace"}, "reads": ["pairs", "fields", "patterns"]},
-            {"command": "explain pair", "args": {"first": "@first", "second": "@second", "workspace": "@workspace"}, "reads": ["weight", "prior", "pairs_all", "pairs_same", "common", "same_customer", "records", "comparisons", "tests", "found", "group_a", "group_b", "across"]},
+            {"command": "explain pair", "args": {"first": "@first", "second": "@second", "workspace": "@workspace"}, "reads": ["weight", "prior", "pairs_all", "pairs_same", "common", "same_customer", "household", "records", "comparisons", "tests", "found", "group_a", "group_b", "across"]},
             {"command": "compare records", "args": {"first": "@first", "others": "@others", "workspace": "@workspace"}, "reads": ["first", "records", "candidates"]},
             {"command": "list kinds", "args": {"workspace": "@workspace", "pending": true}, "reads": ["kinds", "counts"]},
             {"command": "show details", "args": {"ids": "@ids", "workspace": "@workspace"}, "reads": ["file", "columns", "records"]},
@@ -708,7 +708,7 @@ body.filedrag [data-drop].dropping::after { border-style: solid; background: var
             {"command": "list patterns", "args": {"workspace": "@workspace"}, "reads": ["pairs", "fields", "patterns"]},
             {"command": "compare records", "args": {"first": "@first", "others": "@others", "workspace": "@workspace"}, "reads": ["first", "records", "candidates"]},
             {"command": "describe key", "args": {"name": "@name", "workspace": "@workspace"}, "reads": ["name", "pairs", "matched", "only", "examples", "sizes", "largest", "group", "around"]},
-            {"command": "explain pair", "args": {"first": "@first", "second": "@second", "workspace": "@workspace"}, "reads": ["weight", "prior", "pairs_all", "pairs_same", "common", "same_customer", "records", "comparisons", "tests", "found", "group_a", "group_b", "across"]},
+            {"command": "explain pair", "args": {"first": "@first", "second": "@second", "workspace": "@workspace"}, "reads": ["weight", "prior", "pairs_all", "pairs_same", "common", "same_customer", "household", "records", "comparisons", "tests", "found", "group_a", "group_b", "across"]},
             {"command": "describe matching", "args": {"workspace": "@workspace"}, "reads": ["nodes", "edges"]}]},
   {"id": "lookup", "title": "Look up", "icon": "search", "what": "A record against everything the run holds, from its index: found as you type any of its values, and the entities it may belong to, best first.",
    "strip": [],
@@ -2047,7 +2047,7 @@ function pairTable(box, pairs, total, page, count, opts) {  // a page of scored 
   const wide = !opts.compact;
   box.innerHTML = `<div class="tablecard"><div class="tablewrap"><table><thead><tr><th class="num">#</th><th>Record A</th><th>Record B</th><th class="num">Points</th>${wide ? "<th>Found by</th><th>Status</th>" : ""}</tr></thead><tbody>${
     pairs.map((p, k) => `<tr class="pick" data-k="${k}" aria-selected="${k === opts.selected}"><td class="num faint">${fmt((page - 1) * count + k + 1)}</td>
-      <td><div>${esc(p.first)}</div><small class="muted clip" title="${esc(nameIn(p, 0))}">${esc(nameIn(p, 0))}</small></td><td><div>${esc(p.second)}</div><small class="muted clip" title="${esc(nameIn(p, 1))}">${esc(nameIn(p, 1))}</small></td>
+      <td><div>${esc(p.first)}</div><small class="muted clip" title="${esc(nameIn(p, 0))}">${esc(nameIn(p, 0))}</small></td><td><div>${esc(p.second)}</div><small class="muted clip" title="${esc(nameIn(p, 1))}">${esc(nameIn(p, 1))}</small>${p.household ? `<div>${HOUSEHOLD}</div>` : ""}</td>
       <td class="num">${wide || !p.said ? "" : `<span class="${p.said === "match" ? "ink-good" : "ink-bad"}" title="${esc(STATUS[p.status][1])}">${p.said === "match" ? "✓" : "✗"}</span> `}<span class="pts ${p.points >= 0 ? "for" : "against"}">${p.points.toFixed(1)}</span></td>${wide ? `<td class="wrap muted">${esc(foundBy(p))}</td><td>${statusChip(p.status)}</td>` : ""}</tr>`).join("")
     || `<tr><td colspan="${wide ? 6 : 4}" class="faint">No pairs</td></tr>`}</tbody></table></div>${pager(total, page, count)}</div>`;
   box.querySelectorAll("tr[data-k]").forEach((tr) => tr.onclick = () => opts.onPick(Number(tr.dataset.k)));
@@ -2057,7 +2057,7 @@ function pairTable(box, pairs, total, page, count, opts) {  // a page of scored 
 async function pairDialog(page, p) {  // a pair from a list: its full rows, how it scored, and how it was found
   const dlg = $("dlg");
   dlg.innerHTML = `<form method="dialog"><div class="dlg-body wide"><h2>${esc(p.first)} · ${esc(p.second)} · ${p.points.toFixed(1)} points</h2>
-      <p class="muted">${esc(foundBy(p) ? `Found by ${foundBy(p)}` : "")} · ${statusChip(p.status)}</p><div class="fr"></div><div class="how">${loading("Reading how it scored", true)}</div></div>
+      <p class="muted">${esc(foundBy(p) ? `Found by ${foundBy(p)}` : "")} · ${statusChip(p.status)}${p.household ? ` ${HOUSEHOLD}` : ""}</p><div class="fr"></div><div class="how">${loading("Reading how it scored", true)}</div></div>
     <div class="dlg-foot"><span class="grow"></span>${p.status === "waiting" ? `<a class="btn" data-go="pairs" data-record="${esc(p.first)}">Review it</a>` : ""}<button class="btn" value="close">Close</button></div></form>`;
   dlg.onclose = null; dlg.returnValue = ""; dlg.showModal();
   const x = await run(page, "explain pair", {first: p.first, second: p.second});
@@ -2222,7 +2222,7 @@ async function pairsPage(el, arg = {}) {  // Review: the pairs waiting for a per
     if (!p) { $("right").innerHTML = `<div class="card empty">${icon("empty")}<p class="muted">${total ? "Pick a pair" : `No pair waits from ${fmt(from)} points`}</p></div>`; where(); return; }
     $("right").innerHTML = `<div class="card one">${scope("pairs", `Pair ${fmt((page - 1) * count + i + 1)} of ${fmt(total)}`)}
       <h2 class="question">Same customer? ${p.said ? statusChip(p.status) : ""}</h2>
-      <p class="why">${p.points.toFixed(1)} points (${esc(odds(p.points))})${foundBy(p) ? ` · found by ${esc(foundBy(p))}` : ""}</p>
+      <p class="why">${p.points.toFixed(1)} points (${esc(odds(p.points))})${foundBy(p) ? ` · found by ${esc(foundBy(p))}` : ""}${p.household ? ` ${HOUSEHOLD}` : ""}</p>
       <div class="actions"><button class="btn filled" data-a="match">Same</button><button class="btn outlined" data-a="no_match">Different</button>
         <button class="btn" data-skip>Skip</button>${keyHint([["M", "same"], ["N", "different"]])}</div>
       <p class="then">Same: one entity once you apply your decisions. Different: kept apart for good.</p><div id="said"></div>
@@ -3235,8 +3235,9 @@ function recordsOf(r) {  // the two records side by side, their differences mark
       return `<tr><td class="faint">${esc(words(f))}</td><td class="wrap">${r[`${f}_l`] === null ? "—" : a}</td><td class="wrap">${r[`${f}_r`] === null ? "—" : b}</td></tr>`;
     }).join("")}</tbody></table></div>`;
 }
+const HOUSEHOLD = `<span class="tag">maybe one household</span>`;  // an address or a phone shared, another given name or birth date (describe pair's household)
 const pairExtra = (x) => x ? `<div class="found-path"><span class="tag">found by ${esc(found(x.found) || "no key: joined through other records")}</span>${ARROW}<span class="tag">${x.weight.toFixed(1)} points</span>${ARROW}<span class="tag">${
-    x.same_customer ? "one entity" : "two entities"}</span></div>${across(x)}` : "";
+    x.same_customer ? "one entity" : "two entities"}</span>${x.household ? HOUSEHOLD : ""}</div>${across(x)}` : "";
 function waterfallOf(r, x) {  // how the pair scored: from where any two records start, each comparison's step toward same or different
   const score = graph && graph.nodes.find((n) => n.id === "score");
   const comps = Object.keys(r).filter((k) => `${k}_bits` in r), missing = comps.filter((c) => r[c] === "missing");

@@ -20,9 +20,10 @@ from er.cluster import merge
 from er.config import q
 from er.config import (Blocker, Budget, Data, DeletionKeys, FSSpec, Key, KeyBlocker, OverBudget, Pipeline, RulesSpec,
                        SortedNeighbourhood, TfidfNeighbours, ThresholdRule, keys_of)
-from er.evaluate import (average_precision, candidate_metrics, cluster_metrics, edge_metrics, fp_upper, missed_pairs,
-                         true_pairs, wilson)
+from er.evaluate import (average_precision, candidate_metrics, cluster_metrics, edge_metrics, false_pairs, fp_upper, labelled,
+                         missed_pairs, true_pairs, wilson)
 from er.match import scaled_prior, score_fs, scored_sample
+from er.report import households
 from er.run import Run
 from er.settings import Settings
 from er.standardize import prepare
@@ -190,10 +191,10 @@ def run_rules(pipeline: Pipeline, settings: Settings, path: Path, truth: pd.Data
     plan = preflight(spec, df)
     check_budget(plan, spec.budget, len(df))
     run.rules()
-    entity = truth.set_index(uid)[settings.data.entity_id]
+    entity, household = labelled(truth, settings.data)
     edges = table(run, f"""SELECT e.*, k.{q(l)} IS NOT NULL AS kept FROM rule_edges e
         LEFT JOIN rule_kept k ON k.{q(l)} = e.{q(l)} AND k.{q(r)} = e.{q(r)} ORDER BY e.{q(l)}, e.{q(r)}""")
-    edges["fp"] = edges[l].map(entity).to_numpy() != edges[r].map(entity).to_numpy()
+    edges["fp"] = false_pairs(edges[l], edges[r], entity, household)
     kept_edges = edges[edges["kept"]]
 
     ids = df[uid]
@@ -208,8 +209,8 @@ def run_rules(pipeline: Pipeline, settings: Settings, path: Path, truth: pd.Data
         now = clusters.map(clusters.value_counts()) > 1
         stage_of[now & ~resolved] = st.name
         resolved = now
-        metrics.append(dict(stage=st.name, edges=int((upto & edges["kept"].to_numpy()).sum()), **cluster_metrics(clusters, ids.map(entity)),
-                            **edge_metrics(edges[upto], entity, uid)))
+        metrics.append(dict(stage=st.name, edges=int((upto & edges["kept"].to_numpy()).sum()), **cluster_metrics(clusters, *aligned(ids, entity, household)),
+                            **edge_metrics(edges[upto], entity, uid, household)))
 
     order = {rule.name: i for i, _, rule in spec.each()}
     touch = pd.concat([kept_edges[[l, "rule"]].set_axis([uid, "rule"], axis=1), kept_edges[[r, "rule"]].set_axis([uid, "rule"], axis=1)])
@@ -229,7 +230,7 @@ def run_rules(pipeline: Pipeline, settings: Settings, path: Path, truth: pd.Data
 class FSResult:
     report: pd.DataFrame      # per candidate generator: Big-O, estimated and actual pairs, completeness, seconds
     candidates: pd.DataFrame  # union of candidate pairs with the generators that found them
-    scored: pd.DataFrame      # candidates + match_weight, match_probability, gamma levels, named, keep, fp
+    scored: pd.DataFrame      # candidates + match_weight, match_probability, gamma levels, named, keep, fp, one_home, labelled
     metrics: pd.DataFrame     # cascade: previous stage, then this one (cumulative)
     stage_metrics: dict       # this stage alone: candidates, accepted pairs, average precision
     records: pd.DataFrame     # prepared records + CLUSTER_ID, MATCH_STAGE, MATCH_RULE
@@ -239,14 +240,19 @@ class FSResult:
     rule_pairs: pd.DataFrame     # the rules' kept pairs
 
 
-def stage_rows(res: FSResult, spec: FSSpec, accepted: pd.DataFrame, clusters: pd.Series, entity: pd.Series, uid: str) -> list[dict]:
+def aligned(ids: pd.Series, entity: pd.Series, household: pd.Series | None) -> tuple[pd.Series, pd.Series | None]:  # both, in ids' order
+    return ids.map(entity), ids.map(household) if household is not None else None
+
+
+def stage_rows(res: FSResult, spec: FSSpec, accepted: pd.DataFrame, clusters: pd.Series, entity: pd.Series, uid: str,
+               household: pd.Series | None = None) -> list[dict]:
     """The cascade's metrics: after the rules, then after this stage's accepted pairs (kept where the run keeps them)."""
     ids = res.records[uid]
     before = res.rule_clusters.set_index(uid)["cluster_id"].reindex(ids.to_numpy())
-    return [dict(stage=spec.previous_stage, edges=len(res.rule_pairs), **cluster_metrics(before, ids.map(entity)),
-                 **edge_metrics(res.rule_pairs, entity, uid)),
-            dict(stage=spec.stage, edges=len(res.rule_pairs) + int(accepted["keep"].sum()), **cluster_metrics(clusters, ids.map(entity)),
-                 **edge_metrics(pd.concat([res.rule_pairs, accepted]), entity, uid))]
+    return [dict(stage=spec.previous_stage, edges=len(res.rule_pairs), **cluster_metrics(before, *aligned(ids, entity, household)),
+                 **edge_metrics(res.rule_pairs, entity, uid, household)),
+            dict(stage=spec.stage, edges=len(res.rule_pairs) + int(accepted["keep"].sum()), **cluster_metrics(clusters, *aligned(ids, entity, household)),
+                 **edge_metrics(pd.concat([res.rule_pairs, accepted]), entity, uid, household))]
 
 
 def run_fs(pipeline: Pipeline, settings: Settings, path: Path, truth: pd.DataFrame, model_json: dict) -> FSResult:
@@ -262,7 +268,7 @@ def run_fs(pipeline: Pipeline, settings: Settings, path: Path, truth: pd.DataFra
     report = run.candidates()
     run.score()
     run.cluster()
-    entity = truth.set_index(uid)[settings.data.entity_id]
+    entity, household = labelled(truth, settings.data)
     df = table(run, "SELECT * FROM records")
     rule_clusters = table(run, "SELECT * FROM rule_clusters")
     prev = rule_clusters.set_index(uid)["cluster_id"].reindex(df[uid].to_numpy())
@@ -271,7 +277,12 @@ def run_fs(pipeline: Pipeline, settings: Settings, path: Path, truth: pd.DataFra
     report = report.assign(**pd.DataFrame([candidate_metrics(cands[found_by(cands, [b.name])], entity, uid, targets)
                                            for b in spec.blockers]))
     scored = table(run, f"SELECT * FROM ({run.scored()}) ORDER BY {q(l)}, {q(r)}")
-    scored["fp"] = scored[l].map(entity).to_numpy() != scored[r].map(entity).to_numpy()
+    scored["fp"] = false_pairs(scored[l], scored[r], entity, household)
+    scored["one_home"] = ~scored["fp"] & false_pairs(scored[l], scored[r], entity)  # two people of one household
+    run.con.register("er_scored_ids", scored[[l, r]])
+    homes = households(run.con, "records", "SELECT * FROM er_scored_ids", uid, pipeline)
+    run.con.unregister("er_scored_ids")
+    scored["labelled"] = [(a, b) in homes for a, b in zip(scored[l], scored[r])]  # people see it labelled maybe one household
     accepted = scored[automatic(scored, spec.min_match_weight)].assign(stage=spec.stage, rule=spec.model.name,
                                                                        score=lambda s: s["match_probability"])
     gold = table(run, "SELECT * FROM gold").set_index(uid).reindex(df[uid].to_numpy())
@@ -280,8 +291,8 @@ def run_fs(pipeline: Pipeline, settings: Settings, path: Path, truth: pd.DataFra
     rule_pairs = table(run, "SELECT * FROM rule_kept")
     run.con.close()  # its tables are read: free its memory now, not when the collector finds the run
     res = FSResult(report, cands, scored, pd.DataFrame(), {}, out, 0.0, run.scoring, rule_clusters, rule_pairs)
-    res.metrics = pd.DataFrame(stage_rows(res, spec, accepted, gold["cluster_id"], entity, uid))
-    res.stage_metrics = dict(**candidate_metrics(cands, entity, uid, targets), **edge_metrics(accepted, entity, uid),
+    res.metrics = pd.DataFrame(stage_rows(res, spec, accepted, gold["cluster_id"], entity, uid, household))
+    res.stage_metrics = dict(**candidate_metrics(cands, entity, uid, targets), **edge_metrics(accepted, entity, uid, household),
                              average_precision=average_precision(scored["match_weight"].to_numpy(), ~scored["fp"].to_numpy()),
                              min_match_weight=spec.min_match_weight)
     res.seconds = time.perf_counter() - t0
@@ -296,12 +307,12 @@ def threshold_curve(res: FSResult, spec: FSSpec, truth: pd.DataFrame, data: Data
     """FP / recall after resolution at each min_match_weight; scores stay fixed, only the decision and the clusters are
     redone, by the run's own clustering from the rules' clusters. O(|weights| · (E·d + N))."""
     uid = data.unique_id
-    ids, entity = res.records[uid], truth.set_index(uid)[data.entity_id]
+    ids, (entity, household) = res.records[uid], labelled(truth, data)
     con, db = connect()
     rows = []
     for w in weights:
         accepted = res.scored[automatic(res.scored, w)]
-        m = stage_rows(res, spec, accepted, clustered(con, db, res.rule_clusters, accepted[accepted["keep"]], ids, uid), entity, uid)[-1]
+        m = stage_rows(res, spec, accepted, clustered(con, db, res.rule_clusters, accepted[accepted["keep"]], ids, uid), entity, uid, household)[-1]
         rows.append(dict(min_match_weight=w, probability=1 / (1 + 2 ** -w), accepted=len(accepted),
                          pairs_FP=int(accepted["fp"].sum()), stage_fp_rate_hi=fp_upper(int(accepted["fp"].sum()), len(accepted)),
                          TP=m["TP"], FP=m["FP"], FN=m["FN"], recall=m["recall"], recall_lo=m["recall_lo"],
