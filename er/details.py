@@ -110,14 +110,18 @@ def _forms(ids: list[str], a: dict) -> dict[str, str]:
     out = {}
     for i in ids:
         t = str(i).strip()
-        digits = t.isascii() and t.isdigit()
         if a["number"]:
-            if digits:
-                out[str(int(t))] = i
-            continue
-        bare = (t.lstrip("0") or "0") if digits else t
-        for x in (t, bare, bare.zfill(a["pad"]) if digits and a.get("pad") else t):
-            out.setdefault(lit(x), i)
+            if t.isascii() and t.isdigit():
+                out.setdefault(str(int(t)), i)
+        else:
+            out[lit(t)] = i  # each ID's own form first: 151's rows are 151's, whatever 0151 strips to
+    if not a["number"]:
+        for i in ids:
+            t = str(i).strip()
+            if t.isascii() and t.isdigit():
+                bare = t.lstrip("0") or "0"
+                for x in (bare, bare.zfill(a["pad"]) if a.get("pad") else bare):
+                    out.setdefault(lit(x), i)
     return out
 
 

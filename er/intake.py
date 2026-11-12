@@ -18,6 +18,7 @@ unread.parquet (the values, which stay in the workspace). The intake is a functi
 the kinds accepted, so accepting one reads them again. O(bytes) in one pass, in chunks of 200,000 rows, each by column:
 what reading keeps as it is settled in Arrow, the rest one value at a time.
 """
+import codecs
 import ast
 import csv
 import functools
@@ -49,6 +50,7 @@ from er.config import InputError
 REPORT, READ, PROPOSALS, UNREAD = "intake.json", "read", "proposals.parquet", "unread.parquet"
 READER = 3  # what reads a part: one an older reader read is read again (er.folder.fresh). 2: lists read as their item; 3: whole floats as digits, names apart case aside
 SUFFIXES = (".parquet", ".csv", ".tsv", ".txt")  # the records files a folder or an inbox holds
+SIGNATURES = {b"\x89PNG": "a PNG image", b"\xff\xd8\xff": "a JPEG image", b"%PDF": "a PDF", b"\x7fELF": "a program", b"\xcf\xfa\xed\xfe": "a program"}  # files no records file begins as
 KINDS = ("realign", "garbled", "encoding")
 KEEP = 1000  # proposals of each kind kept to show
 ODD = 0.1  # past this share of records that don't line up, the file is refused: its delimiter or header is wrong
@@ -166,6 +168,14 @@ def ungarbled(text: str, m: Model, margin: float) -> str | None:  # a garbled va
 
 
 # ---------- one value: its decodings, and what loses nothing ----------
+
+def utf16(head: bytes, encoding: str) -> bool:  # the head reads in that byte order, a character cut off at its end aside
+    try:
+        codecs.getincrementaldecoder(encoding)().decode(head, final=False)
+        return True
+    except UnicodeDecodeError:
+        return False
+
 
 def decodes(v: str) -> bool:  # a value's bytes (latin-1 characters) are UTF-8
     try:
@@ -311,13 +321,15 @@ def sniff(f: Path) -> tuple[str, str | None, bool]:  # (format, its delimiter, w
         tail = h.read(4)
     if parquet(f, head, tail):
         return "parquet", None, False
+    if what := next((w for sig, w in SIGNATURES.items() if head.startswith(sig)), None):
+        raise InputError(f"{f}: {what}, not records", fix="give a CSV, TSV or Parquet file")
     if head[:2] == b"PK":
         raise InputError(f"{f}: a ZIP or Excel file, not records", fix="save it as CSV (UTF-8 or Shift-JIS) or Parquet, and give that")
     if head[:2] == b"\x1f\x8b":
         raise InputError(f"{f}: a gzip file", fix=f"decompress it first (gunzip {f.name}), then give the file inside")
     wide = (("utf-16" if head[:2] in (b"\xff\xfe", b"\xfe\xff") else  # UTF-16: by its BOM, or without one by where its NULs fall
-             "utf-16-le" if head[1:4096:2].count(0) > 0.3 * len(head[1:4096:2]) > 0 and head[0:4096:2].count(0) < 0.05 * len(head[0:4096:2]) else
-             "utf-16-be" if head[0:4096:2].count(0) > 0.3 * len(head[0:4096:2]) > 0 and head[1:4096:2].count(0) < 0.05 * len(head[1:4096:2]) else
+             "utf-16-le" if head[1:4096:2].count(0) > 0.1 * len(head[1:4096:2]) > 0 and head[0:4096:2].count(0) < 0.05 * len(head[0:4096:2]) and utf16(head, "utf-16-le") else
+             "utf-16-be" if head[0:4096:2].count(0) > 0.1 * len(head[0:4096:2]) > 0 and head[1:4096:2].count(0) < 0.05 * len(head[1:4096:2]) and utf16(head, "utf-16-be") else
              "iso2022_jp" if re.search(rb"\x1b\$[@B]", head) else None))  # JIS: Japanese in seven bits, a comma among them, so decoded whole first
     text = head.decode(wide, "ignore") if wide else head.decode("latin-1")
     lines = [x for x in text.splitlines()[:50] if x.strip()]
@@ -806,17 +818,21 @@ def read_one(f: Path, out: Path, spec: InputSpec, m: Model, accepted: frozenset[
     realigned = realign(odd, width, profile, delimiter or ",", spec)
     taken = []  # rows people's accepted realignment reads
     shown = lambda x: (decodings(x, spec.encodings) or [("", x)])[0][1]  # a field as people read it, in a proposal
-    for (line, fields), fit in zip(odd, realigned):
-        if not fields:  # joined into the row before it
-            continue
+    for k, ((line, fields), fit) in enumerate(zip(odd, realigned)):
         raw = (delimiter or ",").join(x or "" for x in fields)
+        if fit == JOINED:  # in the row before it: read with it, or kept unread with it
+            if "realign" not in accepted:
+                unread.append(dict(line=line, raw=raw.encode("latin-1", "replace"), reason="its fields don't line up: a repair waits (accept repairs realign)"))
+                facts["unread"] += 1
+            continue
         if fit is None:
             unread.append(dict(line=line, raw=raw.encode("latin-1", "replace"),
                                reason=f"{len(fields)} fields where the header has {width}"))
             facts["unread"] += 1
             continue
         joined, row = fit
-        propose(dict(kind="realign", line=line, column=", ".join(names[j] for j in joined), before=shown(raw),
+        both = shown(raw) + (" ⏎ " + shown((delimiter or ",").join(x or "" for x in odd[k + 1][1])) if k + 1 < len(odd) and realigned[k + 1] == JOINED else "")  # a join: both lines
+        propose(dict(kind="realign", line=line, column=", ".join(names[j] for j in joined), before=both,
                               after=" | ".join(shown(row[j] or "") for j in joined)))
         if "realign" in accepted:
             taken.append([value(j, v, line) for j, v in enumerate(row)])
@@ -835,10 +851,14 @@ def read_one(f: Path, out: Path, spec: InputSpec, m: Model, accepted: frozenset[
     return facts, [dict(p, file=f.name) for p in proposals], [dict(u, file=f.name) for u in unread]
 
 
-def realign(odd: list[tuple[int, list]], width: int, profile: list[Counter], delimiter: str, spec: InputSpec) -> list[tuple[list[int], list] | None]:
+JOINED = "joined"  # realign's mark on a short row it joined to the one before
+
+
+def realign(odd: list[tuple[int, list]], width: int, profile: list[Counter], delimiter: str, spec: InputSpec) -> list[tuple[list[int], list] | str | None]:
     """Each row that doesn't line up, re-split if one reading fits its columns far better than any other: too many
     fields, adjacent ones joined back (the delimiter was in a value); too few, joined with the next short row when the
-    two make one (a line break was in a value). (the columns joined, the row) or None. O(rows · width · C(width + extra − 1, extra)):
+    two make one (a line break was in a value) and fit their columns far better joined than each read as its own.
+    (the columns joined, the row), JOINED for the second row of a join, or None. O(rows · width · C(width + extra − 1, extra)):
     every way of joining the extra fields is tried, which [input] max_extra keeps small."""
     decode = lambda x: (decodings(x, spec.encodings) or [("", x)])[0][1] if x else x
     out: list = [None] * len(odd)
@@ -866,9 +886,10 @@ def realign(odd: list[tuple[int, list]], width: int, profile: list[Counter], del
         elif extra < 0 and i + 1 < len(odd) and odd[i + 1][0] == line + 1 and len(fields) + len(odd[i + 1][1]) - 1 == width:
             nxt = odd[i + 1][1]
             row = fields[:-1] + [fields[-1] + " " + nxt[0]] + nxt[1:]
-            out[i] = ([len(fields) - 1], row)
-            odd[i + 1] = (odd[i + 1][0], [])  # its fields went into the row before
-            i += 1
+            score = lambda values: sum(fits(profile[j], decode(v)) for j, v in enumerate(values))
+            if score(row) - score(fields) - score(nxt) >= spec.margin_row:  # one record a line break split, not two records each short of fields
+                out[i], out[i + 1] = ([len(fields) - 1], row), JOINED
+                i += 1
         i += 1
     return out
 

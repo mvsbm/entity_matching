@@ -52,8 +52,10 @@ def find(path: str | Path) -> list[Path]:
     p = Path(path).expanduser()
     if p.is_dir() and (r := intake.report(p)):
         return [p / x["read"] for x in r["files"]]
-    if globbed(p):  # its files, as a folder's: no folder, no hidden file
-        files = sorted(f for f in p.parent.glob(p.name) if f.is_file() and not f.name.startswith(".")) if p.parent.exists() else []
+    if p.is_file() and p.suffix.lower() not in intake.SUFFIXES:  # a picture, a script, a document: not read as records
+        raise InputError(f"{p.name}: not a records file", fix="give a CSV, TSV or Parquet file; one saved without that ending, rename it .csv")
+    if globbed(p):  # its files, as a folder's: no folder, no hidden file, a records file's ending
+        files = sorted(f for f in p.parent.glob(p.name) if f.is_file() and not f.name.startswith(".") and f.suffix.lower() in intake.SUFFIXES) if p.parent.exists() else []
     else:
         files = sorted(f for f in p.rglob("*") if f.is_file() and f.suffix.lower() in intake.SUFFIXES  # a hidden file or folder (.DS_Store, __MACOSX) holds no records
                        and not any(x.startswith(".") or x == "__MACOSX" for x in f.relative_to(p).parts)) if p.is_dir() else [p] if p.is_file() else []
@@ -384,7 +386,8 @@ def answers(path: str | Path, con: duckdb.DuckDBPyConnection, uid: str) -> pd.Da
         raise InputError(f"{path}: needs the columns {uid} and kind; it has {sorted(src.columns)}",
                          fix="give back kind_review.parquet with kind filled in: 1 person, 2 company, 0 can't tell")
     rows = con.sql(f"SELECT * FROM {src.sql}").df().astype("string")
-    given, kind = rows["kind"].str.strip(FILLED).replace("", pd.NA), pd.to_numeric(rows["kind"], errors="coerce")
+    given = rows["kind"].str.strip(FILLED).replace("", pd.NA)
+    kind = pd.to_numeric(given.str.normalize("NFKC"), errors="coerce")  # as written, its spaces aside: ２ is 2
     if len(bad := sorted(set(given[given.notna() & ~kind.isin([0, 1, 2])]))):
         raise InputError(f"{path}: a kind is 1, 2 or 0, not {bad[:5]}", fix="write 1 person, 2 company or 0 can't tell, or leave it empty")
     rows = rows[kind.isin([0, 1, 2]).to_numpy()].reset_index(drop=True)
