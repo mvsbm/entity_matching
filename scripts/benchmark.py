@@ -29,7 +29,7 @@ import pandas as pd
 from er.config import load_pipeline
 from er.evaluate import cluster_metrics, pair_metrics
 from er.generate import KindProblems, generate, kind_problems, load_reference, load_registry, load_spec, split_by_entity
-from er.io import markdown
+from er.io import markdown, read_parquet
 from er.kind import kind_review_sheet
 from er.report import qa
 from er.run import Run
@@ -59,11 +59,11 @@ def links(run: Path) -> dict:
 
 def quality(run: Path, entity: pd.Series) -> dict:
     """A written run's clusters against the truth: after the rules, and at the end; and its model links that are false."""
-    gold = pd.read_parquet(run / "gold.parquet").set_index(UID)["cluster_id"]
-    rules = pd.read_parquet(run / "state" / "rule_clusters.parquet").set_index(UID)["cluster_id"].reindex(gold.index)
+    gold = read_parquet(run / "gold.parquet").set_index(UID)["cluster_id"]
+    rules = read_parquet(run / "state" / "rule_clusters.parquet").set_index(UID)["cluster_id"].reindex(gold.index)
     e = entity.reindex(gold.index)
     m = cluster_metrics(gold, e)
-    x = pd.read_parquet(run / "matches", columns=[f"{UID}_l", f"{UID}_r"])
+    x = read_parquet(run / "matches", columns=[f"{UID}_l", f"{UID}_r"])
     return dict(rules_recall=round(pair_metrics(rules, e)["recall"], 4), recall=round(m["recall"], 4),
                 interval=f"{m['recall_lo']:.3f}–{m['recall_hi']:.3f}", false_merges=int(m["FP"]), fp_rate_at_most=f"{m['fp_rate_hi']:.2%}",
                 **links(run), false_links=int((x[f"{UID}_l"].map(entity) != x[f"{UID}_r"].map(entity)).sum()))
@@ -130,7 +130,7 @@ def kinds(entities: int, labels: int = 2_000) -> pd.DataFrame:
                                                             ("the flag alone", "flag", flag_only, "records.parquet", None),
                                                             (f"the kind step, {labels:,} labels", "kind", p, "records.parquet", d / "labels.parquet")):
             run = Run(pipeline, s, kind_labels=kind_labels).full(d / records, d / folder)  # each its own folder: no answers carried over
-            gold = pd.read_parquet(d / folder / "gold.parquet").set_index(UID).join(truth[["ENTITY_ID", "KIND"]])
+            gold = read_parquet(d / folder / "gold.parquet").set_index(UID).join(truth[["ENTITY_ID", "KIND"]])
             m = cluster_metrics(gold["cluster_id"], gold["ENTITY_ID"])
             mixed = gold.assign(c=gold["KIND"].eq("company")).groupby("cluster_id")["c"].agg(["any", "all"])
             sheet_ = qa(run)["review_sheet"]

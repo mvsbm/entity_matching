@@ -22,7 +22,7 @@ import pandas as pd
 
 from er import intake
 from er.generate import generate, load_reference, load_spec
-from er.io import markdown
+from er.io import markdown, read_parquet
 from er.settings import load_settings
 
 S = load_settings()
@@ -75,7 +75,7 @@ def read(data: bytes, accepted: frozenset[str]) -> tuple[pd.DataFrame, dict, flo
         start = time.time()
         r = intake.take(part, {part / "records.csv": "records.csv"}, S.input, S.paths["reference"], accepted)
         took = time.time() - start
-        return pd.read_parquet(part / r["files"][0]["read"]), r, took
+        return read_parquet(part / r["files"][0]["read"]), r, took
 
 
 def main() -> None:

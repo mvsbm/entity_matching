@@ -46,6 +46,7 @@ from er import folder
 from er.candidates import deletions_sql
 from er.config import DeletionKeys, InputError, KeyBlocker, Pipeline, SortedNeighbourhood, lit, q
 from er.intake import tidy
+from er.io import read_parquet
 from er.kind import Classifier, classifier, merge_answers, name_model
 from er.match import levels, read_by, review_floor, scaled_prior
 from er.report import run_model
@@ -227,7 +228,7 @@ def _build(ws: Path, s: Settings, p: Pipeline, stamp: dict) -> dict:
             con.execute(f"DETACH {db}")
         spec, kind = fitted.kind, None
         if spec and spec.name_field in present_fields(s, have):  # its fitted part: the name model, which holds a connection, is loaded again by a lookup
-            answers = [pd.read_parquet(f).astype({uid: "string"}) for f in folder.answer_parts(ws)]
+            answers = [read_parquet(f).astype({uid: "string"}) for f in folder.answer_parts(ws)]
             c = classifier(s, spec, merge_answers(pd.concat(answers, ignore_index=True) if answers else None, None, uid))
             (tmp / (kind := f"{key}.kind.pkl")).write_bytes(pickle.dumps({k: v for k, v in vars(c).items() if k != "names"}))
         of = {n: f"rule {x[1].name}" if isinstance(x, tuple) else x.name for n, x in tables} | {f"f_{c}": f"search by {SEARCHED[c]}" for c in searched} | {f"f_{c}_reverse": f"search by {SEARCHED[c]}, its end" for c in REVERSED if c in searched}

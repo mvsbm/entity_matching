@@ -19,6 +19,7 @@ from itertools import takewhile
 from pathlib import Path
 
 import pandas as pd
+import pyarrow.fs
 
 from er.config import Data
 
@@ -26,6 +27,16 @@ if os.name == "nt":
     import msvcrt
 else:
     import fcntl
+
+
+LOCAL = pyarrow.fs.LocalFileSystem()
+
+
+def read_parquet(path: Path | str, **kwargs) -> pd.DataFrame:
+    """pd.read_parquet with the file opened by Arrow. pandas opens a local file as a Python object, which Arrow may let
+    go of on its own thread after Python has begun to exit; on Python 3.14 that thread and the exit then wait for each
+    other forever, so a command that finished never ends."""
+    return pd.read_parquet(path, filesystem=LOCAL, **kwargs)  # noqa: TID251
 
 
 STORES = ("gcsfuse", "s3fs", "rclone", "goofys", "mountpoint-s3", "blobfuse", "blobfuse2")  # object storage mounted as files: no lock holds there
@@ -123,8 +134,8 @@ def code_version(root: Path) -> str:
 
 def load(data: Data, dataset: str) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Records and truth, validated: this is where outside data enters every stage."""
-    records = pd.read_parquet(data.bronze_dir / f"{dataset}.parquet").astype("string")
-    truth = pd.read_parquet(data.labels_dir / f"{dataset}.parquet").astype("string")
+    records = read_parquet(data.bronze_dir / f"{dataset}.parquet").astype("string")
+    truth = read_parquet(data.labels_dir / f"{dataset}.parquet").astype("string")
     uid = data.unique_id
     for name, frame in (("records", records), ("labels", truth)):
         if uid not in frame:
@@ -151,7 +162,7 @@ def write_final(data: Data, name: str, config: object, model: dict | None = None
 
 
 def population(data: Data) -> str:  # which generated population the labels hold: test is counted per population
-    labels = pd.read_parquet(data.labels_dir / "test.parquet").sort_values(data.unique_id, ignore_index=True)
+    labels = read_parquet(data.labels_dir / "test.parquet").sort_values(data.unique_id, ignore_index=True)
     return f"{int(pd.util.hash_pandas_object(labels, index=False).sum()) & (2**48 - 1):012x}"
 
 
@@ -162,7 +173,7 @@ def append_leaderboard(data: Data, experiment: str, config: object, dataset: str
     data.experiments_dir.mkdir(parents=True, exist_ok=True)
     row = pd.DataFrame([dict(time=time.strftime("%Y-%m-%d %H:%M:%S"), experiment=experiment, dataset=dataset,
                              population=population(data) if dataset == "test" else None, config_hash=config_hash(config), **metrics)])
-    board = pd.concat([pd.read_parquet(path), row], ignore_index=True) if path.exists() else row
+    board = pd.concat([read_parquet(path), row], ignore_index=True) if path.exists() else row
     board.to_parquet(path, index=False)
 
 
@@ -173,7 +184,7 @@ def test_evaluations(data: Data) -> pd.DataFrame:
     path = data.experiments_dir / "leaderboard.parquet"
     if "test" not in data.datasets or not path.exists():  # a development round (choose.py --no-test) never reads test
         return pd.DataFrame(columns=["family", "configs_on_test"])
-    board = pd.read_parquet(path)
+    board = read_parquet(path)
     board = board[board.get("population", pd.Series(index=board.index, dtype="string")) == population(data)]
     test = board[board["dataset"] == "test"].assign(family=lambda b: b["experiment"].str.split(":").str[0])
     return test.groupby("family")["config_hash"].nunique().rename("configs_on_test").reset_index()

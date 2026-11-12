@@ -203,3 +203,9 @@ Each entry names a way an entity-resolution pipeline like this one goes wrong, a
 - **Why:** every look at test before the choices are final is a chance for a choice to follow it.
 - **Guard:** choices are made on train and confirmed on val, by rule. A leaderboard records every run and counts the distinct configurations scored on each population's test; `scripts/choose.py` stops above 1 per stage. `scripts/choose.py` runs a development round by default, with test left unseen and its report and pipeline in the untracked `data/artifacts/choose/`; only `--test`, the round to commit, scores test, and a newly generated population starts its count afresh. A deliberate clean pass on the same population first archives the leaderboard (`data/artifacts/experiments/archive/`).
 - **Check:** a test counts test evaluations per population, and [`reports/choose.md`](../reports/choose.md) ends with the count: 1 for each stage.
+
+## A command that finishes and never ends
+- **Pitfall:** a command writes everything it should and then never exits: the page shows it running for good, and `nayose try everything` waits on it. It shows as a process left at 0% CPU, its work done.
+- **Why:** pandas opens a local Parquet file as a Python file object and hands it to Arrow, which reads on its own threads and may let go of that object on one of them after Python has begun to exit. Letting go needs Python's lock, and from Python 3.14 a thread that asks for it then waits forever, while the exit waits for Arrow's threads. Of 300 fresh interpreters that each read one file this way and exited, 4 never ended.
+- **Guard:** every read in `er` and `scripts` goes through `er.io.read_parquet`, where Arrow opens the file itself; ruff refuses `pandas.read_parquet` there (`TID251`). Tests read in their own process and may still use it.
+- **Check:** `ruff check .` runs in CI. Of 600 interpreters reading through `er.io.read_parquet`, none hung.

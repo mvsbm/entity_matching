@@ -67,7 +67,7 @@ from er import folder, intake
 from er.candidates import candidates, estimate
 from er.cluster import merge
 from er.config import InputError, Pipeline, TfidfNeighbours, bits, keys_sql, lit, q
-from er.io import code_version, config_hash, markdown, replace_text
+from er.io import code_version, config_hash, markdown, read_parquet, replace_text
 from er.kind import KIND_COLUMNS, NAME_MODEL, century, classifier as kind_classifier, kind_review_sheet, merge_answers
 from er.match import ELSE, fs_settings, named_sql, read_by, refreshed_u, review_floor, rule_edges, score_fs, scored_u, train_fs, u_basis
 from er.probe import missed
@@ -722,7 +722,7 @@ class Run:
         tables = qa(self, previous=out / "review.parquet" if self.added is not None else None)
         sheet = tables.pop("review_sheet")
         if self.added is None and (out / "review.parquet").exists():  # a full run makes the queue again: what people typed in and haven't given back stays
-            sheet = carry_over(self, pd.read_parquet(out / "review.parquet"), sheet, out, full=True)
+            sheet = carry_over(self, read_parquet(out / "review.parquet"), sheet, out, full=True)
         frames = [(sheet, out / "review.parquet")]
         text = ["# Run checks", "", f"Input: `{path}` · {self.n:,} records", ""]
         for name, table in tables.items():
@@ -846,7 +846,7 @@ class Run:
         """People's person/company answers: the sheets the folder `out` keeps, newest first, then the one given on top.
         O(answers)."""
         parts = folder.answer_parts(out)
-        kept = pd.concat([pd.read_parquet(f).astype({self.uid: "string"}) for f in parts], ignore_index=True) if parts else None
+        kept = pd.concat([read_parquet(f).astype({self.uid: "string"}) for f in parts], ignore_index=True) if parts else None
         return merge_answers(kept, self._given(), self.uid)
 
     def _given(self) -> pd.DataFrame | None:
@@ -934,7 +934,7 @@ class Run:
                 UNION ALL SELECT x.{l}, x.{r}, s.match_weight, s.match_probability, x.rule FROM er_rule x JOIN er_rule_scores s USING ({l}, {r})
                 WHERE NOT EXISTS (SELECT 1 FROM {read('matches/*.parquet')} m WHERE m.{l} = x.{l} AND m.{r} = x.{r})""")
             self.con.execute(f"CREATE OR REPLACE TABLE kept AS SELECT {l}, {r} FROM matches")  # what review_sheet says merged
-            self.con.register("er_sheet", pd.read_parquet(sheet, columns=[self.l, self.r]))
+            self.con.register("er_sheet", read_parquet(sheet, columns=[self.l, self.r]))
             asked = [f"SELECT {l}, {r} FROM er_sheet"] + ([f"SELECT {l}, {r} FROM {read(folder.DECISIONS + '/part-*.parquet')}"]
                                                          if any((out / folder.DECISIONS).glob("part-*.parquet")) else [])
             self.con.execute(f"""CREATE OR REPLACE TABLE er_drawn AS SELECT {l}, {r} FROM (
@@ -942,7 +942,7 @@ class Run:
                 FROM matches m WHERE NOT EXISTS (SELECT 1 FROM ({' UNION ALL '.join(asked)}) a WHERE a.{l} = m.{l} AND a.{r} = m.{r}))
                 ORDER BY k, band LIMIT {int(count)}""")
             self.con.execute(f"CREATE OR REPLACE TABLE er_pick AS SELECT d.{l}, d.{r}, m.sources, 'audit' AS why FROM er_drawn d JOIN matches m USING ({l}, {r})")
-            state, sheet_now = trust_state(self.con, out, self.pipeline, self.uid), pd.read_parquet(sheet)
+            state, sheet_now = trust_state(self.con, out, self.pipeline, self.uid), read_parquet(sheet)
             if state and state["next"] and not state["false"]:  # the range people check next, filled to what they still need
                 lo, hi = state["next"]["down_to"], state["next"]["up_to"]
                 waiting = (sheet_now["why"] == "decide") & sheet_now["decision"].isna() if "why" in sheet_now else []

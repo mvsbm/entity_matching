@@ -22,7 +22,7 @@ import pyarrow.parquet as pq
 
 from er import intake
 from er.config import InputError, lit, toml_of
-from er.io import alive, lock, object_store, replace_text
+from er.io import alive, lock, object_store, read_parquet, replace_text
 from er.settings import COLUMNS
 from er.source import find, globbed
 from er.strings import connect
@@ -284,7 +284,7 @@ def type_in(out: Path, sheet: str, column: str, value: object, append: dict | No
         finish_writes(out)
         if not path.exists():
             raise InputError(f"{path}: no such sheet", fix="run the records into that folder first: the run writes it")
-        frame = pd.read_parquet(path)
+        frame = read_parquet(path)
         rows = pd.Series(True, index=frame.index)
         for k, v in keys.items():
             rows &= frame[k].astype("string").eq(str(v)).fillna(False)

@@ -14,6 +14,7 @@ import pandas as pd
 from er import folder
 from er.cluster import merge
 from er.config import InputError, Pipeline, bits, lit, q
+from er.io import read_parquet
 from er.kind import sheet_parts
 from er.match import levels, named_sql
 from er.report import applied, no_run, run_model, scored_again
@@ -77,7 +78,7 @@ def _said(out: Path, uid: str) -> pd.DataFrame:
     l, r = f"{uid}_l", f"{uid}_r"
     done = applied(out, uid)[[l, r, "decision"]].assign(applied=True)
     sheet = out / "review.parquet"
-    typed = pd.read_parquet(sheet, columns=[l, r, "decision"]).dropna(subset=["decision"]).assign(applied=False) if sheet.exists() else done.iloc[:0]
+    typed = read_parquet(sheet, columns=[l, r, "decision"]).dropna(subset=["decision"]).assign(applied=False) if sheet.exists() else done.iloc[:0]
     kept = set(zip(done[l], done[r], done["decision"]))  # the sheet keeps what was applied: only a different answer is newer
     typed = typed[[x not in kept for x in zip(typed[l], typed[r], typed["decision"])]]
     both = pd.concat([typed, done], ignore_index=True).astype({l: "string", r: "string"})
@@ -239,7 +240,7 @@ def describe_results(con: duckdb.DuckDBPyConnection, db: object, out: Path, s: S
     probe = [dict(stratum=x["stratum"], fields=x["fields"], pairs=x["pairs"], scored=x["scored"], missed=x["missed"], low=x["low"], high=x["high"])
              for x in steps.get("probe", {}).get("strata", [])]
     cand = steps.get("candidates", {})
-    sheet = pd.read_parquet(out / "kind_review.parquet") if (out / "kind_review.parquet").exists() else pd.DataFrame(columns=["why", "kind"])
+    sheet = read_parquet(out / "kind_review.parquet") if (out / "kind_review.parquet").exists() else pd.DataFrame(columns=["why", "kind"])
     open_ = sheet[sheet["kind"].isna()].assign(why=sheet_parts(sheet[sheet["kind"].isna()]))  # a flagged record drawn at random is to check
     has = {c for c, *_ in con.execute(f"DESCRIBE SELECT * FROM {gold}").fetchall()}
     flagged = con.execute(f"SELECT count(*) FROM {gold} WHERE kind_flagged").fetchall()[0][0] if "kind_flagged" in has else 0
