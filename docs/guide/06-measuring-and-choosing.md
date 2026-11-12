@@ -4,19 +4,19 @@
 
 *Challenge C8.*
 
-The headline result is: on test, **45.9% recall (43.9–47.9%) and 0 false merges, with a false-merge rate of at most 0.28%**. This chapter explains every part of that sentence, and why it is a fair number and not a lucky or tuned one.
+The headline result is: on test, **48.2% recall (46.2–50.2%) and 0 false merges, with a false-merge rate of at most 0.26%**. This chapter explains every part of that sentence, and why it is a fair number and not a lucky or tuned one.
 
 ## Challenge: what exactly do we count?
 
 A system can be judged on its pairs or on its groups, and the two can disagree.
 
-**Pair metrics** judge the decisions themselves. On validation, the second stage accepts 765 pairs, and all 765 are true.
+**Pair metrics** judge the decisions themselves. On validation, the second stage accepts 918 pairs, and none is false; 32 of them join two people of one household, counted apart (below).
 
 **Group metrics** judge the final groups, after the pairs from both stages have been joined into entities. A pair counts as *found* if its two records end up in the same group, whether it is accepted directly or joined through other records.
 
-- **Recall:** of all true pairs, the share that end up in one group. On validation, 1,026 of 2,215, so 46.3%.
+- **Recall:** of all true pairs, the share that end up in one group. On validation, 1,244 of 2,494, so 49.9%.
 - **False merges:** pairs of different entities that end up in one group. On validation, 0.
-- **Over-merged groups:** groups that mix two or more real entities. On validation, 0.
+- **Over-merged groups:** groups that mix two or more real entities. On validation, 33, each of them people of one household, since no pair in them is false.
 
 **Why groups are the headline.** A customer experiences the groups, not the pairs. And one false pair can merge two whole groups, creating many false pairs at once.
 
@@ -24,7 +24,7 @@ A system can be judged on its pairs or on its groups, and the two can disagree.
 
 ## Challenge: "0 false merges" doesn't mean "never"
 
-Seeing no false merge among a few thousand pairs doesn't prove the rate is zero. And a recall from 2,215 pairs carries chance variation. Every number needs a range.
+Seeing no false merge among a few thousand pairs doesn't prove the rate is zero. And a recall from 2,494 pairs carries chance variation. Every number needs a range.
 
 **Solution: two intervals.**
 
@@ -32,13 +32,13 @@ Seeing no false merge among a few thousand pairs doesn't prove the rate is zero.
 
 $$\frac{\hat p + \frac{z^2}{2n} \pm z\sqrt{\frac{\hat p(1-\hat p)}{n} + \frac{z^2}{4n^2}}}{1 + \frac{z^2}{n}}, \qquad \hat p = \frac{k}{n}$$
 
-On validation, with k = 1,026 and n = 2,215, this gives **44.3–48.4%**. Unlike the simpler normal approximation, it stays sensible near 0% and 100%.
+On validation, with k = 1,244 and n = 2,494, this gives **47.9–51.8%**. Unlike the simpler normal approximation, it stays sensible near 0% and 100%.
 
 **Zero events use the rule of three.** If nothing went wrong in n tries, the true rate is at most about 3/n, with 95% confidence. Precisely, it is the largest rate p at which seeing no errors still has a 5% chance:
 
 $$(1 - p)^n = 0.05 \;\Rightarrow\; p = 1 - 0.05^{1/n} \approx \frac{3}{n}$$
 
-On test the groups contain 1,073 predicted pairs and none is false, so the false-merge rate is **at most 0.28%**.
+On test the groups contain 1,134 true pairs and 45 of one household, and none is false, so the false-merge rate is **at most 0.26%**.
 
 That's why the population is large, with 40,000 entities. A small test set could only promise "at most a few percent".
 
@@ -46,7 +46,7 @@ That's why the population is large, with 40,000 entities. A small test set could
 
 ## Challenge: is a change really better?
 
-Allowing names within one edit lifts the rules' validation recall from 9.0% to 9.2%. The two intervals overlap almost completely, so comparing recalls says nothing.
+Allowing names within one edit lifts the rules' validation recall from 11.1% to 11.3%. The two intervals overlap almost completely, so comparing recalls says nothing.
 
 **Solution: compare on the same pairs (a paired sign test).** Run both configurations on the same records and look only at the pairs where they disagree:
 
@@ -55,7 +55,7 @@ Allowing names within one edit lifts the rules' validation recall from 9.0% to 9
 
 If the change made no difference, each disagreement would be a coin flip. The **sign test** asks how surprising the split is.
 
-For a split of k gains and no losses, that probability is 2 × 0.5ᵏ. The CIF ID one-digit-off level gained 8 true pairs out-of-fold and lost none: 2 × 0.5⁸ = **0.0078**. The names-within-one-edit change gained 17 on train and lost 4: p = **0.0072**, a significant gain. On validation it gained 6 and lost 2 (p = 0.29): too few disagreements to tell, which is why choices are made on the larger selection set.
+For a split of k gains and no losses, that probability is 2 × 0.5ᵏ. The CIF ID one-digit-off level gained 7 true pairs out-of-fold and lost none: 2 × 0.5⁷ = **0.0156**. The names-within-one-edit change gained 18 on train and lost 6: p = **0.0227**, a significant gain. On validation it gained 5 and lost 1 (p = 0.22): too few disagreements to tell, which is why choices are made on the larger selection set.
 
 **Why:** pairs both versions agree on carry no information about the difference, and the paired test ignores them. That makes it far more sensitive than two overlapping intervals.
 
@@ -73,14 +73,14 @@ We make many choices: thresholds, comparators, candidate generators, model optio
 
 | Accept at or above | Pairs accepted (out-of-fold) | False pairs |
 |---|---|---|
-| 6 bits | 2,649 | 1 |
-| 8 bits | 2,380 | 1 |
-| **10 bits** | **2,057** | **0**: the lowest safe weight |
-| 12 bits | 925 | 0: one step stricter, chosen |
+| 4 bits | 2,970 | 1 |
+| 6 bits | 2,753 | 1 |
+| **8 bits** | **2,402** | **0**: the lowest safe weight |
+| 10 bits | 2,086 | 0: one step stricter, chosen |
 
-Every configuration gets its threshold this way: the configuration as written, each variant, and each Optuna trial. The final configuration's rule gives 8 bits.
+Every configuration gets its threshold this way: the configuration as written, each variant, and each Optuna trial. The final configuration's rule gives 6 bits.
 
-A check then confirms that the threshold transfers. Out-of-fold, 0 of 2,368 accepted pairs are false, a rate of at most 0.13%. On validation, 0 of 765 are.
+A check then confirms that the threshold transfers. Out-of-fold, 0 of 2,569 accepted pairs are false, a rate of at most 0.12%. On validation, 0 of 918 are.
 
 **4. The decision rule (`adopt`).** A change is adopted only if it passes a rule, applied on top of the current choice:
 
@@ -92,37 +92,43 @@ A check then confirms that the threshold transfers. Out-of-fold, 0 of 2,368 acce
 
 | Change (second stage) | Out-of-fold gains / losses | Validation | Adopted |
 |---|---|---|---|
-| term-frequency adjustment off (better) | +12 / −0 | +15 / −0 | yes |
-| exact keys only (cheaper) | +0 / −0 | ±0 | yes |
-| Optuna's suggestion, with its own generators (better) | +1,488 / −1 | +243 / −0 | yes |
-| u for the scores from 1 million random pairs instead of 10 million (cheaper) | +1 / −8 | +0 / −1 | no |
+| term-frequency adjustment off (better) | +33 / −0 | +13 / −0 | yes |
+| exact keys only (cheaper) | +0 / −7 | +0 / −2 | no |
+| Optuna's suggestion, with its own generators (better) | +79 / −14 | +25 / −4 | yes |
+| u for the scores from 1 million random pairs instead of 10 million (cheaper) | +93 / −67 | +61 / −0 | no |
 | three compound phone keys instead of the phone (cheaper, for scale) | +0 / −0 | ±0 | yes |
-| a reversed sorted pass instead of TF-IDF (cheaper, for scale) | +1 / −0 | +4 / −0 | yes |
-| five name keys, so no potential match depends on a sorted window (safer, for scale) | +1 / −0 | ±0 | yes |
+| a reversed sorted pass instead of TF-IDF (cheaper, for scale) | +1 / −0 | ±0 | yes |
+| five name keys, so no potential match depends on a sorted window (safer, for scale) | +0 / −0 | ±0 | yes |
 | the address only with the phone, the name's first letter or the given name (cheaper, for scale) | +0 / −0 | ±0 | yes |
-| no sorted windows (cheaper) | +0 / −0 | +0 / −1 | no |
-| score every pair across two rule clusters (better) | +0 / −0 | ±0 | no |
-| u measured on each scored file (chosen, for scale) | +0 / −60 | +0 / −12 | yes |
-| u of the exact levels counted from value counts (chosen, for scale) | +47 / −5 | ±0 | yes |
-| a CIF ID one digit off, as a level (better) | +8 / −0 | +2 / −0 | yes |
-| its one-deletion key (safer) | +2 / −0 | ±0 | yes |
-| the same town, city or prefecture, as address levels (better) | +124 / −67 | +29 / −20 | yes |
-| the birth date, as a comparison (better) | +56 / −0 | +22 / −0 | yes |
-| a birth-date key (safer) | +1 / −0 | ±0 | yes |
+| no sorted windows (cheaper) | +0 / −0 | ±0 | yes |
+| score every pair across two rule clusters (better) | +8 / −0 | ±0 | yes |
+| u measured on each scored file (chosen, for scale) | +0 / −700 | +0 / −92 | yes |
+| u of the exact levels counted from value counts (chosen, for scale) | +437 / −170 | +0 / −335 | yes |
+| a CIF ID one digit off, as a level (better) | +7 / −0 | +4 / −0 | yes |
+| its one-deletion key (safer) | +0 / −0 | ±0 | yes |
+| the same town, city or prefecture, as address levels (better) | +159 / −344 | +181 / −3 | no |
+| the birth date, as a comparison (better) | +49 / −0 | +27 / −0 | yes |
+| a birth-date key (safer) | +8 / −0 | +4 / −0 | yes |
 | a given name + phone key (safer) | +0 / −0 | ±0 | yes |
 | a birth-date one-deletion key, within the prefecture (safer) | +0 / −0 | ±0 | yes |
-| a one-edit level counted exactly through one-deletion keys (chosen, for scale) | +0 / −2 | ±0 | yes |
+| a one-edit level counted exactly through one-deletion keys (chosen, for scale) | +0 / −0 | ±0 | yes |
 | the fit's own u from 1 million pairs; the scores keep 10 million (cheaper) | +0 / −0 | ±0 | yes |
-| the company comparison without its "very close" level (cheaper) | +1 / −0 | ±0 | yes |
-| a name must be compared for an automatic merge (chosen, for scale) | +0 / −39 | +0 / −22 | yes |
+| the company comparison without its "very close" level (cheaper) | +0 / −0 | ±0 | yes |
+| a name must be compared for an automatic merge (chosen, for scale) | +682 / −5 | +494 / −2 | yes |
+| a key on the name's reading, its long vowels written one way (safer) | +0 / −0 | ±0 | yes |
+| three keys on the name's last three sounds, with the phone, the postal code or the postal area (safer) | +1 / −0 | ±0 | yes |
+| the same reading, as a name level (better) | +67 / −0 | +37 / −0 | yes |
+| the same last three sounds, as a name level (better) | +15 / −8 | +10 / −6 | no |
+| the given name compared on its own (better) | +117 / −897 | +0 / −352 | no |
+| the same, or the name's last three sounds where a record has no given name (better) | +0 / −422 | +0 / −154 | no |
 
-Each row is decided on top of the rows above it that were adopted. Optuna's suggestion brings its own list of generators, so it replaces the "exact keys only" list adopted just before it.
+Each row is decided on top of the rows above it that were adopted. Optuna's suggestion brings its own list of generators, in place of the list as written.
 
-The "chosen" rows are the owner's calls, made in the open, and on these sets they mostly cost recall:
-- **u measured on each scored file** loses 60 true pairs out-of-fold and 12 on val. The folds and val hold about 10,000 records, fewer than train, and on a smaller file strangers agree more often. The change removes credit that u from the larger fitting set over-gives there. On a bigger file it adds the credit that train's u withholds, and real files are usually bigger than train.
-- **u counted from value counts** gains here: +47 / −5 out-of-fold. A sample of 10 million pairs cannot see an agreement rarer than about one in a billion pairs, which an exact name or CIF ID becomes in big files; the exact count is right at every size.
-- **A one-edit level counted exactly** loses 2 true pairs out-of-fold. It is chosen for the same reason: the count is right at every size, where a sample sees almost no CIF ID typo pairs.
-- **A name must be compared** holds back 39 true pairs out-of-fold and 22 on val, which a run puts on the review sheet instead. A household shares an address and a phone, which alone can reach the line; train and val hold no such false pair, so the gain shows only at scale.
+The "chosen" rows are the owner's calls, made in the open, and on these sets they move recall both ways:
+- **u measured on each scored file** loses 700 true pairs out-of-fold and 92 on val. The folds and val hold about 10,000 records, fewer than train, and on a smaller file strangers agree more often. The change removes credit that u from the larger fitting set over-gives there. On a bigger file it adds the credit that train's u withholds, and real files are usually bigger than train.
+- **u counted from value counts** gains out-of-fold, +437 / −170, and loses 335 true pairs on val. A sample of 10 million pairs cannot see an agreement rarer than about one in a billion pairs, which an exact name or CIF ID becomes in big files; the exact count is right at every size.
+- **A one-edit level counted exactly** moves no true pair here. It is chosen for the same reason: the count is right at every size, where a sample sees almost no CIF ID typo pairs.
+- **A name must be compared** sends a pair with no name compared to the review sheet instead of merging it. A household shares an address and a phone, which alone can reach the line. On these sets it gains: +682 / −5 out-of-fold, +494 / −2 on val.
 
 No "chosen" row adds a false pair.
 

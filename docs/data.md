@@ -6,13 +6,13 @@
 
 ## Datasets
 
-**Datasets:** one generated population of 40,000 entities (50,116 records), split by entity so a duplicate group never spans two splits. Each split uses the same file name in every layer:
+**Datasets:** one generated population of 40,000 entities and 1,578 household members (52,115 records), split by household so neither a duplicate group nor a household spans two splits. Each split uses the same file name in every layer:
 
 | Dataset | Entities | Records | Role |
 |---|---|---|---|
-| `train` | 60% | 30,103 | fitting, design analyses, cross-validated threshold and decisions, Optuna objective |
-| `val` | 20% | 9,966 | A/B confirmation and selection checks |
-| `test` | 20% | 10,047 | final report, once per configuration |
+| `train` | 60% | 31,226 | fitting, design analyses, cross-validated threshold and decisions, Optuna objective |
+| `val` | 20% | 10,496 | A/B confirmation and selection checks |
+| `test` | 20% | 10,393 | final report, once per configuration |
 
 Every table is Parquet. Only `reference/` is in git; everything else rebuilds from the scripts (`.gitignore`). The medallion
 layers follow the pipeline: bronze is the records as they arrive, silver the standardized records each run keeps in its

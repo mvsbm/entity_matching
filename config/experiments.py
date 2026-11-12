@@ -187,7 +187,7 @@ FS_DECISIONS = (("no_term_frequency", "better"), ("exact_keys_only", "cheaper"),
                 ("cif_deletion_key", "safer"), ("graded_address", "better"), ("birth_date", "better"),
                 ("birth_date_key", "safer"), ("given_name_phone_key", "safer"), ("birth_date_deletion_key", "safer"),
                 ("u_near_by_keys", "chosen"), ("fit_u_from_1e6_pairs", "cheaper"), ("company_without_jw_high", "cheaper"),
-                ("name_needed", "chosen"),  # its gain shows only at scale: train and val hold no such false pair
+                ("name_needed", "chosen"),  # the owner's call: a pair with no name compared goes to people, whatever its score
                 ("name_reading_key", "safer"), ("given_tail_keys", "safer"), ("same_reading_level", "better"), ("same_given_tail_level", "better"),
                 ("given_comparison", "better"), ("given_or_tail_comparison", "better"))
 

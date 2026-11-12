@@ -242,7 +242,9 @@ def test_a_key_for_the_matches_the_probe_found_is_proposed_tried_and_adopted(say
     g.df.to_parquet(tmp_path / "all.parquet", index=False)
     ws = tmp_path / "ws"
     ws.mkdir()
-    few = [b.name for b in p.fs.blockers if b.name not in ("cif", "person_name", "company_name")]
+    from er.config import load_pipeline
+    ran = load_pipeline(s.root / "config" / "final.toml", s.standardize, s.chains, s.columns)  # the method resolve records runs
+    few = [b.name for b in ran.fs.blockers if b.name not in ("cif", "person_name", "company_name")]
     (ws / "method.toml").write_text(f"drop_keys = {json.dumps(few)}\n", encoding="utf-8")  # a method that misses matches
 
     assert say("resolve", "records", tmp_path / "all.parquet", "--workspace", ws)[0] == 0
@@ -318,7 +320,7 @@ def test_scoring_in_slices_gives_the_scores_scoring_all_at_once_gives_and_each_l
     first = Run(p, s).full(tmp_path / "all.parquet", tmp_path / "a")
     told = []
     whole = Run(p, s, model=first.model).full(tmp_path / "all.parquet", tmp_path / "b")
-    sliced = Run(p, s, model=first.model, score_pairs=300, chunk_rows=100, told=lambda *a, **k: told.append((*a, k))).full(tmp_path / "all.parquet", tmp_path / "c")
+    sliced = Run(p, s, model=first.model, score_pairs=20, chunk_rows=100, told=lambda *a, **k: told.append((*a, k))).full(tmp_path / "all.parquet", tmp_path / "c")
     scores = [r.con.execute(f"SELECT * FROM scores ORDER BY {r.l}, {r.r}").df() for r in (whole, sliced)]
     pd.testing.assert_frame_equal(*scores, rtol=1e-9)  # a pair's score depends on it alone: the same in a slice as in the whole
     counts = {}
@@ -337,7 +339,7 @@ def test_scoring_in_slices_gives_the_scores_scoring_all_at_once_gives_and_each_l
     assert [x[0] for x in weighed] == sorted(x[0] for x in weighed) and weighed[0][0] == 0 and weighed[-1][0] == weighed[-1][1] > 0 and all(x[3] for x in weighed)
     told = [(*x[:3], x[3]["likely"]) for x in told if x[2] == "pairs"]
     total = whole._count("cands")
-    assert len(told) == -(-total // 300) > 1 and [x[0] for x in told] == sorted({min(total, 300 * (i + 1)) for i in range(len(told))})
+    assert len(told) == -(-total // 20) > 1 and [x[0] for x in told] == sorted({min(total, 20 * (i + 1)) for i in range(len(told))})
     assert {x[1:3] for x in told} == {(total, "pairs")} and told[-1][3] == whole._count(f"scores s WHERE match_weight >= {bits(p.fs.min_match_weight)} AND {named_sql(p.fs)}")
     assert pd.read_parquet(tmp_path / "b" / "gold.parquet").equals(pd.read_parquet(tmp_path / "c" / "gold.parquet"))
     views = lambda run: run._count("duckdb_views() WHERE NOT internal")

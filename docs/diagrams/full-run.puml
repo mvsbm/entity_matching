@@ -110,7 +110,6 @@ er_decisions --> probe
 matches --> probe
 proposed --> probe
 rule_kept --> probe
-rule_clusters --> probe
 
 write --> f_out
 write --> f_state
