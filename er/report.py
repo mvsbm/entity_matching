@@ -19,7 +19,7 @@ import pandas as pd
 
 from er.config import DeletionKeys, InputError, Key, KeyBlocker, Pipeline, SortedNeighbourhood, TfidfNeighbours, bits, lit, q, sources_text
 from er.folder import DECISIONS, PENDING, TRIALS, history, method, rounds, runs
-from er.io import code_version, table_after
+from er.io import code_version, read_parquet, table_after
 from er.kind import COMPANY, PERSON, SAYS, UNSURE, sheet_parts
 from er.match import ELSE, levels, named_sql, parameters, pattern_coverage, review_floor, scaled_prior, score_fs
 from er.probe import keys_for
@@ -96,7 +96,7 @@ def qa(run: "Run", fields: list[str] | None = None, review: int = 50, previous: 
     coverage = pattern_coverage(run.pipeline.fs, run.scoring, run.n)
     sheet = review_sheet(run, pd.concat([decide, audit], ignore_index=True))
     if previous is not None and previous.exists():
-        sheet = carry_over(run, pd.read_parquet(previous), sheet, previous.parent)
+        sheet = carry_over(run, read_parquet(previous), sheet, previous.parent)
     decide = sheet[sheet["why"] == "decide"]
     queue = pd.DataFrame(dict(why=["decide", "audit"], pairs=[len(decide), len(audit)], from_bits=[lo, t], below_bits=[t, t + 4]))
     queue = queue.replace([math.inf, -math.inf], None)  # no trust line yet: the range from the top step up
@@ -356,7 +356,7 @@ def carry_over(run: "Run", previous: pd.DataFrame, sheet: pd.DataFrame, out: Pat
 def carry_kinds(run: "Run", sheet: pd.DataFrame, previous: Path) -> pd.DataFrame:
     """The person/company sheet a full run makes again, with the previous one's rows holding a kind typed in and not
     given back (none of run.labels) on records the run still holds, as they were; the rest new. O(sheet rows)."""
-    old = pd.read_parquet(previous) if previous.exists() else sheet.iloc[:0]
+    old = read_parquet(previous) if previous.exists() else sheet.iloc[:0]
     typed = old[old["kind"].notna()] if "kind" in old else old.iloc[:0]
     if run.labels is not None:
         typed = typed[~typed[run.uid].astype("string").isin(run.labels[run.uid].astype("string"))]
@@ -408,7 +408,7 @@ def review_workload(con: duckdb.DuckDBPyConnection, out: Path, p: Pipeline, uid:
                            bound=round(1 - 0.05 ** (1 / sample), 4) if sample else None, reviews_left=left, reviews_to_here=total,
                            if_not_clean=int(pairs - checked)))
     below = int(got.get(len(steps), (0,))[0])
-    sheet = pd.read_parquet(out / "kind_review.parquet") if (out / "kind_review.parquet").exists() else pd.DataFrame(columns=["why", "kind"])
+    sheet = read_parquet(out / "kind_review.parquet") if (out / "kind_review.parquet").exists() else pd.DataFrame(columns=["why", "kind"])
     part, open_ = sheet_parts(sheet) if len(sheet) else sheet["why"], sheet["kind"].isna()
     hours = lambda n: round(n * seconds_per_pair / 3600, 1)
     return dict(ranges=ranges, below_last_step=below, unnamed=int(unnamed), watch=trust.watch,
@@ -446,7 +446,7 @@ def applied(out: Path, uid: str) -> pd.DataFrame:  # each pair's latest decision
     parts = sorted((out / DECISIONS).glob("part-*.parquet"))
     if not parts:
         return pd.DataFrame(columns=[f"{uid}_l", f"{uid}_r", "decision"])
-    return pd.concat([pd.read_parquet(f) for f in parts]).drop_duplicates([f"{uid}_l", f"{uid}_r"], keep="last")
+    return pd.concat([read_parquet(f) for f in parts]).drop_duplicates([f"{uid}_l", f"{uid}_r"], keep="last")
 
 
 def describe_workspace(con: duckdb.DuckDBPyConnection, out: Path, uid: str) -> dict:
@@ -463,7 +463,7 @@ def describe_workspace(con: duckdb.DuckDBPyConnection, out: Path, uid: str) -> d
     activity = history(out)
 
     def queue(sheet: str, answer: str, whys: tuple[str, ...]) -> dict:  # each kind of row still open, and the answers written in, not yet applied
-        rows = pd.read_parquet(out / sheet) if (out / sheet).exists() else pd.DataFrame(columns=["why", answer])
+        rows = read_parquet(out / sheet) if (out / sheet).exists() else pd.DataFrame(columns=["why", answer])
         rows = rows.assign(why=sheet_parts(rows)) if answer == "kind" and len(rows) else rows  # a flagged record drawn at random is to decide
         written = rows[answer].notna()
         if answer == "decision" and len(rows):  # a decision applied since stays in the sheet until the next run writes it
@@ -627,7 +627,7 @@ def describe_matching(con: duckdb.DuckDBPyConnection, out: Path | None, p: Pipel
     accepted = rows(f"SELECT count(*) FROM {parquet('matches/*.parquet')}")[0][0] if ran else None
     rule_pairs = sum(v[0] for v in kept.values()) if ran else None
     rule_merged = sum(v[3] for v in kept.values()) if ran else None
-    review = pd.read_parquet(out / "review.parquet") if ran and (out / "review.parquet").exists() else None
+    review = read_parquet(out / "review.parquet") if ran and (out / "review.parquet").exists() else None
     decided = rows(f"SELECT count(*) FROM {parquet(DECISIONS + '/*.parquet')}")[0][0] if ran and any((out / DECISIONS).glob("*.parquet")) else 0
     by = dict(rows(f"SELECT resolved_by, count(*) FROM {parquet('gold.parquet')} WHERE resolved_by = 'review' GROUP BY 1"))
     sizes = rows(f"SELECT n, count(*) FROM (SELECT count(*) AS n FROM {parquet('gold.parquet')} GROUP BY cluster_id) GROUP BY 1 ORDER BY 1")
@@ -833,7 +833,7 @@ def describe_method(out: Path, p: Pipeline, s: "Settings") -> dict:
     now = len(ran)
     audits = decided[(decided["why"] == "audit") & (decided["round"] == now)] if now else decided.iloc[:0]
     false = int((~audits["same"].astype(bool)).sum())
-    review = pd.read_parquet(out / "review.parquet") if (out / "review.parquet").exists() else pd.DataFrame(columns=["why", "decision"])
+    review = read_parquet(out / "review.parquet") if (out / "review.parquet").exists() else pd.DataFrame(columns=["why", "decision"])
     bands = table_after((out / "qa.md").read_text(encoding="utf-8"), "## weight bands").values.tolist() if (out / "qa.md").exists() else []
     by_round = lambda i, x: decided[(decided["round"] == i) & x(decided)]
     ran = [dict(round=i, method=x["method"], at=x["at"], matched=x["matched"], expected_false=x["expected_false"],
@@ -1120,7 +1120,7 @@ def list_patterns(out: Path, p: Pipeline) -> dict:
             have[:4] = [have[0] + pairs, have[1] + pairs * points, have[2] + merged, have[3] + wait]
             have[4] = (have[4] + some)[:3]
     by_gamma = levels(run_model(out)) if acc else {}
-    sheet = pd.read_parquet(out / "review.parquet") if acc and (out / "review.parquet").exists() else pd.DataFrame()
+    sheet = read_parquet(out / "review.parquet") if acc and (out / "review.parquet").exists() else pd.DataFrame()
     shown = [f for f in fields if f in sheet.columns]
     rules = {r.name for _, _, r in p.rules.each()}  # a rule's pairs waiting on the sheet are no pattern's: the model's pairs only
     model = sheet[(sheet["why"] == "decide") & ~sheet["sources"].astype("string").str.split("+").str[0].isin(rules)] if len(sheet) else sheet

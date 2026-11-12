@@ -39,7 +39,7 @@ import pandas as pd
 import pyarrow.compute as pc
 
 from er import details, folder, inbox, index, intake
-from er.io import alive, replace_text
+from er.io import alive, read_parquet, replace_text
 from er.config import InputError, Normalizer, adjust, lit, load_pipeline, q, restrict, sources_text, toml_of, widen
 from er.folder import Busy
 from er.report import (applied, compare_records, describe_entity, describe_key, describe_matching, describe_method, describe_workspace, entity_pairs, explain_pair, fill_rates,
@@ -655,7 +655,7 @@ def setup(a: dict, method: dict | None = None):
 
 
 def sheet(out: Path, name: str) -> pd.DataFrame | None:
-    return pd.read_parquet(out / name) if (out / name).exists() else None
+    return read_parquet(out / name) if (out / name).exists() else None
 
 
 def ids(frame: pd.DataFrame, uid: str) -> pd.DataFrame:  # the file's ID columns under the names every result uses: id, id_l, id_r
@@ -1746,7 +1746,7 @@ def list_kinds(a: dict, emit: "Emit") -> dict:
         raise InputError(f"{out}: no kind_review.parquet", fix="a full run that tells persons from companies writes it: nayose resolve records …")
     kinds = kinds.assign(why=sheet_parts(kinds))  # a flagged record drawn at random is to decide, as everywhere
     kinds.insert(2, "status", np.where(kinds["kind"].notna(), "written in", "open"))
-    answered = {x for f in folder.answer_parts(out) for x in pd.read_parquet(f, columns=[uid])[uid].astype("string")}  # applied answers leave the sheet a rerun draws
+    answered = {x for f in folder.answer_parts(out) for x in read_parquet(f, columns=[uid])[uid].astype("string")}  # applied answers leave the sheet a rerun draws
     return dict(counts=counts(kinds), applied=len(answered), kinds=rows(ids(picked(kinds, a), uid)), next=[dict(command=nayose("answer", "kind", "<ID>", "company", "--workspace", out), why="answer one"),
                                                     dict(command=nayose("apply", "answers", "--workspace", out), why="apply the answers written in: a rerun")])
 

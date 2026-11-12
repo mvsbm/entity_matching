@@ -16,7 +16,14 @@ packages = ["er"]
 package-data = { er = ["ui.html"] }  # the page nayose open ui serves
 
 [tool.ruff.lint]
-select = ["F", "B904", "UP017"]  # names unused or never defined; an error re-raised without its cause; datetime.UTC
+select = ["F", "B904", "UP017", "TID251"]  # names unused or never defined; an error re-raised without its cause; datetime.UTC; the calls banned below
+
+[tool.ruff.lint.flake8-tidy-imports.banned-api]
+"pandas.read_parquet".msg = "use er.io.read_parquet: Arrow opens the file, so the command can't hang at exit"
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["TID251"]  # a test's own process; the commands it starts read through er.io
+"notebooks/*" = ["TID251"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
