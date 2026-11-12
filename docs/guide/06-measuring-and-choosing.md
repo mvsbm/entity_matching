@@ -65,11 +65,11 @@ We make many choices: thresholds, comparators, candidate generators, model optio
 
 **Solution: separate data, and a rule for every choice.**
 
-**1. Three splits, by entity.** Train is for learning and choosing, validation is for confirming, and test is for reporting once. A person's records never cross splits ([chapter 1](01-entity-resolution-and-our-task.md#where-does-the-truth-come-from)).
+**1. Three splits, by entity.** Train is for learning and choosing, validation is for confirming, and test is for reporting once. A person's records never cross splits, nor a household's ([chapter 1](01-entity-resolution-and-our-task.md#where-does-the-truth-come-from)).
 
 **2. Cross-validation inside train.** The probabilistic model is *fitted* on train, so scoring it on train would flatter it. Train's entities are therefore split into three folds. Each fold is scored by a model fitted on the other two, so every score is **out-of-fold**. The rules stage fits nothing, so for it train itself is a fair selection set.
 
-**3. The threshold rule.** On the out-of-fold scores, take the lowest weight that accepts no false pair, with a false-pair rate bound of at most 5%. Then go one step stricter, as a safety margin. For the configuration as written:
+**3. The threshold rule.** On the out-of-fold scores, take the lowest weight that accepts no false pair, with a false-pair rate bound of at most 5%. Then go one step stricter, as a safety margin. A pair of two people of one household is not a false pair here: the family name, the address and the phone are both theirs, so it can score as high as a duplicate, and people decide it, labelled maybe one household ([usage](../usage.md#maybe-one-household)). It is counted apart, in every table's `household` column. For the configuration as written:
 
 | Accept at or above | Pairs accepted (out-of-fold) | False pairs |
 |---|---|---|

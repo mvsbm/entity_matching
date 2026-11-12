@@ -17,7 +17,7 @@ from er.config import InputError, Pipeline, bits, lit, q
 from er.io import read_parquet
 from er.kind import sheet_parts
 from er.match import levels, named_sql
-from er.report import applied, no_run, run_model, said, scored_again
+from er.report import applied, households, no_run, run_model, said, scored_again
 from er.settings import Settings, norm_name
 
 BANDS = (-20, -10, 0, 6, 8, 10, 12, 16, 20)  # the score chart's edges, in points: as report.txt's SCORES
@@ -112,7 +112,8 @@ def list_scored(con: duckdb.DuckDBPyConnection, db: object, out: Path, s: Settin
 
 
 def _with_fields(con: duckdb.DuckDBPyConnection, out: Path, s: Settings, p: Pipeline, pairs: list[dict]) -> list[dict]:
-    """Each pair with both records' compared fields (as the run standardized them): what a row shows at a glance."""
+    """Each pair with both records' compared fields (as the run standardized them), and whether it may be two people of
+    one household: what a row shows at a glance."""
     if not pairs:
         return pairs
     uid = s.data.unique_id
@@ -123,7 +124,11 @@ def _with_fields(con: duckdb.DuckDBPyConnection, out: Path, s: Settings, p: Pipe
     got = con.execute(f"SELECT {', '.join(q(c) for c in [uid, *fields])} FROM {read(out, 'state/records/*.parquet')} WHERE {q(uid)} IN (SELECT {q(uid)} FROM er_ids)").df()
     con.unregister("er_ids")
     by = {str(x[uid]): {f: (None if pd.isna(x[f]) else str(x[f])) for f in fields} for x in got.to_dict("records")}
-    return [{**x, "fields": {f: [by.get(x["first"], {}).get(f), by.get(x["second"], {}).get(f)] for f in fields}} for x in pairs]
+    con.register("er_pairs", pd.DataFrame({f"{uid}_l": [x["first"] for x in pairs], f"{uid}_r": [x["second"] for x in pairs]}, dtype="string"))
+    homes = households(con, read(out, "state/records/*.parquet"), "SELECT * FROM er_pairs", uid, p)
+    con.unregister("er_pairs")
+    return [{**x, "fields": {f: [by.get(x["first"], {}).get(f), by.get(x["second"], {}).get(f)] for f in fields},
+             "household": (x["first"], x["second"]) in homes} for x in pairs]
 
 
 def list_entities(con: duckdb.DuckDBPyConnection, out: Path, s: Settings, p: Pipeline, min_size: int = 2, record: str | None = None,

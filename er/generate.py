@@ -6,7 +6,7 @@ import json
 import tomllib
 import unicodedata
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal
 
@@ -64,6 +64,10 @@ class Spec:
     kana_confusions: tuple[tuple[str, str], ...]  # swapped both ways; a dropped character when none applies
     kanji_variants: tuple[tuple[str, str], ...] = ()  # a character and its variant (斎 / 齋), swapped both ways in a kanji name
     kanji_variant_rate: float = 0.0          # per record and kanji name part: one character written as its variant
+    households: Mapping[str, float] = field(default_factory=dict)  # share: per person entity, a household member, its own entity
+                                             # with their family name and addresses, born another year; siblings: of them, the share
+                                             # that are siblings (else a spouse or a parent); alike: of the siblings, the share whose
+                                             # given name starts as theirs; phone: of them all, the share that share the phones
     phone_typo_rate: float                   # per record: one wrong PHONE_NUM_4 digit
     address_typo_rate: float                 # per record: one wrong digit (else a dropped character) in ORIGINAL_ADDRESS
     nesting: Mapping[str, float]             # per group: 1 = fully nested missingness, 0 = independent
@@ -81,6 +85,7 @@ class Spec:
         assert all(0 <= rho <= 1 for rho in self.nesting.values())
         assert set(self.multi_lambda) == {"phone", "address", "name"}, "multi_lambda: phone, address and name"
         assert all(set(c.parts) <= set(names) and c.rate is None for c in self.columns if c.parts), "parts: other columns; no own rate"
+        assert set(self.households) <= {"share", "siblings", "alike", "phone"}, "households: share, siblings, alike and phone"
 
     @property
     def ramp(self) -> list[str]:  # the nullable columns whose fill rate comes from rate_start → rate_end
@@ -246,33 +251,17 @@ def generate(spec: Spec, persons: pd.DataFrame, companies: pd.DataFrame, towns: 
         ti, b, g = np.unravel_index(rng.choice(np.prod(shape), size, replace=False), shape)
         pools[p] = [Address(int(t[i]), int(bb) + 1, int(gg) + 1, next(codes)) for i, bb, gg in zip(ti, b, g)]
 
-    cifs = iter(distinct_digits(spec.entities + n_rec.sum(), digits["CIF_ID"]))
+    cifs = iter(distinct_digits(spec.entities + n_rec.sum(), digits["CIF_ID"]))  # at least `entities` left over: household members' come from them
     company_names, company_kanji = companies["name_kana"].to_numpy(), companies["name"].to_numpy()
     rows: list[dict[str, str]] = []
-    for e, kind in enumerate(kinds):
-        phones = [phone() for _ in range(n_phone[e])]
-        pool = pools[pref[e]]
-        addrs = rng.choice(len(pool), min(n_addr[e], len(pool)), replace=False).tolist()
-        if kind == "person":  # extra surnames (maiden / married) come from the persona surname pool
-            names, given = [persons.at[persona[e], "surname_kana"]], persons.at[persona[e], "given_kana"]
-            kanji = {names[0]: persons.at[persona[e], "surname"]}  # each surname's kanji, from its reference row
-            given_kanji = persons.at[persona[e], "given"]
-            while len(names) < n_name[e]:
-                i = rng.integers(len(surname_pool))  # as pick(surname_pool) draws, so every other column stays as it was
-                s = surname_pool[i]
-                kanji.setdefault(s, surname_kanji[i])
-                names += [s] if s not in names else []
-        else:  # (name, legal form in front?)
-            chosen = rng.choice(len(company_names), n_name[e], replace=False).tolist()  # as rng.choice(company_names, …) draws
-            names = [(company_names[i], rng.random() < spec.legal_prefix_share) for i in chosen]
-            kanji = {company_names[i]: company_kanji[i] for i in chosen}
-        birth = str(np.datetime64("1930-01-01") + rng.integers(75 * 365)).replace("-", "")  # YYYYMMDD; persons only
-        base_cif = next(cifs)
-        forms, weights = zip(*spec.legal_forms_written)
-        for r in range(n_rec[e]):
+    forms, weights = zip(*spec.legal_forms_written)
+
+    def records(entity: str, kind: str, n: int, phones: list[str], pool: list[Address], addrs: list[int], base_cif: str, names: list,
+                kanji: dict, given: str | None = None, given_kanji: str | None = None, birth: str | None = None) -> None:
+        for r in range(n):
             a = pool[pick(addrs)]
             cif = base_cif if r == 0 else noisy(base_cif, "cif") if rng.random() < spec.cif_keep else next(cifs)
-            row = dict(ENTITY_ID=f"E{e:06d}", KIND=str(kind), PHONE_NUM_4=noisy(pick(phones)[-digits["PHONE_NUM_4"]:], "phone"),
+            row = dict(ENTITY_ID=entity, KIND=kind, PHONE_NUM_4=noisy(pick(phones)[-digits["PHONE_NUM_4"]:], "phone"),
                        CIF_ID=cif, ORIGINAL_ADDRESS=original_address(a), **address_columns(a))
             if kind == "person":  # typos go into the parts, so every name column agrees
                 surname = pick(names)
@@ -294,10 +283,57 @@ def generate(spec: Spec, persons: pd.DataFrame, companies: pd.DataFrame, towns: 
                                                        "NYS_CNV_P_NAME_KANA") if c in row}
             rows.append(row)
 
+    h = spec.households
+    rs = np.random.default_rng([spec.seed, 2])  # who has a household member: its own draws, so the other entities are drawn as without
+    people = np.flatnonzero(kinds == "person")
+    with_member = set(rs.choice(people, round(h.get("share", 0) * len(people)), replace=False).tolist()) if h.get("share") else set()
+    households: dict[int, tuple] = {}
+    for e, kind in enumerate(kinds):
+        phones = [phone() for _ in range(n_phone[e])]
+        pool = pools[pref[e]]
+        addrs = rng.choice(len(pool), min(n_addr[e], len(pool)), replace=False).tolist()
+        if kind == "person":  # extra surnames (maiden / married) come from the persona surname pool
+            names, given = [persons.at[persona[e], "surname_kana"]], persons.at[persona[e], "given_kana"]
+            kanji = {names[0]: persons.at[persona[e], "surname"]}  # each surname's kanji, from its reference row
+            given_kanji = persons.at[persona[e], "given"]
+            while len(names) < n_name[e]:
+                i = rng.integers(len(surname_pool))  # as pick(surname_pool) draws, so every other column stays as it was
+                s = surname_pool[i]
+                kanji.setdefault(s, surname_kanji[i])
+                names += [s] if s not in names else []
+        else:  # (name, legal form in front?)
+            chosen = rng.choice(len(company_names), n_name[e], replace=False).tolist()  # as rng.choice(company_names, …) draws
+            names = [(company_names[i], rng.random() < spec.legal_prefix_share) for i in chosen]
+            kanji = {company_names[i]: company_kanji[i] for i in chosen}
+        birth = str(np.datetime64("1930-01-01") + rng.integers(75 * 365)).replace("-", "")  # YYYYMMDD; persons only
+        base_cif = next(cifs)
+        if kind == "person":
+            records(f"E{e:06d}", "person", n_rec[e], phones, pool, addrs, base_cif, names, kanji, given, given_kanji, birth)
+            if e in with_member:
+                households[e] = (phones, pool, addrs, names[0], kanji[names[0]], given, birth)
+        else:
+            records(f"E{e:06d}", "company", n_rec[e], phones, pool, addrs, base_cif, names, kanji)
+
+    givens = persons[["given_kana", "given"]].drop_duplicates("given_kana")
+    starting = givens.groupby(givens["given_kana"].str[:2])  # a sibling's given name may start as theirs: ユウキ, ユウタ
+    for e, (phones, pool, addrs, surname, surname_k, given, birth) in sorted(households.items()):
+        sibling = rs.random() < h.get("siblings", 0)
+        like = starting.get_group(given[:2]) if sibling and rs.random() < h.get("alike", 0) else givens
+        like = like[like["given_kana"] != given]
+        if like.empty:
+            continue
+        i = int(rs.integers(len(like)))
+        apart = int(rs.integers(365, (15 if sibling else 35) * 365)) * int(rs.choice([-1, 1]))  # a sibling's years, or a spouse's or parent's
+        born = np.datetime64(f"{birth[:4]}-{birth[4:6]}-{birth[6:]}") + apart
+        own = phones if rs.random() < h.get("phone", 0) else [phone() for _ in range(1 + int(rs.poisson(spec.multi_lambda["phone"]["person"])))]
+        records(f"E{e:06d}H", "person", 1 + int(rs.poisson(spec.dup_lambda)), own, pool, addrs, next(cifs), [surname],
+                {surname: surname_k}, like["given_kana"].iat[i], like["given"].iat[i], str(born).replace("-", ""))
+
     with_truth = pd.DataFrame(rows).sample(frac=1, random_state=rng, ignore_index=True)  # shuffle so duplicates aren't adjacent
     with_truth.insert(0, "CONT_ID", [f"{i:0{digits['CONT_ID']}d}" for i in range(1, len(with_truth) + 1)])
     clean = with_truth.reindex(columns=[c.name for c in spec.columns]).astype({c.name: c.dtype for c in spec.columns})
-    truth = with_truth[["CONT_ID", "ENTITY_ID", "KIND"]].astype("string")
+    with_truth["HOUSEHOLD_ID"] = with_truth["ENTITY_ID"].str.removesuffix("H")  # a member's household is its entity's
+    truth = with_truth[["CONT_ID", "ENTITY_ID", "KIND", "HOUSEHOLD_ID"]].astype("string")
 
     # A cell stays filled iff its score ranks below round(rate · n), so every rate is exact.
     # score = ρ · (per-row group draw) + (1 − ρ) · (per-cell draw): ρ = 1 nests the group fully.
@@ -371,7 +407,7 @@ def load_spec(path: Path, difficulty: str | None = None) -> tuple[Spec, Split]:
     spec = Spec(**{**p, "multi_lambda": {a: dict(v) for a, v in p["multi_lambda"].items()}, "phone_prefixes": tuple(p["phone_prefixes"]),
                    "legal_forms_written": tuple(map(tuple, p["legal_forms_written"])), "branches": tuple(p["branches"]),
                    "kana_confusions": tuple(map(tuple, p["kana_confusions"])), "nesting": dict(p["nesting"]),
-                   "kanji_variants": tuple(map(tuple, p.get("kanji_variants", ()))),
+                   "kanji_variants": tuple(map(tuple, p.get("kanji_variants", ()))), "households": dict(p.get("households", {})),
                    "buildings": tuple(p["buildings"]),
                    "original_address_formats": tuple(AddressFormat(**f) for f in p["original_address_formats"]),
                    "columns": tuple(Column(**{**c, "parts": tuple(c.get("parts", ()))}) for c in p["columns"])})
@@ -379,15 +415,16 @@ def load_spec(path: Path, difficulty: str | None = None) -> tuple[Spec, Split]:
 
 
 def split_by_entity(truth: pd.DataFrame, split: Split) -> pd.Series:
-    """Each record's split name: entities shuffled with split.seed and cut by split.shares, so a duplicate group never
-    spans two splits."""
-    entities = np.random.default_rng(split.seed).permutation(truth["ENTITY_ID"].unique())
-    cuts = np.round(np.cumsum(list(split.shares.values())) * len(entities)).astype(int)[:-1]
-    of = {e: name for name, part in zip(split.shares, np.split(entities, cuts)) for e in part}
-    out = truth["ENTITY_ID"].map(of).rename("split")
+    """Each record's split name: households (an entity and its household member, E…H) shuffled with split.seed and cut
+    by split.shares, so neither a duplicate group nor a household spans two splits."""
+    household = truth["HOUSEHOLD_ID"] if "HOUSEHOLD_ID" in truth else truth["ENTITY_ID"]
+    units = np.random.default_rng(split.seed).permutation(household.unique())
+    cuts = np.round(np.cumsum(list(split.shares.values())) * len(units)).astype(int)[:-1]
+    of = {e: name for name, part in zip(split.shares, np.split(units, cuts)) for e in part}
+    out = household.map(of).rename("split")
     assert out.notna().all() and truth.assign(split=out).groupby("ENTITY_ID")["split"].nunique().max() == 1
     for name, share in split.shares.items():
-        assert abs(truth.loc[out == name, "ENTITY_ID"].nunique() / len(entities) - share) <= 0.01, name
+        assert abs(truth.loc[out == name, "ENTITY_ID"].nunique() / truth["ENTITY_ID"].nunique() - share) <= 0.01, name
     return out
 
 

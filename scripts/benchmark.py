@@ -27,7 +27,7 @@ import numpy as np
 import pandas as pd
 
 from er.config import load_pipeline
-from er.evaluate import cluster_metrics, pair_metrics
+from er.evaluate import cluster_metrics, false_pairs, labelled, pair_metrics
 from er.generate import KindProblems, generate, kind_problems, load_reference, load_registry, load_spec, split_by_entity
 from er.io import markdown, read_parquet
 from er.kind import kind_review_sheet
@@ -44,11 +44,12 @@ PERSONS, COMPANIES, TOWNS = load_reference(S.paths["reference"])
 OUT = S.paths["artifacts"] / "benchmark"
 
 
-def population(spec) -> tuple[pd.DataFrame, pd.Series]:
-    """Records, and each record's entity. Past len(PERSONS) entities personas repeat: clones no matcher can tell apart."""
+def population(spec) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Records, and each record's labels (its entity and household). Past len(PERSONS) entities personas repeat: clones
+    no matcher can tell apart."""
     persons = PERSONS if spec.entities <= len(PERSONS) else pd.concat([PERSONS] * (spec.entities // len(PERSONS) + 1), ignore_index=True)
     g = generate(spec, persons, COMPANIES, TOWNS)
-    return g.df, g.truth.set_index(UID)[ENT]
+    return g.df, g.truth.set_index(UID)
 
 
 def links(run: Path) -> dict:
@@ -57,16 +58,19 @@ def links(run: Path) -> dict:
     return dict(model_links=c["accepted"], expected_false=c["expected_false"])
 
 
-def quality(run: Path, entity: pd.Series) -> dict:
-    """A written run's clusters against the truth: after the rules, and at the end; and its model links that are false."""
+def quality(run: Path, truth: pd.DataFrame) -> dict:
+    """A written run's clusters against the truth: after the rules, and at the end; and its model links that are false.
+    Pairs of two people of one household are counted apart (household_merges)."""
     gold = read_parquet(run / "gold.parquet").set_index(UID)["cluster_id"]
     rules = read_parquet(run / "state" / "rule_clusters.parquet").set_index(UID)["cluster_id"].reindex(gold.index)
-    e = entity.reindex(gold.index)
-    m = cluster_metrics(gold, e)
+    entity, household = labelled(truth.reset_index(), S.data)
+    e, h = entity.reindex(gold.index), household.reindex(gold.index) if household is not None else None
+    m = cluster_metrics(gold, e, h)
     x = read_parquet(run / "matches", columns=[f"{UID}_l", f"{UID}_r"])
-    return dict(rules_recall=round(pair_metrics(rules, e)["recall"], 4), recall=round(m["recall"], 4),
+    return dict(rules_recall=round(pair_metrics(rules, e, h)["recall"], 4), recall=round(m["recall"], 4),
                 interval=f"{m['recall_lo']:.3f}–{m['recall_hi']:.3f}", false_merges=int(m["FP"]), fp_rate_at_most=f"{m['fp_rate_hi']:.2%}",
-                **links(run), false_links=int((x[f"{UID}_l"].map(entity) != x[f"{UID}_r"].map(entity)).sum()))
+                household_merges=int(m["household"]), **links(run),
+                false_links=int(false_pairs(x[f"{UID}_l"], x[f"{UID}_r"], entity, household).sum()))
 
 
 def scenarios() -> pd.DataFrame:
@@ -82,18 +86,18 @@ def scenarios() -> pd.DataFrame:
     rows, made = [], {}
     for i, (name, (spec, p)) in enumerate(variants.items()):
         if repr(spec) not in made:
-            records, entity = population(spec)
-            which = split_by_entity(entity.rename(ENT).reset_index(), SPLIT).to_numpy()
+            records, truth = population(spec)
+            which = split_by_entity(truth.reset_index(), SPLIT).to_numpy()
             d = OUT / f"population_{len(made)}"
             d.mkdir(parents=True, exist_ok=True)
             for part in ("train", "test"):
                 records[which == part].to_parquet(d / f"{part}.parquet", index=False)
-            made[repr(spec)] = d, entity
-        d, entity = made[repr(spec)]
+            made[repr(spec)] = d, truth
+        d, truth = made[repr(spec)]
         fit = Run(p, S)
         fit.load(d / "train.parquet")
         Run(p, S, model=fit.fit()).full(d / "test.parquet", OUT / f"scenario_{i}", overwrite=True)  # this script's own folders
-        rows.append(dict(scenario=name, **quality(OUT / f"scenario_{i}", entity)))
+        rows.append(dict(scenario=name, **quality(OUT / f"scenario_{i}", truth)))
         print(rows[-1], flush=True)
     return pd.DataFrame(rows)
 
@@ -130,8 +134,8 @@ def kinds(entities: int, labels: int = 2_000) -> pd.DataFrame:
                                                             ("the flag alone", "flag", flag_only, "records.parquet", None),
                                                             (f"the kind step, {labels:,} labels", "kind", p, "records.parquet", d / "labels.parquet")):
             run = Run(pipeline, s, kind_labels=kind_labels).full(d / records, d / folder)  # each its own folder: no answers carried over
-            gold = read_parquet(d / folder / "gold.parquet").set_index(UID).join(truth[["ENTITY_ID", "KIND"]])
-            m = cluster_metrics(gold["cluster_id"], gold["ENTITY_ID"])
+            gold = read_parquet(d / folder / "gold.parquet").set_index(UID).join(truth[["ENTITY_ID", "KIND", "HOUSEHOLD_ID"]])
+            m = cluster_metrics(gold["cluster_id"], gold["ENTITY_ID"], gold["HOUSEHOLD_ID"])
             mixed = gold.assign(c=gold["KIND"].eq("company")).groupby("cluster_id")["c"].agg(["any", "all"])
             sheet_ = qa(run)["review_sheet"]
             company, person = gold["KIND"].eq("company"), gold["KIND"].eq("person")
@@ -148,7 +152,7 @@ def cost(entities: list[int], memory_limit: str) -> pd.DataFrame:
     """Each population written to Parquet and resolved by nayose resolve records, fitted on the file itself, as a real run."""
     rows = []
     for n in entities:
-        records, entity = population(replace(SPEC, entities=n))
+        records, truth = population(replace(SPEC, entities=n))
         d = OUT / f"cost_{n}"
         d.mkdir(parents=True, exist_ok=True)
         records.to_parquet(d / "records.parquet", index=False)
@@ -167,7 +171,7 @@ def cost(entities: list[int], memory_limit: str) -> pd.DataFrame:
                    **{x["step"]: x["seconds"] for x in steps}, recall="—", false_merges="—", fp_rate_at_most="—", **links(d / "run"),
                    false_links="—")
         if n <= len(PERSONS):
-            q = quality(d / "run", entity)
+            q = quality(d / "run", truth)
             row |= {k: q[k] for k in ("recall", "false_merges", "fp_rate_at_most", "false_links")}
         rows.append(row)
         print(rows[-1], flush=True)

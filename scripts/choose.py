@@ -36,6 +36,7 @@ def main() -> None:
         s = replace(s, data=replace(s.data, datasets=tuple(d for d in s.data.datasets if d != "test")))
     report_file, final_file = ((s.root / "reports" / "choose.md", s.root / "config" / "final.toml") if args.test
                                else (s.paths["artifacts"] / "choose" / "choose.md", s.paths["artifacts"] / "choose" / "final.toml"))
+    report_file.parent.mkdir(parents=True, exist_ok=True)
     p = load_pipeline(s.root / "config" / "pipeline.toml", s.standardize, s.chains, s.columns)
     x = load_experiments(s.root)
     _, db = connect()
@@ -50,6 +51,7 @@ def main() -> None:
             t = time.perf_counter()
             for heading, text, table in step():
                 report.extend([f"### {heading}", ""] + ([text, ""] if text else []) + ([markdown(table), ""] if table is not None else []))
+            report_file.write_text("\n".join(report), encoding="utf-8")  # after every step: a step that stops keeps the tables before it
             print(f"{title}: {step.__name__} ({time.perf_counter() - t:.1f}s)", flush=True)
 
     rules = RulesChooser(p.rules, p, s, db, x.rules_changes(p), x.RULES_DECISIONS, p.decision_p,
@@ -59,8 +61,6 @@ def main() -> None:
     section("Stage 2: Fellegi–Sunter", [fs.candidates_on_train, fs.training, fs.threshold, fs.ab, fs.decide, fs.will_it_scale,
                                          fs.evaluate, fs.why, fs.output, fs.search])
 
-    report_file.parent.mkdir(parents=True, exist_ok=True)
-    report_file.write_text("\n".join(report), encoding="utf-8")
     header = ("# The chosen pipeline: config/pipeline.toml with config/experiments.py's adopted changes, written by "
               "scripts/choose.py.\n# Adopted: rules " + ", ".join(rules.adopted) + "; Fellegi–Sunter " + ", ".join(fs.adopted) +
               ".\n# nayose runs it. It can be edited by hand; scripts/choose.py overwrites it.")

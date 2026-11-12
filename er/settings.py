@@ -433,7 +433,7 @@ def load_settings(path: Path | None = None, columns: Path | None = None) -> Sett
         paths=paths,
         data=Data(bronze_dir=paths["bronze"], labels_dir=paths["labels"], gold_dir=paths["gold"],
                   experiments_dir=paths["experiments"], models_dir=paths["models"],
-                  datasets=tuple(cfg["datasets"]["all"]), unique_id=cols["id"], entity_id=cols["entity"],
+                  datasets=tuple(cfg["datasets"]["all"]), unique_id=cols["id"], entity_id=cols["entity"], household_id=cfg["datasets"].get("household"),
                   synthetic=bool(cfg["datasets"]["synthetic"])),
         standardize=std,
         columns={**{name: ((cols[name],),) for name in SPECIAL}, **{name: d.sources for name, d in fields.items()}},

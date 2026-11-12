@@ -15,6 +15,7 @@ optuna = "data/artifacts/optuna"                 # Optuna studies (SQLite), read
 [datasets]
 all = ["train", "val", "test"]                   # one generated population, split by entity: fit / select / report
 synthetic = true                                 # the demo prints records: scripts/export_pdfs.py exports it only while this is true
+household = "HOUSEHOLD_ID"                       # the labels' household: a pair of two people of one household is counted apart, not as false
 
 # DuckDB, the columnar engine: past memory_limit it spills to temp_directory, so a file of any size runs in bounded
 # memory. Empty values keep DuckDB's defaults (all cores; 80% of RAM; a temporary folder).

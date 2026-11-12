@@ -3,6 +3,9 @@
 Two levels:
   pairs (entity matching)    — the accepted pairs themselves, before transitive closure
   clusters (entity resolution) — pairwise after closure, B-cubed, over-merged and split entities
+
+Where the labels name each record's household, a pair of two people of one household is neither true nor false: it
+is counted apart (`household`), and people decide it. A false pair joins two households.
 """
 import math
 
@@ -30,40 +33,50 @@ def fp_upper(fp: int, n: int, confidence: float = 0.95) -> float:
     return 1.0 if n == 0 or fp >= n else float(beta.ppf(confidence, fp + 1, n - fp))
 
 
-def pair_metrics(cluster_id: pd.Series, entity: pd.Series) -> dict[str, float]:
-    """Pairwise TP/FP/FN of clusters vs entities, from cluster × entity counts."""
+def pair_metrics(cluster_id: pd.Series, entity: pd.Series, household: pd.Series | None = None) -> dict[str, float]:
+    """Pairwise TP/FP/FN of clusters vs entities, from cluster × entity counts; with `household` (aligned to entity),
+    the pairs of one household's people counted apart."""
     tp = c2(pd.DataFrame({"c": cluster_id.to_numpy(), "e": entity.to_numpy()}).value_counts())
+    hh = c2(pd.DataFrame({"c": cluster_id.to_numpy(), "h": household.to_numpy()}).value_counts()) - tp if household is not None else 0
     predicted, actual = c2(cluster_id.value_counts()), c2(entity.value_counts())
+    fp = predicted - tp - hh
     size = cluster_id.map(cluster_id.value_counts()).to_numpy()
     has_dup = entity.map(entity.value_counts()).to_numpy() > 1
-    precision, recall = (tp / predicted if predicted else 1.0), (tp / actual if actual else 1.0)
-    return dict(TP=tp, FP=predicted - tp, FN=actual - tp, precision=precision, recall=recall,
+    precision, recall = (tp / (tp + fp) if tp + fp else 1.0), (tp / actual if actual else 1.0)
+    return dict(TP=tp, FP=fp, FN=actual - tp, household=hh, precision=precision, recall=recall,
                 f1=2 * precision * recall / (precision + recall) if precision + recall else 0.0,
-                FP_per_1k=1000 * (predicted - tp) / len(entity), resolved=int((size > 1).sum()),
+                FP_per_1k=1000 * fp / len(entity), resolved=int((size > 1).sum()),
                 dup_unresolved=int((has_dup & (size == 1)).sum()))
 
 
-def cluster_metrics(cluster_id: pd.Series, entity: pd.Series) -> dict[str, float]:
+def cluster_metrics(cluster_id: pd.Series, entity: pd.Series, household: pd.Series | None = None) -> dict[str, float]:
     """pair_metrics + B-cubed precision/recall + over-merged clusters + split entities."""
     frame = pd.DataFrame({"c": cluster_id.to_numpy(), "e": entity.to_numpy()})
     both = frame.groupby(["c", "e"])["c"].transform("size")
     c_size, e_size = frame.groupby("c")["c"].transform("size"), frame.groupby("e")["e"].transform("size")
     per_cluster, per_entity = frame.groupby("c")["e"].nunique(), frame.groupby("e")["c"].nunique()
-    m = pair_metrics(cluster_id, entity)
+    m = pair_metrics(cluster_id, entity, household)
     lo, hi = wilson(m["TP"], m["TP"] + m["FN"])
     return dict(**m, recall_lo=lo, recall_hi=hi, fp_rate_hi=fp_upper(m["FP"], m["TP"] + m["FP"]),
                 bcubed_precision=float((both / c_size).mean()), bcubed_recall=float((both / e_size).mean()),
                 overmerged=int((per_cluster > 1).sum()), split=int((per_entity > 1).sum()))
 
 
-def edge_metrics(edges: pd.DataFrame, entity: pd.Series, uid: str) -> dict[str, float]:
+def false_pairs(left: pd.Series, right: pd.Series, entity: pd.Series, household: pd.Series | None = None) -> np.ndarray:
+    """Whether each pair (its uids on the left and the right) is false: two entities, or with `household`, two households."""
+    by = entity if household is None else household
+    return left.map(by).to_numpy() != right.map(by).to_numpy()
+
+
+def edge_metrics(edges: pd.DataFrame, entity: pd.Series, uid: str, household: pd.Series | None = None) -> dict[str, float]:
     """The accepted pairs as decisions: how many are right, and what share of all true pairs they are."""
     same = edges[f"{uid}_l"].map(entity).to_numpy() == edges[f"{uid}_r"].map(entity).to_numpy()
-    actual = c2(entity.value_counts())
-    return dict(pairs=len(edges), pairs_TP=int(same.sum()), pairs_FP=int((~same).sum()),
-                pairs_precision=float(same.mean()) if len(edges) else 1.0,
+    false = false_pairs(edges[f"{uid}_l"], edges[f"{uid}_r"], entity, household)
+    actual, n = c2(entity.value_counts()), int(same.sum() + false.sum())
+    return dict(pairs=len(edges), pairs_TP=int(same.sum()), pairs_FP=int(false.sum()), pairs_household=int((~same & ~false).sum()),
+                pairs_precision=float(same.sum() / n) if n else 1.0,
                 pairs_recall=float(same.sum() / actual) if actual else 1.0,
-                pairs_fp_rate_hi=fp_upper(int((~same).sum()), len(edges)))
+                pairs_fp_rate_hi=fp_upper(int(false.sum()), n))
 
 
 def candidate_metrics(pairs: pd.DataFrame, entity: pd.Series, uid: str, targets: pd.DataFrame | None = None) -> dict[str, float]:
@@ -78,6 +91,25 @@ def candidate_metrics(pairs: pd.DataFrame, entity: pd.Series, uid: str, targets:
     if targets is not None:
         hit = targets.merge(pairs[[l, r]], on=[l, r], how="inner")
         out["completeness_on_targets"] = len(hit) / len(targets) if len(targets) else 1.0
+    return out
+
+
+class Truth(frozenset):
+    """The true pairs (uid_l, uid_r), and `household`: the pairs of two people of one household, neither true nor false."""
+    household: frozenset = frozenset()
+
+
+def labelled(truth: pd.DataFrame, data) -> tuple[pd.Series, pd.Series | None]:
+    """uid → entity, and uid → household where the labels name one (data.household_id)."""
+    t = truth.set_index(data.unique_id)
+    return t[data.entity_id], t[data.household_id] if data.household_id and data.household_id in t else None
+
+
+def truth_of(truth: pd.DataFrame, data) -> Truth:
+    entity, household = labelled(truth, data)
+    out = Truth(map(tuple, true_pairs(entity, data.unique_id).to_numpy()))
+    if household is not None:
+        out.household = frozenset(map(tuple, true_pairs(household, data.unique_id).to_numpy())) - out
     return out
 
 
@@ -106,10 +138,12 @@ def predicted_pairs(cluster_id: pd.Series) -> set[tuple[str, str]]:
 def paired_test(base: set[tuple[str, str]], variant: set[tuple[str, str]], truth: set[tuple[str, str]]) -> dict[str, float]:
     """Compare two configurations on the same records, pair by pair. Gains / losses count true pairs one joins and
     the other doesn't; p is an exact two-sided sign test on them. Far more sensitive than comparing two recalls whose
-    intervals overlap, because pairs both configurations agree on carry no information."""
+    intervals overlap, because pairs both configurations agree on carry no information. A Truth's household pairs are
+    neither gains nor false pairs."""
     gains, losses = len((variant - base) & truth), len((base - variant) & truth)
+    aside = getattr(truth, "household", frozenset())
     return dict(TP_gains=gains, TP_losses=losses, p=binomtest(gains, gains + losses, 0.5).pvalue if gains + losses else 1.0,
-                FP_added=len((variant - base) - truth), FP_removed=len((base - variant) - truth))
+                FP_added=len((variant - base) - truth - aside), FP_removed=len((base - variant) - truth - aside))
 
 
 def adopt(kind: str, selection: dict[str, float], val: dict[str, float], p_max: float) -> bool:

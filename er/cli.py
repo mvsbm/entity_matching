@@ -2146,7 +2146,8 @@ COMMANDS: tuple[Command, ...] = (
              "pairs_same": "of them, those the model expects are one customer: the start is their ratio",
              "common": "the points term frequencies add (0 without them)",
              "line": "the trust line (none: above every step; null: the method as tuned)", "threshold": "the weight the method accepts at",
-             "same_customer": "the two are in one customer", "records": "both records: id and fields",
+             "same_customer": "the two are in one customer", "household": "maybe two people of one household: an address or a phone shared, another given name or birth date",
+             "records": "both records: id and fields",
              "comparisons": "comparison, reached (its step), bits",
              "tests": "each step's tests: comparison, step, field, function, threshold, normalize, raw (the values as written), "
                       "prep (each normalizer step: step, a, b), a, b, score, passed",
@@ -2355,7 +2356,8 @@ COMMANDS: tuple[Command, ...] = (
              Param("record", "pairs of this record ID", metavar="ID"), Param("page", "the page (default 1)", metavar="N"),
              Param("count", "pairs a page (default 100)", metavar="N"), PIPELINE),
             {"total": "pairs the filters keep", "typed": "of them, decided and not applied yet", "page": "this page", "count": "pairs a page",
-             "pairs": "each pair: first, second, points, sources, rule, status, said, applied, compared (comparison: level, points), fields (field: [first, second])"},
+             "pairs": "each pair: first, second, points, sources, rule, status, said, applied, compared (comparison: level, points), fields (field: [first, second]), "
+                      "household (maybe two people of one household)"},
             "nayose list scored --workspace workspaces/customers --status waiting --from 6", list_scored_, quick=True,
             show={"pairs": ("first", "second", "points", "status", "rule")}),
     Command("list", "entities", "The entities, largest first",

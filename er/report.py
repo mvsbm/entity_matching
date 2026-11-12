@@ -440,10 +440,22 @@ def review_workload(con: duckdb.DuckDBPyConnection, out: Path, p: Pipeline, uid:
                 hours=dict(to_each_line=[hours(x["reviews_to_here"]) for x in ranges], unnamed=hours(unnamed), kinds=hours(int(((part == "decide") & open_).sum()))))
 
 
+def households(con: duckdb.DuckDBPyConnection, records: str, pairs: str, uid: str, p: Pipeline) -> set[tuple[str, str]]:
+    """The pairs of `pairs` (SQL: uid_l, uid_r) labelled maybe one household ([household]), read on `records` (SQL, the
+    run's standardized records). O(pairs)."""
+    have = {c for c, *_ in con.execute(f"DESCRIBE SELECT * FROM {records}").fetchall()}
+    if (cond := p.household.sql(have)) == "FALSE":
+        return set()
+    u, l, r = q(uid), q(f"{uid}_l"), q(f"{uid}_r")
+    return set(con.execute(f"""SELECT x.{l}, x.{r} FROM ({pairs}) x JOIN {records} l ON l.{u} = x.{l} JOIN {records} r ON r.{u} = x.{r}
+        WHERE {cond}""").fetchall())
+
+
 def review_sheet(run: "Run", pairs: pd.DataFrame) -> pd.DataFrame:
     """Scored pairs as people judge them, in the order given: both records' compared fields side by side, and per
     comparison the level the pair landed in and the bits it earned, which with the prior sum to its weight; whether the
-    run merged it (in kept: a rule's pair, the model's, or people's); an empty `decision` for people to fill in (match or no_match) and give to Run.decide. O(pairs)."""
+    run merged it (in kept: a rule's pair, the model's, or people's); whether it may be two people of one household
+    (households); an empty `decision` for people to fill in (match or no_match) and give to Run.decide. O(pairs)."""
     comps, uid = run.pipeline.fs.model.comparisons, run.uid
     fields = [f for f in dict.fromkeys(col for c in comps for col in (*c.null_if_missing, *(x for lv in c.levels for x, _ in lv.any_of)))
               if f in run.columns()]
@@ -453,7 +465,9 @@ def review_sheet(run: "Run", pairs: pd.DataFrame) -> pd.DataFrame:
     run.con.register("er_review_pairs", pairs[[run.l, run.r]])
     accepted = run.con.sql(f"""SELECT p.*, EXISTS (SELECT 1 FROM kept k WHERE k.{q(run.l)} = p.{q(run.l)} AND k.{q(run.r)} = p.{q(run.r)}) AS accepted
         FROM er_review_pairs p""").df()
+    homes = households(run.con, "records", "SELECT * FROM er_review_pairs", uid, run.pipeline)
     run.con.unregister("er_review_pairs")
+    accepted["household"] = [(a, b) in homes for a, b in zip(accepted[run.l], accepted[run.r])]
     out = pairs.merge(accepted, on=[run.l, run.r]).merge(records.add_suffix("_l"), on=run.l).merge(records.add_suffix("_r"), on=run.r)
     out["decision"] = pd.Series(pd.NA, index=out.index, dtype="string")
     by_gamma = levels(run.scoring)
@@ -461,7 +475,7 @@ def review_sheet(run: "Run", pairs: pd.DataFrame) -> pd.DataFrame:
         gamma = out.pop(f"gamma_{c.name}").astype(int)
         out[c.name] = gamma.map(lambda g: by_gamma[c.name][g][0])
         out[f"{c.name}_bits"] = gamma.map(lambda g: round(by_gamma[c.name][g][1], 2))
-    return out[[*(["why"] if "why" in out else []), "decision", run.l, run.r, "match_weight", "match_probability", "accepted", "sources",
+    return out[[*(["why"] if "why" in out else []), "decision", run.l, run.r, "match_weight", "match_probability", "accepted", "household", "sources",
                 *(f"{f}_{side}" for f in fields for side in ("l", "r")), *(x for c in comps for x in (c.name, f"{c.name}_bits"))]
                ].reset_index(drop=True)
 
@@ -967,7 +981,8 @@ def explain_pair(out: Path, p: Pipeline, s: "Settings", first: str, second: str,
         groups = dict(group_a=[show(x) for x in group_a], group_b=[show(x) for x in group_b],
                       across=[dict(id_l=x, id_r=y, weight=round(float(scores.at[(x, y), "match_weight"]), 2)) for x, y in pairs])
     trust, weight, prior = p.trust.line, float(me["match_weight"]), math.log2(lam / (1 - lam))
-    return dict(id_l=a, id_r=b, weight=round(weight, 2), probability=float(me["match_probability"]), prior=round(prior, 2),
+    home = bool(households(con, f"read_parquet({lit(out / 'state' / 'records' / '*.parquet')}, union_by_name = true)", f"SELECT * FROM er_xp WHERE {l} = {lit(a)} AND {r} = {lit(b)}", uid, p))
+    return dict(id_l=a, id_r=b, weight=round(weight, 2), probability=float(me["match_probability"]), prior=round(prior, 2), household=home,
                 pairs_all=n * (n - 1) // 2, pairs_same=round(lam * n * (n - 1) / 2),  # the prior in counts: λ is their ratio
                 common=round(weight - prior - sum(bits for _, bits in reached.values()), 2),  # term frequencies: how common the values agreed on are
                 line=None if trust is None else "none" if math.isinf(trust) else trust, threshold=p.fs.min_match_weight,

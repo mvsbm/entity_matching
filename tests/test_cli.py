@@ -817,13 +817,24 @@ def test_the_runaway_guard_stops_only_what_would_not_fit(tmp_path, population, m
         Run(p, s).full(tmp_path / "in.parquet", tmp_path / "run")
 
 
-def test_the_generator_makes_direct_matches_rare_and_reports_how_hard_it_is():
-    from er.generate import check, generate, halfwidth, load_reference, load_spec, profile
+def test_the_generator_makes_direct_matches_rare_households_their_own_entities_and_reports_how_hard_it_is():
+    from er.generate import check, generate, halfwidth, load_reference, load_spec, profile, split_by_entity
     import unicodedata
     s = load_settings()
-    spec = replace(load_spec(s.root / "config" / "generator.toml")[0], entities=8_000)
+    spec, split = load_spec(s.root / "config" / "generator.toml")
+    spec = replace(spec, entities=8_000)
     g = generate(spec, *load_reference(s.paths["reference"]))
-    check(spec, g)  # CONT_ID unique, digits, fill rates
+    check(spec, g)  # CONT_ID unique, digits, fill rates, no customer ID shared by two entities
+    t = g.with_truth.assign(household=g.with_truth["ENTITY_ID"].str.removesuffix("H"))
+    member = t["ENTITY_ID"].str.endswith("H")
+    people = (g.truth.drop_duplicates("ENTITY_ID")["KIND"] == "person").sum()
+    share = spec.households["share"]
+    assert t.loc[member, "KIND"].eq("person").all() and 0.8 * share < t.loc[member, "ENTITY_ID"].nunique() / people <= share
+    both = t[member].merge(t[~member], on="household", suffixes=("", "_b"))  # each member's record beside each of its household's
+    assert (both["GIVEN_NAME_KANA"] != both["GIVEN_NAME_KANA_b"]).mean() > 0.9 and (both["BIRTH_DATE"] != both["BIRTH_DATE_b"]).all()
+    assert (both["LAST_NAME_KANA"] == both["LAST_NAME_KANA_b"]).mean() > 0.3  # one family name, each record with its own typos
+    assert ((both["PHONE_NUM_4"] == both["PHONE_NUM_4_b"]) & (both["ADDR_CD"] == both["ADDR_CD_b"])).mean() > 0.03  # what F1 joins on
+    assert t.assign(split=split_by_entity(g.truth, split)).groupby("household")["split"].nunique().max() == 1
     hard = profile(g)
     assert 0.004 <= hard["direct (exact rules)"] <= 0.02  # calibrated to about 1% on the full population
     assert hard["same customer ID"] < 0.05 and 0.05 < hard["nothing in common"] < 0.2
@@ -1023,3 +1034,28 @@ def test_the_page_s_state_is_the_cli_s_a_file_it_can_t_run_counts_said_once_and_
     company = gold[gold["kind"] == 2].groupby("cluster_id").filter(lambda c: len(c) == 1)[uid].iloc[0]
     named = say("list", "entities", "--workspace", home / "w", "--record", company, "--smallest", "1")[1]["entities"]
     assert named and named[0]["names"]  # a company's entity named by its company name
+
+
+def test_two_people_of_one_household_are_labelled_and_a_copy_of_one_is_not(tmp_path, population):
+    from er.report import explain_pair
+    from er.results import list_scored
+    from er.run import Run
+    from er.strings import connect
+    s, p, g = population
+    uid = s.data.unique_id
+    cols = ["GIVEN_NAME_KANA", "LAST_NAME_KANA", "PHONE_NUM_4", "ADDR_CD"]
+    one = g.df[g.df[cols].notna().all(axis=1) & g.df["BIRTH_DATE"].isna()].iloc[0]
+    given = "ハナコ" if not str(one["GIVEN_NAME_KANA"]).startswith("ハ") else "タロウ"  # 2 edits or more from theirs, all three sounds of the end apart
+    member = one.copy()
+    member[[uid, "GIVEN_NAME_KANA", "FULL_NAME_KANA", "O_PERSON_NAME_KANA"]] = ["member", given, one["LAST_NAME_KANA"] + given, one["LAST_NAME_KANA"] + "　" + given]
+    copy = one.copy()
+    copy[uid] = "copy"
+    pd.concat([g.df, pd.DataFrame([member, copy])], ignore_index=True).to_parquet(tmp_path / "in.parquet", index=False)
+    Run(p, s).full(tmp_path / "in.parquet", tmp_path / "run", pipeline_file=s.root / "config" / "final.toml")  # with its reports, as nayose runs it
+    said = lambda x: explain_pair(tmp_path / "run", p, s, one[uid], x)["household"]
+    assert said("member") and not said("copy")  # the copy: the same given name
+    con, db = connect(s.compute)
+    listed = {(x["first"], x["second"]): x["household"] for x in list_scored(con, db, tmp_path / "run", s, p, record="member", count=500)["pairs"]}
+    assert listed.get(tuple(sorted((one[uid], "member")))) is True
+    sheet = pd.read_parquet(tmp_path / "run" / "review.parquet")
+    assert "household" in sheet and sheet["household"].dtype == bool

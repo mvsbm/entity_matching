@@ -34,6 +34,9 @@ kana_confusions = [["ウ", "ー"], ["オ", "ウ"], ["ツ", "ッ"], ["ヤ", "ャ"
 kanji_variants = [["斎", "齋"], ["斉", "齊"], ["辺", "邊"], ["辺", "邉"], ["高", "髙"], ["崎", "﨑"], ["沢", "澤"], ["浜", "濱"], ["桜", "櫻"],
                   ["広", "廣"], ["国", "國"], ["島", "嶋"], ["竜", "龍"], ["恵", "惠"], ["真", "眞"], ["徳", "德"], ["富", "冨"], ["栄", "榮"]]
 kanji_variant_rate = 0.1          # per record and kanji name part: one character written as its variant, as systems store them
+# per person entity, a household member: their family name and addresses, born another year; half siblings (half of them
+# with a given name starting alike: ユウキ, ユウタ), half a spouse or a parent; half sharing the phones
+households = { share = 0.05, siblings = 0.5, alike = 0.5, phone = 0.5 }
 phone_typo_rate = 0.1             # per record: one wrong digit of the phone's last four
 address_typo_rate = 0.1           # per record: one wrong digit (else a dropped character) in the typed address
 nesting = { name = 0.7, postal = 0.9, address = 0.6 }   # per group: 1 = fully nested missingness, 0 = independent

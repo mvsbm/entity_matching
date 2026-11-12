@@ -223,8 +223,8 @@ class Run:
                 known(self.con, f"SELECT {q(self.uid)} AS id FROM er_given_ids", rows, self.uid, self.kind_labels, path)
                 self.con.unregister("er_given_ids")
             self.inputs += file_facts([self.settings.root / NAME_MODEL], "name model") + file_facts([self.kind_labels] if self.kind_labels else [], "answers")
-        probe = self.pipeline.probe  # its groups are keys too: their columns are made with the rest
-        normalized, used = [*rules.normalized(), *fs.normalized(), *probe.normalized()], rules.used() | fs.used() | probe.used()
+        probe, home = self.pipeline.probe, self.pipeline.household  # its groups are keys too, and the label's fields: made with the rest
+        normalized, used = [*rules.normalized(), *fs.normalized(), *probe.normalized(), *home.normalized()], rules.used() | fs.used() | probe.used() | home.used()
         total, done = self._count(rows), 0
         if self.told:
             self.told(0, total, "records")
