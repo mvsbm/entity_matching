@@ -332,3 +332,18 @@ def test_a_comparison_asked_of_duckdb_first_passes_the_pairs_the_python_function
             assert function == "jaro" or spent()[function][1] - before < 1.5 * len(df), (function, t)  # the plain query's, and few of its: most pairs never reach Python
     rule = Comparator(function="jaro_winkler", threshold=0.8).sql("x")  # a rule's form: equal values pass too
     assert "jaro_winkler_similarity" in rule and rule.startswith('(l."x" = r."x" OR')
+
+
+def test_an_em_step_that_finds_no_likely_match_at_a_level_leaves_it_unestimated_instead_of_stopping():
+    import splink.comparison_library as cl
+    from er.match import _populate, _unseen_when_zero
+    level = next(lv for lv in cl.ExactMatch("name").get_comparison("duckdb").comparison_levels if lv.comparison_vector_value == 1)
+    zero = lambda: {"name": {1: {"m_probability": 0.0, "u_probability": 0.1}}}  # one record copied many times outweighs the rest
+    with pytest.raises(ValueError, match="m_probability value 0.0"):
+        _populate(set(), level, "name", zero())  # Splink's own step: the run stops
+    _unseen_when_zero(set(), level, "name", zero())
+    assert not level._m_is_trained  # saved without m: train_fs gives it m = u, 0 bits, and lists it as unestimated
+    _unseen_when_zero(set(), level, "name", {"name": {1: {"m_probability": 0.25, "u_probability": 0.1}}})
+    assert level.m_probability == 0.25  # an m it can hold is taken as found
+    _unseen_when_zero(set(), level, "name", {"name": {1: {"m_probability": float("nan"), "u_probability": 0.1}}})
+    assert not level._m_is_trained  # no match at all in the comparison (0 / 0): Splink would take it, and every weight be NaN

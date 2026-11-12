@@ -26,9 +26,9 @@ Each entry names a way an entity-resolution pipeline like this one goes wrong, a
 
 ## Levels without an estimate
 - **Pitfall:** Splink fills a level it could not estimate with default m and u values, which can produce strong weights out of nothing. It shows as Splink warning "u values not fully trained" or "level not observed".
-- **Why:** a lower level can be unreachable, when its threshold sits above the level before it ("JW low" above "JW high"), or a threshold can be so strict that no random pair reaches it.
-- **Guard:** a level no sampled pair reached gets u at its 95% upper bound, so its weight is a lower bound on the evidence. A level never seen in training gets m = u, worth 0 bits. The model lists such levels (`er.filled`). A level that is never reached is left out: the company comparison has no "JW high" level, and the search skips a tuned level the model doesn't have.
-- **Check:** a test builds a shadowed level and checks that it carries 0 bits.
+- **Why:** a lower level can be unreachable, when its threshold sits above the level before it ("JW low" above "JW high"), or a threshold can be so strict that no random pair reaches it. EM can also find no likely match at a level: one record copied many times outweighs the rest, and Splink's own EM then sets an m of 0 there and stops on it, or, for a comparison no likely match is left in, an m that is not a number, which it takes and every weight of the level becomes.
+- **Guard:** a level no sampled pair reached gets u at its 95% upper bound, so its weight is a lower bound on the evidence. A level never seen in training gets m = u, worth 0 bits, and so does a level EM puts at an m too small to hold or not a number (`er.match._unseen_when_zero`). The model lists such levels (`er.filled`). A level that is never reached is left out: the company comparison has no "JW high" level, and the search skips a tuned level the model doesn't have.
+- **Check:** a test builds a shadowed level and checks that it carries 0 bits; another hands an EM step an m of 0, and one that is not a number, and checks that the level is left unestimated.
 
 ## Two policies that set one parameter
 - **Pitfall:** two procedures that both choose the same setting make the adopt-and-rerun loop go round for ever. It shows as a search suggesting an adopted configuration again, and that suggestion passing the decision rule again.
