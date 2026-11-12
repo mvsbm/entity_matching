@@ -24,10 +24,29 @@ import pandas as pd
 import splink
 import splink.comparison_level_library as cll
 import splink.comparison_library as cl
+import splink.internals.expectation_maximisation as splink_em
 from splink import DuckDBAPI, Linker, SettingsCreator
+from splink.internals.comparison_level import M_U_CLAMP_MIN
+from splink.internals.constants import LEVEL_NOT_OBSERVED_TEXT
 
 from er.candidates import deletions_sql
 from er.config import Comparator, Comparison, DeletionKeys, FSModel, FSSpec, InputError, Key, KeyBlocker, Pipeline, RulesSpec, keys_sql, q
+
+_populate = splink_em.populate_m_u_from_lookup
+
+
+def _unseen_when_zero(fixed: set[str], level, name: str, lookup: dict) -> None:
+    """Splink's EM step, with an m too small to hold or not a number (no likely match at the level, or none in the
+    comparison: one record copied many times outweighs the rest) read as a level not observed, which train_fs gives
+    m = u. Splink refuses the first itself and takes the second, which makes every weight of the level NaN.
+    shortcut: Splink 5.0's own EM finds those m; drop this once its EM clamps them."""
+    got = lookup.get(name, {}).get(level.comparison_vector_value)
+    if got and isinstance(got.get("m_probability"), float) and not got["m_probability"] >= M_U_CLAMP_MIN:  # NaN too
+        got["m_probability"] = LEVEL_NOT_OBSERVED_TEXT
+    _populate(fixed, level, name, lookup)
+
+
+splink_em.populate_m_u_from_lookup = _unseen_when_zero
 
 
 def rule_edges(spec: RulesSpec, records: "Records", db: DuckDBAPI, uid: str, batch: str | None = None,
