@@ -1399,3 +1399,43 @@ sys.exit(er.cli.main(sys.argv[1:]))
     while not any(f["name"].endswith("late") for f in folder.loaded(home / "w2")) and time.time() - t < 60:
         time.sleep(0.2)
     assert any(f["name"].endswith("late") for f in folder.loaded(home / "w2"))  # loaded all the same
+
+
+def test_the_page_fits_its_window_says_each_thing_once_and_keeps_a_pair_s_id_out_of_its_differences(ui_page, tmp_path, population):
+    from er import cli
+    s, p, g = population
+    g.df.to_parquet(tmp_path / "all.parquet", index=False)
+    home = tmp_path / "workspaces"
+    assert cli.main(["create", "workspace", "w", "--home", str(home), "--format", "json"]) == 0
+    assert cli.main(["resolve", "records", str(tmp_path / "all.parquet"), "--workspace", str(home / "w"), "--format", "json"]) == 0
+    page, server, httpd = ui_page(str(home / "w"), str(home), viewport={"width": 1280, "height": 800})
+    page.click(".navitem[data-screen=lookup]")  # before its index: a short page
+    page.wait_for_selector("#build")
+    assert page.evaluate("document.documentElement.scrollHeight <= innerHeight")  # nothing to scroll: its title never hidden under the app bar
+    page.click(".navitem[data-screen=pairs]")
+    page.wait_for_selector("#right .fullrows tbody tr", timeout=60_000)
+    assert page.inner_text("#right [data-skip]") == "Skip"  # as its key says
+    assert page.query_selector("#right tr.fr-id") and "different" not in page.get_attribute("#right tr.fr-id", "class")  # the record's own ID: no difference
+    page.click(".navitem[data-screen=results]")
+    page.click(".tab[data-tab=records]")
+    page.fill("#rid", "no-such-id")
+    page.keyboard.press("Enter")
+    page.wait_for_selector("#rec .fr:has-text('No record no-such-id')", timeout=30_000)
+    assert page.locator("#rec > .card").count() == 1  # no empty entity or pairs below it
+    page.click(".navitem[data-screen=pairs]")
+    page.click("#merge")
+    page.wait_for_selector("dialog[open] .conds")
+    assert page.inner_text("dialog").count("you decide every pair") == 1  # said once
+    page.keyboard.press("Escape")
+
+    phone = page.context.browser.new_page(viewport={"width": 390, "height": 844})
+    phone.goto(page.url.split("#")[0] + "#pairs")
+    phone.wait_for_selector("#right .fullrows tbody tr", timeout=60_000)
+    assert phone.evaluate("document.documentElement.scrollWidth <= innerWidth")  # no sideways scroll
+    ths = phone.locator("#right .fullrows thead th")
+    shown = [ths.nth(k).bounding_box() for k in range(ths.count()) if ths.nth(k).is_visible()]
+    assert len(shown) == 3 and all(b["x"] + 4 < 390 for b in shown)  # the column, record A and record B, all on the screen
+    phone.goto(phone.url.split("#")[0] + "#kinds")
+    phone.wait_for_selector("#left tbody tr", timeout=60_000)
+    engine = phone.locator("#left thead th").last
+    assert engine.inner_text().strip() == "engine" and engine.bounding_box()["x"] + engine.bounding_box()["width"] <= 390
