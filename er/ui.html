@@ -2412,7 +2412,7 @@ const SCREENS = {
     await resultsPage(el, d);
     $("out").insertAdjacentHTML("beforeend", `<details class="fold-line"><summary>Every run so far</summary><div id="runs" style="margin-top:8px"></div></details>`);
     grid($("runs"), d.runs.slice().reverse(), ["at", "what", "files", "seconds"],
-         {filter: false, cell: (r, c) => c === "files" ? esc(r.files.map((f) => baseName(f).replace(/(\.\w+)\.parquet$/, "$1")).join(", ")) : c === "at" ? esc(String(r.at).replace("T", " ")) : esc(fmt(r[c]))});
+         {filter: false, cell: (r, c) => c === "files" ? esc(r.files.map((f) => baseName(f).replace(/(\.\w+)\.parquet$/, "$1")).join(", ")) : c === "at" ? esc(String(r.at ?? "").replace("T", " ")) : esc(fmt(r[c]))});
     return d;
   },
 
