@@ -190,7 +190,8 @@ trained once and its signals computed once; a combination fits only its combiner
   frequencies read; one it reads and lacks still fails loudly. The fit's sample is read the same way.
 - **An edit distance tested on the lengths first.** A Levenshtein, Damerau–Levenshtein or Hamming distance is never
   less than the lengths' difference, so `abs(length(a) - length(b)) <= t` goes before the Python call: the same pairs
-  pass, and on long values most pairs never reach Python.
+  pass, and on long values most pairs never reach Python. A Levenshtein similarity is never more than 1 − that difference ÷ the
+  longer length, tested first the same way.
 - **Edit distances in DuckDB** (`er.config.Comparator.test`). On ASCII values DuckDB's Levenshtein and
   Damerau–Levenshtein are rapidfuzz's (both unrestricted; tests compare them). Other text gets a copy at load with each
   character one ASCII byte by its code point (`one_byte_hash`); two characters may share a byte but never the reverse,

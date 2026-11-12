@@ -1699,7 +1699,8 @@ def found_words(p, pair: dict) -> str:  # how a pair was found, in words: its ru
     if pair.get("rule"):
         for _, st, rule in p.rules.each():
             if rule.name == pair["rule"]:
-                test = lambda c: {"exact": f"same {word(c)}", "jaro_winkler": f"{word(c)} similar", "hamming": f"{word(c)} 1 digit off"}.get(
+                test = lambda c: {"exact": f"same {word(c)}", "jaro_winkler": f"{word(c)} similar", "levenshtein_similarity": f"{word(c)} similar",
+                                  "hamming": f"{word(c)} 1 digit off"}.get(
                     st.comparators[c].function, f"{word(c)} ≤ {num(st.comparators[c].threshold)} edits")
                 return "rule: " + ", ".join([*(f"same {word(c)}" for c in rule.exact), *map(test, rule.fuzzy)])
         return f"rule {pair['rule']}"

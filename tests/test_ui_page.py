@@ -173,7 +173,8 @@ def test_the_page_answers_once_per_key_shows_any_row_and_says_when_the_server_is
     cases = [("jaro_winkler", "MARTHA", "MARHTA"), ("jaro_winkler", "DIXON", "DICKSONX"), ("jaro_winkler", "ハツトリソウタロウ", "ハツトリソウタ"),
              ("jaro_winkler", "服部蒼太朗", "服部聡太"), ("jaro_winkler", "ABC", "XYZ"), ("jaro", "CRATE", "TRACE"), ("levenshtein", "kitten", "sitting"),
              ("levenshtein", "大田区東蒲田1-9-19", "大田区東蒲田1-8-10"), ("damerau_levenshtein", "CA", "ABC"), ("damerau_levenshtein", "ab", "ba"),
-             ("damerau_levenshtein", "1425055915260", "1425055945260"), ("hamming", "1649", "1149"), ("hamming", "1234", "123"), ("jaccard", "サトウ", "サイトウ")]
+             ("damerau_levenshtein", "1425055915260", "1425055945260"), ("hamming", "1649", "1149"), ("hamming", "1234", "123"), ("jaccard", "サトウ", "サイトウ"),
+             ("levenshtein_similarity", "コイスミユウコウ", "コイスミユオコウ"), ("levenshtein_similarity", "kitten", "sitting")]
     got = page.evaluate("(cs) => cs.map(([f, a, b]) => traceScore(f, a, b))", cases)  # what a scene ends on: the engine's own number
     assert got == pytest.approx([FUNCTIONS[f].scorer(a, b) for f, a, b in cases]), list(zip(cases, got))
     raws = [("ハッドリソウタ", ("kana_fold",)), ("東京都大田区東蒲田1丁目9番19号\u3000メゾン青葉806", ("address",)),

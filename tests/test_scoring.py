@@ -287,7 +287,7 @@ def test_a_comparison_told_its_threshold_passes_and_fails_the_pairs_the_full_sco
     a = pa.array(base + base[:2000])
     b = pa.array([word() for _ in range(4000)] + [x[:-1] + rnd.choice(letters) if x else x for x in base[:2000]])  # unrelated, and one edit apart
     for function, thresholds in {"jaro_winkler": [0.95, 0.9, 0.8, 0.75, 0, 1, 1.5], "jaro": [0.9], "levenshtein": [1, 2, 1.5, 0, -1],
-                                 "damerau_levenshtein": [1, 2], "hamming": [1]}.items():  # past the ends: every pair passes, or none, as before
+                                 "levenshtein_similarity": [0.875, 0.5, 0, 1, 1.5], "damerau_levenshtein": [1, 2], "hamming": [1]}.items():  # past the ends: every pair passes, or none, as before
         full = np.asarray(udf(function)(a, b))
         for t in thresholds:  # 0.8 included: a full score just under it is stored as float32 at it, and passes
             cut = np.asarray(udf(function, cut=True)(a, b, pa.array([float(t)] * len(a))))
@@ -299,7 +299,7 @@ def test_a_comparison_asked_of_duckdb_first_passes_the_pairs_the_python_function
     import random
     from er.config import Comparator
     from er.standardize import normalize
-    from er.strings import connect, spent
+    from er.strings import FUNCTIONS, connect, spent
     rnd = random.Random(1)
     kata, roman, digits, kanji = "アイウエオカキクケコサシスセソタチツテトナニヌネノハヒフヘホマミムメモヤユヨラリルレロワヲンガギグゲゴヴァィゥェォャュョッー・", "ABCDEFGHIJKLMNOPQRSTUVWXYZ abc", "0123456789", "東京大阪市区町村一二三丁目番地号"
     word = lambda letters: "".join(rnd.choice(letters) for _ in range(rnd.choice([1, 2, 3, 4, 6, 8, 12, 40, 90])))
@@ -322,10 +322,10 @@ def test_a_comparison_asked_of_duckdb_first_passes_the_pairs_the_python_function
     con.register("er_pairs", df.assign(i=range(len(df))))
     con.execute("CREATE TABLE pairs AS SELECT * FROM er_pairs")
     for function, thresholds in {"jaro_winkler": [0.95, 0.9, 0.8, 0.75, 0, 1, 1.5], "jaro": [0.9, 0.7], "hamming": [1, 0, 2],
-                                 "damerau_levenshtein": [1, 2], "levenshtein": [1, 2]}.items():
+                                 "damerau_levenshtein": [1, 2], "levenshtein": [1, 2], "levenshtein_similarity": [0.875, 0.85, 0.7, 0.5, 0, 1, 1.5]}.items():
         for t in thresholds:
             comp = Comparator(function=function, threshold=t)
-            plain = f'coalesce(cl_{function}_cut("x_l", "x_r", {t}) {">=" if function.startswith("jaro") else "<="} {t}, FALSE)'
+            plain = f'coalesce(cl_{function}_cut("x_l", "x_r", {t}) {">=" if FUNCTIONS[function].similarity else "<="} {t}, FALSE)'
             before = spent().get(function, (0, 0))[1]
             fast, slow = con.execute(f"SELECT list(coalesce({comp.sql('x', level=True)}, FALSE) ORDER BY i), list({plain} ORDER BY i) FROM pairs").fetchall()[0]
             assert fast == slow, (function, t, [(df.x_l[i], df.x_r[i]) for i, (p, q) in enumerate(zip(fast, slow)) if p != q][:3])

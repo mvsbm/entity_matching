@@ -23,7 +23,7 @@ from rapidfuzz import process
 from rapidfuzz.distance import DamerauLevenshtein, Hamming, Jaro, JaroWinkler, Levenshtein
 from splink import DuckDBAPI
 
-Function = Literal["exact", "jaro_winkler", "jaro", "jaccard", "levenshtein", "damerau_levenshtein", "hamming"]
+Function = Literal["exact", "jaro_winkler", "jaro", "jaccard", "levenshtein", "levenshtein_similarity", "damerau_levenshtein", "hamming"]
 
 
 def char_jaccard(a: str, b: str, **_: object) -> float:  # character-set Jaccard
@@ -44,6 +44,7 @@ FUNCTIONS: dict[str, FunctionInfo] = {
     "jaro": FunctionInfo(True, "m·n", lambda L: L * L, Jaro.similarity),
     "jaccard": FunctionInfo(True, "m+n", lambda L: 2 * L, char_jaccard),
     "levenshtein": FunctionInfo(False, "m·n", lambda L: L * L, Levenshtein.distance),
+    "levenshtein_similarity": FunctionInfo(True, "m·n", lambda L: L * L, Levenshtein.normalized_similarity),  # 1 − edits / the longer length
     "damerau_levenshtein": FunctionInfo(False, "m·n", lambda L: L * L, DamerauLevenshtein.distance),
     "hamming": FunctionInfo(False, "n", lambda L: L, Hamming.distance),
 }

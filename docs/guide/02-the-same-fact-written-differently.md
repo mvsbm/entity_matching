@@ -71,7 +71,7 @@ The functions come in four families:
 
 | Family | Functions | The question each asks |
 |---|---|---|
-| edits | Levenshtein, Damerau–Levenshtein, Hamming | how many keystrokes turn one string into the other? |
+| edits | Levenshtein, Levenshtein similarity, Damerau–Levenshtein, Hamming | how many keystrokes turn one string into the other? |
 | character matching | Jaro, Jaro–Winkler | how many characters do they share, in about the same order? |
 | sets | Jaccard | how many of their characters do they share, in any order? |
 | equality | exact | are they the same? |
@@ -105,6 +105,14 @@ Along the diagonal the cost stays at 0 while the characters agree. The last step
 - **Company names in the rules** (at most 1 edit, legal form removed, folded). Each of those rules also needs the phone to agree exactly, with the postal code or the address code, so a simple count is safe there.
 
 **Its blind spot.** Every edit costs the same, so it can't tell a slip in a long name from one in a short name. サトウ / サトオ and マツモトヒサオ / マツモトヒサウ are both 1 edit apart. But one kana is a third of サトウ and only a seventh of マツモトヒサオ. That's why the model uses Jaro–Winkler for names.
+
+### Levenshtein similarity: edits for the length
+
+**The idea.** Levenshtein's edits as a share of the longer string, taken from 1: 1 − d ÷ max(m, n). 1 means identical; 0, that no character lines up.
+
+For サトウ / サトオ it is 1 − 1/3 = **0.667**; for マツモトヒサオ / マツモトヒサウ, 1 − 1/7 = **0.857**. A slip weighs what it changes of the name, so a threshold of 0.875 holds one edit close only in a name of 8 characters or more.
+
+**How it is computed.** The Levenshtein table above, then one division: O(m·n). DuckDB computes it on ASCII, and on a copy of katakana made at load with each character one byte, so a name in kana never reaches Python.
 
 ### Damerau–Levenshtein distance: a swap counts once
 
