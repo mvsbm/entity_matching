@@ -1464,7 +1464,8 @@ def test_the_improve_page_tries_sample_sizes_shows_them_as_they_come_sets_one_an
     page.click("#sizes")
     page.wait_for_selector("#sizes-out svg circle", timeout=120_000)  # the first sizes drawn while it runs
     page.wait_for_selector("#sizes-dl", timeout=300_000)
-    assert (ws / "sample_sizes.txt").exists() and "SAMPLE SIZES" in (ws / "sample_sizes.txt").read_text(encoding="utf-8")
+    report = (ws / "sample_sizes.txt").read_text(encoding="utf-8")
+    assert all(x in report for x in ("SAMPLE SIZES", "LEVELS", "CHECK")) and "pairs at" in page.inner_text("#sizes-out")  # the check said on the page too
     rows = page.query_selector_all("#sizes-table tbody tr")
     assert len(rows) >= 2 and page.query_selector_all("#sizes-out circle")
     with page.expect_download() as got:
