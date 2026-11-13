@@ -50,6 +50,7 @@ from er.match import review_floor
 from er.results import apply_merging, check_merging, describe_merging, describe_results, list_entities, list_scored, merged_links, show_records, with_merging
 from er.strings import connect
 from er.run import Run, run_config, size_bytes, trial
+from er.sizes import grow
 from er.settings import (COLUMNS, SPECIAL, Settings, add_feature, added_of, beside, columns_file, counted_once, features_of, fit_to_file, load_settings, names_by_kind, offers,
                          own_columns, placements, present_fields, remove_feature, set_columns, set_features, set_name_kinds, settings_path, slots)
 from er.standardize import SEPARATORS
@@ -1350,6 +1351,26 @@ def try_method(a: dict, emit: "Emit") -> dict:
     return {**result, "next": [dict(command=nayose("adopt", "method", "--workspace", ws, "--trial", result["trial"]), why="adopt it, and find matches with it")]}
 
 
+def try_sample(a: dict, emit: "Emit") -> dict:
+    s, p, _ = setup(a)
+    ws = Path(a["workspace"])
+    r = grow(ws, s, p, line=emit.line)
+    best = {k: v for k, v in r["settled"].items()}
+    return {**r, "next": [dict(command=nayose("set", "fit", "--workspace", ws, "--records", v, "--em", k), why=f"learn from {v:,} records, {k}, at the next run") for k, v in best.items()]}
+
+
+def set_fit(a: dict, emit: "Emit") -> dict:
+    ws = Path(a["workspace"])
+    records = int(number(a["records"], "--records", fix="a number of records, 1,000 or more"))
+    if records < 1000:
+        raise InputError(f"--records {records}: fewer than 1,000 records hold too few matches to learn from", fix="give 1,000 or more: try sample says where more stops paying")
+    with folder.run_lock(ws):  # read, checked and written as one
+        method = {**folder.method(ws), "fit": {"records": records, "em": a["em"]}}
+        setup(a, method)  # refused before anything is written
+        folder.write_method(ws, method)
+    return {"method": method, "next": [dict(command=nayose("rerun", "records", "--workspace", ws), why="find matches with it")]}
+
+
 def number(text: str, what: str, fix: str = "a weight in bits, for example 9 or 9.5") -> float:
     try:
         return float(text)
@@ -2259,6 +2280,26 @@ COMMANDS: tuple[Command, ...] = (
              "next": "the commands that usually follow"},
             "nayose try method --workspace workspaces/customers --line 9 --drop F3_NAME~_CIF", try_method,
             show={"method": (), "fixed": ("id_l", "id_r", "decision"), "broken": ("id_l", "id_r", "decision")}),
+    Command("try", "sample", "Find how large a sample the model needs to learn from",
+            "Fits the model on 1,000 of the run's records, then 2,000, 4,000, … (each sample the last one and more), with EM "
+            "as the method has it (rules) and in one session per equality key (keys), and scores the pairs the run kept with "
+            "each fit from the levels they hold: how many reach the review floor and the line, and how many each larger sample "
+            "adds and takes away. Stops once two larger samples in a row change almost no pair, or at every record. Writes "
+            "sample_sizes.txt into the workspace, to send: counts, points and m, no record's value. Changes no result. "
+            "O(Σ fits): about twice the last one.",
+            (WORKSPACE, PIPELINE, COMPUTE),
+            {"records": "the run's records", "floor": "the review floor", "line": "the line", "file": "sample_sizes.txt", "report": "its text",
+             "steps": "each fit: records, em, seconds, start, change (the largest move of a level's points), pairs_floor, pairs_line, added, lost, m",
+             "settled": "each way's sample past which a larger one changes almost no pair", "next": "the commands that usually follow"},
+            "nayose try sample --workspace workspaces/customers", try_sample,
+            show={"steps": ("records", "em", "seconds", "start", "pairs_floor", "added", "lost")}),
+    Command("set", "fit", "Set the sample the model learns from, and how EM learns",
+            "Keeps them in the workspace (method.toml fit): the records the next run's fit samples, and EM as the method has it "
+            "(rules) or one session per equality key, each level's m their median (keys). The next run uses them. O(1).",
+            (WORKSPACE, Param("records", "the records to sample, 1,000 or more (try sample says where more stops paying)", required=True, metavar="N"),
+             Param("em", "rules: as the method has it; keys: one session per equality key", "choice", ("rules", "keys"), required=True), PIPELINE),
+            {"method": "the workspace's method.toml", "next": "the commands that usually follow"},
+            "nayose set fit --workspace workspaces/customers --records 64000 --em keys", set_fit),
     Command("try", "everything", "Try everything on a file, and write a report to send that holds no record's value",
             "Auto mode: the commands a person would run on the file, in order, each in a process of its own: create workspace "
             "(auto-<month><day>-<time> in HOME, strict: nothing merges before people check), load records, set feature with "
@@ -2490,7 +2531,7 @@ GROUPS = (  # the top-level help's commands, by task
                 "apply answers", "describe merging", "set merging", "list entities", "describe entity", "split entity")),
     ("Look up", ("build index", "match record", "search records")),
     ("Look inside", ("describe workspace", "describe matching", "describe key", "list patterns", "explain pair", "compare records")),
-    ("Method", ("describe method", "try method", "adopt method", "reset method", "describe review", "lower trust", "raise trust", "draw pairs", "list pairs")),
+    ("Method", ("describe method", "try method", "try sample", "set fit", "adopt method", "reset method", "describe review", "lower trust", "raise trust", "draw pairs", "list pairs")),
 )
 
 

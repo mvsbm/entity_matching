@@ -427,27 +427,32 @@ def rule_pairs(df: pd.DataFrame, rule: tuple[Key, ...]) -> int:  # the pairs a b
     return int((sizes * (sizes - 1) // 2).sum())
 
 
-def train_fs(model: FSModel, df: pd.DataFrame, db: DuckDBAPI, uid: str, labels: pd.Series | None = None, kept: Path | None = None) -> dict:
+def train_fs(model: FSModel, df: pd.DataFrame, db: DuckDBAPI, uid: str, labels: pd.Series | None = None, kept: Path | None = None,
+             u: dict[str, dict[str, float]] | None = None) -> dict:
     """Train on df; `labels` (entity per uid) is required for m_method="labels". Returns the Splink model JSON plus
     "er": what scoring needs (fitting-set size, term frequencies) and which levels had no estimate.
     u-sampling is ~97% of training time and depends only on each comparison and the records (FSModel.u_keys), not on
     the m method or term-frequency adjustment, so it goes through scored_sample's cache.
     A level without an estimate never falls back to Splink's defaults: no sampled pair → u at its upper bound (the
     weight is a lower bound on the evidence); never seen in training → m = u (0 bits). A prior or EM rule that finds no
-    pair in df (its fields nearly empty there) is skipped, and listed in "er"; none left of either stops the fit."""
+    pair in df (its fields nearly empty there) is skipped, and listed in "er"; none left of either stops the fit.
+    `u` (comparison → level → u, the else level's too): those u, none sampled."""
     t = df.copy()
     if model.fit_u_max_pairs:  # the fit's own sample size: its own entries in the cache, and its own bounds
         model = replace(model, u_max_pairs=model.fit_u_max_pairs)
     if model.m_method == "labels":
         assert labels is not None, "m_method='labels' needs truth labels"
         t["__label__"] = t[uid].map(labels)
-    exact = exact_u(model, t, db) if model.u_exact_by_counts else {}  # the leading exact levels, exactly
-    skip = counted(model, exact)
-    u = {**{c: {} for c in skip}, **scored_sample(model, t, db, uid, [c for c in model.comparisons if c.name not in skip], kept)}
-    u = {c: {**levels, **exact.get(c, {})} for c, levels in u.items()}
     labels_of = {c.name: [*(lv.label for lv in c.levels), ELSE] for c in model.comparisons}
-    filled_u = [[c.name, lv] for c in model.comparisons for lv in labels_of[c.name] if lv not in u[c.name]]
-    u = {c.name: {lv: u[c.name].get(lv) or u_bound(model, c, t, db) for lv in labels_of[c.name]} for c in model.comparisons}
+    if u is not None:  # given (a file's, measured already): EM learns m and λ against it, nothing sampled
+        filled_u, u = [], {c.name: {lv: u[c.name][lv] for lv in labels_of[c.name]} for c in model.comparisons}
+    else:
+        exact = exact_u(model, t, db) if model.u_exact_by_counts else {}  # the leading exact levels, exactly
+        skip = counted(model, exact)
+        u = {**{c: {} for c in skip}, **scored_sample(model, t, db, uid, [c for c in model.comparisons if c.name not in skip], kept)}
+        u = {c: {**levels, **exact.get(c, {})} for c, levels in u.items()}
+        filled_u = [[c.name, lv] for c in model.comparisons for lv in labels_of[c.name] if lv not in u[c.name]]
+        u = {c.name: {lv: u[c.name].get(lv) or u_bound(model, c, t, db) for lv in labels_of[c.name]} for c in model.comparisons}
     fields = lambda rule: " + ".join(k.column for k in rule)
     prior = [r for r in model.prior_rules if rule_pairs(t, r)]
     em = [r for r in model.em_rules if rule_pairs(t, r)] if model.m_method == "em" else []
