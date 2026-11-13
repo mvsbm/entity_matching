@@ -1162,7 +1162,7 @@ Find how large a sample the model needs to learn from.
 nayose try sample --workspace WORKSPACE [--pipeline PIPELINE] [--compute KEY=VALUE …] [--format text|json]
 ```
 
-Fits the model on 1,000 of the run's records, then 2,000, 4,000, … (each sample the last one and more), with EM as the method has it (rules) and in one session per equality key (keys), and scores the pairs the run kept with each fit from the levels they hold: how many reach the review floor and the line, and how many each larger sample adds and takes away. Stops once two larger samples in a row change almost no pair, or at every record. Writes sample_sizes.txt into the workspace, to send: counts, points and m, no record's value. Changes no result. O(Σ fits): about twice the last one.
+Fits the model on 1,000 of the run's records, then 2,000, 4,000, … (each sample the last one and more), with EM as the method has it (rules) and in one session per equality key (keys), and scores the pairs the run kept with each fit from the levels they hold: how many reach the review floor and the line, and how many each larger sample adds and takes away. Stops once two larger samples in a row change almost no pair, or at every record. Then each way's chosen fit: its points by level against the run's, the kept pairs it lifts to the review floor by pattern, and a check on the gap's sample of what a run with it would find, what the run's cutoff left out and what no key lists. Writes sample_sizes.txt into the workspace, to send: counts, points and m, no record's value. Changes no result. O(Σ fits): about twice the last one.
 
 | Parameter | |
 |---|---|
@@ -1179,6 +1179,10 @@ Fits the model on 1,000 of the run's records, then 2,000, 4,000, … (each sampl
 | `report` | its text |
 | `steps` | each fit: records, em, seconds, start, change (the largest move of a level's points), pairs_floor, pairs_line, added, lost, m |
 | `settled` | each way's sample past which a larger one changes almost no pair |
+| `chosen` | each way's settled sample, or its largest |
+| `levels` | each level's points: the run's model, then each way's chosen fit |
+| `gained` | each way's kept pairs its fit lifts to the review floor, by pattern |
+| `checks` | each way's chosen fit on the gap's sample: per threshold the pairs, those the keys list, the run kept, a run with it adds, no key lists (95%), and what those agree on |
 | `next` | the commands that usually follow |
 
 ```bash

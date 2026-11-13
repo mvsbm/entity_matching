@@ -3094,7 +3094,7 @@ const SCREENS = {
         b.disabled = true;
         const rows = [], box = $("sizes-out");
         box.innerHTML = `<p class="muted">${spinner()} Fitting on 1,000 records…</p>`;
-        run("improve", "try sample", {}, (e) => { if (e.event === "line" && e.row) { rows.push(e.row); sizesView(box, rows); } })
+        run("improve", "try sample", {}, (e) => { if (e.event === "line") { if (e.row) rows.push(e.row); sizesView(box, rows, null, e.row ? "" : e.text); } })
           .then((r) => { b.disabled = false; if (r.event === "error") box.innerHTML = banner(r); else sizesView(box, r.steps, r); });
       } else if (b.dataset.fit) {
         const f = JSON.parse(b.dataset.fit);
@@ -3115,7 +3115,7 @@ const SCREENS = {
 
 // How large a sample the model needs (try sample): pairs at the floor as each sample grows, both ways EM learns.
 const FIT_EM = {rules: "EM as tuned", keys: "EM per key"};
-function sizesView(box, rows, done = null) {
+function sizesView(box, rows, done = null, now = "") {
   const ok = rows.filter((x) => x.pairs_floor !== undefined), ways = [...new Set(ok.map((x) => x.em))];
   if (!ok.length) { box.innerHTML = `<p class="muted">${spinner()} ${rows.length ? `${fmt(rows[rows.length - 1].records)} records: too few to learn from yet…` : "Fitting…"}</p>`; return; }
   const W = 640, H = 200, L = 56, R = 96, T = 12, B = 28, xs = ok.map((x) => Math.log2(x.records)), lo = Math.min(...xs), hi = Math.max(lo + 1, ...xs);
@@ -3133,12 +3133,16 @@ function sizesView(box, rows, done = null) {
   const use = done ? ways.map((w) => { const n = done.settled[w] ?? ok.filter((x) => x.em === w).pop().records;
     return `<button class="btn ${done.settled[w] ? "filled" : ""}" data-fit='${esc(JSON.stringify({records: Math.max(n, 1000), em: w}))}'>Use ${n >= done.records ? "every record" : `${fmt(n)} records`}, ${FIT_EM[w]}</button>`; }).join(" ") : "";  // a sample of the whole file: any size past it
   box.innerHTML = (done ? `<p class="answer">${Object.keys(done.settled).length ? `More stops paying at ${Object.entries(done.settled).map(([w, n]) => `${fmt(n)} records (${FIT_EM[w]})`).join(", ")}.`
-      : "Still changing at the largest sample."}</p>` : `<p class="muted">${spinner()} ${fmt(rows[rows.length - 1].records)} records done…</p>`) + chart + '<div id="sizes-table"></div>' +
+      : "Still changing at the largest sample."}</p>${checkLines(done)}` : `<p class="muted">${spinner()} ${esc(now ? now.replace(/:.*/, "…") : `${fmt(rows[rows.length - 1].records)} records done…`)}</p>`) + chart + '<div id="sizes-table"></div>' +
     (done ? `<div class="stepfoot" data-report="${esc(done.report)}">${use}<span class="grow"></span><button class="btn" id="sizes-dl">${icon("download")}Download</button></div>` : "");
   grid($("sizes-table"), rows, ["records", "em", "start", "pairs_floor", "added", "lost", "seconds"], {filter: false,
        labels: {em: "EM", pairs_floor: `pairs at ${fmt(done ? done.floor : 4)}+`, lost: "taken away"},
        cell: (r, c) => c === "em" ? esc(FIT_EM[r.em]) : c === "pairs_floor" && r.error ? `<span class="faint">${esc(r.error)}</span>` : esc(r[c] === undefined ? "" : fmt(r[c]))});
 }
+
+const checkLines = (done) => Object.entries(done.checks || {}).map(([w, c]) => { const x = (c.thresholds || [])[0];  // at the review floor: what a run with this fit finds, and what no key lists
+  return c.error ? `<p class="muted">${esc(FIT_EM[w])}: not checked (${esc(c.error)})</p>` : x ? `<p class="muted">${esc(FIT_EM[w])} at ${fmt(done.chosen[w])} records: about ${fmt(x.pairs)} pairs at ${fmt(x.bits)}+;
+    ${x.missed ? `${fmt(x.missed)} no key lists (${fmt(x.missed_lo)}–${fmt(x.missed_hi)})` : `the keys list them all (at most ${fmt(x.missed_hi)} missed)`}; a run with it adds about ${fmt(x.gained)} the last run left out.</p>` : ""; }).join("");
 
 // A change of method in words, and what try method takes for it.
 const methodText = (m) => !m || !Object.keys(m).length ? "as tuned"

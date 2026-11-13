@@ -250,6 +250,23 @@ def generator_atoms(b: Blocker) -> tuple[Atom, ...] | None:  # the atoms a gener
     return None
 
 
+def _frame(rows: pd.DataFrame, combo: tuple[Atom, ...], col: dict[str, int]) -> pd.DataFrame:  # these targets' values on each atom of the combo, as _agrees and _normal read them
+    return pd.DataFrame({f"{s}{i}": rows[f"{s}{col[a.column]}"].to_numpy() for i, a in enumerate(combo) for s in "ab"})
+
+
+def key_lists(b: Blocker, rows: pd.DataFrame, col: dict[str, int], rec: Records, m: int) -> np.ndarray:
+    """Whether the generator lists each of these targets (a{i} / b{i} by atom, col: an atom's column → i): it agrees
+    on every atom of the key, in a block of fewer than m records. A generator that lists otherwise (sorted, TF-IDF): none."""
+    combo = generator_atoms(b)
+    if combo is None or any(a.column not in col for a in combo):
+        return np.zeros(len(rows), bool)
+    f = _frame(rows, combo, col)
+    hit = np.logical_and.reduce([_agrees(a, f[f"a{i}"], f[f"b{i}"]) for i, a in enumerate(combo)])
+    if hit.any():
+        hit[hit] = _normal(combo, b, f[hit].reset_index(drop=True), list(combo), rec, m)
+    return hit
+
+
 def idle(run) -> tuple[tuple[Blocker, ...], list[str]]:
     """The generators to run: each but those whose agreement is no evidence (every comparison reading its fields, if
     any, weighs at most 0 bits at its best level: an ID handed out in sequence, one digit off) and that list no sampled
@@ -265,19 +282,8 @@ def idle(run) -> tuple[tuple[Blocker, ...], list[str]]:
     d = run.found = discover(run, p.keys.records if p.keys else GAP_RECORDS)
     t, m = listed_by(run, d.targets), p.fs.budget.min_oversized()
     col = {a.column: i for i, a in reversed(list(enumerate(d.atoms)))}
-
-    def frame(rows: pd.DataFrame, combo: tuple[Atom, ...]) -> pd.DataFrame:  # these targets' values on each atom of the combo, as _agrees and _normal read them
-        return pd.DataFrame({f"{s}{i}": rows[f"{s}{col[a.column]}"].to_numpy() for i, a in enumerate(combo) for s in "ab"})
-
-    def lists(b: Blocker, rows: pd.DataFrame) -> np.ndarray:  # whether the generator lists each of these targets
-        combo = generator_atoms(b)
-        if combo is None or any(a.column not in col for a in combo):
-            return np.zeros(len(rows), bool)
-        f = frame(rows, combo)
-        hit = np.logical_and.reduce([_agrees(a, f[f"a{i}"], f[f"b{i}"]) for i, a in enumerate(combo)])
-        if hit.any():
-            hit[hit] = _normal(combo, b, f[hit].reset_index(drop=True), list(combo), d.rec, m)
-        return hit
+    frame = lambda rows, combo: _frame(rows, combo, col)
+    lists = lambda b, rows: key_lists(b, rows, col, d.rec, m)
     kept, dropped = list(p.fs.blockers), []
     for z in idle_:
         if any(a.column not in col for a in generator_atoms(z)):
