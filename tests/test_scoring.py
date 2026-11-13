@@ -463,13 +463,13 @@ def test_em_s_m_is_held_within_what_its_evidence_can_say():
     model = FSModel(name="t", comparisons=comps, prior_rules=(), prior_recall=0.5, u_max_pairs=1e4, m_method="em", em_rules=(), seed=0)
     lv = lambda label, m, u: {"label_for_charts": label, "m_probability": m, "u_probability": u}
     js = {"comparisons": [
-        {"output_column_name": "phone", "comparison_levels": [{"is_null_level": True}, lv("exact", 0.85, 1e-4), lv("one digit off", 2e-13, 4e-3), lv("else", 0.15, 0.996)]},
-        {"output_column_name": "cif", "comparison_levels": [{"is_null_level": True}, lv("exact", 3e-7, 3e-7), lv("one digit off", 0.2, 3.3e-5), lv("else", 0.8, 1.0)]}]}
+        {"output_column_name": "phone", "comparison_levels": [{"is_null_level": True}, lv("exact", 0.9, 1e-4), lv("one digit off", 1e-12, 1e-3), lv("else", 0.1, 0.999)]},
+        {"output_column_name": "cif", "comparison_levels": [{"is_null_level": True}, lv("exact", 1e-6, 1e-6), lv("one digit off", 0.1, 1e-5), lv("else", 0.9, 1.0)]}]}
     changed = sensible_m(model, js, {("cif", "exact")})  # cif's exact level never reached by a match in training
     bits = {(c["output_column_name"], x["label_for_charts"]): math.log2(x["m_probability"] / x["u_probability"])
             for c in js["comparisons"] for x in c["comparison_levels"] if not x.get("is_null_level")}
     assert bits["phone", "one digit off"] == pytest.approx(bits["phone", "else"])  # a typo no more evidence against than no agreement
-    assert bits["phone", "exact"] > 12  # what EM learned from agreement stands
+    assert bits["phone", "exact"] > 13  # what EM learned from agreement stands
     assert bits["cif", "one digit off"] == pytest.approx(0, abs=1e-9)  # neighbouring IDs, not a typo of a shared one
     assert {(c, lv) for c, lv, *_ in changed} == {("phone", "one digit off"), ("cif", "one digit off")}
 
