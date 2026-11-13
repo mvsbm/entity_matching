@@ -377,14 +377,77 @@ def test_a_floor_leaves_out_exactly_the_pairs_below_it_and_scores_the_rest_to_th
     assert len(held) == 7  # nothing reaches that floor: only the exempt pairs are scored
 
 
-def test_pairs_that_cant_reach_0_left_out_as_the_keys_list_them_change_no_score_and_no_customer(tmp_path, population, monkeypatch):
+def test_pairs_that_cant_reach_0_left_out_as_the_keys_list_them_change_no_score_no_customer_no_gate_and_no_count(tmp_path, population, monkeypatch):
+    from dataclasses import replace
+    from er import candidates as C
     from er.run import Run
-    s, p, g = population
+    s, p0, g = population
+    p = replace(p0, fs=replace(p0.fs, budget=replace(p0.fs.budget, sample_pairs=0)))  # a block of 2 records oversized: the gate decides hundreds
+    monkeypatch.setattr("er.run.review_floor", lambda pipeline: -50.0)  # and keeps many, pairs below 0 its hits
     g.df.to_parquet(tmp_path / "in.parquet", index=False)
+    monkeypatch.setattr(C, "KEEP_SLICE", 7)  # many slices
+    gate, budget, seen = C._gate, Run.budget, []
+
+    def spy(blockers, r, big, parts, *args):  # the distinct pairs the normal blocks list, as the gate counts them
+        seen.append(r.con.execute(f"SELECT count(*) FROM (SELECT DISTINCT l, r FROM ({' UNION ALL '.join(parts)}))").fetchall()[0][0])
+        return gate(blockers, r, big, parts, *args)
+    monkeypatch.setattr(C, "_gate", spy)
+    Run(p, s, reaching_only=False).full(tmp_path / "in.parquet", tmp_path / "first")
+    monkeypatch.setattr(C, "_gate", gate)
+    monkeypatch.setattr(Run, "budget", lambda self, stop=True: budget(self, stop=False))  # the budget's own stop is not what this tests
+    monkeypatch.setattr(Run, "capacity", lambda self: seen[0] + 3)  # tight: the gate keeps blocks while they fit, and skips the rest
+    every = Run(p, s, reaching_only=False).full(tmp_path / "in.parquet", tmp_path / "every")  # every pair the keys list stored, as before
     kept = Run(p, s).full(tmp_path / "in.parquet", tmp_path / "kept")
-    monkeypatch.setattr(Run, "_reaching", lambda self, pairs: pairs)  # every pair the keys list stored, as before
-    every = Run(p, s).full(tmp_path / "in.parquet", tmp_path / "every")
     read = lambda run, what: run.con.sql(what).df().sort_values(list(run.con.sql(what).columns)).reset_index(drop=True)
     assert kept._count("cands") < every._count("cands")  # fewer stored
     for what in ("SELECT * FROM scores WHERE match_weight >= 0", f"SELECT * FROM ({kept.scored()}) WHERE match_weight >= 0", "SELECT * FROM gold"):
         pd.testing.assert_frame_equal(read(kept, what), read(every, what))  # to the last bit
+    gated = lambda run: run.gated.drop(columns=["best"]).sort_values(["generator", "value"]).reset_index(drop=True)
+    assert set(every.gated["decision"]) >= {"kept", "skipped: over capacity"}  # the capacity binds
+    pd.testing.assert_frame_equal(gated(kept), gated(every))  # every block sampled, scored and decided alike
+    facts = lambda run, step: next(x for x in run.steps if x["step"] == step)
+    for step, keys in (("candidates", ("candidates", "oversized_kept", "gate_pairs")), ("score", ("unscored", "bands"))):
+        assert {k: facts(kept, step)[k] for k in keys} == {k: facts(every, step)[k] for k in keys}  # the counts people read
+    pairs = lambda run: {x["name"]: x["pairs"] for x in facts(run, "candidates")["generators"]}
+    assert pairs(kept) == pairs(every)  # each key's pairs, as listed
+
+
+def test_a_bound_settles_a_level_only_where_the_scored_model_wrote_it_as_the_method_does(population):
+    import copy
+    from er.match import bound_sql, bound_tests, fs_settings
+    s, p, g = population
+    settings = fs_settings(p.fs.model, "uid").create_settings_dict("duckdb")
+    for c in settings["comparisons"]:
+        for lv in c["comparison_levels"]:
+            lv.update(m_probability=0.5, u_probability=0.1)
+    settings["probability_two_random_records_match"] = 1e-6
+    tests = bound_tests(p.fs.model)
+    costly = next(c for c in settings["comparisons"] if tests[c["output_column_name"]])
+    other = copy.deepcopy(settings)  # a model fitted under another method: its first costly level is another test
+    level = next(lv for lv in next(c for c in other["comparisons"] if c["output_column_name"] == costly["output_column_name"])["comparison_levels"]
+                 if not lv.get("is_null_level"))
+    level["sql_condition"] += " AND TRUE"
+    settled = lambda x: bound_sql(x, tests).count("coalesce((")  # a comparison's unsettled outcomes, one per level that may be NULL
+    assert settled(settings) > settled(other)  # that comparison at its best level; the others settled as before
+
+
+def test_chunks_cleaned_ahead_stop_at_the_first_error_instead_of_cleaning_the_rest():
+    import concurrent.futures
+    import threading
+    import time
+    from er.run import ahead
+    done, lock = [], threading.Lock()
+
+    def clean(i):
+        time.sleep(0.01)
+        if i == 2:
+            raise ValueError("bad chunk")
+        with lock:
+            done.append(i)
+        return i
+    with concurrent.futures.ThreadPoolExecutor(2) as pool:
+        got = []
+        with pytest.raises(ValueError, match="bad chunk"):
+            for x in ahead(pool, clean, range(100), 3):
+                got.append(x)
+    assert got == [0, 1] and len(done) < 10  # in order, and the chunks queued after the error never cleaned

@@ -261,7 +261,7 @@ def run_fs(pipeline: Pipeline, settings: Settings, path: Path, truth: pd.DataFra
     t0, uid = time.perf_counter(), settings.data.unique_id
     l, r = f"{uid}_l", f"{uid}_r"
     spec = pipeline.fs
-    run = Run(pipeline, settings, model=model_json)
+    run = Run(pipeline, settings, model=model_json, reaching_only=False)  # every pair the keys list: what the metrics count
     run.load(path)
     run.fit()
     run.rules()

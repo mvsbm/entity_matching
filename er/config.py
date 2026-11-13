@@ -141,8 +141,8 @@ class Comparator:
         ASCII; on other text, its edit distance of the hashed copy (or of the bytes) fails a pair first that no edit of as
         few characters makes.
         Whatever else, the Python function, pair by pair. Each guard is a CASE: DuckDB may reorder AND and OR, never a CASE.
-        `settled` (a level): TRUE or FALSE as far as DuckDB settles it cheaply in C++, NULL where only the Python function or
-        an edit-distance table could (er.match.bound_sql's); a missing value fails, as in the level."""
+        `settled` (a level): TRUE or FALSE as far as DuckDB settles it in C++, NULL where only the Python function could, or
+        for an edit distance past one, a table of edits (er.match.bound_sql's); a missing value fails, as in the level."""
         c = self.column(base)
         side = (lambda x: (q(f"{x}_l"), q(f"{x}_r"))) if level else (lambda x: (f"l.{q(x)}", f"r.{q(x)}"))
         a, b = side(c)
@@ -173,9 +173,9 @@ class Comparator:
             # (unrestricted Damerau too); on the hashed copies it is never more than the values' distance, so a pair past t there
             # can't pass; without copies, its count of bytes edited is at most 4 per character edited (a 4-byte character for a
             # 1-byte one) and 8 per swap
-            quick = (f"WHEN {ascii_} AND {same} AND hamming({a}, {b}) <= 1 THEN TRUE "
-                     f"WHEN {ascii_} AND {same} AND hamming({a}, {b}) > {2 if f == 'damerau_levenshtein' else 1} THEN FALSE "
-                     f"WHEN {ascii_} AND NOT {same} THEN levenshtein({a}, {b}) <= 1 " if t == 1 else "")
+            quick = (f"WHEN {ascii_} THEN (CASE WHEN {same} THEN (CASE WHEN hamming({a}, {b}) <= 1 THEN TRUE "  # hamming only on equal lengths: a CASE
+                     f"WHEN hamming({a}, {b}) > {2 if f == 'damerau_levenshtein' else 1} THEN FALSE ELSE {f}({a}, {b}) <= 1 END) "
+                     f"ELSE levenshtein({a}, {b}) <= 1 END) " if t == 1 else "")
             if settled and t != 1:  # its length alone: a table of edits isn't cheap
                 return f"(CASE WHEN abs(length({a}) - length({b})) > {t} THEN FALSE ELSE NULL END)"
             hashed = f"WHEN {a1} IS NOT NULL AND {b1} IS NOT NULL THEN (CASE WHEN {f}({a1}, {b1}) > {t} THEN FALSE ELSE {python} <= {t} END) " if a1 else ""

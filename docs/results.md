@@ -75,7 +75,7 @@ Paired A/B on val against the rules as written (informational; decisions use the
 **Scores are calibrated to the scored file** (`er.match.score_fs`, `er.match.scored_u`):
 - **Term frequencies** come from the fitting records, stored in the model. A value never seen in training gets no adjustment, the conservative side. `FINAL` turns them off.
 - **λ** is a per-pair rate: true pairs grow with N, pairs with N². It is rescaled from the fitting set's size to the scored set's. So CV folds, val and test (about 10k records each) are scored on the same scale, and the threshold keeps its meaning at any size: on a file of N records, the same evidence earns log2(N/10k) fewer bits than on a 10k file.
-- **u** is measured on the scored file's records, without labels, because a field whose values grow with the file agrees by chance less often in a bigger one. The leading exact levels are counted from value counts. A one-edit level right after them on the same column (the customer ID, phone or birth date one digit off) is counted exactly too: the distinct values are joined on their one-character deletions, which two values one edit apart always share. So cif, phone and birth need no sample; name, company and address are sampled on 10⁷ random pairs, every one of them. m stays from train.
+- **u** is measured on the scored file's records, without labels, because a field whose values grow with the file agrees by chance less often in a bigger one. The leading exact levels are counted from value counts. A one-edit level right after them on the same column (the customer ID, phone or birth date one digit off) is counted exactly too, by keys on the distinct values (one per position for a substitution, one per position for a swap of neighbours, and the deletions of the longer for a length one apart), never pair by pair. So cif, phone and birth need no sample; name, company and address are sampled on 10⁷ random pairs, every one of them. m stays from train.
 - Why this matters: [lessons.md](lessons.md).
 
 **Candidates on train** (6,355 true pairs the deterministic stage missed): every generator in `config/pipeline.toml` `[generators]`, in order, from `reports/choose.md`. Pairs per record at a million records are projected by `scale_check` (pairs of one entity × N, chance pairs × N²):
@@ -186,7 +186,7 @@ That is 2,568 candidates on val (99.995% of all pairs skipped). Every true pair 
 | its key: the birth date (`birth_date_key`) | safer | +8 / −0 (p = 0.0078) | +4 / −0 | yes |
 | the given name + the phone, a key (`given_name_phone_key`) | safer | +0 / −0 | +0 / −0 | yes |
 | the birth date's deletions within the prefecture, a key (`birth_date_deletion_key`) | safer | +0 / −0 | +0 / −0 | yes |
-| one-edit levels counted through one-character deletions, not sampled (`u_near_by_keys`, owner's decision, for scale) | chosen | +0 / −0 | +0 / −0 | yes |
+| one-edit levels counted by keys, not sampled (`u_near_by_keys`, owner's decision, for scale) | chosen | +0 / −0 | +0 / −0 | yes |
 | the fit's own u from 10⁶ pairs, for EM only (`fit_u_from_1e6_pairs`) | cheaper | +0 / −0 | +0 / −0 | yes |
 | the company without its "JW high" level (`company_without_jw_high`) | cheaper | +0 / −0 | +0 / −0 | yes |
 | a name compared, or people decide (`name_needed`, owner's decision) | chosen | +682 / −5 (p < 0.0001) | +494 / −2 | yes |

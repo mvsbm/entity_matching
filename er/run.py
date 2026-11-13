@@ -50,6 +50,7 @@ import contextlib
 import functools
 import hashlib
 import json
+import multiprocessing
 import os
 import re
 import shutil
@@ -115,14 +116,19 @@ def locked(method: Callable) -> Callable:  # the workspace (the method's `out`) 
 
 
 def ahead(pool: concurrent.futures.Executor, f: Callable, items: Iterable, most: int) -> Iterator:
-    """f of each item, in order, computed in `pool` at most `most` items ahead: memory holds a few, whatever the count."""
+    """f of each item, in order, computed in `pool` at most `most` items ahead: memory holds a few, whatever the count.
+    Whatever stops it (an item's error, or the reader's) cancels the items not started, instead of waiting them out."""
     waiting: collections.deque = collections.deque()
-    for item in items:
-        waiting.append(pool.submit(f, item))
-        if len(waiting) >= most:
+    try:
+        for item in items:
+            waiting.append(pool.submit(f, item))
+            if len(waiting) >= most:
+                yield waiting.popleft().result()
+        while waiting:
             yield waiting.popleft().result()
-    while waiting:
-        yield waiting.popleft().result()
+    finally:
+        for w in waiting:
+            w.cancel()
 
 
 def size_bytes(text: str) -> int:  # one of DuckDB's sizes: "8.0 GiB", "512.0 MiB", "1.5 GB"
@@ -143,6 +149,7 @@ class Run:
     echo: Callable[[dict], None] | None = None  # called with each step as it finishes: progress for people (nayose)
     told: Callable[..., None] | None = None   # called as a long step goes (done, total, unit, facts): how far it is, for people
     kind_labels: Path | None = None           # people's person/company labels (a filled-in kind_review.parquet); an increment keeps the run's
+    reaching_only: bool = True                # candidates stores only the pairs that can reach 0 (_reaching); design time measures every pair the keys list
 
     def __post_init__(self) -> None:
         self.con, self.db = connect(self.settings.compute)
@@ -250,13 +257,16 @@ class Run:
             reads = {self.uid, *(c for d in fs.standardize.derived for cols in d.sources for c in cols), *used}  # what cleaning reads: a wide file's other columns never enter the run
             cols = ", ".join([*(q(c) for c, *_ in self.con.execute(f"DESCRIBE SELECT * FROM {rows}").fetchall() if c in reads), *(f"NULL::VARCHAR AS {q(c)}" for c in extra)])
             reader = self.con.cursor().sql(f"SELECT {cols} FROM {rows}").to_arrow_reader(self.chunk_rows)  # its own cursor: inserts go on alongside
-            workers = min(-(-total // self.chunk_rows), int(self.con.execute("SELECT current_setting('threads')").fetchall()[0][0]), os.cpu_count() or 1)
+            workers = min(-(-total // self.chunk_rows), int(self.con.execute("SELECT current_setting('threads')").fetchall()[0][0]), os.cpu_count() or 1,
+                          61 if sys.platform == "win32" else 1 << 20)  # Windows waits on at most 61 processes
             batches = (batch.to_pandas().astype("string") for batch in reader)
             clean = functools.partial(prepare, fs.standardize, normalized=normalized, used=used, kind=self.classifier)
-            with concurrent.futures.ProcessPoolExecutor(workers) if workers > 1 else contextlib.nullcontext() as pool:
+            # spawned on every system: a fork of this process, its DuckDB threads running, may deadlock (Linux before 3.14)
+            with (concurrent.futures.ProcessPoolExecutor(workers, mp_context=multiprocessing.get_context("spawn")) if workers > 1
+                  else contextlib.nullcontext()) as pool:
                 # each chunk cleaned on its own (every step reads one record, or one chunk's values), so in parallel processes
                 # the same records, taken back in order
-                for i, chunk in enumerate(ahead(pool, clean, batches, 2 * workers) if pool else map(clean, batches)):
+                for i, chunk in enumerate(ahead(pool, clean, batches, workers + 1) if pool else map(clean, batches)):
                     self.con.register("er_chunk", chunk)
                     self.con.execute(f"CREATE TABLE {into} AS SELECT * FROM er_chunk" if i == 0 else f"INSERT INTO {into} SELECT * FROM er_chunk")
                     self.con.unregister("er_chunk")
@@ -513,11 +523,12 @@ class Run:
         _, report = candidates(fs.blockers, "records", self.uid, None if fs.bridge else "er_query", fs.budget,
                                clusters="rule_clusters" if fs.bridge else None, con=self.con, into="cands",
                                gate=self._gate, floor=review_floor(self.pipeline), capacity=self.capacity(), told=self._joined(),
-                               known=getattr(self, "estimates", None), keep=self._reaching)
+                               known=getattr(self, "estimates", None), keep=self._reaching if self.reaching_only else None)
         self.con.execute("DROP TABLE IF EXISTS er_bound_records")
         self._gated(report.attrs["gated"])
-        c = self._count("cands")
-        self._done("candidates", "O(N·L + Σ P_g)", f"O({self.n:,}·L + {int(report['pairs'].sum()):,})", t, candidates=c,
+        stored = self._count("cands")
+        self.listed = c = stored if report.attrs["listed"] is None else report.attrs["listed"]  # the distinct pairs the keys listed
+        self._done("candidates", "O(N·L + Σ P_g)", f"O({self.n:,}·L + {int(report['pairs'].sum()):,})", t, candidates=c, stored=stored,
                    oversized_kept=int((self.gated.get("decision", pd.Series(dtype=str)) == "kept").sum()),
                    oversized_skipped=int(self.gated.get("decision", pd.Series(dtype=str)).str.startswith("skipped").sum()),
                    skipped_by={g: int(n) for g, n in self.gated[self.gated["decision"].str.startswith("skipped")].groupby("generator").size().items()}
@@ -607,7 +618,7 @@ class Run:
         for c, g, n in self.con.execute("SELECT c, g, count(*) FROM (UNPIVOT scores ON COLUMNS('^gamma_') INTO NAME c VALUE g) GROUP BY ALL").fetchall():
             reached.setdefault(c.removeprefix("gamma_"), {})[str(g)] = n
         self._done("score", "O(C·K·L²)", f"O({self._count('scores'):,}·{k}·L²)", t, reached=reached, patterns=self._patterns(), bands=self._bands(),
-                   unscored=total - self._count("scores"))
+                   unscored=self.listed - self._count("scores"))  # the pairs listed: those candidates never stored too
 
     def _bands(self) -> list[int]:  # the pairs in `scores` by the score chart's bands (results.BANDS), each by its own weight
         n = dict(self.con.execute(f"SELECT {banded()}, count(*) FROM scores GROUP BY 1").fetchall())
