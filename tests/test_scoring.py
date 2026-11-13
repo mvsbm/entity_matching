@@ -451,3 +451,40 @@ def test_chunks_cleaned_ahead_stop_at_the_first_error_instead_of_cleaning_the_re
             for x in ahead(pool, clean, range(100), 3):
                 got.append(x)
     assert got == [0, 1] and len(done) < 10  # in order, and the chunks queued after the error never cleaned
+
+
+def test_em_s_m_is_held_within_what_its_evidence_can_say():
+    import math
+    from er.config import Comparator, Comparison, FSModel, Level
+    from er.match import sensible_m
+    level = lambda label, f, t=None: Level(label=label, any_of=(("x", Comparator(f, t)),))
+    comps = (Comparison(name="phone", null_if_missing=("x",), levels=(level("exact", "exact"), level("one digit off", "hamming", 1))),
+             Comparison(name="cif", null_if_missing=("x",), levels=(level("exact", "exact"), level("one digit off", "damerau_levenshtein", 1))))
+    model = FSModel(name="t", comparisons=comps, prior_rules=(), prior_recall=0.5, u_max_pairs=1e4, m_method="em", em_rules=(), seed=0)
+    lv = lambda label, m, u: {"label_for_charts": label, "m_probability": m, "u_probability": u}
+    js = {"comparisons": [
+        {"output_column_name": "phone", "comparison_levels": [{"is_null_level": True}, lv("exact", 0.85, 1e-4), lv("one digit off", 2e-13, 4e-3), lv("else", 0.15, 0.996)]},
+        {"output_column_name": "cif", "comparison_levels": [{"is_null_level": True}, lv("exact", 3e-7, 3e-7), lv("one digit off", 0.2, 3.3e-5), lv("else", 0.8, 1.0)]}]}
+    changed = sensible_m(model, js, {("cif", "exact")})  # cif's exact level never reached by a match in training
+    bits = {(c["output_column_name"], x["label_for_charts"]): math.log2(x["m_probability"] / x["u_probability"])
+            for c in js["comparisons"] for x in c["comparison_levels"] if not x.get("is_null_level")}
+    assert bits["phone", "one digit off"] == pytest.approx(bits["phone", "else"])  # a typo no more evidence against than no agreement
+    assert bits["phone", "exact"] > 12  # what EM learned from agreement stands
+    assert bits["cif", "one digit off"] == pytest.approx(0, abs=1e-9)  # neighbouring IDs, not a typo of a shared one
+    assert {(c, lv) for c, lv, *_ in changed} == {("phone", "one digit off"), ("cif", "one digit off")}
+
+
+def test_one_name_in_a_person_field_and_the_company_field_is_compared_on_its_kind_s_side_only():
+    from er.config import load_pipeline
+    from er.kind import classifier
+    from er.settings import load_settings
+    from er.standardize import prepare
+    s = load_settings()
+    p = load_pipeline(s.root / "config" / "final.toml", s.standardize, s.chains, s.columns)
+    records = pd.DataFrame({"CONT_ID": ["1", "2", "3"], "FULL_NAME_KANA": ["ヤマダタロウ", None, "スズキハナコ"], "O_PERSON_NAME_KANA": [None] * 3,
+                            "LAST_NAME_KANA": [None] * 3, "GIVEN_NAME_KANA": [None] * 3,
+                            "NYS_CNV_P_NAME_KANA": ["ﾔﾏﾀﾞﾀﾛｳ", "ｶﾌﾞｼｷｶﾞｲｼｬﾔﾏﾀﾞｼｮｳｼﾞ", "ﾀﾅｶｼｮｳｼﾞ"]}, dtype="string")
+    df = prepare(s.standardize, records, [], {"full_name", "person_name", "company_name"}, kind=classifier(s, p.kind))
+    assert df.loc[0, "full_name"] == "ヤマダタロウ" and pd.isna(df.loc[0, "company_name"])  # a person's name in both: the person side only
+    assert df.loc[1, "company_name"].endswith("ヤマダショウジ")  # a company keeps its name
+    assert df.loc[2, "full_name"] == "スズキハナコ" and df.loc[2, "company_name"] == "タナカショウジ"  # two different names: both kept

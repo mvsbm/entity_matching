@@ -127,6 +127,8 @@ The largest gap, about 1.7 bits, is a different name.
 
 **What can go wrong.** A level may never occur in the sample, if its threshold is too strict, or if a lower level can never be reached because the level above it always catches the pair first. Splink then quietly uses default values, which can create strong evidence out of nothing. We use cautious bounds instead. A level no random pair reaches gets u at its 95% upper bound, and a level never seen in training counts 0 bits ([lessons](../lessons.md)). The company comparison has no "very close" level for that reason: no pair reaches it, in the sample or in EM, so it would add 0 bits for a second string comparison on every pair.
 
+EM can go wrong the other way too. A level its learning pairs never reach gets an m of almost 0, and so a huge negative weight: a phone one digit off would count as near-proof of two different people, where a typo is the likelier story. So no level weighs less than its comparison's "else" level. And "one digit off" stands for a typo in a value that matches share; where matches never shared the exact value in training (an ID unique to each record), being one digit off just means neighbouring IDs, so it counts 0 bits.
+
 **In short:** counts and random pairs give u, near-certain rules give λ, and EM gives m, with no labels needed.
 
 ## Challenge: empty fields

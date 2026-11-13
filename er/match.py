@@ -351,7 +351,7 @@ def scored_sample(model: FSModel, df: Records, db: DuckDBAPI, uid: str, comparis
 def assemble_u(model: FSModel, model_json: dict, sampled: U, exact: U, df: Records, db: DuckDBAPI) -> dict:
     """model_json with each level's u: counted exactly (when the model counts them), else sampled, else, for a level no
     sampled pair reached, the bound on these records. A level never seen in training gets m = u, 0 bits. m and λ stay as
-    fitted (score_fs rescales λ)."""
+    fitted (score_fs rescales λ), within sensible_m's limits, applied again against these u."""
     exact = exact if model.u_exact_by_counts else {}
     by_name, filled_m = {c.name: c for c in model.comparisons}, {tuple(x) for x in model_json["er"]["filled"]["m"]}
     out = copy.deepcopy(model_json)
@@ -362,6 +362,7 @@ def assemble_u(model: FSModel, model_json: dict, sampled: U, exact: U, df: Recor
             lv["u_probability"] = exact.get(name, {}).get(label) or sampled.get(name, {}).get(label) or u_bound(model, by_name[name], df, db)
             if (name, label) in filled_m:
                 lv["m_probability"] = lv["u_probability"]
+    out["er"] = {**out["er"], "adjusted": sensible_m(model, out, filled_m)}  # the limits on m, against these u
     return out
 
 
@@ -473,10 +474,42 @@ def train_fs(model: FSModel, df: pd.DataFrame, db: DuckDBAPI, uid: str, labels: 
             if not lv.get("is_null_level") and "m_probability" not in lv:
                 lv["m_probability"] = lv["u_probability"]
                 filled_m.append([c["output_column_name"], lv["label_for_charts"]])
+    adjusted = sensible_m(model, model_json, {tuple(x) for x in filled_m})
     tf = {c.tf.name: (t[c.tf.name].value_counts() / t[c.tf.name].notna().sum()).to_dict()  # Splink's own formula
           for c in model.comparisons if c.tf and any(lv.tf for lv in c.levels)}
     skipped = [fields(r) for r in (*model.prior_rules, *(model.em_rules if model.m_method == "em" else ())) if r not in (*prior, *em)]
-    return {**model_json, "er": dict(fit_rows=len(t), tf=tf, filled=dict(u=filled_u, m=filled_m), skipped=skipped)}
+    return {**model_json, "er": dict(fit_rows=len(t), tf=tf, filled=dict(u=filled_u, m=filled_m), skipped=skipped, adjusted=adjusted)}
+
+
+NEAR = ("levenshtein", "damerau_levenshtein", "hamming", "jaro", "jaro_winkler", "jaccard", "levenshtein_similarity")  # agreement short of equal
+
+
+def sensible_m(model: FSModel, model_json: dict, filled: set[tuple[str, str]]) -> list[list]:
+    """Two limits on what EM's m may say, each where a sample gave it nothing to go by; returns what changed.
+    - A level of near agreement (one digit off, a similar name) stands for a typo in a value matches share: where no
+      match agreed exactly on the comparison in training (every exact level unestimated, m = u), nearness is neighbouring
+      values (IDs handed out in sequence), not a typo, so it is no evidence either: m = u, 0 bits.
+    - Partial agreement is never more evidence against a match than no agreement: a level weighs at least its
+      comparison's else level (EM drives m to almost 0 for a level none of its learning pairs reached)."""
+    out = []
+    for c, spec in zip(model_json["comparisons"], model.comparisons):
+        name, levels = c["output_column_name"], [lv for lv in c["comparison_levels"] if not lv.get("is_null_level")]
+        by_label = {lv.label: lv for lv in spec.levels}
+        exact = [lv for lv in levels if lv["label_for_charts"] in by_label and all(x.function == "exact" for _, x in by_label[lv["label_for_charts"]].any_of)]
+        if exact and all((name, lv["label_for_charts"]) in filled for lv in exact):
+            for lv in levels:
+                level = by_label.get(lv["label_for_charts"])
+                if level and any(x.function in NEAR for _, x in level.any_of) and lv["m_probability"] != lv["u_probability"]:
+                    out.append([name, lv["label_for_charts"], "no exact agreement among matches: 0 bits", round(math.log2(lv["m_probability"] / lv["u_probability"]), 2)])
+                    lv["m_probability"] = lv["u_probability"]
+        other = next((lv for lv in levels if lv["label_for_charts"] == ELSE), None)
+        if other:
+            floor = other["m_probability"] / other["u_probability"]
+            for lv in levels:
+                if lv is not other and lv["m_probability"] / lv["u_probability"] < floor:
+                    out.append([name, lv["label_for_charts"], "less than no agreement: the else level's weight", round(math.log2(lv["m_probability"] / lv["u_probability"]), 2)])
+                    lv["m_probability"] = lv["u_probability"] * floor
+    return out
 
 
 def scaled_prior(model_json: dict, n_records: int) -> float:
