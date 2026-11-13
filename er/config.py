@@ -305,11 +305,19 @@ class DeletionKeys:
     within: tuple[Key, ...] = ()              # all equal too: limits chance pairs between short values
 
 
-Blocker = KeyBlocker | SortedNeighbourhood | TfidfNeighbours | DeletionKeys
+@dataclass(frozen=True, kw_only=True)
+class EditKeys:
+    name: str
+    key: Key                                  # values at most `edits` edits apart (Levenshtein) are a pair: found by PassJoin
+    within: tuple[Key, ...] = ()              # all equal too
+    edits: int = 2
+
+
+Blocker = KeyBlocker | SortedNeighbourhood | TfidfNeighbours | DeletionKeys | EditKeys
 
 
 def keys_of(b: Blocker) -> tuple[Key, ...]:  # every column a generator reads
-    return b.keys if isinstance(b, KeyBlocker) else (b.key, *b.within) if isinstance(b, DeletionKeys) else (b.key,)
+    return b.keys if isinstance(b, KeyBlocker) else (b.key, *b.within) if isinstance(b, DeletionKeys | EditKeys) else (b.key,)
 
 
 # ---------- Fellegi–Sunter (probabilistic stage) ----------
@@ -446,6 +454,18 @@ class TrustRule:
 
 
 @dataclass(frozen=True, kw_only=True)
+class LearnKeys:
+    """The keys learned on each file, no labels (er.keys): the pairs the run's model accepts, found by sampling through
+    every atom (a column the method reads, equal, or within one or `edits` edits for a column it compares by a
+    similarity), and the keys of up to `max_atoms` atoms that list most of them for their pairs, by weighted set cover
+    within the budget. A file where the sample finds none runs [model] generators."""
+    records: int = 50_000                     # the records sampled, about: their pairs through every atom are scored
+    max_atoms: int = 3
+    edits: int = 2
+    min_gain: int = 1                         # a key is added while it lists at least this many sampled pairs no key chosen lists
+
+
+@dataclass(frozen=True, kw_only=True)
 class Probe:
     """Pairs no pair key lists, sampled within groups matches tend to share (er.probe): each stratum a group as a key
     names it (records with the same phone, say), and about `pairs` pairs scored in each. It measures, without labels,
@@ -574,6 +594,7 @@ class Pipeline:
     trust: TrustRule = TrustRule()            # what merges without people (er.run._accept)
     probe: Probe = Probe()                    # how the matches no key lists are measured (er.probe)
     household: Household = Household()        # which pairs people see labelled "maybe one household"
+    keys: LearnKeys | None = None             # learn the keys on each file; None: [model] generators
 
 
 def _norm(value: object, chains: Mapping[str, tuple[Normalizer, ...]]) -> tuple[Normalizer, ...]:
@@ -594,7 +615,7 @@ def _comparator(d: dict, chains: Mapping[str, tuple[Normalizer, ...]]) -> Compar
     return Comparator(d["function"], d.get("threshold"), _norm(d.get("normalize"), chains))
 
 
-def _generator(name: str, d: dict, chains: Mapping[str, tuple[Normalizer, ...]]) -> Blocker:
+def generator(name: str, d: dict, chains: Mapping[str, tuple[Normalizer, ...]]) -> Blocker:
     match d["kind"]:
         case "keys":
             return KeyBlocker(name=name, keys=tuple(_key(k, chains) for k in d["keys"]))
@@ -604,7 +625,9 @@ def _generator(name: str, d: dict, chains: Mapping[str, tuple[Normalizer, ...]])
             return TfidfNeighbours(name=name, key=_key(d["key"], chains), ngram=tuple(d["ngram"]), k=d["k"], min_cosine=d["min_cosine"])
         case "deletions":
             return DeletionKeys(name=name, key=_key(d["key"], chains), within=tuple(_key(k, chains) for k in d.get("within", ())))
-    raise ValueError(f"generator {name}: unknown kind {d['kind']!r} (keys, sorted, tfidf, deletions)")
+        case "edits":
+            return EditKeys(name=name, key=_key(d["key"], chains), within=tuple(_key(k, chains) for k in d.get("within", ())), edits=d.get("edits", 2))
+    raise ValueError(f"generator {name}: unknown kind {d['kind']!r} (keys, sorted, tfidf, deletions, edits)")
 
 
 def _resolver(d: dict) -> Resolver:
@@ -620,7 +643,7 @@ def pipeline_from(cfg: dict, std: Standardization, chains: Mapping[str, tuple[No
               rules=tuple(Rule(name=r["name"], exact=tuple(r["exact"]), fuzzy=tuple(r.get("fuzzy", ())),
                                blocking=tuple(_key(k, chains) for k in r.get("blocking", ()))) for r in s["rules"]))
         for s in cfg["rules"]["stages"]))
-    generators = {name: _generator(name, d, chains) for name, d in cfg["generators"].items()}
+    generators = {name: generator(name, d, chains) for name, d in cfg["generators"].items()}
     unknown = [g for g in m["generators"] if g not in generators]
     if unknown:
         raise ValueError(f"[model] generators: {unknown} are not defined in [generators]")
@@ -653,7 +676,8 @@ def pipeline_from(cfg: dict, std: Standardization, chains: Mapping[str, tuple[No
                     probe=Probe(strata=tuple((n, tuple(_key(k, chains) for k in keys)) for n, keys in cfg["probe"]["strata"].items()),
                                 pairs=cfg["probe"].get("pairs", 1_000_000)) if "probe" in cfg else Probe(),
                     household=Household(shared=tuple(_key(k, chains) for k in cfg["household"]["shared"]),
-                                        apart=tuple((d["field"], _comparator(d, chains)) for d in cfg["household"]["apart"])) if "household" in cfg else Household())
+                                        apart=tuple((d["field"], _comparator(d, chains)) for d in cfg["household"]["apart"])) if "household" in cfg else Household(),
+                    keys=LearnKeys(**cfg["keys"]) if cfg.get("keys") else None)
 
 
 def widen(p: "Pipeline", added: Iterable[tuple[str, str]]) -> "Pipeline":
@@ -841,6 +865,24 @@ def restrict(p: Pipeline, present: set[str]) -> tuple[Pipeline, list[str]]:
                    household=household), gone
 
 
+def generator_dict(b: Blocker, chains: Mapping[str, tuple[Normalizer, ...]] = {}) -> dict:
+    """A generator as config/pipeline.toml writes it (the inverse of generator), normalizations as chain names where one matches."""
+    name_of = {v: k for k, v in reversed(list(chains.items()))}  # the first chain defined wins
+    norm = lambda n: name_of.get(tuple(n), list(n))
+    key = lambda k: k.column if not k.normalize else {"field": k.column, "normalize": norm(k.normalize)}
+    match b:
+        case KeyBlocker():
+            return {"kind": "keys", "keys": [key(k) for k in b.keys]}
+        case SortedNeighbourhood():
+            return {"kind": "sorted", "key": key(b.key), "window": b.window}
+        case TfidfNeighbours():
+            return {"kind": "tfidf", "key": key(b.key), "ngram": list(b.ngram), "k": b.k, "min_cosine": b.min_cosine}
+        case DeletionKeys():
+            return {"kind": "deletions", "key": key(b.key), **({"within": [key(k) for k in b.within]} if b.within else {})}
+        case EditKeys():
+            return {"kind": "edits", "key": key(b.key), **({"within": [key(k) for k in b.within]} if b.within else {}), "edits": b.edits}
+
+
 def pipeline_dict(p: Pipeline, chains: Mapping[str, tuple[Normalizer, ...]]) -> dict:
     """The inverse of pipeline_from, with normalizations written as chain names where one matches."""
     name_of = {v: k for k, v in reversed(list(chains.items()))}  # the first chain defined wins
@@ -849,16 +891,7 @@ def pipeline_dict(p: Pipeline, chains: Mapping[str, tuple[Normalizer, ...]]) -> 
     comp = lambda c: {"function": c.function, **({"threshold": c.threshold} if c.threshold is not None else {}),
                       **({"normalize": norm(c.normalize)} if c.normalize else {})}
 
-    def gen(b: Blocker) -> dict:
-        match b:
-            case KeyBlocker():
-                return {"kind": "keys", "keys": [key(k) for k in b.keys]}
-            case SortedNeighbourhood():
-                return {"kind": "sorted", "key": key(b.key), "window": b.window}
-            case TfidfNeighbours():
-                return {"kind": "tfidf", "key": key(b.key), "ngram": list(b.ngram), "k": b.k, "min_cosine": b.min_cosine}
-            case DeletionKeys():
-                return {"kind": "deletions", "key": key(b.key), **({"within": [key(k) for k in b.within]} if b.within else {})}
+    gen = lambda b: generator_dict(b, chains)
 
     resolver = lambda r: {"method": r.method, **({"cannot_link": list(r.cannot_link)} if r.cannot_link else {})}
     fs, m = p.fs, p.fs.model
@@ -891,6 +924,7 @@ def pipeline_dict(p: Pipeline, chains: Mapping[str, tuple[Normalizer, ...]]) -> 
            if p.household.shared or p.household.apart else {}),
         "selection": {"cv_folds": p.cv_folds, "cv_seed": p.cv_seed, "decision_p": p.decision_p},
         "display": {"explain_show": list(p.explain_show), "explain_filled": list(p.explain_filled)},
+        **({"keys": vars(p.keys)} if p.keys else {}),
     }
 
 
