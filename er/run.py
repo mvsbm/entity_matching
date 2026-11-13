@@ -302,41 +302,46 @@ class Run:
                                   for c in alts[0] if c not in columns and c not in needed))
 
     def _placeholders(self, table: str, also: tuple[str, ...] = ()) -> None:
-        """Each identifying field's values ([fields] identifying: one entity's each, as a customer ID) that `table` holds
-        on min_oversized() records or more, and each field a comparison's first level tests for equality, the values
-        held so: each, from the most held, that alone makes more of the pairs agreeing on the field than all the others
-        together, held by min_oversized() customers (identifying values) or more, not copies of one (a placeholder name
-        on thousands of records: the exact level's u would describe it, not the field).
-        With those the run already read as missing (self.placeholders): a placeholder such as 00000000, not one customer's. Each is made missing in `table` and `also`, in the field and
-        every copy of it, so no rule, key, comparison or probe reads it as two records agreeing. O(N): a group-by and an
-        update per field."""
+        """Values read as missing, each a placeholder (00000000, a dummy name) and not one entity's nor evidence:
+        - of an identifying field ([fields] identifying: one entity's each, as a customer ID), each held by
+          min_oversized() records or more;
+        - of a field a comparison's first level tests for equality, each held by min_oversized() and CROWD customers or more (copies
+          of one customer's record are no crowd; a record without an identifying value is a customer of its own) whose
+          pairs outnumber those of all the values held by fewer: the exact level's u would describe it, not the field.
+        With those the run already read as missing (self.placeholders), made missing first, so a batch's count is of what
+        is new. Each is made missing in `table` and `also`, in the field, every copy of it, and every field built from the
+        same columns on those records (a name read into person_name, full_name and any_name), so no rule, key, comparison
+        or probe reads it as two records agreeing. O(N): a group-by and an update per field."""
         m, cols = self.pipeline.fs.budget.min_oversized(), {c for c, *_ in self.con.execute(f"DESCRIBE {table}").fetchall()}
         ids = set(self.pipeline.fields.identifying)
-        for f in (f for f in dict.fromkeys([*ids, *compared_exactly(self.pipeline.fs.model)]) if f in cols):
-            who = q(next((x for x in self.pipeline.fields.identifying if x in cols and x != f), self.uid))  # copies of one customer's record are no crowd
+        sources = {d.name: {c for alt in d.sources for c in alt} for d in self.settings.standardize.derived}
+
+        def blank(values: list[str], f: str) -> None:
+            fields = [f, *(d for d, cs in sources.items() if d != f and cs & sources.get(f, set()))]
+            for t in (table, *also):
+                copies = [c for c, *_ in self.con.execute(f"DESCRIBE {t}").fetchall() if any(c == x or c.startswith(f"{x}__") for x in fields)]
+                self.con.execute(f"UPDATE {t} SET {', '.join(f'{q(c)} = NULL' for c in copies)} WHERE {q(f)} IN ({', '.join(map(lit, values))})")
+        crowd = max(m, CROWD)
+        for f in (f for f in dict.fromkeys([*(x for x in compared_exactly(self.pipeline.fs.model) if x not in ids), *ids]) if f in cols):  # identifying last: copies of one customer's record still share its ID when the others are counted
+            if before := self.placeholders.get(f, []):
+                blank(before, f)
+            who = f"coalesce({q(next((x for x in self.pipeline.fields.identifying if x in cols and x != f), self.uid))}, {q(self.uid)})"
             held = self.con.execute(f"SELECT {q(f)}, count(*) FROM {table} WHERE {q(f)} IS NOT NULL GROUP BY 1 HAVING count(*) >= {m}"
-                                    f"{'' if f in ids else f' AND count(DISTINCT {who}) >= {m}'} ORDER BY count(*) DESC, 1").fetchall()
-            if f not in ids and held:  # a compared field: only a value that alone makes most of the pairs agreeing on it
-                rest, new = self.con.execute(f"SELECT coalesce(sum(c * (c - 1) // 2), 0) FROM (SELECT count(*) AS c FROM {table} WHERE {q(f)} IS NOT NULL GROUP BY {q(f)})").fetchall()[0][0], []
-                for v, c in held:
-                    rest -= c * (c - 1) // 2
-                    if c * (c - 1) // 2 <= rest:
-                        break
-                    new.append(v)
+                                    f"{'' if f in ids else f' AND count(DISTINCT {who}) >= {crowd}'} ORDER BY count(*) DESC, 1").fetchall()
+            if f not in ids and held:  # a compared field: a crowd whose pairs outnumber all the others' (two placeholders never hide each other)
+                every = self.con.execute(f"SELECT coalesce(sum(c * (c - 1) // 2), 0) FROM (SELECT count(*) AS c FROM {table} WHERE {q(f)} IS NOT NULL GROUP BY {q(f)})").fetchall()[0][0]
+                rest = every - sum(c * (c - 1) // 2 for _, c in held)
+                new = [v for v, c in held if c * (c - 1) // 2 > rest]
             else:
                 new = [v for v, _ in held]
-            values = [*self.placeholders.get(f, []), *(v for v in new if v not in self.placeholders.get(f, []))]
-            if not values:
+            if not new:
                 continue
-            for t in (table, *also):
-                copies = [c for c, *_ in self.con.execute(f"DESCRIBE {t}").fetchall() if c == f or c.startswith(f"{f}__")]
-                self.con.execute(f"UPDATE {t} SET {', '.join(f'{q(c)} = NULL' for c in copies)} WHERE {q(f)} IN ({', '.join(map(lit, values))})")
-            if new:
-                held = self.con.execute(f"SELECT count(*) FROM {table} WHERE {q(f)} IS NULL").fetchall()[0][0]
-                self.notes.append(f"{f}: {len(new):,} value{'s' if len(new) > 1 else ''} held by {m}+ records read as missing, a placeholder and not "
-                                  f"{'one entity' if f in ids else 'evidence'}'s ({held:,} records without one)" + ("; pairs the run joined on it before stay until it runs again (nayose rerun records)" if also else ""))
-                self.examples.append(f"{f} = {new[0]}: a placeholder, read as missing")
-            self.placeholders[f] = values
+            blank(new, f)
+            n = self.con.execute(f"SELECT count(*) FROM {table} WHERE {q(f)} IS NULL").fetchall()[0][0]
+            self.notes.append(f"{f}: {len(new):,} value{'s' if len(new) > 1 else ''} held by {m}+ records read as missing, a placeholder and not "
+                              f"{'one entity' if f in ids else 'evidence'}'s ({n:,} records without one)" + ("; pairs the run joined on it before stay until it runs again (nayose rerun records)" if also else ""))
+            self.examples.append(f"{f} = {new[0]}: a placeholder, read as missing")
+            self.placeholders[f] = [*before, *new]
 
     def _prepared_key(self, normalized: list, used: set[str], ordered: bool) -> str:
         """All the cleaned records rest on, as one hash: the records files (their SHA-256, in order) and how they are read
@@ -543,12 +548,15 @@ class Run:
             blockers, dropped = idle(self)
             if dropped:
                 self.pipeline = replace(self.pipeline, fs=replace(self.pipeline.fs, blockers=blockers))
+                self.learned = blockers  # kept in state/keys.json: increments and lookups list by the same keys
                 if self.plan is not None:
                     self.plan = self.plan[~((self.plan["kind"] == "generator") & self.plan["name"].isin(dropped))]
+                w = self.found.weight
                 self.notes += [f"key {x} not run: what it agrees on weighs nothing, and other keys or rules list every pair it lists in the gap's sample at "
-                               f"{review_floor(self.pipeline):g}+ bits" for x in dropped]
+                               f"{review_floor(self.pipeline):g}+ bits (of the file's, at most {round(3 * w):,} it alone lists, about 95%)" for x in dropped]
             drew = getattr(self, "found", None)  # a sample drawn, when a key's agreement weighs nothing: the gap step reads it
-            self._done("keys", "O(f·N·b)", f"O({drew.facts['sampled_records']:,} records sampled)" if drew else "O(1)", t, learned=False, dropped=dropped)
+            self._done("keys", "O(f·N·b)", f"O({drew.facts['sampled_records']:,} records sampled)" if drew else "O(1)", t, learned=False, dropped=dropped,
+                       **({k: v for k, v in drew.facts.items() if k != "atoms"} if drew else {}))  # the sample's facts where its time is
             return
         blockers, facts, known = learn(self)
         if facts["learned"]:
@@ -1151,8 +1159,12 @@ class Run:
             return self.full(folder.inputs(out, self.settings.input, self.settings.paths["reference"]), out, overwrite=True, pipeline_file=pipeline_file)
 
 
+CROWD = 64        # the fewest customers a compared field's placeholder is held by, however small the budget's oversized blocks
+PLACEHOLDERS = 2  # how placeholders are told (Run._placeholders): a run that told them otherwise takes no increment until it runs again
+
+
 def run_config(p: Pipeline, s: Settings) -> str:  # what decides the answer: the pipeline and the settings that shape the records
-    return config_hash((p, s.columns, s.standardize, s.flag_company, s.input))  # an increment needs the full run's
+    return config_hash((p, s.columns, s.standardize, s.flag_company, s.input, PLACEHOLDERS))  # an increment needs the full run's
 
 
 def trial(ws: Path, base: Pipeline, variant: Pipeline, method: dict, s: Settings, echo: Callable[[dict], None] | None = None) -> dict:

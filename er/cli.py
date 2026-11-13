@@ -2627,7 +2627,7 @@ def last_run(ws: str | None, name: str) -> dict:
         last, records = {s["step"]: float(s["seconds"]) for s in steps}, steps[0].get("records") if steps else None
     except (OSError, ValueError, KeyError, TypeError, AttributeError):  # an odd steps.json: no estimate, the command still runs
         steps, last, records = [], {}, None
-    order = tuple(last) or (BATCH_ORDER if batch else RUN_ORDER)
+    order = BATCH_ORDER if batch else RUN_ORDER  # this version's steps: the last run's, from an older one, may lack some; its seconds still count
     if name == "match records":  # a batch's steps, up to its entities: it writes nothing
         order = tuple(s for s in order if s not in ("report", "write"))
     if name == "split entity":  # the split decided, then a full run

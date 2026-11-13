@@ -777,6 +777,7 @@ def test_a_customer_id_held_by_many_records_is_a_placeholder_every_step_and_the_
     assert stored.loc[stored[uid].isin(ids), [c for c in stored if c == "customer_id" or c.startswith("customer_id__")]].isna().all().all()
     index.build(tmp_path / "run", s, p)
     assert index.look_up(tmp_path / "run", s, p, values={"CIF_ID": "00000000", "PHONE_NUM_4": "9999"}, at_least=-1e9, most=10**6)["found"] == 0  # typed: missing too
+    assert "found" in index.look_up(tmp_path / "run", s, p, values={"PHONE_NUM_4": "9999"}, at_least=-1e9, most=10**6)  # a field with placeholders not typed: missing already
 
     first, batch = df.drop(index=many[40:]), df.loc[many[40:]].assign(CIF_ID="11111111")  # 40 hold 11111111 in the run; 30 more come
     first.loc[many[:40], "CIF_ID"] = "11111111"
@@ -1062,3 +1063,13 @@ def test_two_people_of_one_household_are_labelled_and_a_copy_of_one_is_not(tmp_p
     assert listed.get(tuple(sorted((one[uid], "member")))) is True
     sheet = pd.read_parquet(tmp_path / "run" / "review.parquet")
     assert "household" in sheet and sheet["household"].dtype == bool
+
+
+def test_a_run_s_progress_follows_this_version_s_steps_when_the_last_run_lacked_one(tmp_path):
+    from er import cli, folder
+    ws = tmp_path / "ws"
+    (ws / "state").mkdir(parents=True)
+    old = [{"step": x, "seconds": 1.0, **({"records": 10} if x == "load" else {})} for x in cli.RUN_ORDER if x != "keys"]  # a run before the keys step
+    (ws / folder.STEPS).write_text(json.dumps({"runs": [{"steps": old}]}), encoding="utf-8")
+    got = cli.last_run(str(ws), "rerun records")
+    assert got["order"] == cli.RUN_ORDER and "keys" in got["order"] and got["last"]["candidates"] == 1.0

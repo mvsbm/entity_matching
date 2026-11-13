@@ -32,6 +32,7 @@ import secrets
 import shutil
 import threading
 import time
+from dataclasses import replace
 import unicodedata
 from bisect import bisect_left
 from collections import Counter
@@ -44,7 +45,7 @@ import pyarrow.parquet as pq
 
 from er import folder
 from er.candidates import deletions_sql
-from er.config import DeletionKeys, InputError, KeyBlocker, Pipeline, SortedNeighbourhood, lit, q
+from er.config import DeletionKeys, InputError, KeyBlocker, Pipeline, SortedNeighbourhood, generator, lit, q
 from er.intake import tidy
 from er.io import read_parquet
 from er.kind import Classifier, classifier, merge_answers, name_model
@@ -90,7 +91,11 @@ def _pipeline(ws: Path, s: Settings, p: Pipeline, columns: list[str]) -> Pipelin
         raise InputError(f"the pipeline or the column mapping changed since the run in {ws}: its records would be looked up otherwise",
                          fix=f"run it again first: nayose rerun records --workspace {ws}")
     folded = {c.casefold() for c in columns}  # a source column named as its field but for case (BIRTH_DATE) gave way to it (standardize.prepare)
-    return fit_to_file(p, s, [*columns, *(c for alts in s.columns.values() for alt in alts for c in alt if c not in columns and c.casefold() in folded)])[0]
+    p = fit_to_file(p, s, [*columns, *(c for alts in s.columns.values() for alt in alts for c in alt if c not in columns and c.casefold() in folded)])[0]
+    kept = ws / "state" / "keys.json"  # the keys the run listed by, learned or left after dropping idle ones (er.keys)
+    if kept.exists():
+        p = replace(p, fs=replace(p.fs, blockers=tuple(generator(n, d, s.chains) for n, d in json.loads(kept.read_text(encoding="utf-8")).items())))
+    return p
 
 
 def _scorable(ws: Path) -> dict:  # the run's model, refused if a lookup can't score as it does
@@ -400,7 +405,7 @@ def _asking(ws: Path, s: Settings, p: Pipeline, values: dict | None, record: str
             query = _query(cur, s, fitted, values, record, kind)
         stored = ws / "state" / "placeholders.json"
         for f, held in (json.loads(stored.read_text(encoding="utf-8")) if stored.exists() else {}).items():  # read as missing, as the run read them
-            if f in query and query[f].iloc[0] in held:
+            if f in query and pd.notna(v := query[f].iloc[0]) and v in held:  # a field not typed is missing already
                 query.loc[:, [c for c in query.columns if c == f or c.startswith(f"{f}__")]] = pd.NA
         cur.register("er_q", query)
         cur.execute("CREATE TEMP TABLE qry AS SELECT * FROM er_q")
