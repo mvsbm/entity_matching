@@ -927,7 +927,7 @@ async function runOnce(command, args, onEvent, tries = 10) {
 // A long command's progress, bottom right on every page, as a download panel: what it does, how far, about how long is
 // left. Folded or closed by the person, the command runs on; the next one opens it again.
 const RUNS = ["resolve records", "rerun records", "add records", "match records"];  // a run's steps say how far it is
-const FRAC = {load: .2, budget: .23, fit: .41, rules: .45, candidates: .57, score: .87, cluster: .88, probe: .95, report: .98, write: 1};  // a run's share of its work, done as each step ends (a million records): the bar's, until a run here measured its own
+const FRAC = {load: .2, budget: .23, fit: .41, rules: .45, candidates: .57, score: .87, cluster: .88, probe: .93, gap: .96, report: .98, write: 1};  // a run's share of its work, done as each step ends (a million records): the bar's, until a run here measured its own
 const lastRuns = {};  // by command: the steps of this workspace's last full run, in seconds, at the records about to run (step 3)
 const scored = (p) => `${fmt(p.done)} of ${fmt(p.total)} pairs scored · ${plural(p.likely, "likely match", "likely matches")} so far`;  // scoring, slice by slice
 function runPace(order, ended, at, now, last, p = null, pAt = at) {
@@ -1798,7 +1798,7 @@ function grid(box, rows, cols, opts = {}) {
 // A parameter's input, built from its declaration: a flag a checkbox, a choice a list, the rest a text box.
 const FIELD = {input: "Records file"};  // a parameter's name on the page, where its own name says less
 const LIT = {load: ["records", "records"], rules: ["rules", "pairs"], candidates: ["candidates", "candidates"], cluster: ["accept", "accepted"]};  // a run's step, the stage it fills in
-const RUN_STEPS = ["load", "budget", "fit", "rules", "candidates", "score", "cluster", "probe", "report", "write"];  // a full run's steps, in the order they end
+const RUN_STEPS = ["load", "budget", "fit", "rules", "candidates", "score", "cluster", "probe", "gap", "report", "write"];  // a full run's steps, in the order they end
 const STEPS_OF = {"add records": ["load", "fit", "rules", "candidates", "score", "cluster", "report", "write"],  // an increment's: no plan, no probe
                   "match records": ["load", "fit", "rules", "candidates", "score", "cluster"]};  // a preview writes nothing
 const BUSY = {"resolve records": "Finding matches", "rerun records": "Matching again", "add records": "Adding the new records", "match records": "Previewing the new records",
@@ -1808,7 +1808,7 @@ const BUSY = {"resolve records": "Finding matches", "rerun records": "Matching a
               "raise trust": "Raising the trust line", "split entity": "Splitting the entity"};
 const DOING = {load: "reading the records", budget: "planning the work", fit: "learning what matches look like", rules: "applying the match rules",
                candidates: "listing pairs to compare", score: "scoring the pairs", cluster: "forming entities", probe: "looking for matches it missed",
-               report: "writing the report", write: "saving"};
+               gap: "measuring what the keys miss", report: "writing the report", write: "saving"};
 const LIT_NODE = {load: "records", rules: "rules", candidates: "candidates", score: "score", cluster: "group"};  // the stage a step works on
 const guess = (rows, w) => {  // a run's seconds, about, before it starts: this workspace's last full run, scaled to these records; else this machine's reading of the file, per column, times four; else a minute a million records
   const r = (w.runs || []).filter((x) => x.what === "full run").slice(-1)[0], f = lastFile(w);
