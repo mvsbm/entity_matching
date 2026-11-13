@@ -215,10 +215,13 @@ def test_the_page_answers_once_per_key_shows_any_row_and_says_when_the_server_is
     page.wait_for_function("() => task.steps.length >= 1 && task.done === null", timeout=60_000)  # a step has ended; the run goes on
     page.wait_for_function("() => (document.querySelector('.rail li.running[data-busy=run] .run-line') || {textContent: ''}).textContent.trim()")  # its step turns, saying how far: a time left only where something measured says one, else the seconds so far
     page.click(".navitem[data-screen=records]")  # the Overview: what runs now, and the way to it
+    assert page.evaluate("""() => { const d = document.createElement('div'); d.innerHTML = stepsCard('rerun records'); $('screen').append(d);
+        const n = [...d.querySelectorAll('.meter, .lin')].filter((x) => x.getBoundingClientRect().height > 0).length; d.remove(); return n; }""") == 1  # one line, never two
     page.wait_for_selector("#auto a[data-go=run]", timeout=10_000)
-    assert page.inner_text("#auto h2").startswith("Matching again")
+    assert page.inner_text("#auto h2").startswith("Matching again") and page.is_visible("#task")  # away from its page: the panel says how far
     page.click("#auto a[data-go=run]")  # back while it runs: its card, and the stages its steps have filled in, as they stand
     page.wait_for_selector("#out .steps-card .answer:has-text('now:')", timeout=10_000)
+    page.wait_for_selector("#task", state="hidden", timeout=5_000)  # its own page: the card says how far, no panel over it
     page.wait_for_selector(".node[data-node=records] .n .v", timeout=10_000)
     page.wait_for_selector("#out .steps-card", state="detached", timeout=120_000)  # ended: its result drawn on its own page,
     assert page.is_hidden("#task")  # and the panel gone from over it
@@ -407,6 +410,9 @@ def test_a_long_command_shows_how_far_it_is_in_a_panel_that_folds_and_closes_and
     page.evaluate("() => { task.start('resolve records', 'j7', Date.now() / 1000 - 100); task.event({event: 'step', step: 'budget', t: 10}, 'j7'); task.event({event: 'progress', done: 0, total: 8, unit: 'records', t: 60}, 'j7'); }")
     assert page.evaluate("task.pAt") == 60  # a count paced from when it began, not from the step before it
     page.evaluate("task.end(true, '', 'j7')")
+    shown = page.evaluate("""() => { const was = current; current = 'run'; task.start('rerun records', 'j8'); const there = $('task').hidden;
+        current = 'records'; task.place(); const away = $('task').hidden; task.end(true, '', 'j8'); current = was; return [there, away]; }""")
+    assert shown == [True, False]  # a run's own page draws its progress: no panel there, the panel elsewhere
     assert page.evaluate("lastRun(2000, {runs: [{what: 'full run', steps: {load: 10, fit: 4}, records: 1000}, {what: 'increment', steps: {load: 1}, records: 5}]})") == {"load": 20, "fit": 8}
     assert page.evaluate("lastRun(2000, {runs: [{what: 'full run', seconds: 9}]})") is None  # a run kept before steps were: nothing to go by
     page.evaluate("() => { task.start('resolve records', 'j3'); task.event({event: 'step', step: 'candidates'}, 'j3'); task.event({event: 'progress', done: 2e6, total: 8e6, unit: 'pairs', likely: 1234}, 'j3'); }")
