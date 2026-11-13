@@ -232,6 +232,16 @@ def report_text(run: "Run", tables: dict[str, pd.DataFrame], pipeline: Path) -> 
 
     steps = tables["steps"]
     out += ["STEPS", *table(steps[["step", "seconds", "peak_memory_gb", "facts"]].rename(columns={"peak_memory_gb": "peak_gb"})), ""]
+    by_step = {x["step"]: x for x in run.steps}
+    if g := by_step.get("gap"):  # what the keys lose against comparing every pair (er.keys.gap)
+        out += [f"GAP  (pairs the model would accept that no key or rule lists; {g['sampled_records']:,} records sampled, each paired with every record "
+                "that shares a value or a near one; about 95%)", *table(pd.DataFrame([dict(
+                    bits=f"{x['bits']:g}+", pairs=f"{x['pairs']:,}", missed=f"{x['missed']:,}", interval=f"{x['missed_lo']:,}–{x['missed_hi']:,}")
+                    for x in g["thresholds"]])),
+                *(["  missed pairs agree on: " + " · ".join(f"{x['atom']} {x['pairs']:,}" for x in g["missed_agree"][:12])] if g["missed_agree"] else []), ""]
+    if (c := by_step.get("candidates")) and c.get("generators"):  # where the candidates' time goes
+        out += ["KEYS  (pairs each lists, seconds; slowest first)", *table(pd.DataFrame([dict(key=x["name"], pairs=f"{x['pairs']:,}", seconds=f"{x['seconds']:.1f}")
+                                                                                     for x in sorted(c["generators"], key=lambda x: -x["seconds"])])), ""]
 
     def row(x: dict, f: str, c: dict) -> dict:
         every = f == "all"

@@ -445,7 +445,7 @@ def test_a_nearly_empty_field_is_kept_and_the_fit_skips_what_it_cannot_learn_fro
     sparse.to_parquet(tmp_path / "sparse.parquet", index=False)
     seen = []
     run = Run(p, s, echo=seen.append).full(tmp_path / "sparse.parquet", tmp_path / "run")
-    assert [x["step"] for x in seen] == ["load", "budget", "fit", "rules", "candidates", "score", "cluster", "probe", "write"]  # step by step
+    assert [x["step"] for x in seen] == ["load", "budget", "fit", "rules", "candidates", "score", "cluster", "probe", "gap", "write"]  # step by step
     assert "address" in run.model["er"]["skipped"] and any("sharing address" in x for x in run.notes)
     sparse.assign(PHONE_NUM_4=None).to_parquet(tmp_path / "bare.parquet", index=False)  # nothing left to learn from
     with pytest.raises(InputError, match="can't be estimated|share phone or address"):  # whichever check finds nothing first

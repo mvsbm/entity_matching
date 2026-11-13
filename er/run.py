@@ -70,8 +70,9 @@ import pyarrow as pa
 from er import folder, intake
 from er.candidates import candidates, estimate
 from er.cluster import merge
-from er.config import InputError, Pipeline, TfidfNeighbours, bits, keys_sql, lit, q
+from er.config import InputError, Pipeline, TfidfNeighbours, bits, generator, generator_dict, keys_sql, lit, q
 from er.io import code_version, config_hash, markdown, read_parquet, replace_text
+from er.keys import gap as keys_gap, learn
 from er.kind import KIND_COLUMNS, NAME_MODEL, century, classifier as kind_classifier, kind_review_sheet, merge_answers
 from er.match import ELSE, bound_tests, fs_settings, named_sql, bound_reads, reaching_sql, read_by, refreshed_u, review_floor, rule_edges, score_fs, scored_u, train_fs, u_basis
 from er.probe import missed
@@ -165,6 +166,7 @@ class Run:
         self.merge: dict = {}                 # the workspace's merge conditions (method.toml merge): none, the trust line decides
         self._spent = spent()  # the comparison functions' time when the last step ended (_done)
         self.gate_seconds, self.gate_pairs = 0.0, 0  # the oversized blocks' samples scored (_gate): how long, how many
+        self.learned: tuple = ()              # the keys learned on the file (keys), if any
         self.plan: pd.DataFrame | None = None  # the budget's pairs per rule and generator (budget()); an increment has none
         self.present: dict = {}               # each field the file holds, and the source columns it is built from
         self.scoring: dict | None = None      # the model with u from this file (fit): what the gate and the scores use
@@ -515,6 +517,24 @@ class Run:
             self.con.execute("INSERT INTO rule_kept SELECT * FROM er_stage")
             merge(self.con, self.db, "rule_clusters", "er_stage", "rule_clusters", self.uid)
 
+    def keys(self) -> None:
+        """The keys learned on this file, no labels (er.keys), in place of [model] generators, kept for its increments:
+        the pairs the model accepts at the review floor, found by sampling through every atom, listed by the keys that
+        reach most of them for the fewest pairs. Without [keys], or where the sample finds none, the generators stand."""
+        if self.pipeline.keys is None:
+            return
+        t = time.perf_counter()
+        blockers, facts, known = learn(self)
+        if facts["learned"]:
+            self.pipeline = replace(self.pipeline, fs=replace(self.pipeline.fs, blockers=blockers))
+            self.estimates, self.learned = known, blockers  # candidates reads their counts, not the records again
+            if self.plan is not None:  # the progress the joins report, weighed by the keys that run
+                self.plan = pd.concat([self.plan[self.plan["kind"] != "generator"], pd.DataFrame(
+                    [dict(kind="generator", name=b.name, normal=known[b.name]["normal_pairs"] or known[b.name]["est_pairs"],
+                          oversized_blocks=known[b.name]["oversized_blocks"]) for b in blockers])], ignore_index=True)
+        self._done("keys", "O(A·N + f·N·b + K·T + K'·N)", f"O({len(facts['atoms'])}·{self.n:,} + {facts['drawn']:,} pairs)", t,
+                   **{k: v for k, v in facts.items() if k != "seconds"})
+
     def candidates(self) -> pd.DataFrame:
         t, fs = time.perf_counter(), self.pipeline.fs
         assert self.scoring is not None, "fit() before candidates(): the gate scores oversized blocks' samples with the model"
@@ -743,6 +763,13 @@ class Run:
                        apart=f"SELECT {l}, {r} FROM er_decisions WHERE decision = 'no_match'")
         self._done("probe", "O(N + P·K + L)", f"O({self.n:,} + {sum(x['scored'] for x in found):,}·K + L)", t, strata=found)
 
+    def gap(self) -> None:
+        """The pairs the model would accept that no key or rule listed, estimated by sampling every way two records can
+        agree (er.keys.gap): report.txt's GAP, what the keys lose against comparing every pair, and where it lies."""
+        t = time.perf_counter()
+        facts = keys_gap(self)
+        self._done("gap", "O(f·N·b)", f"O({facts['sampled_records']:,} records sampled)", t, **{k: v for k, v in facts.items() if k != "seconds"})
+
     def _expected_false(self) -> float:  # the false links the model expects among those it accepted: Σ (1 − match probability), O(E)
         return round(self.con.execute("SELECT coalesce(sum(1 - match_probability), 0) FROM matches").fetchall()[0][0], 2)
 
@@ -759,6 +786,8 @@ class Run:
         aside = [("SELECT * FROM set_aside", out / "set_aside" / name)] if self._count("set_aside") else []
         texts = [(json.dumps(self.model, ensure_ascii=False), state / "model.json"), (self.config, state / "config.txt")] if part == 0 else []
         texts.append((json.dumps(self.placeholders, ensure_ascii=False), state / "placeholders.json"))  # read as missing: an increment and a lookup read them so too
+        if part == 0 and self.learned:  # the keys learned on the file: an increment lists its pairs by them
+            texts.append((json.dumps({b.name: generator_dict(b) for b in self.learned}, ensure_ascii=False), state / "keys.json"))
         if self.basis:  # the u this run scored with, and what an increment needs to tell when they go stale
             texts.append((json.dumps(dict(model=self.scoring, basis=self.basis), ensure_ascii=False), state / "scoring.json"))
         earlier = folder.history(out) if part == 0 else None  # the runs before: read before the old log goes with the old run
@@ -864,6 +893,9 @@ class Run:
             raise InputError(f"the pipeline or the column mapping changed since the full run in {out}: an increment would resolve its batch otherwise",
                              fix="resolve all of them again (nayose rerun records), or add these with the pipeline and config/settings.toml that run used")
         self.model = json.loads((state / "model.json").read_text(encoding="utf-8"))
+        if (state / "keys.json").exists():  # the keys the full run learned
+            learned = json.loads((state / "keys.json").read_text(encoding="utf-8"))
+            self.pipeline = replace(self.pipeline, fs=replace(self.pipeline.fs, blockers=tuple(generator(n, d, self.settings.chains) for n, d in learned.items())))
         self.part = folder.next_part(state / "records")
         parts = ", ".join(lit(x) for x in sorted((state / "records").glob("part-*.parquet")))  # not a glob: this run's own part comes later
         self.con.execute(f"CREATE OR REPLACE VIEW old_records AS SELECT * FROM read_parquet([{parts}], union_by_name = true)")
@@ -1074,11 +1106,13 @@ class Run:
         self.budget()
         self.fit()
         self.rules()
+        self.keys()
         self.candidates()
         self.score()
         self._load_decisions(decided)
         self.cluster()
         self.probe()
+        self.gap()
         return self
 
     def rerun(self, out: Path, pipeline_file: Path | None = None) -> "Run":

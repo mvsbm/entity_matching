@@ -7,6 +7,7 @@ then dropped, so two clusters can join too.
 KeyBlocker            all keys equal                                      self-join             O(N + P)
 SortedNeighbourhood   sort by key, pair records within `window` places    window lead()         O(N log N + N·w)
 DeletionKeys          the value or a one-character deletion of it equal   UNNEST + self-join    O(N·L + P)
+EditKeys              values 1 to k edits apart (Levenshtein)             PassJoin + cpdist     O(U·k³ + S + P)
 TfidfNeighbours       char n-gram TF-IDF, k nearest by cosine (N²: development only, in Python)   O(N·L + U·N·q)
 
 Two values one edit apart (a substitution, an insertion, a deletion or an adjacent swap) always share a deletion key.
@@ -26,7 +27,7 @@ import duckdb
 import numpy as np
 import pandas as pd
 
-from er.config import Blocker, Budget, DeletionKeys, InputError, KeyBlocker, SortedNeighbourhood, TfidfNeighbours, keys_of, q
+from er.config import Blocker, Budget, DeletionKeys, EditKeys, InputError, KeyBlocker, SortedNeighbourhood, TfidfNeighbours, keys_of, q
 from er.strings import connect
 
 _CON: duckdb.DuckDBPyConnection | None = None  # for pandas input when the caller passes no connection
@@ -53,6 +54,8 @@ class Records:
                       else self._view(pd.DataFrame({uid: list(query)}, dtype="string")))
         self.touching = False                 # the query is a batch joined against all (an increment), not most of the file
         self.dk: dict[tuple, str] = {}        # deletion-key rows per (key, within), built once (variants)
+        self.near: dict[tuple, str] = {}      # value pairs within k edits per (key, within, k), verified once (near_values)
+        self.most = 2**62                     # a value held by this many records or more pairs by no edit key (candidates: the oversized size)
 
     def variants(self, b: DeletionKeys) -> str:
         """b's rows, one per deletion key (__dk) of its value (__v), with the uid, the within columns and the cluster:
@@ -70,6 +73,48 @@ class Records:
                        f"USING ({keys})")
             self.dk[at] = self._temp(sql)
         return self.dk[at]
+
+    def near_values(self, b: EditKeys, most: int, probe: str | None = None) -> str:
+        """b's distinct value pairs (with their within values) 1 to b.edits edits apart, as a table (w…, v, x, nv, nx):
+        the values and their records. PassJoin (Li et al., VLDB 2011): a value cut into k + 1 segments keeps one of them
+        whole through k edits, at a position at most k from its own, in a value at most k longer or shorter; so the
+        values sharing such a segment are every candidate, and rapidfuzz's cpdist checks them on all cores. A value of
+        fewer than 2(k + 1) characters (k edits in so short a value make another word, and its one-letter segments would
+        pair it with nearly every value), or held by `most` records or more (a placeholder's block), pairs with none. With
+        `probe` (a table of uids), only the pairs with a value one of its records holds. O(U·k³) segment rows, plus the
+        candidates S checked."""
+        at = (b.key.name, tuple(w.name for w in b.within), b.edits, probe)
+        if at not in self.near:
+            from rapidfuzz.distance import Levenshtein
+            from rapidfuzz.process import cpdist
+            k, parts, within = b.edits, b.edits + 1, [q(w.name) for w in b.within]
+            w_ = "".join(f"{w}, " for w in within)
+            values = self._temp(f"""SELECT {w_}{q(b.key.name)} AS v, count(*) AS n, length({q(b.key.name)}) AS len FROM {self.table}
+                WHERE {_filled([b.key.name, *(w.name for w in b.within)])} GROUP BY ALL HAVING count(*) < {most} AND length({q(b.key.name)}) >= {2 * parts}""")
+            seg = lambda length, i: (f"({length}) // {parts} + ({i} >= {parts} - ({length}) % {parts})::INT",  # segment i of a value this long: its length, its start
+                                     f"1 + {i} * (({length}) // {parts}) + greatest(0, {i} - ({parts} - ({length}) % {parts}))")
+            index = f"SELECT {w_}v, len AS l, i, v[{seg('len', 'i')[1]} : {seg('len', 'i')[1]} + {seg('len', 'i')[0]} - 1] AS s FROM (SELECT *, unnest(range({parts})) AS i FROM {values})"
+            # multi-match-aware starts (Li et al., §4.2): segment i of a value l long, in one len − l longer, only from
+            # max(start − i, start + len − l − (k − i)) to min(start + i, start + len − l + (k − i)); each a complete window
+            lo, hi = f"greatest(st - i, st + len - l - ({k} - i))", f"least(st + i, st + len - l + ({k} - i))"
+            asked = (f"(SELECT * FROM {values} WHERE ({w_}v) IN (SELECT ({w_}{q(b.key.name)}) FROM {self.table} WHERE {q(self.uid)} IN "
+                     f"(SELECT {q(self.uid)} FROM {probe})))" if probe else values)
+            probe_sql = (f"SELECT {w_}v AS x, l, i, x[p : p + sl - 1] AS s FROM (SELECT *, unnest(range({lo}, {hi} + 1)) AS p FROM "
+                     f"(SELECT *, {seg('l', 'i')[1]} AS st, {seg('l', 'i')[0]} AS sl FROM (SELECT *, unnest(range({parts})) AS i FROM "  # nested: unnests in one SELECT are zipped
+                     f"(SELECT {w_}v, len, unnest(range(greatest({parts}, len - {k}), len + {k + 1})) AS l FROM {asked})))) "
+                     f"WHERE p >= 1 AND p + sl - 1 <= length(x)")
+            on = " AND ".join([*(f"a.{w} = c.{w}" for w in within), "a.l = c.l", "a.i = c.i", "a.s = c.s"])
+            cands = self.con.execute(f"""SELECT DISTINCT {"".join(f"a.{w}, " for w in within)}least(a.v, c.x) AS v, greatest(a.v, c.x) AS x
+                FROM ({index}) a JOIN ({probe_sql}) c ON {on} AND a.v <> c.x""").df()
+            if len(cands):
+                d = np.concatenate([cpdist(cands["v"].iloc[i:i + 1_000_000].tolist(), cands["x"].iloc[i:i + 1_000_000].tolist(), scorer=Levenshtein.distance,
+                                           score_cutoff=k, workers=-1) for i in range(0, len(cands), 1_000_000)])
+                cands = cands[d <= k]
+            ws = [w.name for w in b.within]
+            kept = self._temp(f"SELECT * FROM {self._view(cands.reset_index(drop=True))}")
+            self.near[at] = self._temp(f"""SELECT p.*, a.n AS nv, c.n AS nx FROM {kept} p JOIN {values} a ON a.v = p.v {"".join(f"AND a.{q(w)} = p.{q(w)} " for w in ws)}
+                JOIN {values} c ON c.v = p.x {"".join(f"AND c.{q(w)} = p.{q(w)} " for w in ws)}""")
+        return self.near[at]
 
     def _view(self, df: pd.DataFrame) -> str:
         name = f"er_{uuid.uuid4().hex[:12]}"
@@ -161,6 +206,11 @@ def pairs_sql(b: Blocker, r: Records, skip: str | None = None, only: str | None 
             return (f"WITH s AS (SELECT {u}{cl}, {leads} FROM {t} WHERE {k} IS NOT NULL WINDOW w AS (ORDER BY {k}, {u})) "
                     f"SELECT least(x.a, x.b) AS l, greatest(x.a, x.b) AS r FROM ({arms}) x WHERE {cond}") if b.window > 1 else \
                 "SELECT NULL::VARCHAR AS l, NULL::VARCHAR AS r WHERE FALSE"
+        case EditKeys():
+            near, k = r.near_values(b, r.most), q(b.key.name)
+            on = lambda x, side: " AND ".join([f"{x}.{k} = p.{side}", *(f"{x}.{q(w.name)} = p.{q(w.name)}" for w in b.within)])
+            return (f"SELECT least(a.{u}, b.{u}) AS l, greatest(a.{u}, b.{u}) AS r FROM {near} p JOIN {t} a ON {on('a', 'v')} "
+                    f"JOIN {t} b ON {on('b', 'x')} WHERE {r.filters('a', 'b')}")
         case DeletionKeys():
             v = r.variants(b)
             same = " AND ".join(["a.__dk = b.__dk", *(f"a.{q(w.name)} = b.{q(w.name)}" for w in b.within)])
@@ -244,6 +294,10 @@ def estimate(b: Blocker, records: pd.DataFrame | str, n_query: int, con: duckdb.
                              - (SELECT coalesce(sum(greatest(dn - 1, 0) * (__c // d) * (__c // d - 1) // 2), 0) FROM same)""").fetchall()[0][0]
                 return dict(big_o="O(N·L + P)", filled=f"O({n:,}·L + {int(p):,})", est_pairs=int(p), largest_block=int(big), **dict(zip(none, map(int, o))),
                             normal_pairs=pairs)
+            case EditKeys():  # exactly the pairs it lists: its value pairs' records multiplied
+                r.most = min(r.most, oversized_from)
+                p = int(r.con.execute(f"SELECT coalesce(sum(nv * nx), 0) FROM {r.near_values(b, r.most)}").fetchall()[0][0])
+                return dict(big_o="O(U·k³ + S + P)", filled=f"O({n:,}·k³ + {p:,})", est_pairs=p, largest_block=0, **none, normal_pairs=p)
             case TfidfNeighbours():
                 m, length = r.con.execute(f"SELECT count({q(b.key.name)}), avg(length({q(b.key.name)})) FROM {t}").fetchall()[0]
                 per = (length or 0) * (b.ngram[1] - b.ngram[0] + 1)  # n-grams per record, roughly
@@ -271,6 +325,9 @@ def estimate_touching(b: Blocker, r: Records) -> dict[str, object]:
             keys = ", ".join(["__dk", *(q(w.name) for w in b.within)])
             sql = (f"WITH k AS (SELECT DISTINCT {keys} FROM {_rows(b, r, asked=True)}), "
                    f"b AS (SELECT count(*) AS c, {asked} AS qn FROM {r.variants(b)} v JOIN k USING ({keys}) GROUP BY {keys}) {total}")
+        case EditKeys():  # the batch's records' pairs, of the value pairs (an upper bound: both records of a pair may be old)
+            p = r.con.execute(f"SELECT count(*) FROM ({pairs_sql(b, r)})").fetchall()[0][0]
+            return dict(big_o="O(U·k³ + S + Δ·b)", filled=f"O(N·k³ + {int(p):,})", est_pairs=int(p), largest_block=0)
         case SortedNeighbourhood():  # each query record pairs with up to window − 1 records on either side
             m = r.con.execute(f"SELECT count({q(b.key.name)}) FROM {r.asked(t)}").fetchall()[0][0]
             return dict(big_o="O(N log N + Δ·w)", filled=f"O(N log N + {m:,}·{b.window})", est_pairs=2 * m * (b.window - 1), largest_block=b.window)
@@ -323,7 +380,7 @@ def candidates(blockers: tuple[Blocker, ...], records: pd.DataFrame | str, uid: 
         raise InputError(f"{len(blockers)} candidate generators: a run takes at most 63", fix="add fewer name features: each adds its own")
     assert query is not None or not touching, "touching needs the batch as the query"
     r = Records(records, uid, con, query, clusters, columns=[k.name for b in blockers for k in keys_of(b)])
-    r.touching = touching
+    r.touching, r.most = touching, budget.min_oversized()
     l, rr = f"{uid}_l", f"{uid}_r"
     try:
         n_query = r.con.execute(f"SELECT count(*) FROM {r.query or r.table}").fetchall()[0][0]

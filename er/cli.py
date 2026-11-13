@@ -108,8 +108,8 @@ def plain(x: object) -> object:
 
 DOING = {"load": "reading the records", "budget": "counting the pairs", "fit": "fitting the model", "rules": "applying the rules",
          "candidates": "listing the pairs to compare", "score": "scoring the pairs", "cluster": "forming entities",
-         "probe": "looking for missed matches", "report": "writing the reports", "write": "saving", "decide": "applying the decisions"}
-RUN_ORDER = ("load", "budget", "fit", "rules", "candidates", "score", "cluster", "probe", "report", "write")  # a full run's steps
+         "probe": "looking for missed matches", "gap": "measuring what the keys miss", "report": "writing the reports", "write": "saving", "decide": "applying the decisions"}
+RUN_ORDER = ("load", "budget", "fit", "rules", "candidates", "score", "cluster", "probe", "gap", "report", "write")  # a full run's steps
 BATCH_ORDER = ("load", "fit", "rules", "candidates", "score", "cluster", "report", "write")  # a batch added: no budget, no probe
 
 
@@ -2610,7 +2610,7 @@ def indexed(a: dict) -> dict:  # the workspace's index brought up to date with i
 
 
 STEPS_OF = {"check records": ("load", "budget"), "apply decisions": ("decide",), "load records": ("load",), "generate records": ("load",),
-            "try method": RUN_ORDER[:8]}  # the steps of a command that isn't a run: try method's two runs write nothing
+            "try method": RUN_ORDER[:9]}  # the steps of a command that isn't a run: try method's two runs write nothing
 FULL_RUNS = ("resolve records", "rerun records", "apply answers", "adopt method", "reset method", "lower trust", "raise trust", "split entity")
 INDEXED = (*FULL_RUNS, "add records", "apply decisions", "set merging")  # the commands that change a run: its index is kept up to date after them
 
