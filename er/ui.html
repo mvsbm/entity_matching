@@ -194,7 +194,7 @@ form[inert] { opacity: 0.55; cursor: not-allowed; }  /* fields that wait (the lo
 .banner b { display: block; }
 .banner .fix { color: var(--ink); margin-top: 2px; }
 .meter { display: inline-block; width: 64px; height: 4px; border-radius: 2px; background: color-mix(in srgb, var(--primary) 22%, transparent); vertical-align: middle; margin-right: 8px; overflow: hidden; }
-.meter[hidden], .lin[hidden] { display: none; } .steps-card .lin, .task-body .lin { border-radius: 2px; max-width: 480px; margin: 4px 0 2px; }
+.meter[hidden], .meter.wide[hidden], .lin[hidden] { display: none; } .steps-card .lin, .task-body .lin { border-radius: 2px; max-width: 480px; margin: 4px 0 2px; }
 .meter i { display: block; height: 100%; background: var(--primary); }
 .meter.wide { display: block; width: 100%; max-width: 480px; margin: 4px 0 2px; } .meter.wide i { transition: width .3s; }
 .card.ready { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; } .card.ready .grow { flex: 1; }
@@ -954,6 +954,7 @@ function runPace(order, ended, at, now, last, p = null, pAt = at) {
 const paceLine = (pace) => [pace.over ? "longer than last time" : "",
   pace.left === null || (pace.least && pace.left < 2) ? "" : pace.left < 2 ? "almost done" : `${pace.least ? "at least" : "about"} ${lasts(pace.left)} left`].filter(Boolean).join(" · ");
 const OWN_PAGE = new Set(["build index"]);  // long commands their own page says the progress of, where the person is looking: no panel over it
+const ownPage = (command) => OWN_PAGE.has(command) || (RUNS.includes(command) && current === "run");  // a run's own page draws its progress card
 const task = {
   start(command, job, since) {  // since: when it began, for a page drawn while it runs (seconds since the epoch)
     if (this.job && this.done === null) return;  // one at a time: a second, refused at once, doesn't take the panel
@@ -962,8 +963,12 @@ const task = {
     delete lastRuns[command];
     clearTimeout(this.hide); clearInterval(this.clock);
     this.clock = setInterval(() => this.draw(), 1000);
-    $("task").hidden = OWN_PAGE.has(command);
+    this.closed = false;
+    this.place();
     this.draw();
+  },
+  place() {  // the panel while it runs: wherever its progress isn't drawn already, unless the person closed it
+    if (this.job && this.done === null) $("task").hidden = this.closed || ownPage(this.command);
   },
   event(e, job) {
     if (job !== this.job) return;
@@ -4271,6 +4276,7 @@ async function go(id, arg) {
   document.body.classList.remove("nav-open");
   scrollTo(0, 0);  // a page opens at its top, not where the last one was left
   rail();
+  task.place();  // to the run's page: its card says how far; away from it: the panel does
   await refresh(await SCREENS[id]($("screen"), arg));
 }
 
@@ -4321,7 +4327,7 @@ document.addEventListener("keydown", (e) => {
   $("term-close").onclick = () => term.show(false);
   $("term-clear").onclick = () => { $("term-body").innerHTML = ""; };
   $("task-fold").onclick = () => task.fold();
-  $("task-close").onclick = () => { $("task").hidden = true; };  // the command runs on; the next one opens it again
+  $("task-close").onclick = () => { $("task").hidden = true; task.closed = true; };  // the command runs on; the next one opens it again
   const tall = (h) => document.documentElement.style.setProperty("--term-h", `${Math.round(Math.min(innerHeight * 0.85, Math.max(120, h)))}px`);
   const keep = () => { try { localStorage.setItem("term-h", String($("term").offsetHeight)); } catch { /* not kept: the next visit starts at the default */ } };
   try { const h = Number(localStorage.getItem("term-h")); if (h) tall(h); } catch { /* the default */ }
