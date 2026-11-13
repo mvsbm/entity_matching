@@ -266,7 +266,7 @@ def test_a_mapping_reads_back_as_written_and_two_changes_at_once_both_land(say, 
     assert "  ! person name and company name are 20% filled together" in cli.file_lines(dict(fields=shared, needed=dict(one_of=[["person_name", "company_name"]])))  # one column: counted once, as check records does
 
 
-def test_a_name_column_both_kinds_share_is_scored_once_when_names_go_by_kind(say, tmp_path, population, monkeypatch):
+def test_a_name_column_both_kinds_share_is_scored_once_as_mapped_or_by_kind(say, tmp_path, population, monkeypatch):
     s, p, g = population
     monkeypatch.chdir(tmp_path)
     person, u = g.df["NYS_CNV_P_NAME_KANA"].isna() & g.df["FULL_NAME_KANA"].notna(), s.data.unique_id
@@ -280,7 +280,8 @@ def test_a_name_column_both_kinds_share_is_scored_once_when_names_go_by_kind(say
         assert say("resolve", "records", "shared.parquet", "--workspace", f"workspaces/{how}")[0] == 0
         said[how] = con.execute(f"""SELECT count(*) FILTER (WHERE x.ENTITY_ID <> y.ENTITY_ID AND s.match_weight >= 6), avg(s.match_weight) FILTER (WHERE x.ENTITY_ID = y.ENTITY_ID)
             FROM read_parquet('workspaces/{how}/scored/*.parquet') s JOIN truth x ON x.CONT_ID = s.{u}_l JOIN truth y ON y.CONT_ID = s.{u}_r""").fetchall()[0]
-    assert said["by-kind"][0] == 0 and said["by-kind"][1] < said["as-mapped"][1] - 2  # a person's name scored once, not as a company's too
+    assert said["by-kind"][0] == 0 and said["as-mapped"][0] == 0  # a person's name scored once, not as a company's too, either way
+    assert abs(said["by-kind"][1] - said["as-mapped"][1]) < 2
 
 
 def test_a_run_an_earlier_reader_read_takes_no_batch_until_it_runs_again(say, tmp_path, population, monkeypatch):

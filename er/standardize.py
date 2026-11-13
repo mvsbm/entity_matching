@@ -138,6 +138,16 @@ def prepare(std: Standardization, records: pd.DataFrame, normalized: Iterable[tu
         for d in derived:
             if d.kind:  # a record people can't tell goes to neither side
                 df[d.name] = df[d.name].where((side == d.kind) & ~k["kind_held"].to_numpy())
+        # one name in a person field and the company field alike (a column holding every record's name, mapped to both):
+        # one piece of evidence, kept on its kind's side only, not compared twice
+        if "company_name" in df:  # compared folded, as the names are: a converted copy may write small or voiced kana otherwise
+            fold = lambda c: normalize(df[c], ("kana_fold",), std)
+            company, same = fold("company_name"), {f: None for f in ("full_name", "person_name") if f in df}
+            for f in same:
+                same[f] = (fold(f) == company).fillna(False).to_numpy()
+                df[f] = df[f].mask(same[f] & (side == "company"))
+            if same:
+                df["company_name"] = df["company_name"].mask(np.logical_or.reduce(list(same.values())) & (side == "person"))
     for col, steps in normalized:
         if column_name(col, steps) not in df:  # a one-byte copy from the column it copies, if made: not the chain again
             done = steps[-1] in ("one_byte", "one_byte_hash") and column_name(col, steps[:-1]) in df
