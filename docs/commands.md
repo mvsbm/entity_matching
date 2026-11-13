@@ -47,6 +47,8 @@ Written by `scripts/document_commands.py` from the declarations in `er/cli.py`; 
 | [`describe method`](#nayose-describe-method) | What the run shows about its method, and the changes worth trying |
 | [`describe review`](#nayose-describe-review) | How much people must check, range by range of the trust line |
 | [`try method`](#nayose-try-method) | Try a change of the method beside the method as it is |
+| [`try sample`](#nayose-try-sample) | Find how large a sample the model needs to learn from |
+| [`set fit`](#nayose-set-fit) | Set the sample the model learns from, and how EM learns |
 | [`try everything`](#nayose-try-everything) | Try everything on a file, and write a report to send that holds no record's value |
 | [`adopt method`](#nayose-adopt-method) | Adopt a method tried, and find matches with it |
 | [`reset method`](#nayose-reset-method) | Go back to the tuned method, and find matches with it |
@@ -1150,6 +1152,63 @@ Runs the workspace's method and the method with the change (a line; --drop: matc
 
 ```bash
 nayose try method --workspace workspaces/customers --line 9 --drop F3_NAME~_CIF
+```
+
+## nayose try sample
+
+Find how large a sample the model needs to learn from.
+
+```
+nayose try sample --workspace WORKSPACE [--pipeline PIPELINE] [--compute KEY=VALUE …] [--format text|json]
+```
+
+Fits the model on 1,000 of the run's records, then 2,000, 4,000, … (each sample the last one and more), with EM as the method has it (rules) and in one session per equality key (keys), and scores the pairs the run kept with each fit from the levels they hold: how many reach the review floor and the line, and how many each larger sample adds and takes away. Stops once two larger samples in a row change almost no pair, or at every record. Writes sample_sizes.txt into the workspace, to send: counts, points and m, no record's value. Changes no result. O(Σ fits): about twice the last one.
+
+| Parameter | |
+|---|---|
+| `--workspace WORKSPACE` | the workspace: the folder that keeps one matching job (required) |
+| `--pipeline PIPELINE` | the pipeline file (default: config/final.toml) |
+| `--compute KEY=VALUE` | DuckDB limits for this run, over config/settings.toml [compute]: memory_limit=8GB, threads=4, temp_directory=<folder> (past the memory limit DuckDB spills there) |
+
+| Result | |
+|---|---|
+| `records` | the run's records |
+| `floor` | the review floor |
+| `line` | the line |
+| `file` | sample_sizes.txt |
+| `report` | its text |
+| `steps` | each fit: records, em, seconds, start, change (the largest move of a level's points), pairs_floor, pairs_line, added, lost, m |
+| `settled` | each way's sample past which a larger one changes almost no pair |
+| `next` | the commands that usually follow |
+
+```bash
+nayose try sample --workspace workspaces/customers
+```
+
+## nayose set fit
+
+Set the sample the model learns from, and how EM learns.
+
+```
+nayose set fit --workspace WORKSPACE --records N --em rules|keys [--pipeline PIPELINE] [--format text|json]
+```
+
+Keeps them in the workspace (method.toml fit): the records the next run's fit samples, and EM as the method has it (rules) or one session per equality key, each level's m their median (keys). The next run uses them. O(1).
+
+| Parameter | |
+|---|---|
+| `--workspace WORKSPACE` | the workspace: the folder that keeps one matching job (required) |
+| `--records N` | the records to sample, 1,000 or more (try sample says where more stops paying) (required) |
+| `--em rules|keys` | rules: as the method has it; keys: one session per equality key (required) |
+| `--pipeline PIPELINE` | the pipeline file (default: config/final.toml) |
+
+| Result | |
+|---|---|
+| `method` | the workspace's method.toml |
+| `next` | the commands that usually follow |
+
+```bash
+nayose set fit --workspace workspaces/customers --records 64000 --em keys
 ```
 
 ## nayose try everything

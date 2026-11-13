@@ -681,6 +681,8 @@ body.filedrag [data-drop].dropping::after { border-style: solid; background: var
             {"command": "describe method", "args": {"workspace": "@workspace"}, "reads": ["line", "method", "round", "rounds", "audits", "bands", "decided", "rules", "keys", "steps", "proposals", "trials", "trust", "dropped"]},
             {"command": "describe workspace", "args": {"workspace": "@workspace"}, "reads": ["records", "inputs"]},
             {"command": "try method", "args": {"workspace": "@workspace", "line": "@line", "drop": "@drop", "add": "@add", "compute": "@compute"}, "reads": ["trial"]},
+            {"command": "try sample", "args": {"workspace": "@workspace", "compute": "@compute"}, "reads": ["steps", "settled", "floor", "report"]},
+            {"command": "set fit", "args": {"workspace": "@workspace", "records": "@records", "em": "@em"}, "reads": ["method"]},
             {"command": "adopt method", "args": {"workspace": "@workspace", "trial": "@trial", "compute": "@compute"}, "reads": ["summary"]},
             {"command": "reset method", "args": {"workspace": "@workspace", "compute": "@compute"}, "reads": ["summary"]},
             {"command": "describe key", "args": {"name": "@name", "workspace": "@workspace"}, "reads": ["name", "pairs", "matched", "only", "examples", "sizes", "largest", "group", "around"]},
@@ -772,6 +774,7 @@ const ICON = {
   empty: '<rect x="4" y="5" width="16" height="14" rx="2"/><path d="M4 10h16M9 14h6"/>',
   stack: '<path d="M12 4l9 4.5-9 4.5-9-4.5z"/><path d="M3 12.5l9 4.5 9-4.5M3 16.5l9 4.5 9-4.5"/>',
   upload: '<path d="M12 15V4M7.5 8.5L12 4l4.5 4.5"/><path d="M5 15v3a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-3"/>',
+  download: '<path d="M12 4v11M7 10l5 5 5-5M5 20h14"/>',
   file: '<path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5"/>',
 };
 const icon = (name) => `<svg class="ic" viewBox="0 0 24 24" aria-hidden="true">${ICON[name]}</svg>`;
@@ -1807,7 +1810,7 @@ const RUN_STEPS = ["load", "budget", "fit", "rules", "keys", "candidates", "scor
 const STEPS_OF = {"add records": ["load", "fit", "rules", "candidates", "score", "cluster", "report", "write"],  // an increment's: no plan, no probe
                   "match records": ["load", "fit", "rules", "candidates", "score", "cluster"]};  // a preview writes nothing
 const BUSY = {"resolve records": "Finding matches", "rerun records": "Matching again", "add records": "Adding the new records", "match records": "Previewing the new records",
-              "load records": "Loading your file", "upload file": "Uploading your file", "generate records": "Generating records", "accept repairs": "Accepting the repairs", "try everything": "Auto mode", "try method": "Trying a method",
+              "load records": "Loading your file", "upload file": "Uploading your file", "generate records": "Generating records", "accept repairs": "Accepting the repairs", "try everything": "Auto mode", "try method": "Trying a method", "try sample": "Trying sample sizes", "set fit": "Setting the fit",
               "set merging": "Rebuilding the entities", "apply answers": "Matching again with your answers", "apply decisions": "Applying your decisions",
               "adopt method": "Matching with the method tried", "reset method": "Matching with the tuned method", "lower trust": "Lowering the trust line",
               "raise trust": "Raising the trust line", "split entity": "Splitting the entity"};
@@ -3051,6 +3054,9 @@ const SCREENS = {
         d.proposals.length ? d.proposals.map((x) => `<div class="offer">${icon("wand")}<span>${plainly(x)}</span>${tryBtn(x.change)}</div>`).join("") : '<p class="muted" style="margin:0">Nothing to try yet: people\'s decisions show what to change.</p>'}
         ${Object.keys(changed).length ? `<p class="muted">The method is changed: ${esc(methodText(changed))} · <button class="mini" id="reset">Back to the tuned method</button></p>` : ""}
         <details class="fold-line"><summary>Where to draw the line</summary><div id="line" style="margin-top:10px"></div></details></div>
+       <div class="card"><div class="qa"><div class="q"><h2 class="question">How many records should the model learn from?</h2>
+         <p class="answer">${d.method.fit ? `${fmt(d.method.fit.records)} records, ${FIT_EM[d.method.fit.em]}` : "As tuned."}</p></div>
+         <button class="btn outlined" id="sizes">${icon("loop")}Try sample sizes</button></div><div id="sizes-out"></div></div>
        <details class="card fold"><summary><h2>Rounds so far</h2></summary><div id="rounds"></div></details>
        <details class="card fold"><summary><h2>Match rules</h2></summary><div id="rules"></div></details>
        <details class="card fold"><summary><h2>Pair keys</h2></summary><div id="keys"></div></details>
@@ -3084,6 +3090,21 @@ const SCREENS = {
         run("improve", "try method", tryArgs(change), busy(`Trying ${methodText(change)}`)).then((r) => r.event === "error" ? failed(r) : go("improve"));
       } else if (b.dataset.adopt) run("improve", "adopt method", {trial: b.dataset.adopt}, busy("Adopting, and finding matches")).then(round(false));
       else if (b.id === "reset") run("improve", "reset method", {}, busy("Back to the tuned method, and finding matches")).then(round(true));
+      else if (b.id === "sizes") {
+        b.disabled = true;
+        const rows = [], box = $("sizes-out");
+        box.innerHTML = `<p class="muted">${spinner()} Fitting on 1,000 records…</p>`;
+        run("improve", "try sample", {}, (e) => { if (e.event === "line" && e.row) { rows.push(e.row); sizesView(box, rows); } })
+          .then((r) => { b.disabled = false; if (r.event === "error") box.innerHTML = banner(r); else sizesView(box, r.steps, r); });
+      } else if (b.dataset.fit) {
+        const f = JSON.parse(b.dataset.fit);
+        run("improve", "set fit", f).then((r) => { $("sizes-out").insertAdjacentHTML("afterbegin", r.event === "error" ? banner(r)
+          : `<div class="banner info">${icon("check")}<div><b>The next run learns from ${fmt(f.records)} records, ${FIT_EM[f.em]}.</b></div><a class="btn" data-go="run">${icon("run")}Find matches</a></div>`); });
+      } else if (b.id === "sizes-dl") {
+        const a = document.createElement("a");
+        a.href = URL.createObjectURL(new Blob([b.closest("[data-report]").dataset.report], {type: "text/plain"}));
+        a.download = "sample_sizes.txt"; a.click(); URL.revokeObjectURL(a.href);
+      }
     };
     $("wrong")?.addEventListener("click", () => go("results", {tab: "pairs", status: "different"}));  // the pairs people said differ, in Explore
   },
@@ -3092,11 +3113,38 @@ const SCREENS = {
   kinds: (el, note) => review(el, "kinds", note),
 };
 
+// How large a sample the model needs (try sample): pairs at the floor as each sample grows, both ways EM learns.
+const FIT_EM = {rules: "EM as tuned", keys: "EM per key"};
+function sizesView(box, rows, done = null) {
+  const ok = rows.filter((x) => x.pairs_floor !== undefined), ways = [...new Set(ok.map((x) => x.em))];
+  if (!ok.length) { box.innerHTML = `<p class="muted">${spinner()} ${rows.length ? `${fmt(rows[rows.length - 1].records)} records: too few to learn from yet…` : "Fitting…"}</p>`; return; }
+  const W = 640, H = 200, L = 56, R = 96, T = 12, B = 28, xs = ok.map((x) => Math.log2(x.records)), lo = Math.min(...xs), hi = Math.max(lo + 1, ...xs);
+  const vs = ok.map((x) => x.pairs_floor), pad = Math.max(1, (Math.max(...vs) - Math.min(...vs)) * 0.1), bottom = Math.max(0, Math.min(...vs) - pad), top = Math.max(...vs) + pad;  // the range the pairs move in: a few percent is what the question is about
+  const X = (n) => L + (W - L - R) * (Math.log2(n) - lo) / (hi - lo), Y = (v) => T + (H - T - B) * (1 - (v - bottom) / (top - bottom));
+  const color = {rules: "var(--faint)", keys: "var(--primary)"}, ends = ways.map((w) => { const pts = ok.filter((x) => x.em === w); return {w, pts, y: Y(pts[pts.length - 1].pairs_floor) + 4}; });
+  ends.sort((a, b) => a.y - b.y).forEach((e, i, all) => { if (i && e.y - all[i - 1].y < 14) e.y = all[i - 1].y + 14; });  // the labels at the lines' ends, never over each other
+  const lines = ends.map(({w, pts, y}) => `<polyline fill="none" stroke="${color[w]}" stroke-width="2" points="${pts.map((x) => `${X(x.records)},${Y(x.pairs_floor)}`).join(" ")}"/>` +
+      pts.map((x) => `<circle cx="${X(x.records)}" cy="${Y(x.pairs_floor)}" r="4" fill="${color[w]}" stroke="var(--surface)" stroke-width="2"><title>${fmt(x.records)} records, ${FIT_EM[w]}: ${fmt(x.pairs_floor)} pairs</title></circle>`).join("") +
+      `<text x="${X(pts[pts.length - 1].records) + 8}" y="${y}" font-size="12" fill="var(--muted)">${esc(FIT_EM[w])}</text>`).join("");
+  const ticks = [...new Set(ok.map((x) => x.records))].map((n) => `<text x="${X(n)}" y="${H - 8}" font-size="11" text-anchor="middle" fill="var(--faint)">${n >= 1e6 ? `${+(n / 1e6).toFixed(1)}M` : `${Math.round(n / 1000)}k`}</text>`).join("");
+  const chart = `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Pairs at the review floor as the sample grows" style="width:100%;max-width:${W}px;height:auto;margin:8px 0">
+    <line x1="${L}" x2="${W - R}" y1="${H - B}" y2="${H - B}" stroke="var(--line)"/>
+    ${[Math.max(...vs), Math.min(...vs)].map((v) => `<text x="${L - 6}" y="${Y(v) + 4}" font-size="11" text-anchor="end" fill="var(--faint)">${fmt(v)}</text>`).join("")}${ticks}${lines}</svg>`;
+  const use = done ? ways.map((w) => { const n = done.settled[w] ?? ok.filter((x) => x.em === w).pop().records;
+    return `<button class="btn ${done.settled[w] ? "filled" : ""}" data-fit='${esc(JSON.stringify({records: Math.max(n, 1000), em: w}))}'>Use ${n >= done.records ? "every record" : `${fmt(n)} records`}, ${FIT_EM[w]}</button>`; }).join(" ") : "";  // a sample of the whole file: any size past it
+  box.innerHTML = (done ? `<p class="answer">${Object.keys(done.settled).length ? `More stops paying at ${Object.entries(done.settled).map(([w, n]) => `${fmt(n)} records (${FIT_EM[w]})`).join(", ")}.`
+      : "Still changing at the largest sample."}</p>` : `<p class="muted">${spinner()} ${fmt(rows[rows.length - 1].records)} records done…</p>`) + chart + '<div id="sizes-table"></div>' +
+    (done ? `<div class="stepfoot" data-report="${esc(done.report)}">${use}<span class="grow"></span><button class="btn" id="sizes-dl">${icon("download")}Download</button></div>` : "");
+  grid($("sizes-table"), rows, ["records", "em", "start", "pairs_floor", "added", "lost", "seconds"], {filter: false,
+       labels: {em: "EM", pairs_floor: `pairs at ${fmt(done ? done.floor : 4)}+`, lost: "taken away"},
+       cell: (r, c) => c === "em" ? esc(FIT_EM[r.em]) : c === "pairs_floor" && r.error ? `<span class="faint">${esc(r.error)}</span>` : esc(r[c] === undefined ? "" : fmt(r[c]))});
+}
+
 // A change of method in words, and what try method takes for it.
 const methodText = (m) => !m || !Object.keys(m).length ? "as tuned"
   : [...(m.trust !== undefined ? [m.trust === "none" ? "nothing merges by points" : `${fmt(m.trust)}+ merge`] : []),
      ...(m.line !== undefined ? [`line at ${fmt(m.line)}`] : []), ...(m.drop_rules || []).map((x) => `without ${ruleSays(x)}`), ...(m.drop_keys || []).map((x) => `without “${looks(x)}”`),
-     ...(m.add_keys || []).map((k) => `with a key on ${keyText(k)}`)].join(" · ");
+     ...(m.add_keys || []).map((k) => `with a key on ${keyText(k)}`), ...(m.fit ? [`fit on ${fmt(m.fit.records)} records, ${FIT_EM[m.fit.em]}`] : [])].join(" · ");
 const keyText = (k) => k.map((f) => { const [field, ...n] = f.split(":"); return words(field) + (n.includes("first3") ? " area" : n.includes("initial") ? " initial" : ""); }).join(" + ");  // an added key's fields, in words
 const tryArgs = (c) => c.line !== undefined ? {line: String(c.line)} : c.add_keys ? {add: c.add_keys.map((k) => k.join("+"))} : {drop: [...(c.drop_rules || []), ...(c.drop_keys || [])]};
 const tryBtn = (c, label = "Try") => `<button class="btn" data-try='${esc(JSON.stringify(c))}'>${esc(label)}</button>`;

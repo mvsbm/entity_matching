@@ -1448,3 +1448,31 @@ def test_the_page_fits_its_window_says_each_thing_once_and_keeps_a_pair_s_id_out
     phone.wait_for_selector("#left tbody tr", timeout=60_000)
     engine = phone.locator("#left thead th").last
     assert engine.inner_text().strip() == "engine" and engine.bounding_box()["x"] + engine.bounding_box()["width"] <= 390
+
+
+def test_the_improve_page_tries_sample_sizes_shows_them_as_they_come_sets_one_and_downloads_the_report(ui_page, tmp_path, population):
+    from er import cli, folder
+    s, p, g = population
+    g.df.to_parquet(tmp_path / "all.parquet", index=False)
+    ws = tmp_path / "run"
+    assert cli.main(["resolve", "records", str(tmp_path / "all.parquet"), "--workspace", str(ws), "--format", "json"]) == 0
+    page, server, httpd = ui_page(str(ws), str(tmp_path / "workspaces"), viewport={"width": 1280, "height": 900})
+    page.wait_for_selector(".tiles")
+    page.click(".navitem[data-screen=improve]")
+    page.wait_for_selector("#sizes")
+    assert "As tuned." in page.inner_text("#sizes-out").strip() or page.inner_text("#out").count("How many records should the model learn from?") == 1
+    page.click("#sizes")
+    page.wait_for_selector("#sizes-out svg circle", timeout=120_000)  # the first sizes drawn while it runs
+    page.wait_for_selector("#sizes-dl", timeout=300_000)
+    assert (ws / "sample_sizes.txt").exists() and "SAMPLE SIZES" in (ws / "sample_sizes.txt").read_text(encoding="utf-8")
+    rows = page.query_selector_all("#sizes-table tbody tr")
+    assert len(rows) >= 2 and page.query_selector_all("#sizes-out circle")
+    with page.expect_download() as got:
+        page.click("#sizes-dl")
+    assert Path(got.value.path()).read_text(encoding="utf-8") == (ws / "sample_sizes.txt").read_text(encoding="utf-8")  # what is sent is what was written
+    use = page.query_selector("#sizes-out [data-fit]")
+    fit = json.loads(use.get_attribute("data-fit"))
+    use.click()
+    page.wait_for_selector("#sizes-out .banner", timeout=30_000)
+    assert folder.method(ws).get("fit") == fit and "Find matches" in page.inner_text("#sizes-out .banner"), page.inner_text("#sizes-out .banner")
+    page.screenshot(path=str(tmp_path / "sizes.png"), full_page=True)

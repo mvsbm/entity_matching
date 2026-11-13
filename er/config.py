@@ -717,7 +717,7 @@ def widen(p: "Pipeline", added: Iterable[tuple[str, str]]) -> "Pipeline":
                    fs=replace(p.fs, model=model, blockers=p.fs.blockers + tuple(c for b in p.fs.blockers for c in copies.get(b.name, ()))))
 
 
-METHOD_KEYS = ("line", "drop_rules", "drop_keys", "trust", "add_keys", "merge")
+METHOD_KEYS = ("line", "drop_rules", "drop_keys", "trust", "add_keys", "merge", "fit")
 
 
 def added_key(fields: list[str]) -> KeyBlocker:  # a pair key a workspace adds (method.toml add_keys): each field as `field` or `field:normalizer`
@@ -730,7 +730,9 @@ def adjust(p: "Pipeline", method: Mapping[str, object]) -> "Pipeline":
     at; `drop_rules`, match rules left out; `drop_keys`, pair keys left out, each with the copies widen made of it
     (name@field); `trust`, the trust line (TrustRule): "none" (nothing merges without people) or one of its steps;
     `merge`, the conditions that merge pairs without people (er.results.check_merging), read by runs and set merging;
-    `add_keys`, pair keys added, each a list of fields (`field` or `field:normalizer`), as describe method proposes them.
+    `add_keys`, pair keys added, each a list of fields (`field` or `field:normalizer`), as describe method proposes them;
+    `fit`, the sample the model learns from: `records` (fit_rows) and `em`, "rules" (em_rules) or "keys" (one session
+    per equality key, each level's m their median), as try sample shows them.
     Nothing changed: the same pipeline, so the same config hash. O(rules + generators)."""
     if not method:
         return p
@@ -757,8 +759,14 @@ def adjust(p: "Pipeline", method: Mapping[str, object]) -> "Pipeline":
     blockers += tuple(b for b in new if b.name not in {x.name for x in blockers})
     if not stages or not blockers:
         raise InputError(f"method.toml leaves no {'match rule' if not stages else 'pair key'}", fix)
-    return replace(p, rules=replace(p.rules, stages=stages), fs=replace(p.fs, blockers=blockers, min_match_weight=float(line)),
-                   trust=p.trust if trust is None else replace(p.trust, line=math.inf if trust == "none" else float(trust)))
+    fit = method.get("fit", {})
+    if not isinstance(fit, dict) or set(fit) - {"records", "em"} or not isinstance(fit.get("records", 1000), int) or isinstance(fit.get("records"), bool) \
+            or fit.get("records", 1000) < 1000 or fit.get("em", "rules") not in ("rules", "keys"):
+        raise InputError('method.toml: fit takes records (1,000 or more) and em ("rules" or "keys")', fix)
+    model = p.fs.model if "em" not in fit else replace(p.fs.model, em_from_keys=fit["em"] == "keys", em_median=fit["em"] == "keys")
+    return replace(p, rules=replace(p.rules, stages=stages), fs=replace(p.fs, blockers=blockers, min_match_weight=float(line), model=model),
+                   trust=p.trust if trust is None else replace(p.trust, line=math.inf if trust == "none" else float(trust)),
+                   fit_rows=fit.get("records", p.fit_rows))
 
 
 def load_pipeline(path: Path, std: Standardization, chains: Mapping[str, tuple[Normalizer, ...]],

@@ -1073,3 +1073,14 @@ def test_a_run_s_progress_follows_this_version_s_steps_when_the_last_run_lacked_
     (ws / folder.STEPS).write_text(json.dumps({"runs": [{"steps": old}]}), encoding="utf-8")
     got = cli.last_run(str(ws), "rerun records")
     assert got["order"] == cli.RUN_ORDER and "keys" in got["order"] and got["last"]["candidates"] == 1.0
+
+
+def test_the_fit_a_workspace_sets_is_the_sample_and_the_em_its_runs_use(population):
+    from er.config import InputError, adjust
+    s, p, g = population
+    q = adjust(p, {"fit": {"records": 64000, "em": "keys"}})
+    assert q.fit_rows == 64000 and q.fs.model.em_from_keys and q.fs.model.em_median
+    assert adjust(p, {"fit": {"records": 2000}}).fs.model == p.fs.model  # the size alone: EM as it was
+    for bad in ({"records": 10}, {"em": "both"}, {"records": True}, {"size": 2000}):
+        with pytest.raises(InputError, match="fit takes"):
+            adjust(p, {"fit": bad})

@@ -90,6 +90,10 @@ def _pipeline(ws: Path, s: Settings, p: Pipeline, columns: list[str]) -> Pipelin
     if config.exists() and config.read_text(encoding="utf-8") != run_config(p, s):
         raise InputError(f"the pipeline or the column mapping changed since the run in {ws}: its records would be looked up otherwise",
                          fix=f"run it again first: nayose rerun records --workspace {ws}")
+    return fitted(ws, s, p, columns)
+
+
+def fitted(ws: Path, s: Settings, p: Pipeline, columns: list[str]) -> Pipeline:  # the pipeline fitted to a run's stored records, keys as it listed by
     folded = {c.casefold() for c in columns}  # a source column named as its field but for case (BIRTH_DATE) gave way to it (standardize.prepare)
     p = fit_to_file(p, s, [*columns, *(c for alts in s.columns.values() for alt in alts for c in alt if c not in columns and c.casefold() in folded)])[0]
     kept = ws / "state" / "keys.json"  # the keys the run listed by, learned or left after dropping idle ones (er.keys)
