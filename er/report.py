@@ -240,8 +240,11 @@ def report_text(run: "Run", tables: dict[str, pd.DataFrame], pipeline: Path) -> 
                     for x in g["thresholds"]])),
                 *(["  missed pairs agree on: " + " · ".join(f"{x['atom']} {x['pairs']:,}" for x in g["missed_agree"][:12])] if g["missed_agree"] else []), ""]
     if (c := by_step.get("candidates")) and c.get("generators"):  # where the candidates' time goes
-        out += ["KEYS  (pairs each lists, seconds; slowest first)", *table(pd.DataFrame([dict(key=x["name"], pairs=f"{x['pairs']:,}", seconds=f"{x['seconds']:.1f}")
-                                                                                     for x in sorted(c["generators"], key=lambda x: -x["seconds"])])), ""]
+        only = g.get("only", {}) if g else None  # the gap's sampled pairs at the floor no other key or rule lists, scaled
+        out += [f"KEYS  (pairs each lists, seconds{'; only: pairs at the review floor no other key or rule lists, estimated from the gap' if only is not None else ''}; slowest first)",
+                *table(pd.DataFrame([dict(key=x["name"], pairs=f"{x['pairs']:,}", seconds=f"{x['seconds']:.1f}", **({"only": f"{only.get(x['name'], 0):,}"} if only is not None else {}))
+                                     for x in sorted(c["generators"], key=lambda x: -x["seconds"])])),
+                *([f"  not run: {', '.join(k['dropped'])} (its agreement weighs nothing, and other keys list its pairs)"] if (k := by_step.get("keys")) and k.get("dropped") else []), ""]
 
     def row(x: dict, f: str, c: dict) -> dict:
         every = f == "all"
@@ -653,10 +656,10 @@ def describe_matching(con: duckdb.DuckDBPyConnection, out: Path | None, p: Pipel
     section = qa_text.split("## oversized blocks", 1)[1].split("\n## ", 1)[0] if "## oversized blocks" in qa_text else ""
     big = table_after(qa_text, "## oversized blocks") if "|" in section else pd.DataFrame()  # a run without one writes "none"
     skipped = big[big["decision"].astype(str).str.startswith("skipped")].astype({"records": int, "pairs": int}).sort_values("records", ascending=False) if len(big) else big
-    generators = []
+    generators, idle = [], {n for x in facts if x["step"] == "keys" for n in x.get("dropped", ())}  # not run: other keys list its pairs (er.keys.idle)
     for b in p.fs.blockers:
         generators.append(dict(name=b.name, **key_how(b), pairs=listed.get(b.name) if ran else None, matched=found.get(b.name, (0,))[0] if ran else None,
-                               only=alone.get(b.name, 0) if ran else None, seconds=round(seconds[b.name], 2) if b.name in seconds else None, off=b.name in off,
+                               only=alone.get(b.name, 0) if ran else None, seconds=round(seconds[b.name], 2) if b.name in seconds else None, off=b.name in off, idle=b.name in idle,
                                example=list(found[b.name][1:]) if b.name in found else None))
 
     # score: each comparison's levels, the tests behind each, and what the fitted model says each is worth

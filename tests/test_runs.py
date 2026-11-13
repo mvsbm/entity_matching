@@ -281,7 +281,7 @@ def test_describe_matching_draws_the_pipeline_with_the_run_s_numbers(tmp_path, p
     kept = pd.read_parquet(out / "rule_kept")["rule"].value_counts().to_dict()
     assert {r["name"]: r["pairs"] for r in nodes["rules"]["rules"] if r["pairs"]} == kept
     step = next(x for x in json.loads((out / "steps.json").read_text(encoding="utf-8"))["runs"][0]["steps"] if x["step"] == "candidates")
-    assert {x["name"]: x["pairs"] for x in nodes["candidates"]["generators"]} == {x["name"]: x["pairs"] for x in step["generators"]}
+    assert {x["name"]: x["pairs"] for x in nodes["candidates"]["generators"] if not x["idle"]} == {x["name"]: x["pairs"] for x in step["generators"]}
     gold = pd.read_parquet(out / "gold.parquet")
     assert nodes["accept"]["accepted"] == len(pd.read_parquet(out / "matches")) and nodes["customers"]["count"] == gold["cluster_id"].nunique()
     levels = [lv for c in nodes["score"]["comparisons"] for lv in c["levels"] if lv["m"]]

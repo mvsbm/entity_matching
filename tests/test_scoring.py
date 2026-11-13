@@ -386,6 +386,7 @@ def test_pairs_that_cant_reach_0_left_out_as_the_keys_list_them_change_no_score_
     monkeypatch.setattr("er.run.review_floor", lambda pipeline: -50.0)  # and keeps many, pairs below 0 its hits
     g.df.to_parquet(tmp_path / "in.parquet", index=False)
     monkeypatch.setattr(C, "KEEP_SLICE", 7)  # many slices
+    monkeypatch.setattr("er.run.idle", lambda run: (run.pipeline.fs.blockers, []))  # every key runs: the pairs each lists are compared
     gate, budget, seen = C._gate, Run.budget, []
 
     def spy(blockers, r, big, parts, *args):  # the distinct pairs the normal blocks list, as the gate counts them

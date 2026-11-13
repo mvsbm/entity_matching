@@ -23,7 +23,7 @@ package "inputs" {
 }
 
 
-rectangle "<b>1 · Load</b>: read the file, check it, standardize each record (chunks in parallel processes), and tell persons from companies\n<i>O(N·L)</i>\n<size:10><color:#65717E>Run.load · run.ahead · Run._answers · folder.answer_parts · Run._given · source.filled</color></size>\n<size:10><color:#65717E>source.open_source · source.suggest · settings.present_fields · settings.fit_to_file</color></size>\n<size:10><color:#65717E>Run._set_aside · Run._set_aside_in_order · kind.classifier · source.answers · source.known · kind.merge_answers · standardize.prepare · source.file_facts · Run._placeholders · Run._lacks</color></size>\n<size:10><color:#65717E>Run._prepared_key · kind.century · folder.prepared · Run._kept · folder.forget_prepared · folder.keep_prepared · io.alive · io.read_parquet</color></size>" as load
+rectangle "<b>1 · Load</b>: read the file, check it, standardize each record (chunks in parallel processes), and tell persons from companies\n<i>O(N·L)</i>\n<size:10><color:#65717E>Run.load · run.ahead · Run._answers · folder.answer_parts · Run._given · source.filled</color></size>\n<size:10><color:#65717E>source.open_source · source.suggest · settings.present_fields · settings.fit_to_file</color></size>\n<size:10><color:#65717E>Run._set_aside · Run._set_aside_in_order · kind.classifier · source.answers · source.known · kind.merge_answers · standardize.prepare · source.file_facts · Run._placeholders · Run._lacks</color></size>\n<size:10><color:#65717E>Run._prepared_key · kind.century · folder.prepared · Run._kept · folder.forget_prepared · folder.keep_prepared · io.alive · io.read_parquet · match.compared_exactly</color></size>" as load
 package "every step after load reads records" as after_load {
   rectangle "<b>2 · Budget</b>: count every key's pairs before any join; flag blocks too big to join blind\n<i>O(N) per key</i>\n<size:10><color:#65717E>Run.budget · candidates.estimate · Run.capacity · Run.spill_room · run.size_bytes</color></size>" as budget
   rectangle "<b>3 · Fit</b>: learn the model from the file itself, without labels; measure u on this file\n<i>O(n + S·K + P_em·K) + O(N + S·K)</i>\n<size:10><color:#65717E>Run.fit · match.train_fs · match.scored_u</color></size>\n<size:10><color:#65717E>match.u_basis · match.read_by · match.fs_settings · config.keys_sql</color></size>" as fit
@@ -32,11 +32,11 @@ package "every step after load reads records" as after_load {
   rectangle "<b>6 · Score</b>: give every candidate pair that can reach 0 its evidence in bits, the rest left below 0 by a bound, a million at a time, saying how far it is; count the patterns they fall in\n<i>O(C·K·L²)</i>\n<size:10><color:#65717E>Run.score · Run._scored · match.score_fs · match.bound_tests · Run._patterns · Run._bands · results.banded · match.named_sql · match.review_floor</color></size>" as score
   rectangle "<b>7 · Cluster</b>: merge the rules' and the model's pairs at the trust line (none set: every rule pair, and the model's at its threshold with a name compared), or, with the workspace's merge conditions, the pairs that meet them; people's matches, less their no_match; join them into entities, from single records\n<i>O(C + E·d + N)</i>\n<size:10><color:#65717E>Run._load_decisions · Run.cluster · Run._accept · Run.scored · match.named_sql · Run._links · results.merge_where</color></size>\n<size:10><color:#65717E>cluster.merge · Run._gold · run.customer_kinds · Run._expected_false</color></size>" as cluster
   rectangle "<b>7b · Probe</b>: the matches no key lists: pairs drawn within groups matches share (a phone, a postal area), scored; those at the line the likely links don't join, counted and scaled\n<i>O(N + P·K + L)</i>\n<size:10><color:#65717E>Run.probe · probe.missed</color></size>" as probe
-  rectangle "<b>7c · Gap</b>: what the keys miss against comparing every pair: a sample of records paired with every record sharing a value or a near one, scored; the pairs at the review floor, the line and 20 bits no key or rule listed, counted and scaled\n<i>O(f·N·b)</i>\n<size:10><color:#65717E>Run.gap · keys.gap</color></size>" as gap
   rectangle "<b>8 · Write</b>: save the answer, the pairs at 0 points or more with each comparison's level (scored/), the state for increments and the reports (9, built first); the old run goes only once all is written\n<i>O(N + C)</i>\n<size:10><color:#65717E>Run.write · config.generator_dict · Run._links · Run.scored · match.named_sql · folder.next_part · folder.stage · folder.finish_writes · folder.history · folder.brief · Run._log · folder.log · io.code_version · io.replace_text</color></size>\n<size:10><color:#65717E>the round its method is in: folder.round_ran · folder.rounds · folder.method · config.toml_of</color></size>" as write
   rectangle "<b>9 · Report</b>: the checks and the sheets for people, what they typed in and haven't given back kept, saved with the run (8)\n<i>O(review pairs) + O(N) in SQL</i>\n<size:10><color:#65717E>Run.report · report.qa · report.trust_sheet · report.trust_state · report.said · report.applied · report.fill_rates · match.review_floor · match.named_sql · report.review_sheet · report.households · report.carry_over</color></size>\n<size:10><color:#65717E>match.pattern_coverage · match.levels · io.markdown · kind.kind_review_sheet · report.carry_kinds</color></size>\n<size:10><color:#65717E>report.report_text · match.scaled_prior · match.parameters · config.sources_text · io.code_version · io.read_parquet</color></size>" as report
 }
-rectangle "<b>4b · Keys</b>: with [keys], the keys learned on this file: the pairs the model accepts, found by sampling every way two records agree, listed by the fewest pairs (without: the method's generators)\n<i>O(A·N + f·N·b + K·T + K'·N)</i>\n<size:10><color:#65717E>Run.keys · keys.learn · source.known</color></size>" as keys
+rectangle "<b>4b · Keys</b>: with [keys], the keys learned on this file: the pairs the model accepts, found by sampling every way two records agree, listed by the fewest pairs. Without, the method's generators, but one whose agreement weighs nothing and whose sampled pairs at the review floor other keys or rules all list\n<i>O(A·N + f·N·b + K·T + K'·N)</i>\n<size:10><color:#65717E>Run.keys · keys.learn · keys.idle · match.review_floor · source.known</color></size>" as keys
+rectangle "<b>7c · Gap</b>: what the keys miss against comparing every pair: the keys step's sample of records (only those that could reach the floor), each paired with every record sharing a value or a near one, scored; the pairs at the review floor, the line and 20 bits no key or rule listed, counted and scaled\n<i>O(f·N·b)</i>\n<size:10><color:#65717E>Run.gap · keys.gap</color></size>" as gap
 database "records" as records
 database "set_aside" as set_aside
 database "rule_clusters" as rule_clusters
@@ -89,6 +89,10 @@ rule_clusters --> cluster
 rule_clusters --> write
 rule_kept --> write
 rule_kept --> candidates
+records --> keys
+rule_clusters --> keys
+rule_edges --> keys
+rule_kept --> keys
 rule_kept --> score
 candidates --> cands
 cands --> score
@@ -119,8 +123,6 @@ rule_kept --> probe
 rules --> rule_edges
 rule_edges --> gap
 cands --> gap
-rule_clusters --> gap
-rule_kept --> gap
 
 write --> f_out
 write --> f_state

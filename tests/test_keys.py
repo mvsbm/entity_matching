@@ -102,3 +102,20 @@ def test_an_increment_lists_its_pairs_by_the_keys_the_full_run_learned(learned_a
     batch.to_parquet(d / "batch.parquet", index=False)
     run = Run(replace(p, keys=LearnKeys()), s).increment(d / "batch.parquet", d / "learned")
     assert [b.name for b in run.pipeline.fs.blockers] == list(kept)
+
+
+def test_a_key_whose_agreement_weighs_nothing_and_lists_no_pair_of_its_own_is_not_run_and_no_pair_is_lost(population, tmp_path, monkeypatch):
+    from er.match import review_floor
+    from er.run import Run
+    s, p, g = population
+    g.df.to_parquet(tmp_path / "in.parquet", index=False)
+    kept = Run(p, s).full(tmp_path / "in.parquet", tmp_path / "kept")
+    facts = lambda run, step: next(x for x in run.steps if x["step"] == step)
+    dropped = facts(kept, "keys")["dropped"]
+    assert dropped and not {x["name"] for x in facts(kept, "candidates")["generators"]} & set(dropped)
+    monkeypatch.setattr("er.run.idle", lambda run: (run.pipeline.fs.blockers, []))
+    every = Run(p, s, model=kept.model).full(tmp_path / "in.parquet", tmp_path / "every")  # the same model, every key
+    read = lambda run, what: run.con.sql(what).df().sort_values(list(run.con.sql(what).columns)).reset_index(drop=True)
+    for what in (f"SELECT * FROM scores WHERE match_weight >= {review_floor(p)}", "SELECT * FROM gold"):
+        pd.testing.assert_frame_equal(read(kept, what), read(every, what))  # what people see: the same
+    assert facts(kept, "gap")["thresholds"][0]["missed"] == 0 and "only" in facts(kept, "gap")

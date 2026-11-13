@@ -389,7 +389,7 @@ def test_a_long_command_shows_how_far_it_is_in_a_panel_that_folds_and_closes_and
     assert page.inner_text("#task-title") == "Loading your file · about 7 minutes left"
     page.evaluate("task.end(false, 'no file at x.csv', 'j1')")
     assert page.inner_text("#task-title") == "Loading your file: failed"
-    page.evaluate("window.L = {load: 10, budget: 2, fit: 20, rules: 5, candidates: 30, score: 100, cluster: 1, probe: 10, gap: 0, report: 1, write: 1}")  # the last run's steps, 180 s
+    page.evaluate("window.L = {load: 10, budget: 2, fit: 20, rules: 5, keys: 0, candidates: 30, score: 100, cluster: 1, probe: 10, gap: 0, report: 1, write: 1}")  # the last run's steps, 180 s
     assert page.evaluate("runPace(RUN_STEPS, null, 0, 5, null)") == {"done": 0, "left": None, "least": False, "over": False}  # nothing measured yet: no number
     first = page.evaluate("runPace(RUN_STEPS, null, 0, 10, null, {done: 200, total: 1000, unit: 'records'}, 0)")  # a first run: the step's own count, nothing after it
     assert first["left"] == pytest.approx(40) and first["least"] and page.evaluate("paceLine(runPace(RUN_STEPS, null, 0, 10, null, {done: 200, total: 1000, unit: 'records'}, 0))") == "at least 40 seconds left"
@@ -400,7 +400,7 @@ def test_a_long_command_shows_how_far_it_is_in_a_panel_that_folds_and_closes_and
     assert page.evaluate("paceLine(runPace(RUN_STEPS, 'load', 10, 40, L))") == page.evaluate("`longer than last time · at least ${lasts(168)} left`")
     counted = page.evaluate("runPace(RUN_STEPS, 'candidates', 50, 70, L, {done: 25, total: 100, unit: 'pairs'}, 50)")  # its count over last time's: what this run measures
     assert counted["left"] == pytest.approx(60 + 13) and not counted["least"] and counted["done"] == pytest.approx((67 + 25) / 180)
-    more = page.evaluate("runPace(RUN_STEPS, 'rules', 40, 50, L, {done: 50, total: 100, unit: 'keys', more: true}, 40)")  # a part of the step its count doesn't cover: a floor
+    more = page.evaluate("runPace(RUN_STEPS, 'keys', 40, 50, L, {done: 50, total: 100, unit: 'keys', more: true}, 40)")  # a part of the step its count doesn't cover: a floor
     assert more["left"] == pytest.approx(10 + 113) and more["least"]
     counted_all = page.evaluate("runPace(RUN_STEPS, 'fit', 32, 300, L, {done: 12, total: 12, unit: 'rules'}, 32)")  # every rule applied, the step still at work: by last time
     assert counted_all["over"] and counted_all["left"] == pytest.approx(113 + 30)
