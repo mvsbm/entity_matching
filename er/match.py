@@ -92,6 +92,8 @@ def rule_edges(spec: RulesSpec, records: "Records", db: DuckDBAPI, uid: str, bat
 ELSE = "else"
 COPIES = ("one_byte", "one_byte_hash")  # the copies er.standardize makes for the comparisons (Comparator.copied): a table without them is compared without
 U = dict[str, dict[str, float]]  # comparison → level label → u probability
+Bound = Mapping[str, tuple[tuple[str, int], ...] | None]  # per comparison, how bound_sql settles it (bound_tests)
+MAX_STATES = 3 ** 7  # a comparison with more outcomes than this is bounded by its best level
 
 
 def comparison(c: Comparison, u: dict[str, float] | None = None) -> cl.CustomComparison:
@@ -538,10 +540,6 @@ def _sides(settings: dict, have: set[str]) -> str:  # each column the comparison
 
 def _bits(g: int, lv: dict) -> float:  # a level's weight, as Splink writes it: log2(m/u), each clamped at 1e-300; the missing level 0
     return 0.0 if g < 0 else math.log2(max(lv["m_probability"], 1e-300) / max(lv["u_probability"], 1e-300))
-
-
-Bound = Mapping[str, tuple[tuple[str, int], ...] | None]  # per comparison, how bound_sql settles it (bound_tests)
-MAX_STATES = 3 ** 7  # a comparison with more outcomes than this is bounded by its best level
 
 
 def bound_tests(model: FSModel) -> Bound:
