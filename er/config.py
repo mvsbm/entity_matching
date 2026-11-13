@@ -134,25 +134,30 @@ class Comparator:
     def copy(self, base: str) -> str | None:  # that column
         return column_name(base, steps) if (steps := self.copied()) else None
 
-    def sql(self, base: str, level: bool = False) -> str:
+    def sql(self, base: str, level: bool = False, settled: bool = False) -> str:
         """Blocking-rule SQL (l."c" / r."c"), or with level=True Splink comparison-level SQL ("c_l" / "c_r"). DuckDB's own
         Jaro, Jaro–Winkler and Hamming are rapidfuzz's C++, so on characters of one byte each (ASCII, or the one-byte
         copy) they give the Python function's score, on every thread and without Python, and so do its edit distances on
         ASCII; on other text, its edit distance of the hashed copy (or of the bytes) fails a pair first that no edit of as
         few characters makes.
-        Whatever else, the Python function, pair by pair. Each guard is a CASE: DuckDB may reorder AND and OR, never a CASE."""
+        Whatever else, the Python function, pair by pair. Each guard is a CASE: DuckDB may reorder AND and OR, never a CASE.
+        `settled` (a level): TRUE or FALSE as far as DuckDB settles it cheaply in C++, NULL where only the Python function or
+        an edit-distance table could (er.match.bound_sql's); a missing value fails, as in the level."""
         c = self.column(base)
         side = (lambda x: (q(f"{x}_l"), q(f"{x}_r"))) if level else (lambda x: (f"l.{q(x)}", f"r.{q(x)}"))
         a, b = side(c)
         if self.function == "exact":
-            return f"{a} = {b}"
-        test = self.test(a, b, *(side(self.copy(base)) if self.copy(base) else ()))
+            return f"coalesce({a} = {b}, FALSE)" if settled else f"{a} = {b}"
+        test = self.test(a, b, *(side(self.copy(base)) if self.copy(base) else ()), settled=settled)
+        if settled:
+            return f"(CASE WHEN {a} IS NULL OR {b} IS NULL THEN FALSE ELSE {test} END)"
         return test if level else f"({a} = {b} OR {test})"  # a rule: equal values pass without the Python call
 
-    def test(self, a: str, b: str, a1: str | None = None, b1: str | None = None) -> str:
-        """Whether values a and b pass, as SQL (sql's, with their one-byte copies a1 and b1 if any)."""
+    def test(self, a: str, b: str, a1: str | None = None, b1: str | None = None, settled: bool = False) -> str:
+        """Whether values a and b pass, as SQL (sql's, with their one-byte copies a1 and b1 if any); `settled`: NULL where
+        the Python function would be asked."""
         f, t = self.function, self.threshold
-        python = f"cl_{f}_cut({a}, {b}, {t})"  # stops once it knows
+        python = "NULL" if settled else f"cl_{f}_cut({a}, {b}, {t})"  # stops once it knows
         # bytes = characters, and none empty (DuckDB: '' and '' are 0 apart for rapidfuzz's 1, and hamming refuses them)
         ascii_, same = f"strlen({a}) = length({a}) AND strlen({b}) = length({b}) AND strlen({a}) > 0 AND strlen({b}) > 0", f"length({a}) = length({b})"
         if f in ("jaro", "jaro_winkler"):
@@ -163,10 +168,16 @@ class Comparator:
             test = (f"(CASE WHEN abs(length({a}) - length({b})) > {t} THEN FALSE WHEN {ascii_} AND {same} THEN hamming({a}, {b}) <= {t} "
                     f"ELSE {python} <= {t} END)")
         elif f in ("levenshtein", "damerau_levenshtein"):  # never less than the lengths' difference
-            # one edit keeping the length: a substitution, or (Damerau) a swap of two; on ASCII DuckDB's own is rapidfuzz's (unrestricted
-            # Damerau too); on the hashed copies it is never more than the values' distance, so a pair past t there can't pass; without
-            # copies, its count of bytes edited is at most 4 per character edited (a 4-byte character for a 1-byte one) and 8 per swap
-            quick = f"WHEN {ascii_} AND {same} AND hamming({a}, {b}) > {2 if f == 'damerau_levenshtein' else 1} THEN FALSE " if t == 1 else ""
+            # one edit keeping the length: a substitution, or (Damerau) a swap of two, so on ASCII the Hamming distance settles all
+            # but a Damerau pair two apart; one changing it, an insertion or a deletion alike. On ASCII DuckDB's own is rapidfuzz's
+            # (unrestricted Damerau too); on the hashed copies it is never more than the values' distance, so a pair past t there
+            # can't pass; without copies, its count of bytes edited is at most 4 per character edited (a 4-byte character for a
+            # 1-byte one) and 8 per swap
+            quick = (f"WHEN {ascii_} AND {same} AND hamming({a}, {b}) <= 1 THEN TRUE "
+                     f"WHEN {ascii_} AND {same} AND hamming({a}, {b}) > {2 if f == 'damerau_levenshtein' else 1} THEN FALSE "
+                     f"WHEN {ascii_} AND NOT {same} THEN levenshtein({a}, {b}) <= 1 " if t == 1 else "")
+            if settled and t != 1:  # its length alone: a table of edits isn't cheap
+                return f"(CASE WHEN abs(length({a}) - length({b})) > {t} THEN FALSE ELSE NULL END)"
             hashed = f"WHEN {a1} IS NOT NULL AND {b1} IS NOT NULL THEN (CASE WHEN {f}({a1}, {b1}) > {t} THEN FALSE ELSE {python} <= {t} END) " if a1 else ""
             test = (f"(CASE WHEN abs(length({a}) - length({b})) > {t} THEN FALSE {quick}WHEN {ascii_} THEN {f}({a}, {b}) <= {t} {hashed}"
                     f"WHEN levenshtein({a}, {b}) > {(4 if f == 'levenshtein' else 8) * t} THEN FALSE ELSE {python} <= {t} END)")

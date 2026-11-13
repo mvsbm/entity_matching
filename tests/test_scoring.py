@@ -125,24 +125,25 @@ def test_each_distinct_value_normalized_once_gives_the_column_value_by_value_and
 
 
 def test_a_one_edit_level_is_counted_exactly_through_deletion_keys(con_db):
-    from rapidfuzz.distance import DamerauLevenshtein, Hamming
+    from rapidfuzz.distance import DamerauLevenshtein, Hamming, Levenshtein
     from er.match import counted
     _, db = con_db
     rng = np.random.default_rng(1)  # repeated values, an insertion, an adjacent swap, unequal lengths for Hamming, a blank
     vals = [f"{rng.integers(300):03d}" for _ in range(300)] + ["12", "123", "1234", "2134", None]
-    df = pd.DataFrame({"uid": [f"r{i}" for i in range(len(vals))], "cif": vals, "phone": vals[::-1]}, dtype="string")
+    kana = ["".join(rng.choice(list("アアイウ"), rng.integers(0, 5))) for _ in range(len(vals))]  # runs: one deletion from several places
+    df = pd.DataFrame({"uid": [f"r{i}" for i in range(len(vals))], "cif": vals, "phone": vals[::-1], "kana": kana}, dtype="string")
     one_off = lambda col, f: Comparison(name=col, null_if_missing=(col,), levels=(
         Level(label="exact", any_of=((col, Comparator("exact")),)), Level(label="one off", any_of=((col, Comparator(f, 1)),))))
-    m = FSModel(name="t", comparisons=(one_off("cif", "damerau_levenshtein"), one_off("phone", "hamming")), prior_rules=(),
+    m = FSModel(name="t", comparisons=(one_off("cif", "damerau_levenshtein"), one_off("phone", "hamming"), one_off("kana", "levenshtein")), prior_rules=(),
                 prior_recall=0.5, u_max_pairs=1e4, m_method="em", em_rules=(), seed=0, u_exact_by_counts=True, u_near_by_keys=True)
     u = exact_u(m, df, db)
-    filled = [v for v in vals if v is not None]
-    pairs = [(a, b) for i, a in enumerate(filled) for b in filled[i + 1:]]
-    for name, dist in (("cif", DamerauLevenshtein.distance), ("phone", Hamming.distance)):
+    for name, dist in (("cif", DamerauLevenshtein.distance), ("phone", Hamming.distance), ("kana", Levenshtein.distance)):
+        filled = df[name].dropna().tolist()
+        pairs = [(a, b) for i, a in enumerate(filled) for b in filled[i + 1:]]
         assert u[name]["exact"] == pytest.approx(sum(a == b for a, b in pairs) / len(pairs))
         assert u[name]["one off"] == pytest.approx(sum(a != b and dist(a, b) <= 1 for a, b in pairs) / len(pairs))
         assert u[name]["else"] == pytest.approx(1 - u[name]["exact"] - u[name]["one off"])
-    assert counted(m, u) == {"cif", "phone"} and counted(replace(m, u_near_by_keys=False), u) == set()  # nothing left to sample
+    assert counted(m, u) == {"cif", "phone", "kana"} and counted(replace(m, u_near_by_keys=False), u) == set()  # nothing left to sample
 
 
 def test_u_sampled_per_comparison_equals_sampling_them_together(con_db, records):
@@ -329,6 +330,9 @@ def test_a_comparison_asked_of_duckdb_first_passes_the_pairs_the_python_function
             before = spent().get(function, (0, 0))[1]
             fast, slow = con.execute(f"SELECT list(coalesce({comp.sql('x', level=True)}, FALSE) ORDER BY i), list({plain} ORDER BY i) FROM pairs").fetchall()[0]
             assert fast == slow, (function, t, [(df.x_l[i], df.x_r[i]) for i, (p, q) in enumerate(zip(fast, slow)) if p != q][:3])
+            settled = con.execute(f"SELECT list({comp.sql('x', level=True, settled=True)} ORDER BY i) FROM pairs").fetchall()[0][0]
+            assert all(s is None or s == f for s, f in zip(settled, fast)), (function, t)  # what DuckDB settles is the test's answer
+            assert function in ("damerau_levenshtein", "levenshtein") or sum(s is not None for s in settled) > len(df) / 2, (function, t)
             assert function == "jaro" or spent()[function][1] - before < 1.5 * len(df), (function, t)  # the plain query's, and few of its: most pairs never reach Python
     rule = Comparator(function="jaro_winkler", threshold=0.8).sql("x")  # a rule's form: equal values pass too
     assert "jaro_winkler_similarity" in rule and rule.startswith('(l."x" = r."x" OR')
@@ -350,7 +354,7 @@ def test_an_em_step_that_finds_no_likely_match_at_a_level_leaves_it_unestimated_
 
 
 def test_a_floor_leaves_out_exactly_the_pairs_below_it_and_scores_the_rest_to_the_last_bit(tmp_path, population):
-    from er.match import cheap_comparisons
+    from er.match import bound_tests
     from er.run import Run
     s, p, g = population
     g.df.to_parquet(tmp_path / "in.parquet", index=False)
@@ -360,14 +364,27 @@ def test_a_floor_leaves_out_exactly_the_pairs_below_it_and_scores_the_rest_to_th
     con.execute(f"""CREATE OR REPLACE TABLE er_all AS SELECT a.{uid} AS {l}, b.{uid} AS {r} FROM (SELECT {uid} FROM records LIMIT 300) a
         JOIN (SELECT {uid} FROM records LIMIT 300) b ON a.{uid} < b.{uid}""")  # every pair of 300 records: almost all below 0
     every = score_fs(run.scoring, "records", "er_all", db, uid).set_index([l, r]).sort_index()
-    exact = cheap_comparisons(p.fs.model)
-    assert exact and exact < {c.name for c in p.fs.model.comparisons}  # some settled first, the costly ones bounded
+    bound = bound_tests(p.fs.model)
+    assert None in bound.values() and any(bound.values())  # some at their own level, the costly ones bounded by what DuckDB settles
     for floor in (0.0, p.fs.min_match_weight):
-        kept = score_fs(run.scoring, "records", "er_all", db, uid, floor=floor, exact=exact).set_index([l, r]).sort_index()
+        kept = score_fs(run.scoring, "records", "er_all", db, uid, floor=floor, bound=bound).set_index([l, r]).sort_index()
         pd.testing.assert_frame_equal(kept, every.loc[kept.index])  # each scored to the last bit
         assert every.index[every["match_weight"] >= floor].isin(kept.index).all()  # none at the floor or above left out
         left = every.drop(kept.index)
         assert len(left) and (left["match_weight"] < floor).all()  # and every one left out below it
     con.execute("CREATE OR REPLACE TABLE er_some AS SELECT * FROM er_all LIMIT 7")
-    held = score_fs(run.scoring, "records", "er_all", db, uid, floor=1e9, exact=exact, exempt="er_some")
+    held = score_fs(run.scoring, "records", "er_all", db, uid, floor=1e9, bound=bound, exempt="er_some")
     assert len(held) == 7  # nothing reaches that floor: only the exempt pairs are scored
+
+
+def test_pairs_that_cant_reach_0_left_out_as_the_keys_list_them_change_no_score_and_no_customer(tmp_path, population, monkeypatch):
+    from er.run import Run
+    s, p, g = population
+    g.df.to_parquet(tmp_path / "in.parquet", index=False)
+    kept = Run(p, s).full(tmp_path / "in.parquet", tmp_path / "kept")
+    monkeypatch.setattr(Run, "_reaching", lambda self, pairs: pairs)  # every pair the keys list stored, as before
+    every = Run(p, s).full(tmp_path / "in.parquet", tmp_path / "every")
+    read = lambda run, what: run.con.sql(what).df().sort_values(list(run.con.sql(what).columns)).reset_index(drop=True)
+    assert kept._count("cands") < every._count("cands")  # fewer stored
+    for what in ("SELECT * FROM scores WHERE match_weight >= 0", f"SELECT * FROM ({kept.scored()}) WHERE match_weight >= 0", "SELECT * FROM gold"):
+        pd.testing.assert_frame_equal(read(kept, what), read(every, what))  # to the last bit
