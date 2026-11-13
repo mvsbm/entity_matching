@@ -44,6 +44,9 @@ S sampled pairs for u, E accepted pairs, d cluster diameter (Splink's connected 
 the edges' records only: each existing cluster is one node, see er.cluster.merge).
 """
 from importlib.metadata import version
+import collections
+import concurrent.futures
+import contextlib
 import functools
 import hashlib
 import json
@@ -53,7 +56,7 @@ import shutil
 import sys
 import time
 import unicodedata
-from collections.abc import Callable
+from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass, field, replace
 from datetime import datetime
 from pathlib import Path
@@ -69,7 +72,7 @@ from er.cluster import merge
 from er.config import InputError, Pipeline, TfidfNeighbours, bits, keys_sql, lit, q
 from er.io import code_version, config_hash, markdown, read_parquet, replace_text
 from er.kind import KIND_COLUMNS, NAME_MODEL, century, classifier as kind_classifier, kind_review_sheet, merge_answers
-from er.match import ELSE, cheap_comparisons, fs_settings, named_sql, read_by, refreshed_u, review_floor, rule_edges, score_fs, scored_u, train_fs, u_basis
+from er.match import ELSE, bound_tests, fs_settings, named_sql, bound_reads, reaching_sql, read_by, refreshed_u, review_floor, rule_edges, score_fs, scored_u, train_fs, u_basis
 from er.probe import missed
 from er.report import applied, carry_kinds, carry_over, qa, report_text, review_sheet, scored_again, trust_state
 from er.results import BANDS, banded, check_merging, merge_where
@@ -109,6 +112,17 @@ def locked(method: Callable) -> Callable:  # the workspace (the method's `out`) 
         with folder.run_lock(Path(out)):
             return method(self, path, Path(out), *args, **kwargs)
     return wrapper
+
+
+def ahead(pool: concurrent.futures.Executor, f: Callable, items: Iterable, most: int) -> Iterator:
+    """f of each item, in order, computed in `pool` at most `most` items ahead: memory holds a few, whatever the count."""
+    waiting: collections.deque = collections.deque()
+    for item in items:
+        waiting.append(pool.submit(f, item))
+        if len(waiting) >= most:
+            yield waiting.popleft().result()
+    while waiting:
+        yield waiting.popleft().result()
 
 
 def size_bytes(text: str) -> int:  # one of DuckDB's sizes: "8.0 GiB", "512.0 MiB", "1.5 GB"
@@ -236,14 +250,19 @@ class Run:
             reads = {self.uid, *(c for d in fs.standardize.derived for cols in d.sources for c in cols), *used}  # what cleaning reads: a wide file's other columns never enter the run
             cols = ", ".join([*(q(c) for c, *_ in self.con.execute(f"DESCRIBE SELECT * FROM {rows}").fetchall() if c in reads), *(f"NULL::VARCHAR AS {q(c)}" for c in extra)])
             reader = self.con.cursor().sql(f"SELECT {cols} FROM {rows}").to_arrow_reader(self.chunk_rows)  # its own cursor: inserts go on alongside
-            for i, batch in enumerate(reader):
-                chunk = prepare(fs.standardize, batch.to_pandas().astype("string"), normalized, used, kind=self.classifier)
-                self.con.register("er_chunk", chunk)
-                self.con.execute(f"CREATE TABLE {into} AS SELECT * FROM er_chunk" if i == 0 else f"INSERT INTO {into} SELECT * FROM er_chunk")
-                self.con.unregister("er_chunk")
-                done += len(batch)
-                if self.told:
-                    self.told(done, total, "records")
+            workers = min(-(-total // self.chunk_rows), int(self.con.execute("SELECT current_setting('threads')").fetchall()[0][0]), os.cpu_count() or 1)
+            batches = (batch.to_pandas().astype("string") for batch in reader)
+            clean = functools.partial(prepare, fs.standardize, normalized=normalized, used=used, kind=self.classifier)
+            with concurrent.futures.ProcessPoolExecutor(workers) if workers > 1 else contextlib.nullcontext() as pool:
+                # each chunk cleaned on its own (every step reads one record, or one chunk's values), so in parallel processes
+                # the same records, taken back in order
+                for i, chunk in enumerate(ahead(pool, clean, batches, 2 * workers) if pool else map(clean, batches)):
+                    self.con.register("er_chunk", chunk)
+                    self.con.execute(f"CREATE TABLE {into} AS SELECT * FROM er_chunk" if i == 0 else f"INSERT INTO {into} SELECT * FROM er_chunk")
+                    self.con.unregister("er_chunk")
+                    done += len(chunk)
+                    if self.told:
+                        self.told(done, total, "records")
             if keep:
                 folder.keep_prepared(keep, key, lambda f: self.con.execute(f"COPY {into} TO {lit(f)} (FORMAT parquet, COMPRESSION zstd)"))  # a third of snappy's size, as fast
         if self.told and kept:
@@ -494,7 +513,8 @@ class Run:
         _, report = candidates(fs.blockers, "records", self.uid, None if fs.bridge else "er_query", fs.budget,
                                clusters="rule_clusters" if fs.bridge else None, con=self.con, into="cands",
                                gate=self._gate, floor=review_floor(self.pipeline), capacity=self.capacity(), told=self._joined(),
-                               known=getattr(self, "estimates", None))
+                               known=getattr(self, "estimates", None), keep=self._reaching)
+        self.con.execute("DROP TABLE IF EXISTS er_bound_records")
         self._gated(report.attrs["gated"])
         c = self._count("cands")
         self._done("candidates", "O(N·L + Σ P_g)", f"O({self.n:,}·L + {int(report['pairs'].sum()):,})", t, candidates=c,
@@ -504,6 +524,12 @@ class Run:
                    if len(self.gated) else {},  # by the key that made them
                    gate_seconds=round(self.gate_seconds, 2), gate_pairs=self.gate_pairs, generators=listed(report))  # the gate: its samples scored
         return report
+
+    def _reaching(self, pairs: str) -> str:  # a generator's pairs that score() scores: those that can reach 0, and the rules', never stored otherwise
+        bound, have = bound_tests(self.pipeline.fs.model), self.columns()
+        cols = [c for c in sorted(bound_reads(self.scoring, bound)) if c in have]
+        self.con.execute(f"CREATE TABLE IF NOT EXISTS er_bound_records AS SELECT {', '.join(q(c) for c in [self.uid, *cols])} FROM records")  # what the bound reads, narrow
+        return reaching_sql(self.scoring, "er_bound_records", pairs, self.uid, set(cols), self.n, 0.0, bound, "rule_kept")
 
     def _joined(self) -> Callable[..., None] | None:
         """told for candidates' joins, each generator weighed as the budget counted it (the records it reads, the pairs
@@ -536,11 +562,11 @@ class Run:
         are ever held. each(the slice's scores, its pairs) after each slice. With `floor`, a pair that can't reach it is
         left out, unless `exempt` (a table of pairs) holds it (score_fs)."""
         l, r = q(self.l), q(self.r)
-        exact = cheap_comparisons(self.pipeline.fs.model)
+        bound = bound_tests(self.pipeline.fs.model)
         for start in range(0, max(1, self._count(pairs)), self.score_pairs):
             self.con.execute(f"CREATE OR REPLACE TABLE er_slice AS SELECT {l}, {r} FROM {pairs} WHERE rowid >= {start} AND rowid < {start + self.score_pairs}")
             score_fs(self.scoring, "records", "er_slice", self.db, self.uid, into=into if not start else "er_scored", n_records=n_records,
-                     floor=floor, exact=exact, exempt=exempt)
+                     floor=floor, bound=bound, exempt=exempt)
             if start:
                 self.con.execute(f"INSERT INTO {into} SELECT * FROM er_scored")
             if each:
@@ -874,7 +900,7 @@ class Run:
         self.con.execute(f"""CREATE OR REPLACE TABLE touched AS SELECT * FROM records WHERE {u} IN
             (SELECT {l} FROM cands UNION SELECT {r} FROM cands)""")
         score_fs(self.scoring, "touched", "cands", self.db, self.uid, into="scores", n_records=self.n, floor=0.0,
-                 exact=cheap_comparisons(fs.model), exempt="rule_kept")  # as score(): what can't reach 0 is left out
+                 bound=bound_tests(fs.model), exempt="rule_kept")  # as score(): what can't reach 0 is left out
         self._done("score", "O(C_Δ·K·L²)", f"O({self._count('cands'):,}·{len(fs.model.comparisons)}·L²)", t, patterns=self._patterns(), bands=self._bands(),
                    unscored=self._count("cands") - self._count("scores"))
 

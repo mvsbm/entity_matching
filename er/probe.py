@@ -20,7 +20,7 @@ import duckdb
 
 from er.cluster import merge
 from er.config import FSSpec, Key, Probe, bits, q
-from er.match import cheap_comparisons, named_sql, score_fs
+from er.match import bound_tests, named_sql, score_fs
 
 EXAMPLES = 200  # hit pairs kept per stratum, for people to see
 
@@ -54,7 +54,7 @@ def missed(con: duckdb.DuckDBPyConnection, db: object, model: dict, fs: FSSpec, 
         scored = con.execute("SELECT count(*) FROM er_pr_pairs").fetchall()[0][0]
         hits = []
         if scored:
-            score_fs(model, records, "er_pr_pairs", db, uid, into="er_pr_scores", floor=fs.min_match_weight, exact=cheap_comparisons(fs.model))  # a hit is at the line
+            score_fs(model, records, "er_pr_pairs", db, uid, into="er_pr_scores", floor=fs.min_match_weight, bound=bound_tests(fs.model))  # a hit is at the line
             between = f"s.{l} IN {resolved} AND s.{r} IN {resolved}" if resolved else "FALSE"
             hits = con.execute(f"""SELECT s.{l}, s.{r}, round(s.match_weight, 2), CASE WHEN {between} THEN 'rules' ELSE 'keys' END
                 FROM er_pr_scores s JOIN er_pr_joined a ON a.{u} = s.{l}

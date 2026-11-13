@@ -54,11 +54,14 @@ class NameModel:
     vectorizer builds one name at a time in Python, three times faster."""
 
     def __init__(self, terms: list[str], coef: np.ndarray, intercept: float, ngram: int, compute: dict | None = None):
-        self.terms, self.coef, self.intercept, self.ngram = terms, coef, intercept, ngram
+        self.terms, self.coef, self.intercept, self.ngram, self.compute = terms, coef, intercept, ngram, compute
         self.con = connect(compute)[0]  # the run's limits: it scores every chunk's names
         self.con.register("er_weights", pd.DataFrame({"term": terms, "w": coef}))
         self.con.execute("CREATE TABLE weights AS SELECT * FROM er_weights")
         self.con.unregister("er_weights")
+
+    def __reduce__(self) -> tuple:  # sent to a process cleaning chunks beside others (er.run's load): built again there, on one thread
+        return NameModel, (self.terms, self.coef, self.intercept, self.ngram, {**(self.compute or {}), "threads": "1"})
 
     @classmethod
     def fit(cls, texts: pd.Series, y: np.ndarray, ngram: int) -> "NameModel":

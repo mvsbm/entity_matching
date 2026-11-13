@@ -148,8 +148,8 @@ def pairs_sql(b: Blocker, r: Records, skip: str | None = None, only: str | None 
                 once = f"(a.{u} < b.{u} OR b.{u} NOT IN (SELECT {u} FROM {r.query} WHERE {u} IS NOT NULL))"  # a pair of two asked records: once, not both ways round
                 return (f"SELECT least(a.{u}, b.{u}) AS l, greatest(a.{u}, b.{u}) AS r FROM {r.asked(t)} a JOIN {t} b "
                         f"ON {on} AND a.{u} <> b.{u} AND {once} WHERE {r.filters('a', 'b', query=False)} AND {_in(bcols, 'a', blocks, keep)}")
-            return (f"SELECT a.{u} AS l, b.{u} AS r FROM {t} a JOIN {t} b ON {on} AND a.{u} < b.{u} "
-                    f"WHERE {r.filters('a', 'b')} AND {_in(bcols, 'a', blocks, keep)}")
+            x = f"(SELECT * FROM {t} y WHERE {_in(bcols, 'y', blocks, keep)})"  # both sides' blocks chosen before the join, not its pairs after
+            return f"SELECT a.{u} AS l, b.{u} AS r FROM {x} a JOIN {x} b ON {on} AND a.{u} < b.{u} WHERE {r.filters('a', 'b')}"
         case SortedNeighbourhood():
             k = q(b.key.name)
             leads = ", ".join(f"lead({u}, {o}) OVER w AS b{o}" + (f", lead(__cluster, {o}) OVER w AS c{o}" if r.cluster else "")
@@ -167,8 +167,8 @@ def pairs_sql(b: Blocker, r: Records, skip: str | None = None, only: str | None 
             if r.query and r.touching:  # a batch against all: O(|Q|·b), whatever N
                 return (f"SELECT DISTINCT least(a.{u}, b.{u}) AS l, greatest(a.{u}, b.{u}) AS r FROM {_rows(b, r, asked=True)} a "
                         f"JOIN {v} b ON {same} AND a.{u} <> b.{u} WHERE {r.filters('a', 'b', query=False)} AND {_in(bcols, 'a', blocks, keep)}")
-            return (f"SELECT DISTINCT a.{u} AS l, b.{u} AS r FROM {v} a JOIN {v} b ON {same} AND a.{u} < b.{u} "  # one pass, the query a filter
-                    f"WHERE {r.filters('a', 'b')} AND {_in(bcols, 'a', blocks, keep)}")
+            x = f"(SELECT * FROM {v} y WHERE {_in(bcols, 'y', blocks, keep)})"
+            return f"SELECT DISTINCT a.{u} AS l, b.{u} AS r FROM {x} a JOIN {x} b ON {same} AND a.{u} < b.{u} WHERE {r.filters('a', 'b')}"  # one pass, the query a filter
     raise TypeError(f"{b.name}: no SQL generator for {type(b).__name__}")
 
 
@@ -301,7 +301,7 @@ def candidates(blockers: tuple[Blocker, ...], records: pd.DataFrame | str, uid: 
                budget: Budget, clusters: pd.Series | str | None = None, con: duckdb.DuckDBPyConnection | None = None,
                into: str | None = None, touching: bool = False, gate: Callable[[str], str] | None = None,
                floor: float = 0.0, capacity: int | None = None, told: Callable[..., None] | None = None,
-               known: dict[str, dict] | None = None) -> tuple[pd.DataFrame | str, pd.DataFrame]:
+               known: dict[str, dict] | None = None, keep: Callable[[str], str] | None = None) -> tuple[pd.DataFrame | str, pd.DataFrame]:
     """The union of all generators, with the generators that found each pair in `sources`, and a per-generator report.
     With `into`, the union is written to that table in `con` and its name returned instead of a frame, so nothing of
     size C reaches pandas. `touching` (an increment, with `query` the batch): the estimates count only the blocks the
@@ -311,7 +311,9 @@ def candidates(blockers: tuple[Blocker, ...], records: pd.DataFrame | str, uid: 
     with `capacity`, at most that many pairs in all, the highest-yield blocks first. Without a gate they are joined in
     full. report.attrs["gated"] has one row per oversized block: its value, records, pairs, sample and decision.
     `told(done, total, "keys")` as the joins begin and after each generator: how far they are. `known`: generators'
-    estimates made already on these records (er.run's budget), by name, not counted again."""
+    estimates made already on these records (er.run's budget), by name, not counted again. `keep(pairs SQL)`: the SQL
+    of those of a generator's pairs worth keeping (er.match.reaching_sql), applied a slice at a time (_kept), so only
+    one generator's pairs are ever held in full."""
     if not blockers:
         raise ValueError("no candidate generator")
     if len(blockers) > 63:  # one bit per generator in a BIGINT
@@ -334,17 +336,17 @@ def candidates(blockers: tuple[Blocker, ...], records: pd.DataFrame | str, uid: 
                 if r.cluster:  # TF-IDF is computed in Python, so the cluster filter is applied here
                     cl = r.con.sql(f"SELECT {q(uid)}, __cluster FROM {r.table}").df().set_index(uid)["__cluster"]
                     pairs = pairs[pairs["l"].map(cl).to_numpy() != pairs["r"].map(cl).to_numpy()]
-                table = r._temp(f"SELECT * FROM {r._view(pairs)}")
+                table = _kept(r, f"SELECT * FROM {r._view(pairs)}", keep)
             else:
                 if blocks := oversized(b, r, m):
                     big[i] = blocks
-                table = r._temp(pairs_sql(b, r, skip=big.get(i)))
+                table = _kept(r, pairs_sql(b, r, skip=big.get(i)), keep)
             n = r.con.execute(f"SELECT count(*) FROM {table}").fetchall()[0][0]
             report.append(dict(generator=b.name, **est, pairs=n, seconds=round(time.perf_counter() - t, 3)))
             parts.append(f"SELECT l, r, {1 << i}::BIGINT AS bit FROM {table}")
             if told:
                 told(i + 1, len(blockers), "keys")
-        gated, added = _gate(blockers, r, big, parts, gate, floor, capacity, m, (l, rr)) if big else (pd.DataFrame(), {})
+        gated, added = _gate(blockers, r, big, parts, gate, floor, capacity, m, (l, rr), keep) if big else (pd.DataFrame(), {})
         for i, extra in added.items():
             report[i]["pairs"] += extra
         union = f"SELECT l, r, bit_or(bit) AS bits FROM ({' UNION ALL '.join(parts)}) GROUP BY l, r"
@@ -366,8 +368,24 @@ def candidates(blockers: tuple[Blocker, ...], records: pd.DataFrame | str, uid: 
     return result, report
 
 
+KEEP_SLICE = 10_000_000  # pairs a keep filter reads at once: past a few tens of millions, its joins spill and slow tenfold
+
+
+def _kept(r: Records, sql: str, keep: Callable[[str], str] | None) -> str:
+    """The pairs of `sql` (l, r) as a table, only those keep() keeps if given: listed, then filtered KEEP_SLICE at a time,
+    so the filter's join never holds more than a slice."""
+    table = r._temp(sql)
+    if keep is None:
+        return table
+    out = r._temp(keep(f"SELECT l, r FROM {table} WHERE rowid < {KEEP_SLICE}"))
+    for start in range(KEEP_SLICE, r.con.execute(f"SELECT count(*) FROM {table}").fetchall()[0][0], KEEP_SLICE):
+        r.con.execute(f"INSERT INTO {out} {keep(f'SELECT l, r FROM {table} WHERE rowid >= {start} AND rowid < {start + KEEP_SLICE}')}")
+    r.con.execute(f"DROP TABLE {table}")  # the listing: freed as soon as it is read
+    return out
+
+
 def _gate(blockers: tuple[Blocker, ...], r: Records, big: dict[int, str], parts: list[str], gate: Callable | None, floor: float,
-          capacity: int | None, rows: int, names: tuple[str, str]) -> tuple[pd.DataFrame, dict[int, int]]:
+          capacity: int | None, rows: int, names: tuple[str, str], keep: Callable[[str], str] | None) -> tuple[pd.DataFrame, dict[int, int]]:
     """Decide each oversized block, and add the pairs of those kept to `parts`; returns the decisions and the pairs added
     per generator. O(sampled pairs) to decide."""
     info = pd.concat([r.con.execute(f"SELECT {i} AS g, __b AS b, __n AS records, concat_ws(' · ', {', '.join(block_cols(blockers[i]))}) AS value "
@@ -402,7 +420,7 @@ def _gate(blockers: tuple[Blocker, ...], r: Records, big: dict[int, str], parts:
         ids = info.loc[(info["g"] == i) & info["decision"].isin(["kept", "joined in full"]), "b"].tolist()
         if ids:
             kept = r._temp(f"SELECT * FROM {table} WHERE __b IN ({', '.join(map(str, ids))})")
-            pairs_table = r._temp(pairs_sql(blockers[i], r, only=kept))
+            pairs_table = _kept(r, pairs_sql(blockers[i], r, only=kept), keep)
             added[i] = r.con.execute(f"SELECT count(*) FROM {pairs_table}").fetchall()[0][0]
             parts.append(f"SELECT l, r, {1 << i}::BIGINT AS bit FROM {pairs_table}")
     return info.drop(columns=["g", "b"]), added
