@@ -16,14 +16,15 @@ O(A·N) for the atoms' blocks, O(f·N·b) pairs scored, O(K·T) for coverage and
 that list a target.
 """
 import itertools
+import math
 import time
 from dataclasses import dataclass
 
 import numpy as np
 import pandas as pd
 
-from er.candidates import Records, deletions_sql, estimate
-from er.config import Blocker, DeletionKeys, EditKeys, Key, KeyBlocker, Pipeline, keys_of, q
+from er.candidates import Records, estimate
+from er.config import Blocker, DeletionKeys, EditKeys, Key, KeyBlocker, LearnKeys, Pipeline, keys_of, q
 from er.match import bound_tests, review_floor, score_fs
 
 SIMILAR = ("jaro", "jaro_winkler", "jaccard", "levenshtein_similarity")  # similarities: one and `edits` edits apart are atoms
@@ -49,7 +50,7 @@ class Atom:
 def atoms(p: Pipeline, have: set[str]) -> list[Atom]:
     """Every column the method reads as a key, a rule or a comparison, equal; and within edits where it compares that
     column by an edit distance (one) or a similarity (one, and p.keys.edits). Only the columns the records hold."""
-    fs, k = p.fs, p.keys.edits
+    fs, k = p.fs, (p.keys or LearnKeys()).edits
     eq = {x for b in fs.blockers for x in keys_of(b)} | {x for b in p.rules.blockers() for x in keys_of(b)}
     near: dict[Key, set[int]] = {}
     for c in fs.model.comparisons:
@@ -77,14 +78,27 @@ def blocker(combo: tuple[Atom, ...]) -> Blocker:  # the generator a key of these
             else EditKeys(name=name, key=a.key, within=tuple(eq), edits=a.edits))
 
 
-def learn(run, f: float | None = None) -> tuple[tuple[Blocker, ...], dict, dict[str, dict]]:
-    """The keys for this run's records (run: an er.run.Run fitted, its rules run), what was found, and each chosen key's
-    estimate as er.candidates.estimate gives it (the candidates step reads them, not the records again)."""
+@dataclass
+class Found:
+    """What discover() drew: the sampled pairs the model accepts at the review floor (targets: uid_l, uid_r, match_weight,
+    listed, and a{i} / b{i} each atom's value on either side), the atoms, each counting for `weight` of the file's."""
+    atoms: list[Atom]
+    targets: pd.DataFrame
+    weight: float
+    facts: dict
+    rec: Records
+    sampled: dict
+
+
+def discover(run, records: int) -> Found:
+    """The pairs the run's model accepts at the review floor, by sampling: about `records` records drawn by a hash of
+    their ID, each paired with every record sharing an atom with it (or two atoms, where both have blocks too big alone),
+    those that can reach 0 scored. `listed`: whether a key or a rule listed the pair (once the run's candidates exist).
+    Each target counts for 1 / (1 − (1 − f)²) of the file's: a pair is drawn when either record is."""
     t0, p, con, uid, n = time.perf_counter(), run.pipeline, run.con, run.uid, run.n
-    spec, fs, m = p.keys, p.fs, p.fs.budget.min_oversized()
-    have = run.columns()
-    found = atoms(p, have)
-    f = f or min(1.0, spec.records / max(n, 1))
+    fs, m = p.fs, p.fs.budget.min_oversized()
+    found = atoms(p, run.columns())
+    f = min(1.0, records / max(n, 1))
     u, l, r = q(uid), q(run.l), q(run.r)
     con.execute(f"CREATE OR REPLACE TABLE er_kl_s AS SELECT {u} FROM records WHERE hash({u}) % 1000000000 < {int(f * 1e9)}")
     con.execute("CREATE OR REPLACE TABLE er_kl_p (l VARCHAR, r VARCHAR)")
@@ -96,14 +110,17 @@ def learn(run, f: float | None = None) -> tuple[tuple[Blocker, ...], dict, dict[
 
     def through(cols: list[str]) -> None:  # each sampled record with every record of its block on these columns, normal blocks only
         c, filled = ", ".join(q(x) for x in cols), " AND ".join(f"{q(x)} IS NOT NULL" for x in cols)
-        pair('a.' + u, 'b.' + u, f"""(SELECT a.{u}, {', '.join(f'a.{q(x)}' for x in cols)} FROM records a
-            SEMI JOIN (SELECT {c} FROM records WHERE {filled} GROUP BY ALL HAVING count(*) < {m}) z USING ({c}) SEMI JOIN er_kl_s s USING ({u})) a
-            JOIN records b USING ({c}) WHERE a.{u} <> b.{u}""")
+        mine = f"(SELECT {u}, {c} FROM records WHERE {filled} AND {u} IN (SELECT {u} FROM er_kl_s))"  # the sampled records' blocks only are counted
+        pair('a.' + u, 'b.' + u, f"""{mine} a JOIN (SELECT {c} FROM records SEMI JOIN (SELECT DISTINCT {c} FROM {mine}) k USING ({c})
+            GROUP BY ALL HAVING count(*) < {m}) z USING ({c}) JOIN records b USING ({c}) WHERE a.{u} <> b.{u}""")
+    took, t = {}, time.perf_counter()
     for a in eq:
         through([a.column])
+    took["equal"], t = time.perf_counter() - t, time.perf_counter()
     for a, b in itertools.combinations(eq, 2):
         if big[a.column] and big[b.column]:  # both with blocks too big alone: the records equal on both (an atom with normal ones drew them)
             through([a.column, b.column])
+    took["two equal"], t = time.perf_counter() - t, time.perf_counter()
     rec = Records("records", uid, con)
     rec.most, sampled = m, {}
     for a in (a for a in found if a.edits):
@@ -117,18 +134,62 @@ def learn(run, f: float | None = None) -> tuple[tuple[Blocker, ...], dict, dict[
                 WHERE x.{u} IN (SELECT {u} FROM er_kl_s) OR y.{u} IN (SELECT {u} FROM er_kl_s)"""
             sampled[a] = con.execute(f"SELECT count(*) FROM {rest}").fetchall()[0][0]  # the pairs it lists touching the sample: its pairs, scaled
             pair('x.' + u, 'y.' + u, rest)
+        took[a.name] = time.perf_counter() - t
+        t = time.perf_counter()
     con.execute(f"""CREATE OR REPLACE TABLE er_kl_d AS SELECT DISTINCT p.l AS {l}, p.r AS {r} FROM er_kl_p p JOIN rule_clusters a ON a.{u} = p.l
         JOIN rule_clusters b ON b.{u} = p.r WHERE a.cluster_id <> b.cluster_id""")  # a pair inside one rule cluster is the rules'
     drawn, t_drawn = run._count("er_kl_d"), time.perf_counter()
     floor = review_floor(p)
     score_fs(run.scoring, "records", "er_kl_d", run.db, uid, into="er_kl_t", n_records=n, floor=floor, bound=bound_tests(fs.model))
     con.execute(f"DELETE FROM er_kl_t WHERE match_weight < {floor}")
-    weight, t_scored = 1 / (1 - (1 - f) ** 2), time.perf_counter()
-    targets = con.execute(f"""SELECT t.{l}, t.{r}, {', '.join(f'a.{q(a.column)} AS {q("a" + str(i))}, b.{q(a.column)} AS {q("b" + str(i))}' for i, a in enumerate(found))}
+    have = {t for (t,) in con.execute("SELECT table_name FROM duckdb_tables()").fetchall()}
+    listed = " OR ".join(f"EXISTS (SELECT 1 FROM {x} c WHERE c.{l} = t.{l} AND c.{r} = t.{r})" for x in ("cands", "rule_edges") if x in have) or "FALSE"
+    targets = con.execute(f"""SELECT t.{l}, t.{r}, t.match_weight, {listed} AS listed,
+        {', '.join(f'a.{q(a.column)} AS {q("a" + str(i))}, b.{q(a.column)} AS {q("b" + str(i))}' for i, a in enumerate(found))}
         FROM er_kl_t t JOIN records a ON a.{u} = t.{l} JOIN records b ON b.{u} = t.{r}""").df()
-    facts = dict(atoms=[a.name for a in found], share=round(f, 4), drawn=drawn, targets=len(targets), estimated=round(len(targets) * weight))
+    con.execute("DROP TABLE IF EXISTS er_kl_s; DROP TABLE IF EXISTS er_kl_p; DROP TABLE IF EXISTS er_kl_d; DROP TABLE IF EXISTS er_kl_t")
+    weight = 1 / (1 - (1 - f) ** 2)
+    facts = dict(atoms=[a.name for a in found], share=round(f, 4), sampled_records=round(f * n), drawn=drawn, targets=len(targets),
+                 estimated=round(len(targets) * weight), draw_seconds=round(t_drawn - t0, 2), score_seconds=round(time.perf_counter() - t_drawn, 2),
+                 drawn_seconds={k: round(v, 2) for k, v in took.items()})
+    return Found(found, targets, weight, facts, rec, sampled)
+
+
+GAP_RECORDS = 20_000  # records the gap report samples, whatever the file's size
+
+
+def gap(run) -> dict:
+    """The pairs the run's model would accept that no key or rule listed, estimated by sampling (discover): per
+    threshold (the review floor, the model's line, 20 bits), the file's pairs at it and those missed, with 95% Poisson
+    intervals (the probe's); and for those missed at the floor, how many agree on each atom, the keys that would reach them. O(f·N·b)."""
+    t0 = time.perf_counter()
+    d = discover(run, run.pipeline.keys.records if run.pipeline.keys else GAP_RECORDS)
+    d.rec.close()
+    t, w = d.targets, d.weight
+    rows = []
+    for at in sorted({review_floor(run.pipeline), run.pipeline.fs.min_match_weight, 20.0}):
+        x = t[t["match_weight"] >= at]
+        missed = int((~x["listed"]).sum())
+        lo, hi = _poisson(missed)
+        rows.append(dict(bits=at, pairs=round(len(x) * w), missed=round(missed * w), missed_lo=round(lo * w), missed_hi=round(hi * w), sampled_missed=missed))
+    lost = t[~t["listed"]]
+    by = sorted(((a.name, int(_agrees(a, lost[f"a{i}"], lost[f"b{i}"]).sum())) for i, a in enumerate(d.atoms)), key=lambda x: -x[1]) if len(lost) else []
+    return {**d.facts, "thresholds": rows, "missed_agree": [dict(atom=a, pairs=round(k * w)) for a, k in by if k], "seconds": round(time.perf_counter() - t0, 2)}
+
+
+def _poisson(k: int) -> tuple[float, float]:  # about 95% for a count of k, as the probe gives it: none, the rule of three
+    return (max(k - 1.96 * math.sqrt(k), 0.0), k + 1.96 * math.sqrt(k)) if k else (0.0, 3.0)
+
+
+def learn(run, f: float | None = None) -> tuple[tuple[Blocker, ...], dict, dict[str, dict]]:
+    """The keys for this run's records (run: an er.run.Run fitted, its rules run), what was found, and each chosen key's
+    estimate as er.candidates.estimate gives it (the candidates step reads them, not the records again)."""
+    t0, p, con, n = time.perf_counter(), run.pipeline, run.con, run.n
+    spec, fs, m = p.keys, p.fs, p.fs.budget.min_oversized()
+    d = discover(run, spec.records)
+    found, targets, weight, rec, sampled, facts = d.atoms, d.targets, d.weight, d.rec, d.sampled, d.facts
+    t_scored = time.perf_counter()
     if targets.empty:
-        run.con.execute("DROP TABLE IF EXISTS er_kl_s; DROP TABLE IF EXISTS er_kl_p; DROP TABLE IF EXISTS er_kl_d; DROP TABLE IF EXISTS er_kl_t")
         rec.close()
         return fs.blockers, {**facts, "learned": False, "seconds": round(time.perf_counter() - t0, 2)}, {}
 
@@ -208,11 +269,10 @@ def learn(run, f: float | None = None) -> tuple[tuple[Blocker, ...], dict, dict[
         b = cost[combo]["blocker"]
         known[b.name] = {k: v for k, v in cost[combo].items() if k not in ("blocker", "pairs")}
         rows.append(dict(key=b.name, targets=round(gain * weight), pairs=int(pairs), per_record=round(pairs / n, 3)))
-    run.con.execute("DROP TABLE IF EXISTS er_kl_s; DROP TABLE IF EXISTS er_kl_p; DROP TABLE IF EXISTS er_kl_d; DROP TABLE IF EXISTS er_kl_t")
     rec.close()
     left_out = int((~covered).sum())
     facts |= dict(learned=True, keys=rows, uncovered=round(left_out * weight), uncovered_sampled=left_out, seconds=round(time.perf_counter() - t0, 2),
-                  draw_seconds=round(t_drawn - t0, 2), score_seconds=round(t_scored - t_drawn, 2), cover_seconds=round(time.perf_counter() - t_scored, 2))
+                  cover_seconds=round(time.perf_counter() - t_scored, 2))
     return tuple(cost[c]["blocker"] for c, _ in chosen), facts, known
 
 
@@ -251,6 +311,6 @@ def _agrees(a: Atom, x: pd.Series, y: pd.Series) -> np.ndarray:
         out[filled] = [bool(dels(v) & dels(w)) for v, w in zip(x[filled], y[filled])]
         return out
     from rapidfuzz.distance import Levenshtein
-    long = filled & (x.str.len().fillna(0) > a.edits).to_numpy() & (y.str.len().fillna(0) > a.edits).to_numpy()
+    long = filled & (x.str.len().fillna(0) >= 2 * (a.edits + 1)).to_numpy() & (y.str.len().fillna(0) >= 2 * (a.edits + 1)).to_numpy()  # as an edit key pairs them
     out[long] = [0 < Levenshtein.distance(v, w) <= a.edits for v, w in zip(x[long], y[long])]
     return out

@@ -79,7 +79,8 @@ class Records:
         the values and their records. PassJoin (Li et al., VLDB 2011): a value cut into k + 1 segments keeps one of them
         whole through k edits, at a position at most k from its own, in a value at most k longer or shorter; so the
         values sharing such a segment are every candidate, and rapidfuzz's cpdist checks them on all cores. A value of
-        fewer than k + 1 characters, or held by `most` records or more (a placeholder's block), pairs with none. With
+        fewer than 2(k + 1) characters (k edits in so short a value make another word, and its one-letter segments would
+        pair it with nearly every value), or held by `most` records or more (a placeholder's block), pairs with none. With
         `probe` (a table of uids), only the pairs with a value one of its records holds. O(U·k³) segment rows, plus the
         candidates S checked."""
         at = (b.key.name, tuple(w.name for w in b.within), b.edits, probe)
@@ -89,7 +90,7 @@ class Records:
             k, parts, within = b.edits, b.edits + 1, [q(w.name) for w in b.within]
             w_ = "".join(f"{w}, " for w in within)
             values = self._temp(f"""SELECT {w_}{q(b.key.name)} AS v, count(*) AS n, length({q(b.key.name)}) AS len FROM {self.table}
-                WHERE {_filled([b.key.name, *(w.name for w in b.within)])} GROUP BY ALL HAVING count(*) < {most} AND length({q(b.key.name)}) >= {parts}""")
+                WHERE {_filled([b.key.name, *(w.name for w in b.within)])} GROUP BY ALL HAVING count(*) < {most} AND length({q(b.key.name)}) >= {2 * parts}""")
             seg = lambda length, i: (f"({length}) // {parts} + ({i} >= {parts} - ({length}) % {parts})::INT",  # segment i of a value this long: its length, its start
                                      f"1 + {i} * (({length}) // {parts}) + greatest(0, {i} - ({parts} - ({length}) % {parts}))")
             index = f"SELECT {w_}v, len AS l, i, v[{seg('len', 'i')[1]} : {seg('len', 'i')[1]} + {seg('len', 'i')[0]} - 1] AS s FROM (SELECT *, unnest(range({parts})) AS i FROM {values})"

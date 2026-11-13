@@ -72,7 +72,7 @@ from er.candidates import candidates, estimate
 from er.cluster import merge
 from er.config import InputError, Pipeline, TfidfNeighbours, bits, generator, generator_dict, keys_sql, lit, q
 from er.io import code_version, config_hash, markdown, read_parquet, replace_text
-from er.keys import learn
+from er.keys import gap as keys_gap, learn
 from er.kind import KIND_COLUMNS, NAME_MODEL, century, classifier as kind_classifier, kind_review_sheet, merge_answers
 from er.match import ELSE, bound_tests, fs_settings, named_sql, bound_reads, reaching_sql, read_by, refreshed_u, review_floor, rule_edges, score_fs, scored_u, train_fs, u_basis
 from er.probe import missed
@@ -763,6 +763,13 @@ class Run:
                        apart=f"SELECT {l}, {r} FROM er_decisions WHERE decision = 'no_match'")
         self._done("probe", "O(N + P·K + L)", f"O({self.n:,} + {sum(x['scored'] for x in found):,}·K + L)", t, strata=found)
 
+    def gap(self) -> None:
+        """The pairs the model would accept that no key or rule listed, estimated by sampling every way two records can
+        agree (er.keys.gap): report.txt's GAP, what the keys lose against comparing every pair, and where it lies."""
+        t = time.perf_counter()
+        facts = keys_gap(self)
+        self._done("gap", "O(f·N·b)", f"O({facts['sampled_records']:,} records sampled)", t, **{k: v for k, v in facts.items() if k != "seconds"})
+
     def _expected_false(self) -> float:  # the false links the model expects among those it accepted: Σ (1 − match probability), O(E)
         return round(self.con.execute("SELECT coalesce(sum(1 - match_probability), 0) FROM matches").fetchall()[0][0], 2)
 
@@ -1105,6 +1112,7 @@ class Run:
         self._load_decisions(decided)
         self.cluster()
         self.probe()
+        self.gap()
         return self
 
     def rerun(self, out: Path, pipeline_file: Path | None = None) -> "Run":

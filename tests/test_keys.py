@@ -15,8 +15,8 @@ from er.config import EditKeys, Key, LearnKeys
 @pytest.mark.parametrize("k, grouped", [(1, False), (2, False), (2, True), (3, False)])
 def test_values_within_k_edits_are_every_pair_brute_force_finds_and_no_other(k, grouped):
     rnd = random.Random(k)
-    vals = ["".join(rnd.choice("アイウカキ") for _ in range(rnd.randint(1, 9))) for _ in range(700)] + \
-           ["".join(rnd.choice("abc") for _ in range(rnd.randint(1, 7))) for _ in range(250)]  # repeats, short values, two scripts
+    vals = ["".join(rnd.choice("アイウカキ") for _ in range(rnd.randint(1, 11))) for _ in range(900)] + \
+           ["".join(rnd.choice("abc") for _ in range(rnd.randint(1, 9))) for _ in range(300)]  # repeats, short values, two scripts
     df = pd.DataFrame({"uid": [f"r{i}" for i in range(len(vals))], "name": vals, "g": [str(i % 3) for i in range(len(vals))]}, dtype="string")
     within = (Key("g"),) if grouped else ()
     r = Records(df, "uid")
@@ -24,21 +24,21 @@ def test_values_within_k_edits_are_every_pair_brute_force_finds_and_no_other(k, 
         got = {tuple(x) for x in r.con.execute(f"SELECT {'g, ' if grouped else ''}v, x FROM {r.near_values(EditKeys(name='e', key=Key('name'), within=within, edits=k), 10**9)}").fetchall()}
     finally:
         r.close()
-    u = sorted({(g if grouped else None, v) for v, g in zip(vals, df["g"]) if len(v) >= k + 1})
+    u = sorted({(g if grouped else None, v) for v, g in zip(vals, df["g"]) if len(v) >= 2 * (k + 1)})
     want = {((g,) if grouped else ()) + (min(a, b), max(a, b)) for (g, a), (h, b) in itertools.combinations(u, 2)
             if g == h and a != b and Levenshtein.distance(a, b) <= k}
-    assert got == want and len(want) > 500  # PassJoin's windows lose none, and cpdist keeps only those within k
+    assert got == want and len(want) > 100  # PassJoin's windows lose none, and cpdist keeps only those within k
 
 
 def test_a_value_a_crowd_holds_pairs_by_no_edit_key():
-    df = pd.DataFrame({"uid": [f"r{i}" for i in range(80)], "name": ["フメイ"] * 70 + ["フメイ1", "フメ", "サトウ", "サトー", "サトウ", "カトウ", "x", "y", "z", "w"]},
+    df = pd.DataFrame({"uid": [f"r{i}" for i in range(80)], "name": ["フメイフメイ"] * 70 + ["フメイフメイ1", "フメイフメ", "サトウハナコ", "サトーハナコ", "サトウハナコ", "カトウハナコ", "x", "y", "z", "w"]},
                       dtype="string")
     r = Records(df, "uid")
     try:
         pairs = {tuple(x) for x in r.con.execute(f"SELECT v, x FROM {r.near_values(EditKeys(name='e', key=Key('name'), edits=1), 64)}").fetchall()}
     finally:
         r.close()
-    assert ("カトウ", "サトウ") in pairs and not any("フメイ" in p for p in pairs)  # a placeholder's 70 records would pair with each neighbour
+    assert ("カトウハナコ", "サトウハナコ") in pairs and not any("フメイフメイ" in p for p in pairs)  # a placeholder's 70 records would pair with each neighbour
 
 
 def test_atoms_follow_the_method_and_the_records(population):
