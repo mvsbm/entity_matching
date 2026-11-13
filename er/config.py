@@ -351,6 +351,8 @@ class FSModel:
     u_exact_by_counts: bool = False           # u of the leading exact levels from value counts, not the sample (er.match.exact_u)
     u_near_by_keys: bool = False              # and a one-edit level right after them, counted through one-deletion keys
     fit_u_max_pairs: float | None = None      # the fit's own u sample, if it differs (with u_from_scored its u feed only EM)
+    em_median: bool = False                   # one EM session per rule, each level's m the median of the sessions that learned it (not Splink's mean)
+    em_from_keys: bool = False                # the EM sessions blocked on the method's equality keys, not on em_rules (er.run.fit)
 
     def u_keys(self) -> dict[str, str]:
         """What each comparison's u depends on, besides the fitting records: the comparison (term-frequency adjustment
@@ -656,7 +658,7 @@ def pipeline_from(cfg: dict, std: Standardization, chains: Mapping[str, tuple[No
                     prior_rules=tuple(tuple(_key(k, chains) for k in r) for r in m["prior_rules"]), m_method=m["m_method"],
                     em_rules=tuple(tuple(_key(k, chains) for k in r) for r in m["em_rules"]), seed=m["seed"],
                     u_from_scored=m.get("u_from_scored", False), u_exact_by_counts=m.get("u_exact_by_counts", False),
-                    u_near_by_keys=m.get("u_near_by_keys", False), fit_u_max_pairs=m.get("fit_u_max_pairs"))
+                    u_near_by_keys=m.get("u_near_by_keys", False), fit_u_max_pairs=m.get("fit_u_max_pairs"), em_median=m.get("em_median", False), em_from_keys=m.get("em_from_keys", False))
     unknown = [c for c in m.get("needs", ()) if c not in {c.name for c in comparisons}]
     if unknown:
         raise ValueError(f"[model] needs: {unknown} are not comparisons in [[model.comparisons]]")
@@ -912,7 +914,8 @@ def pipeline_dict(p: Pipeline, chains: Mapping[str, tuple[Normalizer, ...]]) -> 
                   "prior_rules": [[key(k) for k in r] for r in m.prior_rules], "prior_recall": m.prior_recall,
                   "u_max_pairs": m.u_max_pairs, "m_method": m.m_method, "em_rules": [[key(k) for k in r] for r in m.em_rules],
                   "seed": m.seed, "u_from_scored": m.u_from_scored, "u_exact_by_counts": m.u_exact_by_counts, "u_near_by_keys": m.u_near_by_keys,
-                  **({"fit_u_max_pairs": m.fit_u_max_pairs} if m.fit_u_max_pairs else {}), "fit_rows": p.fit_rows,
+                  **({"fit_u_max_pairs": m.fit_u_max_pairs} if m.fit_u_max_pairs else {}), **({"em_median": True} if m.em_median else {}),
+                  **({"em_from_keys": True} if m.em_from_keys else {}), "fit_rows": p.fit_rows,
                   "comparisons": [{"name": c.name, "null_if_missing": list(c.null_if_missing), **({"tf": key(c.tf)} if c.tf else {}),
                                    "levels": [{"label": lv.label, "any_of": [{"field": col, **comp(x)} for col, x in lv.any_of],
                                                **({"tf": True} if lv.tf else {})} for lv in c.levels]} for c in m.comparisons]},

@@ -20,6 +20,7 @@ from itertools import combinations, product
 from pathlib import Path
 
 import duckdb
+import numpy as np
 import pandas as pd
 import splink
 import splink.comparison_level_library as cll
@@ -459,15 +460,32 @@ def train_fs(model: FSModel, df: pd.DataFrame, db: DuckDBAPI, uid: str, labels: 
                          "the pairs it learns from", fix="map those fields to filled columns, or give a model fitted before with --model")
     settings = fs_settings(model, uid, u)  # unestimated levels: handled here
     tf_levels = any(c.tf and any(lv.tf for lv in c.levels) for c in model.comparisons)  # none: EM iterates on each agreement pattern's count, not on every pair
-    with narrowed(t, db, read_by(settings, *(keys_sql(r) for r in prior)) | {uid, "__label__"}) as records:
+    median: dict[tuple[str, str], list[float]] = {}
+    with narrowed(t, db, read_by(settings, *(keys_sql(r) for r in (*prior, *em))) | {uid, "__label__"}) as records:
         linker = Linker(records, settings, log_level=logging.ERROR)
         linker.training.estimate_probability_two_random_records_match([keys_sql(r) for r in prior], recall=model.prior_recall)
-        for rule in em:
+        for rule in em if not model.em_median else ():
             linker.training.estimate_parameters_using_expectation_maximisation(keys_sql(rule), estimate_without_term_frequencies=not tf_levels)
+        for rule in em if model.em_median else ():  # each session on its own linker: what each learned, kept apart
+            one = Linker(records, settings, log_level=logging.ERROR)
+            one.training.estimate_probability_two_random_records_match([keys_sql(r) for r in prior], recall=model.prior_recall)
+            session = one.training.estimate_parameters_using_expectation_maximisation(keys_sql(rule), estimate_without_term_frequencies=not tf_levels)
+            fixed = {c.output_column_name for c in session._comparisons_that_cannot_be_estimated}  # its block's own: chosen by them, not learned
+            for c in one.misc.save_model_to_json()["comparisons"]:
+                for lv in (lv for lv in c["comparison_levels"] if c["output_column_name"] not in fixed and "m_probability" in lv and not lv.get("is_null_level")):
+                    median.setdefault((c["output_column_name"], lv["label_for_charts"]), []).append(lv["m_probability"])
+            one.table_management.invalidate_cache()
         if model.m_method == "labels":
             linker.training.estimate_m_from_label_column("__label__")
         model_json = linker.misc.save_model_to_json()
         linker.table_management.invalidate_cache()
+    for c in model_json["comparisons"] if median else ():  # each level's m the median of the sessions that learned it, a comparison's summing to 1
+        levels = [lv for lv in c["comparison_levels"] if not lv.get("is_null_level") and (c["output_column_name"], lv["label_for_charts"]) in median]
+        got = {id(lv): float(np.median(median[c["output_column_name"], lv["label_for_charts"]])) for lv in levels}
+        for lv in levels:
+            lv["m_probability"] = got[id(lv)] / sum(got.values())
+        for lv in (lv for lv in c["comparison_levels"] if not lv.get("is_null_level") and lv not in levels):
+            lv.pop("m_probability", None)  # no session learned it: filled below, m = u
     filled_m = []
     for c in model_json["comparisons"]:
         for lv in c["comparison_levels"]:

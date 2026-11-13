@@ -489,3 +489,15 @@ def test_one_name_in_a_person_field_and_the_company_field_is_compared_on_its_kin
     assert df.loc[0, "full_name"] == "ヤマダタロウ" and pd.isna(df.loc[0, "company_name"])  # a person's name in both: the person side only
     assert df.loc[1, "company_name"].endswith("ヤマダショウジ")  # a company keeps its name
     assert df.loc[2, "full_name"] == "スズキハナコ" and df.loc[2, "company_name"] == "タナカショウジ"  # two different names: both kept
+
+
+def test_em_sessions_kept_apart_give_each_level_the_median_of_those_that_learned_it(con_db, records):
+    _, db = con_db
+    m = lambda j: {(c["output_column_name"], lv["label_for_charts"]): lv["m_probability"] for c in j["comparisons"] for lv in c["comparison_levels"] if not lv.get("is_null_level")}
+    one = model()  # one session: its median is what Splink learns
+    assert m(train_fs(replace(one, em_median=True), records, db, UID)) == pytest.approx(m(train_fs(one, records, db, UID)))
+    two = replace(one, em_rules=((Key("phone"),), (Key("name"),)), em_median=True)  # name learned only where phone chose the pairs, phone only where name did
+    both, by_phone, by_name = (train_fs(x, records, db, UID) for x in (two, replace(one, em_rules=((Key("phone"),),)), replace(one, em_rules=((Key("name"),),))))
+    got = m(both)
+    assert {k: v for k, v in got.items() if k[0] == "name"} == pytest.approx({k: v for k, v in m(by_phone).items() if k[0] == "name"})
+    assert {k: v for k, v in got.items() if k[0] == "phone"} == pytest.approx({k: v for k, v in m(by_name).items() if k[0] == "phone"})
