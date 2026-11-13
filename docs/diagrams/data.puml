@@ -98,7 +98,10 @@ package "state/, for increments: Run.write" {
     the u the run scored with; per comparison its basis and last drift check
   }
   entity "state/placeholders.json" as placeholders {
-    each identifying field's values read as missing: placeholders, not one entity's
+    each field's values read as missing: placeholders, not one entity's nor evidence
+  }
+  entity "state/keys.json" as keyfile {
+    the keys the run listed by, learned or left after dropping idle ones: increments and lookups list by them
   }
   entity "state/config.txt" as config {
     the pipeline and column mapping the full run used, hashed: an increment refuses others

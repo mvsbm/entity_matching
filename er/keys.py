@@ -95,6 +95,9 @@ def reachable(run, floor: float, into: str = "er_kl_ok") -> int:
     column of which the record holds, its best level's weight, or 0 if that is less. A pair scores at most what either of
     its records could, so a pair of a record outside it never reaches the floor. O(N). Returns how many."""
     p, have = run.pipeline, set(run.columns())
+    if run.scoring.get("er", {}).get("tf"):  # a value rarer than u weighs more than its level: no bound from the levels, every record kept
+        run.con.execute(f"CREATE OR REPLACE TABLE {into} AS SELECT {q(run.uid)} FROM records")
+        return run.n
     lam = scaled_prior(run.scoring, run.n)
     terms = []
     for c, j in zip(p.fs.model.comparisons, run.scoring["comparisons"]):
@@ -172,8 +175,9 @@ def discover(run, records: int) -> Found:
         took[a.name] = time.perf_counter() - t
         t = time.perf_counter()
     rec.close()
+    alone = "" if fs.bridge else f" AND (a.{u} IN {run._singletons('rule_clusters')} OR b.{u} IN {run._singletons('rule_clusters')})"  # without bridging, two rule entities are never compared: the probe counts those pairs
     con.execute(f"""CREATE OR REPLACE TABLE er_kl_d AS SELECT DISTINCT p.l AS {l}, p.r AS {r} FROM er_kl_p p JOIN rule_clusters a ON a.{u} = p.l
-        JOIN rule_clusters b ON b.{u} = p.r WHERE a.cluster_id <> b.cluster_id""")  # a pair inside one rule cluster is the rules'
+        JOIN rule_clusters b ON b.{u} = p.r WHERE a.cluster_id <> b.cluster_id{alone}""")  # a pair inside one rule cluster is the rules'
     drawn, t_drawn = run._count("er_kl_d"), time.perf_counter()
     score_fs(run.scoring, "records", "er_kl_d", run.db, uid, into="er_kl_t", n_records=n, floor=floor, bound=bound_tests(fs.model))
     con.execute(f"DELETE FROM er_kl_t WHERE match_weight < {floor}")
@@ -193,14 +197,14 @@ def discover(run, records: int) -> Found:
 
 
 def listed_by(run, targets: pd.DataFrame) -> pd.DataFrame:
-    """The targets with `listed` (a key or a rule listed the pair), `ruled` (a rule did) and `sources` (the keys that
+    """The targets with `listed` (a key listed the pair or a rule kept it), `ruled` (a rule kept it) and `sources` (the keys that
     did, as candidates names them), from the run's candidates and rules' edges as they stand: none listed before the candidates step."""
     con, l, r = run.con, q(run.l), q(run.r)
     have = {t for (t,) in con.execute("SELECT table_name FROM duckdb_tables()").fetchall()}
     con.register("er_kl_tg", targets[[run.l, run.r]])
     try:
         cands = f"(SELECT {l}, {r}, sources FROM cands)" if "cands" in have else f"(SELECT NULL::VARCHAR AS {l}, NULL::VARCHAR AS {r}, NULL::VARCHAR AS sources WHERE FALSE)"
-        rules = f"EXISTS (SELECT 1 FROM rule_edges e WHERE e.{l} = t.{l} AND e.{r} = t.{r})" if "rule_edges" in have else "FALSE"
+        rules = f"EXISTS (SELECT 1 FROM rule_kept e WHERE e.{l} = t.{l} AND e.{r} = t.{r})" if "rule_kept" in have else "FALSE"  # the pairs the rules kept: one found and dropped is no one's
         got = con.execute(f"""SELECT c.sources, {rules} AS ruled, c.{l} IS NOT NULL OR {rules} AS listed FROM er_kl_tg t LEFT JOIN {cands} c USING ({l}, {r})
             ORDER BY t.{l}, t.{r}""").df()
     finally:
@@ -209,6 +213,7 @@ def listed_by(run, targets: pd.DataFrame) -> pd.DataFrame:
 
 
 GAP_RECORDS = 20_000  # records the gap report samples, whatever the file's size
+IDLE_LOSS = 0.01      # an idle key is dropped only where the pairs at the floor it alone may list are, at 95%, at most this share of them
 
 
 def gap(run) -> dict:
@@ -216,7 +221,8 @@ def gap(run) -> dict:
     threshold (the review floor, the model's line, 20 bits), the file's pairs at it and those missed, with 95% Poisson
     intervals (the probe's); and for those missed at the floor, how many agree on each atom, the keys that would reach them. O(f·N·b)."""
     t0 = time.perf_counter()
-    d = getattr(run, "found", None) or discover(run, run.pipeline.keys.records if run.pipeline.keys else GAP_RECORDS)  # drawn by the keys step: listed now
+    reused = getattr(run, "found", None)  # drawn by the keys step, its time there: listed now
+    d = reused or discover(run, run.pipeline.keys.records if run.pipeline.keys else GAP_RECORDS)
     d.rec.close()
     t, w = listed_by(run, d.targets), d.weight
     rows = []
@@ -229,7 +235,8 @@ def gap(run) -> dict:
     by = sorted(((a.name, int(_agrees(a, lost[f"a{i}"], lost[f"b{i}"]).sum())) for i, a in enumerate(d.atoms)), key=lambda x: -x[1]) if len(lost) else []
     alone = t[(t["match_weight"] >= review_floor(run.pipeline)) & ~t["ruled"]]["sources"].dropna()
     alone = alone[~alone.str.contains("+", regex=False)].value_counts()  # listed by one key and no rule: lost without it
-    return {**d.facts, "thresholds": rows, "missed_agree": [dict(atom=a, pairs=round(k * w)) for a, k in by if k],
+    facts = {k: v for k, v in d.facts.items() if not (reused and k in ("draw_seconds", "score_seconds", "drawn_seconds"))}
+    return {**facts, "reused": bool(reused), "thresholds": rows, "missed_agree": [dict(atom=a, pairs=round(k * w)) for a, k in by if k],
             "only": {k: round(v * w) for k, v in alone.items()}, "seconds": round(time.perf_counter() - t0, 2)}
 
 
@@ -282,7 +289,7 @@ def idle(run) -> tuple[tuple[Blocker, ...], list[str]]:
         for b in (b for b in kept if b not in idle_):  # the keys that stay whatever is dropped
             if not others.all():
                 others |= lists(b, mine)
-        if others.all():
+        if others.all() and (d.weight == 1 or 3 <= IDLE_LOSS * len(t)):  # none of its own seen: in every record, or a sample large enough that what it may hold unseen (3 at 95%) is few
             kept.remove(z)
             dropped.append(z.name)
     d.rec.close()

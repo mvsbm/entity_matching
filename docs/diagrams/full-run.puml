@@ -41,7 +41,6 @@ database "records" as records
 database "set_aside" as set_aside
 database "rule_clusters" as rule_clusters
 database "rule_kept" as rule_kept
-database "rule_edges" as rule_edges
 database "cands" as cands
 database "scores" as scores
 database "rule_scores" as rule_scores
@@ -91,7 +90,6 @@ rule_kept --> write
 rule_kept --> candidates
 records --> keys
 rule_clusters --> keys
-rule_edges --> keys
 rule_kept --> keys
 rule_kept --> score
 candidates --> cands
@@ -120,8 +118,7 @@ er_decisions --> probe
 matches --> probe
 proposed --> probe
 rule_kept --> probe
-rules --> rule_edges
-rule_edges --> gap
+rule_kept --> gap
 cands --> gap
 
 write --> f_out
