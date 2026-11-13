@@ -70,7 +70,7 @@ import pyarrow as pa
 from er import folder, intake
 from er.candidates import candidates, estimate
 from er.cluster import merge
-from er.config import InputError, Pipeline, TfidfNeighbours, bits, generator, generator_dict, keys_sql, lit, q
+from er.config import InputError, KeyBlocker, Pipeline, TfidfNeighbours, bits, generator, generator_dict, keys_sql, lit, q
 from er.io import code_version, config_hash, markdown, read_parquet, replace_text
 from er.keys import idle, gap as keys_gap, learn
 from er.kind import KIND_COLUMNS, NAME_MODEL, century, classifier as kind_classifier, kind_review_sheet, merge_answers
@@ -483,10 +483,13 @@ class Run:
             n = self.pipeline.fit_rows
             area = q("postal_code__first3") if "postal_code__first3" in self.columns() else None
             order = f"hash({area}), hash({q(self.uid)})" if area else f"hash({q(self.uid)})"
-            reads = read_by(fs_settings(fs.model, self.uid), *(keys_sql(r) for r in fs.model.prior_rules)) | {self.uid}  # the columns the fit reads, not the file's every one
+            model = fs.model
+            if model.em_from_keys and (keys := tuple(dict.fromkeys(b.keys for b in fs.blockers if isinstance(b, KeyBlocker)))):  # the method's keys, each a block EM learns in
+                model = replace(model, em_rules=keys)
+            reads = read_by(fs_settings(model, self.uid), *(keys_sql(r) for r in (*model.prior_rules, *model.em_rules))) | {self.uid}  # the columns the fit reads, not the file's every one
             cols = ", ".join(q(c) for c in self.columns() if c in reads)
             sample = self.con.execute(f"SELECT {cols} FROM records ORDER BY {order} LIMIT {n}").df().astype("string")
-            self.model = train_fs(fs.model, sample, self.db, self.uid, kept=self.keep and self.keep / folder.U_SAMPLED)
+            self.model = train_fs(model, sample, self.db, self.uid, kept=self.keep and self.keep / folder.U_SAMPLED)
             self.notes += [f"the fit found no two records sharing {f} in its sample of {len(sample):,}, so it learned nothing from them"
                            for f in self.model["er"].get("skipped", [])]
         self.scoring, self.basis, fitted = self.model, {}, time.perf_counter()
