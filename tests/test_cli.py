@@ -445,7 +445,7 @@ def test_a_nearly_empty_field_is_kept_and_the_fit_skips_what_it_cannot_learn_fro
     sparse.to_parquet(tmp_path / "sparse.parquet", index=False)
     seen = []
     run = Run(p, s, echo=seen.append).full(tmp_path / "sparse.parquet", tmp_path / "run")
-    assert [x["step"] for x in seen] == ["load", "budget", "fit", "rules", "candidates", "score", "cluster", "probe", "gap", "write"]  # step by step
+    assert [x["step"] for x in seen] == ["load", "budget", "fit", "rules", "keys", "candidates", "score", "cluster", "probe", "gap", "write"]  # step by step
     assert "address" in run.model["er"]["skipped"] and any("sharing address" in x for x in run.notes)
     sparse.assign(PHONE_NUM_4=None).to_parquet(tmp_path / "bare.parquet", index=False)  # nothing left to learn from
     with pytest.raises(InputError, match="can't be estimated|share phone or address"):  # whichever check finds nothing first
@@ -737,12 +737,14 @@ def test_an_oversized_block_is_checked_on_a_sample_and_a_placeholder_is_skipped(
     uid = s.data.unique_id
     df = g.df.copy()
     dummy = df.index[:100]
-    df.loc[dummy, ["PHONE_NUM_4", "ADDRESS_ONE"]] = ["0000", "東京都"]  # a dummy phone on 100 records: one block of 100
+    df.loc[dummy, ["PHONE_NUM_4", "GIVEN_NAME_KANA", "POST_CD"]] = ["0000", "タロウ", "1500042"]  # a dummy phone, and one given name and postal code: blocks of 100
     df.to_parquet(tmp_path / "in.parquet", index=False)
     run = Run(p, s).full(tmp_path / "in.parquet", tmp_path / "run")  # no stop
-    block = run.gated[run.gated["value"].str.contains("0000") & (run.gated["generator"] == "phone_prefecture")]
+    assert any("phone = 0000" in x and "placeholder" in x for x in run.examples)  # most of the pairs sharing a phone: read as missing, no block
+    assert not run.gated["value"].str.contains("0000").any()
+    block = run.gated[run.gated["value"].str.contains("タロウ") & (run.gated["generator"] == "given_name_postal")]
     assert len(block) == 1 and block["decision"].iloc[0].startswith("skipped") and block["records"].iloc[0] == 100
-    assert any("0000" in x and "skipped" in x for x in run.examples) and not any("0000" in x for x in run.notes)
+    assert any("タロウ" in x and "skipped" in x for x in run.examples) and not any("タロウ" in x for x in run.notes)
     check = nayose("check", "records", tmp_path / "in.parquet")
     assert check.returncode == 0 and "checked by sampling" in check.stdout
 

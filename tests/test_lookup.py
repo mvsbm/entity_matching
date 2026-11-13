@@ -56,8 +56,8 @@ def test_a_lookup_lists_and_scores_the_pairs_an_increment_of_the_record_would_an
     s, p, g = population
     uid, rng = s.data.unique_id, np.random.default_rng(0)
     df = g.df.copy()
-    crowd = rng.random(len(df)) < 0.2  # a phone and a prefecture shared by a fifth of the records: blocks too big, gated
-    df.loc[crowd, "PHONE_NUM_4"], df.loc[crowd, "ADDRESS_ONE"] = "0000", "東京都"
+    crowd = rng.random(len(df)) < 0.2  # a given name and a postal code shared by a fifth of the records: blocks too big, gated
+    df.loc[crowd, "GIVEN_NAME_KANA"], df.loc[crowd, "POST_CD"] = "タロウ", "1500042"
     held = rng.random(len(df)) < 0.1
     df[~held].to_parquet(tmp_path / "first.parquet", index=False)
     df[held].to_parquet(tmp_path / "new.parquet", index=False)

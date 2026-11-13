@@ -481,6 +481,11 @@ def train_fs(model: FSModel, df: pd.DataFrame, db: DuckDBAPI, uid: str, labels: 
     return {**model_json, "er": dict(fit_rows=len(t), tf=tf, filled=dict(u=filled_u, m=filled_m), skipped=skipped, adjusted=adjusted)}
 
 
+def compared_exactly(model: FSModel) -> list[str]:  # the fields a comparison's first level tests for equality alone: an agreement on them is that level's
+    return list(dict.fromkeys(col for c in model.comparisons if c.levels and all(x.function == "exact" for _, x in c.levels[0].any_of)
+                              for col, _ in c.levels[0].any_of))
+
+
 NEAR = ("levenshtein", "damerau_levenshtein", "hamming", "jaro", "jaro_winkler", "jaccard", "levenshtein_similarity")  # agreement short of equal
 
 
