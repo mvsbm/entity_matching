@@ -54,7 +54,7 @@ candidates.
 | Step | Cost | What it touches |
 |---|---|---|
 | load | O(Δ·L), plus one O(N) copy | the batch; a record already in the run is set aside. The stored records and the batch then form one table, which every later step reads |
-| fit | O(N) + O(S·K_stale) | the stored model, with u settled before the rules: the exact and one-edit u counted again on all the records (group-bys, and the distinct values' one-deletion keys); a comparison's sampled u measured again only once the drift of its exact u exceeds its sampling error (`er.match.refreshed_u`) |
+| fit | O(N) + O(S·K_stale) | the stored model, with u settled before the rules: the exact and one-edit u counted again on all the records (group-bys, and the distinct values' position, swap and deletion keys); a comparison's sampled u measured again only once the drift of its exact u exceeds its sampling error (`er.match.refreshed_u`) |
 | rules | O(Δ·Σ b) + a scan of the stored records | each rule joins the batch against all records; the cascade merges into the stored clusters, each cluster one node |
 | candidates | O(Δ·Σ b) + a scan | every generator, with the batch as the query; deletion keys and the budget only for the blocks the batch's keys reach |
 | score | O(C_Δ·K·L²) | only the pairs touching the batch |
@@ -212,16 +212,21 @@ trained once and its signals computed once; a combination fits only its combiner
   or the line up, written once to a table, not joined again from every scored pair each time: the report on a million
   records 11.9 s to 5.5 s, on 250,000 3.4 s to 2.1 s.
 - **Chunks standardized in parallel** (`Run.load`, `run.ahead`). Every step reads one record, or one chunk's
-  values, so the chunks are cleaned in worker processes (as many as DuckDB's threads), a few ahead at most, and taken
-  back in order: the same records. The person/company model is rebuilt in each worker on one thread. A script that
+  values, so the chunks are cleaned in worker processes, spawned on every system (as many as DuckDB's threads, at most
+  one per chunk, the CPUs, and 61 on Windows), one chunk queued beyond them, and taken back in order: the same records;
+  an error in one cancels those not started. Each chunk is sent with the cleaning settings, and the person/company model
+  is rebuilt from its terms and weights in the worker, on one thread. A script that
   runs a load keeps its work under `if __name__ == "__main__":`, as the scripts here do: each worker imports it first.
 - **Pairs that can't reach 0 never stored** (`Run._reaching`, `er.match.reaching_sql`). Each generator's pairs pass
-  step 6's bound as they are listed, 10 million at a time, before its pairs are stored or a deletion key's made
-  distinct: first a looser test on a few columns (the cheap comparisons and the name, the others at their best level
-  or 0, `first_bound`), then the whole bound on the few left. Score scores the same pairs; the candidates counted are
-  those that can reach 0, and a rule's pairs. On a generated file of 1.3 million records with sparse addresses and
-  sequential customer IDs, 112 million candidates became 33,700 and the step 61 s instead of 593 s. Larger passes
-  spill: 33 million pairs through the joins took ten times what 10 million did.
+  step 6's bound as they are listed, 10 million at a time, before they are stored: first a looser test on a few
+  columns (the cheap comparisons and the name, the others at their best level or 0, `first_bound`), then the whole
+  bound on the few left. Score scores the same pairs. Each listed pair leaves a 64-bit hash first, 8 bytes, so the
+  gate reads the pairs other keys listed as it would every pair, and the counts mean what they did: `candidates` the
+  distinct pairs listed (`stored`, those kept), each generator's pairs as listed, `unscored` those below 0. On a
+  generated file of 1.3 million records with sparse addresses and sequential customer IDs, 112 million candidates
+  were 33,700 stored and the step 61 s instead of 593 s. Larger passes spill: 33 million pairs through the joins took
+  ten times what 10 million did. Design time (`er.pipeline.run_fs`) stores every pair, so the keys' metrics count
+  them all (`Run.reaching_only`).
 - **A key's oversized blocks left out before its join**, on both sides, not from its pairs after.
 - **One edit on ASCII without an edit table** (`Comparator.test`): the same length, the Hamming distance; a length
   one apart, Levenshtein (an insertion or a deletion either way). Only a Damerau pair two substitutions apart is
@@ -229,11 +234,13 @@ trained once and its signals computed once; a combination fits only its combiner
 - **A one-edit level's u counted by keys** (`exact_u`): a substitution apart, two values share exactly one "value
   without its i-th character, at i"; a swap of neighbours apart, one "the two in order, at i"; so each key's records
   pair (Σn)² − Σn² over 2 ways. A length one apart is a join of the longer's deletions on the shorter values (for
-  Hamming, which pads, the longer without its last). O(U·L): no pair is listed, where sequential IDs listed tens of
-  millions.
+  Hamming, which pads, the longer without its last). O(U·L²), the distinct values grouped once: no pair is listed,
+  where sequential IDs listed tens of millions.
 - **EM on agreement-pattern counts** (`train_fs`): with no term frequencies, each iteration reads the count of each
   agreement pattern, a few hundred rows, not every pair in EM's blocks, as Splink does when told. The same updates,
-  summed in another order: weights within 10⁻⁹ bits. On that generated file's sample, 505 s to 25 s.
+  summed in another order: weights within 10⁻⁹ bits, unless that order moves the change past `em_convergence` and EM
+  stops an iteration sooner or later, which leaves a level's weight as far from the other order's as one iteration
+  moves it. On that generated file's sample, 505 s to 25 s.
 - **Threshold rule without clustering** (`accept_curve`). The rule reads only accepted and false accepted pairs per
   weight, so decision variants resolve clusters at the chosen weight only.
 - **Run cache.** Identical runs (same configuration, dataset and threshold) are computed once, in both stages.

@@ -92,7 +92,7 @@ def rule_edges(spec: RulesSpec, records: "Records", db: DuckDBAPI, uid: str, bat
 ELSE = "else"
 COPIES = ("one_byte", "one_byte_hash")  # the copies er.standardize makes for the comparisons (Comparator.copied): a table without them is compared without
 U = dict[str, dict[str, float]]  # comparison → level label → u probability
-Bound = Mapping[str, tuple[tuple[str, int], ...] | None]  # per comparison, how bound_sql settles it (bound_tests)
+Bound = Mapping[str, tuple[tuple[str, int, str], ...] | None]  # per comparison, how bound_sql settles it (bound_tests)
 MAX_STATES = 3 ** 7  # a comparison with more outcomes than this is bounded by its best level
 
 
@@ -230,11 +230,11 @@ def exact_u(model: FSModel, records: Records, db: DuckDBAPI) -> U:
             joined pair by pair. Two values of one length one substitution apart share exactly one key "the value without
             its i-th character, at i"; one swap of neighbours apart (Damerau), exactly one "the value with its i-th and next
             characters in order, at i"; so a key's records pair (Σn)² − Σn² over 2 ways. One of a length one more is one
-            deletion away (for Hamming, which pads the shorter, its last): a join of its deletions on the shorter values. O(U·L), U distinct values."""
+            deletion away (for Hamming, which pads the shorter, its last): a join of its deletions on the shorter values.
+            O(U·L²): U distinct values, each L keys of about L characters; the values grouped once, read by every part."""
             if comp.threshold < 1:
                 return 0.0
-            v = f'(SELECT "{col}" AS x, count(*) AS n, length("{col}") AS len FROM {t} WHERE "{col}" IS NOT NULL GROUP BY 1)'
-            at = f"(SELECT x, n, len, unnest(range(1, len + 1)) AS i FROM {v})"
+            v, at = "er_near_v", "(SELECT x, n, len, unnest(range(1, len + 1)) AS i FROM er_near_v)"
             pairs = lambda key, where="TRUE": (f"(SELECT coalesce(sum((s * s - ss) // 2), 0) FROM (SELECT sum(n) AS s, sum(n * n) AS ss "
                                                f"FROM {at} WHERE {where} GROUP BY len, i, {key}))")
             parts = [pairs("x[:i - 1] || x[i + 1:]")]
@@ -243,7 +243,8 @@ def exact_u(model: FSModel, records: Records, db: DuckDBAPI) -> U:
             deleted = "x[:len - 1]" if comp.function == "hamming" else f"unnest({deletions_sql('x')})"  # rapidfuzz's Hamming pads the shorter at its end
             parts.append(f"""(SELECT coalesce(sum(nn), 0) FROM (SELECT DISTINCT a.x, b.x, a.n * b.n AS nn FROM
                 (SELECT x, n, len, {deleted} AS d FROM {v}) a JOIN {v} b ON b.x = a.d AND b.len = a.len - 1))""")
-            return float(con.execute(f"SELECT {' + '.join(parts)}").fetchall()[0][0])
+            return float(con.execute(f"""WITH er_near_v AS MATERIALIZED (SELECT "{col}" AS x, count(*) AS n, length("{col}") AS len FROM {t}
+                WHERE "{col}" IS NOT NULL GROUP BY 1) SELECT {' + '.join(parts)}""").fetchall()[0][0])
 
         out: U = {}
         for c in model.comparisons:
@@ -533,9 +534,15 @@ def _columns(con: duckdb.DuckDBPyConnection, table: str) -> set[str]:
     return {c for c, *_ in con.execute(f"DESCRIBE SELECT * FROM {table}").fetchall()}
 
 
-def _sides(settings: dict, have: set[str]) -> str:  # each column the comparisons read, of records a and b, as "<col>_l" and "<col>_r"; a one-byte copy the records lack is NULL, as narrowed() gives it
+def _sides(settings: dict, have: set[str], cols: Iterable[str] | None = None) -> str:
+    """Each column the comparisons read (or these), of records a and b, as "<col>_l" and "<col>_r"; a one-byte copy the
+    records lack is NULL, as narrowed() gives it."""
     side = lambda c, x: f"{x}.{q(c)}" if c in have or not c.endswith(COPIES) else "NULL::VARCHAR"
-    return ", ".join(f"{side(c, 'a')} AS {q(c + '_l')}, {side(c, 'b')} AS {q(c + '_r')}" for c in sorted(read_by(settings)))
+    return ", ".join(f"{side(c, 'a')} AS {q(c + '_l')}, {side(c, 'b')} AS {q(c + '_r')}" for c in sorted(read_by(settings) if cols is None else cols))
+
+
+def _reads(sql: str) -> list[str]:  # the columns a pair's SQL reads, as "<col>_l" or "<col>_r"
+    return sorted(set(re.findall(r'"([^"]+)_[lr]"', sql)))
 
 
 def _bits(g: int, lv: dict) -> float:  # a level's weight, as Splink writes it: log2(m/u), each clamped at 1e-300; the missing level 0
@@ -546,11 +553,13 @@ def bound_tests(model: FSModel) -> Bound:
     """How predict_sql's bound settles each comparison. None: every test is equality, Hamming or at most one edit, which
     DuckDB settles on short values in C++ (er.config.Comparator.sql), so it is computed at its own level. The others: each
     level's test as far as DuckDB settles it cheaply (Comparator.sql settled: TRUE, FALSE, or NULL where only Python or a
-    table of edits could), with its outcomes: 2 for equality, which is never NULL, else 3."""
+    table of edits could), with its outcomes (2 for equality, which is never NULL, else 3) and its full SQL, which a
+    scored model's level must be for the settled test to stand for it."""
     cheap = lambda x: x.function in ("exact", "hamming") or (x.function in ("levenshtein", "damerau_levenshtein") and (x.threshold or 0) <= 1)
     return {c.name: None if all(cheap(x) for lv in c.levels for _, x in lv.any_of) else
             tuple((" OR ".join(f"({x.sql(col, level=True, settled=True)})" for col, x in lv.any_of),
-                   2 if all(x.function == "exact" for _, x in lv.any_of) else 3) for lv in c.levels)
+                   2 if all(x.function == "exact" for _, x in lv.any_of) else 3,
+                   " OR ".join(f"({x.sql(col, level=True)})" for col, x in lv.any_of)) for lv in c.levels)
             for c in model.comparisons}
 
 
@@ -572,19 +581,20 @@ def bound_sql(settings: dict, tests: Bound, unread: frozenset[str] = frozenset()
             whens = " ".join(f"ELSE cast({_bits(g, lv)} as float8)" if lv["sql_condition"].strip().upper() == "ELSE"
                              else f"WHEN {lv['sql_condition']} THEN cast({_bits(g, lv)} as float8)" for g, lv in ranked)
             parts.append(f"CASE {whens} END")
-        elif levels and len(levels) == len(weights) - 1 and math.prod(n for _, n in levels) <= MAX_STATES:
-            places = [math.prod(n for _, n in levels[:i]) for i in range(len(levels))]
+        elif (levels and [full for *_, full in levels] == [lv["sql_condition"] for g, lv in ranked if g > 0]  # the scored model's own levels
+              and math.prod(n for _, n, _ in levels) <= MAX_STATES):
+            places = [math.prod(n for _, n, _ in levels[:i]) for i in range(len(levels))]
 
             def best(index: int) -> float:  # the outcomes at this index: 0 FALSE, 1 TRUE, 2 unsettled
                 out = -math.inf
-                for (_, n), place, w in zip(levels, places, weights):
+                for (_, n, _), place, w in zip(levels, places, weights):
                     s = index // place % n
                     out = max(out, w) if s else out
                     if s == 1:
                         return out
                 return max(out, weights[-1])
-            table = ", ".join(f"cast({best(i)} as float8)" for i in range(math.prod(n for _, n in levels)))
-            index = " + ".join(f"{place} * {f'({sql})::INT' if n == 2 else f'coalesce(({sql})::INT, 2)'}" for (sql, n), place in zip(levels, places))
+            table = ", ".join(f"cast({best(i)} as float8)" for i in range(math.prod(n for _, n, _ in levels)))
+            index = " + ".join(f"{place} * {f'({sql})::INT' if n == 2 else f'coalesce(({sql})::INT, 2)'}" for (sql, n, _), place in zip(levels, places))
             parts.append(f"CASE WHEN {null} THEN cast(0 as float8) ELSE [{table}][1 + {index}] END")
         else:
             parts.append(f"CASE WHEN {null} THEN cast(0 as float8) ELSE cast({max(weights)} as float8) END")
@@ -596,11 +606,11 @@ def _bound_settings(model_json: dict, n_records: int) -> dict:  # the settings s
 
 
 def bound_reads(model_json: dict, bound: Bound) -> set[str]:  # the columns reaching_sql's bound reads of each record
-    return set(re.findall(r'"([^"]+)_[lr]"', bound_sql(_bound_settings(model_json, 2), bound)))
+    return set(_reads(bound_sql(_bound_settings(model_json, 2), bound)))
 
 
-def _exempt_sql(exempt: str | None, uid: str, at: str) -> str:  # or the pair (at.l, at.r) is one of these
-    return f" OR EXISTS (SELECT 1 FROM {exempt} k WHERE k.{q(uid + '_l')} = {at}.l AND k.{q(uid + '_r')} = {at}.r)" if exempt else ""
+def _exempt_sql(exempt: str | None, uid: str, at: str, cols: tuple[str, str] = ("l", "r")) -> str:  # or the pair at.l, at.r is one of these
+    return f" OR EXISTS (SELECT 1 FROM {exempt} k WHERE k.{q(uid + '_l')} = {at}.{cols[0]} AND k.{q(uid + '_r')} = {at}.{cols[1]})" if exempt else ""
 
 
 def first_bound(model_json: dict, n_records: int, floor: float, bound: Bound, uid: str, exempt: str | None = None) -> tuple[list[str], str] | None:
@@ -616,7 +626,7 @@ def first_bound(model_json: dict, n_records: int, floor: float, bound: Bound, ui
         return None
     top = max(costly, key=lambda c: max(_bits(g, lv) for g, lv in _ranked(c) if g >= 0))["output_column_name"]
     test = bound_sql(settings, bound, frozenset(c["output_column_name"] for c in costly) - {top})
-    return sorted(set(re.findall(r'"([^"]+)_[lr]"', test))), f"({test}) >= {floor - 1e-9!r}{_exempt_sql(exempt, uid, 'z')}"
+    return _reads(test), f"({test}) >= {floor - 1e-9!r}{_exempt_sql(exempt, uid, 'z')}"
 
 
 def reaching_sql(model_json: dict, records: str, pairs: str, uid: str, have: set[str], n_records: int, floor: float,
@@ -626,15 +636,12 @@ def reaching_sql(model_json: dict, records: str, pairs: str, uid: str, have: set
     First first_bound's looser test, then the whole bound on those left, each joined to only the columns it reads."""
     if model_json["er"]["tf"]:
         return pairs
-    side = lambda c, x: f"{x}.{q(c)}" if c in have or not c.endswith(COPIES) else "NULL::VARCHAR"
-
     def passing(pairs: str, cols: list[str], cond: str) -> str:  # the pairs that pass cond, joined to the columns it reads
-        sides = ", ".join(f"{side(c, 'a')} AS {q(c + '_l')}, {side(c, 'b')} AS {q(c + '_r')}" for c in cols)
-        return (f"SELECT z.l, z.r FROM (SELECT p.l, p.r, {sides} FROM ({pairs}) p JOIN {records} a ON a.{q(uid)} = p.l "
+        return (f"SELECT z.l, z.r FROM (SELECT p.l, p.r, {_sides({}, have, cols)} FROM ({pairs}) p JOIN {records} a ON a.{q(uid)} = p.l "
                 f"JOIN {records} b ON b.{q(uid)} = p.r) z WHERE {cond}")
     loose = first_bound(model_json, n_records, floor, bound, uid, exempt)
     test = bound_sql(_bound_settings(model_json, n_records), bound)
-    whole = (sorted(set(re.findall(r'"([^"]+)_[lr]"', test))), f"({test}) >= {floor - 1e-9!r}{_exempt_sql(exempt, uid, 'z')}")  # predict_sql's test, to the bit
+    whole = (_reads(test), f"({test}) >= {floor - 1e-9!r}{_exempt_sql(exempt, uid, 'z')}")  # predict_sql's test, to the bit
     return passing(passing(pairs, *loose) if loose else pairs, *whole)
 
 
@@ -654,7 +661,7 @@ def predict_sql(settings: dict, records: str, pairs: str, uid: str, have: set[st
     mw = f"cast({math.log2(lam / (1 - lam))} as float8) + " + " + ".join(q(f"mw_{n}") for n in names)
     sides = f"SELECT p.{l}, p.{r}, {_sides(settings, have)} FROM {pairs} p JOIN {records} a ON a.{q(uid)} = p.{l} JOIN {records} b ON b.{q(uid)} = p.{r}"
     if floor is not None:  # a hair below: the bound sums its terms in another order than the weight, so it may round a last bit lower
-        kept = f" OR EXISTS (SELECT 1 FROM {exempt} k WHERE k.{l} = x.{l} AND k.{r} = x.{r})" if exempt else ""
+        kept = _exempt_sql(exempt, uid, "x", (l, r))
         sides = f"SELECT * FROM ({sides}) x WHERE ({bound_sql(settings, bound or {})}) >= {floor - 1e-9!r}{kept}"
     return f"""SELECT {l}, {r}, {mw} AS match_weight,
         CASE WHEN ({mw}) >= 0 THEN 1.0 / (1.0 + POWER(cast(2 as float8), -({mw})))

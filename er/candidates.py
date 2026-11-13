@@ -313,7 +313,10 @@ def candidates(blockers: tuple[Blocker, ...], records: pd.DataFrame | str, uid: 
     `told(done, total, "keys")` as the joins begin and after each generator: how far they are. `known`: generators'
     estimates made already on these records (er.run's budget), by name, not counted again. `keep(pairs SQL)`: the SQL
     of those of a generator's pairs worth keeping (er.match.reaching_sql), applied a slice at a time (_kept), so only
-    one generator's pairs are ever held in full."""
+    one generator's pairs are ever held in full. Each listed pair leaves its hash, so what the gate reads of the pairs
+    other keys listed, each generator's pairs and report.attrs["listed"] (the distinct pairs listed) are as without it.
+    shortcut: a pair is known by a 64-bit hash, so two pairs in 10^8 share one about once in 3,000 runs (one count, one
+    sampled pair off); a 128-bit key (two hashes) if that ever matters."""
     if not blockers:
         raise ValueError("no candidate generator")
     if len(blockers) > 63:  # one bit per generator in a BIGINT
@@ -326,6 +329,7 @@ def candidates(blockers: tuple[Blocker, ...], records: pd.DataFrame | str, uid: 
         n_query = r.con.execute(f"SELECT count(*) FROM {r.query or r.table}").fetchall()[0][0]
         m = budget.min_oversized()
         report, parts, big = [], [], {}
+        listed = r._temp("SELECT NULL::UBIGINT AS h WHERE FALSE") if keep else None  # each listed pair's hash, before keep()
         if told:
             told(0, len(blockers), "keys")
         for i, b in enumerate(blockers):
@@ -336,21 +340,21 @@ def candidates(blockers: tuple[Blocker, ...], records: pd.DataFrame | str, uid: 
                 if r.cluster:  # TF-IDF is computed in Python, so the cluster filter is applied here
                     cl = r.con.sql(f"SELECT {q(uid)}, __cluster FROM {r.table}").df().set_index(uid)["__cluster"]
                     pairs = pairs[pairs["l"].map(cl).to_numpy() != pairs["r"].map(cl).to_numpy()]
-                table = _kept(r, f"SELECT * FROM {r._view(pairs)}", keep)
+                table, n = _kept(r, f"SELECT * FROM {r._view(pairs)}", keep, listed)
             else:
                 if blocks := oversized(b, r, m):
                     big[i] = blocks
-                table = _kept(r, pairs_sql(b, r, skip=big.get(i)), keep)
-            n = r.con.execute(f"SELECT count(*) FROM {table}").fetchall()[0][0]
+                table, n = _kept(r, pairs_sql(b, r, skip=big.get(i)), keep, listed)
             report.append(dict(generator=b.name, **est, pairs=n, seconds=round(time.perf_counter() - t, 3)))
             parts.append(f"SELECT l, r, {1 << i}::BIGINT AS bit FROM {table}")
             if told:
                 told(i + 1, len(blockers), "keys")
-        gated, added = _gate(blockers, r, big, parts, gate, floor, capacity, m, (l, rr), keep) if big else (pd.DataFrame(), {})
+        gated, added = _gate(blockers, r, big, parts, gate, floor, capacity, m, (l, rr), keep, listed) if big else (pd.DataFrame(), {})
         for i, extra in added.items():
             report[i]["pairs"] += extra
         union = f"SELECT l, r, bit_or(bit) AS bits FROM ({' UNION ALL '.join(parts)}) GROUP BY l, r"
         bits = r._temp(union)
+        distinct = r.con.execute(f"SELECT count(DISTINCT h) FROM {listed}").fetchall()[0][0] if listed else None
         r.close(keep=frozenset({bits}))  # the parts, blocks and samples the union was made of: freed before the result is written
         names = {m: "+".join(g.name for i, g in enumerate(blockers) if m >> i & 1)
                  for (m,) in r.con.execute(f"SELECT DISTINCT bits FROM {bits}").fetchall()}
@@ -364,30 +368,36 @@ def candidates(blockers: tuple[Blocker, ...], records: pd.DataFrame | str, uid: 
     finally:
         r.close()
     report = pd.DataFrame(report)
-    report.attrs["gated"] = gated.to_dict("records")  # plain records: pandas compares attrs when it combines frames
+    report.attrs["gated"] = gated.to_dict("records")
+    report.attrs["listed"] = distinct  # the distinct pairs the keys listed, with keep(): more than those it stored  # plain records: pandas compares attrs when it combines frames
     return result, report
 
 
 KEEP_SLICE = 10_000_000  # pairs a keep filter reads at once: past a few tens of millions, its joins spill and slow tenfold
 
 
-def _kept(r: Records, sql: str, keep: Callable[[str], str] | None) -> str:
-    """The pairs of `sql` (l, r) as a table, only those keep() keeps if given: listed, then filtered KEEP_SLICE at a time,
-    so the filter's join never holds more than a slice."""
+def _kept(r: Records, sql: str, keep: Callable[[str], str] | None, listed: str | None) -> tuple[str, int]:
+    """The pairs of `sql` (l, r) as a table, only those keep() keeps if given, and how many it listed: listed, each
+    pair's hash added to the table `listed`, then filtered KEEP_SLICE at a time, so the filter's join never holds more
+    than a slice."""
     table = r._temp(sql)
+    n = r.con.execute(f"SELECT count(*) FROM {table}").fetchall()[0][0]
     if keep is None:
-        return table
+        return table, n
+    r.con.execute(f"INSERT INTO {listed} SELECT hash(l, r) FROM {table}")
     out = r._temp(keep(f"SELECT l, r FROM {table} WHERE rowid < {KEEP_SLICE}"))
-    for start in range(KEEP_SLICE, r.con.execute(f"SELECT count(*) FROM {table}").fetchall()[0][0], KEEP_SLICE):
+    for start in range(KEEP_SLICE, n, KEEP_SLICE):
         r.con.execute(f"INSERT INTO {out} {keep(f'SELECT l, r FROM {table} WHERE rowid >= {start} AND rowid < {start + KEEP_SLICE}')}")
     r.con.execute(f"DROP TABLE {table}")  # the listing: freed as soon as it is read
-    return out
+    return out, n
 
 
 def _gate(blockers: tuple[Blocker, ...], r: Records, big: dict[int, str], parts: list[str], gate: Callable | None, floor: float,
-          capacity: int | None, rows: int, names: tuple[str, str], keep: Callable[[str], str] | None) -> tuple[pd.DataFrame, dict[int, int]]:
+          capacity: int | None, rows: int, names: tuple[str, str], keep: Callable[[str], str] | None,
+          listed: str | None) -> tuple[pd.DataFrame, dict[int, int]]:
     """Decide each oversized block, and add the pairs of those kept to `parts`; returns the decisions and the pairs added
-    per generator. O(sampled pairs) to decide."""
+    per generator (as listed, before keep()). The pairs other keys listed are read from `listed` (their hashes) when
+    keep() filtered them, else from `parts`. O(sampled pairs) to decide."""
     info = pd.concat([r.con.execute(f"SELECT {i} AS g, __b AS b, __n AS records, concat_ws(' · ', {', '.join(block_cols(blockers[i]))}) AS value "
                                     f"FROM {table}").df() for i, table in big.items()], ignore_index=True)
     info.insert(0, "generator", info["g"].map(lambda i: blockers[i].name))
@@ -395,10 +405,13 @@ def _gate(blockers: tuple[Blocker, ...], r: Records, big: dict[int, str], parts:
     if gate is None:
         info = info.assign(sampled=0, best=float("nan"), hits=0, decision="joined in full")
     else:
-        listed = r._temp(f"SELECT DISTINCT l, r FROM ({' UNION ALL '.join(parts)})")
+        if listed:  # filtered: the pairs as listed, by their hashes
+            seen, same = r._temp(f"SELECT DISTINCT h FROM {listed}"), "x.h = hash(s.l, s.r)"
+        else:
+            seen, same = r._temp(f"SELECT DISTINCT l, r FROM ({' UNION ALL '.join(parts)})"), "x.l = s.l AND x.r = s.r"
         sample = r._temp(" UNION ALL ".join(
             f"SELECT s.l, s.r, s.__b AS b, {i} AS g FROM ({sample_sql(blockers[i], r, table, rows)}) s "
-            f"WHERE NOT EXISTS (SELECT 1 FROM {listed} x WHERE x.l = s.l AND x.r = s.r)" for i, table in big.items()))
+            f"WHERE NOT EXISTS (SELECT 1 FROM {seen} x WHERE {same})" for i, table in big.items()))
         pairs = r._temp(f'SELECT DISTINCT l AS "{names[0]}", r AS "{names[1]}" FROM {sample}')  # scored in DuckDB, a slice at a time: never all at once through pandas
         scored = gate(pairs)
         stats = r.con.execute(f"""SELECT s.g, s.b, count(*) AS sampled, max(w.w) AS best, count(*) FILTER (WHERE w.w >= {floor}) AS hits
@@ -409,7 +422,7 @@ def _gate(blockers: tuple[Blocker, ...], r: Records, big: dict[int, str], parts:
         info["decision"] = np.where(info["hits"] > 0, "kept", np.where(info["sampled"] == 0, "skipped: other keys list its sampled pairs",
                                                                          "skipped: no sampled pair reaches the floor"))
         if capacity is not None:  # the highest-yield blocks first, while they fit
-            left = capacity - r.con.execute(f"SELECT count(*) FROM {listed}").fetchall()[0][0]
+            left = capacity - r.con.execute(f"SELECT count(*) FROM {seen}").fetchall()[0][0]
             for k in info[info["decision"] == "kept"].assign(y=lambda d: d["hits"] / d["sampled"]).sort_values(["y", "generator", "value"], ascending=[False, True, True]).index:  # ties in a fixed order: the same blocks every run
                 if info.at[k, "pairs"] > left:
                     info.at[k, "decision"] = "skipped: over capacity"
@@ -420,7 +433,6 @@ def _gate(blockers: tuple[Blocker, ...], r: Records, big: dict[int, str], parts:
         ids = info.loc[(info["g"] == i) & info["decision"].isin(["kept", "joined in full"]), "b"].tolist()
         if ids:
             kept = r._temp(f"SELECT * FROM {table} WHERE __b IN ({', '.join(map(str, ids))})")
-            pairs_table = _kept(r, pairs_sql(blockers[i], r, only=kept), keep)
-            added[i] = r.con.execute(f"SELECT count(*) FROM {pairs_table}").fetchall()[0][0]
+            pairs_table, added[i] = _kept(r, pairs_sql(blockers[i], r, only=kept), keep, listed)
             parts.append(f"SELECT l, r, {1 << i}::BIGINT AS bit FROM {pairs_table}")
     return info.drop(columns=["g", "b"]), added
