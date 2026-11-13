@@ -30,11 +30,11 @@ reads the file before these steps, about 15 s a million records from CSV, 7 s fr
 
 | # | Step | Code | Cost | Grows like | At 1M |
 |---|---|---|---|---|---|
-| 1 | load: read in chunks, check the fields, standardize each chunk, and tell persons from companies | `Run.load`, `er.standardize.prepare`, `er.kind` | O(N·L) | N | 10.73 s |
+| 1 | load: read in chunks, check the fields, standardize the chunks in parallel processes, and tell persons from companies | `Run.load`, `er.standardize.prepare`, `er.kind` | O(N·L) | N | 10.73 s |
 | 2 | budget: every rule's and generator's pairs, exactly, before any join | `Run.budget`, `er.candidates.estimate` | O(N) per rule and generator, a group-by | N | 1.96 s |
-| 3 | fit: λ, and m by EM, on a sample of whole postal areas (EM's own u from 10⁶ pairs); then u measured on this file: value counts for the leading exact levels, one-deletion keys for a one-edit level after them (so cif, phone and birth are counted exactly), S pairs for name, company and address | `Run.fit`, `er.match.train_fs`, `exact_u`, `scored_sample`, `assemble_u` | O(n + S·K + P_em·K) + O(N + S·K) | **constant**, plus N | 9.40 s |
+| 3 | fit: λ, and m by EM, on a sample of whole postal areas (EM's own u from 10⁶ pairs); then u measured on this file: value counts for the leading exact levels, position, swap and deletion keys for a one-edit level after them (so cif, phone and birth are counted exactly), S pairs for name, company and address | `Run.fit`, `er.match.train_fs`, `exact_u`, `scored_sample`, `assemble_u` | O(n + S·K + P_em·K) + O(N + S·K) | **constant**, plus N | 9.40 s |
 | 4 | rules: one plain SQL join per rule (the first rule wins a pair), fuzzy checks on the joined pairs only, then the cascade's clusters | `Run.rules`, `er.match.rule_edges`, `er.cluster.merge` | O(N + Σ P_r·L²) + O(E·d + N) | N; ≤ 0.14 pairs per record per rule at 1M | 2.57 s |
-| 5 | candidates: every generator as one SQL join or window, merged by bitmask, only pairs touching a record the rules left alone; oversized blocks checked on a sample scored with the file's u | `Run.candidates`, `er.candidates.candidates` | O(N·L + Σ P_g) | N; ≤ 1.75 pairs per record per key at 1M, 3 per sorted window | 6.53 s |
+| 5 | candidates: every generator as one SQL join or window, keeping only the pairs that can reach 0 (step 6's bound) or a rule found, merged by bitmask, only pairs touching a record the rules left alone; oversized blocks checked on a sample scored with the file's u | `Run.candidates`, `er.candidates.candidates` | O(N·L + Σ P_g) | N; ≤ 1.75 pairs per record per key at 1M, 3 per sorted window | 6.53 s |
 | 6 | score: every candidate that can reach 0 points, with the u the fit measured; a bound settles the rest below 0 unscored, as nothing reads them (below) | `Run.score`, `er.match.score_fs`, `bound_sql` | O(C·K_c + C₀·K·L²) | C | 16.05 s |
 | 7 | cluster: accept at the threshold, connected components with the rules' pairs (each rule cluster one node), gold | `Run.cluster`, `er.cluster.merge` | O(C + E·d + N) | N | 0.34 s |
 | 7b | probe: a hash-stable draw of the records in each `[probe]` group, each paired with its group and scored: the matches no key lists ([below](#the-probe-the-matches-no-key-lists)) | `Run.probe`, `er.probe.missed` | O(N + P·K + L) | N; P about `[probe] pairs` a group | 3.52 s |
@@ -42,7 +42,7 @@ reads the file before these steps, about 15 s a million records from CSV, 7 s fr
 | 9 | report: qa.md, report.txt and the review sheet, built before the write and landing with it | `Run.report` | O(review pairs) + O(N) | N | 0.78 s |
 | | **total** | | | | **53.0 s** |
 
-**Pairs that can't reach 0 points.** Nothing reads a candidate's score below 0: `scored/` keeps 0 points and up, and the line, the trust steps and review all start there. So a pair is scored only when its bound reaches 0: the prior, each comparison whose tests are equality, Hamming or one edit at its own level, and each other at the best level the pair may land in (`bound_tests`): DuckDB settles each level's test where it can in C++, a name or a company name in katakana by Jaro–Winkler on its one-byte copy, and only a test it can't settle (text outside katakana and ASCII, an edit distance past one) counts as passing. 0 where its fields are missing. Each test is computed once: the outcomes index a table of the bounds they allow, since DuckDB computes an expression as often as it is written. A pair a rule found is scored whatever its bound. The rest are counted (`unscored`, one row "below 0" in report.txt's SCORES and the score chart) and never compared by name, company or address: on a file whose address and phone are mostly empty, that is nearly every candidate. Every score written is the same to the last bit. The gate on oversized blocks and the probe do the same at their own floors, the review floor and the line. K_c is the comparisons settled first, C₀ the candidates whose bound reaches 0.
+**Pairs that can't reach 0 points.** Nothing reads a candidate's score below 0: `scored/` keeps 0 points and up, and the line, the trust steps and review all start there. So a pair is scored only when its bound reaches 0: the prior, each comparison whose tests are equality, Hamming or one edit at its own level, and each other at the best level the pair may land in (`bound_tests`): DuckDB settles each level's test where it can in C++, a name or a company name in katakana by Jaro–Winkler on its one-byte copy, and only a test it can't settle (text outside katakana and ASCII, an edit distance past one) counts as passing. 0 where its fields are missing. Each test is computed once: the outcomes index a table of the bounds they allow, since DuckDB computes an expression as often as it is written. A pair a rule found is scored whatever its bound. A full run's candidates step already leaves the rest out as its keys list them (below); an increment's are counted (`unscored`, one row "below 0" in report.txt's SCORES and the score chart) and never compared by name, company or address: on a file whose address and phone are mostly empty, that is nearly every candidate. Every score written is the same to the last bit. The gate on oversized blocks and the probe do the same at their own floors, the review floor and the line. K_c is the comparisons settled first, C₀ the candidates whose bound reaches 0.
 
 At a million records, scoring the candidates (16.05 s) and the fit (9.40 s) take nearly half the time. The fit costs
 nearly the same at any size: it learns on n records, and its u sample of the file is S pairs for each of name, company
@@ -211,6 +211,29 @@ trained once and its signals computed once; a combination fits only its combiner
   hold a link, how many people decided, the next range's sample, the spot-checks) reads the links from the lowest step
   or the line up, written once to a table, not joined again from every scored pair each time: the report on a million
   records 11.9 s to 5.5 s, on 250,000 3.4 s to 2.1 s.
+- **Chunks standardized in parallel** (`Run.load`, `run.ahead`). Every step reads one record, or one chunk's
+  values, so the chunks are cleaned in worker processes (as many as DuckDB's threads), a few ahead at most, and taken
+  back in order: the same records. The person/company model is rebuilt in each worker on one thread. A script that
+  runs a load keeps its work under `if __name__ == "__main__":`, as the scripts here do: each worker imports it first.
+- **Pairs that can't reach 0 never stored** (`Run._reaching`, `er.match.reaching_sql`). Each generator's pairs pass
+  step 6's bound as they are listed, 10 million at a time, before its pairs are stored or a deletion key's made
+  distinct: first a looser test on a few columns (the cheap comparisons and the name, the others at their best level
+  or 0, `first_bound`), then the whole bound on the few left. Score scores the same pairs; the candidates counted are
+  those that can reach 0, and a rule's pairs. On a generated file of 1.3 million records with sparse addresses and
+  sequential customer IDs, 112 million candidates became 33,700 and the step 61 s instead of 593 s. Larger passes
+  spill: 33 million pairs through the joins took ten times what 10 million did.
+- **A key's oversized blocks left out before its join**, on both sides, not from its pairs after.
+- **One edit on ASCII without an edit table** (`Comparator.test`): the same length, the Hamming distance; a length
+  one apart, Levenshtein (an insertion or a deletion either way). Only a Damerau pair two substitutions apart is
+  tested by Damerau–Levenshtein.
+- **A one-edit level's u counted by keys** (`exact_u`): a substitution apart, two values share exactly one "value
+  without its i-th character, at i"; a swap of neighbours apart, one "the two in order, at i"; so each key's records
+  pair (Σn)² − Σn² over 2 ways. A length one apart is a join of the longer's deletions on the shorter values (for
+  Hamming, which pads, the longer without its last). O(U·L): no pair is listed, where sequential IDs listed tens of
+  millions.
+- **EM on agreement-pattern counts** (`train_fs`): with no term frequencies, each iteration reads the count of each
+  agreement pattern, a few hundred rows, not every pair in EM's blocks, as Splink does when told. The same updates,
+  summed in another order: weights within 10⁻⁹ bits. On that generated file's sample, 505 s to 25 s.
 - **Threshold rule without clustering** (`accept_curve`). The rule reads only accepted and false accepted pairs per
   weight, so decision variants resolve clusters at the chosen weight only.
 - **Run cache.** Identical runs (same configuration, dataset and threshold) are computed once, in both stages.
