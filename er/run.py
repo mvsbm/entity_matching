@@ -579,10 +579,9 @@ class Run:
         _, report = candidates(fs.blockers, "records", self.uid, batch or (None if fs.bridge else "er_query"), fs.budget,
                                clusters="rule_clusters" if fs.bridge else None, con=self.con, into="cands", touching=batch is not None,
                                gate=self._gate, floor=review_floor(self.pipeline), capacity=self.capacity(), told=self._joined(),
-                               known=None if batch else getattr(self, "estimates", None), keep=self._reaching if self.reaching_only else None)
+                               known=None if batch else getattr(self, "estimates", None), keep=self._reaching if self.reaching_only else None,
+                               only=self._alone("l", "r") if batch and not fs.bridge else None)  # as a full run's query: a pair touches a record the rules left alone
         self.con.execute("DROP TABLE IF EXISTS er_bound_records; DROP TABLE IF EXISTS er_bound_hashes")
-        if batch and not fs.bridge:  # as a full run's query: a pair touches a record the rules left alone
-            self.con.execute(f"DELETE FROM cands WHERE NOT {self._alone(q(self.l), q(self.r))}")
         self._gated(report.attrs["gated"])
         stored = self._count("cands")
         self.listed = c = stored if report.attrs["listed"] is None else report.attrs["listed"]  # the distinct pairs the keys listed
@@ -836,11 +835,12 @@ class Run:
         texts.append((json.dumps(self.placeholders, ensure_ascii=False), state / "placeholders.json"))  # read as missing: an increment and a lookup read them so too
         if part == 0 and self.learned:  # the keys learned on the file: an increment lists its pairs by them
             texts.append((json.dumps({b.name: generator_dict(b) for b in self.learned}, ensure_ascii=False), state / "keys.json"))
-        # the oversized blocks whose pairs the run listed, an increment's added to its full run's: a key lists a pair in one (er.sample.key_lists, for er.sizes)
-        kept = json.loads((state / BLOCKS).read_text(encoding="utf-8")) if part and (state / BLOCKS).exists() else {}
-        for x in self.gated[self.gated["decision"].isin(["kept", "joined in full"])].itertuples() if len(self.gated) else ():
-            kept[x.generator] = list(dict.fromkeys([*kept.get(x.generator, []), x.value]))
-        if part == 0 or kept:
+        # the oversized blocks the full run listed in full: a key lists a pair in one (er.sample.key_lists, for er.sizes). An increment's
+        # gate lists only its batch's pairs of a block, so its kept blocks are not added: try sample counts those pairs as missed
+        if part == 0:
+            kept = {}
+            for x in self.gated[self.gated["decision"].isin(["kept", "joined in full"])].itertuples() if len(self.gated) else ():
+                kept[x.generator] = list(dict.fromkeys([*kept.get(x.generator, []), x.value]))
             texts.append((json.dumps(kept, ensure_ascii=False), state / BLOCKS))
         if self.basis:  # the u this run scored with, and what an increment needs to tell when they go stale
             texts.append((json.dumps(dict(model=self.scoring, basis=self.basis), ensure_ascii=False), state / "scoring.json"))
