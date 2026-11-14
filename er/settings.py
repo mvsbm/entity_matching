@@ -49,7 +49,7 @@ def field(name: str, spec: object, where: Path | str = "config/settings.toml") -
     """One [columns] entry: a column, a list of fallback column lists, or {sources, normalize, kind}."""
     sources, normalize = (spec["sources"], spec.get("normalize", ())) if isinstance(spec, dict) else (spec, ())
     sources = ((sources,),) if isinstance(sources, str) else tuple(tuple(alt) for alt in sources)
-    checked(all(sources), f"[columns] {name}: an alternative with no column", where)  # no alternative at all: the field has no column, as in a file without it
+    checked(all(alt and all(c.strip() for c in alt) for alt in sources), f"[columns] {name}: an alternative with no column", where)  # a stray + or comma: refused, never a field turned off  # no alternative at all: the field has no column, as in a file without it
     kind = spec.get("kind") if isinstance(spec, dict) else None
     checked(kind in (None, "person", "company"), f"[columns] {name}: kind is person or company", where)
     return Derived(name=name, sources=sources, normalize=tuple(normalize), kind=kind)
@@ -70,7 +70,7 @@ NAME_KINDS = {"full_name": "person", "person_name": "person", "company_name": "c
 def set_name_kinds(path: Path, by_kind: bool) -> None:
     """Each name field kept only on the records that lean its kind (by_kind: kind written on full_name, person_name and
     company_name), or on every record, as mapped (kind taken off), in the [columns] of the file at `path`. O(the file)."""
-    current = tomllib.loads(path.read_text(encoding="utf-8"))["columns"]
+    current = tomllib.loads(path.read_text(encoding="utf-8-sig"))["columns"]
     have = {f: field(f, current[f], path).sources for f in NAME_KINDS if f in current}
     set_columns(path, have, update={f: {"kind": NAME_KINDS[f] if by_kind else None} for f in have})
 
@@ -94,7 +94,7 @@ HEADER = re.compile(r"\s*\[\[?\s*[\w.\- ]+\s*\]\]?\s*(#.*)?$")  # a table's head
 def own_columns(path: Path) -> str:
     """A new workspace's columns.toml: the [columns] and [kind] sections of the settings file at `path`, comments kept."""
     keep, out = False, ["# This workspace's mapping: which of its files' columns hold each field. nayose set columns --workspace changes it.\n"]
-    for line in path.read_text(encoding="utf-8").splitlines(keepends=True):
+    for line in path.read_text(encoding="utf-8-sig").splitlines(keepends=True):
         if HEADER.match(line):
             keep = line.split("#")[0].strip() in ("[columns]", "[kind]")
             out += ["\n"] if keep else []
@@ -109,7 +109,7 @@ def set_columns(path: Path, mapping: dict[str, tuple[tuple[str, ...], ...]], opt
     is turned off, as for a file that lacks it; the field stays declared, so the pipeline still loads). Every other line, each
     line's comment, and a field's options (normalize, kind) stay; a new field takes its `options`; `update` merges
     options into a field's (None takes one off). The new text is loaded and validated before it replaces the old. O(the file)."""
-    text = path.read_text(encoding="utf-8")
+    text = path.read_text(encoding="utf-8-sig")
     lines, current = text.splitlines(keepends=True), tomllib.loads(text)["columns"]
     start = next(i for i, x in enumerate(lines) if x.strip() == "[columns]")
     end = next((i for i in range(start + 1, len(lines)) if HEADER.match(lines[i])), len(lines))
@@ -248,7 +248,7 @@ def features_of(workspace: str | Path | None) -> list[dict]:  # a workspace's st
 def write_added(path: Path, added: Mapping[str, dict]) -> None:
     """Write columns.toml's [features] (the features added, by their main field) in place of the old, under a temporary
     name first, checked to load, then renamed. O(the file)."""
-    lines = path.read_text(encoding="utf-8").splitlines(keepends=True)
+    lines = path.read_text(encoding="utf-8-sig").splitlines(keepends=True)
     if (start := next((i for i, x in enumerate(lines) if x.split("#")[0].strip() == "[features]"), None)) is not None:
         end = next((i for i in range(start + 1, len(lines)) if HEADER.match(lines[i])), len(lines))
         del lines[start:end]
@@ -294,7 +294,7 @@ def remove_feature(workspace: str | Path, path: str) -> list[dict]:
     if f is None or not f.get("added"):
         raise InputError(f"{path}: not a feature added here", fix="only an added feature can be removed; take a default one's columns off instead")
     fields = {f["field"], given_field(f["field"])} if f["type"] == "person name" else {f["field"]}
-    lines = (ws / COLUMNS).read_text(encoding="utf-8").splitlines(keepends=True)
+    lines = (ws / COLUMNS).read_text(encoding="utf-8-sig").splitlines(keepends=True)
     replace_text(ws / COLUMNS, "".join(x for x in lines if not any(re.match(rf"{re.escape(n)}\s*=", x) for n in fields)))
     write_added(ws / COLUMNS, {k: v for k, v in added_of(ws).items() if k != f["field"]})
     return features_of(ws)

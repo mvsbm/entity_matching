@@ -19,6 +19,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 import duckdb
+import numpy as np
 import pandas as pd
 
 from er import intake
@@ -117,6 +118,7 @@ def open_source(path: str | Path | list[Path], con: duckdb.DuckDBPyConnection, e
         found = by_norm.get(norm_name(e), [])
         if e in types or not found:
             continue
+        found += [c for c in types if c not in found and re.fullmatch(re.escape(e) + r"_\d+", c, re.I)]  # e itself, renamed by intake past a case-only twin
         if len(found) > 1:
             raise InputError(f"columns {', '.join(found)} could each be {e}", fix="rename all but one, or map the field to one of them in config/settings.toml [columns]")
         rename[found[0]] = e
@@ -352,22 +354,26 @@ def profiled(values: Mapping[str, list[str]], lex: Lexicon) -> dict[str, dict]:
     and the other columns that hold the same values (same: equal, width aside, on 95% of the rows both fill, which both
     fill together on half the rows at least: one fact written twice). O(values · length + columns² · rows)."""
     out, rows = {}, {c: [plain(v, lex.fold) if v and v.strip() else None for v in vs] for c, vs in values.items()}
-    for c, vs in values.items():
-        vs = [plain(v, lex.fold) for v in vs if v and v.strip()]
+    longest = max(map(len, lex.family), default=0)  # a full name's split past the longest family name finds none
+    for c in values:
+        vs = [v for v in rows[c] if v is not None]
         n = max(1, len(vs))
         written = {k: sum(bool(rx.search(v)) for v in vs) / n for k, rx in SCRIPTS.items()}
         script = max(written, key=written.get) if vs and max(written.values()) >= 0.5 else None
-        full = lambda v: any(v[:i] in lex.family and v[i:] in lex.given for i in range(1, len(v)))
+        full = lambda v: any(v[:i] in lex.family and v[i:] in lex.given for i in range(1, min(len(v), longest + 1)))
         address = lambda v: any(v[:i] in lex.places for i in range(2, min(len(v) - 1, 12) + 1))  # a place, then more
         phone = lambda v: re.fullmatch(r"\d{4,11}", re.sub(r"[-()+－ー‐]", "", v)) is not None  # 4 to 11 digits, its dashes and brackets aside
         out[c] = dict(script=script, family=sum(v in lex.family for v in vs) / n, given=sum(v in lex.given for v in vs) / n,
                       full=sum(full(v) for v in vs) / n, address=sum(address(v) for v in vs) / n, phone=sum(phone(v) for v in vs) / n, same=[])
-    for a in rows:
-        for b in rows:
-            both = [(x, y) for x, y in zip(rows[a], rows[b]) if x is not None and y is not None] if a < b else []
-            if both and len(both) >= len(rows[a]) / 2 and sum(x == y for x, y in both) >= 0.95 * len(both):
-                out[a]["same"].append(b)
-                out[b]["same"].append(a)
+    names, ids = list(rows), {}
+    codes = np.array([[-1 if x is None else ids.setdefault(x, len(ids)) for x in rows[c]] for c in names], dtype=np.int64).reshape(len(names), len(rows[names[0]]) if names else 0)
+    for i, a in enumerate(names):  # every b at once: the rows both fill, and those equal
+        both = (codes[i] >= 0) & (codes >= 0)
+        n, equal = both.sum(1), ((codes == codes[i]) & both).sum(1)
+        for j in np.flatnonzero((n > 0) & (n >= codes.shape[1] / 2) & (equal >= 0.95 * n)):
+            if a < names[j]:
+                out[a]["same"].append(names[j])
+                out[names[j]]["same"].append(a)
     return out
 
 

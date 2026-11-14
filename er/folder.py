@@ -23,7 +23,7 @@ import pyarrow.parquet as pq
 
 from er import intake
 from er.config import InputError, lit, q, toml_of
-from er.io import alive, lock, object_store, read_parquet, replace_text
+from er.io import alive, lock, object_store, patiently, read_parquet, replace_text
 from er.settings import COLUMNS
 from er.source import find, globbed
 from er.strings import connect
@@ -115,11 +115,11 @@ def finish_writes(out: Path) -> None:
         for new, dest in json.loads(pending.read_text(encoding="utf-8")):
             if new is None or os.path.exists(new):
                 if os.path.isdir(dest):
-                    shutil.rmtree(dest)
+                    patiently(shutil.rmtree, dest)
                 elif os.path.exists(dest) and new is None:
-                    os.unlink(dest)
+                    patiently(os.unlink, dest)
                 if new is not None:
-                    os.replace(new, dest)
+                    patiently(os.replace, new, dest)
         shutil.rmtree(out / FULL_TMP, ignore_errors=True)
         pending.unlink()
 

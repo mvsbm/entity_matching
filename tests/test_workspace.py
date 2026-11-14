@@ -550,6 +550,9 @@ def test_the_loader_reads_parquet_by_column_name_and_says_what_is_wrong(tmp_path
     pd.DataFrame({"cont_id": ["1"], "CONT-ID": ["2"]}).to_parquet(tmp_path / "e.parquet", index=False)
     with pytest.raises(InputError, match="could each be CONT_ID"):
         open_source(tmp_path / "e.parquet", con, ["CONT_ID"])
+    pd.DataFrame({"cont_id": ["1"], "CONT_ID_2": ["2"]}).to_parquet(tmp_path / "f.parquet", index=False)  # as intake reads cont_id,CONT_ID: the second renamed
+    with pytest.raises(InputError, match="could each be CONT_ID"):  # never the lowercase one read as CONT_ID
+        open_source(tmp_path / "f.parquet", con, ["CONT_ID"])
 
 
 def test_a_run_sets_aside_what_it_cannot_resolve_and_suggests_a_mapping(tmp_path, population):

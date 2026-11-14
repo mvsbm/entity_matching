@@ -2153,6 +2153,7 @@ async function mergeDialog(page, done) {  // the conditions that merge pairs wit
       + (x.each.length > 1 ? `: ${x.each.map((e) => `${esc(conditionText(e.condition))} ${fmt(e.pairs)}`).join(" · ")}` : "");
   };
   const set = () => {
+    if (ready().length !== m.when.length) { clearTimeout(pause); count(); return; }  // Apply before the count ran: a half-set condition is never dropped
     const conditions = JSON.stringify({join: m.join, when: ready()});
     dlg.close();
     action(page, "set merging", ready().length ? "Merge by these conditions" : "Turn off auto-merge", (e) => done(e.event === "error" ? e : {...e, own: now.own}), null, {form: [], about: ready().length ? `merge when ${mergingText({join: m.join, when: ready()})}` : `no conditions: ${none}`, extra: {conditions}});

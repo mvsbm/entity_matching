@@ -276,7 +276,7 @@ def check_merging(m: dict, p: Pipeline, model: dict | None = None) -> dict:
     (a number), rules (rule names), fields (comparison → the lowest level that counts), the comparisons and levels of
     the run's `model` when given (a comparison of a field the file lacks is not in it)."""
     fix = "each condition: {points = 12}, {rules = [\"…\"]} or {fields = {name = \"…\"}}; join = \"and\" or \"or\""
-    if m.get("join", "and") not in ("and", "or") or not isinstance(m.get("when", []), list):
+    if not isinstance(m, dict) or m.get("join", "and") not in ("and", "or") or not isinstance(m.get("when", []), list):
         raise InputError("merge: join is \"and\" or \"or\", when a list of conditions", fix)
     rules = {r.name for _, _, r in p.rules.each()}
     labels = {c: [label for label, _ in by.values()] for c, by in levels(model).items()} if model else {c.name: [lv.label for lv in c.levels] for c in p.fs.model.comparisons}
@@ -284,8 +284,8 @@ def check_merging(m: dict, p: Pipeline, model: dict | None = None) -> dict:
         if not isinstance(c, dict) or len(c) != 1 or next(iter(c)) not in ("points", "rules", "fields"):
             raise InputError(f"merge: a condition is one of points, rules, fields: {c}", fix)
         (k, v), = c.items()
-        if k == "points" and (isinstance(v, bool) or not isinstance(v, int | float)):
-            raise InputError(f"merge: points is a number: {v}", fix)
+        if k == "points" and (isinstance(v, bool) or not isinstance(v, int | float) or not math.isfinite(v)):
+            raise InputError(f"merge: points is a finite number: {v}", fix)
         if k == "rules" and (not isinstance(v, list) or not v or set(v) - rules):
             raise InputError(f"merge: rules are names among {sorted(rules)}: {v}", fix)
         if k == "fields" and (not isinstance(v, dict) or not v or any(f not in labels or lv not in labels[f] for f, lv in v.items())):
