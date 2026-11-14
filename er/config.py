@@ -792,7 +792,6 @@ def load_pipeline(path: Path, std: Standardization, chains: Mapping[str, tuple[N
 def fields_read(p: Pipeline) -> set[str]:  # every field the rules, the generators and the model read
     r, m = p.rules, p.fs.model
     out = {c for s in r.stages for rule in s.rules for c in (*rule.exact, *rule.fuzzy, *(k.column for k in rule.blocking))}
-    out |= set(r.stages[-1].comparators) if r.stages else set()
     out |= {k.column for b in p.generators.values() for k in keys_of(b)}
     out |= {col for c in m.comparisons for lv in c.levels for col, _ in lv.any_of} | {col for c in m.comparisons for col in c.null_if_missing}
     out |= {c.tf.column for c in m.comparisons if c.tf} | {k.column for rule in (*m.prior_rules, *m.em_rules) for k in rule}

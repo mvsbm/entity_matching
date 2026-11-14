@@ -25,10 +25,8 @@ import pandas as pd
 
 from er.candidates import Records, estimate
 from er.config import Blocker, DeletionKeys, EditKeys, Key, KeyBlocker, LearnKeys, Pipeline, keys_of, q
-from er.match import _bits, _ranked, bound_tests, review_floor, scaled_prior, score_fs
+from er.match import DISTANCES, SIMILARITIES, _bits, _ranked, bound_tests, review_floor, scaled_prior, score_fs
 
-SIMILAR = ("jaro", "jaro_winkler", "jaccard", "levenshtein_similarity")  # similarities: one and `edits` edits apart are atoms
-EDITS = ("levenshtein", "damerau_levenshtein", "hamming")                # edit distances: one edit apart is an atom
 EXTEND = 0.1  # pairs per record above which a key is tried one atom longer
 SETS = 16     # equality keys counted in one scan (GROUPING SETS): one hash table each
 
@@ -57,9 +55,9 @@ def atoms(p: Pipeline, have: set[str]) -> list[Atom]:
         for lv in c.levels:
             for col, comp in lv.any_of:
                 eq.add(key := Key(col, comp.normalize))
-                if comp.function in SIMILAR:
+                if comp.function in SIMILARITIES:  # one and `edits` edits apart are atoms
                     near.setdefault(key, set()).update({1, k})
-                elif comp.function in EDITS and (comp.threshold or 0) >= 1:
+                elif comp.function in DISTANCES and (comp.threshold or 0) >= 1:
                     near.setdefault(key, set()).add(1)
     one = {}  # a column a key and a comparison both read: one atom
     for x in sorted(eq, key=lambda x: (x.name, len(x.normalize))):
@@ -295,19 +293,17 @@ def idle(run) -> tuple[tuple[Blocker, ...], list[str]]:
     d = run.found = discover(run, gap_records(p))
     t, m = listed_by(run, d.targets), p.fs.budget.min_oversized()
     col = {a.column: i for i, a in reversed(list(enumerate(d.atoms)))}
-    frame = lambda rows, combo: _frame(rows, combo, col)
-    lists = lambda b, rows: key_lists(b, rows, col, d.rec, m)
     kept, dropped = list(p.fs.blockers), []
     for z in idle_:
         if any(a.column not in col for a in generator_atoms(z)):
             continue
         combo = generator_atoms(z)
-        f = frame(t, combo)
+        f = _frame(t, combo, col)
         mine = t[np.logical_and.reduce([agrees(a, f[f"a{i}"], f[f"b{i}"]) for i, a in enumerate(combo)]) & ~t["ruled"].to_numpy()].reset_index(drop=True)
         others = np.zeros(len(mine), bool)
         for b in (b for b in kept if b not in idle_):  # the keys that stay whatever is dropped
             if not others.all():
-                others |= lists(b, mine)
+                others |= key_lists(b, mine, col, d.rec, m)
         if others.all() and (d.weight == 1 or 3 <= IDLE_LOSS * len(t)):  # none of its own seen: in every record, or a sample large enough that what it may hold unseen (3 at 95%) is few
             kept.remove(z)
             dropped.append(z.name)
