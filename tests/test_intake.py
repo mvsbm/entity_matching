@@ -391,6 +391,17 @@ def test_text_reading_keeps_is_found_in_one_pass_as_its_definition_says():
     assert pc.match_substring_regex(pa.array(values), intake.text_re2(m.garbled)).to_pylist() == want and any(want) and not all(want)
 
 
+def test_plain_ascii_is_printable_ascii_with_no_space_at_either_end():
+    import random
+    import pyarrow as pa
+    import pyarrow.compute as pc
+    from er import intake
+    rng, chars = random.Random(0), [chr(i) for i in range(128)] + [" "] * 20
+    values = ["", " ", "a", " a", "a ", "a b", "\t", "a\tb", "\x7f", "~", None] + ["".join(rng.choices(chars, k=rng.randint(0, 5))) for _ in range(5000)]
+    a = pa.array(values, pa.string())
+    assert intake.plain_ascii(a).to_pylist() == pc.match_substring_regex(a, "^[!-~](?:[ -~]*[!-~])?$").to_pylist()  # the pattern it replaces
+
+
 def test_a_parquet_file_reads_alike_whatever_its_row_groups_and_text_that_isn_t_utf8_reads_as_bytes(tmp_path, monkeypatch):
     import pyarrow as pa
     from er import intake

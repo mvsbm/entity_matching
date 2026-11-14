@@ -201,6 +201,20 @@ def test_prepare_names_missing_input_columns():
         prepare(load_settings().standardize, pd.DataFrame({"uid": ["1"]}, dtype="string"), [], used=["person_name"])
 
 
+def test_a_chain_made_from_its_prefix_column_is_the_chain_from_scratch():
+    from er.config import column_name
+    std = load_settings().standardize
+    records = pd.DataFrame({"uid": list("123456"), "address": ["東京都港区1丁目2番3号 ビル5F", "東京都", "", None, "ビル", "大阪府大阪市北区2番"],
+                            "name": ["サトウ", "", None, "サトオ", "ス", "ｻﾄｳ"]}, dtype="string")
+    chains = [("address", ("address",)), ("address", ("address", "first3")), ("name", ("kana_fold",)), ("name", ("kana_fold", "long_vowel")),
+              ("name", ("kana_fold", "long_vowel", "last3")), ("name", ("kana_fold", "address"))]
+    for s in (std, replace(std, address_replacements=(*std.address_replacements, ("^$", "空")))):  # a last step that makes something of nothing
+        got = prepare(s, records, chains)
+        for col, steps in chains:
+            assert got[column_name(col, steps)].equals(normalize(records[col], steps, s)), steps
+    assert got["name__kana_fold_address"].tolist()[1] == "空"  # an empty name, as the chain from scratch makes it, not the prefix's missing value
+
+
 def test_blocking_normalizers():
     std = load_settings().standardize
     s = pd.Series(["マツモト", "", pd.NA], dtype="string")
