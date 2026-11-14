@@ -15,7 +15,7 @@ import pandas as pd
 from er.config import DeletionKeys, InputError, KeyBlocker, Pipeline, SortedNeighbourhood, lit, q
 from er.folder import TRIALS, latest_decisions, method, rounds, runs
 from er.io import read_parquet
-from er.match import levels, named_sql, review_floor, scaled_prior, score_fs
+from er.match import levels, named_sql, read_by, review_floor, scaled_prior, score_fs
 from er.probe import keys_for
 from er.report import households, key_found, key_listed, likely_links, no_run, reached_by_gamma
 from er.review_state import applied, read, trust_state
@@ -54,13 +54,14 @@ def run_model(out: Path) -> dict:  # the model the run in `out` scored with: its
     return json.loads(scoring.read_text(encoding="utf-8"))["model"] if scoring.exists() else json.loads(fitted.read_text(encoding="utf-8"))
 
 
-def scored_again(con: duckdb.DuckDBPyConnection, db: object, out: Path, uid: str, pairs: str, into: str) -> dict:
+def scored_again(con: duckdb.DuckDBPyConnection, db: object, out: Path, uid: str, pairs: str, into: str, narrow: bool = False) -> dict:
     """The pairs of the table `pairs` (uid_l, uid_r) scored as the run in `out` scored its candidates: its model, λ for
-    its size, on its standardized records (those the pairs touch), into the table `into`. Returns the model.
-    O(N) to find the records + O(P·K)."""
+    its size, on its standardized records (those the pairs touch, in er_touched: with `narrow`, only the columns the
+    model reads), into the table `into`. Returns the model. O(N) to find the records + O(P·K)."""
     l, r, model = q(f"{uid}_l"), q(f"{uid}_r"), run_model(out)
     stored = read(out, "state/records/*.parquet")
-    con.execute(f"CREATE OR REPLACE TABLE er_touched AS SELECT * FROM {stored} WHERE {q(uid)} IN (SELECT {l} FROM {pairs} UNION SELECT {r} FROM {pairs})")
+    cols = ", ".join(q(c) for c, *_ in con.execute(f"DESCRIBE SELECT * FROM {stored}").fetchall() if c in read_by(model) | {uid}) if narrow else "*"  # a row's every column costs its read
+    con.execute(f"CREATE OR REPLACE TABLE er_touched AS SELECT {cols} FROM {stored} WHERE {q(uid)} IN (SELECT {l} FROM {pairs} UNION SELECT {r} FROM {pairs})")
     n = con.execute(f"SELECT count(*) FROM read_parquet({lit(out / 'gold.parquet')})").fetchall()[0][0]
     score_fs(model, "er_touched", pairs, db, uid, into=into, n_records=n)
     return model
@@ -89,7 +90,7 @@ def describe_method(out: Path, p: Pipeline, s: "Settings") -> dict:
                 f"CREATE TABLE er_decided ({q(l)} VARCHAR, {q(r)} VARCHAR, decision VARCHAR, why VARCHAR, round INTEGER)")
     con.execute(f"CREATE TABLE er_rule AS SELECT {q(l)}, {q(r)}, rule FROM {read(out, 'rule_kept/*.parquet')}")
     con.execute(f"CREATE TABLE er_pairs AS SELECT {q(l)}, {q(r)} FROM er_decided UNION SELECT {q(l)}, {q(r)} FROM er_rule")
-    model = scored_again(con, db, out, uid, "er_pairs", "er_scored")
+    model = scored_again(con, db, out, uid, "er_pairs", "er_scored", narrow=True)
     scored = f"SELECT {q(l)}, {q(r)}, match_weight AS weight, {named_sql(fs)} AS named FROM er_scored s"
     decided = con.execute(f"""SELECT d.*, s.weight, s.named, d.decision = 'match' AS same, x.rule FROM er_decided d JOIN ({scored}) s USING ({q(l)}, {q(r)})
         LEFT JOIN (SELECT {q(l)}, {q(r)}, min(rule) AS rule FROM er_rule GROUP BY ALL) x USING ({q(l)}, {q(r)}) ORDER BY s.weight""").df()
@@ -266,8 +267,8 @@ def describe_key(out: Path, p: Pipeline, s: "Settings", name: str, cap: int = 12
     uid, l, r = s.data.unique_id, q(f"{s.data.unique_id}_l"), q(f"{s.data.unique_id}_r")
     from er.strings import connect
     con = connect(s.compute)[0]
-    con.execute(f"CREATE TABLE er_dk AS SELECT * FROM {read(out, 'state/records/*.parquet')}")
-    have = {c for c, in con.execute("SELECT column_name FROM (DESCRIBE er_dk)").fetchall()}
+    stored = read(out, "state/records/*.parquet")
+    have = {c for c, *_ in con.execute(f"DESCRIBE SELECT * FROM {stored}").fetchall()}
     keys = keys_of(b)
     log = runs(out)
     listed = key_listed([x for run in log for x in run["steps"]]).get(name, (0,))[0]
@@ -284,6 +285,8 @@ def describe_key(out: Path, p: Pipeline, s: "Settings", name: str, cap: int = 12
                 matched=matched, only=only_n, examples=only, sizes=None, largest=[], group=None, around=None)
     if not all(k.name in have for k in keys):  # turned off: a field it reads is not in the file
         return out_
+    reads = dict.fromkeys([uid, *(k.name for k in keys), *shown])  # all a key's rows, groups and records shown read: a wide file's other columns stay on disk
+    con.execute(f"CREATE TABLE er_dk AS SELECT {', '.join(map(q, reads))} FROM {stored}")
     rec = Records("er_dk", uid, con)
     if isinstance(b, (KeyBlocker, DeletionKeys)):
         bc = block_cols(b)
@@ -353,7 +356,7 @@ def entity_pairs(out: Path, s: "Settings", ids: list[str], links: list[dict], ca
     con, db = connect(s.compute)
     con.register("er_ep_df", pd.DataFrame([(x, y) for i, x in enumerate(ids) for y in ids[i + 1:]], columns=[f"{uid}_l", f"{uid}_r"]))
     con.execute("CREATE TABLE er_ep AS SELECT * FROM er_ep_df")
-    model = scored_again(con, db, out, uid, "er_ep", "er_es")
+    model = scored_again(con, db, out, uid, "er_ep", "er_es", narrow=True)
     by: dict[tuple, list] = {}
     for x in links:
         by.setdefault((x[f"{uid}_l"], x[f"{uid}_r"]), []).append(x["by"])

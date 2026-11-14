@@ -765,7 +765,7 @@ def draw_pairs(a: dict, emit: "Emit") -> dict:
     return dict(drawn=step["drawn"], decide=step["decide"], next=[dict(command=nayose("list", "pairs", "--workspace", out, "--open"), why="the pairs to decide and audit")])
 
 
-def ready(s: Settings, p: Pipeline, files: list[dict]) -> dict:
+def ready(con, s: Settings, p: Pipeline, files: list[dict]) -> dict:
     """Whether a run can start on the file loaded last: it holds records, and the pipeline fits its columns (read from
     its schema only), as Run.load would find. {run, why, fix}. O(files)."""
     last = next((f for f in reversed(files) if f.get("last")), files[-1] if files else None)
@@ -774,7 +774,7 @@ def ready(s: Settings, p: Pipeline, files: list[dict]) -> dict:
     if not last.get("rows"):
         return dict(run=False, why=f"{last['name']} holds no records", fix="load the file with its records")
     try:
-        src = open_source(last["path"], connect(s.compute)[0], {c for f, alts in s.columns.items() if f != "entity" for alt in alts for c in alt})
+        src = open_source(last["path"], con, {c for f, alts in s.columns.items() if f != "entity" for alt in alts for c in alt})
         fit_to_file(p, s, src.columns)
     except InputError as e:
         return dict(run=False, why=str(e), fix=e.fix)
@@ -784,11 +784,12 @@ def ready(s: Settings, p: Pipeline, files: list[dict]) -> dict:
 def describe_workspace_(a: dict, emit: "Emit") -> dict:
     s, p, _ = setup(a)
     out = Path(a["workspace"])
-    d = describe_workspace(connect(s.compute)[0], out, s.data.unique_id)
-    d["trust"] = trust_state(connect(s.compute)[0], out, p, s.data.unique_id) if d["records"] else None
+    con = connect(s.compute)[0]  # one for every read here: a connection costs as much as the reads of a small workspace
+    d = describe_workspace(con, out, s.data.unique_id)
+    d["trust"] = trust_state(con, out, p, s.data.unique_id) if d["records"] else None
     d["stamp"] = folder.stamp(out)  # what another tab's decision, answer or change moves: a page coming back reads again
     files = folder.loaded(out)
-    d["ready"] = ready(s, p, files)
+    d["ready"] = ready(con, s, p, files)
     then = ([dict(command=nayose("describe", "results", "--workspace", out), why="what the run found, and what waits for you"),
              dict(command=nayose("open", "ui", "--workspace", out), why="review in the browser")] if d["records"] else
             [dict(command=nayose("resolve", "records", "--workspace", out), why="find matches in the file loaded last")] if files else

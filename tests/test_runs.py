@@ -348,6 +348,10 @@ def test_the_probe_counts_the_matches_no_key_lists_as_the_truth_does(tmp_path, p
     truth = g.truth[[uid, ent]].merge(g.truth[[uid, ent]], on=ent).query(f"{uid}_x < {uid}_y")
     con.register("er_t", truth.rename(columns={f"{uid}_x": l, f"{uid}_y": r})[[l, r]])
     scored_again(con, db, out, uid, "er_t", "er_ts")
+    wide = con.execute("SELECT * FROM er_ts ORDER BY ALL").fetchall()
+    scored_again(con, db, out, uid, "er_t", "er_ts", narrow=True)  # only the columns the model reads: the same scores
+    assert con.execute("SELECT * FROM er_ts ORDER BY ALL").fetchall() == wide \
+        and len(con.execute("DESCRIBE er_touched").fetchall()) < len(con.execute(f"DESCRIBE SELECT * FROM read_parquet('{out}/state/records/*.parquet')").fetchall())
     links = " UNION ALL ".join(f"SELECT {l}, {r} FROM read_parquet('{out / x}/*.parquet')" + (" WHERE match_weight >= 8" if x == "proposed" else "")
                                for x in ("matches", "proposed", "rule_kept") if any((out / x).glob("*.parquet")))
     con.execute(f"CREATE TABLE er_one AS SELECT {uid}, {uid} AS cluster_id FROM read_parquet('{out}/gold.parquet')")

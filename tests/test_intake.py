@@ -373,6 +373,24 @@ def test_a_parquet_file_read_by_column_reads_as_value_by_value_does(tmp_path, mo
     assert quick[0]["decoded"]["utf-8"] > 0 and quick[0]["fixed"]["placeholders"] > 0  # both paths were taken
 
 
+def test_text_reading_keeps_is_found_in_one_pass_as_its_definition_says():
+    import random
+    import pyarrow as pa
+    import pyarrow.compute as pc
+    from er import intake
+    m = intake.model(load_settings().paths["reference"])
+    edges = [0x1f, 0x20, 0x7e, 0x7f, 0x85, 0xa0, 0x1fff, 0x2000, 0x200a, 0x200b, 0x200d, 0x2028, 0x202f, 0x205f, 0x2060, 0x206f, 0x2070, 0x218f, 0x2190,
+             0x23ff, 0x2400, 0x2460, 0x27bf, 0x27c0, 0x2fff, 0x3000, 0x30ff, 0x3100, 0x318f, 0x3190, 0x33ff, 0x3400, 0x4dbf, 0x4dc0, 0x4e00, 0x9fff,
+             0xa000, 0xf8ff, 0xf900, 0xfaff, 0xfb00, 0xfe2f, 0xfe30, 0xfe4f, 0xfe50, 0xfeff, 0xff00, 0xffef, 0xfff0, 0x1f600]
+    pool = [*map(chr, edges), *"\t\n\r ア漢ｱA1", *sorted(m.garbled)[:50]]
+    rng = random.Random(0)
+    values = [*pool, *("".join(rng.choice(pool) for _ in range(rng.randint(1, 5))) for _ in range(20_000))]
+    bad = lambda v: intake.CONTROL.search(v) or intake.BREAKS.search(v) or not m.garbled.isdisjoint(v)
+    want = [bool(intake.JAPANESE.fullmatch(v)) and not bad(v) and v.strip(" \u2000\u2001\u2002\u2003\u2004\u2005\u2006\u2007\u2008\u2009\u200a\u2028\u2029\u202f\u205f\u3000") != ""
+            for v in values]  # every character JAPANESE's, none to fix, one at least not a space
+    assert pc.match_substring_regex(pa.array(values), intake.text_re2(m.garbled)).to_pylist() == want and any(want) and not all(want)
+
+
 def test_a_parquet_file_reads_alike_whatever_its_row_groups_and_text_that_isn_t_utf8_reads_as_bytes(tmp_path, monkeypatch):
     import pyarrow as pa
     from er import intake

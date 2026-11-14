@@ -1169,3 +1169,10 @@ def test_a_report_s_table_reads_back_as_written_a_bar_in_a_value_too():
     df = pd.DataFrame({"value": ["A|B", "x\\|y", "line\nbreak", "C:\\data\\"], "n": ["1", "2", "3", "4"]})
     got = table_after("## t\n\n" + markdown(df) + "\n", "## t")
     assert got["value"].tolist() == ["A|B", "x\\|y", "line break", "C:\\data\\"] and got["n"].tolist() == ["1", "2", "3", "4"]
+
+
+def test_a_result_s_values_reach_json_as_python_s_own():
+    from er.emit import plain
+    got = plain({"a": np.int64(3), 1: [True, None, "x", 2.5, float("nan"), np.float32(1.5), pd.NA, np.str_("y"), np.bool_(False), (np.nan, pd.NaT)]})
+    assert got == {"a": 3, "1": [True, None, "x", 2.5, None, 1.5, None, "y", False, [None, None]]}
+    assert [type(x) for x in (got["a"], *got["1"][:4], got["1"][7], got["1"][8])] == [int, bool, type(None), str, float, str, bool]  # numpy's scalars as Python's

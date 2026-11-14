@@ -21,6 +21,11 @@ if TYPE_CHECKING:
 
 def plain(x: object) -> object:
     """A value JSON can carry: numpy and pandas scalars as Python ones, NaN and NA as null."""
+    t = type(x)
+    if t is str or t is int or t is bool or x is None:  # most of a result's values, each in one test: a sheet's rows are thousands
+        return x
+    if t is float:
+        return None if math.isnan(x) else x
     if isinstance(x, dict):
         return {str(k): plain(v) for k, v in x.items()}
     if isinstance(x, list | tuple):
