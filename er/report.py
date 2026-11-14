@@ -285,8 +285,8 @@ def trust_sheet(run: "Run", out: Path | None = None) -> tuple[pd.DataFrame, pd.D
     links and every range's below go to people one by one instead, best first, `checks` at a time; and the model's
     pairs above its threshold with no name compared, which no line joins; and `watch` spot-checks of the links at the
     line or above. An increment (`out`, its workspace) asks only about the batch's links, but counts the range, its
-    checks and false pairs over the workspace's links too, less the open rows its sheet keeps (carry_over), so it asks
-    what a full run would. O(E)."""
+    checks and false pairs over the workspace's links too, and its sample less the open rows its sheet keeps
+    (carry_over), so it asks for no check a full run wouldn't; a range found false takes the batch's links as well. O(E)."""
     con, l, r, trust, u = run.con, q(run.l), q(run.r), run.pipeline.trust, q(run.uid)
     # once, those every question below reads (from the lowest step or the line up): each would join every scored pair again
     con.execute(f"""CREATE OR REPLACE TEMP TABLE er_trust_links AS SELECT * FROM (SELECT s.* EXCLUDE (named, keep) FROM ({run.scored()}) s WHERE s.named AND s.keep
@@ -308,7 +308,7 @@ def trust_sheet(run: "Run", out: Path | None = None) -> tuple[pd.DataFrame, pd.D
             WHERE d.{l} = x.{l} AND d.{r} = x.{r} AND d.decision = 'no_match')) FROM ({counted}) x WHERE {within}""").fetchall()[0]
         decide = con.sql(f"""SELECT x.* FROM ({links}) x JOIN gold ga ON ga.{u} = x.{l} JOIN gold gb ON gb.{u} = x.{r}
             WHERE x.match_weight >= {bits(min(trust.steps))} AND x.match_weight < {bits(span[1])} AND {open_} AND ga.cluster_id <> gb.cluster_id
-            ORDER BY x.match_weight DESC, x.{l}, x.{r} LIMIT {max(0, trust.checks - waiting(min(trust.steps), span[1]))}""").df() if false else \
+            ORDER BY x.match_weight DESC, x.{l}, x.{r} LIMIT {trust.checks}""").df() if false else \
             con.sql(f"SELECT * FROM ({links}) x WHERE {within} AND {open_} ORDER BY hash(x.{l}, x.{r}) LIMIT {max(0, trust.checks - done - waiting(*span))}").df()
     audit = con.sql(f"SELECT * FROM ({links}) x WHERE x.match_weight >= {bits(trust.line)} AND {open_} ORDER BY hash(x.{l}, x.{r}) LIMIT {trust.watch}").df()
     unnamed = con.sql(f"""SELECT * EXCLUDE (named, keep) FROM ({run.scored()}) x WHERE NOT x.named AND x.keep
