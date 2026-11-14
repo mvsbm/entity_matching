@@ -75,7 +75,7 @@ from er.config import FSModel, InputError, Pipeline, TfidfNeighbours, bits, gene
 from er.io import code_version, config_hash, markdown, read_parquet
 from er.keys import idle, gap as keys_gap, learn
 from er.kind import KIND_COLUMNS, NAME_MODEL, century, classifier as kind_classifier, kind_review_sheet, merge_answers
-from er.match import ELSE, bound_tests, compared_exactly, fit_model, fit_sample_sql, named_sql, bound_reads, reaching_sql, refreshed_u, review_floor, rule_edges, score_fs, scored_u, train_fs, u_basis
+from er.match import ELSE, bound_tests, rough_reads, compared_exactly, fit_model, fit_sample_sql, named_sql, bound_reads, reaching_sql, refreshed_u, review_floor, rule_edges, score_fs, scored_u, train_fs, u_basis
 from er.probe import missed
 from er.report import carry_kinds, carry_over, no_run, qa, report_text, review_sheet
 from er.explain import scored_again
@@ -580,7 +580,7 @@ class Run:
                                clusters="rule_clusters" if fs.bridge else None, con=self.con, into="cands", touching=batch is not None,
                                gate=self._gate, floor=review_floor(self.pipeline), capacity=self.capacity(), told=self._joined(),
                                known=None if batch else getattr(self, "estimates", None), keep=self._reaching if self.reaching_only else None)
-        self.con.execute("DROP TABLE IF EXISTS er_bound_records")
+        self.con.execute("DROP TABLE IF EXISTS er_bound_records; DROP TABLE IF EXISTS er_bound_hashes")
         if batch and not fs.bridge:  # as a full run's query: a pair touches a record the rules left alone
             self.con.execute(f"DELETE FROM cands WHERE NOT {self._alone(q(self.l), q(self.r))}")
         self._gated(report.attrs["gated"])
@@ -599,7 +599,10 @@ class Run:
         bound, have = bound_tests(self.pipeline.fs.model), self.columns()
         cols = [c for c in sorted(bound_reads(self.scoring, bound)) if c in have]
         self.con.execute(f"CREATE TABLE IF NOT EXISTS er_bound_records AS SELECT {', '.join(q(c) for c in [self.uid, *cols])} FROM records")  # what the bound reads, narrow
-        return reaching_sql(self.scoring, "er_bound_records", pairs, self.uid, set(cols), self.n, 0.0, bound, "rule_kept")
+        hashed = [c for c in sorted(rough_reads(self.scoring, bound)) if c in have]
+        self.con.execute(f"CREATE TABLE IF NOT EXISTS er_bound_hashes AS SELECT {q(self.uid)}, "  # what the rough test reads: a hash of each, NULL where missing
+                         f"{', '.join(f'CASE WHEN {q(c)} IS NOT NULL THEN hash({q(c)}) END AS {q(c)}' for c in hashed) or 'NULL AS __none'} FROM records")
+        return reaching_sql(self.scoring, "er_bound_records", pairs, self.uid, set(cols), self.n, 0.0, bound, "rule_kept", hashed="er_bound_hashes")
 
     def _joined(self) -> Callable[..., None] | None:
         """told for candidates' joins, each generator weighed as the budget counted it (the records it reads, the pairs

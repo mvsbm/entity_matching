@@ -11,7 +11,7 @@ from dataclasses import dataclass
 import numpy as np
 import pandas as pd
 
-from er.candidates import Records
+from er.candidates import KEEP_SLICE, Records
 from er.config import Blocker, DeletionKeys, EditKeys, Key, KeyBlocker, LearnKeys, Pipeline, keys_of, q
 from er.match import DISTANCES, SIMILARITIES, _bits, _ranked, bound_tests, review_floor, scaled_prior, score_fs
 
@@ -99,9 +99,13 @@ def discover(run, records: int) -> Found:
     cols = list(dict.fromkeys(a.column for a in found))
     con.execute(f"CREATE OR REPLACE TABLE er_kl_r AS SELECT {u}, {', '.join(map(q, cols))} FROM records SEMI JOIN er_kl_ok USING ({u})")  # narrow
     con.execute(f"CREATE OR REPLACE TABLE er_kl_s AS SELECT {u} FROM er_kl_r WHERE hash({u}) % 1000000000 < {int(f * 1e9)}")
-    con.execute("CREATE OR REPLACE TABLE er_kl_p (l VARCHAR, r VARCHAR)")
-    def pair(a: str, b: str, rest: str) -> None:  # the pairs drawn, only those that can reach 0 (the run's two-stage bound): few, made distinct after every atom
-        con.execute(f"INSERT INTO er_kl_p SELECT l, r FROM ({run._reaching(f'SELECT least({a}, {b}) AS l, greatest({a}, {b}) AS r FROM {rest}')})")
+    con.execute("CREATE OR REPLACE TABLE er_kl_p (l VARCHAR, r VARCHAR); CREATE OR REPLACE TABLE er_kl_q (l VARCHAR, r VARCHAR)")
+    def bounded() -> None:  # the pairs listed so far, distinct, only those that can reach 0 (the run's two-stage bound): one pass, not one per atom
+        con.execute(f"INSERT INTO er_kl_p SELECT l, r FROM ({run._reaching('SELECT DISTINCT l, r FROM er_kl_q')}); DELETE FROM er_kl_q")
+    def pair(a: str, b: str, rest: str) -> None:  # the pairs drawn, bounded KEEP_SLICE at a time
+        con.execute(f"INSERT INTO er_kl_q SELECT least({a}, {b}) AS l, greatest({a}, {b}) AS r FROM {rest}")
+        if run._count("er_kl_q") >= KEEP_SLICE:
+            bounded()
     eq = [a for a in found if not a.edits]
     crowd = {}  # each atom's values held by m records or more: its oversized blocks
     for i, a in enumerate(eq):
@@ -149,6 +153,8 @@ def discover(run, records: int) -> Found:
         took[a.name] = time.perf_counter() - t
         t = time.perf_counter()
     rec.close()
+    bounded()
+    took["bound"] = time.perf_counter() - t
     alone = "" if fs.bridge else f" AND {run._alone(f'a.{u}', f'b.{u}')}"  # without bridging, two rule entities are never compared: the probe counts those pairs
     con.execute(f"""CREATE OR REPLACE TABLE er_kl_d AS SELECT DISTINCT p.l AS {l}, p.r AS {r} FROM er_kl_p p JOIN rule_clusters a ON a.{u} = p.l
         JOIN rule_clusters b ON b.{u} = p.r WHERE a.cluster_id <> b.cluster_id{alone}""")  # a pair inside one rule cluster is the rules'
@@ -159,7 +165,7 @@ def discover(run, records: int) -> Found:
         {', '.join(f'a.{q(a.column)} AS {q("a" + str(i))}, b.{q(a.column)} AS {q("b" + str(i))}' for i, a in enumerate(found))}
         FROM er_kl_t t JOIN records a ON a.{u} = t.{l} JOIN records b ON b.{u} = t.{r} ORDER BY 1, 2""").df()
     targets = listed_by(run, targets)
-    con.execute("DROP VIEW IF EXISTS er_kl_two; DROP VIEW IF EXISTS er_kl_short; " + "; ".join(f"DROP TABLE IF EXISTS {x}" for x in ("er_kl_s", "er_kl_p", "er_kl_d", "er_kl_t", "er_kl_r", "er_kl_ok", *crowd.values()))
+    con.execute("DROP VIEW IF EXISTS er_kl_two; DROP VIEW IF EXISTS er_kl_short; " + "; ".join(f"DROP TABLE IF EXISTS {x}" for x in ("er_kl_s", "er_kl_p", "er_kl_q", "er_kl_d", "er_kl_t", "er_kl_r", "er_kl_ok", *crowd.values()))
                 + "; " + "; ".join(f"DROP TABLE IF EXISTS er_kl_c{i}" for i in range(len(eq))))
     weight = 1 / (1 - (1 - f) ** 2)
     facts = dict(atoms=[a.name for a in found], share=round(f, 4), sampled_records=round(f * n), reachable=ok, drawn=drawn, targets=len(targets),

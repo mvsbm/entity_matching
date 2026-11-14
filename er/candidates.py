@@ -89,31 +89,34 @@ class Records:
             from rapidfuzz.process import cpdist
             k, parts, within = b.edits, b.edits + 1, [q(w.name) for w in b.within]
             w_ = "".join(f"{w}, " for w in within)
-            values = self._temp(f"""SELECT {w_}{q(b.key.name)} AS v, count(*) AS n, length({q(b.key.name)}) AS len FROM {self.table}
-                WHERE {_filled([b.key.name, *(w.name for w in b.within)])} GROUP BY ALL HAVING count(*) < {most} AND length({q(b.key.name)}) >= {2 * parts}""")
+            values = self._temp(f"""SELECT *, row_number() OVER () AS id FROM (SELECT {w_}{q(b.key.name)} AS v, count(*) AS n, length({q(b.key.name)}) AS len FROM {self.table}
+                WHERE {_filled([b.key.name, *(w.name for w in b.within)])} GROUP BY ALL HAVING count(*) < {most} AND length({q(b.key.name)}) >= {2 * parts})""")  # an id per value: only ids cross into Python
             seg = lambda length, i: (f"({length}) // {parts} + ({i} >= {parts} - ({length}) % {parts})::INT",  # segment i of a value this long: its length, its start
                                      f"1 + {i} * (({length}) // {parts}) + greatest(0, {i} - ({parts} - ({length}) % {parts}))")
-            index = f"SELECT {w_}v, len AS l, i, v[{seg('len', 'i')[1]} : {seg('len', 'i')[1]} + {seg('len', 'i')[0]} - 1] AS s FROM (SELECT *, unnest(range({parts})) AS i FROM {values})"
+            index = f"SELECT {w_}v, id, len AS l, i, v[{seg('len', 'i')[1]} : {seg('len', 'i')[1]} + {seg('len', 'i')[0]} - 1] AS s FROM (SELECT *, unnest(range({parts})) AS i FROM {values})"
             # multi-match-aware starts (Li et al., §4.2): segment i of a value l long, in one len − l longer, only from
             # max(start − i, start + len − l − (k − i)) to min(start + i, start + len − l + (k − i)); each a complete window
             lo, hi = f"greatest(st - i, st + len - l - ({k} - i))", f"least(st + i, st + len - l + ({k} - i))"
             asked = (f"(SELECT * FROM {values} WHERE ({w_}v) IN (SELECT ({w_}{q(b.key.name)}) FROM {self.table} WHERE {q(self.uid)} IN "
                      f"(SELECT {q(self.uid)} FROM {probe})))" if probe else values)
-            probe_sql = (f"SELECT {w_}v AS x, l, i, x[p : p + sl - 1] AS s FROM (SELECT *, unnest(range({lo}, {hi} + 1)) AS p FROM "
+            probe_sql = (f"SELECT {w_}v AS x, id AS ix, l, i, x[p : p + sl - 1] AS s FROM (SELECT *, unnest(range({lo}, {hi} + 1)) AS p FROM "
                      f"(SELECT *, {seg('l', 'i')[1]} AS st, {seg('l', 'i')[0]} AS sl FROM (SELECT *, unnest(range({parts})) AS i FROM "  # nested: unnests in one SELECT are zipped
-                     f"(SELECT {w_}v, len, unnest(range(greatest({parts}, len - {k}), len + {k + 1})) AS l FROM {asked})))) "
+                     f"(SELECT {w_}v, id, len, unnest(range(greatest({parts}, len - {k}), len + {k + 1})) AS l FROM {asked})))) "
                      f"WHERE p >= 1 AND p + sl - 1 <= length(x)")
             on = " AND ".join([*(f"a.{w} = c.{w}" for w in within), "a.l = c.l", "a.i = c.i", "a.s = c.s"])
-            cands = self.con.execute(f"""SELECT DISTINCT {"".join(f"a.{w}, " for w in within)}least(a.v, c.x) AS v, greatest(a.v, c.x) AS x
-                FROM ({index}) a JOIN ({probe_sql}) c ON {on} AND a.v <> c.x""").df()
-            if len(cands):
-                d = np.concatenate([cpdist(cands["v"].iloc[i:i + 1_000_000].tolist(), cands["x"].iloc[i:i + 1_000_000].tolist(), scorer=Levenshtein.distance,
-                                           score_cutoff=k, workers=-1) for i in range(0, len(cands), 1_000_000)])
-                cands = cands[d <= k]
-            ws = [w.name for w in b.within]
-            kept = self._temp(f"SELECT * FROM {self._view(cands.reset_index(drop=True))}")
-            self.near[at] = self._temp(f"""SELECT p.*, a.n AS nv, c.n AS nx FROM {kept} p JOIN {values} a ON a.v = p.v {"".join(f"AND a.{q(w)} = p.{q(w)} " for w in ws)}
-                JOIN {values} c ON c.v = p.x {"".join(f"AND c.{q(w)} = p.{q(w)} " for w in ws)}""")
+            ids = self.con.execute(f"""SELECT DISTINCT least(a.id, c.ix) AS a, greatest(a.id, c.ix) AS c
+                FROM ({index}) a JOIN ({probe_sql}) c ON {on} AND a.v <> c.x""").fetchnumpy()
+            a, c = ids["a"].astype(np.int64), ids["c"].astype(np.int64)
+            if len(a):
+                vs = np.array([None, *(v for v, in self.con.execute(f"SELECT v FROM {values} ORDER BY id").fetchall())], dtype=object)  # vs[id]
+                d = np.concatenate([cpdist(vs[a[i:i + 1_000_000]].tolist(), vs[c[i:i + 1_000_000]].tolist(), scorer=Levenshtein.distance,
+                                           score_cutoff=k, workers=-1) for i in range(0, len(a), 1_000_000)])
+                a, c = a[d <= k], c[d <= k]
+            kept = self._view(pd.DataFrame({"a": a, "c": c}))
+            first = "x.v < y.v"  # each pair as before: its values in order, each with its records
+            self.near[at] = self._temp(f"""SELECT {"".join(f"x.{w}, " for w in within)}least(x.v, y.v) AS v, greatest(x.v, y.v) AS x,
+                CASE WHEN {first} THEN x.n ELSE y.n END AS nv, CASE WHEN {first} THEN y.n ELSE x.n END AS nx
+                FROM {kept} p JOIN {values} x ON x.id = p.a JOIN {values} y ON y.id = p.c""")
         return self.near[at]
 
     def _view(self, df: pd.DataFrame) -> str:
@@ -385,7 +388,7 @@ def candidates(blockers: tuple[Blocker, ...], records: pd.DataFrame | str, uid: 
     try:
         n_query = r.con.execute(f"SELECT count(*) FROM {r.query or r.table}").fetchall()[0][0]
         m = budget.min_oversized()
-        report, parts, big = [], [], {}
+        report, parts, big, pending = [], [], {}, {}
         listed = r._temp("SELECT NULL::UBIGINT AS h WHERE FALSE") if keep else None  # each listed pair's hash, before keep()
         if told:
             told(0, len(blockers), "keys")
@@ -397,15 +400,18 @@ def candidates(blockers: tuple[Blocker, ...], records: pd.DataFrame | str, uid: 
                 if r.cluster:  # TF-IDF is computed in Python, so the cluster filter is applied here
                     cl = r.con.sql(f"SELECT {q(uid)}, __cluster FROM {r.table}").df().set_index(uid)["__cluster"]
                     pairs = pairs[pairs["l"].map(cl).to_numpy() != pairs["r"].map(cl).to_numpy()]
-                table, n = _kept(r, f"SELECT * FROM {r._view(pairs)}", keep, listed)
+                table, n = _kept(r, f"SELECT * FROM {r._view(pairs)}", keep, listed, pending)
             else:
                 if blocks := oversized(b, r, m):
                     big[i] = blocks
-                table, n = _kept(r, pairs_sql(b, r, skip=big.get(i)), keep, listed)
+                table, n = _kept(r, pairs_sql(b, r, skip=big.get(i)), keep, listed, pending)
+            if sum(pending.values()) >= KEEP_SLICE:
+                _bound(r, pending, keep)
             report.append(dict(generator=b.name, **est, pairs=n, seconds=round(time.perf_counter() - t, 3)))
             parts.append(f"SELECT l, r, {1 << i}::BIGINT AS bit FROM {table}")
             if told:
                 told(i + 1, len(blockers), "keys")
+        _bound(r, pending, keep)
         gated, added = _gate(blockers, r, big, parts, gate, floor, capacity, m, (l, rr), keep, listed) if big else (pd.DataFrame(), {})
         for i, extra in added.items():
             report[i]["pairs"] += extra
@@ -433,20 +439,40 @@ def candidates(blockers: tuple[Blocker, ...], records: pd.DataFrame | str, uid: 
 KEEP_SLICE = 10_000_000  # pairs a keep filter reads at once: past a few tens of millions, its joins spill and slow tenfold
 
 
-def _kept(r: Records, sql: str, keep: Callable[[str], str] | None, listed: str | None) -> tuple[str, int]:
+def _kept(r: Records, sql: str, keep: Callable[[str], str] | None, listed: str | None, pending: dict[str, int] | None = None) -> tuple[str, int]:
     """The pairs of `sql` (l, r) as a table, only those keep() keeps if given, and how many it listed: listed, each
     pair's hash added to the table `listed`, then filtered KEEP_SLICE at a time, so the filter's join never holds more
-    than a slice."""
+    than a slice. With `pending`, a listing under a slice waits there for _bound, with the others: filtered then."""
     table = r._temp(sql)
     n = r.con.execute(f"SELECT count(*) FROM {table}").fetchall()[0][0]
     if keep is None:
         return table, n
     r.con.execute(f"INSERT INTO {listed} SELECT hash(l, r) FROM {table}")
+    if pending is not None and n < KEEP_SLICE:
+        pending[table] = n
+        return table, n
     out = r._temp(keep(f"SELECT l, r FROM {table} WHERE rowid < {KEEP_SLICE}"))
     for start in range(KEEP_SLICE, n, KEEP_SLICE):
         r.con.execute(f"INSERT INTO {out} {keep(f'SELECT l, r FROM {table} WHERE rowid >= {start} AND rowid < {start + KEEP_SLICE}')}")
     r.con.execute(f"DROP TABLE {table}")  # the listing: freed as soon as it is read
     return out, n
+
+
+def _bound(r: Records, pending: dict[str, int], keep: Callable[[str], str] | None) -> None:
+    """The listings waiting in `pending`, filtered by keep() in one pass over their distinct pairs, a slice at a time:
+    each keeps its pairs that pass. keep() reads a pair alone, so as each filtered on its own, without a join of the
+    records per generator."""
+    if not pending:
+        return
+    both = r._temp(" UNION ".join(f"SELECT l, r FROM {t}" for t in pending))
+    n = r.con.execute(f"SELECT count(*) FROM {both}").fetchall()[0][0]
+    out = r._temp(keep(f"SELECT l, r FROM {both} WHERE rowid < {KEEP_SLICE}"))
+    for start in range(KEEP_SLICE, n, KEEP_SLICE):
+        r.con.execute(f"INSERT INTO {out} {keep(f'SELECT l, r FROM {both} WHERE rowid >= {start} AND rowid < {start + KEEP_SLICE}')}")
+    for t in pending:
+        r.con.execute(f"DELETE FROM {t} WHERE NOT EXISTS (SELECT 1 FROM {out} k WHERE k.l = {t}.l AND k.r = {t}.r)")
+    r.con.execute(f"DROP TABLE {both}; DROP TABLE {out}")
+    pending.clear()
 
 
 def _gate(blockers: tuple[Blocker, ...], r: Records, big: dict[int, str], parts: list[str], gate: Callable | None, floor: float,
