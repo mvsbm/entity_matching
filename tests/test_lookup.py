@@ -48,10 +48,10 @@ def answers(ws, s, p, asks: list[tuple[dict | None, str | None]]) -> list[dict]:
 
 
 def test_a_lookup_lists_and_scores_the_pairs_an_increment_of_the_record_would_and_the_index_kept_up_to_date_answers_as_one_built_again(tmp_path, population, monkeypatch):
-    from er import cli, index
+    from er import brief, cli, index
     from er.candidates import candidates
     from er.match import review_floor, score_fs
-    from er.report import run_model
+    from er.explain import run_model
     from er.strings import connect
     s, p, g = population
     uid, rng = s.data.unique_id, np.random.default_rng(0)
@@ -213,7 +213,7 @@ def test_a_lookup_lists_and_scores_the_pairs_an_increment_of_the_record_would_an
     assert index.look_up(ws, s2, p2, record=stored[uid].iloc[0], at_least=-1e9)["index"]["records"] == len(df)  # it reads the new one
     monkeypatch.undo()
     monkeypatch.setattr(index, "update", lambda *a: (_ for _ in ()).throw(OSError("disk full")))
-    assert cli.indexed({"workspace": str(ws)}) == dict(error="OSError: disk full", fix=f"build it: {cli.nayose('build', 'index', '--workspace', ws)}")  # the run stands: why its index waits
+    assert cli.indexed({"workspace": str(ws)}) == dict(error="OSError: disk full", fix=f"build it: {brief.nayose('build', 'index', '--workspace', ws)}")  # the run stands: why its index waits
 
 
 def test_a_search_finds_records_by_the_start_of_any_value_and_says_one_too_common_to_list(tmp_path, population, monkeypatch):

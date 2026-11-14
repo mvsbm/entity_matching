@@ -383,15 +383,15 @@ def calls(tree: ast.AST) -> list[tuple[str, int]]:  # every call, by its dotted 
 
 
 def test_code_nayose_runs_never_prints_or_exits():
-    """Rule 1, errors are values: the command line (er/cli.py) owns the terminal; the code its commands run raises
+    """Rule 1, errors are values: the command line (er/cli.py, its events written by er/emit.py) owns the terminal; the code its commands run raises
     InputError or returns, since nayose open ui runs it in threads of a long-lived server."""
-    runs = {f for f, box in layers().items() if f.startswith("er/") and box in ("tools_run", "run", "steps", "configuration")} - {"er/cli.py"}
+    runs = {f for f, box in layers().items() if f.startswith("er/") and box in ("tools_run", "run", "steps", "configuration")} - {"er/cli.py", "er/emit.py"}
     found = []
     for f in sorted(runs):
         tree = ast.parse((ROOT / f).read_text(encoding="utf-8"))
         found += [f"{f}:{line} {c}" for c, line in calls(tree) if c in ("print", "exit", "quit", "sys.exit", "os._exit")]
         found += [f"{f}:{n.lineno} raise SystemExit" for n in ast.walk(tree) if isinstance(n, ast.Raise) and "SystemExit" in ast.unparse(n)]
-    assert not found, f"print or exit outside er/cli.py: {found}"
+    assert not found, f"print or exit outside er/cli.py and er/emit.py: {found}"
 
 
 def test_no_code_in_er_changes_process_wide_state():

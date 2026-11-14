@@ -101,11 +101,11 @@ def test_nayose_prints_a_mistake_as_two_lines_and_exits_with_2(tmp_path):
 
 def test_a_long_command_shows_each_step_as_it_ends_and_how_long_is_left(monkeypatch):
     import io
-    from er import cli
+    from er import emit
     clock = [100.0]
-    monkeypatch.setattr(cli.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(emit.time, "monotonic", lambda: clock[0])
     out = io.StringIO()  # not a terminal: a line every 30 seconds, never redrawn
-    e = cli.Emit(out=out, title="resolve records · workspaces/w", order=("load", "score", "write"), last={"load": 10, "score": 100, "write": 5}, last_records=1000)
+    e = emit.Emit(out=out, title="resolve records · workspaces/w", order=("load", "score", "write"), last={"load": 10, "score": 100, "write": 5}, last_records=1000)
     e.step(dict(step="load", seconds=12.0, records=2000, set_aside=0))
     for gap, done in ((10, 100), (10, 200), (25, 450)):  # 10 pairs a second since the first count; the last 45 s into the step
         clock[0] += gap
@@ -118,30 +118,31 @@ def test_a_long_command_shows_each_step_as_it_ends_and_how_long_is_left(monkeypa
         "scoring the pairs · 450 of 1,000 pairs · about 55s left · about 1m 05s left in all")  # its own pace; write as last run's, at twice the records
     assert lines[3].split() == ["✓", "score", "45s", "pairs", "1,000"] and len(lines) == 4 and "\r" not in out.getvalue()
     out = io.StringIO()
-    e = cli.Emit(out=out, title="resolve records", order=cli.RUN_ORDER)  # a first run: nothing to measure the rest by
+    e = emit.Emit(out=out, title="resolve records", order=emit.RUN_ORDER)  # a first run: nothing to measure the rest by
     e.step(dict(step="load", seconds=1.0, records=10))
     clock[0] += 31
     e.progress(5, 10, "pairs")
     assert out.getvalue().splitlines()[-1].endswith("planning the work · 5 of 10 pairs")  # one count gives no pace: no time left said
     out = io.StringIO()
-    e = cli.Emit(out=out, order=("load", "probe"))  # try method: the steps twice
+    e = emit.Emit(out=out, order=("load", "probe"))  # try method: the steps twice
     for step in ("load", "probe", "generate"):  # and one outside them
         e.step(dict(step=step, seconds=1.0))
     clock[0] += 31
     e.progress(5, 10, "records")
     assert out.getvalue().splitlines()[-1].split()[1:4] == ["load", "0.0s", "reading"]  # a count after the last step: the steps again
-    e = cli.Emit(out=out, order=())  # a command whose steps aren't known: each as it ends, and what is under way unnamed
+    e = emit.Emit(out=out, order=())  # a command whose steps aren't known: each as it ends, and what is under way unnamed
     e.step(dict(step="generate", seconds=1.0))
     clock[0] += 31
     e.progress(5, 10, "rows")
     assert out.getvalue().splitlines()[-1].endswith("working · 5 of 10 rows")
-    assert cli.step_facts(dict(step="rules", seconds=1.0, kept=23)) == "kept 23"  # a batch's steps carry other facts: said as they are
-    assert cli.step_facts(dict(step="candidates", seconds=1.0, gate_pairs=0, gate_seconds=0.1, generators=[])) == ""
+    assert emit.step_facts(dict(step="rules", seconds=1.0, kept=23)) == "kept 23"  # a batch's steps carry other facts: said as they are
+    assert emit.step_facts(dict(step="candidates", seconds=1.0, gate_pairs=0, gate_seconds=0.1, generators=[])) == ""
 
 
 def test_text_says_a_result_in_short_and_verbose_says_all_of_it(tmp_path, population, capsys, monkeypatch):
     from er import folder
-    from er.cli import COMMANDS, main, text
+    from er.brief import text
+    from er.cli import COMMANDS, main
     s, p, g = population
     g.df.to_parquet(tmp_path / "all.parquet", index=False)
     monkeypatch.chdir(tmp_path)
@@ -214,7 +215,7 @@ def test_describe_records_says_what_a_column_holds_instead_and_its_one_command_s
 def test_a_mapping_reads_back_as_written_and_two_changes_at_once_both_land(say, tmp_path, monkeypatch):
     import threading
     import time
-    from er import cli, settings
+    from er import brief, cli, settings
     from er.settings import COLUMNS, load_settings, own_columns, set_columns
     monkeypatch.chdir(tmp_path)
     say("create", "workspace", "w")
@@ -263,7 +264,7 @@ def test_a_mapping_reads_back_as_written_and_two_changes_at_once_both_land(say, 
     assert load_settings(columns=mine).columns["birth_date"] == (("DOB",),) and load_settings(columns=mine).columns["kind_flag"] == (("PERSON_ORG_CODE",),)
 
     shared = [dict(field=f, filled=0.2, looks_right=0.9, alternatives=[dict(columns=["NAME"], found=True)]) for f in ("person_name", "company_name")]
-    assert "  ! person name and company name are 20% filled together" in cli.file_lines(dict(fields=shared, needed=dict(one_of=[["person_name", "company_name"]])))  # one column: counted once, as check records does
+    assert "  ! person name and company name are 20% filled together" in brief.file_lines(dict(fields=shared, needed=dict(one_of=[["person_name", "company_name"]])))  # one column: counted once, as check records does
 
 
 def test_a_name_column_both_kinds_share_is_scored_once_as_mapped_or_by_kind(say, tmp_path, population, monkeypatch):
@@ -742,19 +743,23 @@ def test_the_scheduler_serves_the_inbox_in_order_and_parks_what_people_must_fix(
 
 
 def test_an_oversized_block_is_checked_on_a_sample_and_a_placeholder_is_skipped(tmp_path, population):
+    from er.report import describe_matching
     from er.run import Run
+    from er.strings import connect
     s, p, g = population
     uid = s.data.unique_id
     df = g.df.copy()
     dummy = df.index[:100]
     df.loc[dummy, ["PHONE_NUM_4", "GIVEN_NAME_KANA", "POST_CD"]] = ["0000", "タロウ", "1500042"]  # a dummy phone, and one given name and postal code: blocks of 100
     df.to_parquet(tmp_path / "in.parquet", index=False)
-    run = Run(p, s).full(tmp_path / "in.parquet", tmp_path / "run")  # no stop
+    run = Run(p, s).full(tmp_path / "in.parquet", tmp_path / "run", pipeline_file=s.root / "config" / "final.toml")  # no stop
     assert any("phone = 0000" in x and "placeholder" in x for x in run.examples)  # most of the pairs sharing a phone: read as missing, no block
     assert not run.gated["value"].str.contains("0000").any()
     block = run.gated[run.gated["value"].str.contains("タロウ") & (run.gated["generator"] == "given_name_postal")]
     assert len(block) == 1 and block["decision"].iloc[0].startswith("skipped") and block["records"].iloc[0] == 100
     assert any("タロウ" in x and "skipped" in x for x in run.examples) and not any("タロウ" in x for x in run.notes)
+    shown = next(n for n in describe_matching(connect(s.compute)[0], tmp_path / "run", p, s)["nodes"] if n["id"] == "candidates")["skipped"]
+    assert dict(key="given_name_postal", value=block["value"].iloc[0], records=100, pairs=4950) in shown["largest"]  # as qa.md lists it, kept in steps.json
     check = nayose("check", "records", tmp_path / "in.parquet")
     assert check.returncode == 0 and "checked by sampling" in check.stdout
 
@@ -943,7 +948,7 @@ def test_describe_review_sees_a_false_pair_above_the_line_as_the_line_does(tmp_p
     """The line steps down once the range just below it is clean: a false pair above it holds back no range below,
     a false pair below it holds back that range and every one under it; a range above the line merges, none left."""
     from er.config import adjust, load_pipeline
-    from er.report import review_workload, trust_state
+    from er.review_state import review_workload, trust_state
     from er.strings import connect
     s = load_settings()
     uid = s.data.unique_id
@@ -987,7 +992,7 @@ def test_check_records_judges_a_person_s_and_a_company_s_name_together_once_per_
 
 
 def test_a_result_s_nested_numbers_print_plainly_and_a_settings_folder_is_said(tmp_path):
-    from er.cli import cell
+    from er.brief import cell
     from er.config import toml_of
     assert cell({"file": 0.5, "peak_gb": 2}) == "file 0.50 peak gb 2"
     with pytest.raises(InputError, match="can't be read"):
@@ -1051,7 +1056,7 @@ def test_the_page_s_state_is_the_cli_s_a_file_it_can_t_run_counts_said_once_and_
 
 
 def test_two_people_of_one_household_are_labelled_and_a_copy_of_one_is_not(tmp_path, population):
-    from er.report import explain_pair
+    from er.explain import explain_pair
     from er.results import list_scored
     from er.run import Run
     from er.strings import connect
@@ -1076,13 +1081,13 @@ def test_two_people_of_one_household_are_labelled_and_a_copy_of_one_is_not(tmp_p
 
 
 def test_a_run_s_progress_follows_this_version_s_steps_when_the_last_run_lacked_one(tmp_path):
-    from er import cli, folder
+    from er import cli, emit, folder
     ws = tmp_path / "ws"
     (ws / "state").mkdir(parents=True)
-    old = [{"step": x, "seconds": 1.0, **({"records": 10} if x == "load" else {})} for x in cli.RUN_ORDER if x != "keys"]  # a run before the keys step
+    old = [{"step": x, "seconds": 1.0, **({"records": 10} if x == "load" else {})} for x in emit.RUN_ORDER if x != "keys"]  # a run before the keys step
     (ws / folder.STEPS).write_text(json.dumps({"runs": [{"steps": old}]}), encoding="utf-8")
     got = cli.last_run(str(ws), "rerun records")
-    assert got["order"] == cli.RUN_ORDER and "keys" in got["order"] and got["last"]["candidates"] == 1.0
+    assert got["order"] == emit.RUN_ORDER and "keys" in got["order"] and got["last"]["candidates"] == 1.0
 
 
 def test_the_fit_a_workspace_sets_is_the_sample_and_the_em_its_runs_use(population):

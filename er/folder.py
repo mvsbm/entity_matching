@@ -39,7 +39,7 @@ FULL_TMP = ".full.tmp"  # a full run's new files, until they replace the old run
 METHOD = "method.toml"  # the workspace's changes to the tuned method (config.adjust); none: the method as tuned
 ROUNDS = "rounds.json"  # one entry per method a full run used, in order: not a run file, so the history outlasts each run;
 # bounded: one entry per change of method people make, each a full run
-TRIALS = "trials"  # trials of a method (er.run.trial): the last 5 results, and the clusters of the method they were tried against
+TRIALS = "trials"  # trials of a method (er.trial.trial): the last 5 results, and the clusters of the method they were tried against
 PREPARED = "prepared"  # the records as a run loads them, cleaned (er.run.Run.load), a folder per what they were made from:
 # not a run file, so a full run reads them again; bounded: the last KEEP_PREPARED used
 KEEP_PREPARED = 2  # the method and a trial of another that cleans other columns: neither replaces the other's

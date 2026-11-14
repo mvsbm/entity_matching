@@ -126,11 +126,12 @@ PATTERNS = 12  # the patterns of pairs a fit lifts to the floor, the most first
 
 def check(ws: Path, s: Settings, p: Pipeline, base: dict, fitted: dict, n: int) -> dict:
     """What a run with this fit would find that the run in ws didn't keep, and what no key lists, by the gap's sample
-    (er.keys.discover: records drawn by hash, each paired with every record sharing a value or a near one, scored
+    (er.sample.discover: records drawn by hash, each paired with every record sharing a value or a near one, scored
     with this fit): per threshold, the pairs at it, those a key or a rule lists, those the run kept, those a key lists
     the run didn't keep (its cutoff, at its own model: a run with this fit finds them), those no key lists (with a 95%
     interval), and the fields those agree on. Scaled to the file."""
-    from er.keys import agree_counts, discover, gap_records, generator_atoms, key_lists, poisson, thresholds
+    from er.keys import agree_counts, gap_records, thresholds
+    from er.sample import discover, generator_atoms, key_lists, poisson
     from er.run import BLOCKS, Run, stored_keys
     p = stored_keys(ws, p, s)  # the keys the run listed by
     run = Run(p, s)

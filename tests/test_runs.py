@@ -199,7 +199,7 @@ def test_answers_given_wrong_stop_the_run(tmp_path, population):
 def test_the_probe_counts_the_matches_no_key_lists_as_the_truth_does(tmp_path, population):
     from er.cluster import merge
     from er.config import adjust
-    from er.report import scored_again
+    from er.explain import scored_again
     from er.run import Run
     s, p, g = population
     uid, ent = s.data.unique_id, s.data.entity_id
@@ -299,7 +299,7 @@ def test_describe_matching_draws_the_pipeline_with_the_run_s_numbers(tmp_path, p
     group = nodes["group"]
     assert sum(group["joined"].values()) == sum(z["records"] * z["customers"] for z in group["sizes"] if z["records"] > 1)  # who joined each joined record
     assert group["look"]["single_links"]["customers"] <= sum(z["customers"] for z in group["sizes"] if z["records"] >= 3)
-    from er.report import describe_key
+    from er.explain import describe_key
     for name in [g["name"] for g in nodes["candidates"]["generators"] if g["method"] in ("same value", "sorted neighbours") and g["matched"]][:3]:
         k = describe_key(out, p, s, name)
         assert k["matched"] >= k["only"] and len(k["examples"]) <= 3

@@ -68,16 +68,18 @@ import numpy as np
 import pandas as pd
 import pyarrow as pa
 
-from er import folder, intake
+from er import folder
 from er.candidates import candidates, estimate
 from er.cluster import merge
 from er.config import FSModel, InputError, Pipeline, TfidfNeighbours, bits, generator, generator_dict, lit, q
-from er.io import code_version, config_hash, markdown, read_parquet, replace_text
+from er.io import code_version, config_hash, markdown, read_parquet
 from er.keys import idle, gap as keys_gap, learn
 from er.kind import KIND_COLUMNS, NAME_MODEL, century, classifier as kind_classifier, kind_review_sheet, merge_answers
 from er.match import ELSE, bound_tests, compared_exactly, fit_model, fit_sample_sql, named_sql, bound_reads, reaching_sql, refreshed_u, review_floor, rule_edges, score_fs, scored_u, train_fs, u_basis
 from er.probe import missed
-from er.report import applied, carry_kinds, carry_over, no_run, qa, report_text, review_sheet, scored_again, trust_state
+from er.report import carry_kinds, carry_over, no_run, qa, report_text, review_sheet
+from er.explain import scored_again
+from er.review_state import trust_state
 from er.results import BANDS, own_merging, banded, check_merging, merge_where
 from er.settings import SPECIAL, Settings, fit_to_file, present_fields
 from er.source import answers, decisions, file_facts, filled, known, open_source, suggest
@@ -678,7 +680,7 @@ class Run:
 
     def _patterns(self) -> dict:
         """The patterns the pairs in `scores` fall in, one step per comparison: per pattern its pairs, their mean weight,
-        how many merge and how many wait for people as _accept will take them, and three of them (report.list_patterns,
+        how many merge and how many wait for people as _accept will take them, and three of them (explain.list_patterns,
         results.describe_results). A full run's and each increment's: together, every pair the run scored."""
         fs, l, r = self.pipeline.fs, q(self.l), q(self.r)
         at, floor = (bits(x) for x in self._line())
@@ -827,7 +829,7 @@ class Run:
         texts.append((json.dumps(self.placeholders, ensure_ascii=False), state / "placeholders.json"))  # read as missing: an increment and a lookup read them so too
         if part == 0 and self.learned:  # the keys learned on the file: an increment lists its pairs by them
             texts.append((json.dumps({b.name: generator_dict(b) for b in self.learned}, ensure_ascii=False), state / "keys.json"))
-        if part == 0:  # the oversized blocks whose pairs the run listed: a key lists a pair in one (er.keys.key_lists, for er.sizes)
+        if part == 0:  # the oversized blocks whose pairs the run listed: a key lists a pair in one (er.sample.key_lists, for er.sizes)
             kept = self.gated[self.gated["decision"].isin(["kept", "joined in full"])].groupby("generator")["value"].agg(list).to_dict() if len(self.gated) else {}
             texts.append((json.dumps(kept, ensure_ascii=False), state / BLOCKS))
         if self.basis:  # the u this run scored with, and what an increment needs to tell when they go stale
@@ -866,7 +868,8 @@ class Run:
         record an increment holds back reaches the next full run's sheet). Built before the run's files are written, and
         returned as texts and frames for write() to stage with them: a run never lands without its reports, which a
         retry could not make again, since nothing is new by then. `path` is the input, `pipeline` the pipeline file, both
-        named in the reports. Keeps qa's tables, the summary first, in self.tables."""
+        named in the reports. Keeps qa's tables, the summary first, in self.tables, and its weight bands and oversized
+        blocks in the step's facts (steps.json), for describe matching and describe method."""
         t = time.perf_counter()
         tables = qa(self, previous=out / "review.parquet" if self.added is not None else None)
         sheet = tables.pop("review_sheet")
@@ -882,7 +885,9 @@ class Run:
                                        out / "kind_review.parquet"), out / "kind_review.parquet"))
         self.tables = tables
         texts = [("\n".join(text), out / "qa.md"), (report_text(self, tables, pipeline), out / "report.txt")]
-        self._done("report", "O(review pairs) + O(N)", f"O({len(frames[0][0]):,} review pairs + {self.n:,})", t)
+        kept = lambda name, orient: json.loads(tables[name].round(4).to_json(orient=orient))  # as qa.md shows it: describe matching and method read it here
+        self._done("report", "O(review pairs) + O(N)", f"O({len(frames[0][0]):,} review pairs + {self.n:,})", t,
+                   weight_bands=kept("weight_bands", "values"), oversized_blocks=kept("oversized_blocks", "records"))
         return texts, frames
 
     # ---------- increments ----------
@@ -1117,7 +1122,7 @@ class Run:
 
     def resolve(self, path: str | Path | list[Path], decided: Path | None) -> "Run":
         """Steps 1–7 on the file at `path`, writing nothing: each record's cluster (gold), with the decisions the
-        workspace `decided` keeps (None: none). A trial of a method runs these alone (er.run.trial)."""
+        workspace `decided` keeps (None: none). A trial of a method runs these alone (er.trial.trial)."""
         self.load(path)
         self.budget()
         self.fit()
@@ -1159,71 +1164,6 @@ def run_config(p: Pipeline, s: Settings) -> str:
     fit = {f.name: f.default for f in fields(FSModel) if f.name in ("em_from_keys", "em_median")}
     p = replace(p, fit_rows=next(f.default for f in fields(Pipeline) if f.name == "fit_rows"), fs=replace(p.fs, model=replace(p.fs.model, **fit)))
     return config_hash((p, s.columns, s.standardize, s.flag_company, s.input, PLACEHOLDERS))
-
-
-def trial(ws: Path, base: Pipeline, variant: Pipeline, method: dict, s: Settings, echo: Callable[[dict], None] | None = None) -> dict:
-    """The workspace's method (`base`) and a variant of it (`method`, as method.toml would say it), each run on the
-    workspace's files without people's decisions, so neither is judged on pairs it was told, and at its own line, the
-    trust line set aside, so a change shows what the method does rather than what merges yet; both keep the run's
-    fitted model and people's person/company answers. Compared on the pairs people decided, each method's two kinds of
-    mistake (different_joined: pairs people said are different, in one customer: a false merge; same_apart: pairs
-    they said are the same, apart), with the pairs the variant sets right and wrong; and without labels: links, the
-    false ones the model expects, entities, and the pairs of records the variant puts apart or together. The base's clusters are
-    kept for the next trial of the same method on the same files (trials/base.parquet); each trial's result in
-    trials/<n>.json. Two trials of one workspace take turns. O(two full runs without the fit) + O(N + D)."""
-    trials, uid = ws / folder.TRIALS, s.data.unique_id
-    base, variant = (replace(x, trust=replace(x.trust, line=None)) for x in (base, variant))  # a trust line would hide what each does
-    trials.mkdir(exist_ok=True)
-    model, files = json.loads((ws / "state" / "model.json").read_text(encoding="utf-8")), folder.inputs(ws, s.input, s.paths["reference"])
-
-    def resolved(p: Pipeline, into: Path) -> dict:  # each record's cluster, written to `into`; and the numbers people compare
-        run = Run(p, s, model=model, echo=echo)
-        run.labels, run.keep = run._answers(ws), ws
-        run.resolve(files, None)
-        run.con.execute(f"COPY (SELECT {q(uid)}, cluster_id FROM gold) TO {lit(into)} (FORMAT parquet)")
-        probed = next((x["strata"] for x in run.steps if x["step"] == "probe"), [])  # the matches no key lists, as its probe estimates them
-        numbers = dict(matched=run._count("matches"), expected_false=run._expected_false(), rule_pairs=run._count("rule_kept WHERE merged"),
-                       entities=run._count("(SELECT DISTINCT cluster_id FROM gold)"), missed={x["stratum"]: x["keys_missed"] for x in probed})
-        run.con.close()
-        return numbers
-
-    with folder.run_lock(trials):
-        key = dict(config=run_config(base, s), files=[intake.sha256(f) for f in files], model=config_hash(model), code=code_version(s.root),  # all the base's clusters rest on
-                   answers=[intake.sha256(f) for f in folder.answer_parts(ws)])
-        kept = json.loads((trials / "base.json").read_text(encoding="utf-8")) if (trials / "base.json").exists() else {}
-        if kept.get("key") == key and (trials / "base.parquet").exists():
-            before = kept["numbers"]
-        else:
-            before = resolved(base, trials / "base.parquet")
-            replace_text(trials / "base.json", json.dumps(dict(key=key, numbers=before)))
-        after = resolved(variant, trials / "variant.parquet")
-        l, r, u = f"{uid}_l", f"{uid}_r", q(uid)
-        decided = applied(ws, uid)[[l, r, "decision"]].reset_index(drop=True)
-        con = connect(s.compute)[0]  # the two runs' clusters compared in SQL: O(N) rows never reach pandas
-        con.execute(f"""CREATE TABLE o AS SELECT * FROM read_parquet({lit(trials / 'base.parquet')});
-                        CREATE TABLE v AS SELECT * FROM read_parquet({lit(trials / 'variant.parquet')})""")
-        con.register("er_decided", decided.assign(k=range(len(decided))))
-        joined_before, joined_after = (np.array(x, dtype=bool) for x in zip(*con.execute(f"""SELECT coalesce(ol.cluster_id = orr.cluster_id, false),
-            coalesce(vl.cluster_id = vr.cluster_id, false) FROM er_decided d LEFT JOIN o ol ON ol.{u} = d.{q(l)} LEFT JOIN o orr ON orr.{u} = d.{q(r)}
-            LEFT JOIN v vl ON vl.{u} = d.{q(l)} LEFT JOIN v vr ON vr.{u} = d.{q(r)} ORDER BY d.k""").fetchall())) if len(decided) else (np.zeros(0, bool),) * 2
-        same = (decided["decision"] == "match").to_numpy()
-        was, now = joined_before == same, joined_after == same
-        pairs = lambda rows: decided.loc[rows, [l, r, "decision"]].head(50).rename(columns={l: "id_l", r: "id_r"}).to_dict("records")
-        c2 = lambda by: con.execute(f"SELECT coalesce(sum(c * (c - 1) // 2), 0) FROM (SELECT count(*) AS c FROM o JOIN v USING ({u}) GROUP BY {by})").fetchall()[0][0]  # pairs inside groups
-        kept_together, base_pairs, variant_pairs = int(c2("o.cluster_id, v.cluster_id")), int(c2("o.cluster_id")), int(c2("v.cluster_id"))
-        con.close()
-        (trials / "variant.parquet").unlink()
-        n = max((int(f.stem) for f in trials.glob("*.json") if f.stem.isdigit()), default=0) + 1
-        result = dict(trial=n, at=datetime.now().isoformat(timespec="seconds"), method=method, base=before, variant=after,
-                      different_joined=dict(base=int((joined_before & ~same).sum()), variant=int((joined_after & ~same).sum())),
-                      same_apart=dict(base=int((~joined_before & same).sum()), variant=int((~joined_after & same).sum())),
-                      fixed=pairs(now & ~was), broken=pairs(was & ~now),
-                      apart=base_pairs - kept_together, together=variant_pairs - kept_together)
-        replace_text(trials / f"{n}.json", json.dumps(result, ensure_ascii=False, default=str))
-        for f in trials.glob("*.json"):  # bounded: the last 5 trials
-            if f.stem.isdigit() and int(f.stem) <= n - 5:
-                f.unlink()
-    return result
 
 
 def listed(report: pd.DataFrame) -> list[dict]:  # each generator's pairs and seconds, kept in steps.json (describe matching)
