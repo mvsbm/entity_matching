@@ -2213,12 +2213,14 @@ async function pairsPage(el, arg = {}) {  // Review: the pairs waiting for a per
   $("from").value = from; $("record").value = arg.record || "";
   let page = 1, rows = [], total = 0, left = 0, i = 0, pending = false, written = w.pairs.written_in || 0;  // left: total less what this page decided since
   const count = 100;
+  let loads = 0;
   const tally = () => { $("written").textContent = String(written); $("apply").disabled = !written;
     $("done-line").innerHTML = `<b>${plural(left, "pair")}</b> waiting from ${fmt(from)} points${written ? ` · ${fmt(written)} decided, to apply` : ""}`;
     if (steps.steps && steps.steps.pairs) { steps.steps.pairs = {state: left || written ? "attention" : "done", line: left ? `${fmt(left)} waiting` : written ? `${fmt(written)} decided, to apply` : "all decided"}; rail(); } };
   const load = async () => {
     if (rows.length) $("left").innerHTML = loading();  // another page of the queue; the first one waits under the pair's
-    const x = await run("pairs", "list scored", {status: "open", from: String(from), page: String(page), count: String(count), record: $("record").value.trim()});
+    const n = ++loads, x = await run("pairs", "list scored", {status: "open", from: String(from), page: String(page), count: String(count), record: $("record").value.trim()});
+    if (n !== loads) return;  // the last filter's answer only: a pair is answered as it is shown
     if (x.event === "error") { $("left").innerHTML = banner(x); return; }
     rows = x.pairs; total = x.total; left = x.total - x.typed; i = Math.max(0, rows.findIndex((p) => !p.said)); tally(); draw(); show();
   };
@@ -2337,19 +2339,22 @@ async function explorePage(el, arg) {  // Explore: every pair kept, every entity
         <p class="answer">${r.joined ? `${plural(r.joined, "entity", "entities")} ${r.joined === 1 ? "holds" : "hold"} two records or more` : "None yet: every record is its own entity until you say two are the same, or your conditions merge them"}</p></div>
         <label class="find">${icon("search")}<input type="text" id="eid" placeholder="A record ID" aria-label="The entity of a record ID" value="${esc(want.entity || "")}"></label></div>
         ${logBars(r.sizes.map((x) => ({label: x.label, value: x.entities})))}</div><div class="split item-first"><div id="right" class="panel-sticky"></div>${GRIP}<div class="queue"><div id="left"></div></div></div>`;
-    let page = 1;
+    let page = 1, opened = 0, loads = 0;
     const open = async (id) => {
+      const n = ++opened;
       $("right").innerHTML = `<div class="card">${loading()}</div>`;
       const d = await run("results", "describe entity", {id});
+      if (n !== opened) return;  // the entity picked last only
       if (d.event === "error") { $("right").innerHTML = banner(d); return; }
       $("right").innerHTML = `<div class="card one">${scope("customers", `Entity ${d.entity}`)}<h2 class="question">${d.size > 1 ? `Why are these ${fmt(d.size)} records one entity?` : "One record, joined to no other"}</h2>
         <div class="links">${d.links.map((l) => `<div><b>${esc(l.id_l)} ↔ ${esc(l.id_r)}</b> · ${esc(BY[l.by] || ruleSays(l.by))}${l.weight !== null && l.weight !== undefined ? ` · ${signed(l.weight)} points` : ""}</div>`).join("")}</div>
         <div class="fr"></div></div>`;
       const ids = d.records.map((x) => x.id), x = ids.length === 2 ? await run("results", "explain pair", {first: ids[0], second: ids[1]}) : null;
-      if ($("right").querySelector(".fr")) fullRows($("right").querySelector(".fr"), "results", ids, x && x.event !== "error" ? x : null);
+      if (n === opened && $("right").querySelector(".fr")) fullRows($("right").querySelector(".fr"), "results", ids, x && x.event !== "error" ? x : null);
     };
     const load = async () => {
-      const x = await run("results", "list entities", {page: String(page), record: $("eid").value.trim()});
+      const n = ++loads, x = await run("results", "list entities", {page: String(page), record: $("eid").value.trim()});
+      if (n !== loads) return;
       if (x.event === "error") { $("left").innerHTML = banner(x); return; }
       $("left").innerHTML = `${scope("customers", `${fmt(x.total)} entities of two records or more`)}<div class="tablecard"><div class="tablewrap"><table><thead><tr><th>Entity</th><th class="num">Records</th><th>Names</th><th>Joined by</th></tr></thead><tbody>${
         x.entities.map((e, k) => `<tr class="pick" data-k="${k}"><td>${esc(e.entity)}</td><td class="num">${fmt(e.records)}</td><td><span class="clip" title="${esc(e.names.join(" · "))}">${esc(e.names.join(" · "))}</span></td><td>${esc(JOINED[e.joined_by] || "")}</td></tr>`).join("")
@@ -2377,10 +2382,11 @@ async function explorePage(el, arg) {  // Explore: every pair kept, every entity
       <label class="find">${icon("search")}<input type="text" id="frecord" placeholder="A record ID" aria-label="Pairs of a record ID" value="${esc(f.record)}"></label></div><div id="plist"></div>`;
   $("fsource").value = f.source; $("fstatus").value = f.status;
   $("rerun-count")?.addEventListener("click", () => go("run", {via: ["rerun records"]}));  // its dialog, opened on Find matches
-  let page = 1;
+  let page = 1, loads = 0;
   const load = async () => {
-    const x = await run("results", "list scored", {from: String($("ffrom").value || ""), to: String($("fto").value || ""), source: $("fsource").value, status: $("fstatus").value,
+    const n = ++loads, x = await run("results", "list scored", {from: String($("ffrom").value || ""), to: String($("fto").value || ""), source: $("fsource").value, status: $("fstatus").value,
       record: $("frecord").value.trim(), page: String(page), count: "100"});
+    if (n !== loads) return;  // the last filter's answer only, whichever comes back first
     if (x.event === "error") { $("plist").innerHTML = banner(x); return; }
     pairTable($("plist"), x.pairs, x.total, page, x.count, {onPick: (k) => pairDialog("results", x.pairs[k]), onPage: (n) => { page = n; load(); }});
   };

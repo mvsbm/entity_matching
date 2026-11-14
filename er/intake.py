@@ -327,9 +327,10 @@ def sniff(f: Path) -> tuple[str, str | None, bool]:  # (format, its delimiter, w
         raise InputError(f"{f}: a ZIP or Excel file, not records", fix="save it as CSV (UTF-8 or Shift-JIS) or Parquet, and give that")
     if head[:2] == b"\x1f\x8b":
         raise InputError(f"{f}: a gzip file", fix=f"decompress it first (gunzip {f.name}), then give the file inside")
+    even, odd = head[0:4096:2].count(0), head[1:4096:2].count(0)  # a NUL on the other side: a character such as the full-width space (U+3000)
     wide = (("utf-16" if head[:2] in (b"\xff\xfe", b"\xfe\xff") else  # UTF-16: by its BOM, or without one by where its NULs fall
-             "utf-16-le" if head[1:4096:2].count(0) > 0.1 * len(head[1:4096:2]) > 0 and head[0:4096:2].count(0) < 0.05 * len(head[0:4096:2]) and utf16(head, "utf-16-le") else
-             "utf-16-be" if head[0:4096:2].count(0) > 0.1 * len(head[0:4096:2]) > 0 and head[1:4096:2].count(0) < 0.05 * len(head[1:4096:2]) and utf16(head, "utf-16-be") else
+             "utf-16-le" if odd > 0.1 * len(head[1:4096:2]) > 0 and even < odd / 3 and utf16(head, "utf-16-le") else
+             "utf-16-be" if even > 0.1 * len(head[0:4096:2]) > 0 and odd < even / 3 and utf16(head, "utf-16-be") else
              "iso2022_jp" if re.search(rb"\x1b\$[@B]", head) else None))  # JIS: Japanese in seven bits, a comma among them, so decoded whole first
     text = head.decode(wide, "ignore") if wide else head.decode("latin-1")
     lines = [x for x in text.splitlines()[:50] if x.strip()]

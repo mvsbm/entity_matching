@@ -37,6 +37,7 @@ def test_the_ui_serves_only_its_own_link_and_runs_the_commands_as_nayose_does(tm
 
     try:
         assert call("GET", "/api/commands", token="wrong")[0] == 403  # another user of the machine: no link, no page
+        assert call("GET", "/api/commands?token=%C3%A9", token="")[0] == 403  # a link garbled into another script: refused, not a dropped connection
         assert call("GET", "/api/commands", host="example.com")[0] == 403  # a page elsewhere, through DNS rebinding
         status, page = call("GET", "/", token="old")
         assert status == 403 and "Open the link" in page  # an old link: a page in words

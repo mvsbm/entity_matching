@@ -167,7 +167,8 @@ class Classifier:
     def flag_code(self, flag: pd.Series | None, n: int) -> np.ndarray:  # the flag as 2 (company), 1 (person), NaN (none)
         if flag is None:
             return np.full(n, np.nan)
-        return np.where(flag.isna(), np.nan, np.where(flag.astype("string").isin(self.flag_company), COMPANY, PERSON)).astype(float)
+        said = flag.astype("string").str.normalize("NFKC").str.strip()  # as people's answers are read: "２" and "2 " (a padded field) are 2
+        return np.where(flag.isna(), np.nan, np.where(said.isin(self.flag_company), COMPANY, PERSON)).astype(float)
 
     def features(self, name: pd.Series, flag: pd.Series | None, birth: pd.Series | None) -> np.ndarray:
         """Per record: the name model's log-odds, the flag (1 company, 0 person), the birth year, a legal form."""

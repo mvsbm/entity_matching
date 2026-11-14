@@ -174,7 +174,7 @@ def handler(server: Server):
         def _allowed(self) -> bool:
             host = (self.headers.get("Host") or "").rsplit(":", 1)[0]
             token = self.headers.get("X-Token") or parse_qs(urlparse(self.path).query).get("token", [""])[0]
-            if host not in ("127.0.0.1", "localhost") or not secrets.compare_digest(token, server.token):
+            if host not in ("127.0.0.1", "localhost") or not secrets.compare_digest(token.encode(), server.token.encode()):  # bytes: a str past ASCII raises
                 if urlparse(self.path).path == "/":  # a person at an old link: said in words
                     self._send(403, "<!doctype html><meta charset=utf-8><title>nayose</title><body style='font:16px system-ui;margin:48px'>"
                                     "<h1 style='font-weight:500'>This link is from another start of nayose open ui</h1>"

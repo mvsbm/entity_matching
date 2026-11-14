@@ -671,3 +671,15 @@ def test_only_a_records_file_is_read_whole_and_as_it_was_written(say, tmp_path):
 
     pd.DataFrame({uid: ["0001", "0002"], "kind": [" 1", "２\u3000"]}).to_parquet(tmp_path / "kinds.parquet", index=False)
     assert len(answers(tmp_path / "kinds.parquet", connect()[0], uid)) == 2  # both taken: a space or a full-width digit is no other kind
+
+
+def test_utf16_without_its_bom_reads_whole_though_full_width_spaces_put_nuls_on_the_other_side(tmp_path):
+    from er import intake
+    rows = "id,name,address\n" + "".join(f"{i},ヤマダ　タロウ,東京都港区{i}\n" for i in range(40))  # U+3000 is 00 30 in UTF-16-LE
+    for enc in ("utf-16-le", "utf-16-be"):
+        part = tmp_path / enc
+        part.mkdir()
+        (part / "r.csv").write_bytes(rows.encode(enc))
+        r = intake.take(part, {part / "r.csv": "r.csv"}, intake.InputSpec(), load_settings().paths["reference"])
+        got = pd.read_parquet(part / r["files"][0]["read"])
+        assert r["files"][0]["format"] == enc and got["name"].iloc[0] == "ヤマダ　タロウ" and got["address"].iloc[3] == "東京都港区3", enc

@@ -84,9 +84,11 @@ def test_a_run_says_what_is_wrong_in_words_people_can_act_on(say, tmp_path, popu
     box = tmp_path / "inbox"
     (box / "batches").mkdir(parents=True)
     g.df.iloc[:10].to_csv(box / "batches" / "new.csv", index=False)  # just written: perhaps still being copied in
+    (box / "batches" / "._new.csv").write_bytes(b"\x00\x05\x16\x07 junk")  # macOS's copy of a file's attributes, beside it on a shared disk
     said = []
     assert inbox.one_pass(tmp_path / "run", box, 0, [], lambda *a, **k: said.append(a), settle=60) and not said
     assert inbox.one_pass(tmp_path / "run", box, 0, [], lambda *a, **k: said.append(a), settle=0) and said
+    assert [x[0].split(":")[0] for x in said] == ["batches/new.csv"] and (box / "batches" / "._new.csv").exists()  # a hidden file is no batch
 
 
 def test_nayose_prints_a_mistake_as_two_lines_and_exits_with_2(tmp_path):
@@ -97,6 +99,15 @@ def test_nayose_prints_a_mistake_as_two_lines_and_exits_with_2(tmp_path):
     error = json.loads(done.stdout.splitlines()[-1])
     assert done.returncode == 2 and error["event"] == "error" and error["exit"] == 2 and error["fix"]
     assert nayose("resolve", "records", tmp_path / "x.parquet").returncode == 2  # --workspace missing: the parser says so
+
+
+def test_a_number_given_is_a_finite_one_and_a_mistyped_workspace_is_refused_unmade(say, tmp_path):
+    assert say("create", "workspace", "w", "--home", tmp_path)[0] == 0
+    for words in (("draw", "pairs", "--count", "inf"), ("draw", "pairs", "--count", "nan"), ("try", "method", "--line", "nan"), ("describe", "results", "--from=-inf"), ("list", "scored", "--page", "²")):
+        code, e = say(*words, "--workspace", tmp_path / "w")
+        assert code == 2 and ("not a number" in e["error"] or "a whole number" in e["error"]), words
+    for words in (("set", "fit", "--records", "2000", "--em", "rules"), ("decide", "pair", "a", "b", "match"), ("answer", "kind", "a", "company")):
+        assert say(*words, "--workspace", tmp_path / "typo")[0] == 2 and not (tmp_path / "typo").exists(), words  # a workspace mistyped: refused, no folder made
 
 
 def test_a_long_command_shows_each_step_as_it_ends_and_how_long_is_left(monkeypatch):

@@ -1478,3 +1478,35 @@ def test_the_improve_page_tries_sample_sizes_shows_them_as_they_come_sets_one_an
     page.wait_for_selector("#sizes-out .banner", timeout=30_000)
     assert folder.method(ws).get("fit") == fit and "Find matches" in page.inner_text("#sizes-out .banner"), page.inner_text("#sizes-out .banner")
     page.screenshot(path=str(tmp_path / "sizes.png"), full_page=True)
+
+
+def test_a_list_shows_the_answer_to_the_last_thing_asked_whichever_answer_comes_back_first(ui_page, tmp_path, population, say):
+    s, p, g = population
+    g.df.to_parquet(tmp_path / "all.parquet", index=False)
+    ws = tmp_path / "w"
+    assert say("resolve", "records", tmp_path / "all.parquet", "--workspace", ws)[0] == 0
+    rid = say("list", "scored", "--status", "open", "--from=-1000", "--workspace", ws)[1]["pairs"][0]["first"]  # a record of a pair waiting for people
+    page, server, httpd = ui_page(str(ws), str(tmp_path), viewport={"width": 1280, "height": 900})
+    for screen, box, points, record in (("results", "#plist", "#ffrom", "#frecord"), ("pairs", "#left", "#from", "#record")):  # Explore's pairs, Review's queue
+        page.click(f".navitem[data-screen={screen}]")
+        page.wait_for_selector(f"{box} tbody tr")
+        held = []  # every pair from -1000 points asked for, held; then those of one record, which come back first
+        page.route("**/api/run", lambda route: held.append(route) if (b := json.loads(route.request.post_data))["command"] == "list scored" and not b["args"].get("record")
+                   else route.continue_())
+        page.fill(points, "-1000")
+        page.dispatch_event(points, "change")
+        for _ in range(100):
+            if held:
+                break
+            page.wait_for_timeout(50)
+        assert held, screen
+        page.fill(record, rid)
+        page.dispatch_event(record, "change")
+        mine = f"""() => {{ const rs = [...document.querySelectorAll("{box} tbody tr")]; return rs.length > 0 && rs.every((r) => r.textContent.includes("{rid}")); }}"""
+        page.wait_for_function(mine)
+        while held:
+            held.pop().continue_()
+        page.unroute("**/api/run")
+        page.wait_for_timeout(1500)
+        page.screenshot(path=str(tmp_path / f"{screen}.png"), full_page=True)
+        assert page.evaluate(mine), screen  # the record's pairs stay: the answer asked before them, come late, is dropped

@@ -56,7 +56,7 @@ def load(ws: Path, path: str, key: str | None, shown: list[str] | None, uid: str
 def _load(ws: Path, path: str, key: str | None, shown: list[str] | None, uid: str, sent: Path | None) -> dict:
     files, given = source.find(path), Path(path).expanduser()
     for f in files:
-        source.check_parquet(f)
+        source.check_parquet(f, fix="save it as Parquet, then load it")
     name, key = given.parent.name if source.globbed(given) else given.name, key or uid
     con = duckdb.connect()
     types = dict(con.execute(f"SELECT column_name, column_type FROM (DESCRIBE SELECT * FROM {_read(files)})").fetchall())

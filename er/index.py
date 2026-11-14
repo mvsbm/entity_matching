@@ -403,9 +403,11 @@ def _asking(ws: Path, s: Settings, p: Pipeline, values: dict | None, record: str
         with lock:
             query = _query(cur, s, fitted, values, record, kind)
         stored = ws / "state" / "placeholders.json"
-        for f, held in (json.loads(stored.read_text(encoding="utf-8")) if stored.exists() else {}).items():  # read as missing, as the run read them
+        sources = {d.name: {c for alt in d.sources for c in alt} for d in s.standardize.derived}
+        for f, held in (json.loads(stored.read_text(encoding="utf-8")) if stored.exists() else {}).items():  # read as missing, as the run read them (Run._placeholders)
             if f in query and pd.notna(v := query[f].iloc[0]) and v in held:  # a field not typed is missing already
-                query.loc[:, [c for c in query.columns if c == f or c.startswith(f"{f}__")]] = pd.NA
+                fields = [f, *(d for d, cs in sources.items() if d != f and cs & sources.get(f, set()))]  # and every field built from its columns
+                query.loc[:, [c for c in query.columns if any(c == x or c.startswith(f"{x}__") for x in fields)]] = pd.NA
         cur.register("er_q", query)
         cur.execute("CREATE TEMP TABLE qry AS SELECT * FROM er_q")
         cur.unregister("er_q")
