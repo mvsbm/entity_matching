@@ -109,7 +109,7 @@ def test_with_a_trust_line_an_increment_asks_for_the_checks_a_full_run_would(tmp
     import shutil
     from er.run import Run
     s, p, g = population
-    uid, pipe = s.data.unique_id, s.root / "tests" / "method.toml"
+    pipe = s.root / "tests" / "method.toml"
     p = replace(p, trust=replace(p.trust, checks=8, watch=0, line=math.inf))  # nothing merges yet; 8 checks a range
     new = np.random.default_rng(0).random(len(g.df)) < 0.2
     g.df[~new].to_parquet(tmp_path / "old.parquet", index=False)
