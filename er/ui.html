@@ -3136,7 +3136,7 @@ function sizesView(box, rows, done = null, now = "") {
       : "Still changing at the largest sample."}</p>${checkLines(done)}` : `<p class="muted">${spinner()} ${esc(now ? now.replace(/:.*/, "…") : `${fmt(rows[rows.length - 1].records)} records done…`)}</p>`) + chart + '<div id="sizes-table"></div>' +
     (done ? `<div class="stepfoot" data-report="${esc(done.report)}">${use}<span class="grow"></span><button class="btn" id="sizes-dl">${icon("download")}Download</button></div>` : "");
   grid($("sizes-table"), rows, ["records", "em", "start", "pairs_floor", "added", "lost", "seconds"], {filter: false,
-       labels: {em: "EM", pairs_floor: `pairs at ${fmt(done ? done.floor : 4)}+`, lost: "taken away"},
+       labels: {em: "EM", pairs_floor: `pairs at ${fmt((done || rows[0]).floor)}+`, lost: "taken away"},
        cell: (r, c) => c === "em" ? esc(FIT_EM[r.em]) : c === "pairs_floor" && r.error ? `<span class="faint">${esc(r.error)}</span>` : esc(r[c] === undefined ? "" : fmt(r[c]))});
 }
 

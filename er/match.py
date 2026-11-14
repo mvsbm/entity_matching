@@ -427,6 +427,20 @@ def rule_pairs(df: pd.DataFrame, rule: tuple[Key, ...]) -> int:  # the pairs a b
     return int((sizes * (sizes - 1) // 2).sum())
 
 
+def fit_model(fs: FSSpec) -> FSModel:  # the model as its fit learns it: with em_from_keys, one EM session per equality key of the method
+    keys = tuple(dict.fromkeys(b.keys for b in fs.blockers if isinstance(b, KeyBlocker)))
+    return replace(fs.model, em_rules=keys) if fs.model.em_from_keys and keys else fs.model
+
+
+def fit_sample_sql(models: Iterable[FSModel], uid: str, columns: set[str]) -> str:
+    """The records a fit learns from, in the order whose first n are its sample of n: whole postal areas by hash, so
+    households stay together and each sample is a smaller one and more; only the columns these models read."""
+    models = list(models)
+    reads = set().union(*(read_by(fs_settings(m, uid), *(keys_sql(r) for r in (*m.prior_rules, *m.em_rules))) for m in models)) | {uid}
+    area = q("postal_code__first3") if "postal_code__first3" in columns else None
+    return f"SELECT {', '.join(q(c) for c in sorted(columns) if c in reads)} FROM records ORDER BY {f'hash({area}), ' if area else ''}hash({q(uid)})"
+
+
 def train_fs(model: FSModel, df: pd.DataFrame, db: DuckDBAPI, uid: str, labels: pd.Series | None = None, kept: Path | None = None,
              u: dict[str, dict[str, float]] | None = None) -> dict:
     """Train on df; `labels` (entity per uid) is required for m_method="labels". Returns the Splink model JSON plus

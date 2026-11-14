@@ -216,27 +216,39 @@ GAP_RECORDS = 20_000  # records the gap report samples, whatever the file's size
 IDLE_LOSS = 0.01      # an idle key is dropped only where the pairs at the floor it alone may list are, at 95%, at most this share of them
 
 
+def gap_records(p) -> int:  # the records the gap's sample draws
+    return p.keys.records if p.keys else GAP_RECORDS
+
+
+def thresholds(p) -> list[float]:  # where the gap counts: the review floor, the model's line, 20 bits
+    return sorted({review_floor(p), p.fs.min_match_weight, 20.0})
+
+
+def agree_counts(atoms: list[Atom], lost: pd.DataFrame, w: float) -> list[dict]:  # how many of these pairs agree on each atom, scaled by w, the most first
+    by = sorted(((a.name, int(agrees(a, lost[f"a{i}"], lost[f"b{i}"]).sum())) for i, a in enumerate(atoms)), key=lambda x: -x[1]) if len(lost) else []
+    return [dict(atom=a, pairs=round(k * w)) for a, k in by if k]
+
+
 def gap(run) -> dict:
     """The pairs the run's model would accept that no key or rule listed, estimated by sampling (discover): per
     threshold (the review floor, the model's line, 20 bits), the file's pairs at it and those missed, with 95% Poisson
     intervals (the probe's); and for those missed at the floor, how many agree on each atom, the keys that would reach them. O(f·N·b)."""
     t0 = time.perf_counter()
     reused = getattr(run, "found", None)  # drawn by the keys step, its time there: listed now
-    d = reused or discover(run, run.pipeline.keys.records if run.pipeline.keys else GAP_RECORDS)
+    d = reused or discover(run, gap_records(run.pipeline))
     d.rec.close()
     t, w = listed_by(run, d.targets), d.weight
     rows = []
-    for at in sorted({review_floor(run.pipeline), run.pipeline.fs.min_match_weight, 20.0}):
+    for at in thresholds(run.pipeline):
         x = t[t["match_weight"] >= at]
         missed = int((~x["listed"]).sum())
-        lo, hi = _poisson(missed)
+        lo, hi = poisson(missed)
         rows.append(dict(bits=at, pairs=round(len(x) * w), missed=round(missed * w), missed_lo=round(lo * w), missed_hi=round(hi * w), sampled_missed=missed))
     lost = t[~t["listed"]]
-    by = sorted(((a.name, int(_agrees(a, lost[f"a{i}"], lost[f"b{i}"]).sum())) for i, a in enumerate(d.atoms)), key=lambda x: -x[1]) if len(lost) else []
     alone = t[(t["match_weight"] >= review_floor(run.pipeline)) & ~t["ruled"]]["sources"].dropna()
     alone = alone[~alone.str.contains("+", regex=False)].value_counts()  # listed by one key and no rule: lost without it
     facts = {k: v for k, v in d.facts.items() if not (reused and k in ("draw_seconds", "score_seconds", "drawn_seconds"))}
-    return {**facts, "reused": bool(reused), "thresholds": rows, "missed_agree": [dict(atom=a, pairs=round(k * w)) for a, k in by if k],
+    return {**facts, "reused": bool(reused), "thresholds": rows, "missed_agree": agree_counts(d.atoms, lost, w),
             "only": {k: round(v * w) for k, v in alone.items()}, "seconds": round(time.perf_counter() - t0, 2)}
 
 
@@ -250,20 +262,21 @@ def generator_atoms(b: Blocker) -> tuple[Atom, ...] | None:  # the atoms a gener
     return None
 
 
-def _frame(rows: pd.DataFrame, combo: tuple[Atom, ...], col: dict[str, int]) -> pd.DataFrame:  # these targets' values on each atom of the combo, as _agrees and _normal read them
+def _frame(rows: pd.DataFrame, combo: tuple[Atom, ...], col: dict[str, int]) -> pd.DataFrame:  # these targets' values on each atom of the combo, as agrees and _normal read them
     return pd.DataFrame({f"{s}{i}": rows[f"{s}{col[a.column]}"].to_numpy() for i, a in enumerate(combo) for s in "ab"})
 
 
-def key_lists(b: Blocker, rows: pd.DataFrame, col: dict[str, int], rec: Records, m: int) -> np.ndarray:
+def key_lists(b: Blocker, rows: pd.DataFrame, col: dict[str, int], rec: Records, m: int, kept: dict[str, list[str]] | None = None) -> np.ndarray:
     """Whether the generator lists each of these targets (a{i} / b{i} by atom, col: an atom's column → i): it agrees
-    on every atom of the key, in a block of fewer than m records. A generator that lists otherwise (sorted, TF-IDF): none."""
+    on every atom of the key, in a block of fewer than m records or one the run kept (`kept`: each generator's kept
+    blocks by value, state/blocks.json). A generator that lists otherwise (sorted, TF-IDF): none."""
     combo = generator_atoms(b)
     if combo is None or any(a.column not in col for a in combo):
         return np.zeros(len(rows), bool)
     f = _frame(rows, combo, col)
-    hit = np.logical_and.reduce([_agrees(a, f[f"a{i}"], f[f"b{i}"]) for i, a in enumerate(combo)])
+    hit = np.logical_and.reduce([agrees(a, f[f"a{i}"], f[f"b{i}"]) for i, a in enumerate(combo)])
     if hit.any():
-        hit[hit] = _normal(combo, b, f[hit].reset_index(drop=True), list(combo), rec, m)
+        hit[hit] = _normal(combo, b, f[hit].reset_index(drop=True), list(combo), rec, m, frozenset((kept or {}).get(b.name, ())))
     return hit
 
 
@@ -279,7 +292,7 @@ def idle(run) -> tuple[tuple[Blocker, ...], list[str]]:
     idle_ = [b for b in p.fs.blockers if generator_atoms(b) and all(best[c] <= 0 for c, cols in reads.items() if cols & {k.column for k in keys_of(b)})]
     if not idle_:
         return p.fs.blockers, []
-    d = run.found = discover(run, p.keys.records if p.keys else GAP_RECORDS)
+    d = run.found = discover(run, gap_records(p))
     t, m = listed_by(run, d.targets), p.fs.budget.min_oversized()
     col = {a.column: i for i, a in reversed(list(enumerate(d.atoms)))}
     frame = lambda rows, combo: _frame(rows, combo, col)
@@ -290,7 +303,7 @@ def idle(run) -> tuple[tuple[Blocker, ...], list[str]]:
             continue
         combo = generator_atoms(z)
         f = frame(t, combo)
-        mine = t[np.logical_and.reduce([_agrees(a, f[f"a{i}"], f[f"b{i}"]) for i, a in enumerate(combo)]) & ~t["ruled"].to_numpy()].reset_index(drop=True)
+        mine = t[np.logical_and.reduce([agrees(a, f[f"a{i}"], f[f"b{i}"]) for i, a in enumerate(combo)]) & ~t["ruled"].to_numpy()].reset_index(drop=True)
         others = np.zeros(len(mine), bool)
         for b in (b for b in kept if b not in idle_):  # the keys that stay whatever is dropped
             if not others.all():
@@ -302,7 +315,7 @@ def idle(run) -> tuple[tuple[Blocker, ...], list[str]]:
     return tuple(kept), dropped
 
 
-def _poisson(k: int) -> tuple[float, float]:  # about 95% for a count of k, as the probe gives it: none, the rule of three
+def poisson(k: int) -> tuple[float, float]:  # about 95% for a count of k, as the probe gives it: none, the rule of three
     return (max(k - 1.96 * math.sqrt(k), 0.0), k + 1.96 * math.sqrt(k)) if k else (0.0, 3.0)
 
 
@@ -318,7 +331,7 @@ def learn(run, f: float | None = None) -> tuple[tuple[Blocker, ...], dict, dict[
         rec.close()
         return fs.blockers, {**facts, "learned": False, "seconds": round(time.perf_counter() - t0, 2)}, {}
 
-    agree = {a: _agrees(a, targets[f"a{i}"], targets[f"b{i}"]) for i, a in enumerate(found)}
+    agree = {a: agrees(a, targets[f"a{i}"], targets[f"b{i}"]) for i, a in enumerate(found)}
     cost: dict[tuple, dict] = {}
 
     def priced(combo: tuple[Atom, ...]) -> float:  # its pairs per record, counted once as the budget counts them (outside oversized blocks)
@@ -401,21 +414,24 @@ def learn(run, f: float | None = None) -> tuple[tuple[Blocker, ...], dict, dict[
     return tuple(cost[c]["blocker"] for c, _ in chosen), facts, known
 
 
-def _normal(combo: tuple[Atom, ...], b: Blocker, targets: pd.DataFrame, found: list[Atom], rec: Records, m: int) -> np.ndarray:
-    """Whether each target's block under this key holds fewer than m records, so the key's join lists it: the blocks
-    of m or more (few) are found by a group-by, and each target looked up in them."""
+def _normal(combo: tuple[Atom, ...], b: Blocker, targets: pd.DataFrame, found: list[Atom], rec: Records, m: int, kept: frozenset[str] = frozenset()) -> np.ndarray:
+    """Whether each target's block under this key holds fewer than m records, or is one of `kept` (its value as the
+    gate names it: er.candidates._gate), so the key's join lists it: the blocks of m or more (few) are found by a
+    group-by, and each target looked up in them."""
     con, side = rec.con, lambda a, s: targets[f"{s}{found.index(a)}"]
     eq = [a for a in combo if not a.edits]
     if isinstance(b, KeyBlocker):
         cols = ", ".join(q(a.column) for a in eq)
         big = set(con.execute(f"SELECT {cols} FROM records WHERE {' AND '.join(f'{q(a.column)} IS NOT NULL' for a in eq)} "
                               f"GROUP BY ALL HAVING count(*) >= {m}").fetchall())
+        big = {v for v in big if " · ".join(map(str, v)) not in kept}
         return np.array([tuple(v) not in big for v in zip(*(side(a, "a") for a in eq))], bool) if big else np.ones(len(targets), bool)
     near = next(a for a in combo if a.edits)
     within = list(zip(*(side(a, "a") for a in eq))) if eq else [()] * len(targets)
     if isinstance(b, DeletionKeys):  # some deletion key the two share, in a normal block
         v = rec.variants(b)
         big = set(con.execute(f"SELECT __dk, {''.join(f'{q(a.column)}, ' for a in eq)}1 FROM {v} GROUP BY ALL HAVING count(*) >= {m}").fetchall())
+        big = {v for v in big if " · ".join(map(str, v[:-1])) not in kept}
         dels = lambda s: {s, *(s[:i] + s[i + 1:] for i in range(len(s)))} if isinstance(s, str) else set()
         return np.array([any((k, *w, 1) not in big for k in dels(x) & dels(y)) for x, y, w in zip(side(near, "a"), side(near, "b"), within)], bool)
     big = set(con.execute(f"SELECT {''.join(f'{q(a.column)}, ' for a in eq)}{q(near.column)} FROM records WHERE {q(near.column)} IS NOT NULL "
@@ -423,7 +439,7 @@ def _normal(combo: tuple[Atom, ...], b: Blocker, targets: pd.DataFrame, found: l
     return np.array([(*w, x) not in big and (*w, y) not in big for x, y, w in zip(side(near, "a"), side(near, "b"), within)], bool)
 
 
-def _agrees(a: Atom, x: pd.Series, y: pd.Series) -> np.ndarray:
+def agrees(a: Atom, x: pd.Series, y: pd.Series) -> np.ndarray:
     """Whether each pair (x, y) agrees on this atom, as its key would list them: equal, both filled; one deletion
     key shared (the value or one character deleted, from each); 1 to `edits` edits apart, each value at least edits + 1
     characters long."""

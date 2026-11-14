@@ -103,8 +103,11 @@ package "state/, for increments: Run.write" {
   entity "state/keys.json" as keyfile {
     the keys the run listed by, learned or left after dropping idle ones: increments and lookups list by them
   }
+  entity "state/blocks.json" as blocks {
+    each key's oversized blocks the run listed, by value: try sample counts their pairs as listed
+  }
   entity "state/config.txt" as config {
-    the pipeline and column mapping the full run used, hashed: an increment refuses others
+    the pipeline and column mapping the full run used, but its fit, hashed: an increment refuses others
   }
 }
 

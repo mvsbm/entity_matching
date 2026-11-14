@@ -89,6 +89,7 @@ def test_a_learned_key_counts_no_pair_inside_one_of_its_oversized_blocks(populat
         from er.keys import blocker
         a = Atom(Key("pref"), 0)
         assert _normal((a,), blocker((a,)), targets, [a], r, 64).tolist() == [False, True]  # 90 records: only the gate could list it
+        assert _normal((a,), blocker((a,)), targets, [a], r, 64, frozenset({"東京都"})).all()  # the gate kept it: listed
     finally:
         r.close()
 

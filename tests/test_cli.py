@@ -1084,3 +1084,5 @@ def test_the_fit_a_workspace_sets_is_the_sample_and_the_em_its_runs_use(populati
     for bad in ({"records": 10}, {"em": "both"}, {"records": True}, {"size": 2000}):
         with pytest.raises(InputError, match="fit takes"):
             adjust(p, {"fit": bad})
+    from er.run import run_config
+    assert run_config(q, s) == run_config(p, s) != run_config(adjust(p, {"line": 9}), s)  # an increment and a lookup score with the stored model: the fit owes them no rerun
