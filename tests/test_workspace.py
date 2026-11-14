@@ -235,7 +235,7 @@ def test_a_workspace_s_method_changes_the_tuned_one_only_where_it_says(tmp_path)
 
 
 def test_a_line_change_sets_right_what_people_decided_and_never_sets_wrong_what_was_right():
-    from er.report import line_change
+    from er.explain import line_change
     d = lambda rows: pd.DataFrame(rows, columns=["weight", "named", "same"])
     keep = d([(9.0, True, False), (8.5, True, True), (12.0, True, True)])  # raising past the different pair loses the same one
     assert line_change(keep, 8.0) is None
@@ -248,7 +248,7 @@ def test_a_line_change_sets_right_what_people_decided_and_never_sets_wrong_what_
 def test_describe_method_scores_people_s_pairs_again_and_an_audit_stays_one_across_rounds(tmp_path, wide_band):
     from er.config import adjust
     from er.io import config_hash
-    from er.report import describe_method
+    from er.explain import describe_method
     from er.run import Run
     s, p, g = wide_band
     uid = s.data.unique_id
@@ -634,7 +634,7 @@ def test_a_run_s_pairs_rows_and_entities_are_read_without_a_run_and_its_merge_co
     assert say("decide", "pair", *apart, "no_match", *at)[0] == 0  # typed back as applied
     assert say("set", "merging", *at, "--conditions", json.dumps({"when": [{"fields": {"name": "no such step"}}]}))[0] == 2
     assert folder.method(ws)["merge"] == either  # refused before anything changed: the conditions as they were
-    from er.report import run_model
+    from er.explain import run_model
     from er.results import merge_where
     assert merge_where({"when": [{"fields": {"gone": "exact"}}]}, run_model(ws), p) == "(FALSE)"  # a comparison the run lacks: never met, no crash
     assert say("reset", "method", *at)[0] == 0  # back to the tuned method, by a run: people's conditions kept
@@ -771,7 +771,7 @@ def test_a_workspace_on_object_storage_is_refused_and_one_on_a_disk_is_not(say, 
 def test_people_s_line_and_decisions_stand_against_an_old_trial_an_old_sheet_a_late_write_and_a_file_sent_again(say, tmp_path, population, monkeypatch):
     from er import folder, inbox
     from er.config import dump_pipeline
-    from er.report import applied
+    from er.review_state import applied
     s, p, g = population
     uid, ent = s.data.unique_id, s.data.entity_id
     l, r = f"{uid}_l", f"{uid}_r"

@@ -404,7 +404,7 @@ def test_a_parquet_file_reads_alike_whatever_its_row_groups_and_text_that_isn_t_
 
 
 def test_a_part_s_description_is_kept_and_made_again_only_when_what_it_rests_on_changes(tmp_path, monkeypatch, capsys):
-    from er import cli, folder
+    from er import cli, folder, hints
     pd.DataFrame({"CONT_ID": [f"R{i}" for i in range(6)], "TEL": ["0312345678"] * 6, "NAME": ["ヤマダタロウ", "サトウハナコ"] * 3}).to_parquet(tmp_path / "a.parquet", index=False)
     ws = tmp_path / "w"
     assert cli.main(["create", "workspace", "w", "--home", str(tmp_path), "--format", "json"]) == 0
@@ -423,14 +423,14 @@ def test_a_part_s_description_is_kept_and_made_again_only_when_what_it_rests_on_
     fresh = describe()
     assert made == [1] and fresh["slots"] != kept["slots"]  # the mapping changed: described again
     assert describe() == fresh and made == [1]  # and kept again
-    (Path(part) / cli.KEPT).write_text(json.dumps({"key": "other", "described": {}}), encoding="utf-8")
+    (Path(part) / hints.KEPT).write_text(json.dumps({"key": "other", "described": {}}), encoding="utf-8")
     assert describe() == fresh and made == [1, 1]  # a description kept for something else is never given
     (ws / "method.toml").write_text('drop_rules = ["X1_CIF_PERSON_NAME"]\n', encoding="utf-8")  # a method adopted: what a run would turn off may change
     describe()
     assert made == [1, 1, 1]
-    (Path(part) / cli.KEPT).write_text("{not json", encoding="utf-8")  # a kept copy cut short: made again, never a failure
+    (Path(part) / hints.KEPT).write_text("{not json", encoding="utf-8")  # a kept copy cut short: made again, never a failure
     describe()
-    assert made == [1, 1, 1, 1] and json.loads((Path(part) / cli.KEPT).read_text(encoding="utf-8"))["key"]
+    assert made == [1, 1, 1, 1] and json.loads((Path(part) / hints.KEPT).read_text(encoding="utf-8"))["key"]
 
 
 def test_a_value_written_as_a_list_reads_as_its_item_and_a_part_an_older_reader_read_is_read_again_once(tmp_path, monkeypatch):
@@ -575,7 +575,7 @@ def test_what_is_built_from_the_reference_files_is_kept_on_disk_until_they_or_it
 
 
 def test_a_part_s_columns_are_described_once_and_a_mapping_reads_only_what_it_changes_the_same_numbers_out(tmp_path, monkeypatch, capsys, population):
-    from er import cli, folder, source
+    from er import cli, folder, hints, source
     s, p, g = population
     g.df.to_parquet(tmp_path / "all.parquet", index=False)
     ws = tmp_path / "w"
@@ -587,7 +587,7 @@ def test_a_part_s_columns_are_described_once_and_a_mapping_reads_only_what_it_ch
     monkeypatch.setattr(source, "profiled", lambda *a: sampled.append(1) or real(*a))  # the columns profiled: their sample read
 
     def describe(fresh: bool = False) -> dict:  # fresh: nothing kept, every number made again
-        (part / cli.KEPT).unlink(missing_ok=True)
+        (part / hints.KEPT).unlink(missing_ok=True)
         if fresh:
             (part / source.COLUMNS_KEPT).unlink(missing_ok=True)
         capsys.readouterr()

@@ -42,7 +42,7 @@ def test_a_value_a_crowd_holds_pairs_by_no_edit_key():
 
 
 def test_atoms_follow_the_method_and_the_records(population):
-    from er.keys import atoms
+    from er.sample import atoms
     s, p, g = population
     p = replace(p, keys=LearnKeys())
     have = {"person_name__kana_fold", "phone", "customer_id", "postal_code", "company_name__nfkc_strip_legal_form_kana_fold", "birth_date"}
@@ -79,7 +79,7 @@ def test_learned_keys_stay_in_the_budget_and_lose_no_match_the_method_s_keys_fin
 
 
 def test_a_learned_key_counts_no_pair_inside_one_of_its_oversized_blocks(population):
-    from er.keys import Atom, _normal
+    from er.sample import Atom, in_normal
     s, p, g = population
     df = pd.DataFrame({"uid": [f"r{i}" for i in range(100)], "pref": ["東京都"] * 90 + ["大阪府"] * 10}, dtype="string")
     r = Records(df, "uid")
@@ -88,8 +88,8 @@ def test_a_learned_key_counts_no_pair_inside_one_of_its_oversized_blocks(populat
         targets = pd.DataFrame({"a0": ["東京都", "大阪府"], "b0": ["東京都", "大阪府"]})
         from er.keys import blocker
         a = Atom(Key("pref"), 0)
-        assert _normal((a,), blocker((a,)), targets, [a], r, 64).tolist() == [False, True]  # 90 records: only the gate could list it
-        assert _normal((a,), blocker((a,)), targets, [a], r, 64, frozenset({"東京都"})).all()  # the gate kept it: listed
+        assert in_normal((a,), blocker((a,)), targets, [a], r, 64).tolist() == [False, True]  # 90 records: only the gate could list it
+        assert in_normal((a,), blocker((a,)), targets, [a], r, 64, frozenset({"東京都"})).all()  # the gate kept it: listed
     finally:
         r.close()
 
@@ -161,7 +161,7 @@ def test_copies_of_one_customer_s_record_are_no_crowd_and_a_known_placeholder_is
 def test_the_gap_counts_a_pair_as_the_rules_only_where_they_kept_it():
     import duckdb
     from types import SimpleNamespace
-    from er.keys import listed_by
+    from er.sample import listed_by
     con = duckdb.connect()
     con.execute("CREATE TABLE rule_edges AS SELECT 'a' AS id_l, 'b' AS id_r UNION ALL SELECT 'c', 'd'")  # both found by a rule
     con.execute("CREATE TABLE rule_kept AS SELECT 'c' AS id_l, 'd' AS id_r")  # one kept: the other's records were resolved already

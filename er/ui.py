@@ -35,7 +35,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
-from er import cli, folder
+from er import cli, emit, folder
 from er.config import InputError
 from er.io import CHILD
 
@@ -88,16 +88,16 @@ class Job:
     begun: float = field(default_factory=time.time)  # a page drawn while it runs says how long it has run
 
 
-class Collect(cli.Emit):  # a quick command's events, kept for the page as JSON would carry them
+class Collect(emit.Emit):  # a quick command's events, kept for the page as JSON would carry them
     def __init__(self, job: Job):
         super().__init__("json")
         self.job = job
 
     def _json(self, event: str, x: dict) -> None:
-        self.job.events.append({"event": event, **cli.plain(x)})
+        self.job.events.append({"event": event, **emit.plain(x)})
 
 
-def fail(job: Job, error: str, code: int, fix: str = "") -> None:  # the job's end, as an error event cli.Emit writes
+def fail(job: Job, error: str, code: int, fix: str = "") -> None:  # the job's end, as an error event emit.Emit writes
     Collect(job).error(InputError(error, fix), code)
     job.code = code
 
@@ -201,7 +201,7 @@ def handler(server: Server):
             if url.path == "/":
                 self._send(200, PAGE.read_text(encoding="utf-8"), "text/html")
             elif url.path == "/api/commands":
-                self._send(200, dict(commands=declarations(), doing=cli.DOING, workspace=server.workspace, home=server.home))
+                self._send(200, dict(commands=declarations(), doing=emit.DOING, workspace=server.workspace, home=server.home))
             elif url.path.startswith("/api/job/") and (job := server.jobs.get(url.path.rsplit("/", 1)[1])):
                 done = job.code is not None  # read first: a finished job's events are all there
                 events = job.events[int(parse_qs(url.query).get("from", ["0"])[0]):]

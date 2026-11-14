@@ -30,7 +30,7 @@ from er.candidates import candidates
 from er.generate import generate, load_reference, load_spec
 from er.io import markdown
 from er.match import review_floor, score_fs
-from er.report import run_model
+from er.explain import run_model
 from er.settings import load_settings
 from er.strings import connect
 

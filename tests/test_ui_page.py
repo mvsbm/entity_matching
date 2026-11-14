@@ -1303,14 +1303,15 @@ def test_a_file_shows_its_columns_as_it_is_read_then_its_first_rows_then_the_who
     home, ws = tmp_path / "workspaces", tmp_path / "workspaces" / "w"
     assert cli.main(["create", "workspace", "w", "--home", str(home), "--format", "json"]) == 0
     fake_cli(f"""import er.cli as cli
-real = cli.Emit.line
+import er.emit as emit
+real = emit.Emit.line
 def line(self, text, **data):  # the real load, held after each thing it says early until the test lets it go on
     real(self, text, **data)
     if "early" in data:
         go = os.path.join({str(tmp_path)!r}, "go1" if data["early"]["records"] is None else "go2")
         while not os.path.exists(go):
             time.sleep(0.05)
-cli.Emit.line = line
+emit.Emit.line = line
 sys.exit(cli.main(sys.argv[1:]))
 """)
     page, server, httpd = ui_page(str(ws), str(home), viewport={"width": 1280, "height": 900})
