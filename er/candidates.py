@@ -94,19 +94,20 @@ class Records:
                 WHERE {_filled([b.key.name, *(w.name for w in b.within)])} GROUP BY ALL HAVING count(*) < {most} AND length({q(b.key.name)}) >= {2 * parts})""")  # an id per value: only ids cross into Python
             seg = lambda length, i: (f"({length}) // {parts} + ({i} >= {parts} - ({length}) % {parts})::INT",  # segment i of a value this long: its length, its start
                                      f"1 + {i} * (({length}) // {parts}) + greatest(0, {i} - ({parts} - ({length}) % {parts}))")
-            index = f"SELECT {w_}v, id, len AS l, i, v[{seg('len', 'i')[1]} : {seg('len', 'i')[1]} + {seg('len', 'i')[0]} - 1] AS s FROM (SELECT *, unnest(range({parts})) AS i FROM {values})"
+            # each row its value's id, not the value: within one block of within values, one id is one value, and a long value isn't copied per segment
+            index = f"SELECT {w_}id, len AS l, i, v[{seg('len', 'i')[1]} : {seg('len', 'i')[1]} + {seg('len', 'i')[0]} - 1] AS s FROM (SELECT *, unnest(range({parts})) AS i FROM {values})"
             # multi-match-aware starts (Li et al., §4.2): segment i of a value l long, in one len − l longer, only from
             # max(start − i, start + len − l − (k − i)) to min(start + i, start + len − l + (k − i)); each a complete window
             lo, hi = f"greatest(st - i, st + len - l - ({k} - i))", f"least(st + i, st + len - l + ({k} - i))"
             asked = (f"(SELECT * FROM {values} WHERE ({w_}v) IN (SELECT ({w_}{q(b.key.name)}) FROM {self.table} WHERE {q(self.uid)} IN "
                      f"(SELECT {q(self.uid)} FROM {probe})))" if probe else values)
-            probe_sql = (f"SELECT {w_}v AS x, id AS ix, l, i, x[p : p + sl - 1] AS s FROM (SELECT *, unnest(range({lo}, {hi} + 1)) AS p FROM "
+            probe_sql = (f"SELECT {w_}id AS ix, l, i, v[p : p + sl - 1] AS s FROM (SELECT *, unnest(range({lo}, {hi} + 1)) AS p FROM "
                      f"(SELECT *, {seg('l', 'i')[1]} AS st, {seg('l', 'i')[0]} AS sl FROM (SELECT *, unnest(range({parts})) AS i FROM "  # nested: unnests in one SELECT are zipped
                      f"(SELECT {w_}v, id, len, unnest(range(greatest({parts}, len - {k}), len + {k + 1})) AS l FROM {asked})))) "
-                     f"WHERE p >= 1 AND p + sl - 1 <= length(x)")
+                     f"WHERE p >= 1 AND p + sl - 1 <= length(v)")
             on = " AND ".join([*(f"a.{w} = c.{w}" for w in within), "a.l = c.l", "a.i = c.i", "a.s = c.s"])
             ids = self.con.execute(f"""SELECT DISTINCT least(a.id, c.ix) AS a, greatest(a.id, c.ix) AS c
-                FROM ({index}) a JOIN ({probe_sql}) c ON {on} AND a.v <> c.x""").fetchnumpy()
+                FROM ({index}) a JOIN ({probe_sql}) c ON {on} AND a.id <> c.ix""").fetchnumpy()
             a, c = ids["a"].astype(np.int64), ids["c"].astype(np.int64)
             if len(a):
                 vs = np.array([None, *(v for v, in self.con.execute(f"SELECT v FROM {values} ORDER BY id").fetchall())], dtype=object)  # vs[id]

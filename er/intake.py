@@ -440,7 +440,6 @@ def views(a: pa.Array) -> list[str | None]:  # a Parquet column's values as a CS
     return [None if b is None else b.decode("latin-1") for b in a.cast(pa.large_binary()).to_pylist()]
 
 
-PLAIN_RE2 = "^[!-~](?:[ -~]*[!-~])?$"  # printable ASCII, no space at either end: what reading keeps as it is
 SPACES = " \u2000-\u200a\u2028\u2029\u202f\u205f\u3000"  # JAPANESE's spaces, controls and breaks aside
 
 
@@ -475,6 +474,10 @@ def text_re2(garbled: frozenset[str]) -> str:
     return f"^[{re2_class(ok)}]*[{re2_class(ok - members(SPACES))}][{re2_class(ok)}]*$"
 
 
+def plain_ascii(x: pa.Array) -> pa.Array:  # ASCII text printable, not empty, no space at either end: what reading keeps as it is; a byte loop, not a regex
+    return pc.and_(pc.and_(pc.ascii_is_printable(x), pc.greater(pc.binary_length(x), 0)), pc.invert(pc.or_(pc.starts_with(x, " "), pc.ends_with(x, " "))))
+
+
 def settled(a: pa.Array, numeric: bool, nulls: pa.Array, utf8: bool, garbled: frozenset[str]) -> tuple[np.ndarray, np.ndarray]:
     """Which values of a text column reading keeps as they are, decided in Arrow, and which of those are UTF-8 (counted
     as decoded): plain ASCII (printable, no space at either end, not a placeholder, not a number to fix); with UTF-8 read
@@ -484,13 +487,14 @@ def settled(a: pa.Array, numeric: bool, nulls: pa.Array, utf8: bool, garbled: fr
     def on(mask: np.ndarray, test) -> np.ndarray:  # a test run on the values `mask` picks alone, False elsewhere: each value is tested only as what it can be
         out = np.zeros(len(a), bool)
         if (where := np.flatnonzero(mask)).size:
-            out[where] = pc.fill_null(test(a.take(pa.array(where, pa.int64()))), False).to_numpy(zero_copy_only=False)
+            picked = a if where.size == len(a) else a.take(pa.array(where, pa.int64()))  # every value: no copy
+            out[where] = pc.fill_null(test(picked), False).to_numpy(zero_copy_only=False)
         return out
     has = lambda pattern: lambda x: pc.match_substring_regex(x, pattern)
     ascii_ = pc.fill_null(pc.string_is_ascii(a), True).to_numpy(zero_copy_only=False)
     number = on(np.ones(len(a), bool), has("[.eE]")) if numeric else np.zeros(len(a), bool)
-    number |= on(pc.fill_null(pc.match_substring(a, "["), False).to_numpy(zero_copy_only=False), has(r"\[.*\]"))  # perhaps written as a list, spaces around it or not: read one by one, as tidy() decides
-    plain = on(ascii_, lambda x: pc.and_(pc.match_substring_regex(x, PLAIN_RE2), pc.invert(pc.is_in(x, value_set=nulls)))) & ~number
+    number |= on(pc.fill_null(pc.match_substring_regex(a, r"\["), False).to_numpy(zero_copy_only=False), has(r"\[.*\]"))  # perhaps written as a list, spaces around it or not: read one by one, as tidy() decides; RE2 finds a literal far faster than match_substring
+    plain = on(ascii_, lambda x: pc.and_(plain_ascii(x), pc.invert(pc.is_in(x, value_set=nulls)))) & ~number
     if not utf8 or ascii_.all():
         return plain, np.zeros(len(a), bool)
     text = on(~ascii_ & ~number, lambda x: pc.and_(pc.match_substring_regex(x, text_re2(garbled)), pc.invert(pc.is_in(pc.utf8_trim(x, " \u3000"), value_set=nulls))))

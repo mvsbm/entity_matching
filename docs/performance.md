@@ -240,6 +240,17 @@ trained once and its signals computed once; a combination fits only its combiner
   integers, and only those cross into Python, with each value's text once, for rapidfuzz to check: no pandas string
   for each of tens of millions of candidate pairs of names. With the bound above, the gap step on 500,000 generated
   records 21.5 s to 6.3 s (within two edits of a name, 12.4 s to 1.9 s), on train 4.9 s to 1.3 s.
+  Each row of the segment join holds its value's id and segment, never the value itself: within a block of within
+  values one id is one value, so a long value isn't copied into every one of its segment rows.
+- **The gap's one-edit atoms read only the sample's deletion blocks** (`er.sample.discover`): the sampled records'
+  deletion keys first, then each record's keys that are among them, so a block no sampled record is in is never
+  stored. The table of every record's deletions grew as N·L², L the value's length: on 500,000 records with addresses
+  of about 100 characters compared whole, the gap ran out of a 12.7 GiB memory limit and its spill filled the disk; it
+  now finishes in 32 s. On 138,000 such records, the gap 15.7 s to 13.1 s.
+- **A chain made from its prefix's column** (`er.standardize.prepare`): a normalization chain whose chain without its
+  last step was already made (`address`, then `address` and `first3`) applies only that step to it, when that step
+  makes nothing of an empty value, as every built-in step does. On addresses of about 100 characters, the address
+  normalized once a chunk, not twice: a chunk of 200,000 records 6.0 s to 4.3 s.
 - **EM's sessions per key without Splink's checks** (`train_fs`): each session's linker skips Splink's settings
   validation, which only logs warnings the fit hides, and takes the prior the first linker estimated on the same
   records, not counted again. A fit on 1,000 records one session per key, 2.9 s to 2.3 s; on 128,000, 6.2 s to 5.4 s.
@@ -307,6 +318,9 @@ damaged file costs about twice a clean one. A Parquet file is read by column: th
 its values one by one (a text column's first 50,000; past them, UTF-8 values tell nothing), then each chunk's values
 that reading keeps as they are are settled in Arrow, the rest read one by one as in a CSV; the same file, byte for
 byte, in about half the time (7.1 s against 14.8 s on the million records as Parquet).
+Plain ASCII is told by Arrow's byte tests (printable, not empty, no space at either end), not by a regular expression,
+and a bracket found by RE2, which finds a single character far faster than Arrow's substring search: on a file of
+500,000 records × 80 columns, some of 1,500 characters, the reader 37 s to 20 s.
 
 ## The probe: the matches no key lists
 

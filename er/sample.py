@@ -11,7 +11,7 @@ from dataclasses import dataclass
 import numpy as np
 import pandas as pd
 
-from er.candidates import KEEP_SLICE, Records
+from er.candidates import KEEP_SLICE, Records, deletions_sql
 from er.config import Blocker, DeletionKeys, EditKeys, Key, KeyBlocker, LearnKeys, Pipeline, keys_of, q
 from er.match import DISTANCES, SIMILARITIES, _bits, _ranked, bound_tests, review_floor, scaled_prior, score_fs
 
@@ -138,12 +138,13 @@ def discover(run, records: int) -> Found:
             far = near_of[a.column]
             if far >= 2:
                 con.execute(f"CREATE OR REPLACE TEMP VIEW er_kl_short AS SELECT * FROM er_kl_r WHERE length({k}) <= {2 * (far + 1)}")
-            src = rec if far < 2 else Records("er_kl_short", uid, con)
-            v = src.variants(DeletionKeys(name="x", key=Key(a.column)))
-            pair('x.' + u, 'y.' + u, f"""(SELECT * FROM {v} WHERE __dk IN (SELECT __dk FROM {v} GROUP BY 1 HAVING count(*) < {m})) x
-                SEMI JOIN er_kl_s s USING ({u}) JOIN {v} y ON x.__dk = y.__dk AND x.{u} <> y.{u}""")
-            if src is not rec:
-                src.close()
+            src, dk = "er_kl_r" if far < 2 else "er_kl_short", f"unnest({deletions_sql(k)}) AS __dk"
+            # the sampled records' deletion keys, then every record's rows of those keys alone: a block no sampled record is in
+            # is never made, so memory follows the sample, not every record's L deletions of L characters
+            con.execute(f"""CREATE OR REPLACE TEMP TABLE er_kl_x AS SELECT {u}, {dk} FROM {src} WHERE {k} IS NOT NULL AND {u} IN (SELECT {u} FROM er_kl_s);
+                CREATE OR REPLACE TEMP TABLE er_kl_y AS SELECT * FROM (SELECT {u}, {dk} FROM {src} WHERE {k} IS NOT NULL) WHERE __dk IN (SELECT __dk FROM er_kl_x)""")
+            pair('x.' + u, 'y.' + u, f"""(SELECT * FROM er_kl_x WHERE __dk IN (SELECT __dk FROM er_kl_y GROUP BY 1 HAVING count(*) < {m})) x
+                JOIN er_kl_y y ON x.__dk = y.__dk AND x.{u} <> y.{u}""")
         else:
             near = rec.near_values(EditKeys(name="x", key=Key(a.column), edits=a.edits), m, probe="er_kl_s")  # the sample's values against all
             rest = f"""{near} z JOIN er_kl_r x ON x.{k} = z.v JOIN er_kl_r y ON y.{k} = z.x
@@ -165,7 +166,7 @@ def discover(run, records: int) -> Found:
         {', '.join(f'a.{q(a.column)} AS {q("a" + str(i))}, b.{q(a.column)} AS {q("b" + str(i))}' for i, a in enumerate(found))}
         FROM er_kl_t t JOIN records a ON a.{u} = t.{l} JOIN records b ON b.{u} = t.{r} ORDER BY 1, 2""").df()
     targets = listed_by(run, targets)
-    con.execute("DROP VIEW IF EXISTS er_kl_two; DROP VIEW IF EXISTS er_kl_short; " + "; ".join(f"DROP TABLE IF EXISTS {x}" for x in ("er_kl_s", "er_kl_p", "er_kl_q", "er_kl_d", "er_kl_t", "er_kl_r", "er_kl_ok", *crowd.values()))
+    con.execute("DROP VIEW IF EXISTS er_kl_two; DROP VIEW IF EXISTS er_kl_short; " + "; ".join(f"DROP TABLE IF EXISTS {x}" for x in ("er_kl_s", "er_kl_p", "er_kl_q", "er_kl_d", "er_kl_t", "er_kl_x", "er_kl_y", "er_kl_r", "er_kl_ok", *crowd.values()))
                 + "; " + "; ".join(f"DROP TABLE IF EXISTS er_kl_c{i}" for i in range(len(eq))))
     weight = 1 / (1 - (1 - f) ** 2)
     facts = dict(atoms=[a.name for a in found], share=round(f, 4), sampled_records=round(f * n), reachable=ok, drawn=drawn, targets=len(targets),
