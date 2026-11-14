@@ -265,10 +265,10 @@ def merging_of(out: Path, p: Pipeline) -> dict:
 
 def _merging(method: dict, p: Pipeline) -> dict:  # merging_of, for a method as given
     m = method.get("merge") or {}
-    return dict(join=m.get("join", "and"), when=list(m.get("when", [])), own=_own(p))
+    return dict(join=m.get("join", "and"), when=list(m.get("when", [])), own=own_merging(p))
 
 
-def _own(p: Pipeline) -> dict | None:  # what a run merges with no conditions (Run._accept): the tuned threshold, else the trust line
+def own_merging(p: Pipeline) -> dict | None:  # what a run merges with no conditions (Run._accept): the tuned threshold, else the trust line
     line = p.trust.line
     return None if line is not None and math.isinf(line) else dict(line=p.fs.min_match_weight if line is None else line, rules=line is None)
 
@@ -300,7 +300,7 @@ def merge_where(m: dict, model: dict, p: Pipeline, x: str = "x") -> str:
     itself, as Run._accept does: every rule's pair and the model's kept pairs with a name compared at its threshold,
     or the pairs at the trust line; FALSE with the line above every step."""
     if not m.get("when"):
-        own = _own(p)
+        own = own_merging(p)
         if own is None:
             return "FALSE"
         rule = "TRUE" if own["rules"] else f"{x}.match_weight >= {bits(own['line'])}"

@@ -175,7 +175,7 @@ def discover(run, records: int) -> Found:
         took[a.name] = time.perf_counter() - t
         t = time.perf_counter()
     rec.close()
-    alone = "" if fs.bridge else f" AND (a.{u} IN {run._singletons('rule_clusters')} OR b.{u} IN {run._singletons('rule_clusters')})"  # without bridging, two rule entities are never compared: the probe counts those pairs
+    alone = "" if fs.bridge else f" AND {run._alone(f'a.{u}', f'b.{u}')}"  # without bridging, two rule entities are never compared: the probe counts those pairs
     con.execute(f"""CREATE OR REPLACE TABLE er_kl_d AS SELECT DISTINCT p.l AS {l}, p.r AS {r} FROM er_kl_p p JOIN rule_clusters a ON a.{u} = p.l
         JOIN rule_clusters b ON b.{u} = p.r WHERE a.cluster_id <> b.cluster_id{alone}""")  # a pair inside one rule cluster is the rules'
     drawn, t_drawn = run._count("er_kl_d"), time.perf_counter()
