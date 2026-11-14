@@ -44,7 +44,7 @@ PAGE = Path(__file__).with_name("ui.html")
 
 def declarations() -> list[dict]:
     """What the page needs of each command to place it and build its form: the declaration, as data."""
-    return [dict(name=c.name, verb=c.verb, noun=c.noun, help=c.help, about=c.about, example=c.example, quick=c.quick, result=c.result,
+    return [dict(name=c.name, verb=c.verb, noun=c.noun, help=c.help, about=c.about, example=c.example, quick=c.quick, result=c.result, steps=list(cli.steps_of(c.name)),
                  params=[dict(name=p.name, help=p.help, kind=p.kind, choices=list(p.choices), positional=p.positional,
                               required=p.required, optional=p.optional, metavar=p.shown) for p in c.params]) for c in cli.COMMANDS]
 
@@ -129,12 +129,8 @@ class Server:
     def _quick(self, job: Job) -> None:
         emit = Collect(job)
         try:
-            a = cli.parser(Refusing).parse_args(as_json(job.words))
-            result = cli.perform(a.command, {p.name: getattr(a, p.name) for p in a.command.params}, emit)
-            result.pop("exit_code", None)
-            emit.result(a.command, result)
-            job.code = 0
-        except InputError as e:  # the parser's refusal, or a mistake people fix
+            job.code = cli.execute(cli.parser(Refusing).parse_args(as_json(job.words)), emit)
+        except InputError as e:  # the parser's refusal
             fail(job, str(e), 75 if isinstance(e, cli.Busy) else 2, e.fix)
         except (Exception, SystemExit) as e:  # a bug, or argparse leaving (an ID typed as -h): its message, so the page doesn't hang
             oom = cli.out_of_memory(e)
@@ -205,7 +201,7 @@ def handler(server: Server):
             if url.path == "/":
                 self._send(200, PAGE.read_text(encoding="utf-8"), "text/html")
             elif url.path == "/api/commands":
-                self._send(200, dict(commands=declarations(), workspace=server.workspace, home=server.home))
+                self._send(200, dict(commands=declarations(), doing=cli.DOING, workspace=server.workspace, home=server.home))
             elif url.path.startswith("/api/job/") and (job := server.jobs.get(url.path.rsplit("/", 1)[1])):
                 done = job.code is not None  # read first: a finished job's events are all there
                 events = job.events[int(parse_qs(url.query).get("from", ["0"])[0]):]

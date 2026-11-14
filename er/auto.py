@@ -132,7 +132,7 @@ def synthetic(s: Settings, fields, records: int, difficulty: str, out: Path, don
     spec, _ = load_spec(s.root / "config" / "generator.toml", difficulty)
     written = {c.name for c in spec.columns}
     reads = lambda f: any(alt and all(c in written for c in alt) for alt in s.columns.get(f, ()))
-    lost = [f for f in fields.mandatory if not reads(f)] + [" or ".join(g) for g in fields.one_of if not any(map(reads, g))]
+    lost = fields.lacking(reads)
     lost = [x.replace("_", " ") for x in lost]  # said in words: person name or company name
     if lost:
         raise InputError(f"this workspace's mapping reads no column the generator writes for {', '.join(lost)}",

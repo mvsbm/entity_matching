@@ -77,7 +77,7 @@ from er.keys import idle, gap as keys_gap, learn
 from er.kind import KIND_COLUMNS, NAME_MODEL, century, classifier as kind_classifier, kind_review_sheet, merge_answers
 from er.match import ELSE, bound_tests, compared_exactly, fit_model, fit_sample_sql, named_sql, bound_reads, reaching_sql, refreshed_u, review_floor, rule_edges, score_fs, scored_u, train_fs, u_basis
 from er.probe import missed
-from er.report import applied, carry_kinds, carry_over, qa, report_text, review_sheet, scored_again, trust_state
+from er.report import applied, carry_kinds, carry_over, no_run, qa, report_text, review_sheet, scored_again, trust_state
 from er.results import BANDS, own_merging, banded, check_merging, merge_where
 from er.settings import SPECIAL, Settings, fit_to_file, present_fields
 from er.source import answers, decisions, file_facts, filled, known, open_source, suggest
@@ -210,7 +210,7 @@ class Run:
         self.notes, self.inputs = list(src.notes), file_facts(src.files, "records")
         present = self.present = present_fields(self.settings, src.columns)
         hints = suggest(src, self.con, [f for f in self.settings.columns if f not in present and f != "entity"], self.settings.detect)
-        needed = {*self.pipeline.fields.mandatory, *(f for g in self.pipeline.fields.one_of for f in g)}  # those a run stops without
+        needed = self.pipeline.fields.needed()
         hints = {f: (src.given.get(c, c), share, why) for f, (c, share, why) in hints.items() if share >= (0.99 if f == "id" else 0.5) and f in needed}  # a likely column, by the name it has in the file
         extra = self._lacks(stored, src.columns) if stored else []  # an increment's batch is read as the run read its records
         try:
@@ -298,7 +298,7 @@ class Run:
         hold and the batch doesn't (a file without its birth dates), so it is read, prepared and compared as the run's
         were. Never a column a field the run needs reads: a batch without its IDs or names is refused, as a file is."""
         fields, have, given = self.pipeline.fields, {c for c, *_ in self.con.execute(f"DESCRIBE {stored}").fetchall()}, present_fields(self.settings, columns)
-        needed = {c for f in (*fields.mandatory, *(f for g in fields.one_of for f in g)) for alt in self.settings.columns.get(f, ()) for c in alt}
+        needed = {c for f in fields.needed() for alt in self.settings.columns.get(f, ()) for c in alt}
         return list(dict.fromkeys(c for f, alts in self.settings.columns.items() if f in fields.optional and f in have and f not in given
                                   for c in alts[0] if c not in columns and c not in needed))
 
@@ -927,7 +927,7 @@ class Run:
         state, u = out / "state", q(self.uid)
         folder.finish_writes(out)
         if not (state / "model.json").exists():
-            raise InputError(f"no run in {out} to add records to", fix="resolve records into that folder first: nayose resolve records …")
+            raise no_run(out, "add records to")
         if folder.read_by_older(out):  # a list read as text then, as its item now: the two would never agree
             raise InputError(f"the run in {out} read its records with an earlier version of the reader: new records would not compare alike with them",
                              fix=f"run it again first, then add these: nayose rerun records --workspace {out}")
@@ -1010,7 +1010,7 @@ class Run:
         t, u, l, r = time.perf_counter(), q(self.uid), q(self.l), q(self.r)
         folder.finish_writes(out)
         if not (out / "gold.parquet").exists():
-            raise InputError(f"no run in {out} to apply decisions to", fix="resolve the records into that folder first: nayose resolve records …")
+            raise no_run(out, "apply decisions to")
         self.con.execute(f"CREATE OR REPLACE TABLE gold_old AS SELECT * FROM read_parquet({lit(out / 'gold.parquet')})")
         self.inputs = file_facts(decisions(path, self.con, self.l, self.r, into="er_decisions"), "decisions")  # the door: er.source checks them
         known(self.con, f"SELECT {l} AS id FROM er_decisions UNION SELECT {r} FROM er_decisions", "gold_old", self.uid, path, f"the run in {out}")

@@ -782,7 +782,7 @@ const spinner = (cls = "") => `<svg class="spin ${cls}" viewBox="0 0 48 48" aria
 const linear = () => '<div class="lin" aria-hidden="true"><span class="b1"><i></i></span><span class="b2"><i></i></span></div>';  // and its linear one
 const loading = (label = "", small = false) => `<div class="loading${small ? " small" : ""}" role="status" aria-label="${esc(label || "Loading")}">${spinner()}${label ? `<span>${esc(label)}</span>` : ""}</div>`;  // a part still being read
 
-let COMMANDS = {}, current = "records", keyHandler = null, steps = {};
+let COMMANDS = {}, DOING = {}, current = "records", keyHandler = null, steps = {};
 const state = {};
 
 async function api(path, body) {  // the page's one network call: a lost server is a value, never a throw, said once above the page
@@ -940,7 +940,7 @@ function runPace(order, ended, at, now, last, p = null, pAt = at) {
   // makes the time a floor (least); a step past its last time is `over`, and only the steps after it are counted.
   const i = order.indexOf(ended) + 1, next = order[i];
   if (!next) return {done: 1, left: 0, least: false, over: false};
-  const share = (s) => last ? last[s] || 0 : FRAC[s] - (FRAC[RUN_STEPS[RUN_STEPS.indexOf(s) - 1]] || 0);  // a step's part of the work
+  const share = (s) => last ? last[s] || 0 : FRAC[s] - (FRAC[stepsOf("resolve records")[stepsOf("resolve records").indexOf(s) - 1]] || 0);  // a step's part of the work
   const inStep = now - at, after = order.slice(i + 1);
   let here = null, within = 0, over = false, least = false;
   if (p && p.total && p.done && p.done < p.total) {  // its pace so far: the time per unit done, for the units left (all counted: what follows in the step, by last time)
@@ -996,7 +996,7 @@ const task = {
     else $("task").hidden = false;  // a failure said wherever the person is, its page's own command too
   },
   draw() {
-    const secs = (Date.now() - this.t0) / 1000, order = STEPS_OF[this.command] || RUN_STEPS, p = this.p;
+    const secs = (Date.now() - this.t0) / 1000, order = stepsOf(this.command), p = this.p;
     let left = null, now = "", done = null, soon = "";
     if (RUNS.includes(this.command)) {
       const next = order[order.indexOf(this.ended) + 1], pace = runPace(order, this.ended, this.at, secs, this.last, p, this.pAt);
@@ -1040,7 +1040,7 @@ function railBusy() {  // the step a long command runs for: its dot turning, its
 function runCard() {
   const card = current === "run" && $("out")?.querySelector(".steps-card");
   if (!card || !task.t0 || task.done !== null || !RUNS.includes(task.command)) return;
-  const order = STEPS_OF[task.command] || RUN_STEPS, secs = (Date.now() - task.t0) / 1000, next = order[order.indexOf(task.ended) + 1] || order[0];
+  const order = stepsOf(task.command), secs = (Date.now() - task.t0) / 1000, next = order[order.indexOf(task.ended) + 1] || order[0];
   card.querySelector(".answer").innerHTML = `${lasts(secs)} so far${task.soon ? ` · ${task.soon}` : ""} · now: ${esc(task.doing)}`;  // as the panel last drew it
   card.querySelector(".meter i").style.width = `${Math.round(100 * Math.min(1, task.most))}%`;
   card.querySelector(".meter").hidden = !task.most; card.querySelector(".lin").hidden = !!task.most;  // the moving line until a step says how far  // the work done, not the time spent: as the panel has it, never back
@@ -1806,17 +1806,12 @@ function grid(box, rows, cols, opts = {}) {
 // A parameter's input, built from its declaration: a flag a checkbox, a choice a list, the rest a text box.
 const FIELD = {input: "Records file"};  // a parameter's name on the page, where its own name says less
 const LIT = {load: ["records", "records"], rules: ["rules", "pairs"], candidates: ["candidates", "candidates"], cluster: ["accept", "accepted"]};  // a run's step, the stage it fills in
-const RUN_STEPS = ["load", "budget", "fit", "rules", "keys", "candidates", "score", "cluster", "probe", "gap", "report", "write"];  // a full run's steps, in the order they end
-const STEPS_OF = {"add records": ["load", "fit", "rules", "candidates", "score", "cluster", "report", "write"],  // an increment's: no plan, no probe
-                  "match records": ["load", "fit", "rules", "candidates", "score", "cluster"]};  // a preview writes nothing
+const stepsOf = (c) => (COMMANDS[c] || {}).steps || [];  // a run's steps, in the order they end, as the CLI declares them
 const BUSY = {"resolve records": "Finding matches", "rerun records": "Matching again", "add records": "Adding the new records", "match records": "Previewing the new records",
               "load records": "Loading your file", "upload file": "Uploading your file", "generate records": "Generating records", "accept repairs": "Accepting the repairs", "try everything": "Auto mode", "try method": "Trying a method", "try sample": "Trying sample sizes", "set fit": "Setting the fit",
               "set merging": "Rebuilding the entities", "apply answers": "Matching again with your answers", "apply decisions": "Applying your decisions",
               "adopt method": "Matching with the method tried", "reset method": "Matching with the tuned method", "lower trust": "Lowering the trust line",
               "raise trust": "Raising the trust line", "split entity": "Splitting the entity"};
-const DOING = {load: "reading the records", budget: "planning the work", fit: "learning what matches look like", rules: "applying the match rules",
-               candidates: "listing pairs to compare", score: "scoring the pairs", cluster: "forming entities", probe: "looking for matches it missed",
-               gap: "measuring what the keys miss", report: "writing the report", write: "saving"};
 const LIT_NODE = {load: "records", rules: "rules", candidates: "candidates", score: "score", cluster: "group"};  // the stage a step works on
 const guess = (rows, w) => {  // a run's seconds, about, before it starts: this workspace's last full run, scaled to these records; else this machine's reading of the file, per column, times four; else a minute a million records
   const r = (w.runs || []).filter((x) => x.what === "full run").slice(-1)[0], f = lastFile(w);
@@ -4370,7 +4365,7 @@ document.addEventListener("keydown", (e) => {
   for (const [id, name] of [["menu", "menu"], ["search-ic", "search"], ["term-toggle", "terminal"], ["help", "help"], ["term-ic", "terminal"], ["term-clear", "clear"], ["term-close", "close"], ["task-fold", "down"], ["task-close", "close"]]) $(id).innerHTML = icon(name);
   const d = await api("/api/commands");
   if (!d.commands) { $("screen").innerHTML = `<div style="padding:24px">${banner({event: "error", error: d.error || "This page needs the link nayose open ui printed"})}</div>`; return; }
-  COMMANDS = Object.fromEntries(d.commands.map((c) => [c.name, c]));
+  COMMANDS = Object.fromEntries(d.commands.map((c) => [c.name, c])); DOING = d.doing;
   state.home = d.home;
   $("menu").onclick = () => document.body.classList.toggle(matchMedia("(max-width: 860px)").matches ? "nav-open" : "collapsed");
   $("picker").onclick = pick;
