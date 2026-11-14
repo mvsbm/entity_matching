@@ -220,12 +220,12 @@ def rounds(out: Path) -> list[dict]:
     return json.loads((out / ROUNDS).read_text(encoding="utf-8")) if (out / ROUNDS).exists() else []
 
 
-def round_ran(out: Path, entry: dict) -> None:
-    """rounds.json after a full run: its entry replaces the last when the method (entry["config"]) is the same, a run
-    again on new answers or files; a new method opens the next round. Written whole, then renamed."""
+def round_ran(out: Path, entry: dict) -> str:
+    """rounds.json's text after a full run, for stage to write with the run: its entry replaces the last when the
+    method (entry["config"]) is the same, a run again on new answers or files; a new method opens the next round."""
     kept = rounds(out)
     kept = [*kept[:-1], entry] if kept and kept[-1]["config"] == entry["config"] else [*kept, entry]
-    replace_text(out / ROUNDS, json.dumps(kept, indent=1, ensure_ascii=False, default=str))
+    return json.dumps(kept, indent=1, ensure_ascii=False, default=str)
 
 
 def prepared(ws: Path, key: str) -> Path | None:
