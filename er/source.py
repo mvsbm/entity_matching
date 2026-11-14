@@ -23,6 +23,7 @@ import pandas as pd
 
 from er import intake
 from er.config import InputError, lit, q
+from er.io import replace_text
 from er.settings import norm_name
 
 CONVERT = "give it to nayose as it is (load records, or any command that takes records): it reads CSV, TSV and Parquet"
@@ -258,9 +259,8 @@ def describe(path: str | Path, con: duckdb.DuckDBPyConnection, columns: Mapping[
         fits, profile = known["fits"], known["profile"]
         if len(shares) > MAPPED_KEPT or len(seens) > MAPPED_KEPT:  # mappings tried and left: the oldest go
             known["shares"], known["seen"] = dict(list(shares.items())[-MAPPED_KEPT // 2:]), dict(list(seens.items())[-MAPPED_KEPT // 2:])
-        with contextlib.suppress(OSError):
-            (keep / f".{os.getpid()}{COLUMNS_KEPT}").write_text(json.dumps(known, ensure_ascii=False), encoding="utf-8")
-            os.replace(keep / f".{os.getpid()}{COLUMNS_KEPT}", keep / COLUMNS_KEPT)
+        with contextlib.suppress(OSError):  # a cache: one not written is made again
+            replace_text(keep / COLUMNS_KEPT, json.dumps(known, ensure_ascii=False))
     else:
         n, share = count(list(shown))
         con.execute(f"CREATE OR REPLACE TEMP TABLE er_described AS SELECT * FROM {src.sql} USING SAMPLE reservoir({rows} ROWS) REPEATABLE (0)")
@@ -411,9 +411,10 @@ def decisions(path: str | Path, con: duckdb.DuckDBPyConnection, l: str, r: str, 
     decided = f"FROM {src.sql} WHERE {filled('decision')}"
     if (blank := con.execute(f"SELECT count(*) {decided} AND NOT ({filled(l)} AND {filled(r)})").fetchall()[0][0]):
         raise InputError(f"{path}: {blank:,} decided rows lack an ID", fix="fill in both IDs of each decided row, or clear its decision")
-    why = "nullif(trim(why), '')" if "why" in src.columns else "NULL::VARCHAR"  # the sheet's row kind: an audit stays known as one
+    blank = lit(FILLED)  # spaces of any width, as filled() reads them: "match　" is match
+    why = f"nullif(trim(why, {blank}), '')" if "why" in src.columns else "NULL::VARCHAR"  # the sheet's row kind: an audit stays known as one
     con.execute(f"""CREATE OR REPLACE TABLE {q(into)} AS SELECT least({q(l)}, {q(r)}) AS {q(l)}, greatest({q(l)}, {q(r)}) AS {q(r)},
-        lower(trim(decision)) AS decision, any_value({why}) AS why {decided} GROUP BY 1, 2, 3""")
+        lower(trim(decision, {blank})) AS decision, any_value({why}) AS why {decided} GROUP BY 1, 2, 3""")
     if not con.execute(f"SELECT count(*) FROM {q(into)}").fetchall()[0][0]:
         raise InputError(f"{path}: no row has a decision", fix="decide pairs first (nayose decide pair ID ID match), or write match or no_match in the sheet's decision column")
     if (bad := con.execute(f"SELECT DISTINCT decision FROM {q(into)} WHERE decision NOT IN ('match', 'no_match')").fetchall()):

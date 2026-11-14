@@ -22,7 +22,7 @@ import pandas as pd
 import pyarrow.parquet as pq
 
 from er import intake
-from er.config import InputError, lit, toml_of
+from er.config import InputError, lit, q, toml_of
 from er.io import alive, lock, object_store, read_parquet, replace_text
 from er.settings import COLUMNS
 from er.source import find, globbed
@@ -194,6 +194,16 @@ def stamp(ws: Path) -> str:
     files = [ws / "review.parquet", ws / "kind_review.parquet", ws / METHOD, ws / COLUMNS, ws / "gold.parquet",
              *sorted((ws / DECISIONS).glob("part-*.parquet")), *sorted((ws / KIND_ANSWERS).glob("part-*.parquet"))]
     return hashlib.sha256(repr([(f.name, f.stat().st_size, f.stat().st_mtime_ns) for f in files if f.exists()]).encode()).hexdigest()[:12]
+
+
+def latest_decisions(out: Path, uid: str, cols: tuple[str, ...] = ("decision",)) -> str | None:
+    """SQL: each pair's latest decision the folder holds (the last part's: one decided again counts once, as last
+    said), with `cols` as that part gave them; None before any."""
+    parts, l, r = Path(out) / DECISIONS, q(f"{uid}_l"), q(f"{uid}_r")
+    if not any(parts.glob("part-*.parquet")):
+        return None
+    return (f"(SELECT {l}, {r}, {', '.join(f'arg_max({c}, filename) AS {c}' for c in cols)} "
+            f"FROM read_parquet({lit(parts / 'part-*.parquet')}, filename = true, union_by_name = true) GROUP BY {l}, {r})")
 
 
 def method(out: Path | str | None) -> dict:  # the workspace's method.toml, {} without one

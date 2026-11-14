@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING
 import numpy as np
 import pandas as pd
 
-from er.config import InputError, Normalizer, Standardization, column_name, legal_pattern
+from er.config import COPIES, InputError, Normalizer, Standardization, column_name, legal_pattern
 
 if TYPE_CHECKING:
     from er.kind import Classifier
@@ -150,7 +150,7 @@ def prepare(std: Standardization, records: pd.DataFrame, normalized: Iterable[tu
                 df["company_name"] = df["company_name"].mask(np.logical_or.reduce(list(same.values())) & (side == "person"))
     for col, steps in normalized:
         if column_name(col, steps) not in df:  # a one-byte copy from the column it copies, if made: not the chain again
-            done = steps[-1] in ("one_byte", "one_byte_hash") and column_name(col, steps[:-1]) in df
+            done = steps[-1] in COPIES and column_name(col, steps[:-1]) in df
             df[column_name(col, steps)] = normalize(df[column_name(col, steps[:-1])], steps[-1:], std) if done else normalize(df[col], steps, std)
     missing = set(used) - set(df.columns)
     if missing:

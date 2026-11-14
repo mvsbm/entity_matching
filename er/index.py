@@ -43,7 +43,7 @@ import pandas as pd
 import pyarrow.parquet as pq
 
 from er import folder
-from er.candidates import deletions_sql
+from er.candidates import _filled, deletions_sql
 from er.config import DeletionKeys, InputError, KeyBlocker, Pipeline, SortedNeighbourhood, lit, q
 from er.intake import tidy
 from er.io import read_parquet
@@ -121,10 +121,6 @@ def _hashed(x: object, side: str = "") -> str:  # the SQL of a table's key hash,
         return f"hash(__dk, {', '.join(side + q(w.name) for w in x.within)})" if x.within else "hash(__dk)"
     st, rule = x
     return f"hash({', '.join(side + q(c) for c in st.keys(rule))})"
-
-
-def _filled(cols: list[str]) -> str:
-    return " AND ".join(f"{q(c)} IS NOT NULL" for c in cols)
 
 
 def _keys(x: object) -> list[str]:  # the columns a table's rows must all hold
