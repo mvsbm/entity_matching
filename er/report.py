@@ -527,8 +527,10 @@ def describe_matching(con: duckdb.DuckDBPyConnection, out: Path | None, p: Pipel
     found = key_found(con, likely, l, r) if ran else {}
     by_keys = [dict(keys=k, links=c) for k, c in rows(f"SELECT least(len(string_split(sources, '+')), 11) AS k, count(*) FROM ({likely}) GROUP BY 1 ORDER BY 1")]
     off = {m.group(1) for d in turned_off for m in [re.match(r"generator (\S+)", d)] if m}
-    shown = next((x for x in reversed(facts) if x["step"] == "report"), {})  # the tables qa.md shows, kept by the run that wrote it
-    big = pd.DataFrame(shown.get("oversized_blocks", []))
+    shown = next((x for x in reversed(facts) if x["step"] == "report"), {})  # the weight bands qa.md shows, kept by the run that wrote it
+    qa_text = (out / "qa.md").read_text(encoding="utf-8") if ran and (out / "qa.md").exists() else ""  # the blocks' values: in qa.md, never steps.json
+    section = qa_text.split("## oversized blocks", 1)[1].split("\n## ", 1)[0] if "## oversized blocks" in qa_text else ""
+    big = table_after(qa_text, "## oversized blocks") if "|" in section else pd.DataFrame()  # a run without one writes "none"
     skipped = big[big["decision"].astype(str).str.startswith("skipped")].astype({"records": int, "pairs": int}).sort_values("records", ascending=False) if len(big) else big
     generators, idle = [], {n for x in facts if x["step"] == "keys" for n in x.get("dropped", ())}  # not run: other keys list its pairs (er.keys.idle)
     for b in p.fs.blockers:

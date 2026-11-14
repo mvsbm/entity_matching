@@ -105,6 +105,25 @@ def test_an_interrupted_increment_completes_when_run_again(tmp_path, population,
     assert len(pd.read_parquet(tmp_path / "unlogged" / "gold.parquet")) == len(g.df)  # and a rerun reads every file the log names
 
 
+def test_a_full_run_cut_short_in_its_moves_lands_with_its_round(tmp_path, population, monkeypatch):
+    import os
+    from er import folder
+    from er.run import Run
+    s, p, g = population
+    g.df.to_parquet(tmp_path / "all.parquet", index=False)
+    replace_ = os.replace
+    def cut_short(a, b):  # dies at the first move once the moves owed are saved
+        if (tmp_path / "run" / folder.PENDING).exists():
+            raise KeyboardInterrupt
+        replace_(a, b)
+    monkeypatch.setattr(os, "replace", cut_short)
+    with pytest.raises(KeyboardInterrupt):
+        Run(p, s).full(tmp_path / "all.parquet", tmp_path / "run")
+    monkeypatch.undo()
+    folder.finish_writes(tmp_path / "run")  # as the next command on the workspace does
+    assert (tmp_path / "run" / "gold.parquet").exists() and len(folder.rounds(tmp_path / "run")) == 1  # the run and its round land together
+
+
 def test_a_full_run_keeps_the_decisions_and_kinds_people_typed_in_and_have_not_given_back(tmp_path, population):
     from er import folder
     from er.run import Run
@@ -178,6 +197,23 @@ def test_an_increment_refuses_a_changed_pipeline_and_steps_json_says_what_went_i
     with pytest.raises(InputError, match="changed since the full run"):
         Run(changed, s).increment(tmp_path / "new.parquet", tmp_path / "run")  # the batch would be resolved otherwise
     Run(p, s).increment(tmp_path / "new.parquet", tmp_path / "run")  # the run's own pipeline: it goes on
+
+
+def test_an_increment_never_merges_a_pair_people_said_is_different(tmp_path, population):
+    from er.run import Run
+    s, p, g = population
+    uid, ws = s.data.unique_id, tmp_path / "run"
+    g.df.to_parquet(tmp_path / "all.parquet", index=False)
+    Run(p, s).full(tmp_path / "all.parquet", ws)
+    a, b = pd.read_parquet(ws / "matches")[[f"{uid}_l", f"{uid}_r"]].iloc[0]  # the model merged them
+    pd.DataFrame({f"{uid}_l": [a], f"{uid}_r": [b], "decision": ["no_match"]}).to_parquet(tmp_path / "said.parquet")
+    Run(p, s).decide(tmp_path / "said.parquet", ws)
+    g.df[g.df[uid] != b].to_parquet(tmp_path / "without.parquet", index=False)
+    g.df[g.df[uid] == b].to_parquet(tmp_path / "back.parquet", index=False)
+    Run(p, s).full(tmp_path / "without.parquet", ws, overwrite=True)  # decisions/ stays
+    Run(p, s).increment(tmp_path / "back.parquet", ws)
+    gold = pd.read_parquet(ws / "gold.parquet").set_index(uid)["cluster_id"]
+    assert gold[a] != gold[b]  # as a full run applies people's "different"
 
 
 def test_answers_given_wrong_stop_the_run(tmp_path, population):

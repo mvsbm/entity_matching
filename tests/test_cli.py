@@ -759,7 +759,8 @@ def test_an_oversized_block_is_checked_on_a_sample_and_a_placeholder_is_skipped(
     assert len(block) == 1 and block["decision"].iloc[0].startswith("skipped") and block["records"].iloc[0] == 100
     assert any("タロウ" in x and "skipped" in x for x in run.examples) and not any("タロウ" in x for x in run.notes)
     shown = next(n for n in describe_matching(connect(s.compute)[0], tmp_path / "run", p, s)["nodes"] if n["id"] == "candidates")["skipped"]
-    assert dict(key="given_name_postal", value=block["value"].iloc[0], records=100, pairs=4950) in shown["largest"]  # as qa.md lists it, kept in steps.json
+    assert dict(key="given_name_postal", value=block["value"].iloc[0], records=100, pairs=4950) in shown["largest"]  # as qa.md lists it
+    assert "タロウ" not in json.dumps(json.loads((tmp_path / "run" / "steps.json").read_text(encoding="utf-8")), ensure_ascii=False)  # counts, no record's value
     check = nayose("check", "records", tmp_path / "in.parquet")
     assert check.returncode == 0 and "checked by sampling" in check.stdout
 
