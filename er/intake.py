@@ -919,8 +919,9 @@ def take(part: Path, given: dict[Path, str], spec: InputSpec, reference: Path, a
     for f, name in given.items():
         rel = Path(name)
         rel = rel if rel.suffix == ".parquet" else rel.with_name(rel.name + ".parquet")
-        if any(x["read"] == (Path(READ) / rel).as_posix() for x in files):  # x.csv and x.csv.parquet: one would overwrite the other
-            raise InputError(f"{name} and {next(x['given'] for x in files if x['read'] == (Path(READ) / rel).as_posix())} would be read into one file",
+        same = lambda x: x["read"].casefold() == (Path(READ) / rel).as_posix().casefold()  # x.csv and x.csv.parquet, or X.csv and x.csv on a disk that ignores case
+        if any(map(same, files)):
+            raise InputError(f"{name} and {next(x['given'] for x in files if same(x))} would be read into one file",
                              fix="rename one of them, then give them again")
         facts, p, u = read_one(f, tmp / READ / rel, spec, m, accepted, strict, progress and (lambda n, b=seen: progress(b + n, max(whole, b + n))),
                                None if files else shown)  # the first file's: what a person sees first

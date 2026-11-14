@@ -114,7 +114,7 @@ PREPARING = hashlib.sha256(b"".join([*(f.read_bytes() for f in sorted(Path(__fil
 def locked(method: Callable) -> Callable:  # the workspace (the method's `out`) locked for the whole method
     @functools.wraps(method)
     def wrapper(self: "Run", path: str | Path, out: Path, *args: object, **kwargs: object) -> object:
-        with folder.run_lock(Path(out)):
+        with folder.run_lock(Path(out), make=method.__name__ == "full"):  # a full run makes its workspace; the others need one
             return method(self, path, Path(out), *args, **kwargs)
     return wrapper
 
