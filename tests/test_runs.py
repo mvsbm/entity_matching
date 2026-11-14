@@ -150,6 +150,50 @@ def test_without_bridging_an_increment_lists_no_pair_of_two_records_the_rules_jo
     assert not listed(run().increment(tmp_path / "new.parquet", tmp_path / "inc"))  # nor does an increment
 
 
+def crowd_batch(g, uid: str, ruled: bool) -> pd.DataFrame:
+    """80 copies of one person on one new phone, a placeholder customer ID on all: blocks too big for the batch's keys.
+    `ruled`: each two share an address code of their own, so a rule joins them; else every copy is alone."""
+    a = g.df[g.df["FULL_NAME_KANA"].notna() & g.df["POST_CD"].notna()].iloc[0]
+    rows = []
+    for k in range(40):
+        for j in range(2):
+            x = a.copy()
+            x[[uid, "CIF_ID", "PHONE_NUM_4"]] = [f"9{k:04d}{j:05d}", "C00000000", "9999"]
+            if ruled:
+                x["SOURCE_ADDR_CD"] = f"{k:010d}"
+            rows.append(x)
+    return pd.DataFrame(rows)
+
+
+@pytest.mark.parametrize("ruled", [False, True])
+def test_an_increment_s_gate_keeps_a_block_on_pairs_the_run_could_list_and_says_so_in_blocks_json(tmp_path, population, ruled):
+    import json
+    from er.run import BLOCKS, Run
+    from er.sample import Atom, key_lists
+    from er.candidates import Records
+    s, p, g = population
+    uid = s.data.unique_id
+    p = replace(p, fs=replace(p.fs, model=replace(p.fs.model, u_from_scored=False)))  # the stored u: the copies' pairs score as the run's would
+    g.df.to_parquet(tmp_path / "old.parquet", index=False)
+    crowd_batch(g, uid, ruled).to_parquet(tmp_path / "new.parquet", index=False)
+    Run(p, s).full(tmp_path / "old.parquet", tmp_path / "run")
+    run = Run(p, s).increment(tmp_path / "new.parquet", tmp_path / "run")
+    phone = run.gated[run.gated["generator"] == "phone_prefecture"]
+    kept = json.loads((tmp_path / "run" / "state" / BLOCKS).read_text(encoding="utf-8"))
+    if ruled:  # every sampled pair joins two records the rules joined: no pair the run could list, without bridging
+        assert phone["decision"].str.startswith("skipped").all() and "phone_prefecture" not in kept
+        return
+    value = phone.loc[phone["decision"] == "kept", "value"].tolist()
+    assert value and kept["phone_prefecture"] == value  # the block the batch made, listed: try sample counts its pairs as listed
+    b = next(x for x in run.pipeline.fs.blockers if x.name == "phone_prefecture")
+    rows = pd.DataFrame({"a0": ["9999"], "b0": ["9999"], "a1": ["大阪府"], "b1": ["大阪府"]})
+    rec = Records("records", uid, run.con)
+    rec.most = p.fs.budget.min_oversized()
+    col = {k.name: i for i, k in enumerate(b.keys)}
+    assert [Atom(k, 0).column for k in b.keys] == list(col) and key_lists(b, rows, col, rec, rec.most, kept).all()
+    assert not key_lists(b, rows, col, rec, rec.most, {}).any()  # without it, the block counts as not listed
+
+
 def test_a_full_run_cut_short_in_its_moves_lands_with_its_round(tmp_path, population, monkeypatch):
     import os
     from er import folder
