@@ -482,13 +482,13 @@ def train_fs(model: FSModel, df: pd.DataFrame, db: DuckDBAPI, uid: str, labels: 
     tf_levels = any(c.tf and any(lv.tf for lv in c.levels) for c in model.comparisons)  # none: EM iterates on each agreement pattern's count, not on every pair
     median: dict[tuple[str, str], list[float]] = {}
     with narrowed(t, db, read_by(settings, *(keys_sql(r) for r in (*prior, *em))) | {uid, "__label__"}) as records:
-        linker = Linker(records, settings, log_level=logging.ERROR)
+        linker = Linker(records, settings, log_level=logging.ERROR, validate_settings=False)  # its checks only log warnings, which ERROR hides: sqlglot parses for nothing
         linker.training.estimate_probability_two_random_records_match([keys_sql(r) for r in prior], recall=model.prior_recall)
         for rule in em if not model.em_median else ():
             linker.training.estimate_parameters_using_expectation_maximisation(keys_sql(rule), estimate_without_term_frequencies=not tf_levels)
         for rule in em if model.em_median else ():  # each session on its own linker: what each learned, kept apart
-            one = Linker(records, settings, log_level=logging.ERROR)
-            one.training.estimate_probability_two_random_records_match([keys_sql(r) for r in prior], recall=model.prior_recall)
+            one = Linker(records, replace(settings, probability_two_random_records_match=linker._settings_obj._probability_two_random_records_match),
+                         log_level=logging.ERROR, validate_settings=False)  # the prior the first linker estimated on these records: the same count again
             session = one.training.estimate_parameters_using_expectation_maximisation(keys_sql(rule), estimate_without_term_frequencies=not tf_levels)
             fixed = {c.output_column_name for c in session._comparisons_that_cannot_be_estimated}  # its block's own: chosen by them, not learned
             for c in one.misc.save_model_to_json()["comparisons"]:
@@ -676,6 +676,37 @@ def bound_sql(settings: dict, tests: Bound, unread: frozenset[str] = frozenset()
     return " + ".join([f"cast({math.log2(lam / (1 - lam))} as float8)", *parts])
 
 
+_EQUAL = re.compile(r'\("([^"]+)_l" = "\1_r"\)')
+_NULLS = re.compile(r'[()\s]*(?:"[^"]+_[lr]" IS NULL[()\s]*(?:(?:AND|OR)[()\s]*)?)+')
+
+
+def rough_sql(settings: dict, tests: Bound) -> str:
+    """An upper bound of bound_sql that reads only whether values are missing and whether they are equal, so it holds on
+    the values' hashes (a hash differs only where the value does): each comparison 0 where it is missing, else at its
+    leading levels of plain equality in order, each at the best weight from it on, then at the best of the levels after
+    them; where bound_sql weighs a comparison at its best level, at that. Over hashes, a pair costs a few integers."""
+    lam, parts = settings["probability_two_random_records_match"], []
+    for c in settings["comparisons"]:
+        ranked, name = _ranked(c), c["output_column_name"]
+        null = next((lv["sql_condition"] for g, lv in ranked if g < 0), "FALSE")
+        weights, conds = [_bits(g, lv) for g, lv in ranked if g >= 0], [lv["sql_condition"] for g, lv in ranked if g > 0]
+        levels = tests.get(name, ())
+        if null != "FALSE" and not _NULLS.fullmatch(null):
+            parts.append(f"cast({max(0.0, *weights)} as float8)")
+            continue
+        leading = 0  # where bound_sql reads the levels (cheap, or costly by their outcomes), its leading equalities settle them
+        if levels is None or (levels and [full for *_, full in levels] == conds and math.prod(n for _, n, _ in levels) <= MAX_STATES):
+            while leading < len(conds) and all(_EQUAL.fullmatch(x.strip()) for x in conds[leading].split(" OR ")):
+                leading += 1
+        whens = "".join(f"WHEN coalesce({conds[i]}, FALSE) THEN cast({max(weights[i:])} as float8) " for i in range(leading))
+        parts.append(f"CASE WHEN {null} THEN cast(0 as float8) {whens}ELSE cast({max(weights[leading:])} as float8) END")
+    return " + ".join([f"cast({math.log2(lam / (1 - lam))} as float8)", *parts])
+
+
+def rough_reads(model_json: dict, bound: Bound) -> set[str]:  # the columns rough_sql reads of each record: hashed for it
+    return set(_reads(rough_sql(_bound_settings(model_json, 2), bound)))
+
+
 def _bound_settings(model_json: dict, n_records: int) -> dict:  # the settings score_fs scores with at this size
     return {k: v for k, v in model_json.items() if k != "er"} | {"probability_two_random_records_match": scaled_prior(model_json, n_records)}
 
@@ -705,15 +736,22 @@ def first_bound(model_json: dict, n_records: int, floor: float, bound: Bound, ui
 
 
 def reaching_sql(model_json: dict, records: str, pairs: str, uid: str, have: set[str], n_records: int, floor: float,
-                 bound: Bound, exempt: str | None = None) -> str:
+                 bound: Bound, exempt: str | None = None, hashed: str | None = None) -> str:
     """The pairs of `pairs` (SQL with columns l, r) that score_fs at this floor would score: those whose bound reaches it,
     and those in `exempt` (uid_l, uid_r); every pair, for a model with term frequencies, which score_fs doesn't bound.
-    First first_bound's looser test, then the whole bound on those left, each joined to only the columns it reads."""
+    With `hashed` (the uid and a hash of each column rough_reads names, NULL where it is missing), first rough_sql's
+    test on the hashes; then first_bound's looser test, then the whole bound on those left, each joined to only the
+    columns it reads."""
     if model_json["er"]["tf"]:
         return pairs
-    def passing(pairs: str, cols: list[str], cond: str) -> str:  # the pairs that pass cond, joined to the columns it reads
+    def passing(pairs: str, cols: list[str], cond: str, records: str = records) -> str:  # the pairs that pass cond, joined to the columns it reads
         return (f"SELECT z.l, z.r FROM (SELECT p.l, p.r, {_sides({}, have, cols)} FROM ({pairs}) p JOIN {records} a ON a.{q(uid)} = p.l "
                 f"JOIN {records} b ON b.{q(uid)} = p.r) z WHERE {cond}")
+    if hashed:
+        rough = rough_sql(_bound_settings(model_json, n_records), bound)
+        kept = passing(pairs, _reads(rough), f"({rough}) >= {floor - 1e-9!r}", hashed)
+        pairs = (f"{kept} UNION SELECT p.l, p.r FROM ({pairs}) p SEMI JOIN {exempt} k ON k.{q(uid + '_l')} = p.l AND k.{q(uid + '_r')} = p.r"
+                 if exempt else kept)  # the exempt pairs by a join of their own: an EXISTS per pair costs a third of the test
     loose = first_bound(model_json, n_records, floor, bound, uid, exempt)
     test = bound_sql(_bound_settings(model_json, n_records), bound)
     whole = (_reads(test), f"({test}) >= {floor - 1e-9!r}{_exempt_sql(exempt, uid, 'z')}")  # predict_sql's test, to the bit

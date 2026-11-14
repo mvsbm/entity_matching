@@ -218,7 +218,13 @@ trained once and its signals computed once; a combination fits only its combiner
   is rebuilt from its terms and weights in the worker, on one thread. A script that
   runs a load keeps its work under `if __name__ == "__main__":`, as the scripts here do: each worker imports it first.
 - **Pairs that can't reach 0 never stored** (`Run._reaching`, `er.match.reaching_sql`). Each generator's pairs pass
-  step 6's bound as they are listed, 10 million at a time, before they are stored: first a looser test on a few
+  step 6's bound as they are listed, 10 million at a time, before they are stored; generators that list fewer wait
+  and pass it together (`er.candidates._bound`), since the bound reads a pair alone and each pass joins the records
+  again: on 500,000 generated records the candidates step 4.4 s to 3.1 s, an increment of 100,000 into 400,000 4.3 s
+  to 3.1 s. First a rough test on a hash of each column (`rough_sql`): it reads only whether values are missing or
+  equal, each comparison at the best weight that leaves, so it costs a few integers a pair and never drops a pair the
+  bound keeps: on those records with 85% of addresses and 70% of phones blanked and customer IDs in sequence (59
+  million pairs listed by `cif_deletions`), with the pass above, the candidates step 25.5 s to 17.9 s. Then a looser test on a few
   columns (the cheap comparisons and the name, the others at their best level or 0, `first_bound`), then the whole
   bound on the few left. Score scores the same pairs. Each listed pair leaves a 64-bit hash first, 8 bytes, so the
   gate reads the pairs other keys listed as it would every pair, and the counts mean what they did: `candidates` the
@@ -228,6 +234,16 @@ trained once and its signals computed once; a combination fits only its combiner
   ten times what 10 million did. Design time (`er.pipeline.run_fs`) stores every pair, so the keys' metrics count
   them all (`Run.reaching_only`).
 - **A key's oversized blocks left out before its join**, on both sides, not from its pairs after.
+- **The gap's sample bounded once** (`er.sample.discover`): every atom's drawn pairs are listed first, then pass the
+  bound together, 10 million at a time, not one pass per atom; each pass joins the records again.
+- **PassJoin's candidates as value IDs** (`Records.near_values`): the segment join keeps each candidate as two
+  integers, and only those cross into Python, with each value's text once, for rapidfuzz to check: no pandas string
+  for each of tens of millions of candidate pairs of names. With the bound above, the gap step on 500,000 generated
+  records 21.5 s to 6.3 s (within two edits of a name, 12.4 s to 1.9 s), on train 4.9 s to 1.3 s.
+- **EM's sessions per key without Splink's checks** (`train_fs`): each session's linker skips Splink's settings
+  validation, which only logs warnings the fit hides, and takes the prior the first linker estimated on the same
+  records, not counted again. A fit on 1,000 records one session per key, 2.9 s to 2.3 s; on 128,000, 6.2 s to 5.4 s.
+  With the gap's sample above, `nayose try sample` on 500,000 generated records 107 s to 67 s.
 - **One edit on ASCII without an edit table** (`Comparator.test`): the same length, the Hamming distance; a length
   one apart, Levenshtein (an insertion or a deletion either way). Only a Damerau pair two substitutions apart is
   tested by Damerau–Levenshtein.
