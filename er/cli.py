@@ -666,8 +666,6 @@ def set_fit(a: dict, emit: "Emit") -> dict:
     records = int(number(a["records"], "--records", fix="a number of records, 1,000 or more"))
     if records < 1000:
         raise InputError(f"--records {records}: fewer than 1,000 records hold too few matches to learn from", fix="give 1,000 or more: try sample says where more stops paying")
-    if not ws.is_dir():  # the lock would make the folder: a typo is no workspace
-        raise InputError(f"no workspace at {ws}", fix="create it: nayose create workspace NAME")
     with folder.run_lock(ws):  # read, checked and written as one
         method = {**folder.method(ws), "fit": {"records": records, "em": a["em"]}}
         setup(a, method)  # refused before anything is written
@@ -1933,7 +1931,11 @@ def out_of_memory(e: BaseException) -> InputError | None:  # DuckDB's, raised as
 
 def perform(c: Command, a: dict, emit: Emit) -> dict:
     """A command run on its parameters; a field the file lacks, in a workspace, is mapped in the workspace's own
-    columns.toml, so its fix says so (set columns --workspace), with the columns the file's values suggest."""
+    columns.toml, so its fix says so (set columns --workspace), with the columns the file's values suggest. A workspace
+    named that isn't there is refused, unless the command makes one (MAKES): a mistyped path is said, never read as the
+    project's mapping nor made."""
+    if (ws := a.get("workspace")) and c.name not in MAKES and not Path(ws).is_dir():
+        raise InputError(f"no workspace at {ws}", fix="check the path, or create it: nayose create workspace NAME")
     try:
         r = c.run(a, emit)
     except InputError as e:
@@ -1963,6 +1965,7 @@ def indexed(a: dict) -> dict:  # the workspace's index brought up to date with i
 
 STEPS_OF = {"check records": ("load", "budget"), "apply decisions": ("decide",), "load records": ("load",), "generate records": ("load",),
             "try method": RUN_ORDER[:10]}  # the steps of a command that isn't a run: try method's two runs write nothing
+MAKES = ("resolve records", "load records", "serve inbox")  # the commands a folder not there yet may be given as a workspace: they make it
 FULL_RUNS = ("resolve records", "rerun records", "apply answers", "adopt method", "reset method", "lower trust", "raise trust", "split entity")
 INDEXED = (*FULL_RUNS, "add records", "apply decisions", "set merging")  # the commands that change a run: its index is kept up to date after them
 

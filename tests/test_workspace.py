@@ -763,7 +763,7 @@ def test_a_workspace_on_object_storage_is_refused_and_one_on_a_disk_is_not(say, 
     assert code == 2 and "object storage" in e["error"] and not (root / "bucket" / "x").exists()  # refused where it is made, not at its first write
     assert io.object_store(root / "over" / "w") == "s3fs"
     for disk in (root / "my share" / "w", root / "local" / "w", root / "bucket" / "disk" / "w"):  # NFS, a local disk, a disk mounted inside the bucket
-        with folder.run_lock(disk):
+        with folder.run_lock(disk, make=True):
             pass
     monkeypatch.setattr(io, "MOUNTS", tmp_path / "none")  # no mountinfo (macOS, Windows): every folder a disk
     assert io.object_store(root / "bucket") is None

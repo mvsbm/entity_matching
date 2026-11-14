@@ -55,15 +55,19 @@ _held = threading.local()  # the folders this thread holds: taking one again (a 
 
 
 @contextmanager
-def run_lock(out: Path):
+def run_lock(out: Path, make: bool = False):
     """One writer per workspace: an OS lock on <out>/.lock for as long as a run, an increment or a set of decisions
-    writes there. The system releases it when the process ends, even if it dies, so it never goes stale. A thread that
+    writes there. A folder that isn't there is refused, unless the job makes a workspace (`make`: a full run, a file
+    loaded), so a mistyped one is said, never made. The system releases it when the process ends, even if it dies, so it never goes stale. A thread that
     holds it may take it again; another thread or process can't. It holds on a local disk and on a network one (NFS,
     a Windows share); a workspace on object storage mounted as files (io.object_store) is refused: no lock holds there.
     shortcut: one lock per machine's view of a disk; a workspace on object storage itself needs a lease and writes that
     don't rename (folder.stage does), a port of its own."""
     lockable(out)
-    out.mkdir(parents=True, exist_ok=True)
+    if make:
+        out.mkdir(parents=True, exist_ok=True)
+    elif not out.is_dir():
+        raise InputError(f"no workspace at {out}", fix="check the path, or create it: nayose create workspace NAME")
     held, key = _held.__dict__.setdefault("folders", set()), out.resolve()
     if key in held:
         yield
@@ -305,8 +309,6 @@ def type_in(out: Path, sheet: str, column: str, value: object, append: dict | No
     applied: the sheet is given back later (Run.decide, a rerun with the answers). Under the lock, and staged as every
     run file is. O(sheet rows)."""
     path = out / sheet
-    if not out.is_dir():  # the lock would make the folder: a typo leaves none
-        raise InputError(f"{path}: no such sheet", fix="run the records into that folder first: the run writes it")
     with run_lock(out):
         finish_writes(out)
         if not path.exists():
@@ -376,7 +378,7 @@ def receive(ws: Path, name: str, size: int, read: Callable[[int], bytes], into: 
     if not (ws / "columns.toml").is_file():
         raise InputError(f"no workspace at {ws}", fix="create it: nayose create workspace NAME")
     names = [x for x in (into, name) if x is not None]
-    if not name or any(x != Path(x).name or x.startswith(".") for x in names):
+    if not name or any(x != Path(x).name or x.startswith(".") or "\0" in x for x in names):
         raise InputError(f"{name!r}: not a file name", fix="send a file, or give its path")
     if Path(name).suffix.lower() not in intake.SUFFIXES:  # refused before a byte is written
         raise InputError(f"{name}: not a records file", fix="send a CSV, TSV or Parquet file")
@@ -499,11 +501,18 @@ def take_in(ws: Path, path: str | Path, spec: intake.InputSpec, reference: Path,
     p = Path(path).expanduser()
     if p.is_dir() and (ws.resolve() == p.resolve() or p.resolve() in ws.resolve().parents):  # its own files, and itself, read as records
         raise InputError(f"{path} holds this workspace", fix="give the folder that holds the records only")
+    at, home = (p.parent if globbed(p) else p).resolve(), ws.resolve()
+    if (own := next((x for x in parts(ws) if x.resolve() == at), None)) is not None:  # one of its own parts: given again, as it is
+        with run_lock(ws):
+            replace_text(ws / INPUTS / LAST, own.name)
+        return fresh(own, spec, reference, progress), False
+    if home in at.parents and not at.relative_to(home).parts[0].startswith("."):  # its own files (inputs/, a part's read/): read twice, or as records; not what nayose stages there (.uploads, .synthetic-*)
+        raise InputError(f"{path} is inside this workspace", fix="give the records file from where it came; one loaded already is read by a run given none (inputs/last)")
     files, root = find(path), p if p.is_dir() and not intake.report(p) else None  # a workspace part given: its read files, copied by name
     if clash := next((f for f in files if (f.relative_to(root) if root else Path(f.name)).parts[0] in (intake.READ, intake.PROPOSALS, intake.UNREAD, intake.REPORT, SUMS)), None):
         raise InputError(f"{clash}: named as the workspace's own reading of a file", fix="give the records under another name")
     given = sorted(intake.sha256(f) for f in files)
-    with run_lock(ws):
+    with run_lock(ws, make=True):
         for part in parts(ws):
             if sorted(sums(part).values()) == given:
                 replace_text(ws / INPUTS / LAST, part.name)  # given again: the one a run reads, as a new one would be
