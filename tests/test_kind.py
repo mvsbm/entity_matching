@@ -61,6 +61,14 @@ def test_a_run_loads_the_committed_name_model_and_it_is_what_training_builds():
     assert "train_name_model.py" in stop.value.fix
 
 
+def test_a_flag_reads_as_people_s_answers_do_its_spaces_and_width_aside():
+    from types import SimpleNamespace
+    from er.kind import Classifier
+    flag = pd.Series(["2", "2 ", " 2", "２", "1", None, "12"], dtype="string")  # a fixed-width export pads its fields
+    assert Classifier.flag_code(SimpleNamespace(flag_company=("2",)), flag, len(flag)).tolist()[:5] == [2, 2, 2, 2, 1]
+    assert np.isnan(Classifier.flag_code(SimpleNamespace(flag_company=("2",)), flag, len(flag))[5])
+
+
 def test_each_side_s_line_keeps_within_its_labels():
     from er.config import KindSpec
     from er.kind import lines

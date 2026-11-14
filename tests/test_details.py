@@ -29,7 +29,7 @@ def test_details_are_each_record_s_rows_in_the_file_s_order_read_from_the_file_f
     assert code == 2 and f"has no column {UID}" in e["error"] and "--key COLUMN (one of NO, PLAN, START)" in e["fix"]
     (tmp_path / "details.csv").write_text(f"{UID},PLAN\n1,a\n", encoding="utf-8")
     code, e = say("load", "details", tmp_path / "details.csv", "--workspace", ws)
-    assert code == 2 and "not a Parquet file" in e["error"]
+    assert code == 2 and "not a Parquet file" in e["error"] and "load records" not in e["fix"]  # a details file is read as Parquet only
 
     code, e = say("load", "details", tmp_path / "details.parquet", "--workspace", ws)
     with_rows = {i for n, i in enumerate(ids) if n % 4}

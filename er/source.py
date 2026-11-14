@@ -71,7 +71,7 @@ def find(path: str | Path) -> list[Path]:
                      else f"check the path: {folder} {'holds no file like it' if folder.is_dir() else 'does not exist'}")
 
 
-def check_parquet(f: Path) -> None:
+def check_parquet(f: Path, fix: str = CONVERT) -> None:
     """A Parquet file starts and ends with PAR1; say what the file looks like instead."""
     with f.open("rb") as h:
         head = h.read(4)
@@ -80,7 +80,7 @@ def check_parquet(f: Path) -> None:
     if intake.parquet(f, head, tail):
         return
     kind = "a ZIP or Excel file" if head[:2] == b"PK" else "text, perhaps a CSV" if head and all(b >= 9 for b in head) else "not Parquet"
-    raise InputError(f"{f}: not a Parquet file; it looks like {kind}", fix=CONVERT)
+    raise InputError(f"{f}: not a Parquet file; it looks like {kind}", fix=fix)
 
 
 def open_source(path: str | Path | list[Path], con: duckdb.DuckDBPyConnection, expected: Iterable[str], reserved: Iterable[str] = ()) -> Source:

@@ -305,6 +305,8 @@ def type_in(out: Path, sheet: str, column: str, value: object, append: dict | No
     applied: the sheet is given back later (Run.decide, a rerun with the answers). Under the lock, and staged as every
     run file is. O(sheet rows)."""
     path = out / sheet
+    if not out.is_dir():  # the lock would make the folder: a typo leaves none
+        raise InputError(f"{path}: no such sheet", fix="run the records into that folder first: the run writes it")
     with run_lock(out):
         finish_writes(out)
         if not path.exists():
@@ -355,6 +357,7 @@ INPUTS = "inputs"  # the records files a workspace was given, each copied into a
 SUMS = ".sha256"  # in each part: each file's SHA-256 and its path in the part, so content given twice is known without reading it
 LAST = "last"  # in inputs/: the name of the part given last, held already or new, which a run given no file reads
 NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
+DEVICES = {"con", "prn", "aux", "nul", *(f"{d}{i}" for d in ("com", "lpt") for i in range(10))}  # names Windows keeps for its devices, whatever follows a dot
 UPLOADS = ".uploads"  # files the page sent (nayose open ui), read once by the command they were sent for: taken in, or kept as the details file
 STALE = 3600  # seconds: an upload this old was never read, and goes at the next one
 
@@ -416,8 +419,8 @@ def uploaded(ws: Path, path: str | Path) -> Path | None:  # what the page sent t
 def create(home: Path, name: str, columns: str) -> Path:
     """The new workspace home/name, with its own mapping (columns.toml, the text given) and its method (method.toml):
     a trust line above every step, so nothing merges before people check (config.TrustRule). O(1)."""
-    if not NAME.fullmatch(name):
-        raise InputError(f"{name!r}: not a workspace name", fix="Latin letters (A–Z, a–z), digits, '.', '_' and '-', starting with a letter or digit, at most 64")
+    if not NAME.fullmatch(name) or name.split(".")[0].casefold() in DEVICES or name.endswith("."):  # Windows: a device, or the name without its dot
+        raise InputError(f"{name!r}: not a workspace name", fix="Latin letters (A–Z, a–z), digits, '.', '_' and '-', starting with a letter or digit and not ending with '.', at most 64; not con, nul, aux, prn, com1 or lpt1")
     ws = home / name
     lockable(ws)  # refused here, not at the first command that writes to it
     try:

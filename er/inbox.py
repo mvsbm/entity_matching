@@ -1,5 +1,5 @@
-"""Serve an inbox (nayose serve inbox): every file dropped in it (Parquet, CSV or TSV) goes into a run, one at a time,
-in the order it arrived.
+"""Serve an inbox (nayose serve inbox): every file dropped in it (Parquet, CSV or TSV; a hidden one aside) goes into a
+run, one at a time, in the order it arrived.
 
     inbox/batches/*             new records (Parquet, CSV, TSV): nayose add records, or, into an empty workspace, nayose resolve records
     inbox/decisions/*           people's decisions: nayose apply decisions --file
@@ -92,7 +92,7 @@ def one_pass(run: Path, inbox: Path, retries: int, compute: list[str], say: Call
     seen = lambda kind, digest: digest in done_before if kind == "batches" else digest == last.get(kind)
     now = time.time()
     tasks = sorted(((f.stat().st_mtime, f.name, kind, f) for kind in KINDS if (inbox / kind).is_dir() for f in (inbox / kind).iterdir()
-                    if f.suffix.lower() in intake.SUFFIXES and now - f.stat().st_mtime >= settle))
+                    if f.suffix.lower() in intake.SUFFIXES and not f.name.startswith(".") and now - f.stat().st_mtime >= settle))  # a hidden file (._x.csv) holds no records, as in a folder (source.find)
     for _, name, kind, f in tasks:
         digest = intake.sha256(f)
         if seen(kind, digest):

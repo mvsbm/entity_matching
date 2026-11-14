@@ -272,11 +272,17 @@ def test_a_look_up_that_reaches_nothing_says_how_near_it_came_and_reads_values_t
     from er import cli, index
     s, p, g = population
     df = g.df.dropna(subset=["FULL_NAME_KANA"])
-    g.df.to_parquet(tmp_path / "all.parquet", index=False)
+    uid, dummy = s.data.unique_id, df.head(80).copy()  # a placeholder name on 80 customers: read as missing in every field built from its columns
+    dummy[uid], dummy["CIF_ID"], dummy["FULL_NAME_KANA"] = [f"D{i}" for i in range(80)], [f"9{i:07d}" for i in range(80)], "テストタロウ"
+    pd.concat([g.df, dummy], ignore_index=True).to_parquet(tmp_path / "all.parquet", index=False)
     ws = tmp_path / "ws"
     assert cli.main(["resolve", "records", str(tmp_path / "all.parquet"), "--workspace", str(ws), "--format", "json"]) == 0
     assert cli.main(["build", "index", "--workspace", str(ws), "--format", "json"]) == 0
     s2, p2, _ = cli.setup({"workspace": str(ws)})
+    assert json.loads((ws / "state" / "placeholders.json").read_text(encoding="utf-8")).get("person_name")
+    stored = pd.read_parquet(ws / "state" / "records").set_index(uid)
+    looked = index.look_up(ws, s2, p2, values={"FULL_NAME_KANA": "テストタロウ"}, at_least=-1e9)["record"]
+    assert stored.loc["D0", ["full_name", "person_name"]].isna().all() and looked["full_name"] is None and looked["person_name"] is None  # as the run read it
     name = df["FULL_NAME_KANA"].iloc[0]
     r = index.look_up(ws, s2, p2, values={"FULL_NAME_KANA": name}, at_least=1e9)
     assert r["found"] == 0 and r["at_least"] == 1e9 and r["closest"]["points"] == max(x["points"] for x in index.look_up(ws, s2, p2, values={"FULL_NAME_KANA": name}, at_least=-1e9, most=10**6)["entities"])
