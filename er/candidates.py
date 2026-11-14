@@ -56,6 +56,7 @@ class Records:
         self.dk: dict[tuple, str] = {}        # deletion-key rows per (key, within), built once (variants)
         self.near: dict[tuple, str] = {}      # value pairs within k edits per (key, within, k), verified once (near_values)
         self.most = 2**62                     # a value held by this many records or more pairs by no edit key (candidates: the oversized size)
+        self.only: str | None = None          # SQL on a pair's l and r: a pair it is false for is never listed (candidates)
 
     def variants(self, b: DeletionKeys) -> str:
         """b's rows, one per deletion key (__dk) of its value (__v), with the uid, the within columns and the cluster:
@@ -361,7 +362,8 @@ def candidates(blockers: tuple[Blocker, ...], records: pd.DataFrame | str, uid: 
                budget: Budget, clusters: pd.Series | str | None = None, con: duckdb.DuckDBPyConnection | None = None,
                into: str | None = None, touching: bool = False, gate: Callable[[str], str] | None = None,
                floor: float = 0.0, capacity: int | None = None, told: Callable[..., None] | None = None,
-               known: dict[str, dict] | None = None, keep: Callable[[str], str] | None = None) -> tuple[pd.DataFrame | str, pd.DataFrame]:
+               known: dict[str, dict] | None = None, keep: Callable[[str], str] | None = None,
+               only: str | None = None) -> tuple[pd.DataFrame | str, pd.DataFrame]:
     """The union of all generators, with the generators that found each pair in `sources`, and a per-generator report.
     With `into`, the union is written to that table in `con` and its name returned instead of a frame, so nothing of
     size C reaches pandas. `touching` (an increment, with `query` the batch): the estimates count only the blocks the
@@ -375,6 +377,7 @@ def candidates(blockers: tuple[Blocker, ...], records: pd.DataFrame | str, uid: 
     of those of a generator's pairs worth keeping (er.match.reaching_sql), applied a slice at a time (_kept), so only
     one generator's pairs are ever held in full. Each listed pair leaves its hash, so what the gate reads of the pairs
     other keys listed, each generator's pairs and report.attrs["listed"] (the distinct pairs listed) are as without it.
+    `only`: SQL on a pair's l and r; a pair it is false for is never listed, so not counted (an increment without bridging).
     shortcut: a pair is known by a 64-bit hash, so two pairs in 10^8 share one about once in 3,000 runs (one count, one
     sampled pair off); a 128-bit key (two hashes) if that ever matters."""
     if not blockers:
@@ -383,7 +386,7 @@ def candidates(blockers: tuple[Blocker, ...], records: pd.DataFrame | str, uid: 
         raise InputError(f"{len(blockers)} candidate generators: a run takes at most 63", fix="add fewer name features: each adds its own")
     assert query is not None or not touching, "touching needs the batch as the query"
     r = Records(records, uid, con, query, clusters, columns=[k.name for b in blockers for k in keys_of(b)])
-    r.touching, r.most = touching, budget.min_oversized()
+    r.touching, r.most, r.only = touching, budget.min_oversized(), only
     l, rr = f"{uid}_l", f"{uid}_r"
     try:
         n_query = r.con.execute(f"SELECT count(*) FROM {r.query or r.table}").fetchall()[0][0]
@@ -443,7 +446,7 @@ def _kept(r: Records, sql: str, keep: Callable[[str], str] | None, listed: str |
     """The pairs of `sql` (l, r) as a table, only those keep() keeps if given, and how many it listed: listed, each
     pair's hash added to the table `listed`, then filtered KEEP_SLICE at a time, so the filter's join never holds more
     than a slice. With `pending`, a listing under a slice waits there for _bound, with the others: filtered then."""
-    table = r._temp(sql)
+    table = r._temp(f"SELECT * FROM ({sql}) WHERE {r.only}" if r.only else sql)
     n = r.con.execute(f"SELECT count(*) FROM {table}").fetchall()[0][0]
     if keep is None:
         return table, n

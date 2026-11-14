@@ -1,5 +1,6 @@
 """Runs: a full run, increments, writes cut short, the probe, describe matching."""
 import json
+import shutil
 import math
 from dataclasses import replace
 
@@ -147,7 +148,11 @@ def test_without_bridging_an_increment_lists_no_pair_of_two_records_the_rules_jo
     rc = pd.read_parquet(tmp_path / "full" / "state" / "rule_clusters.parquet").set_index(uid)["cluster_id"]
     assert rc["9000000001"] == rc[a[uid]] != rc["9000000002"] == rc[b[uid]] and not listed(full)  # a full run never lists it
     run().full(tmp_path / "old.parquet", tmp_path / "inc")
-    assert not listed(run().increment(tmp_path / "new.parquet", tmp_path / "inc"))  # nor does an increment
+    shutil.copytree(tmp_path / "inc", tmp_path / "reaching")
+    every = run().increment(tmp_path / "new.parquet", tmp_path / "inc")
+    assert not listed(every)  # nor does an increment
+    counted = lambda x: next(z["candidates"] for z in x.steps if z["step"] == "candidates")
+    assert counted(Run(p, s).increment(tmp_path / "new.parquet", tmp_path / "reaching")) == counted(every)  # nor counts it, storing only what can reach 0
 
 
 def crowd_batch(g, uid: str, ruled: bool) -> pd.DataFrame:
@@ -166,7 +171,7 @@ def crowd_batch(g, uid: str, ruled: bool) -> pd.DataFrame:
 
 
 @pytest.mark.parametrize("ruled", [False, True])
-def test_an_increment_s_gate_keeps_a_block_on_pairs_the_run_could_list_and_says_so_in_blocks_json(tmp_path, population, ruled):
+def test_an_increment_s_gate_keeps_a_block_on_pairs_the_run_could_list_and_leaves_blocks_json_to_the_full_run(tmp_path, population, ruled):
     import json
     from er.run import BLOCKS, Run
     from er.sample import Atom, key_lists
@@ -180,11 +185,13 @@ def test_an_increment_s_gate_keeps_a_block_on_pairs_the_run_could_list_and_says_
     run = Run(p, s).increment(tmp_path / "new.parquet", tmp_path / "run")
     phone = run.gated[run.gated["generator"] == "phone_prefecture"]
     kept = json.loads((tmp_path / "run" / "state" / BLOCKS).read_text(encoding="utf-8"))
+    assert "phone_prefecture" not in kept  # the increment listed only its batch's pairs of the block: never counted as listing the old records' pairs
     if ruled:  # every sampled pair joins two records the rules joined: no pair the run could list, without bridging
-        assert phone["decision"].str.startswith("skipped").all() and "phone_prefecture" not in kept
+        assert phone["decision"].str.startswith("skipped").all()
         return
     value = phone.loc[phone["decision"] == "kept", "value"].tolist()
-    assert value and kept["phone_prefecture"] == value  # the block the batch made, listed: try sample counts its pairs as listed
+    assert value  # the block the batch made, listed
+    kept = {"phone_prefecture": value}  # as a full run that kept it would write it
     b = next(x for x in run.pipeline.fs.blockers if x.name == "phone_prefecture")
     rows = pd.DataFrame({"a0": ["9999"], "b0": ["9999"], "a1": ["大阪府"], "b1": ["大阪府"]})
     rec = Records("records", uid, run.con)

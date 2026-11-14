@@ -50,7 +50,7 @@ database "kept" as kept
 database "gold" as gold
 
 package "written to the workspace" {
-  file "new parts: matches/, rule_kept/, state/records/, set_aside/\nrewritten: gold.parquet, state/rule_clusters.parquet, state/scoring.json, state/placeholders.json, state/blocks.json\nsteps.json: an entry added" as f_out
+  file "new parts: matches/, rule_kept/, state/records/, set_aside/\nrewritten: gold.parquet, state/rule_clusters.parquet, state/scoring.json, state/placeholders.json\nsteps.json: an entry added" as f_out
   file "qa.md · report.txt · review.parquet" as f_people
 }
 
