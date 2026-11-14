@@ -1162,7 +1162,8 @@ def rerun_owed(a: dict) -> bool:
         s, p, _ = setup({**a, "pipeline": a.get("pipeline") or run_pipeline(a["workspace"])})
     except InputError:
         return False
-    return ran_with.read_text(encoding="utf-8") != run_config(p, s)
+    ran = (folder.rounds(ran_with.parent.parent)[-1:] or [{}])[0].get("method", {})  # the method.toml the run ran: its fit isn't in config.txt
+    return ran_with.read_text(encoding="utf-8") != run_config(p, s) or ran.get("fit") != folder.method(ran_with.parent.parent).get("fit")
 
 
 def list_features(a: dict, emit: "Emit") -> dict:

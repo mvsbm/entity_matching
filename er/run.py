@@ -58,7 +58,7 @@ import sys
 import time
 import unicodedata
 from collections.abc import Callable, Iterable, Iterator
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field, fields, replace
 from datetime import datetime
 from pathlib import Path
 
@@ -70,11 +70,11 @@ import pyarrow as pa
 from er import folder, intake
 from er.candidates import candidates, estimate
 from er.cluster import merge
-from er.config import InputError, KeyBlocker, Pipeline, TfidfNeighbours, bits, generator, generator_dict, keys_sql, lit, q
+from er.config import FSModel, InputError, Pipeline, TfidfNeighbours, bits, generator, generator_dict, lit, q
 from er.io import code_version, config_hash, markdown, read_parquet, replace_text
 from er.keys import idle, gap as keys_gap, learn
 from er.kind import KIND_COLUMNS, NAME_MODEL, century, classifier as kind_classifier, kind_review_sheet, merge_answers
-from er.match import ELSE, bound_tests, compared_exactly, fs_settings, named_sql, bound_reads, reaching_sql, read_by, refreshed_u, review_floor, rule_edges, score_fs, scored_u, train_fs, u_basis
+from er.match import ELSE, bound_tests, compared_exactly, fit_model, fit_sample_sql, named_sql, bound_reads, reaching_sql, refreshed_u, review_floor, rule_edges, score_fs, scored_u, train_fs, u_basis
 from er.probe import missed
 from er.report import applied, carry_kinds, carry_over, qa, report_text, review_sheet, scored_again, trust_state
 from er.results import BANDS, banded, check_merging, merge_where
@@ -480,15 +480,8 @@ class Run:
         have gone stale (er.match.u_basis)."""
         t, fs = time.perf_counter(), self.pipeline.fs
         if self.model is None:
-            n = self.pipeline.fit_rows
-            area = q("postal_code__first3") if "postal_code__first3" in self.columns() else None
-            order = f"hash({area}), hash({q(self.uid)})" if area else f"hash({q(self.uid)})"
-            model = fs.model
-            if model.em_from_keys and (keys := tuple(dict.fromkeys(b.keys for b in fs.blockers if isinstance(b, KeyBlocker)))):  # the method's keys, each a block EM learns in
-                model = replace(model, em_rules=keys)
-            reads = read_by(fs_settings(model, self.uid), *(keys_sql(r) for r in (*model.prior_rules, *model.em_rules))) | {self.uid}  # the columns the fit reads, not the file's every one
-            cols = ", ".join(q(c) for c in self.columns() if c in reads)
-            sample = self.con.execute(f"SELECT {cols} FROM records ORDER BY {order} LIMIT {n}").df().astype("string")
+            model = fit_model(fs)
+            sample = self.con.execute(f"{fit_sample_sql([model], self.uid, self.columns())} LIMIT {self.pipeline.fit_rows}").df().astype("string")
             self.model = train_fs(model, sample, self.db, self.uid, kept=self.keep and self.keep / folder.U_SAMPLED)
             self.notes += [f"the fit found no two records sharing {f} in its sample of {len(sample):,}, so it learned nothing from them"
                            for f in self.model["er"].get("skipped", [])]
@@ -825,6 +818,9 @@ class Run:
         texts.append((json.dumps(self.placeholders, ensure_ascii=False), state / "placeholders.json"))  # read as missing: an increment and a lookup read them so too
         if part == 0 and self.learned:  # the keys learned on the file: an increment lists its pairs by them
             texts.append((json.dumps({b.name: generator_dict(b) for b in self.learned}, ensure_ascii=False), state / "keys.json"))
+        if part == 0:  # the oversized blocks whose pairs the run listed: a key lists a pair in one (er.keys.key_lists, for er.sizes)
+            kept = self.gated[self.gated["decision"].isin(["kept", "joined in full"])].groupby("generator")["value"].agg(list).to_dict() if len(self.gated) else {}
+            texts.append((json.dumps(kept, ensure_ascii=False), state / BLOCKS))
         if self.basis:  # the u this run scored with, and what an increment needs to tell when they go stale
             texts.append((json.dumps(dict(model=self.scoring, basis=self.basis), ensure_ascii=False), state / "scoring.json"))
         earlier = folder.history(out) if part == 0 else None  # the runs before: read before the old log goes with the old run
@@ -930,9 +926,7 @@ class Run:
             raise InputError(f"the pipeline or the column mapping changed since the full run in {out}: an increment would resolve its batch otherwise",
                              fix="resolve all of them again (nayose rerun records), or add these with the pipeline and config/settings.toml that run used")
         self.model = json.loads((state / "model.json").read_text(encoding="utf-8"))
-        if (state / "keys.json").exists():  # the keys the full run learned
-            learned = json.loads((state / "keys.json").read_text(encoding="utf-8"))
-            self.pipeline = replace(self.pipeline, fs=replace(self.pipeline.fs, blockers=tuple(generator(n, d, self.settings.chains) for n, d in learned.items())))
+        self.pipeline = stored_keys(out, self.pipeline, self.settings)
         self.part = folder.next_part(state / "records")
         parts = ", ".join(lit(x) for x in sorted((state / "records").glob("part-*.parquet")))  # not a glob: this run's own part comes later
         self.con.execute(f"CREATE OR REPLACE VIEW old_records AS SELECT * FROM read_parquet([{parts}], union_by_name = true)")
@@ -1162,12 +1156,24 @@ class Run:
             return self.full(folder.inputs(out, self.settings.input, self.settings.paths["reference"]), out, overwrite=True, pipeline_file=pipeline_file)
 
 
+def stored_keys(ws: Path, p: Pipeline, s: Settings) -> Pipeline:  # the keys the full run listed by, learned or left after dropping idle ones (er.keys): an increment and a lookup list by them
+    kept = Path(ws) / "state" / "keys.json"
+    if not kept.exists():
+        return p
+    return replace(p, fs=replace(p.fs, blockers=tuple(generator(n, d, s.chains) for n, d in json.loads(kept.read_text(encoding="utf-8")).items())))
+
+
+BLOCKS = "blocks.json"  # in state/: each key's oversized blocks a full run listed, by value
 CROWD = 64        # the fewest customers a compared field's placeholder is held by, however small the budget's oversized blocks
 PLACEHOLDERS = 2  # how placeholders are told (Run._placeholders): a run that told them otherwise takes no increment until it runs again
 
 
-def run_config(p: Pipeline, s: Settings) -> str:  # what decides the answer: the pipeline and the settings that shape the records
-    return config_hash((p, s.columns, s.standardize, s.flag_company, s.input, PLACEHOLDERS))  # an increment needs the full run's
+def run_config(p: Pipeline, s: Settings) -> str:
+    """What an increment needs the full run's to be: the pipeline and the settings that shape the records. The fit's
+    sample and EM (method.toml's fit) are left at their defaults: an increment and a lookup score with the stored model."""
+    fit = {f.name: f.default for f in fields(FSModel) if f.name in ("em_from_keys", "em_median")}
+    p = replace(p, fit_rows=next(f.default for f in fields(Pipeline) if f.name == "fit_rows"), fs=replace(p.fs, model=replace(p.fs.model, **fit)))
+    return config_hash((p, s.columns, s.standardize, s.flag_company, s.input, PLACEHOLDERS))
 
 
 def trial(ws: Path, base: Pipeline, variant: Pipeline, method: dict, s: Settings, echo: Callable[[dict], None] | None = None) -> dict:

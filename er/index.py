@@ -32,7 +32,6 @@ import secrets
 import shutil
 import threading
 import time
-from dataclasses import replace
 import unicodedata
 from bisect import bisect_left
 from collections import Counter
@@ -45,13 +44,13 @@ import pyarrow.parquet as pq
 
 from er import folder
 from er.candidates import deletions_sql
-from er.config import DeletionKeys, InputError, KeyBlocker, Pipeline, SortedNeighbourhood, generator, lit, q
+from er.config import DeletionKeys, InputError, KeyBlocker, Pipeline, SortedNeighbourhood, lit, q
 from er.intake import tidy
 from er.io import read_parquet
 from er.kind import Classifier, classifier, merge_answers, name_model
 from er.match import levels, read_by, review_floor, scaled_prior
 from er.report import run_model
-from er.run import run_config
+from er.run import run_config, stored_keys
 from er.settings import COLUMNS, Settings, fit_to_file, present_fields
 from er.standardize import KATAKANA, SEPARATORS, prepare
 from er.strings import connect
@@ -93,13 +92,13 @@ def _pipeline(ws: Path, s: Settings, p: Pipeline, columns: list[str]) -> Pipelin
     return fitted(ws, s, p, columns)
 
 
-def fitted(ws: Path, s: Settings, p: Pipeline, columns: list[str]) -> Pipeline:  # the pipeline fitted to a run's stored records, keys as it listed by
+def to_file(s: Settings, p: Pipeline, columns: list[str]) -> Pipeline:  # the pipeline fitted to a run's stored records, as its fit saw it: the method's keys
     folded = {c.casefold() for c in columns}  # a source column named as its field but for case (BIRTH_DATE) gave way to it (standardize.prepare)
-    p = fit_to_file(p, s, [*columns, *(c for alts in s.columns.values() for alt in alts for c in alt if c not in columns and c.casefold() in folded)])[0]
-    kept = ws / "state" / "keys.json"  # the keys the run listed by, learned or left after dropping idle ones (er.keys)
-    if kept.exists():
-        p = replace(p, fs=replace(p.fs, blockers=tuple(generator(n, d, s.chains) for n, d in json.loads(kept.read_text(encoding="utf-8")).items())))
-    return p
+    return fit_to_file(p, s, [*columns, *(c for alts in s.columns.values() for alt in alts for c in alt if c not in columns and c.casefold() in folded)])[0]
+
+
+def fitted(ws: Path, s: Settings, p: Pipeline, columns: list[str]) -> Pipeline:  # ... and the keys it listed by
+    return stored_keys(ws, to_file(s, p, columns), s)
 
 
 def _scorable(ws: Path) -> dict:  # the run's model, refused if a lookup can't score as it does

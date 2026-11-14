@@ -16,8 +16,8 @@ from dataclasses import replace
 from pathlib import Path
 
 from er import index
-from er.config import InputError, KeyBlocker, Pipeline, keys_sql, lit, q
-from er.match import ELSE, _bits, _ranked, fs_settings, read_by, review_floor, scaled_prior, train_fs
+from er.config import InputError, KeyBlocker, Pipeline, lit, q
+from er.match import ELSE, _bits, _ranked, fit_model, fit_sample_sql, review_floor, scaled_prior, train_fs
 from er.settings import Settings
 from er.strings import connect
 
@@ -26,10 +26,10 @@ SETTLED = 0.005    # pairs at the floor added and taken away, as a share of them
 FILE = "sample_sizes.txt"
 
 
-def models(p: Pipeline) -> dict[str, object]:  # the two ways EM learns: as the method has it, and one session per equality key
+def models(p: Pipeline) -> dict[str, object]:  # the two ways EM learns, as a run's fit would (er.match.fit_model): as the method has it, and one session per equality key
     m = replace(p.fs.model, em_from_keys=False, em_median=False)
-    keys = tuple(dict.fromkeys(b.keys for b in p.fs.blockers if isinstance(b, KeyBlocker)))
-    return {"rules": m, **({"keys": replace(m, em_rules=keys, em_from_keys=True, em_median=True)} if keys else {})}
+    keys = replace(m, em_from_keys=True, em_median=True)
+    return {"rules": m, **({"keys": fit_model(replace(p.fs, model=keys))} if any(isinstance(b, KeyBlocker) for b in p.fs.blockers) else {})}
 
 
 def weights(fitted: dict, n: int) -> tuple[float, dict[tuple[str, int], float]]:  # the start at n records, and each level's points by its gamma
@@ -42,31 +42,29 @@ def score_sql(start: float, w: dict[tuple[str, int], float]) -> str:  # a kept p
     return f"{start!r} + " + " + ".join(f"CASE {q('gamma_' + c)} {' '.join(f'WHEN {g} THEN {v!r}' for (x, g), v in w.items() if x == c)} ELSE 0 END" for c in names)
 
 
-def grow(ws: Path, s: Settings, p: Pipeline, line: Callable[..., None] | None = None, most: int | None = None) -> dict:
+def grow(ws: Path, s: Settings, p: Pipeline, line: Callable[..., None] | None = None) -> dict:
     """The steps (records, em, seconds, start, change, pairs at the floor and the line, added and taken away, m of each
     comparison's first level and else level), each way's settled size, and the report written to the workspace."""
     con, db = connect(s.compute)
     parts = sorted((ws / "state" / "records").glob("part-*.parquet"))
     scoring = ws / "state" / "scoring.json"
-    if not parts or not scoring.exists() or not list((ws / "scored").glob("*.parquet")):
+    if not parts or not (ws / "state" / "model.json").exists() or not list((ws / "scored").glob("*.parquet")):
         raise InputError(f"no run in {ws} to measure a sample against", fix="find matches first: nayose resolve records --workspace …")
+    model = index._scorable(ws)  # a model that adjusts by term frequency scores a pair by more than its levels: refused, as a lookup refuses it
+    if scoring.exists():  # u measured on the file (u_from_scored), as the run scored with them
+        model = json.loads(scoring.read_text(encoding="utf-8"))["model"]
     con.execute(f"CREATE TABLE records AS SELECT * FROM read_parquet([{', '.join(lit(x) for x in parts)}], union_by_name = true)")
-    p = index.fitted(ws, s, p, [c for c, *_ in con.execute("DESCRIBE records").fetchall()])
+    p = index.to_file(s, p, [c for c, *_ in con.execute("DESCRIBE records").fetchall()])  # the method's keys, as a run's fit sees them: not those it kept after
     uid, n = s.data.unique_id, con.execute("SELECT count(*) FROM records").fetchall()[0][0]
-    model = json.loads(scoring.read_text(encoding="utf-8"))["model"]  # the file's u, as the run scored with them
     if [(c["output_column_name"], [lv["label_for_charts"] for g, lv in _ranked(c) if g >= 0]) for c in model["comparisons"]] != \
             [(c.name, [*(lv.label for lv in c.levels), ELSE]) for c in p.fs.model.comparisons]:  # the levels the kept pairs hold are this method's
         raise InputError(f"the method compares otherwise than the run in {ws} did", fix=f"run it again first: nayose rerun records --workspace {ws}")
     u = {c["output_column_name"]: {lv["label_for_charts"]: lv["u_probability"] for g, lv in _ranked(c) if g >= 0} for c in model["comparisons"]}
     con.execute(f"CREATE TABLE kept AS SELECT * FROM read_parquet({lit(str(ws / 'scored' / '*.parquet'))})")
     floor, at = review_floor(p), p.fs.min_match_weight
-    cols = set(c for c, *_ in con.execute("DESCRIBE records").fetchall())
-    area = q("postal_code__first3") if "postal_code__first3" in cols else None
-    order = f"hash({area}), hash({q(uid)})" if area else f"hash({q(uid)})"
     ways, rows, last, quiet, settled, fits = models(p), [], {}, {}, {}, {}
-    reads = set().union(*(read_by(fs_settings(m, uid), *(keys_sql(r) for r in (*m.prior_rules, *m.em_rules))) for m in ways.values())) | {uid}
-    con.execute(f"CREATE TABLE er_ordered AS SELECT {', '.join(q(c) for c in cols if c in reads)} FROM records ORDER BY {order}")
-    size, top = FIRST, min(n, most or n)
+    con.execute(f"CREATE TABLE er_ordered AS {fit_sample_sql(ways.values(), uid, {c for c, *_ in con.execute('DESCRIBE records').fetchall()})}")  # the run's fit sample at each size
+    size, top = FIRST, n
     while True:
         size = min(size, top)
         sample = con.execute(f"SELECT * FROM er_ordered LIMIT {size}").df().astype("string")
@@ -77,13 +75,13 @@ def grow(ws: Path, s: Settings, p: Pipeline, line: Callable[..., None] | None = 
             try:
                 fitted = train_fs(m, sample, db, uid, u=u)
             except Exception as e:  # too few records for its rules: said, and the next size tried
-                rows.append(dict(records=size, em=way, error=str(e).split("\n")[0][:200]))
+                rows.append(dict(records=size, em=way, floor=floor, error=str(e).split("\n")[0][:200]))
                 line and line(f"{size:,} records, {way}: {rows[-1]['error']}", row=rows[-1])
                 continue
             start, w = weights(fitted, n)
             now, fits[way, size] = score_sql(start, w), fitted
             pairs = con.execute(f"SELECT count(*) FILTER (WHERE x >= {floor}), count(*) FILTER (WHERE x >= {at}) FROM (SELECT {now} AS x FROM kept)").fetchall()[0]
-            row = dict(records=size, em=way, seconds=round(time.perf_counter() - t, 2), start=round(start, 2), pairs_floor=pairs[0], pairs_line=pairs[1],
+            row = dict(records=size, em=way, floor=floor, seconds=round(time.perf_counter() - t, 2), start=round(start, 2), pairs_floor=pairs[0], pairs_line=pairs[1],
                        m={c["output_column_name"]: {lv["label_for_charts"]: round(lv["m_probability"], 4) for g, lv in _ranked(c) if g >= 0} for c in fitted["comparisons"]})
             if way in last:
                 was_start, was_w, was_sql, was_size = last[way]
@@ -137,8 +135,9 @@ def check(ws: Path, s: Settings, p: Pipeline, base: dict, fitted: dict, n: int) 
     with this fit): per threshold, the pairs at it, those a key or a rule lists, those the run kept, those a key lists
     the run didn't keep (its cutoff, at its own model: a run with this fit finds them), those no key lists (with a 95%
     interval), and the fields those agree on. Scaled to the file."""
-    from er.keys import GAP_RECORDS, _agrees, _poisson, discover, key_lists
-    from er.run import Run
+    from er.keys import agree_counts, discover, gap_records, generator_atoms, key_lists, poisson, thresholds
+    from er.run import BLOCKS, Run, stored_keys
+    p = stored_keys(ws, p, s)  # the keys the run listed by
     run = Run(p, s)
     con = run.con
     parts = sorted((ws / "state" / "records").glob("part-*.parquet"))
@@ -151,27 +150,29 @@ def check(ws: Path, s: Settings, p: Pipeline, base: dict, fitted: dict, n: int) 
     run.scoring = run.model = {**base, "comparisons": fitted["comparisons"], "probability_two_random_records_match": scaled_prior(fitted, n),
                                "er": {**base["er"], "fit_rows": n}}  # the file's u (train_fs was given them), this fit's m and start
     try:
-        d = discover(run, GAP_RECORDS)
+        d = discover(run, gap_records(p))
+        blocks = ws / "state" / BLOCKS
+        kept = json.loads(blocks.read_text(encoding="utf-8")) if blocks.exists() else {}  # the oversized blocks the run listed
         t, w, m = d.targets, d.weight, p.fs.budget.min_oversized()
         col = {a.column: i for i, a in reversed(list(enumerate(d.atoms)))}
         keyed = t["ruled"].to_numpy().copy()
         for b in p.fs.blockers:
-            keyed |= key_lists(b, t, col, d.rec, m)
+            keyed |= key_lists(b, t, col, d.rec, m, kept)
         d.rec.close()
         con.execute(f"CREATE TABLE er_run_kept AS SELECT {q(run.l)}, {q(run.r)} FROM read_parquet({lit(str(ws / 'scored' / '*.parquet'))})")
         con.register("er_t", t[[run.l, run.r]])
         stored = con.execute(f"SELECT k.{q(run.l)} IS NOT NULL FROM er_t t LEFT JOIN er_run_kept k USING ({q(run.l)}, {q(run.r)}) ORDER BY t.{q(run.l)}, t.{q(run.r)}").fetchnumpy()
         stored = next(iter(stored.values())).astype(bool)
         rows = []
-        for at in sorted({review_floor(p), p.fs.min_match_weight, 20.0}):
+        for at in thresholds(p):
             x = (t["match_weight"] >= at).to_numpy()
             missed = int((x & ~keyed).sum())
-            lo, hi = _poisson(missed)
+            lo, hi = poisson(missed)
             rows.append(dict(bits=at, pairs=round(x.sum() * w), listed=round((x & keyed).sum() * w), kept=round((x & stored).sum() * w),
                              gained=round((x & keyed & ~stored).sum() * w), missed=round(missed * w), missed_lo=round(lo * w), missed_hi=round(hi * w)))
         lost = t[(t["match_weight"] >= review_floor(p)).to_numpy() & ~keyed]
-        agree = sorted(((a.name, int(_agrees(a, lost[f"a{i}"], lost[f"b{i}"]).sum())) for i, a in enumerate(d.atoms)), key=lambda x: -x[1]) if len(lost) else []
-        return dict(sampled=d.facts["sampled_records"], reachable=d.facts["reachable"], thresholds=rows, missed_agree=[dict(atom=a, pairs=round(k * w)) for a, k in agree if k],
+        return dict(sampled=d.facts["sampled_records"], reachable=d.facts["reachable"], thresholds=rows, missed_agree=agree_counts(d.atoms, lost, w),
+                    uncounted=[b.name for b in p.fs.blockers if generator_atoms(b) is None],  # sorted, TF-IDF: what they list isn't told, so "no key" may hold some
                     seconds=round(d.facts["draw_seconds"] + d.facts["score_seconds"], 1))
     finally:
         con.close()
@@ -212,6 +213,8 @@ def text(r: dict) -> str:
         out += [f"  {x['bits']:>4g}+  {x['pairs']:>9,}  {x['listed']:>9,}  {x['kept']:>9,}  {x['gained']:>10,}  {x['missed']:>8,}  {x['missed_lo']:,}–{x['missed_hi']:,}" for x in c["thresholds"]]
         if c["missed_agree"]:
             out.append("  pairs no key lists agree on: " + " · ".join(f"{x['atom']} {x['pairs']:,}" for x in c["missed_agree"][:12]))
+        if c.get("uncounted"):
+            out.append(f"  not counted: {', '.join(c['uncounted'])} (they don't list by agreement)")
         out.append("")
     for x in (x for x in r["steps"] if "m" in x and r.get("chosen", {}).get(x["em"]) == x["records"]):  # each way's chosen fit's m, by comparison and level
         out.append(f"M  ({x['em']}, {x['records']:,} records)")
