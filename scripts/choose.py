@@ -54,7 +54,7 @@ def main() -> None:
             report_file.write_text("\n".join(report), encoding="utf-8")  # after every step: a step that stops keeps the tables before it
             print(f"{title}: {step.__name__} ({time.perf_counter() - t:.1f}s)", flush=True)
 
-    rules = RulesChooser(p.rules, p, s, db, x.rules_changes(p), x.RULES_DECISIONS, p.decision_p,
+    rules = RulesChooser(p.rules, p, s, db, x.rules_changes(p), x.RULES_DECISIONS,
                          replace(x.rules_tune(s.paths["optuna"]), enabled=args.optuna))
     section("Stage 1: rules", [rules.design, rules.ab, rules.decide, rules.cost, rules.evaluate, rules.output, rules.search])
     fs = FSChooser(p.fs, p, rules.final, s, db, x.fs_changes(p), x.FS_DECISIONS, replace(x.fs_tune(s.paths["optuna"]), enabled=args.optuna))

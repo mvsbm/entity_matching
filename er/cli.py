@@ -1351,8 +1351,7 @@ def try_sample(a: dict, emit: "Emit") -> dict:
     s, p, _ = setup(a)
     ws = Path(a["workspace"])
     r = grow(ws, s, p, line=emit.line)
-    best = {k: v for k, v in r["settled"].items()}
-    return {**r, "next": [dict(command=nayose("set", "fit", "--workspace", ws, "--records", v, "--em", k), why=f"learn from {v:,} records, {k}, at the next run") for k, v in best.items()]}
+    return {**r, "next": [dict(command=nayose("set", "fit", "--workspace", ws, "--records", v, "--em", k), why=f"learn from {v:,} records, {k}, at the next run") for k, v in r["settled"].items()]}
 
 
 def set_fit(a: dict, emit: "Emit") -> dict:
@@ -1411,12 +1410,16 @@ def reset_method(a: dict, emit: "Emit") -> dict:  # the method as tuned; people'
         return adopt(a, emit, kept)
 
 
+def locked(command: Callable[[dict, "Emit"], dict]) -> Callable[[dict, "Emit"], dict]:  # a command run under its workspace's lock, read to write: nothing lands between
+    @functools.wraps(command)
+    def run(a: dict, emit: "Emit") -> dict:
+        with folder.run_lock(Path(a["workspace"])):
+            return command(a, emit)
+    return run
+
+
+@locked  # checked and lowered as one: a decision written meanwhile is seen
 def lower_trust(a: dict, emit: "Emit") -> dict:
-    with folder.run_lock(Path(a["workspace"])):  # checked and lowered as one: a decision written meanwhile is seen
-        return _lower_trust(a, emit)
-
-
-def _lower_trust(a: dict, emit: "Emit") -> dict:
     s, p, _ = setup(a)
     ws = Path(a["workspace"])
     state = trust_state(connect(s.compute)[0], ws, p, s.data.unique_id) if (ws / "gold.parquet").exists() else None
@@ -1631,14 +1634,10 @@ def list_pairs(a: dict, emit: "Emit") -> dict:
                                                     dict(command=nayose("apply", "decisions", "--workspace", out), why="apply the decisions written in")])
 
 
+@locked
 def split_entity(a: dict, emit: "Emit") -> dict:
     """An entity split at a link that alone holds it together: that pair decided different (Run.decide stores it with
     people's decisions), then a full run, which never accepts a pair people called different. One lock throughout."""
-    with folder.run_lock(Path(a["workspace"])):
-        return _split_entity(a, emit)
-
-
-def _split_entity(a: dict, emit: "Emit") -> dict:
     s, p, _ = setup(a)
     out, uid = Path(a["workspace"]), s.data.unique_id
     if len(a["between"] or []) != 2:

@@ -45,7 +45,6 @@ class RulesChooser:
     db: DuckDBAPI
     changes: Mapping[str, Callable[[RulesSpec], RulesSpec]]
     decisions: tuple[tuple[str, str], ...]
-    decision_p: float
     tune: Tune
     final: RulesSpec | None = None
     adopted: list[str] = field(default_factory=list)
@@ -102,7 +101,7 @@ class RulesChooser:
                                    self.joined(self.run(variant, "train")), self.train_true)
             on_val = paired_test(self.joined(self.run(final, "val")),
                                  self.joined(self.run(variant, "val")), self.val_true)
-            rows.append(verdict(name, kind, on_train, on_val, self.decision_p, "train"))
+            rows.append(verdict(name, kind, on_train, on_val, self.pipeline.decision_p, "train"))
             if rows[-1]["adopted"]:
                 final = variant
         self.final, self.adopted = final, [v["change"] for v in rows if v["adopted"]]
@@ -182,7 +181,7 @@ class RulesChooser:
             on_train = paired_test(self.joined(self.run(self.final, "train")), self.joined(self.run(spec, "train")), self.train_true)
             on_val = paired_test(self.joined(self.run(self.final, "val")), self.joined(self.run(spec, "val")), self.val_true)
             text = (f"suggested: trial {front.at[best, 'trial']} → adopt by rule ('better' vs FINAL): "
-                    f"{adopt('better', on_train, on_val, self.decision_p)} · train {on_train} · val {on_val}")
+                    f"{adopt('better', on_train, on_val, self.pipeline.decision_p)} · train {on_train} · val {on_val}")
         return [("Optuna: the Pareto front, re-scored on val", text, front.drop(columns="comparators").round(4))]
 
 

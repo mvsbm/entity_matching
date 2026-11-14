@@ -147,8 +147,7 @@ def qa(run: "Run", fields: list[str] | None = None, review: int = 50, previous: 
             kind_rows.append(("note", f"{len(mixed):,} cluster{'s hold' if len(mixed) > 1 else ' holds'} a sure person and a sure company: see qa.md, mixed kinds"))
     probed = next((x["strata"] for x in reversed(run.steps) if x["step"] == "probe"), [])  # er.probe: counts only
     apart = con.execute(f"""SELECT count(*) FROM er_decisions d JOIN gold a ON a.{u} = d.{q(run.l)} JOIN gold b ON b.{u} = d.{q(run.r)}
-        WHERE d.decision = 'no_match' AND a.cluster_id = b.cluster_id""").fetchall()[0][0] \
-        if con.execute("SELECT count(*) FROM duckdb_tables() WHERE table_name = 'er_decisions'").fetchall()[0][0] else 0  # kept apart, joined by others
+        WHERE d.decision = 'no_match' AND a.cluster_id = b.cluster_id""").fetchall()[0][0]  # kept apart, joined by others
     summary = pd.DataFrame([
         ("records", f"{total:,}" + (f", {run.added:,} of them new" if run.added is not None else "") + (f"; {aside:,} set aside (set_aside/)" if aside else "")),
         ("entities", f"{entities:,}; the largest holds {biggest:,} record{'s' * (biggest != 1)}"),

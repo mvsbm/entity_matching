@@ -31,6 +31,7 @@ from splink.internals.comparison_level import M_U_CLAMP_MIN
 from splink.internals.constants import LEVEL_NOT_OBSERVED_TEXT
 
 from er.candidates import deletions_sql
+from er.strings import FUNCTIONS
 from er.config import COPIES, Comparator, Comparison, DeletionKeys, FSModel, FSSpec, InputError, Key, KeyBlocker, Pipeline, RulesSpec, keys_sql, q
 
 _populate = splink_em.populate_m_u_from_lookup
@@ -261,7 +262,7 @@ def exact_u(model: FSModel, records: Records, db: DuckDBAPI) -> U:
             for lv in c.levels:
                 if any(comp.function != "exact" for _, comp in lv.any_of):
                     (col, comp), *more = lv.any_of
-                    if (model.u_near_by_keys and not more and comp.function in ONE_EDIT and comp.threshold <= 1
+                    if (model.u_near_by_keys and not more and comp.function in DISTANCES and comp.threshold <= 1
                             and set(prev) == {comp.column(col)}):  # after exact levels on its own column: unequal values only
                         if (u := near(comp.column(col), comp) / outside if outside else 0.0) > 0:
                             out.setdefault(c.name, {})[lv.label] = u
@@ -280,7 +281,8 @@ def exact_u(model: FSModel, records: Records, db: DuckDBAPI) -> U:
             con.unregister(name)
 
 
-ONE_EDIT = ("levenshtein", "damerau_levenshtein", "hamming")  # distances under which one edit apart shares a deletion key
+DISTANCES = tuple(f for f, x in FUNCTIONS.items() if not x.similarity)  # edit distances: one edit apart shares a deletion key
+SIMILARITIES = tuple(f for f, x in FUNCTIONS.items() if x.similarity and f != "exact")
 
 
 def counted(model: FSModel, exact: U) -> set[str]:  # the comparisons exact_u counted level by level, else included: none to sample
@@ -522,7 +524,6 @@ def compared_exactly(model: FSModel) -> list[str]:  # the fields a comparison's 
                               for col, _ in c.levels[0].any_of))
 
 
-NEAR = ("levenshtein", "damerau_levenshtein", "hamming", "jaro", "jaro_winkler", "jaccard", "levenshtein_similarity")  # agreement short of equal
 
 
 def sensible_m(model: FSModel, model_json: dict, filled: set[tuple[str, str]]) -> list[list]:
@@ -540,7 +541,7 @@ def sensible_m(model: FSModel, model_json: dict, filled: set[tuple[str, str]]) -
         if exact and all((name, lv["label_for_charts"]) in filled for lv in exact):
             for lv in levels:
                 level = by_label.get(lv["label_for_charts"])
-                if level and any(x.function in NEAR for _, x in level.any_of) and lv["m_probability"] != lv["u_probability"]:
+                if level and any(x.function in (*DISTANCES, *SIMILARITIES) for _, x in level.any_of) and lv["m_probability"] != lv["u_probability"]:
                     out.append([name, lv["label_for_charts"], "no exact agreement among matches: 0 bits", round(math.log2(lv["m_probability"] / lv["u_probability"]), 2)])
                     lv["m_probability"] = lv["u_probability"]
         other = next((lv for lv in levels if lv["label_for_charts"] == ELSE), None)
