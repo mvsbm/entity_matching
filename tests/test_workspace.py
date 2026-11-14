@@ -37,6 +37,7 @@ def test_a_workspace_keeps_its_own_mapping_and_a_copy_of_its_files(say, tmp_path
 
     assert say("create", "workspace", "a")[0] == 0 and say("create", "workspace", "b")[0] == 0
     assert say("create", "workspace", "a")[0] == 2 and say("create", "workspace", "../x")[0] == 2  # taken; not a name
+    assert [say("create", "workspace", x)[0] for x in ("nul", "CON.2026", "com1", "a.")] == [2] * 4 and not any((tmp_path / "workspaces").glob("[nNcC]*"))  # no folder Windows can't keep: a device, a dot it drops
     (tmp_path / "workspaces" / "notes").mkdir()  # a folder that is no workspace
     assert {w["name"] for w in say("list", "workspaces")[1]["workspaces"]} == {"a", "b"}
     a, b = Path("workspaces/a"), Path("workspaces/b")

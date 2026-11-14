@@ -666,6 +666,8 @@ def set_fit(a: dict, emit: "Emit") -> dict:
     records = int(number(a["records"], "--records", fix="a number of records, 1,000 or more"))
     if records < 1000:
         raise InputError(f"--records {records}: fewer than 1,000 records hold too few matches to learn from", fix="give 1,000 or more: try sample says where more stops paying")
+    if not ws.is_dir():  # the lock would make the folder: a typo is no workspace
+        raise InputError(f"no workspace at {ws}", fix="create it: nayose create workspace NAME")
     with folder.run_lock(ws):  # read, checked and written as one
         method = {**folder.method(ws), "fit": {"records": records, "em": a["em"]}}
         setup(a, method)  # refused before anything is written
@@ -675,9 +677,11 @@ def set_fit(a: dict, emit: "Emit") -> dict:
 
 def number(text: str, what: str, fix: str = "a weight in bits, for example 9 or 9.5") -> float:
     try:
-        return float(text)
+        if math.isfinite(x := float(text)):
+            return x
     except ValueError:
-        raise InputError(f"{what} {text}: not a number", fix=fix) from None
+        pass
+    raise InputError(f"{what} {text}: not a number", fix=fix)  # nan and inf too: no line, count or bound
 
 
 def adopt(a: dict, emit: "Emit", method: dict) -> dict:
@@ -985,7 +989,7 @@ def counted(a: dict, name: str, default: int) -> int:  # a page or a count: a wh
     v = a.get(name)
     if v in (None, ""):
         return default
-    if not str(v).isdigit() or int(v) < 1:
+    if not str(v).isdecimal() or int(v) < 1:  # ² is a digit, not a number int() reads
         raise InputError(f"--{name} {v}: a whole number from 1", fix=f"for example --{name} {default}")
     return int(v)
 

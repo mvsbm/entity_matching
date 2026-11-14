@@ -79,7 +79,7 @@ The fields, and which ones a run needs (`[fields]` in `config/final.toml`; `kind
 | `phone` | the phone number's last four digits | optional |
 | `customer_id` | the ID another system gave the customer | optional |
 | `birth_date` | a person's birth date, in one format throughout, so equal dates are equal strings (a company's date there is read too) | optional |
-| `kind_flag` | the file's own person/company flag; `config/settings.toml` `[kind] flag_company` lists the values that say company (`2`), any other says person | optional |
+| `kind_flag` | the file's own person/company flag; `config/settings.toml` `[kind] flag_company` lists the values that say company (`2`; read as people's answers are, its spaces and width aside: `2 ` and `２` are `2`), any other says person | optional |
 | `entity` | the true entity, in labelled files only | never read by a run |
 
 - **A missing optional field** turns off only the rules, keys and comparison levels that read it. The run lists them in `qa.md`.
@@ -473,7 +473,7 @@ Pairs are counted before any join, so a run that couldn't fit stops within secon
 
 ## 8 · Run it on a schedule
 
-`nayose serve inbox` takes in every file dropped in an inbox (Parquet, CSV or TSV), one at a time, in the order it arrived.
+`nayose serve inbox` takes in every file dropped in an inbox (Parquet, CSV or TSV; a hidden one, such as macOS's `._name.csv`, left out), one at a time, in the order it arrived.
 
 ```bash
 .venv/bin/nayose serve inbox inbox --workspace workspaces/customers                # one pass; cron can call it
