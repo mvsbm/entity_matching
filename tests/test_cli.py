@@ -341,6 +341,12 @@ def test_nayose_takes_a_file_from_the_check_to_people_s_answers(tmp_path, popula
     assert say("apply", "decisions", "--workspace", run)["decisions"] == 0  # given twice: nothing new
     gold = pd.read_parquet(run / "gold.parquet").set_index(uid)
     assert gold.loc[pair["id_l"], "cluster_id"] == gold.loc[pair["id_r"], "cluster_id"]
+    say("decide", "pair", pair["id_l"], pair["id_r"], "no_match", "--workspace", run)  # taken back
+    say("apply", "decisions", "--workspace", run)
+    people = next(x for x in say("describe", "matching", "--workspace", run)["nodes"] if x["id"] == "people")
+    assert people["decided"] == 1  # one pair decided twice: once, as last said
+    say("decide", "pair", pair["id_l"], pair["id_r"], "match", "--workspace", run)
+    say("apply", "decisions", "--workspace", run)
     record = say("list", "kinds", "--workspace", run, "--open")["kinds"][0]["id"]
     say("answer", "kind", record, "company", "--workspace", run)
     assert record in {x["id"] for x in say("list", "kinds", "--workspace", run, "--pending")["kinds"]}  # written in, not applied: still listed
@@ -643,6 +649,10 @@ def test_a_sheet_given_back_with_no_answer_or_a_kind_in_words_is_refused(tmp_pat
     pd.DataFrame({"uid_l": ["1"], "uid_r": ["2"], "decision": [None]}, dtype="string").to_parquet(tmp_path / "untouched.parquet")
     with pytest.raises(InputError, match="no row has a decision"):
         decisions(tmp_path / "untouched.parquet", duckdb.connect(), "uid_l", "uid_r", into="d")
+    pd.DataFrame({"uid_l": ["1", "3"], "uid_r": ["2", "4"], "decision": ["match\u3000", "\u3000No_Match "]}, dtype="string").to_parquet(tmp_path / "typed.parquet")
+    con = duckdb.connect()
+    decisions(tmp_path / "typed.parquet", con, "uid_l", "uid_r", into="d")  # typed on a Japanese keyboard: full-width spaces around
+    assert sorted(x for x, in con.execute("SELECT decision FROM d").fetchall()) == ["match", "no_match"]
     for kinds, error in ([None, None], "no row is answered"), (["2 company", None], r"a kind is 1, 2 or 0, not \['2 company'\]"):
         pd.DataFrame({"uid": ["1", "2"], "kind": kinds}, dtype="string").to_parquet(tmp_path / "kinds.parquet")
         with pytest.raises(InputError, match=error):
@@ -1086,3 +1096,13 @@ def test_the_fit_a_workspace_sets_is_the_sample_and_the_em_its_runs_use(populati
             adjust(p, {"fit": bad})
     from er.run import run_config
     assert run_config(q, s) == run_config(p, s) != run_config(adjust(p, {"line": 9}), s)  # an increment and a lookup score with the stored model: the fit owes them no rerun
+
+
+def test_a_comparison_s_own_copy_is_no_step_a_setting_may_name(tmp_path):
+    from er.config import COPIES
+    from er.settings import load_settings, settings_path
+    (tmp_path / "pyproject.toml").write_text("", encoding="utf-8")
+    for step in COPIES:  # what the comparisons make for themselves: every place that reads a chain refuses it alike
+        (tmp_path / "settings.toml").write_text(settings_path().read_text(encoding="utf-8").replace('fold = ["kana_fold"]', f'fold = ["kana_fold", "{step}"]'), encoding="utf-8")
+        with pytest.raises(Exception, match="unknown normalizers"):
+            load_settings(tmp_path / "settings.toml")

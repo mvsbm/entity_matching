@@ -40,7 +40,7 @@ import pyarrow.compute as pc
 
 from er import details, folder, inbox, index, intake
 from er.io import alive, read_parquet, replace_text
-from er.config import InputError, Normalizer, Pipeline, adjust, lit, load_pipeline, q, restrict, sources_text, toml_of, widen
+from er.config import COPIES, InputError, Normalizer, Pipeline, adjust, lit, load_pipeline, q, restrict, sources_text, toml_of, widen
 from er.folder import Busy
 from er.report import (applied, compare_records, describe_entity, describe_key, describe_matching, describe_method, describe_workspace, entity_pairs, explain_pair, fill_rates,
                        key_how, list_patterns, review_workload, rule_how, run_model, trust_state)
@@ -816,7 +816,7 @@ def write_mapping(ws: str | None, mapping: dict, update: dict | None = None) -> 
 
 
 def set_preparation(a: dict, emit: "Emit") -> dict:
-    s, steps, mapping, update = settings_for(a), [x for x in get_args(Normalizer) if x != "one_byte"], {}, {}  # one_byte: a comparison's own copy
+    s, steps, mapping, update = settings_for(a), [x for x in get_args(Normalizer) if x not in COPIES], {}, {}  # a comparison's own copy: no feature's
     for item in a["mapping"]:
         f, sep, said = item.partition("=")
         chosen = [x.strip() for x in said.split(",") if x.strip()]

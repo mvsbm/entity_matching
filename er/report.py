@@ -17,8 +17,8 @@ import duckdb
 import numpy as np
 import pandas as pd
 
-from er.config import DeletionKeys, InputError, Key, KeyBlocker, Pipeline, SortedNeighbourhood, TfidfNeighbours, bits, lit, q, sources_text
-from er.folder import DECISIONS, PENDING, TRIALS, history, method, rounds, runs
+from er.config import COPIES, DeletionKeys, InputError, Key, KeyBlocker, Pipeline, SortedNeighbourhood, TfidfNeighbours, bits, lit, q, sources_text
+from er.folder import DECISIONS, PENDING, TRIALS, history, latest_decisions, method, rounds, runs
 from er.io import code_version, read_parquet, table_after
 from er.kind import COMPANY, PERSON, SAYS, UNSURE, sheet_parts
 from er.match import ELSE, levels, named_sql, parameters, pattern_coverage, review_floor, scaled_prior, score_fs
@@ -602,7 +602,7 @@ def describe_matching(con: duckdb.DuckDBPyConnection, out: Path | None, p: Pipel
     have = {c for c, in rows(f"SELECT column_name FROM (DESCRIBE SELECT * FROM {stored})")}
     variants = {}
     for col, norm in [*p.rules.normalized(), *p.fs.normalized()]:
-        if norm[-1:] != ("one_byte",):  # the comparisons' own copy, not a way people's values are made comparable
+        if not norm or norm[-1] not in COPIES:  # the comparisons' own copy, not a way people's values are made comparable
             variants.setdefault(col, set()).add(norm)
     shown_fields = [f for f in s.columns if f not in ("id", "entity") and f in have]
     filled = dict(zip(shown_fields, rows(f"SELECT {', '.join(f'avg(({q(f)} IS NOT NULL)::DOUBLE)' for f in shown_fields)} FROM {stored}")[0])) if shown_fields else {}
@@ -689,7 +689,8 @@ def describe_matching(con: duckdb.DuckDBPyConnection, out: Path | None, p: Pipel
     rule_pairs = sum(v[0] for v in kept.values()) if ran else None
     rule_merged = sum(v[3] for v in kept.values()) if ran else None
     review = read_parquet(out / "review.parquet") if ran and (out / "review.parquet").exists() else None
-    decided = rows(f"SELECT count(*) FROM {parquet(DECISIONS + '/*.parquet')}")[0][0] if ran and any((out / DECISIONS).glob("*.parquet")) else 0
+    latest = latest_decisions(out, uid) if ran else None  # a pair decided again: once, as last said
+    decided = rows(f"SELECT count(*) FROM {latest}")[0][0] if latest else 0
     by = dict(rows(f"SELECT resolved_by, count(*) FROM {parquet('gold.parquet')} WHERE resolved_by = 'review' GROUP BY 1"))
     sizes = rows(f"SELECT n, count(*) FROM (SELECT count(*) AS n FROM {parquet('gold.parquet')} GROUP BY cluster_id) GROUP BY 1 ORDER BY 1")
     customers = sum(k for _, k in sizes) if ran else None
@@ -716,7 +717,7 @@ def describe_matching(con: duckdb.DuckDBPyConnection, out: Path | None, p: Pipel
         FROM {gold} WHERE resolved_by IS NOT NULL GROUP BY 1"""))
     size_eg = {a: e for a, e in rows(f"SELECT n, min(cluster_id) FROM (SELECT cluster_id, count(*) AS n FROM {gold} GROUP BY 1) GROUP BY 1")}
     links = [f"SELECT {l} AS a, {r} AS z FROM {parquet('matches/*.parquet')}"] + ([f"SELECT {l}, {r} FROM {kept_rules} WHERE merged"] if rule_cols else []) + (
-        [f"SELECT {l}, {r} FROM {parquet(DECISIONS + '/*.parquet')} WHERE decision = 'match'"] if decided else [])
+        [f"SELECT {l}, {r} FROM {latest} WHERE decision = 'match'"] if decided else [])
     look = dict(
         largest=[dict(customer=c, records=k) for c, k in rows(f"SELECT cluster_id, count(*) FROM {gold} GROUP BY 1 ORDER BY 2 DESC, 1 LIMIT 5")],
         single_links=rows(f"""WITH g AS (SELECT {q(uid)} AS id, cluster_id AS c FROM {gold}), big AS (SELECT c, count(*) AS n FROM g GROUP BY 1 HAVING count(*) >= 3),
@@ -865,10 +866,8 @@ def describe_method(out: Path, p: Pipeline, s: "Settings") -> dict:
     read = lambda name: f"read_parquet({lit(out / name)}, union_by_name = true)"
 
     # the pairs people decided, the latest decision per pair, and the rules' pairs: scored again, with the name check
-    parts = out / DECISIONS / "part-*.parquet"
-    con.execute(f"""CREATE TABLE er_decided AS SELECT {q(l)}, {q(r)}, arg_max(decision, filename) AS decision, arg_max(why, filename) AS why,
-        arg_max(round, filename) AS round FROM read_parquet({lit(parts)}, filename = true, union_by_name = true) GROUP BY ALL"""
-                if any(parts.parent.glob("part-*.parquet")) else
+    latest = latest_decisions(out, uid, ("decision", "why", "round"))
+    con.execute(f"CREATE TABLE er_decided AS SELECT * FROM {latest}" if latest else
                 f"CREATE TABLE er_decided ({q(l)} VARCHAR, {q(r)} VARCHAR, decision VARCHAR, why VARCHAR, round INTEGER)")
     con.execute(f"CREATE TABLE er_rule AS SELECT {q(l)}, {q(r)}, rule FROM {read('rule_kept/*.parquet')}")
     con.execute(f"CREATE TABLE er_pairs AS SELECT {q(l)}, {q(r)} FROM er_decided UNION SELECT {q(l)}, {q(r)} FROM er_rule")

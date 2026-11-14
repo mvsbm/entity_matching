@@ -1008,9 +1008,8 @@ class Run:
         """The decisions stored in this workspace (None: none), on records of this file, the latest per pair, for _accept."""
         u, l, r, parts = q(self.uid), q(self.l), q(self.r), out / folder.DECISIONS if out else None
         if parts and any(parts.glob("part-*.parquet")):
-            self.con.execute(f"""CREATE OR REPLACE TABLE er_decisions AS SELECT {l}, {r}, arg_max(decision, filename) AS decision
-                FROM read_parquet({lit(parts / 'part-*.parquet')}, filename = true)
-                WHERE {l} IN (SELECT {u} FROM records) AND {r} IN (SELECT {u} FROM records) GROUP BY {l}, {r}""")
+            self.con.execute(f"""CREATE OR REPLACE TABLE er_decisions AS SELECT * FROM {folder.latest_decisions(out, self.uid)}
+                WHERE {l} IN (SELECT {u} FROM records) AND {r} IN (SELECT {u} FROM records)""")
 
     @locked
     def decide(self, path: str | Path, out: Path) -> "Run":
@@ -1027,10 +1026,8 @@ class Run:
         self.con.execute(f"CREATE OR REPLACE TABLE gold_old AS SELECT * FROM read_parquet({lit(out / 'gold.parquet')})")
         self.inputs = file_facts(decisions(path, self.con, self.l, self.r, into="er_decisions"), "decisions")  # the door: er.source checks them
         known(self.con, f"SELECT {l} AS id FROM er_decisions UNION SELECT {r} FROM er_decisions", "gold_old", self.uid, path, f"the run in {out}")
-        if any((parts := out / folder.DECISIONS).glob("part-*.parquet")):
-            self.con.execute(f"""DELETE FROM er_decisions d USING (SELECT {l}, {r}, arg_max(decision, filename) AS decision
-                FROM read_parquet({lit(parts / 'part-*.parquet')}, filename = true) GROUP BY ALL) p
-                WHERE p.{l} = d.{l} AND p.{r} = d.{r} AND p.decision = d.decision""")
+        if latest := folder.latest_decisions(out, self.uid):
+            self.con.execute(f"""DELETE FROM er_decisions d USING {latest} p WHERE p.{l} = d.{l} AND p.{r} = d.{r} AND p.decision = d.decision""")
         if not self._count("er_decisions"):
             self._done("decide", "O(D)", "O(0 new decisions)", t, decisions=0, matches=0, clusters_joined=0)
             return self

@@ -31,7 +31,7 @@ from splink.internals.comparison_level import M_U_CLAMP_MIN
 from splink.internals.constants import LEVEL_NOT_OBSERVED_TEXT
 
 from er.candidates import deletions_sql
-from er.config import Comparator, Comparison, DeletionKeys, FSModel, FSSpec, InputError, Key, KeyBlocker, Pipeline, RulesSpec, keys_sql, q
+from er.config import COPIES, Comparator, Comparison, DeletionKeys, FSModel, FSSpec, InputError, Key, KeyBlocker, Pipeline, RulesSpec, keys_sql, q
 
 _populate = splink_em.populate_m_u_from_lookup
 
@@ -91,7 +91,6 @@ def rule_edges(spec: RulesSpec, records: "Records", db: DuckDBAPI, uid: str, bat
 
 
 ELSE = "else"
-COPIES = ("one_byte", "one_byte_hash")  # the copies er.standardize makes for the comparisons (Comparator.copied): a table without them is compared without
 U = dict[str, dict[str, float]]  # comparison → level label → u probability
 Bound = Mapping[str, tuple[tuple[str, int, str], ...] | None]  # per comparison, how bound_sql settles it (bound_tests)
 MAX_STATES = 3 ** 7  # a comparison with more outcomes than this is bounded by its best level
