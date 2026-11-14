@@ -22,7 +22,7 @@ from er.folder import PENDING, history, latest_decisions, method, rounds, runs
 from er.io import code_version, read_parquet, table_after
 from er.kind import COMPANY, PERSON, SAYS, UNSURE, sheet_parts
 from er.match import ELSE, levels, named_sql, parameters, pattern_coverage, review_floor, scaled_prior
-from er.review_state import applied, read, trust_state
+from er.review_state import _trust_links, applied, read
 
 if TYPE_CHECKING:
     from er.run import Run
@@ -284,26 +284,32 @@ def trust_sheet(run: "Run", out: Path | None = None) -> tuple[pd.DataFrame, pd.D
     range they decided already; once they found one of its links false, the line can't step past it, so its open
     links and every range's below go to people one by one instead, best first, `checks` at a time; and the model's
     pairs above its threshold with no name compared, which no line joins; and `watch` spot-checks of the links at the
-    line or above. An increment (`out`, its workspace) counts the false pairs the workspace holds: its own links are
-    the batch's. O(E)."""
+    line or above. An increment (`out`, its workspace) asks only about the batch's links, but counts the range, its
+    checks and false pairs over the workspace's links too, less the open rows its sheet keeps (carry_over), so it asks
+    what a full run would. O(E)."""
     con, l, r, trust, u = run.con, q(run.l), q(run.r), run.pipeline.trust, q(run.uid)
     # once, those every question below reads (from the lowest step or the line up): each would join every scored pair again
     con.execute(f"""CREATE OR REPLACE TEMP TABLE er_trust_links AS SELECT * FROM (SELECT s.* EXCLUDE (named, keep) FROM ({run.scored()}) s WHERE s.named AND s.keep
                 UNION ALL BY NAME SELECT x.*, k.rule AS sources FROM rule_kept k JOIN rule_scores x USING ({l}, {r}))
                 QUALIFY row_number() OVER (PARTITION BY {l}, {r} ORDER BY sources) = 1 AND match_weight >= {bits(min((*trust.steps, trust.line)))}""")
     links = "SELECT * FROM er_trust_links"
+    stored = _trust_links(out, run.uid, "er_decisions") if out is not None else []  # an increment: the workspace's links count too
+    counted = f"SELECT DISTINCT ON ({l}, {r}) * FROM (SELECT {l}, {r}, match_weight FROM er_trust_links{''.join(f' UNION ALL {x}' for x in stored)})"
+    sheet = out / "review.parquet" if out is not None else None
+    waiting = lambda lo, hi: con.execute(f"""SELECT count(*) FROM read_parquet({lit(sheet)}) x JOIN gold ga ON ga.{u} = x.{l} JOIN gold gb ON gb.{u} = x.{r}
+        WHERE x.why = 'decide' AND x.decision IS NULL AND ga.cluster_id <> gb.cluster_id AND {open_} AND x.match_weight >= {bits(lo)}
+        AND x.match_weight < {bits(hi)}""").fetchall()[0][0] if sheet is not None and sheet.exists() else 0  # the open rows carry_over keeps
     open_ = f"NOT EXISTS (SELECT 1 FROM er_decisions d WHERE d.{l} = x.{l} AND d.{r} = x.{r})"
     decide = pd.DataFrame()
-    holds = lambda lo, hi: con.execute(f"SELECT count(*) > 0 FROM ({links}) x WHERE x.match_weight >= {bits(lo)} AND x.match_weight < {bits(hi)}").fetchall()[0][0]
+    holds = lambda lo, hi: con.execute(f"SELECT count(*) > 0 FROM ({counted}) x WHERE x.match_weight >= {bits(lo)} AND x.match_weight < {bits(hi)}").fetchall()[0][0]
     if (span := trust.below(holds)) is not None:
         within = f"x.match_weight >= {bits(span[0])} AND x.match_weight < {bits(span[1])}"
         done, false = con.execute(f"""SELECT count(*) FILTER (WHERE NOT {open_}), count(*) FILTER (WHERE EXISTS (SELECT 1 FROM er_decisions d
-            WHERE d.{l} = x.{l} AND d.{r} = x.{r} AND d.decision = 'no_match')) FROM ({links}) x WHERE {within}""").fetchall()[0]
-        false = (trust_state(con, out, run.pipeline, run.uid) or {}).get("false", 0) if out is not None else false
+            WHERE d.{l} = x.{l} AND d.{r} = x.{r} AND d.decision = 'no_match')) FROM ({counted}) x WHERE {within}""").fetchall()[0]
         decide = con.sql(f"""SELECT x.* FROM ({links}) x JOIN gold ga ON ga.{u} = x.{l} JOIN gold gb ON gb.{u} = x.{r}
             WHERE x.match_weight >= {bits(min(trust.steps))} AND x.match_weight < {bits(span[1])} AND {open_} AND ga.cluster_id <> gb.cluster_id
-            ORDER BY x.match_weight DESC, x.{l}, x.{r} LIMIT {trust.checks}""").df() if false else \
-            con.sql(f"SELECT * FROM ({links}) x WHERE {within} AND {open_} ORDER BY hash(x.{l}, x.{r}) LIMIT {max(0, trust.checks - done)}").df()
+            ORDER BY x.match_weight DESC, x.{l}, x.{r} LIMIT {max(0, trust.checks - waiting(min(trust.steps), span[1]))}""").df() if false else \
+            con.sql(f"SELECT * FROM ({links}) x WHERE {within} AND {open_} ORDER BY hash(x.{l}, x.{r}) LIMIT {max(0, trust.checks - done - waiting(*span))}").df()
     audit = con.sql(f"SELECT * FROM ({links}) x WHERE x.match_weight >= {bits(trust.line)} AND {open_} ORDER BY hash(x.{l}, x.{r}) LIMIT {trust.watch}").df()
     unnamed = con.sql(f"""SELECT * EXCLUDE (named, keep) FROM ({run.scored()}) x WHERE NOT x.named AND x.keep
         AND x.match_weight >= {run.pipeline.fs.min_match_weight} AND {open_} ORDER BY x.match_weight DESC, x.{l}, x.{r}""").df()  # no line joins them: people do

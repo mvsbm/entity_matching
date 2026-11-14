@@ -105,6 +105,51 @@ def test_an_interrupted_increment_completes_when_run_again(tmp_path, population,
     assert len(pd.read_parquet(tmp_path / "unlogged" / "gold.parquet")) == len(g.df)  # and a rerun reads every file the log names
 
 
+def test_with_a_trust_line_an_increment_asks_for_the_checks_a_full_run_would(tmp_path, population):
+    import shutil
+    from er.run import Run
+    s, p, g = population
+    uid, pipe = s.data.unique_id, s.root / "tests" / "method.toml"
+    p = replace(p, trust=replace(p.trust, checks=8, watch=0, line=math.inf))  # nothing merges yet; 8 checks a range
+    new = np.random.default_rng(0).random(len(g.df)) < 0.2
+    g.df[~new].to_parquet(tmp_path / "old.parquet", index=False)
+    g.df[new].to_parquet(tmp_path / "new.parquet", index=False)
+    g.df.to_parquet(tmp_path / "all.parquet", index=False)
+    Run(p, s).full(tmp_path / "old.parquet", tmp_path / "inc", pipeline_file=pipe)
+    sheet = pd.read_parquet(tmp_path / "inc" / "review.parquet")
+    asked = sheet[sheet["why"] == "decide"].head(5).assign(decision="match")
+    asked.to_parquet(tmp_path / "said.parquet")
+    Run(p, s).decide(tmp_path / "said.parquet", tmp_path / "inc")
+    shutil.copytree(tmp_path / "inc", tmp_path / "full")
+    Run(p, s).increment(tmp_path / "new.parquet", tmp_path / "inc", pipe)
+    Run(p, s).full(tmp_path / "all.parquet", tmp_path / "full", overwrite=True, pipeline_file=pipe)
+    open_ = lambda ws: (lambda x: int(((x["why"] == "decide") & x["decision"].isna()).sum()))(pd.read_parquet(ws / "review.parquet"))
+    assert open_(tmp_path / "inc") == open_(tmp_path / "full") == 3  # 8 checks, 5 decided
+
+
+def test_without_bridging_an_increment_lists_no_pair_of_two_records_the_rules_joined(tmp_path, population):
+    from er.run import Run
+    s, p, g = population
+    assert not p.fs.bridge
+    uid, l, r = s.data.unique_id, f"{s.data.unique_id}_l", f"{s.data.unique_id}_r"
+    both = g.df[g.df["CIF_ID"].notna() & g.df["FULL_NAME_KANA"].notna() & g.df["PHONE_NUM_4"].notna()]
+    a, b = both.iloc[0], both[both["PHONE_NUM_4"] != both.iloc[0]["PHONE_NUM_4"]].iloc[0]
+    x = a.copy()
+    x[uid] = "9000000001"
+    y = b.copy()
+    y[uid], y["PHONE_NUM_4"], y["POST_CD"] = "9000000002", a["PHONE_NUM_4"], a["POST_CD"]  # each joined to its twin by a rule (customer ID and name); the two share a phone and postal area
+    g.df.to_parquet(tmp_path / "old.parquet", index=False)
+    pd.DataFrame([x, y]).to_parquet(tmp_path / "new.parquet", index=False)
+    pd.concat([g.df, pd.DataFrame([x, y])]).to_parquet(tmp_path / "all.parquet", index=False)
+    listed = lambda run: run.con.execute(f"SELECT count(*) FROM cands WHERE {l} = '9000000001' AND {r} = '9000000002'").fetchall()[0][0]
+    run = lambda: Run(p, s, reaching_only=False)  # every pair the keys list, whatever it scores
+    full = run().full(tmp_path / "all.parquet", tmp_path / "full")
+    rc = pd.read_parquet(tmp_path / "full" / "state" / "rule_clusters.parquet").set_index(uid)["cluster_id"]
+    assert rc["9000000001"] == rc[a[uid]] != rc["9000000002"] == rc[b[uid]] and not listed(full)  # a full run never lists it
+    run().full(tmp_path / "old.parquet", tmp_path / "inc")
+    assert not listed(run().increment(tmp_path / "new.parquet", tmp_path / "inc"))  # nor does an increment
+
+
 def test_a_full_run_cut_short_in_its_moves_lands_with_its_round(tmp_path, population, monkeypatch):
     import os
     from er import folder

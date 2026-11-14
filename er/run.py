@@ -581,6 +581,8 @@ class Run:
                                gate=self._gate, floor=review_floor(self.pipeline), capacity=self.capacity(), told=self._joined(),
                                known=None if batch else getattr(self, "estimates", None), keep=self._reaching if self.reaching_only else None)
         self.con.execute("DROP TABLE IF EXISTS er_bound_records")
+        if batch and not fs.bridge:  # as a full run's query: a pair touches a record the rules left alone
+            self.con.execute(f"DELETE FROM cands WHERE NOT {self._alone(q(self.l), q(self.r))}")
         self._gated(report.attrs["gated"])
         stored = self._count("cands")
         self.listed = c = stored if report.attrs["listed"] is None else report.attrs["listed"]  # the distinct pairs the keys listed
