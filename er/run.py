@@ -612,6 +612,8 @@ class Run:
         return lambda i, n, unit: self.told(sum(w[:i]), sum(w), unit, more=more)
 
     def _gate(self, pairs: str) -> str:  # the oversized blocks' sampled pairs (a table), scored as the candidates will be, a slice at a time
+        if not self.pipeline.fs.bridge:  # a pair of two records the rules joined is no pair the run lists: it keeps no block
+            self.con.execute(f"CREATE OR REPLACE TEMP TABLE {pairs} AS SELECT * FROM {pairs} WHERE {self._alone(q(self.l), q(self.r))}")  # made again: its rowids dense, as _scored slices them
         start, total, done = time.perf_counter(), self._count(pairs), 0
         if self.told:
             self.told(0, total, "sampled pairs")
@@ -831,8 +833,11 @@ class Run:
         texts.append((json.dumps(self.placeholders, ensure_ascii=False), state / "placeholders.json"))  # read as missing: an increment and a lookup read them so too
         if part == 0 and self.learned:  # the keys learned on the file: an increment lists its pairs by them
             texts.append((json.dumps({b.name: generator_dict(b) for b in self.learned}, ensure_ascii=False), state / "keys.json"))
-        if part == 0:  # the oversized blocks whose pairs the run listed: a key lists a pair in one (er.sample.key_lists, for er.sizes)
-            kept = self.gated[self.gated["decision"].isin(["kept", "joined in full"])].groupby("generator")["value"].agg(list).to_dict() if len(self.gated) else {}
+        # the oversized blocks whose pairs the run listed, an increment's added to its full run's: a key lists a pair in one (er.sample.key_lists, for er.sizes)
+        kept = json.loads((state / BLOCKS).read_text(encoding="utf-8")) if part and (state / BLOCKS).exists() else {}
+        for x in self.gated[self.gated["decision"].isin(["kept", "joined in full"])].itertuples() if len(self.gated) else ():
+            kept[x.generator] = list(dict.fromkeys([*kept.get(x.generator, []), x.value]))
+        if part == 0 or kept:
             texts.append((json.dumps(kept, ensure_ascii=False), state / BLOCKS))
         if self.basis:  # the u this run scored with, and what an increment needs to tell when they go stale
             texts.append((json.dumps(dict(model=self.scoring, basis=self.basis), ensure_ascii=False), state / "scoring.json"))
