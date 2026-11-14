@@ -834,6 +834,10 @@ class Run:
             texts.append((json.dumps(kept, ensure_ascii=False), state / BLOCKS))
         if self.basis:  # the u this run scored with, and what an increment needs to tell when they go stale
             texts.append((json.dumps(dict(model=self.scoring, basis=self.basis), ensure_ascii=False), state / "scoring.json"))
+        if part == 0:  # the round this method is in, and how it did: lands with the run
+            linked = next(x for x in reversed(self.steps) if x["step"] == "cluster")
+            texts.append((folder.round_ran(out, dict(config=self.config, method=folder.method(out), at=datetime.now().isoformat(timespec="seconds"),
+                                                     matched=linked["accepted"], expected_false=linked["expected_false"])), out / folder.ROUNDS))
         earlier = folder.history(out) if part == 0 else None  # the runs before: read before the old log goes with the old run
         sheets, n = [], folder.next_part(out / folder.KIND_ANSWERS)
         if self.given is not None and len(self.given):  # the sheet given, kept as it came: the next run reads it again
@@ -850,10 +854,6 @@ class Run:
                                      ("SELECT * FROM rule_clusters", state / "rule_clusters.parquet"),
                                      (f"SELECT * FROM {'records' if part == 0 else 'new_records'}", state / "records" / name), *aside, *sheets],
                      [*texts, *people, (logged, out / folder.STEPS)], replace, frames)
-        if part == 0:  # the round this method is in, and how it did
-            linked = next(x for x in reversed(self.steps) if x["step"] == "cluster")
-            folder.round_ran(out, dict(config=self.config, method=folder.method(out), at=datetime.now().isoformat(timespec="seconds"),
-                                       matched=linked["accepted"], expected_false=linked["expected_false"]))
 
     def _log(self, out: Path, append: bool, earlier: list[dict] | None = None, **entry: object) -> str:
         """steps.json with this run's entry (folder.log): when, the code and config that ran, the files read with their
@@ -868,8 +868,8 @@ class Run:
         record an increment holds back reaches the next full run's sheet). Built before the run's files are written, and
         returned as texts and frames for write() to stage with them: a run never lands without its reports, which a
         retry could not make again, since nothing is new by then. `path` is the input, `pipeline` the pipeline file, both
-        named in the reports. Keeps qa's tables, the summary first, in self.tables, and its weight bands and oversized
-        blocks in the step's facts (steps.json), for describe matching and describe method."""
+        named in the reports. Keeps qa's tables, the summary first, in self.tables, and its weight bands (counts) in the
+        step's facts (steps.json), for describe matching and describe method."""
         t = time.perf_counter()
         tables = qa(self, previous=out / "review.parquet" if self.added is not None else None)
         sheet = tables.pop("review_sheet")
@@ -885,9 +885,8 @@ class Run:
                                        out / "kind_review.parquet"), out / "kind_review.parquet"))
         self.tables = tables
         texts = [("\n".join(text), out / "qa.md"), (report_text(self, tables, pipeline), out / "report.txt")]
-        kept = lambda name, orient: json.loads(tables[name].round(4).to_json(orient=orient))  # as qa.md shows it: describe matching and method read it here
-        self._done("report", "O(review pairs) + O(N)", f"O({len(frames[0][0]):,} review pairs + {self.n:,})", t,
-                   weight_bands=kept("weight_bands", "values"), oversized_blocks=kept("oversized_blocks", "records"))
+        bands = json.loads(tables["weight_bands"].round(4).to_json(orient="values"))  # as qa.md shows them: describe matching and method read them here
+        self._done("report", "O(review pairs) + O(N)", f"O({len(frames[0][0]):,} review pairs + {self.n:,})", t, weight_bands=bands)
         return texts, frames
 
     # ---------- increments ----------
@@ -978,6 +977,7 @@ class Run:
 
         self.candidates("new_ids")  # the full run's steps, on the pairs touching the batch
         self.score()
+        self._load_decisions(out)  # people's "different" on a record back in the run stands, as in a full run
         self.cluster(out / "gold.parquet")
         return True
 
