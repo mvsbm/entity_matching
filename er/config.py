@@ -11,6 +11,7 @@ from typing import Literal, get_args
 
 from er.strings import FUNCTIONS, Function
 
+COPIES = ("one_byte", "one_byte_hash")  # the steps of a comparison's own copy (Comparator.copied), never a key's nor a feature's: er.standardize makes them
 Normalizer = Literal["nfkc", "strip_spaces", "kana_fold", "strip_legal_form", "address", "initial", "first3", "reverse", "casefold", "one_byte", "one_byte_hash",
                      "katakana", "strip_separators", "long_vowel", "last3"]
 
@@ -754,7 +755,7 @@ def adjust(p: "Pipeline", method: Mapping[str, object]) -> "Pipeline":
     if not isinstance(added, list) or not all(isinstance(k, list) and k and all(isinstance(f, str) for f in k) for k in added):
         raise InputError("method.toml: add_keys is a list of pair keys, each a list of fields (field or field:normalizer)", fix)
     new = [added_key(k) for k in added]
-    if bad := sorted({k.column for b in new for k in b.keys} - p.fields.declared()) + sorted({n for b in new for k in b.keys for n in k.normalize} - (set(get_args(Normalizer)) - {"one_byte", "one_byte_hash"})):  # the comparisons' own copies, no key's
+    if bad := sorted({k.column for b in new for k in b.keys} - p.fields.declared()) + sorted({n for b in new for k in b.keys for n in k.normalize} - (set(get_args(Normalizer)) - set(COPIES))):  # the comparisons' own copies, no key's
         raise InputError(f"method.toml: add_keys names {bad}: not a field the pipeline declares, nor a normalizer", fix)
     blockers += tuple(b for b in new if b.name not in {x.name for x in blockers})
     if not stages or not blockers:

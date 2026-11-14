@@ -18,7 +18,7 @@ actor "people" as people
 file "reviewed.parquet: review.parquet with decision filled in, or any file with <id>_l, <id>_r, decision" as f_decided
 file "gold.parquet (the run's)" as f_gold_in
 
-rectangle "<b>decide</b> · O(D + touched clusters) + O(N)\nRun.decide · folder.finish_writes · source.decisions · source.file_facts · io.replace_text\nthe checks, every ID a record of the run: source.known · each match pair merges its two clusters: cluster.merge, each cluster one node\nkinds kept, a merged customer's kind again: run.customer_kinds\nthe round it is decided in: folder.rounds\nfolder.next_part · folder.stage · Run._log · folder.log · io.code_version" as decide
+rectangle "<b>decide</b> · O(D + touched clusters) + O(N)\nRun.decide · folder.finish_writes · folder.latest_decisions · folder.parts · source.decisions · source.file_facts · io.replace_text\nthe checks, every ID a record of the run: source.known · each match pair merges its two clusters: cluster.merge, each cluster one node\nkinds kept, a merged customer's kind again: run.customer_kinds\nthe round it is decided in: folder.rounds\nfolder.next_part · folder.stage · Run._log · folder.log · io.code_version" as decide
 
 note right of decide
   stops, with what to fix (exit 2):
