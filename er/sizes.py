@@ -9,7 +9,6 @@ steps in a row settle the fit. The largest move of a level's points, or the star
 sample barely reaches swings without moving a pair. The pairs the run left
 below 0 aren't kept, so a step that raises scores is seen only through the pairs the run kept."""
 import json
-import math
 import time
 from collections.abc import Callable
 from dataclasses import replace
@@ -17,7 +16,7 @@ from pathlib import Path
 
 from er import index
 from er.config import InputError, KeyBlocker, Pipeline, lit, q
-from er.match import ELSE, _bits, _ranked, fit_model, fit_sample_sql, review_floor, scaled_prior, train_fs
+from er.match import ELSE, _ranked, fit_model, fit_sample_sql, levels, prior_bits, review_floor, scaled_prior, train_fs
 from er.settings import Settings
 from er.strings import connect
 
@@ -33,8 +32,7 @@ def models(p: Pipeline) -> dict[str, object]:  # the two ways EM learns, as a ru
 
 
 def weights(fitted: dict, n: int) -> tuple[float, dict[tuple[str, int], float]]:  # the start at n records, and each level's points by its gamma
-    lam = scaled_prior(fitted, n)
-    return math.log2(lam / (1 - lam)), {(c["output_column_name"], g): _bits(g, lv) for c in fitted["comparisons"] for g, lv in _ranked(c) if g >= 0}
+    return prior_bits(fitted, n), {(c, g): v for c, by in levels(fitted).items() for g, (_, v) in by.items() if g >= 0}
 
 
 def score_sql(start: float, w: dict[tuple[str, int], float]) -> str:  # a kept pair's points from the levels it holds
@@ -89,7 +87,7 @@ def grow(ws: Path, s: Settings, p: Pipeline, line: Callable[..., None] | None = 
                 (mc, mg), moved = max(moves.items(), key=lambda kv: kv[1])
                 added, lost = con.execute(f"SELECT count(*) FILTER (WHERE x >= {floor} AND y < {floor}), count(*) FILTER (WHERE x < {floor} AND y >= {floor}) "
                                           f"FROM (SELECT {now} AS x, {was_sql} AS y FROM kept)").fetchall()[0]
-                row.update(change=round(moved, 2), moved="start" if mc == "start" else f"{mc} {label(fitted, mc, mg)}", added=added, lost=lost)
+                row.update(change=round(moved, 2), moved="start" if mc == "start" else f"{mc} {levels(fitted)[mc][mg][0]}", added=added, lost=lost)
                 quiet[way] = quiet.get(way, 0) + 1 if added + lost <= SETTLED * max(pairs[0], 1) else 0  # the pairs people see: a rare level's swing alone changes none
                 if quiet[way] >= 2:
                     settled[way] = was_size  # the first of the two quiet steps: no larger sample changed it
@@ -99,23 +97,23 @@ def grow(ws: Path, s: Settings, p: Pipeline, line: Callable[..., None] | None = 
         if size >= top or len(settled) == len(ways):
             break
         size *= 2
-    run_start, run_w = weights(model, n)
+    run_start, run_w, named = *weights(model, n), levels(model)  # named: each level's label by its gamma
     chosen = {way: settled.get(way) or max(size for w_, size in fits if w_ == way) for way in ways if any(w_ == way for w_, _ in fits)}
-    levels, gained, checks = [dict(comparison="start", level="", run=round(run_start, 2), **{way: round(weights(fits[way, size], n)[0], 2) for way, size in chosen.items()})], {}, {}
+    points, gained, checks = [dict(comparison="start", level="", run=round(run_start, 2), **{way: round(weights(fits[way, size], n)[0], 2) for way, size in chosen.items()})], {}, {}
     for (c, g), v in run_w.items():
-        levels.append(dict(comparison=c, level=label(model, c, g), run=round(v, 2), **{way: round(weights(fits[way, size], n)[1][c, g], 2) for way, size in chosen.items()}))
+        points.append(dict(comparison=c, level=named[c][g][0], run=round(v, 2), **{way: round(weights(fits[way, size], n)[1][c, g], 2) for way, size in chosen.items()}))
     names = [x["output_column_name"] for x in model["comparisons"]]
     for way, size in chosen.items():
         start, w = weights(fits[way, size], n)
         got = con.execute(f"""SELECT {', '.join(q('gamma_' + c) for c in names)}, count(*) AS n FROM (SELECT *, {score_sql(start, w)} AS x, {score_sql(run_start, run_w)} AS y FROM kept)
             WHERE x >= {floor} AND y < {floor} GROUP BY ALL ORDER BY n DESC LIMIT {PATTERNS}""").fetchall()
-        gained[way] = [dict(pattern={c: label(model, c, g) for c, g in zip(names, r[:-1])}, pairs=r[-1]) for r in got]
+        gained[way] = [dict(pattern={c: named[c][g][0] for c, g in zip(names, r[:-1])}, pairs=r[-1]) for r in got]
         line and line(f"checking {size:,} records, {way}: pairs no key lists, and pairs the run's cutoff left out")
         try:
             checks[way] = check(ws, s, p, model, fits[way, size], n)
         except Exception as e:  # said in the report: the sizes stand without it
             checks[way] = dict(error=str(e).split("\n")[0][:300])
-    out = dict(records=n, floor=floor, line=at, steps=rows, settled=settled, chosen=chosen, levels=levels, gained=gained, checks=checks, file=str(ws / FILE))
+    out = dict(records=n, floor=floor, line=at, steps=rows, settled=settled, chosen=chosen, levels=points, gained=gained, checks=checks, file=str(ws / FILE))
     out["report"] = text(out)
     (ws / FILE).write_text(out["report"], encoding="utf-8")
     con.close()
@@ -123,10 +121,6 @@ def grow(ws: Path, s: Settings, p: Pipeline, line: Callable[..., None] | None = 
 
 
 PATTERNS = 12  # the patterns of pairs a fit lifts to the floor, the most first
-
-
-def label(model: dict, c: str, g: int) -> str:  # a level's label by its gamma
-    return "missing" if g < 0 else next(lv["label_for_charts"] for x in model["comparisons"] if x["output_column_name"] == c for gg, lv in _ranked(x) if gg == g)
 
 
 def check(ws: Path, s: Settings, p: Pipeline, base: dict, fitted: dict, n: int) -> dict:
@@ -218,7 +212,7 @@ def text(r: dict) -> str:
         out.append("")
     for x in (x for x in r["steps"] if "m" in x and r.get("chosen", {}).get(x["em"]) == x["records"]):  # each way's chosen fit's m, by comparison and level
         out.append(f"M  ({x['em']}, {x['records']:,} records)")
-        out += [f"  {c:10} " + " · ".join(f"{lab} {v:.4g}" for lab, v in levels.items()) for c, levels in x["m"].items()]
+        out += [f"  {c:10} " + " · ".join(f"{lab} {v:.4g}" for lab, v in by.items()) for c, by in x["m"].items()]
         out.append("")
     return "\n".join(out)
 

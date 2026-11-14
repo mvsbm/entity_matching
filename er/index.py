@@ -48,7 +48,7 @@ from er.config import DeletionKeys, InputError, KeyBlocker, Pipeline, SortedNeig
 from er.intake import tidy
 from er.io import read_parquet
 from er.kind import Classifier, classifier, merge_answers, name_model
-from er.match import levels, read_by, review_floor, scaled_prior
+from er.match import _gammas, levels, prior_bits, read_by, review_floor
 from er.report import run_model
 from er.run import run_config, stored_keys
 from er.settings import COLUMNS, Settings, fit_to_file, present_fields
@@ -779,20 +779,13 @@ def _scored(con: duckdb.DuckDBPyConnection, model: dict, uid: str, me: str, ids:
     con.execute(f"CREATE OR REPLACE TEMP TABLE er_c AS SELECT * EXCLUDE (h) FROM {_records(f'h IN ({', '.join(map(str, hashes))})', uid)}")
     side = lambda c, a, b: f"CASE WHEN q.{u} < c.{u} THEN {a}.{q(c)} ELSE {b}.{q(c)} END"
     pairs = ", ".join(f'{side(c, "q", "c")} AS {q(c + "_l")}, {side(c, "c", "q")} AS {q(c + "_r")}' for c in cols)
-    by = levels(model)
-    gammas = []
-    for comp in model["comparisons"]:
-        ordered = [lv for lv in comp["comparison_levels"] if not lv.get("is_null_level")][::-1]
-        when = [f"WHEN {lv['sql_condition']} THEN -1" for lv in comp["comparison_levels"] if lv.get("is_null_level")]
-        when += [f"WHEN {lv['sql_condition']} THEN {g}" for g, lv in reversed(list(enumerate(ordered))) if lv["sql_condition"] != "ELSE"]
-        gammas.append(f"CASE {' '.join(when)} ELSE 0 END AS {q('gamma_' + comp['output_column_name'])}")
+    by, gammas = levels(model), _gammas(model)  # each level and its points as the run's scores have them
     shown = ", ".join(f"c.{q(x)} AS {q('shown_' + x)}" for x in SHOWN if x in {c for c, *_ in con.execute("DESCRIBE er_c").fetchall()})
     frame = con.execute(f"""SELECT x.*, {', '.join(gammas)} FROM (SELECT c.{u} AS uid, c.entity, {pairs}{', ' + shown if shown else ''}
         FROM qry q, er_c c WHERE c.{u} <> q.{u}) x""").df()
-    lam = scaled_prior(model, n)
     names = [c["output_column_name"] for c in model["comparisons"]]
     bits = np.array([[by[c][int(g)][1] for c, g in zip(names, row)] for row in frame[[f"gamma_{c}" for c in names]].to_numpy()]).reshape(len(frame), len(names))
-    frame["weight"] = np.log2(lam / (1 - lam)) + bits.sum(axis=1)
+    frame["weight"] = prior_bits(model, n) + bits.sum(axis=1)
     frame["compared"] = [{c: by[c][int(g)][0] for c, g in zip(names, row)} for row in frame[[f"gamma_{c}" for c in names]].to_numpy()]
     frame["shown"] = [{x: (None if pd.isna(r.get(f"shown_{x}")) else str(r.get(f"shown_{x}"))) for x in SHOWN if f"shown_{x}" in r} for r in frame.to_dict("records")]
     return frame

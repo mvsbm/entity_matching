@@ -798,12 +798,13 @@ def _predict(linker: Linker, held: list, db: DuckDBAPI, pairs: pd.DataFrame | st
 def levels(model_json: dict) -> dict[str, dict[int, tuple[str, float]]]:
     """Per comparison: each gamma, as score_fs returns it, → its level's label and bits log2(m/u). Gamma counts up from
     the else level (0); -1 is a missing side, worth 0 bits."""
-    out = {}
-    for c in model_json["comparisons"]:
-        ordered = [lv for lv in c["comparison_levels"] if not lv.get("is_null_level")][::-1]
-        out[c["output_column_name"]] = {-1: ("missing", 0.0), **{g: (lv["label_for_charts"], math.log2(lv["m_probability"] / lv["u_probability"]))
-                                                                for g, lv in enumerate(ordered)}}
-    return out
+    return {c["output_column_name"]: {-1: ("missing", 0.0), **{g: (lv["label_for_charts"], _bits(g, lv)) for g, lv in _ranked(c) if g >= 0}}
+            for c in model_json["comparisons"]}
+
+
+def prior_bits(model_json: dict, n_records: int) -> float:  # the start: two random records of n being one, in bits
+    lam = scaled_prior(model_json, n_records)
+    return math.log2(lam / (1 - lam))
 
 
 def waterfall(model_json: dict, gammas: dict[str, int], n_records: int) -> pd.DataFrame:
