@@ -17,6 +17,7 @@ from pathlib import Path
 from er import index
 from er.config import InputError, KeyBlocker, Pipeline, lit, q
 from er.match import ELSE, _ranked, fit_model, fit_sample_sql, levels, prior_bits, review_floor, scaled_prior, train_fs
+from er.report import no_run
 from er.settings import Settings
 from er.strings import connect
 
@@ -47,7 +48,7 @@ def grow(ws: Path, s: Settings, p: Pipeline, line: Callable[..., None] | None = 
     parts = sorted((ws / "state" / "records").glob("part-*.parquet"))
     scoring = ws / "state" / "scoring.json"
     if not parts or not (ws / "state" / "model.json").exists() or not list((ws / "scored").glob("*.parquet")):
-        raise InputError(f"no run in {ws} to measure a sample against", fix="find matches first: nayose resolve records --workspace …")
+        raise no_run(ws, "measure a sample against")
     model = index._scorable(ws)  # a model that adjusts by term frequency scores a pair by more than its levels: refused, as a lookup refuses it
     if scoring.exists():  # u measured on the file (u_from_scored), as the run scored with them
         model = json.loads(scoring.read_text(encoding="utf-8"))["model"]

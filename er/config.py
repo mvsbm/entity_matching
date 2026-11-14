@@ -560,6 +560,12 @@ class Fields:
     labels: tuple[str, ...]                   # read only by labelled runs (choosing, evaluation)
     identifying: tuple[str, ...] = ()         # one entity's each (a customer ID): a value on many records is a placeholder, read as missing (Run.load)
 
+    def needed(self) -> set[str]:  # the fields a run may stop without: every mandatory one and each of a one_of group
+        return {*self.mandatory, *(f for g in self.one_of for f in g)}
+
+    def lacking(self, has: Callable[[str], bool]) -> list[str]:  # what a run stops without, as said: a mandatory field, or "a or b" for a group of none
+        return [f for f in self.mandatory if not has(f)] + [" or ".join(g) for g in self.one_of if not any(map(has, g))]
+
     def declared(self) -> set[str]:
         return {*self.mandatory, *(f for g in self.one_of for f in g), *self.optional, *self.labels}
 
@@ -876,11 +882,16 @@ def restrict(p: Pipeline, present: set[str]) -> tuple[Pipeline, list[str]]:
                    household=household), gone
 
 
+def _as_written(chains: Mapping[str, tuple[Normalizer, ...]]) -> tuple[Callable, Callable]:
+    """How config/pipeline.toml writes normalizations (a chain's name where one matches, the first defined winning) and keys."""
+    name_of = {v: k for k, v in reversed(list(chains.items()))}
+    norm = lambda n: name_of.get(tuple(n), list(n))
+    return norm, lambda k: k.column if not k.normalize else {"field": k.column, "normalize": norm(k.normalize)}
+
+
 def generator_dict(b: Blocker, chains: Mapping[str, tuple[Normalizer, ...]] = {}) -> dict:
     """A generator as config/pipeline.toml writes it (the inverse of generator), normalizations as chain names where one matches."""
-    name_of = {v: k for k, v in reversed(list(chains.items()))}  # the first chain defined wins
-    norm = lambda n: name_of.get(tuple(n), list(n))
-    key = lambda k: k.column if not k.normalize else {"field": k.column, "normalize": norm(k.normalize)}
+    norm, key = _as_written(chains)
     match b:
         case KeyBlocker():
             return {"kind": "keys", "keys": [key(k) for k in b.keys]}
@@ -896,9 +907,7 @@ def generator_dict(b: Blocker, chains: Mapping[str, tuple[Normalizer, ...]] = {}
 
 def pipeline_dict(p: Pipeline, chains: Mapping[str, tuple[Normalizer, ...]]) -> dict:
     """The inverse of pipeline_from, with normalizations written as chain names where one matches."""
-    name_of = {v: k for k, v in reversed(list(chains.items()))}  # the first chain defined wins
-    norm = lambda n: name_of.get(tuple(n), list(n))
-    key = lambda k: k.column if not k.normalize else {"field": k.column, "normalize": norm(k.normalize)}
+    norm, key = _as_written(chains)
     comp = lambda c: {"function": c.function, **({"threshold": c.threshold} if c.threshold is not None else {}),
                       **({"normalize": norm(c.normalize)} if c.normalize else {})}
 

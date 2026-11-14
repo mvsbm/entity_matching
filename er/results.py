@@ -17,7 +17,7 @@ from er.config import InputError, Pipeline, bits, lit, q
 from er.io import read_parquet
 from er.kind import sheet_parts
 from er.match import levels, named_sql
-from er.report import applied, households, no_run, run_model, said, scored_again
+from er.report import applied, households, no_run, read, run_model, said, scored_again
 from er.settings import Settings, norm_name
 
 BANDS = (-20, -10, 0, 6, 8, 10, 12, 16, 20)  # the score chart's edges, in points: as report.txt's SCORES
@@ -26,10 +26,6 @@ BANDS = (-20, -10, 0, 6, 8, 10, 12, 16, 20)  # the score chart's edges, in point
 def banded(col: str = "match_weight") -> str:  # the SQL of a weight's band in the score chart: 0 below BANDS[0], len(BANDS) at its last edge or above
     return "CASE " + " ".join(f"WHEN {col} < {e} THEN {i}" for i, e in enumerate(BANDS)) + f" ELSE {len(BANDS)} END"
 SIZES = ((1, 1, "1 record"), (2, 2, "2 records"), (3, 9, "3–9"), (10, 49, "10–49"), (50, None, "50 or more"))
-
-
-def read(out: Path, name: str) -> str:
-    return f"read_parquet({lit(out / name)}, union_by_name = true)"
 
 
 def joined_by(p: Pipeline) -> str:  # gold's resolved_by as people read it: you, the model, or a rule

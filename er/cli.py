@@ -42,7 +42,7 @@ from er import details, folder, inbox, index, intake
 from er.io import alive, read_parquet, replace_text
 from er.config import COPIES, InputError, Normalizer, Pipeline, adjust, lit, load_pipeline, q, restrict, sources_text, toml_of, widen
 from er.folder import Busy
-from er.report import (applied, compare_records, describe_entity, describe_key, describe_matching, describe_method, describe_workspace, entity_pairs, explain_pair, fill_rates,
+from er.report import (applied, compare_records, no_run, describe_entity, describe_key, describe_matching, describe_method, describe_workspace, entity_pairs, explain_pair, fill_rates,
                        key_how, list_patterns, review_workload, rule_how, run_model, trust_state)
 from er.source import describe, filled, find, lexicon, open_source
 from er.kind import sheet_parts
@@ -107,9 +107,11 @@ def plain(x: object) -> object:
     return x if isinstance(x, str | int | float | bool) or x is None else str(x)
 
 
-DOING = {"load": "reading the records", "budget": "counting the pairs", "fit": "fitting the model", "rules": "applying the rules", "keys": "checking the keys",
-         "candidates": "listing the pairs to compare", "score": "scoring the pairs", "cluster": "forming entities",
-         "probe": "looking for missed matches", "gap": "measuring what the keys miss", "report": "writing the reports", "write": "saving", "decide": "applying the decisions"}
+DOING = {"load": "reading the records", "budget": "planning the work", "fit": "learning what matches look like", "rules": "applying the match rules", "keys": "checking the keys",
+         "candidates": "listing pairs to compare", "score": "scoring the pairs", "cluster": "forming entities",
+         "probe": "looking for matches it missed", "gap": "measuring what the keys miss", "report": "writing the report", "write": "saving", "decide": "applying the decisions"}  # the terminal's and the page's
+RERUN_OWED = "the run read its records with another mapping, method or pipeline: it reads them so once it runs again"  # a result's field, as each command declares it
+READ = "what the reader found (er.intake): rows, values per encoding, fixed (controls, placeholders, numbers, damaged, lists, first of several), proposed and waiting: repairs by kind (realign, garbled, encoding) for accept repairs, with examples; unread rows"
 RUN_ORDER = ("load", "budget", "fit", "rules", "keys", "candidates", "score", "cluster", "probe", "gap", "report", "write")  # a full run's steps
 BATCH_ORDER = ("load", "fit", "rules", "candidates", "score", "cluster", "report", "write")  # a batch added: no budget, no probe
 
@@ -317,12 +319,7 @@ def wide(text: str) -> int:  # columns a terminal gives the text: full-width kan
 
 def table(rows: list[dict], cols: tuple[str, ...] | None, most: int = 20) -> list[str]:
     cols = tuple(c for c in (cols or rows[0].keys()) if c in rows[0])
-    cells = [[cell(r.get(c)) for c in cols] for r in rows[:most]]
-    width = [max(wide(c), *(wide(x[i]) for x in cells)) for i, c in enumerate(cols)]
-    pad = lambda x, w: x + " " * (w - wide(x))
-    out = ["  " + "  ".join(pad(c, w) for c, w in zip(cols, width)).rstrip()]
-    out += ["  " + "  ".join(pad(x, w) for x, w in zip(row, width)).rstrip() for row in cells]
-    return out + ([f"  … {len(rows) - most:,} more (--format json lists every one)"] if len(rows) > most else [])
+    return grid(rows, {c: c for c in cols}, most) + ([f"  … {len(rows) - most:,} more (--format json lists every one)"] if len(rows) > most else [])
 
 
 def text(c: Command, r: dict) -> str:
@@ -416,6 +413,18 @@ def merging_words(m: dict | None) -> str:  # what merges without people, as desc
             else f"pairs at {num(own['line'])}+ points merge without you")
 
 
+def thin(filled: dict[str, float], one_of, columns: Callable[[str], set[str] | None]) -> list[str]:
+    """The fields under 30% filled, said: a group of one_of (a person's or a company's name, each filled only for its
+    kind) together, a column both read counted once (columns: a field's columns), each other field alone."""
+    either, out = {f for g in one_of for f in g}, []
+    for g in [*one_of, *([f] for f in filled if f not in either)]:
+        have = [f for f in g if f in filled]
+        apart = len(set().union(*(columns(f) or set() for f in have))) == sum(len(columns(f) or ()) for f in have)
+        if have and (share := (sum if apart else max)(filled[f] for f in have)) < 0.3:
+            out.append(f"{' and '.join(map(word, have))} {'are' if len(have) > 1 else 'is'} {share:.0%} filled" + (" together" if len(have) > 1 else ""))
+    return out
+
+
 def file_lines(r: dict) -> list[str]:  # a file described: the fields found, and what needs a look
     fields = [f for f in r.get("fields") or [] if f["field"] != "id"]
     found = [f for f in fields if f.get("filled") is not None]
@@ -424,15 +433,8 @@ def file_lines(r: dict) -> list[str]:  # a file described: the fields found, and
     lost = lambda f: not any(x["field"] == f and x.get("filled") is not None for x in r.get("fields") or [])
     missing = [word(f) for f in needed.get("every", []) if lost(f)] + [" or ".join(map(word, g)) for g in needed.get("one_of", []) if all(lost(f) for f in g)]
     out += [f"  ✗ needed: {m}" for m in missing]
-    filled = {f["field"]: f["filled"] for f in found}
-    groups = [g for g in needed.get("one_of", []) if any(f in filled for f in g)]  # a person's or a company's name: together, as check records counts them
-    either = {f for g in groups for f in g}
     cols = {f["field"]: {c for a in f.get("alternatives") or [] if a["found"] for c in a["columns"]} for f in found}
-    for g in [*groups, *([f] for f in filled if f not in either)]:
-        have = [f for f in g if f in filled]
-        apart = len(set().union(*(cols[f] for f in have))) == sum(len(cols[f]) for f in have)  # one column for both: counted once, as check records does
-        if (share := (sum if apart else max)(filled[f] for f in have)) < 0.3:
-            out.append(f"  ! {' and '.join(map(word, have))} {'are' if len(have) > 1 else 'is'} {share:.0%} filled" + (" together" if len(have) > 1 else ""))
+    out += [f"  ! {x}" for x in thin({f["field"]: f["filled"] for f in found}, needed.get("one_of", []), cols.get)]  # as check records says it
     for f in found:  # what its values say is off, else how few look right
         if h := f.get("hint"):
             out.append(f"  {'! ' if h['level'] == 'warn' else ''}{word(f['field'])}: {h['says']}" + (f", e.g. {h['example']}" if h.get("example") else ""))
@@ -753,15 +755,8 @@ def ready_for(run: Run, fields: list[dict], plan: pd.DataFrame, capacity: dict, 
                           fix="give DuckDB more room: --compute memory_limit=… temp_directory=<a disk with space>"))
     elif 2 * needed > fit:
         warns.append(dict(what=f"the pairs fill {needed / fit:.0%} of the room DuckDB has", fix="a larger file may not fit: give it more memory or spill disk"))
-    filled = {f["field"]: f["filled"] for f in fields if f["filled"] is not None}
-    either = {f for group in run.pipeline.fields.one_of for f in group}  # a person's or a company's name: each filled only for its kind, so together
-    columns = lambda f: {c for alt in run.present.get(f) or () for c in alt}
-    for group in [*run.pipeline.fields.one_of, *([f] for f in filled if f not in either)]:
-        have = [f for f in group if f in filled]
-        apart = len(set().union(*map(columns, have))) == sum(len(columns(f)) for f in have)  # one column for both: counted once
-        if have and (share := (sum if apart else max)(filled[f] for f in have)) < 0.3:
-            warns.append(dict(what=f"{' and '.join(map(word, have))} {'are' if len(have) > 1 else 'is'} {share:.0%} filled" + (" together" if len(have) > 1 else ""),
-                              fix="map a fuller column, if the file has one"))
+    warns += [dict(what=x, fix="map a fuller column, if the file has one") for x in thin({f["field"]: f["filled"] for f in fields if f["filled"] is not None},
+                                                                                   run.pipeline.fields.one_of, lambda f: {c for alt in run.present.get(f) or () for c in alt})]
     for f in fields:
         if (h := (hints or {}).get(f["field"])) and h["level"] == "warn" and f["filled"]:
             warns.append(dict(what=f"{word(f['field'])}: {h['says']}", fix=h.get("command") or h["fix"]))
@@ -1347,7 +1342,7 @@ def try_method(a: dict, emit: "Emit") -> dict:
     if method == now:
         raise InputError("nothing to try: that is the method as it is", fix="give --line, --drop with rules or keys to leave out, or --add with a key to add")
     if not (ws / "gold.parquet").exists():
-        raise InputError(f"no run in {ws} to try a method against", fix="find matches first: nayose resolve records --workspace …")
+        raise no_run(ws, "try a method against")
     result = trial(ws, p, setup(a, method)[1], method, s, echo=emit.step)
     return {**result, "next": [dict(command=nayose("adopt", "method", "--workspace", ws, "--trial", result["trial"]), why="adopt it, and find matches with it")]}
 
@@ -1540,7 +1535,7 @@ def list_patterns_(a: dict, emit: "Emit") -> dict:
     s, p, _ = setup(a)
     out = Path(a["workspace"])
     if not (out / "gold.parquet").exists():
-        raise InputError(f"no run in {out}", fix="find matches first: nayose resolve records --workspace …")
+        raise no_run(out)
     return {**list_patterns(out, p), "next": [dict(command=nayose("explain", "pair", "<ID>", "<ID>", "--workspace", out), why="one of a pattern's pairs")]}
 
 
@@ -1591,7 +1586,7 @@ def describe_review(a: dict, emit: "Emit") -> dict:
     s, p, _ = setup(a)
     out = Path(a["workspace"])
     if not (out / "gold.parquet").exists():
-        raise InputError(f"no run in {out}", fix="find matches first: nayose resolve records --workspace …")
+        raise no_run(out)
     per = number(a["seconds"], "--seconds", "seconds, for example 10") if a.get("seconds") else 10.0
     if not 0 < per < math.inf:
         raise InputError(f"--seconds {a['seconds']}: not a time a pair takes", fix="seconds above 0, for example 10")
@@ -1629,7 +1624,7 @@ def list_pairs(a: dict, emit: "Emit") -> dict:
     uid, out = settings_for(a).data.unique_id, Path(a["workspace"])
     pairs = sheet(out, "review.parquet")
     if pairs is None:
-        raise InputError(f"no run in {out}", fix="resolve records into that folder first")
+        raise no_run(out)
     done = pairs.merge(applied(out, uid), on=[f"{uid}_l", f"{uid}_r"], how="left", suffixes=("", "_applied"))["decision_applied"]
     pairs.insert(1, "status", np.where(done.notna() & (done == pairs["decision"]), "applied", np.where(pairs["decision"].notna(), "written in", "open")))
     return dict(counts=counts(pairs), pairs=rows(ids(picked(pairs, a), uid)), next=[dict(command=nayose("decide", "pair", "<ID>", "<ID>", "match", "--workspace", out), why="decide one"),
@@ -1851,12 +1846,12 @@ DESCRIBED = {"records": "records", "columns": "each column of the file: column, 
              "profile": "each column's script (kanji, kana, romaji) and the shares of its values that are known family names, given names, full names, addresses",
              "placements": "for each feature with no column: feature, column, share, why (the file's contents)",
              "offers": "new features the contents suggest: feature, type, script, column, share, why", "notes": "what the reader detected or fixed",
-             "read": "what the reader found (er.intake): rows, values per encoding, fixed (controls, placeholders, numbers, damaged, lists, first of several), proposed and waiting: repairs by kind (realign, garbled, encoding) for accept repairs, with examples; unread rows", "next": "the commands that usually follow"}
+             "read": READ, "next": "the commands that usually follow"}
 CHECKED = {"records": "records read", "fields": "each field: filled, looks_right, top_value (shares), columns",
            "capacity": "the room a run has: memory_limit_gb, spill_folder, spill_free_gb, pairs_needed (this file's, exactly), pairs_fit, headroom (fit ÷ needed)",
            "ready": "ok, and each of stops (what would stop a run) and warns (what to look at first): what, fix",
            "turned_off": "rules, keys and levels a missing field turns off", "keys": "each key's pairs per record and largest block",
-           "oversized_from": "the block size checked by sampling", "notes": "what the loader detected or fixed", "read": "what the reader found (er.intake): rows, values per encoding, fixed (controls, placeholders, numbers, damaged, lists, first of several), proposed and waiting: repairs by kind (realign, garbled, encoding) for accept repairs, with examples; unread rows",
+           "oversized_from": "the block size checked by sampling", "notes": "what the loader detected or fixed", "read": READ,
            "next": "the commands that usually follow"}
 DETAILED = {"file": "the file's name", "rows": "its rows", "key": "the column holding the records' IDs",
             "columns": "each column of the file: column, filled (from its footer), example (from its first rows)", "shown": "the columns people see, in their order: the first names each row on its chip",
@@ -1938,12 +1933,12 @@ COMMANDS: tuple[Command, ...] = (
             (Param("kind", "realign, garbled or encoding", "choice", intake.KINDS, positional=True),
              Param("part", "the loaded file, by its part (0001, or its name; default: the latest with this kind waiting)", metavar="PART"), WORKSPACE),
             {"part": "the part read again", "kind": "the kind accepted", "repaired": "the repairs applied", "rows": "the rows it now holds",
-             "added": "rows that were unread", "read": "what the reader found (er.intake): rows, values per encoding, fixed (controls, placeholders, numbers, damaged, lists, first of several), proposed and waiting: repairs by kind (realign, garbled, encoding) for accept repairs, with examples; unread rows", "next": "the commands that usually follow"},
+             "added": "rows that were unread", "read": READ, "next": "the commands that usually follow"},
             "nayose accept repairs realign --workspace workspaces/acme", accept_repairs),
     Command("list", "features", "The features a workspace's columns fill: groups, features, parts",
             "The workspace's structure: each group, its features and their parts (a full name's family and given names), each "
             "with the columns that hold it, read from its mapping. Without --workspace, the project's. O(the file).",
-            (OWN,), {"features": "the structure: groups › features › parts, each with type and columns", "slots": "each feature and part: feature (its path), columns", "rerun_owed": "the run read its records with another mapping, method or pipeline: it reads them so once it runs again",
+            (OWN,), {"features": "the structure: groups › features › parts, each with type and columns", "slots": "each feature and part: feature (its path), columns", "rerun_owed": RERUN_OWED,
                      "next": "the commands that usually follow"},
             "nayose list features --workspace workspaces/acme", list_features, quick=True, show={"features": ()}),
     Command("set", "feature", "Put columns into features",
@@ -1952,7 +1947,7 @@ COMMANDS: tuple[Command, ...] = (
             "columns.toml, checked before it replaces the old: Name/Full name fills full_name and person_name, its Family name "
             "and Given name a joined fallback of person_name and given_name, and every name, any_name. O(the file).",
             (Param("mapping", "one or more GROUP/FEATURE=COLUMNS", "many", positional=True, metavar="PATH=COLUMNS"), WORKSPACE),
-            {"features": "the structure, as set", "slots": "each feature and part: feature (its path), columns", "rerun_owed": "the run read its records with another mapping, method or pipeline: it reads them so once it runs again", "next": "the commands that usually follow"},
+            {"features": "the structure, as set", "slots": "each feature and part: feature (its path), columns", "rerun_owed": RERUN_OWED, "next": "the commands that usually follow"},
             "nayose set feature \"Name/Full name/Family name=SEI\" \"Name/Full name/Given name=MEI\" --workspace workspaces/acme", set_feature, quick=True,
             show={"features": ()}),
     Command("set", "names", "Compare each record's name on its own side, by its kind, or as mapped",
@@ -1963,7 +1958,7 @@ COMMANDS: tuple[Command, ...] = (
             "engine and the flag disagree, compares no name until people answer it (list kinds). as-mapped takes it back. "
             "The next run reads it. O(the file).",
             (Param("how", "by-kind or as-mapped", "choice", ("by-kind", "as-mapped"), positional=True), WORKSPACE),
-            {"names": "by-kind or as-mapped", "mapping": "the name lines of columns.toml, as written", "rerun_owed": "the run read its records with another mapping, method or pipeline: it reads them so once it runs again", "next": "the commands that usually follow"},
+            {"names": "by-kind or as-mapped", "mapping": "the name lines of columns.toml, as written", "rerun_owed": RERUN_OWED, "next": "the commands that usually follow"},
             "nayose set names by-kind --workspace workspaces/acme", set_names, quick=True),
     Command("add", "feature", "Add a feature: a name in another script, or another company name",
             "Adds a feature to the Name group (PATH: Name/<its name>): a person's name, with its family and given names, or a "
@@ -1976,13 +1971,13 @@ COMMANDS: tuple[Command, ...] = (
              Param("type", "person name or company name", "choice", ("person name", "company name"), required=True),
              Param("script", "kana, kanji or romaji (default kana)", "choice", ("kana", "kanji", "romaji")),
              Param("column", "the column that holds it, if you know it", metavar="COLUMN"), WORKSPACE),
-            {"features": "the structure, with it", "slots": "each feature and part: feature (its path), columns", "rerun_owed": "the run read its records with another mapping, method or pipeline: it reads them so once it runs again", "next": "the commands that usually follow"},
+            {"features": "the structure, with it", "slots": "each feature and part: feature (its path), columns", "rerun_owed": RERUN_OWED, "next": "the commands that usually follow"},
             "nayose add feature \"Name/Kanji name\" --type \"person name\" --script kanji --column SHIMEI --workspace workspaces/acme", add_feature_,
             quick=True, show={"features": ()}),
     Command("remove", "feature", "Remove a feature added to a workspace",
             "Its fields leave the workspace's columns.toml; the defaults stay (take their columns off instead). O(the file).",
             (Param("path", "GROUP/FEATURE", positional=True, metavar="PATH"), WORKSPACE),
-            {"features": "the structure, without it", "slots": "each feature and part: feature (its path), columns", "rerun_owed": "the run read its records with another mapping, method or pipeline: it reads them so once it runs again", "next": "the commands that usually follow"},
+            {"features": "the structure, without it", "slots": "each feature and part: feature (its path), columns", "rerun_owed": RERUN_OWED, "next": "the commands that usually follow"},
             "nayose remove feature \"Name/Kanji name\" --workspace workspaces/acme", remove_feature_, quick=True, show={"features": ()}),
     Command("describe", "records", "What a file holds, for mapping its columns: nothing prepared",
             "Each column's share filled and an example; each field's columns as the mapping reads them (a later one where the "
@@ -2008,7 +2003,7 @@ COMMANDS: tuple[Command, ...] = (
     Command("list", "columns", "Show which of a file's columns hold each field",
             "Reads the workspace's columns.toml, or without one config/settings.toml [columns] (or the ER_SETTINGS file): each "
             "field, its columns (a comma between fallbacks, + between columns joined) and its options. O(the file).",
-            (OWN,), {"settings": "the file read", "own": "true: the workspace's own mapping", "columns": "each field: columns, options", "rerun_owed": "the run read its records with another mapping, method or pipeline: it reads them so once it runs again",
+            (OWN,), {"settings": "the file read", "own": "true: the workspace's own mapping", "columns": "each field: columns, options", "rerun_owed": RERUN_OWED,
                      "next": "the commands that usually follow"},
             "nayose list columns --workspace workspaces/acme", list_columns, quick=True),
     Command("set", "preparation", "Set how a field's values are prepared",
@@ -2018,7 +2013,7 @@ COMMANDS: tuple[Command, ...] = (
             "workspace's columns.toml; else the project's, which new workspaces start from. A run reads the values so once it runs "
             "again. O(the file).",
             (Param("mapping", "one or more FIELD=STEPS", "many", positional=True, metavar="FIELD=STEPS"), OWN),
-            {"settings": "the file written", "own": "true: the workspace's own mapping", "columns": "each field: columns, options", "rerun_owed": "the run read its records with another mapping, method or pipeline: it reads them so once it runs again",
+            {"settings": "the file written", "own": "true: the workspace's own mapping", "columns": "each field: columns, options", "rerun_owed": RERUN_OWED,
              "next": "the commands that usually follow"},
             "nayose set preparation phone=nfkc,strip_separators --workspace workspaces/acme", set_preparation, quick=True),
     Command("set", "columns", "Map fields to a file's columns",
@@ -2027,7 +2022,7 @@ COMMANDS: tuple[Command, ...] = (
             "is checked before it replaces the old. With --workspace, the workspace's columns.toml; else the project's, which "
             "new workspaces start from. O(the file).",
             (Param("mapping", "one or more FIELD=COLUMNS", "many", positional=True, metavar="FIELD=COLUMNS"), OWN),
-            {"settings": "the file written", "own": "true: the workspace's own mapping", "columns": "each field: columns, options", "rerun_owed": "the run read its records with another mapping, method or pipeline: it reads them so once it runs again",
+            {"settings": "the file written", "own": "true: the workspace's own mapping", "columns": "each field: columns, options", "rerun_owed": RERUN_OWED,
              "next": "the commands that usually follow"},
             "nayose set columns phone=TEL4 person_name=NAME_KANA,SEI+MEI --workspace workspaces/acme", set_columns_, quick=True),
     Command("resolve", "records", "Resolve a file: one ID per person or company",
@@ -2665,21 +2660,44 @@ INDEXED = (*FULL_RUNS, "add records", "apply decisions", "set merging")  # the c
 def last_run(ws: str | None, name: str) -> dict:
     """The steps a command runs and, for a run, the workspace's last run of the same kind (a full run, or a batch
     added): its seconds per step and its records, which the time left is measured against. No steps known: none."""
-    batch = name in ("add records", "match records")
+    batch, order = name in ("add records", "match records"), steps_of(name)
     if name not in FULL_RUNS and not batch:
-        return dict(order=STEPS_OF.get(name, ()))
+        return dict(order=order)
     try:
         runs = [r for r in folder.runs(Path(ws)) if bool(r.get("part")) == batch and r.get("steps") and r["steps"][0]["step"] == "load"] if ws else []
         steps = runs[-1]["steps"] if runs else []
         last, records = {s["step"]: float(s["seconds"]) for s in steps}, steps[0].get("records") if steps else None
     except (OSError, ValueError, KeyError, TypeError, AttributeError):  # an odd steps.json: no estimate, the command still runs
         steps, last, records = [], {}, None
-    order = BATCH_ORDER if batch else RUN_ORDER  # this version's steps: the last run's, from an older one, may lack some; its seconds still count
-    if name == "match records":  # a batch's steps, up to its entities: it writes nothing
-        order = tuple(s for s in order if s not in ("report", "write"))
-    if name == "split entity":  # the split decided, then a full run
-        order = ("decide", *order)
-    return dict(order=order, last=last or None, last_records=records)
+    return dict(order=order, last=last or None, last_records=records)  # this version's steps: the last run's, from an older one, may lack some; its seconds still count
+
+
+def steps_of(name: str) -> tuple[str, ...]:  # the steps a command runs, in the order they end: the terminal's progress and the page's
+    if name in ("add records", "match records"):  # a batch's; a preview's up to its entities: it writes nothing
+        return BATCH_ORDER if name == "add records" else tuple(s for s in BATCH_ORDER if s not in ("report", "write"))
+    if name in FULL_RUNS:
+        return ("decide", *RUN_ORDER) if name == "split entity" else RUN_ORDER  # a split: decided, then a full run
+    return STEPS_OF.get(name, ())
+
+
+def execute(a: argparse.Namespace, emit: Emit) -> int:
+    """The command parsed in `a` run, its result or error said through `emit`; the exit code: the command's own, 2 a
+    mistake people fix or memory short, 75 another command holds the workspace. A bug raises. The CLI's and the page's."""
+    c = a.command
+    try:
+        result = perform(c, {p.name: getattr(a, p.name) for p in c.params}, emit)
+    except InputError as e:
+        code = 75 if isinstance(e, Busy) else 2
+        emit.error(e, code)
+        return code
+    except Exception as e:
+        if not (oom := out_of_memory(e)):
+            raise
+        emit.error(oom, 2)
+        return 2
+    code = result.pop("exit_code", 0)
+    emit.result(c, result)
+    return code
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -2691,23 +2709,13 @@ def main(argv: list[str] | None = None) -> int:
     emit = Emit(a.format, verbose=a.verbose, title=f"{c.name} · {getattr(a, 'workspace', None) or getattr(a, 'input', None) or ''}".rstrip(" ·"),
                 **({} if a.format == "json" or c.quick else last_run(getattr(a, "workspace", None), c.name)))
     try:
-        result = perform(c, {p.name: getattr(a, p.name) for p in c.params}, emit)
-    except InputError as e:
-        code = 75 if isinstance(e, Busy) else 2
-        emit.error(e, code)
-        return code
-    except Exception as e:
-        if not (oom := out_of_memory(e)):
-            emit.close()
-            raise
-        emit.error(oom, 2)
-        return 2
+        return execute(a, emit)
     except KeyboardInterrupt:  # Ctrl-C: nothing is half done, every write is staged
         emit.close()
         return 130
-    code = result.pop("exit_code", 0)
-    emit.result(c, result)
-    return code
+    except Exception:
+        emit.close()
+        raise
 
 
 if __name__ == "__main__":

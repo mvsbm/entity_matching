@@ -122,7 +122,7 @@ def test_a_long_command_shows_each_step_as_it_ends_and_how_long_is_left(monkeypa
     e.step(dict(step="load", seconds=1.0, records=10))
     clock[0] += 31
     e.progress(5, 10, "pairs")
-    assert out.getvalue().splitlines()[-1].endswith("counting the pairs · 5 of 10 pairs")  # one count gives no pace: no time left said
+    assert out.getvalue().splitlines()[-1].endswith("planning the work · 5 of 10 pairs")  # one count gives no pace: no time left said
     out = io.StringIO()
     e = cli.Emit(out=out, order=("load", "probe"))  # try method: the steps twice
     for step in ("load", "probe", "generate"):  # and one outside them
@@ -167,7 +167,7 @@ def test_the_commands_that_read_a_run_say_when_the_workspace_holds_none(say, tmp
     say("create", "workspace", "w")
     for words in (("describe", "results"), ("list", "scored"), ("list", "entities"), ("describe", "merging"), ("set", "merging", "--conditions", '{"when": []}')):
         code, e = say(*words, "--workspace", "workspaces/w")
-        assert code == 2 and e["error"] == f"{Path('workspaces/w')} holds no run to read" and e["fix"], words  # never a traceback
+        assert code == 2 and e["error"] == f"no run in {Path('workspaces/w')}" and e["fix"], words  # never a traceback
 
 
 def test_describe_records_says_what_a_column_holds_instead_and_its_one_command_sets_it_right(say, tmp_path, monkeypatch):
