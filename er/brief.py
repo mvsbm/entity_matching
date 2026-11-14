@@ -1,5 +1,6 @@
 """A command's result for a person: in short, command by command (BRIEF), or every field it declares (text, with
 --verbose); rows as tables sized for a terminal, where full-width kana and kanji take two columns."""
+from __future__ import annotations
 import shlex
 import unicodedata
 from collections.abc import Callable

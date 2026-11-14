@@ -2,6 +2,7 @@
 step (explain_pair, pair_tests); one record against others (compare_records); the pairs inside an entity
 (entity_pairs); one pair key (describe_key); the patterns of the whole run (list_patterns); and the method, with the
 pairs people decided and the changes worth trying (describe_method)."""
+from __future__ import annotations
 import json
 import math
 from pathlib import Path

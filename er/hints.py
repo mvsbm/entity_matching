@@ -1,6 +1,7 @@
 """A file's columns as people map them: a path read as the door reads it (readable), what the reader found
 (read_of), and what each slot's sampled values say is off, with what sets it right (hints). A workspace part's
 description is kept with it (KEPT), made again when the code it comes from changes (DESCRIBING)."""
+from __future__ import annotations
 import contextlib
 import functools
 import hashlib

@@ -1,5 +1,6 @@
 """Where a command's events go: JSON, one object per line, for programs and the page; for a person, a line per
 finished step and one for the step under way, redrawn (Live), then the result as er.brief writes it."""
+from __future__ import annotations
 import json
 import math
 import shutil
