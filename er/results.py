@@ -17,7 +17,9 @@ from er.config import InputError, Pipeline, bits, lit, q
 from er.io import read_parquet
 from er.kind import sheet_parts
 from er.match import levels, named_sql
-from er.report import applied, households, no_run, read, run_model, said, scored_again
+from er.report import households, no_run
+from er.explain import run_model, scored_again
+from er.review_state import applied, read, said
 from er.settings import Settings, norm_name
 
 BANDS = (-20, -10, 0, 6, 8, 10, 12, 16, 20)  # the score chart's edges, in points: as report.txt's SCORES

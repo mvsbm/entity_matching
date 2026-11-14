@@ -49,7 +49,7 @@ from er.intake import tidy
 from er.io import read_parquet
 from er.kind import Classifier, classifier, merge_answers, name_model
 from er.match import _gammas, levels, prior_bits, read_by, review_floor
-from er.report import run_model
+from er.explain import run_model
 from er.run import run_config, stored_keys
 from er.settings import COLUMNS, Settings, fit_to_file, present_fields
 from er.standardize import KATAKANA, SEPARATORS, prepare
