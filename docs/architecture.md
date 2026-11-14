@@ -170,7 +170,7 @@ Oversized blocks are left out of each generator's join, then checked: about 2,00
 
 - **Why:** comparing every pair is impossible: 5 × 10¹¹ at a million records. `choose.py` holds each key to at most 5 pairs per record at a million records (`[budget] max_pairs_per_record`), and checks that every true pair able to reach the threshold shares one. Checking a big block on a sample costs at most what joining it would, and tells a placeholder from a real shared value without guessing.
 - **Code:** `Run.candidates` → `candidates.candidates` (run, gate, merge) → `Records.variants` (the deletion keys), `candidates.oversized`, `pairs_sql`, `sample_sql`, `_gate`; `Run._gate` scores the sample, `Run._gated` keeps what it decided
-- **Increment:** the batch is the query, so only pairs touching it are listed, and the deletion keys are kept only for the blocks the batch reaches: `O(Δ·Σb)` plus a scan.
+- **Increment:** the batch is the query, so only pairs touching it are listed (without `bridge`, only those that also touch a record the rules left alone, as in a full run), and the deletion keys are kept only for the blocks the batch reaches: `O(Δ·Σb)` plus a scan.
 
 ### 6 · Score: evidence in bits · `O(C·K·L²)`
 
@@ -213,7 +213,7 @@ Writes each table as Parquet under a temporary name, with the reports (9), and `
 - **Why:** the margin holds pairs that were clean on cross-validated train, held back in case of noise: on the synthetic val split, 55 pairs from 4 to 6 bits, none of them false; one grid step lower, at 2 bits, val's first false pairs appear. So people decide them. Without labels, the audit rows and the largest clusters are how a person catches over-merging.
 - **Code:** `Run.report` → `report.qa` (`report.fill_rates`, `match.review_floor`, `report.review_sheet`, `report.carry_over`, `match.pattern_coverage`), `report.report_text`, `kind.kind_review_sheet` (its rows picked in DuckDB, so only they reach Python), `io.markdown`
 - **From a written folder:** `report.describe_workspace` (what the folder holds), `report.describe_entity` (one record's entity and what joined it), and `report.describe_matching`: the pipeline as a graph, each stage with its method, parameters and fields, and the run's numbers (pairs per rule and how the model scores them, per generator its pairs, links and those only it found, each level's m, u, bits and pairs, the weight bands with what happened in each, the review sheet's patterns, entities and where to look first) with real examples; `explain.describe_key` inspects one pair key (records per value, one group). `nayose describe workspace`, `describe entity`, `describe matching` and `describe key` print them, and `nayose open ui` draws them.
-- **Increment:** the same for the pairs the batch made, plus the previous sheet's rows still open: a run keeps no scores, so a row dropped from the sheet could never come back. No `kind_review.parquet`: a record an increment holds back is on the next full run's sheet.
+- **Increment:** the same for the pairs the batch made, plus the previous sheet's rows still open: a run keeps no scores, so a row dropped from the sheet could never come back. With a trust line, the range people check, its checks and its false pairs are counted over the workspace's links too, less the open rows kept, so an increment asks for no check a full run wouldn't (`report.trust_sheet`). No `kind_review.parquet`: a record an increment holds back is on the next full run's sheet.
 
 ## 5 · An increment
 
