@@ -106,8 +106,23 @@ def test_a_number_given_is_a_finite_one_and_a_mistyped_workspace_is_refused_unma
     for words in (("draw", "pairs", "--count", "inf"), ("draw", "pairs", "--count", "nan"), ("try", "method", "--line", "nan"), ("describe", "results", "--from=-inf"), ("list", "scored", "--page", "²")):
         code, e = say(*words, "--workspace", tmp_path / "w")
         assert code == 2 and ("not a number" in e["error"] or "a whole number" in e["error"]), words
-    for words in (("set", "fit", "--records", "2000", "--em", "rules"), ("decide", "pair", "a", "b", "match"), ("answer", "kind", "a", "company")):
-        assert say(*words, "--workspace", tmp_path / "typo")[0] == 2 and not (tmp_path / "typo").exists(), words  # a workspace mistyped: refused, no folder made
+    from er import cli
+    for c in cli.COMMANDS:  # every command given a workspace mistyped: refused, and no folder made
+        if not any(p.name == "workspace" for p in c.params) or c.name in ("open ui", "serve inbox", *cli.MAKES):
+            continue  # a server, a scheduler, and the commands that make a workspace
+        words = [c.verb, c.noun]
+        for p in c.params:
+            if p.name == "workspace":
+                words += ["--workspace", tmp_path / "typo"]
+            elif p.positional and not p.optional:
+                words += ["a", "b"] if p.kind == "many" else [p.choices[0] if p.choices else tmp_path / "none.csv" if p.kind == "path" else "x"]
+            elif p.required:
+                words += [f"--{p.name}", p.choices[0] if p.choices else "2000"]
+        try:
+            code = say(*words)[0]
+        except SystemExit as e:  # the parser's refusal (describe workspace's workspace is positional)
+            code = e.code
+        assert code == 2 and not (tmp_path / "typo").exists(), c.name
 
 
 def test_a_long_command_shows_each_step_as_it_ends_and_how_long_is_left(monkeypatch):
@@ -507,7 +522,7 @@ def test_a_run_folder_takes_one_writer_at_a_time(tmp_path, population):
     held, done = threading.Event(), threading.Event()
 
     def other_job():  # another job holds the folder, in a thread of its own
-        with run_lock(tmp_path / "run"):
+        with run_lock(tmp_path / "run", make=True):
             held.set()
             done.wait(30)
     job = threading.Thread(target=other_job)

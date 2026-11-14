@@ -155,7 +155,7 @@ class Server:
             if code and not any(e.get("event") in ("error", "result") for e in job.events):  # a crash: the last line of its traceback
                 return fail(job, " ".join(x for x in other if x)[-300:] or f"exit {code}", code)
             job.code = code
-        except OSError as e:  # the process didn't start
+        except (OSError, ValueError) as e:  # the process didn't start (ValueError: a NUL in a word)
             fail(job, f"{type(e).__name__}: {e}", 1)
         finally:
             self.running = None
@@ -202,9 +202,11 @@ def handler(server: Server):
                 self._send(200, PAGE.read_text(encoding="utf-8"), "text/html")
             elif url.path == "/api/commands":
                 self._send(200, dict(commands=declarations(), doing=emit.DOING, workspace=server.workspace, home=server.home))
+            elif url.path.startswith("/api/job/") and not (start := parse_qs(url.query).get("from", ["0"])[0]).isdecimal():
+                self._send(400, {"error": f"from={start}: not a count of events", "fix": "from=0, or the events read so far"})
             elif url.path.startswith("/api/job/") and (job := server.jobs.get(url.path.rsplit("/", 1)[1])):
                 done = job.code is not None  # read first: a finished job's events are all there
-                events = job.events[int(parse_qs(url.query).get("from", ["0"])[0]):]
+                events = job.events[int(start):]
                 now = time.monotonic()
                 with server.lock:
                     if done and job.read is None:
@@ -246,7 +248,10 @@ def handler(server: Server):
 
         def do_POST(self) -> None:
             length = self.headers.get("Content-Length") or ""
-            self.left = int(length) if length.isdigit() else 0
+            self.left = int(length) if length.isdecimal() else 0
+            if length and not length.isdecimal():  # no size to read the body by: answered, and the connection closed
+                self.close_connection = True
+                return self._send(400, {"error": f"Content-Length {length}: not a size", "fix": "send the request from the page"})
             try:
                 self._post()
             finally:
@@ -261,15 +266,17 @@ def handler(server: Server):
                 return self._send(404, {"error": "no such page"})
             try:
                 body = json.loads(self._read(self.left) or b"{}")
+                if not isinstance(body, dict) or not isinstance(body.get("args") or {}, dict):
+                    raise InputError('the body is {"command": …, "args": {…}}', fix="send the request from the page")
                 if body.get("dry"):  # the equivalent command line, from the code that runs it
                     return self._send(200, dict(command=shlex.join(["nayose", *argv(body.get("command", ""), body.get("args") or {})])))
                 key, job = server.start(body.get("command", ""), body.get("args") or {})
-            except (InputError, json.JSONDecodeError) as e:
+            except (InputError, ValueError) as e:  # ValueError: not JSON, or not UTF-8
                 return self._send(400, {"error": str(e), "fix": getattr(e, "fix", "")})
             self._send(200, dict(job=key, command=shlex.join(["nayose", *job.words])))
         def _upload(self) -> None:  # a browser gives a dropped file's bytes, never its path
             q = {k: v[0] for k, v in parse_qs(urlparse(self.path).query).items()}
-            if not (self.headers.get("Content-Length") or "").isdigit():
+            if not (self.headers.get("Content-Length") or "").isdecimal():
                 return self._send(400, {"error": "a file's size (Content-Length) is needed", "fix": "send the file from the page"})
             try:
                 top = folder.receive(Path(q.get("workspace", "")), q.get("name", ""), self.left, self._read, q.get("folder"), q.get("first", "1") == "1")

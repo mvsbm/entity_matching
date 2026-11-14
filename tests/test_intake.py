@@ -653,6 +653,11 @@ def test_only_a_records_file_is_read_whole_and_as_it_was_written(say, tmp_path):
 
     (tmp_path / "r.csv").write_text(f"{uid},FULL_NAME_KANA,KANJI_NAME,TEL\n0001,ヤマダタロウ,山田太郎,1234\n", encoding="utf-8")
     assert say("load", "records", tmp_path / "r.csv", "--workspace", ws)[0] == 0
+    own = folder.parts(ws)
+    for inside in (ws / "inputs", own[-1] / "read", own[-1] / "r.csv", ws / "inputs" / "*"):  # the workspace's own files: read twice, or its readings as records
+        code, e = say("load", "records", inside, "--workspace", ws)
+        assert code == 2 and "inside this workspace" in e["error"] and folder.parts(ws) == own, inside
+    assert say("load", "records", own[-1], "--workspace", ws)[0] == 0 and folder.parts(ws) == own  # a part of its own: given again, as it is
     assert say("set", "columns", "full_name=KANJI_NAME", "--workspace", ws)[0] == 0
     set_features(ws, {"Phone/Phone": (("TEL",),)})  # another feature changed: the full name set by hand stays
     assert load_settings(columns=ws / "columns.toml").columns["full_name"] == (("KANJI_NAME",),)
@@ -683,3 +688,11 @@ def test_utf16_without_its_bom_reads_whole_though_full_width_spaces_put_nuls_on_
         r = intake.take(part, {part / "r.csv": "r.csv"}, intake.InputSpec(), load_settings().paths["reference"])
         got = pd.read_parquet(part / r["files"][0]["read"])
         assert r["files"][0]["format"] == enc and got["name"].iloc[0] == "ヤマダ　タロウ" and got["address"].iloc[3] == "東京都港区3", enc
+
+
+def test_two_files_whose_names_differ_only_by_case_are_refused_not_read_into_one(tmp_path):
+    from er import intake
+    (tmp_path / "one.csv").write_text("id,name\n1,ヤマダ\n", encoding="utf-8")
+    (tmp_path / "two.csv").write_text("id,name\n2,サトウ\n", encoding="utf-8")
+    with pytest.raises(InputError, match="would be read into one file"):  # a.csv and A.csv from a disk that tells case apart, on one that doesn't
+        intake.take(tmp_path, {tmp_path / "one.csv": "a.csv", tmp_path / "two.csv": "A.csv"}, intake.InputSpec(), load_settings().paths["reference"])

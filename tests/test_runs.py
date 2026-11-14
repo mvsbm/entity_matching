@@ -317,6 +317,10 @@ def test_answers_given_wrong_stop_the_run(tmp_path, population):
     (tmp_path / "sheet.parquet").write_text(f"{s.data.unique_id},kind\n0000000001,1\n", encoding="utf-8")  # a sheet saved as CSV: the same door as records
     with pytest.raises(InputError, match="not a Parquet file"):
         Run(p, s, kind_labels=tmp_path / "sheet.parquet").full(tmp_path / "all.parquet", tmp_path / "run")
+    with pytest.raises(InputError, match="no workspace at"):  # a folder not there: refused, never made
+        Run(p, s).increment(tmp_path / "all.parquet", tmp_path / "empty")
+    assert not (tmp_path / "empty").exists()
+    (tmp_path / "empty").mkdir()
     with pytest.raises(InputError, match="no run in"):
         Run(p, s).increment(tmp_path / "all.parquet", tmp_path / "empty")
 

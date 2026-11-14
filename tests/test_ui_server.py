@@ -218,6 +218,49 @@ def test_an_upload_refused_partway_is_answered_and_the_rest_of_its_body_read(tmp
         httpd.shutdown()
 
 
+def test_a_malformed_request_is_answered_with_its_mistake_and_never_drops_the_connection(tmp_path, say):
+    import http.client
+    import threading
+    import time
+    from urllib.parse import urlencode
+    from er import ui
+    home, ws = tmp_path / "workspaces", tmp_path / "workspaces" / "w"
+    assert say("create", "workspace", "w", "--home", home)[0] == 0
+    server = ui.Server(str(ws), str(home))
+    httpd = ui.Listener(("127.0.0.1", 0), ui.handler(server))
+    threading.Thread(target=httpd.serve_forever, daemon=True).start()
+    port = httpd.server_address[1]
+
+    def call(method: str, path: str, body: bytes | None = None, **headers: str) -> tuple[int, dict]:
+        c = http.client.HTTPConnection("127.0.0.1", port, timeout=30)
+        c.putrequest(method, path)
+        for k, v in {"X-Token": server.token, "Host": f"127.0.0.1:{port}", **({"Content-Length": str(len(body))} if body is not None else {}), **headers}.items():
+            c.putheader(k, v)
+        c.endheaders(body)
+        r = c.getresponse()
+        return r.status, json.loads(r.read())
+    try:
+        status, started = call("POST", "/api/run", json.dumps({"command": "list workspaces", "args": {"home": str(home)}}).encode())
+        assert status == 200
+        for path in (f"/api/job/{started['job']}?from=abc", f"/api/job/{started['job']}?from=-3"):
+            assert call("GET", path)[0] == 400, path
+        for body in (b"[]", b'"x"', b"7", b'{"command": "list workspaces", "args": ["x"]}', b"\xff\xfe{", b"{not json"):
+            status, said = call("POST", "/api/run", body)
+            assert status == 400 and said["error"], body
+        assert call("POST", "/api/run", b"{}", **{"Content-Length": "²"})[0] == 400  # a size that is a digit but no number
+        assert call("POST", "/api/run", b"{}", **{"Content-Length": "abc"})[0] == 400
+        q = urlencode({"workspace": str(ws), "name": "a\0.csv"})
+        assert call("POST", f"/api/upload?{q}", b"id\n1\n")[0] == 400  # a NUL in a file's name
+        status, started = call("POST", "/api/run", json.dumps({"command": "resolve records", "args": {"input": "a\0.csv", "workspace": str(ws)}}).encode())
+        deadline = time.monotonic() + 60
+        while not (j := call("GET", f"/api/job/{started['job']}")[1])["done"]:  # a long command whose word holds a NUL: ended, not left running for ever
+            assert time.monotonic() < deadline
+            time.sleep(0.1)
+        assert j["exit"] and j["events"][-1]["event"] == "error"
+    finally:
+        httpd.shutdown()
+
+
 def test_a_file_the_page_sends_is_taken_in_once_by_load_records_and_kept_as_the_details_file(tmp_path, say):
     import http.client
     import io
