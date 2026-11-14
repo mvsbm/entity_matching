@@ -577,3 +577,22 @@ def test_an_increment_scores_its_pairs_a_slice_at_a_time_as_a_full_run_does(tmp_
     key = lambda ws: pd.read_parquet(ws / "scored").drop(columns=["match_probability"]).round({"match_weight": 9}).sort_values(list(pd.read_parquet(ws / "scored").columns[:2])).reset_index(drop=True)
     assert len(key(tmp_path / "a")) and key(tmp_path / "a").equals(key(tmp_path / "b"))
     assert pd.read_parquet(tmp_path / "a" / "gold.parquet").equals(pd.read_parquet(tmp_path / "b" / "gold.parquet"))
+
+
+def test_a_run_s_moves_wait_out_a_reader_holding_a_file_as_windows_refuses_them(tmp_path, monkeypatch):
+    import os
+    from er import folder
+    out = tmp_path / "run"
+    (out / "scored").mkdir(parents=True)
+    (out / "scored" / "part-00000.parquet").write_text("old", encoding="utf-8")
+    (out / "new.parquet").write_text("new", encoding="utf-8")
+    (out / folder.PENDING).write_text(json.dumps([[str(out / "new.parquet"), str(out / "gold.parquet")], [None, str(out / "scored")]]), encoding="utf-8")
+    real, refused = os.replace, []
+    def held(a, b):  # a describe reading the file: refused twice, then let go
+        if len(refused) < 2:
+            refused.append(b)
+            raise PermissionError(13, "in use by another process", b)
+        return real(a, b)
+    monkeypatch.setattr(os, "replace", held)
+    folder.finish_writes(out)
+    assert len(refused) == 2 and (out / "gold.parquet").read_text(encoding="utf-8") == "new" and not (out / "scored").exists() and not (out / folder.PENDING).exists()

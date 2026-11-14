@@ -613,6 +613,8 @@ def test_review_counts_down_an_answer_waits_out_a_busy_workspace_and_auto_merge_
     page.click("#merge")  # merge without people, by their own conditions: no run
     page.click("dialog [data-add]")
     page.fill("dialog [data-v=points]", "")  # a condition half set is never applied as another
+    page.click("dialog [data-set]")  # Apply at once, before the count has run: nothing applied, the dialog says why
+    assert page.is_visible("dialog[open] [data-v=points]") and "Finish each condition" in page.inner_text("dialog .preview")
     page.wait_for_function("() => document.querySelector('dialog [data-set]').disabled")
     page.fill("dialog [data-v=points]", "12")
     page.wait_for_function("() => /would merge/.test(document.querySelector('dialog .preview').textContent)", timeout=30_000)

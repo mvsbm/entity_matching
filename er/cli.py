@@ -494,7 +494,7 @@ def set_names(a: dict, emit: "Emit") -> dict:
         raise InputError(f"{ws} keeps no mapping of its own", fix=f"create it as a workspace first: nayose create workspace {ws.name}")
     with folder.writing(f):
         set_name_kinds(f, a["how"] == "by-kind")
-    lines = [x for x in f.read_text(encoding="utf-8").splitlines() if x.split("=")[0].strip() in ("full_name", "person_name", "company_name")]
+    lines = [x for x in f.read_text(encoding="utf-8-sig").splitlines() if x.split("=")[0].strip() in ("full_name", "person_name", "company_name")]
     return dict(names=a["how"], mapping=lines, rerun_owed=rerun_owed(a), next=[dict(command=nayose("describe", "records", "--workspace", ws), why="see the names checked again"),
                                                     dict(command=nayose("resolve", "records", "--workspace", ws), why="match with it")])
 

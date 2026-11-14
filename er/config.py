@@ -34,7 +34,7 @@ def lit(value: object) -> str:  # a value, a path or text, as an SQL string lite
 
 
 def bits(v: float) -> str:  # a weight in SQL; the trust line above everything is infinity
-    return "'Infinity'::DOUBLE" if math.isinf(v) else repr(float(v))
+    return f"'{'-' if v < 0 else ''}Infinity'::DOUBLE" if math.isinf(v) else repr(float(v))
 
 
 def toml_of(path: Path | str) -> dict:  # a TOML file people edit, or the mistake in it as an InputError

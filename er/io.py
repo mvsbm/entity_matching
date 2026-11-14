@@ -103,6 +103,19 @@ def alive(pid: int) -> bool:
 
 CHILD = dict(encoding="utf-8", errors="replace")  # a nayose child's output: UTF-8 (cli.main writes it so), whatever the locale's code page
 
+def patiently(do: Callable, *args, wait: float = 10.0):
+    """do(*args), tried again for up to `wait` s while it is refused: Windows won't delete or replace a file a reader has
+    open (a describe in the page's threads), and such a read ends in a second."""
+    until = time.monotonic() + wait
+    while True:
+        try:
+            return do(*args)
+        except PermissionError:
+            if time.monotonic() > until:
+                raise
+            time.sleep(0.05)
+
+
 def replace_text(path: Path, text: str, check: Callable[[Path], object] | None = None) -> None:
     """`path` written whole beside itself, then renamed over it, so a write cut short leaves the old file. `check` reads
     the new one first: if it raises, the new one goes and the old stays."""
@@ -114,7 +127,7 @@ def replace_text(path: Path, text: str, check: Callable[[Path], object] | None =
     except BaseException:
         tmp.unlink(missing_ok=True)
         raise
-    os.replace(tmp, path)
+    patiently(os.replace, tmp, path)
 
 
 def config_hash(config: object) -> str:
@@ -201,12 +214,17 @@ def assert_test_scored_once(data: Data) -> None:
 def markdown(df: pd.DataFrame) -> str:
     """A table as GitHub markdown, for the reports."""
     rows = [list(df.columns)] + df.astype(str).to_numpy().tolist()
-    return "\n".join("| " + " | ".join(map(str, r)) + " |" for r in rows[:1] + [["---"] * len(df.columns)] + rows[1:])
+    cell = lambda v: str(v).replace("|", "\\|").replace("\n", " ")  # a bar in a value never shifts the table; a path's backslashes stay as written
+    return "\n".join("| " + " | ".join(map(cell, r)) + " |" for r in rows[:1] + [["---"] * len(df.columns)] + rows[1:])
+
+
+def _cells(line: str) -> list[str]:  # a markdown table row's cells: split at each bar markdown() didn't escape
+    return [c.strip().replace("\\|", "|") for c in re.split(r"(?<!\\)\|", line.strip())[1:-1]]
 
 
 def table_after(text: str, heading: str) -> pd.DataFrame:
     """The first markdown table after this heading in a report (the reverse of markdown()), as strings."""
     lines = text.split(heading, 1)[1].splitlines()
     start = next(i for i, line in enumerate(lines) if line.startswith("|"))
-    rows = [[cell.strip() for cell in line.strip().strip("|").split("|")] for line in takewhile(lambda x: x.startswith("|"), lines[start:])]
+    rows = [_cells(line) for line in takewhile(lambda x: x.startswith("|"), lines[start:])]
     return pd.DataFrame(rows[2:], columns=rows[0])

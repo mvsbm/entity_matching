@@ -1138,3 +1138,34 @@ def test_a_comparison_s_own_copy_is_no_step_a_setting_may_name(tmp_path):
         (tmp_path / "settings.toml").write_text(settings_path().read_text(encoding="utf-8").replace('fold = ["kana_fold"]', f'fold = ["kana_fold", "{step}"]'), encoding="utf-8")
         with pytest.raises(Exception, match="unknown normalizers"):
             load_settings(tmp_path / "settings.toml")
+
+
+def test_a_mapping_with_an_empty_column_is_refused_and_one_saved_with_a_bom_still_changes(say, tmp_path):
+    say("create", "workspace", "w", "--home", tmp_path)
+    f = tmp_path / "w" / "columns.toml"
+    before = f.read_bytes()
+    for typo in ("phone=PHONE_NUM_4+", "phone=PHONE_NUM_4,,TEL", "phone=+TEL"):  # a stray + or comma: never a field quietly turned off
+        code, e = say("set", "columns", typo, "--workspace", tmp_path / "w")
+        assert code == 2 and "no column" in e["error"] and f.read_bytes() == before
+    f.write_bytes(b"\xef\xbb\xbf" + before)  # as Notepad saves it
+    assert say("set", "columns", "phone=TEL", "--workspace", tmp_path / "w")[0] == 0
+    f.write_bytes(b"\xef\xbb\xbf" + f.read_bytes())
+    assert say("set", "names", "by-kind", "--workspace", tmp_path / "w")[0] == 0
+
+
+def test_merge_conditions_that_aren_t_a_table_or_a_finite_number_are_refused(population):
+    from er.config import bits
+    from er.results import check_merging
+    _, p, _ = population
+    for m in ([1], {"when": [{"points": math.nan}]}, {"when": [{"points": -math.inf}]}, {"when": [{"points": math.inf}]}):
+        with pytest.raises(InputError, match="merge"):
+            check_merging(m, p)
+    assert check_merging({"when": [{"points": 12}]}, p)["when"] == [{"points": 12}]
+    assert duckdb.sql(f"SELECT {bits(-math.inf)} < 0, {bits(math.inf)} > 0").fetchall() == [(True, True)]  # infinity keeps its sign
+
+
+def test_a_report_s_table_reads_back_as_written_a_bar_in_a_value_too():
+    from er.io import markdown, table_after
+    df = pd.DataFrame({"value": ["A|B", "x\\|y", "line\nbreak", "C:\\data\\"], "n": ["1", "2", "3", "4"]})
+    got = table_after("## t\n\n" + markdown(df) + "\n", "## t")
+    assert got["value"].tolist() == ["A|B", "x\\|y", "line break", "C:\\data\\"] and got["n"].tolist() == ["1", "2", "3", "4"]
