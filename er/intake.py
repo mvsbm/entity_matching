@@ -440,13 +440,39 @@ def views(a: pa.Array) -> list[str | None]:  # a Parquet column's values as a CS
     return [None if b is None else b.decode("latin-1") for b in a.cast(pa.large_binary()).to_pylist()]
 
 
-def re2(chars: str) -> str:  # a character class's members (ranges kept) for RE2, Arrow's regex: each by its code point
-    return "".join(c if c == "-" else f"\\x{{{ord(c):x}}}" for c in chars)
-
-
 PLAIN_RE2 = "^[!-~](?:[ -~]*[!-~])?$"  # printable ASCII, no space at either end: what reading keeps as it is
-JAPANESE_RE2 = f"^[{re2(JAPANESE.pattern[1:-2])}]*$"
-SOLID_RE2 = "[^\\x{20}\\x{2000}-\\x{200a}\\x{2028}\\x{2029}\\x{202f}\\x{205f}\\x{3000}]"  # a character not a space: JAPANESE's spaces, controls and breaks aside
+SPACES = " \u2000-\u200a\u2028\u2029\u202f\u205f\u3000"  # JAPANESE's spaces, controls and breaks aside
+
+
+def members(chars: str) -> set[int]:  # a character class's members (ranges kept), by code point
+    out, i = set(), 0
+    while i < len(chars):
+        if i + 2 < len(chars) and chars[i + 1] == "-":
+            out.update(range(ord(chars[i]), ord(chars[i + 2]) + 1))
+            i += 3
+        else:
+            out.add(ord(chars[i]))
+            i += 1
+    return out
+
+
+def re2_class(points: set[int]) -> str:  # code points as an RE2 character class's members, each run a range
+    xs, out, i = sorted(points), [], 0
+    while i < len(xs):
+        j = i
+        while j + 1 < len(xs) and xs[j + 1] == xs[j] + 1:
+            j += 1
+        out.append(f"\\x{{{xs[i]:x}}}" + (f"-\\x{{{xs[j]:x}}}" if j > i else ""))
+        i = j + 1
+    return "".join(out)
+
+
+@functools.lru_cache(maxsize=4)
+def text_re2(garbled: frozenset[str]) -> str:
+    """Text reading keeps as it is, as one RE2 pattern: every character JAPANESE's and none a control, a break or one
+    a wrong decoding makes (garbled), and one at least not a space. One pass where three would read each value."""
+    ok = members(JAPANESE.pattern[1:-2]) - members(CONTROL.pattern[1:-1]) - members(BREAKS.pattern[1:-2]) - {ord(c) for c in garbled}
+    return f"^[{re2_class(ok)}]*[{re2_class(ok - members(SPACES))}][{re2_class(ok)}]*$"
 
 
 def settled(a: pa.Array, numeric: bool, nulls: pa.Array, utf8: bool, garbled: frozenset[str]) -> tuple[np.ndarray, np.ndarray]:
@@ -467,9 +493,7 @@ def settled(a: pa.Array, numeric: bool, nulls: pa.Array, utf8: bool, garbled: fr
     plain = on(ascii_, lambda x: pc.and_(pc.match_substring_regex(x, PLAIN_RE2), pc.invert(pc.is_in(x, value_set=nulls)))) & ~number
     if not utf8 or ascii_.all():
         return plain, np.zeros(len(a), bool)
-    bad = f"[{re2(CONTROL.pattern[1:-1])}{re2(BREAKS.pattern[1:-2])}{re2(''.join(sorted(garbled)))}]"
-    text = on(~ascii_ & ~number, lambda x: pc.and_(pc.and_(pc.match_substring_regex(x, JAPANESE_RE2), pc.invert(pc.match_substring_regex(x, bad))),
-                                                    pc.and_(pc.match_substring_regex(x, SOLID_RE2), pc.invert(pc.is_in(pc.utf8_trim(x, " \u3000"), value_set=nulls)))))
+    text = on(~ascii_ & ~number, lambda x: pc.and_(pc.match_substring_regex(x, text_re2(garbled)), pc.invert(pc.is_in(pc.utf8_trim(x, " \u3000"), value_set=nulls))))
     return plain | text, text
 
 
