@@ -178,7 +178,7 @@ Scores every candidate, with the u step 3 measured on this file: for each field,
 
 - **Why:** bits add up, so every score can be explained field by field.
 - **Code:** `Run.score` → `match.score_fs`, `scaled_prior` (λ at this file's size)
-- **Increment:** only the pairs touching the batch are scored, on the records they touch (`touched`): `O(C_Δ·K·L²)`.
+- **Increment:** only the pairs touching the batch that can reach 0 are scored, as above, a slice at a time: `O(C_Δ·K·L²)`.
 
 ### 7 · Cluster: from pairs to entities · `O(C + E·d + N)`
 
@@ -329,7 +329,7 @@ Working tables live in DuckDB, in memory; past `[compute]` `memory_limit` they s
 | `matches`, `gold` | 7 | 8, 9 | accepted pairs; the answer |
 | `old_records`, `new_records`, `new_ids` | 1, increments only | 3–8 | a view over the stored records' parts; the batch; the batch's IDs |
 
-Each step's own working tables, used inside it only: `er_in` (1, when something was off), `er_untrusted_<i>`, `rule_edges`, `er_stage` (4), `er_query` and the deletion keys (5), `touched` (6, increments), `kept`, `clusters`, `er_decisions`, `gold_old` (7), and `er_e`, `er_comp` wherever clusters merge. The Python process holds a chunk (200,000 records) per worker that cleans one, plus one queued (load cleans chunks in parallel processes, as many as DuckDB's threads, at most one per chunk and 61 on Windows), the fit sample (30,000), the model, the oversized blocks' sampled pairs (about 2,000 each) while the gate scores them, and the rows of the review sheets.
+Each step's own working tables, used inside it only: `er_in` (1, when something was off), `er_untrusted_<i>`, `rule_edges`, `er_stage` (4), `er_query` and the deletion keys (5), `kept`, `clusters`, `er_decisions`, `gold_old` (7), and `er_e`, `er_comp` wherever clusters merge. The Python process holds a chunk (200,000 records) per worker that cleans one, plus one queued (load cleans chunks in parallel processes, as many as DuckDB's threads, at most one per chunk and 61 on Windows), the fit sample (30,000), the model, the oversized blocks' sampled pairs (about 2,000 each) while the gate scores them, and the rows of the review sheets.
 
 ## The diagrams: source and checks
 
