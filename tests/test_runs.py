@@ -420,3 +420,24 @@ def test_a_run_over_a_log_an_older_version_wrote_keeps_its_runs_without_their_ti
     Run(p, s).full(tmp_path / "in.parquet", ws, overwrite=True)  # its write reads the old log into the new one's history
     history = folder.history(ws)
     assert [x["at"] for x in history][0] is None and history[-1]["at"]
+
+
+def test_an_increment_scores_its_pairs_a_slice_at_a_time_as_a_full_run_does(tmp_path, population, monkeypatch):
+    import shutil
+    from er.run import Run
+    s, p, g = population
+    new = np.random.default_rng(3).random(len(g.df)) < 0.2
+    g.df[~new].to_parquet(tmp_path / "old.parquet", index=False)
+    g.df[new].to_parquet(tmp_path / "new.parquet", index=False)
+    Run(p, s).full(tmp_path / "old.parquet", tmp_path / "a")
+    shutil.copytree(tmp_path / "a", tmp_path / "b")
+    Run(p, s).increment(tmp_path / "new.parquet", tmp_path / "a")
+    sliced = Run(p, s)
+    sliced.score_pairs = 37  # many slices: the batch's pairs never scored all at once
+    slices, scored = [], Run._scored
+    monkeypatch.setattr(Run, "_scored", lambda self, pairs, into, **k: (slices.append(pairs), scored(self, pairs, into, **k))[1])
+    sliced.increment(tmp_path / "new.parquet", tmp_path / "b")
+    assert "cands" in slices  # through the full run's slices
+    key = lambda ws: pd.read_parquet(ws / "scored").drop(columns=["match_probability"]).round({"match_weight": 9}).sort_values(list(pd.read_parquet(ws / "scored").columns[:2])).reset_index(drop=True)
+    assert len(key(tmp_path / "a")) and key(tmp_path / "a").equals(key(tmp_path / "b"))
+    assert pd.read_parquet(tmp_path / "a" / "gold.parquet").equals(pd.read_parquet(tmp_path / "b" / "gold.parquet"))
