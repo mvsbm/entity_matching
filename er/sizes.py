@@ -15,7 +15,7 @@ from dataclasses import replace
 from pathlib import Path
 
 from er import folder, index
-from er.config import InputError, KeyBlocker, Pipeline, lit, q
+from er.config import InputError, KeyBlocker, Pipeline, em_candidates, lit, q
 from er.match import ELSE, _ranked, fit_model, fit_sample_sql, levels, prior_bits, review_floor, scaled_prior, train_fs
 from er.report import no_run
 from er.settings import Settings
@@ -28,7 +28,7 @@ FILE = "sample_sizes.txt"
 
 def models(p: Pipeline) -> dict[str, object]:  # the two ways EM learns, as a run's fit would (er.match.fit_model): as the workspace sets it (set fit: its rules, or its fields), and one session per equality key
     m = replace(p.fs.model, em_from_keys=False, em_median=False)
-    keys = replace(m, em_from_keys=True, em_median=True)
+    keys = replace(m, em_from_keys=True, em_median=True, em_choose=())
     return {"rules": m, **({"keys": fit_model(replace(p.fs, model=keys))} if any(isinstance(b, KeyBlocker) for b in p.fs.blockers) else {})}
 
 
@@ -41,9 +41,9 @@ def score_sql(start: float, w: dict[tuple[str, int], float]) -> str:  # a kept p
     return f"{start!r} + " + " + ".join(f"CASE {q('gamma_' + c)} {' '.join(f'WHEN {g} THEN {v!r}' for (x, g), v in w.items() if x == c)} ELSE 0 END" for c in names)
 
 
-def grow(ws: Path, s: Settings, p: Pipeline, line: Callable[..., None] | None = None) -> dict:
-    """The steps (records, em, seconds, start, change, pairs at the floor and the line, added and taken away, m of each
-    comparison's first level and else level), each way's settled size, and the report written to the workspace."""
+def opened(ws: Path, s: Settings, p: Pipeline):
+    """The run's records in a connection of their own, the method as its fit saw them, the run's model (u measured on
+    the file, where it was), the ID column, the records' count and those u by comparison and level."""
     con, db = connect(s.compute)
     parts = sorted((ws / "state" / "records").glob("part-*.parquet"))
     scoring = ws / "state" / "scoring.json"
@@ -59,6 +59,28 @@ def grow(ws: Path, s: Settings, p: Pipeline, line: Callable[..., None] | None = 
             [(c.name, [*(lv.label for lv in c.levels), ELSE]) for c in p.fs.model.comparisons]:  # the levels the kept pairs hold are this method's
         raise InputError(f"the method compares otherwise than the run in {ws} did", fix=f"run it again first: nayose rerun records --workspace {ws}")
     u = {c["output_column_name"]: {lv["label_for_charts"]: lv["u_probability"] for g, lv in _ranked(c) if g >= 0} for c in model["comparisons"]}
+    return con, db, p, model, uid, n, u
+
+
+def choose(ws: Path, s: Settings, p: Pipeline, records: int) -> dict:
+    """Fit em "choose" on the run's fit sample of `records` (er.match.chosen), against the file's u: each session's
+    pairs, the share of its matches agreeing on the given name, kept or not and why; the fields kept, as set fit takes
+    them; the comparisons that took every session's m. O(the fit)."""
+    con, db, p, _, uid, n, u = opened(ws, s, p)
+    try:
+        m = replace(p.fs.model, em_choose=em_candidates(p))
+        sample = con.execute(f"{fit_sample_sql([m], uid, {c for c, *_ in con.execute('DESCRIBE records').fetchall()})} LIMIT {records}").df().astype("string")
+        fitted = train_fs(m, sample, db, uid, u=u)["er"]
+    finally:
+        con.close()
+    rows = [{k: round(v, 3) if k == "given_share" and v is not None else v for k, v in x.items()} for x in fitted.get("em_choice", [])]
+    return dict(records=len(sample), sessions=rows, kept=[x["field"] for x in rows if x["kept"]], wide=fitted.get("em_wide", []))
+
+
+def grow(ws: Path, s: Settings, p: Pipeline, line: Callable[..., None] | None = None) -> dict:
+    """The steps (records, em, seconds, start, change, pairs at the floor and the line, added and taken away, m of each
+    comparison's first level and else level), each way's settled size, and the report written to the workspace."""
+    con, db, p, model, uid, n, u = opened(ws, s, p)
     con.execute(f"CREATE TABLE kept AS SELECT * FROM read_parquet({lit(str(ws / 'scored' / '*.parquet'))})")
     floor, at = review_floor(p), p.fs.min_match_weight
     ways, rows, last, quiet, settled, fits = models(p), [], {}, {}, {}, {}

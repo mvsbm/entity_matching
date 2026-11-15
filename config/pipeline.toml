@@ -110,7 +110,7 @@ u_from_scored = false             # true: u re-sampled on each scored file (m an
 u_exact_by_counts = false         # true: u of the leading exact levels counted exactly from value counts, not sampled
 u_near_by_keys = false            # true: also a one-edit level right after them, counted exactly through one-deletion keys
 # fit_u_max_pairs = 1e6           # the fit's own u sample, if it differs from u_max_pairs; with u_from_scored, its u feed only EM
-fit_rows = 30_000                 # an unlabelled run (er.run) fits λ and m on a sample of whole postal areas this size
+fit_rows = 100_000                # an unlabelled run (er.run) fits λ and m on a sample of whole postal areas this size
 
 # Correlated fields share one comparison (address code / normalized address / postal code: address), because
 # Fellegi–Sunter assumes independence. Levels go from most to least similar; an else level is added.

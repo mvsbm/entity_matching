@@ -109,7 +109,7 @@ The other levels (a close name, a nearby address) come from 10 million random pa
 1. **Guess the matches:** with the current m, u and λ, compute each pair's probability of being a match.
 2. **Update m:** recount each level, weighting every pair by that probability.
 
-It runs once on pairs that share a phone and once on pairs that share an address. Each run learns the m values of the *other* fields. A run fits λ and m on a fixed sample of 30,000 records, made of whole postal areas, so the cost doesn't grow with the file. That fit draws its own u sample of 1 million pairs, which feeds only EM; the scores use the u measured on the whole file.
+It runs once on pairs that share a phone and once on pairs that share an address. Each run learns the m values of the *other* fields. A run fits λ and m on a fixed sample of 100,000 records, made of whole postal areas, so the cost doesn't grow with the file. That fit draws its own u sample of 1 million pairs, which feeds only EM; the scores use the u measured on the whole file.
 
 **Does EM get it right?** Our synthetic data has labels, so we can check. Trained on the same records, EM and the labels learn close weights. This is the configuration as written, where "very close" starts at 0.92:
 

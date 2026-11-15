@@ -49,6 +49,7 @@ Written by `scripts/document_commands.py` from the declarations in `er/cli.py`; 
 | [`try method`](#nayose-try-method) | Try a change of the method beside the method as it is |
 | [`try sample`](#nayose-try-sample) | Find how large a sample the model needs to learn from |
 | [`set fit`](#nayose-set-fit) | Set the sample the model learns from, and how EM learns |
+| [`choose em`](#nayose-choose-em) | Choose the fields EM learns from, by the given name |
 | [`try everything`](#nayose-try-everything) | Try everything on a file, and write a report to send that holds no record's value |
 | [`adopt method`](#nayose-adopt-method) | Adopt a method tried, and find matches with it |
 | [`reset method`](#nayose-reset-method) | Go back to the tuned method, and find matches with it |
@@ -1194,7 +1195,7 @@ nayose try sample --workspace workspaces/customers
 Set the sample the model learns from, and how EM learns.
 
 ```
-nayose set fit --workspace WORKSPACE --records N --em rules|keys|FIELDS [--pipeline PIPELINE] [--format text|json]
+nayose set fit --workspace WORKSPACE --records N --em rules|keys|choose|FIELDS [--pipeline PIPELINE] [--format text|json]
 ```
 
 Keeps them in the workspace (method.toml fit): the records the next run's fit samples, and EM as the method has it (rules), one session per equality key, each level's m their median (keys), or one session blocked on each field named (fields, comma-separated, each `field` or `field:normalizer`). The next run uses them. O(1).
@@ -1203,7 +1204,7 @@ Keeps them in the workspace (method.toml fit): the records the next run's fit sa
 |---|---|
 | `--workspace WORKSPACE` | the workspace: the folder that keeps one matching job (required) |
 | `--records N` | the records to sample, 1,000 or more (try sample says where more stops paying) (required) |
-| `--em rules|keys|FIELDS` | rules: as the method has it; keys: one session per equality key; or fields, comma-separated: one session per field (required) |
+| `--em rules|keys|choose|FIELDS` | rules: as the method has it; keys: one session per equality key; choose: as choose em, at each fit; or fields, comma-separated: one session per field (required) |
 | `--pipeline PIPELINE` | the pipeline file (default: config/final.toml) |
 
 | Result | |
@@ -1215,6 +1216,36 @@ Keeps them in the workspace (method.toml fit): the records the next run's fit sa
 nayose set fit --workspace workspaces/customers --records 64000 --em keys
 ```
 
+## nayose choose em
+
+Choose the fields EM learns from, by the given name.
+
+```
+nayose choose em --workspace WORKSPACE [--records N] [--pipeline PIPELINE] [--compute KEY=VALUE …] [--format text|json]
+```
+
+Fits the model on the run's fit sample (--records of them, default the method's), against the u the run measured, in one EM session per field a comparison's first level tests for equality (an identifying field left out). A session is kept when at least half the matches it learned agree on the given name (on the full name where the given name is filled in under 30% of the named records); one keyed on a name field is kept by its key. Writes the kept fields into method.toml's fit, as set fit does (none kept: rules); the next run learns from them. A run with fit em "choose" makes this choice itself, each level's m the median of the kept sessions, and a comparison but the name they hold under 10 pairs agreeing on takes every session's. O(the fit).
+
+| Parameter | |
+|---|---|
+| `--workspace WORKSPACE` | the workspace: the folder that keeps one matching job (required) |
+| `--records N` | the records to sample, 1,000 or more (default: the method's) |
+| `--pipeline PIPELINE` | the pipeline file (default: config/final.toml) |
+| `--compute KEY=VALUE` | DuckDB limits for this run, over config/settings.toml [compute]: memory_limit=8GB, threads=4, temp_directory=<folder> (past the memory limit DuckDB spills there) |
+
+| Result | |
+|---|---|
+| `records` | the records sampled |
+| `sessions` | each session: session, field, pairs, given_share, kept, why |
+| `kept` | the fields kept, as set fit takes them |
+| `wide` | the comparisons the kept sessions barely saw: m from every session |
+| `method` | the workspace's method.toml |
+| `next` | the commands that usually follow |
+
+```bash
+nayose choose em --workspace workspaces/customers
+```
+
 ## nayose try everything
 
 Try everything on a file, and write a report to send that holds no record's value.
@@ -1223,7 +1254,7 @@ Try everything on a file, and write a report to send that holds no record's valu
 nayose try everything INPUT [--home HOME] [--trials N] [--pipeline PIPELINE] [--compute KEY=VALUE …] [--format text|json]
 ```
 
-Auto mode: the commands a person would run on the file, in order, each in a process of its own: create workspace (auto-<month><day>-<time> in HOME, strict: nothing merges before people check), load records, set feature with what its contents suggest, check records, rehearse records (a stop there stops before the real run), resolve records, describe method, list patterns, try method for each change it proposes (--trials of them), the names in another script the file holds in a workspace of their own (auto/offers), and describe review. A step that fails is kept with its error and fix, and the steps that need it are skipped. Then auto/report.md, to send, and auto/report.json, its facts: counts, shares, seconds and the names of columns, fields, rules and keys, each taken field by field; checked against every value of a sample of 20,000 records, every run of six digits or more and every run of kana or kanji that is no column name, each found redacted and counted. When the file's first line was a record (the reader says the header may be missing, or two of its names read like values: four digits, an email, a legal form, a date, a known full name or address), every column name is one of the values. A step that crashed keeps its own words in auto/<step>.log, never in the report. Never lowers the trust line or adopts a method. Exit 0 once the run went through, 2 if a step stopped it, 75 if a workspace was busy, 130 if stopped (Ctrl-C); the report is written each time, once its workspace is made. O(the commands it runs): about 10 minutes a million records.
+Auto mode: the commands a person would run on the file, in order, each in a process of its own: create workspace (auto-<month><day>-<time> in HOME, strict: nothing merges before people check), load records, set feature with what its contents suggest, check records, set fit --em choose, rehearse records (a stop there stops before the real run), resolve records, describe method, list patterns, try method for each change it proposes (--trials of them), the names in another script the file holds in a workspace of their own (auto/offers), and describe review. A step that fails is kept with its error and fix, and the steps that need it are skipped. Then auto/report.md, to send, and auto/report.json, its facts: counts, shares, seconds and the names of columns, fields, rules and keys, each taken field by field; checked against every value of a sample of 20,000 records, every run of six digits or more and every run of kana or kanji that is no column name, each found redacted and counted. When the file's first line was a record (the reader says the header may be missing, or two of its names read like values: four digits, an email, a legal form, a date, a known full name or address), every column name is one of the values. A step that crashed keeps its own words in auto/<step>.log, never in the report. Never lowers the trust line or adopts a method. Exit 0 once the run went through, 2 if a step stopped it, 75 if a workspace was busy, 130 if stopped (Ctrl-C); the report is written each time, once its workspace is made. O(the commands it runs): about 10 minutes a million records.
 
 | Parameter | |
 |---|---|

@@ -18,6 +18,7 @@ then one report to send that holds no record's value (auto/report.md, and the fa
     workspace   create workspace auto-<month><day>-<time>, strict: nothing merges before people check
     load        load records; set feature with what its contents suggest (placements); describe records again
     check       check records: will a run go through, what to look at first
+    fit         set fit --em choose: each fit keeps the EM sessions whose matches agree on the given name
     rehearse    rehearse records: a file of its size and shape, measured; a stop here stops before the real run
     resolve     resolve records
     method      describe method, list patterns
@@ -45,7 +46,7 @@ import sys
 import threading
 import time
 from collections.abc import Callable
-from dataclasses import replace
+from dataclasses import fields, replace
 from datetime import datetime
 from importlib.metadata import version
 from pathlib import Path
@@ -53,7 +54,7 @@ from pathlib import Path
 import duckdb
 import numpy as np
 
-from er.config import InputError, lit
+from er.config import InputError, Pipeline, lit
 from er.folder import method, runs, write_method
 from er.generate import generate, load_reference, load_spec
 from er.io import CHILD, alive, code_version, replace_text
@@ -432,6 +433,7 @@ def everything(file: str, home: Path, trials: int, compute: list[str], pipeline:
         facts["check"] = dict(capacity={k: v for k, v in checked["capacity"].items() if k != "spill_folder"}, ready=checked["ready"],
                               keys=checked["keys"], fields=kept(checked["fields"], "field", "filled", "looks_right", "top_value", "columns"),
                               turned_off=checked.get("turned_off"), notes=checked.get("notes"))
+        do("fit", ["set", "fit", "--records", next(f.default for f in fields(Pipeline) if f.name == "fit_rows"), "--em", "choose", *there, *pipe])  # EM keeps the sessions whose matches agree on the given name
         do("rehearse", ["rehearse", "records", part, *there, *pipe, *limits])
         if (ws / "rehearsal.json").exists():  # its run ran: one that stopped (memory, disk) stops the real one too
             facts["rehearsal"] = json.loads((ws / "rehearsal.json").read_text(encoding="utf-8"))

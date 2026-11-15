@@ -32,7 +32,7 @@ from splink.internals.constants import LEVEL_NOT_OBSERVED_TEXT
 
 from er.candidates import deletions_sql
 from er.strings import FUNCTIONS
-from er.config import COPIES, Comparator, Comparison, DeletionKeys, FSModel, FSSpec, InputError, Key, KeyBlocker, Pipeline, RulesSpec, keys_sql, q
+from er.config import COPIES, GIVEN, PERSON, Comparator, Comparison, DeletionKeys, FSModel, FSSpec, InputError, Key, KeyBlocker, Pipeline, RulesSpec, keys_sql, q
 
 _populate = splink_em.populate_m_u_from_lookup
 
@@ -437,9 +437,74 @@ def fit_sample_sql(models: Iterable[FSModel], uid: str, columns: set[str]) -> st
     """The records a fit learns from, in the order whose first n are its sample of n: whole postal areas by hash, so
     households stay together and each sample is a smaller one and more; only the columns these models read."""
     models = list(models)
-    reads = set().union(*(read_by(fs_settings(m, uid), *(keys_sql(r) for r in (*m.prior_rules, *m.em_rules))) for m in models)) | {uid}
+    reads = set().union(*(read_by(fs_settings(m, uid), *(keys_sql(r) for r in (*m.prior_rules, *m.em_rules, *m.em_choose))) for m in models)) | {uid}
     area = q("postal_code__first3") if "postal_code__first3" in columns else None
     return f"SELECT {', '.join(q(c) for c in sorted(columns) if c in reads)} FROM records ORDER BY {f'hash({area}), ' if area else ''}hash({q(uid)})"
+
+
+def em_sql(model: FSModel, rule: tuple[Key, ...]) -> str:
+    """An EM session's blocking rule, naming as well a column of each comparison that reads a field it keys on, under
+    any normalization: Splink learns no comparison whose columns the rule names (the rule chose its pairs by them), and
+    it tells them by column, so a session keyed on one normalization of a field would learn a comparison of another."""
+    fields = {k.column for k in rule}
+    also = dict.fromkeys(c.null_if_missing[0] for c in model.comparisons
+                         if c.null_if_missing and fields & ({col for lv in c.levels for col, _ in lv.any_of} | set(c.null_if_missing)))
+    return keys_sql(rule) + "".join(f' AND l."{x}" IS NOT DISTINCT FROM l."{x}"' for x in also)  # always true: the same pairs
+
+
+GIVEN_FILLED = 0.3  # the given name filled in fewer of the named records than this: full-name agreement is the check
+GIVEN_SHARE = 0.5   # a session is kept when at least this share of the matches it learned agree on the given name
+ENOUGH = 10         # a comparison takes its m from the kept sessions when they hold this many pairs agreeing at its first level; else from every session
+
+
+def chosen(model: FSModel, t: pd.DataFrame, learned: dict[tuple[Key, ...], dict[tuple[str, str], float]],
+           pairs: dict[tuple[Key, ...], int]) -> tuple[dict[tuple[str, str], list[float]], list[dict], list[str]]:
+    """Fit em "choose": each session (learned: its m per comparison and level) judged by the matches it learned. A session
+    is kept when at least GIVEN_SHARE of them agree on the given name (the name comparison's levels of exact or near-exact
+    agreement, its given-name level among them where that is filled in GIVEN_FILLED of the named records): pairs that
+    share a phone or an address teach EM households, whose members share a family name only. A session keyed on a name
+    field is kept by its key (it learned no name m). Each level's m is then the median of the kept sessions that learned
+    it; a comparison but the name's that those barely saw (fewer than ENOUGH of their pairs agree at its first level,
+    exactly) takes every session's. Returns those m lists ({} when none is kept), each session's row, and the comparisons that took every
+    session's. O(sessions · comparisons · n)."""
+    reads = lambda c: {col for lv in c.levels for col, _ in lv.any_of}
+    anchor = next((c for c in model.comparisons if GIVEN in reads(c)), None) or next((c for c in model.comparisons if PERSON in reads(c)), None)
+    rows = [dict(session=" + ".join(k.column for k in r), field="+".join(":".join((k.column, *k.normalize)) for k in r), pairs=n, given_share=None) for r, n in pairs.items()]  # field: as set fit --em takes it
+    if anchor is None:
+        return {}, [dict(x, kept=False, why="no person's name compared") for x in rows], []
+    names = reads(anchor) | set(anchor.null_if_missing)
+    given_col = next((comp.column(col) for lv in anchor.levels for col, comp in lv.any_of if col == GIVEN), None)
+    named = t[[c for c in anchor.null_if_missing if c in t]].notna().any(axis=1).sum()
+    given = (t[given_col].notna().sum() if given_col in t else 0) / max(named, 1) >= GIVEN_FILLED
+    agree = {lv.label for lv in anchor.levels if all(comp.function == "exact" or (comp.function in SIMILARITIES and (comp.threshold or 0) >= 0.9)
+                                                    for _, comp in lv.any_of) and (given or GIVEN not in {col for col, _ in lv.any_of})}
+    kept = []
+    for r, row in zip(pairs, rows):
+        m = {lv: v for (c, lv), v in learned[r].items() if c == anchor.name}
+        if {k.column for k in r} & names:
+            row.update(kept=True, why="keyed on a name")
+        elif not m:
+            row.update(kept=False, why="no name compared")
+        else:
+            row["given_share"] = share = sum(v for lv, v in m.items() if lv in agree) / sum(m.values())
+            row.update(kept=share >= GIVEN_SHARE, why="matches agree on the given name" if share >= GIVEN_SHARE else "matches share no given name: households")
+        if row["kept"]:
+            kept.append(r)
+    if not kept:
+        return {}, rows, []
+    median, wide = {}, []
+    for c in model.comparisons:
+        first = c.levels[0].any_of if c.levels else ()
+        by = [r for r in kept if any(k[0] == c.name for k in learned[r])]
+        exact = all(comp.function == "exact" for _, comp in first) and any(Key(col, comp.normalize).name in t for col, comp in first)
+        seen = sum(max(rule_pairs(t, (*r, Key(col, comp.normalize))) for col, comp in first if Key(col, comp.normalize).name in t) if exact else pairs[r] for r in by)
+        if seen < ENOUGH and c is not anchor:  # the name's m from kept sessions alone: a dropped one learned households
+            by = [r for r in learned if any(k[0] == c.name for k in learned[r])]
+            if by:
+                wide.append(c.name)
+        for lv in dict.fromkeys(k[1] for r in by for k in learned[r] if k[0] == c.name):
+            median[c.name, lv] = [learned[r][c.name, lv] for r in by if (c.name, lv) in learned[r]]
+    return median, rows, wide
 
 
 def train_fs(model: FSModel, df: pd.DataFrame, db: DuckDBAPI, uid: str, labels: pd.Series | None = None, kept: Path | None = None,
@@ -472,30 +537,45 @@ def train_fs(model: FSModel, df: pd.DataFrame, db: DuckDBAPI, uid: str, labels: 
     prior = [r for r in model.prior_rules if rule_pairs(t, r)]
     em_pairs = {r: n for r in model.em_rules if (n := rule_pairs(t, r))} if model.m_method == "em" else {}  # each EM session's pairs in the sample
     em = list(em_pairs)
+    judged = {r: n for r in model.em_choose if (n := rule_pairs(t, r))} if model.m_method == "em" else {}  # fit em "choose": these judged first
     if not prior:
         raise InputError(f"no two records of the {len(t):,} the fit samples agree on any near-certain rule "
                          f"({'; '.join(map(fields, model.prior_rules))}), so the chance that two records match can't be estimated",
                          fix="map the fields those rules read, or give a model fitted before with --model")
-    if model.m_method == "em" and not em:
+    if model.m_method == "em" and not em and not judged:
         raise InputError(f"no two records of the {len(t):,} the fit samples share {' or '.join(map(fields, model.em_rules))}, "
                          "the pairs it learns from", fix="map those fields to filled columns, or give a model fitted before with --model")
     settings = fs_settings(model, uid, u)  # unestimated levels: handled here
     tf_levels = any(c.tf and any(lv.tf for lv in c.levels) for c in model.comparisons)  # none: EM iterates on each agreement pattern's count, not on every pair
     median: dict[tuple[str, str], list[float]] = {}
-    with narrowed(t, db, read_by(settings, *(keys_sql(r) for r in (*prior, *em))) | {uid, "__label__"}) as records:
+    choice, wide = [], []
+    with narrowed(t, db, read_by(settings, *(em_sql(model, r) for r in (*prior, *em, *judged))) | {uid, "__label__"}) as records:
         linker = Linker(records, settings, log_level=logging.ERROR, validate_settings=False)  # its checks only log warnings, which ERROR hides: sqlglot parses for nothing
         linker.training.estimate_probability_two_random_records_match([keys_sql(r) for r in prior], recall=model.prior_recall)
-        for rule in em if not model.em_median else ():
-            linker.training.estimate_parameters_using_expectation_maximisation(keys_sql(rule), estimate_without_term_frequencies=not tf_levels)
-        for rule in em if model.em_median else ():  # each session on its own linker: what each learned, kept apart
-            one = Linker(records, replace(settings, probability_two_random_records_match=linker._settings_obj._probability_two_random_records_match),
-                         log_level=logging.ERROR, validate_settings=False)  # the prior the first linker estimated on these records: the same count again
-            session = one.training.estimate_parameters_using_expectation_maximisation(keys_sql(rule), estimate_without_term_frequencies=not tf_levels)
-            fixed = {c.output_column_name for c in session._comparisons_that_cannot_be_estimated}  # its block's own: chosen by them, not learned
-            for c in one.misc.save_model_to_json()["comparisons"]:
-                for lv in (lv for lv in c["comparison_levels"] if c["output_column_name"] not in fixed and "m_probability" in lv and not lv.get("is_null_level")):
-                    median.setdefault((c["output_column_name"], lv["label_for_charts"]), []).append(lv["m_probability"])
-            one.table_management.invalidate_cache()
+
+        def apart(rules: Iterable[tuple[Key, ...]]) -> dict[tuple[Key, ...], dict[tuple[str, str], float]]:  # each session on its own linker: what each learned, kept apart
+            out = {}
+            for rule in rules:
+                one = Linker(records, replace(settings, probability_two_random_records_match=linker._settings_obj._probability_two_random_records_match),
+                             log_level=logging.ERROR, validate_settings=False)  # the prior the first linker estimated on these records: the same count again
+                session = one.training.estimate_parameters_using_expectation_maximisation(em_sql(model, rule), estimate_without_term_frequencies=not tf_levels)
+                fixed = {c.output_column_name for c in session._comparisons_that_cannot_be_estimated}  # its block's own: chosen by them, not learned
+                out[rule] = {(c["output_column_name"], lv["label_for_charts"]): lv["m_probability"] for c in one.misc.save_model_to_json()["comparisons"]
+                             for lv in c["comparison_levels"] if c["output_column_name"] not in fixed and "m_probability" in lv and not lv.get("is_null_level")}
+                one.table_management.invalidate_cache()
+            return out
+        if judged:
+            median, choice, wide = chosen(model, t, apart(judged), judged)
+            if median:
+                em_pairs = {r: judged[r] for r, row in zip(judged, choice) if row["kept"]}
+            elif not em:
+                raise InputError(f"no session of the {len(t):,} records the fit samples learned matches that agree on the given name, and no two "
+                                 f"share {' or '.join(map(fields, model.em_rules))}, the method's own", fix="map those fields to filled columns, or give a model fitted before with --model")
+        for rule in em if not model.em_median and not median else ():
+            linker.training.estimate_parameters_using_expectation_maximisation(em_sql(model, rule), estimate_without_term_frequencies=not tf_levels)
+        for ms in (apart(em) if model.em_median and not median else {}).values():
+            for key, v in ms.items():
+                median.setdefault(key, []).append(v)
         if model.m_method == "labels":
             linker.training.estimate_m_from_label_column("__label__")
         model_json = linker.misc.save_model_to_json()
@@ -516,9 +596,11 @@ def train_fs(model: FSModel, df: pd.DataFrame, db: DuckDBAPI, uid: str, labels: 
     adjusted = sensible_m(model, model_json, {tuple(x) for x in filled_m})
     tf = {c.tf.name: (t[c.tf.name].value_counts() / t[c.tf.name].notna().sum()).to_dict()  # Splink's own formula
           for c in model.comparisons if c.tf and any(lv.tf for lv in c.levels)}
-    skipped = [fields(r) for r in (*model.prior_rules, *(model.em_rules if model.m_method == "em" else ())) if r not in (*prior, *em)]
+    kept = any(row["kept"] for row in choice)
+    skipped = [fields(r) for r in (*model.prior_rules, *(model.em_rules if model.m_method == "em" and not kept else ())) if r not in (*prior, *em)]
     return {**model_json, "er": dict(fit_rows=len(t), tf=tf, filled=dict(u=filled_u, m=filled_m), skipped=skipped, adjusted=adjusted,
-                                   em_pairs={fields(r): n for r, n in em_pairs.items()})}
+                                   em_pairs={fields(r): n for r, n in em_pairs.items()},
+                                   **({"em_choice": choice, "em_wide": wide} if choice else {}))}
 
 
 def compared_exactly(model: FSModel) -> list[str]:  # the fields a comparison's first level tests for equality alone: an agreement on them is that level's
