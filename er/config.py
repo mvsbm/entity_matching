@@ -433,6 +433,7 @@ class ThresholdRule:
     max_fp: int
     max_fp_rate_hi: float
     margin_steps: int
+    search_floor: float = 0.0  # bits: the oversized-block gate, the gap and the idle-key check aim here (er.match.search_floor)
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -677,7 +678,7 @@ def pipeline_from(cfg: dict, std: Standardization, chains: Mapping[str, tuple[No
                                   optional=tuple(f["optional"]), labels=tuple(f["labels"]), identifying=tuple(f.get("identifying", ()))),
                     rules=rules, fs=fs, generators=generators,
                     threshold=ThresholdRule(grid=tuple(t["grid"]), max_fp=t["max_fp"], max_fp_rate_hi=t["max_fp_rate_hi"],
-                                            margin_steps=t["margin_steps"]),
+                                            margin_steps=t["margin_steps"], search_floor=float(t.get("search_floor", 0.0))),
                     cv_folds=sel["cv_folds"], cv_seed=sel["cv_seed"], decision_p=sel["decision_p"],
                     explain_show=tuple(d["explain_show"]), explain_filled=tuple(d["explain_filled"]), fit_rows=m.get("fit_rows", 30_000),
                     kind=KindSpec(**{k: tuple(v) if k == "grid" else v for k, v in cfg["kind"].items()}) if "kind" in cfg else None,
@@ -937,7 +938,7 @@ def pipeline_dict(p: Pipeline, chains: Mapping[str, tuple[Normalizer, ...]]) -> 
                                    "levels": [{"label": lv.label, "any_of": [{"field": col, **comp(x)} for col, x in lv.any_of],
                                                **({"tf": True} if lv.tf else {})} for lv in c.levels]} for c in m.comparisons]},
         **({"kind": {k: list(v) if k == "grid" else v for k, v in vars(p.kind).items()}} if p.kind else {}),
-        "threshold": {"grid": list(t.grid), "max_fp": t.max_fp, "max_fp_rate_hi": t.max_fp_rate_hi, "margin_steps": t.margin_steps},
+        "threshold": {"grid": list(t.grid), "max_fp": t.max_fp, "max_fp_rate_hi": t.max_fp_rate_hi, "margin_steps": t.margin_steps, "search_floor": t.search_floor},
         "trust": {"steps": list(p.trust.steps), "checks": p.trust.checks, "watch": p.trust.watch},  # its line is the workspace's
         **({"probe": {"pairs": p.probe.pairs, "strata": {n: [key(k) for k in keys] for n, keys in p.probe.strata}}} if p.probe.strata else {}),
         **({"household": {"shared": [key(k) for k in p.household.shared], "apart": [{"field": col, **comp(x)} for col, x in p.household.apart]}}

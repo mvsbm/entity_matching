@@ -383,7 +383,7 @@ def test_pairs_that_cant_reach_0_left_out_as_the_keys_list_them_change_no_score_
     from er.run import Run
     s, p0, g = population
     p = replace(p0, fs=replace(p0.fs, budget=replace(p0.fs.budget, sample_pairs=0)))  # a block of 2 records oversized: the gate decides hundreds
-    monkeypatch.setattr("er.run.review_floor", lambda pipeline: -50.0)  # and keeps many, pairs below 0 its hits
+    monkeypatch.setattr("er.run.search_floor", lambda pipeline: -50.0)  # and keeps many, pairs below 0 its hits
     g.df.to_parquet(tmp_path / "in.parquet", index=False)
     monkeypatch.setattr(C, "KEEP_SLICE", 7)  # many slices
     monkeypatch.setattr("er.run.idle", lambda run: (run.pipeline.fs.blockers, []))  # every key runs: the pairs each lists are compared

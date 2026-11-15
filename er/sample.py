@@ -1,7 +1,7 @@
 """The pairs the run's model accepts, found by sampling, with no labels (er.keys learns its keys from them, and
 measures the gap they leave; er.sizes sizes a fit by them). Atoms, from the method: every column its keys, rules and
 comparisons read, equal, or within edits (atoms). A hash-stable share of the records, each paired with every record
-sharing an atom with it, scored through the bound at the review floor (discover); which of them a key or rule listed
+sharing an atom with it, scored through the bound at the search floor (discover); which of them a key or rule listed
 (listed_by), and which a generator lists (key_lists). O(A·N) for the atoms' blocks, O(f·N·b) pairs scored."""
 import itertools
 import math
@@ -13,7 +13,7 @@ import pandas as pd
 
 from er.candidates import KEEP_SLICE, Records, deletions_sql
 from er.config import Blocker, DeletionKeys, EditKeys, Key, KeyBlocker, LearnKeys, Pipeline, keys_of, q
-from er.match import DISTANCES, SIMILARITIES, _bits, _ranked, bound_tests, review_floor, scaled_prior, score_fs
+from er.match import DISTANCES, SIMILARITIES, _bits, _ranked, bound_tests, scaled_prior, search_floor, score_fs
 
 
 @dataclass(frozen=True)
@@ -54,7 +54,7 @@ def atoms(p: Pipeline, have: set[str]) -> list[Atom]:
 
 @dataclass
 class Found:
-    """What discover() drew: the sampled pairs the model accepts at the review floor (targets: uid_l, uid_r, match_weight,
+    """What discover() drew: the sampled pairs the model accepts at the floor (targets: uid_l, uid_r, match_weight,
     listed, and a{i} / b{i} each atom's value on either side), the atoms, each counting for `weight` of the file's."""
     atoms: list[Atom]
     targets: pd.DataFrame
@@ -83,15 +83,15 @@ def reachable(run, floor: float, into: str = "er_kl_ok") -> int:
     return run._count(into)
 
 
-def discover(run, records: int) -> Found:
-    """The pairs the run's model accepts at the review floor, by sampling: about `records` records drawn by a hash of
+def discover(run, records: int, floor: float | None = None) -> Found:
+    """The pairs the run's model accepts at `floor` (default: the search floor), by sampling: about `records` records drawn by a hash of
     their ID, each paired with every record sharing an atom with it (or two atoms, where both have blocks too big alone),
     those that can reach 0 scored. Only records that could reach the floor at all (reachable) are drawn or paired, and
     blocks are counted among them: a pair of another can't be a target, and a block can only be smaller, so no target
     is drawn less. `listed`: whether a key or a rule listed the pair (once the run's candidates exist), and `sources`, the
     keys that did. Each target counts for 1 / (1 − (1 − f)²) of the file's: a pair is drawn when either record is."""
     t0, p, con, uid, n = time.perf_counter(), run.pipeline, run.con, run.uid, run.n
-    fs, m, floor = p.fs, p.fs.budget.min_oversized(), review_floor(p)
+    fs, m, floor = p.fs, p.fs.budget.min_oversized(), search_floor(p) if floor is None else floor
     found = atoms(p, run.columns())
     f = min(1.0, records / max(n, 1))
     u, l, r = q(uid), q(run.l), q(run.r)

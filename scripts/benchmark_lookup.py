@@ -29,7 +29,7 @@ from er import cli, index
 from er.candidates import candidates
 from er.generate import generate, load_reference, load_spec
 from er.io import markdown
-from er.match import review_floor, score_fs
+from er.match import score_fs, search_floor
 from er.explain import run_model
 from er.settings import load_settings
 from er.strings import connect
@@ -58,7 +58,7 @@ def checked(ws: Path, s, p, fitted, model, m: dict, records: pd.DataFrame, sourc
         con.execute("INSERT INTO records BY NAME SELECT * FROM er_q")
         con.execute(f"CREATE OR REPLACE TABLE new_ids AS SELECT '{rec[uid]}' AS \"{uid}\"")
         gate = lambda pairs: score_fs(model, "records", pairs, db, uid, into="er_gate", n_records=n)
-        candidates(fitted.fs.blockers, "records", uid, "new_ids", fitted.fs.budget, con=con, into="cands", touching=True, gate=gate, floor=review_floor(fitted))
+        candidates(fitted.fs.blockers, "records", uid, "new_ids", fitted.fs.budget, con=con, into="cands", touching=True, gate=gate, floor=search_floor(fitted))
         score_fs(model, "records", "cands", db, uid, into="scores", n_records=n)
         ref = dict(con.execute(f"""SELECT CASE WHEN "{uid}_l" = '{rec[uid]}' THEN "{uid}_r" ELSE "{uid}_l" END, match_weight FROM scores""").fetchall())
         con.execute(f"DELETE FROM records WHERE \"{uid}\" = '{rec[uid]}'")

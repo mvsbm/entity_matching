@@ -12,7 +12,7 @@ with the numbers filled in, and its time.
     rules       O(N + Σ P_r·L²) + O(E·d + N)     one join per rule (the first rule wins), then the rules' cascade
     candidates  O(N·L + Σ P_g)                   every generator; pairs inside one rule cluster dropped; a flagged block
                                                  joined only if a sample of its pairs, scored as the run scores, reaches
-                                                 the review floor
+                                                 the search floor
     score       O(C·K·L²)                        every candidate scored
     cluster     O(C + E·d + N)                   accept at the threshold, then cluster with the rules' pairs
     probe       O(N + P·K + L)                   the matches no key lists: pairs sampled within groups matches share, scored
@@ -75,7 +75,7 @@ from er.config import FSModel, InputError, Pipeline, TfidfNeighbours, bits, gene
 from er.io import code_version, config_hash, markdown, read_parquet
 from er.keys import idle, gap as keys_gap, learn
 from er.kind import KIND_COLUMNS, NAME_MODEL, century, classifier as kind_classifier, kind_review_sheet, merge_answers
-from er.match import ELSE, bound_tests, rough_reads, compared_exactly, fit_model, fit_sample_sql, named_sql, bound_reads, reaching_sql, refreshed_u, review_floor, rule_edges, score_fs, scored_u, train_fs, u_basis
+from er.match import ELSE, bound_tests, rough_reads, compared_exactly, fit_model, fit_sample_sql, named_sql, bound_reads, reaching_sql, refreshed_u, review_floor, rule_edges, search_floor, score_fs, scored_u, train_fs, u_basis
 from er.probe import missed
 from er.report import carry_kinds, carry_over, no_run, qa, report_text, review_sheet
 from er.explain import scored_again
@@ -554,7 +554,7 @@ class Run:
                     self.plan = self.plan[~((self.plan["kind"] == "generator") & self.plan["name"].isin(dropped))]
                 w = self.found.weight
                 self.notes += [f"key {x} not run: what it agrees on weighs nothing, and other keys or rules list every pair it lists in the gap's sample at "
-                               f"{review_floor(self.pipeline):g}+ bits (of the file's, at most {round(3 * w):,} it alone lists, about 95%)" for x in dropped]
+                               f"{search_floor(self.pipeline):g}+ bits (of the file's, at most {round(3 * w):,} it alone lists, about 95%)" for x in dropped]
             drew = getattr(self, "found", None)  # a sample drawn, when a key's agreement weighs nothing: the gap step reads it
             self._done("keys", "O(f·N·b)", f"O({drew.facts['sampled_records']:,} records sampled)" if drew else "O(1)", t, learned=False, dropped=dropped,
                        **({k: v for k, v in drew.facts.items() if k != "atoms"} if drew else {}))  # the sample's facts where its time is
@@ -578,7 +578,7 @@ class Run:
             self.con.execute(f"CREATE OR REPLACE TABLE er_query AS SELECT * FROM {self._sized('rule_clusters', '=')}")
         _, report = candidates(fs.blockers, "records", self.uid, batch or (None if fs.bridge else "er_query"), fs.budget,
                                clusters="rule_clusters" if fs.bridge else None, con=self.con, into="cands", touching=batch is not None,
-                               gate=self._gate, floor=review_floor(self.pipeline), capacity=self.capacity(), told=self._joined(),
+                               gate=self._gate, floor=search_floor(self.pipeline), capacity=self.capacity(), told=self._joined(),
                                known=None if batch else getattr(self, "estimates", None), keep=self._reaching if self.reaching_only else None,
                                only=self._alone("l", "r") if batch and not fs.bridge else None)  # as a full run's query: a pair touches a record the rules left alone
         self.con.execute("DROP TABLE IF EXISTS er_bound_records; DROP TABLE IF EXISTS er_bound_hashes")
@@ -625,7 +625,7 @@ class Run:
             done += sliced
             if self.told:
                 self.told(done, total, "sampled pairs")
-        self._scored(pairs, "er_gate", n_records=self.n, each=each, floor=review_floor(self.pipeline))  # a block is kept by a pair at its floor
+        self._scored(pairs, "er_gate", n_records=self.n, each=each, floor=search_floor(self.pipeline))  # a block is kept by a pair at its floor
         self.gate_seconds, self.gate_pairs = self.gate_seconds + time.perf_counter() - start, self.gate_pairs + total
         return "er_gate"
 
@@ -651,7 +651,7 @@ class Run:
         self.gated = gated = pd.DataFrame(records)
         if gated.empty:
             return
-        floor = review_floor(self.pipeline)
+        floor = search_floor(self.pipeline)
         for x in gated.sort_values("pairs", ascending=False).head(5).itertuples():
             self.notes.append(f"{x.generator}: a block of {x.records:,} records ({x.pairs:,} pairs); {int(x.hits)} of {int(x.sampled)} "
                               f"sampled pairs reach {floor:g} bits: {x.decision}")

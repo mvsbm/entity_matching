@@ -932,6 +932,12 @@ def named_sql(fs: FSSpec, s: str = "s") -> str:  # the name check (FSSpec.needs)
     return "(" + (" OR ".join(f"{s}.{q('gamma_' + c)} >= 0" for c in fs.needs) or "TRUE") + ")"
 
 
+def search_floor(p: Pipeline) -> float:
+    """Where the search aims: the oversized-block gate, the gap's sample and the idle-key check count pairs from here,
+    [threshold] search_floor or the review floor, whichever is lower. Aiming below review keeps pairs a better model lifts."""
+    return min(p.threshold.search_floor, review_floor(p))
+
+
 def review_floor(p: Pipeline) -> float:
     """The lowest weight people are asked to decide: the threshold rule's safety margin below min_match_weight, i.e. the
     [threshold] grid point margin_steps below it. Pairs there were clean on cross-validated train, but held back."""

@@ -431,7 +431,7 @@ What the run handles by itself, and reports in its summary:
 | a column named like the mapping but for case, width or separators | used |
 | several files with different columns | read together by column name; the summary names what each file lacks |
 | a code stored as a number | read as text, with a warning |
-| one key value on 64 or more records (a dummy phone, a big building, a very common name) | a sample of about 2,000 of its pairs is scored first; the block is used only if one of them reaches the review floor (4 bits), otherwise skipped and named with its sample in the summary and `qa.md` |
+| one key value on 64 or more records (a dummy phone, a big building, a very common name) | a sample of about 2,000 of its pairs is scored first; the block is used only if one of them reaches the search floor (0 bits), otherwise skipped and named with its sample in the summary and `qa.md` |
 | a rule's key value on 64 or more records (one customer ID on thousands) | the rule doesn't trust it, so it can't merge them all; the model can still match those records |
 
 What stops it: two lines, what is wrong and how to fix it, and exit code 2:

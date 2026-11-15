@@ -238,7 +238,7 @@ def report_text(run: "Run", tables: dict[str, pd.DataFrame], pipeline: Path) -> 
                 *(["  missed pairs agree on: " + " · ".join(f"{x['atom']} {x['pairs']:,}" for x in g["missed_agree"][:12])] if g["missed_agree"] else []), ""]
     if (c := by_step.get("candidates")) and c.get("generators"):  # where the candidates' time goes
         only = g.get("only", {}) if g else None  # the gap's sampled pairs at the floor no other key or rule lists, scaled
-        out += [f"KEYS  (pairs each lists, seconds{'; only: pairs at the review floor no other key or rule lists, estimated from the gap' if only is not None else ''}; slowest first)",
+        out += [f"KEYS  (pairs each lists, seconds{'; only: pairs at the search floor no other key or rule lists, estimated from the gap' if only is not None else ''}; slowest first)",
                 *table(pd.DataFrame([dict(key=x["name"], pairs=f"{x['pairs']:,}", seconds=f"{x['seconds']:.1f}", **({"only": f"{only.get(x['name'], 0):,}"} if only is not None else {}))
                                      for x in sorted(c["generators"], key=lambda x: -x["seconds"])])),
                 *([f"  not run: {', '.join(k['dropped'])} (its agreement weighs nothing, and other keys list its pairs)"] if (k := by_step.get("keys")) and k.get("dropped") else []), ""]

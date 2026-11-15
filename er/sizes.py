@@ -146,7 +146,7 @@ def check(ws: Path, s: Settings, p: Pipeline, base: dict, fitted: dict, n: int) 
     run.scoring = run.model = {**base, "comparisons": fitted["comparisons"], "probability_two_random_records_match": scaled_prior(fitted, n),
                                "er": {**base["er"], "fit_rows": n}}  # the file's u (train_fs was given them), this fit's m and start
     try:
-        d = discover(run, gap_records(p))
+        d = discover(run, gap_records(p), review_floor(p))
         blocks = ws / "state" / BLOCKS
         kept = json.loads(blocks.read_text(encoding="utf-8")) if blocks.exists() else {}  # the oversized blocks the run listed
         t, w, m = d.targets, d.weight, p.fs.budget.min_oversized()
@@ -160,7 +160,7 @@ def check(ws: Path, s: Settings, p: Pipeline, base: dict, fitted: dict, n: int) 
         stored = con.execute(f"SELECT k.{q(run.l)} IS NOT NULL FROM er_t t LEFT JOIN er_run_kept k USING ({q(run.l)}, {q(run.r)}) ORDER BY t.{q(run.l)}, t.{q(run.r)}").fetchnumpy()
         stored = next(iter(stored.values())).astype(bool)
         rows = []
-        for at in thresholds(p):
+        for at in (x for x in thresholds(p) if x >= review_floor(p)):  # a fit is judged from the review floor
             x = (t["match_weight"] >= at).to_numpy()
             missed = int((x & ~keyed).sum())
             lo, hi = poisson(missed)

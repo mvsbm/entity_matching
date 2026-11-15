@@ -170,6 +170,20 @@ def crowd_batch(g, uid: str, ruled: bool) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
+def test_the_gate_keeps_a_block_whose_sampled_pairs_reach_the_search_floor_but_not_the_review_floor(tmp_path, population):
+    from er.match import review_floor, search_floor
+    from er.run import Run
+    s, p, g = population
+    grid = tuple(range(0, 32, 2))
+    p = replace(p, threshold=replace(p.threshold, grid=grid), fs=replace(p.fs, min_match_weight=30.0))  # a review floor (28) above the crowd's best pair
+    assert search_floor(p) == 0 and review_floor(p) == 28 and search_floor(replace(p, threshold=replace(p.threshold, search_floor=99))) == 28
+    pd.concat([g.df, crowd_batch(g, s.data.unique_id, False)]).to_parquet(tmp_path / "in.parquet", index=False)
+    gated = Run(p, s).full(tmp_path / "in.parquet", tmp_path / "run").gated
+    crowd = gated[gated["records"] >= 80]
+    assert len(crowd) and (crowd["best"] < review_floor(p)).all() and (crowd["best"] >= search_floor(p)).all()
+    assert (crowd["decision"] == "kept").all()  # aimed at the review floor, every one would be skipped
+
+
 @pytest.mark.parametrize("ruled", [False, True])
 def test_an_increment_s_gate_keeps_a_block_on_pairs_the_run_could_list_and_leaves_blocks_json_to_the_full_run(tmp_path, population, ruled):
     import json
