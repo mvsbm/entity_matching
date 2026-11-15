@@ -501,3 +501,67 @@ def test_em_sessions_kept_apart_give_each_level_the_median_of_those_that_learned
     got = m(both)
     assert {k: v for k, v in got.items() if k[0] == "name"} == pytest.approx({k: v for k, v in m(by_phone).items() if k[0] == "name"})
     assert {k: v for k, v in got.items() if k[0] == "phone"} == pytest.approx({k: v for k, v in m(by_name).items() if k[0] == "phone"})
+
+
+def test_a_session_keyed_on_a_field_learns_no_comparison_of_that_field_under_another_normalization(con_db, records):
+    _, db = con_db
+    got = train_fs(replace(model(), em_rules=((Key("name", ("kana_fold",)),),)), records.assign(name__kana_fold=records["name"]), db, UID)
+    filled = {tuple(x) for x in got["er"]["filled"]["m"]}
+    assert {("name", "exact"), ("name", "close"), ("name", "else")} <= filled and ("phone", "exact") not in filled  # name chose the pairs, whichever copy of it the key reads
+
+
+def households(n_households: int = 150, n_twice: int = 60, companies: int = 0) -> pd.DataFrame:
+    """Families of three sharing a phone and a family name, each born on a day of their own, and people with two records
+    each, the same name and birth date, with phones of their own; `companies` of those with a company name too."""
+    rng = np.random.default_rng(1)
+    family, given = [f"F{i:03d}" for i in range(300)], [f"G{i:03d}" for i in range(300)]
+    day = lambda: f"19{rng.integers(40, 99)}-{rng.integers(1, 13):02d}-{rng.integers(1, 29):02d}"
+    rows = []
+    for h in range(n_households):
+        f, phone = family[rng.integers(300)], f"{rng.integers(10**8):08d}"
+        for k in range(3):
+            g = given[rng.integers(300)]
+            rows.append(dict(uid=f"h{h}-{k}", person_name=f + g, given_name=g, phone=phone, birth_date=day()))
+    for e in range(n_twice):
+        f, g, born = family[rng.integers(300)], given[rng.integers(300)], day()
+        for k in range(2):
+            rows.append(dict(uid=f"p{e}-{k}", person_name=f + g, given_name=g, phone=f"{rng.integers(10**8):08d}", birth_date=born,
+                             company_name=f"C{e}" if e < companies else None))
+    return pd.DataFrame(rows).astype("string")
+
+
+def household_model(em_choose: tuple = ((Key("phone"),), (Key("birth_date"),), (Key("person_name"),))) -> FSModel:
+    exact = lambda label, col: Level(label=label, any_of=((col, Comparator("exact")),))
+    comps = (Comparison(name="name", null_if_missing=("person_name",), levels=(exact("exact", "person_name"), exact("given name", "given_name"),
+                                                                                         Level(label="family", any_of=(("person_name", Comparator("jaro_winkler", 0.8)),)))),
+             Comparison(name="phone", null_if_missing=("phone",), levels=(exact("exact", "phone"),)),
+             Comparison(name="birth", null_if_missing=("birth_date",), levels=(exact("exact", "birth_date"),)),
+             Comparison(name="company", null_if_missing=("company_name",), levels=(exact("exact", "company_name"),)))
+    return FSModel(name="t", comparisons=comps, prior_rules=((Key("person_name"), Key("birth_date")),), prior_recall=0.9, u_max_pairs=1e5,
+                   m_method="em", em_rules=((Key("phone"),),), seed=0, em_choose=em_choose)
+
+
+def test_em_choose_keeps_the_sessions_whose_matches_agree_on_the_given_name(con_db):
+    _, db = con_db
+    got = train_fs(household_model(), households(), db, UID)["er"]
+    rows = {x["session"]: x for x in got["em_choice"]}
+    assert not rows["phone"]["kept"] and rows["phone"]["given_share"] < 0.5  # a phone a family shares: EM learns households
+    assert rows["birth_date"]["kept"] and rows["birth_date"]["given_share"] >= 0.5
+    assert rows["person_name"]["kept"] and rows["person_name"]["given_share"] is None  # keyed on a name: kept by its key
+    assert set(got["em_pairs"]) == {"birth_date", "person_name"}
+
+
+def test_a_comparison_the_kept_sessions_barely_see_takes_every_session_s_m(con_db):
+    _, db = con_db
+    wide = lambda companies: train_fs(household_model(), households(companies=companies), db, UID)["er"]["em_wide"]
+    assert "company" in wide(2) and "name" not in wide(2)  # 2 people with a company: 4 pairs of the kept sessions agree on it, under ENOUGH
+    assert "company" not in wide(40)
+
+
+def test_em_choose_with_no_session_kept_learns_as_the_method_does(con_db):
+    _, db = con_db
+    records = households()
+    got = train_fs(household_model(em_choose=((Key("phone"),),)), records, db, UID)
+    method = train_fs(household_model(em_choose=()), records, db, UID)
+    assert [x["kept"] for x in got["er"]["em_choice"]] == [False] and got["er"]["em_pairs"] == method["er"]["em_pairs"]
+    assert [c["comparison_levels"] for c in got["comparisons"]] == [c["comparison_levels"] for c in method["comparisons"]]

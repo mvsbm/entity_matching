@@ -301,7 +301,13 @@ def report_text(run: "Run", tables: dict[str, pd.DataFrame], pipeline: Path) -> 
     params = parameters(run.scoring)
     out += [f"MODEL  (prior {math.log2(lam / (1 - lam)):.2f} bits at {run.n:,} records; fitted on {m['fit_rows']:,} records"
             + (f"; learned nothing about {', '.join(m['skipped'])}" if m.get("skipped") else "") + ")",
-            *(["  EM learned from: " + " · ".join(f"{f} {n:,} pairs" for f, n in m["em_pairs"].items())] if m.get("em_pairs") else []), *table(pd.DataFrame(dict(
+            *(["  EM learned from: " + " · ".join(f"{f} {n:,} pairs" for f, n in m["em_pairs"].items())] if m.get("em_pairs") else []),
+            *(["  EM SESSIONS  (kept when half the matches a session learned agree on the given name)", *table(pd.DataFrame([dict(
+                session=x["session"], pairs=f"{x['pairs']:,}", given_name=pct(x.get("given_share")), kept="kept" if x["kept"] else "dropped", why=x["why"])
+                for x in m["em_choice"]])),
+               *([f"  m from every session: {', '.join(m['em_wide'])} (the kept ones barely saw it)"] if m.get("em_wide") else []),
+               *([] if any(x["kept"] for x in m["em_choice"]) else ["  none kept: EM learned as the method has it"])] if m.get("em_choice") else []),
+            *table(pd.DataFrame(dict(
                 comparison=params["comparison"], level=params["level"], m=params["m"].map(lambda x: f"{x:.4f}" if x >= 1e-3 else f"{x:.2e}"),
                 u=params["u"].map(lambda x: f"{x:.2e}"), bits=params["weight"].map(lambda x: f"{x:.2f}")))),
             *(f"  {c} {lv}: {why} (EM said {was:+.2f} bits)" for c, lv, why, was in m.get("adjusted", [])), ""]

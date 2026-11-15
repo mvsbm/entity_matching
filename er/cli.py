@@ -51,7 +51,7 @@ from er.results import apply_merging, check_merging, describe_merging, describe_
 from er.strings import connect
 from er.run import Run, run_config, size_bytes
 from er.trial import trial
-from er.sizes import grow
+from er.sizes import choose, grow
 from er.settings import (COLUMNS, SPECIAL, Settings, add_feature, added_of, beside, columns_file, counted_once, features_of, fit_to_file, load_settings, names_by_kind, offers,
                          own_columns, placements, present_fields, remove_feature, set_columns, set_features, set_name_kinds, settings_path, slots)
 
@@ -662,17 +662,32 @@ def try_sample(a: dict, emit: "Emit") -> dict:
     return {**r, "next": [dict(command=nayose("set", "fit", "--workspace", ws, "--records", v, "--em", em(k)), why=f"learn from {v:,} records, {em(k)}, at the next run") for k, v in r["settled"].items()]}
 
 
-def set_fit(a: dict, emit: "Emit") -> dict:
-    ws = Path(a["workspace"])
+def fit_records(a: dict) -> int:  # --records, checked
     records = int(number(a["records"], "--records", fix="a number of records, 1,000 or more"))
     if records < 1000:
         raise InputError(f"--records {records}: fewer than 1,000 records hold too few matches to learn from", fix="give 1,000 or more: try sample says where more stops paying")
-    em = a["em"] if a["em"] in ("rules", "keys") else [f.strip() for f in a["em"].split(",") if f.strip()]
+    return records
+
+
+def write_fit(a: dict, records: int, em: str | list[str]) -> dict:  # method.toml's fit, checked, then written; the result with its next
+    ws = Path(a["workspace"])
     with folder.run_lock(ws):  # read, checked and written as one
         method = {**folder.method(ws), "fit": {"records": records, "em": em}}
         setup(a, method)  # refused before anything is written
         folder.write_method(ws, method)
     return {"method": method, "next": [dict(command=nayose("rerun", "records", "--workspace", ws), why="find matches with it")]}
+
+
+def set_fit(a: dict, emit: "Emit") -> dict:
+    em = a["em"] if a["em"] in ("rules", "keys", "choose") else [f.strip() for f in a["em"].split(",") if f.strip()]
+    return write_fit(a, fit_records(a), em)
+
+
+def choose_em(a: dict, emit: "Emit") -> dict:
+    s, p, _ = setup(a)
+    records = fit_records(a) if a.get("records") else p.fit_rows
+    r = choose(Path(a["workspace"]), s, p, records)
+    return {**r, **write_fit(a, records, r["kept"] or "rules")}
 
 
 def number(text: str, what: str, fix: str = "a weight in bits, for example 9 or 9.5") -> float:
@@ -1610,13 +1625,27 @@ COMMANDS: tuple[Command, ...] = (
             "(rules), one session per equality key, each level's m their median (keys), or one session blocked on each field "
             "named (fields, comma-separated, each `field` or `field:normalizer`). The next run uses them. O(1).",
             (WORKSPACE, Param("records", "the records to sample, 1,000 or more (try sample says where more stops paying)", required=True, metavar="N"),
-             Param("em", "rules: as the method has it; keys: one session per equality key; or fields, comma-separated: one session per field", required=True, metavar="rules|keys|FIELDS"), PIPELINE),
+             Param("em", "rules: as the method has it; keys: one session per equality key; choose: as choose em, at each fit; or fields, comma-separated: one session per field", required=True, metavar="rules|keys|choose|FIELDS"), PIPELINE),
             {"method": "the workspace's method.toml", "next": "the commands that usually follow"},
             "nayose set fit --workspace workspaces/customers --records 64000 --em keys", set_fit),
+    Command("choose", "em", "Choose the fields EM learns from, by the given name",
+            "Fits the model on the run's fit sample (--records of them, default the method's), against the u the run measured, "
+            "in one EM session per field a comparison's first level tests for equality (an identifying field left out). "
+            "A session is kept when at least half the matches it learned agree on the given name (on the full name where the "
+            "given name is filled in under 30% of the named records); one keyed on a name field is kept by its key. Writes the "
+            "kept fields into method.toml's fit, as set fit does (none kept: rules); the next run learns from them. A run with "
+            "fit em \"choose\" makes this choice itself, each level's m the median of the kept sessions, and a comparison but the name "
+            "they hold under 10 pairs agreeing on takes every session's. O(the fit).",
+            (WORKSPACE, Param("records", "the records to sample, 1,000 or more (default: the method's)", metavar="N"), PIPELINE, COMPUTE),
+            {"records": "the records sampled", "sessions": "each session: session, field, pairs, given_share, kept, why",
+             "kept": "the fields kept, as set fit takes them", "wide": "the comparisons the kept sessions barely saw: m from every session",
+             "method": "the workspace's method.toml", "next": "the commands that usually follow"},
+            "nayose choose em --workspace workspaces/customers", choose_em,
+            show={"sessions": ("session", "pairs", "given_share", "kept", "why")}),
     Command("try", "everything", "Try everything on a file, and write a report to send that holds no record's value",
             "Auto mode: the commands a person would run on the file, in order, each in a process of its own: create workspace "
             "(auto-<month><day>-<time> in HOME, strict: nothing merges before people check), load records, set feature with "
-            "what its contents suggest, check records, rehearse records (a stop there stops before the real run), resolve "
+            "what its contents suggest, check records, set fit --em choose, rehearse records (a stop there stops before the real run), resolve "
             "records, describe method, list patterns, try method for each change it proposes (--trials of them), the names "
             "in another script the file holds in a workspace of their own (auto/offers), and describe review. A step that "
             "fails is kept with its error and fix, and the steps that need it are skipped. Then auto/report.md, to send, and "
@@ -1844,7 +1873,7 @@ GROUPS = (  # the top-level help's commands, by task
                 "apply answers", "describe merging", "set merging", "list entities", "describe entity", "split entity")),
     ("Look up", ("build index", "match record", "search records")),
     ("Look inside", ("describe workspace", "describe matching", "describe key", "list patterns", "explain pair", "compare records")),
-    ("Method", ("describe method", "try method", "try sample", "set fit", "adopt method", "reset method", "describe review", "lower trust", "raise trust", "draw pairs", "list pairs")),
+    ("Method", ("describe method", "try method", "try sample", "set fit", "choose em", "adopt method", "reset method", "describe review", "lower trust", "raise trust", "draw pairs", "list pairs")),
 )
 
 

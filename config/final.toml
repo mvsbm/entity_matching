@@ -93,7 +93,7 @@ u_from_scored = true
 u_exact_by_counts = true
 u_near_by_keys = true
 fit_u_max_pairs = 1000000.0
-fit_rows = 30000
+fit_rows = 100000
 
 [[model.comparisons]]
 name = "name"

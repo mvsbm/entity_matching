@@ -12,7 +12,7 @@
 |---|---|
 | N | records in the file |
 | Δ | records in an increment's batch |
-| n | records the model is fitted on (`fit_rows`, 30,000; fixed) |
+| n | records the model is fitted on (`fit_rows`, 100,000; fixed) |
 | L | characters in a name or address |
 | P_r, P_g | pairs inside rule r's or generator g's key blocks |
 | b | records in one key block |
@@ -251,6 +251,10 @@ trained once and its signals computed once; a combination fits only its combiner
   last step was already made (`address`, then `address` and `first3`) applies only that step to it, when that step
   makes nothing of an empty value, as every built-in step does. On addresses of about 100 characters, the address
   normalized once a chunk, not twice: a chunk of 200,000 records 6.0 s to 4.3 s.
+- **A fit sample of 100,000 records, and EM judged by the given name** (`fit_rows`, `er.match.chosen`). The fit's
+  sample costs little against the u measured on the file: on 1,039,995 generated records the fit step takes 3.3 s on
+  30,000 records and 3.7 s on 100,000 with the method's EM, and 5.0 s with fit em `choose` (six sessions, one each);
+  on 500,355 records of 80 columns, addresses of about 100 characters and long notes, 3.0 s, 3.8 s and 5.2 s.
 - **EM's sessions per key without Splink's checks** (`train_fs`): each session's linker skips Splink's settings
   validation, which only logs warnings the fit hides, and takes the prior the first linker estimated on the same
   records, not counted again. A fit on 1,000 records one session per key, 2.9 s to 2.3 s; on 128,000, 6.2 s to 5.4 s.
@@ -294,7 +298,7 @@ on the file itself, without labels ([reports/benchmark.md](../reports/benchmark.
 | 1,000,338 | 53.0 | 6.64 GB | 9.40 | 16.05 | 27.55 |
 
 Over these sizes, time grows like N^0.42. `fit` costs nearly the same at every size, 7.26 s at 12,532 records and 9.40 s
-at a million: it learns on 30,000 records, its u sample of the file is 10⁷ pairs for each of name, company and address
+at a million: in these runs it learned on 30,000 records (`fit_rows` is 100,000: about 0.5 s more, above), its u sample of the file is 10⁷ pairs for each of name, company and address
 whatever the file's size, and cif, phone and birth are counted exactly. So it is nearly all of a small file's time.
 Everything else goes from 6.21 s at 74,959 records to 27.55 s at a million: 13 times the records, 4.4 times the time,
 since the probe scores about `[probe] pairs` in each group once a group has that many, as the postal area does

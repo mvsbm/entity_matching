@@ -101,7 +101,7 @@ For each key, `scale_check` splits its pairs on train into pairs of one entity, 
 | score | O(C·K·L²) | as C | 16.05 s |
 | cluster | O(C + E·d + N) | N | 0.34 s |
 
-*N records · n = 30,000 records in the fit's sample · S = 10⁷ pairs sampled for u · K comparisons (6) · P_em pairs in EM's blocks · L characters in a value · P_r, P_g pairs in a rule's or a generator's blocks · w the window · U records queried, q n-grams per name · C candidates · E accepted pairs · d the largest cluster's diameter. Every symbol and step: [performance](../performance.md#end-to-end-the-cost-of-every-step).*
+*N records · n = 100,000 records in the fit's sample · S = 10⁷ pairs sampled for u · K comparisons (6) · P_em pairs in EM's blocks · L characters in a value · P_r, P_g pairs in a rule's or a generator's blocks · w the window · U records queried, q n-grams per name · C candidates · E accepted pairs · d the largest cluster's diameter. Every symbol and step: [performance](../performance.md#end-to-end-the-cost-of-every-step).*
 
 Everything is near-linear except two kinds of step:
 
@@ -137,7 +137,7 @@ Each key splits the 10,000 phone values into hundreds of thousands of combinatio
 
 An exact address would defeat F2's purpose, which is address typos. The first three characters survive typos later in the address.
 
-**Fix 4: fit on a fixed-size sample, then measure u on the file.** The fit takes a fixed sample of 30,000 records, made of whole postal areas, so a household's records stay together. On it, λ (the chance that two random records are the same entity) comes from near-certain rules, and m from EM. The fit's own u sample, 10⁶ pairs, feeds only EM. Then u, how often two different entities agree on a field by chance, is measured on the whole file:
+**Fix 4: fit on a fixed-size sample, then measure u on the file.** The fit takes a fixed sample of 100,000 records, made of whole postal areas, so a household's records stay together. On it, λ (the chance that two random records are the same entity) comes from near-certain rules, and m from EM. The fit's own u sample, 10⁶ pairs, feeds only EM. Then u, how often two different entities agree on a field by chance, is measured on the whole file:
 
 - **Counted** for the leading exact levels, from value counts.
 - **Counted** for a one-edit level right after them on the same column: the CIF ID, the phone and the birth date "one digit off". The distinct values are joined on their one-deletion keys, so these three comparisons need no sample at all.

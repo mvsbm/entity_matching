@@ -159,14 +159,14 @@ def test_auto_mode_tries_every_step_and_writes_a_report_that_holds_no_value(say,
     ws = Path(r["workspace"])
     text = (ws / "auto" / "report.md").read_text(encoding="utf-8")
     assert code == 0 and r["ok"] and all(x["ok"] for x in r["steps"]) and r["redacted"] == 0 and r["values"] > 0 and text == r["markdown"]
-    assert [x["step"] for x in r["steps"]][:5] == ["workspace", "load", "check", "rehearse", "resolve"] and "review" in [x["step"] for x in r["steps"]]
+    assert [x["step"] for x in r["steps"]][:6] == ["workspace", "load", "check", "fit", "rehearse", "resolve"] and "review" in [x["step"] for x in r["steps"]]
     for section in ("## Steps", "## The file", "## Will a run go through", "## The rehearsal, beside the real run", "## The run (report.txt)",
                     "## The method", "## How much people must check", "## Privacy check"):
         assert section in text, section
     assert not any(v in text for v in planted.values()) and str(tmp_path) not in text and "all.parquet" not in text  # no value, no path, no file name
     facts = json.loads((ws / "auto" / "report.json").read_text(encoding="utf-8"))
     assert facts["privacy"] == {"values": r["values"], "redacted": 0} and not any(v in json.dumps(facts, ensure_ascii=False) for v in planted.values())
-    assert (ws / "method.toml").read_text(encoding="utf-8").strip() == 'trust = "none"'  # strict as made: it never lowers the line or adopts a method
+    assert (ws / "method.toml").read_text(encoding="utf-8").split() == 'trust = "none" fit = { records = 100000, em = "choose" }'.split()  # strict as made, EM judged by the given name: it never lowers the line or adopts a method
     assert say("describe", "workspace", ws)[1]["auto"]["markdown"] == text  # the page's Overview shows it
 
 

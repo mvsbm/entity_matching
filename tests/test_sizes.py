@@ -94,3 +94,38 @@ def test_em_set_to_fields_is_kept_and_try_sample_offers_it_back(ran, capsys, mon
         assert r["em_set"] == "birth_date,person_name" and any("--em birth_date,person_name" in x["command"] for x in r["next"])  # its own fields, not the tuned rules
     finally:
         (ws / folder.METHOD).write_text(method, encoding="utf-8") if method is not None else (ws / folder.METHOD).unlink()
+
+
+def test_choose_em_writes_the_fields_it_kept_and_the_next_run_learns_from_them(ran, capsys):
+    from er import cli, folder
+    from er.config import added_key, adjust, em_candidates
+    s, p, ws = ran
+    method = (ws / folder.METHOD).read_text(encoding="utf-8") if (ws / folder.METHOD).exists() else None
+    try:
+        assert cli.main(["choose", "em", "--workspace", str(ws), "--records", "2000", "--pipeline", str(s.root / "tests" / "method.toml"), "--format", "json"]) == 0
+        r = json.loads(capsys.readouterr().out.splitlines()[-1])
+        cols = list(pd.read_parquet(ws / "state" / "records").columns)
+        judged = [" + ".join(k.column for k in rule) for rule in em_candidates(index.to_file(s, p, cols))]
+        assert [x["session"] for x in r["sessions"]] == [x for x in judged if x in {y["session"] for y in r["sessions"]}] and r["sessions"]
+        assert "customer_id" not in judged and "given_name" not in judged  # an identifying field, and the given name alone, never judged
+        assert r["kept"] == [x["field"] for x in r["sessions"] if x["kept"]] and r["kept"], r["sessions"]
+        assert folder.method(ws)["fit"] == {"records": 2000, "em": r["kept"]} and r["next"][0]["command"].startswith("nayose rerun records")
+        q = adjust(p, folder.method(ws))
+        assert q.fs.model.em_rules == tuple(added_key([f]).keys for f in r["kept"]) and q.fit_rows == 2000  # what the next run's fit learns from
+    finally:
+        (ws / folder.METHOD).write_text(method, encoding="utf-8") if method is not None else (ws / folder.METHOD).unlink(missing_ok=True)
+
+
+def test_a_run_with_em_choose_keeps_each_session_s_verdict_in_its_model_and_the_report_shows_them(ran, tmp_path):
+    from er.config import adjust
+    from er.run import Run
+    s, p, ws = ran
+    g = pd.read_parquet(ws.parent / "all.parquet")
+    g.to_parquet(tmp_path / "in.parquet", index=False)
+    run = Run(adjust(p, {"fit": {"em": "choose"}}), s).full(tmp_path / "in.parquet", tmp_path / "w")
+    choice = run.model["er"]["em_choice"]
+    assert choice and all({"session", "pairs", "kept", "why"} <= set(x) for x in choice)
+    assert set(run.model["er"]["em_pairs"]) == {x["session"] for x in choice if x["kept"]} or not any(x["kept"] for x in choice)
+    from er.report import qa, report_text
+    report = report_text(run, qa(run, [f for f in s.columns if f not in ("id", "entity")]), s.root / "tests" / "method.toml")
+    assert "EM SESSIONS" in report and all(x["session"] in report for x in choice)

@@ -1172,11 +1172,14 @@ CROWD = 64        # the fewest customers a compared field's placeholder is held 
 PLACEHOLDERS = 2  # how placeholders are told (Run._placeholders): a run that told them otherwise takes no increment until it runs again
 
 
+FINGERPRINTED_ROWS = 30_000  # the fit's sample, as every run's fingerprint holds it: whatever a run samples, its increments take no rerun
+
+
 def run_config(p: Pipeline, s: Settings) -> str:
     """What an increment needs the full run's to be: the pipeline and the settings that shape the records. The fit's
     sample and EM (method.toml's fit: the sessions' rules too) are left out: an increment and a lookup score with the stored model."""
-    fit = {f.name: f.default for f in fields(FSModel) if f.name in ("em_from_keys", "em_median")}
-    p = replace(p, fit_rows=next(f.default for f in fields(Pipeline) if f.name == "fit_rows"), fs=replace(p.fs, model=replace(p.fs.model, em_rules=(), **fit)))
+    fit = {f.name: f.default for f in fields(FSModel) if f.name in ("em_from_keys", "em_median")}  # em_choose: never in a model's repr
+    p = replace(p, fit_rows=FINGERPRINTED_ROWS, fs=replace(p.fs, model=replace(p.fs.model, em_rules=(), **fit)))
     return config_hash((p, s.columns, s.standardize, s.flag_company, s.input, PLACEHOLDERS))
 
 

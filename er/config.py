@@ -354,6 +354,7 @@ class FSModel:
     fit_u_max_pairs: float | None = None      # the fit's own u sample, if it differs (with u_from_scored its u feed only EM)
     em_median: bool = False                   # one EM session per rule, each level's m the median of the sessions that learned it (not Splink's mean)
     em_from_keys: bool = False                # the EM sessions blocked on the method's equality keys, not on em_rules (er.run.fit)
+    em_choose: tuple[tuple[Key, ...], ...] = field(default=(), repr=False)  # sessions judged by the given name, those kept in place of em_rules (er.match.chosen); out of repr, so of a run's fingerprint (er.run.run_config)
 
     def u_keys(self) -> dict[str, str]:
         """What each comparison's u depends on, besides the fitting records: the comparison (term-frequency adjustment
@@ -363,7 +364,7 @@ class FSModel:
     def normalized(self) -> list[tuple[str, tuple[Normalizer, ...]]]:
         out = [(col, comp.normalize) for c in self.comparisons for lv in c.levels for col, comp in lv.any_of if comp.normalize]
         out += [(col, comp.copied()) for c in self.comparisons for lv in c.levels for col, comp in lv.any_of if comp.copied()]
-        keys = [k for c in self.comparisons if c.tf for k in [c.tf]] + [k for rule in (*self.prior_rules, *self.em_rules) for k in rule]
+        keys = [k for c in self.comparisons if c.tf for k in [c.tf]] + [k for rule in (*self.prior_rules, *self.em_rules, *self.em_choose) for k in rule]
         return out + [(k.column, k.normalize) for k in keys if k.normalize]
 
 
@@ -389,7 +390,7 @@ class FSSpec:
         cols = {k.name for b in self.blockers for k in keys_of(b)}
         cols |= {comp.column(col) for c in m.comparisons for lv in c.levels for col, comp in lv.any_of}
         cols |= {col for c in m.comparisons for col in c.null_if_missing} | {c.tf.name for c in m.comparisons if c.tf}
-        return cols | {k.name for rule in (*m.prior_rules, *m.em_rules) for k in rule}
+        return cols | {k.name for rule in (*m.prior_rules, *m.em_rules, *m.em_choose) for k in rule}
 
 
 def with_level(model: FSModel, comparison: str, label: str, **changes: object) -> FSModel:
@@ -599,7 +600,7 @@ class Pipeline:
     decision_p: float
     explain_show: tuple[str, ...]             # the worked example's fields
     explain_filled: tuple[str, ...]
-    fit_rows: int = 30_000                    # an unlabelled run fits on a sample of this many records (er.run)
+    fit_rows: int = 100_000                   # an unlabelled run fits on a sample of this many records (er.run)
     kind: KindSpec | None = None              # person or company, on every record; None: not told apart
     trust: TrustRule = TrustRule()            # what merges without people (er.run._accept)
     probe: Probe = Probe()                    # how the matches no key lists are measured (er.probe)
@@ -680,7 +681,7 @@ def pipeline_from(cfg: dict, std: Standardization, chains: Mapping[str, tuple[No
                     threshold=ThresholdRule(grid=tuple(t["grid"]), max_fp=t["max_fp"], max_fp_rate_hi=t["max_fp_rate_hi"],
                                             margin_steps=t["margin_steps"], search_floor=float(t.get("search_floor", 0.0))),
                     cv_folds=sel["cv_folds"], cv_seed=sel["cv_seed"], decision_p=sel["decision_p"],
-                    explain_show=tuple(d["explain_show"]), explain_filled=tuple(d["explain_filled"]), fit_rows=m.get("fit_rows", 30_000),
+                    explain_show=tuple(d["explain_show"]), explain_filled=tuple(d["explain_filled"]), fit_rows=m.get("fit_rows", 100_000),
                     kind=KindSpec(**{k: tuple(v) if k == "grid" else v for k, v in cfg["kind"].items()}) if "kind" in cfg else None,
                     trust=TrustRule(**{k: tuple(map(float, v)) if k == "steps" else v for k, v in cfg.get("trust", {}).items()}),
                     probe=Probe(strata=tuple((n, tuple(_key(k, chains) for k in keys)) for n, keys in cfg["probe"]["strata"].items()),
@@ -728,6 +729,17 @@ def widen(p: "Pipeline", added: Iterable[tuple[str, str]]) -> "Pipeline":
 METHOD_KEYS = ("line", "drop_rules", "drop_keys", "trust", "add_keys", "merge", "fit")
 
 
+GIVEN, PERSON = "given_name", "person_name"  # agreement on the given name tells one person's records from a household's; the full name, where it is sparse (er.match.chosen)
+
+
+def em_candidates(p: "Pipeline") -> tuple[tuple[Key, ...], ...]:
+    """The sessions fit em "choose" judges: one per field a comparison's first level tests for equality, normalized as it
+    tests it (a later level's field, a postal code or a prefecture, makes blocks of strangers); not an identifying field
+    (one customer's each: the prior rules read it), nor the given name alone (as large a block, swaying every m)."""
+    keys = {col: Key(col, comp.normalize) for c in p.fs.model.comparisons if c.levels for col, comp in c.levels[0].any_of if comp.function == "exact"}
+    return tuple((k,) for col, k in keys.items() if col not in p.fields.identifying and col != GIVEN)
+
+
 def added_key(fields: list[str]) -> KeyBlocker:  # a pair key a workspace adds (method.toml add_keys): each field as `field` or `field:normalizer`
     keys = tuple(Key(f, tuple(n)) for f, *n in (x.split(":") for x in fields))
     return KeyBlocker(name="added_" + "_".join(k.name for k in keys), keys=keys)
@@ -739,9 +751,10 @@ def adjust(p: "Pipeline", method: Mapping[str, object]) -> "Pipeline":
     (name@field); `trust`, the trust line (TrustRule): "none" (nothing merges without people) or one of its steps;
     `merge`, the conditions that merge pairs without people (er.results.check_merging), read by runs and set merging;
     `add_keys`, pair keys added, each a list of fields (`field` or `field:normalizer`), as describe method proposes them;
-    `fit`, the sample the model learns from: `records` (fit_rows) and `em`, "rules" (em_rules) or "keys" (one session
-    per equality key, each level's m their median), as try sample shows them, or a list of fields (`field` or
-    `field:normalizer`), one session blocked on each, in place of em_rules.
+    `fit`, the sample the model learns from: `records` (fit_rows) and `em`, "rules" (em_rules), "keys" (one session
+    per equality key, each level's m their median), as try sample shows them, "choose" (one session per compared field,
+    kept by the given name: em_candidates), or a list of fields (`field` or `field:normalizer`), one session blocked on
+    each, in place of em_rules.
     Nothing changed: the same pipeline, so the same config hash. O(rules + generators)."""
     if not method:
         return p
@@ -772,9 +785,9 @@ def adjust(p: "Pipeline", method: Mapping[str, object]) -> "Pipeline":
     em = fit.get("em", "rules") if isinstance(fit, dict) else None
     fields = isinstance(em, list) and em and all(isinstance(f, str) and f for f in em)
     if not isinstance(fit, dict) or set(fit) - {"records", "em"} or not isinstance(fit.get("records", 1000), int) or isinstance(fit.get("records"), bool) \
-            or fit.get("records", 1000) < 1000 or not (em in ("rules", "keys") or fields):
-        raise InputError('method.toml: fit takes records (1,000 or more) and em ("rules", "keys", or a list of fields)', fix)
-    model = p.fs.model if "em" not in fit else replace(p.fs.model, em_from_keys=em == "keys", em_median=em == "keys")
+            or fit.get("records", 1000) < 1000 or not (em in ("rules", "keys", "choose") or fields):
+        raise InputError('method.toml: fit takes records (1,000 or more) and em ("rules", "keys", "choose", or a list of fields)', fix)
+    model = p.fs.model if "em" not in fit else replace(p.fs.model, em_from_keys=em == "keys", em_median=em == "keys", em_choose=em_candidates(p) if em == "choose" else ())
     if fields:
         sessions = tuple(added_key([f]).keys for f in em)
         if bad := sorted({k.column for r in sessions for k in r} - p.fields.declared()) + sorted({n for r in sessions for k in r for n in k.normalize} - (set(get_args(Normalizer)) - set(COPIES))):
@@ -803,7 +816,7 @@ def fields_read(p: Pipeline) -> set[str]:  # every field the rules, the generato
     out = {c for s in r.stages for rule in s.rules for c in (*rule.exact, *rule.fuzzy, *(k.column for k in rule.blocking))}
     out |= {k.column for b in p.generators.values() for k in keys_of(b)}
     out |= {col for c in m.comparisons for lv in c.levels for col, _ in lv.any_of} | {col for c in m.comparisons for col in c.null_if_missing}
-    out |= {c.tf.column for c in m.comparisons if c.tf} | {k.column for rule in (*m.prior_rules, *m.em_rules) for k in rule}
+    out |= {c.tf.column for c in m.comparisons if c.tf} | {k.column for rule in (*m.prior_rules, *m.em_rules, *m.em_choose) for k in rule}
     out |= {*p.explain_show, *p.explain_filled} | {c for s in r.stages for c in s.comparators}
     out |= {k.column for k in p.household.shared} | {col for col, _ in p.household.apart}
     return out
@@ -877,7 +890,7 @@ def restrict(p: Pipeline, present: set[str]) -> tuple[Pipeline, list[str]]:
         raise lacking("the model can't be fitted", {k.column for r in m.em_rules for k in r})
     gone += [f"prior rule {[k.column for k in r]}" for r in m.prior_rules if r not in prior]
     gone += [f"EM rule {[k.column for k in r]}" for r in m.em_rules if r not in em]
-    model = replace(m, comparisons=tuple(comparisons), prior_rules=prior, em_rules=em)
+    model = replace(m, comparisons=tuple(comparisons), prior_rules=prior, em_rules=em, em_choose=tuple(r for r in m.em_choose if has(k.column for k in r)))
     needs = tuple(n for n in p.fs.needs if n in {c.name for c in comparisons})  # [fields] one_of keeps a name comparison
     strata = tuple((n, keys) for n, keys in p.probe.strata if has(k.column for k in keys))
     gone += [f"probe {n} (needs {sorted({k.column for k in keys} - present)})" for n, keys in p.probe.strata if (n, keys) not in strata]
