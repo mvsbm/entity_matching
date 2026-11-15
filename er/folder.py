@@ -168,6 +168,12 @@ def history(out: Path) -> list[dict]:  # every run steps.json holds, in brief, t
     return [*old.get("earlier", []), *map(brief, old.get("runs", []))]
 
 
+def diagnosis(out: Path) -> list[dict] | None:  # what limits what the run finds, as report.txt says it: the last report's items; None before a run that kept them
+    old = json.loads((out / STEPS).read_text(encoding="utf-8")) if (out / STEPS).exists() else {}
+    step = next((s for x in reversed(old.get("runs", [])) for s in x["steps"] if s["step"] == "report"), {})  # decisions write no report
+    return step.get("diagnosis")
+
+
 def log(out: Path, entry: dict, append: bool, earlier: list[dict] | None = None) -> str:
     """steps.json with this entry: one per run, increment or set of decisions (a full run starts it again, with `earlier`,
     the runs before it in brief: history, read before its write replaced the old log). The text, for stage to write with

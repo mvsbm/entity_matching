@@ -835,13 +835,13 @@ def test_a_customer_id_held_by_many_records_is_a_placeholder_every_step_and_the_
 
 def test_the_diagnosis_names_what_limits_the_run_the_most_pairs_first_each_with_its_fix(tmp_path, population):
     from er.match import _ranked, review_floor, search_floor
-    from er.report import SHOWN, diagnosis, qa
+    from er.report import SHOWN, diagnosis, diagnosis_lines, qa
     from er.run import Run
     s, p, g = population
     g.df.to_parquet(tmp_path / "in.parquet", index=False)
     run = Run(p, s).full(tmp_path / "in.parquet", tmp_path / "run")
     tables, lo, m = qa(run, [f for f in s.columns if f not in ("id", "entity")]), review_floor(run.pipeline), run.scoring["er"]
-    said = lambda: diagnosis(run, tables, lo)[1:-1]
+    said = lambda: diagnosis_lines(diagnosis(run, tables, lo))[1:-1]
     top = {c["output_column_name"]: max(g for g, _ in _ranked(c)) for c in run.scoring["comparisons"]}
     assert said() and len(said()) <= SHOWN
     tables["fill"].loc[tables["fill"]["field"] == "birth_date", "filled"] = 0.1  # a compared field mostly empty, and a column like it
@@ -927,6 +927,27 @@ def test_the_run_report_counts_each_score_bands_patterns(reported):
             up, n = w[1] == "and", w[3]
         shown[up] = shown.get(up, 0) + int(n.replace(",", ""))
     assert shown == stored and len(lines) > 3
+
+
+def test_describe_workspace_gives_the_diagnosis_report_txt_prints(reported, capsys):
+    from er import cli
+    from er.report import diagnosis_lines
+    _, text, out = reported
+    assert cli.main(["describe", "workspace", str(out), "--format", "json"]) == 0
+    items = json.loads(capsys.readouterr().out.splitlines()[-1])["diagnosis"]
+    assert isinstance(items, list) and all(set(x) == {"what", "pairs", "fix"} for x in items)
+    assert [x["pairs"] for x in items] == sorted((x["pairs"] for x in items), reverse=True)  # the most pairs first
+    assert section(text, "DIAGNOSIS")[1:] == diagnosis_lines(items)[1:-1]  # one source: report.txt prints the items the page reads
+    was = (out / "steps.json").read_text(encoding="utf-8")
+    steps = json.loads(was)
+    for x in steps["runs"]:  # a run an older version wrote: no items, and none said
+        x["steps"] = [{k: v for k, v in s.items() if k != "diagnosis"} for s in x["steps"]]
+    (out / "steps.json").write_text(json.dumps(steps), encoding="utf-8")
+    try:
+        assert cli.main(["describe", "workspace", str(out), "--format", "json"]) == 0
+        assert json.loads(capsys.readouterr().out.splitlines()[-1])["diagnosis"] is None
+    finally:  # the module's run as it was, for the tests after
+        (out / "steps.json").write_text(was, encoding="utf-8")
 
 
 def test_the_run_report_says_what_each_em_session_learned_from(reported):

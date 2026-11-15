@@ -878,6 +878,7 @@ Records and entities, the largest entities, each run so far, the pairs and kinds
 | `details` | the details file people see above each record (load details), or null |
 | `stamp` | what people and runs change, by its files' sizes and times (sheets, decisions, answers, method, mapping, entities): a page coming back reads again when it moves |
 | `ready` | whether a run can start on the file loaded last: run (true or false), why not, and the fix |
+| `diagnosis` | what limits what the last run finds, as report.txt's DIAGNOSIS says it, the most pairs first: what, pairs (at stake), fix (a command, or empty); null before a run that kept it |
 | `next` | the commands that usually follow |
 
 ```bash

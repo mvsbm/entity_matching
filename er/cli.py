@@ -820,7 +820,7 @@ def describe_workspace_(a: dict, emit: "Emit") -> dict:
     told = out / "auto" / "report.md"  # the last auto mode's report, to send
     auto = dict(report=str(told), markdown=told.read_text(encoding="utf-8")) if told.is_file() else None
     return {**d, "inputs": files, "columns": "own" if columns_file(out) else "project", "auto": auto, "index": index.status(out, s), "rerun_owed": owed,
-            "details": details.described(out, s.data.unique_id), "next": then}
+            "details": details.described(out, s.data.unique_id), "diagnosis": folder.diagnosis(out), "next": then}
 
 
 def describe_entity_(a: dict, emit: "Emit") -> dict:
@@ -1460,9 +1460,11 @@ COMMANDS: tuple[Command, ...] = (
              "details": "the details file people see above each record (load details), or null",
              "stamp": "what people and runs change, by its files' sizes and times (sheets, decisions, answers, method, mapping, entities): a page coming back reads again when it moves",
              "ready": "whether a run can start on the file loaded last: run (true or false), why not, and the fix",
+             "diagnosis": "what limits what the last run finds, as report.txt's DIAGNOSIS says it, the most pairs first: what, pairs (at stake), fix (a command, or empty); null before a run that kept it",
              "next": "the commands that usually follow"},
             "nayose describe workspace workspaces/customers", describe_workspace_, quick=True,
-            show={"largest": ("entity", "records"), "runs": ("at", "what", "seconds"), "inputs": ("name", "files", "bytes", "read"), "auto": (), "index": ()}),
+            show={"largest": ("entity", "records"), "runs": ("at", "what", "seconds"), "inputs": ("name", "files", "bytes", "read"), "auto": (), "index": (),
+                  "diagnosis": ("what", "pairs", "fix")}),
     Command("describe", "entity", "One record's entity, and what joined it",
             "The entity of the record ID: its size, each of its records (the first 200, the ID among them) with its fields and "
             "kind, and every link between them: a rule, the model with its weight in bits, people, or the workspace's merge "
