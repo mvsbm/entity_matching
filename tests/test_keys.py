@@ -180,6 +180,15 @@ def test_copies_of_one_customer_s_record_are_no_crowd_and_a_known_placeholder_is
     assert run.con.execute("SELECT count(*) FROM records WHERE phone IS NOT NULL").fetchall()[0][0] == 0
 
 
+def test_a_short_phone_held_by_many_records_each_is_kept_and_a_dummy_far_past_them_is_still_read_as_missing(population):
+    s, p, g = population
+    uid = s.data.unique_id
+    phones = [f"{i % 100:04d}" for i in range(20_000)] + ["9999"] * 3_000  # 100 values, 200 customers each, as 4 digits on a large file; one dummy
+    rows = {uid: [f"r{i:05d}" for i in range(len(phones))], "customer_id": [None] * len(phones), "phone": phones}
+    run, out = _placeholders(population, rows)
+    assert run.placeholders == {"phone": ["9999"]} and out["phone"].notna().sum() == 20_000
+
+
 def test_the_gap_counts_a_pair_as_the_rules_only_where_they_kept_it():
     import duckdb
     from types import SimpleNamespace

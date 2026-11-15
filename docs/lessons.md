@@ -20,8 +20,8 @@ Each entry names a way an entity-resolution pipeline like this one goes wrong, a
 
 ## A generator that makes impossible twins
 - **Pitfall:** synthetic data holds pairs no matcher could separate, which count as false merges that are no fault of the matcher. They show as false pairs that cluster in one over-merged entity, or as a threshold that fails to transfer from cross-validation to val.
-- **Why:** drawing personas with replacement makes entities with the same name and prefecture. When two of them also draw the same address, they differ only in CIF ID and phone. Real data wouldn't contain such a pair.
-- **Guard:** the generator draws each persona at most once, and refuses a population larger than the persona file. Same-name pairs come only from the persona file itself.
+- **Why:** drawing personas with replacement makes entities with the same name and prefecture. When two of them also draw the same address, they differ only in CIF ID and phone. Drawing every part of a large file from the same personas does the same across parts: at a million records, each full name in its prefecture belongs to about 15 unrelated people. Real data wouldn't contain such pairs.
+- **Guard:** the generator draws each persona at most once, and refuses a population larger than the persona file. A larger file is made in parts, and each part after the first pairs every surname with another persona's given name (`er.auto.part_persons`), so no persona repeats across parts. Same-name pairs come only from the persona file itself.
 - **Check:** `reports/choose.md` prints the transfer check every round: at 6 bits, 0 false of 2,569 accepted pairs out-of-fold, and 0 of 918 on val. False pairs that cluster into one over-merged entity are a sign of one cause, not several.
 
 ## Levels without an estimate
