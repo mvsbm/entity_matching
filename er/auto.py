@@ -8,8 +8,8 @@ one, under the same limits, to measure what this machine needs before the real f
                 folder on the same disk; the parent reads its size every half second (DuckDB deletes spill files as it
                 goes, so only polling sees the peak); seconds and peak memory from the run's steps.json
 
-O(N) to generate and O(a full run) to measure. Past 60,000 entities the generator's personas repeat, so names repeat
-more than in a real file and name keys make more pairs: the result says so, and a check of the real file
+O(N) to generate and O(a full run) to measure. Past 31,596 companies the generator's company names repeat, so they
+repeat more than in a real file and name keys make more pairs: the result says so, and a check of the real file
 (check records) counts its pairs exactly.
 
 Auto mode (nayose try everything): the commands a person would run on a file, in order, each in a process of its own,
@@ -53,6 +53,7 @@ from pathlib import Path
 
 import duckdb
 import numpy as np
+import pandas as pd
 
 from er.config import InputError, Pipeline, lit
 from er.folder import method, runs, write_method
@@ -66,8 +67,8 @@ from er.strings import connect
 CHUNK = 50_000  # entities a generated part: generation's memory, whatever the file's size
 PILOT = 5_000  # entities of a first, small draw: each field's share measured on it, then each rate set right
 POLL = 0.5  # seconds between two readings of the spill folder's size
-LIMIT = ("past 60,000 entities the generator's people repeat, so names repeat more than in a real file and name keys make more "
-         "pairs: the real file's own pairs are in check records")
+LIMIT = ("past 31,596 companies the generator's company names repeat, so they repeat more than in a real file and name keys make "
+         "more pairs: the real file's own pairs are in check records")
 SAMPLE = 20_000  # records whose values the report is checked against
 HIDDEN = "[redacted]"
 JAPANESE = re.compile(r"[\u3005\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff\uff66-\uff9f\U00020000-\U0003134f]+")  # kana, kanji, half-width kana
@@ -155,7 +156,7 @@ def _parts(spec, entities: int, out: Path, ref: tuple, uid: str, done: Callable[
     for i, start in enumerate(range(0, entities, CHUNK)):
         if limit is not None and records >= limit:
             break
-        g = generate(replace(spec, entities=min(CHUNK, entities - start), seed=spec.seed + i), *ref)
+        g = generate(replace(spec, entities=min(CHUNK, entities - start), seed=spec.seed + i), part_persons(ref[0], spec.seed, i), *ref[1:])
         df = g.df.drop(columns=[c for c in unused if c in g.df.columns]).iloc[: None if limit is None else limit - records]
         rng = np.random.default_rng(spec.seed + 20_000 + i)
         for c, keep in (keep_built or {}).items():
@@ -166,6 +167,18 @@ def _parts(spec, entities: int, out: Path, ref: tuple, uid: str, done: Callable[
         records += len(df)
         done(records)
     return records
+
+
+def part_persons(persons: pd.DataFrame, seed: int, i: int) -> pd.DataFrame:
+    """The personas part i draws from: the reference's for the first part; for each later one, every surname (with its
+    prefecture) beside another persona's given name, sex and age, shuffled by the part's seed. Each part draws its
+    entities from all of them, so the same personas in every part would make each full name, in its prefecture, about
+    entities ÷ CHUNK unrelated people of a large file: namesakes no matcher can tell apart."""
+    if i == 0:
+        return persons
+    out, given = persons.copy(), ["given", "given_kana", "sex", "age"]
+    out[given] = persons[given].to_numpy()[np.random.default_rng(seed + 30_000 + i).permutation(len(persons))]
+    return out
 
 
 def size_of(folder: Path) -> int:  # the bytes under a folder now; a file DuckDB just removed is skipped

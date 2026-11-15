@@ -68,6 +68,22 @@ def test_a_generated_file_takes_the_shape_it_is_given_across_its_parts(tmp_path,
     assert 0.1 < auto.shape(load_settings(), tmp_path / "b")["fields"]["company_name"] < 0.35  # the generator's share of companies, not 90%
 
 
+def test_the_parts_of_a_large_generated_file_draw_no_persona_twice():
+    from er import auto
+    from er.generate import generate, load_reference, load_spec
+    from er.settings import load_settings
+    s = load_settings()
+    spec, _ = load_spec(s.root / "config" / "generator.toml")
+    persons, *rest = load_reference(s.paths["reference"])
+    assert auto.part_persons(persons, spec.seed, 0) is persons  # a file of one part is as it was
+    names = []
+    for i in range(2):  # two parts of 3,000 of 60,000 personas: about 150 drawn by both, were they the same personas
+        g = generate(replace(spec, entities=3000, seed=spec.seed + i, company_share=0.0), auto.part_persons(persons, spec.seed, i), *rest)
+        w = g.clean.merge(g.truth, on="CONT_ID").dropna(subset=["LAST_NAME_KANJI", "GIVEN_NAME_KANJI"]).drop_duplicates("ENTITY_ID")
+        names.append(set(w["LAST_NAME_KANJI"] + w["GIVEN_NAME_KANJI"]))
+    assert len(names[0] & names[1]) < 20  # chance namesakes only
+
+
 def test_generated_records_go_into_a_workspace_as_a_file_does_and_the_same_twice_copies_nothing(say, tmp_path):
     from er import folder
     assert say("create", "workspace", "w", "--home", tmp_path)[0] == 0

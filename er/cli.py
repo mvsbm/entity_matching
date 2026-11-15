@@ -1241,8 +1241,9 @@ COMMANDS: tuple[Command, ...] = (
             "more records with typos, other notations, moves and missing values, as hard to match as --difficulty says "
             "([difficulty]); written in parts of 50,000 entities, each with its own seed, exactly N records, then loaded as "
             "load records loads a file. The same size and difficulty give the same records, so a second time copies nothing. The "
-            "workspace's mapping must read the generator's columns, as the project's does. Past 60,000 entities names repeat "
-            "more than in a real file, so name keys make more pairs. O(N) to generate (about 100 s a million records), "
+            "workspace's mapping must read the generator's columns, as the project's does. Each part after "
+            "the first pairs every surname with another persona's given name, so no person repeats; past 31,596 companies their "
+            "names repeat more than in a real file. O(N) to generate (about 100 s a million records), "
             "memory of 50,000 entities, then load records'.",
             (Param("records", "how many (default 10000)", metavar="N"),
              Param("difficulty", "easy, medium or hard (default medium)", "choice", ("easy", "medium", "hard")), WORKSPACE),
@@ -1368,8 +1369,8 @@ COMMANDS: tuple[Command, ...] = (
             "added to the workspace left out: the generated file holds none), its spill folder's size read every half second. Says the seconds "
             "of each step, the peak memory, the peak spill, the pairs, and the generated shape beside the file's; if the run "
             "stopped (memory, disk), why, as the real file would. Removes what it made; keeps rehearsal.json in the workspace. "
-            "Past 60,000 entities names repeat more than in a real file, so name keys make more pairs: check records counts "
-            "the file's own. O(N) to generate, O(a full run) to measure.",
+            "Past 31,596 companies the generator's company names repeat more than in a real file, so name keys make more pairs: "
+            "check records counts the file's own. O(N) to generate, O(a full run) to measure.",
             (replace(INPUT, help=INPUT.help + ", its shape read, not copied in; without it, the file loaded into the workspace last", optional=True),
              WORKSPACE, PIPELINE, COMPUTE),
             {"ok": "whether the run went through", "records": "records generated", "generate_seconds": "seconds to generate and describe them",

@@ -333,7 +333,9 @@ class Run:
             if before := self.placeholders.get(f, []):
                 blank(before, f)
             who = f"coalesce({q(next((x for x in self.pipeline.fields.identifying if x in cols and x != f), self.uid))}, {q(self.uid)})"
-            held = self.con.execute(f"SELECT {q(f)}, count(*) FROM {table} WHERE {q(f)} IS NOT NULL GROUP BY 1 HAVING count(*) >= {m}"
+            filled, distinct = self.con.execute(f"SELECT count({q(f)}), count(DISTINCT {q(f)}) FROM {table}").fetchall()[0]
+            at = max(m, math.ceil(SPREAD * filled / max(distinct, 1)))  # far past the field's own records per value: a 4-digit phone's values are no crowd however many records hold each
+            held = self.con.execute(f"SELECT {q(f)}, count(*) FROM {table} WHERE {q(f)} IS NOT NULL GROUP BY 1 HAVING count(*) >= {at}"
                                     f"{'' if f in ids else f' AND count(DISTINCT {who}) >= {crowd}'} ORDER BY count(*) DESC, 1").fetchall()
             if f not in ids and held:  # a compared field: a crowd whose pairs outnumber all the others' (two placeholders never hide each other)
                 every = self.con.execute(f"SELECT coalesce(sum(c * (c - 1) // 2), 0) FROM (SELECT count(*) AS c FROM {table} WHERE {q(f)} IS NOT NULL GROUP BY {q(f)})").fetchall()[0][0]
@@ -345,7 +347,7 @@ class Run:
                 continue
             blank(new, f)
             n = self.con.execute(f"SELECT count(*) FROM {table} WHERE {q(f)} IS NULL").fetchall()[0][0]
-            self.notes.append(f"{f}: {len(new):,} value{'s' if len(new) > 1 else ''} held by {m}+ records read as missing, a placeholder and not "
+            self.notes.append(f"{f}: {len(new):,} value{'s' if len(new) > 1 else ''} held by {at:,}+ records read as missing, a placeholder and not "
                               f"{'one entity' if f in ids else 'evidence'}'s ({n:,} records without one)" + ("; pairs the run joined on it before stay until it runs again (nayose rerun records)" if also else ""))
             self.examples.append(f"{f} = {new[0]}: a placeholder, read as missing")
             self.placeholders[f] = [*before, *new]
@@ -1171,6 +1173,7 @@ def stored_keys(ws: Path, p: Pipeline, s: Settings) -> Pipeline:  # the keys the
 
 BLOCKS = "blocks.json"  # in state/: each key's oversized blocks a full run listed, by value
 CROWD = 64        # the fewest customers a compared field's placeholder is held by, however small the budget's oversized blocks
+SPREAD = 10       # a placeholder is held by this many times the field's records per value, or more
 PLACEHOLDERS = 2  # how placeholders are told (Run._placeholders): a run that told them otherwise takes no increment until it runs again
 
 
