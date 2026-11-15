@@ -470,7 +470,8 @@ def train_fs(model: FSModel, df: pd.DataFrame, db: DuckDBAPI, uid: str, labels: 
         u = {c.name: {lv: u[c.name].get(lv) or u_bound(model, c, t, db) for lv in labels_of[c.name]} for c in model.comparisons}
     fields = lambda rule: " + ".join(k.column for k in rule)
     prior = [r for r in model.prior_rules if rule_pairs(t, r)]
-    em = [r for r in model.em_rules if rule_pairs(t, r)] if model.m_method == "em" else []
+    em_pairs = {r: n for r in model.em_rules if (n := rule_pairs(t, r))} if model.m_method == "em" else {}  # each EM session's pairs in the sample
+    em = list(em_pairs)
     if not prior:
         raise InputError(f"no two records of the {len(t):,} the fit samples agree on any near-certain rule "
                          f"({'; '.join(map(fields, model.prior_rules))}), so the chance that two records match can't be estimated",
@@ -516,7 +517,8 @@ def train_fs(model: FSModel, df: pd.DataFrame, db: DuckDBAPI, uid: str, labels: 
     tf = {c.tf.name: (t[c.tf.name].value_counts() / t[c.tf.name].notna().sum()).to_dict()  # Splink's own formula
           for c in model.comparisons if c.tf and any(lv.tf for lv in c.levels)}
     skipped = [fields(r) for r in (*model.prior_rules, *(model.em_rules if model.m_method == "em" else ())) if r not in (*prior, *em)]
-    return {**model_json, "er": dict(fit_rows=len(t), tf=tf, filled=dict(u=filled_u, m=filled_m), skipped=skipped, adjusted=adjusted)}
+    return {**model_json, "er": dict(fit_rows=len(t), tf=tf, filled=dict(u=filled_u, m=filled_m), skipped=skipped, adjusted=adjusted,
+                                   em_pairs={fields(r): n for r, n in em_pairs.items()})}
 
 
 def compared_exactly(model: FSModel) -> list[str]:  # the fields a comparison's first level tests for equality alone: an agreement on them is that level's
