@@ -833,6 +833,40 @@ def test_a_customer_id_held_by_many_records_is_a_placeholder_every_step_and_the_
     assert new["customer_id"].isna().all() and ("birth_date" not in new or new["birth_date"].isna().all())
 
 
+def test_the_diagnosis_names_what_limits_the_run_the_most_pairs_first_each_with_its_fix(tmp_path, population):
+    from er.match import _ranked, review_floor, search_floor
+    from er.report import SHOWN, diagnosis, qa
+    from er.run import Run
+    s, p, g = population
+    g.df.to_parquet(tmp_path / "in.parquet", index=False)
+    run = Run(p, s).full(tmp_path / "in.parquet", tmp_path / "run")
+    tables, lo, m = qa(run, [f for f in s.columns if f not in ("id", "entity")]), review_floor(run.pipeline), run.scoring["er"]
+    said = lambda: diagnosis(run, tables, lo)[1:-1]
+    top = {c["output_column_name"]: max(g for g, _ in _ranked(c)) for c in run.scoring["comparisons"]}
+    assert said() and len(said()) <= SHOWN
+    tables["fill"].loc[tables["fill"]["field"] == "birth_date", "filled"] = 0.1  # a compared field mostly empty, and a column like it
+    run.unmapped = pd.DataFrame([dict(column="BORN", filled=0.9, distinct=0.5, looks_like="birth_date", share=0.8)])
+    run.con.execute(f"UPDATE scores SET gamma_birth = -1, match_weight = {lo - 1} WHERE rowid IN (SELECT rowid FROM scores LIMIT 5)")
+    assert any("birth_date 10% filled" in x and 'nayose set feature "Birth date/Birth date=' in x and ",BORN\" --workspace" in x for x in said())
+    m["em_given"] = [dict(session="phone", pairs=100, given_share=0.1)]  # EM taught by households
+    assert any(x.startswith("  EM learned households from phone (10%") and "nayose choose em" in x for x in said())
+    near = lambda: next((int(x.split()[0].replace(",", "")) for x in said() if "agree exactly on a name and another field" in x and "the model expects" in x), 0)
+    was = near()  # near misses: three pairs from the review floor moved below it, agreeing on the name and the phone
+    run.con.execute(f"UPDATE scores SET gamma_name = {top['name']}, gamma_phone = {top['phone']}, match_weight = {lo - 1} WHERE rowid IN (SELECT rowid FROM scores WHERE match_weight >= {lo} LIMIT 3)")
+    assert near() == was + 3
+    m["filled"]["m"].append(["phone", "exact"])  # a level that learned nothing, holding pairs
+    assert any("levels that learned nothing hold pairs" in x and "phone exact" in x for x in said())
+    gap = next(x for x in run.steps if x["step"] == "gap")
+    gap["thresholds"] = [dict(bits=lo, pairs=500, missed=50, missed_lo=40, missed_hi=60)]
+    run.gated = pd.DataFrame([dict(generator="phone", value="x", records=900, pairs=404_550, sampled=2000, best=search_floor(run.pipeline) - 1, hits=0, decision="skipped: over capacity")])
+    assert any("no key lists about 50 pairs" in x and "(40–60)" in x for x in said()) and any("1 oversized blocks skipped (404,550 pairs)" in x for x in said())
+    m["em_pairs"] = {"phone": 40}  # a thin session
+    assert any("EM learned from few pairs: phone 40" in x for x in said()) and len(said()) <= SHOWN
+    stakes = said()
+    assert stakes[0].startswith("  1 oversized blocks skipped")  # the most pairs first
+    assert stakes[-1].startswith("  EM learned from few pairs")  # advice, no pairs: last
+
+
 def test_the_run_report_holds_no_record_value(tmp_path, population):
     import re
     from er.report import qa, report_text

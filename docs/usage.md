@@ -240,7 +240,7 @@ None of these runs anything: they read the workspace's files.
 | `proposed/` | the model's pair below the trust line | both IDs, `match_weight`, `match_probability`, `sources`; empty with no trust line | the pairs waiting for people, or for the line to come down |
 | `scored/` | pair at 0 points or more, and every rule's pair | both IDs, `match_weight`, `match_probability`, `sources` (none: a rule alone found it), `rule`, `named`, `keep`, and `gamma_<comparison>`, the level each comparison reached | list, filter and review any pair without a run; merge by your own conditions ([section 6](#merge-by-your-own-conditions)). A workspace whose run wrote none gets it once, on first use, from the pairs that run stored, scored again |
 | `qa.md` | | the summary (with `missed`: the matches no pair key lists, sampled within `[probe]` groups, as estimated by the probe); each field's fill rate (flagged under 5%), the share that looks right and the share of its most common value; what was turned off; each step's Big-O, time and memory; pairs by weight; cluster sizes; the 10 largest clusters; match patterns no key guarantees; the review queue; records and customers by kind; clusters holding both a sure person and a sure company; the oversized blocks and what was decided for each | check the run without labels |
-| `report.txt` | | the run on one page of plain text, with no record's value in it: what ran (the code, the tracked files changed in this copy, the pipeline, the machine's limits), the summary, the fields, the columns no field reads (filled, distinct, the field each looks most like), scores and links by weight with the false links expected, the commonest patterns of levels below and from the review floor, cluster sizes, each step's time and memory (the fit's own sample and the u measured on the file apart; the gate's samples), where each step's time went in the string comparisons (per function: the wall seconds while it ran, the threads that ran it at once, the values it compared, per value), the pairs each EM session learned from (with fit em `choose`, each session judged: its pairs, the share of its matches agreeing on the given name, kept or dropped and why) and the model's m, u and bits per level, the costliest blocks (a full run), the match patterns no key pairs | send it to whoever helps with the run ([section 7](#7--when-something-is-wrong)) |
+| `report.txt` | | the run on one page of plain text, with no record's value in it: what ran (the code, the tracked files changed in this copy, the pipeline, the machine's limits), DIAGNOSIS (what limits what the run finds, below), the summary, the fields, the columns no field reads (filled, distinct, the field each looks most like), scores and links by weight with the false links expected, the commonest patterns of levels below and from the review floor, cluster sizes, each step's time and memory (the fit's own sample and the u measured on the file apart; the gate's samples), where each step's time went in the string comparisons (per function: the wall seconds while it ran, the threads that ran it at once, the values it compared, per value), the pairs each EM session learned from (with fit em `choose`, each session judged: its pairs, the share of its matches agreeing on the given name, kept or dropped and why) and the model's m, u and bits per level, the costliest blocks (a full run), the match patterns no key pairs | send it to whoever helps with the run ([section 7](#7--when-something-is-wrong)) |
 | `review.parquet` | pair for people | `why` (`decide` or `audit`); an empty `decision`; both records' compared fields; per comparison, the level reached and its bits; `accepted`, whether the run joined the pair; `household`, whether it may be two people of one household ([section 6](#6--review-and-decide)) | decide the next range below the trust line and audit above it, or, with no line, decide the pairs just below the threshold and those above it with no name compared, and audit those just above ([section 6](#6--review-and-decide)) |
 | `kind_review.parquet` | record for people | `why` (`decide` or `measure`), `reason` in words, `engine_says`, `name_says`, `flag` and `birth_date` if the file has them, the name; `engine` and `engine_p` (the engine's kind and its probability of a company), `name_p`, `drawn`; an empty `kind` | answer 1 person, 2 company or 0 can't tell ([section 6](#6--review-and-decide)) |
 | `decisions/` | decided pair | both IDs and `decision`; `why` (`decide`, `audit`, or `split` from `split entity`) when there is one; `round`, the round it was decided in; one part per file people gave back | what people decided; a full run applies it again |
@@ -421,6 +421,22 @@ Wrong audit pairs are also the evidence for changing the matching. In `qa.md`, a
 `review.parquet` holds records. Keep it wherever the data itself is kept.
 
 ## 7 · When something is wrong
+
+`report.txt` starts with DIAGNOSIS: what limits what the run finds, at most eight lines, the most pairs at stake first,
+each with a number and the command that fixes it where there is one (`--workspace …`: the run's workspace). It names:
+
+- a compared field filled in under 30% of the records (a person's name and a company's aside: each kind fills one), the
+  pairs below the review floor its comparison can't compare, and a column no field reads whose values look like the
+  field, with the `nayose set feature` that adds it as a fallback;
+- EM sessions of the run's own fit whose matches mostly share no given name: they learned households (`nayose choose em`);
+- pairs below the review floor that agree exactly on a name and another field (the birth date, the phone, the
+  address, …), by pattern, and the true pairs the model itself expects among all the pairs below the review floor;
+- levels that learned nothing (m = u, 0 bits) yet hold pairs (`nayose try sample`);
+- pairs at the review floor no key lists (the gap's estimate and its interval), and oversized blocks skipped whose best
+  sampled pair came within 2 bits of the search floor (`nayose describe method`);
+- EM sessions that learned from under 200 pairs (more records: `nayose choose em … --records`, or `nayose try sample`).
+
+What is fine is left out.
 
 What the run handles by itself, and reports in its summary:
 

@@ -17,13 +17,14 @@ import duckdb
 import numpy as np
 import pandas as pd
 
-from er.config import COPIES, DeletionKeys, InputError, Key, KeyBlocker, Pipeline, SortedNeighbourhood, TfidfNeighbours, bits, lit, q, sources_text
+from er.config import COPIES, GIVEN, DeletionKeys, InputError, Key, KeyBlocker, Pipeline, SortedNeighbourhood, TfidfNeighbours, bits, lit, q, sources_text
 from er.folder import PENDING, history, latest_decisions, method, rounds, runs
 from er.io import code_version, read_parquet, table_after
 from er.kind import COMPANY, PERSON, SAYS, UNSURE, sheet_parts
-from er.match import ELSE, levels, named_sql, parameters, pattern_coverage, review_floor, scaled_prior
+from er.match import ELSE, GIVEN_SHARE, _ranked, levels, named_sql, parameters, pattern_coverage, review_floor, scaled_prior, search_floor
 from er.source import filled, fit
 from er.review_state import _trust_links, applied, read
+from er.settings import DEFAULT_FEATURES
 
 if TYPE_CHECKING:
     from er.run import Run
@@ -189,11 +190,105 @@ def qa(run: "Run", fields: list[str] | None = None, review: int = 50, previous: 
                 review_sheet=sheet)
 
 
+SPARSE = 0.3  # a compared field filled in fewer records than this: DIAGNOSIS names it
+THIN = 200    # a kept EM session that learned from fewer pairs: DIAGNOSIS asks for more records
+NEAR = 2.0    # bits: a skipped oversized block whose best sampled pair came this close to the search floor
+SHOWN = 8     # DIAGNOSIS's lines at most
+WS = "--workspace …"
+
+
+def feature_path(field: str) -> str | None:  # where set feature puts a field's columns
+    if field in ("person_name", "given_name"):
+        return "Name/Full name" + ("/Given name" if field == "given_name" else "")
+    return next((f"{g}/{f['name']}" for g, feats in DEFAULT_FEATURES for f in feats if f.get("field") == field), None)
+
+
+def diagnosis(run: "Run", tables: dict[str, pd.DataFrame], lo: float) -> list[str]:
+    """What limits what the run finds, the most pairs at stake first, at most SHOWN lines, each what, a number and the
+    fix (a command where there is one); what is fine is left out: EM sessions of the run's own fit that learned
+    households, compared fields under SPARSE filled (with a column no field reads that looks like one), pairs below the
+    review floor that agree exactly on a name and another field, levels that learned nothing yet hold pairs, what the
+    search leaves (the gap at the review floor, oversized blocks skipped that came within NEAR bits), and, last, EM
+    sessions of under THIN pairs. No record's value:
+    field, column and level names, counts and shares. O(C) over the scores."""
+    con, model, m, fs = run.con, run.scoring, run.scoring["er"], run.pipeline.fs
+    gammas = {c for c, *_ in con.execute("DESCRIBE scores").fetchall() if c.startswith("gamma_")}
+    below = f"match_weight >= 0 AND match_weight < {lo}"
+    count = lambda where: con.execute(f"SELECT count(*) FROM scores WHERE {where}").fetchall()[0][0]
+    n_below, expected = con.execute(f"SELECT count(*), coalesce(sum(match_probability), 0) FROM scores WHERE {below}").fetchall()[0]
+    gamma = {c["output_column_name"]: {lv["label_for_charts"]: g for g, lv in _ranked(c)} for c in model["comparisons"]}
+    out: list[tuple[float, str]] = []
+
+    if households := [x for x in m.get("em_given", []) if x["given_share"] is not None and x["given_share"] < GIVEN_SHARE]:  # EM taught by households: first of equals
+        out.append((n_below, "EM learned households from " + ", ".join(f"{x['session']} ({x['given_share']:.0%} of its matches agree on the given name)" for x in households)
+                    + f": it scores the {n_below:,} pairs below review → nayose choose em {WS}"))
+
+    fill = tables["fill"].set_index("field")["filled"]  # compared fields mostly empty (one comparison a line), and a column that looks like one
+    either = {f for group in run.pipeline.fields.one_of for f in group}  # a person's name or a company's: each kind fills one
+    cols = getattr(run, "unmapped", None)
+    for c in (c for c in fs.model.comparisons if f"gamma_{c.name}" in gammas):
+        sparse = [f for f in dict.fromkeys([*(col for lv in c.levels for col, _ in lv.any_of), *c.null_if_missing]) if f in fill and fill[f] < SPARSE and f not in either]
+        if not sparse:
+            continue
+        if not (stake := count(f"{below} AND {q('gamma_' + c.name)} = -1")):
+            continue
+        line = f"{', '.join(f'{f} {fill[f]:.0%}' for f in sparse)} filled: {stake:,} pairs below review compare no {c.name}"
+        for f in sparse:
+            like = cols[(cols["looks_like"] == f) & (cols["share"] >= 0.5)].sort_values("filled", ascending=False) if cols is not None and len(cols) else []
+            if len(like) and (path := feature_path(f)):
+                col, now = like.iloc[0]["column"], ",".join("+".join(alt) for alt in run.present.get(f, ()))
+                line += f"; column {col} looks like {f} ({like.iloc[0]['filled']:.0%} filled) → nayose set feature \"{path}={now + ',' if now else ''}{col}\" {WS}"
+                break
+        out.append((stake, line))
+
+    agree, named = [], ["given name"]  # near misses: a name and another field agree exactly, below the review floor (a phone and an address alone: a household's)
+    for c in fs.model.comparisons:
+        named += [c.name] if {col for lv in c.levels for col, _ in lv.any_of} & either else []
+        if f"gamma_{c.name}" in gammas:
+            exact = [gamma[c.name][lv.label] for lv in c.levels if all(x.function == "exact" for _, x in lv.any_of) and GIVEN not in {col for col, _ in lv.any_of}]
+            given = [gamma[c.name][lv.label] for lv in c.levels if GIVEN in {col for col, _ in lv.any_of}]
+            agree += [f"CASE WHEN {q('gamma_' + c.name)} IN ({', '.join(map(str, gs))}) THEN '{what}' END" for what, gs in ((c.name, exact), ("given name", given)) if gs]
+    if len(agree) > 1 and n_below:
+        got = con.execute(f"""SELECT p, count(*) AS n FROM (SELECT concat_ws(' + ', {', '.join(agree)}) AS p FROM scores WHERE {below})
+            WHERE p LIKE '% + %' AND list_has_any(string_split(p, ' + '), {named!r}) GROUP BY 1 ORDER BY n DESC, p""").fetchall()
+        if total := sum(n for _, n in got):
+            out.append((total, f"{total:,} pairs below review agree exactly on a name and another field ({', '.join(f'{p} {n:,}' for p, n in got[:3])}); "
+                               f"the model expects {expected:,.0f} true pairs among the {n_below:,} below review → nayose list patterns {WS}"))
+
+    held, empty = [], 0  # levels that learned nothing (m = u: 0 bits)
+    for c, lv in (tuple(x) for x in m.get("filled", {}).get("m", [])):
+        if lv != ELSE and f"gamma_{c}" in gammas and lv in gamma.get(c, {}):
+            if n := count(f"{q('gamma_' + c)} = {gamma[c][lv]}"):
+                held.append((n, f"{c} {lv} {n:,}"))
+            else:
+                empty += 1
+    if held:
+        out.append((sum(n for n, _ in held), "levels that learned nothing hold pairs, at 0 bits: " + ", ".join(x for _, x in sorted(held, reverse=True))
+                    + (f" ({empty} more hold none)" if empty else "") + f" → nayose try sample {WS}"))
+
+    g = next((x for x in run.steps if x["step"] == "gap"), None)  # what the search leaves
+    if g and (at := next((x for x in g["thresholds"] if x["bits"] >= lo), None)) and at["missed"]:
+        out.append((at["missed"], f"no key lists about {at['missed']:,} pairs at {at['bits']:g}+ ({at['missed_lo']:,}–{at['missed_hi']:,}) → nayose describe method {WS}"))
+    gated, floor = getattr(run, "gated", pd.DataFrame()), search_floor(run.pipeline)
+    if len(gated) and "best" in gated:
+        near = gated[gated["decision"].str.startswith("skipped") & (gated["best"] >= floor - NEAR)]
+        if len(near):
+            out.append((int(near["pairs"].sum()), f"{len(near):,} oversized blocks skipped ({int(near['pairs'].sum()):,} pairs) held a sampled pair within {NEAR:g} bits "
+                                                   f"of {floor:g} → nayose describe method {WS}"))
+
+    kept = [(x["session"], x["pairs"]) for x in m["em_choice"] if x["kept"]] if m.get("em_choice") else list(m.get("em_pairs", {}).items())  # thin sessions
+    if thin := [(x, n) for x, n in kept if n < THIN]:
+        fix = f"nayose choose em {WS} --records {2 * m['fit_rows']}" if m.get("em_choice") else f"nayose try sample {WS}"
+        out.append((0, f"EM learned from few pairs: {', '.join(f'{x} {n:,}' for x, n in thin)} → {fix}"))
+    lines = [x for _, x in sorted(out, key=lambda x: -x[0])[:SHOWN]] or ["nothing found"]
+    return ["DIAGNOSIS  (what limits what the run finds, the most pairs at stake first)", *(f"  {x}" for x in lines), ""]
+
+
 def report_text(run: "Run", tables: dict[str, pd.DataFrame], pipeline: Path) -> str:
     """The run on a page of plain text that holds no record's value (no ID, name, phone or address: the notes that
     quote one are run.examples, in qa.md only), so it can leave the machine that holds the records. `tables` is qa()'s.
-    It shows what ran (the code, the tracked files changed in this copy, the pipeline, the machine's limits), the
-    summary, each field's fill and shape, the columns no field reads, scores and accepted links by weight with the false links the
+    It shows what ran (the code, the tracked files changed in this copy, the pipeline, the machine's limits), what limits
+    what the run finds (diagnosis), the summary, each field's fill and shape, the columns no field reads, scores and accepted links by weight with the false links the
     model expects, each score band's commonest patterns, cluster sizes, each step's time and memory, its time in each string comparison, the model (the prior, the pairs each EM session learned from, and m, u and bits per level), the costliest
     blocks, and the patterns no key pairs. O(C + E) over scores and matches."""
     con, fs = run.con, run.pipeline.fs
@@ -219,6 +314,7 @@ def report_text(run: "Run", tables: dict[str, pd.DataFrame], pipeline: Path) -> 
            f"{threads} threads · memory limit {memory} · spill room {run.spill_room() / 1e9:,.0f} GB · "
            f"took {sum(x['seconds'] for x in run.steps):,.1f} s · peak {max(x['peak_memory_gb'] for x in run.steps):.2f} GB", ""]
 
+    out += diagnosis(run, tables, lo)
     summary = tables["summary"][tables["summary"]["what"] != "example"]
     out += ["SUMMARY", *(f"  {what:<12} {value}" for what, value in summary.itertuples(index=False)), ""]
 
