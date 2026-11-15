@@ -82,10 +82,13 @@ def _status_sql(con: duckdb.DuckDBPyConnection, out: Path, uid: str, index: str)
 
 
 def list_scored(con: duckdb.DuckDBPyConnection, db: object, out: Path, s: Settings, p: Pipeline, frm: float | None = None, to: float | None = None,
-                source: str | None = None, status: str | None = None, record: str | None = None, page: int = 1, count: int = 100) -> dict:
+                source: str | None = None, status: str | None = None, record: str | None = None, page: int = 1, count: int = 100,
+                each: bool = False) -> dict:
     """One page of the run's pairs at 0 points or more, best first: both IDs, points, how each was found, its status,
     each comparison's level and points, and both records' compared fields. `total` counts every pair the filters keep,
-    so the pages are honest. O(E log E) to order E pairs + O(page·F) for the fields."""
+    so the pages are honest. With `each`, one pair of each pattern (each comparison's level) the filters keep, drawn by
+    a hash of its IDs, the patterns of most pairs first, each with `like`: the pairs it stands for. O(E log E) to order
+    E pairs + O(page·F) for the fields."""
     uid = s.data.unique_id
     l, r = q(f"{uid}_l"), q(f"{uid}_r")
     rows = _status_sql(con, out, uid, pair_index(con, db, out, s, p))
@@ -94,10 +97,15 @@ def list_scored(con: duckdb.DuckDBPyConnection, db: object, out: Path, s: Settin
     # open: waiting, or decided and not applied yet, so a queue holds still while people decide it
     where += ["(status = 'waiting' OR NOT coalesce(applied, TRUE))" if status == "open" else f"status = {lit(status)}"] if status else []
     where += [f"({l} = {lit(record)} OR {r} = {lit(record)})"] if record else []
-    sql = f"SELECT * FROM ({rows}) WHERE {' AND '.join(where)}"
+    sql, order = f"SELECT * FROM ({rows}) WHERE {' AND '.join(where)}", f"match_weight DESC, {l}, {r}"
+    if each:
+        pattern = ", ".join(q(c) for c, *_ in con.execute(f"DESCRIBE {sql}").fetchall() if c.startswith("gamma_")) or "TRUE"
+        sql = (f"SELECT * FROM (SELECT *, count(*) OVER (PARTITION BY {pattern}) AS er_like FROM ({sql})) "
+               f"QUALIFY row_number() OVER (PARTITION BY {pattern} ORDER BY hash({l}, {r}), {l}, {r}) = 1")
+        order = f"er_like DESC, {order}"
     total, typed = con.execute(f"SELECT count(*), count(*) FILTER (said IS NOT NULL AND NOT applied) FROM ({sql})").fetchall()[0]
     page = max(1, int(page))
-    frame = con.execute(f"SELECT * FROM ({sql}) ORDER BY match_weight DESC, {l}, {r} LIMIT {int(count)} OFFSET {(page - 1) * int(count)}").df()
+    frame = con.execute(f"SELECT * FROM ({sql}) ORDER BY {order} LIMIT {int(count)} OFFSET {(page - 1) * int(count)}").df()
     model, uidl, uidr = run_model(out), f"{uid}_l", f"{uid}_r"
     lv = levels(model)
     pairs = []
@@ -105,7 +113,8 @@ def list_scored(con: duckdb.DuckDBPyConnection, db: object, out: Path, s: Settin
         gammas = {c: int(x[f"gamma_{c}"]) for c in lv if f"gamma_{c}" in x and not pd.isna(x[f"gamma_{c}"])}
         compared = {c: dict(level=lv[c][g][0], points=round(lv[c][g][1], 2)) for c, g in gammas.items() if g in lv[c]}
         pairs.append(dict(first=x[uidl], second=x[uidr], points=round(float(x["match_weight"]), 2), sources=x["sources"], rule=x["rule"],
-                          status=x["status"], said=x["said"], applied=x["applied"] if not pd.isna(x["applied"]) else None, compared=compared))
+                          status=x["status"], said=x["said"], applied=x["applied"] if not pd.isna(x["applied"]) else None, compared=compared,
+                          **({"like": int(x["er_like"])} if each else {})))
     return dict(total=int(total), typed=int(typed), page=page, count=int(count), pairs=_with_fields(con, out, s, p, pairs))
 
 

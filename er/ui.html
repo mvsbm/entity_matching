@@ -661,7 +661,7 @@ body.filedrag [data-drop].dropping::after { border-style: solid; background: var
             {"command": "describe matching", "args": {"workspace": "@workspace"}, "reads": ["nodes"]}]},
   {"id": "pairs", "title": "Review", "icon": "pairs", "what": "The pairs waiting for you, best first: both full rows side by side, then same or different.",
    "strip": ["score", "accept", "group"],
-   "uses": [{"command": "list scored", "args": {"workspace": "@workspace", "status": "@status", "from": "@from", "to": "@to", "source": "@source", "record": "@record", "page": "@page", "count": "@count"}, "reads": ["total", "typed", "page", "count", "pairs"]},
+   "uses": [{"command": "list scored", "args": {"workspace": "@workspace", "status": "@status", "from": "@from", "to": "@to", "source": "@source", "record": "@record", "page": "@page", "count": "@count", "each": "@each"}, "reads": ["total", "typed", "page", "count", "pairs"]},
             {"command": "show records", "args": {"ids": "@ids", "workspace": "@workspace"}, "reads": ["columns", "records"]},
             {"command": "show details", "args": {"ids": "@ids", "workspace": "@workspace"}, "reads": ["file", "columns", "records"]},
             {"command": "describe results", "args": {"workspace": "@workspace"}, "reads": ["records", "entities", "joined", "sizes", "scores", "candidates", "review_from", "waiting", "pairs", "merged_by", "merging", "missed", "too_big", "kinds"]},
@@ -2192,6 +2192,7 @@ async function pairsPage(el, arg = {}) {  // Review: the pairs waiting for a per
   el.innerHTML = head("pairs", `<button class="btn" id="merge">${icon("wand")}Auto-merge</button><button class="btn" id="refresh">${icon("refresh")}Refresh</button>`, reviewTabs("pairs")) +
     `<div id="note">${arg.note || ""}</div><div class="split item-first"><div id="right" class="panel-sticky"></div>${GRIP}
       <div class="queue"><div class="card progress"><div class="from"><label>Review from <input type="number" step="0.5" id="from" aria-label="Review from these points"> points</label>
+        <label><input type="checkbox" id="each"> One of each pattern below</label>
         <label class="find">${icon("search")}<input type="text" id="record" placeholder="A record ID" aria-label="Pairs of a record ID"></label></div>
         <div id="done-line" class="answer"></div><div class="actions" style="margin-top:10px"><button class="btn outlined" id="apply">${icon("check")}Apply decisions <span class="badge" id="written">0</span></button></div></div>
       <div id="left"></div></div></div>`;
@@ -2213,16 +2214,20 @@ async function pairsPage(el, arg = {}) {  // Review: the pairs waiting for a per
   if (arg.merge) mergeDialog("pairs", merged);
   let from = resultsNow && resultsNow.event !== "error" ? resultsNow.review_from : 6;
   try { const kept = localStorage.getItem("nayose.reviewFrom"); if (kept !== null && Number.isFinite(Number(kept))) from = Number(kept); } catch {}
-  $("from").value = from; $("record").value = arg.record || "";
+  let each = false;  // below the floor, one pair of each pattern: the kinds of pair nobody is asked about
+  try { each = localStorage.getItem("nayose.reviewEach") === "1"; } catch {}
+  $("from").value = from; $("each").checked = each; $("record").value = arg.record || "";
   let page = 1, rows = [], total = 0, left = 0, i = 0, pending = false, written = w.pairs.written_in || 0;  // left: total less what this page decided since
   const count = 100;
   let loads = 0;
   const tally = () => { $("written").textContent = String(written); $("apply").disabled = !written;
-    $("done-line").innerHTML = `<b>${plural(left, "pair")}</b> waiting from ${fmt(from)} points${written ? ` · ${fmt(written)} decided, to apply` : ""}`;
-    if (steps.steps && steps.steps.pairs) { steps.steps.pairs = {state: left || written ? "attention" : "done", line: left ? `${fmt(left)} waiting` : written ? `${fmt(written)} decided, to apply` : "all decided"}; rail(); } };
+    $("done-line").innerHTML = (each ? `<b>${plural(left, "pattern")}</b> below ${fmt(from)} points, one pair each` : `<b>${plural(left, "pair")}</b> waiting from ${fmt(from)} points`)
+      + (written ? ` · ${fmt(written)} decided, to apply` : "");
+    if (!each && steps.steps && steps.steps.pairs) { steps.steps.pairs = {state: left || written ? "attention" : "done", line: left ? `${fmt(left)} waiting` : written ? `${fmt(written)} decided, to apply` : "all decided"}; rail(); } };
   const load = async () => {
     if (rows.length) $("left").innerHTML = loading();  // another page of the queue; the first one waits under the pair's
-    const n = ++loads, x = await run("pairs", "list scored", {status: "open", from: String(from), page: String(page), count: String(count), record: $("record").value.trim()});
+    const range = each ? {to: String(from), each: true} : {from: String(from)};
+    const n = ++loads, x = await run("pairs", "list scored", {status: "open", ...range, page: String(page), count: String(count), record: $("record").value.trim()});
     if (n !== loads) return;  // the last filter's answer only: a pair is answered as it is shown
     if (x.event === "error") { $("left").innerHTML = banner(x); return; }
     rows = x.pairs; total = x.total; left = x.total - x.typed; i = Math.max(0, rows.findIndex((p) => !p.said)); tally(); draw(); show();
@@ -2230,10 +2235,10 @@ async function pairsPage(el, arg = {}) {  // Review: the pairs waiting for a per
   const draw = () => pairTable($("left"), rows, total, page, count, {compact: true, selected: i, onPick: (k) => { i = k; draw(); show(); }, onPage: (n) => { page = n; load(); }});
   const show = () => {
     const p = rows[i];
-    if (!p) { $("right").innerHTML = `<div class="card empty">${icon("empty")}<p class="muted">${total ? "Pick a pair" : `No pair waits from ${fmt(from)} points`}</p></div>`; where(); return; }
+    if (!p) { $("right").innerHTML = `<div class="card empty">${icon("empty")}<p class="muted">${total ? "Pick a pair" : each ? `No pair waits below ${fmt(from)} points` : `No pair waits from ${fmt(from)} points`}</p></div>`; where(); return; }
     $("right").innerHTML = `<div class="card one">${scope("pairs", `Pair ${fmt((page - 1) * count + i + 1)} of ${fmt(total)}`)}
       <h2 class="question">Same customer? ${p.said ? statusChip(p.status) : ""}</h2>
-      <p class="why">${p.points.toFixed(1)} points (${esc(odds(p.points))})${foundBy(p) ? ` · found by ${esc(foundBy(p))}` : ""}${p.household ? ` ${HOUSEHOLD}` : ""}</p>
+      <p class="why">${p.points.toFixed(1)} points (${esc(odds(p.points))})${foundBy(p) ? ` · found by ${esc(foundBy(p))}` : ""}${p.like ? ` · one of ${plural(p.like, "pair")} like it` : ""}${p.household ? ` ${HOUSEHOLD}` : ""}</p>
       <div class="actions"><button class="btn filled" data-a="match">Same</button><button class="btn outlined" data-a="no_match">Different</button>
         <button class="btn" data-skip>Skip</button>${keyHint([["M", "same"], ["N", "different"]])}</div>
       <p class="then">Same: one entity once you apply your decisions. Different: kept apart for good.</p><div id="said"></div>
@@ -2280,6 +2285,7 @@ async function pairsPage(el, arg = {}) {  // Review: the pairs waiting for a per
   };
   $("from").onchange = () => { const v = Number($("from").value); if ($("from").value.trim() === "" || !Number.isFinite(v)) { $("from").value = from; return; } from = v; try { localStorage.setItem("nayose.reviewFrom", String(v)); } catch {} page = 1; load(); };  // emptied: as it was, never 0
   $("record").onchange = () => { page = 1; load(); };
+  $("each").onchange = () => { each = $("each").checked; try { localStorage.setItem("nayose.reviewEach", each ? "1" : "0"); } catch {} page = 1; load(); };
   $("apply").onclick = () => {
     $("apply").disabled = true; $("apply").querySelector("svg").outerHTML = spinner();
     run("pairs", "apply decisions").then((e) => e.event === "error" ? ($("note").innerHTML = banner(e), $("apply").querySelector("svg").outerHTML = icon("check"), tally())

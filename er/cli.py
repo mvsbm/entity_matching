@@ -1032,7 +1032,7 @@ def list_scored_(a: dict, emit: "Emit") -> dict:
     con, db = connect(s.compute)
     num = lambda k: number(a[k], f"--{k}") if a.get(k) not in (None, "") else None
     r = list_scored(con, db, Path(a["workspace"]), s, p, num("from"), num("to"), a.get("source"), a.get("status"), a.get("record") or None,
-                    counted(a, "page", 1), counted(a, "count", 100))
+                    counted(a, "page", 1), counted(a, "count", 100), bool(a.get("each")))
     for x in r["pairs"]:
         x["found"] = found_words(p, x)
     return r
@@ -1735,14 +1735,16 @@ COMMANDS: tuple[Command, ...] = (
             "Every pair the run scored at 0 points or more and every rule pair, best first: both IDs, points, how each was "
             "found (keys, rule), its status (waiting, merged, same, different: people's), each comparison's level and "
             "points, and both records' compared fields; filtered by points, by how found, by status or by a record ID; "
-            "with the total the filters keep. O(E log E) + O(page·F).",
+            "with the total the filters keep. With --each, one pair of each pattern the filters keep, the patterns of most "
+            "pairs first: below the review floor, the kinds of pair nobody is asked about, one of each to see. O(E log E) + O(page·F).",
             (WORKSPACE, Param("from", "from these points", metavar="POINTS"), Param("to", "below these points", metavar="POINTS"),
              Param("source", "found by a rule, or by the model's keys", "choice", ("rules", "model")),
              Param("status", "one status only; open: waiting, or decided and not applied yet", "choice", ("waiting", "merged", "same", "different", "open")),
              Param("record", "pairs of this record ID", metavar="ID"), Param("page", "the page (default 1)", metavar="N"),
-             Param("count", "pairs a page (default 100)", metavar="N"), PIPELINE),
-            {"total": "pairs the filters keep", "typed": "of them, decided and not applied yet", "page": "this page", "count": "pairs a page",
-             "pairs": "each pair: first, second, points, sources, rule, status, said, applied, compared (comparison: level, points), fields (field: [first, second]), "
+             Param("count", "pairs a page (default 100)", metavar="N"),
+             Param("each", "one pair of each pattern (each comparison's level), the patterns of most pairs first", "flag"), PIPELINE),
+            {"total": "pairs the filters keep (with --each: patterns)", "typed": "of them, decided and not applied yet", "page": "this page", "count": "pairs a page",
+             "pairs": "each pair: first, second, points, sources, rule, status, said, applied, compared (comparison: level, points), like (with --each: the pairs of its pattern), fields (field: [first, second]), "
                       "household (maybe two people of one household)"},
             "nayose list scored --workspace workspaces/customers --status waiting --from 6", list_scored_, quick=True,
             show={"pairs": ("first", "second", "points", "status", "rule")}),
