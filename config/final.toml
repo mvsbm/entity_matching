@@ -166,7 +166,7 @@ grid = [0, 2, 4, 6, 8, 10, 12, 14, 16]
 max_fp = 0
 max_fp_rate_hi = 0.05
 margin_steps = 1
-search_floor = 0                  # bits: oversized blocks, the gap and idle keys are judged from here (or the review floor, if lower)
+search_floor = 0                  # bits: oversized blocks and the gap are judged from here (or the review floor, if lower); idle keys from the review floor
 
 [trust]
 steps = [20.0, 12.0, 8.0, 6.0, 0.0]

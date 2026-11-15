@@ -554,7 +554,7 @@ class Run:
                     self.plan = self.plan[~((self.plan["kind"] == "generator") & self.plan["name"].isin(dropped))]
                 w = self.found.weight
                 self.notes += [f"key {x} not run: what it agrees on weighs nothing, and other keys or rules list every pair it lists in the gap's sample at "
-                               f"{search_floor(self.pipeline):g}+ bits (of the file's, at most {round(3 * w):,} it alone lists, about 95%)" for x in dropped]
+                               f"{review_floor(self.pipeline):g}+ bits (of the file's, at most {round(3 * w):,} it alone lists, about 95%)" for x in dropped]
             drew = getattr(self, "found", None)  # a sample drawn, when a key's agreement weighs nothing: the gap step reads it
             self._done("keys", "O(f·N·b)", f"O({drew.facts['sampled_records']:,} records sampled)" if drew else "O(1)", t, learned=False, dropped=dropped,
                        **({k: v for k, v in drew.facts.items() if k != "atoms"} if drew else {}))  # the sample's facts where its time is

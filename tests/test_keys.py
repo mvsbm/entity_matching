@@ -208,3 +208,23 @@ def test_an_idle_key_stays_where_the_sample_is_too_small_to_say_and_one_dropped_
     batch.to_parquet(tmp_path / "batch.parquet", index=False)
     inc = Run(p, s).increment(tmp_path / "batch.parquet", tmp_path / "whole")
     assert [b.name for b in inc.pipeline.fs.blockers] == list(kept)  # an increment lists by the keys the full run ran
+
+
+def test_a_key_whose_pairs_of_its_own_all_score_below_review_is_not_run_whatever_the_search_floor(population, tmp_path, monkeypatch):
+    import numpy as np
+    from er.keys import idle
+    from er.match import review_floor, search_floor
+    from er.run import Run
+    s, p, g = population
+    p = replace(p, threshold=replace(p.threshold, grid=tuple(range(0, 100, 2))), fs=replace(p.fs, min_match_weight=100.0))  # a review floor (98) above every pair
+    assert search_floor(p) == 0 and review_floor(p) == 98
+    uid = s.data.unique_id
+    twins = g.df[g.df["CIF_ID"].notna() & g.df["FULL_NAME_KANA"].notna()].head(20).copy()
+    twins[uid] = twins[uid] + "_twin"
+    twins["CIF_ID"] = twins["CIF_ID"].str[:-1] + twins["CIF_ID"].str[-1].map(lambda c: "1" if c == "0" else "0")  # one digit off: the ID key's own pairs
+    twins[["PHONE_NUM_4", "PHONE_NUM"]] = None  # no rule joins them
+    pd.concat([g.df, twins]).to_parquet(tmp_path / "in.parquet", index=False)
+    run = Run(p, s).full(tmp_path / "in.parquet", tmp_path / "w")
+    run.pipeline = replace(run.pipeline, fs=replace(run.pipeline.fs, blockers=p.fs.blockers))
+    monkeypatch.setattr("er.keys.key_lists", lambda b, t, *a: np.zeros(len(t), bool))  # no other key lists its pairs: each one its own
+    assert "cif_deletions" in idle(run)[1]  # its own pairs (the twins) score 0 and up, none 98: they cost pairs no one is asked about

@@ -433,7 +433,7 @@ class ThresholdRule:
     max_fp: int
     max_fp_rate_hi: float
     margin_steps: int
-    search_floor: float = 0.0  # bits: the oversized-block gate, the gap and the idle-key check aim here (er.match.search_floor)
+    search_floor: float = 0.0  # bits: the oversized-block gate and the gap aim here (er.match.search_floor); the idle-key check, the review floor
 
 
 @dataclass(frozen=True, kw_only=True)

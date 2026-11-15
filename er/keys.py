@@ -72,7 +72,7 @@ def gap(run) -> dict:
         lo, hi = poisson(missed)
         rows.append(dict(bits=at, pairs=round(len(x) * w), missed=round(missed * w), missed_lo=round(lo * w), missed_hi=round(hi * w), sampled_missed=missed))
     lost = t[~t["listed"]]
-    alone = t[(t["match_weight"] >= search_floor(run.pipeline)) & ~t["ruled"]]["sources"].dropna()
+    alone = t[(t["match_weight"] >= review_floor(run.pipeline)) & ~t["ruled"]]["sources"].dropna()
     alone = alone[~alone.str.contains("+", regex=False)].value_counts()  # listed by one key and no rule: lost without it
     facts = {k: v for k, v in d.facts.items() if not (reused and k in ("draw_seconds", "score_seconds", "drawn_seconds"))}
     return {**facts, "reused": bool(reused), "thresholds": rows, "missed_agree": agree_counts(d.atoms, lost, w),
@@ -82,9 +82,11 @@ def gap(run) -> dict:
 def idle(run) -> tuple[tuple[Blocker, ...], list[str]]:
     """The generators to run: each but those whose agreement is no evidence (every comparison reading its fields, if
     any, weighs at most 0 bits at its best level: an ID handed out in sequence, one digit off) and that list no sampled
-    pair at the search floor no other generator or rule lists. Such a key's pairs reach the floor on other fields alone,
-    so another key that reads them lists them, and it costs its pairs for nothing; one with a pair of its own stays. The
-    sample is the gap step's (discover), kept for it: run.found. Returns the generators kept and those dropped."""
+    pair at the review floor no other generator or rule lists. Such a key's pairs reach the floor on other fields alone,
+    so another key that reads them lists them, and it costs its pairs for nothing; one with a pair of its own stays. Judged
+    at the review floor, not the search floor: a key whose pairs of its own all score below review costs its pairs for
+    none people see, and the check runs again on each run's model. The sample is the gap step's (discover), kept for
+    it: run.found. Returns the generators kept and those dropped."""
     p = run.pipeline
     best = {c.name: max([0.0, *(_bits(g, lv) for g, lv in _ranked(j) if g >= 0)]) for c, j in zip(p.fs.model.comparisons, run.scoring["comparisons"])}
     reads = {c.name: {col for lv in c.levels for col, _ in lv.any_of} | set(c.null_if_missing) for c in p.fs.model.comparisons}
@@ -93,6 +95,7 @@ def idle(run) -> tuple[tuple[Blocker, ...], list[str]]:
         return p.fs.blockers, []
     d = run.found = discover(run, gap_records(p))
     t, m = listed_by(run, d.targets), p.fs.budget.min_oversized()
+    t = t[t["match_weight"] >= review_floor(p)].reset_index(drop=True)
     col = {a.column: i for i, a in reversed(list(enumerate(d.atoms)))}
     kept, dropped = list(p.fs.blockers), []
     for z in idle_:
