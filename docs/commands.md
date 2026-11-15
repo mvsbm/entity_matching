@@ -1526,10 +1526,10 @@ nayose describe results --workspace workspaces/customers
 The pairs the run scored, best first, a page at a time.
 
 ```
-nayose list scored --workspace WORKSPACE [--from POINTS] [--to POINTS] [--source rules|model] [--status waiting|merged|same|different|open] [--record ID] [--page N] [--count N] [--pipeline PIPELINE] [--format text|json]
+nayose list scored --workspace WORKSPACE [--from POINTS] [--to POINTS] [--source rules|model] [--status waiting|merged|same|different|open] [--record ID] [--page N] [--count N] [--each] [--pipeline PIPELINE] [--format text|json]
 ```
 
-Every pair the run scored at 0 points or more and every rule pair, best first: both IDs, points, how each was found (keys, rule), its status (waiting, merged, same, different: people's), each comparison's level and points, and both records' compared fields; filtered by points, by how found, by status or by a record ID; with the total the filters keep. O(E log E) + O(page·F).
+Every pair the run scored at 0 points or more and every rule pair, best first: both IDs, points, how each was found (keys, rule), its status (waiting, merged, same, different: people's), each comparison's level and points, and both records' compared fields; filtered by points, by how found, by status or by a record ID; with the total the filters keep. With --each, one pair of each pattern the filters keep, the patterns of most pairs first: below the review floor, the kinds of pair nobody is asked about, one of each to see. O(E log E) + O(page·F).
 
 | Parameter | |
 |---|---|
@@ -1541,15 +1541,16 @@ Every pair the run scored at 0 points or more and every rule pair, best first: b
 | `--record ID` | pairs of this record ID |
 | `--page N` | the page (default 1) |
 | `--count N` | pairs a page (default 100) |
+| `--each` | one pair of each pattern (each comparison's level), the patterns of most pairs first |
 | `--pipeline PIPELINE` | the pipeline file (default: config/final.toml) |
 
 | Result | |
 |---|---|
-| `total` | pairs the filters keep |
+| `total` | pairs the filters keep (with --each: patterns) |
 | `typed` | of them, decided and not applied yet |
 | `page` | this page |
 | `count` | pairs a page |
-| `pairs` | each pair: first, second, points, sources, rule, status, said, applied, compared (comparison: level, points), fields (field: [first, second]), household (maybe two people of one household) |
+| `pairs` | each pair: first, second, points, sources, rule, status, said, applied, compared (comparison: level, points), like (with --each: the pairs of its pattern), fields (field: [first, second]), household (maybe two people of one household) |
 
 ```bash
 nayose list scored --workspace workspaces/customers --status waiting --from 6

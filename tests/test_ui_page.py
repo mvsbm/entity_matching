@@ -608,6 +608,12 @@ def test_review_counts_down_an_answer_waits_out_a_busy_workspace_and_auto_merge_
     assert not other.is_alive()
     page.wait_for_function("() => document.querySelector('#written').textContent === '2'", timeout=15_000)
     assert not page.query_selector("#said .banner") and page.inner_text(".rail li.attention .sub") == f"{waiting - 2:,} waiting"
+    page.click("label:has(#each)")  # below the floor, one pair of each pattern instead
+    page.wait_for_function("() => document.querySelector('#done-line').textContent.includes('one pair each')")
+    assert not page.query_selector("#right .banner") and page.inner_text(".rail li.attention .sub") == f"{waiting - 2:,} waiting"  # the rail counts the queue still
+    assert "like it" in page.inner_text("#right .why") if page.query_selector("#right .why") else "No pair waits below" in page.inner_text("#right")
+    page.click("label:has(#each)")
+    page.wait_for_function(f"() => document.querySelector('#done-line').textContent.startsWith('{waiting - 2:,} pair')")
     entities = lambda: set(pd.read_parquet(ws / "gold.parquet").groupby("cluster_id")[uid].agg(frozenset))
     before = entities()
     page.click("#merge")  # merge without people, by their own conditions: no run

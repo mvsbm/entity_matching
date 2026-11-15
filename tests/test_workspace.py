@@ -607,6 +607,13 @@ def test_a_run_s_pairs_rows_and_entities_are_read_without_a_run_and_its_merge_co
     points = [x["points"] for x in one["pairs"] + two["pairs"]]
     assert one["total"] == len(index) and len(one["pairs"]) == 5 and points == sorted(points, reverse=True)  # best first, across pages
     assert say("list", "scored", *at, "--status", "waiting", "--from", d["review_from"])[1]["total"] == sum(x["pairs"] for x in d["waiting"])
+    below = ("--status", "open", "--to", 1000, "--count", 100_000)  # every open pair: on this file, patterns repeat above the floor only
+    _, every = say("list", "scored", *at, *below)
+    _, kinds = say("list", "scored", *at, *below, "--each")  # one of each pattern nobody is asked about
+    pattern = lambda x: tuple(sorted((c, v["level"]) for c, v in x["compared"].items()))
+    assert every["total"] > kinds["total"] == len(kinds["pairs"]) == len({pattern(x) for x in kinds["pairs"]}) == len({pattern(x) for x in every["pairs"]})
+    assert sum(x["like"] for x in kinds["pairs"]) == every["total"] and [x["like"] for x in kinds["pairs"]] == sorted((x["like"] for x in kinds["pairs"]), reverse=True)
+    assert "like" not in every["pairs"][0]
     best = one["pairs"][0]
     assert set(best["compared"]) == {c.name for c in p.fs.model.comparisons}  # each comparison's level and points
     _, rows = say("show", "records", best["first"], best["second"], "nope", *at)
