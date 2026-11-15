@@ -203,9 +203,10 @@ def feature_path(field: str) -> str | None:  # where set feature puts a field's 
     return next((f"{g}/{f['name']}" for g, feats in DEFAULT_FEATURES for f in feats if f.get("field") == field), None)
 
 
-def diagnosis(run: "Run", tables: dict[str, pd.DataFrame], lo: float) -> list[str]:
-    """What limits what the run finds, the most pairs at stake first, at most SHOWN lines, each what, a number and the
-    fix (a command where there is one); what is fine is left out: EM sessions of the run's own fit that learned
+def diagnosis(run: "Run", tables: dict[str, pd.DataFrame], lo: float) -> list[dict]:
+    """What limits what the run finds, the most pairs at stake first, at most SHOWN items, each what (with its number),
+    the pairs at stake and the fix (a command where there is one): report.txt prints them (diagnosis_lines), steps.json
+    keeps them for describe workspace. What is fine is left out: EM sessions of the run's own fit that learned
     households, compared fields under SPARSE filled (with a column no field reads that looks like one), pairs below the
     review floor that agree exactly on a name and another field, levels that learned nothing yet hold pairs, what the
     search leaves (the gap at the review floor, oversized blocks skipped that came within NEAR bits), and, last, EM
@@ -280,15 +281,19 @@ def diagnosis(run: "Run", tables: dict[str, pd.DataFrame], lo: float) -> list[st
     if thin := [(x, n) for x, n in kept if n < THIN]:
         fix = f"nayose choose em {WS} --records {2 * m['fit_rows']}" if m.get("em_choice") else f"nayose try sample {WS}"
         out.append((0, f"EM learned from few pairs: {', '.join(f'{x} {n:,}' for x, n in thin)} → {fix}"))
-    lines = [x for _, x in sorted(out, key=lambda x: -x[0])[:SHOWN]] or ["nothing found"]
+    return [dict(what=what, pairs=int(n), fix=fix) for n, x in sorted(out, key=lambda x: -x[0])[:SHOWN] for what, _, fix in [x.partition(" → ")]]
+
+
+def diagnosis_lines(items: list[dict]) -> list[str]:  # report.txt's DIAGNOSIS, from diagnosis's items
+    lines = [x["what"] + (f" → {x['fix']}" if x["fix"] else "") for x in items] or ["nothing found"]
     return ["DIAGNOSIS  (what limits what the run finds, the most pairs at stake first)", *(f"  {x}" for x in lines), ""]
 
 
-def report_text(run: "Run", tables: dict[str, pd.DataFrame], pipeline: Path) -> str:
+def report_text(run: "Run", tables: dict[str, pd.DataFrame], pipeline: Path, items: list[dict] | None = None) -> str:
     """The run on a page of plain text that holds no record's value (no ID, name, phone or address: the notes that
     quote one are run.examples, in qa.md only), so it can leave the machine that holds the records. `tables` is qa()'s.
     It shows what ran (the code, the tracked files changed in this copy, the pipeline, the machine's limits), what limits
-    what the run finds (diagnosis), the summary, each field's fill and shape, the columns no field reads, scores and accepted links by weight with the false links the
+    what the run finds (diagnosis's `items`, made here when not given), the summary, each field's fill and shape, the columns no field reads, scores and accepted links by weight with the false links the
     model expects, each score band's commonest patterns, cluster sizes, each step's time and memory, its time in each string comparison, the model (the prior, the pairs each EM session learned from, and m, u and bits per level), the costliest
     blocks, and the patterns no key pairs. O(C + E) over scores and matches."""
     con, fs = run.con, run.pipeline.fs
@@ -314,7 +319,7 @@ def report_text(run: "Run", tables: dict[str, pd.DataFrame], pipeline: Path) -> 
            f"{threads} threads · memory limit {memory} · spill room {run.spill_room() / 1e9:,.0f} GB · "
            f"took {sum(x['seconds'] for x in run.steps):,.1f} s · peak {max(x['peak_memory_gb'] for x in run.steps):.2f} GB", ""]
 
-    out += diagnosis(run, tables, lo)
+    out += diagnosis_lines(diagnosis(run, tables, lo) if items is None else items)
     summary = tables["summary"][tables["summary"]["what"] != "example"]
     out += ["SUMMARY", *(f"  {what:<12} {value}" for what, value in summary.itertuples(index=False)), ""]
 

@@ -84,6 +84,7 @@ p.then { font-size: 12px; color: var(--muted); margin: 6px 0 0; }
 .qa > .q { flex: 1 1 420px; min-width: 0; }
 .qa h2.question { font-size: 22px; font-weight: 400; margin: 0 0 4px; }
 .qa .answer { font-size: 15px; margin: 0; color: var(--ink); } .qa .answer b { font-weight: 600; } .qa .answer .muted { color: var(--muted); }
+.limits { margin-top: 12px; } .limit { padding: 10px 0; border-top: 1px solid var(--line); } .limit .equiv { margin: 8px 0 0; }
 .qa .big, .qa h2.question.big { font-size: 28px; line-height: 1.25; font-variant-numeric: tabular-nums; }
 .checks { display: flex; flex-direction: column; gap: 6px; font-size: 14px; }
 .checks > div { display: flex; gap: 10px; align-items: baseline; } .checks > div::before { width: 14px; flex: none; text-align: center; font-weight: 700; }
@@ -652,7 +653,7 @@ body.filedrag [data-drop].dropping::after { border-style: solid; background: var
             {"command": "add records", "args": {"input": "@input", "workspace": "@workspace", "compute": "@compute"}, "form": ["input"], "reads": ["summary"]},
             {"command": "match records", "args": {"input": "@input", "workspace": "@workspace"}, "form": ["input"], "reads": ["counts", "records"]},
             {"command": "rerun records", "args": {"workspace": "@workspace", "compute": "@compute"}, "form": [], "reads": ["summary"]},
-            {"command": "describe workspace", "args": {"workspace": "@workspace"}, "reads": ["records", "entities", "pairs", "trust", "inputs"]},
+            {"command": "describe workspace", "args": {"workspace": "@workspace"}, "reads": ["records", "entities", "pairs", "trust", "inputs", "diagnosis"]},
             {"command": "list patterns", "args": {"workspace": "@workspace"}, "reads": ["pairs", "fields", "patterns"]},
             {"command": "compare records", "args": {"first": "@first", "others": "@others", "workspace": "@workspace"}, "reads": ["first", "records", "candidates"]},
             {"command": "explain pair", "args": {"first": "@first", "second": "@second", "workspace": "@workspace"}, "reads": ["weight", "prior", "pairs_all", "pairs_same", "common", "same_customer", "household", "records", "comparisons", "tests", "found", "group_a", "group_b", "across"]},
@@ -683,6 +684,7 @@ body.filedrag [data-drop].dropping::after { border-style: solid; background: var
             {"command": "try method", "args": {"workspace": "@workspace", "line": "@line", "drop": "@drop", "add": "@add", "compute": "@compute"}, "reads": ["trial"]},
             {"command": "try sample", "args": {"workspace": "@workspace", "compute": "@compute"}, "reads": ["steps", "settled", "floor", "report"]},
             {"command": "set fit", "args": {"workspace": "@workspace", "records": "@records", "em": "@em"}, "reads": ["method"]},
+            {"command": "choose em", "args": {"workspace": "@workspace", "records": "@records", "compute": "@compute"}, "reads": ["records", "sessions", "kept", "wide", "method"]},
             {"command": "adopt method", "args": {"workspace": "@workspace", "trial": "@trial", "compute": "@compute"}, "reads": ["summary"]},
             {"command": "reset method", "args": {"workspace": "@workspace", "compute": "@compute"}, "reads": ["summary"]},
             {"command": "describe key", "args": {"name": "@name", "workspace": "@workspace"}, "reads": ["name", "pairs", "matched", "only", "examples", "sizes", "largest", "group", "around"]},
@@ -1808,7 +1810,7 @@ const FIELD = {input: "Records file"};  // a parameter's name on the page, where
 const LIT = {load: ["records", "records"], rules: ["rules", "pairs"], candidates: ["candidates", "candidates"], cluster: ["accept", "accepted"]};  // a run's step, the stage it fills in
 const stepsOf = (c) => (COMMANDS[c] || {}).steps || [];  // a run's steps, in the order they end, as the CLI declares them
 const BUSY = {"resolve records": "Finding matches", "rerun records": "Matching again", "add records": "Adding the new records", "match records": "Previewing the new records",
-              "load records": "Loading your file", "upload file": "Uploading your file", "generate records": "Generating records", "accept repairs": "Accepting the repairs", "try everything": "Auto mode", "try method": "Trying a method", "try sample": "Trying sample sizes", "set fit": "Setting the fit",
+              "load records": "Loading your file", "upload file": "Uploading your file", "generate records": "Generating records", "accept repairs": "Accepting the repairs", "try everything": "Auto mode", "try method": "Trying a method", "try sample": "Trying sample sizes", "set fit": "Setting the fit", "choose em": "Choosing EM's fields",
               "set merging": "Rebuilding the entities", "apply answers": "Matching again with your answers", "apply decisions": "Applying your decisions",
               "adopt method": "Matching with the method tried", "reset method": "Matching with the tuned method", "lower trust": "Lowering the trust line",
               "raise trust": "Raising the trust line", "split entity": "Splitting the entity"};
@@ -2913,7 +2915,7 @@ const SCREENS = {
     }
     $("flowq").textContent = "How did it find matches?";
     $("out").innerHTML = `<div class="card"><div class="qa"><div class="q"><h2 class="question big">${plural(w.records, "record")} → ${plural(w.entities, "entity", "entities")}</h2>
-      <p class="answer">The last run: what it found is on Results, the pairs waiting for you on Review</p></div><a class="btn filled" data-go="records">${icon("overview")}Results</a></div></div>${
+      <p class="answer">The last run: what it found is on Results, the pairs waiting for you on Review</p></div><a class="btn filled" data-go="records">${icon("overview")}Results</a></div></div>${diagCard(w.diagnosis, state.workspace)}${
       file && !file.read ? `<div class="card ready">${icon("records")}<div><b>${esc(nameOf(file))}</b><span class="muted"> · ${plural(file.rows, "record")}, not matched yet</span></div>
         <span class="grow"></span><button class="btn filled" data-add>${icon("add")}Add them to this run</button><button class="btn" data-first>Replace the run with them</button></div>` : ""}`;  // a file loaded since: added, or matched alone
     $("out").querySelector("[data-first]")?.addEventListener("click", () => start("resolve records", "Replace the run with them",
@@ -3025,7 +3027,7 @@ const SCREENS = {
     return w;
   },
 
-  async improve(el) {  // the loop: what people's decisions say about the method; a change tried, adopted, and the new round reviewed
+  async improve(el, arg) {  // the loop: what people's decisions say about the method; a change tried, adopted, and the new round reviewed; arg: a button to press once drawn ({press, records})
     const foot = `<div class="stepfoot"><a class="btn" data-go="pairs">← Review</a><span class="grow"></span>
       <a class="btn" data-go="run">${icon("run")}Find matches</a><a class="btn outlined" data-go="records">Results →</a></div>`;
     el.innerHTML = head("improve", `<button class="btn" id="refresh">${icon("refresh")}Refresh</button>`) +
@@ -3057,8 +3059,11 @@ const SCREENS = {
         ${Object.keys(changed).length ? `<p class="muted">The method is changed: ${esc(methodText(changed))} · <button class="mini" id="reset">Back to the tuned method</button></p>` : ""}
         <details class="fold-line"><summary>Where to draw the line</summary><div id="line" style="margin-top:10px"></div></details></div>
        <div class="card"><div class="qa"><div class="q"><h2 class="question">How many records should the model learn from?</h2>
-         <p class="answer">${d.method.fit ? `${fmt(d.method.fit.records)} records, ${FIT_EM[d.method.fit.em]}` : "As tuned."}</p></div>
+         <p class="answer" id="fit-now">${fitNow(d.method.fit)}</p></div>
          <button class="btn outlined" id="sizes">${icon("loop")}Try sample sizes</button></div><div id="sizes-out"></div></div>
+       <div class="card"><div class="qa"><div class="q"><h2 class="question">Which fields should EM learn from?</h2>
+         <p class="answer" id="em-now">${emNow(d.method.fit)}</p></div>
+         <button class="btn outlined" id="choose-em">✦ Choose EM fields</button></div><div id="em-out"></div></div>
        <details class="card fold"><summary><h2>Rounds so far</h2></summary><div id="rounds"></div></details>
        <details class="card fold"><summary><h2>Match rules</h2></summary><div id="rules"></div></details>
        <details class="card fold"><summary><h2>Pair keys</h2></summary><div id="keys"></div></details>
@@ -3098,10 +3103,15 @@ const SCREENS = {
         box.innerHTML = `<p class="muted">${spinner()} Fitting on 1,000 records…</p>`;
         run("improve", "try sample", {}, (e) => { if (e.event === "line") { if (e.row) rows.push(e.row); sizesView(box, rows, null, e.row ? "" : e.text); } })
           .then((r) => { b.disabled = false; if (r.event === "error") box.innerHTML = banner(r); else sizesView(box, r.steps, r); });
+      } else if (b.id === "choose-em") {
+        b.disabled = true;
+        const box = $("em-out");
+        box.innerHTML = `<p class="muted">${spinner()} Fitting one session per field…</p>`;
+        run("improve", "choose em", b.dataset.records ? {records: b.dataset.records} : {}).then((r) => { b.disabled = false; emView(box, r); });
       } else if (b.dataset.fit) {
         const f = JSON.parse(b.dataset.fit);
         run("improve", "set fit", f).then((r) => { $("sizes-out").insertAdjacentHTML("afterbegin", r.event === "error" ? banner(r)
-          : `<div class="banner info">${icon("check")}<div><b>The next run learns from ${fmt(f.records)} records, ${esc(FIT_EM[f.em] || `EM per ${f.em.replaceAll(",", ", ")}`)}.</b></div><a class="btn" data-go="run">${icon("run")}Find matches</a></div>`); });
+          : `<div class="banner info">${icon("check")}<div><b>The next run learns from ${fmt(f.records)} records, ${esc(fitEm(f.em))}.</b></div><a class="btn" data-go="run">${icon("run")}Find matches</a></div>`); });
       } else if (b.id === "sizes-dl") {
         const a = document.createElement("a");
         a.href = URL.createObjectURL(new Blob([b.closest("[data-report]").dataset.report], {type: "text/plain"}));
@@ -3109,14 +3119,41 @@ const SCREENS = {
       }
     };
     $("wrong")?.addEventListener("click", () => go("results", {tab: "pairs", status: "different"}));  // the pairs people said differ, in Explore
+    if (arg?.press && $(arg.press)) { if (arg.records) $(arg.press).dataset.records = arg.records; $(arg.press).scrollIntoView({block: "center"}); $(arg.press).click(); }  // a fix the run's page asked for
   },
 
   pairs: (el, arg) => pairsPage(el, arg),
   kinds: (el, note) => review(el, "kinds", note),
 };
 
+// What limits what the run finds (describe workspace's diagnosis, report.txt's DIAGNOSIS): the most pairs first, each
+// with its fix; one the Method page runs is a button there, another its command line to copy. None kept: no card.
+const FIXES = {"choose em": "choose-em", "try sample": "sizes"};
+function diagCard(items, ws) {
+  if (!items) return "";
+  if (!items.length) return `<div class="card">${ask("What limits what the run finds?", "Nothing found.")}</div>`;
+  const row = (x) => {
+    const fix = x.fix.replaceAll("--workspace …", `--workspace ${ws}`), press = FIXES[(x.fix.match(/^nayose (\w+ \w+)/) || [])[1]], records = (x.fix.match(/--records (\d+)/) || [])[1];
+    return `<div class="qa limit"><div class="q">${esc(x.what)}${!press && fix ? `<div class="equiv">${icon("terminal")}<code>${esc(fix)}</code>
+      <button type="button" class="iconbtn" data-copy="${esc(fix)}" aria-label="Copy the command line">${icon("copy")}</button></div>` : ""}</div>${
+      press ? `<button class="btn outlined" data-go="improve" data-press="${press}"${records ? ` data-records="${records}"` : ""}>${press === "sizes" ? `${icon("loop")}Try sample sizes` : "✦ Choose EM fields"}</button>` : ""}</div>`;
+  };
+  return `<div class="card">${ask("What limits what the run finds?", `${plural(items.length, "limit")}, the most pairs first`)}<div class="limits">${items.map(row).join("")}</div></div>`;
+}
+
 // How large a sample the model needs (try sample): pairs at the floor as each sample grows, both ways EM learns.
-const FIT_EM = {rules: "EM as set", keys: "EM per key"};
+const FIT_EM = {rules: "EM as set", keys: "EM per key", choose: "EM chosen by the given name"};
+const fitEm = (em) => FIT_EM[em] || `EM per ${[].concat(em).join(", ")}`;  // a list of fields, or a word set fit takes
+const fitNow = (fit) => fit ? `${fmt(fit.records)} records, ${fitEm(fit.em)}` : "As tuned.";
+const emNow = (fit) => !fit ? "As tuned." : fit.em === "choose" ? "Each run chooses them by the given name." : Array.isArray(fit.em) ? `${fit.em.map(words).join(", ")}.` : `${fitEm(fit.em)}.`;
+function emView(box, r) {  // choose em: each session kept or dropped and why, and what the next run does
+  if (r.event === "error") { box.innerHTML = banner(r); return; }
+  box.innerHTML = `<div class="banner info">${icon("check")}<div><b>${r.kept.length ? `Kept now: ${r.sessions.filter((x) => x.kept).map((x) => words(x.session)).join(", ")}` : "None kept now: EM as set"}.</b></div><a class="btn" data-go="run">${icon("run")}Find matches</a></div>
+    <div id="em-table"></div>${r.wide.length ? `<p class="faint">m from every session: ${esc(r.wide.map(words).join(", "))}</p>` : ""}`;
+  $("em-now").textContent = emNow(r.method.fit); $("fit-now").textContent = fitNow(r.method.fit);
+  grid($("em-table"), r.sessions, ["session", "pairs", "given_share", "kept", "why"], {filter: false, labels: {given_share: "agree on the given name", kept: ""},
+       cell: (x, c) => c === "kept" ? `<span class="chip ${x.kept ? "good" : ""}">${x.kept ? "kept" : "dropped"}</span>` : c === "given_share" ? esc(pct(x[c])) : c === "session" ? esc(words(x[c])) : esc(fmt(x[c]))});
+}
 function sizesView(box, rows, done = null, now = "") {
   const ok = rows.filter((x) => x.pairs_floor !== undefined), ways = [...new Set(ok.map((x) => x.em))];
   if (!ok.length) { box.innerHTML = `<p class="muted">${spinner()} ${rows.length ? `${fmt(rows[rows.length - 1].records)} records: too few to learn from yet…` : "Fitting…"}</p>`; return; }
@@ -3150,7 +3187,7 @@ const checkLines = (done) => Object.entries(done.checks || {}).map(([w, c]) => {
 const methodText = (m) => !m || !Object.keys(m).length ? "as tuned"
   : [...(m.trust !== undefined ? [m.trust === "none" ? "nothing merges by points" : `${fmt(m.trust)}+ merge`] : []),
      ...(m.line !== undefined ? [`line at ${fmt(m.line)}`] : []), ...(m.drop_rules || []).map((x) => `without ${ruleSays(x)}`), ...(m.drop_keys || []).map((x) => `without “${looks(x)}”`),
-     ...(m.add_keys || []).map((k) => `with a key on ${keyText(k)}`), ...(m.fit ? [`fit on ${fmt(m.fit.records)} records, ${FIT_EM[m.fit.em]}`] : [])].join(" · ");
+     ...(m.add_keys || []).map((k) => `with a key on ${keyText(k)}`), ...(m.fit ? [`fit on ${fmt(m.fit.records)} records, ${fitEm(m.fit.em)}`] : [])].join(" · ");
 const keyText = (k) => k.map((f) => { const [field, ...n] = f.split(":"); return words(field) + (n.includes("first3") ? " area" : n.includes("initial") ? " initial" : ""); }).join(" + ");  // an added key's fields, in words
 const tryArgs = (c) => c.line !== undefined ? {line: String(c.line)} : c.add_keys ? {add: c.add_keys.map((k) => k.join("+"))} : {drop: [...(c.drop_rules || []), ...(c.drop_keys || [])]};
 const tryBtn = (c, label = "Try") => `<button class="btn" data-try='${esc(JSON.stringify(c))}'>${esc(label)}</button>`;
@@ -4355,8 +4392,11 @@ document.addEventListener("click", (e) => {
   if (a) {  // a link to a page: with the tab, the record or the dialog it opens there
     e.preventDefault(); a.closest("dialog")?.close();
     const {go: to, tab, record} = a.dataset;
-    go(to, tab ? {tab, ...(a.dataset.open ? {open: a.dataset.open} : {})} : record ? {record} : "merge" in a.dataset ? {merge: true} : undefined);
+    go(to, tab ? {tab, ...(a.dataset.open ? {open: a.dataset.open} : {})} : record ? {record} : "merge" in a.dataset ? {merge: true}
+      : a.dataset.press ? {press: a.dataset.press, records: a.dataset.records} : undefined);
   }
+  const c = e.target.closest("[data-copy]");
+  if (c) navigator.clipboard?.writeText(c.dataset.copy).then(() => snack('<span class="msg">Copied</span>', 3000), () => {});
   if (e.target.closest("[data-pick]")) pick();
   if (e.target.closest("[data-auto]")) autoMode();
 });

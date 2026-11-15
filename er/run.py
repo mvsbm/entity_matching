@@ -77,7 +77,7 @@ from er.keys import idle, gap as keys_gap, learn
 from er.kind import KIND_COLUMNS, NAME_MODEL, century, classifier as kind_classifier, kind_review_sheet, merge_answers
 from er.match import ELSE, bound_tests, rough_reads, compared_exactly, fit_model, fit_sample_sql, named_sql, bound_reads, reaching_sql, refreshed_u, review_floor, rule_edges, search_floor, score_fs, scored_u, train_fs, u_basis
 from er.probe import missed
-from er.report import carry_kinds, carry_over, no_run, qa, report_text, review_sheet, unmapped_columns
+from er.report import carry_kinds, carry_over, diagnosis, no_run, qa, report_text, review_sheet, unmapped_columns
 from er.explain import scored_again
 from er.review_state import trust_state
 from er.results import BANDS, own_merging, banded, check_merging, merge_where
@@ -883,7 +883,8 @@ class Run:
         returned as texts and frames for write() to stage with them: a run never lands without its reports, which a
         retry could not make again, since nothing is new by then. `path` is the input, `pipeline` the pipeline file, both
         named in the reports. Keeps qa's tables, the summary first, in self.tables, and its weight bands (counts) in the
-        step's facts (steps.json), for describe matching and describe method."""
+        step's facts (steps.json), for describe matching and describe method, with what limits what the run finds
+        (report.diagnosis), for describe workspace."""
         t = time.perf_counter()
         tables = qa(self, previous=out / "review.parquet" if self.added is not None else None)
         sheet = tables.pop("review_sheet")
@@ -898,9 +899,10 @@ class Run:
             frames.append((carry_kinds(self, kind_review_sheet(self.con, "records", self.uid, self.pipeline.kind, self.settings.flag_company, answered),
                                        out / "kind_review.parquet"), out / "kind_review.parquet"))
         self.tables = tables
-        texts = [("\n".join(text), out / "qa.md"), (report_text(self, tables, pipeline), out / "report.txt")]
+        items = diagnosis(self, tables, review_floor(self.pipeline))  # report.txt prints them, describe workspace reads them here
+        texts = [("\n".join(text), out / "qa.md"), (report_text(self, tables, pipeline, items), out / "report.txt")]
         bands = json.loads(tables["weight_bands"].round(4).to_json(orient="values"))  # as qa.md shows them: describe matching and method read them here
-        self._done("report", "O(review pairs) + O(N)", f"O({len(frames[0][0]):,} review pairs + {self.n:,})", t, weight_bands=bands)
+        self._done("report", "O(review pairs) + O(N)", f"O({len(frames[0][0]):,} review pairs + {self.n:,})", t, weight_bands=bands, diagnosis=items)
         return texts, frames
 
     # ---------- increments ----------

@@ -1512,3 +1512,82 @@ def test_a_list_shows_the_answer_to_the_last_thing_asked_whichever_answer_comes_
         page.wait_for_timeout(1500)
         page.screenshot(path=str(tmp_path / f"{screen}.png"), full_page=True)
         assert page.evaluate(mine), screen  # the record's pairs stay: the answer asked before them, come late, is dropped
+
+
+def test_the_run_s_page_says_what_limits_it_and_the_method_page_chooses_em_s_fields_once_per_click(ui_page, tmp_path, population):
+    from er import cli, folder
+    s, p, g = population
+    g.df.to_parquet(tmp_path / "all.parquet", index=False)
+    ws, home = tmp_path / "run", tmp_path / "workspaces"
+    assert cli.main(["resolve", "records", str(tmp_path / "all.parquet"), "--workspace", str(ws), "--format", "json"]) == 0
+    items = folder.diagnosis(ws)
+    page, server, httpd = ui_page(str(ws), str(home), viewport={"width": 1280, "height": 900})
+    shot = lambda name: page.screenshot(path=str(tmp_path / f"{name}.png"), full_page=True)
+    page.wait_for_selector(".tiles")
+    page.click(".navitem[data-screen=run]")
+    page.wait_for_selector("#out h2.question.big")
+    said = page.inner_text("#out")
+    assert "What limits what the run finds?" in said and (all(x["what"] in said for x in items) if items else "Nothing found." in said)  # report.txt's items
+    assert "--workspace …" not in said
+    shot("diagnosis-light")
+    page.emulate_media(color_scheme="dark")
+    shot("diagnosis-dark")
+    page.emulate_media(color_scheme="light")
+
+    page.click(".navitem[data-screen=improve]")
+    page.wait_for_selector("#choose-em")
+    assert page.inner_text("#em-now") == "As tuned."
+    shot("choose-em-before")
+    sent = []
+    page.on("request", lambda r: r.url.endswith("/api/run") and json.loads(r.post_data)["command"] == "choose em" and sent.append(r))
+    page.dblclick("#choose-em")  # pressed twice: one fit
+    assert page.is_disabled("#choose-em")
+    page.wait_for_selector("#em-out .banner", timeout=120_000)
+    assert len(sent) == 1 and folder.method(ws)["fit"]["em"] == "choose" and not page.is_disabled("#choose-em")
+    assert page.inner_text("#em-now") == "Each run chooses them by the given name." and "EM chosen by the given name" in page.inner_text("#out")
+    rows = page.query_selector_all("#em-table tbody tr")
+    assert rows and all(r.query_selector(".chip").inner_text() in ("kept", "dropped") for r in rows)
+    shot("choose-em-after")
+    page.emulate_media(color_scheme="dark")
+    shot("choose-em-after-dark")
+    page.emulate_media(color_scheme="light")
+
+    page.click("#em-out .banner a[data-go=run]")  # the next run chooses them itself
+    page.click("[data-act='rerun records']")
+    page.click("#dlg button[value=run]")
+    page.wait_for_selector("#out .steps-card", timeout=10_000)
+    page.wait_for_selector("#out .steps-card", state="detached", timeout=120_000)
+    page.wait_for_selector("#out h2.question.big")
+    after = folder.diagnosis(ws)
+    assert after is not None and ("Nothing found." in page.inner_text("#out") if not after else all(x["what"] in page.inner_text("#out") for x in after))
+    shot("diagnosis-after-rerun")
+    page.evaluate("""() => { const box = document.createElement("div"); box.id = "probe"; document.querySelector("#out").append(box);  // a fix the Method page runs: its button
+        box.innerHTML = diagCard([{what: "EM learned from few pairs: phone 40", pairs: 0, fix: "nayose choose em --workspace … --records 4000"},
+                                  {what: "no key lists about 50 pairs", pairs: 50, fix: "nayose describe method --workspace …"}], state.workspace); }""")
+    assert page.query_selector("#probe [data-press=choose-em][data-records='4000']") and f"describe method --workspace {ws}" in page.inner_text("#probe code")
+    shot("diagnosis-buttons")
+    page.click("#probe [data-press=choose-em]")  # to the Method page, its button pressed with the records asked
+    page.wait_for_selector("#em-out .banner", timeout=120_000)
+    assert folder.method(ws)["fit"] == {"records": 4000, "em": "choose"}
+
+    steps = json.loads((ws / "steps.json").read_text(encoding="utf-8"))  # a run an older version wrote: no card, no error
+    for x in steps["runs"]:
+        x["steps"] = [{k: v for k, v in st.items() if k != "diagnosis"} for st in x["steps"]]
+    (ws / "steps.json").write_text(json.dumps(steps), encoding="utf-8")
+    page.click(".navitem[data-screen=run]")
+    page.wait_for_selector("#out h2.question.big")
+    assert "What limits" not in page.inner_text("#out") and not page.query_selector("#out .banner.bad")
+    assert cli.main(["create", "workspace", "empty", "--home", str(home), "--format", "json"]) == 0  # a workspace without a run: no card
+    page.evaluate(f"setWorkspace({json.dumps(str(home / 'empty'))})")
+    page.click(".navitem[data-screen=run]")
+    page.wait_for_selector("#out .card")
+    assert "What limits" not in page.inner_text("#out")
+    page.evaluate(f"setWorkspace({json.dumps(str(ws))})")
+    page.click(".navitem[data-screen=improve]")
+    page.wait_for_selector("#choose-em")
+    httpd.shutdown()  # the server lost: said above the page, the button back
+    httpd.server_close()
+    page.click("#choose-em")
+    page.wait_for_selector("#lost", timeout=30_000)
+    page.wait_for_selector("#choose-em:not([disabled])", timeout=30_000)
+    shot("choose-em-lost")
