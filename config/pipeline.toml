@@ -179,6 +179,7 @@ grid = [0, 2, 4, 6, 8, 10, 12, 14, 16]   # upper bound ≤ max_fp_rate_hi, then 
 max_fp = 0
 max_fp_rate_hi = 0.05
 margin_steps = 1
+search_floor = 0                  # bits: oversized blocks, the gap and idle keys are judged from here (or the review floor, if lower)
 
 [trust]                           # a workspace's trust line (its method.toml trust): pairs scoring at or above it merge without people
 steps = [20.0, 12.0, 8.0, 6.0, 0.0]   # bits, high to low: the line steps down one range at a time; none set: the method as tuned

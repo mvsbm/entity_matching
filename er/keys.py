@@ -22,7 +22,7 @@ import pandas as pd
 
 from er.candidates import estimate
 from er.config import Blocker, DeletionKeys, EditKeys, KeyBlocker, keys_of, q
-from er.match import _bits, _ranked, review_floor
+from er.match import _bits, _ranked, review_floor, search_floor
 from er.sample import Atom, agrees, discover, frame, generator_atoms, in_normal, key_lists, listed_by, poisson
 
 EXTEND = 0.1  # pairs per record above which a key is tried one atom longer
@@ -47,8 +47,8 @@ def gap_records(p) -> int:  # the records the gap's sample draws
     return p.keys.records if p.keys else GAP_RECORDS
 
 
-def thresholds(p) -> list[float]:  # where the gap counts: the review floor, the model's line, 20 bits
-    return sorted({review_floor(p), p.fs.min_match_weight, 20.0})
+def thresholds(p) -> list[float]:  # where the gap counts: the search floor, the review floor, the model's line, 20 bits
+    return sorted({search_floor(p), review_floor(p), p.fs.min_match_weight, 20.0})
 
 
 def agree_counts(atoms: list[Atom], lost: pd.DataFrame, w: float) -> list[dict]:  # how many of these pairs agree on each atom, scaled by w, the most first
@@ -58,7 +58,7 @@ def agree_counts(atoms: list[Atom], lost: pd.DataFrame, w: float) -> list[dict]:
 
 def gap(run) -> dict:
     """The pairs the run's model would accept that no key or rule listed, estimated by sampling (discover): per
-    threshold (the review floor, the model's line, 20 bits), the file's pairs at it and those missed, with 95% Poisson
+    threshold (the search floor, the review floor, the model's line, 20 bits), the file's pairs at it and those missed, with 95% Poisson
     intervals (the probe's); and for those missed at the floor, how many agree on each atom, the keys that would reach them. O(f·N·b)."""
     t0 = time.perf_counter()
     reused = getattr(run, "found", None)  # drawn by the keys step, its time there: listed now
@@ -72,7 +72,7 @@ def gap(run) -> dict:
         lo, hi = poisson(missed)
         rows.append(dict(bits=at, pairs=round(len(x) * w), missed=round(missed * w), missed_lo=round(lo * w), missed_hi=round(hi * w), sampled_missed=missed))
     lost = t[~t["listed"]]
-    alone = t[(t["match_weight"] >= review_floor(run.pipeline)) & ~t["ruled"]]["sources"].dropna()
+    alone = t[(t["match_weight"] >= search_floor(run.pipeline)) & ~t["ruled"]]["sources"].dropna()
     alone = alone[~alone.str.contains("+", regex=False)].value_counts()  # listed by one key and no rule: lost without it
     facts = {k: v for k, v in d.facts.items() if not (reused and k in ("draw_seconds", "score_seconds", "drawn_seconds"))}
     return {**facts, "reused": bool(reused), "thresholds": rows, "missed_agree": agree_counts(d.atoms, lost, w),
@@ -82,7 +82,7 @@ def gap(run) -> dict:
 def idle(run) -> tuple[tuple[Blocker, ...], list[str]]:
     """The generators to run: each but those whose agreement is no evidence (every comparison reading its fields, if
     any, weighs at most 0 bits at its best level: an ID handed out in sequence, one digit off) and that list no sampled
-    pair at the review floor no other generator or rule lists. Such a key's pairs reach the floor on other fields alone,
+    pair at the search floor no other generator or rule lists. Such a key's pairs reach the floor on other fields alone,
     so another key that reads them lists them, and it costs its pairs for nothing; one with a pair of its own stays. The
     sample is the gap step's (discover), kept for it: run.found. Returns the generators kept and those dropped."""
     p = run.pipeline
@@ -114,10 +114,11 @@ def idle(run) -> tuple[tuple[Blocker, ...], list[str]]:
 
 def learn(run, f: float | None = None) -> tuple[tuple[Blocker, ...], dict, dict[str, dict]]:
     """The keys for this run's records (run: an er.run.Run fitted, its rules run), what was found, and each chosen key's
-    estimate as er.candidates.estimate gives it (the candidates step reads them, not the records again)."""
+    estimate as er.candidates.estimate gives it (the candidates step reads them, not the records again). The keys aim at the
+    review floor, not the search floor: aimed lower, the cover buys keys for pairs nobody reviews."""
     t0, p, con, n = time.perf_counter(), run.pipeline, run.con, run.n
     spec, fs, m = p.keys, p.fs, p.fs.budget.min_oversized()
-    d = discover(run, spec.records)
+    d = discover(run, spec.records, review_floor(p))
     found, targets, weight, rec, sampled, facts = d.atoms, d.targets, d.weight, d.rec, d.sampled, d.facts
     t_scored = time.perf_counter()
     if targets.empty:

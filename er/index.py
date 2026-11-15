@@ -48,7 +48,7 @@ from er.config import DeletionKeys, InputError, KeyBlocker, Pipeline, SortedNeig
 from er.intake import tidy
 from er.io import read_parquet
 from er.kind import Classifier, classifier, merge_answers, name_model
-from er.match import _gammas, levels, prior_bits, read_by, review_floor
+from er.match import _gammas, levels, prior_bits, read_by, review_floor, search_floor
 from er.explain import run_model
 from er.run import run_config, stored_keys
 from er.settings import COLUMNS, Settings, fit_to_file, present_fields
@@ -719,8 +719,8 @@ def _gate(con: duckdb.DuckDBPyConnection, p: Pipeline, model: dict, uid: str, me
           checked: list[dict], n: int) -> dict[str, set[str]]:  # n: the records with it, for the prior
     """Each oversized block the record falls in, as a run gates it (er.candidates._gate): the record against the block's
     records of lowest hash(uid), it among them, less the pairs other keys list; the block joined in full only if one of
-    those reaches the review floor. O(sampled + b) a block."""
-    m, floor, added = p.fs.budget.min_oversized(), review_floor(p), {}
+    those reaches the search floor. O(sampled + b) a block."""
+    m, floor, added = p.fs.budget.min_oversized(), search_floor(p), {}
     names = {x.name: name for name, x in _tables(p) if not isinstance(x, tuple)}
     mine = con.execute("SELECT hash(?::VARCHAR)", [me]).fetchall()[0][0]
     for c in checked:

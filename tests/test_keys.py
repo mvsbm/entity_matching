@@ -2,6 +2,7 @@
 import itertools
 import json
 import random
+import re
 from dataclasses import replace
 
 import pandas as pd
@@ -78,6 +79,27 @@ def test_learned_keys_stay_in_the_budget_and_lose_no_match_the_method_s_keys_fin
     assert true_fixed <= true_learned and false_learned <= false_fixed  # every true pair kept, no false one added
 
 
+def test_the_keys_learned_are_the_same_whatever_the_search_floor(learned_and_fixed):
+    from er.keys import learn
+    s, p, g, d, fixed, learned = learned_and_fixed
+    run, chosen = learned, [x["key"] for x in next(x for x in learned.steps if x["step"] == "keys")["keys"]]
+    for floor in (0.0, 2.0, 99.0):  # 99: aimed at the review floor
+        run.pipeline = replace(run.pipeline, threshold=replace(run.pipeline.threshold, search_floor=floor))
+        assert [b.name for b in learn(run)[0]] == chosen
+
+
+def test_the_gap_counts_from_the_search_floor(learned_and_fixed):
+    from er.keys import thresholds
+    from er.match import review_floor, search_floor
+    s, p, g, d, fixed, learned = learned_and_fixed
+    assert search_floor(p) < review_floor(p) and thresholds(p) == sorted({search_floor(p), review_floor(p), p.fs.min_match_weight, 20.0})
+    gap = next(x for x in fixed.steps if x["step"] == "gap")
+    assert [x["bits"] for x in gap["thresholds"]] == thresholds(p)
+    from er.report import qa, report_text
+    shown = report_text(fixed, qa(fixed), d / "pipeline.toml").split("\nGAP")[1].split("\n\n")[0]
+    assert re.search(rf"^\s+{search_floor(p):g}\+\s", shown, re.M)  # its row, first
+
+
 def test_a_learned_key_counts_no_pair_inside_one_of_its_oversized_blocks(population):
     from er.sample import Atom, in_normal
     s, p, g = population
@@ -119,7 +141,7 @@ def test_a_key_whose_agreement_weighs_nothing_and_lists_no_pair_of_its_own_is_no
     read = lambda run, what: run.con.sql(what).df().sort_values(list(run.con.sql(what).columns)).reset_index(drop=True)
     for what in (f"SELECT * FROM scores WHERE match_weight >= {review_floor(p)}", "SELECT * FROM gold"):
         pd.testing.assert_frame_equal(read(kept, what), read(every, what))  # what people see: the same
-    assert facts(kept, "gap")["thresholds"][0]["missed"] == 0 and "only" in facts(kept, "gap")
+    assert next(x for x in facts(kept, "gap")["thresholds"] if x["bits"] == review_floor(p))["missed"] == 0 and "only" in facts(kept, "gap")
 
 
 def _placeholders(population, rows: dict) -> tuple:  # Run._placeholders on a table of these columns, as load leaves records
