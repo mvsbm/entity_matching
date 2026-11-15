@@ -1224,7 +1224,7 @@ Choose the fields EM learns from, by the given name.
 nayose choose em --workspace WORKSPACE [--records N] [--pipeline PIPELINE] [--compute KEY=VALUE …] [--format text|json]
 ```
 
-Fits the model on the run's fit sample (--records of them, default the method's), against the u the run measured, in one EM session per field a comparison's first level tests for equality (an identifying field left out). A session is kept when at least half the matches it learned agree on the given name (on the full name where the given name is filled in under 30% of the named records); one keyed on a name field is kept by its key. Writes the kept fields into method.toml's fit, as set fit does (none kept: rules); the next run learns from them. A run with fit em "choose" makes this choice itself, each level's m the median of the kept sessions, and a comparison but the name they hold under 10 pairs agreeing on takes every session's. O(the fit).
+Fits the model on the run's fit sample (--records of them, default the method's), against the u the run measured, in one EM session per field a comparison's first level tests for equality (an identifying field left out). A session is kept when at least half the matches it learned agree on the given name (on the full name where the given name is filled in under 30% of the named records); one keyed on a name field is kept by its key. Writes fit em "choose" into method.toml: each run then makes this choice itself on its own sample, each level's m the median of the kept sessions, a comparison but the name they hold under 10 pairs agreeing on taking every session's, and none kept: the method's rules. O(the fit).
 
 | Parameter | |
 |---|---|
@@ -1237,7 +1237,7 @@ Fits the model on the run's fit sample (--records of them, default the method's)
 |---|---|
 | `records` | the records sampled |
 | `sessions` | each session: session, field, pairs, given_share, kept, why |
-| `kept` | the fields kept, as set fit takes them |
+| `kept` | the fields kept |
 | `wide` | the comparisons the kept sessions barely saw: m from every session |
 | `method` | the workspace's method.toml |
 | `next` | the commands that usually follow |

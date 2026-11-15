@@ -687,7 +687,7 @@ def choose_em(a: dict, emit: "Emit") -> dict:
     s, p, _ = setup(a)
     records = fit_records(a) if a.get("records") else p.fit_rows
     r = choose(Path(a["workspace"]), s, p, records)
-    return {**r, **write_fit(a, records, r["kept"] or "rules")}
+    return {**r, **write_fit(a, records, "choose")}  # each run judges again, on its own sample: the median and the fallback with it
 
 
 def number(text: str, what: str, fix: str = "a weight in bits, for example 9 or 9.5") -> float:
@@ -1632,13 +1632,13 @@ COMMANDS: tuple[Command, ...] = (
             "Fits the model on the run's fit sample (--records of them, default the method's), against the u the run measured, "
             "in one EM session per field a comparison's first level tests for equality (an identifying field left out). "
             "A session is kept when at least half the matches it learned agree on the given name (on the full name where the "
-            "given name is filled in under 30% of the named records); one keyed on a name field is kept by its key. Writes the "
-            "kept fields into method.toml's fit, as set fit does (none kept: rules); the next run learns from them. A run with "
-            "fit em \"choose\" makes this choice itself, each level's m the median of the kept sessions, and a comparison but the name "
-            "they hold under 10 pairs agreeing on takes every session's. O(the fit).",
+            "given name is filled in under 30% of the named records); one keyed on a name field is kept by its key. Writes fit em "
+            "\"choose\" into method.toml: each run then makes this choice itself on its own sample, each level's m the median of the "
+            "kept sessions, a comparison but the name they hold under 10 pairs agreeing on taking every session's, and none kept: "
+            "the method's rules. O(the fit).",
             (WORKSPACE, Param("records", "the records to sample, 1,000 or more (default: the method's)", metavar="N"), PIPELINE, COMPUTE),
             {"records": "the records sampled", "sessions": "each session: session, field, pairs, given_share, kept, why",
-             "kept": "the fields kept, as set fit takes them", "wide": "the comparisons the kept sessions barely saw: m from every session",
+             "kept": "the fields kept", "wide": "the comparisons the kept sessions barely saw: m from every session",
              "method": "the workspace's method.toml", "next": "the commands that usually follow"},
             "nayose choose em --workspace workspaces/customers", choose_em,
             show={"sessions": ("session", "pairs", "given_share", "kept", "why")}),

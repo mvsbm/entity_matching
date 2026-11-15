@@ -96,9 +96,9 @@ def test_em_set_to_fields_is_kept_and_try_sample_offers_it_back(ran, capsys, mon
         (ws / folder.METHOD).write_text(method, encoding="utf-8") if method is not None else (ws / folder.METHOD).unlink()
 
 
-def test_choose_em_writes_the_fields_it_kept_and_the_next_run_learns_from_them(ran, capsys):
+def test_choose_em_shows_the_fields_it_keeps_and_sets_each_run_to_choose_them_itself(ran, capsys):
     from er import cli, folder
-    from er.config import added_key, adjust, em_candidates
+    from er.config import adjust, em_candidates
     s, p, ws = ran
     method = (ws / folder.METHOD).read_text(encoding="utf-8") if (ws / folder.METHOD).exists() else None
     try:
@@ -109,9 +109,9 @@ def test_choose_em_writes_the_fields_it_kept_and_the_next_run_learns_from_them(r
         assert [x["session"] for x in r["sessions"]] == [x for x in judged if x in {y["session"] for y in r["sessions"]}] and r["sessions"]
         assert "customer_id" not in judged and "given_name" not in judged  # an identifying field, and the given name alone, never judged
         assert r["kept"] == [x["field"] for x in r["sessions"] if x["kept"]] and r["kept"], r["sessions"]
-        assert folder.method(ws)["fit"] == {"records": 2000, "em": r["kept"]} and r["next"][0]["command"].startswith("nayose rerun records")
+        assert folder.method(ws)["fit"] == {"records": 2000, "em": "choose"} and r["next"][0]["command"].startswith("nayose rerun records")
         q = adjust(p, folder.method(ws))
-        assert q.fs.model.em_rules == tuple(added_key([f]).keys for f in r["kept"]) and q.fit_rows == 2000  # what the next run's fit learns from
+        assert q.fs.model.em_choose and q.fit_rows == 2000  # the next run's fit chooses again, with the median and the fallback
     finally:
         (ws / folder.METHOD).write_text(method, encoding="utf-8") if method is not None else (ws / folder.METHOD).unlink(missing_ok=True)
 
