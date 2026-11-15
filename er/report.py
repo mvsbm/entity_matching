@@ -22,6 +22,7 @@ from er.folder import PENDING, history, latest_decisions, method, rounds, runs
 from er.io import code_version, read_parquet, table_after
 from er.kind import COMPANY, PERSON, SAYS, UNSURE, sheet_parts
 from er.match import ELSE, levels, named_sql, parameters, pattern_coverage, review_floor, scaled_prior
+from er.source import filled, fit
 from er.review_state import _trust_links, applied, read
 
 if TYPE_CHECKING:
@@ -53,6 +54,23 @@ def fill_rates(run: "Run", fields: list[str] | None = None, sample: int = 10_000
     return pd.DataFrame(dict(field=fs, filled=filled, looks_right=[looks.get(f) for f in fs], top_value=[top.get(f) for f in fs],
                              no_letters=shape[0::3], length=shape[1::3], longest=shape[2::3])).assign(
         flag=lambda d: np.where(d["filled"] < 0.05, "under 5%", ""))
+
+
+def unmapped_columns(con: duckdb.DuckDBPyConnection, table: str, columns: list[str], fields: list[str], patterns: dict[str, str]) -> pd.DataFrame:
+    """Each of `columns` (read by no field) on the sample `table`: its share filled, the share of its filled values
+    held once (distinct), and the field its values look most like (er.source.fit), with that share; best fit first.
+    Numbers and names only: no value. O(sample · columns · fields)."""
+    if not columns:
+        return pd.DataFrame(columns=["column", "filled", "distinct", "looks_like", "share"])
+    v = filled("v")
+    n = max(1, con.execute(f"SELECT count(*) FROM {table}").fetchall()[0][0])
+    shape = {c: (k / n, d / max(1, k)) for c, k, d in con.execute(f"""SELECT c, count(*) FILTER (WHERE {v}), count(DISTINCT v) FILTER (WHERE {v})
+        FROM (UNPIVOT (SELECT {', '.join(q(c) for c in columns)} FROM {table}) ON COLUMNS(*) INTO NAME c VALUE v) GROUP BY c""").fetchall()}
+    fits = fit(con, table, columns, [f for f in fields if f != "id"], patterns)  # id: any column of unique values fits it; distinct says that
+    best = {c: max(((f, s[c]) for f, s in fits.items()), key=lambda x: x[1], default=("", 0.0)) for c in columns}
+    return pd.DataFrame([dict(column=c, filled=shape.get(c, (0.0, 0.0))[0], distinct=shape.get(c, (0.0, 0.0))[1],
+                              looks_like=best[c][0] if best[c][1] > 0 else "", share=best[c][1]) for c in columns]
+                        ).sort_values(["share", "filled"], ascending=False, kind="stable", ignore_index=True)
 
 
 def qa(run: "Run", fields: list[str] | None = None, review: int = 50, previous: Path | None = None) -> dict[str, pd.DataFrame]:
@@ -175,8 +193,8 @@ def report_text(run: "Run", tables: dict[str, pd.DataFrame], pipeline: Path) -> 
     """The run on a page of plain text that holds no record's value (no ID, name, phone or address: the notes that
     quote one are run.examples, in qa.md only), so it can leave the machine that holds the records. `tables` is qa()'s.
     It shows what ran (the code, the tracked files changed in this copy, the pipeline, the machine's limits), the
-    summary, each field's fill and shape, scores and accepted links by weight with the false links the model expects,
-    cluster sizes, each step's time and memory, its time in each string comparison, the model (the prior, and m, u and bits per level), the costliest
+    summary, each field's fill and shape, the columns no field reads, scores and accepted links by weight with the false links the
+    model expects, each score band's commonest patterns, cluster sizes, each step's time and memory, its time in each string comparison, the model (the prior, the pairs each EM session learned from, and m, u and bits per level), the costliest
     blocks, and the patterns no key pairs. O(C + E) over scores and matches."""
     con, fs = run.con, run.pipeline.fs
     t, lo = fs.min_match_weight, review_floor(run.pipeline)
@@ -210,6 +228,13 @@ def report_text(run: "Run", tables: dict[str, pd.DataFrame], pipeline: Path) -> 
         no_letters=fill["no_letters"].map(pct), length=fill["length"].map(lambda x: "" if pd.isna(x) else f"{x:.0f}"),
         longest=fill["longest"].map(lambda x: "" if pd.isna(x) else f"{int(x):,}"), columns=[sources_text(run.present.get(f)) for f in fill["field"]]))), ""]
 
+    if (cols := getattr(run, "unmapped", None)) is not None and len(cols):  # a Run made without load (er.sizes) has none
+        shown = cols.head(30)
+        out += ["COLUMNS NOT MAPPED  (no field reads them; filled, distinct and the field their values look most like: on the first 10,000 records)",
+                *table(pd.DataFrame(dict(column=shown["column"], filled=shown["filled"].map(pct), distinct=shown["distinct"].map(pct),
+                                         looks_like=shown["looks_like"], share=[pct(x) if f else "" for f, x in zip(shown["looks_like"], shown["share"])]))),
+                *([f"  and {len(cols) - len(shown):,} more"] if len(cols) > len(shown) else []), ""]
+
     edges = sorted({-20, -10, 0, lo, t, t + 2, t + 4, t + 8, t + 12})
     band = "CASE " + " ".join(f"WHEN match_weight < {b} THEN {i}" for i, b in enumerate(edges)) + f" ELSE {len(edges)} END"
     scored = dict(con.execute(f"SELECT {band}, count(*) FROM scores GROUP BY 1").fetchall())
@@ -222,6 +247,21 @@ def report_text(run: "Run", tables: dict[str, pd.DataFrame], pipeline: Path) -> 
     out += [f"SCORES  (bits; review from {lo:g}, accept from {t:g}; expected false = the sum of 1 − match probability)", *table(pd.DataFrame(
         [dict(bits=label(i), candidates=f"{scored[i]:,}", accepted=f"{accepted.get(i, (0, 0))[0]:,}", expected_false=f"{accepted.get(i, (0, 0))[1]:.2f}")
          for i in sorted(scored)])), ""]
+
+    gammas = [c for c, *_ in con.execute("DESCRIBE scores").fetchall() if c.startswith("gamma_")]
+    if gammas:  # each band's most common patterns among the keys' pairs scored/ keeps, one level per comparison as MODEL names it
+        named = levels(run.scoring)
+        got = con.execute(f"""WITH p AS (SELECT match_weight >= {lo} AS up, {', '.join(q(g) for g in gammas)}, count(*) AS n, avg(match_weight) AS w
+                FROM scores WHERE match_weight >= 0 GROUP BY ALL)
+            SELECT * EXCLUDE (k) FROM (SELECT *, sum(n) OVER (PARTITION BY up) AS total, count(*) OVER (PARTITION BY up) AS kinds,
+                row_number() OVER (PARTITION BY up ORDER BY n DESC, w DESC) AS k FROM p) WHERE k <= 12 ORDER BY up DESC, k""").fetchall()
+        band = lambda up: f"{lo:g} and up" if up else f"0 to {lo:g}"
+        out += ["PATTERNS BY SCORE  (the keys' pairs at 0 bits and up, below and from the review floor: each band's 12 most common levels)",
+                *table(pd.DataFrame([dict(band=band(x[0]), pairs=f"{x[len(gammas) + 1]:,}", bits=f"{x[len(gammas) + 2]:.1f}",
+                                          **{g.removeprefix("gamma_"): named.get(g.removeprefix("gamma_"), {}).get(int(v), (str(v),))[0] if v is not None else "missing"
+                                             for g, v in zip(gammas, x[1:])}) for x in got])),
+                *(f"  {band(up)}: {kinds - 12:,} patterns more, {int(total) - sum(y[len(gammas) + 1] for y in got if y[0] == up):,} pairs"
+                  for up, total, kinds in dict.fromkeys((x[0], x[-2], x[-1]) for x in got) if kinds > 12), ""]
 
     sizes = tables["cluster_sizes"]
     by = pd.cut(sizes["cluster_size"], [0, 1, 2, 3, 4, 9, 49, np.inf], labels=["1", "2", "3", "4", "5–9", "10–49", "50+"])
@@ -260,7 +300,8 @@ def report_text(run: "Run", tables: dict[str, pd.DataFrame], pipeline: Path) -> 
     lam, m = scaled_prior(run.scoring, run.n), run.scoring["er"]
     params = parameters(run.scoring)
     out += [f"MODEL  (prior {math.log2(lam / (1 - lam)):.2f} bits at {run.n:,} records; fitted on {m['fit_rows']:,} records"
-            + (f"; learned nothing about {', '.join(m['skipped'])}" if m.get("skipped") else "") + ")", *table(pd.DataFrame(dict(
+            + (f"; learned nothing about {', '.join(m['skipped'])}" if m.get("skipped") else "") + ")",
+            *(["  EM learned from: " + " · ".join(f"{f} {n:,} pairs" for f, n in m["em_pairs"].items())] if m.get("em_pairs") else []), *table(pd.DataFrame(dict(
                 comparison=params["comparison"], level=params["level"], m=params["m"].map(lambda x: f"{x:.4f}" if x >= 1e-3 else f"{x:.2e}"),
                 u=params["u"].map(lambda x: f"{x:.2e}"), bits=params["weight"].map(lambda x: f"{x:.2f}")))),
             *(f"  {c} {lv}: {why} (EM said {was:+.2f} bits)" for c, lv, why, was in m.get("adjusted", [])), ""]

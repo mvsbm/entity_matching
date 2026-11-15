@@ -854,6 +854,55 @@ def test_the_run_report_holds_no_record_value(tmp_path, population):
     assert f"about {expected:,.{1 if expected >= 1 else 2}f} of them false" in text and "MODEL" in text and "birth_date" in text
 
 
+@pytest.fixture(scope="module")
+def reported(tmp_path_factory, population):  # one full run with a column no field reads, and its report.txt
+    from er.run import Run
+    s, p, g = population
+    d = tmp_path_factory.mktemp("reported")
+    g.df.assign(SPARE_PHONE=g.df["PHONE_NUM_4"]).to_parquet(d / "in.parquet", index=False)
+    run = Run(p, s).full(d / "in.parquet", d / "run", pipeline_file=s.root / "config" / "final.toml")
+    return run, (d / "run" / "report.txt").read_text(encoding="utf-8"), d / "run"
+
+
+def section(text: str, name: str) -> list[str]:  # a report.txt section's lines, its header first
+    return text.split(f"\n{name}")[1].split("\n\n")[0].splitlines()
+
+
+def test_the_run_report_names_each_column_no_field_reads_and_what_it_looks_like(reported, population):
+    _, text, _ = reported
+    rows = {x.split()[0]: x.split() for x in section(text, "COLUMNS NOT MAPPED")[2:]}
+    assert rows["SPARE_PHONE"][3] == "phone" and "PHONE_NUM_4" not in rows and "CONT_ID" not in rows  # a column a field reads: not listed
+    shares = [float(x[4].rstrip("%")) for x in rows.values() if len(x) == 5]
+    assert len(shares) > 1 and shares == sorted(shares, reverse=True)  # best fit first
+    assert not any(v in text for v in population[2].df["PHONE_NUM_4"].dropna().unique())  # its values never
+
+
+def test_the_run_report_counts_each_score_bands_patterns(reported):
+    from er.match import review_floor
+    run, text, out = reported
+    lines = section(text, "PATTERNS BY SCORE")
+    assert lines[1].split()[:3] == ["band", "pairs", "bits"] and [c.name for c in run.pipeline.fs.model.comparisons] == lines[1].split()[3:]
+    lo = review_floor(run.pipeline)
+    stored = dict(duckdb.sql(f"SELECT match_weight >= {lo}, count(*) FROM read_parquet('{out}/scored/*.parquet') WHERE match_weight >= 0 AND sources IS NOT NULL GROUP BY 1").fetchall())
+    shown: dict[bool, int] = {}
+    for x in lines[2:]:
+        w = x.split()
+        if m := re.fullmatch(r"\s+(0 to \S+|\S+ and up): [\d,]+ patterns more, ([\d,]+) pairs", x):  # the rest of a band
+            up, n = m.group(1).endswith("and up"), m.group(2)
+        else:
+            up, n = w[1] == "and", w[3]
+        shown[up] = shown.get(up, 0) + int(n.replace(",", ""))
+    assert shown == stored and len(lines) > 3
+
+
+def test_the_run_report_says_what_each_em_session_learned_from(reported):
+    run, text, _ = reported
+    em = run.model["er"]["em_pairs"]
+    assert em and all(n > 0 for n in em.values())
+    line = next(x for x in section(text, "MODEL")[:2] if "EM learned from:" in x)
+    assert all(f"{f} {n:,} pairs" in line for f, n in em.items())
+
+
 def test_the_runaway_guard_stops_only_what_would_not_fit(tmp_path, population, monkeypatch):
     from er.run import Run
     s, p, g = population

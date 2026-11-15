@@ -77,7 +77,7 @@ from er.keys import idle, gap as keys_gap, learn
 from er.kind import KIND_COLUMNS, NAME_MODEL, century, classifier as kind_classifier, kind_review_sheet, merge_answers
 from er.match import ELSE, bound_tests, rough_reads, compared_exactly, fit_model, fit_sample_sql, named_sql, bound_reads, reaching_sql, refreshed_u, review_floor, rule_edges, search_floor, score_fs, scored_u, train_fs, u_basis
 from er.probe import missed
-from er.report import carry_kinds, carry_over, no_run, qa, report_text, review_sheet
+from er.report import carry_kinds, carry_over, no_run, qa, report_text, review_sheet, unmapped_columns
 from er.explain import scored_again
 from er.review_state import trust_state
 from er.results import BANDS, own_merging, banded, check_merging, merge_where
@@ -172,6 +172,7 @@ class Run:
         self.learned: tuple = ()              # the keys learned on the file (keys), if any
         self.plan: pd.DataFrame | None = None  # the budget's pairs per rule and generator (budget()); an increment has none
         self.present: dict = {}               # each field the file holds, and the source columns it is built from
+        self.unmapped: pd.DataFrame | None = None  # the file's columns no field reads, on a sample (report.unmapped_columns)
         self.scoring: dict | None = None      # the model with u from this file (fit): what the gate and the scores use
         self.basis: dict = {}                 # what an increment needs to tell whether those u went stale (er.match.u_basis)
         self.classifier = None                # each record's kind, person or company (er.kind); None: the pipeline doesn't ask
@@ -212,6 +213,9 @@ class Run:
         self.notes, self.inputs = list(src.notes), file_facts(src.files, "records")
         present = self.present = present_fields(self.settings, src.columns)
         hints = suggest(src, self.con, [f for f in self.settings.columns if f not in present and f != "entity"], self.settings.detect)
+        mapped = {c for alts in self.settings.columns.values() for alt in alts for c in alt}
+        self.unmapped = unmapped_columns(self.con, "er_sample", [c for c in src.columns if c not in mapped], list(self.settings.columns), self.settings.detect).assign(
+            column=lambda d: d["column"].map(lambda c: src.given.get(c, c)))  # on suggest's sample: by the names the file gives them
         needed = self.pipeline.fields.needed()
         hints = {f: (src.given.get(c, c), share, why) for f, (c, share, why) in hints.items() if share >= (0.99 if f == "id" else 0.5) and f in needed}  # a likely column, by the name it has in the file
         extra = self._lacks(stored, src.columns) if stored else []  # an increment's batch is read as the run read its records
