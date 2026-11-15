@@ -1174,7 +1174,7 @@ def stored_keys(ws: Path, p: Pipeline, s: Settings) -> Pipeline:  # the keys the
 BLOCKS = "blocks.json"  # in state/: each key's oversized blocks a full run listed, by value
 CROWD = 64        # the fewest customers a compared field's placeholder is held by, however small the budget's oversized blocks
 SPREAD = 10       # a placeholder is held by this many times the field's records per value, or more
-PLACEHOLDERS = 2  # how placeholders are told (Run._placeholders): a run that told them otherwise takes no increment until it runs again
+PLACEHOLDERS = 3  # how placeholders are told (Run._placeholders): a run that told them otherwise takes no increment until it runs again
 
 
 FINGERPRINTED_ROWS = 30_000  # the fit's sample, as every run's fingerprint holds it: whatever a run samples, its increments take no rerun
