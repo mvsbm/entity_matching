@@ -570,6 +570,6 @@ def test_em_choose_with_no_session_kept_learns_as_the_method_does(con_db):
 def test_the_method_s_own_em_sessions_are_judged_by_the_given_name_too(con_db):
     _, db = con_db
     records, two = households(), ((Key("phone"),), (Key("birth_date"),))
-    for model in (replace(household_model(em_choose=()), em_rules=two), replace(household_model(em_choose=()), em_rules=two, em_median=True)):  # in turn, and kept apart
-        got = {x["session"]: x["given_share"] for x in train_fs(model, records, db, UID)["er"]["em_given"]}
+    for fitted in (replace(household_model(em_choose=()), em_rules=two), replace(household_model(em_choose=()), em_rules=two, em_median=True)):  # in turn, and kept apart
+        got = {x["session"]: x["given_share"] for x in train_fs(fitted, records, db, UID)["er"]["em_given"]}
         assert got["phone"] < 0.5 <= got["birth_date"], got  # what DIAGNOSIS says of a run's own EM
