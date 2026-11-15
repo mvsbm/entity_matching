@@ -658,7 +658,8 @@ def try_sample(a: dict, emit: "Emit") -> dict:
     s, p, _ = setup(a)
     ws = Path(a["workspace"])
     r = grow(ws, s, p, line=emit.line)
-    return {**r, "next": [dict(command=nayose("set", "fit", "--workspace", ws, "--records", v, "--em", k), why=f"learn from {v:,} records, {k}, at the next run") for k, v in r["settled"].items()]}
+    em = lambda k: r.get("em_set", k) if k == "rules" else k  # the workspace's own fields, kept
+    return {**r, "next": [dict(command=nayose("set", "fit", "--workspace", ws, "--records", v, "--em", em(k)), why=f"learn from {v:,} records, {em(k)}, at the next run") for k, v in r["settled"].items()]}
 
 
 def set_fit(a: dict, emit: "Emit") -> dict:
@@ -666,8 +667,9 @@ def set_fit(a: dict, emit: "Emit") -> dict:
     records = int(number(a["records"], "--records", fix="a number of records, 1,000 or more"))
     if records < 1000:
         raise InputError(f"--records {records}: fewer than 1,000 records hold too few matches to learn from", fix="give 1,000 or more: try sample says where more stops paying")
+    em = a["em"] if a["em"] in ("rules", "keys") else [f.strip() for f in a["em"].split(",") if f.strip()]
     with folder.run_lock(ws):  # read, checked and written as one
-        method = {**folder.method(ws), "fit": {"records": records, "em": a["em"]}}
+        method = {**folder.method(ws), "fit": {"records": records, "em": em}}
         setup(a, method)  # refused before anything is written
         folder.write_method(ws, method)
     return {"method": method, "next": [dict(command=nayose("rerun", "records", "--workspace", ws), why="find matches with it")]}
@@ -1605,9 +1607,10 @@ COMMANDS: tuple[Command, ...] = (
             show={"steps": ("records", "em", "seconds", "start", "pairs_floor", "added", "lost")}),
     Command("set", "fit", "Set the sample the model learns from, and how EM learns",
             "Keeps them in the workspace (method.toml fit): the records the next run's fit samples, and EM as the method has it "
-            "(rules) or one session per equality key, each level's m their median (keys). The next run uses them. O(1).",
+            "(rules), one session per equality key, each level's m their median (keys), or one session blocked on each field "
+            "named (fields, comma-separated, each `field` or `field:normalizer`). The next run uses them. O(1).",
             (WORKSPACE, Param("records", "the records to sample, 1,000 or more (try sample says where more stops paying)", required=True, metavar="N"),
-             Param("em", "rules: as the method has it; keys: one session per equality key", "choice", ("rules", "keys"), required=True), PIPELINE),
+             Param("em", "rules: as the method has it; keys: one session per equality key; or fields, comma-separated: one session per field", required=True, metavar="rules|keys|FIELDS"), PIPELINE),
             {"method": "the workspace's method.toml", "next": "the commands that usually follow"},
             "nayose set fit --workspace workspaces/customers --records 64000 --em keys", set_fit),
     Command("try", "everything", "Try everything on a file, and write a report to send that holds no record's value",

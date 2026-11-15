@@ -77,3 +77,20 @@ def test_a_fit_set_after_the_run_owes_a_rerun_but_no_increment_refuses(ran, caps
         assert (ws / "state" / "config.txt").read_text(encoding="utf-8") == run_config(adjust(p, folder.method(ws)), s)  # an increment and a lookup take it as it was
     finally:
         (ws / folder.METHOD).write_text(method, encoding="utf-8") if method is not None else (ws / folder.METHOD).unlink()
+
+
+def test_em_set_to_fields_is_kept_and_try_sample_offers_it_back(ran, capsys, monkeypatch):
+    from er import cli, folder
+    s, p, ws = ran
+    method = (ws / folder.METHOD).read_text(encoding="utf-8") if (ws / folder.METHOD).exists() else None
+    assert cli.main(["set", "fit", "--records", "2000", "--em", "birth_date, person_name", "--workspace", str(ws), "--pipeline", str(s.root / "tests" / "method.toml"), "--format", "json"]) == 0
+    capsys.readouterr()
+    try:
+        assert folder.method(ws)["fit"] == {"records": 2000, "em": ["birth_date", "person_name"]}
+        monkeypatch.setattr(sizes, "FIRST", 100)
+        monkeypatch.setattr(sizes, "SETTLED", 10.0)
+        assert cli.main(["try", "sample", "--workspace", str(ws), "--pipeline", str(s.root / "tests" / "method.toml"), "--format", "json"]) == 0
+        r = json.loads(capsys.readouterr().out.splitlines()[-1])
+        assert r["em_set"] == "birth_date,person_name" and any("--em birth_date,person_name" in x["command"] for x in r["next"])  # its own fields, not the tuned rules
+    finally:
+        (ws / folder.METHOD).write_text(method, encoding="utf-8") if method is not None else (ws / folder.METHOD).unlink()

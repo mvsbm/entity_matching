@@ -3101,7 +3101,7 @@ const SCREENS = {
       } else if (b.dataset.fit) {
         const f = JSON.parse(b.dataset.fit);
         run("improve", "set fit", f).then((r) => { $("sizes-out").insertAdjacentHTML("afterbegin", r.event === "error" ? banner(r)
-          : `<div class="banner info">${icon("check")}<div><b>The next run learns from ${fmt(f.records)} records, ${FIT_EM[f.em]}.</b></div><a class="btn" data-go="run">${icon("run")}Find matches</a></div>`); });
+          : `<div class="banner info">${icon("check")}<div><b>The next run learns from ${fmt(f.records)} records, ${esc(FIT_EM[f.em] || `EM per ${f.em.replaceAll(",", ", ")}`)}.</b></div><a class="btn" data-go="run">${icon("run")}Find matches</a></div>`); });
       } else if (b.id === "sizes-dl") {
         const a = document.createElement("a");
         a.href = URL.createObjectURL(new Blob([b.closest("[data-report]").dataset.report], {type: "text/plain"}));
@@ -3116,7 +3116,7 @@ const SCREENS = {
 };
 
 // How large a sample the model needs (try sample): pairs at the floor as each sample grows, both ways EM learns.
-const FIT_EM = {rules: "EM as tuned", keys: "EM per key"};
+const FIT_EM = {rules: "EM as set", keys: "EM per key"};
 function sizesView(box, rows, done = null, now = "") {
   const ok = rows.filter((x) => x.pairs_floor !== undefined), ways = [...new Set(ok.map((x) => x.em))];
   if (!ok.length) { box.innerHTML = `<p class="muted">${spinner()} ${rows.length ? `${fmt(rows[rows.length - 1].records)} records: too few to learn from yet…` : "Fitting…"}</p>`; return; }
@@ -3133,7 +3133,7 @@ function sizesView(box, rows, done = null, now = "") {
     <line x1="${L}" x2="${W - R}" y1="${H - B}" y2="${H - B}" stroke="var(--line)"/>
     ${[Math.max(...vs), Math.min(...vs)].map((v) => `<text x="${L - 6}" y="${Y(v) + 4}" font-size="11" text-anchor="end" fill="var(--faint)">${fmt(v)}</text>`).join("")}${ticks}${lines}</svg>`;
   const use = done ? ways.map((w) => { const n = done.settled[w] ?? ok.filter((x) => x.em === w).pop().records;
-    return `<button class="btn ${done.settled[w] ? "filled" : ""}" data-fit='${esc(JSON.stringify({records: Math.max(n, 1000), em: w}))}'>Use ${n >= done.records ? "every record" : `${fmt(n)} records`}, ${FIT_EM[w]}</button>`; }).join(" ") : "";  // a sample of the whole file: any size past it
+    return `<button class="btn ${done.settled[w] ? "filled" : ""}" data-fit='${esc(JSON.stringify({records: Math.max(n, 1000), em: w === "rules" && done.em_set || w}))}'>Use ${n >= done.records ? "every record" : `${fmt(n)} records`}, ${FIT_EM[w]}</button>`; }).join(" ") : "";  // a sample of the whole file: any size past it
   box.innerHTML = (done ? `<p class="answer">${Object.keys(done.settled).length ? `More stops paying at ${Object.entries(done.settled).map(([w, n]) => `${fmt(n)} records (${FIT_EM[w]})`).join(", ")}.`
       : "Still changing at the largest sample."}</p>${checkLines(done)}` : `<p class="muted">${spinner()} ${esc(now ? now.replace(/:.*/, "…") : `${fmt(rows[rows.length - 1].records)} records done…`)}</p>`) + chart + '<div id="sizes-table"></div>' +
     (done ? `<div class="stepfoot" data-report="${esc(done.report)}">${use}<span class="grow"></span><button class="btn" id="sizes-dl">${icon("download")}Download</button></div>` : "");

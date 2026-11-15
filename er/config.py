@@ -740,7 +740,8 @@ def adjust(p: "Pipeline", method: Mapping[str, object]) -> "Pipeline":
     `merge`, the conditions that merge pairs without people (er.results.check_merging), read by runs and set merging;
     `add_keys`, pair keys added, each a list of fields (`field` or `field:normalizer`), as describe method proposes them;
     `fit`, the sample the model learns from: `records` (fit_rows) and `em`, "rules" (em_rules) or "keys" (one session
-    per equality key, each level's m their median), as try sample shows them.
+    per equality key, each level's m their median), as try sample shows them, or a list of fields (`field` or
+    `field:normalizer`), one session blocked on each, in place of em_rules.
     Nothing changed: the same pipeline, so the same config hash. O(rules + generators)."""
     if not method:
         return p
@@ -768,10 +769,17 @@ def adjust(p: "Pipeline", method: Mapping[str, object]) -> "Pipeline":
     if not stages or not blockers:
         raise InputError(f"method.toml leaves no {'match rule' if not stages else 'pair key'}", fix)
     fit = method.get("fit", {})
+    em = fit.get("em", "rules") if isinstance(fit, dict) else None
+    fields = isinstance(em, list) and em and all(isinstance(f, str) and f for f in em)
     if not isinstance(fit, dict) or set(fit) - {"records", "em"} or not isinstance(fit.get("records", 1000), int) or isinstance(fit.get("records"), bool) \
-            or fit.get("records", 1000) < 1000 or fit.get("em", "rules") not in ("rules", "keys"):
-        raise InputError('method.toml: fit takes records (1,000 or more) and em ("rules" or "keys")', fix)
-    model = p.fs.model if "em" not in fit else replace(p.fs.model, em_from_keys=fit["em"] == "keys", em_median=fit["em"] == "keys")
+            or fit.get("records", 1000) < 1000 or not (em in ("rules", "keys") or fields):
+        raise InputError('method.toml: fit takes records (1,000 or more) and em ("rules", "keys", or a list of fields)', fix)
+    model = p.fs.model if "em" not in fit else replace(p.fs.model, em_from_keys=em == "keys", em_median=em == "keys")
+    if fields:
+        sessions = tuple(added_key([f]).keys for f in em)
+        if bad := sorted({k.column for r in sessions for k in r} - p.fields.declared()) + sorted({n for r in sessions for k in r for n in k.normalize} - (set(get_args(Normalizer)) - set(COPIES))):
+            raise InputError(f"method.toml: fit em names {bad}: not a field the pipeline declares, nor a normalizer", fix)
+        model = replace(model, em_rules=sessions)
     return replace(p, rules=replace(p.rules, stages=stages), fs=replace(p.fs, blockers=blockers, min_match_weight=float(line), model=model),
                    trust=p.trust if trust is None else replace(p.trust, line=math.inf if trust == "none" else float(trust)),
                    fit_rows=fit.get("records", p.fit_rows))
