@@ -1194,16 +1194,16 @@ nayose try sample --workspace workspaces/customers
 Set the sample the model learns from, and how EM learns.
 
 ```
-nayose set fit --workspace WORKSPACE --records N --em rules|keys [--pipeline PIPELINE] [--format text|json]
+nayose set fit --workspace WORKSPACE --records N --em rules|keys|FIELDS [--pipeline PIPELINE] [--format text|json]
 ```
 
-Keeps them in the workspace (method.toml fit): the records the next run's fit samples, and EM as the method has it (rules) or one session per equality key, each level's m their median (keys). The next run uses them. O(1).
+Keeps them in the workspace (method.toml fit): the records the next run's fit samples, and EM as the method has it (rules), one session per equality key, each level's m their median (keys), or one session blocked on each field named (fields, comma-separated, each `field` or `field:normalizer`). The next run uses them. O(1).
 
 | Parameter | |
 |---|---|
 | `--workspace WORKSPACE` | the workspace: the folder that keeps one matching job (required) |
 | `--records N` | the records to sample, 1,000 or more (try sample says where more stops paying) (required) |
-| `--em rules|keys` | rules: as the method has it; keys: one session per equality key (required) |
+| `--em rules|keys|FIELDS` | rules: as the method has it; keys: one session per equality key; or fields, comma-separated: one session per field (required) |
 | `--pipeline PIPELINE` | the pipeline file (default: config/final.toml) |
 
 | Result | |

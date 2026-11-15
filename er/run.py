@@ -1170,9 +1170,9 @@ PLACEHOLDERS = 2  # how placeholders are told (Run._placeholders): a run that to
 
 def run_config(p: Pipeline, s: Settings) -> str:
     """What an increment needs the full run's to be: the pipeline and the settings that shape the records. The fit's
-    sample and EM (method.toml's fit) are left at their defaults: an increment and a lookup score with the stored model."""
+    sample and EM (method.toml's fit: the sessions' rules too) are left out: an increment and a lookup score with the stored model."""
     fit = {f.name: f.default for f in fields(FSModel) if f.name in ("em_from_keys", "em_median")}
-    p = replace(p, fit_rows=next(f.default for f in fields(Pipeline) if f.name == "fit_rows"), fs=replace(p.fs, model=replace(p.fs.model, **fit)))
+    p = replace(p, fit_rows=next(f.default for f in fields(Pipeline) if f.name == "fit_rows"), fs=replace(p.fs, model=replace(p.fs.model, em_rules=(), **fit)))
     return config_hash((p, s.columns, s.standardize, s.flag_company, s.input, PLACEHOLDERS))
 
 

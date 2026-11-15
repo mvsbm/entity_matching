@@ -1130,6 +1130,22 @@ def test_the_fit_a_workspace_sets_is_the_sample_and_the_em_its_runs_use(populati
     assert run_config(q, s) == run_config(p, s) != run_config(adjust(p, {"line": 9}), s)  # an increment and a lookup score with the stored model: the fit owes them no rerun
 
 
+def test_em_set_to_fields_learns_one_session_blocked_on_each_and_a_run_fits_with_them(population, tmp_path):
+    from er.config import InputError, Key, adjust
+    from er.run import Run
+    s, p, g = population
+    q = adjust(p, {"fit": {"records": 30000, "em": ["birth_date", "person_name:kana_fold"]}})
+    assert q.fs.model.em_rules == ((Key("birth_date"),), (Key("person_name", ("kana_fold",)),)) and not q.fs.model.em_from_keys
+    from er.run import run_config
+    assert run_config(q, s) == run_config(p, s)  # an increment scores with the stored model: EM owes it no rerun
+    for bad in (["no_such_field"], ["person_name:no_such_step"], [], [""]):
+        with pytest.raises(InputError):
+            adjust(p, {"fit": {"em": bad}})
+    g.df.to_parquet(tmp_path / "in.parquet", index=False)
+    run = Run(q, s).full(tmp_path / "in.parquet", tmp_path / "w")
+    assert not {"birth_date", "person_name"} & set(run.model["er"]["skipped"])  # both sessions found pairs to learn from
+
+
 def test_a_comparison_s_own_copy_is_no_step_a_setting_may_name(tmp_path):
     from er.config import COPIES
     from er.settings import load_settings, settings_path
