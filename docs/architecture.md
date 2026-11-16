@@ -178,7 +178,8 @@ Scores every candidate, with the u step 3 measured on this file: for each field,
 
 - **Why:** bits add up, so every score can be explained field by field.
 - **Code:** `Run.score` → `match.score_fs`, `scaled_prior` (λ at this file's size)
-- **Increment:** only the pairs touching the batch that can reach 0 are scored, as above, a slice at a time: `O(C_Δ·K·L²)`.
+- **The floor:** a pair is scored and stored only if it can reach the workspace's floor: 0 points, or `method.toml` `keep` (`set floor`). A lower floor keeps pairs people can review that 0 drops, such as a moved customer with a new ID, for more pairs scored and stored. The oversized blocks' gate keeps its own floor (step 5).
+- **Increment:** only the pairs touching the batch that can reach the floor are scored, as above, a slice at a time: `O(C_Δ·K·L²)`.
 
 ### 7 · Cluster: from pairs to entities · `O(C + E·d + N)`
 

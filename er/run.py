@@ -153,7 +153,7 @@ class Run:
     echo: Callable[[dict], None] | None = None  # called with each step as it finishes: progress for people (nayose)
     told: Callable[..., None] | None = None   # called as a long step goes (done, total, unit, facts): how far it is, for people
     kind_labels: Path | None = None           # people's person/company labels (a filled-in kind_review.parquet); an increment keeps the run's
-    reaching_only: bool = True                # candidates stores only the pairs that can reach 0 (_reaching); design time measures every pair the keys list
+    reaching_only: bool = True                # candidates stores only the pairs that can reach keep_from (_reaching); design time measures every pair the keys list
 
     def __post_init__(self) -> None:
         self.con, self.db = connect(self.settings.compute)
@@ -600,14 +600,15 @@ class Run:
                    gate_seconds=round(self.gate_seconds, 2), gate_pairs=self.gate_pairs, generators=listed(report))  # the gate: its samples scored
         return report
 
-    def _reaching(self, pairs: str) -> str:  # a generator's pairs that score() scores: those that can reach 0, and the rules', never stored otherwise
+    def _reaching(self, pairs: str) -> str:  # a generator's pairs that score() scores: those that can reach keep_from, and the rules', never stored otherwise
         bound, have = bound_tests(self.pipeline.fs.model), self.columns()
         cols = [c for c in sorted(bound_reads(self.scoring, bound)) if c in have]
         self.con.execute(f"CREATE TABLE IF NOT EXISTS er_bound_records AS SELECT {', '.join(q(c) for c in [self.uid, *cols])} FROM records")  # what the bound reads, narrow
         hashed = [c for c in sorted(rough_reads(self.scoring, bound)) if c in have]
         self.con.execute(f"CREATE TABLE IF NOT EXISTS er_bound_hashes AS SELECT {q(self.uid)}, "  # what the rough test reads: a hash of each, NULL where missing
                          f"{', '.join(f'CASE WHEN {q(c)} IS NOT NULL THEN hash({q(c)}) END AS {q(c)}' for c in hashed) or 'NULL AS __none'} FROM records")
-        return reaching_sql(self.scoring, "er_bound_records", pairs, self.uid, set(cols), self.n, 0.0, bound, "rule_kept", hashed="er_bound_hashes")
+        return reaching_sql(self.scoring, "er_bound_records", pairs, self.uid, set(cols), self.n, self.pipeline.threshold.keep_from, bound, "rule_kept",
+                            hashed="er_bound_hashes")
 
     def _joined(self) -> Callable[..., None] | None:
         """told for candidates' joins, each generator weighed as the budget counted it (the records it reads, the pairs
@@ -667,8 +668,8 @@ class Run:
             self.notes.append(f"{len(gated):,} oversized blocks in all: {kept:,} kept, {len(gated) - kept:,} skipped (qa.md lists them)")
 
     def score(self) -> None:
-        """Every candidate that can reach 0 points scored by Splink, with the model and u that fit() settled (the rest: a
-        bound settles it below 0, which nothing reads: unscored); and the patterns the scored pairs fall in (_patterns)."""
+        """Every candidate that can reach keep_from points (method.toml keep, 0 unless set) scored by Splink, with the model
+        and u that fit() settled (the rest: a bound settles it below, which nothing reads: unscored); and the patterns the scored pairs fall in (_patterns)."""
         t, fs = time.perf_counter(), self.pipeline.fs
         k, model_line = len(fs.model.comparisons), bits(fs.min_match_weight)
         total, done, likely = self._count("cands"), 0, 0  # likely: the pairs the model scores as matches, whatever trust lets merge
@@ -679,7 +680,7 @@ class Run:
             done, likely = done + sliced, likely + hit
             if self.told:
                 self.told(done, total, "pairs", likely=likely)
-        self._scored("cands", "scores", each=each, floor=0.0, exempt="rule_kept")  # scored/ keeps 0 points and up, and every rule pair
+        self._scored("cands", "scores", each=each, floor=self.pipeline.threshold.keep_from, exempt="rule_kept")  # scored/ keeps keep_from points and up, and every rule pair
         reached: dict[str, dict[str, int]] = {}  # per comparison, the pairs at each level (gamma, as score_fs gives it): one scan
         for c, g, n in self.con.execute("SELECT c, g, count(*) FROM (UNPIVOT scores ON COLUMNS('^gamma_') INTO NAME c VALUE g) GROUP BY ALL").fetchall():
             reached.setdefault(c.removeprefix("gamma_"), {})[str(g)] = n
@@ -713,13 +714,13 @@ class Run:
             JOIN rule_clusters a ON a.{u} = s.{l} JOIN rule_clusters b ON b.{u} = s.{r}"""
 
     def _links(self) -> str:
-        """Every pair scored at 0 points or more and every rule pair, as scored/ keeps them for people (er.results): its
+        """Every pair scored at keep_from points or more and every rule pair, as scored/ keeps them for people (er.results): its
         points, how it was found (sources: the keys; rule: the rule), named, keep, and one gamma per comparison."""
         fs, l, r = self.pipeline.fs, q(self.l), q(self.r)
         gammas = [c for c, *_ in self.con.execute("DESCRIBE scores").fetchall() if c.startswith("gamma_")]
         rule = f"(SELECT {l}, {r}, min(rule) AS rule FROM rule_kept GROUP BY ALL)"
         model = f"""SELECT s.{l}, s.{r}, s.match_weight, s.match_probability, s.sources, k.rule, s.named, s.keep, {', '.join(f's.{q(g)}' for g in gammas)}
-            FROM ({self.scored()}) s LEFT JOIN {rule} k USING ({l}, {r}) WHERE s.match_weight >= 0 OR k.rule IS NOT NULL"""
+            FROM ({self.scored()}) s LEFT JOIN {rule} k USING ({l}, {r}) WHERE s.match_weight >= {self.pipeline.threshold.keep_from} OR k.rule IS NOT NULL"""
         if not self.con.execute("SELECT count(*) FROM duckdb_tables() WHERE table_name = 'rule_scores'").fetchall()[0][0]:
             return model
         return f"""{model} UNION ALL BY NAME SELECT x.{l}, x.{r}, x.match_weight, x.match_probability, NULL::VARCHAR AS sources, k.rule,
@@ -1185,7 +1186,8 @@ def run_config(p: Pipeline, s: Settings) -> str:
     sample and EM (method.toml's fit: the sessions' rules too) are left out: an increment and a lookup score with the stored model."""
     fit = {f.name: f.default for f in fields(FSModel) if f.name in ("em_from_keys", "em_median")}  # em_choose: never in a model's repr
     p = replace(p, fit_rows=FINGERPRINTED_ROWS, fs=replace(p.fs, model=replace(p.fs.model, em_rules=(), **fit)))
-    return config_hash((p, s.columns, s.standardize, s.flag_company, s.input, PLACEHOLDERS))
+    keep = p.threshold.keep_from  # out of the dataclass's repr, so a workspace that never set it keeps its hash
+    return config_hash((p, s.columns, s.standardize, s.flag_company, s.input, PLACEHOLDERS) + ((("keep", keep),) if keep else ()))
 
 
 def listed(report: pd.DataFrame) -> list[dict]:  # each generator's pairs and seconds, kept in steps.json (describe matching)

@@ -129,3 +129,35 @@ def test_a_run_with_em_choose_keeps_each_session_s_verdict_in_its_model_and_the_
     from er.report import qa, report_text
     report = report_text(run, qa(run, [f for f in s.columns if f not in ("id", "entity")]), s.root / "tests" / "method.toml")
     assert "EM SESSIONS" in report and all(x["session"] in report for x in choice)
+
+
+def test_a_floor_below_0_keeps_the_pairs_down_to_it_and_every_pair_the_default_kept(ran, tmp_path, capsys):
+    import shutil
+    import duckdb
+    from er import cli
+    s, p, ws = ran
+    low = tmp_path / "low"
+    shutil.copytree(ws, low)
+    read = lambda w: duckdb.sql(f"SELECT * EXCLUDE (match_probability) FROM read_parquet('{w}/scored/*.parquet')").df()
+    before = read(ws)
+    pipeline = ["--pipeline", str(s.root / "tests" / "method.toml")]  # as the run was made
+    assert cli.main(["set", "floor", "--points", "-10", "--workspace", str(low), *pipeline, "--format", "json"]) == 0
+    assert cli.rerun_owed({"workspace": str(low), "pipeline": pipeline[1]})  # stored pairs change: the run owes a rerun
+    assert cli.main(["rerun", "records", "--workspace", str(low), *pipeline, "--format", "json"]) == 0
+    capsys.readouterr()
+    after = read(low)
+    model = lambda d: d[d["rule"].isna()]
+    assert (model(after)["match_weight"] < 0).any() and (model(after)["match_weight"] >= -10).all()
+    key = lambda d: d[d["match_weight"] >= 0].sort_values(list(d.columns[:2])).reset_index(drop=True)
+    pd.testing.assert_frame_equal(key(after)[key(before).columns], key(before), check_dtype=False)  # at 0 and up: the same pairs and points
+
+
+def test_keep_in_method_toml_is_a_number_and_changes_the_run_s_hash_only_when_set(ran):
+    from er.config import adjust
+    from er.run import run_config
+    s, p, ws = ran
+    assert run_config(adjust(p, {"keep": 0}), s) == run_config(p, s) != run_config(adjust(p, {"keep": -10}), s)
+    assert adjust(p, {"keep": -10}).threshold.keep_from == -10
+    for bad in ("low", True, float("inf")):
+        with pytest.raises(InputError, match="keep"):
+            adjust(p, {"keep": bad})
