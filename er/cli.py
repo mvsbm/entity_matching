@@ -683,6 +683,15 @@ def set_fit(a: dict, emit: "Emit") -> dict:
     return write_fit(a, fit_records(a), em)
 
 
+def set_floor(a: dict, emit: "Emit") -> dict:  # method.toml's keep, checked, then written
+    ws, points = Path(a["workspace"]), number(a["points"], "points", fix="a number of points, for example -10 or 0")
+    with folder.run_lock(ws):  # read, checked and written as one
+        method = {**folder.method(ws), "keep": points}
+        setup(a, method)  # refused before anything is written
+        folder.write_method(ws, method)
+    return {"method": method, "next": [dict(command=nayose("rerun", "records", "--workspace", ws), why="find matches with it")]}
+
+
 def choose_em(a: dict, emit: "Emit") -> dict:
     s, p, _ = setup(a)
     records = fit_records(a) if a.get("records") else p.fit_rows
@@ -1631,6 +1640,12 @@ COMMANDS: tuple[Command, ...] = (
              Param("em", "rules: as the method has it; keys: one session per equality key; choose: as choose em, at each fit; or fields, comma-separated: one session per field", required=True, metavar="rules|keys|choose|FIELDS"), PIPELINE),
             {"method": "the workspace's method.toml", "next": "the commands that usually follow"},
             "nayose set fit --workspace workspaces/customers --records 64000 --em keys", set_fit),
+    Command("set", "floor", "Set the points from which the run keeps pairs",
+            "Keeps it in the workspace (method.toml keep): a pair whose best case can't reach it is never compared in full or "
+            "stored, so people can't review it. 0 unless set; lower keeps more pairs and costs more. The next run uses it. O(1).",
+            (WORKSPACE, Param("points", "the points to keep pairs from, for example -10", required=True, metavar="POINTS"), PIPELINE),
+            {"method": "the workspace's method.toml", "next": "the commands that usually follow"},
+            "nayose set floor --workspace workspaces/customers --points -10", set_floor),
     Command("choose", "em", "Choose the fields EM learns from, by the given name",
             "Fits the model on the run's fit sample (--records of them, default the method's), against the u the run measured, "
             "in one EM session per field a comparison's first level tests for equality (an identifying field left out). "
@@ -1878,7 +1893,7 @@ GROUPS = (  # the top-level help's commands, by task
                 "apply answers", "describe merging", "set merging", "list entities", "describe entity", "split entity")),
     ("Look up", ("build index", "match record", "search records")),
     ("Look inside", ("describe workspace", "describe matching", "describe key", "list patterns", "explain pair", "compare records")),
-    ("Method", ("describe method", "try method", "try sample", "set fit", "choose em", "adopt method", "reset method", "describe review", "lower trust", "raise trust", "draw pairs", "list pairs")),
+    ("Method", ("describe method", "try method", "try sample", "set fit", "set floor", "choose em", "adopt method", "reset method", "describe review", "lower trust", "raise trust", "draw pairs", "list pairs")),
 )
 
 

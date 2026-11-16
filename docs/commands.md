@@ -49,6 +49,7 @@ Written by `scripts/document_commands.py` from the declarations in `er/cli.py`; 
 | [`try method`](#nayose-try-method) | Try a change of the method beside the method as it is |
 | [`try sample`](#nayose-try-sample) | Find how large a sample the model needs to learn from |
 | [`set fit`](#nayose-set-fit) | Set the sample the model learns from, and how EM learns |
+| [`set floor`](#nayose-set-floor) | Set the points from which the run keeps pairs |
 | [`choose em`](#nayose-choose-em) | Choose the fields EM learns from, by the given name |
 | [`try everything`](#nayose-try-everything) | Try everything on a file, and write a report to send that holds no record's value |
 | [`adopt method`](#nayose-adopt-method) | Adopt a method tried, and find matches with it |
@@ -1215,6 +1216,31 @@ Keeps them in the workspace (method.toml fit): the records the next run's fit sa
 
 ```bash
 nayose set fit --workspace workspaces/customers --records 64000 --em keys
+```
+
+## nayose set floor
+
+Set the points from which the run keeps pairs.
+
+```
+nayose set floor --workspace WORKSPACE --points POINTS [--pipeline PIPELINE] [--format text|json]
+```
+
+Keeps it in the workspace (method.toml keep): a pair whose best case can't reach it is never compared in full or stored, so people can't review it. 0 unless set; lower keeps more pairs and costs more. The next run uses it. O(1).
+
+| Parameter | |
+|---|---|
+| `--workspace WORKSPACE` | the workspace: the folder that keeps one matching job (required) |
+| `--points POINTS` | the points to keep pairs from, for example -10 (required) |
+| `--pipeline PIPELINE` | the pipeline file (default: config/final.toml) |
+
+| Result | |
+|---|---|
+| `method` | the workspace's method.toml |
+| `next` | the commands that usually follow |
+
+```bash
+nayose set floor --workspace workspaces/customers --points -10
 ```
 
 ## nayose choose em

@@ -435,6 +435,7 @@ class ThresholdRule:
     max_fp_rate_hi: float
     margin_steps: int
     search_floor: float = 0.0  # bits: the oversized-block gate and the gap aim here (er.match.search_floor); the idle-key check, the review floor
+    keep_from: float = field(default=0.0, repr=False)  # bits: a pair the best case says can't reach it is never stored (method.toml keep); in the run's hash only when set (run_config)
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -726,7 +727,7 @@ def widen(p: "Pipeline", added: Iterable[tuple[str, str]]) -> "Pipeline":
                    fs=replace(p.fs, model=model, blockers=p.fs.blockers + tuple(c for b in p.fs.blockers for c in copies.get(b.name, ()))))
 
 
-METHOD_KEYS = ("line", "drop_rules", "drop_keys", "trust", "add_keys", "merge", "fit")
+METHOD_KEYS = ("line", "drop_rules", "drop_keys", "trust", "add_keys", "merge", "fit", "keep")
 
 
 GIVEN, PERSON = "given_name", "person_name"  # agreement on the given name tells one person's records from a household's; the full name, where it is sparse (er.match.chosen)
@@ -754,7 +755,7 @@ def adjust(p: "Pipeline", method: Mapping[str, object]) -> "Pipeline":
     `fit`, the sample the model learns from: `records` (fit_rows) and `em`, "rules" (em_rules), "keys" (one session
     per equality key, each level's m their median), as try sample shows them, "choose" (one session per compared field,
     kept by the given name: em_candidates), or a list of fields (`field` or `field:normalizer`), one session blocked on
-    each, in place of em_rules.
+    each, in place of em_rules; `keep`, the points from which the run stores pairs (keep_from, default 0).
     Nothing changed: the same pipeline, so the same config hash. O(rules + generators)."""
     if not method:
         return p
@@ -764,6 +765,9 @@ def adjust(p: "Pipeline", method: Mapping[str, object]) -> "Pipeline":
     line = method.get("line", p.fs.min_match_weight)
     if isinstance(line, bool) or not isinstance(line, int | float) or not all(isinstance(method.get(k, []), list) for k in METHOD_KEYS[1:3]):
         raise InputError("method.toml: line is a weight in bits, drop_rules and drop_keys lists of names", fix)
+    keep = method.get("keep", p.threshold.keep_from)
+    if isinstance(keep, bool) or not isinstance(keep, int | float) or not math.isfinite(keep):
+        raise InputError("method.toml: keep is the points from which pairs are stored, for example -10", fix)
     trust = method.get("trust")
     if trust is not None and trust != "none" and (isinstance(trust, bool) or not isinstance(trust, int | float) or float(trust) not in p.trust.steps):
         raise InputError(f'method.toml: trust is "none" or one of the steps {list(p.trust.steps)}', fix)
@@ -795,7 +799,7 @@ def adjust(p: "Pipeline", method: Mapping[str, object]) -> "Pipeline":
         model = replace(model, em_rules=sessions)
     return replace(p, rules=replace(p.rules, stages=stages), fs=replace(p.fs, blockers=blockers, min_match_weight=float(line), model=model),
                    trust=p.trust if trust is None else replace(p.trust, line=math.inf if trust == "none" else float(trust)),
-                   fit_rows=fit.get("records", p.fit_rows))
+                   fit_rows=fit.get("records", p.fit_rows), threshold=replace(p.threshold, keep_from=float(keep)))
 
 
 def load_pipeline(path: Path, std: Standardization, chains: Mapping[str, tuple[Normalizer, ...]],
