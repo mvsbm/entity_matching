@@ -25,7 +25,7 @@
 
 **A full run** (`er.run.Run.full`, which `nayose resolve records` calls), with the times measured on 1,039,995 generated records by
 `scripts/benchmark.py`, in a process of its own under an 8 GB DuckDB memory limit (peak 7.21 GB, Python included). The reader
-reads the file before these steps, about 15 s a million records from CSV, 7 s from Parquet ([below](#reading-a-file-as-it-comes)):
+reads the file before these steps, about 3.3 s a million records ([below](#reading-a-file-as-it-comes)):
 
 | # | Step | Code | Cost | Grows like | At 1M |
 |---|---|---|---|---|---|
@@ -231,6 +231,11 @@ trained once and its signals computed once; a combination fits only its combiner
   run reads, so `scripts/benchmark.py` runs them at design time, where the keys are chosen. On the parity runs'
   generated files (each pair of runs on one file), a full run of 1,000,000 records 43.1 s to 27.1 s (the gap took
   15.39 s of it, the probe 0.59 s), of 200,000 records 16.8 s to 10.6 s, wall clock; every output file, the model, an increment and 30 lookups the same to the last bit.
+- **Records read as Parquet only** (`er.intake`): every column read as text, by column in Arrow, with no delimiter,
+  quoting or encoding to work out. On the parity runs' generated 1,000,000-record Parquet file, the reader 3.81 s to
+  3.25 s (the median of three runs), the file it reads the same to the byte (its SHA-256); the full run with it 27.1 s
+  to 26.2 s, wall clock; every result the same to the last bit, on train, val, 200,000 and 1,000,000 records, an
+  increment and 30 lookups.
 - **The gap's sample bounded once** (`er.sample.discover`): every atom's drawn pairs are listed first, then pass the
   bound together, 10 million at a time, not one pass per atom; each pass joins the records again.
 - **PassJoin's candidates as value IDs** (`Records.near_values`): the segment join keeps each candidate as two
@@ -297,21 +302,19 @@ quarter of a second at every size, since the candidates step lists only the pair
 
 ## Reading a file as it comes
 
-`scripts/benchmark_intake.py`: the reader (`er.intake`, before every run) on a generated file of 1,000,338 records × 25
-columns written as CSV, clean and damaged ([reports/benchmark_intake.md](../reports/benchmark_intake.md)):
+`scripts/benchmark_intake.py`: the reader (`er.intake`, before every run) on a generated file of 1,039,995 records × 25
+columns as Parquet, every column text, a clean copy and a damaged one ([reports/benchmark_intake.md](../reports/benchmark_intake.md)):
 
 | File | Seconds | Read back | Changed, never damaged |
 |---|---|---|---|
-| clean UTF-8 CSV | 14.8 | every value | 0 |
-| damaged CSV, every proposal accepted | 26.8 | each kind of damage: 100.0% of its values | 0 |
+| clean | 3.4 | every value | 0 |
+| damaged | 3.9 | each kind of damage: 100.0% of its values | 0 |
 
-The damaged file holds values in CP932 (10% of rows) and EUC-JP (2%), zero-width characters and NULs, placeholders,
-spreadsheet numbers, names garbled upstream and unquoted commas inside addresses. Most values take the fast path: ASCII
-as it is, UTF-8 that reads as Japanese text decoded once; only the others are tried in every encoding and judged, so a
-damaged file costs about twice a clean one. A Parquet file is read by column: the first chunk learns each column from
-its values one by one (a text column's first 50,000; past them, UTF-8 values tell nothing), then each chunk's values
-that reading keeps as they are are settled in Arrow, the rest read one by one as in a CSV; the same file, byte for
-byte, in about half the time (7.1 s against 14.8 s on the million records as Parquet).
+The damaged copy holds 84,895 values with a zero-width character and a NUL, 84,222 NULL placeholders, 10,094 numbers
+a spreadsheet wrote (5851.0) and 83,148 values written as lists (["…"]). Most values take the fast path: each chunk's
+values that reading keeps as they are (plain ASCII, Japanese UTF-8 with nothing to fix) are settled in Arrow, by
+column, and only the rest are read one by one, so the damaged copy costs about 15% more than the clean one. Which
+columns hold numbers is learned from the first chunk (a column's first 50,000 values).
 Plain ASCII is told by Arrow's byte tests (printable, not empty, no space at either end), not by a regular expression,
 and a bracket found by RE2, which finds a single character far faster than Arrow's substring search: on a file of
 500,000 records × 80 columns, some of 1,500 characters, the reader 37 s to 20 s.
@@ -322,4 +325,4 @@ At design time, `scripts/benchmark.py` runs both on each scenario's run once it 
 The gap pairs 20,000 sampled records with every record that shares a value with them or a near one, and scores the
 pairs: O(f·N·b). The probe scores about `[probe] pairs` (a million) pairs in each of its groups, drawn at random among
 the pairs that share a phone or a postal area: O(N + P·K + L). On the parity runs' generated file of 1,000,000
-records, the gap takes 15.39 s and the probe 0.59 s, against 27.1 s for the whole run.
+records, the gap takes 15.39 s and the probe 0.59 s, against 26.2 s for the whole run.

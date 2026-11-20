@@ -255,13 +255,13 @@ def current(out: Path, replacing: bool = False) -> None:
         raise InputError(f"{out}: a workspace an earlier nayose wrote ({'; '.join(what)})", fix="run it again into a new folder: nayose resolve records FILE --workspace PATH")
 
 
-def inputs(out: Path, spec: intake.InputSpec | None = None, reference: Path | None = None) -> list[Path]:
+def inputs(out: Path, spec: intake.InputSpec | None = None) -> list[Path]:
     """The record files the run in `out` read, in order: the full run's, then each increment's (steps.json). Each
     must still hold what was read, by its SHA-256, where it was read, in the workspace's own inputs/ (wherever the
     workspace now is, and whatever folder nayose starts from), or where the scheduler moved it (jobs.jsonl). With the
     reader's settings, a part an older reader read is read again first (fresh). O(bytes)."""
     for part in parts(out) if spec else []:
-        fresh(part, spec, reference)
+        fresh(part, spec)
     named = [x for run in runs(out) for x in run.get("inputs", []) if x.get("role") == "records"]
     if not named:
         raise InputError(f"{out}: steps.json names no record file", fix="give the files again with a full run that overwrites the folder")
@@ -271,7 +271,7 @@ def inputs(out: Path, spec: intake.InputSpec | None = None, reference: Path | No
     inside = {sha: part / rel for part in parts(out) for rel, sha in sums(part).items()}
     read = [(part / f["read"], f["versions"]) for part in parts(out) for f in intake.report(part)["files"]]
     inside |= {v: f for f, versions in read for v in versions}
-    replaced = {v: versions[-1] for _, versions in read for v in versions[:-1]}  # a read file a repair accepted later replaced
+    replaced = {v: versions[-1] for _, versions in read for v in versions[:-1]}  # a read file a newer reader read again replaced
     files = []
     for x in named:
         here = [Path(p) for p in (x["file"], inside.get(x["sha256"]), moved.get(x["sha256"])) if p and Path(p).is_file()]
@@ -319,10 +319,10 @@ def read_by_older(out: Path) -> bool:
     return bool(older) and any(x.get("sha256") in older for run in runs(out) for x in run.get("inputs", []) if x.get("role") == "records")
 
 
-def fresh(part: Path, spec: intake.InputSpec, reference: Path, progress=None) -> Path:
+def fresh(part: Path, spec: intake.InputSpec, progress=None) -> Path:
     """A part as this code and these [input] settings read it: one an older reader read (intake.READER), or under other
-    settings, is read again, once, under its workspace's lock, with the repairs people accepted, as accepting one reads
-    it; a run that read the old one still finds its file (intake.json versions). A reading cut short in its moves is
+    settings, is read again, once, under its workspace's lock; a run that read the old one still finds its file
+    (intake.json versions). A reading cut short in its moves is
     finished first. O(bytes) once; O(1) after."""
     stale = lambda r: r.get("reader", 1) < intake.READER or r.get("input") != intake.read_as(spec)
     if not (part / ".read.tmp" / intake.REPORT).is_file() and ((r := intake.report(part)) is None or not stale(r)):
@@ -330,16 +330,15 @@ def fresh(part: Path, spec: intake.InputSpec, reference: Path, progress=None) ->
     with run_lock(part.parent.parent):
         intake.settle(part)
         if (r := intake.report(part)) is not None and stale(r):  # another job may have read it meanwhile
-            intake.take(part, {part / x["given"]: x["given"] for x in r["files"]}, spec, reference, frozenset(r["accepted"]), progress=progress)
+            intake.take(part, {part / x["given"]: x["given"] for x in r["files"]}, spec, progress=progress)
     return part
 
 
-def take_in(ws: Path, path: str | Path, spec: intake.InputSpec, reference: Path, progress=None, shown=None) -> tuple[Path, bool]:
+def take_in(ws: Path, path: str | Path, spec: intake.InputSpec, progress=None) -> tuple[Path, bool]:
     """Copy the files `path` names (a file, a glob or a folder: er.source.find) into the next part of the workspace's
-    inputs/, and read them (er.intake: read/, what was found, the repairs proposed), under its lock: into a hidden
-    folder first, renamed into place once every file is complete and read, so a part is whole or absent. Content the
-    workspace already holds, file for file by SHA-256, is not copied again. `progress`, `shown`: intake.take's. The part, and
-    whether it is new. O(bytes)."""
+    inputs/, and read them (er.intake: read/ and what was found), under its lock: into a hidden folder first, renamed
+    into place once every file is complete and read, so a part is whole or absent. Content the workspace already holds,
+    file for file by SHA-256, is not copied again. `progress`: intake.take's. The part, and whether it is new. O(bytes)."""
     p = Path(path).expanduser()
     if p.is_dir() and (ws.resolve() == p.resolve() or p.resolve() in ws.resolve().parents):  # its own files, and itself, read as records
         raise InputError(f"{path} holds this workspace", fix="give the folder that holds the records only")
@@ -347,18 +346,18 @@ def take_in(ws: Path, path: str | Path, spec: intake.InputSpec, reference: Path,
     if (own := next((x for x in parts(ws) if x.resolve() == at), None)) is not None:  # one of its own parts: given again, as it is
         with run_lock(ws):
             replace_text(ws / INPUTS / LAST, own.name)
-        return fresh(own, spec, reference, progress), False
+        return fresh(own, spec, progress), False
     if home in at.parents and not at.relative_to(home).parts[0].startswith("."):  # its own files (inputs/, a part's read/): read twice, or as records; not what nayose stages there (.uploads, .synthetic-*)
         raise InputError(f"{path} is inside this workspace", fix="give the records file from where it came; one loaded already is read by a run given none (inputs/last)")
     files, root = find(path), p if p.is_dir() and not intake.report(p) else None  # a workspace part given: its read files, copied by name
-    if clash := next((f for f in files if (f.relative_to(root) if root else Path(f.name)).parts[0] in (intake.READ, intake.PROPOSALS, intake.UNREAD, intake.REPORT, SUMS)), None):
+    if clash := next((f for f in files if (f.relative_to(root) if root else Path(f.name)).parts[0] in (intake.READ, intake.REPORT, SUMS)), None):
         raise InputError(f"{clash}: named as the workspace's own reading of a file", fix="give the records under another name")
     given = sorted(intake.sha256(f) for f in files)
     with run_lock(ws, make=True):
         for part in parts(ws):
             if sorted(sums(part).values()) == given:
                 replace_text(ws / INPUTS / LAST, part.name)  # given again: the one a run reads, as a new one would be
-                return fresh(part, spec, reference, progress), False
+                return fresh(part, spec, progress), False
         stem = p.parent.name if globbed(p) else p.name if root else p.stem
         n = max((int(x.name.split("-", 1)[0]) for x in parts(ws)), default=0) + 1
         part = ws / INPUTS / f"{n:04d}-{re.sub(r'[^A-Za-z0-9._-]+', '_', stem)[:40] or 'records'}"
@@ -373,7 +372,7 @@ def take_in(ws: Path, path: str | Path, spec: intake.InputSpec, reference: Path,
             copied[tmp / rel] = rel.as_posix()
         (tmp / SUMS).write_text("\n".join(lines) + "\n", encoding="utf-8")
         try:
-            intake.take(tmp, copied, spec, reference, progress=progress, shown=shown)
+            intake.take(tmp, copied, spec, progress=progress)
         except BaseException:
             shutil.rmtree(tmp, ignore_errors=True)
             raise
@@ -384,14 +383,13 @@ def take_in(ws: Path, path: str | Path, spec: intake.InputSpec, reference: Path,
 
 def loaded(ws: Path) -> list[dict]:
     """inputs/'s parts, oldest first: each one's name, path, files, bytes and rows (as the intake read them), the name
-    of its file as given (one file), the repairs waiting for people and the rows unread, whether a run has read all of it as it is now (steps.json, by
+    of its file as given (one file), whether a run has read all of it as it is now (steps.json, by
     SHA-256), the seconds its reading took and its columns (this machine's pace: the page's estimate of a run), and
     whether it was given last (last: the one a run given no file reads). O(parts + files + steps.json)."""
     read, given_last = {x["sha256"] for run in runs(ws) for x in run.get("inputs", []) if x.get("role") == "records"}, last(ws)
     def facts(part: Path) -> dict:  # a part's rows and whether a run read it, as the intake read it
         r = intake.report(part)
-        waiting = sum(n for k, n in r["proposed"].items() if k not in r["accepted"])
-        return dict(rows=r["rows"], read=all(f["versions"][-1] in read for f in r["files"]), waiting=waiting, unread=r["unread"], seconds=r.get("seconds"), columns=max((x["columns"] for x in r["files"]), default=0),
+        return dict(rows=r["rows"], read=all(f["versions"][-1] in read for f in r["files"]), seconds=r.get("seconds"), columns=max((x["columns"] for x in r["files"]), default=0),
                     given=Path(r["files"][0]["given"]).name if len(r["files"]) == 1 else None)  # its file's own name, kana and kanji kept
     return [dict(name=part.name, path=str(part), files=len(own), bytes=sum((part / rel).stat().st_size for rel in own), **facts(part), last=part == given_last)
             for part in parts(ws) for own in [sums(part)]]

@@ -122,7 +122,13 @@ def load_settings(path: Path | None = None) -> Settings:
     )
 
 
-def input_spec(cfg: dict) -> InputSpec:  # [input]: the encodings tried, the placeholders, how sure a proposed repair must be
+READ_AS_TEXT = ("encodings", "margin_text", "margin_row", "max_extra")  # [input] keys only a text file's reading needs: records are Parquet
+
+
+def input_spec(cfg: dict) -> InputSpec:  # [input]: the placeholders read as missing
+    if gone := sorted(set(cfg) & set(READ_AS_TEXT)):
+        raise InputError(f"[input] {', '.join(gone)}: {'sets' if len(gone) == 1 else 'set'} nothing: records are Parquet, whose text is UTF-8",
+                         fix=f"delete {', '.join(gone)} from [input]")
     unknown = set(cfg) - set(InputSpec.__dataclass_fields__)
     checked(not unknown, f"[input]: unknown keys {sorted(unknown)}")
     return InputSpec(**{k: tuple(map(str, v)) if isinstance(v, list) else v for k, v in cfg.items()})

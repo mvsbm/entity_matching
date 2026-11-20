@@ -19,7 +19,6 @@ from er import intake
 from er.config import InputError, lit, q
 from er.settings import norm_name
 
-CONVERT = "give it to nayose as it is (any command that takes records): it reads CSV, TSV and Parquet"
 NESTED = ("STRUCT", "MAP", "UNION", "[]")  # DuckDB types a field's column can't hold
 NUMBER = re.compile(r"^(U?(TINY|SMALL|BIG|HUGE)?INT(EGER)?|FLOAT|DOUBLE|DECIMAL|REAL)")
 
@@ -34,18 +33,19 @@ class Source:
     given: dict[str, str] = field(default_factory=dict)  # a column read under another name (KIND_2) → its name in the file
 
 
-def globbed(p: Path) -> bool:  # a pattern of names (*.csv, part-?.csv); a file or folder that exists is itself, [ in its name or not
+def globbed(p: Path) -> bool:  # a pattern of names (*.parquet, part-?.parquet); a file or folder that exists is itself, [ in its name or not
     return not p.exists() and any(c in p.name for c in "*?[")
 
 
 def find(path: str | Path) -> list[Path]:
-    """The files a path names: one file, a glob, or a folder (its Parquet, CSV and TSV files, at any depth:
-    intake.SUFFIXES); a workspace's part, the files its intake read (er.intake). ~ is the home folder."""
+    """The files a path names: one file, a glob, or a folder (its Parquet files, at any depth: intake.SUFFIXES); a
+    workspace's part, the files its intake read (er.intake). ~ is the home folder."""
     p = Path(path).expanduser()
     if p.is_dir() and (r := intake.report(p)):
         return [p / x["read"] for x in r["files"]]
-    if p.is_file() and p.suffix.lower() not in intake.SUFFIXES:  # a picture, a script, a document: not read as records
-        raise InputError(f"{p.name}: not a records file", fix="give a CSV, TSV or Parquet file; one saved without that ending, rename it .csv")
+    if p.is_file() and p.suffix.lower() not in intake.SUFFIXES:  # a CSV, a picture, a document refused, saying how to write it as Parquet
+        intake.check(p)
+        return [p]  # Parquet saved without its ending: read as it is
     if globbed(p):  # its files, as a folder's: no folder, no hidden file, a records file's ending
         files = sorted(f for f in p.parent.glob(p.name) if f.is_file() and not f.name.startswith(".") and f.suffix.lower() in intake.SUFFIXES) if p.parent.exists() else []
     else:
@@ -54,24 +54,12 @@ def find(path: str | Path) -> list[Path]:
     if files:
         return files
     if p.is_dir():
-        raise InputError(f"{path} holds no CSV, TSV or Parquet file", fix="name a records file, or a folder that holds some")
+        raise InputError(f"{path} holds no Parquet file", fix=f"name a Parquet file, or a folder that holds some; a CSV: {intake.CONVERT}")
     folder = p.parent
     names = {f.stem: f.name for f in folder.iterdir() if f != p} if folder.is_dir() else {}  # by stem: a close name, whatever its suffix
     near = [names[s] for s in difflib.get_close_matches(p.stem, names, n=3)]
     raise InputError(f"no file matches {path}", fix=f"did you mean {' or '.join(str(folder / n) for n in near)}?" if near
                      else f"check the path: {folder} {'holds no file like it' if folder.is_dir() else 'does not exist'}")
-
-
-def check_parquet(f: Path, fix: str = CONVERT) -> None:
-    """A Parquet file starts and ends with PAR1; say what the file looks like instead."""
-    with f.open("rb") as h:
-        head = h.read(4)
-        h.seek(max(0, f.stat().st_size - 4))
-        tail = h.read(4)
-    if intake.parquet(f, head, tail):
-        return
-    kind = "a ZIP or Excel file" if head[:2] == b"PK" else "text, perhaps a CSV" if head and all(b >= 9 for b in head) else "not Parquet"
-    raise InputError(f"{f}: not a Parquet file; it looks like {kind}", fix=fix)
 
 
 def open_source(path: str | Path | list[Path], con: duckdb.DuckDBPyConnection, expected: Iterable[str], reserved: Iterable[str] = ()) -> Source:
@@ -83,7 +71,7 @@ def open_source(path: str | Path | list[Path], con: duckdb.DuckDBPyConnection, e
     ordered = isinstance(path, list)
     files = [x for p in path for x in find(p)] if ordered else find(path)
     for f in files:
-        check_parquet(f)
+        intake.check(f)
     schemas = {}
     for f in files:
         try:

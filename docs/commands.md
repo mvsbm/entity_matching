@@ -32,7 +32,7 @@ A full run, without labels: load, budget, fit, rules, candidates, score, cluster
 
 | Parameter | |
 |---|---|
-| `INPUT` | the records: a CSV, TSV or Parquet file, a quoted glob ('in/*.csv') or a folder of them, read as they come and together by column name; copied into the workspace first. Without it, the file loaded into it last |
+| `INPUT` | the records: a Parquet file, a quoted glob ('in/*.parquet') or a folder of them, read together by column name; copied into the workspace first. Without it, the file loaded into it last |
 | `--workspace WORKSPACE` | the workspace: the folder that keeps one matching job (required) |
 | `--overwrite` | replace the results it holds |
 | `--pipeline PIPELINE` | the pipeline file (default: config/final.toml) |
@@ -64,7 +64,7 @@ An increment: each new record compared with every stored one, with the run's mod
 
 | Parameter | |
 |---|---|
-| `INPUT` | the records: a CSV, TSV or Parquet file, a quoted glob ('in/*.csv') or a folder of them, read as they come and together by column name; copied into the workspace first. Without it, the file loaded into it last |
+| `INPUT` | the records: a Parquet file, a quoted glob ('in/*.parquet') or a folder of them, read together by column name; copied into the workspace first. Without it, the file loaded into it last |
 | `--workspace WORKSPACE` | the workspace: the folder that keeps one matching job (required) |
 | `--pipeline PIPELINE` | the pipeline file (default: config/final.toml) |
 | `--compute KEY=VALUE` | DuckDB limits for this run, over config/settings.toml [compute]: memory_limit=8GB, threads=4, temp_directory=<folder> (past the memory limit DuckDB spills there) |
@@ -94,7 +94,7 @@ An increment's steps without its write: for each record, the entity it would joi
 
 | Parameter | |
 |---|---|
-| `INPUT` | the records: a CSV, TSV or Parquet file, a quoted glob ('in/*.csv') or a folder of them, read as they come and together by column name |
+| `INPUT` | the records: a Parquet file, a quoted glob ('in/*.parquet') or a folder of them, read together by column name |
 | `--workspace WORKSPACE` | the workspace: the folder that keeps one matching job (required) |
 | `--pipeline PIPELINE` | the pipeline file (default: config/final.toml) |
 | `--compute KEY=VALUE` | DuckDB limits for this run, over config/settings.toml [compute]: memory_limit=8GB, threads=4, temp_directory=<folder> (past the memory limit DuckDB spills there) |

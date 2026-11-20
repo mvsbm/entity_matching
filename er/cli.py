@@ -148,10 +148,10 @@ def given(a: dict, emit: "Emit | None" = None) -> str:
     read again first if an older reader read it (folder.fresh)."""
     ws, s, told = Path(a["workspace"]), settings_for(a), rows_told(emit)
     if a["input"]:
-        return str(folder.take_in(ws, a["input"], s.input, s.paths["reference"], progress=told)[0])
+        return str(folder.take_in(ws, a["input"], s.input, progress=told)[0])
     if not (part := folder.last(ws)):
         raise InputError(f"no records file in {ws}", fix=f"name it: nayose resolve records FILE --workspace {ws}")
-    return str(folder.fresh(part, s.input, s.paths["reference"], told))
+    return str(folder.fresh(part, s.input, told))
 
 
 def resolve_records(a: dict, emit: "Emit") -> dict:
@@ -172,8 +172,8 @@ def add_records(a: dict, emit: "Emit") -> dict:
         shutil.rmtree(part, ignore_errors=True)
         (replace_text(out / folder.INPUTS / folder.LAST, before.name) if before else (out / folder.INPUTS / folder.LAST).unlink(missing_ok=True))
     held = [x for x in folder.parts(out) if a["input"] and Path(a["input"]).expanduser().resolve() == x.resolve()]  # a part loaded already: as it is
-    part, copied = ((folder.fresh(held[0], s.input, s.paths["reference"], rows_told(emit)), False) if held else
-                    folder.take_in(out, a["input"], s.input, s.paths["reference"], progress=rows_told(emit)) if a["input"] else (Path(given(a, emit)), False))
+    part, copied = ((folder.fresh(held[0], s.input, rows_told(emit)), False) if held else
+                    folder.take_in(out, a["input"], s.input, progress=rows_told(emit)) if a["input"] else (Path(given(a, emit)), False))
     try:
         run = Run(p, s, echo=emit.step, told=emit.progress).increment(part, out, pipeline_file=pipeline)
     except InputError as e:
@@ -249,7 +249,7 @@ def counted(a: dict, name: str, default: int) -> int:  # a page or a count: a wh
 def apply_decisions(a: dict, emit: "Emit") -> dict:
     s, p, _ = setup(a)
     out = Path(a["workspace"])
-    with folder.run_lock(out), readable(a["file"], s, strict=True) if a["file"] else contextlib.nullcontext(out / "review.parquet") as path:
+    with folder.run_lock(out), readable(a["file"], s) if a["file"] else contextlib.nullcontext(out / "review.parquet") as path:
         run = Run(p, s, echo=emit.step, told=emit.progress).decide(path, out)
     x = run.steps[-1]
     return dict(decisions=x["decisions"], matches=x["matches"], clusters_joined=x["clusters_joined"],
@@ -259,7 +259,7 @@ def apply_decisions(a: dict, emit: "Emit") -> dict:
 
 # ---------- the declarations ----------
 
-INPUT = Param("input", "the records: a CSV, TSV or Parquet file, a quoted glob ('in/*.csv') or a folder of them, read as they come and together by column name",
+INPUT = Param("input", "the records: a Parquet file, a quoted glob ('in/*.parquet') or a folder of them, read together by column name",
               "path", positional=True)
 WORKSPACE = Param("workspace", "the workspace: the folder that keeps one matching job", "path", required=True)
 GIVEN = replace(INPUT, help=INPUT.help + "; copied into the workspace first. Without it, the file loaded into it last", optional=True)

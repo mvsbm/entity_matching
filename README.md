@@ -28,7 +28,7 @@ These numbers come from synthetic records built from real Japanese names, compan
 - **The data is hard on purpose.** About 1% of true pairs are direct matches (the same customer ID and name, or the same name, address code and phone), and 11.3% share nothing usable, so no method finds them all ([data](docs/data.md#how-hard-it-is)).
 - **It merged no two unrelated customers:** 0 false merges on test, so the rate is at most 0.26%. Two people of one household (a spouse, a parent or a sibling at one address) can score as high as a duplicate; their pairs are counted apart, 45 on test. On val, people see 27 of the 32 such pairs it accepted labelled "maybe one household" ([usage](docs/usage.md#maybe-one-household)).
 - **It merges less falsely than the file's person/company flag alone:** on generated files with one name column for both, and company names held out of its name model's training, it calls a kind where it is sure, never a person against a company flag, and takes the flag's elsewhere, flagging where they disagree. It made 33–111 false merges against 38–121 by the flag alone, and called 63–314 companies persons against 102–644; it called more persons companies, 554–2,690 against 306–2,533 ([chapter 7](docs/guide/07-person-or-company.md)).
-- **A million records take 27.2 seconds,** with peak memory 7.21 GB under an 8 GB limit (1,039,995 generated records), and about 15 seconds before that for the reader to read the file as it comes. Every step's work grows about linearly with the file.
+- **A million records take 27.2 seconds,** with peak memory 7.21 GB under an 8 GB limit (1,039,995 generated records), and about 3 seconds before that for the reader to read the file as it comes. Every step's work grows about linearly with the file.
 
 Real data may differ, and only a run on it can tell ([limits](#limits)).
 
@@ -37,8 +37,8 @@ Real data may differ, and only a run on it can tell ([limits](#limits)).
 ```bash
 ./setup_venv.sh
 # map the file's columns once: config/settings.toml [columns]
-.venv/bin/nayose resolve records customers.csv --workspace workspaces/customers     # CSV, TSV or Parquet: one ID per person or company
-.venv/bin/nayose add records new.csv --workspace workspaces/customers               # a batch joins the run
+.venv/bin/nayose resolve records customers.parquet --workspace workspaces/customers # Parquet: one ID per person or company
+.venv/bin/nayose add records new.parquet --workspace workspaces/customers           # a batch joins the run
 .venv/bin/nayose apply decisions --file reviewed.parquet --workspace workspaces/customers   # people's decisions on the pairs
 ```
 
