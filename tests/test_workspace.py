@@ -218,10 +218,10 @@ def test_the_loader_reads_parquet_by_column_name_and_says_what_is_wrong(tmp_path
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
     monkeypatch.setenv("USERPROFILE", str(tmp_path / "home"))  # Windows' home folder
     from er import folder as folders, intake
-    part, _ = folders.take_in(tmp_path / "ws_home", "~/exports", intake.InputSpec(), load_settings().paths["reference"])
+    part, _ = folders.take_in(tmp_path / "ws_home", "~/exports", intake.InputSpec())
     assert intake.report(part)["rows"] == 6
     (tmp_path / "empty").mkdir()
-    with pytest.raises(InputError, match="holds no CSV, TSV or Parquet file"):  # a folder with no records file: said so, not "did you mean" itself
+    with pytest.raises(InputError, match="holds no Parquet file"):  # a folder with no records file: said so, not "did you mean" itself
         open_source(tmp_path / "empty", con, [])
     (tmp_path / "c.parquet").write_text("CONT_ID,name\n1,x\n", encoding="utf-8")
     with pytest.raises(InputError, match="looks like text"):

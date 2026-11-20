@@ -61,7 +61,7 @@ The fields, and which ones a run needs (`[fields]` in `config/final.toml`):
 
 ### Files as they come
 
-A records file is CSV, TSV or Parquet: a file, a quoted glob (`'in/*.csv'`) or a folder of them, read together by column name. The reader (`er.intake`) decodes each value on its own, so one file may mix encodings by column or by row: a value is read in the one of `[input] encodings` (UTF-8, CP932, EUC-JP) that decodes it strictly. What loses nothing is fixed and counted: control bytes, zero-width characters and BOMs inside values removed, placeholders (`[input] nulls`: NULL, \N, N/A, -, …) made missing, a number a spreadsheet wrote as `5851.0` read as `5851`. What would be a guess (a row whose fields don't line up, a garbled value, a value another encoding reads better) is never applied: it is kept in the part's `proposals.parquet`, and a row nothing can read in `unread.parquet`. A file where more than 1,000 records, and more than a tenth of those read, don't line up with its header is refused: its delimiter or its header is wrong. Not read: gzip and Excel (save it as CSV or Parquet).
+A records file is Parquet: a file, a quoted glob (`'in/*.parquet'`) or a folder of them (`.parquet` files at any depth), read together by column name; a Parquet file saved without its ending is read as it is. Anything else is refused, with how to write it as Parquet, every column as text: in Python, `pandas.read_csv(path, dtype=str).to_parquet(new)`; in DuckDB, `COPY (FROM read_csv(path, all_varchar = true)) TO new`. The reader (`er.intake`) reads every column as text. What loses nothing is fixed and counted: control bytes, zero-width characters and BOMs removed, placeholders (`[input] nulls`: NULL, \N, N/A, -, …) and values of spaces alone made missing, a number a spreadsheet wrote as `5851.0` read as `5851` and one in E notation (`1.23E+11`, its digits gone) made missing, a value written as a list (`["8700848"]`) read as its first item, a blank column name numbered and one that repeats another but for case suffixed. Text is UTF-8: a value stored as bytes that aren't, or holding U+FFFD (decoded wrong upstream), is made missing and counted as damaged. A column stored as a number gets a note: its leading zeros may be lost upstream.
 
 ## 3 · Run
 
@@ -187,16 +187,16 @@ What stops it: two lines, what is wrong and how to fix it, and exit code 2:
 | The message says | Why |
 |---|---|
 | `no file matches …` | a wrong path; it suggests the closest names in that folder |
-| `… a ZIP or Excel file, not records` | save it as CSV or Parquet |
+| `…: not a Parquet file; it looks like text, perhaps a CSV` (or `a ZIP or Excel file`, `empty`, `not Parquet`), or `… holds no Parquet file` | write it as Parquet, every column as text: in Python, `pandas.read_csv(path, dtype=str).to_parquet(new)`; in DuckDB, `COPY (FROM read_csv(path, all_varchar = true)) TO new` |
 | `the file lacks a field every run needs` | `[columns]` points at a column the file lacks |
 | `no record has an ID in column …` | `id` is mapped to the wrong column |
 | `the normal blocks alone would make … pairs, more than fit` | give DuckDB more room (`--compute memory_limit=… temp_directory=…`) or split the file |
 | `… already holds a run` | add `--overwrite`, or pick another folder |
 | `… holds its own method.toml` (or `columns.toml`) `, which no run reads` | move what it sets into `config/final.toml` (or `config/settings.toml [columns]`, or a settings file `ER_SETTINGS` names), then delete it |
+| `[input] encodings, …: set nothing: records are Parquet, whose text is UTF-8` | delete those keys from `[input]` in the settings file |
 | `[keys] sets nothing: a run lists pairs by the [model] generators as given` | delete `[keys]` from the pipeline file |
 | `… a workspace an earlier nayose wrote (keys learned on its file or left out, which no run reads now)` | run it again into a new folder (`nayose resolve records FILE --workspace PATH`), or replace it with `--overwrite` |
 | `out of memory` | raise `--compute memory_limit`, or give `temp_directory` a disk with more room |
-| `… don't line up with its header` | a wrong delimiter or header |
 | `no run in … to add records to` | `resolve records` first |
 | `the pipeline or the column mapping changed since the full run` | resolve the run again, or add the batch with the settings that run used |
 | `needs the columns …_l, …_r and decision` | a decisions file without both IDs and `decision` |

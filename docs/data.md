@@ -31,7 +31,7 @@ data/artifacts/optuna/*.db                  the Optuna studies, with --optuna
 data/artifacts/benchmark/, demo/            workspaces of scripts/benchmark.py and the demo
 ```
 
-A workspace is the same wherever it is written, by `scripts/choose.py` here or by `nayose resolve records` anywhere: `gold.parquet`, `matches/`, `rule_kept/`, `steps.json`, `rounds.json` and `state/`. `nayose` adds `qa.md`, `report.txt` and `review.parquet`; `decisions/` and `set_aside/` appear when there are any. `nayose` also keeps a copy of every records file given to it, in `inputs/`, each with what its reader made of it (`read/`, `intake.json`, `proposals.parquet`, `unread.parquet`), and the records as a full run cleaned them, read again by the next while nothing they rest on changed (`prepared/`) ([architecture](architecture.md#the-workspace)).
+A workspace is the same wherever it is written, by `scripts/choose.py` here or by `nayose resolve records` anywhere: `gold.parquet`, `matches/`, `rule_kept/`, `steps.json`, `rounds.json` and `state/`. `nayose` adds `qa.md`, `report.txt` and `review.parquet`; `decisions/` and `set_aside/` appear when there are any. `nayose` also keeps a copy of every records file given to it, in `inputs/`, each with what its reader made of it (`read/`, `intake.json`), and the records as a full run cleaned them, read again by the next while nothing they rest on changed (`prepared/`) ([architecture](architecture.md#the-workspace)).
 
 ## Reference data: `data/reference/`
 
