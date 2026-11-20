@@ -65,11 +65,11 @@ def test_a_u_sample_is_drawn_once_per_set_of_records(con, records, monkeypatch):
 
 
 def test_a_u_sample_counted_in_one_pass_gives_splink_s_u_to_the_last_bit(con, records):
-    from er.match import fs_settings
+    from er.match import model_dict
     gaps = records.assign(name=records["name"].mask(records.index % 7 == 0))  # a missing side: neither level's
     for pairs in (1e4, 300):  # every pair, and the share of records a hash of their ID draws
         m = replace(model(extra_name_levels=(Level(label="never", any_of=(("name", Comparator("jaro_winkler", 0.95)),)),)), u_max_pairs=pairs)
-        linker = Linker(DuckDBAPI(connection=con).register(gaps.assign(name__one_byte=normalize(gaps["name"], ("one_byte",), None))), fs_settings(m, UID), log_level=logging.ERROR)
+        linker = Linker(DuckDBAPI(connection=con).register(gaps.assign(name__one_byte=normalize(gaps["name"], ("one_byte",), None))), model_dict(m, UID), log_level=logging.ERROR)
         linker.training.estimate_u_using_random_sampling(max_pairs=pairs, seed=m.seed, min_count_per_level=None, num_chunks=3)
         splink_u, ours = u_values(linker.misc.save_model_to_json()), sample_u(m, list(m.comparisons), gaps, con, UID)
         assert ours == splink_u and "never" not in ours["name"] and 0 < sum(ours["name"].values()) <= 1, pairs
@@ -403,9 +403,9 @@ def test_pairs_that_cant_reach_0_left_out_as_the_keys_list_them_change_no_score_
 
 def test_a_bound_settles_a_level_only_where_the_scored_model_wrote_it_as_the_method_does(population):
     import copy
-    from er.match import bound_sql, bound_tests, fs_settings
+    from er.match import bound_sql, bound_tests, model_dict
     s, p, g = population
-    settings = fs_settings(p.fs.model, "uid").create_settings_dict("duckdb")
+    settings = model_dict(p.fs.model, "uid")
     for c in settings["comparisons"]:
         for lv in c["comparison_levels"]:
             lv.update(m_probability=0.5, u_probability=0.1)
@@ -555,3 +555,41 @@ def test_the_method_s_own_em_sessions_are_judged_by_the_given_name_too(con):
     for fitted in (replace(household_model(em_choose=()), em_rules=two), replace(household_model(em_choose=()), em_rules=two, em_median=True)):  # in turn, and kept apart
         got = {x["session"]: x["given_share"] for x in train_fs(fitted, records, con, UID)["er"]["em_given"]}
         assert got["phone"] < 0.5 <= got["birth_date"], got  # what DIAGNOSIS says of a run's own EM
+
+
+@pytest.mark.parametrize("pipeline", ["final.toml", "pipeline.toml"])
+def test_the_model_dict_is_the_settings_splink_built_from_the_same_comparisons(pipeline, con):
+    """match.model_dict against the SettingsCreator it replaces (Splink 5.0's CustomComparison levels): the same
+    comparisons, levels, SQL, u and rules, and a linker given either saves the same model."""
+    import splink.comparison_level_library as cll
+    import splink.comparison_library as cl
+    from splink import SettingsCreator
+    from er.config import keys_sql, load_pipeline
+    from er.match import ELSE, model_dict, read_by
+    from er.settings import load_settings
+    s = load_settings()
+    m = load_pipeline(s.root / "config" / pipeline, s.standardize, s.chains, s.columns).fs.model
+
+    def splink_comparison(c, u):  # match.comparison as it was written on Splink's builders
+        def with_u(level, label):
+            return level.configure(u_probability=u[label]) if u and label in u else level
+        null = " AND ".join(f'("{col}_l" IS NULL OR "{col}_r" IS NULL)' for col in c.null_if_missing)
+        levels = [cll.CustomLevel(null, "missing").configure(is_null_level=True)]
+        for lv in c.levels:
+            level = cll.CustomLevel(" OR ".join(f"({comp.sql(col, level=True)})" for col, comp in lv.any_of), lv.label)
+            levels.append(with_u(level.configure(tf_adjustment_column=c.tf.name) if lv.tf and c.tf else level, lv.label))
+        return cl.CustomComparison(comparison_levels=[*levels, with_u(cll.ElseLevel().configure(label_for_charts=ELSE), ELSE)], output_column_name=c.name)
+
+    u = {c.name: {lv.label: 0.01 * (i + 1) for i, lv in enumerate(c.levels)} | {ELSE: 0.5} for c in m.comparisons[::2]}  # some given, some not
+    theirs = SettingsCreator(link_type="dedupe_only", unique_id_column_name="uid", blocking_rules_to_generate_predictions=[keys_sql(r) for r in m.em_rules],
+                             comparisons=[splink_comparison(c, u.get(c.name)) for c in m.comparisons]).create_settings_dict("duckdb")
+    ours = model_dict(m, "uid", u)
+    keys = ("sql_condition", "label_for_charts", "u_probability", "is_null_level", "tf_adjustment_column")
+    shape = lambda d: [(c["output_column_name"], [{k: lv[k] for k in keys if k in lv} for lv in c["comparison_levels"]]) for c in d["comparisons"]]
+    assert shape(ours) == shape(theirs) and len(ours["comparisons"]) == len(m.comparisons)
+    assert ours["blocking_rules_to_generate_predictions"] == [b["blocking_rule"] for b in theirs["blocking_rules_to_generate_predictions"]]
+    frame = pd.DataFrame({"uid": ["1", "2"], **{c: pd.Series([None, None], dtype="string") for c in read_by(ours)}})
+    saved = [Linker(DuckDBAPI(connection=con).register(frame), x, log_level=logging.ERROR).misc.save_model_to_json() for x in (ours, theirs)]
+    for x in saved:
+        x.pop("linker_uid")
+    assert saved[0] == saved[1]
