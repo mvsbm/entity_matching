@@ -21,7 +21,6 @@ value's length, b a block's size, C candidates, K comparisons. A lookup lists th
 lists (er.candidates) and scores them as er.match.score_fs scores them with the run's model; an increment, unlike it,
 counts u again on every record.
 """
-from importlib.metadata import version
 import contextlib
 import hashlib
 import json
@@ -49,7 +48,7 @@ from er.kind import Classifier, classifier
 from er.match import _gammas, levels, prior_bits, read_by, review_floor, search_floor
 from er.explain import run_model
 from er.run import run_config, stored_keys
-from er.settings import COLUMNS, Settings, fit_to_file, present_fields
+from er.settings import Settings, fit_to_file, present_fields
 from er.standardize import KATAKANA, SEPARATORS, prepare
 from er.strings import connect
 
@@ -68,17 +67,17 @@ REBUILD = 0.1  # shortcut: the records added since the build reaching this share
 OPEN = 2  # shortcut: the indexes kept open, each with its DuckDB connection and classifier, for a server's next lookup; raise it when people look up in more workspaces at once
 QUERY = "\x7flookup"  # the ID of a record typed in: no record's, and after every one in order
 LAST = chr(0x10FFFF)  # after every character: a prefix's range ends at it
-MOVES = ("gold.parquet", "state/rule_clusters.parquet", "state/scoring.json", "state/placeholders.json", folder.METHOD)  # what a delta carries: entities, rules' clusters, the u an increment counts again, the values read as missing, merging conditions
+MOVES = ("gold.parquet", "state/rule_clusters.parquet", "state/scoring.json", "state/placeholders.json")  # what a delta carries: entities, rules' clusters, the u an increment counts again, the values read as missing
 INDEXING = hashlib.sha256(b"".join((Path(__file__).parent / f"{m}.py").read_bytes() for m in ("index", "candidates", "config", "standardize", "match", "kind"))
-                          + duckdb.__version__.encode() + version("scikit-learn").encode()).hexdigest()[:12]  # what reads and writes an index (kind.pkl pickles a scikit-learn model): another version builds it again
+                          + duckdb.__version__.encode()).hexdigest()[:12]  # what reads and writes an index: another version builds it again
 
 _OPENED: dict[str, tuple] = {}  # bounded: OPEN workspaces, the oldest dropped; each its manifest, connection, classifier and the classifier's lock
 _OPENING = threading.Lock()
 
 
-def _stamp(ws: Path) -> dict[str, list[int]]:  # what an index rests on: each file of the run, the method and the mapping, by size and time
+def _stamp(ws: Path) -> dict[str, list[int]]:  # what an index rests on: each file of the run, by size and time
     files = [*sorted((ws / "state" / "records").glob("part-*.parquet")), ws / "gold.parquet", ws / "state" / "scoring.json", ws / "state" / "placeholders.json", ws / "state" / "model.json",
-             ws / "state" / "config.txt", ws / "state" / "rule_clusters.parquet", ws / folder.METHOD, ws / COLUMNS]
+             ws / "state" / "config.txt", ws / "state" / "rule_clusters.parquet"]
     return {f.relative_to(ws).as_posix(): [f.stat().st_size, f.stat().st_mtime_ns] for f in files if f.exists()}
 
 

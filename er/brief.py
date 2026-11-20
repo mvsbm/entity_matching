@@ -120,21 +120,8 @@ def grid(rows: list[dict], cols: dict[str, str], most: int = 20) -> list[str]:  
            ["  " + "  ".join(pad(x, w) for x, w in zip(row, width)).rstrip() for row in cells]
 
 
-def merging_words(m: dict | None) -> str:  # what merges without people, in words
-    if not m:
-        return ""
-    if m.get("when"):
-        said = []
-        for c in m["when"]:
-            (k, v), = c.items()
-            said.append(f"{num(v)} points or more" if k == "points" else f"found by {', '.join(v)}" if k == "rules"
-                        else " and ".join(f"{word(f)} at least {lv}" for f, lv in v.items()))
-        return "pairs merge without you when " + f" {m.get('join', 'and')} ".join(said)
-    own = m.get("own")
-    if not own:
-        return "nothing merges without you"
-    return (f"the rules' pairs, and the model's at {num(own['line'])}+ points, merge without you" if own.get("rules")
-            else f"pairs at {num(own['line'])}+ points merge without you")
+def merging_words(m: dict) -> str:  # what a run merges, in words
+    return f"the rules' pairs, and the model's at {num(m['line'])}+ points, merge without you"
 
 
 def thin(filled: dict[str, float], one_of, columns: Callable[[str], set[str] | None]) -> list[str]:

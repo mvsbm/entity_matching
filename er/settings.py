@@ -1,11 +1,10 @@
 """Shared settings from config/settings.toml: paths, datasets, the fields a file's columns hold, and the language-specific
-normalization, validated on load. ER_SETTINGS may name another settings file. A workspace's own columns.toml
-([columns] and [kind]), if it keeps one, replaces the project's."""
+normalization, validated on load. ER_SETTINGS may name another settings file, inside the project or anywhere."""
 import importlib.util
 import os
 import re
 import unicodedata
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import get_args
@@ -14,7 +13,6 @@ from er.config import COPIES, Data, Derived, InputError, Normalizer, Pipeline, S
 from er.intake import InputSpec
 
 SPECIAL = ("id", "entity")  # single columns, used under their own names: the record id and the truth
-COLUMNS = "columns.toml"  # a workspace's own [columns] and [kind]: which of its files' columns hold each field
 
 
 @dataclass(frozen=True)
@@ -67,34 +65,6 @@ def settings_path() -> Path:  # the settings file a run reads
     return Path(os.environ.get("ER_SETTINGS") or project_root() / "config" / "settings.toml")
 
 
-def columns_file(workspace: str | Path | None) -> Path | None:  # a workspace's own mapping, if it keeps one
-    f = Path(workspace) / COLUMNS if workspace else None
-    return f if f and f.is_file() else None
-
-
-# ---------- a workspace's features: groups › features › parts, each with its columns, compiled into [columns] ----------
-# The structure is read back from the mapping (features_from), so the two can't disagree.
-
-
-ADDED = {"person name": ("person_name", "given_name"), "company name": ("company_name",)}  # an added feature's fields stand beside these
-
-
-def given_field(field: str) -> str:  # an added person's name's given name: person_name_2 → given_name_2
-    return "given_name" + field.removeprefix("person_name")
-
-
-def added_of(workspace: str | Path | None) -> dict[str, dict]:  # the features added in a workspace: columns.toml's [features]
-    f = columns_file(workspace)
-    return toml_of(f).get("features", {}) if f else {}
-
-
-def beside(added: Mapping[str, dict]) -> list[tuple[str, str]]:
-    """Each added field, and the field it stands beside (config.widen): a person's name and its given name beside
-    person_name and given_name, a company name beside company_name."""
-    return [pair for field, x in added.items() for pair in
-            ([(field, "person_name"), (given_field(field), "given_name")] if x["type"] == "person name" else [(field, ADDED[x["type"]][0])])]
-
-
 SAYS = {"full": "are a known family name and given name", "family": "are known family names", "given": "are known given names",
         "address": "start with a known prefecture or city"}
 
@@ -103,15 +73,15 @@ def norm_name(column: str) -> str:  # a column's name as people mean it: width, 
     return re.sub(r"[\s_\-・.]+", "", unicodedata.normalize("NFKC", column).casefold())
 
 
-def load_settings(path: Path | None = None, columns: Path | None = None) -> Settings:
-    """The settings file at `path` (settings_path()); with `columns`, a workspace's columns.toml, whose [columns] and
-    [kind] replace the file's."""
+def load_settings(path: Path | None = None) -> Settings:
+    """The settings file at `path` (settings_path()). Its paths are the project's it is in, or, outside any (a private
+    mapping kept out of the repository), this package's."""
     path = Path(path or settings_path())
-    root = project_root(path.parent)
+    try:
+        root = project_root(path.parent)
+    except FileNotFoundError:
+        root = project_root()
     cfg = toml_of(path)
-    if columns:
-        own = toml_of(columns)
-        cfg = {**cfg, "columns": own["columns"], "kind": own.get("kind", {})}
     paths = {name: root / rel for name, rel in cfg["paths"].items()}
     steps = set(get_args(Normalizer)) - set(COPIES)  # the comparisons' own copy (er.config.Comparator.copy): not a key's
 
@@ -123,10 +93,10 @@ def load_settings(path: Path | None = None, columns: Path | None = None) -> Sett
 
     cols = cfg["columns"]
     for name in SPECIAL:
-        checked(isinstance(cols.get(name), str), f"[columns] {name} must name one column", columns or path)
-    fields = {name: field(name, spec, columns or path) for name, spec in cols.items() if name not in SPECIAL}
+        checked(isinstance(cols.get(name), str), f"[columns] {name} must name one column", path)
+    fields = {name: field(name, spec, path) for name, spec in cols.items() if name not in SPECIAL}
     unknown = {s for d in fields.values() for s in d.normalize} - steps
-    checked(not unknown, f"[columns]: unknown normalizers {unknown}", columns or path)
+    checked(not unknown, f"[columns]: unknown normalizers {unknown}", path)
     # a field that is its own single column, unnormalized, needs no copy
     derived = tuple(d for d in fields.values() if d.sources != ((d.name,),) or d.normalize)
 

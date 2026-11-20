@@ -63,12 +63,12 @@ def test_a_model_adjusting_by_term_frequency_is_refused(ran, monkeypatch):
 
 
 def test_a_run_with_em_choose_keeps_each_session_s_verdict_in_its_model_and_the_report_shows_them(ran, tmp_path):
-    from er.config import adjust
+    from er.config import em_candidates
     from er.run import Run
     s, p, ws = ran
     g = pd.read_parquet(ws.parent / "all.parquet")
     g.to_parquet(tmp_path / "in.parquet", index=False)
-    run = Run(adjust(p, {"fit": {"em": "choose"}}), s).full(tmp_path / "in.parquet", tmp_path / "w")
+    run = Run(replace(p, fs=replace(p.fs, model=replace(p.fs.model, em_choose=em_candidates(p)))), s).full(tmp_path / "in.parquet", tmp_path / "w")
     choice = run.model["er"]["em_choice"]
     assert choice and all({"session", "pairs", "kept", "why"} <= set(x) for x in choice)
     assert set(run.model["er"]["em_pairs"]) == {x["session"] for x in choice if x["kept"]} or not any(x["kept"] for x in choice)
@@ -82,9 +82,9 @@ def test_a_floor_below_0_keeps_the_pairs_down_to_it_and_every_pair_the_default_k
     from er import cli
     s, p, ws = ran
     low = tmp_path / "low"
-    low.mkdir()
-    (low / "method.toml").write_text("keep = -10\n", encoding="utf-8")  # the floor, set in the workspace's method
-    assert cli.main(["resolve", "records", str(ws.parent / "all.parquet"), "--workspace", str(low), "--pipeline", str(s.root / "tests" / "method.toml"), "--format", "json"]) == 0
+    method = (s.root / "tests" / "method.toml").read_text(encoding="utf-8").replace("\n[threshold]\n", "\n[threshold]\nkeep_from = -10\n", 1)  # the floor, set in the pipeline
+    (tmp_path / "low.toml").write_text(method, encoding="utf-8")
+    assert cli.main(["resolve", "records", str(ws.parent / "all.parquet"), "--workspace", str(low), "--pipeline", str(tmp_path / "low.toml"), "--format", "json"]) == 0
     capsys.readouterr()
     read = lambda w: duckdb.sql(f"SELECT * EXCLUDE (match_probability) FROM read_parquet('{w}/scored/*.parquet')").df()
     before, after = read(ws), read(low)
@@ -94,12 +94,8 @@ def test_a_floor_below_0_keeps_the_pairs_down_to_it_and_every_pair_the_default_k
     pd.testing.assert_frame_equal(key(after)[key(before).columns], key(before), check_dtype=False)  # at 0 and up: the same pairs and points
 
 
-def test_keep_in_method_toml_is_a_number_and_changes_the_run_s_hash_only_when_set(ran):
-    from er.config import adjust
+def test_keep_from_changes_the_run_s_hash_only_when_set(ran):
     from er.run import run_config
     s, p, ws = ran
-    assert run_config(adjust(p, {"keep": 0}), s) == run_config(p, s) != run_config(adjust(p, {"keep": -10}), s)
-    assert adjust(p, {"keep": -10}).threshold.keep_from == -10
-    for bad in ("low", True, float("inf")):
-        with pytest.raises(InputError, match="keep"):
-            adjust(p, {"keep": bad})
+    at = lambda bits: replace(p, threshold=replace(p.threshold, keep_from=bits))
+    assert run_config(at(0.0), s) == run_config(p, s) != run_config(at(-10.0), s)

@@ -30,16 +30,15 @@ import pandas as pd
 
 from er import folder, index
 from er.io import read_parquet, replace_text
-from er.config import InputError, adjust, load_pipeline, widen
+from er.config import InputError, load_pipeline
 from er.brief import merging_words, nayose
 from er.emit import BATCH_ORDER, RUN_ORDER, Emit, plain, rows_told
 from er.folder import Busy
 from er.hints import readable
 from er.match import review_floor
-from er.results import apply_merging, describe_results
-from er.strings import connect
+from er.results import describe_results
 from er.run import Run
-from er.settings import (added_of, beside, columns_file, load_settings)
+from er.settings import (load_settings)
 
 
 @dataclass(frozen=True)
@@ -81,23 +80,20 @@ class Command:
 
 # ---------- what each command does ----------
 
-def settings_for(a: dict):  # the settings, with the named workspace's own mapping when it keeps one; an earlier nayose's workspace refused
+def settings_for(a: dict):  # the settings; an earlier nayose's workspace refused
     if (ws := a.get("workspace")) and Path(ws).is_dir():
         folder.current(Path(ws), replacing=bool(a.get("overwrite")))  # a run --overwrite writes the rules' pairs anew
-    return load_settings(columns=columns_file(ws))
+    return load_settings()
 
 
-def setup(a: dict, method: dict | None = None):
-    """The settings, with this run's DuckDB limits, the pipeline, and its file; with `method`, that method in place of
-    the workspace's method.toml."""
+def setup(a: dict):
+    """The settings, with this run's DuckDB limits, the pipeline, and its file."""
     s = settings_for(a)
     if bad := [kv for kv in a.get("compute") or [] if "=" not in kv]:
         raise InputError(f"--compute {' '.join(bad)}: each limit is KEY=VALUE", fix="for example --compute memory_limit=8GB threads=4")
     s = replace(s, compute={**s.compute, **dict(kv.split("=", 1) for kv in a.get("compute") or [])})
     pipeline = Path(a.get("pipeline") or s.root / "config" / "final.toml")
-    ws = a.get("workspace")  # its own features, then its changes to the method
-    return s, adjust(widen(load_pipeline(pipeline, s.standardize, s.chains, s.columns), beside(added_of(ws))),
-                     folder.method(ws) if method is None else method), pipeline
+    return s, load_pipeline(pipeline, s.standardize, s.chains, s.columns), pipeline
 
 
 def sheet(out: Path, name: str) -> pd.DataFrame | None:
@@ -256,9 +252,6 @@ def apply_decisions(a: dict, emit: "Emit") -> dict:
     out = Path(a["workspace"])
     with folder.run_lock(out), readable(a["file"], s, strict=True) if a["file"] else contextlib.nullcontext(out / "review.parquet") as path:
         run = Run(p, s, echo=emit.step, told=emit.progress).decide(path, out)
-        if folder.method(out).get("merge"):  # merged by people's conditions: rebuilt, so a pair said different parts at once
-            con = connect(s.compute)
-            apply_merging(con, out, s, p)
     x = run.steps[-1]
     return dict(decisions=x["decisions"], matches=x["matches"], clusters_joined=x["clusters_joined"],
                 summary=[["nothing new", "every decision was applied before"]] if not x["decisions"] else [],
@@ -281,9 +274,8 @@ RUN_RESULT = {"summary": "the run in words: records, entities, who joined them, 
 COMMANDS: tuple[Command, ...] = (
     Command("resolve", "records", "Resolve a file: one ID per person or company",
             "A full run, without labels: load, budget, fit, rules, candidates, score, cluster, write, report. Writes the "
-            "workspace: gold.parquet, matches/, rule_kept/, proposed/, set_aside/, state/, steps.json, and for people qa.md, "
-            "report.txt and review.parquet. With a trust line (method.toml trust), only pairs scoring at "
-            "or above it join; the rest wait for people. A folder that holds a run is refused without --overwrite; people's "
+            "workspace: gold.parquet, matches/, rule_kept/, set_aside/, state/, steps.json, and for people qa.md, "
+            "report.txt and review.parquet. A folder that holds a run is refused without --overwrite; people's "
             "decisions in it stand. O(N·L + ΣP + C·K·L²).",
             (GIVEN, WORKSPACE, Param("overwrite", "replace the results it holds", "flag"), PIPELINE,
              Param("model", "a fitted model to score with instead of fitting one on the file (its JSON, or the file that holds it under 'model')", "path"),
@@ -305,7 +297,7 @@ COMMANDS: tuple[Command, ...] = (
             "Every key of every record the run holds and every value a search reads, sorted, in the workspace's index/ (DuckDB "
             "databases), with what it was built from. Read once from the run's own files, nothing "
             "standardized again; built beside the last index, which stays until the new one is whole. Once built, it is kept up to "
-            "date by the commands that change the run: an increment, decisions or merging conditions write what changed beside it; a "
+            "date by the commands that change the run: an increment or decisions write what changed beside it; a "
             "full run builds it again. O(N·(G + R + D·L + F) + N log N): N records, G pair keys, R rules, D deletion keys, L a value's "
             "length, F searched columns.",
             (WORKSPACE, PIPELINE, COMPUTE),
@@ -333,8 +325,7 @@ COMMANDS: tuple[Command, ...] = (
             'nayose match record FULL_NAME_KANA="ヤマダ タロウ" PHONE_NUM_4=1234 --workspace workspaces/customers', match_record, quick=True),
     Command("apply", "decisions", "Apply people's decisions to the run",
             "Each match pair joins its two entities at once, scoring nothing; no_match is kept, and a full run never accepts "
-            "the pair. With merge conditions set (method.toml merge), the entities are then rebuilt from the stored pairs, so a "
-            "no_match pair the conditions joined parts at once. Decisions are kept in decisions/; one applied before "
+            "the pair. Decisions are kept in decisions/; one applied before "
             "changes nothing. O(D + touched clusters) + O(N).",
             (WORKSPACE, FILE("a file of decisions: the two ID columns and decision"), PIPELINE, COMPUTE),
             {"decisions": "decisions applied", "matches": "of them, match", "clusters_joined": "entities joined",

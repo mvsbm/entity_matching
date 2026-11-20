@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from er.config import lit, q
+from er.config import lit
 from er.folder import DECISIONS
 from er.io import read_parquet
 
@@ -19,17 +19,6 @@ def said(out: Path, uid: str) -> pd.DataFrame:
     typed = typed[[x not in kept for x in zip(typed[l], typed[r], typed["decision"])]]
     both = pd.concat([typed, done], ignore_index=True).astype({l: "string", r: "string"})
     return both.drop_duplicates([l, r], keep="first")  # a decision typed since overrides the applied one
-
-
-def _trust_links(out: Path, uid: str, decided: str) -> list[str]:
-    """The links a trust line counts, as SQL parts to union (DISTINCT ON the pair): the run's matches, proposed and
-    rules' pairs, and the scored pairs people decided (`decided`, a table), at the line or above in neither."""
-    l, r = q(f"{uid}_l"), q(f"{uid}_r")
-    parts = [f"SELECT {l}, {r}, match_weight FROM {read(out, f'{x}/*.parquet')}"
-             for x in ("matches", "proposed", "rule_kept") if any((out / x).glob("*.parquet"))]
-    if parts and any((out / "scored").glob("*.parquet")):
-        parts.append(f"SELECT s.{l}, s.{r}, s.match_weight FROM {read(out, 'scored/*.parquet')} s JOIN {decided} USING ({l}, {r})")
-    return parts
 
 
 def applied(out: Path, uid: str) -> pd.DataFrame:  # each pair's latest decision the folder holds

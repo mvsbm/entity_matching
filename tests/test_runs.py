@@ -103,28 +103,6 @@ def test_an_interrupted_increment_completes_when_run_again(tmp_path, population,
     assert Run(p, s).increment(tmp_path / "new.parquet", tmp_path / "unlogged").added == len(g.df[new])  # so the batch goes in again, whole
 
 
-def test_with_a_trust_line_an_increment_asks_for_the_checks_a_full_run_would(tmp_path, population):
-    import shutil
-    from er.run import Run
-    s, p, g = population
-    pipe = s.root / "tests" / "method.toml"
-    p = replace(p, trust=replace(p.trust, checks=8, watch=0, line=math.inf))  # nothing merges yet; 8 checks a range
-    new = np.random.default_rng(0).random(len(g.df)) < 0.2
-    g.df[~new].to_parquet(tmp_path / "old.parquet", index=False)
-    g.df[new].to_parquet(tmp_path / "new.parquet", index=False)
-    g.df.to_parquet(tmp_path / "all.parquet", index=False)
-    Run(p, s).full(tmp_path / "old.parquet", tmp_path / "inc", pipeline_file=pipe)
-    sheet = pd.read_parquet(tmp_path / "inc" / "review.parquet")
-    asked = sheet[sheet["why"] == "decide"].head(5).assign(decision="match")
-    asked.to_parquet(tmp_path / "said.parquet")
-    Run(p, s).decide(tmp_path / "said.parquet", tmp_path / "inc")
-    shutil.copytree(tmp_path / "inc", tmp_path / "full")
-    Run(p, s).increment(tmp_path / "new.parquet", tmp_path / "inc", pipe)
-    Run(p, s).full(tmp_path / "all.parquet", tmp_path / "full", overwrite=True, pipeline_file=pipe)
-    open_ = lambda ws: (lambda x: int(((x["why"] == "decide") & x["decision"].isna()).sum()))(pd.read_parquet(ws / "review.parquet"))
-    assert open_(tmp_path / "inc") == open_(tmp_path / "full") == 3  # 8 checks, 5 decided
-
-
 def test_without_bridging_an_increment_lists_no_pair_of_two_records_the_rules_joined(tmp_path, population):
     from er.run import Run
     s, p, g = population
@@ -336,14 +314,13 @@ def test_an_increment_needs_a_workspace_that_holds_a_run(tmp_path, population):
 
 def test_the_probe_counts_the_matches_no_key_lists_as_the_truth_does(tmp_path, population):
     from er.cluster import merge
-    from er.config import adjust
     from er.explain import scored_again
     from er.run import Run
     s, p, g = population
     uid, ent = s.data.unique_id, s.data.entity_id
     l, r = f"{uid}_l", f"{uid}_r"
     g.df.to_parquet(tmp_path / "all.parquet", index=False)
-    few = adjust(p, {"drop_keys": [b.name for b in p.fs.blockers if b.name not in ("cif", "person_name", "company_name")]})  # a method that misses
+    few = replace(p, fs=replace(p.fs, blockers=tuple(b for b in p.fs.blockers if b.name in ("cif", "person_name", "company_name"))))  # a method that misses
     out = tmp_path / "run"
     probe = next(x for x in Run(few, s).full(tmp_path / "all.parquet", out).steps if x["step"] == "probe")["strata"]
     con = connect(s.compute)  # the truth: every true pair scored as the run scores, at its line, that its likely links don't join
@@ -354,8 +331,7 @@ def test_the_probe_counts_the_matches_no_key_lists_as_the_truth_does(tmp_path, p
     scored_again(con, out, uid, "er_t", "er_ts", narrow=True)  # only the columns the model reads: the same scores
     assert con.execute("SELECT * FROM er_ts ORDER BY ALL").fetchall() == wide \
         and len(con.execute("DESCRIBE er_touched").fetchall()) < len(con.execute(f"DESCRIBE SELECT * FROM read_parquet('{out}/state/records/*.parquet')").fetchall())
-    links = " UNION ALL ".join(f"SELECT {l}, {r} FROM read_parquet('{out / x}/*.parquet')" + (" WHERE match_weight >= 8" if x == "proposed" else "")
-                               for x in ("matches", "proposed", "rule_kept") if any((out / x).glob("*.parquet")))
+    links = " UNION ALL ".join(f"SELECT {l}, {r} FROM read_parquet('{out / x}/*.parquet')" for x in ("matches", "rule_kept") if any((out / x).glob("*.parquet")))
     con.execute(f"CREATE TABLE er_one AS SELECT {uid}, {uid} AS cluster_id FROM read_parquet('{out}/gold.parquet')")
     merge(con, "er_one", f"({links})", "er_joined", uid)
     missed = con.execute(f"""SELECT s.{l}, s.{r} FROM er_ts s JOIN er_joined a ON a.{uid} = s.{l} JOIN er_joined b ON b.{uid} = s.{r}
