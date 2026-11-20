@@ -85,9 +85,8 @@ def describe_results(con: duckdb.DuckDBPyConnection, out: Path, s: Settings, p: 
     """What the run found, for the Results page: how the scores came out (every pair the run scored, each by its own
     points: the full run's and each increment's bands, as they logged them; a run logged before them, the full run's
     patterns, each pattern at its mean weight; the rules' own pairs from the pair index), the pairs waiting for people from `review_from` up, by range, what
-    merged and how, entities by size, what the run merges without people (merging), whether matches could be missed (the
-    probe), the groups too big to compare by the key that made them, and person or company: the records flagged (the
-    engine sure against the file's flag). O(N + P + E)."""
+    merged and how, entities by size, what the run merges without people (merging), the groups too big to compare by the
+    key that made them, and person or company: the records flagged (the engine sure against the file's flag). O(N + P + E)."""
     uid, gold = s.data.unique_id, read(out, "gold.parquet")
     index, chart, counts = pair_index(con, out, s, p), None, None
     scored = [x for run in folder.runs(out) for x in run.get("steps", []) if x["step"] == "score"]
@@ -115,8 +114,6 @@ def describe_results(con: duckdb.DuckDBPyConnection, out: Path, s: Settings, p: 
     size_of = lambda lo, hi: sum(c for n, c in sizes if n >= lo and (hi is None or n <= hi))
     joined = dict(con.execute(f"SELECT coalesce({joined_by(p)}, 'none'), count(*) FROM {gold} GROUP BY 1").fetchall())
     steps = {x["step"]: x for run in folder.runs(out) if not run.get("part") for x in run.get("steps", [])}
-    probe = [dict(stratum=x["stratum"], fields=x["fields"], pairs=x["pairs"], scored=x["scored"], missed=x["missed"], low=x["low"], high=x["high"])
-             for x in steps.get("probe", {}).get("strata", [])]
     cand = steps.get("candidates", {})
     has = {c for c, *_ in con.execute(f"DESCRIBE SELECT * FROM {gold}").fetchall()}
     flagged = con.execute(f"SELECT count(*) FROM {gold} WHERE kind_flagged").fetchall()[0][0] if "kind_flagged" in has else 0
@@ -128,6 +125,6 @@ def describe_results(con: duckdb.DuckDBPyConnection, out: Path, s: Settings, p: 
                 scores=chart, candidates=sum(x["pairs"] for x in chart) if chart else cand.get("candidates"), uncounted=uncounted, listed=listed,
                 review_from=review_from, waiting=[dict(down_to=cuts[i], up_to=cuts[i - 1] if i else None, pairs=n) for i, n in waiting],
                 pairs=dict(kept=sum(by_status.values()), **by_status), merged_by=joined,
-                merging=dict(line=p.fs.min_match_weight), missed=probe,
+                merging=dict(line=p.fs.min_match_weight),
                 too_big=dict(skipped=cand.get("oversized_skipped", 0), kept=cand.get("oversized_kept", 0), by=cand.get("skipped_by", {}), min=p.fs.budget.min_oversized()),
                 kinds=dict(flagged=int(flagged)))

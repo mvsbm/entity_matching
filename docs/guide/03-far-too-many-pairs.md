@@ -84,22 +84,22 @@ The labelled files hold 10,000 to 30,000 records, and the pipeline must run on f
 
 ### Where the work grows faster than the file
 
-For each key, `scale_check` splits its pairs on train into pairs of one entity, which grow like N, and chance pairs between two entities, which grow like N². It projects both to a million records and reports a **growth exponent** α, with work ∝ N^α. At α = 1 the work is linear: ten times the records, ten times the work. At α = 2 it is quadratic: ten times the records, a hundred times the work. The times are from a whole run on 1,000,338 records ([below](#measured-a-whole-run-up-to-a-million-records)).
+For each key, `scale_check` splits its pairs on train into pairs of one entity, which grow like N, and chance pairs between two entities, which grow like N². It projects both to a million records and reports a **growth exponent** α, with work ∝ N^α. At α = 1 the work is linear: ten times the records, ten times the work. At α = 2 it is quadratic: ten times the records, a hundred times the work. The times are from a whole run on 1,039,995 records ([below](#measured-a-whole-run-up-to-a-million-records)).
 
 | Step | Cost | Grows like | At a million records |
 |---|---|---|---|
-| load and standardize, persons and companies | O(N·L) | N | 10.73 s |
-| fit | O(n + S·K + P_em·K) + O(N + S·K) | a fixed sample, plus O(N) counts | 9.40 s |
-| rules | O(N + ΣP_r·L²) + O(E·log E + N) | N^1.0 to N^1.21 per rule | ≤ 0.18 million pairs per rule; 2.57 s |
+| load and standardize, persons and companies | O(N·L) | N | 6.63 s |
+| fit | O(n + S·K + P_em·K) + O(N + S·K) | a fixed sample, plus O(N) counts | 3.54 s |
+| rules | O(N + ΣP_r·L²) + O(E·log E + N) | N^1.0 to N^1.21 per rule | ≤ 0.18 million pairs per rule; 2.09 s |
 | **rule F2, joined on the phone alone** | O(N + P) | **N^1.95** | **50 million pairs**, the phone key's blocks |
 | key: **phone alone** | O(N + P) | **N^1.95** | **50 million pairs**, nearly all by chance |
 | keys: **address alone, address code alone** | O(N + P) | **N^1.85, N^1.74** | **5.8 and 5.7 pairs per record**, over the budget of 5 |
 | the chosen keys and one-deletion keys | O(N + P), O(N·L + P) | N^1.0 to N^1.83 | ≤ 2.1 million pairs each |
 | sorted neighbourhood | O(N log N + N·w) | N | 3 million pairs per pass |
 | **TF-IDF neighbours** | O(N·L + U·N·q) | **N^2.0** | **10¹² similarities** |
-| candidates | O(N·L + ΣP_g) | as ΣP_g | 6.53 s |
-| score | O(C·K·L²) | as C | 16.05 s |
-| cluster | O(C + E·log E + N) | N | 0.34 s |
+| candidates | O(N·L + ΣP_g) | as ΣP_g | 10.38 s |
+| score | O(C·K·L²) | as C | 0.23 s |
+| cluster | O(C + E·log E + N) | N | 0.24 s |
 
 *N records · n = 100,000 records in the fit's sample · S = 10⁷ pairs sampled for u · K comparisons (6) · P_em pairs in EM's blocks · L characters in a value · P_r, P_g pairs in a rule's or a generator's blocks · w the window · U records queried, q n-grams per name · C candidates · E accepted pairs · d the largest cluster's diameter. Every symbol and step: [performance](../performance.md#end-to-end-the-cost-of-every-step).*
 
@@ -219,13 +219,13 @@ Without labels, a run can check only the patterns: every combination of comparis
 
 | Records | Fit | Rules | Candidates | Score | Total | Peak memory |
 |---|---|---|---|---|---|---|
-| 12,532 | 7.26 s | 0.14 s | 0.23 s | 0.26 s | 8.9 s | 0.96 GB |
-| 24,955 | 7.81 s | 0.18 s | 0.34 s | 0.38 s | 10.7 s | 1.08 GB |
-| 50,116 | 7.85 s | 0.25 s | 0.58 s | 0.76 s | 13.1 s | 1.44 GB |
-| 74,959 | 8.03 s | 0.36 s | 0.85 s | 1.16 s | 15.4 s | 1.66 GB |
-| **1,000,338** | **9.40 s** | **2.57 s** | **6.53 s** | **16.05 s** | **53.0 s** | **6.64 GB** |
+| 13,019 | 1.38 s | 0.06 s | 0.20 s | 0.02 s | 2.3 s | 0.63 GB |
+| 25,947 | 1.51 s | 0.09 s | 0.32 s | 0.03 s | 3.0 s | 0.71 GB |
+| 52,115 | 1.71 s | 0.15 s | 0.58 s | 0.04 s | 4.1 s | 0.89 GB |
+| 77,926 | 2.01 s | 0.22 s | 0.83 s | 0.05 s | 5.5 s | 1.02 GB |
+| **1,039,995** | **3.54 s** | **2.09 s** | **10.38 s** | **0.23 s** | **27.2 s** | **7.21 GB** |
 
-A million records take 53.0 seconds, the probe's 3.5 among them. The fit, on a fixed sample, and the u sample of the file inside it, 10 million pairs, cost about the same at any size, so at these sizes the total grows far slower than the file. Without them, the work grows about linearly with it. Peak memory is the process's, Python included: 6.64 GB at a million records, under the 8 GB limit. The cost of every step, for a full run and for an increment, is in [performance.md](../performance.md).
+A million records take 27.2 seconds, 10.38 of them listing the candidates and 6.63 loading the file. The fit, on a fixed sample, and the u sample of the file inside it, 10 million pairs, grow far slower than the file: 1.38 s at 13,019 records, 3.54 s at a million. So at these sizes the total grows slower than the file, like N^0.58. Scoring stays under a quarter of a second at every size, since only the pairs that can reach 0 are listed. Peak memory is the process's, Python included: 7.21 GB at a million records, under the 8 GB limit. The cost of every step, for a full run and for an increment, is in [performance.md](../performance.md).
 
 Three choices keep a million records within bounds:
 
@@ -237,21 +237,21 @@ The generator has 60,000 distinct personas. Beyond that it must reuse them, whic
 
 ### Quality as the file grows
 
-Up to 75,000 records, every entity is still a distinct persona, so quality can be measured too. Each file is fitted on itself, without labels:
+Up to 78,000 records, every entity is still a distinct persona, so quality can be measured too. Each file is fitted on itself, without labels:
 
 | Records | Recall | False merges | False-merge rate ≤ |
 |---|---|---|---|
-| 12,532 | 45.7% | 2 | 0.48% |
-| 24,955 | 46.0% | 0 | 0.12% |
-| 50,116 | 44.7% | 0 | 0.06% |
-| 74,959 | 44.2% | 4 | 0.12% |
+| 13,019 | 48.4% | 2 | 0.44% |
+| 25,947 | 49.3% | 0 | 0.10% |
+| 52,115 | 47.8% | 2 | 0.11% |
+| 77,926 | 47.8% | 6 | 0.14% |
 
 On train, every true pair that could reach the threshold shares a key, at its size and at a million records. Two things change as the file grows:
 
-- **False pairs appear.** A bigger file holds more pairs of different entities that look alike. The run joined 2 false pairs at 12,532 records, through 1 false link, and 4 at 74,959, through 3. Each is a model link between 8.2 and 10.1 bits (the threshold is 8), between near-namesakes with a kana typo who share an address or a phone. The model expects them: the sum of 1 − match probability over its links, which every run reports without labels, is 0.84 at 12,532 records, 4.38 at 74,959, and 30.11 of 38,786 links at a million. The bound on the false-merge rate is 0.48% at 12,532 records, above the 0.26% reported for test, and 0.06–0.12% at the larger sizes.
-- **Recall stays within two points,** between 44.2% and 46.0%. u is measured on each scored file, so an agreement on a field whose values grow with the file, such as the address or the CIF ID, earns the credit it has at that size ([lessons.md](../lessons.md#weights-fitted-at-one-file-size-used-at-another)). On the labelled splits, which are no bigger than train, this choice costs true pairs: 700 on cross-validated train and 92 on val (`u_from_scored_file`, adopted as "chosen", [chapter 6](06-measuring-and-choosing.md)).
+- **False pairs appear.** A bigger file holds more pairs of different entities that look alike. The run joined 2 false pairs at 13,019 records, through 1 false link, 2 at 52,115, through 2, and 6 at 77,926, through 5. Each is a model link between 7.0 and 12.0 bits (the threshold is 6), between two people who share an address or a phone, most of them a family name too. The model expects at least as many: the sum of 1 − match probability over its links, which every run reports without labels, is 1.67 at 13,019 records, 2.28 at 25,947, 4.76 at 52,115 and 7.62 at 77,926; at a million, where personas repeat as clones, 223.43 of 55,222 links. The bound on the false-merge rate is 0.44% at 13,019 records, above the 0.26% reported for test, and 0.10–0.14% at the larger sizes.
+- **Recall stays within two points,** between 47.8% and 49.3%. u is measured on each scored file, so an agreement on a field whose values grow with the file, such as the address or the CIF ID, earns the credit it has at that size ([lessons.md](../lessons.md#weights-fitted-at-one-file-size-used-at-another)). On the labelled splits, which are no bigger than train, this choice costs true pairs: 700 on cross-validated train and 92 on val (`u_from_scored_file`, adopted as "chosen", [chapter 6](06-measuring-and-choosing.md)).
 
-**In short:** two kinds of step grow with the square of the file: keys whose values come from a fixed pool (the phone digits, the address), and all-against-all similarity. Compound keys, no TF-IDF and a narrower F2 join keep both in check. A sorted window reaches fewer pairs as the file grows, so five more keys make sure no potential match depends on one, and the chosen pipeline uses no window at all. A million records take 53 seconds, with peak memory 6.64 GB under an 8 GB limit, on DuckDB tables that spill to disk past it.
+**In short:** two kinds of step grow with the square of the file: keys whose values come from a fixed pool (the phone digits, the address), and all-against-all similarity. Compound keys, no TF-IDF and a narrower F2 join keep both in check. A sorted window reaches fewer pairs as the file grows, so five more keys make sure no potential match depends on one, and the chosen pipeline uses no window at all. A million records take 27.2 seconds, with peak memory 7.21 GB under an 8 GB limit, on DuckDB tables that spill to disk past it.
 
 ## In the code
 

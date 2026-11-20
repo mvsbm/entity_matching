@@ -152,10 +152,9 @@ def check(ws: Path, s: Settings, p: Pipeline, base: dict, fitted: dict, n: int) 
     with this fit): per threshold, the pairs at it, those a key or a rule lists, those the run kept, those a key lists
     the run didn't keep (its cutoff, at its own model: a run with this fit finds them), those no key lists (with a 95%
     interval), and the fields those agree on. Scaled to the file."""
-    from er.keys import agree_counts, gap_records, thresholds
+    from er.gap import GAP_RECORDS, agree_counts, thresholds
     from er.sample import discover, generator_atoms, key_lists, poisson
-    from er.run import BLOCKS, Run, stored_keys
-    p = stored_keys(ws, p, s)  # the keys the run listed by
+    from er.run import BLOCKS, Run
     run = Run(p, s)
     con = run.con
     parts = sorted((ws / "state" / "records").glob("part-*.parquet"))
@@ -168,7 +167,7 @@ def check(ws: Path, s: Settings, p: Pipeline, base: dict, fitted: dict, n: int) 
     run.scoring = run.model = {**base, "comparisons": fitted["comparisons"], "probability_two_random_records_match": scaled_prior(fitted, n),
                                "er": {**base["er"], "fit_rows": n}}  # the file's u (train_fs was given them), this fit's m and start
     try:
-        d = discover(run, gap_records(p), review_floor(p))
+        d = discover(run, GAP_RECORDS, review_floor(p))
         blocks = ws / "state" / BLOCKS
         kept = json.loads(blocks.read_text(encoding="utf-8")) if blocks.exists() else {}  # the oversized blocks the run listed
         t, w, m = d.targets, d.weight, p.fs.budget.min_oversized()

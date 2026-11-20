@@ -1,15 +1,14 @@
-"""How fast the index is built, one record looked up in it, a search answered as a person types, and the index kept up
-to date after an increment, on a generated population; whether each lookup lists and scores what the batch path does
+"""How fast the index is built, one record looked up in it, and the index kept up to date after an increment, on a generated population; whether each lookup lists and scores what the batch path does
 for that record alone, and whether the index kept up to date answers as one built again.
 
     .venv/bin/python scripts/benchmark_lookup.py --entities 800000     # about a million records: some minutes
     .venv/bin/python scripts/benchmark_lookup.py --entities 20000      # quick
 
 Holds out --lookups records and an increment of --added, runs the rest (nayose resolve records), builds the index (nayose
-build index), looks each held-out record up by its values, in one process, as the page's server does, searches by the
-start of its name as a person types it, and checks --checked of them against er.candidates and er.match.score_fs on the
-stored records plus that one. Then adds the increment (nayose add records, which keeps the index up to date) and asks
---checked lookups and searches of the index kept up to date and of one built again. Writes reports/benchmark_lookup.md.
+build index), looks each held-out record up by its values, in one process, as the page's server does, and checks
+--checked of them against er.candidates and er.match.score_fs on the stored records plus that one. Then adds the
+increment (nayose add records, which keeps the index up to date) and asks --checked lookups of the index kept up to
+date and of one built again. Writes reports/benchmark_lookup.md.
 """
 import argparse
 import contextlib
@@ -70,13 +69,11 @@ def checked(ws: Path, s, p, fitted, model, m: dict, records: pd.DataFrame, sourc
     return out
 
 
-def answers(ws: Path, s, p, asks: list) -> list[dict]:  # what each lookup and search answers, all of it but its time
+def answers(ws: Path, s, p, asks: list) -> list[dict]:  # what each lookup answers, all of it but its time
     out = []
     for values, record in asks:
         r = index.look_up(ws, s, p, values=values, record=record, at_least=-1e9, most=10**6)
         out.append({**{k: r[k] for k in ("record", "entities", "found", "candidates", "likely", "checked")}, "records": r["index"]["records"]})
-        r = index.search(ws, s, p, values, most=10**6)
-        out.append({**{k: r[k] for k in ("entities", "found", "listed", "candidates", "typed", "over")}, "records": r["index"]["records"]})
     return out
 
 
@@ -115,7 +112,7 @@ def main() -> None:
     size = sum((ws / index.INDEX / f).stat().st_size for f in m["files"].values() if f)
     fitted, model = index._pipeline(ws, s2, p, m["columns"]), run_model(ws)
     sources = sorted({c for d in fitted.fs.standardize.derived for alt in d.sources for c in alt})
-    times, compared, parts, sought, listed = [], [], [], [], []
+    times, compared, parts = [], [], []
     for i, (_, rec) in enumerate(g.df[held].iterrows()):
         values = {c: rec[c] for c in sources if c in rec and pd.notna(rec[c])}
         t = time.perf_counter()
@@ -127,13 +124,7 @@ def main() -> None:
             opened = took
         compared.append(r["candidates"])
         parts.append(r["seconds"])
-        name = rec["FULL_NAME_KANA"] if pd.notna(rec["FULL_NAME_KANA"]) else rec["NYS_CNV_P_NAME_KANA"]
-        for k in range(2, 6) if isinstance(name, str) else ():  # a name as it is typed
-            t = time.perf_counter()
-            r = index.search(ws, s2, p, {"FULL_NAME_KANA" if pd.notna(rec["FULL_NAME_KANA"]) else "NYS_CNV_P_NAME_KANA": name[:k]})
-            sought.append(time.perf_counter() - t)
-            listed.append(r["listed"])
-    print(f"{len(times):,} lookups, p95 {np.percentile(times, 95) * 1000:.0f} ms; {len(sought):,} searches, p95 {np.percentile(sought, 95) * 1000:.0f} ms", flush=True)
+    print(f"{len(times):,} lookups, p95 {np.percentile(times, 95) * 1000:.0f} ms", flush=True)
     checks = pd.DataFrame(checked(ws, s2, p, fitted, model, m, g.df[held].head(args.checked), sources))
     asks = [({c: rec[c] for c in sources if c in rec and pd.notna(rec[c])}, None) for _, rec in g.df[held | added].sample(args.checked, random_state=0).iterrows()]
     said = io.StringIO()
@@ -160,13 +151,10 @@ def main() -> None:
               f"**p50 {ms(50)}, p95 {ms(95)}, max {ms(100)}**, the index kept open by the process as the page's server keeps it; the first, which opens it, "
               f"{opened * 1000:,.0f} ms. Records compared: median {int(np.median(compared)):,}, max {max(compared):,}.", "",
               markdown(stages), "",
-              "## A search, as a person types", "",
-              f"Each held-out record's name searched by its first 2, 3, 4 and 5 characters (`nayose search records`): **p50 {ms(50, sought)}, "
-              f"p95 {ms(95, sought)}, max {ms(100, sought)}** over {len(sought):,} searches; records listed: median {int(np.median(listed)):,}.", "",
               "## Kept up to date", "",
               f"`nayose add records` of {added.sum():,} records: the index brought up to date in **{kept['seconds']:,.1f} s** "
               f"({kept['added']:,} records added, {kept['moved']:,} whose entity or rule cluster moved){'; built again: ' + kept['rebuilt'] if kept['rebuilt'] else ''}; "
-              f"built again in full, {rebuilt_seconds:,.1f} s. Of {len(asks):,} records looked up and searched by all their values, "
+              f"built again in full, {rebuilt_seconds:,.1f} s. Of {len(asks):,} records looked up by all their values, "
               f"**{same:,} of {len(now):,} answers** of the index kept up to date equal those of the one built again.", "",
               "## The same as the batch path", "",
               f"{len(checks):,} of the records looked up, each also listed by `er.candidates` among the stored records plus it alone, oversized "

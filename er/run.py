@@ -15,8 +15,6 @@ with the numbers filled in, and its time.
                                                  the search floor
     score       O(C·K·L²)                        every candidate scored
     cluster     O(C + E·log E + N)                   accept at the threshold, then cluster with the rules' pairs
-    probe       O(N + P·K + L)                   the matches no key lists: pairs sampled within groups matches share, scored
-                                                 (er.probe), the hits the likely links don't join counted and scaled
     write       O(N + C)                         gold clusters and matches, as Parquet; the state for increments; and,
                                                  built first, the report
     report      O(review pairs) + O(N) in SQL    for people: qa.md, report.txt, review.parquet
@@ -70,12 +68,10 @@ import pyarrow as pa
 from er import folder
 from er.candidates import candidates, estimate
 from er.cluster import merge
-from er.config import FSModel, InputError, Pipeline, TfidfNeighbours, bits, generator, generator_dict, lit, q
+from er.config import FSModel, InputError, Pipeline, TfidfNeighbours, bits, lit, q
 from er.io import code_version, config_hash, markdown, read_parquet
-from er.keys import idle, gap as keys_gap, learn
 from er.kind import KIND_COLUMNS, NAME_MODEL, classifier as kind_classifier
 from er.match import ELSE, bound_tests, rough_reads, compared_exactly, fit_model, fit_sample_sql, named_sql, bound_reads, reaching_sql, refreshed_u, review_floor, rule_edges, search_floor, score_fs, scored_u, train_fs, u_basis
-from er.probe import missed
 from er.report import carry_over, diagnosis, no_run, qa, report_text, unmapped_columns
 from er.results import BANDS, banded
 from er.settings import SPECIAL, Settings, fit_to_file, present_fields
@@ -164,7 +160,6 @@ class Run:
         self.keep: Path | None = None         # the workspace whose cleaned records a full run reads again (folder.prepared), if any
         self._spent = spent()  # the comparison functions' time when the last step ended (_done)
         self.gate_seconds, self.gate_pairs = 0.0, 0  # the oversized blocks' samples scored (_gate): how long, how many
-        self.learned: tuple = ()              # the keys learned on the file (keys), if any
         self.plan: pd.DataFrame | None = None  # the budget's pairs per rule and generator (budget()); an increment has none
         self.present: dict = {}               # each field the file holds, and the source columns it is built from
         self.unmapped: pd.DataFrame | None = None  # the file's columns no field reads, on a sample (report.unmapped_columns)
@@ -527,38 +522,6 @@ class Run:
             self.con.execute("INSERT INTO rule_kept SELECT * FROM er_stage")
             merge(self.con, "rule_clusters", "er_stage", "rule_clusters", self.uid)
 
-    def keys(self) -> None:
-        """The keys learned on this file, no labels (er.keys), in place of [model] generators, kept for its increments:
-        the pairs the model accepts at the review floor, found by sampling through every atom, listed by the keys that
-        reach most of them for the fewest pairs. Without [keys], or where the sample finds none, the generators stand."""
-        t = time.perf_counter()
-        if self.pipeline.keys is None:  # the method's keys, but those whose pairs other keys list and whose agreement is no evidence
-            if not (self.reaching_only and self.added is None):
-                return
-            blockers, dropped = idle(self)
-            if dropped:
-                self.pipeline = replace(self.pipeline, fs=replace(self.pipeline.fs, blockers=blockers))
-                self.learned = blockers  # kept in state/keys.json: increments and lookups list by the same keys
-                if self.plan is not None:
-                    self.plan = self.plan[~((self.plan["kind"] == "generator") & self.plan["name"].isin(dropped))]
-                w = self.found.weight
-                self.notes += [f"key {x} not run: what it agrees on weighs nothing, and other keys or rules list every pair it lists in the gap's sample at "
-                               f"{review_floor(self.pipeline):g}+ bits (of the file's, at most {round(3 * w):,} it alone lists, about 95%)" for x in dropped]
-            drew = getattr(self, "found", None)  # a sample drawn, when a key's agreement weighs nothing: the gap step reads it
-            self._done("keys", "O(f·N·b)", f"O({drew.facts['sampled_records']:,} records sampled)" if drew else "O(1)", t, learned=False, dropped=dropped,
-                       **({k: v for k, v in drew.facts.items() if k != "atoms"} if drew else {}))  # the sample's facts where its time is
-            return
-        blockers, facts, known = learn(self)
-        if facts["learned"]:
-            self.pipeline = replace(self.pipeline, fs=replace(self.pipeline.fs, blockers=blockers))
-            self.estimates, self.learned = known, blockers  # candidates reads their counts, not the records again
-            if self.plan is not None:  # the progress the joins report, weighed by the keys that run
-                self.plan = pd.concat([self.plan[self.plan["kind"] != "generator"], pd.DataFrame(
-                    [dict(kind="generator", name=b.name, normal=known[b.name]["normal_pairs"] or known[b.name]["est_pairs"],
-                          oversized_blocks=known[b.name]["oversized_blocks"]) for b in blockers])], ignore_index=True)
-        self._done("keys", "O(A·N + f·N·b + K·T + K'·N)", f"O({len(facts['atoms'])}·{self.n:,} + {facts['drawn']:,} pairs)", t,
-                   **{k: v for k, v in facts.items() if k != "seconds"})
-
     def candidates(self, batch: str | None = None) -> pd.DataFrame:
         """The pairs the keys list, as cands: of the file, or (an increment) those touching `batch`, a table of its IDs."""
         t, fs = time.perf_counter(), self.pipeline.fs
@@ -762,28 +725,6 @@ class Run:
         self._done("cluster", "O(C_Δ + touched clusters)" if old else "O(C + E·log E + N)", f"O({self._count('scores'):,} + {e:,}·log E + {self.n:,})", t, accepted=e,
                    expected_false=self._expected_false())
 
-    def probe(self) -> None:
-        """The matches no pair key lists, measured without labels (er.probe): in each [probe] stratum, pairs drawn at
-        random, scored, and those at the model's line its likely links don't join counted and scaled. The likely links:
-        its matches, the rules' pairs people didn't call different, and people's "same". O(N + P·K + L)."""
-        spec, fs, l, r = self.pipeline.probe, self.pipeline.fs, q(self.l), q(self.r)
-        if not spec.strata:
-            return
-        t = time.perf_counter()
-        links = f"""SELECT {l}, {r} FROM matches
-            UNION ALL SELECT {l}, {r} FROM rule_kept k WHERE NOT EXISTS (SELECT 1 FROM er_decisions d WHERE d.{l} = k.{l} AND d.{r} = k.{r} AND d.decision = 'no_match')
-            UNION ALL SELECT {l}, {r} FROM er_decisions WHERE decision = 'match'"""
-        found = missed(self.con, self.scoring, fs, spec, "records", links, self.uid, None if fs.bridge else self._sized("rule_clusters", ">"),
-                       apart=f"SELECT {l}, {r} FROM er_decisions WHERE decision = 'no_match'")
-        self._done("probe", "O(N + P·K + L)", f"O({self.n:,} + {sum(x['scored'] for x in found):,}·K + L)", t, strata=found)
-
-    def gap(self) -> None:
-        """The pairs the model would accept that no key or rule listed, estimated by sampling every way two records can
-        agree (er.keys.gap): report.txt's GAP, what the keys lose against comparing every pair, and where it lies."""
-        t = time.perf_counter()
-        facts = keys_gap(self)
-        self._done("gap", "O(f·N·b)", f"O({facts['sampled_records']:,} records sampled)", t, **{k: v for k, v in facts.items() if k != "seconds"})
-
     def _expected_false(self) -> float:  # the false links the model expects among those it accepted: Σ (1 − match probability), O(E)
         return round(self.con.execute("SELECT coalesce(sum(1 - match_probability), 0) FROM matches").fetchall()[0][0], 2)
 
@@ -799,8 +740,6 @@ class Run:
         aside = [("SELECT * FROM set_aside", out / "set_aside" / name)] if self._count("set_aside") else []
         texts = [(json.dumps(self.model, ensure_ascii=False), state / "model.json"), (self.config, state / "config.txt")] if part == 0 else []
         texts.append((json.dumps(self.placeholders, ensure_ascii=False), state / "placeholders.json"))  # read as missing: an increment and a lookup read them so too
-        if part == 0 and self.learned:  # the keys learned on the file: an increment lists its pairs by them
-            texts.append((json.dumps({b.name: generator_dict(b) for b in self.learned}, ensure_ascii=False), state / "keys.json"))
         # the oversized blocks the full run listed in full: a key lists a pair in one (er.sample.key_lists, for er.sizes). An increment's
         # gate lists only its batch's pairs of a block, so its kept blocks are not added: er.sizes counts those pairs as missed
         if part == 0:
@@ -904,7 +843,6 @@ class Run:
             raise InputError(f"the pipeline or the column mapping changed since the full run in {out}: an increment would resolve its batch otherwise",
                              fix="resolve all of them again (nayose resolve records … --overwrite), or add these with the pipeline and config/settings.toml that run used")
         self.model = json.loads((state / "model.json").read_text(encoding="utf-8"))
-        self.pipeline = stored_keys(out, self.pipeline, self.settings)
         self.part = folder.next_part(state / "records")
         parts = ", ".join(lit(x) for x in sorted((state / "records").glob("part-*.parquet")))  # not a glob: this run's own part comes later
         self.con.execute(f"CREATE OR REPLACE VIEW old_records AS SELECT * FROM read_parquet([{parts}], union_by_name = true)")
@@ -1017,26 +955,16 @@ class Run:
 
     def resolve(self, path: str | Path | list[Path], decided: Path | None) -> "Run":
         """Steps 1–7 on the file at `path`, writing nothing: each record's cluster (gold), with the decisions the
-        workspace `decided` keeps (None: none). A trial of a method runs these alone (er.trial.trial)."""
+        workspace `decided` keeps (None: none)."""
         self.load(path)
         self.budget()
         self.fit()
         self.rules()
-        self.keys()
         self.candidates()
         self.score()
         self._load_decisions(decided)
         self.cluster()
-        self.probe()
-        self.gap()
         return self
-
-
-def stored_keys(ws: Path, p: Pipeline, s: Settings) -> Pipeline:  # the keys the full run listed by, learned or left after dropping idle ones (er.keys): an increment and a lookup list by them
-    kept = Path(ws) / "state" / "keys.json"
-    if not kept.exists():
-        return p
-    return replace(p, fs=replace(p.fs, blockers=tuple(generator(n, d, s.chains) for n, d in json.loads(kept.read_text(encoding="utf-8")).items())))
 
 
 BLOCKS = "blocks.json"  # in state/: each key's oversized blocks a full run listed, by value

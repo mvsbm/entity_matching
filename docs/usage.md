@@ -71,13 +71,13 @@ A records file is CSV, TSV or Parquet: a file, a quoted glob (`'in/*.csv'`) or a
 
 The workspace is the folder that keeps one matching job: the file, copied into its `inputs/`, the results and people's decisions. `resolve records` makes it, and refuses one that holds a run without `--overwrite`; people's decisions in it stand. `--compute memory_limit=8GB threads=4 temp_directory=<folder>` sets DuckDB's limits for the run, over `config/settings.toml` `[compute]`; past the memory limit, DuckDB spills to that folder. Before any join, a full run checks that the pairs fit in memory plus the room DuckDB may spill to, so a run that can't fit stops within seconds.
 
-The run needs no labels: it fits its model on the file itself. On a terminal, one line shows the step under way, how far it is and about how long is left; each step gets a line as it ends. Then the result in short: the records and the entities they became, the pairs waiting for people, about how many matches it may have missed, the records flagged person or company, and where the report is. `--verbose` prints every field. What each step does, and what it costs: [architecture, the run](architecture.md#4--the-run).
+The run needs no labels: it fits its model on the file itself. On a terminal, one line shows the step under way, how far it is and about how long is left; each step gets a line as it ends. Then the result in short: the records and the entities they became, the pairs waiting for people, the records flagged person or company, and where the report is. `--verbose` prints every field. What each step does, and what it costs: [architecture, the run](architecture.md#4--the-run).
 
 ### Before a run on your file
 
 1. **Map the columns** in `config/settings.toml` `[columns]` until nothing needed is missing.
 2. **Give DuckDB its limits.** Set `[compute]` `memory_limit` below the machine's memory, leaving room for Python, and `temp_directory` on a disk with room for about 350 bytes per pair.
-3. **After the run, read `report.txt`.** Its DIAGNOSIS says what limits what the run finds; the summary's `missed` estimates the matches no pair key lists.
+3. **After the run, read `report.txt`.** Its DIAGNOSIS says what limits what the run finds.
 4. **To ask for help, send `report.txt`.** It holds no record's value ([section 7](#7--when-something-is-wrong)).
 
 ## 4 · Read the outputs
@@ -133,7 +133,7 @@ matches = pd.read_parquet("workspaces/customers/matches")      # a folder of par
 
 - **The answer.** `match record` takes one record by the file's column names and gives the entities it may belong to, best first, from the review floor (4 points) up: each with its points, how each field compared, the rule that would join it, and whether it is likely the same. When none reaches the floor, it names the closest record compared.
 - **The same pairs as an increment.** The record is prepared as a run prepares one, each of its keys looked up, and the records found scored with the run's model. So it lists and scores the pairs an increment of that record alone would. It writes nothing.
-- **The index.** `build index` reads the run's own files once and writes `index/`: every key of every record, sorted, so a lookup reads only the rows its keys name. On a million records it is built in about 7 s and takes 0.85 GB; a lookup takes about 0.1 s and grows only with the log of the run's size ([performance](performance.md)).
+- **The index.** `build index` reads the run's own files once and writes `index/`: every key of every record, sorted, so a lookup reads only the rows its keys name. On a million records it is built in about 3 s and takes 0.84 GB; a lookup takes under 0.1 s and grows only with the log of the run's size ([performance](performance.md)).
 - **Kept up to date.** `add records` and `apply decisions` update the index as their last step; a full run builds it again.
 
 ## 6 · Review and decide
@@ -170,7 +170,7 @@ The engine decides each record's kind on its own. It calls a kind it is sure of:
 
 ## 7 · When something is wrong
 
-`report.txt` starts with DIAGNOSIS: what limits what the run finds, at most eight lines, the most pairs at stake first. It names a compared field filled in under 30% of the records; EM sessions whose matches mostly share no given name (they learned households); pairs below the review floor that agree exactly on a name and another field; levels that learned nothing yet hold pairs; pairs at the review floor no key lists; and EM sessions that learned from under 200 pairs. What is fine is left out.
+`report.txt` starts with DIAGNOSIS: what limits what the run finds, at most eight lines, the most pairs at stake first. It names a compared field filled in under 30% of the records; EM sessions whose matches mostly share no given name (they learned households); pairs below the review floor that agree exactly on a name and another field; levels that learned nothing yet hold pairs; and EM sessions that learned from under 200 pairs. What is fine is left out.
 
 What the run handles by itself, and reports in its summary:
 
@@ -193,6 +193,8 @@ What stops it: two lines, what is wrong and how to fix it, and exit code 2:
 | `the normal blocks alone would make … pairs, more than fit` | give DuckDB more room (`--compute memory_limit=… temp_directory=…`) or split the file |
 | `… already holds a run` | add `--overwrite`, or pick another folder |
 | `… holds its own method.toml` (or `columns.toml`) `, which no run reads` | move what it sets into `config/final.toml` (or `config/settings.toml [columns]`, or a settings file `ER_SETTINGS` names), then delete it |
+| `[keys] sets nothing: a run lists pairs by the [model] generators as given` | delete `[keys]` from the pipeline file |
+| `… a workspace an earlier nayose wrote (keys learned on its file or left out, which no run reads now)` | run it again into a new folder (`nayose resolve records FILE --workspace PATH`), or replace it with `--overwrite` |
 | `out of memory` | raise `--compute memory_limit`, or give `temp_directory` a disk with more room |
 | `… don't line up with its header` | a wrong delimiter or header |
 | `no run in … to add records to` | `resolve records` first |

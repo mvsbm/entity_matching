@@ -137,7 +137,6 @@ def qa(run: "Run", fields: list[str] | None = None, review: int = 50, previous: 
                                       f"{b:,} 1 person flagged 2"))
         if len(mixed):
             kind_rows.append(("note", f"{len(mixed):,} cluster{'s hold' if len(mixed) > 1 else ' holds'} a sure person and a sure company: see qa.md, mixed kinds"))
-    probed = next((x["strata"] for x in reversed(run.steps) if x["step"] == "probe"), [])  # er.probe: counts only
     apart = con.execute(f"""SELECT count(*) FROM er_decisions d JOIN gold a ON a.{u} = d.{q(run.l)} JOIN gold b ON b.{u} = d.{q(run.r)}
         WHERE d.decision = 'no_match' AND a.cluster_id = b.cluster_id""").fetchall()[0][0]  # kept apart, joined by others
     summary = pd.DataFrame([
@@ -147,9 +146,6 @@ def qa(run: "Run", fields: list[str] | None = None, review: int = 50, previous: 
         ("model links", f"{linked['accepted']:,}{' in this batch' if run.added is not None else ''}; about {linked['expected_false']:,.{1 if linked['expected_false'] >= 1 else 2}f} "
                         "of them false, as the model expects (the sum of 1 − match probability)"),
         ("to decide", f"{len(decide):,} pair{'' if len(decide) == 1 else 's'} in review.parquet (why = decide)"),
-        *(("missed", f"about {x['missed']:,} matches the method missed ({x['low']:,}–{x['high']:,}) among pairs that share {' + '.join(x['fields'])}: "
-                     f"{x['hits']:,} found in {x['scored']:,} of its {x['pairs']:,} pairs, scored" + (f"; {x['between_rules']:,} of them between two entities the rules formed (bridge off)"
-                     if x["between_rules"] else "")) for x in probed),
         *kind_rows,
         *([("note", f"{apart:,} pair{'s' if apart > 1 else ''} people called different {'are' if apart > 1 else 'is'} in one entity through other links: "
                     "a full run parts it only where no other link holds it")] if apart else []),
@@ -175,8 +171,8 @@ def diagnosis(run: "Run", tables: dict[str, pd.DataFrame], lo: float) -> list[di
     the pairs at stake and the fix (the setting to change, where there is one): report.txt prints them (diagnosis_lines),
     steps.json keeps them. What is fine is left out: EM sessions of the run's own fit that learned
     households, compared fields under SPARSE filled (with a column no field reads that looks like one), pairs below the
-    review floor that agree exactly on a name and another field, levels that learned nothing yet hold pairs, what the
-    search leaves (the gap at the review floor, oversized blocks skipped that came within NEAR bits), and, last, EM
+    review floor that agree exactly on a name and another field, levels that learned nothing yet hold pairs, oversized
+    blocks skipped that came within NEAR bits, and, last, EM
     sessions of under THIN pairs. No record's value:
     field, column and level names, counts and shares. O(C) over the scores."""
     con, model, m, fs = run.con, run.scoring, run.scoring["er"], run.pipeline.fs
@@ -234,9 +230,6 @@ def diagnosis(run: "Run", tables: dict[str, pd.DataFrame], lo: float) -> list[di
         out.append((sum(n for n, _ in held), "levels that learned nothing hold pairs, at 0 bits: " + ", ".join(x for _, x in sorted(held, reverse=True))
                     + (f" ({empty} more hold none)" if empty else "") + " → a larger fit sample: [model] fit_rows"))
 
-    g = next((x for x in run.steps if x["step"] == "gap"), None)  # what the search leaves
-    if g and (at := next((x for x in g["thresholds"] if x["bits"] >= lo), None)) and at["missed"]:
-        out.append((at["missed"], f"no key lists about {at['missed']:,} pairs at {at['bits']:g}+ ({at['missed_lo']:,}–{at['missed_hi']:,}) → a key for them, chosen at design time"))
     gated, floor = getattr(run, "gated", pd.DataFrame()), search_floor(run.pipeline)
     if len(gated) and "best" in gated:
         near = gated[gated["decision"].str.startswith("skipped") & (gated["best"] >= floor - NEAR)]
@@ -338,18 +331,9 @@ def report_text(run: "Run", tables: dict[str, pd.DataFrame], pipeline: Path, ite
     steps = tables["steps"]
     out += ["STEPS", *table(steps[["step", "seconds", "peak_memory_gb", "facts"]].rename(columns={"peak_memory_gb": "peak_gb"})), ""]
     by_step = {x["step"]: x for x in run.steps}
-    if g := by_step.get("gap"):  # what the keys lose against comparing every pair (er.keys.gap)
-        out += [f"GAP  (pairs the model would accept that no key or rule lists; {g['sampled_records']:,} records sampled, each paired with every record "
-                "that shares a value or a near one; about 95%)", *table(pd.DataFrame([dict(
-                    bits=f"{x['bits']:g}+", pairs=f"{x['pairs']:,}", missed=f"{x['missed']:,}", interval=f"{x['missed_lo']:,}–{x['missed_hi']:,}")
-                    for x in g["thresholds"]])),
-                *(["  missed pairs agree on: " + " · ".join(f"{x['atom']} {x['pairs']:,}" for x in g["missed_agree"][:12])] if g["missed_agree"] else []), ""]
     if (c := by_step.get("candidates")) and c.get("generators"):  # where the candidates' time goes
-        only = g.get("only", {}) if g else None  # the gap's sampled pairs at the floor no other key or rule lists, scaled
-        out += [f"KEYS  (pairs each lists, seconds{'; only: pairs at the review floor no other key or rule lists, estimated from the gap' if only is not None else ''}; slowest first)",
-                *table(pd.DataFrame([dict(key=x["name"], pairs=f"{x['pairs']:,}", seconds=f"{x['seconds']:.1f}", **({"only": f"{only.get(x['name'], 0):,}"} if only is not None else {}))
-                                     for x in sorted(c["generators"], key=lambda x: -x["seconds"])])),
-                *([f"  not run: {', '.join(k['dropped'])} (its agreement weighs nothing, and other keys list its pairs)"] if (k := by_step.get("keys")) and k.get("dropped") else []), ""]
+        out += ["KEYS  (pairs each lists, seconds; slowest first)",
+                *table(pd.DataFrame([dict(key=x["name"], pairs=f"{x['pairs']:,}", seconds=f"{x['seconds']:.1f}") for x in sorted(c["generators"], key=lambda x: -x["seconds"])])), ""]
 
     def row(x: dict, f: str, c: dict) -> dict:
         every = f == "all"

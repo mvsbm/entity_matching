@@ -172,10 +172,10 @@ grid = [0, 2, 4, 6, 8, 10, 12, 14, 16]   # upper bound ≤ max_fp_rate_hi, then 
 max_fp = 0
 max_fp_rate_hi = 0.05
 margin_steps = 1
-search_floor = 0                  # bits: oversized blocks and the gap are judged from here (or the review floor, if lower); idle keys from the review floor
+search_floor = 0                  # bits: oversized blocks are judged from here (or the review floor, if lower), and the gap counts from here at design time
 keep_from = 0                     # bits: the points from which a run stores a pair (scored/), every rule pair whatever its points
 
-[probe]                           # the matches no pair key lists, measured: pairs sampled within groups matches tend to share (er.probe)
+[probe]                           # design time (scripts/benchmark.py, er.probe): the matches no pair key lists, measured: pairs sampled within groups matches tend to share
 pairs = 1000000                   # about this many pairs scored in each group: about 2 s a group at a million records
 strata = { phone = ["phone"], postal_area = [{ field = "postal_code", normalize = "first3" }] }   # each a group as a key names it
 

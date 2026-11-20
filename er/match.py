@@ -1005,7 +1005,7 @@ def named_sql(fs: FSSpec, s: str = "s") -> str:  # the name check (FSSpec.needs)
 
 
 def search_floor(p: Pipeline) -> float:
-    """Where the search aims: the oversized-block gate, the gap's sample and the idle-key check count pairs from here,
+    """Where the search aims: the oversized-block gate counts pairs from here, and the gap's sample at design time,
     [threshold] search_floor or the review floor, whichever is lower. Aiming below review keeps pairs a better model lifts."""
     return min(p.threshold.search_floor, review_floor(p))
 

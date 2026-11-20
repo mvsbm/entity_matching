@@ -36,8 +36,8 @@ table, name a table, drop one), one DuckDB and one BigQuery implementation, chos
 In BigQuery the index is key tables clustered by key, and a batch lookup is a join. Today's `er/index.py` (a sorted
 DuckDB file) doesn't carry over. AlloyDB may later serve single-record lookups from the same key tables.
 
-**At 1 billion records**, nothing that grows with N may pass through pandas or Python memory. To watch: the gap check
-(O(f·N·b)), clustering about 70 million edges, a JavaScript UDF's speed on the pairs scored in full (about 7% of
+**At 1 billion records**, nothing that grows with N may pass through pandas or Python memory. To watch: clustering about 70
+million edges, a JavaScript UDF's speed on the pairs scored in full (about 7% of
 records). Cost is measured at 1M → 10M → 100M generated records in a sandbox and extrapolated, not guessed.
 
 ## Design-time tuning
