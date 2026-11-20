@@ -92,7 +92,7 @@ package "state/, for increments: Run.write" {
     cluster_id : its rule cluster
   }
   entity "state/model.json" as model {
-    Splink's model: λ, m and u per level, the fit's facts
+    the model: λ, m and u per level (as Splink 5.0 writes it), the fit's facts
   }
   entity "state/scoring.json" as scoring {
     the u the run scored with; per comparison its basis and last drift check

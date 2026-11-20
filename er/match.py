@@ -24,31 +24,12 @@ import duckdb
 import numpy as np
 import pandas as pd
 import splink
-import splink.internals.expectation_maximisation as splink_em
 from splink import DuckDBAPI, Linker
-from splink.internals.comparison_level import M_U_CLAMP_MIN
-from splink.internals.constants import LEVEL_NOT_OBSERVED_TEXT
 
+from er import fit
 from er.candidates import deletions_sql
 from er.strings import FUNCTIONS
 from er.config import COPIES, GIVEN, PERSON, Comparator, Comparison, DeletionKeys, FSModel, FSSpec, InputError, Key, KeyBlocker, Pipeline, RulesSpec, keys_sql, q
-
-_populate = splink_em.populate_m_u_from_lookup
-
-
-def _unseen_when_zero(fixed: set[str], level, name: str, lookup: dict) -> None:
-    """Splink's EM step, with an m too small to hold or not a number (no likely match at the level, or none in the
-    comparison: one record copied many times outweighs the rest) read as a level not observed, which train_fs gives
-    m = u. Splink refuses the first itself and takes the second, which makes every weight of the level NaN.
-    shortcut: Splink 5.0's own EM finds those m; drop this once its EM clamps them."""
-    got = lookup.get(name, {}).get(level.comparison_vector_value)
-    if got and isinstance(got.get("m_probability"), float) and not got["m_probability"] >= M_U_CLAMP_MIN:  # NaN too
-        got["m_probability"] = LEVEL_NOT_OBSERVED_TEXT
-    _populate(fixed, level, name, lookup)
-
-
-splink_em.populate_m_u_from_lookup = _unseen_when_zero
-
 
 def rule_edges(spec: RulesSpec, records: "Records", con: duckdb.DuckDBPyConnection, uid: str, batch: str | None = None,
                trust: Mapping[int, str] | None = None, into: str | None = None, told: Callable[..., None] | None = None) -> tuple[pd.DataFrame | str, dict[str, float]]:
@@ -447,14 +428,14 @@ def fit_sample_sql(models: Iterable[FSModel], uid: str, columns: set[str]) -> st
     return f"SELECT {', '.join(q(c) for c in sorted(columns) if c in reads)} FROM records ORDER BY {f'hash({area}), ' if area else ''}hash({q(uid)})"
 
 
-def em_sql(model: FSModel, rule: tuple[Key, ...]) -> str:
-    """An EM session's blocking rule, naming as well a column of each comparison that reads a field it keys on, under
-    any normalization: Splink learns no comparison whose columns the rule names (the rule chose its pairs by them), and
-    it tells them by column, so a session keyed on one normalization of a field would learn a comparison of another."""
+def keyed(model: FSModel, rule: tuple[Key, ...]) -> set[str]:
+    """The record columns an EM session keyed on `rule` holds fixed: its keys', and a column of each comparison that
+    reads a field it keys on, under any normalization (a session keyed on one normalization of a field must not learn
+    a comparison of another: the key chose its pairs by that field)."""
     fields = {k.column for k in rule}
-    also = dict.fromkeys(c.null_if_missing[0] for c in model.comparisons
-                         if c.null_if_missing and fields & ({col for lv in c.levels for col, _ in lv.any_of} | set(c.null_if_missing)))
-    return keys_sql(rule) + "".join(f' AND l."{x}" IS NOT DISTINCT FROM l."{x}"' for x in also)  # always true: the same pairs
+    also = {c.null_if_missing[0] for c in model.comparisons
+            if c.null_if_missing and fields & ({col for lv in c.levels for col, _ in lv.any_of} | set(c.null_if_missing))}
+    return {k.name for k in rule} | also
 
 
 GIVEN_FILLED = 0.3  # the given name filled in fewer of the named records than this: full-name agreement is the check
@@ -557,25 +538,16 @@ def train_fs(model: FSModel, df: pd.DataFrame, con: duckdb.DuckDBPyConnection, u
         raise InputError(f"no two records of the {len(t):,} the fit samples share {' or '.join(map(fields, model.em_rules))}, "
                          "the pairs it learns from", fix="map those fields to filled columns, or give a model fitted before with --model")
     settings = model_dict(model, uid, u)  # unestimated levels: handled here
-    tf_levels = any(c.tf and any(lv.tf for lv in c.levels) for c in model.comparisons)  # none: EM iterates on each agreement pattern's count, not on every pair
     median: dict[tuple[str, str], list[float]] = {}
     choice, wide = [], []
-    with narrowed(t, con, read_by(settings, *(em_sql(model, r) for r in (*prior, *em, *choose))) | {uid, "__label__"}) as name:
-        records = DuckDBAPI(connection=con).register(name)  # Splink's wrapper for this fit alone: its cache goes with it
-        linker = Linker(records, settings, log_level=logging.ERROR, validate_settings=False)  # its checks only log warnings, which ERROR hides: sqlglot parses for nothing
-        linker.training.estimate_probability_two_random_records_match([keys_sql(r) for r in prior], recall=model.prior_recall)
+    with narrowed(t, con, read_by(settings, *(keys_sql(r) for r in (*prior, *em, *choose))) | {uid, "__label__"}) as records:
+        lam = fit.prior(con, records, [keys_sql(r) for r in prior], uid, model.prior_recall)
 
-        def apart(rules: Iterable[tuple[Key, ...]]) -> dict[tuple[Key, ...], dict[tuple[str, str], float]]:  # each session on its own linker: what each learned, kept apart
-            out = {}
-            for rule in rules:
-                one = Linker(records, {**settings, "probability_two_random_records_match": linker._settings_obj._probability_two_random_records_match},
-                             log_level=logging.ERROR, validate_settings=False)  # the prior the first linker estimated on these records: the same count again
-                session = one.training.estimate_parameters_using_expectation_maximisation(em_sql(model, rule), estimate_without_term_frequencies=not tf_levels)
-                fixed = {c.output_column_name for c in session._comparisons_that_cannot_be_estimated}  # its block's own: chosen by them, not learned
-                out[rule] = {(c["output_column_name"], lv["label_for_charts"]): lv["m_probability"] for c in one.misc.save_model_to_json()["comparisons"]
-                             for lv in c["comparison_levels"] if c["output_column_name"] not in fixed and "m_probability" in lv and not lv.get("is_null_level")}
-                one.table_management.invalidate_cache()
-            return out
+        def session(rule: tuple[Key, ...], trained: fit.Trained) -> dict[tuple[str, str], float]:  # what one EM session learned
+            return fit.session(con, records, settings, keys_sql(rule), keyed(model, rule), uid, lam, trained).m
+
+        def apart(rules: Iterable[tuple[Key, ...]]) -> dict[tuple[Key, ...], dict[tuple[str, str], float]]:  # each from the first guess: kept apart
+            return {rule: session(rule, fit.Trained()) for rule in rules}
         if choose:
             median, choice, wide = chosen(model, t, apart(choose), choose)
             if median:
@@ -583,19 +555,18 @@ def train_fs(model: FSModel, df: pd.DataFrame, con: duckdb.DuckDBPyConnection, u
             elif not em:
                 raise InputError(f"no session of the {len(t):,} records the fit samples learned matches that agree on the given name, and no two "
                                  f"share {' or '.join(map(fields, model.em_rules))}, the method's own", fix="map those fields to filled columns, or give a model fitted before with --model")
-        learned = {}  # the method's sessions, each judged as fit em "choose" judges them (er "em_given"): what DIAGNOSIS says of them
+        trained = fit.Trained()  # the method's sessions, one after another: each starts from what those before it learned
+        learned = {}  # each judged as fit em "choose" judges them (er "em_given"): what DIAGNOSIS says of them
         for rule in em if not model.em_median and not median else ():
-            session = linker.training.estimate_parameters_using_expectation_maximisation(em_sql(model, rule), estimate_without_term_frequencies=not tf_levels)
-            learned[rule] = {(c.output_column_name, lv.label_for_charts): lv._m_probability for c in session.core_model_settings.comparisons
-                             for lv in c.comparison_levels if not lv.is_null_level and isinstance(lv._m_probability, float)}
+            learned[rule] = session(rule, trained)
+            trained.add(learned[rule])
         learned |= apart(em) if model.em_median and not median else {}
         for ms in learned.values() if model.em_median else ():
             for key, v in ms.items():
                 median.setdefault(key, []).append(v)
         if model.m_method == "labels":
-            linker.training.estimate_m_from_label_column("__label__")
-        model_json = linker.misc.save_model_to_json()
-        linker.table_management.invalidate_cache()
+            trained.add(fit.m_from_labels(con, records, settings, "__label__", uid))
+    model_json = fit.fitted(settings, lam, trained.medians())
     for c in model_json["comparisons"] if median else ():  # each level's m the median of the sessions that learned it, a comparison's summing to 1
         levels = [lv for lv in c["comparison_levels"] if not lv.get("is_null_level") and (c["output_column_name"], lv["label_for_charts"]) in median]
         got = {id(lv): float(np.median(median[c["output_column_name"], lv["label_for_charts"]])) for lv in levels}

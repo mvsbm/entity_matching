@@ -25,10 +25,10 @@ Each entry names a way an entity-resolution pipeline like this one goes wrong, a
 - **Check:** `reports/choose.md` prints the transfer check every round: at 6 bits, 0 false of 2,569 accepted pairs out-of-fold, and 0 of 918 on val. False pairs that cluster into one over-merged entity are a sign of one cause, not several.
 
 ## Levels without an estimate
-- **Pitfall:** Splink fills a level it could not estimate with default m and u values, which can produce strong weights out of nothing. It shows as Splink warning "u values not fully trained" or "level not observed".
-- **Why:** a lower level can be unreachable, when its threshold sits above the level before it ("JW low" above "JW high"), or a threshold can be so strict that no random pair reaches it. EM can also find no likely match at a level: one record copied many times outweighs the rest, and Splink's own EM then sets an m of 0 there and stops on it, or, for a comparison no likely match is left in, an m that is not a number, which it takes and every weight of the level becomes.
-- **Guard:** a level no sampled pair reached gets u at its 95% upper bound, so its weight is a lower bound on the evidence. A level never seen in training gets m = u, worth 0 bits, and so does a level EM puts at an m too small to hold or not a number (`er.match._unseen_when_zero`). The model lists such levels (`er.filled`). A level that is never reached is left out: the company comparison has no "JW high" level, and the search skips a tuned level the model doesn't have.
-- **Check:** a test builds a shadowed level and checks that it carries 0 bits; another hands an EM step an m of 0, and one that is not a number, and checks that the level is left unestimated.
+- **Pitfall:** a level filled with default m and u values when it could not be estimated (Splink's way) can produce strong weights out of nothing.
+- **Why:** a lower level can be unreachable, when its threshold sits above the level before it ("JW low" above "JW high"), or a threshold can be so strict that no random pair reaches it. EM can also find no likely match at a level: one record copied many times outweighs the rest, and EM then finds an m of 0 there, or, for a comparison no likely match is left in, an m that is not a number, which would make every weight of the level one.
+- **Guard:** a level no sampled pair reached gets u at its 95% upper bound, so its weight is a lower bound on the evidence. A level never seen in training gets m = u, worth 0 bits, and so does a level EM puts at an m too small to hold or not a number (`er.fit.session`). The model lists such levels (`er.filled`). A level that is never reached is left out: the company comparison has no "JW high" level, and the search skips a tuned level the model doesn't have.
+- **Check:** a test builds a shadowed level and checks that it carries 0 bits; another fits one record copied 80 times, and a level no pair reaches, and checks that both are left unestimated as Splink's EM held to the same rule leaves them (`tests/test_fit.py`).
 
 ## Two policies that set one parameter
 - **Pitfall:** two procedures that both choose the same setting make the adopt-and-rerun loop go round for ever. It shows as a search suggesting an adopted configuration again, and that suggestion passing the decision rule again.
@@ -181,8 +181,8 @@ Each entry names a way an entity-resolution pipeline like this one goes wrong, a
 - **Check:** a test decides one pair, runs an increment, and checks that the others are still on the sheet and the decided one is not.
 
 ## A nearly empty field that stops the fit
-- **Pitfall:** a field filled on very few records makes the fit stop with a long traceback from Splink.
-- **Why:** the fit learns m from pairs that share a phone, and from pairs that share an address. If no two records of its sample share an address, Splink refuses a learning rule with no pairs.
+- **Pitfall:** a field filled on very few records leaves an EM session with no pair to learn from.
+- **Why:** the fit learns m from pairs that share a phone, and from pairs that share an address. If no two records of its sample share an address, that session has nothing to learn from.
 - **Guard:** a rule that finds no pair is skipped, and the summary names it; the field still counts where it is filled. With no rule left, the run stops with two lines saying what to fix.
 - **Check:** a test empties the address and then the phone too.
 
