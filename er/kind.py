@@ -5,9 +5,9 @@
                  removed; trained once on public reference data by scripts/train_name_model.py: config/kind_names.npz
 
 Each record gets kind (2 company, 1 person, 0 not sure: the codes a person/company flag uses): the engine's call where
-it is sure (a written legal form, or a name past name_line either way), else the file's flag. kind_p (the probability
-of a company), kind_by (engine or flag), name_p (what its name alone says), kind_flagged (the engine sure against the
-flag: matched as the engine says). A name routed by kind (er.standardize.prepare) goes to the side of its kind.
+it is sure (a written legal form, or a name past name_line either way; a person's name never against a company
+flag), else the file's flag. kind_p (the probability of a company), kind_by (engine or flag), name_p (what its name
+alone says), kind_flagged (the engine sure against the flag: matched as the engine says). A name routed by kind (er.standardize.prepare) goes to the side of its kind.
 scripts/choose_kind.py chose these parts. O(N·L·g) to score N records (g n-gram lengths), O(T·L·g) once to train on T
 reference names.
 """
@@ -130,13 +130,16 @@ class Classifier:
         """Per record: kind (2 company, 1 person, 0 not sure), kind_p (the probability of a company), kind_by (engine or
         flag: where the kind came from), name_p (what the name and its legal form alone say), kind_flagged (the engine
         sure against the flag: matched as the engine says) and kind_name, the name as written. The engine calls a kind
-        it is sure of: a written legal form, or a name past spec.name_line either way. Else the file's flag decides; with
-        none, not sure. With spec.trust_flag, the flag decides every record."""
+        it is sure of: a written legal form, or a name past spec.name_line either way; but a name that reads as a
+        person's never overrides a company flag (a company's records under its representative's name read so, and
+        matched as a person they merge into the representative's own). Else the file's flag decides; with none, not
+        sure. With spec.trust_flag, the flag decides every record."""
         written = legal(name, self.std)
         name_p = np.where(written, 1.0, 1 / (1 + np.exp(-self.names.logit(text(name, self.std)))))
         flag_code = self.flag_code(flag, len(name))  # 2 company, 1 person, NaN none
         line = self.spec.name_line
         sure = np.where(written | (name_p >= line), COMPANY, np.where(name_p <= 1 - line, PERSON, UNSURE))
+        sure = np.where((sure == PERSON) & (flag_code == COMPANY), UNSURE, sure)  # the company flag stands
         nameless = name.isna().to_numpy()  # nothing to judge: the flag alone, no lean
         p = flag_code - 1 if self.spec.trust_flag else name_p  # the flag taken as it is: it is the engine's word
         sure, p = np.where(nameless | self.spec.trust_flag, UNSURE, sure), np.where(nameless, np.nan, p)

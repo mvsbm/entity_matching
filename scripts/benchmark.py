@@ -197,7 +197,8 @@ def main() -> None:
               "held out of the name model's training and written as banks write them; companies with records under their representative's name, the representative a person of "
               "the file (half at that person's address and phone); sole traders named like a shop; company dates; and a flag good, "
               "medium or poor. Each resolved three ways: names routed by the truth (the flag replaced by it, taken as it is); by the "
-              "flag alone; by the kind step (a written legal form, or a name the model is sure of; else the flag). `person_company_clusters` hold "
+              "flag alone; by the kind step (a written legal form, or a name the model is sure of, never a person's against a company flag; else "
+              "the flag). `person_company_clusters` hold "
               "a true person and a true company; `sure_*` is the share of true companies called 2 and of true persons called 1; "
               "`wrong_*` the records called 2 that are persons and called 1 that are companies.", "", markdown(kind), "",
               f"## Cost: files of growing size (time grows like N^{curve.attrs['alpha']})", "",

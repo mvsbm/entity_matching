@@ -18,19 +18,19 @@ Each population's test split, with λ and m fitted on its train split without la
 
 ## Person or company: end to end
 
-Populations with one name column for every kind (`er.generate.kind_problems`): real company names from the registry, held out of the name model's training and written as banks write them; companies with records under their representative's name, the representative a person of the file (half at that person's address and phone); sole traders named like a shop; company dates; and a flag good, medium or poor. Each resolved three ways: names routed by the truth (the flag replaced by it, taken as it is); by the flag alone; by the kind step (a written legal form, or a name the model is sure of; else the flag). This section: `scripts/benchmark.py`'s `kinds(20_000)` alone, measured again on 2026-11-20; the others are from the command above. `person_company_clusters` hold a true person and a true company; `sure_*` is the share of true companies called 2 and of true persons called 1; `wrong_*` the records called 2 that are persons and called 1 that are companies.
+Populations with one name column for every kind (`er.generate.kind_problems`): real company names from the registry, held out of the name model's training and written as banks write them; companies with records under their representative's name, the representative a person of the file (half at that person's address and phone); sole traders named like a shop; company dates; and a flag good, medium or poor. Each resolved three ways: names routed by the truth (the flag replaced by it, taken as it is); by the flag alone; by the kind step (a written legal form, or a name the model is sure of, never a person's against a company flag; else the flag). This section: `scripts/benchmark.py`'s `kinds(20_000)` alone, measured again on 2026-11-20; the others are from the command above. `person_company_clusters` hold a true person and a true company; `sure_*` is the share of true companies called 2 and of true persons called 1; `wrong_*` the records called 2 that are persons and called 1 that are companies.
 
 | flag | routed_by | recall | false_merges | person_company_clusters | pairs_to_decide | sure_companies | wrong_companies | sure_persons | wrong_persons | seconds |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| good (1% wrong at random, 20% on representatives) | the truth | 0.5018 | 5 | 0 | 285 | 100.0% | 0 | 100.0% | 0 | 4.2 |
-| good (1% wrong at random, 20% on representatives) | the flag alone | 0.4911 | 38 | 27 | 297 | 97.9% | 306 | 98.5% | 102 | 4.4 |
-| good (1% wrong at random, 20% on representatives) | the kind step | 0.4927 | 84 | 63 | 267 | 96.6% | 433 | 97.9% | 166 | 3.2 |
+| good (1% wrong at random, 20% on representatives) | the truth | 0.5018 | 5 | 0 | 285 | 100.0% | 0 | 100.0% | 0 | 4.3 |
+| good (1% wrong at random, 20% on representatives) | the flag alone | 0.4911 | 38 | 27 | 297 | 97.9% | 306 | 98.5% | 102 | 4.3 |
+| good (1% wrong at random, 20% on representatives) | the kind step | 0.4899 | 33 | 26 | 306 | 98.7% | 554 | 97.4% | 63 | 3.2 |
 | medium (3%, 50%) | the truth | 0.5018 | 5 | 0 | 285 | 100.0% | 0 | 100.0% | 0 | 2.9 |
-| medium (3%, 50%) | the flag alone | 0.4718 | 79 | 61 | 284 | 94.8% | 886 | 95.8% | 256 | 4.8 |
-| medium (3%, 50%) | the kind step | 0.484 | 107 | 82 | 259 | 95.5% | 753 | 96.4% | 221 | 3.2 |
+| medium (3%, 50%) | the flag alone | 0.4718 | 79 | 61 | 284 | 94.8% | 886 | 95.8% | 256 | 4.7 |
+| medium (3%, 50%) | the kind step | 0.4728 | 73 | 59 | 291 | 96.9% | 1091 | 94.8% | 153 | 3.2 |
 | poor (10%, 80%) | the truth | 0.5018 | 5 | 0 | 285 | 100.0% | 0 | 100.0% | 0 | 2.9 |
 | poor (10%, 80%) | the flag alone | 0.4046 | 121 | 93 | 371 | 86.9% | 2533 | 87.9% | 644 | 4.9 |
-| poor (10%, 80%) | the kind step | 0.4547 | 124 | 94 | 318 | 92.9% | 1643 | 92.2% | 350 | 3.3 |
+| poor (10%, 80%) | the kind step | 0.4146 | 111 | 86 | 353 | 93.6% | 2690 | 87.2% | 314 | 3.3 |
 
 ## Cost: files of growing size (time grows like N^0.42)
 

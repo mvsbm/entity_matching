@@ -94,6 +94,9 @@ def test_the_engine_calls_what_it_is_sure_of_the_flag_the_rest_and_a_person_comp
     line = p.kind.name_line
     sure = np.where(written.fillna(False) | (named["name_p"] >= line), 2, np.where(named["name_p"] <= 1 - line, 1, 0))
     flag = np.where(named["kind_flag"].isna(), 0, np.where(named["kind_flag"].isin(s.flag_company), 2, 1))
+    person_under_company = (sure == 1) & (flag == 2)  # a company's records under its representative's name read so
+    assert person_under_company.any() and (named["kind"].to_numpy()[person_under_company] == 2).all()  # the company flag stands
+    sure = np.where(person_under_company, 0, sure)
     assert (named["kind"].to_numpy() == np.where(sure > 0, sure, flag)).all() and set(named["kind"]) == {1, 2}  # a legal form or a sure name; else the flag
     assert (named["kind_flagged"].to_numpy() == ((sure > 0) & (flag > 0) & (sure != flag))).all() and named["kind_flagged"].any()  # sure against the flag
     pair = (home[uid], firm[uid])
