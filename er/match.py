@@ -24,10 +24,8 @@ import duckdb
 import numpy as np
 import pandas as pd
 import splink
-import splink.comparison_level_library as cll
-import splink.comparison_library as cl
 import splink.internals.expectation_maximisation as splink_em
-from splink import DuckDBAPI, Linker, SettingsCreator
+from splink import DuckDBAPI, Linker
 from splink.internals.comparison_level import M_U_CLAMP_MIN
 from splink.internals.constants import LEVEL_NOT_OBSERVED_TEXT
 
@@ -98,22 +96,25 @@ Bound = Mapping[str, tuple[tuple[str, int, str], ...] | None]  # per comparison,
 MAX_STATES = 3 ** 7  # a comparison with more outcomes than this is bounded by its best level
 
 
-def comparison(c: Comparison, u: dict[str, float] | None = None) -> cl.CustomComparison:
-    def with_u(level: cll.CustomLevel, label: str) -> cll.CustomLevel:
-        return level.configure(u_probability=u[label]) if u and label in u else level
+def comparison(c: Comparison, u: dict[str, float] | None = None) -> dict:
+    """A comparison as the model holds it: the missing level first, then its levels in order, the else level last; each
+    level its SQL over "<col>_l" and "<col>_r", and its u where `u` (label → u) gives it."""
+    u = u or {}
+    with_u = lambda label: {"u_probability": u[label]} if label in u else {}
     null = " AND ".join(f'("{col}_l" IS NULL OR "{col}_r" IS NULL)' for col in c.null_if_missing)
-    levels = [cll.CustomLevel(null, "missing").configure(is_null_level=True)]
+    levels = [{"sql_condition": null, "label_for_charts": "missing", "is_null_level": True}]
     for lv in c.levels:
-        level = cll.CustomLevel(" OR ".join(f"({comp.sql(col, level=True)})" for col, comp in lv.any_of), lv.label)
-        levels.append(with_u(level.configure(tf_adjustment_column=c.tf.name) if lv.tf and c.tf else level, lv.label))
-    return cl.CustomComparison(comparison_levels=[*levels, with_u(cll.ElseLevel().configure(label_for_charts=ELSE), ELSE)],
-                               output_column_name=c.name)
+        levels.append({"sql_condition": " OR ".join(f"({comp.sql(col, level=True)})" for col, comp in lv.any_of), "label_for_charts": lv.label,
+                       **with_u(lv.label), **({"tf_adjustment_column": c.tf.name} if lv.tf and c.tf else {})})
+    levels.append({"sql_condition": "ELSE", "label_for_charts": ELSE, **with_u(ELSE)})
+    return {"output_column_name": c.name, "comparison_levels": levels}
 
 
-def fs_settings(model: FSModel, uid: str, u: U | None = None) -> SettingsCreator:
-    return SettingsCreator(link_type="dedupe_only", unique_id_column_name=uid,
-                           comparisons=[comparison(c, (u or {}).get(c.name)) for c in model.comparisons],
-                           blocking_rules_to_generate_predictions=[keys_sql(r) for r in model.em_rules])
+def model_dict(model: FSModel, uid: str, u: U | None = None) -> dict:
+    """The model before it is fitted: its comparisons, with the u given, and its EM sessions' rules."""
+    return {"link_type": "dedupe_only", "unique_id_column_name": uid,
+            "comparisons": [comparison(c, (u or {}).get(c.name)) for c in model.comparisons],
+            "blocking_rules_to_generate_predictions": [keys_sql(r) for r in model.em_rules]}
 
 
 def u_values(model_json: dict) -> U:
@@ -126,12 +127,11 @@ def u_values(model_json: dict) -> U:
             for c in model_json["comparisons"]}
 
 
-def read_by(settings: dict | SettingsCreator, *rules: str) -> set[str]:
+def read_by(settings: dict, *rules: str) -> set[str]:
     """The columns a linker reads: each comparison level's ("x_l", "x_r"), each blocking rule's (l."x"), each term
     frequency's: all its records need to hold."""
-    s = settings.create_settings_dict("duckdb") if isinstance(settings, SettingsCreator) else settings
-    levels = [lv for c in s["comparisons"] for lv in c["comparison_levels"]]
-    blocking = [b["blocking_rule"] if isinstance(b, dict) else b for b in s.get("blocking_rules_to_generate_predictions", [])]
+    levels = [lv for c in settings["comparisons"] for lv in c["comparison_levels"]]
+    blocking = [b["blocking_rule"] if isinstance(b, dict) else b for b in settings.get("blocking_rules_to_generate_predictions", [])]
     text = " ".join([*(lv.get("sql_condition", "") for lv in levels), *blocking, *rules])
     return set(re.findall(r'"([^"]+)_[lr]"', text)) | set(re.findall(r'\b[lr]\."([^"]+)"', text)) | {lv["tf_adjustment_column"] for lv in levels if lv.get("tf_adjustment_column")}
 
@@ -168,7 +168,7 @@ def sample_u(model: FSModel, comparisons: list[Comparison], df: pd.DataFrame, co
     (tests/). O(max_pairs · comparisons)."""
     if not comparisons:
         return {}
-    settings = fs_settings(replace(model, comparisons=tuple(comparisons)), uid).create_settings_dict("duckdb")
+    settings = model_dict(replace(model, comparisons=tuple(comparisons)), uid)
     u = q(uid)
     with narrowed(df, con, read_by(settings) | {uid}) as records:
         t = q(records)
@@ -442,7 +442,7 @@ def fit_sample_sql(models: Iterable[FSModel], uid: str, columns: set[str]) -> st
     """The records a fit learns from, in the order whose first n are its sample of n: whole postal areas by hash, so
     households stay together and each sample is a smaller one and more; only the columns these models read."""
     models = list(models)
-    reads = set().union(*(read_by(fs_settings(m, uid), *(keys_sql(r) for r in (*m.prior_rules, *m.em_rules, *m.em_choose))) for m in models)) | {uid}
+    reads = set().union(*(read_by(model_dict(m, uid), *(keys_sql(r) for r in (*m.prior_rules, *m.em_rules, *m.em_choose))) for m in models)) | {uid}
     area = q("postal_code__first3") if "postal_code__first3" in columns else None
     return f"SELECT {', '.join(q(c) for c in sorted(columns) if c in reads)} FROM records ORDER BY {f'hash({area}), ' if area else ''}hash({q(uid)})"
 
@@ -556,7 +556,7 @@ def train_fs(model: FSModel, df: pd.DataFrame, con: duckdb.DuckDBPyConnection, u
     if model.m_method == "em" and not em and not choose:
         raise InputError(f"no two records of the {len(t):,} the fit samples share {' or '.join(map(fields, model.em_rules))}, "
                          "the pairs it learns from", fix="map those fields to filled columns, or give a model fitted before with --model")
-    settings = fs_settings(model, uid, u)  # unestimated levels: handled here
+    settings = model_dict(model, uid, u)  # unestimated levels: handled here
     tf_levels = any(c.tf and any(lv.tf for lv in c.levels) for c in model.comparisons)  # none: EM iterates on each agreement pattern's count, not on every pair
     median: dict[tuple[str, str], list[float]] = {}
     choice, wide = [], []
@@ -568,7 +568,7 @@ def train_fs(model: FSModel, df: pd.DataFrame, con: duckdb.DuckDBPyConnection, u
         def apart(rules: Iterable[tuple[Key, ...]]) -> dict[tuple[Key, ...], dict[tuple[str, str], float]]:  # each session on its own linker: what each learned, kept apart
             out = {}
             for rule in rules:
-                one = Linker(records, replace(settings, probability_two_random_records_match=linker._settings_obj._probability_two_random_records_match),
+                one = Linker(records, {**settings, "probability_two_random_records_match": linker._settings_obj._probability_two_random_records_match},
                              log_level=logging.ERROR, validate_settings=False)  # the prior the first linker estimated on these records: the same count again
                 session = one.training.estimate_parameters_using_expectation_maximisation(em_sql(model, rule), estimate_without_term_frequencies=not tf_levels)
                 fixed = {c.output_column_name for c in session._comparisons_that_cannot_be_estimated}  # its block's own: chosen by them, not learned
