@@ -908,7 +908,7 @@ def test_the_run_report_names_each_column_no_field_reads_and_what_it_looks_like(
     assert rows["SPARE_PHONE"][3] == "phone" and "PHONE_NUM_4" not in rows and "CONT_ID" not in rows  # a column a field reads: not listed
     shares = [float(x[4].rstrip("%")) for x in rows.values() if len(x) == 5]
     assert len(shares) > 1 and shares == sorted(shares, reverse=True)  # best fit first
-    assert not any(v in text for v in population[2].df["PHONE_NUM_4"].dropna().unique())  # its values never
+    assert not any(re.search(rf"(?<![0-9a-z]){v}(?![0-9a-z])", text) for v in population[2].df["PHONE_NUM_4"].dropna().unique())  # its values never (a commit hash may hold the digits)
 
 
 def test_the_run_report_counts_each_score_bands_patterns(reported):

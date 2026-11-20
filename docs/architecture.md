@@ -82,7 +82,8 @@ Splink 5 was read against this code, and each overlap measured on the same data,
 
 | Job | Ours or Splink's | Why |
 |---|---|---|
-| training (λ, EM), connected components | Splink's | its job |
+| training (λ, EM) | Splink's | its job |
+| connected components | ours (`cluster.merge`: scipy on the nodes numbered in their ids' order) | the same clusters as Splink's (tests compare them), in one pass over the edges where Splink's SQL takes a round per step of the longest path |
 | scoring, the u sample | Splink's SQL, run by ours (`match.predict_sql`, `match.sample_u`) | the same scores and u to the last bit (tests compare them with Splink's), in one query: Splink copies the records twice before scoring, and joins the u sample's pairs again for each comparison; a model with term frequencies is scored by Splink |
 | the rules' joins | ours, plain SQL | `deterministic_link` gives the same pairs but first joins every column of both records back: 1.35× slower at a million records, 17× at 10,000. Splink has no cascade (a later stage adding a pair only for a record still unresolved) |
 | merging the generators' pairs | ours | 1.56× faster at a million records, and every generator that found a pair is kept (`sources`); Splink keeps the first. Sorted windows aren't Splink blocking rules |
@@ -109,7 +110,7 @@ Every module sits in one layer: the tools (`nayose`: `er/cli.py`, its commands; 
 
 | Mode | Cost |
 |---|---|
-| full run | `O(N·L + ΣP + C·K·L² + E·d)`, plus a fixed-size fit and u sample. Linear in N while every key keeps its pairs per record flat, which the budget checks |
+| full run | `O(N·L + ΣP + C·K·L² + E·log E)`, plus a fixed-size fit and u sample. Linear in N while every key keeps its pairs per record flat, which the budget checks |
 | increment | `O(Δ·(L + Σb) + C_Δ·K·L²)`, plus narrow `O(N)` scans: the stored records read into one table, the exact and one-edit u counts, gold rewritten. A comparison's u is sampled again, `O(S)`, only once its drift exceeds its sampling error. The joins start from the batch, so the expensive work follows Δ, not N |
 | decisions | `O(D + touched clusters)`, plus `O(N)` to rewrite gold. Nothing is scored |
 
@@ -146,7 +147,7 @@ The gate on oversized blocks (step 5) and the scores (step 6) both use these u.
 - **Code:** `Run.fit` → `match.train_fs` (Splink), `exact_u` (value counts, and position, swap and deletion keys), `counted` (the comparisons that need no sample), `scored_sample` (u by random sampling, cached per comparison and the values it reads, so within one process a model's variants share one sample), `assemble_u`, `u_basis`. A near-certain or learning rule that finds no pair in the sample (its field nearly empty) is skipped and named in the summary; with none left of either, the run stops with what to fix.
 - **Increment:** no fit. It reads `state/model.json`, so every increment scores with the full run's model, and settles its u before the rules, as a full run does: `match.refreshed_u`. The exact and one-edit levels are counted again on all records. A comparison's sampled u are measured again only once the drift of its exact level, since it was sampled, exceeds the sampling error of its most precise sampled level, 1/(ln 2·√hits) bits: before that, a new sample would only redraw the noise. `O(N + S·K_stale)`.
 
-### 4 · Rules: the certain cases · `O(N + ΣP_r·L²) + O(E·d + N)`
+### 4 · Rules: the certain cases · `O(N + ΣP_r·L²) + O(E·log E + N)`
 
 Each rule is one join on its exact keys; its fuzzy conditions (names within two edits, addresses by Jaro–Winkler, a phone one digit off, …) are checked on the joined pairs only. A pair belongs to the first rule that finds it. Stage by stage, exact then fuzzy, a pair is kept only if it touches a record still unresolved, and the kept pairs are merged into the rule clusters, each cluster one node.
 
@@ -181,12 +182,12 @@ Scores every candidate, with the u step 3 measured on this file: for each field,
 - **The floor:** a pair is scored and stored only if it can reach the workspace's floor: 0 points, or `method.toml` `keep` (`set floor`). A lower floor keeps pairs people can review that 0 drops, such as a moved customer with a new ID, for more pairs scored and stored. The oversized blocks' gate keeps its own floor (step 5).
 - **Increment:** only the pairs touching the batch that can reach the floor are scored, as above, a slice at a time: `O(C_Δ·K·L²)`.
 
-### 7 · Cluster: from pairs to entities · `O(C + E·d + N)`
+### 7 · Cluster: from pairs to entities · `O(C + E·log E + N)`
 
 Accepts a pair at 6 bits or more (`[model] min_match_weight`), if it touches a record the rules left alone (with `[model] bridge`, also if it joins two rule clusters), if a name was compared (`[model] needs`: the person names or the company names, filled on both sides), and if people haven't decided it is no match. Then it clusters the accepted pairs with the rules' pairs and the pairs people decided are a match (connected components: a run refuses a pipeline that asks for another resolver), and records, for each record, its cluster, the stage that resolved it, and the rule (`fs` for the model, `review` for people), with its kind and its customer's ([7](#7--person-or-company)). A cluster is named after its smallest record ID. A workspace with merge conditions (`method.toml` `merge`) accepts by them instead, the rules' pairs and the model's alike, as `set merging` does on the stored pairs ([6](#6--decisions)), so a run and that command give the same entities.
 
 - **Why:** pairs must become entities: if A matches B and B matches C, all three are one. Recording what resolved each record makes every merge auditable, and naming a cluster by its smallest ID makes an increment name it as a full run would. A household shares address and phone, and those two alone reach the threshold; so do a person and a company at one address. Without a name compared, people decide.
-- **Code:** `Run._load_decisions` (people's decisions, from `decisions/`), `Run.cluster` → `Run._accept` (the threshold, `match.named_sql`; with a trust line, `config.TrustRule`, only the rules' and the model's pairs at the line or above, the model's others in `proposed`; with merge conditions, `Run._links` and `results.merge_where`), `cluster.merge` (Splink's connected components from single records over the pairs that join, as in an increment), `Run._gold` (`run.customer_kinds`), `Run._expected_false`
+- **Code:** `Run._load_decisions` (people's decisions, from `decisions/`), `Run.cluster` → `Run._accept` (the threshold, `match.named_sql`; with a trust line, `config.TrustRule`, only the rules' and the model's pairs at the line or above, the model's others in `proposed`; with merge conditions, `Run._links` and `results.merge_where`), `cluster.merge` (connected components from single records over the pairs that join, as in an increment), `Run._gold` (`run.customer_kinds`), `Run._expected_false`
 - **Increment:** the stored gold is the base, each stored cluster one node, stored answers stand, and people's no_match holds for the batch's pairs too: `O(C_Δ + touched clusters)`.
 
 ### 7b · Probe: the matches no key lists · `O(N + P·K + L)`
@@ -241,7 +242,7 @@ Writes each table as Parquet under a temporary name, with the reports (9), and `
 - **Why:** people's work must change the answer at once, and must survive a full re-run. `decisions/` is not a run file, so `--overwrite` keeps it and the full run applies it again. `qa.md`, `report.txt` and the sheets describe the run before the decisions until the next run or increment writes them again.
 - **One at a time:** an answer can also be written into the workspace's sheet, a decision into `review.parquet`, a kind into `kind_review.parquet`, under the lock and staged as every run file is (`folder.type_in`). Nothing is applied until the sheet is given back; an increment keeps the decisions written in.
 - **Code:** `Run.decide` → `source.decisions` (the columns, a decided row without both IDs, a sheet with no decision, the values, a pair decided both ways), `source.known` (every ID a record of the run), `cluster.merge`, `run.customer_kinds`, `folder.stage`
-- **By people's conditions:** `nayose set merging` saves the conditions under which pairs merge without people (`method.toml` `merge`: points, rules, the step each comparison reached; all or any of them) and rebuilds `gold.parquet` from `scored/`: connected components over people's applied matches and the pairs the conditions take, less people's `no_match`, from single records. No run: `O(E·d + N)`. Off again, what they joined parts; people's answers stand.
+- **By people's conditions:** `nayose set merging` saves the conditions under which pairs merge without people (`method.toml` `merge`: points, rules, the step each comparison reached; all or any of them) and rebuilds `gold.parquet` from `scored/`: connected components over people's applied matches and the pairs the conditions take, less people's `no_match`, from single records. No run: `O(E·log E + N)`. Off again, what they joined parts; people's answers stand.
 - **Code:** `results.apply_merging` → `results._regroup` (`results.merge_where`, `cluster.merge`), `run.customer_kinds`, `folder.stage`; `results.describe_merging` counts what they would merge first
 
 ## 7 · Person or company

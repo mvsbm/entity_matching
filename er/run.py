@@ -9,12 +9,12 @@ with the numbers filled in, and its time.
                                                  64+ records flagged (a rule doesn't trust them; candidates sample them)
     fit         O(n + S·K + P_em·K) + O(N + S·K) λ and m by EM on a fixed-size sample of n records (or a fitted model),
                                                  then u on this file
-    rules       O(N + Σ P_r·L²) + O(E·d + N)     one join per rule (the first rule wins), then the rules' cascade
+    rules       O(N + Σ P_r·L²) + O(E·log E + N)     one join per rule (the first rule wins), then the rules' cascade
     candidates  O(N·L + Σ P_g)                   every generator; pairs inside one rule cluster dropped; a flagged block
                                                  joined only if a sample of its pairs, scored as the run scores, reaches
                                                  the search floor
     score       O(C·K·L²)                        every candidate scored
-    cluster     O(C + E·d + N)                   accept at the threshold, then cluster with the rules' pairs
+    cluster     O(C + E·log E + N)                   accept at the threshold, then cluster with the rules' pairs
     probe       O(N + P·K + L)                   the matches no key lists: pairs sampled within groups matches share, scored
                                                  (er.probe), the hits the likely links don't join counted and scaled
     write       O(N + C)                         gold clusters and matches, as Parquet; the state for increments; and,
@@ -40,8 +40,8 @@ one is complete. A workspace takes one writer at a time (run_lock): a full run, 
 it for as long as it writes.
 
 N records, L characters per value, P pairs in a rule's or generator's key blocks, C candidates, K comparisons,
-S sampled pairs for u, E accepted pairs, d cluster diameter (Splink's connected components take up to d rounds, over
-the edges' records only: each existing cluster is one node, see er.cluster.merge).
+S sampled pairs for u, E accepted pairs (clustered over the edges' records only: each existing cluster is one node,
+numbered in a sort, see er.cluster.merge).
 """
 from importlib.metadata import version
 import collections
@@ -519,7 +519,7 @@ class Run:
         self.con.execute(f"CREATE OR REPLACE TABLE rule_clusters AS SELECT {q(self.uid)}, {q(self.uid)} AS cluster_id FROM records")
         self._rules()
         p = self._count("rule_edges")
-        self._done("rules", "O(N + Σ P_r·L²) + O(E·d + N)", f"O({self.n:,} + {p:,} pairs)", t, pairs=p, kept=self._count("rule_kept"))
+        self._done("rules", "O(N + Σ P_r·L²) + O(E·log E + N)", f"O({self.n:,} + {p:,} pairs)", t, pairs=p, kept=self._count("rule_kept"))
 
     def _rules(self, batch: str | None = None) -> None:
         """The rules' pairs (er.match.rule_edges: every record, or a batch against all), less the values each rule
@@ -798,7 +798,7 @@ class Run:
         merge(self.con, "er_single", "kept", "clusters", self.uid)
         self._gold("gold_old" if old else None)
         e = self._count("matches")
-        self._done("cluster", "O(C_Δ + touched clusters)" if old else "O(C + E·d + N)", f"O({self._count('scores'):,} + {e:,}·d + {self.n:,})", t, accepted=e,
+        self._done("cluster", "O(C_Δ + touched clusters)" if old else "O(C + E·log E + N)", f"O({self._count('scores'):,} + {e:,}·log E + {self.n:,})", t, accepted=e,
                    expected_false=self._expected_false())
 
     def probe(self) -> None:

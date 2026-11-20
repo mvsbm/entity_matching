@@ -21,7 +21,6 @@
 | S | random pairs sampled for u on the file (10⁷; fixed), for each comparison not counted exactly; the fit's own sample, for EM, is 10⁶ |
 | P_em | pairs in EM's blocks (equal phone, equal address) within the fitting sample |
 | E | accepted pairs |
-| d | diameter of the largest cluster: Splink's connected components take up to d rounds |
 | F, D, T | folds (3), decision variants (5 for the rules, 23 for the model), Optuna trials |
 
 **A full run** (`er.run.Run.full`, which `nayose resolve records` calls), with the times measured on 1,000,338 generated records by
@@ -33,10 +32,10 @@ reads the file before these steps, about 15 s a million records from CSV, 7 s fr
 | 1 | load: read in chunks, check the fields, standardize the chunks in parallel processes, and tell persons from companies | `Run.load`, `er.standardize.prepare`, `er.kind` | O(N·L) | N | 10.73 s |
 | 2 | budget: every rule's and generator's pairs, exactly, before any join | `Run.budget`, `er.candidates.estimate` | O(N) per rule and generator, a group-by | N | 1.96 s |
 | 3 | fit: λ, and m by EM, on a sample of whole postal areas (EM's own u from 10⁶ pairs); then u measured on this file: value counts for the leading exact levels, position, swap and deletion keys for a one-edit level after them (so cif, phone and birth are counted exactly), S pairs for name, company and address | `Run.fit`, `er.match.train_fs`, `exact_u`, `scored_sample`, `assemble_u` | O(n + S·K + P_em·K) + O(N + S·K) | **constant**, plus N | 9.40 s |
-| 4 | rules: one plain SQL join per rule (the first rule wins a pair), fuzzy checks on the joined pairs only, then the cascade's clusters | `Run.rules`, `er.match.rule_edges`, `er.cluster.merge` | O(N + Σ P_r·L²) + O(E·d + N) | N; ≤ 0.14 pairs per record per rule at 1M | 2.57 s |
+| 4 | rules: one plain SQL join per rule (the first rule wins a pair), fuzzy checks on the joined pairs only, then the cascade's clusters | `Run.rules`, `er.match.rule_edges`, `er.cluster.merge` | O(N + Σ P_r·L²) + O(E·log E + N) | N; ≤ 0.14 pairs per record per rule at 1M | 2.57 s |
 | 5 | candidates: every generator as one SQL join or window, keeping only the pairs that can reach 0 (step 6's bound) or a rule found, merged by bitmask, only pairs touching a record the rules left alone; oversized blocks checked on a sample scored with the file's u | `Run.candidates`, `er.candidates.candidates` | O(N·L + Σ P_g) | N; ≤ 1.75 pairs per record per key at 1M, 3 per sorted window | 6.53 s |
 | 6 | score: every candidate that can reach 0 points, with the u the fit measured; a bound settles the rest below 0 unscored, as nothing reads them (below) | `Run.score`, `er.match.score_fs`, `bound_sql` | O(C·K_c + C₀·K·L²) | C | 16.05 s |
-| 7 | cluster: accept at the threshold, connected components with the rules' pairs (each rule cluster one node), gold | `Run.cluster`, `er.cluster.merge` | O(C + E·d + N) | N | 0.34 s |
+| 7 | cluster: accept at the threshold, connected components with the rules' pairs (each rule cluster one node), gold | `Run.cluster`, `er.cluster.merge` | O(C + E·log E + N) | N | 0.34 s |
 | 7b | probe: a hash-stable draw of the records in each `[probe]` group, each paired with its group and scored: the matches no key lists ([below](#the-probe-the-matches-no-key-lists)) | `Run.probe`, `er.probe.missed` | O(N + P·K + L) | N; P about `[probe] pairs` a group | 3.52 s |
 | 8 | write: gold, matches, the rules' pairs and the state for increments, as Parquet | `Run.write` | O(N + C) | N | 1.07 s |
 | 9 | report: qa.md, report.txt and the review sheet, built before the write and landing with it | `Run.report` | O(review pairs) + O(N) | N | 0.78 s |
@@ -61,7 +60,7 @@ candidates.
 | cluster | O(C_Δ + touched clusters) | the stored clusters, with the new pairs merged in |
 | write | O(Δ + C_Δ) appended, O(N) rewritten | new Parquet parts for records, rule pairs and matches; gold and the rules' clusters rewritten. Every file is staged under a temporary name and renamed into place only once all are complete, so an interrupted increment leaves the run as it was, or is finished by the next one |
 
-So a full run costs **O(N·L + Σ P + C·K·L² + E·d)**, plus the fit and the u sample, whose sizes are fixed. It
+So a full run costs **O(N·L + Σ P + C·K·L² + E·log E)**, plus the fit and the u sample, whose sizes are fixed. It
 is linear in N when every key's pairs per record stay flat as the file grows, which `budget` checks exactly on each
 file and `scale_check` projects to `budget.target_rows` while choosing (below). An increment costs
 **O(Δ·(L + Σ b) + C_Δ·K·L²)**, plus sequential scans and rewrites of the stored columns, the exact u counts, and a u
