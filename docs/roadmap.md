@@ -65,6 +65,9 @@ The target, in three named patterns:
   state.
 - **Jobs read top to bottom.** `jobs/build.py` is about 50 lines that read like the diagram: one line per step.
 - **Ports and adapters for the engine.** Steps call `engine.run(...)`; DuckDB and BigQuery are two adapters.
+- **Configuration-driven.** What the method does (the fields, keys, levels, rules and thresholds) is set in the
+  config file and never in code. Each config section names the one step that reads it, and is checked when it
+  loads, so a wrong value stops the job before any work.
 
 ```
 er/
