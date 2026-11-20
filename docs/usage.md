@@ -166,7 +166,7 @@ A pair whose records share an address or a phone, and whose given names or birth
 
 ### Persons and companies
 
-The engine decides each record's kind on its own. It calls a kind it is sure of: a company where a legal form is written (株式会社, カ)〇〇, 〇〇(カ …), and a company or a person where the name model is at least `[kind] name_line` (99%) sure. Else the file's flag (`kind_flag`) decides, and without one the record is `0`, not sure. A sure call the flag contradicts is flagged (`kind_flagged`): the record is matched as the engine says. On generated files it gets fewer kinds wrong than a medium or poor flag and more than a good one, and merges more falsely than the flag alone ([chapter 7](guide/07-person-or-company.md#on-a-whole-run)). Where the file's flag is good, `config/final.toml` `[kind] trust_flag = true` takes it as it is.
+The engine decides each record's kind on its own. It calls a kind it is sure of: a company where a legal form is written (株式会社, カ)〇〇, 〇〇(カ …), and a company or a person where the name model is at least `[kind] name_line` (99%) sure. Else the file's flag (`kind_flag`) decides, and without one the record is `0`, not sure. A sure call the flag contradicts is flagged (`kind_flagged`): the record is matched as the engine says. A name that reads as a person's never overrides a company flag. On generated files it makes fewer false merges than the flag alone, and calls fewer companies persons but more persons companies ([chapter 7](guide/07-person-or-company.md#on-a-whole-run)). `config/final.toml` `[kind] trust_flag = true` takes the file's flag as it is.
 
 ## 7 · When something is wrong
 

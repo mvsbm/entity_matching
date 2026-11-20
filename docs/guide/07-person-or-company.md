@@ -23,7 +23,7 @@ None of these rates is known for a given file. So the choice must hold across th
 
 1. **A legal form says company.** Written where banks write one (the readings, and the bank abbreviations at the front or the end), a legal form makes a company near certain.
 2. **The name says where a record leans.** A logistic regression on the name's character 1–3-grams, legal forms and spaces removed, trained once on public data: the registry's real company readings and the personas' names. It needs no label from the file. It learns what company stems look like: …ショウテン, …クリニック, …コウギョウ.
-3. **Correct first: sure, or the flag.** The engine calls 2 company where a legal form is written, and 2 company or 1 person where the name model is at least `[kind] name_line` (99%) sure; otherwise the file's flag decides, and with no flag the record is 0, not sure. `[kind] trust_flag = true` takes the flag as it is.
+3. **Correct first: sure, or the flag.** The engine calls 2 company where a legal form is written, and 2 company or 1 person where the name model is at least `[kind] name_line` (99%) sure, but never 1 person against a company flag: a company's records under its representative's name read as a person's; otherwise the file's flag decides, and with no flag the record is 0, not sure. `[kind] trust_flag = true` takes the flag as it is.
 4. **Disagreements are flagged, not held.** Where the engine is sure and the flag says the other kind, the record is flagged and matched as the engine says. Each name goes to the side of its kind, and a pair of a person and a company has no name compared, so the model's name check (`[model] needs`, [chapter 5](05-uncertain-evidence-fellegi-sunter.md)) leaves it to people.
 5. **The flag's owners see where it is likely wrong.** `gold.parquet` marks each flagged record (`kind_flagged`), and `report.txt` counts them.
 
@@ -60,22 +60,21 @@ The name model it judges is the run's own: trained on `er.generate.kind_training
 |---|---|---|---|---|---|---|---|
 | any | the truth | 50.2% | 5 | 0 | 0 | 0 | 100.0% |
 | good | the flag alone | 49.1% | 38 | 27 | 306 | 102 | 98.5% |
-| good | the kind step | 49.3% | 84 | 63 | 433 | 166 | 97.9% |
+| good | the kind step | 49.0% | 33 | 26 | 554 | 63 | 97.4% |
 | medium | the flag alone | 47.2% | 79 | 61 | 886 | 256 | 95.8% |
-| medium | the kind step | 48.4% | 107 | 82 | 753 | 221 | 96.4% |
+| medium | the kind step | 47.3% | 73 | 59 | 1,091 | 153 | 94.8% |
 | poor | the flag alone | 40.5% | 121 | 93 | 2,533 | 644 | 87.9% |
-| poor | the kind step | 45.5% | 124 | 94 | 1,643 | 350 | 92.2% |
+| poor | the kind step | 41.5% | 111 | 86 | 2,690 | 314 | 87.2% |
 
-- **Recall** is 0.2–5.0 points higher by the kind step than by the flag alone.
-- **Wrong kinds:** against a medium or poor flag, fewer: persons called companies 753 and 1,643, against 886 and 2,533; companies called persons 221 and 350, against 256 and 644. Against a good flag, more: 433 against 306, and 166 against 102. Where the engine is not sure, the flag's word stands; where it is sure, its word stands, right or wrong.
-- **False merges** are more than the flag's on every flag: 84, 107 and 124 against 38, 79 and 121. Routed by the truth there are 5: the others come from names sent to the wrong side. A company record under its representative's name, at the representative's address and phone, goes to the person side when the name model is sure it is a person's, whatever the flag says, and can merge into the representative's own records.
-- **Nearly every record has a kind:** 92.2–97.9% of persons and 92.9–96.6% of companies.
-- **Where the file's flag is good**, `[kind] trust_flag = true` takes it as it is: the flag alone's row.
+- **False merges** are fewer than the flag's on every flag: 33, 73 and 111 against 38, 79 and 121. Routed by the truth there are 5: the others come from names sent to the wrong side. A name that reads as a person's never overrides a company flag, so a company's records under its representative's name stay on the company side while the flag says company.
+- **Wrong kinds:** companies called persons are fewer than the flag's on every flag: 63, 153 and 314 against 102, 256 and 644. Persons called companies are more: 554, 1,091 and 2,690 against 306, 886 and 2,533, where a name the model is sure is a company's overrides a person flag.
+- **Recall** is within 0.2 points of the flag alone's against a good or medium flag, and 1.0 point higher against a poor one.
+- **Nearly every record has a kind:** 87.2–97.4% of persons and 93.6–98.7% of companies.
 
 ## What it can't do
 
 - **A company record that is its representative's twin.** Under the representative's name, at the representative's address and phone, flagged person: every column matches the person's own record. Neither the engine nor people looking at the record can tell; another column could (an account type, a corporate number).
-- **A company under its representative's name reads as a person.** Its name is a person's: where the name model is 99% sure of a person, the engine calls one, even against a flag that says company (`kind_flagged`).
+- **A person the flag wrongly calls a company stays a company.** A name that reads as a person's never overrides a company flag, so the flag's mistake stands there; it costs fewer merges than the engine's person call costs on companies under their representative's name.
 
 ## In the code
 
