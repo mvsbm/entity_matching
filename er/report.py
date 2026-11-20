@@ -1,10 +1,7 @@
 """The reports for people, from a run's tables (er.run.Run): qa (the label-free checks, and the summary in words),
 fill_rates, review_sheet (scored pairs as people judge them), carry_over (the open review queue across increments) and
 report_text (the run on a page with no record's value in it). Run.report builds them; Run.write stages them with the
-run's files. From a written workspace: describe_workspace (what it holds), describe_entity (one record's entity) and
-describe_matching (the pipeline as a graph, with the run's numbers).
-"""
-import json
+run's files."""
 import math
 import platform
 import re
@@ -17,18 +14,15 @@ import duckdb
 import numpy as np
 import pandas as pd
 
-from er.config import COPIES, GIVEN, DeletionKeys, InputError, Key, KeyBlocker, Pipeline, SortedNeighbourhood, TfidfNeighbours, bits, lit, q, sources_text
-from er.folder import PENDING, history, latest_decisions, method, rounds, runs
-from er.io import code_version, read_parquet, table_after
-from er.kind import COMPANY, PERSON, SAYS, UNSURE, sheet_parts
+from er.config import GIVEN, InputError, Key, Pipeline, bits, lit, q, sources_text
+from er.io import code_version, read_parquet
+from er.kind import COMPANY, PERSON, SAYS, UNSURE
 from er.match import ELSE, GIVEN_SHARE, _ranked, levels, named_sql, parameters, pattern_coverage, review_floor, scaled_prior, search_floor
 from er.source import filled, fit
-from er.review_state import _trust_links, applied, read
-from er.settings import DEFAULT_FEATURES
+from er.review_state import _trust_links, applied
 
 if TYPE_CHECKING:
     from er.run import Run
-    from er.settings import Settings
 
 
 def fill_rates(run: "Run", fields: list[str] | None = None, sample: int = 10_000) -> pd.DataFrame:
@@ -178,7 +172,7 @@ def qa(run: "Run", fields: list[str] | None = None, review: int = 50, previous: 
                      if x["between_rules"] else "")) for x in probed),
         *kind_rows,
         *([("note", f"{apart:,} pair{'s' if apart > 1 else ''} people called different {'are' if apart > 1 else 'is'} in one entity through other links: "
-                    "see it with describe entity, part it with split entity")] if apart else []),
+                    "a full run parts it only where no other link holds it")] if apart else []),
         *(("note", f"{f} only {x:.1%} filled: check its mapping") for f, x in fill.loc[fill["flag"] != "", ["field", "filled"]].itertuples(index=False)),
         *(("note", f"turned off, a field it reads is missing: {d}") for d in run.disabled),
         *(("note", note) for note in run.notes),
@@ -194,19 +188,12 @@ SPARSE = 0.3  # a compared field filled in fewer records than this: DIAGNOSIS na
 THIN = 200    # a kept EM session that learned from fewer pairs: DIAGNOSIS asks for more records
 NEAR = 2.0    # bits: a skipped oversized block whose best sampled pair came this close to the search floor
 SHOWN = 8     # DIAGNOSIS's lines at most
-WS = "--workspace …"
-
-
-def feature_path(field: str) -> str | None:  # where set feature puts a field's columns
-    if field in ("person_name", "given_name"):
-        return "Name/Full name" + ("/Given name" if field == "given_name" else "")
-    return next((f"{g}/{f['name']}" for g, feats in DEFAULT_FEATURES for f in feats if f.get("field") == field), None)
 
 
 def diagnosis(run: "Run", tables: dict[str, pd.DataFrame], lo: float) -> list[dict]:
     """What limits what the run finds, the most pairs at stake first, at most SHOWN items, each what (with its number),
-    the pairs at stake and the fix (a command where there is one): report.txt prints them (diagnosis_lines), steps.json
-    keeps them for describe workspace. What is fine is left out: EM sessions of the run's own fit that learned
+    the pairs at stake and the fix (the setting to change, where there is one): report.txt prints them (diagnosis_lines),
+    steps.json keeps them. What is fine is left out: EM sessions of the run's own fit that learned
     households, compared fields under SPARSE filled (with a column no field reads that looks like one), pairs below the
     review floor that agree exactly on a name and another field, levels that learned nothing yet hold pairs, what the
     search leaves (the gap at the review floor, oversized blocks skipped that came within NEAR bits), and, last, EM
@@ -222,7 +209,7 @@ def diagnosis(run: "Run", tables: dict[str, pd.DataFrame], lo: float) -> list[di
 
     if households := [x for x in m.get("em_given", []) if x["given_share"] is not None and x["given_share"] < GIVEN_SHARE]:  # EM taught by households: first of equals
         out.append((n_below, "EM learned households from " + ", ".join(f"{x['session']} ({x['given_share']:.0%} of its matches agree on the given name)" for x in households)
-                    + f": it scores the {n_below:,} pairs below review → nayose choose em {WS}"))
+                    + f": it scores the {n_below:,} pairs below review → fit em = \"choose\" (method.toml)"))
 
     fill = tables["fill"].set_index("field")["filled"]  # compared fields mostly empty (one comparison a line), and a column that looks like one
     either = {f for group in run.pipeline.fields.one_of for f in group}  # a person's name or a company's: each kind fills one
@@ -236,9 +223,9 @@ def diagnosis(run: "Run", tables: dict[str, pd.DataFrame], lo: float) -> list[di
         line = f"{', '.join(f'{f} {fill[f]:.0%}' for f in sparse)} filled: {stake:,} pairs below review compare no {c.name}"
         for f in sparse:
             like = cols[(cols["looks_like"] == f) & (cols["share"] >= 0.5)].sort_values("filled", ascending=False) if cols is not None and len(cols) else []
-            if len(like) and (path := feature_path(f)):
-                col, now = like.iloc[0]["column"], ",".join("+".join(alt) for alt in run.present.get(f, ()))
-                line += f"; column {col} looks like {f} ({like.iloc[0]['filled']:.0%} filled) → nayose set feature \"{path}={now + ',' if now else ''}{col}\" {WS}"
+            if len(like):
+                col = like.iloc[0]["column"]
+                line += f"; column {col} looks like {f} ({like.iloc[0]['filled']:.0%} filled) → add {col} to {f}'s sources in config/settings.toml [columns]"
                 break
         out.append((stake, line))
 
@@ -254,7 +241,7 @@ def diagnosis(run: "Run", tables: dict[str, pd.DataFrame], lo: float) -> list[di
             WHERE p LIKE '% + %' AND list_has_any(string_split(p, ' + '), {named!r}) GROUP BY 1 ORDER BY n DESC, p""").fetchall()
         if total := sum(n for _, n in got):
             out.append((total, f"{total:,} pairs below review agree exactly on a name and another field ({', '.join(f'{p} {n:,}' for p, n in got[:3])}); "
-                               f"the model expects {expected:,.0f} true pairs among the {n_below:,} below review → nayose list patterns {WS}"))
+                               f"the model expects {expected:,.0f} true pairs among the {n_below:,} below review"))
 
     held, empty = [], 0  # levels that learned nothing (m = u: 0 bits)
     for c, lv in (tuple(x) for x in m.get("filled", {}).get("m", [])):
@@ -265,21 +252,21 @@ def diagnosis(run: "Run", tables: dict[str, pd.DataFrame], lo: float) -> list[di
                 empty += 1
     if held:
         out.append((sum(n for n, _ in held), "levels that learned nothing hold pairs, at 0 bits: " + ", ".join(x for _, x in sorted(held, reverse=True))
-                    + (f" ({empty} more hold none)" if empty else "") + f" → nayose try sample {WS}"))
+                    + (f" ({empty} more hold none)" if empty else "") + " → a larger fit sample: fit records (method.toml)"))
 
     g = next((x for x in run.steps if x["step"] == "gap"), None)  # what the search leaves
     if g and (at := next((x for x in g["thresholds"] if x["bits"] >= lo), None)) and at["missed"]:
-        out.append((at["missed"], f"no key lists about {at['missed']:,} pairs at {at['bits']:g}+ ({at['missed_lo']:,}–{at['missed_hi']:,}) → nayose describe method {WS}"))
+        out.append((at["missed"], f"no key lists about {at['missed']:,} pairs at {at['bits']:g}+ ({at['missed_lo']:,}–{at['missed_hi']:,}) → a key for them, chosen at design time"))
     gated, floor = getattr(run, "gated", pd.DataFrame()), search_floor(run.pipeline)
     if len(gated) and "best" in gated:
         near = gated[gated["decision"].str.startswith("skipped") & (gated["best"] >= floor - NEAR)]
         if len(near):
             out.append((int(near["pairs"].sum()), f"{len(near):,} oversized blocks skipped ({int(near['pairs'].sum()):,} pairs) held a sampled pair within {NEAR:g} bits "
-                                                   f"of {floor:g} → nayose describe method {WS}"))
+                                                   f"of {floor:g} → a narrower key for them, chosen at design time"))
 
     kept = [(x["session"], x["pairs"]) for x in m["em_choice"] if x["kept"]] if m.get("em_choice") else list(m.get("em_pairs", {}).items())  # thin sessions
     if thin := [(x, n) for x, n in kept if n < THIN]:
-        fix = f"nayose choose em {WS} --records {2 * m['fit_rows']}" if m.get("em_choice") else f"nayose try sample {WS}"
+        fix = f"fit records = {2 * m['fit_rows']} (method.toml)" if m.get("em_choice") else "a larger fit sample: fit records (method.toml)"
         out.append((0, f"EM learned from few pairs: {', '.join(f'{x} {n:,}' for x, n in thin)} → {fix}"))
     return [dict(what=what, pairs=int(n), fix=fix) for n, x in sorted(out, key=lambda x: -x[0])[:SHOWN] for what, _, fix in [x.partition(" → ")]]
 
@@ -543,312 +530,12 @@ def review_sheet(run: "Run", pairs: pd.DataFrame) -> pd.DataFrame:
                ].reset_index(drop=True)
 
 
-def describe_workspace(con: duckdb.DuckDBPyConnection, out: Path, uid: str) -> dict:
-    """What the workspace `out` holds, for people: records and entities, the largest entities, each run so far
-    (steps.json), the pairs and kinds still open and the answers written in but not given back, the records set
-    aside, a write still owed, and the last summary (qa.md); a workspace with no run yet holds none of them.
-    O(N) in SQL + O(sheet rows)."""
-    if not out.is_dir():
-        raise InputError(f"no workspace at {out}", fix="create it: nayose create workspace NAME; or see them: nayose list workspaces")
-    gold = f"read_parquet({lit(out / 'gold.parquet')})"
-    ran = (out / "gold.parquet").exists()
-    records, entities = con.execute(f"SELECT count(*), count(DISTINCT cluster_id) FROM {gold}").fetchall()[0] if ran else (0, 0)
-    largest = con.execute(f"SELECT cluster_id AS entity, count(*) AS records FROM {gold} GROUP BY 1 ORDER BY 2 DESC, 1 LIMIT 10").fetchall() if ran else []
-    activity = history(out)
-
-    def queue(sheet: str, answer: str, whys: tuple[str, ...]) -> dict:  # each kind of row still open, and the answers written in, not yet applied
-        rows = read_parquet(out / sheet) if (out / sheet).exists() else pd.DataFrame(columns=["why", answer])
-        rows = rows.assign(why=sheet_parts(rows)) if answer == "kind" and len(rows) else rows  # a flagged record drawn at random is to decide
-        written = rows[answer].notna()
-        if answer == "decision" and len(rows):  # a decision applied since stays in the sheet until the next run writes it
-            done = rows.merge(applied(out, uid), on=[f"{uid}_l", f"{uid}_r"], how="left", suffixes=("", "_applied"))["decision_applied"]
-            written &= ~(done == rows["decision"]).fillna(False).to_numpy()
-        return {**{w: int(((rows["why"] == w) & rows[answer].isna()).sum()) for w in whys}, "written_in": int(written.sum())}
-    aside = out / "set_aside"
-    summary = table_after((out / "qa.md").read_text(encoding="utf-8"), "## summary") if (out / "qa.md").exists() else pd.DataFrame()
-    now, decided = len(rounds(out)), applied(out, uid)
-    audits = decided[(decided["why"] == "audit") & (decided["round"] == now)] if {"why", "round"} <= set(decided) else decided.iloc[:0]  # this round's
-    return dict(workspace=str(out), records=records, entities=entities, largest=[dict(entity=e, records=n) for e, n in largest], runs=activity,
-                round=now, audits=dict(checked=len(audits), false=int((audits["decision"] == "no_match").sum())),
-                pairs=queue("review.parquet", "decision", ("decide", "audit")), kinds=queue("kind_review.parquet", "kind", ("decide", "measure")),
-                set_aside=con.execute(f"SELECT count(*) FROM read_parquet({lit(aside / '*.parquet')})").fetchall()[0][0]
-                if any(aside.glob("*.parquet")) else 0,
-                write_owed=(out / PENDING).exists(), summary=summary.values.tolist())
-
-
-def describe_entity(con: duckdb.DuckDBPyConnection, out: Path, uid: str, record: str, fields: list[str], most: int = 200) -> dict:
-    """The entity of `record` in the workspace `out`: its size, and of its first `most` records (`record` among them)
-    each with its fields and kind, and every link between them, from a rule (rule_kept), the model (matches, with its
-    weight) or people (decisions), as frames. O(N) in SQL."""
-    u, l, r = q(uid), q(f"{uid}_l"), q(f"{uid}_r")
-    gold = f"read_parquet({lit(out / 'gold.parquet')})"
-    if not (out / "gold.parquet").exists():
-        raise no_run(out)
-    if not (hit := con.execute(f"SELECT cluster_id FROM {gold} WHERE {u} = ?", [record]).fetchall()):
-        raise InputError(f"{record}: no record of the run in {out}",
-                         fix="check the ID as the run wrote it: a spreadsheet may read 0000000151 as the number 151")
-    entity = hit[0][0]
-    size = con.execute(f"SELECT count(*) FROM {gold} WHERE cluster_id = ?", [entity]).fetchall()[0][0]
-    con.execute(f"CREATE OR REPLACE TEMP TABLE er_entity AS SELECT * FROM {gold} WHERE cluster_id = ? ORDER BY {u} = ? DESC, {u} LIMIT {most}",
-                [entity, record])  # an over-merge of thousands: the page draws a few hundred, and says so
-    stored = read(out, "state/records/*.parquet")
-    have = [f for f, in con.execute(f"SELECT column_name FROM (DESCRIBE SELECT * FROM {stored})").fetchall() if f in fields]
-    rows = con.execute(f"SELECT e.*, {', '.join(f's.{q(f)}' for f in have) or 'NULL AS none'} FROM er_entity e "
-                       f"JOIN {stored} s USING ({u}) ORDER BY e.{u}").df()
-    among = f"WHERE {l} IN (SELECT {u} FROM er_entity) AND {r} IN (SELECT {u} FROM er_entity)"
-    links = [f"""SELECT {l}, {r}, rule AS by, NULL::DOUBLE AS weight FROM {read(out, 'rule_kept/*.parquet')}
-                 {among} AND merged""",
-             f"SELECT {l}, {r}, 'fs' AS by, match_weight AS weight FROM read_parquet({lit(out / 'matches' / '*.parquet')}) {among}"]
-    if len(latest := applied(out, uid)[[f"{uid}_l", f"{uid}_r", "decision"]]):  # each pair's latest: a "same" changed since is no link
-        con.register("er_entity_said", latest)
-        links.append(f"SELECT {l}, {r}, 'people: ' || decision AS by, NULL FROM er_entity_said {among}")
-    found = con.execute(" UNION ALL ".join(links) + " ORDER BY 1, 2").df()
-    if len(latest):
-        con.unregister("er_entity_said")
-    return dict(record=record, entity=entity, size=size, records=rows, links=found)
-
-
-GRAPH_NODES = ("records", "prepare", "rules", "candidates", "score", "accept", "people", "group", "kind", "customers")
-
-
-def reached_by_gamma(facts: list[dict]) -> dict[tuple[str, int], int]:
-    """The pairs that stopped at each comparison step, (comparison, gamma) → count, summed over the run log's score steps."""
-    reached: dict[tuple[str, int], int] = {}
-    for x in facts:
-        for c, by in x.get("reached", {}).items():
-            for g, k in by.items():
-                reached[(c, int(g))] = reached.get((c, int(g)), 0) + k
-    return reached
-
-
-def describe_matching(con: duckdb.DuckDBPyConnection, out: Path | None, p: Pipeline, s: "Settings") -> dict:
-    """The pipeline as a graph, for people to see what is computed and how: one node per stage (GRAPH_NODES) with its
-    method and parameters and the fields it reads, and the edges between them. With `out`, a written run, each node also
-    holds the run's numbers (records, pairs per rule and per generator, each level's m, u, bits and pairs, the weight bands,
-    accepted pairs, pairs for people, customers) and real examples. O(E + R + N) in SQL over the run's files."""
-    uid, ran = s.data.unique_id, out is not None and (out / "gold.parquet").exists()
-    l, r = q(f"{uid}_l"), q(f"{uid}_r")
-    rows = lambda sql: con.execute(sql).fetchall() if ran else []
-    parquet = lambda name: read(out, name) if ran else ""  # no run: nothing to read
-    log = runs(out) if ran else []
-    facts = [x for run in log for x in run["steps"]]
-    turned_off = list(log[-1].get("disabled", [])) if log else []  # what the last run turned off: a field it reads is missing
-    n = rows(f"SELECT count(*) FROM {parquet('gold.parquet')}")[0][0] if ran else None
-
-    # prepare: each field's columns, how it is made comparable, how full it is, and one real record
-    stored = parquet("state/records/*.parquet")
-    have = {c for c, in rows(f"SELECT column_name FROM (DESCRIBE SELECT * FROM {stored})")}
-    variants = {}
-    for col, norm in [*p.rules.normalized(), *p.fs.normalized()]:
-        if not norm or norm[-1] not in COPIES:  # the comparisons' own copy, not a way people's values are made comparable
-            variants.setdefault(col, set()).add(norm)
-    shown_fields = [f for f in s.columns if f not in ("id", "entity") and f in have]
-    filled = dict(zip(shown_fields, rows(f"SELECT {', '.join(f'avg(({q(f)} IS NOT NULL)::DOUBLE)' for f in shown_fields)} FROM {stored}")[0])) if shown_fields else {}
-    fields = []  # one scan for every field's fill rate, then one row per field for its example
-    for f, alts in s.columns.items():
-        if f in ("id", "entity"):
-            continue
-        chain = next((list(d.normalize) for d in s.standardize.derived if d.name == f), [])
-        forms = sorted(variants.get(f, ()))
-        item = dict(field=f, columns=[list(a) for a in alts], normalize=chain, compared_as=[list(v) for v in forms], filled=None, example=None)
-        if f in have:
-            item["filled"] = filled[f]
-            raw = [c for a in alts for c in a if c in have]
-            shown = [c for c in (*raw, f, *(f"{f}__{'_'.join(v)}" for v in forms)) if c in have]
-            got = con.execute(f"SELECT {', '.join(q(c) for c in shown)} FROM {stored} WHERE {q(f)} IS NOT NULL LIMIT 1").fetchall()
-            item["example"] = dict(zip(shown, got[0])) if got else None
-        fields.append(item)
-
-    # rules: what each compares, how, and the pairs it kept
-    kept = {name: (k, a, b, m) for name, k, a, b, m in rows(f"""SELECT rule, count(*), min({l}), arg_min({r}, {l}),
-        count(*) FILTER (WHERE merged) FROM {parquet('rule_kept/*.parquet')} GROUP BY 1""")}  # found, and merged: below a trust line, none until people check
-    t = p.fs.min_match_weight
-    rule_cols = {c for c, in rows(f"SELECT column_name FROM (DESCRIBE SELECT * FROM {parquet('rule_kept/*.parquet')})")} if ran and any((out / "rule_kept").glob("*.parquet")) else set()
-    scored_rules = "match_weight" in rule_cols  # the model's points for a rule's pairs: a run's rules are scored (Run._rules)
-    split = {name: (hi, mid, lo) for name, hi, mid, lo in rows(f"""SELECT rule, count(*) FILTER (WHERE match_weight >= {t}),
-        count(*) FILTER (WHERE match_weight >= 0 AND match_weight < {t}), count(*) FILTER (WHERE match_weight < 0) FROM {parquet('rule_kept/*.parquet')} GROUP BY 1""")} if scored_rules else {}
-    lowest = {name: [[a, b, round(float(w), 1)] for a, b, w in got] for name, got in rows(f"""SELECT rule, list([{l}, {r}, match_weight::VARCHAR] ORDER BY match_weight)
-        FROM (SELECT *, row_number() OVER (PARTITION BY rule ORDER BY match_weight, {l}, {r}) AS k FROM {parquet('rule_kept/*.parquet')}) WHERE k <= 3 GROUP BY 1""")} if scored_rules else {}
-    rules = [dict(stage=st.name, name=x.name, exact=list(x.exact), scores=dict(zip(("high", "mid", "low"), split[x.name])) if x.name in split else None,
-                  lowest=lowest.get(x.name, []),
-                  fuzzy=rule_how(st, x)["fuzzy"], blocking=[key(k) for k in x.blocking], pairs=kept.get(x.name, (0,))[0] if ran else None,
-                  merged=kept.get(x.name, (0, 0, 0, 0))[3] if ran else None,
-                  example=list(kept[x.name][1:3]) if x.name in kept else None) for _, st, x in p.rules.each()]
-
-    # candidates: each generator, its method, the pairs it listed, the accepted pairs it found, and one of them
-    listed = key_listed(facts)
-    likely = likely_links(out, p) if ran else ""
-    found = key_found(con, likely, l, r) if ran else {}
-    by_keys = [dict(keys=k, links=c) for k, c in rows(f"SELECT least(len(string_split(sources, '+')), 11) AS k, count(*) FROM ({likely}) GROUP BY 1 ORDER BY 1")]
-    off = {m.group(1) for d in turned_off for m in [re.match(r"generator (\S+)", d)] if m}
-    shown = next((x for x in reversed(facts) if x["step"] == "report"), {})  # the weight bands qa.md shows, kept by the run that wrote it
-    qa_text = (out / "qa.md").read_text(encoding="utf-8") if ran and (out / "qa.md").exists() else ""  # the blocks' values: in qa.md, never steps.json
-    section = qa_text.split("## oversized blocks", 1)[1].split("\n## ", 1)[0] if "## oversized blocks" in qa_text else ""
-    big = table_after(qa_text, "## oversized blocks") if "|" in section else pd.DataFrame()  # a run without one writes "none"
-    skipped = big[big["decision"].astype(str).str.startswith("skipped")].astype({"records": int, "pairs": int}).sort_values("records", ascending=False) if len(big) else big
-    generators, idle = [], {n for x in facts if x["step"] == "keys" for n in x.get("dropped", ())}  # not run: other keys list its pairs (er.keys.idle)
-    for b in p.fs.blockers:
-        generators.append(dict(name=b.name, **key_how(b), pairs=listed.get(b.name, (None,))[0] if ran else None, matched=found.get(b.name, (0,))[0] if ran else None,
-                               only=found.get(b.name, (0, 0))[1] if ran else None, seconds=round(listed[b.name][1], 2) if b.name in listed else None, off=b.name in off, idle=b.name in idle,
-                               example=list(found[b.name][2:]) if b.name in found else None))
-
-    # score: each comparison's levels, the tests behind each, and what the fitted model says each is worth
-    model = None
-    if ran:
-        scoring = out / "state" / "scoring.json"
-        model = (json.loads(scoring.read_text(encoding="utf-8"))["model"] if scoring.exists()
-                 else json.loads((out / "state" / "model.json").read_text(encoding="utf-8")))
-    worth = {(x.comparison, x.level): (x.m, x.u, x.weight) for x in parameters(model).itertuples()} if model else {}
-    reach, gamma = reached_by_gamma(facts), {(c, label): g for c, by in levels(model).items() for g, (label, _) in by.items()} if model else {}
-    pairs = lambda c, label: reach.get((c, gamma.get((c, label))), 0) if ran else None  # the pairs that stopped at this step
-    comparisons = [dict(name=c.name, missing=pairs(c.name, "missing"),
-                        levels=[dict(label=lv.label, tests=[dict(field=col, function=t.function, threshold=t.threshold,
-                                                                 normalize=list(t.normalize)) for col, t in lv.any_of],
-                                     **dict(zip(("m", "u", "bits"), worth.get((c.name, lv.label), (None,) * 3))), pairs=pairs(c.name, lv.label))
-                                for lv in c.levels] + [dict(label=ELSE, tests=[], **dict(zip(("m", "u", "bits"), worth.get((c.name, ELSE), (None,) * 3))),
-                                                            pairs=pairs(c.name, ELSE))])
-                   for c in p.fs.model.comparisons]
-    lam = scaled_prior(model, n) if model else None
-    scored = sum(x.get("candidates", 0) for x in facts if x["step"] == "candidates") if ran else None  # the keys' pairs: the levels count these
-    compared = scored + rows(f"SELECT count(*) FROM {parquet('scored/*.parquet')} WHERE sources IS NULL")[0][0] \
-        if scored is not None and any((out / "scored").glob("*.parquet")) else scored  # and the rules' pairs no key listed, as describe results counts them
-
-    # accept, people, group: the line, the band below it for people, and what joined into customers
-    bands = shown.get("weight_bands", [])
-    accepted = rows(f"SELECT count(*) FROM {parquet('matches/*.parquet')}")[0][0] if ran else None
-    rule_pairs = sum(v[0] for v in kept.values()) if ran else None
-    rule_merged = sum(v[3] for v in kept.values()) if ran else None
-    review = read_parquet(out / "review.parquet") if ran and (out / "review.parquet").exists() else None
-    latest = latest_decisions(out, uid) if ran else None  # a pair decided again: once, as last said
-    decided = rows(f"SELECT count(*) FROM {latest}")[0][0] if latest else 0
-    by = dict(rows(f"SELECT resolved_by, count(*) FROM {parquet('gold.parquet')} WHERE resolved_by = 'review' GROUP BY 1"))
-    sizes = rows(f"SELECT n, count(*) FROM (SELECT count(*) AS n FROM {parquet('gold.parquet')} GROUP BY cluster_id) GROUP BY 1 ORDER BY 1")
-    customers = sum(k for _, k in sizes) if ran else None
-    kinds = dict(rows(f"SELECT kind, count(*) FROM {parquet('gold.parquet')} GROUP BY 1")) if ran and "kind" in {
-        c for c, in rows(f"SELECT column_name FROM (DESCRIBE SELECT * FROM {parquet('gold.parquet')})")} else {}
-    open_ = int(((review["why"] == "decide") & review["decision"].isna()).sum()) if review is not None else None
-    decide = review[review["why"] == "decide"] if review is not None else pd.DataFrame(columns=["match_weight"])
-    band_of = lambda w: (w // 2 * 2).astype(int)
-    review_bands = [[int(k), int(c)] for k, c in band_of(decide["match_weight"]).value_counts().sort_index().items()] if len(decide) else []
-    rule_bands = [[int(k), int(c)] for k, c in rows(f"""SELECT floor(match_weight / 2) * 2, count(*) FROM {parquet('rule_kept/*.parquet')}
-        WHERE merged GROUP BY 1 ORDER BY 1""")] if scored_rules else []
-    examples = {int(b): got for b, got in rows(f"""SELECT b, list([a, z, w, what] ORDER BY what, k) FROM (
-        SELECT *, row_number() OVER (PARTITION BY b, what ORDER BY hash(a || z)) AS k FROM (
-          SELECT floor(match_weight / 2) * 2 AS b, {l} AS a, {r} AS z, round(match_weight, 1)::VARCHAR AS w, 'merged' AS what FROM {parquet('matches/*.parquet')}
-          {f"UNION ALL SELECT floor(match_weight / 2) * 2, {l}, {r}, round(match_weight, 1)::VARCHAR, 'to review' FROM {parquet('review.parquet')} WHERE why = 'decide'" if review is not None else ""}))
-        WHERE k <= 2 GROUP BY 1""")}  # two of each kind per 2-point band: what a click on a bar shows
-    expected = sum(x.get("expected_false", 0) for x in facts if x["step"] == "cluster") if ran else None
-    comps_on = [c.name for c in p.fs.model.comparisons if review is not None and c.name in review.columns]
-    waiting = (decide.groupby(comps_on, dropna=False).size().sort_values(ascending=False) if comps_on and len(decide) else pd.Series(dtype=int))
-    patterns = [dict(steps={c: (None if pd.isna(v) else v) for c, v in zip(comps_on, key if isinstance(key, tuple) else (key,))}, pairs=int(k)) for key, k in waiting.head(5).items()]
-    gold, kept_rules = parquet("gold.parquet"), parquet("rule_kept/*.parquet")
-    model_name = p.fs.model.name
-    joined = dict(rows(f"""SELECT CASE WHEN resolved_by = '{model_name}' THEN 'model' WHEN resolved_by = 'review' THEN 'people' ELSE 'rules' END, count(*)
-        FROM {gold} WHERE resolved_by IS NOT NULL GROUP BY 1"""))
-    size_eg = {a: e for a, e in rows(f"SELECT n, min(cluster_id) FROM (SELECT cluster_id, count(*) AS n FROM {gold} GROUP BY 1) GROUP BY 1")}
-    links = [f"SELECT {l} AS a, {r} AS z FROM {parquet('matches/*.parquet')}"] + ([f"SELECT {l}, {r} FROM {kept_rules} WHERE merged"] if rule_cols else []) + (
-        [f"SELECT {l}, {r} FROM {latest} WHERE decision = 'match'"] if decided else [])
-    look = dict(
-        largest=[dict(customer=c, records=k) for c, k in rows(f"SELECT cluster_id, count(*) FROM {gold} GROUP BY 1 ORDER BY 2 DESC, 1 LIMIT 5")],
-        single_links=rows(f"""WITH g AS (SELECT {q(uid)} AS id, cluster_id AS c FROM {gold}), big AS (SELECT c, count(*) AS n FROM g GROUP BY 1 HAVING count(*) >= 3),
-            e AS (SELECT g.c, count(*) AS e FROM ({' UNION '.join(links)}) x JOIN g ON g.id = x.a GROUP BY 1)
-            SELECT count(*), list(c ORDER BY c)[:5] FROM big JOIN e USING (c) WHERE e.e = big.n - 1""")[0] if ran else (0, []),  # every link a bridge: one lost splits it
-        mixed=rows(f"""SELECT count(*), list(cluster_id ORDER BY cluster_id)[:5] FROM (SELECT cluster_id FROM {gold} GROUP BY 1
-            HAVING count(*) FILTER (WHERE kind = {PERSON}) > 0 AND count(*) FILTER (WHERE kind = {COMPANY}) > 0)""")[0] if ran and kinds else (0, []),
-        weak_rule=rows(f"""SELECT count(DISTINCT g.cluster_id), list(DISTINCT g.cluster_id ORDER BY g.cluster_id)[:5] FROM {kept_rules} x JOIN {gold} g ON g.{q(uid)} = x.{l}
-            WHERE coalesce(x.merged, TRUE) AND x.match_weight < 0""")[0] if scored_rules else (0, []))
-    look = {k: v if k == "largest" else dict(customers=int(v[0]), examples=list(v[1] or [])) for k, v in look.items()}
-    inputs = [f for run in log for f in run.get("inputs", []) if f.get("role") == "records"]
-    load = [x for x in facts if x["step"] == "load"]
-    probed = [x for x in facts if x["step"] == "probe"]
-    columns = None
-    if inputs and Path(inputs[-1]["file"]).exists():
-        import pyarrow.parquet as pq
-        columns = len(pq.read_schema(inputs[-1]["file"]).names)
-    took = lambda step: round(sum(x["seconds"] for x in facts if x["step"] == step), 1) if ran else None  # a step's seconds, over the run and its increments
-    nodes = [
-        dict(id="records", name="Records", count=n, files=[f["file"] for f in inputs], bytes=sum(f.get("bytes", 0) for f in inputs) if inputs else None,
-             columns=columns, seconds=round(sum(x["seconds"] for x in load), 1) if load else None,
-             set_aside=sum(x.get("set_aside", 0) for x in load) if load else None, turned_off=turned_off,
-             kinds={"company": kinds.get(2, 0), "person": kinds.get(1, 0), "unsure": kinds.get(0, 0)} if kinds else None),
-        dict(id="prepare", name="Make values comparable", method="normalizers per field", fields=fields),
-        dict(id="rules", name="Rules", method="certain cases first: exact, then fuzzy", rules=rules, pairs=rule_pairs, merged=rule_merged),
-        dict(id="candidates", name="Candidates", method="list the pairs worth comparing", generators=generators, pairs=compared,
-             possible=n * (n - 1) // 2 if n else None, listed=sum(k for k, _ in listed.values()) if ran else None, by_keys=by_keys, seconds=took("candidates"),
-             skipped=dict(blocks=len(skipped), largest=[dict(key=x.generator, value=x.value, records=x.records, pairs=x.pairs) for x in skipped.head(5).itertuples()]),
-             missed=[{**x, "examples": x["examples"][:20]} for x in probed[-1]["strata"]] if probed else None),  # the last full run's probe (er.probe)
-        dict(id="score", name="Score", method="Fellegi–Sunter: each comparison adds evidence, in bits", comparisons=comparisons,
-             prior_bits=math.log2(lam / (1 - lam)) if lam else None, pairs=scored, seconds=took("score"),
-             unscored=sum(x.get("unscored", 0) for x in facts if x["step"] == "score") if ran else None),  # a bound left them below 0: no level counted
-        dict(id="accept", name="Accept", method="at the line, with a name compared", threshold=p.fs.min_match_weight, review_from=review_floor(p),
-             trust=None if p.trust.line is None else "none" if math.isinf(p.trust.line) else p.trust.line,
-             merge=method(out).get("merge") if out else None,  # people's merge conditions (er.results): they decide in place of the line
-             needs=list(p.fs.needs), bands=bands, accepted=accepted, review_bands=review_bands, rule_bands=rule_bands, examples=examples,
-             expected_false=round(expected, 1) if expected is not None else None),
-        dict(id="people", name="People decide", method="close calls go to people", to_decide=open_, decided=decided, joined=by.get("review", 0) if ran else None,
-             below=int((decide["match_weight"] < t).sum()), unnamed=int((decide["match_weight"] >= t).sum()),
-             audits=int((review["why"] == "audit").sum()) if review is not None else 0, sheet=len(decide), answered=int(decide["decision"].notna().sum()) if len(decide) else 0,
-             comparisons=comps_on, patterns=patterns),
-        dict(id="group", name="Group", method="connected components: linked records are one customer", customers=customers,
-             sizes=[dict(records=a, customers=k, example=size_eg.get(a)) for a, k in sizes], joined=joined if ran else None, look=look if ran else None),
-        dict(id="kind", name="Person or company", method="legal form, name model, combiner", on=p.kind is not None,
-             legal_forms=len(s.standardize.legal_forms), ngram=p.kind.ngram if p.kind else None,
-             counts={"company": kinds.get(2, 0), "person": kinds.get(1, 0), "unsure": kinds.get(0, 0)} if kinds else None),
-        dict(id="customers", name="Customers", count=customers),
-    ]
-    edges = [dict(source=a, target=b, count=c) for a, b, c in (
-        ("records", "prepare", n), ("prepare", "rules", n), ("prepare", "candidates", n), ("prepare", "kind", n), ("kind", "score", n),
-        ("rules", "group", rule_merged), ("candidates", "score", scored), ("score", "accept", scored), ("accept", "group", accepted),
-        ("accept", "people", open_), ("people", "group", decided), ("group", "customers", customers))]
-    assert [x["id"] for x in nodes] == list(GRAPH_NODES)
-    return dict(nodes=nodes, edges=edges)
-
-
 def no_run(out: Path, to: str = "") -> InputError:  # a command that needs a run, on a folder without one
     return InputError(f"no run in {out}" + (f" to {to}" if to else ""), fix="find matches first: nayose resolve records --workspace …")
 
 
 def key(k: Key) -> dict:  # a field a key or rule reads, as the page words it
     return dict(field=k.column, normalize=list(k.normalize))
-
-
-def key_how(b) -> dict:  # what a pair key looks for: its method and fields
-    match b:
-        case KeyBlocker():
-            return dict(method="same value", keys=[key(k) for k in b.keys])
-        case SortedNeighbourhood():
-            return dict(method="sorted neighbours", keys=[key(b.key)], window=b.window)
-        case TfidfNeighbours():
-            return dict(method="TF-IDF nearest", keys=[key(b.key)], ngram=list(b.ngram), k=b.k, min_cosine=b.min_cosine)
-        case DeletionKeys():
-            return dict(method="one letter deleted", keys=[key(b.key)], within=[key(k) for k in b.within])
-
-
-def rule_how(st, x) -> dict:  # what a match rule compares: the fields it needs equal, and the tests of the others
-    return dict(exact=list(x.exact), fuzzy=[dict(field=c, function=st.comparators[c].function, threshold=st.comparators[c].threshold,
-                                                 normalize=list(st.comparators[c].normalize)) for c in x.fuzzy])
-
-
-def key_listed(facts: list[dict]) -> dict[str, tuple[int, float]]:  # each key's pairs listed and seconds, over the runs' steps
-    out: dict[str, tuple[int, float]] = {}
-    for x in facts:
-        for g in x.get("generators", ()):
-            pairs, seconds = out.get(g["name"], (0, 0.0))
-            out[g["name"]] = (pairs + g["pairs"], seconds + g["seconds"])
-    return out
-
-
-def key_found(con: duckdb.DuckDBPyConnection, likely: str, l: str, r: str) -> dict[str, tuple]:
-    """Each key's likely links (likely_links): how many it found, how many it alone found, and one of them (l, r)."""
-    return {g: (k, only, a, b) for g, k, only, a, b in con.execute(f"""SELECT g, count(*), count(*) FILTER (WHERE alone), min(a), arg_min(b, a)
-        FROM (SELECT unnest(string_split(sources, '+')) AS g, NOT contains(sources, '+') AS alone, {l} AS a, {r} AS b FROM ({likely})) GROUP BY 1""").fetchall()}
-
-
-def likely_links(out: Path, p: Pipeline) -> str:
-    """The run's likely links in `out`, as SQL: its matches, and the model's pairs at its line that a trust line holds
-    back for people (proposed). What a key found is counted on these, so a strict workspace still sees its keys work."""
-    waiting = f" UNION ALL BY NAME SELECT * FROM {read(out, 'proposed/*.parquet')} WHERE match_weight >= {p.fs.min_match_weight!r}" if any((out / "proposed").glob("*.parquet")) else ""
-    return f"SELECT * FROM {read(out, 'matches/*.parquet')}{waiting}"
 
 
 # ---------- how a match was found: one pair, a customer's pairs, the patterns of the whole file ----------

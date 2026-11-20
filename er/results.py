@@ -17,10 +17,10 @@ from er.config import InputError, Pipeline, bits, lit, q
 from er.io import read_parquet
 from er.kind import sheet_parts
 from er.match import levels, named_sql
-from er.report import households, no_run
+from er.report import no_run
 from er.explain import run_model, scored_again
 from er.review_state import applied, read, said
-from er.settings import Settings, norm_name
+from er.settings import Settings
 
 BANDS = (-20, -10, 0, 6, 8, 10, 12, 16, 20)  # the score chart's edges, in points: as report.txt's SCORES
 
@@ -81,127 +81,6 @@ def _status_sql(con: duckdb.DuckDBPyConnection, out: Path, uid: str, index: str)
         JOIN {read(out, 'gold.parquet')} ga ON ga.{u} = x.{l} JOIN {read(out, 'gold.parquet')} gb ON gb.{u} = x.{r}"""
 
 
-def list_scored(con: duckdb.DuckDBPyConnection, out: Path, s: Settings, p: Pipeline, frm: float | None = None, to: float | None = None,
-                source: str | None = None, status: str | None = None, record: str | None = None, page: int = 1, count: int = 100,
-                each: bool = False) -> dict:
-    """One page of the run's pairs at 0 points or more, best first: both IDs, points, how each was found, its status,
-    each comparison's level and points, and both records' compared fields. `total` counts every pair the filters keep,
-    so the pages are honest. With `each`, one pair of each pattern (each comparison's level) the filters keep, drawn by
-    a hash of its IDs, the patterns of most pairs first, each with `like`: the pairs it stands for. O(E log E) to order
-    E pairs + O(page·F) for the fields."""
-    uid = s.data.unique_id
-    l, r = q(f"{uid}_l"), q(f"{uid}_r")
-    rows = _status_sql(con, out, uid, pair_index(con, out, s, p))
-    where = [f"match_weight >= {bits(frm)}" if frm is not None else "TRUE", f"match_weight < {bits(to)}" if to is not None else "TRUE"]
-    where += {"rules": ["rule IS NOT NULL"], "model": ["rule IS NULL"]}.get(source or "", [])
-    # open: waiting, or decided and not applied yet, so a queue holds still while people decide it
-    where += ["(status = 'waiting' OR NOT coalesce(applied, TRUE))" if status == "open" else f"status = {lit(status)}"] if status else []
-    where += [f"({l} = {lit(record)} OR {r} = {lit(record)})"] if record else []
-    sql, order = f"SELECT * FROM ({rows}) WHERE {' AND '.join(where)}", f"match_weight DESC, {l}, {r}"
-    if each:
-        pattern = ", ".join(q(c) for c, *_ in con.execute(f"DESCRIBE {sql}").fetchall() if c.startswith("gamma_")) or "TRUE"
-        sql = (f"SELECT * FROM (SELECT *, count(*) OVER (PARTITION BY {pattern}) AS er_like FROM ({sql})) "
-               f"QUALIFY row_number() OVER (PARTITION BY {pattern} ORDER BY hash({l}, {r}), {l}, {r}) = 1")
-        order = f"er_like DESC, {order}"
-    total, typed = con.execute(f"SELECT count(*), count(*) FILTER (said IS NOT NULL AND NOT applied) FROM ({sql})").fetchall()[0]
-    page = max(1, int(page))
-    frame = con.execute(f"SELECT * FROM ({sql}) ORDER BY {order} LIMIT {int(count)} OFFSET {(page - 1) * int(count)}").df()
-    model, uidl, uidr = run_model(out), f"{uid}_l", f"{uid}_r"
-    lv = levels(model)
-    pairs = []
-    for x in frame.to_dict("records"):
-        gammas = {c: int(x[f"gamma_{c}"]) for c in lv if f"gamma_{c}" in x and not pd.isna(x[f"gamma_{c}"])}
-        compared = {c: dict(level=lv[c][g][0], points=round(lv[c][g][1], 2)) for c, g in gammas.items() if g in lv[c]}
-        pairs.append(dict(first=x[uidl], second=x[uidr], points=round(float(x["match_weight"]), 2), sources=x["sources"], rule=x["rule"],
-                          status=x["status"], said=x["said"], applied=x["applied"] if not pd.isna(x["applied"]) else None, compared=compared,
-                          **({"like": int(x["er_like"])} if each else {})))
-    return dict(total=int(total), typed=int(typed), page=page, count=int(count), pairs=_with_fields(con, out, s, p, pairs))
-
-
-def _with_fields(con: duckdb.DuckDBPyConnection, out: Path, s: Settings, p: Pipeline, pairs: list[dict]) -> list[dict]:
-    """Each pair with both records' compared fields (as the run standardized them), and whether it may be two people of
-    one household: what a row shows at a glance."""
-    if not pairs:
-        return pairs
-    uid = s.data.unique_id
-    have = {c for c, *_ in con.execute(f"DESCRIBE SELECT * FROM {read(out, 'state/records/*.parquet')}").fetchall()}
-    fields = [f for f in dict.fromkeys(f for c in p.fs.model.comparisons for f in (*c.null_if_missing, *(x for lv in c.levels for x, _ in lv.any_of))) if f in have]
-    ids = sorted({x["first"] for x in pairs} | {x["second"] for x in pairs})
-    con.register("er_ids", pd.DataFrame({uid: ids}, dtype="string"))
-    got = con.execute(f"SELECT {', '.join(q(c) for c in [uid, *fields])} FROM {read(out, 'state/records/*.parquet')} WHERE {q(uid)} IN (SELECT {q(uid)} FROM er_ids)").df()
-    con.unregister("er_ids")
-    by = {str(x[uid]): {f: (None if pd.isna(x[f]) else str(x[f])) for f in fields} for x in got.to_dict("records")}
-    con.register("er_pairs", pd.DataFrame({f"{uid}_l": [x["first"] for x in pairs], f"{uid}_r": [x["second"] for x in pairs]}, dtype="string"))
-    homes = households(con, read(out, "state/records/*.parquet"), "SELECT * FROM er_pairs", uid, p)
-    con.unregister("er_pairs")
-    return [{**x, "fields": {f: [by.get(x["first"], {}).get(f), by.get(x["second"], {}).get(f)] for f in fields},
-             "household": (x["first"], x["second"]) in homes} for x in pairs]
-
-
-def list_entities(con: duckdb.DuckDBPyConnection, out: Path, s: Settings, p: Pipeline, min_size: int = 2, record: str | None = None,
-                    page: int = 1, count: int = 100) -> dict:
-    """Entities of `min_size` records or more, largest first: each one's records, what joined most of them (you, the
-    model or a rule: joined_by), and a name to know it by. O(N)."""
-    if not (out / "gold.parquet").exists():
-        raise no_run(out)
-    u, gold = q(s.data.unique_id), read(out, "gold.parquet")
-    where = f"cluster_id IN (SELECT cluster_id FROM {gold} WHERE {u} = {lit(record)})" if record else "TRUE"
-    sizes = f"SELECT cluster_id, count(*) AS records, mode({joined_by(p)}) AS joined_by FROM {gold} GROUP BY 1 HAVING count(*) >= {int(min_size)}"
-    total = con.execute(f"SELECT count(*) FROM ({sizes}) WHERE {where}").fetchall()[0][0]
-    rows = con.execute(f"""SELECT * FROM ({sizes}) WHERE {where} ORDER BY records DESC, cluster_id
-        LIMIT {int(count)} OFFSET {(max(1, int(page)) - 1) * int(count)}""").df()
-    stored = {c for c, *_ in con.execute(f"DESCRIBE SELECT * FROM {read(out, 'state/records/*.parquet')}").fetchall()}
-    held = [f for f in ("full_name", "person_name", "company_name") if f in stored]  # the ones the run kept: a field the file lacks isn't
-    name = f"coalesce({', '.join(f'r.{q(f)}' for f in held)})" if held else None  # each record's own: a company's in company_name
-    names = {}
-    if len(rows) and name:
-        con.register("er_ents", rows[["cluster_id"]])
-        got = con.execute(f"""SELECT g.cluster_id, list(DISTINCT {name}) FILTER (WHERE {name} IS NOT NULL)[1:3] AS names
-            FROM {gold} g JOIN er_ents e USING (cluster_id) JOIN {read(out, 'state/records/*.parquet')} r USING ({u}) GROUP BY 1""").fetchall()
-        con.unregister("er_ents")
-        names = dict(got)
-    return dict(total=int(total), page=max(1, int(page)), count=int(count),
-                entities=[dict(entity=str(x["cluster_id"]), records=int(x["records"]), joined_by=x["joined_by"], names=names.get(x["cluster_id"]) or [])
-                          for x in rows.to_dict("records")])
-
-
-def show_records(con: duckdb.DuckDBPyConnection, out: Path, s: Settings, ids: list[str]) -> dict:
-    """Each record's full row as the file gave it (every column, in the file's order, from the workspace's copy of
-    it: inputs/…/read/), and the fields each column feeds; a record set aside says why. O(N) per call, a scan of
-    the ID column."""
-    files = _read_files(out)
-    if not files:
-        raise InputError(f"{out} keeps no copy of its records file", fix="load the file into the workspace: nayose load records … --workspace …")
-    uid = s.data.unique_id
-    source = f"read_parquet([{', '.join(lit(str(f)) for f in files)}], union_by_name = true)"
-    columns = [c for c, *_ in con.execute(f"DESCRIBE SELECT * FROM {source}").fetchall()]
-    key = next((c for c in columns if c == uid), None) or next((c for c in columns if norm_name(c) == norm_name(uid)), None)
-    if key is None:
-        raise InputError(f"{out}: the copy of the records file has no column {uid}", fix="")
-    con.register("er_ids", pd.DataFrame({key: [str(x) for x in ids]}, dtype="string"))
-    got = con.execute(f"SELECT * FROM {source} WHERE {q(key)} IN (SELECT {q(key)} FROM er_ids)").df()
-    con.unregister("er_ids")
-    feeds = {}
-    for f, alts in s.columns.items():
-        for c in dict.fromkeys(c for alt in alts for c in alt):
-            feeds.setdefault(c, []).append(f)
-    aside = {}
-    if any((out / "set_aside").glob("*.parquet")):
-        aside = dict(con.execute(f"SELECT {q(uid)}, any_value(reason) FROM {read(out, 'set_aside/*.parquet')} GROUP BY 1").fetchall())
-    rows = {}
-    for x in got.to_dict("records"):
-        rows.setdefault(str(x[key]), {c: (None if pd.isna(x[c]) else str(x[c])) for c in columns})
-    return dict(columns=[dict(column=c, fields=feeds.get(c, [])) for c in columns],
-                records=[dict(id=str(i), row=rows.get(str(i)), set_aside=aside.get(str(i))) for i in ids])
-
-
-def _read_files(out: Path) -> list[Path]:
-    """The read/ copies the runs read, as steps.json names them; else every read/ copy the workspace keeps."""
-    named = [Path(f["file"]) for run in folder.runs(out) for f in run.get("inputs", []) if f.get("role") == "records"]
-    found = [f for f in dict.fromkeys(named) if f.exists()]
-    return found or sorted((out / folder.INPUTS).glob("*/read/**/*.parquet"))
-
-
 def _full_run_patterns(out: Path) -> dict | None:
     full = [x for run in folder.runs(out) if not run.get("part") for x in run.get("steps", []) if x["step"] == "score" and x.get("patterns")]
     return full[-1]["patterns"] if full else None
@@ -250,7 +129,7 @@ def describe_results(con: duckdb.DuckDBPyConnection, out: Path, s: Settings, p: 
     flagged = con.execute(f"SELECT count(*) FROM {gold} WHERE kind_flagged").fetchall()[0][0] if "kind_flagged" in has else 0
     uncounted = 0 if chart is None or all("bands" in x for x in scored) else sum(  # from the full run's patterns: every increment's records left out
         next((x.get("records") or 0 for x in run["steps"] if x["step"] == "load"), 0) for run in folder.runs(out) if run.get("part"))
-    listed = con.execute(f"SELECT count(*) FROM {index} WHERE match_weight >= 0").fetchall()[0][0]  # as list scored lists them from 0
+    listed = con.execute(f"SELECT count(*) FROM {index} WHERE match_weight >= 0").fetchall()[0][0]  # the pairs kept from 0 points
     return dict(records=sum(c * n for n, c in sizes), entities=sum(c for _, c in sizes), joined=size_of(2, None),
                 sizes=[dict(label=label, entities=size_of(lo, hi)) for lo, hi, label in SIZES],
                 scores=chart, candidates=sum(x["pairs"] for x in chart) if chart else cand.get("candidates"), uncounted=uncounted, listed=listed,
@@ -327,21 +206,6 @@ def merge_where(m: dict, model: dict, p: Pipeline, x: str = "x") -> str:
     return "(" + f" {m.get('join', 'and').upper()} ".join(parts) + ")"
 
 
-def describe_merging(con: duckdb.DuckDBPyConnection, out: Path, s: Settings, p: Pipeline, m: dict | None = None) -> dict:
-    """What the conditions `m` (else the workspace's) would merge: pairs, per condition and all together, people's
-    applied "different" left apart; and the entities that would then hold two records or more. O(E + N)."""
-    m = check_merging(m, p) if m is not None else merging_of(out, p)
-    model, uid = run_model(out), s.data.unique_id
-    l, r, index = q(f"{uid}_l"), q(f"{uid}_r"), pair_index(con, out, s, p)
-    con.register("er_applied", applied(out, uid)[[f"{uid}_l", f"{uid}_r", "decision"]])
-    count = lambda where: con.execute(f"""SELECT count(*) FROM {index} x WHERE {where}
-        AND NOT EXISTS (SELECT 1 FROM er_applied d WHERE d.{l} = x.{l} AND d.{r} = x.{r} AND d.decision = 'no_match')""").fetchall()[0][0]  # as _regroup: the applied answers, a newer one typed in waits
-    each = [dict(condition=c, pairs=count(merge_where(dict(join="and", when=[c]), model, p))) for c in m["when"]]
-    _regroup(con, out, s, p, m, model)
-    entities = con.execute("SELECT count(*) FROM (SELECT cluster_id FROM gold_new GROUP BY 1 HAVING count(*) > 1)").fetchall()[0][0]
-    return dict(join=m["join"], when=m["when"], each=each, pairs=count(merge_where(m, model, p)), entities=int(entities))
-
-
 def _regroup(con: duckdb.DuckDBPyConnection, out: Path, s: Settings, p: Pipeline, m: dict, model: dict) -> None:
     """gold_new: every record's entity from people's "same" and the pairs the conditions merge, people's "different"
     never merged; resolved_by review where people joined it, else the conditions'. O(E·log E + N)."""
@@ -392,20 +256,3 @@ def apply_merging(con: duckdb.DuckDBPyConnection, out: Path, s: Settings, p: Pip
     return dict(join=m["join"], when=m["when"], entities=int(joined), merged=con.execute("SELECT count(*) FROM er_auto").fetchall()[0][0])
 
 
-def merged_links(con: duckdb.DuckDBPyConnection, out: Path, s: Settings, p: Pipeline, ids: list[str]) -> pd.DataFrame:
-    """The pairs among `ids` that the workspace's conditions merge, less people's "different": describe entity's links
-    by 'auto', with their points. O(E) over the index."""
-    uid, m = s.data.unique_id, merging_of(out, p)
-    l, r = f"{uid}_l", f"{uid}_r"
-    if not m["when"]:
-        return pd.DataFrame(columns=[l, r, "by", "weight"])
-    con.register("er_members", pd.DataFrame({"id": ids}, dtype="string"))
-    con.register("er_no", applied(out, uid).query("decision == 'no_match'")[[l, r]].astype("string"))
-    return con.execute(f"""SELECT {q(l)}, {q(r)}, 'auto' AS by, match_weight AS weight FROM {pair_index(con, out, s, p)} x
-        WHERE {q(l)} IN (SELECT id FROM er_members) AND {q(r)} IN (SELECT id FROM er_members) AND {merge_where(m, run_model(out), p)}
-        AND NOT EXISTS (SELECT 1 FROM er_no n WHERE n.{q(l)} = x.{q(l)} AND n.{q(r)} = x.{q(r)}) ORDER BY 1, 2""").df()
-
-
-def with_merging(out: Path, m: dict) -> dict:
-    """method.toml with its merge set to `m` (none: removed), the rest of the method as it is."""
-    return {**{k: v for k, v in folder.method(out).items() if k != "merge"}, **({"merge": m} if m.get("when") else {})}

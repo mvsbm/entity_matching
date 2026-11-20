@@ -211,7 +211,7 @@ Each entry names a way an entity-resolution pipeline like this one goes wrong, a
 - **Check:** a test counts test evaluations per population, and [`reports/choose.md`](../reports/choose.md) ends with the count: 1 for each stage.
 
 ## A command that finishes and never ends
-- **Pitfall:** a command writes everything it should and then never exits: the page shows it running for good, and `nayose try everything` waits on it. It shows as a process left at 0% CPU, its work done.
+- **Pitfall:** a command writes everything it should and then never exits: a job that runs it waits for good. It shows as a process left at 0% CPU, its work done.
 - **Why:** pandas opens a local Parquet file as a Python file object and hands it to Arrow, which reads on its own threads and may let go of that object on one of them after Python has begun to exit. Letting go needs Python's lock, and from Python 3.14 a thread that asks for it then waits forever, while the exit waits for Arrow's threads. Of 300 fresh interpreters that each read one file this way and exited, 4 never ended.
 - **Guard:** every read in `er` and `scripts` goes through `er.io.read_parquet`, where Arrow opens the file itself; ruff refuses `pandas.read_parquet` there (`TID251`). Tests read in their own process and may still use it.
 - **Check:** `ruff check .` runs in CI. Of 600 interpreters reading through `er.io.read_parquet`, none hung.

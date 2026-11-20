@@ -1,20 +1,16 @@
 """The workspace on disk, and how it is written: one writer at a time (run_lock); every write staged (stage: each
 file under a temporary name, then the moves still owed in pending.json, then the moves; finish_writes completes a write
-cut short); steps.json written whole, then renamed (log); a new part numbered after the highest (next_part); one
-answer people give, written into a sheet (type_in); the record files a run read (inputs). A workspace is made with its
-own mapping (create), listed (workspaces), and given records files, each copied into inputs/ (take_in, loaded). What a
-run writes there, and what people keep there (decisions/, kind_answers/): docs/architecture.md, the workspace.
-"""
+cut short); steps.json written whole, then renamed (log); a new part numbered after the highest (next_part); the
+record files a run read (inputs), each copied into inputs/ (take_in, loaded). What a run writes there, and what people
+keep there (decisions/, kind_answers/): docs/architecture.md, the workspace."""
 import hashlib
 import json
 import os
 import re
 import shutil
 import threading
-import time
 from collections.abc import Callable
-from contextlib import contextmanager, suppress
-from datetime import datetime
+from contextlib import contextmanager
 from pathlib import Path
 
 import duckdb
@@ -23,10 +19,9 @@ import pyarrow.parquet as pq
 
 from er import intake
 from er.config import InputError, lit, q, toml_of
-from er.io import alive, lock, object_store, patiently, read_parquet, replace_text
+from er.io import alive, lock, object_store, patiently, replace_text
 from er.settings import COLUMNS
 from er.source import find, globbed
-from er.strings import connect
 
 PENDING = "pending.json"  # the renames a write still owes, saved once every new file is complete
 STEPS = "steps.json"  # the run's log: one entry per run, increment or set of decisions (log, runs)
@@ -38,8 +33,6 @@ KIND_ANSWERS = "kind_answers"  # people's person/company answers, a part per she
 FULL_TMP = ".full.tmp"  # a full run's new files, until they replace the old run's
 METHOD = "method.toml"  # the workspace's changes to the tuned method (config.adjust); none: the method as tuned
 ROUNDS = "rounds.json"  # one entry per method a full run used, in order: not a run file, so the history outlasts each run;
-# bounded: one entry per change of method people make, each a full run
-TRIALS = "trials"  # trials of a method (er.trial.trial): the last 5 results, and the clusters of the method they were tried against
 PREPARED = "prepared"  # the records as a run loads them, cleaned (er.run.Run.load), a folder per what they were made from:
 # not a run file, so a full run reads them again; bounded: the last KEEP_PREPARED used
 KEEP_PREPARED = 2  # the method and a trial of another that cleans other columns: neither replaces the other's
@@ -67,7 +60,7 @@ def run_lock(out: Path, make: bool = False):
     if make:
         out.mkdir(parents=True, exist_ok=True)
     elif not out.is_dir():
-        raise InputError(f"no workspace at {out}", fix="check the path, or create it: nayose create workspace NAME")
+        raise InputError(f"no workspace at {out}", fix="check the path, or make it with a full run: nayose resolve records FILE --workspace PATH")
     held, key = _held.__dict__.setdefault("folders", set()), out.resolve()
     if key in held:
         yield
@@ -86,24 +79,6 @@ def lockable(path: Path) -> None:  # refused where no lock holds, before anythin
     if kind := object_store(path):
         raise InputError(f"{path} is on object storage ({kind}): no lock holds there, so two jobs could write it at once",
                          fix="put the workspace on a local or network disk: a persistent disk, Filestore, NFS")
-
-
-@contextmanager
-def writing(path: Path, wait: float = 10.0):
-    """One change of a mapping (a workspace's columns.toml, the project's settings.toml) at a time: each reads the file,
-    changes it and replaces it whole, so two at once would lose one. Apart from run_lock: a mapping may change while a
-    run runs, for the next. An OS lock on a file beside it; a change takes milliseconds, so another waits up to `wait` s."""
-    if not path.parent.is_dir():  # no workspace: what writes says so
-        yield
-        return
-    lockable(path.parent)
-    with open(path.with_name(f".{path.name}.lock"), "w") as f:
-        until = time.monotonic() + wait
-        while not lock(f):
-            if time.monotonic() > until:
-                raise Busy(f"another change is writing {path}", fix="try again once it is written")
-            time.sleep(0.02)
-        yield
 
 
 def finish_writes(out: Path) -> None:
@@ -183,19 +158,9 @@ def log(out: Path, entry: dict, append: bool, earlier: list[dict] | None = None)
     return json.dumps(dict(earlier=old.get("earlier", []) if append else (earlier or [])[-EARLIER:], runs=[*old.get("runs", []), entry]), indent=1, default=str)
 
 
-PEOPLE = ("trust", "merge")  # the method's keys people set (their trust line, their merge conditions): a method adopted or reset keeps today's
-
-
 def method_text(method: dict) -> str:  # method.toml's text for `method`, each value in TOML (tables inline); "" for none
     from er.config import _toml
     return "".join(f"{k} = {_toml(v, inline=True)}\n" for k, v in method.items())
-
-
-def write_method(out: Path, method: dict) -> None:  # method.toml as `method` says, whole or not at all; none: no file
-    if method:
-        replace_text(out / METHOD, method_text(method))
-    else:
-        (out / METHOD).unlink(missing_ok=True)
 
 
 def stamp(ws: Path) -> str:
@@ -305,33 +270,7 @@ def current(out: Path, replacing: bool = False) -> None:
            None if replacing else next(("rules' pairs that don't say whether they merged" for f in (out / "rule_kept").glob("part-*.parquet")
                                         if "merged" not in pq.read_schema(f).names), None)]
     if what := [x for x in old if x]:
-        raise InputError(f"{out}: a workspace an earlier nayose wrote ({'; '.join(what)})", fix="create it again: nayose create workspace NAME, then load its files")
-
-
-def type_in(out: Path, sheet: str, column: str, value: object, append: dict | None = None, **keys: str) -> None:
-    """One answer people give, written into the workspace's sheet (review.parquet's decision, kind_review.parquet's
-    kind) on the row whose `keys` columns hold those values, as a person would type it in; None clears it. With
-    `append`, a row the sheet lacks is added with those values (a stored pair people chose to decide). Nothing is
-    applied: the sheet is given back later (Run.decide, a rerun with the answers). Under the lock, and staged as every
-    run file is. O(sheet rows)."""
-    path = out / sheet
-    with run_lock(out):
-        finish_writes(out)
-        if not path.exists():
-            raise InputError(f"{path}: no such sheet", fix="run the records into that folder first: the run writes it")
-        frame = read_parquet(path)
-        rows = pd.Series(True, index=frame.index)
-        for k, v in keys.items():
-            rows &= frame[k].astype("string").eq(str(v)).fillna(False)
-        if not rows.any() and append is not None:
-            frame = pd.concat([frame, pd.DataFrame([{**keys, **append}])], ignore_index=True)
-            rows = pd.Series(False, index=frame.index)
-            rows.iloc[-1] = True
-        if not rows.any():
-            raise InputError(f"{path}: no row for {', '.join(f'{k} {v}' for k, v in keys.items())}",
-                             fix="answer a row the sheet holds, with the IDs as the run wrote them")
-        frame.loc[rows, column] = pd.NA if value is None else value
-        stage(connect(), out, [], frames=[(frame, path)])
+        raise InputError(f"{out}: a workspace an earlier nayose wrote ({'; '.join(what)})", fix="run it again into a new folder: nayose resolve records FILE --workspace PATH")
 
 
 def inputs(out: Path, spec: intake.InputSpec | None = None, reference: Path | None = None) -> list[Path]:
@@ -364,10 +303,6 @@ def inputs(out: Path, spec: intake.InputSpec | None = None, reference: Path | No
 INPUTS = "inputs"  # the records files a workspace was given, each copied into a part of its own: inputs/NNNN-<name>/
 SUMS = ".sha256"  # in each part: each file's SHA-256 and its path in the part, so content given twice is known without reading it
 LAST = "last"  # in inputs/: the name of the part given last, held already or new, which a run given no file reads
-NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
-DEVICES = {"con", "prn", "aux", "nul", *(f"{d}{i}" for d in ("com", "lpt") for i in range(10))}  # names Windows keeps for its devices, whatever follows a dot
-UPLOADS = ".uploads"  # files the page sent (nayose open ui), read once by the command they were sent for: taken in, or kept as the details file
-STALE = 3600  # seconds: an upload this old was never read, and goes at the next one
 
 
 def remove(p: Path) -> None:  # a file or a folder, as far as it goes: one held open elsewhere stays
@@ -375,87 +310,6 @@ def remove(p: Path) -> None:  # a file or a folder, as far as it goes: one held 
         shutil.rmtree(p) if p.is_dir() else p.unlink(missing_ok=True)
     except OSError:
         pass
-
-
-def receive(ws: Path, name: str, size: int, read: Callable[[int], bytes], into: str | None = None, first: bool = True) -> Path:
-    """The `size` bytes the page sends, read in pieces, written to the workspace's uploads as `name`, in the folder
-    `into` when several files are one (the first of them clearing it). A file is whole or absent: written beside, then
-    renamed. The file, or its folder. O(bytes)."""
-    if not (ws / "columns.toml").is_file():
-        raise InputError(f"no workspace at {ws}", fix="create it: nayose create workspace NAME")
-    names = [x for x in (into, name) if x is not None]
-    if not name or any(x != Path(x).name or x.startswith(".") or "\0" in x for x in names):
-        raise InputError(f"{name!r}: not a file name", fix="send a file, or give its path")
-    if Path(name).suffix.lower() not in intake.SUFFIXES:  # refused before a byte is written
-        raise InputError(f"{name}: not a records file", fix="send a CSV, TSV or Parquet file")
-    up = ws / UPLOADS
-    out = up.joinpath(*names)
-    part, left = out.with_name(f".{out.name}.part"), size
-    try:
-        up.mkdir(exist_ok=True)
-        for old in up.iterdir():
-            try:
-                if time.time() - old.stat().st_mtime > STALE:
-                    remove(old)
-            except OSError:  # gone meanwhile: another upload's own sweep
-                pass
-        if first:
-            remove(up / names[0])
-        if (free := shutil.disk_usage(up).free) < size:
-            raise InputError(f"no room for {name}: {size:,} bytes, {free:,} free", fix="free some disk space, or give the file's path on this computer")
-        out.parent.mkdir(exist_ok=True)
-        with open(part, "wb") as f:
-            while left and (got := read(min(left, 1 << 20))):
-                f.write(got)
-                left -= len(got)
-        if left:
-            raise InputError(f"{name}: cut short, {size - left:,} of {size:,} bytes came", fix="send it again")
-        os.replace(part, out)
-    except OSError as e:  # the disk filled or refused, or the page went
-        raise InputError(f"{name}: not written ({e.strerror or e})", fix="free some disk space, or send it again") from e
-    finally:  # nothing half written: once renamed, there is no part left
-        with suppress(OSError):
-            part.unlink(missing_ok=True)
-    return up / names[0]
-
-
-def uploaded(ws: Path, path: str | Path) -> Path | None:  # what the page sent that `path` names: a file or folder in the workspace's uploads
-    p = Path(path).expanduser()
-    return p.resolve() if p.exists() and p.resolve().parent == (ws / UPLOADS).resolve() else None
-
-
-def create(home: Path, name: str, columns: str) -> Path:
-    """The new workspace home/name, with its own mapping (columns.toml, the text given) and its method (method.toml):
-    a trust line above every step, so nothing merges before people check (config.TrustRule). O(1)."""
-    if not NAME.fullmatch(name) or name.split(".")[0].casefold() in DEVICES or name.endswith("."):  # Windows: a device, or the name without its dot
-        raise InputError(f"{name!r}: not a workspace name", fix="Latin letters (A–Z, a–z), digits, '.', '_' and '-', starting with a letter or digit and not ending with '.', at most 64; not con, nul, aux, prn, com1 or lpt1")
-    ws = home / name
-    lockable(ws)  # refused here, not at the first command that writes to it
-    try:
-        ws.mkdir(parents=True)  # at once: two asking for one name, one gets it
-    except FileExistsError:
-        raise InputError(f"{ws} exists", fix="open it, or choose another name") from None
-    try:
-        (ws / COLUMNS).write_text(columns, encoding="utf-8")
-        (ws / METHOD).write_text('trust = "none"\n', encoding="utf-8")
-    except BaseException:
-        shutil.rmtree(ws, ignore_errors=True)
-        raise
-    return ws
-
-
-def workspaces(home: Path) -> list[dict]:
-    """The workspaces in `home` (a folder holding columns.toml or steps.json), the latest active first: each one's name,
-    path, files given, whether it holds a run, and when it last changed, from steps.json and the folder; no record is
-    read. O(workspaces)."""
-    found = []
-    for ws in (p for p in home.iterdir() if p.is_dir() and not p.name.startswith(".")) if home.is_dir() else ():
-        if not ((ws / COLUMNS).is_file() or (ws / STEPS).is_file()):
-            continue
-        log = runs(ws)
-        found.append(dict(name=ws.name, workspace=str(ws), files=len(parts(ws)), ran=(ws / "gold.parquet").is_file(),
-                          last=(log[-1].get("at") if log else None) or datetime.fromtimestamp(ws.stat().st_mtime).isoformat(timespec="seconds")))
-    return sorted(found, key=lambda w: w["last"], reverse=True)
 
 
 def parts(ws: Path) -> list[Path]:  # inputs/'s parts, oldest first

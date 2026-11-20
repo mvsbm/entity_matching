@@ -57,7 +57,7 @@ def opened(ws: Path, s: Settings, p: Pipeline):
     uid, n = s.data.unique_id, con.execute("SELECT count(*) FROM records").fetchall()[0][0]
     if [(c["output_column_name"], [lv["label_for_charts"] for g, lv in _ranked(c) if g >= 0]) for c in model["comparisons"]] != \
             [(c.name, [*(lv.label for lv in c.levels), ELSE]) for c in p.fs.model.comparisons]:  # the levels the kept pairs hold are this method's
-        raise InputError(f"the method compares otherwise than the run in {ws} did", fix=f"run it again first: nayose rerun records --workspace {ws}")
+        raise InputError(f"the method compares otherwise than the run in {ws} did", fix=f"run it again first: nayose resolve records FILE --workspace {ws} --overwrite")
     u = {c["output_column_name"]: {lv["label_for_charts"]: lv["u_probability"] for g, lv in _ranked(c) if g >= 0} for c in model["comparisons"]}
     return con, p, model, uid, n, u
 

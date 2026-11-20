@@ -3,15 +3,11 @@ decisions on pairs), all Parquet. It finds the files (a path, a glob or a folder
 several together by column name, and gives a column its configured name when the two differ only in case, width or
 separators. Source.notes says what it did; when it must stop, it raises an InputError that says what to fix. It reads
 each file's footer (its schema), never its rows, so its cost doesn't grow with the file. suggest() profiles a
-fixed-size sample; describe() says what a file holds, for mapping its columns, in one scan and a sample. People's files are checked here too (answers, decisions), and every ID they give must name a record
+fixed-size sample. People's files are checked here too (answers, decisions), and every ID they give must name a record
 (known): one rule for both.
 """
-import contextlib
 import difflib
-import functools
 import hashlib
-import json
-import os
 import re
 import unicodedata
 from collections.abc import Iterable, Mapping
@@ -19,19 +15,15 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 import duckdb
-import numpy as np
 import pandas as pd
 
 from er import intake
 from er.config import InputError, lit, q
-from er.io import replace_text
 from er.settings import norm_name
 
-CONVERT = "give it to nayose as it is (load records, or any command that takes records): it reads CSV, TSV and Parquet"
+CONVERT = "give it to nayose as it is (any command that takes records): it reads CSV, TSV and Parquet"
 NESTED = ("STRUCT", "MAP", "UNION", "[]")  # DuckDB types a field's column can't hold
 NUMBER = re.compile(r"^(U?(TINY|SMALL|BIG|HUGE)?INT(EGER)?|FLOAT|DOUBLE|DECIMAL|REAL)")
-
-
 
 
 @dataclass
@@ -190,191 +182,12 @@ def suggest(src: Source, con: duckdb.DuckDBPyConnection, fields: Iterable[str], 
     return out
 
 
-COLUMNS_KEPT, SAMPLE_KEPT = ".columns.json", ".sample.parquet"  # in a part: what describe learned of its columns alone, and its sample, kept while its files are as they are
-MAPPED_KEPT = 2_000  # and of the columns' combinations mappings read: the newest half kept past this many
-
-
-def describe(path: str | Path, con: duckdb.DuckDBPyConnection, columns: Mapping[str, tuple[tuple[str, ...], ...]],
-             patterns: Mapping[str, str], rows: int = 2_000, lex: "Lexicon | None" = None,
-             slots: Mapping[str, tuple[tuple[str, ...], ...]] | None = None, slot_patterns: Mapping[str, str] | None = None, keep: Path | None = None) -> dict:
-    """What a records file holds, for mapping its columns, without preparing a record. Its records; each column's share
-    filled and an example; each field's sources (`columns`: its alternatives, each one column or several joined, as a
-    run reads them: a later one where the earlier are empty, a joined one only where every part is filled), with each
-    one's share filled, an example, and the share of its values that look like the field, and the same for the field
-    as a whole, with a value that doesn't (odd); for each field and column, how well the column fits (`fit`: the order to offer them in); and for a
-    field the file holds none of, the column whose name or values suggest it. Shares filled cover the file; examples
-    and fits come from a sample of `rows` records. Suggestions only: a wrong guess applied silently would corrupt
-    results. With `slots` (a workspace's features, by path, er.settings.slots), the same numbers for each, in the same
-    scan, and their values matched against `slot_patterns`; with `lex`, each column's profile (profiled). With `keep` (a
-    workspace's part), what rests on the columns alone (each one's share filled and example, the sample, the fits, the
-    profile) is kept there and read again while the part's files, the patterns, the names and this code are as they
-    were: a mapping changed scans only the columns its fields and slots read. O(N · (C + alternatives)) in one scan,
-    plus O(rows · C · F); kept, O(N · their columns) plus O(rows · alternatives)."""
-    every = {**columns, **{f"slot:{k}": v for k, v in (slots or {}).items()}}  # a slot by its path, apart from the fields
-    src = open_source(path, con, {c for alts in every.values() for alt in alts for c in alt})
-    cols, fields = src.columns, {f: alts for f, alts in columns.items() if f != "entity"}
-    here = {f: [alt for alt in alts if set(alt) <= set(cols)] for f, alts in {**fields, **{k: v for k, v in every.items() if k.startswith("slot:")}}.items()}
-    value = lambda alt: (f"CASE WHEN {' AND '.join(filled(c) for c in alt)} THEN {' || '.join(q(c) for c in alt)} END"
-                         if len(alt) > 1 else f"CASE WHEN {filled(alt[0])} THEN {q(alt[0])} END")
-    whole = lambda alts: f"coalesce({', '.join(value(a) for a in alts)})"
-    shown = {**{("column", c): value((c,)) for c in cols},
-             **{("alt", f, i): value(a) for f, alts in here.items() for i, a in enumerate(alts)},
-             **{("field", f): whole(alts) for f, alts in here.items() if alts}}
-    b = {c: f"er_b{i}" for i, c in enumerate(cols)}  # each column's filled test once per row, every share counted from them
-    held = lambda alt: " AND ".join(b[c] for c in alt)
-    test = {k: b[k[1]] if k[0] == "column" else held(here[k[1]][k[2]]) if k[0] == "alt" else " OR ".join(f"({held(a)})" for a in here[k[1]])
-            for k in shown}
-    reads = lambda k: [k[1]] if k[0] == "column" else here[k[1]][k[2]] if k[0] == "alt" else [c for a in here[k[1]] for c in a]  # the columns a key's share rests on
-    pattern = {f: x for f, x in {**patterns, **{f"slot:{k}": v for k, v in (slot_patterns or {}).items()}}.items() if f in here}
-    looks = lambda f, v: f"coalesce(avg(regexp_matches({v}, {lit(pattern[f])})::INT) FILTER (WHERE {v} IS NOT NULL), 0)" if f in pattern else "NULL"
-    odd = lambda f, v: f"first({v}) FILTER (WHERE NOT regexp_matches({v}, {lit(pattern[f])}))" if f in pattern else "NULL"  # a value that doesn't look like it
-    def count(keys: list) -> tuple[int, dict]:  # the rows, and each key's share filled: one scan, of the columns the keys read
-        used = [c for c in cols if any(c in reads(k) for k in keys)] or cols
-        got = con.execute(f"SELECT count(*), {', '.join([f'coalesce(count_if({test[k]}), 0)' for k in keys] or ['0'])} "  # none true: NULL, not 0
-                          f"FROM (SELECT {', '.join(f'{filled(c)} AS {b[c]}' for c in used)} FROM {src.sql})").fetchall()[0]
-        return got[0], dict(zip(keys, (x / max(1, got[0]) for x in got[1:])))
-    def seen(keys: list) -> tuple[dict, dict, dict]:  # each key's example, share that looks like its field, and a value that doesn't, on the sample
-        got = con.execute(f"SELECT {', '.join(f'first({shown[k]}) FILTER (WHERE {shown[k]} IS NOT NULL), ' + (f'{looks(k[1], shown[k])}, {odd(k[1], shown[k])}' if k[0] != 'column' else 'NULL, NULL') for k in keys)} "
-                          f"FROM er_described").fetchall()[0] if keys else ()
-        return dict(zip(keys, got[0::3])), dict(zip(keys, got[1::3])), dict(zip(keys, got[2::3]))
-    on_columns, mapped = [k for k in shown if k[0] == "column"], [k for k in shown if k[0] != "column"]
-    key = keep and hashlib.sha256(json.dumps([[x["sha256"] for x in (intake.report(keep) or {}).get("files", [])], src.sql, cols, rows, sorted(patterns.items()),
-                                              lex.made_of if lex else None, CODE, intake.CODE]).encode()).hexdigest()
-    try:  # a copy kept never fails the command: unreadable, it is made again
-        known = json.loads((keep / COLUMNS_KEPT).read_text(encoding="utf-8")) if key and (keep / SAMPLE_KEPT).is_file() else {}
-    except (OSError, ValueError):
-        known = {}
-    alts = lambda k: [here[k[1]][k[2]]] if k[0] == "alt" else here[k[1]]  # a mapped key as the columns it reads, in order: what its numbers rest on
-    shared = lambda k: json.dumps(alts(k), ensure_ascii=False)
-    sampled = lambda k: json.dumps([k[0] == "alt", alts(k), pattern.get(k[1])], ensure_ascii=False)
-    if known.get("key") == key and key:  # the columns as they were described: the sample read back, only keys never counted counted
-        con.execute(f"CREATE OR REPLACE TEMP TABLE er_described AS SELECT * FROM read_parquet({lit(str(keep / SAMPLE_KEPT))})")
-        n, shares, seens = known["n"], known.setdefault("shares", {}), known.setdefault("seen", {})
-        fresh = [k for k in mapped if shared(k) not in shares]
-        shares.update({shared(k): x for k, x in (count(fresh)[1] if fresh else {}).items()})
-        fresh = [k for k in mapped if sampled(k) not in seens]
-        ex, lk, od = seen(fresh)
-        seens.update({sampled(k): [ex[k], lk[k], od[k]] for k in fresh})
-        share = {**{("column", c): x for c, x in zip(cols, known["share"])}, **{k: shares[shared(k)] for k in mapped}}
-        example = {**{("column", c): x for c, x in zip(cols, known["example"])}, **{k: seens[sampled(k)][0] for k in mapped}}
-        looks_right, unlike = {k: seens[sampled(k)][1] for k in mapped}, {k: seens[sampled(k)][2] for k in mapped}
-        fits, profile = known["fits"], known["profile"]
-        if len(shares) > MAPPED_KEPT or len(seens) > MAPPED_KEPT:  # mappings tried and left: the oldest go
-            known["shares"], known["seen"] = dict(list(shares.items())[-MAPPED_KEPT // 2:]), dict(list(seens.items())[-MAPPED_KEPT // 2:])
-        with contextlib.suppress(OSError):  # a cache: one not written is made again
-            replace_text(keep / COLUMNS_KEPT, json.dumps(known, ensure_ascii=False))
-    else:
-        n, share = count(list(shown))
-        con.execute(f"CREATE OR REPLACE TEMP TABLE er_described AS SELECT * FROM {src.sql} USING SAMPLE reservoir({rows} ROWS) REPEATABLE (0)")
-        example, looks_right, unlike = seen(list(shown))
-        fits = fit(con, "er_described", cols, fields, patterns)
-        sample = con.execute(f"SELECT {', '.join(q(c) for c in cols)} FROM er_described").fetchall()
-        profile = profiled({c: [r[i] for r in sample] for i, c in enumerate(cols)}, lex) if lex else {}  # row by row: columns compared on the same records
-        if key:
-            with contextlib.suppress(OSError, duckdb.Error):  # a folder people can only read: described in full again next time
-                tmp = keep / f".{os.getpid()}{SAMPLE_KEPT}"
-                con.execute(f"COPY er_described TO {lit(str(tmp))} (FORMAT parquet)")
-                os.replace(tmp, keep / SAMPLE_KEPT)
-                kept = dict(key=key, n=n, share=[share[k] for k in on_columns], example=[example[k] for k in on_columns], fits=fits, profile=profile,
-                            shares={shared(k): share[k] for k in mapped}, seen={sampled(k): [example[k], looks_right[k], unlike[k]] for k in mapped})
-                (keep / f".{os.getpid()}{COLUMNS_KEPT}").write_text(json.dumps(kept, ensure_ascii=False), encoding="utf-8")
-                os.replace(keep / f".{os.getpid()}{COLUMNS_KEPT}", keep / COLUMNS_KEPT)
-    norms, suggested = {norm_name(c): c for c in cols}, []
-    unique = lambda c: con.execute(f"SELECT count(DISTINCT {q(c)}) = count(*) FROM er_described WHERE {filled(c)}").fetchall()[0][0]  # on the sample: a hint, never a scan of the file
-    for f in fields:
-        if here[f]:
-            continue
-        if (c := norms.get(norm_name(f))) is not None:
-            suggested.append(dict(field=f, column=c, why="its name"))
-        elif f in fits and (c := max(fits[f], key=fits[f].get, default=None)) and fits[f][c] >= (0.99 if f == "id" else 0.5) and (f != "id" or unique(c)):
-            suggested.append(dict(field=f, column=c, why=f"{fits[f][c]:.0%} " + ("filled, each value once" if f == "id" else f"look like {f.replace('_', ' ')}")))
-    def entry(f: str, alts: tuple[tuple[str, ...], ...]) -> dict:  # a field's or a slot's numbers, and each of its alternatives'
-        return dict(sources=[list(a) for a in alts], filled=share.get(("field", f)), example=example.get(("field", f)), looks_right=looks_right.get(("field", f)),
-                    odd=unlike.get(("field", f)),
-                    alternatives=[dict(columns=list(a), found=set(a) <= set(cols),
-                                       **({k: v for k, v in zip(("filled", "example", "looks_right"), (share[key], example[key], looks_right[key]))}
-                                          if (key := ("alt", f, here[f].index(a)) if a in here[f] else None) else
-                                          dict(filled=None, example=None, looks_right=None))) for a in alts])
-    return dict(
-        records=n,
-        columns=[dict(column=c, filled=share[("column", c)], example=example[("column", c)]) for c in cols],
-        fields=[dict(field=f, **entry(f, alts)) for f, alts in fields.items()],
-        slots=[dict(feature=k, **entry(f"slot:{k}", alts)) for k, alts in (slots or {}).items()],
-        fit=fits, suggested=suggested, profile=profile, notes=src.notes)
-
-
-@dataclass(frozen=True)
-class Lexicon:
-    """What names and places look like, from data/reference/ (individual.json, addresses.json): family and given names
-    and prefectures and cities, each in kanji and in kana, kana folded as the run folds it."""
-    family: frozenset[str]
-    given: frozenset[str]
-    places: frozenset[str]
-    fold: dict[int, str]
-    made_of: str = ""  # the files and fold it was made of: what a profile kept with a part rests on
-
-
-def lexicon(folder: Path, kana_fold: tuple[tuple[str, str], ...]) -> Lexicon:
-    """The reference lists as sets, read once per process while its files are as they were. O(reference rows)."""
-    return _lexicon(folder, kana_fold, tuple(sorted((f.name, f.stat().st_size, f.stat().st_mtime_ns) for f in Path(folder).glob("*") if f.is_file())))
-
-
-@functools.lru_cache(maxsize=1)  # bounded: the one reference folder a process reads, as it is now
-def _lexicon(folder: Path, kana_fold: tuple[tuple[str, str], ...], stamp: tuple) -> Lexicon:  # kept on disk while the files and this code are as they are
-    key = (str(Path(folder).resolve()), kana_fold, stamp, CODE)
-    return intake.kept("lexicon", key, lambda: _lists(folder, kana_fold, repr(key)))
-
-
 CODE = hashlib.sha256(Path(__file__).read_bytes()).hexdigest()[:16]  # this module as it is: a copy its older self built is built again
-
-
-def _lists(folder: Path, kana_fold: tuple[tuple[str, str], ...], made_of: str = "") -> Lexicon:
-    fold = str.maketrans(dict(kana_fold))
-    people = json.loads((folder / "individual.json").read_text(encoding="utf-8"))
-    places = json.loads((folder / "addresses.json").read_text(encoding="utf-8"))
-    keep = lambda values: frozenset(v for x in values if x and (v := plain(x, fold)))
-    return Lexicon(family=keep(x for r in people for x in (r["surname"], r["surname_kana"])),
-                   given=keep(x for r in people for x in (r["given"], r["given_kana"])),
-                   places=keep(x for r in places for x in (r["pref"], r["pref_kana"], r["city"], r["city_kana"])), fold=fold, made_of=made_of)
 
 
 def plain(value: str, fold: dict[int, str]) -> str:  # a value as names are looked up: same width, no spaces, katakana, kana folded
     v = re.sub(r"[\s\u3000・]+", "", unicodedata.normalize("NFKC", value))
     return "".join(chr(ord(c) + 0x60) if "ぁ" <= c <= "ゖ" else c for c in v).translate(fold)
-
-
-SCRIPTS = {"kanji": re.compile(r"[\u4e00-\u9fff々]"), "kana": re.compile(r"[\u30a0-\u30ff\u3040-\u309f]"), "romaji": re.compile(r"[A-Za-z]")}
-
-
-def profiled(values: Mapping[str, list[str]], lex: Lexicon) -> dict[str, dict]:
-    """For each column, from its sampled filled values: its script (kanji, kana, romaji, or none: the letters most of its
-    values are written in), and the share of values that are a known family name, a known given name, a known family name
-    followed by a known given name (a full name), that start with a known prefecture or city and go on (an address), and
-    that are 4 to 11 digits once dashes and brackets are dropped (a phone number, when the column's name says so);
-    and the other columns that hold the same values (same: equal, width aside, on 95% of the rows both fill, which both
-    fill together on half the rows at least: one fact written twice). O(values · length + columns² · rows)."""
-    out, rows = {}, {c: [plain(v, lex.fold) if v and v.strip() else None for v in vs] for c, vs in values.items()}
-    longest = max(map(len, lex.family), default=0)  # a full name's split past the longest family name finds none
-    for c in values:
-        vs = [v for v in rows[c] if v is not None]
-        n = max(1, len(vs))
-        written = {k: sum(bool(rx.search(v)) for v in vs) / n for k, rx in SCRIPTS.items()}
-        script = max(written, key=written.get) if vs and max(written.values()) >= 0.5 else None
-        full = lambda v: any(v[:i] in lex.family and v[i:] in lex.given for i in range(1, min(len(v), longest + 1)))
-        address = lambda v: any(v[:i] in lex.places for i in range(2, min(len(v) - 1, 12) + 1))  # a place, then more
-        phone = lambda v: re.fullmatch(r"\d{4,11}", re.sub(r"[-()+－ー‐]", "", v)) is not None  # 4 to 11 digits, its dashes and brackets aside
-        out[c] = dict(script=script, family=sum(v in lex.family for v in vs) / n, given=sum(v in lex.given for v in vs) / n,
-                      full=sum(full(v) for v in vs) / n, address=sum(address(v) for v in vs) / n, phone=sum(phone(v) for v in vs) / n, same=[])
-    names, ids = list(rows), {}
-    codes = np.array([[-1 if x is None else ids.setdefault(x, len(ids)) for x in rows[c]] for c in names], dtype=np.int64).reshape(len(names), len(rows[names[0]]) if names else 0)
-    for i, a in enumerate(names):  # every b at once: the rows both fill, and those equal
-        both = (codes[i] >= 0) & (codes >= 0)
-        n, equal = both.sum(1), ((codes == codes[i]) & both).sum(1)
-        for j in np.flatnonzero((n > 0) & (n >= codes.shape[1] / 2) & (equal >= 0.95 * n)):
-            if a < names[j]:
-                out[a]["same"].append(names[j])
-                out[names[j]]["same"].append(a)
-    return out
 
 
 def file_facts(files: list[Path], role: str) -> list[dict]:
@@ -398,7 +211,7 @@ def answers(path: str | Path, con: duckdb.DuckDBPyConnection, uid: str) -> pd.Da
         raise InputError(f"{path}: a kind is 1, 2 or 0, not {bad[:5]}", fix="write 1 person, 2 company or 0 can't tell, or leave it empty")
     rows = rows[kind.isin([0, 1, 2]).to_numpy()].reset_index(drop=True)
     if rows.empty:
-        raise InputError(f"{path}: no row is answered", fix="answer records first (nayose answer kind ID company), or write 1 person, 2 company or 0 can't tell in the sheet's kind column")
+        raise InputError(f"{path}: no row is answered", fix="write 1 person, 2 company or 0 can't tell in the sheet's kind column")
     if (blank := int(rows[uid].str.strip(FILLED).fillna("").eq("").sum())):
         raise InputError(f"{path}: {blank:,} answered rows have no {uid}", fix="fill in each answered row's ID, or clear its answer")
     return rows
@@ -422,7 +235,7 @@ def decisions(path: str | Path, con: duckdb.DuckDBPyConnection, l: str, r: str, 
     con.execute(f"""CREATE OR REPLACE TABLE {q(into)} AS SELECT least({q(l)}, {q(r)}) AS {q(l)}, greatest({q(l)}, {q(r)}) AS {q(r)},
         lower(trim(decision, {blank})) AS decision, any_value({why}) AS why {decided} GROUP BY 1, 2, 3""")
     if not con.execute(f"SELECT count(*) FROM {q(into)}").fetchall()[0][0]:
-        raise InputError(f"{path}: no row has a decision", fix="decide pairs first (nayose decide pair ID ID match), or write match or no_match in the sheet's decision column")
+        raise InputError(f"{path}: no row has a decision", fix="write match or no_match in the sheet's decision column")
     if (bad := con.execute(f"SELECT DISTINCT decision FROM {q(into)} WHERE decision NOT IN ('match', 'no_match')").fetchall()):
         raise InputError(f"{path}: a decision is match or no_match, not {sorted(x for x, in bad)}", fix="correct those rows, or leave them empty")
     if (both := con.execute(f"SELECT {q(l)}, {q(r)} FROM {q(into)} GROUP BY ALL HAVING count(*) > 1 LIMIT 5").fetchall()):

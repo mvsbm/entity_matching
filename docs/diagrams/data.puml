@@ -38,12 +38,12 @@ package "the answer: Run.write" {
     stage
     score
     match_weight : bits, the model's
-    merged : at the trust line or above (none set: every pair), and no no_match
+    merged : whether it joined: not when people said no_match
   }
   entity "proposed/part-n.parquet" as proposed {
     * <id>_l
     * <id>_r
-    match_weight : bits, below the trust line
+    match_weight : bits, held back for people
     match_probability
     sources : the generators that found the pair
   }
@@ -104,7 +104,7 @@ package "state/, for increments: Run.write" {
     the keys the run listed by, learned or left after dropping idle ones: increments and lookups list by them
   }
   entity "state/blocks.json" as blocks {
-    each key's oversized blocks the run listed, by value: try sample counts their pairs as listed
+    each key's oversized blocks the run listed, by value: the fit's sizing counts their pairs as listed
   }
   entity "state/config.txt" as config {
     the pipeline and column mapping the full run used, but its fit, hashed: an increment refuses others
@@ -176,10 +176,6 @@ package "people's work and the writers' state" {
   }
   entity "pending.json" as pending {
     the moves a write still owes; only while one is cut short
-  }
-  entity "jobs.jsonl" as jobs {
-    nayose serve inbox: one line per file per pass
-    file, sha256, outcome, attempts, path
   }
 }
 

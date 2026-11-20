@@ -13,7 +13,6 @@ from er.match import named_sql
 from er.strings import connect
 
 
-
 def test_a_run_refuses_a_resolver_it_cannot_apply(population):
     from er.run import Run
     s, p, _ = population  # choose.py could adopt the constrained resolver; the run would then cluster otherwise
@@ -102,8 +101,6 @@ def test_an_interrupted_increment_completes_when_run_again(tmp_path, population,
     monkeypatch.undo()
     assert (tmp_path / "unlogged" / "steps.json").read_text(encoding="utf-8") == before  # the log and the files it names land together
     assert Run(p, s).increment(tmp_path / "new.parquet", tmp_path / "unlogged").added == len(g.df[new])  # so the batch goes in again, whole
-    Run(p, s).rerun(tmp_path / "unlogged")
-    assert len(pd.read_parquet(tmp_path / "unlogged" / "gold.parquet")) == len(g.df)  # and a rerun reads every file the log names
 
 
 def test_with_a_trust_line_an_increment_asks_for_the_checks_a_full_run_would(tmp_path, population):
@@ -234,23 +231,20 @@ def test_a_full_run_cut_short_in_its_moves_lands_with_its_round(tmp_path, popula
     assert (tmp_path / "run" / "gold.parquet").exists() and len(folder.rounds(tmp_path / "run")) == 1  # the run and its round land together
 
 
-def test_a_full_run_keeps_the_decisions_and_kinds_people_typed_in_and_have_not_given_back(tmp_path, population):
-    from er import folder
+def test_a_full_run_keeps_the_decisions_people_wrote_in_the_sheet_and_have_not_given_back(tmp_path, population):
     from er.run import Run
     s, p, g = population
     uid, ws = s.data.unique_id, tmp_path / "ws"
     g.df.to_parquet(tmp_path / "all.parquet", index=False)
-    Run(p, s).full(tmp_path / "all.parquet", ws, pipeline_file=s.root / "config" / "final.toml")  # with its reports: the sheets
+    Run(p, s).full(tmp_path / "all.parquet", ws, pipeline_file=s.root / "config" / "final.toml")  # with its reports: the sheet
     sheet = pd.read_parquet(ws / "review.parquet")
-    row = sheet[sheet["why"] == "decide"].iloc[0]
-    keys = {f"{uid}_l": row[f"{uid}_l"], f"{uid}_r": row[f"{uid}_r"]}
-    folder.type_in(ws, "review.parquet", "decision", "no_match", **keys)  # nayose decide pair, not applied
-    record = pd.read_parquet(ws / "kind_review.parquet")[uid].iloc[0]
-    folder.type_in(ws, "kind_review.parquet", "kind", 2, **{uid: record})  # nayose answer kind, not applied
-    Run(p, s).rerun(ws, pipeline_file=s.root / "config" / "final.toml")  # a full run makes both sheets again
-    after, kinds = pd.read_parquet(ws / "review.parquet"), pd.read_parquet(ws / "kind_review.parquet")
+    row = sheet.index[sheet["why"] == "decide"][0]
+    keys = {f"{uid}_l": sheet.at[row, f"{uid}_l"], f"{uid}_r": sheet.at[row, f"{uid}_r"]}
+    sheet.loc[row, "decision"] = "no_match"  # written in the sheet, not applied
+    sheet.to_parquet(ws / "review.parquet", index=False)
+    Run(p, s).full(tmp_path / "all.parquet", ws, overwrite=True, pipeline_file=s.root / "config" / "final.toml")  # a full run makes the sheet again
+    after = pd.read_parquet(ws / "review.parquet")
     assert after[(after[f"{uid}_l"] == keys[f"{uid}_l"]) & (after[f"{uid}_r"] == keys[f"{uid}_r"])]["decision"].tolist() == ["no_match"]
-    assert kinds.loc[kinds[uid] == record, "kind"].tolist() == [2] and kinds[uid].is_unique
 
 
 def test_an_overwrite_cut_short_keeps_the_old_run_and_people_s_answers(tmp_path, population, monkeypatch):
@@ -390,83 +384,6 @@ def test_the_probe_counts_the_matches_no_key_lists_as_the_truth_does(tmp_path, p
     assert all(x["hits"] <= by[x["stratum"]]["hits"] for x in full)  # the tuned method's keys miss no more
 
 
-def test_a_key_for_the_matches_the_probe_found_is_proposed_tried_and_adopted(say, tmp_path, population, capsys):
-    import tomllib
-    s, p, g = population
-    g.df.to_parquet(tmp_path / "all.parquet", index=False)
-    ws = tmp_path / "ws"
-    ws.mkdir()
-    from er.config import load_pipeline
-    ran = load_pipeline(s.root / "config" / "final.toml", s.standardize, s.chains, s.columns)  # the method resolve records runs
-    few = [b.name for b in ran.fs.blockers if b.name not in ("cif", "person_name", "company_name")]
-    (ws / "method.toml").write_text(f"drop_keys = {json.dumps(few)}\n", encoding="utf-8")  # a method that misses matches
-
-    assert say("resolve", "records", tmp_path / "all.parquet", "--workspace", ws)[0] == 0
-    code, d = say("describe", "method", "--workspace", ws)
-    adds = [x for x in d["proposals"] if "add_keys" in x["change"]]
-    assert code == 0 and adds and adds[0]["adds"]["lists"] > 0  # a key that lists matches the probe found no key lists
-    key = adds[0]["change"]["add_keys"][0]
-    code, t = say("try", "method", "--add", "+".join(key), "--workspace", ws)
-    assert code == 0 and t["method"]["add_keys"] == [key] and sum(t["variant"]["missed"].values()) < sum(t["base"]["missed"].values())
-    assert say("try", "method", "--add", "nope", "--workspace", ws)[0] == 2  # a field the pipeline doesn't declare: refused
-    assert say("adopt", "method", "--trial", t["trial"], "--workspace", ws)[0] == 0
-    assert tomllib.loads((ws / "method.toml").read_text(encoding="utf-8"))["add_keys"] == [key]
-    log = json.loads((ws / "steps.json").read_text(encoding="utf-8"))["runs"][-1]["steps"]
-    assert sum(x["keys_missed"] for x in next(x for x in log if x["step"] == "probe")["strata"]) == sum(t["variant"]["missed"].values())
-    (ws / "method.toml").write_text((ws / "method.toml").read_text(encoding="utf-8") + 'trust = "none"\n', encoding="utf-8")
-    code, t = say("try", "method", "--line", 14, "--workspace", ws)  # nothing merges by itself, yet a trial shows what the method does
-    assert code == 0 and t["base"]["matched"] > t["variant"]["matched"] > 0
-    assert say("reset", "method", "--workspace", ws)[0] == 0
-    assert tomllib.loads((ws / "method.toml").read_text(encoding="utf-8")) == {"trust": "none"}  # the method as tuned; the trust line people earned stays
-    (ws / "method.toml").write_text('trust = "none\n', encoding="utf-8")  # a method.toml that doesn't read: reset is still the way out
-    assert say("reset", "method", "--workspace", ws)[0] == 0 and not (ws / "method.toml").exists()
-
-
-def test_describe_matching_draws_the_pipeline_with_the_run_s_numbers(tmp_path, population):
-    import duckdb
-    from er.report import GRAPH_NODES, describe_matching
-    from er.run import Run
-    s, p, g = population
-    g.df.to_parquet(tmp_path / "all.parquet", index=False)
-    out = tmp_path / "run"
-    Run(p, s).full(tmp_path / "all.parquet", out, pipeline_file=s.root / "config" / "final.toml")
-    nodes = {n["id"]: n for n in describe_matching(duckdb.connect(), out, p, s)["nodes"]}
-    assert list(nodes) == list(GRAPH_NODES)
-    kept = pd.read_parquet(out / "rule_kept")["rule"].value_counts().to_dict()
-    assert {r["name"]: r["pairs"] for r in nodes["rules"]["rules"] if r["pairs"]} == kept
-    step = next(x for x in json.loads((out / "steps.json").read_text(encoding="utf-8"))["runs"][0]["steps"] if x["step"] == "candidates")
-    assert {x["name"]: x["pairs"] for x in nodes["candidates"]["generators"] if not x["idle"]} == {x["name"]: x["pairs"] for x in step["generators"]}
-    gold = pd.read_parquet(out / "gold.parquet")
-    assert nodes["accept"]["accepted"] == len(pd.read_parquet(out / "matches")) and nodes["customers"]["count"] == gold["cluster_id"].nunique()
-    levels = [lv for c in nodes["score"]["comparisons"] for lv in c["levels"] if lv["m"]]
-    assert levels and all(math.isclose(lv["bits"], math.log2(lv["m"] / lv["u"])) for lv in levels)  # each level's worth, as fitted
-    assert all(c["missing"] + sum(lv["pairs"] for lv in c["levels"]) + nodes["score"]["unscored"] == nodes["score"]["pairs"]
-               for c in nodes["score"]["comparisons"])  # each pair stops at one step, or a bound leaves it below 0
-    for r in nodes["rules"]["rules"]:  # the model's points for each rule's pairs: every pair in one of three ranges
-        assert r["scores"] is None or sum(r["scores"].values()) == r["pairs"]
-    links = len(pd.read_parquet(out / "matches"))
-    assert sum(x["links"] for x in nodes["candidates"]["by_keys"]) == links and nodes["candidates"]["possible"] == len(gold) * (len(gold) - 1) // 2
-    sheet = pd.read_parquet(out / "review.parquet")
-    people = nodes["people"]
-    assert sum(n for _, n in nodes["accept"]["review_bands"]) == people["sheet"] == people["below"] + people["unnamed"] == (sheet["why"] == "decide").sum()
-    assert sum(p["pairs"] for p in people["patterns"]) <= people["sheet"]
-    group = nodes["group"]
-    assert sum(group["joined"].values()) == sum(z["records"] * z["customers"] for z in group["sizes"] if z["records"] > 1)  # who joined each joined record
-    assert group["look"]["single_links"]["customers"] <= sum(z["customers"] for z in group["sizes"] if z["records"] >= 3)
-    from er.explain import describe_key
-    for name in [g["name"] for g in nodes["candidates"]["generators"] if g["method"] in ("same value", "sorted neighbours") and g["matched"]][:3]:
-        k = describe_key(out, p, s, name)
-        assert k["matched"] >= k["only"] and len(k["examples"]) <= 3
-        if k["sizes"] is not None:  # equal values: records per value, and one value's records, the link behind it among them
-            assert sum(z["records"] * z["values"] for z in k["sizes"] if z["records"] < 10) <= len(gold)
-            assert k["group"] is None or set(k["group"]["pair"]) <= {x["id"] for x in k["group"]["records"]} or k["group"]["more"]
-        else:  # sorted neighbours: the records around a link, in its order
-            assert k["around"] is None or [x["sorted_as"] for x in k["around"]["records"]] == sorted(x["sorted_as"] for x in k["around"]["records"])
-    assert all(f["example"] for f in nodes["prepare"]["fields"] if f["filled"])  # a real value for every field the file fills
-    bare = {n["id"]: n for n in describe_matching(duckdb.connect(), None, p, s)["nodes"]}  # no run yet: the methods only
-    assert bare["records"]["count"] is None and bare["rules"]["rules"][0]["pairs"] is None and bare["score"]["comparisons"][0]["levels"][0]["bits"] is None
-
-
 def test_scoring_in_slices_gives_the_scores_scoring_all_at_once_gives_and_each_long_step_says_how_far_it_is(tmp_path, population):
     from er.run import Run
     s, p, g = population
@@ -513,8 +430,6 @@ def test_a_full_run_reads_the_records_it_cleaned_again_until_anything_they_rest_
     again = Run(p, s).full(tmp_path / "all.parquet", ws, overwrite=True)
     assert (load(first), load(again)) == ("made", "kept")
     pd.testing.assert_frame_equal(rows(first), rows(again))  # as cleaning them again would make them
-    pd.testing.assert_frame_equal(gold, pd.read_parquet(ws / "gold.parquet"))
-    assert load(Run(p, s).rerun(ws)) == "kept"  # the run's one file, read again in order: the same records
     pd.testing.assert_frame_equal(gold, pd.read_parquet(ws / "gold.parquet"))
     (kept,) = (ws / folder.PREPARED).iterdir()
     (kept / "records.parquet").write_bytes(b"not parquet")  # a copy that can't be read: made again
@@ -570,7 +485,6 @@ def test_a_run_over_a_log_an_older_version_wrote_keeps_its_runs_without_their_ti
     log = json.loads((ws / "steps.json").read_text(encoding="utf-8"))
     log["runs"] = [{k: v for k, v in x.items() if k in ("disabled", "part", "steps")} for x in log["runs"]]  # as an older version wrote it
     (ws / "steps.json").write_text(json.dumps(log), encoding="utf-8")
-    assert folder.workspaces(tmp_path / "home")[0]["last"]  # the folder's own time, where the log has none
     Run(p, s).full(tmp_path / "in.parquet", ws, overwrite=True)  # its write reads the old log into the new one's history
     history = folder.history(ws)
     assert [x["at"] for x in history][0] is None and history[-1]["at"]

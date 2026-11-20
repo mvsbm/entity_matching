@@ -1,8 +1,6 @@
-"""What the tests share: small hand-made frames, a generated population for whole runs, nayose as a user runs it (in
-this process, and in its own), and the page in a browser. A test that uses a whole-run fixture is marked slow; one
-that uses the browser, browser: run the fast ones with -m "not slow and not browser"."""
-import contextlib
-import gc
+"""What the tests share: small hand-made frames, a generated population for whole runs, and nayose as a user runs it
+(in this process, and in its own). A test that uses a whole-run fixture is marked slow: run the fast ones with
+-m "not slow"."""
 import json
 import os
 from dataclasses import replace
@@ -28,8 +26,6 @@ def pytest_collection_modifyitems(items):
     for item in items:
         if SLOW & set(item.fixturenames):
             item.add_marker(pytest.mark.slow)
-        if "ui_page" in item.fixturenames:
-            item.add_marker(pytest.mark.browser)
 
 
 @pytest.hookimpl(hookwrapper=True)
@@ -143,51 +139,3 @@ def fake_cli(tmp_path, monkeypatch):
         swap = lambda cmd: [sys.executable, str(script), *cmd[3:]] if list(cmd[1:3]) == ["-m", "er.cli"] else cmd
         monkeypatch.setattr(subprocess, "Popen", lambda cmd, *a, **k: real(swap(cmd), *a, **k))
     return fake
-
-
-@pytest.fixture
-def ui_page(request):
-    """open(workspace, home, viewport=None) → (page, server, httpd): the page on a server of its own, in Chromium, at
-    its link. Everything opened is closed after the test, whatever happens in it. No browser: skipped, except under CI,
-    where the browser tests must run, so it fails. With ER_TRACES set (CI sets it), a failed test leaves each page's
-    Playwright trace there: what it clicked, saw and asked, step by step (npx playwright show-trace FILE)."""
-    import threading
-    from er import ui
-    if os.environ.get("CI"):
-        import playwright.sync_api as sync
-    else:
-        sync = pytest.importorskip("playwright.sync_api")
-    with contextlib.ExitStack() as opened:  # each thing closed after the test, the last opened first, even when one close fails
-        pw, traced = [], []
-
-        def open_(workspace: str | None, home: str, viewport: dict | None = None):
-            if not pw:  # as nayose open ui starts (ui.serve): what is there already never walked again by each command's collection
-                gc.collect()
-                gc.freeze()
-                opened.callback(gc.unfreeze)
-            server = ui.Server(workspace, home)
-            httpd = ui.Listener(("127.0.0.1", 0), ui.handler(server))
-            threading.Thread(target=httpd.serve_forever, daemon=True).start()
-            opened.callback(httpd.server_close)
-            opened.callback(httpd.shutdown)
-            if not pw:  # started once the test asks for a page: the test's own setup runs outside Playwright's loop
-                pw.append(sync.sync_playwright().start())
-                opened.callback(pw[0].stop)
-            try:
-                browser = pw[0].chromium.launch()
-            except sync.Error:
-                if os.environ.get("CI"):
-                    raise
-                pytest.skip("no browser: .venv/bin/python -m playwright install chromium")
-            opened.callback(browser.close)
-            context = browser.new_context(**({"viewport": viewport} if viewport else {}))
-            if traces := os.environ.get("ER_TRACES"):
-                context.tracing.start(snapshots=True)  # the page as it was at each step; no screenshots, which slow a busy machine
-                path = Path(traces) / f"{request.node.name}-{len(traced)}.zip"
-                traced.append(path)
-                failed = lambda: any(r.failed for r in (getattr(request.node, f"report_{w}", None) for w in ("setup", "call")) if r)
-                opened.callback(lambda: context.tracing.stop(**({"path": path} if failed() else {})))  # before the browser closes
-            page = context.new_page()
-            page.goto(f"http://127.0.0.1:{httpd.server_address[1]}/?token={server.token}")
-            return page, server, httpd
-        yield open_

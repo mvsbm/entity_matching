@@ -99,8 +99,6 @@ def test_a_lookup_lists_and_scores_the_pairs_an_increment_of_the_record_would_an
         assert all(abs(got[k] - ref[k]) < 1e-9 for k in ref), rec[uid]  # each scored alike
     assert gated  # some records fell in a block too big: gated as the run gates it
 
-    assert "PERSON_ORG_CODE" not in {c["column"] for c in index.status(ws, s2)["columns"]}  # a column the run's file lacks: never offered
-
     con = connect(s2.compute)  # stored records looked up as new: the batch path with each already among the records, once
     index._attach(con, ws, m)
     con.register("er_stored", stored.astype({uid: "string"}))
@@ -166,43 +164,16 @@ def test_a_lookup_lists_and_scores_the_pairs_an_increment_of_the_record_would_an
     monkeypatch.setattr(index, "REBUILD", 1.0)  # each change written beside the same index, one after another
     m = kept("add", "records", str(tmp_path / "first_new.parquet"))
     assert m["added"] == len(first) and m["updates"] == 1 and m["records"] == (~held).sum()  # written beside the index, not built again
-    d, kept_pairs = cli.describe_results_({"workspace": str(ws)}, None), pd.read_parquet(ws / "scored")
-    at_zero = sum(x["pairs"] for x in d["scores"] if x["down_to"] is not None and x["down_to"] >= 0)
-    runs = json.loads((ws / "steps.json").read_text(encoding="utf-8"))["runs"]
-    by_keys = sum(row[len(x["patterns"]["fields"])] for run in runs for x in run["steps"] if x.get("patterns") for row in x["patterns"]["rows"]) \
-        + sum(x.get("unscored", 0) for run in runs for x in run["steps"])  # scored, by pattern; and those a bound left below 0
-    rules_alone = int((kept_pairs["rule"].notna() & kept_pairs["sources"].isna()).sum())
-    assert at_zero == int((kept_pairs["match_weight"] >= 0).sum())  # at 0 or more: the pairs Explore lists
-    assert sum(x["pairs"] for x in d["scores"]) == by_keys + rules_alone and len(runs) == 2  # every pair compared: the increment's with the full run's
-    log = (ws / "steps.json").read_text(encoding="utf-8")
-    older = json.loads(log)
-    for run in older["runs"]:
-        for x in run["steps"]:
-            x.pop("bands", None)
-    (ws / "steps.json").write_text(json.dumps(older), encoding="utf-8")  # a run logged before each counted its own bands
-    d = cli.describe_results_({"workspace": str(ws)}, None)
-    assert d["uncounted"] == len(first) and d["listed"] == int((kept_pairs["match_weight"] >= 0).sum()) and d["scores"]  # what the chart leaves out, said; the list counted whole
-    older = json.loads(log)
-    for x in older["runs"][0]["steps"]:  # the full run logged before the bands, an increment after
-        x.pop("bands", None)
-    (ws / "steps.json").write_text(json.dumps(older), encoding="utf-8")
-    assert cli.describe_results_({"workspace": str(ws)}, None)["uncounted"] == len(first)  # read from the full run's patterns: the increment left out, said
-    (ws / "steps.json").write_text(log, encoding="utf-8")
-    assert cli.describe_results_({"workspace": str(ws)}, None)["uncounted"] == 0
     entity = pd.read_parquet(ws / "gold.parquet").set_index(uid)["cluster_id"]
     pairs = pd.read_parquet(ws / "scored")  # a pair of stored records in two entities: a "same" joins them
     stored_pair = pairs[~pairs[f"{uid}_l"].isin(first[uid]) & ~pairs[f"{uid}_r"].isin(first[uid])
                         & (pairs[f"{uid}_l"].map(entity) != pairs[f"{uid}_r"].map(entity))].iloc[0]
-    assert cli.main(["decide", "pair", stored_pair[f"{uid}_l"], stored_pair[f"{uid}_r"], "match", "--workspace", str(ws)]) == 0
-    m = kept("apply", "decisions")
+    pd.DataFrame({f"{uid}_l": [stored_pair[f"{uid}_l"]], f"{uid}_r": [stored_pair[f"{uid}_r"]], "decision": ["match"]}).to_parquet(tmp_path / "same.parquet", index=False)
+    m = kept("apply", "decisions", "--file", str(tmp_path / "same.parquet"))
     assert m["moved"] >= 1 and m["added"] == len(first) and m["updates"] == 2  # the entity the decision joined, moved; the records added, still beside it
-    m = kept("set", "merging", "--conditions", json.dumps({"when": [{"points": 0}]}))
-    assert m["moved"] > 1 and m["updates"] == 3  # records added and then merged, among them
     monkeypatch.setattr(index, "REBUILD", 0.01)
     assert cli.main(["add", "records", str(tmp_path / "later_new.parquet"), "--workspace", str(ws), "--format", "json"]) == 0
     assert index.manifest(ws)["records"] == len(df) and index.manifest(ws)["added"] == 0 and index.stale(ws) is None  # past REBUILD of it: built again
-    assert cli.main(["set", "merging", "--conditions", json.dumps({"when": []}), "--workspace", str(ws), "--format", "json"]) == 0
-    assert index.manifest(ws)["updates"] == 0 and index.manifest(ws)["moved"] == 0 and index.stale(ws) is None  # the entities moved past REBUILD of it: built again
     monkeypatch.undo()
     assert {f.name for f in (ws / "index").iterdir()} == {"manifest.json", *(f for f in index.manifest(ws)["files"].values() if f)}  # the files it names, no other
 
@@ -214,53 +185,6 @@ def test_a_lookup_lists_and_scores_the_pairs_an_increment_of_the_record_would_an
     monkeypatch.undo()
     monkeypatch.setattr(index, "update", lambda *a: (_ for _ in ()).throw(OSError("disk full")))
     assert cli.indexed({"workspace": str(ws)}) == dict(error="OSError: disk full", fix=f"build it: {brief.nayose('build', 'index', '--workspace', ws)}")  # the run stands: why its index waits
-
-
-def test_a_search_finds_records_by_the_start_of_any_value_and_says_one_too_common_to_list(tmp_path, population, monkeypatch):
-    from er import cli, index
-    s, p, g = population
-    uid, df = s.data.unique_id, g.df
-    df.to_parquet(tmp_path / "all.parquet", index=False)
-    ws = tmp_path / "ws"
-    assert cli.main(["resolve", "records", str(tmp_path / "all.parquet"), "--workspace", str(ws), "--format", "json"]) == 0
-    assert cli.main(["build", "index", "--workspace", str(ws), "--format", "json"]) == 0
-    s2, p2, _ = cli.setup({"workspace": str(ws)})
-    people = df[df["FULL_NAME_KANA"].notna() & df["PHONE_NUM_4"].notna() & df["POST_CD"].notna()].head(5)
-    for _, r in people.iterrows():
-        both = index.search(ws, s2, p2, dict(FULL_NAME_KANA=r["FULL_NAME_KANA"][:3], PHONE_NUM_4=r["PHONE_NUM_4"]), most=10**6)
-        hit = next(e for e in both["entities"] if e["entity"] == both["entities"][0]["entity"])
-        assert set(hit["fields"]) == {"name", "phone"} and r[uid] in _records(ws, uid, hit["entity"])  # the start of its name and its phone: its entity first
-        for one, field in ((dict(PHONE_NUM_4=r["PHONE_NUM_4"]), "phone"), (dict(POST_CD=r["POST_CD"]), "postal_code"),
-                           (dict(FULL_NAME_KANA=r["FULL_NAME_KANA"][-3:]), "name")):  # any one value alone, a name also by its end
-            found = index.search(ws, s2, p2, one, most=10**6)
-            assert r[uid] in {x for e in found["entities"] for x in _records(ws, uid, e["entity"])} and all(field in e["fields"] for e in found["entities"]), one
-    r = people.iloc[0]
-    hira = "".join(chr(ord(ch) - 0x60) if "ァ" <= ch <= "ヶ" else ch for ch in r["FULL_NAME_KANA"][:3])
-    for typed, plain in ((dict(PHONE_NUM_4="".join(chr(ord(d) + 0xFEE0) for d in r["PHONE_NUM_4"])), dict(PHONE_NUM_4=r["PHONE_NUM_4"])),  # full-width digits
-                         (dict(POST_CD=f"{r['POST_CD'][:3]}-{r['POST_CD'][3:]}"), dict(POST_CD=r["POST_CD"])),  # a postal code as written
-                         (dict(FULL_NAME_KANA=hira), dict(FULL_NAME_KANA=r["FULL_NAME_KANA"][:3]))):  # hiragana
-        assert index.search(ws, s2, p2, typed, most=50)["entities"] == index.search(ws, s2, p2, plain, most=50)["entities"], typed  # as people type them, found alike
-    assert index._typed("さいたま市３－１", None) == "さいたま市３－１" and index._typed("さとう", "name") == "サトウ" and index._typed("〒１００－０００１", "digits") == "1000001"
-    monkeypatch.setattr(index, "CAP", 3)
-    name = df["FULL_NAME_KANA"].dropna().str[:1].value_counts().index[0]
-    said = index.search(ws, s2, p2, dict(FULL_NAME_KANA=name))
-    assert [{k: x[k] for k in ("field", "value")} for x in said["over"]] == [dict(field="name", value=name)] and said["over"][0]["records"] >= 3  # too common to list all: said, how many
-    assert said["entities"] and all("name" in e["fields"] for e in said["entities"])  # and the first of them, still shown
-    common = df["PHONE_NUM_4"].value_counts().index[0]
-    said = cli.search_records({"workspace": str(ws), "values": [f"PHONE_NUM_4={common}"], "from": None, "count": "5"}, None)
-    assert said["over"] == [dict(field="phone", value=common, records=int((df["PHONE_NUM_4"] == common).sum()), more=False, listed=True)]  # too many to list all: said, how many
-    assert said["entities"] and all(e["shown"]["phone"] == common for e in said["entities"])  # the first of them, shown
-    said = cli.search_records({"workspace": str(ws), "values": ["PHONE_NUM_4=-", "FULL_NAME_KANA=NULL"], "from": None, "count": None}, None)
-    assert said["typed"] == [] and said["missing"] == ["FULL_NAME_KANA", "PHONE_NUM_4"] and said["entities"] == []  # placeholders alone: nothing to search by
-    with pytest.raises(InputError, match="FULL_NAME_KANA=-: read as missing"):  # looked up: said in words a person reads
-        cli.match_record({"workspace": str(ws), "values": ["FULL_NAME_KANA=-"], "record": None, "from": None, "count": None}, None)
-    assert set(json.loads((ws / "index" / "manifest.json").read_text(encoding="utf-8"))["searched"]) == set(index.SEARCHED)  # the method's run holds every column a search reads
-    town = df["ADDRESS_ONE"].dropna().iloc[0]  # the prefecture: a field no search reads
-    said = index.search(ws, s2, p2, dict(ADDRESS_ONE=town))
-    assert said["unsearched"] == ["prefecture"] and said["typed"] == [] and said["entities"] == []  # said, not "type more of it"
-    said = index.search(ws, s2, p2, dict(ADDRESS_ONE=town, FULL_NAME_KANA=r["FULL_NAME_KANA"][:3]))
-    assert said["unsearched"] == ["prefecture"] and said["typed"] == ["name"] and said["entities"]  # the rest searched as before
-    assert index.search(ws, s2, p2, dict(ADDRESS_ONE="-"))["unsearched"] == []  # a placeholder: nothing typed
 
 
 def _records(ws, uid: str, entity: str) -> set[str]:  # an entity's records, as the run holds them

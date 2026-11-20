@@ -7,11 +7,11 @@ alone would give. Each value is decoded in the one of [input] encodings it decod
 strictly, else in its column's. What loses nothing is fixed at once: control bytes, zero-width characters and BOMs
 removed, placeholder nulls ([input] nulls), values of spaces alone and numbers a spreadsheet cut short (1.23E+11) made missing, 12345.0 read
 as 12345, a value written as a list (a Parquet list column, or text like ["8700848"]) read as its item: the first, when
-it lists several, counted apart. What would be a guess is proposed, and applies once people accept its kind (`nayose accept repairs`):
+it lists several, counted apart. What would be a guess is proposed in the read's report, never applied by itself:
 - realign: a row whose fields don't line up, re-split where every value fits its column;
 - garbled: a value a wrong decoding upstream garbled (mojibake), decoded back;
 - encoding: a value that several encodings read, read in another than its column's.
-Until then a row that doesn't line up is unread, never dropped. A Parquet file's text gets the same fixes.
+A row that doesn't line up is unread, never dropped. A Parquet file's text gets the same fixes.
 
 A part holds what was given, `read/` (what runs read), intake.json (counts only: no value), proposals.parquet and
 unread.parquet (the values, which stay in the workspace). The intake is a function of the files given, [input] and
@@ -999,11 +999,6 @@ def settle(part: Path) -> None:
 
 def report(part: Path) -> dict | None:  # what the intake found in a part, or None for a path that is no part
     return json.loads((part / REPORT).read_text(encoding="utf-8")) if (part / REPORT).is_file() else None
-
-
-def accept(part: Path, kind: str, spec: InputSpec, reference: Path) -> dict:  # the part read again, one more kind of repair accepted
-    r = report(part)
-    return take(part, {part / x["given"]: x["given"] for x in r["files"]}, spec, reference, frozenset(r["accepted"]) | {kind})
 
 
 def part_of(f: Path) -> Path | None:  # the part a read file belongs to

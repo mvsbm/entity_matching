@@ -1,4 +1,4 @@
-# A pull request merges with its checklist ticked (.github/pull_request_template.md): CONTRIBUTING.md, rule 10.
+# A pull request merges with its checklist ticked (.github/pull_request_template.md): CONTRIBUTING.md, rule 8.
 name: checklist
 on:
   pull_request:

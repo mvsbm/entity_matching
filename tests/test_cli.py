@@ -17,17 +17,19 @@ from conftest import nayose
 
 
 def _mapping(tmp_path: Path, s, **fields: str) -> Path:  # the project's mapping with some fields mapped to other columns, as a workspace's columns.toml
-    from er.settings import set_columns, own_columns, settings_path
+    config = (s.root / "config" / "settings.toml").read_text(encoding="utf-8")
+    mapping = config[config.index("\n[columns]\n") + 1:]
+    for k, v in fields.items():  # each field one column
+        mapping, n = re.subn(rf"^({k} = \{{ sources = )\[\[.*?\]\]", rf'\1[["{v}"]]', mapping, count=1, flags=re.M)
+        assert n == 1, k
     f = tmp_path / "columns.toml"
-    f.write_text(own_columns(settings_path()), encoding="utf-8")
-    set_columns(f, {k: [[v]] for k, v in fields.items()})  # each field one column
+    f.write_text(mapping, encoding="utf-8")
     return f
 
 
 def test_a_run_says_what_is_wrong_in_words_people_can_act_on(say, tmp_path, population, capsys, monkeypatch):
     from splink.internals.exceptions import SplinkException
 
-    from er import folder, inbox
     from er.run import Run
     s, p, g = population
     monkeypatch.chdir(tmp_path)
@@ -42,9 +44,9 @@ def test_a_run_says_what_is_wrong_in_words_people_can_act_on(say, tmp_path, popu
     with pytest.raises(InputError, match="both read"):  # one column for two compared fields: one value counted twice
         Run(p, load_settings(columns=_mapping(tmp_path, s, postal_code=phone))).full(tmp_path / "nopostal.parquet", tmp_path / "run1")
     g.df.to_parquet(tmp_path / "all.parquet", index=False)
-    for words in (("check", "records", tmp_path / "all.parquet", "--compute", "memory_limit=lots"), ("check", "records", tmp_path / "all.parquet", "--compute", "memroy_limit=8GB"),
-                  ("resolve", "records", tmp_path / "all.parquet", "--workspace", tmp_path / "w", "--model", tmp_path / "none.json"),
-                  ("serve", "inbox", tmp_path / "box", "--workspace", tmp_path / "w", "--settle", "1m")):
+    for words in (("resolve", "records", tmp_path / "all.parquet", "--workspace", tmp_path / "w", "--compute", "memory_limit=lots"),
+                  ("resolve", "records", tmp_path / "all.parquet", "--workspace", tmp_path / "w", "--compute", "memroy_limit=8GB"),
+                  ("resolve", "records", tmp_path / "all.parquet", "--workspace", tmp_path / "w", "--model", tmp_path / "none.json")):
         code, e = say(*words)
         assert code == 2 and e["fix"], words  # a mistake people fix: two lines, never a traceback
     def short(*_, **__):  # out of memory inside Splink, which wraps DuckDB's error in its own
@@ -56,60 +58,27 @@ def test_a_run_says_what_is_wrong_in_words_people_can_act_on(say, tmp_path, popu
         m.setattr(Run, "full", short)
         code, e = say("resolve", "records", tmp_path / "all.parquet", "--workspace", tmp_path / "w")
         assert code == 2 and "out of memory" in e["error"] and "memory_limit" in e["fix"]
-    (tmp_path / "w2").mkdir()
-    _mapping(tmp_path / "w2", s, postal_code=phone)  # the page's step 2 says what the run would refuse
-    assert any("both read" in x for x in say("describe", "records", tmp_path / "all.parquet", "--workspace", tmp_path / "w2")[1]["turned_off"])
-    (tmp_path / "w3").mkdir()
-    _mapping(tmp_path / "w3", s, kind_flag=s.columns["company_name"][0][0])  # a name column in the person/company flag: warned
-    slots = say("describe", "records", tmp_path / "all.parquet", "--workspace", tmp_path / "w3")[1]["slots"]
-    flag = [x["looks_right"] for x in slots if x["feature"].endswith("/Person or company")]
-    assert flag and flag[0] < 0.5
-    (tmp_path / "ws").mkdir()
-    (tmp_path / "ws" / "method.toml").write_text('trust = "none\n', encoding="utf-8")
-    code, e = say("describe", "method", "--workspace", tmp_path / "ws")
-    assert code == 2 and "not valid TOML" in e["error"]
-    (tmp_path / "ws" / "method.toml").write_text('trust = "none"  # 人が確かめる\n', encoding="cp932")
-    code, e = say("describe", "method", "--workspace", tmp_path / "ws")
-    assert code == 2 and "not UTF-8" in e["error"]
-    (tmp_path / "ws" / "method.toml").write_text('trust = "none"\n', encoding="utf-8-sig")  # as Notepad saves it
-    assert folder.method(tmp_path / "ws") == {"trust": "none"}
-    folder = tmp_path / "csvs"
-    folder.mkdir()
-    g.df.iloc[:200].to_csv(folder / "a.csv", index=False)
-    g.df.iloc[200:].to_csv(folder / "b.tsv", sep="\t", index=False)
-    (folder / "__MACOSX").mkdir()
-    (folder / "__MACOSX" / "._a.csv").write_bytes(b"\x00\x05\x16\x07 junk")
-    (folder / ".a.csv.swp").write_text("x,y\n1,2\n", encoding="utf-8")
-    assert say("check", "records", folder)[1]["records"] == len(g.df)  # a folder of CSV and TSV files, read together; hidden ones left alone
-    box = tmp_path / "inbox"
-    (box / "batches").mkdir(parents=True)
-    g.df.iloc[:10].to_csv(box / "batches" / "new.csv", index=False)  # just written: perhaps still being copied in
-    (box / "batches" / "._new.csv").write_bytes(b"\x00\x05\x16\x07 junk")  # macOS's copy of a file's attributes, beside it on a shared disk
-    said = []
-    assert inbox.one_pass(tmp_path / "run", box, 0, [], lambda *a, **k: said.append(a), settle=60) and not said
-    assert inbox.one_pass(tmp_path / "run", box, 0, [], lambda *a, **k: said.append(a), settle=0) and said
-    assert [x[0].split(":")[0] for x in said] == ["batches/new.csv"] and (box / "batches" / "._new.csv").exists()  # a hidden file is no batch
 
 
 def test_nayose_prints_a_mistake_as_two_lines_and_exits_with_2(tmp_path):
-    done = nayose("check", "records", tmp_path / "none.parquet")
+    done = nayose("resolve", "records", tmp_path / "none.parquet", "--workspace", tmp_path / "w")
     assert done.returncode == 2 and done.stderr.splitlines()[0].startswith("✗ no file matches")
     assert done.stderr.splitlines()[1].lstrip().startswith("fix: ") and "Traceback" not in done.stderr
-    done = nayose("check", "records", tmp_path / "none.parquet", "--format", "json")
+    done = nayose("resolve", "records", tmp_path / "none.parquet", "--workspace", tmp_path / "w", "--format", "json")
     error = json.loads(done.stdout.splitlines()[-1])
     assert done.returncode == 2 and error["event"] == "error" and error["exit"] == 2 and error["fix"]
     assert nayose("resolve", "records", tmp_path / "x.parquet").returncode == 2  # --workspace missing: the parser says so
 
 
 def test_a_number_given_is_a_finite_one_and_a_mistyped_workspace_is_refused_unmade(say, tmp_path):
-    assert say("create", "workspace", "w", "--home", tmp_path)[0] == 0
-    for words in (("draw", "pairs", "--count", "inf"), ("draw", "pairs", "--count", "nan"), ("try", "method", "--line", "nan"), ("describe", "results", "--from=-inf"), ("list", "scored", "--page", "²")):
+    (tmp_path / "w").mkdir()
+    for words in (("match", "record", "X=1", "--count", "inf"), ("match", "record", "X=1", "--count", "nan"), ("match", "record", "X=1", "--from=-inf"), ("match", "record", "X=1", "--count", "²")):
         code, e = say(*words, "--workspace", tmp_path / "w")
         assert code == 2 and ("not a number" in e["error"] or "a whole number" in e["error"]), words
     from er import cli
     for c in cli.COMMANDS:  # every command given a workspace mistyped: refused, and no folder made
-        if not any(p.name == "workspace" for p in c.params) or c.name in ("open ui", "serve inbox", *cli.MAKES):
-            continue  # a server, a scheduler, and the commands that make a workspace
+        if not any(p.name == "workspace" for p in c.params) or c.name in cli.MAKES:
+            continue  # the commands that make a workspace
         words = [c.verb, c.noun]
         for p in c.params:
             if p.name == "workspace":
@@ -120,7 +89,7 @@ def test_a_number_given_is_a_finite_one_and_a_mistyped_workspace_is_refused_unma
                 words += [f"--{p.name}", p.choices[0] if p.choices else "2000"]
         try:
             code = say(*words)[0]
-        except SystemExit as e:  # the parser's refusal (describe workspace's workspace is positional)
+        except SystemExit as e:  # the parser's refusal
             code = e.code
         assert code == 2 and not (tmp_path / "typo").exists(), c.name
 
@@ -170,127 +139,32 @@ def test_text_says_a_result_in_short_and_verbose_says_all_of_it(tmp_path, popula
     from er.brief import text
     from er.cli import COMMANDS, main
     s, p, g = population
+    uid = s.data.unique_id
     g.df.to_parquet(tmp_path / "all.parquet", index=False)
     monkeypatch.chdir(tmp_path)
     said = lambda *words: (main([*map(str, words)]), capsys.readouterr().out.splitlines())[1]
-    assert said("create", "workspace", "w")[:2] == [f"✓ created {Path('workspaces/w')}", "next"]  # as the system writes a path
-    said("load", "records", "all.parquet", "--workspace", "workspaces/w")
-    out = said("check", "records", "--workspace", "workspaces/w")  # its own file: none given
-    assert out[0] == "check records · workspaces/w" and next(x for x in out if x.startswith("✓ ")).startswith(f"✓ ready: {len(g.df):,} records") and any(x.split()[:5] == ["nayose", "resolve", "records", "--workspace", "workspaces/w"] for x in out)
-    out = said("resolve", "records", "--workspace", "workspaces/w")
+    out = said("resolve", "records", "all.parquet", "--workspace", "workspaces/w")
     ran = [x["step"] for x in folder.runs(Path("workspaces/w"))[-1]["steps"]]
     assert out[0] == "resolve records · workspaces/w" and [x.split()[1] for x in out if x.startswith("  ✓ ")] == ran  # each step once, in order
     at = next(i for i, x in enumerate(out) if x.startswith(f"✓ {len(g.df):,} records → "))
     assert out.index("next") - at <= 7 and len(out) - out.index("next") - 1 <= 3  # the result in a few lines, then at most 3 commands
-    c = next(c for c in COMMANDS if c.name == "describe workspace")
-    main(["describe", "workspace", "workspaces/w", "--format", "json"])
+    sheet = pd.read_parquet(Path("workspaces/w") / "review.parquet")
+    sheet.head(1)[[f"{uid}_l", f"{uid}_r"]].assign(decision="match").to_parquet("d.parquet", index=False)
+    said("apply", "decisions", "--file", "d.parquet", "--workspace", "workspaces/w")
+    c = next(c for c in COMMANDS if c.name == "apply decisions")
+    main(["apply", "decisions", "--file", "d.parquet", "--workspace", "workspaces/w", "--format", "json"])  # given again: nothing new, the same result each time
     r = {k: v for k, v in json.loads(capsys.readouterr().out.splitlines()[-1]).items() if k not in ("event", "command")}
-    full = said("describe", "workspace", "workspaces/w", "--verbose")
-    assert full == text(c, r).splitlines() and len(full) > len(said("describe", "workspace", "workspaces/w"))
+    full, lines = said("apply", "decisions", "--file", "d.parquet", "--workspace", "workspaces/w", "--verbose"), text(c, r).splitlines()
+    assert full[-len(lines):] == lines and len(full) > len(said("apply", "decisions", "--file", "d.parquet", "--workspace", "workspaces/w"))
 
 
 def test_the_commands_that_read_a_run_say_when_the_workspace_holds_none(say, tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
-    say("create", "workspace", "w")
-    for words in (("describe", "results"), ("list", "scored"), ("list", "entities"), ("describe", "merging"), ("set", "merging", "--conditions", '{"when": []}')):
+    Path("workspaces/w").mkdir(parents=True)
+    pd.DataFrame({load_settings().data.unique_id: ["1"], "FULL_NAME_KANA": ["ヤマダタロウ"]}).to_parquet("one.parquet", index=False)
+    for words in (("build", "index"), ("apply", "decisions"), ("match", "records", "one.parquet")):
         code, e = say(*words, "--workspace", "workspaces/w")
-        assert code == 2 and e["error"] == f"no run in {Path('workspaces/w')}" and e["fix"], words  # never a traceback
-
-
-def test_describe_records_says_what_a_column_holds_instead_and_its_one_command_sets_it_right(say, tmp_path, monkeypatch):
-    import shlex
-    monkeypatch.chdir(tmp_path)
-    people, n = ["ヤマダタロウ", "サトウハナコ", "スズキイチロウ", "タナカミドリ", "イシイカホ", "ワタナベケン", "コバヤシユミ", "カトウマコト"], 400
-    df = pd.DataFrame({"CONT_ID": [f"{i:08d}" for i in range(n)], "FULL_NAME_KANA": [people[i % 8] for i in range(n)],
-                  "NYS_CNV_P_NAME_KANA": [people[i % 8].replace("イイ", "イー") for i in range(n)],  # each record's own name, converted: no company's
-                  "PHONE_NUM_4": [f"{i * 37 % 10_000:04d}" for i in range(n)], "POST_CD": [f"{i * 7919 % 10**7:07d}" for i in range(n)],
-                  "SOURCE_ADDR_CD": [f"{9_000_000_000 + i}" for i in range(n)],
-                  "BIRTH_DATE": [f"{60 + i % 40}-{1 + i % 12:02d}-{1 + i % 28:02d}" for i in range(n)]})
-    df.to_parquet("f.parquet", index=False)
-    say("create", "workspace", "w")
-    at = ("--workspace", "workspaces/w")
-    hint = lambda r: {x["feature"]: x["hint"] for x in r["slots"]}
-    code, r = say("load", "records", "f.parquet", *at)
-    h = hint(r)
-    assert h["Name/Company name"]["act"] == "names" and h["Name/Company name"]["says"].startswith("mostly people's names")
-    assert any(w["fix"] == "nayose set names by-kind --workspace workspaces/w" for w in say("check", "records", *at)[1]["ready"]["warns"])  # check records says it too
-    assert r["next"][0]["command"] == "nayose set names by-kind --workspace workspaces/w"  # the fix first
-    assert h["Birth date/Birth date"] is None and h["Name/Full name"] is None  # 93-05-25 is a birth date; people's names where people's go
-    assert say("set", "names", "by-kind", *at)[1]["names"] == "by-kind" and 'kind = "company"' in Path("workspaces/w/columns.toml").read_text(encoding="utf-8")
-    assert not any("set names" in w["fix"] for w in say("check", "records", *at)[1]["ready"]["warns"])  # the description kept from before: not said again
-    assert hint(say("describe", "records", *at)[1])["Name/Company name"]["level"] == "info"  # said, and nothing left to do
-    say("set", "feature", "Phone/Phone=POST_CD", "Address/Postal code=", *at)  # postal codes read as the phone
-    h = hint(say("describe", "records", *at)[1])["Phone/Phone"]
-    assert h["act"] == "move" and h["to"] == "Address/Postal code" and h["says"].startswith("values look like postal code")
-    assert say(*shlex.split(h["command"])[1:])[0] == 0  # the command it names, as a person would paste it
-    slots = {x["feature"]: x["columns"] for x in say("list", "features", *at)[1]["slots"]}
-    assert slots["Address/Postal code"] == "POST_CD" and slots["Phone/Phone"].startswith("no column")
-    assert not any(x["hint"] for x in say("describe", "records", *at)[1]["slots"] if x["feature"] != "Name/Company name")
-    say("set", "feature", "Phone/Phone=POST_CD+PHONE_NUM_4", *at)  # joined: judged whole, no one column of it moved
-    h = hint(say("describe", "records", *at)[1])["Phone/Phone"]
-    assert h["says"].startswith("only 0% look right") and h["example"] and "act" not in h and h["example"] not in h["says"]  # a value, apart from what reports carry
-    say("set", "feature", "Name/Full name/Given name=POST_CD", "Name/Full name/Family name=FULL_NAME_KANA", *at)  # postal codes as the given name, a family name joined to it
-    h = hint(say("describe", "records", *at)[1])["Name/Full name/Given name"]
-    assert h["act"] == "off" and say(*shlex.split(h["command"])[1:])[0] == 0  # the family name goes with it: the command takes both off
-    slots = {x["feature"]: x["columns"] for x in say("list", "features", *at)[1]["slots"]}
-    assert slots["Name/Full name/Given name"].startswith("no column") and slots["Name/Full name/Family name"].startswith("no column")
-    df.assign(BIRTH_DATE=[("19" if i % 2 else "") + x for i, x in enumerate(df["BIRTH_DATE"])]).to_parquet("mixed.parquet", index=False)
-    assert hint(say("describe", "records", "mixed.parquet", *at)[1])["Birth date/Birth date"]["says"].startswith("written 2 ways (99-99-99, 9999-99-99)")
-
-
-def test_a_mapping_reads_back_as_written_and_two_changes_at_once_both_land(say, tmp_path, monkeypatch):
-    import threading
-    import time
-    from er import brief, cli, settings
-    from er.settings import COLUMNS, load_settings, own_columns, set_columns
-    monkeypatch.chdir(tmp_path)
-    say("create", "workspace", "w")
-    at, ws = ("--workspace", "workspaces/w"), tmp_path / "workspaces" / "w"
-    cols = lambda: load_settings(columns=ws / COLUMNS).columns
-    say("set", "feature", "Name/Full name=SEI+MEI", "Name/Full name/Family name=", "Name/Full name/Given name=", *at)  # a full name of two columns, no parts
-    say("set", "feature", "Phone/Phone=TEL", *at)
-    assert cols()["full_name"] == (("SEI", "MEI"),) and cols()["given_name"] == ()  # read back as one full name, through a change elsewhere
-    code, e = say("set", "feature", "Name/Full name/Family name=SEI", *at)
-    assert code == 2 and "joined to the given name" in e["error"]  # no given name to join it to: refused, never dropped
-    assert say("set", "feature", "Name/Full name/Given name=MEI", "Name/Full name/Family name=SEI,SEI2", *at)[0] == 2  # one column: a second would be dropped
-    assert say("set", "feature", "Name/Full name/Given name=MEI", "Name/Full name/Family name=SEI", *at)[0] == 0
-    assert cols()["person_name"][-1] == ("SEI", "MEI") and cols()["given_name"] == (("MEI",),)
-    assert say("set", "feature", "Name/Full name/Given name=", *at)[0] == 2  # the family name would lose what it is joined to: refused
-    say("set", "feature", "Name/Full name/Family name=", *at)
-    say("set", "feature", "Phone/Phone=TEL", *at)
-    assert cols()["full_name"] == (("SEI", "MEI"),) and cols()["given_name"] == (("MEI",),)  # a full name of two columns beside a given name: still the full name
-
-    real = settings.replace_text
-    def slow(*a, **k):  # each change read the file before the other wrote it
-        time.sleep(0.3)
-        real(*a, **k)
-    monkeypatch.setattr(settings, "replace_text", slow)
-    go = threading.Barrier(2)
-    def change(mapping: str) -> None:
-        go.wait()
-        assert cli.main(["set", "feature", mapping, *at, "--format", "json"]) == 0
-    threads = [threading.Thread(target=change, args=(m,)) for m in ("Phone/Phone=TEL_NEW", "Address/City=CITY_NEW")]
-    [t.start() for t in threads]
-    [t.join() for t in threads]
-    assert cols()["phone"] == (("TEL_NEW",),) and cols()["city"] == (("CITY_NEW",),)  # one at a time: neither lost
-    monkeypatch.undo()
-
-    project = tmp_path / "settings.toml"  # an array written over several lines: its lines are no header
-    project.write_text(settings.settings_path().read_text(encoding="utf-8").replace('address = [["STD_ADDRESS"], ["ORIGINAL_ADDRESS"]]',
-                                                                                  'address = [\n  ["STD_ADDRESS"],\n  ["ORIGINAL_ADDRESS"]\n]')
-                       .replace('kind_flag = "PERSON_ORG_CODE"', 'kind_flag = [\n  ["PERSON_ORG_CODE"],\n]'), encoding="utf-8")
-    mine = tmp_path / "mine.toml"
-    mine.write_text(own_columns(project), encoding="utf-8")
-    assert load_settings(columns=mine).columns["address"] == (("STD_ADDRESS",), ("ORIGINAL_ADDRESS",))
-    set_columns(mine, {"phone": (("TEL",),)})
-    set_columns(mine, {"address": (("ADDR",),)})  # every line of its value replaced
-    assert load_settings(columns=mine).columns["address"] == (("ADDR",),) and load_settings(columns=mine).columns["phone"] == (("TEL",),)
-    mine.write_text("".join(x for x in mine.read_text(encoding="utf-8").splitlines(keepends=True) if not x.startswith("birth_date")), encoding="utf-8")
-    set_columns(mine, {"birth_date": (("DOB",),)})  # a new field: after every line of the last one's value
-    assert load_settings(columns=mine).columns["birth_date"] == (("DOB",),) and load_settings(columns=mine).columns["kind_flag"] == (("PERSON_ORG_CODE",),)
-
-    shared = [dict(field=f, filled=0.2, looks_right=0.9, alternatives=[dict(columns=["NAME"], found=True)]) for f in ("person_name", "company_name")]
-    assert "  ! person name and company name are 20% filled together" in brief.file_lines(dict(fields=shared, needed=dict(one_of=[["person_name", "company_name"]])))  # one column: counted once, as check records does
+        assert code == 2 and "no run" in e["error"] and e["fix"], words  # never a traceback
 
 
 def test_a_name_column_both_kinds_share_is_scored_once_as_mapped_or_by_kind(say, tmp_path, population, monkeypatch):
@@ -298,35 +172,22 @@ def test_a_name_column_both_kinds_share_is_scored_once_as_mapped_or_by_kind(say,
     monkeypatch.chdir(tmp_path)
     person, u = g.df["NYS_CNV_P_NAME_KANA"].isna() & g.df["FULL_NAME_KANA"].notna(), s.data.unique_id
     g.df.assign(NYS_CNV_P_NAME_KANA=g.df["NYS_CNV_P_NAME_KANA"].where(~person, g.df["FULL_NAME_KANA"])).to_parquet("shared.parquet", index=False)  # every person's name in the company column too
+    config = (s.root / "config" / "settings.toml").read_text(encoding="utf-8")
+    by_kind = config[config.index("\n[columns]\n") + 1:]  # the mapping and what follows it
+    for f, kind in (("full_name", "person"), ("person_name", "person"), ("company_name", "company")):  # each name kept on the side its record's kind leans to
+        by_kind, n = re.subn(rf"^({f} = \{{ .*?) \}}", rf'\1, kind = "{kind}" }}', by_kind, count=1, flags=re.M)
+        assert n == 1, f
+    Path("workspaces/by-kind").mkdir(parents=True)
+    (Path("workspaces/by-kind") / "columns.toml").write_text(by_kind, encoding="utf-8")
     con = duckdb.connect()
     con.register("truth", g.truth)
     said = {}
     for how in ("as-mapped", "by-kind"):
-        say("create", "workspace", how)
-        say("set", "names", how, "--workspace", f"workspaces/{how}")
         assert say("resolve", "records", "shared.parquet", "--workspace", f"workspaces/{how}")[0] == 0
         said[how] = con.execute(f"""SELECT count(*) FILTER (WHERE x.ENTITY_ID <> y.ENTITY_ID AND s.match_weight >= 6), avg(s.match_weight) FILTER (WHERE x.ENTITY_ID = y.ENTITY_ID)
             FROM read_parquet('workspaces/{how}/scored/*.parquet') s JOIN truth x ON x.CONT_ID = s.{u}_l JOIN truth y ON y.CONT_ID = s.{u}_r""").fetchall()[0]
     assert said["by-kind"][0] == 0 and said["as-mapped"][0] == 0  # a person's name scored once, not as a company's too, either way
     assert abs(said["by-kind"][1] - said["as-mapped"][1]) < 2
-
-
-def test_a_run_an_earlier_reader_read_takes_no_batch_until_it_runs_again(say, tmp_path, population, monkeypatch):
-    from er import folder, intake
-    s, p, g = population
-    monkeypatch.chdir(tmp_path)
-    g.df.iloc[:440].assign(PHONE_NUM_4=[f'["{x}"]' if isinstance(x, str) else x for x in g.df["PHONE_NUM_4"].iloc[:440]]).to_parquet("first.parquet", index=False)
-    g.df.iloc[440:].to_parquet("batch.parquet", index=False)
-    say("create", "workspace", "w")
-    at = ("--workspace", "workspaces/w")
-    with monkeypatch.context() as m:  # the run read as the reader before this one: phones kept as ["1201"]
-        m.setattr(intake, "READER", 1)
-        m.setattr(intake, "unlisted", lambda v: None)
-        assert say("resolve", "records", "first.parquet", *at)[0] == 0
-    code, e = say("add", "records", "batch.parquet", *at)  # its phones read 1201: they would never agree with the run's
-    assert code == 2 and "rerun records" in e["fix"] and len(folder.parts(Path("workspaces/w"))) == 1  # the batch not kept
-    assert say("rerun", "records", *at)[0] == 0 and intake.report(folder.parts(Path("workspaces/w"))[0])["fixed"].get("lists")  # read again, once: the lists as their item
-    assert say("add", "records", "batch.parquet", *at)[0] == 0
 
 
 def test_every_command_has_its_help(capsys):
@@ -338,10 +199,12 @@ def test_every_command_has_its_help(capsys):
         assert done.value.code == 0 and c.help in shown and c.example in shown
 
 
-def test_nayose_takes_a_file_from_the_check_to_people_s_answers(tmp_path, population, capsys):
+def test_nayose_takes_a_file_from_a_run_to_people_s_decisions_and_a_batch(tmp_path, population, capsys):
+    from er import folder
     from er.cli import COMMANDS, main
     s, p, g = population
     uid, half = s.data.unique_id, len(g.df) // 2
+    l, r = f"{uid}_l", f"{uid}_r"
     g.df.iloc[:half].to_parquet(tmp_path / "first.parquet", index=False)
     g.df.iloc[half:].to_parquet(tmp_path / "new.parquet", index=False)
     run, declared = tmp_path / "run", {c.name: set(c.result) for c in COMMANDS}
@@ -354,70 +217,21 @@ def test_nayose_takes_a_file_from_the_check_to_people_s_answers(tmp_path, popula
         assert set(r) - {"event", "command"} <= declared[r["command"]] and "next" in r
         return r
 
-    assert say("check", "records", tmp_path / "first.parquet")["records"] == half
-    g.df.iloc[:half].drop(columns=["PHONE_NUM_4"]).to_parquet(tmp_path / "no_phone.parquet", index=False)
-    off = say("check", "records", tmp_path / "no_phone.parquet")["turned_off"]  # the full check: what a run would turn off
-    assert off and say("describe", "records", tmp_path / "no_phone.parquet")["turned_off"] == off  # the same, from the mapping alone
     assert say("resolve", "records", tmp_path / "first.parquet", "--workspace", run)["summary"][0][0] == "records"
-    pair = say("list", "pairs", "--workspace", run, "--open")["pairs"][0]
-    say("decide", "pair", pair["id_r"], pair["id_l"], "match", "--workspace", run)  # either order
-    pending = lambda: {(x["id_l"], x["id_r"]) for x in say("list", "pairs", "--workspace", run, "--pending")["pairs"]}
-    assert (pair["id_l"], pair["id_r"]) in pending()  # written in, not applied: still listed
-    assert say("apply", "decisions", "--workspace", run)["matches"] == 1
-    assert (pair["id_l"], pair["id_r"]) not in pending()
-    assert say("apply", "decisions", "--workspace", run)["decisions"] == 0  # given twice: nothing new
-    gold = pd.read_parquet(run / "gold.parquet").set_index(uid)
-    assert gold.loc[pair["id_l"], "cluster_id"] == gold.loc[pair["id_r"], "cluster_id"]
-    say("decide", "pair", pair["id_l"], pair["id_r"], "no_match", "--workspace", run)  # taken back
-    say("apply", "decisions", "--workspace", run)
-    people = next(x for x in say("describe", "matching", "--workspace", run)["nodes"] if x["id"] == "people")
-    assert people["decided"] == 1  # one pair decided twice: once, as last said
-    say("decide", "pair", pair["id_l"], pair["id_r"], "match", "--workspace", run)
-    say("apply", "decisions", "--workspace", run)
-    record = say("list", "kinds", "--workspace", run, "--open")["kinds"][0]["id"]
-    say("answer", "kind", record, "company", "--workspace", run)
-    assert record in {x["id"] for x in say("list", "kinds", "--workspace", run, "--pending")["kinds"]}  # written in, not applied: still listed
-    assert record not in {x["id"] for x in say("list", "kinds", "--workspace", run, "--open")["kinds"]}
-    say("apply", "answers", "--workspace", run)
-    kinds = say("list", "kinds", "--workspace", run, "--pending")
-    assert kinds["applied"] == 1 and record not in {x["id"] for x in kinds["kinds"]}  # applied: off the sheet a rerun drew, counted
-    assert pd.read_parquet(run / "gold.parquet").set_index(uid).loc[record, ["kind", "kind_by"]].tolist() == [2, "people"]
-    entity = say("describe", "entity", pair["id_l"], "--workspace", run)
-    assert {pair["id_l"], pair["id_r"]} <= {x["id"] for x in entity["records"]} and any(x["by"] == "people: match" for x in entity["links"])
-    n = len(entity["records"])
-    assert len(entity["pairs"]) == n * (n - 1) // 2 and {(x["id_l"], x["id_r"]) for x in entity["weakest"]} <= {(x["id_l"], x["id_r"]) for x in entity["links"]}
-    why = say("explain", "pair", pair["id_r"], pair["id_l"], "--workspace", run)
-    assert (why["id_l"], why["id_r"]) == (pair["id_l"], pair["id_r"]) and why["same_customer"] and why["found"]["people"] == "match"
-    assert why["pairs_all"] == half * (half - 1) // 2 and abs(why["prior"] - math.log2(why["pairs_same"] / (why["pairs_all"] - why["pairs_same"]))) < 0.05  # the start, in counts
-    for c in why["comparisons"]:  # the step Python's scorers pass first is the step Splink's SQL reached
-        tests = [x for x in why["tests"] if x["comparison"] == c["comparison"]]
-        first = next((x["step"] for x in tests if x["passed"]), None)
-        assert c["reached"] == first or (first is None and c["reached"] in ("else", "missing")), (c, tests)
-    assert abs(why["weight"] - why["prior"] - why["common"] - sum(c["bits"] for c in why["comparisons"])) < 0.05
-    assert all(x["prep"][-1][1:] == [x["a"], x["b"]] for x in why["tests"] if x["prep"])  # each normalizer step shown ends at the value compared
-    ids = [x["id"] for x in entity["records"]]
-    compared = say("compare", "records", ids[0], *ids[1:], "--workspace", run)  # one record against the rest of its customer
-    assert [x["id"] for x in compared["candidates"]] == ids[1:] and compared["records"][0]["id"] == ids[0]
-    for k in compared["candidates"]:  # each comparison's step: the one its first passing test sets; the first record's side first
-        for c in k["comparisons"]:
-            tests = [x for x in k["tests"] if x["comparison"] == c["comparison"]]
-            first = next((x["step"] for x in tests if x["passed"]), None)
-            assert c["reached"] == first or (first is None and c["reached"] in ("else", "missing")), (c, tests)
-        assert all(x["raw"][0] == compared["records"][0][x["field"]] for x in k["tests"] if x["field"] in compared["records"][0])
-    patterns = say("list", "patterns", "--workspace", run)
-    scored = next(x for x in json.loads((run / "steps.json").read_text(encoding="utf-8"))["runs"][0]["steps"] if x["step"] == "score")
-    assert patterns["pairs"] == sum(scored["reached"][patterns["fields"][0]].values())
-    assert sum(x["merged"] for x in patterns["patterns"]) == len(pd.read_parquet(run / "matches"))  # no decision yet said no
-    assert all(x["merged"] + x["wait"] + x["held"] + x["apart"] == x["pairs"] and min(x["wait"], x["held"], x["apart"]) >= 0 and 0 < len(x["examples"]) <= 3 for x in patterns["patterns"])
     sheet = pd.read_parquet(run / "review.parquet")
-    assert sum(x["wait"] for x in patterns["patterns"]) == (sheet["why"] == "decide").sum()  # what waits is what the sheet asks
+    pair = sheet.iloc[0]
+    decisions = tmp_path / "decisions.parquet"
+    pd.DataFrame({l: [pair[r]], r: [pair[l]], "decision": ["match"]}).to_parquet(decisions, index=False)  # either order
+    assert say("apply", "decisions", "--workspace", run, "--file", decisions)["matches"] == 1
+    assert say("apply", "decisions", "--workspace", run, "--file", decisions)["decisions"] == 0  # given twice: nothing new
+    gold = pd.read_parquet(run / "gold.parquet").set_index(uid)
+    assert gold.loc[pair[l], "cluster_id"] == gold.loc[pair[r], "cluster_id"]
     matched = say("match", "records", tmp_path / "new.parquet", "--workspace", run)
     assert len(matched["records"]) == len(g.df) - half and set(matched["counts"]) <= {"joins an entity", "a new entity"}
     added = say("add", "records", tmp_path / "new.parquet", "--workspace", run)
     assert added["summary"][0][1].startswith(f"{len(g.df):,}")
     again = say("match", "records", tmp_path / "new.parquet", "--workspace", run)  # every record in the run already: each said so
     assert set(again["counts"]) == {"already in the run"} and len(again["records"]) == len(g.df) - half
-    from er import folder
     before = folder.parts(run)
     assert say("add", "records", tmp_path / "new.parquet", "--workspace", run)["summary"][0][0] == "nothing new" and folder.parts(run) == before  # no copy kept
     g.df.head(50).rename(columns={uid: "customer_no"}).to_parquet(tmp_path / "renamed.parquet", index=False)
@@ -428,46 +242,7 @@ def test_nayose_takes_a_file_from_the_check_to_people_s_answers(tmp_path, popula
     g.df.head(50).rename(columns={uid: "customer_no", name: "name_kana"}).to_parquet(tmp_path / "renamed2.parquet", index=False)
     assert main(["match", "records", str(tmp_path / "renamed2.parquet"), "--workspace", str(run), "--format", "json"]) == 2  # a preview: the same advice
     fix = json.loads(capsys.readouterr().out.splitlines()[-1])["fix"]
-    assert fix.count(f"customer_no as {uid}") == 1 and "name_kana" not in fix and "set columns" not in fix  # what a run needs and lacks, once: a name it reads elsewhere isn't
-    assert say("load", "records", tmp_path / "new.parquet", "--workspace", run)  # loaded again, as step 2 does: every record of it in the run
-    loaded = folder.parts(run)[-1]
-    assert say("add", "records", loaded, "--workspace", run)["summary"][0] == ["nothing new", "every ID of new.parquet is in the run already"]
-    assert folder.parts(run) == before  # a file loaded before stays
-    assert say("describe", "workspace", run)["records"] == len(g.df)
-    graph = say("describe", "matching", "--workspace", run)
-    assert {n["id"] for n in graph["nodes"]} >= {"rules", "candidates", "score", "group"} and graph["edges"]
-
-
-def test_split_entity_splits_only_at_a_link_that_alone_holds_it_and_the_split_stays(say, tmp_path, population, capsys):
-    s, p, g = population
-    g.df.to_parquet(tmp_path / "all.parquet", index=False)
-    run = tmp_path / "run"
-
-    assert say("resolve", "records", tmp_path / "all.parquet", "--workspace", run)[0] == 0
-    gold = pd.read_parquet(run / "gold.parquet")
-    uid, sizes = s.data.unique_id, gold["cluster_id"].value_counts()
-    held = None  # an entity a link alone holds together: two records, their one link
-    for cluster in sizes.loc[lambda n: n == 2].index:
-        _, e = say("describe", "entity", cluster, "--workspace", run)
-        held = held or (e["weakest"] and (cluster, (e["weakest"][0]["id_l"], e["weakest"][0]["id_r"])))
-    assert held, "no entity held by a single link"
-    other = next(c for c in sizes.loc[lambda n: n == 2].index if c != held[0])  # another, closed into a triangle by people's "same"
-    c, d = sorted(gold.loc[gold["cluster_id"] == other, uid])
-    x = gold.loc[gold["cluster_id"].map(sizes) == 1, uid].iloc[0]
-    pd.DataFrame({f"{uid}_l": sorted([c, x])[:1] + sorted([d, x])[:1], f"{uid}_r": sorted([c, x])[1:] + sorted([d, x])[1:],
-                  "decision": ["match", "match"]}).to_parquet(tmp_path / "same.parquet", index=False)
-    assert say("apply", "decisions", "--file", tmp_path / "same.parquet", "--workspace", run)[0] == 0
-    code, refused = say("split", "entity", other, "--between", c, d, "--workspace", run)
-    assert code != 0 and "other links still join them" in refused["error"]  # x still joins them: it would split nothing
-    code, refused = say("split", "entity", held[0], "--between", held[1][0], "not-a-record", "--workspace", run)
-    assert code != 0 and "not both records of the entity" in refused["error"]
-    cluster, (a, b) = held
-    code, _ = say("split", "entity", cluster, "--between", a, b, "--workspace", run)
-    after = pd.read_parquet(run / "gold.parquet").set_index(s.data.unique_id)["cluster_id"]
-    assert code == 0 and after[a] != after[b]  # split where that link held it
-    assert say("rerun", "records", "--workspace", run)[0] == 0  # and it stays split: people's "different" is kept
-    again = pd.read_parquet(run / "gold.parquet").set_index(s.data.unique_id)["cluster_id"]
-    assert again[a] != again[b]
+    assert fix.count(f"customer_no as {uid}") == 1 and "name_kana" not in fix  # what a run needs and lacks, once: a name it reads elsewhere isn't
 
 
 def test_a_nearly_empty_field_is_kept_and_the_fit_skips_what_it_cannot_learn_from(tmp_path, population):
@@ -555,121 +330,6 @@ def test_matching_a_batch_names_the_entities_adding_it_would_give_and_writes_not
     assert (gold.loc[m[uid]].to_numpy() == m["entity"].to_numpy()).all()  # the entities the increment then gave
 
 
-def test_a_rerun_reads_the_run_s_files_in_order_and_keeps_what_the_increments_kept(tmp_path, population):
-    from er.run import Run
-    s, p, g = population
-    uid, n = s.data.unique_id, len(g.df)
-    other = next(c for c in g.df.columns if c != uid)
-    resent = g.df.iloc[:1].assign(**{other: "changed"})  # an ID of the run, sent again with other content
-    for i, part in enumerate([g.df.iloc[:n // 2], g.df.iloc[n // 2:3 * n // 4], pd.concat([g.df.iloc[3 * n // 4:], resent])]):
-        part.to_parquet(tmp_path / f"{i}.parquet", index=False)
-    out = tmp_path / "run"
-    Run(p, s).full(tmp_path / "0.parquet", out)
-    for i in (1, 2):
-        Run(p, s).increment(tmp_path / f"{i}.parquet", out)
-    added = pd.read_parquet(out / "gold.parquet")
-    Run(p, s).rerun(out)
-    again = pd.read_parquet(out / "gold.parquet")
-    Run(p, s).full([tmp_path / f"{i}.parquet" for i in range(3)], tmp_path / "fresh")
-    assert again.equals(pd.read_parquet(tmp_path / "fresh" / "gold.parquet"))  # a full run on the same files, in order
-    assert sorted(again[uid]) == sorted(added[uid])
-    aside = pd.read_parquet(out / "set_aside")
-    assert aside.loc[aside[uid] == resent[uid].item(), "reason"].tolist() == ["already in the run"]
-    (tmp_path / "1.parquet").unlink()
-    with pytest.raises(InputError, match="1.parquet: gone since the run read it"):
-        Run(p, s).rerun(out)
-
-
-def test_one_answer_is_typed_into_the_sheet_and_waits_for_a_busy_folder(tmp_path, population):
-    import threading
-    from er.folder import Busy, run_lock, type_in
-    from er.run import Run
-    s, p, g = population
-    l, r = f"{s.data.unique_id}_l", f"{s.data.unique_id}_r"
-    g.df.to_parquet(tmp_path / "all.parquet", index=False)
-    out = tmp_path / "run"
-    Run(p, s).full(tmp_path / "all.parquet", out, pipeline_file=s.root / "config" / "final.toml")
-    a, b = pd.read_parquet(out / "review.parquet").iloc[0][[l, r]]
-    type_in(out, "review.parquet", "decision", "match", **{l: a, r: b})
-    sheet = pd.read_parquet(out / "review.parquet")
-    assert sheet.iloc[0]["decision"] == "match" and sheet["decision"].iloc[1:].isna().all()
-    type_in(out, "review.parquet", "decision", None, **{l: a, r: b})
-    assert pd.read_parquet(out / "review.parquet")["decision"].isna().all()
-    with pytest.raises(InputError, match="no row for"):
-        type_in(out, "review.parquet", "decision", "match", **{l: b, r: "nobody"})
-    held, done = threading.Event(), threading.Event()
-
-    def other_job():  # a run writing to the folder, in a thread of its own
-        with run_lock(out):
-            held.set()
-            done.wait(30)
-    job = threading.Thread(target=other_job)
-    job.start()
-    assert held.wait(30)
-    with pytest.raises(Busy):
-        type_in(out, "review.parquet", "decision", "match", **{l: a, r: b})
-    done.set()
-    job.join(30)
-
-
-def test_set_columns_rewrites_the_fields_lines_and_keeps_the_rest(tmp_path):
-    import shutil
-    from er.settings import set_columns
-    root = load_settings().root
-    (tmp_path / "config").mkdir()
-    (tmp_path / "pyproject.toml").touch()
-    f = tmp_path / "config" / "settings.toml"
-    shutil.copy(root / "config" / "settings.toml", f)
-    before = f.read_text(encoding="utf-8")
-    set_columns(f, {"phone": (("TEL4",),), "person_name": (("NAME",), ("SEI", "MEI")), "town_code": (("TOWN",),), "birth_date": ()})
-    s = load_settings(f)
-    assert s.columns["phone"] == (("TEL4",),) and s.columns["person_name"] == (("NAME",), ("SEI", "MEI")) and s.columns["birth_date"] == ()  # no column, still declared
-    after = f.read_text(encoding="utf-8")
-    line = lambda name: next(x for x in after.split("\n[columns]\n", 1)[1].splitlines() if x.startswith(f"{name} ="))
-    assert 'normalize = ["nfkc", "katakana", "strip_spaces"]' in line("person_name") and "# municipality + town + chome" in line("town_code")  # options, comments stay
-    assert len(after.splitlines()) == len(before.splitlines()) and line("birth_date").startswith("birth_date = []") and "#" in line("birth_date")
-    with pytest.raises(InputError, match="id must name one column"):
-        set_columns(f, {"id": (("A",), ("B",))})
-    assert f.read_text(encoding="utf-8") == after and not (tmp_path / "config" / "settings.toml.tmp").exists()
-
-
-def test_describe_says_what_a_run_folder_holds_and_what_joined_an_entity(tmp_path, population):
-    from er import match
-    from er.report import describe_entity, describe_workspace
-    from er.run import Run
-    s, p, g = population
-    uid = s.data.unique_id
-    g.df.to_parquet(tmp_path / "all.parquet", index=False)
-    match.SCORED_U.clear()  # the fit samples u itself, as a first run in a process does: an earlier test's run left it nothing to compare
-    out = tmp_path / "run"
-    run = Run(p, s).full(tmp_path / "all.parquet", out, pipeline_file=s.root / "config" / "final.toml")
-    gold = pd.read_parquet(out / "gold.parquet")
-    d = describe_workspace(run.con, out, uid)
-    assert (d["records"], d["entities"]) == (len(gold), gold["cluster_id"].nunique()) and d["runs"][0]["what"] == "full run"
-    assert d["runs"][0]["records"] == len(gold) and {"load", "fit", "score"} <= set(d["runs"][0]["steps"])  # each step's seconds: the next run's estimate
-    step = {x["step"]: x for x in run.steps}  # where the time went: the fit's two parts, the gate, each string function's seconds and values
-    assert {"sample_seconds", "file_u_seconds"} <= set(step["fit"]) and {"gate_seconds", "gate_pairs"} <= set(step["candidates"])
-    assert step["fit"]["compared"]["all"]["wall"] > 0 and "jaro_winkler" not in step["score"].get("compared", {})  # names: compared by DuckDB itself
-    section = (out / "report.txt").read_text(encoding="utf-8").split("TIME IN COMPARISONS")[1].split("MODEL")[0]
-    shown = bool(re.search(r"^\s+fit\s+all of them\s", section, re.M))
-    assert shown == (step["fit"]["compared"]["all"]["wall"] >= 0.01)  # the fit's time in string functions, from a hundredth of a second, whatever the machine's speed
-    from er import strings
-    strings._enter(("t",), 0); strings._enter(("t",), 1)  # two calls at once, 0–2 and 1–3: three seconds of wall, not four
-    strings._leave(("t",), 1.5, 2, 5); strings._leave(("t",), 1.5, 3, 5)
-    assert strings.SPENT.pop("t") == [3.0, 10, 2, 3.0]
-    assert d["pairs"]["decide"] + d["pairs"]["audit"] == len(pd.read_parquet(out / "review.parquet")) and not d["write_owed"]
-    assert d["summary"][0][0] == "records"
-    big = d["largest"][0]
-    e = describe_entity(run.con, out, uid, big["entity"], run.fields)
-    assert len(e["records"]) == big["records"] and len(e["links"]) >= big["records"] - 1  # a cluster is joined by its links
-    last = e["records"][uid].max()  # an entity past the cap: its first records, the one asked for among them, and its size
-    few = describe_entity(run.con, out, uid, last, run.fields, most=1)
-    assert big["records"] > 1 and few["records"][uid].tolist() == [last] and few["size"] == big["records"]
-    assert set(e["links"]["by"]) <= {*(r.name for _, _, r in p.rules.each()), "fs"} and e["size"] == big["records"]
-    with pytest.raises(InputError, match="no record of the run"):
-        describe_entity(run.con, out, uid, "nobody", run.fields)
-
-
 def test_a_sheet_given_back_with_no_answer_or_a_kind_in_words_is_refused(tmp_path):
     import duckdb
     from er.source import answers, decisions
@@ -708,70 +368,8 @@ def test_a_run_and_its_reports_land_together_even_when_the_write_is_cut_short(tm
     assert {"qa.md", "report.txt", "review.parquet", "kind_review.parquet"} <= {f.name for f in out.iterdir()} and not list(out.rglob("*.tmp"))
 
 
-def test_the_scheduler_serves_the_inbox_in_order_and_parks_what_people_must_fix(tmp_path, population):
-    import os
-    import shutil
-    import sys
-    from er import inbox as schedule
-    s, p, g = population
-    uid = s.data.unique_id
-    made = []
-    code, _, _, tries = schedule.attempt(lambda: made.append(1) or [sys.executable, "-c", "import sys; sys.exit(1)"], retries=2, wait=0)
-    assert (code, tries, len(made)) == (1, 3, 3)  # an unexpected failure is tried again, its command made again: the folder may hold the run now
-
-    inbox, run = tmp_path / "inbox", tmp_path / "run"
-    (inbox / "batches").mkdir(parents=True)
-    new = np.random.default_rng(3).random(len(g.df)) < 0.2
-    g.df[~new].to_parquet(inbox / "batches" / "a_first.parquet", index=False)
-    g.df[new].to_parquet(inbox / "batches" / "b_new.parquet", index=False)
-    shutil.copy(inbox / "batches" / "b_new.parquet", inbox / "batches" / "c_again.parquet")  # the same content, twice
-    (inbox / "batches" / "d_bad.parquet").write_text("CONT_ID\n1\n", encoding="utf-8")  # a CSV, named as Parquet: read as it comes, and short of fields
-    for k, f in enumerate(sorted((inbox / "batches").iterdir())):
-        os.utime(f, (1_000 + k, 1_000 + k))  # arrival order
-    serve = lambda: nayose("serve", "inbox", inbox, "--workspace", run, "--settle", "0")  # files written just now: taken at once
-    done = serve()
-    assert done.returncode == 0, done.stderr
-    jobs = [(e["file"], e["outcome"]) for e in schedule.ledger(run)]
-    assert jobs == [("a_first.parquet", "done"), ("b_new.parquet", "done"), ("c_again.parquet", "done"), ("d_bad.parquet", "failed")]
-    assert len(pd.read_parquet(run / "gold.parquet")) == len(g.df)  # the first batch the full run, the second an increment
-    parked = list((inbox / "failed" / "batches").glob("*.error.txt"))
-    assert len(parked) == 1 and "holds none of these fields" in parked[0].read_text(encoding="utf-8")
-    assert not list((inbox / "batches").glob("*.parquet"))
-
-    sheet = pd.read_parquet(run / "review.parquet")
-    (inbox / "decisions").mkdir(exist_ok=True)
-    sheet.iloc[:1].assign(decision="match").to_parquet(inbox / "decisions" / "reviewed.parquet")
-    assert serve().returncode == 0 and schedule.ledger(run)[-1]["outcome"] == "done"
-    assert (run / "decisions").exists()
-    from er.folder import inputs
-    assert [f.parents[1].name for f in inputs(run)] == ["0001-a_first", "0002-b_new"]  # copied into the workspace and read there (part/read/): found there, wherever the batch went
-    before = len(schedule.ledger(run))
-    assert serve().returncode == 0 and len(schedule.ledger(run)) == before  # nothing waiting: nothing done
-
-    from er.folder import run_lock
-    g.df[~new].head(10).to_parquet(inbox / "batches" / "e_busy.parquet", index=False)  # records the run holds: nothing new
-    with run_lock(run):  # someone runs nayose on the folder by hand
-        busy = nayose("serve", "inbox", inbox, "--workspace", run, "--retries", "0", "--settle", "0")
-    assert busy.returncode != 0 and (schedule.ledger(run)[-1]["outcome"], schedule.ledger(run)[-1]["exit"]) == ("stopped", 75)
-    assert (inbox / "batches" / "e_busy.parquet").exists()  # it waits in the inbox, not parked in failed/
-    assert serve().returncode == 0 and schedule.ledger(run)[-1]["outcome"] == "done"
-
-    sheet.assign(decision=pd.NA).to_parquet(inbox / "decisions" / "untouched.parquet")  # given back as it was sent
-    answers = pd.DataFrame({uid: g.df[uid].head(3), "kind": ["1", "1", "2"]})
-    answers.to_parquet(inbox / "answers" / "three.parquet")
-    for k, f in enumerate(("untouched", "three")):
-        os.utime(next(inbox.rglob(f"{f}.parquet")), (2_000 + k, 2_000 + k))  # arrival order
-    assert serve().returncode == 0
-    assert [(e["file"], e["outcome"]) for e in schedule.ledger(run)[-2:]] == [("untouched.parquet", "failed"), ("three.parquet", "done")]
-    assert "no row has a decision" in next((inbox / "failed" / "decisions").glob("*untouched.parquet.error.txt")).read_text(encoding="utf-8")
-    gold = pd.read_parquet(run / "gold.parquet").set_index(uid)
-    assert (gold.loc[answers[uid], "kind_by"] == "people").all()  # the answers went in by a rerun
-
-
 def test_an_oversized_block_is_checked_on_a_sample_and_a_placeholder_is_skipped(tmp_path, population):
-    from er.report import describe_matching
     from er.run import Run
-    from er.strings import connect
     s, p, g = population
     uid = s.data.unique_id
     df = g.df.copy()
@@ -784,11 +382,7 @@ def test_an_oversized_block_is_checked_on_a_sample_and_a_placeholder_is_skipped(
     block = run.gated[run.gated["value"].str.contains("タロウ") & (run.gated["generator"] == "given_name_postal")]
     assert len(block) == 1 and block["decision"].iloc[0].startswith("skipped") and block["records"].iloc[0] == 100
     assert any("タロウ" in x and "skipped" in x for x in run.examples) and not any("タロウ" in x for x in run.notes)
-    shown = next(n for n in describe_matching(connect(s.compute), tmp_path / "run", p, s)["nodes"] if n["id"] == "candidates")["skipped"]
-    assert dict(key="given_name_postal", value=block["value"].iloc[0], records=100, pairs=4950) in shown["largest"]  # as qa.md lists it
     assert "タロウ" not in json.dumps(json.loads((tmp_path / "run" / "steps.json").read_text(encoding="utf-8")), ensure_ascii=False)  # counts, no record's value
-    check = nayose("check", "records", tmp_path / "in.parquet")
-    assert check.returncode == 0 and "checked by sampling" in check.stdout
 
     same = pd.concat([g.df.iloc[[0]]] * 70, ignore_index=True)  # 70 copies of one record: every key's block oversized
     same[uid] = [f"copy{i:03d}" for i in range(70)]
@@ -828,7 +422,7 @@ def test_a_customer_id_held_by_many_records_is_a_placeholder_every_step_and_the_
     Run(p, s).full(tmp_path / "first.parquet", tmp_path / "inc")
     added = Run(p, s).increment(tmp_path / "batch.parquet", tmp_path / "inc")
     assert added.added == 30 and json.loads((tmp_path / "inc" / "state" / "placeholders.json").read_text(encoding="utf-8")) == {"customer_id": ["11111111"]}
-    assert any("pairs the run joined on it before stay until it runs again" in x for x in added.notes)
+    assert any("pairs the run joined on it before stay until a full run" in x for x in added.notes)
     new = pd.read_parquet(sorted((tmp_path / "inc" / "state" / "records").glob("part-*.parquet"))[-1])
     assert new["customer_id"].isna().all() and ("birth_date" not in new or new["birth_date"].isna().all())
 
@@ -847,9 +441,9 @@ def test_the_diagnosis_names_what_limits_the_run_the_most_pairs_first_each_with_
     tables["fill"].loc[tables["fill"]["field"] == "birth_date", "filled"] = 0.1  # a compared field mostly empty, and a column like it
     run.unmapped = pd.DataFrame([dict(column="BORN", filled=0.9, distinct=0.5, looks_like="birth_date", share=0.8)])
     run.con.execute(f"UPDATE scores SET gamma_birth = -1, match_weight = {lo - 1} WHERE rowid IN (SELECT rowid FROM scores LIMIT 5)")
-    assert any("birth_date 10% filled" in x and 'nayose set feature "Birth date/Birth date=' in x and ",BORN\" --workspace" in x for x in said())
+    assert any("birth_date 10% filled" in x and "add BORN to birth_date's sources in config/settings.toml [columns]" in x for x in said())
     m["em_given"] = [dict(session="phone", pairs=100, given_share=0.1)]  # EM taught by households
-    assert any(x.startswith("  EM learned households from phone (10%") and "nayose choose em" in x for x in said())
+    assert any(x.startswith("  EM learned households from phone (10%") and 'fit em = "choose"' in x for x in said())
     near = lambda: next((int(x.split()[0].replace(",", "")) for x in said() if "agree exactly on a name and another field" in x and "the model expects" in x), 0)
     was = near()  # near misses: three pairs from the review floor moved below it, agreeing on the name and the phone
     run.con.execute(f"UPDATE scores SET gamma_name = {top['name']}, gamma_phone = {top['phone']}, match_weight = {lo - 1} WHERE rowid IN (SELECT rowid FROM scores WHERE match_weight >= {lo} LIMIT 3)")
@@ -929,27 +523,6 @@ def test_the_run_report_counts_each_score_bands_patterns(reported):
     assert shown == stored and len(lines) > 3
 
 
-def test_describe_workspace_gives_the_diagnosis_report_txt_prints(reported, capsys):
-    from er import cli
-    from er.report import diagnosis_lines
-    _, text, out = reported
-    assert cli.main(["describe", "workspace", str(out), "--format", "json"]) == 0
-    items = json.loads(capsys.readouterr().out.splitlines()[-1])["diagnosis"]
-    assert isinstance(items, list) and all(set(x) == {"what", "pairs", "fix"} for x in items)
-    assert [x["pairs"] for x in items] == sorted((x["pairs"] for x in items), reverse=True)  # the most pairs first
-    assert section(text, "DIAGNOSIS")[1:] == diagnosis_lines(items)[1:-1]  # one source: report.txt prints the items the page reads
-    was = (out / "steps.json").read_text(encoding="utf-8")
-    steps = json.loads(was)
-    for x in steps["runs"]:  # a run an older version wrote: no items, and none said
-        x["steps"] = [{k: v for k, v in s.items() if k != "diagnosis"} for s in x["steps"]]
-    (out / "steps.json").write_text(json.dumps(steps), encoding="utf-8")
-    try:
-        assert cli.main(["describe", "workspace", str(out), "--format", "json"]) == 0
-        assert json.loads(capsys.readouterr().out.splitlines()[-1])["diagnosis"] is None
-    finally:  # the module's run as it was, for the tests after
-        (out / "steps.json").write_text(was, encoding="utf-8")
-
-
 def test_the_run_report_says_what_each_em_session_learned_from(reported):
     run, text, _ = reported
     em = run.model["er"]["em_pairs"]
@@ -1010,118 +583,6 @@ def test_test_is_counted_once_per_population(tmp_path):
     assert test_evaluations(dev).empty
 
 
-def test_check_records_says_whether_a_run_will_go_through_and_what_to_look_at_first(say, tmp_path, population, monkeypatch):
-    from er.run import Run
-    s, p, g = population
-    g.df.to_parquet(tmp_path / "all.parquet", index=False)
-    code, r = say("check", "records", tmp_path / "all.parquet")
-    c = r["capacity"]
-    assert code == 0 and r["ready"]["ok"] and not r["ready"]["stops"] and c["pairs_needed"] > 0 and c["pairs_fit"] >= c["pairs_needed"]
-    assert c["headroom"] == round(c["pairs_fit"] / c["pairs_needed"], 1) and c["memory_limit_gb"] > 0 and c["spill_folder"]
-    assert any(w["what"].startswith("birth date is") for w in r["ready"]["warns"])  # a nearly empty field, said with what to do
-    assert not any("company name" in w["what"] for w in r["ready"]["warns"])  # filled only for companies, by design: with the person's name, it is full
-    needed = c["pairs_needed"]
-    monkeypatch.setattr(Run, "capacity", lambda self: 10)  # room for 10 pairs: the file's won't fit
-    code, r = say("check", "records", tmp_path / "all.parquet")
-    assert code == 0 and not r["ready"]["ok"] and "more than fit in memory" in r["ready"]["stops"][0]["what"] and r["ready"]["stops"][0]["fix"]
-    monkeypatch.setattr(Run, "capacity", lambda self: int(needed / 1.04))  # its headroom rounds to 1.0, yet the run would stop
-    code, r = say("check", "records", tmp_path / "all.parquet")
-    assert r["capacity"]["headroom"] == 1.0 and not r["ready"]["ok"]
-    monkeypatch.setattr(Run, "capacity", lambda self: int(needed * 1.5))
-    code, r = say("check", "records", tmp_path / "all.parquet")
-    assert r["ready"]["ok"] and any(w["what"] == "the pairs fill 67% of the room DuckDB has" for w in r["ready"]["warns"])
-
-
-def test_describe_review_counts_what_people_must_check_range_by_range(say, tmp_path, population, monkeypatch):
-    s, p, g = population
-    g.df.to_parquet(tmp_path / "all.parquet", index=False)
-    monkeypatch.chdir(tmp_path)
-    assert say("create", "workspace", "w")[0] == 0  # strict: nothing merges by points
-    assert say("resolve", "records", "all.parquet", "--workspace", "workspaces/w")[0] == 0
-    trust = say("describe", "workspace", "workspaces/w")[1]["trust"]
-    code, r = say("describe", "review", "--workspace", "workspaces/w", "--seconds", "20")
-    top = r["ranges"][0]
-    assert code == 0 and (top["down_to"], top["up_to"]) == (20.0, None)  # every range, the empty ones too
-    assert sum(x["pairs"] for x in r["ranges"] if x["down_to"] >= trust["next"]["down_to"]) == trust["pairs"] > 0  # what people check first, as the trust line counts it: past the empty 20+
-    assert [x["down_to"] for x in r["ranges"]] == sorted(p.trust.steps, reverse=True)
-    assert all(x["sample"] == min(p.trust.checks, x["pairs"]) and x["reviews_left"] == x["sample"] for x in r["ranges"])  # none decided yet
-    assert [x["reviews_to_here"] for x in r["ranges"]] == list(np.cumsum([x["reviews_left"] for x in r["ranges"]]))
-    assert all(x["bound"] is None or x["bound"] == round(1 - 0.05 ** (1 / x["sample"]), 4) for x in r["ranges"])  # what a clean sample proves
-    assert r["hours"]["to_each_line"][-1] == round(r["ranges"][-1]["reviews_to_here"] * 20 / 3600, 1) and r["kinds"]["measure"] > 0
-    assert say("describe", "review", "--workspace", "workspaces/w", "--seconds", "fast")[0] == 2  # not a number: said, not a traceback
-    assert say("describe", "review", "--workspace", "workspaces/w", "--seconds", "inf")[0] == 2 and say("describe", "review", "--workspace", "workspaces/w", "--seconds", "0")[0] == 2
-
-    ws, uid = tmp_path / "workspaces" / "w", s.data.unique_id
-    l, r_ = f"{uid}_l", f"{uid}_r"
-    pairs = pd.concat([pd.read_parquet(ws / x)[[l, r_, "match_weight"]] for x in ("matches", "proposed", "rule_kept") if any((ws / x).glob("*.parquet"))])
-    sheet = pd.read_parquet(ws / "review.parquet")
-    paired = set(pairs[l]) | set(pairs[r_])
-    alone = sorted(set(pd.read_parquet(ws / "gold.parquet")[uid]) - paired)[:2]  # two records no method paired: a pair with no name compared, planted
-    sheet = pd.concat([sheet, pd.DataFrame({l: [alone[0]], r_: [alone[1]], "why": ["decide"]})]).astype({l: "string", r_: "string"})
-    sheet.to_parquet(ws / "review.parquet", index=False)
-    unnamed = sheet[(sheet["why"] == "decide") & ~sheet.set_index([l, r_]).index.isin(pairs.set_index([l, r_]).index)]
-    assert len(unnamed) == say("describe", "review", "--workspace", "workspaces/w")[1]["unnamed"] > 0
-    r = say("describe", "review", "--workspace", "workspaces/w")[1]
-    first = next(i for i, x in enumerate(r["ranges"]) if x["pairs"])  # the highest range with pairs: one of them people say is different
-    lo, hi = r["ranges"][first]["down_to"], r["ranges"][first]["up_to"] or math.inf
-    false = pairs[(pairs["match_weight"] >= lo) & (pairs["match_weight"] < hi)].head(1)
-    pd.concat([false[[l, r_]].assign(decision="no_match"), unnamed[[l, r_]].head(1).assign(decision="match")]).to_parquet(tmp_path / "decided.parquet")
-    assert say("apply", "decisions", "--file", "decided.parquet", "--workspace", "workspaces/w")[0] == 0
-    code, after = say("describe", "review", "--workspace", "workspaces/w")
-    top = after["ranges"][first]
-    assert code == 0 and (top["checked"], top["different"], top["chance_clean"]) == (1, 1, None) and after["unnamed"] == r["unnamed"] - 1  # a decided pair waits no more
-    assert all(x["reviews_left"] == x["pairs"] - x["checked"] for x in after["ranges"])  # the line never passes a range found false: all of it, and below
-    (ws / "method.toml").unlink()
-    assert say("describe", "review", "--workspace", "workspaces/w")[0] == 2  # no trust line: it merges as tuned, said
-
-
-def test_describe_review_sees_a_false_pair_above_the_line_as_the_line_does(tmp_path):
-    """The line steps down once the range just below it is clean: a false pair above it holds back no range below,
-    a false pair below it holds back that range and every one under it; a range above the line merges, none left."""
-    from er.config import adjust, load_pipeline
-    from er.review_state import review_workload, trust_state
-    from er.strings import connect
-    s = load_settings()
-    uid = s.data.unique_id
-    l, r = f"{uid}_l", f"{uid}_r"
-    p = adjust(load_pipeline(s.root / "config" / "final.toml", s.standardize, s.chains, s.columns), {"trust": 12.0})
-    (tmp_path / "matches").mkdir()
-    (tmp_path / "decisions").mkdir()
-    w = np.r_[np.full(400, 25.0), np.full(400, 15.0), np.full(1000, 10.0), np.full(1000, 7.0), np.full(500, 3.0)]
-    m = pd.DataFrame({l: [f"{i:08d}" for i in range(len(w))], r: [f"{10_000_000 + i:08d}" for i in range(len(w))], "match_weight": w})
-    m.to_parquet(tmp_path / "matches" / "part-00000.parquet", index=False)
-    decide = lambda rows: rows[[l, r]].assign(decision="no_match").to_parquet(tmp_path / "decisions" / "part-00000.parquet", index=False)
-    con = connect(s.compute)
-
-    decide(m.head(1))  # an audit above the line said different
-    st, got = trust_state(con, tmp_path, p, uid), review_workload(con, tmp_path, p, uid)
-    by = {x["down_to"]: x for x in got["ranges"]}
-    assert st["next"]["down_to"] == 8.0 and by[8.0]["reviews_left"] == st["needed"] - st["checked"] == 300  # as the line counts it
-    assert by[20.0]["reviews_left"] == by[12.0]["reviews_left"] == 0  # above the line: merging
-    assert by[8.0]["chance_clean"] is not None and by[6.0]["reviews_left"] == 300 and by[0.0]["reviews_left"] == 300
-
-    decide(m[m["match_weight"] == 10.0].head(1))  # one below the line: that range and every one under it, whole
-    got = review_workload(con, tmp_path, p, uid)
-    by = {x["down_to"]: x for x in got["ranges"]}
-    assert (by[8.0]["reviews_left"], by[6.0]["reviews_left"], by[0.0]["reviews_left"]) == (999, 1000, 500) and by[8.0]["chance_clean"] is None
-    assert by[8.0]["reviews_to_here"] == 999 and got["ranges"][-1]["reviews_to_here"] == 2499
-
-
-def test_check_records_judges_a_person_s_and_a_company_s_name_together_once_per_column():
-    from types import SimpleNamespace
-    from er.cli import ready_for
-    room = dict(pairs_needed=10, pairs_fit=100)
-    run = lambda person, company: SimpleNamespace(pipeline=SimpleNamespace(fields=SimpleNamespace(one_of=(("person_name", "company_name"),))),
-                                                  present={"person_name": person, "company_name": company}, _count=lambda t: 0)
-    field = lambda f, x: dict(field=f, filled=x, looks_right=1.0, columns="")
-    both = [field("person_name", 0.2), field("company_name", 0.15)]
-    said = lambda r: [w["what"] for w in ready_for(r, both, None, room, None)["warns"]]
-    assert not said(run((("NAME",),), (("CORP",),)))  # each filled for its kind: 35% together, enough
-    assert said(run((("NAME",),), (("NAME",),))) == ["person name and company name are 20% filled together"]  # one column: counted once
-    alone = [field("person_name", 0.1)]
-    assert [w["what"] for w in ready_for(run((("NAME",),), ()), alone, None, room, None)["warns"]] == ["person name is 10% filled"]  # the only name, nearly empty
-
-
 def test_a_result_s_nested_numbers_print_plainly_and_a_settings_folder_is_said(tmp_path):
     from er.brief import cell
     from er.config import toml_of
@@ -1134,12 +595,11 @@ def test_a_run_in_a_workspace_on_a_file_without_a_needed_field_says_to_map_it_th
     s, p, g = population
     g.df.rename(columns={s.data.unique_id: "customer_no"}).to_parquet(tmp_path / "theirs.parquet", index=False)
     monkeypatch.chdir(tmp_path)
-    say("create", "workspace", "w")
     code, e = say("resolve", "records", "theirs.parquet", "--workspace", "workspaces/w")
-    assert code == 2 and e["fix"].startswith("map it in the workspace") and "nayose set columns id=customer_no --workspace workspaces/w" in e["fix"]
+    assert code == 2 and "config/settings.toml [columns]" in e["fix"] and 'id = "customer_no"' in e["fix"]
     g.df.rename(columns={s.data.unique_id: "id"}).to_parquet(tmp_path / "ids.parquet", index=False)  # its ID column named as the field: read as id_2
     code, e = say("resolve", "records", "ids.parquet", "--workspace", "workspaces/w", "--overwrite")
-    assert code == 2 and "set columns id=id --workspace" in e["fix"] and "id_2" not in e["error"] + e["fix"]  # the file's own name for it
+    assert code == 2 and 'id = "id"' in e["fix"] and "id_2" not in e["error"] + e["fix"]  # the file's own name for it
 
 
 def test_a_file_with_columns_named_as_the_run_names_its_own_runs(say, tmp_path, population):
@@ -1149,11 +609,6 @@ def test_a_file_with_columns_named_as_the_run_names_its_own_runs(say, tmp_path, 
     code, r = say("resolve", "records", tmp_path / "theirs.parquet", "--workspace", tmp_path / "run")
     notes = [v for w, v in r["summary"] if w == "note"]
     assert code == 0 and any("column KIND read as KIND_2" in n for n in notes) and any("column Address read as Address_2" in n for n in notes)
-    flag = s.columns["kind_flag"][0][0]
-    df.assign(KIND=df[flag] if flag in df else "1").to_parquet(tmp_path / "flagged.parquet", index=False)
-    say("create", "workspace", "w", "--home", tmp_path)
-    assert say("set", "columns", "kind_flag=KIND", "--workspace", tmp_path / "w")[0] == 0  # the person/company flag, mapped, named as the run's kind
-    assert say("resolve", "records", tmp_path / "flagged.parquet", "--workspace", tmp_path / "w")[0] == 0
 
 
 def test_the_commands_the_tests_start_run_this_checkout_s_code(tmp_path):  # from a git worktree too, not the venv's checkout
@@ -1163,34 +618,9 @@ def test_the_commands_the_tests_start_run_this_checkout_s_code(tmp_path):  # fro
     assert Path(got.strip()).resolve().is_relative_to(Path(__file__).resolve().parents[1])
 
 
-def test_the_page_s_state_is_the_cli_s_a_file_it_can_t_run_counts_said_once_and_each_entity_named(say, tmp_path, population):
-    s, p, g = population
-    uid = s.data.unique_id
-    home = tmp_path / "home"
-    assert say("create", "workspace", "short", "--home", home)[0] == 0
-    (tmp_path / "short.csv").write_text(f"{uid},NAME_X,TEL\n0001,ヤマダタロウ,1234\n0002,スズキハナコ,5678\n", encoding="utf-8")
-    assert say("load", "records", tmp_path / "short.csv", "--workspace", home / "short")[0] == 0  # read: its name column not mapped
-    ready = say("describe", "workspace", home / "short")[1]["ready"]
-    assert not ready["run"] and "name" in ready["why"] and ready["fix"]  # not ready, and why in its own words
-
-    g.df.to_parquet(tmp_path / "all.parquet", index=False)
-    assert say("create", "workspace", "w", "--home", home)[0] == 0
-    assert say("resolve", "records", tmp_path / "all.parquet", "--workspace", home / "w")[0] == 0
-    assert say("describe", "workspace", home / "w")[1]["ready"]["run"]
-    compared = say("describe", "results", "--workspace", home / "w")[1]["candidates"]
-    nodes = {x["id"]: x for x in say("describe", "matching", "--workspace", home / "w")[1]["nodes"]}
-    assert compared == nodes["candidates"]["pairs"]  # one number of pairs compared, wherever it is said
-    gold = pd.read_parquet(home / "w" / "gold.parquet")
-    company = gold[gold["kind"] == 2].groupby("cluster_id").filter(lambda c: len(c) == 1)[uid].iloc[0]
-    named = say("list", "entities", "--workspace", home / "w", "--record", company, "--smallest", "1")[1]["entities"]
-    assert named and named[0]["names"]  # a company's entity named by its company name
-
-
 def test_two_people_of_one_household_are_labelled_and_a_copy_of_one_is_not(tmp_path, population):
-    from er.explain import explain_pair
-    from er.results import list_scored
+    from er.report import households
     from er.run import Run
-    from er.strings import connect
     s, p, g = population
     uid = s.data.unique_id
     cols = ["GIVEN_NAME_KANA", "LAST_NAME_KANA", "PHONE_NUM_4", "ADDR_CD"]
@@ -1201,12 +631,9 @@ def test_two_people_of_one_household_are_labelled_and_a_copy_of_one_is_not(tmp_p
     copy = one.copy()
     copy[uid] = "copy"
     pd.concat([g.df, pd.DataFrame([member, copy])], ignore_index=True).to_parquet(tmp_path / "in.parquet", index=False)
-    Run(p, s).full(tmp_path / "in.parquet", tmp_path / "run", pipeline_file=s.root / "config" / "final.toml")  # with its reports, as nayose runs it
-    said = lambda x: explain_pair(tmp_path / "run", p, s, one[uid], x)["household"]
-    assert said("member") and not said("copy")  # the copy: the same given name
-    con = connect(s.compute)
-    listed = {(x["first"], x["second"]): x["household"] for x in list_scored(con, tmp_path / "run", s, p, record="member", count=500)["pairs"]}
-    assert listed.get(tuple(sorted((one[uid], "member")))) is True
+    run = Run(p, s).full(tmp_path / "in.parquet", tmp_path / "run", pipeline_file=s.root / "config" / "final.toml")  # with its reports, as nayose runs it
+    pairs = f"""SELECT * FROM (VALUES ('{one[uid]}', 'member'), ('{one[uid]}', 'copy')) t("{uid}_l", "{uid}_r")"""
+    assert households(run.con, "records", pairs, uid, run.pipeline) == {(one[uid], "member")}  # the copy: the same given name
     sheet = pd.read_parquet(tmp_path / "run" / "review.parquet")
     assert "household" in sheet and sheet["household"].dtype == bool
 
@@ -1217,7 +644,7 @@ def test_a_run_s_progress_follows_this_version_s_steps_when_the_last_run_lacked_
     (ws / "state").mkdir(parents=True)
     old = [{"step": x, "seconds": 1.0, **({"records": 10} if x == "load" else {})} for x in emit.RUN_ORDER if x != "keys"]  # a run before the keys step
     (ws / folder.STEPS).write_text(json.dumps({"runs": [{"steps": old}]}), encoding="utf-8")
-    got = cli.last_run(str(ws), "rerun records")
+    got = cli.last_run(str(ws), "resolve records")
     assert got["order"] == emit.RUN_ORDER and "keys" in got["order"] and got["last"]["candidates"] == 1.0
 
 
@@ -1260,19 +687,6 @@ def test_a_comparison_s_own_copy_is_no_step_a_setting_may_name(tmp_path):
             load_settings(tmp_path / "settings.toml")
 
 
-def test_a_mapping_with_an_empty_column_is_refused_and_one_saved_with_a_bom_still_changes(say, tmp_path):
-    say("create", "workspace", "w", "--home", tmp_path)
-    f = tmp_path / "w" / "columns.toml"
-    before = f.read_bytes()
-    for typo in ("phone=PHONE_NUM_4+", "phone=PHONE_NUM_4,,TEL", "phone=+TEL"):  # a stray + or comma: never a field quietly turned off
-        code, e = say("set", "columns", typo, "--workspace", tmp_path / "w")
-        assert code == 2 and "no column" in e["error"] and f.read_bytes() == before
-    f.write_bytes(b"\xef\xbb\xbf" + before)  # as Notepad saves it
-    assert say("set", "columns", "phone=TEL", "--workspace", tmp_path / "w")[0] == 0
-    f.write_bytes(b"\xef\xbb\xbf" + f.read_bytes())
-    assert say("set", "names", "by-kind", "--workspace", tmp_path / "w")[0] == 0
-
-
 def test_merge_conditions_that_aren_t_a_table_or_a_finite_number_are_refused(population):
     from er.config import bits
     from er.results import check_merging
@@ -1282,13 +696,6 @@ def test_merge_conditions_that_aren_t_a_table_or_a_finite_number_are_refused(pop
             check_merging(m, p)
     assert check_merging({"when": [{"points": 12}]}, p)["when"] == [{"points": 12}]
     assert duckdb.sql(f"SELECT {bits(-math.inf)} < 0, {bits(math.inf)} > 0").fetchall() == [(True, True)]  # infinity keeps its sign
-
-
-def test_a_report_s_table_reads_back_as_written_a_bar_in_a_value_too():
-    from er.io import markdown, table_after
-    df = pd.DataFrame({"value": ["A|B", "x\\|y", "line\nbreak", "C:\\data\\"], "n": ["1", "2", "3", "4"]})
-    got = table_after("## t\n\n" + markdown(df) + "\n", "## t")
-    assert got["value"].tolist() == ["A|B", "x\\|y", "line break", "C:\\data\\"] and got["n"].tolist() == ["1", "2", "3", "4"]
 
 
 def test_a_result_s_values_reach_json_as_python_s_own():
