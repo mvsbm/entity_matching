@@ -13,7 +13,7 @@ Container(demo, "Demo", "notebooks/demo.ipynb, scripts/export_pdfs.py", "every s
 
 System_Boundary(engine, "The engine, in one process") {
   Container(er, "er", "Python package", "every computation: the layers of HLD 3")
-  Container(duckdb, "DuckDB and Splink", "in process", "the working tables, spilled to disk past memory_limit; EM training, scoring, connected components")
+  Container(duckdb, "DuckDB and Splink", "in process", "the working tables, spilled to disk past memory_limit; EM training (Splink), scoring, connected components (scipy)")
 }
 
 ContainerDb(config, "config/", "TOML, npz", "settings.toml: the file's columns, [locale], [compute], [kind] · final.toml: the chosen pipeline and kind_names.npz: the name model, the hand-off from design time")

@@ -305,7 +305,7 @@ def automatic(scored: pd.DataFrame, weight: float) -> pd.Series:  # the pairs me
 
 def threshold_curve(res: FSResult, spec: FSSpec, truth: pd.DataFrame, data: Data, weights: list[float]) -> pd.DataFrame:
     """FP / recall after resolution at each min_match_weight; scores stay fixed, only the decision and the clusters are
-    redone, by the run's own clustering from the rules' clusters. O(|weights| · (E·d + N))."""
+    redone, by the run's own clustering from the rules' clusters. O(|weights| · (E·log E + N))."""
     uid = data.unique_id
     ids, (entity, household) = res.records[uid], labelled(truth, data)
     con = connect()
