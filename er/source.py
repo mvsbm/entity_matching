@@ -1,10 +1,9 @@
-"""The one door every input goes through: records, increment batches, and people's files (person/company answers,
-decisions on pairs), all Parquet. It finds the files (a path, a glob or a folder), checks that each is Parquet, reads
+"""The one door every input goes through: records, increment batches, and people's decisions on pairs, all Parquet. It finds the files (a path, a glob or a folder), checks that each is Parquet, reads
 several together by column name, and gives a column its configured name when the two differ only in case, width or
 separators. Source.notes says what it did; when it must stop, it raises an InputError that says what to fix. It reads
 each file's footer (its schema), never its rows, so its cost doesn't grow with the file. suggest() profiles a
-fixed-size sample. People's files are checked here too (answers, decisions), and every ID they give must name a record
-(known): one rule for both.
+fixed-size sample. People's decisions are checked here too, and every ID they give must name a record
+(known).
 """
 import difflib
 import hashlib
@@ -15,7 +14,6 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 import duckdb
-import pandas as pd
 
 from er import intake
 from er.config import InputError, lit, q
@@ -191,30 +189,9 @@ def plain(value: str, fold: dict[int, str]) -> str:  # a value as names are look
 
 
 def file_facts(files: list[Path], role: str) -> list[dict]:
-    """Each file read: its path, what it is (records, decisions, answers, the name model), size and SHA-256, so a run
+    """Each file read: its path, what it is (records, decisions, the name model), size and SHA-256, so a run
     says exactly what went in, and a rerun finds its records again. O(bytes)."""
     return [dict(file=str(Path(f).resolve()), role=role, bytes=Path(f).stat().st_size, sha256=intake.sha256(Path(f))) for f in files]
-
-
-def answers(path: str | Path, con: duckdb.DuckDBPyConnection, uid: str) -> pd.DataFrame:
-    """A sheet of person/company answers (kind_review.parquet, filled in): its answered rows (kind 1 person, 2 company,
-    0 can't tell), every column as text, as every input is read. Refuses a file without the ID and kind columns, a kind
-    that is none of those, a sheet with no answer, and an answered row without an ID. O(rows)."""
-    src = open_source(path, con, [uid, "kind"])
-    if {uid, "kind"} - set(src.columns):
-        raise InputError(f"{path}: needs the columns {uid} and kind; it has {sorted(src.columns)}",
-                         fix="give back kind_review.parquet with kind filled in: 1 person, 2 company, 0 can't tell")
-    rows = con.sql(f"SELECT * FROM {src.sql}").df().astype("string")
-    given = rows["kind"].str.strip(FILLED).replace("", pd.NA)
-    kind = pd.to_numeric(given.str.normalize("NFKC"), errors="coerce")  # as written, its spaces aside: ２ is 2
-    if len(bad := sorted(set(given[given.notna() & ~kind.isin([0, 1, 2])]))):
-        raise InputError(f"{path}: a kind is 1, 2 or 0, not {bad[:5]}", fix="write 1 person, 2 company or 0 can't tell, or leave it empty")
-    rows = rows[kind.isin([0, 1, 2]).to_numpy()].reset_index(drop=True)
-    if rows.empty:
-        raise InputError(f"{path}: no row is answered", fix="write 1 person, 2 company or 0 can't tell in the sheet's kind column")
-    if (blank := int(rows[uid].str.strip(FILLED).fillna("").eq("").sum())):
-        raise InputError(f"{path}: {blank:,} answered rows have no {uid}", fix="fill in each answered row's ID, or clear its answer")
-    return rows
 
 
 def decisions(path: str | Path, con: duckdb.DuckDBPyConnection, l: str, r: str, into: str) -> list[Path]:

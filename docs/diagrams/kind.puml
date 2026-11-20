@@ -1,5 +1,5 @@
 @startuml kind
-title LLD 4 · Person or company: trained once at design time, fitted on people's answers, applied in every chunk, asked about on a sheet
+title LLD 4 · Person or company: trained once at design time, applied in every chunk
 skinparam defaultFontSize 11
 skinparam rectangle {
   BackgroundColor #F4F6F8
@@ -24,22 +24,15 @@ package "the name model: public data only, trained once by scripts/train_name_mo
 }
 rectangle "kind.name_model: every run loads it, never trains it;\nunder other settings it stops, with what to fix" as load
 
-package "people's answers" {
-  file "kind_review.parquet answered, given to a run · kind_answers/part-n.parquet" as f_answers
-  rectangle "Run._answers · Run._given (checked) · kind.merge_answers\nper record the newest answer; a blank row erases nothing" as merge
-  rectangle "kind.classifier\nthe combiner: gradient-boosted trees, depth 2, on Classifier.features\n(the name's logit, the flag, the birth year, kind.legal), fitted on the answers 1 and 2\nkind.lines: each side's line on the out-of-fold answers drawn to measure\nClassifier.fitted: the combiner with its lines, once 50 drawn to measure hold both kinds" as fit
-}
+rectangle "kind.classifier\nthe name model, the legal forms (kind.legal) and the flag's values;\n[kind] name_line and trust_flag" as fit
 
 package "every chunk of the load (LLD 1, step 1)" {
-  rectangle "standardize.prepare → Classifier.classify\nkind: the engine's sure call (its lines; without answers, a legal form or a name past name_line), else the flag, else 0 not sure\nkind_p, kind_by, name_p, kind_flagged (sure against the flag), kind_held, kind_name; people's answers stand\nthe name routed by its kind: person_name and full_name for a person, company_name for a company; not sure, where kind_p leans;\npeople can't tell (0): neither side" as classify
+  rectangle "standardize.prepare → Classifier.classify\nkind: the engine's sure call (a legal form written, or a name past name_line either way), else the flag, else 0 not sure;\nwith trust_flag, the flag as it is\nkind_p, kind_by (engine or flag), name_p, kind_flagged (sure against the flag: matched as the engine says), kind_name\nthe name routed by its kind: person_name and full_name for a person, company_name for a company; not sure, where kind_p leans" as classify
   database "records" as records
 }
 
 rectangle "Run._gold · run.customer_kinds\neach record's kind; each customer's: 2 if any record is surely 2,\n1 if none leans company and one is surely 1, else 0" as gold
 file "gold.parquet" as f_gold
-rectangle "Run.report → kind.kind_review_sheet\npicked in DuckDB: decide (flagged, surest first, at most review_max);\nmeasure, optional (labels_to_draw drawn at random by hash of the ID); each row in words" as sheet
-file "kind_review.parquet" as f_sheet
-actor "people: 1 person, 2 company, 0 can't tell" as people
 
 f_ref --> split
 split --> names
@@ -48,14 +41,8 @@ names --> model
 model --> f_cache
 f_cache --> load
 load --> fit
-f_answers --> merge
-merge --> fit
 fit --> classify
 classify --> records
 records --> gold
 gold --> f_gold
-records --> sheet
-sheet --> f_sheet
-f_sheet --> people
-people --> f_answers
 @enduml

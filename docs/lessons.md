@@ -141,7 +141,7 @@ Each entry names a way an entity-resolution pipeline like this one goes wrong, a
 ## A signal true only in the generator
 - **Pitfall:** a generator that fills birth dates for persons only makes "a birth date is filled" look like proof of a person, and a classifier leans on it. In a real file a company's record can hold a date there too: its founding date, or its representative's birth date. It shows as companies called persons, confidently.
 - **Why:** the generator's choices become the model's evidence. A signal that exists only by construction is learned as if it were real.
-- **Guard:** `scripts/choose_kind.py` gives companies a date on 0–60% of their records, a founding year or the representative's birth date, and judges every combination across that range. The combiner reads the birth year, which still tells a founding year from most birth years, not only whether a date is filled.
+- **Guard:** `scripts/choose_kind.py` gives companies a date on 0–60% of their records, a founding year or the representative's birth date, and judges every combination across that range. A run reads no date to tell the kinds: a written legal form, the name and the flag.
 - **Check:** `reports/choose_kind.md`: each signal's worth, with and without, across the scenarios.
 
 ## A seeded generator that draws in a set's order
@@ -153,25 +153,25 @@ Each entry names a way an entity-resolution pipeline like this one goes wrong, a
 ## A model judged that isn't the one that runs
 - **Pitfall:** a script that chooses between configurations builds its own copy of a training set. Its verdict then holds for a model no run uses. It shows as a ranking that moves when the copy is replaced by the real one.
 - **Why:** a copy with another seed, or the same names written another way (each persona written once and duplicated, where the run writes each twice), trains another model, and the ranking of the 48 finalists moves with it by many places.
-- **Guard:** `scripts/choose_kind.py` trains its public name model on `er.generate.kind_training_names`, as `er.generate.train_name_model` does, and judges by `[kind]`'s own budgets.
+- **Guard:** `scripts/choose_kind.py` trains its public name model on `er.generate.kind_training_names`, as `er.generate.train_name_model` does.
 - **Check:** `reports/choose_kind.md`, written from the run's own training names.
 
 ## Measurements run into a folder that keeps people's work
-- **Pitfall:** a benchmark resolves its baseline into a workspace that an earlier, labelled run used. The baseline then carries that run's answers. It shows as a baseline better than it is.
-- **Why:** a full run keeps people's answers across `--overwrite`, as it must for real work. Three ways of routing resolved into one folder hand each the answers of the labelled run before it: about 3,000 truth answers, most of them exactly the flag's errors, would correct the flag-alone baseline.
+- **Pitfall:** a benchmark resolves its baseline into a workspace that an earlier run used. The baseline then carries what people decided there. It shows as a baseline better than it is.
+- **Why:** a full run keeps people's decisions across `--overwrite`, as it must for real work. Several ways of resolving one file, run in one folder, each start from the decisions made on the ones before.
 - **Guard:** each routing gets a fresh folder of its own.
 - **Check:** `reports/benchmark.md`, written with fresh folders.
 
 ## A measuring draw taken from what review left
 - **Pitfall:** records sent to people because they look wrong are a biased sample, and so is a draw taken from the records left after them, or one stratified to hold more of the records the engine is surest of. Placing a line or measuring an error rate on any of them misjudges it. It shows as a line that holds on the answers and breaks on the file.
 - **Why:** the records sent to decide are those where the engine and the flag disagree, where the errors gather; taking them out of the measuring draw leaves the easy records. A stratified draw puts more of the surest records above each line than the file has there, so the error above it looks smaller than it is.
-- **Guard:** `kind.kind_review_sheet` draws the measuring rows first, at random from every record with a name, then the records to decide from the rest. `kind.classifier` places the lines and measures the flag on the measuring answers only, and fits the combiner on all of them.
-- **Check:** a test checks the sheet's two kinds of rows and their reasons; the benchmark's "Person or company" section counts the wrong calls on every record.
+- **Guard:** a run places no line and measures no error rate on people's answers. `scripts/choose_kind.py` places its lines on answers drawn at random from every record.
+- **Check:** `reports/choose_kind.md`, placing the lines; the benchmark's "Person or company" section counts the wrong calls on every record.
 
 ## A line placed at zero errors on a few hundred labels
 - **Pitfall:** "no labelled error above the line" on a few hundred labels says little about a 0.1% error rate: a sample with 100 companies in it passes a line that lets one call in a hundred go wrong. It shows as a line that holds on the labels and breaks on the file, in some files and not in others.
 - **Why:** no error in n draws bounds the rate only near 3/n.
-- **Guard:** the company line is two grid steps stricter than the first clean one on a measuring draw of 2,000 records at random, and three on fewer answers: on 1,000, two steps broke the budget in 4 of 60 trials. The person line asks for a wrong share within its budget at 95% confidence: a share of at most half the budget, measured on as few as 30 answers, broke the budget in 4 of 60 trials.
+- **Guard:** a run places no line on labels: the engine calls a kind past `[kind] name_line`. In `scripts/choose_kind.py`, a company line two grid steps stricter than the first clean one broke the budget in 4 of 60 trials on 1,000 answers; a person line at a wrong share of at most half the budget, measured on as few as 30 answers, in 4 of 60.
 - **Check:** `reports/choose_kind.md`, placing the lines: in how many of the 12 scenarios each number of answers and each rule breaks the budget.
 
 ## An increment that drops the review queue

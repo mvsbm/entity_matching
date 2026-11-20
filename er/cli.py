@@ -132,8 +132,7 @@ def run_facts(run: Run, out: Path) -> dict | None:  # what a person reads first 
 
 
 def after_run(run: Run, out: Path) -> dict:
-    wrote = ["gold.parquet", "review.parquet", "qa.md", "report.txt", *(["kind_review.parquet"] if (out / "kind_review.parquet").exists() and run.added is None else []),
-             "matches/", "state/"]
+    wrote = ["gold.parquet", "review.parquet", "qa.md", "report.txt", "matches/", "state/"]
     facts = run_facts(run, out)
     return dict(summary=run.tables["summary"].values.tolist(), seconds=round(sum(x["seconds"] for x in run.steps), 1), facts=facts,
                 wrote=[str(out / f) for f in wrote], next=next_after(out, facts and facts["waiting"]))
@@ -283,9 +282,9 @@ COMMANDS: tuple[Command, ...] = (
     Command("resolve", "records", "Resolve a file: one ID per person or company",
             "A full run, without labels: load, budget, fit, rules, candidates, score, cluster, write, report. Writes the "
             "workspace: gold.parquet, matches/, rule_kept/, proposed/, set_aside/, state/, steps.json, and for people qa.md, "
-            "report.txt, review.parquet and kind_review.parquet. With a trust line (method.toml trust), only pairs scoring at "
+            "report.txt and review.parquet. With a trust line (method.toml trust), only pairs scoring at "
             "or above it join; the rest wait for people. A folder that holds a run is refused without --overwrite; people's "
-            "decisions and answers in it stand. O(N·L + ΣP + C·K·L²).",
+            "decisions in it stand. O(N·L + ΣP + C·K·L²).",
             (GIVEN, WORKSPACE, Param("overwrite", "replace the results it holds", "flag"), PIPELINE,
              Param("model", "a fitted model to score with instead of fitting one on the file (its JSON, or the file that holds it under 'model')", "path"),
              COMPUTE),
@@ -304,7 +303,7 @@ COMMANDS: tuple[Command, ...] = (
             show={"records": ("id", "entity", "status", "by", "weight")}),
     Command("build", "index", "The index a record is looked up in, from the run",
             "Every key of every record the run holds and every value a search reads, sorted, in the workspace's index/ (DuckDB "
-            "databases), with the person/company classifier and what it was built from. Read once from the run's own files, nothing "
+            "databases), with what it was built from. Read once from the run's own files, nothing "
             "standardized again; built beside the last index, which stays until the new one is whole. Once built, it is kept up to "
             "date by the commands that change the run: an increment, decisions or merging conditions write what changed beside it; a "
             "full run builds it again. O(N·(G + R + D·L + F) + N log N): N records, G pair keys, R rules, D deletion keys, L a value's "

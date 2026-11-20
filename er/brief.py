@@ -162,7 +162,7 @@ def brief_run(r: dict) -> list[str]:  # resolve and add records: what the run fo
     if f.get("too_big"):
         out.append(f"  ! {f['too_big']:,} groups too big to compare were skipped: see report.txt")
     if f.get("kinds"):
-        out.append(f"  person or company: {f['kinds']:,} flagged, matched as the engine says: kind_review.parquet")
+        out.append(f"  person or company: {f['kinds']:,} flagged, matched as the engine says: gold.parquet kind_flagged")
     out.append(f"  details: {f['report']}")
     return out + nexts(r)
 

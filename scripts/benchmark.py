@@ -9,7 +9,7 @@ The report starts with the command that wrote it.
 Quality: each scenario generates a population with er.generate (config/generator.toml, varied), fits λ and m on
 its train split without labels, resolves its test split with u measured on it, and compares the clusters with the truth.
 Person or company: populations with every kind problem on (er.generate.kind_problems) and one name column, resolved
-with names routed by the truth, by the file's flag alone, and by the kind step on people's answers (here, the truth).
+with names routed by the truth, by the file's flag alone, and by the kind step.
 Cost: populations of growing size, each resolved by nayose resolve records in a process of its own, so the peak memory is
 that run's alone. Past the memory limit (--memory-limit, else config/settings.toml [compute]) DuckDB spills to disk.
 """
@@ -30,7 +30,6 @@ from er.config import load_pipeline
 from er.evaluate import cluster_metrics, false_pairs, labelled, pair_metrics
 from er.generate import KindProblems, generate, kind_problems, load_reference, load_registry, load_spec, split_by_entity
 from er.io import markdown, read_parquet
-from er.kind import kind_review_sheet
 from er.report import qa
 from er.run import Run
 from er.settings import load_settings, shared_name
@@ -107,12 +106,12 @@ FLAGS = {"good (1% wrong at random, 20% on representatives)": KindProblems(flag_
          "poor (10%, 80%)": KindProblems(flag_wrong=0.10, flag_wrong_representative=0.8, sole_flagged_company=0.5)}
 
 
-def kinds(entities: int, labels: int = 2_000) -> pd.DataFrame:
+def kinds(entities: int) -> pd.DataFrame:
     """Person or company, end to end: populations with one name column for every kind, representative-named companies,
     sole traders, company dates and a flag good, medium or poor, each resolved three ways. The truth routes each name
-    (the flag replaced by the truth, taken as it is: the bound); the flag alone (taken as it is); the kind step, on
-    `labels` records of its labelling sheet labelled with the truth, as people would. A person–company cluster holds a
-    true person and a true company."""
+    (the flag replaced by the truth, taken as it is: the bound); the flag alone (taken as it is); the kind step (er.kind:
+    a written legal form, or a name the model is sure of; else the flag). A person–company cluster holds a true person
+    and a true company."""
     std, reg = S.standardize, load_registry(S.paths["reference"])
     s = shared_name(S, "NAME_KANA")
     p = load_pipeline(S.root / "config" / "final.toml", s.standardize, s.chains, s.columns)
@@ -122,18 +121,15 @@ def kinds(entities: int, labels: int = 2_000) -> pd.DataFrame:
         g = kind_problems(generate(replace(SPEC, entities=entities), PERSONS, COMPANIES, TOWNS), problems, reg,
                           std.legal_front, std.legal_end, SPEC.kana_confusions, SPEC.branches)
         d = OUT / f"kinds_{i}"
-        shutil.rmtree(d, ignore_errors=True)  # fresh: a workspace keeps people's answers across --overwrite
+        shutil.rmtree(d, ignore_errors=True)  # fresh: a workspace keeps people's decisions across --overwrite
         d.mkdir(parents=True)
         g.df.to_parquet(d / "records.parquet", index=False)
         g.df.assign(PERSON_ORG_CODE=np.where(g.truth["KIND"].eq("company"), "2", "1")).to_parquet(d / "truth_flag.parquet", index=False)
         truth = g.truth.set_index(UID)
-        free = Run(p, s).full(d / "records.parquet", d / "free")
-        sheet = kind_review_sheet(free.con, "records", UID, replace(p.kind, labels_to_draw=labels), S.flag_company)  # people answer every row: here, the truth
-        sheet.assign(kind=np.where(truth.loc[sheet[UID], "KIND"].eq("company"), 2, 1)).to_parquet(d / "labels.parquet")
-        for how, folder, pipeline, records, kind_labels in (("the truth", "truth", flag_only, "truth_flag.parquet", None),
-                                                            ("the flag alone", "flag", flag_only, "records.parquet", None),
-                                                            (f"the kind step, {labels:,} labels", "kind", p, "records.parquet", d / "labels.parquet")):
-            run = Run(pipeline, s, kind_labels=kind_labels).full(d / records, d / folder)  # each its own folder: no answers carried over
+        for how, folder, pipeline, records in (("the truth", "truth", flag_only, "truth_flag.parquet"),
+                                               ("the flag alone", "flag", flag_only, "records.parquet"),
+                                               ("the kind step", "kind", p, "records.parquet")):
+            run = Run(pipeline, s).full(d / records, d / folder)
             gold = read_parquet(d / folder / "gold.parquet").set_index(UID).join(truth[["ENTITY_ID", "KIND", "HOUSEHOLD_ID"]])
             m = cluster_metrics(gold["cluster_id"], gold["ENTITY_ID"], gold["HOUSEHOLD_ID"])
             mixed = gold.assign(c=gold["KIND"].eq("company")).groupby("cluster_id")["c"].agg(["any", "all"])
@@ -201,7 +197,7 @@ def main() -> None:
               "held out of the name model's training and written as banks write them; companies with records under their representative's name, the representative a person of "
               "the file (half at that person's address and phone); sole traders named like a shop; company dates; and a flag good, "
               "medium or poor. Each resolved three ways: names routed by the truth (the flag replaced by it, taken as it is); by the "
-              "flag alone; by the kind step, people answering its review sheet (here, with the truth). `person_company_clusters` hold "
+              "flag alone; by the kind step (a written legal form, or a name the model is sure of; else the flag). `person_company_clusters` hold "
               "a true person and a true company; `sure_*` is the share of true companies called 2 and of true persons called 1; "
               "`wrong_*` the records called 2 that are persons and called 1 that are companies.", "", markdown(kind), "",
               f"## Cost: files of growing size (time grows like N^{curve.attrs['alpha']})", "",

@@ -19,9 +19,8 @@ package "the answer: Run.write" {
     resolved_by : the rule, fs or review
     kind : 2 company · 1 person · 0 not sure
     kind_p : the probability of a company
-    kind_by : engine · flag · people
+    kind_by : engine · flag
     kind_flagged : sure against the file's flag
-    kind_held : people can't tell: its name kept from matching
     customer_kind : its cluster's kind
   }
   entity "matches/part-n.parquet" as matches {
@@ -84,7 +83,6 @@ package "state/, for increments: Run.write" {
     kind_by
     name_p
     kind_flagged
-    kind_held
     kind_name : the name as written
   }
   entity "state/rule_clusters.parquet" as rule_clusters {
@@ -136,22 +134,6 @@ package "for people: Run.report" {
     <comparison> : its level
     <comparison>_bits
   }
-  entity "kind_review.parquet" as kind_review {
-    * <id>
-    why : decide · measure
-    reason : in words
-    engine_says
-    name_says
-    <flag, if the file has one>
-    name
-    <birth_date, if the file has one>
-    engine
-    engine_p
-    name_p
-    drawn
-    flagged : the engine sure against the flag
-    kind : 1 · 2 · 0, to fill in
-  }
   entity "qa.md" as qa {
     the label-free checks: summary, fill, steps, weight bands,
     clusters, kinds, oversized blocks, the review queue
@@ -169,11 +151,6 @@ package "people's work and the writers' state" {
     why : decide · audit, from the sheet
     round : the round it was decided in (rounds.json)
   }
-  entity "kind_answers/part-n.parquet" as kind_answers {
-    * <id>
-    kind : 1 · 2 · 0, people's answer
-    <the answered sheet's other columns, as given>
-  }
   entity "pending.json" as pending {
     the moves a write still owes; only while one is cut short
   }
@@ -185,9 +162,7 @@ rule_kept }o--|| gold : <id>_l, <id>_r
 proposed }o--|| gold : <id>_l, <id>_r
 scored }o--|| gold : <id>_l, <id>_r
 records ||--|| gold : <id>
-kind_answers }o--|| records : <id>
 prepared ||--|| records : <id>
 review }o--|| gold : <id>_l, <id>_r
-kind_review |o--|| records : <id>
 decisions }o--|| gold : <id>_l, <id>_r
 @enduml

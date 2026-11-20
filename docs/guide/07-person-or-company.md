@@ -19,23 +19,21 @@ What makes it hard, each built into the generator (`er.generate.kind_problems`) 
 
 None of these rates is known for a given file. So the choice must hold across their whole plausible range, not at one guess.
 
-## Solution: a name model, a combiner, a line per side, and people where the signals disagree
+## Solution: a legal form, a name model, and the flag where neither is sure
 
 1. **A legal form says company.** Written where banks write one (the readings, and the bank abbreviations at the front or the end), a legal form makes a company near certain.
 2. **The name says where a record leans.** A logistic regression on the name's character 1–3-grams, legal forms and spaces removed, trained once on public data: the registry's real company readings and the personas' names. It needs no label from the file. It learns what company stems look like: …ショウテン, …クリニック, …コウギョウ.
-3. **People's answers weigh the rest.** A combiner, gradient-boosted trees of depth 2, weighs the name's score, the file's flag, the birth year and the legal form, fitted on people's answers. It learns how far to trust this file's flag.
-4. **Correct first: a line per side.** The engine calls 2 company or 1 person only above that side's line; below both, the file's flag decides, and with no flag the record is 0, not sure. The company line: the lowest with no answer of a person above it, then two grid steps stricter; three when fewer answers than the 2,000 drawn to measure are given back. The person line: the lowest where the answers above it say, at 95% confidence, that at most 1% of the calls above it are wrong; with none wrong, that takes 300 answers above it. A wrong share measured on a few dozen answers looks safe when it isn't: placed that way, the line broke its budget in 4 of 60 trials.
-5. **Disagreements are flagged, not held.** Where the engine is sure and the flag says the other kind, the record is flagged and matched as the engine says. Each name goes to the side of its kind, and a pair of a person and a company has no name compared, so the model's name check (`[model] needs`, [chapter 5](05-uncertain-evidence-fellegi-sunter.md)) leaves it to people.
-6. **People see why.** `kind_review.parquet` lists the flagged records, surest first (why = decide), and an optional random draw that measures the flag and the engine (why = measure). Each row says in words what the engine, the name alone and the flag say. People answer 1, 2 or 0; their answers stand for their records, and a 0 keeps the record's name out of matching.
+3. **Correct first: sure, or the flag.** The engine calls 2 company where a legal form is written, and 2 company or 1 person where the name model is at least `[kind] name_line` (99%) sure; otherwise the file's flag decides, and with no flag the record is 0, not sure. `[kind] trust_flag = true` takes the flag as it is.
+4. **Disagreements are flagged, not held.** Where the engine is sure and the flag says the other kind, the record is flagged and matched as the engine says. Each name goes to the side of its kind, and a pair of a person and a company has no name compared, so the model's name check (`[model] needs`, [chapter 5](05-uncertain-evidence-fellegi-sunter.md)) leaves it to people.
+5. **The flag's owners see where it is likely wrong.** `gold.parquet` marks each flagged record (`kind_flagged`), and `report.txt` counts them.
 
 A customer's kind follows from its records: 2 if any record is a company, 1 if none leans company and one is a person, else 0.
 
 ### Why this solution
 
-- **The flag alone isn't enough, and neither is the name.** The flag is wrong where the cases are hard; the name can't see a company under a person's name. The combiner uses both, weighted by this file's answers.
-- **No labels needed to start.** Without answers the engine calls a company where a legal form is written, and either kind where the name model is at least 99% sure; the flag decides the rest. The name model is trained on public data, so a run works on day one, and gets better as people answer.
-- **The measuring draw is random.** Records sent to people because they look wrong would make every error rate look worse than it is. A draw stratified to hold more of the surest records puts more of them above each line than the file has, so the error measured above the line is not the file's. On the scenarios the two draws trade places by size (below); only the random draw measures the file as it is.
-- **Held back, not guessed.** A company sent to the person side can merge into its representative's own records. Holding the disagreements back costs some recall until people answer, and spares those merges.
+- **The flag alone isn't enough, and neither is the name.** The flag is wrong where the cases are hard; the name can't see a company under a person's name. The engine takes the name where it is sure, and the flag elsewhere.
+- **No labels needed.** The name model is trained on public data and the legal forms are the banks' own, so a run works on day one, on nothing but the file.
+- **Held back, not guessed.** A company sent to the person side can merge into its representative's own records. Holding a person–company pair back for people costs some recall until they decide it, and spares those merges.
 
 ## How we know: every combination, across the unknowns
 
@@ -50,39 +48,38 @@ A customer's kind follows from its records: 2 if any record is a company, 1 if n
 | a dictionary of known surnames and given names | 67.6% with it, 67.3% without |
 | training also on the file's own legal-form records | 67.6% (66.8% on public data only) |
 
-The name model it judges is the run's own: trained on `er.generate.kind_training_names`, as `scripts/train_name_model.py` trains it. The pipeline's combination, public training only so the name model is trained once, comes 25th of 48 at 65.5%, 2.1 points below the best, which also trains on the file's own legal-form records and adds the dictionary of names. On the company side it decides 74.0% of companies on average and 70.5% in the worst scenario. On the person side, 57.0% on average, and from 0.0% to 97.5% by scenario: it falls to nothing where many companies have records under their representative's name and the flag is wrong on them (15–20% of companies, the flag wrong on 33–79% of those records). Those records are a person's name, flagged person: no signal in them says company.
+The name model it judges is the run's own: trained on `er.generate.kind_training_names`, as `scripts/train_name_model.py` trains it. The pipeline's combination, the run's name model (public training only, so it is trained once) under the study's trees of depth 2, comes 25th of 48 at 65.5%, 2.1 points below the best, which also trains on the file's own legal-form records and adds the dictionary of names. On the company side it decides 74.0% of companies on average and 70.5% in the worst scenario. On the person side, 57.0% on average, and from 0.0% to 97.5% by scenario: it falls to nothing where many companies have records under their representative's name and the flag is wrong on them (15–20% of companies, the flag wrong on 33–79% of those records). Those records are a person's name, flagged person: no signal in them says company.
 
 **Sole traders.** Counted as individuals, the person side decides 57.0% of persons; counted as businesses on their trade-name records, 7.8%; on every record, 0.1%. A sole trader is legally a person, which is also what the flag means.
 
-**Placing the lines from answers.** On answers drawn at random, as the review sheet draws them, in 60 trials (5 draws per scenario). With 2,000 answers, the company line, two steps stricter than the first clean one, broke its 0.1% budget in 1 trial (worst 0.12% of company calls); with 1,000, in 4. So on fewer answers than the measuring draw it goes one step further: with 1,000, three steps broke the budget in 1 trial and decided 58.0% of companies, against 66.8% at two. With 500, three steps still broke it in 7 trials, and only four kept it (2 of 60, deciding 35.0%): give back the whole draw. For the person line three rules were tried ([results](../results.md#placing-the-lines-from-peoples-answers)). A measured wrong share of at most half of 1%, on 30 answers or more, broke the 1% budget in 4 of 60 trials. A 95% upper bound on that share within 1% broke it in 2, deciding 19.8% of persons; with 4,000 answers, two sheets, 29.8%. No wrong answer above the line, the company side's rule, decides almost none: an answered company lies above nearly every line. The run uses the bound; with none wrong, it takes 300 answers above the line. No rule keeps a budget in every trial: a line placed on answers is measured, not guaranteed.
-
 ## On a whole run
 
-`scripts/benchmark.py` runs the whole pipeline on generated populations of 20,000 customers with all of the above, one name column for both kinds, and a flag good (wrong on 1% of records at random, on 20% of the representative-named ones), medium (3%, 50%) or poor (10%, 80%). The company names come from the registry's companies held out of the name model's training; the persons come from every persona, half of them in its training. Each population is resolved three ways: names routed by the truth, by the flag alone, and by the kind step with people answering its review sheet (here, with the truth) ([reports/benchmark.md](../../reports/benchmark.md)):
+`scripts/benchmark.py` runs the whole pipeline on generated populations of 20,000 customers with all of the above, one name column for both kinds, and a flag good (wrong on 1% of records at random, on 20% of the representative-named ones), medium (3%, 50%) or poor (10%, 80%). The company names come from the registry's companies held out of the name model's training; the persons come from every persona, half of them in its training. Each population is resolved three ways: names routed by the truth, by the flag alone, and by the kind step ([reports/benchmark.md](../../reports/benchmark.md)):
 
 | Flag | Routed by | Recall | False merges | Person–company clusters | Persons called 2 | Companies called 1 | Persons called 1 |
 |---|---|---|---|---|---|---|---|
-| any | the truth | 46.2% | 1 | 0 | 0 | 0 | 100.0% |
-| good | the flag alone | 45.5% | 21 | 20 | 308 | 103 | 98.5% |
-| good | the kind step | 46.1% | 21 | 20 | 180 | 63 | 99.1% |
-| medium | the flag alone | 44.2% | 62 | 54 | 840 | 296 | 95.8% |
-| medium | the kind step | 45.6% | 54 | 47 | 486 | 172 | 97.6% |
-| poor | the flag alone | 39.0% | 84 | 72 | 2,398 | 687 | 88.0% |
-| poor | the kind step | 42.6% | 76 | 64 | 1,641 | 322 | 91.8% |
+| any | the truth | 50.2% | 5 | 0 | 0 | 0 | 100.0% |
+| good | the flag alone | 49.1% | 38 | 27 | 306 | 102 | 98.5% |
+| good | the kind step | 49.3% | 84 | 63 | 433 | 166 | 97.9% |
+| medium | the flag alone | 47.2% | 79 | 61 | 886 | 256 | 95.8% |
+| medium | the kind step | 48.4% | 107 | 82 | 753 | 221 | 96.4% |
+| poor | the flag alone | 40.5% | 121 | 93 | 2,533 | 644 | 87.9% |
+| poor | the kind step | 45.5% | 124 | 94 | 1,643 | 350 | 92.2% |
 
-- **Recall** is 0.6–3.6 points higher by the kind step than by the flag alone.
-- **Fewer wrong kinds than the flag's:** persons called companies 180 to 1,641, against 308 to 2,398; companies called persons 63 to 322, against 103 to 687. Where the engine is not sure, the flag's word stands, so the flag's mistakes there remain; the engine corrects those it is sure of.
-- **False merges** are no more than the flag's on every flag: 21, 54 and 76 against 21, 62 and 84. Routed by the truth there is one, between two persons: the others come from names sent to the wrong side. A company record under its representative's name, at the representative's address and phone and flagged person, goes to the person side by either route, and can merge into the representative's own records.
-- **Nearly every record has a kind:** 91.8–99.1% of persons and 93.5–98.7% of companies. Calling the records the engine isn't sure of 0, not sure, with their names sent where they lean and none held back, called no person a company but merged more: 75 and 91 where the flag is medium and poor.
+- **Recall** is 0.2–5.0 points higher by the kind step than by the flag alone.
+- **Wrong kinds:** against a medium or poor flag, fewer: persons called companies 753 and 1,643, against 886 and 2,533; companies called persons 221 and 350, against 256 and 644. Against a good flag, more: 433 against 306, and 166 against 102. Where the engine is not sure, the flag's word stands; where it is sure, its word stands, right or wrong.
+- **False merges** are more than the flag's on every flag: 84, 107 and 124 against 38, 79 and 121. Routed by the truth there are 5: the others come from names sent to the wrong side. A company record under its representative's name, at the representative's address and phone, goes to the person side when the name model is sure it is a person's, whatever the flag says, and can merge into the representative's own records.
+- **Nearly every record has a kind:** 92.2–97.9% of persons and 92.9–96.6% of companies.
+- **Where the file's flag is good**, `[kind] trust_flag = true` takes it as it is: the flag alone's row.
 
 ## What it can't do
 
 - **A company record that is its representative's twin.** Under the representative's name, at the representative's address and phone, flagged person: every column matches the person's own record. Neither the engine nor people looking at the record can tell; another column could (an account type, a corporate number).
-- **The person side is measured, not guaranteed.** Where many companies hide under their representatives' names behind a wrong flag, the person line finds no level within its budget and calls nobody a sure person. The run says so ("person never").
+- **A company under its representative's name reads as a person.** Its name is a person's: where the name model is 99% sure of a person, the engine calls one, even against a flag that says company (`kind_flagged`).
 
 ## In the code
 
-- `er/kind.py`: `legal`, `text`, `NameModel` (scored in DuckDB), `name_model` (loads `config/kind_names.npz`, trained by `scripts/train_name_model.py`), `Classifier.classify`, `lines`, `classifier` (people's answers), `merge_answers`, `kind_review_sheet`
+- `er/kind.py`: `legal`, `text`, `NameModel` (scored in DuckDB), `name_model` (loads `config/kind_names.npz`, trained by `scripts/train_name_model.py`), `Classifier.classify`, `classifier`
 - `er/standardize.py`: `legal_pattern`, and `prepare`, which scores each chunk and routes the name fields
 - `er/run.py`: `Run.load` (the classifier), `Run._gold` (a customer's kind); `er/report.py`: `qa` (the summary's kind lines)
 - `er/settings.py`: `shared_name`, the settings for one name column

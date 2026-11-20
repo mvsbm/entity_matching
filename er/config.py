@@ -5,7 +5,7 @@ import math
 import re
 import tomllib
 from collections.abc import Callable, Iterable, Iterator, Mapping
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field, fields, replace
 from pathlib import Path
 from typing import Literal, get_args
 
@@ -575,18 +575,18 @@ class Fields:
 
 @dataclass(frozen=True, kw_only=True)
 class KindSpec:
-    """Person or company (er.kind): a name model, a combiner fitted on people's labels, and a line on each side."""
+    """Person or company (er.kind): a written legal form, or a name model sure past name_line; else the file's flag."""
     name_field: str = "any_name"              # the field holding each record's name, a person's or a company's
     ngram: int = 3                            # the name model's character n-grams: 1 to this
-    depth: int = 2                            # the combiner's trees (gradient boosting)
-    company_wrong_at_most: float = 0.001      # the budget the company line is judged by (choose_kind): placed with no labelled error above it, then margin_steps stricter
-    person_wrong_at_most: float = 0.01        # the person line: the labelled error above it within this, at 95% confidence
-    margin_steps: int = 2                     # the company line: this many grid steps above the first clean one; one more on fewer than labels_to_draw answers
-    labels_to_draw: int = 2000                # the review sheet's records drawn to measure the flag and the engine
-    review_max: int = 1000                    # ... and at most this many it sends people to decide (the surest disagreements)
-    name_line: float = 0.99                   # a name that says the other kind than the flag this surely is sent to decide
-    grid: tuple[float, ...] = (0.5, 0.8, 0.9, 0.95, 0.98, 0.99, 0.995, 0.998, 0.999, 0.9995, 0.9999)
+    name_line: float = 0.99                   # the name model calls a kind it is at least this sure of
     trust_flag: bool = False                  # take the file's person/company flag as it is, instead of the model
+
+
+def kind_spec(d: Mapping[str, object]) -> KindSpec:  # [kind], refused when it sets what no field holds
+    if unknown := sorted(set(d) - {f.name for f in fields(KindSpec)}):
+        raise InputError(f"[kind]: {', '.join(unknown)} set nothing: a record's kind is a written legal form, a name the model is "
+                         "sure of (name_line), or else the file's flag", fix=f"delete {', '.join(unknown)} from [kind]")
+    return KindSpec(**d)
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -683,7 +683,7 @@ def pipeline_from(cfg: dict, std: Standardization, chains: Mapping[str, tuple[No
                                             margin_steps=t["margin_steps"], search_floor=float(t.get("search_floor", 0.0))),
                     cv_folds=sel["cv_folds"], cv_seed=sel["cv_seed"], decision_p=sel["decision_p"],
                     explain_show=tuple(d["explain_show"]), explain_filled=tuple(d["explain_filled"]), fit_rows=m.get("fit_rows", 100_000),
-                    kind=KindSpec(**{k: tuple(v) if k == "grid" else v for k, v in cfg["kind"].items()}) if "kind" in cfg else None,
+                    kind=kind_spec(cfg["kind"]) if "kind" in cfg else None,
                     trust=TrustRule(**{k: tuple(map(float, v)) if k == "steps" else v for k, v in cfg.get("trust", {}).items()}),
                     probe=Probe(strata=tuple((n, tuple(_key(k, chains) for k in keys)) for n, keys in cfg["probe"]["strata"].items()),
                                 pairs=cfg["probe"].get("pairs", 1_000_000)) if "probe" in cfg else Probe(),
@@ -962,7 +962,7 @@ def pipeline_dict(p: Pipeline, chains: Mapping[str, tuple[Normalizer, ...]]) -> 
                   "comparisons": [{"name": c.name, "null_if_missing": list(c.null_if_missing), **({"tf": key(c.tf)} if c.tf else {}),
                                    "levels": [{"label": lv.label, "any_of": [{"field": col, **comp(x)} for col, x in lv.any_of],
                                                **({"tf": True} if lv.tf else {})} for lv in c.levels]} for c in m.comparisons]},
-        **({"kind": {k: list(v) if k == "grid" else v for k, v in vars(p.kind).items()}} if p.kind else {}),
+        **({"kind": vars(p.kind)} if p.kind else {}),
         "threshold": {"grid": list(t.grid), "max_fp": t.max_fp, "max_fp_rate_hi": t.max_fp_rate_hi, "margin_steps": t.margin_steps, "search_floor": t.search_floor},
         "trust": {"steps": list(p.trust.steps), "checks": p.trust.checks, "watch": p.trust.watch},  # its line is the workspace's
         **({"probe": {"pairs": p.probe.pairs, "strata": {n: [key(k) for k in keys] for n, keys in p.probe.strata}}} if p.probe.strata else {}),

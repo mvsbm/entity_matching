@@ -247,7 +247,7 @@ def test_a_full_run_keeps_the_decisions_people_wrote_in_the_sheet_and_have_not_g
     assert after[(after[f"{uid}_l"] == keys[f"{uid}_l"]) & (after[f"{uid}_r"] == keys[f"{uid}_r"])]["decision"].tolist() == ["no_match"]
 
 
-def test_an_overwrite_cut_short_keeps_the_old_run_and_people_s_answers(tmp_path, population, monkeypatch):
+def test_an_overwrite_cut_short_keeps_the_old_run_and_people_s_decisions(tmp_path, population, monkeypatch):
     import os
     import er.folder
     from er.folder import finish_writes
@@ -255,8 +255,10 @@ def test_an_overwrite_cut_short_keeps_the_old_run_and_people_s_answers(tmp_path,
     s, p, g = population
     uid = s.data.unique_id
     g.df.to_parquet(tmp_path / "all.parquet", index=False)
-    pd.DataFrame({uid: g.df[uid].astype("string")[:5], "kind": [1] * 5}).to_parquet(tmp_path / "answers.parquet")
-    Run(p, s, kind_labels=tmp_path / "answers.parquet").full(tmp_path / "all.parquet", tmp_path / "run")
+    Run(p, s).full(tmp_path / "all.parquet", tmp_path / "run")
+    a, b = sorted(pd.read_parquet(tmp_path / "run" / "gold.parquet").drop_duplicates("cluster_id")[uid].iloc[:2])  # two entities: people say one
+    pd.DataFrame({f"{uid}_l": [a], f"{uid}_r": [b], "decision": ["match"]}).to_parquet(tmp_path / "decided.parquet")
+    Run(p, s).decide(tmp_path / "decided.parquet", tmp_path / "run")
     before = pd.read_parquet(tmp_path / "run" / "gold.parquet")
     lit = er.folder.lit
     def full_disk(path):  # the new gold can't be written
@@ -268,7 +270,7 @@ def test_an_overwrite_cut_short_keeps_the_old_run_and_people_s_answers(tmp_path,
         Run(p, s).full(tmp_path / "all.parquet", tmp_path / "run", overwrite=True)
     monkeypatch.undo()
     pd.testing.assert_frame_equal(pd.read_parquet(tmp_path / "run" / "gold.parquet"), before)  # the old run stands
-    assert len(pd.read_parquet(tmp_path / "run" / "kind_answers")) == 5  # and people's answers with it
+    assert len(pd.read_parquet(tmp_path / "run" / "decisions")) == 1  # and people's decisions with it
 
     moves, replace_ = [], os.replace
     def cut_short(a, b):  # dies after the first of the moves that replace the old run
@@ -282,7 +284,7 @@ def test_an_overwrite_cut_short_keeps_the_old_run_and_people_s_answers(tmp_path,
     monkeypatch.undo()
     finish_writes(tmp_path / "run")  # what the next run, increment or decisions do first
     pd.testing.assert_frame_equal(pd.read_parquet(tmp_path / "run" / "gold.parquet"), before)
-    assert len(pd.read_parquet(tmp_path / "run" / "kind_answers")) == 5
+    assert len(pd.read_parquet(tmp_path / "run" / "decisions")) == 1
     assert len(pd.read_parquet(tmp_path / "run" / "state" / "records")) == len(g.df) and not (tmp_path / "run" / ".full.tmp").exists()
 
 
@@ -320,18 +322,10 @@ def test_an_increment_never_merges_a_pair_people_said_is_different(tmp_path, pop
     assert gold[a] != gold[b]  # as a full run applies people's "different"
 
 
-def test_answers_given_wrong_stop_the_run(tmp_path, population):
+def test_an_increment_needs_a_workspace_that_holds_a_run(tmp_path, population):
     from er.run import Run
     s, p, g = population
     g.df.to_parquet(tmp_path / "all.parquet", index=False)
-    with pytest.raises(InputError, match="no file matches"):
-        Run(p, s, kind_labels=tmp_path / "answres.parquet").full(tmp_path / "all.parquet", tmp_path / "run")
-    pd.DataFrame({"kind": [1]}).to_parquet(tmp_path / "no_ids.parquet")
-    with pytest.raises(InputError, match="needs the columns"):
-        Run(p, s, kind_labels=tmp_path / "no_ids.parquet").full(tmp_path / "all.parquet", tmp_path / "run")
-    (tmp_path / "sheet.parquet").write_text(f"{s.data.unique_id},kind\n0000000001,1\n", encoding="utf-8")  # a sheet saved as CSV: the same door as records
-    with pytest.raises(InputError, match="not a Parquet file"):
-        Run(p, s, kind_labels=tmp_path / "sheet.parquet").full(tmp_path / "all.parquet", tmp_path / "run")
     with pytest.raises(InputError, match="no workspace at"):  # a folder not there: refused, never made
         Run(p, s).increment(tmp_path / "all.parquet", tmp_path / "empty")
     assert not (tmp_path / "empty").exists()
