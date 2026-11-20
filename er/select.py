@@ -9,9 +9,9 @@ import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field, replace
 
+import duckdb
 import optuna
 import pandas as pd
-from splink import DuckDBAPI
 
 from er.candidates import candidates, estimate, found_by
 from er.config import (FSSpec, FSTune, KeyBlocker, OverBudget, Pipeline, RulesSpec, ThresholdRule, Tune, with_comparators,
@@ -42,7 +42,6 @@ class RulesChooser:
     spec: RulesSpec
     pipeline: Pipeline                        # the rest of the pipeline the rules run in (er.run.Run)
     settings: Settings
-    db: DuckDBAPI
     changes: Mapping[str, Callable[[RulesSpec], RulesSpec]]
     decisions: tuple[tuple[str, str], ...]
     tune: Tune
@@ -196,7 +195,7 @@ class FSChooser:
     pipeline: Pipeline
     rules: RulesSpec                          # the rules stage as chosen: its results are this stage's starting point
     settings: Settings
-    db: DuckDBAPI
+    con: duckdb.DuckDBPyConnection
     changes: Mapping[str, Callable[[FSSpec], FSSpec]]
     decisions: tuple[tuple[str, str], ...]
     tune: FSTune
@@ -237,7 +236,7 @@ class FSChooser:
         uid = self.data.unique_id
         if (repr(spec.model), key) not in self.models:
             df = prepare(spec.standardize, records, spec.normalized(), spec.used())
-            self.models[repr(spec.model), key] = train_fs(spec.model, df, self.db, uid, labels=truth.set_index(uid)[self.data.entity_id])
+            self.models[repr(spec.model), key] = train_fs(spec.model, df, self.con, uid, labels=truth.set_index(uid)[self.data.entity_id])
         return self.models[repr(spec.model), key]
 
     def run(self, spec: FSSpec, dataset: str) -> FSResult:  # model fitted on all of train
@@ -340,7 +339,7 @@ class FSChooser:
         plan = self.growth.loc[[b.name for b in f.blockers]].reset_index()
         assert plan["within_budget"].all(), f"over budget at {f.budget.target_rows:,} rows: {plan.loc[~plan['within_budget'], 'key'].tolist()}"
         cover = window_only(f, self.fit(f, self.train_records, self.train_truth, "train"), self.train_records, self.train_truth,
-                            self.db, self.data, [len(self.train_records), f.budget.target_rows])
+                            self.con, self.data, [len(self.train_records), f.budget.target_rows])
         assert cover["window_only"].eq(0).all(), "a potential match is left to a sorted window, whose reach shrinks as the file grows"
         patterns = pattern_coverage(f, self.fit(f, self.train_records, self.train_truth, "train"), f.budget.target_rows)
         text = (f"{len(patterns)} patterns that can reach the threshold at {f.budget.target_rows:,} records have no guaranteed key; "

@@ -143,7 +143,7 @@ def run_facts(run: Run, out: Path) -> dict | None:  # what a person reads first 
     if not any((out / folder.SCORED).glob("part-*.parquet")):  # a run from before the index: building it here would add minutes no one asked for
         return None
     try:
-        r = describe_results(run.con, run.db, out, run.settings, run.pipeline, review_floor(run.pipeline))
+        r = describe_results(run.con, out, run.settings, run.pipeline, review_floor(run.pipeline))
     except (InputError, duckdb.Error, OSError):
         return None
     return dict(records=r["records"], entities=r["entities"], joined=r["joined"], waiting=sum(x["pairs"] for x in r["waiting"]), review_from=r["review_from"],
@@ -355,7 +355,7 @@ def described(a: dict) -> dict:
         if script[path] not in (None, "kana"):
             return None
         return (None if x.get("added") else x.get("field")) or SLOT_FIELD.get(x.get("role") or x.get("type"))
-    con = connect(s.compute)[0]
+    con = connect(s.compute)
     part = Path(a["input"]) if intake.report(Path(a["input"])) else None  # a workspace's part: its columns' own facts kept with it
     d = describe(a["input"], con, s.columns, s.detect, lex=lexicon(s.paths["reference"], tuple(s.standardize.kana_fold.items())), keep=part,
                  slots={path: x["columns"] for path, x in slots(feats)},
@@ -757,7 +757,7 @@ def locked(command: Callable[[dict, "Emit"], dict]) -> Callable[[dict, "Emit"], 
 def lower_trust(a: dict, emit: "Emit") -> dict:
     s, p, _ = setup(a)
     ws = Path(a["workspace"])
-    state = trust_state(connect(s.compute)[0], ws, p, s.data.unique_id) if (ws / "gold.parquet").exists() else None
+    state = trust_state(connect(s.compute), ws, p, s.data.unique_id) if (ws / "gold.parquet").exists() else None
     if state is None:
         raise InputError(f"{ws} has no trust line: it merges as tuned", fix="start one, and nothing merges before people check: nayose raise trust --workspace …")
     if state["typed_false"]:  # written in, not applied: the range isn't proven, and it would merge them
@@ -810,7 +810,7 @@ def ready(con, s: Settings, p: Pipeline, files: list[dict]) -> dict:
 def describe_workspace_(a: dict, emit: "Emit") -> dict:
     s, p, _ = setup(a)
     out = Path(a["workspace"])
-    con = connect(s.compute)[0]  # one for every read here: a connection costs as much as the reads of a small workspace
+    con = connect(s.compute)  # one for every read here: a connection costs as much as the reads of a small workspace
     d = describe_workspace(con, out, s.data.unique_id)
     d["trust"] = trust_state(con, out, p, s.data.unique_id) if d["records"] else None
     d["stamp"] = folder.stamp(out)  # what another tab's decision, answer or change moves: a page coming back reads again
@@ -835,10 +835,10 @@ def describe_workspace_(a: dict, emit: "Emit") -> dict:
 def describe_entity_(a: dict, emit: "Emit") -> dict:
     s, out = settings_for(a), Path(a["workspace"])
     uid = s.data.unique_id
-    con, db = connect(s.compute)
+    con = connect(s.compute)
     d = describe_entity(con, out, uid, a["id"], [f for f in s.columns if f not in SPECIAL])
     if folder.method(out).get("merge"):  # merged by the workspace's conditions since the run: the links its files don't hold
-        more, pair = merged_links(con, db, out, s, setup(a)[1], d["records"][uid].tolist()), [f"{uid}_l", f"{uid}_r"]
+        more, pair = merged_links(con, out, s, setup(a)[1], d["records"][uid].tolist()), [f"{uid}_l", f"{uid}_r"]
         more = more[~more.set_index(pair).index.isin(d["links"].set_index(pair).index)]
         d["links"] = pd.concat([d["links"], more], ignore_index=True)
     inside = entity_pairs(out, s, d["records"][uid].tolist(), rows(d["links"]))
@@ -881,7 +881,7 @@ def list_patterns_(a: dict, emit: "Emit") -> dict:
 def describe_matching_(a: dict, emit: "Emit") -> dict:
     s, p, _ = setup(a)
     out = Path(a["workspace"]) if a["workspace"] else None
-    return {**describe_matching(connect(s.compute)[0], out, p, s),
+    return {**describe_matching(connect(s.compute), out, p, s),
             "next": [dict(command=nayose("describe", "workspace", out), why="the workspace at a glance")] if out else
                     [dict(command=nayose("resolve", "records", "<file>", "--workspace", "<workspace>"), why="match records: the graph then holds their numbers")]}
 
@@ -931,7 +931,7 @@ def describe_review(a: dict, emit: "Emit") -> dict:
         raise InputError(f"--seconds {a['seconds']}: not a time a pair takes", fix="seconds above 0, for example 10")
     if p.trust.line is None:
         raise InputError(f"{out} has no trust line: it merges as tuned", fix="start one, and nothing merges before people check: nayose raise trust --workspace …")
-    return {**review_workload(connect(s.compute)[0], out, p, s.data.unique_id, per),
+    return {**review_workload(connect(s.compute), out, p, s.data.unique_id, per),
             "next": [dict(command=nayose("list", "pairs", "--workspace", out, "--pending"), why="the pairs waiting now")]}
 
 
@@ -979,7 +979,7 @@ def split_entity(a: dict, emit: "Emit") -> dict:
     if len(a["between"] or []) != 2:
         raise InputError("--between takes the two records of the link", fix="nayose split entity ID --between A B --workspace …")
     first, second = sorted(map(str, a["between"]))
-    d = describe_entity(connect(s.compute)[0], out, uid, a["id"], [f for f in s.columns if f not in SPECIAL])
+    d = describe_entity(connect(s.compute), out, uid, a["id"], [f for f in s.columns if f not in SPECIAL])
     held = d["records"][uid].tolist()
     inside = entity_pairs(out, s, held, rows(d["links"]))
     if inside["capped"]:
@@ -1030,17 +1030,17 @@ def conditions(a: dict) -> dict | None:  # --conditions as JSON: {"join": "and"|
 
 def describe_results_(a: dict, emit: "Emit") -> dict:
     s, p, _ = setup(a)
-    con, db = connect(s.compute)
+    con = connect(s.compute)
     out = Path(a["workspace"])
     frm = number(a["from"], "--from") if a.get("from") else review_floor(p)
-    return {**describe_results(con, db, out, s, p, frm), "next": [dict(command=nayose("list", "scored", "--workspace", out, "--status", "waiting"), why="the pairs waiting for you")]}
+    return {**describe_results(con, out, s, p, frm), "next": [dict(command=nayose("list", "scored", "--workspace", out, "--status", "waiting"), why="the pairs waiting for you")]}
 
 
 def list_scored_(a: dict, emit: "Emit") -> dict:
     s, p, _ = setup(a)
-    con, db = connect(s.compute)
+    con = connect(s.compute)
     num = lambda k: number(a[k], f"--{k}") if a.get(k) not in (None, "") else None
-    r = list_scored(con, db, Path(a["workspace"]), s, p, num("from"), num("to"), a.get("source"), a.get("status"), a.get("record") or None,
+    r = list_scored(con, Path(a["workspace"]), s, p, num("from"), num("to"), a.get("source"), a.get("status"), a.get("record") or None,
                     counted(a, "page", 1), counted(a, "count", 100), bool(a.get("each")))
     for x in r["pairs"]:
         x["found"] = found_words(p, x)
@@ -1061,7 +1061,7 @@ def found_words(p, pair: dict) -> str:  # how a pair was found, in words: its ru
 
 def list_entities_(a: dict, emit: "Emit") -> dict:
     s, p, _ = setup(a)
-    return list_entities(connect(s.compute)[0], Path(a["workspace"]), s, p, counted(a, "smallest", 2), a.get("record") or None,
+    return list_entities(connect(s.compute), Path(a["workspace"]), s, p, counted(a, "smallest", 2), a.get("record") or None,
                          counted(a, "page", 1), counted(a, "count", 100))
 
 
@@ -1082,23 +1082,23 @@ def show_details(a: dict, emit: "Emit") -> dict:
 
 def show_records_(a: dict, emit: "Emit") -> dict:
     s = settings_for(a)
-    return show_records(connect(s.compute)[0], Path(a["workspace"]), s, list(dict.fromkeys(a["ids"])))
+    return show_records(connect(s.compute), Path(a["workspace"]), s, list(dict.fromkeys(a["ids"])))
 
 
 def describe_merging_(a: dict, emit: "Emit") -> dict:
     s, p, _ = setup(a)
-    con, db = connect(s.compute)
+    con = connect(s.compute)
     out, m = Path(a["workspace"]), conditions(a)
-    return describe_merging(con, db, out, s, p, None if m is None else check_merging(m, p, run_model(out)))
+    return describe_merging(con, out, s, p, None if m is None else check_merging(m, p, run_model(out)))
 
 
 def set_merging(a: dict, emit: "Emit") -> dict:
     s, p, _ = setup(a)
     out = Path(a["workspace"])
     m = check_merging(conditions(a) or {}, p, run_model(out))  # the run's own comparisons: a field the file lacks has none
-    con, db = connect(s.compute)
+    con = connect(s.compute)
     with folder.run_lock(out):  # the conditions written with the entities they make, in one staged write
-        r = apply_merging(con, db, out, s, p, method=with_merging(out, m))
+        r = apply_merging(con, out, s, p, method=with_merging(out, m))
     return {**r, "next": [dict(command=nayose("describe", "results", "--workspace", out), why="what now merges")]}
 
 
@@ -1108,8 +1108,8 @@ def apply_decisions(a: dict, emit: "Emit") -> dict:
     with folder.run_lock(out), readable(a["file"], s, strict=True) if a["file"] else contextlib.nullcontext(out / "review.parquet") as path:
         run = Run(p, s, echo=emit.step, told=emit.progress).decide(path, out)
         if folder.method(out).get("merge"):  # merged by people's conditions: rebuilt, so a pair said different parts at once
-            con, db = connect(s.compute)
-            apply_merging(con, db, out, s, p)
+            con = connect(s.compute)
+            apply_merging(con, out, s, p)
     x = run.steps[-1]
     return dict(decisions=x["decisions"], matches=x["matches"], clusters_joined=x["clusters_joined"],
                 summary=[["nothing new", "every decision was applied before"]] if not x["decisions"] else [],

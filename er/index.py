@@ -217,7 +217,7 @@ def _build(ws: Path, s: Settings, p: Pipeline, stamp: dict) -> dict:
     tables, searched = _tables(fitted), [c for c in SEARCHED if c in have]
     reads = {uid, *read_by(model), *(c for _, x in tables for c in _keys(x)), *(c for c in SHOWN if c in have), *searched,
              *(c for _, x in tables if isinstance(x, tuple) for c in _rule_reads(x, have))}
-    con, _ = connect(s.compute)
+    con = connect(s.compute)
     tmp, key = _scratch(ws), secrets.token_hex(6)
     try:
         con.execute(f"ATTACH {lit(tmp / f'{key}.duckdb')} AS ix")
@@ -268,7 +268,7 @@ def update(ws: Path, s: Settings, p: Pipeline) -> dict:
             return dict(index=str(ws / INDEX), records=m["records"] + m["added"], added=m["added"], moved=m["moved"], seconds=0.0, rebuilt=None)
         fitted, n = _pipeline(ws, s, p, m["columns"]), m["updates"] + 1
         _scorable(ws)
-        con, _ = connect(s.compute)
+        con = connect(s.compute)
         tmp, delta = _scratch(ws), f"{m['id']}-{n}.duckdb"
         try:
             con.execute(f"ATTACH {lit(ws / INDEX / m['files']['keys'])} AS ix (READ_ONLY)")
@@ -384,7 +384,7 @@ def _open(ws: Path, s: Settings, p: Pipeline) -> tuple[dict, Pipeline, duckdb.Du
                     _OPENED.pop(key, None)
                     while len(_OPENED) >= OPEN:
                         _OPENED.pop(next(iter(_OPENED)))
-                    con, _ = connect(s.compute)
+                    con = connect(s.compute)
                     _attach(con, ws, m)
                     o = _OPENED[key] = (m, con, _classifier(ws, s, fitted, m), threading.Lock())
             return m, fitted, o[1], o[2], o[3]

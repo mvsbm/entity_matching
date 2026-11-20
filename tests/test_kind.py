@@ -197,13 +197,13 @@ def test_results_count_the_flagged_and_a_gold_written_before_flags_still_reads(t
     out = tmp_path / "run"
     g.df.to_parquet(tmp_path / "all.parquet", index=False)
     Run(p, s).full(tmp_path / "all.parquet", out, pipeline_file=s.root / "config" / "final.toml")
-    con, db = connect(s.compute)
+    con = connect(s.compute)
     gold, sheet = pd.read_parquet(out / "gold.parquet"), pd.read_parquet(out / "kind_review.parquet")
-    k, part = describe_results(con, db, out, s, p)["kinds"], sheet_parts(sheet)
+    k, part = describe_results(con, out, s, p)["kinds"], sheet_parts(sheet)
     assert k == dict(flagged=int(gold["kind_flagged"].sum()), to_check=int((part == "decide").sum()), to_teach=int((part == "measure").sum()))
     assert k["flagged"] and int(sheet["flagged"].sum()) == k["to_check"]  # every flagged record on the sheet is to check, drawn at random or not
     gold.drop(columns="kind_flagged").to_parquet(out / "gold.parquet")  # as a run written before flags left it
-    assert describe_merging(con, db, out, s, p, {"when": [{"points": 12}]})["pairs"] >= 0  # it still reads: none of its records flagged
+    assert describe_merging(con, out, s, p, {"when": [{"points": 12}]})["pairs"] >= 0  # it still reads: none of its records flagged
 
 
 def test_a_sheet_s_ids_must_name_records_of_the_file(tmp_path, kind_population):

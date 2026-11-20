@@ -10,10 +10,10 @@ from collections.abc import Callable
 from dataclasses import dataclass, replace
 from pathlib import Path
 
+import duckdb
 import numpy as np
 import pandas as pd
 import pyarrow as pa
-from splink import DuckDBAPI
 
 from er.candidates import estimate, found_by, generate
 from er.cluster import merge
@@ -108,7 +108,7 @@ def scale_check(spec: RulesSpec | FSSpec, records: pd.DataFrame, truth: pd.DataF
                                      within_budget=lambda t: t["projected_pairs"] <= budget.max_pairs(budget.target_rows))
 
 
-def window_only(spec: FSSpec, model_json: dict, records: pd.DataFrame, truth: pd.DataFrame, db: DuckDBAPI, data: Data,
+def window_only(spec: FSSpec, model_json: dict, records: pd.DataFrame, truth: pd.DataFrame, con: duckdb.DuckDBPyConnection, data: Data,
                 sizes: list[int]) -> pd.DataFrame:
     """Per file size: the potential matches (true pairs whose fields would reach min_match_weight at that size) and how
     many of them share no equality key (KeyBlocker, DeletionKeys). Only a window (sorted neighbourhood, TF-IDF) can find
@@ -119,12 +119,12 @@ def window_only(spec: FSSpec, model_json: dict, records: pd.DataFrame, truth: pd
     uid = data.unique_id
     l, r = f"{uid}_l", f"{uid}_r"
     df = prepare(spec.standardize, records, spec.normalized(), spec.used())
-    scored = score_fs(model_json, df, true_pairs(truth.set_index(uid)[data.entity_id], uid).astype("string"), db, uid)
+    scored = score_fs(model_json, df, true_pairs(truth.set_index(uid)[data.entity_id], uid).astype("string"), con, uid)
     u_here, growth = {}, {}
     if spec.model.u_from_scored:
         entity = df[uid].map(truth.set_index(uid)[data.entity_id])
         half = df[entity_rank(entity) < entity.nunique() // 2]  # whole entities, as the population would grow
-        u_here, u_half = (scored_sample(spec.model, d, db, uid) for d in (df, half))  # df: the fit's own sample of train
+        u_here, u_half = (scored_sample(spec.model, d, con, uid) for d in (df, half))  # df: the fit's own sample of train
         growth = {(c, lv): math.log(u / u_half[c][lv]) / math.log(len(df) / len(half))
                   for c in u_here for lv, u in u_here[c].items() if u_half[c].get(lv)}
     keyed = pd.concat([generate(b, df, uid, None) for b in spec.blockers if isinstance(b, KeyBlocker | DeletionKeys)]
@@ -159,13 +159,13 @@ def table(run: Run, sql: str) -> pd.DataFrame:  # a query on a run's tables, its
     return df.astype({c: "string" for c in df.columns if df[c].dtype == object})
 
 
-def clustered(con, db: DuckDBAPI, base: pd.DataFrame, edges: pd.DataFrame, ids: pd.Series, uid: str) -> pd.Series:
+def clustered(con: duckdb.DuckDBPyConnection, base: pd.DataFrame, edges: pd.DataFrame, ids: pd.Series, uid: str) -> pd.Series:
     """`base` (uid, cluster_id) with `edges` added (er.cluster.merge, the run's own clustering), in the order of ids."""
     con.register("er_base_df", base)
     con.register("er_edges_df", edges[[f"{uid}_l", f"{uid}_r"]])
     con.execute("CREATE OR REPLACE TABLE er_base AS SELECT * FROM er_base_df")
     con.execute("CREATE OR REPLACE TABLE er_edges AS SELECT * FROM er_edges_df")
-    merge(con, db, "er_base", "er_edges", "er_clusters", uid)
+    merge(con, "er_base", "er_edges", "er_clusters", uid)
     out = con.sql("SELECT * FROM er_clusters").df().set_index(uid)["cluster_id"]
     return out.astype("string").reindex(ids.to_numpy())
 
@@ -205,7 +205,7 @@ def run_rules(pipeline: Pipeline, settings: Settings, path: Path, truth: pd.Data
     for st in spec.stages:  # the clusters after each stage: the kept pairs of the stages so far, merged as the run merges them
         names.append(st.name)
         upto = edges["stage"].isin(names).to_numpy()
-        clusters = clustered(run.con, run.db, base, edges[upto & edges["kept"].to_numpy()], ids, uid)
+        clusters = clustered(run.con, base, edges[upto & edges["kept"].to_numpy()], ids, uid)
         now = clusters.map(clusters.value_counts()) > 1
         stage_of[now & ~resolved] = st.name
         resolved = now
@@ -308,11 +308,11 @@ def threshold_curve(res: FSResult, spec: FSSpec, truth: pd.DataFrame, data: Data
     redone, by the run's own clustering from the rules' clusters. O(|weights| · (E·d + N))."""
     uid = data.unique_id
     ids, (entity, household) = res.records[uid], labelled(truth, data)
-    con, db = connect()
+    con = connect()
     rows = []
     for w in weights:
         accepted = res.scored[automatic(res.scored, w)]
-        m = stage_rows(res, spec, accepted, clustered(con, db, res.rule_clusters, accepted[accepted["keep"]], ids, uid), entity, uid, household)[-1]
+        m = stage_rows(res, spec, accepted, clustered(con, res.rule_clusters, accepted[accepted["keep"]], ids, uid), entity, uid, household)[-1]
         rows.append(dict(min_match_weight=w, probability=1 / (1 + 2 ** -w), accepted=len(accepted),
                          pairs_FP=int(accepted["fp"].sum()), stage_fp_rate_hi=fp_upper(int(accepted["fp"].sum()), len(accepted)),
                          TP=m["TP"], FP=m["FP"], FN=m["FN"], recall=m["recall"], recall_lo=m["recall_lo"],

@@ -56,13 +56,12 @@ def test_an_absent_optional_field_disables_exactly_what_reads_it():
     assert person.sources == (("LAST_NAME_KANA", "GIVEN_NAME_KANA"),) and any("X1_CIF_PERSON_NAME" in g for g in gone)
 
 
-def test_pattern_coverage_finds_the_patterns_no_key_guarantees(con_db, records):
-    _, db = con_db
+def test_pattern_coverage_finds_the_patterns_no_key_guarantees(con, records):
     spec = FSSpec(standardize=replace(load_settings().standardize, derived=()), previous_stage="rules", stage="fs", model=model(),
                     blockers=(KeyBlocker(name="phone", keys=(Key("phone"),)),), min_match_weight=-10.0,  # toy weights
                     resolver=Resolver(method="connected_components"),
                     budget=Budget(max_pairs_per_record=10**4, max_block_size=10**4, target_rows=10**6, benchmark_pairs=10))
-    model_json = train_fs(model(), records, db, UID)
+    model_json = train_fs(model(), records, con, UID)
     open_ = pattern_coverage(spec, model_json, len(records))
     assert len(open_) and not (open_["phone"] == "exact").any()  # the phone key guarantees every pattern with phone exact
     named = pattern_coverage(replace(spec, blockers=spec.blockers + (KeyBlocker(name="name", keys=(Key("name"),)),)), model_json, len(records))
@@ -70,10 +69,9 @@ def test_pattern_coverage_finds_the_patterns_no_key_guarantees(con_db, records):
     assert len(pattern_coverage(spec, model_json, 10**9)) <= len(open_)  # fewer patterns reach the threshold at scale
 
 
-def test_exact_u_counts_every_pair(con_db, records):
-    _, db = con_db
+def test_exact_u_counts_every_pair(con, records):
     holes = records.assign(name=records["name"].mask(records.index % 7 == 0))  # some names missing: the null level
-    u = exact_u(model(), holes, db)
+    u = exact_u(model(), holes, con)
     pairs = [(a, b) for i, a in enumerate(holes.itertuples()) for b in list(holes.itertuples())[i + 1:]]
     filled = [(a, b) for a, b in pairs if pd.notna(a.name) and pd.notna(b.name)]
     assert u["name"]["exact"] == pytest.approx(sum(a.name == b.name for a, b in filled) / len(filled))

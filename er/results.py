@@ -34,7 +34,7 @@ def joined_by(p: Pipeline) -> str:  # gold's resolved_by as people read it: you,
     return f"CASE WHEN resolved_by = 'review' THEN 'you' WHEN resolved_by = {lit(p.fs.model.name)} THEN 'model' WHEN resolved_by IS NOT NULL THEN 'rule' END"
 
 
-def pair_index(con: duckdb.DuckDBPyConnection, db: object, out: Path, s: Settings, p: Pipeline) -> str:
+def pair_index(con: duckdb.DuckDBPyConnection, out: Path, s: Settings, p: Pipeline) -> str:
     """scored/ as SQL: every pair the run scored at 0 points or more, the rules' pairs too, with how it was found
     (sources: its keys; rule: the rule that matched it), whether a name was compared (named) and one gamma per
     comparison. A run written before runs kept it gets it here, once, from the pairs it stored (matches/, proposed/,
@@ -44,11 +44,11 @@ def pair_index(con: duckdb.DuckDBPyConnection, db: object, out: Path, s: Setting
         with folder.run_lock(out):
             folder.finish_writes(out)  # a write cut short is finished first: staging the index replaces its list of moves
             if not any(index.glob("part-*.parquet")):
-                _index(con, db, out, s, p)
+                _index(con, out, s, p)
     return read(out, f"{folder.SCORED}/*.parquet")
 
 
-def _index(con: duckdb.DuckDBPyConnection, db: object, out: Path, s: Settings, p: Pipeline) -> None:
+def _index(con: duckdb.DuckDBPyConnection, out: Path, s: Settings, p: Pipeline) -> None:
     uid = s.data.unique_id
     l, r = q(f"{uid}_l"), q(f"{uid}_r")
     have = lambda name: any((out / name).glob("*.parquet"))
@@ -62,7 +62,7 @@ def _index(con: duckdb.DuckDBPyConnection, db: object, out: Path, s: Settings, p
     con.execute(f"""CREATE OR REPLACE TABLE er_index AS SELECT {l}, {r}, max(match_weight) AS match_weight, coalesce(max(sources) FILTER (WHERE part = 'model'),
         CASE WHEN bool_or(part = 'rule') THEN NULL ELSE max(sources) END) AS sources, max(rule) AS rule
         FROM ({' UNION ALL BY NAME '.join(parts)}) WHERE {l} IS NOT NULL GROUP BY {l}, {r}""")
-    scored_again(con, db, out, uid, "er_index", "er_index_scores")
+    scored_again(con, out, uid, "er_index", "er_index_scores")
     gammas = [c for c, *_ in con.execute("DESCRIBE er_index_scores").fetchall() if c.startswith("gamma_")]
     fs = replace(p.fs, needs=tuple(c for c in p.fs.needs if f"gamma_{c}" in gammas))  # the name check on the comparisons that run had
     con.execute(f"""CREATE OR REPLACE TABLE er_scored_index AS SELECT i.{l}, i.{r}, coalesce(i.match_weight, x.match_weight) AS match_weight,
@@ -81,7 +81,7 @@ def _status_sql(con: duckdb.DuckDBPyConnection, out: Path, uid: str, index: str)
         JOIN {read(out, 'gold.parquet')} ga ON ga.{u} = x.{l} JOIN {read(out, 'gold.parquet')} gb ON gb.{u} = x.{r}"""
 
 
-def list_scored(con: duckdb.DuckDBPyConnection, db: object, out: Path, s: Settings, p: Pipeline, frm: float | None = None, to: float | None = None,
+def list_scored(con: duckdb.DuckDBPyConnection, out: Path, s: Settings, p: Pipeline, frm: float | None = None, to: float | None = None,
                 source: str | None = None, status: str | None = None, record: str | None = None, page: int = 1, count: int = 100,
                 each: bool = False) -> dict:
     """One page of the run's pairs at 0 points or more, best first: both IDs, points, how each was found, its status,
@@ -91,7 +91,7 @@ def list_scored(con: duckdb.DuckDBPyConnection, db: object, out: Path, s: Settin
     E pairs + O(page·F) for the fields."""
     uid = s.data.unique_id
     l, r = q(f"{uid}_l"), q(f"{uid}_r")
-    rows = _status_sql(con, out, uid, pair_index(con, db, out, s, p))
+    rows = _status_sql(con, out, uid, pair_index(con, out, s, p))
     where = [f"match_weight >= {bits(frm)}" if frm is not None else "TRUE", f"match_weight < {bits(to)}" if to is not None else "TRUE"]
     where += {"rules": ["rule IS NOT NULL"], "model": ["rule IS NULL"]}.get(source or "", [])
     # open: waiting, or decided and not applied yet, so a queue holds still while people decide it
@@ -207,7 +207,7 @@ def _full_run_patterns(out: Path) -> dict | None:
     return full[-1]["patterns"] if full else None
 
 
-def describe_results(con: duckdb.DuckDBPyConnection, db: object, out: Path, s: Settings, p: Pipeline, review_from: float = 6.0) -> dict:
+def describe_results(con: duckdb.DuckDBPyConnection, out: Path, s: Settings, p: Pipeline, review_from: float = 6.0) -> dict:
     """What the run found, for the Results page: how the scores came out (every pair the run scored, each by its own
     points: the full run's and each increment's bands, as they logged them; a run logged before them, the full run's
     patterns, each pattern at its mean weight; the rules' own pairs from the pair index), the pairs waiting for people from `review_from` up, by range, what
@@ -215,7 +215,7 @@ def describe_results(con: duckdb.DuckDBPyConnection, db: object, out: Path, s: S
     probe), the groups too big to compare by the key that made them, and person or company: the records flagged (the
     engine sure against the file's flag), those still open on the sheet, and the measuring draw's open rows. O(N + P + E)."""
     uid, gold = s.data.unique_id, read(out, "gold.parquet")
-    index, chart, counts = pair_index(con, db, out, s, p), None, None
+    index, chart, counts = pair_index(con, out, s, p), None, None
     scored = [x for run in folder.runs(out) for x in run.get("steps", []) if x["step"] == "score"]
     if scored and all("bands" in x for x in scored):  # the keys' pairs, each by its own weight: the full run's and each increment's
         counts = [sum(n) for n in zip(*(x["bands"] for x in scored))]
@@ -327,37 +327,37 @@ def merge_where(m: dict, model: dict, p: Pipeline, x: str = "x") -> str:
     return "(" + f" {m.get('join', 'and').upper()} ".join(parts) + ")"
 
 
-def describe_merging(con: duckdb.DuckDBPyConnection, db: object, out: Path, s: Settings, p: Pipeline, m: dict | None = None) -> dict:
+def describe_merging(con: duckdb.DuckDBPyConnection, out: Path, s: Settings, p: Pipeline, m: dict | None = None) -> dict:
     """What the conditions `m` (else the workspace's) would merge: pairs, per condition and all together, people's
     applied "different" left apart; and the entities that would then hold two records or more. O(E + N)."""
     m = check_merging(m, p) if m is not None else merging_of(out, p)
     model, uid = run_model(out), s.data.unique_id
-    l, r, index = q(f"{uid}_l"), q(f"{uid}_r"), pair_index(con, db, out, s, p)
+    l, r, index = q(f"{uid}_l"), q(f"{uid}_r"), pair_index(con, out, s, p)
     con.register("er_applied", applied(out, uid)[[f"{uid}_l", f"{uid}_r", "decision"]])
     count = lambda where: con.execute(f"""SELECT count(*) FROM {index} x WHERE {where}
         AND NOT EXISTS (SELECT 1 FROM er_applied d WHERE d.{l} = x.{l} AND d.{r} = x.{r} AND d.decision = 'no_match')""").fetchall()[0][0]  # as _regroup: the applied answers, a newer one typed in waits
     each = [dict(condition=c, pairs=count(merge_where(dict(join="and", when=[c]), model, p))) for c in m["when"]]
-    _regroup(con, db, out, s, p, m, model)
+    _regroup(con, out, s, p, m, model)
     entities = con.execute("SELECT count(*) FROM (SELECT cluster_id FROM gold_new GROUP BY 1 HAVING count(*) > 1)").fetchall()[0][0]
     return dict(join=m["join"], when=m["when"], each=each, pairs=count(merge_where(m, model, p)), entities=int(entities))
 
 
-def _regroup(con: duckdb.DuckDBPyConnection, db: object, out: Path, s: Settings, p: Pipeline, m: dict, model: dict) -> None:
+def _regroup(con: duckdb.DuckDBPyConnection, out: Path, s: Settings, p: Pipeline, m: dict, model: dict) -> None:
     """gold_new: every record's entity from people's "same" and the pairs the conditions merge, people's "different"
     never merged; resolved_by review where people joined it, else the conditions'. O(E·d + N)."""
     uid = s.data.unique_id
     l, r, u = q(f"{uid}_l"), q(f"{uid}_r"), q(uid)
     con.register("er_applied", applied(out, uid)[[f"{uid}_l", f"{uid}_r", "decision"]])  # what merges is what was applied; typed answers wait for Apply
-    index = pair_index(con, db, out, s, p)
+    index = pair_index(con, out, s, p)
     con.execute(f"""CREATE OR REPLACE TABLE er_auto AS SELECT {l}, {r}, rule FROM {index} x WHERE {merge_where(m, model, p)}
         AND NOT EXISTS (SELECT 1 FROM er_applied d WHERE d.{l} = x.{l} AND d.{r} = x.{r} AND d.decision = 'no_match')""")
     con.execute(f"CREATE OR REPLACE TABLE er_people AS SELECT {l}, {r} FROM er_applied WHERE decision = 'match'")
     con.execute(f"CREATE OR REPLACE TABLE er_base AS SELECT {u}, {u} AS cluster_id FROM {read(out, 'gold.parquet')}")
     con.execute(f"CREATE OR REPLACE TABLE er_links AS SELECT * FROM er_people UNION SELECT {l}, {r} FROM er_auto")
-    merge(con, db, "er_base", "er_links", "gold_new", uid)
+    merge(con, "er_base", "er_links", "gold_new", uid)
 
 
-def apply_merging(con: duckdb.DuckDBPyConnection, db: object, out: Path, s: Settings, p: Pipeline, method: dict | None = None) -> dict:
+def apply_merging(con: duckdb.DuckDBPyConnection, out: Path, s: Settings, p: Pipeline, method: dict | None = None) -> dict:
     """gold.parquet rebuilt from people's applied "same" and the pairs the workspace's conditions merge (none: the pairs
     the method merges by itself), as a run would: a condition turned off parts what it joined, people's answers stand.
     `method`: method.toml as it becomes, written with gold, so the two never disagree. No run: O(E·d + N) on the
@@ -368,7 +368,7 @@ def apply_merging(con: duckdb.DuckDBPyConnection, db: object, out: Path, s: Sett
     with folder.run_lock(out):
         m = merging_of(out, p) if method is None else _merging(method, p)
         folder.finish_writes(out)
-        _regroup(con, db, out, s, p, m, model)
+        _regroup(con, out, s, p, m, model)
         old = read(out, "gold.parquet")
         cols = {c for c, *_ in con.execute(f"DESCRIBE SELECT * FROM {old}").fetchall()}
         kinds = "kind" in cols
@@ -392,7 +392,7 @@ def apply_merging(con: duckdb.DuckDBPyConnection, db: object, out: Path, s: Sett
     return dict(join=m["join"], when=m["when"], entities=int(joined), merged=con.execute("SELECT count(*) FROM er_auto").fetchall()[0][0])
 
 
-def merged_links(con: duckdb.DuckDBPyConnection, db: object, out: Path, s: Settings, p: Pipeline, ids: list[str]) -> pd.DataFrame:
+def merged_links(con: duckdb.DuckDBPyConnection, out: Path, s: Settings, p: Pipeline, ids: list[str]) -> pd.DataFrame:
     """The pairs among `ids` that the workspace's conditions merge, less people's "different": describe entity's links
     by 'auto', with their points. O(E) over the index."""
     uid, m = s.data.unique_id, merging_of(out, p)
@@ -401,7 +401,7 @@ def merged_links(con: duckdb.DuckDBPyConnection, db: object, out: Path, s: Setti
         return pd.DataFrame(columns=[l, r, "by", "weight"])
     con.register("er_members", pd.DataFrame({"id": ids}, dtype="string"))
     con.register("er_no", applied(out, uid).query("decision == 'no_match'")[[l, r]].astype("string"))
-    return con.execute(f"""SELECT {q(l)}, {q(r)}, 'auto' AS by, match_weight AS weight FROM {pair_index(con, db, out, s, p)} x
+    return con.execute(f"""SELECT {q(l)}, {q(r)}, 'auto' AS by, match_weight AS weight FROM {pair_index(con, out, s, p)} x
         WHERE {q(l)} IN (SELECT id FROM er_members) AND {q(r)} IN (SELECT id FROM er_members) AND {merge_where(m, run_model(out), p)}
         AND NOT EXISTS (SELECT 1 FROM er_no n WHERE n.{q(l)} = x.{q(l)} AND n.{q(r)} = x.{q(r)}) ORDER BY 1, 2""").df()
 

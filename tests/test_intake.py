@@ -704,7 +704,7 @@ def test_only_a_records_file_is_read_whole_and_as_it_was_written(say, tmp_path):
     assert got["name"].iloc[0] == "タナカタロウ" and got["address"].iloc[3] == "東京都千代田区丸の内3丁目"
 
     pd.DataFrame({uid: ["0001", "0002"], "kind": [" 1", "２\u3000"]}).to_parquet(tmp_path / "kinds.parquet", index=False)
-    assert len(answers(tmp_path / "kinds.parquet", connect()[0], uid)) == 2  # both taken: a space or a full-width digit is no other kind
+    assert len(answers(tmp_path / "kinds.parquet", connect(), uid)) == 2  # both taken: a space or a full-width digit is no other kind
 
 
 def test_utf16_without_its_bom_reads_whole_though_full_width_spaces_put_nuls_on_the_other_side(tmp_path):

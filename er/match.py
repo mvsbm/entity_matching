@@ -8,6 +8,7 @@ fellegi_sunter  Splink's Fellegi–Sunter model: λ from near-certain rules, u c
 import contextlib
 import copy
 import hashlib
+import itertools
 import json
 import logging
 import math
@@ -51,16 +52,16 @@ def _unseen_when_zero(fixed: set[str], level, name: str, lookup: dict) -> None:
 splink_em.populate_m_u_from_lookup = _unseen_when_zero
 
 
-def rule_edges(spec: RulesSpec, records: "Records", db: DuckDBAPI, uid: str, batch: str | None = None,
+def rule_edges(spec: RulesSpec, records: "Records", con: duckdb.DuckDBPyConnection, uid: str, batch: str | None = None,
                trust: Mapping[int, str] | None = None, into: str | None = None, told: Callable[..., None] | None = None) -> tuple[pd.DataFrame | str, dict[str, float]]:
     """Every rule's pairs, uid_l < uid_r, with the rule and stage that found it (the first rule in order wins a pair)
     and score 1.0: one equi-join per rule, its fuzzy conditions checked on the joined pairs only. `batch`: a table of
     records joined against all of them (an increment), O(|batch|·b) instead of every pair; `trust`: per rule (its index
     in order), a condition its record `l` must meet (values it doesn't trust left out: the keys are equal on both
-    sides). With `into`, a table in db's connection, else a frame. Also returns each rule's seconds. `told(done, total,
+    sides). With `into`, a table in con, else a frame. Also returns each rule's seconds. `told(done, total,
     "rules")` after each rule: how far it is.
     Plain SQL, not Splink's deterministic_link, which joins every column of both records back only for us to drop them."""
-    l, r, u, con = q(f"{uid}_l"), q(f"{uid}_r"), q(uid), db.duckdb_con
+    l, r, u = q(f"{uid}_l"), q(f"{uid}_r"), q(uid)
     name = records if isinstance(records, str) else f"er_rules_{abs(hash(id(records)))}"
     if not isinstance(records, str):  # a frame not prepared by er.standardize has no one-byte copy: the Python function compares its pairs
         copies = {comp.copy(c) for s in spec.stages for c, comp in s.comparators.items() if comp.copy(c)} - set(records.columns)
@@ -135,26 +136,30 @@ def read_by(settings: dict | SettingsCreator, *rules: str) -> set[str]:
     return set(re.findall(r'"([^"]+)_[lr]"', text)) | set(re.findall(r'\b[lr]\."([^"]+)"', text)) | {lv["tf_adjustment_column"] for lv in levels if lv.get("tf_adjustment_column")}
 
 
+_NARROWED = itertools.count()  # each registration its own name: they nest
+
+
 @contextlib.contextmanager
-def narrowed(df: "Records", db: DuckDBAPI, keep: set[str]):
+def narrowed(df: "Records", con: duckdb.DuckDBPyConnection, keep: set[str]):
     """The records as a linker reads them, registered: only the columns in `keep`, so a wide file's others never travel
     with each pair through its joins (the same scores; a column it reads and lacks fails loudly, but a one-byte copy:
-    records not prepared by er.standardize lack it, and the Python function then compares every pair). Released after,
-    the db's cache first (it may name them)."""
+    records not prepared by er.standardize lack it, and the Python function then compares every pair). Yields the name
+    they are registered under on con; released after (a linker's cache first: it may name them)."""
+    name = f"er_narrowed_{next(_NARROWED)}"
     if isinstance(df, pd.DataFrame):
-        x = db.register(df[[c for c in df.columns if c in keep]].assign(**{c: pd.Series(pd.NA, index=df.index, dtype="string")
-                                                                           for c in keep - set(df.columns) if c.endswith(COPIES)}))
+        con.register(name, df[[c for c in df.columns if c in keep]].assign(**{c: pd.Series(pd.NA, index=df.index, dtype="string")
+                                                                              for c in keep - set(df.columns) if c.endswith(COPIES)}))
     else:
-        have = [c for c, *_ in db.duckdb_con.execute(f'DESCRIBE "{df}"').fetchall()]
+        have = [c for c, *_ in con.execute(f'DESCRIBE "{df}"').fetchall()]
         cols = [q(c) for c in have if c in keep] + [f"NULL::VARCHAR AS {q(c)}" for c in sorted(keep - set(have)) if c.endswith(COPIES)]
-        x = db.register(db.duckdb_con.sql(f'SELECT {", ".join(cols)} FROM "{df}"'))
+        con.register(name, con.sql(f'SELECT {", ".join(cols)} FROM "{df}"'))
     try:
-        yield x
+        yield name
     finally:
-        db.duckdb_con.unregister(x.physical_name)
+        con.unregister(name)
 
 
-def sample_u(model: FSModel, comparisons: list[Comparison], df: pd.DataFrame, db: DuckDBAPI, uid: str) -> U:
+def sample_u(model: FSModel, comparisons: list[Comparison], df: pd.DataFrame, con: duckdb.DuckDBPyConnection, uid: str) -> U:
     """Splink's random sampling for just these comparisons, its sample drawn as Splink draws it (the records whose
     hash of ID and seed falls in the share that gives about max_pairs pairs, and every pair of them), every comparison's
     levels counted in one pass over the pairs, where Splink joins them again for each comparison, chunk by chunk: the
@@ -164,9 +169,9 @@ def sample_u(model: FSModel, comparisons: list[Comparison], df: pd.DataFrame, db
     if not comparisons:
         return {}
     settings = fs_settings(replace(model, comparisons=tuple(comparisons)), uid).create_settings_dict("duckdb")
-    con, u = db.duckdb_con, q(uid)
-    with narrowed(df, db, read_by(settings) | {uid}) as records:
-        t = q(records.physical_name)
+    u = q(uid)
+    with narrowed(df, con, read_by(settings) | {uid}) as records:
+        t = q(records)
         share = 0.5 * ((8 * model.u_max_pairs + 1) ** 0.5 + 1) / max(con.execute(f"SELECT count(*) FROM {t}").fetchall()[0][0], 1)
         key = u if model.seed is None else f"({u}) || '_{model.seed}'"
         drawn = f"(SELECT * FROM {t} WHERE (((hash({key})) % 1000000000) + 1000000000) % 1000000000 < {max(1, round(share * 1_000_000_000))})" if share < 1 else t
@@ -187,25 +192,25 @@ def sample_u(model: FSModel, comparisons: list[Comparison], df: pd.DataFrame, db
     return out
 
 
-Records = pd.DataFrame | str  # a frame, or the name of a table in the DuckDB connection behind `db`
+Records = pd.DataFrame | str  # a frame, or the name of a table in the DuckDB connection `con`
 
 
-def rows(records: Records, db: DuckDBAPI) -> int:
-    return len(records) if isinstance(records, pd.DataFrame) else db.duckdb_con.execute(f'SELECT count(*) FROM "{records}"').fetchall()[0][0]
+def rows(records: Records, con: duckdb.DuckDBPyConnection) -> int:
+    return len(records) if isinstance(records, pd.DataFrame) else con.execute(f'SELECT count(*) FROM "{records}"').fetchall()[0][0]
 
 
-def fill_share(records: Records, col: str, db: DuckDBAPI) -> float:  # the share of records with col filled
+def fill_share(records: Records, col: str, con: duckdb.DuckDBPyConnection) -> float:  # the share of records with col filled
     if isinstance(records, pd.DataFrame):
         return float(records[col].notna().mean())
-    return float(db.duckdb_con.execute(f'SELECT avg(("{col}" IS NOT NULL)::INT) FROM "{records}"').fetchall()[0][0] or 0)
+    return float(con.execute(f'SELECT avg(("{col}" IS NOT NULL)::INT) FROM "{records}"').fetchall()[0][0] or 0)
 
 
-def exact_u(model: FSModel, records: Records, db: DuckDBAPI) -> U:
+def exact_u(model: FSModel, records: Records, con: duckdb.DuckDBPyConnection) -> U:
     """u of each comparison's leading exact levels, computed exactly from value counts: the share of all distinct record
     pairs that land in the level, among the pairs outside the comparison's null level. A level that ORs several exact
     conditions is counted by inclusion–exclusion. O(N) per set of conditions; unlike a sample, it can't miss an agreement
     rarer than one in a billion pairs."""
-    con, name = db.duckdb_con, None
+    name = None
     if isinstance(records, pd.DataFrame):
         name = f"er_u_{abs(hash(id(records)))}"
         con.register(name, records)
@@ -289,12 +294,12 @@ def counted(model: FSModel, exact: U) -> set[str]:  # the comparisons exact_u co
     return {name for name, u in exact.items() if ELSE in u} if model.u_exact_by_counts and model.u_near_by_keys else set()
 
 
-def u_bound(model: FSModel, c: Comparison, records: Records, db: DuckDBAPI) -> float:
+def u_bound(model: FSModel, c: Comparison, records: Records, con: duckdb.DuckDBPyConnection) -> float:
     """95% upper bound on u for a level no sampled pair reached: zero hits among the sampled pairs where the comparison
     is filled, of which there are at least (largest fill share of its columns)² of the sample."""
-    n = rows(records, db)
+    n = rows(records, con)
     sampled = min(model.u_max_pairs, n * (n - 1) / 2)
-    n_filled = max(1, int(sampled * max(fill_share(records, col, db) for col in c.null_if_missing) ** 2))
+    n_filled = max(1, int(sampled * max(fill_share(records, col, con) for col in c.null_if_missing) ** 2))
     return 1 - 0.05 ** (1 / n_filled)  # the one-sided 95% Clopper–Pearson bound at zero hits (er.evaluate.fp_upper(0, n))
 
 
@@ -305,9 +310,9 @@ U_KEPT = 64  # sampled u a workspace keeps (folder.U_SAMPLED), the newest: one p
 U_CODE = hashlib.sha256(b"".join((Path(__file__).parent / f).read_bytes() for f in ("match.py", "strings.py", "config.py"))).hexdigest()[:16]
 
 
-def fingerprint(records: Records, cols: list[str], db: DuckDBAPI) -> int:
+def fingerprint(records: Records, cols: list[str], con: duckdb.DuckDBPyConnection) -> int:
     """The same set of records and values, in any order, a frame or a table alike: hashed by DuckDB either way."""
-    con, name = db.duckdb_con, records if isinstance(records, str) else f"er_fp_{abs(hash(id(records)))}"
+    name = records if isinstance(records, str) else f"er_fp_{abs(hash(id(records)))}"
     if not isinstance(records, str):
         con.register(name, records)
     try:
@@ -317,7 +322,7 @@ def fingerprint(records: Records, cols: list[str], db: DuckDBAPI) -> int:
             con.unregister(name)
 
 
-def scored_sample(model: FSModel, df: Records, db: DuckDBAPI, uid: str, comparisons: Iterable[Comparison] | None = None, kept: Path | None = None) -> U:
+def scored_sample(model: FSModel, df: Records, con: duckdb.DuckDBPyConnection, uid: str, comparisons: Iterable[Comparison] | None = None, kept: Path | None = None) -> U:
     """u by random sampling on these records, per comparison (all, or these), cached (SCORED_U) by the comparison and
     the values it reads, within this process. Splink picks the sampled pairs by a hash of the record ID, so nothing else
     changes them: a model and its variant share one sample, and so do a fit on a whole small file and the run's u on it
@@ -327,7 +332,7 @@ def scored_sample(model: FSModel, df: Records, db: DuckDBAPI, uid: str, comparis
     while the comparison, the values, this code and Splink's and DuckDB's versions are as they were."""
     keys, wanted = model.u_keys(), list(model.comparisons if comparisons is None else comparisons)
     reads = {c.name: [uid, *sorted({comp.column(col) for lv in c.levels for col, comp in lv.any_of} | set(c.null_if_missing))] for c in wanted}
-    prints = {c.name: fingerprint(df, reads[c.name], db) for c in wanted}
+    prints = {c.name: fingerprint(df, reads[c.name], con) for c in wanted}
     stable = lambda name: hashlib.sha256(repr((keys[name], prints[name], splink.__version__, duckdb.__version__, U_CODE)).encode()).hexdigest()
     try:  # a copy kept never fails a run: unreadable, sampled again
         on_disk = json.loads(kept.read_text(encoding="utf-8")) if kept and kept.is_file() else {}
@@ -337,7 +342,7 @@ def scored_sample(model: FSModel, df: Records, db: DuckDBAPI, uid: str, comparis
         if (keys[c.name], prints[c.name]) not in SCORED_U and stable(c.name) in on_disk:
             SCORED_U[keys[c.name], prints[c.name]] = on_disk[stable(c.name)]
     todo = [c for c in wanted if (keys[c.name], prints[c.name]) not in SCORED_U]
-    fresh = sample_u(model, todo, df, db, uid)
+    fresh = sample_u(model, todo, df, con, uid)
     for name, u in fresh.items():
         SCORED_U[keys[name], prints[name]] = u
         on_disk.pop(stable(name), None)
@@ -350,7 +355,7 @@ def scored_sample(model: FSModel, df: Records, db: DuckDBAPI, uid: str, comparis
     return {c.name: SCORED_U[keys[c.name], prints[c.name]] for c in wanted}
 
 
-def assemble_u(model: FSModel, model_json: dict, sampled: U, exact: U, df: Records, db: DuckDBAPI) -> dict:
+def assemble_u(model: FSModel, model_json: dict, sampled: U, exact: U, df: Records, con: duckdb.DuckDBPyConnection) -> dict:
     """model_json with each level's u: counted exactly (when the model counts them), else sampled, else, for a level no
     sampled pair reached, the bound on these records. A level never seen in training gets m = u, 0 bits. m and λ stay as
     fitted (score_fs rescales λ), within sensible_m's limits, applied again against these u."""
@@ -361,30 +366,30 @@ def assemble_u(model: FSModel, model_json: dict, sampled: U, exact: U, df: Recor
         name = c["output_column_name"]
         for lv in (lv for lv in c["comparison_levels"] if not lv.get("is_null_level")):
             label = lv["label_for_charts"]
-            lv["u_probability"] = exact.get(name, {}).get(label) or sampled.get(name, {}).get(label) or u_bound(model, by_name[name], df, db)
+            lv["u_probability"] = exact.get(name, {}).get(label) or sampled.get(name, {}).get(label) or u_bound(model, by_name[name], df, con)
             if (name, label) in filled_m:
                 lv["m_probability"] = lv["u_probability"]
     out["er"] = {**out["er"], "adjusted": sensible_m(model, out, filled_m)}  # the limits on m, against these u
     return out
 
 
-def scored_u(model: FSModel, model_json: dict, df: Records, db: DuckDBAPI, uid: str, kept: Path | None = None) -> tuple[dict, U, U]:
+def scored_u(model: FSModel, model_json: dict, df: Records, con: duckdb.DuckDBPyConnection, uid: str, kept: Path | None = None) -> tuple[dict, U, U]:
     """model_json with u measured on the records to be scored, and the u sampled and counted for it (u_basis reads them).
     In a bigger file, a field whose value set grows with it (address, CIF ID) agrees by chance less often, so u fixed
     from the fitting set under-credits it. Needs no labels; O(N) counts and u_max_pairs sampled, whatever the file's size."""
-    exact = exact_u(model, df, db)
+    exact = exact_u(model, df, con)
     skip = counted(model, exact)
-    sampled = scored_sample(model, df, db, uid, [c for c in model.comparisons if c.name not in skip], kept)
-    return assemble_u(model, model_json, sampled, exact, df, db), sampled, exact
+    sampled = scored_sample(model, df, con, uid, [c for c in model.comparisons if c.name not in skip], kept)
+    return assemble_u(model, model_json, sampled, exact, df, con), sampled, exact
 
 
-def u_basis(model: FSModel, sampled: U, exact: U, df: Records, db: DuckDBAPI, names: Iterable[str] | None = None) -> dict:
+def u_basis(model: FSModel, sampled: U, exact: U, df: Records, con: duckdb.DuckDBPyConnection, names: Iterable[str] | None = None) -> dict:
     """What a later increment needs to tell whether these sampled u have gone stale, per comparison: the sampled u, the
     exact-level u counted alongside, the record count, and how many sampled pairs had the comparison filled."""
-    n = rows(df, db)
+    n = rows(df, con)
     sampled_pairs = min(model.u_max_pairs, n * (n - 1) / 2)
     return {c.name: dict(sampled=sampled.get(c.name, {}), exact=exact.get(c.name, {}), n=n,
-                         pairs=sampled_pairs * max(fill_share(df, col, db) for col in c.null_if_missing) ** 2)
+                         pairs=sampled_pairs * max(fill_share(df, col, con) for col in c.null_if_missing) ** 2)
             for c in model.comparisons if names is None or c.name in names}
 
 
@@ -408,18 +413,18 @@ def stale_u(model: FSModel, basis: dict, exact_now: U, n: int) -> dict[str, dict
     return out
 
 
-def refreshed_u(model: FSModel, model_json: dict, basis: dict, df: Records, db: DuckDBAPI, uid: str) -> tuple[dict, dict, list[str]]:
+def refreshed_u(model: FSModel, model_json: dict, basis: dict, df: Records, con: duckdb.DuckDBPyConnection, uid: str) -> tuple[dict, dict, list[str]]:
     """For an increment: the exact levels counted again on all records (O(N), a group-by per level), and only the
     comparisons stale_u finds stale sampled again (u_max_pairs each); the rest keep their stored sample. Returns the
     scoring model, the updated basis (each comparison with its last check) and the comparisons sampled again."""
-    exact, n = exact_u(model, df, db), rows(df, db)
+    exact, n = exact_u(model, df, con), rows(df, con)
     check = stale_u(model, basis, exact, n)
     todo = [c for c in model.comparisons if check[c.name]["drift_bits"] > check[c.name]["se_bits"] and c.name not in counted(model, exact)]
-    basis = {**basis, **u_basis(model, sample_u(model, todo, df, db, uid), exact, df, db, {c.name for c in todo})}
+    basis = {**basis, **u_basis(model, sample_u(model, todo, df, con, uid), exact, df, con, {c.name for c in todo})}
     for name, x in check.items():
         basis[name]["last_check"] = {k: v if math.isfinite(v) else None for k, v in x.items()}
     sampled = {name: b["sampled"] for name, b in basis.items()}
-    return assemble_u(model, model_json, sampled, exact, df, db), basis, [c.name for c in todo]
+    return assemble_u(model, model_json, sampled, exact, df, con), basis, [c.name for c in todo]
 
 
 def rule_pairs(df: pd.DataFrame, rule: tuple[Key, ...]) -> int:  # the pairs a blocking rule makes in these records
@@ -513,7 +518,7 @@ def chosen(model: FSModel, t: pd.DataFrame, learned: dict[tuple[Key, ...], dict[
     return median, rows, wide
 
 
-def train_fs(model: FSModel, df: pd.DataFrame, db: DuckDBAPI, uid: str, labels: pd.Series | None = None, kept: Path | None = None,
+def train_fs(model: FSModel, df: pd.DataFrame, con: duckdb.DuckDBPyConnection, uid: str, labels: pd.Series | None = None, kept: Path | None = None,
              u: dict[str, dict[str, float]] | None = None) -> dict:
     """Train on df; `labels` (entity per uid) is required for m_method="labels". Returns the Splink model JSON plus
     "er": what scoring needs (fitting-set size, term frequencies) and which levels had no estimate.
@@ -533,12 +538,12 @@ def train_fs(model: FSModel, df: pd.DataFrame, db: DuckDBAPI, uid: str, labels: 
     if u is not None:  # given (a file's, measured already): EM learns m and λ against it, nothing sampled
         filled_u, u = [], {c.name: {lv: u[c.name][lv] for lv in labels_of[c.name]} for c in model.comparisons}
     else:
-        exact = exact_u(model, t, db) if model.u_exact_by_counts else {}  # the leading exact levels, exactly
+        exact = exact_u(model, t, con) if model.u_exact_by_counts else {}  # the leading exact levels, exactly
         skip = counted(model, exact)
-        u = {**{c: {} for c in skip}, **scored_sample(model, t, db, uid, [c for c in model.comparisons if c.name not in skip], kept)}
+        u = {**{c: {} for c in skip}, **scored_sample(model, t, con, uid, [c for c in model.comparisons if c.name not in skip], kept)}
         u = {c: {**levels, **exact.get(c, {})} for c, levels in u.items()}
         filled_u = [[c.name, lv] for c in model.comparisons for lv in labels_of[c.name] if lv not in u[c.name]]
-        u = {c.name: {lv: u[c.name].get(lv) or u_bound(model, c, t, db) for lv in labels_of[c.name]} for c in model.comparisons}
+        u = {c.name: {lv: u[c.name].get(lv) or u_bound(model, c, t, con) for lv in labels_of[c.name]} for c in model.comparisons}
     fields = lambda rule: " + ".join(k.column for k in rule)
     prior = [r for r in model.prior_rules if rule_pairs(t, r)]
     em_pairs = {r: n for r in model.em_rules if (n := rule_pairs(t, r))} if model.m_method == "em" else {}  # each EM session's pairs in the sample
@@ -555,7 +560,8 @@ def train_fs(model: FSModel, df: pd.DataFrame, db: DuckDBAPI, uid: str, labels: 
     tf_levels = any(c.tf and any(lv.tf for lv in c.levels) for c in model.comparisons)  # none: EM iterates on each agreement pattern's count, not on every pair
     median: dict[tuple[str, str], list[float]] = {}
     choice, wide = [], []
-    with narrowed(t, db, read_by(settings, *(em_sql(model, r) for r in (*prior, *em, *choose))) | {uid, "__label__"}) as records:
+    with narrowed(t, con, read_by(settings, *(em_sql(model, r) for r in (*prior, *em, *choose))) | {uid, "__label__"}) as name:
+        records = DuckDBAPI(connection=con).register(name)  # Splink's wrapper for this fit alone: its cache goes with it
         linker = Linker(records, settings, log_level=logging.ERROR, validate_settings=False)  # its checks only log warnings, which ERROR hides: sqlglot parses for nothing
         linker.training.estimate_probability_two_random_records_match([keys_sql(r) for r in prior], recall=model.prior_recall)
 
@@ -655,33 +661,33 @@ def scaled_prior(model_json: dict, n_records: int) -> float:
     return min(prior, 1 - 1e-9)
 
 
-def score_fs(model_json: dict, df: Records, pairs: pd.DataFrame | str, db: DuckDBAPI, uid: str,
+def score_fs(model_json: dict, df: Records, pairs: pd.DataFrame | str, con: duckdb.DuckDBPyConnection, uid: str,
              into: str | None = None, n_records: int | None = None, floor: float | None = None,
              bound: Bound | None = None, exempt: str | None = None) -> pd.DataFrame | str:
     """Score exactly these candidate pairs (uid_l < uid_r) with a model from train_fs, so that a score doesn't depend
     on the size of the scored set: term frequencies come from the fitting records (a value unseen there gets no
-    adjustment), and λ is rescaled to this set's size (scaled_prior). Records and pairs may be tables in db's
-    connection; with `into`, the scores are written to that table and its name returned, so nothing of size C
+    adjustment), and λ is rescaled to this set's size (scaled_prior). Records and pairs may be tables in
+    con; with `into`, the scores are written to that table and its name returned, so nothing of size C
     reaches pandas. `n_records`: the size λ is rescaled to, when df holds only the records the pairs touch.
     With `floor` (and no term frequencies), a pair whose score can't reach it is left out unscored (predict_sql):
     `bound`, how the bound settles each comparison (bound_tests); `exempt`, a table of pairs (uid_l, uid_r)
     scored whatever their bound."""
     l, r = f"{uid}_l", f"{uid}_r"
     fit = model_json["er"]
-    lam = scaled_prior(model_json, n_records or rows(df, db))
+    lam = scaled_prior(model_json, n_records or rows(df, con))
     settings = {k: v for k, v in model_json.items() if k != "er"} | {"probability_two_random_records_match": lam}
     if not fit["tf"]:
-        return _scored(settings, df, pairs, db, uid, into, floor, bound or {}, exempt)
-    with narrowed(df, db, read_by(settings) | {uid}) as records:
-        linker = Linker(records, settings, log_level=logging.WARNING)
-        linker.table_management.invalidate_cache()  # the cache lives on the shared db, keyed by table name only
-        con, held = db.duckdb_con, []  # what it registers, released once scored: a run calls it once a slice
+        return _scored(settings, df, pairs, con, uid, into, floor, bound or {}, exempt)
+    with narrowed(df, con, read_by(settings) | {uid}) as name:
+        db = DuckDBAPI(connection=con)  # Splink's wrapper for this call alone: its cache goes with it
+        linker = Linker(db.register(name), settings, log_level=logging.WARNING)
+        held = []  # what it registers, released once scored: a run calls it once a slice
         try:
             for col, tf in fit["tf"].items():
                 held.append(db.register(pd.DataFrame({col: list(tf), f"tf_{col}": list(tf.values())})))
                 linker.table_management.register_term_frequency_lookup(held[-1], col)
             return _predict(linker, held, db, pairs, l, r, into)
-        finally:  # the db's cache first: it names the lookups, and a linker made later on this db would read them
+        finally:  # the linker's cache first: it names the lookups
             linker.table_management.invalidate_cache()
             for x in held:
                 con.unregister(x.physical_name)
@@ -877,9 +883,9 @@ def predict_sql(settings: dict, records: str, pairs: str, uid: str, have: set[st
         FROM (SELECT *, {', '.join(weights)} FROM (SELECT {l}, {r}, {', '.join(_gammas(settings))} FROM ({sides})))"""
 
 
-def _scored(settings: dict, df: Records, pairs: pd.DataFrame | str, db: DuckDBAPI, uid: str, into: str | None,
+def _scored(settings: dict, df: Records, pairs: pd.DataFrame | str, con: duckdb.DuckDBPyConnection, uid: str, into: str | None,
             floor: float | None = None, bound: Bound | None = None, exempt: str | None = None) -> pd.DataFrame | str:
-    con, held = db.duckdb_con, []
+    held = []
 
     def table(x: pd.DataFrame | str, name: str) -> str:
         if isinstance(x, str):
@@ -925,7 +931,7 @@ def _predict(linker: Linker, held: list, db: DuckDBAPI, pairs: pd.DataFrame | st
         predictions.drop_table_from_database_and_remove_from_cache()
         return into
     out = projected.df()
-    predictions.drop_table_from_database_and_remove_from_cache()  # else every call keeps its predictions in the shared db
+    predictions.drop_table_from_database_and_remove_from_cache()  # else the predictions stay in con
     return out.astype({l: "string", r: "string"})
 
 

@@ -331,7 +331,7 @@ def type_in(out: Path, sheet: str, column: str, value: object, append: dict | No
             raise InputError(f"{path}: no row for {', '.join(f'{k} {v}' for k, v in keys.items())}",
                              fix="answer a row the sheet holds, with the IDs as the run wrote them")
         frame.loc[rows, column] = pd.NA if value is None else value
-        stage(connect()[0], out, [], frames=[(frame, path)])
+        stage(connect(), out, [], frames=[(frame, path)])
 
 
 def inputs(out: Path, spec: intake.InputSpec | None = None, reference: Path | None = None) -> list[Path]:

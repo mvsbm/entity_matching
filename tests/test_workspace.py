@@ -505,16 +505,15 @@ def test_an_increment_counts_exact_u_again_and_samples_only_a_drifted_comparison
     after = json.loads((tmp_path / "c" / "state" / "scoring.json").read_text(encoding="utf-8"))["basis"]
     stale = [k for k, b in after.items() if b["last_check"]["drift_bits"] > (b["last_check"]["se_bits"] or math.inf)]
     assert sampled == stale  # sampled again exactly where drift outgrew the sampling error
-    exact = exact_u(model, "records", inc.db)  # the exact levels are always counted on every record
+    exact = exact_u(model, "records", inc.con)  # the exact levels are always counted on every record
     for c in inc.scoring["comparisons"]:
         for lv in c["comparison_levels"]:
             if lv.get("label_for_charts") in exact.get(c["output_column_name"], {}):
                 assert lv["u_probability"] == pytest.approx(exact[c["output_column_name"]][lv["label_for_charts"]])
 
 
-def test_the_loader_reads_parquet_by_column_name_and_says_what_is_wrong(tmp_path, con_db, monkeypatch):
+def test_the_loader_reads_parquet_by_column_name_and_says_what_is_wrong(tmp_path, con, monkeypatch):
     from er.source import open_source
-    con, _ = con_db
     pd.DataFrame({"cont_id": ["1", "2"], "Phone-Num 4": [599, 1234], "x": ["a", "b"]}).to_parquet(tmp_path / "a.parquet", index=False)
     pd.DataFrame({"CONT_ID": ["3"], "y": ["c"]}).to_parquet(tmp_path / "b.parquet", index=False)
     src = open_source(tmp_path / "a.parquet", con, ["CONT_ID", "PHONE_NUM_4"])  # case, width and separators aside

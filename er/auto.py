@@ -82,7 +82,7 @@ def shape(s: Settings, path: str | Path) -> dict:
     """The records at `path` and each field's share filled, under the mapping of `s`, from describe's one scan: counts
     and shares only, no value. Its share of companies, the company name's, unless that reads a column a person's name
     reads too (one name column for both: then not known, None). O(N)."""
-    d = describe(path, connect(s.compute)[0], s.columns, s.detect)
+    d = describe(path, connect(s.compute), s.columns, s.detect)
     fields = {f["field"]: round(f["filled"], 4) for f in d["fields"] if f["filled"]}
     names = lambda f: {c for alt in s.columns.get(f, ()) for c in alt}
     shared = names("company_name") & (names("person_name") | names("full_name"))
@@ -200,7 +200,7 @@ def rehearse(ws: Path, sh: dict, s: Settings, pipeline: Path | None, emit: Calla
     listed, the generated shape beside the file's, and what went wrong if the run stopped (an out-of-memory or a full
     disk: the real file would stop there too), in its own words when it died without saying (the last lines it wrote)."""
     root, t = ws / "rehearsal", time.perf_counter()
-    temp = Path(connect(s.compute)[0].execute("SELECT current_setting('temp_directory')").fetchall()[0][0])
+    temp = Path(connect(s.compute).execute("SELECT current_setting('temp_directory')").fetchall()[0][0])
     for old in temp.glob("rehearsal-*"):  # one a rehearsal killed outright left: its process is gone
         pid = old.name.removeprefix("rehearsal-")
         if pid.isdigit() and not alive(int(pid)):
@@ -311,7 +311,7 @@ def values(part: Path, s: Settings) -> set[str]:
     report's own words; a name is written Sato or SATO) or a number or time of fewer than 6 digits (12.34, 04:19);
     a column's name is none. O(SAMPLE · columns)."""
     files = ", ".join(lit(str(f)) for f in find(part))
-    df = connect(s.compute)[0].execute(f"SELECT * FROM read_parquet([{files}], union_by_name = true) USING SAMPLE {SAMPLE} ROWS").df()
+    df = connect(s.compute).execute(f"SELECT * FROM read_parquet([{files}], union_by_name = true) USING SAMPLE {SAMPLE} ROWS").df()
     names, out = set(df.columns), set()
     for c in df.columns:
         for v in df[c].dropna().astype(str).str.strip().unique():

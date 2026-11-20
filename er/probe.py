@@ -25,7 +25,7 @@ from er.match import bound_tests, named_sql, score_fs
 EXAMPLES = 200  # hit pairs kept per stratum, for people to see
 
 
-def missed(con: duckdb.DuckDBPyConnection, db: object, model: dict, fs: FSSpec, spec: Probe, records: str, links: str, uid: str,
+def missed(con: duckdb.DuckDBPyConnection, model: dict, fs: FSSpec, spec: Probe, records: str, links: str, uid: str,
            resolved: str | None = None, apart: str | None = None) -> list[dict]:
     """Each stratum of `spec`, measured on `records` (the run's standardized records) with the run's `model`, against
     `links` (SQL: uid_l, uid_r, the model's likely links): its pairs, the share of records drawn, the pairs scored,
@@ -36,7 +36,7 @@ def missed(con: duckdb.DuckDBPyConnection, db: object, model: dict, fs: FSSpec, 
     u, l, r = q(uid), q(f"{uid}_l"), q(f"{uid}_r")
     have = {c for c, *_ in con.execute(f"DESCRIBE SELECT * FROM {records}").fetchall()}
     con.execute(f"CREATE OR REPLACE TABLE er_pr_single AS SELECT {u}, {u} AS cluster_id FROM {records}")
-    merge(con, db, "er_pr_single", f"({links})", "er_pr_joined", uid)
+    merge(con, "er_pr_single", f"({links})", "er_pr_joined", uid)
     out = []
     for name, keys in spec.strata:
         cols = [k.name for k in keys]
@@ -54,7 +54,7 @@ def missed(con: duckdb.DuckDBPyConnection, db: object, model: dict, fs: FSSpec, 
         scored = con.execute("SELECT count(*) FROM er_pr_pairs").fetchall()[0][0]
         hits = []
         if scored:
-            score_fs(model, records, "er_pr_pairs", db, uid, into="er_pr_scores", floor=fs.min_match_weight, bound=bound_tests(fs.model))  # a hit is at the line
+            score_fs(model, records, "er_pr_pairs", con, uid, into="er_pr_scores", floor=fs.min_match_weight, bound=bound_tests(fs.model))  # a hit is at the line
             between = f"s.{l} IN {resolved} AND s.{r} IN {resolved}" if resolved else "FALSE"
             hits = con.execute(f"""SELECT s.{l}, s.{r}, round(s.match_weight, 2), CASE WHEN {between} THEN 'rules' ELSE 'keys' END
                 FROM er_pr_scores s JOIN er_pr_joined a ON a.{u} = s.{l}

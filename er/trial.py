@@ -55,7 +55,7 @@ def trial(ws: Path, base: Pipeline, variant: Pipeline, method: dict, s: Settings
         after = resolved(variant, trials / "variant.parquet")
         l, r, u = f"{uid}_l", f"{uid}_r", q(uid)
         decided = applied(ws, uid)[[l, r, "decision"]].reset_index(drop=True)
-        con = connect(s.compute)[0]  # the two runs' clusters compared in SQL: O(N) rows never reach pandas
+        con = connect(s.compute)  # the two runs' clusters compared in SQL: O(N) rows never reach pandas
         con.execute(f"""CREATE TABLE o AS SELECT * FROM read_parquet({lit(trials / 'base.parquet')});
                         CREATE TABLE v AS SELECT * FROM read_parquet({lit(trials / 'variant.parquet')})""")
         con.register("er_decided", decided.assign(k=range(len(decided))))

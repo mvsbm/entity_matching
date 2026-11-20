@@ -76,7 +76,7 @@ def test_a_lookup_lists_and_scores_the_pairs_an_increment_of_the_record_would_an
     gated = 0
     for _, rec in df[held].head(12).iterrows():
         values = {c: rec[c] for c in sources if c in rec and pd.notna(rec[c])}
-        con, db = connect(s2.compute)
+        con = connect(s2.compute)
         index._attach(con, ws, m)
         query = index._query(con, s2, fitted, values, None, index._classifier(ws, s2, fitted, m)).assign(**{uid: rec[uid]})  # prepared as the lookup prepares it, under its own ID
         con.register("er_q", query)
@@ -89,9 +89,9 @@ def test_a_lookup_lists_and_scores_the_pairs_an_increment_of_the_record_would_an
         con.register("er_all", both)
         con.execute("CREATE TABLE records AS SELECT * FROM er_all")
         con.execute(f"CREATE TABLE new_ids AS SELECT '{rec[uid]}' AS \"{uid}\"")
-        gate = lambda pairs: score_fs(model, "records", pairs, db, uid, into="er_gate", n_records=len(both))
+        gate = lambda pairs: score_fs(model, "records", pairs, con, uid, into="er_gate", n_records=len(both))
         candidates(fitted.fs.blockers, "records", uid, "new_ids", fitted.fs.budget, con=con, into="cands", touching=True, gate=gate, floor=review_floor(fitted))
-        score_fs(model, "records", "cands", db, uid, into="scores", n_records=len(both))
+        score_fs(model, "records", "cands", con, uid, into="scores", n_records=len(both))
         ref = dict(con.execute(f"""SELECT CASE WHEN "{uid}_l" = '{rec[uid]}' THEN "{uid}_r" ELSE "{uid}_l" END, match_weight FROM scores""").fetchall())
         con.close()
         got = dict(zip(mine["uid"], mine["weight"]))
@@ -101,7 +101,7 @@ def test_a_lookup_lists_and_scores_the_pairs_an_increment_of_the_record_would_an
 
     assert "PERSON_ORG_CODE" not in {c["column"] for c in index.status(ws, s2)["columns"]}  # a column the run's file lacks: never offered
 
-    con, db = connect(s2.compute)  # stored records looked up as new: the batch path with each already among the records, once
+    con = connect(s2.compute)  # stored records looked up as new: the batch path with each already among the records, once
     index._attach(con, ws, m)
     con.register("er_stored", stored.astype({uid: "string"}))
     con.execute("CREATE TABLE records AS SELECT * FROM er_stored")
@@ -113,9 +113,9 @@ def test_a_lookup_lists_and_scores_the_pairs_an_increment_of_the_record_would_an
         found = {**found, **index._gate(con, fitted, model, uid, rid, found, checked, m["records"])}
         mine = index._scored(con, model, uid, rid, sorted(found), m["records"])
         con.execute(f"CREATE OR REPLACE TABLE new_ids AS SELECT '{rid}' AS \"{uid}\"")
-        gate = lambda pairs: score_fs(model, "records", pairs, db, uid, into="er_gate", n_records=m["records"])
+        gate = lambda pairs: score_fs(model, "records", pairs, con, uid, into="er_gate", n_records=m["records"])
         candidates(fitted.fs.blockers, "records", uid, "new_ids", fitted.fs.budget, con=con, into="cands", touching=True, gate=gate, floor=review_floor(fitted))
-        score_fs(model, "records", "cands", db, uid, into="scores", n_records=m["records"])
+        score_fs(model, "records", "cands", con, uid, into="scores", n_records=m["records"])
         ref = dict(con.execute(f"""SELECT CASE WHEN "{uid}_l" = '{rid}' THEN "{uid}_r" ELSE "{uid}_l" END, match_weight FROM scores""").fetchall())
         got = dict(zip(mine["uid"], mine["weight"]))
         assert set(got) == set(ref) and all(abs(got[k] - ref[k]) < 1e-9 for k in ref), rid
