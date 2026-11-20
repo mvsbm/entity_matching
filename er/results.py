@@ -344,7 +344,7 @@ def describe_merging(con: duckdb.DuckDBPyConnection, out: Path, s: Settings, p: 
 
 def _regroup(con: duckdb.DuckDBPyConnection, out: Path, s: Settings, p: Pipeline, m: dict, model: dict) -> None:
     """gold_new: every record's entity from people's "same" and the pairs the conditions merge, people's "different"
-    never merged; resolved_by review where people joined it, else the conditions'. O(E·d + N)."""
+    never merged; resolved_by review where people joined it, else the conditions'. O(E·log E + N)."""
     uid = s.data.unique_id
     l, r, u = q(f"{uid}_l"), q(f"{uid}_r"), q(uid)
     con.register("er_applied", applied(out, uid)[[f"{uid}_l", f"{uid}_r", "decision"]])  # what merges is what was applied; typed answers wait for Apply
@@ -360,7 +360,7 @@ def _regroup(con: duckdb.DuckDBPyConnection, out: Path, s: Settings, p: Pipeline
 def apply_merging(con: duckdb.DuckDBPyConnection, out: Path, s: Settings, p: Pipeline, method: dict | None = None) -> dict:
     """gold.parquet rebuilt from people's applied "same" and the pairs the workspace's conditions merge (none: the pairs
     the method merges by itself), as a run would: a condition turned off parts what it joined, people's answers stand.
-    `method`: method.toml as it becomes, written with gold, so the two never disagree. No run: O(E·d + N) on the
+    `method`: method.toml as it becomes, written with gold, so the two never disagree. No run: O(E·log E + N) on the
     stored pairs."""
     from er.run import customer_kinds  # er.run reads merge_where from here
     uid, model = s.data.unique_id, run_model(out)

@@ -90,7 +90,7 @@ For each key, `scale_check` splits its pairs on train into pairs of one entity, 
 |---|---|---|---|
 | load and standardize, persons and companies | O(N·L) | N | 10.73 s |
 | fit | O(n + S·K + P_em·K) + O(N + S·K) | a fixed sample, plus O(N) counts | 9.40 s |
-| rules | O(N + ΣP_r·L²) + O(E·d + N) | N^1.0 to N^1.21 per rule | ≤ 0.18 million pairs per rule; 2.57 s |
+| rules | O(N + ΣP_r·L²) + O(E·log E + N) | N^1.0 to N^1.21 per rule | ≤ 0.18 million pairs per rule; 2.57 s |
 | **rule F2, joined on the phone alone** | O(N + P) | **N^1.95** | **50 million pairs**, the phone key's blocks |
 | key: **phone alone** | O(N + P) | **N^1.95** | **50 million pairs**, nearly all by chance |
 | keys: **address alone, address code alone** | O(N + P) | **N^1.85, N^1.74** | **5.8 and 5.7 pairs per record**, over the budget of 5 |
@@ -99,7 +99,7 @@ For each key, `scale_check` splits its pairs on train into pairs of one entity, 
 | **TF-IDF neighbours** | O(N·L + U·N·q) | **N^2.0** | **10¹² similarities** |
 | candidates | O(N·L + ΣP_g) | as ΣP_g | 6.53 s |
 | score | O(C·K·L²) | as C | 16.05 s |
-| cluster | O(C + E·d + N) | N | 0.34 s |
+| cluster | O(C + E·log E + N) | N | 0.34 s |
 
 *N records · n = 100,000 records in the fit's sample · S = 10⁷ pairs sampled for u · K comparisons (6) · P_em pairs in EM's blocks · L characters in a value · P_r, P_g pairs in a rule's or a generator's blocks · w the window · U records queried, q n-grams per name · C candidates · E accepted pairs · d the largest cluster's diameter. Every symbol and step: [performance](../performance.md#end-to-end-the-cost-of-every-step).*
 
