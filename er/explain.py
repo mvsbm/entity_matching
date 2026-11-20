@@ -54,7 +54,7 @@ def run_model(out: Path) -> dict:  # the model the run in `out` scored with: its
     return json.loads(scoring.read_text(encoding="utf-8"))["model"] if scoring.exists() else json.loads(fitted.read_text(encoding="utf-8"))
 
 
-def scored_again(con: duckdb.DuckDBPyConnection, db: object, out: Path, uid: str, pairs: str, into: str, narrow: bool = False) -> dict:
+def scored_again(con: duckdb.DuckDBPyConnection, out: Path, uid: str, pairs: str, into: str, narrow: bool = False) -> dict:
     """The pairs of the table `pairs` (uid_l, uid_r) scored as the run in `out` scored its candidates: its model, λ for
     its size, on its standardized records (those the pairs touch, in er_touched: with `narrow`, only the columns the
     model reads), into the table `into`. Returns the model. O(N) to find the records + O(P·K)."""
@@ -63,7 +63,7 @@ def scored_again(con: duckdb.DuckDBPyConnection, db: object, out: Path, uid: str
     cols = ", ".join(q(c) for c, *_ in con.execute(f"DESCRIBE SELECT * FROM {stored}").fetchall() if c in read_by(model) | {uid}) if narrow else "*"  # a row's every column costs its read
     con.execute(f"CREATE OR REPLACE TABLE er_touched AS SELECT {cols} FROM {stored} WHERE {q(uid)} IN (SELECT {l} FROM {pairs} UNION SELECT {r} FROM {pairs})")
     n = con.execute(f"SELECT count(*) FROM read_parquet({lit(out / 'gold.parquet')})").fetchall()[0][0]
-    score_fs(model, "er_touched", pairs, db, uid, into=into, n_records=n)
+    score_fs(model, "er_touched", pairs, con, uid, into=into, n_records=n)
     return model
 
 
@@ -82,7 +82,7 @@ def describe_method(out: Path, p: Pipeline, s: "Settings") -> dict:
         raise no_run(out)
     uid, t, fs = s.data.unique_id, p.fs.min_match_weight, p.fs
     l, r = f"{uid}_l", f"{uid}_r"
-    con, db = connect(s.compute)
+    con = connect(s.compute)
 
     # the pairs people decided, the latest decision per pair, and the rules' pairs: scored again, with the name check
     latest = latest_decisions(out, uid, ("decision", "why", "round"))
@@ -90,7 +90,7 @@ def describe_method(out: Path, p: Pipeline, s: "Settings") -> dict:
                 f"CREATE TABLE er_decided ({q(l)} VARCHAR, {q(r)} VARCHAR, decision VARCHAR, why VARCHAR, round INTEGER)")
     con.execute(f"CREATE TABLE er_rule AS SELECT {q(l)}, {q(r)}, rule FROM {read(out, 'rule_kept/*.parquet')}")
     con.execute(f"CREATE TABLE er_pairs AS SELECT {q(l)}, {q(r)} FROM er_decided UNION SELECT {q(l)}, {q(r)} FROM er_rule")
-    model = scored_again(con, db, out, uid, "er_pairs", "er_scored", narrow=True)
+    model = scored_again(con, out, uid, "er_pairs", "er_scored", narrow=True)
     scored = f"SELECT {q(l)}, {q(r)}, match_weight AS weight, {named_sql(fs)} AS named FROM er_scored s"
     decided = con.execute(f"""SELECT d.*, s.weight, s.named, d.decision = 'match' AS same, x.rule FROM er_decided d JOIN ({scored}) s USING ({q(l)}, {q(r)})
         LEFT JOIN (SELECT {q(l)}, {q(r)}, min(rule) AS rule FROM er_rule GROUP BY ALL) x USING ({q(l)}, {q(r)}) ORDER BY s.weight""").df()
@@ -166,7 +166,7 @@ def explain_pair(out: Path, p: Pipeline, s: "Settings", first: str, second: str,
     if not (out / "gold.parquet").exists():
         raise no_run(out)
     a, b = sorted((str(first), str(second)))
-    con, db = connect(s.compute)
+    con = connect(s.compute)
     gold = con.execute(f"""SELECT {u}, cluster_id FROM {read(out, 'gold.parquet')} WHERE cluster_id IN
         (SELECT cluster_id FROM {read(out, 'gold.parquet')} WHERE {u} IN (?, ?))""", [a, b]).df()
     cluster = dict(zip(gold[uid], gold["cluster_id"]))
@@ -178,7 +178,7 @@ def explain_pair(out: Path, p: Pipeline, s: "Settings", first: str, second: str,
     pairs = [(a, b)] + ([(min(x, y), max(x, y)) for x in group_a for y in group_b if {x, y} != {a, b}][:cap] if across else [])
     con.register("er_xp_df", pd.DataFrame(pairs, columns=[f"{uid}_l", f"{uid}_r"]))
     con.execute("CREATE TABLE er_xp AS SELECT * FROM er_xp_df")
-    model = scored_again(con, db, out, uid, "er_xp", "er_xs")
+    model = scored_again(con, out, uid, "er_xp", "er_xs")
     scores = con.execute("SELECT * FROM er_xs").df().set_index([f"{uid}_l", f"{uid}_r"])
     me = scores.loc[(a, b)]
     recs = con.execute("SELECT * FROM er_touched").df().set_index(uid)
@@ -266,7 +266,7 @@ def describe_key(out: Path, p: Pipeline, s: "Settings", name: str, cap: int = 12
         raise no_run(out)
     uid, l, r = s.data.unique_id, q(f"{s.data.unique_id}_l"), q(f"{s.data.unique_id}_r")
     from er.strings import connect
-    con = connect(s.compute)[0]
+    con = connect(s.compute)
     stored = read(out, "state/records/*.parquet")
     have = {c for c, *_ in con.execute(f"DESCRIBE SELECT * FROM {stored}").fetchall()}
     keys = keys_of(b)
@@ -324,14 +324,14 @@ def compare_records(out: Path, p: Pipeline, s: "Settings", first: str, others: l
         raise no_run(out)
     if not others:
         raise InputError("no other record to compare with", fix="give the first record's ID, then one or more others")
-    con, db = connect(s.compute)
+    con = connect(s.compute)
     known = {x for x, in con.execute(f"SELECT {q(uid)} FROM read_parquet({lit(out / 'gold.parquet')}) WHERE {q(uid)} IN (SELECT unnest(?))", [[first, *others]]).fetchall()}
     if missing := [x for x in (first, *others) if x not in known]:
         raise InputError(f"{missing}: no record of the run in {out}", fix="check the IDs as the run wrote them: a spreadsheet may read 0000000151 as the number 151")
     pairs = [tuple(sorted((first, x))) for x in others]
     con.register("er_cr_df", pd.DataFrame(pairs, columns=[f"{uid}_l", f"{uid}_r"]))
     con.execute("CREATE TABLE er_cr AS SELECT * FROM er_cr_df")
-    model = scored_again(con, db, out, uid, "er_cr", "er_cs")
+    model = scored_again(con, out, uid, "er_cr", "er_cs")
     scores = con.execute("SELECT * FROM er_cs").df().set_index([f"{uid}_l", f"{uid}_r"])
     recs = con.execute("SELECT * FROM er_touched").df().set_index(uid)
     fields = [f for f in s.columns if f not in ("id", "entity") and f in recs.columns]
@@ -353,10 +353,10 @@ def entity_pairs(out: Path, s: "Settings", ids: list[str], links: list[dict], ca
     uid = s.data.unique_id
     if not 2 <= len(ids) <= cap:
         return dict(pairs=[], weakest=[], capped=len(ids) > cap)
-    con, db = connect(s.compute)
+    con = connect(s.compute)
     con.register("er_ep_df", pd.DataFrame([(x, y) for i, x in enumerate(ids) for y in ids[i + 1:]], columns=[f"{uid}_l", f"{uid}_r"]))
     con.execute("CREATE TABLE er_ep AS SELECT * FROM er_ep_df")
-    model = scored_again(con, db, out, uid, "er_ep", "er_es", narrow=True)
+    model = scored_again(con, out, uid, "er_ep", "er_es", narrow=True)
     by: dict[tuple, list] = {}
     for x in links:
         by.setdefault((x[f"{uid}_l"], x[f"{uid}_r"]), []).append(x["by"])

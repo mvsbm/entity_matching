@@ -40,7 +40,7 @@ class Records:
     def __init__(self, records: pd.DataFrame | str, uid: str, con: duckdb.DuckDBPyConnection | None = None,
                  query: Iterable[str] | None = None, clusters: pd.Series | str | None = None, columns: Iterable[str] | None = None):
         global _CON
-        self.con = con or (_CON := _CON or connect()[0])
+        self.con = con or (_CON := _CON or connect())
         self.uid, self.views = uid, []
         self.frame = records if isinstance(records, pd.DataFrame) else None
         base = self._view(records) if isinstance(records, pd.DataFrame) else q(records)

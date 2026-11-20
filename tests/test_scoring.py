@@ -6,7 +6,7 @@ from dataclasses import replace
 import numpy as np
 import pandas as pd
 import pytest
-from splink import Linker
+from splink import DuckDBAPI, Linker
 
 from er.config import (Budget, Comparator, Comparison, FSModel, Key, Level, Resolver, Rule, RulesSpec, Stage, ThresholdRule, keys_sql)
 from er.evaluate import adopt, fp_upper, paired_test, wilson
@@ -20,8 +20,7 @@ from er.tune import pick_within_noise
 from conftest import PAIR, UID, model
 
 
-def test_string_functions_are_character_level_and_null_safe(con_db):
-    con, _ = con_db  # DuckDB's own jaro_winkler_similarity compares bytes and gives 0.897 here
+def test_string_functions_are_character_level_and_null_safe(con):
     assert con.sql("select round(cl_jaro_winkler('サトウヒロシ', 'サトウタカシ'), 3), cl_levenshtein('サトウ', 'サトオ'), "
                    "cl_levenshtein('サトウ', NULL) is null").fetchall() == [(0.844, 1.0, True)]
 
@@ -32,13 +31,13 @@ def test_the_spill_folder_is_the_person_s_own_or_refused(tmp_path, monkeypatch):
     import tempfile
     from er.config import InputError
     monkeypatch.setattr(tempfile, "tempdir", str(tmp_path))
-    con = connect()[0]
+    con = connect()
     spill = tmp_path / f"nayose-spill-{getpass.getuser()}"
     assert con.execute("SELECT current_setting('temp_directory')").fetchall()[0][0] == str(spill) and spill.stat().st_mode & 0o777 == 0o700
     spill.chmod(0o755)  # open to others: spilled records could be read
     with pytest.raises(InputError, match="isn't yours alone"):
         connect()
-    assert connect({"temp_directory": str(tmp_path / "mine")})[0]  # a folder given: used as it is
+    assert connect({"temp_directory": str(tmp_path / "mine")})  # a folder given: used as it is
 
 
 def test_typed_addresses_normalize_to_one_key():
@@ -47,57 +46,54 @@ def test_typed_addresses_normalize_to_one_key():
     assert normalize(typed, ("address",), load_settings().standardize).nunique() == 1
 
 
-def test_a_u_sample_is_drawn_once_per_set_of_records(con_db, records, monkeypatch):
+def test_a_u_sample_is_drawn_once_per_set_of_records(con, records, monkeypatch):
     import er.match as M
-    con, db = con_db
     labels = records.set_index(UID)["entity"]
     M.SCORED_U.clear()
-    fresh = train_fs(model("labels"), records, db, UID, labels)
+    fresh = train_fs(model("labels"), records, con, UID, labels)
     sampled, real = [], M.sample_u
     monkeypatch.setattr(M, "sample_u", lambda m, comps, *a: sampled.extend(c.name for c in comps) or real(m, comps, *a))
     assert model("em").u_keys() == model("labels").u_keys()
-    other = train_fs(model("em"), records, db, UID, labels)  # another m method, the same comparisons and records
+    other = train_fs(model("em"), records, con, UID, labels)  # another m method, the same comparisons and records
     con.register("er_shuffled", records.sample(frac=1, random_state=0))  # the same records as a table, in another order
-    table = M.scored_sample(model(), "er_shuffled", db, UID)
+    table = M.scored_sample(model(), "er_shuffled", con, UID)
     assert sampled == []
-    assert table == M.scored_sample(model(), records, db, UID) == u_values(other) == u_values(fresh)
+    assert table == M.scored_sample(model(), records, con, UID) == u_values(other) == u_values(fresh)
     M.SCORED_U.clear()
-    again = train_fs(model("labels"), records, db, UID, labels)
+    again = train_fs(model("labels"), records, con, UID, labels)
     assert sampled == ["name", "phone"] and parameters(fresh).fillna(0).round(12).equals(parameters(again).fillna(0).round(12))
 
 
-def test_a_u_sample_counted_in_one_pass_gives_splink_s_u_to_the_last_bit(con_db, records):
+def test_a_u_sample_counted_in_one_pass_gives_splink_s_u_to_the_last_bit(con, records):
     from er.match import fs_settings
-    _, db = con_db
     gaps = records.assign(name=records["name"].mask(records.index % 7 == 0))  # a missing side: neither level's
     for pairs in (1e4, 300):  # every pair, and the share of records a hash of their ID draws
         m = replace(model(extra_name_levels=(Level(label="never", any_of=(("name", Comparator("jaro_winkler", 0.95)),)),)), u_max_pairs=pairs)
-        linker = Linker(db.register(gaps.assign(name__one_byte=normalize(gaps["name"], ("one_byte",), None))), fs_settings(m, UID), log_level=logging.ERROR)
+        linker = Linker(DuckDBAPI(connection=con).register(gaps.assign(name__one_byte=normalize(gaps["name"], ("one_byte",), None))), fs_settings(m, UID), log_level=logging.ERROR)
         linker.training.estimate_u_using_random_sampling(max_pairs=pairs, seed=m.seed, min_count_per_level=None, num_chunks=3)
-        splink_u, ours = u_values(linker.misc.save_model_to_json()), sample_u(m, list(m.comparisons), gaps, db, UID)
+        splink_u, ours = u_values(linker.misc.save_model_to_json()), sample_u(m, list(m.comparisons), gaps, con, UID)
         assert ours == splink_u and "never" not in ours["name"] and 0 < sum(ours["name"].values()) <= 1, pairs
 
 
-def test_a_u_sample_kept_by_a_workspace_is_read_again_and_drawn_again_once_what_it_rests_on_changes(con_db, records, monkeypatch, tmp_path):
+def test_a_u_sample_kept_by_a_workspace_is_read_again_and_drawn_again_once_what_it_rests_on_changes(con, records, monkeypatch, tmp_path):
     import er.match as M
-    _, db = con_db
     kept = tmp_path / "u_sampled.json"
     M.SCORED_U.clear()
-    first = M.scored_sample(model(), records, db, UID, kept=kept)
+    first = M.scored_sample(model(), records, con, UID, kept=kept)
     assert kept.is_file() and len(json_loads(kept)) == len(model().comparisons)
     sampled, real = [], M.sample_u
     monkeypatch.setattr(M, "sample_u", lambda m, comps, *a: sampled.extend(c.name for c in comps) or real(m, comps, *a))
     M.SCORED_U.clear()  # another process: nothing in memory
-    assert M.scored_sample(model(), records, db, UID, kept=kept) == first and sampled == []  # read, never drawn
+    assert M.scored_sample(model(), records, con, UID, kept=kept) == first and sampled == []  # read, never drawn
     monkeypatch.setattr(M, "U_CODE", "another")  # the code that samples changed: drawn again, the same u
     M.SCORED_U.clear()
-    assert M.scored_sample(model(), records, db, UID, kept=kept) == first and sampled == ["name", "phone"]
+    assert M.scored_sample(model(), records, con, UID, kept=kept) == first and sampled == ["name", "phone"]
     kept.write_text("{cut short", encoding="utf-8")  # a copy that can't be read: drawn again, never a failure
     M.SCORED_U.clear()
-    assert M.scored_sample(model(), records, db, UID, kept=kept) == first
+    assert M.scored_sample(model(), records, con, UID, kept=kept) == first
     monkeypatch.setattr(M, "U_KEPT", 2)
     for seed in range(3):  # bounded: the newest U_KEPT
-        M.scored_sample(replace(model(), seed=seed), records, db, UID, kept=kept)
+        M.scored_sample(replace(model(), seed=seed), records, con, UID, kept=kept)
     assert len(json_loads(kept)) == 2
 
 
@@ -124,10 +120,9 @@ def test_each_distinct_value_normalized_once_gives_the_column_value_by_value_and
     assert all(len(h) == len(t) and h.isascii() for h, t in zip(hashed.dropna(), texts[hashed.notna()]))  # one byte a character
 
 
-def test_a_one_edit_level_is_counted_exactly_through_deletion_keys(con_db):
+def test_a_one_edit_level_is_counted_exactly_through_deletion_keys(con):
     from rapidfuzz.distance import DamerauLevenshtein, Hamming, Levenshtein
     from er.match import counted
-    _, db = con_db
     rng = np.random.default_rng(1)  # repeated values, an insertion, an adjacent swap, unequal lengths for Hamming, a blank
     vals = [f"{rng.integers(300):03d}" for _ in range(300)] + ["12", "123", "1234", "2134", None]
     kana = ["".join(rng.choice(list("アアイウ"), rng.integers(0, 5))) for _ in range(len(vals))]  # runs: one deletion from several places
@@ -136,7 +131,7 @@ def test_a_one_edit_level_is_counted_exactly_through_deletion_keys(con_db):
         Level(label="exact", any_of=((col, Comparator("exact")),)), Level(label="one off", any_of=((col, Comparator(f, 1)),))))
     m = FSModel(name="t", comparisons=(one_off("cif", "damerau_levenshtein"), one_off("phone", "hamming"), one_off("kana", "levenshtein")), prior_rules=(),
                 prior_recall=0.5, u_max_pairs=1e4, m_method="em", em_rules=(), seed=0, u_exact_by_counts=True, u_near_by_keys=True)
-    u = exact_u(m, df, db)
+    u = exact_u(m, df, con)
     for name, dist in (("cif", DamerauLevenshtein.distance), ("phone", Hamming.distance), ("kana", Levenshtein.distance)):
         filled = df[name].dropna().tolist()
         pairs = [(a, b) for i, a in enumerate(filled) for b in filled[i + 1:]]
@@ -146,17 +141,15 @@ def test_a_one_edit_level_is_counted_exactly_through_deletion_keys(con_db):
     assert counted(m, u) == {"cif", "phone", "kana"} and counted(replace(m, u_near_by_keys=False), u) == set()  # nothing left to sample
 
 
-def test_u_sampled_per_comparison_equals_sampling_them_together(con_db, records):
-    _, db = con_db
+def test_u_sampled_per_comparison_equals_sampling_them_together(con, records):
     m = replace(model(), u_max_pairs=2_000)  # fewer than the 7,140 pairs, so a real sample
     name, phone = m.comparisons
-    assert sample_u(m, [name, phone], records, db, UID) == {**sample_u(m, [name], records, db, UID), **sample_u(m, [phone], records, db, UID)}
+    assert sample_u(m, [name, phone], records, con, UID) == {**sample_u(m, [name], records, con, UID), **sample_u(m, [phone], records, con, UID)}
 
 
-def test_levels_without_an_estimate_get_bounds_not_splink_defaults(con_db, records):
-    _, db = con_db  # JW ≥ 0.95 after JW ≥ 0.9: no pair can reach it
+def test_levels_without_an_estimate_get_bounds_not_splink_defaults(con, records):
     m = model(extra_name_levels=(Level(label="shadowed", any_of=(("name", Comparator("jaro_winkler", 0.95)),)),))
-    model_json = train_fs(m, records, db, UID)
+    model_json = train_fs(m, records, con, UID)
     filled = model_json["er"]["filled"]  # m also lists phone: EM blocks on phone, so it can never estimate phone's m
     assert filled["u"] == [["name", "shadowed"]] and ["name", "shadowed"] in filled["m"]
     assert all("m_probability" in lv and "u_probability" in lv for c in model_json["comparisons"]
@@ -164,57 +157,52 @@ def test_levels_without_an_estimate_get_bounds_not_splink_defaults(con_db, recor
     assert parameters(model_json).set_index(["comparison", "level"]).at[("name", "shadowed"), "weight"] == 0
 
 
-def test_registered_pairs_score_like_splink_blocking(con_db, records):
-    _, db = con_db
-    model_json = train_fs(model(), records, db, UID)
+def test_registered_pairs_score_like_splink_blocking(con, records):
+    model_json = train_fs(model(), records, con, UID)
     splink_json = {k: v for k, v in model_json.items() if k != "er"}
     from er.standardize import normalize
     copied = records.assign(name__one_byte=normalize(records["name"], ("one_byte",), None))  # as er.standardize prepares them: Splink's own linker reads every column
-    native = Linker(db.register(copied), {**splink_json, "blocking_rules_to_generate_predictions": [keys_sql((Key("phone"),))]},
+    native = Linker(DuckDBAPI(connection=con).register(copied), {**splink_json, "blocking_rules_to_generate_predictions": [keys_sql((Key("phone"),))]},
                     log_level=logging.ERROR).inference.predict().as_pandas_dataframe().astype({"uid_l": "string", "uid_r": "string"})
-    ours = score_fs(model_json, records, native[["uid_l", "uid_r"]], db, UID)  # Splink's SQL in one query of ours: the same to the last bit
+    ours = score_fs(model_json, records, native[["uid_l", "uid_r"]], con, UID)  # Splink's SQL in one query of ours: the same to the last bit
     both = native.merge(ours, on=["uid_l", "uid_r"], suffixes=("_native", "_registered"))
     assert len(both) == len(native) > 0 and both["gamma_name_native"].nunique() > 1
     for c in ("match_weight", "match_probability", "gamma_name", "gamma_phone"):
         assert (both[f"{c}_native"] == both[f"{c}_registered"]).all(), c
 
 
-def test_waterfall_bits_sum_to_the_match_weight(con_db, records):
-    _, db = con_db
-    model_json = train_fs(model(), records, db, UID)
+def test_waterfall_bits_sum_to_the_match_weight(con, records):
+    model_json = train_fs(model(), records, con, UID)
     pairs = pd.DataFrame({"uid_l": ["001a", "000a", "000a"], "uid_r": ["001b", "000b", "059b"]}, dtype="string")
-    scored = score_fs(model_json, records, pairs, db, UID)  # exact name, close name, different entity
+    scored = score_fs(model_json, records, pairs, con, UID)  # exact name, close name, different entity
     for _, row in scored.iterrows():
         bits = waterfall(model_json, {c: row[f"gamma_{c}"] for c in ("name", "phone")}, len(records))
         assert bits["bits"].sum() == pytest.approx(row["match_weight"])
 
 
-def test_term_frequencies_come_from_the_fitting_records(con_db, records):
-    _, db = con_db
-    model_json, plain = train_fs(model(tf=True), records, db, UID), train_fs(model(), records, db, UID)
+def test_term_frequencies_come_from_the_fitting_records(con, records):
+    model_json, plain = train_fs(model(tf=True), records, con, UID), train_fs(model(), records, con, UID)
     other = records.assign(name=records["name"].where(records["uid"].isin(["001a", "001b"]), "ヨソ"))  # the pair's name: 2 of 120
 
     def weight(m: dict, df: pd.DataFrame, d) -> float:
         return score_fs(m, df, PAIR, d, UID)["match_weight"].item()
-    with_tf = weight(model_json, records, db)
-    assert with_tf != pytest.approx(weight(plain, records, db))  # the adjustment applies
-    assert with_tf == pytest.approx(weight(model_json, other, db)) == pytest.approx(weight(model_json, other, connect()[1]))
+    with_tf = weight(model_json, records, con)
+    assert with_tf != pytest.approx(weight(plain, records, con))  # the adjustment applies
+    assert with_tf == pytest.approx(weight(model_json, other, con)) == pytest.approx(weight(model_json, other, connect()))
 
 
-def test_prior_is_rescaled_to_the_scored_set_size(con_db, records):
-    _, db = con_db
-    model_json = train_fs(model(), records, db, UID)
+def test_prior_is_rescaled_to_the_scored_set_size(con, records):
+    model_json = train_fs(model(), records, con, UID)
     padded = pd.concat([records, pd.DataFrame({"uid": [f"p{i:03d}" for i in range(120)], "name": "ヨソ", "phone": "9999",
                                                "entity": "pad"}, dtype="string")], ignore_index=True)
     lam = model_json["probability_two_random_records_match"]
     scaled = lam * (len(records) - 1) / (len(padded) - 1)
     expected = math.log2(scaled / (1 - scaled)) - math.log2(lam / (1 - lam))
-    assert score_fs(model_json, padded, PAIR, db, UID)["match_weight"].item() - \
-        score_fs(model_json, records, PAIR, db, UID)["match_weight"].item() == pytest.approx(expected)
+    assert score_fs(model_json, padded, PAIR, con, UID)["match_weight"].item() - \
+        score_fs(model_json, records, PAIR, con, UID)["match_weight"].item() == pytest.approx(expected)
 
 
-def test_shared_connection_gives_the_same_rules_and_clusters_as_a_fresh_one(con_db):
-    _, db = con_db
+def test_shared_connection_gives_the_same_rules_and_clusters_as_a_fresh_one(con):
     spec = RulesSpec(standardize=load_settings().standardize, resolver=Resolver(method="connected_components"),
                      budget=Budget(max_pairs_per_record=10**4, max_block_size=10**4, target_rows=10**4, benchmark_pairs=100),
                      stages=(Stage(name="fuzzy", rules=(Rule(name="R", exact=("phone",), fuzzy=("name",)),),
@@ -222,11 +210,11 @@ def test_shared_connection_gives_the_same_rules_and_clusters_as_a_fresh_one(con_
     a = pd.DataFrame({"uid": ["1", "2", "3"], "phone": ["11", "11", "22"], "name": ["サトウ", "サトオ", "スズキ"]}, dtype="string")
     b = pd.DataFrame({"uid": ["7", "8", "9"], "phone": ["33", "33", "33"], "name": ["タナカ", "タナカ", "イトウ"]}, dtype="string")
     base = lambda d: pd.DataFrame({UID: d[UID], "cluster_id": d[UID]})
-    first = rule_edges(spec, a, db, UID)[0]
-    clustered(db.duckdb_con, db, base(a), first, a[UID], UID)  # leaves whatever it caches on the shared db
-    shared, fresh = rule_edges(spec, b, db, UID)[0], rule_edges(spec, b, connect()[1], UID)[0]
+    first = rule_edges(spec, a, con, UID)[0]
+    clustered(con, base(a), first, a[UID], UID)  # leaves whatever it caches on the shared connection
+    shared, fresh = rule_edges(spec, b, con, UID)[0], rule_edges(spec, b, connect(), UID)[0]
     assert shared.reset_index(drop=True).equals(fresh.reset_index(drop=True)) and len(shared) == 1
-    assert clustered(db.duckdb_con, db, base(b), shared, b[UID], UID).equals(clustered(*connect(), base(b), fresh, b[UID], UID))
+    assert clustered(con, base(b), shared, b[UID], UID).equals(clustered(connect(), base(b), fresh, b[UID], UID))
 
 
 def test_uncertainty():
@@ -313,7 +301,7 @@ def test_a_comparison_asked_of_duckdb_first_passes_the_pairs_the_python_function
             x = word(letters)
             left.append(x); right.append(rnd.choice([word(letters), near(x), near(near(x)), x, word(kata), word(digits), None]))
     left += [None, "アイ", "", "ア"]; right += ["アイ", None, "ア", ""]
-    con, _ = connect()
+    con = connect()
     df = pd.DataFrame({"x_l": left, "x_r": right}, dtype="string")  # '' kept: records not prepared by er.standardize may hold it
     for side in ("l", "r"):
         df[f"x__one_byte_{side}"] = normalize(df[f"x_{side}"], ("one_byte",), None)
@@ -359,21 +347,21 @@ def test_a_floor_leaves_out_exactly_the_pairs_below_it_and_scores_the_rest_to_th
     s, p, g = population
     g.df.to_parquet(tmp_path / "in.parquet", index=False)
     run = Run(p, s).full(tmp_path / "in.parquet", tmp_path / "run")
-    uid, con, db = s.data.unique_id, run.con, run.db
+    uid, con = s.data.unique_id, run.con
     l, r = f"{uid}_l", f"{uid}_r"
     con.execute(f"""CREATE OR REPLACE TABLE er_all AS SELECT a.{uid} AS {l}, b.{uid} AS {r} FROM (SELECT {uid} FROM records LIMIT 300) a
         JOIN (SELECT {uid} FROM records LIMIT 300) b ON a.{uid} < b.{uid}""")  # every pair of 300 records: almost all below 0
-    every = score_fs(run.scoring, "records", "er_all", db, uid).set_index([l, r]).sort_index()
+    every = score_fs(run.scoring, "records", "er_all", con, uid).set_index([l, r]).sort_index()
     bound = bound_tests(p.fs.model)
     assert None in bound.values() and any(bound.values())  # some at their own level, the costly ones bounded by what DuckDB settles
     for floor in (0.0, p.fs.min_match_weight):
-        kept = score_fs(run.scoring, "records", "er_all", db, uid, floor=floor, bound=bound).set_index([l, r]).sort_index()
+        kept = score_fs(run.scoring, "records", "er_all", con, uid, floor=floor, bound=bound).set_index([l, r]).sort_index()
         pd.testing.assert_frame_equal(kept, every.loc[kept.index])  # each scored to the last bit
         assert every.index[every["match_weight"] >= floor].isin(kept.index).all()  # none at the floor or above left out
         left = every.drop(kept.index)
         assert len(left) and (left["match_weight"] < floor).all()  # and every one left out below it
     con.execute("CREATE OR REPLACE TABLE er_some AS SELECT * FROM er_all LIMIT 7")
-    held = score_fs(run.scoring, "records", "er_all", db, uid, floor=1e9, bound=bound, exempt="er_some")
+    held = score_fs(run.scoring, "records", "er_all", con, uid, floor=1e9, bound=bound, exempt="er_some")
     assert len(held) == 7  # nothing reaches that floor: only the exempt pairs are scored
 
 
@@ -491,21 +479,19 @@ def test_one_name_in_a_person_field_and_the_company_field_is_compared_on_its_kin
     assert df.loc[2, "full_name"] == "スズキハナコ" and df.loc[2, "company_name"] == "タナカショウジ"  # two different names: both kept
 
 
-def test_em_sessions_kept_apart_give_each_level_the_median_of_those_that_learned_it(con_db, records):
-    _, db = con_db
+def test_em_sessions_kept_apart_give_each_level_the_median_of_those_that_learned_it(con, records):
     m = lambda j: {(c["output_column_name"], lv["label_for_charts"]): lv["m_probability"] for c in j["comparisons"] for lv in c["comparison_levels"] if not lv.get("is_null_level")}
     one = model()  # one session: its median is what Splink learns
-    assert m(train_fs(replace(one, em_median=True), records, db, UID)) == pytest.approx(m(train_fs(one, records, db, UID)))
+    assert m(train_fs(replace(one, em_median=True), records, con, UID)) == pytest.approx(m(train_fs(one, records, con, UID)))
     two = replace(one, em_rules=((Key("phone"),), (Key("name"),)), em_median=True)  # name learned only where phone chose the pairs, phone only where name did
-    both, by_phone, by_name = (train_fs(x, records, db, UID) for x in (two, replace(one, em_rules=((Key("phone"),),)), replace(one, em_rules=((Key("name"),),))))
+    both, by_phone, by_name = (train_fs(x, records, con, UID) for x in (two, replace(one, em_rules=((Key("phone"),),)), replace(one, em_rules=((Key("name"),),))))
     got = m(both)
     assert {k: v for k, v in got.items() if k[0] == "name"} == pytest.approx({k: v for k, v in m(by_phone).items() if k[0] == "name"})
     assert {k: v for k, v in got.items() if k[0] == "phone"} == pytest.approx({k: v for k, v in m(by_name).items() if k[0] == "phone"})
 
 
-def test_a_session_keyed_on_a_field_learns_no_comparison_of_that_field_under_another_normalization(con_db, records):
-    _, db = con_db
-    got = train_fs(replace(model(), em_rules=((Key("name", ("kana_fold",)),),)), records.assign(name__kana_fold=records["name"]), db, UID)
+def test_a_session_keyed_on_a_field_learns_no_comparison_of_that_field_under_another_normalization(con, records):
+    got = train_fs(replace(model(), em_rules=((Key("name", ("kana_fold",)),),)), records.assign(name__kana_fold=records["name"]), con, UID)
     filled = {tuple(x) for x in got["er"]["filled"]["m"]}
     assert {("name", "exact"), ("name", "close"), ("name", "else")} <= filled and ("phone", "exact") not in filled  # name chose the pairs, whichever copy of it the key reads
 
@@ -541,9 +527,8 @@ def household_model(em_choose: tuple = ((Key("phone"),), (Key("birth_date"),), (
                    m_method="em", em_rules=((Key("phone"),),), seed=0, em_choose=em_choose)
 
 
-def test_em_choose_keeps_the_sessions_whose_matches_agree_on_the_given_name(con_db):
-    _, db = con_db
-    got = train_fs(household_model(), households(), db, UID)["er"]
+def test_em_choose_keeps_the_sessions_whose_matches_agree_on_the_given_name(con):
+    got = train_fs(household_model(), households(), con, UID)["er"]
     rows = {x["session"]: x for x in got["em_choice"]}
     assert not rows["phone"]["kept"] and rows["phone"]["given_share"] < 0.5  # a phone a family shares: EM learns households
     assert rows["birth_date"]["kept"] and rows["birth_date"]["given_share"] >= 0.5
@@ -551,25 +536,22 @@ def test_em_choose_keeps_the_sessions_whose_matches_agree_on_the_given_name(con_
     assert set(got["em_pairs"]) == {"birth_date", "person_name"}
 
 
-def test_a_comparison_the_kept_sessions_barely_see_takes_every_session_s_m(con_db):
-    _, db = con_db
-    wide = lambda companies: train_fs(household_model(), households(companies=companies), db, UID)["er"]["em_wide"]
+def test_a_comparison_the_kept_sessions_barely_see_takes_every_session_s_m(con):
+    wide = lambda companies: train_fs(household_model(), households(companies=companies), con, UID)["er"]["em_wide"]
     assert "company" in wide(2) and "name" not in wide(2)  # 2 people with a company: 4 pairs of the kept sessions agree on it, under ENOUGH
     assert "company" not in wide(40)
 
 
-def test_em_choose_with_no_session_kept_learns_as_the_method_does(con_db):
-    _, db = con_db
+def test_em_choose_with_no_session_kept_learns_as_the_method_does(con):
     records = households()
-    got = train_fs(household_model(em_choose=((Key("phone"),),)), records, db, UID)
-    method = train_fs(household_model(em_choose=()), records, db, UID)
+    got = train_fs(household_model(em_choose=((Key("phone"),),)), records, con, UID)
+    method = train_fs(household_model(em_choose=()), records, con, UID)
     assert [x["kept"] for x in got["er"]["em_choice"]] == [False] and got["er"]["em_pairs"] == method["er"]["em_pairs"]
     assert [c["comparison_levels"] for c in got["comparisons"]] == [c["comparison_levels"] for c in method["comparisons"]]
 
 
-def test_the_method_s_own_em_sessions_are_judged_by_the_given_name_too(con_db):
-    _, db = con_db
+def test_the_method_s_own_em_sessions_are_judged_by_the_given_name_too(con):
     records, two = households(), ((Key("phone"),), (Key("birth_date"),))
     for fitted in (replace(household_model(em_choose=()), em_rules=two), replace(household_model(em_choose=()), em_rules=two, em_median=True)):  # in turn, and kept apart
-        got = {x["session"]: x["given_share"] for x in train_fs(fitted, records, db, UID)["er"]["em_given"]}
+        got = {x["session"]: x["given_share"] for x in train_fs(fitted, records, con, UID)["er"]["em_given"]}
         assert got["phone"] < 0.5 <= got["birth_date"], got  # what DIAGNOSIS says of a run's own EM

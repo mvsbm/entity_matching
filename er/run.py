@@ -156,7 +156,7 @@ class Run:
     reaching_only: bool = True                # candidates stores only the pairs that can reach keep_from (_reaching); design time measures every pair the keys list
 
     def __post_init__(self) -> None:
-        self.con, self.db = connect(self.settings.compute)
+        self.con = connect(self.settings.compute)
         self.uid = self.settings.data.unique_id
         self.l, self.r = f"{self.uid}_l", f"{self.uid}_r"
         self.notes: list[str] = []            # what the loader detected or fixed, for the run's summary; never a record's value
@@ -491,13 +491,13 @@ class Run:
         if self.model is None:
             model = fit_model(fs)
             sample = self.con.execute(f"{fit_sample_sql([model], self.uid, self.columns())} LIMIT {self.pipeline.fit_rows}").df().astype("string")
-            self.model = train_fs(model, sample, self.db, self.uid, kept=self.keep and self.keep / folder.U_SAMPLED)
+            self.model = train_fs(model, sample, self.con, self.uid, kept=self.keep and self.keep / folder.U_SAMPLED)
             self.notes += [f"the fit found no two records sharing {f} in its sample of {len(sample):,}, so it learned nothing from them"
                            for f in self.model["er"].get("skipped", [])]
         self.scoring, self.basis, fitted = self.model, {}, time.perf_counter()
         if fs.model.u_from_scored:
-            self.scoring, sampled, exact = scored_u(fs.model, self.model, "records", self.db, self.uid, kept=self.keep and self.keep / folder.U_SAMPLED)
-            self.basis = u_basis(fs.model, sampled, exact, "records", self.db)
+            self.scoring, sampled, exact = scored_u(fs.model, self.model, "records", self.con, self.uid, kept=self.keep and self.keep / folder.U_SAMPLED)
+            self.basis = u_basis(fs.model, sampled, exact, "records", self.con)
         self._done("fit", "O(n + S·K + P_em·K) + O(N + S·K)", f"n = {self.model['er']['fit_rows']:,}; u on {self.n:,} records", t,
                    sample_seconds=round(fitted - t, 2), file_u_seconds=round(time.perf_counter() - fitted, 2))  # the fit on its sample, then u on this file
         return self.model
@@ -532,17 +532,17 @@ class Run:
         for i, st, rule in rules.each():
             if (untrusted := self._untrusted(i, rule.name, st.keys(rule), within=batch)):
                 trust[i] = f"NOT EXISTS (SELECT 1 FROM {untrusted} z WHERE {' AND '.join(f'z.{q(c)} = l.{q(c)}' for c in st.keys(rule))})"
-        _, self.rule_seconds = rule_edges(rules, "records", self.db, self.uid, batch=batch, trust=trust, into="rule_edges", told=self.told)
+        _, self.rule_seconds = rule_edges(rules, "records", self.con, self.uid, batch=batch, trust=trust, into="rule_edges", told=self.told)
         if self.scoring is None:  # design time measures the rules alone, before any model is fitted: no trust line reads them
             self.con.execute("CREATE OR REPLACE TABLE rule_edges AS SELECT *, NULL::DOUBLE AS match_weight FROM rule_edges")
         else:
-            score_fs(self.scoring, "records", "rule_edges", self.db, self.uid, into="rule_scores", n_records=self._count("records"))  # O(R·K)
+            score_fs(self.scoring, "records", "rule_edges", self.con, self.uid, into="rule_scores", n_records=self._count("records"))  # O(R·K)
             self.con.execute(f"CREATE OR REPLACE TABLE rule_edges AS SELECT e.*, s.match_weight FROM rule_edges e JOIN rule_scores s USING ({l}, {r})")
         self.con.execute("CREATE OR REPLACE TABLE rule_kept AS SELECT * FROM rule_edges WHERE FALSE")
         for st in rules.stages:
             self.con.execute(f"""CREATE OR REPLACE TABLE er_stage AS SELECT * FROM rule_edges WHERE stage = '{st.name}' AND {self._alone(l, r)}""")
             self.con.execute("INSERT INTO rule_kept SELECT * FROM er_stage")
-            merge(self.con, self.db, "rule_clusters", "er_stage", "rule_clusters", self.uid)
+            merge(self.con, "rule_clusters", "er_stage", "rule_clusters", self.uid)
 
     def keys(self) -> None:
         """The keys learned on this file, no labels (er.keys), in place of [model] generators, kept for its increments:
@@ -646,7 +646,7 @@ class Run:
         bound = bound_tests(self.pipeline.fs.model)
         for start in range(0, max(1, self._count(pairs)), self.score_pairs):
             self.con.execute(f"CREATE OR REPLACE TABLE er_slice AS SELECT {l}, {r} FROM {pairs} WHERE rowid >= {start} AND rowid < {start + self.score_pairs}")
-            score_fs(self.scoring, "records", "er_slice", self.db, self.uid, into=into if not start else "er_scored", n_records=n_records,
+            score_fs(self.scoring, "records", "er_slice", self.con, self.uid, into=into if not start else "er_scored", n_records=n_records,
                      floor=floor, bound=bound, exempt=exempt)
             if start:
                 self.con.execute(f"INSERT INTO {into} SELECT * FROM er_scored")
@@ -795,7 +795,7 @@ class Run:
             self.con.execute(f"CREATE OR REPLACE TABLE er_single AS SELECT {u}, cluster_id FROM gold_old UNION ALL SELECT {u}, {u} FROM new_ids")
         else:
             self.con.execute(f"CREATE OR REPLACE TABLE er_single AS SELECT {u}, {u} AS cluster_id FROM records")
-        merge(self.con, self.db, "er_single", "kept", "clusters", self.uid)
+        merge(self.con, "er_single", "kept", "clusters", self.uid)
         self._gold("gold_old" if old else None)
         e = self._count("matches")
         self._done("cluster", "O(C_Δ + touched clusters)" if old else "O(C + E·d + N)", f"O({self._count('scores'):,} + {e:,}·d + {self.n:,})", t, accepted=e,
@@ -813,7 +813,7 @@ class Run:
         links = f"""SELECT {l}, {r} FROM matches UNION ALL SELECT {l}, {r} FROM proposed WHERE match_weight >= {bits(fs.min_match_weight)}
             UNION ALL SELECT {l}, {r} FROM rule_kept k WHERE NOT EXISTS (SELECT 1 FROM er_decisions d WHERE d.{l} = k.{l} AND d.{r} = k.{r} AND d.decision = 'no_match')
             UNION ALL SELECT {l}, {r} FROM er_decisions WHERE decision = 'match'"""
-        found = missed(self.con, self.db, self.scoring, fs, spec, "records", links, self.uid, None if fs.bridge else self._sized("rule_clusters", ">"),
+        found = missed(self.con, self.scoring, fs, spec, "records", links, self.uid, None if fs.bridge else self._sized("rule_clusters", ">"),
                        apart=f"SELECT {l}, {r} FROM er_decisions WHERE decision = 'no_match'")
         self._done("probe", "O(N + P·K + L)", f"O({self.n:,} + {sum(x['scored'] for x in found):,}·K + L)", t, strata=found)
 
@@ -983,7 +983,7 @@ class Run:
         if fs.model.u_from_scored:  # exact levels counted again; a comparison sampled again only once it is stale
             stored = state / "scoring.json"
             basis = json.loads(stored.read_text(encoding="utf-8"))["basis"] if stored.exists() else {}
-            self.scoring, self.basis, again = refreshed_u(fs.model, self.model, basis, "records", self.db, self.uid)
+            self.scoring, self.basis, again = refreshed_u(fs.model, self.model, basis, "records", self.con, self.uid)
             self.notes += [f"u of {c} measured again: it drifted {self.basis[c]['last_check']['drift_bits']:.3f} bits, more than "
                            f"its sampling error ({self.basis[c]['last_check']['se_bits']:.3f})" for c in again if self.basis[c]['last_check']['drift_bits'] is not None]
         self._done("fit", "O(N + S·K_stale)", f"O({self.n:,} + {fs.model.u_max_pairs:,.0f}·{len(again)})", t, sampled_again=len(again))
@@ -1046,7 +1046,7 @@ class Run:
         self.n = self._count("gold_old")
         self.con.execute(f"CREATE OR REPLACE TABLE er_base AS SELECT {u}, cluster_id FROM gold_old")
         self.con.execute(f"CREATE OR REPLACE TABLE er_review AS SELECT {l}, {r} FROM er_decisions WHERE decision = 'match'")
-        merge(self.con, self.db, "er_base", "er_review", "clusters", self.uid)
+        merge(self.con, "er_base", "er_review", "clusters", self.uid)
         have = {c[0] for c in self.con.execute("DESCRIBE gold_old").fetchall()}
         kinds = "kind" in have  # each record's kind stands; its customer's follows the merge
         flagged = "o.kind_flagged" if "kind_flagged" in have else "FALSE AS kind_flagged"  # a run written before flags: none
@@ -1087,7 +1087,7 @@ class Run:
                 raise InputError(f"no review sheet in {out}", fix="find matches first: nayose resolve records --workspace …")
             self.con.execute(f"""CREATE OR REPLACE TABLE er_rule AS SELECT {l}, {r}, min(rule) AS rule FROM {read('rule_kept/*.parquet')}
                 WHERE merged GROUP BY ALL""")
-            scored_again(self.con, self.db, out, self.uid, "er_rule", "er_rule_scores")
+            scored_again(self.con, out, self.uid, "er_rule", "er_rule_scores")
             self.con.execute(f"""CREATE OR REPLACE TABLE matches AS SELECT {l}, {r}, match_weight, match_probability, sources FROM {read('matches/*.parquet')}
                 UNION ALL SELECT x.{l}, x.{r}, s.match_weight, s.match_probability, x.rule FROM er_rule x JOIN er_rule_scores s USING ({l}, {r})
                 WHERE NOT EXISTS (SELECT 1 FROM {read('matches/*.parquet')} m WHERE m.{l} = x.{l} AND m.{r} = x.{r})""")
@@ -1113,7 +1113,7 @@ class Run:
                     ORDER BY hash(x.{l}, x.{r}) LIMIT {want}""")
             drawn = self._count("er_pick")
             if drawn:
-                self.scoring = scored_again(self.con, self.db, out, self.uid, "er_pick", "er_drawn_scores")
+                self.scoring = scored_again(self.con, out, self.uid, "er_pick", "er_drawn_scores")
                 self.con.execute("CREATE OR REPLACE TABLE records AS SELECT * FROM er_touched")  # what review_sheet shows of each record
                 names = {c["output_column_name"] for c in self.scoring["comparisons"]}  # the comparisons the run could make
                 m = self.pipeline.fs.model

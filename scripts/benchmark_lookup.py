@@ -42,7 +42,7 @@ def checked(ws: Path, s, p, fitted, model, m: dict, records: pd.DataFrame, sourc
     """Each record against the batch path: the pairs er.candidates lists for it alone among the stored records, gated
     alike, and their scores by score_fs, beside the lookup's. One stored table, the record inserted and taken out again."""
     uid, out = s.data.unique_id, []
-    con, db = connect(s.compute)
+    con = connect(s.compute)
     parts = ", ".join(f"'{f}'" for f in sorted((ws / "state" / "records").glob("part-*.parquet")))
     con.execute(f"CREATE TABLE records AS SELECT * FROM read_parquet([{parts}], union_by_name = true)")
     index._attach(con, ws, m)
@@ -57,9 +57,9 @@ def checked(ws: Path, s, p, fitted, model, m: dict, records: pd.DataFrame, sourc
         mine = index._scored(con, model, uid, rec[uid], sorted(found), n)
         con.execute("INSERT INTO records BY NAME SELECT * FROM er_q")
         con.execute(f"CREATE OR REPLACE TABLE new_ids AS SELECT '{rec[uid]}' AS \"{uid}\"")
-        gate = lambda pairs: score_fs(model, "records", pairs, db, uid, into="er_gate", n_records=n)
+        gate = lambda pairs: score_fs(model, "records", pairs, con, uid, into="er_gate", n_records=n)
         candidates(fitted.fs.blockers, "records", uid, "new_ids", fitted.fs.budget, con=con, into="cands", touching=True, gate=gate, floor=search_floor(fitted))
-        score_fs(model, "records", "cands", db, uid, into="scores", n_records=n)
+        score_fs(model, "records", "cands", con, uid, into="scores", n_records=n)
         ref = dict(con.execute(f"""SELECT CASE WHEN "{uid}_l" = '{rec[uid]}' THEN "{uid}_r" ELSE "{uid}_l" END, match_weight FROM scores""").fetchall())
         con.execute(f"DELETE FROM records WHERE \"{uid}\" = '{rec[uid]}'")
         con.unregister("er_q")

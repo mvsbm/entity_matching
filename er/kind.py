@@ -55,7 +55,7 @@ class NameModel:
 
     def __init__(self, terms: list[str], coef: np.ndarray, intercept: float, ngram: int, compute: dict | None = None):
         self.terms, self.coef, self.intercept, self.ngram, self.compute = terms, coef, intercept, ngram, compute
-        self.con = connect(compute)[0]  # the run's limits: it scores every chunk's names
+        self.con = connect(compute)  # the run's limits: it scores every chunk's names
         self.con.register("er_weights", pd.DataFrame({"term": terms, "w": coef}))
         self.con.execute("CREATE TABLE weights AS SELECT * FROM er_weights")
         self.con.unregister("er_weights")

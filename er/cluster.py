@@ -8,7 +8,7 @@ from splink.clustering import cluster_pairwise_predictions_at_threshold
 from er.config import q
 
 
-def merge(con: duckdb.DuckDBPyConnection, db: DuckDBAPI, base: str, edges: str, into: str, uid: str) -> None:
+def merge(con: duckdb.DuckDBPyConnection, base: str, edges: str, into: str, uid: str) -> None:
     """`into`: `base` (uid → cluster_id, every record) with the pairs of `edges` (<uid>_l, <uid>_r) added. Each existing
     cluster is one node, so the work grows with the edges, not with the file; a merged cluster takes the smallest id, as
     a full rebuild does (Splink names a cluster after its smallest uid). O(E·d + N) for E edges, d the largest
@@ -20,6 +20,7 @@ def merge(con: duckdb.DuckDBPyConnection, db: DuckDBAPI, base: str, edges: str, 
     if not con.execute("SELECT count(*) FROM er_e").fetchall()[0][0]:
         con.execute(f"CREATE OR REPLACE TABLE {into} AS SELECT * FROM {base}")
         return
+    db = DuckDBAPI(connection=con)  # Splink's wrapper for this call alone: its cache goes with it
     comp = cluster_pairwise_predictions_at_threshold(
         nodes=db.register(con.sql(f"SELECT {l} AS {u} FROM er_e UNION SELECT {r} FROM er_e")),
         edges=db.register(con.sql("SELECT * FROM er_e")), db_api=db, node_id_column_name=uid)

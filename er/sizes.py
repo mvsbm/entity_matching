@@ -44,7 +44,7 @@ def score_sql(start: float, w: dict[tuple[str, int], float]) -> str:  # a kept p
 def opened(ws: Path, s: Settings, p: Pipeline):
     """The run's records in a connection of their own, the method as its fit saw them, the run's model (u measured on
     the file, where it was), the ID column, the records' count and those u by comparison and level."""
-    con, db = connect(s.compute)
+    con = connect(s.compute)
     parts = sorted((ws / "state" / "records").glob("part-*.parquet"))
     scoring = ws / "state" / "scoring.json"
     if not parts or not (ws / "state" / "model.json").exists() or not list((ws / "scored").glob("*.parquet")):
@@ -59,18 +59,18 @@ def opened(ws: Path, s: Settings, p: Pipeline):
             [(c.name, [*(lv.label for lv in c.levels), ELSE]) for c in p.fs.model.comparisons]:  # the levels the kept pairs hold are this method's
         raise InputError(f"the method compares otherwise than the run in {ws} did", fix=f"run it again first: nayose rerun records --workspace {ws}")
     u = {c["output_column_name"]: {lv["label_for_charts"]: lv["u_probability"] for g, lv in _ranked(c) if g >= 0} for c in model["comparisons"]}
-    return con, db, p, model, uid, n, u
+    return con, p, model, uid, n, u
 
 
 def choose(ws: Path, s: Settings, p: Pipeline, records: int) -> dict:
     """Fit em "choose" on the run's fit sample of `records` (er.match.chosen), against the file's u: each session's
     pairs, the share of its matches agreeing on the given name, kept or not and why; the fields kept, as set fit takes
     them; the comparisons that took every session's m. O(the fit)."""
-    con, db, p, _, uid, n, u = opened(ws, s, p)
+    con, p, _, uid, n, u = opened(ws, s, p)
     try:
         m = replace(p.fs.model, em_choose=em_candidates(p))
         sample = con.execute(f"{fit_sample_sql([m], uid, {c for c, *_ in con.execute('DESCRIBE records').fetchall()})} LIMIT {records}").df().astype("string")
-        fitted = train_fs(m, sample, db, uid, u=u)["er"]
+        fitted = train_fs(m, sample, con, uid, u=u)["er"]
     finally:
         con.close()
     rows = [{k: round(v, 3) if k == "given_share" and v is not None else v for k, v in x.items()} for x in fitted.get("em_choice", [])]
@@ -80,7 +80,7 @@ def choose(ws: Path, s: Settings, p: Pipeline, records: int) -> dict:
 def grow(ws: Path, s: Settings, p: Pipeline, line: Callable[..., None] | None = None) -> dict:
     """The steps (records, em, seconds, start, change, pairs at the floor and the line, added and taken away, m of each
     comparison's first level and else level), each way's settled size, and the report written to the workspace."""
-    con, db, p, model, uid, n, u = opened(ws, s, p)
+    con, p, model, uid, n, u = opened(ws, s, p)
     con.execute(f"CREATE TABLE kept AS SELECT * FROM read_parquet({lit(str(ws / 'scored' / '*.parquet'))})")
     floor, at = review_floor(p), p.fs.min_match_weight
     ways, rows, last, quiet, settled, fits = models(p), [], {}, {}, {}, {}
@@ -94,7 +94,7 @@ def grow(ws: Path, s: Settings, p: Pipeline, line: Callable[..., None] | None = 
                 continue
             t = time.perf_counter()
             try:
-                fitted = train_fs(m, sample, db, uid, u=u)
+                fitted = train_fs(m, sample, con, uid, u=u)
             except Exception as e:  # too few records for its rules: said, and the next size tried
                 rows.append(dict(records=size, em=way, floor=floor, error=str(e).split("\n")[0][:200]))
                 line and line(f"{size:,} records, {way}: {rows[-1]['error']}", row=rows[-1])

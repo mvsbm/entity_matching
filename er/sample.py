@@ -160,7 +160,7 @@ def discover(run, records: int, floor: float | None = None) -> Found:
     con.execute(f"""CREATE OR REPLACE TABLE er_kl_d AS SELECT DISTINCT p.l AS {l}, p.r AS {r} FROM er_kl_p p JOIN rule_clusters a ON a.{u} = p.l
         JOIN rule_clusters b ON b.{u} = p.r WHERE a.cluster_id <> b.cluster_id{alone}""")  # a pair inside one rule cluster is the rules'
     drawn, t_drawn = run._count("er_kl_d"), time.perf_counter()
-    score_fs(run.scoring, "records", "er_kl_d", run.db, uid, into="er_kl_t", n_records=n, floor=floor, bound=bound_tests(fs.model))
+    score_fs(run.scoring, "records", "er_kl_d", run.con, uid, into="er_kl_t", n_records=n, floor=floor, bound=bound_tests(fs.model))
     con.execute(f"DELETE FROM er_kl_t WHERE match_weight < {floor}")
     targets = con.execute(f"""SELECT t.{l}, t.{r}, t.match_weight,
         {', '.join(f'a.{q(a.column)} AS {q("a" + str(i))}, b.{q(a.column)} AS {q("b" + str(i))}' for i, a in enumerate(found))}

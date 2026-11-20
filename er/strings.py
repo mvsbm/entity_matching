@@ -21,7 +21,6 @@ import pyarrow as pa
 import pyarrow.compute as pc
 from rapidfuzz import process
 from rapidfuzz.distance import DamerauLevenshtein, Hamming, Jaro, JaroWinkler, Levenshtein
-from splink import DuckDBAPI
 
 Function = Literal["exact", "jaro_winkler", "jaro", "jaccard", "levenshtein", "damerau_levenshtein", "hamming"]
 
@@ -118,8 +117,8 @@ COMPUTE = ("threads", "memory_limit", "temp_directory", "max_temp_directory_size
 
 
 
-def connect(compute: dict | None = None) -> tuple[duckdb.DuckDBPyConnection, DuckDBAPI]:
-    """A DuckDB connection with every cl_<function> registered, wrapped for Splink. `compute` (config/settings.toml
+def connect(compute: dict | None = None) -> duckdb.DuckDBPyConnection:
+    """A DuckDB connection with every cl_<function> registered. `compute` (config/settings.toml
     [compute]) sets threads, memory_limit, temp_directory and max_temp_directory_size: past the memory limit, DuckDB
     spills to that folder (none set: one of the person's own in the system's temporary folder, never the folder nayose starts from). A limit
     nayose doesn't set, or one DuckDB refuses, is an InputError."""
@@ -152,4 +151,4 @@ def connect(compute: dict | None = None) -> tuple[duckdb.DuckDBPyConnection, Duc
     # self-check: character-level (the byte-level built-in gives 0.897 here) and NULL-safe
     assert con.sql("select round(cl_jaro_winkler('サトウヒロシ', 'サトウタカシ'), 3), "
                    "cl_levenshtein('サトウ', NULL) is null").fetchall() == [(0.844, True)]
-    return con, DuckDBAPI(connection=con)
+    return con

@@ -39,7 +39,7 @@ def pytest_runtest_makereport(item, call):  # each phase's report kept on the te
 
 
 @pytest.fixture(scope="session")
-def con_db():
+def con():
     return connect()
 
 

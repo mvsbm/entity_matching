@@ -47,7 +47,7 @@ def test_a_rehearsal_runs_a_file_of_the_same_size_and_shape_and_measures_it(say,
     monkeypatch.setattr(auto.subprocess, "Popen", lambda *a, **k: (_ for _ in ()).throw(OSError("no such program")))
     with pytest.raises(OSError):
         say("rehearse", "records", "--workspace", ws)
-    assert not (ws / "rehearsal").exists() and not list(Path(auto.connect({})[0].execute("SELECT current_setting('temp_directory')").fetchall()[0][0]).glob(f"rehearsal-{os.getpid()}"))
+    assert not (ws / "rehearsal").exists() and not list(Path(auto.connect({}).execute("SELECT current_setting('temp_directory')").fetchall()[0][0]).glob(f"rehearsal-{os.getpid()}"))
     assert say("rehearse", "records", "--workspace", ws, "--pipeline", tmp_path / "none.toml")[0] == 2  # a pipeline file that isn't there: said
 
 
@@ -146,7 +146,7 @@ def test_a_rehearsal_stopped_midway_leaves_nothing_behind(tmp_path, monkeypatch,
     from er import auto
     from er.settings import load_settings
     s = load_settings()
-    temp = Path(auto.connect(s.compute)[0].execute("SELECT current_setting('temp_directory')").fetchall()[0][0])
+    temp = Path(auto.connect(s.compute).execute("SELECT current_setting('temp_directory')").fetchall()[0][0])
     stale = temp / "rehearsal-999999"  # what a rehearsal killed outright left: its process is gone
     stale.mkdir(parents=True, exist_ok=True)
     pid = tmp_path / "pid"  # a run that goes on and on
