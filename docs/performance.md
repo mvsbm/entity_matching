@@ -69,7 +69,9 @@ re-fits the model.
 **People's decisions** (`Run.decide`, `nayose apply decisions`) cost **O(D + touched clusters)** for D
 decisions, plus O(N) to rewrite gold: each `match` pair merges two stored clusters, each one node, and nothing is scored.
 
-**Measured:** into the million-record run, an increment of 1,000 records takes about 4 s, with a peak of 2.25 GB.
+**Measured:** an increment of 1,000 records into a run of 999,000 generated records (the parity runs' 1M file less
+1,000 drawn at random), `nayose add records` in a process of its own: 4.0 s of steps, 5.4 s wall clock, a peak of
+4.19 GB under DuckDB's default memory limit.
 
 **A lookup** (`index.look_up`, `nayose match record`): one record against the run's index costs
 **O(G·(log N + b) + C·K·L²)**, N only inside log N: each of its keys reads a few row groups of its table, sorted by the
