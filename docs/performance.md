@@ -254,10 +254,6 @@ trained once and its signals computed once; a combination fits only its combiner
   sample costs little against the u measured on the file: on 1,039,995 generated records the fit step takes 3.3 s on
   30,000 records and 3.7 s on 100,000 with the method's EM, and 5.0 s with fit em `choose` (six sessions, one each);
   on 500,355 records of 80 columns, addresses of about 100 characters and long notes, 3.0 s, 3.8 s and 5.2 s.
-- **EM's sessions per key without Splink's checks** (`train_fs`): each session's linker skips Splink's settings
-  validation, which only logs warnings the fit hides, and takes the prior the first linker estimated on the same
-  records, not counted again. A fit on 1,000 records one session per key, 2.9 s to 2.3 s; on 128,000, 6.2 s to 5.4 s.
-  With the gap's sample above, `nayose try sample` on 500,000 generated records 107 s to 67 s.
 - **One edit on ASCII without an edit table** (`Comparator.test`): the same length, the Hamming distance; a length
   one apart, Levenshtein (an insertion or a deletion either way). Only a Damerau pair two substitutions apart is
   tested by Damerau–Levenshtein.
@@ -266,11 +262,9 @@ trained once and its signals computed once; a combination fits only its combiner
   pair (Σn)² − Σn² over 2 ways. A length one apart is a join of the longer's deletions on the shorter values (for
   Hamming, which pads, the longer without its last). O(U·L²), the distinct values grouped once: no pair is listed,
   where sequential IDs listed tens of millions.
-- **EM on agreement-pattern counts** (`train_fs`): with no term frequencies, each iteration reads the count of each
-  agreement pattern, a few hundred rows, not every pair in EM's blocks, as Splink does when told. The same updates,
-  summed in another order: weights within 10⁻⁹ bits, unless that order moves the change past `em_convergence` and EM
-  stops an iteration sooner or later, which leaves a level's weight as far from the other order's as one iteration
-  moves it. On that generated file's sample, 505 s to 25 s.
+- **EM on agreement-pattern counts, in Python** (`er.fit.session`): each session counts its pairs' agreement
+  patterns in one query, a few hundred rows, and runs its rounds over those counts in Python, never over every pair
+  in its blocks: the prior counted once, no linker, table cache or settings check per session.
 - **Threshold rule without clustering** (`accept_curve`). The rule reads only accepted and false accepted pairs per
   weight, so decision variants resolve clusters at the chosen weight only.
 - **Run cache.** Identical runs (same configuration, dataset and threshold) are computed once, in both stages.

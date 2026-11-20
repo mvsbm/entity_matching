@@ -56,7 +56,7 @@ The system turns a file of customer records into one ID per person or company. I
 
 **One engine.** `nayose`, `benchmark.py`, the demo and `choose.py` all run `er.run.Run`. `choose.py` measures each configuration by running it (`er.pipeline.run_rules`, `run_fs`: the run's steps up to its clusters, nothing written) and joining the run's tables to the truth, so it judges exactly what runs, with the same gate on oversized blocks and the same untrusted values. It then writes each split's workspace through `er.run`.
 
-**Where Splink sits.** Splink does the model's training (λ and EM) and the clustering, on the run's DuckDB connection; its scoring and u sample run as its own SQL, written by the `er` package in one query each. Everything around it is the `er` package: the rules' joins and candidate generation as SQL, budgets, u from the scored file, the threshold rule, decisions, evaluation ([what we take from Splink, and why the rest is ours](#what-we-take-from-splink-and-what-we-do-ourselves)).
+**Where Splink sits.** The model is Splink 5.0's Fellegi–Sunter, ported: the fit (`er.fit`: λ, EM, m from labels), the clustering (`cluster.merge`), the scoring and the u sample are the `er` package's own, and tests hold each to Splink's numbers. Splink itself only scores a model with term frequencies, an option of design time. Everything around it is the `er` package: the rules' joins and candidate generation as SQL, budgets, u from the scored file, the threshold rule, decisions, evaluation ([what we take from Splink, and why the rest is ours](#what-we-take-from-splink-and-what-we-do-ourselves)).
 
 **Configured for any file.** The engine reads logical fields only. `config/settings.toml` `[columns]` maps each field to the file's columns, and `[fields]` in the pipeline says which are mandatory and which optional. A missing optional field turns off only what reads it ([usage](usage.md#2--map-your-columns)).
 
@@ -74,7 +74,7 @@ The SQL is written to move: joins, group-bys, window functions and `CREATE TABLE
 | reading and writing files | `er.source`, `er.run` | `read_parquet(…, union_by_name = true)`, `COPY … (FORMAT parquet)`, `UNION ALL BY NAME` |
 | standardization (NFKC, hiragana as katakana, separators dropped, kana folding, the address chain) | `er.standardize` | pandas, per chunk: DuckDB has no NFKC |
 
-Splink writes the training, scoring and clustering SQL for each engine it supports.
+The fit's EM runs in Python on the agreement patterns' counts, a few hundred rows, so it needs nothing of the engine but one query per session.
 
 ### What we take from Splink, and what we do ourselves
 
@@ -82,7 +82,7 @@ Splink 5 was read against this code, and each overlap measured on the same data,
 
 | Job | Ours or Splink's | Why |
 |---|---|---|
-| training (λ, EM) | Splink's | its job |
+| training (λ, EM, m from labels) | ours (`er.fit`), ported from Splink's | the same λ, fixed comparisons, starts and rounds as Splink's, m within 10⁻¹² (tests compare them). Its sums run in a fixed order, so a fit repeats to the last bit; Splink's move by a last bit from run to run, in the order DuckDB's threads leave the rows |
 | connected components | ours (`cluster.merge`: scipy on the nodes numbered in their ids' order) | the same clusters as Splink's (tests compare them), in one pass over the edges where Splink's SQL takes a round per step of the longest path |
 | scoring, the u sample | Splink's SQL, run by ours (`match.predict_sql`, `match.sample_u`) | the same scores and u to the last bit (tests compare them with Splink's), in one query: Splink copies the records twice before scoring, and joins the u sample's pairs again for each comparison; a model with term frequencies is scored by Splink |
 | the rules' joins | ours, plain SQL | `deterministic_link` gives the same pairs but first joins every column of both records back: 1.35× slower at a million records, 17× at 10,000. Splink has no cascade (a later stage adding a pair only for a record still unresolved) |
@@ -144,7 +144,7 @@ Takes a fixed sample of 100,000 records, made of whole postal areas (by the ID's
 The gate on oversized blocks (step 5) and the scores (step 6) both use these u.
 
 - **Why:** a real file has no labels, so the model learns from the data. A fixed sample keeps the cost flat at any size; whole postal areas keep a household's records together. A sample of 10⁷ pairs can't see an agreement rarer than one in 10⁹ pairs, such as two customer IDs one digit apart in a big file; a count can.
-- **Code:** `Run.fit` → `match.train_fs` (Splink), `exact_u` (value counts, and position, swap and deletion keys), `counted` (the comparisons that need no sample), `scored_sample` (u by random sampling, cached per comparison and the values it reads, so within one process a model's variants share one sample), `assemble_u`, `u_basis`. A near-certain or learning rule that finds no pair in the sample (its field nearly empty) is skipped and named in the summary; with none left of either, the run stops with what to fix.
+- **Code:** `Run.fit` → `match.train_fs` (`fit.prior`, `fit.session`, `fit.m_from_labels`), `exact_u` (value counts, and position, swap and deletion keys), `counted` (the comparisons that need no sample), `scored_sample` (u by random sampling, cached per comparison and the values it reads, so within one process a model's variants share one sample), `assemble_u`, `u_basis`. A near-certain or learning rule that finds no pair in the sample (its field nearly empty) is skipped and named in the summary; with none left of either, the run stops with what to fix.
 - **Increment:** no fit. It reads `state/model.json`, so every increment scores with the full run's model, and settles its u before the rules, as a full run does: `match.refreshed_u`. The exact and one-edit levels are counted again on all records. A comparison's sampled u are measured again only once the drift of its exact level, since it was sampled, exceeds the sampling error of its most precise sampled level, 1/(ln 2·√hits) bits: before that, a new sample would only redraw the noise. `O(N + S·K_stale)`.
 
 ### 4 · Rules: the certain cases · `O(N + ΣP_r·L²) + O(E·log E + N)`
