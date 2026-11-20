@@ -128,32 +128,17 @@ def qa(run: "Run", fields: list[str] | None = None, review: int = 50, previous: 
         kind_rows = [("kinds", " · ".join(f"{n.get((of, k), 0):,} × {SAYS[k]}" for k in (COMPANY, PERSON, UNSURE)) + f" ({of})")
                      for of in ("records", "customers")]
         c = run.classifier
-        if c is not None and c.spec.trust_flag:
-            how = "the file's flag, as it is (trust_flag)"
-        elif c is not None and (f := c.fitted) is not None:
-            side = lambda line, at: at if line <= 1 else "never (no line holds its budget)"
-            how = (f"{c.labels:,} answers ({c.measured:,} drawn to measure): company {side(f.line_company, f'at P ≥ {f.line_company:g}')}, "
-                   f"person {side(f.line_person, f'at P ≤ {1 - f.line_person:.4g}, its labelled error {f.person_error:.2%}' if f.person_error is not None else '')}")
-        else:  # no line placed: a written legal form, or a name the model is sure of
-            how = ((f"{c.labels:,} answers, {c.measured:,} of them drawn to measure: a line needs 50 drawn to measure, of both kinds"
-                    if c is not None and c.labels else "no answers yet")
-                   + (f"; the engine's own: a written legal form, or a name {c.spec.name_line:.0%} sure; else the flag" if c is not None else ""))
-        if c is not None and c.decided:
-            how += f"; people decided {len(c.decided):,} records"
-        flagged, unknown = con.execute("SELECT count(*) FILTER (WHERE kind_flagged), count(*) FILTER (WHERE kind_held AND kind_by = 'people') FROM gold").fetchall()[0]  # held by the engine: a record an older run held
+        flagged = con.execute("SELECT count(*) FILTER (WHERE kind_flagged) FROM gold").fetchall()[0][0]
         if flagged:
-            kind_rows.append(("flagged", f"{flagged:,} records the engine is sure of against the flag: matched as the engine says; "
-                                         "answer them in kind_review.parquet if you want, surest first"))
-        if unknown:
-            kind_rows.append(("held back", f"{unknown:,} records people can't tell: their names stay out of matching, and their pairs come to review.parquet"))
-        if c is not None and c.flag_error is not None:
-            how += f"; the flag wrong on {c.flag_error:.1%} of {c.flag_checked:,} answers drawn at random"
-        kind_rows += [("kinds from", how)] if c is not None else []
+            kind_rows.append(("flagged", f"{flagged:,} records the engine is sure of against the flag: matched as the engine says (gold: kind_flagged)"))
+        if c is not None:
+            kind_rows.append(("kinds from", "the file's flag, as it is (trust_flag)" if c.spec.trust_flag
+                              else f"a written legal form, or a name {c.spec.name_line:.0%} sure; else the flag"))
         if c is not None and not c.spec.trust_flag and "kind_flag" in run.columns():  # the flag's likely errors, for its owners
             says = "x.kind_flag IN (" + ", ".join(map(lit, c.flag_company)) + ")"
             a, b = con.execute(f"""SELECT count(*) FILTER (WHERE g.kind = 2 AND NOT {says}), count(*) FILTER (WHERE g.kind = 1 AND {says})
                                    FROM gold g JOIN records x USING ({u}) WHERE x.kind_flag IS NOT NULL""").fetchall()[0]
-            kind_rows.append(("flag", f"a kind the engine or people are sure of contradicts it on {a + b:,} records: {a:,} 2 company flagged 1, "
+            kind_rows.append(("flag", f"a kind the engine is sure of contradicts it on {a + b:,} records: {a:,} 2 company flagged 1, "
                                       f"{b:,} 1 person flagged 2"))
         if len(mixed):
             kind_rows.append(("note", f"{len(mixed):,} cluster{'s hold' if len(mixed) > 1 else ' holds'} a sure person and a sure company: see qa.md, mixed kinds"))
@@ -472,22 +457,6 @@ def carry_over(run: "Run", previous: pd.DataFrame, sheet: pd.DataFrame, out: Pat
     both = pd.concat([sheet[~sheet.set_index([run.l, run.r]).index.isin(kept.set_index([run.l, run.r]).index)], kept], ignore_index=True)
     decide = both[both["why"] == "decide"].sort_values("match_weight", ascending=False, ignore_index=True)
     return pd.concat([decide, both[both["why"] != "decide"]], ignore_index=True)
-
-
-def carry_kinds(run: "Run", sheet: pd.DataFrame, previous: Path) -> pd.DataFrame:
-    """The person/company sheet a full run makes again, with the previous one's rows holding a kind typed in and not
-    given back (none of run.labels) on records the run still holds, as they were; the rest new. O(sheet rows)."""
-    old = read_parquet(previous) if previous.exists() else sheet.iloc[:0]
-    typed = old[old["kind"].notna()] if "kind" in old else old.iloc[:0]
-    if run.labels is not None:
-        typed = typed[~typed[run.uid].astype("string").isin(run.labels[run.uid].astype("string"))]
-    if typed.empty:
-        return sheet
-    run.con.register("er_typed", typed[[run.uid]].astype("string"))
-    held = {x for (x,) in run.con.execute(f"SELECT {q(run.uid)} FROM records WHERE {q(run.uid)} IN (SELECT {q(run.uid)} FROM er_typed)").fetchall()}
-    run.con.unregister("er_typed")
-    typed = typed[typed[run.uid].astype("string").isin(held)].reindex(columns=sheet.columns)
-    return pd.concat([sheet[~sheet[run.uid].astype("string").isin(typed[run.uid].astype("string"))], typed], ignore_index=True)
 
 
 def households(con: duckdb.DuckDBPyConnection, records: str, pairs: str, uid: str, p: Pipeline) -> set[tuple[str, str]]:

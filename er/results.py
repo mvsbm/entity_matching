@@ -9,13 +9,10 @@ from dataclasses import replace
 from pathlib import Path
 
 import duckdb
-import pandas as pd
 
 from er import folder
 from er.cluster import merge
 from er.config import InputError, Pipeline, bits, lit, q
-from er.io import read_parquet
-from er.kind import sheet_parts
 from er.match import levels, named_sql
 from er.report import no_run
 from er.explain import run_model, scored_again
@@ -92,7 +89,7 @@ def describe_results(con: duckdb.DuckDBPyConnection, out: Path, s: Settings, p: 
     patterns, each pattern at its mean weight; the rules' own pairs from the pair index), the pairs waiting for people from `review_from` up, by range, what
     merged and how, entities by size, the merge conditions and what they merge, whether matches could be missed (the
     probe), the groups too big to compare by the key that made them, and person or company: the records flagged (the
-    engine sure against the file's flag), those still open on the sheet, and the measuring draw's open rows. O(N + P + E)."""
+    engine sure against the file's flag). O(N + P + E)."""
     uid, gold = s.data.unique_id, read(out, "gold.parquet")
     index, chart, counts = pair_index(con, out, s, p), None, None
     scored = [x for run in folder.runs(out) for x in run.get("steps", []) if x["step"] == "score"]
@@ -123,8 +120,6 @@ def describe_results(con: duckdb.DuckDBPyConnection, out: Path, s: Settings, p: 
     probe = [dict(stratum=x["stratum"], fields=x["fields"], pairs=x["pairs"], scored=x["scored"], missed=x["missed"], low=x["low"], high=x["high"])
              for x in steps.get("probe", {}).get("strata", [])]
     cand = steps.get("candidates", {})
-    sheet = read_parquet(out / "kind_review.parquet") if (out / "kind_review.parquet").exists() else pd.DataFrame(columns=["why", "kind"])
-    open_ = sheet[sheet["kind"].isna()].assign(why=sheet_parts(sheet[sheet["kind"].isna()]))  # a flagged record drawn at random is to check
     has = {c for c, *_ in con.execute(f"DESCRIBE SELECT * FROM {gold}").fetchall()}
     flagged = con.execute(f"SELECT count(*) FROM {gold} WHERE kind_flagged").fetchall()[0][0] if "kind_flagged" in has else 0
     uncounted = 0 if chart is None or all("bands" in x for x in scored) else sum(  # from the full run's patterns: every increment's records left out
@@ -137,7 +132,7 @@ def describe_results(con: duckdb.DuckDBPyConnection, out: Path, s: Settings, p: 
                 pairs=dict(kept=sum(by_status.values()), **by_status), merged_by=joined,
                 merging=merging_of(out, p), missed=probe,
                 too_big=dict(skipped=cand.get("oversized_skipped", 0), kept=cand.get("oversized_kept", 0), by=cand.get("skipped_by", {}), min=p.fs.budget.min_oversized()),
-                kinds=dict(flagged=int(flagged), to_check=int((open_["why"] == "decide").sum()), to_teach=int((open_["why"] == "measure").sum())))
+                kinds=dict(flagged=int(flagged)))
 
 
 # ---------- merging without people ----------
@@ -247,7 +242,7 @@ def apply_merging(con: duckdb.DuckDBPyConnection, out: Path, s: Settings, p: Pip
             SELECT c.{u}, c.cluster_id,
                    CASE WHEN f.id IS NOT NULL THEN {lit(fs.previous_stage)} WHEN m.id IS NOT NULL THEN {lit(fs.stage)} WHEN z.n > 1 THEN 'review' END AS resolved_stage,
                    CASE WHEN f.id IS NOT NULL THEN f.rule WHEN m.id IS NOT NULL THEN {lit(fs.model.name)} WHEN z.n > 1 THEN 'review' END AS resolved_by
-                   {f", o.kind, o.kind_p, o.kind_by, {'o.kind_flagged' if 'kind_flagged' in cols else 'FALSE AS kind_flagged'}, o.kind_held, k.customer_kind" if kinds else ""}
+                   {f", o.kind, o.kind_p, o.kind_by, {'o.kind_flagged' if 'kind_flagged' in cols else 'FALSE AS kind_flagged'}, k.customer_kind" if kinds else ""}
             FROM gold_new c JOIN size z USING (cluster_id) JOIN {old} o USING ({u}) LEFT JOIN first f ON f.id = c.{u} LEFT JOIN model m ON m.id = c.{u}
             {"JOIN customer k USING (cluster_id)" if kinds else ""} ORDER BY c.{u}""")
         joined = con.execute("SELECT count(*) FROM (SELECT cluster_id FROM gold GROUP BY 1 HAVING count(*) > 1)").fetchall()[0][0]

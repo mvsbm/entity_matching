@@ -19,7 +19,7 @@ with the numbers filled in, and its time.
                                                  (er.probe), the hits the likely links don't join counted and scaled
     write       O(N + C)                         gold clusters and matches, as Parquet; the state for increments; and,
                                                  built first, the report
-    report      O(review pairs) + O(N) in SQL    for people: qa.md, report.txt, review.parquet, kind_review.parquet
+    report      O(review pairs) + O(N) in SQL    for people: qa.md, report.txt, review.parquet
 
 increment() adds a batch Δ of new records to a written run: the batch is joined against all records, rule by rule and
 generator by generator, scored, and merged into the existing clusters, each cluster one node. Its cost is
@@ -29,8 +29,7 @@ only for a comparison whose drift has outgrown its sampling error (er.match.refr
 re-scores everything.
 
 decide() applies people's decisions on the review sheet (qa) without scoring anything: a `match` pair merges two
-clusters. Decisions are kept in decisions/, which a full run on the same folder applies again; people's person/company
-answers in kind_answers/, a part per sheet as given, which every later run on the folder reads.
+clusters. Decisions are kept in decisions/, which a full run on the same folder applies again.
 
 Writes are staged: every file is written under a temporary name; once all are complete, the list of moves still owed is
 saved (pending.json), then they are done. A run's reports are among its files, and steps.json replaces itself whole. A write interrupted before that list exists left the run as it was: run it
@@ -74,13 +73,13 @@ from er.cluster import merge
 from er.config import FSModel, InputError, Pipeline, TfidfNeighbours, bits, generator, generator_dict, lit, q
 from er.io import code_version, config_hash, markdown, read_parquet
 from er.keys import idle, gap as keys_gap, learn
-from er.kind import KIND_COLUMNS, NAME_MODEL, century, classifier as kind_classifier, kind_review_sheet, merge_answers
+from er.kind import KIND_COLUMNS, NAME_MODEL, classifier as kind_classifier
 from er.match import ELSE, bound_tests, rough_reads, compared_exactly, fit_model, fit_sample_sql, named_sql, bound_reads, reaching_sql, refreshed_u, review_floor, rule_edges, search_floor, score_fs, scored_u, train_fs, u_basis
 from er.probe import missed
-from er.report import carry_kinds, carry_over, diagnosis, no_run, qa, report_text, unmapped_columns
+from er.report import carry_over, diagnosis, no_run, qa, report_text, unmapped_columns
 from er.results import BANDS, own_merging, banded, check_merging, merge_where
 from er.settings import SPECIAL, Settings, fit_to_file, present_fields
-from er.source import answers, decisions, file_facts, filled, known, open_source, suggest
+from er.source import decisions, file_facts, filled, known, open_source, suggest
 from er.standardize import prepare
 from er.strings import connect, spent
 
@@ -150,7 +149,6 @@ class Run:
     disabled: list[str] = field(default_factory=list)
     echo: Callable[[dict], None] | None = None  # called with each step as it finishes: progress for people (nayose)
     told: Callable[..., None] | None = None   # called as a long step goes (done, total, unit, facts): how far it is, for people
-    kind_labels: Path | None = None           # people's person/company labels (a filled-in kind_review.parquet); an increment keeps the run's
     reaching_only: bool = True                # candidates stores only the pairs that can reach keep_from (_reaching); design time measures every pair the keys list
 
     def __post_init__(self) -> None:
@@ -174,8 +172,6 @@ class Run:
         self.scoring: dict | None = None      # the model with u from this file (fit): what the gate and the scores use
         self.basis: dict = {}                 # what an increment needs to tell whether those u went stale (er.match.u_basis)
         self.classifier = None                # each record's kind, person or company (er.kind); None: the pipeline doesn't ask
-        self.labels: pd.DataFrame | None = None  # the person/company answers it rests on: the folder's sheets and the one given
-        self.given: pd.DataFrame | None = None   # the filled rows of the sheet given (kind_labels), as given
         self.tables: dict[str, pd.DataFrame] = {}  # qa's tables, the summary first, once report() built them
         self.fields = [f for f in self.settings.columns if f not in SPECIAL]  # the logical fields of [columns]
         self.inputs: list[dict] = []          # the files read: path, bytes, SHA-256 (steps.json)
@@ -243,14 +239,8 @@ class Run:
             return
         fs, rules, spec = self.pipeline.fs, self.pipeline.rules, self.pipeline.kind
         if spec and spec.name_field in present:
-            if self.labels is None:  # full() and increment() merge them with the run's first
-                self.labels = merge_answers(None, self._given(), self.uid)
-            self.classifier = kind_classifier(self.settings, spec, self.labels)
-            if self.given is not None and len(self.given):  # each answer names a record of this file
-                self.con.register("er_given_ids", self.given[[self.uid]])
-                known(self.con, f"SELECT {q(self.uid)} AS id FROM er_given_ids", rows, self.uid, self.kind_labels, path)
-                self.con.unregister("er_given_ids")
-            self.inputs += file_facts([self.settings.root / NAME_MODEL], "name model") + file_facts([self.kind_labels] if self.kind_labels else [], "answers")
+            self.classifier = kind_classifier(self.settings, spec)
+            self.inputs += file_facts([self.settings.root / NAME_MODEL], "name model")
         probe, home = self.pipeline.probe, self.pipeline.household  # its groups are keys too, and the label's fields: made with the rest
         normalized, used = [*rules.normalized(), *fs.normalized(), *probe.normalized(), *home.normalized()], rules.used() | fs.used() | probe.used() | home.used()
         total, done = self._count(rows), 0
@@ -291,9 +281,7 @@ class Run:
         kinds = {}
         if self.classifier is not None:  # how many records each kind holds
             kinds = dict(self.con.execute(f"SELECT kind, count(*) FROM {into} GROUP BY 1").fetchall())
-            kinds = {"companies": kinds.get(2, 0), "persons": kinds.get(1, 0), "not sure": kinds.get(0, 0),
-                     "decided by people": self._count(f"{into} WHERE kind_by = 'people'"), "flagged": self._count(f"{into} WHERE kind_flagged"),
-                     "held back": self._count(f"{into} WHERE kind_held")}
+            kinds = {"companies": kinds.get(2, 0), "persons": kinds.get(1, 0), "not sure": kinds.get(0, 0), "flagged": self._count(f"{into} WHERE kind_flagged")}
         self._done("load", "O(N·L)", f"O({self.n:,}·L)", t, records=self.n, disabled=len(self.disabled), set_aside=self._count("set_aside"), **kinds,
                    **({"prepared": "kept" if kept else "made"} if keep else {}))
 
@@ -353,13 +341,11 @@ class Run:
     def _prepared_key(self, normalized: list, used: set[str], ordered: bool) -> str:
         """All the cleaned records rest on, as one hash: the records files (their SHA-256, in order) and how they are read
         and matched to fields, the cleaning, the columns the method cleans and reads, the person/company engine (its
-        name model, people's answers), the code, and the century a 2-digit birth year falls in (kind.century: this
-        year's). Not the compute limits: they change no record."""
+        name model) and the code. Not the compute limits: they change no record."""
         s, files = self.settings, [f["sha256"] for f in self.inputs if f["role"] in ("records", "name model")]
-        answers = hashlib.sha256(self.labels.to_csv(index=False).encode()).hexdigest() if self.labels is not None else None
         ordered = ordered and sum(f["role"] == "records" for f in self.inputs) > 1  # one file read in order sets aside what it would read at once: a rerun reads the first run's
         return hashlib.sha256(repr((files, ordered, s.data, s.columns, s.input, s.standardize, s.flag_company, self.pipeline.fs.standardize,
-                                    normalized, sorted(used), self.pipeline.kind, answers, PREPARING, century())).encode()).hexdigest()[:16]
+                                    normalized, sorted(used), self.pipeline.kind, PREPARING)).encode()).hexdigest()[:16]
 
     def _kept(self, path: Path | None, into: str, n: int) -> bool:  # the cleaned records kept, read into `into`; False if none, or one that can't be read whole
         if path is None:
@@ -778,7 +764,7 @@ class Run:
                  size AS (SELECT cluster_id, count(*) AS n FROM clusters GROUP BY 1),
                  matched AS (SELECT {l} AS id FROM matches UNION SELECT {r} FROM matches)
                  {f", customer AS ({customer_kinds('clusters', 'records', u)})" if kinds else ""}
-            SELECT k.{u}, k.cluster_id, {stage} AS resolved_stage, {by} AS resolved_by{", x.kind, x.kind_p, x.kind_by, x.kind_flagged, x.kind_held, c.customer_kind" if kinds else ""}
+            SELECT k.{u}, k.cluster_id, {stage} AS resolved_stage, {by} AS resolved_by{", x.kind, x.kind_p, x.kind_by, x.kind_flagged, c.customer_kind" if kinds else ""}
             FROM clusters k JOIN size z USING (cluster_id) LEFT JOIN first f ON f.id = k.{u} LEFT JOIN matched m ON m.id = k.{u} {f"LEFT JOIN {old} o USING ({u})" if old else ""}
                  {f"JOIN records x USING ({u}) JOIN customer c USING (cluster_id)" if kinds else ""}
             ORDER BY k.{u}""")
@@ -829,7 +815,7 @@ class Run:
         """Gold (each record's cluster, the stage and rule that resolved it, its kind and its customer's), the accepted
         pairs with their weights, the rules' pairs (with their weights, and whether each merged), with a trust line the
         model's pairs left to people (proposed), as Parquet; and the state an increment needs: the standardized
-        records, the rules' clusters and people's person/company answers. Records, rules' pairs and matches are folders
+        records and the rules' clusters. Records, rules' pairs and matches are folders
         that increments append to. `replace` (a full run): the old run's files, which the new ones replace. `report`
         (the input and the pipeline file): the reports for people (report()), built first and written with these files.
         Staged: see the module."""
@@ -854,10 +840,6 @@ class Run:
             texts.append((folder.round_ran(out, dict(config=self.config, method=folder.method(out), at=datetime.now().isoformat(timespec="seconds"),
                                                      matched=linked["accepted"], expected_false=linked["expected_false"])), out / folder.ROUNDS))
         earlier = folder.history(out) if part == 0 else None  # the runs before: read before the old log goes with the old run
-        sheets, n = [], folder.next_part(out / folder.KIND_ANSWERS)
-        if self.given is not None and len(self.given):  # the sheet given, kept as it came: the next run reads it again
-            self.con.register("er_given", self.given)
-            sheets.append(("SELECT * FROM er_given", out / folder.KIND_ANSWERS / f"part-{n:05d}.parquet"))
         # an increment adds to the pair index its full run began; a run written before it had none gets it whole, once (results.pair_index)
         scored = [(self._links(), out / folder.SCORED / name)] if part == 0 or (out / folder.SCORED / "part-00000.parquet").exists() else []
         def logged() -> str:  # once the files are written: the write's time, in the entry that lands with them
@@ -867,7 +849,7 @@ class Run:
                                      ("SELECT * FROM proposed", out / "proposed" / name), *scored,
                                      (f"SELECT * FROM gold ORDER BY {q(self.uid)}", out / "gold.parquet"),
                                      ("SELECT * FROM rule_clusters", state / "rule_clusters.parquet"),
-                                     (f"SELECT * FROM {'records' if part == 0 else 'new_records'}", state / "records" / name), *aside, *sheets],
+                                     (f"SELECT * FROM {'records' if part == 0 else 'new_records'}", state / "records" / name), *aside],
                      [*texts, *people, (logged, out / folder.STEPS)], replace, frames)
 
     def _log(self, out: Path, append: bool, earlier: list[dict] | None = None, **entry: object) -> str:
@@ -878,9 +860,8 @@ class Run:
 
     def report(self, path: str | Path, out: Path, pipeline: Path) -> tuple[list[tuple[str, Path]], list[tuple[pd.DataFrame, Path]]]:
         """Step 9, for people: qa.md (the label-free checks, qa), report.txt (the run on a page with no record's value in
-        it), review.parquet (the pairs to decide and to audit; an increment keeps the previous sheet's open rows) and, on
-        a full run that tells persons from companies, kind_review.parquet (records to answer, none answered already; a
-        record an increment holds back reaches the next full run's sheet). Built before the run's files are written, and
+        it) and review.parquet (the pairs to decide and to audit; an increment keeps the previous sheet's open rows).
+        Built before the run's files are written, and
         returned as texts and frames for write() to stage with them: a run never lands without its reports, which a
         retry could not make again, since nothing is new by then. `path` is the input, `pipeline` the pipeline file, both
         named in the reports. Keeps qa's tables, the summary first, in self.tables, and its weight bands (counts) in the
@@ -894,10 +875,6 @@ class Run:
         text = ["# Run checks", "", f"Input: `{path}` · {self.n:,} records", ""]
         for name, table in tables.items():
             text += [f"## {name.replace('_', ' ')}", "", markdown(table.round(4)) if len(table) else "none", ""]
-        if self.classifier is not None and self.added is None:
-            answered = self.labels[self.uid].astype("string") if self.labels is not None else ()
-            frames.append((carry_kinds(self, kind_review_sheet(self.con, "records", self.uid, self.pipeline.kind, self.settings.flag_company, answered),
-                                       out / "kind_review.parquet"), out / "kind_review.parquet"))
         self.tables = tables
         items = diagnosis(self, tables, review_floor(self.pipeline))  # report.txt prints them
         texts = [("\n".join(text), out / "qa.md"), (report_text(self, tables, pipeline, items), out / "report.txt")]
@@ -959,7 +936,6 @@ class Run:
         self.part = folder.next_part(state / "records")
         parts = ", ".join(lit(x) for x in sorted((state / "records").glob("part-*.parquet")))  # not a glob: this run's own part comes later
         self.con.execute(f"CREATE OR REPLACE VIEW old_records AS SELECT * FROM read_parquet([{parts}], union_by_name = true)")
-        self.labels = self._answers(out)  # the batch's kinds rest on the run's answers, and any given with it
         self.merge = check_merging(folder.method(out).get("merge") or {}, self.pipeline)
         self.load(path, into="new_records", stored="old_records")  # a record already in the run is set aside: a retry adds nothing twice
         self.added = self.n
@@ -996,20 +972,6 @@ class Run:
         self._load_decisions(out)  # people's "different" on a record back in the run stands, as in a full run
         self.cluster(out / "gold.parquet")
         return True
-
-    def _answers(self, out: Path) -> pd.DataFrame | None:
-        """People's person/company answers: the sheets the folder `out` keeps, newest first, then the one given on top.
-        O(answers)."""
-        parts = folder.answer_parts(out)
-        kept = pd.concat([read_parquet(f).astype({self.uid: "string"}) for f in parts], ignore_index=True) if parts else None
-        return merge_answers(kept, self._given(), self.uid)
-
-    def _given(self) -> pd.DataFrame | None:
-        """The answered sheet given (kind_labels), through the door every input takes (er.source.answers): its answered
-        rows, read once."""
-        if self.kind_labels is not None and self.given is None:
-            self.given = answers(self.kind_labels, self.con, self.uid)
-        return self.given
 
     # ---------- people's decisions ----------
 
@@ -1051,7 +1013,7 @@ class Run:
                  {f", customer AS ({customer_kinds('clusters', 'gold_old', u)})" if kinds else ""}
             SELECT c.{u}, c.cluster_id, coalesce(o.resolved_stage, CASE WHEN z.n > 1 THEN 'review' END) AS resolved_stage,
                    coalesce(o.resolved_by, CASE WHEN z.n > 1 THEN 'review' END) AS resolved_by
-                   {f", o.kind, o.kind_p, o.kind_by, {flagged}, o.kind_held, k.customer_kind" if kinds else ""}
+                   {f", o.kind, o.kind_p, o.kind_by, {flagged}, k.customer_kind" if kinds else ""}
             FROM clusters c JOIN size z USING (cluster_id) JOIN gold_old o USING ({u}) {"JOIN customer k USING (cluster_id)" if kinds else ""}
             ORDER BY c.{u}""")
         d, m = self._count("er_decisions"), self._count("er_review")
@@ -1077,7 +1039,6 @@ class Run:
         held = folder.held(out)
         if held and not overwrite:
             raise InputError(f"{out} already holds a run", fix="choose another folder, or replace the run: nayose resolve records … --overwrite")
-        self.labels = self._answers(out)  # read before the folder's old state goes
         self.merge = check_merging(folder.method(out).get("merge") or {}, self.pipeline)
         self.keep = out
         self.resolve(path, out)
@@ -1132,7 +1093,7 @@ def listed(report: pd.DataFrame) -> list[dict]:  # each generator's pairs and se
 
 def customer_kinds(clusters: str, kinds: str, u: str) -> str:
     """Each cluster's customer_kind, from its records' kind and kind_p (`kinds`: a table holding both): 2 company if any
-    record is one (kind 2: the engine's call, the flag's or people's); 1 person if no record leans company and one is a
+    record is one (kind 2: the engine's call or the flag's); 1 person if no record leans company and one is a
     person; else 0 not sure. O(N)."""
     return f"""SELECT k.cluster_id, CASE WHEN bool_or(x.kind = 2) THEN 2 WHEN coalesce(max(x.kind_p), 0) < 0.5 AND bool_or(x.kind = 1)
                THEN 1 ELSE 0 END::TINYINT AS customer_kind FROM {clusters} k JOIN {kinds} x USING ({u}) GROUP BY 1"""

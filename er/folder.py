@@ -2,8 +2,7 @@
 file under a temporary name, then the moves still owed in pending.json, then the moves; finish_writes completes a write
 cut short); steps.json written whole, then renamed (log); a new part numbered after the highest (next_part); the
 record files a run read (inputs), each copied into inputs/ (take_in, loaded). What a run writes there, and what people
-keep there (decisions/, kind_answers/): docs/architecture.md, the workspace."""
-import hashlib
+keep there (decisions/): docs/architecture.md, the workspace."""
 import json
 import os
 import re
@@ -20,16 +19,15 @@ import pyarrow.parquet as pq
 from er import intake
 from er.config import InputError, lit, q, toml_of
 from er.io import alive, lock, object_store, patiently, replace_text
-from er.settings import COLUMNS
 from er.source import find, globbed
 
 PENDING = "pending.json"  # the renames a write still owes, saved once every new file is complete
 STEPS = "steps.json"  # the run's log: one entry per run, increment or set of decisions (log, runs)
 SCORED = "scored"  # every pair scored at 0 points or more and every rule pair, each comparison's level with it: what people browse (er.results)
 RUN_FILES = ("gold.parquet", STEPS, PENDING, "matches", "rule_kept", "proposed", SCORED, "state", "set_aside",  # what a run writes in its folder
-             "qa.md", "report.txt", "review.parquet", "kind_review.parquet")
+             "qa.md", "report.txt", "review.parquet",
+             "kind_review.parquet")  # the person/company sheet an earlier nayose wrote: a full run with --overwrite clears it
 DECISIONS = "decisions"  # people's decisions: not a run file, so a full run with overwrite keeps and applies them
-KIND_ANSWERS = "kind_answers"  # people's person/company answers, a part per sheet as given: kept as decisions are
 FULL_TMP = ".full.tmp"  # a full run's new files, until they replace the old run's
 METHOD = "method.toml"  # the workspace's changes to the tuned method (config.adjust); none: the method as tuned
 ROUNDS = "rounds.json"  # one entry per method a full run used, in order: not a run file, so the history outlasts each run;
@@ -163,14 +161,6 @@ def method_text(method: dict) -> str:  # method.toml's text for `method`, each v
     return "".join(f"{k} = {_toml(v, inline=True)}\n" for k, v in method.items())
 
 
-def stamp(ws: Path) -> str:
-    """What people and runs change in the workspace `ws`, by each file's size and time: the sheets, decisions,
-    answers, method, mapping and entities. A page that sees it change reads the workspace again. O(files)."""
-    files = [ws / "review.parquet", ws / "kind_review.parquet", ws / METHOD, ws / COLUMNS, ws / "gold.parquet",
-             *sorted((ws / DECISIONS).glob("part-*.parquet")), *sorted((ws / KIND_ANSWERS).glob("part-*.parquet"))]
-    return hashlib.sha256(repr([(f.name, f.stat().st_size, f.stat().st_mtime_ns) for f in files if f.exists()]).encode()).hexdigest()[:12]
-
-
 def latest_decisions(out: Path, uid: str, cols: tuple[str, ...] = ("decision",)) -> str | None:
     """SQL: each pair's latest decision the folder holds (the last part's: one decided again counts once, as last
     said), with `cols` as that part gave them; None before any."""
@@ -257,15 +247,12 @@ def held(out: Path) -> list[Path]:  # the run files a folder holds: what resolve
     return [out / f for f in RUN_FILES if (out / f).exists()]
 
 
-def answer_parts(out: Path) -> list[Path]:  # people's answer sheets the folder keeps, newest first
-    return sorted((out / KIND_ANSWERS).glob("part-*.parquet"), reverse=True)
-
-
 def current(out: Path, replacing: bool = False) -> None:
-    """Refuses a workspace an earlier nayose wrote, in a layout this one no longer reads: answers kept in state/, an
-    input part the reader never described (no intake.json), or rules' pairs written before they said whether each
-    merged, unless a full run is `replacing` them (--overwrite). O(parts) to look."""
-    old = ["people's answers in state/" if (out / "state" / "kind_labels.parquet").exists() else None,
+    """Refuses a workspace an earlier nayose wrote, in a layout this one no longer reads: person/company answers (in
+    kind_answers/ or state/), which no run reads now (each record's kind is the engine's rule), an input part the reader
+    never described (no intake.json), or rules' pairs written before they said whether each merged, unless a full run is
+    `replacing` them (--overwrite). O(parts) to look."""
+    old = ["people's person/company answers, which no run reads now" if (out / "kind_answers").is_dir() or (out / "state" / "kind_labels.parquet").exists() else None,
            next((f"{p.name} read before the reader described its files" for p in parts(out) if not intake.report(p)), None),
            None if replacing else next(("rules' pairs that don't say whether they merged" for f in (out / "rule_kept").glob("part-*.parquet")
                                         if "merged" not in pq.read_schema(f).names), None)]

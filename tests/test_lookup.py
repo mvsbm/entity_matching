@@ -137,7 +137,7 @@ def test_a_lookup_lists_and_scores_the_pairs_an_increment_of_the_record_would_an
         cli.match_record({"workspace": str(ws), "values": ["PHONE_NUM_4=1"], "record": "x", "from": None, "count": None}, None)
 
     before = (ws / "index" / "manifest.json").read_text(encoding="utf-8")
-    monkeypatch.setattr(index, "classifier", lambda *a, **k: (_ for _ in ()).throw(KeyboardInterrupt))
+    monkeypatch.setattr(index, "_publish", lambda *a, **k: (_ for _ in ()).throw(KeyboardInterrupt))  # its files all written, none yet in place
     with pytest.raises(KeyboardInterrupt):  # a build cut short: the index before it stands, and nothing of the new one is left
         index.build(ws, s2, p2)
     monkeypatch.undo()

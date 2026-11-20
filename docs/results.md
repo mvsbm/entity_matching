@@ -292,7 +292,7 @@ The best mean among the 48 finalists with the idea, and without it.
 | signal known_name: with | 67.6% |
 | signal known_name: without | 67.3% |
 
-The pipeline's combination (`config/pipeline.toml` `[kind]`: the bank table, n-grams 1–3, trained once on public data, trees of depth 2 on the flag, the birth year and the legal form) is 25th of 48: mean 65.5%, worst 35.3%, against 67.6% for the best, which also trains on the file's own legal-form records and reads a dictionary of names. The name model judged is the run's own (`er.generate.kind_training_names`).
+The pipeline's combination (the bank table and n-grams 1–3 of `config/pipeline.toml` `[kind]`, trained once on public data, and the study's trees of depth 2 on the flag, the birth year and the legal form; a run fits no combiner) is 25th of 48: mean 65.5%, worst 35.3%, against 67.6% for the best, which also trains on the file's own legal-form records and reads a dictionary of names. The name model judged is the run's own (`er.generate.kind_training_names`).
 
 ### The scenarios, for the pipeline's combination
 
@@ -321,9 +321,9 @@ The pipeline's combination (`config/pipeline.toml` `[kind]`: the bank table, n-g
 
 ### Placing the lines from people's answers
 
-The lines placed on answers drawn at random, as the review sheet draws them, 5 draws per scenario: 60 trials. `over_budget`: of the 60 trials (person calls: 1% wrong; company calls: 0.1%).
+The lines placed on answers drawn at random, 5 draws per scenario: 60 trials. A run places no line: it calls a kind on a written legal form or a name past `[kind] name_line`, else takes the flag's. `over_budget`: of the 60 trials (person calls: 1% wrong; company calls: 0.1%).
 
-**The person line**, by three rules: (a) the answers above it 30 or more, and at most half of 1% of them wrong; (b) the 95% one-sided upper bound on their wrong share (Clopper–Pearson) within 1%; (c) the company's rule. Chosen before the run: the rule over budget in at most 3 of 60 trials with 2,000 answers, then the most persons decided. Rule a breaks its budget in 4; b in 2, deciding 19.8% of persons; c decides almost none, since an answered company lies above nearly every line. `er.kind.lines` places the person line by b. The best combination decides 2.2 points more persons under b, with as many trials over budget: too little to train the name model on each file.
+**The person line**, by three rules: (a) the answers above it 30 or more, and at most half of 1% of them wrong; (b) the 95% one-sided upper bound on their wrong share (Clopper–Pearson) within 1%; (c) the company's rule. Chosen before the run: the rule over budget in at most 3 of 60 trials with 2,000 answers, then the most persons decided. Rule a breaks its budget in 4; b in 2, deciding 19.8% of persons; c decides almost none, since an answered company lies above nearly every line. The best combination decides 2.2 points more persons under b, with as many trials over budget: too little to train the name model on each file.
 
 | combination | answers | person_rule | persons | person_wrong_worst | person_over_budget |
 | --- | --- | --- | --- | --- | --- |
@@ -352,55 +352,55 @@ The lines placed on answers drawn at random, as the review sheet draws them, 5 d
 | the best | 4000 | b | 29.82% | 1.00% | 1 |
 | the best | 4000 | c | 0.01% | 0.00% | 0 |
 
-**The company line**: no labelled person above it, then this many grid steps stricter. Chosen before the run: the rule over budget in at most 3 of 60 trials at every count from 1,000 answers up, then the most companies decided at 2,000. Two steps broke the budget in 4 trials at 1,000 answers; two steps from 2,000 answers and three below kept it everywhere from 1,000 (1, 1, 0 trials) and decides as many companies as two steps on a full draw (66.7%). `er.kind.lines` places it so. At 500 answers only four steps kept the budget (2 of 60, deciding 35.0%): people should give back the whole draw.
+**The company line**: no labelled person above it, then this many grid steps stricter. Chosen before the run: the rule over budget in at most 3 of 60 trials at every count from 1,000 answers up, then the most companies decided at 2,000. Two steps broke the budget in 4 trials at 1,000 answers; two steps from 2,000 answers and three below kept it everywhere from 1,000 (1, 1, 0 trials) and decides as many companies as two steps on a full draw (66.7%). At 500 answers only four steps kept the budget (2 of 60, deciding 35.0%).
 
 | combination | answers | company_rule | companies | company_wrong_worst | company_over_budget |
 | --- | --- | --- | --- | --- | --- |
 | the pipeline's | 500 | 2 steps | 61.79% | 3.13% | 10 |
 | the pipeline's | 500 | 3 steps | 52.13% | 1.45% | 7 |
 | the pipeline's | 500 | 4 steps | 35.02% | 1.41% | 2 |
-| the pipeline's | 500 | 2 steps from 2,000 answers, 3 below (er.kind.lines) | 52.13% | 1.45% | 7 |
+| the pipeline's | 500 | 2 steps from 2,000 answers, 3 below | 52.13% | 1.45% | 7 |
 | the pipeline's | 1000 | 2 steps | 66.77% | 0.41% | 4 |
 | the pipeline's | 1000 | 3 steps | 57.97% | 0.14% | 1 |
 | the pipeline's | 1000 | 4 steps | 40.48% | 0.27% | 1 |
-| the pipeline's | 1000 | 2 steps from 2,000 answers, 3 below (er.kind.lines) | 57.97% | 0.14% | 1 |
+| the pipeline's | 1000 | 2 steps from 2,000 answers, 3 below | 57.97% | 0.14% | 1 |
 | the pipeline's | 2000 | 2 steps | 66.74% | 0.12% | 1 |
 | the pipeline's | 2000 | 3 steps | 59.29% | 0.08% | 0 |
 | the pipeline's | 2000 | 4 steps | 46.14% | 0.15% | 1 |
-| the pipeline's | 2000 | 2 steps from 2,000 answers, 3 below (er.kind.lines) | 66.74% | 0.12% | 1 |
+| the pipeline's | 2000 | 2 steps from 2,000 answers, 3 below | 66.74% | 0.12% | 1 |
 | the pipeline's | 4000 | 2 steps | 67.69% | 0.04% | 0 |
 | the pipeline's | 4000 | 3 steps | 62.03% | 0.03% | 0 |
 | the pipeline's | 4000 | 4 steps | 50.68% | 0.09% | 0 |
-| the pipeline's | 4000 | 2 steps from 2,000 answers, 3 below (er.kind.lines) | 67.69% | 0.04% | 0 |
+| the pipeline's | 4000 | 2 steps from 2,000 answers, 3 below | 67.69% | 0.04% | 0 |
 | the best | 500 | 2 steps | 61.42% | 3.01% | 11 |
 | the best | 500 | 3 steps | 49.53% | 1.46% | 6 |
 | the best | 500 | 4 steps | 35.09% | 1.37% | 3 |
-| the best | 500 | 2 steps from 2,000 answers, 3 below (er.kind.lines) | 49.53% | 1.46% | 6 |
+| the best | 500 | 2 steps from 2,000 answers, 3 below | 49.53% | 1.46% | 6 |
 | the best | 1000 | 2 steps | 65.47% | 0.80% | 3 |
 | the best | 1000 | 3 steps | 54.68% | 0.32% | 2 |
 | the best | 1000 | 4 steps | 36.66% | 0.14% | 1 |
-| the best | 1000 | 2 steps from 2,000 answers, 3 below (er.kind.lines) | 54.68% | 0.32% | 2 |
+| the best | 1000 | 2 steps from 2,000 answers, 3 below | 54.68% | 0.32% | 2 |
 | the best | 2000 | 2 steps | 67.06% | 0.13% | 1 |
 | the best | 2000 | 3 steps | 59.52% | 0.06% | 0 |
 | the best | 2000 | 4 steps | 45.54% | 0.12% | 1 |
-| the best | 2000 | 2 steps from 2,000 answers, 3 below (er.kind.lines) | 67.06% | 0.13% | 1 |
+| the best | 2000 | 2 steps from 2,000 answers, 3 below | 67.06% | 0.13% | 1 |
 | the best | 4000 | 2 steps | 67.64% | 0.02% | 0 |
 | the best | 4000 | 3 steps | 61.91% | 0.03% | 0 |
 | the best | 4000 | 4 steps | 50.94% | 0.05% | 0 |
-| the best | 4000 | 2 steps from 2,000 answers, 3 below (er.kind.lines) | 67.64% | 0.02% | 0 |
+| the best | 4000 | 2 steps from 2,000 answers, 3 below | 67.64% | 0.02% | 0 |
 
 ### End to end
 
-From `scripts/benchmark.py` ([`reports/benchmark.md`](../reports/benchmark.md)). Populations with one name column for every kind (`er.generate.kind_problems`): real company names from the registry, held out of the name model's training and written as banks write them; companies with records under their representative's name, the representative a person of the file (half at that person's address and phone); sole traders named like a shop; company dates; and a flag good, medium or poor. Each resolved three ways: names routed by the truth (the flag replaced by it, taken as it is); by the flag alone; by the kind step, people answering its review sheet (here, with the truth). `person_company_clusters` hold a true person and a true company; `sure_*` is the share of true companies called 2 and of true persons called 1; `wrong_*` the records called 2 that are persons and called 1 that are companies.
+From `scripts/benchmark.py` ([`reports/benchmark.md`](../reports/benchmark.md)). Populations with one name column for every kind (`er.generate.kind_problems`): real company names from the registry, held out of the name model's training and written as banks write them; companies with records under their representative's name, the representative a person of the file (half at that person's address and phone); sole traders named like a shop; company dates; and a flag good, medium or poor. Each resolved three ways: names routed by the truth (the flag replaced by it, taken as it is); by the flag alone; by the kind step (a written legal form, or a name the model is sure of; else the flag). `person_company_clusters` hold a true person and a true company; `sure_*` is the share of true companies called 2 and of true persons called 1; `wrong_*` the records called 2 that are persons and called 1 that are companies.
 
 | flag | routed_by | recall | false_merges | person_company_clusters | pairs_to_decide | sure_companies | wrong_companies | sure_persons | wrong_persons | seconds |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| good (1% wrong at random, 20% on representatives) | the truth | 0.4618 | 1 | 0 | 573 | 100.0% | 0 | 100.0% | 0 | 5.7 |
-| good (1% wrong at random, 20% on representatives) | the flag alone | 0.4553 | 21 | 20 | 532 | 97.9% | 308 | 98.5% | 103 | 6.3 |
-| good (1% wrong at random, 20% on representatives) | the kind step, 2,000 labels | 0.4614 | 21 | 20 | 521 | 98.7% | 180 | 99.1% | 63 | 7.2 |
-| medium (3%, 50%) | the truth | 0.4618 | 1 | 0 | 573 | 100.0% | 0 | 100.0% | 0 | 3.5 |
-| medium (3%, 50%) | the flag alone | 0.4417 | 62 | 54 | 500 | 94.0% | 840 | 95.8% | 296 | 6.4 |
-| medium (3%, 50%) | the kind step, 2,000 labels | 0.4564 | 54 | 47 | 494 | 96.5% | 486 | 97.6% | 172 | 7.3 |
-| poor (10%, 80%) | the truth | 0.4618 | 1 | 0 | 573 | 100.0% | 0 | 100.0% | 0 | 3.4 |
-| poor (10%, 80%) | the flag alone | 0.3899 | 84 | 72 | 528 | 86.1% | 2398 | 88.0% | 687 | 6.4 |
-| poor (10%, 80%) | the kind step, 2,000 labels | 0.426 | 76 | 64 | 499 | 93.5% | 1641 | 91.8% | 322 | 7.4 |
+| good (1% wrong at random, 20% on representatives) | the truth | 0.5018 | 5 | 0 | 285 | 100.0% | 0 | 100.0% | 0 | 4.2 |
+| good (1% wrong at random, 20% on representatives) | the flag alone | 0.4911 | 38 | 27 | 297 | 97.9% | 306 | 98.5% | 102 | 4.4 |
+| good (1% wrong at random, 20% on representatives) | the kind step | 0.4927 | 84 | 63 | 267 | 96.6% | 433 | 97.9% | 166 | 3.2 |
+| medium (3%, 50%) | the truth | 0.5018 | 5 | 0 | 285 | 100.0% | 0 | 100.0% | 0 | 2.9 |
+| medium (3%, 50%) | the flag alone | 0.4718 | 79 | 61 | 284 | 94.8% | 886 | 95.8% | 256 | 4.8 |
+| medium (3%, 50%) | the kind step | 0.484 | 107 | 82 | 259 | 95.5% | 753 | 96.4% | 221 | 3.2 |
+| poor (10%, 80%) | the truth | 0.5018 | 5 | 0 | 285 | 100.0% | 0 | 100.0% | 0 | 2.9 |
+| poor (10%, 80%) | the flag alone | 0.4046 | 121 | 93 | 371 | 86.9% | 2533 | 87.9% | 644 | 4.9 |
+| poor (10%, 80%) | the kind step | 0.4547 | 124 | 94 | 318 | 92.9% | 1643 | 92.2% | 350 | 3.3 |

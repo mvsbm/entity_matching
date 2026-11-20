@@ -19,7 +19,8 @@ model's character n-grams (1–3, 1–4) × its training (public data; also the 
 combiner's signals (each subset of: the flag, a birth date filled, the birth year, a legal form, a name of known surname
 and given name) × the combiner (gradient-boosted trees of depth 2 or 3, logistic regression), fitted on 1,000 records
 labelled at random. Successive halving: every combination on 3 scenarios, the best quarter on 6, the best quarter of
-those on 12; the combination of config/pipeline.toml always on 12.
+those on 12; the pipeline's combination always on 12: config/pipeline.toml [kind]'s name model, with the combiner
+this study weighs (DEPTH). A run fits no combiner: it decides by er.kind's own rule.
 
 Correct first: on each side, the share decided while its wrong calls stay within a budget (company calls: 0.1% wrong;
 person calls: 1%), the line placed with the truth, so the ranking measures the score itself. Then, for the pipeline's
@@ -42,7 +43,7 @@ from sklearn.model_selection import StratifiedKFold, cross_val_predict
 from er.config import load_pipeline
 from er.generate import bank_name, kana_typo, kind_training_names, load_reference, load_registry, load_spec, name_model_split
 from er.io import markdown
-from er.kind import NameModel, legal, lines, text
+from er.kind import NameModel, legal, text
 from er.settings import load_settings
 from er.standardize import normalize
 
@@ -50,12 +51,15 @@ logging.disable(logging.WARNING)
 S = load_settings()
 SPEC = load_spec(S.root / "config" / "generator.toml")[0]
 KIND = load_pipeline(S.root / "config" / "pipeline.toml", S.standardize, S.chains, S.columns).kind
-BUDGET_C, BUDGET_P, HAND, CUSTOMERS = KIND.company_wrong_at_most, KIND.person_wrong_at_most, 1_000, 20_000
+# a combiner on people's answers, and the lines placed on them: what this study weighs; a run decides by er.kind's own rule
+BUDGET_C, BUDGET_P, HAND, CUSTOMERS = 0.001, 0.01, 1_000, 20_000  # company calls at most 0.1% wrong, person calls 1%
+DEPTH, MARGIN_STEPS = 2, 2  # the trees' depth; the company line this many grid steps above the first clean one
+GRID = (0.5, 0.8, 0.9, 0.95, 0.98, 0.99, 0.995, 0.998, 0.999, 0.9995, 0.9999)
 SIGNALS = ("flag", "birth", "birth_year", "legal", "known_name")
 COMBINERS = ("gbdt2", "gbdt3", "lr")
 GENERATOR_FORMS = tuple(sorted({normalize(pd.Series([f], dtype="string"), ("nfkc",), S.standardize)[0] for f, _ in SPEC.legal_forms_written if f}))
 STD = {"bank table": S.standardize, "generator's forms": replace(S.standardize, legal_forms=GENERATOR_FORMS, legal_front=(), legal_end=())}
-PIPELINE = dict(legal="bank table", ngram=KIND.ngram, train="public", signals=("flag", "birth_year", "legal"), combiner=f"gbdt{KIND.depth}")
+PIPELINE = dict(legal="bank table", ngram=KIND.ngram, train="public", signals=("flag", "birth_year", "legal"), combiner=f"gbdt{DEPTH}")
 
 
 def scenarios(n: int = 12) -> list[dict]:
@@ -107,13 +111,13 @@ PERSON_RULES = {"a": "the lowest line whose answers above it are 30 or more and 
                 "b": "the lowest line whose 95% one-sided upper bound (Clopper–Pearson) on the wrong share above it is within the budget",
                 "c": "the company's rule: the lowest line with no wrong answer above it, then margin_steps stricter"}
 COMPANY_RULES = {"2 steps": lambda n: 2, "3 steps": lambda n: 3, "4 steps": lambda n: 4,
-                 "2 steps from 2,000 answers, 3 below (er.kind.lines)": lambda n: 2 if n >= 2000 else 3}  # margin_steps by the answers measured
+                 "2 steps from 2,000 answers, 3 below": lambda n: 2 if n >= 2000 else 3}  # margin_steps by the answers measured
 DRAWS = 5
 
 
 def person_line(p: np.ndarray, company: np.ndarray, rule: str) -> float:
     """The person line by each rule judged, on out-of-fold probabilities of a company (1.01: never)."""
-    grid = list(KIND.grid)
+    grid = list(GRID)
     for k, g in enumerate(grid):
         above = (1 - p) >= g
         n, wrong = int(above.sum()), int((above & company).sum())
@@ -122,8 +126,16 @@ def person_line(p: np.ndarray, company: np.ndarray, rule: str) -> float:
         if rule == "b" and n and wrong < n and beta.ppf(0.95, wrong + 1, n - wrong) <= BUDGET_P:
             return g
         if rule == "c" and n and not wrong:
-            return grid[min(k + KIND.margin_steps, len(grid) - 1)]
+            return grid[min(k + MARGIN_STEPS, len(grid) - 1)]
     return 1.01
+
+
+def company_line(p: np.ndarray, company: np.ndarray, steps: int) -> float:
+    """The lowest grid point with no labelled person above it, then `steps` stricter (out-of-fold probabilities of a
+    company; 1.01: never)."""
+    grid = list(GRID)
+    clean = [g for g in grid if not ((p >= g) & ~company).any() and (p >= g).any()]
+    return grid[min(grid.index(clean[0]) + steps, len(grid) - 1)] if clean else 1.01
 
 
 def coverage(score: np.ndarray, right: np.ndarray, budget: float) -> float:
@@ -260,7 +272,7 @@ def main() -> None:
                         placing.append(dict(combination=which, answers=n_ans, person_rule=rule,
                                             persons=p_calls[y == 0].mean(), person_wrong=(p_calls & (y == 1)).sum() / max(p_calls.sum(), 1)))
                     for rule, margin in COMPANY_RULES.items():
-                        c_calls = p >= lines(oof, company, replace(KIND, margin_steps=margin(n_ans), labels_to_draw=0))[0]  # this rule's steps only
+                        c_calls = p >= company_line(oof, company, margin(n_ans))
                         company_placing.append(dict(combination=which, answers=n_ans, company_rule=rule, companies=c_calls[y == 1].mean(),
                                                     company_wrong=(c_calls & (y == 0)).sum() / max(c_calls.sum(), 1)))
         if k == pipeline == best_k:
@@ -281,15 +293,15 @@ def main() -> None:
               f"{BUDGET_C:.1%} of company calls are wrong, and of persons called person while at most {BUDGET_P:.0%} of person calls are "
               "wrong, each line placed with the truth.", "",
               "## The scenarios", "", "What a file can't tell about itself, over its plausible range (a Latin hypercube); and, for the "
-              "combination of `config/pipeline.toml` [kind], the shares it decides within budget.", "", markdown(per), "",
+              "pipeline's combination, the shares it decides within budget.", "", markdown(per), "",
               "## The search", "", f"{len(configs):,} combinations, successive halving:", "", markdown(pd.DataFrame(stages)), "",
               f"## The finalists on all 12 scenarios (the best 15 of {len(final)})", "",
               "mean and worst: over the scenarios, of the two sides' shares averaged.", "",
               markdown(pct(final.drop(columns="k").head(15))), "",
               "## What each idea is worth", "", "The best mean among the finalists with the idea, and without it.", "", markdown(pd.DataFrame(worth)), "",
               "## The pipeline's combination", "",
-              f"`config/pipeline.toml` [kind]: the bank table, n-grams 1–{KIND.ngram}, trained once on public data, gradient-boosted trees "
-              f"of depth {KIND.depth} on the flag, the birth year and the legal form. Rank {rank} of {len(final)}: mean "
+              f"The bank table and n-grams 1–{KIND.ngram} (`config/pipeline.toml` [kind]), trained once on public data, and gradient-boosted trees "
+              f"of depth {DEPTH} on the flag, the birth year and the legal form. Rank {rank} of {len(final)}: mean "
               f"{final.loc[rank - 1, 'mean']:.1%} (worst {final.loc[rank - 1, 'worst']:.1%}), against {best['mean']:.1%} for the best "
               f"({best['legal']}, {best['ngram']}, {best['training']}, {best['combiner']}: {best['signals']}).", "",
               "## Counting sole traders", "", "The pipeline's combination, each way of counting them.", "", markdown(pol), "",

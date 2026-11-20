@@ -241,10 +241,9 @@ def logged_runs(tmp: Path) -> tuple:
     batch = np.random.default_rng(0).random(len(g.df)) < 0.2
     g.df[~batch].to_parquet(tmp / "first.parquet", index=False)
     pd.concat([g.df[batch], g.df[~batch].head(1)]).to_parquet(tmp / "new.parquet", index=False)  # one already in the run: set aside
-    pd.DataFrame({s.data.unique_id: g.df[~batch][s.data.unique_id].astype("string")[:3], "kind": [1] * 3}).to_parquet(tmp / "answers.parquet")
     out, pipeline, logs = tmp / "run", s.root / "config" / "final.toml", {}
     for mode in ("full", "increment"):
-        run = Run(p, s, kind_labels=tmp / "answers.parquet" if mode == "full" else None)
+        run = Run(p, s)
         logs[mode] = Logged(run)
         run.full(tmp / "first.parquet", out, pipeline_file=pipeline) if mode == "full" else run.increment(tmp / "new.parquet", out, pipeline_file=pipeline)
     sheet = pd.read_parquet(out / "review.parquet")

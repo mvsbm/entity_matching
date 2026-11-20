@@ -330,9 +330,9 @@ def test_matching_a_batch_names_the_entities_adding_it_would_give_and_writes_not
     assert (gold.loc[m[uid]].to_numpy() == m["entity"].to_numpy()).all()  # the entities the increment then gave
 
 
-def test_a_sheet_given_back_with_no_answer_or_a_kind_in_words_is_refused(tmp_path):
+def test_a_sheet_given_back_with_no_decision_is_refused_and_one_typed_with_wide_spaces_is_read(tmp_path):
     import duckdb
-    from er.source import answers, decisions
+    from er.source import decisions
     pd.DataFrame({"uid_l": ["1"], "uid_r": ["2"], "decision": [None]}, dtype="string").to_parquet(tmp_path / "untouched.parquet")
     with pytest.raises(InputError, match="no row has a decision"):
         decisions(tmp_path / "untouched.parquet", duckdb.connect(), "uid_l", "uid_r", into="d")
@@ -340,12 +340,6 @@ def test_a_sheet_given_back_with_no_answer_or_a_kind_in_words_is_refused(tmp_pat
     con = duckdb.connect()
     decisions(tmp_path / "typed.parquet", con, "uid_l", "uid_r", into="d")  # typed on a Japanese keyboard: full-width spaces around
     assert sorted(x for x, in con.execute("SELECT decision FROM d").fetchall()) == ["match", "no_match"]
-    for kinds, error in ([None, None], "no row is answered"), (["2 company", None], r"a kind is 1, 2 or 0, not \['2 company'\]"):
-        pd.DataFrame({"uid": ["1", "2"], "kind": kinds}, dtype="string").to_parquet(tmp_path / "kinds.parquet")
-        with pytest.raises(InputError, match=error):
-            answers(tmp_path / "kinds.parquet", duckdb.connect(), "uid")
-    pd.DataFrame({"uid": ["1", "2"], "kind": ["2.0", None]}, dtype="string").to_parquet(tmp_path / "kinds.parquet")
-    assert len(answers(tmp_path / "kinds.parquet", duckdb.connect(), "uid")) == 1  # a spreadsheet's 2.0 is 2
 
 
 def test_a_run_and_its_reports_land_together_even_when_the_write_is_cut_short(tmp_path, population, monkeypatch):
@@ -365,7 +359,7 @@ def test_a_run_and_its_reports_land_together_even_when_the_write_is_cut_short(tm
     monkeypatch.setattr(er.folder, "finish_writes", real)
     again = Run(p, s).increment(tmp_path / "all.parquet", out)  # the retry: the next job finishes the moves, and finds nothing new
     assert again.added == 0 and (out / "gold.parquet").exists()
-    assert {"qa.md", "report.txt", "review.parquet", "kind_review.parquet"} <= {f.name for f in out.iterdir()} and not list(out.rglob("*.tmp"))
+    assert {"qa.md", "report.txt", "review.parquet"} <= {f.name for f in out.iterdir()} and not list(out.rglob("*.tmp"))
 
 
 def test_an_oversized_block_is_checked_on_a_sample_and_a_placeholder_is_skipped(tmp_path, population):

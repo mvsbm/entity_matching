@@ -4,7 +4,7 @@ search: the stored records whose values start with what a person typed, in any f
 build() reads the written run once (state/records, already standardized; gold; the model it scored with) and writes
 <workspace>/index/: a DuckDB database holding every key of every record and every searched value, each table sorted by
 its key in row groups small enough that a lookup reads little of it; a second database of what changed since, empty
-when built; the person/company classifier's fitted part; and manifest.json, which names them and what they rest on.
+when built; and manifest.json, which names them and what they rest on.
 update() writes the second again after a change to the run: the records added since the build, with every key and
 value of theirs, and the records whose entity or rule cluster moved; anything else changed builds the index again.
 look_up() prepares a record as a run prepares one, looks each of its keys up, gates an oversized block as a run does,
@@ -26,7 +26,6 @@ import contextlib
 import hashlib
 import json
 import os
-import pickle
 import re
 import secrets
 import shutil
@@ -46,8 +45,7 @@ from er import folder
 from er.candidates import _filled, deletions_sql
 from er.config import DeletionKeys, InputError, KeyBlocker, Pipeline, SortedNeighbourhood, lit, q
 from er.intake import tidy
-from er.io import read_parquet
-from er.kind import Classifier, classifier, merge_answers, name_model
+from er.kind import Classifier, classifier
 from er.match import _gammas, levels, prior_bits, read_by, review_floor, search_floor
 from er.explain import run_model
 from er.run import run_config, stored_keys
@@ -80,7 +78,7 @@ _OPENING = threading.Lock()
 
 def _stamp(ws: Path) -> dict[str, list[int]]:  # what an index rests on: each file of the run, the method and the mapping, by size and time
     files = [*sorted((ws / "state" / "records").glob("part-*.parquet")), ws / "gold.parquet", ws / "state" / "scoring.json", ws / "state" / "placeholders.json", ws / "state" / "model.json",
-             ws / "state" / "config.txt", ws / "state" / "rule_clusters.parquet", ws / folder.METHOD, ws / COLUMNS, *folder.answer_parts(ws)]
+             ws / "state" / "config.txt", ws / "state" / "rule_clusters.parquet", ws / folder.METHOD, ws / COLUMNS]
     return {f.relative_to(ws).as_posix(): [f.stat().st_size, f.stat().st_mtime_ns] for f in files if f.exists()}
 
 
@@ -230,15 +228,11 @@ def _build(ws: Path, s: Settings, p: Pipeline, stamp: dict) -> dict:
         con.execute(f"CREATE TABLE dx.moved AS SELECT {q(uid)}, entity, resolved FROM ixr.records LIMIT 0")
         for db in ("ix", "ixr", "dx"):
             con.execute(f"DETACH {db}")
-        spec, kind = fitted.kind, None
-        if spec and spec.name_field in present_fields(s, have):  # its fitted part: the name model, which holds a connection, is loaded again by a lookup
-            answers = [read_parquet(f).astype({uid: "string"}) for f in folder.answer_parts(ws)]
-            c = classifier(s, spec, merge_answers(pd.concat(answers, ignore_index=True) if answers else None, None, uid))
-            (tmp / (kind := f"{key}.kind.pkl")).write_bytes(pickle.dumps({k: v for k, v in vars(c).items() if k != "names"}))
+        kind = bool(fitted.kind and fitted.kind.name_field in present_fields(s, have))  # the records hold a kind: a record looked up is told one too
         of = {n: f"rule {x[1].name}" if isinstance(x, tuple) else x.name for n, x in tables} | {f"f_{c}": f"search by {SEARCHED[c]}" for c in searched} | {f"f_{c}_reverse": f"search by {SEARCHED[c]}, its end" for c in REVERSED if c in searched}
         m = dict(id=key, built_at=time.strftime("%Y-%m-%dT%H:%M:%S"), records=made["records"][0], added=0, moved=0, columns=have, searched=searched,
                  indexing=INDEXING, stamp=stamp, built_on=stamp, updates=0,
-                 files=dict(keys=f"{key}.duckdb", records=f"{key}.records.duckdb", delta=f"{key}-0.duckdb", kind=kind),
+                 files=dict(keys=f"{key}.duckdb", records=f"{key}.records.duckdb", delta=f"{key}-0.duckdb"), kind=kind,
                  tables={k: dict(of=of.get(k, k), rows=r, seconds=v) for k, (r, v) in made.items()}, seconds=round(time.perf_counter() - t0, 2))
         _publish(ws, tmp, m)
     finally:
@@ -252,7 +246,7 @@ def update(ws: Path, s: Settings, p: Pipeline) -> dict:
     """The index of `ws` brought up to date with its run, under the workspace's lock: what changed since the build
     written again, from the records added since (new parts of state/records) and the records whose entity or rule
     cluster moved (gold, the rules' clusters). Anything else changed (a full run, the mapping, the method's keys,
-    people's person/company answers, the code), a column of the added records read as another type, or the records added
+    the code), a column of the added records read as another type, or the records added
     or moved reaching REBUILD of the index, builds it again (rebuilt: why). O(Δ·(G + R + D·L + F) + N)."""
     ws, t0, uid = Path(ws), time.perf_counter(), s.data.unique_id
     with folder.run_lock(ws):
@@ -305,7 +299,7 @@ def update(ws: Path, s: Settings, p: Pipeline) -> dict:
 def _since(m: dict | None, now: dict) -> str | None:
     """Why the run as stamped `now` needs its index built again, rather than what changed since written, or None: what
     changed carries records added (new parts) and the files in MOVES; anything else changed is a full run, the mapping,
-    the method's keys, people's answers."""
+    the method's keys."""
     if m is None:
         return "no index yet"
     if m.get("indexing") != INDEXING:
@@ -327,8 +321,8 @@ def manifest(ws: Path) -> dict | None:  # the index's manifest, or None without 
 
 
 def stale(ws: Path, m: dict | None = None) -> str | None:
-    """What changed in the run since its index was last written (a file of it, the method, the mapping, people's
-    answers, the code that reads it), or None. O(files)."""
+    """What changed in the run since its index was last written (a file of it, the method, the mapping, the code that
+    reads it), or None. O(files)."""
     m = m or manifest(ws)
     if m is None:
         return "no index yet"
@@ -344,8 +338,8 @@ def _attach(con: duckdb.DuckDBPyConnection, ws: Path, m: dict) -> None:  # the i
         con.execute(f"ATTACH {lit(Path(ws) / INDEX / m['files'][f])} AS {db} (READ_ONLY)")
 
 
-def _classifier(ws: Path, s: Settings, p: Pipeline, m: dict) -> Classifier | None:  # the run's, as the index keeps it, with the name model loaded again
-    return Classifier(**pickle.loads((Path(ws) / INDEX / m["files"]["kind"]).read_bytes()), names=name_model(s, p.kind)) if m["files"]["kind"] and p.kind else None
+def _classifier(ws: Path, s: Settings, p: Pipeline, m: dict) -> Classifier | None:  # the run's: its rule, as config/pipeline.toml [kind] sets it
+    return classifier(s, p.kind) if m.get("kind") and p.kind else None
 
 
 def _open(ws: Path, s: Settings, p: Pipeline) -> tuple[dict, Pipeline, duckdb.DuckDBPyConnection, Classifier | None, threading.Lock]:

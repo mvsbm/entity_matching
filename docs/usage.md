@@ -86,12 +86,11 @@ Everything is in the workspace.
 
 | File | One row per | Holds |
 |---|---|---|
-| `gold.parquet` | record | `cluster_id` (the smallest record ID of its cluster); `resolved_stage` (`deterministic`, `probabilistic` or `review`); `resolved_by` (the rule, `fs` for the model, or `review` for people); `kind` (1 person, 2 company, 0 not sure), `kind_p` (the probability of a company), `kind_by` (`engine`, or `flag` where the engine is not sure), `kind_flagged` (the engine sure against the file's flag), `kind_held` and `customer_kind`, the entity's |
+| `gold.parquet` | record | `cluster_id` (the smallest record ID of its cluster); `resolved_stage` (`deterministic`, `probabilistic` or `review`); `resolved_by` (the rule, `fs` for the model, or `review` for people); `kind` (1 person, 2 company, 0 not sure), `kind_p` (the probability of a company), `kind_by` (`engine`, or `flag` where the engine is not sure), `kind_flagged` (the engine sure against the file's flag) and `customer_kind`, the entity's |
 | `matches/` | accepted pair | both IDs; `match_weight` in bits; `match_probability`; `sources`, the candidate generators that listed it |
 | `rule_kept/` | pair a rule found | both IDs, the rule and its stage; `match_weight`, the model's bits for it; `merged`, whether it joined |
 | `scored/` | pair at 0 points or more, and every rule's pair | both IDs, `match_weight`, `match_probability`, `sources`, `rule`, `named`, `keep`, and `gamma_<comparison>`, the level each comparison reached |
 | `review.parquet` | pair for people | `why` (`decide` or `audit`); an empty `decision`; both records' compared fields; per comparison, the level reached and its bits; `accepted`; `household` ([section 6](#6--review-and-decide)) |
-| `kind_review.parquet` | record | the records flagged (at most `[kind] review_max`, 1,000), and a draw at random to measure the engine and the flag (`labels_to_draw`), each with why, in words |
 | `qa.md` | | the label-free checks: fill rates, what was turned off, each step's cost, pairs by weight, cluster sizes, the largest clusters, the oversized blocks |
 | `report.txt` | | the run on one page, with no record's value in it ([section 7](#7--when-something-is-wrong)) |
 | `decisions/` | decided pair | both IDs, `decision`, `why` and `round`; one part per file given back |
@@ -167,7 +166,7 @@ A pair whose records share an address or a phone, and whose given names or birth
 
 ### Persons and companies
 
-The engine decides each record's kind on its own. It calls a kind it is sure of: a company where a legal form is written (株式会社, カ)〇〇, 〇〇(カ …), and a company or a person where the name model is at least `[kind] name_line` (99%) sure. Else the file's flag (`kind_flag`) decides, and without one the record is `0`, not sure. A sure call the flag contradicts is flagged (`kind_flagged`): the record is matched as the engine says, and `kind_review.parquet` lists it. On generated files it gets fewer kinds wrong than the flag alone, with no more false merges ([chapter 7](guide/07-person-or-company.md#on-a-whole-run)). `config/final.toml` `[kind] trust_flag = true` takes the file's flag as it is.
+The engine decides each record's kind on its own. It calls a kind it is sure of: a company where a legal form is written (株式会社, カ)〇〇, 〇〇(カ …), and a company or a person where the name model is at least `[kind] name_line` (99%) sure. Else the file's flag (`kind_flag`) decides, and without one the record is `0`, not sure. A sure call the flag contradicts is flagged (`kind_flagged`): the record is matched as the engine says. On generated files it gets fewer kinds wrong than a medium or poor flag and more than a good one, and merges more falsely than the flag alone ([chapter 7](guide/07-person-or-company.md#on-a-whole-run)). Where the file's flag is good, `config/final.toml` `[kind] trust_flag = true` takes it as it is.
 
 ## 7 · When something is wrong
 

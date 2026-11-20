@@ -1,6 +1,4 @@
-"""Person or company: the name model, the kind problems, people's answers."""
-import json
-from pathlib import Path
+"""Person or company: the name model, the kind problems, the engine's rule."""
 from dataclasses import replace
 
 import numpy as np
@@ -26,11 +24,6 @@ def kind_population():
                       spec.kana_confusions, spec.branches)
     s = shared_name(base, "NAME_KANA")
     return s, load_pipeline(s.root / "config" / "final.toml", s.standardize, s.chains, s.columns), g
-
-
-def kind_sheet_for(run, s, p, draw):  # the run's review sheet, as Run.report writes it, with a smaller draw
-    from er.kind import kind_review_sheet
-    return kind_review_sheet(run.con, "records", s.data.unique_id, replace(p.kind, labels_to_draw=draw, review_max=200), s.flag_company)
 
 
 def test_the_name_model_saves_and_loads_to_the_same_scores(tmp_path):
@@ -60,25 +53,12 @@ def test_a_run_loads_the_committed_name_model_and_it_is_what_training_builds():
     assert "train_name_model.py" in stop.value.fix
 
 
-def test_a_flag_reads_as_people_s_answers_do_its_spaces_and_width_aside():
+def test_a_flag_reads_its_spaces_and_width_aside():
     from types import SimpleNamespace
     from er.kind import Classifier
     flag = pd.Series(["2", "2 ", " 2", "２", "1", None, "12"], dtype="string")  # a fixed-width export pads its fields
     assert Classifier.flag_code(SimpleNamespace(flag_company=("2",)), flag, len(flag)).tolist()[:5] == [2, 2, 2, 2, 1]
     assert np.isnan(Classifier.flag_code(SimpleNamespace(flag_company=("2",)), flag, len(flag))[5])
-
-
-def test_each_side_s_line_keeps_within_its_labels():
-    from er.config import KindSpec
-    from er.kind import lines
-    p = np.r_[np.full(50, 0.999), [0.97], np.full(300, 0.01), [0.03]]  # 50 companies, a person at 0.97, 300 persons, a company at 0.03
-    company = np.r_[np.ones(50, bool), [False], np.zeros(300, bool), [True]]
-    line_c, line_p, error = lines(p, company, KindSpec(margin_steps=1, labels_to_draw=len(p)))
-    assert line_c == 0.99   # the lowest line with no person above it is 0.98; one step stricter
-    assert lines(p, company, KindSpec(margin_steps=1, labels_to_draw=len(p) + 1))[0] == 0.995  # fewer answers than the draw: one more
-    assert (line_p, error) == (0.98, 0.0)  # 300 right: the rate's 95% bound is 0.99%; at 0.95, 1 wrong in 301 bounds it at 1.6%
-    few = np.r_[np.full(40, 0.01), np.full(10, 0.999)]  # 40 persons, none wrong: the bound is still 7.2%
-    assert lines(few, np.r_[np.zeros(40, bool), np.ones(10, bool)], KindSpec())[1] == 1.01
 
 
 def test_the_kind_problems_change_names_dates_and_the_flag_only(kind_population):
@@ -94,7 +74,7 @@ def test_the_kind_problems_change_names_dates_and_the_flag_only(kind_population)
     assert 0.02 < (flag_company != g.truth["KIND"].eq("company")).mean() < 0.1  # the flag is wrong, now and then
 
 
-def test_without_answers_the_engine_calls_what_it_is_sure_of_the_flag_the_rest_and_a_person_company_pair_goes_to_people(tmp_path, kind_population):
+def test_the_engine_calls_what_it_is_sure_of_the_flag_the_rest_and_a_person_company_pair_goes_to_people(tmp_path, kind_population):
     from er.report import qa
     from er.run import Run
     s, p, g = kind_population
@@ -120,85 +100,6 @@ def test_without_answers_the_engine_calls_what_it_is_sure_of_the_flag_the_rest_a
     assert run.con.execute(f'SELECT count(*) FROM matches WHERE "{l}" = ? AND "{r}" = ?', list(pair)).fetchall()[0][0] == 0
     sheet = qa(run, [f for f in s.columns if f not in ("id", "entity")])["review_sheet"]
     assert sheet[(sheet[l] == pair[0]) & (sheet[r] == pair[1])]["why"].tolist() == ["decide"]
-
-
-def test_the_review_sheet_says_in_words_why_each_record_is_there(tmp_path, kind_population):
-    from er.run import Run
-    s, p, g = kind_population
-    uid = s.data.unique_id
-    g.df.to_parquet(tmp_path / "all.parquet", index=False)
-    sheet = kind_sheet_for(Run(p, s).full(tmp_path / "all.parquet", tmp_path / "a"), s, p, 300)
-    assert set(sheet["why"]) == {"decide", "measure"} and sheet[uid].is_unique and sheet["kind"].isna().all()
-    decide = sheet[sheet["why"] == "decide"]
-    assert len(decide) <= 200 and (decide["reason"].str.contains("the flag says")).all()
-    assert decide["reason"].str.startswith("the engine is sure it is").all() and decide["reason"].str.endswith("matched as the engine says").all()
-    assert set(sheet["engine_says"]) <= {"2 company", "1 person", "0 not sure"} and sheet["name_says"].str.match(r"[12] (company|person) \(").all()
-    measure = sheet[sheet["why"] == "measure"]
-    assert len(measure) == 300 and set(measure["drawn"]) == {"at random"} and measure[~measure["flagged"]]["reason"].str.startswith("drawn at random").all()
-    assert measure[measure["flagged"]]["reason"].str.startswith("the engine is sure").all()  # a flagged record drawn: said as flagged
-    flags = g.df.set_index(uid).loc[decide[uid], "PERSON_ORG_CODE"].astype(int).to_numpy()
-    assert len(decide) and (decide["engine"].to_numpy() != flags).all()  # flagged: the engine's sure kind against the flag
-    surest = (decide["engine_p"] - 0.5).abs().to_numpy()
-    assert (surest[:-1] >= surest[1:]).all()  # surest first
-
-
-def test_with_answers_the_kinds_are_the_same_every_run_people_s_stand_and_a_customer_takes_its_surest_record(tmp_path, kind_population):
-    from er.run import Run
-    s, p, g = kind_population
-    uid = s.data.unique_id
-    g.df.to_parquet(tmp_path / "all.parquet", index=False)
-    sheet = kind_sheet_for(Run(p, s).full(tmp_path / "all.parquet", tmp_path / "a"), s, p, 900)
-    sheet["kind"] = np.where(g.truth.set_index("CONT_ID").loc[sheet[uid], "KIND"].eq("company"), 2, 1)  # people's answers: here, the truth
-    sheet.loc[sheet.index[:3], "kind"] = 0  # can't tell: kept out
-    sheet.to_parquet(tmp_path / "labels.parquet")
-    a = Run(p, s, kind_labels=tmp_path / "labels.parquet").full(tmp_path / "all.parquet", tmp_path / "b")
-    Run(p, s, kind_labels=tmp_path / "labels.parquet").full(tmp_path / "all.parquet", tmp_path / "c")
-    ga, gb = (pd.read_parquet(tmp_path / x / "gold.parquet") for x in ("b", "c"))
-    assert a.classifier.labels == len(sheet) - 3 and a.classifier.measured == (sheet["why"] == "measure").sum() - (sheet["why"][:3] == "measure").sum()
-    assert ga[["kind", "kind_p", "kind_by", "customer_kind"]].equals(gb[["kind", "kind_p", "kind_by", "customer_kind"]])
-    answered = ga.set_index(uid).loc[sheet[uid][3:]]
-    assert (answered["kind_by"] == "people").all() and (answered["kind"].to_numpy() == sheet["kind"][3:].to_numpy()).all()  # people's answers stand
-    assert len(pd.read_parquet(tmp_path / "b" / "kind_answers" / "part-00000.parquet")) == len(sheet)  # kept as given, for later runs
-    inputs = json.loads((tmp_path / "b" / "steps.json").read_text(encoding="utf-8"))["runs"][0]["inputs"]
-    assert {Path(i["file"]).name for i in inputs} == {"all.parquet", "kind_names.npz", "labels.parquet"}  # what went in, with its SHA-256
-    by = ga.groupby("cluster_id").agg(any_company=("kind", lambda k: (k == 2).any()), leans=("kind_p", "max"),
-                                      any_person=("kind", lambda k: (k == 1).any()), customer=("customer_kind", "first"))
-    expect = np.where(by.any_company, 2, np.where((by.leans.fillna(0) < 0.5) & by.any_person, 1, 0))
-    assert (by.customer.to_numpy() == expect).all()
-    wrong = ga.set_index(uid).join(g.truth.set_index("CONT_ID")["KIND"])
-    sure = (wrong["kind_by"] == "engine") & (wrong["kind_p"] >= a.classifier.fitted.line_company)
-    assert not (sure & (wrong["KIND"] != "company")).any()  # no sure company that isn't one: a wrong one is the flag's
-
-
-def test_answers_without_a_measuring_draw_keep_the_engine_s_own_rule(tmp_path, kind_population):
-    from er.run import Run
-    s, p, g = kind_population
-    uid = s.data.unique_id
-    g.df.to_parquet(tmp_path / "all.parquet", index=False)
-    sheet = kind_sheet_for(Run(p, s).full(tmp_path / "all.parquet", tmp_path / "free"), s, p, 600)
-    decide = np.arange(len(sheet)) < 60  # the first rows people chose to answer, none of them drawn to measure
-    truth = np.where(g.truth.set_index("CONT_ID").loc[sheet[uid], "KIND"].eq("company"), 2, 1)
-    sheet.assign(why="decide", kind=pd.array(np.where(decide, truth, pd.NA), dtype="Int8")).to_parquet(tmp_path / "top.parquet")
-    run = Run(p, s, kind_labels=tmp_path / "top.parquet").full(tmp_path / "all.parquet", tmp_path / "run")
-    assert run.classifier.labels == decide.sum() >= 50 and run.classifier.measured == 0 and run.classifier.fitted is None
-    before, after = (pd.read_parquet(tmp_path / x / "gold.parquet").set_index(uid) for x in ("free", "run"))
-    engine = after.index[after["kind_by"] == "engine"]
-    assert (before.loc[engine, "kind"] == 2).any() and after.loc[engine, "kind"].equals(before.loc[engine, "kind"])  # a legal form still decides
-    assert (after.loc[sheet[uid][decide], "kind"].to_numpy() == truth[decide]).all()  # and people's answers stand
-
-
-def test_a_sheet_s_ids_must_name_records_of_the_file(tmp_path, kind_population):
-    from er.run import Run
-    s, p, g = kind_population
-    uid = s.data.unique_id
-    g.df.to_parquet(tmp_path / "all.parquet", index=False)
-    sheet = kind_sheet_for(Run(p, s).full(tmp_path / "all.parquet", tmp_path / "free"), s, p, 100).assign(kind=1)
-    sheet.assign(**{uid: sheet[uid].astype("int64")}).to_parquet(tmp_path / "numbers.parquet")  # as a spreadsheet gives 0000000151 back
-    with pytest.raises(InputError, match="IDs that name no record of"):  # as for decisions
-        Run(p, s, kind_labels=tmp_path / "numbers.parquet").full(tmp_path / "all.parquet", tmp_path / "a")
-    sheet.assign(**{uid: [pd.NA, *sheet[uid][1:]]}).astype({uid: "string"}).to_parquet(tmp_path / "blank.parquet")
-    with pytest.raises(InputError, match="answered rows have no"):
-        Run(p, s, kind_labels=tmp_path / "blank.parquet").full(tmp_path / "all.parquet", tmp_path / "b")
 
 
 def test_a_new_part_takes_the_number_after_the_highest(tmp_path):
@@ -244,39 +145,20 @@ def test_a_decision_keeps_each_record_s_kind_and_a_merged_customer_takes_its_sur
     assert after["kind"].equals(before.set_index(uid)["kind"].reindex(after.index))  # each record's kind stands
 
 
-def test_a_record_people_can_t_tell_stays_out_of_name_matching_and_off_the_next_sheet(tmp_path, kind_population):
-    from er.run import Run
-    s, p, g = kind_population
-    uid = s.data.unique_id
-    g.df.to_parquet(tmp_path / "all.parquet", index=False)
-    sheet = kind_sheet_for(Run(p, s).full(tmp_path / "all.parquet", tmp_path / "free"), s, p, 600)
-    first = sheet[uid].iloc[0]
-    sheet.assign(kind=pd.array([0] + [pd.NA] * (len(sheet) - 1), dtype="Int8")).to_parquet(tmp_path / "answers.parquet")
-    run = Run(p, s, kind_labels=tmp_path / "answers.parquet").full(tmp_path / "all.parquet", tmp_path / "run")
-    gold = pd.read_parquet(tmp_path / "run" / "gold.parquet").set_index(uid)
-    assert gold.loc[first, ["kind", "kind_by"]].tolist() == [0, "people"] and gold.loc[first, "kind_held"]
-    names = run.con.execute(f'SELECT person_name, company_name FROM records WHERE "{uid}" = ?', [first]).fetchall()[0]
-    assert names == (None, None)  # its name goes to neither side: its pairs go to people
-    assert first not in set(kind_sheet_for(run, s, p, 600)[uid])
-
-
-def test_an_increment_classifies_its_batch_on_the_run_s_answers(tmp_path, kind_population):
+def test_an_increment_tells_its_batch_s_kinds_as_a_full_run_does(tmp_path, kind_population):
     from er.run import Run
     s, p, g = kind_population
     uid = s.data.unique_id
     batch = np.random.default_rng(0).random(len(g.df)) < 0.1
     g.df[~batch].to_parquet(tmp_path / "first.parquet", index=False)
     g.df[batch].to_parquet(tmp_path / "new.parquet", index=False)
-    sheet = kind_sheet_for(Run(p, s).full(tmp_path / "first.parquet", tmp_path / "free"), s, p, 600)
-    sheet["kind"] = np.where(g.truth.set_index("CONT_ID").loc[sheet[uid], "KIND"].eq("company"), 2, 1)
-    sheet.to_parquet(tmp_path / "answers.parquet")
-    full = Run(p, s, kind_labels=tmp_path / "answers.parquet").full(tmp_path / "first.parquet", tmp_path / "run")
-    inc = Run(p, s).increment(tmp_path / "new.parquet", tmp_path / "run")
-    assert inc.classifier.labels == full.classifier.labels > 0 and inc.classifier.fitted.line_company == full.classifier.fitted.line_company
-    gold = pd.read_parquet(tmp_path / "run" / "gold.parquet").set_index(uid)
-    assert (gold.loc[sheet[uid], "kind_by"] == "people").all()  # the stored records' answers stand
-    new = gold.loc[g.df.loc[batch, uid]]
-    assert new["kind"].notna().all() and set(new["kind_by"]) == {"engine", "flag"}  # the batch: the same engine's calls, the flag's where it isn't sure
+    g.df.to_parquet(tmp_path / "all.parquet", index=False)
+    Run(p, s).full(tmp_path / "first.parquet", tmp_path / "run")
+    Run(p, s).increment(tmp_path / "new.parquet", tmp_path / "run")
+    Run(p, s).full(tmp_path / "all.parquet", tmp_path / "whole")
+    inc, whole = (pd.read_parquet(tmp_path / w / "gold.parquet").set_index(uid).loc[g.df.loc[batch, uid], ["kind", "kind_p", "kind_by", "kind_flagged"]]
+                  for w in ("run", "whole"))
+    assert inc.equals(whole) and set(inc["kind_by"]) == {"engine", "flag"}  # one rule, whichever run tells it
 
 
 def test_the_kind_problems_are_the_same_in_every_process(tmp_path):
@@ -310,21 +192,12 @@ def test_the_kind_problems_name_no_company_the_name_model_trains_on():
     assert set(train["reading"]) == {"ヰヱヰヱ"} and set(held["reading"]) == {"アオイ"}
 
 
-def test_a_birth_year_reads_from_four_digits_or_two_by_this_year(monkeypatch):
-    import datetime
-    from er import kind
-    from er.kind import birth_year
-    got = birth_year(pd.Series(["1993-05-25", "19930525", "1993/05/25", "1993/5/2", "199305", "93-05-25", "930525", "25/05/1993", "05-01-02", None, "abc",
-                                "H05.05.25"], dtype="string"))
-    assert got[:9].tolist() == [1993] * 8 + [2005] and np.isnan(got[9:]).all()  # an era's year: none
-    for year, read in ((2026, 1927), (2027, 2027)):  # 27: a year to come in 2026, this year in 2027
-        monkeypatch.setattr(kind, "date", type("D", (), {"today": staticmethod(lambda y=year: datetime.date(y, 1, 1))}))
-        assert birth_year(pd.Series(["27-03-15", "270315", "26-03-15"], dtype="string")).tolist() == [read, read, 2026]
-
-
-def test_answers_of_ids_and_kinds_alone_stand_and_train_nothing():
-    from er.kind import COMPANY, PERSON, classifier
-    s = load_settings()
-    labels = pd.DataFrame({s.data.unique_id: [str(i) for i in range(60)], "kind": [PERSON, COMPANY] * 30})  # as answers() takes a file: no name
-    c = classifier(s, load_pipeline(s.root / "config" / "final.toml", s.standardize, s.chains, s.columns).kind, labels)
-    assert c.decided["0"] == PERSON and c.fitted is None  # each stands for its record; with no name, nothing to learn from
+def test_a_pipeline_or_a_workspace_holding_what_no_run_reads_of_kind_is_refused(tmp_path):
+    from er import folder
+    from er.config import kind_spec
+    with pytest.raises(InputError, match="depth, review_max set nothing") as stop:  # a combiner's and a review sheet's settings
+        kind_spec({"name_field": "any_name", "depth": 2, "review_max": 1000})
+    assert stop.value.fix == "delete depth, review_max from [kind]"
+    (tmp_path / "kind_answers").mkdir()  # people's person/company answers: a run would leave them out
+    with pytest.raises(InputError, match="person/company answers, which no run reads now"):
+        folder.current(tmp_path)

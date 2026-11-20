@@ -130,14 +130,14 @@ def prepare(std: Standardization, records: pd.DataFrame, normalized: Iterable[tu
         if kind is not None and d.name == kind.spec.name_field:
             raw = out  # the name as written: its legal form still in it
     if kind is not None and raw is not None:
-        k = kind.classify(raw, df.get("kind_flag"), df.get("birth_date"), ids=df.get(kind.uid))
-        for c in ("kind", "kind_p", "kind_by", "name_p", "kind_flagged", "kind_held", "kind_name"):
+        k = kind.classify(raw, df.get("kind_flag"))
+        for c in k.columns:
             df[c] = k[c].to_numpy()
         kind_, lean = k["kind"].to_numpy(), np.where(k["kind_p"].to_numpy() >= 0.5, "company", "person")
         side = np.where(kind_ == 2, "company", np.where(kind_ == 1, "person", lean))  # its kind; not sure, where it leans
         for d in derived:
-            if d.kind:  # a record people can't tell goes to neither side
-                df[d.name] = df[d.name].where((side == d.kind) & ~k["kind_held"].to_numpy())
+            if d.kind:
+                df[d.name] = df[d.name].where(side == d.kind)
         # one name in a person field and the company field alike (a column holding every record's name, mapped to both):
         # one piece of evidence, kept on its kind's side only, not compared twice
         if "company_name" in df:  # compared folded, as the names are: a converted copy may write small or voiced kana otherwise
