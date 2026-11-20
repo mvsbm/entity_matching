@@ -4,7 +4,7 @@ Written by `scripts/choose_kind.py`. Real company names from `data/reference/reg
 
 ## The scenarios
 
-What a file can't tell about itself, over its plausible range (a Latin hypercube); and, for the combination of `config/pipeline.toml` [kind], the shares it decides within budget.
+What a file can't tell about itself, over its plausible range (a Latin hypercube); and, for the pipeline's combination, the shares it decides within budget.
 
 | scenario | flag_wrong | on_representatives | representative_named_companies | sole_traders | sole_flagged_company | company_dates | companies | persons |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
@@ -27,9 +27,9 @@ What a file can't tell about itself, over its plausible range (a Latin hypercube
 
 | scenarios | combinations | seconds |
 | --- | --- | --- |
-| 3 | 768 | 131 |
-| 6 | 192 | 53 |
-| 12 | 48 | 54 |
+| 3 | 768 | 119 |
+| 6 | 192 | 49 |
+| 12 | 48 | 49 |
 
 ## The finalists on all 12 scenarios (the best 15 of 48)
 
@@ -81,7 +81,7 @@ The best mean among the finalists with the idea, and without it.
 
 ## The pipeline's combination
 
-`config/pipeline.toml` [kind]: the bank table, n-grams 1–3, trained once on public data, gradient-boosted trees of depth 2 on the flag, the birth year and the legal form. Rank 25 of 48: mean 65.5% (worst 35.3%), against 67.6% for the best (bank table, 1–3, public + the file's legal-form records, gbdt2: flag, birth, birth_year, legal, known_name).
+The bank table and n-grams 1–3 (`config/pipeline.toml` [kind]), trained once on public data, and gradient-boosted trees of depth 2 on the flag, the birth year and the legal form. Rank 25 of 48: mean 65.5% (worst 35.3%), against 67.6% for the best (bank table, 1–3, public + the file's legal-form records, gbdt2: flag, birth, birth_year, legal, known_name).
 
 ## Counting sole traders
 
@@ -139,32 +139,32 @@ The lowest grid line with no labelled person above it, then this many grid steps
 | the pipeline's | 500 | 2 steps | 61.79% | 3.13% | 10 |
 | the pipeline's | 500 | 3 steps | 52.13% | 1.45% | 7 |
 | the pipeline's | 500 | 4 steps | 35.02% | 1.41% | 2 |
-| the pipeline's | 500 | 2 steps from 2,000 answers, 3 below (er.kind.lines) | 52.13% | 1.45% | 7 |
+| the pipeline's | 500 | 2 steps from 2,000 answers, 3 below | 52.13% | 1.45% | 7 |
 | the pipeline's | 1000 | 2 steps | 66.77% | 0.41% | 4 |
 | the pipeline's | 1000 | 3 steps | 57.97% | 0.14% | 1 |
 | the pipeline's | 1000 | 4 steps | 40.48% | 0.27% | 1 |
-| the pipeline's | 1000 | 2 steps from 2,000 answers, 3 below (er.kind.lines) | 57.97% | 0.14% | 1 |
+| the pipeline's | 1000 | 2 steps from 2,000 answers, 3 below | 57.97% | 0.14% | 1 |
 | the pipeline's | 2000 | 2 steps | 66.74% | 0.12% | 1 |
 | the pipeline's | 2000 | 3 steps | 59.29% | 0.08% | 0 |
 | the pipeline's | 2000 | 4 steps | 46.14% | 0.15% | 1 |
-| the pipeline's | 2000 | 2 steps from 2,000 answers, 3 below (er.kind.lines) | 66.74% | 0.12% | 1 |
+| the pipeline's | 2000 | 2 steps from 2,000 answers, 3 below | 66.74% | 0.12% | 1 |
 | the pipeline's | 4000 | 2 steps | 67.69% | 0.04% | 0 |
 | the pipeline's | 4000 | 3 steps | 62.03% | 0.03% | 0 |
 | the pipeline's | 4000 | 4 steps | 50.68% | 0.09% | 0 |
-| the pipeline's | 4000 | 2 steps from 2,000 answers, 3 below (er.kind.lines) | 67.69% | 0.04% | 0 |
+| the pipeline's | 4000 | 2 steps from 2,000 answers, 3 below | 67.69% | 0.04% | 0 |
 | the best | 500 | 2 steps | 61.42% | 3.01% | 11 |
 | the best | 500 | 3 steps | 49.53% | 1.46% | 6 |
 | the best | 500 | 4 steps | 35.09% | 1.37% | 3 |
-| the best | 500 | 2 steps from 2,000 answers, 3 below (er.kind.lines) | 49.53% | 1.46% | 6 |
+| the best | 500 | 2 steps from 2,000 answers, 3 below | 49.53% | 1.46% | 6 |
 | the best | 1000 | 2 steps | 65.47% | 0.80% | 3 |
 | the best | 1000 | 3 steps | 54.68% | 0.32% | 2 |
 | the best | 1000 | 4 steps | 36.66% | 0.14% | 1 |
-| the best | 1000 | 2 steps from 2,000 answers, 3 below (er.kind.lines) | 54.68% | 0.32% | 2 |
+| the best | 1000 | 2 steps from 2,000 answers, 3 below | 54.68% | 0.32% | 2 |
 | the best | 2000 | 2 steps | 67.06% | 0.13% | 1 |
 | the best | 2000 | 3 steps | 59.52% | 0.06% | 0 |
 | the best | 2000 | 4 steps | 45.54% | 0.12% | 1 |
-| the best | 2000 | 2 steps from 2,000 answers, 3 below (er.kind.lines) | 67.06% | 0.13% | 1 |
+| the best | 2000 | 2 steps from 2,000 answers, 3 below | 67.06% | 0.13% | 1 |
 | the best | 4000 | 2 steps | 67.64% | 0.02% | 0 |
 | the best | 4000 | 3 steps | 61.91% | 0.03% | 0 |
 | the best | 4000 | 4 steps | 50.94% | 0.05% | 0 |
-| the best | 4000 | 2 steps from 2,000 answers, 3 below (er.kind.lines) | 67.64% | 0.02% | 0 |
+| the best | 4000 | 2 steps from 2,000 answers, 3 below | 67.64% | 0.02% | 0 |
