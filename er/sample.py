@@ -1,5 +1,5 @@
-"""The pairs the run's model accepts, found by sampling, with no labels (er.keys learns its keys from them, and
-measures the gap they leave; er.sizes sizes a fit by them). Atoms, from the method: every column its keys, rules and
+"""The pairs the run's model accepts, found by sampling, with no labels (er.gap measures the gap the keys leave by
+them; er.sizes sizes a fit by them). Atoms, from the method: every column its keys, rules and
 comparisons read, equal, or within edits (atoms). A hash-stable share of the records, each paired with every record
 sharing an atom with it, scored through the bound at the search floor (discover); which of them a key or rule listed
 (listed_by), and which a generator lists (key_lists). O(A·N) for the atoms' blocks, O(f·N·b) pairs scored."""
@@ -12,8 +12,10 @@ import numpy as np
 import pandas as pd
 
 from er.candidates import KEEP_SLICE, Records, deletions_sql
-from er.config import Blocker, DeletionKeys, EditKeys, Key, KeyBlocker, LearnKeys, Pipeline, keys_of, q
+from er.config import Blocker, DeletionKeys, EditKeys, Key, KeyBlocker, Pipeline, keys_of, q
 from er.match import DISTANCES, SIMILARITIES, _bits, _ranked, bound_tests, scaled_prior, search_floor, score_fs
+
+EDITS = 2  # a column compared by a similarity is an atom within one edit and within this many (PassJoin)
 
 
 @dataclass(frozen=True)
@@ -32,8 +34,8 @@ class Atom:
 
 def atoms(p: Pipeline, have: set[str]) -> list[Atom]:
     """Every column the method reads as a key, a rule or a comparison, equal; and within edits where it compares that
-    column by an edit distance (one) or a similarity (one, and p.keys.edits). Only the columns the records hold."""
-    fs, k = p.fs, (p.keys or LearnKeys()).edits
+    column by an edit distance (one) or a similarity (one, and EDITS). Only the columns the records hold."""
+    fs, k = p.fs, EDITS
     eq = {x for b in fs.blockers for x in keys_of(b)} | {x for b in p.rules.blockers() for x in keys_of(b)}
     near: dict[Key, set[int]] = {}
     for c in fs.model.comparisons:
@@ -61,7 +63,6 @@ class Found:
     weight: float
     facts: dict
     rec: Records
-    sampled: dict
 
 
 def reachable(run, floor: float, into: str = "er_kl_ok") -> int:
@@ -131,7 +132,7 @@ def discover(run, records: int, floor: float | None = None) -> Found:
     for a in found:
         near_of[a.column] = max(near_of.get(a.column, 0), a.edits)
     rec = Records("er_kl_r", uid, con)
-    rec.most, sampled = m, {}
+    rec.most = m
     for a in (a for a in found if a.edits):
         k = q(a.column)
         if a.edits == 1:  # sharing a one-deletion key, in a normal deletion block; where PassJoin draws the long values, the short ones only
@@ -149,7 +150,6 @@ def discover(run, records: int, floor: float | None = None) -> Found:
             near = rec.near_values(EditKeys(name="x", key=Key(a.column), edits=a.edits), m, probe="er_kl_s")  # the sample's values against all
             rest = f"""{near} z JOIN er_kl_r x ON x.{k} = z.v JOIN er_kl_r y ON y.{k} = z.x
                 WHERE x.{u} IN (SELECT {u} FROM er_kl_s) OR y.{u} IN (SELECT {u} FROM er_kl_s)"""
-            sampled[a] = con.execute(f"SELECT count(*) FROM {rest}").fetchall()[0][0]  # the pairs it lists touching the sample: its pairs, scaled
             pair('x.' + u, 'y.' + u, rest)
         took[a.name] = time.perf_counter() - t
         t = time.perf_counter()
@@ -174,7 +174,7 @@ def discover(run, records: int, floor: float | None = None) -> Found:
                  drawn_seconds={k: round(v, 2) for k, v in took.items()})
     full = Records("records", uid, con)
     full.most = m
-    return Found(found, targets, weight, facts, full, sampled)
+    return Found(found, targets, weight, facts, full)
 
 
 def listed_by(run, targets: pd.DataFrame) -> pd.DataFrame:

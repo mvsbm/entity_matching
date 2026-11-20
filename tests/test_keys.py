@@ -1,16 +1,15 @@
-"""Keys learned on each file (er.keys) and the edit-distance key they may choose (er.candidates.EditKeys)."""
+"""The keys a run lists pairs by: as the method names them (an edit-distance key: er.candidates.EditKeys), the gap
+they leave (er.gap, at design time), and the values read as missing."""
 import itertools
 import json
 import random
-import re
-from dataclasses import replace
 
 import pandas as pd
 import pytest
 from rapidfuzz.distance import Levenshtein
 
 from er.candidates import Records
-from er.config import EditKeys, Key, LearnKeys
+from er.config import EditKeys, InputError, Key, KeyBlocker
 
 
 @pytest.mark.parametrize("k, grouped", [(1, False), (2, False), (2, True), (3, False)])
@@ -45,7 +44,6 @@ def test_a_value_a_crowd_holds_pairs_by_no_edit_key():
 def test_atoms_follow_the_method_and_the_records(population):
     from er.sample import atoms
     s, p, g = population
-    p = replace(p, keys=LearnKeys())
     have = {"person_name__kana_fold", "phone", "customer_id", "postal_code", "company_name__nfkc_strip_legal_form_kana_fold", "birth_date"}
     found = atoms(p, have)
     assert {a.column for a in found} <= have  # only what the records hold
@@ -53,54 +51,7 @@ def test_atoms_follow_the_method_and_the_records(population):
     assert any(a.column == "customer_id" and a.edits == 1 for a in found) and not any(a.column == "customer_id" and a.edits == 2 for a in found)
 
 
-@pytest.fixture(scope="module")
-def learned_and_fixed(population, tmp_path_factory):
-    from er.run import Run
-    s, p, g = population
-    d = tmp_path_factory.mktemp("keys")
-    g.df.to_parquet(d / "in.parquet", index=False)
-    fixed = Run(p, s).full(d / "in.parquet", d / "fixed")
-    learned = Run(replace(p, keys=LearnKeys()), s, model=fixed.model).full(d / "in.parquet", d / "learned")  # the same model: only the keys differ
-    return s, p, g, d, fixed, learned
-
-
-def test_learned_keys_stay_in_the_budget_and_lose_no_match_the_method_s_keys_find(learned_and_fixed):
-    s, p, g, d, fixed, learned = learned_and_fixed
-    facts = next(x for x in learned.steps if x["step"] == "keys")
-    assert facts["learned"] and facts["keys"] and all(x["key"].startswith("learned:") for x in facts["keys"])
-    assert sum(x["pairs"] for x in facts["keys"]) <= p.fs.budget.max_pairs(learned.n)
-    uid, ent = s.data.unique_id, s.data.entity_id
-    truth = g.truth.set_index(uid)[ent]
-    def found(run):  # the true and the false pairs the run merges
-        pairs = run.con.sql(f"SELECT {uid}_l AS a, {uid}_r AS b FROM matches UNION SELECT {uid}_l, {uid}_r FROM rule_kept").df()
-        same = pairs["a"].map(truth).to_numpy() == pairs["b"].map(truth).to_numpy()
-        return set(map(tuple, pairs[same].to_numpy())), int((~same).sum())
-    (true_fixed, false_fixed), (true_learned, false_learned) = found(fixed), found(learned)
-    assert true_fixed <= true_learned and false_learned <= false_fixed  # every true pair kept, no false one added
-
-
-def test_the_keys_learned_are_the_same_whatever_the_search_floor(learned_and_fixed):
-    from er.keys import learn
-    s, p, g, d, fixed, learned = learned_and_fixed
-    run, chosen = learned, [x["key"] for x in next(x for x in learned.steps if x["step"] == "keys")["keys"]]
-    for floor in (0.0, 2.0, 99.0):  # 99: aimed at the review floor
-        run.pipeline = replace(run.pipeline, threshold=replace(run.pipeline.threshold, search_floor=floor))
-        assert [b.name for b in learn(run)[0]] == chosen
-
-
-def test_the_gap_counts_from_the_search_floor(learned_and_fixed):
-    from er.keys import thresholds
-    from er.match import review_floor, search_floor
-    s, p, g, d, fixed, learned = learned_and_fixed
-    assert search_floor(p) < review_floor(p) and thresholds(p) == sorted({search_floor(p), review_floor(p), p.fs.min_match_weight, 20.0})
-    gap = next(x for x in fixed.steps if x["step"] == "gap")
-    assert [x["bits"] for x in gap["thresholds"]] == thresholds(p)
-    from er.report import qa, report_text
-    shown = report_text(fixed, qa(fixed), d / "pipeline.toml").split("\nGAP")[1].split("\n\n")[0]
-    assert re.search(rf"^\s+{search_floor(p):g}\+\s", shown, re.M)  # its row, first
-
-
-def test_a_learned_key_counts_no_pair_inside_one_of_its_oversized_blocks(population):
+def test_a_key_counts_no_pair_inside_one_of_its_oversized_blocks_unless_the_gate_kept_it(population):
     from er.sample import Atom, in_normal
     s, p, g = population
     df = pd.DataFrame({"uid": [f"r{i}" for i in range(100)], "pref": ["東京都"] * 90 + ["大阪府"] * 10}, dtype="string")
@@ -108,40 +59,11 @@ def test_a_learned_key_counts_no_pair_inside_one_of_its_oversized_blocks(populat
     r.con.execute(f"CREATE TABLE records AS SELECT * FROM {r.table}")
     try:
         targets = pd.DataFrame({"a0": ["東京都", "大阪府"], "b0": ["東京都", "大阪府"]})
-        from er.keys import blocker
-        a = Atom(Key("pref"), 0)
-        assert in_normal((a,), blocker((a,)), targets, [a], r, 64).tolist() == [False, True]  # 90 records: only the gate could list it
-        assert in_normal((a,), blocker((a,)), targets, [a], r, 64, frozenset({"東京都"})).all()  # the gate kept it: listed
+        a, key = Atom(Key("pref"), 0), KeyBlocker(name="pref", keys=(Key("pref"),))
+        assert in_normal((a,), key, targets, [a], r, 64).tolist() == [False, True]  # 90 records: only the gate could list it
+        assert in_normal((a,), key, targets, [a], r, 64, frozenset({"東京都"})).all()  # the gate kept it: listed
     finally:
         r.close()
-
-
-def test_an_increment_lists_its_pairs_by_the_keys_the_full_run_learned(learned_and_fixed):
-    from er.run import Run
-    s, p, g, d, fixed, learned = learned_and_fixed
-    kept = json.loads((d / "learned" / "state" / "keys.json").read_text(encoding="utf-8"))
-    assert list(kept) == [x["key"] for x in next(x for x in learned.steps if x["step"] == "keys")["keys"]]
-    batch = g.df.sample(20, random_state=1).assign(**{s.data.unique_id: lambda x: x[s.data.unique_id] + "_new"})
-    batch.to_parquet(d / "batch.parquet", index=False)
-    run = Run(replace(p, keys=LearnKeys()), s).increment(d / "batch.parquet", d / "learned")
-    assert [b.name for b in run.pipeline.fs.blockers] == list(kept)
-
-
-def test_a_key_whose_agreement_weighs_nothing_and_lists_no_pair_of_its_own_is_not_run_and_no_pair_is_lost(population, tmp_path, monkeypatch):
-    from er.match import review_floor
-    from er.run import Run
-    s, p, g = population
-    g.df.to_parquet(tmp_path / "in.parquet", index=False)
-    kept = Run(p, s).full(tmp_path / "in.parquet", tmp_path / "kept")
-    facts = lambda run, step: next(x for x in run.steps if x["step"] == step)
-    dropped = facts(kept, "keys")["dropped"]
-    assert dropped and not {x["name"] for x in facts(kept, "candidates")["generators"]} & set(dropped)
-    monkeypatch.setattr("er.run.idle", lambda run: (run.pipeline.fs.blockers, []))
-    every = Run(p, s, model=kept.model).full(tmp_path / "in.parquet", tmp_path / "every")  # the same model, every key
-    read = lambda run, what: run.con.sql(what).df().sort_values(list(run.con.sql(what).columns)).reset_index(drop=True)
-    for what in (f"SELECT * FROM scores WHERE match_weight >= {review_floor(p)}", "SELECT * FROM gold"):
-        pd.testing.assert_frame_equal(read(kept, what), read(every, what))  # what people see: the same
-    assert next(x for x in facts(kept, "gap")["thresholds"] if x["bits"] == review_floor(p))["missed"] == 0 and "only" in facts(kept, "gap")
 
 
 def _placeholders(population, rows: dict) -> tuple:  # Run._placeholders on a table of these columns, as load leaves records
@@ -200,40 +122,45 @@ def test_the_gap_counts_a_pair_as_the_rules_only_where_they_kept_it():
     assert got["ruled"].tolist() == [False, True] and got["listed"].tolist() == [False, True]
 
 
-def test_an_idle_key_stays_where_the_sample_is_too_small_to_say_and_one_dropped_is_kept_for_increments(population, tmp_path, monkeypatch):
+@pytest.fixture(scope="module")
+def ran(population, tmp_path_factory):
     from er.run import Run
     s, p, g = population
-    g.df.to_parquet(tmp_path / "in.parquet", index=False)
-    monkeypatch.setattr("er.keys.GAP_RECORDS", 40)  # a few records of the file: what an idle key alone lists can't be ruled out
-    small = Run(p, s).full(tmp_path / "in.parquet", tmp_path / "small")
-    assert next(x for x in small.steps if x["step"] == "keys")["dropped"] == []
-    monkeypatch.undo()
-    run = Run(p, s).full(tmp_path / "in.parquet", tmp_path / "whole")  # every record sampled: exact
-    keys = next(x for x in run.steps if x["step"] == "keys")
-    assert keys["dropped"] and "draw_seconds" in keys and "draw_seconds" not in next(x for x in run.steps if x["step"] == "gap")  # the sample's time where it was spent
-    kept = json.loads((tmp_path / "whole" / "state" / "keys.json").read_text(encoding="utf-8"))
-    assert not set(kept) & set(keys["dropped"])
-    batch = g.df.sample(20, random_state=2).assign(**{s.data.unique_id: lambda x: x[s.data.unique_id] + "_new"})
-    batch.to_parquet(tmp_path / "batch.parquet", index=False)
-    inc = Run(p, s).increment(tmp_path / "batch.parquet", tmp_path / "whole")
-    assert [b.name for b in inc.pipeline.fs.blockers] == list(kept)  # an increment lists by the keys the full run ran
+    d = tmp_path_factory.mktemp("keys")
+    g.df.to_parquet(d / "in.parquet", index=False)
+    return s, p, g, d, Run(p, s).full(d / "in.parquet", d / "ws")
 
 
-def test_a_key_whose_pairs_of_its_own_all_score_below_review_is_not_run_whatever_the_search_floor(population, tmp_path, monkeypatch):
-    import numpy as np
-    from er.keys import idle
+def test_a_run_lists_by_every_key_the_method_names_and_keeps_none_of_its_own(ran):
+    s, p, g, d, run = ran
+    listed = [x["name"] for x in next(x for x in run.steps if x["step"] == "candidates")["generators"]]
+    assert sorted(listed) == sorted(b.name for b in run.pipeline.fs.blockers) == sorted(b.name for b in p.fs.blockers)
+    assert not (d / "ws" / "state" / "keys.json").exists() and not {"keys", "probe", "gap"} & {x["step"] for x in run.steps}
+
+
+def test_the_gap_counts_from_the_search_floor(ran):
+    from er.gap import gap, thresholds
     from er.match import review_floor, search_floor
-    from er.run import Run
-    s, p, g = population
-    p = replace(p, threshold=replace(p.threshold, grid=tuple(range(0, 100, 2))), fs=replace(p.fs, min_match_weight=100.0))  # a review floor (98) above every pair
-    assert search_floor(p) == 0 and review_floor(p) == 98
-    uid = s.data.unique_id
-    twins = g.df[g.df["CIF_ID"].notna() & g.df["FULL_NAME_KANA"].notna()].head(20).copy()
-    twins[uid] = twins[uid] + "_twin"
-    twins["CIF_ID"] = twins["CIF_ID"].str[:-1] + twins["CIF_ID"].str[-1].map(lambda c: "1" if c == "0" else "0")  # one digit off: the ID key's own pairs
-    twins[["PHONE_NUM_4", "PHONE_NUM"]] = None  # no rule joins them
-    pd.concat([g.df, twins]).to_parquet(tmp_path / "in.parquet", index=False)
-    run = Run(p, s).full(tmp_path / "in.parquet", tmp_path / "w")
-    run.pipeline = replace(run.pipeline, fs=replace(run.pipeline.fs, blockers=p.fs.blockers))
-    monkeypatch.setattr("er.keys.key_lists", lambda b, t, *a: np.zeros(len(t), bool))  # no other key lists its pairs: each one its own
-    assert "cif_deletions" in idle(run)[1]  # its own pairs (the twins) score 0 and up, none 98: they cost pairs no one is asked about
+    s, p, g, d, run = ran
+    assert search_floor(p) < review_floor(p) and thresholds(p) == sorted({search_floor(p), review_floor(p), p.fs.min_match_weight, 20.0})
+    rows = gap(run)["thresholds"]
+    assert [x["bits"] for x in rows] == thresholds(p) and rows[0]["bits"] == search_floor(p)
+    assert all(x["missed_lo"] <= x["missed"] <= x["missed_hi"] for x in rows) and [x["pairs"] for x in rows] == sorted((x["pairs"] for x in rows), reverse=True)
+
+
+def test_a_pipeline_with_keys_to_learn_and_a_workspace_holding_keys_a_run_learned_are_refused(ran, population):
+    from er import folder
+    from er.config import pipeline_from
+    import tomllib
+    s, p, g, d, run = ran
+    cfg = tomllib.loads((s.root / "config" / "final.toml").read_text(encoding="utf-8"))
+    with pytest.raises(InputError, match=r"\[keys\] sets nothing") as e:
+        pipeline_from({**cfg, "keys": {"records": 50_000}}, s.standardize, s.chains)
+    assert e.value.fix == "delete [keys]"
+    (d / "ws" / "state" / "keys.json").write_text(json.dumps({}), encoding="utf-8")
+    try:
+        with pytest.raises(InputError, match="keys learned on its file or left out"):
+            folder.current(d / "ws")
+        folder.current(d / "ws", replacing=True)  # a full run --overwrite replaces state/ whole
+    finally:
+        (d / "ws" / "state" / "keys.json").unlink()

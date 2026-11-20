@@ -34,8 +34,9 @@ def test_a_run_says_what_is_wrong_in_words_people_can_act_on(say, tmp_path, popu
 
     phone, postal = s.columns["phone"][0][0], [c for alt in s.columns["postal_code"] for c in alt]
     g.df.assign(**{c: None for c in postal}).to_parquet(tmp_path / "nopostal.parquet", index=False)  # mapped, but never filled
+    from er.probe import probe
     run = Run(p, s).full(tmp_path / "nopostal.parquet", tmp_path / "run")
-    assert [x["stratum"] for x in next(x for x in run.steps if x["step"] == "probe")["strata"]] == ["phone"]  # an empty group: nothing to draw
+    assert [x["stratum"] for x in probe(run)] == ["phone"]  # an empty group: nothing to draw
     g.df.head(0).to_parquet(tmp_path / "empty.parquet", index=False)
     with pytest.raises(InputError, match="no record, only its header"):
         Run(p, s).full(tmp_path / "empty.parquet", tmp_path / "run0")
@@ -251,7 +252,7 @@ def test_a_nearly_empty_field_is_kept_and_the_fit_skips_what_it_cannot_learn_fro
     sparse.to_parquet(tmp_path / "sparse.parquet", index=False)
     seen = []
     run = Run(p, s, echo=seen.append).full(tmp_path / "sparse.parquet", tmp_path / "run")
-    assert [x["step"] for x in seen] == ["load", "budget", "fit", "rules", "keys", "candidates", "score", "cluster", "probe", "gap", "write"]  # step by step
+    assert [x["step"] for x in seen] == ["load", "budget", "fit", "rules", "candidates", "score", "cluster", "write"]  # step by step
     assert "address" in run.model["er"]["skipped"] and any("sharing address" in x for x in run.notes)
     sparse.assign(PHONE_NUM_4=None).to_parquet(tmp_path / "bare.parquet", index=False)  # nothing left to learn from
     with pytest.raises(InputError, match="can't be estimated|share phone or address"):  # whichever check finds nothing first
@@ -442,10 +443,8 @@ def test_the_diagnosis_names_what_limits_the_run_the_most_pairs_first_each_with_
     assert near() == was + 3
     m["filled"]["m"].append(["phone", "exact"])  # a level that learned nothing, holding pairs
     assert any("levels that learned nothing hold pairs" in x and "phone exact" in x for x in said())
-    gap = next(x for x in run.steps if x["step"] == "gap")
-    gap["thresholds"] = [dict(bits=lo, pairs=500, missed=50, missed_lo=40, missed_hi=60)]
     run.gated = pd.DataFrame([dict(generator="phone", value="x", records=900, pairs=404_550, sampled=2000, best=search_floor(run.pipeline) - 1, hits=0, decision="skipped: over capacity")])
-    assert any("no key lists about 50 pairs" in x and "(40–60)" in x for x in said()) and any("1 oversized blocks skipped (404,550 pairs)" in x for x in said())
+    assert any("1 oversized blocks skipped (404,550 pairs)" in x for x in said())
     m["em_pairs"] = {"phone": 40}  # a thin session
     assert any("EM learned from few pairs: phone 40" in x for x in said()) and len(said()) <= SHOWN
     stakes = said()

@@ -1,5 +1,5 @@
 """Look up: one record against the run's index, as an increment of that record alone would list and score its pairs;
-search, by any values' starts; and the index kept up to date by what changed, answering as one built again would."""
+and the index kept up to date by what changed, answering as one built again would."""
 import json
 import shutil
 from dataclasses import replace
@@ -35,15 +35,12 @@ def test_a_sorted_window_places_the_record_as_the_run_s_window_does_at_either_en
             assert index._window(con, "g0", x, me, key) == want, (n, key, me)
 
 
-def answers(ws, s, p, asks: list[tuple[dict | None, str | None]]) -> list[dict]:  # what each lookup and search answers, all of it but its time
+def answers(ws, s, p, asks: list[tuple[dict | None, str | None]]) -> list[dict]:  # what each lookup answers, all of it but its time
     from er import index
     out = []
     for values, record in asks:
         r = index.look_up(ws, s, p, values=values, record=record, at_least=-1e9, most=10**6)
         out.append({**{k: r[k] for k in ("record", "entities", "found", "candidates", "likely", "checked")}, "records": r["index"]["records"]})
-        if values:
-            r = index.search(ws, s, p, values, most=10**6)
-            out.append({**{k: r[k] for k in ("entities", "found", "listed", "candidates", "typed", "over")}, "records": r["index"]["records"]})
     return out
 
 

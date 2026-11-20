@@ -434,20 +434,8 @@ class ThresholdRule:
     max_fp: int
     max_fp_rate_hi: float
     margin_steps: int
-    search_floor: float = 0.0  # bits: the oversized-block gate and the gap aim here (er.match.search_floor); the idle-key check, the review floor
+    search_floor: float = 0.0  # bits: the oversized-block gate aims here (er.match.search_floor)
     keep_from: float = field(default=0.0, repr=False)  # bits: a pair the best case says can't reach it is never stored; in the run's hash only when set (run_config)
-
-
-@dataclass(frozen=True, kw_only=True)
-class LearnKeys:
-    """The keys learned on each file, no labels (er.keys): the pairs the run's model accepts, found by sampling through
-    every atom (a column the method reads, equal, or within one or `edits` edits for a column it compares by a
-    similarity), and the keys of up to `max_atoms` atoms that list most of them for their pairs, by weighted set cover
-    within the budget. A file where the sample finds none runs [model] generators."""
-    records: int = 50_000                     # the records sampled, about: their pairs through every atom are scored
-    max_atoms: int = 3
-    edits: int = 2
-    min_gain: int = 1                         # a key is added while it lists at least this many sampled pairs no key chosen lists
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -584,7 +572,6 @@ class Pipeline:
     kind: KindSpec | None = None              # person or company, on every record; None: not told apart
     probe: Probe = Probe()                    # how the matches no key lists are measured (er.probe)
     household: Household = Household()        # which pairs people see labelled "maybe one household"
-    keys: LearnKeys | None = None             # learn the keys on each file; None: [model] generators
 
 
 def _norm(value: object, chains: Mapping[str, tuple[Normalizer, ...]]) -> tuple[Normalizer, ...]:
@@ -629,6 +616,8 @@ def pipeline_from(cfg: dict, std: Standardization, chains: Mapping[str, tuple[No
     if "trust" in cfg:  # nothing merges by a sampled line: the rules' pairs, the model's at its threshold and people's decisions
         raise InputError("[trust] sets nothing: a run merges the rules' pairs and the model's at its threshold; people decide the rest",
                          fix="delete [trust]")
+    if "keys" in cfg:  # a run lists pairs by the generators the method names, chosen at design time
+        raise InputError("[keys] sets nothing: a run lists pairs by the [model] generators as given", fix="delete [keys]")
     f, b, m = cfg["fields"], cfg["budget"], cfg["model"]
     budget = Budget(**b)
     rules = RulesSpec(standardize=std, resolver=_resolver(cfg["rules"]["resolver"]), budget=budget, stages=tuple(
@@ -669,8 +658,7 @@ def pipeline_from(cfg: dict, std: Standardization, chains: Mapping[str, tuple[No
                     probe=Probe(strata=tuple((n, tuple(_key(k, chains) for k in keys)) for n, keys in cfg["probe"]["strata"].items()),
                                 pairs=cfg["probe"].get("pairs", 1_000_000)) if "probe" in cfg else Probe(),
                     household=Household(shared=tuple(_key(k, chains) for k in cfg["household"]["shared"]),
-                                        apart=tuple((d["field"], _comparator(d, chains)) for d in cfg["household"]["apart"])) if "household" in cfg else Household(),
-                    keys=LearnKeys(**cfg["keys"]) if cfg.get("keys") else None)
+                                        apart=tuple((d["field"], _comparator(d, chains)) for d in cfg["household"]["apart"])) if "household" in cfg else Household())
 
 
 GIVEN, PERSON = "given_name", "person_name"  # agreement on the given name tells one person's records from a household's; the full name, where it is sparse (er.match.chosen)
@@ -852,7 +840,6 @@ def pipeline_dict(p: Pipeline, chains: Mapping[str, tuple[Normalizer, ...]]) -> 
            if p.household.shared or p.household.apart else {}),
         "selection": {"cv_folds": p.cv_folds, "cv_seed": p.cv_seed, "decision_p": p.decision_p},
         "display": {"explain_show": list(p.explain_show), "explain_filled": list(p.explain_filled)},
-        **({"keys": vars(p.keys)} if p.keys else {}),
     }
 
 

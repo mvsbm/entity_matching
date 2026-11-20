@@ -1,4 +1,4 @@
-"""The matches no pair key lists, measured without labels, after a full run clusters.
+"""The matches no pair key lists, measured without labels, at design time (scripts/benchmark.py), once a run clusters.
 
 A match the keys can't find shares none of what they look at, so nothing built from the links found can count it.
 So the probe samples pairs directly, within groups matches tend to share ([probe] strata: the same phone, the same
@@ -71,3 +71,12 @@ def missed(con: duckdb.DuckDBPyConnection, model: dict, fs: FSSpec, spec: Probe,
     return out
 
 
+def probe(run) -> list[dict]:
+    """Each [probe] stratum measured on a Run that has clustered (missed): its likely links are its matches, the rules'
+    pairs people didn't call different, and people's "same"; a pair people called different is never a hit. O(N + P·K + L)."""
+    fs, l, r = run.pipeline.fs, q(run.l), q(run.r)
+    links = f"""SELECT {l}, {r} FROM matches
+        UNION ALL SELECT {l}, {r} FROM rule_kept k WHERE NOT EXISTS (SELECT 1 FROM er_decisions d WHERE d.{l} = k.{l} AND d.{r} = k.{r} AND d.decision = 'no_match')
+        UNION ALL SELECT {l}, {r} FROM er_decisions WHERE decision = 'match'"""
+    return missed(run.con, run.scoring, fs, run.pipeline.probe, "records", links, run.uid, None if fs.bridge else run._sized("rule_clusters", ">"),
+                  apart=f"SELECT {l}, {r} FROM er_decisions WHERE decision = 'no_match'")

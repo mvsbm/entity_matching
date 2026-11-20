@@ -122,8 +122,7 @@ def run_facts(run: Run, out: Path) -> dict | None:  # what a person reads first 
     except (InputError, duckdb.Error, OSError):
         return None
     return dict(records=r["records"], entities=r["entities"], joined=r["joined"], waiting=sum(x["pairs"] for x in r["waiting"]), review_from=r["review_from"],
-                merging=merging_words(r["merging"]), missed=sum(x["missed"] for x in r["missed"]) if r["missed"] else None,
-                missed_high=sum(x["high"] for x in r["missed"]) if r["missed"] else None, too_big=r["too_big"]["skipped"], kinds=r["kinds"]["flagged"],
+                merging=merging_words(r["merging"]), too_big=r["too_big"]["skipped"], kinds=r["kinds"]["flagged"],
                 report=str(out / "report.txt"))
 
 
@@ -269,7 +268,7 @@ COMPUTE = Param("compute", "DuckDB limits for this run, over config/settings.tom
 PIPELINE = Param("pipeline", "the pipeline file (default: config/final.toml)", "path")
 FILE = lambda what: Param("file", f"{what} (default: the workspace's own sheet, with the answers written in)", "path")
 RUN_RESULT = {"summary": "the run in words: records, entities, who joined them, the model's links, what is left to people",
-              "facts": "what to read first: records, entities, joined, waiting (pairs for people from review_from points), merging, missed and missed_high (the probe), too_big, kinds (flagged person or company), report",
+              "facts": "what to read first: records, entities, joined, waiting (pairs for people from review_from points), merging, too_big, kinds (flagged person or company), report",
               "seconds": "the run's time", "wrote": "the files written", "index": "the workspace's index, if built: brought up to date (records, added, moved, seconds, rebuilt: why built again), or error and fix", "next": "the commands that usually follow"}
 COMMANDS: tuple[Command, ...] = (
     Command("resolve", "records", "Resolve a file: one ID per person or company",
@@ -294,15 +293,14 @@ COMMANDS: tuple[Command, ...] = (
             "nayose match records new.parquet --workspace workspaces/customers", match_records,
             show={"records": ("id", "entity", "status", "by", "weight")}),
     Command("build", "index", "The index a record is looked up in, from the run",
-            "Every key of every record the run holds and every value a search reads, sorted, in the workspace's index/ (DuckDB "
+            "Every key of every record the run holds, sorted, in the workspace's index/ (DuckDB "
             "databases), with what it was built from. Read once from the run's own files, nothing "
             "standardized again; built beside the last index, which stays until the new one is whole. Once built, it is kept up to "
             "date by the commands that change the run: an increment or decisions write what changed beside it; a "
-            "full run builds it again. O(N·(G + R + D·L + F) + N log N): N records, G pair keys, R rules, D deletion keys, L a value's "
-            "length, F searched columns.",
+            "full run builds it again. O(N·(G + R + D·L) + N log N): N records, G pair keys, R rules, D deletion keys, L a value's "
+            "length.",
             (WORKSPACE, PIPELINE, COMPUTE),
             {"index": "its folder", "records": "the records it holds", "tables": "each table: of (its key or rule), rows, seconds", "seconds": "in all",
-             "unsearched": "the fields a search reads that this run's records don't hold: typed, they are said, not searched",
              "next": "the commands that usually follow"},
             "nayose build index --workspace workspaces/customers", build_index),
     Command("match", "record", "The entities one record may belong to, from the index; nothing written",

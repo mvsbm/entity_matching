@@ -1,4 +1,4 @@
-"""Runs: a full run, increments, writes cut short, the probe, describe matching."""
+"""Runs: a full run, increments, writes cut short, the probe (design time, on a run), describe matching."""
 import json
 import shutil
 import math
@@ -315,6 +315,7 @@ def test_an_increment_needs_a_workspace_that_holds_a_run(tmp_path, population):
 def test_the_probe_counts_the_matches_no_key_lists_as_the_truth_does(tmp_path, population):
     from er.cluster import merge
     from er.explain import scored_again
+    from er.probe import probe as probed
     from er.run import Run
     s, p, g = population
     uid, ent = s.data.unique_id, s.data.entity_id
@@ -322,7 +323,7 @@ def test_the_probe_counts_the_matches_no_key_lists_as_the_truth_does(tmp_path, p
     g.df.to_parquet(tmp_path / "all.parquet", index=False)
     few = replace(p, fs=replace(p.fs, blockers=tuple(b for b in p.fs.blockers if b.name in ("cif", "person_name", "company_name"))))  # a method that misses
     out = tmp_path / "run"
-    probe = next(x for x in Run(few, s).full(tmp_path / "all.parquet", out).steps if x["step"] == "probe")["strata"]
+    probe = probed(Run(few, s).full(tmp_path / "all.parquet", out))
     con = connect(s.compute)  # the truth: every true pair scored as the run scores, at its line, that its likely links don't join
     truth = g.truth[[uid, ent]].merge(g.truth[[uid, ent]], on=ent).query(f"{uid}_x < {uid}_y")
     con.register("er_t", truth.rename(columns={f"{uid}_x": l, f"{uid}_y": r})[[l, r]])
@@ -344,13 +345,12 @@ def test_the_probe_counts_the_matches_no_key_lists_as_the_truth_does(tmp_path, p
     apart = sorted(shared)[0]  # people say one of them is different: no match missed, then
     pd.DataFrame({l: [apart[0]], r: [apart[1]], "decision": ["no_match"]}).to_parquet(tmp_path / "apart.parquet")
     Run(few, s).decide(tmp_path / "apart.parquet", out)
-    again = next(x for x in Run(few, s).full(tmp_path / "all.parquet", out, overwrite=True).steps if x["step"] == "probe")["strata"]
+    again = probed(Run(few, s).full(tmp_path / "all.parquet", out, overwrite=True))
     phone_again = next(x for x in again if x["stratum"] == "phone")
     assert phone_again["hits"] == len(shared) - 1 and apart not in {tuple(x[:2]) for x in phone_again["examples"]}
-    sampled = next(x for x in Run(replace(few, probe=replace(few.probe, pairs=200)), s).full(tmp_path / "all.parquet", tmp_path / "run2").steps
-                   if x["step"] == "probe")["strata"][0]
+    sampled = probed(Run(replace(few, probe=replace(few.probe, pairs=200)), s).full(tmp_path / "all.parquet", tmp_path / "run2"))[0]
     assert sampled["drawn"] < 1 and sampled["low"] <= len(shared) <= sampled["high"]  # a share drawn: its interval holds the truth
-    full = next(x for x in Run(p, s).full(tmp_path / "all.parquet", tmp_path / "run3").steps if x["step"] == "probe")["strata"]
+    full = probed(Run(p, s).full(tmp_path / "all.parquet", tmp_path / "run3"))
     assert all(x["hits"] <= by[x["stratum"]]["hits"] for x in full)  # the tuned method's keys miss no more
 
 

@@ -144,8 +144,6 @@ def brief_run(r: dict) -> list[str]:  # resolve and add records: what the run fo
     out.append(f"  {f['waiting']:,} pairs wait for your review ({num(f['review_from'])}+ points)" if f["waiting"] else "  no pair waits for your review")
     if f.get("merging"):
         out.append(f"  {f['merging']}")
-    if f.get("missed") is not None:
-        out.append(f"  matches no key listed: about {f['missed']:,} (at most {f['missed_high']:,}), among the pairs the probe checked")
     if f.get("too_big"):
         out.append(f"  ! {f['too_big']:,} groups too big to compare were skipped: see report.txt")
     if f.get("kinds"):

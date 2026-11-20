@@ -239,8 +239,9 @@ def held(out: Path) -> list[Path]:  # the run files a folder holds: what resolve
 def current(out: Path, replacing: bool = False) -> None:
     """Refuses a workspace an earlier nayose wrote, in a layout this one no longer reads: person/company answers (in
     kind_answers/ or state/), which no run reads now (each record's kind is the engine's rule), an input part the reader
-    never described (no intake.json), or rules' pairs written before they said whether each merged, unless a full run is
-    `replacing` them (--overwrite); and one holding its own method.toml or columns.toml, which no run reads: the method
+    never described (no intake.json), or rules' pairs written before they said whether each merged or keys a run learned
+    or left out (state/keys.json: a run lists by the method's keys), unless a full run is `replacing` them (--overwrite);
+    and one holding its own method.toml or columns.toml, which no run reads: the method
     is config/final.toml's, the mapping config/settings.toml's. O(parts) to look."""
     if own := [f for f in ("method.toml", "columns.toml") if (out / f).exists()]:
         raise InputError(f"{out} holds its own {' and '.join(own)}, which no run reads: the method is config/final.toml's, the column mapping "
@@ -248,7 +249,8 @@ def current(out: Path, replacing: bool = False) -> None:
     old = ["people's person/company answers, which no run reads now" if (out / "kind_answers").is_dir() or (out / "state" / "kind_labels.parquet").exists() else None,
            next((f"{p.name} read before the reader described its files" for p in parts(out) if not intake.report(p)), None),
            None if replacing else next(("rules' pairs that don't say whether they merged" for f in (out / "rule_kept").glob("part-*.parquet")
-                                        if "merged" not in pq.read_schema(f).names), None)]
+                                        if "merged" not in pq.read_schema(f).names), None),
+           None if replacing or not (out / "state" / "keys.json").exists() else "keys learned on its file or left out, which no run reads now"]
     if what := [x for x in old if x]:
         raise InputError(f"{out}: a workspace an earlier nayose wrote ({'; '.join(what)})", fix="run it again into a new folder: nayose resolve records FILE --workspace PATH")
 

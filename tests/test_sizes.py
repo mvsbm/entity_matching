@@ -31,17 +31,12 @@ def test_a_kept_pair_rescored_from_its_levels_has_the_points_the_run_gave_it(ran
     assert isinstance(json.loads((ws / "state" / BLOCKS).read_text(encoding="utf-8")), dict)  # the blocks the run listed, for the check
 
 
-def test_the_keys_way_learns_in_the_method_s_keys_as_a_run_s_fit_does_not_those_the_run_kept(ran):
+def test_the_keys_way_learns_in_the_method_s_keys_as_a_run_s_fit_does(ran):
     s, p, ws = ran
     cols = list(pd.read_parquet(ws / "state" / "records").columns)
     first = next(b for b in p.fs.blockers if hasattr(b, "keys"))
-    (ws / "state" / "keys.json").write_text(json.dumps({}), encoding="utf-8")  # a run that kept no key of the method
-    try:
-        assert index.fitted(ws, s, p, cols).fs.blockers == ()
-        way = sizes.models(index.to_file(s, p, cols))["keys"]
-        assert first.keys in way.em_rules and way.em_rules == fit_model(replace(index.to_file(s, p, cols).fs, model=replace(p.fs.model, em_from_keys=True))).em_rules
-    finally:
-        (ws / "state" / "keys.json").unlink()
+    way = sizes.models(index.to_file(s, p, cols))["keys"]
+    assert first.keys in way.em_rules and way.em_rules == fit_model(replace(index.to_file(s, p, cols).fs, model=replace(p.fs.model, em_from_keys=True))).em_rules
 
 
 def test_sizes_settle_at_the_first_of_two_quiet_steps(ran, monkeypatch):

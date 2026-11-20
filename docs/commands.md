@@ -42,7 +42,7 @@ A full run, without labels: load, budget, fit, rules, candidates, score, cluster
 | Result | |
 |---|---|
 | `summary` | the run in words: records, entities, who joined them, the model's links, what is left to people |
-| `facts` | what to read first: records, entities, joined, waiting (pairs for people from review_from points), merging, missed and missed_high (the probe), too_big, kinds (flagged person or company), report |
+| `facts` | what to read first: records, entities, joined, waiting (pairs for people from review_from points), merging, too_big, kinds (flagged person or company), report |
 | `seconds` | the run's time |
 | `wrote` | the files written |
 | `index` | the workspace's index, if built: brought up to date (records, added, moved, seconds, rebuilt: why built again), or error and fix |
@@ -72,7 +72,7 @@ An increment: each new record compared with every stored one, with the run's mod
 | Result | |
 |---|---|
 | `summary` | the run in words: records, entities, who joined them, the model's links, what is left to people |
-| `facts` | what to read first: records, entities, joined, waiting (pairs for people from review_from points), merging, missed and missed_high (the probe), too_big, kinds (flagged person or company), report |
+| `facts` | what to read first: records, entities, joined, waiting (pairs for people from review_from points), merging, too_big, kinds (flagged person or company), report |
 | `seconds` | the run's time |
 | `wrote` | the files written |
 | `index` | the workspace's index, if built: brought up to date (records, added, moved, seconds, rebuilt: why built again), or error and fix |
@@ -117,7 +117,7 @@ The index a record is looked up in, from the run.
 nayose build index --workspace WORKSPACE [--pipeline PIPELINE] [--compute KEY=VALUE …] [--format text|json]
 ```
 
-Every key of every record the run holds and every value a search reads, sorted, in the workspace's index/ (DuckDB databases), with what it was built from. Read once from the run's own files, nothing standardized again; built beside the last index, which stays until the new one is whole. Once built, it is kept up to date by the commands that change the run: an increment or decisions write what changed beside it; a full run builds it again. O(N·(G + R + D·L + F) + N log N): N records, G pair keys, R rules, D deletion keys, L a value's length, F searched columns.
+Every key of every record the run holds, sorted, in the workspace's index/ (DuckDB databases), with what it was built from. Read once from the run's own files, nothing standardized again; built beside the last index, which stays until the new one is whole. Once built, it is kept up to date by the commands that change the run: an increment or decisions write what changed beside it; a full run builds it again. O(N·(G + R + D·L) + N log N): N records, G pair keys, R rules, D deletion keys, L a value's length.
 
 | Parameter | |
 |---|---|
@@ -131,7 +131,6 @@ Every key of every record the run holds and every value a search reads, sorted, 
 | `records` | the records it holds |
 | `tables` | each table: of (its key or rule), rows, seconds |
 | `seconds` | in all |
-| `unsearched` | the fields a search reads that this run's records don't hold: typed, they are said, not searched |
 | `next` | the commands that usually follow |
 
 ```bash

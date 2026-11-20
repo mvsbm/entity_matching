@@ -30,12 +30,9 @@ package "every step after load reads records" as after_load {
   rectangle "<b>5 · Candidates</b>: list the pairs worth scoring, keeping only those that can reach 0; check big blocks on a sample\n<i>O(N·L + ΣP_g)</i>\n<size:10><color:#65717E>Run.candidates · run.listed · candidates.candidates · Run._reaching · match.reaching_sql · match.bound_reads · Run._gate · Run._scored · match.score_fs · match.bound_tests · Run._gated · Run._joined</color></size>\n<size:10><color:#65717E>match.search_floor · Run.capacity · Run.spill_room · run.size_bytes · Run._sized · Run._alone · match.rough_reads</color></size>" as candidates
   rectangle "<b>6 · Score</b>: give every candidate pair that can reach 0 its evidence in bits, the rest left below 0 by a bound, a million at a time, saying how far it is; count the patterns they fall in\n<i>O(C·K·L²)</i>\n<size:10><color:#65717E>Run.score · Run._scored · match.score_fs · match.bound_tests · Run._patterns · Run._bands · results.banded · match.named_sql · match.review_floor</color></size>" as score
   rectangle "<b>7 · Cluster</b>: merge every rule pair, the model's pairs at its threshold with a name compared and people's matches, less their no_match; join them into entities, from single records\n<i>O(C + E·log E + N)</i>\n<size:10><color:#65717E>Run._load_decisions · folder.latest_decisions · folder.parts · Run.cluster · Run._accept · Run.scored · match.named_sql</color></size>\n<size:10><color:#65717E>cluster.merge · Run._gold · run.customer_kinds · Run._expected_false · Run._alone · Run._sized</color></size>" as cluster
-  rectangle "<b>7b · Probe</b>: the matches no key lists: pairs drawn within groups matches share (a phone, a postal area), scored; those at the line the likely links don't join, counted and scaled\n<i>O(N + P·K + L)</i>\n<size:10><color:#65717E>Run.probe · probe.missed · Run._sized</color></size>" as probe
-  rectangle "<b>8 · Write</b>: save the answer, the pairs at 0 points or more with each comparison's level (scored/), the state for increments and the reports (9, built first); the old run goes only once all is written\n<i>O(N + C)</i>\n<size:10><color:#65717E>Run.write · config.generator_dict · Run._links · Run.scored · match.named_sql · folder.stage · folder.finish_writes · folder.history · folder.brief · Run._log · folder.log · io.code_version · io.replace_text · io.patiently</color></size>\n<size:10><color:#65717E>the round its method is in: folder.round_ran · folder.rounds · Run._alone · Run._sized</color></size>" as write
+  rectangle "<b>8 · Write</b>: save the answer, the pairs at 0 points or more with each comparison's level (scored/), the state for increments and the reports (9, built first); the old run goes only once all is written\n<i>O(N + C)</i>\n<size:10><color:#65717E>Run.write · Run._links · Run.scored · match.named_sql · folder.stage · folder.finish_writes · folder.history · folder.brief · Run._log · folder.log · io.code_version · io.replace_text · io.patiently</color></size>\n<size:10><color:#65717E>the round its method is in: folder.round_ran · folder.rounds · Run._alone · Run._sized</color></size>" as write
   rectangle "<b>9 · Report</b>: the checks and the sheets for people, what they typed in and haven't given back kept, saved with the run (8)\n<i>O(review pairs) + O(N) in SQL</i>\n<size:10><color:#65717E>Run.report · report.qa · review_state.applied · report.fill_rates · match.review_floor · match.named_sql · report.review_sheet · report.households · report.carry_over</color></size>\n<size:10><color:#65717E>match.pattern_coverage · match.levels · io.markdown</color></size>\n<size:10><color:#65717E>report.report_text · match.scaled_prior · source.filled · match.parameters · config.sources_text · io.code_version · io.read_parquet</color></size>\n<size:10><color:#65717E>report.diagnosis · report.diagnosis_lines · match._ranked · match.search_floor</color></size>" as report
 }
-rectangle "<b>4b · Keys</b>: with [keys], the keys learned on this file: the pairs the model accepts, found by sampling every way two records agree, listed by the fewest pairs. Without, the method's generators, but one whose agreement weighs nothing and whose sampled pairs at the review floor other keys or rules all list\n<i>O(A·N + f·N·b + K·T + K'·N)</i>\n<size:10><color:#65717E>Run.keys · keys.learn · keys.idle · match.review_floor · source.known</color></size>" as keys
-rectangle "<b>7c · Gap</b>: what the keys miss against comparing every pair: the keys step's sample of records (only those that could reach the floor), each paired with every record sharing a value or a near one, scored; the pairs at the search floor, the review floor, the line and 20 bits no key or rule listed, counted and scaled\n<i>O(f·N·b)</i>\n<size:10><color:#65717E>Run.gap · keys.gap</color></size>" as gap
 database "records" as records
 database "set_aside" as set_aside
 database "rule_clusters" as rule_clusters
@@ -46,7 +43,6 @@ database "rule_scores" as rule_scores
 database "matches" as matches
 database "kept" as kept
 database "gold" as gold
-database "er_decisions" as er_decisions
 
 package "the workspace (~--workspace)" {
   file "gold.parquet · steps.json\nmatches/part-n.parquet · rule_kept/part-n.parquet\nset_aside/part-n.parquet\nscored/part-n.parquet: every pair at 0 points or more, each comparison's level" as f_out
@@ -62,13 +58,10 @@ f_decisions --> cluster
 load ..> budget
 budget ..> fit
 fit ..> rules
-rules ..> keys
-keys ..> candidates
+rules ..> candidates
 candidates ..> score
 score ..> cluster
-cluster ..> probe
-probe ..> gap
-gap ..> write
+cluster ..> write
 write ..> report : built first, saved together
 
 load --> records
@@ -85,9 +78,6 @@ rule_clusters --> cluster
 rule_clusters --> write
 rule_kept --> write
 rule_kept --> candidates
-records --> keys
-rule_clusters --> keys
-rule_kept --> keys
 rule_kept --> score
 candidates --> cands
 cands --> score
@@ -107,13 +97,6 @@ gold --> write
 gold --> report
 set_aside --> write
 set_aside --> report
-cluster --> er_decisions
-report --> er_decisions
-er_decisions --> probe
-matches --> probe
-rule_kept --> probe
-rule_kept --> gap
-cands --> gap
 
 write --> f_out
 write --> f_state

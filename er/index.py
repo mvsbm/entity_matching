@@ -1,22 +1,19 @@
-"""Look up: one record against a workspace's run, in well under a second, whatever the number of records stored; and
-search: the stored records whose values start with what a person typed, in any field, as they type.
+"""Look up: one record against a workspace's run, in well under a second, whatever the number of records stored.
 
 build() reads the written run once (state/records, already standardized; gold; the model it scored with) and writes
-<workspace>/index/: a DuckDB database holding every key of every record and every searched value, each table sorted by
+<workspace>/index/: a DuckDB database holding every key of every record, each table sorted by
 its key in row groups small enough that a lookup reads little of it; a second database of what changed since, empty
 when built; and manifest.json, which names them and what they rest on.
 update() writes the second again after a change to the run: the records added since the build, with every key and
 value of theirs, and the records whose entity or rule cluster moved; anything else changed builds the index again.
 look_up() prepares a record as a run prepares one, looks each of its keys up, gates an oversized block as a run does,
-scores the candidates with the run's model and groups them by entity. search() reads each value typed by its prefix
-and scores the records that share the most. Neither writes.
+scores the candidates with the run's model and groups them by entity. It writes nothing.
 
-    build      O(N·(G + R + D·L + F) + N log N)   every key of every record, hashed, sorted: DuckDB, in parallel
-    update     O(Δ·(G + R + D·L + F) + N)         the records added since the build; one narrow pass for what moved
-    look_up    O(G·(log N + b) + C·K·L²)          N only in log N: a key's rows are a few row groups of its sorted table
-    search     O(F·(log N + CAP) + SCORED·K·L²)
+    build      O(N·(G + R + D·L) + N log N)   every key of every record, hashed, sorted: DuckDB, in parallel
+    update     O(Δ·(G + R + D·L) + N)         the records added since the build; one narrow pass for what moved
+    look_up    O(G·(log N + b) + C·K·L²)      N only in log N: a key's rows are a few row groups of its sorted table
 
-N stored records, Δ added since the build, G generators, R rules, D deletion generators, F searched columns, L a
+N stored records, Δ added since the build, G generators, R rules, D deletion generators, L a
 value's length, b a block's size, C candidates, K comparisons. A lookup lists the pairs an increment of that one record
 lists (er.candidates) and scores them as er.match.score_fs scores them with the run's model; an increment, unlike it,
 counts u again on every record.
@@ -32,7 +29,6 @@ import threading
 import time
 import unicodedata
 from bisect import bisect_left
-from collections import Counter
 from pathlib import Path
 
 import duckdb
@@ -47,7 +43,7 @@ from er.intake import tidy
 from er.kind import Classifier, classifier
 from er.match import _gammas, levels, prior_bits, read_by, review_floor, search_floor
 from er.explain import run_model
-from er.run import run_config, stored_keys
+from er.run import run_config
 from er.settings import Settings, fit_to_file, present_fields
 from er.standardize import KATAKANA, SEPARATORS, prepare
 from er.strings import connect
@@ -56,17 +52,13 @@ INDEX = "index"
 SPARSE = 1024  # a sorted generator keeps every this many keys apart: a bisect there, then one read of at most this many rows
 ROWS = 2048  # a row group's rows in the records' database: a lookup reads whole row groups of each column it fetches, so small ones read little
 SHOWN = ("full_name", "person_name", "company_name", "address", "postal_code", "phone", "birth_date", "customer_id")  # a record, as a person reads it
-SEARCHED = {"any_name": "name", "given_name__kana_fold": "name", "address__address": "address", "postal_code": "postal_code", "phone": "phone",
-            "customer_id": "customer_id", "birth_date": "birth_date", "address_code": "address_code"}  # shortcut: the columns config/final.toml's standardizing writes that a search reads by prefix, each with its field; another method's are added here
+ALIKE = {"any_name": "name", "given_name__kana_fold": "name", "address__address": "address", "postal_code": "postal_code", "phone": "phone",
+         "customer_id": "customer_id", "birth_date": "birth_date", "address_code": "address_code"}  # shortcut: the columns config/final.toml's standardizing writes that tell tied records apart by prefix (_agree), each with its field; another method's are added here
 REVERSED = ("any_name",)  # also read by its end: a given name typed alone, the family name before it
 DIGITS = ("phone", "postal_code", "customer_id")  # fields held as digits: what a person writes between them (_typed), as the project's mapping drops it
-CAP = 2000  # shortcut: a value typed that starts this many records or more is too common to list whole: said, its first by value listed; raise it as scoring gets faster
-COUNTED = 100_000  # shortcut: a value that common is counted this far (said "100,000+"), so a first keystroke reads a bounded range; raise it if people need the exact count
-SCORED = 500  # shortcut: the records scored for a search, those sharing the most values typed; raise it as scoring gets faster
 REBUILD = 0.1  # shortcut: the records added since the build reaching this share of it build it again, so the delta stays small; lower it if lookups slow
 OPEN = 2  # shortcut: the indexes kept open, each with its DuckDB connection and classifier, for a server's next lookup; raise it when people look up in more workspaces at once
 QUERY = "\x7flookup"  # the ID of a record typed in: no record's, and after every one in order
-LAST = chr(0x10FFFF)  # after every character: a prefix's range ends at it
 MOVES = ("gold.parquet", "state/rule_clusters.parquet", "state/scoring.json", "state/placeholders.json")  # what a delta carries: entities, rules' clusters, the u an increment counts again, the values read as missing
 INDEXING = hashlib.sha256(b"".join((Path(__file__).parent / f"{m}.py").read_bytes() for m in ("index", "candidates", "config", "standardize", "match", "kind"))
                           + duckdb.__version__.encode()).hexdigest()[:12]  # what reads and writes an index: another version builds it again
@@ -86,16 +78,12 @@ def _pipeline(ws: Path, s: Settings, p: Pipeline, columns: list[str]) -> Pipelin
     if config.exists() and config.read_text(encoding="utf-8") != run_config(p, s):
         raise InputError(f"the pipeline or the column mapping changed since the run in {ws}: its records would be looked up otherwise",
                          fix=f"run it again first: nayose resolve records FILE --workspace {ws} --overwrite")
-    return fitted(ws, s, p, columns)
+    return to_file(s, p, columns)
 
 
 def to_file(s: Settings, p: Pipeline, columns: list[str]) -> Pipeline:  # the pipeline fitted to a run's stored records, as its fit saw it: the method's keys
     folded = {c.casefold() for c in columns}  # a source column named as its field but for case (BIRTH_DATE) gave way to it (standardize.prepare)
     return fit_to_file(p, s, [*columns, *(c for alts in s.columns.values() for alt in alts for c in alt if c not in columns and c.casefold() in folded)])[0]
-
-
-def fitted(ws: Path, s: Settings, p: Pipeline, columns: list[str]) -> Pipeline:  # ... and the keys it listed by
-    return stored_keys(ws, to_file(s, p, columns), s)
 
 
 def _scorable(ws: Path) -> dict:  # the run's model, refused if a lookup can't score as it does
@@ -144,10 +132,10 @@ def _entities(ws: Path, uid: str) -> str:  # each record's entity, and whether t
             f"(SELECT {u}, count(*) OVER (PARTITION BY cluster_id) AS n FROM read_parquet({lit(ws / 'state' / 'rule_clusters.parquet')})) c USING ({u}))")
 
 
-def _write(con: duckdb.DuckDBPyConnection, into: str, src: str, p: Pipeline, ws: Path, uid: str, searched: list[str], records: str | None = None) -> dict[str, list]:
+def _write(con: duckdb.DuckDBPyConnection, into: str, src: str, p: Pipeline, ws: Path, uid: str, records: str | None = None) -> dict[str, list]:
     """The index's tables in the database `into`, of the records in `src`: the records (each with its entity and whether
     the rules joined it; in the database `records`, else `into`), each key's (hash, uid), each window's (pos, key, uid)
-    with every SPARSE-th, each searched column's (value, uid), each sorted. Each table's [rows, seconds]."""
+    with every SPARSE-th, each sorted. Each table's [rows, seconds]."""
     u, jobs, records = q(uid), {}, records or into
     jobs["records"] = [f"CREATE TABLE {records}.records AS SELECT hash(s.{u}) AS h, s.*, e.entity, coalesce(e.resolved, FALSE) AS resolved "
                        f"FROM {src} s LEFT JOIN {_entities(ws, uid)} e USING ({u}) ORDER BY h"]
@@ -158,9 +146,6 @@ def _write(con: duckdb.DuckDBPyConnection, into: str, src: str, p: Pipeline, ws:
                           f"CREATE TABLE {into}.{name}_sparse AS SELECT pos, key, uid FROM {into}.{name} WHERE (pos - 1) % {SPARSE} = 0 ORDER BY pos"]
         else:
             jobs[name] = [f"CREATE TABLE {into}.{name} AS {_rows(x, src, uid)} ORDER BY h"]
-    for c in searched:
-        for t, v in ((f"f_{c}", q(c)), *(((f"f_{c}_reverse", f"reverse({q(c)})"),) if c in REVERSED else ())):
-            jobs[t] = [f"CREATE TABLE {into}.{q(t)} AS SELECT {v} AS v, {u} AS uid FROM {src} WHERE {q(c)} IS NOT NULL ORDER BY v"]
 
     made = {}
     for name, sqls in jobs.items():
@@ -196,7 +181,7 @@ def _publish(ws: Path, tmp: Path, m: dict) -> None:
 
 def build(ws: Path, s: Settings, p: Pipeline) -> dict:
     """The index of the run in `ws`, written to ws/index/ under the workspace's lock: its files written aside, then
-    moved into place and named by a new manifest, so one cut short leaves the last whole. O(N·(G + R + D·L + F) + N log N)."""
+    moved into place and named by a new manifest, so one cut short leaves the last whole. O(N·(G + R + D·L) + N log N)."""
     ws = Path(ws)
     with folder.run_lock(ws):
         folder.finish_writes(ws)
@@ -211,8 +196,8 @@ def _build(ws: Path, s: Settings, p: Pipeline, stamp: dict) -> dict:
     src = f"read_parquet([{', '.join(lit(x) for x in parts)}], union_by_name = true)"
     have = list(dict.fromkeys(c for f in parts for c in pq.read_schema(f).names))  # as union_by_name orders them
     fitted, model = _pipeline(ws, s, p, have), _scorable(ws)
-    tables, searched = _tables(fitted), [c for c in SEARCHED if c in have]
-    reads = {uid, *read_by(model), *(c for _, x in tables for c in _keys(x)), *(c for c in SHOWN if c in have), *searched,
+    tables = _tables(fitted)
+    reads = {uid, *read_by(model), *(c for _, x in tables for c in _keys(x)), *(c for c in SHOWN if c in have), *(c for c in ALIKE if c in have),
              *(c for _, x in tables if isinstance(x, tuple) for c in _rule_reads(x, have))}
     con = connect(s.compute)
     tmp, key = _scratch(ws), secrets.token_hex(6)
@@ -222,14 +207,14 @@ def _build(ws: Path, s: Settings, p: Pipeline, stamp: dict) -> dict:
         con.execute(f"ATTACH {lit(tmp / f'{key}-0.duckdb')} AS dx (ROW_GROUP_SIZE {ROWS})")
         t = time.perf_counter()
         con.execute(f"CREATE TEMP TABLE src AS SELECT {', '.join(q(c) for c in have if c in reads)} FROM {src}")  # read once: every table reads it
-        made = {"read": [None, round(time.perf_counter() - t, 3)], **_write(con, "ix", "src", fitted, ws, uid, searched, records="ixr")}
-        _write(con, "dx", "(SELECT * FROM src LIMIT 0)", fitted, ws, uid, searched)  # what changed since: nothing yet
+        made = {"read": [None, round(time.perf_counter() - t, 3)], **_write(con, "ix", "src", fitted, ws, uid, records="ixr")}
+        _write(con, "dx", "(SELECT * FROM src LIMIT 0)", fitted, ws, uid)  # what changed since: nothing yet
         con.execute(f"CREATE TABLE dx.moved AS SELECT {q(uid)}, entity, resolved FROM ixr.records LIMIT 0")
         for db in ("ix", "ixr", "dx"):
             con.execute(f"DETACH {db}")
         kind = bool(fitted.kind and fitted.kind.name_field in present_fields(s, have))  # the records hold a kind: a record looked up is told one too
-        of = {n: f"rule {x[1].name}" if isinstance(x, tuple) else x.name for n, x in tables} | {f"f_{c}": f"search by {SEARCHED[c]}" for c in searched} | {f"f_{c}_reverse": f"search by {SEARCHED[c]}, its end" for c in REVERSED if c in searched}
-        m = dict(id=key, built_at=time.strftime("%Y-%m-%dT%H:%M:%S"), records=made["records"][0], added=0, moved=0, columns=have, searched=searched,
+        of = {n: f"rule {x[1].name}" if isinstance(x, tuple) else x.name for n, x in tables}
+        m = dict(id=key, built_at=time.strftime("%Y-%m-%dT%H:%M:%S"), records=made["records"][0], added=0, moved=0, columns=have,
                  indexing=INDEXING, stamp=stamp, built_on=stamp, updates=0,
                  files=dict(keys=f"{key}.duckdb", records=f"{key}.records.duckdb", delta=f"{key}-0.duckdb"), kind=kind,
                  tables={k: dict(of=of.get(k, k), rows=r, seconds=v) for k, (r, v) in made.items()}, seconds=round(time.perf_counter() - t0, 2))
@@ -237,8 +222,7 @@ def _build(ws: Path, s: Settings, p: Pipeline, stamp: dict) -> dict:
     finally:
         con.close()
         shutil.rmtree(tmp, ignore_errors=True)
-    return dict(index=str(ws / INDEX), records=m["records"], tables=m["tables"], seconds=m["seconds"],
-                unsearched=sorted({f for c, f in SEARCHED.items() if c not in have} - {SEARCHED[c] for c in searched}))
+    return dict(index=str(ws / INDEX), records=m["records"], tables=m["tables"], seconds=m["seconds"])
 
 
 def update(ws: Path, s: Settings, p: Pipeline) -> dict:
@@ -246,7 +230,7 @@ def update(ws: Path, s: Settings, p: Pipeline) -> dict:
     written again, from the records added since (new parts of state/records) and the records whose entity or rule
     cluster moved (gold, the rules' clusters). Anything else changed (a full run, the mapping, the method's keys,
     the code), a column of the added records read as another type, or the records added
-    or moved reaching REBUILD of the index, builds it again (rebuilt: why). O(Δ·(G + R + D·L + F) + N)."""
+    or moved reaching REBUILD of the index, builds it again (rebuilt: why). O(Δ·(G + R + D·L) + N)."""
     ws, t0, uid = Path(ws), time.perf_counter(), s.data.unique_id
     with folder.run_lock(ws):
         folder.finish_writes(ws)
@@ -275,7 +259,7 @@ def update(ws: Path, s: Settings, p: Pipeline) -> dict:
             else:
                 con.execute(f"CREATE TEMP TABLE src AS SELECT {', '.join(q(c) if c in there else f'NULL::{t} AS {q(c)}' for c, t in stored.items())} FROM {src}" if new
                             else "CREATE TEMP TABLE src AS SELECT * EXCLUDE (h, entity, resolved) FROM ixr.records LIMIT 0")  # the base's columns, in its order
-                _write(con, "dx", "src", fitted, ws, uid, m["searched"])
+                _write(con, "dx", "src", fitted, ws, uid)
                 u = q(uid)
                 con.execute(f"""CREATE TABLE dx.moved AS SELECT b.{u}, e.entity, coalesce(e.resolved, FALSE) AS resolved FROM ixr.records b
                     LEFT JOIN {_entities(ws, uid)} e USING ({u}) WHERE e.entity IS DISTINCT FROM b.entity OR coalesce(e.resolved, FALSE) <> b.resolved""")
@@ -439,7 +423,7 @@ def _look_up(ws: Path, s: Settings, p: Pipeline, values: dict[str, str] | None =
         t = time.perf_counter()
         ids = sorted({*found, *rules} - {me})
         scored = _scored(con, model, uid, me, ids, n)
-        typed = {c: v for c in m["searched"] if c in query and pd.notna(v := query[c].iloc[0])}
+        typed = {c: v for c in ALIKE if c in m["columns"] and c in query and pd.notna(v := query[c].iloc[0])}
         agree = _agree(con, uid, typed) if len(scored) and typed else {}  # the values that start alike: of records tied, the nearest
         clock["score"] = time.perf_counter() - t
     floor, rows = review_floor(fitted) if at_least is None else at_least, []
@@ -463,89 +447,6 @@ def _look_up(ws: Path, s: Settings, p: Pipeline, values: dict[str, str] | None =
     closest = dict(record=near["uid"], entity=near["entity"], points=round(float(near["weight"]), 2), shown=near["shown"]) if near is not None else None
     return dict(record=_view(query, uid), entities=rows[:most], found=len(rows), at_least=floor, closest=closest, candidates=len(ids), likely=sum(r["likely"] for r in rows),
                 checked=checked, seconds={k: round(v, 4) for k, v in clock.items()}, index=dict(built_at=m["built_at"], records=n - extra))
-
-
-def search(ws: Path, s: Settings, p: Pipeline, values: dict[str, str], at_least: float | None = None, most: int = 10) -> dict:
-    """_search on the values as given, and on them as people type what records hold otherwise (_folded: full-width
-    digits, 100-0001, a name in hiragana) when that reads them otherwise: the answer whose best agree on more of what was
-    typed, as given when alike, a file holding them as typed; the other said (read_as). Blanks
-    and placeholders alone (-, NULL: [input] nulls) are nothing to search by, as nothing typed is."""
-    nulls = frozenset(s.input.nulls)
-    if all(tidy(str(v), nulls, False)[0] is None for v in values.values()):
-        m, fitted = _open(ws, s, p)[:2]
-        _sources(fitted, values)
-        return dict(record={}, entities=[], found=0, listed=0, candidates=0, typed=[], missing=sorted(values), over=[], unsearched=[], seconds={},
-                    index=dict(built_at=m["built_at"], records=m["records"] + m["added"]))
-    found, folded = _search(ws, s, p, values, at_least, most), _folded(s, values)
-    if folded == values:
-        return found
-    try:
-        again = _search(ws, s, p, folded, at_least, most)  # as records hold them most often: kept if its best agree on more of what was typed, else lists where as given lists none
-    except InputError:  # read so, it says nothing: the answer as given
-        return found
-    agreed = lambda r: (max((len(e["fields"]) for e in r["entities"]), default=0), bool(r["listed"]))
-    return {**again, "read_as": {c: v for c, v in folded.items() if v != values[c]}} if agreed(again) > agreed(found) else found
-
-
-def _search(ws: Path, s: Settings, p: Pipeline, values: dict[str, str], at_least: float | None = None, most: int = 10) -> dict:
-    """The stored records whose values start with what was typed, any of the file's columns, best first: by how many of
-    the searched fields agree (a name also by its end), then by the run's points for the two, a field not typed being
-    missing. Each entity at `at_least` points or more (default: any) with its best record, its points, the fields that
-    agree and each comparison's level; at most `most`, ties in the order the values were read. A value that starts CAP
-    records or more is said (over: how many) and lists the first SCORED of them by value, to be narrowed; of the records
-    listed, the SCORED sharing the most values are scored.
-    O(F·(log N + CAP) + SCORED·K·L²)."""
-    ws, uid, clock, t = Path(ws), s.data.unique_id, {}, time.perf_counter()
-    with _asking(ws, s, p, values, None) as (m, fitted, model, con, query):
-        typed = {c: v for c in m["searched"] if c in query and pd.notna(v := query[c].iloc[0])}
-        feeds = {c: {d.name for d in fitted.fs.standardize.derived if any(c in alt for alt in d.sources)} for c in values}  # the fields each column typed fills
-        held, nulls = {c.split("__")[0] for c in m["searched"]}, frozenset(s.input.nulls)  # the fields the index searches, by their columns' names
-        unsearched = sorted({f for c, v in values.items() if tidy(str(v), nulls, False)[0] is not None and not feeds[c] & held for f in feeds[c]})  # typed, no column searched: said
-        clock["prepare"] = time.perf_counter() - t
-        t = time.perf_counter()
-        listed, over, first = {}, {}, {}  # first: each record's place in the order its value was read (by value): ties go by it
-        for c, v in typed.items():
-            field = SEARCHED[c]
-            if field in over:
-                continue
-            reads = [(f"f_{c}", v), *(((f"f_{c}_reverse", con.execute(f"SELECT reverse({q(c)}) FROM qry").fetchall()[0][0]),) if c in REVERSED else ())]
-            for table, x in reads:
-                within = _both(table, f"v >= {lit(x)} AND v < {lit(x + LAST)}", "v, uid")
-                rows = con.execute(f"SELECT uid FROM {within} ORDER BY v, uid LIMIT {CAP}").fetchall()
-                if len(rows) == CAP and table == f"f_{c}" and field not in listed:  # its field's first value starts too many: how many, and the first by value
-                    n = con.execute(f"SELECT count(*) FROM (SELECT 1 FROM {within} LIMIT {COUNTED})").fetchall()[0][0]
-                    over[field] = dict(value=v, records=n, more=n >= COUNTED)
-                    rows = rows[:SCORED]
-                elif len(rows) == CAP:  # another read of a field listed already: too many to add to it
-                    continue
-                listed.setdefault(field, set()).update(u for (u,) in rows)
-                for (u,) in rows:
-                    first.setdefault(u, len(first))
-                if field in over:
-                    break
-        if any(us for f, us in listed.items() if f not in over):  # another value lists its own: the common one only agrees, its first by value left out
-            listed = {f: us for f, us in listed.items() if f not in over}
-        for f in over:
-            over[f]["listed"] = f in listed
-        shared = Counter(u for us in listed.values() for u in us)
-        ids = sorted(shared, key=lambda u: (-shared[u], first[u]))[:SCORED]
-        clock["values"] = time.perf_counter() - t
-        t = time.perf_counter()
-        scored = _scored(con, model, uid, QUERY, ids, m["records"] + m["added"] + 1)
-        agree = _agree(con, uid, typed) if len(scored) else {}
-        clock["score"] = time.perf_counter() - t
-    rows = []
-    if len(scored):
-        scored = scored.assign(likely=_likely(scored, fitted), fields=[agree.get(u, []) for u in scored["uid"]])
-        scored["agreed"], size = scored["fields"].map(len), scored["entity"].value_counts()
-        scored["first"] = scored["uid"].map(first)
-        for x in scored.sort_values(["agreed", "weight", "first"], ascending=[False, False, True]).drop_duplicates("entity").itertuples():
-            if at_least is None or x.weight >= at_least:
-                rows.append(dict(entity=x.entity, record=x.uid, points=round(float(x.weight), 2), likely=bool(x.likely), fields=x.fields,
-                                 compared=x.compared, records=int(size[x.entity]), shown=x.shown))
-    return dict(record=_view(query, uid), entities=rows[:most], found=len(rows), listed=len(shared), candidates=len(ids),
-                typed=sorted({SEARCHED[c] for c in typed}), over=[dict(field=f, **v) for f, v in over.items()], unsearched=unsearched,
-                seconds={k: round(v, 4) for k, v in clock.items()}, index=dict(built_at=m["built_at"], records=m["records"] + m["added"]))
 
 
 def _folded(s: Settings, values: dict[str, str]) -> dict[str, str]:
@@ -587,9 +488,9 @@ def _likely(scored: pd.DataFrame, p: Pipeline) -> np.ndarray:  # at the line or 
 
 
 def _agree(con: duckdb.DuckDBPyConnection, uid: str, typed: dict[str, str]) -> dict[str, list[str]]:
-    """Each record _scored read (er_c), with the searched fields whose value starts with what was typed (a name also:
+    """Each record _scored read (er_c), with the fields of ALIKE whose value starts with what was typed (a name also:
     ends with it)."""
-    checks = [*((SEARCHED[c], f"starts_with(c.{q(c)}, q.{q(c)})") for c in typed), *((SEARCHED[c], f"suffix(c.{q(c)}, q.{q(c)})") for c in typed if c in REVERSED)]
+    checks = [*((ALIKE[c], f"starts_with(c.{q(c)}, q.{q(c)})") for c in typed), *((ALIKE[c], f"suffix(c.{q(c)}, q.{q(c)})") for c in typed if c in REVERSED)]
     rows = con.execute(f"SELECT c.{q(uid)}, {', '.join(f'coalesce({x}, FALSE)' for _, x in checks)} FROM er_c c, qry q").fetchall()
     return {r[0]: sorted({f for (f, _), ok in zip(checks, r[1:]) if ok}) for r in rows}
 
