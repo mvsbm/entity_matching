@@ -26,7 +26,7 @@ The setup installs `.venv/bin/nayose` (名寄せ, gathering one customer's recor
 
 ## 2 · Map your columns
 
-The pipeline never names your columns. It works on logical fields, and `config/settings.toml` `[columns]` says which of your columns hold each one (`ER_SETTINGS=<file>` points nayose at another settings file):
+The pipeline never names your columns. It works on logical fields, and `config/settings.toml` `[columns]` says which of your columns hold each one (`ER_SETTINGS=<file>` points nayose at another settings file, which may live outside the repository to keep a mapping private):
 
 ```toml
 [columns]
@@ -192,6 +192,7 @@ What stops it: two lines, what is wrong and how to fix it, and exit code 2:
 | `no record has an ID in column …` | `id` is mapped to the wrong column |
 | `the normal blocks alone would make … pairs, more than fit` | give DuckDB more room (`--compute memory_limit=… temp_directory=…`) or split the file |
 | `… already holds a run` | add `--overwrite`, or pick another folder |
+| `… holds its own method.toml` (or `columns.toml`) `, which no run reads` | move what it sets into `config/final.toml` (or `config/settings.toml [columns]`, or a settings file `ER_SETTINGS` names), then delete it |
 | `out of memory` | raise `--compute memory_limit`, or give `temp_directory` a disk with more room |
 | `… don't line up with its header` | a wrong delimiter or header |
 | `no run in … to add records to` | `resolve records` first |

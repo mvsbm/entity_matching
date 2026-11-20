@@ -14,7 +14,7 @@ from collections.abc import Callable
 from dataclasses import replace
 from pathlib import Path
 
-from er import folder, index
+from er import index
 from er.config import InputError, KeyBlocker, Pipeline, em_candidates, lit, q
 from er.match import ELSE, _ranked, fit_model, fit_sample_sql, levels, prior_bits, review_floor, scaled_prior, train_fs
 from er.report import no_run
@@ -136,9 +136,7 @@ def grow(ws: Path, s: Settings, p: Pipeline, line: Callable[..., None] | None = 
             checks[way] = check(ws, s, p, model, fits[way, size], n)
         except Exception as e:  # said in the report: the sizes stand without it
             checks[way] = dict(error=str(e).split("\n")[0][:300])
-    em = folder.method(ws).get("fit", {}).get("em")
-    out = dict(records=n, floor=floor, line=at, steps=rows, settled=settled, chosen=chosen,
-               **({"em_set": ",".join(em)} if isinstance(em, list) else {}), levels=points, gained=gained, checks=checks, file=str(ws / FILE))
+    out = dict(records=n, floor=floor, line=at, steps=rows, settled=settled, chosen=chosen, levels=points, gained=gained, checks=checks, file=str(ws / FILE))
     out["report"] = text(out)
     (ws / FILE).write_text(out["report"], encoding="utf-8")
     con.close()

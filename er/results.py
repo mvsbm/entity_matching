@@ -4,19 +4,17 @@ entities; each record's full row as the file gave it; and the conditions under w
 
 Everything here reads the workspace's own files. The pair index alone is written, once, for a workspace whose run
 kept none (written before runs did): from the pairs that run stored, rescored, never by running again."""
-import math
 from dataclasses import replace
 from pathlib import Path
 
 import duckdb
 
 from er import folder
-from er.cluster import merge
-from er.config import InputError, Pipeline, bits, lit, q
-from er.match import levels, named_sql
+from er.config import Pipeline, bits, lit, q
+from er.match import named_sql
 from er.report import no_run
-from er.explain import run_model, scored_again
-from er.review_state import applied, read, said
+from er.explain import scored_again
+from er.review_state import read, said
 from er.settings import Settings
 
 BANDS = (-20, -10, 0, 6, 8, 10, 12, 16, 20)  # the score chart's edges, in points: as report.txt's SCORES
@@ -87,7 +85,7 @@ def describe_results(con: duckdb.DuckDBPyConnection, out: Path, s: Settings, p: 
     """What the run found, for the Results page: how the scores came out (every pair the run scored, each by its own
     points: the full run's and each increment's bands, as they logged them; a run logged before them, the full run's
     patterns, each pattern at its mean weight; the rules' own pairs from the pair index), the pairs waiting for people from `review_from` up, by range, what
-    merged and how, entities by size, the merge conditions and what they merge, whether matches could be missed (the
+    merged and how, entities by size, what the run merges without people (merging), whether matches could be missed (the
     probe), the groups too big to compare by the key that made them, and person or company: the records flagged (the
     engine sure against the file's flag). O(N + P + E)."""
     uid, gold = s.data.unique_id, read(out, "gold.parquet")
@@ -130,124 +128,6 @@ def describe_results(con: duckdb.DuckDBPyConnection, out: Path, s: Settings, p: 
                 scores=chart, candidates=sum(x["pairs"] for x in chart) if chart else cand.get("candidates"), uncounted=uncounted, listed=listed,
                 review_from=review_from, waiting=[dict(down_to=cuts[i], up_to=cuts[i - 1] if i else None, pairs=n) for i, n in waiting],
                 pairs=dict(kept=sum(by_status.values()), **by_status), merged_by=joined,
-                merging=merging_of(out, p), missed=probe,
+                merging=dict(line=p.fs.min_match_weight), missed=probe,
                 too_big=dict(skipped=cand.get("oversized_skipped", 0), kept=cand.get("oversized_kept", 0), by=cand.get("skipped_by", {}), min=p.fs.budget.min_oversized()),
                 kinds=dict(flagged=int(flagged)))
-
-
-# ---------- merging without people ----------
-
-def merging_of(out: Path, p: Pipeline) -> dict:
-    """The workspace's merge conditions (method.toml `merge`): {join: and|or, when: [...]}, none when unset; and what
-    the method merges by itself when there are none (own): pairs at `line` points or more with a name compared, and
-    with `rules` every rule's pair; None when nothing does (a trust line above every step)."""
-    return _merging(folder.method(out), p)
-
-
-def _merging(method: dict, p: Pipeline) -> dict:  # merging_of, for a method as given
-    m = method.get("merge") or {}
-    return dict(join=m.get("join", "and"), when=list(m.get("when", [])), own=own_merging(p))
-
-
-def own_merging(p: Pipeline) -> dict | None:  # what a run merges with no conditions (Run._accept): the tuned threshold, else the trust line
-    line = p.trust.line
-    return None if line is not None and math.isinf(line) else dict(line=p.fs.min_match_weight if line is None else line, rules=line is None)
-
-
-def check_merging(m: dict, p: Pipeline, model: dict | None = None) -> dict:
-    """`m` as method.toml may hold it, refused with what to fix when a condition names what the method lacks: points
-    (a number), rules (rule names), fields (comparison → the lowest level that counts), the comparisons and levels of
-    the run's `model` when given (a comparison of a field the file lacks is not in it)."""
-    fix = "each condition: {points = 12}, {rules = [\"…\"]} or {fields = {name = \"…\"}}; join = \"and\" or \"or\""
-    if not isinstance(m, dict) or m.get("join", "and") not in ("and", "or") or not isinstance(m.get("when", []), list):
-        raise InputError("merge: join is \"and\" or \"or\", when a list of conditions", fix)
-    rules = {r.name for _, _, r in p.rules.each()}
-    labels = {c: [label for label, _ in by.values()] for c, by in levels(model).items()} if model else {c.name: [lv.label for lv in c.levels] for c in p.fs.model.comparisons}
-    for c in m.get("when", []):
-        if not isinstance(c, dict) or len(c) != 1 or next(iter(c)) not in ("points", "rules", "fields"):
-            raise InputError(f"merge: a condition is one of points, rules, fields: {c}", fix)
-        (k, v), = c.items()
-        if k == "points" and (isinstance(v, bool) or not isinstance(v, int | float) or not math.isfinite(v)):
-            raise InputError(f"merge: points is a finite number: {v}", fix)
-        if k == "rules" and (not isinstance(v, list) or not v or set(v) - rules):
-            raise InputError(f"merge: rules are names among {sorted(rules)}: {v}", fix)
-        if k == "fields" and (not isinstance(v, dict) or not v or any(f not in labels or lv not in labels[f] for f, lv in v.items())):
-            raise InputError(f"merge: fields are comparisons and one of their levels: {v}", fix=f"{fix}; levels: {labels}")
-    return dict(join=m.get("join", "and"), when=list(m.get("when", [])))
-
-
-def merge_where(m: dict, model: dict, p: Pipeline, x: str = "x") -> str:
-    """The pairs the conditions merge, as SQL on scored/ rows aliased `x`. With none, those the method merges by
-    itself, as Run._accept does: every rule's pair and the model's kept pairs with a name compared at its threshold,
-    or the pairs at the trust line; FALSE with the line above every step."""
-    if not m.get("when"):
-        own = own_merging(p)
-        if own is None:
-            return "FALSE"
-        rule = "TRUE" if own["rules"] else f"{x}.match_weight >= {bits(own['line'])}"
-        return f"(({x}.rule IS NOT NULL AND {rule}) OR ({x}.named AND {x}.keep AND {x}.match_weight >= {bits(own['line'])}))"
-    gamma = {c: {label: g for g, (label, _) in by.items()} for c, by in levels(model).items()}
-    parts = []
-    for c in m["when"]:
-        (k, v), = c.items()
-        if k == "points":
-            parts.append(f"{x}.match_weight >= {bits(v)}")
-        elif k == "rules":
-            parts.append(f"{x}.rule IN ({', '.join(lit(n) for n in v)})")
-        elif all(lv in gamma.get(f, {}) for f, lv in v.items()):
-            parts.append("(" + " AND ".join(f"{x}.{q('gamma_' + f)} >= {gamma[f][lv]}" for f, lv in v.items()) + ")")
-        else:  # a comparison this run's model lacks (its field gone from the file): never met
-            parts.append("FALSE")
-    return "(" + f" {m.get('join', 'and').upper()} ".join(parts) + ")"
-
-
-def _regroup(con: duckdb.DuckDBPyConnection, out: Path, s: Settings, p: Pipeline, m: dict, model: dict) -> None:
-    """gold_new: every record's entity from people's "same" and the pairs the conditions merge, people's "different"
-    never merged; resolved_by review where people joined it, else the conditions'. O(E·log E + N)."""
-    uid = s.data.unique_id
-    l, r, u = q(f"{uid}_l"), q(f"{uid}_r"), q(uid)
-    con.register("er_applied", applied(out, uid)[[f"{uid}_l", f"{uid}_r", "decision"]])  # what merges is what was applied; typed answers wait for Apply
-    index = pair_index(con, out, s, p)
-    con.execute(f"""CREATE OR REPLACE TABLE er_auto AS SELECT {l}, {r}, rule FROM {index} x WHERE {merge_where(m, model, p)}
-        AND NOT EXISTS (SELECT 1 FROM er_applied d WHERE d.{l} = x.{l} AND d.{r} = x.{r} AND d.decision = 'no_match')""")
-    con.execute(f"CREATE OR REPLACE TABLE er_people AS SELECT {l}, {r} FROM er_applied WHERE decision = 'match'")
-    con.execute(f"CREATE OR REPLACE TABLE er_base AS SELECT {u}, {u} AS cluster_id FROM {read(out, 'gold.parquet')}")
-    con.execute(f"CREATE OR REPLACE TABLE er_links AS SELECT * FROM er_people UNION SELECT {l}, {r} FROM er_auto")
-    merge(con, "er_base", "er_links", "gold_new", uid)
-
-
-def apply_merging(con: duckdb.DuckDBPyConnection, out: Path, s: Settings, p: Pipeline, method: dict | None = None) -> dict:
-    """gold.parquet rebuilt from people's applied "same" and the pairs the workspace's conditions merge (none: the pairs
-    the method merges by itself), as a run would: a condition turned off parts what it joined, people's answers stand.
-    `method`: method.toml as it becomes, written with gold, so the two never disagree. No run: O(E·log E + N) on the
-    stored pairs."""
-    from er.run import customer_kinds  # er.run reads merge_where from here
-    uid, model = s.data.unique_id, run_model(out)
-    u = q(uid)
-    with folder.run_lock(out):
-        m = merging_of(out, p) if method is None else _merging(method, p)
-        folder.finish_writes(out)
-        _regroup(con, out, s, p, m, model)
-        old = read(out, "gold.parquet")
-        cols = {c for c, *_ in con.execute(f"DESCRIBE SELECT * FROM {old}").fetchall()}
-        kinds = "kind" in cols
-        # what resolved each record, as Run._gold says it: a rule pair of it that merged, the first rule; else the model; else people
-        order = " ".join(f"WHEN {lit(rule.name)} THEN {i}" for i, _, rule in p.rules.each())
-        l, r, fs = q(f"{uid}_l"), q(f"{uid}_r"), p.fs
-        con.execute(f"""CREATE OR REPLACE TABLE gold AS WITH size AS (SELECT cluster_id, count(*) AS n FROM gold_new GROUP BY 1),
-                touch AS (SELECT {l} AS id, rule FROM er_auto WHERE rule IS NOT NULL UNION ALL SELECT {r}, rule FROM er_auto WHERE rule IS NOT NULL),
-                first AS (SELECT id, arg_min(rule, {f"CASE rule {order} END" if order else "rule"}) AS rule FROM touch GROUP BY id),
-                model AS (SELECT {l} AS id FROM er_auto WHERE rule IS NULL UNION SELECT {r} FROM er_auto WHERE rule IS NULL)
-                {f", customer AS ({customer_kinds('gold_new', old, u)})" if kinds else ""}
-            SELECT c.{u}, c.cluster_id,
-                   CASE WHEN f.id IS NOT NULL THEN {lit(fs.previous_stage)} WHEN m.id IS NOT NULL THEN {lit(fs.stage)} WHEN z.n > 1 THEN 'review' END AS resolved_stage,
-                   CASE WHEN f.id IS NOT NULL THEN f.rule WHEN m.id IS NOT NULL THEN {lit(fs.model.name)} WHEN z.n > 1 THEN 'review' END AS resolved_by
-                   {f", o.kind, o.kind_p, o.kind_by, {'o.kind_flagged' if 'kind_flagged' in cols else 'FALSE AS kind_flagged'}, k.customer_kind" if kinds else ""}
-            FROM gold_new c JOIN size z USING (cluster_id) JOIN {old} o USING ({u}) LEFT JOIN first f ON f.id = c.{u} LEFT JOIN model m ON m.id = c.{u}
-            {"JOIN customer k USING (cluster_id)" if kinds else ""} ORDER BY c.{u}""")
-        joined = con.execute("SELECT count(*) FROM (SELECT cluster_id FROM gold GROUP BY 1 HAVING count(*) > 1)").fetchall()[0][0]
-        folder.stage(con, out, [(f"SELECT * FROM gold ORDER BY {u}", out / "gold.parquet")],
-                     [(folder.method_text(method), out / folder.METHOD)] if method is not None else [])
-    return dict(join=m["join"], when=m["when"], entities=int(joined), merged=con.execute("SELECT count(*) FROM er_auto").fetchall()[0][0])
-
-
