@@ -28,7 +28,7 @@ Resolve a file: one ID per person or company.
 nayose resolve records [INPUT] --workspace WORKSPACE [--overwrite] [--pipeline PIPELINE] [--model MODEL] [--compute KEY=VALUE …] [--format text|json]
 ```
 
-A full run, without labels: load, budget, fit, rules, candidates, score, cluster, write, report. Writes the workspace: gold.parquet, matches/, rule_kept/, proposed/, set_aside/, state/, steps.json, and for people qa.md, report.txt and review.parquet. With a trust line (method.toml trust), only pairs scoring at or above it join; the rest wait for people. A folder that holds a run is refused without --overwrite; people's decisions in it stand. O(N·L + ΣP + C·K·L²).
+A full run, without labels: load, budget, fit, rules, candidates, score, cluster, write, report. Writes the workspace: gold.parquet, matches/, rule_kept/, set_aside/, state/, steps.json, and for people qa.md, report.txt and review.parquet. A folder that holds a run is refused without --overwrite; people's decisions in it stand. O(N·L + ΣP + C·K·L²).
 
 | Parameter | |
 |---|---|
@@ -117,7 +117,7 @@ The index a record is looked up in, from the run.
 nayose build index --workspace WORKSPACE [--pipeline PIPELINE] [--compute KEY=VALUE …] [--format text|json]
 ```
 
-Every key of every record the run holds and every value a search reads, sorted, in the workspace's index/ (DuckDB databases), with what it was built from. Read once from the run's own files, nothing standardized again; built beside the last index, which stays until the new one is whole. Once built, it is kept up to date by the commands that change the run: an increment, decisions or merging conditions write what changed beside it; a full run builds it again. O(N·(G + R + D·L + F) + N log N): N records, G pair keys, R rules, D deletion keys, L a value's length, F searched columns.
+Every key of every record the run holds and every value a search reads, sorted, in the workspace's index/ (DuckDB databases), with what it was built from. Read once from the run's own files, nothing standardized again; built beside the last index, which stays until the new one is whole. Once built, it is kept up to date by the commands that change the run: an increment or decisions write what changed beside it; a full run builds it again. O(N·(G + R + D·L + F) + N log N): N records, G pair keys, R rules, D deletion keys, L a value's length, F searched columns.
 
 | Parameter | |
 |---|---|
@@ -185,7 +185,7 @@ Apply people's decisions to the run.
 nayose apply decisions --workspace WORKSPACE [--file FILE] [--pipeline PIPELINE] [--compute KEY=VALUE …] [--format text|json]
 ```
 
-Each match pair joins its two entities at once, scoring nothing; no_match is kept, and a full run never accepts the pair. With merge conditions set (method.toml merge), the entities are then rebuilt from the stored pairs, so a no_match pair the conditions joined parts at once. Decisions are kept in decisions/; one applied before changes nothing. O(D + touched clusters) + O(N).
+Each match pair joins its two entities at once, scoring nothing; no_match is kept, and a full run never accepts the pair. Decisions are kept in decisions/; one applied before changes nothing. O(D + touched clusters) + O(N).
 
 | Parameter | |
 |---|---|

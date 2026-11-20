@@ -14,12 +14,12 @@ import duckdb
 import numpy as np
 import pandas as pd
 
-from er.config import GIVEN, InputError, Key, Pipeline, bits, lit, q, sources_text
+from er.config import GIVEN, InputError, Key, Pipeline, lit, q, sources_text
 from er.io import code_version, read_parquet
 from er.kind import COMPANY, PERSON, SAYS, UNSURE
 from er.match import ELSE, GIVEN_SHARE, _ranked, levels, named_sql, parameters, pattern_coverage, review_floor, scaled_prior, search_floor
 from er.source import filled, fit
-from er.review_state import _trust_links, applied
+from er.review_state import applied
 
 if TYPE_CHECKING:
     from er.run import Run
@@ -85,21 +85,17 @@ def qa(run: "Run", fields: list[str] | None = None, review: int = 50, previous: 
     sizes = con.sql("SELECT n AS cluster_size, count(*) AS clusters FROM (SELECT count(*) AS n FROM gold GROUP BY cluster_id) GROUP BY 1 ORDER BY 1").df()
     largest = con.sql("SELECT cluster_id, count(*) AS records FROM gold GROUP BY 1 ORDER BY 2 DESC, 1 LIMIT 10").df()
     con.execute(f"CREATE TABLE IF NOT EXISTS er_decisions ({l} VARCHAR, {r} VARCHAR, decision VARCHAR)")
-    if run.pipeline.trust.line is not None:  # with a trust line: the next range's sample, and spot-checks above the line
-        decide, audit = trust_sheet(run, previous.parent if previous is not None else None)
-        lo, t = run.pipeline.trust.below() or (run.pipeline.trust.line, run.pipeline.trust.line)
-    else:
-        decide = con.sql(f"""SELECT * EXCLUDE (k1, k2) FROM (
-                SELECT s.*, c.sources, least(ga.cluster_id, gb.cluster_id) AS k1, greatest(ga.cluster_id, gb.cluster_id) AS k2
-                FROM scores s JOIN cands c USING ({l}, {r}) JOIN gold ga ON ga.{u} = s.{l} JOIN gold gb ON gb.{u} = s.{r}
-                WHERE s.match_weight >= {lo} AND (s.match_weight < {t} OR NOT {named_sql(run.pipeline.fs)}) AND ga.cluster_id <> gb.cluster_id
-                  AND NOT EXISTS (SELECT 1 FROM er_decisions d WHERE d.{l} = s.{l} AND d.{r} = s.{r}))
-            QUALIFY row_number() OVER (PARTITION BY k1, k2 ORDER BY match_weight DESC, {l}, {r}) = 1
-            ORDER BY match_weight DESC, {l}, {r}""").df().assign(why="decide")
-        audit = con.sql(f"""SELECT * EXCLUDE (k) FROM (SELECT s.*, m.sources, row_number() OVER (PARTITION BY floor(s.match_weight) ORDER BY hash(s.{l}, s.{r})) AS k
-                            FROM matches m JOIN scores s USING ({l}, {r}) WHERE s.match_weight < {t + 4}
-                              AND NOT EXISTS (SELECT 1 FROM er_decisions d WHERE d.{l} = s.{l} AND d.{r} = s.{r}))
-                            WHERE k <= {max(1, review // 4)} ORDER BY match_weight, {l}, {r}""").df().assign(why="audit")
+    decide = con.sql(f"""SELECT * EXCLUDE (k1, k2) FROM (
+            SELECT s.*, c.sources, least(ga.cluster_id, gb.cluster_id) AS k1, greatest(ga.cluster_id, gb.cluster_id) AS k2
+            FROM scores s JOIN cands c USING ({l}, {r}) JOIN gold ga ON ga.{u} = s.{l} JOIN gold gb ON gb.{u} = s.{r}
+            WHERE s.match_weight >= {lo} AND (s.match_weight < {t} OR NOT {named_sql(run.pipeline.fs)}) AND ga.cluster_id <> gb.cluster_id
+              AND NOT EXISTS (SELECT 1 FROM er_decisions d WHERE d.{l} = s.{l} AND d.{r} = s.{r}))
+        QUALIFY row_number() OVER (PARTITION BY k1, k2 ORDER BY match_weight DESC, {l}, {r}) = 1
+        ORDER BY match_weight DESC, {l}, {r}""").df().assign(why="decide")
+    audit = con.sql(f"""SELECT * EXCLUDE (k) FROM (SELECT s.*, m.sources, row_number() OVER (PARTITION BY floor(s.match_weight) ORDER BY hash(s.{l}, s.{r})) AS k
+                        FROM matches m JOIN scores s USING ({l}, {r}) WHERE s.match_weight < {t + 4}
+                          AND NOT EXISTS (SELECT 1 FROM er_decisions d WHERE d.{l} = s.{l} AND d.{r} = s.{r}))
+                        WHERE k <= {max(1, review // 4)} ORDER BY match_weight, {l}, {r}""").df().assign(why="audit")
     steps = pd.DataFrame(run.steps)
     base = ["step", "big_o", "filled", "seconds", "peak_memory_gb"]
     number = lambda v: isinstance(v, int | float) and not isinstance(v, bool) and not math.isnan(v)  # a list (generators) is no fact
@@ -111,7 +107,6 @@ def qa(run: "Run", fields: list[str] | None = None, review: int = 50, previous: 
         sheet = carry_over(run, read_parquet(previous), sheet, previous.parent)
     decide = sheet[sheet["why"] == "decide"]
     queue = pd.DataFrame(dict(why=["decide", "audit"], pairs=[len(decide), len(audit)], from_bits=[lo, t], below_bits=[t, t + 4]))
-    queue = queue.replace([math.inf, -math.inf], None)  # no trust line yet: the range from the top step up
     fs, aside = run.pipeline.fs, run.con.execute("SELECT count(*) FROM set_aside").fetchall()[0][0]
     total, entities, biggest, by_rules, by_model, by_people = con.execute(f"""SELECT count(*), count(DISTINCT cluster_id), max(n),
         count(*) FILTER (WHERE resolved_stage = '{fs.previous_stage}'), count(*) FILTER (WHERE resolved_stage = '{fs.stage}'),
@@ -194,7 +189,7 @@ def diagnosis(run: "Run", tables: dict[str, pd.DataFrame], lo: float) -> list[di
 
     if households := [x for x in m.get("em_given", []) if x["given_share"] is not None and x["given_share"] < GIVEN_SHARE]:  # EM taught by households: first of equals
         out.append((n_below, "EM learned households from " + ", ".join(f"{x['session']} ({x['given_share']:.0%} of its matches agree on the given name)" for x in households)
-                    + f": it scores the {n_below:,} pairs below review → fit em = \"choose\" (method.toml)"))
+                    + f": it scores the {n_below:,} pairs below review → EM sessions that hold the given name fixed, chosen at design time ([model] em_rules)"))
 
     fill = tables["fill"].set_index("field")["filled"]  # compared fields mostly empty (one comparison a line), and a column that looks like one
     either = {f for group in run.pipeline.fields.one_of for f in group}  # a person's name or a company's: each kind fills one
@@ -237,7 +232,7 @@ def diagnosis(run: "Run", tables: dict[str, pd.DataFrame], lo: float) -> list[di
                 empty += 1
     if held:
         out.append((sum(n for n, _ in held), "levels that learned nothing hold pairs, at 0 bits: " + ", ".join(x for _, x in sorted(held, reverse=True))
-                    + (f" ({empty} more hold none)" if empty else "") + " → a larger fit sample: fit records (method.toml)"))
+                    + (f" ({empty} more hold none)" if empty else "") + " → a larger fit sample: [model] fit_rows"))
 
     g = next((x for x in run.steps if x["step"] == "gap"), None)  # what the search leaves
     if g and (at := next((x for x in g["thresholds"] if x["bits"] >= lo), None)) and at["missed"]:
@@ -251,7 +246,7 @@ def diagnosis(run: "Run", tables: dict[str, pd.DataFrame], lo: float) -> list[di
 
     kept = [(x["session"], x["pairs"]) for x in m["em_choice"] if x["kept"]] if m.get("em_choice") else list(m.get("em_pairs", {}).items())  # thin sessions
     if thin := [(x, n) for x, n in kept if n < THIN]:
-        fix = f"fit records = {2 * m['fit_rows']} (method.toml)" if m.get("em_choice") else "a larger fit sample: fit records (method.toml)"
+        fix = f"[model] fit_rows = {2 * m['fit_rows']}" if m.get("em_choice") else "a larger fit sample: [model] fit_rows"
         out.append((0, f"EM learned from few pairs: {', '.join(f'{x} {n:,}' for x, n in thin)} → {fix}"))
     return [dict(what=what, pairs=int(n), fix=fix) for n, x in sorted(out, key=lambda x: -x[0])[:SHOWN] for what, _, fix in [x.partition(" → ")]]
 
@@ -396,45 +391,6 @@ def report_text(run: "Run", tables: dict[str, pd.DataFrame], pipeline: Path, ite
     out += ["PATTERNS WITHOUT A KEY  (they reach the threshold, but no key is sure to pair them; share of matches, at most)",
             *table(patterns.assign(bits=patterns["bits"].map(lambda x: f"{x:.2f}"), share_of_matches=patterns["share_of_matches"].map(lambda x: f"{x:.3%}")))]
     return "\n".join(out) + "\n"
-
-
-def trust_sheet(run: "Run", out: Path | None = None) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """With a trust line: the next range's links (the rules' pairs and the model's named ones, from its next step down
-    to the line) that people have not decided, in a fixed random order (hash), as many as `checks` less those of the
-    range they decided already; once they found one of its links false, the line can't step past it, so its open
-    links and every range's below go to people one by one instead, best first, `checks` at a time; and the model's
-    pairs above its threshold with no name compared, which no line joins; and `watch` spot-checks of the links at the
-    line or above. An increment (`out`, its workspace) asks only about the batch's links, but counts the range, its
-    checks and false pairs over the workspace's links too, and its sample less the open rows its sheet keeps
-    (carry_over), so it asks for no check a full run wouldn't; a range found false takes the batch's links as well. O(E)."""
-    con, l, r, trust, u = run.con, q(run.l), q(run.r), run.pipeline.trust, q(run.uid)
-    # once, those every question below reads (from the lowest step or the line up): each would join every scored pair again
-    con.execute(f"""CREATE OR REPLACE TEMP TABLE er_trust_links AS SELECT * FROM (SELECT s.* EXCLUDE (named, keep) FROM ({run.scored()}) s WHERE s.named AND s.keep
-                UNION ALL BY NAME SELECT x.*, k.rule AS sources FROM rule_kept k JOIN rule_scores x USING ({l}, {r}))
-                QUALIFY row_number() OVER (PARTITION BY {l}, {r} ORDER BY sources) = 1 AND match_weight >= {bits(min((*trust.steps, trust.line)))}""")
-    links = "SELECT * FROM er_trust_links"
-    stored = _trust_links(out, run.uid, "er_decisions") if out is not None else []  # an increment: the workspace's links count too
-    counted = f"SELECT DISTINCT ON ({l}, {r}) * FROM (SELECT {l}, {r}, match_weight FROM er_trust_links{''.join(f' UNION ALL {x}' for x in stored)})"
-    sheet = out / "review.parquet" if out is not None else None
-    waiting = lambda lo, hi: con.execute(f"""SELECT count(*) FROM read_parquet({lit(sheet)}) x JOIN gold ga ON ga.{u} = x.{l} JOIN gold gb ON gb.{u} = x.{r}
-        WHERE x.why = 'decide' AND x.decision IS NULL AND ga.cluster_id <> gb.cluster_id AND {open_} AND x.match_weight >= {bits(lo)}
-        AND x.match_weight < {bits(hi)}""").fetchall()[0][0] if sheet is not None and sheet.exists() else 0  # the open rows carry_over keeps
-    open_ = f"NOT EXISTS (SELECT 1 FROM er_decisions d WHERE d.{l} = x.{l} AND d.{r} = x.{r})"
-    decide = pd.DataFrame()
-    holds = lambda lo, hi: con.execute(f"SELECT count(*) > 0 FROM ({counted}) x WHERE x.match_weight >= {bits(lo)} AND x.match_weight < {bits(hi)}").fetchall()[0][0]
-    if (span := trust.below(holds)) is not None:
-        within = f"x.match_weight >= {bits(span[0])} AND x.match_weight < {bits(span[1])}"
-        done, false = con.execute(f"""SELECT count(*) FILTER (WHERE NOT {open_}), count(*) FILTER (WHERE EXISTS (SELECT 1 FROM er_decisions d
-            WHERE d.{l} = x.{l} AND d.{r} = x.{r} AND d.decision = 'no_match')) FROM ({counted}) x WHERE {within}""").fetchall()[0]
-        decide = con.sql(f"""SELECT x.* FROM ({links}) x JOIN gold ga ON ga.{u} = x.{l} JOIN gold gb ON gb.{u} = x.{r}
-            WHERE x.match_weight >= {bits(min(trust.steps))} AND x.match_weight < {bits(span[1])} AND {open_} AND ga.cluster_id <> gb.cluster_id
-            ORDER BY x.match_weight DESC, x.{l}, x.{r} LIMIT {trust.checks}""").df() if false else \
-            con.sql(f"SELECT * FROM ({links}) x WHERE {within} AND {open_} ORDER BY hash(x.{l}, x.{r}) LIMIT {max(0, trust.checks - done - waiting(*span))}").df()
-    audit = con.sql(f"SELECT * FROM ({links}) x WHERE x.match_weight >= {bits(trust.line)} AND {open_} ORDER BY hash(x.{l}, x.{r}) LIMIT {trust.watch}").df()
-    unnamed = con.sql(f"""SELECT * EXCLUDE (named, keep) FROM ({run.scored()}) x WHERE NOT x.named AND x.keep
-        AND x.match_weight >= {run.pipeline.fs.min_match_weight} AND {open_} ORDER BY x.match_weight DESC, x.{l}, x.{r}""").df()  # no line joins them: people do
-    con.execute("DROP TABLE er_trust_links")
-    return pd.concat([decide, unnamed], ignore_index=True).assign(why="decide"), audit.assign(why="audit")
 
 
 def carry_over(run: "Run", previous: pd.DataFrame, sheet: pd.DataFrame, out: Path, full: bool = False) -> pd.DataFrame:

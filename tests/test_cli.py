@@ -1,6 +1,5 @@
 """nayose: each command as a user runs it, mistakes in words, the scheduler, the run's reports."""
 import json
-import math
 import re
 from pathlib import Path
 from dataclasses import replace
@@ -16,14 +15,13 @@ from er.settings import load_settings
 from conftest import nayose
 
 
-def _mapping(tmp_path: Path, s, **fields: str) -> Path:  # the project's mapping with some fields mapped to other columns, as a workspace's columns.toml
+def _mapping(tmp_path: Path, s, **fields: str) -> Path:  # the project's settings with some fields mapped to other columns, as a private settings file
     config = (s.root / "config" / "settings.toml").read_text(encoding="utf-8")
-    mapping = config[config.index("\n[columns]\n") + 1:]
     for k, v in fields.items():  # each field one column
-        mapping, n = re.subn(rf"^({k} = \{{ sources = )\[\[.*?\]\]", rf'\1[["{v}"]]', mapping, count=1, flags=re.M)
+        config, n = re.subn(rf"^({k} = \{{ sources = )\[\[.*?\]\]", rf'\1[["{v}"]]', config, count=1, flags=re.M)
         assert n == 1, k
-    f = tmp_path / "columns.toml"
-    f.write_text(mapping, encoding="utf-8")
+    f = tmp_path / "settings.toml"
+    f.write_text(config, encoding="utf-8")
     return f
 
 
@@ -42,7 +40,7 @@ def test_a_run_says_what_is_wrong_in_words_people_can_act_on(say, tmp_path, popu
     with pytest.raises(InputError, match="no record, only its header"):
         Run(p, s).full(tmp_path / "empty.parquet", tmp_path / "run0")
     with pytest.raises(InputError, match="both read"):  # one column for two compared fields: one value counted twice
-        Run(p, load_settings(columns=_mapping(tmp_path, s, postal_code=phone))).full(tmp_path / "nopostal.parquet", tmp_path / "run1")
+        Run(p, load_settings(_mapping(tmp_path, s, postal_code=phone))).full(tmp_path / "nopostal.parquet", tmp_path / "run1")
     g.df.to_parquet(tmp_path / "all.parquet", index=False)
     for words in (("resolve", "records", tmp_path / "all.parquet", "--workspace", tmp_path / "w", "--compute", "memory_limit=lots"),
                   ("resolve", "records", tmp_path / "all.parquet", "--workspace", tmp_path / "w", "--compute", "memroy_limit=8GB"),
@@ -172,17 +170,17 @@ def test_a_name_column_both_kinds_share_is_scored_once_as_mapped_or_by_kind(say,
     monkeypatch.chdir(tmp_path)
     person, u = g.df["NYS_CNV_P_NAME_KANA"].isna() & g.df["FULL_NAME_KANA"].notna(), s.data.unique_id
     g.df.assign(NYS_CNV_P_NAME_KANA=g.df["NYS_CNV_P_NAME_KANA"].where(~person, g.df["FULL_NAME_KANA"])).to_parquet("shared.parquet", index=False)  # every person's name in the company column too
-    config = (s.root / "config" / "settings.toml").read_text(encoding="utf-8")
-    by_kind = config[config.index("\n[columns]\n") + 1:]  # the mapping and what follows it
+    by_kind = (s.root / "config" / "settings.toml").read_text(encoding="utf-8")
     for f, kind in (("full_name", "person"), ("person_name", "person"), ("company_name", "company")):  # each name kept on the side its record's kind leans to
         by_kind, n = re.subn(rf"^({f} = \{{ .*?) \}}", rf'\1, kind = "{kind}" }}', by_kind, count=1, flags=re.M)
         assert n == 1, f
-    Path("workspaces/by-kind").mkdir(parents=True)
-    (Path("workspaces/by-kind") / "columns.toml").write_text(by_kind, encoding="utf-8")
+    Path("by-kind.toml").write_text(by_kind, encoding="utf-8")  # a private settings file, as ER_SETTINGS names one
     con = duckdb.connect()
     con.register("truth", g.truth)
     said = {}
     for how in ("as-mapped", "by-kind"):
+        if how == "by-kind":
+            monkeypatch.setenv("ER_SETTINGS", str(Path("by-kind.toml").resolve()))
         assert say("resolve", "records", "shared.parquet", "--workspace", f"workspaces/{how}")[0] == 0
         said[how] = con.execute(f"""SELECT count(*) FILTER (WHERE x.ENTITY_ID <> y.ENTITY_ID AND s.match_weight >= 6), avg(s.match_weight) FILTER (WHERE x.ENTITY_ID = y.ENTITY_ID)
             FROM read_parquet('workspaces/{how}/scored/*.parquet') s JOIN truth x ON x.CONT_ID = s.{u}_l JOIN truth y ON y.CONT_ID = s.{u}_r""").fetchall()[0]
@@ -437,7 +435,7 @@ def test_the_diagnosis_names_what_limits_the_run_the_most_pairs_first_each_with_
     run.con.execute(f"UPDATE scores SET gamma_birth = -1, match_weight = {lo - 1} WHERE rowid IN (SELECT rowid FROM scores LIMIT 5)")
     assert any("birth_date 10% filled" in x and "add BORN to birth_date's sources in config/settings.toml [columns]" in x for x in said())
     m["em_given"] = [dict(session="phone", pairs=100, given_share=0.1)]  # EM taught by households
-    assert any(x.startswith("  EM learned households from phone (10%") and 'fit em = "choose"' in x for x in said())
+    assert any(x.startswith("  EM learned households from phone (10%") and "[model] em_rules" in x for x in said())
     near = lambda: next((int(x.split()[0].replace(",", "")) for x in said() if "agree exactly on a name and another field" in x and "the model expects" in x), 0)
     was = near()  # near misses: three pairs from the review floor moved below it, agreeing on the name and the phone
     run.con.execute(f"UPDATE scores SET gamma_name = {top['name']}, gamma_phone = {top['phone']}, match_weight = {lo - 1} WHERE rowid IN (SELECT rowid FROM scores WHERE match_weight >= {lo} LIMIT 3)")
@@ -642,30 +640,12 @@ def test_a_run_s_progress_follows_this_version_s_steps_when_the_last_run_lacked_
     assert got["order"] == emit.RUN_ORDER and "keys" in got["order"] and got["last"]["candidates"] == 1.0
 
 
-def test_the_fit_a_workspace_sets_is_the_sample_and_the_em_its_runs_use(population):
-    from er.config import InputError, adjust
+def test_em_on_fields_learns_one_session_blocked_on_each_and_the_fit_owes_an_increment_no_rerun(population, tmp_path):
+    from er.config import Key
+    from er.run import Run, run_config
     s, p, g = population
-    q = adjust(p, {"fit": {"records": 64000, "em": "keys"}})
-    assert q.fit_rows == 64000 and q.fs.model.em_from_keys and q.fs.model.em_median
-    assert adjust(p, {"fit": {"records": 2000}}).fs.model == p.fs.model  # the size alone: EM as it was
-    for bad in ({"records": 10}, {"em": "both"}, {"records": True}, {"size": 2000}):
-        with pytest.raises(InputError, match="fit takes"):
-            adjust(p, {"fit": bad})
-    from er.run import run_config
-    assert run_config(q, s) == run_config(p, s) != run_config(adjust(p, {"line": 9}), s)  # an increment and a lookup score with the stored model: the fit owes them no rerun
-
-
-def test_em_set_to_fields_learns_one_session_blocked_on_each_and_a_run_fits_with_them(population, tmp_path):
-    from er.config import InputError, Key, adjust
-    from er.run import Run
-    s, p, g = population
-    q = adjust(p, {"fit": {"records": 30000, "em": ["birth_date", "person_name:kana_fold"]}})
-    assert q.fs.model.em_rules == ((Key("birth_date"),), (Key("person_name", ("kana_fold",)),)) and not q.fs.model.em_from_keys
-    from er.run import run_config
-    assert run_config(q, s) == run_config(p, s)  # an increment scores with the stored model: EM owes it no rerun
-    for bad in (["no_such_field"], ["person_name:no_such_step"], [], [""]):
-        with pytest.raises(InputError):
-            adjust(p, {"fit": {"em": bad}})
+    q = replace(p, fit_rows=30000, fs=replace(p.fs, model=replace(p.fs.model, em_rules=((Key("birth_date"),), (Key("person_name", ("kana_fold",)),)))))
+    assert run_config(q, s) == run_config(p, s) != run_config(replace(p, fs=replace(p.fs, min_match_weight=9)), s)  # an increment scores with the stored model
     g.df.to_parquet(tmp_path / "in.parquet", index=False)
     run = Run(q, s).full(tmp_path / "in.parquet", tmp_path / "w")
     assert not {"birth_date", "person_name"} & set(run.model["er"]["skipped"])  # both sessions found pairs to learn from
@@ -679,17 +659,6 @@ def test_a_comparison_s_own_copy_is_no_step_a_setting_may_name(tmp_path):
         (tmp_path / "settings.toml").write_text(settings_path().read_text(encoding="utf-8").replace('fold = ["kana_fold"]', f'fold = ["kana_fold", "{step}"]'), encoding="utf-8")
         with pytest.raises(Exception, match="unknown normalizers"):
             load_settings(tmp_path / "settings.toml")
-
-
-def test_merge_conditions_that_aren_t_a_table_or_a_finite_number_are_refused(population):
-    from er.config import bits
-    from er.results import check_merging
-    _, p, _ = population
-    for m in ([1], {"when": [{"points": math.nan}]}, {"when": [{"points": -math.inf}]}, {"when": [{"points": math.inf}]}):
-        with pytest.raises(InputError, match="merge"):
-            check_merging(m, p)
-    assert check_merging({"when": [{"points": 12}]}, p)["when"] == [{"points": 12}]
-    assert duckdb.sql(f"SELECT {bits(-math.inf)} < 0, {bits(math.inf)} > 0").fetchall() == [(True, True)]  # infinity keeps its sign
 
 
 def test_a_result_s_values_reach_json_as_python_s_own():

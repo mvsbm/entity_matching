@@ -1,4 +1,4 @@
-"""Workspaces: their own mapping and files, the review sheet, decisions, the method and the trust line."""
+"""Workspaces: their files, the review sheet and people's decisions."""
 import math
 import os
 from dataclasses import replace
@@ -10,7 +10,6 @@ import pytest
 from er.candidates import Records, estimate_touching, generate
 from er.config import (DeletionKeys, InputError, Key, KeyBlocker)
 from er.match import exact_u, stale_u
-from er.config import load_pipeline
 from er.settings import load_settings
 
 
@@ -150,25 +149,19 @@ def test_decisions_join_clusters_without_scoring_and_a_full_run_applies_them_aga
         Run(p, s).decide(tmp_path / "blank.parquet", tmp_path / "a")
 
 
-def test_a_workspace_s_method_changes_the_tuned_one_only_where_it_says(tmp_path):
-    from er.cli import setup
-    from er.config import adjust
-    from er.io import config_hash
+def test_a_workspace_holding_its_own_method_or_mapping_and_a_pipeline_with_a_trust_line_are_refused(tmp_path):
+    from er import folder
+    from er.config import pipeline_from, toml_of
+    for f in ("method.toml", "columns.toml"):  # what no run reads: it would silently run otherwise
+        ws = tmp_path / f.removesuffix(".toml")
+        ws.mkdir()
+        (ws / f).write_text("", encoding="utf-8")
+        with pytest.raises(InputError, match=f"holds its own {f}") as stop:
+            folder.current(ws)
+        assert f in stop.value.fix
     s = load_settings()
-    p = load_pipeline(s.root / "config" / "final.toml", s.standardize, s.chains, s.columns)
-    assert adjust(p, {}) is p and setup(dict(workspace=str(tmp_path)))[1] == p  # no method.toml: the tuned method, the same hash
-    rule = p.rules.stages[-1].rules[0].name
-    (tmp_path / "method.toml").write_text(f'line = 9.5\ndrop_rules = ["{rule}"]\ndrop_keys = ["cif"]\n', encoding="utf-8")
-    q = setup(dict(workspace=str(tmp_path)))[1]  # every command on the workspace: increments compare this hash
-    assert q.fs.min_match_weight == 9.5 and rule not in {r.name for _, _, r in q.rules.each()}
-    assert [b.name for b in q.fs.blockers] == [b.name for b in p.fs.blockers if b.name != "cif"]
-    assert config_hash(q) != config_hash(p) and q.rules.stages[0] == p.rules.stages[0] and q.fs.model == p.fs.model
-    assert adjust(p, {"trust": "none"}).trust.line == math.inf and adjust(p, {"trust": 12}).trust.below() == (8.0, 12.0)
-    for bad, says in (({"drop_keys": ["nope"]}, "no rule or pair key named"), ({"lines": 9}, "unknown keys"), ({"line": "9"}, "a weight in bits"),
-                      ({"drop_keys": "cif"}, "lists of names"), ({"trust": 7}, "one of the steps"), ({"trust": "all"}, "one of the steps"),
-                      ({"drop_keys": [b.name for b in p.fs.blockers]}, "leaves no pair key")):
-        with pytest.raises(InputError, match=says):
-            adjust(p, bad)
+    with pytest.raises(InputError, match=r"\[trust\] sets nothing"):
+        pipeline_from(toml_of(s.root / "config" / "final.toml") | {"trust": {"steps": [12.0]}}, s.standardize, s.chains)
 
 
 def test_an_increment_counts_exact_u_again_and_samples_only_a_drifted_comparison(tmp_path, population, monkeypatch):
@@ -306,12 +299,11 @@ def test_people_s_latest_decision_stands_a_file_given_twice_changes_nothing_and_
     assert say("apply", "decisions", "--file", "same.parquet", *at)[1]["decisions"] == 0  # given twice: nothing new
     assert say("apply", "decisions", "--file", "other.parquet", *at)[0] == 0 and latest(same[l], same[r]) == "no_match"  # the latest stands
 
-    found = pd.concat([pd.read_parquet(ws / "matches"), pd.read_parquet(ws / "proposed")]).sort_values("match_weight", ascending=False)
-    link = found[found[l].map(truth) == found[r].map(truth)].iloc[0]  # a pair the run joined or proposed: people say different
+    found = pd.read_parquet(ws / "matches").sort_values("match_weight", ascending=False)
+    link = found[found[l].map(truth) == found[r].map(truth)].iloc[0]  # a pair the run joined: people say different
     pd.DataFrame({l: [link[l]], r: [link[r]], "decision": ["no_match"]}).to_parquet(tmp_path / "false.parquet")
     assert say("apply", "decisions", "--file", "false.parquet", *at)[0] == 0
     assert say("resolve", "records", "theirs.parquet", *at, "--overwrite")[0] == 0  # a full run reads people's decisions back
-    for t in ("matches", "proposed"):
-        x = pd.read_parquet(ws / t)
-        assert not ((x[l] == link[l]) & (x[r] == link[r])).any(), t  # never joined or proposed again
+    x = pd.read_parquet(ws / "matches")
+    assert not ((x[l] == link[l]) & (x[r] == link[r])).any()  # never joined again
     assert latest(same[l], same[r]) == "no_match"

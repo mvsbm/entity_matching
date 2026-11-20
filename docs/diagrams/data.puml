@@ -39,13 +39,6 @@ package "the answer: Run.write" {
     match_weight : bits, the model's
     merged : whether it joined: not when people said no_match
   }
-  entity "proposed/part-n.parquet" as proposed {
-    * <id>_l
-    * <id>_r
-    match_weight : bits, held back for people
-    match_probability
-    sources : the generators that found the pair
-  }
   entity "scored/part-n.parquet" as scored {
     * <id>_l
     * <id>_r
@@ -68,7 +61,7 @@ package "the answer: Run.write" {
   }
   entity "rounds.json" as rounds {
     one entry per method the workspace ran; kept by --overwrite
-    config, method, at, matched, expected_false
+    config, at, matched, expected_false
   }
 }
 
@@ -159,7 +152,6 @@ package "people's work and the writers' state" {
 gold }o--|| rule_clusters : <id>
 matches }o--|| gold : <id>_l, <id>_r
 rule_kept }o--|| gold : <id>_l, <id>_r
-proposed }o--|| gold : <id>_l, <id>_r
 scored }o--|| gold : <id>_l, <id>_r
 records ||--|| gold : <id>
 prepared ||--|| records : <id>

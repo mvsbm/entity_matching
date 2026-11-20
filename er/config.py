@@ -4,10 +4,10 @@ import json
 import math
 import re
 import tomllib
-from collections.abc import Callable, Iterable, Iterator, Mapping
+from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass, field, fields, replace
 from pathlib import Path
-from typing import Literal, get_args
+from typing import Literal
 
 from er.strings import FUNCTIONS, Function
 
@@ -33,7 +33,7 @@ def lit(value: object) -> str:  # a value, a path or text, as an SQL string lite
     return "'" + str(value).replace("'", "''") + "'"
 
 
-def bits(v: float) -> str:  # a weight in SQL; the trust line above everything is infinity
+def bits(v: float) -> str:  # a weight in SQL; infinity above everything
     return f"'{'-' if v < 0 else ''}Infinity'::DOUBLE" if math.isinf(v) else repr(float(v))
 
 
@@ -435,28 +435,7 @@ class ThresholdRule:
     max_fp_rate_hi: float
     margin_steps: int
     search_floor: float = 0.0  # bits: the oversized-block gate and the gap aim here (er.match.search_floor); the idle-key check, the review floor
-    keep_from: float = field(default=0.0, repr=False)  # bits: a pair the best case says can't reach it is never stored (method.toml keep); in the run's hash only when set (run_config)
-
-
-@dataclass(frozen=True, kw_only=True)
-class TrustRule:
-    """The trust line: pairs scoring at or above it merge without people, because a random sample of their range came
-    back clean. It starts above every step (no line: nothing merges) and is lowered a step at a time, once `checks`
-    answers on the next range down hold none false: at most 1% false at 95% for 300 (the rule of three). `line` is the
-    workspace's (method.toml trust, through adjust): inf, nothing merges; None, no trust line, the method as tuned."""
-    steps: tuple[float, ...] = (20.0, 12.0, 8.0, 6.0, 0.0)  # bits, high to low; a rule pair below the last never merges by itself
-    checks: int = 300
-    watch: int = 20                           # spot-checks a run of the pairs above the line
-    line: float | None = None
-
-    def below(self, holds: Callable[[float, float], bool] | None = None) -> tuple[float, float] | None:
-        """The range people check next: [a step down, the line); None at the last. With `holds` (whether [step, line)
-        holds a link), the first step whose range holds one: lowering the line past ranges that hold none merges
-        nothing, so people never wait on an empty range."""
-        if self.line is None:
-            return None
-        lower = sorted((s for s in self.steps if s < self.line), reverse=True)
-        return next(((s, self.line) for s in lower if holds is None or holds(s, self.line)), (lower[-1], self.line) if lower else None)
+    keep_from: float = field(default=0.0, repr=False)  # bits: a pair the best case says can't reach it is never stored; in the run's hash only when set (run_config)
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -603,7 +582,6 @@ class Pipeline:
     explain_filled: tuple[str, ...]
     fit_rows: int = 100_000                   # an unlabelled run fits on a sample of this many records (er.run)
     kind: KindSpec | None = None              # person or company, on every record; None: not told apart
-    trust: TrustRule = TrustRule()            # what merges without people (er.run._accept)
     probe: Probe = Probe()                    # how the matches no key lists are measured (er.probe)
     household: Household = Household()        # which pairs people see labelled "maybe one household"
     keys: LearnKeys | None = None             # learn the keys on each file; None: [model] generators
@@ -648,6 +626,9 @@ def _resolver(d: dict) -> Resolver:
 
 def pipeline_from(cfg: dict, std: Standardization, chains: Mapping[str, tuple[Normalizer, ...]]) -> Pipeline:
     """The parsed config/pipeline.toml → typed config."""
+    if "trust" in cfg:  # nothing merges by a sampled line: the rules' pairs, the model's at its threshold and people's decisions
+        raise InputError("[trust] sets nothing: a run merges the rules' pairs and the model's at its threshold; people decide the rest",
+                         fix="delete [trust]")
     f, b, m = cfg["fields"], cfg["budget"], cfg["model"]
     budget = Budget(**b)
     rules = RulesSpec(standardize=std, resolver=_resolver(cfg["rules"]["resolver"]), budget=budget, stages=tuple(
@@ -680,54 +661,16 @@ def pipeline_from(cfg: dict, std: Standardization, chains: Mapping[str, tuple[No
                                   optional=tuple(f["optional"]), labels=tuple(f["labels"]), identifying=tuple(f.get("identifying", ()))),
                     rules=rules, fs=fs, generators=generators,
                     threshold=ThresholdRule(grid=tuple(t["grid"]), max_fp=t["max_fp"], max_fp_rate_hi=t["max_fp_rate_hi"],
-                                            margin_steps=t["margin_steps"], search_floor=float(t.get("search_floor", 0.0))),
+                                            margin_steps=t["margin_steps"], search_floor=float(t.get("search_floor", 0.0)),
+                                            keep_from=float(t.get("keep_from", 0.0))),
                     cv_folds=sel["cv_folds"], cv_seed=sel["cv_seed"], decision_p=sel["decision_p"],
                     explain_show=tuple(d["explain_show"]), explain_filled=tuple(d["explain_filled"]), fit_rows=m.get("fit_rows", 100_000),
                     kind=kind_spec(cfg["kind"]) if "kind" in cfg else None,
-                    trust=TrustRule(**{k: tuple(map(float, v)) if k == "steps" else v for k, v in cfg.get("trust", {}).items()}),
                     probe=Probe(strata=tuple((n, tuple(_key(k, chains) for k in keys)) for n, keys in cfg["probe"]["strata"].items()),
                                 pairs=cfg["probe"].get("pairs", 1_000_000)) if "probe" in cfg else Probe(),
                     household=Household(shared=tuple(_key(k, chains) for k in cfg["household"]["shared"]),
                                         apart=tuple((d["field"], _comparator(d, chains)) for d in cfg["household"]["apart"])) if "household" in cfg else Household(),
                     keys=LearnKeys(**cfg["keys"]) if cfg.get("keys") else None)
-
-
-def widen(p: "Pipeline", added: Iterable[tuple[str, str]]) -> "Pipeline":
-    """The pipeline with a workspace's own fields beside the fields they stand with (added: pairs of (added field, the
-    field it stands beside), e.g. ("person_name_2", "person_name")). Each comparison step that tests a field tests the
-    added one the same way too, so a step is reached when either agrees, and the two are one piece of evidence, not two;
-    a comparison is missing only when none of them is filled on both sides. Each generator keyed on a field gets a copy
-    keyed on the added one, used when its original is. The added fields are declared optional, so a file without them
-    turns off only what reads them. Rules are unchanged. Nothing added: the same pipeline, so the same config hash.
-    O(steps + generators)."""
-    beside: dict[str, list[str]] = {}
-    for new, old in added:
-        beside.setdefault(old, []).append(new)
-    if not beside:
-        return p
-    level = lambda lv: replace(lv, any_of=lv.any_of + tuple((n, comp) for col, comp in lv.any_of for n in beside.get(col, ())))
-    model = replace(p.fs.model, comparisons=tuple(
-        replace(c, levels=tuple(level(lv) for lv in c.levels), null_if_missing=c.null_if_missing + tuple(n for col in c.null_if_missing for n in beside.get(col, ())))
-        for c in p.fs.model.comparisons))
-
-    def rekeyed(b: Blocker, old: str, new: str) -> Blocker:  # the generator, reading the added field where it read the old
-        swap = lambda k: replace(k, column=new) if k.column == old else k
-        changes: dict = {"name": f"{b.name}@{new}"}
-        if isinstance(b, KeyBlocker):
-            changes["keys"] = tuple(swap(k) for k in b.keys)
-        else:
-            changes["key"] = swap(b.key)
-        if isinstance(b, DeletionKeys):
-            changes["within"] = tuple(swap(k) for k in b.within)
-        return replace(b, **changes)
-    copies = {b.name: [rekeyed(b, old, new) for old, news in beside.items() if old in {k.column for k in keys_of(b)} for new in news]
-              for b in p.generators.values()}
-    return replace(p, fields=replace(p.fields, optional=p.fields.optional + tuple(n for news in beside.values() for n in news)),
-                   generators={**p.generators, **{c.name: c for cs in copies.values() for c in cs}},
-                   fs=replace(p.fs, model=model, blockers=p.fs.blockers + tuple(c for b in p.fs.blockers for c in copies.get(b.name, ()))))
-
-
-METHOD_KEYS = ("line", "drop_rules", "drop_keys", "trust", "add_keys", "merge", "fit", "keep")
 
 
 GIVEN, PERSON = "given_name", "person_name"  # agreement on the given name tells one person's records from a household's; the full name, where it is sparse (er.match.chosen)
@@ -739,67 +682,6 @@ def em_candidates(p: "Pipeline") -> tuple[tuple[Key, ...], ...]:
     (one customer's each: the prior rules read it), nor the given name alone (as large a block, swaying every m)."""
     keys = {col: Key(col, comp.normalize) for c in p.fs.model.comparisons if c.levels for col, comp in c.levels[0].any_of if comp.function == "exact"}
     return tuple((k,) for col, k in keys.items() if col not in p.fields.identifying and col != GIVEN)
-
-
-def added_key(fields: list[str]) -> KeyBlocker:  # a pair key a workspace adds (method.toml add_keys): each field as `field` or `field:normalizer`
-    keys = tuple(Key(f, tuple(n)) for f, *n in (x.split(":") for x in fields))
-    return KeyBlocker(name="added_" + "_".join(k.name for k in keys), keys=keys)
-
-
-def adjust(p: "Pipeline", method: Mapping[str, object]) -> "Pipeline":
-    """The pipeline with a workspace's changes to the tuned method (method.toml): `line`, the weight pairs are accepted
-    at; `drop_rules`, match rules left out; `drop_keys`, pair keys left out, each with the copies widen made of it
-    (name@field); `trust`, the trust line (TrustRule): "none" (nothing merges without people) or one of its steps;
-    `merge`, the conditions that merge pairs without people (er.results.check_merging), read by runs and set merging;
-    `add_keys`, pair keys added, each a list of fields (`field` or `field:normalizer`), as describe method proposes them;
-    `fit`, the sample the model learns from: `records` (fit_rows) and `em`, "rules" (em_rules), "keys" (one session
-    per equality key, each level's m their median), as try sample shows them, "choose" (one session per compared field,
-    kept by the given name: em_candidates), or a list of fields (`field` or `field:normalizer`), one session blocked on
-    each, in place of em_rules; `keep`, the points from which the run stores pairs (keep_from, default 0).
-    Nothing changed: the same pipeline, so the same config hash. O(rules + generators)."""
-    if not method:
-        return p
-    fix = "correct method.toml in the workspace, or go back to the tuned method: nayose reset method --workspace …"
-    if unknown := set(method) - set(METHOD_KEYS):
-        raise InputError(f"method.toml: unknown keys {sorted(unknown)}; it takes {', '.join(METHOD_KEYS)}", fix)
-    line = method.get("line", p.fs.min_match_weight)
-    if isinstance(line, bool) or not isinstance(line, int | float) or not all(isinstance(method.get(k, []), list) for k in METHOD_KEYS[1:3]):
-        raise InputError("method.toml: line is a weight in bits, drop_rules and drop_keys lists of names", fix)
-    keep = method.get("keep", p.threshold.keep_from)
-    if isinstance(keep, bool) or not isinstance(keep, int | float) or not math.isfinite(keep):
-        raise InputError("method.toml: keep is the points from which pairs are stored, for example -10", fix)
-    trust = method.get("trust")
-    if trust is not None and trust != "none" and (isinstance(trust, bool) or not isinstance(trust, int | float) or float(trust) not in p.trust.steps):
-        raise InputError(f'method.toml: trust is "none" or one of the steps {list(p.trust.steps)}', fix)
-    rules, keys = set(method.get("drop_rules", ())), set(method.get("drop_keys", ()))
-    if bad := (rules - {r.name for _, _, r in p.rules.each()}) | (keys - {b.name for b in p.fs.blockers}):
-        raise InputError(f"method.toml: no rule or pair key named {sorted(bad)}", fix)
-    stages = tuple(s for s in (replace(s, rules=tuple(r for r in s.rules if r.name not in rules)) for s in p.rules.stages) if s.rules)
-    blockers = tuple(b for b in p.fs.blockers if b.name not in keys and b.name.split("@")[0] not in keys)
-    added = method.get("add_keys", [])
-    if not isinstance(added, list) or not all(isinstance(k, list) and k and all(isinstance(f, str) for f in k) for k in added):
-        raise InputError("method.toml: add_keys is a list of pair keys, each a list of fields (field or field:normalizer)", fix)
-    new = [added_key(k) for k in added]
-    if bad := sorted({k.column for b in new for k in b.keys} - p.fields.declared()) + sorted({n for b in new for k in b.keys for n in k.normalize} - (set(get_args(Normalizer)) - set(COPIES))):  # the comparisons' own copies, no key's
-        raise InputError(f"method.toml: add_keys names {bad}: not a field the pipeline declares, nor a normalizer", fix)
-    blockers += tuple(b for b in new if b.name not in {x.name for x in blockers})
-    if not stages or not blockers:
-        raise InputError(f"method.toml leaves no {'match rule' if not stages else 'pair key'}", fix)
-    fit = method.get("fit", {})
-    em = fit.get("em", "rules") if isinstance(fit, dict) else None
-    fields = isinstance(em, list) and em and all(isinstance(f, str) and f for f in em)
-    if not isinstance(fit, dict) or set(fit) - {"records", "em"} or not isinstance(fit.get("records", 1000), int) or isinstance(fit.get("records"), bool) \
-            or fit.get("records", 1000) < 1000 or not (em in ("rules", "keys", "choose") or fields):
-        raise InputError('method.toml: fit takes records (1,000 or more) and em ("rules", "keys", "choose", or a list of fields)', fix)
-    model = p.fs.model if "em" not in fit else replace(p.fs.model, em_from_keys=em == "keys", em_median=em == "keys", em_choose=em_candidates(p) if em == "choose" else ())
-    if fields:
-        sessions = tuple(added_key([f]).keys for f in em)
-        if bad := sorted({k.column for r in sessions for k in r} - p.fields.declared()) + sorted({n for r in sessions for k in r for n in k.normalize} - (set(get_args(Normalizer)) - set(COPIES))):
-            raise InputError(f"method.toml: fit em names {bad}: not a field the pipeline declares, nor a normalizer", fix)
-        model = replace(model, em_rules=sessions)
-    return replace(p, rules=replace(p.rules, stages=stages), fs=replace(p.fs, blockers=blockers, min_match_weight=float(line), model=model),
-                   trust=p.trust if trust is None else replace(p.trust, line=math.inf if trust == "none" else float(trust)),
-                   fit_rows=fit.get("records", p.fit_rows), threshold=replace(p.threshold, keep_from=float(keep)))
 
 
 def load_pipeline(path: Path, std: Standardization, chains: Mapping[str, tuple[Normalizer, ...]],
@@ -963,8 +845,8 @@ def pipeline_dict(p: Pipeline, chains: Mapping[str, tuple[Normalizer, ...]]) -> 
                                    "levels": [{"label": lv.label, "any_of": [{"field": col, **comp(x)} for col, x in lv.any_of],
                                                **({"tf": True} if lv.tf else {})} for lv in c.levels]} for c in m.comparisons]},
         **({"kind": vars(p.kind)} if p.kind else {}),
-        "threshold": {"grid": list(t.grid), "max_fp": t.max_fp, "max_fp_rate_hi": t.max_fp_rate_hi, "margin_steps": t.margin_steps, "search_floor": t.search_floor},
-        "trust": {"steps": list(p.trust.steps), "checks": p.trust.checks, "watch": p.trust.watch},  # its line is the workspace's
+        "threshold": {"grid": list(t.grid), "max_fp": t.max_fp, "max_fp_rate_hi": t.max_fp_rate_hi, "margin_steps": t.margin_steps, "search_floor": t.search_floor,
+                      **({"keep_from": t.keep_from} if t.keep_from else {})},
         **({"probe": {"pairs": p.probe.pairs, "strata": {n: [key(k) for k in keys] for n, keys in p.probe.strata}}} if p.probe.strata else {}),
         **({"household": {"shared": [key(k) for k in p.household.shared], "apart": [{"field": col, **comp(x)} for col, x in p.household.apart]}}
            if p.household.shared or p.household.apart else {}),

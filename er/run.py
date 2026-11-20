@@ -77,7 +77,7 @@ from er.kind import KIND_COLUMNS, NAME_MODEL, classifier as kind_classifier
 from er.match import ELSE, bound_tests, rough_reads, compared_exactly, fit_model, fit_sample_sql, named_sql, bound_reads, reaching_sql, refreshed_u, review_floor, rule_edges, search_floor, score_fs, scored_u, train_fs, u_basis
 from er.probe import missed
 from er.report import carry_over, diagnosis, no_run, qa, report_text, unmapped_columns
-from er.results import BANDS, own_merging, banded, check_merging, merge_where
+from er.results import BANDS, banded
 from er.settings import SPECIAL, Settings, fit_to_file, present_fields
 from er.source import decisions, file_facts, filled, known, open_source, suggest
 from er.standardize import prepare
@@ -162,7 +162,6 @@ class Run:
         self.gated = pd.DataFrame()           # the oversized blocks the candidates checked, and what was decided
         self.placeholders: dict[str, list[str]] = {}  # each identifying field's values read as missing (_placeholders), kept with the run
         self.keep: Path | None = None         # the workspace whose cleaned records a full run reads again (folder.prepared), if any
-        self.merge: dict = {}                 # the workspace's merge conditions (method.toml merge): none, the trust line decides
         self._spent = spent()  # the comparison functions' time when the last step ended (_done)
         self.gate_seconds, self.gate_pairs = 0.0, 0  # the oversized blocks' samples scored (_gate): how long, how many
         self.learned: tuple = ()              # the keys learned on the file (keys), if any
@@ -507,8 +506,8 @@ class Run:
 
     def _rules(self, batch: str | None = None) -> None:
         """The rules' pairs (er.match.rule_edges: every record, or a batch against all), less the values each rule
-        doesn't trust (_untrusted), each scored by the model too (rule_scores: what the trust line and the review sheet
-        read), then the cascade into rule_clusters, which the caller starts: a stage's pair is kept only if it touches a
+        doesn't trust (_untrusted), each scored by the model too (rule_scores: what the review sheet reads),
+        then the cascade into rule_clusters, which the caller starts: a stage's pair is kept only if it touches a
         record still unresolved, and merged in (er.cluster.merge). The rule clusters steer the candidates; what merges
         into customers is _accept's."""
         l, r, rules = q(self.l), q(self.r), self.pipeline.rules
@@ -517,7 +516,7 @@ class Run:
             if (untrusted := self._untrusted(i, rule.name, st.keys(rule), within=batch)):
                 trust[i] = f"NOT EXISTS (SELECT 1 FROM {untrusted} z WHERE {' AND '.join(f'z.{q(c)} = l.{q(c)}' for c in st.keys(rule))})"
         _, self.rule_seconds = rule_edges(rules, "records", self.con, self.uid, batch=batch, trust=trust, into="rule_edges", told=self.told)
-        if self.scoring is None:  # design time measures the rules alone, before any model is fitted: no trust line reads them
+        if self.scoring is None:  # design time measures the rules alone, before any model is fitted: nothing reads their weights
             self.con.execute("CREATE OR REPLACE TABLE rule_edges AS SELECT *, NULL::DOUBLE AS match_weight FROM rule_edges")
         else:
             score_fs(self.scoring, "records", "rule_edges", self.con, self.uid, into="rule_scores", n_records=self._count("records"))  # O(R·K)
@@ -652,11 +651,11 @@ class Run:
             self.notes.append(f"{len(gated):,} oversized blocks in all: {kept:,} kept, {len(gated) - kept:,} skipped (qa.md lists them)")
 
     def score(self) -> None:
-        """Every candidate that can reach keep_from points (method.toml keep, 0 unless set) scored by Splink, with the model
+        """Every candidate that can reach keep_from points ([threshold] keep_from, 0 unless set) scored, with the model
         and u that fit() settled (the rest: a bound settles it below, which nothing reads: unscored); and the patterns the scored pairs fall in (_patterns)."""
         t, fs = time.perf_counter(), self.pipeline.fs
         k, model_line = len(fs.model.comparisons), bits(fs.min_match_weight)
-        total, done, likely = self._count("cands"), 0, 0  # likely: the pairs the model scores as matches, whatever trust lets merge
+        total, done, likely = self._count("cands"), 0, 0  # likely: the pairs the model scores as matches
 
         def each(scored: str, sliced: int) -> None:  # how far scoring is, after each slice
             nonlocal done, likely
@@ -680,7 +679,7 @@ class Run:
         how many merge and how many wait for people as _accept will take them, and three of them (explain.list_patterns,
         results.describe_results). A full run's and each increment's: together, every pair the run scored."""
         fs, l, r = self.pipeline.fs, q(self.l), q(self.r)
-        at, floor = (bits(x) for x in self._line())
+        at, floor = bits(fs.min_match_weight), bits(review_floor(self.pipeline))
         gammas = [c for c, *_ in self.con.execute("DESCRIBE scores").fetchall() if c.startswith("gamma_")]
         rows = self.con.execute(f"""SELECT {', '.join(q(g) for g in gammas)}, count(*), round(avg(match_weight), 2),
             count(*) FILTER (match_weight >= {at} AND {named_sql(fs)}),
@@ -711,38 +710,16 @@ class Run:
             {named_sql(fs, 'x')} AS named, TRUE AS keep, {', '.join(f'x.{q(g)}' for g in gammas)} FROM rule_scores x JOIN {rule} k USING ({l}, {r})
             WHERE NOT EXISTS (SELECT 1 FROM scores s WHERE s.{l} = x.{l} AND s.{r} = x.{r})"""
 
-    def _line(self) -> tuple[float, float]:
-        """Where the model's pairs merge with no conditions, as apply merging reads it (results.own_merging): the tuned
-        threshold, else the trust line (inf: above every step); and where those below it wait for people from."""
-        own, trust = own_merging(self.pipeline), self.pipeline.trust
-        return (math.inf if own is None else own["line"]), (review_floor(self.pipeline) if trust.line is None else min(trust.steps))
-
     def _accept(self) -> None:
-        """What merges into customers (kept): the rules' pairs and the model's (matches), less the pairs people decided
-        are no match, and the pairs they decided are a match (er_decisions, loaded by full() from the workspace; empty
-        otherwise). With no trust line (TrustRule.line None), every rule pair and the model's named and kept pairs
-        (scored) at its threshold or above; with one, only the pairs scoring at or above the line, the rules' and the
-        model's alike: the rest wait for people, the model's in proposed. rule_kept says which of its pairs merged. With
-        the workspace's merge conditions (method.toml merge, er.results.merge_where), those alone decide, the rules'
-        pairs and the model's alike, as apply merging decides on the stored pairs."""
-        l, r, line = q(self.l), q(self.r), self.pipeline.trust.line
+        """What merges into customers (kept): every rule pair and the model's named and kept pairs (scored) at its
+        threshold or above (matches), less the pairs people decided are no match, and the pairs they decided are a match
+        (er_decisions, loaded by full() from the workspace; empty otherwise). rule_kept says which of its pairs merged."""
+        l, r = q(self.l), q(self.r)
         self.con.execute(f"CREATE TABLE IF NOT EXISTS er_decisions ({l} VARCHAR, {r} VARCHAR, decision VARCHAR)")
         no = lambda x: f"NOT EXISTS (SELECT 1 FROM er_decisions d WHERE d.{l} = {x}.{l} AND d.{r} = {x}.{r} AND d.decision = 'no_match')"
-        if self.merge.get("when"):
-            hit = merge_where(self.merge, self.scoring, self.pipeline)
-            self.con.execute(f"CREATE OR REPLACE TABLE er_links AS {self._links()}")
-            pick = f"SELECT x.{l}, x.{r}, x.match_weight, x.match_probability, x.sources FROM er_links x WHERE x.rule IS NULL"
-            self.con.execute(f"CREATE OR REPLACE TABLE matches AS {pick} AND {hit} AND {no('x')}")
-            self.con.execute(f"CREATE OR REPLACE TABLE proposed AS {pick} AND NOT ({hit})")
-            merged = f"EXISTS (SELECT 1 FROM er_links x WHERE x.{l} = k.{l} AND x.{r} = k.{r} AND x.rule IS NOT NULL AND {hit})"
-        else:  # what the method merges by itself, as merge_where reads it with no conditions
-            own, (at, floor) = own_merging(self.pipeline), self._line()
-            model = f"SELECT s.{l}, s.{r}, s.match_weight, s.match_probability, s.sources FROM ({self.scored()}) s WHERE s.named AND s.keep"
-            self.con.execute(f"CREATE OR REPLACE TABLE matches AS SELECT * FROM ({model}) s WHERE s.match_weight >= {bits(at)} AND {no('s')}")
-            self.con.execute(f"""CREATE OR REPLACE TABLE proposed AS SELECT * FROM ({model}) s WHERE s.match_weight < {bits(at)}
-                AND s.match_weight >= {bits(floor) if line is not None else bits(at)}""")  # with a line only: the pairs people may check
-            merged = "TRUE" if own and own["rules"] else f"k.match_weight >= {bits(at)}"
-        self.con.execute(f"""CREATE OR REPLACE TABLE rule_kept AS SELECT k.* EXCLUDE (merged), {merged} AND {no('k')} AS merged
+        self.con.execute(f"""CREATE OR REPLACE TABLE matches AS SELECT s.{l}, s.{r}, s.match_weight, s.match_probability, s.sources
+            FROM ({self.scored()}) s WHERE s.named AND s.keep AND s.match_weight >= {bits(self.pipeline.fs.min_match_weight)} AND {no('s')}""")
+        self.con.execute(f"""CREATE OR REPLACE TABLE rule_kept AS SELECT k.* EXCLUDE (merged), {no('k')} AS merged
             FROM (SELECT *, NULL AS merged FROM rule_kept) k""")
         self.con.execute(f"""CREATE OR REPLACE TABLE kept AS SELECT {l}, {r} FROM rule_kept WHERE merged UNION ALL SELECT {l}, {r} FROM matches
             UNION ALL SELECT {l}, {r} FROM er_decisions WHERE decision = 'match'""")
@@ -788,13 +765,12 @@ class Run:
     def probe(self) -> None:
         """The matches no pair key lists, measured without labels (er.probe): in each [probe] stratum, pairs drawn at
         random, scored, and those at the model's line its likely links don't join counted and scaled. The likely links:
-        its matches, its pairs waiting at the line or above, the rules' pairs people didn't call different, and
-        people's "same". O(N + P·K + L)."""
+        its matches, the rules' pairs people didn't call different, and people's "same". O(N + P·K + L)."""
         spec, fs, l, r = self.pipeline.probe, self.pipeline.fs, q(self.l), q(self.r)
         if not spec.strata:
             return
         t = time.perf_counter()
-        links = f"""SELECT {l}, {r} FROM matches UNION ALL SELECT {l}, {r} FROM proposed WHERE match_weight >= {bits(fs.min_match_weight)}
+        links = f"""SELECT {l}, {r} FROM matches
             UNION ALL SELECT {l}, {r} FROM rule_kept k WHERE NOT EXISTS (SELECT 1 FROM er_decisions d WHERE d.{l} = k.{l} AND d.{r} = k.{r} AND d.decision = 'no_match')
             UNION ALL SELECT {l}, {r} FROM er_decisions WHERE decision = 'match'"""
         found = missed(self.con, self.scoring, fs, spec, "records", links, self.uid, None if fs.bridge else self._sized("rule_clusters", ">"),
@@ -813,8 +789,7 @@ class Run:
 
     def write(self, out: Path, part: int = 0, replace: list[Path] | None = None, report: tuple[str | Path, Path] | None = None) -> None:
         """Gold (each record's cluster, the stage and rule that resolved it, its kind and its customer's), the accepted
-        pairs with their weights, the rules' pairs (with their weights, and whether each merged), with a trust line the
-        model's pairs left to people (proposed), as Parquet; and the state an increment needs: the standardized
+        pairs with their weights, the rules' pairs (with their weights, and whether each merged), as Parquet; and the state an increment needs: the standardized
         records and the rules' clusters. Records, rules' pairs and matches are folders
         that increments append to. `replace` (a full run): the old run's files, which the new ones replace. `report`
         (the input and the pipeline file): the reports for people (report()), built first and written with these files.
@@ -837,7 +812,7 @@ class Run:
             texts.append((json.dumps(dict(model=self.scoring, basis=self.basis), ensure_ascii=False), state / "scoring.json"))
         if part == 0:  # the round this method is in, and how it did: lands with the run
             linked = next(x for x in reversed(self.steps) if x["step"] == "cluster")
-            texts.append((folder.round_ran(out, dict(config=self.config, method=folder.method(out), at=datetime.now().isoformat(timespec="seconds"),
+            texts.append((folder.round_ran(out, dict(config=self.config, at=datetime.now().isoformat(timespec="seconds"),
                                                      matched=linked["accepted"], expected_false=linked["expected_false"])), out / folder.ROUNDS))
         earlier = folder.history(out) if part == 0 else None  # the runs before: read before the old log goes with the old run
         # an increment adds to the pair index its full run began; a run written before it had none gets it whole, once (results.pair_index)
@@ -846,7 +821,7 @@ class Run:
             self._done("write", "O(N + C)", f"O({self.n:,} + {self._count('matches'):,})", t)
             return self._log(out, part > 0, earlier, part=part, disabled=self.disabled, pipeline=str(Path(report[1]).resolve()) if report else None)
         folder.stage(self.con, out, [("SELECT * FROM rule_kept", out / "rule_kept" / name), ("SELECT * FROM matches", out / "matches" / name),
-                                     ("SELECT * FROM proposed", out / "proposed" / name), *scored,
+                                     *scored,
                                      (f"SELECT * FROM gold ORDER BY {q(self.uid)}", out / "gold.parquet"),
                                      ("SELECT * FROM rule_clusters", state / "rule_clusters.parquet"),
                                      (f"SELECT * FROM {'records' if part == 0 else 'new_records'}", state / "records" / name), *aside],
@@ -896,21 +871,18 @@ class Run:
     def match(self, path: str | Path, out: Path) -> pd.DataFrame:
         """Which entity each record of `path` would join in the run in `out`, and by what, writing nothing: the
         increment's steps without its write. One row per record read: its ID; `entity`, the cluster_id it would have;
-        `status` (joins an entity; waits for people, a pair of it below the trust line, so it joins only once people
-        check; a new entity; already in the run; or set aside and why); `by`, the rule or `fs` that linked it most
-        strongly, and `weight`, its best model link in bits, or its best pair waiting. O(an increment) less its write."""
+        `status` (joins an entity; a new entity; already in the run; or set aside and why); `by`, the rule or `fs` that
+        linked it most strongly, and `weight`, its best model link in bits. O(an increment) less its write."""
         u = q(self.uid)
         if self._join(path, out):
             self.con.execute(f"""CREATE OR REPLACE TABLE er_match AS WITH
                 ends AS (SELECT {q(self.l)} AS id, rule, NULL::DOUBLE AS w FROM rule_kept WHERE merged UNION ALL SELECT {q(self.r)}, rule, NULL FROM rule_kept WHERE merged
                          UNION ALL SELECT {q(self.l)}, 'fs', match_weight FROM matches UNION ALL SELECT {q(self.r)}, 'fs', match_weight FROM matches),
                 best AS (SELECT id, arg_max(rule, coalesce(w, 1e9)) AS by, max(w) AS weight FROM ends GROUP BY 1),
-                waits AS (SELECT id, max(w) AS w FROM (SELECT {q(self.l)} AS id, match_weight AS w FROM proposed UNION ALL SELECT {q(self.r)}, match_weight FROM proposed
-                          UNION ALL SELECT {q(self.l)}, match_weight FROM rule_kept WHERE NOT merged UNION ALL SELECT {q(self.r)}, match_weight FROM rule_kept WHERE NOT merged) GROUP BY 1),
                 old AS (SELECT DISTINCT g.cluster_id FROM gold g JOIN gold_old o USING ({u}))
                 SELECT n.{u}, g.cluster_id AS entity, CASE WHEN g.cluster_id IN (SELECT cluster_id FROM old) THEN 'joins an entity'
-                       WHEN wt.id IS NOT NULL THEN 'waits for people' ELSE 'a new entity' END AS status, b.by, coalesce(b.weight, wt.w) AS weight
-                FROM new_ids n JOIN gold g USING ({u}) LEFT JOIN best b ON b.id = n.{u} LEFT JOIN waits wt ON wt.id = n.{u}""")
+                       ELSE 'a new entity' END AS status, b.by, b.weight
+                FROM new_ids n JOIN gold g USING ({u}) LEFT JOIN best b ON b.id = n.{u}""")
         else:
             self.con.execute(f"CREATE OR REPLACE TABLE er_match AS SELECT NULL::VARCHAR AS {u}, NULL::VARCHAR AS entity, '' AS status, NULL::VARCHAR AS by, NULL::DOUBLE AS weight WHERE FALSE")
         return self.con.execute(f"""SELECT * FROM er_match UNION ALL BY NAME
@@ -936,7 +908,6 @@ class Run:
         self.part = folder.next_part(state / "records")
         parts = ", ".join(lit(x) for x in sorted((state / "records").glob("part-*.parquet")))  # not a glob: this run's own part comes later
         self.con.execute(f"CREATE OR REPLACE VIEW old_records AS SELECT * FROM read_parquet([{parts}], union_by_name = true)")
-        self.merge = check_merging(folder.method(out).get("merge") or {}, self.pipeline)
         self.load(path, into="new_records", stored="old_records")  # a record already in the run is set aside: a retry adds nothing twice
         self.added = self.n
         if not self.added:
@@ -1039,7 +1010,6 @@ class Run:
         held = folder.held(out)
         if held and not overwrite:
             raise InputError(f"{out} already holds a run", fix="choose another folder, or replace the run: nayose resolve records … --overwrite")
-        self.merge = check_merging(folder.method(out).get("merge") or {}, self.pipeline)
         self.keep = out
         self.resolve(path, out)
         self.write(out, replace=held, report=(path, pipeline_file) if pipeline_file else None)  # the old run goes only once the new one is complete
@@ -1080,7 +1050,7 @@ FINGERPRINTED_ROWS = 30_000  # the fit's sample, as every run's fingerprint hold
 
 def run_config(p: Pipeline, s: Settings) -> str:
     """What an increment needs the full run's to be: the pipeline and the settings that shape the records. The fit's
-    sample and EM (method.toml's fit: the sessions' rules too) are left out: an increment and a lookup score with the stored model."""
+    sample and EM (the sessions' rules too) are left out: an increment and a lookup score with the stored model."""
     fit = {f.name: f.default for f in fields(FSModel) if f.name in ("em_from_keys", "em_median")}  # em_choose: never in a model's repr
     p = replace(p, fit_rows=FINGERPRINTED_ROWS, fs=replace(p.fs, model=replace(p.fs.model, em_rules=(), **fit)))
     keep = p.threshold.keep_from  # out of the dataclass's repr, so a workspace that never set it keeps its hash
