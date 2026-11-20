@@ -384,7 +384,7 @@ def calls(tree: ast.AST) -> list[tuple[str, int]]:  # every call, by its dotted 
 
 def test_code_nayose_runs_never_prints_or_exits():
     """Rule 1, errors are values: the command line (er/cli.py, its events written by er/emit.py) owns the terminal; the code its commands run raises
-    InputError or returns, since nayose open ui runs it in threads of a long-lived server."""
+    InputError or returns, so a job that calls it decides what to say and when to stop."""
     runs = {f for f, box in layers().items() if f.startswith("er/") and box in ("tools_run", "run", "steps", "configuration")} - {"er/cli.py", "er/emit.py"}
     found = []
     for f in sorted(runs):
@@ -395,7 +395,7 @@ def test_code_nayose_runs_never_prints_or_exits():
 
 
 def test_no_code_in_er_changes_process_wide_state():
-    """Rule 2: the server runs commands in threads, which share the process's streams, working folder and environment."""
+    """Rule 2: a process is shared: by the progress line's thread (er.emit), and by the code a job calls; streams, working folder and environment are every caller's."""
     banned_calls = ("redirect_stdout", "redirect_stderr", "os.chdir", "os.putenv", "os.environ.update", "os.environ.pop",
                     "os.environ.setdefault", "os.environ.clear", "sys.path.insert", "sys.path.append")
     found = []
@@ -431,8 +431,3 @@ def test_a_store_that_grows_says_what_bounds_it():
     assert not found, f"stores that grow without saying what bounds them: {found}"
 
 
-def test_the_page_reaches_the_network_through_one_call_that_never_throws():
-    """Rule 5: every request the page makes goes through api(), which turns a lost server into a value."""
-    html = (ROOT / "er" / "ui.html").read_text(encoding="utf-8")
-    api = re.search(r"async function api\(.*?\n}\n", html, re.S)
-    assert html.count("fetch(") == 1 and api and "fetch(" in api.group(0) and "try {" in api.group(0) and "catch" in api.group(0)

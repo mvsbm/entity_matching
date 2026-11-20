@@ -13,13 +13,12 @@ bound of the matches the keys miss.
 
 O(N) to group and draw, O(P·K) to score the P pairs drawn, O(L) to join the L links.
 """
-import itertools
 import math
 
 import duckdb
 
 from er.cluster import merge
-from er.config import FSSpec, Key, Probe, bits, q
+from er.config import FSSpec, Probe, bits, q
 from er.match import bound_tests, named_sql, score_fs
 
 EXAMPLES = 200  # hit pairs kept per stratum, for people to see
@@ -72,46 +71,3 @@ def missed(con: duckdb.DuckDBPyConnection, model: dict, fs: FSSpec, spec: Probe,
     return out
 
 
-# the fields a key to find them may join: each as the run keeps it (a field, or its normalized copy)
-MENU = (("phone", ()), ("postal_code", ("first3",)), ("postal_code", ()), ("city", ()), ("prefecture", ()), ("town_code", ()), ("address_code", ()),
-        ("any_name", ("initial",)), ("given_name", ("kana_fold",)), ("person_name", ("kana_fold",)), ("birth_date", ()))
-
-
-def keys_for(con: duckdb.DuckDBPyConnection, records: str, uid: str, strata: list[dict], have: list[tuple[Key, ...]], most: float, top: int = 3) -> list[dict]:
-    """Pair keys that would list the matches the probe found no key lists (its hits of why "keys"): each one or two
-    fields of MENU the run's records hold, not a key the method has (`have`), on which both records of at least a
-    fifth of the hits agree; within `most` pairs per record, the budget's; best first, by the hits it lists, then its
-    cost. Each: its fields (field or field:normalizer, as method.toml add_keys takes them), the hits it lists of how
-    many, its pairs per record, and about how many matches it would find (the share it lists of a stratum's hits, of
-    that stratum's estimate; the largest). O(hits) to check each key, O(N) to price each of at most ten."""
-    hits = [(i, a, b) for i, st in enumerate(strata) for a, b, _, why in st["examples"] if why == "keys"]
-    if not hits:
-        return []
-    cols = {c for c, *_ in con.execute(f"DESCRIBE SELECT * FROM {records}").fetchall()}
-    menu = [k for k in (Key(f, n) for f, n in MENU) if k.name in cols]
-    u = q(uid)
-    ids = sorted({x for _, a, b in hits for x in (a, b)})
-    con.execute("CREATE OR REPLACE TEMP TABLE er_hit_ids (id VARCHAR)")
-    con.executemany("INSERT INTO er_hit_ids VALUES (?)", [(x,) for x in ids])
-    rows = con.execute(f"SELECT {u}, {', '.join(q(k.name) for k in menu)} FROM {records} WHERE {u} IN (SELECT id FROM er_hit_ids)").fetchall()
-    value = {r[0]: dict(zip((k.name for k in menu), r[1:])) for r in rows}
-    owned = {frozenset(k.name for k in keys) for keys in have}
-    found = []
-    for keys in [*((k,) for k in menu), *itertools.combinations(menu, 2)]:
-        if frozenset(k.name for k in keys) in owned:
-            continue
-        agree = [(i, a, b) for i, a, b in hits if a in value and b in value and all(value[a][k.name] is not None and value[a][k.name] == value[b][k.name] for k in keys)]
-        if len(agree) >= max(1, len(hits) / 5):
-            found.append((keys, agree))
-    n = con.execute(f"SELECT count(*) FROM {records}").fetchall()[0][0]
-    out = []
-    for keys, agree in sorted(found, key=lambda x: -len(x[1]))[:10]:
-        filled, by = " AND ".join(f"{q(k.name)} IS NOT NULL" for k in keys), ", ".join(q(k.name) for k in keys)
-        pairs = con.execute(f"SELECT coalesce(sum(c * (c - 1) // 2), 0) FROM (SELECT count(*) AS c FROM {records} WHERE {filled} GROUP BY {by})").fetchall()[0][0]
-        if pairs / n > most:
-            continue
-        finds = max(sum(1 for i, *_ in agree if i == j) / len(st["examples"]) * st["hits"] / (1 - (1 - st["drawn"]) ** 2) if st["examples"] and st["drawn"] else 0
-                    for j, st in enumerate(strata))  # of the stratum's hits, the share this key lists, scaled as the stratum's estimate (a pair drawn with either record)
-        out.append(dict(keys=[k.column + "".join(f":{x}" for x in k.normalize) for k in keys], lists=len(agree), of=len(hits),
-                        pairs_per_record=round(pairs / n, 2), finds=round(finds)))
-    return sorted(out, key=lambda x: (-x["lists"], x["pairs_per_record"]))[:top]

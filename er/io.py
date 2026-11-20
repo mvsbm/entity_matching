@@ -15,7 +15,6 @@ import subprocess
 import threading
 import time
 from collections.abc import Callable
-from itertools import takewhile
 from pathlib import Path
 
 import pandas as pd
@@ -218,13 +217,3 @@ def markdown(df: pd.DataFrame) -> str:
     return "\n".join("| " + " | ".join(map(cell, r)) + " |" for r in rows[:1] + [["---"] * len(df.columns)] + rows[1:])
 
 
-def _cells(line: str) -> list[str]:  # a markdown table row's cells: split at each bar markdown() didn't escape
-    return [c.strip().replace("\\|", "|") for c in re.split(r"(?<!\\)\|", line.strip())[1:-1]]
-
-
-def table_after(text: str, heading: str) -> pd.DataFrame:
-    """The first markdown table after this heading in a report (the reverse of markdown()), as strings."""
-    lines = text.split(heading, 1)[1].splitlines()
-    start = next(i for i, line in enumerate(lines) if line.startswith("|"))
-    rows = [_cells(line) for line in takewhile(lambda x: x.startswith("|"), lines[start:])]
-    return pd.DataFrame(rows[2:], columns=rows[0])

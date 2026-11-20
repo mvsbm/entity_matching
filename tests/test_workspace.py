@@ -1,8 +1,6 @@
 """Workspaces: their own mapping and files, the review sheet, decisions, the method and the trust line."""
-import json
 import math
 import os
-from pathlib import Path
 from dataclasses import replace
 
 import numpy as np
@@ -10,11 +8,10 @@ import pandas as pd
 import pytest
 
 from er.candidates import Records, estimate_touching, generate
-from er.config import (DeletionKeys, InputError, Key, KeyBlocker, Rule)
+from er.config import (DeletionKeys, InputError, Key, KeyBlocker)
 from er.match import exact_u, stale_u
 from er.config import load_pipeline
 from er.settings import load_settings
-
 
 
 @pytest.fixture(scope="module")
@@ -23,67 +20,6 @@ def wide_band(population):
     pairs to decide on a small population."""
     s, p, g = population
     return s, replace(p, threshold=replace(p.threshold, margin_steps=4), fs=replace(p.fs, min_match_weight=p.fs.min_match_weight + 6)), g
-
-
-def test_a_workspace_keeps_its_own_mapping_and_a_copy_of_its_files(say, tmp_path, population, capsys, monkeypatch):
-    import threading
-    from er import folder
-    from er.settings import settings_path
-    from er.intake import sha256
-    s, p, g = population
-    g.df.rename(columns={s.data.unique_id: "customer_no"}).to_parquet(tmp_path / "theirs.parquet", index=False)  # their own ID column
-    monkeypatch.chdir(tmp_path)  # workspaces/, in the folder nayose starts from
-    project = settings_path().read_text(encoding="utf-8")
-
-    assert say("create", "workspace", "a")[0] == 0 and say("create", "workspace", "b")[0] == 0
-    assert say("create", "workspace", "a")[0] == 2 and say("create", "workspace", "../x")[0] == 2  # taken; not a name
-    assert [say("create", "workspace", x)[0] for x in ("nul", "CON.2026", "com1", "a.")] == [2] * 4 and not any((tmp_path / "workspaces").glob("[nNcC]*"))  # no folder Windows can't keep: a device, a dot it drops
-    (tmp_path / "workspaces" / "notes").mkdir()  # a folder that is no workspace
-    assert {w["name"] for w in say("list", "workspaces")[1]["workspaces"]} == {"a", "b"}
-    a, b = Path("workspaces/a"), Path("workspaces/b")
-
-    code, e = say("load", "records", "theirs.parquet", "--workspace", a)  # copied, then described: the ID is not where the mapping looks
-    assert code == 0 and [(x["field"], x["column"]) for x in e["suggested"]] == [("id", "customer_no")]
-    code, e = say("check", "records", a / "inputs" / "0001-theirs", "--workspace", a)  # the full check stops, and says the line to run
-    assert code == 2 and e["hints"] == {"id": "customer_no"} and "set columns id=customer_no --workspace" in e["fix"]
-    assert folder.sums(a / "inputs" / "0001-theirs") == {"theirs.parquet": sha256(tmp_path / "theirs.parquet")}
-    say("load", "records", "theirs.parquet", "--workspace", a)
-    assert [x.name for x in folder.parts(a)] == ["0001-theirs"]  # the same content again: not copied again
-    assert say("set", "columns", "id=customer_no", "--workspace", a)[0] == 0
-    assert settings_path().read_text(encoding="utf-8") == project and 'id = "CONT_ID"' in (b / "columns.toml").read_text(encoding="utf-8")  # a's alone
-    code, e = say("resolve", "records", "--workspace", b)
-    assert code == 2 and e["error"].startswith("no records file")
-    assert say("resolve", "records", "--workspace", a)[1]["summary"][0][1].startswith(f"{len(g.df):,}")  # the file loaded last
-    (tmp_path / "theirs.parquet").unlink()
-    assert say("rerun", "records", "--workspace", a)[0] == 0  # its own copy: the original may go
-    (tmp_path / "elsewhere").mkdir()
-    monkeypatch.chdir(tmp_path / "elsewhere")  # another folder: the paths steps.json holds lead nowhere, its inputs/ still holds them
-    assert say("rerun", "records", "--workspace", tmp_path / a)[0] == 0
-    monkeypatch.chdir(tmp_path)
-    d = say("describe", "workspace", a)[1]
-    assert d["columns"] == "own" and [(x["name"], x["read"]) for x in d["inputs"]] == [("0001-theirs", True)]
-    assert say("describe", "workspace", b)[1]["records"] == 0  # nothing run yet: no error
-    assert say("describe", "workspace", "workspaces/none")[0] == 2
-
-    for n, rows in (("one", g.df.iloc[:10]), ("two", g.df.iloc[10:20])):
-        rows.to_parquet(tmp_path / f"{n}.parquet", index=False)
-    said = []
-
-    def take(n: str) -> None:
-        try:
-            said.append(folder.take_in(b, tmp_path / f"{n}.parquet", s.input, s.paths["reference"])[0].name)
-        except folder.Busy:  # one writer at a time: the others are told to try again
-            said.append("busy")
-    given = [threading.Thread(target=take, args=(n,)) for n in ("one", "two", "one")]  # at once
-    [t.start() for t in given]
-    [t.join(60) for t in given]
-    assert not any(t.is_alive() for t in given)
-    for n in ("one", "two"):  # tried again, one at a time
-        take(n)
-    names = [x.name for x in folder.parts(b)]
-    assert "busy" in said or len(set(said)) < 3  # they met
-    assert sorted(x.split("-", 1)[1] for x in names) == ["one", "two"] and len({x[:4] for x in names}) == 2  # each once, numbered apart
-    assert not list((b / "inputs").glob(".*"))  # no copy left half done
 
 
 def test_design_time_measures_the_run_s_own_gold_pairs_and_rule_clusters(tmp_path, population):
@@ -235,252 +171,6 @@ def test_a_workspace_s_method_changes_the_tuned_one_only_where_it_says(tmp_path)
             adjust(p, bad)
 
 
-def test_a_line_change_sets_right_what_people_decided_and_never_sets_wrong_what_was_right():
-    from er.explain import line_change
-    d = lambda rows: pd.DataFrame(rows, columns=["weight", "named", "same"])
-    keep = d([(9.0, True, False), (8.5, True, True), (12.0, True, True)])  # raising past the different pair loses the same one
-    assert line_change(keep, 8.0) is None
-    both = d([(9.0, True, False), (8.5, True, False), (12.0, True, True), (7.0, True, True), (13.0, False, True)])
-    assert line_change(both, 8.0) == (9.5, 2)  # up sets right two, down (7) one; the unnamed pair no line accepts
-    assert line_change(d([]), 8.0) is None
-    assert line_change(both, 8.0, 6.0, 9.0) == (7.0, 1)  # in the band people review only: past it, pairs nobody looked at
-
-
-def test_describe_method_scores_people_s_pairs_again_and_an_audit_stays_one_across_rounds(tmp_path, wide_band):
-    from er.config import adjust
-    from er.io import config_hash
-    from er.explain import describe_method
-    from er.run import Run
-    s, p, g = wide_band
-    uid = s.data.unique_id
-    l, r = f"{uid}_l", f"{uid}_r"
-    ws = tmp_path / "ws"
-    g.df.to_parquet(tmp_path / "all.parquet", index=False)
-    final = s.root / "config" / "final.toml"  # named in the reports, which a run then writes
-    run = Run(p, s).full(tmp_path / "all.parquet", ws, pipeline_file=final)
-    sheet = pd.read_parquet(ws / "review.parquet")
-    yes, no = sheet[sheet["why"] == "decide"].index[0], sheet[sheet["why"] == "audit"].index[0]
-    sheet.loc[yes, "decision"], sheet.loc[no, "decision"] = "match", "no_match"
-    sheet.to_parquet(tmp_path / "reviewed.parquet")
-    kept = pd.read_parquet(ws / "rule_kept").sort_values("match_weight")
-    rule_pair = kept.iloc[0]  # one the model scores lowest: only its rule joins it
-    sure = kept[(kept["rule"] != rule_pair["rule"]) & (kept["match_weight"] >= p.fs.min_match_weight + 4)].iloc[-1]  # one the model links anyway
-    assert rule_pair["match_weight"] < p.fs.min_match_weight
-    pd.DataFrame({l: [rule_pair[l], sure[l]], r: [rule_pair[r], sure[r]], "decision": ["no_match"] * 2}).to_parquet(tmp_path / "rule.parquet")  # no why: a file of one's own
-    Run(p, s).decide(tmp_path / "reviewed.parquet", ws)
-    Run(p, s).decide(tmp_path / "rule.parquet", ws)
-
-    d = describe_method(ws, p, s)
-    assert d["round"] == 1 and d["method"] == {} and d["rounds"][0]["matched"] == next(x for x in run.steps if x["step"] == "cluster")["accepted"]
-    assert d["audits"]["checked"] == d["audits"]["false"] == d["rounds"][0]["false_found"] == 1 and d["rounds"][0]["decided"] == 4
-    weights = {(x["id_l"], x["id_r"]): x["weight"] for x in d["decided"]}
-    for i in (yes, no):  # scored again: as the run scored them
-        assert weights[tuple(sheet.loc[i, [l, r]])] == pytest.approx(sheet.loc[i, "match_weight"], abs=0.01)
-    flagged = next(x for x in d["rules"] if x["name"] == rule_pair["rule"])
-    assert flagged["different"] == 1 and {"drop_rules": [rule_pair["rule"]]} in [x["change"] for x in d["proposals"]]
-    assert {"drop_rules": [sure["rule"]]} not in [x["change"] for x in d["proposals"]]  # leaving out its rule would join that pair all the same
-    keys = {x["name"]: x for x in d["keys"]}
-    assert all(keys[c["drop_keys"][0]]["only"] == 0 < keys[c["drop_keys"][0]]["pairs"] for x in d["proposals"] if "drop_keys" in (c := x["change"]))
-    scored = run.con.execute("SELECT count(*) FROM scores").fetchall()[0][0]
-    for c in p.fs.model.comparisons:  # every scored pair reaches one step of each comparison
-        assert sum(x["reached"] for x in d["steps"] if x["comparison"] == c.name) == scored
-
-    again = Run(p, s, model=run.model).rerun(ws, pipeline_file=final)  # the same method: the same round, and the audit is still one
-    assert describe_method(ws, p, s)["rounds"][0]["false_found"] == 1 and len(json.loads((ws / "rounds.json").read_text(encoding="utf-8"))) == 1
-    assert not pd.read_parquet(ws / "review.parquet").set_index([l, r]).index.isin(list(weights)).any()  # decided pairs: never asked again
-    (ws / "method.toml").write_text(f"line = {p.fs.min_match_weight + 1}\n", encoding="utf-8")
-    q = adjust(p, {"line": p.fs.min_match_weight + 1})
-    Run(q, s, model=again.model).rerun(ws, pipeline_file=final)
-    d = describe_method(ws, q, s)
-    assert d["round"] == 2 and [x["method"] for x in d["rounds"]] == [{}, {"line": p.fs.min_match_weight + 1}]
-    assert d["audits"]["checked"] == 0 and d["rounds"][0]["false_found"] == 1 and config_hash(q) != config_hash(p)
-
-
-def test_a_bad_rule_is_found_tried_and_left_out_and_audits_reach_every_kind_of_link(say, tmp_path, population, capsys, monkeypatch):
-    import threading
-    import er.cli as cli
-    from er import folder
-    from er.config import dump_pipeline
-    s, p, g = population
-    uid, ent = s.data.unique_id, s.data.entity_id
-    l, r = f"{uid}_l", f"{uid}_r"
-    bad = Rule(name="BAD_POSTAL_CODE", exact=("postal_code",))  # one postal code: many people
-    last = p.rules.stages[-1]
-    dump_pipeline(replace(p, rules=replace(p.rules, stages=(*p.rules.stages[:-1], replace(last, rules=(*last.rules, bad))))), s.chains, tmp_path / "planted.toml")
-    g.df.to_parquet(tmp_path / "theirs.parquet", index=False)
-    monkeypatch.chdir(tmp_path)
-    ws, pipe = tmp_path / "workspaces" / "w", ("--workspace", "workspaces/w", "--pipeline", "planted.toml")
-
-    say("create", "workspace", "w")
-    (ws / "method.toml").unlink()  # the method as tuned: this is about improving it, not the trust line
-    say("load", "records", "theirs.parquet", "--workspace", "workspaces/w")
-    assert say("resolve", "records", *pipe)[0] == 0
-    tuned = (ws / "state" / "config.txt").read_text(encoding="utf-8")
-    entity = g.truth.set_index(uid)[ent]
-    kept = pd.read_parquet(ws / "rule_kept")
-    wrong = kept[(kept["rule"] == bad.name) & (kept[l].map(entity) != kept[r].map(entity))].head(3)
-    assert len(wrong) == 3
-    sheet = pd.read_parquet(ws / "review.parquet")
-    joins = sheet[sheet["why"] == "decide"].head(1)  # a pair people join: a trial must not see it joined
-    pd.concat([wrong[[l, r]].assign(decision="no_match"), joins[[l, r]].assign(decision="match")]).to_parquet(tmp_path / "decided.parquet")
-    assert say("apply", "decisions", "--file", "decided.parquet", *pipe)[0] == 0
-
-    code_, d = say("describe", "method", *pipe)
-    assert code_ == 0 and next(x for x in d["rules"] if x["name"] == bad.name)["different"] == 3
-    assert {"drop_rules": [bad.name]} in [x["change"] for x in d["proposals"]]
-    code_, tried = say("try", "method", "--drop", bad.name, *pipe)
-    assert code_ == 0 and tried["different_joined"] == {"base": 3, "variant": 0} and tried["same_apart"]["variant"] <= 1  # false merges gone
-    assert len(tried["fixed"]) >= 3 and tried["apart"] >= 3
-    entities = pd.read_parquet(ws / "gold.parquet")["cluster_id"].nunique()
-    assert tried["base"]["entities"] == entities + 1  # the trial ran without people's decisions: the pair they joined is apart
-    key = json.loads((ws / "trials" / "base.json").read_text(encoding="utf-8"))["key"]
-    assert {"config", "files", "model", "code", "answers"} <= set(key) and all(len(x) == 64 for x in key["files"])  # all the base's clusters rest on, files by what they hold: never stale
-    assert say("try", "method", "--drop", "nope", *pipe)[0] == 2 and say("try", "method", *pipe)[0] == 2
-
-    monkeypatch.setattr(cli, "rerun_records", lambda a, emit: (_ for _ in ()).throw(InputError("the disk is full")))
-    assert say("adopt", "method", "--trial", tried["trial"], *pipe)[0] == 2 and not (ws / "method.toml").exists()  # as it was
-    monkeypatch.undo()
-    monkeypatch.chdir(tmp_path)
-    assert say("adopt", "method", "--trial", tried["trial"], *pipe)[0] == 0
-    assert folder.method(ws) == {"drop_rules": [bad.name]} and (ws / "state" / "config.txt").read_text(encoding="utf-8") != tuned
-    code_, d = say("describe", "method", *pipe)
-    assert d["round"] == 2 and bad.name not in [x["name"] for x in d["rules"]] and d["rounds"][0]["decided"] == 4
-
-    asked = lambda: pd.read_parquet(ws / "review.parquet")
-    before = asked()
-    assert say("draw", "pairs", "--count", 5, *pipe)[1]["drawn"] == 5
-    assert say("draw", "pairs", "--count", 50, *pipe)[1]["drawn"] > 0  # the rest
-    assert say("draw", "pairs", "--count", 50, *pipe)[1]["drawn"] == 0  # every link is asked about once
-    after = asked()
-    drawn = after.iloc[len(before):]
-    assert (drawn["why"] == "audit").all() and drawn["accepted"].all() and not after.duplicated([l, r]).any()
-    decided = pd.read_parquet(ws / "decisions")[[l, r]]
-    assert not drawn.set_index([l, r]).index.isin(decided.set_index([l, r]).index).any()  # never a pair people decided
-    assert drawn["match_weight"].floordiv(1).nunique() > 1 and drawn["sources"].str.match(r"^[A-Z]").any()  # bands, and the rules' links too
-
-    held, go = threading.Event(), threading.Event()
-    def other_trial():  # another trial of the workspace, in a thread of its own
-        with folder.run_lock(ws / "trials"):
-            held.set()
-            go.wait(60)
-    other = threading.Thread(target=other_trial)
-    other.start()
-    held.wait(60)
-    assert say("try", "method", "--line", 9, *pipe)[0] == 75  # the trials take turns
-    go.set()
-    other.join(30)
-    for line in (9, 10, 11, 12, 13, 14):
-        assert say("try", "method", "--line", line, *pipe)[0] == 0
-    assert sorted(int(f.stem) for f in (ws / "trials").glob("*.json") if f.stem.isdigit()) == list(range(3, 8))  # bounded: the last 5
-
-    assert say("reset", "method", *pipe)[0] == 0
-    assert not (ws / "method.toml").exists() and (ws / "state" / "config.txt").read_text(encoding="utf-8") == tuned
-    assert len(folder.rounds(ws)) == 3
-
-
-def test_the_trust_line_merges_only_ranges_people_proved_and_steps_down_one_at_a_time(say, tmp_path, population, capsys, monkeypatch):
-    from er import folder
-    from er.config import dump_pipeline
-    s, p, g = population
-    uid, ent = s.data.unique_id, s.data.entity_id
-    l, r = f"{uid}_l", f"{uid}_r"
-    dump_pipeline(replace(p, trust=replace(p.trust, checks=8, watch=3)), s.chains, tmp_path / "small.toml")  # a sample of 8, to test on 492 records
-    g.df.iloc[:400].to_parquet(tmp_path / "theirs.parquet", index=False)
-    g.df.iloc[400:446].to_parquet(tmp_path / "early.parquet", index=False)
-    g.df.iloc[446:].to_parquet(tmp_path / "batch.parquet", index=False)
-    monkeypatch.chdir(tmp_path)
-    ws, pipe = tmp_path / "workspaces" / "w", ("--workspace", "workspaces/w", "--pipeline", "small.toml")
-    truth = g.truth.set_index(uid)[ent]
-
-    def decide_by_truth() -> None:  # people answer every open row of the sheet, rightly
-        sheet = pd.read_parquet(ws / "review.parquet")
-        sheet = sheet[sheet["decision"].isna()].assign(decision=lambda x: np.where(x[l].map(truth) == x[r].map(truth), "match", "no_match"))
-        sheet.to_parquet(tmp_path / "decided.parquet")
-        assert say("apply", "decisions", "--file", "decided.parquet", *pipe)[0] == 0
-
-    say("create", "workspace", "w")
-    assert folder.method(ws) == {"trust": "none"}  # a new workspace starts strict
-    say("load", "records", "theirs.parquet", "--workspace", "workspaces/w")
-    assert say("resolve", "records", *pipe)[0] == 0
-    gold = pd.read_parquet(ws / "gold.parquet")
-    assert gold["cluster_id"].nunique() == len(gold) and not pd.read_parquet(ws / "rule_kept")["merged"].any()  # nothing merged
-    keys = say("describe", "method", *pipe)[1]["keys"]
-    assert any(k["matched"] for k in keys)  # the keys' likely links count, though none merged: no key looks idle
-    busy = max(keys, key=lambda k: k["matched"])
-    assert say("describe", "key", busy["name"], *pipe)[1]["matched"] == busy["matched"]  # its drawer counts what its row counts
-    kept = (ws / "method.toml").read_text(encoding="utf-8")
-    (ws / "method.toml").write_text(kept + f'drop_keys = ["{busy["name"]}"]\n', encoding="utf-8")
-    left = say("describe", "method", *pipe)[1]["dropped"]["keys"]  # what the method leaves out, still in words for the page
-    assert [x["name"] for x in left] == [busy["name"]] and left[0]["method"] and left[0]["keys"]
-    (ws / "method.toml").write_text(kept, encoding="utf-8")
-    trust = say("describe", "workspace", "workspaces/w", "--pipeline", "small.toml")[1]["trust"]  # nothing scores 20 on 492 records: that range is passed
-    assert trust["line"] == "none" and trust["next"] == {"down_to": 12.0, "up_to": None} and trust["checked"] == 0 < trust["needed"] <= 8
-    tuned = (ws / "state" / "config.txt").read_text(encoding="utf-8")
-    rules, sheet = [r.name for _, _, r in p.rules.each()], pd.read_parquet(ws / "review.parquet")  # the rules' pairs wait on the sheet too, with the model's levels
-    model = sheet[(sheet["why"] == "decide") & ~sheet["sources"].isin(rules)]
-    pd.concat([sheet, *[model.head(1).assign(sources=rules[0])] * 50]).to_parquet(ws / "review.parquet")
-    assert len(model) and all(min(x["wait"], x["held"], x["apart"]) >= 0 for x in say("list", "patterns", *pipe)[1]["patterns"])  # no pattern's count below 0
-    sheet.to_parquet(ws / "review.parquet")
-    assert say("lower", "trust", *pipe)[0] == 2  # not proven yet
-    full = pd.read_parquet(ws / "review.parquet")
-    full[full["why"] != "decide"].to_parquet(ws / "review.parquet")  # a sheet with none of the range's pairs (written before empty ranges were passed)
-    drew = say("draw", "pairs", "--count", "0", *pipe)[1]
-    assert drew["decide"] == trust["needed"] and drew["drawn"] == 0  # filled from the pairs the run kept for people: no run
-    sheet = pd.read_parquet(ws / "review.parquet")
-    sample = sheet[sheet["why"] == "decide"]
-    assert len(sample) == trust["needed"] and sample["match_weight"].between(12, 20, inclusive="left").all() and not sample.duplicated([l, r]).any()
-    decide_by_truth()
-    trust = say("describe", "workspace", "workspaces/w", "--pipeline", "small.toml")[1]["trust"]
-    assert trust["checked"] == trust["needed"] and trust["may_lower"] == (trust["false"] == 0)
-    assert trust["false"] == 0  # 12 bits and more: right on this population
-
-    assert say("lower", "trust", *pipe)[0] == 0 and folder.method(ws) == {"trust": 12.0}
-    kept = pd.read_parquet(ws / "rule_kept")
-    assert kept["merged"].any() and (kept.loc[kept["merged"], "match_weight"] >= 12).all() and (kept.loc[~kept["merged"], "match_weight"] < 12).all()
-    assert (pd.read_parquet(ws / "matches")["match_weight"] >= 12).all() and (pd.read_parquet(ws / "proposed")["match_weight"] < 12).all()
-    assert (ws / "state" / "config.txt").read_text(encoding="utf-8") != tuned and len(folder.rounds(ws)) == 2
-    trust = say("describe", "workspace", "workspaces/w", "--pipeline", "small.toml")[1]["trust"]
-    assert trust["line"] == 12.0 and trust["next"] == {"down_to": 8.0, "up_to": 12.0} and trust["above"]["pairs"] > 0
-    audits = pd.read_parquet(ws / "review.parquet").query("why == 'audit'")["match_weight"]
-    assert len(audits) and (audits >= 12).all()  # spot-checks above the line
-    sheet = pd.read_parquet(ws / "review.parquet")
-    one = sheet[(sheet["why"] == "decide") & sheet["match_weight"].between(8, 12, inclusive="left")].head(1)
-    one.assign(decision="no_match")[[l, r, "decision"]].to_parquet(tmp_path / "false.parquet")  # people find a false pair in the range below the line
-    assert len(one) and say("apply", "decisions", "--file", "false.parquet", *pipe)[0] == 0 and say("rerun", "records", *pipe)[0] == 0
-    left = pd.read_parquet(ws / "review.parquet").query("why == 'decide'")
-    assert (left["match_weight"] < 8).any()  # the line can't pass it: it, and every range below, to people one by one
-    stuck = say("describe", "workspace", "workspaces/w", "--pipeline", "small.toml")[1]["trust"]
-    assert stuck["false"] == 1 and stuck["needed"] == stuck["pairs"]  # every pair of it goes to people: "N of all" checked
-    assert say("add", "records", "early.parquet", *pipe)[0] == 0  # a batch then: its pairs below go to people one by one too
-    early, sheet = set(g.df.iloc[400:446][uid].astype(str)), pd.read_parquet(ws / "review.parquet")
-    assert (sheet[(sheet["why"] == "decide") & (sheet[l].isin(early) | sheet[r].isin(early))]["match_weight"] < 8).any()
-
-    pair = kept[kept["merged"]].iloc[0]  # people say a merged rule pair is no match: it stays apart from then on
-    pd.DataFrame({l: [pair[l]], r: [pair[r]], "decision": ["no_match"]}).to_parquet(tmp_path / "no.parquet")
-    assert say("apply", "decisions", "--file", "no.parquet", *pipe)[0] == 0 and say("rerun", "records", *pipe)[0] == 0
-    again = pd.read_parquet(ws / "rule_kept").set_index([l, r])
-    assert not again.loc[(pair[l], pair[r]), "merged"]
-
-    status = {x["id"]: x["status"] for x in say("match", "records", "batch.parquet", *pipe)[1]["records"]}
-    assert say("add", "records", "batch.parquet", *pipe)[0] == 0  # a batch: above the line merges, below waits
-    sheet, new = pd.read_parquet(ws / "review.parquet"), set(g.df.iloc[446:][uid].astype(str))
-    asked = {x for x in pd.concat([sheet[l], sheet[r]]) if x in new}
-    assert asked and {status[x] for x in asked} <= {"joins an entity", "waits for people"}  # as the preview said: none of them a new entity
-    assert "waits for people" in status.values()
-    part = sorted((ws / "rule_kept").glob("part-*.parquet"))[-1]
-    batch = pd.read_parquet(part)
-    assert (batch["merged"] == (batch["match_weight"] >= 12)).all()
-
-    assert say("raise", "trust", *pipe)[0] == 0 and folder.method(ws) == {"trust": 20.0}  # a step up
-    assert say("raise", "trust", *pipe)[0] == 0 and folder.method(ws) == {"trust": "none"}  # back to people for everything
-    runs = say("describe", "workspace", "workspaces/w", "--pipeline", "small.toml")[1]["runs"]  # the activity: every run, though a full run starts steps.json again
-    assert sum(x["what"] == "full run" for x in runs) > 3 and {Path(f).name for x in runs for f in x["files"]} == {"theirs.parquet", "early.parquet", "batch.parquet"}
-    gold = pd.read_parquet(ws / "gold.parquet").set_index(uid)
-    joined = gold.groupby("cluster_id").filter(lambda x: len(x) > 1)
-    assert joined["resolved_by"].eq("review").all()  # only what people said is the same
-    assert say("raise", "trust", *pipe)[0] == 2  # above every step already
-
-
 def test_an_increment_counts_exact_u_again_and_samples_only_a_drifted_comparison(tmp_path, population, monkeypatch):
     import json
     import er.match as M
@@ -573,181 +263,6 @@ def test_a_run_sets_aside_what_it_cannot_resolve_and_suggests_a_mapping(tmp_path
     assert 'id = "customer_no"' in e.value.fix  # suggested from its values: filled and unique
 
 
-def test_a_run_s_pairs_rows_and_entities_are_read_without_a_run_and_its_merge_conditions_need_none(say, tmp_path, population, monkeypatch):
-    """Results, Review and Explore read the run's own files: every pair at 0 points or more with each comparison's level
-    (scored/), each record's full row as the file gave it, the entities. Merge conditions join pairs without a run, as a
-    run would; turned off, they part only what they joined: people's answers stand, and their "different" never merges."""
-    import shutil
-    from er import folder
-    s, p, g = population
-    uid = s.data.unique_id
-    g.df.to_parquet(tmp_path / "theirs.parquet", index=False)
-    monkeypatch.chdir(tmp_path)
-    ws, at = tmp_path / "workspaces" / "w", ("--workspace", "workspaces/w")
-    say("create", "workspace", "w")  # strict: nothing merges without people
-    assert say("resolve", "records", "theirs.parquet", *at)[0] == 0
-    entities = lambda: set(pd.read_parquet(ws / "gold.parquet").groupby("cluster_id")[uid].agg(frozenset))
-    assert all(len(e) == 1 for e in entities())
-
-    _, d = say("describe", "results", *at)
-    gold, kinds = pd.read_parquet(ws / "gold.parquet"), pd.read_parquet(ws / "kind_review.parquet")
-    from er.kind import sheet_parts
-    part = sheet_parts(kinds)
-    assert d["kinds"] == dict(flagged=int(gold["kind_flagged"].sum()), to_check=int((part == "decide").sum()), to_teach=int((part == "measure").sum()))
-    assert set(gold.loc[gold["kind_flagged"], "kind_by"]) <= {"engine"}  # flagged: the engine sure against the flag, nobody answered yet
-    assert d["too_big"]["min"] == p.fs.budget.min_oversized() and sum(d["too_big"]["by"].values()) == d["too_big"]["skipped"]  # skipped groups, by the key that made them
-    index = pd.read_parquet(ws / "scored")
-    rules_alone = int((index["rule"].notna() & index["sources"].isna()).sum())
-    listed = next(x["candidates"] for x in json.loads((ws / "steps.json").read_text(encoding="utf-8"))["runs"][0]["steps"] if x["step"] == "candidates")
-    assert d["joined"] == 0 and sum(x["pairs"] for x in d["scores"]) == d["candidates"] == listed + rules_alone  # every pair compared: the keys' and the rules' own
-    assert ((index["match_weight"] >= 0) | index["rule"].notna()).all()  # 0 or more; the rules' pairs whatever they score
-    _, one = say("list", "scored", *at, "--count", 5)
-    _, two = say("list", "scored", *at, "--count", 5, "--page", 2)
-    points = [x["points"] for x in one["pairs"] + two["pairs"]]
-    assert one["total"] == len(index) and len(one["pairs"]) == 5 and points == sorted(points, reverse=True)  # best first, across pages
-    assert say("list", "scored", *at, "--status", "waiting", "--from", d["review_from"])[1]["total"] == sum(x["pairs"] for x in d["waiting"])
-    below = ("--status", "open", "--to", 1000, "--count", 100_000)  # every open pair: on this file, patterns repeat above the floor only
-    _, every = say("list", "scored", *at, *below)
-    _, kinds = say("list", "scored", *at, *below, "--each")  # one of each pattern nobody is asked about
-    pattern = lambda x: tuple(sorted((c, v["level"]) for c, v in x["compared"].items()))
-    assert every["total"] > kinds["total"] == len(kinds["pairs"]) == len({pattern(x) for x in kinds["pairs"]}) == len({pattern(x) for x in every["pairs"]})
-    assert sum(x["like"] for x in kinds["pairs"]) == every["total"] and [x["like"] for x in kinds["pairs"]] == sorted((x["like"] for x in kinds["pairs"]), reverse=True)
-    assert "like" not in every["pairs"][0]
-    best = one["pairs"][0]
-    assert set(best["compared"]) == {c.name for c in p.fs.model.comparisons}  # each comparison's level and points
-    _, rows = say("show", "records", best["first"], best["second"], "nope", *at)
-    given = g.df.set_index(uid, drop=False)
-    assert [c["column"] for c in rows["columns"]] == list(g.df.columns) and [x["id"] for x in rows["records"]] == [best["first"], best["second"], "nope"]
-    for x in rows["records"][:2]:  # every column as the file gave it
-        assert {k: v for k, v in x["row"].items() if v not in (None, "")} == {k: str(v) for k, v in given.loc[x["id"]].items() if pd.notna(v) and str(v) != ""}
-    assert rows["records"][2]["row"] is None
-
-    same, apart = (best["first"], best["second"]), (one["pairs"][1]["first"], one["pairs"][1]["second"])
-    for (a, b), said in ((same, "match"), (apart, "no_match")):
-        assert say("decide", "pair", a, b, said, *at)[0] == 0
-    assert say("apply", "decisions", *at)[0] == 0
-    people = entities()
-    assert {*same} <= next(e for e in people if same[0] in e)
-    name = next(c for c in p.fs.model.comparisons if c.name == "name")
-    rule = index["rule"].dropna().iloc[0]
-    count = lambda m: say("describe", "merging", *at, "--conditions", json.dumps(m))[1]["pairs"]
-    high, by_rule, alike = count({"when": [{"points": 12}]}), count({"when": [{"rules": [rule]}]}), count({"when": [{"fields": {"name": name.levels[1].label}}]})
-    assert count({"join": "and", "when": [{"points": 12}, {"fields": {"name": name.levels[1].label}}]}) <= min(high, alike)
-    either = {"join": "or", "when": [{"points": 12}, {"rules": [rule]}]}
-    assert max(high, by_rule) <= count(either) <= high + by_rule
-    assert say("decide", "pair", *apart, "match", *at)[0] == 0  # typed over the applied "different", not applied: it waits, as merging does
-    _, on = say("set", "merging", *at, "--conditions", json.dumps(either))
-    merged, said = entities(), pd.read_parquet(ws / "gold.parquet")
-    assert on["entities"] > 0 and folder.method(ws)["merge"]["join"] == "or" and merged != people
-    assert on["merged"] == count(either) and on["merged"] > len(index[index["match_weight"] >= 12]) // 2  # merged as previewed: undecided pairs counted
-    assert not any({*apart} <= e for e in merged if len(e) == 2)  # their "different" never merges by the conditions
-    assert say("decide", "pair", *apart, "no_match", *at)[0] == 0  # typed back as applied
-    assert say("set", "merging", *at, "--conditions", json.dumps({"when": [{"fields": {"name": "no such step"}}]}))[0] == 2
-    assert folder.method(ws)["merge"] == either  # refused before anything changed: the conditions as they were
-    from er.explain import run_model
-    from er.results import merge_where
-    assert merge_where({"when": [{"fields": {"gone": "exact"}}]}, run_model(ws), p) == "(FALSE)"  # a comparison the run lacks: never met, no crash
-    assert say("reset", "method", *at)[0] == 0  # back to the tuned method, by a run: people's conditions kept
-    assert folder.method(ws)["merge"] == either and entities() == merged  # a run takes the same conditions: the same entities
-    pd.testing.assert_frame_equal(pd.read_parquet(ws / "gold.parquet")[said.columns], said)  # and says the same of what joined each record
-    a, b = sorted(next(e for e in merged if len(e) == 2 and e != frozenset(same)))  # two records only the conditions joined
-    assert say("decide", "pair", a, b, "no_match", *at)[0] == 0 and say("apply", "decisions", *at)[0] == 0
-    assert not any({a, b} <= e for e in entities())  # said different and applied: apart at once, the conditions still on
-    assert say("set", "merging", *at, "--conditions", json.dumps({"when": []}))[0] == 0
-    assert entities() == people and "merge" not in folder.method(ws)  # off: what the conditions joined parts; people's answer stands
-
-    g.df.iloc[:440].to_parquet(tmp_path / "first.parquet", index=False)
-    g.df.iloc[440:].to_parquet(tmp_path / "batch.parquet", index=False)
-    tuned, off = tmp_path / "tuned", ("set", "merging", "--workspace", "tuned", "--conditions", json.dumps({"when": []}))
-    assert say("resolve", "records", "first.parquet", "--workspace", "tuned")[0] == 0  # the method as tuned: rules and the model merge by themselves
-    run = pd.read_parquet(tuned / "gold.parquet")
-    assert say(*off)[0] == 0
-    pd.testing.assert_frame_equal(pd.read_parquet(tuned / "gold.parquet"), run)  # no conditions: what the method merges, as its run did
-    shutil.rmtree(tuned / "scored")  # a run written before scored/ existed, then a batch: the batch adds no part to an index it lacks
-    assert say("add", "records", "batch.parquet", "--workspace", "tuned")[0] == 0 and not (tuned / "scored").exists()
-    grouped = lambda: set(pd.read_parquet(tuned / "gold.parquet").groupby("cluster_id")[uid].agg(frozenset))
-    added = grouped()
-    assert say(*off)[0] == 0 and grouped() == added  # indexed whole, from every part stored: nothing the run or the batch merged lost
-
-    shutil.rmtree(ws / "scored")  # a workspace its run wrote before scored/ existed: indexed once, from the pairs it stored
-    assert say("list", "scored", *at)[1]["total"] > 0
-    part = next((ws / "scored").glob("part-*.parquet"))
-    built = part.stat().st_mtime_ns
-    assert say("describe", "results", *at)[0] == 0 and part.stat().st_mtime_ns == built
-
-
-def test_a_value_written_two_ways_is_one_once_prepared_so_and_describe_records_offers_the_step(say, tmp_path, population, monkeypatch):
-    """A name in hiragana, a customer ID and phone in full-width digits, a postal code written 100-0001: the same person
-    once the mapping prepares them as one (the project's does), two people when it doesn't; a workspace whose mapping
-    doesn't is told so on its file, with the command that adds the step."""
-    import shlex
-    from er import cli
-    s, p, g = population
-    uid = s.data.unique_id
-    monkeypatch.chdir(tmp_path)
-    hira = lambda v: v if pd.isna(v) else "".join(chr(ord(c) - 0x60) if "ァ" <= c <= "ヶ" else c for c in v)
-    wide = lambda v: "".join(chr(ord(c) + 0xFEE0) if c.isdigit() else c for c in v)
-    one = g.df[g.df[["FULL_NAME_KANA", "CIF_ID", "PHONE_NUM_4", "POST_CD"]].notna().all(axis=1)].iloc[0]
-    twin = one.copy()
-    twin[uid] = "9" * len(one[uid])
-    for c in ("FULL_NAME_KANA", "O_PERSON_NAME_KANA", "LAST_NAME_KANA", "GIVEN_NAME_KANA"):
-        twin[c] = hira(one[c])
-    twin["CIF_ID"], twin["PHONE_NUM_4"], twin["POST_CD"] = wide(one["CIF_ID"]), wide(one["PHONE_NUM_4"]), f"{one['POST_CD'][:3]}-{one['POST_CD'][3:]}"
-    pd.concat([g.df, twin.to_frame().T], ignore_index=True).astype({c: "string" for c in g.df.columns}).to_parquet("all.parquet", index=False)
-    def same(ws: str) -> bool:  # the two found as one: joined by a rule, or at the line (a workspace merges nothing before people check)
-        pairs = pd.read_parquet(Path(ws) / "scored")
-        pair = pairs[(pairs[f"{uid}_l"] == min(one[uid], twin[uid])) & (pairs[f"{uid}_r"] == max(one[uid], twin[uid]))]
-        return bool(len(pair)) and bool(pair["rule"].notna().any() or (pair["match_weight"] >= p.fs.min_match_weight).any())
-
-    say("create", "workspace", "folds")
-    assert say("resolve", "records", "all.parquet", "--workspace", "workspaces/folds")[0] == 0
-    assert same("workspaces/folds")  # the project's mapping: written two ways, read as one
-
-    say("create", "workspace", "plain")
-    at = ("--workspace", "workspaces/plain")
-    assert say("set", "preparation", "phone=nope", *at)[1]["error"] == "nope: no such step"
-    steps = {d.name: d.normalize for d in s.standardize.derived}
-    names, digits = ("full_name", "person_name", "given_name", "company_name", "any_name"), ("phone", "postal_code", "customer_id", "birth_date")
-    assert say("set", "preparation", *(f"{f}={','.join(x for x in steps[f] if x != 'katakana')}" for f in names), *(f"{f}=" for f in digits), *at)[0] == 0  # as written
-    assert say("resolve", "records", "all.parquet", *at)[0] == 0
-    assert not same("workspaces/plain")  # prepared as they are written: two people
-    assert say("describe", "workspace", "workspaces/plain")[1]["rerun_owed"] is False and cli.run_pipeline("workspaces/plain").endswith("final.toml")
-    say("load", "records", "all.parquet", *at)
-    for _ in range(10):  # each of the file's columns written two ways: its fix, as a person would paste it
-        hint = next((x["hint"] for x in say("describe", "records", *at)[1]["slots"] if (x.get("hint") or {}).get("act") == "prepare"), None)
-        if hint is None:
-            break
-        assert hint["says"].endswith("the same value written two ways won't match") and hint["button"] == "Read as one" and hint["example"]
-        assert say(*shlex.split(hint["command"])[1:])[0] == 0
-    columns = Path("workspaces/plain/columns.toml").read_text(encoding="utf-8")
-    assert '"strip_separators"' in columns and '"katakana"' in columns and hint is None
-    told = say("describe", "workspace", "workspaces/plain")[1]
-    assert told["rerun_owed"] is True and told["next"][0]["command"].startswith("nayose rerun records")  # changed since the run: said first
-    assert say("rerun", "records", *at)[0] == 0
-    assert say("describe", "workspace", "workspaces/plain")[1]["rerun_owed"] is False
-    assert same("workspaces/plain")  # its mapping set right, by the file's own hints: one person
-
-
-def test_the_file_given_last_is_the_one_a_run_reads_even_one_the_workspace_held_already(say, tmp_path, population):
-    from er import folder
-    s, p, g = population
-    cut = len(g.df) * 3 // 5  # two files of different sizes: which one a run read, told by its records
-    g.df.iloc[:cut].to_parquet(tmp_path / "a.parquet", index=False)
-    g.df.iloc[cut:].to_parquet(tmp_path / "b.parquet", index=False)
-    assert say("create", "workspace", "w", "--home", tmp_path)[0] == 0
-    ws = tmp_path / "w"
-    for f in ("a", "b", "a"):  # A again, after B: held already, copied nothing
-        code, r = say("load", "records", tmp_path / f"{f}.parquet", "--workspace", ws)
-    assert code == 0 and not r["copied"] and folder.last(ws).name == "0001-a" and [x["last"] for x in folder.loaded(ws)] == [True, False]
-    assert say("resolve", "records", "--workspace", ws)[0] == 0
-    assert say("describe", "workspace", ws)[1]["records"] == cut  # A's records, as step 2 said
-    g.df.iloc[:10].to_parquet(tmp_path / "a_head.parquet", index=False)
-    code, r = say("add", "records", tmp_path / "a_head.parquet", "--workspace", ws)  # in the run already: its copy goes
-    assert code == 0 and r["summary"][0][0] == "nothing new" and len(folder.parts(ws)) == 2 and folder.last(ws).name == "0001-a"  # A, given before it, still the one a run reads
-    (ws / "inputs" / "last").unlink()  # a workspace loaded before the part given last was kept: its newest
-    assert folder.last(ws).name == "0002-b"
-
-
 @pytest.mark.skipif(os.name == "nt", reason="Linux's mount table and its paths: on Windows every folder is a disk (io.object_store)")
 def test_a_workspace_on_object_storage_is_refused_and_one_on_a_disk_is_not(say, tmp_path, monkeypatch):
     from er import folder, io
@@ -763,13 +278,7 @@ def test_a_workspace_on_object_storage_is_refused_and_one_on_a_disk_is_not(say, 
     with pytest.raises(InputError, match=r"object storage \(gcsfuse\)"):
         with folder.run_lock(root / "bucket" / "w"):
             pass
-    (root / "bucket" / "v").mkdir(parents=True)
-    with pytest.raises(InputError, match="no lock holds there"):
-        with folder.writing(root / "bucket" / "v" / "columns.toml"):
-            pass
     assert not (root / "bucket" / "w").exists()  # refused before anything is written
-    code, e = say("create", "workspace", "x", "--home", root / "bucket")
-    assert code == 2 and "object storage" in e["error"] and not (root / "bucket" / "x").exists()  # refused where it is made, not at its first write
     assert io.object_store(root / "over" / "w") == "s3fs"
     for disk in (root / "my share" / "w", root / "local" / "w", root / "bucket" / "disk" / "w"):  # NFS, a local disk, a disk mounted inside the bucket
         with folder.run_lock(disk, make=True):
@@ -778,65 +287,31 @@ def test_a_workspace_on_object_storage_is_refused_and_one_on_a_disk_is_not(say, 
     assert io.object_store(root / "bucket") is None
 
 
-def test_people_s_line_and_decisions_stand_against_an_old_trial_an_old_sheet_a_late_write_and_a_file_sent_again(say, tmp_path, population, monkeypatch):
-    from er import folder, inbox
-    from er.config import dump_pipeline
+def test_people_s_latest_decision_stands_a_file_given_twice_changes_nothing_and_a_full_run_reads_them_back(say, tmp_path, population, monkeypatch):
     from er.review_state import applied
     s, p, g = population
     uid, ent = s.data.unique_id, s.data.entity_id
     l, r = f"{uid}_l", f"{uid}_r"
-    dump_pipeline(replace(p, trust=replace(p.trust, checks=8, watch=3)), s.chains, tmp_path / "small.toml")  # a sample of 8, to test on 492 records
     g.df.to_parquet(tmp_path / "theirs.parquet", index=False)
     monkeypatch.chdir(tmp_path)
-    ws, pipe, at = tmp_path / "workspaces" / "w", ("--workspace", "workspaces/w", "--pipeline", "small.toml"), ("--workspace", "workspaces/w")
+    ws, at = tmp_path / "workspaces" / "w", ("--workspace", "workspaces/w")
     truth = g.truth.set_index(uid)[ent]
     latest = lambda a, b: applied(ws, uid).set_index([l, r])["decision"].get((a, b))
-    say("create", "workspace", "w")
-    say("load", "records", "theirs.parquet", *at)
-    assert say("resolve", "records", *pipe)[0] == 0
-    sample = pd.read_parquet(ws / "review.parquet").query("why == 'decide'")
-    sample.assign(decision=np.where(sample[l].map(truth) == sample[r].map(truth), "match", "no_match")).to_parquet(tmp_path / "decided.parquet")
-    assert say("apply", "decisions", "--file", "decided.parquet", *pipe)[0] == 0 and say("lower", "trust", *pipe)[0] == 0 and folder.method(ws)["trust"] == 12.0
-
-    below = pd.read_parquet(ws / "proposed").sort_values("match_weight").iloc[-1]  # the next range's best pair, not decided
-    assert say("decide", "pair", below[l], below[r], "no_match", *at)[0] == 0  # marked different on the sheet, not applied
-    code, said = say("lower", "trust", *pipe)
-    assert code == 2 and "marked different on the review sheet" in said["error"] and folder.method(ws)["trust"] == 12.0  # the line stays
-    assert say("decide", "pair", below[l], below[r], "clear", *at)[0] == 0
-
-    assert say("try", "method", "--line", "9", *pipe)[0] == 0  # trial 1: the method with today's line, 12
-    link = pd.read_parquet(ws / "matches").sort_values("match_weight").iloc[0]  # a link above the line, merged without people: a spot-check finds it false
-    pd.DataFrame({l: [link[l]], r: [link[r]], "decision": ["no_match"]}).to_parquet(tmp_path / "false.parquet")
-    assert say("apply", "decisions", "--file", "false.parquet", *pipe)[0] == 0
-    assert say("rerun", "records", *pipe)[0] == 0  # the pair is now in neither matches nor proposed: still counted
-    assert say("describe", "workspace", "workspaces/w", "--pipeline", "small.toml")[1]["trust"]["above"]["false"] == 1
-    assert say("raise", "trust", *pipe)[0] == 0 and folder.method(ws)["trust"] == 20.0
-    assert say("adopt", "method", "--trial", "1", *pipe)[0] == 0 and folder.method(ws)["trust"] == 20.0  # people's line, not the trial's
-
-    same = sample[sample[l].map(truth) == sample[r].map(truth)].iloc[0]  # a pair decided same, on the sheet as applied
-    assert say("decide", "pair", same[l], same[r], "match", *at)[0] == 0 and say("apply", "decisions", *pipe)[0] == 0
+    assert say("resolve", "records", "theirs.parquet", *at)[0] == 0
+    sheet = pd.read_parquet(ws / "review.parquet")
+    same = sheet[sheet[l].map(truth) == sheet[r].map(truth)].iloc[0]
+    pd.DataFrame({l: [same[l]], r: [same[r]], "decision": ["match"]}).to_parquet(tmp_path / "same.parquet")
     pd.DataFrame({l: [same[l]], r: [same[r]], "decision": ["no_match"]}).to_parquet(tmp_path / "other.parquet")  # another person: different
-    assert say("apply", "decisions", "--file", "other.parquet", *pipe)[0] == 0 and latest(same[l], same[r]) == "no_match"
-    assert say("apply", "decisions", *pipe)[0] == 0 and latest(same[l], same[r]) == "no_match"  # the sheet again: the old "same" never comes back
-    links = say("describe", "entity", same[l], *at)[1]["links"]
-    assert not [x for x in links if {x["id_l"], x["id_r"]} == {same[l], same[r]} and x["by"] == "people: match"]  # its latest only
+    assert say("apply", "decisions", "--file", "same.parquet", *at)[1]["matches"] == 1 and latest(same[l], same[r]) == "match"
+    assert say("apply", "decisions", "--file", "same.parquet", *at)[1]["decisions"] == 0  # given twice: nothing new
+    assert say("apply", "decisions", "--file", "other.parquet", *at)[0] == 0 and latest(same[l], same[r]) == "no_match"  # the latest stands
 
-    m = {"join": "and", "when": [{"points": 12}]}
-    folder.write_method(ws, {**folder.method(ws), "merge": m})
-    assert folder.method(ws)["merge"] == m  # merge conditions are a table: written as one
-    before = (ws / folder.METHOD).read_text(encoding="utf-8")
-    real = folder.stage
-    monkeypatch.setattr(folder, "stage", lambda *a, **k: (_ for _ in ()).throw(OSError("disk full")))  # the write fails
-    with pytest.raises(OSError):
-        say("set", "merging", "--conditions", json.dumps({"join": "or", "when": [{"points": 20}]}), *pipe)
-    assert (ws / folder.METHOD).read_text(encoding="utf-8") == before  # the conditions and the entities still agree
-    monkeypatch.setattr(folder, "stage", real)
-
-    box = tmp_path / "inbox" / "decisions"
-    box.mkdir(parents=True)
-    for i, (name, decision) in enumerate((("a.csv", "match"), ("b.csv", "no_match"), ("a2.csv", "match"))):  # a, then b, then a's file again to undo b
-        f = box / name
-        f.write_text(f"{l},{r},decision\n{below[l]},{below[r]},{decision}\n", encoding="utf-8")
-        os.utime(f, (1_000_000 + i, 1_000_000 + i))
-        assert inbox.one_pass(ws, tmp_path / "inbox", 1, [], lambda *a, **k: None, settle=0)
-        assert latest(below[l], below[r]) == decision
+    found = pd.concat([pd.read_parquet(ws / "matches"), pd.read_parquet(ws / "proposed")]).sort_values("match_weight", ascending=False)
+    link = found[found[l].map(truth) == found[r].map(truth)].iloc[0]  # a pair the run joined or proposed: people say different
+    pd.DataFrame({l: [link[l]], r: [link[r]], "decision": ["no_match"]}).to_parquet(tmp_path / "false.parquet")
+    assert say("apply", "decisions", "--file", "false.parquet", *at)[0] == 0
+    assert say("resolve", "records", "theirs.parquet", *at, "--overwrite")[0] == 0  # a full run reads people's decisions back
+    for t in ("matches", "proposed"):
+        x = pd.read_parquet(ws / t)
+        assert not ((x[l] == link[l]) & (x[r] == link[r])).any(), t  # never joined or proposed again
+    assert latest(same[l], same[r]) == "no_match"

@@ -852,7 +852,7 @@ def restrict(p: Pipeline, present: set[str]) -> tuple[Pipeline, list[str]]:
     def lacking(what: str, needs: set[str]) -> InputError:  # refused in words: which fields would let it run, and how to give one
         missing = sorted(needs - present)
         return InputError(f"{what}: each way reads a field this file lacks ({', '.join(missing)})",
-                          fix=f"map one to a column: in Your data, or nayose set columns {missing[0]}=COLUMN --workspace …; or give the file one")
+                          fix=f"map one to a column in config/settings.toml [columns] ({missing[0]} = \"COLUMN\"), or give the file one")
     stages = []
     for s in p.rules.stages:
         keep = []

@@ -286,7 +286,7 @@ def u_bound(model: FSModel, c: Comparison, records: Records, con: duckdb.DuckDBP
 
 SCORED_U: dict[tuple[str, int], dict[str, float]] = {}  # (FSModel.u_keys() value, fingerprint of what it reads) → u per level
 # shortcut: one entry per comparison and file this process scores, never dropped; fine for a run or choose.py, a
-# process that scores file after file needs a limit (nayose open ui runs those in processes of their own)
+# long-lived process that scores file after file needs a limit
 U_KEPT = 64  # sampled u a workspace keeps (folder.U_SAMPLED), the newest: one per comparison, sample and file, and a few of each
 U_CODE = hashlib.sha256(b"".join((Path(__file__).parent / f).read_bytes() for f in ("match.py", "strings.py", "config.py"))).hexdigest()[:16]
 

@@ -1,59 +1,45 @@
 """nayose (名寄せ: gathering each customer's records under one name), the command line, in kubectl's grammar: a verb,
 then a noun, then its parameters.
 
-    nayose check records customers.parquet
     nayose resolve records customers.parquet --workspace workspaces/customers
-    nayose list pairs --workspace workspaces/customers --open
+    nayose add records new.parquet --workspace workspaces/customers
+    nayose build index --workspace workspaces/customers
+    nayose match record FULL_NAME_KANA=ヤマダタロウ PHONE_NUM_4=1234 --workspace workspaces/customers
 
 Each command is declared once, in COMMANDS: its verb and noun, what it does, its parameters, the fields of its result,
-an example, and the function that runs it. The parser, the reference (docs/commands.md, reference()) and the UI's
-forms are all built from those declarations. A command emits events: each step as it finishes (and, as JSON, how far a
-file has been read: progress), then one result, or an error (er.emit). --format text renders them for a person (er.brief); --format json writes each as one JSON object per line. Every result
-names the commands that usually come next. Exit codes: 0; 2, a mistake people fix, in two lines (what is wrong, and
-how to fix it); 75, the workspace is busy: try again later; 1, a pass of serve inbox stopped on a file.
+an example, and the function that runs it. The parser and the reference (docs/commands.md, reference()) are built
+from those declarations. A command emits events: each step as it finishes (and, as JSON, how far a file has been
+read: progress), then one result, or an error (er.emit). --format text renders them for a person (er.brief);
+--format json writes each as one JSON object per line. Every result names the commands that usually come next.
+Exit codes: 0; 2, a mistake people fix, in two lines (what is wrong, and how to fix it); 75, the workspace is busy:
+try again later.
 """
 import argparse
 import contextlib
-import functools
 import gc
-import hashlib
 import json
 import math
-import os
-import shlex
 import shutil
 import sys
-import tempfile
 from collections.abc import Callable
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import get_args
 
 import duckdb
-import numpy as np
 import pandas as pd
-import pyarrow.compute as pc
 
-from er import details, folder, inbox, index, intake
-from er.io import alive, read_parquet, replace_text
-from er.config import COPIES, InputError, Normalizer, Pipeline, adjust, lit, load_pipeline, q, restrict, sources_text, toml_of, widen
-from er.brief import WARN, merging_words, nayose, num, thin, word
+from er import folder, index
+from er.io import read_parquet, replace_text
+from er.config import InputError, adjust, load_pipeline, widen
+from er.brief import merging_words, nayose
 from er.emit import BATCH_ORDER, RUN_ORDER, Emit, plain, rows_told
 from er.folder import Busy
-from er.hints import DESCRIBING, FLAG, KEPT, SLOT_FIELD, hints, read_of, readable
-from er.report import no_run, describe_entity, describe_matching, describe_workspace, fill_rates, key_how, rule_how
-from er.explain import compare_records, describe_key, describe_method, entity_pairs, explain_pair, list_patterns, run_model
-from er.review_state import applied, review_workload, trust_state
-from er.source import describe, find, lexicon, open_source
-from er.kind import sheet_parts
+from er.hints import readable
 from er.match import review_floor
-from er.results import apply_merging, check_merging, describe_merging, describe_results, list_entities, list_scored, merged_links, show_records, with_merging
+from er.results import apply_merging, describe_results
 from er.strings import connect
-from er.run import Run, run_config, size_bytes
-from er.trial import trial
-from er.sizes import choose, grow
-from er.settings import (COLUMNS, SPECIAL, Settings, add_feature, added_of, beside, columns_file, counted_once, features_of, fit_to_file, load_settings, names_by_kind, offers,
-                         own_columns, placements, present_fields, remove_feature, set_columns, set_features, set_name_kinds, settings_path, slots)
+from er.run import Run
+from er.settings import (added_of, beside, columns_file, load_settings)
 
 
 @dataclass(frozen=True)
@@ -88,10 +74,6 @@ class Command:
     @property
     def name(self) -> str:
         return f"{self.verb} {self.noun}"
-
-
-RERUN_OWED = "the run read its records with another mapping, method or pipeline: it reads them so once it runs again"  # a result's field, as each command declares it
-READ = "what the reader found (er.intake): rows, values per encoding, fixed (controls, placeholders, numbers, damaged, lists, first of several), proposed and waiting: repairs by kind (realign, garbled, encoding) for accept repairs, with examples; unread rows"
 
 
 # ---------- results in short, for a person (--verbose: every field, as text() writes it) ----------
@@ -131,12 +113,9 @@ def rows(frame: pd.DataFrame) -> list[dict]:
 
 
 def next_after(out: Path, waiting: int | None = None) -> list[dict]:
-    """What usually follows a run: the pairs waiting for people, the person/company answers open, then what it found."""
-    found = [dict(command=nayose("open", "ui", "--workspace", out), why=f"review the {waiting:,} pairs in the browser"),
-             dict(command=nayose("list", "scored", "--workspace", out, "--status", "waiting"), why="or list them here, best first")] if waiting else []
-    if (kinds := sheet(out, "kind_review.parquet")) is not None and (n := int(((sheet_parts(kinds) == "decide") & kinds["kind"].isna()).sum())):
-        found.append(dict(command=nayose("list", "kinds", "--workspace", out, "--open"), why=f"{n:,} flagged person or company to check, surest first"))
-    return found + [dict(command=nayose("describe", "results", "--workspace", out), why="what the run found")]
+    """What usually follows a run: people's decisions on the pairs waiting (review.parquet), then the index to look records up in."""
+    found = [dict(command=nayose("apply", "decisions", "--file", "DECISIONS", "--workspace", out), why=f"once people decide the {waiting:,} pairs of review.parquet")] if waiting else []
+    return found + [dict(command=nayose("build", "index", "--workspace", out), why="look records up")]
 
 
 def run_facts(run: Run, out: Path) -> dict | None:  # what a person reads first after a run; none if it can't be read (the run stands either way)
@@ -160,135 +139,6 @@ def after_run(run: Run, out: Path) -> dict:
                 wrote=[str(out / f) for f in wrote], next=next_after(out, facts and facts["waiting"]))
 
 
-def loaded(a: dict, verb: str) -> dict:  # a command's file: the one named, else the workspace's file loaded last
-    if a["input"]:
-        return a
-    if not a.get("workspace") or not (part := folder.last(Path(a["workspace"]))):
-        raise InputError(f"no file to {verb}", fix=f"name one: nayose {verb} records FILE; or load one into the workspace first")
-    return {**a, "input": str(part)}
-
-
-def check_records(a: dict, emit: "Emit") -> dict:
-    s, p, _ = setup(a)
-    a = loaded(a, "check")
-    with readable(a["input"], s, emit=emit) as path:
-        return checked(a, s, p, path, emit)
-
-
-def checked(a: dict, s, p, path: str, emit: "Emit") -> dict:
-    part = folder.last(Path(a["workspace"])) if a.get("workspace") else None
-    own = part is not None and Path(a["input"]).resolve() == part.resolve()  # the file a run given none reads
-    run = Run(p, s, echo=emit.step, told=emit.progress)
-    run.load(path)
-    plan = run.budget(stop=False)
-    fill = fill_rates(run).set_index("field")
-    shown = plan[(plan["oversized_blocks"] > 0) | plan["name"].isin(plan.nlargest(5, "per_record")["name"])].sort_values("per_record", ascending=False)
-    fields = [dict(field=f, filled=fill.loc[f, "filled"], looks_right=fill.loc[f, "looks_right"], top_value=fill.loc[f, "top_value"],
-                   columns=sources_text(run.present[f])) if f in fill.index else dict(field=f, filled=None, looks_right=None, top_value=None, columns=None)
-              for f in run.fields]
-    keys = [dict(key=x.name, per_record=x.per_record, largest_block=x.largest_block, oversized_blocks=x.oversized_blocks,
-                 oversized_records=x.oversized_records) for x in shown.itertuples()]
-    limit, spill = run.con.execute("SELECT current_setting('memory_limit'), current_setting('temp_directory')").fetchall()[0]
-    needed, fit, read = int(plan["normal"].sum()), run.capacity(), read_of(Path(path))
-    capacity = dict(memory_limit_gb=round(size_bytes(limit) / 2**30, 2), spill_folder=spill, spill_free_gb=round(run.spill_room() / 2**30, 1),
-                    pairs_needed=needed, pairs_fit=fit, headroom=round(fit / needed, 1) if needed else None)
-    try:  # what describe records said of the file's fields, kept with a workspace's file: its hints, while nothing they rest on changed
-        k = json.loads((Path(path) / KEPT).read_text(encoding="utf-8"))
-        kept = {f["field"]: f.get("hint") for f in k["described"]["fields"]} if k["key"] == described_key(a, Path(path)) else {}
-    except (OSError, ValueError, KeyError, TypeError):
-        kept = {}
-    return plain(dict(records=run.n, fields=fields, turned_off=run.disabled, keys=keys, oversized_from=p.fs.budget.min_oversized(), notes=run.notes, read=read,
-                      capacity=capacity, ready=ready_for(run, fields, plan, capacity, read, kept),
-                      next=[dict(command=nayose("resolve", "records", *([] if own else [a["input"]]), "--workspace", a.get("workspace") or "<workspace>"),
-                                 why="find matches")]))
-
-
-def ready_for(run: Run, fields: list[dict], plan: pd.DataFrame, capacity: dict, read: dict | None, hints: dict | None = None) -> dict:
-    """Whether a run of the file checked would go through, and what may hurt it: what would stop it (its pairs over
-    the room DuckDB has; a mistake in the file or the mapping stops the check itself, with its fix), and what to
-    look at first (a field nearly empty, or whose values don't look like it, said as describe records' hint where it
-    gave one; repairs waiting; rows unread; records set aside; little room to spare). Each a sentence, with what to do."""
-    stops, warns = [], []
-    needed, fit = capacity["pairs_needed"], capacity["pairs_fit"]
-    if needed > fit:  # the numbers themselves: the headroom shown is rounded
-        most = ", ".join(f"{x.name} {x.normal:,}" for x in plan.nlargest(3, "normal").itertuples())
-        stops.append(dict(what=f"the pairs ({capacity['pairs_needed']:,}) are more than fit in memory and the spill disk ({capacity['pairs_fit']:,}); the most: {most}",
-                          fix="give DuckDB more room: --compute memory_limit=… temp_directory=<a disk with space>"))
-    elif 2 * needed > fit:
-        warns.append(dict(what=f"the pairs fill {needed / fit:.0%} of the room DuckDB has", fix="a larger file may not fit: give it more memory or spill disk"))
-    warns += [dict(what=x, fix="map a fuller column, if the file has one") for x in thin({f["field"]: f["filled"] for f in fields if f["filled"] is not None},
-                                                                                   run.pipeline.fields.one_of, lambda f: {c for alt in run.present.get(f) or () for c in alt})]
-    for f in fields:
-        if (h := (hints or {}).get(f["field"])) and h["level"] == "warn" and f["filled"]:
-            warns.append(dict(what=f"{word(f['field'])}: {h['says']}", fix=h.get("command") or h["fix"]))
-        elif f["looks_right"] is not None and f["filled"] and f["looks_right"] < WARN:
-            warns.append(dict(what=f"only {f['looks_right']:.0%} of {word(f['field'])} values look right", fix=f"check its column ({f['columns']})"))
-    if read and read["waiting"]:
-        warns.append(dict(what=f"repairs wait: {', '.join(f'{n:,} {k}' for k, n in read['waiting'].items())}", fix="see them with describe records, then accept repairs KIND"))
-    if read and read["unread"]:
-        warns.append(dict(what=f"{read['unread']:,} rows couldn't be read", fix="they are in unread.parquet in the file's part: fix the file and load it again"))
-    if aside := run._count("set_aside"):
-        warns.append(dict(what=f"{aside:,} records are set aside (no ID, or one ID with different content)", fix="the run leaves them out: set_aside/ says why"))
-    return dict(ok=not stops, stops=stops, warns=warns)
-
-
-def list_columns(a: dict, emit: "Emit") -> dict:
-    path = columns_file(a.get("workspace")) or settings_path()
-    found = []
-    for f, spec in toml_of(path)["columns"].items():
-        src = spec["sources"] if isinstance(spec, dict) else spec
-        alts = [[src]] if isinstance(src, str) else src
-        options = " · ".join(f"{k} {v if isinstance(v, str) else ' '.join(v)}" for k, v in spec.items() if k != "sources") if isinstance(spec, dict) else ""
-        found.append(dict(field=f, columns=", ".join(" + ".join(x) for x in alts), options=options))
-    there = ["--workspace", a["workspace"]] if a.get("workspace") else []
-    return dict(settings=str(path), own=path.name == COLUMNS, columns=found, rerun_owed=rerun_owed(a),
-                next=[dict(command=nayose("set", "columns", "FIELD=COLUMN", *there), why="map a field to other columns"),
-                                                         dict(command=nayose("check", "records", "<file>"), why="check a file with this mapping")])
-
-
-def set_columns_(a: dict, emit: "Emit") -> dict:
-    s, p, _ = setup(a)
-    known = {*p.fields.declared(), *SPECIAL, *s.columns}
-    mapping = {}
-    for item in a["mapping"]:
-        f, sep, cols = item.partition("=")
-        if not sep or not f:
-            raise InputError(f"{item}: write FIELD=COLUMNS", fix="for example phone=TEL4, or person_name=NAME_KANA,SEI+MEI: "
-                             "a comma between fallbacks, + between columns joined, nothing after = to remove the field")
-        if f not in known:
-            raise InputError(f"{f}: no such field", fix=f"the fields: {', '.join(sorted(known))}")
-        mapping[f] = tuple(tuple(c.strip() for c in alt.split("+")) for alt in cols.split(",")) if cols else ()
-    write_mapping(a.get("workspace"), mapping)
-    return {**list_columns(a, emit), "next": [dict(command=nayose("check", "records", "<file>"), why="check a file with the new mapping")]}
-
-
-def write_mapping(ws: str | None, mapping: dict, update: dict | None = None) -> None:  # the workspace's own mapping (else the project's), rewritten by settings.set_columns
-    if ws and not Path(ws).is_dir():
-        raise InputError(f"no workspace at {ws}", fix="create it: nayose create workspace NAME")
-    with folder.writing(Path(ws) / COLUMNS if ws else settings_path()):
-        if ws and not columns_file(ws):  # a workspace made before it kept its own mapping starts from the project's
-            (Path(ws) / COLUMNS).write_text(own_columns(settings_path()), encoding="utf-8")
-        set_columns(columns_file(ws) or settings_path(), mapping, update=update)
-
-
-def set_preparation(a: dict, emit: "Emit") -> dict:
-    s, steps, mapping, update = settings_for(a), [x for x in get_args(Normalizer) if x not in COPIES], {}, {}  # a comparison's own copy: no feature's
-    for item in a["mapping"]:
-        f, sep, said = item.partition("=")
-        chosen = [x.strip() for x in said.split(",") if x.strip()]
-        if not sep or not f:
-            raise InputError(f"{item}: write FIELD=STEPS", fix="for example phone=nfkc,strip_separators: the steps in order, nothing after = for none")
-        if f not in s.columns or f in SPECIAL:
-            raise InputError(f"{f}: no field the mapping prepares", fix=f"its fields: {', '.join(x for x in s.columns if x not in SPECIAL)}")
-        if bad := [x for x in chosen if x not in steps]:
-            raise InputError(f"{', '.join(bad)}: no such step", fix=f"the steps: {', '.join(steps)}")
-        mapping[f], update[f] = s.columns[f], {"normalize": chosen or None}
-    ws = a.get("workspace")
-    write_mapping(ws, mapping, update)
-    return {**list_columns(a, emit), "next": [dict(command=nayose("rerun", "records", "--workspace", ws), why="match again, its values prepared so")] if ws else
-            [dict(command=nayose("check", "records", "<file>"), why="check a file with the new preparation")]}
-
-
 def model_from(path: str | None) -> dict | None:
     if not path:
         return None
@@ -306,240 +156,8 @@ def given(a: dict, emit: "Emit | None" = None) -> str:
     if a["input"]:
         return str(folder.take_in(ws, a["input"], s.input, s.paths["reference"], progress=told)[0])
     if not (part := folder.last(ws)):
-        raise InputError(f"no records file in {ws}", fix=f"load one: nayose load records FILE --workspace {ws}; or name it here")
+        raise InputError(f"no records file in {ws}", fix=f"name it: nayose resolve records FILE --workspace {ws}")
     return str(folder.fresh(part, s.input, s.paths["reference"], told))
-
-
-def described_key(a: dict, part: Path) -> str | None:
-    """All a workspace part's description rests on, as one hash: the part's files as read (their SHA-256, and the repairs
-    accepted), the workspace's mapping and method, the settings and the pipeline, the reference names and places, the
-    command's words, the code and its libraries.
-    None for anything but a workspace's part: a file read for one command alone is read again anyway."""
-    r, ws = intake.report(part), a.get("workspace")
-    if not r or not ws or not Path(a["input"]).expanduser().is_dir():
-        return None
-    s = settings_for(a)
-    ref = sorted((f.name, f.stat().st_size, f.stat().st_mtime_ns) for f in Path(s.paths["reference"]).glob("*") if f.is_file())
-    words = json.dumps([[x["sha256"], x.get("versions")] for x in r["files"]] + [r["accepted"], str(a["input"]), str(ws), ref, DESCRIBING])
-    files = (settings_path(), columns_file(ws), Path(a.get("pipeline") or s.root / "config" / "final.toml"), Path(ws) / folder.METHOD)
-    rests = [words.encode(), *(Path(f).read_bytes() if f and Path(f).is_file() else b"" for f in files)]  # each in its place: one missing is never another
-    return hashlib.sha256(b"\0".join(rests)).hexdigest()
-
-
-def describe_records(a: dict, emit: "Emit") -> dict:
-    """A workspace part's description is kept with it (KEPT) and given again while nothing it rests on changed
-    (described_key): opening step 2 reads no record. Anything else is described as it comes. O(1) kept; else describe's."""
-    a = loaded(a, "describe")
-    with readable(a["input"], settings_for(a), emit=emit) as path:
-        part = Path(path)
-        key, kept = described_key(a, part), part / KEPT
-        try:  # a copy kept never fails the command: unreadable, it is made again
-            old = json.loads(kept.read_text(encoding="utf-8")) if key and kept.is_file() else {}
-        except (OSError, ValueError):
-            old = {}
-        if key and old.get("key") == key:
-            d = old["described"]
-        else:
-            d = plain(described({**a, "given": a["input"], "input": path}))
-            if key and described_key(a, part) == key:  # nothing changed while it was read (another client's mapping), and the part is still there
-                with contextlib.suppress(OSError):  # another describe writing it, a folder people can only read: kept another time
-                    replace_text(kept, json.dumps({"key": key, "described": d}, ensure_ascii=False))
-        return {**d, "read": read_of(part)}
-
-
-def described(a: dict) -> dict:
-    (s, p, _), there = setup(a), ["--workspace", a["workspace"]] if a.get("workspace") else []
-    feats = features_of(a.get("workspace"))
-    script = {path: f.get("script") for g in feats for f in g["features"] for path, _ in slots([dict(g, features=[f])])}
-    def field(path: str, x: dict) -> str | None:  # whose pattern a slot's values should match: none in a script the patterns aren't written in
-        if script[path] not in (None, "kana"):
-            return None
-        return (None if x.get("added") else x.get("field")) or SLOT_FIELD.get(x.get("role") or x.get("type"))
-    con = connect(s.compute)
-    part = Path(a["input"]) if intake.report(Path(a["input"])) else None  # a workspace's part: its columns' own facts kept with it
-    d = describe(a["input"], con, s.columns, s.detect, lex=lexicon(s.paths["reference"], tuple(s.standardize.kana_fold.items())), keep=part,
-                 slots={path: x["columns"] for path, x in slots(feats)},
-                 slot_patterns={**{path: s.detect[f] for path, x in slots(feats) if (f := field(path, x)) in s.detect},
-                                **{path: FLAG for path, x in slots(feats) if x.get("type") == "flag"}})
-    try:  # what a run of this file would turn off, as the run decides it: from the mapping, no record read
-        counted_once(p, present := present_fields(s, [c["column"] for c in d["columns"]]))
-        off = restrict(p, set(present))[1]
-    except InputError as e:
-        off = [str(e)]
-    said = hints(d, con, s, p, feats, a.get("workspace"), field)
-    for x in d["slots"]:
-        x["hint"] = said.get(x["feature"])
-    by_field = {}
-    for path, x in slots(feats):
-        if said.get(path) and (f := field(path, x)):
-            by_field.setdefault(f, said[path])
-    for x in d["fields"]:
-        x["hint"] = by_field.get(x["field"])
-    d = {**d, "features": feats, "placements": placements(feats, d["profile"], d["fit"]), "offers": offers(feats, d["profile"]),
-         "needed": dict(every=list(p.fields.mandatory), one_of=[list(g) for g in p.fields.one_of]), "turned_off": off, "names_by_kind": names_by_kind(s)}
-    found = [f"{x['feature']}={x['column']}" for x in d["placements"]]
-    waiting = (intake.report(Path(a["input"])) or {}).get("proposed", {}) if there else {}
-    fixes = list({h["command"]: h for h in said.values() if h.get("command")}.values())  # one fix a line, the slots' order
-    return {**d, "next": [dict(command=h["command"], why=h["fix"]) for h in fixes] +
-            [dict(command=nayose("accept", "repairs", k, *there), why=f"{n:,} proposed: see them first, in read.examples") for k, n in waiting.items()] +
-            ([dict(command=nayose("set", "feature", *found, *there), why="place what the file's contents suggest")] if found and there else []) +
-            [dict(command=nayose("resolve", "records", *there) if there else nayose("check", "records", a["given"]),
-                  why="find matches in it" if there else "the full check: every record prepared, every key counted")]}
-
-
-def load_records(a: dict, emit: "Emit") -> dict:
-    ws, s = Path(a["workspace"]), settings_for(a)
-    sent = folder.uploaded(ws, a["input"])  # sent by the page: read once, then gone, taken in or refused
-    try:
-        part, copied = folder.take_in(ws, a["input"], s.input, s.paths["reference"], progress=lambda n, whole: emit.progress(n, whole, "rows"),
-                                      shown=lambda kind, x: shown_early(a, emit, kind, x))
-    finally:
-        if sent:
-            folder.remove(sent)
-    return {**describe_records({**a, "input": str(part)}, emit), "loaded": str(part), "copied": copied}
-
-
-def shown_early(a: dict, emit: "Emit", kind: str, x) -> None:
-    """A file as it is read, before its result: its columns' names with the workspace's features around them, then
-    each column's and each feature's share filled and an example in its first chunk (x, as read: missing is null),
-    counted in Arrow, milliseconds. The rest (suggestions, hints, the whole file's numbers) comes with the result.
-    Never what fails a load: what can't be said waits for the result."""
-    try:
-        names = x if kind == "columns" else x.column_names
-        filled = {} if kind == "columns" else {c: pc.is_valid(x[c]).to_numpy(zero_copy_only=False) for c in names}
-        share = lambda mask: float(mask.mean()) if len(mask) else 0.0
-        example = lambda c: next((v for v in x[c].drop_null().slice(0, 1).to_pylist()), None) if c in filled else None
-        def alts(f: dict) -> list:  # a slot's alternatives as the page shows them, its numbers from the chunk where it has one
-            return [dict(columns=list(alt), found=set(alt) <= set(names), filled=share(np.logical_and.reduce([filled[c] for c in alt])) if filled and set(alt) <= set(names) else None,
-                         example=None, looks_right=None) for alt in f["columns"]]
-        def whole(f: dict) -> float | None:  # where any of its alternatives is filled
-            held = [np.logical_and.reduce([filled[c] for c in alt]) for alt in f["columns"] if set(alt) <= set(names)] if filled else []
-            return share(np.logical_or.reduce(held)) if held else None
-        feats = features_of(a["workspace"])
-        d = dict(records=None if kind == "columns" else x.num_rows, columns=[dict(column=c, filled=share(filled[c]) if filled else None, example=example(c)) for c in names],
-                 fields=[], features=feats, placements=[], offers=[], needed=dict(every=[], one_of=[]), turned_off=[], fit={}, profile={}, suggested=[], notes=[],
-                 slots=[dict(feature=path, sources=[list(alt) for alt in f["columns"]], filled=whole(f), example=None, looks_right=None, odd=None, hint=None, alternatives=alts(f))
-                        for path, f in slots(feats)])
-        emit.line(f"{len(names)} columns: {', '.join(names[:8])}{' …' if len(names) > 8 else ''}" if kind == "columns" else f"the first {x.num_rows:,} rows counted", early=d)
-    except Exception:  # a preview, never what fails the load
-        pass
-
-
-def generate_records(a: dict, emit: "Emit") -> dict:
-    from er import auto
-    ws = Path(a["workspace"])
-    if not ws.is_dir():
-        raise InputError(f"no workspace at {ws}", fix="create it: nayose create workspace NAME")
-    text = (a.get("records") or "10000").replace(",", "")
-    if not text.isdecimal() or int(text) < 1:
-        raise InputError(f"--records {a['records']}: not a whole number of 1 or more", fix="a whole number, for example 100000")
-    n, level, (s, p, _) = int(text), a.get("difficulty") or "medium", setup(a)
-    with folder.run_lock(ws):  # a busy workspace refused before generating; load_records takes it again, as this thread holds it
-        for old in ws.glob(".synthetic-*"):  # one a process killed outright left
-            if (pid := old.name.rpartition("-")[2]).isdigit() and not alive(int(pid)):
-                shutil.rmtree(old, ignore_errors=True)
-        tmp = ws / f".synthetic-{os.getpid()}"  # on the workspace's disk; gone whatever happens
-        shutil.rmtree(tmp, ignore_errors=True)
-        tmp.mkdir()
-        try:
-            out = tmp / f"synthetic-{level}-{n}"
-            auto.synthetic(s, p.fields, n, level, out, lambda done: emit.progress(done, n, "records"))
-            return load_records({**a, "input": str(out)}, emit)
-        finally:
-            shutil.rmtree(tmp, ignore_errors=True)
-
-
-def run_pipeline(ws: str | Path | None) -> str | None:  # the pipeline file the workspace's full run used, as its log says (none said: before it did)
-    return next((r.get("pipeline") for r in folder.runs(Path(ws)) if not r.get("part")), None) if ws and Path(ws).is_dir() else None
-
-
-def rerun_owed(a: dict) -> bool:
-    """Whether the workspace's run read its records with another mapping or method than these now, under the pipeline
-    it ran (its state/config.txt, as an increment checks it): the run reads them so once it runs again. No run, or a
-    workspace or method refused where it is read: False."""
-    ran_with = Path(a["workspace"]) / "state" / "config.txt" if a.get("workspace") else None
-    if ran_with is None or not ran_with.is_file():
-        return False
-    try:
-        s, p, _ = setup({**a, "pipeline": a.get("pipeline") or run_pipeline(a["workspace"])})
-    except InputError:
-        return False
-    ran = (folder.rounds(ran_with.parent.parent)[-1:] or [{}])[0].get("method", {})  # the method.toml the run ran: its fit isn't in config.txt
-    return ran_with.read_text(encoding="utf-8") != run_config(p, s) or ran.get("fit") != folder.method(ran_with.parent.parent).get("fit")
-
-
-def list_features(a: dict, emit: "Emit") -> dict:
-    feats = features_of(a.get("workspace"))
-    return dict(features=feats, slots=[dict(feature=path, columns=sources_text(x["columns"])) for path, x in slots(feats)], rerun_owed=rerun_owed(a),
-                next=[dict(command=nayose("set", "feature", "GROUP/FEATURE=COLUMN", *(["--workspace", a["workspace"]] if a.get("workspace") else [])),
-                           why="put a column into a feature")])
-
-
-def set_feature(a: dict, emit: "Emit") -> dict:
-    values = {}
-    for item in a["mapping"]:
-        path, sep, cols = item.partition("=")
-        if not sep or not path:
-            raise InputError(f"{item}: write GROUP/FEATURE=COLUMNS", fix="for example \"Name/Full name/Family name=SEI\": a comma between "
-                             "fallbacks, + between columns joined, nothing after = for no column")
-        values[path] = tuple(tuple(c.strip() for c in alt.split("+")) for alt in cols.split(",")) if cols else ()
-    with folder.writing(Path(a["workspace"]) / COLUMNS):
-        set_features(a["workspace"], values)
-    return {**list_features(a, emit), "next": [dict(command=nayose("describe", "records", "<file>", "--workspace", a["workspace"]), why="see how the file fills them")]}
-
-
-def set_names(a: dict, emit: "Emit") -> dict:
-    ws = Path(a["workspace"])
-    if not (f := columns_file(ws)):
-        raise InputError(f"{ws} keeps no mapping of its own", fix=f"create it as a workspace first: nayose create workspace {ws.name}")
-    with folder.writing(f):
-        set_name_kinds(f, a["how"] == "by-kind")
-    lines = [x for x in f.read_text(encoding="utf-8-sig").splitlines() if x.split("=")[0].strip() in ("full_name", "person_name", "company_name")]
-    return dict(names=a["how"], mapping=lines, rerun_owed=rerun_owed(a), next=[dict(command=nayose("describe", "records", "--workspace", ws), why="see the names checked again"),
-                                                    dict(command=nayose("resolve", "records", "--workspace", ws), why="match with it")])
-
-
-def add_feature_(a: dict, emit: "Emit") -> dict:
-    with folder.writing(Path(a["workspace"]) / COLUMNS):
-        add_feature(a["workspace"], a["path"], a["type"], a["script"], a["column"])
-    return {**list_features(a, emit), "next": [dict(command=nayose("describe", "records", "<file>", "--workspace", a["workspace"]), why="see how the file fills it")]}
-
-
-def remove_feature_(a: dict, emit: "Emit") -> dict:
-    with folder.writing(Path(a["workspace"]) / COLUMNS):
-        remove_feature(a["workspace"], a["path"])
-    return list_features(a, emit)
-
-
-def accept_repairs(a: dict, emit: "Emit") -> dict:
-    s, ws, kind = settings_for(a), Path(a["workspace"]), a["kind"]
-    have = [(p, r) for p in folder.parts(ws) if (r := intake.report(p))]
-    pick = ([(p, r) for p, r in have if a["part"] in (p.name, p.name.split("-", 1)[0], p.name.split("-", 1)[0].lstrip("0"))] if a["part"]
-            else [(p, r) for p, r in have if r["proposed"].get(kind) and kind not in r["accepted"]][-1:])
-    if not pick:
-        raise InputError(f"{ws}: no loaded file {a['part']}" if a["part"] else f"{ws}: no loaded file has {kind} repairs waiting",
-                         fix=f"the files loaded, and what waits in each: {nayose('describe', 'workspace', ws)}")
-    part, r = pick[0]
-    if kind in r["accepted"] or not r["proposed"].get(kind):
-        raise InputError(f"{part.name}: {'its ' + kind + ' repairs are accepted already' if kind in r['accepted'] else 'no ' + kind + ' repair waits'}",
-                         fix=f"what waits: {nayose('describe', 'records', part, '--workspace', ws)}")
-    with folder.run_lock(ws):
-        new = intake.accept(part, kind, s.input, s.paths["reference"])
-    again = (ws / "gold.parquet").is_file()
-    return dict(part=part.name, kind=kind, repaired=r["proposed"][kind], rows=new["rows"], added=new["rows"] - r["rows"], read=read_of(part),
-                next=[dict(command=nayose("rerun", "records", "--workspace", ws), why="a run read the file before: run it again to use them") if again
-                      else dict(command=nayose("resolve", "records", "--workspace", ws), why="find matches")])
-
-
-def create_workspace(a: dict, emit: "Emit") -> dict:
-    ws = folder.create(Path(a["home"] or "workspaces"), a["name"], own_columns(settings_path()))
-    return dict(workspace=str(ws), next=[dict(command=nayose("load", "records", "<file>", "--workspace", ws), why="give it your records file")])
-
-
-def list_workspaces(a: dict, emit: "Emit") -> dict:
-    home = Path(a["home"] or "workspaces")
-    return dict(home=str(home), workspaces=folder.workspaces(home),
-                next=[dict(command=nayose("create", "workspace", "<name>", *(["--home", home] if a["home"] else [])), why="start a new one")])
 
 
 def resolve_records(a: dict, emit: "Emit") -> dict:
@@ -589,8 +207,7 @@ def match_records(a: dict, emit: "Emit") -> dict:
 def build_index(a: dict, emit: "Emit") -> dict:
     s, p, _ = setup(a)
     ws = Path(a["workspace"])
-    return {**index.build(ws, s, p), "next": [dict(command=nayose("match", "record", "COLUMN=VALUE", "--workspace", ws), why="look a record up"),
-                                              dict(command=nayose("open", "ui", "--workspace", ws), why="or look up in the browser")]}
+    return {**index.build(ws, s, p), "next": [dict(command=nayose("match", "record", "COLUMN=VALUE", "--workspace", ws), why="look a record up")]}
 
 
 def typed_values(items: list[str] | None) -> dict[str, str]:  # COLUMN=VALUE words, by the file's column names
@@ -614,89 +231,7 @@ def match_record(a: dict, emit: "Emit") -> dict:
         raise InputError("give a record's values, or --record ID, one of them", fix="for example: nayose match record PHONE_NUM_4=1234 --workspace W")
     at_least, most = ranked(a, 20)
     found = index.look_up(ws, s, p, values=values or None, record=a["record"], at_least=at_least, most=most)
-    return {**found, "next": [dict(command=nayose("show", "records", found["entities"][0]["record"], "--workspace", ws), why="its full row")] if found["entities"] else []}
-
-
-def search_records(a: dict, emit: "Emit") -> dict:
-    s, p, _ = setup(a)
-    ws, values = Path(a["workspace"]), typed_values(a["values"])
-    at_least, most = ranked(a, 10)
-    found = index.search(ws, s, p, values, at_least=at_least, most=most)
-    return {**found, "next": [dict(command=nayose("match", "record", *(f"{k}={v}" for k, v in values.items()), "--workspace", ws), why="what a run would do with it")]}
-
-
-def rerun_records(a: dict, emit: "Emit") -> dict:
-    s, p, pipeline = setup(a)
-    out = Path(a["workspace"])
-    return after_run(Run(p, s, echo=emit.step, told=emit.progress).rerun(out, pipeline_file=pipeline), out)
-
-
-def try_method(a: dict, emit: "Emit") -> dict:
-    s, p, _ = setup(a)
-    ws, now = Path(a["workspace"]), folder.method(Path(a["workspace"]))
-    rules, keys = {r.name for _, _, r in p.rules.each()}, {b.name for b in p.fs.blockers}
-    if bad := [x for x in a.get("drop") or [] if x not in rules | keys]:
-        raise InputError(f"--drop {' '.join(bad)}: no match rule or pair key of the method has that name", fix="see them: nayose describe method --workspace …")
-    method = {**now, **({"line": number(a["line"], "--line")} if a.get("line") else {})}
-    declared = p.fields.declared()
-    if bad := [x for x in a.get("add") or [] if not all(f.split(":")[0] in declared for f in x.split("+"))]:
-        raise InputError(f"--add {' '.join(bad)}: a field the pipeline doesn't declare", fix=f"its fields: {', '.join(sorted(declared))}; join a key's fields with +")
-    if a.get("add"):  # each a key's fields joined by +, as describe method proposes it
-        method["add_keys"] = [list(k) for k in dict.fromkeys([*map(tuple, now.get("add_keys", [])), *(tuple(x.split("+")) for x in a["add"])])]
-    for name, among in (("drop_rules", rules), ("drop_keys", keys)):
-        if dropped := sorted({*now.get(name, []), *(x for x in a.get("drop") or [] if x in among)}):
-            method[name] = dropped
-    if method == now:
-        raise InputError("nothing to try: that is the method as it is", fix="give --line, --drop with rules or keys to leave out, or --add with a key to add")
-    if not (ws / "gold.parquet").exists():
-        raise no_run(ws, "try a method against")
-    result = trial(ws, p, setup(a, method)[1], method, s, echo=emit.step)
-    return {**result, "next": [dict(command=nayose("adopt", "method", "--workspace", ws, "--trial", result["trial"]), why="adopt it, and find matches with it")]}
-
-
-def try_sample(a: dict, emit: "Emit") -> dict:
-    s, p, _ = setup(a)
-    ws = Path(a["workspace"])
-    r = grow(ws, s, p, line=emit.line)
-    em = lambda k: r.get("em_set", k) if k == "rules" else k  # the workspace's own fields, kept
-    return {**r, "next": [dict(command=nayose("set", "fit", "--workspace", ws, "--records", v, "--em", em(k)), why=f"learn from {v:,} records, {em(k)}, at the next run") for k, v in r["settled"].items()]}
-
-
-def fit_records(a: dict) -> int:  # --records, checked
-    records = int(number(a["records"], "--records", fix="a number of records, 1,000 or more"))
-    if records < 1000:
-        raise InputError(f"--records {records}: fewer than 1,000 records hold too few matches to learn from", fix="give 1,000 or more: try sample says where more stops paying")
-    return records
-
-
-def write_fit(a: dict, records: int, em: str | list[str]) -> dict:  # method.toml's fit, checked, then written; the result with its next
-    ws = Path(a["workspace"])
-    with folder.run_lock(ws):  # read, checked and written as one
-        method = {**folder.method(ws), "fit": {"records": records, "em": em}}
-        setup(a, method)  # refused before anything is written
-        folder.write_method(ws, method)
-    return {"method": method, "next": [dict(command=nayose("rerun", "records", "--workspace", ws), why="find matches with it")]}
-
-
-def set_fit(a: dict, emit: "Emit") -> dict:
-    em = a["em"] if a["em"] in ("rules", "keys", "choose") else [f.strip() for f in a["em"].split(",") if f.strip()]
-    return write_fit(a, fit_records(a), em)
-
-
-def set_floor(a: dict, emit: "Emit") -> dict:  # method.toml's keep, checked, then written
-    ws, points = Path(a["workspace"]), number(a["points"], "points", fix="a number of points, for example -10 or 0")
-    with folder.run_lock(ws):  # read, checked and written as one
-        method = {**folder.method(ws), "keep": points}
-        setup(a, method)  # refused before anything is written
-        folder.write_method(ws, method)
-    return {"method": method, "next": [dict(command=nayose("rerun", "records", "--workspace", ws), why="find matches with it")]}
-
-
-def choose_em(a: dict, emit: "Emit") -> dict:
-    s, p, _ = setup(a)
-    records = fit_records(a) if a.get("records") else p.fit_rows
-    r = choose(Path(a["workspace"]), s, p, records)
-    return {**r, **write_fit(a, records, "choose")}  # each run judges again, on its own sample: the median and the fallback with it
+    return {**found, "next": []}
 
 
 def number(text: str, what: str, fix: str = "a weight in bits, for example 9 or 9.5") -> float:
@@ -708,308 +243,6 @@ def number(text: str, what: str, fix: str = "a weight in bits, for example 9 or 
     raise InputError(f"{what} {text}: not a number", fix=fix)  # nan and inf too: no line, count or bound
 
 
-def adopt(a: dict, emit: "Emit", method: dict) -> dict:
-    """The workspace's method.toml set to `method` ({}: none, the tuned method), then a run with it; method.toml as it
-    was if the run fails, so the method and the run always agree."""
-    ws = Path(a["workspace"])
-    path, old = ws / folder.METHOD, (ws / folder.METHOD).read_text(encoding="utf-8") if (ws / folder.METHOD).exists() else None
-    with folder.run_lock(ws):  # held through the run: no other writer sees the new method before its run
-        setup(a, method)  # a method that no longer fits the pipeline is refused before anything changes
-        folder.write_method(ws, method)
-        try:
-            return rerun_records(a, emit)
-        except BaseException:
-            if old is None:
-                path.unlink(missing_ok=True)
-            else:
-                replace_text(path, old)
-            raise
-
-
-def adopt_method(a: dict, emit: "Emit") -> dict:
-    ws = Path(a["workspace"])
-    f = ws / folder.TRIALS / f"{a['trial']}.json"
-    if not f.exists():
-        raise InputError(f"no trial {a['trial']} in {ws}", fix="try it first: nayose try method --workspace …; the last 5 trials are kept")
-    with folder.run_lock(ws):  # people's trust line and merge conditions as they are now, not as at the trial
-        tried, now = json.loads(f.read_text(encoding="utf-8"))["method"], folder.method(ws)
-        return adopt(a, emit, {**{k: v for k, v in tried.items() if k not in folder.PEOPLE}, **{k: now[k] for k in folder.PEOPLE if k in now}})
-
-
-def reset_method(a: dict, emit: "Emit") -> dict:  # the method as tuned; people's trust line and merge conditions stay, unless they no longer read or fit
-    with folder.run_lock(Path(a["workspace"])):
-        try:
-            setup(a, kept := {k: v for k, v in folder.method(Path(a["workspace"])).items() if k in folder.PEOPLE})
-        except InputError:  # the way out every refusal of method.toml names: nothing of it kept
-            kept = {}
-        return adopt(a, emit, kept)
-
-
-def locked(command: Callable[[dict, "Emit"], dict]) -> Callable[[dict, "Emit"], dict]:  # a command run under its workspace's lock, read to write: nothing lands between
-    @functools.wraps(command)
-    def run(a: dict, emit: "Emit") -> dict:
-        with folder.run_lock(Path(a["workspace"])):
-            return command(a, emit)
-    return run
-
-
-@locked  # checked and lowered as one: a decision written meanwhile is seen
-def lower_trust(a: dict, emit: "Emit") -> dict:
-    s, p, _ = setup(a)
-    ws = Path(a["workspace"])
-    state = trust_state(connect(s.compute), ws, p, s.data.unique_id) if (ws / "gold.parquet").exists() else None
-    if state is None:
-        raise InputError(f"{ws} has no trust line: it merges as tuned", fix="start one, and nothing merges before people check: nayose raise trust --workspace …")
-    if state["typed_false"]:  # written in, not applied: the range isn't proven, and it would merge them
-        raise InputError(f"{state['typed_false']:,} pair{'s' if state['typed_false'] > 1 else ''} of the range below the line {'are' if state['typed_false'] > 1 else 'is'} "
-                         "marked different on the review sheet, not applied yet: the line stays", fix="apply them first: nayose apply decisions --workspace …")
-    if not state["may_lower"]:
-        span = state["next"]
-        if span and state["false"]:  # proven false: no count of checks lowers it
-            raise InputError(f"people found {state['false']:,} pair{'s' if state['false'] > 1 else ''} of the range below the line different: the line stays",
-                             fix="decide its pairs, and those below, one by one: nayose list pairs --workspace … --open")
-        raise InputError(f"the range below the line isn't proven yet: {state['checked']:,} of {state['needed']:,} checked"
-                         if span else "the trust line is at its last step", fix="check the range's pairs: nayose list pairs --workspace … --open" if span else "")
-    return adopt(a, emit, {**folder.method(ws), "trust": state["next"]["down_to"]})
-
-
-def raise_trust(a: dict, emit: "Emit") -> dict:
-    with folder.run_lock(Path(a["workspace"])):  # read and raised as one
-        s, p, _ = setup(a)
-        ws, line = Path(a["workspace"]), p.trust.line
-        if line is not None and math.isinf(line):
-            raise InputError("the trust line is above every step already: nothing merges before people check", fix="")
-        up = [x for x in p.trust.steps if line is not None and x > line]
-        return adopt(a, emit, {**folder.method(ws), "trust": min(up) if up else "none"})
-
-
-def draw_pairs(a: dict, emit: "Emit") -> dict:
-    s, p, _ = setup(a)
-    out, count = Path(a["workspace"]), int(number(a.get("count") or "50", "--count", "a count of pairs, for example 50"))
-    run = Run(p, s, echo=emit.step, told=emit.progress).draw(out, count)
-    step = run.steps[-1]
-    return dict(drawn=step["drawn"], decide=step["decide"], next=[dict(command=nayose("list", "pairs", "--workspace", out, "--open"), why="the pairs to decide and audit")])
-
-
-def ready(con, s: Settings, p: Pipeline, files: list[dict]) -> dict:
-    """Whether a run can start on the file loaded last: it holds records, and the pipeline fits its columns (read from
-    its schema only), as Run.load would find. {run, why, fix}. O(files)."""
-    last = next((f for f in reversed(files) if f.get("last")), files[-1] if files else None)
-    if last is None:
-        return dict(run=False, why="no records file loaded yet", fix="load one: nayose load records FILE --workspace …")
-    if not last.get("rows"):
-        return dict(run=False, why=f"{last['name']} holds no records", fix="load the file with its records")
-    try:
-        src = open_source(last["path"], con, {c for f, alts in s.columns.items() if f != "entity" for alt in alts for c in alt})
-        fit_to_file(p, s, src.columns)
-    except InputError as e:
-        return dict(run=False, why=str(e), fix=e.fix)
-    return dict(run=True, why="", fix="")
-
-
-def describe_workspace_(a: dict, emit: "Emit") -> dict:
-    s, p, _ = setup(a)
-    out = Path(a["workspace"])
-    con = connect(s.compute)  # one for every read here: a connection costs as much as the reads of a small workspace
-    d = describe_workspace(con, out, s.data.unique_id)
-    d["trust"] = trust_state(con, out, p, s.data.unique_id) if d["records"] else None
-    d["stamp"] = folder.stamp(out)  # what another tab's decision, answer or change moves: a page coming back reads again
-    files = folder.loaded(out)
-    d["ready"] = ready(con, s, p, files)
-    then = ([dict(command=nayose("describe", "results", "--workspace", out), why="what the run found, and what waits for you"),
-             dict(command=nayose("open", "ui", "--workspace", out), why="review in the browser")] if d["records"] else
-            [dict(command=nayose("resolve", "records", "--workspace", out), why="find matches in the file loaded last")] if files else
-            [dict(command=nayose("load", "records", "<file>", "--workspace", out), why="give it your records file")])
-    then = [dict(command=nayose("describe", "records", f["path"], "--workspace", out), why=f"{f['waiting']:,} repairs wait in {f['name']}: see them, then accept repairs")
-            for f in files if f.get("waiting")] + then
-    owed = bool(d["records"]) and rerun_owed(a)
-    used = run_pipeline(out)
-    again = ["--pipeline", used] if used and Path(used) != Path(s.root / "config" / "final.toml").resolve() else []  # the run's own, not the default
-    then = [dict(command=nayose("rerun", "records", "--workspace", out, *again), why="the mapping or the method changed since the run: match again to read the records so")] * owed + then
-    told = out / "auto" / "report.md"  # the last auto mode's report, to send
-    auto = dict(report=str(told), markdown=told.read_text(encoding="utf-8")) if told.is_file() else None
-    return {**d, "inputs": files, "columns": "own" if columns_file(out) else "project", "auto": auto, "index": index.status(out, s), "rerun_owed": owed,
-            "details": details.described(out, s.data.unique_id), "diagnosis": folder.diagnosis(out), "next": then}
-
-
-def describe_entity_(a: dict, emit: "Emit") -> dict:
-    s, out = settings_for(a), Path(a["workspace"])
-    uid = s.data.unique_id
-    con = connect(s.compute)
-    d = describe_entity(con, out, uid, a["id"], [f for f in s.columns if f not in SPECIAL])
-    if folder.method(out).get("merge"):  # merged by the workspace's conditions since the run: the links its files don't hold
-        more, pair = merged_links(con, out, s, setup(a)[1], d["records"][uid].tolist()), [f"{uid}_l", f"{uid}_r"]
-        more = more[~more.set_index(pair).index.isin(d["links"].set_index(pair).index)]
-        d["links"] = pd.concat([d["links"], more], ignore_index=True)
-    inside = entity_pairs(out, s, d["records"][uid].tolist(), rows(d["links"]))
-    return dict(record=d["record"], entity=d["entity"], size=d["size"], records=rows(ids(d["records"], uid)), links=rows(ids(d["links"], uid)), **inside,
-                next=[dict(command=nayose("explain", "pair", "<ID>", "<ID>", "--workspace", out), why="how one pair was scored"),
-                      dict(command=nayose("list", "pairs", "--workspace", out), why="the pairs for people")])
-
-
-def explain_pair_(a: dict, emit: "Emit") -> dict:
-    s, p, _ = setup(a)
-    out = Path(a["workspace"])
-    d = explain_pair(out, p, s, a["first"], a["second"])
-    return {**d, "next": [dict(command=nayose("decide", "pair", d["id_l"], d["id_r"], "match", "--workspace", out), why="decide it, if it is on the sheet"),
-                          dict(command=nayose("describe", "entity", d["id_l"], "--workspace", out), why="the customer of the first")]}
-
-
-def describe_key_(a: dict, emit: "Emit") -> dict:
-    s, p, _ = setup(a)
-    out = Path(a["workspace"])
-    d = describe_key(out, p, s, a["name"])
-    return {**d, "next": [dict(command=nayose("explain", "pair", x[0], x[1], "--workspace", out), why="a link only this key found") for x in d["examples"][:1]]}
-
-
-def compare_records_(a: dict, emit: "Emit") -> dict:
-    s, p, _ = setup(a)
-    out = Path(a["workspace"])
-    d = compare_records(out, p, s, a["first"], a["others"])
-    return {**d, "next": [dict(command=nayose("explain", "pair", d["first"], x["id"], "--workspace", out), why="how one of them scored")
-                          for x in d["candidates"][:1]]}
-
-
-def list_patterns_(a: dict, emit: "Emit") -> dict:
-    s, p, _ = setup(a)
-    out = Path(a["workspace"])
-    if not (out / "gold.parquet").exists():
-        raise no_run(out)
-    return {**list_patterns(out, p), "next": [dict(command=nayose("explain", "pair", "<ID>", "<ID>", "--workspace", out), why="one of a pattern's pairs")]}
-
-
-def describe_matching_(a: dict, emit: "Emit") -> dict:
-    s, p, _ = setup(a)
-    out = Path(a["workspace"]) if a["workspace"] else None
-    return {**describe_matching(connect(s.compute), out, p, s),
-            "next": [dict(command=nayose("describe", "workspace", out), why="the workspace at a glance")] if out else
-                    [dict(command=nayose("resolve", "records", "<file>", "--workspace", "<workspace>"), why="match records: the graph then holds their numbers")]}
-
-
-def rehearse_records(a: dict, emit: "Emit") -> dict:
-    from er import auto
-    s, _, pipeline = setup(a)
-    ws = Path(a["workspace"])
-    if not ws.is_dir():
-        raise InputError(f"no workspace at {ws}", fix="create it: nayose create workspace NAME")
-    src = a["input"] or (str(part) if (part := folder.last(ws)) else None)  # its shape only: never copied in
-    if not src:
-        raise InputError(f"no records file in {ws}", fix=f"name one, or load it first: nayose load records FILE --workspace {ws}")
-    with readable(src, s) as path:
-        sh = auto.shape(s, path)
-    r = auto.rehearse(ws, sh, s, Path(a["pipeline"]) if a.get("pipeline") else None, emit.step)
-    if not r["ok"]:
-        raise InputError(f"a file of {r['records']:,} records stopped here: {r['error']}", fix=r["fix"] or "give the run more room: --compute memory_limit=… temp_directory=…")
-    return {**r, "next": [dict(command=nayose("resolve", "records", *([a["input"]] if a["input"] else []), "--workspace", ws), why="the real file, now its size is known to fit")]}
-
-
-def try_everything(a: dict, emit: "Emit") -> dict:
-    from er import auto
-    trials = int(number(a["trials"], "--trials", "a count, for example 3")) if a.get("trials") else 3
-    home = Path(a["home"] or "workspaces")
-    r = auto.everything(a["input"], home, max(trials, 0), a["compute"] or [], a.get("pipeline"), emit.step)
-    if r["workspace"] is None:
-        if r["exit_code"] == 130:  # stopped before its workspace was made: nothing to report
-            raise KeyboardInterrupt
-        failed = r["facts"]["steps"][-1]
-        raise InputError(failed["error"] or "the workspace could not be made", fix=failed.get("fix") or "")
-    done = auto.written(r, a["input"], settings_for({"workspace": str(r["workspace"])}))
-    steps = [{k: x[k] for k in ("step", "ok", "seconds", "error")} for x in r["facts"]["steps"]]
-    return dict(workspace=str(r["workspace"]), ok=r["exit_code"] == 0, steps=steps, report=done["report"], values=done["values"],
-                redacted=done["redacted"], markdown=done["markdown"], exit_code=r["exit_code"],
-                next=[dict(command=f"cat {shlex.quote(done['report'])}", why="the report to send: it holds no record's value"),
-                      dict(command=nayose("describe", "workspace", r["workspace"]), why="the workspace it made")])
-
-
-def describe_review(a: dict, emit: "Emit") -> dict:
-    s, p, _ = setup(a)
-    out = Path(a["workspace"])
-    if not (out / "gold.parquet").exists():
-        raise no_run(out)
-    per = number(a["seconds"], "--seconds", "seconds, for example 10") if a.get("seconds") else 10.0
-    if not 0 < per < math.inf:
-        raise InputError(f"--seconds {a['seconds']}: not a time a pair takes", fix="seconds above 0, for example 10")
-    if p.trust.line is None:
-        raise InputError(f"{out} has no trust line: it merges as tuned", fix="start one, and nothing merges before people check: nayose raise trust --workspace …")
-    return {**review_workload(connect(s.compute), out, p, s.data.unique_id, per),
-            "next": [dict(command=nayose("list", "pairs", "--workspace", out, "--pending"), why="the pairs waiting now")]}
-
-
-def describe_method_(a: dict, emit: "Emit") -> dict:
-    s, p, _ = setup(a)
-    out, tuned = Path(a["workspace"]), setup(a, {})[1]  # the method as tuned: what this one leaves out, in words
-    have, keys = {x.name for _, _, x in p.rules.each()}, {b.name for b in p.fs.blockers}
-    dropped = dict(rules=[dict(name=x.name, **rule_how(st, x)) for _, st, x in tuned.rules.each() if x.name not in have],
-                   keys=[dict(name=b.name, **key_how(b)) for b in tuned.fs.blockers if b.name not in keys])
-    return {**describe_method(out, p, s), "dropped": dropped, "next": [dict(command=nayose("list", "pairs", "--workspace", out, "--open"), why="the pairs left to decide")]}
-
-
-def picked(frame: pd.DataFrame, a: dict) -> pd.DataFrame:  # the sheet's rows --why, --open and --pending ask for
-    keep = pd.Series(True, index=frame.index)
-    if a["why"]:
-        keep &= frame["why"] == a["why"]
-    if a["open"]:
-        keep &= frame["status"] == "open"
-    if a["pending"]:
-        keep &= frame["status"] != "applied"
-    return frame[keep]
-
-
-def counts(frame: pd.DataFrame) -> dict[str, int]:  # rows by why and status
-    return {f"{why} {status}": int(n) for (why, status), n in frame.groupby(["why", "status"]).size().items()}
-
-
-def list_pairs(a: dict, emit: "Emit") -> dict:
-    uid, out = settings_for(a).data.unique_id, Path(a["workspace"])
-    pairs = sheet(out, "review.parquet")
-    if pairs is None:
-        raise no_run(out)
-    done = pairs.merge(applied(out, uid), on=[f"{uid}_l", f"{uid}_r"], how="left", suffixes=("", "_applied"))["decision_applied"]
-    pairs.insert(1, "status", np.where(done.notna() & (done == pairs["decision"]), "applied", np.where(pairs["decision"].notna(), "written in", "open")))
-    return dict(counts=counts(pairs), pairs=rows(ids(picked(pairs, a), uid)), next=[dict(command=nayose("decide", "pair", "<ID>", "<ID>", "match", "--workspace", out), why="decide one"),
-                                                    dict(command=nayose("apply", "decisions", "--workspace", out), why="apply the decisions written in")])
-
-
-@locked
-def split_entity(a: dict, emit: "Emit") -> dict:
-    """An entity split at a link that alone holds it together: that pair decided different (Run.decide stores it with
-    people's decisions), then a full run, which never accepts a pair people called different. One lock throughout."""
-    s, p, _ = setup(a)
-    out, uid = Path(a["workspace"]), s.data.unique_id
-    if len(a["between"] or []) != 2:
-        raise InputError("--between takes the two records of the link", fix="nayose split entity ID --between A B --workspace …")
-    first, second = sorted(map(str, a["between"]))
-    d = describe_entity(connect(s.compute), out, uid, a["id"], [f for f in s.columns if f not in SPECIAL])
-    held = d["records"][uid].tolist()
-    inside = entity_pairs(out, s, held, rows(d["links"]))
-    if inside["capped"]:
-        raise InputError(f"the entity of {a['id']} holds {d['size']:,} records: too many to find where it splits", fix="decide its pairs in Review instead: nayose list scored --record ID, then decide pair")
-    if not {first, second} <= set(held):
-        raise InputError(f"{first} and {second}: not both records of the entity of {a['id']}", fix="see its records: nayose describe entity ID --workspace …")
-    if dict(id_l=first, id_r=second) not in inside["weakest"]:
-        raise InputError(f"{first} – {second} doesn't hold the entity together: other links still join them",
-                         fix="split it at one of its weakest links: nayose describe entity ID --workspace … lists them")
-    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
-        f = Path(tmp) / "split.parquet"
-        pd.DataFrame({f"{uid}_l": [first], f"{uid}_r": [second], "decision": ["no_match"], "why": ["split"]}).to_parquet(f, index=False)
-        Run(p, s, echo=emit.step, told=emit.progress).decide(f, out)
-    return rerun_records(a, emit)
-
-
-def decide_pair(a: dict, emit: "Emit") -> dict:
-    uid, out = settings_for(a).data.unique_id, Path(a["workspace"])
-    first, second = sorted([a["first"], a["second"]])  # the sheet holds each pair lower ID first
-    keys = {f"{uid}_l": first, f"{uid}_r": second}
-    sheet, con, stored = out / "review.parquet", duckdb.connect(), None
-    on = sheet.exists() and con.execute(f"SELECT count(*) FROM read_parquet({lit(sheet)}) WHERE {q(f'{uid}_l')} = ? AND {q(f'{uid}_r')} = ?", [first, second]).fetchall()[0][0]
-    if not on and any((out / folder.SCORED).glob("*.parquet")):  # any pair the run kept may be decided: one the sheet lacks joins it
-        stored = con.execute(f"""SELECT match_weight, sources FROM read_parquet({lit(out / folder.SCORED / '*.parquet')}, union_by_name = true)
-            WHERE {q(f'{uid}_l')} = ? AND {q(f'{uid}_r')} = ? LIMIT 1""", [first, second]).fetchall()
-    append = dict(why="decide", match_weight=stored[0][0], sources=stored[0][1]) if stored else None
-    folder.type_in(out, "review.parquet", "decision", None if a["decision"] == "clear" else a["decision"], append, **keys)
-    return dict(pair=[first, second], decision=a["decision"], next=[dict(command=nayose("apply", "decisions", "--workspace", out), why="apply them")])
-
-
 def counted(a: dict, name: str, default: int) -> int:  # a page or a count: a whole number from 1
     v = a.get(name)
     if v in (None, ""):
@@ -1017,89 +250,6 @@ def counted(a: dict, name: str, default: int) -> int:  # a page or a count: a wh
     if not str(v).isdecimal() or int(v) < 1:  # ² is a digit, not a number int() reads
         raise InputError(f"--{name} {v}: a whole number from 1", fix=f"for example --{name} {default}")
     return int(v)
-
-
-def conditions(a: dict) -> dict | None:  # --conditions as JSON: {"join": "and"|"or", "when": [...]}
-    if not a.get("conditions"):
-        return None
-    try:
-        return json.loads(a["conditions"])
-    except json.JSONDecodeError as e:
-        raise InputError(f"--conditions: not JSON ({e.msg})", fix='for example --conditions \'{"join": "or", "when": [{"points": 12}]}\'') from None
-
-
-def describe_results_(a: dict, emit: "Emit") -> dict:
-    s, p, _ = setup(a)
-    con = connect(s.compute)
-    out = Path(a["workspace"])
-    frm = number(a["from"], "--from") if a.get("from") else review_floor(p)
-    return {**describe_results(con, out, s, p, frm), "next": [dict(command=nayose("list", "scored", "--workspace", out, "--status", "waiting"), why="the pairs waiting for you")]}
-
-
-def list_scored_(a: dict, emit: "Emit") -> dict:
-    s, p, _ = setup(a)
-    con = connect(s.compute)
-    num = lambda k: number(a[k], f"--{k}") if a.get(k) not in (None, "") else None
-    r = list_scored(con, Path(a["workspace"]), s, p, num("from"), num("to"), a.get("source"), a.get("status"), a.get("record") or None,
-                    counted(a, "page", 1), counted(a, "count", 100), bool(a.get("each")))
-    for x in r["pairs"]:
-        x["found"] = found_words(p, x)
-    return r
-
-
-def found_words(p, pair: dict) -> str:  # how a pair was found, in words: its rule's tests, else its first keys
-    if pair.get("rule"):
-        for _, st, rule in p.rules.each():
-            if rule.name == pair["rule"]:
-                test = lambda c: {"exact": f"same {word(c)}", "jaro_winkler": f"{word(c)} similar", "hamming": f"{word(c)} 1 digit off"}.get(
-                    st.comparators[c].function, f"{word(c)} ≤ {num(st.comparators[c].threshold)} edits")
-                return "rule: " + ", ".join([*(f"same {word(c)}" for c in rule.exact), *map(test, rule.fuzzy)])
-        return f"rule {pair['rule']}"
-    keys = (pair.get("sources") or "").split("+")
-    return "keys: " + ", ".join(k.replace("sn_", "sorted ").replace("_", " ") for k in keys[:2]) + (" …" if len(keys) > 2 else "") if keys[0] else ""
-
-
-def list_entities_(a: dict, emit: "Emit") -> dict:
-    s, p, _ = setup(a)
-    return list_entities(connect(s.compute), Path(a["workspace"]), s, p, counted(a, "smallest", 2), a.get("record") or None,
-                         counted(a, "page", 1), counted(a, "count", 100))
-
-
-def load_details(a: dict, emit: "Emit") -> dict:
-    s = settings_for(a)
-    return details.load(Path(a["workspace"]), a["file"], a.get("key"), a.get("columns"), s.data.unique_id)
-
-
-def set_details(a: dict, emit: "Emit") -> dict:
-    settings_for(a)
-    return details.choose(Path(a["workspace"]), a.get("columns") or [])
-
-
-def show_details(a: dict, emit: "Emit") -> dict:
-    settings_for(a)
-    return details.show(Path(a["workspace"]), a["ids"])
-
-
-def show_records_(a: dict, emit: "Emit") -> dict:
-    s = settings_for(a)
-    return show_records(connect(s.compute), Path(a["workspace"]), s, list(dict.fromkeys(a["ids"])))
-
-
-def describe_merging_(a: dict, emit: "Emit") -> dict:
-    s, p, _ = setup(a)
-    con = connect(s.compute)
-    out, m = Path(a["workspace"]), conditions(a)
-    return describe_merging(con, out, s, p, None if m is None else check_merging(m, p, run_model(out)))
-
-
-def set_merging(a: dict, emit: "Emit") -> dict:
-    s, p, _ = setup(a)
-    out = Path(a["workspace"])
-    m = check_merging(conditions(a) or {}, p, run_model(out))  # the run's own comparisons: a field the file lacks has none
-    con = connect(s.compute)
-    with folder.run_lock(out):  # the conditions written with the entities they make, in one staged write
-        r = apply_merging(con, out, s, p, method=with_merging(out, m))
-    return {**r, "next": [dict(command=nayose("describe", "results", "--workspace", out), why="what now merges")]}
 
 
 def apply_decisions(a: dict, emit: "Emit") -> dict:
@@ -1113,48 +263,7 @@ def apply_decisions(a: dict, emit: "Emit") -> dict:
     x = run.steps[-1]
     return dict(decisions=x["decisions"], matches=x["matches"], clusters_joined=x["clusters_joined"],
                 summary=[["nothing new", "every decision was applied before"]] if not x["decisions"] else [],
-                next=[dict(command=nayose("describe", "workspace", out), why="the workspace at a glance")])
-
-
-KINDS = {"person": 1, "company": 2, "unsure": 0, "clear": None}
-
-
-def list_kinds(a: dict, emit: "Emit") -> dict:
-    uid, out = settings_for(a).data.unique_id, Path(a["workspace"])
-    kinds = sheet(out, "kind_review.parquet")
-    if kinds is None:
-        raise InputError(f"{out}: no kind_review.parquet", fix="a full run that tells persons from companies writes it: nayose resolve records …")
-    kinds = kinds.assign(why=sheet_parts(kinds))  # a flagged record drawn at random is to decide, as everywhere
-    kinds.insert(2, "status", np.where(kinds["kind"].notna(), "written in", "open"))
-    answered = {x for f in folder.answer_parts(out) for x in read_parquet(f, columns=[uid])[uid].astype("string")}  # applied answers leave the sheet a rerun draws
-    return dict(counts=counts(kinds), applied=len(answered), kinds=rows(ids(picked(kinds, a), uid)), next=[dict(command=nayose("answer", "kind", "<ID>", "company", "--workspace", out), why="answer one"),
-                                                    dict(command=nayose("apply", "answers", "--workspace", out), why="apply the answers written in: a rerun")])
-
-
-def answer_kind(a: dict, emit: "Emit") -> dict:
-    uid, out = settings_for(a).data.unique_id, Path(a["workspace"])
-    folder.type_in(out, "kind_review.parquet", "kind", KINDS[a["kind"]], **{uid: a["id"]})
-    return dict(record=a["id"], kind=a["kind"], next=[dict(command=nayose("apply", "answers", "--workspace", out), why="apply them: a rerun")])
-
-
-def apply_answers(a: dict, emit: "Emit") -> dict:
-    s, p, pipeline = setup(a)
-    out = Path(a["workspace"])
-    with readable(a["file"], s, strict=True) if a["file"] else contextlib.nullcontext(out / "kind_review.parquet") as path:
-        return after_run(Run(p, s, echo=emit.step, told=emit.progress, kind_labels=find(path)[0]).rerun(out, pipeline_file=pipeline), out)
-
-
-def serve_inbox(a: dict, emit: "Emit") -> dict:
-    seconds = lambda name, default: number(a[name], f"--{name}", "seconds, for example 60") if a[name] else default
-    ok = inbox.serve(Path(a["workspace"]), Path(a["inbox"]), seconds("every", None), int(number(a["retries"] or "2", "--retries", "a count, for example 2")),
-                     a["compute"] or [], emit.line, seconds("settle", 60.0))
-    return dict(stopped=not ok, exit_code=0 if ok else 1, next=[dict(command=nayose("describe", "workspace", a["workspace"]), why="the workspace at a glance")])
-
-
-def open_ui(a: dict, emit: "Emit") -> dict:
-    from er import ui  # the page's server: it reads these declarations
-    ui.serve(int(number(a["port"] or "8765", "--port", "a port, for example 8765")), a["workspace"], a["home"] or "workspaces", emit.line, open_browser=not a["link"])
-    return dict(next=[])
+                next=[dict(command=nayose("build", "index", "--workspace", out), why="look records up, with these decisions")])
 
 
 # ---------- the declarations ----------
@@ -1162,205 +271,15 @@ def open_ui(a: dict, emit: "Emit") -> dict:
 INPUT = Param("input", "the records: a CSV, TSV or Parquet file, a quoted glob ('in/*.csv') or a folder of them, read as they come and together by column name",
               "path", positional=True)
 WORKSPACE = Param("workspace", "the workspace: the folder that keeps one matching job", "path", required=True)
-TRUST = ("the trust line (none: the method as tuned): line (none: above every step), next (the range checked next: down_to, "
-         "up_to), its pairs, checked, false, needed, may_lower; above (the pairs above the line: pairs, checked, false); checks")
-OWN = Param("workspace", "a workspace, for its own mapping (without it, the project's: config/settings.toml)", "path")
 GIVEN = replace(INPUT, help=INPUT.help + "; copied into the workspace first. Without it, the file loaded into it last", optional=True)
-HOME = Param("home", "the folder that holds the workspaces (default: workspaces, in the current folder)", "path")
-DESCRIBED = {"records": "records", "columns": "each column of the file: column, filled, example",
-             "fields": "each field: field, sources, filled, example, looks_right, and each of its alternatives (columns, found, filled, example, looks_right)",
-             "fit": "for each field, each column's fit: the share of its values that look like the field (id: filled, each value once)",
-             "suggested": "for each field the file holds none of: field, column, why",
-             "needed": "the fields a run stops without: every (each of them), one_of (at least one of each group)",
-             "turned_off": "rules, keys and levels a run of this file would turn off: a field they read is missing",
-             "slots": "each feature and part: feature (its path), sources, filled, example, looks_right, odd (a value that doesn't look right), "
-                      "hint (what its values say is off: level warn or info, says, example (a value that doesn't look right), fix, and with a workspace the command and button that fix it), "
-                      "and each of its alternatives",
-             "names_by_kind": "whether each record's name is compared on the side its kind leans to (set names)",
-             "features": "the structure: groups › features › parts, each with type and columns",
-             "profile": "each column's script (kanji, kana, romaji) and the shares of its values that are known family names, given names, full names, addresses",
-             "placements": "for each feature with no column: feature, column, share, why (the file's contents)",
-             "offers": "new features the contents suggest: feature, type, script, column, share, why", "notes": "what the reader detected or fixed",
-             "read": READ, "next": "the commands that usually follow"}
-CHECKED = {"records": "records read", "fields": "each field: filled, looks_right, top_value (shares), columns",
-           "capacity": "the room a run has: memory_limit_gb, spill_folder, spill_free_gb, pairs_needed (this file's, exactly), pairs_fit, headroom (fit ÷ needed)",
-           "ready": "ok, and each of stops (what would stop a run) and warns (what to look at first): what, fix",
-           "turned_off": "rules, keys and levels a missing field turns off", "keys": "each key's pairs per record and largest block",
-           "oversized_from": "the block size checked by sampling", "notes": "what the loader detected or fixed", "read": READ,
-           "next": "the commands that usually follow"}
-DETAILED = {"file": "the file's name", "rows": "its rows", "key": "the column holding the records' IDs",
-            "columns": "each column of the file: column, filled (from its footer), example (from its first rows)", "shown": "the columns people see, in their order: the first names each row on its chip",
-            "linked": "of the records drawn, those with a row (null: no records yet, or no ID column)", "drawn": "records drawn from the file given last: 2,000, or all of them if fewer"}
 COMPUTE = Param("compute", "DuckDB limits for this run, over config/settings.toml [compute]: memory_limit=8GB, threads=4, "
                 "temp_directory=<folder> (past the memory limit DuckDB spills there)", "many", metavar="KEY=VALUE")
 PIPELINE = Param("pipeline", "the pipeline file (default: config/final.toml)", "path")
-OPEN = Param("open", "only the rows nobody has answered", "flag")
-PENDING = Param("pending", "only the rows not yet applied: open, or written in", "flag")
 FILE = lambda what: Param("file", f"{what} (default: the workspace's own sheet, with the answers written in)", "path")
 RUN_RESULT = {"summary": "the run in words: records, entities, who joined them, the model's links, what is left to people",
               "facts": "what to read first: records, entities, joined, waiting (pairs for people from review_from points), merging, missed and missed_high (the probe), too_big, kinds (flagged person or company), report",
               "seconds": "the run's time", "wrote": "the files written", "index": "the workspace's index, if built: brought up to date (records, added, moved, seconds, rebuilt: why built again), or error and fix", "next": "the commands that usually follow"}
 COMMANDS: tuple[Command, ...] = (
-    Command("create", "workspace", "Start a workspace: the folder for one matching job",
-            "Makes HOME/NAME (HOME: --home, else workspaces/ in the current folder) with its own mapping, columns.toml: "
-            "config/settings.toml's [columns] and [kind], which of its files' columns hold each field. Records files given to "
-            "it are copied into its inputs/, and its runs, people's decisions and their answers are written beside them, so "
-            "opening it again finds all of it. O(1).",
-            (Param("name", "letters, digits, '.', '_' and '-', at most 64", positional=True, metavar="NAME"), HOME),
-            {"workspace": "the workspace made", "next": "the commands that usually follow"},
-            "nayose create workspace acme", create_workspace, quick=True),
-    Command("list", "workspaces", "The workspaces, the latest active first",
-            "Every folder in HOME that holds a workspace: its name, the files given to it, whether it holds a run, and when it "
-            "last changed. Reads steps.json, no record. O(workspaces).",
-            (HOME,), {"home": "the folder listed", "workspaces": "each one: name, workspace, files, ran, last",
-                      "next": "the commands that usually follow"},
-            "nayose list workspaces", list_workspaces, quick=True, show={"workspaces": ("name", "files", "ran", "last")}),
-    Command("load", "records", "Copy a file into a workspace, read it as it comes, then describe it",
-            "Copies the records into a part of the workspace's own (inputs/0001-customers/), unless it holds the same content "
-            "already, and reads it as it comes (er.intake): a CSV, TSV or Parquet, each value in its own encoding; control "
-            "bytes, placeholders and spreadsheet numbers fixed; a row whose fields don't line up, a garbled value or another "
-            "encoding's reading proposed, for people to see and accept (accept repairs). Then describes it as describe "
-            "records does, with the workspace's mapping. Its runs read what was read, so the original can move or go. "
-            "O(bytes) for the copy and the reading (about 7 s a million records from Parquet, 15 s from CSV), then the description's.",
-            (INPUT, WORKSPACE), {**DESCRIBED, "loaded": "the part the records are in", "copied": "false: the workspace held them already"},
-            "nayose load records customers.parquet --workspace workspaces/acme", load_records,
-            show={"columns": ("column", "filled", "example"), "fields": ("field", "filled", "looks_right"), "fit": (), "features": (), "profile": (),
-                  "slots": ("feature", "filled", "looks_right"), "placements": ("feature", "column", "why"), "offers": ("feature", "column", "why")}),
-    Command("load", "details", "Point a workspace at a details file: rows people see above each record they review",
-            "Rows about the records, found by the record's ID (--key: the column holding it, by default the records' own ID "
-            "column), any number for one record, such as each contract a customer holds. Matching never reads them, so loading "
-            "them asks for no run. Nothing is copied: the workspace keeps where the file is, its key and the columns shown, and "
-            "a card reads the file itself (show details), so the file must stay where it is; loading another replaces it. "
-            "Parquet: a file, a quoted glob or a folder of them. Its footer and first 200 rows (milliseconds at any size), then "
-            "2,000 records drawn from the file given last, to say how many have a row: one scan of the key column.",
-            (Param("file", "the details: a Parquet file, a quoted glob or a folder of them", "path", positional=True),
-             Param("key", "its column of record IDs (default: the records' ID column)", metavar="COLUMN"),
-             Param("columns", "the columns people see, in this order (default: all, in the file's)", "many", metavar="COLUMN"), WORKSPACE),
-            DETAILED, "nayose load details contracts.parquet --workspace workspaces/acme", load_details, quick=True,
-            show={"columns": ("column", "filled", "example")}),
-    Command("set", "details", "Choose the details file's columns people see",
-            "Which columns of the details file (load details) are shown with each record, in the order given, the first naming "
-            "each row on its chip; none given: none. Matching reads "
-            "none of it, so it waits for no run and asks for none. O(columns).",
-            (Param("columns", "the columns to show, in this order", "many", metavar="COLUMN"), WORKSPACE),
-            DETAILED, "nayose set details --columns PLAN START_DATE --workspace workspaces/acme", set_details, quick=True,
-            show={"columns": ("column", "filled", "example")}),
-    Command("generate", "records", "Generate synthetic records into a workspace, then load them as a file",
-            "People and companies from the reference names, companies and towns (config/generator.toml), each under one or "
-            "more records with typos, other notations, moves and missing values, as hard to match as --difficulty says "
-            "([difficulty]); written in parts of 50,000 entities, each with its own seed, exactly N records, then loaded as "
-            "load records loads a file. The same size and difficulty give the same records, so a second time copies nothing. The "
-            "workspace's mapping must read the generator's columns, as the project's does. Each part after "
-            "the first pairs every surname with another persona's given name, so no person repeats; past 31,596 companies their "
-            "names repeat more than in a real file. O(N) to generate (about 100 s a million records), "
-            "memory of 50,000 entities, then load records'.",
-            (Param("records", "how many (default 10000)", metavar="N"),
-             Param("difficulty", "easy, medium or hard (default medium)", "choice", ("easy", "medium", "hard")), WORKSPACE),
-            {**DESCRIBED, "loaded": "the part the records are in", "copied": "false: the workspace held them already"},
-            "nayose generate records --records 100000 --difficulty hard --workspace workspaces/acme", generate_records,
-            show={"columns": ("column", "filled", "example"), "fields": ("field", "filled", "looks_right"), "fit": (), "features": (), "profile": (),
-                  "slots": ("feature", "filled", "looks_right"), "placements": ("feature", "column", "why"), "offers": ("feature", "column", "why")}),
-    Command("accept", "repairs", "Accept one kind of repair the reader proposed for a loaded file",
-            "Reads the file again with that kind applied: realign, each row whose fields don't line up re-split where every "
-            "value fits its column (unread until then); garbled, each value a wrong decoding garbled upstream decoded back; "
-            "encoding, each value another encoding reads far better read in it. Each was proposed only when it read at least "
-            "e^margin likelier ([input]). describe records shows them first, in read.examples. When a run read the file "
-            "already, run matching again to use them. O(the file).",
-            (Param("kind", "realign, garbled or encoding", "choice", intake.KINDS, positional=True),
-             Param("part", "the loaded file, by its part (0001, or its name; default: the latest with this kind waiting)", metavar="PART"), WORKSPACE),
-            {"part": "the part read again", "kind": "the kind accepted", "repaired": "the repairs applied", "rows": "the rows it now holds",
-             "added": "rows that were unread", "read": READ, "next": "the commands that usually follow"},
-            "nayose accept repairs realign --workspace workspaces/acme", accept_repairs),
-    Command("list", "features", "The features a workspace's columns fill: groups, features, parts",
-            "The workspace's structure: each group, its features and their parts (a full name's family and given names), each "
-            "with the columns that hold it, read from its mapping. Without --workspace, the project's. O(the file).",
-            (OWN,), {"features": "the structure: groups › features › parts, each with type and columns", "slots": "each feature and part: feature (its path), columns", "rerun_owed": RERUN_OWED,
-                     "next": "the commands that usually follow"},
-            "nayose list features --workspace workspaces/acme", list_features, quick=True, show={"features": ()}),
-    Command("set", "feature", "Put columns into features",
-            "Sets each named feature's or part's columns, by its path: GROUP/FEATURE=COLUMN, GROUP/FEATURE/PART=COLUMN, A,B "
-            "(B where A is empty), A+B (joined), nothing (no column). Then writes the mapping they mean into the workspace's "
-            "columns.toml, checked before it replaces the old: Name/Full name fills full_name and person_name, its Family name "
-            "and Given name a joined fallback of person_name and given_name, and every name, any_name. O(the file).",
-            (Param("mapping", "one or more GROUP/FEATURE=COLUMNS", "many", positional=True, metavar="PATH=COLUMNS"), WORKSPACE),
-            {"features": "the structure, as set", "slots": "each feature and part: feature (its path), columns", "rerun_owed": RERUN_OWED, "next": "the commands that usually follow"},
-            "nayose set feature \"Name/Full name/Family name=SEI\" \"Name/Full name/Given name=MEI\" --workspace workspaces/acme", set_feature, quick=True,
-            show={"features": ()}),
-    Command("set", "names", "Compare each record's name on its own side, by its kind, or as mapped",
-            "by-kind: a person's name is compared only with people's names, a company's only with companies' (kind = person "
-            "on full_name and person_name, kind = company on company_name, in the workspace's columns.toml): for a file whose "
-            "name columns hold both kinds' names, which a run would otherwise score twice, as a person's name and as a "
-            "company's. Each record goes to the side its kind leans to (er.kind); one whose kind is unsure, where the "
-            "engine and the flag disagree, compares no name until people answer it (list kinds). as-mapped takes it back. "
-            "The next run reads it. O(the file).",
-            (Param("how", "by-kind or as-mapped", "choice", ("by-kind", "as-mapped"), positional=True), WORKSPACE),
-            {"names": "by-kind or as-mapped", "mapping": "the name lines of columns.toml, as written", "rerun_owed": RERUN_OWED, "next": "the commands that usually follow"},
-            "nayose set names by-kind --workspace workspaces/acme", set_names, quick=True),
-    Command("add", "feature", "Add a feature: a name in another script, or another company name",
-            "Adds a feature to the Name group (PATH: Name/<its name>): a person's name, with its family and given names, or a "
-            "company name, in a script (kana, kanji or romaji: how its values are prepared). Its fields are numbered beside "
-            "the ones it stands with (person_name_2, given_name_2; company_name_2) in the workspace's columns.toml. A run then "
-            "compares it with them: each step of the name comparison is reached when either name agrees, as one piece of "
-            "evidence, and pairs are also found on it; the match rules stay as they are. The steps' thresholds were "
-            "tuned on kana; their weights are fitted on each run's file. O(the file).",
-            (Param("path", "Name/<its name>", positional=True, metavar="PATH"),
-             Param("type", "person name or company name", "choice", ("person name", "company name"), required=True),
-             Param("script", "kana, kanji or romaji (default kana)", "choice", ("kana", "kanji", "romaji")),
-             Param("column", "the column that holds it, if you know it", metavar="COLUMN"), WORKSPACE),
-            {"features": "the structure, with it", "slots": "each feature and part: feature (its path), columns", "rerun_owed": RERUN_OWED, "next": "the commands that usually follow"},
-            "nayose add feature \"Name/Kanji name\" --type \"person name\" --script kanji --column SHIMEI --workspace workspaces/acme", add_feature_,
-            quick=True, show={"features": ()}),
-    Command("remove", "feature", "Remove a feature added to a workspace",
-            "Its fields leave the workspace's columns.toml; the defaults stay (take their columns off instead). O(the file).",
-            (Param("path", "GROUP/FEATURE", positional=True, metavar="PATH"), WORKSPACE),
-            {"features": "the structure, without it", "slots": "each feature and part: feature (its path), columns", "rerun_owed": RERUN_OWED, "next": "the commands that usually follow"},
-            "nayose remove feature \"Name/Kanji name\" --workspace workspaces/acme", remove_feature_, quick=True, show={"features": ()}),
-    Command("describe", "records", "What a file holds, for mapping its columns: nothing prepared",
-            "Each column's share filled and an example; each field's columns as the mapping reads them (a later one where the "
-            "earlier are empty, a joined one where every part is filled), each with its share filled, an example and the share "
-            "of its values that look like the field; how well each column fits each field; and, for a field the file holds "
-            "none of, the column its name or values suggest, never applied: set columns applies it; and what a run would turn "
-            "off, a field they read missing; and for a feature whose values don't look like it, what they say is off and "
-            "what sets it right (hint): a name column holding the other kind's names too (set names by-kind), values that "
-            "look like another field (set feature), or a value that doesn't look right. Shares filled cover the "
-            "file; the rest a sample of 2,000 records. A file not loaded into a workspace is read as it comes first, for "
-            "this command alone (read: what the reader found). O(N·C) in one scan, plus the sample, plus the reading.",
-            (replace(INPUT, help=INPUT.help + "; without it, the workspace's file loaded last", optional=True), OWN), DESCRIBED, "nayose describe records customers.parquet --workspace workspaces/acme", describe_records, quick=True,
-            show={"columns": ("column", "filled", "example"), "fields": ("field", "filled", "looks_right"), "fit": (), "features": (), "profile": (),
-                  "slots": ("feature", "filled", "looks_right"), "placements": ("feature", "column", "why"), "offers": ("feature", "column", "why")}),
-    Command("check", "records", "Read, map and check a file, in seconds; resolve nothing",
-            "Reads the file through the door every input takes, maps its columns to the logical fields (config/settings.toml "
-            "[columns]), and counts each key's pairs before any join. Shows each field's fill rate, the share of values that "
-            "look like it and the share of its most common value, what would be turned off, and the blocks the run will check "
-            "on a sample. A field the run needs and the file lacks stops it, with the column whose values look most like it. "
-            "O(N) for the counts; a sample of 10,000 records for the shares.",
-            (replace(INPUT, help=INPUT.help + "; without it, the workspace's file loaded last", optional=True), OWN, COMPUTE, PIPELINE), CHECKED,
-            "nayose check records customers.parquet", check_records),
-    Command("list", "columns", "Show which of a file's columns hold each field",
-            "Reads the workspace's columns.toml, or without one config/settings.toml [columns] (or the ER_SETTINGS file): each "
-            "field, its columns (a comma between fallbacks, + between columns joined) and its options. O(the file).",
-            (OWN,), {"settings": "the file read", "own": "true: the workspace's own mapping", "columns": "each field: columns, options", "rerun_owed": RERUN_OWED,
-                     "next": "the commands that usually follow"},
-            "nayose list columns --workspace workspaces/acme", list_columns, quick=True),
-    Command("set", "preparation", "Set how a field's values are prepared",
-            "Rewrites the named fields' normalize steps in [columns]: FIELD=STEP,STEP, applied in order (FIELD= for none), the field's "
-            "columns as they are. Among the steps: nfkc (full-width as half-width, half-width kana as full), katakana (hiragana as "
-            "katakana), strip_separators (03-1234-5678 as 0312345678, letters kept), strip_spaces, kana_fold. With --workspace, the "
-            "workspace's columns.toml; else the project's, which new workspaces start from. A run reads the values so once it runs "
-            "again. O(the file).",
-            (Param("mapping", "one or more FIELD=STEPS", "many", positional=True, metavar="FIELD=STEPS"), OWN),
-            {"settings": "the file written", "own": "true: the workspace's own mapping", "columns": "each field: columns, options", "rerun_owed": RERUN_OWED,
-             "next": "the commands that usually follow"},
-            "nayose set preparation phone=nfkc,strip_separators --workspace workspaces/acme", set_preparation, quick=True),
-    Command("set", "columns", "Map fields to a file's columns",
-            "Rewrites the named fields' lines in [columns]: FIELD=COLUMN, FIELD=A,B (B where A is empty), FIELD=A+B (A and B "
-            "joined), FIELD= (no column: whatever reads it is turned off). Every other line, each line's comment and a field's options stay; the new file "
-            "is checked before it replaces the old. With --workspace, the workspace's columns.toml; else the project's, which "
-            "new workspaces start from. O(the file).",
-            (Param("mapping", "one or more FIELD=COLUMNS", "many", positional=True, metavar="FIELD=COLUMNS"), OWN),
-            {"settings": "the file written", "own": "true: the workspace's own mapping", "columns": "each field: columns, options", "rerun_owed": RERUN_OWED,
-             "next": "the commands that usually follow"},
-            "nayose set columns phone=TEL4 person_name=NAME_KANA,SEI+MEI --workspace workspaces/acme", set_columns_, quick=True),
     Command("resolve", "records", "Resolve a file: one ID per person or company",
             "A full run, without labels: load, budget, fit, rules, candidates, score, cluster, write, report. Writes the "
             "workspace: gold.parquet, matches/, rule_kept/, proposed/, set_aside/, state/, steps.json, and for people qa.md, "
@@ -1371,24 +290,6 @@ COMMANDS: tuple[Command, ...] = (
              Param("model", "a fitted model to score with instead of fitting one on the file (its JSON, or the file that holds it under 'model')", "path"),
              COMPUTE),
             RUN_RESULT, "nayose resolve records customers.parquet --workspace workspaces/customers", resolve_records),
-    Command("rehearse", "records", "Run a generated file of the same size and shape, and measure what this machine needs",
-            "The file's records and each field's share filled (no value kept); a file of that size and shape generated in "
-            "parts of 50,000 entities, each field filled at the file's share, a field it lacks left out; that file resolved "
-            "in a process of its own, under the same limits and the workspace's method (method.toml; a key on a name feature "
-            "added to the workspace left out: the generated file holds none), its spill folder's size read every half second. Says the seconds "
-            "of each step, the peak memory, the peak spill, the pairs, and the generated shape beside the file's; if the run "
-            "stopped (memory, disk), why, as the real file would. Removes what it made; keeps rehearsal.json in the workspace. "
-            "Past 31,596 companies the generator's company names repeat more than in a real file, so name keys make more pairs: "
-            "check records counts the file's own. O(N) to generate, O(a full run) to measure.",
-            (replace(INPUT, help=INPUT.help + ", its shape read, not copied in; without it, the file loaded into the workspace last", optional=True),
-             WORKSPACE, PIPELINE, COMPUTE),
-            {"ok": "whether the run went through", "records": "records generated", "generate_seconds": "seconds to generate and describe them",
-             "generate_peak_gb": "the peak memory of generating them, a process apart from the run's",
-             "seconds": "the run's seconds", "steps": "seconds of each step", "peak_memory_gb": "the run's peak memory (the process's)",
-             "peak_spill_gb": "the most it spilled to disk at once", "pairs": "the pairs its keys and rules listed",
-             "shape": "each field: its share filled in the file and in the rehearsal", "error": "why the run stopped, if it did",
-             "fix": "what to do then", "limit": "what a generated file can't show", "next": "the commands that usually follow"},
-            "nayose rehearse records --workspace workspaces/customers", rehearse_records),
     Command("add", "records", "Add new records to a run",
             "An increment: each new record compared with every stored one, with the run's model; it can join an existing "
             "entity. A record whose ID is already in the run is set aside, so adding the same file twice adds nothing. "
@@ -1431,469 +332,23 @@ COMMANDS: tuple[Command, ...] = (
              "checked": "each key: found, or why not; a block too big: its records and the gate's decision", "seconds": "each part",
              "index": "built_at, records", "next": "the commands that usually follow"},
             'nayose match record FULL_NAME_KANA="ヤマダ タロウ" PHONE_NUM_4=1234 --workspace workspaces/customers', match_record, quick=True),
-    Command("search", "records", "The stored records whose values start with those given, any of them; nothing written",
-            "Values by the file's column names, any of them (finding nothing as given, read again as people type them: full-width, a "
-            "name's hiragana, 100-0001), each prepared as a run prepares it and read by its start in the index "
-            "(a name also by its end): the records sharing the most of them, scored with the run's model, a column not given counting "
-            "as missing. The entities at --from points or more (default: any), best first, each with its best record, its points and "
-            "the fields that agree. A value that starts too many records to list is said, to be given further. "
-            "O(F·(log N + 2,000) + 500·K·L²): F the fields given, N only in log N.",
-            (Param("values", "the values, by the file's column names", "many", positional=True, metavar="COLUMN=VALUE"),
-             Param("from", "from these points (default: any)", metavar="POINTS"), Param("count", "the most entities (default 10)", metavar="N"),
-             WORKSPACE, PIPELINE, COMPUTE),
-            {"record": "the values as compared: their fields and kind", "entities": "each: entity, record, points, likely, fields (those that agree), compared, records, shown",
-             "found": "entities at --from or more", "listed": "records whose values start with those given", "candidates": "of them, scored",
-             "typed": "the fields searched", "unsearched": "the fields typed that this run can't be searched by: its records don't hold them", "read_as": "the values as read, when they were typed otherwise than records hold them and so read agree on more", "missing": "the columns given, when every value read as missing: nothing to search by",
-             "over": "each value that starts too many records to list them all: field, value, records (how many start with it, counted to 100,000: more true past it), listed (its first by value listed: no other value lists its own)", "seconds": "each part",
-             "index": "built_at, records", "next": "the commands that usually follow"},
-            "nayose search records FULL_NAME_KANA=ヤマダ PHONE_NUM_4=1234 --workspace workspaces/customers", search_records, quick=True),
-    Command("rerun", "records", "A full run again, on the run's own files",
-            "Reads the record files the run read, the full run's and each increment's, in order (steps.json; a scheduled batch "
-            "found where the scheduler moved it), each checked by its SHA-256, and resolves them again in one full run: every "
-            "pair compared again, an ID's records kept as the increments kept them. O(a full run).",
-            (WORKSPACE, PIPELINE, COMPUTE), RUN_RESULT, "nayose rerun records --workspace workspaces/customers", rerun_records),
-    Command("describe", "workspace", "What a workspace holds",
-            "Records and entities, the largest entities, each run so far, the pairs and kinds still open and the answers written "
-            "in, records set aside, a write still owed, the last summary, the round with its audits, and the trust line. O(N) in SQL.",
-            (Param("workspace", "the workspace", "path", positional=True), PIPELINE),
-            {"workspace": "the workspace", "records": "records", "entities": "entities", "largest": "the 10 largest entities",
-             "runs": "each run so far: at, what, the record files it read, seconds, records loaded, each step's seconds", "pairs": "open pairs to decide and audit, and decisions written in",
-             "kinds": "open records to decide (flagged, drawn or not) and to measure (optional), and answers written in", "set_aside": "records set aside",
-             "write_owed": "a write cut short, finished by the next one", "summary": "the last run's summary",
-             "round": "the round now: one per method the workspace ran (rounds.json)", "audits": "this round's audits people decided: checked, false",
-             "trust": TRUST,
-             "inputs": "the records files given to it, each in inputs/: name, path, files, bytes, rows, read (by a run, as it is now), waiting (repairs proposed, for people), unread (rows), given (its file's own name, one file), seconds (its reading took), columns",
-             "columns": "own: its columns.toml; project: config/settings.toml's",
-             "auto": "the report try everything wrote, to send: report (its path), markdown",
-             "rerun_owed": "the mapping, the method or the pipeline changed since the run: it reads the records so once it runs again",
-             "index": "the lookup's index: built_at, records, added (of them, since it was built), stale (what changed since, or null; built_at null: none yet), columns (each a lookup reads: column, field, main: in the field's first alternative)",
-             "details": "the details file people see above each record (load details), or null",
-             "stamp": "what people and runs change, by its files' sizes and times (sheets, decisions, answers, method, mapping, entities): a page coming back reads again when it moves",
-             "ready": "whether a run can start on the file loaded last: run (true or false), why not, and the fix",
-             "diagnosis": "what limits what the last run finds, as report.txt's DIAGNOSIS says it, the most pairs first: what, pairs (at stake), fix (a command, or empty); null before a run that kept it",
-             "next": "the commands that usually follow"},
-            "nayose describe workspace workspaces/customers", describe_workspace_, quick=True,
-            show={"largest": ("entity", "records"), "runs": ("at", "what", "seconds"), "inputs": ("name", "files", "bytes", "read"), "auto": (), "index": (),
-                  "diagnosis": ("what", "pairs", "fix")}),
-    Command("describe", "entity", "One record's entity, and what joined it",
-            "The entity of the record ID: its size, each of its records (the first 200, the ID among them) with its fields and "
-            "kind, and every link between them: a rule, the model with its weight in bits, people, or the workspace's merge "
-            "conditions (auto). O(N) in SQL.",
-            (Param("id", "a record ID, as the run wrote it", positional=True, metavar="ID"), WORKSPACE),
-            {"record": "the ID asked for", "entity": "its entity (the cluster_id)", "size": "how many records it holds",
-             "records": "each of the entity's records, the first 200",
-             "links": "each link between them: id_l, id_r, by, weight",
-             "pairs": "of an entity of up to 50 records, every pair inside it scored: id_l, id_r, weight, by (none: joined through others), comparisons (comparison, reached, bits)",
-             "weakest": "the links whose loss would split the entity: id_l, id_r", "capped": "true: too many records to score every pair",
-             "next": "the commands that usually follow"},
-            "nayose describe entity 0000000151 --workspace workspaces/customers", describe_entity_, quick=True,
-            show={"records": ("id", "resolved_by", "kind", "person_name", "company_name", "address", "postal_code", "phone", "customer_id", "birth_date"),
-                  "links": ("id_l", "id_r", "by", "weight"), "pairs": ("id_l", "id_r", "weight", "by"), "weakest": ("id_l", "id_r")}),
-    Command("explain", "pair", "How the model scored one pair, and what found it",
-            "Two record IDs of the run, scored again as the run scored: per comparison, each step's tests, the values each "
-            "compared after its normalization, the function, its threshold and the score it gave; the step each comparison "
-            "reached and its points; the starting points for two records, and the total. What found the pair: a match "
-            "rule, the pair keys, people; and whether it merged. When the two are in different customers and one of them holds "
-            "more records, both customers and every pair across them (at most 400), scored. O(400·K).",
-            (Param("first", "one record ID", positional=True, metavar="ID"), Param("second", "the other", positional=True, metavar="ID"), WORKSPACE, PIPELINE),
-            {"id_l": "the lower ID", "id_r": "the other", "weight": "the pair's points (bits)", "probability": "the model's chance they are one",
-             "prior": "the points two records start from", "pairs_all": "the pairs of records the run's file holds",
-             "pairs_same": "of them, those the model expects are one customer: the start is their ratio",
-             "common": "the points term frequencies add (0 without them)",
-             "line": "the trust line (none: above every step; null: the method as tuned)", "threshold": "the weight the method accepts at",
-             "same_customer": "the two are in one customer", "household": "maybe two people of one household: an address or a phone shared, another given name or birth date",
-             "records": "both records: id and fields",
-             "comparisons": "comparison, reached (its step), bits",
-             "tests": "each step's tests: comparison, step, field, function, threshold, normalize, raw (the values as written), "
-                      "prep (each normalizer step: step, a, b), a, b, score, passed",
-             "found": "rule (a match rule's name), keys (the pair keys that listed it), people (a decision), merged",
-             "group_a": "the first's customer, when the two are apart and one customer holds more", "group_b": "the second's",
-             "across": "each pair across the two customers: id_l, id_r, weight", "next": "the commands that usually follow"},
-            "nayose explain pair 0000000151 0000000377 --workspace workspaces/customers", explain_pair_, quick=True,
-            show={"records": (), "comparisons": ("comparison", "reached", "bits"),
-                  "tests": ("comparison", "step", "field", "function", "threshold", "a", "b", "score", "passed"),
-                  "group_a": ("id",), "group_b": ("id",), "across": ("id_l", "id_r", "weight")}),
-    Command("describe", "key", "One pair key: what it lists, how big its groups are, and what only it found",
-            "A pair key of the run's method lists two records as a pair to compare when they share its value; it matches nothing "
-            "itself. This shows the pairs it listed, the links of the run among them and those no other key listed (up to 3, "
-            "to explain). For a key of equal values or of one-letter deletions: how many records share each value (1 to 9, "
-            "10 or more), its largest values, and one group: the records sharing the value behind one of those links (at most "
-            "12). For sorted neighbours: the records around such a link in the key's order. O(N), O(N·L) with deletions.",
-            (Param("name", "the pair key, as describe matching names it", positional=True, metavar="KEY"), WORKSPACE, PIPELINE),
-            {"name": "the key", "method": "KeyBlocker (equal values), SortedNeighbourhood, DeletionKeys or TfidfNeighbours",
-             "keys": "the fields it reads: field, normalize", "pairs": "the pairs it listed", "matched": "links of the run it listed",
-             "only": "links no other key listed", "examples": "up to 3 of them: id_l, id_r, weight",
-             "sizes": "records per value: records (10: 10 or more), values", "largest": "its 3 largest values: value, records",
-             "group": "one value's records: value, pair (the link behind it), records, more",
-             "around": "sorted neighbours: window, pair, the records around it in order (sorted_as)", "next": "the commands that usually follow"},
-            "nayose describe key person_name --workspace workspaces/customers", describe_key_, quick=True,
-            show={"sizes": ("records", "values"), "largest": ("value", "records"), "examples": ()}),
-    Command("compare", "records", "One record against others: every comparison's steps, test by test, for each",
-            "The first record of the run against each of the others (at most 50), every pair scored again as the run scored: "
-            "per other, its points, the step each comparison reached and every step's tests, with the values each compared as "
-            "written, after each normalizer and as compared, the first record's side first. For a record's candidates: "
-            "another customer's records, or the rest of its own. O(50·K).",
-            (Param("first", "the record to compare", positional=True, metavar="ID"), Param("others", "the records to compare it with", "many", positional=True, metavar="ID"),
-             WORKSPACE, PIPELINE),
-            {"first": "the record compared", "records": "the first, then each other: id and fields",
-             "candidates": "each other: id, weight (the pair's points), comparisons (comparison, reached, bits), tests (as explain pair's)",
-             "next": "the commands that usually follow"},
-            "nayose compare records 0000000151 0000000377 0000000412 --workspace workspaces/customers", compare_records_, quick=True,
-            show={"records": (), "candidates": ("id", "weight")}),
-    Command("describe", "matching", "How records are matched: every method, on which fields, with its numbers",
-            "The pipeline as a graph: records, how each field is made comparable, the rules, the ways pairs are listed, the "
-            "comparisons, what each level is worth in bits and the pairs that stopped at it, the line pairs are accepted at, the pairs left to people, and "
-            "how linked records become customers. With --workspace, each part also holds that run's numbers and a real example. "
-            "O(E + R + N) in SQL over the run's files.",
-            (Param("workspace", "a workspace: its numbers and examples (without it, the methods only)", "path"), PIPELINE),
-            {"nodes": "each part: id, name, method, its parameters and fields, and with --workspace its numbers and examples",
-             "edges": "source, target, count", "next": "the commands that usually follow"},
-            "nayose describe matching --workspace workspaces/customers", describe_matching_, quick=True),
-    Command("describe", "method", "What the run shows about its method, and the changes worth trying",
-            "From the run in the workspace and people's decisions: each round so far (a round per method the workspace "
-            "ran: the tuned one, then each change of method.toml), with the links it made and the audits people decided in "
-            "it; the line pairs are accepted at, the weight bands, and every pair people decided, scored again with the "
-            "run's model; each match rule's pairs, those scoring below the line, and those people said are different; "
-            "each pair key's pairs, seconds, links, and links only it found; each comparison step's bits and the pairs that "
-            "reached it; and proposals: a line in the band people review that sets right decided pairs without setting any "
-            "wrong, a rule people found different pairs in, a key no link needs. Changes nothing. O((D + R)·K) to score the "
-            "decided and rule pairs again, + O(E) over the run's files.",
-            (WORKSPACE, PIPELINE),
-            {"line": "the weight pairs are accepted at", "review_from": "the lowest weight people are asked to decide",
-             "method": "the workspace's changes to the tuned method (method.toml)", "round": "the round now (0: no round recorded)",
-             "rounds": "round, method, at, matched, expected_false, decided, audited, false_found",
-             "audits": "this round's audits: checked, false, at_most (the false rate's 95% upper bound)",
-             "dropped": "the rules and pair keys the method leaves out, each as describe matching words it (rules: exact, fuzzy; keys: method, keys)",
-             "to_decide": "pairs left to decide", "bands": "weight_from, pairs, accepted",
-             "decided": "each pair people decided: id_l, id_r, decision, why, round, weight, named, rule",
-             "rules": "name, pairs, below (scored below the line), different (people said)",
-             "keys": "name, pairs, seconds, matched, only (links no other key found)",
-             "steps": "comparison, level, bits, reached", "proposals": "change (method.toml keys), why",
-             "trials": "the trials kept (the last 5), as try method gave them", "trust": TRUST, "next": "the commands that usually follow"},
-            "nayose describe method --workspace workspaces/customers", describe_method_, quick=True,
-            show={"rounds": ("round", "matched", "audited", "false_found", "expected_false"), "bands": (), "decided": (),
-                  "rules": ("name", "pairs", "below", "different"), "keys": ("name", "pairs", "seconds", "matched", "only"),
-                  "steps": ("comparison", "level", "bits", "reached"), "proposals": ("change", "why"), "trials": ()}),
-    Command("describe", "review", "How much people must check, range by range of the trust line",
-            "From the run in the workspace, without labels: for each range of the trust line's steps, its pairs (the rules' "
-            "and the model's links), how many people decided and said different, the sample a range needs (checks, or all "
-            "of a smaller range), the false links the model expects in it, the chance its sample comes back clean, the false "
-            "rate a clean sample bounds, and the reviews left to merge it and every range above; then what waits whatever "
-            "the line, the spot-checks a round, the person/company sheet, and the hours they take if each pair takes --seconds (an assumption, "
-            "not a measure). A range above the line merges: none left there; a range people found a false pair in, and every "
-            "range below it, need all their pairs, since the line never steps past it. A workspace with no trust line merges "
-            "as tuned, and is refused. Changes nothing. O(E + D) over the run's files and people's decisions.",
-            (WORKSPACE, PIPELINE, Param("seconds", "the seconds one pair takes people to decide, for the hours (default 10)")),
-            {"ranges": "each range: down_to, up_to (none: no top), pairs, checked, different, sample, expected_false, chance_clean, "
-                       "bound (the false rate a clean sample proves, at 95%), reviews_left, reviews_to_here (cumulative), if_not_clean",
-             "below_last_step": "pairs below the last step: they never merge by points", "unnamed": "the model's pairs with no name compared: people decide each",
-             "watch": "spot-checks a round of the pairs above the line", "kinds": "the person/company sheet: measure, decide, answered",
-             "seconds_per_pair": "the assumption the hours rest on", "hours": "to_each_line (cumulative, range by range), unnamed, kinds",
-             "next": "the commands that usually follow"},
-            "nayose describe review --workspace workspaces/customers", describe_review, quick=True,
-            show={"ranges": ("down_to", "up_to", "pairs", "checked", "different", "sample", "expected_false", "chance_clean", "reviews_left", "reviews_to_here")}),
-    Command("try", "method", "Try a change of the method beside the method as it is",
-            "Runs the workspace's method and the method with the change (a line; --drop: match rules and pair keys left "
-            "out; --add: pair keys added, as describe method proposes them for the matches the probe found no key lists) on the workspace's files, both without people's decisions, so neither is judged on pairs it was told, and at the method's own line with the trust line set aside; both "
-            "keep the run's fitted model and people's person/company answers. Says what the change does to the pairs people "
-            "decided (those they said are different yet joined: false merges; those they said are the same yet apart) and, "
-            "without labels, to the links, the false links the model expects, the entities, and the pairs of records it puts "
-            "apart or together. Writes only trials/ in the workspace: each trial's result (the "
-            "last 5 kept) and the clusters of the method as it is, kept for the next trial. O(two full runs without the fit); "
-            "one when the method and the files are those of the last trial.",
-            (WORKSPACE, Param("line", "the weight to accept pairs at, in bits", metavar="BITS"),
-             Param("drop", "match rules and pair keys to leave out, by name", "many", metavar="NAME"),
-             Param("add", "pair keys to add, each its fields joined by + (field or field:normalizer), as describe method proposes them", "many", metavar="FIELDS"),
-             PIPELINE, COMPUTE),
-            {"trial": "its number, for adopt method", "at": "when", "method": "the method tried, as method.toml would say it",
-             "base": "the method as it is: matched, expected_false, rule_pairs, entities", "variant": "the method tried: the same",
-             "different_joined": "pairs people said are different, in one customer (false merges): base, variant",
-             "same_apart": "pairs people said are the same, apart: base, variant",
-             "fixed": "pairs people decided that it sets right: id_l, id_r, decision (50 at most)", "broken": "those it sets wrong (50 at most)",
-             "apart": "pairs of records it puts apart", "together": "pairs of records it puts together",
-             "next": "the commands that usually follow"},
-            "nayose try method --workspace workspaces/customers --line 9 --drop F3_NAME~_CIF", try_method,
-            show={"method": (), "fixed": ("id_l", "id_r", "decision"), "broken": ("id_l", "id_r", "decision")}),
-    Command("try", "sample", "Find how large a sample the model needs to learn from",
-            "Fits the model on 1,000 of the run's records, then 2,000, 4,000, … (each sample the last one and more), with EM "
-            "as the method has it (rules) and in one session per equality key (keys), and scores the pairs the run kept with "
-            "each fit from the levels they hold: how many reach the review floor and the line, and how many each larger sample "
-            "adds and takes away. Stops once two larger samples in a row change almost no pair, or at every record. Then each way's "
-            "chosen fit: its points by level against the run's, the kept pairs it lifts to the review floor by pattern, and a check on "
-            "the gap's sample of what a run with it would find, what the run's cutoff left out and what no key lists. Writes "
-            "sample_sizes.txt into the workspace, to send: counts, points and m, no record's value. Changes no result. "
-            "O(Σ fits): about twice the last one.",
-            (WORKSPACE, PIPELINE, COMPUTE),
-            {"records": "the run's records", "floor": "the review floor", "line": "the line", "file": "sample_sizes.txt", "report": "its text",
-             "steps": "each fit: records, em, seconds, start, change (the largest move of a level's points), pairs_floor, pairs_line, added, lost, m",
-             "settled": "each way's sample past which a larger one changes almost no pair", "chosen": "each way's settled sample, or its largest",
-             "levels": "each level's points: the run's model, then each way's chosen fit", "gained": "each way's kept pairs its fit lifts to the review floor, by pattern",
-             "checks": "each way's chosen fit on the gap's sample: per threshold the pairs, those the keys list, the run kept, a run with it adds, no key lists (95%), and what those agree on",
-             "next": "the commands that usually follow"},
-            "nayose try sample --workspace workspaces/customers", try_sample,
-            show={"steps": ("records", "em", "seconds", "start", "pairs_floor", "added", "lost")}),
-    Command("set", "fit", "Set the sample the model learns from, and how EM learns",
-            "Keeps them in the workspace (method.toml fit): the records the next run's fit samples, and EM as the method has it "
-            "(rules), one session per equality key, each level's m their median (keys), or one session blocked on each field "
-            "named (fields, comma-separated, each `field` or `field:normalizer`). The next run uses them. O(1).",
-            (WORKSPACE, Param("records", "the records to sample, 1,000 or more (try sample says where more stops paying)", required=True, metavar="N"),
-             Param("em", "rules: as the method has it; keys: one session per equality key; choose: as choose em, at each fit; or fields, comma-separated: one session per field", required=True, metavar="rules|keys|choose|FIELDS"), PIPELINE),
-            {"method": "the workspace's method.toml", "next": "the commands that usually follow"},
-            "nayose set fit --workspace workspaces/customers --records 64000 --em keys", set_fit),
-    Command("set", "floor", "Set the points from which the run keeps pairs",
-            "Keeps it in the workspace (method.toml keep): a pair whose best case can't reach it is never compared in full or "
-            "stored, so people can't review it. 0 unless set; lower keeps more pairs and costs more. The next run uses it. O(1).",
-            (WORKSPACE, Param("points", "the points to keep pairs from, for example -10", required=True, metavar="POINTS"), PIPELINE),
-            {"method": "the workspace's method.toml", "next": "the commands that usually follow"},
-            "nayose set floor --workspace workspaces/customers --points -10", set_floor),
-    Command("choose", "em", "Choose the fields EM learns from, by the given name",
-            "Fits the model on the run's fit sample (--records of them, default the method's), against the u the run measured, "
-            "in one EM session per field a comparison's first level tests for equality (an identifying field left out). "
-            "A session is kept when at least half the matches it learned agree on the given name (on the full name where the "
-            "given name is filled in under 30% of the named records); one keyed on a name field is kept by its key. Writes fit em "
-            "\"choose\" into method.toml: each run then makes this choice itself on its own sample, each level's m the median of the "
-            "kept sessions, a comparison but the name they hold under 10 pairs agreeing on taking every session's, and none kept: "
-            "the method's rules. O(the fit).",
-            (WORKSPACE, Param("records", "the records to sample, 1,000 or more (default: the method's)", metavar="N"), PIPELINE, COMPUTE),
-            {"records": "the records sampled", "sessions": "each session: session, field, pairs, given_share, kept, why",
-             "kept": "the fields kept", "wide": "the comparisons the kept sessions barely saw: m from every session",
-             "method": "the workspace's method.toml", "next": "the commands that usually follow"},
-            "nayose choose em --workspace workspaces/customers", choose_em,
-            show={"sessions": ("session", "pairs", "given_share", "kept", "why")}),
-    Command("try", "everything", "Try everything on a file, and write a report to send that holds no record's value",
-            "Auto mode: the commands a person would run on the file, in order, each in a process of its own: create workspace "
-            "(auto-<month><day>-<time> in HOME, strict: nothing merges before people check), load records, set feature with "
-            "what its contents suggest, check records, set fit --em choose, rehearse records (a stop there stops before the real run), resolve "
-            "records, describe method, list patterns, try method for each change it proposes (--trials of them), the names "
-            "in another script the file holds in a workspace of their own (auto/offers), and describe review. A step that "
-            "fails is kept with its error and fix, and the steps that need it are skipped. Then auto/report.md, to send, and "
-            "auto/report.json, its facts: counts, shares, seconds and the names of columns, fields, rules and keys, each taken "
-            "field by field; checked against every value of a sample of 20,000 records, every run of six digits or more and "
-            "every run of kana or kanji that is no column name, each found redacted and counted. When the file's first line "
-            "was a record (the reader says the header may be missing, or two of its names read like values: four digits, an "
-            "email, a legal form, a date, a known full name or address), every column name is one of the values. A step that "
-            "crashed keeps its own words in auto/<step>.log, never in the report. Never lowers the trust line or adopts a "
-            "method. Exit 0 once the run went through, 2 if a step stopped it, 75 if a workspace was busy, 130 if stopped "
-            "(Ctrl-C); the report is written each time, once its workspace is made. O(the commands it runs): about 10 "
-            "minutes a million records.",
-            (INPUT, HOME, Param("trials", "how many of the changes describe method proposes to try (default 3)", metavar="N"),
-             PIPELINE, COMPUTE),
-            {"workspace": "the workspace it made", "ok": "whether the run went through", "steps": "each step: step, ok, seconds, error",
-             "report": "auto/report.md: the report to send", "values": "the values of the sample the report was checked against",
-             "redacted": "what the check found and redacted (0: none)", "markdown": "the report itself", "next": "the commands that usually follow"},
-            "nayose try everything customers.parquet", try_everything, show={"markdown": ()}),
-    Command("adopt", "method", "Adopt a method tried, and find matches with it",
-            "Writes the trial's method into the workspace's method.toml, its merge conditions as they are now, then runs the workspace's files again with it, as "
-            "rerun records does; method.toml is left as it was if the run fails. Every later command on the workspace runs "
-            "this method. O(a full run).",
-            (WORKSPACE, Param("trial", "the trial's number (try method gives it)", required=True, metavar="N"), PIPELINE, COMPUTE),
-            RUN_RESULT, "nayose adopt method --workspace workspaces/customers --trial 3", adopt_method),
-    Command("reset", "method", "Go back to the tuned method, and find matches with it",
-            "Takes the workspace's changes to the method out of method.toml (the line, the rules and keys left out or added) "
-            "and keeps its trust line, which people earned, and their merge conditions; then runs the workspace's files again, as rerun records does. "
-            "method.toml is left as it was if the run fails. O(a full run).",
-            (WORKSPACE, PIPELINE, COMPUTE), RUN_RESULT, "nayose reset method --workspace workspaces/customers", reset_method),
-    Command("lower", "trust", "Merge the next range of scores without people, once its sample is clean",
-            "The trust line (the workspace's method.toml trust): pairs scoring at or above it merge without people. It steps "
-            "down one range ([trust] steps) once people answered checks pairs of that range (or all of them), drawn at "
-            "random, and found none false: at most 1% false at 95% for 300. Refused before then. Then runs the workspace's "
-            "files again with the new line, as rerun records does; method.toml is left as it was if the run fails. O(a full run).",
-            (WORKSPACE, PIPELINE, COMPUTE), RUN_RESULT, "nayose lower trust --workspace workspaces/customers", lower_trust),
-    Command("raise", "trust", "Take a range of scores back to people",
-            "Raises the trust line one step (or starts one, above every step, on a workspace without: nothing then merges "
-            "before people check), then runs the workspace's files again; method.toml is left as it was if the run fails. "
-            "For when a spot-check above the line finds a false link. O(a full run).",
-            (WORKSPACE, PIPELINE, COMPUTE), RUN_RESULT, "nayose raise trust --workspace workspaces/customers", raise_trust),
-    Command("split", "entity", "Split an entity at a link that alone holds it together",
-            "The two records of the link are decided different, kept with people's decisions, and the workspace's files run "
-            "again, which never joins a pair people called different: the entity becomes the two parts that link held together. "
-            "Refused for a link other links stand in for, so a split always splits. O(n²·K) to check, then O(a full run).",
-            (Param("id", "a record of the entity", positional=True, metavar="ID"), Param("between", "the link's two records", "many", metavar="ID"), WORKSPACE, PIPELINE, COMPUTE),
-            RUN_RESULT, "nayose split entity 0000262688 --between 0000262688 0000312261 --workspace workspaces/customers", split_entity),
-    Command("draw", "pairs", "More links on the review sheet, to audit; and the pairs of the range people check next",
-            "Adds audit rows to review.parquet: links, the model's and the rules', that people have not decided and the sheet "
-            "does not hold, spread evenly over 1-bit weight bands, a rule's pairs scored as the model scores them. No false "
-            "link in many audits is what says the links are right. With a trust line, first the pairs of the range people "
-            "check next that the sheet lacks, from those the run kept for people: no run. O(N + (R + count)·K + E).",
-            (WORKSPACE, Param("count", "how many audits (default 50)", metavar="N"), PIPELINE),
-            {"drawn": "audit rows added", "decide": "rows of the range people check next added", "next": "the commands that usually follow"},
-            "nayose draw pairs --workspace workspaces/customers --count 50", draw_pairs, quick=True),
-    Command("list", "pairs", "The pairs for people to decide and to audit",
-            "The run's review.parquet: decide rows (the pairs just below the threshold, and those above it with no name "
-            "compared) and audit rows (accepted pairs just above it), each with both records' fields, each comparison's level "
-            "and bits, and a status: open, written in, or applied. O(sheet rows).",
-            (WORKSPACE, Param("why", "decide or audit only", "choice", ("decide", "audit")), OPEN, PENDING),
-            {"counts": "rows by why and status", "pairs": "each pair: why, status, decision, id_l, id_r, match_weight, accepted, fields, levels",
-             "next": "the commands that usually follow"},
-            "nayose list pairs --workspace workspaces/customers --open", list_pairs, quick=True,
-            show={"pairs": ("why", "status", "id_l", "id_r", "match_weight", "accepted")}),
-    Command("describe", "results", "What the run found, at a glance",
-            "How the scores came out (every pair the run scored, the full run's and each increment's, by its points), the pairs waiting for "
-            "people from --from points up, by range, what merged and how, entities by size, the merge conditions, whether "
-            "matches could be missed (the probe), the groups too big to compare, and the person/company answers to give. "
-            "Reads the workspace only: no run. The first read of a run written before runs kept their pairs' levels makes "
-            "that index once (scored/), from the pairs it stored. O(N + P + E).",
-            (WORKSPACE, Param("from", "review from these points (default: the review floor)", metavar="POINTS"), PIPELINE),
-            {"records": "records", "entities": "entities", "joined": "entities of two records or more",
-             "sizes": "entities by size: label, entities", "scores": "every scored pair by points: down_to, up_to, pairs",
-             "candidates": "pairs compared", "uncounted": "the records added since the full run whose pairs scores leaves out (a run logged before each counted its own)",
-             "listed": "the pairs kept at 0 points or more: those list scored lists from 0", "review_from": "the points people review from",
-             "waiting": "pairs waiting for people, by range: down_to, up_to, pairs", "pairs": "the pairs kept (0 points or more), by status",
-             "merged_by": "records by what joined them: you, model, rule, or none",
-             "merging": "the merge conditions: join, when; own: what the method merges by itself when there are none (line, rules), or null",
-             "missed": "the probe's strata: stratum, fields, pairs, scored, missed, low, high",
-             "too_big": "groups too big to compare: skipped, kept, by (the key that made them → how many skipped)",
-             "kinds": "person or company: flagged (the engine sure against the file's flag, matched as the engine says), to_check (those open on the sheet), to_teach (the measuring draw's open rows: optional)",
-             "next": "the commands that usually follow"},
-            "nayose describe results --workspace workspaces/customers", describe_results_, quick=True),
-    Command("list", "scored", "The pairs the run scored, best first, a page at a time",
-            "Every pair the run scored at 0 points or more and every rule pair, best first: both IDs, points, how each was "
-            "found (keys, rule), its status (waiting, merged, same, different: people's), each comparison's level and "
-            "points, and both records' compared fields; filtered by points, by how found, by status or by a record ID; "
-            "with the total the filters keep. With --each, one pair of each pattern the filters keep, the patterns of most "
-            "pairs first: below the review floor, the kinds of pair nobody is asked about, one of each to see. O(E log E) + O(page·F).",
-            (WORKSPACE, Param("from", "from these points", metavar="POINTS"), Param("to", "below these points", metavar="POINTS"),
-             Param("source", "found by a rule, or by the model's keys", "choice", ("rules", "model")),
-             Param("status", "one status only; open: waiting, or decided and not applied yet", "choice", ("waiting", "merged", "same", "different", "open")),
-             Param("record", "pairs of this record ID", metavar="ID"), Param("page", "the page (default 1)", metavar="N"),
-             Param("count", "pairs a page (default 100)", metavar="N"),
-             Param("each", "one pair of each pattern (each comparison's level), the patterns of most pairs first", "flag"), PIPELINE),
-            {"total": "pairs the filters keep (with --each: patterns)", "typed": "of them, decided and not applied yet", "page": "this page", "count": "pairs a page",
-             "pairs": "each pair: first, second, points, sources, rule, status, said, applied, compared (comparison: level, points), like (with --each: the pairs of its pattern), fields (field: [first, second]), "
-                      "household (maybe two people of one household)"},
-            "nayose list scored --workspace workspaces/customers --status waiting --from 6", list_scored_, quick=True,
-            show={"pairs": ("first", "second", "points", "status", "rule")}),
-    Command("list", "entities", "The entities, largest first",
-            "Entities of --smallest records or more (default 2), largest first: how many records each holds, what joined "
-            "it, and up to three names; the one holding --record. O(N).",
-            (WORKSPACE, Param("smallest", "entities of this many records or more (default 2)", metavar="N"),
-             Param("record", "the entity of this record ID", metavar="ID"), Param("page", "the page (default 1)", metavar="N"),
-             Param("count", "entities a page (default 100)", metavar="N")),
-            {"total": "entities the filters keep", "page": "this page", "count": "entities a page",
-             "entities": "each entity: entity, records, joined_by (you, model or rule), names"},
-            "nayose list entities --workspace workspaces/customers", list_entities_, quick=True,
-            show={"entities": ("entity", "records", "joined_by")}),
-    Command("show", "records", "Records' full rows, as the file gave them",
-            "Each record's full row: every column of the records file, in its order, from the workspace's copy of it "
-            "(inputs/…/read/), with the fields each column feeds; a record set aside says why. Side by side for people to "
-            "compare. O(N), a scan of the ID column.",
-            (Param("ids", "record IDs", "many", positional=True, metavar="ID"), WORKSPACE),
-            {"columns": "the file's columns in order: column, fields (those it feeds)", "records": "each record: id, row (column: value), set_aside"},
-            "nayose show records 0000102855 0000905311 --workspace workspaces/customers", show_records_, quick=True),
-    Command("show", "details", "Records' rows in the details file",
-            "Each record's rows in the workspace's details file (load details), the columns people see in their order, the rows in the file's: "
-            "the first 1,000 and how many it has. Read from the file itself, its key compared as the file holds it: at most one "
-            "scan of the key column, then the shown columns of the rows found, tens of milliseconds a card. No details file: none.",
-            (Param("ids", "record IDs", "many", positional=True, metavar="ID"), WORKSPACE),
-            {"file": "the details file's name, or null: none loaded", "key": "its column of record IDs", "columns": "the columns shown",
-             "records": "each record: id, rows (each a list of values, as columns), total (its rows, all of them)"},
-            "nayose show details 0000102855 0000905311 --workspace workspaces/customers", show_details, quick=True),
-    Command("describe", "merging", "What merge conditions would merge, before they apply",
-            "The pairs the conditions merge without people (--conditions, else the workspace's), condition by condition and "
-            "together, pairs people said differ left apart, and the entities of two records or more that would then hold; "
-            "with none, what the method merges by itself. "
-            "Conditions: points (at least), rules (found by one of them), fields (each comparison at least at a level), "
-            "joined by and or or. No run. O(E + N).",
-            (WORKSPACE, Param("conditions", 'as JSON: {"join": "or", "when": [{"points": 12}, {"rules": ["…"]}, {"fields": {"name": "…"}}]}',
-                              metavar="JSON"), PIPELINE),
-            {"join": "and or or", "when": "the conditions", "each": "per condition: condition, pairs", "pairs": "pairs merged, all together",
-             "entities": "entities of two records or more then"},
-            "nayose describe merging --workspace workspaces/customers --conditions '{\"when\": [{\"points\": 12}]}'", describe_merging_, quick=True),
-    Command("set", "merging", "Merge pairs without people, by conditions you set",
-            "Keeps the conditions in the workspace (method.toml merge) and rebuilds the entities at once from people's "
-            "applied answers and the pairs the conditions merge (none: the pairs the method merges by itself, as a run does; "
-            "in a new workspace, none); a condition taken off "
-            "parts what it joined. No run: the stored pairs. Runs after this one merge by the same conditions. O(E + N).",
-            (WORKSPACE, Param("conditions", 'as JSON: {"join": "and", "when": [...]}; {} for none', metavar="JSON", required=True), PIPELINE),
-            {"join": "and or or", "when": "the conditions", "entities": "entities of two records or more", "merged": "pairs the conditions merged",
-             "index": "the workspace's index, if built: brought up to date (records, added, moved, seconds, rebuilt: why built again), or error and fix", "next": "the commands that usually follow"},
-            "nayose set merging --workspace workspaces/customers --conditions '{\"join\": \"or\", \"when\": [{\"points\": 14}]}'", set_merging),
-    Command("list", "patterns", "The model's pairs as patterns: what each comparison said, and what became of them",
-            "Every pair the model scored, by its pattern (the step each comparison reached): the pairs, their mean points, how "
-            "many merged, are on the review sheet for people (wait), were in its band but not asked (held: already one customer, "
-            "another pair of the same two customers asked, or outside a trust line's sample) or stayed apart, and three to explain. "
-            "From the score steps the full run and its increments logged (steps.json), and the sheet. O(P + S).",
-            (WORKSPACE, PIPELINE),
-            {"fields": "the comparisons, in pattern order", "pairs": "the pairs scored", "threshold": "the weight the method accepts at",
-             "patterns": "key, steps (comparison → step), bits (comparison → its points), pairs, points, merged, wait, held, apart, examples (id_l, id_r)",
-             "next": "the commands that usually follow"},
-            "nayose list patterns --workspace workspaces/customers", list_patterns_, quick=True,
-            show={"patterns": ("key", "pairs", "points", "merged", "wait", "held", "apart")}),
-    Command("decide", "pair", "Decide one pair: match or no match",
-            "Writes the decision into the workspace's review.parquet; nothing is applied until apply decisions. clear takes "
-            "it back. Any pair the run kept (list scored) can be decided: one the sheet lacks joins it. O(sheet rows), and "
-            "O(E) over scored/ for a pair the sheet lacks.",
-            (Param("first", "one record ID of the pair", positional=True, metavar="ID"), Param("second", "the other", positional=True, metavar="ID"),
-             Param("decision", "match, no_match, or clear", "choice", ("match", "no_match", "clear"), positional=True), WORKSPACE),
-            {"pair": "the two IDs, lower first", "decision": "what was written", "next": "the commands that usually follow"},
-            "nayose decide pair 0000000151 0000000152 match --workspace workspaces/customers", decide_pair, quick=True),
     Command("apply", "decisions", "Apply people's decisions to the run",
             "Each match pair joins its two entities at once, scoring nothing; no_match is kept, and a full run never accepts "
-            "the pair. With merge conditions set (set merging), the entities are then rebuilt from the stored pairs, so a "
+            "the pair. With merge conditions set (method.toml merge), the entities are then rebuilt from the stored pairs, so a "
             "no_match pair the conditions joined parts at once. Decisions are kept in decisions/; one applied before "
             "changes nothing. O(D + touched clusters) + O(N).",
             (WORKSPACE, FILE("a file of decisions: the two ID columns and decision"), PIPELINE, COMPUTE),
             {"decisions": "decisions applied", "matches": "of them, match", "clusters_joined": "entities joined",
              "summary": "said when nothing was new", "index": "the workspace's index, if built: brought up to date (records, added, moved, seconds, rebuilt: why built again), or error and fix", "next": "the commands that usually follow"},
             "nayose apply decisions --workspace workspaces/customers", apply_decisions),
-    Command("list", "kinds", "The records for people to answer person or company",
-            "The run's kind_review.parquet: decide rows (flagged: the engine sure against the file's flag, surest first, drawn "
-            "at random or not) and measure rows (optional: a random draw that places the engine's lines), each with what the "
-            "engine, the name and the flag say, and why it is there. O(sheet rows).",
-            (WORKSPACE, Param("why", "decide (flagged) or measure (optional) only", "choice", ("decide", "measure")), OPEN, PENDING),
-            {"counts": "rows by why and status", "applied": "the records answered in earlier rounds: applied, they leave the sheet", "kinds": "each record: id, why, status, reason, engine_says, name_says, name, kind",
-             "next": "the commands that usually follow"},
-            "nayose list kinds --workspace workspaces/customers --open", list_kinds, quick=True,
-            show={"kinds": ("id", "why", "status", "name", "engine_says", "name_says", "flag")}),
-    Command("answer", "kind", "Answer one record: person, company, or unsure",
-            "Writes the answer into the workspace's kind_review.parquet (1 person, 2 company, 0 can't tell); nothing is "
-            "applied until apply answers. clear takes it back. A sole trader is a person. O(sheet rows).",
-            (Param("id", "the record ID", positional=True, metavar="ID"), Param("kind", "person, company, unsure, or clear", "choice", tuple(KINDS), positional=True), WORKSPACE),
-            {"record": "the ID", "kind": "what was written", "next": "the commands that usually follow"},
-            "nayose answer kind 0000000151 company --workspace workspaces/customers", answer_kind, quick=True),
-    Command("apply", "answers", "Apply people's person/company answers: a rerun",
-            "The answers stand for their records, teach the engine, and the draw to measure places its lines; they are kept in "
-            "kind_answers/. They change how each name is matched, so they are applied by a full run on the run's own files "
-            "(rerun records). O(a full run).",
-            (WORKSPACE, FILE("a file of answers: the ID column and kind"), PIPELINE, COMPUTE), RUN_RESULT,
-            "nayose apply answers --workspace workspaces/customers", apply_answers),
-    Command("serve", "inbox", "Take in every file dropped in an inbox, one at a time",
-            "inbox/batches/ (new records: add records; into an empty workspace, resolve records), inbox/decisions/ (apply "
-            "decisions), inbox/answers/ (apply answers), oldest first, each as its nayose command in a process of its own. "
-            "Done files go to inbox/done/, ones people must fix to inbox/failed/ with their error; any other failure is tried "
-            "again, then stops the pass with the file left in place. A file changed in the last --settle seconds waits for a "
-            "later pass: write a file elsewhere and move it in. One pass, or one every --every seconds. Each file is a "
-            "line in <run>/jobs.jsonl.",
-            (Param("inbox", "the inbox folder", "path", positional=True, metavar="INBOX"), WORKSPACE,
-             Param("every", "seconds between passes; without it, one pass", "text", metavar="SECONDS"),
-             Param("retries", "attempts after an unexpected failure (default 2)", "text", metavar="N"),
-             Param("settle", "seconds a file must be left unchanged before it is taken, so one still being copied in waits (default 60)", "text", metavar="SECONDS"),
-             COMPUTE),
-            {"stopped": "the pass stopped on a file that kept failing", "next": "the commands that usually follow"},
-            "nayose serve inbox inbox --workspace workspaces/customers --every 300", serve_inbox),
-    Command("open", "ui", "The commands in a browser, on this machine only",
-            "Serves a page on 127.0.0.1, reachable only from this machine and only with the link it prints, and opens it. Its "
-            "screens follow the work: records, columns, check and run, results, pairs (keys M, N, S), kinds (keys 1, 2, 0). Each "
-            "button runs one of these commands, shown as the command line it is; lists, describes and single answers run in "
-            "the page's own process, the others each in a process of their own, one at a time. Nothing is loaded from the "
-            "network. Ctrl-C stops it.",
-            (Param("workspace", "the workspace the page starts with", "path"), HOME, Param("port", "the port (default 8765; 0: any free one)", metavar="PORT"),
-             Param("link", "print the link only; open no browser", "flag")),
-            {"next": "the commands that usually follow"}, "nayose open ui --workspace workspaces/customers", open_ui),
 )
 
 
 # ---------- the parser and the reference, from the declarations ----------
 
 GROUPS = (  # the top-level help's commands, by task
-    ("Set up", ("create workspace", "list workspaces", "load records", "generate records", "load details", "set details", "accept repairs", "check records", "describe records", "list columns",
-                "set columns", "set preparation", "list features", "set feature", "set names", "add feature", "remove feature")),
-    ("Run", ("resolve records", "add records", "match records", "rerun records", "rehearse records", "try everything", "serve inbox")),
-    ("Review", ("open ui", "describe results", "list scored", "show records", "show details", "decide pair", "apply decisions", "list kinds", "answer kind",
-                "apply answers", "describe merging", "set merging", "list entities", "describe entity", "split entity")),
-    ("Look up", ("build index", "match record", "search records")),
-    ("Look inside", ("describe workspace", "describe matching", "describe key", "list patterns", "explain pair", "compare records")),
-    ("Method", ("describe method", "try method", "try sample", "set fit", "set floor", "choose em", "adopt method", "reset method", "describe review", "lower trust", "raise trust", "draw pairs", "list pairs")),
+    ("Run", ("resolve records", "add records", "match records", "apply decisions")),
+    ("Look up", ("build index", "match record")),
 )
 
 
@@ -1959,7 +414,7 @@ def reference() -> str:
            "\"command\": …, …}` with the fields listed below, or `{\"event\": \"error\", \"error\": …, \"fix\": …, \"hints\": …, "
            "\"exit\": …}`. IDs are `id`, `id_l`, `id_r`, whatever the file calls them.",
            "- **Exit codes:** 0; 2, a mistake people fix (two lines: what is wrong, and the fix); 75, the workspace is busy: "
-           "try again later; 1, a pass of `serve inbox` stopped on a file; 130, stopped with Ctrl-C.",
+           "try again later; 130, stopped with Ctrl-C.",
            "- **`next`**, in every result: the commands that usually follow, each with why.", "",
            "| Command | Does |", "|---|---|", *(f"| [`{c.name}`](#nayose-{c.verb}-{c.noun}) | {c.help} |" for c in COMMANDS), ""]
     for c in COMMANDS:
@@ -1983,12 +438,11 @@ def out_of_memory(e: BaseException) -> InputError | None:  # DuckDB's, raised as
 
 
 def perform(c: Command, a: dict, emit: Emit) -> dict:
-    """A command run on its parameters; a field the file lacks, in a workspace, is mapped in the workspace's own
-    columns.toml, so its fix says so (set columns --workspace), with the columns the file's values suggest. A workspace
-    named that isn't there is refused, unless the command makes one (MAKES): a mistyped path is said, never read as the
-    project's mapping nor made."""
+    """A command run on its parameters. A batch for a run that lacks a field says to name its column as the run does.
+    A workspace named that isn't there is refused, unless the command makes one (MAKES): a mistyped path is said,
+    never made."""
     if (ws := a.get("workspace")) and c.name not in MAKES and not Path(ws).is_dir():
-        raise InputError(f"no workspace at {ws}", fix="check the path, or create it: nayose create workspace NAME")
+        raise InputError(f"no workspace at {ws}", fix="check the path, or make it with a full run: nayose resolve records FILE --workspace PATH")
     try:
         r = c.run(a, emit)
     except InputError as e:
@@ -1999,8 +453,7 @@ def perform(c: Command, a: dict, emit: Emit) -> dict:
             named = dict.fromkeys(f"{col} as {' + '.join(s.columns[f][0])}" for f, col in e.hints.items() if s.columns.get(f) and s.columns[f][0])
             if named:
                 raise InputError(str(e), fix=f"a batch has the run's columns: write {', '.join(named)} in it (check them first), then try again", hints=e.hints) from None
-        raise InputError(str(e), fix=f"map it in the workspace, once the values look right: "
-                         f"{nayose('set', 'columns', *(f'{f}={c}' for f, c in e.hints.items()), '--workspace', a['workspace'])}", hints=e.hints) from None
+        raise
     if c.name in INDEXED and a.get("workspace") and (Path(a["workspace"]) / index.INDEX / "manifest.json").exists():  # a run changed: its index, built once, kept up to date
         r["index"] = indexed(a)
     return r
@@ -2016,11 +469,10 @@ def indexed(a: dict) -> dict:  # the workspace's index brought up to date with i
         return dict(error=str(said), fix=said.fix)
 
 
-STEPS_OF = {"check records": ("load", "budget"), "apply decisions": ("decide",), "load records": ("load",), "generate records": ("load",),
-            "try method": RUN_ORDER[:10]}  # the steps of a command that isn't a run: try method's two runs write nothing
-MAKES = ("resolve records", "load records", "serve inbox")  # the commands a folder not there yet may be given as a workspace: they make it
-FULL_RUNS = ("resolve records", "rerun records", "apply answers", "adopt method", "reset method", "lower trust", "raise trust", "split entity")
-INDEXED = (*FULL_RUNS, "add records", "apply decisions", "set merging")  # the commands that change a run: its index is kept up to date after them
+STEPS_OF = {"apply decisions": ("decide",)}  # the steps of a command that isn't a run
+MAKES = ("resolve records",)  # the commands a folder not there yet may be given as a workspace: they make it
+FULL_RUNS = ("resolve records",)
+INDEXED = (*FULL_RUNS, "add records", "apply decisions")  # the commands that change a run: its index is kept up to date after them
 
 
 def last_run(ws: str | None, name: str) -> dict:
@@ -2042,7 +494,7 @@ def steps_of(name: str) -> tuple[str, ...]:  # the steps a command runs, in the 
     if name in ("add records", "match records"):  # a batch's; a preview's up to its entities: it writes nothing
         return BATCH_ORDER if name == "add records" else tuple(s for s in BATCH_ORDER if s not in ("report", "write"))
     if name in FULL_RUNS:
-        return ("decide", *RUN_ORDER) if name == "split entity" else RUN_ORDER  # a split: decided, then a full run
+        return RUN_ORDER
     return STEPS_OF.get(name, ())
 
 

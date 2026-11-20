@@ -150,11 +150,6 @@ class Live:
                 print(self._line("…"), file=self.out, flush=True)
                 self.said = now
 
-    def say(self, text: str) -> None:
-        with self.lock:
-            self._clear()
-            print(text, file=self.out, flush=True)
-
     def close(self) -> None:
         self.stop.set()
         with self.lock:
@@ -188,13 +183,6 @@ class Emit:
         else:
             self._live().progress(done, total, unit)
 
-    def line(self, text: str, **data: object) -> None:  # a running note: serve inbox's files, open ui's link
-        if self.fmt == "json":
-            self._json("line", {"text": text, **data})
-        elif self.live:
-            self.live.say(text)
-        else:
-            print(text, file=self.out, flush=True)
 
     def close(self) -> None:
         if self.live:

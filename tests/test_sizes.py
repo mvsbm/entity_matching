@@ -62,60 +62,6 @@ def test_a_model_adjusting_by_term_frequency_is_refused(ran, monkeypatch):
         sizes.grow(ws, s, p)
 
 
-def test_a_fit_set_after_the_run_owes_a_rerun_but_no_increment_refuses(ran, capsys):
-    from er import cli, folder
-    s, p, ws = ran
-    look = lambda: (cli.main(["describe", "workspace", str(ws), "--format", "json"]), json.loads(capsys.readouterr().out.splitlines()[-1]))[1]
-    assert not look()["rerun_owed"]
-    method = (ws / folder.METHOD).read_text(encoding="utf-8") if (ws / folder.METHOD).exists() else None
-    assert cli.main(["set", "fit", "--records", "64000", "--em", "keys", "--workspace", str(ws), "--format", "json"]) == 0
-    capsys.readouterr()
-    try:
-        assert look()["rerun_owed"]  # the next run fits otherwise
-        from er.config import adjust
-        from er.run import run_config
-        assert (ws / "state" / "config.txt").read_text(encoding="utf-8") == run_config(adjust(p, folder.method(ws)), s)  # an increment and a lookup take it as it was
-    finally:
-        (ws / folder.METHOD).write_text(method, encoding="utf-8") if method is not None else (ws / folder.METHOD).unlink()
-
-
-def test_em_set_to_fields_is_kept_and_try_sample_offers_it_back(ran, capsys, monkeypatch):
-    from er import cli, folder
-    s, p, ws = ran
-    method = (ws / folder.METHOD).read_text(encoding="utf-8") if (ws / folder.METHOD).exists() else None
-    assert cli.main(["set", "fit", "--records", "2000", "--em", "birth_date, person_name", "--workspace", str(ws), "--pipeline", str(s.root / "tests" / "method.toml"), "--format", "json"]) == 0
-    capsys.readouterr()
-    try:
-        assert folder.method(ws)["fit"] == {"records": 2000, "em": ["birth_date", "person_name"]}
-        monkeypatch.setattr(sizes, "FIRST", 100)
-        monkeypatch.setattr(sizes, "SETTLED", 10.0)
-        assert cli.main(["try", "sample", "--workspace", str(ws), "--pipeline", str(s.root / "tests" / "method.toml"), "--format", "json"]) == 0
-        r = json.loads(capsys.readouterr().out.splitlines()[-1])
-        assert r["em_set"] == "birth_date,person_name" and any("--em birth_date,person_name" in x["command"] for x in r["next"])  # its own fields, not the tuned rules
-    finally:
-        (ws / folder.METHOD).write_text(method, encoding="utf-8") if method is not None else (ws / folder.METHOD).unlink()
-
-
-def test_choose_em_shows_the_fields_it_keeps_and_sets_each_run_to_choose_them_itself(ran, capsys):
-    from er import cli, folder
-    from er.config import adjust, em_candidates
-    s, p, ws = ran
-    method = (ws / folder.METHOD).read_text(encoding="utf-8") if (ws / folder.METHOD).exists() else None
-    try:
-        assert cli.main(["choose", "em", "--workspace", str(ws), "--records", "2000", "--pipeline", str(s.root / "tests" / "method.toml"), "--format", "json"]) == 0
-        r = json.loads(capsys.readouterr().out.splitlines()[-1])
-        cols = list(pd.read_parquet(ws / "state" / "records").columns)
-        judged = [" + ".join(k.column for k in rule) for rule in em_candidates(index.to_file(s, p, cols))]
-        assert [x["session"] for x in r["sessions"]] == [x for x in judged if x in {y["session"] for y in r["sessions"]}] and r["sessions"]
-        assert "customer_id" not in judged and "given_name" not in judged  # an identifying field, and the given name alone, never judged
-        assert r["kept"] == [x["field"] for x in r["sessions"] if x["kept"]] and r["kept"], r["sessions"]
-        assert folder.method(ws)["fit"] == {"records": 2000, "em": "choose"} and r["next"][0]["command"].startswith("nayose rerun records")
-        q = adjust(p, folder.method(ws))
-        assert q.fs.model.em_choose and q.fit_rows == 2000  # the next run's fit chooses again, with the median and the fallback
-    finally:
-        (ws / folder.METHOD).write_text(method, encoding="utf-8") if method is not None else (ws / folder.METHOD).unlink(missing_ok=True)
-
-
 def test_a_run_with_em_choose_keeps_each_session_s_verdict_in_its_model_and_the_report_shows_them(ran, tmp_path):
     from er.config import adjust
     from er.run import Run
@@ -132,20 +78,16 @@ def test_a_run_with_em_choose_keeps_each_session_s_verdict_in_its_model_and_the_
 
 
 def test_a_floor_below_0_keeps_the_pairs_down_to_it_and_every_pair_the_default_kept(ran, tmp_path, capsys):
-    import shutil
     import duckdb
     from er import cli
     s, p, ws = ran
     low = tmp_path / "low"
-    shutil.copytree(ws, low)
-    read = lambda w: duckdb.sql(f"SELECT * EXCLUDE (match_probability) FROM read_parquet('{w}/scored/*.parquet')").df()
-    before = read(ws)
-    pipeline = ["--pipeline", str(s.root / "tests" / "method.toml")]  # as the run was made
-    assert cli.main(["set", "floor", "--points", "-10", "--workspace", str(low), *pipeline, "--format", "json"]) == 0
-    assert cli.rerun_owed({"workspace": str(low), "pipeline": pipeline[1]})  # stored pairs change: the run owes a rerun
-    assert cli.main(["rerun", "records", "--workspace", str(low), *pipeline, "--format", "json"]) == 0
+    low.mkdir()
+    (low / "method.toml").write_text("keep = -10\n", encoding="utf-8")  # the floor, set in the workspace's method
+    assert cli.main(["resolve", "records", str(ws.parent / "all.parquet"), "--workspace", str(low), "--pipeline", str(s.root / "tests" / "method.toml"), "--format", "json"]) == 0
     capsys.readouterr()
-    after = read(low)
+    read = lambda w: duckdb.sql(f"SELECT * EXCLUDE (match_probability) FROM read_parquet('{w}/scored/*.parquet')").df()
+    before, after = read(ws), read(low)
     model = lambda d: d[d["rule"].isna()]
     assert (model(after)["match_weight"] < 0).any() and (model(after)["match_weight"] >= -10).all()
     key = lambda d: d[d["match_weight"] >= 0].sort_values(list(d.columns[:2])).reset_index(drop=True)

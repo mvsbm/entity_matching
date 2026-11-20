@@ -41,7 +41,7 @@ reads the file before these steps, about 15 s a million records from CSV, 7 s fr
 | 9 | report: qa.md, report.txt and the review sheet, built before the write and landing with it | `Run.report` | O(review pairs) + O(N) | N | 0.78 s |
 | | **total** | | | | **53.0 s** |
 
-**Pairs that can't reach 0 points.** Nothing reads a candidate's score below the floor: `scored/` keeps 0 points and up (or `method.toml` `keep`), and the line, the trust steps and review all start there. So a pair is scored only when its bound reaches the floor: the prior, each comparison whose tests are equality, Hamming or one edit at its own level, and each other at the best level the pair may land in (`bound_tests`): DuckDB settles each level's test where it can in C++, a name or a company name in katakana by Jaro–Winkler on its one-byte copy, and only a test it can't settle (text outside katakana and ASCII, an edit distance past one) counts as passing. 0 where its fields are missing. Each test is computed once: the outcomes index a table of the bounds they allow, since DuckDB computes an expression as often as it is written. A pair a rule found is scored whatever its bound. A full run's candidates step already leaves the rest out as its keys list them (below); an increment's are counted (`unscored`, one row "below 0" in report.txt's SCORES and the score chart) and never compared by name, company or address: on a file whose address and phone are mostly empty, that is nearly every candidate. Every score written is the same to the last bit. The gate on oversized blocks and the probe do the same at their own floors, the review floor and the line. K_c is the comparisons settled first, C₀ the candidates whose bound reaches 0.
+**Pairs that can't reach 0 points.** Nothing reads a candidate's score below the floor: `scored/` keeps 0 points and up (or `method.toml` `keep`), and the line and review start there. So a pair is scored only when its bound reaches the floor: the prior, each comparison whose tests are equality, Hamming or one edit at its own level, and each other at the best level the pair may land in (`bound_tests`): DuckDB settles each level's test where it can in C++, a name or a company name in katakana by Jaro–Winkler on its one-byte copy, and only a test it can't settle (text outside katakana and ASCII, an edit distance past one) counts as passing. 0 where its fields are missing. Each test is computed once: the outcomes index a table of the bounds they allow, since DuckDB computes an expression as often as it is written. A pair a rule found is scored whatever its bound. A full run's candidates step already leaves the rest out as its keys list them (below); an increment's are counted (`unscored`, one row "below 0" in report.txt's SCORES and the score chart) and never compared by name, company or address: on a file whose address and phone are mostly empty, that is nearly every candidate. Every score written is the same to the last bit. The gate on oversized blocks and the probe do the same at their own floors, the review floor and the line. K_c is the comparisons settled first, C₀ the candidates whose bound reaches 0.
 
 At a million records, scoring the candidates (16.05 s) and the fit (9.40 s) take nearly half the time. The fit costs
 nearly the same at any size: it learns on n records, and its u sample of the file is S pairs for each of name, company
@@ -74,17 +74,14 @@ decisions, plus O(N) to rewrite gold: each `match` pair merges two stored cluste
 
 **A lookup** (`index.look_up`, `nayose match record`): one record against the run's index costs
 **O(G·(log N + b) + C·K·L²)**, N only inside log N: each of its keys reads a few row groups of its table, sorted by the
-key's hash, and a sorted window's place is a bisect in every 1,024th key. **A search** (`index.search`, `nayose search
-records`) costs **O(F·(log N + 2,000) + 500·K·L²)**: each value given read by its start from its column's sorted table,
-at most 2,000 records listed and 500 scored. Building the index (`index.build`, `nayose build index`) costs
+key's hash, and a sorted window's place is a bisect in every 1,024th key. Building the index (`index.build`, `nayose build index`) costs
 **O(N·(G + R + D·L + F) + N log N)**: every key and searched value of every record, sorted, read from the run's own
-files. Keeping it up to date after an increment, decisions or merging conditions (`index.update`) costs
+files. Keeping it up to date after an increment or decisions (`index.update`) costs
 **O(Δ·(G + R + D·L + F) + N)** for Δ records added, the N one pass over two columns for the entities that moved.
 **Measured** on a million generated records ([reports/benchmark_lookup.md](../reports/benchmark_lookup.md)): built in
-about 7 s, 0.85 GB on disk; with the index kept open, a lookup at p50 about 100 ms and p95 about 125 ms, a search at p50
-about 70 ms and p95 about 115 ms; 1,000 records added, the index up to date in 0.3 s, against 7 s to build it again. The
+about 7 s, 0.85 GB on disk; with the index kept open, a lookup at p50 about 100 ms and p95 about 125 ms; 1,000 records added, the index up to date in 0.3 s, against 7 s to build it again. The
 pairs and weights equal to an increment of that record alone on every record checked, and the index kept up to date
-answering every lookup and search as one built again.
+answering every lookup as one built again.
 
 **Memory.** Records, pairs, scores and clusters are DuckDB tables. Past `memory_limit` (config/settings.toml `[compute]`,
 or `--compute memory_limit=8GB` on a command), DuckDB spills them to `temp_directory`: by default a folder of the
@@ -150,7 +147,7 @@ trained once and its signals computed once; a combination fits only its combiner
   a hash of the record ID. So the cache is keyed by the comparison and a fingerprint of those values, a frame and a
   table with the same rows alike: within one process, a model's variants and `choose.py`'s repeats of train share one
   sample. A workspace keeps it too (`u_sampled.json`, keyed besides by the code and Splink's and DuckDB's versions), so
-  a rerun or a trial of a method comparing the same way reads it and draws no sample: 250,000 records' fit from 12.5 s
+  the next full run comparing the same way reads it and draws no sample: 250,000 records' fit from 12.5 s
   to 3.6 s. cif, phone and birth need none: their levels are counted (`exact_u`, once per fit).
 - **The u sample counted in one pass** (`er.match.sample_u`). The records and pairs are drawn as Splink draws them (a
   hash of the ID and the seed), and every comparison's levels are counted in one pass over the pairs, where Splink's
@@ -181,7 +178,7 @@ trained once and its signals computed once; a combination fits only its combiner
 - **A comparison told its threshold** (`cl_<function>_cut`). Every condition asks whether a pair is within a threshold
   (a Jaro–Winkler of 0.9 or more, an edit distance of 2 or less), so the function is given it and stops once the answer
   is known (rapidfuzz's `score_cutoff`): the same pairs pass and fail, with the same score where they pass, and an edit
-  distance on long values is no longer worked out in full. On addresses of about 150 characters, the fit's 10 million
+  distance on long values is not worked out in full. On addresses of about 150 characters, the fit's 10 million
   sampled pairs take a third of the time.
 - **A linker reads only the columns it compares** (`match.narrowed`, `match.read_by`). Splink carries every column of its
   input through its joins, two copies per pair; a wide file's other columns (80 of them, long text) made scoring a
@@ -197,19 +194,15 @@ trained once and its signals computed once; a combination fits only its combiner
   checks only the pairs left: of 10 million sampled address pairs, 36,645 instead of 2.3 million. Records
   prepared without the copy are bounded by the bytes instead: one character edited is at most 4 bytes edited.
 - **The oversized blocks' samples scored a slice at a time, in DuckDB** (`Run._gate`, `Run._scored`), not all at once
-  through pandas: thousands of placeholder blocks no longer need their every sampled pair compared in one call.
-- **A rule's untrusted values tested before its join** (in WHERE, not ON): a placeholder's block is no longer joined
-  and compared in full before it is left out.
+  through pandas: thousands of placeholder blocks never need their every sampled pair compared in one call.
+- **A rule's untrusted values tested before its join** (in WHERE, not ON): a placeholder's block is left out before
+  it is joined and compared in full.
 - **Each candidate pair listed once**: a key's join over the query keeps one order of a pair of two queried records
   instead of both and a DISTINCT; the union's parts are freed as soon as it is made.
 - **Scoring in slices** (`Run.score_pairs`, 5 million pairs at a time). A pair's score depends on it alone, so the
   slices score as the whole would; each slice says how far scoring is (pairs scored, and those at the model's line so
   far), and bounds the step's memory. Each slice joins every record again, about 0.75 s at a million records: 9.3
   million pairs in slices of a million took 13.8 s, in slices of 5 million 8.8 s, for 0.2 GB more at the peak.
-- **The trust sheet's links joined once** (`er.report.trust_sheet`). Every question the sheet asks (does a range
-  hold a link, how many people decided, the next range's sample, the spot-checks) reads the links from the lowest step
-  or the line up, written once to a table, not joined again from every scored pair each time: the report on a million
-  records 11.9 s to 5.5 s, on 250,000 3.4 s to 2.1 s.
 - **Chunks standardized in parallel** (`Run.load`, `run.ahead`). Every step reads one record, or one chunk's
   values, so the chunks are cleaned in worker processes, spawned on every system (as many as DuckDB's threads, at most
   one per chunk, the CPUs, and 61 on Windows), one chunk queued beyond them, and taken back in order: the same records;

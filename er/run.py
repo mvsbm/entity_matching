@@ -77,9 +77,7 @@ from er.keys import idle, gap as keys_gap, learn
 from er.kind import KIND_COLUMNS, NAME_MODEL, century, classifier as kind_classifier, kind_review_sheet, merge_answers
 from er.match import ELSE, bound_tests, rough_reads, compared_exactly, fit_model, fit_sample_sql, named_sql, bound_reads, reaching_sql, refreshed_u, review_floor, rule_edges, search_floor, score_fs, scored_u, train_fs, u_basis
 from er.probe import missed
-from er.report import carry_kinds, carry_over, diagnosis, no_run, qa, report_text, review_sheet, unmapped_columns
-from er.explain import scored_again
-from er.review_state import trust_state
+from er.report import carry_kinds, carry_over, diagnosis, no_run, qa, report_text, unmapped_columns
 from er.results import BANDS, own_merging, banded, check_merging, merge_where
 from er.settings import SPECIAL, Settings, fit_to_file, present_fields
 from er.source import answers, decisions, file_facts, filled, known, open_source, suggest
@@ -348,7 +346,7 @@ class Run:
             blank(new, f)
             n = self.con.execute(f"SELECT count(*) FROM {table} WHERE {q(f)} IS NULL").fetchall()[0][0]
             self.notes.append(f"{f}: {len(new):,} value{'s' if len(new) > 1 else ''} held by {at:,}+ records read as missing, a placeholder and not "
-                              f"{'one entity' if f in ids else 'evidence'}'s ({n:,} records without one)" + ("; pairs the run joined on it before stay until it runs again (nayose rerun records)" if also else ""))
+                              f"{'one entity' if f in ids else 'evidence'}'s ({n:,} records without one)" + ("; pairs the run joined on it before stay until a full run" if also else ""))
             self.examples.append(f"{f} = {new[0]}: a placeholder, read as missing")
             self.placeholders[f] = [*before, *new]
 
@@ -843,7 +841,7 @@ class Run:
         if part == 0 and self.learned:  # the keys learned on the file: an increment lists its pairs by them
             texts.append((json.dumps({b.name: generator_dict(b) for b in self.learned}, ensure_ascii=False), state / "keys.json"))
         # the oversized blocks the full run listed in full: a key lists a pair in one (er.sample.key_lists, for er.sizes). An increment's
-        # gate lists only its batch's pairs of a block, so its kept blocks are not added: try sample counts those pairs as missed
+        # gate lists only its batch's pairs of a block, so its kept blocks are not added: er.sizes counts those pairs as missed
         if part == 0:
             kept = {}
             for x in self.gated[self.gated["decision"].isin(["kept", "joined in full"])].itertuples() if len(self.gated) else ():
@@ -886,8 +884,7 @@ class Run:
         returned as texts and frames for write() to stage with them: a run never lands without its reports, which a
         retry could not make again, since nothing is new by then. `path` is the input, `pipeline` the pipeline file, both
         named in the reports. Keeps qa's tables, the summary first, in self.tables, and its weight bands (counts) in the
-        step's facts (steps.json), for describe matching and describe method, with what limits what the run finds
-        (report.diagnosis), for describe workspace."""
+        step's facts (steps.json), with what limits what the run finds (report.diagnosis)."""
         t = time.perf_counter()
         tables = qa(self, previous=out / "review.parquet" if self.added is not None else None)
         sheet = tables.pop("review_sheet")
@@ -902,9 +899,9 @@ class Run:
             frames.append((carry_kinds(self, kind_review_sheet(self.con, "records", self.uid, self.pipeline.kind, self.settings.flag_company, answered),
                                        out / "kind_review.parquet"), out / "kind_review.parquet"))
         self.tables = tables
-        items = diagnosis(self, tables, review_floor(self.pipeline))  # report.txt prints them, describe workspace reads them here
+        items = diagnosis(self, tables, review_floor(self.pipeline))  # report.txt prints them
         texts = [("\n".join(text), out / "qa.md"), (report_text(self, tables, pipeline, items), out / "report.txt")]
-        bands = json.loads(tables["weight_bands"].round(4).to_json(orient="values"))  # as qa.md shows them: describe matching and method read them here
+        bands = json.loads(tables["weight_bands"].round(4).to_json(orient="values"))  # as qa.md shows them
         self._done("report", "O(review pairs) + O(N)", f"O({len(frames[0][0]):,} review pairs + {self.n:,})", t, weight_bands=bands, diagnosis=items)
         return texts, frames
 
@@ -953,10 +950,10 @@ class Run:
             raise no_run(out, "add records to")
         if folder.read_by_older(out):  # a list read as text then, as its item now: the two would never agree
             raise InputError(f"the run in {out} read its records with an earlier version of the reader: new records would not compare alike with them",
-                             fix=f"run it again first, then add these: nayose rerun records --workspace {out}")
+                             fix=f"run it again first, then add these: nayose resolve records FILE --workspace {out} --overwrite")
         if (state / "config.txt").exists() and (state / "config.txt").read_text(encoding="utf-8") != self.config:
             raise InputError(f"the pipeline or the column mapping changed since the full run in {out}: an increment would resolve its batch otherwise",
-                             fix="resolve all of them again (nayose rerun records), or add these with the pipeline and config/settings.toml that run used")
+                             fix="resolve all of them again (nayose resolve records … --overwrite), or add these with the pipeline and config/settings.toml that run used")
         self.model = json.loads((state / "model.json").read_text(encoding="utf-8"))
         self.pipeline = stored_keys(out, self.pipeline, self.settings)
         self.part = folder.next_part(state / "records")
@@ -1072,58 +1069,6 @@ class Run:
                      [(self._log(out, True, decisions=str(path)), out / folder.STEPS)])
         return self
 
-    def draw(self, out: Path, count: int) -> "Run":
-        """`count` more audit rows on the review sheet of the run in `out`: links, the model's and the rules', that
-        people have not decided and the sheet does not hold, spread evenly over 1-bit weight bands, a rule's pairs
-        scored as the model would score them. Audits of every kind of link say how few false ones are left. With a trust
-        line, first the next range's pairs people still have to check (trust_state), from the links the run kept for
-        them, while the sheet holds fewer: a sheet written before, or a range just reached, fills without a run. Under
-        the lock, and staged. O(N + (R + count)·K + E) + O(sheet)."""
-        t, l, r, sheet = time.perf_counter(), q(self.l), q(self.r), out / "review.parquet"
-        read = lambda name: f"read_parquet({lit(out / name)}, union_by_name = true)"
-        with folder.run_lock(out):
-            folder.finish_writes(out)
-            if not sheet.exists():
-                raise InputError(f"no review sheet in {out}", fix="find matches first: nayose resolve records --workspace …")
-            self.con.execute(f"""CREATE OR REPLACE TABLE er_rule AS SELECT {l}, {r}, min(rule) AS rule FROM {read('rule_kept/*.parquet')}
-                WHERE merged GROUP BY ALL""")
-            scored_again(self.con, out, self.uid, "er_rule", "er_rule_scores")
-            self.con.execute(f"""CREATE OR REPLACE TABLE matches AS SELECT {l}, {r}, match_weight, match_probability, sources FROM {read('matches/*.parquet')}
-                UNION ALL SELECT x.{l}, x.{r}, s.match_weight, s.match_probability, x.rule FROM er_rule x JOIN er_rule_scores s USING ({l}, {r})
-                WHERE NOT EXISTS (SELECT 1 FROM {read('matches/*.parquet')} m WHERE m.{l} = x.{l} AND m.{r} = x.{r})""")
-            self.con.execute(f"CREATE OR REPLACE TABLE kept AS SELECT {l}, {r} FROM matches")  # what review_sheet says merged
-            self.con.register("er_sheet", read_parquet(sheet, columns=[self.l, self.r]))
-            asked = [f"SELECT {l}, {r} FROM er_sheet"] + ([f"SELECT {l}, {r} FROM {read(folder.DECISIONS + '/part-*.parquet')}"]
-                                                         if any((out / folder.DECISIONS).glob("part-*.parquet")) else [])
-            self.con.execute(f"""CREATE OR REPLACE TABLE er_drawn AS SELECT {l}, {r} FROM (
-                SELECT {l}, {r}, floor(match_weight) AS band, row_number() OVER (PARTITION BY floor(match_weight) ORDER BY hash({l}, {r})) AS k
-                FROM matches m WHERE NOT EXISTS (SELECT 1 FROM ({' UNION ALL '.join(asked)}) a WHERE a.{l} = m.{l} AND a.{r} = m.{r}))
-                ORDER BY k, band LIMIT {int(count)}""")
-            self.con.execute(f"CREATE OR REPLACE TABLE er_pick AS SELECT d.{l}, d.{r}, m.sources, 'audit' AS why FROM er_drawn d JOIN matches m USING ({l}, {r})")
-            state, sheet_now = trust_state(self.con, out, self.pipeline, self.uid), read_parquet(sheet)
-            if state and state["next"] and not state["false"]:  # the range people check next, filled to what they still need
-                lo, hi = state["next"]["down_to"], state["next"]["up_to"]
-                waiting = (sheet_now["why"] == "decide") & sheet_now["decision"].isna() if "why" in sheet_now else []
-                want = max(0, state["needed"] - state["checked"] - int(sum(waiting)))
-                left = ([f"SELECT {l}, {r}, match_weight, sources FROM {read('proposed/*.parquet')}"] if any((out / "proposed").glob("*.parquet")) else []) + \
-                       [f"SELECT {l}, {r}, match_weight, rule AS sources FROM {read('rule_kept/*.parquet')} WHERE NOT merged"]  # what the run left to people
-                below = f" AND x.match_weight < {bits(hi)}" if hi is not None else ""
-                self.con.execute(f"""INSERT INTO er_pick SELECT {l}, {r}, sources, 'decide' FROM (SELECT DISTINCT ON ({l}, {r}) * FROM ({' UNION ALL '.join(left)})) x
-                    WHERE x.match_weight >= {bits(lo)}{below} AND NOT EXISTS (SELECT 1 FROM ({' UNION ALL '.join(asked)}) a WHERE a.{l} = x.{l} AND a.{r} = x.{r})
-                    ORDER BY hash(x.{l}, x.{r}) LIMIT {want}""")
-            drawn = self._count("er_pick")
-            if drawn:
-                self.scoring = scored_again(self.con, out, self.uid, "er_pick", "er_drawn_scores")
-                self.con.execute("CREATE OR REPLACE TABLE records AS SELECT * FROM er_touched")  # what review_sheet shows of each record
-                names = {c["output_column_name"] for c in self.scoring["comparisons"]}  # the comparisons the run could make
-                m = self.pipeline.fs.model
-                self.pipeline = replace(self.pipeline, fs=replace(self.pipeline.fs, model=replace(m, comparisons=tuple(c for c in m.comparisons if c.name in names))))
-                pairs = self.con.execute(f"SELECT s.*, p.sources, p.why FROM er_drawn_scores s JOIN er_pick p USING ({l}, {r}) ORDER BY p.why DESC, s.match_weight DESC").df()
-                folder.stage(self.con, out, [], frames=[(pd.concat([sheet_now, review_sheet(self, pairs)], ignore_index=True), sheet)])
-        decide = self._count("er_pick WHERE why = 'decide'")
-        self._done("draw", "O(N + (R + count)·K + E)", f"O({self._count('er_rule'):,} rule pairs + {self._count('matches'):,} links)", t, drawn=drawn - decide, decide=decide)
-        return self
-
     @locked
     def full(self, path: str | Path, out: Path, overwrite: bool = False, pipeline_file: Path | None = None) -> "Run":
         """Steps 1–8 on the file at `path` into the workspace `out`; with `pipeline_file` (named in the reports), step 8
@@ -1155,15 +1100,6 @@ class Run:
         self.gap()
         return self
 
-    def rerun(self, out: Path, pipeline_file: Path | None = None) -> "Run":
-        """A full run again, on the record files the run in `out` read (folder.inputs): the full run's, then each
-        increment's, in order, an ID's records set aside as the increments set them aside (_set_aside, ordered).
-        People's decisions and answers stand, as on any full run of the folder. O(a full run) + O(bytes) to check the
-        files."""
-        out = Path(out)
-        with folder.run_lock(out):  # the files named inside the lock: no increment lands between
-            return self.full(folder.inputs(out, self.settings.input, self.settings.paths["reference"]), out, overwrite=True, pipeline_file=pipeline_file)
-
 
 def stored_keys(ws: Path, p: Pipeline, s: Settings) -> Pipeline:  # the keys the full run listed by, learned or left after dropping idle ones (er.keys): an increment and a lookup list by them
     kept = Path(ws) / "state" / "keys.json"
@@ -1190,7 +1126,7 @@ def run_config(p: Pipeline, s: Settings) -> str:
     return config_hash((p, s.columns, s.standardize, s.flag_company, s.input, PLACEHOLDERS) + ((("keep", keep),) if keep else ()))
 
 
-def listed(report: pd.DataFrame) -> list[dict]:  # each generator's pairs and seconds, kept in steps.json (describe matching)
+def listed(report: pd.DataFrame) -> list[dict]:  # each generator's pairs and seconds, kept in steps.json
     return [dict(name=r.generator, pairs=int(r.pairs), seconds=float(r.seconds)) for r in report.itertuples()]
 
 

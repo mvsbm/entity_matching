@@ -1,7 +1,5 @@
 """The reader and describe records: files as they come, repairs proposed and accepted."""
 import io
-import json
-import math
 from pathlib import Path
 from dataclasses import replace
 
@@ -13,87 +11,6 @@ import pytest
 from er.config import (InputError)
 from er.settings import load_settings
 
-from conftest import dirty_csv
-
-
-def test_describe_records_says_what_a_file_holds_without_preparing_it(tmp_path, population):
-    import duckdb
-    from er.source import describe
-    s, p, g = population
-    uid, phone = s.data.unique_id, s.columns["phone"][0][0]
-    df = g.df.rename(columns={uid: "customer_no", phone: "TEL"}).astype({"TEL": "string"})
-    df.loc[df.index[:5], "TEL"] = ["", " ", "\u3000", None, "12"]  # blank is missing, as a run reads it
-    df["Postal Code"] = df.pop(s.columns["postal_code"][0][0])  # the field's own name, not the column the mapping names
-    df = df.drop(columns=[c for alt in s.columns["postal_code"][1:] for c in alt if c in df])
-    df["n"] = range(len(df))  # a number column: read as text
-    df.to_parquet(tmp_path / "theirs.parquet", index=False)
-    d = describe(tmp_path / "theirs.parquet", duckdb.connect(), s.columns, s.detect)
-    blank = lambda x: x.isna() | x.astype("string").str.fullmatch("[ \t\n\r\u3000]*").fillna(True)
-    assert d["records"] == len(df) and {c["column"]: round(c["filled"], 9) for c in d["columns"]} == {c: round(1 - blank(df[c]).mean(), 9) for c in df}
-    person = next(f for f in d["fields"] if f["field"] == "person_name")
-    alts = [df[a[0]].mask(blank(df[a[0]])) if len(a) == 1 else (df[a[0]].mask(blank(df[a[0]])) + df[a[1]].mask(blank(df[a[1]]))) for a in person["sources"]]
-    whole = alts[0]
-    for x in alts[1:]:
-        whole = whole.fillna(x)
-    assert math.isclose(person["filled"], whole.notna().mean()) and [x["found"] for x in person["alternatives"]] == [True] * len(alts)
-    assert {x["field"]: x["column"] for x in d["suggested"]} == {"id": "customer_no", "phone": "TEL", "postal_code": "Postal Code"}  # values, values, name
-    assert d["fit"]["phone"]["TEL"] > 0.9 and not next(f for f in d["fields"] if f["field"] == "phone")["sources"][0] == ["TEL"]  # suggested, not applied
-
-
-def test_a_joined_alternative_whose_parts_never_fill_together_is_filled_nowhere(tmp_path):
-    import duckdb
-    from er.source import describe
-    pd.DataFrame({"a": ["x", None, "z"], "b": [None, "y", ""]}).to_parquet(tmp_path / "f.parquet", index=False)
-    d = describe(tmp_path / "f.parquet", duckdb.connect(), {"both": (("a", "b"),), "either": (("a", "b"), ("a",), ("b",))}, {})
-    shares = {f["field"]: f["filled"] for f in d["fields"]}
-    assert shares["both"] == 0 and shares["either"] == 1  # each row holds one of them
-
-
-def test_the_file_s_contents_say_which_feature_each_column_fills(say, tmp_path, capsys, monkeypatch):
-    import random
-    from er.settings import compiled, features_from, load_settings
-    s = load_settings()
-    assert compiled(features_from(s.columns)) == {k: v for k, v in s.columns.items() if k != "entity"}  # the structure is the mapping, read back
-    people = json.loads((s.paths["reference"] / "individual.json").read_text(encoding="utf-8"))
-    places = json.loads((s.paths["reference"] / "addresses.json").read_text(encoding="utf-8"))
-    rnd, n = random.Random(0), 400
-    who, where = rnd.sample(people, n), rnd.sample(places, n)
-    pd.DataFrame({  # columns named nothing a mapping knows: only their contents say what they hold
-        "c1": [f"R{i:06d}" for i in range(n)], "c2": [p["surname_kana"] for p in who], "c3": [p["given_kana"] for p in who],
-        "c4": [p["surname_kana"] + " " + p["given_kana"] for p in who], "c5": [p["surname"] + p["given"] for p in who],
-        "c6": [f"株式会社{p['surname']}商事" for p in who], "c7": [f"{a['pref']}{a['city']}{a['town']}{rnd.randint(1, 9)}-{rnd.randint(1, 30)}" for a in where],
-        "c8": ["".join(rnd.choice("abcdefgh") for _ in range(6)) for _ in range(n)],
-        "c9": [a["postal"] for a in where], "c10": [a["postal"] for a in where],  # a postal code, and a copy of it
-        "c11": [f"{rnd.randint(0, n // 2):010d}" for _ in range(n)],  # an address code: ten digits, shared
-        "c12": [f"{rnd.randrange(10 ** 12, 10 ** 13)}" for _ in range(n)],  # a customer number
-        "c13": [f"{rnd.randint(1000, 9999)}" for _ in range(n)],  # four digits, named nothing: a branch code as much as a phone
-        "携帯電話": [f"090-{rnd.randint(1000, 9999)}-{rnd.randint(1000, 9999)}" for _ in range(n)],  # named a phone, written as one
-        "fax_tel": [f"03{rnd.randint(10 ** 7, 10 ** 8 - 1)}" for _ in range(n)]}).to_parquet(tmp_path / "theirs.parquet", index=False)  # a fax: no calls
-    monkeypatch.chdir(tmp_path)
-
-    say("create", "workspace", "w")
-    code, d = say("load", "records", "theirs.parquet", "--workspace", "workspaces/w")
-    assert code == 0 and {c: x["script"] for c, x in d["profile"].items()} == {"c1": "romaji", "c2": "kana", "c3": "kana", "c4": "kana", "c5": "kanji",
-                                                                               "c6": "kanji", "c7": "kanji", "c8": "romaji", "c9": None, "c10": None,
-                                                                               "c11": None, "c12": None, "c13": None, "携帯電話": None,
-                                                                               "fax_tel": None}  # digits: no script
-    assert {x["feature"]: x["column"] for x in d["placements"]} == {
-        "ID/Record ID": "c1", "Name/Full name": "c4", "Name/Full name/Family name": "c2", "Name/Full name/Given name": "c3",
-        "Name/Company name": "c6", "Address/Address": "c7", "Address/Postal code": "c9", "Address/Address code": "c11", "ID/Customer number": "c12",
-        "Phone/Phone": "携帯電話"}  # named a phone, and numbers: before four digits named nothing, and never the fax
-    assert next(x for x in d["placements"] if x["feature"] == "Phone/Phone")["why"].startswith("its name says phone; 100%")
-    # the narrow pattern (a postal code) placed before the broad one (five digits or more), and its copy (c10) nowhere; an ID
-    # mostly unique; the kanji full name (c5) waits for a kanji feature; the random text, nowhere
-    assert [(x["feature"], x["script"], x["column"]) for x in d["offers"]] == [("Name/Kanji name", "kanji", "c5")]  # offered as a new feature
-    code, _ = say("set", "feature", *(f"{x['feature']}={x['column']}" for x in d["placements"]), "--workspace", "workspaces/w")
-    m = load_settings(columns=tmp_path / "workspaces" / "w" / "columns.toml").columns
-    assert code == 0 and m["id"] == (("c1",),) and m["person_name"] == (("c4",), ("c2", "c3")) and m["given_name"] == (("c3",),)
-    assert m["full_name"] == (("c4",),) and m["any_name"] == (("c4",), ("c2", "c3"), ("c6",)) and m["company_name"] == (("c6",),)
-    code, e = say("set", "feature", "Name/Nickname=c8", "--workspace", "workspaces/w")
-    assert code == 2 and "Name/Full name/Family name" in e["fix"]  # no such feature: the ones there are
-    say("set", "feature", "Address/Address=", "--workspace", "workspaces/w")
-    assert load_settings(columns=tmp_path / "workspaces" / "w" / "columns.toml").columns["address"] == ()  # no column, still declared
-    assert say("describe", "records", "theirs.parquet", "--workspace", "workspaces/w")[1]["placements"][0]["feature"] == "Address/Address"  # offered again
 
 
 def test_the_generator_writes_kanji_names_without_changing_any_other_column():
@@ -113,50 +30,6 @@ def test_the_generator_writes_kanji_names_without_changing_any_other_column():
     given = d[person].dropna(subset=["GIVEN_NAME_KANJI"]).groupby("ENTITY_ID")["GIVEN_NAME_KANJI"].agg(lambda x: x.map(plain).nunique())
     assert given.max() == 1  # one person, one given name in kanji, through their kana typos
     assert d["COMPANY_NAME_KANJI"].dropna().str.contains("株式会社").any()
-
-
-def test_a_name_added_in_another_script_is_compared_beside_the_kana_one(say, tmp_path, population, capsys, monkeypatch):
-    import random
-    from er.config import widen
-    from er.settings import added_of, beside, features_of
-    from er.standardize import normalize
-    s, p, g = population
-    assert widen(p, []) is p  # nothing added: the same pipeline, so the same config hash
-    assert normalize(pd.Series(["Tanaka Taro", "ＴＡＮＡＫＡ　ＴＡＲＯ"], dtype="string"), ("nfkc", "strip_spaces", "casefold"), s.standardize).nunique() == 1
-    uid, ent, kana = s.data.unique_id, s.data.entity_id, [c for alt in s.columns["person_name"] for c in alt]
-    phone, code, cif = s.columns["phone"][0][0], s.columns["address_code"][0][0], s.columns["customer_id"][0][0]
-    people = json.loads((s.paths["reference"] / "individual.json").read_text(encoding="utf-8"))
-    rnd = random.Random(1)
-    df = g.df.merge(g.truth[[uid, ent]], on=uid)
-    df["SHIMEI"] = df[ent].map({e: (lambda r: r["surname"] + r["given"])(rnd.choice(people)) for e in df[ent].unique()})  # one kanji name a person
-    same = df[df[kana[0]].notna() & df[phone].notna() & df[code].notna()].groupby([ent, phone, code])[uid].apply(list)
-    a, b = next(ids for ids in same if len(ids) >= 2)[:2]  # one person's two records, the same address and phone
-    other = df[df[ent] != df.loc[df[uid] == a, ent].iloc[0]].iloc[0]
-    df.loc[df[uid] == a, kana] = other[kana].to_numpy()  # renamed in kana (a new surname, a reading misheard); its customer number gone
-    df.loc[df[uid] == a, cif] = None
-    df.drop(columns=[ent]).to_parquet(tmp_path / "theirs.parquet", index=False)
-    monkeypatch.chdir(tmp_path)
-
-    joined = lambda w: (lambda gold: gold.loc[a, "cluster_id"] == gold.loc[b, "cluster_id"])(pd.read_parquet(tmp_path / "workspaces" / w / "gold.parquet").set_index(uid))
-    for w in ("kana", "kanji"):
-        say("create", "workspace", w)
-        (tmp_path / "workspaces" / w / "method.toml").unlink()  # the method as tuned: this is about matching, not the trust line
-        say("load", "records", "theirs.parquet", "--workspace", f"workspaces/{w}")
-    code_, e = say("add", "feature", "Name/Kanji name", "--type", "person name", "--script", "kanji", "--column", "SHIMEI", "--workspace", "workspaces/kanji")
-    assert code_ == 0 and "Name/Kanji name" in [x["feature"] for x in e["slots"]]
-    assert beside(added_of("workspaces/kanji")) == [("person_name_2", "person_name"), ("given_name_2", "given_name")]
-    assert any(f.get("added") for f in features_of("workspaces/kanji")[1]["features"]) and not added_of("workspaces/kana")
-    assert say("resolve", "records", "--workspace", "workspaces/kana")[0] == 0 and not joined("kana")  # kana alone: the names disagree
-    assert say("resolve", "records", "--workspace", "workspaces/kanji")[0] == 0 and joined("kanji")  # the kanji name agrees: one person
-    run = json.loads((tmp_path / "workspaces" / "kanji" / "steps.json").read_text(encoding="utf-8"))["runs"][0]
-    found = {x["name"]: x["pairs"] for x in next(x for x in run["steps"] if x["step"] == "candidates")["generators"]}
-    assert any(n.endswith("@person_name_2") and v for n, v in found.items())  # pairs are found on the kanji name too
-    gold = pd.read_parquet(tmp_path / "workspaces" / "kanji" / "gold.parquet")
-    assert gold["kind"].equals(pd.read_parquet(tmp_path / "workspaces" / "kana" / "gold.parquet")["kind"])  # any_name stays kana: kinds unchanged
-    code_, e = say("add", "feature", "Address/Old address", "--type", "person name", "--workspace", "workspaces/kanji")
-    assert code_ == 2  # only Name takes a feature here
-    say("remove", "feature", "Name/Kanji name", "--workspace", "workspaces/kanji")
-    assert not added_of("workspaces/kanji") and "person_name_2" not in (tmp_path / "workspaces" / "kanji" / "columns.toml").read_text(encoding="utf-8")
 
 
 def test_the_reader_reads_each_value_as_it_comes_and_proposes_only_what_it_would_guess(tmp_path, monkeypatch):
@@ -244,40 +117,6 @@ def test_the_reader_reads_each_value_as_it_comes_and_proposes_only_what_it_would
         read("cut.parquet", clean.getvalue()[:-10])
 
 
-def test_a_file_loads_as_it_comes_and_a_run_reads_the_repairs_people_accept(say, tmp_path, population, capsys, monkeypatch):
-    from er import intake
-    s, p, g = population
-    uid, name, address = s.data.unique_id, "FULL_NAME_KANA", "ORIGINAL_ADDRESS"
-    monkeypatch.chdir(tmp_path)
-
-    df = g.df.astype("string")
-    cp932, spilled, garbled = dirty_csv(df, name, address, tmp_path / "dirty.csv")
-    assert say("create", "workspace", "w")[0] == 0
-    w = Path("workspaces/w")
-    code, e = say("load", "records", tmp_path / "dirty.csv", "--workspace", w)
-    assert code == 0 and e["read"]["waiting"] == {"realign": 1, "garbled": 1} and e["read"]["decoded"]["cp932"] == cp932 and e["read"]["rows"] == len(df) - 1
-    assert {x["after"] for x in e["read"]["examples"]["realign"]} == {spilled[1]} and e["read"]["examples"]["garbled"][0]["after"] == garbled[1]
-    assert e["next"][0]["command"].startswith("nayose accept repairs") and say("describe", "workspace", w)[1]["inputs"][0]["waiting"] == 2
-    assert say("resolve", "records", "--workspace", w)[0] == 0 and len(pd.read_parquet(w / "gold.parquet")) == len(df) - 1  # the row that waits is unread
-
-    code, e = say("accept", "repairs", "realign", "--workspace", w)
-    assert code == 0 and e["added"] == 1 and e["read"]["waiting"] == {"garbled": 1} and "rerun records" in e["next"][0]["command"]
-    assert say("accept", "repairs", "realign", "--workspace", w)[0] == 2  # nothing of that kind waits now
-    assert say("rerun", "records", "--workspace", w)[0] == 0  # it finds the file it read before, now repaired
-    gold = pd.read_parquet(w / "gold.parquet")
-    assert len(gold) == len(df) and spilled[0] in set(gold[uid])
-    assert say("accept", "repairs", "garbled", "--part", "0001", "--workspace", w)[0] == 0
-    read = pd.read_parquet(w / "inputs" / "0001-dirty" / intake.READ / "dirty.csv.parquet").set_index(uid)
-    assert read.loc[garbled[0], name] == garbled[1] and read.loc[spilled[0], address] == spilled[1]
-    code, e = say("add", "records", w / "inputs" / "0001-dirty", "--workspace", w)  # its records, repaired since the run: added as a batch
-    assert code == 0 and e["summary"][0][0] == "nothing new" and (w / "inputs" / "0001-dirty").is_dir()  # a file loaded before is never removed
-    assert say("rerun", "records", "--workspace", w)[0] == 0
-
-    (tmp_path / "decisions.csv").write_text(f"{uid}_l,{uid}_r,decision\n{df[uid][0]},{df[uid][1]},match,extra\n", encoding="utf-8")  # people's file, a field too many
-    code, e = say("apply", "decisions", "--file", tmp_path / "decisions.csv", "--workspace", w)
-    assert code == 2 and "decisions.csv" in e["error"] and "nayose-" not in e["error"]  # refused, said of their file
-
-
 def test_the_reader_takes_the_files_real_systems_write_and_refuses_one_it_cannot_line_up(tmp_path, monkeypatch):
     from er import intake
     ref, spec = load_settings().paths["reference"], intake.InputSpec()
@@ -317,28 +156,6 @@ def test_the_reader_takes_the_files_real_systems_write_and_refuses_one_it_cannot
     assert len(got) == 20_900 and r["unread"] == 1100
     with pytest.raises(InputError, match="don't line up"):  # a wrong delimiter: refused, not 99% unread
         read("bad.csv", "\n".join(["a,b,c", *(f"{i},x,y,z" if i % 3 == 0 else f"{i},x,y" for i in range(6000))]).encode())
-
-
-def test_a_load_says_how_far_it_has_read_and_the_workspace_keeps_how_long_it_took(tmp_path, monkeypatch, capsys):
-    from er import cli, intake
-    monkeypatch.setattr(intake, "CHUNK", 2)  # a progress each two rows
-    pd.DataFrame({"ID": [f"R{i}" for i in range(5)], "NAME": ["ヤマダタロウ"] * 5}).to_parquet(tmp_path / "a.parquet", index=False)
-    (tmp_path / "b.csv").write_text("ID,NAME\n" + "".join(f"S{i},スズキ\n" for i in range(5)), encoding="utf-8")
-    assert cli.main(["create", "workspace", "w", "--home", str(tmp_path), "--format", "json"]) == 0
-    for f in ("a.parquet", "b.csv"):  # Parquet counts its rows; text, its lines
-        capsys.readouterr()
-        assert cli.main(["load", "records", str(tmp_path / f), "--workspace", str(tmp_path / "w"), "--format", "json"]) == 0
-        events = [json.loads(x) for x in capsys.readouterr().out.splitlines()]
-        assert [(e["done"], e["total"]) for e in events if e["event"] == "progress"] == [(2, 5), (4, 5), (5, 5)], f
-    (tmp_path / "c.csv").write_bytes(b"ID,NOTE\n" + b"".join(b'T%d,"two\nlines"\n' % i for i in range(3)))  # a newline inside a value: more lines than rows
-    capsys.readouterr()
-    assert cli.main(["load", "records", str(tmp_path / "c.csv"), "--workspace", str(tmp_path / "w"), "--format", "json"]) == 0
-    progress = [(e["done"], e["total"]) for e in map(json.loads, capsys.readouterr().out.splitlines()) if e["event"] == "progress"]
-    assert progress[-1] == (3, 3) and all(t > 0 for _, t in progress)  # counted on, then done at the rows it holds, whatever the estimate said
-    capsys.readouterr()
-    assert cli.main(["describe", "workspace", str(tmp_path / "w"), "--format", "json"]) == 0
-    inputs = json.loads(capsys.readouterr().out.splitlines()[-1])["inputs"]
-    assert [x["columns"] for x in inputs] == [2, 2, 2] and all(x["seconds"] >= 0 for x in inputs)  # this machine's pace, for the page's estimate of a run
 
 
 def test_a_parquet_file_read_by_column_reads_as_value_by_value_does(tmp_path, monkeypatch):
@@ -430,36 +247,6 @@ def test_a_parquet_file_reads_alike_whatever_its_row_groups_and_text_that_isn_t_
         r = intake.take(part, {part / "y.parquet": "y.parquet"}, spec, ref)
         texts[name] = (r["decoded"], pd.read_parquet(part / r["files"][0]["read"])["name"].tolist())
     assert texts["text"] == texts["bytes"] and texts["text"][1][:2] == ["ヤマダ", "東京都"]  # read one by one, in its own encoding
-
-
-def test_a_part_s_description_is_kept_and_made_again_only_when_what_it_rests_on_changes(tmp_path, monkeypatch, capsys):
-    from er import cli, folder, hints
-    pd.DataFrame({"CONT_ID": [f"R{i}" for i in range(6)], "TEL": ["0312345678"] * 6, "NAME": ["ヤマダタロウ", "サトウハナコ"] * 3}).to_parquet(tmp_path / "a.parquet", index=False)
-    ws = tmp_path / "w"
-    assert cli.main(["create", "workspace", "w", "--home", str(tmp_path), "--format", "json"]) == 0
-    assert cli.main(["load", "records", str(tmp_path / "a.parquet"), "--workspace", str(ws), "--format", "json"]) == 0
-    part = str(folder.parts(ws)[0])
-    made, real = [], cli.described
-    monkeypatch.setattr(cli, "described", lambda a: made.append(1) or real(a))
-
-    def describe() -> dict:
-        capsys.readouterr()
-        assert cli.main(["describe", "records", part, "--workspace", str(ws), "--format", "json"]) == 0
-        return json.loads(capsys.readouterr().out.splitlines()[-1])
-    kept = describe()
-    assert not made and kept["records"] == 6  # as the load left it: no record read
-    assert cli.main(["set", "feature", "Phone/Phone=TEL", "--workspace", str(ws), "--format", "json"]) == 0
-    fresh = describe()
-    assert made == [1] and fresh["slots"] != kept["slots"]  # the mapping changed: described again
-    assert describe() == fresh and made == [1]  # and kept again
-    (Path(part) / hints.KEPT).write_text(json.dumps({"key": "other", "described": {}}), encoding="utf-8")
-    assert describe() == fresh and made == [1, 1]  # a description kept for something else is never given
-    (ws / "method.toml").write_text('drop_rules = ["X1_CIF_PERSON_NAME"]\n', encoding="utf-8")  # a method adopted: what a run would turn off may change
-    describe()
-    assert made == [1, 1, 1]
-    (Path(part) / hints.KEPT).write_text("{not json", encoding="utf-8")  # a kept copy cut short: made again, never a failure
-    describe()
-    assert made == [1, 1, 1, 1] and json.loads((Path(part) / hints.KEPT).read_text(encoding="utf-8"))["key"]
 
 
 def test_a_value_written_as_a_list_reads_as_its_item_and_a_part_an_older_reader_read_is_read_again_once(tmp_path, monkeypatch):
@@ -601,110 +388,6 @@ def test_what_is_built_from_the_reference_files_is_kept_on_disk_until_they_or_it
         assert intake.kept("other", ("files", 1), build(5)) == {"built": 5}  # a folder it can't write: built, not kept
     finally:
         (tmp_path / "cache").chmod(0o700)
-
-
-def test_a_part_s_columns_are_described_once_and_a_mapping_reads_only_what_it_changes_the_same_numbers_out(tmp_path, monkeypatch, capsys, population):
-    from er import cli, folder, hints, source
-    s, p, g = population
-    g.df.to_parquet(tmp_path / "all.parquet", index=False)
-    ws = tmp_path / "w"
-    assert cli.main(["create", "workspace", "w", "--home", str(tmp_path), "--format", "json"]) == 0
-    assert cli.main(["load", "records", str(tmp_path / "all.parquet"), "--workspace", str(ws), "--format", "json"]) == 0
-    part = folder.parts(ws)[0]
-    sampled = []
-    real = source.profiled
-    monkeypatch.setattr(source, "profiled", lambda *a: sampled.append(1) or real(*a))  # the columns profiled: their sample read
-
-    def describe(fresh: bool = False) -> dict:  # fresh: nothing kept, every number made again
-        (part / hints.KEPT).unlink(missing_ok=True)
-        if fresh:
-            (part / source.COLUMNS_KEPT).unlink(missing_ok=True)
-        capsys.readouterr()
-        assert cli.main(["describe", "records", "--workspace", str(ws), "--format", "json"]) == 0
-        return json.loads(capsys.readouterr().out.splitlines()[-1])
-    phone = s.columns["phone"][0][0]
-    first = describe()
-    assert (part / source.COLUMNS_KEPT).is_file() and (part / source.SAMPLE_KEPT).is_file() and not sampled  # kept with the part since it loaded
-    for mapping in (f"Phone/Phone={phone},{s.columns['customer_id'][0][0]}", "Phone/Phone=", f"Phone/Phone={phone}"):
-        assert cli.main(["set", "feature", mapping, "--workspace", str(ws), "--format", "json"]) == 0
-        sampled.clear()
-        kept = describe()
-        assert not sampled and kept == describe(fresh=True) and sampled == [1]  # its sample never read again, and the same numbers as made from nothing
-    monkeypatch.setattr(source, "CODE", "another")  # what describes the columns changed: described again, never read back
-    sampled.clear()
-    assert describe() == describe(fresh=True) and sampled == [1, 1]
-    (part / source.COLUMNS_KEPT).write_text("{cut short", encoding="utf-8")  # a kept copy unreadable: made again, never a failure
-    assert describe()["records"] == first["records"]
-
-
-def test_a_load_says_its_columns_then_its_first_rows_counted_before_its_result(tmp_path, capsys):
-    from er import cli
-    uid = load_settings().data.unique_id
-    rows = [f"{uid},FULL_NAME_KANA,TEL"] + [f"{i:04d},{'ヤマダタロウ' if i % 3 else ''},{'NULL' if i % 4 == 0 else 1000 + i}" for i in range(40)]
-    (tmp_path / "r.csv").write_text("\n".join(rows) + "\n", encoding="utf-8")
-    assert cli.main(["create", "workspace", "w", "--home", str(tmp_path), "--format", "json"]) == 0
-    capsys.readouterr()
-    assert cli.main(["load", "records", str(tmp_path / "r.csv"), "--workspace", str(tmp_path / "w"), "--format", "json"]) == 0
-    events = [json.loads(x) for x in capsys.readouterr().out.splitlines()]
-    early = [e["early"] for e in events if e["event"] == "line" and "early" in e]
-    result = events[-1]
-    assert result["event"] == "result" and [d["records"] for d in early] == [None, 40]  # the names at once, then the first chunk counted, then the result
-    assert [c["column"] for c in early[0]["columns"]] == [c["column"] for c in result["columns"]] and all(c["filled"] is None for c in early[0]["columns"])
-    assert [(c["column"], c["filled"]) for c in early[1]["columns"]] == [(c["column"], c["filled"]) for c in result["columns"]]  # one chunk: its counts are the file's
-    assert {s["feature"]: s["filled"] for s in early[1]["slots"] if s["filled"] is not None} == {s["feature"]: s["filled"] for s in result["slots"] if s["filled"] is not None}
-
-
-def test_only_a_records_file_is_read_whole_and_as_it_was_written(say, tmp_path):
-    from er import folder, intake
-    from er.details import _forms
-    from er.settings import load_settings, set_features
-    from er.source import answers
-    from er.strings import connect
-    uid = load_settings().data.unique_id
-    home, ws = tmp_path / "home", tmp_path / "home" / "w"
-    assert say("create", "workspace", "w", "--home", home)[0] == 0
-    (tmp_path / "shot.png").write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 64)
-    (tmp_path / "walk.py").write_text("import json, os\nprint(1)\n", encoding="utf-8")
-    (tmp_path / "shot.csv").write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 64)  # a picture named as a CSV
-    for f in ("shot.png", "walk.py", "shot.csv"):
-        code, e = say("load", "records", tmp_path / f, "--workspace", ws)
-        assert code == 2 and ("not a records file" in e["error"] or "a PNG image" in e["error"]), f
-    with pytest.raises(InputError, match="not a records file"):
-        folder.receive(ws, "walk.py", 10, lambda n: b"x" * n)
-    assert not (ws / folder.UPLOADS).exists() or not list((ws / folder.UPLOADS).iterdir())  # refused before a byte is written
-    code, e = say("load", "records", home, "--workspace", ws)  # a folder that holds the workspace itself
-    assert code == 2 and "holds this workspace" in e["error"] and not folder.parts(ws)
-    (tmp_path / "given" / "read").mkdir(parents=True)
-    (tmp_path / "given" / "a.csv").write_text(f"{uid},FULL_NAME_KANA\n0001,ヤマダタロウ\n", encoding="utf-8")
-    (tmp_path / "given" / "read" / "b.csv").write_text(f"{uid},FULL_NAME_KANA\n0002,スズキハナコ\n", encoding="utf-8")
-    code, e = say("load", "records", tmp_path / "given", "--workspace", ws)
-    assert code == 2 and "named as the workspace's own reading" in e["error"]
-
-    (tmp_path / "r.csv").write_text(f"{uid},FULL_NAME_KANA,KANJI_NAME,TEL\n0001,ヤマダタロウ,山田太郎,1234\n", encoding="utf-8")
-    assert say("load", "records", tmp_path / "r.csv", "--workspace", ws)[0] == 0
-    own = folder.parts(ws)
-    for inside in (ws / "inputs", own[-1] / "read", own[-1] / "r.csv", ws / "inputs" / "*"):  # the workspace's own files: read twice, or its readings as records
-        code, e = say("load", "records", inside, "--workspace", ws)
-        assert code == 2 and "inside this workspace" in e["error"] and folder.parts(ws) == own, inside
-    assert say("load", "records", own[-1], "--workspace", ws)[0] == 0 and folder.parts(ws) == own  # a part of its own: given again, as it is
-    assert say("set", "columns", "full_name=KANJI_NAME", "--workspace", ws)[0] == 0
-    set_features(ws, {"Phone/Phone": (("TEL",),)})  # another feature changed: the full name set by hand stays
-    assert load_settings(columns=ws / "columns.toml").columns["full_name"] == (("KANJI_NAME",),)
-
-    forms = _forms(["0151", "151"], {"number": False, "pad": 4})
-    assert forms["'151'"] == "151" and forms["'0151'"] == "0151"  # each ID's rows its own
-
-    rows = "\r\n".join(["id,name,address", *(f"{i},タナカタロウ,東京都千代田区丸の内{i}丁目" for i in range(50))]) + "\r\n"
-    (tmp_path / "wide.csv").write_bytes(rows.encode("utf-16-le"))  # UTF-16 without a BOM, mostly Japanese: few NULs
-    part = tmp_path / "wide_part"
-    part.mkdir()
-    (part / "wide.csv").write_bytes(rows.encode("utf-16-le"))
-    r = intake.take(part, {part / "wide.csv": "wide.csv"}, intake.InputSpec(), load_settings().paths["reference"], frozenset())
-    got = pd.read_parquet(part / r["files"][0]["read"])
-    assert got["name"].iloc[0] == "タナカタロウ" and got["address"].iloc[3] == "東京都千代田区丸の内3丁目"
-
-    pd.DataFrame({uid: ["0001", "0002"], "kind": [" 1", "２\u3000"]}).to_parquet(tmp_path / "kinds.parquet", index=False)
-    assert len(answers(tmp_path / "kinds.parquet", connect(), uid)) == 2  # both taken: a space or a full-width digit is no other kind
 
 
 def test_utf16_without_its_bom_reads_whole_though_full_width_spaces_put_nuls_on_the_other_side(tmp_path):

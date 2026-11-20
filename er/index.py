@@ -88,7 +88,7 @@ def _pipeline(ws: Path, s: Settings, p: Pipeline, columns: list[str]) -> Pipelin
     config = ws / "state" / "config.txt"
     if config.exists() and config.read_text(encoding="utf-8") != run_config(p, s):
         raise InputError(f"the pipeline or the column mapping changed since the run in {ws}: its records would be looked up otherwise",
-                         fix=f"run it again first: nayose rerun records --workspace {ws}")
+                         fix=f"run it again first: nayose resolve records FILE --workspace {ws} --overwrite")
     return fitted(ws, s, p, columns)
 
 
@@ -324,25 +324,6 @@ def _rule_reads(x: tuple, have: list[str]) -> list[str]:  # the columns a rule's
 def manifest(ws: Path) -> dict | None:  # the index's manifest, or None without one
     f = Path(ws) / INDEX / "manifest.json"
     return json.loads(f.read_text(encoding="utf-8")) if f.exists() else None
-
-
-def status(ws: Path, s: Settings) -> dict:
-    """The index as a page shows it: when it was built, on how many records (of them, added since), what changed since
-    (None: up to date), and the columns a lookup reads, each with its field and whether it is in the field's first
-    alternative (main), in the mapping's order. O(files)."""
-    m, parts = manifest(ws), sorted((Path(ws) / "state" / "records").glob("part-*.parquet"))
-    have = m["columns"] if m else pq.read_schema(parts[0]).names if parts else []
-    folded = {c.casefold() for c in have}  # a source column named as its field but for case gave way to it (standardize.prepare)
-    present = present_fields(s, [*have, *(c for alts in s.columns.values() for alt in alts for c in alt if c.casefold() in folded)])
-    seen, columns = set(), []
-    for field, alts in present.items():
-        for k, alt in enumerate(alts):
-            for c in alt:
-                if field not in ("id", "entity") and c not in seen:
-                    seen.add(c)
-                    columns.append(dict(column=c, field=field, main=k == 0 and field != "kind_flag"))
-    return dict(built_at=m and m["built_at"], records=m and m["records"] + m.get("added", 0), added=m and m.get("added", 0),
-                stale=stale(ws, m) if m else None, columns=columns)
 
 
 def stale(ws: Path, m: dict | None = None) -> str | None:

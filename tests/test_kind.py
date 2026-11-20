@@ -13,7 +13,6 @@ from er.settings import load_settings
 from er.standardize import normalize
 
 
-
 @pytest.fixture(scope="module")
 def kind_population():
     """A small population with one name column for every kind, a person/company flag that is sometimes wrong, companies
@@ -188,24 +187,6 @@ def test_answers_without_a_measuring_draw_keep_the_engine_s_own_rule(tmp_path, k
     assert (after.loc[sheet[uid][decide], "kind"].to_numpy() == truth[decide]).all()  # and people's answers stand
 
 
-def test_results_count_the_flagged_and_a_gold_written_before_flags_still_reads(tmp_path, kind_population):
-    from er.kind import sheet_parts
-    from er.results import describe_merging, describe_results
-    from er.run import Run
-    from er.strings import connect
-    s, p, g = kind_population
-    out = tmp_path / "run"
-    g.df.to_parquet(tmp_path / "all.parquet", index=False)
-    Run(p, s).full(tmp_path / "all.parquet", out, pipeline_file=s.root / "config" / "final.toml")
-    con = connect(s.compute)
-    gold, sheet = pd.read_parquet(out / "gold.parquet"), pd.read_parquet(out / "kind_review.parquet")
-    k, part = describe_results(con, out, s, p)["kinds"], sheet_parts(sheet)
-    assert k == dict(flagged=int(gold["kind_flagged"].sum()), to_check=int((part == "decide").sum()), to_teach=int((part == "measure").sum()))
-    assert k["flagged"] and int(sheet["flagged"].sum()) == k["to_check"]  # every flagged record on the sheet is to check, drawn at random or not
-    gold.drop(columns="kind_flagged").to_parquet(out / "gold.parquet")  # as a run written before flags left it
-    assert describe_merging(con, out, s, p, {"when": [{"points": 12}]})["pairs"] >= 0  # it still reads: none of its records flagged
-
-
 def test_a_sheet_s_ids_must_name_records_of_the_file(tmp_path, kind_population):
     from er.run import Run
     s, p, g = kind_population
@@ -261,53 +242,6 @@ def test_a_decision_keeps_each_record_s_kind_and_a_merged_customer_takes_its_sur
     assert list(after.reset_index().columns) == list(before.columns)
     assert after.loc[pair, "cluster_id"].nunique() == 1 and (after.loc[pair, "customer_kind"] == 2).all()
     assert after["kind"].equals(before.set_index(uid)["kind"].reindex(after.index))  # each record's kind stands
-
-
-def test_answers_add_up_over_sheets_each_kept_as_given_and_a_blank_row_erases_nothing(tmp_path, kind_population):
-    import shutil
-    from er.run import Run
-    s, p, g = kind_population
-    uid = s.data.unique_id
-    g.df.to_parquet(tmp_path / "all.parquet", index=False)
-    sheet = kind_sheet_for(Run(p, s).full(tmp_path / "all.parquet", tmp_path / "free"), s, p, 600)
-    truth = np.where(g.truth.set_index("CONT_ID").loc[sheet[uid], "KIND"].eq("company"), 2, 1)
-    half = len(sheet) // 2
-    first = sheet.assign(kind=pd.array([*truth[:half], *[pd.NA] * (len(sheet) - half)], dtype="Int8"))  # the second half left blank
-    first.to_parquet(tmp_path / "first.parquet")
-    run1 = Run(p, s, kind_labels=tmp_path / "first.parquet").full(tmp_path / "all.parquet", tmp_path / "run")
-    assert set(run1.labels[uid]) == set(sheet[uid][:half])  # a blank row isn't an answer: its record comes back on the next sheet
-    second = sheet.assign(kind=pd.array([pd.NA] * half + list(truth[half:]), dtype="Int8"))  # the first half blank this time
-    second.to_parquet(tmp_path / "second.parquet")
-    run2 = Run(p, s, kind_labels=tmp_path / "second.parquet").full(tmp_path / "all.parquet", tmp_path / "run", overwrite=True)
-    answers = tmp_path / "run" / "kind_answers"
-    parts = sorted(answers.glob("part-*.parquet"))
-    assert [set(pd.read_parquet(f)[uid]) for f in parts] == [set(sheet[uid][:half]), set(sheet[uid][half:])]  # a part per sheet, its filled rows
-    assert len(run2.classifier.decided) == len(sheet)  # both sheets' answers stand
-    gold = pd.read_parquet(tmp_path / "run" / "gold.parquet").set_index(uid).loc[sheet[uid]]
-    assert (gold["kind_by"] == "people").all() and (gold["kind"].to_numpy() == truth).all()
-
-    parts[1].unlink()  # a sheet answered wrong: deleting its part undoes it
-    Run(p, s).full(tmp_path / "all.parquet", tmp_path / "run", overwrite=True)
-    assert set(pd.read_parquet(answers)[uid]) == set(sheet[uid][:half])
-    gold = pd.read_parquet(tmp_path / "run" / "gold.parquet").set_index(uid)
-    assert not (gold.loc[sheet[uid][half:], "kind_by"] == "people").any()
-
-    from er import folder
-    from er.cli import main
-    shutil.move(parts[0], tmp_path / "run" / "state" / "kind_labels.parquet")  # answers where an earlier nayose kept them: refused, never half read
-    assert main(["list", "pairs", "--workspace", str(tmp_path / "run"), "--format", "json"]) == 2
-    with pytest.raises(InputError, match="an earlier nayose wrote .people's answers in state/"):
-        folder.current(tmp_path / "run")
-    old = tmp_path / "old"
-    (old / "inputs" / "0001-theirs").mkdir(parents=True)  # a part the reader never described
-    with pytest.raises(InputError, match="0001-theirs read before the reader described its files"):
-        folder.current(old)
-    (old / "inputs" / "0001-theirs").rmdir()
-    (old / "rule_kept").mkdir()
-    pd.DataFrame({f"{uid}_l": ["1"], f"{uid}_r": ["2"], "rule": ["X1"]}).to_parquet(old / "rule_kept" / "part-00000.parquet")  # rules' pairs without merged
-    with pytest.raises(InputError, match="don't say whether they merged"):
-        folder.current(old)
-    folder.current(old, replacing=True)  # a full run --overwrite writes them anew: let through
 
 
 def test_a_record_people_can_t_tell_stays_out_of_name_matching_and_off_the_next_sheet(tmp_path, kind_population):
