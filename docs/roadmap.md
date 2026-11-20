@@ -61,7 +61,7 @@ The engine is hard to explain today, for reasons that are in the code, not in th
 The target, in three named patterns:
 
 - **A pipeline of steps over tables.** Each step is one module with one public function whose arguments and return
-  value are its tables and its own config section: `keys = build_keys(engine, records, config.keys)`. No shared object
+  value are its tables and its own config section, as in keys = build_keys(engine, records, keys_config). No shared object
   state.
 - **Jobs read top to bottom.** `jobs/build.py` is about 50 lines that read like the diagram: one line per step.
 - **Ports and adapters for the engine.** Steps call `engine.run(...)`; DuckDB and BigQuery are two adapters.
