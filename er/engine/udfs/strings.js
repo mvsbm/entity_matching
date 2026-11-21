@@ -1,8 +1,14 @@
-// The character-level comparison functions as rapidfuzz 3 computes them, for BigQuery's JavaScript UDFs: each takes
-// two strings (code points, not UTF-16 units) and returns what rapidfuzz.distance.<Name> gives.
+// The character-level comparison functions as DuckDB's engine scores them (er/engine/duckdb.py: rapidfuzz 3), for
+// BigQuery's JavaScript UDFs: each takes two strings (code points, not UTF-16 units). Jaro and Jaro–Winkler are float32s,
+// as rapidfuzz's cpdist returns them, the rest as it does: so the last bit of the double, which rapidfuzz's builds round
+// differently (arm64 fuses Jaro–Winkler's boost into one multiply-add), never reaches a comparison.
 function chars(s) { return Array.from(s); }
 
-function jaro(a, b) {
+function jaro(a, b) {  // as a float32, as rapidfuzz's cpdist gives every similarity (DuckDB's engine compares that)
+  return Math.fround(jaro_double(a, b));
+}
+
+function jaro_double(a, b) {
   const x = chars(a), y = chars(b);
   if (!x.length && !y.length) return 1.0;
   if (!x.length || !y.length) return 0.0;
@@ -27,43 +33,12 @@ function jaro(a, b) {
   return (m / x.length + m / y.length + (m - t) / m) / 3.0;
 }
 
-function parts(x) {  // a double as an exact integer m and exponent e: x = m · 2^e
-  if (x === 0) return [0n, 0];
-  const v = new DataView(new ArrayBuffer(8));
-  v.setFloat64(0, x);
-  const hi = v.getUint32(0), lo = v.getUint32(4), biased = (hi >>> 20) & 0x7ff;
-  let m = (BigInt(hi & 0xfffff) << 32n) | BigInt(lo);
-  if (biased) m |= 1n << 52n;
-  return [hi >>> 31 ? -m : m, (biased || 1) - 1075];
-}
-
-function rounded(m, e) {  // m · 2^e to the nearest double, ties to even (results here are normal numbers)
-  if (m === 0n) return 0;
-  const negative = m < 0n;
-  if (negative) m = -m;
-  const shift = m.toString(2).length - 53;
-  if (shift > 0) {
-    const rest = m & ((1n << BigInt(shift)) - 1n), half = 1n << BigInt(shift - 1);
-    m >>= BigInt(shift);
-    if (rest > half || (rest === half && (m & 1n))) m += 1n;
-    e += shift;
-  }
-  const r = Number(m) * Math.pow(2, e);
-  return negative ? -r : r;
-}
-
-function fma(a, b, c) {  // a · b + c, rounded once, as a fused multiply-add gives it
-  const [ma, ea] = parts(a), [mb, eb] = parts(b), [mc, ec] = parts(c);
-  const ep = ea + eb, e = Math.min(ep, ec);
-  return rounded((ma * mb << BigInt(ep - e)) + (mc << BigInt(ec - e)), e);
-}
-
-function jaro_winkler(a, b) {  // the prefix boost as rapidfuzz computes it: one fused multiply-add
-  const sim = jaro(a, b), x = chars(a), y = chars(b);
-  if (sim <= 0.7) return sim;
+function jaro_winkler(a, b) {  // the prefix boost on Jaro past 0.7, the first four characters at most
+  const sim = jaro_double(a, b), x = chars(a), y = chars(b);
+  if (sim <= 0.7) return Math.fround(sim);
   let prefix = 0;
   while (prefix < 4 && prefix < x.length && prefix < y.length && x[prefix] === y[prefix]) prefix++;
-  return fma(prefix * 0.1, 1.0 - sim, sim);
+  return Math.fround(sim + prefix * 0.1 * (1.0 - sim));
 }
 
 function levenshtein(a, b) {
