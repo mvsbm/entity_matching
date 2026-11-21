@@ -1,0 +1,26 @@
+# An increment: the batch in the bucket's in/batch.parquet, added to runs/main.
+# `gcloud run jobs replace` reads it once Jenkins fills ${…} (deploy/Jenkinsfile); an execution may give other arguments
+# (--args), never other code.
+apiVersion: run.googleapis.com/v1
+kind: Job
+metadata:
+  name: nayose-update
+  labels: {app: nayose}
+spec:
+  template:
+    spec:
+      taskCount: 1
+      parallelism: 1
+      template:
+        spec:
+          serviceAccountName: ${SERVICE_ACCOUNT}
+          timeoutSeconds: 21600
+          maxRetries: 0
+          volumes:
+            - name: bucket
+              csi: {driver: gcsfuse.run.googleapis.com, volumeAttributes: {bucketName: "${BUCKET}"}}
+          containers:
+            - image: ${IMAGE}
+              args: ["runs/main", "add", "records", "/gcs/in/batch.parquet"]
+              resources: {limits: {cpu: "4", memory: 16Gi}}
+              volumeMounts: [{name: bucket, mountPath: /gcs}]

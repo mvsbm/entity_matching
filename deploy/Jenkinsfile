@@ -1,0 +1,68 @@
+// CI/CD for nayose's Cloud Run jobs (deploy/jobs/*.yaml). Every push: the lint and the tests. A push to main also builds
+// the image (deploy/Dockerfile), pushes it to Artifact Registry and deploys the jobs on it. A build with RUN set starts
+// one job once deployed, with ARGS as its arguments. Nothing in BigQuery or Cloud Run is changed by hand: every gcloud
+// call runs as the service account whose key Jenkins holds (the credential gcp-service-account).
+// Jenkins provides, as environment: GCP_PROJECT, GCP_REGION, AR_REPO (the Artifact Registry repository), BUCKET (the
+// jobs' bucket), SERVICE_ACCOUNT (the jobs' identity).
+pipeline {
+  agent any
+  parameters {
+    choice(name: 'RUN', choices: ['none', 'nayose-build', 'nayose-update', 'nayose-lookup'], description: 'a job to start once deployed')
+    string(name: 'ARGS', defaultValue: '', description: "its arguments, comma-separated, e.g. runs/main,match,record,--record,1234")
+  }
+  environment {
+    IMAGE = "${env.GCP_REGION}-docker.pkg.dev/${env.GCP_PROJECT}/${env.AR_REPO}/nayose:${env.GIT_COMMIT}"
+  }
+  stages {
+    stage('Test') {
+      steps {
+        sh '''
+          python3 -m venv .venv
+          .venv/bin/python -m pip install -r requirements.txt
+          .venv/bin/ruff check er design scripts tests
+          .venv/bin/python -m pytest -n auto -q tests
+        '''
+      }
+    }
+    stage('Image') {
+      when { branch 'main' }
+      steps {
+        withCredentials([file(credentialsId: 'gcp-service-account', variable: 'KEY')]) {
+          sh '''
+            gcloud auth activate-service-account --key-file="$KEY" --project="$GCP_PROJECT"
+            gcloud auth configure-docker "$GCP_REGION-docker.pkg.dev" --quiet
+            docker build -f deploy/Dockerfile -t "$IMAGE" .
+            docker push "$IMAGE"
+          '''
+        }
+      }
+    }
+    stage('Deploy') {
+      when { branch 'main' }
+      steps {
+        withCredentials([file(credentialsId: 'gcp-service-account', variable: 'KEY')]) {
+          sh '''
+            gcloud auth activate-service-account --key-file="$KEY" --project="$GCP_PROJECT"
+            export IMAGE SERVICE_ACCOUNT BUCKET
+            for job in deploy/jobs/*.yaml; do
+              filled=$(mktemp)
+              envsubst '$IMAGE $SERVICE_ACCOUNT $BUCKET' < "$job" > "$filled"
+              gcloud run jobs replace "$filled" --region="$GCP_REGION"
+            done
+          '''
+        }
+      }
+    }
+    stage('Run') {
+      when { expression { params.RUN != 'none' } }
+      steps {
+        withCredentials([file(credentialsId: 'gcp-service-account', variable: 'KEY')]) {
+          sh '''
+            gcloud auth activate-service-account --key-file="$KEY" --project="$GCP_PROJECT"
+            gcloud run jobs execute "$RUN" --region="$GCP_REGION" --wait ${ARGS:+--args="$ARGS"}
+          '''
+        }
+      }
+    }
+  }
+}

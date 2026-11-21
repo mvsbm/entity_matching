@@ -1,0 +1,11 @@
+# What a job's image installs: the engine's run-time dependencies, pip only, at requirements.txt's pins
+# (tests/test_deploy.py holds them equal), and the BigQuery client. Nothing for design time, the notebooks or the tests.
+numpy==2.4.4
+pandas==3.0.3
+duckdb==2.0.0
+pyarrow==26.0.0
+scipy==1.18.1
+rapidfuzz==3.14.6
+scikit-learn==1.9.1
+google-cloud-bigquery==3.47.0  # er.engine.bigquery: queries, sessions, load jobs
+google-cloud-bigquery-storage==2.43.0  # its Storage Read API: a result read in Arrow batches
