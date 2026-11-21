@@ -8,6 +8,7 @@ import pandas as pd
 import pytest
 from rapidfuzz.distance import Levenshtein
 
+from er.engine.duckdb import DuckDB
 from er.candidates import Records
 from er.config import EditKeys, InputError, Key
 
@@ -21,7 +22,7 @@ def test_values_within_k_edits_are_every_pair_brute_force_finds_and_no_other(k, 
     within = (Key("g"),) if grouped else ()
     r = Records(df, "uid")
     try:
-        got = {tuple(x) for x in r.con.execute(f"SELECT {'g, ' if grouped else ''}v, x FROM {r.near_values(EditKeys(name='e', key=Key('name'), within=within, edits=k), 10**9)}").fetchall()}
+        got = {tuple(x) for x in r.engine.rows(f"SELECT {'g, ' if grouped else ''}v, x FROM {r.near_values(EditKeys(name='e', key=Key('name'), within=within, edits=k), 10**9)}")}
     finally:
         r.close()
     u = sorted({(g if grouped else None, v) for v, g in zip(vals, df["g"]) if len(v) >= 2 * (k + 1)})
@@ -35,7 +36,7 @@ def test_a_value_a_crowd_holds_pairs_by_no_edit_key():
                       dtype="string")
     r = Records(df, "uid")
     try:
-        pairs = {tuple(x) for x in r.con.execute(f"SELECT v, x FROM {r.near_values(EditKeys(name='e', key=Key('name'), edits=1), 64)}").fetchall()}
+        pairs = {tuple(x) for x in r.engine.rows(f"SELECT v, x FROM {r.near_values(EditKeys(name='e', key=Key('name'), edits=1), 64)}")}
     finally:
         r.close()
     assert ("カトウハナコ", "サトウハナコ") in pairs and not any("フメイフメイ" in p for p in pairs)  # a placeholder's 70 records would pair with each neighbour
@@ -57,10 +58,10 @@ def _placeholders(population, rows: dict) -> tuple:  # Run._placeholders on a ta
     s, p, g = population
     run = Run(p, s)
     df = pd.DataFrame(rows, dtype="string")
-    run.con.register("er_rows", df)
-    run.con.execute("CREATE TABLE records AS SELECT * FROM er_rows")
+    run.engine.register("er_rows", df)
+    run.engine.run("CREATE TABLE records AS SELECT * FROM er_rows")
     run._placeholders("records")
-    return run, run.con.sql("SELECT * FROM records ORDER BY 1").df()
+    return run, run.engine.frame("SELECT * FROM records ORDER BY 1")
 
 
 def test_a_placeholder_is_found_on_records_without_an_id_beside_another_and_read_as_missing_in_every_field_of_its_columns(population):
@@ -82,10 +83,10 @@ def test_copies_of_one_customer_s_record_are_no_crowd_and_a_known_placeholder_is
     run, out = _placeholders(population, rows)
     assert "person_name" not in run.placeholders and "phone" not in run.placeholders and out["person_name"].notna().all()  # one customer's 70 copies
     run.placeholders, run.notes = {"phone": ["1234"]}, []
-    run.con.execute("UPDATE records SET phone = '1234'")
+    run.engine.run("UPDATE records SET phone = '1234'")
     run._placeholders("records")
     assert out is not None and not any(x.startswith("phone:") for x in run.notes)  # read as missing as before, and not said again
-    assert run.con.execute("SELECT count(*) FROM records WHERE phone IS NOT NULL").fetchall()[0][0] == 0
+    assert run.engine.value("SELECT count(*) FROM records WHERE phone IS NOT NULL") == 0
 
 
 def test_a_short_phone_held_by_many_records_each_is_kept_and_a_dummy_far_past_them_is_still_read_as_missing(population):
@@ -101,10 +102,10 @@ def test_the_gap_counts_a_pair_as_the_rules_only_where_they_kept_it():
     import duckdb
     from types import SimpleNamespace
     from design.sample import listed_by
-    con = duckdb.connect()
-    con.execute("CREATE TABLE rule_edges AS SELECT 'a' AS id_l, 'b' AS id_r UNION ALL SELECT 'c', 'd'")  # both found by a rule
-    con.execute("CREATE TABLE rule_kept AS SELECT 'c' AS id_l, 'd' AS id_r")  # one kept: the other's records were resolved already
-    got = listed_by(SimpleNamespace(con=con, l="id_l", r="id_r"), pd.DataFrame({"id_l": ["a", "c"], "id_r": ["b", "d"]}))
+    engine = DuckDB(duckdb.connect())
+    engine.run("CREATE TABLE rule_edges AS SELECT 'a' AS id_l, 'b' AS id_r UNION ALL SELECT 'c', 'd'")  # both found by a rule
+    engine.run("CREATE TABLE rule_kept AS SELECT 'c' AS id_l, 'd' AS id_r")  # one kept: the other's records were resolved already
+    got = listed_by(SimpleNamespace(engine=engine, l="id_l", r="id_r"), pd.DataFrame({"id_l": ["a", "c"], "id_r": ["b", "d"]}))
     assert got["ruled"].tolist() == [False, True] and got["listed"].tolist() == [False, True]
 
 

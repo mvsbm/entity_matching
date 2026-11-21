@@ -5,6 +5,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
+from er.engine.duckdb import DuckDB
 from er.candidates import candidates, estimate, found_by, generate
 from er.config import (Budget, Comparator, DeletionKeys, FSSpec, InputError, Key, KeyBlocker, OverBudget,
                        Resolver, Rule, RulesSpec, SortedNeighbourhood, Stage, TfidfNeighbours)
@@ -63,13 +64,13 @@ def test_entity_folds_keep_every_entity_in_one_fold():
     assert by_entity.max() == 1 and folds.nunique() == 3 and folds.equals(entity_folds(truth, data, 3, 0))
 
 
-def test_the_run_s_clustering_merges_whole_clusters_and_names_each_after_its_smallest_id(con):
+def test_the_run_s_clustering_merges_whole_clusters_and_names_each_after_its_smallest_id(engine):
     ids = pd.Series(list("ABCDEF"), dtype="string")
     base = pd.DataFrame({UID: list("ABCDEF"), "cluster_id": ["A", "A", "C", "C", "E", "F"]})  # the rules' clusters: AB, CD
     pair = lambda rows: pd.DataFrame(rows, columns=["uid_l", "uid_r"], dtype="string")
-    out = clustered(con, base, pair([("D", "B"), ("E", "F")]), ids, UID)
+    out = clustered(engine, base, pair([("D", "B"), ("E", "F")]), ids, UID)
     assert out.tolist() == ["A", "A", "A", "A", "E", "E"]  # D–B joins both whole clusters; E–F a new one
-    assert clustered(con, base, pair([]), ids, UID).tolist() == base["cluster_id"].tolist()  # no pair: as they were
+    assert clustered(engine, base, pair([]), ids, UID).tolist() == base["cluster_id"].tolist()  # no pair: as they were
 
 
 def test_deletion_keys_find_every_pair_one_edit_apart():
@@ -84,13 +85,13 @@ def test_deletion_keys_find_every_pair_one_edit_apart():
     assert estimate(DeletionKeys(name="d", key=Key("name")), df, len(df))["est_pairs"] >= len(every)  # an upper bound
 
 
-def test_u_from_the_scored_file(con, records):
-    fitted = train_fs(model(), records, con, UID)
-    same = scored_u(model(), fitted, records, con, UID)[0]  # the fitting records, the same sample: the same model
-    assert score_fs(same, records, PAIR, con, UID)["match_weight"].item() == pytest.approx(score_fs(fitted, records, PAIR, con, UID)["match_weight"].item())
+def test_u_from_the_scored_file(engine, records):
+    fitted = train_fs(model(), records, engine, UID)
+    same = scored_u(model(), fitted, records, engine, UID)[0]  # the fitting records, the same sample: the same model
+    assert score_fs(same, records, PAIR, engine, UID)["match_weight"].item() == pytest.approx(score_fs(fitted, records, PAIR, engine, UID)["match_weight"].item())
     padded = pd.concat([records, pd.DataFrame({"uid": [f"p{i:03d}" for i in range(240)], "name": [f"ヨソ{i}" for i in range(240)],
                                                "phone": [f"{i:04d}" for i in range(240)], "entity": "pad"}, dtype="string")], ignore_index=True)
-    other = scored_u(model(), fitted, padded, con, UID)[0]
+    other = scored_u(model(), fitted, padded, engine, UID)[0]
     u = lambda m: {lv["label_for_charts"]: lv["u_probability"] for c in m["comparisons"] if c["output_column_name"] == "phone" for lv in c["comparison_levels"] if not lv.get("is_null_level")}
     assert u(other)["exact"] < u(fitted)["exact"]  # more distinct phones: random pairs agree less often
     unseen = {tuple(x) for x in fitted["er"]["filled"]["m"]}  # never seen in training: m follows u, 0 bits
@@ -99,19 +100,19 @@ def test_u_from_the_scored_file(con, records):
     assert all(mu[0] == m(fitted)[k][0] if k not in unseen else mu[0] == mu[1] for k, mu in m(other).items())  # m stays as fitted
 
 
-def test_window_only_counts_potential_matches_no_key_reaches(con, records):
+def test_window_only_counts_potential_matches_no_key_reaches(engine, records):
     data = replace(load_settings().data, unique_id=UID, entity_id="entity")
     spec = FSSpec(standardize=replace(load_settings().standardize, derived=()), previous_stage="rules", stage="fs", model=model(),
                     blockers=(KeyBlocker(name="phone", keys=(Key("phone"),)),), min_match_weight=-10.0,  # toy weights: −6 to −3
                     resolver=Resolver(method="connected_components"),
                     budget=Budget(max_pairs_per_record=10**4, max_block_size=10**4, target_rows=10**6, benchmark_pairs=10))
-    model_json, truth = train_fs(model(), records, con, UID), records[[UID, "entity"]]
-    keyed = window_only(spec, model_json, records, truth, con, data, [len(records), 10**6])
+    model_json, truth = train_fs(model(), records, engine, UID), records[[UID, "entity"]]
+    keyed = window_only(spec, model_json, records, truth, engine, data, [len(records), 10**6])
     windowed = window_only(replace(spec, blockers=(SortedNeighbourhood(name="s", key=Key("name"), window=2),)), model_json,
-                           records, truth, con, data, [len(records)])
+                           records, truth, engine, data, [len(records)])
     assert keyed["window_only"].eq(0).all() and keyed["potential"].iloc[1] < keyed["potential"].iloc[0]  # λ falls with N
     assert windowed["window_only"].iloc[0] == windowed["potential"].iloc[0] > 0  # every true pair shares the phone, none a key here
-    moving = window_only(replace(spec, model=replace(spec.model, u_from_scored=True)), model_json, records, truth, con, data, [len(records)])
+    moving = window_only(replace(spec, model=replace(spec.model, u_from_scored=True)), model_json, records, truth, engine, data, [len(records)])
     assert moving["potential"].iloc[0] == keyed["potential"].iloc[0]  # at its own size, u from the records is the fitted u
 
 
@@ -156,12 +157,12 @@ def test_a_deletion_keys_normal_pairs_hold_the_pairs_its_join_lists_and_never_go
     df = pd.DataFrame({"uid": [f"{i:05d}" for i in range(len(names))], "name": names}, dtype="string")
     b, budget = DeletionKeys(name="d", key=Key("name")), Budget(max_pairs_per_record=1000, max_block_size=1000, target_rows=10, benchmark_pairs=10)
     est = estimate(b, df, len(df), uid="uid", oversized_from=budget.min_oversized())
-    con = duckdb.connect()  # a gate that keeps no oversized block: the join lists the normal blocks' pairs only
-    union, _ = candidates((b,), df, "uid", None, budget, con=con, gate=lambda t: con.execute(f"CREATE OR REPLACE TABLE g AS SELECT *, -99.0 AS match_weight FROM {t}") and "g")
+    engine = DuckDB(duckdb.connect())  # a gate that keeps no oversized block: the join lists the normal blocks' pairs only
+    union, _ = candidates((b,), df, "uid", None, budget, engine=engine, gate=lambda t: engine.run(f"CREATE OR REPLACE TABLE g AS SELECT *, -99.0 AS match_weight FROM {t}") or "g")
     assert est["oversized_blocks"] and est["est_pairs"] - est["oversized_pairs"] < 0 <= len(union) <= est["normal_pairs"] < est["est_pairs"]
     few = pd.DataFrame({"uid": list("0123"), "name": ["ABC", "ABC", "ABX", "ABX"]}, dtype="string")  # block AB oversized; each value's other keys normal
     tight = Budget(max_pairs_per_record=1000, max_block_size=1000, target_rows=10, benchmark_pairs=10, sample_pairs=3)
-    union, _ = candidates((b,), few, "uid", None, tight, con=con, gate=lambda t: con.execute(f"CREATE OR REPLACE TABLE g AS SELECT *, -99.0 AS match_weight FROM {t}") and "g")
+    union, _ = candidates((b,), few, "uid", None, tight, engine=engine, gate=lambda t: engine.run(f"CREATE OR REPLACE TABLE g AS SELECT *, -99.0 AS match_weight FROM {t}") or "g")
     assert estimate(b, few, 4, uid="uid", oversized_from=tight.min_oversized())["normal_pairs"] == len(union) == 2  # a value's pair once, in one of its normal blocks
 
 
@@ -252,7 +253,7 @@ def test_grown_pairs_tells_a_square_law_key_from_a_linear_one():
     assert at_own == 10**6 // 2 and at_few == pytest.approx(10**6 * (10**6 - 1) / 2 / 50, rel=0.05)  # C(n, 2) / 50 values
 
 
-def test_a_blocking_key_limits_a_rule_join(con):
+def test_a_blocking_key_limits_a_rule_join(engine):
     std = replace(load_settings().standardize, derived=())  # a hand-made frame without the real input columns
     df = pd.DataFrame({"uid": list("ABC"), "phone": ["1", "1", "1"], "name": ["サトウ", "サトオ", "カトウ"]}, dtype="string")
     budget = Budget(max_pairs_per_record=10, max_block_size=10, target_rows=10, benchmark_pairs=10)
@@ -260,8 +261,8 @@ def test_a_blocking_key_limits_a_rule_join(con):
         return RulesSpec(standardize=std, resolver=Resolver(method="connected_components"), budget=budget,
                          stages=(Stage(name="fuzzy", rules=(Rule(name="R", exact=("phone",), fuzzy=("name",), blocking=blocking),),
                                        comparators={"name": Comparator("levenshtein", 1)}),))
-    plain = set(map(tuple, rule_edges(spec(()), df, con, UID)[0][["uid_l", "uid_r"]].to_numpy()))
+    plain = set(map(tuple, rule_edges(spec(()), df, engine, UID)[0][["uid_l", "uid_r"]].to_numpy()))
     s = spec((Key("name", ("initial",)),))
-    blocked = set(map(tuple, rule_edges(s, prepare(std, df, s.normalized()), con, UID)[0][["uid_l", "uid_r"]].to_numpy()))
+    blocked = set(map(tuple, rule_edges(s, prepare(std, df, s.normalized()), engine, UID)[0][["uid_l", "uid_r"]].to_numpy()))
     assert plain == {("A", "B"), ("A", "C")} and blocked == {("A", "B")}  # カトウ starts differently: not joined
 

@@ -77,7 +77,7 @@ def reachable(run, floor: float, into: str = "er_kl_ok") -> int:
         cols = sorted({x for lv in c.levels for col, comp in lv.any_of for x in (col, comp.column(col)) if x in have})
         if best > 0 and cols:
             terms.append(f"CASE WHEN {' OR '.join(f'{q(x)} IS NOT NULL' for x in cols)} THEN {best} ELSE 0 END")
-    run.con.execute(f"CREATE OR REPLACE TABLE {into} AS SELECT {q(run.uid)} FROM records WHERE {math.log2(lam / (1 - lam))} + {' + '.join(terms) or '0'} >= {floor}")
+    run.engine.run(f"CREATE OR REPLACE TABLE {into} AS SELECT {q(run.uid)} FROM records WHERE {math.log2(lam / (1 - lam))} + {' + '.join(terms) or '0'} >= {floor}")
     return run._count(into)
 
 
@@ -88,26 +88,26 @@ def discover(run, records: int, floor: float | None = None) -> Found:
     blocks are counted among them: a pair of another can't be a target, and a block can only be smaller, so no target
     is drawn less. `listed`: whether a key or a rule listed the pair (once the run's candidates exist), and `sources`, the
     keys that did. Each target counts for 1 / (1 − (1 − f)²) of the file's: a pair is drawn when either record is."""
-    t0, p, con, uid, n = time.perf_counter(), run.pipeline, run.con, run.uid, run.n
+    t0, p, engine, uid, n = time.perf_counter(), run.pipeline, run.engine, run.uid, run.n
     fs, m, floor = p.fs, p.fs.budget.min_oversized(), search_floor(p) if floor is None else floor
     found = atoms(p, run.columns())
     f = min(1.0, records / max(n, 1))
     u, l, r = q(uid), q(run.l), q(run.r)
     ok = reachable(run, floor)
     cols = list(dict.fromkeys(a.column for a in found))
-    con.execute(f"CREATE OR REPLACE TABLE er_kl_r AS SELECT {u}, {', '.join(map(q, cols))} FROM records SEMI JOIN er_kl_ok USING ({u})")  # narrow
-    con.execute(f"CREATE OR REPLACE TABLE er_kl_s AS SELECT {u} FROM er_kl_r WHERE hash({u}) % 1000000000 < {int(f * 1e9)}")
-    con.execute("CREATE OR REPLACE TABLE er_kl_p (l VARCHAR, r VARCHAR); CREATE OR REPLACE TABLE er_kl_q (l VARCHAR, r VARCHAR)")
+    engine.run(f"CREATE OR REPLACE TABLE er_kl_r AS SELECT {u}, {', '.join(map(q, cols))} FROM records SEMI JOIN er_kl_ok USING ({u})")  # narrow
+    engine.run(f"CREATE OR REPLACE TABLE er_kl_s AS SELECT {u} FROM er_kl_r WHERE hash({u}) % 1000000000 < {int(f * 1e9)}")
+    engine.run("CREATE OR REPLACE TABLE er_kl_p (l VARCHAR, r VARCHAR); CREATE OR REPLACE TABLE er_kl_q (l VARCHAR, r VARCHAR)")
     def bounded() -> None:  # the pairs listed so far, distinct, only those that can reach 0 (the run's two-stage bound): one pass, not one per atom
-        con.execute(f"INSERT INTO er_kl_p SELECT l, r FROM ({run._reaching('SELECT DISTINCT l, r FROM er_kl_q')}); DELETE FROM er_kl_q")
+        engine.run(f"INSERT INTO er_kl_p SELECT l, r FROM ({run._reaching('SELECT DISTINCT l, r FROM er_kl_q')}); DELETE FROM er_kl_q")
     def pair(a: str, b: str, rest: str) -> None:  # the pairs drawn, bounded KEEP_SLICE at a time
-        con.execute(f"INSERT INTO er_kl_q SELECT least({a}, {b}) AS l, greatest({a}, {b}) AS r FROM {rest}")
+        engine.run(f"INSERT INTO er_kl_q SELECT least({a}, {b}) AS l, greatest({a}, {b}) AS r FROM {rest}")
         if run._count("er_kl_q") >= KEEP_SLICE:
             bounded()
     eq = [a for a in found if not a.edits]
     crowd = {}  # each atom's values held by m records or more: its oversized blocks
     for i, a in enumerate(eq):
-        con.execute(f"CREATE OR REPLACE TABLE er_kl_c{i} AS SELECT {q(a.column)} FROM er_kl_r WHERE {q(a.column)} IS NOT NULL GROUP BY 1 HAVING count(*) >= {m}")
+        engine.run(f"CREATE OR REPLACE TABLE er_kl_c{i} AS SELECT {q(a.column)} FROM er_kl_r WHERE {q(a.column)} IS NOT NULL GROUP BY 1 HAVING count(*) >= {m}")
         if run._count(f"er_kl_c{i}"):
             crowd[a.column] = f"er_kl_c{i}"
 
@@ -122,24 +122,24 @@ def discover(run, records: int, floor: float | None = None) -> Found:
     took["equal"], t = time.perf_counter() - t, time.perf_counter()
     for a, b in itertools.combinations([a for a in eq if a.column in crowd], 2):  # both with blocks too big alone: the records equal on both (an atom with normal ones drew them)
         x, y = q(a.column), q(b.column)
-        con.execute(f"CREATE OR REPLACE TEMP VIEW er_kl_two AS SELECT {u}, {x}, {y} FROM er_kl_r WHERE {x} IN (SELECT * FROM {crowd[a.column]}) AND {y} IN (SELECT * FROM {crowd[b.column]})")
+        engine.run(f"CREATE OR REPLACE TEMP VIEW er_kl_two AS SELECT {u}, {x}, {y} FROM er_kl_r WHERE {x} IN (SELECT * FROM {crowd[a.column]}) AND {y} IN (SELECT * FROM {crowd[b.column]})")
         through([a.column, b.column], "er_kl_two")  # in both crowds: the only records such a pair can hold
     took["two equal"], t = time.perf_counter() - t, time.perf_counter()
     near_of = {}  # each column's farthest near atom: PassJoin draws its values of 2(k + 1) characters or more
     for a in found:
         near_of[a.column] = max(near_of.get(a.column, 0), a.edits)
-    rec = Records("er_kl_r", uid, con)
+    rec = Records("er_kl_r", uid, engine)
     rec.most = m
     for a in (a for a in found if a.edits):
         k = q(a.column)
         if a.edits == 1:  # sharing a one-deletion key, in a normal deletion block; where PassJoin draws the long values, the short ones only
             far = near_of[a.column]
             if far >= 2:
-                con.execute(f"CREATE OR REPLACE TEMP VIEW er_kl_short AS SELECT * FROM er_kl_r WHERE length({k}) <= {2 * (far + 1)}")
+                engine.run(f"CREATE OR REPLACE TEMP VIEW er_kl_short AS SELECT * FROM er_kl_r WHERE length({k}) <= {2 * (far + 1)}")
             src, dk = "er_kl_r" if far < 2 else "er_kl_short", f"unnest({deletions_sql(k)}) AS __dk"
             # the sampled records' deletion keys, then every record's rows of those keys alone: a block no sampled record is in
             # is never made, so memory follows the sample, not every record's L deletions of L characters
-            con.execute(f"""CREATE OR REPLACE TEMP TABLE er_kl_x AS SELECT {u}, {dk} FROM {src} WHERE {k} IS NOT NULL AND {u} IN (SELECT {u} FROM er_kl_s);
+            engine.run(f"""CREATE OR REPLACE TEMP TABLE er_kl_x AS SELECT {u}, {dk} FROM {src} WHERE {k} IS NOT NULL AND {u} IN (SELECT {u} FROM er_kl_s);
                 CREATE OR REPLACE TEMP TABLE er_kl_y AS SELECT * FROM (SELECT {u}, {dk} FROM {src} WHERE {k} IS NOT NULL) WHERE __dk IN (SELECT __dk FROM er_kl_x)""")
             pair('x.' + u, 'y.' + u, f"""(SELECT * FROM er_kl_x WHERE __dk IN (SELECT __dk FROM er_kl_y GROUP BY 1 HAVING count(*) < {m})) x
                 JOIN er_kl_y y ON x.__dk = y.__dk AND x.{u} <> y.{u}""")
@@ -154,22 +154,22 @@ def discover(run, records: int, floor: float | None = None) -> Found:
     bounded()
     took["bound"] = time.perf_counter() - t
     alone = "" if fs.bridge else f" AND {run._alone(f'a.{u}', f'b.{u}')}"  # without bridging, two rule entities are never compared: the probe counts those pairs
-    con.execute(f"""CREATE OR REPLACE TABLE er_kl_d AS SELECT DISTINCT p.l AS {l}, p.r AS {r} FROM er_kl_p p JOIN rule_clusters a ON a.{u} = p.l
+    engine.run(f"""CREATE OR REPLACE TABLE er_kl_d AS SELECT DISTINCT p.l AS {l}, p.r AS {r} FROM er_kl_p p JOIN rule_clusters a ON a.{u} = p.l
         JOIN rule_clusters b ON b.{u} = p.r WHERE a.cluster_id <> b.cluster_id{alone}""")  # a pair inside one rule cluster is the rules'
     drawn, t_drawn = run._count("er_kl_d"), time.perf_counter()
-    score_fs(run.scoring, "records", "er_kl_d", run.con, uid, into="er_kl_t", n_records=n, floor=floor, bound=bound_tests(fs.model))
-    con.execute(f"DELETE FROM er_kl_t WHERE match_weight < {floor}")
-    targets = con.execute(f"""SELECT t.{l}, t.{r}, t.match_weight,
+    score_fs(run.scoring, "records", "er_kl_d", run.engine, uid, into="er_kl_t", n_records=n, floor=floor, bound=bound_tests(fs.model))
+    engine.run(f"DELETE FROM er_kl_t WHERE match_weight < {floor}")
+    targets = engine.frame(f"""SELECT t.{l}, t.{r}, t.match_weight,
         {', '.join(f'a.{q(a.column)} AS {q("a" + str(i))}, b.{q(a.column)} AS {q("b" + str(i))}' for i, a in enumerate(found))}
-        FROM er_kl_t t JOIN records a ON a.{u} = t.{l} JOIN records b ON b.{u} = t.{r} ORDER BY 1, 2""").df()
+        FROM er_kl_t t JOIN records a ON a.{u} = t.{l} JOIN records b ON b.{u} = t.{r} ORDER BY 1, 2""")
     targets = listed_by(run, targets)
-    con.execute("DROP VIEW IF EXISTS er_kl_two; DROP VIEW IF EXISTS er_kl_short; " + "; ".join(f"DROP TABLE IF EXISTS {x}" for x in ("er_kl_s", "er_kl_p", "er_kl_q", "er_kl_d", "er_kl_t", "er_kl_x", "er_kl_y", "er_kl_r", "er_kl_ok", *crowd.values()))
+    engine.run("DROP VIEW IF EXISTS er_kl_two; DROP VIEW IF EXISTS er_kl_short; " + "; ".join(f"DROP TABLE IF EXISTS {x}" for x in ("er_kl_s", "er_kl_p", "er_kl_q", "er_kl_d", "er_kl_t", "er_kl_x", "er_kl_y", "er_kl_r", "er_kl_ok", *crowd.values()))
                 + "; " + "; ".join(f"DROP TABLE IF EXISTS er_kl_c{i}" for i in range(len(eq))))
     weight = 1 / (1 - (1 - f) ** 2)
     facts = dict(atoms=[a.name for a in found], share=round(f, 4), sampled_records=round(f * n), reachable=ok, drawn=drawn, targets=len(targets),
                  estimated=round(len(targets) * weight), draw_seconds=round(t_drawn - t0, 2), score_seconds=round(time.perf_counter() - t_drawn, 2),
                  drawn_seconds={k: round(v, 2) for k, v in took.items()})
-    full = Records("records", uid, con)
+    full = Records("records", uid, engine)
     full.most = m
     return Found(found, targets, weight, facts, full)
 
@@ -177,16 +177,16 @@ def discover(run, records: int, floor: float | None = None) -> Found:
 def listed_by(run, targets: pd.DataFrame) -> pd.DataFrame:
     """The targets with `listed` (a key listed the pair or a rule kept it), `ruled` (a rule kept it) and `sources` (the keys that
     did, as candidates names them), from the run's candidates and rules' edges as they stand: none listed before the candidates step."""
-    con, l, r = run.con, q(run.l), q(run.r)
-    have = {t for (t,) in con.execute("SELECT table_name FROM duckdb_tables()").fetchall()}
-    con.register("er_kl_tg", targets[[run.l, run.r]])
+    engine, l, r = run.engine, q(run.l), q(run.r)
+    have = {t for (t,) in engine.rows("SELECT table_name FROM duckdb_tables()")}
+    engine.register("er_kl_tg", targets[[run.l, run.r]])
     try:
         cands = f"(SELECT {l}, {r}, sources FROM cands)" if "cands" in have else f"(SELECT NULL::VARCHAR AS {l}, NULL::VARCHAR AS {r}, NULL::VARCHAR AS sources WHERE FALSE)"
         rules = f"EXISTS (SELECT 1 FROM rule_kept e WHERE e.{l} = t.{l} AND e.{r} = t.{r})" if "rule_kept" in have else "FALSE"  # the pairs the rules kept: one found and dropped is no one's
-        got = con.execute(f"""SELECT c.sources, {rules} AS ruled, c.{l} IS NOT NULL OR {rules} AS listed FROM er_kl_tg t LEFT JOIN {cands} c USING ({l}, {r})
-            ORDER BY t.{l}, t.{r}""").df()
+        got = engine.frame(f"""SELECT c.sources, {rules} AS ruled, c.{l} IS NOT NULL OR {rules} AS listed FROM er_kl_tg t LEFT JOIN {cands} c USING ({l}, {r})
+            ORDER BY t.{l}, t.{r}""")
     finally:
-        con.unregister("er_kl_tg")
+        engine.unregister("er_kl_tg")
     return targets.assign(listed=got["listed"].astype(bool).to_numpy(), ruled=got["ruled"].astype(bool).to_numpy(), sources=got["sources"].to_numpy())
 
 

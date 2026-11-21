@@ -8,6 +8,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
+from er.engine.duckdb import DuckDB
 from er.config import InputError
 
 
@@ -20,19 +21,19 @@ def test_a_sorted_window_places_the_record_as_the_run_s_window_does_at_either_en
     for n in (1, 5, 1024, 1025, 1500, 2049):
         stored = [(f"k{rng.integers(0, n // 3 + 2):05d}", f"r{i:05d}") for i in range(n)]  # many equal keys: the ID orders them
         later = rng.random(n) < 0.1  # added since the index was built: the window of both
-        con = duckdb.connect()
+        engine = DuckDB(duckdb.connect())
         for db, part in (("ix", [r for r, x in zip(stored, later) if not x]), ("dx", [r for r, x in zip(stored, later) if x])):
-            con.execute(f"ATTACH ':memory:' AS {db}")
-            con.register("src", pd.DataFrame(part, columns=["k", "uid"], dtype="string"))
-            con.execute(f"CREATE TABLE {db}.g0 AS SELECT row_number() OVER (ORDER BY k, uid) AS pos, k AS key, uid FROM src ORDER BY pos")
-            con.execute(f"CREATE TABLE {db}.g0_sparse AS SELECT pos, key, uid FROM {db}.g0 WHERE (pos - 1) % {index.SPARSE} = 0 ORDER BY pos")
-            con.unregister("src")
+            engine.run(f"ATTACH ':memory:' AS {db}")
+            engine.register("src", pd.DataFrame(part, columns=["k", "uid"], dtype="string"))
+            engine.run(f"CREATE TABLE {db}.g0 AS SELECT row_number() OVER (ORDER BY k, uid) AS pos, k AS key, uid FROM src ORDER BY pos")
+            engine.run(f"CREATE TABLE {db}.g0_sparse AS SELECT pos, key, uid FROM {db}.g0 WHERE (pos - 1) % {index.SPARSE} = 0 ORDER BY pos")
+            engine.unregister("src")
         order = sorted(stored)
         for key, me in [("a", "q"), ("zzz", "q"), (order[0][0], "q"), (order[-1][0], "q"), (order[n // 2][0], "r99999"), *order[:3], order[-1]]:
             rest = [r for r in order if r[1] != me]  # a stored record looked up as new: the window as if it weren't there
             at = sum(r < (key, me) for r in rest)
             want = [u for _, u in rest[max(0, at - 3):at] + rest[at:at + 3]]
-            assert index._window(con, "g0", x, me, key) == want, (n, key, me)
+            assert index._window(engine, "g0", x, me, key) == want, (n, key, me)
 
 
 def answers(ws, s, p, asks: list[tuple[dict | None, str | None]]) -> list[dict]:  # what each lookup answers, all of it but its time
@@ -49,7 +50,7 @@ def test_a_lookup_lists_and_scores_the_pairs_an_increment_of_the_record_would_an
     from er.candidates import candidates
     from er.match import review_floor, score_fs
     from er.explain import run_model
-    from er.strings import connect
+    from er.engine.duckdb import connect
     s, p, g = population
     uid, rng = s.data.unique_id, np.random.default_rng(0)
     df = g.df.copy()
@@ -73,48 +74,48 @@ def test_a_lookup_lists_and_scores_the_pairs_an_increment_of_the_record_would_an
     gated = 0
     for _, rec in df[held].head(12).iterrows():
         values = {c: rec[c] for c in sources if c in rec and pd.notna(rec[c])}
-        con = connect(s2.compute)
-        index._attach(con, ws, m)
-        query = index._query(con, s2, fitted, values, None, index._classifier(ws, s2, fitted, m)).assign(**{uid: rec[uid]})  # prepared as the lookup prepares it, under its own ID
-        con.register("er_q", query)
-        con.execute("CREATE TEMP TABLE qry AS SELECT * FROM er_q")
-        found, checked = index._candidates(con, fitted, uid, rec[uid])
-        found = {**found, **index._gate(con, fitted, model, uid, rec[uid], found, checked, m["records"])}
-        mine = index._scored(con, model, uid, rec[uid], sorted(found), m["records"] + 1)
+        engine = connect(s2.compute)
+        index._attach(engine, ws, m)
+        query = index._query(engine, s2, fitted, values, None, index._classifier(ws, s2, fitted, m)).assign(**{uid: rec[uid]})  # prepared as the lookup prepares it, under its own ID
+        engine.register("er_q", query)
+        engine.run("CREATE TEMP TABLE qry AS SELECT * FROM er_q")
+        found, checked = index._candidates(engine, fitted, uid, rec[uid])
+        found = {**found, **index._gate(engine, fitted, model, uid, rec[uid], found, checked, m["records"])}
+        mine = index._scored(engine, model, uid, rec[uid], sorted(found), m["records"] + 1)
         gated += sum(len(c.get("big", ())) for c in checked)
         both = pd.concat([stored, query], ignore_index=True).astype({uid: "string"})  # the batch path: the record against all, as an increment of it alone
-        con.register("er_all", both)
-        con.execute("CREATE TABLE records AS SELECT * FROM er_all")
-        con.execute(f"CREATE TABLE new_ids AS SELECT '{rec[uid]}' AS \"{uid}\"")
-        gate = lambda pairs: score_fs(model, "records", pairs, con, uid, into="er_gate", n_records=len(both))
-        candidates(fitted.fs.blockers, "records", uid, "new_ids", fitted.fs.budget, con=con, into="cands", touching=True, gate=gate, floor=review_floor(fitted))
-        score_fs(model, "records", "cands", con, uid, into="scores", n_records=len(both))
-        ref = dict(con.execute(f"""SELECT CASE WHEN "{uid}_l" = '{rec[uid]}' THEN "{uid}_r" ELSE "{uid}_l" END, match_weight FROM scores""").fetchall())
-        con.close()
+        engine.register("er_all", both)
+        engine.run("CREATE TABLE records AS SELECT * FROM er_all")
+        engine.run(f"CREATE TABLE new_ids AS SELECT '{rec[uid]}' AS \"{uid}\"")
+        gate = lambda pairs: score_fs(model, "records", pairs, engine, uid, into="er_gate", n_records=len(both))
+        candidates(fitted.fs.blockers, "records", uid, "new_ids", fitted.fs.budget, engine=engine, into="cands", touching=True, gate=gate, floor=review_floor(fitted))
+        score_fs(model, "records", "cands", engine, uid, into="scores", n_records=len(both))
+        ref = dict(engine.rows(f"""SELECT CASE WHEN "{uid}_l" = '{rec[uid]}' THEN "{uid}_r" ELSE "{uid}_l" END, match_weight FROM scores"""))
+        engine.close()
         got = dict(zip(mine["uid"], mine["weight"]))
         assert set(got) == set(ref), rec[uid]  # no pair missed, none added
         assert all(abs(got[k] - ref[k]) < 1e-9 for k in ref), rec[uid]  # each scored alike
     assert gated  # some records fell in a block too big: gated as the run gates it
 
-    con = connect(s2.compute)  # stored records looked up as new: the batch path with each already among the records, once
-    index._attach(con, ws, m)
-    con.register("er_stored", stored.astype({uid: "string"}))
-    con.execute("CREATE TABLE records AS SELECT * FROM er_stored")
+    engine = connect(s2.compute)  # stored records looked up as new: the batch path with each already among the records, once
+    index._attach(engine, ws, m)
+    engine.register("er_stored", stored.astype({uid: "string"}))
+    engine.run("CREATE TABLE records AS SELECT * FROM er_stored")
     for rid in [*stored.loc[crowd[~held], uid].head(3), *stored[uid].head(2)]:
-        query = con.execute(f"SELECT * EXCLUDE (h, entity, resolved) FROM ixr.records WHERE \"{uid}\" = ?", [rid]).df().astype("string")
-        con.register("er_q", query)
-        con.execute("CREATE OR REPLACE TEMP TABLE qry AS SELECT * FROM er_q")
-        found, checked = index._candidates(con, fitted, uid, rid, 0)
-        found = {**found, **index._gate(con, fitted, model, uid, rid, found, checked, m["records"])}
-        mine = index._scored(con, model, uid, rid, sorted(found), m["records"])
-        con.execute(f"CREATE OR REPLACE TABLE new_ids AS SELECT '{rid}' AS \"{uid}\"")
-        gate = lambda pairs: score_fs(model, "records", pairs, con, uid, into="er_gate", n_records=m["records"])
-        candidates(fitted.fs.blockers, "records", uid, "new_ids", fitted.fs.budget, con=con, into="cands", touching=True, gate=gate, floor=review_floor(fitted))
-        score_fs(model, "records", "cands", con, uid, into="scores", n_records=m["records"])
-        ref = dict(con.execute(f"""SELECT CASE WHEN "{uid}_l" = '{rid}' THEN "{uid}_r" ELSE "{uid}_l" END, match_weight FROM scores""").fetchall())
+        query = engine.frame(f"SELECT * EXCLUDE (h, entity, resolved) FROM ixr.records WHERE \"{uid}\" = ?", [rid]).astype("string")
+        engine.register("er_q", query)
+        engine.run("CREATE OR REPLACE TEMP TABLE qry AS SELECT * FROM er_q")
+        found, checked = index._candidates(engine, fitted, uid, rid, 0)
+        found = {**found, **index._gate(engine, fitted, model, uid, rid, found, checked, m["records"])}
+        mine = index._scored(engine, model, uid, rid, sorted(found), m["records"])
+        engine.run(f"CREATE OR REPLACE TABLE new_ids AS SELECT '{rid}' AS \"{uid}\"")
+        gate = lambda pairs: score_fs(model, "records", pairs, engine, uid, into="er_gate", n_records=m["records"])
+        candidates(fitted.fs.blockers, "records", uid, "new_ids", fitted.fs.budget, engine=engine, into="cands", touching=True, gate=gate, floor=review_floor(fitted))
+        score_fs(model, "records", "cands", engine, uid, into="scores", n_records=m["records"])
+        ref = dict(engine.rows(f"""SELECT CASE WHEN "{uid}_l" = '{rid}' THEN "{uid}_r" ELSE "{uid}_l" END, match_weight FROM scores"""))
         got = dict(zip(mine["uid"], mine["weight"]))
         assert set(got) == set(ref) and all(abs(got[k] - ref[k]) < 1e-9 for k in ref), rid
-    con.close()
+    engine.close()
 
     rec = df[held].iloc[0]
     said = cli.match_record({"workspace": str(ws), "values": [f"{c}={rec[c]}" for c in ("FULL_NAME_KANA", "PHONE_NUM_4") if pd.notna(rec[c])],

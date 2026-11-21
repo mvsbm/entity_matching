@@ -21,7 +21,7 @@ import pandas as pd
 
 from er.config import InputError, KindSpec, Standardization, legal_pattern
 from er.standardize import normalize
-from er.strings import connect
+from er.engine.duckdb import connect
 
 VERSION = 2  # of the name model's training: a change here trains it again
 
@@ -44,10 +44,10 @@ class NameModel:
 
     def __init__(self, terms: list[str], coef: np.ndarray, intercept: float, ngram: int, compute: dict | None = None):
         self.terms, self.coef, self.intercept, self.ngram, self.compute = terms, coef, intercept, ngram, compute
-        self.con = connect(compute)  # the run's limits: it scores every chunk's names
-        self.con.register("er_weights", pd.DataFrame({"term": terms, "w": coef}))
-        self.con.execute("CREATE TABLE weights AS SELECT * FROM er_weights")
-        self.con.unregister("er_weights")
+        self.engine = connect(compute)  # the run's limits: it scores every chunk's names
+        self.engine.register("er_weights", pd.DataFrame({"term": terms, "w": coef}))
+        self.engine.run("CREATE TABLE weights AS SELECT * FROM er_weights")
+        self.engine.unregister("er_weights")
 
     def __reduce__(self) -> tuple:  # sent to a process cleaning chunks beside others (er.run's load): built again there, on one thread
         return NameModel, (self.terms, self.coef, self.intercept, self.ngram, {**(self.compute or {}), "threads": "1"})
@@ -65,11 +65,11 @@ class NameModel:
         out = np.where(has, self.intercept, np.nan)
         if has.any():  # lower case and each n-gram once, as the vectorizer that trained it counts them; each distinct name once
             codes, names = pd.factorize(texts[has].str.lower())
-            self.con.register("er_names", pd.DataFrame({"r": np.arange(len(names)), "t": np.asarray(names, dtype=object)}))
-            sums = self.con.execute(f"""SELECT r, sum(w ORDER BY term) AS s FROM (SELECT DISTINCT r, substr(t, i, n) AS term FROM
+            self.engine.register("er_names", pd.DataFrame({"r": np.arange(len(names)), "t": np.asarray(names, dtype=object)}))
+            sums = self.engine.numpy(f"""SELECT r, sum(w ORDER BY term) AS s FROM (SELECT DISTINCT r, substr(t, i, n) AS term FROM
                 (SELECT r, t, n, unnest(range(1, length(t) - n + 2)) AS i FROM er_names, (SELECT unnest(range(1, {self.ngram} + 1)) AS n)))
-                JOIN weights USING (term) GROUP BY r""").fetchnumpy()
-            self.con.unregister("er_names")
+                JOIN weights USING (term) GROUP BY r""")
+            self.engine.unregister("er_names")
             each = np.zeros(len(names))
             each[sums["r"]] = sums["s"]  # summed in term order: the same bits every run
             out[np.flatnonzero(has)] += each[codes]

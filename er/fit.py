@@ -23,8 +23,8 @@ import re
 import statistics
 from dataclasses import dataclass
 
-import duckdb
 
+from er.engine.engine import Engine
 from er.config import InputError, q
 
 START_M = 0.95           # Splink's first guess of m for a comparison's first level
@@ -35,17 +35,17 @@ Level = tuple[str, str]  # (comparison, level label)
 Gamma = tuple[str, int]  # (comparison, the level's gamma)
 
 
-def prior(con: duckdb.DuckDBPyConnection, records: str, rules: list[str], uid: str, recall: float) -> float:
+def prior(engine: Engine, records: str, rules: list[str], uid: str, recall: float) -> float:
     """λ: the pairs any of these rules find (SQL over l and r), counted once each, divided by the share of all
     matches they are thought to find (recall), over every pair of the records. O(n + P) per rule."""
     u = q(uid)
-    n = con.execute(f"SELECT count(*) FROM {records}").fetchall()[0][0]
+    n = engine.value(f"SELECT count(*) FROM {records}")
     every = int(n * (n - 1) / 2)
     found = 0
     for i, rule in enumerate(rules):  # each rule's pairs that no earlier rule found
         earlier = " OR ".join(f"coalesce(({r}), false)" for r in rules[:i])
         new = f" AND NOT ({earlier})" if earlier else ""
-        found += con.execute(f"SELECT count(*) FROM {records} l JOIN {records} r ON ({rule}) AND l.{u} < r.{u}{new}").fetchall()[0][0]
+        found += engine.value(f"SELECT count(*) FROM {records} l JOIN {records} r ON ({rule}) AND l.{u} < r.{u}{new}")
     if found > every * recall:
         raise InputError(f"the near-certain rules find {found:,} of the {every:,} pairs, more than a recall of {recall} allows "
                          f"(at least {found / every:,.2f})", fix="raise [model] prior_recall, or make the prior rules stricter")
@@ -120,18 +120,18 @@ def _odds(p: float) -> float:
     return p / (1 - p) if p != 1 else math.inf
 
 
-def _patterns(con: duckdb.DuckDBPyConnection, records: str, pairs_on: str, uid: str, comparisons: list[dict]) -> list[tuple]:
+def _patterns(engine: Engine, records: str, pairs_on: str, uid: str, comparisons: list[dict]) -> list[tuple]:
     """Each pattern of gammas the pairs show (pairs_on: SQL over l and r; each pair once), with its count, in order."""
     u = q(uid)
     cols = sorted(set().union(*(columns(c) for c in comparisons)))
     sides = ", ".join(f"l.{q(x)} AS {q(x + '_l')}, r.{q(x)} AS {q(x + '_r')}" for x in cols)
     gammas = [f"CASE {' '.join(f'ELSE {g}' if lv['sql_condition'].strip().upper() == 'ELSE' else f'WHEN {lv['sql_condition']} THEN {g}' for g, lv in ladder)} END"
               for _, ladder in numbered(comparisons)]
-    return con.execute(f"""SELECT {', '.join(gammas)}, count(*) FROM (SELECT {sides} FROM {records} l JOIN {records} r
-        ON ({pairs_on}) AND l.{u} < r.{u}) GROUP BY ALL ORDER BY ALL""").fetchall()
+    return engine.rows(f"""SELECT {', '.join(gammas)}, count(*) FROM (SELECT {sides} FROM {records} l JOIN {records} r
+        ON ({pairs_on}) AND l.{u} < r.{u}) GROUP BY ALL ORDER BY ALL""")
 
 
-def session(con: duckdb.DuckDBPyConnection, records: str, settings: dict, pairs_on: str, keyed: set[str], uid: str,
+def session(engine: Engine, records: str, settings: dict, pairs_on: str, keyed: set[str], uid: str,
             lam: float, trained: Trained) -> Session:
     """One EM session on the pairs that share a key (pairs_on: SQL over l and r; keyed: the record columns it names).
     settings: the model's comparisons, each level with its u. O(P·K) for the patterns of P pairs and K comparisons,
@@ -152,7 +152,7 @@ def session(con: duckdb.DuckDBPyConnection, records: str, settings: dict, pairs_
     if not ladders:
         return Session(fixed=fixed, start=start, m={}, rounds=0)
 
-    patterns = _patterns(con, records, pairs_on, uid, [c for c, _ in ladders])
+    patterns = _patterns(engine, records, pairs_on, uid, [c for c, _ in ladders])
     if not patterns:
         raise InputError(f"no two records share {pairs_on}, the pairs an EM session learns from", fix="map those fields to filled columns")
     names = [c["output_column_name"] for c, _ in ladders]
@@ -192,11 +192,11 @@ def session(con: duckdb.DuckDBPyConnection, records: str, settings: dict, pairs_
     return Session(fixed=fixed, start=start, m={(key[0], label[key]): v for key, v in m.items() if v is not None}, rounds=rounds)
 
 
-def m_from_labels(con: duckdb.DuckDBPyConnection, records: str, settings: dict, label: str, uid: str) -> dict[Level, float]:
+def m_from_labels(engine: Engine, records: str, settings: dict, label: str, uid: str) -> dict[Level, float]:
     """m counted on the pairs of records with the same label (never a missing one): each level's share of a
     comparison's filled pairs. A level no pair reached is left out. O(P·K)."""
     out = {}
-    patterns = _patterns(con, records, f"l.{q(label)} = r.{q(label)}", uid, settings["comparisons"])
+    patterns = _patterns(engine, records, f"l.{q(label)} = r.{q(label)}", uid, settings["comparisons"])
     for i, (c, ladder) in enumerate(numbered(settings["comparisons"])):
         count: dict[int, int] = {}
         for *gammas, n in patterns:

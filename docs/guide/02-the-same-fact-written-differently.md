@@ -262,7 +262,7 @@ DuckDB, the database engine every run uses, has built-in similarity functions. T
 
 ### Solution: character-level versions of every function
 
-`er/strings.py` registers character-level versions of each function in DuckDB, built on the `rapidfuzz` library. They are named `cl_jaro_winkler`, `cl_levenshtein`, and so on. Every rule and every model level uses them. `connect()` checks them on every start, and so do the tests.
+`er/engine/duckdb.py` registers character-level versions of each function in DuckDB (`er/strings.py` lists them), built on the `rapidfuzz` library. They are named `cl_jaro_winkler`, `cl_levenshtein`, and so on. Every rule and every model level uses them. `connect()` checks them on every start, and so do the tests.
 
 ### Why it matters
 
@@ -274,7 +274,7 @@ The gap is not cosmetic. Our model treats Jaro–Winkler at or above 0.95 as "ve
 
 - `config/settings.toml`: `[locale]` (the folding table, legal forms, address rules, normalization chains) and `[columns]` (each field's source columns, and the NFKC and space removal of the name fields)
 - `er/standardize.py`: `normalize` (apply named normalizers), `prepare` (derive and normalize the columns a stage uses)
-- `er/strings.py`: `cl_*` functions, `connect()`
+- `er/strings.py`: the functions and their character-level scorers; `er/engine/duckdb.py`: the `cl_*` functions, `connect()`
 - `tests/test_scoring.py`: character-level and NULL-safe functions; the three address formats give one key
 
 ## Further reading

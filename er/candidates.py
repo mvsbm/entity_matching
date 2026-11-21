@@ -1,5 +1,5 @@
 """Candidate generation (blocking): which pairs are worth scoring, as SQL on a columnar engine (DuckDB). The records
-are a pandas frame (registered, zero-copy) or the name of a table in `con`, so the same code serves any size.
+are a pandas frame (registered, zero-copy) or the name of a table in `engine`, so the same code serves any size.
 Only pairs that touch a query record (one an earlier stage left unresolved) are produced, so leftovers can still join
 existing clusters. `query=None` makes every record a query; with `clusters`, pairs already inside one cluster are
 then dropped, so two clusters can join too.
@@ -23,24 +23,24 @@ import time
 import uuid
 from collections.abc import Callable, Iterable
 
-import duckdb
 import numpy as np
 import pandas as pd
 
+from er.engine.engine import Engine
 from er.config import Blocker, Budget, DeletionKeys, EditKeys, InputError, KeyBlocker, SortedNeighbourhood, TfidfNeighbours, keys_of, q
-from er.strings import connect
+from er.engine.duckdb import connect
 
-_CON: duckdb.DuckDBPyConnection | None = None  # for pandas input when the caller passes no connection
+_CON: Engine | None = None  # for pandas input when the caller passes no connection
 
 
 class Records:
-    """The records as a relation in `con`: a registered pandas frame or an existing table; `cluster` adds a column
+    """The records as a relation in `engine`: a registered pandas frame or an existing table; `cluster` adds a column
     holding each record's previous cluster, `query` a table of the query ids."""
 
-    def __init__(self, records: pd.DataFrame | str, uid: str, con: duckdb.DuckDBPyConnection | None = None,
+    def __init__(self, records: pd.DataFrame | str, uid: str, engine: Engine | None = None,
                  query: Iterable[str] | None = None, clusters: pd.Series | str | None = None, columns: Iterable[str] | None = None):
         global _CON
-        self.con = con or (_CON := _CON or connect())
+        self.engine = engine or (_CON := _CON or connect())
         self.uid, self.views = uid, []
         self.frame = records if isinstance(records, pd.DataFrame) else None
         base = self._view(records) if isinstance(records, pd.DataFrame) else q(records)
@@ -106,11 +106,11 @@ class Records:
                      f"(SELECT {w_}v, id, len, unnest(range(greatest({parts}, len - {k}), len + {k + 1})) AS l FROM {asked})))) "
                      f"WHERE p >= 1 AND p + sl - 1 <= length(v)")
             on = " AND ".join([*(f"a.{w} = c.{w}" for w in within), "a.l = c.l", "a.i = c.i", "a.s = c.s"])
-            ids = self.con.execute(f"""SELECT DISTINCT least(a.id, c.ix) AS a, greatest(a.id, c.ix) AS c
-                FROM ({index}) a JOIN ({probe_sql}) c ON {on} AND a.id <> c.ix""").fetchnumpy()
+            ids = self.engine.numpy(f"""SELECT DISTINCT least(a.id, c.ix) AS a, greatest(a.id, c.ix) AS c
+                FROM ({index}) a JOIN ({probe_sql}) c ON {on} AND a.id <> c.ix""")
             a, c = ids["a"].astype(np.int64), ids["c"].astype(np.int64)
             if len(a):
-                vs = np.array([None, *(v for v, in self.con.execute(f"SELECT v FROM {values} ORDER BY id").fetchall())], dtype=object)  # vs[id]
+                vs = np.array([None, *(v for v, in self.engine.rows(f"SELECT v FROM {values} ORDER BY id"))], dtype=object)  # vs[id]
                 d = np.concatenate([cpdist(vs[a[i:i + 1_000_000]].tolist(), vs[c[i:i + 1_000_000]].tolist(), scorer=Levenshtein.distance,
                                            score_cutoff=k, workers=-1) for i in range(0, len(a), 1_000_000)])
                 a, c = a[d <= k], c[d <= k]
@@ -123,19 +123,19 @@ class Records:
 
     def _view(self, df: pd.DataFrame) -> str:
         name = f"er_{uuid.uuid4().hex[:12]}"
-        self.con.register(name, df)
+        self.engine.register(name, df)
         self.views.append(("view", name))
         return name
 
     def _temp(self, sql: str) -> str:
         name = f"er_{uuid.uuid4().hex[:12]}"
-        self.con.execute(f"CREATE TEMP TABLE {name} AS {sql}")
+        self.engine.run(f"CREATE TEMP TABLE {name} AS {sql}")
         self.views.append(("table", name))
         return name
 
     def close(self, keep: frozenset[str] = frozenset()) -> None:  # every view and table made, but those kept: freed
         for kind, name in reversed([x for x in self.views if x[1] not in keep]):
-            self.con.unregister(name) if kind == "view" else self.con.execute(f"DROP TABLE IF EXISTS {name}")
+            self.engine.unregister(name) if kind == "view" else self.engine.run(f"DROP TABLE IF EXISTS {name}")
         self.views = [x for x in self.views if x[1] in keep]
 
     def asked(self, t: str) -> str:  # the query's rows of t
@@ -175,7 +175,7 @@ def oversized(b: Blocker, r: Records, from_records: int) -> str | None:
     asked = f" AND count(*) FILTER (WHERE {q(r.uid)} IN (SELECT {q(r.uid)} FROM {r.query})) > 0" if r.query else ""
     table = r._temp(f"""SELECT {', '.join(cols)}, count(*) AS __n, row_number() OVER () AS __b FROM {_rows(b, r)}
                        GROUP BY {', '.join(cols)} HAVING count(*) >= {from_records}{asked}""")
-    return table if r.con.execute(f"SELECT count(*) FROM {table}").fetchall()[0][0] else None
+    return table if r.engine.value(f"SELECT count(*) FROM {table}") else None
 
 
 def _in(cols: list[str], alias: str, blocks: str | None, keep: bool) -> str:  # is alias's block one of these blocks?
@@ -243,9 +243,9 @@ def _tfidf(b: TfidfNeighbours, r: Records) -> pd.DataFrame:  # N² by design: de
     from sklearn.feature_extraction.text import TfidfVectorizer
     from sklearn.neighbors import NearestNeighbors
     uid = r.uid
-    base = (r.frame if r.frame is not None else r.con.sql(f"SELECT * FROM {r.table}").df()).dropna(subset=[b.key.name])
+    base = (r.frame if r.frame is not None else r.engine.frame(f"SELECT * FROM {r.table}")).dropna(subset=[b.key.name])
     base = base[[uid, b.key.name]].sort_values(uid, kind="stable").reset_index(drop=True)  # by ID: the neighbours a tie gives don't follow the rows' order
-    query = set(r.con.sql(f"SELECT {q(uid)} FROM {r.query}").df()[uid]) if r.query else None
+    query = set(r.engine.frame(f"SELECT {q(uid)} FROM {r.query}")[uid]) if r.query else None
     qi = np.arange(len(base)) if query is None else np.flatnonzero(base[uid].isin(query).to_numpy())
     if not len(qi) or len(base) < 2:
         return pd.DataFrame({"l": pd.Series(dtype="string"), "r": pd.Series(dtype="string")})
@@ -259,7 +259,7 @@ def _tfidf(b: TfidfNeighbours, r: Records) -> pd.DataFrame:  # N² by design: de
     return out[out["l"] != out["r"]].drop_duplicates(ignore_index=True)
 
 
-def estimate(b: Blocker, records: pd.DataFrame | str, n_query: int, con: duckdb.DuckDBPyConnection | None = None,
+def estimate(b: Blocker, records: pd.DataFrame | str, n_query: int, engine: Engine | None = None,
              uid: str | None = None, oversized_from: int = 2**62, normal: bool = True) -> dict[str, object]:
     """Work before any join: candidate pairs (an upper bound) and the largest block, by group-by; and the blocks of
     `oversized_from` records or more: how many, their records and their pairs; and normal_pairs, those the join lists
@@ -267,44 +267,44 @@ def estimate(b: Blocker, records: pd.DataFrame | str, n_query: int, con: duckdb.
     m = oversized_from
     over = f"count(*) FILTER (WHERE c >= {m}), coalesce(sum(c) FILTER (WHERE c >= {m}), 0), coalesce(sum(c * (c - 1) // 2) FILTER (WHERE c >= {m}), 0)"
     none = dict(oversized_blocks=0, oversized_records=0, oversized_pairs=0)
-    r = records if isinstance(records, Records) else Records(records, uid or "", con)
-    t, n = r.table, r.con.execute(f"SELECT count(*) FROM {r.table}").fetchall()[0][0]
+    r = records if isinstance(records, Records) else Records(records, uid or "", engine)
+    t, n = r.table, r.engine.value(f"SELECT count(*) FROM {r.table}")
     try:
         match b:
             case KeyBlocker():
                 cols = ", ".join(q(k.name) for k in b.keys)
-                p, big, *o = r.con.execute(f"SELECT coalesce(sum(c * (c - 1) // 2), 0), coalesce(max(c), 0), {over} FROM "
-                                           f"(SELECT count(*) AS c FROM {t} WHERE {_filled(k.name for k in b.keys)} GROUP BY {cols})").fetchall()[0]
+                p, big, *o = r.engine.row(f"SELECT coalesce(sum(c * (c - 1) // 2), 0), coalesce(max(c), 0), {over} FROM "
+                                           f"(SELECT count(*) AS c FROM {t} WHERE {_filled(k.name for k in b.keys)} GROUP BY {cols})")
                 return dict(big_o="O(N + P)", filled=f"O({n:,} + {int(p):,})", est_pairs=int(p), largest_block=int(big), **dict(zip(none, map(int, o))),
                             normal_pairs=int(p) - int(o[2]))
             case SortedNeighbourhood():
-                m = r.con.execute(f"SELECT count({q(b.key.name)}) FROM {t}").fetchall()[0][0]
+                m = r.engine.value(f"SELECT count({q(b.key.name)}) FROM {t}")
                 return dict(big_o="O(N log N + N·w)", filled=f"O({m:,}·log {m:,} + {m:,}·{b.window})",
                             est_pairs=m * (b.window - 1), largest_block=b.window, **none, normal_pairs=m * (b.window - 1))
             case DeletionKeys():  # Σ C(k,2) over the key blocks, less the repeats: identical values share all their d keys
                 v, within = r.variants(b), [q(w.name) for w in b.within]
-                p, big, *o = r.con.execute(f"""
+                p, big, *o = r.engine.row(f"""
                     WITH blocks AS (SELECT count(*) AS c FROM {v} GROUP BY {', '.join(['__dk', *within])}),
                          same AS (SELECT count(*) AS c, count(DISTINCT __dk) AS d FROM {v} GROUP BY {', '.join(['__v', *within])}),
                          agg AS (SELECT coalesce(sum(c * (c - 1) // 2), 0) AS p, coalesce(max(c), 0) AS big, {over} FROM blocks)
-                    SELECT agg.p - (SELECT coalesce(sum((d - 1) * (c // d) * (c // d - 1) // 2), 0) FROM same), agg.* EXCLUDE (p) FROM agg""").fetchall()[0]
+                    SELECT agg.p - (SELECT coalesce(sum((d - 1) * (c // d) * (c // d - 1) // 2), 0) FROM same), agg.* EXCLUDE (p) FROM agg""")
                 pairs = int(p) if not o[0] else None
                 if o[0] and normal:  # the repeats taken off only where they are joined: a value's pairs once, if one of its d blocks is normal
                     keys = ", ".join(["__dk", *within])
-                    pairs = r.con.execute(f"""
+                    pairs = r.engine.value(f"""
                         WITH blocks AS (SELECT {keys}, count(*) AS __c FROM {v} GROUP BY {keys}),
                              same AS (SELECT count(*) AS __c, count(DISTINCT __dk) AS d, count(DISTINCT __dk) FILTER (WHERE b.__c < {m}) AS dn
                                       FROM {v} JOIN blocks b USING ({keys}) GROUP BY {', '.join(['__v', *within])})
                         SELECT (SELECT coalesce(sum(__c * (__c - 1) // 2) FILTER (WHERE __c < {m}), 0) FROM blocks)
-                             - (SELECT coalesce(sum(greatest(dn - 1, 0) * (__c // d) * (__c // d - 1) // 2), 0) FROM same)""").fetchall()[0][0]
+                             - (SELECT coalesce(sum(greatest(dn - 1, 0) * (__c // d) * (__c // d - 1) // 2), 0) FROM same)""")
                 return dict(big_o="O(N·L + P)", filled=f"O({n:,}·L + {int(p):,})", est_pairs=int(p), largest_block=int(big), **dict(zip(none, map(int, o))),
                             normal_pairs=pairs)
             case EditKeys():  # exactly the pairs it lists: its value pairs' records multiplied
                 r.most = min(r.most, oversized_from)
-                p = int(r.con.execute(f"SELECT coalesce(sum(nv * nx), 0) FROM {r.near_values(b, r.most)}").fetchall()[0][0])
+                p = int(r.engine.value(f"SELECT coalesce(sum(nv * nx), 0) FROM {r.near_values(b, r.most)}"))
                 return dict(big_o="O(U·k³ + S + P)", filled=f"O({n:,}·k³ + {p:,})", est_pairs=p, largest_block=0, **none, normal_pairs=p)
             case TfidfNeighbours():
-                m, length = r.con.execute(f"SELECT count({q(b.key.name)}), avg(length({q(b.key.name)})) FROM {t}").fetchall()[0]
+                m, length = r.engine.row(f"SELECT count({q(b.key.name)}), avg(length({q(b.key.name)})) FROM {t}")
                 per = (length or 0) * (b.ngram[1] - b.ngram[0] + 1)  # n-grams per record, roughly
                 return dict(big_o="O(N·L + U·N·q)", filled=f"O({m:,}·L + {n_query:,}·{m:,}·{per:.0f})",
                             est_pairs=n_query * b.k, largest_block=b.k + 1, **none, normal_pairs=n_query * b.k)
@@ -331,24 +331,24 @@ def estimate_touching(b: Blocker, r: Records) -> dict[str, object]:
             sql = (f"WITH k AS (SELECT DISTINCT {keys} FROM {_rows(b, r, asked=True)}), "
                    f"b AS (SELECT count(*) AS c, {asked} AS qn FROM {r.variants(b)} v JOIN k USING ({keys}) GROUP BY {keys}) {total}")
         case EditKeys():  # the batch's records' pairs, of the value pairs (an upper bound: both records of a pair may be old)
-            p = r.con.execute(f"SELECT count(*) FROM ({pairs_sql(b, r)})").fetchall()[0][0]
+            p = r.engine.value(f"SELECT count(*) FROM ({pairs_sql(b, r)})")
             return dict(big_o="O(U·k³ + S + Δ·b)", filled=f"O(N·k³ + {int(p):,})", est_pairs=int(p), largest_block=0)
         case SortedNeighbourhood():  # each query record pairs with up to window − 1 records on either side
-            m = r.con.execute(f"SELECT count({q(b.key.name)}) FROM {r.asked(t)}").fetchall()[0][0]
+            m = r.engine.value(f"SELECT count({q(b.key.name)}) FROM {r.asked(t)}")
             return dict(big_o="O(N log N + Δ·w)", filled=f"O(N log N + {m:,}·{b.window})", est_pairs=2 * m * (b.window - 1), largest_block=b.window)
         case _:
-            m = r.con.execute(f"SELECT count(*) FROM {r.query}").fetchall()[0][0]
+            m = r.engine.value(f"SELECT count(*) FROM {r.query}")
             return estimate(b, r, m)
-    p, big = r.con.execute(sql).fetchall()[0]
+    p, big = r.engine.row(sql)
     return dict(big_o="O(N + Δ·b)", filled=f"O(N + {int(p):,})", est_pairs=int(p), largest_block=int(big))
 
 
 def generate(b: Blocker, records: pd.DataFrame | str, uid: str, query: Iterable[str] | None,
-             con: duckdb.DuckDBPyConnection | None = None) -> pd.DataFrame:
+             engine: Engine | None = None) -> pd.DataFrame:
     """One generator's pairs, uid_l < uid_r, as pandas (small files and tests)."""
-    r = Records(records, uid, con, query)
+    r = Records(records, uid, engine, query)
     try:
-        out = _tfidf(b, r) if isinstance(b, TfidfNeighbours) else r.con.sql(pairs_sql(b, r)).df()
+        out = _tfidf(b, r) if isinstance(b, TfidfNeighbours) else r.engine.frame(pairs_sql(b, r))
     finally:
         r.close()
     return out.set_axis([f"{uid}_l", f"{uid}_r"], axis=1).astype("string")
@@ -360,13 +360,13 @@ def found_by(cands: pd.DataFrame, names: Iterable[str]) -> np.ndarray:  # the pa
 
 
 def candidates(blockers: tuple[Blocker, ...], records: pd.DataFrame | str, uid: str, query: Iterable[str] | str | None,
-               budget: Budget, clusters: pd.Series | str | None = None, con: duckdb.DuckDBPyConnection | None = None,
+               budget: Budget, clusters: pd.Series | str | None = None, engine: Engine | None = None,
                into: str | None = None, touching: bool = False, gate: Callable[[str], str] | None = None,
                floor: float = 0.0, capacity: int | None = None, told: Callable[..., None] | None = None,
                known: dict[str, dict] | None = None, keep: Callable[[str], str] | None = None,
                only: str | None = None) -> tuple[pd.DataFrame | str, pd.DataFrame]:
     """The union of all generators, with the generators that found each pair in `sources`, and a per-generator report.
-    With `into`, the union is written to that table in `con` and its name returned instead of a frame, so nothing of
+    With `into`, the union is written to that table in `engine` and its name returned instead of a frame, so nothing of
     size C reaches pandas. `touching` (an increment, with `query` the batch): the estimates count only the blocks the
     batch reaches. Oversized blocks (budget.min_oversized() records or more) are left out of each generator's join.
     With a `gate` (it scores a table of pairs, uid_l / uid_r, into a table it names, with match_weight), a sample of each such
@@ -386,11 +386,11 @@ def candidates(blockers: tuple[Blocker, ...], records: pd.DataFrame | str, uid: 
     if len(blockers) > 63:  # one bit per generator in a BIGINT
         raise InputError(f"{len(blockers)} candidate generators: a run takes at most 63", fix="add fewer name features: each adds its own")
     assert query is not None or not touching, "touching needs the batch as the query"
-    r = Records(records, uid, con, query, clusters, columns=[k.name for b in blockers for k in keys_of(b)])
+    r = Records(records, uid, engine, query, clusters, columns=[k.name for b in blockers for k in keys_of(b)])
     r.touching, r.most, r.only = touching, budget.min_oversized(), only
     l, rr = f"{uid}_l", f"{uid}_r"
     try:
-        n_query = r.con.execute(f"SELECT count(*) FROM {r.query or r.table}").fetchall()[0][0]
+        n_query = r.engine.value(f"SELECT count(*) FROM {r.query or r.table}")
         m = budget.min_oversized()
         report, parts, big, pending = [], [], {}, {}
         listed = r._temp("SELECT NULL::UBIGINT AS h WHERE FALSE") if keep else None  # each listed pair's hash, before keep()
@@ -402,7 +402,7 @@ def candidates(blockers: tuple[Blocker, ...], records: pd.DataFrame | str, uid: 
             if isinstance(b, TfidfNeighbours):
                 pairs = _tfidf(b, r)
                 if r.cluster:  # TF-IDF is computed in Python, so the cluster filter is applied here
-                    cl = r.con.sql(f"SELECT {q(uid)}, __cluster FROM {r.table}").df().set_index(uid)["__cluster"]
+                    cl = r.engine.frame(f"SELECT {q(uid)}, __cluster FROM {r.table}").set_index(uid)["__cluster"]
                     pairs = pairs[pairs["l"].map(cl).to_numpy() != pairs["r"].map(cl).to_numpy()]
                 table, n = _kept(r, f"SELECT * FROM {r._view(pairs)}", keep, listed, pending)
             else:
@@ -421,17 +421,17 @@ def candidates(blockers: tuple[Blocker, ...], records: pd.DataFrame | str, uid: 
             report[i]["pairs"] += extra
         union = f"SELECT l, r, bit_or(bit) AS bits FROM ({' UNION ALL '.join(parts)}) GROUP BY l, r"
         bits = r._temp(union)
-        distinct = r.con.execute(f"SELECT count(DISTINCT h) FROM {listed}").fetchall()[0][0] if listed else None
+        distinct = r.engine.value(f"SELECT count(DISTINCT h) FROM {listed}") if listed else None
         r.close(keep=frozenset({bits}))  # the parts, blocks and samples the union was made of: freed before the result is written
         names = {m: "+".join(g.name for i, g in enumerate(blockers) if m >> i & 1)
-                 for (m,) in r.con.execute(f"SELECT DISTINCT bits FROM {bits}").fetchall()}
+                 for (m,) in r.engine.rows(f"SELECT DISTINCT bits FROM {bits}")}
         cases = " ".join(f"WHEN {m} THEN '{s}'" for m, s in names.items())
         out = f"SELECT l AS {q(l)}, r AS {q(rr)}, {f'CASE bits {cases} END' if cases else 'NULL::VARCHAR'} AS sources FROM {bits}"  # no pair: no case
         if into:  # unordered: whoever reads the table joins it or orders it
-            r.con.execute(f"CREATE OR REPLACE TABLE {q(into)} AS {out}")
+            r.engine.run(f"CREATE OR REPLACE TABLE {q(into)} AS {out}")
             result = into
         else:
-            result = r.con.sql(f"{out} ORDER BY l, r").df().astype("string")
+            result = r.engine.frame(f"{out} ORDER BY l, r").astype("string")
     finally:
         r.close()
     report = pd.DataFrame(report)
@@ -448,17 +448,17 @@ def _kept(r: Records, sql: str, keep: Callable[[str], str] | None, listed: str |
     pair's hash added to the table `listed`, then filtered KEEP_SLICE at a time, so the filter's join never holds more
     than a slice. With `pending`, a listing under a slice waits there for _bound, with the others: filtered then."""
     table = r._temp(f"SELECT * FROM ({sql}) WHERE {r.only}" if r.only else sql)
-    n = r.con.execute(f"SELECT count(*) FROM {table}").fetchall()[0][0]
+    n = r.engine.value(f"SELECT count(*) FROM {table}")
     if keep is None:
         return table, n
-    r.con.execute(f"INSERT INTO {listed} SELECT hash(l, r) FROM {table}")
+    r.engine.run(f"INSERT INTO {listed} SELECT hash(l, r) FROM {table}")
     if pending is not None and n < KEEP_SLICE:
         pending[table] = n
         return table, n
     out = r._temp(keep(f"SELECT l, r FROM {table} WHERE rowid < {KEEP_SLICE}"))
     for start in range(KEEP_SLICE, n, KEEP_SLICE):
-        r.con.execute(f"INSERT INTO {out} {keep(f'SELECT l, r FROM {table} WHERE rowid >= {start} AND rowid < {start + KEEP_SLICE}')}")
-    r.con.execute(f"DROP TABLE {table}")  # the listing: freed as soon as it is read
+        r.engine.run(f"INSERT INTO {out} {keep(f'SELECT l, r FROM {table} WHERE rowid >= {start} AND rowid < {start + KEEP_SLICE}')}")
+    r.engine.run(f"DROP TABLE {table}")  # the listing: freed as soon as it is read
     return out, n
 
 
@@ -469,13 +469,13 @@ def _bound(r: Records, pending: dict[str, int], keep: Callable[[str], str] | Non
     if not pending:
         return
     both = r._temp(" UNION ".join(f"SELECT l, r FROM {t}" for t in pending))
-    n = r.con.execute(f"SELECT count(*) FROM {both}").fetchall()[0][0]
+    n = r.engine.value(f"SELECT count(*) FROM {both}")
     out = r._temp(keep(f"SELECT l, r FROM {both} WHERE rowid < {KEEP_SLICE}"))
     for start in range(KEEP_SLICE, n, KEEP_SLICE):
-        r.con.execute(f"INSERT INTO {out} {keep(f'SELECT l, r FROM {both} WHERE rowid >= {start} AND rowid < {start + KEEP_SLICE}')}")
+        r.engine.run(f"INSERT INTO {out} {keep(f'SELECT l, r FROM {both} WHERE rowid >= {start} AND rowid < {start + KEEP_SLICE}')}")
     for t in pending:
-        r.con.execute(f"DELETE FROM {t} WHERE NOT EXISTS (SELECT 1 FROM {out} k WHERE k.l = {t}.l AND k.r = {t}.r)")
-    r.con.execute(f"DROP TABLE {both}; DROP TABLE {out}")
+        r.engine.run(f"DELETE FROM {t} WHERE NOT EXISTS (SELECT 1 FROM {out} k WHERE k.l = {t}.l AND k.r = {t}.r)")
+    r.engine.run(f"DROP TABLE {both}; DROP TABLE {out}")
     pending.clear()
 
 
@@ -485,8 +485,8 @@ def _gate(blockers: tuple[Blocker, ...], r: Records, big: dict[int, str], parts:
     """Decide each oversized block, and add the pairs of those kept to `parts`; returns the decisions and the pairs added
     per generator (as listed, before keep()). The pairs other keys listed are read from `listed` (their hashes) when
     keep() filtered them, else from `parts`. O(sampled pairs) to decide."""
-    info = pd.concat([r.con.execute(f"SELECT {i} AS g, __b AS b, __n AS records, concat_ws(' · ', {', '.join(block_cols(blockers[i]))}) AS value "
-                                    f"FROM {table}").df() for i, table in big.items()], ignore_index=True)
+    info = pd.concat([r.engine.frame(f"SELECT {i} AS g, __b AS b, __n AS records, concat_ws(' · ', {', '.join(block_cols(blockers[i]))}) AS value "
+                                    f"FROM {table}") for i, table in big.items()], ignore_index=True)
     info.insert(0, "generator", info["g"].map(lambda i: blockers[i].name))
     info["pairs"] = info["records"] * (info["records"] - 1) // 2
     if gate is None:
@@ -501,15 +501,15 @@ def _gate(blockers: tuple[Blocker, ...], r: Records, big: dict[int, str], parts:
             f"WHERE NOT EXISTS (SELECT 1 FROM {seen} x WHERE {same})" for i, table in big.items()))
         pairs = r._temp(f'SELECT DISTINCT l AS "{names[0]}", r AS "{names[1]}" FROM {sample}')  # scored in DuckDB, a slice at a time: never all at once through pandas
         scored = gate(pairs)
-        stats = r.con.execute(f"""SELECT s.g, s.b, count(*) AS sampled, max(w.w) AS best, count(*) FILTER (WHERE w.w >= {floor}) AS hits
+        stats = r.engine.frame(f"""SELECT s.g, s.b, count(*) AS sampled, max(w.w) AS best, count(*) FILTER (WHERE w.w >= {floor}) AS hits
                                   FROM {sample} s LEFT JOIN (SELECT "{names[0]}" AS l, "{names[1]}" AS r, match_weight AS w FROM {scored}) w USING (l, r)
-                                  GROUP BY 1, 2""").df()  # every sampled pair counted; the gate's scores hold only those that could reach the floor
-        r.con.execute(f"DROP TABLE IF EXISTS {scored}")
+                                  GROUP BY 1, 2""")  # every sampled pair counted; the gate's scores hold only those that could reach the floor
+        r.engine.run(f"DROP TABLE IF EXISTS {scored}")
         info = info.merge(stats, on=["g", "b"], how="left").fillna({"sampled": 0, "hits": 0})
         info["decision"] = np.where(info["hits"] > 0, "kept", np.where(info["sampled"] == 0, "skipped: other keys list its sampled pairs",
                                                                          "skipped: no sampled pair reaches the floor"))
         if capacity is not None:  # the highest-yield blocks first, while they fit
-            left = capacity - r.con.execute(f"SELECT count(*) FROM {seen}").fetchall()[0][0]
+            left = capacity - r.engine.value(f"SELECT count(*) FROM {seen}")
             for k in info[info["decision"] == "kept"].assign(y=lambda d: d["hits"] / d["sampled"]).sort_values(["y", "generator", "value"], ascending=[False, True, True]).index:  # ties in a fixed order: the same blocks every run
                 if info.at[k, "pairs"] > left:
                     info.at[k, "decision"] = "skipped: over capacity"

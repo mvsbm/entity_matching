@@ -195,7 +195,7 @@ class FSChooser:
     pipeline: Pipeline
     rules: RulesSpec                          # the rules stage as chosen: its results are this stage's starting point
     settings: Settings
-    con: duckdb.DuckDBPyConnection
+    engine: duckdb.DuckDBPyConnection
     changes: Mapping[str, Callable[[FSSpec], FSSpec]]
     decisions: tuple[tuple[str, str], ...]
     tune: FSTune
@@ -236,7 +236,7 @@ class FSChooser:
         uid = self.data.unique_id
         if (repr(spec.model), key) not in self.models:
             df = prepare(spec.standardize, records, spec.normalized(), spec.used())
-            self.models[repr(spec.model), key] = train_fs(spec.model, df, self.con, uid, labels=truth.set_index(uid)[self.data.entity_id])
+            self.models[repr(spec.model), key] = train_fs(spec.model, df, self.engine, uid, labels=truth.set_index(uid)[self.data.entity_id])
         return self.models[repr(spec.model), key]
 
     def run(self, spec: FSSpec, dataset: str) -> FSResult:  # model fitted on all of train
@@ -339,7 +339,7 @@ class FSChooser:
         plan = self.growth.loc[[b.name for b in f.blockers]].reset_index()
         assert plan["within_budget"].all(), f"over budget at {f.budget.target_rows:,} rows: {plan.loc[~plan['within_budget'], 'key'].tolist()}"
         cover = window_only(f, self.fit(f, self.train_records, self.train_truth, "train"), self.train_records, self.train_truth,
-                            self.con, self.data, [len(self.train_records), f.budget.target_rows])
+                            self.engine, self.data, [len(self.train_records), f.budget.target_rows])
         assert cover["window_only"].eq(0).all(), "a potential match is left to a sorted window, whose reach shrinks as the file grows"
         patterns = pattern_coverage(f, self.fit(f, self.train_records, self.train_truth, "train"), f.budget.target_rows)
         text = (f"{len(patterns)} patterns that can reach the threshold at {f.budget.target_rows:,} records have no guaranteed key; "

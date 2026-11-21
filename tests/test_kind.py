@@ -86,7 +86,7 @@ def test_the_engine_calls_what_it_is_sure_of_the_flag_the_rest_and_a_person_comp
     firm[[uid, "NAME_KANA", "PERSON_ORG_CODE"]] = ["9" * len(home[uid]), "カブシキガイシャテスト", "2"]
     pd.concat([g.df, firm.to_frame().T.astype(g.df.dtypes)], ignore_index=True).to_parquet(tmp_path / "all.parquet", index=False)
     run = Run(replace(p, fs=replace(p.fs, min_match_weight=4.0)), s).full(tmp_path / "all.parquet", tmp_path / "run")
-    rec = run.con.sql(f'SELECT "{uid}", person_name, company_name, kind, name_p, kind_flag, kind_flagged FROM records').df().set_index(uid)
+    rec = run.engine.frame(f'SELECT "{uid}", person_name, company_name, kind, name_p, kind_flag, kind_flagged FROM records').set_index(uid)
     assert rec.loc[firm[uid], "kind"] == 2 and pd.isna(rec.loc[firm[uid], "person_name"]) and rec.loc[firm[uid], "company_name"] == "カブシキガイシャテスト"
     assert pd.notna(rec.loc[home[uid], "person_name"]) and pd.isna(rec.loc[home[uid], "company_name"])
     named = rec[rec.index.isin(g.df[uid])].join(g.df.set_index(uid)["NAME_KANA"])
@@ -100,7 +100,7 @@ def test_the_engine_calls_what_it_is_sure_of_the_flag_the_rest_and_a_person_comp
     assert (named["kind"].to_numpy() == np.where(sure > 0, sure, flag)).all() and set(named["kind"]) == {1, 2}  # a legal form or a sure name; else the flag
     assert (named["kind_flagged"].to_numpy() == ((sure > 0) & (flag > 0) & (sure != flag))).all() and named["kind_flagged"].any()  # sure against the flag
     pair = (home[uid], firm[uid])
-    assert run.con.execute(f'SELECT count(*) FROM matches WHERE "{l}" = ? AND "{r}" = ?', list(pair)).fetchall()[0][0] == 0
+    assert run.engine.value(f'SELECT count(*) FROM matches WHERE "{l}" = ? AND "{r}" = ?', list(pair)) == 0
     sheet = qa(run, [f for f in s.columns if f not in ("id", "entity")])["review_sheet"]
     assert sheet[(sheet[l] == pair[0]) & (sheet[r] == pair[1])]["why"].tolist() == ["decide"]
 
