@@ -14,6 +14,8 @@ import pandas as pd
 from er.candidates import KEEP_SLICE, Records, deletions_sql
 from er.config import EditKeys, Key, Pipeline, keys_of, q
 from er.match import DISTANCES, SIMILARITIES, _bits, _ranked, bound_tests, scaled_prior, search_floor, score_fs
+from er.steps.candidates import reaching
+from er.steps.rules import alone
 
 EDITS = 2  # a column compared by a similarity is an atom within one edit and within this many (PassJoin)
 
@@ -78,7 +80,7 @@ def reachable(run, floor: float, into: str = "er_kl_ok") -> int:
         if best > 0 and cols:
             terms.append(f"CASE WHEN {' OR '.join(f'{q(x)} IS NOT NULL' for x in cols)} THEN {best} ELSE 0 END")
     run.engine.run(f"CREATE OR REPLACE TABLE {into} AS SELECT {q(run.uid)} FROM records WHERE {math.log2(lam / (1 - lam))} + {' + '.join(terms) or '0'} >= {floor}")
-    return run._count(into)
+    return run.job.count(into)
 
 
 def discover(run, records: int, floor: float | None = None) -> Found:
@@ -99,16 +101,16 @@ def discover(run, records: int, floor: float | None = None) -> Found:
     engine.run(f"CREATE OR REPLACE TABLE er_kl_s AS SELECT {u} FROM er_kl_r WHERE hash({u}) % 1000000000 < {int(f * 1e9)}")
     engine.run("CREATE OR REPLACE TABLE er_kl_p (l VARCHAR, r VARCHAR); CREATE OR REPLACE TABLE er_kl_q (l VARCHAR, r VARCHAR)")
     def bounded() -> None:  # the pairs listed so far, distinct, only those that can reach 0 (the run's two-stage bound): one pass, not one per atom
-        engine.run(f"INSERT INTO er_kl_p SELECT l, r FROM ({run._reaching('SELECT DISTINCT l, r FROM er_kl_q')}); DELETE FROM er_kl_q")
+        engine.run(f"INSERT INTO er_kl_p SELECT l, r FROM ({reaching(run.job, run.scoring, run.n, 'SELECT DISTINCT l, r FROM er_kl_q')}); DELETE FROM er_kl_q")
     def pair(a: str, b: str, rest: str) -> None:  # the pairs drawn, bounded KEEP_SLICE at a time
         engine.run(f"INSERT INTO er_kl_q SELECT least({a}, {b}) AS l, greatest({a}, {b}) AS r FROM {rest}")
-        if run._count("er_kl_q") >= KEEP_SLICE:
+        if run.job.count("er_kl_q") >= KEEP_SLICE:
             bounded()
     eq = [a for a in found if not a.edits]
     crowd = {}  # each atom's values held by m records or more: its oversized blocks
     for i, a in enumerate(eq):
         engine.run(f"CREATE OR REPLACE TABLE er_kl_c{i} AS SELECT {q(a.column)} FROM er_kl_r WHERE {q(a.column)} IS NOT NULL GROUP BY 1 HAVING count(*) >= {m}")
-        if run._count(f"er_kl_c{i}"):
+        if run.job.count(f"er_kl_c{i}"):
             crowd[a.column] = f"er_kl_c{i}"
 
     def through(cols: list[str], src: str = "er_kl_r") -> None:  # each sampled record with every record of its block on these columns, normal blocks only
@@ -153,10 +155,10 @@ def discover(run, records: int, floor: float | None = None) -> Found:
     rec.close()
     bounded()
     took["bound"] = time.perf_counter() - t
-    alone = "" if fs.bridge else f" AND {run._alone(f'a.{u}', f'b.{u}')}"  # without bridging, two rule entities are never compared: the probe counts those pairs
+    apart = "" if fs.bridge else f" AND {alone(f'a.{u}', f'b.{u}', run.uid)}"  # without bridging, two rule entities are never compared: the probe counts those pairs
     engine.run(f"""CREATE OR REPLACE TABLE er_kl_d AS SELECT DISTINCT p.l AS {l}, p.r AS {r} FROM er_kl_p p JOIN rule_clusters a ON a.{u} = p.l
-        JOIN rule_clusters b ON b.{u} = p.r WHERE a.cluster_id <> b.cluster_id{alone}""")  # a pair inside one rule cluster is the rules'
-    drawn, t_drawn = run._count("er_kl_d"), time.perf_counter()
+        JOIN rule_clusters b ON b.{u} = p.r WHERE a.cluster_id <> b.cluster_id{apart}""")  # a pair inside one rule cluster is the rules'
+    drawn, t_drawn = run.job.count("er_kl_d"), time.perf_counter()
     score_fs(run.scoring, "records", "er_kl_d", run.engine, uid, into="er_kl_t", n_records=n, floor=floor, bound=bound_tests(fs.model))
     engine.run(f"DELETE FROM er_kl_t WHERE match_weight < {floor}")
     targets = engine.frame(f"""SELECT t.{l}, t.{r}, t.match_weight,

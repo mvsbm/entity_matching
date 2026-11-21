@@ -51,8 +51,8 @@ into the image. Deploy on every push; start the 1B build only by an explicit tri
 
 The engine is hard to explain today, for reasons that are in the code, not in the reader:
 
-- one `Run` class of about 1,200 lines whose steps share hidden state: tables passed by name (`"records"`,
-  `"rule_edges"`, `"scores"`), so a step's signature doesn't say what it reads or writes;
+- tables passed between the steps by name (`"records"`, `"rule_edges"`, `"scores"`): each step's docstring names
+  those it reads and writes, its signature doesn't;
 - dense lines and docstrings that argue edge cases instead of saying what a function does;
 - what the method does lives in `final.toml` and some 30 config classes, read by SQL built far from both;
 - short names (`q`, `lit`, `_sides`, `_ranked`, `rough_sql`, `first_bound`);
@@ -71,11 +71,14 @@ The target, in three named patterns:
 
 ```
 er/
-  jobs/     build.py  update_index.py  lookup.py           entry points, one line per step
-  steps/    prepare.py  keys.py  candidates.py  fit.py  score.py  cluster.py
-  engine/   engine.py (the interface)  duckdb.py  bigquery.py  portable.py (hash, slicing, …)
-  model.py  the Fellegi–Sunter model as plain Python: levels, points, λ (no SQL)
+  jobs/     build.py  update.py  decide.py                 a full run, an increment, decisions: one line per step
+            to come: update_index.py  lookup.py
+  steps/    job.py  load.py  budget.py  fit.py  rules.py  candidates.py  score.py  cluster.py  write.py  report.py
+  engine/   engine.py (the interface)  duckdb.py
+            to come: bigquery.py  portable.py (hash, slicing, …)
+  model.py  to come: the Fellegi–Sunter model as plain Python: levels, points, λ (no SQL)
   config.py the settings and the method, each section saying which step reads it
+  …         what the steps call: match.py, candidates.py, cluster.py, folder.py, report.py, …
 design/     select.py  experiments.py  pipeline.py  evaluate.py  tune.py  generate.py  sample.py  probe.py  gap.py
             design time's modules, beside er/ and never imported by it; local only, on DuckDB
 scripts/    choose.py  benchmark.py  generate.py  …   the design-time entry points
@@ -93,8 +96,9 @@ the jobs, the table each step writes, and where to change what.
    EM (#157); term frequencies and Splink out, the tests held to values recorded from Splink 5.0~~.
 2. **The cut.** Run the production path (build, then an update) under coverage; delete what it never calls (the UI,
    most of the CLI, auto, trials, try sample, …); `design/` keeps the tuning.
-3. **The restructure**, step by step into `jobs/`, `steps/`, `engine/`, each move checked by digest against the
-   run before it. The DuckDB engine first.
+3. **The restructure**, step by step, each move checked by digest against the run before it: ~~`er/engine/` with
+   the DuckDB engine, `er/steps/` (one module per step), `er/jobs/` (build, update, decide)~~; then the index's jobs
+   (update_index, lookup) and `model.py`.
 4. **The BigQuery engine**, the string UDFs and the parity check in CI.
 5. **The three jobs** on Cloud Run, wired into Jenkins.
 6. **Scale rehearsal**: 10M → 100M generated records on BigQuery, time and bytes billed; then the real build.

@@ -25,13 +25,13 @@ def test_design_time_measures_the_run_s_own_gold_pairs_and_rule_clusters(tmp_pat
     """scripts/choose.py measures through design.pipeline, which reads the tables of an er.run.Run: it must report the gold,
     the accepted pairs and their weights, and the rules' clusters that the run writes."""
     from design.pipeline import automatic, run_fs, run_rules
-    from er.run import Run
+    from er.jobs.build import build
     s, p, g = population
     p = replace(p, fs=replace(p.fs, needs=("name", "company")))  # a pair with no name compared is held back
     uid = s.data.unique_id
     l, r = f"{uid}_l", f"{uid}_r"
     g.df.to_parquet(tmp_path / "all.parquet", index=False)
-    run = Run(p, s).full(tmp_path / "all.parquet", tmp_path / "run")
+    run = build(tmp_path / "all.parquet", tmp_path / "run", s, p)
     res = run_fs(p, s, tmp_path / "all.parquet", g.truth, run.model)
     labelled = (res.records.set_index(uid)[["CLUSTER_ID", "MATCH_STAGE", "MATCH_RULE"]]
                 .set_axis(["cluster_id", "resolved_stage", "resolved_by"], axis=1).astype("string"))
@@ -50,7 +50,7 @@ def test_a_pair_with_no_name_compared_is_left_to_people(tmp_path, population):
     """A company at a person's address with the person's phone: each record lacks the other's name field, so no name
     is compared, and address and phone alone reach the threshold. With needs, people decide it instead."""
     from er.report import qa
-    from er.run import Run
+    from er.jobs.build import build
     s, p, g = population
     uid = s.data.unique_id
     l, r = f"{uid}_l", f"{uid}_r"
@@ -62,7 +62,7 @@ def test_a_pair_with_no_name_compared_is_left_to_people(tmp_path, population):
     pair = (home[uid], firm[uid])
     p = replace(p, fs=replace(p.fs, min_match_weight=4.0))
     for needs, out in (((), "a"), (("name", "company"), "b")):
-        run = Run(replace(p, fs=replace(p.fs, needs=needs)), s).full(tmp_path / "all.parquet", tmp_path / out)
+        run = build(tmp_path / "all.parquet", tmp_path / out, s, replace(p, fs=replace(p.fs, needs=needs)))
         weight = run.engine.value(f'SELECT match_weight FROM scores WHERE "{l}" = ? AND "{r}" = ?', list(pair))
         merged = run.engine.value(f'SELECT count(*) FROM matches WHERE "{l}" = ? AND "{r}" = ?', list(pair))
         assert weight >= 4.0 and merged == (not needs)
@@ -86,11 +86,11 @@ def test_the_batch_budget_counts_the_pairs_touching_the_batch():
 def test_the_review_sheet_asks_about_each_cluster_pair_in_the_safety_margin_once(tmp_path, wide_band):
     from er.match import review_floor
     from er.report import qa
-    from er.run import Run
+    from er.jobs.build import build
     s, p, g = wide_band
     uid = s.data.unique_id
     g.df.to_parquet(tmp_path / "all.parquet", index=False)
-    run = Run(p, s).full(tmp_path / "all.parquet", tmp_path / "a")
+    run = build(tmp_path / "all.parquet", tmp_path / "a", s, p)
     sheet = qa(run, [f for f in s.columns if f not in ("id", "entity")])["review_sheet"]
     t, lo = p.fs.min_match_weight, review_floor(p)
     assert lo == t - 8  # margin_steps (4) grid steps of 2 bits below the threshold
@@ -104,12 +104,13 @@ def test_the_review_sheet_asks_about_each_cluster_pair_in_the_safety_margin_once
 
 def test_decisions_join_clusters_without_scoring_and_a_full_run_applies_them_again(tmp_path, wide_band):
     from er.report import qa
-    from er.run import Run
+    from er.jobs.build import build
+    from er.jobs.decide import decide
     s, p, g = wide_band
     uid = s.data.unique_id
     l, r = f"{uid}_l", f"{uid}_r"
     g.df.to_parquet(tmp_path / "all.parquet", index=False)
-    run = Run(p, s).full(tmp_path / "all.parquet", tmp_path / "a")
+    run = build(tmp_path / "all.parquet", tmp_path / "a", s, p)
     sheet = qa(run, [f for f in s.columns if f not in ("id", "entity")])["review_sheet"]
     yes = sheet[sheet["why"] == "decide"].index[0]
     sheet.loc[yes, "decision"] = "match"
@@ -117,8 +118,8 @@ def test_decisions_join_clusters_without_scoring_and_a_full_run_applies_them_aga
     rejected = run.engine.row(f'SELECT "{l}", "{r}" FROM matches ORDER BY match_weight DESC LIMIT 1')
     pd.DataFrame({l: [rejected[0]], r: [rejected[1]], "decision": [" No_Match "]}).to_parquet(tmp_path / "rejected.parquet")
     before = pd.read_parquet(tmp_path / "a" / "gold.parquet").set_index(uid)
-    Run(p, s).decide(tmp_path / "reviewed.parquet", tmp_path / "a")
-    Run(p, s).decide(tmp_path / "rejected.parquet", tmp_path / "a")  # an accepted pair people reject: it splits nothing now
+    decide(tmp_path / "reviewed.parquet", tmp_path / "a", s, p)
+    decide(tmp_path / "rejected.parquet", tmp_path / "a", s, p)  # an accepted pair people reject: it splits nothing now
     after = pd.read_parquet(tmp_path / "a" / "gold.parquet").set_index(uid)
     pair = sheet.loc[yes, [l, r]].tolist()
     assert after.loc[pair[0], "cluster_id"] == after.loc[pair[1], "cluster_id"] != before.loc[pair[1], "cluster_id"] or \
@@ -127,7 +128,7 @@ def test_decisions_join_clusters_without_scoring_and_a_full_run_applies_them_aga
     assert joined.any() and after.loc[joined, "resolved_by"].eq("review").all()
     assert len(pd.read_parquet(tmp_path / "a" / "decisions")) == 2
 
-    rerun = Run(p, s, model=run.model).full(tmp_path / "all.parquet", tmp_path / "a", overwrite=True)  # people's work survives
+    rerun = build(tmp_path / "all.parquet", tmp_path / "a", s, p, model=run.model, overwrite=True)  # people's work survives
     again = pd.read_parquet(tmp_path / "a" / "gold.parquet").set_index(uid)
     assert again.loc[pair[0], "cluster_id"] == again.loc[pair[1], "cluster_id"]
     matches = pd.read_parquet(tmp_path / "a" / "matches")
@@ -140,13 +141,13 @@ def test_decisions_join_clusters_without_scoring_and_a_full_run_applies_them_aga
     sheet.loc[yes, "decision"] = "maybe"
     sheet.to_parquet(tmp_path / "bad.parquet")
     with pytest.raises(ValueError, match="match or no_match"):
-        Run(p, s).decide(tmp_path / "bad.parquet", tmp_path / "a")
+        decide(tmp_path / "bad.parquet", tmp_path / "a", s, p)
     pd.DataFrame({l: ["nobody"], r: [pair[0]], "decision": ["match"]}).to_parquet(tmp_path / "unknown.parquet")
     with pytest.raises(ValueError, match="IDs that name no record of the run"):
-        Run(p, s).decide(tmp_path / "unknown.parquet", tmp_path / "a")
+        decide(tmp_path / "unknown.parquet", tmp_path / "a", s, p)
     pd.DataFrame({l: [None], r: [pair[0]], "decision": ["match"]}).to_parquet(tmp_path / "blank.parquet")
     with pytest.raises(ValueError, match="decided rows lack an ID"):  # it would decide a pair of one record with itself
-        Run(p, s).decide(tmp_path / "blank.parquet", tmp_path / "a")
+        decide(tmp_path / "blank.parquet", tmp_path / "a", s, p)
 
 
 def test_a_workspace_holding_its_own_method_or_mapping_and_a_pipeline_with_a_trust_line_are_refused(tmp_path):
@@ -167,12 +168,13 @@ def test_a_workspace_holding_its_own_method_or_mapping_and_a_pipeline_with_a_tru
 def test_an_increment_counts_exact_u_again_and_samples_only_a_drifted_comparison(tmp_path, population, monkeypatch):
     import json
     import er.match as M
-    from er.run import Run
+    from er.jobs.build import build
+    from er.jobs.update import update
     s, p, g = population
     new = np.random.default_rng(1).random(len(g.df)) < 0.1
     g.df[~new].to_parquet(tmp_path / "old.parquet", index=False)
     g.df[new].to_parquet(tmp_path / "new.parquet", index=False)
-    full = Run(p, s).full(tmp_path / "old.parquet", tmp_path / "c")
+    full = build(tmp_path / "old.parquet", tmp_path / "c", s, p)
     basis = json.loads((tmp_path / "c" / "state" / "scoring.json").read_text(encoding="utf-8"))["basis"]
     model = p.fs.model
     same = stale_u(model, basis, {name: b["exact"] for name, b in basis.items()}, full.n)
@@ -184,7 +186,7 @@ def test_an_increment_counts_exact_u_again_and_samples_only_a_drifted_comparison
 
     sampled, real = [], M.sample_u
     monkeypatch.setattr(M, "sample_u", lambda m, comps, *a: sampled.extend(c.name for c in comps) or real(m, comps, *a))
-    inc = Run(p, s).increment(tmp_path / "new.parquet", tmp_path / "c")
+    inc = update(tmp_path / "new.parquet", tmp_path / "c", s, p)
     after = json.loads((tmp_path / "c" / "state" / "scoring.json").read_text(encoding="utf-8"))["basis"]
     stale = [k for k, b in after.items() if b["last_check"]["drift_bits"] > (b["last_check"]["se_bits"] or math.inf)]
     assert sampled == stale  # sampled again exactly where drift outgrew the sampling error
@@ -238,21 +240,23 @@ def test_the_loader_reads_parquet_by_column_name_and_says_what_is_wrong(tmp_path
 
 
 def test_a_run_sets_aside_what_it_cannot_resolve_and_suggests_a_mapping(tmp_path, population):
-    from er.run import Run
+    from er.steps.job import start
+    from er.steps.load import load
+    from er.jobs.build import build
     s, p, g = population
     uid = s.data.unique_id
     df = g.df.copy()
     df = pd.concat([df, df.iloc[[0]], df.iloc[[1]].assign(PHONE_NUM_4="9999")], ignore_index=True)  # an exact copy; a clash
     df.loc[2, uid], df.loc[3, uid], df.loc[4, uid], df.loc[5, uid] = " ", "\t", "\xa0", "\u3000"  # no ID: blank in any of its forms
     df.to_parquet(tmp_path / "in.parquet", index=False)
-    run = Run(p, s).full(tmp_path / "in.parquet", tmp_path / "run")
+    run = build(tmp_path / "in.parquet", tmp_path / "run", s, p)
     aside = pd.read_parquet(tmp_path / "run" / "set_aside")
     assert sorted(aside["reason"]) == ["no ID"] * 4 + ["the same ID with different content"] * 2
     assert run.n == len(g.df) - 5 and any("kept once" in x for x in run.notes)
 
     g.df.rename(columns={uid: "customer_no"}).to_parquet(tmp_path / "renamed.parquet", index=False)
     with pytest.raises(InputError, match="lacks a field every run needs") as e:
-        Run(p, s).load(tmp_path / "renamed.parquet")
+        load(start(s, p), tmp_path / "renamed.parquet")
     assert 'id = "customer_no"' in e.value.fix  # suggested from its values: filled and unique
 
 

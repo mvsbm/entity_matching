@@ -76,7 +76,7 @@ def test_the_kind_problems_change_names_dates_and_the_flag_only(kind_population)
 
 def test_the_engine_calls_what_it_is_sure_of_the_flag_the_rest_and_a_person_company_pair_goes_to_people(tmp_path, kind_population):
     from er.report import qa
-    from er.run import Run
+    from er.jobs.build import build
     s, p, g = kind_population
     uid = s.data.unique_id
     l, r = f"{uid}_l", f"{uid}_r"
@@ -85,7 +85,7 @@ def test_the_engine_calls_what_it_is_sure_of_the_flag_the_rest_and_a_person_comp
     firm[["CIF_ID", "BIRTH_DATE"]] = pd.NA
     firm[[uid, "NAME_KANA", "PERSON_ORG_CODE"]] = ["9" * len(home[uid]), "カブシキガイシャテスト", "2"]
     pd.concat([g.df, firm.to_frame().T.astype(g.df.dtypes)], ignore_index=True).to_parquet(tmp_path / "all.parquet", index=False)
-    run = Run(replace(p, fs=replace(p.fs, min_match_weight=4.0)), s).full(tmp_path / "all.parquet", tmp_path / "run")
+    run = build(tmp_path / "all.parquet", tmp_path / "run", s, replace(p, fs=replace(p.fs, min_match_weight=4.0)))
     rec = run.engine.frame(f'SELECT "{uid}", person_name, company_name, kind, name_p, kind_flag, kind_flagged FROM records').set_index(uid)
     assert rec.loc[firm[uid], "kind"] == 2 and pd.isna(rec.loc[firm[uid], "person_name"]) and rec.loc[firm[uid], "company_name"] == "カブシキガイシャテスト"
     assert pd.notna(rec.loc[home[uid], "person_name"]) and pd.isna(rec.loc[home[uid], "company_name"])
@@ -131,17 +131,18 @@ def test_a_name_in_hiragana_reads_as_the_same_name_in_katakana():  # as the name
 
 
 def test_a_decision_keeps_each_record_s_kind_and_a_merged_customer_takes_its_surest(tmp_path, population):
-    from er.run import Run
+    from er.jobs.build import build
+    from er.jobs.decide import decide
     s, p, g = population
     uid = s.data.unique_id
     g.df.to_parquet(tmp_path / "all.parquet", index=False)
-    Run(p, s).full(tmp_path / "all.parquet", tmp_path / "run")
+    build(tmp_path / "all.parquet", tmp_path / "run", s, p)
     before = pd.read_parquet(tmp_path / "run" / "gold.parquet")
     alone = before.groupby("cluster_id").filter(lambda c: len(c) == 1)
     company, other = alone[alone["kind"] == 2].iloc[0], alone[alone["kind"] == 0].iloc[0]  # a sure company, a record not sure
     pair = sorted([company[uid], other[uid]])
     pd.DataFrame({f"{uid}_l": [pair[0]], f"{uid}_r": [pair[1]], "decision": ["match"]}).to_parquet(tmp_path / "decided.parquet")
-    Run(p, s).decide(tmp_path / "decided.parquet", tmp_path / "run")
+    decide(tmp_path / "decided.parquet", tmp_path / "run", s, p)
     after = pd.read_parquet(tmp_path / "run" / "gold.parquet").set_index(uid)
     assert list(after.reset_index().columns) == list(before.columns)
     assert after.loc[pair, "cluster_id"].nunique() == 1 and (after.loc[pair, "customer_kind"] == 2).all()
@@ -149,16 +150,17 @@ def test_a_decision_keeps_each_record_s_kind_and_a_merged_customer_takes_its_sur
 
 
 def test_an_increment_tells_its_batch_s_kinds_as_a_full_run_does(tmp_path, kind_population):
-    from er.run import Run
+    from er.jobs.build import build
+    from er.jobs.update import update
     s, p, g = kind_population
     uid = s.data.unique_id
     batch = np.random.default_rng(0).random(len(g.df)) < 0.1
     g.df[~batch].to_parquet(tmp_path / "first.parquet", index=False)
     g.df[batch].to_parquet(tmp_path / "new.parquet", index=False)
     g.df.to_parquet(tmp_path / "all.parquet", index=False)
-    Run(p, s).full(tmp_path / "first.parquet", tmp_path / "run")
-    Run(p, s).increment(tmp_path / "new.parquet", tmp_path / "run")
-    Run(p, s).full(tmp_path / "all.parquet", tmp_path / "whole")
+    build(tmp_path / "first.parquet", tmp_path / "run", s, p)
+    update(tmp_path / "new.parquet", tmp_path / "run", s, p)
+    build(tmp_path / "all.parquet", tmp_path / "whole", s, p)
     inc, whole = (pd.read_parquet(tmp_path / w / "gold.parquet").set_index(uid).loc[g.df.loc[batch, uid], ["kind", "kind_p", "kind_by", "kind_flagged"]]
                   for w in ("run", "whole"))
     assert inc.equals(whole) and set(inc["kind_by"]) == {"engine", "flag"}  # one rule, whichever run tells it

@@ -35,10 +35,13 @@ from er.brief import merging_words, nayose
 from er.emit import BATCH_ORDER, RUN_ORDER, Emit, plain, rows_told
 from er.folder import Busy
 from er.hints import readable
+from er.jobs.build import build
+from er.jobs.decide import decide
+from er.jobs.update import update, would_join
 from er.match import review_floor, saved as saved_model
 from er.results import describe_results
-from er.run import Run
 from er.settings import (load_settings)
+from er.steps.job import Ran
 
 
 @dataclass(frozen=True)
@@ -114,7 +117,7 @@ def next_after(out: Path, waiting: int | None = None) -> list[dict]:
     return found + [dict(command=nayose("build", "index", "--workspace", out), why="look records up")]
 
 
-def run_facts(run: Run, out: Path) -> dict | None:  # what a person reads first after a run; none if it can't be read (the run stands either way)
+def run_facts(run: Ran, out: Path) -> dict | None:  # what a person reads first after a run; none if it can't be read (the run stands either way)
     if not any((out / folder.SCORED).glob("part-*.parquet")):  # a run from before the index: building it here would add minutes no one asked for
         return None
     try:
@@ -126,7 +129,7 @@ def run_facts(run: Run, out: Path) -> dict | None:  # what a person reads first 
                 report=str(out / "report.txt"))
 
 
-def after_run(run: Run, out: Path) -> dict:
+def after_run(run: Ran, out: Path) -> dict:
     wrote = ["gold.parquet", "review.parquet", "qa.md", "report.txt", "matches/", "state/"]
     facts = run_facts(run, out)
     return dict(summary=run.tables["summary"].values.tolist(), seconds=round(sum(x["seconds"] for x in run.steps), 1), facts=facts,
@@ -157,7 +160,8 @@ def given(a: dict, emit: "Emit | None" = None) -> str:
 def resolve_records(a: dict, emit: "Emit") -> dict:
     s, p, pipeline = setup(a)
     out = Path(a["workspace"])
-    return after_run(Run(p, s, model=model_from(a["model"]), echo=emit.step, told=emit.progress).full(given(a, emit), out, overwrite=a["overwrite"], pipeline_file=pipeline), out)
+    ran = build(given(a, emit), out, s, p, model=model_from(a["model"]), overwrite=a["overwrite"], pipeline_file=pipeline, echo=emit.step, told=emit.progress)
+    return after_run(ran, out)
 
 
 def add_records(a: dict, emit: "Emit") -> dict:
@@ -175,7 +179,7 @@ def add_records(a: dict, emit: "Emit") -> dict:
     part, copied = ((folder.fresh(held[0], s.input, rows_told(emit)), False) if held else
                     folder.take_in(out, a["input"], s.input, progress=rows_told(emit)) if a["input"] else (Path(given(a, emit)), False))
     try:
-        run = Run(p, s, echo=emit.step, told=emit.progress).increment(part, out, pipeline_file=pipeline)
+        run = update(part, out, s, p, pipeline_file=pipeline, echo=emit.step, told=emit.progress)
     except InputError as e:
         if copied and not isinstance(e, Busy):  # another job may hold it now
             drop()
@@ -193,7 +197,7 @@ def match_records(a: dict, emit: "Emit") -> dict:
     s, p, _ = setup(a)
     out = Path(a["workspace"])
     with readable(a["input"], s, emit=emit) as path:
-        found = Run(p, s, echo=emit.step, told=emit.progress).match(path, out)
+        found = would_join(path, out, s, p, echo=emit.step, told=emit.progress)
     return dict(counts={k: int(v) for k, v in found["status"].value_counts().items()}, records=rows(ids(found, s.data.unique_id)),
                 next=[dict(command=nayose("add", "records", a["input"], "--workspace", out), why="add them to the run")])
 
@@ -250,7 +254,7 @@ def apply_decisions(a: dict, emit: "Emit") -> dict:
     s, p, _ = setup(a)
     out = Path(a["workspace"])
     with folder.run_lock(out), readable(a["file"], s) if a["file"] else contextlib.nullcontext(out / "review.parquet") as path:
-        run = Run(p, s, echo=emit.step, told=emit.progress).decide(path, out)
+        run = decide(path, out, s, p, echo=emit.step, told=emit.progress)
     x = run.steps[-1]
     return dict(decisions=x["decisions"], matches=x["matches"], clusters_joined=x["clusters_joined"],
                 summary=[["nothing new", "every decision was applied before"]] if not x["decisions"] else [],

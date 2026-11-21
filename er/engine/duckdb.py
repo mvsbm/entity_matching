@@ -3,6 +3,8 @@ registered as Python UDFs (cl_<name>, rapidfuzz), files on the local disk. What 
 er/engine/engine.py."""
 import getpass
 import os
+import re
+import shutil
 import tempfile
 import threading
 import time
@@ -17,6 +19,12 @@ import pyarrow.compute as pc
 from rapidfuzz import process
 
 from er.strings import FUNCTIONS, char_jaccard
+
+
+def size_bytes(text: str) -> int:  # one of DuckDB's sizes: "8.0 GiB", "512.0 MiB", "1.5 GB"
+    num, unit = re.match(r"([\d.]+)\s*([A-Za-z]*)", text).groups()
+    scale = {"": 1, "b": 1, "bytes": 1, "kb": 1e3, "mb": 1e6, "gb": 1e9, "tb": 1e12, "pb": 1e15, "kib": 2**10, "mib": 2**20, "gib": 2**30, "tib": 2**40, "pib": 2**50}
+    return int(float(num) * scale[unit.lower()])
 
 
 class DuckDB:
@@ -70,6 +78,17 @@ class DuckDB:
 
     def cursor(self) -> "DuckDB":  # the same database on a cursor of its own, for another thread
         return DuckDB(self.con.cursor())
+
+    def room(self) -> float:
+        """The bytes a step's tables may take: DuckDB's memory limit plus the room it may spill to (spill_room)."""
+        return size_bytes(self.value("SELECT current_setting('memory_limit')")) + self.spill_room()
+
+    def spill_room(self) -> float:
+        """The bytes DuckDB may spill: its temp directory's free space, capped as DuckDB caps it (max_temp_directory_size:
+        by default 90% of that space)."""
+        temp, cap = self.row("SELECT current_setting('temp_directory'), current_setting('max_temp_directory_size')")
+        free = shutil.disk_usage(temp if temp and os.path.isdir(temp) else ".").free
+        return 0.9 * free if "%" in cap else min(free, size_bytes(cap))
 
     def close(self) -> None:
         self.con.close()

@@ -141,7 +141,7 @@ No "chosen" row adds a false pair.
 
 ## Challenge: does it hold beyond our one dataset?
 
-Every number so far comes from one generated population: one seed, one noise model, one prior. A result that holds only there would be fragile. So `scripts/benchmark.py` re-runs the final configuration, unchanged, on populations generated differently, the way a real file is run (`er.run`, without labels): it fits λ and m on each population's train split, then resolves that population's test split, measuring u on it as a run does. Nothing is re-tuned ([reports/benchmark.md](../../reports/benchmark.md)).
+Every number so far comes from one generated population: one seed, one noise model, one prior. A result that holds only there would be fragile. So `scripts/benchmark.py` re-runs the final configuration, unchanged, on populations generated differently, the way a real file is run (`jobs.build.build`, without labels): it fits λ and m on each population's train split, then resolves that population's test split, measuring u on it as a run does. Nothing is re-tuned ([reports/benchmark.md](../../reports/benchmark.md)).
 
 | Scenario | Rules alone | Both stages | 95% interval | False merges | False-merge rate ≤ |
 |---|---|---|---|---|---|
