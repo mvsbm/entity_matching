@@ -387,7 +387,7 @@ def test_an_oversized_block_is_checked_on_a_sample_and_a_placeholder_is_skipped(
 
 
 def test_a_customer_id_held_by_many_records_is_a_placeholder_every_step_and_the_lookup_read_as_missing(tmp_path, population):
-    from er import index
+    from er.jobs import index
     from er.jobs.build import build
     from er.jobs.update import update
     s, p, g = population

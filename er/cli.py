@@ -28,7 +28,8 @@ from pathlib import Path
 import duckdb
 import pandas as pd
 
-from er import folder, index
+from er import folder
+from er.jobs import index
 from er.io import read_parquet, replace_text
 from er.config import InputError, load_pipeline
 from er.brief import merging_words, nayose

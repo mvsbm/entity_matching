@@ -3,4 +3,5 @@
     build    a records file resolved into a workspace
     update   a batch added to a written run; which entity each record of a batch would join
     decide   people's decisions applied to a written run
+    index    the index a record is looked up in: built, kept up to date, looked up
 """

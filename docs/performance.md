@@ -73,11 +73,11 @@ decisions, plus O(N) to rewrite gold: each `match` pair merges two stored cluste
 1,000 drawn at random), `nayose add records` in a process of its own: 4.0 s of steps, 5.4 s wall clock, a peak of
 4.19 GB under DuckDB's default memory limit.
 
-**A lookup** (`index.look_up`, `nayose match record`): one record against the run's index costs
+**A lookup** (`jobs.index.look_up`, `nayose match record`): one record against the run's index costs
 **O(G·(log N + b) + C·K·L²)**, N only inside log N: each of its keys reads a few row groups of its table, sorted by the
-key's hash, and a sorted window's place is a bisect in every 1,024th key. Building the index (`index.build`, `nayose build index`) costs
+key's hash, and a sorted window's place is a bisect in every 1,024th key. Building the index (`jobs.index.build`, `nayose build index`) costs
 **O(N·(G + R + D·L) + N log N)**: every key of every record, sorted, read from the run's own
-files. Keeping it up to date after an increment or decisions (`index.update`) costs
+files. Keeping it up to date after an increment or decisions (`jobs.index.update`) costs
 **O(Δ·(G + R + D·L) + N)** for Δ records added, the N one pass over two columns for the entities that moved.
 **Measured** on 1,039,995 generated records ([reports/benchmark_lookup.md](../reports/benchmark_lookup.md)): built in
 3.2 s, 840 MB on disk; with the index kept open, a lookup at p50 83 ms, p95 91 ms and at most 197 ms; 1,000 records added, the index up to date in 0.2 s, against 3.1 s to build it again. The

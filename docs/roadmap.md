@@ -33,7 +33,7 @@ table, name a table, drop one), one DuckDB and one BigQuery implementation, chos
    score → the request's threshold, rules and conditions → candidates in BigQuery, then Google Sheets for review.
    The request's settings are job arguments, not code: a request never goes through CI/CD.
 
-In BigQuery the index is key tables clustered by key, and a batch lookup is a join. Today's `er/index.py` (a sorted
+In BigQuery the index is key tables clustered by key, and a batch lookup is a join. Today's `er/jobs/index.py` (a sorted
 DuckDB file) doesn't carry over. AlloyDB may later serve single-record lookups from the same key tables.
 
 **At 1 billion records**, nothing that grows with N may pass through pandas or Python memory. To watch: clustering about 70
@@ -71,8 +71,8 @@ The target, in three named patterns:
 
 ```
 er/
-  jobs/     build.py  update.py  decide.py                 a full run, an increment, decisions: one line per step
-            to come: update_index.py  lookup.py
+  jobs/     build.py  update.py  decide.py  index.py       a full run, an increment, decisions: one line per step;
+                                                         the index: built, kept up to date, looked up
   steps/    job.py  load.py  budget.py  fit.py  rules.py  candidates.py  score.py  cluster.py  write.py  report.py
   engine/   engine.py (the interface)  duckdb.py
             to come: bigquery.py  portable.py (hash, slicing, …)
@@ -97,8 +97,8 @@ the jobs, the table each step writes, and where to change what.
 2. **The cut.** Run the production path (build, then an update) under coverage; delete what it never calls (the UI,
    most of the CLI, auto, trials, try sample, …); `design/` keeps the tuning.
 3. **The restructure**, step by step, each move checked by digest against the run before it: ~~`er/engine/` with
-   the DuckDB engine, `er/steps/` (one module per step), `er/jobs/` (build, update, decide)~~; then the index's jobs
-   (update_index, lookup) and `model.py`.
+   the DuckDB engine, `er/steps/` (one module per step), `er/jobs/` (build, update, decide, index)~~; then
+   `model.py`.
 4. **The BigQuery engine**, the string UDFs and the parity check in CI.
 5. **The three jobs** on Cloud Run, wired into Jenkins.
 6. **Scale rehearsal**: 10M → 100M generated records on BigQuery, time and bytes billed; then the real build.
