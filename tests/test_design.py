@@ -28,7 +28,7 @@ from sqlglot import exp
 
 ROOT = Path(__file__).resolve().parents[1]
 DIAGRAMS = ROOT / "docs" / "diagrams"
-PLUMBING = {"config.q", "config.lit", "config.bits", "Run._count", "Run._done", "Run.columns", "Run._resolved", "Run._singletons"}  # SQL quoting, counting
+PLUMBING = {"config.q", "config.lit", "config.bits"}  # SQL quoting
 TRANSIENT = {"pending.json", "jobs.jsonl"}  # in a workspace only while a write is cut short; the scheduler's ledger
 EXTENSIONS = {"py", "toml", "md", "parquet", "json", "jsonl", "txt", "npz", "svg", "puml", "lock", "tmp", "ipynb", "pdf"}
 
@@ -69,18 +69,29 @@ PACKAGE = {f.stem: pkg for pkg in PACKAGES for f in (ROOT / pkg).glob("*.py") if
 NESTED = {f.relative_to(ROOT).as_posix() for pkg in PACKAGES for f in (ROOT / pkg).glob("*/*.py") if f.stem != "__init__"}  # er/engine/duckdb.py: named by path
 MODULES = set(PACKAGE)
 RANK = {"tools_design": 5, "tools_run": 4, "design": 3, "run": 2, "steps": 1, "configuration": 0}  # components.puml: each layer imports only those below; a design-time tool may drive nayose
-CLASSES = {"Run": "er.run", "Classifier": "er.kind", "NameModel": "er.kind", "Fitted": "er.kind"}
-RUN_LAYER = ("run", "folder", "report")  # the run's modules: a step box names what it reaches in them
+CLASSES = {"Job": "er.steps.job", "Ran": "er.steps.job", "Log": "er.steps.job", "Classifier": "er.kind", "NameModel": "er.kind", "Fitted": "er.kind"}
+SUBPACKAGES = ("steps", "jobs", "engine")  # a module of er/<one of these>/ is named by both: steps.load.load
+RUN_LAYER = ("jobs.build", "jobs.update", "jobs.decide", "steps.job", "steps.load", "steps.budget", "steps.fit", "steps.rules",  # the run's modules:
+             "steps.candidates", "steps.score", "steps.cluster", "steps.write", "steps.report", "folder", "report")  # a step box names what it reaches in them
+STEPS = {"steps.load.load": "load", "steps.budget.budget": "budget", "steps.fit.fit": "fit", "steps.rules.rules": "rules",  # each step's function: its box
+         "steps.candidates.candidates": "candidates", "steps.score.score": "score", "steps.cluster.cluster": "cluster",
+         "steps.write.write": "write", "steps.report.report": "report"}
 
 
 def names_in(label: str) -> set[str]:
-    """The functions a label names: module.function (a module of er/ or design/, its package left off), Run.method, Classifier.method,
-    NameModel.method; file names (run.py) aside."""
-    found = re.findall(r"(?<![\w./])(?:er\.|design\.)?((?:[A-Z]\w*|[a-z_]+)\.[A-Za-z_]\w*)", label.replace("\\n", " "))
-    return {n for n in found if n.split(".")[0] in MODULES | set(CLASSES) and n.split(".")[1] not in EXTENSIONS}
+    """The functions a label names: module.function (a module of er/ or design/, its package left off; one of
+    er/steps/, er/jobs/ or er/engine/ by both, steps.load.load), Job.method and the like; file names (run.py) aside."""
+    text = label.replace("\\n", " ")
+    nested = re.findall(rf"(?<![\w./])(?:er\.)?((?:{'|'.join(SUBPACKAGES)})\.[a-z_]+\.[A-Za-z_]\w*)", text)
+    found = re.findall(r"(?<![\w./])(?:er\.|design\.)?((?:[A-Z]\w*|[a-z_]+)\.[A-Za-z_]\w*)", re.sub(rf"(?:{'|'.join(SUBPACKAGES)})\.[a-z_]+\.[A-Za-z_]\w*", " ", text))
+    return set(nested) | {n for n in found if n.split(".")[0] in MODULES | set(CLASSES)
+                          and (n.split(".")[1] not in EXTENSIONS or resolve_name(n))}  # report.txt a file; io.lock a function
 
 
 def resolve_name(name: str) -> bool:
+    if name.split(".")[0] in SUBPACKAGES:  # steps.load.load
+        package, module, attr = name.split(".", 2)
+        return (ROOT / "er" / package / f"{module}.py").is_file() and hasattr(importlib.import_module(f"er.{package}.{module}"), attr)
     head, attr = name.split(".", 1)
     if head in CLASSES:  # a method or field, or an attribute each instance sets (self.x = …)
         cls = getattr(importlib.import_module(CLASSES[head]), head)
@@ -114,31 +125,29 @@ def imports() -> set[tuple[str, str]]:
 
 
 class RunCode:
-    """The run layer (er/run.py, er/folder.py, er/report.py) read with ast: which functions a step reaches. A step's
-    reach follows Run's methods (other steps aside) and the run layer's functions, named module.function; it stops at a
-    function of another er module, named module.function too."""
+    """The run layer (RUN_LAYER: the jobs, the steps, er/folder.py, er/report.py) read with ast: which functions a step
+    reaches. A step's reach follows the run layer's functions (other steps aside), named module.function (a step
+    module's as steps.load.function); it stops at a function of another er module, named module.function too."""
 
     def __init__(self):
         self.local, self.names = {}, {}  # module.function → its ast; per module, each name it sees → module.function
         for m in RUN_LAYER:
-            tree = ast.parse((ROOT / "er" / f"{m}.py").read_text(encoding="utf-8"))
+            tree = ast.parse((ROOT / "er" / f"{m.replace('.', '/')}.py").read_text(encoding="utf-8"))
             names = self.names[m] = {}
             for node in tree.body:
                 if isinstance(node, ast.ImportFrom) and node.module and node.module.startswith("er."):
-                    mod = importlib.import_module(node.module)
+                    mod, key = importlib.import_module(node.module), node.module.removeprefix("er.")
                     for a in node.names:
                         if callable(getattr(mod, a.name)) and not isinstance(getattr(mod, a.name), type):  # functions, not classes
-                            names[a.asname or a.name] = f"{node.module.split('.')[1]}.{a.name}"
+                            names[a.asname or a.name] = f"{key}.{a.name}"
                 elif isinstance(node, ast.ImportFrom) and node.module == "er":  # from er import folder: folder.stage
                     names.update({a.asname or a.name: a.name for a in node.names})
                 elif isinstance(node, ast.FunctionDef):
                     self.local[f"{m}.{node.name}"] = node
                     names[node.name] = f"{m}.{node.name}"
-                elif isinstance(node, ast.ClassDef) and node.name == "Run":
-                    self.methods = {n.name: n for n in node.body if isinstance(n, ast.FunctionDef)}
 
-    def body(self, name: str) -> ast.FunctionDef:
-        return self.methods[name.split(".")[1]] if name.startswith("Run.") else self.local[name]
+    def module_of(self, name: str) -> str:  # steps.load.load → steps.load; folder.stage → folder
+        return name.rsplit(".", 1)[0]
 
     def reach(self, roots: set[str], steps: set[str] = frozenset()) -> set[str]:
         seen, todo = set(), list(roots)
@@ -149,17 +158,17 @@ class RunCode:
             seen.add(name)
             if name in PLUMBING:
                 continue
-            names = self.names["run" if name.startswith("Run.") else name.split(".")[0]]
-            for node in (n for stmt in self.body(name).body for n in ast.walk(stmt)):  # decorators aside
+            names = self.names[self.module_of(name)]
+            for node in (n for stmt in self.local[name].body for n in ast.walk(stmt)):  # decorators aside
                 found = None
-                if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name) and node.value.id == "self" and node.attr in self.methods:
-                    found = None if node.attr in steps else f"Run.{node.attr}"
-                elif isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name) and names.get(node.value.id) in RUN_LAYER:
+                if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name) and names.get(node.value.id) in RUN_LAYER:
                     found = f"{names[node.value.id]}.{node.attr}"  # called by its module's name: a function, not a constant
                     found = found if found in self.local else None
                 elif isinstance(node, ast.Name) and node.id in names and "." in names[node.id]:
                     found = names[node.id]
-                if found in self.local or (found or "").startswith("Run."):
+                if found in steps:
+                    continue
+                if found in self.local:
                     if found not in seen:
                         todo.append(found)
                 elif found:
@@ -167,16 +176,18 @@ class RunCode:
         return seen - PLUMBING
 
     def steps_of_full(self) -> dict[str, set[str]]:
-        """Run.full's steps in order: each step method it calls, with the helpers it calls just before (in that step);
-        Run.resolve's steps 1–7 in its place, as a trial runs them alone."""
+        """The full run's steps in order (jobs.build.build, jobs.build.resolve's steps in its place): each step's
+        function, with the run layer's functions the job calls just before it (in that step)."""
         out, pending = {}, set()
-        nodes = [x for node in ast.walk(self.methods["full"]) for x in
-                 (ast.walk(self.methods["resolve"]) if isinstance(node, ast.Attribute) and node.attr == "resolve" else [node])]
-        for node in nodes:
-            if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name) and node.value.id == "self" and node.attr in self.methods and node.attr != "resolve":
-                pending.add(f"Run.{node.attr}")
-                if not node.attr.startswith("_"):
-                    out[node.attr], pending = pending, set()
+        statements = [*self.local["jobs.build.resolve"].body, *self.local["jobs.build.build"].body]
+        for node in (n for stmt in statements for n in ast.walk(stmt)):
+            if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)):
+                continue
+            name = self.names["jobs.build"].get(node.func.id)
+            if name in STEPS and name != "steps.report.report":
+                out[STEPS[name]], pending = {*pending, name}, set()
+            elif name in self.local and name != "jobs.build.resolve":
+                pending.add(name)
         return out
 
 
@@ -205,17 +216,22 @@ def lineage(statements: list[str]) -> tuple[set[str], set[str]]:
 
 
 class Logged:
-    """A Run whose every query is logged, and given to the step that finishes after it (Run.echo)."""
+    """A job whose every query is logged (its engine made by connect, which starts the log), each given to the step
+    that finishes after it (echo, the job's)."""
 
-    def __init__(self, run):
-        self.run, self.by_step = run, defaultdict(list)
-        run.engine.run("CALL enable_logging('QueryLog')")
-        run.echo = lambda step: self.cut(step["step"])
+    def __init__(self):
+        self.engine, self.by_step = None, defaultdict(list)
 
-    def cut(self, step: str) -> None:
-        rows = self.run.engine.rows("SELECT message FROM duckdb_logs WHERE type = 'QueryLog'")
-        self.run.engine.run("CALL truncate_duckdb_logs()")
-        self.by_step[step] += [m for m, in rows if "duckdb_logs" not in m]
+    def connect(self, compute=None):
+        from er.engine.duckdb import connect
+        self.engine = connect(compute)
+        self.engine.run("CALL enable_logging('QueryLog')")
+        return self.engine
+
+    def echo(self, step: dict) -> None:
+        rows = self.engine.rows("SELECT message FROM duckdb_logs WHERE type = 'QueryLog'")
+        self.engine.run("CALL truncate_duckdb_logs()")
+        self.by_step[step["step"]] += [m for m, in rows if "duckdb_logs" not in m]
 
 
 def drawn_tables(steps: dict[str, list[str]]) -> tuple[set[tuple[str, str]], set[str]]:
@@ -239,7 +255,6 @@ def logged_runs(tmp: Path) -> tuple:
     decisions, each with its query log."""
     from er.config import load_pipeline
     from design.generate import generate, load_reference, load_spec
-    from er.run import Run
     from er.settings import load_settings
     s = load_settings()  # the tests' population (tests/conftest.py)
     p = load_pipeline(s.root / "config" / "final.toml", s.standardize, s.chains, s.columns)
@@ -247,16 +262,19 @@ def logged_runs(tmp: Path) -> tuple:
     batch = np.random.default_rng(0).random(len(g.df)) < 0.2
     g.df[~batch].to_parquet(tmp / "first.parquet", index=False)
     pd.concat([g.df[batch], g.df[~batch].head(1)]).to_parquet(tmp / "new.parquet", index=False)  # one already in the run: set aside
-    out, pipeline, logs = tmp / "run", s.root / "config" / "final.toml", {}
-    for mode in ("full", "increment"):
-        run = Run(p, s)
-        logs[mode] = Logged(run)
-        run.full(tmp / "first.parquet", out, pipeline_file=pipeline) if mode == "full" else run.increment(tmp / "new.parquet", out, pipeline_file=pipeline)
+    from unittest import mock
+    from er.jobs.build import build
+    from er.jobs.decide import decide
+    from er.jobs.update import update
+    out, pipeline, logs = tmp / "run", s.root / "config" / "final.toml", {mode: Logged() for mode in ("full", "increment", "decisions")}
+    with mock.patch("er.steps.job.connect", logs["full"].connect):
+        build(tmp / "first.parquet", out, s, p, pipeline_file=pipeline, echo=logs["full"].echo)
+    with mock.patch("er.steps.job.connect", logs["increment"].connect):
+        update(tmp / "new.parquet", out, s, p, pipeline_file=pipeline, echo=logs["increment"].echo)
     sheet = pd.read_parquet(out / "review.parquet")
     sheet.iloc[:1].assign(decision="match").to_parquet(tmp / "decided.parquet")
-    run = Run(p, s)
-    logs["decisions"] = Logged(run)
-    run.decide(tmp / "decided.parquet", out)
+    with mock.patch("er.steps.job.connect", logs["decisions"].connect):
+        decide(tmp / "decided.parquet", out, s, p, echo=logs["decisions"].echo)
     return s, out, {mode: dict(log.by_step) for mode, log in logs.items()}
 
 
@@ -307,18 +325,18 @@ def test_every_path_and_function_a_diagram_or_a_doc_names_exists():
 def test_each_step_box_names_the_functions_its_step_reaches():
     code = RunCode()
     elements, _, _ = parse("full-run")
-    steps = code.steps_of_full() | {"report": {"Run.report"}}
+    steps = code.steps_of_full() | {"report": {"steps.report.report"}}
     wrong = {}
     for step, roots in steps.items():
         named = names_in(elements[step][1])
-        expected = code.reach(roots, steps=set(steps) - {r.split(".")[1] for r in roots})
+        expected = code.reach(roots, steps=set(STEPS) - roots)
         if named != expected:
             wrong[step] = dict(to_draw=sorted(expected - named), to_remove=sorted(named - expected))
     assert not wrong, f"full-run.puml: {wrong}"
-    for diagram, method in (("increment", "increment"), ("decisions", "decide")):
+    for diagram, job in (("increment", "jobs.update.update"), ("decisions", "jobs.decide.decide")):
         elements, _, _ = parse(diagram)
         named = set().union(*(names_in(label) for eid, (kind, label) in elements.items() if kind == "rectangle" and eid != "report"))
-        expected = code.reach({f"Run.{method}"}, steps={"report"})  # the report: its own box, as in the full run's
+        expected = code.reach({job}, steps={"steps.report.report"})  # the report: its own box, as in the full run's
         assert named == expected, f"{diagram}.puml: to draw {sorted(expected - named)}, to remove {sorted(named - expected)}"
 
 

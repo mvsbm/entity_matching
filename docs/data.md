@@ -23,7 +23,7 @@ sits outside them:
 data/reference/*.json                       public reference data (tracked; SOURCES.md)
 data/medallion/bronze/<dataset>.parquet     records as they arrive (generated)      scripts/generate.py
 data/labels/<dataset>.parquet               truth, read only to choose and evaluate scripts/generate.py
-data/medallion/gold/<dataset>/              each dataset resolved: a workspace     scripts/choose.py, through er.run
+data/medallion/gold/<dataset>/              each dataset resolved: a workspace     scripts/choose.py, through er.jobs
                                             (silver: its state/records/)
 data/artifacts/models/*_final.json          the chosen configurations, the fitted model
 data/artifacts/experiments/leaderboard.parquet   one row per experiment and dataset (archive/: earlier passes)

@@ -231,7 +231,7 @@ Train is scored in-sample (the model is fitted on all of it), and has no false p
 
 ## Benchmark
 
-`scripts/benchmark.py` runs `FINAL` the way a real file is run (`er.run`, without labels), without re-tuning anything, and writes [`reports/benchmark.md`](../reports/benchmark.md). Chapter [6](guide/06-measuring-and-choosing.md#challenge-does-it-hold-beyond-our-one-dataset) explains the scenarios, and chapter [3](guide/03-far-too-many-pairs.md#scaling-to-a-million-records) the cost.
+`scripts/benchmark.py` runs `FINAL` the way a real file is run (`jobs.build.build`, without labels), without re-tuning anything, and writes [`reports/benchmark.md`](../reports/benchmark.md). Chapter [6](guide/06-measuring-and-choosing.md#challenge-does-it-hold-beyond-our-one-dataset) explains the scenarios, and chapter [3](guide/03-far-too-many-pairs.md#scaling-to-a-million-records) the cost.
 
 ### Scenarios
 

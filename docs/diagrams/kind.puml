@@ -31,7 +31,7 @@ package "every chunk of the load (LLD 1, step 1)" {
   database "records" as records
 }
 
-rectangle "Run._gold · run.customer_kinds\neach record's kind; each customer's: 2 if any record is surely 2,\n1 if none leans company and one is surely 1, else 0" as gold
+rectangle "steps.cluster._gold · steps.cluster.customer_kinds\neach record's kind; each customer's: 2 if any record is surely 2,\n1 if none leans company and one is surely 1, else 0" as gold
 file "gold.parquet" as f_gold
 
 f_ref --> split

@@ -33,7 +33,7 @@ def test_a_floor_below_0_keeps_the_pairs_down_to_it_and_every_pair_the_default_k
 
 
 def test_keep_from_changes_the_run_s_hash_only_when_set(ran):
-    from er.run import run_config
+    from er.steps.write import run_config
     s, p, ws = ran
     at = lambda bits: replace(p, threshold=replace(p.threshold, keep_from=bits))
     assert run_config(at(0.0), s) == run_config(p, s) != run_config(at(-10.0), s)

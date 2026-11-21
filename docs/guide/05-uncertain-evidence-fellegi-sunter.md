@@ -205,7 +205,7 @@ Pairs of two people of one household are counted apart, neither true nor false: 
   - `scaled_prior`: rescales λ to the scored file's size
 - `er/cluster.py`: `merge`, the run's clustering
 - `config/pipeline.toml` `[model]`: the comparisons and levels; `design/select.py`: `FSChooser.training` (EM against labels), `why`, `threshold`, run by `scripts/choose.py`
-- `er/run.py`: `Run.fit` (the fit, then u on the whole file) and `Run.score`, the same model without labels on any file; `er/match.py`: `named_sql`, the name check; `notebooks/demo.ipynb`, sections 5 and 8–11, draws each step
+- `er/steps/fit.py`: `steps.fit.fit` (the fit, then u on the whole file); `er/steps/score.py`: `steps.score.score`, the same model without labels on any file; `er/match.py`: `named_sql`, the name check; `notebooks/demo.ipynb`, sections 5 and 8–11, draws each step
 - every table: [results.md](../results.md)
 
 ## Further reading
