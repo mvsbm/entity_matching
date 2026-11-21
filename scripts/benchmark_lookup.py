@@ -24,7 +24,8 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from er import cli, index
+from er import cli
+from er.jobs import index
 from er.candidates import candidates
 from design.generate import generate, load_reference, load_spec
 from er.io import markdown

@@ -61,7 +61,7 @@ REBUILD = 0.1  # shortcut: the records added since the build reaching this share
 OPEN = 2  # shortcut: the indexes kept open, each with its DuckDB connection and classifier, for a server's next lookup; raise it when people look up in more workspaces at once
 QUERY = "\x7flookup"  # the ID of a record typed in: no record's, and after every one in order
 MOVES = ("gold.parquet", "state/rule_clusters.parquet", "state/scoring.json", "state/placeholders.json")  # what a delta carries: entities, rules' clusters, the u an increment counts again, the values read as missing
-INDEXING = hashlib.sha256(b"".join((Path(__file__).parent / f"{m}.py").read_bytes() for m in ("index", "candidates", "config", "standardize", "match", "kind"))
+INDEXING = hashlib.sha256(b"".join((Path(__file__).resolve().parents[1] / f"{m}.py").read_bytes() for m in ("jobs/index", "candidates", "config", "standardize", "match", "kind"))
                           + duckdb.__version__.encode()).hexdigest()[:12]  # what reads and writes an index: another version builds it again
 
 _OPENED: dict[str, tuple] = {}  # bounded: OPEN workspaces, the oldest dropped; each its manifest, connection, classifier and the classifier's lock
