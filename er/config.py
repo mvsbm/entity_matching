@@ -60,8 +60,7 @@ class OverBudget(InputError):
 
 
 def column_name(base: str, normalize: tuple[Normalizer, ...]) -> str:
-    """The derived column holding normalized values. Plain identifier characters only: Splink builds unquoted
-    table names (term-frequency tables) from column names."""
+    """The derived column holding normalized values, in plain identifier characters."""
     return f"{base}__{'_'.join(normalize)}" if normalize else base
 
 
@@ -136,7 +135,7 @@ class Comparator:
         return column_name(base, steps) if (steps := self.copied()) else None
 
     def sql(self, base: str, level: bool = False, settled: bool = False) -> str:
-        """Blocking-rule SQL (l."c" / r."c"), or with level=True Splink comparison-level SQL ("c_l" / "c_r"). DuckDB's own
+        """Blocking-rule SQL (l."c" / r."c"), or with level=True comparison-level SQL ("c_l" / "c_r"). DuckDB's own
         Jaro, Jaro–Winkler and Hamming are rapidfuzz's C++, so on characters of one byte each (ASCII, or the one-byte
         copy) they give the Python function's score, on every thread and without Python, and so do its edit distances on
         ASCII; on other text, its edit distance of the hashed copy (or of the bytes) fails a pair first that no edit of as
@@ -327,7 +326,6 @@ def keys_of(b: Blocker) -> tuple[Key, ...]:  # every column a generator reads
 class Level:
     label: str
     any_of: tuple[tuple[str, Comparator], ...]  # (column, comparator) conditions, OR'd
-    tf: bool = False                          # term-frequency adjust this level (on the comparison's tf key)
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -335,7 +333,6 @@ class Comparison:
     name: str
     levels: tuple[Level, ...]                 # most to least similar; an else level is added
     null_if_missing: tuple[str, ...]          # null level when none of these is filled on both sides
-    tf: Key | None = None
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -357,14 +354,14 @@ class FSModel:
     em_choose: tuple[tuple[Key, ...], ...] = field(default=(), repr=False)  # sessions judged by the given name, those kept in place of em_rules (er.match.chosen); out of repr, so of a run's fingerprint (er.run.run_config)
 
     def u_keys(self) -> dict[str, str]:
-        """What each comparison's u depends on, besides the fitting records: the comparison (term-frequency adjustment
-        aside), the sample size and the seed. Equal keys give identical u, also across models."""
-        return {c.name: repr((replace(c, tf=None), self.u_max_pairs, self.seed)) for c in self.comparisons}
+        """What each comparison's u depends on, besides the fitting records: the comparison, the sample size and the
+        seed. Equal keys give identical u, also across models."""
+        return {c.name: repr((c, self.u_max_pairs, self.seed)) for c in self.comparisons}
 
     def normalized(self) -> list[tuple[str, tuple[Normalizer, ...]]]:
         out = [(col, comp.normalize) for c in self.comparisons for lv in c.levels for col, comp in lv.any_of if comp.normalize]
         out += [(col, comp.copied()) for c in self.comparisons for lv in c.levels for col, comp in lv.any_of if comp.copied()]
-        keys = [k for c in self.comparisons if c.tf for k in [c.tf]] + [k for rule in (*self.prior_rules, *self.em_rules, *self.em_choose) for k in rule]
+        keys = [k for rule in (*self.prior_rules, *self.em_rules, *self.em_choose) for k in rule]
         return out + [(k.column, k.normalize) for k in keys if k.normalize]
 
 
@@ -389,7 +386,7 @@ class FSSpec:
         m = self.model
         cols = {k.name for b in self.blockers for k in keys_of(b)}
         cols |= {comp.column(col) for c in m.comparisons for lv in c.levels for col, comp in lv.any_of}
-        cols |= {col for c in m.comparisons for col in c.null_if_missing} | {c.tf.name for c in m.comparisons if c.tf}
+        cols |= {col for c in m.comparisons for col in c.null_if_missing}
         return cols | {k.name for rule in (*m.prior_rules, *m.em_rules, *m.em_choose) for k in rule}
 
 
@@ -403,10 +400,6 @@ def with_level(model: FSModel, comparison: str, label: str, **changes: object) -
     assert found, f"no level {label!r} in comparison {comparison!r}"
     return replace(model, comparisons=tuple(replace(c, levels=tuple(map(level, c.levels))) if c.name == comparison else c
                                             for c in model.comparisons))
-
-
-def without_tf(model: FSModel) -> FSModel:  # no term frequencies: neither the comparisons' keys nor their levels' flags
-    return replace(model, comparisons=tuple(replace(c, tf=None, levels=tuple(replace(lv, tf=False) for lv in c.levels)) for c in model.comparisons))
 
 
 # ---------- data, search ----------
@@ -509,7 +502,6 @@ class FSTune:
     """Search over whole components of the probabilistic stage, not just thresholds."""
     toggle_blockers: tuple[str, ...]          # generators a trial may switch off
     m_methods: tuple[Literal["em", "labels"], ...]
-    tf_options: tuple[bool, ...]
     level_thresholds: Mapping[tuple[str, str], tuple[float, float, float]]  # (comparison, level) → low, high, step
     n_trials: int                             # the only bound, as in Tune
     enabled: bool = False                     # as in Tune
@@ -629,9 +621,12 @@ def pipeline_from(cfg: dict, std: Standardization, chains: Mapping[str, tuple[No
     unknown = [g for g in m["generators"] if g not in generators]
     if unknown:
         raise ValueError(f"[model] generators: {unknown} are not defined in [generators]")
+    if tf := [c["name"] for c in m["comparisons"] if "tf" in c or any("tf" in lv for lv in c["levels"])]:
+        raise InputError(f"[model] comparisons {', '.join(tf)}: tf sets nothing: a level weighs the same whichever value agrees",
+                         fix="delete tf from those comparisons and their levels")
     comparisons = tuple(Comparison(
-        name=c["name"], null_if_missing=tuple(c["null_if_missing"]), tf=_key(c["tf"], chains) if "tf" in c else None,
-        levels=tuple(Level(label=lv["label"], tf=lv.get("tf", False),
+        name=c["name"], null_if_missing=tuple(c["null_if_missing"]),
+        levels=tuple(Level(label=lv["label"],
                            any_of=tuple((a["field"], _comparator(a, chains)) for a in lv["any_of"])) for lv in c["levels"]))
         for c in m["comparisons"])
     model = FSModel(name=m["name"], comparisons=comparisons, prior_recall=m["prior_recall"], u_max_pairs=m["u_max_pairs"],
@@ -690,7 +685,7 @@ def fields_read(p: Pipeline) -> set[str]:  # every field the rules, the generato
     out = {c for s in r.stages for rule in s.rules for c in (*rule.exact, *rule.fuzzy, *(k.column for k in rule.blocking))}
     out |= {k.column for b in p.generators.values() for k in keys_of(b)}
     out |= {col for c in m.comparisons for lv in c.levels for col, _ in lv.any_of} | {col for c in m.comparisons for col in c.null_if_missing}
-    out |= {c.tf.column for c in m.comparisons if c.tf} | {k.column for rule in (*m.prior_rules, *m.em_rules, *m.em_choose) for k in rule}
+    out |= {k.column for rule in (*m.prior_rules, *m.em_rules, *m.em_choose) for k in rule}
     out |= {*p.explain_show, *p.explain_filled} | {c for s in r.stages for c in s.comparators}
     out |= {k.column for k in p.household.shared} | {col for col, _ in p.household.apart}
     return out
@@ -750,9 +745,7 @@ def restrict(p: Pipeline, present: set[str]) -> tuple[Pipeline, list[str]]:
                 gone.append(f"level {c.name}: {lv.label} (needs {sorted({col for col, _ in lv.any_of})})")
         null = tuple(col for col in c.null_if_missing if col in present)
         if levels and null:
-            tf = c.tf if c.tf and c.tf.column in present else None
-            comparisons.append(replace(c, levels=tuple(levels) if tf else tuple(replace(lv, tf=False) for lv in levels),
-                                       null_if_missing=null, tf=tf))
+            comparisons.append(replace(c, levels=tuple(levels), null_if_missing=null))
         else:
             gone.append(f"comparison {c.name}")
     m = p.fs.model
@@ -829,9 +822,9 @@ def pipeline_dict(p: Pipeline, chains: Mapping[str, tuple[Normalizer, ...]]) -> 
                   "seed": m.seed, "u_from_scored": m.u_from_scored, "u_exact_by_counts": m.u_exact_by_counts, "u_near_by_keys": m.u_near_by_keys,
                   **({"fit_u_max_pairs": m.fit_u_max_pairs} if m.fit_u_max_pairs else {}), **({"em_median": True} if m.em_median else {}),
                   **({"em_from_keys": True} if m.em_from_keys else {}), "fit_rows": p.fit_rows,
-                  "comparisons": [{"name": c.name, "null_if_missing": list(c.null_if_missing), **({"tf": key(c.tf)} if c.tf else {}),
-                                   "levels": [{"label": lv.label, "any_of": [{"field": col, **comp(x)} for col, x in lv.any_of],
-                                               **({"tf": True} if lv.tf else {})} for lv in c.levels]} for c in m.comparisons]},
+                  "comparisons": [{"name": c.name, "null_if_missing": list(c.null_if_missing),
+                                   "levels": [{"label": lv.label, "any_of": [{"field": col, **comp(x)} for col, x in lv.any_of]}
+                                              for lv in c.levels]} for c in m.comparisons]},
         **({"kind": vars(p.kind)} if p.kind else {}),
         "threshold": {"grid": list(t.grid), "max_fp": t.max_fp, "max_fp_rate_hi": t.max_fp_rate_hi, "margin_steps": t.margin_steps, "search_floor": t.search_floor,
                       **({"keep_from": t.keep_from} if t.keep_from else {})},

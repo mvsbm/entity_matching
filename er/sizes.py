@@ -15,6 +15,7 @@ from dataclasses import replace
 from pathlib import Path
 
 from er import index
+from er.explain import run_model
 from er.config import InputError, KeyBlocker, Pipeline, em_candidates, lit, q
 from er.match import ELSE, _ranked, fit_model, fit_sample_sql, levels, prior_bits, review_floor, scaled_prior, train_fs
 from er.report import no_run
@@ -46,12 +47,9 @@ def opened(ws: Path, s: Settings, p: Pipeline):
     the file, where it was), the ID column, the records' count and those u by comparison and level."""
     con = connect(s.compute)
     parts = sorted((ws / "state" / "records").glob("part-*.parquet"))
-    scoring = ws / "state" / "scoring.json"
     if not parts or not (ws / "state" / "model.json").exists() or not list((ws / "scored").glob("*.parquet")):
         raise no_run(ws, "measure a sample against")
-    model = index._scorable(ws)  # a model that adjusts by term frequency scores a pair by more than its levels: refused, as a lookup refuses it
-    if scoring.exists():  # u measured on the file (u_from_scored), as the run scored with them
-        model = json.loads(scoring.read_text(encoding="utf-8"))["model"]
+    model = run_model(ws)  # u measured on the file (u_from_scored), as the run scored with them
     con.execute(f"CREATE TABLE records AS SELECT * FROM read_parquet([{', '.join(lit(x) for x in parts)}], union_by_name = true)")
     p = index.to_file(s, p, [c for c, *_ in con.execute("DESCRIBE records").fetchall()])  # the method's keys, as a run's fit sees them: not those it kept after
     uid, n = s.data.unique_id, con.execute("SELECT count(*) FROM records").fetchall()[0][0]

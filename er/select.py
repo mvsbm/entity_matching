@@ -328,7 +328,7 @@ class FSChooser:
             if rows[-1]["adopted"]:
                 final = variant
         self.final, self.adopted = final, [v["change"] for v in rows if v["adopted"]]
-        text = (f"FINAL: {len(final.blockers)} generators · term frequency {'on' if any(c.tf for c in final.model.comparisons) else 'off'} · "
+        text = (f"FINAL: {len(final.blockers)} generators · "
                 f"m by {final.model.m_method} · min_match_weight {final.min_match_weight} · {final.resolver.method}")
         return [("Decisions", text, pd.DataFrame(rows).round(4))]
 
@@ -413,8 +413,7 @@ class FSChooser:
             on = {b for b in tune.toggle_blockers if trial.suggest_categorical(f"use:{b}", [True, False])}
             fixed = {b.name for b in final.blockers} - set(tune.toggle_blockers)
             m_method = trial.suggest_categorical("m_method", list(tune.m_methods))
-            tf = {c.name: c.tf for c in self.spec.model.comparisons} if trial.suggest_categorical("term_frequency", list(tune.tf_options)) else {}
-            model = replace(final.model, m_method=m_method, comparisons=tuple(replace(c, tf=tf.get(c.name)) for c in final.model.comparisons))
+            model = replace(final.model, m_method=m_method)
             have = {(c.name, lv.label) for c in model.comparisons for lv in c.levels}  # a decision may have dropped one
             for (comparison, label), (lo, hi, step) in tune.level_thresholds.items():
                 if (comparison, label) in have:

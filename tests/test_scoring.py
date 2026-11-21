@@ -1,14 +1,14 @@
 """Scoring: string functions, u and m, the weights, the threshold and how it is chosen."""
-import logging
+import json
 import math
 from dataclasses import replace
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
 import pytest
-from splink import DuckDBAPI, Linker
 
-from er.config import (Budget, Comparator, Comparison, FSModel, Key, Level, Resolver, Rule, RulesSpec, Stage, ThresholdRule, keys_sql)
+from er.config import (Budget, Comparator, Comparison, FSModel, Key, Level, Resolver, Rule, RulesSpec, Stage, ThresholdRule)
 from er.evaluate import adopt, fp_upper, paired_test, wilson
 from er.match import exact_u, parameters, rule_edges, sample_u, score_fs, train_fs, u_values, waterfall
 from er.pipeline import (accept_curve, clustered, select_threshold)
@@ -18,6 +18,9 @@ from er.strings import connect
 from er.tune import pick_within_noise
 
 from conftest import PAIR, UID, model
+
+FIXTURES = Path(__file__).parent / "fixtures"
+SPLINK = json.loads((FIXTURES / "splink-5.0.0.json").read_text(encoding="utf-8"))  # what Splink 5.0.0 gave, recorded
 
 
 def test_string_functions_are_character_level_and_null_safe(con):
@@ -64,15 +67,14 @@ def test_a_u_sample_is_drawn_once_per_set_of_records(con, records, monkeypatch):
     assert sampled == ["name", "phone"] and parameters(fresh).fillna(0).round(12).equals(parameters(again).fillna(0).round(12))
 
 
-def test_a_u_sample_counted_in_one_pass_gives_splink_s_u_to_the_last_bit(con, records):
-    from er.match import model_dict
+def test_a_u_sample_counted_in_one_pass_gives_splink_s_u_to_the_last_bit(con):
+    """Against Splink 5.0.0's random sampling of the same records, as recorded (tests/fixtures/splink-5.0.0.json)."""
+    records = pd.read_parquet(FIXTURES / "splink-5.0.0" / "records.parquet")
     gaps = records.assign(name=records["name"].mask(records.index % 7 == 0))  # a missing side: neither level's
     for pairs in (1e4, 300):  # every pair, and the share of records a hash of their ID draws
         m = replace(model(extra_name_levels=(Level(label="never", any_of=(("name", Comparator("jaro_winkler", 0.95)),)),)), u_max_pairs=pairs)
-        linker = Linker(DuckDBAPI(connection=con).register(gaps.assign(name__one_byte=normalize(gaps["name"], ("one_byte",), None))), model_dict(m, UID), log_level=logging.ERROR)
-        linker.training.estimate_u_using_random_sampling(max_pairs=pairs, seed=m.seed, min_count_per_level=None, num_chunks=3)
-        splink_u, ours = u_values(linker.misc.save_model_to_json()), sample_u(m, list(m.comparisons), gaps, con, UID)
-        assert ours == splink_u and "never" not in ours["name"] and 0 < sum(ours["name"].values()) <= 1, pairs
+        ours = sample_u(m, list(m.comparisons), gaps, con, UID)
+        assert ours == SPLINK["u_sample"][repr(pairs)] and "never" not in ours["name"] and 0 < sum(ours["name"].values()) <= 1, pairs
 
 
 def test_a_u_sample_kept_by_a_workspace_is_read_again_and_drawn_again_once_what_it_rests_on_changes(con, records, monkeypatch, tmp_path):
@@ -157,17 +159,17 @@ def test_levels_without_an_estimate_get_bounds_not_splink_defaults(con, records)
     assert parameters(model_json).set_index(["comparison", "level"]).at[("name", "shadowed"), "weight"] == 0
 
 
-def test_registered_pairs_score_like_splink_blocking(con, records):
-    model_json = train_fs(model(), records, con, UID)
-    splink_json = {k: v for k, v in model_json.items() if k != "er"}
-    from er.standardize import normalize
-    copied = records.assign(name__one_byte=normalize(records["name"], ("one_byte",), None))  # as er.standardize prepares them: Splink's own linker reads every column
-    native = Linker(DuckDBAPI(connection=con).register(copied), {**splink_json, "blocking_rules_to_generate_predictions": [keys_sql((Key("phone"),))]},
-                    log_level=logging.ERROR).inference.predict().as_pandas_dataframe().astype({"uid_l": "string", "uid_r": "string"})
-    ours = score_fs(model_json, records, native[["uid_l", "uid_r"]], con, UID)  # Splink's SQL in one query of ours: the same to the last bit
+def test_pairs_score_as_splink_s_predict_scored_them_to_the_last_bit(con):
+    """Against Splink 5.0.0's predict of the pairs sharing a phone, with the same model, as recorded
+    (tests/fixtures/splink-5.0.0.json): the same weight, probability and levels."""
+    records = pd.read_parquet(FIXTURES / "splink-5.0.0" / "records.parquet")
+    recorded = SPLINK["predict"]
+    cols = ["uid_l", "uid_r", "match_weight", "match_probability", "gamma_name", "gamma_phone"]
+    native = pd.DataFrame(recorded["pairs"], columns=cols).astype({"uid_l": "string", "uid_r": "string"})
+    ours = score_fs(recorded["model"], records, native[["uid_l", "uid_r"]], con, UID)
     both = native.merge(ours, on=["uid_l", "uid_r"], suffixes=("_native", "_registered"))
     assert len(both) == len(native) > 0 and both["gamma_name_native"].nunique() > 1
-    for c in ("match_weight", "match_probability", "gamma_name", "gamma_phone"):
+    for c in cols[2:]:
         assert (both[f"{c}_native"] == both[f"{c}_registered"]).all(), c
 
 
@@ -180,15 +182,21 @@ def test_waterfall_bits_sum_to_the_match_weight(con, records):
         assert bits["bits"].sum() == pytest.approx(row["match_weight"])
 
 
-def test_term_frequencies_come_from_the_fitting_records(con, records):
-    model_json, plain = train_fs(model(tf=True), records, con, UID), train_fs(model(), records, con, UID)
-    other = records.assign(name=records["name"].where(records["uid"].isin(["001a", "001b"]), "ヨソ"))  # the pair's name: 2 of 120
-
-    def weight(m: dict, df: pd.DataFrame, d) -> float:
-        return score_fs(m, df, PAIR, d, UID)["match_weight"].item()
-    with_tf = weight(model_json, records, con)
-    assert with_tf != pytest.approx(weight(plain, records, con))  # the adjustment applies
-    assert with_tf == pytest.approx(weight(model_json, other, con)) == pytest.approx(weight(model_json, other, connect()))
+def test_a_saved_model_adjusting_by_term_frequency_is_refused_where_it_is_read(tmp_path):
+    from er.cli import model_from
+    from er.config import InputError
+    from er.explain import run_model
+    tf = {"comparisons": [], "er": {"fit_rows": 10, "tf": {"name": {"サトウ": 0.1}}}}
+    (tmp_path / "model.json").write_text(json.dumps(tf), encoding="utf-8")
+    with pytest.raises(InputError, match="term frequency") as e:
+        model_from(str(tmp_path / "model.json"))
+    assert e.value.fix == "leave --model out to fit one on the file"
+    (tmp_path / "state").mkdir()
+    (tmp_path / "state" / "model.json").write_text(json.dumps(tf), encoding="utf-8")
+    with pytest.raises(InputError, match="term frequency"):  # a workspace's: the index, sizes and scoring again read it so
+        run_model(tmp_path)
+    (tmp_path / "state" / "model.json").write_text(json.dumps({**tf, "er": {"fit_rows": 10, "tf": {}}}), encoding="utf-8")
+    assert run_model(tmp_path)["er"]["fit_rows"] == 10  # a model saved with none is read as it is
 
 
 def test_prior_is_rescaled_to_the_scored_set_size(con, records):
@@ -539,41 +547,3 @@ def test_the_method_s_own_em_sessions_are_judged_by_the_given_name_too(con):
     for fitted in (replace(household_model(em_choose=()), em_rules=two), replace(household_model(em_choose=()), em_rules=two, em_median=True)):  # in turn, and kept apart
         got = {x["session"]: x["given_share"] for x in train_fs(fitted, records, con, UID)["er"]["em_given"]}
         assert got["phone"] < 0.5 <= got["birth_date"], got  # what DIAGNOSIS says of a run's own EM
-
-
-@pytest.mark.parametrize("pipeline", ["final.toml", "pipeline.toml"])
-def test_the_model_dict_is_the_settings_splink_built_from_the_same_comparisons(pipeline, con):
-    """match.model_dict against the SettingsCreator it replaces (Splink 5.0's CustomComparison levels): the same
-    comparisons, levels, SQL, u and rules, and a linker given either saves the same model."""
-    import splink.comparison_level_library as cll
-    import splink.comparison_library as cl
-    from splink import SettingsCreator
-    from er.config import keys_sql, load_pipeline
-    from er.match import ELSE, model_dict, read_by
-    from er.settings import load_settings
-    s = load_settings()
-    m = load_pipeline(s.root / "config" / pipeline, s.standardize, s.chains, s.columns).fs.model
-
-    def splink_comparison(c, u):  # match.comparison as it was written on Splink's builders
-        def with_u(level, label):
-            return level.configure(u_probability=u[label]) if u and label in u else level
-        null = " AND ".join(f'("{col}_l" IS NULL OR "{col}_r" IS NULL)' for col in c.null_if_missing)
-        levels = [cll.CustomLevel(null, "missing").configure(is_null_level=True)]
-        for lv in c.levels:
-            level = cll.CustomLevel(" OR ".join(f"({comp.sql(col, level=True)})" for col, comp in lv.any_of), lv.label)
-            levels.append(with_u(level.configure(tf_adjustment_column=c.tf.name) if lv.tf and c.tf else level, lv.label))
-        return cl.CustomComparison(comparison_levels=[*levels, with_u(cll.ElseLevel().configure(label_for_charts=ELSE), ELSE)], output_column_name=c.name)
-
-    u = {c.name: {lv.label: 0.01 * (i + 1) for i, lv in enumerate(c.levels)} | {ELSE: 0.5} for c in m.comparisons[::2]}  # some given, some not
-    theirs = SettingsCreator(link_type="dedupe_only", unique_id_column_name="uid", blocking_rules_to_generate_predictions=[keys_sql(r) for r in m.em_rules],
-                             comparisons=[splink_comparison(c, u.get(c.name)) for c in m.comparisons]).create_settings_dict("duckdb")
-    ours = model_dict(m, "uid", u)
-    keys = ("sql_condition", "label_for_charts", "u_probability", "is_null_level", "tf_adjustment_column")
-    shape = lambda d: [(c["output_column_name"], [{k: lv[k] for k in keys if k in lv} for lv in c["comparison_levels"]]) for c in d["comparisons"]]
-    assert shape(ours) == shape(theirs) and len(ours["comparisons"]) == len(m.comparisons)
-    assert ours["blocking_rules_to_generate_predictions"] == [b["blocking_rule"] for b in theirs["blocking_rules_to_generate_predictions"]]
-    frame = pd.DataFrame({"uid": ["1", "2"], **{c: pd.Series([None, None], dtype="string") for c in read_by(ours)}})
-    saved = [Linker(DuckDBAPI(connection=con).register(frame), x, log_level=logging.ERROR).misc.save_model_to_json() for x in (ours, theirs)]
-    for x in saved:
-        x.pop("linker_uid")
-    assert saved[0] == saved[1]

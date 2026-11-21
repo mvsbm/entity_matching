@@ -53,7 +53,7 @@ Research on the problem goes back more than sixty years. Four ideas shape this r
 
 ## How is it done in practice?
 
-Governments and statistics offices link records about people with the Fellegi–Sunter model. The UK Ministry of Justice built Splink, the library we use, to link people across court, prison and probation records that share no common ID. Other parts of the UK government, including the Office for National Statistics, use it too.
+Governments and statistics offices link records about people with the Fellegi–Sunter model. The UK Ministry of Justice built Splink, an open-source implementation of the model, to link people across court, prison and probation records that share no common ID; our model computes Fellegi–Sunter as Splink 5.0 does. Other parts of the UK government, including the Office for National Statistics, use it too.
 
 Teams cleaning customer data often work in three tiers:
 

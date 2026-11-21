@@ -253,7 +253,7 @@ Reading down each column shows what each function notices:
 
 ## Challenge: Japanese text breaks standard tools
 
-DuckDB, the database engine under Splink, has built-in similarity functions. They compare **bytes**, not characters. In UTF-8, each katakana character takes 3 bytes. Every katakana shares the same first byte, and most share the second as well. Byte by byte, unrelated names look far more alike than they are:
+DuckDB, the database engine every run uses, has built-in similarity functions. They compare **bytes**, not characters. In UTF-8, each katakana character takes 3 bytes. Every katakana shares the same first byte, and most share the second as well. Byte by byte, unrelated names look far more alike than they are:
 
 | Pair | Byte-level Jaro–Winkler | Character-level |
 |---|---|---|

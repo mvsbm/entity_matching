@@ -2,9 +2,8 @@
 numpy==2.4.4
 pandas==3.0.3
 ipykernel==7.4.0  # notebooks/: the kernel VS Code and scripts/export_pdfs.py run them on
-splink==5.0.0  # the model's training and scoring, and the clustering (er.match, er.cluster)
 duckdb==2.0.0  # the engine of every run; 2.0 changed fetching and lambdas (docs/lessons.md)
-pyarrow==26.0.0  # the reader's casts and every Parquet written (er.intake); splink brings it, unpinned
+pyarrow==26.0.0  # the reader's casts and every Parquet written (er.intake)
 scipy==1.18.1  # beta and binomial bounds on false rates (er.evaluate, er.kind, er.report); scikit-learn brings it, unpinned
 optuna==5.0.0  # scripts/choose.py --optuna: the comparator searches (er.tune, er.select)
 optuna-dashboard==0.21.0  # localhost web UI for the study
@@ -14,7 +13,7 @@ pytest==9.2.0  # tests/: engine self-checks
 pytest-xdist==3.8.0  # tests/: on every core at once (-n auto)
 pytest-split==0.11.0  # CI: the long tiers in parts of about equal time, by tests/durations.json
 ruff==0.17.0  # CI: the rules in pyproject.toml [tool.ruff]
-sqlglot==30.25.0  # tests/test_design.py: the tables each step's SQL makes and reads (Splink installs it too)
+sqlglot==30.25.0  # tests/test_design.py: the tables each step's SQL makes and reads
 matplotlib==3.11.2  # notebooks/demo.ipynb: the charts (static, so the PDF keeps them)
 nbconvert==7.17.2  # scripts/export_pdfs.py: run the demo notebook, render it with its outputs
 playwright==1.64.1  # scripts/export_pdfs.py prints the docs as PDFs (once: python -m playwright install chromium)

@@ -70,9 +70,6 @@ def reachable(run, floor: float, into: str = "er_kl_ok") -> int:
     column of which the record holds, its best level's weight, or 0 if that is less. A pair scores at most what either of
     its records could, so a pair of a record outside it never reaches the floor. O(N). Returns how many."""
     p, have = run.pipeline, set(run.columns())
-    if run.scoring.get("er", {}).get("tf"):  # a value rarer than u weighs more than its level: no bound from the levels, every record kept
-        run.con.execute(f"CREATE OR REPLACE TABLE {into} AS SELECT {q(run.uid)} FROM records")
-        return run.n
     lam = scaled_prior(run.scoring, run.n)
     terms = []
     for c, j in zip(p.fs.model.comparisons, run.scoring["comparisons"]):

@@ -117,10 +117,9 @@ fit_rows = 100_000                # an unlabelled run (er.run) fits λ and m on 
 [[model.comparisons]]
 name = "name"
 null_if_missing = ["person_name"]
-tf = { field = "person_name", normalize = "fold" }
 levels = [
-  { label = "exact", any_of = [{ field = "person_name", function = "exact" }], tf = true },
-  { label = "fold exact", any_of = [{ field = "person_name", function = "exact", normalize = "fold" }], tf = true },
+  { label = "exact", any_of = [{ field = "person_name", function = "exact" }] },
+  { label = "fold exact", any_of = [{ field = "person_name", function = "exact", normalize = "fold" }] },
   { label = "fold JW high", any_of = [{ field = "person_name", function = "jaro_winkler", threshold = 0.92, normalize = "fold" }] },
   { label = "given name", any_of = [{ field = "given_name", function = "exact", normalize = "fold" }] },   # surname change
   { label = "fold JW low", any_of = [{ field = "person_name", function = "jaro_winkler", threshold = 0.85, normalize = "fold" }] },
@@ -129,9 +128,8 @@ levels = [
 [[model.comparisons]]
 name = "company"
 null_if_missing = ["company_name"]
-tf = { field = "company_name", normalize = "company" }
 levels = [
-  { label = "exact", any_of = [{ field = "company_name", function = "exact", normalize = "company" }], tf = true },
+  { label = "exact", any_of = [{ field = "company_name", function = "exact", normalize = "company" }] },
   { label = "JW high", any_of = [{ field = "company_name", function = "jaro_winkler", threshold = 0.92, normalize = "company" }] },
   { label = "JW low", any_of = [{ field = "company_name", function = "jaro_winkler", threshold = 0.85, normalize = "company" }] },
 ]

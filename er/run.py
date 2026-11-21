@@ -138,7 +138,7 @@ def size_bytes(text: str) -> int:  # one of DuckDB's sizes: "8.0 GiB", "512.0 Mi
 class Run:
     pipeline: Pipeline                        # the chosen pipeline; fitted to the file by load()
     settings: Settings
-    model: dict | None = None                 # a fitted model (Splink JSON from train_fs); None: fit on this file
+    model: dict | None = None                 # a fitted model (the JSON train_fs returns); None: fit on this file
     chunk_rows: int = 200_000
     score_pairs: int = 5_000_000              # pairs scored at a time: each slice says how far scoring is, and bounds its memory; each joins every record again
     steps: list[dict] = field(default_factory=list)

@@ -115,7 +115,6 @@ def window_only(spec: FSSpec, model_json: dict, records: pd.DataFrame, truth: pd
     those, and a window's reach shrinks as the file grows. λ moves to each size; with model.u_from_scored, so does u:
     per level u ∝ N^γ, γ measured between half and all of the entities, so a pair agreeing on a field whose value set
     grows with the file keeps its weight at scale. O(N + P + T·C) for T true pairs, plus two u samples."""
-    assert not model_json["er"]["tf"], "the weights at other sizes are summed from the levels, without term frequencies"
     uid = data.unique_id
     l, r = f"{uid}_l", f"{uid}_r"
     df = prepare(spec.standardize, records, spec.normalized(), spec.used())
@@ -221,7 +220,7 @@ def run_rules(pipeline: Pipeline, settings: Settings, path: Path, truth: pd.Data
     rules = (edges.groupby("rule", sort=False).agg(edges=("fp", "size"), edge_FP=("fp", "sum"), kept=("kept", "sum"),
                                                    kept_FP=("fp", lambda f: int((f & edges.loc[f.index, "kept"]).sum())))
              .reindex(plan["rule"]).fillna(0).astype(int).reset_index())
-    plan = plan.assign(actual_ms=(1000 * plan["rule"].map(run.rule_seconds)).round(1))  # includes Splink's per-rule overhead
+    plan = plan.assign(actual_ms=(1000 * plan["rule"].map(run.rule_seconds)).round(1))
     run.con.close()  # its tables are read: free its memory now, not when the collector finds the run
     return Result(plan, rules, pd.DataFrame(metrics), out, edges, time.perf_counter() - t0)
 

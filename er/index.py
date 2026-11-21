@@ -86,14 +86,6 @@ def to_file(s: Settings, p: Pipeline, columns: list[str]) -> Pipeline:  # the pi
     return fit_to_file(p, s, [*columns, *(c for alts in s.columns.values() for alt in alts for c in alt if c not in columns and c.casefold() in folded)])[0]
 
 
-def _scorable(ws: Path) -> dict:  # the run's model, refused if a lookup can't score as it does
-    model = run_model(ws)
-    if model["er"]["tf"]:
-        raise InputError(f"the model of the run in {ws} adjusts levels by term frequency, which a lookup doesn't",
-                         fix="index a run of config/final.toml's method, which adjusts none")
-    return model
-
-
 def _tables(p: Pipeline) -> list[tuple[str, object]]:  # each index table of keys, by name: its generator or (stage, rule)
     return [*((f"g{i}", b) for i, b in enumerate(p.fs.blockers) if isinstance(b, (KeyBlocker, DeletionKeys, SortedNeighbourhood))),
             *((f"r{i}", (st, rule)) for i, st, rule in p.rules.each() if st.keys(rule))]
@@ -195,7 +187,7 @@ def _build(ws: Path, s: Settings, p: Pipeline, stamp: dict) -> dict:
         raise InputError(f"{ws} holds no run to index", fix=f"find matches first: nayose resolve records <file> --workspace {ws}")
     src = f"read_parquet([{', '.join(lit(x) for x in parts)}], union_by_name = true)"
     have = list(dict.fromkeys(c for f in parts for c in pq.read_schema(f).names))  # as union_by_name orders them
-    fitted, model = _pipeline(ws, s, p, have), _scorable(ws)
+    fitted, model = _pipeline(ws, s, p, have), run_model(ws)
     tables = _tables(fitted)
     reads = {uid, *read_by(model), *(c for _, x in tables for c in _keys(x)), *(c for c in SHOWN if c in have), *(c for c in ALIKE if c in have),
              *(c for _, x in tables if isinstance(x, tuple) for c in _rule_reads(x, have))}
@@ -244,7 +236,6 @@ def update(ws: Path, s: Settings, p: Pipeline) -> dict:
         if now == m["stamp"]:  # nothing changed since the last write
             return dict(index=str(ws / INDEX), records=m["records"] + m["added"], added=m["added"], moved=m["moved"], seconds=0.0, rebuilt=None)
         fitted, n = _pipeline(ws, s, p, m["columns"]), m["updates"] + 1
-        _scorable(ws)
         con = connect(s.compute)
         tmp, delta = _scratch(ws), f"{m['id']}-{n}.duckdb"
         try:

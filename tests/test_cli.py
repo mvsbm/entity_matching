@@ -26,8 +26,6 @@ def _mapping(tmp_path: Path, s, **fields: str) -> Path:  # the project's setting
 
 
 def test_a_run_says_what_is_wrong_in_words_people_can_act_on(say, tmp_path, population, capsys, monkeypatch):
-    from splink.internals.exceptions import SplinkException
-
     from er.run import Run
     s, p, g = population
     monkeypatch.chdir(tmp_path)
@@ -48,11 +46,8 @@ def test_a_run_says_what_is_wrong_in_words_people_can_act_on(say, tmp_path, popu
                   ("resolve", "records", tmp_path / "all.parquet", "--workspace", tmp_path / "w", "--model", tmp_path / "none.json")):
         code, e = say(*words)
         assert code == 2 and e["fix"], words  # a mistake people fix: two lines, never a traceback
-    def short(*_, **__):  # out of memory inside Splink, which wraps DuckDB's error in its own
-        try:
-            raise duckdb.OutOfMemoryException("Out of Memory Error: failed to allocate")
-        except duckdb.OutOfMemoryException as inner:
-            raise SplinkException("Error executing the following sql") from inner
+    def short(*_, **__):  # out of memory in DuckDB
+        raise duckdb.OutOfMemoryException("Out of Memory Error: failed to allocate")
     with monkeypatch.context() as m:
         m.setattr(Run, "full", short)
         code, e = say("resolve", "records", tmp_path / "all.parquet", "--workspace", tmp_path / "w")

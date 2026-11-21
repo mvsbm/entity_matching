@@ -11,7 +11,7 @@ from dataclasses import replace
 from pathlib import Path
 
 from er.config import (Candidate, Comparator, Comparison, FSSpec, FSTune, Key, Level, Pipeline, RulesSpec, SortedNeighbourhood, TfidfNeighbours,
-                       Tune, KeyBlocker, with_comparators, with_level, without_tf)
+                       Tune, KeyBlocker, with_comparators, with_level)
 
 FOLD, COMPANY = ("kana_fold",), ("nfkc", "strip_legal_form", "kana_fold")
 READING, GIVEN_TAIL = ("kana_fold", "long_vowel"), ("kana_fold", "long_vowel", "last3")
@@ -119,7 +119,7 @@ def fs_changes(p: Pipeline) -> dict[str, Callable[[FSSpec], FSSpec]]:
         return lambda s: replace(s, model=replace(s.model, comparisons=(*s.model.comparisons, given)))
 
     def optuna_suggestion(s: FSSpec) -> FSSpec:  # an Optuna study's suggestion (trial 12); passed adopt
-        model = without_tf(s.model)
+        model = s.model
         for (comparison, label), threshold in {("name", "fold JW high"): 0.95, ("name", "fold JW low"): 0.75,
                                                ("company", "JW high"): 0.97, ("company", "JW low"): 0.80}.items():
             model = with_level(model, comparison, label, threshold=threshold)
@@ -128,7 +128,6 @@ def fs_changes(p: Pipeline) -> dict[str, Callable[[FSSpec], FSSpec]]:
 
     return {
         "labels": lambda s: replace(s, model=replace(s.model, m_method="labels")),
-        "no_term_frequency": lambda s: replace(s, model=without_tf(s.model)),
         "exact_keys_only": lambda s: replace(s, blockers=tuple(b for b in s.blockers if isinstance(b, KeyBlocker))),
         "levenshtein_names": lambda s: replace(s, model=with_level(with_level(s.model, "name", "fold JW high", function="levenshtein",
                                                                               threshold=1), "name", "fold JW low", function="levenshtein", threshold=2)),
@@ -180,7 +179,7 @@ def fs_changes(p: Pipeline) -> dict[str, Callable[[FSSpec], FSSpec]]:
     }
 
 
-FS_DECISIONS = (("no_term_frequency", "better"), ("exact_keys_only", "cheaper"), ("optuna_suggestion", "better"),
+FS_DECISIONS = (("exact_keys_only", "cheaper"), ("optuna_suggestion", "better"),
                 ("u_from_1e6_pairs", "cheaper"), ("compound_phone_keys", "cheaper"), ("sorted_names_for_tfidf", "cheaper"),
                 ("name_keys", "safer"), ("bounded_address_keys", "cheaper"), ("no_sorted_windows", "cheaper"), ("bridge_rule_clusters", "better"), ("u_from_scored_file", "chosen"),
                 ("u_exact_by_counts", "chosen"), ("cif_one_digit_off", "better"),
@@ -196,7 +195,6 @@ def fs_tune(optuna_dir: Path) -> FSTune:
     return FSTune(
         toggle_blockers=("person_name", "company_name", "sn_person_name", "sn_person_name_reversed", "sn_company_name"),
         m_methods=("em", "labels"),
-        tf_options=(True, False),
         level_thresholds={("name", "fold JW high"): (0.88, 0.97, 0.01), ("name", "fold JW low"): (0.75, 0.90, 0.01),
                           ("company", "JW high"): (0.88, 0.97, 0.01), ("company", "JW low"): (0.75, 0.90, 0.01)},
         n_trials=30, seed=0,
