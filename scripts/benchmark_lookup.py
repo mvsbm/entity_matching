@@ -31,7 +31,7 @@ from er.io import markdown
 from er.match import score_fs, search_floor
 from er.explain import run_model
 from er.settings import load_settings
-from er.strings import connect
+from er.engine.duckdb import connect
 
 S = load_settings()
 OUT = S.root / "data" / "artifacts" / "benchmark_lookup"
@@ -41,31 +41,31 @@ def checked(ws: Path, s, p, fitted, model, m: dict, records: pd.DataFrame, sourc
     """Each record against the batch path: the pairs er.candidates lists for it alone among the stored records, gated
     alike, and their scores by score_fs, beside the lookup's. One stored table, the record inserted and taken out again."""
     uid, out = s.data.unique_id, []
-    con = connect(s.compute)
+    engine = connect(s.compute)
     parts = ", ".join(f"'{f}'" for f in sorted((ws / "state" / "records").glob("part-*.parquet")))
-    con.execute(f"CREATE TABLE records AS SELECT * FROM read_parquet([{parts}], union_by_name = true)")
-    index._attach(con, ws, m)
-    n, kind = con.execute("SELECT count(*) FROM records").fetchall()[0][0] + 1, index._classifier(ws, s, fitted, m)
+    engine.run(f"CREATE TABLE records AS SELECT * FROM read_parquet([{parts}], union_by_name = true)")
+    index._attach(engine, ws, m)
+    n, kind = engine.value("SELECT count(*) FROM records") + 1, index._classifier(ws, s, fitted, m)
     for _, rec in records.iterrows():
         values = {c: rec[c] for c in sources if c in rec and pd.notna(rec[c])}
-        query = index._query(con, s, fitted, values, None, kind).assign(**{uid: rec[uid]})
-        con.register("er_q", query)
-        con.execute("CREATE OR REPLACE TEMP TABLE qry AS SELECT * FROM er_q")
-        found, said = index._candidates(con, fitted, uid, rec[uid])
-        found = {**found, **index._gate(con, fitted, model, uid, rec[uid], found, said, m["records"])}
-        mine = index._scored(con, model, uid, rec[uid], sorted(found), n)
-        con.execute("INSERT INTO records BY NAME SELECT * FROM er_q")
-        con.execute(f"CREATE OR REPLACE TABLE new_ids AS SELECT '{rec[uid]}' AS \"{uid}\"")
-        gate = lambda pairs: score_fs(model, "records", pairs, con, uid, into="er_gate", n_records=n)
-        candidates(fitted.fs.blockers, "records", uid, "new_ids", fitted.fs.budget, con=con, into="cands", touching=True, gate=gate, floor=search_floor(fitted))
-        score_fs(model, "records", "cands", con, uid, into="scores", n_records=n)
-        ref = dict(con.execute(f"""SELECT CASE WHEN "{uid}_l" = '{rec[uid]}' THEN "{uid}_r" ELSE "{uid}_l" END, match_weight FROM scores""").fetchall())
-        con.execute(f"DELETE FROM records WHERE \"{uid}\" = '{rec[uid]}'")
-        con.unregister("er_q")
+        query = index._query(engine, s, fitted, values, None, kind).assign(**{uid: rec[uid]})
+        engine.register("er_q", query)
+        engine.run("CREATE OR REPLACE TEMP TABLE qry AS SELECT * FROM er_q")
+        found, said = index._candidates(engine, fitted, uid, rec[uid])
+        found = {**found, **index._gate(engine, fitted, model, uid, rec[uid], found, said, m["records"])}
+        mine = index._scored(engine, model, uid, rec[uid], sorted(found), n)
+        engine.run("INSERT INTO records BY NAME SELECT * FROM er_q")
+        engine.run(f"CREATE OR REPLACE TABLE new_ids AS SELECT '{rec[uid]}' AS \"{uid}\"")
+        gate = lambda pairs: score_fs(model, "records", pairs, engine, uid, into="er_gate", n_records=n)
+        candidates(fitted.fs.blockers, "records", uid, "new_ids", fitted.fs.budget, engine=engine, into="cands", touching=True, gate=gate, floor=search_floor(fitted))
+        score_fs(model, "records", "cands", engine, uid, into="scores", n_records=n)
+        ref = dict(engine.rows(f"""SELECT CASE WHEN "{uid}_l" = '{rec[uid]}' THEN "{uid}_r" ELSE "{uid}_l" END, match_weight FROM scores"""))
+        engine.run(f"DELETE FROM records WHERE \"{uid}\" = '{rec[uid]}'")
+        engine.unregister("er_q")
         got = dict(zip(mine["uid"], mine["weight"]))
         out.append(dict(record=rec[uid], batch=len(ref), lookup=len(got), missed=len(set(ref) - set(got)), added=len(set(got) - set(ref)),
                         max_weight_gap=max((abs(got[k] - ref[k]) for k in ref if k in got), default=0.0)))
-    con.close()
+    engine.close()
     return out
 
 

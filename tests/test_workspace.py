@@ -63,8 +63,8 @@ def test_a_pair_with_no_name_compared_is_left_to_people(tmp_path, population):
     p = replace(p, fs=replace(p.fs, min_match_weight=4.0))
     for needs, out in (((), "a"), (("name", "company"), "b")):
         run = Run(replace(p, fs=replace(p.fs, needs=needs)), s).full(tmp_path / "all.parquet", tmp_path / out)
-        weight = run.con.execute(f'SELECT match_weight FROM scores WHERE "{l}" = ? AND "{r}" = ?', list(pair)).fetchall()[0][0]
-        merged = run.con.execute(f'SELECT count(*) FROM matches WHERE "{l}" = ? AND "{r}" = ?', list(pair)).fetchall()[0][0]
+        weight = run.engine.value(f'SELECT match_weight FROM scores WHERE "{l}" = ? AND "{r}" = ?', list(pair))
+        merged = run.engine.value(f'SELECT count(*) FROM matches WHERE "{l}" = ? AND "{r}" = ?', list(pair))
         assert weight >= 4.0 and merged == (not needs)
     sheet = qa(run, [f for f in s.columns if f not in ("id", "entity")])["review_sheet"]
     row = sheet[(sheet[l] == pair[0]) & (sheet[r] == pair[1])]
@@ -114,7 +114,7 @@ def test_decisions_join_clusters_without_scoring_and_a_full_run_applies_them_aga
     yes = sheet[sheet["why"] == "decide"].index[0]
     sheet.loc[yes, "decision"] = "match"
     sheet.to_parquet(tmp_path / "reviewed.parquet")  # the sheet as people return it; undecided rows are skipped
-    rejected = run.con.execute(f'SELECT "{l}", "{r}" FROM matches ORDER BY match_weight DESC LIMIT 1').fetchall()[0]
+    rejected = run.engine.row(f'SELECT "{l}", "{r}" FROM matches ORDER BY match_weight DESC LIMIT 1')
     pd.DataFrame({l: [rejected[0]], r: [rejected[1]], "decision": [" No_Match "]}).to_parquet(tmp_path / "rejected.parquet")
     before = pd.read_parquet(tmp_path / "a" / "gold.parquet").set_index(uid)
     Run(p, s).decide(tmp_path / "reviewed.parquet", tmp_path / "a")
@@ -188,29 +188,29 @@ def test_an_increment_counts_exact_u_again_and_samples_only_a_drifted_comparison
     after = json.loads((tmp_path / "c" / "state" / "scoring.json").read_text(encoding="utf-8"))["basis"]
     stale = [k for k, b in after.items() if b["last_check"]["drift_bits"] > (b["last_check"]["se_bits"] or math.inf)]
     assert sampled == stale  # sampled again exactly where drift outgrew the sampling error
-    exact = exact_u(model, "records", inc.con)  # the exact levels are always counted on every record
+    exact = exact_u(model, "records", inc.engine)  # the exact levels are always counted on every record
     for c in inc.scoring["comparisons"]:
         for lv in c["comparison_levels"]:
             if lv.get("label_for_charts") in exact.get(c["output_column_name"], {}):
                 assert lv["u_probability"] == pytest.approx(exact[c["output_column_name"]][lv["label_for_charts"]])
 
 
-def test_the_loader_reads_parquet_by_column_name_and_says_what_is_wrong(tmp_path, con, monkeypatch):
+def test_the_loader_reads_parquet_by_column_name_and_says_what_is_wrong(tmp_path, engine, monkeypatch):
     from er.source import open_source
     pd.DataFrame({"cont_id": ["1", "2"], "Phone-Num 4": [599, 1234], "x": ["a", "b"]}).to_parquet(tmp_path / "a.parquet", index=False)
     pd.DataFrame({"CONT_ID": ["3"], "y": ["c"]}).to_parquet(tmp_path / "b.parquet", index=False)
-    src = open_source(tmp_path / "a.parquet", con, ["CONT_ID", "PHONE_NUM_4"])  # case, width and separators aside
+    src = open_source(tmp_path / "a.parquet", engine, ["CONT_ID", "PHONE_NUM_4"])  # case, width and separators aside
     assert src.columns == ["CONT_ID", "PHONE_NUM_4", "x"]
-    assert con.execute(f"SELECT PHONE_NUM_4 FROM {src.sql}").fetchall() == [("599",), ("1234",)]  # text, zeros lost upstream
+    assert engine.rows(f"SELECT PHONE_NUM_4 FROM {src.sql}") == [("599",), ("1234",)]  # text, zeros lost upstream
     assert any("read as CONT_ID" in x for x in src.notes) and any("stored as a number" in x for x in src.notes)
-    both = open_source(tmp_path / "*.parquet", con, ["CONT_ID"])  # a glob: read together by column name
-    assert con.execute(f"SELECT count(*) FROM {both.sql}").fetchall()[0][0] == 3 and any("lacks" in x for x in both.notes)
+    both = open_source(tmp_path / "*.parquet", engine, ["CONT_ID"])  # a glob: read together by column name
+    assert engine.value(f"SELECT count(*) FROM {both.sql}") == 3 and any("lacks" in x for x in both.notes)
 
     with pytest.raises(InputError, match="no file matches") as e:
-        open_source(tmp_path / "aa.parquet", con, [])
+        open_source(tmp_path / "aa.parquet", engine, [])
     assert "a.parquet" in e.value.fix  # did you mean
     pd.DataFrame({"CONT_ID": ["1"], "KIND": ["Person"], "Phone": ["x"], "phone__x": ["y"], "kind_2": ["z"]}).to_parquet(tmp_path / "k.parquet")
-    named = open_source(tmp_path / "k.parquet", con, ["CONT_ID"], reserved=["kind", "phone"])  # names the run writes itself, in another case
+    named = open_source(tmp_path / "k.parquet", engine, ["CONT_ID"], reserved=["kind", "phone"])  # names the run writes itself, in another case
     assert named.columns == ["CONT_ID", "KIND_3", "Phone_2", "phone__x_2", "kind_2"] and any("column KIND read as KIND_3" in n for n in named.notes)
     for d in ("a", "b"):  # a folder named from the home folder: every file in it, kept apart
         (tmp_path / "home" / "exports" / d).mkdir(parents=True)
@@ -222,19 +222,19 @@ def test_the_loader_reads_parquet_by_column_name_and_says_what_is_wrong(tmp_path
     assert intake.report(part)["rows"] == 6
     (tmp_path / "empty").mkdir()
     with pytest.raises(InputError, match="holds no Parquet file"):  # a folder with no records file: said so, not "did you mean" itself
-        open_source(tmp_path / "empty", con, [])
+        open_source(tmp_path / "empty", engine, [])
     (tmp_path / "c.parquet").write_text("CONT_ID,name\n1,x\n", encoding="utf-8")
     with pytest.raises(InputError, match="looks like text"):
-        open_source(tmp_path / "c.parquet", con, [])
+        open_source(tmp_path / "c.parquet", engine, [])
     (tmp_path / "d.parquet").write_bytes((tmp_path / "a.parquet").read_bytes()[:-10])
     with pytest.raises(InputError, match="cut short"):
-        open_source(tmp_path / "d.parquet", con, [])
+        open_source(tmp_path / "d.parquet", engine, [])
     pd.DataFrame({"cont_id": ["1"], "CONT-ID": ["2"]}).to_parquet(tmp_path / "e.parquet", index=False)
     with pytest.raises(InputError, match="could each be CONT_ID"):
-        open_source(tmp_path / "e.parquet", con, ["CONT_ID"])
+        open_source(tmp_path / "e.parquet", engine, ["CONT_ID"])
     pd.DataFrame({"cont_id": ["1"], "CONT_ID_2": ["2"]}).to_parquet(tmp_path / "f.parquet", index=False)  # as intake reads cont_id,CONT_ID: the second renamed
     with pytest.raises(InputError, match="could each be CONT_ID"):  # never the lowercase one read as CONT_ID
-        open_source(tmp_path / "f.parquet", con, ["CONT_ID"])
+        open_source(tmp_path / "f.parquet", engine, ["CONT_ID"])
 
 
 def test_a_run_sets_aside_what_it_cannot_resolve_and_suggests_a_mapping(tmp_path, population):

@@ -9,6 +9,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
+from er.engine.duckdb import DuckDB
 from er.config import (InputError)
 from er.settings import load_settings
 
@@ -171,15 +172,15 @@ def test_a_name_column_both_kinds_share_is_scored_once_as_mapped_or_by_kind(say,
         by_kind, n = re.subn(rf"^({f} = \{{ .*?) \}}", rf'\1, kind = "{kind}" }}', by_kind, count=1, flags=re.M)
         assert n == 1, f
     Path("by-kind.toml").write_text(by_kind, encoding="utf-8")  # a private settings file, as ER_SETTINGS names one
-    con = duckdb.connect()
-    con.register("truth", g.truth)
+    engine = DuckDB(duckdb.connect())
+    engine.register("truth", g.truth)
     said = {}
     for how in ("as-mapped", "by-kind"):
         if how == "by-kind":
             monkeypatch.setenv("ER_SETTINGS", str(Path("by-kind.toml").resolve()))
         assert say("resolve", "records", "shared.parquet", "--workspace", f"workspaces/{how}")[0] == 0
-        said[how] = con.execute(f"""SELECT count(*) FILTER (WHERE x.ENTITY_ID <> y.ENTITY_ID AND s.match_weight >= 6), avg(s.match_weight) FILTER (WHERE x.ENTITY_ID = y.ENTITY_ID)
-            FROM read_parquet('workspaces/{how}/scored/*.parquet') s JOIN truth x ON x.CONT_ID = s.{u}_l JOIN truth y ON y.CONT_ID = s.{u}_r""").fetchall()[0]
+        said[how] = engine.row(f"""SELECT count(*) FILTER (WHERE x.ENTITY_ID <> y.ENTITY_ID AND s.match_weight >= 6), avg(s.match_weight) FILTER (WHERE x.ENTITY_ID = y.ENTITY_ID)
+            FROM read_parquet('workspaces/{how}/scored/*.parquet') s JOIN truth x ON x.CONT_ID = s.{u}_l JOIN truth y ON y.CONT_ID = s.{u}_r""")
     assert said["by-kind"][0] == 0 and said["as-mapped"][0] == 0  # a person's name scored once, not as a company's too, either way
     assert abs(said["by-kind"][1] - said["as-mapped"][1]) < 2
 
@@ -329,11 +330,11 @@ def test_a_sheet_given_back_with_no_decision_is_refused_and_one_typed_with_wide_
     from er.source import decisions
     pd.DataFrame({"uid_l": ["1"], "uid_r": ["2"], "decision": [None]}, dtype="string").to_parquet(tmp_path / "untouched.parquet")
     with pytest.raises(InputError, match="no row has a decision"):
-        decisions(tmp_path / "untouched.parquet", duckdb.connect(), "uid_l", "uid_r", into="d")
+        decisions(tmp_path / "untouched.parquet", DuckDB(duckdb.connect()), "uid_l", "uid_r", into="d")
     pd.DataFrame({"uid_l": ["1", "3"], "uid_r": ["2", "4"], "decision": ["match\u3000", "\u3000No_Match "]}, dtype="string").to_parquet(tmp_path / "typed.parquet")
-    con = duckdb.connect()
-    decisions(tmp_path / "typed.parquet", con, "uid_l", "uid_r", into="d")  # typed on a Japanese keyboard: full-width spaces around
-    assert sorted(x for x, in con.execute("SELECT decision FROM d").fetchall()) == ["match", "no_match"]
+    engine = DuckDB(duckdb.connect())
+    decisions(tmp_path / "typed.parquet", engine, "uid_l", "uid_r", into="d")  # typed on a Japanese keyboard: full-width spaces around
+    assert sorted(x for x, in engine.rows("SELECT decision FROM d")) == ["match", "no_match"]
 
 
 def test_a_run_and_its_reports_land_together_even_when_the_write_is_cut_short(tmp_path, population, monkeypatch):
@@ -428,13 +429,13 @@ def test_the_diagnosis_names_what_limits_the_run_the_most_pairs_first_each_with_
     assert said() and len(said()) <= SHOWN
     tables["fill"].loc[tables["fill"]["field"] == "birth_date", "filled"] = 0.1  # a compared field mostly empty, and a column like it
     run.unmapped = pd.DataFrame([dict(column="BORN", filled=0.9, distinct=0.5, looks_like="birth_date", share=0.8)])
-    run.con.execute(f"UPDATE scores SET gamma_birth = -1, match_weight = {lo - 1} WHERE rowid IN (SELECT rowid FROM scores LIMIT 5)")
+    run.engine.run(f"UPDATE scores SET gamma_birth = -1, match_weight = {lo - 1} WHERE rowid IN (SELECT rowid FROM scores LIMIT 5)")
     assert any("birth_date 10% filled" in x and "add BORN to birth_date's sources in config/settings.toml [columns]" in x for x in said())
     m["em_given"] = [dict(session="phone", pairs=100, given_share=0.1)]  # EM taught by households
     assert any(x.startswith("  EM learned households from phone (10%") and "[model] em_rules" in x for x in said())
     near = lambda: next((int(x.split()[0].replace(",", "")) for x in said() if "agree exactly on a name and another field" in x and "the model expects" in x), 0)
     was = near()  # near misses: three pairs from the review floor moved below it, agreeing on the name and the phone
-    run.con.execute(f"UPDATE scores SET gamma_name = {top['name']}, gamma_phone = {top['phone']}, match_weight = {lo - 1} WHERE rowid IN (SELECT rowid FROM scores WHERE match_weight >= {lo} LIMIT 3)")
+    run.engine.run(f"UPDATE scores SET gamma_name = {top['name']}, gamma_phone = {top['phone']}, match_weight = {lo - 1} WHERE rowid IN (SELECT rowid FROM scores WHERE match_weight >= {lo} LIMIT 3)")
     assert near() == was + 3
     m["filled"]["m"].append(["phone", "exact"])  # a level that learned nothing, holding pairs
     assert any("levels that learned nothing hold pairs" in x and "phone exact" in x for x in said())
@@ -619,7 +620,7 @@ def test_two_people_of_one_household_are_labelled_and_a_copy_of_one_is_not(tmp_p
     pd.concat([g.df, pd.DataFrame([member, copy])], ignore_index=True).to_parquet(tmp_path / "in.parquet", index=False)
     run = Run(p, s).full(tmp_path / "in.parquet", tmp_path / "run", pipeline_file=s.root / "config" / "final.toml")  # with its reports, as nayose runs it
     pairs = f"""SELECT * FROM (VALUES ('{one[uid]}', 'member'), ('{one[uid]}', 'copy')) t("{uid}_l", "{uid}_r")"""
-    assert households(run.con, "records", pairs, uid, run.pipeline) == {(one[uid], "member")}  # the copy: the same given name
+    assert households(run.engine, "records", pairs, uid, run.pipeline) == {(one[uid], "member")}  # the copy: the same given name
     sheet = pd.read_parquet(tmp_path / "run" / "review.parquet")
     assert "household" in sheet and sheet["household"].dtype == bool
 

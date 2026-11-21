@@ -118,7 +118,7 @@ def run_facts(run: Run, out: Path) -> dict | None:  # what a person reads first 
     if not any((out / folder.SCORED).glob("part-*.parquet")):  # a run from before the index: building it here would add minutes no one asked for
         return None
     try:
-        r = describe_results(run.con, out, run.settings, run.pipeline, review_floor(run.pipeline))
+        r = describe_results(run.engine, out, run.settings, run.pipeline, review_floor(run.pipeline))
     except (InputError, duckdb.Error, OSError):
         return None
     return dict(records=r["records"], entities=r["entities"], joined=r["joined"], waiting=sum(x["pairs"] for x in r["waiting"]), review_from=r["review_from"],

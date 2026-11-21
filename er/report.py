@@ -13,6 +13,7 @@ import duckdb
 import numpy as np
 import pandas as pd
 
+from er.engine.engine import Engine
 from er.config import GIVEN, InputError, Key, Pipeline, lit, q, sources_text
 from er.io import code_version, read_parquet
 from er.kind import COMPANY, PERSON, SAYS, UNSURE
@@ -35,32 +36,32 @@ def fill_rates(run: "Run", fields: list[str] | None = None, sample: int = 10_000
     fs = [f for f in (run.fields if fields is None else fields) if f in cols]
     if not fs:
         return pd.DataFrame(columns=["field", "filled", "looks_right", "top_value", "no_letters", "length", "longest", "flag"])
-    filled = run.con.execute(f"SELECT {', '.join(f'avg(({q(f)} IS NOT NULL)::INT)' for f in fs)} FROM records").fetchall()[0]
-    run.con.execute(f"CREATE OR REPLACE TEMP TABLE er_fill_sample AS SELECT {', '.join(f'{q(f)}::VARCHAR AS {q(f)}' for f in fs)} "
+    filled = run.engine.row(f"SELECT {', '.join(f'avg(({q(f)} IS NOT NULL)::INT)' for f in fs)} FROM records")
+    run.engine.run(f"CREATE OR REPLACE TEMP TABLE er_fill_sample AS SELECT {', '.join(f'{q(f)}::VARCHAR AS {q(f)}' for f in fs)} "
                     f"FROM records ORDER BY hash({q(run.uid)}) LIMIT {sample}")  # by ID: the same sample whatever the rows' order
     pattern = {f: run.settings.detect[f] for f in fs if f in run.settings.detect}
-    looks = dict(zip(pattern, run.con.execute("SELECT " + ", ".join(f"avg(regexp_matches({q(f)}, {lit(p)})::INT)" for f, p in pattern.items())
-                                              + " FROM er_fill_sample").fetchall()[0])) if pattern else {}
-    top = dict(run.con.execute("""SELECT field, max(n) / sum(n) FROM (SELECT field, v, count(*) AS n FROM
-        (UNPIVOT er_fill_sample ON COLUMNS(*) INTO NAME field VALUE v) GROUP BY ALL) GROUP BY field""").fetchall())
-    shape = run.con.execute("SELECT " + ", ".join(f"avg((NOT regexp_matches({q(f)}, '[\\pL\\pN]'))::INT), avg(length({q(f)})), max(length({q(f)}))" for f in fs)
-                            + " FROM er_fill_sample").fetchall()[0]
+    looks = dict(zip(pattern, run.engine.row("SELECT " + ", ".join(f"avg(regexp_matches({q(f)}, {lit(p)})::INT)" for f, p in pattern.items())
+                                              + " FROM er_fill_sample"))) if pattern else {}
+    top = dict(run.engine.rows("""SELECT field, max(n) / sum(n) FROM (SELECT field, v, count(*) AS n FROM
+        (UNPIVOT er_fill_sample ON COLUMNS(*) INTO NAME field VALUE v) GROUP BY ALL) GROUP BY field"""))
+    shape = run.engine.row("SELECT " + ", ".join(f"avg((NOT regexp_matches({q(f)}, '[\\pL\\pN]'))::INT), avg(length({q(f)})), max(length({q(f)}))" for f in fs)
+                            + " FROM er_fill_sample")
     return pd.DataFrame(dict(field=fs, filled=filled, looks_right=[looks.get(f) for f in fs], top_value=[top.get(f) for f in fs],
                              no_letters=shape[0::3], length=shape[1::3], longest=shape[2::3])).assign(
         flag=lambda d: np.where(d["filled"] < 0.05, "under 5%", ""))
 
 
-def unmapped_columns(con: duckdb.DuckDBPyConnection, table: str, columns: list[str], fields: list[str], patterns: dict[str, str]) -> pd.DataFrame:
+def unmapped_columns(engine: Engine, table: str, columns: list[str], fields: list[str], patterns: dict[str, str]) -> pd.DataFrame:
     """Each of `columns` (read by no field) on the sample `table`: its share filled, the share of its filled values
     held once (distinct), and the field its values look most like (er.source.fit), with that share; best fit first.
     Numbers and names only: no value. O(sample · columns · fields)."""
     if not columns:
         return pd.DataFrame(columns=["column", "filled", "distinct", "looks_like", "share"])
     v = filled("v")
-    n = max(1, con.execute(f"SELECT count(*) FROM {table}").fetchall()[0][0])
-    shape = {c: (k / n, d / max(1, k)) for c, k, d in con.execute(f"""SELECT c, count(*) FILTER (WHERE {v}), count(DISTINCT v) FILTER (WHERE {v})
-        FROM (UNPIVOT (SELECT {', '.join(q(c) for c in columns)} FROM {table}) ON COLUMNS(*) INTO NAME c VALUE v) GROUP BY c""").fetchall()}
-    fits = fit(con, table, columns, [f for f in fields if f != "id"], patterns)  # id: any column of unique values fits it; distinct says that
+    n = max(1, engine.value(f"SELECT count(*) FROM {table}"))
+    shape = {c: (k / n, d / max(1, k)) for c, k, d in engine.rows(f"""SELECT c, count(*) FILTER (WHERE {v}), count(DISTINCT v) FILTER (WHERE {v})
+        FROM (UNPIVOT (SELECT {', '.join(q(c) for c in columns)} FROM {table}) ON COLUMNS(*) INTO NAME c VALUE v) GROUP BY c""")}
+    fits = fit(engine, table, columns, [f for f in fields if f != "id"], patterns)  # id: any column of unique values fits it; distinct says that
     best = {c: max(((f, s[c]) for f, s in fits.items()), key=lambda x: x[1], default=("", 0.0)) for c in columns}
     return pd.DataFrame([dict(column=c, filled=shape.get(c, (0.0, 0.0))[0], distinct=shape.get(c, (0.0, 0.0))[1],
                               looks_like=best[c][0] if best[c][1] > 0 else "", share=best[c][1]) for c in columns]
@@ -76,25 +77,25 @@ def qa(run: "Run", fields: list[str] | None = None, review: int = 50, previous: 
     threshold's safety margin [review_floor, min_match_weight), or above it with no name compared, not decided yet, best link first. "audit": accepted pairs
     up to 4 bits above the threshold not decided yet, `review` of them, stratified by 1-bit band. `previous`, the workspace's sheet
     before an increment: its open rows stay (carry_over), since the scores behind them aren't kept."""
-    con, u, t = run.con, q(run.uid), run.pipeline.fs.min_match_weight
+    engine, u, t = run.engine, q(run.uid), run.pipeline.fs.min_match_weight
     fill = fill_rates(run, fields)
     l, r, lo = q(run.l), q(run.r), review_floor(run.pipeline)
-    bands = con.sql(f"""SELECT floor(s.match_weight / 2) * 2 AS weight_from, count(*) AS pairs, count(m.{l}) AS accepted
-                        FROM scores s LEFT JOIN matches m USING ({l}, {r}) GROUP BY 1 ORDER BY 1""").df()
-    sizes = con.sql("SELECT n AS cluster_size, count(*) AS clusters FROM (SELECT count(*) AS n FROM gold GROUP BY cluster_id) GROUP BY 1 ORDER BY 1").df()
-    largest = con.sql("SELECT cluster_id, count(*) AS records FROM gold GROUP BY 1 ORDER BY 2 DESC, 1 LIMIT 10").df()
-    con.execute(f"CREATE TABLE IF NOT EXISTS er_decisions ({l} VARCHAR, {r} VARCHAR, decision VARCHAR)")
-    decide = con.sql(f"""SELECT * EXCLUDE (k1, k2) FROM (
+    bands = engine.frame(f"""SELECT floor(s.match_weight / 2) * 2 AS weight_from, count(*) AS pairs, count(m.{l}) AS accepted
+                        FROM scores s LEFT JOIN matches m USING ({l}, {r}) GROUP BY 1 ORDER BY 1""")
+    sizes = engine.frame("SELECT n AS cluster_size, count(*) AS clusters FROM (SELECT count(*) AS n FROM gold GROUP BY cluster_id) GROUP BY 1 ORDER BY 1")
+    largest = engine.frame("SELECT cluster_id, count(*) AS records FROM gold GROUP BY 1 ORDER BY 2 DESC, 1 LIMIT 10")
+    engine.run(f"CREATE TABLE IF NOT EXISTS er_decisions ({l} VARCHAR, {r} VARCHAR, decision VARCHAR)")
+    decide = engine.frame(f"""SELECT * EXCLUDE (k1, k2) FROM (
             SELECT s.*, c.sources, least(ga.cluster_id, gb.cluster_id) AS k1, greatest(ga.cluster_id, gb.cluster_id) AS k2
             FROM scores s JOIN cands c USING ({l}, {r}) JOIN gold ga ON ga.{u} = s.{l} JOIN gold gb ON gb.{u} = s.{r}
             WHERE s.match_weight >= {lo} AND (s.match_weight < {t} OR NOT {named_sql(run.pipeline.fs)}) AND ga.cluster_id <> gb.cluster_id
               AND NOT EXISTS (SELECT 1 FROM er_decisions d WHERE d.{l} = s.{l} AND d.{r} = s.{r}))
         QUALIFY row_number() OVER (PARTITION BY k1, k2 ORDER BY match_weight DESC, {l}, {r}) = 1
-        ORDER BY match_weight DESC, {l}, {r}""").df().assign(why="decide")
-    audit = con.sql(f"""SELECT * EXCLUDE (k) FROM (SELECT s.*, m.sources, row_number() OVER (PARTITION BY floor(s.match_weight) ORDER BY hash(s.{l}, s.{r})) AS k
+        ORDER BY match_weight DESC, {l}, {r}""").assign(why="decide")
+    audit = engine.frame(f"""SELECT * EXCLUDE (k) FROM (SELECT s.*, m.sources, row_number() OVER (PARTITION BY floor(s.match_weight) ORDER BY hash(s.{l}, s.{r})) AS k
                         FROM matches m JOIN scores s USING ({l}, {r}) WHERE s.match_weight < {t + 4}
                           AND NOT EXISTS (SELECT 1 FROM er_decisions d WHERE d.{l} = s.{l} AND d.{r} = s.{r}))
-                        WHERE k <= {max(1, review // 4)} ORDER BY match_weight, {l}, {r}""").df().assign(why="audit")
+                        WHERE k <= {max(1, review // 4)} ORDER BY match_weight, {l}, {r}""").assign(why="audit")
     steps = pd.DataFrame(run.steps)
     base = ["step", "big_o", "filled", "seconds", "peak_memory_gb"]
     number = lambda v: isinstance(v, int | float) and not isinstance(v, bool) and not math.isnan(v)  # a list (generators) is no fact
@@ -106,23 +107,23 @@ def qa(run: "Run", fields: list[str] | None = None, review: int = 50, previous: 
         sheet = carry_over(run, read_parquet(previous), sheet, previous.parent)
     decide = sheet[sheet["why"] == "decide"]
     queue = pd.DataFrame(dict(why=["decide", "audit"], pairs=[len(decide), len(audit)], from_bits=[lo, t], below_bits=[t, t + 4]))
-    fs, aside = run.pipeline.fs, run.con.execute("SELECT count(*) FROM set_aside").fetchall()[0][0]
-    total, entities, biggest, by_rules, by_model, by_people = con.execute(f"""SELECT count(*), count(DISTINCT cluster_id), max(n),
+    fs, aside = run.pipeline.fs, run.engine.value("SELECT count(*) FROM set_aside")
+    total, entities, biggest, by_rules, by_model, by_people = engine.row(f"""SELECT count(*), count(DISTINCT cluster_id), max(n),
         count(*) FILTER (WHERE resolved_stage = '{fs.previous_stage}'), count(*) FILTER (WHERE resolved_stage = '{fs.stage}'),
-        count(*) FILTER (WHERE resolved_stage = 'review') FROM gold JOIN (SELECT cluster_id, count(*) AS n FROM gold GROUP BY 1) USING (cluster_id)""").fetchall()[0]
+        count(*) FILTER (WHERE resolved_stage = 'review') FROM gold JOIN (SELECT cluster_id, count(*) AS n FROM gold GROUP BY 1) USING (cluster_id)""")
     linked = next(x for x in reversed(run.steps) if x["step"] == "cluster")
     kinds, mixed, kind_rows = pd.DataFrame(), pd.DataFrame(), []
-    if "kind" in con.sql("DESCRIBE gold").df()["column_name"].tolist():
-        kinds = con.sql("""SELECT 'records' AS of, kind, count(*) AS how_many FROM gold GROUP BY ALL
-                           UNION ALL SELECT 'customers', customer_kind, count(DISTINCT cluster_id) FROM gold GROUP BY ALL ORDER BY ALL""").df()
-        mixed = con.sql("""SELECT cluster_id, count(*) AS records, count(*) FILTER (WHERE kind = 2) AS companies,
+    if "kind" in engine.frame("DESCRIBE gold")["column_name"].tolist():
+        kinds = engine.frame("""SELECT 'records' AS of, kind, count(*) AS how_many FROM gold GROUP BY ALL
+                           UNION ALL SELECT 'customers', customer_kind, count(DISTINCT cluster_id) FROM gold GROUP BY ALL ORDER BY ALL""")
+        mixed = engine.frame("""SELECT cluster_id, count(*) AS records, count(*) FILTER (WHERE kind = 2) AS companies,
                                   count(*) FILTER (WHERE kind = 1) AS persons FROM gold GROUP BY 1
-                           HAVING companies > 0 AND persons > 0 ORDER BY records DESC, cluster_id""").df()
+                           HAVING companies > 0 AND persons > 0 ORDER BY records DESC, cluster_id""")
         n = {(x.of, x.kind): x.how_many for x in kinds.itertuples()}
         kind_rows = [("kinds", " · ".join(f"{n.get((of, k), 0):,} × {SAYS[k]}" for k in (COMPANY, PERSON, UNSURE)) + f" ({of})")
                      for of in ("records", "customers")]
         c = run.classifier
-        flagged = con.execute("SELECT count(*) FILTER (WHERE kind_flagged) FROM gold").fetchall()[0][0]
+        flagged = engine.value("SELECT count(*) FILTER (WHERE kind_flagged) FROM gold")
         if flagged:
             kind_rows.append(("flagged", f"{flagged:,} records the engine is sure of against the flag: matched as the engine says (gold: kind_flagged)"))
         if c is not None:
@@ -130,14 +131,14 @@ def qa(run: "Run", fields: list[str] | None = None, review: int = 50, previous: 
                               else f"a written legal form, or a name {c.spec.name_line:.0%} sure; else the flag"))
         if c is not None and not c.spec.trust_flag and "kind_flag" in run.columns():  # the flag's likely errors, for its owners
             says = "x.kind_flag IN (" + ", ".join(map(lit, c.flag_company)) + ")"
-            a, b = con.execute(f"""SELECT count(*) FILTER (WHERE g.kind = 2 AND NOT {says}), count(*) FILTER (WHERE g.kind = 1 AND {says})
-                                   FROM gold g JOIN records x USING ({u}) WHERE x.kind_flag IS NOT NULL""").fetchall()[0]
+            a, b = engine.row(f"""SELECT count(*) FILTER (WHERE g.kind = 2 AND NOT {says}), count(*) FILTER (WHERE g.kind = 1 AND {says})
+                                   FROM gold g JOIN records x USING ({u}) WHERE x.kind_flag IS NOT NULL""")
             kind_rows.append(("flag", f"a kind the engine is sure of contradicts it on {a + b:,} records: {a:,} 2 company flagged 1, "
                                       f"{b:,} 1 person flagged 2"))
         if len(mixed):
             kind_rows.append(("note", f"{len(mixed):,} cluster{'s hold' if len(mixed) > 1 else ' holds'} a sure person and a sure company: see qa.md, mixed kinds"))
-    apart = con.execute(f"""SELECT count(*) FROM er_decisions d JOIN gold a ON a.{u} = d.{q(run.l)} JOIN gold b ON b.{u} = d.{q(run.r)}
-        WHERE d.decision = 'no_match' AND a.cluster_id = b.cluster_id""").fetchall()[0][0]  # kept apart, joined by others
+    apart = engine.value(f"""SELECT count(*) FROM er_decisions d JOIN gold a ON a.{u} = d.{q(run.l)} JOIN gold b ON b.{u} = d.{q(run.r)}
+        WHERE d.decision = 'no_match' AND a.cluster_id = b.cluster_id""")  # kept apart, joined by others
     summary = pd.DataFrame([
         ("records", f"{total:,}" + (f", {run.added:,} of them new" if run.added is not None else "") + (f"; {aside:,} set aside (set_aside/)" if aside else "")),
         ("entities", f"{entities:,}; the largest holds {biggest:,} record{'s' * (biggest != 1)}"),
@@ -174,11 +175,11 @@ def diagnosis(run: "Run", tables: dict[str, pd.DataFrame], lo: float) -> list[di
     blocks skipped that came within NEAR bits, and, last, EM
     sessions of under THIN pairs. No record's value:
     field, column and level names, counts and shares. O(C) over the scores."""
-    con, model, m, fs = run.con, run.scoring, run.scoring["er"], run.pipeline.fs
-    gammas = {c for c, *_ in con.execute("DESCRIBE scores").fetchall() if c.startswith("gamma_")}
+    engine, model, m, fs = run.engine, run.scoring, run.scoring["er"], run.pipeline.fs
+    gammas = {c for c, *_ in engine.rows("DESCRIBE scores") if c.startswith("gamma_")}
     below = f"match_weight >= 0 AND match_weight < {lo}"
-    count = lambda where: con.execute(f"SELECT count(*) FROM scores WHERE {where}").fetchall()[0][0]
-    n_below, expected = con.execute(f"SELECT count(*), coalesce(sum(match_probability), 0) FROM scores WHERE {below}").fetchall()[0]
+    count = lambda where: engine.value(f"SELECT count(*) FROM scores WHERE {where}")
+    n_below, expected = engine.row(f"SELECT count(*), coalesce(sum(match_probability), 0) FROM scores WHERE {below}")
     gamma = {c["output_column_name"]: {lv["label_for_charts"]: g for g, lv in _ranked(c)} for c in model["comparisons"]}
     out: list[tuple[float, str]] = []
 
@@ -212,8 +213,8 @@ def diagnosis(run: "Run", tables: dict[str, pd.DataFrame], lo: float) -> list[di
             given = [gamma[c.name][lv.label] for lv in c.levels if GIVEN in {col for col, _ in lv.any_of}]
             agree += [f"CASE WHEN {q('gamma_' + c.name)} IN ({', '.join(map(str, gs))}) THEN '{what}' END" for what, gs in ((c.name, exact), ("given name", given)) if gs]
     if len(agree) > 1 and n_below:
-        got = con.execute(f"""SELECT p, count(*) AS n FROM (SELECT concat_ws(' + ', {', '.join(agree)}) AS p FROM scores WHERE {below})
-            WHERE p LIKE '% + %' AND list_has_any(string_split(p, ' + '), {named!r}) GROUP BY 1 ORDER BY n DESC, p""").fetchall()
+        got = engine.rows(f"""SELECT p, count(*) AS n FROM (SELECT concat_ws(' + ', {', '.join(agree)}) AS p FROM scores WHERE {below})
+            WHERE p LIKE '% + %' AND list_has_any(string_split(p, ' + '), {named!r}) GROUP BY 1 ORDER BY n DESC, p""")
         if total := sum(n for _, n in got):
             out.append((total, f"{total:,} pairs below review agree exactly on a name and another field ({', '.join(f'{p} {n:,}' for p, n in got[:3])}); "
                                f"the model expects {expected:,.0f} true pairs among the {n_below:,} below review"))
@@ -253,7 +254,7 @@ def report_text(run: "Run", tables: dict[str, pd.DataFrame], pipeline: Path, ite
     what the run finds (diagnosis's `items`, made here when not given), the summary, each field's fill and shape, the columns no field reads, scores and accepted links by weight with the false links the
     model expects, each score band's commonest patterns, cluster sizes, each step's time and memory, its time in each string comparison, the model (the prior, the pairs each EM session learned from, and m, u and bits per level), the costliest
     blocks, and the patterns no key pairs. O(C + E) over scores and matches."""
-    con, fs = run.con, run.pipeline.fs
+    engine, fs = run.engine, run.pipeline.fs
     t, lo = fs.min_match_weight, review_floor(run.pipeline)
 
     def table(df: pd.DataFrame) -> list[str]:  # numbers right-aligned, text left, so the page stays narrow
@@ -268,7 +269,7 @@ def report_text(run: "Run", tables: dict[str, pd.DataFrame], pipeline: Path, ite
         return "—" if x is None or pd.isna(x) else f"{x:.1%}"
 
     code = code_version(run.settings.root)
-    threads, memory = con.execute("SELECT current_setting('threads'), current_setting('memory_limit')").fetchall()[0]
+    threads, memory = engine.row("SELECT current_setting('threads'), current_setting('memory_limit')")
     kind = "full run" if run.added is None else f"increment of {run.added:,} new records"
     out = [f"RUN REPORT · {datetime.now():%Y-%m-%d %H:%M} · {kind} · no record's value in it",
            f"code {code} · pipeline {pipeline.name}",
@@ -295,8 +296,8 @@ def report_text(run: "Run", tables: dict[str, pd.DataFrame], pipeline: Path, ite
 
     edges = sorted({-20, -10, 0, lo, t, t + 2, t + 4, t + 8, t + 12})
     band = "CASE " + " ".join(f"WHEN match_weight < {b} THEN {i}" for i, b in enumerate(edges)) + f" ELSE {len(edges)} END"
-    scored = dict(con.execute(f"SELECT {band}, count(*) FROM scores GROUP BY 1").fetchall())
-    accepted = {k: (n, x) for k, n, x in con.execute(f"SELECT {band}, count(*), sum(1 - match_probability) FROM matches GROUP BY 1").fetchall()}
+    scored = dict(engine.rows(f"SELECT {band}, count(*) FROM scores GROUP BY 1"))
+    accepted = {k: (n, x) for k, n, x in engine.rows(f"SELECT {band}, count(*), sum(1 - match_probability) FROM matches GROUP BY 1")}
     label = lambda i: f"below {edges[0]:g}" if i == 0 else f"{edges[-1]:g} and up" if i == len(edges) else f"{edges[i - 1]:g} to {edges[i]:g}"
     if unscored := sum(x.get("unscored", 0) for x in run.steps if x["step"] == "score"):  # pairs a bound put below 0, never scored: one row below 0
         below = [i for i in scored if i < len(edges) and edges[i] <= 0]
@@ -306,13 +307,13 @@ def report_text(run: "Run", tables: dict[str, pd.DataFrame], pipeline: Path, ite
         [dict(bits=label(i), candidates=f"{scored[i]:,}", accepted=f"{accepted.get(i, (0, 0))[0]:,}", expected_false=f"{accepted.get(i, (0, 0))[1]:.2f}")
          for i in sorted(scored)])), ""]
 
-    gammas = [c for c, *_ in con.execute("DESCRIBE scores").fetchall() if c.startswith("gamma_")]
+    gammas = [c for c, *_ in engine.rows("DESCRIBE scores") if c.startswith("gamma_")]
     if gammas:  # each band's most common patterns among the keys' pairs scored/ keeps, one level per comparison as MODEL names it
         named = levels(run.scoring)
-        got = con.execute(f"""WITH p AS (SELECT match_weight >= {lo} AS up, {', '.join(q(g) for g in gammas)}, count(*) AS n, avg(match_weight) AS w
+        got = engine.rows(f"""WITH p AS (SELECT match_weight >= {lo} AS up, {', '.join(q(g) for g in gammas)}, count(*) AS n, avg(match_weight) AS w
                 FROM scores WHERE match_weight >= 0 GROUP BY ALL)
             SELECT * EXCLUDE (k) FROM (SELECT *, sum(n) OVER (PARTITION BY up) AS total, count(*) OVER (PARTITION BY up) AS kinds,
-                row_number() OVER (PARTITION BY up ORDER BY n DESC, w DESC) AS k FROM p) WHERE k <= 12 ORDER BY up DESC, k""").fetchall()
+                row_number() OVER (PARTITION BY up ORDER BY n DESC, w DESC) AS k FROM p) WHERE k <= 12 ORDER BY up DESC, k""")
         band = lambda up: f"{lo:g} and up" if up else f"0 to {lo:g}"
         out += ["PATTERNS BY SCORE  (the keys' pairs at 0 bits and up, below and from the review floor: each band's 12 most common levels)",
                 *table(pd.DataFrame([dict(band=band(x[0]), pairs=f"{x[len(gammas) + 1]:,}", bits=f"{x[len(gammas) + 2]:.1f}",
@@ -378,28 +379,28 @@ def carry_over(run: "Run", previous: pd.DataFrame, sheet: pd.DataFrame, out: Pat
     prev = previous if "why" in previous else previous.iloc[:0]  # a sheet from before the queue: nothing to keep
     if prev.empty:
         return sheet
-    run.con.register("er_prev", prev[[run.l, run.r, "decision", "why"]])
-    run.con.register("er_stored", applied(out, run.uid)[[run.l, run.r, "decision"]].astype("string"))
-    keep = run.con.execute(f"""SELECT p.{l}, p.{r} FROM er_prev p JOIN gold a ON a.{u} = p.{l} JOIN gold b ON b.{u} = p.{r}
+    run.engine.register("er_prev", prev[[run.l, run.r, "decision", "why"]])
+    run.engine.register("er_stored", applied(out, run.uid)[[run.l, run.r, "decision"]].astype("string"))
+    keep = run.engine.frame(f"""SELECT p.{l}, p.{r} FROM er_prev p JOIN gold a ON a.{u} = p.{l} JOIN gold b ON b.{u} = p.{r}
         WHERE (p.decision IS NOT NULL OR ({'FALSE' if full else 'TRUE'} AND p.why = 'decide' AND a.cluster_id <> b.cluster_id))
-          AND NOT EXISTS (SELECT 1 FROM er_stored d WHERE d.{l} = p.{l} AND d.{r} = p.{r} AND (p.decision IS NULL OR d.decision = p.decision))""").df()
-    run.con.unregister("er_prev")
-    run.con.unregister("er_stored")
+          AND NOT EXISTS (SELECT 1 FROM er_stored d WHERE d.{l} = p.{l} AND d.{r} = p.{r} AND (p.decision IS NULL OR d.decision = p.decision))""")
+    run.engine.unregister("er_prev")
+    run.engine.unregister("er_stored")
     kept = prev.merge(keep, on=[run.l, run.r]).reindex(columns=sheet.columns)  # a column this run's sheet lacks goes, one it adds is empty
     both = pd.concat([sheet[~sheet.set_index([run.l, run.r]).index.isin(kept.set_index([run.l, run.r]).index)], kept], ignore_index=True)
     decide = both[both["why"] == "decide"].sort_values("match_weight", ascending=False, ignore_index=True)
     return pd.concat([decide, both[both["why"] != "decide"]], ignore_index=True)
 
 
-def households(con: duckdb.DuckDBPyConnection, records: str, pairs: str, uid: str, p: Pipeline) -> set[tuple[str, str]]:
+def households(engine: Engine, records: str, pairs: str, uid: str, p: Pipeline) -> set[tuple[str, str]]:
     """The pairs of `pairs` (SQL: uid_l, uid_r) labelled maybe one household ([household]), read on `records` (SQL, the
     run's standardized records). O(pairs)."""
-    have = {c for c, *_ in con.execute(f"DESCRIBE SELECT * FROM {records}").fetchall()}
+    have = {c for c, *_ in engine.rows(f"DESCRIBE SELECT * FROM {records}")}
     if (cond := p.household.sql(have)) == "FALSE":
         return set()
     u, l, r = q(uid), q(f"{uid}_l"), q(f"{uid}_r")
-    return set(con.execute(f"""SELECT x.{l}, x.{r} FROM ({pairs}) x JOIN {records} l ON l.{u} = x.{l} JOIN {records} r ON r.{u} = x.{r}
-        WHERE {cond}""").fetchall())
+    return set(engine.rows(f"""SELECT x.{l}, x.{r} FROM ({pairs}) x JOIN {records} l ON l.{u} = x.{l} JOIN {records} r ON r.{u} = x.{r}
+        WHERE {cond}"""))
 
 
 def review_sheet(run: "Run", pairs: pd.DataFrame) -> pd.DataFrame:
@@ -410,14 +411,14 @@ def review_sheet(run: "Run", pairs: pd.DataFrame) -> pd.DataFrame:
     comps, uid = run.pipeline.fs.model.comparisons, run.uid
     fields = [f for f in dict.fromkeys(col for c in comps for col in (*c.null_if_missing, *(x for lv in c.levels for x, _ in lv.any_of)))
               if f in run.columns()]
-    run.con.register("er_review_ids", pd.DataFrame({uid: pd.concat([pairs[run.l], pairs[run.r]]).unique()}))
-    records = run.con.sql(f"SELECT {', '.join(q(c) for c in [uid, *fields])} FROM records JOIN er_review_ids USING ({q(uid)})").df()
-    run.con.unregister("er_review_ids")
-    run.con.register("er_review_pairs", pairs[[run.l, run.r]])
-    accepted = run.con.sql(f"""SELECT p.*, EXISTS (SELECT 1 FROM kept k WHERE k.{q(run.l)} = p.{q(run.l)} AND k.{q(run.r)} = p.{q(run.r)}) AS accepted
-        FROM er_review_pairs p""").df()
-    homes = households(run.con, "records", "SELECT * FROM er_review_pairs", uid, run.pipeline)
-    run.con.unregister("er_review_pairs")
+    run.engine.register("er_review_ids", pd.DataFrame({uid: pd.concat([pairs[run.l], pairs[run.r]]).unique()}))
+    records = run.engine.frame(f"SELECT {', '.join(q(c) for c in [uid, *fields])} FROM records JOIN er_review_ids USING ({q(uid)})")
+    run.engine.unregister("er_review_ids")
+    run.engine.register("er_review_pairs", pairs[[run.l, run.r]])
+    accepted = run.engine.frame(f"""SELECT p.*, EXISTS (SELECT 1 FROM kept k WHERE k.{q(run.l)} = p.{q(run.l)} AND k.{q(run.r)} = p.{q(run.r)}) AS accepted
+        FROM er_review_pairs p""")
+    homes = households(run.engine, "records", "SELECT * FROM er_review_pairs", uid, run.pipeline)
+    run.engine.unregister("er_review_pairs")
     accepted["household"] = [(a, b) in homes for a, b in zip(accepted[run.l], accepted[run.r])]
     out = pairs.merge(accepted, on=[run.l, run.r]).merge(records.add_suffix("_l"), on=run.l).merge(records.add_suffix("_r"), on=run.r)
     out["decision"] = pd.Series(pd.NA, index=out.index, dtype="string")
