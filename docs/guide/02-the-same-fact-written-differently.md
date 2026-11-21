@@ -194,7 +194,7 @@ The score runs from 0 (no character in common) to 1 (the same characters).
 |---|---|---|---|
 | カブシキガイシャカネコカイソウテン / カネコカイソウテンカブシキガイシャ | 16 | 0.513 | **1.000** |
 
-To the order-sensitive functions, the same company looks completely different. To Jaccard, it looks identical. But the company normalizer removes the legal form wherever it stands, so both become カネコカイソウテン, and an order-sensitive count works. Jaccard stays in the rules' search space (`config/experiments.py`); the search picks Levenshtein.
+To the order-sensitive functions, the same company looks completely different. To Jaccard, it looks identical. But the company normalizer removes the legal form wherever it stands, so both become カネコカイソウテン, and an order-sensitive count works. Jaccard stays in the rules' search space (`design/experiments.py`); the search picks Levenshtein.
 
 **Its blind spot, and why we use it nowhere.** Because order doesn't count, Jaccard is the wrong tool for numbers. 0599 and 0959 have the same digits, so their Jaccard is 1.0. So do `千代田区丸の内1-3-17` and `1-3-7`, which may be a different address. For phones and addresses, the order *is* the information.
 

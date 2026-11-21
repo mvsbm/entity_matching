@@ -6,11 +6,11 @@ tables. Writes reports/benchmark.md. Nothing is re-tuned.
 
 The report starts with the command that wrote it.
 
-Quality: each scenario generates a population with er.generate (config/generator.toml, varied), fits λ and m on
+Quality: each scenario generates a population with design.generate (config/generator.toml, varied), fits λ and m on
 its train split without labels, resolves its test split with u measured on it, and compares the clusters with the truth;
-and estimates, without labels, the matches no key lists: the gap (er.gap) and the probe (er.probe), which run here
+and estimates, without labels, the matches no key lists: the gap (design.gap) and the probe (design.probe), which run here
 only, where the keys are chosen.
-Person or company: populations with every kind problem on (er.generate.kind_problems) and one name column, resolved
+Person or company: populations with every kind problem on (design.generate.kind_problems) and one name column, resolved
 with names routed by the truth, by the file's flag alone, and by the kind step.
 Cost: populations of growing size, each resolved by nayose resolve records in a process of its own, so the peak memory is
 that run's alone. Past the memory limit (--memory-limit, else config/settings.toml [compute]) DuckDB spills to disk.
@@ -29,11 +29,11 @@ import numpy as np
 import pandas as pd
 
 from er.config import load_pipeline
-from er.evaluate import cluster_metrics, false_pairs, labelled, pair_metrics
-from er.gap import gap
-from er.generate import KindProblems, generate, kind_problems, load_reference, load_registry, load_spec, split_by_entity
+from design.evaluate import cluster_metrics, false_pairs, labelled, pair_metrics
+from design.gap import gap
+from design.generate import KindProblems, generate, kind_problems, load_reference, load_registry, load_spec, split_by_entity
 from er.io import markdown, read_parquet
-from er.probe import probe
+from design.probe import probe
 from er.report import qa
 from er.run import Run
 from er.settings import load_settings, shared_name
@@ -78,7 +78,7 @@ def quality(run: Path, truth: pd.DataFrame) -> dict:
 
 def unlisted(run: Run) -> dict:
     """The matches the keys miss, estimated without labels on a run that has clustered: the gap at the model's line
-    (er.gap) and the probe's, summed over its strata (er.probe), each with its 95% interval."""
+    (design.gap) and the probe's, summed over its strata (design.probe), each with its 95% interval."""
     line = next(x for x in gap(run)["thresholds"] if x["bits"] == run.pipeline.fs.min_match_weight)
     strata = probe(run)
     total = lambda k: sum(x[k] or 0 for x in strata)
@@ -206,11 +206,11 @@ def main() -> None:
               "records in one cluster that are two entities; `false_links` are the model's links between two entities, and "
               "`expected_false` the false links the model expects among its own (the sum of 1 − match probability), which a run "
               "reports without labels. `gap_at_line` and `probe_missed` estimate, without labels, the matches no key lists, with their "
-              "95% intervals: the gap pairs a sample of records with every record that shares a value or a near one (`er.gap`); "
-              "the probe samples pairs within a phone or a postal area (`er.probe`). They run here, where the keys are chosen, "
+              "95% intervals: the gap pairs a sample of records with every record that shares a value or a near one (`design.gap`); "
+              "the probe samples pairs within a phone or a postal area (`design.probe`). They run here, where the keys are chosen, "
               "not in a run.", "", markdown(robust), "",
               "## Person or company: end to end", "",
-              "Populations with one name column for every kind (`er.generate.kind_problems`): real company names from the registry, "
+              "Populations with one name column for every kind (`design.generate.kind_problems`): real company names from the registry, "
               "held out of the name model's training and written as banks write them; companies with records under their representative's name, the representative a person of "
               "the file (half at that person's address and phone); sole traders named like a shop; company dates; and a flag good, "
               "medium or poor. Each resolved three ways: names routed by the truth (the flag replaced by it, taken as it is); by the "

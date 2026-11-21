@@ -76,7 +76,9 @@ er/
   engine/   engine.py (the interface)  duckdb.py  bigquery.py  portable.py (hash, slicing, …)
   model.py  the Fellegi–Sunter model as plain Python: levels, points, λ (no SQL)
   config.py the settings and the method, each section saying which step reads it
-design/     choose.py  tune.py  evaluate.py  generate.py   local only, on DuckDB
+design/     select.py  experiments.py  pipeline.py  evaluate.py  tune.py  generate.py  sample.py  probe.py  gap.py
+            design time's modules, beside er/ and never imported by it; local only, on DuckDB
+scripts/    choose.py  benchmark.py  generate.py  …   the design-time entry points
 ```
 
 House rules for the rewrite, even where they cost lines: plain names; one statement per line; SQL as formatted

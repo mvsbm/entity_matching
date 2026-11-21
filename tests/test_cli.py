@@ -32,7 +32,7 @@ def test_a_run_says_what_is_wrong_in_words_people_can_act_on(say, tmp_path, popu
 
     phone, postal = s.columns["phone"][0][0], [c for alt in s.columns["postal_code"] for c in alt]
     g.df.assign(**{c: None for c in postal}).to_parquet(tmp_path / "nopostal.parquet", index=False)  # mapped, but never filled
-    from er.probe import probe
+    from design.probe import probe
     run = Run(p, s).full(tmp_path / "nopostal.parquet", tmp_path / "run")
     assert [x["stratum"] for x in probe(run)] == ["phone"]  # an empty group: nothing to draw
     g.df.head(0).to_parquet(tmp_path / "empty.parquet", index=False)
@@ -527,7 +527,7 @@ def test_the_runaway_guard_stops_only_what_would_not_fit(tmp_path, population, m
 
 
 def test_the_generator_makes_direct_matches_rare_households_their_own_entities_and_reports_how_hard_it_is():
-    from er.generate import check, generate, halfwidth, load_reference, load_spec, profile, split_by_entity
+    from design.generate import check, generate, halfwidth, load_reference, load_spec, profile, split_by_entity
     import unicodedata
     s = load_settings()
     spec, split = load_spec(s.root / "config" / "generator.toml")

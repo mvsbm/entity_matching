@@ -69,7 +69,7 @@ def model(m_method: str = "em", extra_name_levels: tuple[Level, ...] = ()) -> FS
 @pytest.fixture(scope="session")
 def population():
     """A small generated population and the final pipeline, for whole runs: made once for every test that runs one."""
-    from er.generate import generate as make, load_reference, load_spec
+    from design.generate import generate as make, load_reference, load_spec
     s = load_settings()
     p = load_pipeline(ROOT / "tests" / "method.toml", s.standardize, s.chains, s.columns)  # the tests' own method: a method round changes config/final.toml, never what they count on
     g = make(replace(load_spec(s.root / "config" / "generator.toml")[0], entities=400, households={}),  # the tests count on this population; choose.py measures households

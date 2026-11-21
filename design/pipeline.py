@@ -20,7 +20,7 @@ from er.cluster import merge
 from er.config import q
 from er.config import (Blocker, Budget, Data, DeletionKeys, FSSpec, Key, KeyBlocker, OverBudget, Pipeline, RulesSpec,
                        SortedNeighbourhood, TfidfNeighbours, ThresholdRule, keys_of)
-from er.evaluate import (average_precision, candidate_metrics, cluster_metrics, edge_metrics, false_pairs, fp_upper, labelled,
+from design.evaluate import (average_precision, candidate_metrics, cluster_metrics, edge_metrics, false_pairs, fp_upper, labelled,
                          missed_pairs, true_pairs, wilson)
 from er.match import scaled_prior, score_fs, scored_sample
 from er.report import households

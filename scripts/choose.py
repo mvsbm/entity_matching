@@ -4,7 +4,7 @@
     .venv/bin/python scripts/choose.py --test       # the round to commit: design analyses, A/B, threshold rule, decisions, checks, test once
     .venv/bin/python scripts/choose.py --optuna     # also run both Optuna searches (off by default; about 10 minutes)
 
-Starts from config/pipeline.toml and config/experiments.py. Writes (a development round writes the first two to the
+Starts from config/pipeline.toml and design/experiments.py. Writes (a development round writes the first two to the
 untracked data/artifacts/choose/ instead, so it changes no committed file):
 - reports/choose.md: every table of the run (the docs cite it)
 - config/final.toml: the chosen pipeline, in the pipeline.toml format, which nayose runs
@@ -19,8 +19,9 @@ from dataclasses import replace
 from er.config import dump_pipeline, load_pipeline
 from er.io import markdown
 from er.run import Run
-from er.select import FSChooser, RulesChooser
-from er.settings import load_experiments, load_settings
+from design import experiments
+from design.select import FSChooser, RulesChooser
+from er.settings import load_settings
 from er.strings import connect
 
 
@@ -38,10 +39,10 @@ def main() -> None:
                                else (s.paths["artifacts"] / "choose" / "choose.md", s.paths["artifacts"] / "choose" / "final.toml"))
     report_file.parent.mkdir(parents=True, exist_ok=True)
     p = load_pipeline(s.root / "config" / "pipeline.toml", s.standardize, s.chains, s.columns)
-    x = load_experiments(s.root)
+    x = experiments
     con = connect()
     report = ["# Choosing the configuration", "",
-              "Written by `scripts/choose.py` from `config/pipeline.toml` and `config/experiments.py`, on the labelled synthetic "
+              "Written by `scripts/choose.py` from `config/pipeline.toml` and `design/experiments.py`, on the labelled synthetic "
               "datasets. " + ("Test is scored once per stage, at the end of each." if args.test else
                                  "A development round: train and val only, test left unseen."), ""]
 
@@ -61,7 +62,7 @@ def main() -> None:
     section("Stage 2: Fellegi–Sunter", [fs.candidates_on_train, fs.training, fs.threshold, fs.ab, fs.decide, fs.will_it_scale,
                                          fs.evaluate, fs.why, fs.output, fs.search])
 
-    header = ("# The chosen pipeline: config/pipeline.toml with config/experiments.py's adopted changes, written by "
+    header = ("# The chosen pipeline: config/pipeline.toml with design/experiments.py's adopted changes, written by "
               "scripts/choose.py.\n# Adopted: rules " + ", ".join(rules.adopted) + "; Fellegi–Sunter " + ", ".join(fs.adopted) +
               ".\n# nayose runs it. It can be edited by hand; scripts/choose.py overwrites it.")
     final = replace(p, rules=rules.final, fs=fs.final)

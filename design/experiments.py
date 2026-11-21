@@ -1,7 +1,7 @@
 """Development only: the variants scripts/choose.py tries on config/pipeline.toml, the order it decides them in, and
 the Optuna search spaces (off by default). A variant is code, so this is Python; everything else is config/*.toml.
 Each variant is a change to a configuration, written once; DECISIONS adopt them in order, each on top of the choice
-so far, by er.evaluate.adopt: "better" needs a significant paired gain on the selection set (no FP added); "cheaper"
+so far, by design.evaluate.adopt: "better" needs a significant paired gain on the selection set (no FP added); "cheaper"
 and "safer" (more pairs, gain at scale) no paired loss there; "chosen" is the owner's call for a gain the selection sets
 are too small to show (no FP may be added, recall may move). "better", "cheaper" and "safer" also need no net loss on val
 (at least as many true pairs gained as lost, no more false pairs added than removed); "chosen" needs only the second.

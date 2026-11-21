@@ -140,7 +140,7 @@ Real customer data has no answer key. Nobody knows for sure which records are th
 - **A CIF ID** is kept on 3% of the duplicate records, and in a tenth of those typed with one digit wrong. The other duplicates carry a new one.
 - **Empty fields:** the fill rate falls from 99.99% to 65% across the columns, and fields of one kind (name, postal code, address) tend to be empty together. A person's birth date is filled for 15%, independently of the rest.
 - **Households:** unrelated entities sometimes share an address, and 5% of persons have a household member, an entity of their own, who shares their family name and every address, and half the time their phone. They are look-alikes that must not be merged.
-- **Hard on purpose.** These rates make about 1% of true pairs direct, the kind exact rules settle. `er.generate.profile` measures it ([data.md](../data.md#how-hard-it-is)).
+- **Hard on purpose.** These rates make about 1% of true pairs direct, the kind exact rules settle. `design.generate.profile` measures it ([data.md](../data.md#how-hard-it-is)).
 
 **Split by entity, not by record.** The 40,000 entities are split 60 / 20 / 20 into train, validation (val) and test. A person's records always stay in one split, so test asks only about people that nothing was ever tuned on.
 
@@ -182,7 +182,7 @@ Real customer data has no answer key. Nobody knows for sure which records are th
 ## In the code
 
 - `config/settings.toml`: paths, datasets, `[columns]` (which of a file's columns hold each field)
-- `er/generate.py`: the generator (`Spec`, `Split`, `generate`, `check`, and `profile`, how hard the population is), configured by `config/generator.toml` and run by `scripts/generate.py`
+- `design/generate.py`: the generator (`Spec`, `Split`, `generate`, `check`, and `profile`, how hard the population is), configured by `config/generator.toml` and run by `scripts/generate.py`
 - `notebooks/demo.ipynb`, section 2: a small population generated and charted
 - `data/reference/SOURCES.md`: where each reference file came from
 - reference details: [data.md](../data.md)

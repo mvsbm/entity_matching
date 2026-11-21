@@ -223,10 +223,10 @@ trained once and its signals computed once; a combination fits only its combiner
   distinct pairs listed (`stored`, those kept), each generator's pairs as listed, `unscored` those below 0. On a
   generated file of 1.3 million records with sparse addresses and sequential customer IDs, 112 million candidates
   were 33,700 stored and the step 61 s instead of 593 s. Larger passes spill: 33 million pairs through the joins took
-  ten times what 10 million did. Design time (`er.pipeline.run_fs`) stores every pair, so the keys' metrics count
+  ten times what 10 million did. Design time (`design.pipeline.run_fs`) stores every pair, so the keys' metrics count
   them all (`Run.reaching_only`).
 - **A key's oversized blocks left out before its join**, on both sides, not from its pairs after.
-- **No gap or probe in a run** (`er.gap`, `er.probe`): they estimate the matches the keys miss, which no output of a
+- **No gap or probe in a run** (`design.gap`, `design.probe`): they estimate the matches the keys miss, which no output of a
   run reads, so `scripts/benchmark.py` runs them at design time, where the keys are chosen. On the parity runs'
   generated files (each pair of runs on one file), a full run of 1,000,000 records 43.1 s to 27.1 s (the gap took
   15.39 s of it, the probe 0.59 s), of 200,000 records 16.8 s to 10.6 s, wall clock; every output file, the model, an increment and 30 lookups the same to the last bit.
@@ -235,7 +235,7 @@ trained once and its signals computed once; a combination fits only its combiner
   3.25 s (the median of three runs), the file it reads the same to the byte (its SHA-256); the full run with it 27.1 s
   to 26.2 s, wall clock; every result the same to the last bit, on train, val, 200,000 and 1,000,000 records, an
   increment and 30 lookups.
-- **The gap's sample bounded once** (`er.sample.discover`): every atom's drawn pairs are listed first, then pass the
+- **The gap's sample bounded once** (`design.sample.discover`): every atom's drawn pairs are listed first, then pass the
   bound together, 10 million at a time, not one pass per atom; each pass joins the records again.
 - **PassJoin's candidates as value IDs** (`Records.near_values`): the segment join keeps each candidate as two
   integers, and only those cross into Python, with each value's text once, for rapidfuzz to check: no pandas string
@@ -243,7 +243,7 @@ trained once and its signals computed once; a combination fits only its combiner
   records 21.5 s to 6.3 s (within two edits of a name, 12.4 s to 1.9 s), on train 4.9 s to 1.3 s.
   Each row of the segment join holds its value's id and segment, never the value itself: within a block of within
   values one id is one value, so a long value isn't copied into every one of its segment rows.
-- **The gap's one-edit atoms read only the sample's deletion blocks** (`er.sample.discover`): the sampled records'
+- **The gap's one-edit atoms read only the sample's deletion blocks** (`design.sample.discover`): the sampled records'
   deletion keys first, then each record's keys that are among them, so a block no sampled record is in is never
   stored. The table of every record's deletions grew as N·L², L the value's length: on 500,000 records with addresses
   of about 100 characters compared whole, the gap ran out of a 12.7 GiB memory limit and its spill filled the disk; it
@@ -252,10 +252,9 @@ trained once and its signals computed once; a combination fits only its combiner
   last step was already made (`address`, then `address` and `first3`) applies only that step to it, when that step
   makes nothing of an empty value, as every built-in step does. On addresses of about 100 characters, the address
   normalized once a chunk, not twice: a chunk of 200,000 records 6.0 s to 4.3 s.
-- **A fit sample of 100,000 records, and EM judged by the given name** (`fit_rows`, `er.match.chosen`). The fit's
-  sample costs little against the u measured on the file: on 1,039,995 generated records the fit step takes 3.3 s on
-  30,000 records and 3.7 s on 100,000 with the method's EM, and 5.0 s with `em_choose` (six sessions, one each);
-  on 500,355 records of 80 columns, addresses of about 100 characters and long notes, 3.0 s, 3.8 s and 5.2 s.
+- **A fit sample of 100,000 records** (`fit_rows`). The fit's sample costs little against the u measured on the
+  file: on 1,039,995 generated records the fit step takes 3.3 s on 30,000 records and 3.7 s on 100,000; on 500,355
+  records of 80 columns, addresses of about 100 characters and long notes, 3.0 s and 3.8 s.
 - **One edit on ASCII without an edit table** (`Comparator.test`): the same length, the Hamming distance; a length
   one apart, Levenshtein (an insertion or a deletion either way). Only a Damerau pair two substitutions apart is
   tested by Damerau–Levenshtein.

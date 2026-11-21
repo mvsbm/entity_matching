@@ -102,7 +102,7 @@ def name_key(settings, spec: KindSpec) -> str:
 
 def name_model(settings, spec: KindSpec) -> NameModel:
     """The name model a run loads, config/kind_names.npz: trained once, on public data only, by
-    scripts/train_name_model.py (er.generate.train_name_model). A run never trains it."""
+    scripts/train_name_model.py (design.generate.train_name_model). A run never trains it."""
     if (m := NameModel.load(settings.root / NAME_MODEL, name_key(settings, spec), settings.compute)) is None:
         raise InputError(f"{NAME_MODEL}: missing, or trained under other settings (the legal forms, the kana folding or [kind] ngram)",
                          fix="run scripts/train_name_model.py and commit config/kind_names.npz")

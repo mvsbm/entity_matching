@@ -15,7 +15,7 @@ from er.standardize import normalize
 def kind_population():
     """A small population with one name column for every kind, a person/company flag that is sometimes wrong, companies
     under their representative's name and sole traders; the settings that read it; the final pipeline."""
-    from er.generate import KindProblems, generate as make, kind_problems, load_reference, load_registry, load_spec
+    from design.generate import KindProblems, generate as make, kind_problems, load_reference, load_registry, load_spec
     from er.settings import shared_name
     base = load_settings()
     spec = replace(load_spec(base.root / "config" / "generator.toml")[0], entities=1_500)
@@ -40,7 +40,7 @@ def test_the_name_model_saves_and_loads_to_the_same_scores(tmp_path):
 def test_a_run_loads_the_committed_name_model_and_it_is_what_training_builds():
     """config/kind_names.npz is what scripts/train_name_model.py builds from today's reference data, generator settings
     and code; a run refuses one trained under its other settings."""
-    from er.generate import train_name_model
+    from design.generate import train_name_model
     from er.kind import name_model
     s = load_settings()
     spec = load_pipeline(s.root / "config" / "final.toml", s.standardize, s.chains, s.columns).kind
@@ -62,7 +62,7 @@ def test_a_flag_reads_its_spaces_and_width_aside():
 
 
 def test_the_kind_problems_change_names_dates_and_the_flag_only(kind_population):
-    from er.generate import generate as make, load_reference, load_spec
+    from design.generate import generate as make, load_reference, load_spec
     s, p, g = kind_population
     made = make(replace(load_spec(s.root / "config" / "generator.toml")[0], entities=1_500), *load_reference(s.paths["reference"])).df
     assert {"NAME_KANA", "PERSON_ORG_CODE"} <= set(g.df.columns) and "FULL_NAME_KANA" not in g.df.columns
@@ -169,7 +169,7 @@ def test_the_kind_problems_are_the_same_in_every_process(tmp_path):
     import sys
     code = """import sys
 from dataclasses import replace
-from er.generate import KindProblems, generate, kind_problems, load_reference, load_registry, load_spec
+from design.generate import KindProblems, generate, kind_problems, load_reference, load_registry, load_spec
 from er.settings import load_settings
 s = load_settings()
 spec = replace(load_spec(s.root / "config" / "generator.toml")[0], entities=400)
@@ -182,7 +182,7 @@ g.df.to_parquet(sys.argv[1], index=False)"""
 
 
 def test_the_kind_problems_name_no_company_the_name_model_trains_on():
-    from er.generate import KindProblems, generate as make, kind_problems, load_reference, load_spec, name_model_split
+    from design.generate import KindProblems, generate as make, kind_problems, load_reference, load_spec, name_model_split
     s = load_settings()
     spec = replace(load_spec(s.root / "config" / "generator.toml")[0], entities=600)
     registry = pd.DataFrame({"reading": ["ヰヱヰヱ", "アオイ"], "legal": ["カブシキガイシャ"] * 2, "abbreviation": ["カ"] * 2,
