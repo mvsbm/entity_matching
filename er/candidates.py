@@ -393,7 +393,7 @@ def candidates(blockers: tuple[Blocker, ...], records: pd.DataFrame | str, uid: 
         n_query = r.engine.value(f"SELECT count(*) FROM {r.query or r.table}")
         m = budget.min_oversized()
         report, parts, big, pending = [], [], {}, {}
-        listed = r._temp("SELECT NULL::UBIGINT AS h WHERE FALSE") if keep else None  # each listed pair's hash, before keep()
+        listed = r._temp("SELECT NULL::BIGINT AS h WHERE FALSE") if keep else None  # each listed pair's hash (config.hashed), before keep()
         if told:
             told(0, len(blockers), "keys")
         for i, b in enumerate(blockers):

@@ -77,6 +77,12 @@ The SQL is written to move: joins, group-bys, window functions and `CREATE TABLE
 
 The fit's EM runs in Python on the agreement patterns' counts, a few hundred rows, so it needs nothing of the engine but one query per session.
 
+**The BigQuery engine** (`er/engine/bigquery.py`) gives DuckDB's engine's verbs on a BigQuery client, every statement in one session of the job's own:
+
+- **`translate`** turns a step's SQL into BigQuery's (sqlglot). A table a statement makes is the session's temporary table; `cl_*` and `er_hash` are the job dataset's functions.
+- **`functions`** makes those functions in the dataset, once per deploy. The comparison functions are rapidfuzz's algorithms in JavaScript (`er/engine/udfs/strings.js`), Jaro and Jaro–Winkler as float32s, as DuckDB's engine scores them (rapidfuzz's cpdist). `tests/test_bigquery.py` runs them in V8 against DuckDB's engine's own `cl_*` functions, score for score to the last bit. The float32 also hides how a build of rapidfuzz rounds the double: arm64's fuses Jaro–Winkler's boost into one multiply-add, x86's rounds twice.
+- **A statement with a part only DuckDB has is refused by name** (`NotPortable`), never sent half translated: DESCRIBE, `duckdb_tables()`, `current_setting`, `read_parquet`, `COPY … TO`, `rowid`, ATTACH, the list functions and their lambda, `UNPIVOT … COLUMNS(*)`, `arg_min` of n, and whatever BigQuery's grammar refuses. A whole run of the tests' population sends 550 statements: 498 translate, the scoring of every pair among them; 52 are refused. Those are what a BigQuery job still needs: the workspace's files as tables, the tables' columns from the engine, the scoring's slices, the deletion keys, the index.
+
 ### Where the method comes from, and what is ours
 
 The model is Fellegi–Sunter as Splink 5.0 implements it. The `er` package computes every part of it, in SQL on DuckDB and in Python, and tests hold each part to values recorded once from Splink 5.0.0 with DuckDB 2.0.0: `tests/fixtures/splink-5.0.0.json`, with each fit's records (synthetic) in `tests/fixtures/splink-5.0.0/`.
