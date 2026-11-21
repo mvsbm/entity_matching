@@ -74,8 +74,8 @@ er/
   jobs/     build.py  update.py  decide.py  index.py       a full run, an increment, decisions: one line per step;
                                                          the index: built, kept up to date, looked up
   steps/    job.py  load.py  budget.py  fit.py  rules.py  candidates.py  score.py  cluster.py  write.py  report.py
-  engine/   engine.py (the interface)  duckdb.py
-            to come: bigquery.py, and the portable forms of slicing and UNPIVOT (the hash is er.config.hashed)
+  engine/   engine.py (the interface)  duckdb.py  udfs/strings.js
+            bigquery.py (the steps it refuses by name: to come)
   model.py  to come: the Fellegi–Sunter model as plain Python: levels, points, λ (no SQL)
   config.py the settings and the method, each section saying which step reads it
   …         what the steps call: match.py, candidates.py, cluster.py, folder.py, report.py, …
@@ -99,7 +99,10 @@ the jobs, the table each step writes, and where to change what.
 3. **The restructure**, step by step, each move checked by digest against the run before it: ~~`er/engine/` with
    the DuckDB engine, `er/steps/` (one module per step), `er/jobs/` (build, update, decide, index)~~; then
    `model.py`.
-4. **The BigQuery engine**, the string UDFs and the parity check in CI.
+4. **The BigQuery engine**, the string UDFs and the parity check in CI: ~~the engine's verbs, the translation and
+   the functions in JavaScript (`er/engine/bigquery.py`), checked offline~~; then the parts it refuses by name (the
+   workspace's files as tables, DESCRIBE, the scoring's slices, the deletion keys, the index), and the parity check
+   once CI has a sandbox dataset.
 5. **The three jobs** on Cloud Run, wired into Jenkins.
 6. **Scale rehearsal**: 10M → 100M generated records on BigQuery, time and bytes billed; then the real build.
 
