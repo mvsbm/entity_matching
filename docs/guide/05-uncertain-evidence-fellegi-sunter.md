@@ -143,9 +143,7 @@ The company comparison above is *missing*: a person has no company name. Some co
 
 Sharing the name サトウ says less than sharing a rare name. That was Newcombe's 1959 insight. A **term-frequency adjustment** gives an exact match more bits when the value is rare.
 
-It is tested like any other change, and cross-validated train decides. Switching it off finds 33 more true pairs out-of-fold and loses none (13 more on val), so it is off.
-
-The adjustment carries a subtle trap. Frequencies must come from the training records and stay fixed when scoring, or a score would depend on which file is being scored. Splink caches them on the database connection by column name, so `score_fs` clears that cache and uses the frequencies stored with the model ([lessons](../lessons.md)).
+Tested like any other change on cross-validated train, the adjustment loses 33 true pairs out-of-fold and gains none (13 lost on val). So the model has none: a level weighs the same whichever value agrees, and a pipeline that asks for an adjustment is refused.
 
 ## Challenge: where to draw the line?
 

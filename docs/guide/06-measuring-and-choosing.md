@@ -92,7 +92,6 @@ A check then confirms that the threshold transfers. Out-of-fold, 0 of 2,569 acce
 
 | Change (second stage) | Out-of-fold gains / losses | Validation | Adopted |
 |---|---|---|---|
-| term-frequency adjustment off (better) | +33 / −0 | +13 / −0 | yes |
 | exact keys only (cheaper) | +0 / −7 | +0 / −2 | no |
 | Optuna's suggestion, with its own generators (better) | +79 / −14 | +25 / −4 | yes |
 | u for the scores from 1 million random pairs instead of 10 million (cheaper) | +93 / −67 | +61 / −0 | no |
@@ -168,7 +167,7 @@ The cost files of [chapter 3](03-far-too-many-pairs.md#scaling-to-a-million-reco
 
 Careful splits are not enough. The pipeline's own tools can produce numbers that look right and are wrong:
 
-- **A cache keyed too loosely** scores a file with another file's name frequencies. `score_fs` clears Splink's cache, and the frequencies are stored with the model.
+- **A cache keyed too loosely** scores a file with another file's values. Every cache is keyed by all it reads: the u cache by the comparison and a fingerprint of its values.
 - **Weights fitted at one size** are wrong at another. λ is rescaled, and u measured, on every scored file.
 - **The generator can make impossible twins,** two entities no matcher could tell apart. Each persona is drawn at most once.
 - **Two policies on one setting** never settle: if Optuna searched the threshold the threshold rule also sets, the adopt-and-rerun loop would go round for ever. The rule alone sets it.

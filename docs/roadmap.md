@@ -88,9 +88,9 @@ the jobs, the table each step writes, and where to change what.
 ## Order
 
 1. ~~The connection without Splink's wrapper (#151), our connected components (#154), our model dict (#156), our
-   EM (#157)~~. Term frequencies go with the cut.
+   EM (#157); term frequencies and Splink out, the tests held to values recorded from Splink 5.0~~.
 2. **The cut.** Run the production path (build, then an update) under coverage; delete what it never calls (the UI,
-   most of the CLI, auto, trials, try sample, …); `design/` keeps the tuning. Splink goes entirely here.
+   most of the CLI, auto, trials, try sample, …); `design/` keeps the tuning.
 3. **The restructure**, step by step into `jobs/`, `steps/`, `engine/`, each move checked by digest against the
    run before it. The DuckDB engine first.
 4. **The BigQuery engine**, the string UDFs and the parity check in CI.

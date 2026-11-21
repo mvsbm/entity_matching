@@ -39,7 +39,7 @@ The system turns a file of customer records into one ID per person or company. I
 
 ## 2 · Containers
 
-![HLD 2, containers: people run nayose and the developer the design-time tools; both, and the demo, call the er package, which runs on DuckDB and Splink in one process, reads config/ and data/reference/, writes the workspace and caches the name model in data/artifacts/; the design-time tools write the synthetic data, the reports and final.toml](diagrams/containers.svg)
+![HLD 2, containers: people run nayose and the developer the design-time tools; both, and the demo, call the er package, which runs on DuckDB in one process, reads config/ and data/reference/, writes the workspace and caches the name model in data/artifacts/; the design-time tools write the synthetic data, the reports and final.toml](diagrams/containers.svg)
 
 | Part | Holds |
 |---|---|
@@ -56,7 +56,7 @@ The system turns a file of customer records into one ID per person or company. I
 
 **One engine.** `nayose`, `benchmark.py`, the demo and `choose.py` all run `er.run.Run`. `choose.py` measures each configuration by running it (`er.pipeline.run_rules`, `run_fs`: the run's steps up to its clusters, nothing written) and joining the run's tables to the truth, so it judges exactly what runs, with the same gate on oversized blocks and the same untrusted values. It then writes each split's workspace through `er.run`.
 
-**Where Splink sits.** The model is Splink 5.0's Fellegi–Sunter, ported: the fit (`er.fit`: λ, EM, m from labels), the clustering (`cluster.merge`), the scoring and the u sample are the `er` package's own, and tests hold each to Splink's numbers. Splink itself only scores a model with term frequencies, an option of design time. Everything around it is the `er` package: the rules' joins and candidate generation as SQL, budgets, u from the scored file, the threshold rule, decisions, evaluation ([what we take from Splink, and why the rest is ours](#what-we-take-from-splink-and-what-we-do-ourselves)).
+**Where the method comes from.** The model is Fellegi–Sunter as Splink 5.0 implements it, computed by the `er` package itself: the fit (`er.fit`: λ, EM, m from labels), the u sample, the scoring and the clustering (`cluster.merge`), each held by tests to values recorded once from Splink 5.0. Everything around it is the `er` package's own: the rules' joins and candidate generation as SQL, budgets, u from the scored file, the threshold rule, decisions, evaluation ([where the method comes from, and what is ours](#where-the-method-comes-from-and-what-is-ours)).
 
 **Configured for any file.** The engine reads logical fields only. `config/settings.toml` `[columns]` maps each field to the file's columns, and `[fields]` in the pipeline says which are mandatory and which optional. A missing optional field turns off only what reads it ([usage](usage.md#2--map-your-columns)).
 
@@ -76,23 +76,31 @@ The SQL is written to move: joins, group-bys, window functions and `CREATE TABLE
 
 The fit's EM runs in Python on the agreement patterns' counts, a few hundred rows, so it needs nothing of the engine but one query per session.
 
-### What we take from Splink, and what we do ourselves
+### Where the method comes from, and what is ours
 
-Splink 5 was read against this code, and each overlap measured on the same data, with the same output both ways.
+The model is Fellegi–Sunter as Splink 5.0 implements it. The `er` package computes every part of it, in SQL on DuckDB and in Python, and tests hold each part to values recorded once from Splink 5.0.0 with DuckDB 2.0.0: `tests/fixtures/splink-5.0.0.json`, with each fit's records (synthetic) in `tests/fixtures/splink-5.0.0/`.
 
-| Job | Ours or Splink's | Why |
+| Part | Code | As Splink 5.0 computes it |
 |---|---|---|
-| training (λ, EM, m from labels) | ours (`er.fit`), ported from Splink's | the same λ, fixed comparisons, starts and rounds as Splink's, m within 10⁻¹² (tests compare them). Its sums run in a fixed order, so a fit repeats to the last bit; Splink's move by a last bit from run to run, in the order DuckDB's threads leave the rows |
-| connected components | ours (`cluster.merge`: scipy on the nodes numbered in their ids' order) | the same clusters as Splink's (tests compare them), in one pass over the edges where Splink's SQL takes a round per step of the longest path |
-| scoring, the u sample | Splink's SQL, run by ours (`match.predict_sql`, `match.sample_u`) | the same scores and u to the last bit (tests compare them with Splink's), in one query: Splink copies the records twice before scoring, and joins the u sample's pairs again for each comparison; a model with term frequencies is scored by Splink |
-| the rules' joins | ours, plain SQL | `deterministic_link` gives the same pairs but first joins every column of both records back: 1.35× slower at a million records, 17× at 10,000. Splink has no cascade (a later stage adding a pair only for a record still unresolved) |
-| merging the generators' pairs | ours | 1.56× faster at a million records, and every generator that found a pair is kept (`sources`); Splink keeps the first. Sorted windows aren't Splink blocking rules |
-| counting a key's pairs before any join | ours | one group-by, 5–6× faster than Splink's exact count |
-| threshold curves | ours | the same counts as Splink's truth-space table at every weight, faster, and with folds, bounds and the name check, none of which Splink has |
-| cluster metrics, intervals, the paired test | ours | Splink has no cluster-level accuracy |
-| λ at the file's size, exact u from value counts | ours | Splink has neither; a 10⁷-pair sample can't see an agreement rarer than one in 10⁹ pairs |
-| increments: merging into stored clusters, stable names | ours | Splink 5 has no incremental clustering; `predict_between` scores only |
-| string similarity | ours (`cl_*`) | DuckDB's built-ins, which Splink's comparison libraries call, compare bytes: タナカ / タカナ get Jaro–Winkler 0.956 from them, 0.556 by character |
+| training (λ, EM, m from labels) | `er.fit` | the same λ, fixed comparisons, starts and rounds, m within 10⁻¹² (`tests/test_fit.py`). Its sums run in a fixed order, so a fit repeats to the last bit; Splink's move by a last bit from run to run, in the order DuckDB's threads leave the rows |
+| the u sample | `match.sample_u` | the pairs drawn as Splink draws them and the same u to the last bit, every comparison's levels counted in one pass over the pairs, where Splink joins them again for each comparison |
+| scoring | `match.predict_sql` | Splink's predict SQL in one query: the same scores to the last bit (`tests/test_scoring.py`), without the two copies of the records Splink makes first |
+| connected components | `cluster.merge`: scipy on the nodes numbered in their ids' order | the same clusters (`tests/test_cluster.py`), in one pass over the edges where Splink's SQL takes a round per step of the longest path |
+
+A level weighs the same whichever value agrees: a pipeline that sets `tf` on a comparison, and a saved model adjusted by term frequency, are refused.
+
+The rest has no counterpart in Splink, or does what Splink's doesn't:
+
+| Job | Why it is ours |
+|---|---|
+| the rules' joins | plain SQL. Splink's `deterministic_link` gives the same pairs but first joins every column of both records back: 1.35× slower at a million records, 17× at 10,000. Splink has no cascade (a later stage adding a pair only for a record still unresolved) |
+| merging the generators' pairs | 1.56× faster at a million records, and every generator that found a pair is kept (`sources`); Splink keeps the first. Sorted windows aren't Splink blocking rules |
+| counting a key's pairs before any join | one group-by, 5–6× faster than Splink's exact count |
+| threshold curves | the same counts as Splink's truth-space table at every weight, faster, and with folds, bounds and the name check, none of which Splink has |
+| cluster metrics, intervals, the paired test | Splink has no cluster-level accuracy |
+| λ at the file's size, exact u from value counts | Splink has neither; a 10⁷-pair sample can't see an agreement rarer than one in 10⁹ pairs |
+| increments: merging into stored clusters, stable names | Splink 5 has no incremental clustering; `predict_between` scores only |
+| string similarity (`cl_*`) | DuckDB's built-ins, which Splink's comparison libraries call, compare bytes: タナカ / タカナ get Jaro–Winkler 0.956 from them, 0.556 by character |
 
 Not used, and why: chunked prediction (refuses given pairs, and only bounds memory); salting (ignored in Splink 5); Parquet materialisation (1.05–1.67× slower here); `cluster_using_single_best_links` (for sources without duplicates); `DateOfBirthComparison` (birth dates that aren't dates, and no extra true pair); m from people's review decisions (rows chosen by their score bias m by up to 3.8 bits; the decisions are applied as merges instead).
 
@@ -152,7 +160,7 @@ The gate on oversized blocks (step 5) and the scores (step 6) both use these u.
 Each rule is one join on its exact keys; its fuzzy conditions (names within two edits, addresses by Jaro–Winkler, a phone one digit off, …) are checked on the joined pairs only. A pair belongs to the first rule that finds it. Stage by stage, exact then fuzzy, a pair is kept only if it touches a record still unresolved, and the kept pairs are merged into the rule clusters, each cluster one node.
 
 - **Why:** certain cases are cheap and auditable, and settle most duplicates without a false merge. The model then works only on what is left.
-- **Code:** `Run.rules` → `Run._rules` → `match.rule_edges` (one plain SQL join per rule, the same for `choose.py`, full runs and increments: Splink's `deterministic_link` would join every column of both records back first), `config.Stage.sql` (a fuzzy condition lets equal values through without the string function), `strings.connect` (the character-level `cl_*` functions), `cluster.merge`. A rule leaves out any value of its keys held by an oversized block (`Run._untrusted`): one address and phone on 3,000 records is not one customer's, so the summary names it, and the model can still match those records. A customer ID such as that is already missing (step 1).
+- **Code:** `Run.rules` → `Run._rules` → `match.rule_edges` (one plain SQL join per rule, the same for `choose.py`, full runs and increments), `config.Stage.sql` (a fuzzy condition lets equal values through without the string function), `strings.connect` (the character-level `cl_*` functions), `cluster.merge`. A rule leaves out any value of its keys held by an oversized block (`Run._untrusted`): one address and phone on 3,000 records is not one customer's, so the summary names it, and the model can still match those records. A customer ID such as that is already missing (step 1).
 - **Increment:** each rule joins the batch against all records. Each stored cluster is merged as a single node (`cluster.merge`): `O(Δ·Σb)` plus a scan.
 
 ### 5 · Candidates: which pairs to score · `O(N·L + ΣP_g)`
@@ -288,7 +296,7 @@ Kept on disk. Steps are numbered as in [the run](#4--the-run); the diagram above
 | `state/config.txt` | 8, full runs only | increments, lookups | the hash of the pipeline, but the fit's sample and EM (an increment scores with the stored model), and the settings that shape the records (column mapping, `[locale]`, the flag's values) the full run used |
 | `steps.json` | 8, and decisions | you; an audit | one entry per run, increment or set of decisions: when, the code's commit and the files changed in this copy, the config hash, each file read with what it is (records, decisions, the name model), its size and SHA-256, and each step's Big-O with its numbers, time and peak memory; the candidates step also lists the pairs each generator found, the score step the pairs at each level of each comparison, and the report step the weight bands qa.md shows |
 | `prepared/<key>/records.parquet` | 1, full runs | the next full run with the same key | the records as step 1 leaves them: cleaned, normalized, person or company decided. The key hashes all they rest on: the records files' SHA-256 in order, how they are read and matched to fields (the mapping), the cleaning settings, the columns the method cleans and reads, the name model, and the code (and Python's, DuckDB's, pandas', pyarrow's, scikit-learn's, SciPy's and Unicode's versions); not the compute limits. A new key cleans the records again and keeps them; the last two used stay, so two methods that clean other columns don't replace each other. Each is written in a folder of its own and renamed into place once complete; one that can't be written (a full disk) is left out, one that can't be read whole is made again, and one a run cut short left half written is removed by the next. Step 1 still opens the file, matches its columns and sets rows aside; only the cleaning, record by record in Python, is read back instead. Never read by an increment: its batch is new. Kept by `--overwrite` |
-| `u_sampled.json` | 3, full runs (`match.scored_sample`) | the next full run: a comparison sampled again only once it, the values it reads, the code or Splink's or DuckDB's version changes | each comparison's u from its random pairs, by a hash of all it rests on: the newest 64 |
+| `u_sampled.json` | 3, full runs (`match.scored_sample`) | the next full run: a comparison sampled again only once it, the values it reads, the code or DuckDB's version changes | each comparison's u from its random pairs, by a hash of all it rests on: the newest 64 |
 | `pending.json` | 8, deleted when done | the next run, increment or decisions | moves owed by an unfinished write |
 | `.lock` | every writer | every writer | the workspace's lock: one writer at a time |
 | `qa.md`, `review.parquet` | 9 | people | the label-free report; the pairs to decide and to audit |

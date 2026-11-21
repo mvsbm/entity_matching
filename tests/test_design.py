@@ -194,7 +194,7 @@ def lineage(statements: list[str]) -> tuple[set[str], set[str]]:
         own = {target.name} if isinstance(target, exp.Table) else set()
         made |= own
         read |= {t.name for t in tree.find_all(exp.Table) if t.name and t.name not in ctes} - own
-    keep = lambda names: {n for n in names if not n.startswith("__splink") and n not in {"duckdb_logs"}}
+    keep = lambda names: {n for n in names if n not in {"duckdb_logs"}}
     return keep(made), keep(read)
 
 

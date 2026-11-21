@@ -9,7 +9,7 @@ gold = "data/medallion/gold"                     # <dataset>/: each dataset reso
 labels = "data/labels"                           # <dataset>.parquet: truth, read only to choose and evaluate
 artifacts = "data/artifacts"                     # what the scripts keep for themselves: models, experiments, benchmark, demo
 experiments = "data/artifacts/experiments"       # leaderboard.parquet
-models = "data/artifacts/models"                 # trained Splink models
+models = "data/artifacts/models"                 # trained models
 optuna = "data/artifacts/optuna"                 # Optuna studies (SQLite), read by optuna-dashboard
 
 [datasets]

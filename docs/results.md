@@ -66,14 +66,14 @@ Paired A/B on val against the rules as written (informational; decisions use the
 
 ## Stage 2: probabilistic matching
 
-**Method:** the **Fellegi–Sunter model (Splink 5)** is the only probabilistic method; every A/B row is a variant of it.
+**Method:** the **Fellegi–Sunter model, as Splink 5.0 implements it,** is the only probabilistic method; every A/B row is a variant of it.
 - λ comes from near-certain rules and m from EM (or labels), both on the fitting records. EM's own u come from 10⁶ random pairs of those records (`fit_u_max_pairs`). The u the scores use are measured on each scored file (below).
 - There are six comparisons: name, company, address, phone, cif, birth. Correlated columns share one comparison (address code, normalized address and postal code form one), because FS assumes independence.
 - Levels use the `cl_*` functions.
 - **A level without an estimate never uses Splink's defaults.** No sampled pair reached it → u at its 95% upper bound, so its weight is a lower bound on the evidence. Never seen in training → m = u, 0 bits. The training table lists such levels (none in the pipeline as written). Two limits hold EM's m to what its evidence can say (`er.match.sensible_m`, listed under MODEL in report.txt where they act): a level of near agreement (one digit off, a similar name) gets 0 bits when no match agreed exactly on its comparison in training, since nearness then is neighbouring values (IDs handed out in sequence), not a typo; and no level weighs less than its comparison's else level, since partial agreement is never more evidence against a match than none (EM drives m to almost 0 for a level none of its learning pairs reached).
 
 **Scores are calibrated to the scored file** (`er.match.score_fs`, `er.match.scored_u`):
-- **Term frequencies** come from the fitting records, stored in the model. A value never seen in training gets no adjustment, the conservative side. `FINAL` turns them off.
+- **No term frequencies:** a level weighs the same whichever value agrees.
 - **λ** is a per-pair rate: true pairs grow with N, pairs with N². It is rescaled from the fitting set's size to the scored set's. So CV folds, val and test (about 10k records each) are scored on the same scale, and the threshold keeps its meaning at any size: on a file of N records, the same evidence earns log2(N/10k) fewer bits than on a 10k file.
 - **u** is measured on the scored file's records, without labels, because a field whose values grow with the file agrees by chance less often in a bigger one. The leading exact levels are counted from value counts. A one-edit level right after them on the same column (the customer ID, phone or birth date one digit off) is counted exactly too, by keys on the distinct values (one per position for a substitution, one per position for a swap of neighbours, and the deletions of the longer for a length one apart), never pair by pair. So cif, phone and birth need no sample; name, company and address are sampled on 10⁷ random pairs, every one of them. m stays from train.
 - Why this matters: [lessons.md](lessons.md).
@@ -167,7 +167,6 @@ That is 2,568 candidates on val (99.995% of all pairs skipped). Every true pair 
 
 | Change | Kind | Cross-validated train: true pairs gained / lost | Val | Adopted |
 |---|---|---|---|---|
-| term-frequency adjustment off (`no_term_frequency`) | better | +33 / −0 (p < 0.0001) | +13 / −0 | yes |
 | exact keys only: no sorted windows, no TF-IDF (`exact_keys_only`) | cheaper | +0 / −7 (p = 0.0156) | +0 / −2 | no |
 | Optuna's suggestion, below (`optuna_suggestion`) | better | +79 / −14 (p < 0.0001) | +25 / −4 | yes |
 | u from 10⁶ pairs instead of 10⁷ (`u_from_1e6_pairs`) | cheaper | +93 / −67 (p = 0.0478) | +61 / −0 | no |
@@ -199,7 +198,7 @@ That is 2,568 candidates on val (99.995% of all pairs skipped). Every true pair 
 
 `optuna_suggestion` sets the generators itself (those of the pipeline as written, less four); the scale changes after it replace the phone, address and TF-IDF keys, and `no_sorted_windows` drops the sorted windows, so `FINAL` lists pairs by keys alone. The four "chosen" calls are made for scale, whatever they do to recall on train-sized files. The three on u make the weights right at any file size: u measured on the file itself, and counted where a sample of 10⁷ pairs can't see an agreement rarer than one in 10⁹ pairs (an exact name, or a customer ID, equal or one digit off, in a big file). The name check holds back pairs with no name compared, such as a household sharing an address and a phone: they go to people ([usage](usage.md#6--review-and-decide)). On train and val it gains true pairs too.
 
-**Results with `FINAL`** (22 generators, all of them keys, u from each scored file with the exact and one-edit levels counted, term frequency off, m by EM, Optuna's JW thresholds, a "same reading" name level, a name compared, every pair across two rule clusters scored, threshold 6, connected components):
+**Results with `FINAL`** (22 generators, all of them keys, u from each scored file with the exact and one-edit levels counted, m by EM, Optuna's JW thresholds, a "same reading" name level, a name compared, every pair across two rule clusters scored, threshold 6, connected components):
 
 | Data | After deterministic → after probabilistic | 95% interval | FP | FP rate ≤ | Accepted pairs |
 |---|---|---|---|---|---|
@@ -227,8 +226,8 @@ Train is scored in-sample (the model is fitted on all of it), and has no false p
 
 **Worked example:** `reports/choose.md` breaks two pairs into bits: an accepted true match with a typo (6.19 bits, from the same address and the same phone, the given names unlike), and the rejected non-match closest to the threshold (3.66 bits, from the phone and the given name, the addresses different). [Chapter 5](guide/05-uncertain-evidence-fellegi-sunter.md#solution-evidence-in-bits) walks through one pair field by field, and section 9 of the demo draws two more.
 
-**Optuna** (cross-validated objective, 30 trials, seeded; off by default: `fs_tune`, `enabled=False`; `scripts/choose.py --optuna` runs it): each trial switches generators off and picks the m method, term frequency and level thresholds. Its threshold comes from the threshold rule, as `FINAL`'s does: a search that set the threshold itself would pull against the rule ([lessons.md](lessons.md#two-policies-that-set-one-parameter)). A tuned level the model doesn't have is skipped.
-- Its suggestion that passed `adopt` is the `optuna_suggestion` decision. It drops four generators (the person- and company-name keys, the person-name sorted neighbourhood, the company TF-IDF), turns term frequency off, and sets the JW thresholds: names 0.95 / 0.75, companies 0.97 / 0.80. `company_without_jw_high` then drops the company's 0.97 level, which no pair reached.
+**Optuna** (cross-validated objective, 30 trials, seeded; off by default: `fs_tune`, `enabled=False`; `scripts/choose.py --optuna` runs it): each trial switches generators off and picks the m method and level thresholds. Its threshold comes from the threshold rule, as `FINAL`'s does: a search that set the threshold itself would pull against the rule ([lessons.md](lessons.md#two-policies-that-set-one-parameter)). A tuned level the model doesn't have is skipped.
+- Its suggestion that passed `adopt` is the `optuna_suggestion` decision. It drops four generators (the person- and company-name keys, the person-name sorted neighbourhood, the company TF-IDF) and sets the JW thresholds: names 0.95 / 0.75, companies 0.97 / 0.80. `company_without_jw_high` then drops the company's 0.97 level, which no pair reached.
 
 ## Benchmark
 

@@ -115,10 +115,6 @@ def test_a_lookup_lists_and_scores_the_pairs_an_increment_of_the_record_would_an
         got = dict(zip(mine["uid"], mine["weight"]))
         assert set(got) == set(ref) and all(abs(got[k] - ref[k]) < 1e-9 for k in ref), rid
     con.close()
-    monkeypatch.setattr(index, "run_model", lambda out: {**run_model(out), "er": {**run_model(out)["er"], "tf": {"name": {"x": 0.1}}}})
-    with pytest.raises(InputError, match="term frequency"):  # a model a lookup can't score as a run does: refused when built, said in words
-        index.build(ws, s2, p2)
-    monkeypatch.undo()
 
     rec = df[held].iloc[0]
     said = cli.match_record({"workspace": str(ws), "values": [f"{c}={rec[c]}" for c in ("FULL_NAME_KANA", "PHONE_NUM_4") if pd.notna(rec[c])],
