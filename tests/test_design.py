@@ -66,6 +66,7 @@ def parse(name: str) -> tuple[dict[str, tuple[str, str]], list[tuple[str, str]],
 
 PACKAGES = ("er", "design")  # the engine, and design time's code beside it
 PACKAGE = {f.stem: pkg for pkg in PACKAGES for f in (ROOT / pkg).glob("*.py") if f.stem != "__init__"}  # each module's package
+NESTED = {f.relative_to(ROOT).as_posix() for pkg in PACKAGES for f in (ROOT / pkg).glob("*/*.py") if f.stem != "__init__"}  # er/engine/duckdb.py: named by path
 MODULES = set(PACKAGE)
 RANK = {"tools_design": 5, "tools_run": 4, "design": 3, "run": 2, "steps": 1, "configuration": 0}  # components.puml: each layer imports only those below; a design-time tool may drive nayose
 CLASSES = {"Run": "er.run", "Classifier": "er.kind", "NameModel": "er.kind", "Fitted": "er.kind"}
@@ -94,7 +95,7 @@ def imports() -> set[tuple[str, str]]:
     """Every import of a module of er/ or design/ by a file of er/, design/ or scripts/, as repo-relative paths. Imports
     for type checking only are left out: they make no dependency at run time."""
     out = set()
-    for f in [*(x for pkg in (*PACKAGES, "scripts") for x in sorted((ROOT / pkg).glob("*.py")))]:
+    for f in [*(x for pkg in (*PACKAGES, "scripts") for x in sorted((ROOT / pkg).rglob("*.py")))]:
         tree = ast.parse(f.read_text(encoding="utf-8"))
         typing_only = {id(n) for node in ast.walk(tree) if isinstance(node, ast.If) and "TYPE_CHECKING" in ast.unparse(node.test)
                        for n in ast.walk(node)}
@@ -106,8 +107,9 @@ def imports() -> set[tuple[str, str]]:
             if isinstance(node, ast.ImportFrom) and node.module in PACKAGES:  # from design import experiments
                 mods = [f"{node.module}.{a.name}" for a in node.names if a.name in MODULES]
             for m in mods:
-                if m.split(".")[0] in PACKAGES and "." in m and f.name != "__init__.py":
-                    out.add((f.relative_to(ROOT).as_posix(), f"{m.split('.')[0]}/{m.split('.')[1]}.py"))
+                path = m.replace(".", "/") + ".py"
+                if m.split(".")[0] in PACKAGES and (ROOT / path).is_file() and f.name != "__init__.py":
+                    out.add((f.relative_to(ROOT).as_posix(), path))
     return out
 
 
@@ -207,12 +209,12 @@ class Logged:
 
     def __init__(self, run):
         self.run, self.by_step = run, defaultdict(list)
-        run.con.execute("CALL enable_logging('QueryLog')")
+        run.engine.run("CALL enable_logging('QueryLog')")
         run.echo = lambda step: self.cut(step["step"])
 
     def cut(self, step: str) -> None:
-        rows = self.run.con.execute("SELECT message FROM duckdb_logs WHERE type = 'QueryLog'").fetchall()
-        self.run.con.execute("CALL truncate_duckdb_logs()")
+        rows = self.run.engine.rows("SELECT message FROM duckdb_logs WHERE type = 'QueryLog'")
+        self.run.engine.run("CALL truncate_duckdb_logs()")
         self.by_step[step] += [m for m, in rows if "duckdb_logs" not in m]
 
 
@@ -265,7 +267,7 @@ def layers() -> dict[str, str]:
     elements, _, _ = parse("components")
     layer = {}
     for eid, (_, label) in elements.items():
-        for f in re.findall(r"\b(?:er|design|scripts)/\w+\.py", label):
+        for f in re.findall(r"\b(?:er|design|scripts)/[\w/]+\.py", label):
             assert f not in layer, f"{f} is in two boxes of components.puml: {layer[f]}, {eid}"
             layer[f] = eid
     return layer
@@ -274,7 +276,7 @@ def layers() -> dict[str, str]:
 def test_the_components_diagram_holds_every_module_once_and_draws_the_imports_between_its_layers():
     _, edges, _ = parse("components")
     layer = layers()
-    files = {f"{PACKAGE[m]}/{m}.py" for m in MODULES} | {f.relative_to(ROOT).as_posix() for f in (ROOT / "scripts").glob("*.py")}
+    files = {f"{PACKAGE[m]}/{m}.py" for m in MODULES} | NESTED | {f.relative_to(ROOT).as_posix() for f in (ROOT / "scripts").glob("*.py")}
     assert files == set(layer), f"components.puml: modules to place {sorted(files - set(layer))}, to remove {sorted(set(layer) - files)}"
     code = {(layer[a], layer[b]) for a, b in imports() if layer[a] != layer[b]}
     drawn = {(a, b) for a, b in edges if a in layer.values() and b in layer.values()}
@@ -402,7 +404,7 @@ def test_no_code_in_er_changes_process_wide_state():
     banned_calls = ("redirect_stdout", "redirect_stderr", "os.chdir", "os.putenv", "os.environ.update", "os.environ.pop",
                     "os.environ.setdefault", "os.environ.clear", "sys.path.insert", "sys.path.append")
     found = []
-    for f in sorted((ROOT / "er").glob("*.py")):
+    for f in sorted((ROOT / "er").rglob("*.py")):
         tree = ast.parse(f.read_text(encoding="utf-8"))
         found += [f"{f.name}:{line} {c}" for c, line in calls(tree) if c.split(".")[-1] in banned_calls or c in banned_calls]
         for n in ast.walk(tree):
@@ -416,7 +418,7 @@ def test_a_store_that_grows_says_what_bounds_it():
     """Rule 3: a module-level dict, list or set that code adds to names its bound on the line that makes it
     (bounded: …), or the limit it doesn't have (shortcut: …)."""
     found = []
-    for f in sorted((ROOT / "er").glob("*.py")):
+    for f in sorted((ROOT / "er").rglob("*.py")):
         text = f.read_text(encoding="utf-8")
         tree, lines = ast.parse(text), text.splitlines()
         stores = {}

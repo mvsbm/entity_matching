@@ -10,7 +10,7 @@ import pytest
 
 from er.config import (InputError, Resolver, bits)
 from er.match import named_sql
-from er.strings import connect
+from er.engine.duckdb import connect
 
 
 def test_a_run_refuses_a_resolver_it_cannot_apply(population):
@@ -117,7 +117,7 @@ def test_without_bridging_an_increment_lists_no_pair_of_two_records_the_rules_jo
     g.df.to_parquet(tmp_path / "old.parquet", index=False)
     pd.DataFrame([x, y]).to_parquet(tmp_path / "new.parquet", index=False)
     pd.concat([g.df, pd.DataFrame([x, y])]).to_parquet(tmp_path / "all.parquet", index=False)
-    listed = lambda run: run.con.execute(f"SELECT count(*) FROM cands WHERE {l} = '9000000001' AND {r} = '9000000002'").fetchall()[0][0]
+    listed = lambda run: run.engine.value(f"SELECT count(*) FROM cands WHERE {l} = '9000000001' AND {r} = '9000000002'")
     run = lambda: Run(p, s, reaching_only=False)  # every pair the keys list, whatever it scores
     full = run().full(tmp_path / "all.parquet", tmp_path / "full")
     rc = pd.read_parquet(tmp_path / "full" / "state" / "rule_clusters.parquet").set_index(uid)["cluster_id"]
@@ -310,19 +310,19 @@ def test_the_probe_counts_the_matches_no_key_lists_as_the_truth_does(tmp_path, p
     few = replace(p, fs=replace(p.fs, blockers=tuple(b for b in p.fs.blockers if b.name in ("cif", "person_name", "company_name"))))  # a method that misses
     out = tmp_path / "run"
     probe = probed(Run(few, s).full(tmp_path / "all.parquet", out))
-    con = connect(s.compute)  # the truth: every true pair scored as the run scores, at its line, that its likely links don't join
+    engine = connect(s.compute)  # the truth: every true pair scored as the run scores, at its line, that its likely links don't join
     truth = g.truth[[uid, ent]].merge(g.truth[[uid, ent]], on=ent).query(f"{uid}_x < {uid}_y")
-    con.register("er_t", truth.rename(columns={f"{uid}_x": l, f"{uid}_y": r})[[l, r]])
-    scored_again(con, out, uid, "er_t", "er_ts")
-    wide = con.execute("SELECT * FROM er_ts ORDER BY ALL").fetchall()
-    scored_again(con, out, uid, "er_t", "er_ts", narrow=True)  # only the columns the model reads: the same scores
-    assert con.execute("SELECT * FROM er_ts ORDER BY ALL").fetchall() == wide \
-        and len(con.execute("DESCRIBE er_touched").fetchall()) < len(con.execute(f"DESCRIBE SELECT * FROM read_parquet('{out}/state/records/*.parquet')").fetchall())
+    engine.register("er_t", truth.rename(columns={f"{uid}_x": l, f"{uid}_y": r})[[l, r]])
+    scored_again(engine, out, uid, "er_t", "er_ts")
+    wide = engine.rows("SELECT * FROM er_ts ORDER BY ALL")
+    scored_again(engine, out, uid, "er_t", "er_ts", narrow=True)  # only the columns the model reads: the same scores
+    assert engine.rows("SELECT * FROM er_ts ORDER BY ALL") == wide \
+        and len(engine.rows("DESCRIBE er_touched")) < len(engine.rows(f"DESCRIBE SELECT * FROM read_parquet('{out}/state/records/*.parquet')"))
     links = " UNION ALL ".join(f"SELECT {l}, {r} FROM read_parquet('{out / x}/*.parquet')" for x in ("matches", "rule_kept") if any((out / x).glob("*.parquet")))
-    con.execute(f"CREATE TABLE er_one AS SELECT {uid}, {uid} AS cluster_id FROM read_parquet('{out}/gold.parquet')")
-    merge(con, "er_one", f"({links})", "er_joined", uid)
-    missed = con.execute(f"""SELECT s.{l}, s.{r} FROM er_ts s JOIN er_joined a ON a.{uid} = s.{l} JOIN er_joined b ON b.{uid} = s.{r}
-        WHERE s.match_weight >= {few.fs.min_match_weight} AND {named_sql(few.fs)} AND a.cluster_id <> b.cluster_id""").fetchall()
+    engine.run(f"CREATE TABLE er_one AS SELECT {uid}, {uid} AS cluster_id FROM read_parquet('{out}/gold.parquet')")
+    merge(engine, "er_one", f"({links})", "er_joined", uid)
+    missed = engine.rows(f"""SELECT s.{l}, s.{r} FROM er_ts s JOIN er_joined a ON a.{uid} = s.{l} JOIN er_joined b ON b.{uid} = s.{r}
+        WHERE s.match_weight >= {few.fs.min_match_weight} AND {named_sql(few.fs)} AND a.cluster_id <> b.cluster_id""")
     phone = g.df.set_index(uid)[s.columns["phone"][0][0]]
     shared = {(a, b) for a, b in missed if pd.notna(phone[a]) and phone[a] == phone[b]}
     by = {x["stratum"]: x for x in probe}
@@ -348,7 +348,7 @@ def test_scoring_in_slices_gives_the_scores_scoring_all_at_once_gives_and_each_l
     told = []
     whole = Run(p, s, model=first.model).full(tmp_path / "all.parquet", tmp_path / "b")
     sliced = Run(p, s, model=first.model, score_pairs=20, chunk_rows=100, told=lambda *a, **k: told.append((*a, k))).full(tmp_path / "all.parquet", tmp_path / "c")
-    scores = [r.con.execute(f"SELECT * FROM scores ORDER BY {r.l}, {r.r}").df() for r in (whole, sliced)]
+    scores = [r.engine.frame(f"SELECT * FROM scores ORDER BY {r.l}, {r.r}") for r in (whole, sliced)]
     pd.testing.assert_frame_equal(*scores, rtol=1e-9)  # a pair's score depends on it alone: the same in a slice as in the whole
     counts = {}
     for done, of, unit, _ in told:
@@ -380,7 +380,7 @@ def test_a_full_run_reads_the_records_it_cleaned_again_until_anything_they_rest_
     g.df.to_parquet(tmp_path / "all.parquet", index=False)
     ws = tmp_path / "ws"
     load = lambda run: next(x for x in run.steps if x["step"] == "load")["prepared"]
-    rows = lambda run: run.con.execute(f"SELECT * FROM records ORDER BY {run.uid}").df()
+    rows = lambda run: run.engine.frame(f"SELECT * FROM records ORDER BY {run.uid}")
     first = Run(p, s).full(tmp_path / "all.parquet", ws)
     gold = pd.read_parquet(ws / "gold.parquet")
     again = Run(p, s).full(tmp_path / "all.parquet", ws, overwrite=True)

@@ -161,7 +161,7 @@ The gate on oversized blocks (step 5) and the scores (step 6) both use these u.
 Each rule is one join on its exact keys; its fuzzy conditions (names within two edits, addresses by Jaro–Winkler, a phone one digit off, …) are checked on the joined pairs only. A pair belongs to the first rule that finds it. Stage by stage, exact then fuzzy, a pair is kept only if it touches a record still unresolved, and the kept pairs are merged into the rule clusters, each cluster one node.
 
 - **Why:** certain cases are cheap and auditable, and settle most duplicates without a false merge. The model then works only on what is left.
-- **Code:** `Run.rules` → `Run._rules` → `match.rule_edges` (one plain SQL join per rule, the same for `choose.py`, full runs and increments), `config.Stage.sql` (a fuzzy condition lets equal values through without the string function), `strings.connect` (the character-level `cl_*` functions), `cluster.merge`. A rule leaves out any value of its keys held by an oversized block (`Run._untrusted`): one address and phone on 3,000 records is not one customer's, so the summary names it, and the model can still match those records. A customer ID such as that is already missing (step 1).
+- **Code:** `Run.rules` → `Run._rules` → `match.rule_edges` (one plain SQL join per rule, the same for `choose.py`, full runs and increments), `config.Stage.sql` (a fuzzy condition lets equal values through without the string function), `er/engine/duckdb.py`'s `connect` (the character-level `cl_*` functions), `cluster.merge`. A rule leaves out any value of its keys held by an oversized block (`Run._untrusted`): one address and phone on 3,000 records is not one customer's, so the summary names it, and the model can still match those records. A customer ID such as that is already missing (step 1).
 - **Increment:** each rule joins the batch against all records. Each stored cluster is merged as a single node (`cluster.merge`): `O(Δ·Σb)` plus a scan.
 
 ### 5 · Candidates: which pairs to score · `O(N·L + ΣP_g)`
@@ -308,7 +308,7 @@ Kept on disk. Steps are numbered as in [the run](#4--the-run); the diagram above
 
 ### While a run runs
 
-Working tables live in DuckDB, in memory; past `[compute]` `memory_limit` they spill to `temp_directory`, by default a folder of the person's own, readable only by them, in the system's temporary folder (`strings.connect`). All are dropped when the run ends. The tables one step makes and later steps use are those the LLD diagrams draw:
+Working tables live in DuckDB, in memory; past `[compute]` `memory_limit` they spill to `temp_directory`, by default a folder of the person's own, readable only by them, in the system's temporary folder (`er/engine/duckdb.py`, its `connect`). All are dropped when the run ends. The tables one step makes and later steps use are those the LLD diagrams draw:
 
 | Table | Made by step | Used by | Holds |
 |---|---|---|---|

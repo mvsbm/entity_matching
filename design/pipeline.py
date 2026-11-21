@@ -27,7 +27,8 @@ from er.report import households
 from er.run import Run
 from er.settings import Settings
 from er.standardize import prepare
-from er.strings import FUNCTIONS, connect, udf
+from er.strings import FUNCTIONS
+from er.engine.duckdb import connect, udf
 
 BENCH: dict[tuple[str, str], float] = {}  # seconds per pair, by (column, function); bounded: one per column and function compared
 
@@ -108,7 +109,7 @@ def scale_check(spec: RulesSpec | FSSpec, records: pd.DataFrame, truth: pd.DataF
                                      within_budget=lambda t: t["projected_pairs"] <= budget.max_pairs(budget.target_rows))
 
 
-def window_only(spec: FSSpec, model_json: dict, records: pd.DataFrame, truth: pd.DataFrame, con: duckdb.DuckDBPyConnection, data: Data,
+def window_only(spec: FSSpec, model_json: dict, records: pd.DataFrame, truth: pd.DataFrame, engine: duckdb.DuckDBPyConnection, data: Data,
                 sizes: list[int]) -> pd.DataFrame:
     """Per file size: the potential matches (true pairs whose fields would reach min_match_weight at that size) and how
     many of them share no equality key (KeyBlocker, DeletionKeys). Only a window (sorted neighbourhood, TF-IDF) can find
@@ -118,12 +119,12 @@ def window_only(spec: FSSpec, model_json: dict, records: pd.DataFrame, truth: pd
     uid = data.unique_id
     l, r = f"{uid}_l", f"{uid}_r"
     df = prepare(spec.standardize, records, spec.normalized(), spec.used())
-    scored = score_fs(model_json, df, true_pairs(truth.set_index(uid)[data.entity_id], uid).astype("string"), con, uid)
+    scored = score_fs(model_json, df, true_pairs(truth.set_index(uid)[data.entity_id], uid).astype("string"), engine, uid)
     u_here, growth = {}, {}
     if spec.model.u_from_scored:
         entity = df[uid].map(truth.set_index(uid)[data.entity_id])
         half = df[entity_rank(entity) < entity.nunique() // 2]  # whole entities, as the population would grow
-        u_here, u_half = (scored_sample(spec.model, d, con, uid) for d in (df, half))  # df: the fit's own sample of train
+        u_here, u_half = (scored_sample(spec.model, d, engine, uid) for d in (df, half))  # df: the fit's own sample of train
         growth = {(c, lv): math.log(u / u_half[c][lv]) / math.log(len(df) / len(half))
                   for c in u_here for lv, u in u_here[c].items() if u_half[c].get(lv)}
     keyed = pd.concat([generate(b, df, uid, None) for b in spec.blockers if isinstance(b, KeyBlocker | DeletionKeys)]
@@ -154,18 +155,18 @@ def check_budget(plan: pd.DataFrame, budget: Budget, n: int) -> None:
 
 
 def table(run: Run, sql: str) -> pd.DataFrame:  # a query on a run's tables, its text columns as pandas strings
-    df = run.con.sql(sql).df()
+    df = run.engine.frame(sql)
     return df.astype({c: "string" for c in df.columns if df[c].dtype == object})
 
 
-def clustered(con: duckdb.DuckDBPyConnection, base: pd.DataFrame, edges: pd.DataFrame, ids: pd.Series, uid: str) -> pd.Series:
+def clustered(engine: duckdb.DuckDBPyConnection, base: pd.DataFrame, edges: pd.DataFrame, ids: pd.Series, uid: str) -> pd.Series:
     """`base` (uid, cluster_id) with `edges` added (er.cluster.merge, the run's own clustering), in the order of ids."""
-    con.register("er_base_df", base)
-    con.register("er_edges_df", edges[[f"{uid}_l", f"{uid}_r"]])
-    con.execute("CREATE OR REPLACE TABLE er_base AS SELECT * FROM er_base_df")
-    con.execute("CREATE OR REPLACE TABLE er_edges AS SELECT * FROM er_edges_df")
-    merge(con, "er_base", "er_edges", "er_clusters", uid)
-    out = con.sql("SELECT * FROM er_clusters").df().set_index(uid)["cluster_id"]
+    engine.register("er_base_df", base)
+    engine.register("er_edges_df", edges[[f"{uid}_l", f"{uid}_r"]])
+    engine.run("CREATE OR REPLACE TABLE er_base AS SELECT * FROM er_base_df")
+    engine.run("CREATE OR REPLACE TABLE er_edges AS SELECT * FROM er_edges_df")
+    merge(engine, "er_base", "er_edges", "er_clusters", uid)
+    out = engine.frame("SELECT * FROM er_clusters").set_index(uid)["cluster_id"]
     return out.astype("string").reindex(ids.to_numpy())
 
 
@@ -204,7 +205,7 @@ def run_rules(pipeline: Pipeline, settings: Settings, path: Path, truth: pd.Data
     for st in spec.stages:  # the clusters after each stage: the kept pairs of the stages so far, merged as the run merges them
         names.append(st.name)
         upto = edges["stage"].isin(names).to_numpy()
-        clusters = clustered(run.con, base, edges[upto & edges["kept"].to_numpy()], ids, uid)
+        clusters = clustered(run.engine, base, edges[upto & edges["kept"].to_numpy()], ids, uid)
         now = clusters.map(clusters.value_counts()) > 1
         stage_of[now & ~resolved] = st.name
         resolved = now
@@ -221,7 +222,7 @@ def run_rules(pipeline: Pipeline, settings: Settings, path: Path, truth: pd.Data
                                                    kept_FP=("fp", lambda f: int((f & edges.loc[f.index, "kept"]).sum())))
              .reindex(plan["rule"]).fillna(0).astype(int).reset_index())
     plan = plan.assign(actual_ms=(1000 * plan["rule"].map(run.rule_seconds)).round(1))
-    run.con.close()  # its tables are read: free its memory now, not when the collector finds the run
+    run.engine.close()  # its tables are read: free its memory now, not when the collector finds the run
     return Result(plan, rules, pd.DataFrame(metrics), out, edges, time.perf_counter() - t0)
 
 
@@ -278,9 +279,9 @@ def run_fs(pipeline: Pipeline, settings: Settings, path: Path, truth: pd.DataFra
     scored = table(run, f"SELECT * FROM ({run.scored()}) ORDER BY {q(l)}, {q(r)}")
     scored["fp"] = false_pairs(scored[l], scored[r], entity, household)
     scored["one_home"] = ~scored["fp"] & false_pairs(scored[l], scored[r], entity)  # two people of one household
-    run.con.register("er_scored_ids", scored[[l, r]])
-    homes = households(run.con, "records", "SELECT * FROM er_scored_ids", uid, pipeline)
-    run.con.unregister("er_scored_ids")
+    run.engine.register("er_scored_ids", scored[[l, r]])
+    homes = households(run.engine, "records", "SELECT * FROM er_scored_ids", uid, pipeline)
+    run.engine.unregister("er_scored_ids")
     scored["labelled"] = [(a, b) in homes for a, b in zip(scored[l], scored[r])]  # people see it labelled maybe one household
     accepted = scored[automatic(scored, spec.min_match_weight)].assign(stage=spec.stage, rule=spec.model.name,
                                                                        score=lambda s: s["match_probability"])
@@ -288,7 +289,7 @@ def run_fs(pipeline: Pipeline, settings: Settings, path: Path, truth: pd.DataFra
     out = df.assign(CLUSTER_ID=gold["cluster_id"].to_numpy(), MATCH_STAGE=gold["resolved_stage"].to_numpy(),
                     MATCH_RULE=gold["resolved_by"].to_numpy())
     rule_pairs = table(run, "SELECT * FROM rule_kept")
-    run.con.close()  # its tables are read: free its memory now, not when the collector finds the run
+    run.engine.close()  # its tables are read: free its memory now, not when the collector finds the run
     res = FSResult(report, cands, scored, pd.DataFrame(), {}, out, 0.0, run.scoring, rule_clusters, rule_pairs)
     res.metrics = pd.DataFrame(stage_rows(res, spec, accepted, gold["cluster_id"], entity, uid, household))
     res.stage_metrics = dict(**candidate_metrics(cands, entity, uid, targets), **edge_metrics(accepted, entity, uid, household),
@@ -307,17 +308,17 @@ def threshold_curve(res: FSResult, spec: FSSpec, truth: pd.DataFrame, data: Data
     redone, by the run's own clustering from the rules' clusters. O(|weights| · (E·log E + N))."""
     uid = data.unique_id
     ids, (entity, household) = res.records[uid], labelled(truth, data)
-    con = connect()
+    engine = connect()
     rows = []
     for w in weights:
         accepted = res.scored[automatic(res.scored, w)]
-        m = stage_rows(res, spec, accepted, clustered(con, res.rule_clusters, accepted[accepted["keep"]], ids, uid), entity, uid, household)[-1]
+        m = stage_rows(res, spec, accepted, clustered(engine, res.rule_clusters, accepted[accepted["keep"]], ids, uid), entity, uid, household)[-1]
         rows.append(dict(min_match_weight=w, probability=1 / (1 + 2 ** -w), accepted=len(accepted),
                          pairs_FP=int(accepted["fp"].sum()), stage_fp_rate_hi=fp_upper(int(accepted["fp"].sum()), len(accepted)),
                          TP=m["TP"], FP=m["FP"], FN=m["FN"], recall=m["recall"], recall_lo=m["recall_lo"],
                          recall_hi=m["recall_hi"], precision=m["precision"], fp_rate_hi=m["fp_rate_hi"], f1=m["f1"],
                          overmerged=m["overmerged"], dup_unresolved=m["dup_unresolved"]))
-    con.close()
+    engine.close()
     return pd.DataFrame(rows)
 
 

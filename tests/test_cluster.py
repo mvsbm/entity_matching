@@ -35,16 +35,16 @@ def graph(seed: int, n: int, e: int, chain: int = 0, grouped: bool = False) -> t
 
 
 @pytest.mark.parametrize("args", list(RECORDED))
-def test_merge_gives_each_record_the_cluster_splink_s_connected_components_gave(con, args):
+def test_merge_gives_each_record_the_cluster_splink_s_connected_components_gave(engine, args):
     base, edges = graph(*json.loads(args))
-    con.register("er_t_base", base)
-    con.register("er_t_edges", edges)
+    engine.register("er_t_base", base)
+    engine.register("er_t_edges", edges)
     try:
-        merge(con, "er_t_base", "er_t_edges", "er_t_ours", UID)
-        ours = [list(x) for x in con.execute(f"SELECT {q(UID)}, cluster_id FROM er_t_ours ORDER BY 1").fetchall()]
+        merge(engine, "er_t_base", "er_t_edges", "er_t_ours", UID)
+        ours = [list(x) for x in engine.rows(f"SELECT {q(UID)}, cluster_id FROM er_t_ours ORDER BY 1")]
     finally:
-        con.unregister("er_t_base")
-        con.unregister("er_t_edges")
+        engine.unregister("er_t_base")
+        engine.unregister("er_t_edges")
     theirs = RECORDED[args]
     assert (len(ours), len({c for _, c in ours})) == (theirs["records"], theirs["clusters"])
     assert hashlib.sha256(json.dumps(ours).encode()).hexdigest() == theirs["sha256"]

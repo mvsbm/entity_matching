@@ -36,6 +36,7 @@ import numpy as np
 import pandas as pd
 import pyarrow.parquet as pq
 
+from er.engine.engine import Engine
 from er import folder
 from er.candidates import _filled, deletions_sql
 from er.config import DeletionKeys, InputError, KeyBlocker, Pipeline, SortedNeighbourhood, lit, q
@@ -46,7 +47,7 @@ from er.explain import run_model
 from er.run import run_config
 from er.settings import Settings, fit_to_file, present_fields
 from er.standardize import KATAKANA, SEPARATORS, prepare
-from er.strings import connect
+from er.engine.duckdb import connect
 
 INDEX = "index"
 SPARSE = 1024  # a sorted generator keeps every this many keys apart: a bisect there, then one read of at most this many rows
@@ -124,7 +125,7 @@ def _entities(ws: Path, uid: str) -> str:  # each record's entity, and whether t
             f"(SELECT {u}, count(*) OVER (PARTITION BY cluster_id) AS n FROM read_parquet({lit(ws / 'state' / 'rule_clusters.parquet')})) c USING ({u}))")
 
 
-def _write(con: duckdb.DuckDBPyConnection, into: str, src: str, p: Pipeline, ws: Path, uid: str, records: str | None = None) -> dict[str, list]:
+def _write(engine: Engine, into: str, src: str, p: Pipeline, ws: Path, uid: str, records: str | None = None) -> dict[str, list]:
     """The index's tables in the database `into`, of the records in `src`: the records (each with its entity and whether
     the rules joined it; in the database `records`, else `into`), each key's (hash, uid), each window's (pos, key, uid)
     with every SPARSE-th, each sorted. Each table's [rows, seconds]."""
@@ -143,8 +144,8 @@ def _write(con: duckdb.DuckDBPyConnection, into: str, src: str, p: Pipeline, ws:
     for name, sqls in jobs.items():
         t = time.perf_counter()
         for sql in sqls:
-            con.execute(sql)
-        made[name] = [con.execute(f"SELECT count(*) FROM {records if name == 'records' else into}.{q(name)}").fetchall()[0][0], round(time.perf_counter() - t, 3)]
+            engine.run(sql)
+        made[name] = [engine.value(f"SELECT count(*) FROM {records if name == 'records' else into}.{q(name)}"), round(time.perf_counter() - t, 3)]
     return made
 
 
@@ -191,19 +192,19 @@ def _build(ws: Path, s: Settings, p: Pipeline, stamp: dict) -> dict:
     tables = _tables(fitted)
     reads = {uid, *read_by(model), *(c for _, x in tables for c in _keys(x)), *(c for c in SHOWN if c in have), *(c for c in ALIKE if c in have),
              *(c for _, x in tables if isinstance(x, tuple) for c in _rule_reads(x, have))}
-    con = connect(s.compute)
+    engine = connect(s.compute)
     tmp, key = _scratch(ws), secrets.token_hex(6)
     try:
-        con.execute(f"ATTACH {lit(tmp / f'{key}.duckdb')} AS ix")
-        con.execute(f"ATTACH {lit(tmp / f'{key}.records.duckdb')} AS ixr (ROW_GROUP_SIZE {ROWS})")
-        con.execute(f"ATTACH {lit(tmp / f'{key}-0.duckdb')} AS dx (ROW_GROUP_SIZE {ROWS})")
+        engine.run(f"ATTACH {lit(tmp / f'{key}.duckdb')} AS ix")
+        engine.run(f"ATTACH {lit(tmp / f'{key}.records.duckdb')} AS ixr (ROW_GROUP_SIZE {ROWS})")
+        engine.run(f"ATTACH {lit(tmp / f'{key}-0.duckdb')} AS dx (ROW_GROUP_SIZE {ROWS})")
         t = time.perf_counter()
-        con.execute(f"CREATE TEMP TABLE src AS SELECT {', '.join(q(c) for c in have if c in reads)} FROM {src}")  # read once: every table reads it
-        made = {"read": [None, round(time.perf_counter() - t, 3)], **_write(con, "ix", "src", fitted, ws, uid, records="ixr")}
-        _write(con, "dx", "(SELECT * FROM src LIMIT 0)", fitted, ws, uid)  # what changed since: nothing yet
-        con.execute(f"CREATE TABLE dx.moved AS SELECT {q(uid)}, entity, resolved FROM ixr.records LIMIT 0")
+        engine.run(f"CREATE TEMP TABLE src AS SELECT {', '.join(q(c) for c in have if c in reads)} FROM {src}")  # read once: every table reads it
+        made = {"read": [None, round(time.perf_counter() - t, 3)], **_write(engine, "ix", "src", fitted, ws, uid, records="ixr")}
+        _write(engine, "dx", "(SELECT * FROM src LIMIT 0)", fitted, ws, uid)  # what changed since: nothing yet
+        engine.run(f"CREATE TABLE dx.moved AS SELECT {q(uid)}, entity, resolved FROM ixr.records LIMIT 0")
         for db in ("ix", "ixr", "dx"):
-            con.execute(f"DETACH {db}")
+            engine.run(f"DETACH {db}")
         kind = bool(fitted.kind and fitted.kind.name_field in present_fields(s, have))  # the records hold a kind: a record looked up is told one too
         of = {n: f"rule {x[1].name}" if isinstance(x, tuple) else x.name for n, x in tables}
         m = dict(id=key, built_at=time.strftime("%Y-%m-%dT%H:%M:%S"), records=made["records"][0], added=0, moved=0, columns=have,
@@ -212,7 +213,7 @@ def _build(ws: Path, s: Settings, p: Pipeline, stamp: dict) -> dict:
                  tables={k: dict(of=of.get(k, k), rows=r, seconds=v) for k, (r, v) in made.items()}, seconds=round(time.perf_counter() - t0, 2))
         _publish(ws, tmp, m)
     finally:
-        con.close()
+        engine.close()
         shutil.rmtree(tmp, ignore_errors=True)
     return dict(index=str(ws / INDEX), records=m["records"], tables=m["tables"], seconds=m["seconds"])
 
@@ -236,34 +237,34 @@ def update(ws: Path, s: Settings, p: Pipeline) -> dict:
         if now == m["stamp"]:  # nothing changed since the last write
             return dict(index=str(ws / INDEX), records=m["records"] + m["added"], added=m["added"], moved=m["moved"], seconds=0.0, rebuilt=None)
         fitted, n = _pipeline(ws, s, p, m["columns"]), m["updates"] + 1
-        con = connect(s.compute)
+        engine = connect(s.compute)
         tmp, delta = _scratch(ws), f"{m['id']}-{n}.duckdb"
         try:
-            con.execute(f"ATTACH {lit(ws / INDEX / m['files']['keys'])} AS ix (READ_ONLY)")
-            con.execute(f"ATTACH {lit(ws / INDEX / m['files']['records'])} AS ixr (READ_ONLY)")
-            con.execute(f"ATTACH {lit(tmp / delta)} AS dx (ROW_GROUP_SIZE {ROWS})")
-            stored = {c: t for c, t, *_ in con.execute("DESCRIBE ixr.records").fetchall() if c not in ("h", "entity", "resolved")}
+            engine.run(f"ATTACH {lit(ws / INDEX / m['files']['keys'])} AS ix (READ_ONLY)")
+            engine.run(f"ATTACH {lit(ws / INDEX / m['files']['records'])} AS ixr (READ_ONLY)")
+            engine.run(f"ATTACH {lit(tmp / delta)} AS dx (ROW_GROUP_SIZE {ROWS})")
+            stored = {c: t for c, t, *_ in engine.rows("DESCRIBE ixr.records") if c not in ("h", "entity", "resolved")}
             src = f"read_parquet([{', '.join(lit(x) for x in new)}], union_by_name = true)"
-            there = {c: t for c, t, *_ in con.execute(f"DESCRIBE SELECT * FROM {src}").fetchall()} if new else {}
+            there = {c: t for c, t, *_ in engine.rows(f"DESCRIBE SELECT * FROM {src}")} if new else {}
             if retyped := sorted(c for c, t in there.items() if c in stored and t != stored[c]):  # a key hashed as another type meets none of the index's
                 why = f"{', '.join(retyped[:3])} read as another type"
             else:
-                con.execute(f"CREATE TEMP TABLE src AS SELECT {', '.join(q(c) if c in there else f'NULL::{t} AS {q(c)}' for c, t in stored.items())} FROM {src}" if new
+                engine.run(f"CREATE TEMP TABLE src AS SELECT {', '.join(q(c) if c in there else f'NULL::{t} AS {q(c)}' for c, t in stored.items())} FROM {src}" if new
                             else "CREATE TEMP TABLE src AS SELECT * EXCLUDE (h, entity, resolved) FROM ixr.records LIMIT 0")  # the base's columns, in its order
-                _write(con, "dx", "src", fitted, ws, uid)
+                _write(engine, "dx", "src", fitted, ws, uid)
                 u = q(uid)
-                con.execute(f"""CREATE TABLE dx.moved AS SELECT b.{u}, e.entity, coalesce(e.resolved, FALSE) AS resolved FROM ixr.records b
+                engine.run(f"""CREATE TABLE dx.moved AS SELECT b.{u}, e.entity, coalesce(e.resolved, FALSE) AS resolved FROM ixr.records b
                     LEFT JOIN {_entities(ws, uid)} e USING ({u}) WHERE e.entity IS DISTINCT FROM b.entity OR coalesce(e.resolved, FALSE) <> b.resolved""")
-                added, moved = (con.execute(f"SELECT count(*) FROM dx.{t}").fetchall()[0][0] for t in ("records", "moved"))
+                added, moved = (engine.value(f"SELECT count(*) FROM dx.{t}") for t in ("records", "moved"))
                 if added + moved >= REBUILD * m["records"]:  # every read joins what moved: kept small
                     why = f"the records added or moved since reach {REBUILD:.0%} of it"
                 else:
                     for db in ("ix", "ixr", "dx"):
-                        con.execute(f"DETACH {db}")
+                        engine.run(f"DETACH {db}")
                     _publish(ws, tmp, {**m, "stamp": now, "added": added, "moved": moved, "files": {**m["files"], "delta": delta}, "updates": n,
                                        "updated_at": time.strftime("%Y-%m-%dT%H:%M:%S")})
         finally:
-            con.close()
+            engine.close()
             shutil.rmtree(tmp, ignore_errors=True)
         if why is not None:
             return {**_build(ws, s, p, now), "added": 0, "moved": 0, "rebuilt": why}
@@ -307,16 +308,16 @@ def stale(ws: Path, m: dict | None = None) -> str | None:
     return f"{', '.join(changed[:3])}{' …' if len(changed) > 3 else ''} changed since it was built" if changed else None
 
 
-def _attach(con: duckdb.DuckDBPyConnection, ws: Path, m: dict) -> None:  # the index the manifest names: its keys as ix, its records as ixr, what changed since as dx
+def _attach(engine: Engine, ws: Path, m: dict) -> None:  # the index the manifest names: its keys as ix, its records as ixr, what changed since as dx
     for db, f in (("ix", "keys"), ("ixr", "records"), ("dx", "delta")):
-        con.execute(f"ATTACH {lit(Path(ws) / INDEX / m['files'][f])} AS {db} (READ_ONLY)")
+        engine.run(f"ATTACH {lit(Path(ws) / INDEX / m['files'][f])} AS {db} (READ_ONLY)")
 
 
 def _classifier(ws: Path, s: Settings, p: Pipeline, m: dict) -> Classifier | None:  # the run's: its rule, as config/pipeline.toml [kind] sets it
     return classifier(s, p.kind) if m.get("kind") and p.kind else None
 
 
-def _open(ws: Path, s: Settings, p: Pipeline) -> tuple[dict, Pipeline, duckdb.DuckDBPyConnection, Classifier | None, threading.Lock]:
+def _open(ws: Path, s: Settings, p: Pipeline) -> tuple[dict, Pipeline, Engine, Classifier | None, threading.Lock]:
     """The index of `ws` as its manifest names it now, refused when out of date: the manifest, the fitted pipeline, a
     connection with both databases attached and the classifier, kept open for the next call (OPEN at most). Each
     caller reads through a cursor of its own, and prepares under the lock: the classifier's name model holds a
@@ -333,9 +334,9 @@ def _open(ws: Path, s: Settings, p: Pipeline) -> tuple[dict, Pipeline, duckdb.Du
                     _OPENED.pop(key, None)
                     while len(_OPENED) >= OPEN:
                         _OPENED.pop(next(iter(_OPENED)))
-                    con = connect(s.compute)
-                    _attach(con, ws, m)
-                    o = _OPENED[key] = (m, con, _classifier(ws, s, fitted, m), threading.Lock())
+                    engine = connect(s.compute)
+                    _attach(engine, ws, m)
+                    o = _OPENED[key] = (m, engine, _classifier(ws, s, fitted, m), threading.Lock())
             return m, fitted, o[1], o[2], o[3]
         except (duckdb.IOException, FileNotFoundError):
             if not again:
@@ -346,8 +347,8 @@ def _open(ws: Path, s: Settings, p: Pipeline) -> tuple[dict, Pipeline, duckdb.Du
 def _asking(ws: Path, s: Settings, p: Pipeline, values: dict | None, record: str | None):
     """The index opened, and the record asked about prepared into the cursor's table qry: the manifest, the fitted
     pipeline, the run's model, the cursor and the record."""
-    m, fitted, con, kind, lock = _open(ws, s, p)
-    cur = con.cursor()
+    m, fitted, engine, kind, lock = _open(ws, s, p)
+    cur = engine.cursor()
     try:
         with lock:
             query = _query(cur, s, fitted, values, record, kind)
@@ -358,7 +359,7 @@ def _asking(ws: Path, s: Settings, p: Pipeline, values: dict | None, record: str
                 fields = [f, *(d for d, cs in sources.items() if d != f and cs & sources.get(f, set()))]  # and every field built from its columns
                 query.loc[:, [c for c in query.columns if any(c == x or c.startswith(f"{x}__") for x in fields)]] = pd.NA
         cur.register("er_q", query)
-        cur.execute("CREATE TEMP TABLE qry AS SELECT * FROM er_q")
+        cur.run("CREATE TEMP TABLE qry AS SELECT * FROM er_q")
         cur.unregister("er_q")
         yield m, fitted, run_model(ws), cur, query
     finally:
@@ -400,22 +401,22 @@ def _look_up(ws: Path, s: Settings, p: Pipeline, values: dict[str, str] | None =
     level, the rule that would join it, and the keys that listed it; at most `most`. Also the record as compared, and
     what was looked up, how, and how long each part took. O(G·(log N + b) + C·K·L²)."""
     ws, uid, clock, t = Path(ws), s.data.unique_id, {}, time.perf_counter()
-    with _asking(ws, s, p, values, record) as (m, fitted, model, con, query):
+    with _asking(ws, s, p, values, record) as (m, fitted, model, engine, query):
         me, extra = query[uid].iloc[0], 0 if record is not None else 1  # a stored record as new: the store holds it once already
         n = m["records"] + m["added"] + extra
         clock["prepare"] = time.perf_counter() - t
         t = time.perf_counter()
-        found, checked = _candidates(con, fitted, uid, me, extra)
+        found, checked = _candidates(engine, fitted, uid, me, extra)
         clock["keys"] = time.perf_counter() - t
         t = time.perf_counter()
-        found = {**found, **_gate(con, fitted, model, uid, me, found, checked, n)}
-        rules = _rules(con, fitted, uid, me, checked, extra)
+        found = {**found, **_gate(engine, fitted, model, uid, me, found, checked, n)}
+        rules = _rules(engine, fitted, uid, me, checked, extra)
         clock["rules"] = time.perf_counter() - t
         t = time.perf_counter()
         ids = sorted({*found, *rules} - {me})
-        scored = _scored(con, model, uid, me, ids, n)
+        scored = _scored(engine, model, uid, me, ids, n)
         typed = {c: v for c in ALIKE if c in m["columns"] and c in query and pd.notna(v := query[c].iloc[0])}
-        agree = _agree(con, uid, typed) if len(scored) and typed else {}  # the values that start alike: of records tied, the nearest
+        agree = _agree(engine, uid, typed) if len(scored) and typed else {}  # the values that start alike: of records tied, the nearest
         clock["score"] = time.perf_counter() - t
     floor, rows = review_floor(fitted) if at_least is None else at_least, []
     if len(scored):
@@ -478,20 +479,20 @@ def _likely(scored: pd.DataFrame, p: Pipeline) -> np.ndarray:  # at the line or 
     return (scored["weight"] >= p.fs.min_match_weight).to_numpy() & named
 
 
-def _agree(con: duckdb.DuckDBPyConnection, uid: str, typed: dict[str, str]) -> dict[str, list[str]]:
+def _agree(engine: Engine, uid: str, typed: dict[str, str]) -> dict[str, list[str]]:
     """Each record _scored read (er_c), with the fields of ALIKE whose value starts with what was typed (a name also:
     ends with it)."""
     checks = [*((ALIKE[c], f"starts_with(c.{q(c)}, q.{q(c)})") for c in typed), *((ALIKE[c], f"suffix(c.{q(c)}, q.{q(c)})") for c in typed if c in REVERSED)]
-    rows = con.execute(f"SELECT c.{q(uid)}, {', '.join(f'coalesce({x}, FALSE)' for _, x in checks)} FROM er_c c, qry q").fetchall()
+    rows = engine.rows(f"SELECT c.{q(uid)}, {', '.join(f'coalesce({x}, FALSE)' for _, x in checks)} FROM er_c c, qry q")
     return {r[0]: sorted({f for (f, _), ok in zip(checks, r[1:]) if ok}) for r in rows}
 
 
-def _query(con: duckdb.DuckDBPyConnection, s: Settings, p: Pipeline, values: dict | None, record: str | None, kind: Classifier | None) -> pd.DataFrame:
+def _query(engine: Engine, s: Settings, p: Pipeline, values: dict | None, record: str | None, kind: Classifier | None) -> pd.DataFrame:
     """The record looked up, as a run prepares it: a stored one's row as the index holds it, or the values given, by the
     file's column names, read as the reader reads a value and prepared with the run's classifier `kind`."""
     uid = s.data.unique_id
     if record is not None:
-        row = con.execute(f"SELECT * EXCLUDE (h, entity, resolved) FROM {_both('records', f'h = hash({lit(record)}::VARCHAR) AND {q(uid)} = {lit(record)}')}").df()
+        row = engine.frame(f"SELECT * EXCLUDE (h, entity, resolved) FROM {_both('records', f'h = hash({lit(record)}::VARCHAR) AND {q(uid)} = {lit(record)}')}")
         if row.empty:
             raise InputError(f"{record}: no record of the run has that ID", fix="give a record ID the run holds, or the record's values")
         return row.astype("string")
@@ -514,7 +515,7 @@ def _sources(p: Pipeline, values: dict | None) -> list[str]:  # the columns a fi
     return sources
 
 
-def _candidates(con: duckdb.DuckDBPyConnection, p: Pipeline, uid: str, me: str, extra: int = 1) -> tuple[dict[str, set[str]], list[dict]]:
+def _candidates(engine: Engine, p: Pipeline, uid: str, me: str, extra: int = 1) -> tuple[dict[str, set[str]], list[dict]]:
     """The stored records each generator lists with the record (its blocks and windows), and per generator what was
     looked up: rows found, or why none (a key the record lacks, a block too big). `extra`: what the record adds to a
     block, 1 for a new one, 0 for a stored one looked up as new. O(G·(log N + b))."""
@@ -523,18 +524,18 @@ def _candidates(con: duckdb.DuckDBPyConnection, p: Pipeline, uid: str, me: str, 
     tables = dict(_tables(p))
     for name, x in tables.items():
         if isinstance(x, (KeyBlocker, DeletionKeys)):
-            hashes[name] = [h for (h,) in con.execute(f"SELECT DISTINCT h FROM ({_rows(x, 'qry', uid)})").fetchall()]
+            hashes[name] = [h for (h,) in engine.rows(f"SELECT DISTINCT h FROM ({_rows(x, 'qry', uid)})")]
     sizes = {(t, h): n for t, hs in hashes.items() if hs  # each block's records, counted in its sorted rows: a block too big is gated
-             for h, n in con.execute(f"SELECT h, count(*) FROM {_both(t, f'h IN ({', '.join(map(str, hs))})', 'h')} GROUP BY h").fetchall()}
+             for h, n in engine.rows(f"SELECT h, count(*) FROM {_both(t, f'h IN ({', '.join(map(str, hs))})', 'h')} GROUP BY h")}
     m = p.fs.budget.min_oversized()
     for name, x in tables.items():
         if isinstance(x, tuple):
             continue
         if isinstance(x, SortedNeighbourhood):
-            near = _window(con, name, x, me, con.execute(f"SELECT {q(x.key.name)} FROM qry").fetchall()[0][0])
+            near = _window(engine, name, x, me, engine.value(f"SELECT {q(x.key.name)} FROM qry"))
             for v in near:
                 found.setdefault(v, set()).add(x.name)
-            checked.append(dict(key=x.name, found=len(near)) if near or _held(con, x) else dict(key=x.name, found=0, why="the record has no value for it"))
+            checked.append(dict(key=x.name, found=len(near)) if near or _held(engine, x) else dict(key=x.name, found=0, why="the record has no value for it"))
             continue
         hs = hashes.get(name, [])
         if not hs:
@@ -542,7 +543,7 @@ def _candidates(con: duckdb.DuckDBPyConnection, p: Pipeline, uid: str, me: str, 
             continue
         normal = [h for h in hs if sizes.get((name, h), 0) + extra < m]
         big = [h for h in hs if sizes.get((name, h), 0) + extra >= m]
-        rows = con.execute(f"SELECT DISTINCT uid FROM {_both(name, f'h IN ({', '.join(map(str, normal))})', 'uid')}").fetchall() if normal else []
+        rows = engine.rows(f"SELECT DISTINCT uid FROM {_both(name, f'h IN ({', '.join(map(str, normal))})', 'uid')}") if normal else []
         for (v,) in rows:
             if v != me:
                 found.setdefault(v, set()).add(x.name)
@@ -550,56 +551,56 @@ def _candidates(con: duckdb.DuckDBPyConnection, p: Pipeline, uid: str, me: str, 
     return found, checked
 
 
-def _held(con: duckdb.DuckDBPyConnection, x: SortedNeighbourhood) -> bool:  # whether the record has a value for the window's key
-    return con.execute(f"SELECT {q(x.key.name)} IS NOT NULL FROM qry").fetchall()[0][0]
+def _held(engine: Engine, x: SortedNeighbourhood) -> bool:  # whether the record has a value for the window's key
+    return engine.value(f"SELECT {q(x.key.name)} IS NOT NULL FROM qry")
 
 
-def _window(con: duckdb.DuckDBPyConnection, name: str, x: SortedNeighbourhood, me: str, key: str | None) -> list[str]:
+def _window(engine: Engine, name: str, x: SortedNeighbourhood, me: str, key: str | None) -> list[str]:
     """The window-1 records on each side of the record in (key, uid) order, as the run's window places it among them:
     the nearest of the index's and of what changed since, merged. O(log N + SPARSE)."""
     if key is None or x.window < 2:
         return []
     w, before, after = x.window - 1, [], []
     for db in ("ix", "dx"):
-        b, a = _near(con, db, name, me, key, w)
+        b, a = _near(engine, db, name, me, key, w)
         before += b
         after += a
     return [u for _, u in sorted(before)[-w:]] + [u for _, u in sorted(after)[:w]]
 
 
-def _near(con: duckdb.DuckDBPyConnection, db: str, name: str, me: str, key: str, w: int) -> tuple[list[tuple], list[tuple]]:
+def _near(engine: Engine, db: str, name: str, me: str, key: str, w: int) -> tuple[list[tuple], list[tuple]]:
     """The w (key, uid) rows of one database's window table before the record and the w after it: a bisect in the
     sparse table, then one read of the rows between two of its keys. O(log N + SPARSE)."""
-    sparse = con.execute(f"SELECT pos, key, uid FROM {db}.{name}_sparse ORDER BY pos").fetchall()
+    sparse = engine.rows(f"SELECT pos, key, uid FROM {db}.{name}_sparse ORDER BY pos")
     at = bisect_left([(k, u) for _, k, u in sparse], (key, me))  # the first sparse row at or after the record
     lo = sparse[at - 1][0] if at else 1
     hi = sparse[at][0] if at < len(sparse) else lo + SPARSE
-    block = con.execute(f"SELECT pos, key, uid FROM {db}.{name} WHERE pos BETWEEN {lo} AND {hi} ORDER BY pos").fetchall()
+    block = engine.rows(f"SELECT pos, key, uid FROM {db}.{name} WHERE pos BETWEEN {lo} AND {hi} ORDER BY pos")
     start = next((pos for pos, k, u in block if (k, u) >= (key, me)), block[-1][0] + 1 if block else lo)  # its place: before the first row past it, else after the last
-    rows = con.execute(f"SELECT key, uid FROM {db}.{name} WHERE pos BETWEEN {start - w - 1} AND {start + w} ORDER BY pos").fetchall()
+    rows = engine.rows(f"SELECT key, uid FROM {db}.{name} WHERE pos BETWEEN {start - w - 1} AND {start + w} ORDER BY pos")
     rows = [(k, u) for k, u in rows if u != me]  # a stored record looked up as new: the window as if it weren't there
     return [r for r in rows if r < (key, me)][-w:], [r for r in rows if r > (key, me)][:w]
 
 
-def _gate(con: duckdb.DuckDBPyConnection, p: Pipeline, model: dict, uid: str, me: str, found: dict[str, set[str]],
+def _gate(engine: Engine, p: Pipeline, model: dict, uid: str, me: str, found: dict[str, set[str]],
           checked: list[dict], n: int) -> dict[str, set[str]]:  # n: the records with it, for the prior
     """Each oversized block the record falls in, as a run gates it (er.candidates._gate): the record against the block's
     records of lowest hash(uid), it among them, less the pairs other keys list; the block joined in full only if one of
     those reaches the search floor. O(sampled + b) a block."""
     m, floor, added = p.fs.budget.min_oversized(), search_floor(p), {}
     names = {x.name: name for name, x in _tables(p) if not isinstance(x, tuple)}
-    mine = con.execute("SELECT hash(?::VARCHAR)", [me]).fetchall()[0][0]
+    mine = engine.value("SELECT hash(?::VARCHAR)", [me])
     for c in checked:
         for b in c.get("big", ()):
             block = _both(names[c["key"]], f"h = {b['h']}", "uid")
-            rows = con.execute(f"SELECT DISTINCT uid, hash(uid) AS hu FROM {block} ORDER BY hu LIMIT {m}").fetchall()
+            rows = engine.rows(f"SELECT DISTINCT uid, hash(uid) AS hu FROM {block} ORDER BY hu LIMIT {m}")
             ranked = sorted([*(r for r in rows if r[0] != me), (me, mine)], key=lambda r: r[1])[:m]  # the block's lowest hashes, the record among them once
             sample = [u for u, hu in ranked if u != me and u not in found]
-            scored = _scored(con, model, uid, me, sample, n)
+            scored = _scored(engine, model, uid, me, sample, n)
             b.update(sampled=len(sample), best=round(float(scored["weight"].max()), 2) if len(scored) else None)
             if len(sample) and (scored["weight"] >= floor).any():
                 b["decision"] = "kept"
-                for (v,) in con.execute(f"SELECT DISTINCT uid FROM {block}").fetchall():
+                for (v,) in engine.rows(f"SELECT DISTINCT uid FROM {block}"):
                     if v != me:
                         added.setdefault(v, set()).add(c["key"])
             else:
@@ -607,23 +608,23 @@ def _gate(con: duckdb.DuckDBPyConnection, p: Pipeline, model: dict, uid: str, me
     return {v: keys | found.get(v, set()) for v, keys in added.items()}
 
 
-def _rules(con: duckdb.DuckDBPyConnection, p: Pipeline, uid: str, me: str, checked: list[dict], extra: int = 1) -> dict[str, tuple[int, str]]:
+def _rules(engine: Engine, p: Pipeline, uid: str, me: str, checked: list[dict], extra: int = 1) -> dict[str, tuple[int, str]]:
     """Each stored record a rule joins the record to, with the rule's place in order and name: as er.match.rule_edges
     finds them (the rule's keys looked up, a value on too many records left out as Run._untrusted leaves it, its
     conditions checked; the first rule in order winning a pair), then the stages' cascade as Run._rules keeps them: a
     later stage's pair goes when both its records are already in a rule cluster of two or more."""
     m, out, order = p.fs.budget.min_oversized(), {}, {n: i for i, (n, x) in enumerate(t for t in _tables(p) if isinstance(t[1], tuple))}
     for name, (st, rule) in ((n, x) for n, x in _tables(p) if isinstance(x, tuple)):
-        h = con.execute(f"SELECT {_hashed((st, rule))} FROM qry WHERE {_filled(st.keys(rule))}").fetchall()
+        h = engine.rows(f"SELECT {_hashed((st, rule))} FROM qry WHERE {_filled(st.keys(rule))}")
         if not h:
             continue
-        size = con.execute(f"SELECT count(*) FROM {_both(name, f'h = {h[0][0]}', 'h')}").fetchall()[0][0]
+        size = engine.value(f"SELECT count(*) FROM {_both(name, f'h = {h[0][0]}', 'h')}")
         if size + extra >= m:
             checked.append(dict(key=f"rule {rule.name}", found=0, why=f"its value is on {size + extra:,} records: the rule doesn't trust it"))
             continue
-        hus = [hu for (hu,) in con.execute(f"SELECT DISTINCT hash(uid) FROM {_both(name, f'h = {h[0][0]}', 'uid')}").fetchall()]  # literals: the records table read by its zone maps
-        hits = con.execute(f"""SELECT r.{q(uid)}, r.resolved FROM qry l JOIN {_records(f"h IN ({', '.join(map(str, hus))})", uid)} r
-            ON {st.sql(rule)} AND r.{q(uid)} <> l.{q(uid)}""").fetchall() if hus else []
+        hus = [hu for (hu,) in engine.rows(f"SELECT DISTINCT hash(uid) FROM {_both(name, f'h = {h[0][0]}', 'uid')}")]  # literals: the records table read by its zone maps
+        hits = engine.rows(f"""SELECT r.{q(uid)}, r.resolved FROM qry l JOIN {_records(f"h IN ({', '.join(map(str, hus))})", uid)} r
+            ON {st.sql(rule)} AND r.{q(uid)} <> l.{q(uid)}""") if hus else []
         for v, resolved in hits:
             out.setdefault(v, (order[name], rule.name, st.name, bool(resolved)))
     kept, joined, done = {}, set(), False  # the record starts alone; each stage's kept pairs put it in a cluster of two or more
@@ -635,7 +636,7 @@ def _rules(con: duckdb.DuckDBPyConnection, p: Pipeline, uid: str, me: str, check
     return kept
 
 
-def _scored(con: duckdb.DuckDBPyConnection, model: dict, uid: str, me: str, ids: list[str], n: int) -> pd.DataFrame:
+def _scored(engine: Engine, model: dict, uid: str, me: str, ids: list[str], n: int) -> pd.DataFrame:
     """The record against each of these stored records, scored as er.match.score_fs scores a pair with the run's
     model: each comparison's level by its own SQL, the pair oriented uid_l < uid_r, its bits summed with the prior at
     n records. With each its entity, its levels in words, and the fields a person reads; the records read stay in
@@ -643,14 +644,14 @@ def _scored(con: duckdb.DuckDBPyConnection, model: dict, uid: str, me: str, ids:
     if not ids:
         return pd.DataFrame(columns=["uid", "entity", "weight", "compared", "shown"])
     cols, u = sorted(read_by(model)), q(uid)
-    hashes = [h for (h,) in con.execute("SELECT hash(x) FROM unnest(?::VARCHAR[]) t(x)", [ids]).fetchall()]
-    con.execute(f"CREATE OR REPLACE TEMP TABLE er_c AS SELECT * EXCLUDE (h) FROM {_records(f'h IN ({', '.join(map(str, hashes))})', uid)}")
+    hashes = [h for (h,) in engine.rows("SELECT hash(x) FROM unnest(?::VARCHAR[]) t(x)", [ids])]
+    engine.run(f"CREATE OR REPLACE TEMP TABLE er_c AS SELECT * EXCLUDE (h) FROM {_records(f'h IN ({', '.join(map(str, hashes))})', uid)}")
     side = lambda c, a, b: f"CASE WHEN q.{u} < c.{u} THEN {a}.{q(c)} ELSE {b}.{q(c)} END"
     pairs = ", ".join(f'{side(c, "q", "c")} AS {q(c + "_l")}, {side(c, "c", "q")} AS {q(c + "_r")}' for c in cols)
     by, gammas = levels(model), _gammas(model)  # each level and its points as the run's scores have them
-    shown = ", ".join(f"c.{q(x)} AS {q('shown_' + x)}" for x in SHOWN if x in {c for c, *_ in con.execute("DESCRIBE er_c").fetchall()})
-    frame = con.execute(f"""SELECT x.*, {', '.join(gammas)} FROM (SELECT c.{u} AS uid, c.entity, {pairs}{', ' + shown if shown else ''}
-        FROM qry q, er_c c WHERE c.{u} <> q.{u}) x""").df()
+    shown = ", ".join(f"c.{q(x)} AS {q('shown_' + x)}" for x in SHOWN if x in {c for c, *_ in engine.rows("DESCRIBE er_c")})
+    frame = engine.frame(f"""SELECT x.*, {', '.join(gammas)} FROM (SELECT c.{u} AS uid, c.entity, {pairs}{', ' + shown if shown else ''}
+        FROM qry q, er_c c WHERE c.{u} <> q.{u}) x""")
     names = [c["output_column_name"] for c in model["comparisons"]]
     bits = np.array([[by[c][int(g)][1] for c, g in zip(names, row)] for row in frame[[f"gamma_{c}" for c in names]].to_numpy()]).reshape(len(frame), len(names))
     frame["weight"] = prior_bits(model, n) + bits.sum(axis=1)

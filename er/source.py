@@ -15,6 +15,7 @@ from pathlib import Path
 
 import duckdb
 
+from er.engine.engine import Engine
 from er import intake
 from er.config import InputError, lit, q
 from er.settings import norm_name
@@ -62,7 +63,7 @@ def find(path: str | Path) -> list[Path]:
                      else f"check the path: {folder} {'holds no file like it' if folder.is_dir() else 'does not exist'}")
 
 
-def open_source(path: str | Path | list[Path], con: duckdb.DuckDBPyConnection, expected: Iterable[str], reserved: Iterable[str] = ()) -> Source:
+def open_source(path: str | Path | list[Path], engine: Engine, expected: Iterable[str], reserved: Iterable[str] = ()) -> Source:
     """The files `path` names as one relation of text columns; a list of files is read in order, and each row keeps
     its file's position (er_file). A column whose name matches an `expected` one but for case, width or separators is
     given the expected name; one stored as a number is read as text, with a note. One no field reads whose name, in
@@ -75,7 +76,7 @@ def open_source(path: str | Path | list[Path], con: duckdb.DuckDBPyConnection, e
     schemas = {}
     for f in files:
         try:
-            schemas[f] = [(row[0], row[1]) for row in con.execute(f"DESCRIBE SELECT * FROM read_parquet({lit(f)})").fetchall()]
+            schemas[f] = [(row[0], row[1]) for row in engine.rows(f"DESCRIBE SELECT * FROM read_parquet({lit(f)})")]
         except duckdb.Error as e:
             raise InputError(f"{f}: can't be read as Parquet ({str(e).splitlines()[0]})", fix="copy it again, or write it again from its source") from None
     types: dict[str, str] = {}
@@ -138,30 +139,30 @@ def filled(c: str) -> str:  # SQL: the column holds a value, never NULL itself; 
             f"ELSE true END, false)")
 
 
-def fit(con: duckdb.DuckDBPyConnection, table: str, columns: list[str], fields: Iterable[str], patterns: Mapping[str, str]) -> dict[str, dict[str, float]]:
+def fit(engine: Engine, table: str, columns: list[str], fields: Iterable[str], patterns: Mapping[str, str]) -> dict[str, dict[str, float]]:
     """For each field and each column of `table`, how well the column's values fit the field: for `id`, the share of
     rows filled with a value no other row holds; for another field, the share of filled values its [locale.detect]
     pattern matches. A field with neither is left out. O(rows · columns · fields) time; memory for the fields alone."""
     asked = [f for f in fields if f == "id" or f in patterns]
     if not asked or not columns:
         return {}
-    n = max(1, con.execute(f"SELECT count(*) FROM {table}").fetchall()[0][0])
+    n = max(1, engine.value(f"SELECT count(*) FROM {table}"))
     share = lambda f: (f"count(DISTINCT v) FILTER (WHERE {filled('v')}) / {n}" if f == "id"
                        else f"coalesce(avg(regexp_matches(v, {lit(patterns[f])})::INT) FILTER (WHERE {filled('v')}), 0)")
     # the sample long (one row per column and value), each pattern once over it: memory grows with the patterns, not columns × patterns
-    got = {c: x for c, *x in con.execute(f"""SELECT c, {', '.join(map(share, asked))} FROM (UNPIVOT (SELECT {', '.join(q(c) for c in columns)} FROM {table})
-        ON COLUMNS(*) INTO NAME c VALUE v) GROUP BY c""").fetchall()}
+    got = {c: x for c, *x in engine.rows(f"""SELECT c, {', '.join(map(share, asked))} FROM (UNPIVOT (SELECT {', '.join(q(c) for c in columns)} FROM {table})
+        ON COLUMNS(*) INTO NAME c VALUE v) GROUP BY c""")}
     return {f: {c: got[c][i] if c in got else 0 for c in columns} for i, f in enumerate(asked)}
 
 
-def suggest(src: Source, con: duckdb.DuckDBPyConnection, fields: Iterable[str], patterns: Mapping[str, str],
+def suggest(src: Source, engine: Engine, fields: Iterable[str], patterns: Mapping[str, str],
             rows: int = 10_000) -> dict[str, tuple[str, float, str]]:
     """For each field, the file's column whose values look most like it, its share and the evidence, from the first `rows`
     records (fit). A field nothing matches is left out. Suggestions only: a wrong guess applied silently would
     corrupt results. O(rows · columns)."""
-    con.execute(f"CREATE OR REPLACE TEMP TABLE er_sample AS SELECT * FROM {src.sql} LIMIT {rows}")
+    engine.run(f"CREATE OR REPLACE TEMP TABLE er_sample AS SELECT * FROM {src.sql} LIMIT {rows}")
     out = {}
-    for f, shares in fit(con, "er_sample", src.columns, fields, patterns).items():
+    for f, shares in fit(engine, "er_sample", src.columns, fields, patterns).items():
         best = max(shares, key=shares.get)
         if shares[best] > 0:
             out[f] = (best, shares[best], f"{shares[best]:.0%} {'filled and unique' if f == 'id' else f'of filled values look like {f}'}")
@@ -182,36 +183,36 @@ def file_facts(files: list[Path], role: str) -> list[dict]:
     return [dict(file=str(Path(f).resolve()), role=role, bytes=Path(f).stat().st_size, sha256=intake.sha256(Path(f))) for f in files]
 
 
-def decisions(path: str | Path, con: duckdb.DuckDBPyConnection, l: str, r: str, into: str) -> list[Path]:
+def decisions(path: str | Path, engine: Engine, l: str, r: str, into: str) -> list[Path]:
     """People's decisions on pairs (review.parquet with decision filled in, or any file with the two IDs and decision)
     as the table `into`, and the files read: each pair once, the lower ID first, decision match or no_match, and the
     sheet's why (decide, audit) where it has one; rows without a decision skipped. Refuses a file without those
     columns, a decided row without both IDs, a file with no decision, another decision, and a pair decided both ways.
     O(rows)."""
-    src = open_source(path, con, [l, r, "decision"])
+    src = open_source(path, engine, [l, r, "decision"])
     if {l, r, "decision"} - set(src.columns):  # say what is wrong, row by row where it can
         raise InputError(f"{path}: needs the columns {l}, {r} and decision; it has {sorted(src.columns)}",
                          fix="give back review.parquet with decision filled in, or a file with those three columns")
     decided = f"FROM {src.sql} WHERE {filled('decision')}"
-    if (blank := con.execute(f"SELECT count(*) {decided} AND NOT ({filled(l)} AND {filled(r)})").fetchall()[0][0]):
+    if (blank := engine.value(f"SELECT count(*) {decided} AND NOT ({filled(l)} AND {filled(r)})")):
         raise InputError(f"{path}: {blank:,} decided rows lack an ID", fix="fill in both IDs of each decided row, or clear its decision")
     blank = lit(FILLED)  # spaces of any width, as filled() reads them: "match　" is match
     why = f"nullif(trim(why, {blank}), '')" if "why" in src.columns else "NULL::VARCHAR"  # the sheet's row kind: an audit stays known as one
-    con.execute(f"""CREATE OR REPLACE TABLE {q(into)} AS SELECT least({q(l)}, {q(r)}) AS {q(l)}, greatest({q(l)}, {q(r)}) AS {q(r)},
+    engine.run(f"""CREATE OR REPLACE TABLE {q(into)} AS SELECT least({q(l)}, {q(r)}) AS {q(l)}, greatest({q(l)}, {q(r)}) AS {q(r)},
         lower(trim(decision, {blank})) AS decision, any_value({why}) AS why {decided} GROUP BY 1, 2, 3""")
-    if not con.execute(f"SELECT count(*) FROM {q(into)}").fetchall()[0][0]:
+    if not engine.value(f"SELECT count(*) FROM {q(into)}"):
         raise InputError(f"{path}: no row has a decision", fix="write match or no_match in the sheet's decision column")
-    if (bad := con.execute(f"SELECT DISTINCT decision FROM {q(into)} WHERE decision NOT IN ('match', 'no_match')").fetchall()):
+    if (bad := engine.rows(f"SELECT DISTINCT decision FROM {q(into)} WHERE decision NOT IN ('match', 'no_match')")):
         raise InputError(f"{path}: a decision is match or no_match, not {sorted(x for x, in bad)}", fix="correct those rows, or leave them empty")
-    if (both := con.execute(f"SELECT {q(l)}, {q(r)} FROM {q(into)} GROUP BY ALL HAVING count(*) > 1 LIMIT 5").fetchall()):
+    if (both := engine.rows(f"SELECT {q(l)}, {q(r)} FROM {q(into)} GROUP BY ALL HAVING count(*) > 1 LIMIT 5")):
         raise InputError(f"{path}: pairs decided both ways: {both}", fix="keep one decision per pair")
     return src.files
 
 
-def known(con: duckdb.DuckDBPyConnection, ids: str, records: str, uid: str, path: str | Path, where: str) -> None:
+def known(engine: Engine, ids: str, records: str, uid: str, path: str | Path, where: str) -> None:
     """Every ID people gave (`ids`: SQL with one column, id) names a record of `records`; the first five that don't are
     refused. A spreadsheet reads 0000000151 as the number 151: such a file would stand for no record. O(IDs + N)."""
-    unknown = [x for x, in con.execute(f"SELECT id FROM ({ids}) WHERE id NOT IN (SELECT {q(uid)} FROM {records}) ORDER BY 1 LIMIT 5").fetchall()]
+    unknown = [x for x, in engine.rows(f"SELECT id FROM ({ids}) WHERE id NOT IN (SELECT {q(uid)} FROM {records}) ORDER BY 1 LIMIT 5")]
     if unknown:
         raise InputError(f"{path}: IDs that name no record of {where}: {unknown}",
                          fix="check the IDs as the run wrote them: a spreadsheet may read 0000000151 as the number 151")

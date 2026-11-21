@@ -77,7 +77,7 @@ from er.results import BANDS, banded
 from er.settings import SPECIAL, Settings, fit_to_file, present_fields
 from er.source import decisions, file_facts, filled, known, open_source, suggest
 from er.standardize import prepare
-from er.strings import connect, spent
+from er.engine.duckdb import connect, spent
 
 
 def peak_gb() -> float:  # the process's peak resident memory so far (ru_maxrss: bytes on macOS, KB on Linux; Windows: its peak working set)
@@ -148,7 +148,7 @@ class Run:
     reaching_only: bool = True                # candidates stores only the pairs that can reach keep_from (_reaching); design time measures every pair the keys list
 
     def __post_init__(self) -> None:
-        self.con = connect(self.settings.compute)
+        self.engine = connect(self.settings.compute)
         self.uid = self.settings.data.unique_id
         self.l, self.r = f"{self.uid}_l", f"{self.uid}_r"
         self.notes: list[str] = []            # what the loader detected or fixed, for the run's summary; never a record's value
@@ -187,7 +187,7 @@ class Run:
             self.echo(self.steps[-1])
 
     def _count(self, sql: str) -> int:
-        return self.con.execute(f"SELECT count(*) FROM {sql}").fetchall()[0][0]
+        return self.engine.value(f"SELECT count(*) FROM {sql}")
 
     # ---------- the steps ----------
 
@@ -196,13 +196,13 @@ class Run:
         against config/pipeline.toml [fields]; set aside what can't be resolved (_set_aside); standardize each chunk with
         er.standardize.prepare (each record on its own, so chunking changes nothing) into the table `into`."""
         t = time.perf_counter()
-        src = open_source(path, self.con, {c for f, alts in self.settings.columns.items() if f != "entity" for alt in alts for c in alt},
+        src = open_source(path, self.engine, {c for f, alts in self.settings.columns.items() if f != "entity" for alt in alts for c in alt},
                           reserved={*self.settings.columns, *KIND_COLUMNS, "cluster_id", "resolved_stage", "resolved_by", "er_file", "er_path", "er_first"})
         self.notes, self.inputs = list(src.notes), file_facts(src.files, "records")
         present = self.present = present_fields(self.settings, src.columns)
-        hints = suggest(src, self.con, [f for f in self.settings.columns if f not in present and f != "entity"], self.settings.detect)
+        hints = suggest(src, self.engine, [f for f in self.settings.columns if f not in present and f != "entity"], self.settings.detect)
         mapped = {c for alts in self.settings.columns.values() for alt in alts for c in alt}
-        self.unmapped = unmapped_columns(self.con, "er_sample", [c for c in src.columns if c not in mapped], list(self.settings.columns), self.settings.detect).assign(
+        self.unmapped = unmapped_columns(self.engine, "er_sample", [c for c in src.columns if c not in mapped], list(self.settings.columns), self.settings.detect).assign(
             column=lambda d: d["column"].map(lambda c: src.given.get(c, c)))  # on suggest's sample: by the names the file gives them
         needed = self.pipeline.fields.needed()
         hints = {f: (src.given.get(c, c), share, why) for f, (c, share, why) in hints.items() if share >= (0.99 if f == "id" else 0.5) and f in needed}  # a likely column, by the name it has in the file
@@ -223,7 +223,7 @@ class Run:
                 raise InputError(f"{path}: the model was fitted on other comparison levels (only in the model: {sorted(fitted - here)}; "
                                  f"only here: {sorted(here - fitted)})", fix="run without --model: the run then fits its model on this file")
         rows = self._set_aside(src.sql, stored, src.ordered)
-        self.con.execute(f"DROP TABLE IF EXISTS {into}")
+        self.engine.run(f"DROP TABLE IF EXISTS {into}")
         self.n = 0
         if not self._count(rows):
             if stored is None and not self._count(src.sql):
@@ -246,9 +246,9 @@ class Run:
             done = total
         else:
             reads = {self.uid, *(c for d in fs.standardize.derived for cols in d.sources for c in cols), *used}  # what cleaning reads: a wide file's other columns never enter the run
-            cols = ", ".join([*(q(c) for c, *_ in self.con.execute(f"DESCRIBE SELECT * FROM {rows}").fetchall() if c in reads), *(f"NULL::VARCHAR AS {q(c)}" for c in extra)])
-            reader = self.con.cursor().sql(f"SELECT {cols} FROM {rows}").to_arrow_reader(self.chunk_rows)  # its own cursor: inserts go on alongside
-            workers = min(-(-total // self.chunk_rows), int(self.con.execute("SELECT current_setting('threads')").fetchall()[0][0]), os.cpu_count() or 1,
+            cols = ", ".join([*(q(c) for c, *_ in self.engine.rows(f"DESCRIBE SELECT * FROM {rows}") if c in reads), *(f"NULL::VARCHAR AS {q(c)}" for c in extra)])
+            reader = self.engine.batches(f"SELECT {cols} FROM {rows}", self.chunk_rows)  # its own cursor: inserts go on alongside
+            workers = min(-(-total // self.chunk_rows), int(self.engine.value("SELECT current_setting('threads')")), os.cpu_count() or 1,
                           61 if sys.platform == "win32" else 1 << 20)  # Windows waits on at most 61 processes
             batches = (batch.to_pandas().astype("string") for batch in reader)
             clean = functools.partial(prepare, fs.standardize, normalized=normalized, used=used, kind=self.classifier)
@@ -258,23 +258,23 @@ class Run:
                 # each chunk cleaned on its own (every step reads one record, or one chunk's values), so in parallel processes
                 # the same records, taken back in order
                 for i, chunk in enumerate(ahead(pool, clean, batches, workers + 1) if pool else map(clean, batches)):
-                    self.con.register("er_chunk", chunk)
-                    self.con.execute(f"CREATE TABLE {into} AS SELECT * FROM er_chunk" if i == 0 else f"INSERT INTO {into} SELECT * FROM er_chunk")
-                    self.con.unregister("er_chunk")
+                    self.engine.register("er_chunk", chunk)
+                    self.engine.run(f"CREATE TABLE {into} AS SELECT * FROM er_chunk" if i == 0 else f"INSERT INTO {into} SELECT * FROM er_chunk")
+                    self.engine.unregister("er_chunk")
                     done += len(chunk)
                     if self.told:
                         self.told(done, total, "records")
             if keep:
-                folder.keep_prepared(keep, key, lambda f: self.con.execute(f"COPY {into} TO {lit(f)} (FORMAT parquet, COMPRESSION zstd)"))  # a third of snappy's size, as fast
+                folder.keep_prepared(keep, key, lambda f: self.engine.run(f"COPY {into} TO {lit(f)} (FORMAT parquet, COMPRESSION zstd)"))  # a third of snappy's size, as fast
         if self.told and kept:
             self.told(done, total, "records")
-        self.con.execute("DROP TABLE IF EXISTS er_in")  # the file kept once, read: a copy of it no step reads again
+        self.engine.run("DROP TABLE IF EXISTS er_in")  # the file kept once, read: a copy of it no step reads again
         self.n = self._count(into)
         if stored is None:  # an increment's batch: read as missing with the run's records (_join)
             self._placeholders(into)
         kinds = {}
         if self.classifier is not None:  # how many records each kind holds
-            kinds = dict(self.con.execute(f"SELECT kind, count(*) FROM {into} GROUP BY 1").fetchall())
+            kinds = dict(self.engine.rows(f"SELECT kind, count(*) FROM {into} GROUP BY 1"))
             kinds = {"companies": kinds.get(2, 0), "persons": kinds.get(1, 0), "not sure": kinds.get(0, 0), "flagged": self._count(f"{into} WHERE kind_flagged")}
         self._done("load", "O(N·L)", f"O({self.n:,}·L)", t, records=self.n, disabled=len(self.disabled), set_aside=self._count("set_aside"), **kinds,
                    **({"prepared": "kept" if kept else "made"} if keep else {}))
@@ -283,7 +283,7 @@ class Run:
         """The columns an increment's batch reads as missing: the first source of each optional field the run's records
         hold and the batch doesn't (a file without its birth dates), so it is read, prepared and compared as the run's
         were. Never a column a field the run needs reads: a batch without its IDs or names is refused, as a file is."""
-        fields, have, given = self.pipeline.fields, {c for c, *_ in self.con.execute(f"DESCRIBE {stored}").fetchall()}, present_fields(self.settings, columns)
+        fields, have, given = self.pipeline.fields, {c for c, *_ in self.engine.rows(f"DESCRIBE {stored}")}, present_fields(self.settings, columns)
         needed = {c for f in fields.needed() for alt in self.settings.columns.get(f, ()) for c in alt}
         return list(dict.fromkeys(c for f, alts in self.settings.columns.items() if f in fields.optional and f in have and f not in given
                                   for c in alts[0] if c not in columns and c not in needed))
@@ -299,26 +299,26 @@ class Run:
         is new. Each is made missing in `table` and `also`, in the field, every copy of it, and every field built from the
         same columns on those records (a name read into person_name, full_name and any_name), so no rule, key, comparison
         or probe reads it as two records agreeing. O(N): a group-by and an update per field."""
-        m, cols = self.pipeline.fs.budget.min_oversized(), {c for c, *_ in self.con.execute(f"DESCRIBE {table}").fetchall()}
+        m, cols = self.pipeline.fs.budget.min_oversized(), {c for c, *_ in self.engine.rows(f"DESCRIBE {table}")}
         ids = set(self.pipeline.fields.identifying)
         sources = {d.name: {c for alt in d.sources for c in alt} for d in self.settings.standardize.derived}
 
         def blank(values: list[str], f: str) -> None:
             fields = [f, *(d for d, cs in sources.items() if d != f and cs & sources.get(f, set()))]
             for t in (table, *also):
-                copies = [c for c, *_ in self.con.execute(f"DESCRIBE {t}").fetchall() if any(c == x or c.startswith(f"{x}__") for x in fields)]
-                self.con.execute(f"UPDATE {t} SET {', '.join(f'{q(c)} = NULL' for c in copies)} WHERE {q(f)} IN ({', '.join(map(lit, values))})")
+                copies = [c for c, *_ in self.engine.rows(f"DESCRIBE {t}") if any(c == x or c.startswith(f"{x}__") for x in fields)]
+                self.engine.run(f"UPDATE {t} SET {', '.join(f'{q(c)} = NULL' for c in copies)} WHERE {q(f)} IN ({', '.join(map(lit, values))})")
         crowd = max(m, CROWD)
         for f in (f for f in dict.fromkeys([*(x for x in compared_exactly(self.pipeline.fs.model) if x not in ids), *ids]) if f in cols):  # identifying last: copies of one customer's record still share its ID when the others are counted
             if before := self.placeholders.get(f, []):
                 blank(before, f)
             who = f"coalesce({q(next((x for x in self.pipeline.fields.identifying if x in cols and x != f), self.uid))}, {q(self.uid)})"
-            filled, distinct = self.con.execute(f"SELECT count({q(f)}), count(DISTINCT {q(f)}) FROM {table}").fetchall()[0]
+            filled, distinct = self.engine.row(f"SELECT count({q(f)}), count(DISTINCT {q(f)}) FROM {table}")
             at = max(m, math.ceil(SPREAD * filled / max(distinct, 1)))  # far past the field's own records per value: a 4-digit phone's values are no crowd however many records hold each
-            held = self.con.execute(f"SELECT {q(f)}, count(*) FROM {table} WHERE {q(f)} IS NOT NULL GROUP BY 1 HAVING count(*) >= {at}"
-                                    f"{'' if f in ids else f' AND count(DISTINCT {who}) >= {crowd}'} ORDER BY count(*) DESC, 1").fetchall()
+            held = self.engine.rows(f"SELECT {q(f)}, count(*) FROM {table} WHERE {q(f)} IS NOT NULL GROUP BY 1 HAVING count(*) >= {at}"
+                                    f"{'' if f in ids else f' AND count(DISTINCT {who}) >= {crowd}'} ORDER BY count(*) DESC, 1")
             if f not in ids and held:  # a compared field: a crowd whose pairs outnumber all the others' (two placeholders never hide each other)
-                every = self.con.execute(f"SELECT coalesce(sum(c * (c - 1) // 2), 0) FROM (SELECT count(*) AS c FROM {table} WHERE {q(f)} IS NOT NULL GROUP BY {q(f)})").fetchall()[0][0]
+                every = self.engine.value(f"SELECT coalesce(sum(c * (c - 1) // 2), 0) FROM (SELECT count(*) AS c FROM {table} WHERE {q(f)} IS NOT NULL GROUP BY {q(f)})")
                 rest = every - sum(c * (c - 1) // 2 for _, c in held)
                 new = [v for v, c in held if c * (c - 1) // 2 > rest]
             else:
@@ -326,7 +326,7 @@ class Run:
             if not new:
                 continue
             blank(new, f)
-            n = self.con.execute(f"SELECT count(*) FROM {table} WHERE {q(f)} IS NULL").fetchall()[0][0]
+            n = self.engine.value(f"SELECT count(*) FROM {table} WHERE {q(f)} IS NULL")
             self.notes.append(f"{f}: {len(new):,} value{'s' if len(new) > 1 else ''} held by {at:,}+ records read as missing, a placeholder and not "
                               f"{'one entity' if f in ids else 'evidence'}'s ({n:,} records without one)" + ("; pairs the run joined on it before stay until a full run" if also else ""))
             self.examples.append(f"{f} = {new[0]}: a placeholder, read as missing")
@@ -345,12 +345,12 @@ class Run:
         if path is None:
             return False
         try:
-            self.con.execute(f"CREATE TABLE {into} AS SELECT * FROM read_parquet({lit(path)})")
+            self.engine.run(f"CREATE TABLE {into} AS SELECT * FROM read_parquet({lit(path)})")
             if self._count(into) == n:
                 return True
         except duckdb.Error:
             pass
-        self.con.execute(f"DROP TABLE IF EXISTS {into}")
+        self.engine.run(f"DROP TABLE IF EXISTS {into}")
         folder.forget_prepared(path.parent.parent, path.parent.name)
         return False
 
@@ -365,21 +365,21 @@ class Run:
         blank, known = f"NOT {filled(self.uid)}", f"{u} IN (SELECT {u} FROM {stored})" if stored else "FALSE"  # blank as describe reads it
         if ordered:
             return self._set_aside_in_order(src, blank)
-        n, ids, empty, clash = self.con.execute(f"""SELECT count(*), count(DISTINCT {u}), count(*) FILTER (WHERE {blank}),
-            count(*) FILTER (WHERE {known}) FROM {src}""").fetchall()[0]
-        self.con.execute(f"CREATE OR REPLACE TABLE set_aside AS SELECT *, ''::VARCHAR AS reason FROM {src} WHERE FALSE")
+        n, ids, empty, clash = self.engine.row(f"""SELECT count(*), count(DISTINCT {u}), count(*) FILTER (WHERE {blank}),
+            count(*) FILTER (WHERE {known}) FROM {src}""")
+        self.engine.run(f"CREATE OR REPLACE TABLE set_aside AS SELECT *, ''::VARCHAR AS reason FROM {src} WHERE FALSE")
         if n and empty == n:
             raise InputError(f"no record has an ID in column {self.uid}", fix="map id in config/settings.toml [columns] to the column holding each record's ID")
         if not empty and ids == n and not clash:
             return src
-        self.con.execute(f"CREATE OR REPLACE TABLE er_in AS SELECT DISTINCT * FROM {src}")
+        self.engine.run(f"CREATE OR REPLACE TABLE er_in AS SELECT DISTINCT * FROM {src}")
         if (kept := self._count("er_in")) < n:
             self.notes.append(f"{n - kept:,} rows identical to another in every column, kept once")
-        self.con.execute(f"""INSERT INTO set_aside SELECT *, CASE WHEN {blank} THEN 'no ID' WHEN {known} THEN 'already in the run'
+        self.engine.run(f"""INSERT INTO set_aside SELECT *, CASE WHEN {blank} THEN 'no ID' WHEN {known} THEN 'already in the run'
                 ELSE 'the same ID with different content' END FROM er_in
             WHERE {blank} OR {known} OR {u} IN (SELECT {u} FROM er_in GROUP BY {u} HAVING count(*) > 1)""")
         self.notes += [f"{k:,} records set aside: {reason}" for reason, k in
-                       self.con.execute("SELECT reason, count(*) FROM set_aside GROUP BY 1 ORDER BY 1").fetchall()]
+                       self.engine.rows("SELECT reason, count(*) FROM set_aside GROUP BY 1 ORDER BY 1")]
         return f"(SELECT * FROM er_in WHERE NOT ({blank}) AND {u} NOT IN (SELECT {u} FROM set_aside WHERE {u} IS NOT NULL))"
 
     def _set_aside_in_order(self, src: str, blank: str) -> str:
@@ -389,16 +389,16 @@ class Run:
         n = self._count(src)
         if n and not self._count(f"{src} WHERE NOT ({blank})"):
             raise InputError(f"no record has an ID in column {self.uid}", fix="map id in config/settings.toml [columns] to the column holding each record's ID")
-        self.con.execute(f"""CREATE OR REPLACE TABLE er_in AS WITH d AS (SELECT DISTINCT * FROM {src}),
+        self.engine.run(f"""CREATE OR REPLACE TABLE er_in AS WITH d AS (SELECT DISTINCT * FROM {src}),
             once AS (SELECT {u}, min(er_file) AS er_first FROM (SELECT {u}, er_file FROM d WHERE NOT ({blank}) GROUP BY ALL HAVING count(*) = 1) GROUP BY 1)
             SELECT d.*, once.er_first FROM d LEFT JOIN once USING ({u})""")
         if (kept := self._count("er_in")) < n:
             self.notes.append(f"{n - kept:,} rows identical to another in every column, kept once")
         keep = f"NOT ({blank}) AND coalesce(er_file = er_first, FALSE)"
-        self.con.execute(f"""CREATE OR REPLACE TABLE set_aside AS SELECT * EXCLUDE (er_file, er_first), CASE WHEN {blank} THEN 'no ID'
+        self.engine.run(f"""CREATE OR REPLACE TABLE set_aside AS SELECT * EXCLUDE (er_file, er_first), CASE WHEN {blank} THEN 'no ID'
             WHEN er_file > er_first THEN 'already in the run' ELSE 'the same ID with different content' END AS reason FROM er_in WHERE NOT ({keep})""")
         self.notes += [f"{k:,} records set aside: {reason}" for reason, k in
-                       self.con.execute("SELECT reason, count(*) FROM set_aside GROUP BY 1 ORDER BY 1").fetchall()]
+                       self.engine.rows("SELECT reason, count(*) FROM set_aside GROUP BY 1 ORDER BY 1")]
         return f"(SELECT * EXCLUDE (er_file, er_first) FROM er_in WHERE {keep})"
 
     def budget(self, stop: bool = True) -> pd.DataFrame:
@@ -412,7 +412,7 @@ class Run:
         rules = self.pipeline.rules.blockers()
         self.estimates = {}  # each generator's, by name: candidates() reads them again, not the records
         for kind, x in [*(("rule", k) for k in rules), *(("generator", g) for g in self.pipeline.fs.blockers)]:
-            est = estimate(x, "records", 0 if kind == "rule" else self.n, self.con, oversized_from=m)
+            est = estimate(x, "records", 0 if kind == "rule" else self.n, self.engine, oversized_from=m)
             if kind == "generator" and not isinstance(x, TfidfNeighbours):  # TF-IDF's rests on the query, which the rules make
                 self.estimates[x.name] = est
             rows.append(dict(kind=kind, name=x.name, **est))
@@ -430,13 +430,13 @@ class Run:
 
     def capacity(self) -> int:
         """The pairs that fit in DuckDB's memory limit plus the room it may spill to, at BYTES_PER_PAIR."""
-        limit = self.con.execute("SELECT current_setting('memory_limit')").fetchall()[0][0]
+        limit = self.engine.value("SELECT current_setting('memory_limit')")
         return int((size_bytes(limit) + self.spill_room()) / BYTES_PER_PAIR)
 
     def spill_room(self) -> float:
         """The bytes DuckDB may spill: its temp directory's free space, capped as DuckDB caps it (max_temp_directory_size:
         by default 90% of that space)."""
-        temp, cap = self.con.execute("SELECT current_setting('temp_directory'), current_setting('max_temp_directory_size')").fetchall()[0]
+        temp, cap = self.engine.row("SELECT current_setting('temp_directory'), current_setting('max_temp_directory_size')")
         free = shutil.disk_usage(temp if temp and os.path.isdir(temp) else ".").free
         return 0.9 * free if "%" in cap else min(free, size_bytes(cap))
 
@@ -448,12 +448,12 @@ class Run:
         filled = " AND ".join(f"{q(c)} IS NOT NULL" for c in rule_keys)
         held = f" AND ({cols}) IN (SELECT {cols} FROM {within})" if within else ""
         name = f"er_untrusted_{i}"
-        self.con.execute(f"CREATE OR REPLACE TABLE {name} AS SELECT {cols}, count(*) AS __n FROM records WHERE {filled}{held} "
+        self.engine.run(f"CREATE OR REPLACE TABLE {name} AS SELECT {cols}, count(*) AS __n FROM records WHERE {filled}{held} "
                          f"GROUP BY {cols} HAVING count(*) >= {m} ORDER BY __n DESC")
-        n, records = self.con.execute(f"SELECT count(*), coalesce(sum(__n), 0) FROM {name}").fetchall()[0]
+        n, records = self.engine.row(f"SELECT count(*), coalesce(sum(__n), 0) FROM {name}")
         if not n:
             return None
-        top = self.con.execute(f"SELECT * FROM {name} LIMIT 1").fetchall()[0]
+        top = self.engine.row(f"SELECT * FROM {name} LIMIT 1")
         self.notes.append(f"rule {rule} doesn't trust {n:,} value{'s' if n > 1 else ''} held by {m}+ records ({int(records):,} records)")
         self.examples.append(f"rule {rule}: {', '.join(f'{c} = {v}' for c, v in zip(rule_keys, top))} in {top[-1]:,} records")
         return name
@@ -468,20 +468,20 @@ class Run:
         t, fs = time.perf_counter(), self.pipeline.fs
         if self.model is None:
             model = fit_model(fs)
-            sample = self.con.execute(f"{fit_sample_sql([model], self.uid, self.columns())} LIMIT {self.pipeline.fit_rows}").df().astype("string")
-            self.model = train_fs(model, sample, self.con, self.uid, kept=self.keep and self.keep / folder.U_SAMPLED)
+            sample = self.engine.frame(f"{fit_sample_sql([model], self.uid, self.columns())} LIMIT {self.pipeline.fit_rows}").astype("string")
+            self.model = train_fs(model, sample, self.engine, self.uid, kept=self.keep and self.keep / folder.U_SAMPLED)
             self.notes += [f"the fit found no two records sharing {f} in its sample of {len(sample):,}, so it learned nothing from them"
                            for f in self.model["er"].get("skipped", [])]
         self.scoring, self.basis, fitted = self.model, {}, time.perf_counter()
         if fs.model.u_from_scored:
-            self.scoring, sampled, exact = scored_u(fs.model, self.model, "records", self.con, self.uid, kept=self.keep and self.keep / folder.U_SAMPLED)
-            self.basis = u_basis(fs.model, sampled, exact, "records", self.con)
+            self.scoring, sampled, exact = scored_u(fs.model, self.model, "records", self.engine, self.uid, kept=self.keep and self.keep / folder.U_SAMPLED)
+            self.basis = u_basis(fs.model, sampled, exact, "records", self.engine)
         self._done("fit", "O(n + S·K + P_em·K) + O(N + S·K)", f"n = {self.model['er']['fit_rows']:,}; u on {self.n:,} records", t,
                    sample_seconds=round(fitted - t, 2), file_u_seconds=round(time.perf_counter() - fitted, 2))  # the fit on its sample, then u on this file
         return self.model
 
     def columns(self) -> set[str]:  # the records table's columns
-        return {c[0] for c in self.con.execute("DESCRIBE records").fetchall()}
+        return {c[0] for c in self.engine.rows("DESCRIBE records")}
 
     def _sized(self, clusters: str, op: str) -> str:  # the records in a cluster whose size is `op` 1: "> 1" joined, "= 1" alone
         return f"(SELECT {q(self.uid)} FROM {clusters} WHERE cluster_id IN (SELECT cluster_id FROM {clusters} GROUP BY 1 HAVING count(*) {op} 1))"
@@ -494,7 +494,7 @@ class Run:
         """One join per rule (the first rule wins a pair), then the cascade: a later stage adds a pair only if it
         touches a record still unresolved; clusters are merged after each stage."""
         t = time.perf_counter()
-        self.con.execute(f"CREATE OR REPLACE TABLE rule_clusters AS SELECT {q(self.uid)}, {q(self.uid)} AS cluster_id FROM records")
+        self.engine.run(f"CREATE OR REPLACE TABLE rule_clusters AS SELECT {q(self.uid)}, {q(self.uid)} AS cluster_id FROM records")
         self._rules()
         p = self._count("rule_edges")
         self._done("rules", "O(N + Σ P_r·L²) + O(E·log E + N)", f"O({self.n:,} + {p:,} pairs)", t, pairs=p, kept=self._count("rule_kept"))
@@ -510,30 +510,30 @@ class Run:
         for i, st, rule in rules.each():
             if (untrusted := self._untrusted(i, rule.name, st.keys(rule), within=batch)):
                 trust[i] = f"NOT EXISTS (SELECT 1 FROM {untrusted} z WHERE {' AND '.join(f'z.{q(c)} = l.{q(c)}' for c in st.keys(rule))})"
-        _, self.rule_seconds = rule_edges(rules, "records", self.con, self.uid, batch=batch, trust=trust, into="rule_edges", told=self.told)
+        _, self.rule_seconds = rule_edges(rules, "records", self.engine, self.uid, batch=batch, trust=trust, into="rule_edges", told=self.told)
         if self.scoring is None:  # design time measures the rules alone, before any model is fitted: nothing reads their weights
-            self.con.execute("CREATE OR REPLACE TABLE rule_edges AS SELECT *, NULL::DOUBLE AS match_weight FROM rule_edges")
+            self.engine.run("CREATE OR REPLACE TABLE rule_edges AS SELECT *, NULL::DOUBLE AS match_weight FROM rule_edges")
         else:
-            score_fs(self.scoring, "records", "rule_edges", self.con, self.uid, into="rule_scores", n_records=self._count("records"))  # O(R·K)
-            self.con.execute(f"CREATE OR REPLACE TABLE rule_edges AS SELECT e.*, s.match_weight FROM rule_edges e JOIN rule_scores s USING ({l}, {r})")
-        self.con.execute("CREATE OR REPLACE TABLE rule_kept AS SELECT * FROM rule_edges WHERE FALSE")
+            score_fs(self.scoring, "records", "rule_edges", self.engine, self.uid, into="rule_scores", n_records=self._count("records"))  # O(R·K)
+            self.engine.run(f"CREATE OR REPLACE TABLE rule_edges AS SELECT e.*, s.match_weight FROM rule_edges e JOIN rule_scores s USING ({l}, {r})")
+        self.engine.run("CREATE OR REPLACE TABLE rule_kept AS SELECT * FROM rule_edges WHERE FALSE")
         for st in rules.stages:
-            self.con.execute(f"""CREATE OR REPLACE TABLE er_stage AS SELECT * FROM rule_edges WHERE stage = '{st.name}' AND {self._alone(l, r)}""")
-            self.con.execute("INSERT INTO rule_kept SELECT * FROM er_stage")
-            merge(self.con, "rule_clusters", "er_stage", "rule_clusters", self.uid)
+            self.engine.run(f"""CREATE OR REPLACE TABLE er_stage AS SELECT * FROM rule_edges WHERE stage = '{st.name}' AND {self._alone(l, r)}""")
+            self.engine.run("INSERT INTO rule_kept SELECT * FROM er_stage")
+            merge(self.engine, "rule_clusters", "er_stage", "rule_clusters", self.uid)
 
     def candidates(self, batch: str | None = None) -> pd.DataFrame:
         """The pairs the keys list, as cands: of the file, or (an increment) those touching `batch`, a table of its IDs."""
         t, fs = time.perf_counter(), self.pipeline.fs
         assert self.scoring is not None, "fit() before candidates(): the gate scores oversized blocks' samples with the model"
         if not fs.bridge and not batch:  # the query: the records the rules left alone
-            self.con.execute(f"CREATE OR REPLACE TABLE er_query AS SELECT * FROM {self._sized('rule_clusters', '=')}")
+            self.engine.run(f"CREATE OR REPLACE TABLE er_query AS SELECT * FROM {self._sized('rule_clusters', '=')}")
         _, report = candidates(fs.blockers, "records", self.uid, batch or (None if fs.bridge else "er_query"), fs.budget,
-                               clusters="rule_clusters" if fs.bridge else None, con=self.con, into="cands", touching=batch is not None,
+                               clusters="rule_clusters" if fs.bridge else None, engine=self.engine, into="cands", touching=batch is not None,
                                gate=self._gate, floor=search_floor(self.pipeline), capacity=self.capacity(), told=self._joined(),
                                known=None if batch else getattr(self, "estimates", None), keep=self._reaching if self.reaching_only else None,
                                only=self._alone("l", "r") if batch and not fs.bridge else None)  # as a full run's query: a pair touches a record the rules left alone
-        self.con.execute("DROP TABLE IF EXISTS er_bound_records; DROP TABLE IF EXISTS er_bound_hashes")
+        self.engine.run("DROP TABLE IF EXISTS er_bound_records; DROP TABLE IF EXISTS er_bound_hashes")
         self._gated(report.attrs["gated"])
         stored = self._count("cands")
         self.listed = c = stored if report.attrs["listed"] is None else report.attrs["listed"]  # the distinct pairs the keys listed
@@ -549,9 +549,9 @@ class Run:
     def _reaching(self, pairs: str) -> str:  # a generator's pairs that score() scores: those that can reach keep_from, and the rules', never stored otherwise
         bound, have = bound_tests(self.pipeline.fs.model), self.columns()
         cols = [c for c in sorted(bound_reads(self.scoring, bound)) if c in have]
-        self.con.execute(f"CREATE TABLE IF NOT EXISTS er_bound_records AS SELECT {', '.join(q(c) for c in [self.uid, *cols])} FROM records")  # what the bound reads, narrow
+        self.engine.run(f"CREATE TABLE IF NOT EXISTS er_bound_records AS SELECT {', '.join(q(c) for c in [self.uid, *cols])} FROM records")  # what the bound reads, narrow
         hashed = [c for c in sorted(rough_reads(self.scoring, bound)) if c in have]
-        self.con.execute(f"CREATE TABLE IF NOT EXISTS er_bound_hashes AS SELECT {q(self.uid)}, "  # what the rough test reads: a hash of each, NULL where missing
+        self.engine.run(f"CREATE TABLE IF NOT EXISTS er_bound_hashes AS SELECT {q(self.uid)}, "  # what the rough test reads: a hash of each, NULL where missing
                          f"{', '.join(f'CASE WHEN {q(c)} IS NOT NULL THEN hash({q(c)}) END AS {q(c)}' for c in hashed) or 'NULL AS __none'} FROM records")
         return reaching_sql(self.scoring, "er_bound_records", pairs, self.uid, set(cols), self.n, self.pipeline.threshold.keep_from, bound, "rule_kept",
                             hashed="er_bound_hashes")
@@ -568,7 +568,7 @@ class Run:
 
     def _gate(self, pairs: str) -> str:  # the oversized blocks' sampled pairs (a table), scored as the candidates will be, a slice at a time
         if not self.pipeline.fs.bridge:  # a pair of two records the rules joined is no pair the run lists: it keeps no block
-            self.con.execute(f"CREATE OR REPLACE TEMP TABLE {pairs} AS SELECT * FROM {pairs} WHERE {self._alone(q(self.l), q(self.r))}")  # made again: its rowids dense, as _scored slices them
+            self.engine.run(f"CREATE OR REPLACE TEMP TABLE {pairs} AS SELECT * FROM {pairs} WHERE {self._alone(q(self.l), q(self.r))}")  # made again: its rowids dense, as _scored slices them
         start, total, done = time.perf_counter(), self._count(pairs), 0
         if self.told:
             self.told(0, total, "sampled pairs")
@@ -591,14 +591,14 @@ class Run:
         l, r = q(self.l), q(self.r)
         bound = bound_tests(self.pipeline.fs.model)
         for start in range(0, max(1, self._count(pairs)), self.score_pairs):
-            self.con.execute(f"CREATE OR REPLACE TABLE er_slice AS SELECT {l}, {r} FROM {pairs} WHERE rowid >= {start} AND rowid < {start + self.score_pairs}")
-            score_fs(self.scoring, "records", "er_slice", self.con, self.uid, into=into if not start else "er_scored", n_records=n_records,
+            self.engine.run(f"CREATE OR REPLACE TABLE er_slice AS SELECT {l}, {r} FROM {pairs} WHERE rowid >= {start} AND rowid < {start + self.score_pairs}")
+            score_fs(self.scoring, "records", "er_slice", self.engine, self.uid, into=into if not start else "er_scored", n_records=n_records,
                      floor=floor, bound=bound, exempt=exempt)
             if start:
-                self.con.execute(f"INSERT INTO {into} SELECT * FROM er_scored")
+                self.engine.run(f"INSERT INTO {into} SELECT * FROM er_scored")
             if each:
                 each(into if not start else "er_scored", self._count("er_slice"))
-        self.con.execute("DROP TABLE IF EXISTS er_slice; DROP TABLE IF EXISTS er_scored")
+        self.engine.run("DROP TABLE IF EXISTS er_slice; DROP TABLE IF EXISTS er_scored")
 
     def _gated(self, records: list[dict]) -> None:  # the oversized blocks' decisions, kept for qa and named in the summary
         self.gated = gated = pd.DataFrame(records)
@@ -622,19 +622,19 @@ class Run:
 
         def each(scored: str, sliced: int) -> None:  # how far scoring is, after each slice
             nonlocal done, likely
-            hit = self.con.execute(f"SELECT count(*) FILTER (match_weight >= {model_line} AND {named_sql(fs)}) FROM {scored} s").fetchall()[0][0]
+            hit = self.engine.value(f"SELECT count(*) FILTER (match_weight >= {model_line} AND {named_sql(fs)}) FROM {scored} s")
             done, likely = done + sliced, likely + hit
             if self.told:
                 self.told(done, total, "pairs", likely=likely)
         self._scored("cands", "scores", each=each, floor=self.pipeline.threshold.keep_from, exempt="rule_kept")  # scored/ keeps keep_from points and up, and every rule pair
         reached: dict[str, dict[str, int]] = {}  # per comparison, the pairs at each level (gamma, as score_fs gives it): one scan
-        for c, g, n in self.con.execute("SELECT c, g, count(*) FROM (UNPIVOT scores ON COLUMNS('^gamma_') INTO NAME c VALUE g) GROUP BY ALL").fetchall():
+        for c, g, n in self.engine.rows("SELECT c, g, count(*) FROM (UNPIVOT scores ON COLUMNS('^gamma_') INTO NAME c VALUE g) GROUP BY ALL"):
             reached.setdefault(c.removeprefix("gamma_"), {})[str(g)] = n
         self._done("score", "O(C·K·L²)", f"O({self._count('scores'):,}·{k}·L²)", t, reached=reached, patterns=self._patterns(), bands=self._bands(),
                    unscored=self.listed - self._count("scores"))  # the pairs listed: those candidates never stored too
 
     def _bands(self) -> list[int]:  # the pairs in `scores` by the score chart's bands (results.BANDS), each by its own weight
-        n = dict(self.con.execute(f"SELECT {banded()}, count(*) FROM scores GROUP BY 1").fetchall())
+        n = dict(self.engine.rows(f"SELECT {banded()}, count(*) FROM scores GROUP BY 1"))
         return [n.get(i, 0) for i in range(len(BANDS) + 1)]
 
     def _patterns(self) -> dict:
@@ -643,11 +643,11 @@ class Run:
         results.describe_results). A full run's and each increment's: together, every pair the run scored."""
         fs, l, r = self.pipeline.fs, q(self.l), q(self.r)
         at, floor = bits(fs.min_match_weight), bits(review_floor(self.pipeline))
-        gammas = [c for c, *_ in self.con.execute("DESCRIBE scores").fetchall() if c.startswith("gamma_")]
-        rows = self.con.execute(f"""SELECT {', '.join(q(g) for g in gammas)}, count(*), round(avg(match_weight), 2),
+        gammas = [c for c, *_ in self.engine.rows("DESCRIBE scores") if c.startswith("gamma_")]
+        rows = self.engine.rows(f"""SELECT {', '.join(q(g) for g in gammas)}, count(*), round(avg(match_weight), 2),
             count(*) FILTER (match_weight >= {at} AND {named_sql(fs)}),
             count(*) FILTER (match_weight >= {floor} AND (match_weight < {at} OR NOT {named_sql(fs)})),
-            arg_min([{l}, {r}], hash({l} || ' ' || {r}), 3) FROM scores s GROUP BY ALL""").fetchall() if gammas else []
+            arg_min([{l}, {r}], hash({l} || ' ' || {r}), 3) FROM scores s GROUP BY ALL""") if gammas else []
         return dict(fields=[g.removeprefix("gamma_") for g in gammas], rows=[list(x) for x in rows])
 
     def scored(self) -> str:
@@ -663,11 +663,11 @@ class Run:
         """Every pair scored at keep_from points or more and every rule pair, as scored/ keeps them for people (er.results): its
         points, how it was found (sources: the keys; rule: the rule), named, keep, and one gamma per comparison."""
         fs, l, r = self.pipeline.fs, q(self.l), q(self.r)
-        gammas = [c for c, *_ in self.con.execute("DESCRIBE scores").fetchall() if c.startswith("gamma_")]
+        gammas = [c for c, *_ in self.engine.rows("DESCRIBE scores") if c.startswith("gamma_")]
         rule = f"(SELECT {l}, {r}, min(rule) AS rule FROM rule_kept GROUP BY ALL)"
         model = f"""SELECT s.{l}, s.{r}, s.match_weight, s.match_probability, s.sources, k.rule, s.named, s.keep, {', '.join(f's.{q(g)}' for g in gammas)}
             FROM ({self.scored()}) s LEFT JOIN {rule} k USING ({l}, {r}) WHERE s.match_weight >= {self.pipeline.threshold.keep_from} OR k.rule IS NOT NULL"""
-        if not self.con.execute("SELECT count(*) FROM duckdb_tables() WHERE table_name = 'rule_scores'").fetchall()[0][0]:
+        if not self.engine.value("SELECT count(*) FROM duckdb_tables() WHERE table_name = 'rule_scores'"):
             return model
         return f"""{model} UNION ALL BY NAME SELECT x.{l}, x.{r}, x.match_weight, x.match_probability, NULL::VARCHAR AS sources, k.rule,
             {named_sql(fs, 'x')} AS named, TRUE AS keep, {', '.join(f'x.{q(g)}' for g in gammas)} FROM rule_scores x JOIN {rule} k USING ({l}, {r})
@@ -678,13 +678,13 @@ class Run:
         threshold or above (matches), less the pairs people decided are no match, and the pairs they decided are a match
         (er_decisions, loaded by full() from the workspace; empty otherwise). rule_kept says which of its pairs merged."""
         l, r = q(self.l), q(self.r)
-        self.con.execute(f"CREATE TABLE IF NOT EXISTS er_decisions ({l} VARCHAR, {r} VARCHAR, decision VARCHAR)")
+        self.engine.run(f"CREATE TABLE IF NOT EXISTS er_decisions ({l} VARCHAR, {r} VARCHAR, decision VARCHAR)")
         no = lambda x: f"NOT EXISTS (SELECT 1 FROM er_decisions d WHERE d.{l} = {x}.{l} AND d.{r} = {x}.{r} AND d.decision = 'no_match')"
-        self.con.execute(f"""CREATE OR REPLACE TABLE matches AS SELECT s.{l}, s.{r}, s.match_weight, s.match_probability, s.sources
+        self.engine.run(f"""CREATE OR REPLACE TABLE matches AS SELECT s.{l}, s.{r}, s.match_weight, s.match_probability, s.sources
             FROM ({self.scored()}) s WHERE s.named AND s.keep AND s.match_weight >= {bits(self.pipeline.fs.min_match_weight)} AND {no('s')}""")
-        self.con.execute(f"""CREATE OR REPLACE TABLE rule_kept AS SELECT k.* EXCLUDE (merged), {no('k')} AS merged
+        self.engine.run(f"""CREATE OR REPLACE TABLE rule_kept AS SELECT k.* EXCLUDE (merged), {no('k')} AS merged
             FROM (SELECT *, NULL AS merged FROM rule_kept) k""")
-        self.con.execute(f"""CREATE OR REPLACE TABLE kept AS SELECT {l}, {r} FROM rule_kept WHERE merged UNION ALL SELECT {l}, {r} FROM matches
+        self.engine.run(f"""CREATE OR REPLACE TABLE kept AS SELECT {l}, {r} FROM rule_kept WHERE merged UNION ALL SELECT {l}, {r} FROM matches
             UNION ALL SELECT {l}, {r} FROM er_decisions WHERE decision = 'match'""")
 
     def _gold(self, old: str | None = None) -> None:
@@ -698,7 +698,7 @@ class Run:
         if old:
             stage, by = f"coalesce(o.resolved_stage, {stage})", f"coalesce(o.resolved_by, {by})"
         kinds = "kind" in self.columns()  # each record's kind, and its customer's (customer_kinds)
-        self.con.execute(f"""CREATE OR REPLACE TABLE gold AS
+        self.engine.run(f"""CREATE OR REPLACE TABLE gold AS
             WITH touch AS (SELECT {l} AS id, rule FROM rule_kept WHERE merged UNION ALL SELECT {r}, rule FROM rule_kept WHERE merged),
                  first AS (SELECT id, arg_min(rule, CASE rule {order} END) AS rule FROM touch GROUP BY id),
                  size AS (SELECT cluster_id, count(*) AS n FROM clusters GROUP BY 1),
@@ -715,18 +715,18 @@ class Run:
         t, u = time.perf_counter(), q(self.uid)
         self._accept()
         if old:  # the stored entities, whose answers stand, and each new record alone
-            self.con.execute(f"CREATE OR REPLACE TABLE gold_old AS SELECT * FROM read_parquet({lit(old)})")
-            self.con.execute(f"CREATE OR REPLACE TABLE er_single AS SELECT {u}, cluster_id FROM gold_old UNION ALL SELECT {u}, {u} FROM new_ids")
+            self.engine.run(f"CREATE OR REPLACE TABLE gold_old AS SELECT * FROM read_parquet({lit(old)})")
+            self.engine.run(f"CREATE OR REPLACE TABLE er_single AS SELECT {u}, cluster_id FROM gold_old UNION ALL SELECT {u}, {u} FROM new_ids")
         else:
-            self.con.execute(f"CREATE OR REPLACE TABLE er_single AS SELECT {u}, {u} AS cluster_id FROM records")
-        merge(self.con, "er_single", "kept", "clusters", self.uid)
+            self.engine.run(f"CREATE OR REPLACE TABLE er_single AS SELECT {u}, {u} AS cluster_id FROM records")
+        merge(self.engine, "er_single", "kept", "clusters", self.uid)
         self._gold("gold_old" if old else None)
         e = self._count("matches")
         self._done("cluster", "O(C_Δ + touched clusters)" if old else "O(C + E·log E + N)", f"O({self._count('scores'):,} + {e:,}·log E + {self.n:,})", t, accepted=e,
                    expected_false=self._expected_false())
 
     def _expected_false(self) -> float:  # the false links the model expects among those it accepted: Σ (1 − match probability), O(E)
-        return round(self.con.execute("SELECT coalesce(sum(1 - match_probability), 0) FROM matches").fetchall()[0][0], 2)
+        return round(self.engine.value("SELECT coalesce(sum(1 - match_probability), 0) FROM matches"), 2)
 
     def write(self, out: Path, part: int = 0, replace: list[Path] | None = None, report: tuple[str | Path, Path] | None = None) -> None:
         """Gold (each record's cluster, the stage and rule that resolved it, its kind and its customer's), the accepted
@@ -752,7 +752,7 @@ class Run:
         def logged() -> str:  # once the files are written: the write's time, in the entry that lands with them
             self._done("write", "O(N + C)", f"O({self.n:,} + {self._count('matches'):,})", t)
             return self._log(out, part > 0, earlier, part=part, disabled=self.disabled, pipeline=str(Path(report[1]).resolve()) if report else None)
-        folder.stage(self.con, out, [("SELECT * FROM rule_kept", out / "rule_kept" / name), ("SELECT * FROM matches", out / "matches" / name),
+        folder.stage(self.engine, out, [("SELECT * FROM rule_kept", out / "rule_kept" / name), ("SELECT * FROM matches", out / "matches" / name),
                                      *scored,
                                      (f"SELECT * FROM gold ORDER BY {q(self.uid)}", out / "gold.parquet"),
                                      ("SELECT * FROM rule_clusters", state / "rule_clusters.parquet"),
@@ -807,7 +807,7 @@ class Run:
         linked it most strongly, and `weight`, its best model link in bits. O(an increment) less its write."""
         u = q(self.uid)
         if self._join(path, out):
-            self.con.execute(f"""CREATE OR REPLACE TABLE er_match AS WITH
+            self.engine.run(f"""CREATE OR REPLACE TABLE er_match AS WITH
                 ends AS (SELECT {q(self.l)} AS id, rule, NULL::DOUBLE AS w FROM rule_kept WHERE merged UNION ALL SELECT {q(self.r)}, rule, NULL FROM rule_kept WHERE merged
                          UNION ALL SELECT {q(self.l)}, 'fs', match_weight FROM matches UNION ALL SELECT {q(self.r)}, 'fs', match_weight FROM matches),
                 best AS (SELECT id, arg_max(rule, coalesce(w, 1e9)) AS by, max(w) AS weight FROM ends GROUP BY 1),
@@ -816,11 +816,11 @@ class Run:
                        ELSE 'a new entity' END AS status, b.by, b.weight
                 FROM new_ids n JOIN gold g USING ({u}) LEFT JOIN best b ON b.id = n.{u}""")
         else:
-            self.con.execute(f"CREATE OR REPLACE TABLE er_match AS SELECT NULL::VARCHAR AS {u}, NULL::VARCHAR AS entity, '' AS status, NULL::VARCHAR AS by, NULL::DOUBLE AS weight WHERE FALSE")
-        return self.con.execute(f"""SELECT * FROM er_match UNION ALL BY NAME
+            self.engine.run(f"CREATE OR REPLACE TABLE er_match AS SELECT NULL::VARCHAR AS {u}, NULL::VARCHAR AS entity, '' AS status, NULL::VARCHAR AS by, NULL::DOUBLE AS weight WHERE FALSE")
+        return self.engine.frame(f"""SELECT * FROM er_match UNION ALL BY NAME
             SELECT s.{u}, g.cluster_id AS entity, CASE WHEN s.reason = 'already in the run' THEN s.reason ELSE 'set aside: ' || s.reason END AS status
             FROM set_aside s LEFT JOIN read_parquet({lit(out / 'gold.parquet')}) g ON g.{u} = s.{u} AND s.reason = 'already in the run'
-            ORDER BY 1""").df()
+            ORDER BY 1""")
 
     def _join(self, path: str | Path, out: Path) -> bool:
         """The increment's steps on the batch at `path` against the run in `out`, up to its clusters (gold), writing
@@ -838,19 +838,19 @@ class Run:
         self.model = json.loads((state / "model.json").read_text(encoding="utf-8"))
         self.part = folder.next_part(state / "records")
         parts = ", ".join(lit(x) for x in sorted((state / "records").glob("part-*.parquet")))  # not a glob: this run's own part comes later
-        self.con.execute(f"CREATE OR REPLACE VIEW old_records AS SELECT * FROM read_parquet([{parts}], union_by_name = true)")
+        self.engine.run(f"CREATE OR REPLACE VIEW old_records AS SELECT * FROM read_parquet([{parts}], union_by_name = true)")
         self.load(path, into="new_records", stored="old_records")  # a record already in the run is set aside: a retry adds nothing twice
         self.added = self.n
         if not self.added:
-            other = self.con.execute("SELECT count(*) FROM set_aside WHERE reason <> 'already in the run'").fetchall()[0][0]
+            other = self.engine.value("SELECT count(*) FROM set_aside WHERE reason <> 'already in the run'")
             if other:
                 raise InputError(f"{path}: no new record to add ({'; '.join(self.notes)})", fix="give the records set aside IDs, one per record")
             return False  # every record is already in the run: nothing to do
-        self.con.execute("CREATE OR REPLACE TABLE records AS SELECT * FROM old_records UNION ALL BY NAME SELECT * FROM new_records")  # read by every step: once
+        self.engine.run("CREATE OR REPLACE TABLE records AS SELECT * FROM old_records UNION ALL BY NAME SELECT * FROM new_records")  # read by every step: once
         stored = state / "placeholders.json"
         self.placeholders = json.loads(stored.read_text(encoding="utf-8")) if stored.exists() else {}
         self._placeholders("records", also=("new_records",))  # the run's own, and any the batch takes past the line
-        self.con.execute(f"CREATE OR REPLACE TABLE new_ids AS SELECT {u} FROM new_records")
+        self.engine.run(f"CREATE OR REPLACE TABLE new_ids AS SELECT {u} FROM new_records")
         self.n = self._count("records")
 
         t, again, fs = time.perf_counter(), [], self.pipeline.fs  # the stored model; u settled before the gate needs them
@@ -858,13 +858,13 @@ class Run:
         if fs.model.u_from_scored:  # exact levels counted again; a comparison sampled again only once it is stale
             stored = state / "scoring.json"
             basis = json.loads(stored.read_text(encoding="utf-8"))["basis"] if stored.exists() else {}
-            self.scoring, self.basis, again = refreshed_u(fs.model, self.model, basis, "records", self.con, self.uid)
+            self.scoring, self.basis, again = refreshed_u(fs.model, self.model, basis, "records", self.engine, self.uid)
             self.notes += [f"u of {c} measured again: it drifted {self.basis[c]['last_check']['drift_bits']:.3f} bits, more than "
                            f"its sampling error ({self.basis[c]['last_check']['se_bits']:.3f})" for c in again if self.basis[c]['last_check']['drift_bits'] is not None]
         self._done("fit", "O(N + S·K_stale)", f"O({self.n:,} + {fs.model.u_max_pairs:,.0f}·{len(again)})", t, sampled_again=len(again))
 
         t = time.perf_counter()  # the rules: each against the batch only, then the cascade on the merged clusters
-        self.con.execute(f"""CREATE OR REPLACE TABLE rule_clusters AS SELECT * FROM read_parquet({lit(state / 'rule_clusters.parquet')})
+        self.engine.run(f"""CREATE OR REPLACE TABLE rule_clusters AS SELECT * FROM read_parquet({lit(state / 'rule_clusters.parquet')})
             UNION ALL SELECT {u}, {u} AS cluster_id FROM new_ids""")
         self._rules("new_records")
         self._done("rules", "O(|Δ|·Σ b + scan)", f"O({self._count('new_ids'):,} new records)", t, kept=self._count("rule_kept"))
@@ -881,7 +881,7 @@ class Run:
         """The decisions stored in this workspace (None: none), on records of this file, the latest per pair, for _accept."""
         u, l, r, parts = q(self.uid), q(self.l), q(self.r), out / folder.DECISIONS if out else None
         if parts and any(parts.glob("part-*.parquet")):
-            self.con.execute(f"""CREATE OR REPLACE TABLE er_decisions AS SELECT * FROM {folder.latest_decisions(out, self.uid)}
+            self.engine.run(f"""CREATE OR REPLACE TABLE er_decisions AS SELECT * FROM {folder.latest_decisions(out, self.uid)}
                 WHERE {l} IN (SELECT {u} FROM records) AND {r} IN (SELECT {u} FROM records)""")
 
     @locked
@@ -896,22 +896,22 @@ class Run:
         folder.finish_writes(out)
         if not (out / "gold.parquet").exists():
             raise no_run(out, "apply decisions to")
-        self.con.execute(f"CREATE OR REPLACE TABLE gold_old AS SELECT * FROM read_parquet({lit(out / 'gold.parquet')})")
-        self.inputs = file_facts(decisions(path, self.con, self.l, self.r, into="er_decisions"), "decisions")  # the door: er.source checks them
-        known(self.con, f"SELECT {l} AS id FROM er_decisions UNION SELECT {r} FROM er_decisions", "gold_old", self.uid, path, f"the run in {out}")
+        self.engine.run(f"CREATE OR REPLACE TABLE gold_old AS SELECT * FROM read_parquet({lit(out / 'gold.parquet')})")
+        self.inputs = file_facts(decisions(path, self.engine, self.l, self.r, into="er_decisions"), "decisions")  # the door: er.source checks them
+        known(self.engine, f"SELECT {l} AS id FROM er_decisions UNION SELECT {r} FROM er_decisions", "gold_old", self.uid, path, f"the run in {out}")
         if latest := folder.latest_decisions(out, self.uid):
-            self.con.execute(f"""DELETE FROM er_decisions d USING {latest} p WHERE p.{l} = d.{l} AND p.{r} = d.{r} AND p.decision = d.decision""")
+            self.engine.run(f"""DELETE FROM er_decisions d USING {latest} p WHERE p.{l} = d.{l} AND p.{r} = d.{r} AND p.decision = d.decision""")
         if not self._count("er_decisions"):
             self._done("decide", "O(D)", "O(0 new decisions)", t, decisions=0, matches=0, clusters_joined=0)
             return self
         self.n = self._count("gold_old")
-        self.con.execute(f"CREATE OR REPLACE TABLE er_base AS SELECT {u}, cluster_id FROM gold_old")
-        self.con.execute(f"CREATE OR REPLACE TABLE er_review AS SELECT {l}, {r} FROM er_decisions WHERE decision = 'match'")
-        merge(self.con, "er_base", "er_review", "clusters", self.uid)
-        have = {c[0] for c in self.con.execute("DESCRIBE gold_old").fetchall()}
+        self.engine.run(f"CREATE OR REPLACE TABLE er_base AS SELECT {u}, cluster_id FROM gold_old")
+        self.engine.run(f"CREATE OR REPLACE TABLE er_review AS SELECT {l}, {r} FROM er_decisions WHERE decision = 'match'")
+        merge(self.engine, "er_base", "er_review", "clusters", self.uid)
+        have = {c[0] for c in self.engine.rows("DESCRIBE gold_old")}
         kinds = "kind" in have  # each record's kind stands; its customer's follows the merge
         flagged = "o.kind_flagged" if "kind_flagged" in have else "FALSE AS kind_flagged"  # a run written before flags: none
-        self.con.execute(f"""CREATE OR REPLACE TABLE gold AS WITH size AS (SELECT cluster_id, count(*) AS n FROM clusters GROUP BY 1)
+        self.engine.run(f"""CREATE OR REPLACE TABLE gold AS WITH size AS (SELECT cluster_id, count(*) AS n FROM clusters GROUP BY 1)
                  {f", customer AS ({customer_kinds('clusters', 'gold_old', u)})" if kinds else ""}
             SELECT c.{u}, c.cluster_id, coalesce(o.resolved_stage, CASE WHEN z.n > 1 THEN 'review' END) AS resolved_stage,
                    coalesce(o.resolved_by, CASE WHEN z.n > 1 THEN 'review' END) AS resolved_by
@@ -919,7 +919,7 @@ class Run:
             FROM clusters c JOIN size z USING (cluster_id) JOIN gold_old o USING ({u}) {"JOIN customer k USING (cluster_id)" if kinds else ""}
             ORDER BY c.{u}""")
         d, m = self._count("er_decisions"), self._count("er_review")
-        before, after = (self.con.execute(f"SELECT count(DISTINCT cluster_id) FROM {x}").fetchall()[0][0] for x in ("gold_old", "gold"))
+        before, after = (self.engine.value(f"SELECT count(DISTINCT cluster_id) FROM {x}") for x in ("gold_old", "gold"))
         self._done("decide", "O(D + touched clusters) + O(N)", f"O({d:,} decisions + {self.n:,})", t,
                    decisions=d, matches=m, clusters_joined=before - after)
         parts, sheet = out / folder.DECISIONS, out / "review.parquet"
@@ -927,7 +927,7 @@ class Run:
         restamp = [(f"""SELECT s.* EXCLUDE (file_row_number) REPLACE (coalesce(d.decision, s.decision::VARCHAR) AS decision)
             FROM read_parquet({lit(sheet)}, file_row_number = true) s LEFT JOIN er_decisions d ON d.{l} = s.{l} AND d.{r} = s.{r}
             ORDER BY file_row_number""", sheet)] if sheet.exists() and Path(path).resolve() != sheet.resolve() else []  # the sheet shows each pair's latest: an answer given elsewhere never comes back from it
-        folder.stage(self.con, out, [(f"SELECT * FROM gold ORDER BY {u}", out / "gold.parquet"),
+        folder.stage(self.engine, out, [(f"SELECT * FROM gold ORDER BY {u}", out / "gold.parquet"),
                                      (f"SELECT *, {len(folder.rounds(out)) or 'NULL'}::INTEGER AS round FROM er_decisions",
                                       parts / f"part-{folder.next_part(parts):05d}.parquet"), *restamp],
                      [(self._log(out, True, decisions=str(path)), out / folder.STEPS)])

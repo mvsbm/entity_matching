@@ -12,7 +12,7 @@ import pytest
 
 from er.config import Comparator, Comparison, FSModel, Key, Level, load_pipeline
 from er.settings import load_settings
-from er.strings import connect
+from er.engine.duckdb import connect
 
 UID = "uid"
 PAIR = pd.DataFrame({"uid_l": ["001a"], "uid_r": ["001b"]}, dtype="string")  # same name, in 4 of the 120 records
@@ -35,7 +35,7 @@ def pytest_runtest_makereport(item, call):  # each phase's report kept on the te
 
 
 @pytest.fixture(scope="session")
-def con():
+def engine():
     return connect()
 
 
