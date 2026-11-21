@@ -53,15 +53,17 @@ def test_atoms_follow_the_method_and_the_records(population):
 
 
 
-def _placeholders(population, rows: dict) -> tuple:  # Run._placeholders on a table of these columns, as load leaves records
-    from er.run import Run
+def _placeholders(population, rows: dict) -> tuple:  # steps.load.placeholders on a table of these columns, as load leaves records
+    from types import SimpleNamespace
+    from er.steps.job import start
+    from er.steps.load import placeholders
     s, p, g = population
-    run = Run(p, s)
+    job = start(s, p)
     df = pd.DataFrame(rows, dtype="string")
-    run.engine.register("er_rows", df)
-    run.engine.run("CREATE TABLE records AS SELECT * FROM er_rows")
-    run._placeholders("records")
-    return run, run.engine.frame("SELECT * FROM records ORDER BY 1")
+    job.engine.register("er_rows", df)
+    job.engine.run("CREATE TABLE records AS SELECT * FROM er_rows")
+    run = SimpleNamespace(job=job, engine=job.engine, notes=job.log.notes, placeholders=placeholders(job, p, "records", {}))
+    return run, job.engine.frame("SELECT * FROM records ORDER BY 1")
 
 
 def test_a_placeholder_is_found_on_records_without_an_id_beside_another_and_read_as_missing_in_every_field_of_its_columns(population):
@@ -82,10 +84,11 @@ def test_copies_of_one_customer_s_record_are_no_crowd_and_a_known_placeholder_is
     rows = {uid: [f"c{i:03d}" for i in range(70)], "customer_id": ["C1"] * 70, "person_name": ["サトウハナコ"] * 70, "phone": ["1234"] * 70}
     run, out = _placeholders(population, rows)
     assert "person_name" not in run.placeholders and "phone" not in run.placeholders and out["person_name"].notna().all()  # one customer's 70 copies
-    run.placeholders, run.notes = {"phone": ["1234"]}, []
+    from er.steps.load import placeholders
+    run.job.log.notes.clear()
     run.engine.run("UPDATE records SET phone = '1234'")
-    run._placeholders("records")
-    assert out is not None and not any(x.startswith("phone:") for x in run.notes)  # read as missing as before, and not said again
+    placeholders(run.job, p, "records", {"phone": ["1234"]})
+    assert out is not None and not any(x.startswith("phone:") for x in run.job.log.notes)  # read as missing as before, and not said again
     assert run.engine.value("SELECT count(*) FROM records WHERE phone IS NOT NULL") == 0
 
 
@@ -111,11 +114,11 @@ def test_the_gap_counts_a_pair_as_the_rules_only_where_they_kept_it():
 
 @pytest.fixture(scope="module")
 def ran(population, tmp_path_factory):
-    from er.run import Run
+    from er.jobs.build import build
     s, p, g = population
     d = tmp_path_factory.mktemp("keys")
     g.df.to_parquet(d / "in.parquet", index=False)
-    return s, p, g, d, Run(p, s).full(d / "in.parquet", d / "ws")
+    return s, p, g, d, build(d / "in.parquet", d / "ws", s, p)
 
 
 def test_a_run_lists_by_every_key_the_method_names_and_keeps_none_of_its_own(ran):

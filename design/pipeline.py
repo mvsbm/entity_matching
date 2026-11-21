@@ -1,6 +1,6 @@
 """Design time's measurements: preflight (the work per rule before any join), projections to a target size, and the
-pipeline measured against the truth. Every measured run is er.run.Run, the run nayose resolve records makes: run_rules and
-run_fs read its tables and join them to the truth, so design time judges exactly what runs. Metrics after each stage
+pipeline measured against the truth. Every measured run takes the steps nayose resolve records takes (er.steps): run_rules
+and run_fs read their tables and join them to the truth, so design time judges exactly what runs. Metrics after each stage
 are cumulative: matching metrics on the accepted pairs, resolution metrics on the clusters.
 """
 import math
@@ -20,11 +20,17 @@ from er.cluster import merge
 from er.config import q
 from er.config import (Blocker, Budget, Data, DeletionKeys, FSSpec, Key, KeyBlocker, OverBudget, Pipeline, RulesSpec,
                        SortedNeighbourhood, TfidfNeighbours, ThresholdRule, keys_of)
+from er.steps.candidates import candidates
+from er.steps.cluster import cluster
+from er.steps.fit import fit
+from er.steps.job import Job, start
+from er.steps.load import load
+from er.steps.rules import rules
+from er.steps.score import score, scored_sql
 from design.evaluate import (average_precision, candidate_metrics, cluster_metrics, edge_metrics, false_pairs, fp_upper, labelled,
                          missed_pairs, true_pairs, wilson)
 from er.match import scaled_prior, score_fs, scored_sample
 from er.report import households
-from er.run import Run
 from er.settings import Settings
 from er.standardize import prepare
 from er.strings import FUNCTIONS
@@ -154,8 +160,8 @@ def check_budget(plan: pd.DataFrame, budget: Budget, n: int) -> None:
         raise OverBudget(f"over budget: {over[['rule', 'P', 'largest_block']].to_dict('records')}")
 
 
-def table(run: Run, sql: str) -> pd.DataFrame:  # a query on a run's tables, its text columns as pandas strings
-    df = run.engine.frame(sql)
+def table(job: Job, sql: str) -> pd.DataFrame:  # a query on a job's tables, its text columns as pandas strings
+    df = job.engine.frame(sql)
     return df.astype({c: "string" for c in df.columns if df[c].dtype == object})
 
 
@@ -181,18 +187,20 @@ class Result:
 
 
 def run_rules(pipeline: Pipeline, settings: Settings, path: Path, truth: pd.DataFrame) -> Result:
-    """The pipeline's rules on the file at `path`, run by er.run.Run, measured against the truth. The preflight comes
-    first and stops an over-budget configuration (OverBudget) before any join. O(N + Σ P_r·L²) + O(N) per stage."""
+    """The pipeline's rules on the file at `path`, run by the steps a run takes (er.steps: load, then rules), measured
+    against the truth. The preflight comes first and stops an over-budget configuration (OverBudget) before any join.
+    O(N + Σ P_r·L²) + O(N) per stage."""
     t0, spec, uid = time.perf_counter(), pipeline.rules, settings.data.unique_id
     l, r = f"{uid}_l", f"{uid}_r"
-    run = Run(pipeline, settings)
-    run.load(path)
-    df = table(run, "SELECT * FROM records")
+    job = start(settings, pipeline)
+    loaded = load(job, path)
+    job.pipeline = loaded.pipeline
+    df = table(job, "SELECT * FROM records")
     plan = preflight(spec, df)
     check_budget(plan, spec.budget, len(df))
-    run.rules()
+    ruled = rules(job, loaded.n, None)  # the rules alone, before any model is fitted
     entity, household = labelled(truth, settings.data)
-    edges = table(run, f"""SELECT e.*, k.{q(l)} IS NOT NULL AS kept FROM rule_edges e
+    edges = table(job, f"""SELECT e.*, k.{q(l)} IS NOT NULL AS kept FROM rule_edges e
         LEFT JOIN rule_kept k ON k.{q(l)} = e.{q(l)} AND k.{q(r)} = e.{q(r)} ORDER BY e.{q(l)}, e.{q(r)}""")
     edges["fp"] = false_pairs(edges[l], edges[r], entity, household)
     kept_edges = edges[edges["kept"]]
@@ -205,7 +213,7 @@ def run_rules(pipeline: Pipeline, settings: Settings, path: Path, truth: pd.Data
     for st in spec.stages:  # the clusters after each stage: the kept pairs of the stages so far, merged as the run merges them
         names.append(st.name)
         upto = edges["stage"].isin(names).to_numpy()
-        clusters = clustered(run.engine, base, edges[upto & edges["kept"].to_numpy()], ids, uid)
+        clusters = clustered(job.engine, base, edges[upto & edges["kept"].to_numpy()], ids, uid)
         now = clusters.map(clusters.value_counts()) > 1
         stage_of[now & ~resolved] = st.name
         resolved = now
@@ -218,12 +226,12 @@ def run_rules(pipeline: Pipeline, settings: Settings, path: Path, truth: pd.Data
     out = df.assign(CLUSTER_ID=clusters.to_numpy(), MATCH_STAGE=stage_of.to_numpy(),
                     MATCH_RULE=df[uid].map(first_rule).where(stage_of.notna().to_numpy()))
 
-    rules = (edges.groupby("rule", sort=False).agg(edges=("fp", "size"), edge_FP=("fp", "sum"), kept=("kept", "sum"),
+    by_rule = (edges.groupby("rule", sort=False).agg(edges=("fp", "size"), edge_FP=("fp", "sum"), kept=("kept", "sum"),
                                                    kept_FP=("fp", lambda f: int((f & edges.loc[f.index, "kept"]).sum())))
              .reindex(plan["rule"]).fillna(0).astype(int).reset_index())
-    plan = plan.assign(actual_ms=(1000 * plan["rule"].map(run.rule_seconds)).round(1))
-    run.engine.close()  # its tables are read: free its memory now, not when the collector finds the run
-    return Result(plan, rules, pd.DataFrame(metrics), out, edges, time.perf_counter() - t0)
+    plan = plan.assign(actual_ms=(1000 * plan["rule"].map(ruled.seconds)).round(1))
+    job.engine.close()  # its tables are read: free its memory now, not when the collector finds the job
+    return Result(plan, by_rule, pd.DataFrame(metrics), out, edges, time.perf_counter() - t0)
 
 
 @dataclass
@@ -256,41 +264,43 @@ def stage_rows(res: FSResult, spec: FSSpec, accepted: pd.DataFrame, clusters: pd
 
 
 def run_fs(pipeline: Pipeline, settings: Settings, path: Path, truth: pd.DataFrame, model_json: dict) -> FSResult:
-    """The pipeline on the file at `path` with this fitted model, run by er.run.Run (u measured on the file when the
-    model asks), accepting at the pipeline's min_match_weight, measured against the truth."""
+    """The pipeline on the file at `path` with this fitted model, run by the steps a run takes (er.steps; u measured on
+    the file when the model asks), accepting at the pipeline's min_match_weight, measured against the truth."""
     t0, uid = time.perf_counter(), settings.data.unique_id
     l, r = f"{uid}_l", f"{uid}_r"
     spec = pipeline.fs
-    run = Run(pipeline, settings, model=model_json, reaching_only=False)  # every pair the keys list: what the metrics count
-    run.load(path)
-    run.fit()
-    run.rules()
-    report = run.candidates()
-    run.score()
-    run.cluster()
+    job = start(settings, pipeline)
+    loaded = load(job, path, model=model_json)
+    job.pipeline = loaded.pipeline
+    fitted = fit(job, loaded.n, model_json)
+    rules(job, loaded.n, fitted.scoring)
+    listed = candidates(job, loaded.n, fitted.scoring, None, reaching_only=False)  # every pair the keys list: what the metrics count
+    report = listed.report
+    score(job, fitted.scoring, listed.listed)
+    cluster(job, loaded.n)
     entity, household = labelled(truth, settings.data)
-    df = table(run, "SELECT * FROM records")
-    rule_clusters = table(run, "SELECT * FROM rule_clusters")
+    df = table(job, "SELECT * FROM records")
+    rule_clusters = table(job, "SELECT * FROM rule_clusters")
     prev = rule_clusters.set_index(uid)["cluster_id"].reindex(df[uid].to_numpy())
     targets = missed_pairs(prev, entity.reindex(prev.index), uid)
-    cands = table(run, f"SELECT * FROM cands ORDER BY {q(l)}, {q(r)}")
+    cands = table(job, f"SELECT * FROM cands ORDER BY {q(l)}, {q(r)}")
     report = report.assign(**pd.DataFrame([candidate_metrics(cands[found_by(cands, [b.name])], entity, uid, targets)
                                            for b in spec.blockers]))
-    scored = table(run, f"SELECT * FROM ({run.scored()}) ORDER BY {q(l)}, {q(r)}")
+    scored = table(job, f"SELECT * FROM ({scored_sql(job)}) ORDER BY {q(l)}, {q(r)}")
     scored["fp"] = false_pairs(scored[l], scored[r], entity, household)
     scored["one_home"] = ~scored["fp"] & false_pairs(scored[l], scored[r], entity)  # two people of one household
-    run.engine.register("er_scored_ids", scored[[l, r]])
-    homes = households(run.engine, "records", "SELECT * FROM er_scored_ids", uid, pipeline)
-    run.engine.unregister("er_scored_ids")
+    job.engine.register("er_scored_ids", scored[[l, r]])
+    homes = households(job.engine, "records", "SELECT * FROM er_scored_ids", uid, pipeline)
+    job.engine.unregister("er_scored_ids")
     scored["labelled"] = [(a, b) in homes for a, b in zip(scored[l], scored[r])]  # people see it labelled maybe one household
     accepted = scored[automatic(scored, spec.min_match_weight)].assign(stage=spec.stage, rule=spec.model.name,
                                                                        score=lambda s: s["match_probability"])
-    gold = table(run, "SELECT * FROM gold").set_index(uid).reindex(df[uid].to_numpy())
+    gold = table(job, "SELECT * FROM gold").set_index(uid).reindex(df[uid].to_numpy())
     out = df.assign(CLUSTER_ID=gold["cluster_id"].to_numpy(), MATCH_STAGE=gold["resolved_stage"].to_numpy(),
                     MATCH_RULE=gold["resolved_by"].to_numpy())
-    rule_pairs = table(run, "SELECT * FROM rule_kept")
-    run.engine.close()  # its tables are read: free its memory now, not when the collector finds the run
-    res = FSResult(report, cands, scored, pd.DataFrame(), {}, out, 0.0, run.scoring, rule_clusters, rule_pairs)
+    rule_pairs = table(job, "SELECT * FROM rule_kept")
+    job.engine.close()  # its tables are read: free its memory now, not when the collector finds the job
+    res = FSResult(report, cands, scored, pd.DataFrame(), {}, out, 0.0, fitted.scoring, rule_clusters, rule_pairs)
     res.metrics = pd.DataFrame(stage_rows(res, spec, accepted, gold["cluster_id"], entity, uid, household))
     res.stage_metrics = dict(**candidate_metrics(cands, entity, uid, targets), **edge_metrics(accepted, entity, uid, household),
                              average_precision=average_precision(scored["match_weight"].to_numpy(), ~scored["fp"].to_numpy()),

@@ -80,7 +80,7 @@ The name model it judges is the run's own: trained on `design.generate.kind_trai
 
 - `er/kind.py`: `legal`, `text`, `NameModel` (scored in DuckDB), `name_model` (loads `config/kind_names.npz`, trained by `scripts/train_name_model.py`), `Classifier.classify`, `classifier`
 - `er/standardize.py`: `legal_pattern`, and `prepare`, which scores each chunk and routes the name fields
-- `er/run.py`: `Run.load` (the classifier), `Run._gold` (a customer's kind); `er/report.py`: `qa` (the summary's kind lines)
+- `er/steps/load.py`: `steps.load.load` (the classifier); `er/steps/cluster.py`: `steps.cluster._gold`, `steps.cluster.customer_kinds` (a customer's kind); `er/report.py`: `qa` (the summary's kind lines)
 - `er/settings.py`: `shared_name`, the settings for one name column
 - `design/generate.py`: `name_model_split`, `kind_problems`, `bank_name`, `kind_training_names`
 - `scripts/choose_kind.py`: the choice above; `scripts/benchmark.py`: `kinds`, the whole run

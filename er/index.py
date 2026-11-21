@@ -44,7 +44,7 @@ from er.intake import tidy
 from er.kind import Classifier, classifier
 from er.match import _gammas, levels, prior_bits, read_by, review_floor, search_floor
 from er.explain import run_model
-from er.run import run_config
+from er.steps.write import run_config
 from er.settings import Settings, fit_to_file, present_fields
 from er.standardize import KATAKANA, SEPARATORS, prepare
 from er.engine.duckdb import connect
