@@ -14,7 +14,7 @@ from er.config import InputError
 
 def test_a_sorted_window_places_the_record_as_the_run_s_window_does_at_either_end_and_among_equal_keys():
     import duckdb
-    from er import index
+    from er.jobs import index
     from er.config import Key, SortedNeighbourhood
     rng = np.random.default_rng(0)
     x = SortedNeighbourhood(name="w", key=Key("k"), window=4)
@@ -37,7 +37,7 @@ def test_a_sorted_window_places_the_record_as_the_run_s_window_does_at_either_en
 
 
 def answers(ws, s, p, asks: list[tuple[dict | None, str | None]]) -> list[dict]:  # what each lookup answers, all of it but its time
-    from er import index
+    from er.jobs import index
     out = []
     for values, record in asks:
         r = index.look_up(ws, s, p, values=values, record=record, at_least=-1e9, most=10**6)
@@ -46,7 +46,8 @@ def answers(ws, s, p, asks: list[tuple[dict | None, str | None]]) -> list[dict]:
 
 
 def test_a_lookup_lists_and_scores_the_pairs_an_increment_of_the_record_would_and_the_index_kept_up_to_date_answers_as_one_built_again(tmp_path, population, monkeypatch):
-    from er import brief, cli, index
+    from er import brief, cli
+    from er.jobs import index
     from er.candidates import candidates
     from er.match import review_floor, score_fs
     from er.explain import run_model
@@ -187,7 +188,8 @@ def _records(ws, uid: str, entity: str) -> set[str]:  # an entity's records, as 
 
 
 def test_a_look_up_that_reaches_nothing_says_how_near_it_came_and_reads_values_typed_otherwise_as_records_hold_them(tmp_path, population, monkeypatch):
-    from er import cli, index
+    from er import cli
+    from er.jobs import index
     s, p, g = population
     df = g.df.dropna(subset=["FULL_NAME_KANA"])
     uid, dummy = s.data.unique_id, df.head(80).copy()  # a placeholder name on 80 customers: read as missing in every field built from its columns
