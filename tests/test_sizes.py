@@ -5,7 +5,6 @@ import pandas as pd
 import pytest
 
 from er import index, sizes
-from er.config import InputError
 from er.match import fit_model
 from er.run import BLOCKS
 
@@ -48,13 +47,6 @@ def test_sizes_settle_at_the_first_of_two_quiet_steps(ran, monkeypatch):
         fitted = [x["records"] for x in r["steps"] if x["em"] == way and "error" not in x]
         assert r["settled"][way] == fitted[1] and len(fitted) == 3, (way, fitted)  # the second size, the first quiet one; the third confirmed it, and no fourth was fitted
     assert r["settled"] and all(x["floor"] == r["floor"] for x in r["steps"])
-
-
-def test_a_model_adjusting_by_term_frequency_is_refused(ran, monkeypatch):
-    s, p, ws = ran
-    monkeypatch.setattr(index, "run_model", lambda ws: {"er": {"tf": True}})
-    with pytest.raises(InputError, match="term frequency"):
-        sizes.grow(ws, s, p)
 
 
 def test_a_run_with_em_choose_keeps_each_session_s_verdict_in_its_model_and_the_report_shows_them(ran, tmp_path):

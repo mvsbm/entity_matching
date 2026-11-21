@@ -35,7 +35,7 @@ from er.brief import merging_words, nayose
 from er.emit import BATCH_ORDER, RUN_ORDER, Emit, plain, rows_told
 from er.folder import Busy
 from er.hints import readable
-from er.match import review_floor
+from er.match import review_floor, saved as saved_model
 from er.results import describe_results
 from er.run import Run
 from er.settings import (load_settings)
@@ -140,7 +140,7 @@ def model_from(path: str | None) -> dict | None:
         saved = json.loads(Path(path).read_text(encoding="utf-8"))
     except (OSError, ValueError) as e:
         raise InputError(f"--model {path}: {e}", fix="give the JSON a run saved (state/model.json), or leave --model out to fit one on the file") from None
-    return saved.get("model", saved)
+    return saved_model(saved.get("model", saved), f"--model {path}", fix="leave --model out to fit one on the file")
 
 
 def given(a: dict, emit: "Emit | None" = None) -> str:
@@ -419,7 +419,7 @@ def reference() -> str:
     return "\n".join(out)
 
 
-def out_of_memory(e: BaseException) -> InputError | None:  # DuckDB's, raised as it is or by Splink: a limit people set, which they can raise
+def out_of_memory(e: BaseException) -> InputError | None:  # DuckDB's, raised as it is or as the cause of another: a limit people set, which they can raise
     oom = next((x for x in (e, e.__cause__) if isinstance(x, duckdb.OutOfMemoryException)), None)
     return oom and InputError(f"out of memory: {str(oom).splitlines()[0]}", fix="raise --compute memory_limit, or give --compute temp_directory "
                               "a folder with more free disk (config/settings.toml [compute] for every run)")

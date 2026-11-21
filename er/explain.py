@@ -7,7 +7,7 @@ from pathlib import Path
 import duckdb
 
 from er.config import lit, q
-from er.match import read_by, score_fs
+from er.match import read_by, saved, score_fs
 from er.report import no_run
 from er.review_state import read
 
@@ -16,7 +16,8 @@ def run_model(out: Path) -> dict:  # the model the run in `out` scored with: its
     scoring, fitted = out / "state" / "scoring.json", out / "state" / "model.json"
     if not fitted.exists():
         raise no_run(out)
-    return json.loads(scoring.read_text(encoding="utf-8"))["model"] if scoring.exists() else json.loads(fitted.read_text(encoding="utf-8"))
+    model = json.loads(scoring.read_text(encoding="utf-8"))["model"] if scoring.exists() else json.loads(fitted.read_text(encoding="utf-8"))
+    return saved(model, f"the run in {out}", fix=f"run it again: nayose resolve records FILE --workspace {out} --overwrite")
 
 
 def scored_again(con: duckdb.DuckDBPyConnection, out: Path, uid: str, pairs: str, into: str, narrow: bool = False) -> dict:

@@ -2,15 +2,14 @@
 
 rules           a pair is accepted when every condition of one rule holds (score 1.0); each rule is one SQL
                 equi-join, so its work is the pairs inside its blocks
-fellegi_sunter  Splink's Fellegi–Sunter model: λ from near-certain rules, u counted on the file where a level can be
-                (exact_u) and sampled where it can't, m by EM or from labels; scores any registered candidate table, so candidates and scoring stay independent
+fellegi_sunter  the Fellegi–Sunter model as Splink 5.0 computes it: λ from near-certain rules, u counted on the file where a
+                level can be (exact_u) and sampled where it can't, m by EM or from labels; scores any registered candidate table, so candidates and scoring stay independent
 """
 import contextlib
 import copy
 import hashlib
 import itertools
 import json
-import logging
 import math
 import os
 import re
@@ -23,8 +22,6 @@ from pathlib import Path
 import duckdb
 import numpy as np
 import pandas as pd
-import splink
-from splink import DuckDBAPI, Linker
 
 from er import fit
 from er.candidates import deletions_sql
@@ -38,8 +35,7 @@ def rule_edges(spec: RulesSpec, records: "Records", con: duckdb.DuckDBPyConnecti
     records joined against all of them (an increment), O(|batch|·b) instead of every pair; `trust`: per rule (its index
     in order), a condition its record `l` must meet (values it doesn't trust left out: the keys are equal on both
     sides). With `into`, a table in con, else a frame. Also returns each rule's seconds. `told(done, total,
-    "rules")` after each rule: how far it is.
-    Plain SQL, not Splink's deterministic_link, which joins every column of both records back only for us to drop them."""
+    "rules")` after each rule: how far it is."""
     l, r, u = q(f"{uid}_l"), q(f"{uid}_r"), q(uid)
     name = records if isinstance(records, str) else f"er_rules_{abs(hash(id(records)))}"
     if not isinstance(records, str):  # a frame not prepared by er.standardize has no one-byte copy: the Python function compares its pairs
@@ -86,7 +82,7 @@ def comparison(c: Comparison, u: dict[str, float] | None = None) -> dict:
     levels = [{"sql_condition": null, "label_for_charts": "missing", "is_null_level": True}]
     for lv in c.levels:
         levels.append({"sql_condition": " OR ".join(f"({comp.sql(col, level=True)})" for col, comp in lv.any_of), "label_for_charts": lv.label,
-                       **with_u(lv.label), **({"tf_adjustment_column": c.tf.name} if lv.tf and c.tf else {})})
+                       **with_u(lv.label)})
     levels.append({"sql_condition": "ELSE", "label_for_charts": ELSE, **with_u(ELSE)})
     return {"output_column_name": c.name, "comparison_levels": levels}
 
@@ -109,12 +105,12 @@ def u_values(model_json: dict) -> U:
 
 
 def read_by(settings: dict, *rules: str) -> set[str]:
-    """The columns a linker reads: each comparison level's ("x_l", "x_r"), each blocking rule's (l."x"), each term
-    frequency's: all its records need to hold."""
+    """The columns a model reads: each comparison level's ("x_l", "x_r") and each blocking rule's (l."x"): all its
+    records need to hold."""
     levels = [lv for c in settings["comparisons"] for lv in c["comparison_levels"]]
     blocking = [b["blocking_rule"] if isinstance(b, dict) else b for b in settings.get("blocking_rules_to_generate_predictions", [])]
     text = " ".join([*(lv.get("sql_condition", "") for lv in levels), *blocking, *rules])
-    return set(re.findall(r'"([^"]+)_[lr]"', text)) | set(re.findall(r'\b[lr]\."([^"]+)"', text)) | {lv["tf_adjustment_column"] for lv in levels if lv.get("tf_adjustment_column")}
+    return set(re.findall(r'"([^"]+)_[lr]"', text)) | set(re.findall(r'\b[lr]\."([^"]+)"', text))
 
 
 _NARROWED = itertools.count()  # each registration its own name: they nest
@@ -310,11 +306,11 @@ def scored_sample(model: FSModel, df: Records, con: duckdb.DuckDBPyConnection, u
     when both sample as many pairs (fit_u_max_pairs unset). O(N) per comparison for
     the fingerprint, plus u_max_pairs per comparison not cached yet. With `kept` (a workspace's folder.U_SAMPLED), across
     processes too: a rerun, or a trial of another method comparing the same way, reads its u, never samples it again,
-    while the comparison, the values, this code and Splink's and DuckDB's versions are as they were."""
+    while the comparison, the values, this code and DuckDB's version are as they were."""
     keys, wanted = model.u_keys(), list(model.comparisons if comparisons is None else comparisons)
     reads = {c.name: [uid, *sorted({comp.column(col) for lv in c.levels for col, comp in lv.any_of} | set(c.null_if_missing))] for c in wanted}
     prints = {c.name: fingerprint(df, reads[c.name], con) for c in wanted}
-    stable = lambda name: hashlib.sha256(repr((keys[name], prints[name], splink.__version__, duckdb.__version__, U_CODE)).encode()).hexdigest()
+    stable = lambda name: hashlib.sha256(repr((keys[name], prints[name], duckdb.__version__, U_CODE)).encode()).hexdigest()
     try:  # a copy kept never fails a run: unreadable, sampled again
         on_disk = json.loads(kept.read_text(encoding="utf-8")) if kept and kept.is_file() else {}
     except (OSError, ValueError):
@@ -501,11 +497,11 @@ def chosen(model: FSModel, t: pd.DataFrame, learned: dict[tuple[Key, ...], dict[
 
 def train_fs(model: FSModel, df: pd.DataFrame, con: duckdb.DuckDBPyConnection, uid: str, labels: pd.Series | None = None, kept: Path | None = None,
              u: dict[str, dict[str, float]] | None = None) -> dict:
-    """Train on df; `labels` (entity per uid) is required for m_method="labels". Returns the Splink model JSON plus
-    "er": what scoring needs (fitting-set size, term frequencies) and which levels had no estimate.
+    """Train on df; `labels` (entity per uid) is required for m_method="labels". Returns the model JSON plus "er":
+    what scoring needs (the fitting-set size) and which levels had no estimate.
     u-sampling is ~97% of training time and depends only on each comparison and the records (FSModel.u_keys), not on
-    the m method or term-frequency adjustment, so it goes through scored_sample's cache.
-    A level without an estimate never falls back to Splink's defaults: no sampled pair → u at its upper bound (the
+    the m method, so it goes through scored_sample's cache.
+    A level without an estimate never falls back to a default: no sampled pair → u at its upper bound (the
     weight is a lower bound on the evidence); never seen in training → m = u (0 bits). A prior or EM rule that finds no
     pair in df (its fields nearly empty there) is skipped, and listed in "er"; none left of either stops the fit.
     `u` (comparison → level → u, the else level's too): those u, none sampled."""
@@ -581,11 +577,9 @@ def train_fs(model: FSModel, df: pd.DataFrame, con: duckdb.DuckDBPyConnection, u
                 lv["m_probability"] = lv["u_probability"]
                 filled_m.append([c["output_column_name"], lv["label_for_charts"]])
     adjusted = sensible_m(model, model_json, {tuple(x) for x in filled_m})
-    tf = {c.tf.name: (t[c.tf.name].value_counts() / t[c.tf.name].notna().sum()).to_dict()  # Splink's own formula
-          for c in model.comparisons if c.tf and any(lv.tf for lv in c.levels)}
     kept = any(row["kept"] for row in choice)
     skipped = [fields(r) for r in (*model.prior_rules, *(model.em_rules if model.m_method == "em" and not kept else ())) if r not in (*prior, *em)]
-    return {**model_json, "er": dict(fit_rows=len(t), tf=tf, filled=dict(u=filled_u, m=filled_m), skipped=skipped, adjusted=adjusted,
+    return {**model_json, "er": dict(fit_rows=len(t), filled=dict(u=filled_u, m=filled_m), skipped=skipped, adjusted=adjusted,
                                    em_pairs={fields(r): n for r, n in em_pairs.items()},
                                    **({"em_choice": choice, "em_wide": wide} if choice else {}),
                                    **({"em_given": [{k: x[k] for k in ("session", "pairs", "given_share")} for x in judged(model, t, learned, em_pairs)[0]]} if learned else {}))}
@@ -626,6 +620,14 @@ def sensible_m(model: FSModel, model_json: dict, filled: set[tuple[str, str]]) -
     return out
 
 
+def saved(model_json: dict, where: str, fix: str) -> dict:
+    """A model a run saved, refused if its levels were adjusted by term frequency: a level weighs the same whichever
+    value agrees, and a run scores by the levels alone."""
+    if model_json.get("er", {}).get("tf"):
+        raise InputError(f"{where}: the model adjusts levels by term frequency, which no run scores", fix=fix)
+    return model_json
+
+
 def scaled_prior(model_json: dict, n_records: int) -> float:
     """λ for a set of n_records: a per-pair rate (true pairs grow with N, pairs with N²), rescaled from the fitting set."""
     prior = model_json["probability_two_random_records_match"] * (model_json["er"]["fit_rows"] - 1) / max(n_records - 1, 1)
@@ -636,32 +638,15 @@ def score_fs(model_json: dict, df: Records, pairs: pd.DataFrame | str, con: duck
              into: str | None = None, n_records: int | None = None, floor: float | None = None,
              bound: Bound | None = None, exempt: str | None = None) -> pd.DataFrame | str:
     """Score exactly these candidate pairs (uid_l < uid_r) with a model from train_fs, so that a score doesn't depend
-    on the size of the scored set: term frequencies come from the fitting records (a value unseen there gets no
-    adjustment), and λ is rescaled to this set's size (scaled_prior). Records and pairs may be tables in
+    on the size of the scored set: λ is rescaled to this set's size (scaled_prior). Records and pairs may be tables in
     con; with `into`, the scores are written to that table and its name returned, so nothing of size C
     reaches pandas. `n_records`: the size λ is rescaled to, when df holds only the records the pairs touch.
-    With `floor` (and no term frequencies), a pair whose score can't reach it is left out unscored (predict_sql):
+    With `floor`, a pair whose score can't reach it is left out unscored (predict_sql):
     `bound`, how the bound settles each comparison (bound_tests); `exempt`, a table of pairs (uid_l, uid_r)
     scored whatever their bound."""
-    l, r = f"{uid}_l", f"{uid}_r"
-    fit = model_json["er"]
     lam = scaled_prior(model_json, n_records or rows(df, con))
     settings = {k: v for k, v in model_json.items() if k != "er"} | {"probability_two_random_records_match": lam}
-    if not fit["tf"]:
-        return _scored(settings, df, pairs, con, uid, into, floor, bound or {}, exempt)
-    with narrowed(df, con, read_by(settings) | {uid}) as name:
-        db = DuckDBAPI(connection=con)  # Splink's wrapper for this call alone: its cache goes with it
-        linker = Linker(db.register(name), settings, log_level=logging.WARNING)
-        held = []  # what it registers, released once scored: a run calls it once a slice
-        try:
-            for col, tf in fit["tf"].items():
-                held.append(db.register(pd.DataFrame({col: list(tf), f"tf_{col}": list(tf.values())})))
-                linker.table_management.register_term_frequency_lookup(held[-1], col)
-            return _predict(linker, held, db, pairs, l, r, into)
-        finally:  # the linker's cache first: it names the lookups
-            linker.table_management.invalidate_cache()
-            for x in held:
-                con.unregister(x.physical_name)
+    return _scored(settings, df, pairs, con, uid, into, floor, bound or {}, exempt)
 
 
 def _ranked(c: dict) -> list[tuple[int, dict]]:  # a comparison's levels with their gamma, as Splink numbers them: missing -1, the others down to the else level's 0
@@ -795,9 +780,7 @@ def first_bound(model_json: dict, n_records: int, floor: float, bound: Bound, ui
     """reaching_sql's first, looser test: the columns it reads of each record, and its condition over "<col>_l",
     "<col>_r" and the pair z.l, z.r. The cheap comparisons and the costly one worth most are settled, each other at its
     best level or 0 without reading it: on a few columns, it drops most of the pairs that can't reach the floor. None
-    where there is no first test (one costly comparison or none, or term frequencies)."""
-    if model_json["er"]["tf"]:
-        return None
+    where there is no first test (one costly comparison or none)."""
     settings = _bound_settings(model_json, n_records)
     costly = [c for c in settings["comparisons"] if bound.get(c["output_column_name"])]
     if len(costly) < 2:
@@ -810,12 +793,10 @@ def first_bound(model_json: dict, n_records: int, floor: float, bound: Bound, ui
 def reaching_sql(model_json: dict, records: str, pairs: str, uid: str, have: set[str], n_records: int, floor: float,
                  bound: Bound, exempt: str | None = None, hashed: str | None = None) -> str:
     """The pairs of `pairs` (SQL with columns l, r) that score_fs at this floor would score: those whose bound reaches it,
-    and those in `exempt` (uid_l, uid_r); every pair, for a model with term frequencies, which score_fs doesn't bound.
+    and those in `exempt` (uid_l, uid_r).
     With `hashed` (the uid and a hash of each column rough_reads names, NULL where it is missing), first rough_sql's
     test on the hashes; then first_bound's looser test, then the whole bound on those left, each joined to only the
     columns it reads."""
-    if model_json["er"]["tf"]:
-        return pairs
     def passing(pairs: str, cols: list[str], cond: str, records: str = records) -> str:  # the pairs that pass cond, joined to the columns it reads
         return (f"SELECT z.l, z.r FROM (SELECT p.l, p.r, {_sides({}, have, cols)} FROM ({pairs}) p JOIN {records} a ON a.{q(uid)} = p.l "
                 f"JOIN {records} b ON b.{q(uid)} = p.r) z WHERE {cond}")
@@ -832,10 +813,10 @@ def reaching_sql(model_json: dict, records: str, pairs: str, uid: str, have: set
 
 def predict_sql(settings: dict, records: str, pairs: str, uid: str, have: set[str], floor: float | None = None,
                 bound: Bound | None = None, exempt: str | None = None) -> str:
-    """Splink's predict of the pairs in `pairs` (uid_l, uid_r), as Splink writes it, in one query: each comparison's
+    """The pairs in `pairs` (uid_l, uid_r) scored in one query as Splink 5.0's predict scores them: each comparison's
     gamma (_gammas), its weight the same float8 literal of log2(m/u) (each clamped at 1e-300), and the match weight the
-    prior's and theirs summed in the same order: the same scores to the last bit, without the two copies of the records
-    Splink makes first. `have`: the columns `records` holds. No term frequencies: Splink scores a model with them.
+    prior's and theirs summed in the same order: the same scores to the last bit (tests/test_scoring.py).
+    `have`: the columns `records` holds.
     With `floor`, only the pairs whose bound (bound_sql) reaches it, and those in `exempt`: the rest can't, and their
     costly comparisons are never made. O(P·K) in C++ for the bound, then today's work on the pairs left."""
     l, r = q(f"{uid}_l"), q(f"{uid}_r")
@@ -876,36 +857,6 @@ def _scored(settings: dict, df: Records, pairs: pd.DataFrame | str, con: duckdb.
             con.unregister(x)
 
 
-def _predict(linker: Linker, held: list, db: DuckDBAPI, pairs: pd.DataFrame | str, l: str, r: str, into: str | None) -> pd.DataFrame | str:
-    con = db.duckdb_con
-    if isinstance(pairs, pd.DataFrame):
-        if pairs.empty:
-            empty = pairs.assign(match_weight=pd.Series(dtype=float), match_probability=pd.Series(dtype=float))
-            if into is None:
-                return empty
-            con.register("er_empty_scores", empty)
-            con.execute(f'CREATE OR REPLACE TABLE "{into}" AS SELECT * FROM er_empty_scores')
-            con.unregister("er_empty_scores")
-            return into
-        blocked = db.register(pd.DataFrame({"match_key": "0", "join_key_l": pairs[l].to_numpy(), "join_key_r": pairs[r].to_numpy()}))
-    else:
-        blocked = db.register(con.sql(f'SELECT \'0\' AS match_key, "{l}" AS join_key_l, "{r}" AS join_key_r FROM "{pairs}"'))
-    held.append(blocked)
-    linker.table_management.register_blocked_pairs_for_predict(blocked)
-    predictions = linker.inference.predict()
-    rel = predictions.as_duckdbpyrelation()
-    keep = [l, r, "match_weight", "match_probability", *(c for c in rel.columns if c.startswith("gamma_"))]
-    projected = rel.project(", ".join(q(c) for c in keep))  # memory: the matching columns never reach pandas
-    if into is not None:
-        con.execute(f'DROP TABLE IF EXISTS "{into}"')
-        projected.to_table(into)
-        predictions.drop_table_from_database_and_remove_from_cache()
-        return into
-    out = projected.df()
-    predictions.drop_table_from_database_and_remove_from_cache()  # else the predictions stay in con
-    return out.astype({l: "string", r: "string"})
-
-
 def levels(model_json: dict) -> dict[str, dict[int, tuple[str, float]]]:
     """Per comparison: each gamma, as score_fs returns it, → its level's label and bits log2(m/u). Gamma counts up from
     the else level (0); -1 is a missing side, worth 0 bits."""
@@ -920,8 +871,7 @@ def prior_bits(model_json: dict, n_records: int) -> float:  # the start: two ran
 
 def waterfall(model_json: dict, gammas: dict[str, int], n_records: int) -> pd.DataFrame:
     """One scored pair's match weight as evidence: the prior, then per comparison the bits of the level the pair landed
-    in. The bits sum to Splink's match_weight."""
-    assert not model_json["er"]["tf"], "term-frequency adjustments are per value and not shown here"
+    in. The bits sum to the pair's match_weight."""
     lam = scaled_prior(model_json, n_records)
     rows = [dict(evidence="prior", level="two random records match", bits=math.log2(lam / (1 - lam)))]
     for name, by_gamma in levels(model_json).items():
@@ -939,7 +889,7 @@ def parameters(model_json: dict) -> pd.DataFrame:
                 continue
             m, u = lv.get("m_probability"), lv.get("u_probability")
             rows.append(dict(comparison=c["output_column_name"], level=lv.get("label_for_charts"), m=m, u=u,
-                             weight=math.log2(m / u) if m and u else None, tf=lv.get("tf_adjustment_column")))
+                             weight=math.log2(m / u) if m and u else None))
     return pd.DataFrame(rows)
 
 

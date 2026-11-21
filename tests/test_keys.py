@@ -157,6 +157,10 @@ def test_a_pipeline_with_keys_to_learn_and_a_workspace_holding_keys_a_run_learne
     with pytest.raises(InputError, match=r"\[keys\] sets nothing") as e:
         pipeline_from({**cfg, "keys": {"records": 50_000}}, s.standardize, s.chains)
     assert e.value.fix == "delete [keys]"
+    name = {**cfg["model"]["comparisons"][0], "tf": {"field": "person_name"}}
+    with pytest.raises(InputError, match="tf sets nothing") as e:  # term frequencies: a level weighs the same whichever value agrees
+        pipeline_from({**cfg, "model": {**cfg["model"], "comparisons": [name, *cfg["model"]["comparisons"][1:]]}}, s.standardize, s.chains)
+    assert e.value.fix == "delete tf from those comparisons and their levels"
     (d / "ws" / "state" / "keys.json").write_text(json.dumps({}), encoding="utf-8")
     try:
         with pytest.raises(InputError, match="keys learned on its file or left out"):

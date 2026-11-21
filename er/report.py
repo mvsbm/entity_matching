@@ -6,7 +6,6 @@ import math
 import platform
 import re
 from datetime import datetime
-from importlib.metadata import version
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -275,7 +274,7 @@ def report_text(run: "Run", tables: dict[str, pd.DataFrame], pipeline: Path, ite
     kind = "full run" if run.added is None else f"increment of {run.added:,} new records"
     out = [f"RUN REPORT · {datetime.now():%Y-%m-%d %H:%M} · {kind} · no record's value in it",
            f"code {code} · pipeline {pipeline.name}",
-           f"python {platform.python_version()} · duckdb {duckdb.__version__} · splink {version('splink')} · {platform.system()} {platform.machine()}",
+           f"python {platform.python_version()} · duckdb {duckdb.__version__} · {platform.system()} {platform.machine()}",
            f"{threads} threads · memory limit {memory} · spill room {run.spill_room() / 1e9:,.0f} GB · "
            f"took {sum(x['seconds'] for x in run.steps):,.1f} s · peak {max(x['peak_memory_gb'] for x in run.steps):.2f} GB", ""]
 

@@ -80,7 +80,7 @@ def exact_column(sql: str) -> str | None:  # "x" where a level is plain equality
 
 class Trained:
     """Each level's m as the sessions so far have left it: the median of what each learned for it, or Splink's first
-    guess before any has. One per fit (a Splink linker kept these)."""
+    guess before any has. One per fit."""
 
     def __init__(self):
         self.learned: dict[Level, list[float]] = {}

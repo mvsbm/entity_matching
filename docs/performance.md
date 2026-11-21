@@ -144,10 +144,10 @@ trained once and its signals computed once; a combination fits only its combiner
 - **The budget's counts read again** (`er.candidates.candidates`, `known`): each generator's pairs and blocks are
   counted once, by the budget, and step 4 reads them, not the records.
 - **One u sample per set of records** (`er.match.scored_sample`, `SCORED_U`). A comparison's u depends only on
-  itself, the sample size, the seed (`FSModel.u_keys`) and the values it reads, since Splink picks the sampled pairs by
-  a hash of the record ID. So the cache is keyed by the comparison and a fingerprint of those values, a frame and a
+  itself, the sample size, the seed (`FSModel.u_keys`) and the values it reads, since the sampled pairs are picked by
+  a hash of the record ID, as Splink picks them. So the cache is keyed by the comparison and a fingerprint of those values, a frame and a
   table with the same rows alike: within one process, a model's variants and `choose.py`'s repeats of train share one
-  sample. A workspace keeps it too (`u_sampled.json`, keyed besides by the code and Splink's and DuckDB's versions), so
+  sample. A workspace keeps it too (`u_sampled.json`, keyed besides by the code and DuckDB's version), so
   the next full run comparing the same way reads it and draws no sample: 250,000 records' fit from 12.5 s
   to 3.6 s. cif, phone and birth need none: their levels are counted (`exact_u`, once per fit).
 - **The u sample counted in one pass** (`er.match.sample_u`). The records and pairs are drawn as Splink draws them (a
@@ -156,11 +156,10 @@ trained once and its signals computed once; a combination fits only its combiner
   pairs are written first as row numbers, 16 bytes a pair (160 MB for 10 million): the drawn records fill one row
   group, and DuckDB would compare pairs read from it on one thread. Streamed into the counts, the compared values
   never sit in memory. The fit's two samples of 250,000 records, 11.2 s to 3.5 s with the edit distances below.
-- **Scores in one query** (`er.match.predict_sql`). Splink's predict SQL as Splink writes it: each level's condition
+- **Scores in one query** (`er.match.predict_sql`). Splink 5.0's predict SQL as Splink writes it: each level's condition
   in order, its weight the same `float8` literal, summed in the same order, so the same scores to the last bit (tests
-  compare them with Splink's), without the two copies of the records Splink makes first and its SQL built per call.
-  Scoring 250,000 records 4.8 s to 2.6 s, the probe's draws 5.1 s to 3.0 s. A model with term frequencies is scored
-  by Splink.
+  compare them with the scores recorded from Splink 5.0), without the two copies of the records Splink makes first and
+  its SQL built per call. Scoring 250,000 records 4.8 s to 2.6 s, the probe's draws 5.1 s to 3.0 s.
 - **Rules in plain SQL** (`er.match.rule_edges`): one equi-join per rule, for `choose.py`, full runs and increments
   alike. A fuzzy condition lets equal values through without calling the string function. Splink's
   `deterministic_link` would join every column of both records back first.
@@ -181,10 +180,10 @@ trained once and its signals computed once; a combination fits only its combiner
   is known (rapidfuzz's `score_cutoff`): the same pairs pass and fail, with the same score where they pass, and an edit
   distance on long values is not worked out in full. On addresses of about 150 characters, the fit's 10 million
   sampled pairs take a third of the time.
-- **A linker reads only the columns it compares** (`match.narrowed`, `match.read_by`). Splink carries every column of its
-  input through its joins, two copies per pair; a wide file's other columns (80 of them, long text) made scoring a
-  million records 428 s instead of 63 s. Each linker gets the ID and the columns its levels, blocking rules and term
-  frequencies read; one it reads and lacks still fails loudly. The fit's sample is read the same way.
+- **A model reads only the columns it compares** (`match.narrowed`, `match.read_by`). Every column carried through
+  the scoring joins is copied twice per pair; a wide file's other columns (80 of them, long text) made scoring a
+  million records 428 s instead of 63 s. Scoring gets the ID and the columns its levels and blocking rules read; one it
+  reads and lacks still fails loudly. The fit's sample is read the same way.
 - **An edit distance tested on the lengths first.** A Levenshtein, Damerau–Levenshtein or Hamming distance is never
   less than the lengths' difference, so `abs(length(a) - length(b)) <= t` goes before the Python call: the same pairs
   pass, and on long values most pairs never reach Python.
@@ -267,7 +266,7 @@ trained once and its signals computed once; a combination fits only its combiner
   where sequential IDs listed tens of millions.
 - **EM on agreement-pattern counts, in Python** (`er.fit.session`): each session counts its pairs' agreement
   patterns in one query, a few hundred rows, and runs its rounds over those counts in Python, never over every pair
-  in its blocks: the prior counted once, no linker, table cache or settings check per session.
+  in its blocks: the prior counted once, no table cache or settings check per session.
 - **Threshold rule without clustering** (`accept_curve`). The rule reads only accepted and false accepted pairs per
   weight, so decision variants resolve clusters at the chosen weight only.
 - **Run cache.** Identical runs (same configuration, dataset and threshold) are computed once, in both stages.

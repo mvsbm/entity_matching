@@ -8,8 +8,8 @@ Each entry names a way an entity-resolution pipeline like this one goes wrong, a
 
 ## Scores that depend on what was scored before
 - **Pitfall:** a cache keyed too loosely makes a file's scores depend on which file was scored before it on the same connection. It shows as train and cross-validation disagreeing with val and test, or a change gaining far more on one set than on another.
-- **Why:** Splink keeps term-frequency tables in a cache on the DuckDB connection, keyed by name alone. With one shared connection, every file after the first is scored with the first file's name frequencies, and a name missing from that stale table gets no adjustment at all.
-- **Guard:** `score_fs` clears Splink's cache before scoring, and term frequencies come from the fitting records, stored in the model. The pipeline's own caches are keyed by everything they read: the u cache (`er.match.scored_sample`) by the comparison and a fingerprint of the values it reads.
+- **Why:** a cache kept on the DuckDB connection and keyed by a name alone, such as a table of how often each name occurs, serves every file after the first with the first file's values. With one shared connection, every later file is scored by what the first file held.
+- **Guard:** a level weighs the same whichever value agrees, so no table of values goes into a score. The pipeline's caches are keyed by everything they read: the u cache (`er.match.scored_sample`) by the comparison and a fingerprint of the values it reads.
 - **Check:** `tests/` scores one set after another on a shared connection and compares the result with a fresh connection, for the model and for the rules. Another test checks that one u sample serves the same records in any order, as a frame or as a table.
 
 ## Weights fitted at one file size, used at another
@@ -28,7 +28,7 @@ Each entry names a way an entity-resolution pipeline like this one goes wrong, a
 - **Pitfall:** a level filled with default m and u values when it could not be estimated (Splink's way) can produce strong weights out of nothing.
 - **Why:** a lower level can be unreachable, when its threshold sits above the level before it ("JW low" above "JW high"), or a threshold can be so strict that no random pair reaches it. EM can also find no likely match at a level: one record copied many times outweighs the rest, and EM then finds an m of 0 there, or, for a comparison no likely match is left in, an m that is not a number, which would make every weight of the level one.
 - **Guard:** a level no sampled pair reached gets u at its 95% upper bound, so its weight is a lower bound on the evidence. A level never seen in training gets m = u, worth 0 bits, and so does a level EM puts at an m too small to hold or not a number (`er.fit.session`). The model lists such levels (`er.filled`). A level that is never reached is left out: the company comparison has no "JW high" level, and the search skips a tuned level the model doesn't have.
-- **Check:** a test builds a shadowed level and checks that it carries 0 bits; another fits one record copied 80 times, and a level no pair reaches, and checks that both are left unestimated as Splink's EM held to the same rule leaves them (`tests/test_fit.py`).
+- **Check:** a test builds a shadowed level and checks that it carries 0 bits; another fits one record copied 80 times, and a level no pair reaches, and checks that both are left unestimated, as in the values recorded from Splink 5.0's EM held to the same rule (`tests/test_fit.py`, `tests/fixtures/splink-5.0.0.json`).
 
 ## Two policies that set one parameter
 - **Pitfall:** two procedures that both choose the same setting make the adopt-and-rerun loop go round for ever. It shows as a search suggesting an adopted configuration again, and that suggestion passing the decision rule again.
@@ -38,8 +38,8 @@ Each entry names a way an entity-resolution pipeline like this one goes wrong, a
 
 ## A search option that does nothing
 - **Pitfall:** a search option built on top of the current choice can be a no-op, so the search spends trials on it and learns nothing. It shows as an option whose two values give identical trials.
-- **Why:** trials are built from `FINAL`'s model. With term frequency off in `FINAL`, a trial's "term frequency on" has no keys to turn back on; with a level dropped by a decision, a threshold for it has nothing to tune.
-- **Guard:** "on" restores the keys from the pipeline as written, and a trial tunes only the levels the model has.
+- **Why:** trials are built from `FINAL`'s model. With a level dropped by a decision, a threshold for it has nothing to tune.
+- **Guard:** a trial tunes only the levels the model has.
 - **Check:** none automated: `FSChooser.search` in `er/select.py` builds each trial, in one place.
 
 ## A wall-clock bound on a search
@@ -86,8 +86,8 @@ Each entry names a way an entity-resolution pipeline like this one goes wrong, a
 
 ## A copy that outgrows memory
 - **Pitfall:** an intermediate table copied into pandas with more columns than needed outgrows memory on a big file. It shows as a run that stalls deep in swap.
-- **Why:** reading Splink's predictions into pandas with every matching column of both records, only to keep the ids, the weights and the gammas, makes a copy that grows with the candidates times the columns.
-- **Guard:** DuckDB selects the needed columns before anything reaches pandas, and the predictions table is dropped once read. Every table of size N or C is a DuckDB table (`er.run`), which spills past `[compute]` `memory_limit` to a folder of the person's own in the system's temporary folder, unless `temp_directory` says otherwise. A run's capacity counts the spill room DuckDB allows: 90% of the free disk by default. DuckDB keeps what the limit allows, so the peak under a large limit says little: test the smallest limit that completes, not the peak.
+- **Why:** reading the scored pairs into pandas with every compared column of both records, only to keep the ids, the weights and the gammas, makes a copy that grows with the candidates times the columns.
+- **Guard:** DuckDB selects the needed columns before anything reaches pandas, and the scores stay a DuckDB table. Every table of size N or C is a DuckDB table (`er.run`), which spills past `[compute]` `memory_limit` to a folder of the person's own in the system's temporary folder, unless `temp_directory` says otherwise. A run's capacity counts the spill room DuckDB allows: 90% of the free disk by default. DuckDB keeps what the limit allows, so the peak under a large limit says little: test the smallest limit that completes, not the peak.
 - **Check:** every run's `steps.json` records the peak memory after each step, and `reports/benchmark.md` reports it at every file size: 7.21 GB at 1,039,995 records under an 8 GB limit, Python included.
 
 ## An answer that depends on the file's order

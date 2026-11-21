@@ -52,12 +52,12 @@ def records() -> pd.DataFrame:
     return pd.DataFrame(rows).astype("string")
 
 
-def model(m_method: str = "em", tf: bool = False, extra_name_levels: tuple[Level, ...] = ()) -> FSModel:
+def model(m_method: str = "em", extra_name_levels: tuple[Level, ...] = ()) -> FSModel:
     return FSModel(
         name="test",
         comparisons=(
-            Comparison(name="name", null_if_missing=("name",), tf=Key("name") if tf else None, levels=(
-                Level(label="exact", any_of=(("name", Comparator("exact")),), tf=tf),
+            Comparison(name="name", null_if_missing=("name",), levels=(
+                Level(label="exact", any_of=(("name", Comparator("exact")),)),
                 Level(label="close", any_of=(("name", Comparator("jaro_winkler", 0.9)),)), *extra_name_levels)),
             Comparison(name="phone", null_if_missing=("phone",), levels=(
                 Level(label="exact", any_of=(("phone", Comparator("exact")),)),)),
