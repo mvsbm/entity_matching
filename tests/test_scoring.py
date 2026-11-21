@@ -9,13 +9,13 @@ import pandas as pd
 import pytest
 
 from er.config import (Budget, Comparator, Comparison, FSModel, Key, Level, Resolver, Rule, RulesSpec, Stage, ThresholdRule)
-from er.evaluate import adopt, fp_upper, paired_test, wilson
+from design.evaluate import adopt, fp_upper, paired_test, wilson
 from er.match import exact_u, parameters, rule_edges, sample_u, score_fs, train_fs, u_values, waterfall
-from er.pipeline import (accept_curve, clustered, select_threshold)
+from design.pipeline import (accept_curve, clustered, select_threshold)
 from er.settings import load_settings
 from er.standardize import normalize
 from er.strings import connect
-from er.tune import pick_within_noise
+from design.tune import pick_within_noise
 
 from conftest import PAIR, UID, model
 
@@ -508,7 +508,7 @@ def households(n_households: int = 150, n_twice: int = 60, companies: int = 0) -
     return pd.DataFrame(rows).astype("string")
 
 
-def household_model(em_choose: tuple = ((Key("phone"),), (Key("birth_date"),), (Key("person_name"),))) -> FSModel:
+def household_model() -> FSModel:
     exact = lambda label, col: Level(label=label, any_of=((col, Comparator("exact")),))
     comps = (Comparison(name="name", null_if_missing=("person_name",), levels=(exact("exact", "person_name"), exact("given name", "given_name"),
                                                                                          Level(label="family", any_of=(("person_name", Comparator("jaro_winkler", 0.8)),)))),
@@ -516,34 +516,11 @@ def household_model(em_choose: tuple = ((Key("phone"),), (Key("birth_date"),), (
              Comparison(name="birth", null_if_missing=("birth_date",), levels=(exact("exact", "birth_date"),)),
              Comparison(name="company", null_if_missing=("company_name",), levels=(exact("exact", "company_name"),)))
     return FSModel(name="t", comparisons=comps, prior_rules=((Key("person_name"), Key("birth_date")),), prior_recall=0.9, u_max_pairs=1e5,
-                   m_method="em", em_rules=((Key("phone"),),), seed=0, em_choose=em_choose)
-
-
-def test_em_choose_keeps_the_sessions_whose_matches_agree_on_the_given_name(con):
-    got = train_fs(household_model(), households(), con, UID)["er"]
-    rows = {x["session"]: x for x in got["em_choice"]}
-    assert not rows["phone"]["kept"] and rows["phone"]["given_share"] < 0.5  # a phone a family shares: EM learns households
-    assert rows["birth_date"]["kept"] and rows["birth_date"]["given_share"] >= 0.5
-    assert rows["person_name"]["kept"] and rows["person_name"]["given_share"] is None  # keyed on a name: kept by its key
-    assert set(got["em_pairs"]) == {"birth_date", "person_name"}
-
-
-def test_a_comparison_the_kept_sessions_barely_see_takes_every_session_s_m(con):
-    wide = lambda companies: train_fs(household_model(), households(companies=companies), con, UID)["er"]["em_wide"]
-    assert "company" in wide(2) and "name" not in wide(2)  # 2 people with a company: 4 pairs of the kept sessions agree on it, under ENOUGH
-    assert "company" not in wide(40)
-
-
-def test_em_choose_with_no_session_kept_learns_as_the_method_does(con):
-    records = households()
-    got = train_fs(household_model(em_choose=((Key("phone"),),)), records, con, UID)
-    method = train_fs(household_model(em_choose=()), records, con, UID)
-    assert [x["kept"] for x in got["er"]["em_choice"]] == [False] and got["er"]["em_pairs"] == method["er"]["em_pairs"]
-    assert [c["comparison_levels"] for c in got["comparisons"]] == [c["comparison_levels"] for c in method["comparisons"]]
+                   m_method="em", em_rules=((Key("phone"),),), seed=0)
 
 
 def test_the_method_s_own_em_sessions_are_judged_by_the_given_name_too(con):
     records, two = households(), ((Key("phone"),), (Key("birth_date"),))
-    for fitted in (replace(household_model(em_choose=()), em_rules=two), replace(household_model(em_choose=()), em_rules=two, em_median=True)):  # in turn, and kept apart
+    for fitted in (replace(household_model(), em_rules=two), replace(household_model(), em_rules=two, em_median=True)):  # in turn, and kept apart
         got = {x["session"]: x["given_share"] for x in train_fs(fitted, records, con, UID)["er"]["em_given"]}
         assert got["phone"] < 0.5 <= got["birth_date"], got  # what DIAGNOSIS says of a run's own EM

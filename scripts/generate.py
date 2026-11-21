@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from er.generate import check, generate, load_reference, load_spec, profile, split_by_entity
+from design.generate import check, generate, load_reference, load_spec, profile, split_by_entity
 from er.settings import load_settings
 
 

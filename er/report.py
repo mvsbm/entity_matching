@@ -236,10 +236,8 @@ def diagnosis(run: "Run", tables: dict[str, pd.DataFrame], lo: float) -> list[di
             out.append((int(near["pairs"].sum()), f"{len(near):,} oversized blocks skipped ({int(near['pairs'].sum()):,} pairs) held a sampled pair within {NEAR:g} bits "
                                                    f"of {floor:g} → a narrower key for them, chosen at design time"))
 
-    kept = [(x["session"], x["pairs"]) for x in m["em_choice"] if x["kept"]] if m.get("em_choice") else list(m.get("em_pairs", {}).items())  # thin sessions
-    if thin := [(x, n) for x, n in kept if n < THIN]:
-        fix = f"[model] fit_rows = {2 * m['fit_rows']}" if m.get("em_choice") else "a larger fit sample: [model] fit_rows"
-        out.append((0, f"EM learned from few pairs: {', '.join(f'{x} {n:,}' for x, n in thin)} → {fix}"))
+    if thin := [(x, n) for x, n in m.get("em_pairs", {}).items() if n < THIN]:  # thin sessions
+        out.append((0, f"EM learned from few pairs: {', '.join(f'{x} {n:,}' for x, n in thin)} → a larger fit sample: [model] fit_rows"))
     return [dict(what=what, pairs=int(n), fix=fix) for n, x in sorted(out, key=lambda x: -x[0])[:SHOWN] for what, _, fix in [x.partition(" → ")]]
 
 
@@ -353,11 +351,6 @@ def report_text(run: "Run", tables: dict[str, pd.DataFrame], pipeline: Path, ite
     out += [f"MODEL  (prior {math.log2(lam / (1 - lam)):.2f} bits at {run.n:,} records; fitted on {m['fit_rows']:,} records"
             + (f"; learned nothing about {', '.join(m['skipped'])}" if m.get("skipped") else "") + ")",
             *(["  EM learned from: " + " · ".join(f"{f} {n:,} pairs" for f, n in m["em_pairs"].items())] if m.get("em_pairs") else []),
-            *(["  EM SESSIONS  (kept when half the matches a session learned agree on the given name)", *table(pd.DataFrame([dict(
-                session=x["session"], pairs=f"{x['pairs']:,}", given_name=pct(x.get("given_share")), kept="kept" if x["kept"] else "dropped", why=x["why"])
-                for x in m["em_choice"]])),
-               *([f"  m from every session: {', '.join(m['em_wide'])} (the kept ones barely saw it)"] if m.get("em_wide") else []),
-               *([] if any(x["kept"] for x in m["em_choice"]) else ["  none kept: EM learned as the method has it"])] if m.get("em_choice") else []),
             *table(pd.DataFrame(dict(
                 comparison=params["comparison"], level=params["level"], m=params["m"].map(lambda x: f"{x:.4f}" if x >= 1e-3 else f"{x:.2e}"),
                 u=params["u"].map(lambda x: f"{x:.2e}"), bits=params["weight"].map(lambda x: f"{x:.2f}")))),

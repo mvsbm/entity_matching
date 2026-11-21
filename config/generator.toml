@@ -1,4 +1,4 @@
-# The synthetic generator (er.generate): one population of entities built from the reference data in
+# The synthetic generator (design.generate): one population of entities built from the reference data in
 # data/reference, then split by entity. scripts/generate.py writes it; tests and reports reuse it.
 
 [population]
@@ -27,7 +27,7 @@ branches = ["ホンシャ", "トウキョウシテン", "オオサカシテン",
 space_rate = 0.3                  # per person record: a space between surname and given name
 halfwidth_rate = 0.15             # per record: every name column in half-width katakana
 # calibrated so that about 1% of true pairs are direct (same CIF ID and name, or same name, address code and phone):
-# scripts/generate.py prints the profile (er.generate.profile)
+# scripts/generate.py prints the profile (design.generate.profile)
 name_typo_rate = 0.3              # per record and name part (surname, given name, company name)
 kana_confusions = [["ウ", "ー"], ["オ", "ウ"], ["ツ", "ッ"], ["ヤ", "ャ"], ["ユ", "ュ"], ["ヨ", "ョ"], ["ガ", "カ"],
                    ["ギ", "キ"], ["グ", "ク"], ["ゴ", "コ"], ["ジ", "シ"], ["ダ", "タ"], ["ド", "ト"], ["ブ", "フ"]]

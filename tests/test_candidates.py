@@ -8,10 +8,10 @@ import pytest
 from er.candidates import candidates, estimate, found_by, generate
 from er.config import (Budget, Comparator, DeletionKeys, FSSpec, InputError, Key, KeyBlocker, OverBudget,
                        Resolver, Rule, RulesSpec, SortedNeighbourhood, Stage, TfidfNeighbours)
-from er.evaluate import cluster_metrics, edge_metrics, paired_test, predicted_pairs, true_pairs, truth_of
+from design.evaluate import cluster_metrics, edge_metrics, paired_test, predicted_pairs, true_pairs, truth_of
 from er.io import load
 from er.match import rule_edges, score_fs, train_fs, scored_u
-from er.pipeline import (check_budget, clustered, entity_folds, grown_pairs, preflight, window_only)
+from design.pipeline import (check_budget, clustered, entity_folds, grown_pairs, preflight, window_only)
 from er.settings import load_settings
 from er.standardize import normalize, prepare
 
@@ -227,7 +227,7 @@ def test_blocking_normalizers():
 def test_legal_forms_go_wherever_banks_write_them_and_the_generator_s_names_lose_exactly_its_forms():
     import re
     import unicodedata
-    from er.generate import generate, load_reference, load_spec
+    from design.generate import generate, load_reference, load_spec
     s = load_settings()
     std = s.standardize
     strip = lambda xs: normalize(pd.Series(xs, dtype="string"), ("nfkc", "strip_legal_form"), std).tolist()

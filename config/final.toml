@@ -1,4 +1,4 @@
-# The chosen pipeline: config/pipeline.toml with config/experiments.py's adopted changes, written by scripts/choose.py.
+# The chosen pipeline: config/pipeline.toml with design/experiments.py's adopted changes, written by scripts/choose.py.
 # Adopted: rules fold_levenshtein, f2_address_exact, f2_address_prefix, optuna_comparators; Fellegi–Sunter optuna_suggestion, compound_phone_keys, sorted_names_for_tfidf, name_keys, bounded_address_keys, no_sorted_windows, bridge_rule_clusters, u_from_scored_file, u_exact_by_counts, cif_one_digit_off, cif_deletion_key, birth_date, birth_date_key, given_name_phone_key, birth_date_deletion_key, u_near_by_keys, fit_u_from_1e6_pairs, company_without_jw_high, name_needed, name_reading_key, given_tail_keys, same_reading_level.
 # nayose runs it. It can be edited by hand; scripts/choose.py overwrites it.
 

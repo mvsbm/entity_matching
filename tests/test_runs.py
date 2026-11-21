@@ -160,11 +160,8 @@ def test_the_gate_keeps_a_block_whose_sampled_pairs_reach_the_search_floor_but_n
 
 
 @pytest.mark.parametrize("ruled", [False, True])
-def test_an_increment_s_gate_keeps_a_block_on_pairs_the_run_could_list_and_leaves_blocks_json_to_the_full_run(tmp_path, population, ruled):
-    import json
-    from er.run import BLOCKS, Run
-    from er.sample import Atom, key_lists
-    from er.candidates import Records
+def test_an_increment_s_gate_keeps_a_block_on_pairs_the_run_could_list(tmp_path, population, ruled):
+    from er.run import Run
     s, p, g = population
     uid = s.data.unique_id
     p = replace(p, fs=replace(p.fs, model=replace(p.fs.model, u_from_scored=False)))  # the stored u: the copies' pairs score as the run's would
@@ -173,21 +170,10 @@ def test_an_increment_s_gate_keeps_a_block_on_pairs_the_run_could_list_and_leave
     Run(p, s).full(tmp_path / "old.parquet", tmp_path / "run")
     run = Run(p, s).increment(tmp_path / "new.parquet", tmp_path / "run")
     phone = run.gated[run.gated["generator"] == "phone_prefecture"]
-    kept = json.loads((tmp_path / "run" / "state" / BLOCKS).read_text(encoding="utf-8"))
-    assert "phone_prefecture" not in kept  # the increment listed only its batch's pairs of the block: never counted as listing the old records' pairs
     if ruled:  # every sampled pair joins two records the rules joined: no pair the run could list, without bridging
         assert phone["decision"].str.startswith("skipped").all()
         return
-    value = phone.loc[phone["decision"] == "kept", "value"].tolist()
-    assert value  # the block the batch made, listed
-    kept = {"phone_prefecture": value}  # as a full run that kept it would write it
-    b = next(x for x in run.pipeline.fs.blockers if x.name == "phone_prefecture")
-    rows = pd.DataFrame({"a0": ["9999"], "b0": ["9999"], "a1": ["大阪府"], "b1": ["大阪府"]})
-    rec = Records("records", uid, run.con)
-    rec.most = p.fs.budget.min_oversized()
-    col = {k.name: i for i, k in enumerate(b.keys)}
-    assert [Atom(k, 0).column for k in b.keys] == list(col) and key_lists(b, rows, col, rec, rec.most, kept).all()
-    assert not key_lists(b, rows, col, rec, rec.most, {}).any()  # without it, the block counts as not listed
+    assert phone.loc[phone["decision"] == "kept", "value"].tolist()  # the block the batch made, listed
 
 
 def test_a_full_run_cut_short_in_its_moves_lands_with_its_round(tmp_path, population, monkeypatch):
@@ -315,7 +301,7 @@ def test_an_increment_needs_a_workspace_that_holds_a_run(tmp_path, population):
 def test_the_probe_counts_the_matches_no_key_lists_as_the_truth_does(tmp_path, population):
     from er.cluster import merge
     from er.explain import scored_again
-    from er.probe import probe as probed
+    from design.probe import probe as probed
     from er.run import Run
     s, p, g = population
     uid, ent = s.data.unique_id, s.data.entity_id

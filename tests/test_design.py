@@ -64,16 +64,18 @@ def parse(name: str) -> tuple[dict[str, tuple[str, str]], list[tuple[str, str]],
     return elements, edges, fields
 
 
-MODULES = {f.stem for f in (ROOT / "er").glob("*.py")} - {"__init__"}
-RANK = {"tools_run": 4, "tools_design": 4, "design": 3, "run": 2, "steps": 1, "configuration": 0}  # components.puml: each layer imports only those below
+PACKAGES = ("er", "design")  # the engine, and design time's code beside it
+PACKAGE = {f.stem: pkg for pkg in PACKAGES for f in (ROOT / pkg).glob("*.py") if f.stem != "__init__"}  # each module's package
+MODULES = set(PACKAGE)
+RANK = {"tools_design": 5, "tools_run": 4, "design": 3, "run": 2, "steps": 1, "configuration": 0}  # components.puml: each layer imports only those below; a design-time tool may drive nayose
 CLASSES = {"Run": "er.run", "Classifier": "er.kind", "NameModel": "er.kind", "Fitted": "er.kind"}
 RUN_LAYER = ("run", "folder", "report")  # the run's modules: a step box names what it reaches in them
 
 
 def names_in(label: str) -> set[str]:
-    """The functions a label names: module.function (a module of er/, er. left off), Run.method, Classifier.method,
+    """The functions a label names: module.function (a module of er/ or design/, its package left off), Run.method, Classifier.method,
     NameModel.method; file names (run.py) aside."""
-    found = re.findall(r"(?<![\w./])(?:er\.)?((?:[A-Z]\w*|[a-z_]+)\.[A-Za-z_]\w*)", label.replace("\\n", " "))
+    found = re.findall(r"(?<![\w./])(?:er\.|design\.)?((?:[A-Z]\w*|[a-z_]+)\.[A-Za-z_]\w*)", label.replace("\\n", " "))
     return {n for n in found if n.split(".")[0] in MODULES | set(CLASSES) and n.split(".")[1] not in EXTENSIONS}
 
 
@@ -83,16 +85,16 @@ def resolve_name(name: str) -> bool:
         cls = getattr(importlib.import_module(CLASSES[head]), head)
         source = (ROOT / CLASSES[head].replace(".", "/")).with_suffix(".py").read_text(encoding="utf-8")
         return hasattr(cls, attr) or attr in getattr(cls, "__dataclass_fields__", {}) or f"self.{attr}" in source
-    return hasattr(importlib.import_module(f"er.{head}"), attr)
+    return hasattr(importlib.import_module(f"{PACKAGE[head]}.{head}"), attr)
 
 
 # ---------- what the code does ----------
 
 def imports() -> set[tuple[str, str]]:
-    """Every import of an er module by a file of er/ or scripts/, as repo-relative paths. Imports for type checking only
-    are left out: they make no dependency at run time."""
+    """Every import of a module of er/ or design/ by a file of er/, design/ or scripts/, as repo-relative paths. Imports
+    for type checking only are left out: they make no dependency at run time."""
     out = set()
-    for f in [*sorted((ROOT / "er").glob("*.py")), *sorted((ROOT / "scripts").glob("*.py"))]:
+    for f in [*(x for pkg in (*PACKAGES, "scripts") for x in sorted((ROOT / pkg).glob("*.py")))]:
         tree = ast.parse(f.read_text(encoding="utf-8"))
         typing_only = {id(n) for node in ast.walk(tree) if isinstance(node, ast.If) and "TYPE_CHECKING" in ast.unparse(node.test)
                        for n in ast.walk(node)}
@@ -101,9 +103,11 @@ def imports() -> set[tuple[str, str]]:
                 continue
             mods = ([node.module] if isinstance(node, ast.ImportFrom) and node.module else
                     [a.name for a in node.names] if isinstance(node, ast.Import) else [])
+            if isinstance(node, ast.ImportFrom) and node.module in PACKAGES:  # from design import experiments
+                mods = [f"{node.module}.{a.name}" for a in node.names if a.name in MODULES]
             for m in mods:
-                if m.startswith("er.") and f.name != "__init__.py":
-                    out.add((f.relative_to(ROOT).as_posix(), f"er/{m.split('.')[1]}.py"))
+                if m.split(".")[0] in PACKAGES and "." in m and f.name != "__init__.py":
+                    out.add((f.relative_to(ROOT).as_posix(), f"{m.split('.')[0]}/{m.split('.')[1]}.py"))
     return out
 
 
@@ -232,7 +236,7 @@ def logged_runs(tmp: Path) -> tuple:
     """The tests' population (tests/conftest.py) through a full run and its report, an increment and its report, and a set of
     decisions, each with its query log."""
     from er.config import load_pipeline
-    from er.generate import generate, load_reference, load_spec
+    from design.generate import generate, load_reference, load_spec
     from er.run import Run
     from er.settings import load_settings
     s = load_settings()  # the tests' population (tests/conftest.py)
@@ -261,7 +265,7 @@ def layers() -> dict[str, str]:
     elements, _, _ = parse("components")
     layer = {}
     for eid, (_, label) in elements.items():
-        for f in re.findall(r"\b(?:er|scripts)/\w+\.py", label):
+        for f in re.findall(r"\b(?:er|design|scripts)/\w+\.py", label):
             assert f not in layer, f"{f} is in two boxes of components.puml: {layer[f]}, {eid}"
             layer[f] = eid
     return layer
@@ -270,7 +274,7 @@ def layers() -> dict[str, str]:
 def test_the_components_diagram_holds_every_module_once_and_draws_the_imports_between_its_layers():
     _, edges, _ = parse("components")
     layer = layers()
-    files = {f"er/{m}.py" for m in MODULES} | {f.relative_to(ROOT).as_posix() for f in (ROOT / "scripts").glob("*.py")}
+    files = {f"{PACKAGE[m]}/{m}.py" for m in MODULES} | {f.relative_to(ROOT).as_posix() for f in (ROOT / "scripts").glob("*.py")}
     assert files == set(layer), f"components.puml: modules to place {sorted(files - set(layer))}, to remove {sorted(set(layer) - files)}"
     code = {(layer[a], layer[b]) for a, b in imports() if layer[a] != layer[b]}
     drawn = {(a, b) for a, b in edges if a in layer.values() and b in layer.values()}
@@ -285,7 +289,7 @@ def test_every_path_and_function_a_diagram_or_a_doc_names_exists():
     missing_paths, missing_names = set(), set()
     for f, text in texts.items():
         text = re.sub(r"</?(?:b|i|u|size|color|font)(?::[^>]*)?>", "", text)  # PlantUML's formatting, not part of a path
-        for p in re.findall(r"\b((?:er|scripts|config|docs|reports|notebooks|tests|data/reference)/[\w./*<>-]*\w)", text):
+        for p in re.findall(r"\b((?:er|design|scripts|config|docs|reports|notebooks|tests|data/reference)/[\w./*<>-]*\w)", text):
             pattern = re.sub(r"<[^>]+>|part-n", "*", p)
             if not list(ROOT.glob(pattern)) and not (ROOT / pattern).exists():
                 missing_paths.add(f"{f}: {p}")

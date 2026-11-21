@@ -20,7 +20,7 @@ import numpy as np
 import pandas as pd
 
 from er import intake
-from er.generate import generate, load_reference, load_spec
+from design.generate import generate, load_reference, load_spec
 from er.io import markdown, read_parquet
 from er.settings import load_settings
 

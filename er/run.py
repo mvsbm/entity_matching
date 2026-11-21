@@ -653,7 +653,7 @@ class Run:
     def scored(self) -> str:
         """Every scored pair with its generators (sources) and what acceptance reads besides the weight: named, a name
         compared (fs.needs); keep, the pair joins two rule clusters (bridge) or touches a record the rules left alone. As
-        SQL, for _accept, and for design time to accept at other weights (er.pipeline)."""
+        SQL, for _accept, and for design time to accept at other weights (design.pipeline)."""
         fs, l, r, u = self.pipeline.fs, q(self.l), q(self.r), q(self.uid)
         keep = "a.cluster_id <> b.cluster_id" if fs.bridge else self._alone(f"s.{l}", f"s.{r}")
         return f"""SELECT s.*, c.sources, {named_sql(fs)} AS named, {keep} AS keep FROM scores s JOIN cands c USING ({l}, {r})
@@ -740,13 +740,6 @@ class Run:
         aside = [("SELECT * FROM set_aside", out / "set_aside" / name)] if self._count("set_aside") else []
         texts = [(json.dumps(self.model, ensure_ascii=False), state / "model.json"), (self.config, state / "config.txt")] if part == 0 else []
         texts.append((json.dumps(self.placeholders, ensure_ascii=False), state / "placeholders.json"))  # read as missing: an increment and a lookup read them so too
-        # the oversized blocks the full run listed in full: a key lists a pair in one (er.sample.key_lists, for er.sizes). An increment's
-        # gate lists only its batch's pairs of a block, so its kept blocks are not added: er.sizes counts those pairs as missed
-        if part == 0:
-            kept = {}
-            for x in self.gated[self.gated["decision"].isin(["kept", "joined in full"])].itertuples() if len(self.gated) else ():
-                kept[x.generator] = list(dict.fromkeys([*kept.get(x.generator, []), x.value]))
-            texts.append((json.dumps(kept, ensure_ascii=False), state / BLOCKS))
         if self.basis:  # the u this run scored with, and what an increment needs to tell when they go stale
             texts.append((json.dumps(dict(model=self.scoring, basis=self.basis), ensure_ascii=False), state / "scoring.json"))
         if part == 0:  # the round this method is in, and how it did: lands with the run
@@ -967,7 +960,6 @@ class Run:
         return self
 
 
-BLOCKS = "blocks.json"  # in state/: each key's oversized blocks a full run listed, by value
 CROWD = 64        # the fewest customers a compared field's placeholder is held by, however small the budget's oversized blocks
 SPREAD = 10       # a placeholder is held by this many times the field's records per value, or more
 PLACEHOLDERS = 3  # how placeholders are told (Run._placeholders): a run that told them otherwise takes no increment until it runs again
@@ -979,7 +971,7 @@ FINGERPRINTED_ROWS = 30_000  # the fit's sample, as every run's fingerprint hold
 def run_config(p: Pipeline, s: Settings) -> str:
     """What an increment needs the full run's to be: the pipeline and the settings that shape the records. The fit's
     sample and EM (the sessions' rules too) are left out: an increment and a lookup score with the stored model."""
-    fit = {f.name: f.default for f in fields(FSModel) if f.name in ("em_from_keys", "em_median")}  # em_choose: never in a model's repr
+    fit = {f.name: f.default for f in fields(FSModel) if f.name in ("em_from_keys", "em_median")}
     p = replace(p, fit_rows=FINGERPRINTED_ROWS, fs=replace(p.fs, model=replace(p.fs.model, em_rules=(), **fit)))
     keep = p.threshold.keep_from  # out of the dataclass's repr, so a workspace that never set it keeps its hash
     return config_hash((p, s.columns, s.standardize, s.flag_company, s.input, PLACEHOLDERS) + ((("keep", keep),) if keep else ()))

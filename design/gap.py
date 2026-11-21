@@ -1,10 +1,10 @@
 """The gap: the pairs the run's model would accept that no key or rule listed, estimated without labels, at design
 time (scripts/benchmark.py), on a Run that has clustered.
 
-1. Atoms (er.sample), from the method: every column its keys, rules and comparisons read, equal; within one edit (deletion keys)
+1. Atoms (design.sample), from the method: every column its keys, rules and comparisons read, equal; within one edit (deletion keys)
    for a column it compares by an edit distance or a similarity; within EDITS edits (PassJoin) for one it compares by
    a similarity. A value held by an oversized block's worth of records (a placeholder) pairs by none of them.
-2. Targets (er.sample.discover): a hash-stable share f of the records, each paired with every record sharing an atom with it (or, where
+2. Targets (design.sample.discover): a hash-stable share f of the records, each paired with every record sharing an atom with it (or, where
    both of two atoms' blocks are oversized alone, both), scored with the run's model. A pair is drawn
    when either record is, so each counts for 1 / (1 − (1 − f)²) of the file's (the probe's estimator).
 3. Per threshold, the targets at it and those no key or rule lists, with 95% Poisson intervals; for those missed, the
@@ -17,7 +17,7 @@ import time
 import pandas as pd
 
 from er.match import review_floor, search_floor
-from er.sample import Atom, agrees, discover, listed_by, poisson
+from design.sample import Atom, agrees, discover, listed_by, poisson
 
 GAP_RECORDS = 20_000  # records the gap samples, whatever the file's size
 

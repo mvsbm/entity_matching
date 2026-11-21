@@ -1,4 +1,4 @@
-"""The pairs the run's model accepts, found by sampling, with no labels (er.gap measures the gap the keys leave by
+"""The pairs the run's model accepts, found by sampling, with no labels (design.gap measures the gap the keys leave by
 them; er.sizes sizes a fit by them). Atoms, from the method: every column its keys, rules and
 comparisons read, equal, or within edits (atoms). A hash-stable share of the records, each paired with every record
 sharing an atom with it, scored through the bound at the search floor (discover); which of them a key or rule listed
@@ -12,7 +12,7 @@ import numpy as np
 import pandas as pd
 
 from er.candidates import KEEP_SLICE, Records, deletions_sql
-from er.config import Blocker, DeletionKeys, EditKeys, Key, KeyBlocker, Pipeline, keys_of, q
+from er.config import EditKeys, Key, Pipeline, keys_of, q
 from er.match import DISTANCES, SIMILARITIES, _bits, _ranked, bound_tests, scaled_prior, search_floor, score_fs
 
 EDITS = 2  # a column compared by a similarity is an atom within one edit and within this many (PassJoin)
@@ -191,63 +191,9 @@ def listed_by(run, targets: pd.DataFrame) -> pd.DataFrame:
 
 
 
-def generator_atoms(b: Blocker) -> tuple[Atom, ...] | None:  # the atoms a generator lists by, all of them: None for one that lists otherwise (sorted, TF-IDF)
-    if isinstance(b, KeyBlocker):
-        return tuple(Atom(k, 0) for k in b.keys)
-    if isinstance(b, DeletionKeys):
-        return (*(Atom(w, 0) for w in b.within), Atom(b.key, 1))
-    if isinstance(b, EditKeys):
-        return (*(Atom(w, 0) for w in b.within), Atom(b.key, b.edits))
-    return None
-
-
-def frame(rows: pd.DataFrame, combo: tuple[Atom, ...], col: dict[str, int]) -> pd.DataFrame:  # these targets' values on each atom of the combo, as agrees and in_normal read them
-    return pd.DataFrame({f"{s}{i}": rows[f"{s}{col[a.column]}"].to_numpy() for i, a in enumerate(combo) for s in "ab"})
-
-
-def key_lists(b: Blocker, rows: pd.DataFrame, col: dict[str, int], rec: Records, m: int, kept: dict[str, list[str]] | None = None) -> np.ndarray:
-    """Whether the generator lists each of these targets (a{i} / b{i} by atom, col: an atom's column → i): it agrees
-    on every atom of the key, in a block of fewer than m records or one the run kept (`kept`: each generator's kept
-    blocks by value, state/blocks.json). A generator that lists otherwise (sorted, TF-IDF): none."""
-    combo = generator_atoms(b)
-    if combo is None or any(a.column not in col for a in combo):
-        return np.zeros(len(rows), bool)
-    f = frame(rows, combo, col)
-    hit = np.logical_and.reduce([agrees(a, f[f"a{i}"], f[f"b{i}"]) for i, a in enumerate(combo)])
-    if hit.any():
-        hit[hit] = in_normal(combo, b, f[hit].reset_index(drop=True), list(combo), rec, m, frozenset((kept or {}).get(b.name, ())))
-    return hit
-
-
-
 def poisson(k: int) -> tuple[float, float]:  # about 95% for a count of k, as the probe gives it: none, the rule of three
     return (max(k - 1.96 * math.sqrt(k), 0.0), k + 1.96 * math.sqrt(k)) if k else (0.0, 3.0)
 
-
-
-def in_normal(combo: tuple[Atom, ...], b: Blocker, targets: pd.DataFrame, found: list[Atom], rec: Records, m: int, kept: frozenset[str] = frozenset()) -> np.ndarray:
-    """Whether each target's block under this key holds fewer than m records, or is one of `kept` (its value as the
-    gate names it: er.candidates._gate), so the key's join lists it: the blocks of m or more (few) are found by a
-    group-by, and each target looked up in them."""
-    con, side = rec.con, lambda a, s: targets[f"{s}{found.index(a)}"]
-    eq = [a for a in combo if not a.edits]
-    if isinstance(b, KeyBlocker):
-        cols = ", ".join(q(a.column) for a in eq)
-        big = set(con.execute(f"SELECT {cols} FROM records WHERE {' AND '.join(f'{q(a.column)} IS NOT NULL' for a in eq)} "
-                              f"GROUP BY ALL HAVING count(*) >= {m}").fetchall())
-        big = {v for v in big if " · ".join(map(str, v)) not in kept}
-        return np.array([tuple(v) not in big for v in zip(*(side(a, "a") for a in eq))], bool) if big else np.ones(len(targets), bool)
-    near = next(a for a in combo if a.edits)
-    within = list(zip(*(side(a, "a") for a in eq))) if eq else [()] * len(targets)
-    if isinstance(b, DeletionKeys):  # some deletion key the two share, in a normal block
-        v = rec.variants(b)
-        big = set(con.execute(f"SELECT __dk, {''.join(f'{q(a.column)}, ' for a in eq)}1 FROM {v} GROUP BY ALL HAVING count(*) >= {m}").fetchall())
-        big = {v for v in big if " · ".join(map(str, v[:-1])) not in kept}
-        dels = lambda s: {s, *(s[:i] + s[i + 1:] for i in range(len(s)))} if isinstance(s, str) else set()
-        return np.array([any((k, *w, 1) not in big for k in dels(x) & dels(y)) for x, y, w in zip(side(near, "a"), side(near, "b"), within)], bool)
-    big = set(con.execute(f"SELECT {''.join(f'{q(a.column)}, ' for a in eq)}{q(near.column)} FROM records WHERE {q(near.column)} IS NOT NULL "
-                          f"GROUP BY ALL HAVING count(*) >= {m}").fetchall())  # an edit key leaves out a value held by m records or more
-    return np.array([(*w, x) not in big and (*w, y) not in big for x, y, w in zip(side(near, "a"), side(near, "b"), within)], bool)
 
 
 def agrees(a: Atom, x: pd.Series, y: pd.Series) -> np.ndarray:

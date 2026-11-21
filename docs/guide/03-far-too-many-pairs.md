@@ -207,7 +207,7 @@ With these five keys, every potential match on train still shares a key, at its 
 
 ### How the configuration keeps it that way
 
-`scripts/choose.py` projects every key and rule of the chosen pipeline to `budget.target_rows` (a million records) and stops if one would exceed the budget of 5 pairs per record (`er.pipeline.scale_check`). It needs only the training file. For each key it counts the pairs of one entity, P_same, and the chance pairs, P_chance, and projects each by its own law: P(n) = P_same·n/N + P_chance·n(n − 1)/(N(N − 1)). That is what keeping a share of the entities would give on average, computed instead of sampled. Pairs between two members of a household count as chance, the safe side. Optuna trials that fail the check are pruned.
+`scripts/choose.py` projects every key and rule of the chosen pipeline to `budget.target_rows` (a million records) and stops if one would exceed the budget of 5 pairs per record (`design.pipeline.scale_check`). It needs only the training file. For each key it counts the pairs of one entity, P_same, and the chance pairs, P_chance, and projects each by its own law: P(n) = P_same·n/N + P_chance·n(n − 1)/(N(N − 1)). That is what keeping a share of the entities would give on average, computed instead of sampled. Pairs between two members of a household count as chance, the safe side. Optuna trials that fail the check are pruned.
 
 For the chosen pipeline, the largest projection of a key is phone + name initial, at 2.1 pairs per record; a sorted window, which it leaves out, would make 3 per record by construction. The check also counts the potential matches on train that share no key, at train's size and at a million records (`window_only`), and stops if any is left. Here: 0 of 3,278, and 0 of 3,071.
 
@@ -256,13 +256,13 @@ On train, every true pair that could reach the threshold shares a key, at its si
 ## In the code
 
 - `er/config.py`: the generator types `KeyBlocker`, `SortedNeighbourhood`, `TfidfNeighbours`, `DeletionKeys` (one-deletion keys); `er/candidates.py`: each as SQL (`pairs_sql`), `candidates` (merge by bits), `estimate` (the count before any join)
-- `er/pipeline.py`: `grown_pairs` (a key's pairs of one entity and by chance, each projected by its own law), `scale_check` (every key and rule projected to `target_rows`), `window_only` (the potential matches no key reaches) and `cascade`'s `bridge` (a stage that may join two clusters)
+- `design/pipeline.py`: `grown_pairs` (a key's pairs of one entity and by chance, each projected by its own law), `scale_check` (every key and rule projected to `target_rows`), `window_only` (the potential matches no key reaches) and `cascade`'s `bridge` (a stage that may join two clusters)
 - `er/match.py`: `pattern_coverage` (the same question without labels, which every run's `qa.md` reports)
 - `er/config.py`: `Budget` (`max_pairs_per_record`, `max_block_size`, `target_rows`, `sample_pairs`); `FSSpec.bridge` (score every pair across two clusters)
 - `er/match.py`: `exact_u` (u counted: the leading exact levels, and a one-edit level after them through one-deletion keys), `scored_sample` (u sampled, kept per comparison and the values it reads), `assemble_u`, `refreshed_u` (an increment's u)
 - `config/pipeline.toml`: every generator, in logical fields; `config/settings.toml`: the fields behind the compound keys (`any_name`, the postal area) and the normalizers `initial`, `first3`, `reverse`
-- `config/experiments.py`: the key changes and their decisions (`compound_phone_keys`, `sorted_names_for_tfidf`, `name_keys`, `bounded_address_keys`, `no_sorted_windows`, `bridge_rule_clusters`), and the u changes (`u_exact_by_counts`, `u_near_by_keys`, `fit_u_from_1e6_pairs`)
-- `er/select.py`: `FSChooser.candidates_on_train` prints the generator table above; `will_it_scale` stops `scripts/choose.py` if the chosen pipeline would go over budget at `target_rows`, or would leave a potential match to a window; `RulesChooser.cost` does the same for the rules
+- `design/experiments.py`: the key changes and their decisions (`compound_phone_keys`, `sorted_names_for_tfidf`, `name_keys`, `bounded_address_keys`, `no_sorted_windows`, `bridge_rule_clusters`), and the u changes (`u_exact_by_counts`, `u_near_by_keys`, `fit_u_from_1e6_pairs`)
+- `design/select.py`: `FSChooser.candidates_on_train` prints the generator table above; `will_it_scale` stops `scripts/choose.py` if the chosen pipeline would go over budget at `target_rows`, or would leave a potential match to a window; `RulesChooser.cost` does the same for the rules
 - `er/run.py`: `Run.budget`, the exact count on the file before any join; `Run.fit`, the fit and then u on the file; `Run.capacity`, the memory limit plus the spill room; `er/candidates.py`: `oversized`, `sample_sql`, `_gate`, the sample check of big blocks; `scripts/benchmark.py`: whole runs on generated files from 12,500 to a million records
 
 ## Further reading

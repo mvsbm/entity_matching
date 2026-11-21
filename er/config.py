@@ -351,7 +351,6 @@ class FSModel:
     fit_u_max_pairs: float | None = None      # the fit's own u sample, if it differs (with u_from_scored its u feed only EM)
     em_median: bool = False                   # one EM session per rule, each level's m the median of the sessions that learned it (not Splink's mean)
     em_from_keys: bool = False                # the EM sessions blocked on the method's equality keys, not on em_rules (er.run.fit)
-    em_choose: tuple[tuple[Key, ...], ...] = field(default=(), repr=False)  # sessions judged by the given name, those kept in place of em_rules (er.match.chosen); out of repr, so of a run's fingerprint (er.run.run_config)
 
     def u_keys(self) -> dict[str, str]:
         """What each comparison's u depends on, besides the fitting records: the comparison, the sample size and the
@@ -361,7 +360,7 @@ class FSModel:
     def normalized(self) -> list[tuple[str, tuple[Normalizer, ...]]]:
         out = [(col, comp.normalize) for c in self.comparisons for lv in c.levels for col, comp in lv.any_of if comp.normalize]
         out += [(col, comp.copied()) for c in self.comparisons for lv in c.levels for col, comp in lv.any_of if comp.copied()]
-        keys = [k for rule in (*self.prior_rules, *self.em_rules, *self.em_choose) for k in rule]
+        keys = [k for rule in (*self.prior_rules, *self.em_rules) for k in rule]
         return out + [(k.column, k.normalize) for k in keys if k.normalize]
 
 
@@ -387,7 +386,7 @@ class FSSpec:
         cols = {k.name for b in self.blockers for k in keys_of(b)}
         cols |= {comp.column(col) for c in m.comparisons for lv in c.levels for col, comp in lv.any_of}
         cols |= {col for c in m.comparisons for col in c.null_if_missing}
-        return cols | {k.name for rule in (*m.prior_rules, *m.em_rules, *m.em_choose) for k in rule}
+        return cols | {k.name for rule in (*m.prior_rules, *m.em_rules) for k in rule}
 
 
 def with_level(model: FSModel, comparison: str, label: str, **changes: object) -> FSModel:
@@ -433,7 +432,7 @@ class ThresholdRule:
 
 @dataclass(frozen=True, kw_only=True)
 class Probe:
-    """Pairs no pair key lists, sampled within groups matches tend to share (er.probe): each stratum a group as a key
+    """Pairs no pair key lists, sampled within groups matches tend to share (design.probe): each stratum a group as a key
     names it (records with the same phone, say), and about `pairs` pairs scored in each. It measures, without labels,
     the matches the keys miss."""
     strata: tuple[tuple[str, tuple[Key, ...]], ...] = ()
@@ -489,7 +488,7 @@ class Tune:
     stage: str                                # the stage whose comparators are searched
     space: Mapping[str, tuple[Candidate, ...]]
     n_trials: int                             # the only bound: a wall-clock timeout would make the front depend on machine speed
-    enabled: bool = False                     # off by default: FINAL keeps the suggestions already adopted (config/experiments.py)
+    enabled: bool = False                     # off by default: FINAL keeps the suggestions already adopted (design/experiments.py)
     seed: int
     storage_path: Path                        # SQLite file the study is saved to; optuna-dashboard reads it
     study_prefix: str                         # each run is a new study: <prefix>_<timestamp>
@@ -562,7 +561,7 @@ class Pipeline:
     explain_filled: tuple[str, ...]
     fit_rows: int = 100_000                   # an unlabelled run fits on a sample of this many records (er.run)
     kind: KindSpec | None = None              # person or company, on every record; None: not told apart
-    probe: Probe = Probe()                    # how the matches no key lists are measured (er.probe)
+    probe: Probe = Probe()                    # how the matches no key lists are measured (design.probe)
     household: Household = Household()        # which pairs people see labelled "maybe one household"
 
 
@@ -656,15 +655,7 @@ def pipeline_from(cfg: dict, std: Standardization, chains: Mapping[str, tuple[No
                                         apart=tuple((d["field"], _comparator(d, chains)) for d in cfg["household"]["apart"])) if "household" in cfg else Household())
 
 
-GIVEN, PERSON = "given_name", "person_name"  # agreement on the given name tells one person's records from a household's; the full name, where it is sparse (er.match.chosen)
-
-
-def em_candidates(p: "Pipeline") -> tuple[tuple[Key, ...], ...]:
-    """The sessions fit em "choose" judges: one per field a comparison's first level tests for equality, normalized as it
-    tests it (a later level's field, a postal code or a prefecture, makes blocks of strangers); not an identifying field
-    (one customer's each: the prior rules read it), nor the given name alone (as large a block, swaying every m)."""
-    keys = {col: Key(col, comp.normalize) for c in p.fs.model.comparisons if c.levels for col, comp in c.levels[0].any_of if comp.function == "exact"}
-    return tuple((k,) for col, k in keys.items() if col not in p.fields.identifying and col != GIVEN)
+GIVEN, PERSON = "given_name", "person_name"  # agreement on the given name tells one person's records from a household's; the full name, where it is sparse (er.match.judged)
 
 
 def load_pipeline(path: Path, std: Standardization, chains: Mapping[str, tuple[Normalizer, ...]],
@@ -685,7 +676,7 @@ def fields_read(p: Pipeline) -> set[str]:  # every field the rules, the generato
     out = {c for s in r.stages for rule in s.rules for c in (*rule.exact, *rule.fuzzy, *(k.column for k in rule.blocking))}
     out |= {k.column for b in p.generators.values() for k in keys_of(b)}
     out |= {col for c in m.comparisons for lv in c.levels for col, _ in lv.any_of} | {col for c in m.comparisons for col in c.null_if_missing}
-    out |= {k.column for rule in (*m.prior_rules, *m.em_rules, *m.em_choose) for k in rule}
+    out |= {k.column for rule in (*m.prior_rules, *m.em_rules) for k in rule}
     out |= {*p.explain_show, *p.explain_filled} | {c for s in r.stages for c in s.comparators}
     out |= {k.column for k in p.household.shared} | {col for col, _ in p.household.apart}
     return out
@@ -757,7 +748,7 @@ def restrict(p: Pipeline, present: set[str]) -> tuple[Pipeline, list[str]]:
         raise lacking("the model can't be fitted", {k.column for r in m.em_rules for k in r})
     gone += [f"prior rule {[k.column for k in r]}" for r in m.prior_rules if r not in prior]
     gone += [f"EM rule {[k.column for k in r]}" for r in m.em_rules if r not in em]
-    model = replace(m, comparisons=tuple(comparisons), prior_rules=prior, em_rules=em, em_choose=tuple(r for r in m.em_choose if has(k.column for k in r)))
+    model = replace(m, comparisons=tuple(comparisons), prior_rules=prior, em_rules=em)
     needs = tuple(n for n in p.fs.needs if n in {c.name for c in comparisons})  # [fields] one_of keeps a name comparison
     strata = tuple((n, keys) for n, keys in p.probe.strata if has(k.column for k in keys))
     gone += [f"probe {n} (needs {sorted({k.column for k in keys} - present)})" for n, keys in p.probe.strata if (n, keys) not in strata]

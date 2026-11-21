@@ -12,7 +12,8 @@ Container(designtime, "Design-time tools", "scripts/generate.py, scripts/choose.
 Container(demo, "Demo", "notebooks/demo.ipynb, scripts/export_pdfs.py", "every step of a run, charted; its PDF")
 
 System_Boundary(engine, "The engine, in one process") {
-  Container(er, "er", "Python package", "every computation: the layers of HLD 3")
+  Container(er, "er", "Python package", "every computation a run makes: the layers of HLD 3")
+  Container(designpkg, "design", "Python package", "design time's code: the generator, the choice and its experiments, metrics and searches, the gap and the probe; it reads er, never the reverse")
   Container(duckdb, "DuckDB", "in process", "the working tables, spilled to disk past memory_limit; every step's SQL, the scoring included; connected components by scipy")
 }
 
@@ -25,11 +26,13 @@ ContainerDb(synthetic, "Synthetic data and reports", "Parquet, Markdown", "data/
 Rel(owner, runtime, "runs")
 Rel(developer, designtime, "runs")
 Rel(runtime, er, "er.run.Run")
-Rel(designtime, er, "er.select, er.run, er.generate")
+Rel(designtime, designpkg, "design.select, design.generate, design.gap")
+Rel(designtime, er, "er.run")
+Rel(designpkg, er, "er.run, er.match, er.config")
 Rel(demo, er, "er.run.Run, step by step")
 Rel(er, duckdb, "SQL on one connection")
 Rel(er, config, "reads")
-Rel(er, reference, "reads")
+Rel(designpkg, reference, "reads")
 Rel(er, runfolder, "reads, writes (staged, one writer)")
 Rel(er, artifacts, "the leaderboard, the fitted models")
 Rel(designtime, synthetic, "writes")
