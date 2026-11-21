@@ -18,7 +18,7 @@ from dataclasses import replace
 
 from er.config import dump_pipeline, load_pipeline
 from er.io import markdown
-from er.run import Run
+from er.jobs.build import build
 from design import experiments
 from design.select import FSChooser, RulesChooser
 from er.settings import load_settings
@@ -69,7 +69,7 @@ def main() -> None:
     dump_pipeline(final, s.chains, final_file, header)
     model = fs.fit(fs.final, fs.train_records, fs.train_truth, "train")
     for dataset in s.data.datasets:  # the gold layer, written by the code nayose runs
-        Run(final, s, model=model).full(s.data.bronze_dir / f"{dataset}.parquet", s.data.gold_dir / dataset, overwrite=True)
+        build(s.data.bronze_dir / f"{dataset}.parquet", s.data.gold_dir / dataset, s, final, model=model, overwrite=True)
     print(f"wrote {report_file}, {final_file} and {s.data.gold_dir}/<dataset>/")
 
 

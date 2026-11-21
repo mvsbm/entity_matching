@@ -87,14 +87,14 @@ Each entry names a way an entity-resolution pipeline like this one goes wrong, a
 ## A copy that outgrows memory
 - **Pitfall:** an intermediate table copied into pandas with more columns than needed outgrows memory on a big file. It shows as a run that stalls deep in swap.
 - **Why:** reading the scored pairs into pandas with every compared column of both records, only to keep the ids, the weights and the gammas, makes a copy that grows with the candidates times the columns.
-- **Guard:** DuckDB selects the needed columns before anything reaches pandas, and the scores stay a DuckDB table. Every table of size N or C is a DuckDB table (`er.run`), which spills past `[compute]` `memory_limit` to a folder of the person's own in the system's temporary folder, unless `temp_directory` says otherwise. A run's capacity counts the spill room DuckDB allows: 90% of the free disk by default. DuckDB keeps what the limit allows, so the peak under a large limit says little: test the smallest limit that completes, not the peak.
+- **Guard:** DuckDB selects the needed columns before anything reaches pandas, and the scores stay a DuckDB table. Every table of size N or C is a DuckDB table (`er/steps/`), which spills past `[compute]` `memory_limit` to a folder of the person's own in the system's temporary folder, unless `temp_directory` says otherwise. A run's capacity counts the spill room DuckDB allows: 90% of the free disk by default. DuckDB keeps what the limit allows, so the peak under a large limit says little: test the smallest limit that completes, not the peak.
 - **Check:** every run's `steps.json` records the peak memory after each step, and `reports/benchmark.md` reports it at every file size: 7.21 GB at 1,039,995 records under an 8 GB limit, Python included.
 
 ## An answer that depends on the file's order
 - **Pitfall:** an output column depends on the order of the records in the file. It shows as identical clusters but a different `resolved_by` after the file is shuffled.
 - **Why:** naming, for a record the probabilistic stage reached, the first rule in the file that touched it.
 - **Guard:** a record keeps the rule that resolved it in the previous stage, or else is named after the model, whatever the order.
-- **Check:** a test runs the same records in two orders and requires identical gold, every column; it also checks that an increment never splits a stored cluster. Another requires the engine `scripts/choose.py` measures with (`design.pipeline`) and the one `nayose` runs (`er.run`) to give identical gold.
+- **Check:** a test runs the same records in two orders and requires identical gold, every column; it also checks that an increment never splits a stored cluster. Another requires the engine `scripts/choose.py` measures with (`design.pipeline`) and the one `nayose` runs (`jobs.build.build`) to give identical gold.
 
 ## Two spellings of "nothing"
 - **Pitfall:** a blank that isn't treated as missing. A name that still holds a full-width space never equals the same name without it, and two values emptied by normalization agree at "exact" and fall into one block. It shows by reading the code or the values, not in the numbers.
@@ -129,7 +129,7 @@ Each entry names a way an entity-resolution pipeline like this one goes wrong, a
 ## A report that carries records off the machine
 - **Pitfall:** a run report sent to someone for help carries records with it: the value of a placeholder phone, a customer ID on thousands of records, the IDs of the largest clusters. It shows only by reading the report.
 - **Why:** the notes that make a run's problems clear quote the values behind them, and a report built from them inherits the values.
-- **Guard:** `report.txt` is built only from field and column names, counts, shares, times and the model's parameters. A note that quotes a value is kept apart (`Run.examples`) and goes to the terminal and `qa.md` only.
+- **Guard:** `report.txt` is built only from field and column names, counts, shares, times and the model's parameters. A note that quotes a value is kept apart (`Log.examples`) and goes to the terminal and `qa.md` only.
 - **Check:** a test puts a placeholder phone and a customer ID with one name on many records, so the run has notes quoting them, and checks that the report holds no kana or kanji, no record ID and no customer ID.
 
 ## A legal-form list that misses how banks write it

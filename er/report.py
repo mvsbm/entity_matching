@@ -1,7 +1,7 @@
-"""The reports for people, from a run's tables (er.run.Run): qa (the label-free checks, and the summary in words),
-fill_rates, review_sheet (scored pairs as people judge them), carry_over (the open review queue across increments) and
-report_text (the run on a page with no record's value in it). Run.report builds them; Run.write stages them with the
-run's files."""
+"""The reports for people, from what a job did (er.steps.job.Ran) and its tables: qa (the label-free checks, and the
+summary in words), fill_rates, review_sheet (scored pairs as people judge them), carry_over (the open review queue across
+increments) and report_text (the run on a page with no record's value in it). er.steps.report builds them; er.steps.write
+stages them with the run's files."""
 import math
 import platform
 import re
@@ -22,10 +22,10 @@ from er.source import filled, fit
 from er.review_state import applied
 
 if TYPE_CHECKING:
-    from er.run import Run
+    from er.steps.job import Ran
 
 
-def fill_rates(run: "Run", fields: list[str] | None = None, sample: int = 10_000) -> pd.DataFrame:
+def fill_rates(run: "Ran", fields: list[str] | None = None, sample: int = 10_000) -> pd.DataFrame:
     """Each field's share of filled records, flagged under 5%: a field almost never filled is often a mapping mistake.
     Then, on a random sample of `sample` records, the share of filled values that look like the field ([locale.detect];
     a low share is a wrong column or a format the comparisons don't expect), the share held by its most common
@@ -68,7 +68,7 @@ def unmapped_columns(engine: Engine, table: str, columns: list[str], fields: lis
                         ).sort_values(["share", "filled"], ascending=False, kind="stable", ignore_index=True)
 
 
-def qa(run: "Run", fields: list[str] | None = None, review: int = 50, previous: Path | None = None) -> dict[str, pd.DataFrame]:
+def qa(run: "Ran", fields: list[str] | None = None, review: int = 50, previous: Path | None = None) -> dict[str, pd.DataFrame]:
     """The label-free report of a run: a summary in words (records, entities, who joined them, the model's links and the
     false ones it expects among them, what to decide, what the loader fixed), fill rate per field (flagged under 5%)
     (of `fields`, by default every logical field) with the share that looks like the field and the share of its most common value, what was disabled, every step's cost,
@@ -166,7 +166,7 @@ NEAR = 2.0    # bits: a skipped oversized block whose best sampled pair came thi
 SHOWN = 8     # DIAGNOSIS's lines at most
 
 
-def diagnosis(run: "Run", tables: dict[str, pd.DataFrame], lo: float) -> list[dict]:
+def diagnosis(run: "Ran", tables: dict[str, pd.DataFrame], lo: float) -> list[dict]:
     """What limits what the run finds, the most pairs at stake first, at most SHOWN items, each what (with its number),
     the pairs at stake and the fix (the setting to change, where there is one): report.txt prints them (diagnosis_lines),
     steps.json keeps them. What is fine is left out: EM sessions of the run's own fit that learned
@@ -247,7 +247,7 @@ def diagnosis_lines(items: list[dict]) -> list[str]:  # report.txt's DIAGNOSIS, 
     return ["DIAGNOSIS  (what limits what the run finds, the most pairs at stake first)", *(f"  {x}" for x in lines), ""]
 
 
-def report_text(run: "Run", tables: dict[str, pd.DataFrame], pipeline: Path, items: list[dict] | None = None) -> str:
+def report_text(run: "Ran", tables: dict[str, pd.DataFrame], pipeline: Path, items: list[dict] | None = None) -> str:
     """The run on a page of plain text that holds no record's value (no ID, name, phone or address: the notes that
     quote one are run.examples, in qa.md only), so it can leave the machine that holds the records. `tables` is qa()'s.
     It shows what ran (the code, the tracked files changed in this copy, the pipeline, the machine's limits), what limits
@@ -370,7 +370,7 @@ def report_text(run: "Run", tables: dict[str, pd.DataFrame], pipeline: Path, ite
     return "\n".join(out) + "\n"
 
 
-def carry_over(run: "Run", previous: pd.DataFrame, sheet: pd.DataFrame, out: Path, full: bool = False) -> pd.DataFrame:
+def carry_over(run: "Ran", previous: pd.DataFrame, sheet: pd.DataFrame, out: Path, full: bool = False) -> pd.DataFrame:
     """The review queue across runs: the previous sheet's rows holding a decision typed in and not given back (one other
     than the pair's latest in decisions/: the sheet keeps what was applied), and, across increments, its decide rows
     nobody gave back whose records are still in different clusters; a full run (`full`) makes the rest again. Those
@@ -403,7 +403,7 @@ def households(engine: Engine, records: str, pairs: str, uid: str, p: Pipeline) 
         WHERE {cond}"""))
 
 
-def review_sheet(run: "Run", pairs: pd.DataFrame) -> pd.DataFrame:
+def review_sheet(run: "Ran", pairs: pd.DataFrame) -> pd.DataFrame:
     """Scored pairs as people judge them, in the order given: both records' compared fields side by side, and per
     comparison the level the pair landed in and the bits it earned, which with the prior sum to its weight; whether the
     run merged it (in kept: a rule's pair, the model's, or people's); whether it may be two people of one household

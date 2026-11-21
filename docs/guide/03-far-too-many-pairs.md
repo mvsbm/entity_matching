@@ -263,7 +263,7 @@ On train, every true pair that could reach the threshold shares a key, at its si
 - `config/pipeline.toml`: every generator, in logical fields; `config/settings.toml`: the fields behind the compound keys (`any_name`, the postal area) and the normalizers `initial`, `first3`, `reverse`
 - `design/experiments.py`: the key changes and their decisions (`compound_phone_keys`, `sorted_names_for_tfidf`, `name_keys`, `bounded_address_keys`, `no_sorted_windows`, `bridge_rule_clusters`), and the u changes (`u_exact_by_counts`, `u_near_by_keys`, `fit_u_from_1e6_pairs`)
 - `design/select.py`: `FSChooser.candidates_on_train` prints the generator table above; `will_it_scale` stops `scripts/choose.py` if the chosen pipeline would go over budget at `target_rows`, or would leave a potential match to a window; `RulesChooser.cost` does the same for the rules
-- `er/run.py`: `Run.budget`, the exact count on the file before any join; `Run.fit`, the fit and then u on the file; `Run.capacity`, the memory limit plus the spill room; `er/candidates.py`: `oversized`, `sample_sql`, `_gate`, the sample check of big blocks; `scripts/benchmark.py`: whole runs on generated files from 12,500 to a million records
+- `er/steps/budget.py`: `steps.budget.budget`, the exact count on the file before any join; `steps.budget.capacity`, the memory limit plus the spill room; `er/steps/fit.py`: `steps.fit.fit`, the fit and then u on the file; `er/candidates.py`: `oversized`, `sample_sql`, `_gate`, the sample check of big blocks; `scripts/benchmark.py`: whole runs on generated files from 13,000 to a million records
 
 ## Further reading
 

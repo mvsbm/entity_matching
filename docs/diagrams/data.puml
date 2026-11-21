@@ -11,7 +11,7 @@ skinparam class {
   HeaderBackgroundColor #E8F1FB
 }
 
-package "the answer: Run.write" {
+package "the answer: steps.write.write" {
   entity "gold.parquet" as gold {
     * <id> : the record
     cluster_id : the smallest <id> of its cluster
@@ -65,7 +65,7 @@ package "the answer: Run.write" {
   }
 }
 
-package "state/, for increments: Run.write" {
+package "state/, for increments: steps.write.write" {
   entity "state/records/part-n.parquet" as records {
     * <id>
     <the input's columns>
@@ -96,7 +96,7 @@ package "state/, for increments: Run.write" {
   }
 }
 
-package "kept for the next run: Run.load, Run.fit" {
+package "kept for the next run: steps.load.load, steps.fit.fit" {
   entity "prepared/<key>/records.parquet" as prepared {
     * <id>
     <the records as step 1 cleans them: the columns state/records/ holds>
@@ -106,7 +106,7 @@ package "kept for the next run: Run.load, Run.fit" {
   }
 }
 
-package "for people: Run.report" {
+package "for people: steps.report.report" {
   entity "review.parquet" as review {
     why : decide · audit
     decision : match · no_match, to fill in

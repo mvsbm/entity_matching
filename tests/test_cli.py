@@ -27,20 +27,20 @@ def _mapping(tmp_path: Path, s, **fields: str) -> Path:  # the project's setting
 
 
 def test_a_run_says_what_is_wrong_in_words_people_can_act_on(say, tmp_path, population, capsys, monkeypatch):
-    from er.run import Run
+    from er.jobs.build import build
     s, p, g = population
     monkeypatch.chdir(tmp_path)
 
     phone, postal = s.columns["phone"][0][0], [c for alt in s.columns["postal_code"] for c in alt]
     g.df.assign(**{c: None for c in postal}).to_parquet(tmp_path / "nopostal.parquet", index=False)  # mapped, but never filled
     from design.probe import probe
-    run = Run(p, s).full(tmp_path / "nopostal.parquet", tmp_path / "run")
+    run = build(tmp_path / "nopostal.parquet", tmp_path / "run", s, p)
     assert [x["stratum"] for x in probe(run)] == ["phone"]  # an empty group: nothing to draw
     g.df.head(0).to_parquet(tmp_path / "empty.parquet", index=False)
     with pytest.raises(InputError, match="no record, only its header"):
-        Run(p, s).full(tmp_path / "empty.parquet", tmp_path / "run0")
+        build(tmp_path / "empty.parquet", tmp_path / "run0", s, p)
     with pytest.raises(InputError, match="both read"):  # one column for two compared fields: one value counted twice
-        Run(p, load_settings(_mapping(tmp_path, s, postal_code=phone))).full(tmp_path / "nopostal.parquet", tmp_path / "run1")
+        build(tmp_path / "nopostal.parquet", tmp_path / "run1", load_settings(_mapping(tmp_path, s, postal_code=phone)), p)
     g.df.to_parquet(tmp_path / "all.parquet", index=False)
     for words in (("resolve", "records", tmp_path / "all.parquet", "--workspace", tmp_path / "w", "--compute", "memory_limit=lots"),
                   ("resolve", "records", tmp_path / "all.parquet", "--workspace", tmp_path / "w", "--compute", "memroy_limit=8GB"),
@@ -50,7 +50,7 @@ def test_a_run_says_what_is_wrong_in_words_people_can_act_on(say, tmp_path, popu
     def short(*_, **__):  # out of memory in DuckDB
         raise duckdb.OutOfMemoryException("Out of Memory Error: failed to allocate")
     with monkeypatch.context() as m:
-        m.setattr(Run, "full", short)
+        m.setattr("er.cli.build", short)
         code, e = say("resolve", "records", tmp_path / "all.parquet", "--workspace", tmp_path / "w")
         assert code == 2 and "out of memory" in e["error"] and "memory_limit" in e["fix"]
 
@@ -241,23 +241,25 @@ def test_nayose_takes_a_file_from_a_run_to_people_s_decisions_and_a_batch(tmp_pa
 
 
 def test_a_nearly_empty_field_is_kept_and_the_fit_skips_what_it_cannot_learn_from(tmp_path, population):
-    from er.run import Run
+    from er.jobs.build import build
     s, p, g = population
     sparse = g.df.copy()
     sparse.loc[sparse.index[10:], ["STD_ADDRESS", "ORIGINAL_ADDRESS"]] = None  # no two records share an address
     sparse.to_parquet(tmp_path / "sparse.parquet", index=False)
     seen = []
-    run = Run(p, s, echo=seen.append).full(tmp_path / "sparse.parquet", tmp_path / "run")
+    run = build(tmp_path / "sparse.parquet", tmp_path / "run", s, p, echo=seen.append)
     assert [x["step"] for x in seen] == ["load", "budget", "fit", "rules", "candidates", "score", "cluster", "write"]  # step by step
     assert "address" in run.model["er"]["skipped"] and any("sharing address" in x for x in run.notes)
     sparse.assign(PHONE_NUM_4=None).to_parquet(tmp_path / "bare.parquet", index=False)  # nothing left to learn from
     with pytest.raises(InputError, match="can't be estimated|share phone or address"):  # whichever check finds nothing first
-        Run(p, s).full(tmp_path / "bare.parquet", tmp_path / "bare")
+        build(tmp_path / "bare.parquet", tmp_path / "bare", s, p)
 
 
 def test_an_increment_keeps_the_open_review_queue(tmp_path, population):
     from er.report import qa
-    from er.run import Run
+    from er.jobs.build import build
+    from er.jobs.decide import decide
+    from er.jobs.update import update
     s, p, g = population
     p = replace(p, threshold=replace(p.threshold, margin_steps=4), fs=replace(p.fs, min_match_weight=p.fs.min_match_weight + 6))  # a wide band
     uid = s.data.unique_id
@@ -266,15 +268,15 @@ def test_an_increment_keeps_the_open_review_queue(tmp_path, population):
     g.df[~new].to_parquet(tmp_path / "old.parquet", index=False)
     g.df[new].to_parquet(tmp_path / "new.parquet", index=False)
     fields = [f for f in s.columns if f not in ("id", "entity")]
-    run = Run(p, s).full(tmp_path / "old.parquet", tmp_path / "c")
+    run = build(tmp_path / "old.parquet", tmp_path / "c", s, p)
     first = qa(run, fields)["review_sheet"]
     first.to_parquet(tmp_path / "c" / "review.parquet")
     open_ = first[first["why"] == "decide"]
     assert len(open_) >= 2
     first.loc[open_.index[:1], "decision"] = "no_match"  # one decided and given back; the rest still open
     first.loc[open_.index[:1]].to_parquet(tmp_path / "given.parquet")
-    Run(p, s).decide(tmp_path / "given.parquet", tmp_path / "c")
-    inc = Run(p, s).increment(tmp_path / "new.parquet", tmp_path / "c")
+    decide(tmp_path / "given.parquet", tmp_path / "c", s, p)
+    inc = update(tmp_path / "new.parquet", tmp_path / "c", s, p)
     sheet = qa(inc, fields, previous=tmp_path / "c" / "review.parquet")["review_sheet"]
     pairs = set(map(tuple, sheet.loc[sheet["why"] == "decide", [l, r]].to_numpy()))
     gold = pd.read_parquet(tmp_path / "c" / "gold.parquet").set_index(uid)["cluster_id"]
@@ -286,7 +288,7 @@ def test_an_increment_keeps_the_open_review_queue(tmp_path, population):
 def test_a_run_folder_takes_one_writer_at_a_time(tmp_path, population):
     import threading
     from er.folder import run_lock
-    from er.run import Run
+    from er.jobs.build import build
     s, p, g = population
     g.df.to_parquet(tmp_path / "all.parquet", index=False)
     held, done = threading.Event(), threading.Event()
@@ -299,28 +301,29 @@ def test_a_run_folder_takes_one_writer_at_a_time(tmp_path, population):
     job.start()
     assert held.wait(30)
     with pytest.raises(InputError, match="another job is writing"):
-        Run(p, s).full(tmp_path / "all.parquet", tmp_path / "run")
+        build(tmp_path / "all.parquet", tmp_path / "run", s, p)
     done.set()
     job.join(30)
     with run_lock(tmp_path / "run"), run_lock(tmp_path / "run"):  # the thread holding it may take it again (a rerun's full run)
-        Run(p, s).full(tmp_path / "all.parquet", tmp_path / "run")  # released by the other: free again
+        build(tmp_path / "all.parquet", tmp_path / "run", s, p)  # released by the other: free again
 
 
 def test_matching_a_batch_names_the_entities_adding_it_would_give_and_writes_nothing(tmp_path, population):
-    from er.run import Run
+    from er.jobs.build import build
+    from er.jobs.update import update, would_join
     s, p, g = population
     uid, half = s.data.unique_id, len(g.df) // 2
     g.df.iloc[:half].to_parquet(tmp_path / "first.parquet", index=False)
     pd.concat([g.df.iloc[half:], g.df.iloc[:1]]).to_parquet(tmp_path / "batch.parquet", index=False)  # one already in the run
     out = tmp_path / "run"
-    Run(p, s).full(tmp_path / "first.parquet", out)
+    build(tmp_path / "first.parquet", out, s, p)
     files = lambda: {f: f.read_bytes() for f in out.rglob("*") if f.is_file() and f.name != ".lock"}
     before = files()
-    m = Run(p, s).match(tmp_path / "batch.parquet", out)
+    m = would_join(tmp_path / "batch.parquet", out, s, p)
     assert files() == before
     assert m.loc[m[uid] == g.df.iloc[0][uid], "status"].item() == "already in the run"
     assert set(m["status"]) == {"joins an entity", "a new entity", "already in the run"} and len(m) == len(g.df) - half + 1
-    Run(p, s).increment(tmp_path / "batch.parquet", out)
+    update(tmp_path / "batch.parquet", out, s, p)
     gold = pd.read_parquet(out / "gold.parquet").set_index(uid)["cluster_id"]
     assert (gold.loc[m[uid]].to_numpy() == m["entity"].to_numpy()).all()  # the entities the increment then gave
 
@@ -339,7 +342,8 @@ def test_a_sheet_given_back_with_no_decision_is_refused_and_one_typed_with_wide_
 
 def test_a_run_and_its_reports_land_together_even_when_the_write_is_cut_short(tmp_path, population, monkeypatch):
     import er.folder
-    from er.run import Run
+    from er.jobs.build import build
+    from er.jobs.update import update
     s, p, g = population
     g.df.to_parquet(tmp_path / "all.parquet", index=False)
     out, real = tmp_path / "run", er.folder.finish_writes
@@ -350,22 +354,22 @@ def test_a_run_and_its_reports_land_together_even_when_the_write_is_cut_short(tm
         real(folder)
     monkeypatch.setattr(er.folder, "finish_writes", killed)
     with pytest.raises(SystemExit):
-        Run(p, s).full(tmp_path / "all.parquet", out, pipeline_file=s.root / "config" / "final.toml")
+        build(tmp_path / "all.parquet", out, s, p, pipeline_file=s.root / "config" / "final.toml")
     monkeypatch.setattr(er.folder, "finish_writes", real)
-    again = Run(p, s).increment(tmp_path / "all.parquet", out)  # the retry: the next job finishes the moves, and finds nothing new
+    again = update(tmp_path / "all.parquet", out, s, p)  # the retry: the next job finishes the moves, and finds nothing new
     assert again.added == 0 and (out / "gold.parquet").exists()
     assert {"qa.md", "report.txt", "review.parquet"} <= {f.name for f in out.iterdir()} and not list(out.rglob("*.tmp"))
 
 
 def test_an_oversized_block_is_checked_on_a_sample_and_a_placeholder_is_skipped(tmp_path, population):
-    from er.run import Run
+    from er.jobs.build import build
     s, p, g = population
     uid = s.data.unique_id
     df = g.df.copy()
     dummy = df.index[:100]
     df.loc[dummy, ["PHONE_NUM_4", "GIVEN_NAME_KANA", "POST_CD"]] = ["0000", "タロウ", "1500042"]  # a dummy phone, and one given name and postal code: blocks of 100
     df.to_parquet(tmp_path / "in.parquet", index=False)
-    run = Run(p, s).full(tmp_path / "in.parquet", tmp_path / "run", pipeline_file=s.root / "config" / "final.toml")  # no stop
+    run = build(tmp_path / "in.parquet", tmp_path / "run", s, p, pipeline_file=s.root / "config" / "final.toml")  # no stop
     assert any("phone = 0000" in x and "placeholder" in x for x in run.examples)  # most of the pairs sharing a phone: read as missing, no block
     assert not run.gated["value"].str.contains("0000").any()
     block = run.gated[run.gated["value"].str.contains("タロウ") & (run.gated["generator"] == "given_name_postal")]
@@ -376,7 +380,7 @@ def test_an_oversized_block_is_checked_on_a_sample_and_a_placeholder_is_skipped(
     same = pd.concat([g.df.iloc[[0]]] * 70, ignore_index=True)  # 70 copies of one record: every key's block oversized
     same[uid] = [f"copy{i:03d}" for i in range(70)]
     pd.concat([g.df, same]).to_parquet(tmp_path / "copies.parquet", index=False)
-    run = Run(p, s).full(tmp_path / "copies.parquet", tmp_path / "copies")
+    run = build(tmp_path / "copies.parquet", tmp_path / "copies", s, p)
     gold = pd.read_parquet(tmp_path / "copies" / "gold.parquet").set_index(uid)
     assert gold.loc[same[uid], "cluster_id"].nunique() == 1  # the sample shows they match: kept and joined
     assert (run.gated["decision"] == "kept").any()
@@ -384,7 +388,8 @@ def test_an_oversized_block_is_checked_on_a_sample_and_a_placeholder_is_skipped(
 
 def test_a_customer_id_held_by_many_records_is_a_placeholder_every_step_and_the_lookup_read_as_missing(tmp_path, population):
     from er import index
-    from er.run import Run
+    from er.jobs.build import build
+    from er.jobs.update import update
     s, p, g = population
     uid = s.data.unique_id
     df = g.df.copy()
@@ -392,7 +397,7 @@ def test_a_customer_id_held_by_many_records_is_a_placeholder_every_step_and_the_
     df.loc[many, "CIF_ID"] = "00000000"  # one customer ID on 70 people: a placeholder
     df.loc[many, "PHONE_NUM_4"] = [f"{1000 + i % 7}" for i in range(len(many))]  # 7 phones: ID and phone together, blocks of 10
     df.to_parquet(tmp_path / "in.parquet", index=False)
-    run = Run(p, s).full(tmp_path / "in.parquet", tmp_path / "run")
+    run = build(tmp_path / "in.parquet", tmp_path / "run", s, p)
     kept, ids = pd.read_parquet(tmp_path / "run" / "rule_kept"), set(df.loc[many, uid])
     inside = kept[kept[f"{uid}_l"].isin(ids) & kept[f"{uid}_r"].isin(ids)]
     assert not inside["rule"].str.contains("CIF").any()  # X1, X3, F3: none pairs them by it
@@ -408,8 +413,8 @@ def test_a_customer_id_held_by_many_records_is_a_placeholder_every_step_and_the_
     first.loc[many[:40], "CIF_ID"] = "11111111"
     first.to_parquet(tmp_path / "first.parquet", index=False)
     batch.drop(columns=["BIRTH_DATE"]).to_parquet(tmp_path / "batch.parquet", index=False)  # a batch without the birth dates the run compares
-    Run(p, s).full(tmp_path / "first.parquet", tmp_path / "inc")
-    added = Run(p, s).increment(tmp_path / "batch.parquet", tmp_path / "inc")
+    build(tmp_path / "first.parquet", tmp_path / "inc", s, p)
+    added = update(tmp_path / "batch.parquet", tmp_path / "inc", s, p)
     assert added.added == 30 and json.loads((tmp_path / "inc" / "state" / "placeholders.json").read_text(encoding="utf-8")) == {"customer_id": ["11111111"]}
     assert any("pairs the run joined on it before stay until a full run" in x for x in added.notes)
     new = pd.read_parquet(sorted((tmp_path / "inc" / "state" / "records").glob("part-*.parquet"))[-1])
@@ -419,10 +424,10 @@ def test_a_customer_id_held_by_many_records_is_a_placeholder_every_step_and_the_
 def test_the_diagnosis_names_what_limits_the_run_the_most_pairs_first_each_with_its_fix(tmp_path, population):
     from er.match import _ranked, review_floor, search_floor
     from er.report import SHOWN, diagnosis, diagnosis_lines, qa
-    from er.run import Run
+    from er.jobs.build import build
     s, p, g = population
     g.df.to_parquet(tmp_path / "in.parquet", index=False)
-    run = Run(p, s).full(tmp_path / "in.parquet", tmp_path / "run")
+    run = build(tmp_path / "in.parquet", tmp_path / "run", s, p)
     tables, lo, m = qa(run, [f for f in s.columns if f not in ("id", "entity")]), review_floor(run.pipeline), run.scoring["er"]
     said = lambda: diagnosis_lines(diagnosis(run, tables, lo))[1:-1]
     top = {c["output_column_name"]: max(g for g, _ in _ranked(c)) for c in run.scoring["comparisons"]}
@@ -451,14 +456,14 @@ def test_the_diagnosis_names_what_limits_the_run_the_most_pairs_first_each_with_
 def test_the_run_report_holds_no_record_value(tmp_path, population):
     import re
     from er.report import qa, report_text
-    from er.run import Run
+    from er.jobs.build import build
     s, p, g = population
     uid = s.data.unique_id
     df = g.df.copy()
     df.loc[df.index[:100], ["PHONE_NUM_4", "ADDRESS_ONE"]] = ["0000", "東京都"]  # placeholders: notes that quote a value
     df.loc[df.index[100:170], ["CIF_ID", "FULL_NAME_KANA"]] = ["9999999999999", "ヤマダタロウ"]
     df.to_parquet(tmp_path / "in.parquet", index=False)
-    run = Run(p, s).full(tmp_path / "in.parquet", tmp_path / "run")
+    run = build(tmp_path / "in.parquet", tmp_path / "run", s, p)
     tables = qa(run, [f for f in s.columns if f not in ("id", "entity")])
     text = report_text(run, tables, s.root / "config" / "final.toml")
     assert any("9999999999999" in x for x in run.examples) and any("0000" in x for x in run.examples)
@@ -471,11 +476,11 @@ def test_the_run_report_holds_no_record_value(tmp_path, population):
 
 @pytest.fixture(scope="module")
 def reported(tmp_path_factory, population):  # one full run with a column no field reads, and its report.txt
-    from er.run import Run
+    from er.jobs.build import build
     s, p, g = population
     d = tmp_path_factory.mktemp("reported")
     g.df.assign(SPARE_PHONE=g.df["PHONE_NUM_4"]).to_parquet(d / "in.parquet", index=False)
-    run = Run(p, s).full(d / "in.parquet", d / "run", pipeline_file=s.root / "config" / "final.toml")
+    run = build(d / "in.parquet", d / "run", s, p, pipeline_file=s.root / "config" / "final.toml")
     return run, (d / "run" / "report.txt").read_text(encoding="utf-8"), d / "run"
 
 
@@ -519,12 +524,12 @@ def test_the_run_report_says_what_each_em_session_learned_from(reported):
 
 
 def test_the_runaway_guard_stops_only_what_would_not_fit(tmp_path, population, monkeypatch):
-    from er.run import Run
+    from er.jobs.build import build
     s, p, g = population
     g.df.to_parquet(tmp_path / "in.parquet", index=False)
-    monkeypatch.setattr(Run, "capacity", lambda self: 10)
+    monkeypatch.setattr("er.steps.budget.capacity", lambda engine: 10)
     with pytest.raises(InputError, match="more than fit in memory"):
-        Run(p, s).full(tmp_path / "in.parquet", tmp_path / "run")
+        build(tmp_path / "in.parquet", tmp_path / "run", s, p)
 
 
 def test_the_generator_makes_direct_matches_rare_households_their_own_entities_and_reports_how_hard_it_is():
@@ -607,7 +612,7 @@ def test_the_commands_the_tests_start_run_this_checkout_s_code(tmp_path):  # fro
 
 def test_two_people_of_one_household_are_labelled_and_a_copy_of_one_is_not(tmp_path, population):
     from er.report import households
-    from er.run import Run
+    from er.jobs.build import build
     s, p, g = population
     uid = s.data.unique_id
     cols = ["GIVEN_NAME_KANA", "LAST_NAME_KANA", "PHONE_NUM_4", "ADDR_CD"]
@@ -618,7 +623,7 @@ def test_two_people_of_one_household_are_labelled_and_a_copy_of_one_is_not(tmp_p
     copy = one.copy()
     copy[uid] = "copy"
     pd.concat([g.df, pd.DataFrame([member, copy])], ignore_index=True).to_parquet(tmp_path / "in.parquet", index=False)
-    run = Run(p, s).full(tmp_path / "in.parquet", tmp_path / "run", pipeline_file=s.root / "config" / "final.toml")  # with its reports, as nayose runs it
+    run = build(tmp_path / "in.parquet", tmp_path / "run", s, p, pipeline_file=s.root / "config" / "final.toml")  # with its reports, as nayose runs it
     pairs = f"""SELECT * FROM (VALUES ('{one[uid]}', 'member'), ('{one[uid]}', 'copy')) t("{uid}_l", "{uid}_r")"""
     assert households(run.engine, "records", pairs, uid, run.pipeline) == {(one[uid], "member")}  # the copy: the same given name
     sheet = pd.read_parquet(tmp_path / "run" / "review.parquet")
@@ -637,12 +642,13 @@ def test_a_run_s_progress_follows_this_version_s_steps_when_the_last_run_lacked_
 
 def test_em_on_fields_learns_one_session_blocked_on_each_and_the_fit_owes_an_increment_no_rerun(population, tmp_path):
     from er.config import Key
-    from er.run import Run, run_config
+    from er.jobs.build import build
+    from er.steps.write import run_config
     s, p, g = population
     q = replace(p, fit_rows=30000, fs=replace(p.fs, model=replace(p.fs.model, em_rules=((Key("birth_date"),), (Key("person_name", ("kana_fold",)),)))))
     assert run_config(q, s) == run_config(p, s) != run_config(replace(p, fs=replace(p.fs, min_match_weight=9)), s)  # an increment scores with the stored model
     g.df.to_parquet(tmp_path / "in.parquet", index=False)
-    run = Run(q, s).full(tmp_path / "in.parquet", tmp_path / "w")
+    run = build(tmp_path / "in.parquet", tmp_path / "w", s, q)
     assert not {"birth_date", "person_name"} & set(run.model["er"]["skipped"])  # both sessions found pairs to learn from
 
 

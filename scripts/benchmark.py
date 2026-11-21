@@ -35,7 +35,10 @@ from design.generate import KindProblems, generate, kind_problems, load_referenc
 from er.io import markdown, read_parquet
 from design.probe import probe
 from er.report import qa
-from er.run import Run
+from er.steps.fit import fit
+from er.steps.job import Ran, start
+from er.steps.load import load
+from er.jobs.build import build
 from er.settings import load_settings, shared_name
 
 logging.disable(logging.WARNING)
@@ -76,7 +79,7 @@ def quality(run: Path, truth: pd.DataFrame) -> dict:
                 false_links=int(false_pairs(x[f"{UID}_l"], x[f"{UID}_r"], entity, household).sum()))
 
 
-def unlisted(run: Run) -> dict:
+def unlisted(run: Ran) -> dict:
     """The matches the keys miss, estimated without labels on a run that has clustered: the gap at the model's line
     (design.gap) and the probe's, summed over its strata (design.probe), each with its 95% interval."""
     line = next(x for x in gap(run)["thresholds"] if x["bits"] == run.pipeline.fs.min_match_weight)
@@ -107,9 +110,12 @@ def scenarios() -> pd.DataFrame:
                 records[which == part].to_parquet(d / f"{part}.parquet", index=False)
             made[repr(spec)] = d, truth
         d, truth = made[repr(spec)]
-        fit = Run(p, S)
-        fit.load(d / "train.parquet")
-        run = Run(p, S, model=fit.fit()).full(d / "test.parquet", OUT / f"scenario_{i}", overwrite=True)  # this script's own folders
+        job = start(S, p)  # the model fitted on train, as a run fits it
+        loaded = load(job, d / "train.parquet")
+        job.pipeline = loaded.pipeline
+        model = fit(job, loaded.n).model
+        job.engine.close()
+        run = build(d / "test.parquet", OUT / f"scenario_{i}", S, p, model=model, overwrite=True)  # this script's own folders
         rows.append(dict(scenario=name, **quality(OUT / f"scenario_{i}", truth), **unlisted(run)))
         print(rows[-1], flush=True)
     return pd.DataFrame(rows)
@@ -143,7 +149,7 @@ def kinds(entities: int) -> pd.DataFrame:
         for how, folder, pipeline, records in (("the truth", "truth", flag_only, "truth_flag.parquet"),
                                                ("the flag alone", "flag", flag_only, "records.parquet"),
                                                ("the kind step", "kind", p, "records.parquet")):
-            run = Run(pipeline, s).full(d / records, d / folder)
+            run = build(d / records, d / folder, s, pipeline)
             gold = read_parquet(d / folder / "gold.parquet").set_index(UID).join(truth[["ENTITY_ID", "KIND", "HOUSEHOLD_ID"]])
             m = cluster_metrics(gold["cluster_id"], gold["ENTITY_ID"], gold["HOUSEHOLD_ID"])
             mixed = gold.assign(c=gold["KIND"].eq("company")).groupby("cluster_id")["c"].agg(["any", "all"])

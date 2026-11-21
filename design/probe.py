@@ -20,6 +20,7 @@ import duckdb
 from er.cluster import merge
 from er.config import FSSpec, Probe, bits, q
 from er.match import bound_tests, named_sql, score_fs
+from er.steps.rules import sized
 
 EXAMPLES = 200  # hit pairs kept per stratum, for people to see
 
@@ -78,5 +79,5 @@ def probe(run) -> list[dict]:
     links = f"""SELECT {l}, {r} FROM matches
         UNION ALL SELECT {l}, {r} FROM rule_kept k WHERE NOT EXISTS (SELECT 1 FROM er_decisions d WHERE d.{l} = k.{l} AND d.{r} = k.{r} AND d.decision = 'no_match')
         UNION ALL SELECT {l}, {r} FROM er_decisions WHERE decision = 'match'"""
-    return missed(run.engine, run.scoring, fs, run.pipeline.probe, "records", links, run.uid, None if fs.bridge else run._sized("rule_clusters", ">"),
+    return missed(run.engine, run.scoring, fs, run.pipeline.probe, "records", links, run.uid, None if fs.bridge else sized("rule_clusters", ">", run.uid),
                   apart=f"SELECT {l}, {r} FROM er_decisions WHERE decision = 'no_match'")
