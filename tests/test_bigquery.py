@@ -9,7 +9,6 @@ from collections import Counter
 import pytest
 
 from er.engine.bigquery import FUNCTIONS, UDFS, BigQuery, NotPortable, functions, translate
-from er.strings import FUNCTIONS as SCORERS
 
 DATASET = "project.dataset"
 
@@ -39,19 +38,24 @@ def pairs(n: int, seed: int = 0) -> list[tuple[str, str]]:
     return out
 
 
-def test_each_comparison_function_in_javascript_scores_as_rapidfuzz_does():
-    """20,000 pairs, each function: the same score to the last bit (Jaro–Winkler's boost a fused multiply-add, as
-    rapidfuzz's build here computes it). A NULL side is NULL, as DuckDB's functions give it."""
+def test_each_comparison_function_in_javascript_scores_as_duckdb_s_engine_does(engine):
+    """20,000 pairs, each function: the score DuckDB's engine gives (cl_<name>, rapidfuzz's through cpdist: Jaro and
+    Jaro–Winkler as float32s), the same in JavaScript to the last bit, on every machine: the float32 hides how a build
+    of rapidfuzz rounds the double. A NULL side is NULL, as DuckDB's functions give it."""
+    import pandas as pd
     mini_racer = pytest.importorskip("py_mini_racer")
     ctx = mini_racer.MiniRacer()
     ctx.eval(UDFS.read_text(encoding="utf-8"))
     given = pairs(20_000)
-    for name in FUNCTIONS:
-        got = json.loads(ctx.eval(f"JSON.stringify({json.dumps(given, ensure_ascii=False)}.map(([a, b]) => {name}(a, b)))"))
-        scorer = SCORERS[name].scorer
-        want = [float(scorer(a, b)) if name != "jaccard" or a or b else 0.0 for a, b in given]
-        wrong = [(a, b, g, w) for (a, b), g, w in zip(given, got, want) if g != w]
-        assert not wrong, (name, len(wrong), wrong[:3])
+    engine.register("er_t_pairs", pd.DataFrame(given, columns=["a", "b"], dtype="string").assign(i=range(len(given))))
+    try:
+        for name in FUNCTIONS:
+            got = json.loads(ctx.eval(f"JSON.stringify({json.dumps(given, ensure_ascii=False)}.map(([a, b]) => {name}(a, b)))"))
+            want = [x for (x,) in engine.rows(f"SELECT cl_{name}(a, b) FROM er_t_pairs ORDER BY i")]
+            wrong = [(a, b, g, w) for (a, b), g, w in zip(given, got, want) if g != w]
+            assert not wrong, (name, len(wrong), wrong[:3])
+    finally:
+        engine.unregister("er_t_pairs")
 
 
 def test_the_deploy_makes_each_function_twice_and_the_hash_once():
