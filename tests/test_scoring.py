@@ -68,13 +68,23 @@ def test_a_u_sample_is_drawn_once_per_set_of_records(engine, records, monkeypatc
 
 
 def test_a_u_sample_counted_in_one_pass_gives_splink_s_u_to_the_last_bit(engine):
-    """Against Splink 5.0.0's random sampling of the same records, as recorded (tests/fixtures/splink-5.0.0.json)."""
+    """Every pair: against Splink 5.0.0's random sampling of the same records, as recorded (tests/fixtures/splink-5.0.0.json).
+    A share of them: the records the portable hash draws (er.config.hashed, as Python's MD5 computes it), every pair of
+    them counted as every pair is."""
+    import hashlib
     records = pd.read_parquet(FIXTURES / "splink-5.0.0" / "records.parquet")
     gaps = records.assign(name=records["name"].mask(records.index % 7 == 0))  # a missing side: neither level's
     for pairs in (1e4, 300):  # every pair, and the share of records a hash of their ID draws
         m = replace(model(extra_name_levels=(Level(label="never", any_of=(("name", Comparator("jaro_winkler", 0.95)),)),)), u_max_pairs=pairs)
         ours = sample_u(m, list(m.comparisons), gaps, engine, UID)
-        assert ours == SPLINK["u_sample"][repr(pairs)] and "never" not in ours["name"] and 0 < sum(ours["name"].values()) <= 1, pairs
+        assert "never" not in ours["name"] and 0 < sum(ours["name"].values()) <= 1, pairs
+        if pairs == 1e4:
+            assert ours == SPLINK["u_sample"][repr(pairs)]
+            continue
+        share = 0.5 * ((8 * pairs + 1) ** 0.5 + 1) / len(gaps)
+        drawn = gaps[[int(hashlib.md5(f"{x}_{m.seed}".encode()).hexdigest()[:15], 16) % 1_000_000_000 < max(1, round(share * 1e9)) for x in gaps[UID]]]
+        assert 0 < len(drawn) < len(gaps)
+        assert ours == sample_u(replace(m, u_max_pairs=1e9), list(m.comparisons), drawn.reset_index(drop=True), engine, UID)
 
 
 def test_a_u_sample_kept_by_a_workspace_is_read_again_and_drawn_again_once_what_it_rests_on_changes(engine, records, monkeypatch, tmp_path):

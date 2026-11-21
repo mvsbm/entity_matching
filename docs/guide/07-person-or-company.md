@@ -61,8 +61,8 @@ The name model it judges is the run's own: trained on `design.generate.kind_trai
 | any | the truth | 50.2% | 5 | 0 | 0 | 0 | 100.0% |
 | good | the flag alone | 49.1% | 38 | 27 | 306 | 102 | 98.5% |
 | good | the kind step | 49.0% | 33 | 26 | 554 | 63 | 97.4% |
-| medium | the flag alone | 47.2% | 79 | 61 | 886 | 256 | 95.8% |
-| medium | the kind step | 47.3% | 73 | 59 | 1,091 | 153 | 94.8% |
+| medium | the flag alone | 47.1% | 79 | 61 | 886 | 256 | 95.8% |
+| medium | the kind step | 47.2% | 73 | 59 | 1,091 | 153 | 94.8% |
 | poor | the flag alone | 40.5% | 121 | 93 | 2,533 | 644 | 87.9% |
 | poor | the kind step | 41.5% | 111 | 86 | 2,690 | 314 | 87.2% |
 

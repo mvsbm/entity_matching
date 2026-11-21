@@ -1,4 +1,4 @@
-"""Benchmark the chosen pipeline (config/final.toml) as it runs on real files: er.run, without labels, on DuckDB
+"""Benchmark the chosen pipeline (config/final.toml) as it runs on real files: er.jobs.build, without labels, on DuckDB
 tables. Writes reports/benchmark.md. Nothing is re-tuned.
 
     .venv/bin/python scripts/benchmark.py                 # scenarios and the cost curve up to 60,000 entities
@@ -205,7 +205,7 @@ def main() -> None:
     robust, kind, curve = scenarios(), kinds(20_000), cost(args.entities, args.memory_limit)
     limit = args.memory_limit or "DuckDB's default (80% of RAM)"
     report = ["# Benchmark", "",
-              f"Written by `{shlex.join(['scripts/benchmark.py', *sys.argv[1:]])}`: `config/final.toml` through `er.run`, the run "
+              f"Written by `{shlex.join(['scripts/benchmark.py', *sys.argv[1:]])}`: `config/final.toml` through `jobs.build.build`, the run "
               "without labels on DuckDB tables, on generated populations. Nothing is re-tuned.", "",
               "## Quality: scenarios", "",
               "Each population's test split, with λ and m fitted on its train split without labels and u measured on the test split, as a run does. `false_merges` are pairs of "

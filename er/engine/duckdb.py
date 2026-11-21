@@ -37,6 +37,8 @@ class DuckDB:
 
     def __init__(self, con: duckdb.DuckDBPyConnection) -> None:
         self.con = con
+        # the portable hash (er.config.hashed): MD5's first 15 hex digits as an integer, as BigQuery computes it too
+        con.execute("CREATE OR REPLACE MACRO er_hash(x) AS ('0x' || substr(md5(coalesce(CAST(x AS VARCHAR), '')), 1, 15))::BIGINT")
 
     def run(self, sql: str, params: list | None = None) -> None:
         self.con.execute(sql, params)

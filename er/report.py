@@ -14,7 +14,7 @@ import numpy as np
 import pandas as pd
 
 from er.engine.engine import Engine
-from er.config import GIVEN, InputError, Key, Pipeline, lit, q, sources_text
+from er.config import GIVEN, hashed, InputError, Key, lit, Pipeline, q, sources_text
 from er.io import code_version, read_parquet
 from er.kind import COMPANY, PERSON, SAYS, UNSURE
 from er.match import ELSE, GIVEN_SHARE, _ranked, levels, named_sql, parameters, pattern_coverage, review_floor, scaled_prior, search_floor
@@ -38,7 +38,7 @@ def fill_rates(run: "Ran", fields: list[str] | None = None, sample: int = 10_000
         return pd.DataFrame(columns=["field", "filled", "looks_right", "top_value", "no_letters", "length", "longest", "flag"])
     filled = run.engine.row(f"SELECT {', '.join(f'avg(({q(f)} IS NOT NULL)::INT)' for f in fs)} FROM records")
     run.engine.run(f"CREATE OR REPLACE TEMP TABLE er_fill_sample AS SELECT {', '.join(f'{q(f)}::VARCHAR AS {q(f)}' for f in fs)} "
-                    f"FROM records ORDER BY hash({q(run.uid)}) LIMIT {sample}")  # by ID: the same sample whatever the rows' order
+                    f"FROM records ORDER BY {hashed(q(run.uid))} LIMIT {sample}")  # by ID: the same sample whatever the rows' order
     pattern = {f: run.settings.detect[f] for f in fs if f in run.settings.detect}
     looks = dict(zip(pattern, run.engine.row("SELECT " + ", ".join(f"avg(regexp_matches({q(f)}, {lit(p)})::INT)" for f, p in pattern.items())
                                               + " FROM er_fill_sample"))) if pattern else {}
@@ -92,7 +92,7 @@ def qa(run: "Ran", fields: list[str] | None = None, review: int = 50, previous: 
               AND NOT EXISTS (SELECT 1 FROM er_decisions d WHERE d.{l} = s.{l} AND d.{r} = s.{r}))
         QUALIFY row_number() OVER (PARTITION BY k1, k2 ORDER BY match_weight DESC, {l}, {r}) = 1
         ORDER BY match_weight DESC, {l}, {r}""").assign(why="decide")
-    audit = engine.frame(f"""SELECT * EXCLUDE (k) FROM (SELECT s.*, m.sources, row_number() OVER (PARTITION BY floor(s.match_weight) ORDER BY hash(s.{l}, s.{r})) AS k
+    audit = engine.frame(f"""SELECT * EXCLUDE (k) FROM (SELECT s.*, m.sources, row_number() OVER (PARTITION BY floor(s.match_weight) ORDER BY {hashed(f's.{l}', f's.{r}')}) AS k
                         FROM matches m JOIN scores s USING ({l}, {r}) WHERE s.match_weight < {t + 4}
                           AND NOT EXISTS (SELECT 1 FROM er_decisions d WHERE d.{l} = s.{l} AND d.{r} = s.{r}))
                         WHERE k <= {max(1, review // 4)} ORDER BY match_weight, {l}, {r}""").assign(why="audit")

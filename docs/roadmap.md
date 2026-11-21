@@ -17,10 +17,10 @@ and in which order. Strike each step through as it lands.
 table, name a table, drop one), one DuckDB and one BigQuery implementation, chosen by `ENGINE=duckdb|bigquery`.
 
 - **SQL is written once**, in DuckDB's dialect, and sqlglot translates it for BigQuery. Tried on our hardest queries:
-  `DISTINCT ON`, casts and `GROUP BY ALL` translate. String slicing (`x[:i-1]`), `hash()` and DuckDB's
-  `UNPIVOT … COLUMNS(*)` don't: about five patterns to write once in a portable form.
-- **One hash for both engines.** The u sample and the fit's sample order are drawn by a hash; DuckDB's and BigQuery's
-  differ, so both use an MD5-based one. Changing it moves today's samples once (a one-time shift in u, measured and shown).
+  `DISTINCT ON`, casts and `GROUP BY ALL` translate. String slicing (`x[:i-1]`) and DuckDB's `UNPIVOT … COLUMNS(*)`
+  don't: a few patterns to write once in a portable form.
+- ~~**One hash for both engines.**~~ Every draw and order by hash goes through `er_hash` (`config.hashed`: MD5's first
+  60 bits as an integer), a macro DuckDB's engine defines and BigQuery's will define alike.
 - **Parity in CI.** The same small file (100k records) through both engines, compared by digest: clusters and pairs
   exactly, scores to 9 decimals. That check is what makes "the same code" true; it costs cents of BigQuery.
 
@@ -75,7 +75,7 @@ er/
                                                          the index: built, kept up to date, looked up
   steps/    job.py  load.py  budget.py  fit.py  rules.py  candidates.py  score.py  cluster.py  write.py  report.py
   engine/   engine.py (the interface)  duckdb.py
-            to come: bigquery.py  portable.py (hash, slicing, …)
+            to come: bigquery.py, and the portable forms of slicing and UNPIVOT (the hash is er.config.hashed)
   model.py  to come: the Fellegi–Sunter model as plain Python: levels, points, λ (no SQL)
   config.py the settings and the method, each section saying which step reads it
   …         what the steps call: match.py, candidates.py, cluster.py, folder.py, report.py, …
