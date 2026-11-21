@@ -170,7 +170,7 @@ trained once and its signals computed once; a combination fits only its combiner
   does, each cluster one node, so connected components run over the clusters the pairs touch, not over every record.
 - **An increment's records in one table**: the stored parts and the batch are read once, into `records`, which every
   later step reads.
-- **String functions on one thread per DuckDB call** (`er.strings.udf`). DuckDB already calls them on all its threads,
+- **String functions on one thread per DuckDB call** (`er/engine/duckdb.py`, its `udf`). DuckDB already calls them on all its threads,
   so a thread pool per call costs more than it saves: the rules call Damerau–Levenshtein about 20 values at a time, and
   on a million records a pool per call made the rules take 15 s instead of 4 s. Running the functions in worker
   processes instead was slower (the fit 21 s instead of 12 s): a value takes 0.2 to 1 µs to compare, and passing a batch

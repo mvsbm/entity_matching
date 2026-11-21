@@ -22,7 +22,7 @@ from er.run import Run
 from design import experiments
 from design.select import FSChooser, RulesChooser
 from er.settings import load_settings
-from er.strings import connect
+from er.engine.duckdb import connect
 
 
 def main() -> None:
@@ -40,7 +40,7 @@ def main() -> None:
     report_file.parent.mkdir(parents=True, exist_ok=True)
     p = load_pipeline(s.root / "config" / "pipeline.toml", s.standardize, s.chains, s.columns)
     x = experiments
-    con = connect()
+    engine = connect()
     report = ["# Choosing the configuration", "",
               "Written by `scripts/choose.py` from `config/pipeline.toml` and `design/experiments.py`, on the labelled synthetic "
               "datasets. " + ("Test is scored once per stage, at the end of each." if args.test else
@@ -58,7 +58,7 @@ def main() -> None:
     rules = RulesChooser(p.rules, p, s, x.rules_changes(p), x.RULES_DECISIONS,
                          replace(x.rules_tune(s.paths["optuna"]), enabled=args.optuna))
     section("Stage 1: rules", [rules.design, rules.ab, rules.decide, rules.cost, rules.evaluate, rules.output, rules.search])
-    fs = FSChooser(p.fs, p, rules.final, s, con, x.fs_changes(p), x.FS_DECISIONS, replace(x.fs_tune(s.paths["optuna"]), enabled=args.optuna))
+    fs = FSChooser(p.fs, p, rules.final, s, engine, x.fs_changes(p), x.FS_DECISIONS, replace(x.fs_tune(s.paths["optuna"]), enabled=args.optuna))
     section("Stage 2: Fellegi–Sunter", [fs.candidates_on_train, fs.training, fs.threshold, fs.ab, fs.decide, fs.will_it_scale,
                                          fs.evaluate, fs.why, fs.output, fs.search])
 

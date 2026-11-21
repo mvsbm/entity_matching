@@ -16,6 +16,7 @@ import duckdb
 import pandas as pd
 import pyarrow.parquet as pq
 
+from er.engine.engine import Engine
 from er import intake
 from er.config import InputError, lit, q
 from er.io import alive, lock, object_store, patiently, replace_text
@@ -96,7 +97,7 @@ def finish_writes(out: Path) -> None:
         pending.unlink()
 
 
-def stage(con: duckdb.DuckDBPyConnection, out: Path, tables: list[tuple[str, Path]], texts: list[tuple[str | Callable[[], str], Path]] = (),
+def stage(engine: Engine, out: Path, tables: list[tuple[str, Path]], texts: list[tuple[str | Callable[[], str], Path]] = (),
           replace: list[Path] | None = None, frames: list[tuple[pd.DataFrame, Path]] = ()) -> None:
     """Write every file under a temporary name; once all are complete, save the moves still owed (pending.json),
     then do them. An interruption before that leaves the folder as it was; one after it, finish_writes completes.
@@ -109,7 +110,7 @@ def stage(con: duckdb.DuckDBPyConnection, out: Path, tables: list[tuple[str, Pat
     tmp = lambda d: out / FULL_TMP / d.relative_to(out) if whole(d) else d.with_name(d.name + ".tmp")
     for sql, dest in tables:
         tmp(dest).parent.mkdir(parents=True, exist_ok=True)
-        con.execute(f"COPY ({sql}) TO {lit(tmp(dest))} (FORMAT parquet)")
+        engine.run(f"COPY ({sql}) TO {lit(tmp(dest))} (FORMAT parquet)")
     for text, dest in texts:
         tmp(dest).parent.mkdir(parents=True, exist_ok=True)
         tmp(dest).write_text(text() if callable(text) else text, encoding="utf-8")

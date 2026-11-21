@@ -24,7 +24,7 @@ from er.match import bound_tests, named_sql, score_fs
 EXAMPLES = 200  # hit pairs kept per stratum, for people to see
 
 
-def missed(con: duckdb.DuckDBPyConnection, model: dict, fs: FSSpec, spec: Probe, records: str, links: str, uid: str,
+def missed(engine: duckdb.DuckDBPyConnection, model: dict, fs: FSSpec, spec: Probe, records: str, links: str, uid: str,
            resolved: str | None = None, apart: str | None = None) -> list[dict]:
     """Each stratum of `spec`, measured on `records` (the run's standardized records) with the run's `model`, against
     `links` (SQL: uid_l, uid_r, the model's likely links): its pairs, the share of records drawn, the pairs scored,
@@ -33,33 +33,33 @@ def missed(con: duckdb.DuckDBPyConnection, model: dict, fs: FSSpec, spec: Probe,
     joins: why "rules", not "keys", so a key can't find them. `apart` (SQL: uid_l, uid_r) are pairs people said are
     different: never hits."""
     u, l, r = q(uid), q(f"{uid}_l"), q(f"{uid}_r")
-    have = {c for c, *_ in con.execute(f"DESCRIBE SELECT * FROM {records}").fetchall()}
-    con.execute(f"CREATE OR REPLACE TABLE er_pr_single AS SELECT {u}, {u} AS cluster_id FROM {records}")
-    merge(con, "er_pr_single", f"({links})", "er_pr_joined", uid)
+    have = {c for c, *_ in engine.rows(f"DESCRIBE SELECT * FROM {records}")}
+    engine.run(f"CREATE OR REPLACE TABLE er_pr_single AS SELECT {u}, {u} AS cluster_id FROM {records}")
+    merge(engine, "er_pr_single", f"({links})", "er_pr_joined", uid)
     out = []
     for name, keys in spec.strata:
         cols = [k.name for k in keys]
         if not set(cols) <= have:
             continue
         filled, by = " AND ".join(f"{q(c)} IS NOT NULL" for c in cols), ", ".join(map(q, cols))
-        squares, pairs = con.execute(f"SELECT coalesce(sum(c * c), 0), coalesce(sum(c * (c - 1) // 2), 0) FROM (SELECT count(*) AS c FROM {records} WHERE {filled} GROUP BY {by})").fetchall()[0]
+        squares, pairs = engine.row(f"SELECT coalesce(sum(c * c), 0), coalesce(sum(c * (c - 1) // 2), 0) FROM (SELECT count(*) AS c FROM {records} WHERE {filled} GROUP BY {by})")
         if not squares:  # no record holds the stratum's value: nothing to draw from
             continue
         cut = max(1, round(min(1.0, spec.pairs / squares) * 2**32))  # the share drawn, as the draw makes it: at any size at least one in 2³²
         f = cut / 2**32
-        con.execute(f"""CREATE OR REPLACE TABLE er_pr_pairs AS SELECT DISTINCT least(a.{u}, b.{u}) AS {l}, greatest(a.{u}, b.{u}) AS {r}
+        engine.run(f"""CREATE OR REPLACE TABLE er_pr_pairs AS SELECT DISTINCT least(a.{u}, b.{u}) AS {l}, greatest(a.{u}, b.{u}) AS {r}
             FROM (SELECT * FROM {records} WHERE {filled} AND hash({u}) % 4294967296 < {cut}) a
             JOIN {records} b USING ({by}) WHERE a.{u} <> b.{u}""")
-        scored = con.execute("SELECT count(*) FROM er_pr_pairs").fetchall()[0][0]
+        scored = engine.value("SELECT count(*) FROM er_pr_pairs")
         hits = []
         if scored:
-            score_fs(model, records, "er_pr_pairs", con, uid, into="er_pr_scores", floor=fs.min_match_weight, bound=bound_tests(fs.model))  # a hit is at the line
+            score_fs(model, records, "er_pr_pairs", engine, uid, into="er_pr_scores", floor=fs.min_match_weight, bound=bound_tests(fs.model))  # a hit is at the line
             between = f"s.{l} IN {resolved} AND s.{r} IN {resolved}" if resolved else "FALSE"
-            hits = con.execute(f"""SELECT s.{l}, s.{r}, round(s.match_weight, 2), CASE WHEN {between} THEN 'rules' ELSE 'keys' END
+            hits = engine.rows(f"""SELECT s.{l}, s.{r}, round(s.match_weight, 2), CASE WHEN {between} THEN 'rules' ELSE 'keys' END
                 FROM er_pr_scores s JOIN er_pr_joined a ON a.{u} = s.{l}
                 JOIN er_pr_joined b ON b.{u} = s.{r} WHERE s.match_weight >= {bits(fs.min_match_weight)} AND {named_sql(fs)}
                 AND a.cluster_id <> b.cluster_id {f"AND NOT EXISTS (SELECT 1 FROM ({apart}) x WHERE x.{l} = s.{l} AND x.{r} = s.{r})" if apart else ""}
-                ORDER BY hash(s.{l}, s.{r})""").fetchall()  # in hash order: the first are a random sample of them
+                ORDER BY hash(s.{l}, s.{r})""")  # in hash order: the first are a random sample of them
         drawn = 1 - (1 - f) ** 2  # a pair is drawn when either of its records is
         h = len(hits)
         low, high = (max(h - 1.96 * math.sqrt(h), 0.0), h + 1.96 * math.sqrt(h)) if h else (0.0, 3.0)  # none: the rule of three
@@ -78,5 +78,5 @@ def probe(run) -> list[dict]:
     links = f"""SELECT {l}, {r} FROM matches
         UNION ALL SELECT {l}, {r} FROM rule_kept k WHERE NOT EXISTS (SELECT 1 FROM er_decisions d WHERE d.{l} = k.{l} AND d.{r} = k.{r} AND d.decision = 'no_match')
         UNION ALL SELECT {l}, {r} FROM er_decisions WHERE decision = 'match'"""
-    return missed(run.con, run.scoring, fs, run.pipeline.probe, "records", links, run.uid, None if fs.bridge else run._sized("rule_clusters", ">"),
+    return missed(run.engine, run.scoring, fs, run.pipeline.probe, "records", links, run.uid, None if fs.bridge else run._sized("rule_clusters", ">"),
                   apart=f"SELECT {l}, {r} FROM er_decisions WHERE decision = 'no_match'")
