@@ -18,7 +18,7 @@ import math
 import duckdb
 
 from er.cluster import merge
-from er.config import FSSpec, Probe, bits, q
+from er.config import bits, FSSpec, hashed, Probe, q
 from er.match import bound_tests, named_sql, score_fs
 from er.steps.rules import sized
 
@@ -49,7 +49,7 @@ def missed(engine: duckdb.DuckDBPyConnection, model: dict, fs: FSSpec, spec: Pro
         cut = max(1, round(min(1.0, spec.pairs / squares) * 2**32))  # the share drawn, as the draw makes it: at any size at least one in 2³²
         f = cut / 2**32
         engine.run(f"""CREATE OR REPLACE TABLE er_pr_pairs AS SELECT DISTINCT least(a.{u}, b.{u}) AS {l}, greatest(a.{u}, b.{u}) AS {r}
-            FROM (SELECT * FROM {records} WHERE {filled} AND hash({u}) % 4294967296 < {cut}) a
+            FROM (SELECT * FROM {records} WHERE {filled} AND {hashed(u)} % 4294967296 < {cut}) a
             JOIN {records} b USING ({by}) WHERE a.{u} <> b.{u}""")
         scored = engine.value("SELECT count(*) FROM er_pr_pairs")
         hits = []
@@ -60,7 +60,7 @@ def missed(engine: duckdb.DuckDBPyConnection, model: dict, fs: FSSpec, spec: Pro
                 FROM er_pr_scores s JOIN er_pr_joined a ON a.{u} = s.{l}
                 JOIN er_pr_joined b ON b.{u} = s.{r} WHERE s.match_weight >= {bits(fs.min_match_weight)} AND {named_sql(fs)}
                 AND a.cluster_id <> b.cluster_id {f"AND NOT EXISTS (SELECT 1 FROM ({apart}) x WHERE x.{l} = s.{l} AND x.{r} = s.{r})" if apart else ""}
-                ORDER BY hash(s.{l}, s.{r})""")  # in hash order: the first are a random sample of them
+                ORDER BY {hashed(f's.{l}', f's.{r}')}""")  # in hash order: the first are a random sample of them
         drawn = 1 - (1 - f) ** 2  # a pair is drawn when either of its records is
         h = len(hits)
         low, high = (max(h - 1.96 * math.sqrt(h), 0.0), h + 1.96 * math.sqrt(h)) if h else (0.0, 3.0)  # none: the rule of three

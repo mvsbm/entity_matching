@@ -28,7 +28,7 @@ from sqlglot import exp
 
 ROOT = Path(__file__).resolve().parents[1]
 DIAGRAMS = ROOT / "docs" / "diagrams"
-PLUMBING = {"config.q", "config.lit", "config.bits"}  # SQL quoting
+PLUMBING = {"config.q", "config.lit", "config.bits", "config.hashed"}  # SQL quoting, and the portable hash
 TRANSIENT = {"pending.json", "jobs.jsonl"}  # in a workspace only while a write is cut short; the scheduler's ledger
 EXTENSIONS = {"py", "toml", "md", "parquet", "json", "jsonl", "txt", "npz", "svg", "puml", "lock", "tmp", "ipynb", "pdf"}
 

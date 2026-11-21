@@ -12,7 +12,7 @@ import numpy as np
 import pandas as pd
 
 from er.candidates import KEEP_SLICE, Records, deletions_sql
-from er.config import EditKeys, Key, Pipeline, keys_of, q
+from er.config import EditKeys, hashed, Key, keys_of, Pipeline, q
 from er.match import DISTANCES, SIMILARITIES, _bits, _ranked, bound_tests, scaled_prior, search_floor, score_fs
 from er.steps.candidates import reaching
 from er.steps.rules import alone
@@ -98,7 +98,7 @@ def discover(run, records: int, floor: float | None = None) -> Found:
     ok = reachable(run, floor)
     cols = list(dict.fromkeys(a.column for a in found))
     engine.run(f"CREATE OR REPLACE TABLE er_kl_r AS SELECT {u}, {', '.join(map(q, cols))} FROM records SEMI JOIN er_kl_ok USING ({u})")  # narrow
-    engine.run(f"CREATE OR REPLACE TABLE er_kl_s AS SELECT {u} FROM er_kl_r WHERE hash({u}) % 1000000000 < {int(f * 1e9)}")
+    engine.run(f"CREATE OR REPLACE TABLE er_kl_s AS SELECT {u} FROM er_kl_r WHERE {hashed(u)} % 1000000000 < {int(f * 1e9)}")
     engine.run("CREATE OR REPLACE TABLE er_kl_p (l VARCHAR, r VARCHAR); CREATE OR REPLACE TABLE er_kl_q (l VARCHAR, r VARCHAR)")
     def bounded() -> None:  # the pairs listed so far, distinct, only those that can reach 0 (the run's two-stage bound): one pass, not one per atom
         engine.run(f"INSERT INTO er_kl_p SELECT l, r FROM ({reaching(run.job, run.scoring, run.n, 'SELECT DISTINCT l, r FROM er_kl_q')}); DELETE FROM er_kl_q")

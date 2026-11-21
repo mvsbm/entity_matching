@@ -7,7 +7,7 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass
 
-from er.config import bits, q
+from er.config import bits, hashed, q
 from er.match import bound_tests, named_sql, review_floor, score_fs
 from er.results import BANDS, banded
 from er.steps.job import Job
@@ -80,7 +80,7 @@ def patterns(job: Job) -> dict:
     rows = job.engine.rows(f"""SELECT {', '.join(q(g) for g in gammas)}, count(*), round(avg(match_weight), 2),
         count(*) FILTER (match_weight >= {at} AND {named_sql(fs)}),
         count(*) FILTER (match_weight >= {floor} AND (match_weight < {at} OR NOT {named_sql(fs)})),
-        arg_min([{l}, {r}], hash({l} || ' ' || {r}), 3) FROM scores s GROUP BY ALL""") if gammas else []
+        arg_min([{l}, {r}], {hashed(f"{l} || ' ' || {r}")}, 3) FROM scores s GROUP BY ALL""") if gammas else []
     return dict(fields=[g.removeprefix("gamma_") for g in gammas], rows=[list(x) for x in rows])
 
 

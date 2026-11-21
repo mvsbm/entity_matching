@@ -29,6 +29,14 @@ def q(name: str) -> str:  # a quoted SQL identifier
     return '"' + name.replace('"', '""') + '"'
 
 
+def hashed(*exprs: str) -> str:
+    """The portable hash of these SQL expressions, as every engine computes it: er_hash, the first 60 bits of the MD5
+    of their text (a NULL as ''), several joined by a unit separator. A BIGINT from 0 to 2^60 − 1: DuckDB and BigQuery
+    draw the same samples and order rows alike by it."""
+    sep = lit(chr(31))
+    return f"er_hash({exprs[0] if len(exprs) == 1 else f' || {sep} || '.join(f'coalesce(CAST({e} AS VARCHAR), {lit(chr(39) * 0)})' for e in exprs)})"
+
+
 def lit(value: object) -> str:  # a value, a path or text, as an SQL string literal
     return "'" + str(value).replace("'", "''") + "'"
 
