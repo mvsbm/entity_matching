@@ -8,7 +8,7 @@
 
 A customer file usually carries a flag, 1 for a person and 2 for a company. It is right most of the time, and nobody knows how often it is wrong. Telling the kinds apart matters twice: as an answer of its own, and for matching, where a company merged into a person's records is a false merge of the worst kind.
 
-What makes it hard, each built into the generator (`er.generate.kind_problems`) so it can be measured:
+What makes it hard, each built into the generator (`design.generate.kind_problems`) so it can be measured:
 
 - **One name column for both kinds.** A person's name and a company's name arrive in the same column.
 - **Legal forms written the bank's way.** カブシキガイシャ in full, カ)ヤマダショウジ in front, ヤマダショウジ(カ at the end, イ) for 医療法人, or left out.
@@ -48,7 +48,7 @@ A customer's kind follows from its records: 2 if any record is a company, 1 if n
 | a dictionary of known surnames and given names | 67.6% with it, 67.3% without |
 | training also on the file's own legal-form records | 67.6% (66.8% on public data only) |
 
-The name model it judges is the run's own: trained on `er.generate.kind_training_names`, as `scripts/train_name_model.py` trains it. The pipeline's combination, the run's name model (public training only, so it is trained once) under the study's trees of depth 2, comes 25th of 48 at 65.5%, 2.1 points below the best, which also trains on the file's own legal-form records and adds the dictionary of names. On the company side it decides 74.0% of companies on average and 70.5% in the worst scenario. On the person side, 57.0% on average, and from 0.0% to 97.5% by scenario: it falls to nothing where many companies have records under their representative's name and the flag is wrong on them (15–20% of companies, the flag wrong on 33–79% of those records). Those records are a person's name, flagged person: no signal in them says company.
+The name model it judges is the run's own: trained on `design.generate.kind_training_names`, as `scripts/train_name_model.py` trains it. The pipeline's combination, the run's name model (public training only, so it is trained once) under the study's trees of depth 2, comes 25th of 48 at 65.5%, 2.1 points below the best, which also trains on the file's own legal-form records and adds the dictionary of names. On the company side it decides 74.0% of companies on average and 70.5% in the worst scenario. On the person side, 57.0% on average, and from 0.0% to 97.5% by scenario: it falls to nothing where many companies have records under their representative's name and the flag is wrong on them (15–20% of companies, the flag wrong on 33–79% of those records). Those records are a person's name, flagged person: no signal in them says company.
 
 **Sole traders.** Counted as individuals, the person side decides 57.0% of persons; counted as businesses on their trade-name records, 7.8%; on every record, 0.1%. A sole trader is legally a person, which is also what the flag means.
 
@@ -82,7 +82,7 @@ The name model it judges is the run's own: trained on `er.generate.kind_training
 - `er/standardize.py`: `legal_pattern`, and `prepare`, which scores each chunk and routes the name fields
 - `er/run.py`: `Run.load` (the classifier), `Run._gold` (a customer's kind); `er/report.py`: `qa` (the summary's kind lines)
 - `er/settings.py`: `shared_name`, the settings for one name column
-- `er/generate.py`: `name_model_split`, `kind_problems`, `bank_name`, `kind_training_names`
+- `design/generate.py`: `name_model_split`, `kind_problems`, `bank_name`, `kind_training_names`
 - `scripts/choose_kind.py`: the choice above; `scripts/benchmark.py`: `kinds`, the whole run
 - every table: [results.md](../results.md#person-or-company)
 

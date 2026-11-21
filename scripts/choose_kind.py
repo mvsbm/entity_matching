@@ -4,7 +4,7 @@ the range of what a file can't tell about itself. Writes reports/choose_kind.md.
     .venv/bin/python scripts/choose_kind.py          # about 6 minutes
 
 Data. Companies: data/reference/registry.json, real corporations' readings, written the ways bank records write them
-(er.generate.bank_name); training uses Miyagi's and Okayama's, the test Fukuoka's. Persons: the personas, half each.
+(design.generate.bank_name); training uses Miyagi's and Okayama's, the test Fukuoka's. Persons: the personas, half each.
 A test population has 20,000 customers (a fifth companies) with 1 + Poisson records each, a person/company flag, birth
 dates on 15% of a person's records, company records under the representative's name, and sole traders (legally persons)
 named like a shop on most of their records.
@@ -41,7 +41,7 @@ from sklearn.linear_model import LogisticRegression
 from sklearn.model_selection import StratifiedKFold, cross_val_predict
 
 from er.config import load_pipeline
-from er.generate import bank_name, kana_typo, kind_training_names, load_reference, load_registry, load_spec, name_model_split
+from design.generate import bank_name, kana_typo, kind_training_names, load_reference, load_registry, load_spec, name_model_split
 from er.io import markdown
 from er.kind import NameModel, legal, text
 from er.settings import load_settings

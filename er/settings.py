@@ -1,6 +1,5 @@
 """Shared settings from config/settings.toml: paths, datasets, the fields a file's columns hold, and the language-specific
 normalization, validated on load. ER_SETTINGS may name another settings file, inside the project or anywhere."""
-import importlib.util
 import os
 import re
 import unicodedata
@@ -132,13 +131,6 @@ def input_spec(cfg: dict) -> InputSpec:  # [input]: the placeholders read as mis
     unknown = set(cfg) - set(InputSpec.__dataclass_fields__)
     checked(not unknown, f"[input]: unknown keys {sorted(unknown)}")
     return InputSpec(**{k: tuple(map(str, v)) if isinstance(v, list) else v for k, v in cfg.items()})
-
-
-def load_experiments(root: Path):  # config/experiments.py: the development variants, as a module
-    spec = importlib.util.spec_from_file_location("experiments", root / "config" / "experiments.py")
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
 
 
 def present_fields(s: Settings, file_columns: Iterable[str]) -> dict[str, tuple[tuple[str, ...], ...]]:

@@ -8,7 +8,7 @@ Stages and their tables:
   matching     pairs → scored / decided pairs                            (er.match)
   resolution   accepted pairs → clusters                                 (er.cluster.merge, in a run and at design time)
   report       qa.md, report.txt, review.parquet    (er.report, by er.run.Run.report)
-  evaluation   pairs and clusters vs truth, plus cost                     (er.evaluate)
+  evaluation   pairs and clusters vs truth, plus cost                     (design.evaluate)
 
 The command line, nayose: every command declared once (er.cli); an inbox served through it (er.inbox); the same commands in
 a browser (er.ui, er/ui.html).

@@ -40,7 +40,7 @@ The train-only design analysis justifies "never one key alone". Single keys coll
 
 None adds a false pair. The two F2 rows are there for scale. With a fuzzy address check, F2 would join on the last four phone digits alone, the phone key's blocks: about 50 million pairs at a million records. Close normalized addresses share their start, so F2 joins on the phone and the address's first three characters (the city), which loses no true pair and projects to 182,959 pairs at a million records. All the rules together project to 549,274 pairs there, from 4,090 on train ([chapter 3](guide/03-far-too-many-pairs.md#scaling-to-a-million-records)).
 
-**Optuna** (60 trials on train, seeded; off by default: `rules_tune`, `enabled=False`; `scripts/choose.py --optuna` runs it) searches each field's comparator. Its suggestion passed the same rule and is a change in `config/experiments.py` (`optuna_comparators`), decided last because it was found on top of the rest.
+**Optuna** (60 trials on train, seeded; off by default: `rules_tune`, `enabled=False`; `scripts/choose.py --optuna` runs it) searches each field's comparator. Its suggestion passed the same rule and is a change in `design/experiments.py` (`optuna_comparators`), decided last because it was found on top of the rest.
 
 **Results with `FINAL`:**
 
@@ -235,7 +235,7 @@ Train is scored in-sample (the model is fitted on all of it), and has no false p
 
 ### Scenarios
 
-Each population's test split, with λ and m fitted on its train split without labels and u measured on the test split, as a run does. `false_merges` are pairs of records in one cluster that are two entities; `false_links` are the model's links between two entities, and `expected_false` the false links the model expects among its own (the sum of 1 − match probability), which a run reports without labels. `household_merges` are pairs in one cluster that are two people of one household, counted apart from `false_merges`. `gap_at_line` and `probe_missed` estimate, without labels, the matches no key lists at the model's line, with their 95% intervals: the gap pairs a sample of records with every record that shares a value or a near one (`er.gap`), the probe samples pairs within a phone or a postal area (`er.probe`). They run here, where the keys are chosen, not in a run.
+Each population's test split, with λ and m fitted on its train split without labels and u measured on the test split, as a run does. `false_merges` are pairs of records in one cluster that are two entities; `false_links` are the model's links between two entities, and `expected_false` the false links the model expects among its own (the sum of 1 − match probability), which a run reports without labels. `household_merges` are pairs in one cluster that are two people of one household, counted apart from `false_merges`. `gap_at_line` and `probe_missed` estimate, without labels, the matches no key lists at the model's line, with their 95% intervals: the gap pairs a sample of records with every record that shares a value or a near one (`design.gap`), the probe samples pairs within a phone or a postal area (`design.probe`). They run here, where the keys are chosen, not in a run.
 
 | scenario | rules_recall | recall | interval | false_merges | fp_rate_at_most | household_merges | model_links | expected_false | false_links | gap_at_line | probe_missed |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
@@ -291,7 +291,7 @@ The best mean among the 48 finalists with the idea, and without it.
 | signal known_name: with | 67.6% |
 | signal known_name: without | 67.3% |
 
-The pipeline's combination (the bank table and n-grams 1–3 of `config/pipeline.toml` `[kind]`, trained once on public data, and the study's trees of depth 2 on the flag, the birth year and the legal form; a run fits no combiner) is 25th of 48: mean 65.5%, worst 35.3%, against 67.6% for the best, which also trains on the file's own legal-form records and reads a dictionary of names. The name model judged is the run's own (`er.generate.kind_training_names`).
+The pipeline's combination (the bank table and n-grams 1–3 of `config/pipeline.toml` `[kind]`, trained once on public data, and the study's trees of depth 2 on the flag, the birth year and the legal form; a run fits no combiner) is 25th of 48: mean 65.5%, worst 35.3%, against 67.6% for the best, which also trains on the file's own legal-form records and reads a dictionary of names. The name model judged is the run's own (`design.generate.kind_training_names`).
 
 ### The scenarios, for the pipeline's combination
 
@@ -390,7 +390,7 @@ The lines placed on answers drawn at random, 5 draws per scenario: 60 trials. A 
 
 ### End to end
 
-From `scripts/benchmark.py` ([`reports/benchmark.md`](../reports/benchmark.md)). Populations with one name column for every kind (`er.generate.kind_problems`): real company names from the registry, held out of the name model's training and written as banks write them; companies with records under their representative's name, the representative a person of the file (half at that person's address and phone); sole traders named like a shop; company dates; and a flag good, medium or poor. Each resolved three ways: names routed by the truth (the flag replaced by it, taken as it is); by the flag alone; by the kind step (a written legal form, or a name the model is sure of, never a person's against a company flag; else the flag). `person_company_clusters` hold a true person and a true company; `sure_*` is the share of true companies called 2 and of true persons called 1; `wrong_*` the records called 2 that are persons and called 1 that are companies.
+From `scripts/benchmark.py` ([`reports/benchmark.md`](../reports/benchmark.md)). Populations with one name column for every kind (`design.generate.kind_problems`): real company names from the registry, held out of the name model's training and written as banks write them; companies with records under their representative's name, the representative a person of the file (half at that person's address and phone); sole traders named like a shop; company dates; and a flag good, medium or poor. Each resolved three ways: names routed by the truth (the flag replaced by it, taken as it is); by the flag alone; by the kind step (a written legal form, or a name the model is sure of, never a person's against a company flag; else the flag). `person_company_clusters` hold a true person and a true company; `sure_*` is the share of true companies called 2 and of true persons called 1; `wrong_*` the records called 2 that are persons and called 1 that are companies.
 
 | flag | routed_by | recall | false_merges | person_company_clusters | pairs_to_decide | sure_companies | wrong_companies | sure_persons | wrong_persons | seconds |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |

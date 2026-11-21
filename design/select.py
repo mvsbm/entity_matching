@@ -1,5 +1,5 @@
 """Choosing the configuration on labelled data: design analyses, paired A/B on val, the threshold rule on out-of-fold
-train scores, decisions by rule (er.evaluate.adopt), the scale and coverage checks, and test scored once.
+train scores, decisions by rule (design.evaluate.adopt), the scale and coverage checks, and test scored once.
 scripts/choose.py runs both stages in order; each step returns its tables for reports/choose.md.
 
 The rules stage fits nothing, so train is a clean selection set. The Fellegi–Sunter stage is fitted on train, so its
@@ -16,15 +16,15 @@ import pandas as pd
 from er.candidates import candidates, estimate, found_by
 from er.config import (FSSpec, FSTune, KeyBlocker, OverBudget, Pipeline, RulesSpec, ThresholdRule, Tune, with_comparators,
                        with_level)
-from er.evaluate import adopt, c2, candidate_metrics, missed_pairs, paired_test, predicted_pairs, truth_of
+from design.evaluate import adopt, c2, candidate_metrics, missed_pairs, paired_test, predicted_pairs, truth_of
 from er.io import append_leaderboard, assert_test_scored_once, load, test_evaluations, write_final
 from er.match import parameters, pattern_coverage, train_fs, waterfall
-from er.pipeline import (FSResult, Result, accept_curve, automatic, complexity_summary, cross_validate_fs, cv_threshold_curve, entity_folds,
+from design.pipeline import (FSResult, Result, accept_curve, automatic, complexity_summary, cross_validate_fs, cv_threshold_curve, entity_folds,
                          preflight, run_fs, run_rules, scale_check, select_threshold, summed, threshold_curve,
                          window_only)
 from er.settings import Settings
 from er.standardize import prepare
-from er.tune import new_study, pick_within_noise, plain, start_dashboard, suggest_comparators
+from design.tune import new_study, pick_within_noise, plain, start_dashboard, suggest_comparators
 
 SHOW = ["stage", "TP", "FP", "household", "recall", "recall_lo", "recall_hi", "fp_rate_hi", "pairs_FP", "overmerged", "dup_unresolved"]
 Section = tuple[str, str, pd.DataFrame | None]  # heading, text, table
@@ -109,7 +109,7 @@ class RulesChooser:
 
     def cost(self) -> list[Section]:
         """Per rule: P = Σ C(k, 2) over its key blocks now, and projected to budget.target_rows from its pairs of one
-        entity (× N) and by chance (× N²), er.pipeline.grown_pairs. Stops if a rule would exceed the budget there."""
+        entity (× N) and by chance (× N²), design.pipeline.grown_pairs. Stops if a rule would exceed the budget there."""
         f = self.final
         grows = scale_check(f, self.train, self.train_truth, self.data).rename(columns={"key": "rule"})[["rule", "alpha", "projected_pairs", "per_record", "within_budget"]]
         plan = preflight(f, prepare(f.standardize, self.train, f.normalized(), f.used())).merge(grows, on="rule")

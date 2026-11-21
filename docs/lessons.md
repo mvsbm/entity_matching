@@ -34,13 +34,13 @@ Each entry names a way an entity-resolution pipeline like this one goes wrong, a
 - **Pitfall:** two procedures that both choose the same setting make the adopt-and-rerun loop go round for ever. It shows as a search suggesting an adopted configuration again, and that suggestion passing the decision rule again.
 - **Why:** if Optuna searches the acceptance threshold while the threshold rule re-sets each adopted configuration's threshold to its own choice, any point with a lower threshold beats the choice again.
 - **Guard:** one policy everywhere. Every configuration, whether the pipeline as written, a decision variant or an Optuna trial, takes its threshold from the threshold rule (`config/pipeline.toml` `[threshold]`), and Optuna does not search it.
-- **Check:** the search spaces in `config/experiments.py` hold no threshold, each trial takes the rule's (`FSChooser.threshold_of`), and a test checks the rule's pick.
+- **Check:** the search spaces in `design/experiments.py` hold no threshold, each trial takes the rule's (`FSChooser.threshold_of`), and a test checks the rule's pick.
 
 ## A search option that does nothing
 - **Pitfall:** a search option built on top of the current choice can be a no-op, so the search spends trials on it and learns nothing. It shows as an option whose two values give identical trials.
 - **Why:** trials are built from `FINAL`'s model. With a level dropped by a decision, a threshold for it has nothing to tune.
 - **Guard:** a trial tunes only the levels the model has.
-- **Check:** none automated: `FSChooser.search` in `er/select.py` builds each trial, in one place.
+- **Check:** none automated: `FSChooser.search` in `design/select.py` builds each trial, in one place.
 
 ## A wall-clock bound on a search
 - **Pitfall:** a search bounded by time gives results that depend on the machine. It shows as studies that run fewer trials than asked.
@@ -94,7 +94,7 @@ Each entry names a way an entity-resolution pipeline like this one goes wrong, a
 - **Pitfall:** an output column depends on the order of the records in the file. It shows as identical clusters but a different `resolved_by` after the file is shuffled.
 - **Why:** naming, for a record the probabilistic stage reached, the first rule in the file that touched it.
 - **Guard:** a record keeps the rule that resolved it in the previous stage, or else is named after the model, whatever the order.
-- **Check:** a test runs the same records in two orders and requires identical gold, every column; it also checks that an increment never splits a stored cluster. Another requires the engine `scripts/choose.py` measures with (`er.pipeline`) and the one `nayose` runs (`er.run`) to give identical gold.
+- **Check:** a test runs the same records in two orders and requires identical gold, every column; it also checks that an increment never splits a stored cluster. Another requires the engine `scripts/choose.py` measures with (`design.pipeline`) and the one `nayose` runs (`er.run`) to give identical gold.
 
 ## Two spellings of "nothing"
 - **Pitfall:** a blank that isn't treated as missing. A name that still holds a full-width space never equals the same name without it, and two values emptied by normalization agree at "exact" and fall into one block. It shows by reading the code or the values, not in the numbers.
@@ -146,14 +146,14 @@ Each entry names a way an entity-resolution pipeline like this one goes wrong, a
 
 ## A seeded generator that draws in a set's order
 - **Pitfall:** a generator seeded for reproducible data draws its random numbers while looping over a Python set. It shows as a benchmark whose baseline row moves between two runs of the same code.
-- **Why:** Python hashes strings differently in every process, so a set of entity IDs iterates in a different order each time, and the same draws land on different entities: which companies sit at their representative's address, in `er.generate.kind_problems`, would change from run to run.
+- **Why:** Python hashes strings differently in every process, so a set of entity IDs iterates in a different order each time, and the same draws land on different entities: which companies sit at their representative's address, in `design.generate.kind_problems`, would change from run to run.
 - **Guard:** every draw follows a fixed order: the entities' own order (`pd.unique`), never a set's.
 - **Check:** a test generates the person-or-company problems in two processes with different `PYTHONHASHSEED` and requires identical records.
 
 ## A model judged that isn't the one that runs
 - **Pitfall:** a script that chooses between configurations builds its own copy of a training set. Its verdict then holds for a model no run uses. It shows as a ranking that moves when the copy is replaced by the real one.
 - **Why:** a copy with another seed, or the same names written another way (each persona written once and duplicated, where the run writes each twice), trains another model, and the ranking of the 48 finalists moves with it by many places.
-- **Guard:** `scripts/choose_kind.py` trains its public name model on `er.generate.kind_training_names`, as `er.generate.train_name_model` does.
+- **Guard:** `scripts/choose_kind.py` trains its public name model on `design.generate.kind_training_names`, as `design.generate.train_name_model` does.
 - **Check:** `reports/choose_kind.md`, written from the run's own training names.
 
 ## Measurements run into a folder that keeps people's work

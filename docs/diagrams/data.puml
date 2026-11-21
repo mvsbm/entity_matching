@@ -91,9 +91,6 @@ package "state/, for increments: Run.write" {
   entity "state/placeholders.json" as placeholders {
     each field's values read as missing: placeholders, not one entity's nor evidence
   }
-  entity "state/blocks.json" as blocks {
-    each key's oversized blocks the run listed, by value: the fit's sizing counts their pairs as listed
-  }
   entity "state/config.txt" as config {
     the pipeline and column mapping the full run used, but its fit, hashed: an increment refuses others
   }
