@@ -103,7 +103,9 @@ the jobs, the table each step writes, and where to change what.
    the functions in JavaScript (`er/engine/bigquery.py`), checked offline~~; then the parts it refuses by name (the
    workspace's files as tables, DESCRIBE, the scoring's slices, the deletion keys, the index), and the parity check
    once CI has a sandbox dataset.
-5. **The three jobs** on Cloud Run, wired into Jenkins.
+5. **The three jobs** on Cloud Run, wired into Jenkins: ~~`deploy/` (the image, `job.sh`, the jobs, the Jenkinsfile),
+   run in Docker on this machine~~; then on GCP, once the project, the bucket, the Artifact Registry repository and
+   the service account are named.
 6. **Scale rehearsal**: 10M → 100M generated records on BigQuery, time and bytes billed; then the real build.
 
 ## Open questions for infrastructure
