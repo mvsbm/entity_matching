@@ -88,7 +88,7 @@ Each entry names a way an entity-resolution pipeline like this one goes wrong, a
 - **Pitfall:** an intermediate table copied into pandas with more columns than needed outgrows memory on a big file. It shows as a run that stalls deep in swap.
 - **Why:** reading the scored pairs into pandas with every compared column of both records, only to keep the ids, the weights and the gammas, makes a copy that grows with the candidates times the columns.
 - **Guard:** DuckDB selects the needed columns before anything reaches pandas, and the scores stay a DuckDB table. Every table of size N or C is a DuckDB table (`er/steps/`), which spills past `[compute]` `memory_limit` to a folder of the person's own in the system's temporary folder, unless `temp_directory` says otherwise. A run's capacity counts the spill room DuckDB allows: 90% of the free disk by default. DuckDB keeps what the limit allows, so the peak under a large limit says little: test the smallest limit that completes, not the peak.
-- **Check:** every run's `steps.json` records the peak memory after each step, and `reports/benchmark.md` reports it at every file size: 7.21 GB at 1,039,995 records under an 8 GB limit, Python included.
+- **Check:** every run's `steps.json` records the peak memory after each step, and `reports/benchmark.md` reports it at every file size: 7.1 GB at 1,039,995 records under an 8 GB limit, Python included.
 
 ## An answer that depends on the file's order
 - **Pitfall:** an output column depends on the order of the records in the file. It shows as identical clusters but a different `resolved_by` after the file is shuffled.

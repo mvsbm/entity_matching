@@ -9,7 +9,7 @@ from dataclasses import dataclass, field
 import pandas as pd
 
 from er.candidates import candidates as listing
-from er.config import q
+from er.config import hashed, q
 from er.match import bound_reads, bound_tests, reaching_sql, rough_reads, search_floor
 from er.steps.budget import Budget, capacity
 from er.steps.job import Job
@@ -67,9 +67,9 @@ def reaching(job: Job, scoring: dict, n: int, pairs: str) -> str:  # a generator
     bound, have = bound_tests(p.fs.model), job.columns()
     cols = [c for c in sorted(bound_reads(scoring, bound)) if c in have]
     engine.run(f"CREATE TABLE IF NOT EXISTS er_bound_records AS SELECT {', '.join(q(c) for c in [uid, *cols])} FROM records")  # what the bound reads, narrow
-    hashed = [c for c in sorted(rough_reads(scoring, bound)) if c in have]
+    rough = [c for c in sorted(rough_reads(scoring, bound)) if c in have]
     engine.run(f"CREATE TABLE IF NOT EXISTS er_bound_hashes AS SELECT {q(uid)}, "  # what the rough test reads: a hash of each, NULL where missing
-               f"{', '.join(f'CASE WHEN {q(c)} IS NOT NULL THEN hash({q(c)}) END AS {q(c)}' for c in hashed) or 'NULL AS __none'} FROM records")
+               f"{', '.join(f'CASE WHEN {q(c)} IS NOT NULL THEN {hashed(q(c))} END AS {q(c)}' for c in rough) or 'NULL AS __none'} FROM records")
     return reaching_sql(scoring, "er_bound_records", pairs, uid, set(cols), n, p.threshold.keep_from, bound, "rule_kept", hashed="er_bound_hashes")
 
 

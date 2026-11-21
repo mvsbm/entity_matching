@@ -71,7 +71,7 @@ The SQL is written to move: joins, group-bys, window functions and `CREATE TABLE
 | one-character deletions of a value | `er.candidates`, `er.match` | `list_transform` + `unnest` |
 | a pair's generators as bits | `er.candidates` | `bit_or`, then a `CASE` per bit |
 | the first rule that pairs two records | `er.match`, `er/steps/rules.py` | `DISTINCT ON`, `arg_min` |
-| sampling whole postal areas for the fit | `er.match` | `ORDER BY hash(…)` |
+| sampling whole postal areas for the fit, and every draw by hash | `er.match`, `config.hashed` | `ORDER BY er_hash(…)`: MD5's first 60 bits as an integer, a macro each engine defines alike |
 | reading and writing files | `er.source`, `er/steps/write.py` | `read_parquet(…, union_by_name = true)`, `COPY … (FORMAT parquet)`, `UNION ALL BY NAME` |
 | standardization (NFKC, hiragana as katakana, separators dropped, kana folding, the address chain) | `er.standardize` | pandas, per chunk: DuckDB has no NFKC |
 
@@ -84,7 +84,7 @@ The model is Fellegi–Sunter as Splink 5.0 implements it. The `er` package comp
 | Part | Code | As Splink 5.0 computes it |
 |---|---|---|
 | training (λ, EM, m from labels) | `er.fit` | the same λ, fixed comparisons, starts and rounds, m within 10⁻¹² (`tests/test_fit.py`). Its sums run in a fixed order, so a fit repeats to the last bit; Splink's move by a last bit from run to run, in the order DuckDB's threads leave the rows |
-| the u sample | `match.sample_u` | the pairs drawn as Splink draws them and the same u to the last bit, every comparison's levels counted in one pass over the pairs, where Splink joins them again for each comparison |
+| the u sample | `match.sample_u` | Splink's draw (the records whose hash of ID and seed falls in a share, and every pair of them) by the portable hash (`config.hashed`), so every engine draws the same records; on every pair, the same u as Splink's to the last bit; every comparison's levels counted in one pass over the pairs, where Splink joins them again for each comparison |
 | scoring | `match.predict_sql` | Splink's predict SQL in one query: the same scores to the last bit (`tests/test_scoring.py`), without the two copies of the records Splink makes first |
 | connected components | `cluster.merge`: scipy on the nodes numbered in their ids' order | the same clusters (`tests/test_cluster.py`), in one pass over the edges where Splink's SQL takes a round per step of the longest path |
 

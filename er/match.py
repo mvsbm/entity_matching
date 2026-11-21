@@ -27,7 +27,7 @@ from er.engine.engine import Engine
 from er import fit
 from er.candidates import deletions_sql
 from er.strings import FUNCTIONS
-from er.config import COPIES, GIVEN, PERSON, Comparator, Comparison, DeletionKeys, FSModel, FSSpec, InputError, Key, KeyBlocker, Pipeline, RulesSpec, keys_sql, q
+from er.config import Comparator, Comparison, COPIES, DeletionKeys, FSModel, FSSpec, GIVEN, hashed, InputError, Key, KeyBlocker, keys_sql, PERSON, Pipeline, q, RulesSpec
 
 def rule_edges(spec: RulesSpec, records: "Records", engine: Engine, uid: str, batch: str | None = None,
                trust: Mapping[int, str] | None = None, into: str | None = None, told: Callable[..., None] | None = None) -> tuple[pd.DataFrame | str, dict[str, float]]:
@@ -152,7 +152,7 @@ def sample_u(model: FSModel, comparisons: list[Comparison], df: pd.DataFrame, en
         t = q(records)
         share = 0.5 * ((8 * model.u_max_pairs + 1) ** 0.5 + 1) / max(engine.value(f"SELECT count(*) FROM {t}"), 1)
         key = u if model.seed is None else f"({u}) || '_{model.seed}'"
-        drawn = f"(SELECT * FROM {t} WHERE (((hash({key})) % 1000000000) + 1000000000) % 1000000000 < {max(1, round(share * 1_000_000_000))})" if share < 1 else t
+        drawn = f"(SELECT * FROM {t} WHERE {hashed(key)} % 1000000000 < {max(1, round(share * 1_000_000_000))})" if share < 1 else t
         # the pairs as row numbers first (16 bytes a pair): drawn from one row group of records, they'd be compared on one thread
         engine.run(f"CREATE OR REPLACE TEMP TABLE er_u_drawn AS SELECT row_number() OVER () AS er_i, * FROM {drawn}")
         engine.run(f"CREATE OR REPLACE TEMP TABLE er_u_pairs AS SELECT a.er_i AS i, b.er_i AS j FROM er_u_drawn a JOIN er_u_drawn b ON a.{u} < b.{u}")
@@ -294,7 +294,7 @@ def fingerprint(records: Records, cols: list[str], engine: Engine) -> int:
     if not isinstance(records, str):
         engine.register(name, records)
     try:
-        return int(engine.value(f'SELECT coalesce(bit_xor(hash({", ".join(chr(34) + c + chr(34) for c in cols)})), 0) FROM "{name}"'))
+        return int(engine.value(f'SELECT coalesce(bit_xor({hashed(*map(q, cols))}), 0) FROM "{name}"'))
     finally:
         if not isinstance(records, str):
             engine.unregister(name)
@@ -422,7 +422,7 @@ def fit_sample_sql(models: Iterable[FSModel], uid: str, columns: set[str]) -> st
     models = list(models)
     reads = set().union(*(read_by(model_dict(m, uid), *(keys_sql(r) for r in (*m.prior_rules, *m.em_rules))) for m in models)) | {uid}
     area = q("postal_code__first3") if "postal_code__first3" in columns else None
-    return f"SELECT {', '.join(q(c) for c in sorted(columns) if c in reads)} FROM records ORDER BY {f'hash({area}), ' if area else ''}hash({q(uid)})"
+    return f"SELECT {', '.join(q(c) for c in sorted(columns) if c in reads)} FROM records ORDER BY {f'{hashed(area)}, ' if area else ''}{hashed(q(uid))}"
 
 
 def keyed(model: FSModel, rule: tuple[Key, ...]) -> set[str]:

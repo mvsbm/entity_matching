@@ -39,7 +39,7 @@ import pyarrow.parquet as pq
 from er.engine.engine import Engine
 from er import folder
 from er.candidates import _filled, deletions_sql
-from er.config import DeletionKeys, InputError, KeyBlocker, Pipeline, SortedNeighbourhood, lit, q
+from er.config import DeletionKeys, hashed, InputError, KeyBlocker, Pipeline, SortedNeighbourhood, lit, q
 from er.intake import tidy
 from er.kind import Classifier, classifier
 from er.match import _gammas, levels, prior_bits, read_by, review_floor, search_floor
@@ -94,11 +94,11 @@ def _tables(p: Pipeline) -> list[tuple[str, object]]:  # each index table of key
 
 def _hashed(x: object, side: str = "") -> str:  # the SQL of a table's key hash, on columns aliased `side`
     if isinstance(x, KeyBlocker):
-        return f"hash({', '.join(side + q(k.name) for k in x.keys)})"
+        return hashed(*(side + q(k.name) for k in x.keys))
     if isinstance(x, DeletionKeys):
-        return f"hash(__dk, {', '.join(side + q(w.name) for w in x.within)})" if x.within else "hash(__dk)"
+        return hashed("__dk", *(side + q(w.name) for w in x.within))
     st, rule = x
-    return f"hash({', '.join(side + q(c) for c in st.keys(rule))})"
+    return hashed(*(side + q(c) for c in st.keys(rule)))
 
 
 def _keys(x: object) -> list[str]:  # the columns a table's rows must all hold
@@ -130,7 +130,7 @@ def _write(engine: Engine, into: str, src: str, p: Pipeline, ws: Path, uid: str,
     the rules joined it; in the database `records`, else `into`), each key's (hash, uid), each window's (pos, key, uid)
     with every SPARSE-th, each sorted. Each table's [rows, seconds]."""
     u, jobs, records = q(uid), {}, records or into
-    jobs["records"] = [f"CREATE TABLE {records}.records AS SELECT hash(s.{u}) AS h, s.*, e.entity, coalesce(e.resolved, FALSE) AS resolved "
+    jobs["records"] = [f"CREATE TABLE {records}.records AS SELECT {hashed(f's.{u}')} AS h, s.*, e.entity, coalesce(e.resolved, FALSE) AS resolved "
                        f"FROM {src} s LEFT JOIN {_entities(ws, uid)} e USING ({u}) ORDER BY h"]
     for name, x in _tables(p):
         if isinstance(x, SortedNeighbourhood):  # positions in the run's own window order: key, then uid
@@ -492,7 +492,7 @@ def _query(engine: Engine, s: Settings, p: Pipeline, values: dict | None, record
     file's column names, read as the reader reads a value and prepared with the run's classifier `kind`."""
     uid = s.data.unique_id
     if record is not None:
-        row = engine.frame(f"SELECT * EXCLUDE (h, entity, resolved) FROM {_both('records', f'h = hash({lit(record)}::VARCHAR) AND {q(uid)} = {lit(record)}')}")
+        row = engine.frame(f"SELECT * EXCLUDE (h, entity, resolved) FROM {_both('records', f'h = {hashed(lit(record) + "::VARCHAR")} AND {q(uid)} = {lit(record)}')}")
         if row.empty:
             raise InputError(f"{record}: no record of the run has that ID", fix="give a record ID the run holds, or the record's values")
         return row.astype("string")
@@ -585,15 +585,15 @@ def _near(engine: Engine, db: str, name: str, me: str, key: str, w: int) -> tupl
 def _gate(engine: Engine, p: Pipeline, model: dict, uid: str, me: str, found: dict[str, set[str]],
           checked: list[dict], n: int) -> dict[str, set[str]]:  # n: the records with it, for the prior
     """Each oversized block the record falls in, as a run gates it (er.candidates._gate): the record against the block's
-    records of lowest hash(uid), it among them, less the pairs other keys list; the block joined in full only if one of
+    records of lowest hashed(uid), it among them, less the pairs other keys list; the block joined in full only if one of
     those reaches the search floor. O(sampled + b) a block."""
     m, floor, added = p.fs.budget.min_oversized(), search_floor(p), {}
     names = {x.name: name for name, x in _tables(p) if not isinstance(x, tuple)}
-    mine = engine.value("SELECT hash(?::VARCHAR)", [me])
+    mine = engine.value(f"SELECT {hashed('?::VARCHAR')}", [me])
     for c in checked:
         for b in c.get("big", ()):
             block = _both(names[c["key"]], f"h = {b['h']}", "uid")
-            rows = engine.rows(f"SELECT DISTINCT uid, hash(uid) AS hu FROM {block} ORDER BY hu LIMIT {m}")
+            rows = engine.rows(f"SELECT DISTINCT uid, {hashed('uid')} AS hu FROM {block} ORDER BY hu LIMIT {m}")
             ranked = sorted([*(r for r in rows if r[0] != me), (me, mine)], key=lambda r: r[1])[:m]  # the block's lowest hashes, the record among them once
             sample = [u for u, hu in ranked if u != me and u not in found]
             scored = _scored(engine, model, uid, me, sample, n)
@@ -622,7 +622,7 @@ def _rules(engine: Engine, p: Pipeline, uid: str, me: str, checked: list[dict], 
         if size + extra >= m:
             checked.append(dict(key=f"rule {rule.name}", found=0, why=f"its value is on {size + extra:,} records: the rule doesn't trust it"))
             continue
-        hus = [hu for (hu,) in engine.rows(f"SELECT DISTINCT hash(uid) FROM {_both(name, f'h = {h[0][0]}', 'uid')}")]  # literals: the records table read by its zone maps
+        hus = [hu for (hu,) in engine.rows(f"SELECT DISTINCT {hashed('uid')} FROM {_both(name, f'h = {h[0][0]}', 'uid')}")]  # literals: the records table read by its zone maps
         hits = engine.rows(f"""SELECT r.{q(uid)}, r.resolved FROM qry l JOIN {_records(f"h IN ({', '.join(map(str, hus))})", uid)} r
             ON {st.sql(rule)} AND r.{q(uid)} <> l.{q(uid)}""") if hus else []
         for v, resolved in hits:
@@ -644,7 +644,7 @@ def _scored(engine: Engine, model: dict, uid: str, me: str, ids: list[str], n: i
     if not ids:
         return pd.DataFrame(columns=["uid", "entity", "weight", "compared", "shown"])
     cols, u = sorted(read_by(model)), q(uid)
-    hashes = [h for (h,) in engine.rows("SELECT hash(x) FROM unnest(?::VARCHAR[]) t(x)", [ids])]
+    hashes = [h for (h,) in engine.rows(f"SELECT {hashed('x')} FROM unnest(?::VARCHAR[]) t(x)", [ids])]
     engine.run(f"CREATE OR REPLACE TEMP TABLE er_c AS SELECT * EXCLUDE (h) FROM {_records(f'h IN ({', '.join(map(str, hashes))})', uid)}")
     side = lambda c, a, b: f"CASE WHEN q.{u} < c.{u} THEN {a}.{q(c)} ELSE {b}.{q(c)} END"
     pairs = ", ".join(f'{side(c, "q", "c")} AS {q(c + "_l")}, {side(c, "c", "q")} AS {q(c + "_r")}' for c in cols)

@@ -1,5 +1,5 @@
 {
- "about": "What Splink 5.0.0 gave, with duckdb 2.0.0, in the tests that held er.fit, er.match's u sample and scoring, and er.cluster to it; each fit's inputs beside it, its records in splink-5.0.0/<case>.parquet",
+ "about": "What Splink 5.0.0 gave, with duckdb 2.0.0, in the tests that held er.fit, er.match's u sample and scoring, and er.cluster to it; each fit's inputs beside it, its records in splink-5.0.0/<case>.parquet; the u sample of every pair (a share of them is drawn by er's portable hash, not Splink's)",
  "fit": {
   "population": {
    "inputs": {
@@ -769,17 +769,6 @@
    "phone": {
     "exact": 0.008403361344537815,
     "else": 0.9915966386554622
-   }
-  },
-  "300": {
-   "name": {
-    "exact": 0.03439153439153439,
-    "close": 0.13227513227513227,
-    "else": 0.8333333333333334
-   },
-   "phone": {
-    "exact": 0.005681818181818182,
-    "else": 0.9943181818181818
    }
   }
  },
