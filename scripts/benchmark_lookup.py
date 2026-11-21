@@ -26,7 +26,7 @@ import pandas as pd
 
 from er import cli, index
 from er.candidates import candidates
-from er.generate import generate, load_reference, load_spec
+from design.generate import generate, load_reference, load_spec
 from er.io import markdown
 from er.match import score_fs, search_floor
 from er.explain import run_model

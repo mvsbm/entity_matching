@@ -131,7 +131,7 @@ The "chosen" rows are the owner's calls, made in the open, and on these sets the
 
 No "chosen" row adds a false pair.
 
-**5. Optuna proposes; the rule decides.** Optuna is a search tool. It tries many combinations of options (60 seeded trials for the rules, scored on train, which a rule doesn't fit to; 30 for the model, scored out-of-fold) and keeps the best trade-offs between recall and false merges. A tie-break, `pick_within_noise`, prefers the cheapest point whose recall is within noise of the best. The suggestion then faces `adopt` like any other change. Both studies are **off by default** (`enabled=False` in `config/experiments.py`). The chosen pipeline keeps the suggestions that passed, because those are written there as changes (`optuna_comparators` for the rules, `optuna_suggestion` for the model). `scripts/choose.py --optuna` searches again, which is worth it after the data or the rules change.
+**5. Optuna proposes; the rule decides.** Optuna is a search tool. It tries many combinations of options (60 seeded trials for the rules, scored on train, which a rule doesn't fit to; 30 for the model, scored out-of-fold) and keeps the best trade-offs between recall and false merges. A tie-break, `pick_within_noise`, prefers the cheapest point whose recall is within noise of the best. The suggestion then faces `adopt` like any other change. Both studies are **off by default** (`enabled=False` in `design/experiments.py`). The chosen pipeline keeps the suggestions that passed, because those are written there as changes (`optuna_comparators` for the rules, `optuna_suggestion` for the model). `scripts/choose.py --optuna` searches again, which is worth it after the data or the rules change.
 
 **6. Test is scored once.** A leaderboard records every run. It counts the distinct configurations scored on this population's test, and `scripts/choose.py` stops with an error above 1. The count is 1 for each stage. A newly generated population has a test nobody has seen, so its count starts again. `scripts/choose.py` runs a development round on train and val only, writing to the untracked `data/artifacts/choose/`; `--test` is the round to commit, which scores test and writes `config/final.toml` and `reports/choose.md`.
 
@@ -180,12 +180,12 @@ Each has a guard and a check: a test, or a number printed on every run. The full
 
 ## In the code
 
-- `er/evaluate.py`: `wilson`, `fp_upper` (the zero-event bound), `paired_test` (the sign test), `adopt`, `cluster_metrics`, `edge_metrics`
-- `er/pipeline.py`: `entity_folds`, `cross_validate_fs`, `cv_threshold_curve`, `accept_curve`, `select_threshold`
+- `design/evaluate.py`: `wilson`, `fp_upper` (the zero-event bound), `paired_test` (the sign test), `adopt`, `cluster_metrics`, `edge_metrics`
+- `design/pipeline.py`: `entity_folds`, `cross_validate_fs`, `cv_threshold_curve`, `accept_curve`, `select_threshold`
 - `er/config.py`: `ThresholdRule`
-- `er/tune.py`: `pick_within_noise`, `new_study`
+- `design/tune.py`: `pick_within_noise`, `new_study`
 - `er/io.py`: `append_leaderboard`, `test_evaluations` and `assert_test_scored_once` (the test counter)
-- `er/select.py`: `RulesChooser` and `FSChooser`, every step of the choice, run by `scripts/choose.py` ([reports/choose.md](../../reports/choose.md)); `config/experiments.py`: the changes and the order they are decided in
+- `design/select.py`: `RulesChooser` and `FSChooser`, every step of the choice, run by `scripts/choose.py` ([reports/choose.md](../../reports/choose.md)); `design/experiments.py`: the changes and the order they are decided in
 - `scripts/benchmark.py`: the scenarios above, and the cost run of [chapter 3](03-far-too-many-pairs.md#scaling-to-a-million-records)
 - every table: [results.md](../results.md)
 

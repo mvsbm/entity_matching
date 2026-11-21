@@ -277,7 +277,7 @@ def u_bound(model: FSModel, c: Comparison, records: Records, con: duckdb.DuckDBP
     n = rows(records, con)
     sampled = min(model.u_max_pairs, n * (n - 1) / 2)
     n_filled = max(1, int(sampled * max(fill_share(records, col, con) for col in c.null_if_missing) ** 2))
-    return 1 - 0.05 ** (1 / n_filled)  # the one-sided 95% Clopper–Pearson bound at zero hits (er.evaluate.fp_upper(0, n))
+    return 1 - 0.05 ** (1 / n_filled)  # the one-sided 95% Clopper–Pearson bound at zero hits (design.evaluate.fp_upper(0, n))
 
 
 SCORED_U: dict[tuple[str, int], dict[str, float]] = {}  # (FSModel.u_keys() value, fingerprint of what it reads) → u per level
@@ -419,7 +419,7 @@ def fit_sample_sql(models: Iterable[FSModel], uid: str, columns: set[str]) -> st
     """The records a fit learns from, in the order whose first n are its sample of n: whole postal areas by hash, so
     households stay together and each sample is a smaller one and more; only the columns these models read."""
     models = list(models)
-    reads = set().union(*(read_by(model_dict(m, uid), *(keys_sql(r) for r in (*m.prior_rules, *m.em_rules, *m.em_choose))) for m in models)) | {uid}
+    reads = set().union(*(read_by(model_dict(m, uid), *(keys_sql(r) for r in (*m.prior_rules, *m.em_rules))) for m in models)) | {uid}
     area = q("postal_code__first3") if "postal_code__first3" in columns else None
     return f"SELECT {', '.join(q(c) for c in sorted(columns) if c in reads)} FROM records ORDER BY {f'hash({area}), ' if area else ''}hash({q(uid)})"
 
@@ -436,13 +436,12 @@ def keyed(model: FSModel, rule: tuple[Key, ...]) -> set[str]:
 
 GIVEN_FILLED = 0.3  # the given name filled in fewer of the named records than this: full-name agreement is the check
 GIVEN_SHARE = 0.5   # a session is kept when at least this share of the matches it learned agree on the given name
-ENOUGH = 10         # a comparison takes its m from the kept sessions when they hold this many pairs agreeing at its first level; else from every session
 
 
 def judged(model: FSModel, t: pd.DataFrame, learned: dict[tuple[Key, ...], dict[tuple[str, str], float]],
            pairs: dict[tuple[Key, ...], int]) -> tuple[list[dict], Comparison | None]:
-    """Each EM session (learned: its m per comparison and level) judged by the matches it learned: kept when at least
-    GIVEN_SHARE of them agree on the given name (the name comparison's levels of exact or near-exact agreement, its
+    """Each EM session (learned: its m per comparison and level) judged by the matches it learned, for DIAGNOSIS: sound when
+    at least GIVEN_SHARE of them agree on the given name (the name comparison's levels of exact or near-exact agreement, its
     given-name level among them where that is filled in GIVEN_FILLED of the named records): pairs that share a phone or
     an address teach EM households, whose members share a family name only. A session keyed on a name field is kept by
     its key (it learned no name m). Each session's row (session, field as set fit takes it, pairs, given_share, kept,
@@ -468,31 +467,6 @@ def judged(model: FSModel, t: pd.DataFrame, learned: dict[tuple[Key, ...], dict[
             row["given_share"] = share = sum(v for lv, v in m.items() if lv in agree) / sum(m.values())
             row.update(kept=share >= GIVEN_SHARE, why="matches agree on the given name" if share >= GIVEN_SHARE else "matches share no given name: households")
     return rows, anchor
-
-
-def chosen(model: FSModel, t: pd.DataFrame, learned: dict[tuple[Key, ...], dict[tuple[str, str], float]],
-           pairs: dict[tuple[Key, ...], int]) -> tuple[dict[tuple[str, str], list[float]], list[dict], list[str]]:
-    """Fit em "choose": the sessions judged; each level's m the median of the kept sessions that learned it; a
-    comparison but the name's that those barely saw (fewer than ENOUGH of their pairs agree at its first level, exactly)
-    takes every session's. Returns those m lists ({} when none is kept), each session's row, and the comparisons that
-    took every session's. O(sessions · comparisons · n)."""
-    rows, anchor = judged(model, t, learned, pairs)
-    kept = [r for r, row in zip(pairs, rows) if row["kept"]]
-    if not kept:
-        return {}, rows, []
-    median, wide = {}, []
-    for c in model.comparisons:
-        first = c.levels[0].any_of if c.levels else ()
-        by = [r for r in kept if any(k[0] == c.name for k in learned[r])]
-        exact = all(comp.function == "exact" for _, comp in first) and any(Key(col, comp.normalize).name in t for col, comp in first)
-        seen = sum(max(rule_pairs(t, (*r, Key(col, comp.normalize))) for col, comp in first if Key(col, comp.normalize).name in t) if exact else pairs[r] for r in by)
-        if seen < ENOUGH and c is not anchor:  # the name's m from kept sessions alone: a dropped one learned households
-            by = [r for r in learned if any(k[0] == c.name for k in learned[r])]
-            if by:
-                wide.append(c.name)
-        for lv in dict.fromkeys(k[1] for r in by for k in learned[r] if k[0] == c.name):
-            median[c.name, lv] = [learned[r][c.name, lv] for r in by if (c.name, lv) in learned[r]]
-    return median, rows, wide
 
 
 def train_fs(model: FSModel, df: pd.DataFrame, con: duckdb.DuckDBPyConnection, uid: str, labels: pd.Series | None = None, kept: Path | None = None,
@@ -525,18 +499,16 @@ def train_fs(model: FSModel, df: pd.DataFrame, con: duckdb.DuckDBPyConnection, u
     prior = [r for r in model.prior_rules if rule_pairs(t, r)]
     em_pairs = {r: n for r in model.em_rules if (n := rule_pairs(t, r))} if model.m_method == "em" else {}  # each EM session's pairs in the sample
     em = list(em_pairs)
-    choose = {r: n for r in model.em_choose if (n := rule_pairs(t, r))} if model.m_method == "em" else {}  # fit em "choose": these judged first
     if not prior:
         raise InputError(f"no two records of the {len(t):,} the fit samples agree on any near-certain rule "
                          f"({'; '.join(map(fields, model.prior_rules))}), so the chance that two records match can't be estimated",
                          fix="map the fields those rules read, or give a model fitted before with --model")
-    if model.m_method == "em" and not em and not choose:
+    if model.m_method == "em" and not em:
         raise InputError(f"no two records of the {len(t):,} the fit samples share {' or '.join(map(fields, model.em_rules))}, "
                          "the pairs it learns from", fix="map those fields to filled columns, or give a model fitted before with --model")
     settings = model_dict(model, uid, u)  # unestimated levels: handled here
     median: dict[tuple[str, str], list[float]] = {}
-    choice, wide = [], []
-    with narrowed(t, con, read_by(settings, *(keys_sql(r) for r in (*prior, *em, *choose))) | {uid, "__label__"}) as records:
+    with narrowed(t, con, read_by(settings, *(keys_sql(r) for r in (*prior, *em))) | {uid, "__label__"}) as records:
         lam = fit.prior(con, records, [keys_sql(r) for r in prior], uid, model.prior_recall)
 
         def session(rule: tuple[Key, ...], trained: fit.Trained) -> dict[tuple[str, str], float]:  # what one EM session learned
@@ -544,19 +516,12 @@ def train_fs(model: FSModel, df: pd.DataFrame, con: duckdb.DuckDBPyConnection, u
 
         def apart(rules: Iterable[tuple[Key, ...]]) -> dict[tuple[Key, ...], dict[tuple[str, str], float]]:  # each from the first guess: kept apart
             return {rule: session(rule, fit.Trained()) for rule in rules}
-        if choose:
-            median, choice, wide = chosen(model, t, apart(choose), choose)
-            if median:
-                em_pairs = {r: choose[r] for r, row in zip(choose, choice) if row["kept"]}
-            elif not em:
-                raise InputError(f"no session of the {len(t):,} records the fit samples learned matches that agree on the given name, and no two "
-                                 f"share {' or '.join(map(fields, model.em_rules))}, the method's own", fix="map those fields to filled columns, or give a model fitted before with --model")
         trained = fit.Trained()  # the method's sessions, one after another: each starts from what those before it learned
-        learned = {}  # each judged as fit em "choose" judges them (er "em_given"): what DIAGNOSIS says of them
-        for rule in em if not model.em_median and not median else ():
+        learned = {}  # each judged by the given name (er "em_given"): what DIAGNOSIS says of them
+        for rule in em if not model.em_median else ():
             learned[rule] = session(rule, trained)
             trained.add(learned[rule])
-        learned |= apart(em) if model.em_median and not median else {}
+        learned |= apart(em) if model.em_median else {}
         for ms in learned.values() if model.em_median else ():
             for key, v in ms.items():
                 median.setdefault(key, []).append(v)
@@ -577,11 +542,9 @@ def train_fs(model: FSModel, df: pd.DataFrame, con: duckdb.DuckDBPyConnection, u
                 lv["m_probability"] = lv["u_probability"]
                 filled_m.append([c["output_column_name"], lv["label_for_charts"]])
     adjusted = sensible_m(model, model_json, {tuple(x) for x in filled_m})
-    kept = any(row["kept"] for row in choice)
-    skipped = [fields(r) for r in (*model.prior_rules, *(model.em_rules if model.m_method == "em" and not kept else ())) if r not in (*prior, *em)]
+    skipped = [fields(r) for r in (*model.prior_rules, *(model.em_rules if model.m_method == "em" else ())) if r not in (*prior, *em)]
     return {**model_json, "er": dict(fit_rows=len(t), filled=dict(u=filled_u, m=filled_m), skipped=skipped, adjusted=adjusted,
                                    em_pairs={fields(r): n for r, n in em_pairs.items()},
-                                   **({"em_choice": choice, "em_wide": wide} if choice else {}),
                                    **({"em_given": [{k: x[k] for k in ("session", "pairs", "given_share")} for x in judged(model, t, learned, em_pairs)[0]]} if learned else {}))}
 
 

@@ -12,7 +12,7 @@ from er.settings import load_settings
 
 
 def test_the_generator_writes_kanji_names_without_changing_any_other_column():
-    from er.generate import check, generate as make, load_reference, load_spec
+    from design.generate import check, generate as make, load_reference, load_spec
     s = load_settings()
     spec, ref = replace(load_spec(s.root / "config" / "generator.toml")[0], entities=300), load_reference(s.paths["reference"])
     full = make(spec, *ref)

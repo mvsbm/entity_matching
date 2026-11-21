@@ -22,9 +22,9 @@ def wide_band(population):
 
 
 def test_design_time_measures_the_run_s_own_gold_pairs_and_rule_clusters(tmp_path, population):
-    """scripts/choose.py measures through er.pipeline, which reads the tables of an er.run.Run: it must report the gold,
+    """scripts/choose.py measures through design.pipeline, which reads the tables of an er.run.Run: it must report the gold,
     the accepted pairs and their weights, and the rules' clusters that the run writes."""
-    from er.pipeline import automatic, run_fs, run_rules
+    from design.pipeline import automatic, run_fs, run_rules
     from er.run import Run
     s, p, g = population
     p = replace(p, fs=replace(p.fs, needs=("name", "company")))  # a pair with no name compared is held back

@@ -1,5 +1,5 @@
 # The matching pipeline, as written, in the field names of config/settings.toml [columns]. Loaded by
-# er.config.load_pipeline. scripts/choose.py applies config/experiments.py's adopted changes to it and writes the
+# er.config.load_pipeline. scripts/choose.py applies design/experiments.py's adopted changes to it and writes the
 # result, in this same format, to config/final.toml, which nayose runs.
 #
 # A key or a compared value is a field name, or { field, normalize }; normalize is a chain from
@@ -173,7 +173,7 @@ margin_steps = 1
 search_floor = 0                  # bits: oversized blocks are judged from here (or the review floor, if lower), and the gap counts from here at design time
 keep_from = 0                     # bits: the points from which a run stores a pair (scored/), every rule pair whatever its points
 
-[probe]                           # design time (scripts/benchmark.py, er.probe): the matches no pair key lists, measured: pairs sampled within groups matches tend to share
+[probe]                           # design time (scripts/benchmark.py, design.probe): the matches no pair key lists, measured: pairs sampled within groups matches tend to share
 pairs = 1000000                   # about this many pairs scored in each group: about 2 s a group at a million records
 strata = { phone = ["phone"], postal_area = [{ field = "postal_code", normalize = "first3" }] }   # each a group as a key names it
 
