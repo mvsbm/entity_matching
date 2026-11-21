@@ -1,0 +1,26 @@
+# The full run: the records in the bucket's in/records.parquet, resolved into its runs/main.
+# `gcloud run jobs replace` reads it once Jenkins fills ${…} (deploy/Jenkinsfile); an execution may give other arguments
+# (--args), never other code.
+apiVersion: run.googleapis.com/v1
+kind: Job
+metadata:
+  name: nayose-build
+  labels: {app: nayose}
+spec:
+  template:
+    spec:
+      taskCount: 1
+      parallelism: 1
+      template:
+        spec:
+          serviceAccountName: ${SERVICE_ACCOUNT}
+          timeoutSeconds: 86400
+          maxRetries: 0
+          volumes:
+            - name: bucket
+              csi: {driver: gcsfuse.run.googleapis.com, volumeAttributes: {bucketName: "${BUCKET}"}}
+          containers:
+            - image: ${IMAGE}
+              args: ["runs/main", "resolve", "records", "/gcs/in/records.parquet", "--overwrite"]
+              resources: {limits: {cpu: "8", memory: 32Gi}}
+              volumeMounts: [{name: bucket, mountPath: /gcs}]

@@ -1,0 +1,11 @@
+data/
+.venv/
+**/__pycache__/
+notebooks/
+reports/
+docs/
+tests/
+research_notes/
+.claude/
+.git/
+*.egg-info/
