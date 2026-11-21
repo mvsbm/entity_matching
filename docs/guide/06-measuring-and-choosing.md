@@ -147,7 +147,7 @@ Every number so far comes from one generated population: one seed, one noise mod
 |---|---|---|---|---|---|
 | as reported (seed 0) | 9.6% | 48.2% | 46.2–50.2% | 0 | 0.26% |
 | another seed (1) | 10.9% | 48.6% | 46.6–50.7% | 0 | 0.27% |
-| another seed (2) | 10.3% | 50.6% | 48.6–52.6% | 0 | 0.25% |
+| another seed (2) | 10.3% | 50.5% | 48.5–52.6% | 0 | 0.25% |
 | twice as many typos in names, phones and addresses | 9.2% | 43.1% | 41.1–45.1% | 0 | 0.29% |
 | emptier fields (fill rates fall to 45%, not 65%) | 7.9% | 44.4% | 42.4–46.4% | 0 | 0.29% |
 | prior: the near-certain rules find half the share measured on train (λ × 2) | 9.6% | 49.8% | 47.7–51.8% | 0 | 0.26% |
@@ -155,11 +155,11 @@ Every number so far comes from one generated population: one seed, one noise mod
 
 What the table shows:
 
-- **No scenario has a false merge.** Across the three seeds, recall stays between 48.2% and 50.6%.
+- **No scenario has a false merge.** Across the three seeds, recall stays between 48.2% and 50.5%.
 - **Typos are the sensitive part.** Twice as many typos cost the final result 5.1 points (48.2% → 43.1%): a typo turns an exact agreement into a close one, worth fewer bits, and pushes more pairs below the line. Emptier fields cost 3.8 points (to 44.4%), and the rules 1.7 (9.6% → 7.9%).
 - **A prior off by a factor of two moves recall by a few points, not the false merges.** λ rests on a share measured on train's labels: the true pairs the near-certain rules find (2.3%). A real file has no labels to measure it. If the share were half as large, or 1.5 times as large, every weight would shift by one bit, or by about half a bit. Recall moves from 48.2% to 49.8% or to 47.7%, with no false merge, because the threshold's safety step absorbs the shift.
 
-The cost files of [chapter 3](03-far-too-many-pairs.md#scaling-to-a-million-records), each fitted on itself, are not all clean: the model merges 2 false pairs at 13,019 records, through 1 false link, 2 at 52,115, through 2, and 6 at 77,926, through 5, against 0 at 25,947 ([reports/benchmark.md](../../reports/benchmark.md)). Each false link is of 7.0–12.0 bits, against the 6-bit line: two people who share an address or a phone, most of them a family name too. The model expects at least as many: by its own probabilities, 1.67, 4.76 and 7.62 of its links on those three files are false. Test, scored once, has none, and on every scenario's test split the model expects about one (0.91–1.48) and has none. How the cost and the quality behave as the file grows to a million records is in chapter 3.
+The cost files of [chapter 3](03-far-too-many-pairs.md#scaling-to-a-million-records), each fitted on itself, are not all clean: the model merges 2 false pairs at 13,019 records, through 1 false link, 2 at 52,115, through 2, and 6 at 77,926, through 5, against 0 at 25,947 ([reports/benchmark.md](../../reports/benchmark.md)). Each false link is of 6.8–12.0 bits, against the 6-bit line: two people who share an address or a phone, most of them a family name too. The model expects at least as many: by its own probabilities, 1.61, 4.82 and 8.07 of its links on those three files are false. Test, scored once, has none, and on every scenario's test split the model expects about one (0.91–1.51) and has none. How the cost and the quality behave as the file grows to a million records is in chapter 3.
 
 **In short:** the final configuration holds across seeds, emptier fields and a prior off by a factor of two; more typos cost recall, not false merges. A few false links do slip through on the cost files, no more than the model expects.
 

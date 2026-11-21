@@ -27,7 +27,7 @@ import numpy as np
 import pandas as pd
 
 from er.engine.engine import Engine
-from er.config import Blocker, Budget, DeletionKeys, EditKeys, InputError, KeyBlocker, SortedNeighbourhood, TfidfNeighbours, keys_of, q
+from er.config import Blocker, Budget, DeletionKeys, EditKeys, hashed, InputError, KeyBlocker, keys_of, q, SortedNeighbourhood, TfidfNeighbours
 from er.engine.duckdb import connect
 
 _CON: Engine | None = None  # for pandas input when the caller passes no connection
@@ -231,7 +231,7 @@ def sample_sql(b: Blocker, r: Records, blocks: str, rows: int) -> str:
     """Pairs among up to `rows` records of each of these blocks, chosen by hash (with a query: up to `rows` query
     records against up to `rows` of the block), with the block's `__b`: about rows²/2 pairs per block, whatever its size."""
     cols, u = block_cols(b), q(r.uid)
-    ranked = lambda asked: (f"(SELECT x.*, z.__b, row_number() OVER (PARTITION BY z.__b ORDER BY hash(x.{u})) AS __k "
+    ranked = lambda asked: (f"(SELECT x.*, z.__b, row_number() OVER (PARTITION BY z.__b ORDER BY {hashed(f'x.{u}')}) AS __k "
                             f"FROM {_rows(b, r, asked)} x JOIN {blocks} z USING ({', '.join(cols)}))")
     a, c = ranked(bool(r.query)), ranked(False)
     order = f"a.{u} <> c.{u}" if r.query else f"a.{u} < c.{u}"
@@ -451,7 +451,7 @@ def _kept(r: Records, sql: str, keep: Callable[[str], str] | None, listed: str |
     n = r.engine.value(f"SELECT count(*) FROM {table}")
     if keep is None:
         return table, n
-    r.engine.run(f"INSERT INTO {listed} SELECT hash(l, r) FROM {table}")
+    r.engine.run(f"INSERT INTO {listed} SELECT {hashed('l', 'r')} FROM {table}")
     if pending is not None and n < KEEP_SLICE:
         pending[table] = n
         return table, n
@@ -493,7 +493,7 @@ def _gate(blockers: tuple[Blocker, ...], r: Records, big: dict[int, str], parts:
         info = info.assign(sampled=0, best=float("nan"), hits=0, decision="joined in full")
     else:
         if listed:  # filtered: the pairs as listed, by their hashes
-            seen, same = r._temp(f"SELECT DISTINCT h FROM {listed}"), "x.h = hash(s.l, s.r)"
+            seen, same = r._temp(f"SELECT DISTINCT h FROM {listed}"), f"x.h = {hashed('s.l', 's.r')}"
         else:
             seen, same = r._temp(f"SELECT DISTINCT l, r FROM ({' UNION ALL '.join(parts)})"), "x.l = s.l AND x.r = s.r"
         sample = r._temp(" UNION ALL ".join(
