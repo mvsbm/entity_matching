@@ -127,6 +127,19 @@ def test_a_statement_s_empty_twin_makes_the_same_columns():  # a `-- when: NOT â
             assert all(x == lists[0] or x == ["*"] for x in lists), (f.name, name, lists)
 
 
+def test_records_sql_names_a_record_s_fields_alike_each_time():  # made's UNION ALL pairs its two sides' columns by position
+    import sqlglot
+    from sqlglot import exp
+    from nayose import SQL, statements
+    trees = [sqlglot.parse_one(s, read="bigquery") for s in statements((SQL / "records.sql").read_text(encoding="utf-8"))]
+    trees = [t.expressions[0] if isinstance(t, exp.Block) else t for t in trees]  # a comment after its ';'
+    columns = next([c.name for c in t.this.expressions] for t in trees if isinstance(t, exp.Create) and t.this.this.name == "records")
+    fields = columns[:columns.index("company_name") + 1] + ["batch"]  # a record's fields, before the copies made from them
+    made = next(c.this for t in trees for c in t.find_all(exp.CTE) if c.alias == "made")
+    redone = [t.expression for t in trees if isinstance(t, exp.Create) and t.this.name == "redone_fields"]
+    assert len(redone) == 2 and all([e.alias_or_name for e in s.selects] == fields for s in [made.left, made.right, *redone])
+
+
 def test_a_row_a_function_reads_is_of_a_narrow_table():  # BigQuery may bill a row passed whole as every column of its table
     import sqlglot
     from sqlglot import exp

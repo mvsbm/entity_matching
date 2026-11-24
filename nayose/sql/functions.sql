@@ -1,4 +1,4 @@
--- The functions nayose's SQL calls, each written once; every job runs this file first. Two kinds:
+-- The functions nayose's SQL calls, each written once, and the comparisons' levels; every job runs this file first:
 --
 -- 1. The intake's: each value of the input as read, what loses nothing fixed: mapping.sql reads every column it reads
 --    through read_value(value, numeric, @nulls). O(bytes). What is fixed, in order:
@@ -20,9 +20,17 @@
 --    those are tested first, the same levels without the call where it can't pass. O(L²) a pair for a fuzzy level.
 --
 -- 3. The rules' fuzzy tests (score.sql): a name, a company, an address or a phone close enough.
+--
+-- 4. Each comparison's levels as 2. numbers them, with their labels and kinds: what fit.sql reads of a level.
 
 
 -- ---------- 1. The intake ----------
+
+-- A value of spaces alone (SP, any width), or empty.
+CREATE OR REPLACE TEMP FUNCTION blank(v STRING) AS (REGEXP_CONTAINS(v, r'^[\t-\r\x{1c}-\x{20}\x{85}\x{a0}\x{1680}\x{2000}-\x{200a}\x{2028}\x{2029}\x{202f}\x{205f}\x{3000}]*$'));
+
+-- A value without the spaces it starts and ends with (SP: as Python's str.strip takes them).
+CREATE OR REPLACE TEMP FUNCTION trimmed(v STRING) AS (REGEXP_REPLACE(v, r'^[\t-\r\x{1c}-\x{20}\x{85}\x{a0}\x{1680}\x{2000}-\x{200a}\x{2028}\x{2029}\x{202f}\x{205f}\x{3000}]+|[\t-\r\x{1c}-\x{20}\x{85}\x{a0}\x{1680}\x{2000}-\x{200a}\x{2028}\x{2029}\x{202f}\x{205f}\x{3000}]+$', ''));
 
 -- A value written as a list: its first filled item; else the value (damaged, missing).
 --   A list is plain when JSON reads it as a list of strings, numbers and nulls (["a", 1, null]), or Python as a list
@@ -90,29 +98,18 @@ CREATE OR REPLACE TEMP FUNCTION jaro_winkler_of(a STRING, b STRING, one_byte_a S
   IF(one_byte_a IS NOT NULL AND one_byte_b IS NOT NULL, cl_jaro_winkler_cut(one_byte_a, one_byte_b, threshold), cl_jaro_winkler_cut(a, b, threshold))
 );
 
--- name: the person's name as written, folded (kana_fold), read alike (long_vowel), then near
-CREATE OR REPLACE TEMP FUNCTION gamma_name(l ANY TYPE, r ANY TYPE) AS (
-  CASE
-    WHEN l.person_name IS NULL OR r.person_name IS NULL THEN -1
-    WHEN l.person_name = r.person_name THEN 6                                                          -- exact
-    WHEN l.person_name__kana_fold = r.person_name__kana_fold THEN 5                                    -- fold exact
-    WHEN l.person_name__kana_fold_long_vowel = r.person_name__kana_fold_long_vowel THEN 4              -- same reading
-    WHEN jaro_winkler_of(l.person_name__kana_fold, r.person_name__kana_fold, l.person_name__kana_fold_one_byte, r.person_name__kana_fold_one_byte,
-                         CAST(0.95 AS FLOAT64)) >= CAST(0.95 AS FLOAT64) THEN 3                           -- fold JW high
-    WHEN l.given_name__kana_fold = r.given_name__kana_fold THEN 2                                      -- given name
-    WHEN jaro_winkler_of(l.person_name__kana_fold, r.person_name__kana_fold, l.person_name__kana_fold_one_byte, r.person_name__kana_fold_one_byte,
-                         CAST(0.75 AS FLOAT64)) >= CAST(0.75 AS FLOAT64) THEN 1                           -- fold JW low
-    ELSE 0
-  END
+
+-- How many characters two strings start with alike, up to 4: the start Winkler raises a Jaro score by.
+CREATE OR REPLACE TEMP FUNCTION common_start(a STRING, b STRING) AS (
+  IF(LEFT(a, 1) = LEFT(b, 1), IF(LEFT(a, 2) = LEFT(b, 2), IF(LEFT(a, 3) = LEFT(b, 3), IF(LEFT(a, 4) = LEFT(b, 4), 4, 3), 2), 1), 0)
 );
 
 -- The most Jaro–Winkler two strings can score, from their lengths and common start alone: Jaro at most (2 + r)/3 (r the
 -- shorter's length over the longer's: every character of the shorter matching, in order), raised by the common start
 -- (up to 4 characters) as Winkler raises it. A threshold this misses, the score misses too.
 CREATE OR REPLACE TEMP FUNCTION jaro_winkler_most(a STRING, b STRING) AS (
-  (2 + LEAST(LENGTH(a), LENGTH(b)) / GREATEST(LENGTH(a), LENGTH(b), 1)) / 3
-    * (1 - CAST(0.1 AS FLOAT64) * IF(LEFT(a, 1) = LEFT(b, 1), IF(LEFT(a, 2) = LEFT(b, 2), IF(LEFT(a, 3) = LEFT(b, 3), IF(LEFT(a, 4) = LEFT(b, 4), 4, 3), 2), 1), 0))
-    + CAST(0.1 AS FLOAT64) * IF(LEFT(a, 1) = LEFT(b, 1), IF(LEFT(a, 2) = LEFT(b, 2), IF(LEFT(a, 3) = LEFT(b, 3), IF(LEFT(a, 4) = LEFT(b, 4), 4, 3), 2), 1), 0)
+  (2 + LEAST(LENGTH(a), LENGTH(b)) / GREATEST(LENGTH(a), LENGTH(b), 1)) / 3 * (1 - CAST(0.1 AS FLOAT64) * common_start(a, b))
+    + CAST(0.1 AS FLOAT64) * common_start(a, b)
 );
 
 -- The most two names' Jaro–Winkler can be: where both are katakana (one-byte copies), from the letters they share,
@@ -128,12 +125,12 @@ CREATE OR REPLACE TEMP FUNCTION name_jw_most(l ANY TYPE, r ANY TYPE) AS (
                              LENGTH(r.person_name__kana_fold_one_byte) - BIT_COUNT(r.person_name__kana_fold_letters_lo) - BIT_COUNT(r.person_name__kana_fold_letters_hi)),
                      LENGTH(l.person_name__kana_fold_one_byte), LENGTH(r.person_name__kana_fold_one_byte))
                * (1 / LENGTH(l.person_name__kana_fold_one_byte) + 1 / LENGTH(r.person_name__kana_fold_one_byte)) + 1) / 3)
-         * (1 - CAST(0.1 AS FLOAT64) * IF(LEFT(l.person_name__kana_fold, 1) = LEFT(r.person_name__kana_fold, 1), IF(LEFT(l.person_name__kana_fold, 2) = LEFT(r.person_name__kana_fold, 2),
-                                          IF(LEFT(l.person_name__kana_fold, 3) = LEFT(r.person_name__kana_fold, 3), IF(LEFT(l.person_name__kana_fold, 4) = LEFT(r.person_name__kana_fold, 4), 4, 3), 2), 1), 0)))
+         * (1 - CAST(0.1 AS FLOAT64) * common_start(l.person_name__kana_fold, r.person_name__kana_fold)))
 );
 
--- the same levels from a name's Jaro–Winkler already computed once (name_score: the folded names' score from 0.75 up,
--- else 0; NULL where an equality settles the level): one call a pair, where gamma_name may make two
+-- name: the person's name as written, folded (kana_fold), read alike (long_vowel), then near. Two functions, so the
+-- Jaro–Winkler is called once a pair: name_score, the folded names' score from 0.75 up, else 0 (NULL where an
+-- equality settles the level), computed once as a column (s_name); then name_level, the level from it.
 CREATE OR REPLACE TEMP FUNCTION name_score(l ANY TYPE, r ANY TYPE) AS (
   CASE
     WHEN l.person_name IS NULL OR r.person_name IS NULL OR l.person_name = r.person_name
@@ -147,14 +144,20 @@ CREATE OR REPLACE TEMP FUNCTION name_score(l ANY TYPE, r ANY TYPE) AS (
 CREATE OR REPLACE TEMP FUNCTION name_level(l ANY TYPE, r ANY TYPE, s FLOAT64) AS (
   CASE
     WHEN l.person_name IS NULL OR r.person_name IS NULL THEN -1
-    WHEN l.person_name = r.person_name THEN 6
-    WHEN l.person_name__kana_fold = r.person_name__kana_fold THEN 5
-    WHEN l.person_name__kana_fold_long_vowel = r.person_name__kana_fold_long_vowel THEN 4
-    WHEN s >= CAST(0.95 AS FLOAT64) THEN 3
-    WHEN l.given_name__kana_fold = r.given_name__kana_fold THEN 2
-    WHEN s >= CAST(0.75 AS FLOAT64) THEN 1
+    WHEN l.person_name = r.person_name THEN 6                                                -- exact
+    WHEN l.person_name__kana_fold = r.person_name__kana_fold THEN 5                          -- fold exact
+    WHEN l.person_name__kana_fold_long_vowel = r.person_name__kana_fold_long_vowel THEN 4    -- same reading
+    WHEN s >= CAST(0.95 AS FLOAT64) THEN 3                                                   -- fold JW high
+    WHEN l.given_name__kana_fold = r.given_name__kana_fold THEN 2                            -- given name
+    WHEN s >= CAST(0.75 AS FLOAT64) THEN 1                                                   -- fold JW low
     ELSE 0
   END
+);
+-- the same levels where the score is the Jaro–Winkler itself, without name_score's bound: the gate's few sampled
+-- pairs (score.sql), where the bound's two letter columns would be read of every record for a call or two saved
+CREATE OR REPLACE TEMP FUNCTION gamma_name(l ANY TYPE, r ANY TYPE) AS (
+  name_level(l, r, jaro_winkler_of(l.person_name__kana_fold, r.person_name__kana_fold, l.person_name__kana_fold_one_byte,
+                                   r.person_name__kana_fold_one_byte, CAST(0.75 AS FLOAT64)))
 );
 
 -- company: the company's name, its legal form gone and folded (company_name__nfkc_strip_legal_form_kana_fold)
@@ -271,6 +274,8 @@ CREATE OR REPLACE TEMP FUNCTION near_phone(l ANY TYPE, r ANY TYPE) AS (
   END
 );
 
+
+-- ---------- 4. The levels ----------
 
 -- Each comparison's levels, as the functions above number them: what the fit and the report read of a level.
 -- kind: exact (equality alone), near (a distance or a similarity), else. position: the comparison's place in the model.
