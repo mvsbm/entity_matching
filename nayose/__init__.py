@@ -255,7 +255,7 @@ def asked(engine, c: dict, record: str | None, values: dict | None, ids: list, u
     else:
         given = list(({x: values.get(x) for x in c["input"]["columns"]} | {c["input"]["id"]: QUERY}).items())
         temp.add("input")
-        engine.run("CREATE TEMP TABLE input AS SELECT " + ", ".join(f"CAST({'NULL' if v is None else f'@v{i}'} AS STRING) AS `{x}`"
+        engine.run("CREATE OR REPLACE TEMP TABLE input AS SELECT " + ", ".join(f"CAST({'NULL' if v is None else f'@v{i}'} AS STRING) AS `{x}`"
                                                                      for i, (x, v) in enumerate(given)),
                    {f"v{i}": str(v) for i, (_, v) in enumerate(given) if v is not None})
         records(engine, None, lookup=True, scratch=temp)

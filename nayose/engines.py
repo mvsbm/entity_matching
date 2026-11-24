@@ -229,10 +229,11 @@ class DuckDB:
     def read_parquet(self, table: str, files: list[Path], columns: list[str] = ()) -> None:
         """Parquet files as the table `table`, each column of each file a name of its own (names), the files' columns
         joined by name, and each of `columns` they lack, missing. Text that isn't UTF-8 is refused. Copied once: the
-        mapping reads it twice, and a file read in place each time is slower."""
+        mapping reads it twice, and a file read in place each time is slower. A temporary table: nothing reads it past
+        the job that loads it, so the run's file keeps no copy of it."""
         quote = lambda n: '"' + n.replace('"', '""') + '"'
         parts = [f"SELECT * FROM read_parquet(?) AS t({', '.join(map(quote, names(pq.read_schema(f).names)))})" for f in files]
-        self.con.execute(f'CREATE OR REPLACE TABLE "{table}" AS ' + " UNION ALL BY NAME ".join(parts), [str(f) for f in files])
+        self.con.execute(f'CREATE OR REPLACE TEMP TABLE "{table}" AS ' + " UNION ALL BY NAME ".join(parts), [str(f) for f in files])
         have = {n.casefold() for n, _ in self.columns(table)}
         for c in (c for c in columns if c.casefold() not in have):
             self.con.execute(f'ALTER TABLE "{table}" ADD COLUMN {quote(c)} VARCHAR')
