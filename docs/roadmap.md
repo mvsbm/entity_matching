@@ -11,8 +11,7 @@ in both bytes billed and work, from `scripts/estimate_cost.py`.
 On 1M generated records, `scripts/estimate_cost.py` puts a build at about 8.4 GB billed and `scripts/benchmark.py`
 at about 30 s. `score.sql` accounts for about 4.6 GB of that and 6.5 million of its 17.7 million comparison calls,
 the fit for 11.2 million: the bound (`bound_of`) passes almost every candidate, so the comparisons run on nearly all
-of them. The plan: tighten the bound so that fewer pairs reach them. records.sql's 2.5 GB and 9.8 s come next: a batch's records
-are written to a table and read again to be added.
+of them. The plan: tighten the bound so that fewer pairs reach them. records.sql writes a batch's records once, straight from its fields.
 
 ## 2 · A key index that persists
 
