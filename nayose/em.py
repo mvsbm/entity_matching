@@ -247,7 +247,6 @@ def first_m(model: dict, name: str, gamma: int, trained: dict) -> float:
     return START_M if gamma == n - 1 else (1 - START_M) / (n - 1)
 
 
-
 def probability(p: float) -> float:  # points → the chance of a match, written so that 2^points never overflows
     return 1.0 / (1.0 + 2.0 ** -p) if p >= 0 else 2.0 ** p / (1.0 + 2.0 ** p)
 
