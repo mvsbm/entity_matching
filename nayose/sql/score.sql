@@ -1,4 +1,4 @@
--- Stage 3, score: the pairs worth scoring and their scores, as er/'s rules, candidates and score steps make them, for
+-- Stage 3, score: the pairs worth scoring and their scores: the rules' pairs and the keys' candidates, scored, for
 -- the run's latest batch against all its records (a build: every record new). The rules' pairs; every pair a key
 -- lists, each key's blocks of @oversized records or more checked on a sample first; each pair's level of each
 -- comparison (functions.sql) and its weight from the model (the prior's bits and each level's, added in the model's

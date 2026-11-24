@@ -1,4 +1,4 @@
-// The character-level comparison functions as DuckDB's engine scores them (er/engine/duckdb.py: rapidfuzz 3), for
+// The character-level comparison functions as DuckDB's twins score them (nayose/engines.py: rapidfuzz 3), for
 // BigQuery's JavaScript UDFs: each takes two strings (code points, not UTF-16 units). Jaro and Jaro–Winkler are float32s,
 // as rapidfuzz's cpdist returns them, the rest as it does: so the last bit of the double, which rapidfuzz's builds round
 // differently (arm64 fuses Jaro–Winkler's boost into one multiply-add), never reaches a comparison.

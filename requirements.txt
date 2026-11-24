@@ -2,14 +2,13 @@
 numpy==2.4.4
 pandas==3.0.3
 duckdb==2.0.0  # the engine of every run on this machine
-pyarrow==26.0.0  # the reader's casts and every Parquet written (er.intake)
-scipy==1.18.1  # clusters by connected components (er.cluster); bounds on false rates (design.evaluate)
-rapidfuzz==3.14.6  # character-level string metrics where DuckDB's own (bytes) can't be asked: values beyond one byte a character
-scikit-learn==1.9.1  # the person-or-company name model (er.kind)
+pyarrow==26.0.0  # the input's column names read, every Parquet written
+scipy==1.18.1  # bounds on false rates (design.evaluate)
+rapidfuzz==3.14.6  # the comparisons' DuckDB twins (nayose.engines): characters where DuckDB's own read bytes
+scikit-learn==1.9.1  # the person-or-company name model's training (scripts/train_name_model.py)
 pytest==9.2.0  # tests/: engine self-checks
 pytest-xdist==3.8.0  # tests/: on every core at once (-n auto)
-pytest-split==0.11.0  # CI: the long tiers in parts of about equal time, by tests/durations.json
-mini-racer==0.14.1  # tests/test_bigquery.py: the comparison functions' JavaScript run in V8, against rapidfuzz
+mini-racer==0.14.1  # tests/test_functions.py: the comparison functions' JavaScript run in V8, against rapidfuzz
 ruff==0.17.0  # CI: the rules in pyproject.toml [tool.ruff]
-sqlglot==30.25.0  # the BigQuery engine's translation of the steps' SQL (er.engine.bigquery); tests/test_design.py's tables
--e .  # the er package: the jobs, and what the scripts share
+sqlglot==30.25.0  # BigQuery SQL translated for DuckDB (nayose.engines)
+-e .  # the nayose package and the design kit

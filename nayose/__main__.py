@@ -48,7 +48,7 @@ def files(given: str) -> list[Path]:  # a Parquet file, a folder of them or a qu
 
 
 @contextlib.contextmanager
-def writing(out: Path, make: bool = False):
+def writing(out: Path, make: bool = False, compute: dict | None = None):
     """The run in `out` to write: the folder's lock (the system releases it when the process ends, even if it dies),
     a copy of run.duckdb to work on (`make`: a new, empty one), put in place whole when the job is done."""
     if not make and not (out / RUN).is_file():
@@ -61,7 +61,7 @@ def writing(out: Path, make: bool = False):
         new.unlink(missing_ok=True)
         if not make:
             shutil.copyfile(out / RUN, new)
-        engine = DuckDB(new)
+        engine = DuckDB(new, compute)
         try:
             yield engine
             engine.close()
@@ -108,7 +108,7 @@ def build(a: argparse.Namespace) -> dict:
     out, given, steps = a.out, files(a.given), {}
     if (out / RUN).is_file() and not a.overwrite:
         raise InputError(f"{out} already holds a run", fix=f"choose another folder, or replace the run: python -m nayose build {a.given} --out {out} --overwrite")
-    with writing(out, make=True) as engine:
+    with writing(out, make=True, compute=limits(a)) as engine:
         if (out / RUN).is_file() and (said := kept(out)):  # people's decisions stay with the run that replaces it
             engine.con.execute(f"CREATE TABLE decisions AS SELECT * FROM read_parquet('{said}')")
             Path(said).unlink()
@@ -135,7 +135,7 @@ def kept(out: Path) -> str | None:  # the run's decisions as a Parquet file besi
 
 def update(a: argparse.Namespace) -> dict:
     out, given, steps = a.out, files(a.given), {}
-    with writing(out) as engine:
+    with writing(out, compute=limits(a)) as engine:
         before = engine.value("SELECT COUNT(*) FROM records")
         timed(steps, "records", nayose.records, engine, given)
         added = engine.value("SELECT COUNT(*) FROM records") - before
@@ -193,6 +193,12 @@ def lookup(a: argparse.Namespace) -> dict:
         return dict(records=out)
 
 
+def limits(a: argparse.Namespace) -> dict:  # --compute KEY=VALUE: DuckDB's limits for this run
+    if bad := [kv for kv in a.compute if "=" not in kv]:
+        raise InputError(f"--compute {' '.join(bad)}: each limit is KEY=VALUE", fix="for example --compute memory_limit=8GB threads=4")
+    return dict(kv.split("=", 1) for kv in a.compute)
+
+
 def typed(item: str) -> tuple[str, str]:  # a COLUMN=VALUE word, by the input's column names
     column, sep, value = item.partition("=")
     if not sep or not column:
@@ -216,6 +222,8 @@ def parser() -> argparse.ArgumentParser:
         if given:
             j.add_argument("given", nargs="*" if name == "lookup" else None, help=given)
         j.add_argument("--out", required=True, type=Path, help="the run's folder")
+        if name in ("build", "update"):
+            j.add_argument("--compute", nargs="*", default=[], metavar="KEY=VALUE", help="DuckDB's limits for this run: memory_limit=8GB threads=4")
         if name == "build":
             j.add_argument("--overwrite", action="store_true", help="replace the run the folder holds, keeping people's decisions")
         if name == "match":
@@ -241,10 +249,8 @@ def main(argv: list[str] | None = None) -> int:
     except InputError as e:
         print(json.dumps(dict(severity="WARNING" if isinstance(e, Busy) else "ERROR", error=str(e), fix=e.fix), ensure_ascii=False))
         return 75 if isinstance(e, Busy) else 2
-    except duckdb.Error as e:  # a refusal the SQL raised (ERROR(...)): what to fix is in its words
-        if "given:" not in str(e) and "config.toml" not in str(e):
-            raise
-        said = str(e).split("Error: ", 1)[-1]
+    except duckdb.InvalidInputException as e:  # a refusal the SQL raised (ERROR(...)) or the fit did (em.py's ValueError): its words say what to fix
+        said = str(e).split("ValueError: ", 1)[-1] if "ValueError: " in str(e) else str(e).split("Error: ", 1)[-1]
         print(json.dumps(dict(severity="ERROR", error=said.split("; ", 1)[0], fix=said.split("; ", 1)[-1]), ensure_ascii=False))
         return 2
     print(json.dumps({"severity": "INFO", **result}, ensure_ascii=False, default=str))

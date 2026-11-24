@@ -1,7 +1,9 @@
-"""Stage 1 (nayose/sql/functions.sql, nayose/mapping.sql, nayose/sql/records.sql): each value read as er/'s intake reads
-it, what was fixed counted alike; the same records as er/'s load step makes from the same file, field by field, the kind
-and the copies too; kind_p and name_p to 9 decimals (BigQuery's SUM has no order, so their last bit may move)."""
+"""Stage 1 (nayose/sql/functions.sql, nayose/mapping.sql, nayose/sql/records.sql): each value read as er/'s intake read
+it (tests/fixtures/expected.json), what was fixed counted alike; a hand-made file's records as er/'s load step made
+them, field by field, the kind and the copies too (their digest, floats to 9 decimals: BigQuery's SUM has no order)."""
+import json
 import math
+import os
 from pathlib import Path
 
 import numpy as np
@@ -12,20 +14,13 @@ import pytest
 
 import nayose
 from nayose.engines import DuckDB
+from test_parity import digest
 
 ROOT = Path(__file__).resolve().parents[1]
 COLUMNS = nayose.config()["input"]["columns"]
 
 
-def er_records(path: Path) -> pd.DataFrame:  # er/'s load step on the file, with the method and settings a run uses
-    from er.config import load_pipeline
-    from er.settings import load_settings
-    from er.steps.job import start
-    from er.steps.load import load
-    s = load_settings()
-    job = start(s, load_pipeline(s.root / "config" / "pipeline.toml", s.standardize, s.chains, s.columns))
-    load(job, path)
-    return job.engine.frame("SELECT * FROM records").rename(columns={s.data.unique_id: "id"})
+EXPECTED = json.loads((ROOT / "tests" / "fixtures" / "expected.json").read_text(encoding="utf-8"))
 
 
 def nayose_records(path: Path) -> tuple[pd.DataFrame, DuckDB]:
@@ -34,31 +29,7 @@ def nayose_records(path: Path) -> tuple[pd.DataFrame, DuckDB]:
     return engine.con.execute("SELECT * FROM records").df(), engine
 
 
-def same(old: pd.DataFrame, new: pd.DataFrame) -> list[str]:
-    """The columns both hold where a record's value differs; floats compared to 9 decimals."""
-    both = old.merge(new, on="id", how="outer", suffixes=("_er", "_nayose"), indicator=True)
-    assert (both["_merge"] == "both").all(), both.loc[both["_merge"] != "both", "id"].tolist()[:5]
-    out = []
-    for c in sorted((set(old.columns) & set(new.columns)) - {"id"}):
-        a, b = both[f"{c}_er"], both[f"{c}_nayose"]
-        if pd.api.types.is_float_dtype(a) or pd.api.types.is_float_dtype(b):
-            a, b = a.astype(float).round(9), b.astype(float).round(9)
-        else:
-            a, b = a.astype("string"), b.astype("string")
-        if not (a.isna() == b.isna()).all() or not (a[a.notna()] == b[a.notna()]).all():
-            out.append(c)
-    return out
-
-
-def test_the_records_of_a_generated_population_are_er_s(tmp_path, population):
-    s, p, g = population
-    g.df.to_parquet(tmp_path / "in.parquet", index=False)
-    new, engine = nayose_records(tmp_path / "in.parquet")
-    assert same(er_records(tmp_path / "in.parquet"), new) == []
-    assert len(new) == len(g.df) and engine.value("SELECT COUNT(*) FROM set_aside") == 0
-
-
-def test_what_er_s_load_fixes_set_aside_and_reads_as_missing_nayose_does_alike(tmp_path):
+def test_what_the_reader_fixes_sets_aside_and_reads_as_missing_is_as_er_s_load_did(tmp_path):
     rows = []
     row = lambda i, **k: {c: None for c in COLUMNS} | {"CONT_ID": f"{i:05d}"} | k
     for i in range(270):  # a dummy phone 70 customers share, the rest each their own: a placeholder, read as missing
@@ -78,7 +49,10 @@ def test_what_er_s_load_fixes_set_aside_and_reads_as_missing_nayose_does_alike(t
     blank_id["CONT_ID"] = "  "  # no ID: set aside
     pd.DataFrame([*rows, blank_id], columns=COLUMNS).astype("string").to_parquet(tmp_path / "in.parquet", index=False)
     new, engine = nayose_records(tmp_path / "in.parquet")
-    assert same(er_records(tmp_path / "in.parquet"), new) == []
+    said = digest(new.drop(columns=["name_p", "batch"]).sort_values("id", ignore_index=True))
+    if os.environ.get("NAYOSE_PARITY_WRITE"):
+        (ROOT / "tests" / "fixtures" / "expected.json").write_text(json.dumps({**EXPECTED, "handmade_records": said}, ensure_ascii=False, indent=1) + "\n", encoding="utf-8")
+    assert said == json.loads((ROOT / "tests" / "fixtures" / "expected.json").read_text(encoding="utf-8"))["handmade_records"]
     assert new["phone"].isna().sum() >= 70 and engine.rows("SELECT field, value FROM placeholders") == [("phone", "0000")]
     assert sorted(engine.rows("SELECT CONT_ID, reason FROM set_aside")) == [  # as the file gave them, to be fixed and added again
         ("  ", "no ID"), ("00305", "the same ID with different content"), ("00305", "the same ID with different content")]
@@ -102,16 +76,15 @@ VALUES = ["ヤマダタロウ", "ヤマダ　タロウ", " サトウ", "サト�
           '["", null]', "[{[]}]", "12345.0", "1.23457E+11", "100", "3.5"]  # every kind of value the intake treats apart
 
 
-def test_each_value_is_read_as_er_s_intake_reads_it():
-    from er.intake import tidy
+def test_each_value_is_read_as_er_s_intake_read_it():
     nulls = nayose.config()["input"]["nulls"]
-    er_read = lambda v, numeric: None if not v or "�" in v else tidy(v, frozenset(nulls), numeric)[0]  # er.intake.read_one's value()
     engine = DuckDB()
     nayose.stage(engine, "functions")
     for numeric in (False, True):  # a column of text, a column of numbers
         got = [r[0] for r in engine.rows("SELECT read_value(v, @numeric, @nulls) FROM UNNEST(@values) AS v WITH OFFSET AS i ORDER BY i",
                                          {"numeric": numeric, "nulls": nayose.nulls_pattern(nulls), "values": VALUES})]
-        assert [(v, g) for v, g in zip(VALUES, got) if g != er_read(v, numeric)] == []
+        want = EXPECTED["read_value"]["numbers" if numeric else "text"]
+        assert [(v, g, w) for v, g, w in zip(VALUES, got, want) if g != w] == []
 
 
 def test_the_reader_names_each_column_its_own_and_refuses_text_that_isn_t_utf8(tmp_path):

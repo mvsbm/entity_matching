@@ -1,28 +1,32 @@
-"""Train the person-or-company name model and write config/kind_names.npz, which every run loads (er.kind.name_model).
+"""Train the person-or-company name model and write config/kind_names.npz, which every run reads (nayose's records.sql).
 
     .venv/bin/python scripts/train_name_model.py      # a few seconds
 
 Public data only: data/reference/'s personas and registry companies, written the ways config/generator.toml says bank
 records write them (design.generate.train_name_model). Run it, and commit the file, after changing data/reference/,
-config/generator.toml's kana_confusions or branches, the legal forms or kana folding in config/settings.toml, [kind]
-ngram, or the training code: a test fails until the file is what training builds, and a run refuses a file trained
-under other settings.
+config/generator.toml's kana_confusions or branches, nayose/config.toml's legal forms, kana folding or [records] ngram,
+or the training code.
 """
 import argparse
+import os
+from pathlib import Path
 
-from er.config import load_pipeline
+import numpy as np
+
 from design.generate import train_name_model
-from er.kind import NAME_MODEL, name_key
-from er.settings import load_settings
+
+ROOT = Path(__file__).resolve().parents[1]
+NAME_MODEL = ROOT / "config" / "kind_names.npz"
 
 
 def main() -> None:
     argparse.ArgumentParser(description=__doc__.split("\n\n")[0], formatter_class=argparse.RawDescriptionHelpFormatter,
                             epilog=__doc__.split("\n\n", 1)[1]).parse_args()
-    s = load_settings()
-    spec = load_pipeline(s.root / "config" / "pipeline.toml", s.standardize, s.chains, s.columns).kind
-    train_name_model(s, spec).save(s.root / NAME_MODEL, name_key(s, spec))
-    print(f"wrote {NAME_MODEL}")
+    m = train_name_model(ROOT / "data" / "reference", ROOT / "config" / "generator.toml")
+    tmp = NAME_MODEL.with_name(f"kind_names.{os.getpid()}.tmp.npz")  # complete before it replaces the old file: a run may be reading it
+    np.savez_compressed(tmp, terms=np.array(m["terms"]), coef=m["coef"], intercept=m["intercept"], ngram=m["ngram"])
+    os.replace(tmp, NAME_MODEL)
+    print(f"wrote {NAME_MODEL.relative_to(ROOT)}")
 
 
 if __name__ == "__main__":

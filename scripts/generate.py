@@ -1,5 +1,5 @@
 """Write a synthetic population: config/generator.toml's spec, generated from the reference data, checked, then split
-by entity into the datasets of config/settings.toml (records as they arrive, in the bronze layer, and labels for
+by entity into config/generator.toml [split]'s datasets (records as they arrive, in the bronze layer, and labels for
 evaluation), as Parquet.
 
     .venv/bin/python scripts/generate.py                                   # data/medallion/bronze/<dataset>.parquet, data/labels/<dataset>.parquet
@@ -12,7 +12,9 @@ from pathlib import Path
 import pandas as pd
 
 from design.generate import check, generate, load_reference, load_spec, profile, split_by_entity
-from er.settings import load_settings
+
+ROOT = Path(__file__).resolve().parents[1]
+BRONZE, LABELS = ROOT / "data" / "medallion" / "bronze", ROOT / "data" / "labels"  # records as they arrive; their entities
 
 
 def main() -> None:
@@ -22,10 +24,9 @@ def main() -> None:
     parser.add_argument("--out", type=Path, help="write one unsplit records.parquet and labels.parquet here instead")
     args = parser.parse_args()
 
-    s = load_settings()
-    spec, split = load_spec(s.root / "config" / "generator.toml")
+    spec, split = load_spec(ROOT / "config" / "generator.toml")
     spec = replace(spec, **{k: v for k, v in (("entities", args.entities), ("seed", args.seed)) if v is not None})
-    g = generate(spec, *load_reference(s.paths["reference"]))
+    g = generate(spec, *load_reference(ROOT / "data" / "reference"))
     check(spec, g)
     entities = g.truth.groupby("ENTITY_ID").size()
     print(f"{len(g.df):,} records · {len(entities):,} entities · {(entities > 1).mean():.1%} duplicated · typos {g.typos}")
@@ -39,13 +40,12 @@ def main() -> None:
         g.truth.to_parquet(args.out / "labels.parquet", index=False)
         print(f"wrote {args.out}/records.parquet and labels.parquet")
         return
-    assert set(split.shares) == set(s.data.datasets), "config/generator.toml [split] must name config/settings.toml's datasets"
     of = split_by_entity(g.truth, split)
-    s.data.bronze_dir.mkdir(parents=True, exist_ok=True)
-    s.data.labels_dir.mkdir(parents=True, exist_ok=True)
+    BRONZE.mkdir(parents=True, exist_ok=True)
+    LABELS.mkdir(parents=True, exist_ok=True)
     for name in split.shares:
-        g.df[of == name].to_parquet(s.data.bronze_dir / f"{name}.parquet", index=False)
-        g.truth[of == name].to_parquet(s.data.labels_dir / f"{name}.parquet", index=False)
+        g.df[of == name].to_parquet(BRONZE / f"{name}.parquet", index=False)
+        g.truth[of == name].to_parquet(LABELS / f"{name}.parquet", index=False)
     print(pd.DataFrame({"records": of.value_counts(), "entities": g.truth.groupby(of)["ENTITY_ID"].nunique()}).reindex(list(split.shares)))
 
 

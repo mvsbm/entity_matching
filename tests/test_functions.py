@@ -1,13 +1,42 @@
 """The functions nayose's SQL calls by name, the same on both engines: the character-level comparisons (rapidfuzz in
-DuckDB, JavaScript in BigQuery), the portable hash, and NFKC."""
+DuckDB, JavaScript in BigQuery) scoring as er/'s did (tests/fixtures/expected.json), the portable hash, and NFKC."""
+import hashlib
 import json
+import random
 import unicodedata
+from pathlib import Path
 
 import pandas as pd
 import pytest
 
 from nayose.engines import FUNCTIONS, STRINGS, DuckDB
-from test_bigquery import pairs
+
+EXPECTED = json.loads((Path(__file__).parent / "fixtures" / "expected.json").read_text(encoding="utf-8"))
+
+
+def pairs(n: int, seed: int = 0) -> list[tuple[str, str]]:
+    """Kana and ASCII values with their typos: a character changed, two swapped, one dropped or added, and unrelated ones."""
+    rng = random.Random(seed)
+    kana, ascii_ = "アイウエオカキクケコサシスセソタチツテトナニヌネノハヒフヘホマミムメモヤユヨラリルレロワヲンガギグゲゴー", "abcdefgh0123"
+    word = lambda alphabet: "".join(rng.choice(alphabet) for _ in range(rng.randint(0, 9)))
+    out = []
+    for _ in range(n):
+        alphabet = kana if rng.random() < 0.7 else ascii_
+        a, b = word(alphabet), []
+        b = list(a)
+        for _ in range(rng.randint(0, 3)):
+            op = rng.random()
+            if op < 0.3 and b:
+                b[rng.randrange(len(b))] = rng.choice(alphabet)
+            elif op < 0.5 and len(b) > 1:
+                i = rng.randrange(len(b) - 1)
+                b[i], b[i + 1] = b[i + 1], b[i]
+            elif op < 0.7 and b:
+                del b[rng.randrange(len(b))]
+            else:
+                b.insert(rng.randrange(len(b) + 1), rng.choice(alphabet))
+        out.append((a, "".join(b) if rng.random() < 0.8 else word(alphabet)))
+    return out
 
 
 @pytest.fixture(scope="module")
@@ -18,15 +47,11 @@ def duck():
 
 
 def test_the_comparisons_score_as_er_s_did_to_the_last_bit(duck):
-    from er.engine.duckdb import connect
-    old = connect()
-    given = pd.DataFrame(pairs(5_000), columns=["a", "b"], dtype="string").assign(i=range(5_000))
-    for con in (duck.con, old.con):
-        con.register("t", given)
+    duck.con.register("t", pd.DataFrame(pairs(5_000), columns=["a", "b"], dtype="string").assign(i=range(5_000)))
     for name, (similarity, _) in FUNCTIONS.items():
         for cut in ("", ", 0.8" if similarity else ", 1", ", 0.95" if similarity else ", 2"):
-            sql = f"SELECT cl_{name}{'_cut' if cut else ''}(a, b{cut}) FROM t ORDER BY i"
-            assert duck.con.execute(sql).fetchall() == old.con.execute(sql).fetchall(), (name, cut)
+            rows = duck.con.execute(f"SELECT cl_{name}{'_cut' if cut else ''}(a, b{cut}) FROM t ORDER BY i").fetchall()
+            assert hashlib.sha256(repr(rows).encode()).hexdigest()[:16] == EXPECTED["comparisons"][f"{name}{cut}"], (name, cut)
 
 
 def test_duckdb_s_own_comparisons_answer_where_both_strings_are_a_byte_a_character_as_the_twins_do(duck):
@@ -56,18 +81,15 @@ def test_javascript_scores_as_the_duckdb_twins_do(duck):
 
 
 def test_the_one_byte_hash_is_er_s(duck):
-    from er.standardize import _hashed
     values = ["東京都千代田区丸の内1-1-1", "ｱｲｳ", "サトウ", None, "𠮷野家", "abc", "東京都千代田区丸の内1-1-1"]
     got = [r[0] for r in duck.con.execute("SELECT one_byte_hash(x) FROM (SELECT unnest(?) AS x)", [values]).fetchall()]
-    assert got == [None if v is None else v2 for v, v2 in zip(values, _hashed(pd.Series(values, dtype="string")).tolist())]
+    assert got == EXPECTED["one_byte_hash"]
     assert got[0] == got[-1] and all(c.isascii() for c in got[0])
 
 
 def test_the_portable_hash_and_nfkc(duck):
-    from er.engine.duckdb import connect
-    old = connect()
     values = ["サトウ", "", None, "12345", "ｶﾌﾞｼｷｶﾞｲｼｬ", "㈱ヤマダ"]
-    hashes = lambda con: [r[0] for r in con.execute("SELECT er_hash(x) FROM (SELECT unnest(?) AS x)", [values]).fetchall()]
-    assert hashes(duck.con) == hashes(old.con)  # er.config.hashed's: what every sample and order by hash reads
+    got = [r[0] for r in duck.con.execute("SELECT er_hash(x) FROM (SELECT unnest(?) AS x)", [values]).fetchall()]
+    assert got == [int(hashlib.md5((v or "").encode()).hexdigest()[:15], 16) for v in values]  # MD5's first 60 bits: what every sample and order by hash reads
     got = [r[0] for r in duck.con.execute("SELECT nfkc(x) FROM (SELECT unnest(?) AS x)", [values]).fetchall()]
     assert got == [None if v is None else unicodedata.normalize("NFKC", v) for v in values] and got[4] == "カブシキガイシャ" and got[5] == "(株)ヤマダ"

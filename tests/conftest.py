@@ -1,123 +1,20 @@
-"""What the tests share: small hand-made frames, a generated population for whole runs, and python -m er as a machine runs it
-(in this process, and in its own). A test that uses a whole-run fixture is marked slow: run the fast ones with
--m "not slow"."""
-import json
+"""What the tests share: a generated population for whole runs (design.generate, config/generator.toml, at 400
+entities), made once for every test that runs one."""
 import os
-import uuid
 from dataclasses import replace
 from pathlib import Path
 
-import numpy as np
-import pandas as pd
 import pytest
 
-from er.config import Comparator, Comparison, FSModel, Key, Level, RulesSpec, load_pipeline
-from er.match import rule_edges
-from er.settings import load_settings
-from er.standardize import prepare
-from er.engine.duckdb import connect
-
-UID = "uid"
-PAIR = pd.DataFrame({"uid_l": ["001a"], "uid_r": ["001b"]}, dtype="string")  # same name, in 4 of the 120 records
-SLOW = {"population", "kind_population", "wide_band", "runs"}  # fixtures that run whole pipelines (runs: test_design.py's)
 ROOT = Path(__file__).resolve().parents[1]
-# the processes the tests start import this checkout's er: the venv's editable install names the one it was made from
+# the processes the tests start import this checkout's nayose: the venv's editable install names the one it was made from
 os.environ["PYTHONPATH"] = os.pathsep.join([str(ROOT), *filter(None, [os.environ.get("PYTHONPATH")])])
-
-
-def pytest_collection_modifyitems(items):
-    for item in items:
-        if SLOW & set(item.fixturenames):
-            item.add_marker(pytest.mark.slow)
-
-
-@pytest.hookimpl(hookwrapper=True)
-def pytest_runtest_makereport(item, call):  # each phase's report kept on the test, for a fixture to see how it went
-    report = (yield).get_result()
-    setattr(item, f"report_{report.when}", report)
-
-
-@pytest.fixture(scope="session")
-def engine():
-    return connect()
-
-
-@pytest.fixture(scope="session")
-def records() -> pd.DataFrame:
-    """60 entities, two records each: same phone, the second name sometimes with one kana changed."""
-    rng = np.random.default_rng(0)
-    names = ["サトウヒロシ", "スズキケイコ", "タカハシアキラ", "タナカユウコ", "イトウタロウ", "ワタナベミホ"]
-    rows = []
-    for e in range(60):
-        name, phone = names[e % len(names)] + "アイウエオ"[e // 12], f"{rng.integers(10_000):04d}"
-        rows.append(dict(uid=f"{e:03d}a", name=name, phone=phone, entity=f"E{e}"))
-        rows.append(dict(uid=f"{e:03d}b", name=name[:-1] + "カ" if e % 3 == 0 else name, phone=phone, entity=f"E{e}"))
-    return pd.DataFrame(rows).astype("string")
-
-
-def table(engine, df: pd.DataFrame) -> str:  # a frame as a table of the engine, the form the code reads records and pairs in
-    name = f"er_t_{uuid.uuid4().hex[:12]}"
-    engine.register(name, df)
-    return name
-
-
-def ids(engine, values) -> str:  # a table of these record IDs: a query
-    return table(engine, pd.DataFrame({UID: list(values)}, dtype="string"))
-
-
-def rule_pairs(engine, spec: RulesSpec, df: pd.DataFrame) -> pd.DataFrame:  # the rules' pairs of a hand-made frame, prepared as a run prepares its records
-    std = replace(load_settings().standardize, derived=())
-    rule_edges(spec, table(engine, prepare(std, df, spec.normalized())), engine, UID, into="er_t_rules")
-    return engine.frame("SELECT * FROM er_t_rules ORDER BY uid_l, uid_r").astype({"uid_l": "string", "uid_r": "string"})
-
-
-def model(extra_name_levels: tuple[Level, ...] = ()) -> FSModel:
-    return FSModel(
-        comparisons=(
-            Comparison(name="name", null_if_missing=("name",), levels=(
-                Level(label="exact", any_of=(("name", Comparator("exact")),)),
-                Level(label="close", any_of=(("name", Comparator("jaro_winkler", 0.9)),)), *extra_name_levels)),
-            Comparison(name="phone", null_if_missing=("phone",), levels=(
-                Level(label="exact", any_of=(("phone", Comparator("exact")),)),)),
-        ),
-        prior_rules=((Key("name"), Key("phone")),), prior_recall=0.9, u_max_pairs=1e4,
-        em_rules=((Key("phone"),),), seed=0)
 
 
 @pytest.fixture(scope="session")
 def population():
-    """A small generated population and the final pipeline, for whole runs: made once for every test that runs one."""
-    from design.generate import generate as make, load_reference, load_spec
-    s = load_settings()
-    p = load_pipeline(ROOT / "tests" / "method.toml", s.standardize, s.chains, s.columns)  # the tests' own method: a method round changes config/pipeline.toml, never what they count on
-    g = make(replace(load_spec(s.root / "config" / "generator.toml")[0], entities=400, households={}),  # the tests count on this population; choose.py measures households
-             *load_reference(s.paths["reference"]))
-    return s, p, g
-
-
-def clustered(engine, base: pd.DataFrame, edges: pd.DataFrame, ids: pd.Series, uid: str) -> pd.Series:
-    """`base` (uid, cluster_id) with `edges` added, as a run clusters (er.cluster.merge), in the order of ids."""
-    from er.cluster import merge
-    engine.register("er_base_df", base)
-    engine.register("er_edges_df", edges[[f"{uid}_l", f"{uid}_r"]])
-    engine.run("CREATE OR REPLACE TABLE er_base AS SELECT * FROM er_base_df")
-    engine.run("CREATE OR REPLACE TABLE er_edges AS SELECT * FROM er_edges_df")
-    merge(engine, "er_base", "er_edges", "er_clusters", uid)
-    return engine.frame("SELECT * FROM er_clusters").set_index(uid)["cluster_id"].astype("string").reindex(ids.to_numpy())
-
-
-def run_er(*words: object, check: bool = False, timeout: float = 600):  # a job, as a machine runs it, in a process of its own
-    import subprocess
-    import sys
-    return subprocess.run([sys.executable, "-m", "er", *map(str, words)], capture_output=True, encoding="utf-8", errors="replace", check=check, timeout=timeout)
-
-
-@pytest.fixture
-def say(capsys):
-    """python -m er in this process: say(*words) → (its exit code, the JSON it printed)."""
-    from er.__main__ import main
-
-    def run(*words: object) -> tuple[int, dict]:
-        code = main([*map(str, words)])
-        return code, json.loads(capsys.readouterr().out.splitlines()[-1])
-    return run
+    """A small generated population (design.generate.Generated: df, the records; truth, their entities): the tests
+    count on it, so its spec is fixed here, households aside."""
+    from design.generate import generate, load_reference, load_spec
+    spec = replace(load_spec(ROOT / "config" / "generator.toml")[0], entities=400, households={})
+    return generate(spec, *load_reference(ROOT / "data" / "reference"))
