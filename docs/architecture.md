@@ -129,7 +129,7 @@ names the latest. An update (`nayose.update`) runs the build's stages on a new b
 
 - **records**: the batch's records join the run's. A record already in the run is set aside, so a batch given twice
   adds nothing. Placeholders are counted again over all records, and a run's record holding a new placeholder is
-  made again with that value read as missing.
+  made again with that value read as missing. A batch that brings none reads no record to make again.
 - **fit** with `@refit` false: the build's model is kept (`fit.fitted`), so there is no sample and no EM. u is
   measured again on the run's records. A level counted exactly is counted again. A sampled comparison is sampled
   again only once its drift outweighs its sampling error (`em.stale`). That test runs on the exact counts first
