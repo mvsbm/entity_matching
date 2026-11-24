@@ -102,7 +102,20 @@ The fit's EM runs in Python on the agreement patterns' counts, a few hundred row
   - `nayose-check`: the fingerprint against the run's.
 
   Each names the image, the service account, the bucket and the settings secret as `${…}`, which Jenkins fills.
-- **Jenkins** (`deploy/Jenkinsfile`): every push runs the lint and the tests. A push to main builds the image, pushes it to Artifact Registry and deploys the jobs (`gcloud run jobs replace`). A build with `RUN` set starts one, with `ARGS`. Every gcloud call runs as the service account whose key Jenkins holds.
+- **Delivery:**
+  - **GitHub Actions gates every pull request.**
+    - `tests.yml`: the lint and the tests.
+    - `deploy.yml`: the image built from `deploy/Dockerfile` with its packages checked against their hashes (`deploy/requirements.lock`), and the runner run in it on a generated file.
+  - **Jenkins (`deploy/Jenkinsfile`) ships what main holds.** It builds one image per commit and pushes it once. It deploys that image by its digest to staging (`deploy/deploy.sh`) and runs the smoke test there (`deploy/smoke.sh`): a generated file built by Cloud Run and on the agent, the two runs compared by `deploy/digest.py`. After a person approves, it deploys the same digest to prod, then runs `nayose-check`. When that says a full run is due, a person starts it.
+  - **Identities:** every gcloud call runs as the deployer account of the project it touches. `docs/operations.md` is how it is set up.
+- **The infrastructure** (`deploy/terraform/`): one environment per project, staging and prod, each made by the same Terraform. It makes:
+  - the bucket, the settings secret and the datasets;
+  - the service accounts, each with the least it needs: the jobs', Jenkins' and the scheduler's;
+  - Workload Identity Federation for Jenkins;
+  - the image's registry, in prod;
+  - the nightly update, the alert on a failed job, and the budget.
+
+  The DevOps team applies it (`docs/operations.md`).
 - **Run on this machine in Docker:** the build job on the 200k generated file, then a batch added and a record looked up, the bucket a mounted folder (the runner keeps the lock and `CURRENT` there as files when no `BUCKET` is set). The clusters, pairs, scores and model are the local run's. `kind_p` differs in its last bit on 241 of 200,000 records: the name model's floats on Linux's math library against macOS's. A job runs on the DuckDB engine; on BigQuery's once the parts it refuses are done (above).
 
 ### Where the method comes from, and what is ours

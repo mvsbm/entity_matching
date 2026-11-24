@@ -104,13 +104,15 @@ the jobs, the table each step writes, and where to change what.
    then its store (the run's files as a dataset's tables, the index), and the parity check once CI has a sandbox
    dataset.
 5. **The jobs** on Cloud Run, wired into Jenkins: ~~`deploy/` (the image, the runner, the jobs, the Jenkinsfile),
-   run in Docker on this machine~~; then on GCP, once the project, the bucket, the Artifact Registry repository and
-   the service account are named.
+   run in Docker on this machine; the runner, one writer per run and every result published whole; the delivery
+   from staging to prod and the infrastructure as code (`deploy/terraform/`, `docs/operations.md`)~~; then applied
+   on GCP by the DevOps team.
 6. **Scale rehearsal**: 10M → 100M generated records on BigQuery, time and bytes billed; then the real build.
 
 ## Open questions for infrastructure
 
-- A sandbox dataset the CI service account may write, for the parity check.
-- Whether that account may create datasets and UDFs.
-- How a lookup request starts a job (a Jenkins parameterized build, `gcloud run jobs execute --args`, or a message).
-- The region and the limits for Cloud Run jobs (about 32 GiB of memory and no local disk, from memory: to confirm).
+`docs/operations.md` holds what the DevOps team sets up. What is still theirs to confirm:
+
+- **On the first staging deploy:** the bucket's mount options, the secret's mount, and the jobs' memory in the region (32 GiB for build).
+- **A lookup request, beyond a person starting a job** (Jenkins' `RUN`, or `gcloud run jobs execute --args`): whether something must call it, and so needs a service in front of the index.
+- **Their own policies:** keys (Workload Identity Federation instead), a VPC Service Controls perimeter, encryption keys, audit logs.
