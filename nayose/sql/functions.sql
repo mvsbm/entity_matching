@@ -153,11 +153,22 @@ CREATE OR REPLACE TEMP FUNCTION name_level(l ANY TYPE, r ANY TYPE, s FLOAT64) AS
     ELSE 0
   END
 );
--- the same levels where the score is the Jaro–Winkler itself, without name_score's bound: the gate's few sampled
--- pairs (score.sql), where the bound's two letter columns would be read of every record for a call or two saved
+-- the same levels, each Jaro–Winkler called in its own branch: the gate's (score.sql), whose few sampled pairs don't
+-- pay name_score's bound (its two letter columns read of every record). Not name_level over a call: BigQuery
+-- computes a SQL function's arguments before its body, so the call would run for every pair, equal names too.
 CREATE OR REPLACE TEMP FUNCTION gamma_name(l ANY TYPE, r ANY TYPE) AS (
-  name_level(l, r, jaro_winkler_of(l.person_name__kana_fold, r.person_name__kana_fold, l.person_name__kana_fold_one_byte,
-                                   r.person_name__kana_fold_one_byte, CAST(0.75 AS FLOAT64)))
+  CASE
+    WHEN l.person_name IS NULL OR r.person_name IS NULL THEN -1
+    WHEN l.person_name = r.person_name THEN 6
+    WHEN l.person_name__kana_fold = r.person_name__kana_fold THEN 5
+    WHEN l.person_name__kana_fold_long_vowel = r.person_name__kana_fold_long_vowel THEN 4
+    WHEN jaro_winkler_of(l.person_name__kana_fold, r.person_name__kana_fold, l.person_name__kana_fold_one_byte, r.person_name__kana_fold_one_byte,
+                         CAST(0.95 AS FLOAT64)) >= CAST(0.95 AS FLOAT64) THEN 3
+    WHEN l.given_name__kana_fold = r.given_name__kana_fold THEN 2
+    WHEN jaro_winkler_of(l.person_name__kana_fold, r.person_name__kana_fold, l.person_name__kana_fold_one_byte, r.person_name__kana_fold_one_byte,
+                         CAST(0.75 AS FLOAT64)) >= CAST(0.75 AS FLOAT64) THEN 1
+    ELSE 0
+  END
 );
 
 -- company: the company's name, its legal form gone and folded (company_name__nfkc_strip_legal_form_kana_fold)
