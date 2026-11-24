@@ -309,16 +309,17 @@ def in_dataset(sql: str, dataset: str) -> str:
 def procedures(dataset: str, mapping: Path | None = None) -> list[str]:
     """The statements the deploy runs in `dataset` (project.dataset), after functions(): the method's own SQL functions
     (each file's CREATE TEMP FUNCTION), the dataset's; then one procedure a job (JOBS), its stages' statements in order
-    (mapping: the deployment's mapping.sql), the values they read (@name: nayose.values_of, config.toml's) declared at
+    (mapping: the deployment's mapping.sql, refused unless it makes temporary tables alone), the values they read (@name: nayose.values_of, config.toml's) declared at
     its top as v_name, the dataset the one whose tables they name. A build first drops every table it writes but those
     KEPT, so it starts as an empty run. Every call of a method's function names the dataset, where the deploy made it."""
-    path = lambda stage: (mapping or nayose.HERE / "mapping.sql") if stage == "mapping" else nayose.SQL / f"{stage}.sql"
+    read = lambda stage: (nayose.mapping_statements(mapping or nayose.HERE / "mapping.sql") if stage == "mapping"
+                          else nayose.statements((nayose.SQL / f"{stage}.sql").read_text(encoding="utf-8")))
     made, bodies = {}, {}
     for job, stages in JOBS.items():
         body, declared, written = [], {}, {}
         for stage, told in stages:
             declared |= nayose.values_of(stage, **told)
-            for sql in nayose.statements(path(stage).read_text(encoding="utf-8")):
+            for sql in read(stage):
                 if m := TEMP_FUNCTION.match(sql):
                     made.setdefault(m[2], TEMP_FUNCTION.sub(lambda x: f"{x[1]}CREATE OR REPLACE FUNCTION `{dataset}`.{x[2]}", sql, count=1))
                 else:

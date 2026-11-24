@@ -76,6 +76,18 @@ def mapping() -> Path:  # mapping.sql, or the file NAYOSE_MAPPING names (another
     return Path(os.environ.get("NAYOSE_MAPPING") or HERE / "mapping.sql")
 
 
+def mapping_statements(path: Path) -> list[str]:
+    """A mapping's statements, refused unless each makes a temporary table or only reads. A mapping turns the input's
+    columns into fields and keeps nothing: a table of its own would be dropped by the next build (engines.procedures),
+    which makes again all it writes, and a function of its own would replace one of the method's on BigQuery alone."""
+    out = statements(path.read_text(encoding="utf-8"))
+    if bad := [s for s in out if not READ.match(s) or TEMP_FUNCTION.match(s)]:
+        said = " ".join(re.sub(rf"^{LEAD}", "", bad[0], flags=re.S).split())[:80]
+        raise InputError(f"{path.name}: a mapping makes temporary tables alone, and this statement doesn't: {said}",
+                         fix="make it CREATE OR REPLACE TEMP TABLE; what a run keeps is the method's tables")
+    return out
+
+
 def legal_pattern(c: dict) -> str:
     """A legal form anywhere (also with its small kana written large), or a bank abbreviation where it may stand: first,
     カ)〇〇, or last, 〇〇(カ. Longest first, so 医療法人社団 isn't cut to 医療法人. On NFKC text."""
@@ -102,6 +114,7 @@ def records(engine, files: list | None, lookup: bool = False, scratch: set | Non
     c = config()
     if bad := [x for x in c["input"]["columns"] if not NAME.match(x)]:
         raise ValueError(f"config.toml [input] columns: {bad} are no plain column names")
+    mapping_statements(mapping())  # refused before the job writes anything
     if files is not None:
         engine.read_parquet("input", files, c["input"]["columns"])
     if scratch is None:
