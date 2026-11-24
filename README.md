@@ -1,89 +1,92 @@
-# Entity resolution for Japanese customer records
+# nayose: entity resolution for Japanese customer records
 
-Finds which customer records belong to the same person or company, and gives each of them one ID. It reads names in katakana, addresses in any format, the last four phone digits, customer IDs and birth dates. It needs no labels to run.
+nayose finds the customer records that belong to the same person or company. It reads names in katakana, addresses
+in any format, the last four phone digits, customer IDs and birth dates, and it needs no labels. It never merges by
+itself. It scores the pairs worth comparing, people decide the pairs above a threshold they set, and their decisions
+make the entities.
+
+The method is BigQuery SQL, one file per stage ([nayose/sql/](nayose/sql/)). BigQuery runs it as written. DuckDB runs
+it on a laptop or in CI after sqlglot translates it. A run is a set of tables: a BigQuery dataset, or a DuckDB file.
 
 ```mermaid
 flowchart LR
-  A["your records"] --> S["1 · Standardize<br/>one way to write each fact"]
-  S --> R["2 · Rules<br/>settle the certain cases"]
-  R --> C["3 · Candidates<br/>list the pairs worth comparing"]
-  C --> F["4 · Score<br/>weigh the evidence, in bits"]
-  F --> G["5 · Cluster<br/>linked records become one"]
-  G --> O["one ID per person<br/>or company"]
+  I["records"] --> R["records.sql<br/>standardize, person or company"]
+  R --> F["fit.sql<br/>learn the model, no labels"]
+  F --> S["score.sql<br/>rules, candidates, points"]
+  S --> M["match.sql<br/>the pairs at a threshold"]
+  M --> P["people decide"]
+  P --> D["decide.sql<br/>entities from decisions"]
 ```
 
-1. **Standardize.** The same fact is written many ways: full-width digits, kana variants, addresses with or without the prefecture or the building. Each is rewritten in one form.
-2. **Rules.** Pairs that agree on strong evidence, such as the same customer ID and the same name, are found first. Rules are cheap and easy to audit.
-3. **Candidates.** Comparing every pair is impossible on a large file: a million records make 500 billion pairs. Shared keys, such as the same address and phone, or a name one letter apart in the same postal area, list about 5 pairs per record instead.
-4. **Score.** Each field adds evidence for or against, in bits. Each bit doubles the odds that the two records are one entity. Nothing merges by itself: a match run lists the pairs at a threshold people set, each with its evidence, and people decide each one.
-5. **Cluster.** Records linked by pairs people said match become one entity. If A matches B and B matches C, all three are one.
-
-One pair, scored field by field: [chapter 5](docs/guide/05-uncertain-evidence-fellegi-sunter.md#solution-evidence-in-bits).
-
-## How well it works
-
-These numbers come from synthetic records built from real Japanese names, companies and addresses, where the truth is known. Each is measured as if people took a match run at the method's threshold, 6 points, whole: every rule pair, and every model pair there with a name compared, said to match.
-
-- **It finds almost half the duplicates:** 48.2% of the true pairs on test (95% interval 46.2–50.2%); the rules alone find 9.6%. Test is a split never used for any choice.
-- **The data is hard on purpose.** About 1% of true pairs are direct matches (the same customer ID and name, or the same name, address code and phone), and 11.3% share nothing usable, so no method finds them all ([data](docs/data.md#how-hard-it-is)).
-- **It merged no two unrelated customers:** 0 false merges on test, so the rate is at most 0.26%. Two people of one household (a spouse, a parent or a sibling at one address) can score as high as a duplicate; their pairs are counted apart, 45 on test. On val, 27 of the 32 such pairs at 6 points are marked in a match run's table as maybe one household.
-- **It merges less falsely than the file's person/company flag alone:** on generated files with one name column for both, and company names held out of its name model's training, it calls a kind where it is sure, never a person against a company flag, and takes the flag's elsewhere, flagging where they disagree. It made 33–111 false merges against 38–121 by the flag alone, and called 63–314 companies persons against 102–644; it called more persons companies, 554–2,690 against 306–2,533 ([chapter 7](docs/guide/07-person-or-company.md)).
-- **A million records take 26.2 seconds,** with peak memory 7.3 GB under an 8 GB limit (1,039,995 generated records), about 3 seconds before that for the reader to read the file as it comes, and 3.2 after it to build the lookup index. Every step's work grows about linearly with the file.
-
-Real data may differ, and only a run on it can tell ([limits](#limits)).
-
-## Quick start
+## Setup
 
 ```bash
-./setup_venv.sh          # Windows, in PowerShell: powershell -ExecutionPolicy Bypass -File setup_venv.ps1
-# map the file's columns once: config/settings.toml [columns]
-.venv/bin/python -m er build customers.parquet --out runs/customers     # a full run, then its lookup index
-.venv/bin/python -m er update new.parquet --out runs/customers          # a batch joins the run
-.venv/bin/python -m er match --out runs/customers --threshold 8         # the pairs at 8 points or more, as a table for people
-.venv/bin/python -m er decide decided.parquet --out runs/customers      # people's decisions applied
-.venv/bin/python -m er lookup --out runs/customers --record 1234        # one record looked up, as if it were new
+./setup_venv.sh        # Windows, in PowerShell: powershell -ExecutionPolicy Bypass -File setup_venv.ps1
 ```
 
-On Windows, `.venv\Scripts\python` in place of `.venv/bin/python`.
+This needs Python 3.12 or later. On Windows, write `.venv\Scripts\python` in place of `.venv/bin/python`.
 
-The run's folder holds `gold.parquet` (each record and its entity's ID, and each one's kind: 1 person, 2 company, 0 not sure), `scored/` (every pair scored, with its evidence) and `report.txt` (the run on one page with no record's value in it, to send when asking for help). The run merges nothing by itself. `match` writes the pairs at the threshold people give as one table, `matched/points-<threshold>.parquet`, each pair with its evidence and an empty `decision`. Reviewers fill in `decision` (`match` or `no_match`), in a BigQuery table or a Sheet; `decide` applies it, or another file of `<id>_l`, `<id>_r`, `decision`. `lookup` also takes one record's `COLUMN=VALUE` words, or `--file PEOPLE.parquet`: the entities each record of a file would join, writing nothing.
-
-Each job prints one JSON object on stdout, and each step as a JSON line on stderr. Exit 2 is a mistake people fix (the JSON's `error` and `fix`); 75, another job is writing the run. `--pipeline` names another method file (default `config/pipeline.toml`); `--compute memory_limit=8GB threads=4` sets DuckDB's limits for one job.
-
-## Design time
+## Data to try it on
 
 ```bash
-.venv/bin/python scripts/generate.py           # synthetic records and their truth: data/medallion/bronze/, data/labels/
-.venv/bin/python scripts/benchmark.py          # quality and cost on generated populations: reports/benchmark.md
-.venv/bin/python scripts/train_name_model.py   # the person-or-company name model: config/kind_names.npz
+.venv/bin/python scripts/generate.py   # data/medallion/bronze/{train,val,test}.parquet, their entities in data/labels/
 ```
+
+The generator writes synthetic records from real names, companies and addresses, and records which entity each one
+belongs to. [nayose/mapping.sql](nayose/mapping.sql) reads its columns. For a file with other columns, write a mapping
+of your own, name it in `NAYOSE_MAPPING`, and list the columns it reads in `nayose/config.toml` `[input]`.
+
+## The jobs
+
+```bash
+.venv/bin/python -m nayose build data/medallion/bronze/train.parquet --out workspaces/demo  # a run's first batch
+.venv/bin/python -m nayose update data/medallion/bronze/val.parquet --out workspaces/demo    # a batch added to the run
+.venv/bin/python -m nayose match --out workspaces/demo --threshold 6     # the pairs at 6 points or more: matched/points-6.parquet
+.venv/bin/python -m nayose decide decided.parquet --out workspaces/demo  # the match table, its decisions filled in, applied
+.venv/bin/python -m nayose lookup --out workspaces/demo --record 1234    # a stored record, looked up as if it were new
+.venv/bin/python -m nayose lookup --out workspaces/demo FULL_NAME_KANA=ヤマダタロウ PHONE_NUM_4=1234
+```
+
+A run is a folder. It holds `run.duckdb` (the run's tables), `report.txt` (the run on one page, with no record's
+value in it) and `matched/`. The match table has an empty `decision` column. Reviewers fill it in with `match` or
+`no_match`, in a BigQuery table or a Sheet, and `decide` reads it back. The `gold` table gives each record its entity.
+
+Each job prints one JSON object. Exit code 2 means a mistake that people fix, and the JSON's `fix` says how. Exit
+code 75 means another job is writing the run, so try again later. On BigQuery, build, update, decide and match are
+procedures of the run's dataset, and Jenkins calls them ([operations](docs/operations.md)).
 
 ## Tests
 
 ```bash
-.venv/bin/python -m pytest -n auto -q
+.venv/bin/python -m pytest -n auto
 ```
 
-The tiers, and the rules each test holds: [contributing](CONTRIBUTING.md).
+## The repository
+
+| Path | Holds |
+|---|---|
+| `nayose/sql/` | the method: functions, records, fit, score, decide, match, lookup, report |
+| `nayose/config.toml` | the values the SQL reads, a section a stage, and the keys and rules a run uses |
+| `nayose/mapping.sql` | the input's columns as fields (each deployment has its own) |
+| `nayose/__main__.py`, `__init__.py` | the jobs and the run's folder; each stage run with its values; report.txt |
+| `nayose/engines.py` | DuckDB and BigQuery: the translation, the function twins, the deploy's statements |
+| `nayose/em.py`, `entities.py`, `strings.js` | EM and connected components (Python UDFs); the comparisons in JavaScript |
+| `config/` | `kind_names.npz` (the person-or-company name model), `generator.toml` (the synthetic data) |
+| `deploy/` | the deploy to BigQuery, the Jenkinsfile, the Terraform |
+| `scripts/`, `design/` | design time: generate, benchmark, estimate_cost, train_name_model; the generator and the metrics |
+| `data/reference/` | public names, companies and addresses the generator reads |
+| `reports/` | what the benchmark measured on synthetic data |
+| `tests/` | the tests |
 
 ## Read next
 
 | To | Read |
 |---|---|
-| see how it is built: every job, step and file | [architecture](docs/architecture.md) |
+| see how it is built: every stage, table and engine | [architecture](docs/architecture.md) |
 | understand each method, and why it is the one chosen | [the guide](docs/guide/01-entity-resolution-and-our-task.md) |
-| look up a term | [the glossary](docs/guide/01-entity-resolution-and-our-task.md#words-used-in-this-guide) |
-| know what each step costs | [performance](docs/performance.md) |
-| set it up and run it on Google Cloud | [operations](docs/operations.md) |
-| check the numbers | [benchmark](reports/benchmark.md) |
+| deploy and run it on BigQuery | [operations](docs/operations.md) |
+| know what each stage costs | [performance](docs/performance.md) |
+| check the numbers (synthetic data only) | [benchmark](reports/benchmark.md) |
 | know where the data comes from | [data](docs/data.md) |
 | change the code | [contributing](CONTRIBUTING.md) |
-| see where it is going | [roadmap](docs/roadmap.md) |
-
-## Limits
-
-- **Measured on synthetic data only.** Test comes from the same generator as the data the choices were made on. Other seeds, emptier fields, or a prior off by a factor of two keep recall between 44.4% and 50.5%; twice the typos lowers it to 43.1%. None of these made a false merge ([benchmark](reports/benchmark.md)). Real data has not been measured.
-- **False pairs appear on files fitted on themselves.** On the generated files of the cost benchmark, a match run at 6 points taken whole joins 2 false pairs at 13,019 records, through 1 false link, 2 at 52,115, through 2, and 6 at 77,926, through 5. Each is a model link between 6.8 and 12.0 bits, between two people who share an address or a phone, most of them a family name too. The model expects at least as many: the sum of 1 − match probability over its links, which needs no labels, is 1.61 at 13,019 records, 4.82 at 52,115 and 8.07 at 77,926; at a million, where personas repeat as clones, 54.54 of 44,065 links.
-- **A company that looks like its representative.** A company record under its representative's name, at the representative's address and phone and flagged person, looks like the person's own record in every column. Nothing tells them apart, so it can merge into the person ([chapter 7](docs/guide/07-person-or-company.md#what-it-cant-do)).
-- **Close names rely on other keys.** A Jaro–Winkler level guarantees no shared key, so two close but unequal names (or company names) are compared only if another key lists them. By the model's own bound, up to 13.2% of matches at a million records rest on such patterns; on labelled train, every pair that could reach the threshold shares a key.
-- **Machine-read kana.** Given-name readings come from SudachiPy, and some differ from the intended reading.
+| see what comes next | [roadmap](docs/roadmap.md) |

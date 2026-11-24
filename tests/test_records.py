@@ -1,6 +1,6 @@
-"""Stage 1 (nayose/sql/functions.sql, nayose/mapping.sql, nayose/sql/records.sql): each value read as er/'s intake read
-it (tests/fixtures/expected.json), what was fixed counted alike; a hand-made file's records as er/'s load step made
-them, field by field, the kind and the copies too (their digest, floats to 9 decimals: BigQuery's SUM has no order)."""
+"""Stage 1 (nayose/sql/functions.sql, nayose/mapping.sql, nayose/sql/records.sql): each value read as recorded
+(tests/fixtures/expected.json), what was fixed counted alike; a hand-made file's records as recorded, field by field,
+the kind and the copies too (their digest, floats to 9 decimals: BigQuery's SUM has no order)."""
 import json
 import math
 import os
@@ -29,7 +29,7 @@ def nayose_records(path: Path) -> tuple[pd.DataFrame, DuckDB]:
     return engine.con.execute("SELECT * FROM records").df(), engine
 
 
-def test_what_the_reader_fixes_sets_aside_and_reads_as_missing_is_as_er_s_load_did(tmp_path):
+def test_what_the_reader_fixes_sets_aside_and_reads_as_missing_is_as_recorded(tmp_path):
     rows = []
     row = lambda i, **k: {c: None for c in COLUMNS} | {"CONT_ID": f"{i:05d}"} | k
     for i in range(270):  # a dummy phone 70 customers share, the rest each their own: a placeholder, read as missing
@@ -76,7 +76,7 @@ VALUES = ["ヤマダタロウ", "ヤマダ　タロウ", " サトウ", "サト�
           '["", null]', "[{[]}]", "12345.0", "1.23457E+11", "100", "3.5"]  # every kind of value the intake treats apart
 
 
-def test_each_value_is_read_as_er_s_intake_read_it():
+def test_each_value_is_read_as_recorded():
     nulls = nayose.config()["input"]["nulls"]
     engine = DuckDB()
     nayose.stage(engine, "functions")
@@ -90,7 +90,7 @@ def test_each_value_is_read_as_er_s_intake_read_it():
 def test_the_reader_names_each_column_its_own_and_refuses_text_that_isn_t_utf8(tmp_path):
     pq.write_table(pa.table({"id": ["1"], "TEL": ["0311112222"], "tel": ["09033334444"], "": ["c"]}), tmp_path / "names.parquet")
     engine = DuckDB()
-    engine.read_parquet("input", [tmp_path / "names.parquet"], ["CIF_ID"])  # as er/ names them; a column the file lacks, missing
+    engine.read_parquet("input", [tmp_path / "names.parquet"], ["CIF_ID"])  # a column the file lacks, missing
     assert engine.rows("SELECT * FROM input") == [("1", "0311112222", "09033334444", "c", None)]
     assert [n for n, _ in engine.columns("input")] == ["id", "TEL", "tel_2", "column_4", "CIF_ID"]
     bad = pa.Array.from_buffers(pa.string(), 1, [None, pa.py_buffer(np.array([0, 6], np.int32).tobytes()), pa.py_buffer("ヤマダ".encode("cp932"))])

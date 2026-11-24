@@ -1,5 +1,5 @@
-"""Stage 2, fit (nayose/sql/functions.sql, fit.sql, nayose/em.py): the model nayose learns is the one er/ learned from
-the same records: λ, each level's m and u as fitted on the sample and measured again on the file, and the notes, on
+"""Stage 2, fit (nayose/sql/functions.sql, fit.sql, nayose/em.py): the model nayose learns from the tests' population is
+the one recorded: λ, each level's m and u as fitted on the sample and measured again on the file, and the notes, on
 the tests' population whole and with the sample cut from it (their digest, to 12 significant digits, in
 tests/fixtures/expected.json; NAYOSE_PARITY_WRITE=1 writes it again)."""
 import copy
@@ -21,11 +21,11 @@ def rounded(x):  # a float to 12 significant digits, in lists and dicts too: a l
 
 
 @pytest.mark.parametrize("sizes", [{}, {"fit_rows": 300, "fit_u_max_pairs": 2000, "u_max_pairs": 5000}], ids=["whole", "sampled"])
-def test_the_model_is_er_s(tmp_path, population, monkeypatch, sizes):
+def test_the_model_is_as_recorded(tmp_path, population, monkeypatch, sizes):
     g = population
     g.df.to_parquet(tmp_path / "in.parquet", index=False)
     c = copy.deepcopy(nayose.config())
-    c["fit"].update(sizes)  # a sample cut from the file, and u sampled on both: the hash's draw, as er's
+    c["fit"].update(sizes)  # a sample cut from the file, and u sampled on both: the hash's draw
     monkeypatch.setattr(nayose, "config", lambda: c)
     engine = DuckDB()
     nayose.records(engine, [tmp_path / "in.parquet"])

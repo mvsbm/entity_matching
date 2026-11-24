@@ -208,7 +208,7 @@ def cost(entities: list[int], memory_limit: str) -> pd.DataFrame:
             continue
         said = json.loads(done.stdout.strip().splitlines()[-1])
         engine = DuckDB(d / "run" / "run.duckdb")
-        row = dict(records=size, seconds=said["seconds"], peak_memory_gb=round(peak, 2), **said["steps"],
+        row = dict(records=size, seconds=said["seconds"], peak_memory_gb=round(peak, 2), **{f"{k} s": v for k, v in said["steps"].items()},
                    recall="—", false_merges="—", fp_rate_at_most="—", **links(accepted(engine)[2]), false_links="—")
         if n <= len(PERSONS):
             q = quality(engine, truth)
@@ -255,7 +255,7 @@ def main() -> None:
               "`wrong_*` the records called 2 that are persons and called 1 that are companies.", "", markdown(kind), "",
               f"## Cost: files of growing size (time grows like N^{curve.attrs['alpha']})", "",
               f"Each file is resolved by `python -m nayose build` in a process of its own, fitted on the file itself; DuckDB memory limit: "
-              f"{limit}. Peak memory is the process's, Python included. Stage columns are seconds. `fit` (on {int(c['fit']['fit_rows']):,} "
+              f"{limit}. Peak memory is the process's, Python included. Each stage's seconds: its own column. `fit` (on {int(c['fit']['fit_rows']):,} "
               f"records) and the u sample of the file inside it ({float(c['fit']['u_max_pairs']):,.0f} pairs) grow far slower than the file (the fit's sample is fixed; only u's exact counts read every record), so at "
               f"these sizes the total grows far slower than N. Above {len(PERSONS):,} entities personas repeat, so those rows measure "
               "cost only.", "", markdown(curve), ""]

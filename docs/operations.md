@@ -1,128 +1,110 @@
 # Operations: nayose on Google Cloud
 
-For the team that sets up and runs the jobs. Everything that is code is in the repository (`deploy/`). This page is
-what people do: once per environment, on every release, and when something goes wrong.
+For the DevOps team and the people who run the jobs. The code is in `deploy/`. This page covers what people do: once per environment, on every release, for each job, and when something goes wrong.
 
 ## What runs where
 
-| Part | What it does | Where it is defined |
+| Part | What it does | Defined in |
 |---|---|---|
-| GitHub Actions | gates every pull request: the lint and the tests; the image built and run; the Terraform valid | `.github/workflows/` |
-| Jenkins | ships what main holds, the same image from staging to prod | `deploy/Jenkinsfile` |
-| Artifact Registry `nayose` (prod) | one image per commit, deployed by digest | `deploy/Dockerfile`, `deploy/terraform/` |
-| Cloud Run jobs `nayose-*` | build, update, decide, match, lookup, check | `deploy/jobs/`, `deploy/runner.py` |
-| bucket `PROJECT-nayose-runs` | the jobs' inputs and the runs | `deploy/terraform/main.tf` |
-| secret `nayose-settings` | the column mapping the jobs read | `deploy/terraform/main.tf` (the value: people) |
-| datasets `nayose`, `nayose_ci` (staging) | the run's tables, once its state moves to BigQuery (`docs/roadmap.md`); the parity check's sandbox | `deploy/terraform/main.tf` |
-| service accounts | `nayose-runtime` (the jobs), `nayose-deployer` (Jenkins), `nayose-scheduler` | `deploy/terraform/iam.tf` |
-| Cloud Scheduler, Monitoring, a budget | nayose-update nightly (optional); an alert on a failed job; spending | `deploy/terraform/main.tf` |
+| GitHub Actions | gates every pull request: the lint, the tests, the Terraform formatted and valid | `.github/workflows/` |
+| Jenkins | ships what main holds: staging, a person's approval, then prod; runs one job in prod when asked | `deploy/Jenkinsfile` |
+| dataset `nayose` | the run: its tables, the functions, one procedure per job, the name model | `deploy/terraform/main.tf`; its contents by `deploy/deploy.py` |
+| dataset `nayose_ci` (staging only) | the sandbox for the BigQuery parity check; its tables expire after a day | `deploy/terraform/main.tf` |
+| bucket `PROJECT-nayose-runs` | the jobs' input files, in `in/`; a deleted object can be brought back for a week | `deploy/terraform/main.tf` |
+| secret `nayose-mapping` | prod's `mapping.sql`, which the prod deploy builds the procedures with | `deploy/terraform/main.tf`; the value is the DevOps team's |
+| service accounts | `nayose-deployer` makes the dataset's functions and procedures; `nayose-runtime` loads inputs and calls the procedures | `deploy/terraform/iam.tf` |
+| Workload Identity Federation | exchanges Jenkins' OIDC token for either account, so no key is needed (optional) | `deploy/terraform/iam.tf` |
+| budget | the month's spending, with alerts at 50%, 90% and 100% (optional) | `deploy/terraform/main.tf` |
 
-Staging and prod are each a project of their own, made by the same Terraform with their own variables.
-
-## The bucket
-
-```
-in/records.parquet        the records a full run reads (nayose-build)
-in/batch.parquet          a batch to add (nayose-update)
-in/decisions.parquet      a match table filled in, or any file of the two IDs and a decision (nayose-decide)
-runs/main/CURRENT         the version every job reads
-runs/main/v/<version>/    a whole run: gold.parquet, scored/, state/, index/, decisions/, matched/, report.txt, steps.json
-runs/main/LOCK            there while a job writes the run
-runs/main/CHECK.json      nayose-check's answer: rebuild_due
-```
-
-- **One writer at a time.** A job that writes the run (build, update, decide, match) holds `LOCK`. A second one waits up to an hour, then exits 75; a lookup reads meanwhile.
-- **All or nothing.** The writing job works on a copy of the current version and writes its result as a new version. Only then does it move `CURRENT`. A job that fails, or is stopped, leaves the run as it was.
-- **Three versions kept.** The newest three versions stay, and older ones are deleted. The bucket keeps a deleted object for a week (soft delete).
-- **Where people find their files.** A match run's table is in the new version's `matched/` (`points-8.parquet` for threshold 8), with both records' compared fields side by side for people to decide on. The run's page is `report.txt`, which holds no record's value.
+Staging and prod are each a project of their own, made by the same Terraform with their own variables. A run on BigQuery is its dataset's tables. The bucket holds only inputs.
 
 ## Setting up an environment
 
 Once per project, staging first.
 
-1. **Terraform** (`deploy/terraform/`, Terraform 1.6 or later):
-   - Copy `staging.tfvars.example` or `prod.tfvars.example` to `ENV.tfvars` and fill it in. Leave `create_registry` true in prod only, and put staging's job account in prod's `registry_readers`.
-   - Then run:
-     ```
-     terraform init -backend-config="bucket=STATE_BUCKET" -backend-config="prefix=nayose/ENV"
-     terraform apply -var-file=ENV.tfvars
-     ```
-   - The state lives in a bucket of yours, never in the repository. The outputs are what the steps below need.
-2. **The column mapping:** `gcloud secrets versions add nayose-settings --data-file=FILE`. The file is a whole settings file in `config/settings.toml`'s form.
-   - **Staging:** `config/settings.toml` itself, because the smoke test compares staging's run with one built from the repository.
-   - **Prod:** the mapping of the real file's columns. It holds column names, never a record.
-3. **Jenkins' identity in each project** (the deployer account):
-   - **Best:** Workload Identity Federation. Set `jenkins_oidc_issuer` and `jenkins_oidc_subject` for Jenkins' OIDC tokens (its OpenID Connect Provider plugin), then make a credential configuration with `gcloud iam workload-identity-pools create-cred-config` (output `workload_identity_provider`). No key exists to leak.
-   - **Otherwise:** a key of `nayose-deployer`, rotated at least every 90 days.
-   - Either way, the file is a Jenkins file credential:
-     - `nayose-staging`: staging's deployer;
-     - `nayose-prod`: prod's deployer;
-     - `nayose-registry`: prod's deployer again, which pushes the image.
-4. **The Jenkins job:**
-   - **The job itself:** a multibranch pipeline on the repository, with script path `deploy/Jenkinsfile`.
-   - **Its environment:**
-     - `STAGING_PROJECT` and `PROD_PROJECT`;
-     - `REGION`;
-     - `REGISTRY` (the output `registry`);
-     - `APPROVERS`: the Jenkins group that may promote to prod and start a full run.
-   - **Agents need:** Docker (building for linux/amd64), the gcloud CLI, Python 3.12, and `envsubst` (gettext).
+1. **Terraform** (`deploy/terraform/`: Terraform 1.6 or later; the google provider 6.x, at `.terraform.lock.hcl`'s hashes). Copy `staging.tfvars.example` or `prod.tfvars.example` to `ENV.tfvars` and fill it in. Then run:
+   ```
+   terraform init -backend-config="bucket=STATE_BUCKET" -backend-config="prefix=nayose/ENV"
+   terraform apply -var-file=ENV.tfvars
+   ```
+   The state lives in a bucket of the team's, never in the repository. The apply also turns on the APIs the jobs use (`main.tf` `services`).
+
+   | Variable | Sets | Default |
+   |---|---|---|
+   | `project` | the environment's project | required |
+   | `environment` | `staging` or `prod`. Staging also gets `nayose_ci`, and its runtime account may write the bucket (for the smoke test's file) | required |
+   | `region`, `bigquery_location` | where the bucket and the datasets are | `asia-northeast1` |
+   | `jenkins_oidc_issuer`, `jenkins_oidc_subject` | Jenkins' OIDC issuer, and the token subject of its job; empty means keys instead | empty |
+   | `alert_emails` | who the budget emails | none |
+   | `billing_account`, `monthly_budget`, `budget_currency` | the budget; with no billing account there is none | empty, 0, `JPY` |
+
+   Outputs: `bucket`, `runtime_service_account`, `deployer_service_account`, `mapping_secret`, `workload_identity_provider`.
+2. **The column mapping, in prod:** `gcloud secrets versions add nayose-mapping --project=PROD_PROJECT --data-file=mapping.sql`. The file is the deployment's mapping, in `nayose/mapping.sql`'s form ([data](data.md#the-mapping-columns-to-fields)). It holds column names, never a record. Staging deploys the repository's `nayose/mapping.sql` instead, because the smoke test's generated file needs it; staging's secret stays empty.
+3. **Credentials:** four Jenkins file credentials, one per account and project: `nayose-staging-deployer`, `nayose-staging-runtime`, `nayose-prod-deployer`, `nayose-prod-runtime`.
+   - **Best:** a Workload Identity Federation configuration, where Jenkins issues OIDC tokens (its OpenID Connect Provider plugin): `gcloud iam workload-identity-pools create-cred-config WORKLOAD_IDENTITY_PROVIDER --service-account=ACCOUNT_EMAIL --credential-source-file=TOKEN_FILE --output-file=FILE`. No key exists to leak.
+   - **Otherwise:** a key of the account, rotated at least every 90 days.
+4. **The Jenkins job:** a multibranch pipeline on the repository, with script path `deploy/Jenkinsfile`.
+   - **Environment:** `STAGING_PROJECT`, `PROD_PROJECT`, and `APPROVERS` (the Jenkins users or group that may promote to prod).
+   - **Agents need:** Python 3.12 or later with `venv`, and the gcloud CLI. The BigQuery client comes from pip (`deploy/requirements.txt`).
    - **Plugins:** Pipeline and Credentials Binding.
-5. **The first release:**
-   - Put the records in prod's `in/records.parquet`, then push to main or replay the main branch.
-   - Staging deploys and passes its smoke test. Someone in `APPROVERS` promotes the commit.
-   - `nayose-check` in prod says a full run is due, because there is no run yet. Starting it runs `nayose-build`.
-   - **Confirm on this first deploy** (it can't be checked without Google Cloud):
-     - the jobs can write the bucket's mount (`mountOptions`: `uid=10001`, `implicit-dirs`);
-     - the secret is read at `/secrets/settings/settings.toml`;
-     - the region gives the jobs their memory (32 GiB for build).
 
 ## A release
 
-Every merge to main goes through the same stages (`deploy/Jenkinsfile`):
+Every push to main goes through these stages (`deploy/Jenkinsfile`, one build at a time):
 
-| Stage | What happens | Who |
+| Stage | What happens | Runs as |
 |---|---|---|
-| Checks | the lint and the fast tests, on every push | Jenkins |
-| Image | one image built for the commit, pushed once; every later stage deploys it by digest | Jenkins |
-| Staging | the jobs deployed to staging (`deploy/deploy.sh`), then the smoke test: a generated file built by Cloud Run and on the agent, the two runs' files compared (`deploy/smoke.sh`, `deploy/digest.py`) | Jenkins |
-| Approve | promote the commit, or not | someone in `APPROVERS` |
-| Prod | the same digest deployed to prod, then `nayose-check` | Jenkins |
-| Rebuild | only when `CHECK.json` says `rebuild_due`: increments, match runs and lookups refuse until `nayose-build` runs, so it asks to start it | someone in `APPROVERS` |
+| Checks | every push, on any branch: `ruff check` and the tests, except the slow ones | — |
+| Staging | `deploy/deploy.py STAGING_PROJECT.nayose`: the functions, the procedures and the name model. Then the smoke test (`deploy/smoke.py`): a generated file of 2,000 entities is copied to `in/smoke.parquet`, built by BigQuery there and by DuckDB on the agent, and the two runs' scored pairs and entities are compared row for row | deployer, then runtime |
+| Approve | someone in `APPROVERS` promotes the commit; this waits up to 7 days | — |
+| Prod | the same commit made in prod's `nayose`, with the secret's mapping | deployer |
 
-Nobody changes Cloud Run, the bucket's layout or BigQuery by hand: a change is a pull request, applied by Jenkins or Terraform.
+Every deploy statement is `CREATE OR REPLACE`, so deploying again gives the same result, and rolling back means replaying an earlier commit. A deploy leaves the run's tables alone: a change to the method reaches them only through a build. Nobody changes the datasets, the bucket or the accounts by hand: a change is a pull request, applied by Jenkins or Terraform.
 
-## Running a job
+## Running a job in prod
 
-In Jenkins, set `RUN` (the job) and `ARGS` (its words, comma-separated); nothing else is built or deployed. Or with gcloud, as `nayose-deployer`:
+Start the Jenkins job on main with `JOB` and `ARGS` (space-separated). Only the Run stage runs, as `nayose-runtime` (`deploy/run.py`):
+
+| JOB | ARGS | What it does |
+|---|---|---|
+| `build` | `gs://PROJECT-nayose-runs/in/…parquet` … | makes the run again from these records; people's decisions stay |
+| `update` | the batch's `gs://` files | adds a batch to the run |
+| `decide` | a filled-in match table's `gs://` files | stores people's decisions and makes the entities again |
+| `match` | a threshold, in points (`8`) | writes the table `nayose.matched`: the pairs at that threshold or more |
+
+build and update print `report.txt`, which Jenkins archives. It holds no record's value, so it can be shared. On BigQuery it has no COLUMNS NOT MAPPED section, and STEPS has one line, for the whole job. A refusal, such as a decisions file with a bad row, fails the build with BigQuery's error, which says what to fix. People put the input files in `in/`; the runtime account only reads them.
+
+## Running locally
 
 ```
-gcloud run jobs execute nayose-update --region=REGION --wait
-gcloud run jobs execute nayose-match  --region=REGION --wait --args="runs/main,match,--threshold,10"
-gcloud run jobs execute nayose-lookup --region=REGION --wait --args="runs/main,lookup,--record,12345678"
-gcloud run jobs execute nayose-decide --region=REGION --wait
+python -m nayose build records.parquet --out runs/main         a run's first batch
+python -m nayose update batch.parquet --out runs/main          a batch added
+python -m nayose match --out runs/main --threshold 8           matched/points-8.parquet
+python -m nayose decide decided.parquet --out runs/main        people's decisions applied
+python -m nayose lookup --out runs/main --record 1234          or COLUMN=VALUE …, or --file FILE
 ```
+
+- **A run is a folder:** `run.duckdb` (its tables), `report.txt` and `matched/`.
+- **One writer at a time:** build, update and decide take the folder's lock (`.lock`). The system frees the lock when the process ends, even if it dies, so none is ever left behind. A writer works on `run.duckdb.new` and puts it in place whole when done, so a job that fails or is killed leaves `run.duckdb` as it was; the next writer removes a leftover `run.duckdb.new`. match and lookup each read a copy of their own and never wait. Every job needs free disk for one more copy of `run.duckdb`.
+- **What a job prints:** one JSON object on stdout, and each stage's seconds as a JSON line on stderr.
 
 | Exit | Means | Then |
 |---|---|---|
-| 0 | done | |
-| 2 | a mistake people fix: the log's ERROR line says what is wrong, and the fix | fix it, run it again |
-| 75 | another job held the run for over an hour | run it again later |
-| 1 | `CURRENT` moved while the job held the lock: a lock was taken over while its job still ran. The job's version is kept, not published | look at both executions; publish by hand only once it is clear |
+| 0 | done, including an update with nothing new (`added: 0`) | |
+| 2 | a mistake people fix: the JSON's `error` says what is wrong, and `fix` how to fix it | fix it and run again |
+| 75 | another job is writing the run | try again later |
+| 1 | a bug: a traceback on stderr; the run is as it was | report it |
 
-Every line a job prints is JSON with a `severity`, so Logging shows errors as errors and the alert policy fires on a failed execution.
+- **Limits:** `--compute` gives build and update DuckDB's settings, such as `memory_limit=8GB threads=4 temp_directory=/big/disk`. Past `memory_limit`, DuckDB spills to `temp_directory`.
+- **Building again:** `python -m nayose build FILES --out runs/main --overwrite` replaces the run and keeps people's decisions. The old run stays until the new one is complete. Build again after any change to `nayose/sql/`, `config.toml` or `mapping.sql`. report.txt's second line names the method the run was made by (`method <fingerprint>`), but nothing refuses an update made by a different method, so compare it before an update.
+- **Backup and restore:** copy `run.duckdb` at any time, since writers never change it in place. To restore, copy it back while no job is writing.
+- **Another config or mapping:** set `NAYOSE_CONFIG` or `NAYOSE_MAPPING` to its path.
 
-## When something goes wrong
+## What isn't there yet
 
-- **A job failed.** The alert names it. Its execution's log says why (`severity=ERROR`), and nothing was published. Fix it, then run it again.
-- **Roll back the code.** Deploy an earlier image by its digest, `deploy/deploy.sh PROJECT REGION REGISTRY/nayose@sha256:…` (the registry keeps the last 30), or replay the earlier commit in Jenkins.
-- **Roll back the data.** With no job running (no `runs/main/LOCK`), point `CURRENT` at an earlier version: `printf %s VERSION | gcloud storage cp - gs://BUCKET/runs/main/CURRENT`. The last three versions are there.
-- **A lock left behind.** A job stopped outright leaves `LOCK`, and the next job takes it over after 26 hours. With no execution running, `gcloud storage rm gs://BUCKET/runs/main/LOCK` frees it now.
-- **A full run due.** `CHECK.json` says `rebuild_due: true`: the method or the mapping changed what an increment needs. Start `nayose-build`; the release asks to.
-
-## Limits
-
-- **A job copies the run onto its own disk, which Cloud Run keeps in memory.** That is about 1.1 GB per million records, so up to some 20M records in a 32 GiB job. Past that, the run's state moves into BigQuery (`docs/roadmap.md`); that needs the staging sandbox dataset to be built and checked against.
-- **A lookup is a job:** seconds to start, then the run copied. A service in front of the index answers in well under a second, once lookups need it.
+- **Lookups on BigQuery.** There is no lookup procedure, so lookups run only locally. A lookup is an update of one record that is then rolled back, and BigQuery takes no DDL in a transaction.
+- **Nothing has run on BigQuery yet.** `tests/test_deploy.py` checks the deploy and the jobs against a client that records what it is sent. The parity check (the tests' population built in `nayose_ci` and held to the same digests as DuckDB) waits for the sandbox. Confirm these on the first staging deploy: the Python functions (`python-3.11`) can be made in the dataset's location; the OIDC token each WIF configuration reads is on the agent, since the Jenkinsfile binds only the configuration file; the smoke test says `the same`.
+- **All or nothing, on BigQuery.** A procedure's statements replace tables one at a time, so a failed job may leave some tables made again and others not. Run it again: a build from every input file so far (decisions stay), or bring the tables back with BigQuery's time travel. Only Jenkins keeps jobs to one at a time (`disableConcurrentBuilds`, per branch), so start jobs from main only. Nothing in BigQuery stops a second call.
 
 ## What the DevOps team decides
 
@@ -131,6 +113,5 @@ These are good practice the repository can't set for you:
 - **No service account keys:** Workload Identity Federation, and an organisation policy that forbids keys.
 - **A VPC Service Controls perimeter** around both projects: Storage, BigQuery and Secret Manager.
 - **Customer-managed encryption keys** for the bucket, the datasets and the secret, where policy asks for them.
-- **Data Access audit logs** for Storage and BigQuery, and how long logs and the bucket's soft delete keep things.
-- **Who is in `APPROVERS`,** and who receives `alert_emails`.
-- **Dependabot's weekly pull requests** for the base image and the actions, reviewed like any other change.
+- **Data Access audit logs** for Storage and BigQuery, and how long logs, time travel and the bucket's soft delete keep things.
+- **Who is in `APPROVERS`,** who receives `alert_emails`, and who may write prod's `in/`.

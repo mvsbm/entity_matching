@@ -20,8 +20,6 @@ data/artifacts/
 # People's runs (python -m nayose build … --out workspaces/…): their records and results, never committed
 workspaces/
 
-# one writer at a time (er.folder.run_lock)
-.*.lock
 
 # Terraform: the providers it downloads, and the variables people fill in (deploy/terraform/*.tfvars.example are the forms)
 deploy/terraform/.terraform/

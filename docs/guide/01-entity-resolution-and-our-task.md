@@ -33,7 +33,7 @@ Matching is one step inside resolution. Resolution adds two jobs of its own:
 | Question | are these two records the same entity? | which records belong together? |
 | Looks at | one pair | the whole file |
 | Answer | yes / no, or a probability | groups of records, one per entity |
-| In this repo | `er.match` | `er.candidates`, then `er.match`, then connected components (`er.cluster.merge`, the same in a run and at design time) |
+| In this repo | `score.sql` (6. The scores), each comparison's level from `functions.sql` (`gamma_name` and the others) | `score.sql`'s keys (2. The keys), then its scores, then connected components over people's match decisions (`decide.sql`, `entities_of` in `nayose/entities.py`; the benchmark groups with the same function) |
 
 The same problem goes by other names. *Deduplication* finds duplicates inside one file, which is our case. *Record linkage* connects records across two files. Linking records to a master list is a third variant.
 
@@ -112,8 +112,8 @@ Here is what happens to the validation file, with every pair at the method's thr
 flowchart LR
   A["10,496 records<br/>2,494 true duplicate pairs"] -->|"exact rules"| B["3.6% found"]
   B -->|"fuzzy rules"| C["11.9% found<br/>2,198 pairs still missed"]
-  C -->|"22 candidate generators"| D["2,568 candidate pairs<br/>contain 79.6% of the 2,198"]
-  D -->|"Fellegi–Sunter ≥ 6 bits"| E["918 pairs<br/>none of them false"]
+  C -->|"22 candidate generators"| D["2,869 candidate pairs<br/>contain 79.6% of the 2,198"]
+  D -->|"Fellegi–Sunter ≥ 6 bits"| E["1,208 pairs<br/>none of them false"]
   E -->|"connected components"| F["49.9% found<br/>0 false merges"]
 ```
 
@@ -152,7 +152,7 @@ Real customer data has no answer key. Nobody knows for sure which records are th
 
 ### A rule for every choice
 
-Every choice in `config/pipeline.toml` is measured at design time on these splits, by one rule:
+Every choice of the method (`nayose/sql/`, and its values in `nayose/config.toml`) is measured at design time on these splits, by one rule:
 
 - **The threshold.** On cross-validated train (each third scored by a model fitted on the other two, so every score is out-of-fold), the lowest weight with no false pair and a false-pair rate bound of at most 5%, then one grid step stricter: 6 bits.
 - **A change** is adopted if it is *better* (a significant paired gain on cross-validated train, p < 0.05, and no false pair added), *cheaper* (no true pair lost, no false pair added), *safer* (the same test, for a change that adds pairs whose gain shows only at scale) or *chosen* (the owner's call, for a gain too small to show on files of 10,000 records; no false pair added). Then, on val, a better, cheaper or safer change may not lose more true pairs than it gains.
@@ -168,12 +168,12 @@ Every choice in `config/pipeline.toml` is measured at design time on these split
 | true pair | two records of the same entity | 1 |
 | matching, resolution | deciding pair by pair; turning the matched pairs into groups | 1 |
 | train, val, test | the three splits: fit and choose; confirm; report, once | 1 |
-| field | a logical part of a record (name, address, phone), mapped from the file's columns by `[columns]` | 2 |
+| field | a logical part of a record (name, address, phone), mapped from the file's columns by `nayose/mapping.sql` | 2 |
 | standardize | rewrite each value in one form, so equal facts compare equal | 2 |
 | rule | a condition that pairs two records on strong evidence alone, such as the same customer ID and the same name | 4 |
 | key, block | a value records share, such as the same address and phone; records with one key form a block, and only pairs inside a block are listed | 3 |
 | candidate generator | one way of listing pairs: a key, or one-letter deletions of a value | 3 |
-| candidates | every generator's pairs together: the only pairs scored | 3 |
+| candidates | every generator's pairs together: with the rules' pairs, the only pairs scored | 3 |
 | potential match | a true pair whose fields would reach the threshold, if it were scored | 3 |
 | m | how often two records of the **same** entity land in a comparison level, such as "same address" | 5 |
 | u | how often two **different** entities land there by chance | 5 |
@@ -184,12 +184,12 @@ Every choice in `config/pipeline.toml` is measured at design time on these split
 | recall | the share of true pairs found | 1 |
 | false merge | two different entities put in one cluster; "at most 0.26%" is the 95% upper bound when none was seen | 1 |
 | cross-validation | fitting on two thirds of train and scoring the other third, three times, so a choice is never judged on the data it was fitted on | 1 |
-| the method | `config/pipeline.toml`: the fields, rules, keys, model and threshold every job runs | 1 |
-| increment | a batch of new records added to a written run | [architecture](../architecture.md#5--an-increment) |
+| the method | `nayose/sql/`: the fields, rules, keys and model every job runs, a file per stage; their values in `nayose/config.toml` | 1 |
+| build, update | a run's first batch of records; a batch added to a run, which scores only the pairs touching it | [architecture](../architecture.md#5--an-increment) |
 
 ## In the code
 
-- `config/settings.toml`: paths, datasets, `[columns]` (which of a file's columns hold each field)
+- `nayose/mapping.sql`: which of a file's columns hold each field; `nayose/config.toml` `[input]`: every column it reads, and the values read as missing
 - `design/generate.py`: the generator (`Spec`, `Split`, `generate`, `check`, and `profile`, how hard the population is), configured by `config/generator.toml` and run by `scripts/generate.py`
 - `data/reference/SOURCES.md`: where each reference file came from
 - reference details: [data.md](../data.md)

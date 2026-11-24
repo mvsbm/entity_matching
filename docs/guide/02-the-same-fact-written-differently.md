@@ -39,12 +39,12 @@ A *normalizer* maps every variant of one fact to one standard form. We use four.
 ### Why this solution
 
 - **Similarity alone can't bridge format changes.** `1丁目3番17号` and `1-3-17` are many edits apart, although they mean the same thing.
-- **It stays readable.** Every rule is one line in `config/settings.toml`. Anyone can see exactly which forms get merged.
+- **It stays readable.** Every rule is a line or two of `records.sql`, its lists (the folding table, the legal forms, the prefectures) in `config.toml` `[records]`. Anyone can see exactly which forms get merged.
 - **Alternatives need labels.** A learned model of "same address" would need many labelled examples, and we have none.
 
 ### Filling the gaps: one field from several columns
 
-A record may have a full name, or only a surname and a given name in separate columns. So each **logical field** the pipeline compares takes the first filled of its source columns, as `config/settings.toml` `[columns]` lists them:
+A record may have a full name, or only a surname and a given name in separate columns. So each **logical field** the method compares takes the first filled of its source columns, as `nayose/mapping.sql` lists them:
 
 | Field | Takes the first filled of |
 |---|---|
@@ -122,11 +122,11 @@ Along the diagonal the cost stays at 0 while the characters agree. The last step
 
 **Example.** In 0599 and 0499, only the second digit differs, so the distance is **1**. The swap 0599 / 0959 counts **2**. Strings of different lengths have no Hamming distance at all.
 
-**Properties.** It is the simplest and fastest function, O(n). It allows replacements only, never insertions or deletions.
+**Properties.** It is the simplest and fastest function, O(n). It allows replacements only, never insertions or deletions. The method's version, as `rapidfuzz` computes it, pads the shorter of two strings at its end, so a value that lost its last character is one off.
 
 **Where we use it, and why.** **Phones, in the model** (the level "one digit off") **and in the rules** (at most 1). The last four digits always have exactly four characters, and the most common error is one wrong digit, which is exactly Hamming distance 1.
 
-It also makes the evidence easy to check by counting. Each number has 4 × 9 = 36 neighbours at distance 1. So two strangers land there by chance about 36 times in 10,000. The model counts this level exactly on each file, through one-deletion keys ([chapter 3](03-far-too-many-pairs.md#keeping-every-potential-match)), and finds the same: about 1 in 277 on val ([chapter 5](05-uncertain-evidence-fellegi-sunter.md)).
+It also makes the evidence easy to check by counting. Each number has 4 × 9 = 36 neighbours at distance 1. So two strangers land there by chance about 36 times in 10,000. The model counts this level exactly on each file, through one-deletion keys ([chapter 3](03-far-too-many-pairs.md#keeping-every-potential-match)), and finds the same: about 1 in 276 on val ([chapter 5](05-uncertain-evidence-fellegi-sunter.md)).
 
 ### Jaro and Jaro–Winkler: shared characters, in order, with a bonus for the start
 
@@ -174,7 +174,7 @@ $$JW = J + 0.1\,\ell\,(1 - J)$$
 
 The rules also use Jaro–Winkler for addresses (0.9 or more). A normalized address shares a long start, the city and town, and differs, if at all, near the end.
 
-**Its blind spot.** Different people who share a surname score high. サトウヒロシ and サトウタカシ reach **0.844**, which counts as "close" (at least 0.75). That's why "close" is weak evidence in the model, worth only about 5 bits ([chapter 5](05-uncertain-evidence-fellegi-sunter.md)).
+**Its blind spot.** Different people who share a surname score high. サトウヒロシ and サトウタカシ reach **0.844**, which counts as "close" (at least 0.75). That's why "close" is weak evidence in the model, worth only about 6 bits ([chapter 5](05-uncertain-evidence-fellegi-sunter.md)).
 
 ### Jaccard similarity: shared characters, in any order
 
@@ -202,7 +202,7 @@ To the order-sensitive functions, the same company looks completely different. T
 
 **The idea.** Two values are equal after normalization, or they aren't.
 
-**Where we use it, and why.** For the address code, the postal code, the town code, the city and the prefecture, and as the strongest level of every comparison. These are identifiers, not words: a code one digit away is usually a different code, so "nearly equal" carries no meaning. The CIF ID and the birth date are identifiers too, but people retype them, so the model adds a "one digit off" level after the exact one (Damerau–Levenshtein, above). Exact matching is also the cheapest test, because the database finds equal values with a hash join ([chapter 3](03-far-too-many-pairs.md)).
+**Where we use it, and why.** For the address code, the postal code and the prefecture, and as the strongest level of every comparison. These are identifiers, not words: a code one digit away is usually a different code, so "nearly equal" carries no meaning. The CIF ID and the birth date are identifiers too, but people retype them, so the model adds a "one digit off" level after the exact one (Damerau–Levenshtein, above). Exact matching is also the cheapest test, because the database finds equal values with a hash join ([chapter 3](03-far-too-many-pairs.md)).
 
 ### All the functions side by side
 
@@ -241,7 +241,7 @@ Reading down each column shows what each function notices:
 
 **A risk we accept, and how we contain it.** "Close" addresses include neighbours. 福島市吉倉4-11 and 4-17 score 0.956 and are one edit apart, whether through a typo or because they are next door. So a close address is never enough on its own:
 - **In the rules,** a close address must come with a close name and the same phone.
-- **In the model,** "address close" is worth +2.5 bits on val, against +13.1 for the same address.
+- **In the model,** "address close" is worth +1.9 bits on val, against +12.8 for the same address.
 
 ### Other options, and why we didn't take them
 
@@ -253,7 +253,7 @@ Reading down each column shows what each function notices:
 
 ## Challenge: Japanese text breaks standard tools
 
-DuckDB, the database engine every run uses, has built-in similarity functions. They compare **bytes**, not characters. In UTF-8, each katakana character takes 3 bytes. Every katakana shares the same first byte, and most share the second as well. Byte by byte, unrelated names look far more alike than they are:
+DuckDB, the database engine a run uses on a laptop or in CI, has built-in similarity functions. They compare **bytes**, not characters. In UTF-8, each katakana character takes 3 bytes. Every katakana shares the same first byte, and most share the second as well. Byte by byte, unrelated names look far more alike than they are:
 
 | Pair | Byte-level Jaro–Winkler | Character-level |
 |---|---|---|
@@ -262,7 +262,7 @@ DuckDB, the database engine every run uses, has built-in similarity functions. T
 
 ### Solution: character-level versions of every function
 
-`er/engine/duckdb.py` registers character-level versions of each function in DuckDB (`er/strings.py` lists them), built on the `rapidfuzz` library. They are named `cl_jaro_winkler`, `cl_levenshtein`, and so on. Every rule and every model level uses them. `connect()` checks them on every start, and so do the tests.
+The SQL calls character-level versions of each function by name: `cl_jaro_winkler`, `cl_levenshtein`, `cl_damerau_levenshtein` and `cl_hamming`, each also as a `_cut` form that stops once its threshold can't be reached. Every rule and every model level uses them. On BigQuery they are JavaScript functions (`nayose/strings.js`), which the deploy makes. On DuckDB, `nayose/engines.py` registers twins built on the `rapidfuzz` library, and calls DuckDB's own function only where both strings are one byte a character (the one-byte copies of katakana names that `records.sql` makes). The translation for DuckDB refuses `EDIT_DISTANCE`, which DuckDB would answer in bytes, and the tests hold the JavaScript, the twins and DuckDB's own functions to the same scores.
 
 ### Why it matters
 
@@ -272,10 +272,12 @@ The gap is not cosmetic. Our model treats Jaro–Winkler at or above 0.95 as "ve
 
 ## In the code
 
-- `config/settings.toml`: `[locale]` (the folding table, legal forms, address rules, normalization chains) and `[columns]` (each field's source columns, and the NFKC and space removal of the name fields)
-- `er/standardize.py`: `normalize` (apply named normalizers), `prepare` (derive and normalize the columns a stage uses)
-- `er/strings.py`: the functions and their character-level scorers; `er/engine/duckdb.py`: the `cl_*` functions, `connect()`
-- `tests/test_scoring.py`: character-level and NULL-safe functions; the three address formats give one key
+- `nayose/mapping.sql`: each field from its source columns, every column read through `read_value` (`functions.sql`, 1. The intake: damaged values, lists, placeholders and blanks read as missing)
+- `nayose/sql/records.sql`: 2. Each field standardized (NFKC, katakana, spaces and separators gone); 6. The copies the keys and comparisons read (`person_name__kana_fold`, `address__address`, `company_name__nfkc_strip_legal_form_kana_fold`, the reading `person_name__kana_fold_long_vowel`, the one-byte copies)
+- `nayose/config.toml` `[records]`: `kana_fold_from` and `kana_fold_to` (the folding table), `legal_forms`, `legal_front`, `legal_end`, `prefectures`; `nayose/__init__.py`: `legal_pattern`, the legal forms where banks write them
+- `nayose/sql/functions.sql`: 2. The comparisons (`gamma_name`, `gamma_company`, `gamma_address`, `gamma_phone`, `gamma_cif`, `gamma_birth`); 3. The rules' fuzzy tests (`near_name`, `near_company`, `near_address`, `near_phone`)
+- the `cl_*` functions: `nayose/strings.js` (BigQuery), `nayose/engines.py` (DuckDB: `FUNCTIONS`, `compare`, `native`; `avoided`, the forms refused)
+- `tests/test_functions.py`: the JavaScript, the twins and DuckDB's own functions score alike; `tests/test_records.py`: the intake, and the address key
 
 ## Further reading
 
@@ -286,6 +288,6 @@ The gap is not cosmetic. Our model treats Jaro–Winkler at or above 0.95 as "ve
 - M. A. Jaro, "Advances in record-linkage methodology as applied to matching the 1985 census of Tampa, Florida," *Journal of the American Statistical Association* 84(406), 1989.
 - W. E. Winkler, "String comparator metrics and enhanced decision rules in the Fellegi–Sunter model of record linkage," *Proceedings of the Section on Survey Research Methods*, American Statistical Association, 1990. The prefix bonus.
 - P. Jaccard, "The distribution of the flora in the alpine zone," *New Phytologist* 11(2), 1912. The origin of the Jaccard index.
-- [rapidfuzz documentation](https://rapidfuzz.github.io/RapidFuzz/): the string metrics behind `cl_*`.
+- [rapidfuzz documentation](https://rapidfuzz.github.io/RapidFuzz/): the string metrics behind `cl_*`, which `nayose/strings.js` follows.
 
 **Next:** [3. Far too many pairs →](03-far-too-many-pairs.md)

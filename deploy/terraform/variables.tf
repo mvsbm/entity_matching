@@ -4,7 +4,7 @@ variable "project" {
 }
 
 variable "environment" {
-  description = "staging or prod: staging holds the CI sandbox dataset, and its deployer writes the bucket (the smoke test)."
+  description = "staging or prod: staging holds the CI sandbox dataset, and its runtime account writes the bucket (the smoke test's file)."
   type        = string
   validation {
     condition     = contains(["staging", "prod"], var.environment)
@@ -31,13 +31,13 @@ variable "jenkins_oidc_issuer" {
 }
 
 variable "jenkins_oidc_subject" {
-  description = "With jenkins_oidc_issuer: the token subject (sub) of the Jenkins job that may act as the deployer."
+  description = "With jenkins_oidc_issuer: the token subject (sub) of the Jenkins job that may act as the deployer and the runtime account."
   type        = string
   default     = ""
 }
 
 variable "alert_emails" {
-  description = "Who is told when a job's execution fails."
+  description = "Who is told when the month's spending passes a budget threshold."
   type        = list(string)
   default     = []
 }

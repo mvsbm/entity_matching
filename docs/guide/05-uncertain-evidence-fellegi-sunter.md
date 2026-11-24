@@ -22,13 +22,13 @@ The Fellegi–Sunter model asks two questions about every field.
 - **m:** if the two records *are* the same entity, how often does this field look like this?
 - **u:** if they are *different* entities, how often does it look like this by chance?
 
-The ratio m / u says how much more likely the observation is under "same" than under "different". Here are the values learned for the phone on train, at design time:
+The ratio m / u says how much more likely the observation is under "same" than under "different". Here are the values the method learns for the phone on train:
 
 | Phone observation | m: same entity | u: different entities | Evidence |
 |---|---|---|---|
-| exactly equal | 0.261 | about 1 in 9,600 | +11.3 bits |
-| one digit off | 0.062 | about 1 in 280 | +4.1 bits |
-| different | 0.677 | 0.996 | −0.6 bits |
+| exactly equal | 0.259 | about 1 in 9,400 | +11.3 bits |
+| one digit off | 0.061 | about 1 in 277 | +4.1 bits |
+| different | 0.681 | 0.996 | −0.5 bits |
 
 u is rounded to three decimals; the "1 in" values follow from m and the weight. Both can be checked by counting:
 - **Exactly equal:** two strangers share a random last four digits about 1 time in 10,000.
@@ -52,7 +52,7 @@ Each term is a number of **bits**, and each bit doubles the odds. So +10 bits mu
 | before looking | two random records match about 1 in 23,000 | −14.49 |
 | name | different | −3.19 |
 | company | missing (a person has no company name) | 0.00 |
-| address | the same address | +12.77 |
+| address | the same address | +12.76 |
 | phone | exactly equal | +11.14 |
 | CIF ID | different | −0.03 |
 | birth date | missing | 0.00 |
@@ -62,7 +62,7 @@ The total is from unrounded parts. Back from bits to a probability:
 
 $$p = \frac{2^{w}}{1 + 2^{w}} = \frac{2^{6.19}}{1 + 2^{6.19}} = 98.6\%$$
 
-That clears the method's 6-bit threshold (below) by 0.19 bits. A different CIF ID costs almost nothing: true pairs have different CIF IDs 98.5% of the time (m = 0.985), nearly as often as strangers.
+That clears the method's 6-bit threshold (below) by 0.19 bits. A different CIF ID costs almost nothing: true pairs have different CIF IDs 98.3% of the time (m = 0.983), nearly as often as strangers.
 
 ### Why this solution
 
@@ -75,7 +75,7 @@ That clears the method's 6-bit threshold (below) by 0.19 bits. A different CIF I
 
 The sum assumes the fields are **independent**, given whether the pair matches. Some of ours are not. The address code, the address text and the postal code describe one fact: where the record lives. Counting them as three fields would count one agreement three times.
 
-So correlated fields form **one comparison** with ordered levels. The first level that holds wins. The levels and thresholds shown are the method's (`config/pipeline.toml`):
+So correlated fields form **one comparison** with ordered levels. The first level that holds wins. The levels and thresholds shown are the method's (`functions.sql`: `gamma_name` and the others):
 
 | Comparison | Levels, strongest first |
 |---|---|
@@ -100,16 +100,16 @@ In a real file, nobody tells us which pairs match. Each parameter must come from
 
 The other levels (a close name, a nearby address) come from 10 million random pairs, every one of them scored. Counting matters because a sample of 10 million pairs cannot see an agreement rarer than about one in a billion pairs, which an exact name or CIF ID becomes in a big file.
 
-**u is measured on every file we score.** Some fields have more distinct values in a bigger file: there are more addresses and more CIF IDs. Two random records then agree on them less often, so u is smaller. A u measured on train would under-credit those agreements on a bigger file, and over-credit them on a smaller one. Measuring u on the whole file being scored keeps each weight right at any size. The scores and the check on oversized key blocks ([chapter 3](03-far-too-many-pairs.md)) use the same u. It needs no labels, and costs about the same at any size: the fit, with this measurement inside it, takes 1.49 seconds at 13,019 records and 4.05 at a million ([`reports/benchmark.md`](../../reports/benchmark.md)).
+**u is measured on every file we score.** Some fields have more distinct values in a bigger file: there are more addresses and more CIF IDs. Two random records then agree on them less often, so u is smaller. A u measured on train would under-credit those agreements on a bigger file, and over-credit them on a smaller one. Measuring u on the whole file being scored keeps each weight right at any size. The scores and the check on oversized key blocks ([chapter 3](03-far-too-many-pairs.md)) use the same u. It needs no labels, and costs about the same at any size: the fit, with this measurement inside it, takes 2.75 seconds at 13,019 records and 6.03 at a million ([`reports/benchmark.md`](../../reports/benchmark.md)).
 
-**λ, from near-certain rules.** Pairs that agree on CIF ID and name, on CIF ID and company name, or on name, address code and phone are almost surely matches. Counting them, and dividing by the share of true pairs these rules find, gives λ. That share, measured on train's labels at design time, is 2.2% (`[model] prior_recall` in `config/pipeline.toml`), used for files without labels. The chance two random records match depends on the file's size, so λ is rescaled for each file. On val, a file of 10,496 records, it is about 1 in 23,000 pairs (−14.5 bits).
+**λ, from near-certain rules.** Pairs that agree on CIF ID and name, on CIF ID and company name, or on name, address code and phone are almost surely matches. Counting them, and dividing by the share of true pairs these rules find, gives λ. That share, measured on train's labels at design time, is 2.2% (`[fit] prior_recall` in `config.toml`), used for files without labels. The chance two random records match depends on the file's size, so λ is rescaled for each file. On val, a file of 10,496 records, it is about 1 in 23,000 pairs (−14.5 bits).
 
 **m, by expectation–maximization (EM).** Take the pairs that share a phone number. They are a mix of true pairs and strangers, in unknown proportions. EM alternates two steps until the numbers settle:
 
 1. **Guess the matches:** with the current m, u and λ, compute each pair's probability of being a match.
 2. **Update m:** recount each level, weighting every pair by that probability.
 
-It runs once on pairs that share a phone and once on pairs that share an address. Each run learns the m values of the *other* fields. A run fits λ and m on a fixed sample of 100,000 records, made of whole postal areas, so the cost doesn't grow with the file. That fit draws its own u sample of 1 million pairs, which feeds only EM; the scores use the u measured on the whole file.
+It runs once on pairs that share a phone and once on pairs that share an address (`[fit] sessions`). Each run learns the m values of the *other* fields, and a level's m is the median of what the runs learn. A run fits λ and m on a fixed sample of 100,000 records, made of whole postal areas, so the cost doesn't grow with the file. That fit draws its own u sample of 1 million pairs, which feeds only EM; the scores use the u measured on the whole file.
 
 **Does EM get it right?** Our synthetic data has labels, so we can check. Trained on the same records, EM and the labels learn close weights. This is the configuration as written, where "very close" starts at 0.92:
 
@@ -143,35 +143,37 @@ The company comparison above is *missing*: a person has no company name. Some co
 
 Sharing the name サトウ says less than sharing a rare name. That was Newcombe's 1959 insight. A **term-frequency adjustment** gives an exact match more bits when the value is rare.
 
-Tested like any other change on cross-validated train, the adjustment loses 33 true pairs out-of-fold and gains none (13 lost on val). So the model has none: a level weighs the same whichever value agrees, and a pipeline that asks for an adjustment is refused.
+Tested like any other change on cross-validated train, the adjustment loses 33 true pairs out-of-fold and gains none (13 lost on val). So the model has none: a level weighs the same whichever value agrees.
 
 ## Challenge: where to draw the line?
 
-A score is not yet a decision, and a run merges nothing by itself: people set a match run's threshold and decide its pairs. The method is designed, and measured, at **6 bits or more**, a probability of about 98.5%. On validation, with every pair at or above it taken as a match, the threshold trades recall against false merges like this:
+A score is not yet a decision, and a run merges nothing by itself: people set a match run's threshold and decide its pairs. The method is designed, and measured, at **6 bits or more**, a probability of about 98.5% (`[lookup] likely_from`, where a lookup calls a candidate likely). On validation, with every rule pair and every pair at or above the threshold taken as a match, the threshold trades recall against false merges like this:
 
 | Taken at or above | Pairs taken | False pairs among them | Recall after grouping |
 |---|---|---|---|
-| 0 bits | 1,263 | 8 | 59.7% |
-| 2 bits | 1,195 | 5 | 58.2% |
-| 4 bits | 973 | 0 | 52.0% |
-| **6 bits** | **918** | **0** | **49.9%** |
-| 8 bits | 877 | 0 | 48.6% |
-| 10 bits | 416 | 0 | 28.8% |
+| 0 bits | 1,561 | 8 | 59.7% |
+| 2 bits | 1,491 | 5 | 58.2% |
+| 4 bits | 1,259 | 0 | 51.8% |
+| **6 bits** | **1,208** | **0** | **49.9%** |
+| 8 bits | 1,166 | 0 | 48.6% |
+| 10 bits | 703 | 0 | 28.8% |
+
+*Pairs taken: the pairs the keys list, at or above the threshold, with a name compared (below). Each is scored with the model fitted on train, its u measured on val.*
 
 The 6 is not picked from this table, which would tune it on validation. It comes from the threshold rule applied to train at design time ([chapter 1](01-entity-resolution-and-our-task.md#a-rule-for-every-choice)): the lowest weight with no false pair in cross-validation, plus one safety step.
 
-**The safety step is the review floor.** The pairs between the lowest clean weight and the design threshold, from 4 to 6 bits, are never wrong on cross-validated train, but sit one step below it in case of noise. On val, the 4-bit row above takes 55 more pairs, none of them false, and lifts recall from 49.9% to 52.0%. A lookup shows entities from the review floor by default; a match run starts wherever people set it ([decisions](../architecture.md#6--decisions)).
+**The safety step is the review floor.** The pairs between the lowest clean weight and the design threshold, from 4 to 6 bits, are never wrong on cross-validated train, but sit one step below it in case of noise. On val, the 4-bit row above takes 51 more pairs, none of them false, and lifts recall from 49.9% to 51.8%. A lookup shows entities from the review floor by default (`[lookup] at_least`); a match run starts wherever people set it, from 0 bits up (`[score] keep_from`: a run keeps no pair below it) ([decisions](../architecture.md#6--decisions)).
 
 **A name must be compared.** A household shares an address and a phone, and those two alone can reach 6 bits. So the method, as measured, takes a model pair only if a person name or a company name is filled on both sides. A match run's table marks those pairs (`named`), and people judge the others on their evidence, whatever their score.
 
-**The closest non-match**, the pair of different people with the highest score on val:
+**The closest non-match**, one of the two pairs of different people with the highest score on val:
 
 | | Name | Address | Phone | CIF ID |
 |---|---|---|---|---|
 | C | ャマノベタカユキ | 北海道岩見沢市日の出台10-26-24 | 2604 | 8852433827058 |
 | D | イナモチタカユキ | 大阪府泉北郡忠岡町 | 2604 | 7587446239261 |
 
-Same phone digits (+11.14). The surnames differ, but the given names agree (タカユキ), worth +7.62. Different addresses (−0.58), and a different CIF ID (−0.03): **+3.66 bits**, below even the review floor. Our example pair's names counted as different, but it shared the address as well as the phone; that is what lifted it to 6.19.
+Same phone digits (+11.14). The surnames differ, but the given names agree (タカユキ), worth +7.61. Different addresses (−0.58), and a different CIF ID (−0.03): **+3.64 bits**, below even the review floor. Our example pair's names counted as different, but it shared the address as well as the phone; that is what lifted it to 6.19.
 
 ## Challenge: from pairs to groups
 
@@ -181,13 +183,13 @@ Matched pairs must become groups. If people say A–B and B–C match, then A, B
 
 **Why, and the risk.** It is the natural reading of "same as", and it lets a record join a group that the rules already started. The risk is a **chain**: one false pair can join two whole groups. A strict threshold, and people deciding each pair, keep chains safe.
 
-A cautious alternative would refuse a merge when the two groups hold different given names, but a typo in a given name looks like a conflict, so it loses true pairs. A run groups by connected components only (`er.cluster.merge`), and design time measures the run itself, so the choice is measured the way it runs.
+A cautious alternative would refuse a merge when the two groups hold different given names, but a typo in a given name looks like a conflict, so it loses true pairs. A run groups by connected components only (`decide.sql`, with `entities_of`), and the benchmark groups the pairs it takes with the same function, so the choice is measured the way it runs.
 
 ## On our data
 
 | Split | Recall: rules → + this stage | 95% interval | False merges | False-merge rate at most |
 |---|---|---|---|---|
-| train | 10.5% → 47.7% | 46.5–48.8% | 0 | 0.09% |
+| train | 10.5% → 47.6% | 46.5–48.8% | 0 | 0.09% |
 | val | 11.9% → 49.9% | 47.9–51.8% | 0 | 0.24% |
 | **test** | 9.6% → **48.2%** | 46.2–50.2% | **0** | 0.26% |
 
@@ -197,15 +199,13 @@ Pairs of two people of one household are counted apart, neither true nor false: 
 
 ## In the code
 
-- `er/match.py`:
-  - `train_fs`: learns λ, u and m
-  - `exact_u`, `scored_u`: u counted exactly where it can be, the rest sampled, on the scored file
-  - `score_fs`: scores candidate pairs
-  - `scaled_prior`: rescales λ to the scored file's size
-- `er/cluster.py`: `merge`, the run's clustering
-- `config/pipeline.toml` `[model]`: the comparisons and levels; `[threshold]`: the threshold rule's grid and margin
-- `er/steps/fit.py`: `steps.fit.fit` (the fit, then u on the whole file); `er/steps/score.py`: `steps.score.score`, the same model without labels on any file; `er/match.py`: `named_sql`, the name check
-- `er/jobs/match.py`: `jobs.match.match`, a match run's table for people
+- `nayose/sql/functions.sql`, 2. The comparisons: `gamma_name`, `gamma_company`, `gamma_address`, `gamma_phone`, `gamma_cif`, `gamma_birth`, and `levels`, each level's label and kind
+- `nayose/sql/fit.sql`: 1. The sample; 2. λ (`fit_prior`, the near-certain rules' pairs); 3. EM's pairs (`em_patterns`, a session a key); 4. u (counted where it can be, the rest sampled, on the sample and on the file); 5. The model (`fit_model`: `model`, each level's m, u and bits; `fit`, λ and its bits at the file's size)
+- `nayose/em.py`: `fit` (the model from fit.sql's counts), `learn` (λ, u, then m), `session` (one EM session), `u_bound`, `sensible_m` (the two limits on m), `assemble` (u on the file), `refresh` (an update's u)
+- `nayose/config.toml` `[fit]`: `prior_recall`, `sessions`, `fit_rows`, `fit_u_max_pairs`, `u_max_pairs`, `seed`; `[lookup]`: `at_least` (the review floor, 4 bits), `likely_from` (6 bits)
+- `nayose/sql/score.sql`: 3. The model's bits (`weights`: the prior's bits, rescaled for a lookup; `weight_of`; `bound_of`); 6. The scores (`scored`: each pair's levels, weight and probability, and `named`, the name check)
+- `nayose/sql/match.sql`: a match run's table for people, at the threshold they set (each comparison's level and bits, `named`, `household`)
+- `nayose/sql/decide.sql`, 3. The entities: connected components over the pairs people said match (`entities_of`, `nayose/entities.py`)
 
 ## Further reading
 

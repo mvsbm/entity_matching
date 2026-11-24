@@ -63,7 +63,7 @@ def avoided(sql: str) -> list[str]:
     return out
 
 
-@functools.cache
+@functools.lru_cache(maxsize=4096)  # each statement translated once: the stage files hold a few hundred
 def duckdb_sql(sql: str) -> str:
     """`sql` (BigQuery's dialect) as DuckDB runs it, or ValueError naming what it holds that DuckDB would answer otherwise."""
     if bad := avoided(sql):
@@ -297,6 +297,9 @@ def procedures(dataset: str, functions: str, mapping: Path | None = None) -> lis
         head = [f"DECLARE v_{k} {bigquery_type(v)} DEFAULT {bigquery_literal(v)}" for k, v in declared.items()]
         head += [f"SET @@dataset_project_id = '{project}'", f"SET @@dataset_id = '{name}'"]
         head += [f"DROP TABLE IF EXISTS {x}" for x in RUN_TABLES] if job == "build" else []
+        method = nayose.fingerprint(mapping=mapping)  # what an update needs unchanged since the build
+        head += [nayose.UNCHANGED.replace("@fingerprint", bigquery_literal(method))] if job == "update" else []
+        body = [*body, nayose.METHOD.replace("@fingerprint", bigquery_literal(method))] if job == "build" else body
         out.append(f"CREATE OR REPLACE PROCEDURE `{dataset}`.{job}({args})\nBEGIN\n" + ";\n".join([*head, *map(ours, body)]) + ";\nEND")
     return out
 

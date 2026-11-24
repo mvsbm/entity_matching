@@ -1,5 +1,5 @@
 """The functions nayose's SQL calls by name, the same on both engines: the character-level comparisons (rapidfuzz in
-DuckDB, JavaScript in BigQuery) scoring as er/'s did (tests/fixtures/expected.json), the portable hash, and NFKC."""
+DuckDB, JavaScript in BigQuery) scoring as recorded (tests/fixtures/expected.json), the portable hash, and NFKC."""
 import hashlib
 import json
 import random
@@ -46,7 +46,7 @@ def duck():
     engine.close()
 
 
-def test_the_comparisons_score_as_er_s_did_to_the_last_bit(duck):
+def test_the_comparisons_score_as_recorded_to_the_last_bit(duck):
     duck.con.register("t", pd.DataFrame(pairs(5_000), columns=["a", "b"], dtype="string").assign(i=range(5_000)))
     for name, (similarity, _) in FUNCTIONS.items():
         for cut in ("", ", 0.8" if similarity else ", 1", ", 0.95" if similarity else ", 2"):
@@ -80,7 +80,7 @@ def test_javascript_scores_as_the_duckdb_twins_do(duck):
         assert [(a, b) for (a, b), g, w in zip(given, got, want) if g != w] == [], name
 
 
-def test_the_one_byte_hash_is_er_s(duck):
+def test_the_one_byte_hash_is_as_recorded(duck):
     values = ["東京都千代田区丸の内1-1-1", "ｱｲｳ", "サトウ", None, "𠮷野家", "abc", "東京都千代田区丸の内1-1-1"]
     got = [r[0] for r in duck.con.execute("SELECT one_byte_hash(x) FROM (SELECT unnest(?) AS x)", [values]).fetchall()]
     assert got == EXPECTED["one_byte_hash"]

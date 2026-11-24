@@ -1,6 +1,6 @@
 # Benchmark
 
-Written by `scripts/benchmark.py --entities 10000 20000 40000 60000 800000 --memory-limit 8GB`: `config/pipeline.toml` through `jobs.build.build`, the run without labels on DuckDB tables, on generated populations. Nothing is re-tuned. A run merges nothing by itself; each is measured at the method's design threshold (6 points), as people would take a match run there whole: every rule pair, and the model's pairs at it or above with a name compared, joined by transitive closure.
+Written by `scripts/benchmark.py --entities 10000 20000 40000 60000 800000 --memory-limit 8GB`: the method (`nayose/sql/`, `nayose/config.toml`) through nayose's build, the run without labels on DuckDB, on generated populations. Nothing is re-tuned. A run merges nothing by itself; each is measured at the method's design threshold (6 points), as people would take a match run there whole: every rule pair, and the model's pairs at it or above with a name compared, joined by transitive closure.
 
 ## Quality: scenarios
 
@@ -22,24 +22,24 @@ Populations with one name column for every kind (`design.generate.kind_problems`
 
 | flag | routed_by | recall | false_merges | person_company_clusters | sure_companies | wrong_companies | sure_persons | wrong_persons | seconds |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| good (1% wrong at random, 20% on representatives) | the truth | 0.5018 | 5 | 0 | 100.0% | 0 | 100.0% | 0 | 2.8 |
-| good (1% wrong at random, 20% on representatives) | the flag alone | 0.4911 | 38 | 27 | 97.9% | 306 | 98.5% | 102 | 2.7 |
-| good (1% wrong at random, 20% on representatives) | the kind step | 0.4899 | 33 | 26 | 98.7% | 554 | 97.4% | 63 | 2.7 |
-| medium (3%, 50%) | the truth | 0.5018 | 5 | 0 | 100.0% | 0 | 100.0% | 0 | 2.7 |
-| medium (3%, 50%) | the flag alone | 0.4712 | 79 | 61 | 94.8% | 886 | 95.8% | 256 | 3.8 |
-| medium (3%, 50%) | the kind step | 0.4723 | 73 | 59 | 96.9% | 1091 | 94.8% | 153 | 2.7 |
-| poor (10%, 80%) | the truth | 0.5018 | 5 | 0 | 100.0% | 0 | 100.0% | 0 | 2.7 |
-| poor (10%, 80%) | the flag alone | 0.4046 | 121 | 93 | 86.9% | 2533 | 87.9% | 644 | 4.4 |
-| poor (10%, 80%) | the kind step | 0.4146 | 111 | 86 | 93.6% | 2690 | 87.2% | 314 | 2.8 |
+| good (1% wrong at random, 20% on representatives) | the truth | 0.5018 | 5 | 0 | 100.0% | 0 | 100.0% | 0 | 4.0 |
+| good (1% wrong at random, 20% on representatives) | the flag alone | 0.4911 | 38 | 27 | 97.9% | 306 | 98.5% | 102 | 4.0 |
+| good (1% wrong at random, 20% on representatives) | the kind step | 0.4899 | 33 | 26 | 98.7% | 554 | 97.4% | 63 | 4.0 |
+| medium (3%, 50%) | the truth | 0.5018 | 5 | 0 | 100.0% | 0 | 100.0% | 0 | 4.0 |
+| medium (3%, 50%) | the flag alone | 0.4712 | 79 | 61 | 94.8% | 886 | 95.8% | 256 | 4.0 |
+| medium (3%, 50%) | the kind step | 0.4723 | 73 | 59 | 96.9% | 1091 | 94.8% | 153 | 4.0 |
+| poor (10%, 80%) | the truth | 0.5018 | 5 | 0 | 100.0% | 0 | 100.0% | 0 | 4.0 |
+| poor (10%, 80%) | the flag alone | 0.4046 | 121 | 93 | 86.9% | 2533 | 87.9% | 644 | 4.2 |
+| poor (10%, 80%) | the kind step | 0.4146 | 111 | 86 | 93.6% | 2690 | 87.2% | 314 | 3.9 |
 
-## Cost: files of growing size (time grows like N^0.56)
+## Cost: files of growing size (time grows like N^0.5)
 
-Each file is resolved by `python -m er build` in a process of its own, fitted on the file itself; DuckDB memory limit: 8GB. Peak memory is the process's, Python included. Step columns are seconds. `fit` (on 100,000 records) and the u sample of the file inside it (10,000,000 pairs) grow far slower than the file (the fit's sample is fixed; only u's exact counts read every record), so at these sizes the total grows far slower than N. Above 60,000 entities personas repeat, so those rows measure cost only.
+Each file is resolved by `python -m nayose build` in a process of its own, fitted on the file itself; DuckDB memory limit: 8GB. Peak memory is the process's, Python included. Each stage's seconds: its own column. `fit` (on 100,000 records) and the u sample of the file inside it (10,000,000 pairs) grow far slower than the file (the fit's sample is fixed; only u's exact counts read every record), so at these sizes the total grows far slower than N. Above 60,000 entities personas repeat, so those rows measure cost only.
 
-| records | seconds | peak_memory_gb | load | budget | fit | rules | candidates | score | cluster | report | write | recall | false_merges | fp_rate_at_most | model_links | expected_false | false_links |
-| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| 13019 | 2.3 | 0.6 | 0.3 | 0.09 | 1.48 | 0.05 | 0.2 | 0.02 | 0.01 | 0.1 | 0.05 | 0.4843 | 2 | 0.44% | 1414 | 1.62 | 1 |
-| 25947 | 2.7 | 0.69 | 0.49 | 0.13 | 1.5 | 0.08 | 0.3 | 0.03 | 0.01 | 0.1 | 0.08 | 0.492 | 0 | 0.11% | 2782 | 2.34 | 0 |
-| 52115 | 3.8 | 0.88 | 0.8 | 0.2 | 1.76 | 0.13 | 0.6 | 0.04 | 0.03 | 0.12 | 0.16 | 0.4784 | 2 | 0.11% | 5570 | 4.9 | 2 |
-| 77926 | 4.9 | 1.09 | 1.14 | 0.27 | 2.07 | 0.18 | 0.82 | 0.05 | 0.03 | 0.13 | 0.23 | 0.4747 | 6 | 0.14% | 8155 | 8.25 | 5 |
-| 1039995 | 24.8 | 7.63 | 5.39 | 1.99 | 4.04 | 1.91 | 9.82 | 0.22 | 0.12 | 0.26 | 1.02 | — | — | — | 69727 | 56.85 | — |
+| records | seconds | peak_memory_gb | records s | fit s | score s | decide s | recall | false_merges | fp_rate_at_most | model_links | expected_false | false_links |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| 13019 | 3.8 | 1.25 | 0.72 | 2.75 | 0.29 | 0.04 | 0.4843 | 2 | 0.44% | 1414 | 1.62 | 1 |
+| 25947 | 4.4 | 1.46 | 1.2 | 2.8 | 0.37 | 0.04 | 0.492 | 0 | 0.11% | 2782 | 2.34 | 0 |
+| 52115 | 5.9 | 1.81 | 2.11 | 3.15 | 0.55 | 0.13 | 0.4784 | 2 | 0.11% | 5570 | 4.9 | 2 |
+| 77926 | 7.6 | 2.3 | 2.96 | 3.76 | 0.78 | 0.06 | 0.4747 | 6 | 0.14% | 8155 | 8.25 | 5 |
+| 1039995 | 30.9 | 6.69 | 9.83 | 6.03 | 14.83 | 0.18 | — | — | — | 69727 | 56.85 | — |
