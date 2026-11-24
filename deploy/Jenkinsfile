@@ -3,11 +3,11 @@
 // one job once deployed, with ARGS as its arguments. Nothing in BigQuery or Cloud Run is changed by hand: every gcloud
 // call runs as the service account whose key Jenkins holds (the credential gcp-service-account).
 // Jenkins provides, as environment: GCP_PROJECT, GCP_REGION, AR_REPO (the Artifact Registry repository), BUCKET (the
-// jobs' bucket), SERVICE_ACCOUNT (the jobs' identity).
+// jobs' bucket), SERVICE_ACCOUNT (the jobs' identity), SETTINGS_SECRET (the Secret Manager secret holding the column mapping).
 pipeline {
   agent any
   parameters {
-    choice(name: 'RUN', choices: ['none', 'nayose-build', 'nayose-update', 'nayose-match', 'nayose-lookup'], description: 'a job to start once deployed')
+    choice(name: 'RUN', choices: ['none', 'nayose-build', 'nayose-update', 'nayose-decide', 'nayose-match', 'nayose-lookup', 'nayose-check'], description: 'a job to start once deployed')
     string(name: 'ARGS', defaultValue: '', description: "its arguments, comma-separated, e.g. runs/main,lookup,--record,1234")
   }
   environment {
@@ -43,10 +43,10 @@ pipeline {
         withCredentials([file(credentialsId: 'gcp-service-account', variable: 'KEY')]) {
           sh '''
             gcloud auth activate-service-account --key-file="$KEY" --project="$GCP_PROJECT"
-            export IMAGE SERVICE_ACCOUNT BUCKET
+            export IMAGE SERVICE_ACCOUNT BUCKET SETTINGS_SECRET
             for job in deploy/jobs/*.yaml; do
               filled=$(mktemp)
-              envsubst '$IMAGE $SERVICE_ACCOUNT $BUCKET' < "$job" > "$filled"
+              envsubst '$IMAGE $SERVICE_ACCOUNT $BUCKET $SETTINGS_SECRET' < "$job" > "$filled"
               gcloud run jobs replace "$filled" --region="$GCP_REGION"
             done
           '''

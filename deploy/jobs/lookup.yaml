@@ -1,6 +1,7 @@
-# One record looked up in runs/main's index; the answer in the execution's log. An execution names the record (--args).
-# `gcloud run jobs replace` reads it once Jenkins fills ${…} (deploy/Jenkinsfile); an execution may give other arguments
-# (--args), never other code.
+# One record looked up in runs/main's index; the answer in the execution's log. An execution names the record
+# (--args). It reads the current version and writes nothing.
+# `gcloud run jobs replace` reads it once Jenkins fills ${…} (deploy/Jenkinsfile); an execution may give other
+# arguments (--args), never other code. deploy/runner.py runs it on runs/main's current version (docs/operations.md).
 apiVersion: run.googleapis.com/v1
 kind: Job
 metadata:
@@ -18,9 +19,16 @@ spec:
           maxRetries: 0
           volumes:
             - name: bucket
-              csi: {driver: gcsfuse.run.googleapis.com, volumeAttributes: {bucketName: "${BUCKET}"}}
+              csi: {driver: gcsfuse.run.googleapis.com, volumeAttributes: {bucketName: "${BUCKET}", mountOptions: "implicit-dirs,uid=10001,gid=10001"}}  # the image's user owns what it writes
+            - name: settings
+              secret: {secretName: "${SETTINGS_SECRET}", items: [{key: latest, path: settings.toml}]}
           containers:
             - image: ${IMAGE}
               args: ["runs/main", "lookup", "--record", "RECORD_ID"]
+              env:
+                - {name: BUCKET, value: "${BUCKET}"}
+                - {name: ER_SETTINGS, value: /secrets/settings/settings.toml}
               resources: {limits: {cpu: "2", memory: 8Gi}}
-              volumeMounts: [{name: bucket, mountPath: /gcs}]
+              volumeMounts:
+                - {name: bucket, mountPath: /gcs}
+                - {name: settings, mountPath: /secrets/settings, readOnly: true}

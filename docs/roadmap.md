@@ -103,7 +103,7 @@ the jobs, the table each step writes, and where to change what.
    the functions in JavaScript (`er/engine/bigquery.py`), checked offline; every statement a job sends portable~~;
    then its store (the run's files as a dataset's tables, the index), and the parity check once CI has a sandbox
    dataset.
-5. **The jobs** on Cloud Run, wired into Jenkins: ~~`deploy/` (the image, `job.sh`, the jobs, the Jenkinsfile),
+5. **The jobs** on Cloud Run, wired into Jenkins: ~~`deploy/` (the image, the runner, the jobs, the Jenkinsfile),
    run in Docker on this machine~~; then on GCP, once the project, the bucket, the Artifact Registry repository and
    the service account are named.
 6. **Scale rehearsal**: 10M → 100M generated records on BigQuery, time and bytes billed; then the real build.

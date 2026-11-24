@@ -86,10 +86,24 @@ The fit's EM runs in Python on the agreement patterns' counts, a few hundred row
 
 `deploy/` holds what runs the jobs on Google Cloud. Jenkins builds and deploys it, and nobody changes Cloud Run or BigQuery by hand.
 
-- **The image** (`deploy/Dockerfile`, python 3.12) holds the engine. Its dependencies are pip only, at the pins the tests run with (`deploy/requirements.txt`, held equal by `tests/test_deploy.py`), plus the BigQuery client; the method is `config/`. `deploy/job.sh` is its entry point. It copies a run's folder from the bucket, which Cloud Run mounts at `/gcs`, onto the job's own disk, keeping the files' times. It runs `python -m er "$@" --out /tmp/run` there, and copies the folder back after a job that writes into it (build, update, match, decide). A run takes its lock on a disk, never on object storage, and each job runs one task at a time.
-- **The jobs** (`deploy/jobs/`): `nayose-build` (`build /gcs/in/records.parquet --overwrite`: a full run into `runs/main`), `nayose-update` (`update /gcs/in/batch.parquet`: an increment), `nayose-match` (`match --threshold 8`: a match run's table into `runs/main/matched/`) and `nayose-lookup` (`lookup --record RECORD_ID`: one record, whose ID an execution gives in `--args`). Each names the image, the service account and the bucket as `${…}`, which Jenkins fills.
-- **Jenkins** (`deploy/Jenkinsfile`): every push runs the lint and the tests. A push to main builds the image, pushes it to Artifact Registry and deploys the four jobs (`gcloud run jobs replace`). A build with `RUN` set starts one, with `ARGS`. Every gcloud call runs as the service account whose key Jenkins holds.
-- **Run on this machine in Docker:** the build job on the 200k generated file, then a batch added and a record looked up, the run's folder kept on a mounted folder as the bucket would hold it. The clusters, pairs, scores and model are the local run's. `kind_p` differs in its last bit on 241 of 200,000 records: the name model's floats on Linux's math library against macOS's. A job runs on the DuckDB engine; on BigQuery's once the parts it refuses are done (above).
+- **The image** (`deploy/Dockerfile`, python 3.12) holds the engine. Its dependencies are pip only, at the pins the tests run with (`deploy/requirements.txt`, held equal by `tests/test_deploy.py`), plus the BigQuery and Storage clients; the method is `config/`. Its entry point is `deploy/runner.py`.
+- **The runner** (`deploy/runner.py`) keeps each run in the bucket as versions, `runs/main/v/<version>/`, and `runs/main/CURRENT` names the one jobs read.
+  - **A job that writes** (build, update, decide, match) holds the run's lock, `runs/main/LOCK`. Through the Storage API it is made only where none is, so one job at a time writes a run, however many executions start; another waits up to an hour, then exits 75. The job copies the current version onto its own disk, keeping the files' times, runs `python -m er` there, and writes the result as a new version. Only then does it move `CURRENT`, under a precondition on the version it read, and keep the newest three versions.
+  - **A job that fails or is cut short** publishes nothing, and the run stays as it was.
+  - **A lookup** reads the current version and takes no lock.
+  - **`check`** writes `runs/main/CHECK.json`: whether this image's fingerprint differs from the run's, so a full run is due before increments run again.
+  - **The column mapping** comes from Secret Manager, mounted as a file that `ER_SETTINGS` names, so the image holds no file's column names. Every line the runner and `python -m er` print is JSON with a `severity`, as Cloud Logging reads it.
+- **The jobs** (`deploy/jobs/`):
+  - `nayose-build`: `build /gcs/in/records.parquet --overwrite`, a full run;
+  - `nayose-update`: `update /gcs/in/batch.parquet`, an increment;
+  - `nayose-decide`: `decide /gcs/in/decisions.parquet`, people's decisions;
+  - `nayose-match`: `match --threshold 8`, a match run's table into the new version's `matched/`;
+  - `nayose-lookup`: `lookup --record RECORD_ID`, one record, whose ID an execution gives in `--args`;
+  - `nayose-check`: the fingerprint against the run's.
+
+  Each names the image, the service account, the bucket and the settings secret as `${…}`, which Jenkins fills.
+- **Jenkins** (`deploy/Jenkinsfile`): every push runs the lint and the tests. A push to main builds the image, pushes it to Artifact Registry and deploys the jobs (`gcloud run jobs replace`). A build with `RUN` set starts one, with `ARGS`. Every gcloud call runs as the service account whose key Jenkins holds.
+- **Run on this machine in Docker:** the build job on the 200k generated file, then a batch added and a record looked up, the bucket a mounted folder (the runner keeps the lock and `CURRENT` there as files when no `BUCKET` is set). The clusters, pairs, scores and model are the local run's. `kind_p` differs in its last bit on 241 of 200,000 records: the name model's floats on Linux's math library against macOS's. A job runs on the DuckDB engine; on BigQuery's once the parts it refuses are done (above).
 
 ### Where the method comes from, and what is ours
 
