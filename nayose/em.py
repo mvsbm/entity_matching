@@ -28,6 +28,10 @@ PRIOR_RULES = {"cif_name": "customer_id + full_name", "cif_company": "customer_i
                "name_code_phone": "full_name + address_code + phone"}  # fit_prior's columns, as the report names the rules
 
 
+def in_order(lv: dict) -> tuple:  # the model's order of levels: by comparison, then the strongest level first
+    return lv["position"], -lv["gamma"]
+
+
 def fit(counts: str, settings: str, stored: str | None = None) -> str:
     """The model from fit.sql's counts (counts: its tables, each a list of rows) and config.toml [fit] (settings):
     learned on the sample (learn), its u measured on the file (assemble). With `stored` (an update: what fit gave a
@@ -36,16 +40,14 @@ def fit(counts: str, settings: str, stored: str | None = None) -> str:
     (prior_bits), the sample's size, the notes the report reads, and what an update needs: the model as fitted and
     each comparison's basis (u_basis)."""
     c, s = json.loads(counts), json.loads(settings)
-    levels = sorted(c["levels"], key=lambda lv: (lv["position"], -lv["gamma"]))
+    levels = sorted(c["levels"], key=in_order)
     got = measured(c, s)
-    if stored is not None and json.loads(stored)["basis"] is not None:
-        return refresh(json.loads(stored), got["file"])
-    if stored is not None:  # a model fitted on another file (scripts/benchmark.py: on a train split): kept, its u measured on this one whole
-        model = json.loads(stored)["model"]
-        exact = exact_u(levels, got["file"])
-        sampled = sampled_u(levels, got["file"], [x for x in comparisons(levels) if ELSE not in exact.get(x, {})])
-        return given(model, assemble(model, got["file"], sampled), got["file"]["n"], u_basis(got["file"], sampled, exact, comparisons(levels)), [])
-    model = learn(levels, got["sample"], c["prior"][0], c["patterns"] or [], s)
+    kept = json.loads(stored) if stored is not None else None
+    if kept is not None and kept["basis"] is not None:
+        return refresh(kept, got["file"])
+    # a model fitted on another file (scripts/benchmark.py: on a train split) kept, else learned on the sample; its u
+    # measured on this file whole
+    model = kept["model"] if kept is not None else learn(levels, got["sample"], c["prior"][0], c["patterns"] or [], s)
     exact = exact_u(levels, got["file"])
     sampled = sampled_u(levels, got["file"], [x for x in comparisons(levels) if ELSE not in exact.get(x, {})])
     return given(model, assemble(model, got["file"], sampled), got["file"]["n"], u_basis(got["file"], sampled, exact, comparisons(levels)), [])
@@ -82,7 +84,7 @@ def resampled(counts: str, settings: str, stored: str | None = None) -> str:
     if stored is not None and (kept := json.loads(stored))["basis"] is not None:
         levels = kept["model"]["levels"]
         return ",".join(stale(levels, kept["basis"], exact_u(levels, got), got["n"])[0])
-    levels = sorted(c["levels"], key=lambda lv: (lv["position"], -lv["gamma"]))
+    levels = sorted(c["levels"], key=in_order)
     exact = exact_u(levels, got)
     return ",".join(x for x in comparisons(levels) if ELSE not in exact.get(x, {}))
 
@@ -98,9 +100,12 @@ def given(model: dict, scoring: dict, n: int, basis: dict, again: list[dict]) ->
 def u_basis(got: dict, sampled: dict, exact: dict, names: list[str]) -> dict:
     """What a later update needs to tell whether these comparisons' sampled u went stale: the sampled u, the u counted
     exactly alongside, the record count, and how many sampled pairs had the comparison filled."""
+    return {x: dict(sampled=sampled.get(x, {}), exact=exact.get(x, {}), n=got["n"], pairs=filled_pairs(got, x)) for x in names}
+
+
+def filled_pairs(got: dict, name: str) -> float:  # about how many sampled pairs have the comparison filled on both sides
     n = got["n"]
-    pairs = min(got["max_pairs"], n * (n - 1) / 2)
-    return {x: dict(sampled=sampled.get(x, {}), exact=exact.get(x, {}), n=n, pairs=pairs * (got["filled"][x] / n if n else 0.0) ** 2) for x in names}
+    return min(got["max_pairs"], n * (n - 1) / 2) * (got["filled"][name] / n if n else 0.0) ** 2
 
 
 def stale_u(levels: list[dict], basis: dict, exact_now: dict, n: int) -> dict[str, dict[str, float]]:
@@ -176,10 +181,7 @@ def sampled_u(levels: list[dict], got: dict, names: list[str]) -> dict[str, dict
 def u_bound(got: dict, name: str) -> float:
     """95% upper bound on u for a level no sampled pair reached: zero hits among the sampled pairs where the comparison
     is filled, of which there are at least (its fill share)² of the sample."""
-    n = got["n"]
-    sampled = min(got["max_pairs"], n * (n - 1) / 2)
-    n_filled = max(1, int(sampled * (got["filled"][name] / n if n else 0.0) ** 2))
-    return 1 - 0.05 ** (1 / n_filled)
+    return 1 - 0.05 ** (1 / max(1, int(filled_pairs(got, name))))
 
 
 def comparisons(levels: list[dict]) -> list[str]:  # the comparisons, in the model's order
@@ -188,7 +190,7 @@ def comparisons(levels: list[dict]) -> list[str]:  # the comparisons, in the mod
 
 # ---------- the model learned on the sample ----------
 
-def learn(levels: list[dict], got: dict, prior_counts: dict, patterns: list[dict], c: dict) -> dict:
+def learn(levels: list[dict], got: dict, prior_counts: dict, patterns: list[dict], settings: dict) -> dict:
     """The model on the sample: u, λ, then m by the EM sessions in order. Refuses when no
     near-certain rule, or no session's key, finds a pair in the sample."""
     names = comparisons(levels)
@@ -201,7 +203,7 @@ def learn(levels: list[dict], got: dict, prior_counts: dict, patterns: list[dict
 
     records, found = prior_counts["records"], prior_counts["found"]
     prior = [rule for rule in PRIOR_RULES if prior_counts[rule]]
-    sessions = [s["key"] for s in c["sessions"]]
+    sessions = [s["key"] for s in settings["sessions"]]
     patterns = {s: [tuple(p[n] for n in names) + (p["pairs"],) for p in patterns if p["session"] == s] for s in sessions}
     em_pairs = {s: sum(p[-1] for p in patterns[s]) for s in sessions if patterns[s]}
     if not prior:
@@ -211,14 +213,14 @@ def learn(levels: list[dict], got: dict, prior_counts: dict, patterns: list[dict
         raise ValueError(f"no two records of the {records:,} the fit samples share {' or '.join(sessions)}, the pairs it learns from: "
                          "map those fields to filled columns")
     every = int(records * (records - 1) / 2)
-    if found > every * c["prior_recall"]:
-        raise ValueError(f"the near-certain rules find {found:,} of the {every:,} pairs, more than a recall of {c['prior_recall']} allows "
+    if found > every * settings["prior_recall"]:
+        raise ValueError(f"the near-certain rules find {found:,} of the {every:,} pairs, more than a recall of {settings['prior_recall']} allows "
                          f"(at least {found / every:,.2f}): raise [fit] prior_recall, or make the prior rules stricter")
-    lam = found / c["prior_recall"] / every
+    lam = found / settings["prior_recall"] / every
 
     trained: dict[tuple[str, str], list[float]] = {}
     learned = {}
-    for s in (x for x in c["sessions"] if x["key"] in em_pairs):
+    for s in (x for x in settings["sessions"] if x["key"] in em_pairs):
         learned[s["key"]] = session(model, patterns[s["key"]], names, s, lam, trained)
         for key, value in learned[s["key"]].items():
             trained.setdefault(key, []).append(value)
@@ -244,9 +246,6 @@ def first_m(model: dict, name: str, gamma: int, trained: dict) -> float:
     n = sum(1 for x in model["levels"] if x["comparison"] == name)
     return START_M if gamma == n - 1 else (1 - START_M) / (n - 1)
 
-
-def points(m: float, u: float) -> float:  # a level's points, as Splink writes them: log2(m / u), each at least 1e-300
-    return math.log2(max(m, 1e-300) / max(u, 1e-300))
 
 
 def probability(p: float) -> float:  # points → the chance of a match, written so that 2^points never overflows
@@ -275,7 +274,7 @@ def session(model: dict, patterns: list[tuple], names: list[str], s: dict, lam: 
     m: dict[tuple[str, int], float | None] = {key: first_m(model, key[0], key[1], trained) for key in u}
     rows = [(list(x[:-1]), x[-1]) for x in sorted(tuple(p[i] for i in learns) + (p[-1],) for p in patterns)]  # in order, as SQL's ORDER BY ALL
     for _ in range(MAX_ROUNDS):
-        points_at = {key: points(UNSEEN_M if m[key] is None else m[key], u[key]) for key in m} | {(n, -1): 0.0 for n in order}
+        points_at = {key: bits(UNSEEN_M if m[key] is None else m[key], u[key]) for key in m} | {(n, -1): 0.0 for n in order}
         prior_points = math.log2(odds(lam_s))
         expected: dict[tuple[str, int], float] = {}
         matches, pairs = 0.0, 0
@@ -305,8 +304,7 @@ def session(model: dict, patterns: list[tuple], names: list[str], s: dict, lam: 
 
 
 def sensible_m(model: dict, filled: set[tuple[str, str]]) -> list[list]:
-    """Two limits on what EM's m may say, each where a sample gave it nothing to go by; returns what changed
-   .
+    """Two limits on what EM's m may say, each where a sample gave it nothing to go by; returns what changed.
     - A near level stands for a typo in a value matches share: where no match agreed exactly in training (every exact
       level's m filled as u), nearness is neighbouring values (IDs handed out in sequence), no evidence: m = u, 0 bits.
     - Partial agreement is never more evidence against a match than none: a level weighs at least its else level."""
@@ -333,8 +331,7 @@ def sensible_m(model: dict, filled: set[tuple[str, str]]) -> list[list]:
 
 def assemble(model: dict, got: dict, sampled: dict) -> dict:
     """The model with each level's u measured on the file: counted exactly, else `sampled`, else the bound on the file.
-    A level never seen in training keeps m = u, 0 bits; m and λ stay as fitted, within sensible_m's limits again
-   ."""
+    A level never seen in training keeps m = u, 0 bits; m and λ stay as fitted, within sensible_m's limits again."""
     exact = exact_u(model["levels"], got)
     filled_m = {tuple(x) for x in model["notes"]["filled"]["m"]}
     out = copy.deepcopy(model)

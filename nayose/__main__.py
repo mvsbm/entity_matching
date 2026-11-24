@@ -75,16 +75,13 @@ def writing(out: Path, make: bool = False, compute: dict | None = None):
 def reading(out: Path, copy: bool = True):  # the run in `out` to read: a match's statements write, on a copy of its own
     if not (out / RUN).is_file():
         raise InputError(f"no run at {out}", fix=f"check the path, or build one: python -m nayose build FILE --out {out}")
-    if not copy and os.name != "nt":  # a lookup's write temporary tables alone: the run itself, read-only; a writer's
-        engine = DuckDB(out / RUN, read_only=True)  # os.replace leaves this open file as it was (Windows can't: a copy there)
-        try:
-            yield engine
-        finally:
-            engine.close()
-        return
+    # a lookup's statements write temporary tables alone: the run itself, read-only, as a writer's os.replace leaves an
+    # open file as it was (Windows can't, so a copy there)
+    in_place = not copy and os.name != "nt"
     with tempfile.TemporaryDirectory(prefix="nayose-") as tmp:
-        shutil.copyfile(out / RUN, Path(tmp) / RUN)
-        engine = DuckDB(Path(tmp) / RUN)
+        if not in_place:
+            shutil.copyfile(out / RUN, Path(tmp) / RUN)
+        engine = DuckDB(out / RUN if in_place else Path(tmp) / RUN, read_only=in_place)
         try:
             yield engine
         finally:
@@ -152,7 +149,7 @@ def update(a: argparse.Namespace) -> dict:
             aside = engine.rows("SELECT reason, COUNT(*) FROM set_aside GROUP BY reason ORDER BY reason")
             if any(reason != "already in the run" for reason, _ in aside):
                 raise InputError(f"{a.given}: no new record to add ({', '.join(f'{n:,} {r}' for r, n in aside)})", fix="give the records set aside IDs, one per record")
-            raise Unchanged(dict(records=before, added=0, seconds=round(sum(steps.values()), 1), steps=steps))
+            raise NothingNew(dict(records=before, added=0, seconds=round(sum(steps.values()), 1), steps=steps))
         timed(steps, "fit", nayose.fit, engine, False)
         timed(steps, "score", nayose.score, engine)
         timed(steps, "decide", nayose.decide, engine, [])
@@ -160,7 +157,7 @@ def update(a: argparse.Namespace) -> dict:
     return dict(records=before + added, added=added, seconds=round(sum(steps.values()), 1), steps=steps)
 
 
-class Unchanged(Exception):  # nothing new: the run stays as it was, and the job says so
+class NothingNew(Exception):  # nothing new: the run stays as it was, and the job says so
     def __init__(self, said: dict) -> None:
         self.said = said
 
@@ -253,7 +250,7 @@ def main(argv: list[str] | None = None) -> int:
     a = parser().parse_args(argv)
     try:
         result = dict(build=build, update=update, match=match, decide=decide, lookup=lookup)[a.job](a)
-    except Unchanged as e:
+    except NothingNew as e:
         result = e.said
     except InputError as e:
         print(json.dumps(dict(severity="WARNING" if isinstance(e, Busy) else "ERROR", error=str(e), fix=e.fix), ensure_ascii=False))
