@@ -8,7 +8,7 @@ import pytest
 from er.engine.duckdb import DuckDB
 from er.candidates import candidates, estimate, generate
 from er.config import (Budget, Comparator, DeletionKeys, InputError, Key, KeyBlocker,
-                       Resolver, Rule, RulesSpec, Stage)
+                       Rule, RulesSpec, Stage)
 from design.evaluate import cluster_metrics, edge_metrics, paired_test, predicted_pairs, true_pairs, truth_of
 from er.match import rule_edges, score_fs, train_fs, scored_u
 from er.settings import load_settings
@@ -100,7 +100,7 @@ def test_candidate_generators_respect_the_query_and_the_clusters():
         assert sorted(map(tuple, generate(KeyBlocker(name="k", keys=(Key("phone"),)), df, UID, asked).to_numpy())) == pairs  # each pair once, none lost
     assert len(generate(KeyBlocker(name="k", keys=(Key("phone"),)), df, UID, None)) == 3 + 1 + 3  # None: every record a query
     clusters = pd.Series(["c0", "c0", "c2", "c3", "c4", "c5", "c6", "c7"], index=df["uid"].to_numpy())
-    budget = Budget(max_pairs_per_record=100, max_block_size=100, target_rows=10, benchmark_pairs=10)
+    budget = Budget()
     union, _ = candidates((KeyBlocker(name="k", keys=(Key("phone"),)), KeyBlocker(name="s", keys=(Key("name"),))),
                           df, UID, None, budget, clusters)
     sources = dict(zip(zip(union["uid_l"], union["uid_r"]), union["sources"]))
@@ -109,7 +109,7 @@ def test_candidate_generators_respect_the_query_and_the_clusters():
 
 def test_candidates_with_no_pair_give_none_and_more_generators_than_bits_are_refused():
     df = pd.DataFrame({"uid": ["1", "2", "3"], "phone": ["1", "2", None]}, dtype="string")
-    budget = Budget(max_pairs_per_record=100, max_block_size=100, target_rows=10, benchmark_pairs=10)
+    budget = Budget()
     union, _ = candidates((KeyBlocker(name="k", keys=(Key("phone"),)),), df, UID, None, budget)
     assert union.empty and "sources" in union  # no two records share a phone: no pair, no SQL error
     many = tuple(KeyBlocker(name=f"k{i}", keys=(Key("phone"),)) for i in range(64))
@@ -121,13 +121,13 @@ def test_a_deletion_keys_normal_pairs_hold_the_pairs_its_join_lists_and_never_go
     import duckdb
     names = ["JOHNSMITH"] * 200 + [f"N{i:05d}" for i in range(2000)]  # one value on 200 records: each of its keys an oversized block
     df = pd.DataFrame({"uid": [f"{i:05d}" for i in range(len(names))], "name": names}, dtype="string")
-    b, budget = DeletionKeys(name="d", key=Key("name")), Budget(max_pairs_per_record=1000, max_block_size=1000, target_rows=10, benchmark_pairs=10)
+    b, budget = DeletionKeys(name="d", key=Key("name")), Budget()
     est = estimate(b, df, uid="uid", oversized_from=budget.min_oversized())
     engine = DuckDB(duckdb.connect())  # a gate that keeps no oversized block: the join lists the normal blocks' pairs only
     union, _ = candidates((b,), df, "uid", None, budget, engine=engine, gate=lambda t: engine.run(f"CREATE OR REPLACE TABLE g AS SELECT *, -99.0 AS match_weight FROM {t}") or "g")
     assert est["oversized_blocks"] and est["est_pairs"] - est["oversized_pairs"] < 0 <= len(union) <= est["normal_pairs"] < est["est_pairs"]
     few = pd.DataFrame({"uid": list("0123"), "name": ["ABC", "ABC", "ABX", "ABX"]}, dtype="string")  # block AB oversized; each value's other keys normal
-    tight = Budget(max_pairs_per_record=1000, max_block_size=1000, target_rows=10, benchmark_pairs=10, sample_pairs=3)
+    tight = Budget(sample_pairs=3)
     union, _ = candidates((b,), few, "uid", None, tight, engine=engine, gate=lambda t: engine.run(f"CREATE OR REPLACE TABLE g AS SELECT *, -99.0 AS match_weight FROM {t}") or "g")
     assert estimate(b, few, uid="uid", oversized_from=tight.min_oversized())["normal_pairs"] == len(union) == 2  # a value's pair once, in one of its normal blocks
 
@@ -156,7 +156,6 @@ def test_blocking_normalizers():
     s = pd.Series(["マツモト", "", pd.NA], dtype="string")
     assert normalize(s, ("initial",), std).tolist()[:1] == ["マ"] and normalize(s, ("initial",), std).isna().tolist()[1:] == [True, True]
     assert normalize(pd.Series(["1000033"], dtype="string"), ("first3",), std).tolist() == ["100"]
-    assert normalize(pd.Series(["サトウ"], dtype="string"), ("reverse",), std).tolist() == ["ウトサ"]
     addresses = pd.Series(["東京都千代田区丸の内1丁目1番1号 丸の内ビル3F", "東京都千代田区 丸の内1丁目1番1号", "東京都千代田区\u3000霞が関2丁目3番4号",
                            "　東京都港区六本木6丁目10番1号", "北海道札幌市中央区大通"], dtype="string")
     assert normalize(addresses, ("address",), std).tolist() == ["千代田区丸の内1-1-1", "千代田区丸の内1-1-1", "千代田区霞が関2-3-4", "港区六本木6-10-1",
@@ -182,10 +181,8 @@ def test_legal_forms_go_wherever_banks_write_them_and_the_generator_s_names_lose
 def test_a_blocking_key_limits_a_rule_join(engine):
     std = replace(load_settings().standardize, derived=())  # a hand-made frame without the real input columns
     df = pd.DataFrame({"uid": list("ABC"), "phone": ["1", "1", "1"], "name": ["サトウ", "サトオ", "カトウ"]}, dtype="string")
-    budget = Budget(max_pairs_per_record=10, max_block_size=10, target_rows=10, benchmark_pairs=10)
     def spec(blocking):
-        return RulesSpec(standardize=std, resolver=Resolver(method="connected_components"), budget=budget,
-                         stages=(Stage(name="fuzzy", rules=(Rule(name="R", exact=("phone",), fuzzy=("name",), blocking=blocking),),
+        return RulesSpec(stages=(Stage(name="fuzzy", rules=(Rule(name="R", exact=("phone",), fuzzy=("name",), blocking=blocking),),
                                        comparators={"name": Comparator("levenshtein", 1)}),))
     plain = set(map(tuple, rule_edges(spec(()), df, engine, UID)[["uid_l", "uid_r"]].to_numpy()))
     s = spec((Key("name", ("initial",)),))

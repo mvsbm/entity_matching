@@ -20,7 +20,7 @@ import sqlglot
 from sqlglot import exp
 
 UDFS = Path(__file__).parent / "udfs" / "strings.js"
-FUNCTIONS = ("jaro_winkler", "jaro", "jaccard", "levenshtein", "damerau_levenshtein", "hamming")  # er.strings.FUNCTIONS less exact
+FUNCTIONS = ("jaro_winkler", "jaro", "levenshtein", "damerau_levenshtein", "hamming")  # er.strings.FUNCTIONS less exact
 DUCKDB_ONLY = {  # what refuses a statement, by the part that names it
     "DESCRIBE": r"^\s*DESCRIBE\b", "duckdb_tables()": r"\bduckdb_\w+\(", "current_setting()": r"\bcurrent_setting\(",
     "read_parquet()": r"\bread_parquet\(", "COPY … TO": r"^\s*COPY\b", "rowid": r"\browid\b", "ATTACH": r"^\s*(ATTACH|DETACH)\b",

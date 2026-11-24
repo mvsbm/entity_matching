@@ -16,7 +16,7 @@ import pyarrow as pa
 import pyarrow.compute as pc
 from rapidfuzz import process
 
-from er.strings import FUNCTIONS, char_jaccard
+from er.strings import FUNCTIONS
 
 
 def size_bytes(text: str) -> int:  # one of DuckDB's sizes: "8.0 GiB", "512.0 MiB", "1.5 GB"
@@ -155,10 +155,7 @@ def udf(function: str, cut: bool = False) -> Callable[..., pa.Array]:  # vectori
         # kept in rapidfuzz's range: no similarity is past 0 to 1, no distance under 0, so a threshold outside passes or fails as before
         t = None if threshold is None or not len(threshold) else threshold[0].as_py()
         early = {} if t is None else {"score_cutoff": min(max(t - 1e-6, 0.0), 1.0) if info.similarity else max(int(t), 0)}
-        if scorer is char_jaccard:
-            scores = np.array([char_jaccard(p, q) if p or q else 0.0 for p, q in zip(x, y)])
-        else:
-            scores = process.cpdist(x, y, scorer=scorer, **early)
+        scores = process.cpdist(x, y, scorer=scorer, **early)
         return pa.array(np.asarray(scores, dtype=float), mask=null.to_numpy(zero_copy_only=False))  # NULL never satisfies a condition
     return (lambda a, b, threshold: f(a, b, threshold)) if cut else (lambda a, b: f(a, b, None))  # DuckDB counts the parameters
 

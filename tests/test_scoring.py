@@ -8,7 +8,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from er.config import (Budget, Comparator, Comparison, FSModel, Key, Level, Resolver, Rule, RulesSpec, Stage)
+from er.config import (Comparator, Comparison, FSModel, Key, Level, Rule, RulesSpec, Stage)
 from design.evaluate import fp_upper, paired_test, wilson
 from er.match import exact_u, parameters, rule_edges, sample_u, score_fs, train_fs
 from er.settings import load_settings
@@ -51,7 +51,7 @@ def test_a_u_sample_is_the_same_for_the_same_records_in_any_order(engine, record
     import er.match as M
     comps = model().comparisons
     engine.register("er_shuffled", records.sample(frac=1, random_state=0))  # the same records as a table, in another order
-    fitted = train_fs(model("em"), records, engine, UID)
+    fitted = train_fs(model(), records, engine, UID)
     assert M.sample_u(model(), comps, "er_shuffled", engine, UID) == M.sample_u(model(), comps, records, engine, UID) == u_of(fitted)
 
 
@@ -81,7 +81,7 @@ def test_each_distinct_value_normalized_once_gives_the_column_value_by_value_and
     values = ["ヤマダ　タロウ", "ｻﾄｳﾊﾅｺ", None, "すずき いちろう", "０３－１２３４－５６７８", "東京都港区1丁目2番3号 ビル5F", "(株)サトウ", "", "TANAKA"] * 50
     s = pd.Series(values, dtype="string")
     for steps in (("nfkc",), ("nfkc", "katakana", "strip_spaces"), ("nfkc", "strip_separators"), ("kana_fold", "one_byte"), ("one_byte_hash",), ("address",),
-                  ("nfkc", "strip_legal_form", "kana_fold"), ("initial",), ("first3",), ("reverse",), ("casefold",), ("kana_fold", "long_vowel", "last3")):
+                  ("nfkc", "strip_legal_form", "kana_fold"), ("initial",), ("first3",), ("kana_fold", "long_vowel", "last3")):
         got, one_by_one = normalize(s, steps, std), _normalized(s, steps, std)
         assert got.equals(one_by_one) and got.dtype == one_by_one.dtype and got.index.equals(s.index), steps  # the same column, the same type
     names = pd.Series(["サイトオトシオ", "サイトウトシオ", "サトー", "ケエコ", "ナカイサアヤ", "ヤマシタサアヤ", None], dtype="string")
@@ -102,8 +102,8 @@ def test_a_one_edit_level_is_counted_exactly_through_deletion_keys(engine):
     df = pd.DataFrame({"uid": [f"r{i}" for i in range(len(vals))], "cif": vals, "phone": vals[::-1], "kana": kana}, dtype="string")
     one_off = lambda col, f: Comparison(name=col, null_if_missing=(col,), levels=(
         Level(label="exact", any_of=((col, Comparator("exact")),)), Level(label="one off", any_of=((col, Comparator(f, 1)),))))
-    m = FSModel(name="t", comparisons=(one_off("cif", "damerau_levenshtein"), one_off("phone", "hamming"), one_off("kana", "levenshtein")), prior_rules=(),
-                prior_recall=0.5, u_max_pairs=1e4, m_method="em", em_rules=(), seed=0, u_exact_by_counts=True, u_near_by_keys=True)
+    m = FSModel(comparisons=(one_off("cif", "damerau_levenshtein"), one_off("phone", "hamming"), one_off("kana", "levenshtein")), prior_rules=(),
+                prior_recall=0.5, u_max_pairs=1e4, em_rules=(), seed=0, u_exact_by_counts=True, u_near_by_keys=True)
     u = exact_u(m, df, engine)
     for name, dist in (("cif", DamerauLevenshtein.distance), ("phone", Hamming.distance), ("kana", Levenshtein.distance)):
         filled = df[name].dropna().tolist()
@@ -144,18 +144,6 @@ def test_pairs_score_as_splink_s_predict_scored_them_to_the_last_bit(engine):
         assert (both[f"{c}_native"] == both[f"{c}_registered"]).all(), c
 
 
-def test_a_saved_model_adjusting_by_term_frequency_is_refused_where_it_is_read(tmp_path):
-    from er.config import InputError
-    from er.jobs.index import run_model
-    tf = {"comparisons": [], "er": {"fit_rows": 10, "tf": {"name": {"サトウ": 0.1}}}}
-    (tmp_path / "state").mkdir()
-    (tmp_path / "state" / "model.json").write_text(json.dumps(tf), encoding="utf-8")
-    with pytest.raises(InputError, match="term frequency"):  # a workspace's: the index, sizes and scoring again read it so
-        run_model(tmp_path)
-    (tmp_path / "state" / "model.json").write_text(json.dumps({**tf, "er": {"fit_rows": 10, "tf": {}}}), encoding="utf-8")
-    assert run_model(tmp_path)["er"]["fit_rows"] == 10  # a model saved with none is read as it is
-
-
 def test_prior_is_rescaled_to_the_scored_set_size(engine, records):
     model_json = train_fs(model(), records, engine, UID)
     padded = pd.concat([records, pd.DataFrame({"uid": [f"p{i:03d}" for i in range(120)], "name": "ヨソ", "phone": "9999",
@@ -175,9 +163,7 @@ def u_of(model_json: dict) -> dict:  # the u a fit sampled: each level's but tho
 
 
 def test_shared_connection_gives_the_same_rules_and_clusters_as_a_fresh_one(engine):
-    spec = RulesSpec(standardize=load_settings().standardize, resolver=Resolver(method="connected_components"),
-                     budget=Budget(max_pairs_per_record=10**4, max_block_size=10**4, target_rows=10**4, benchmark_pairs=100),
-                     stages=(Stage(name="fuzzy", rules=(Rule(name="R", exact=("phone",), fuzzy=("name",)),),
+    spec = RulesSpec(stages=(Stage(name="fuzzy", rules=(Rule(name="R", exact=("phone",), fuzzy=("name",)),),
                                    comparators={"name": Comparator("jaro_winkler", 0.8)}),))
     a = pd.DataFrame({"uid": ["1", "2", "3"], "phone": ["11", "11", "22"], "name": ["サトウ", "サトオ", "スズキ"]}, dtype="string")
     b = pd.DataFrame({"uid": ["7", "8", "9"], "phone": ["33", "33", "33"], "name": ["タナカ", "タナカ", "イトウ"]}, dtype="string")
@@ -373,7 +359,7 @@ def test_em_s_m_is_held_within_what_its_evidence_can_say():
     level = lambda label, f, t=None: Level(label=label, any_of=(("x", Comparator(f, t)),))
     comps = (Comparison(name="phone", null_if_missing=("x",), levels=(level("exact", "exact"), level("one digit off", "hamming", 1))),
              Comparison(name="cif", null_if_missing=("x",), levels=(level("exact", "exact"), level("one digit off", "damerau_levenshtein", 1))))
-    model = FSModel(name="t", comparisons=comps, prior_rules=(), prior_recall=0.5, u_max_pairs=1e4, m_method="em", em_rules=(), seed=0)
+    model = FSModel(comparisons=comps, prior_rules=(), prior_recall=0.5, u_max_pairs=1e4, em_rules=(), seed=0)
     lv = lambda label, m, u: {"label_for_charts": label, "m_probability": m, "u_probability": u}
     js = {"comparisons": [
         {"output_column_name": "phone", "comparison_levels": [{"is_null_level": True}, lv("exact", 0.9, 1e-4), lv("one digit off", 1e-12, 1e-3), lv("else", 0.1, 0.999)]},
@@ -401,17 +387,6 @@ def test_one_name_in_a_person_field_and_the_company_field_is_compared_on_its_kin
     assert df.loc[0, "full_name"] == "ヤマダタロウ" and pd.isna(df.loc[0, "company_name"])  # a person's name in both: the person side only
     assert df.loc[1, "company_name"].endswith("ヤマダショウジ")  # a company keeps its name
     assert df.loc[2, "full_name"] == "スズキハナコ" and df.loc[2, "company_name"] == "タナカショウジ"  # two different names: both kept
-
-
-def test_em_sessions_kept_apart_give_each_level_the_median_of_those_that_learned_it(engine, records):
-    m = lambda j: {(c["output_column_name"], lv["label_for_charts"]): lv["m_probability"] for c in j["comparisons"] for lv in c["comparison_levels"] if not lv.get("is_null_level")}
-    one = model()  # one session: its median is what Splink learns
-    assert m(train_fs(replace(one, em_median=True), records, engine, UID)) == pytest.approx(m(train_fs(one, records, engine, UID)))
-    two = replace(one, em_rules=((Key("phone"),), (Key("name"),)), em_median=True)  # name learned only where phone chose the pairs, phone only where name did
-    both, by_phone, by_name = (train_fs(x, records, engine, UID) for x in (two, replace(one, em_rules=((Key("phone"),),)), replace(one, em_rules=((Key("name"),),))))
-    got = m(both)
-    assert {k: v for k, v in got.items() if k[0] == "name"} == pytest.approx({k: v for k, v in m(by_phone).items() if k[0] == "name"})
-    assert {k: v for k, v in got.items() if k[0] == "phone"} == pytest.approx({k: v for k, v in m(by_name).items() if k[0] == "phone"})
 
 
 def test_a_session_keyed_on_a_field_learns_no_comparison_of_that_field_under_another_normalization(engine, records):
@@ -447,12 +422,11 @@ def household_model() -> FSModel:
              Comparison(name="phone", null_if_missing=("phone",), levels=(exact("exact", "phone"),)),
              Comparison(name="birth", null_if_missing=("birth_date",), levels=(exact("exact", "birth_date"),)),
              Comparison(name="company", null_if_missing=("company_name",), levels=(exact("exact", "company_name"),)))
-    return FSModel(name="t", comparisons=comps, prior_rules=((Key("person_name"), Key("birth_date")),), prior_recall=0.9, u_max_pairs=1e5,
-                   m_method="em", em_rules=((Key("phone"),),), seed=0)
+    return FSModel(comparisons=comps, prior_rules=((Key("person_name"), Key("birth_date")),), prior_recall=0.9, u_max_pairs=1e5,
+                   em_rules=((Key("phone"),),), seed=0)
 
 
 def test_the_method_s_own_em_sessions_are_judged_by_the_given_name_too(engine):
     records, two = households(), ((Key("phone"),), (Key("birth_date"),))
-    for fitted in (replace(household_model(), em_rules=two), replace(household_model(), em_rules=two, em_median=True)):  # in turn, and kept apart
-        got = {x["session"]: x["given_share"] for x in train_fs(fitted, records, engine, UID)["er"]["em_given"]}
-        assert got["phone"] < 0.5 <= got["birth_date"], got  # what DIAGNOSIS says of a run's own EM
+    got = {x["session"]: x["given_share"] for x in train_fs(replace(household_model(), em_rules=two), records, engine, UID)["er"]["em_given"]}
+    assert got["phone"] < 0.5 <= got["birth_date"], got  # what DIAGNOSIS says of a run's own EM

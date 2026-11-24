@@ -5,7 +5,7 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from er.match import fit_model, fit_sample_sql, refreshed_u, scored_u, train_fs, u_basis
+from er.match import fit_sample_sql, refreshed_u, scored_u, train_fs, u_basis
 from er.steps.job import Job
 
 
@@ -23,7 +23,7 @@ def fit(job: Job, n: int, model: dict | None = None) -> Fitted:
     sample's u would under-credit a field whose values grow with the file."""
     t, p, engine, uid = time.perf_counter(), job.pipeline, job.engine, job.uid
     if model is None:
-        method = fit_model(p.fs)
+        method = p.fs.model
         sample = engine.frame(f"{fit_sample_sql([method], uid, job.columns())} LIMIT {p.fit_rows}").astype("string")
         model = train_fs(method, sample, engine, uid)
         job.log.notes += [f"the fit found no two records sharing {f} in its sample of {len(sample):,}, so it learned nothing from them"

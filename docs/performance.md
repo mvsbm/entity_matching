@@ -105,9 +105,8 @@ answering every lookup as one built again.
 | `budget` | every run, on the actual file | O(N) per rule and generator | only a run whose normal blocks would not fit in memory and the room DuckDB may spill to. Oversized blocks (64+ records) are checked on a sample instead: at most `sample_pairs` scored pairs each, never more than joining them would cost |
 | `pattern_coverage` | every run, in report.txt (PATTERNS WITHOUT A KEY) | O(Π levels), a few thousand patterns | reported, not stopped: patterns that can reach the threshold with no guaranteed key |
 
-The keys themselves are held at design time, on labelled train, to `max_pairs_per_record` × N projected to
-`target_rows` (a million records): the guard against keys that grow by many normal blocks, which the sample check
-doesn't catch. A key's pairs P on train split into T pairs of one entity and C chance pairs between entities. A
+The keys themselves are chosen on labelled train to stay under 5 pairs per record projected to a million
+records: the guard against keys that grow by many normal blocks, which the sample check doesn't catch. A key's pairs P on train split into T pairs of one entity and C chance pairs between entities. A
 bigger population of the same kind has proportionally more duplicated entities, so T grows like N, and two entities
 share a value with the same probability at any size, so C grows like N²: P(n) = T·n/N + C·n(n − 1)/(N(N − 1)). That is
 the expectation of keeping a share of the entities, computed instead of sampled. Pairs between members of one

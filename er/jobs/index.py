@@ -43,7 +43,7 @@ from er.intake import tidy
 from er.io import read_parquet
 from er.source import find, readable
 from er.kind import Classifier, classifier
-from er.match import _gammas, levels, prior_bits, read_by, review_floor, saved, search_floor
+from er.match import _gammas, levels, prior_bits, read_by, review_floor, search_floor
 from er.report import no_run
 from er.steps.write import run_config
 from er.settings import Settings, fit_to_file, present_fields
@@ -91,8 +91,7 @@ def run_model(out: Path) -> dict:  # the model the run in `out` scored with: its
     scoring, fitted = out / "state" / "scoring.json", out / "state" / "model.json"
     if not fitted.exists():
         raise no_run(out)
-    model = json.loads(scoring.read_text(encoding="utf-8"))["model"] if scoring.exists() else json.loads(fitted.read_text(encoding="utf-8"))
-    return saved(model, f"the run in {out}", fix=f"build it again: python -m er build FILE --out {out} --overwrite")
+    return json.loads(scoring.read_text(encoding="utf-8"))["model"] if scoring.exists() else json.loads(fitted.read_text(encoding="utf-8"))
 
 
 def _tables(p: Pipeline) -> list[tuple[str, object]]:  # each index table of keys, by name: its generator or (stage, rule)
