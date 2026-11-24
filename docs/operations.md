@@ -72,7 +72,7 @@ Start the Jenkins job on main with `JOB` and `ARGS` (space-separated). Only the 
 | `decide` | a filled-in match table's `gs://` files | stores people's decisions and makes the entities again |
 | `match` | a threshold, in points (`8`) | writes the table `nayose.matched`: the pairs at that threshold or more |
 | `undo` | none | undoes a job whose process died: every table as that job found it |
-| `lookup` | `--record ID`, or `COLUMN=VALUE` words (no spaces: Jenkins splits `ARGS` on them) | looks a record up; the answer, which holds records' values, goes to the table `nayose.looked_up` (`asked`, `at`, `answer` as JSON), and the job prints only that it did. It refuses while a job runs (exit 75) |
+| `lookup` | `--record ID`, or `COLUMN=VALUE` words (no spaces: Jenkins splits `ARGS` on them) | looks a record up, with prod's column mapping (the secret `nayose-mapping`, which the runtime account reads); the answer, which holds records' values, goes to the table `nayose.looked_up` (`asked`, `at`, `answer` as JSON), and the job prints only that it did. It refuses while a job runs (exit 75). In Jenkins, look up by `--record ID`: Jenkins keeps a build's `ARGS`, so typed values would stay with it |
 
 build and update print `report.txt`, which Jenkins archives. It holds no record's value, so it can be shared. On BigQuery it has no COLUMNS NOT MAPPED section, and STEPS has one line, for the whole job. A refusal, such as a decisions file with a bad row, fails the build with BigQuery's error, which says what to fix. People put the input files in `in/`; the runtime account only reads them.
 
