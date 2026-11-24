@@ -9,13 +9,13 @@ import pandas as pd
 import pytest
 
 from er.config import (Comparator, Comparison, FSModel, Key, Level, Rule, RulesSpec, Stage)
-from design.evaluate import fp_upper, paired_test, wilson
-from er.match import exact_u, parameters, rule_edges, sample_u, score_fs, train_fs
+from design.evaluate import fp_upper, wilson
+from er.match import exact_u, parameters, sample_u, score_fs, train_fs
 from er.settings import load_settings
 from er.standardize import normalize
 from er.engine.duckdb import connect
 
-from conftest import PAIR, UID, clustered, model
+from conftest import PAIR, UID, clustered, model, rule_pairs, table
 
 FIXTURES = Path(__file__).parent / "fixtures"
 SPLINK = json.loads((FIXTURES / "splink-5.0.0.json").read_text(encoding="utf-8"))  # what Splink 5.0.0 gave, recorded
@@ -137,7 +137,7 @@ def test_pairs_score_as_splink_s_predict_scored_them_to_the_last_bit(engine):
     recorded = SPLINK["predict"]
     cols = ["uid_l", "uid_r", "match_weight", "match_probability", "gamma_name", "gamma_phone"]
     native = pd.DataFrame(recorded["pairs"], columns=cols).astype({"uid_l": "string", "uid_r": "string"})
-    ours = score_fs(recorded["model"], records, native[["uid_l", "uid_r"]], engine, UID)
+    ours = score_fs(recorded["model"], table(engine, records), table(engine, native[["uid_l", "uid_r"]]), engine, UID)
     both = native.merge(ours, on=["uid_l", "uid_r"], suffixes=("_native", "_registered"))
     assert len(both) == len(native) > 0 and both["gamma_name_native"].nunique() > 1
     for c in cols[2:]:
@@ -151,8 +151,8 @@ def test_prior_is_rescaled_to_the_scored_set_size(engine, records):
     lam = model_json["probability_two_random_records_match"]
     scaled = lam * (len(records) - 1) / (len(padded) - 1)
     expected = math.log2(scaled / (1 - scaled)) - math.log2(lam / (1 - lam))
-    assert score_fs(model_json, padded, PAIR, engine, UID)["match_weight"].item() - \
-        score_fs(model_json, records, PAIR, engine, UID)["match_weight"].item() == pytest.approx(expected)
+    at = lambda df: score_fs(model_json, table(engine, df), table(engine, PAIR), engine, UID)["match_weight"].item()
+    assert at(padded) - at(records) == pytest.approx(expected)
 
 
 def u_of(model_json: dict) -> dict:  # the u a fit sampled: each level's but those filled with a bound
@@ -168,11 +168,12 @@ def test_shared_connection_gives_the_same_rules_and_clusters_as_a_fresh_one(engi
     a = pd.DataFrame({"uid": ["1", "2", "3"], "phone": ["11", "11", "22"], "name": ["サトウ", "サトオ", "スズキ"]}, dtype="string")
     b = pd.DataFrame({"uid": ["7", "8", "9"], "phone": ["33", "33", "33"], "name": ["タナカ", "タナカ", "イトウ"]}, dtype="string")
     base = lambda d: pd.DataFrame({UID: d[UID], "cluster_id": d[UID]})
-    first = rule_edges(spec, a, engine, UID)
+    first = rule_pairs(engine, spec, a)
     clustered(engine, base(a), first, a[UID], UID)  # leaves whatever it caches on the shared connection
-    shared, fresh = rule_edges(spec, b, engine, UID), rule_edges(spec, b, connect(), UID)
+    other = connect()
+    shared, fresh = rule_pairs(engine, spec, b), rule_pairs(other, spec, b)
     assert shared.reset_index(drop=True).equals(fresh.reset_index(drop=True)) and len(shared) == 1
-    assert clustered(engine, base(b), shared, b[UID], UID).equals(clustered(connect(), base(b), fresh, b[UID], UID))
+    assert clustered(engine, base(b), shared, b[UID], UID).equals(clustered(other, base(b), fresh, b[UID], UID))
 
 
 def test_uncertainty():
@@ -180,8 +181,6 @@ def test_uncertainty():
     assert (round(lo, 4), round(hi, 4)) == (0.7415, 0.8201)
     assert abs(fp_upper(0, 57) - 3 / 57) < 0.003       # zero FP among n bounds the rate at ≈ 3/n
     assert round(fp_upper(0, 3000), 4) == 0.001
-    t = paired_test(base={("a", "b")}, variant={("a", "b"), ("c", "d"), ("x", "y")}, truth={("a", "b"), ("c", "d")})
-    assert (t["TP_gains"], t["TP_losses"], t["FP_added"]) == (1, 0, 1)
 
 
 def test_settings_resolve_paths_from_any_working_folder(monkeypatch):

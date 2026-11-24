@@ -22,18 +22,14 @@ from er.candidates import deletions_sql
 from er.strings import FUNCTIONS
 from er.config import Comparator, Comparison, COPIES, DeletionKeys, FSModel, FSSpec, GIVEN, hashed, InputError, Key, KeyBlocker, keys_sql, PERSON, Pipeline, q, RulesSpec, unpivoted
 
-def rule_edges(spec: RulesSpec, records: "Records", engine: Engine, uid: str, batch: str | None = None,
-               trust: Mapping[int, str] | None = None, into: str | None = None) -> pd.DataFrame | str:
+def rule_edges(spec: RulesSpec, records: str, engine: Engine, uid: str, batch: str | None = None,
+               trust: Mapping[int, str] | None = None, into: str = "rule_edges") -> None:
     """Every rule's pairs, uid_l < uid_r, with the rule and stage that found it (the first rule in order wins a pair)
     and score 1.0: one equi-join per rule, its fuzzy conditions checked on the joined pairs only. `batch`: a table of
     records joined against all of them (an increment), O(|batch|·b) instead of every pair; `trust`: per rule (its index
     in order), a condition its record `l` must meet (values it doesn't trust left out: the keys are equal on both
-    sides). With `into`, a table in the engine, else a frame."""
-    l, r, u = q(f"{uid}_l"), q(f"{uid}_r"), q(uid)
-    name = records if isinstance(records, str) else f"er_rules_{abs(hash(id(records)))}"
-    if not isinstance(records, str):  # a frame not prepared by er.standardize has no one-byte copy: the Python function compares its pairs
-        copies = {comp.copy(c) for s in spec.stages for c, comp in s.comparators.items() if comp.copy(c)} - set(records.columns)
-        engine.register(name, records.assign(**{c: pd.Series(pd.NA, index=records.index, dtype="string") for c in copies}))
+    sides). Into the table `into`; `records` are prepared by er.standardize (the comparators' one-byte copies too)."""
+    l, r, u, name = q(f"{uid}_l"), q(f"{uid}_r"), q(uid), records
     left, order = (batch, "<>") if batch else (name, "<")  # a batch pair can come both ways round: DISTINCT ON keeps one
     parts = []
     try:
@@ -43,15 +39,10 @@ def rule_edges(spec: RulesSpec, records: "Records", engine: Engine, uid: str, ba
                         f'FROM "{left}" l JOIN "{name}" r ON {s.sql(rule)} AND l.{u} {order} r.{u}{keep}')
             parts.append(f"SELECT {l}, {r}, '{rule.name}' AS rule, '{s.name}' AS stage, {i} AS i FROM er_rule_{i}")
         sql = f'SELECT DISTINCT ON ({l}, {r}) {l}, {r}, rule, stage, 1.0 AS score FROM ({" UNION ALL ".join(parts)}) ORDER BY {l}, {r}, i'
-        if into:
-            engine.run(f'CREATE OR REPLACE TABLE "{into}" AS {sql}')
-            return into
-        return engine.frame(sql).astype({f"{uid}_l": "string", f"{uid}_r": "string"})
+        engine.run(f'CREATE OR REPLACE TABLE "{into}" AS {sql}')
     finally:
         for i in range(len(parts)):
             engine.run(f"DROP TABLE IF EXISTS er_rule_{i}")
-        if not isinstance(records, str):
-            engine.unregister(name)
 
 
 ELSE = "else"
@@ -141,7 +132,7 @@ def sample_u(model: FSModel, comparisons: list[Comparison], df: pd.DataFrame, en
     counts = {(c.removeprefix("gamma_"), g): n for c, g, n in got}
     out: U = {}
     for c in settings["comparisons"]:
-        name, ranked = c["output_column_name"], _ranked(c)
+        name, ranked = c["output_column_name"], fit.ranked(c)
         filled = sum(counts.get((name, g), 0) for g, _ in ranked if g >= 0)
         out[name] = {lv["label_for_charts"]: counts[name, g] / filled for g, lv in ranked if g >= 0 and counts.get((name, g))}
     return out
@@ -366,18 +357,18 @@ GIVEN_SHARE = 0.5   # a session is kept when at least this share of the matches 
 
 
 def judged(model: FSModel, t: pd.DataFrame, learned: dict[tuple[Key, ...], dict[tuple[str, str], float]],
-           pairs: dict[tuple[Key, ...], int]) -> tuple[list[dict], Comparison | None]:
-    """Each EM session (learned: its m per comparison and level) judged by the matches it learned, for DIAGNOSIS: sound when
-    at least GIVEN_SHARE of them agree on the given name (the name comparison's levels of exact or near-exact agreement, its
-    given-name level among them where that is filled in GIVEN_FILLED of the named records): pairs that share a phone or
-    an address teach EM households, whose members share a family name only. A session keyed on a name field is kept by
-    its key (it learned no name m). Each session's row (session, field as set fit takes it, pairs, given_share, kept,
-    why), and the name comparison judged by. O(sessions · levels)."""
+           pairs: dict[tuple[Key, ...], int]) -> list[dict]:
+    """Each EM session (learned: its m per comparison and level) judged by the matches it learned, for DIAGNOSIS (sound
+    when at least GIVEN_SHARE of them agree): the share that agree on the given name (the name comparison's levels of
+    exact or near-exact agreement, its given-name level among them where that is filled in GIVEN_FILLED of the named
+    records): pairs that share a phone or an address teach EM households, whose members share a family name only. A
+    session keyed on a name field, or that learned no name m, has none. Each session's row: session, pairs, given_share.
+    O(sessions · levels)."""
     reads = lambda c: {col for lv in c.levels for col, _ in lv.any_of}
     anchor = next((c for c in model.comparisons if GIVEN in reads(c)), None) or next((c for c in model.comparisons if PERSON in reads(c)), None)
-    rows = [dict(session=" + ".join(k.column for k in r), field="+".join(":".join((k.column, *k.normalize)) for k in r), pairs=n, given_share=None) for r, n in pairs.items()]
+    rows = [dict(session=" + ".join(k.column for k in r), pairs=n, given_share=None) for r, n in pairs.items()]
     if anchor is None:
-        return [dict(x, kept=False, why="no person's name compared") for x in rows], None
+        return rows
     names = reads(anchor) | set(anchor.null_if_missing)
     given_col = next((comp.column(col) for lv in anchor.levels for col, comp in lv.any_of if col == GIVEN), None)
     named = t[[c for c in anchor.null_if_missing if c in t]].notna().any(axis=1).sum()
@@ -386,14 +377,9 @@ def judged(model: FSModel, t: pd.DataFrame, learned: dict[tuple[Key, ...], dict[
                                                     for _, comp in lv.any_of) and (given or GIVEN not in {col for col, _ in lv.any_of})}
     for r, row in zip(pairs, rows):
         m = {lv: v for (c, lv), v in learned.get(r, {}).items() if c == anchor.name}
-        if {k.column for k in r} & names:
-            row.update(kept=True, why="keyed on a name")
-        elif not m:
-            row.update(kept=False, why="no name compared")
-        else:
-            row["given_share"] = share = sum(v for lv, v in m.items() if lv in agree) / sum(m.values())
-            row.update(kept=share >= GIVEN_SHARE, why="matches agree on the given name" if share >= GIVEN_SHARE else "matches share no given name: households")
-    return rows, anchor
+        if m and not {k.column for k in r} & names:
+            row["given_share"] = sum(v for lv, v in m.items() if lv in agree) / sum(m.values())
+    return rows
 
 
 def train_fs(model: FSModel, df: pd.DataFrame, engine: Engine, uid: str) -> dict:
@@ -442,7 +428,7 @@ def train_fs(model: FSModel, df: pd.DataFrame, engine: Engine, uid: str) -> dict
     skipped = [fields(r) for r in (*model.prior_rules, *model.em_rules) if r not in (*prior, *em)]
     return {**model_json, "er": dict(fit_rows=len(t), filled=dict(u=filled_u, m=filled_m), skipped=skipped, adjusted=adjusted,
                                    em_pairs={fields(r): n for r, n in em_pairs.items()},
-                                   **({"em_given": [{k: x[k] for k in ("session", "pairs", "given_share")} for x in judged(model, t, learned, em_pairs)[0]]} if learned else {}))}
+                                   **({"em_given": judged(model, t, learned, em_pairs)} if learned else {}))}
 
 
 def compared_exactly(model: FSModel) -> list[str]:  # the fields a comparison's first level tests for equality alone: an agreement on them is that level's
@@ -484,11 +470,11 @@ def scaled_prior(model_json: dict, n_records: int) -> float:
     return min(prior, 1 - 1e-9)
 
 
-def score_fs(model_json: dict, df: Records, pairs: pd.DataFrame | str, engine: Engine, uid: str,
+def score_fs(model_json: dict, df: str, pairs: str, engine: Engine, uid: str,
              into: str | None = None, n_records: int | None = None, floor: float | None = None,
              bound: Bound | None = None, exempt: str | None = None) -> pd.DataFrame | str:
     """Score exactly these candidate pairs (uid_l < uid_r) with a model from train_fs, so that a score doesn't depend
-    on the size of the scored set: λ is rescaled to this set's size (scaled_prior). Records and pairs may be tables in
+    on the size of the scored set: λ is rescaled to this set's size (scaled_prior). Records and pairs are tables in
     the engine; with `into`, the scores are written to that table and its name returned, so nothing of size C
     reaches pandas. `n_records`: the size λ is rescaled to, when df holds only the records the pairs touch.
     With `floor`, a pair whose score can't reach it is left out unscored (predict_sql):
@@ -499,17 +485,8 @@ def score_fs(model_json: dict, df: Records, pairs: pd.DataFrame | str, engine: E
     return _scored(settings, df, pairs, engine, uid, into, floor, bound or {}, exempt)
 
 
-def _ranked(c: dict) -> list[tuple[int, dict]]:  # a comparison's levels with their gamma, as Splink numbers them: missing -1, the others down to the else level's 0
-    top = sum(not lv.get("is_null_level") for lv in c["comparison_levels"])
-    return [(-1, lv) if lv.get("is_null_level") else (top := top - 1, lv) for lv in c["comparison_levels"]]
-
-
-def _gammas(settings: dict) -> list[str]:  # each comparison's gamma from its levels' conditions in order, as Splink computes it on "<col>_l" and "<col>_r"
-    out = []
-    for c in settings["comparisons"]:
-        whens = " ".join(f"{lv['sql_condition']} {g}" if lv["sql_condition"].strip().upper() == "ELSE" else f"WHEN {lv['sql_condition']} THEN {g}" for g, lv in _ranked(c))
-        out.append(f"CASE {whens} END AS {q('gamma_' + c['output_column_name'])}")
-    return out
+def _gammas(settings: dict) -> list[str]:  # each comparison's gamma (fit.gamma_sql), as gamma_<name>
+    return [f"{fit.gamma_sql(c)} AS {q('gamma_' + c['output_column_name'])}" for c in settings["comparisons"]]
 
 
 def _columns(engine: Engine, table: str) -> set[str]:
@@ -553,7 +530,7 @@ def bound_sql(settings: dict, tests: Bound, unread: frozenset[str] = frozenset()
     `unread` at its best level's weight or 0, whichever is more, reading none of its columns."""
     lam, parts = settings["probability_two_random_records_match"], []
     for c in settings["comparisons"]:
-        ranked, name = _ranked(c), c["output_column_name"]
+        ranked, name = fit.ranked(c), c["output_column_name"]
         null = next((lv["sql_condition"] for g, lv in ranked if g < 0), "FALSE")
         weights = [_bits(g, lv) for g, lv in ranked if g >= 0]  # in order, the else level's last
         levels = tests.get(name, ())
@@ -594,7 +571,7 @@ def rough_sql(settings: dict, tests: Bound) -> str:
     them; where bound_sql weighs a comparison at its best level, at that. Over hashes, a pair costs a few integers."""
     lam, parts = settings["probability_two_random_records_match"], []
     for c in settings["comparisons"]:
-        ranked, name = _ranked(c), c["output_column_name"]
+        ranked, name = fit.ranked(c), c["output_column_name"]
         null = next((lv["sql_condition"] for g, lv in ranked if g < 0), "FALSE")
         weights, conds = [_bits(g, lv) for g, lv in ranked if g >= 0], [lv["sql_condition"] for g, lv in ranked if g > 0]
         levels = tests.get(name, ())
@@ -635,7 +612,7 @@ def first_bound(model_json: dict, n_records: int, floor: float, bound: Bound, ui
     costly = [c for c in settings["comparisons"] if bound.get(c["output_column_name"])]
     if len(costly) < 2:
         return None
-    top = max(costly, key=lambda c: max(_bits(g, lv) for g, lv in _ranked(c) if g >= 0))["output_column_name"]
+    top = max(costly, key=lambda c: max(_bits(g, lv) for g, lv in fit.ranked(c) if g >= 0))["output_column_name"]
     test = bound_sql(settings, bound, frozenset(c["output_column_name"] for c in costly) - {top})
     return _reads(test), f"({test}) >= {floor - 1e-9!r}{_exempt_sql(exempt, uid, 'z')}"
 
@@ -672,7 +649,7 @@ def predict_sql(settings: dict, records: str, pairs: str, uid: str, have: set[st
     l, r = q(f"{uid}_l"), q(f"{uid}_r")
     names, weights = [c["output_column_name"] for c in settings["comparisons"]], []
     for name, c in zip(names, settings["comparisons"]):
-        weights.append(f"CASE {' '.join(f'WHEN {q("gamma_" + name)} = {g} THEN cast({_bits(g, lv)} as float8)' for g, lv in _ranked(c))} END AS {q('mw_' + name)}")
+        weights.append(f"CASE {' '.join(f'WHEN {q("gamma_" + name)} = {g} THEN cast({_bits(g, lv)} as float8)' for g, lv in fit.ranked(c))} END AS {q('mw_' + name)}")
     lam = settings["probability_two_random_records_match"]
     mw = f"cast({math.log2(lam / (1 - lam))} as float8) + " + " + ".join(q(f"mw_{n}") for n in names)
     sides = f"SELECT p.{l}, p.{r}, {_sides(settings, have)} FROM {pairs} p JOIN {records} a ON a.{q(uid)} = p.{l} JOIN {records} b ON b.{q(uid)} = p.{r}"
@@ -685,32 +662,19 @@ def predict_sql(settings: dict, records: str, pairs: str, uid: str, have: set[st
         FROM (SELECT *, {', '.join(weights)} FROM (SELECT {l}, {r}, {', '.join(_gammas(settings))} FROM ({sides})))"""
 
 
-def _scored(settings: dict, df: Records, pairs: pd.DataFrame | str, engine: Engine, uid: str, into: str | None,
+def _scored(settings: dict, records: str, pairs: str, engine: Engine, uid: str, into: str | None,
             floor: float | None = None, bound: Bound | None = None, exempt: str | None = None) -> pd.DataFrame | str:
-    held = []
-
-    def table(x: pd.DataFrame | str, name: str) -> str:
-        if isinstance(x, str):
-            return q(x)
-        engine.register(name, x)
-        held.append(name)
-        return name
-    try:
-        records = table(df, "er_score_records")
-        sql = predict_sql(settings, records, table(pairs, "er_score_pairs"), uid, _columns(engine, records), floor, bound, exempt)
-        if into is None:
-            return engine.frame(sql).astype({f"{uid}_l": "string", f"{uid}_r": "string"})
-        engine.run(f"CREATE OR REPLACE TABLE {q(into)} AS {sql}")
-        return into
-    finally:
-        for x in held:
-            engine.unregister(x)
+    sql = predict_sql(settings, q(records), q(pairs), uid, _columns(engine, q(records)), floor, bound, exempt)
+    if into is None:
+        return engine.frame(sql).astype({f"{uid}_l": "string", f"{uid}_r": "string"})
+    engine.run(f"CREATE OR REPLACE TABLE {q(into)} AS {sql}")
+    return into
 
 
 def levels(model_json: dict) -> dict[str, dict[int, tuple[str, float]]]:
     """Per comparison: each gamma, as score_fs returns it, → its level's label and bits log2(m/u). Gamma counts up from
     the else level (0); -1 is a missing side, worth 0 bits."""
-    return {c["output_column_name"]: {-1: ("missing", 0.0), **{g: (lv["label_for_charts"], _bits(g, lv)) for g, lv in _ranked(c) if g >= 0}}
+    return {c["output_column_name"]: {-1: ("missing", 0.0), **{g: (lv["label_for_charts"], _bits(g, lv)) for g, lv in fit.ranked(c) if g >= 0}}
             for c in model_json["comparisons"]}
 
 
