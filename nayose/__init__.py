@@ -46,6 +46,20 @@ UNCHANGED = f"SELECT IF((SELECT fingerprint FROM method) <> @fingerprint, ERROR(
 QUERY = "\uffffasked"  # the ID of a record looked up by its values: no record's, and after every one in order
 SHOWN = ("full_name", "person_name", "company_name", "address", "postal_code", "phone", "birth_date", "customer_id")  # a record, as a person reads it
 BLANK = "".join(ch for ch in map(chr, range(0x3001)) if ch.isspace())  # what a blank value people give is made of: Python's whitespace
+COMPARISONS = ("name", "company", "address", "phone", "cif", "birth")  # the model's, in its order
+FIELDS = ("full_name", "person_name", "given_name", "company_name", "any_name", "address", "address_code", "postal_code", "prefecture",
+          "town_code", "city", "phone", "customer_id", "birth_date")  # a record's fields, as report.txt lists them
+
+# a statement, read from its text (run_file, scratched, the deploy's procedures)
+PARAMETER = re.compile(r"@(\w+)")  # a value a statement reads, by name (run_file gives it, the deploy declares it)
+NOT_CODE = re.compile(r"--[^\n]*|'(?:[^'\\]|\\.)*'")  # a comment or a string: what isn't code
+WHEN = re.compile(r"^\s*--\s*when:(.*)$", re.M | re.I)
+LEAD = r"(?:\s*--[^\n]*\n|\s*/\*.*?\*/)*\s*"  # a statement's leading comments
+WRITE = re.compile(rf"^({LEAD})(CREATE\s+OR\s+REPLACE\s+TEMP(?:ORARY)?\s+TABLE|CREATE\s+OR\s+REPLACE\s+TABLE|"
+                   r"CREATE\s+TABLE\s+IF\s+NOT\s+EXISTS|CREATE\s+(?:OR\s+REPLACE\s+)?(?:MATERIALIZED\s+)?VIEW|CREATE\s+TABLE|"
+                   r"INSERT(?:\s+INTO)?|DELETE(?:\s+FROM)?|UPDATE|MERGE(?:\s+INTO)?|TRUNCATE\s+TABLE)\s+`?(\w+)`?", re.I | re.S)
+READ = re.compile(rf"^{LEAD}(SELECT|WITH|CREATE\s+(?:OR\s+REPLACE\s+)?TEMP(?:ORARY)?\s+(?:FUNCTION|TABLE))\b", re.I | re.S)
+TEMP_FUNCTION = re.compile(rf"^({LEAD})CREATE\s+(?:OR\s+REPLACE\s+)?TEMP(?:ORARY)?\s+FUNCTION\s+(\w+)", re.I | re.S)  # (its comments, its name)
 
 
 class InputError(ValueError):  # a refusal the person running the job can act on: what is wrong, and how to fix it
@@ -170,16 +184,16 @@ def lookup(engine, record: str | None = None, values: dict | None = None, at_lea
     if record is not None and not engine.value("SELECT COUNT(*) FROM records WHERE id = @me", {"me": me}):
         raise InputError(f"{record}: no record of the run has that ID", fix="give a record ID the run holds, or the record's values")
     held = engine.value("SELECT COUNT(*) FROM records")
-    keys = its_keys(engine, c, record, values, me)
+    keys = its_keys(engine, record, values, me)
     ids, blocks = index_records(engine, keys, record, me, int(c["score"]["oversized"]))
-    view, cands, found, checked = scored_against(engine, c, record, values, me, ids, blocks, held, at_least)
+    view, cands, found, checked = scored_against(engine, record, values, me, ids, blocks, held, at_least)
     return answer(record, view, cands, found, checked, at_least, most)
 
 
-def its_keys(engine, c: dict, record: str | None, values: dict | None, me: str) -> dict[str, set]:
+def its_keys(engine, record: str | None, values: dict | None, me: str) -> dict[str, set]:
     """A lookup's step 1: the keys of the record asked about, made from it alone (every_key's and rule_keys')."""
     with engine.scratch():
-        asked(engine, c, record, values, [me] if record is not None else [], until="every_key")
+        asked(engine, record, values, [me] if record is not None else [], until="every_key")
         return {"every_key": set(engine.rows("SELECT g, k FROM every_key WHERE id = @me", {"me": me})),
                 "rule_keys": set(engine.rows("SELECT i, k FROM rule_keys WHERE id = @me", {"me": me}))}
 
@@ -203,17 +217,17 @@ def index_records(engine, keys: dict[str, set], record: str | None, me: str, big
     return ids | {i for _, read in blocks.values() for i in read}, blocks
 
 
-def scored_against(engine, c: dict, record: str | None, values: dict | None, me: str, ids: set, blocks: dict, held: int,
-                   at_least: float) -> tuple:
+def scored_against(engine, record: str | None, values: dict | None, me: str, ids: set, blocks: dict, held: int, at_least: float) -> tuple:
     """A lookup's step 3: the record scored against those records alone, a block read in part at its size whole. A big
     block the gate keeps makes every pair of it a candidate, so it is read whole, from the run's index (outside the
     scratch, whose every_key is the lookup's own), and scored again. The record as compared and lookup.sql's tables."""
+    c = config()
     big = int(c["score"]["oversized"])
     while True:
         with engine.scratch():
             typed = 0 if record is not None else 1  # a typed record isn't in the index: its blocks hold one more
             sized = [(g, k, n + typed) for (g, k), (n, read) in blocks.items() if n > len(read)]
-            temp = asked(engine, c, record, values, sorted(ids), outside=held - len(ids), sized=sized)
+            temp = asked(engine, record, values, sorted(ids), outside=held - len(ids), sized=sized)
             kept = {(g, k) for g, k in engine.rows("SELECT g, value FROM gated WHERE decision = 'kept'")} & {(g, k) for g, k, _ in sized}
             if not kept:
                 stage(engine, "lookup", scratch=temp, at_least=at_least, likely_from=float(c["lookup"]["likely_from"]),
@@ -226,9 +240,6 @@ def scored_against(engine, c: dict, record: str | None, values: dict | None, me:
             if (g, k) in kept:
                 blocks[g, k][1].add(i)
                 ids.add(i)
-
-
-COMPARISONS = ("name", "company", "address", "phone", "cif", "birth")  # the model's, in its order
 
 
 def answer(record: str | None, view, cands: pd.DataFrame, found: pd.DataFrame, checked: pd.DataFrame, at_least: float, most: int) -> dict:
@@ -257,7 +268,6 @@ def answer(record: str | None, view, cands: pd.DataFrame, found: pd.DataFrame, c
                 checked=keys)
 
 
-
 def unchanged(engine, fix: str) -> None:
     """Refused (CHANGED, then `fix`) unless the run was built by this method: its SQL, values and mapping (fingerprint)."""
     try:
@@ -268,8 +278,7 @@ def unchanged(engine, fix: str) -> None:
         raise InputError(CHANGED, fix=fix)
 
 
-def asked(engine, c: dict, record: str | None, values: dict | None, ids: list, until: str | None = None, outside: int = 0,
-          sized: list = ()) -> set:
+def asked(engine, record: str | None, values: dict | None, ids: list, until: str | None = None, outside: int = 0, sized: list = ()) -> set:
     """The run as a lookup sees it, in temporary tables of the run's names (run_file's scratch): records and gold, of
     `ids` alone (each read by ID: on BigQuery, its clustering's blocks), placeholders whole; the record asked about,
     a batch of its own (a stored one's batch raised, or `values` made a record by records.sql); then score.sql, up to
@@ -289,7 +298,8 @@ def asked(engine, c: dict, record: str | None, values: dict | None, ids: list, u
         engine.run("CREATE TEMP TABLE this_batch AS SELECT MAX(batch) + 1 AS batch FROM records")
         engine.run("UPDATE records SET batch = (SELECT batch FROM this_batch) WHERE id = @me", {"me": record})
     else:
-        given = list(({x: values.get(x) for x in c["input"]["columns"]} | {c["input"]["id"]: QUERY}).items())
+        columns = config()["input"]
+        given = list(({x: values.get(x) for x in columns["columns"]} | {columns["id"]: QUERY}).items())
         temp.add("input")
         engine.run("CREATE OR REPLACE TEMP TABLE input AS SELECT " + ", ".join(f"CAST({'NULL' if v is None else f'@v{i}'} AS STRING) AS `{x}`"
                                                                      for i, (x, v) in enumerate(given)),
@@ -299,37 +309,46 @@ def asked(engine, c: dict, record: str | None, values: dict | None, ids: list, u
             shown = [f"{k}={v}" for k, v in values.items() if v not in (None, "")]
             raise InputError(f"{', '.join(shown)}: read as missing, as a file's would be" if shown else "no value given",
                              fix="give a value a record holds: a name, a phone, a postal code")
-    view = next(s for s in statements((SQL / "fit.sql").read_text(encoding="utf-8")) if (m := WRITE.match(s)) and m.group(3) == "compared")
-    engine.run(scratched(view, temp))  # the columns score compares, of these records: fit.sql's view, as a temporary table
+    engine.run(scratched(making("fit", "compared"), temp))  # the columns score compares, of these records: fit.sql's view, as a temporary table
     score(engine, lookup=True, scratch=temp, until=until, outside=outside)
     return temp
 
 
-def build(engine, files: list, model: str | None = None) -> None:
+def run_stage(name: str, do, *args) -> None:  # a stage of build or update, run as it is (the CLI's times each)
+    do(*args)
+
+
+def build(engine, files: list, model: str | None = None, timed=run_stage) -> None:
     """A run's first batch on `engine`, an empty run: its records, the model fitted (`model`: one fitted elsewhere, as
     fit gave it back, kept: its u measured on these records), every pair scored, the entities people's decisions make
-    (none yet, or those the run kept). O(N·L + n + S·K + ΣP + C·K·L²): P a block's pairs, C the candidates, L a
-    value's length."""
-    records(engine, files)
+    (none yet, or those the run kept). Each stage run by `timed` (name, the stage, its arguments). O(N·L + n + S·K +
+    ΣP + C·K·L²): P a block's pairs, C the candidates, L a value's length."""
+    timed("records", records, engine, files)
     if model is not None:
         engine.run("CREATE OR REPLACE TABLE fit AS SELECT CAST(NULL AS FLOAT64) AS probability, CAST(NULL AS INT64) AS fit_rows, "
                    "CAST(NULL AS INT64) AS records, CAST(NULL AS FLOAT64) AS prior_bits, CAST(NULL AS STRING) AS notes, @fitted AS fitted",
                    {"fitted": json.dumps({**json.loads(model), "basis": None})})
-    fit(engine, refit=model is None)
-    score(engine)
-    decide(engine, [])
+    timed("fit", fit, engine, model is None)
+    timed("score", score, engine)
+    timed("decide", decide, engine, [])
     engine.run(METHOD, {"fingerprint": fingerprint()})
 
 
-def update(engine, files: list) -> None:
+def update(engine, files: list, timed=run_stage, out: object = "RUN") -> int:
     """A batch added to the run on `engine`: its records (one already in the run set aside), the build's model with u
-    measured again on every record, the pairs touching the batch scored, the entities made again.
-    O(Δ·(L + b) + C_Δ·K·L²), plus O(N) scans of the run's records and keys."""
-    unchanged(engine, "build the run again with them (python -m nayose build FILE --out RUN --overwrite), or update with the code the build ran")
-    records(engine, files)
-    fit(engine, refit=False)
-    score(engine)
-    decide(engine, [])
+    measured again on every record, the pairs touching the batch scored, the entities made again; each stage run by
+    `timed`, as build's. The records added; none, and nothing past the records is done (the CLI keeps the run as it
+    was). `out`: the run's folder, as a refusal names it. O(Δ·(L + b) + C_Δ·K·L²), plus O(N) scans of the run's
+    records and keys."""
+    unchanged(engine, f"build the run again with them (python -m nayose build FILE --out {out} --overwrite), or update with the code the build ran")
+    before = engine.value("SELECT COUNT(*) FROM records")
+    timed("records", records, engine, files)
+    if not (added := engine.value("SELECT COUNT(*) FROM records") - before):
+        return 0
+    timed("fit", fit, engine, False)
+    timed("score", score, engine)
+    timed("decide", decide, engine, [])
+    return added
 
 
 def decide(engine, files: list) -> None:
@@ -359,10 +378,6 @@ def match(engine, threshold: float) -> None:
     check_threshold(threshold)
     stage(engine, "functions")
     stage(engine, "match", threshold=float(threshold))
-
-
-FIELDS = ("full_name", "person_name", "given_name", "company_name", "any_name", "address", "address_code", "postal_code", "prefecture",
-          "town_code", "city", "phone", "customer_id", "birth_date")  # a record's fields, as report.txt lists them
 
 
 def report(engine, steps: dict[str, float], job: str) -> str:
@@ -518,6 +533,10 @@ def statements(text: str) -> list[str]:
     return out
 
 
+def making(name: str, table: str) -> str:  # the statement of stage `name` that makes `table`
+    return next(s for s in statements((SQL / f"{name}.sql").read_text(encoding="utf-8")) if (m := WRITE.match(s)) and m[3] == table)
+
+
 def stage(engine, name: str, scratch: set | None = None, until: str | None = None, **values: object) -> None:
     """The stage nayose/sql/<name>.sql on `engine`, its statements in order (run_file)."""
     run_file(engine, SQL / f"{name}.sql", scratch=scratch, until=until, **values)
@@ -544,11 +563,6 @@ def run_file(engine, path: Path, scratch: set | None = None, until: str | None =
             return
 
 
-PARAMETER = re.compile(r"@(\w+)")  # a value a statement reads, by name (run_file gives it, the deploy declares it)
-NOT_CODE = re.compile(r"--[^\n]*|'(?:[^'\\]|\\.)*'")  # a comment or a string: what isn't code
-WHEN = re.compile(r"^\s*--\s*when:(.*)$", re.M | re.I)
-
-
 def when(sql: str) -> str | None:
     """A statement's condition: its leading comments' `-- when: <condition>`, a comment after it aside; None without.
     Refused where there are two, or one on a function (the deploy makes those apart), or one past the statement's start."""
@@ -557,14 +571,6 @@ def when(sql: str) -> str | None:
     if len(lines) > 1 or (lines and TEMP_FUNCTION.match(sql)) or len(WHEN.findall(sql)) > len(lines):
         raise ValueError(f"a statement holds one condition, in its leading comments, and a function none: {sql.strip()[:80]}")
     return lines[0].split("--")[0].strip() or None if lines else None
-
-
-LEAD = r"(?:\s*--[^\n]*\n|\s*/\*.*?\*/)*\s*"  # a statement's leading comments
-WRITE = re.compile(rf"^({LEAD})(CREATE\s+OR\s+REPLACE\s+TEMP(?:ORARY)?\s+TABLE|CREATE\s+OR\s+REPLACE\s+TABLE|"
-                   r"CREATE\s+TABLE\s+IF\s+NOT\s+EXISTS|CREATE\s+(?:OR\s+REPLACE\s+)?(?:MATERIALIZED\s+)?VIEW|CREATE\s+TABLE|"
-                   r"INSERT(?:\s+INTO)?|DELETE(?:\s+FROM)?|UPDATE|MERGE(?:\s+INTO)?|TRUNCATE\s+TABLE)\s+`?(\w+)`?", re.I | re.S)
-READ = re.compile(rf"^{LEAD}(SELECT|WITH|CREATE\s+(?:OR\s+REPLACE\s+)?TEMP(?:ORARY)?\s+(?:FUNCTION|TABLE))\b", re.I | re.S)
-TEMP_FUNCTION = re.compile(rf"^({LEAD})CREATE\s+(?:OR\s+REPLACE\s+)?TEMP(?:ORARY)?\s+FUNCTION\s+(\w+)", re.I | re.S)  # (its comments, its name)
 
 
 def scratched(sql: str, temp: set) -> str | None:

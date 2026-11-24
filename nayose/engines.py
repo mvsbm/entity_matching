@@ -1,7 +1,7 @@
 """Where nayose's SQL runs. The SQL is BigQuery's (nayose/sql/), and the two engines differ only here:
 
-    BigQuery   runs it as written, in a session of the job's own, a run's tables in its dataset; the functions it
-               calls by name (cl_*, er_hash, nfkc) are the functions dataset's, which the deploy makes (functions())
+    BigQuery   runs it as written, in a session of the job's own, a run's tables in its dataset, and the functions
+               it calls by name (cl_*, er_hash, nfkc) too, which the deploy makes there (functions())
     DuckDB     translates it first (sqlglot, BigQuery → DuckDB), refusing a form whose translation changes what it
                gives (AVOID, avoided()), and calls twins of the same functions: for cl_*, DuckDB's own where
                both strings are a byte a character (native), else rapidfuzz; Arrow's utf8_normalize for nfkc, numpy for one_byte_hash, a macro for er_hash
@@ -291,8 +291,7 @@ JOBS = {  # each job BigQuery runs as a procedure of the run's dataset: its stag
     "match": [("functions", {}), ("match", {})],
 }  # no lookup: nayose.lookup's statements, each step in a session of its own (BigQuery.scratch), write temporary tables alone
 ARGUMENTS = {"match": {"threshold": "FLOAT64"}}  # a procedure's own values: given when it is called, not declared
-RUN_TABLES = ("records", "placeholders", "this_batch", "set_aside", "fit_sample", "fit_prior", "em_patterns", "u_outside", "u_counted",
-              "u_near", "u_sampled", "u_filled", "model", "fit", "rule_keys", "every_key", "rule_pairs", "cands", "gated", "scored", "gold")  # a build starts without them; decisions stay
+KEPT = ("decisions",)  # people's: a build keeps them, as the CLI's does
 
 
 def in_dataset(sql: str, dataset: str) -> str:
@@ -307,16 +306,16 @@ def in_dataset(sql: str, dataset: str) -> str:
     return tree.sql(dialect="bigquery")
 
 
-def procedures(dataset: str, functions: str, mapping: Path | None = None) -> list[str]:
+def procedures(dataset: str, mapping: Path | None = None) -> list[str]:
     """The statements the deploy runs in `dataset` (project.dataset), after functions(): the method's own SQL functions
     (each file's CREATE TEMP FUNCTION), the dataset's; then one procedure a job (JOBS), its stages' statements in order
     (mapping: the deployment's mapping.sql), the values they read (@name: nayose.values_of, config.toml's) declared at
-    its top as v_name, the dataset the one whose tables they name. Every call of a method's function names its
-    dataset: `functions`' for the JavaScript and Python ones, `dataset`'s for the SQL ones."""
+    its top as v_name, the dataset the one whose tables they name. A build first drops every table it writes but those
+    KEPT, so it starts as an empty run. Every call of a method's function names the dataset, where the deploy made it."""
     path = lambda stage: (mapping or nayose.HERE / "mapping.sql") if stage == "mapping" else nayose.SQL / f"{stage}.sql"
     made, bodies = {}, {}
     for job, stages in JOBS.items():
-        body, declared = [], {}
+        body, declared, written = [], {}, {}
         for stage, told in stages:
             declared |= nayose.values_of(stage, **told)
             for sql in nayose.statements(path(stage).read_text(encoding="utf-8")):
@@ -325,18 +324,21 @@ def procedures(dataset: str, functions: str, mapping: Path | None = None) -> lis
                 else:
                     sql = nayose.PARAMETER.sub(r"v_\1", sql)  # comments too: a -- when: condition is read from them
                     guard = nayose.when(sql)  # read before in_dataset, whose SQL keeps no comment
-                    sql = in_dataset(sql, dataset) if (head := WRITE.match(sql)) and "VIEW" in head[2].upper() else sql
+                    if (head := WRITE.match(sql)) and "VIEW" in head[2].upper():
+                        sql = in_dataset(sql, dataset)
+                    elif head and "TEMP" not in head[2].upper() and head[3] not in KEPT:
+                        written.setdefault(head[3])  # a run's table, in the order the job first writes it
                     body.append(f"IF {guard} THEN\n{sql};\nEND IF" if guard else sql)
-        bodies[job] = (body, {k: v for k, v in declared.items() if k not in ARGUMENTS.get(job, {})})
+        bodies[job] = (body, {k: v for k, v in declared.items() if k not in ARGUMENTS.get(job, {})}, list(written))
     own = calls_of(made)
-    ours = lambda sql: qualified(sql, own, dataset, functions)
+    ours = lambda sql: qualified(sql, own, dataset)
     out = [ours(sql) for sql in made.values()]
     project, name = dataset.split(".")
-    for job, (body, declared) in bodies.items():
+    for job, (body, declared, written) in bodies.items():
         args = ", ".join(f"v_{k} {kind}" for k, kind in ARGUMENTS.get(job, {}).items())
         head = [f"DECLARE v_{k} {bigquery_type(v)} DEFAULT {bigquery_literal(v)}" for k, v in declared.items()]
         head += [f"SET @@dataset_project_id = '{project}'", f"SET @@dataset_id = '{name}'"]
-        head += [f"DROP TABLE IF EXISTS {x}" for x in RUN_TABLES] if job == "build" else []
+        head += [f"DROP TABLE IF EXISTS {x}" for x in written] if job == "build" else []
         method = nayose.fingerprint(mapping_file=mapping)  # what an update needs unchanged since the build
         head += [nayose.UNCHANGED.replace("@fingerprint", bigquery_literal(method))] if job == "update" else []
         body = [*body, nayose.METHOD.replace("@fingerprint", bigquery_literal(method))] if job == "build" else body
@@ -352,10 +354,10 @@ def calls_of(names) -> re.Pattern:  # a call of any of these functions, by name 
     return re.compile(r"(?<![\w.`])(" + "|".join(sorted(names, key=len, reverse=True)) + r")\s*\(")
 
 
-def qualified(sql: str, own: re.Pattern, dataset: str, functions: str) -> str:
-    """`sql`, each call of the method's SQL functions (`own`) named with `dataset`, where the deploy made them, and each
-    of the JavaScript and Python ones (BigQuery.CALLS) with `functions`'s."""
-    return own.sub(lambda m: f"`{dataset}`.{m[1]}(", BigQuery.CALLS.sub(lambda m: f"`{functions}`.{m[1]}(", sql))
+def qualified(sql: str, own: re.Pattern, dataset: str) -> str:
+    """`sql`, each call of the method's functions named with `dataset`, where the deploy made them: its SQL ones
+    (`own`) and the JavaScript and Python ones (BigQuery.CALLS)."""
+    return own.sub(lambda m: f"`{dataset}`.{m[1]}(", BigQuery.CALLS.sub(lambda m: f"`{dataset}`.{m[1]}(", sql))
 
 
 def bigquery_type(v: object) -> str:  # a value's BigQuery type, as values_of() gives it
@@ -381,21 +383,21 @@ def bigquery_literal(v: object) -> str:  # a value as BigQuery SQL: a string esc
 
 class BigQuery:
     """nayose's SQL on BigQuery, as written, in one session of the job's own (its temporary tables die with it). A
-    run's tables are in `dataset` (project.dataset), so a statement names them alone; the functions it calls are
-    `functions`' (project.dataset, the deploy's: functions()). `client`: a google.cloud.bigquery.Client (made when not
-    given); `bigquery`: the module its job configurations come from (imported when not given)."""
+    run's tables are in `dataset` (project.dataset), so a statement names them alone, and so are the functions it
+    calls (the deploy's: functions(), procedures()). `client`: a google.cloud.bigquery.Client (made when not given);
+    `bigquery`: the module its job configurations come from (imported when not given)."""
     name = "bigquery"
     CALLS = re.compile(r"(?<![\w.`])(" + "|".join([*(f"cl_{n}(?:_cut)?" for n in FUNCTIONS), "er_hash", "nfkc", "one_byte_hash", "fit_model", "resampled", "entities_of"]) + r")\s*\(", re.I)
 
-    def __init__(self, dataset: str, functions: str, client: object = None, bigquery: object = None) -> None:
+    def __init__(self, dataset: str, client: object = None, bigquery: object = None) -> None:
         self.bigquery = bigquery or importlib.import_module("google.cloud.bigquery")
         self.client = client or self.bigquery.Client(project=dataset.split(".")[0])
-        self.dataset, self.functions, self.session = dataset, functions, None
+        self.dataset, self.session = dataset, None
 
     OWN = calls_of(method_functions())  # the method's SQL functions: the deploy made each in the dataset
 
     def _job(self, sql: str, values: dict | None = None) -> object:
-        text = qualified(sql, self.OWN, self.dataset, self.functions)
+        text = qualified(sql, self.OWN, self.dataset)
         job = self.client.query(text, job_config=self._config(values))
         result = job.result()
         if self.session is None:

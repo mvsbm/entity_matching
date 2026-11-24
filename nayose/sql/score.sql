@@ -132,7 +132,8 @@ CREATE TEMP TABLE IF NOT EXISTS block_size (g INT64, k STRING, n INT64);  -- a b
 CREATE OR REPLACE TEMP TABLE key_blocks AS
 SELECT e.g, e.k, e.id, e.new, s.n
 FROM every_key AS e
-JOIN (SELECT b.g, b.k, COALESCE(u.n, b.n) AS n FROM (SELECT g, k, COUNT(*) AS n FROM every_key GROUP BY g, k HAVING (COUNT(*) > 1 OR @lookup) AND LOGICAL_OR(new)) AS b
+JOIN (SELECT b.g, b.k, COALESCE(u.n, b.n) AS n
+      FROM (SELECT g, k, COUNT(*) AS n FROM every_key GROUP BY g, k HAVING (COUNT(*) > 1 OR @lookup) AND LOGICAL_OR(new)) AS b
       LEFT JOIN block_size AS u USING (g, k)) AS s USING (g, k)
 WHERE s.n > 1 OR e.new;
 
@@ -225,7 +226,8 @@ WHERE a.new_rank <= @oversized AND c.rank <= @oversized
 
 CREATE OR REPLACE TABLE gated AS
 WITH scored_sample AS (
-  SELECT p.l, p.r, weight_of(gamma_name(x, y), gamma_company(x, y), gamma_address(x, y), gamma_phone(x, y), gamma_cif(x, y), gamma_birth(x, y), w) AS w
+  SELECT p.l, p.r,
+         weight_of(gamma_name(x, y), gamma_company(x, y), gamma_address(x, y), gamma_phone(x, y), gamma_cif(x, y), gamma_birth(x, y), w) AS w
   FROM (SELECT DISTINCT l, r FROM gate_pairs) AS p JOIN compared AS x ON x.id = p.l JOIN compared AS y ON y.id = p.r CROSS JOIN weights AS w
   WHERE bound_of(x, y, w) >= @search_floor - CAST(0.000000001 AS FLOAT64)
 ),
@@ -233,7 +235,8 @@ stats AS (
   SELECT p.g, p.k, COUNT(*) AS sampled, MAX(s.w) AS best, COUNT(CASE WHEN s.w >= @search_floor THEN 1 END) AS hits
   FROM gate_pairs AS p LEFT JOIN scored_sample AS s USING (l, r) GROUP BY p.g, p.k
 )
-SELECT z.g, z.k AS value, z.n AS records, DIV(z.n * (z.n - 1), 2) AS pairs, COALESCE(s.sampled, 0) AS sampled, s.best, COALESCE(s.hits, 0) AS hits,
+SELECT z.g, z.k AS value, z.n AS records, DIV(z.n * (z.n - 1), 2) AS pairs,
+       COALESCE(s.sampled, 0) AS sampled, s.best, COALESCE(s.hits, 0) AS hits,
        CASE WHEN COALESCE(s.hits, 0) > 0 THEN 'kept' WHEN COALESCE(s.sampled, 0) = 0 THEN 'skipped: other keys list its sampled pairs'
             ELSE 'skipped: no sampled pair reaches the floor' END AS decision
 FROM (SELECT DISTINCT g, k, n FROM key_blocks WHERE n >= @oversized) AS z LEFT JOIN stats AS s ON s.g = z.g AND s.k = z.k;

@@ -3,35 +3,32 @@ records can be read anywhere: which keys find a match no other key or rule finds
 
     python scripts/key_quality.py RUN [--truth TRUTH.parquet] [--points 6]
 
-RUN: a build's run folder (its run.duckdb, read-only; an update keeps its last batch's candidates alone, so refused). A match: a pair the run scored at --points or more with a name
-compared ([lookup] likely_from: as people review), or a rule's pair. A key's candidates: the pairs it lists (cands'
-sources). Only it: a match no other key lists and no rule finds, lost were the key to go. Can go together: the keys
-that list no match alone, less, one at a time, the one whose return keeps the most matches, until none is lost.
-TRUTH (a generated population's: CONT_ID, ENTITY_ID) splits each count into true and false. O(C·G) for C candidates.
+RUN: a build's run folder (its run.duckdb, read-only; an update keeps its last batch's candidates alone, so refused).
+A match: a pair the run scored at --points or more with a name compared ([lookup] likely_from: as people review), or a
+rule's pair. A key's candidates: the pairs it lists (cands' sources). Only it: a match no other key lists and no rule
+finds, lost were the key to go. Can go together: the keys that list no match alone, less, one at a time, the one whose
+return keeps the most matches, until none is lost. TRUTH (a generated population's: CONT_ID, ENTITY_ID) splits each
+count into true and false. O(C·G) for C candidates.
 """
 import argparse
-import re
 import sys
 from pathlib import Path
-
-import duckdb
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 import nayose  # noqa: E402
-
-
-def generators() -> list[str]:  # score.sql's, in the order of their bits in sources
-    sql = (nayose.SQL / "score.sql").read_text(encoding="utf-8")
-    return re.findall(r"'(\w+)'", sql[sql.index("CREATE OR REPLACE TEMP TABLE generators"):sql.index("AS name WITH OFFSET AS g")])
+from nayose.engines import DuckDB  # noqa: E402
 
 
 def measure(run: Path, truth: Path | None, points: float) -> dict:
-    con = duckdb.connect(str(run / "run.duckdb"), read_only=True)
+    engine = DuckDB(run / "run.duckdb", read_only=True)
+    con = engine.con
     if con.execute("SELECT MAX(batch) FROM records").fetchone()[0]:
         raise SystemExit(f"{run}: updated since its build, and cands holds its last batch's pairs alone: count a build's run")
-    names = generators()
+    engine.run(nayose.making("score", "generators"), {"keys": list(nayose.config()["score"]["keys"])})  # score.sql's: each one's bit
+    made = engine.rows("SELECT name, used FROM generators ORDER BY g")
+    names, used = [n for n, _ in made], {n for n, on in made if on}
     same = "a.entity = b.entity" if truth else "NULL"
     if truth:
         con.execute(f"CREATE TEMP TABLE truth AS SELECT CAST(CONT_ID AS VARCHAR) AS id, CAST(ENTITY_ID AS VARCHAR) AS entity FROM read_parquet('{truth}')")
@@ -41,8 +38,7 @@ def measure(run: Path, truth: Path | None, points: float) -> dict:
     con.execute(f"""CREATE TEMP TABLE m AS
         SELECT string_split(COALESCE(s.sources, ''), '+') AS keys, s.rule IS NOT NULL AS ruled, {same} AS same
         FROM scored AS s {join} WHERE s.rule IS NOT NULL OR (s.match_weight >= ? AND s.named)""", [points])
-    used = [n for n in names if n in nayose.config()["score"]["keys"]]  # a key with no rows too: 0, and it can go
-    rows = []
+    rows = []  # each key the run uses, one with no rows too: 0, and it can go
     for g, k in enumerate(names):
         if k not in used:
             continue

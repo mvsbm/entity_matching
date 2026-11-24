@@ -90,7 +90,7 @@ def resampled(counts: str, settings: str, stored: str | None = None) -> str:
 
 
 def fitted(model: dict, scoring: dict, n: int, basis: dict, again: list[dict]) -> str:  # what fit gives back: fit()'s
-    lam = min(model["probability"] * (model["fit_rows"] - 1) / max(n - 1, 1), 1 - 1e-9)  # λ rescaled to the file's size: a per-pair rate
+    lam = min(model["probability"] * (model["fit_rows"] - 1) / max(n - 1, 1), 1 - 1e-9)  # λ rescaled to the file's size: a per-pair rate (score.sql's weights, at the run's)
     return json.dumps(dict(
         levels=[dict(lv, file_m=f["m"], file_u=f["u"], bits=bits(f["m"], f["u"])) for lv, f in zip(model["levels"], scoring["levels"])],
         probability=model["probability"], fit_rows=model["fit_rows"], records=n, prior_bits=math.log2(lam / (1 - lam)),

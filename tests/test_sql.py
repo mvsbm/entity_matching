@@ -91,7 +91,7 @@ def test_bigquery_runs_the_sql_as_written_in_one_session_with_the_dataset_s_tabl
     module = SimpleNamespace(QueryJobConfig=lambda **k: SimpleNamespace(**k), ConnectionProperty=lambda key, value: SimpleNamespace(key=key, value=value),
                              ScalarQueryParameter=lambda name, kind, value: (name, kind, value), ArrayQueryParameter=lambda name, kind, value: (name, kind, value))
     client = Recorded()
-    engine = BigQuery("p.run_main", "p.nayose", client=client, bigquery=module)
+    engine = BigQuery("p.run_main", client=client, bigquery=module)
     assert engine.value("SELECT COUNT(*) AS n FROM records WHERE w >= @t AND s IN UNNEST(@s)", {"t": 6.0, "s": ["a", "b"]}) == 3
     engine.run("CREATE TEMP TABLE x AS SELECT cl_jaro_winkler(a, b) AS j, er_hash(a) AS h, nfkc(a) AS n, my_cl_x(a) FROM records")
     (first_sql, first), (second_sql, second) = client.sent
@@ -99,7 +99,7 @@ def test_bigquery_runs_the_sql_as_written_in_one_session_with_the_dataset_s_tabl
     assert first.create_session and first.default_dataset == "p.run_main"
     assert first.query_parameters == [("t", "FLOAT64", 6.0), ("s", "STRING", ["a", "b"])]
     assert not second.create_session and second.connection_properties[0].value == "s1"
-    assert "`p.nayose`.cl_jaro_winkler(a, b)" in second_sql and "`p.nayose`.er_hash(a)" in second_sql and "`p.nayose`.nfkc(a)" in second_sql
+    assert "`p.run_main`.cl_jaro_winkler(a, b)" in second_sql and "`p.run_main`.er_hash(a)" in second_sql and "`p.run_main`.nfkc(a)" in second_sql
     assert "my_cl_x(a)" in second_sql  # only the functions' own names
 
 

@@ -101,7 +101,7 @@ def main(argv: list[str] | None = None, client: object = None, bigquery: object 
         except nayose.InputError as e:
             print(json.dumps(dict(severity="ERROR", error=str(e), fix=e.fix)), file=sys.stderr)
             return 2
-    engine = BigQuery(dataset, dataset, client=client, bigquery=bigquery)
+    engine = BigQuery(dataset, client=client, bigquery=bigquery)
     try:
         if job == "lookup":
             return lookup(engine, dataset, given)

@@ -22,7 +22,8 @@ CREATE OR REPLACE TEMP FUNCTION household(l ANY TYPE, r ANY TYPE) AS (
     OR (l.birth_date IS NOT NULL AND r.birth_date IS NOT NULL AND NOT cl_damerau_levenshtein_cut(l.birth_date, r.birth_date, 1) <= 1))
 );
 
--- each comparison's level as people read it: its label and its bits to two places; a missing side, 0
+-- each comparison's level as people read it: its label and its bits to two places; a missing side, 0 (lookup.sql's
+-- shown, the same labels)
 CREATE OR REPLACE TEMP TABLE shown AS
 SELECT comparison, gamma, label, ROUND(bits, 2) AS bits FROM model
 UNION ALL SELECT DISTINCT comparison, -1, 'missing', CAST(0 AS FLOAT64) FROM model;

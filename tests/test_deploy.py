@@ -27,7 +27,7 @@ def script(name: str):  # deploy/<name>.py as a module
 
 
 def test_each_job_is_a_procedure_of_its_stages_with_every_value_it_reads_declared_and_every_function_named():
-    out = procedures("p.run", "p.fn")
+    out = procedures("p.run")
     made = {re.search(r"FUNCTION `p\.run`\.(\w+)\(", s)[1]: s for s in out if "CREATE OR REPLACE FUNCTION" in s}
     jobs = {re.search(r"PROCEDURE `p\.run`\.(\w+)\(", s)[1]: s for s in out if "CREATE OR REPLACE PROCEDURE" in s}
     assert set(jobs) == {"build", "update", "decide", "match"} and {"read_value", "gamma_name", "weight_of", "bound_of", "household"} <= set(made)
@@ -39,13 +39,14 @@ def test_each_job_is_a_procedure_of_its_stages_with_every_value_it_reads_declare
         assert not re.findall(r"(?<!@)@\w+", code) and "TEMP FUNCTION" not in code, job  # no query parameter, no function of its own
         for declare in (s for s in body.split(";\n") if s.startswith("DECLARE ")):
             assert sqlglot.parse_one(declare, read="bigquery") is not None
-    for sql in out:  # a call of the method's SQL functions names the run's dataset; of the JavaScript and Python ones, theirs
+    for sql in out:  # a call of any of the method's functions names the run's dataset, where the deploy made it
         code = CODE.sub("", sql)
         assert not [n for n in made if re.search(rf"(?<![\w.`]){n}\s*\(", code)], sql[:80]
-    assert "`p.fn`.fit_model(" in jobs["build"] and "`p.fn`.entities_of(" in jobs["decide"] and "`p.fn`.cl_jaro_winkler_cut(" in made["jaro_winkler_of"]
-    levenshtein = [s for s in functions("p.fn") if ".cl_levenshtein" in s]  # BigQuery's own EDIT_DISTANCE: no JavaScript
+    assert "`p.run`.fit_model(" in jobs["build"] and "`p.run`.entities_of(" in jobs["decide"] and "`p.run`.cl_jaro_winkler_cut(" in made["jaro_winkler_of"]
+    levenshtein = [s for s in functions("p.run") if ".cl_levenshtein" in s]  # BigQuery's own EDIT_DISTANCE: no JavaScript
     assert len(levenshtein) == 2 and all("EDIT_DISTANCE(a, b" in s and "LANGUAGE js" not in s for s in levenshtein)
-    assert "DROP TABLE IF EXISTS records" in jobs["build"] and "DROP TABLE IF EXISTS decisions" not in jobs["build"]  # people's decisions stay
+    dropped = set(re.findall(r"DROP TABLE IF EXISTS (\w+)", jobs["build"]))  # a build starts without the tables it writes, but people's decisions
+    assert {"records", "placeholders", "fit", "u_sampled", "rule_pairs", "scored", "gold", "report_counts"} <= dropped and "decisions" not in dropped
     views = re.findall(r"CREATE OR REPLACE VIEW [^;]*", jobs["build"])  # a view's tables named with their dataset: BigQuery reads no default there
     assert len(views) == 2 and all(re.search(r"\bFROM p\.run\.\w+", v) and not re.search(r"\bFROM (?!p\.run\.)\w+\b", v) for v in views), views
     assert "DROP TABLE" not in jobs["update"] and "DECLARE v_refit BOOL DEFAULT FALSE" in jobs["update"]
@@ -174,7 +175,7 @@ def test_a_job_on_bigquery_is_all_or_nothing(monkeypatch):
     assert left.tables == after  # the left clone was dropped first, so nothing older came back
 
     died = Tables(before, made)  # a job whose process died, its procedure run: the next job refuses; undo waits for it, then undoes
-    assert run.begin(run.BigQuery("p.run", "p.run", client=died, bigquery=MODULE), "p.run", "build")
+    assert run.begin(run.BigQuery("p.run", client=died, bigquery=MODULE), "p.run", "build")
     died.query("CALL `p.run`.build()")
     died.running, died.tables["name_weights"] = {"s1"}, 2  # its procedure still running; a deploy since, with a new name model
     assert run.main(["p.run", "match", "8"], client=died, bigquery=MODULE) == 75 and not [s for s in died.sent if s.startswith("CALL `p.run`.match")]
@@ -190,15 +191,15 @@ def test_python_s_statements_on_bigquery_call_the_deploy_s_functions_and_make_no
     import nayose
     from nayose.engines import BigQuery
     client = Recorded()
-    engine = BigQuery("p.run", "p.fn", client=client, bigquery=MODULE)
+    engine = BigQuery("p.run", client=client, bigquery=MODULE)
     nayose.stage(engine, "functions")
     engine.run("SELECT gamma_company(x, y), cl_jaro_winkler(a, b) FROM t")
-    assert not [s for s in client.sent if "TEMP FUNCTION" in s] and "`p.run`.gamma_company(x, y), `p.fn`.cl_jaro_winkler(a, b)" in client.sent[-1]
+    assert not [s for s in client.sent if "TEMP FUNCTION" in s] and "`p.run`.gamma_company(x, y), `p.run`.cl_jaro_winkler(a, b)" in client.sent[-1]
 
 
 def test_every_function_python_calls_on_bigquery_is_one_the_deploy_makes():  # else a lookup would call one never made
     from nayose import SQL
-    made = {re.search(r"FUNCTION `p\.run`\.(\w+)\(", s)[1] for s in procedures("p.run", "p.fn") if "CREATE OR REPLACE FUNCTION" in s}
+    made = {re.search(r"FUNCTION `p\.run`\.(\w+)\(", s)[1] for s in procedures("p.run") if "CREATE OR REPLACE FUNCTION" in s}
     called = {n for f in SQL.glob("*.sql") for n in re.findall(r"CREATE OR REPLACE TEMP FUNCTION (\w+)", f.read_text(encoding="utf-8"))}
     assert called <= made, called - made
 
