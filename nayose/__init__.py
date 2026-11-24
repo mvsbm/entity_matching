@@ -314,7 +314,7 @@ def asked(engine, record: str | None, values: dict | None, ids: list, until: str
     return temp
 
 
-def run_stage(name: str, do, *args) -> None:  # a stage of build or update, run as it is (the CLI's times each)
+def run_stage(name: str, do, *args) -> None:  # a stage of build, run as it is (the CLI's build times each)
     do(*args)
 
 
@@ -334,21 +334,15 @@ def build(engine, files: list, model: str | None = None, timed=run_stage) -> Non
     engine.run(METHOD, {"fingerprint": fingerprint()})
 
 
-def update(engine, files: list, timed=run_stage, out: object = "RUN") -> int:
+def update(engine, files: list) -> None:
     """A batch added to the run on `engine`: its records (one already in the run set aside), the build's model with u
-    measured again on every record, the pairs touching the batch scored, the entities made again; each stage run by
-    `timed`, as build's. The records added; none, and nothing past the records is done (the CLI keeps the run as it
-    was). `out`: the run's folder, as a refusal names it. O(Δ·(L + b) + C_Δ·K·L²), plus O(N) scans of the run's
-    records and keys."""
-    unchanged(engine, f"build the run again with them (python -m nayose build FILE --out {out} --overwrite), or update with the code the build ran")
-    before = engine.value("SELECT COUNT(*) FROM records")
-    timed("records", records, engine, files)
-    if not (added := engine.value("SELECT COUNT(*) FROM records") - before):
-        return 0
-    timed("fit", fit, engine, False)
-    timed("score", score, engine)
-    timed("decide", decide, engine, [])
-    return added
+    measured again on every record, the pairs touching the batch scored, the entities made again.
+    O(Δ·(L + b) + C_Δ·K·L²), plus O(N) scans of the run's records and keys."""
+    unchanged(engine, "build the run again with them (python -m nayose build FILE --out RUN --overwrite), or update with the code the build ran")
+    records(engine, files)
+    fit(engine, refit=False)
+    score(engine)
+    decide(engine, [])
 
 
 def decide(engine, files: list) -> None:

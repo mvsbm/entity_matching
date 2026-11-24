@@ -12,7 +12,8 @@ A run is a folder: run.duckdb (its tables), report.txt, matched/. A job that wri
 a copy of run.duckdb and puts it in place whole when done, so a run is never half written and readers never wait
 (match on a copy of its own, a lookup on the run itself, read-only: on a copy on Windows). Each prints one JSON object
 on stdout; each stage, as it ends, one JSON line on stderr. Exit codes: 0; 2, a mistake people fix (the JSON says what
-is wrong, and the fix); 75, another job is writing the run: try again later. The method is nayose/sql/, its values nayose/config.toml, the input's columns mapping.sql.
+is wrong, and the fix); 75, another job is writing the run: try again later. The method is nayose/sql/, its values
+nayose/config.toml, the input's columns mapping.sql.
 """
 import argparse
 import contextlib
@@ -138,15 +139,20 @@ def kept(out: Path) -> str | None:  # the run's decisions as a Parquet file besi
 def update(a: argparse.Namespace) -> dict:
     out, given, steps = a.out, files(a.given), {}
     with writing(out, compute=limits(a)) as engine:
-        added = nayose.update(engine, given, timed=functools.partial(timed, steps), out=out)
-        n = engine.value("SELECT COUNT(*) FROM records")
+        nayose.unchanged(engine, f"build the run again with them (python -m nayose build FILE --out {out} --overwrite), or update with the code the build ran")
+        before = engine.value("SELECT COUNT(*) FROM records")
+        timed(steps, "records", nayose.records, engine, given)
+        added = engine.value("SELECT COUNT(*) FROM records") - before
         if not added:
             aside = engine.rows("SELECT reason, COUNT(*) FROM set_aside GROUP BY reason ORDER BY reason")
             if any(reason != "already in the run" for reason, _ in aside):
                 raise InputError(f"{a.given}: no new record to add ({', '.join(f'{n:,} {r}' for r, n in aside)})", fix="give the records set aside IDs, one per record")
-            raise NothingNew(dict(records=n, added=0, seconds=round(sum(steps.values()), 1), steps=steps))
+            raise NothingNew(dict(records=before, added=0, seconds=round(sum(steps.values()), 1), steps=steps))
+        timed(steps, "fit", nayose.fit, engine, False)
+        timed(steps, "score", nayose.score, engine)
+        timed(steps, "decide", nayose.decide, engine, [])
         report(engine, out, steps, "update")
-    return dict(records=n, added=added, seconds=round(sum(steps.values()), 1), steps=steps)
+    return dict(records=before + added, added=added, seconds=round(sum(steps.values()), 1), steps=steps)
 
 
 class NothingNew(Exception):  # nothing new: the run stays as it was, and the job says so
