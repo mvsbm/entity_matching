@@ -7,7 +7,8 @@ tables. Writes reports/benchmark.md. Nothing is re-tuned.
 The report starts with the command that wrote it.
 
 Quality: each scenario generates a population with design.generate (config/generator.toml, varied), fits λ and m on
-its train split without labels, resolves its test split with u measured on it, and compares the clusters with the truth.
+its train split without labels, resolves its test split with u measured on it, and compares the entities at the
+method's design threshold (accepted) with the truth.
 Person or company: populations with every kind problem on (design.generate.kind_problems) and one name column, resolved
 with names routed by the truth, by the file's flag alone, and by the kind step.
 Cost: populations of growing size, each resolved by `python -m er build` in a process of its own, so the peak memory is
@@ -30,7 +31,8 @@ from er.config import load_pipeline
 from design.evaluate import cluster_metrics, false_pairs, labelled, pair_metrics
 from design.generate import KindProblems, generate, kind_problems, load_reference, load_registry, load_spec, split_by_entity
 from er.io import markdown, read_parquet
-from er.report import qa
+from er.cluster import merge
+from er.engine.duckdb import connect
 from er.steps.fit import fit
 from er.steps.job import start
 from er.steps.load import load
@@ -54,25 +56,42 @@ def population(spec) -> tuple[pd.DataFrame, pd.DataFrame]:
     return g.df, g.truth.set_index(UID)
 
 
-def links(run: Path) -> dict:
-    """A written run's model links, and the false ones the model expects among them (the sum of 1 − match probability)."""
-    c = next(x for x in reversed(json.loads((run / "steps.json").read_text(encoding="utf-8"))["runs"][-1]["steps"]) if x["step"] == "cluster")
-    return dict(model_links=c["accepted"], expected_false=c["expected_false"])
+def accepted(run: Path, p) -> tuple[pd.Series, pd.DataFrame]:
+    """The method at its design threshold, as a match run at min_match_weight would offer it and people take it whole:
+    every rule pair, and the model's pairs there or above with a name compared (named) that may join two rule
+    clusters (keep), from the run's scored/; the records' entities by transitive closure (er.cluster.merge). Each
+    record's entity, and the model's pairs taken."""
+    l, r = f"{UID}_l", f"{UID}_r"
+    scored = read_parquet(run / "scored")
+    model = scored[scored["sources"].notna() & scored["named"] & scored["keep"] & (scored["match_weight"] >= p.fs.min_match_weight)]
+    edges = pd.concat([scored.loc[scored["rule"].notna(), [l, r]], model[[l, r]]], ignore_index=True)
+    ids = read_parquet(run / "gold.parquet")[UID]
+    engine = connect()
+    engine.register("er_base", pd.DataFrame({UID: ids, "cluster_id": ids}))
+    engine.register("er_edges", edges)
+    merge(engine, "er_base", "er_edges", "er_entities", UID)
+    entity = engine.frame("SELECT * FROM er_entities").set_index(UID)["cluster_id"].reindex(ids.to_numpy())
+    engine.close()
+    return entity, model
 
 
-def quality(run: Path, truth: pd.DataFrame) -> dict:
-    """A written run's clusters against the truth: after the rules, and at the end; and its model links that are false.
-    Pairs of two people of one household are counted apart (household_merges)."""
-    gold = read_parquet(run / "gold.parquet").set_index(UID)["cluster_id"]
+def links(model: pd.DataFrame) -> dict:
+    """The model's links taken, and the false ones the model expects among them (the sum of 1 − match probability)."""
+    return dict(model_links=len(model), expected_false=round(float((1 - model["match_probability"]).sum()), 2))
+
+
+def quality(run: Path, truth: pd.DataFrame, p) -> dict:
+    """A written run's entities at the design threshold (accepted) against the truth: after the rules, and at the end;
+    and its model links that are false. Pairs of two people of one household are counted apart (household_merges)."""
+    gold, model = accepted(run, p)
     rules = read_parquet(run / "state" / "rule_clusters.parquet").set_index(UID)["cluster_id"].reindex(gold.index)
     entity, household = labelled(truth.reset_index(), S.data)
     e, h = entity.reindex(gold.index), household.reindex(gold.index) if household is not None else None
     m = cluster_metrics(gold, e, h)
-    x = read_parquet(run / "matches", columns=[f"{UID}_l", f"{UID}_r"])
     return dict(rules_recall=round(pair_metrics(rules, e, h)["recall"], 4), recall=round(m["recall"], 4),
                 interval=f"{m['recall_lo']:.3f}–{m['recall_hi']:.3f}", false_merges=int(m["FP"]), fp_rate_at_most=f"{m['fp_rate_hi']:.2%}",
-                household_merges=int(m["household"]), **links(run),
-                false_links=int(false_pairs(x[f"{UID}_l"], x[f"{UID}_r"], entity, household).sum()))
+                household_merges=int(m["household"]), **links(model),
+                false_links=int(false_pairs(model[f"{UID}_l"], model[f"{UID}_r"], entity, household).sum()))
 
 
 def scenarios() -> pd.DataFrame:
@@ -102,7 +121,7 @@ def scenarios() -> pd.DataFrame:
         model = fit(job, loaded.n).model
         job.engine.close()
         build(d / "test.parquet", OUT / f"scenario_{i}", S, p, model=model, overwrite=True)  # this script's own folders
-        rows.append(dict(scenario=name, **quality(OUT / f"scenario_{i}", truth)))
+        rows.append(dict(scenario=name, **quality(OUT / f"scenario_{i}", truth, p)))
         print(rows[-1], flush=True)
     return pd.DataFrame(rows)
 
@@ -136,13 +155,13 @@ def kinds(entities: int) -> pd.DataFrame:
                                                ("the flag alone", "flag", flag_only, "records.parquet"),
                                                ("the kind step", "kind", p, "records.parquet")):
             run = build(d / records, d / folder, s, pipeline)
-            gold = read_parquet(d / folder / "gold.parquet").set_index(UID).join(truth[["ENTITY_ID", "KIND", "HOUSEHOLD_ID"]])
+            gold = read_parquet(d / folder / "gold.parquet").set_index(UID).assign(cluster_id=accepted(d / folder, pipeline)[0]).join(
+                truth[["ENTITY_ID", "KIND", "HOUSEHOLD_ID"]])
             m = cluster_metrics(gold["cluster_id"], gold["ENTITY_ID"], gold["HOUSEHOLD_ID"])
             mixed = gold.assign(c=gold["KIND"].eq("company")).groupby("cluster_id")["c"].agg(["any", "all"])
-            sheet_ = qa(run)["review_sheet"]
             company, person = gold["KIND"].eq("company"), gold["KIND"].eq("person")
             rows.append(dict(flag=name, routed_by=how, recall=round(m["recall"], 4), false_merges=int(m["FP"]),
-                             person_company_clusters=int((mixed["any"] & ~mixed["all"]).sum()), pairs_to_decide=int((sheet_["why"] == "decide").sum()),
+                             person_company_clusters=int((mixed["any"] & ~mixed["all"]).sum()), 
                              sure_companies=f"{(gold['kind'].eq(2) & company).sum() / company.sum():.1%}", wrong_companies=int((gold["kind"].eq(2) & person).sum()),
                              sure_persons=f"{(gold['kind'].eq(1) & person).sum() / person.sum():.1%}", wrong_persons=int((gold["kind"].eq(1) & company).sum()),
                              seconds=round(sum(x["seconds"] for x in run.steps), 1)))
@@ -170,10 +189,10 @@ def cost(entities: list[int], memory_limit: str) -> pd.DataFrame:
             continue
         steps = json.loads((d / "run" / "steps.json").read_text(encoding="utf-8"))["runs"][-1]["steps"]
         row = dict(records=size, seconds=round(sum(x["seconds"] for x in steps), 1), peak_memory_gb=max(x["peak_memory_gb"] for x in steps),
-                   **{x["step"]: x["seconds"] for x in steps}, recall="—", false_merges="—", fp_rate_at_most="—", **links(d / "run"),
+                   **{x["step"]: x["seconds"] for x in steps}, recall="—", false_merges="—", fp_rate_at_most="—", **links(accepted(d / "run", FINAL)[1]),
                    false_links="—")
         if n <= len(PERSONS):
-            q = quality(d / "run", truth)
+            q = quality(d / "run", truth, FINAL)
             row |= {k: q[k] for k in ("recall", "false_merges", "fp_rate_at_most", "false_links")}
         rows.append(row)
         print(rows[-1], flush=True)
@@ -192,12 +211,14 @@ def main() -> None:
     limit = args.memory_limit or "DuckDB's default (80% of RAM)"
     report = ["# Benchmark", "",
               f"Written by `{shlex.join(['scripts/benchmark.py', *sys.argv[1:]])}`: `config/pipeline.toml` through `jobs.build.build`, the run "
-              "without labels on DuckDB tables, on generated populations. Nothing is re-tuned.", "",
+              "without labels on DuckDB tables, on generated populations. Nothing is re-tuned. A run merges nothing by itself; each is "
+              f"measured at the method's design threshold ({FINAL.fs.min_match_weight:g} points), as people would take a match run there "
+              "whole: every rule pair, and the model's pairs at it or above with a name compared, joined by transitive closure.", "",
               "## Quality: scenarios", "",
               "Each population's test split, with λ and m fitted on its train split without labels and u measured on the test split, as a run does. `false_merges` are pairs of "
               "records in one cluster that are two entities; `false_links` are the model's links between two entities, and "
-              "`expected_false` the false links the model expects among its own (the sum of 1 − match probability), which a run "
-              "reports without labels.", "", markdown(robust), "",
+              "`expected_false` the false links the model expects among its own (the sum of 1 − match probability), known "
+              "without labels.", "", markdown(robust), "",
               "## Person or company: end to end", "",
               "Populations with one name column for every kind (`design.generate.kind_problems`): real company names from the registry, "
               "held out of the name model's training and written as banks write them; companies with records under their representative's name, the representative a person of "

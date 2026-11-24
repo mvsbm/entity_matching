@@ -5,7 +5,7 @@ HIDE_STEREOTYPE()
 title HLD 1 · Context: who uses the system, and what crosses its edges
 
 Person(owner, "Data owner", "maps the file's columns once (config/settings.toml [columns]), then runs the jobs")
-Person(reviewer, "Reviewer", "decides the pairs in the margin and audits the pairs above, in a table or a sheet")
+Person(reviewer, "Reviewer", "decides the pairs of a match run, at the threshold people set, in a table or a sheet")
 Person(developer, "Developer", "proposes changes to the method, measured on synthetic data with the truth")
 
 System_Ext(files, "Customer files", "Parquet, columns of any name: a file, a glob or a folder; new batches later")
@@ -17,13 +17,13 @@ System_Boundary(er, "Entity resolution (this repository)") {
   System(design, "Design time", "scripts/generate.py, scripts/benchmark.py, scripts/train_name_model.py: synthetic records with the truth; the method measured; the name model trained")
 }
 
-Rel(owner, runtime, "runs", "build, update")
+Rel(owner, runtime, "runs", "build, update, match")
 Rel(runtime, files, "reads", "er.source")
 Rel(design, reference, "reads", "the generator's input")
 Rel(developer, design, "proposes", "config/pipeline.toml")
 Rel(design, developer, "reports", "reports/*.md")
 Rel(design, runtime, "hands over", "config/pipeline.toml, config/kind_names.npz")
-Rel(runtime, reviewer, "asks", "review.parquet, report.txt")
+Rel(runtime, reviewer, "asks", "a match run's table, report.txt")
 Rel(reviewer, runtime, "answers", "decide")
 Rel(runtime, downstream, "gives", "gold.parquet: cluster_id, customer_kind")
 SHOW_LEGEND()

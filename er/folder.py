@@ -10,7 +10,6 @@ from collections.abc import Callable
 from contextlib import contextmanager
 from pathlib import Path
 
-import pandas as pd
 
 from er.engine.engine import Engine
 from er.config import InputError, q
@@ -18,9 +17,10 @@ from er.io import lock, object_store, patiently, replace_text
 
 PENDING = "pending.json"  # the renames a write still owes, saved once every new file is complete
 STEPS = "steps.json"  # the run's log: one entry per run, increment or set of decisions (log)
-SCORED = "scored"  # every pair scored at 0 points or more and every rule pair, each comparison's level with it: what people review
-RUN_FILES = ("gold.parquet", STEPS, PENDING, "matches", "rule_kept", SCORED, "state", "set_aside",  # what a run writes in its folder
-             "qa.md", "report.txt", "review.parquet")  # qa.md: cleared by a full run where one lies
+SCORED = "scored"  # every pair scored at 0 points or more and every rule pair, each comparison's level with it: what a match run reads
+MATCHED = "matched"  # each match run's table (er.jobs.match): read from the run, so a full run clears them with it
+RUN_FILES = ("gold.parquet", STEPS, PENDING, "rule_kept", SCORED, MATCHED, "state", "set_aside", "report.txt",  # what a run writes in its folder
+             "matches", "review.parquet", "qa.md")  # and, where one lies, what an earlier version wrote: cleared by a full run
 DECISIONS = "decisions"  # people's decisions: not a run file, so a full run with overwrite keeps and applies them
 FULL_TMP = ".full.tmp"  # a full run's new files, until they replace the old run's
 
@@ -86,7 +86,7 @@ def finish_writes(out: Path) -> None:
 
 
 def stage(engine: Engine, out: Path, tables: list[tuple[str, Path]], texts: list[tuple[str | Callable[[], str], Path]] = (),
-          replace: list[Path] | None = None, frames: list[tuple[pd.DataFrame, Path]] = ()) -> None:
+          replace: list[Path] | None = None) -> None:
     """Write every file under a temporary name; once all are complete, save the moves still owed (pending.json),
     then do them. An interruption before that leaves the folder as it was; one after it, finish_writes completes.
     With `replace` (a full run), the new run files are written in FULL_TMP, and each of its entries replaces the old
@@ -102,10 +102,7 @@ def stage(engine: Engine, out: Path, tables: list[tuple[str, Path]], texts: list
     for text, dest in texts:
         tmp(dest).parent.mkdir(parents=True, exist_ok=True)
         tmp(dest).write_text(text() if callable(text) else text, encoding="utf-8")
-    for frame, dest in frames:  # sheets for people: pandas keeps their empty answer columns typed
-        tmp(dest).parent.mkdir(parents=True, exist_ok=True)
-        frame.to_parquet(tmp(dest))
-    dests = [dest for _, dest in (*tables, *texts, *frames)]
+    dests = [dest for _, dest in (*tables, *texts)]
     staged = [[str(tmp(d)), str(d)] for d in dests if not whole(d)]
     if replace is not None:
         new = sorted({d.relative_to(out).parts[0] for d in dests if whole(d)})

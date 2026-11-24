@@ -5,7 +5,6 @@ from pathlib import Path
 from dataclasses import replace
 
 import duckdb
-import numpy as np
 import pandas as pd
 import pytest
 
@@ -58,7 +57,8 @@ def test_a_job_prints_a_mistake_as_json_and_exits_with_2(tmp_path):
 def test_a_job_on_a_folder_that_holds_no_run_is_refused_and_makes_none(say, tmp_path):
     pd.DataFrame({load_settings().data.unique_id: ["1"], "FULL_NAME_KANA": ["ヤマダタロウ"]}).to_parquet(tmp_path / "one.parquet", index=False)
     (tmp_path / "empty").mkdir()
-    for words in (("update", tmp_path / "one.parquet"), ("decide",), ("lookup", "--file", tmp_path / "one.parquet"), ("lookup", "--record", "1")):
+    for words in (("update", tmp_path / "one.parquet"), ("decide", tmp_path / "one.parquet"), ("match", "--threshold", "6"),
+                  ("lookup", "--file", tmp_path / "one.parquet"), ("lookup", "--record", "1")):
         code, e = say(*words, "--out", tmp_path / "typo")
         assert code == 2 and "no run" in e["error"] and not (tmp_path / "typo").exists(), words  # a mistyped folder: said, never made
         code, e = say(*words, "--out", tmp_path / "empty")
@@ -88,30 +88,42 @@ def test_a_name_column_both_kinds_share_is_scored_once_as_mapped_or_by_kind(tmp_
     assert abs(said["by-kind"][1] - said["as-mapped"][1]) < 2
 
 
-def test_a_run_takes_people_s_decisions_and_a_batch_each_once(tmp_path, population):
+def test_a_run_matches_at_the_threshold_people_set_takes_their_decisions_and_a_batch_each_once(tmp_path, population):
     from er.jobs.build import build
     from er.jobs.decide import decide
-    from er.jobs.update import update, would_join
+    from er.jobs.match import match
+    from er.jobs.update import update
     s, p, g = population
     uid, half = s.data.unique_id, len(g.df) // 2
     l, r = f"{uid}_l", f"{uid}_r"
     g.df.iloc[:half].to_parquet(tmp_path / "first.parquet", index=False)
     g.df.iloc[half:].to_parquet(tmp_path / "new.parquet", index=False)
     run = tmp_path / "run"
-    build(tmp_path / "first.parquet", run, s, p, pipeline_file=s.root / "config" / "pipeline.toml")
-    pair = pd.read_parquet(run / "review.parquet").iloc[0]
+    build(tmp_path / "first.parquet", run, s, p)
+    gold = pd.read_parquet(run / "gold.parquet")
+    assert gold["cluster_id"].nunique() == len(gold) and gold["resolved_by"].isna().all()  # nothing merges by itself
+    made = match(run, s, p, 8.0)
+    table, scored = pd.read_parquet(made["into"]), pd.read_parquet(run / "scored")
+    assert made["pairs"] == len(table) == (scored["match_weight"] >= 8).sum() > 0 and table["decision"].isna().all()
+    assert table["match_weight"].is_monotonic_decreasing and {"rule", "household", "sources"} <= set(table.columns)
+    pair = table.iloc[0]
     decisions = tmp_path / "decisions.parquet"
     pd.DataFrame({l: [pair[r]], r: [pair[l]], "decision": ["match"]}).to_parquet(decisions, index=False)  # either order
     assert decide(decisions, run, s, p).steps[-1]["matches"] == 1
     assert decide(decisions, run, s, p).steps[-1]["decisions"] == 0  # given twice: nothing new
     gold = pd.read_parquet(run / "gold.parquet").set_index(uid)
-    assert gold.loc[pair[l], "cluster_id"] == gold.loc[pair[r], "cluster_id"]
-    matched = would_join(tmp_path / "new.parquet", run, s, p)
-    assert len(matched) == len(g.df) - half and set(matched["status"]) <= {"joins an entity", "a new entity"}
+    assert gold.loc[pair[l], "cluster_id"] == gold.loc[pair[r], "cluster_id"] and gold.loc[pair[l], "resolved_by"] == "review"
     assert update(tmp_path / "new.parquet", run, s, p).added == len(g.df) - half
-    again = would_join(tmp_path / "new.parquet", run, s, p)  # every record in the run already: each said so
-    assert set(again["status"]) == {"already in the run"} and len(again) == len(g.df) - half
     assert update(tmp_path / "new.parquet", run, s, p).added == 0  # nothing new: nothing written
+    gold = pd.read_parquet(run / "gold.parquet").set_index(uid)
+    assert gold.loc[pair[l], "cluster_id"] == gold.loc[pair[r], "cluster_id"] and gold["cluster_id"].nunique() == len(gold) - 1  # the decision stands
+    pd.DataFrame({l: [pair[l]], r: [pair[r]], "decision": ["no_match"]}).to_parquet(decisions, index=False)  # said otherwise: the latest stands
+    decide(decisions, run, s, p)
+    assert pd.read_parquet(run / "gold.parquet")["cluster_id"].nunique() == len(g.df)
+    again = pd.read_parquet(match(run, s, p, 8.0)["into"])
+    assert len(again) == (pd.read_parquet(run / "scored")["match_weight"] >= 8).sum() - 1  # the pair said different: no longer offered
+    with pytest.raises(InputError, match="keeps the pairs from"):
+        match(run, s, p, p.threshold.keep_from - 1)
 
 
 def test_a_nearly_empty_field_is_kept_and_the_fit_skips_what_it_cannot_learn_from(tmp_path, population):
@@ -127,36 +139,6 @@ def test_a_nearly_empty_field_is_kept_and_the_fit_skips_what_it_cannot_learn_fro
     sparse.assign(PHONE_NUM_4=None).to_parquet(tmp_path / "bare.parquet", index=False)  # nothing left to learn from
     with pytest.raises(InputError, match="can't be estimated|share phone or address"):  # whichever check finds nothing first
         build(tmp_path / "bare.parquet", tmp_path / "bare", s, p)
-
-
-def test_an_increment_keeps_the_open_review_queue(tmp_path, population):
-    from er.report import qa
-    from er.jobs.build import build
-    from er.jobs.decide import decide
-    from er.jobs.update import update
-    s, p, g = population
-    p = replace(p, threshold=replace(p.threshold, margin_steps=4), fs=replace(p.fs, min_match_weight=p.fs.min_match_weight + 6))  # a wide band
-    uid = s.data.unique_id
-    l, r = f"{uid}_l", f"{uid}_r"
-    new = np.random.default_rng(2).random(len(g.df)) < 0.2
-    g.df[~new].to_parquet(tmp_path / "old.parquet", index=False)
-    g.df[new].to_parquet(tmp_path / "new.parquet", index=False)
-    fields = [f for f in s.columns if f not in ("id", "entity")]
-    run = build(tmp_path / "old.parquet", tmp_path / "c", s, p)
-    first = qa(run, fields)["review_sheet"]
-    first.to_parquet(tmp_path / "c" / "review.parquet")
-    open_ = first[first["why"] == "decide"]
-    assert len(open_) >= 2
-    first.loc[open_.index[:1], "decision"] = "no_match"  # one decided and given back; the rest still open
-    first.loc[open_.index[:1]].to_parquet(tmp_path / "given.parquet")
-    decide(tmp_path / "given.parquet", tmp_path / "c", s, p)
-    inc = update(tmp_path / "new.parquet", tmp_path / "c", s, p)
-    sheet = qa(inc, fields, previous=tmp_path / "c" / "review.parquet")["review_sheet"]
-    pairs = set(map(tuple, sheet.loc[sheet["why"] == "decide", [l, r]].to_numpy()))
-    gold = pd.read_parquet(tmp_path / "c" / "gold.parquet").set_index(uid)["cluster_id"]
-    still = {(a, b) for a, b in open_.iloc[1:][[l, r]].to_numpy() if gold[a] != gold[b]}
-    assert still and still <= pairs  # still open after the increment
-    assert tuple(open_.iloc[0][[l, r]]) not in pairs  # decided: gone
 
 
 def test_a_run_folder_takes_one_writer_at_a_time(tmp_path, population):
@@ -182,24 +164,25 @@ def test_a_run_folder_takes_one_writer_at_a_time(tmp_path, population):
         build(tmp_path / "all.parquet", tmp_path / "run", s, p)  # released by the other: free again
 
 
-def test_matching_a_batch_names_the_entities_adding_it_would_give_and_writes_nothing(tmp_path, population):
+def test_a_file_s_records_are_looked_up_each_as_one_is_writing_nothing(tmp_path, population):
+    from er.jobs import index
     from er.jobs.build import build
-    from er.jobs.update import update, would_join
     s, p, g = population
     uid, half = s.data.unique_id, len(g.df) // 2
     g.df.iloc[:half].to_parquet(tmp_path / "first.parquet", index=False)
-    pd.concat([g.df.iloc[half:], g.df.iloc[:1]]).to_parquet(tmp_path / "batch.parquet", index=False)  # one already in the run
+    batch = pd.concat([g.df.iloc[half:half + 20], g.df.iloc[:1]])  # one already in the run
+    batch.to_parquet(tmp_path / "batch.parquet", index=False)
     out = tmp_path / "run"
     build(tmp_path / "first.parquet", out, s, p)
     files = lambda: {f: f.read_bytes() for f in out.rglob("*") if f.is_file() and f.name != ".lock"}
     before = files()
-    m = would_join(tmp_path / "batch.parquet", out, s, p)
-    assert files() == before
-    assert m.loc[m[uid] == g.df.iloc[0][uid], "status"].item() == "already in the run"
-    assert set(m["status"]) == {"joins an entity", "a new entity", "already in the run"} and len(m) == len(g.df) - half + 1
-    update(tmp_path / "batch.parquet", out, s, p)
-    gold = pd.read_parquet(out / "gold.parquet").set_index(uid)["cluster_id"]
-    assert (gold.loc[m[uid]].to_numpy() == m["entity"].to_numpy()).all()  # the entities the increment then gave
+    rows = index.look_up_file(out, s, p, tmp_path / "batch.parquet", at_least=-1e9, most=10**6)
+    assert files() == before and {x["asked"] for x in rows} == set(batch[uid])
+    stored = g.df.iloc[0][uid]
+    assert next(x for x in rows if x["asked"] == stored)["record"] == stored  # the stored record, looked up by its values: itself first
+    one = batch.iloc[0]
+    alone = index.look_up(out, s, p, values={c: str(v) for c, v in one.items() if pd.notna(v) and c in index._sources(p, None)}, at_least=-1e9, most=10**6)
+    assert [(e["record"], e["points"]) for e in alone["entities"]] == [(x["record"], x["points"]) for x in rows if x["asked"] == one[uid]]  # as one looked up alone
 
 
 def test_a_sheet_given_back_with_no_decision_is_refused_and_one_typed_with_wide_spaces_is_read(tmp_path):
@@ -232,7 +215,7 @@ def test_a_run_and_its_reports_land_together_even_when_the_write_is_cut_short(tm
     monkeypatch.setattr(er.folder, "finish_writes", real)
     again = update(tmp_path / "all.parquet", out, s, p)  # the retry: the next job finishes the moves, and finds nothing new
     assert again.added == 0 and (out / "gold.parquet").exists()
-    assert {"report.txt", "review.parquet"} <= {f.name for f in out.iterdir()} and not list(out.rglob("*.tmp"))
+    assert "report.txt" in {f.name for f in out.iterdir()} and not list(out.rglob("*.tmp"))
 
 
 def test_an_oversized_block_is_checked_on_a_sample_and_a_placeholder_is_skipped(tmp_path, population):
@@ -255,8 +238,9 @@ def test_an_oversized_block_is_checked_on_a_sample_and_a_placeholder_is_skipped(
     same[uid] = [f"copy{i:03d}" for i in range(70)]
     pd.concat([g.df, same]).to_parquet(tmp_path / "copies.parquet", index=False)
     run = build(tmp_path / "copies.parquet", tmp_path / "copies", s, p)
-    gold = pd.read_parquet(tmp_path / "copies" / "gold.parquet").set_index(uid)
-    assert gold.loc[same[uid], "cluster_id"].nunique() == 1  # the sample shows they match: kept and joined
+    scored = pd.read_parquet(tmp_path / "copies" / "scored")
+    among = scored[scored[f"{uid}_l"].isin(same[uid]) & scored[f"{uid}_r"].isin(same[uid])]
+    assert len(among) == 70 * 69 // 2 and (among["match_weight"] >= p.fs.min_match_weight).all()  # the sample shows they match: joined in full, each pair scored
     assert (run.gated["decision"] == "kept").any()
 
 
@@ -343,9 +327,7 @@ def test_the_run_report_holds_no_record_value(tmp_path, population):
     assert any("9999999999999" in x for x in run.examples) and any("0000" in x for x in run.examples)
     assert not re.search(r"[\u3040-\u30ff\u3400-\u9fff\uff66-\uff9f]", text)  # no kana or kanji: no name, address or town
     assert not any(v in text for c in (uid, "CIF_ID") for v in df[c].dropna())  # no record ID, no customer ID
-    expected = (1 - pd.read_parquet(tmp_path / "run" / "matches")["match_probability"]).sum()
-    assert next(x for x in run.steps if x["step"] == "cluster")["expected_false"] == round(expected, 2)
-    assert f"about {expected:,.{1 if expected >= 1 else 2}f} of them false" in text and "MODEL" in text and "birth_date" in text
+    assert "SCORES" in text and "MODEL" in text and "birth_date" in text
 
 
 @pytest.fixture(scope="module")
@@ -481,8 +463,10 @@ def test_two_people_of_one_household_are_labelled_and_a_copy_of_one_is_not(tmp_p
     run = build(tmp_path / "in.parquet", tmp_path / "run", s, p, pipeline_file=s.root / "config" / "pipeline.toml")  # with its reports, as python -m er runs it
     pairs = f"""SELECT * FROM (VALUES ('{one[uid]}', 'member'), ('{one[uid]}', 'copy')) t("{uid}_l", "{uid}_r")"""
     assert households(run.engine, "records", pairs, uid, run.pipeline) == {(one[uid], "member")}  # the copy: the same given name
-    sheet = pd.read_parquet(tmp_path / "run" / "review.parquet")
-    assert "household" in sheet and sheet["household"].dtype == bool
+    from er.jobs.match import match
+    table = pd.read_parquet(match(tmp_path / "run", s, p, p.threshold.keep_from)["into"]).set_index([f"{uid}_l", f"{uid}_r"])
+    assert table["household"].dtype == bool and table.loc[tuple(sorted((one[uid], "member"))), "household"]  # the match table says so
+    assert not table.loc[tuple(sorted((one[uid], "copy"))), "household"]
 
 
 def test_em_on_fields_learns_one_session_blocked_on_each_and_the_fit_owes_an_increment_no_rerun(population, tmp_path):

@@ -10,5 +10,5 @@ mkdir -p "$ws" /tmp/run
 cp -Rp "$ws/." /tmp/run/  # -p: the files' times kept, which the index's stamp reads
 python -m er "$@" --out /tmp/run
 case "$1" in
-  build|update|decide) cp -Rp /tmp/run/. "$ws/" ;;  # the jobs that change the run
+  build|update|decide|match) cp -Rp /tmp/run/. "$ws/" ;;  # the jobs that write into the run
 esac

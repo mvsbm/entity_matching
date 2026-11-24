@@ -196,24 +196,24 @@ def file_facts(files: list[Path], role: str) -> list[dict]:
 
 
 def decisions(path: str | Path, engine: Engine, l: str, r: str, into: str) -> list[Path]:
-    """People's decisions on pairs (review.parquet with decision filled in, or any file with the two IDs and decision)
+    """People's decisions on pairs (a match table with decision filled in, or any file with the two IDs and decision)
     as the table `into`, and the files read: each pair once, the lower ID first, decision match or no_match, and the
-    sheet's why (decide, audit) where it has one; rows without a decision skipped. Refuses a file without those
+    file's why where it has one; rows without a decision skipped. Refuses a file without those
     columns, a decided row without both IDs, a file with no decision, another decision, and a pair decided both ways.
     O(rows)."""
     src = open_source(path, engine, [l, r, "decision"])
     if {l, r, "decision"} - set(src.columns):  # say what is wrong, row by row where it can
         raise InputError(f"{path}: needs the columns {l}, {r} and decision; it has {sorted(src.columns)}",
-                         fix="give back review.parquet with decision filled in, or a file with those three columns")
+                         fix="give back a match table with decision filled in, or a file with those three columns")
     decided = f"FROM {src.sql} WHERE {filled('decision')}"
     if (blank := engine.value(f"SELECT count(*) {decided} AND NOT ({filled(l)} AND {filled(r)})")):
         raise InputError(f"{path}: {blank:,} decided rows lack an ID", fix="fill in both IDs of each decided row, or clear its decision")
     blank = lit(FILLED)  # spaces of any width, as filled() reads them: "match　" is match
-    why = f"nullif(trim(why, {blank}), '')" if "why" in src.columns else "NULL::VARCHAR"  # the sheet's row kind: an audit stays known as one
+    why = f"nullif(trim(why, {blank}), '')" if "why" in src.columns else "NULL::VARCHAR"  # the file's own why, kept with the decision
     engine.run(f"""CREATE OR REPLACE TABLE {q(into)} AS SELECT least({q(l)}, {q(r)}) AS {q(l)}, greatest({q(l)}, {q(r)}) AS {q(r)},
         lower(trim(decision, {blank})) AS decision, any_value({why}) AS why {decided} GROUP BY 1, 2, 3""")
     if not engine.value(f"SELECT count(*) FROM {q(into)}"):
-        raise InputError(f"{path}: no row has a decision", fix="write match or no_match in the sheet's decision column")
+        raise InputError(f"{path}: no row has a decision", fix="write match or no_match in the table's decision column")
     if (bad := engine.rows(f"SELECT DISTINCT decision FROM {q(into)} WHERE decision NOT IN ('match', 'no_match')")):
         raise InputError(f"{path}: a decision is match or no_match, not {sorted(x for x, in bad)}", fix="correct those rows, or leave them empty")
     if (both := engine.rows(f"SELECT {q(l)}, {q(r)} FROM {q(into)} GROUP BY ALL HAVING count(*) > 1 LIMIT 5")):

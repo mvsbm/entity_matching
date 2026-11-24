@@ -40,6 +40,8 @@ from er import folder
 from er.candidates import _filled, deletions_sql
 from er.config import DeletionKeys, hashed, InputError, KeyBlocker, Pipeline, lit, q
 from er.intake import tidy
+from er.io import read_parquet
+from er.source import find, readable
 from er.kind import Classifier, classifier
 from er.match import _gammas, levels, prior_bits, read_by, review_floor, saved, search_floor
 from er.report import no_run
@@ -391,6 +393,23 @@ def look_up(ws: Path, s: Settings, p: Pipeline, values: dict[str, str] | None = 
         if again["found"] or (again["closest"] and (not found["closest"] or again["closest"]["points"] > found["closest"]["points"])):
             return {**again, "read_as": {c: v for c, v in folded.items() if v != values[c]}}
     return found
+
+
+def look_up_file(ws: Path, s: Settings, p: Pipeline, path: str | Path, at_least: float | None = None, most: int = 20) -> list[dict]:
+    """Each record of the file at `path` (read by the intake) looked up as look_up looks a record up by its values:
+    one row per record and entity found at `at_least` points or more (default: the review floor), its ID (asked), the
+    entity's best record, its points, the rule that would join it and the keys that listed it; a record that finds
+    none, one row without an entity. Writes nothing. O(R·(G·(log N + b) + C·K·L²)) for R records."""
+    uid, out = s.data.unique_id, []
+    with readable(path, s.input) as read:
+        frame = pd.concat([read_parquet(f) for f in find(read)], ignore_index=True)
+    read_by = set(_sources(p, None))
+    for rec in frame.to_dict("records"):
+        values = {c: str(v) for c, v in rec.items() if c in read_by and v is not None and not pd.isna(v)}
+        found = look_up(ws, s, p, values=values, at_least=at_least, most=most)["entities"] if values else []
+        out += [dict(asked=rec.get(uid), entity=e["entity"], record=e["record"], points=e["points"], rule=e["rule"], keys=e["keys"]) for e in found] or \
+               [dict(asked=rec.get(uid), entity=None, record=None, points=None, rule=None, keys=[])]
+    return out
 
 
 def _look_up(ws: Path, s: Settings, p: Pipeline, values: dict[str, str] | None = None, record: str | None = None,

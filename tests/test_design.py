@@ -280,8 +280,9 @@ def logged_runs(tmp: Path) -> tuple:
         build(tmp / "first.parquet", out, s, p, pipeline_file=pipeline, echo=logs["full"].echo)
     with mock.patch("er.steps.job.connect", logs["increment"].connect):
         update(tmp / "new.parquet", out, s, p, pipeline_file=pipeline, echo=logs["increment"].echo)
-    sheet = pd.read_parquet(out / "review.parquet")
-    sheet.iloc[:1].assign(decision="match").to_parquet(tmp / "decided.parquet")
+    from er.jobs.match import match
+    table = match(out, s, p, p.fs.min_match_weight, into=tmp / "matched.parquet")["into"]  # outside the run's folder
+    pd.read_parquet(table).iloc[:1].assign(decision="match").to_parquet(tmp / "decided.parquet")
     with mock.patch("er.steps.job.connect", logs["decisions"].connect):
         decide(tmp / "decided.parquet", out, s, p, echo=logs["decisions"].echo)
     return s, out, {mode: dict(log.by_step) for mode, log in logs.items()}

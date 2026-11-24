@@ -17,7 +17,7 @@ and where a step's tables and files are, so its SQL holds no part only one engin
     slices(table, size) conditions that each hold one slice of its rows    threads(), memory()  the engine's limits
     attach(alias, path) a database SQL reads as alias.table, until detach(alias)
 
-frame, numpy, arrow and rows are for small results (a sample, a count per level, a review sheet), or results read
+frame, numpy, arrow and rows are for small results (a sample, a count per level, a lookup's candidates), or results read
 in chunks through batches: no step pulls a table that grows with the records into Python whole.
 """
 from typing import Protocol

@@ -55,7 +55,7 @@ Measured at design time on train, for the 6,355 true pairs the rules missed. Eac
 | + TF-IDF (person, company) | 33,126 | 86.1% |
 | + the scalable generators, the name's reading and last sounds, and the birth date (below) | 96,672 | 89.2% |
 
-The folded names find the most for the pairs they make; the sorted windows make the most pairs. The method (`config/pipeline.toml`) lists pairs by 22 of these 30 generators, all of them keys. It leaves out the phone, the address and the address code alone, which grow with the square of the file, TF-IDF, which compares every name with every other, and the sorted windows, whose reach shrinks as the file grows (next sections). On validation it lists **2,568 candidates holding 79.6% of the 2,198 true pairs the rules missed**, while skipping 99.995% of all pairs. On train, every true pair that could reach the threshold shares one of its keys, at train's size and at a million records ([below](#keeping-every-potential-match)), so the pairs it leaves out lack the evidence to be accepted.
+The folded names find the most for the pairs they make; the sorted windows make the most pairs. The method (`config/pipeline.toml`) lists pairs by 22 of these 30 generators, all of them keys. It leaves out the phone, the address and the address code alone, which grow with the square of the file, TF-IDF, which compares every name with every other, and the sorted windows, whose reach shrinks as the file grows (next sections). On validation it lists **2,568 candidates holding 79.6% of the 2,198 true pairs the rules missed**, while skipping 99.995% of all pairs. On train, every true pair that could reach the threshold shares one of its keys, at train's size and at a million records ([below](#keeping-every-potential-match)), so the pairs it leaves out lack the evidence to reach the threshold.
 
 **In short:** a few cheap keys find most duplicates; the extra generators buy the last few points.
 
@@ -69,7 +69,7 @@ On train (31,226 records) that gives about 48,800 chance pairs, and the count fi
 
 At a million records, the same formula gives **50 million** chance pairs from the phone key alone. That's why every key is projected to the target size before it is used.
 
-**A missed candidate is lost for good.** On val, 20.4% of the true pairs the rules missed are on no list, and the second stage can never find them. On train, every true pair that could reach the threshold shares a key, so the pairs left out are those without the evidence to be accepted.
+**A missed candidate is lost for good.** On val, 20.4% of the true pairs the rules missed are on no list, and the second stage can never find them. On train, every true pair that could reach the threshold shares a key, so the pairs left out are those without the evidence to reach it.
 
 **In short:** blocking sets the ceiling on recall, and keys with few values blow up at scale.
 
@@ -83,19 +83,19 @@ Each key's pairs on train split into pairs of one entity, which grow like N, and
 
 | Step | Cost | Grows like | At a million records |
 |---|---|---|---|
-| load and standardize, persons and companies | O(N·L) | N | 6.91 s |
-| fit | O(n + S·K + P_em·K) + O(N + S·K) | a fixed sample, plus O(N) counts | 4.05 s |
-| rules | O(N + ΣP_r·L²) + O(E·log E + N) | N^1.0 to N^1.21 per rule | ≤ 0.18 million pairs per rule; 2.09 s |
+| load and standardize, persons and companies | O(N·L) | N | 5.30 s |
+| fit | O(n + S·K + P_em·K) + O(N + S·K) | a fixed sample, plus O(N) counts | 4.33 s |
+| rules | O(N + ΣP_r·L²) + O(E·log E + N) | N^1.0 to N^1.21 per rule | ≤ 0.18 million pairs per rule; 2.11 s |
 | **rule F2, joined on the phone alone** | O(N + P) | **N^1.95** | **50 million pairs**, the phone key's blocks |
 | key: **phone alone** | O(N + P) | **N^1.95** | **50 million pairs**, nearly all by chance |
 | keys: **address alone, address code alone** | O(N + P) | **N^1.85, N^1.74** | **5.8 and 5.7 pairs per record**, over the budget of 5 |
 | the chosen keys and one-deletion keys | O(N + P), O(N·L + P) | N^1.0 to N^1.83 | ≤ 2.1 million pairs each |
 | **TF-IDF neighbours** | O(N·L + U·N·q) | **N^2.0** | **10¹² similarities** |
-| candidates | O(N·L + ΣP_g) | as ΣP_g | 11.84 s |
-| score | O(C·K·L²) | as C | 0.24 s |
-| cluster | O(C + E·log E + N) | N | 0.23 s |
+| candidates | O(N·L + ΣP_g) | as ΣP_g | 10.74 s |
+| score | O(C·K·L²) | as C | 0.25 s |
+| cluster | O(D + N) | N | 0.14 s |
 
-*N records · n = 100,000 records in the fit's sample · S = 10⁷ pairs sampled for u · K comparisons (6) · P_em pairs in EM's blocks · L characters in a value · P_r, P_g pairs in a rule's or a generator's blocks · U records queried, q n-grams per name · C candidates · E accepted pairs · d the largest cluster's diameter. Every symbol and step: [performance](../performance.md#end-to-end-the-cost-of-every-step).*
+*N records · n = 100,000 records in the fit's sample · S = 10⁷ pairs sampled for u · K comparisons (6) · P_em pairs in EM's blocks · L characters in a value · P_r, P_g pairs in a rule's or a generator's blocks · U records queried, q n-grams per name · C candidates · E the rules' pairs · D people's decisions · d the largest cluster's diameter. Every symbol and step: [performance](../performance.md#end-to-end-the-cost-of-every-step).*
 
 Everything is near-linear except two kinds of step:
 
@@ -118,7 +118,7 @@ Each key splits the 10,000 phone values into hundreds of thousands of combinatio
 
 *Decision:* 0 true pairs gained or lost, on cross-validated train and on val. **Adopted.** These keys still grow faster than N (α = 1.52, 1.17 and 1.52), from a much smaller constant. The check below would flag them first if files grew well past a million.
 
-**Fix 2: rule F2 joins on more than the phone.** F2 accepts a pair with a similar name, a similar address (Jaro–Winkler 0.9 or more) and the same phone. With the address fuzzy, the phone is its only exact key, so a join on the phone alone would inherit the phone's N² growth. So F2 joins on the phone and the first three characters of the normalized address (the start of the city, such as 福島市), and checks the name and the address on the joined pairs:
+**Fix 2: rule F2 joins on more than the phone.** F2 pairs two records with a similar name, a similar address (Jaro–Winkler 0.9 or more) and the same phone. With the address fuzzy, the phone is its only exact key, so a join on the phone alone would inherit the phone's N² growth. So F2 joins on the phone and the first three characters of the normalized address (the start of the city, such as 福島市), and checks the name and the address on the joined pairs:
 
 | F2 joins on | Pairs at a million records | Train: true pairs lost | Val: lost | Adopted |
 |---|---|---|---|---|
@@ -143,7 +143,7 @@ The gate on oversized blocks and the scores both use these u. The fit costs O(n 
 
 ### Keeping every potential match
 
-The fixes above are judged by the pairs the method accepts. A stricter test asks about the pairs it *could* accept. Call a true pair a **potential match** if its fields, once compared, would reach the 6-bit threshold. Blocking must keep every potential match, at every file size. A pair that falls short with all its evidence counted can never be accepted, whatever list it is on.
+The fixes above are judged by the pairs the method takes at its threshold. A stricter test asks about the pairs it *could* take. Call a true pair a **potential match** if its fields, once compared, would reach the 6-bit threshold. Blocking must keep every potential match, at every file size. A pair that falls short with all its evidence counted can never reach it, whatever list it is on.
 
 What counts as potential depends on the file size. λ shrinks as the file grows, so the same evidence earns fewer bits: about log2(N / 30,000) fewer than on train. u moves too, because u is measured on each scored file ([chapter 5](05-uncertain-evidence-fellegi-sunter.md#challenge-learning-m-u-and-λ-without-labels)): on fields whose values grow with the file, strangers agree less often, so an agreement earns more. That makes every size testable on the training file. Score its true pairs once, then move λ to the target size, and u by the growth measured between half and all of train's entities. The pairs still at 6 bits or more are the potential matches at that size.
 
@@ -209,13 +209,13 @@ Without labels, a run can check only the patterns: every combination of comparis
 
 | Records | Fit | Rules | Candidates | Score | Total | Peak memory |
 |---|---|---|---|---|---|---|
-| 13,019 | 1.49 s | 0.08 s | 0.23 s | 0.02 s | 2.5 s | 0.60 GB |
-| 25,947 | 1.57 s | 0.09 s | 0.37 s | 0.03 s | 3.1 s | 0.67 GB |
-| 52,115 | 1.85 s | 0.15 s | 0.67 s | 0.04 s | 4.4 s | 0.85 GB |
-| 77,926 | 2.21 s | 0.22 s | 0.96 s | 0.05 s | 5.8 s | 1.02 GB |
-| **1,039,995** | **4.05 s** | **2.09 s** | **11.84 s** | **0.24 s** | **29.7 s** | **7.10 GB** |
+| 13,019 | 1.49 s | 0.06 s | 0.20 s | 0.02 s | 2.3 s | 0.60 GB |
+| 25,947 | 1.58 s | 0.09 s | 0.31 s | 0.03 s | 2.8 s | 0.68 GB |
+| 52,115 | 1.86 s | 0.15 s | 0.54 s | 0.04 s | 3.9 s | 0.90 GB |
+| 77,926 | 2.23 s | 0.21 s | 0.76 s | 0.05 s | 5.1 s | 1.10 GB |
+| **1,039,995** | **4.33 s** | **2.11 s** | **10.74 s** | **0.25 s** | **26.2 s** | **7.26 GB** |
 
-A million records take 29.7 seconds, 11.84 of them listing the candidates and 6.91 loading the file. The fit, on a fixed sample, and the u sample of the file inside it, 10 million pairs, grow far slower than the file: 1.49 s at 13,019 records, 4.05 s at a million. So at these sizes the total grows slower than the file, like N^0.58. Scoring stays under a quarter of a second at every size, since only the pairs that can reach 0 are listed. Peak memory is the process's, Python included: 7.1 GB at a million records, under the 8 GB limit. The cost of every step, for a full run and for an increment, is in [performance.md](../performance.md).
+A million records take 26.2 seconds, 10.74 of them listing the candidates and 5.30 loading the file. The fit, on a fixed sample, and the u sample of the file inside it, 10 million pairs, grow far slower than the file: 1.49 s at 13,019 records, 4.33 s at a million. So at these sizes the total grows slower than the file, like N^0.57. Scoring stays under a quarter of a second at every size, since only the pairs that can reach 0 are listed. Peak memory is the process's, Python included: 7.3 GB at a million records, under the 8 GB limit. The cost of every step, for a full run and for an increment, is in [performance.md](../performance.md).
 
 Three choices keep a million records within bounds:
 
@@ -241,7 +241,7 @@ On train, every true pair that could reach the threshold shares a key, at its si
 - **False pairs appear.** A bigger file holds more pairs of different entities that look alike. The run joined 2 false pairs at 13,019 records, through 1 false link, 2 at 52,115, through 2, and 6 at 77,926, through 5. Each is a model link between 6.8 and 12.0 bits (the threshold is 6), between two people who share an address or a phone, most of them a family name too. The model expects at least as many: the sum of 1 − match probability over its links, which every run reports without labels, is 1.61 at 13,019 records, 2.33 at 25,947, 4.82 at 52,115 and 8.07 at 77,926; at a million, where personas repeat as clones, 54.54 of 44,065 links. The bound on the false-merge rate is 0.44% at 13,019 records, above the 0.26% reported for test, and 0.11–0.14% at the larger sizes.
 - **Recall stays within two points,** between 47.5% and 49.2%. u is measured on each scored file, so an agreement on a field whose values grow with the file, such as the address or the CIF ID, earns the credit it has at that size. On the labelled splits, which are no bigger than train, this choice costs true pairs: 700 on cross-validated train and 92 on val (adopted as "chosen", [chapter 1](01-entity-resolution-and-our-task.md#a-rule-for-every-choice)).
 
-**In short:** two kinds of step grow with the square of the file: keys whose values come from a fixed pool (the phone digits, the address), and all-against-all similarity. Compound keys, no TF-IDF and a narrower F2 join keep both in check. A sorted window reaches fewer pairs as the file grows, so five more keys make sure no potential match depends on one, and the method uses no window at all. A million records take 29.7 seconds, with peak memory 7.1 GB under an 8 GB limit, on DuckDB tables that spill to disk past it.
+**In short:** two kinds of step grow with the square of the file: keys whose values come from a fixed pool (the phone digits, the address), and all-against-all similarity. Compound keys, no TF-IDF and a narrower F2 join keep both in check. A sorted window reaches fewer pairs as the file grows, so five more keys make sure no potential match depends on one, and the method uses no window at all. A million records take 26.2 seconds, with peak memory 7.3 GB under an 8 GB limit, on DuckDB tables that spill to disk past it.
 
 ## In the code
 

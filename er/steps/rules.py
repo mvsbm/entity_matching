@@ -32,7 +32,7 @@ def alone(a: str, b: str, uid: str) -> str:  # SQL: the pair (a, b) touches a re
 def rules(job: Job, n: int, scoring: dict | None, batch: str | None = None) -> Ruled:
     """The rules' pairs and their cascade. A full run starts rule_clusters here, each record alone; an increment
     (`batch`: new_records) has started it from the stored clusters. `scoring`: the model the rules' pairs are scored
-    with, for the review sheet (None: design time measures the rules alone, before any model is fitted)."""
+    with, for scored/ (None: design time measures the rules alone, before any model is fitted)."""
     t, engine, uid = time.perf_counter(), job.engine, job.uid
     if batch is None:
         engine.run(f"CREATE OR REPLACE TABLE rule_clusters AS SELECT {q(uid)}, {q(uid)} AS cluster_id FROM records")
@@ -47,7 +47,7 @@ def rules(job: Job, n: int, scoring: dict | None, batch: str | None = None) -> R
 
 def _cascade(job: Job, scoring: dict | None, batch: str | None) -> dict[str, float]:
     """The rules' pairs (er.match.rule_edges: every record, or a batch against all), less the values each rule
-    doesn't trust (_untrusted), each scored by the model too (rule_scores: what the review sheet reads), then the
+    doesn't trust (_untrusted), each scored by the model too (rule_scores: what scored/ keeps of them), then the
     cascade into rule_clusters: a stage's pair is kept only if it touches a record still unresolved, and merged in
     (er.cluster.merge). The rule clusters steer the candidates; what merges into customers is steps.cluster's."""
     engine, uid, rules_spec = job.engine, job.uid, job.pipeline.rules

@@ -874,7 +874,7 @@ def pattern_coverage(spec: FSSpec, model_json: dict, n_records: int) -> pd.DataF
     return out.sort_values("share_of_matches", ascending=False, ignore_index=True)
 
 
-def named_sql(fs: FSSpec, s: str = "s") -> str:  # the name check (FSSpec.needs) on scores aliased `s`: a merge without people compares a name
+def named_sql(fs: FSSpec, s: str = "s") -> str:  # the name check (FSSpec.needs) on scores aliased `s`: whether a name was compared (scored/'s named)
     return "(" + (" OR ".join(f"{s}.{q('gamma_' + c)} >= 0" for c in fs.needs) or "TRUE") + ")"
 
 

@@ -9,5 +9,5 @@ module's docstring says the tables it reads and writes.
     score       6  every candidate that can reach the floor
     cluster     7  what merges, connected components, gold
     write       8  the workspace's files, staged
-    report      9  report.txt, review.parquet
+    report      9  report.txt
 """
