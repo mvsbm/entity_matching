@@ -1,0 +1,11 @@
+# Proposals, as pull requests, when what the image and CI are pinned to has a newer release: the image's base (by
+# digest, deploy/Dockerfile) and the workflows' actions. Python packages move by hand, with requirements.txt and
+# deploy/requirements.lock together (deploy/requirements.txt says how).
+version: 2
+updates:
+  - package-ecosystem: docker
+    directory: /deploy
+    schedule: {interval: weekly}
+  - package-ecosystem: github-actions
+    directory: /
+    schedule: {interval: weekly}

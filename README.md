@@ -74,6 +74,7 @@ The tiers, and the rules each test holds: [contributing](CONTRIBUTING.md).
 | understand each method, and why it is the one chosen | [the guide](docs/guide/01-entity-resolution-and-our-task.md) |
 | look up a term | [the glossary](docs/guide/01-entity-resolution-and-our-task.md#words-used-in-this-guide) |
 | know what each step costs | [performance](docs/performance.md) |
+| set it up and run it on Google Cloud | [operations](docs/operations.md) |
 | check the numbers | [benchmark](reports/benchmark.md) |
 | know where the data comes from | [data](docs/data.md) |
 | change the code | [contributing](CONTRIBUTING.md) |
