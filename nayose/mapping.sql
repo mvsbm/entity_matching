@@ -7,9 +7,9 @@
 -- order: the first whose columns are all filled, joined. config.toml [input] columns lists every column read here; one
 -- the file lacks is read as missing.
 
--- every input row as the file gave it, its ID read as the records' is: what set_aside keeps, and tells apart
+-- every distinct input row as the file gave it, its ID read as the records' is: what set_aside keeps, and tells apart
 CREATE OR REPLACE TEMP TABLE input_rows AS
-SELECT read_value(CONT_ID, TRUE, @nulls) AS nayose_id, * FROM input;
+SELECT DISTINCT read_value(CONT_ID, TRUE, @nulls) AS nayose_id, * FROM input;
 
 CREATE OR REPLACE TEMP TABLE mapped AS
 WITH source AS (

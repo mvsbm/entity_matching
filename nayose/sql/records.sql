@@ -7,27 +7,25 @@
 -- Values: config.toml [records], and the patterns nayose builds from its lists (legal_pattern, prefecture_pattern).
 
 
--- 1. Set aside what can't be resolved. Rows identical in every column are kept once. A record without an ID (blank:
---    whitespace alone, as Python counts it), and every record of an ID holding different content, are set aside.
-
-CREATE OR REPLACE TEMP TABLE distinct_rows AS
-SELECT DISTINCT * FROM input_rows;
+-- 1. Set aside what can't be resolved. Rows identical in every column are kept once (mapping.sql's input_rows). A
+--    record without an ID (blank: whitespace alone, as Python counts it), and every record of an ID holding different
+--    content, are set aside.
 
 CREATE OR REPLACE TABLE set_aside AS
 SELECT * EXCEPT (nayose_id),
   CASE WHEN nayose_id IS NULL OR REGEXP_CONTAINS(nayose_id, r'^[\t-\r\x{1c}-\x{20}\x{85}\x{a0}\x{1680}\x{2000}-\x{200a}\x{2028}\x{2029}\x{202f}\x{205f}\x{3000}]*$')
        THEN 'no ID' ELSE 'the same ID with different content' END AS reason
-FROM distinct_rows
+FROM input_rows
 WHERE nayose_id IS NULL
    OR REGEXP_CONTAINS(nayose_id, r'^[\t-\r\x{1c}-\x{20}\x{85}\x{a0}\x{1680}\x{2000}-\x{200a}\x{2028}\x{2029}\x{202f}\x{205f}\x{3000}]*$')
-   OR nayose_id IN (SELECT nayose_id FROM distinct_rows GROUP BY nayose_id HAVING COUNT(*) > 1);
+   OR nayose_id IN (SELECT nayose_id FROM input_rows GROUP BY nayose_id HAVING COUNT(*) > 1);
 
 CREATE OR REPLACE TEMP TABLE kept AS
 SELECT DISTINCT m.*
 FROM mapped AS m
 WHERE m.id IS NOT NULL
   AND NOT REGEXP_CONTAINS(m.id, r'^[\t-\r\x{1c}-\x{20}\x{85}\x{a0}\x{1680}\x{2000}-\x{200a}\x{2028}\x{2029}\x{202f}\x{205f}\x{3000}]*$')
-  AND m.id NOT IN (SELECT nayose_id FROM distinct_rows GROUP BY nayose_id HAVING COUNT(*) > 1);
+  AND m.id NOT IN (SELECT nayose_id FROM input_rows GROUP BY nayose_id HAVING COUNT(*) > 1);
 
 
 -- 2. Each field standardized by its chain of steps, in order; a value the chain leaves empty is missing.
@@ -64,16 +62,16 @@ FROM kept;
 --    overrides a company flag. Else the file's flag (kind_flag; flag_company's values say company). With
 --    trust_flag, the flag decides every record.
 
-CREATE OR REPLACE TEMP TABLE name_sums AS
-SELECT g.id, SUM(w.w) AS s
+CREATE OR REPLACE TEMP TABLE name_sums AS  -- each distinct name once: many records share one
+SELECT g.t, SUM(w.w) AS s
 FROM (
-  SELECT DISTINCT id, SUBSTR(t, i, n) AS term
-  FROM (SELECT id, LOWER(any_name) AS t FROM standardized WHERE any_name IS NOT NULL),
+  SELECT DISTINCT t, SUBSTR(t, i, n) AS term
+  FROM (SELECT DISTINCT LOWER(any_name) AS t FROM standardized WHERE any_name IS NOT NULL),
     UNNEST(GENERATE_ARRAY(1, @ngram)) AS n,
     UNNEST(GENERATE_ARRAY(1, LENGTH(t) - n + 1)) AS i
 ) AS g
 JOIN name_weights AS w ON w.term = g.term
-GROUP BY g.id;
+GROUP BY g.t;
 
 CREATE OR REPLACE TEMP TABLE told AS
 WITH judged AS (
@@ -87,7 +85,7 @@ WITH judged AS (
               IN UNNEST(@flag_company) THEN 2
          ELSE 1 END AS flag
   FROM standardized AS s
-  LEFT JOIN name_sums AS n USING (id)
+  LEFT JOIN name_sums AS n ON n.t = LOWER(s.any_name)
 ),
 scored AS (
   SELECT *, IF(written, CAST(1 AS FLOAT64), 1 / (1 + EXP(-logit))) AS name_p  -- NULL: no name the model can read
@@ -149,8 +147,7 @@ FROM same;
 --    records per value if more) and by at least `crowd` customers, and its pairs outnumber those of every value held
 --    by fewer. The customer ID's, if held by `at` records. No field's blanking changes another's counts (a name blanked
 --    blanks only the fields built from its columns, and customers are counted by the customer ID, blanked as the
---    others are read), so all are found at once, then blanked: a name in person_name with full_name, given_name and
---    any_name, a company's name with any_name.
+--    others are read), so all are found at once, and blanked as the records are written (6).
 CREATE OR REPLACE TABLE placeholders AS
 WITH v AS (
   SELECT 'person_name' AS field, person_name AS value, COALESCE(customer_id, id) AS who FROM sided
@@ -169,28 +166,28 @@ held_pairs AS (SELECT field, SUM(DIV(n * (n - 1), 2)) AS pairs FROM held GROUP B
 SELECT h.field, h.value, h.n FROM held AS h JOIN s USING (field) JOIN held_pairs AS p USING (field)
 WHERE h.field = 'customer_id' OR DIV(h.n * (h.n - 1), 2) > s.every - p.pairs;
 
-UPDATE sided SET
-  full_name = IF(person_name IN (SELECT value FROM placeholders WHERE field = 'person_name'), NULL, full_name),
-  given_name = IF(person_name IN (SELECT value FROM placeholders WHERE field = 'person_name'), NULL, given_name),
-  any_name = IF(person_name IN (SELECT value FROM placeholders WHERE field = 'person_name')
-                OR company_name IN (SELECT value FROM placeholders WHERE field = 'company_name'), NULL, any_name),
-  person_name = IF(person_name IN (SELECT value FROM placeholders WHERE field = 'person_name'), NULL, person_name),
-  company_name = IF(company_name IN (SELECT value FROM placeholders WHERE field = 'company_name'), NULL, company_name),
-  address_code = IF(address_code IN (SELECT value FROM placeholders WHERE field = 'address_code'), NULL, address_code),
-  address = IF(address IN (SELECT value FROM placeholders WHERE field = 'address'), NULL, address),
-  phone = IF(phone IN (SELECT value FROM placeholders WHERE field = 'phone'), NULL, phone),
-  birth_date = IF(birth_date IN (SELECT value FROM placeholders WHERE field = 'birth_date'), NULL, birth_date),
-  customer_id = IF(customer_id IN (SELECT value FROM placeholders WHERE field = 'customer_id'), NULL, customer_id)
-WHERE TRUE;
-
-
 -- 6. The copies the keys and comparisons read, each a chain of steps from a field, and the records.
 --    address: NFKC; 丁目, 番地 and 号 as dashes; the building and room after the first space past the street number
 --    gone, then every space; the address's own prefecture off its start. first3, initial, last3: a key's start or
 --    end. long_vowel: a long vowel written either way (サトウ, サトオ, サトー) as one reading.
 
 CREATE OR REPLACE TABLE records AS
-WITH copies AS (
+WITH blanked AS (  -- the placeholders read as missing: a name in person_name with full_name, given_name and any_name
+  SELECT * REPLACE (
+    IF(person_name IN (SELECT value FROM placeholders WHERE field = 'person_name'), NULL, full_name) AS full_name,
+    IF(person_name IN (SELECT value FROM placeholders WHERE field = 'person_name'), NULL, given_name) AS given_name,
+    IF(person_name IN (SELECT value FROM placeholders WHERE field = 'person_name')
+       OR company_name IN (SELECT value FROM placeholders WHERE field = 'company_name'), NULL, any_name) AS any_name,
+    IF(person_name IN (SELECT value FROM placeholders WHERE field = 'person_name'), NULL, person_name) AS person_name,
+    IF(company_name IN (SELECT value FROM placeholders WHERE field = 'company_name'), NULL, company_name) AS company_name,
+    IF(address_code IN (SELECT value FROM placeholders WHERE field = 'address_code'), NULL, address_code) AS address_code,
+    IF(address IN (SELECT value FROM placeholders WHERE field = 'address'), NULL, address) AS address,
+    IF(phone IN (SELECT value FROM placeholders WHERE field = 'phone'), NULL, phone) AS phone,
+    IF(birth_date IN (SELECT value FROM placeholders WHERE field = 'birth_date'), NULL, birth_date) AS birth_date,
+    IF(customer_id IN (SELECT value FROM placeholders WHERE field = 'customer_id'), NULL, customer_id) AS customer_id)
+  FROM sided
+),
+copies AS (
   SELECT
     *,
     NULLIF(TRANSLATE(person_name, @kana_fold_from, @kana_fold_to), '') AS person_name__kana_fold,
@@ -207,7 +204,7 @@ WITH copies AS (
     NULLIF(SUBSTR(postal_code, 1, 3), '') AS postal_code__first3,
     NULLIF(SUBSTR(any_name, 1, 1), '') AS any_name__initial,
     NULLIF(TRANSLATE(given_name, @kana_fold_from, @kana_fold_to), '') AS given_name__kana_fold
-  FROM sided
+  FROM blanked
 ),
 readings AS (
   SELECT
