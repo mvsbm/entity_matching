@@ -1,5 +1,5 @@
 """Candidate generation (blocking): which pairs are worth scoring, as SQL on a columnar engine (DuckDB). The records
-are a pandas frame (registered, zero-copy) or the name of a table in `engine`, so the same code serves any size.
+are a table in `engine`, so the same code serves any size.
 Only pairs that touch a query record (one an earlier stage left unresolved) are produced, so leftovers can still join
 existing clusters. `query=None` makes every record a query; with `clusters`, pairs already inside one cluster are
 then dropped, so two clusters can join too.
@@ -24,29 +24,21 @@ import pandas as pd
 
 from er.engine.engine import Engine
 from er.config import Blocker, Budget, DeletionKeys, hashed, InputError, KeyBlocker, keys_of, q
-from er.engine.duckdb import connect
-
-_CON: Engine | None = None  # for pandas input when the caller passes no connection
 
 
 class Records:
-    """The records as a relation in `engine`: a registered pandas frame or an existing table; `cluster` adds a column
-    holding each record's previous cluster, `query` a table of the query ids."""
+    """The records, a table in `engine`; `clusters` (a table: uid, cluster_id) adds a column holding each record's
+    previous cluster, `query` is a table of the query ids."""
 
-    def __init__(self, records: pd.DataFrame | str, uid: str, engine: Engine | None = None,
-                 query: Iterable[str] | None = None, clusters: pd.Series | str | None = None, columns: Iterable[str] | None = None):
-        global _CON
-        self.engine = engine or (_CON := _CON or connect())
-        self.uid, self.views = uid, []
-        base = self._view(records) if isinstance(records, pd.DataFrame) else q(records)
-        if clusters is not None:  # a Series uid → cluster, or a table with columns uid and cluster_id
-            c = (self._view(pd.DataFrame({uid: clusters.index.to_numpy(), "cluster_id": clusters.to_numpy()}).astype("string"))
-                 if isinstance(clusters, pd.Series) else q(clusters))
+    def __init__(self, records: str, uid: str, engine: Engine, query: str | None = None, clusters: str | None = None,
+                 columns: Iterable[str] | None = None):
+        self.engine, self.uid, self.views = engine, uid, []
+        base = q(records)
+        if clusters is not None:
             cols = ", ".join(f"t.{q(x)}" for x in dict.fromkeys([uid, *columns])) if columns else "t.*"  # the copy holds only what is read
-            base = self._temp(f"SELECT {cols}, c.cluster_id AS __cluster FROM {base} t JOIN {c} c USING ({q(uid)})")
+            base = self._temp(f"SELECT {cols}, c.cluster_id AS __cluster FROM {base} t JOIN {q(clusters)} c USING ({q(uid)})")
         self.table, self.cluster = base, clusters is not None
-        self.query = (None if query is None else q(query) if isinstance(query, str)  # a table of query ids, or the ids
-                      else self._view(pd.DataFrame({uid: list(query)}, dtype="string")))
+        self.query = None if query is None else q(query)
         self.touching = False                 # the query is a batch joined against all (an increment), not most of the file
         self.dk: dict[tuple, str] = {}        # deletion-key rows per (key, within), built once (variants)
         self.only: str | None = None          # SQL on a pair's l and r: a pair it is false for is never listed (candidates)
@@ -69,22 +61,16 @@ class Records:
             self.dk[at] = self._temp(sql)
         return self.dk[at]
 
-    def _view(self, df: pd.DataFrame) -> str:
-        name = f"er_{uuid.uuid4().hex[:12]}"
-        self.engine.register(name, df)
-        self.views.append(("view", name))
-        return name
-
     def _temp(self, sql: str) -> str:
         name = f"er_{uuid.uuid4().hex[:12]}"
         self.engine.run(f"CREATE TEMP TABLE {name} AS {sql}")
-        self.views.append(("table", name))
+        self.views.append(name)
         return name
 
-    def close(self, keep: frozenset[str] = frozenset()) -> None:  # every view and table made, but those kept: freed
-        for kind, name in reversed([x for x in self.views if x[1] not in keep]):
-            self.engine.unregister(name) if kind == "view" else self.engine.run(f"DROP TABLE IF EXISTS {name}")
-        self.views = [x for x in self.views if x[1] in keep]
+    def close(self, keep: frozenset[str] = frozenset()) -> None:  # every table made, but those kept: freed
+        for name in reversed([x for x in self.views if x not in keep]):
+            self.engine.run(f"DROP TABLE IF EXISTS {name}")
+        self.views = [x for x in self.views if x in keep]
 
     def asked(self, t: str) -> str:  # the query's rows of t
         return f"(SELECT * FROM {t} WHERE {q(self.uid)} IN (SELECT {q(self.uid)} FROM {self.query}))"
@@ -171,7 +157,7 @@ def sample_sql(b: Blocker, r: Records, blocks: str, rows: int) -> str:
             f"ON a.__b = c.__b AND {order} AND a.__k <= {rows} AND c.__k <= {rows} WHERE {r.filters('a', 'c', query=False)}")
 
 
-def estimate(b: Blocker, records: pd.DataFrame | str, engine: Engine | None = None,
+def estimate(b: Blocker, records: "Records | str", engine: Engine | None = None,
              uid: str | None = None, oversized_from: int = 2**62) -> dict[str, object]:
     """Work before any join: candidate pairs (an upper bound) and the largest block, by group-by; and the blocks of
     `oversized_from` records or more: how many, their records and their pairs; and normal_pairs, those the join lists
@@ -212,19 +198,8 @@ def estimate(b: Blocker, records: pd.DataFrame | str, engine: Engine | None = No
             r.close()
 
 
-def generate(b: Blocker, records: pd.DataFrame | str, uid: str, query: Iterable[str] | None,
-             engine: Engine | None = None) -> pd.DataFrame:
-    """One generator's pairs, uid_l < uid_r, as pandas (small files and tests)."""
-    r = Records(records, uid, engine, query)
-    try:
-        out = r.engine.frame(pairs_sql(b, r))
-    finally:
-        r.close()
-    return out.set_axis([f"{uid}_l", f"{uid}_r"], axis=1).astype("string")
-
-
-def candidates(blockers: tuple[Blocker, ...], records: pd.DataFrame | str, uid: str, query: Iterable[str] | str | None,
-               budget: Budget, clusters: pd.Series | str | None = None, engine: Engine | None = None,
+def candidates(blockers: tuple[Blocker, ...], records: str, uid: str, query: str | None, budget: Budget, *, engine: Engine,
+               clusters: str | None = None,
                into: str | None = None, touching: bool = False, gate: Callable[[str], str] | None = None,
                floor: float = 0.0, capacity: int | None = None,
                keep: Callable[[str], str] | None = None,

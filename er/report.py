@@ -14,10 +14,11 @@ import numpy as np
 import pandas as pd
 
 from er.engine.engine import Engine
+from er.fit import ranked
 from er.config import GIVEN, hashed, InputError, Key, lit, Pipeline, q, sources_text, unpivoted
 from er.io import code_version
 from er.kind import COMPANY, PERSON, SAYS, UNSURE
-from er.match import ELSE, GIVEN_SHARE, _ranked, levels, parameters, pattern_coverage, review_floor, scaled_prior, search_floor
+from er.match import ELSE, GIVEN_SHARE, levels, parameters, pattern_coverage, review_floor, scaled_prior, search_floor
 from er.source import filled, fit
 
 if TYPE_CHECKING:
@@ -75,7 +76,6 @@ def qa(run: "Ran", fields: list[str] | None = None) -> dict[str, pd.DataFrame]:
     engine, u = run.engine, q(run.uid)
     fill = fill_rates(run, fields)
     sizes = engine.frame("SELECT n AS cluster_size, count(*) AS clusters FROM (SELECT count(*) AS n FROM gold GROUP BY cluster_id) GROUP BY 1 ORDER BY 1")
-    engine.run(f"CREATE TABLE IF NOT EXISTS er_decisions ({q(run.l)} VARCHAR, {q(run.r)} VARCHAR, decision VARCHAR)")
     steps = pd.DataFrame(run.steps)
     base = ["step", "big_o", "filled", "seconds", "peak_memory_gb"]
     number = lambda v: isinstance(v, int | float) and not isinstance(v, bool) and not math.isnan(v)  # a list (generators) is no fact
@@ -149,7 +149,7 @@ def diagnosis(run: "Ran", tables: dict[str, pd.DataFrame], lo: float) -> list[di
     below = f"match_weight >= 0 AND match_weight < {lo}"
     count = lambda where: engine.value(f"SELECT count(*) FROM scores WHERE {where}")
     n_below, expected = engine.row(f"SELECT count(*), coalesce(sum(match_probability), 0) FROM scores WHERE {below}")
-    gamma = {c["output_column_name"]: {lv["label_for_charts"]: g for g, lv in _ranked(c)} for c in model["comparisons"]}
+    gamma = {c["output_column_name"]: {lv["label_for_charts"]: g for g, lv in ranked(c)} for c in model["comparisons"]}
     out: list[tuple[float, str]] = []
 
     if households := [x for x in m.get("em_given", []) if x["given_share"] is not None and x["given_share"] < GIVEN_SHARE]:  # EM taught by households: first of equals

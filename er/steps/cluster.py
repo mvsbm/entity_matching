@@ -32,26 +32,25 @@ def cluster(job: Job, n: int, old: Path | None = None) -> None:
     else:
         engine.run(f"CREATE OR REPLACE TABLE er_single AS SELECT {u}, {u} AS cluster_id FROM records")
     merge(engine, "er_single", "kept", "clusters", job.uid)
-    _gold(job, "gold_old" if old else None)
+    engine.run(gold_sql(u, "records" if "kind" in job.columns() else None, "gold_old" if old else None))
     d = job.count("kept")
     job.log.done("cluster", "O(D + N)", f"O({d:,} decisions + {n:,})", t, decided=d)
 
 
-def _gold(job: Job, old: str | None = None) -> None:
-    """Each record's entity (cluster_id), and what joined it: people (review), when a decision put it with another
-    record; else nothing. With the file's kinds, each record's kind and its entity's (customer_kinds). An increment
-    passes the stored gold as `old`, whose answers stand."""
-    u = q(job.uid)
+def gold_sql(u: str, kinds: str | None, old: str | None = None, flagged: str = "x.kind_flagged") -> str:
+    """Gold, from `clusters`: each record's entity (cluster_id), and what joined it: people (review), when a decision put
+    it with another record; else nothing. `kinds`: a table holding each record's kind (the records, or the stored gold),
+    which gold keeps with its entity's (customer_kinds); `flagged`: the kind_flagged column it is read as. An increment
+    passes the stored gold as `old`, whose answers stand. `u`: the ID column, quoted."""
     stage = "CASE WHEN z.n > 1 THEN 'review' END"
     stage, by = (f"coalesce(o.resolved_stage, {stage})", f"coalesce(o.resolved_by, {stage})") if old else (stage, stage)
-    kinds = "kind" in job.columns()  # each record's kind, and its customer's (customer_kinds)
-    job.engine.run(f"""CREATE OR REPLACE TABLE gold AS
+    return f"""CREATE OR REPLACE TABLE gold AS
         WITH size AS (SELECT cluster_id, count(*) AS n FROM clusters GROUP BY 1)
-             {f", customer AS ({customer_kinds('clusters', 'records', u)})" if kinds else ""}
-        SELECT k.{u}, k.cluster_id, {stage} AS resolved_stage, {by} AS resolved_by{", x.kind, x.kind_p, x.kind_by, x.kind_flagged, c.customer_kind" if kinds else ""}
+             {f", customer AS ({customer_kinds('clusters', kinds, u)})" if kinds else ""}
+        SELECT k.{u}, k.cluster_id, {stage} AS resolved_stage, {by} AS resolved_by{f", x.kind, x.kind_p, x.kind_by, {flagged}, c.customer_kind" if kinds else ""}
         FROM clusters k JOIN size z USING (cluster_id) {f"LEFT JOIN {old} o USING ({u})" if old else ""}
-             {f"JOIN records x USING ({u}) JOIN customer c USING (cluster_id)" if kinds else ""}
-        ORDER BY k.{u}""")
+             {f"JOIN {kinds} x USING ({u}) JOIN customer c USING (cluster_id)" if kinds else ""}
+        ORDER BY k.{u}"""
 
 
 def customer_kinds(clusters: str, kinds: str, u: str) -> str:

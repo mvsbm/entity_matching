@@ -55,7 +55,7 @@ The engine is hard to explain today, for reasons that are in the code, not in th
   those it reads and writes, its signature doesn't;
 - dense lines and docstrings that argue edge cases instead of saying what a function does;
 - what the method does lives in `pipeline.toml` and some 30 config classes, read by SQL built far from both;
-- short names (`q`, `lit`, `_sides`, `_ranked`, `rough_sql`, `first_bound`).
+- short names (`q`, `lit`, `_sides`, `rough_sql`, `first_bound`).
 
 The target, in three named patterns:
 

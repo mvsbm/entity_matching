@@ -6,15 +6,20 @@ import pandas as pd
 import pytest
 
 from er.engine.duckdb import DuckDB
-from er.candidates import candidates, estimate, generate
+from er.candidates import candidates, estimate
 from er.config import (Budget, Comparator, DeletionKeys, InputError, Key, KeyBlocker,
                        Rule, RulesSpec, Stage)
-from design.evaluate import cluster_metrics, edge_metrics, paired_test, predicted_pairs, true_pairs, truth_of
-from er.match import rule_edges, score_fs, train_fs, scored_u
+from design.evaluate import cluster_metrics
+from er.match import score_fs, train_fs, scored_u
 from er.settings import load_settings
 from er.standardize import normalize, prepare
 
-from conftest import PAIR, UID, clustered, model
+from conftest import PAIR, UID, clustered, ids, model, rule_pairs, table
+
+
+def listed(engine, b, df: pd.DataFrame, query=None) -> pd.DataFrame:  # one generator's pairs, uid_l < uid_r: of the query's records, or every record's
+    union, _ = candidates((b,), table(engine, df), UID, None if query is None else ids(engine, query), Budget(), engine=engine)
+    return union[["uid_l", "uid_r"]]
 
 
 def brute_pairs(groups: pd.Series) -> set[tuple[str, str]]:  # every pair inside each group, by enumeration
@@ -31,8 +36,6 @@ def test_pair_and_cluster_metrics_match_a_brute_force_recount():
     entity = pd.Series(rng.integers(0, 30, 80).astype(str), index=ids)
     cluster = pd.Series(np.where(rng.random(80) < 0.7, entity.to_numpy(), rng.integers(30, 60, 80).astype(str)), index=ids)
     truth, pred = brute_pairs(entity), brute_pairs(cluster)
-    assert predicted_pairs(cluster) == pred
-    assert set(map(tuple, true_pairs(entity.rename_axis("uid"), "uid").to_numpy())) == truth
     m = cluster_metrics(cluster, entity)
     assert (m["TP"], m["FP"], m["FN"]) == (len(truth & pred), len(pred - truth), len(truth - pred))
     assert m["overmerged"] == sum(entity[cluster == c].nunique() > 1 for c in cluster.unique())
@@ -44,14 +47,6 @@ def test_pair_and_cluster_metrics_match_a_brute_force_recount():
     homes = brute_pairs(household.astype(str)) - truth
     h = cluster_metrics(cluster, entity, household)
     assert (h["TP"], h["FP"], h["FN"], h["household"]) == (len(truth & pred), len(pred - truth - homes), len(truth - pred), len(pred & homes))
-    labels = pd.DataFrame({"uid": ids, "entity": entity.to_numpy(), "home": household.to_numpy()})
-    t = truth_of(labels, replace(load_settings().data, unique_id="uid", entity_id="entity", household_id="home"))
-    assert t == truth and t.household == homes
-    test = paired_test(set(), pred, t)  # every pair the clusters join, against none
-    assert (test["TP_gains"], test["FP_added"]) == (len(truth & pred), len(pred - truth - homes))
-    edges = pd.DataFrame(sorted(pred), columns=["uid_l", "uid_r"])
-    e = edge_metrics(edges, entity, "uid", household)
-    assert (e["pairs_TP"], e["pairs_FP"], e["pairs_household"]) == (len(truth & pred), len(pred - truth - homes), len(pred & homes))
 
 
 def test_the_run_s_clustering_merges_whole_clusters_and_names_each_after_its_smallest_id(engine):
@@ -63,22 +58,23 @@ def test_the_run_s_clustering_merges_whole_clusters_and_names_each_after_its_sma
     assert clustered(engine, base, pair([]), ids, UID).tolist() == base["cluster_id"].tolist()  # no pair: as they were
 
 
-def test_deletion_keys_find_every_pair_one_edit_apart():
+def test_deletion_keys_find_every_pair_one_edit_apart(engine):
     names = {"0": "サトウヒロシ", "1": "サトウヒロミ", "2": "サトヒロシ", "3": "サトウヒロシイ", "4": "サウトヒロシ",  # swap ウ/ト
              "5": "サトウタカシ", "6": "サトウヒロシ"}
     df = pd.DataFrame({"uid": list(names), "name": list(names.values()), "area": ["1", "1", "1", "1", "1", "1", "2"]}, dtype="string")
-    pairs = set(map(tuple, generate(DeletionKeys(name="d", key=Key("name")), df, UID, {"0"}).to_numpy()))
+    pairs = set(map(tuple, listed(engine, DeletionKeys(name="d", key=Key("name")), df, {"0"}).to_numpy()))
     assert pairs == {("0", "1"), ("0", "2"), ("0", "3"), ("0", "4"), ("0", "6")}  # 5: two substitutions away
-    within = set(map(tuple, generate(DeletionKeys(name="d", key=Key("name"), within=(Key("area"),)), df, UID, {"0"}).to_numpy()))
+    within = set(map(tuple, listed(engine, DeletionKeys(name="d", key=Key("name"), within=(Key("area"),)), df, {"0"}).to_numpy()))
     assert within == pairs - {("0", "6")}  # another area
-    every = generate(DeletionKeys(name="d", key=Key("name")), df, UID, set(names))
-    assert estimate(DeletionKeys(name="d", key=Key("name")), df)["est_pairs"] >= len(every)  # an upper bound
+    every = listed(engine, DeletionKeys(name="d", key=Key("name")), df, set(names))
+    assert estimate(DeletionKeys(name="d", key=Key("name")), table(engine, df), engine)["est_pairs"] >= len(every)  # an upper bound
 
 
 def test_u_from_the_scored_file(engine, records):
     fitted = train_fs(model(), records, engine, UID)
     same = scored_u(model(), fitted, records, engine, UID)[0]  # the fitting records, the same sample: the same model
-    assert score_fs(same, records, PAIR, engine, UID)["match_weight"].item() == pytest.approx(score_fs(fitted, records, PAIR, engine, UID)["match_weight"].item())
+    at = lambda m: score_fs(m, table(engine, records), table(engine, PAIR), engine, UID)["match_weight"].item()
+    assert at(same) == pytest.approx(at(fitted))
     padded = pd.concat([records, pd.DataFrame({"uid": [f"p{i:03d}" for i in range(240)], "name": [f"ヨソ{i}" for i in range(240)],
                                                "phone": [f"{i:04d}" for i in range(240)], "entity": "pad"}, dtype="string")], ignore_index=True)
     other = scored_u(model(), fitted, padded, engine, UID)[0]
@@ -90,31 +86,31 @@ def test_u_from_the_scored_file(engine, records):
     assert all(mu[0] == m(fitted)[k][0] if k not in unseen else mu[0] == mu[1] for k, mu in m(other).items())  # m stays as fitted
 
 
-def test_candidate_generators_respect_the_query_and_the_clusters():
+def test_candidate_generators_respect_the_query_and_the_clusters(engine):
     df = pd.DataFrame({"uid": [f"{i}" for i in range(8)], "phone": ["1", "1", "1", "2", "2", "3", "3", "3"],
                        "name": ["サトウ", "サトオ", "サトウ", "タナカ", "タナカ", "スズキ", "スズキイチ", "イトウ"]}, dtype="string")
     query = {"0", "5"}
-    keys = generate(KeyBlocker(name="k", keys=(Key("phone"),)), df, UID, query)
+    keys = listed(engine, KeyBlocker(name="k", keys=(Key("phone"),)), df, query)
     assert set(map(tuple, keys.to_numpy())) == {("0", "1"), ("0", "2"), ("5", "6"), ("5", "7")}  # only pairs touching a query
     for asked, pairs in ((["0", "1"], [("0", "1"), ("0", "2"), ("1", "2")]), (["2", None], [("0", "2"), ("1", "2")])):  # two asked in a block; a NULL among them
-        assert sorted(map(tuple, generate(KeyBlocker(name="k", keys=(Key("phone"),)), df, UID, asked).to_numpy())) == pairs  # each pair once, none lost
-    assert len(generate(KeyBlocker(name="k", keys=(Key("phone"),)), df, UID, None)) == 3 + 1 + 3  # None: every record a query
-    clusters = pd.Series(["c0", "c0", "c2", "c3", "c4", "c5", "c6", "c7"], index=df["uid"].to_numpy())
+        assert sorted(map(tuple, listed(engine, KeyBlocker(name="k", keys=(Key("phone"),)), df, asked).to_numpy())) == pairs  # each pair once, none lost
+    assert len(listed(engine, KeyBlocker(name="k", keys=(Key("phone"),)), df)) == 3 + 1 + 3  # None: every record a query
+    clusters = table(engine, pd.DataFrame({UID: df["uid"], "cluster_id": ["c0", "c0", "c2", "c3", "c4", "c5", "c6", "c7"]}, dtype="string"))
     budget = Budget()
     union, _ = candidates((KeyBlocker(name="k", keys=(Key("phone"),)), KeyBlocker(name="s", keys=(Key("name"),))),
-                          df, UID, None, budget, clusters)
+                          table(engine, df), UID, None, budget, engine=engine, clusters=clusters)
     sources = dict(zip(zip(union["uid_l"], union["uid_r"]), union["sources"]))
     assert ("0", "1") not in sources and sources[("0", "2")] == sources[("3", "4")] == "k+s"  # one cluster already; found by both
 
 
-def test_candidates_with_no_pair_give_none_and_more_generators_than_bits_are_refused():
+def test_candidates_with_no_pair_give_none_and_more_generators_than_bits_are_refused(engine):
     df = pd.DataFrame({"uid": ["1", "2", "3"], "phone": ["1", "2", None]}, dtype="string")
     budget = Budget()
-    union, _ = candidates((KeyBlocker(name="k", keys=(Key("phone"),)),), df, UID, None, budget)
+    union, _ = candidates((KeyBlocker(name="k", keys=(Key("phone"),)),), table(engine, df), UID, None, budget, engine=engine)
     assert union.empty and "sources" in union  # no two records share a phone: no pair, no SQL error
     many = tuple(KeyBlocker(name=f"k{i}", keys=(Key("phone"),)) for i in range(64))
     with pytest.raises(InputError, match="at most 63"):  # one bit per generator in a BIGINT
-        candidates(many, df, UID, None, budget)
+        candidates(many, table(engine, df), UID, None, budget, engine=engine)
 
 
 def test_a_deletion_keys_normal_pairs_hold_the_pairs_its_join_lists_and_never_go_below_zero():
@@ -122,14 +118,14 @@ def test_a_deletion_keys_normal_pairs_hold_the_pairs_its_join_lists_and_never_go
     names = ["JOHNSMITH"] * 200 + [f"N{i:05d}" for i in range(2000)]  # one value on 200 records: each of its keys an oversized block
     df = pd.DataFrame({"uid": [f"{i:05d}" for i in range(len(names))], "name": names}, dtype="string")
     b, budget = DeletionKeys(name="d", key=Key("name")), Budget()
-    est = estimate(b, df, uid="uid", oversized_from=budget.min_oversized())
     engine = DuckDB(duckdb.connect())  # a gate that keeps no oversized block: the join lists the normal blocks' pairs only
-    union, _ = candidates((b,), df, "uid", None, budget, engine=engine, gate=lambda t: engine.run(f"CREATE OR REPLACE TABLE g AS SELECT *, -99.0 AS match_weight FROM {t}") or "g")
+    est = estimate(b, table(engine, df), engine, uid="uid", oversized_from=budget.min_oversized())
+    union, _ = candidates((b,), table(engine, df), "uid", None, budget, engine=engine, gate=lambda t: engine.run(f"CREATE OR REPLACE TABLE g AS SELECT *, -99.0 AS match_weight FROM {t}") or "g")
     assert est["oversized_blocks"] and est["est_pairs"] - est["oversized_pairs"] < 0 <= len(union) <= est["normal_pairs"] < est["est_pairs"]
     few = pd.DataFrame({"uid": list("0123"), "name": ["ABC", "ABC", "ABX", "ABX"]}, dtype="string")  # block AB oversized; each value's other keys normal
     tight = Budget(sample_pairs=3)
-    union, _ = candidates((b,), few, "uid", None, tight, engine=engine, gate=lambda t: engine.run(f"CREATE OR REPLACE TABLE g AS SELECT *, -99.0 AS match_weight FROM {t}") or "g")
-    assert estimate(b, few, uid="uid", oversized_from=tight.min_oversized())["normal_pairs"] == len(union) == 2  # a value's pair once, in one of its normal blocks
+    union, _ = candidates((b,), table(engine, few), "uid", None, tight, engine=engine, gate=lambda t: engine.run(f"CREATE OR REPLACE TABLE g AS SELECT *, -99.0 AS match_weight FROM {t}") or "g")
+    assert estimate(b, table(engine, few), engine, uid="uid", oversized_from=tight.min_oversized())["normal_pairs"] == len(union) == 2  # a value's pair once, in one of its normal blocks
 
 
 def test_prepare_names_missing_input_columns():
@@ -179,13 +175,11 @@ def test_legal_forms_go_wherever_banks_write_them_and_the_generator_s_names_lose
 
 
 def test_a_blocking_key_limits_a_rule_join(engine):
-    std = replace(load_settings().standardize, derived=())  # a hand-made frame without the real input columns
     df = pd.DataFrame({"uid": list("ABC"), "phone": ["1", "1", "1"], "name": ["サトウ", "サトオ", "カトウ"]}, dtype="string")
     def spec(blocking):
         return RulesSpec(stages=(Stage(name="fuzzy", rules=(Rule(name="R", exact=("phone",), fuzzy=("name",), blocking=blocking),),
                                        comparators={"name": Comparator("levenshtein", 1)}),))
-    plain = set(map(tuple, rule_edges(spec(()), df, engine, UID)[["uid_l", "uid_r"]].to_numpy()))
-    s = spec((Key("name", ("initial",)),))
-    blocked = set(map(tuple, rule_edges(s, prepare(std, df, s.normalized()), engine, UID)[["uid_l", "uid_r"]].to_numpy()))
+    plain = set(map(tuple, rule_pairs(engine, spec(()), df)[["uid_l", "uid_r"]].to_numpy()))
+    blocked = set(map(tuple, rule_pairs(engine, spec((Key("name", ("initial",)),)), df)[["uid_l", "uid_r"]].to_numpy()))
     assert plain == {("A", "B"), ("A", "C")} and blocked == {("A", "B")}  # カトウ starts differently: not joined
 
