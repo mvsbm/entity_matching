@@ -66,13 +66,20 @@ def duckdb_sql(sql: str) -> str:
     """`sql` (BigQuery's dialect) as DuckDB runs it, or ValueError naming what it holds that DuckDB would answer otherwise."""
     if bad := avoided(sql):
         raise ValueError("; ".join(bad) + f": {sql.strip()[:160]}")
-    trees = [tree.transform(as_bigquery_extracts) for tree in sqlglot.parse(sql, read="bigquery")]
+    trees = [tree.transform(as_bigquery) for tree in sqlglot.parse(sql, read="bigquery")]
     return ";\n".join(t.sql(dialect="duckdb", unsupported_level=sqlglot.ErrorLevel.RAISE) for t in trees)
 
 
-def as_bigquery_extracts(node: exp.Expression) -> exp.Expression:
-    """REGEXP_EXTRACT as BigQuery answers it: the group's match where the pattern has one (sqlglot reads groups with
-    Python's re, which can't read RE2's \\x{3000} or \\p{Nd}), and NULL where it doesn't match (DuckDB's gives '')."""
+def as_bigquery(node: exp.Expression) -> exp.Expression:
+    """Where sqlglot's translation answers otherwise, the node as BigQuery answers it:
+    - DIV(a, b): DuckDB's a // b, each side and the whole in brackets (sqlglot writes DIV(x - y, 2) as x - y // 2);
+    - REGEXP_EXTRACT: the group's match where the pattern has one (sqlglot reads groups with Python's re, which can't
+      read RE2's \\x{3000} or \\p{Nd}), and NULL where it doesn't match (DuckDB's gives '')."""
+    if isinstance(node, exp.IntDiv) and not node.args.get("bigquery"):
+        node.set("bigquery", True)  # done: transform visits it again inside the brackets
+        node.set("this", exp.Paren(this=node.this))
+        node.set("expression", exp.Paren(this=node.expression))
+        return exp.Paren(this=node)
     if isinstance(node, (exp.RegexpExtract, exp.RegexpExtractAll)) and not node.args.get("bigquery"):
         pattern = node.expression
         if (pattern.is_string or isinstance(pattern, exp.RawString)) and groups(pattern.name) == 1:

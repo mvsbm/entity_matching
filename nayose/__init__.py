@@ -6,6 +6,7 @@ a set of tables: a BigQuery dataset, or a DuckDB database file.
 
     read(engine, files)             stage 1's intake: the input files as the table input, each value read (intake.sql)
     records(engine, files)          stage 1: the input files read, mapped (mapping.sql) and made records (records.sql)
+    em.fit(engine)                  stage 2: the model learned on a sample (fit.sql, u.sql, nayose/em.py), u on the file
     stage(engine, name, **values)   a stage's statements in order, each given the values it names (@name)
     statements(text)                a stage file's statements: each ends with a line that ends in ;
     fingerprint()                   what an increment needs unchanged since the full run: the SQL and the values
@@ -25,6 +26,12 @@ SMALL_KANA = str.maketrans("ァィゥェォッャュョヮ", "アイウエオツ
 HIRAGANA = "".join(chr(c) for c in range(0x3041, 0x3097))  # hiragana, and the katakana each is read as
 KATAKANA = "".join(chr(c + 0x60) for c in range(0x3041, 0x3097))
 NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")  # a column name config.toml gives
+
+
+class InputError(ValueError):  # a refusal the person running the job can act on: what is wrong, and how to fix it
+    def __init__(self, message: str, fix: str = "") -> None:
+        super().__init__(message)
+        self.fix = fix
 
 
 def config(path: Path = HERE / "config.toml") -> dict:
