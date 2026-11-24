@@ -52,9 +52,8 @@ def records() -> pd.DataFrame:
     return pd.DataFrame(rows).astype("string")
 
 
-def model(m_method: str = "em", extra_name_levels: tuple[Level, ...] = ()) -> FSModel:
+def model(extra_name_levels: tuple[Level, ...] = ()) -> FSModel:
     return FSModel(
-        name="test",
         comparisons=(
             Comparison(name="name", null_if_missing=("name",), levels=(
                 Level(label="exact", any_of=(("name", Comparator("exact")),)),
@@ -62,7 +61,7 @@ def model(m_method: str = "em", extra_name_levels: tuple[Level, ...] = ()) -> FS
             Comparison(name="phone", null_if_missing=("phone",), levels=(
                 Level(label="exact", any_of=(("phone", Comparator("exact")),)),)),
         ),
-        prior_rules=((Key("name"), Key("phone")),), prior_recall=0.9, u_max_pairs=1e4, m_method=m_method,
+        prior_rules=((Key("name"), Key("phone")),), prior_recall=0.9, u_max_pairs=1e4,
         em_rules=((Key("phone"),),), seed=0)
 
 

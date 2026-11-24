@@ -10,7 +10,6 @@ artifacts = "data/artifacts"                     # what the scripts keep for the
 
 [datasets]
 all = ["train", "val", "test"]                   # one generated population, split by entity: fit / select / report
-synthetic = true                                 # generated records: real (personal) data is never exported
 household = "HOUSEHOLD_ID"                       # the labels' household: a pair of two people of one household is counted apart, not as false
 
 # DuckDB, the columnar engine: past memory_limit it spills to temp_directory, so a file of any size runs in bounded
@@ -57,7 +56,6 @@ address_cut_at = " "                             # drop the building / room afte
 fold = ["kana_fold"]
 company = ["nfkc", "strip_legal_form", "kana_fold"]
 address = ["address"]
-reversed = ["kana_fold", "reverse"]
 initial = ["initial"]
 first3 = ["first3"]
 address_first3 = ["address", "first3"]

@@ -198,7 +198,9 @@ def test_the_kind_problems_name_no_company_the_name_model_trains_on():
 
 
 def test_a_pipeline_setting_what_no_run_reads_of_kind_is_refused():
-    from er.config import kind_spec
-    with pytest.raises(InputError, match="depth, review_max set nothing") as stop:  # a combiner's and a review sheet's settings
-        kind_spec({"name_field": "any_name", "depth": 2, "review_max": 1000})
+    from er.config import pipeline_from, toml_of
+    s = load_settings()
+    cfg = toml_of(s.root / "config" / "pipeline.toml")
+    with pytest.raises(InputError, match=r"\[kind\]: depth, review_max set nothing") as stop:  # a combiner's and a review sheet's settings
+        pipeline_from({**cfg, "kind": {"name_field": "any_name", "depth": 2, "review_max": 1000}}, s.standardize, s.chains)
     assert stop.value.fix == "delete depth, review_max from [kind]"

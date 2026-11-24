@@ -8,10 +8,11 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import get_args
 
-from er.config import COPIES, Data, Derived, InputError, Normalizer, Pipeline, Standardization, check_fields, checked, legal_pattern, restrict, sources_text, toml_of
+from er.config import COPIES, Data, Derived, InputError, Normalizer, Pipeline, Standardization, check_fields, checked, legal_pattern, only, restrict, sources_text, toml_of
 from er.intake import InputSpec
 
-SPECIAL = ("id", "entity")  # single columns, used under their own names: the record id and the truth
+SPECIAL = ("id",)  # a single column, used under its own name: the record id
+TRUTH = "entity"  # [columns] entity: the truth's column, in labels/ only (scripts/benchmark.py); no field
 
 
 @dataclass(frozen=True)
@@ -19,7 +20,7 @@ class Settings:
     root: Path                                # project root; every path below is resolved against it
     paths: dict[str, Path]
     data: Data
-    standardize: Standardization              # its `derived` builds every field (except id / entity) under its name
+    standardize: Standardization              # its `derived` builds every field (but id) under its name
     columns: dict[str, tuple[tuple[str, ...], ...]]  # field → its sources: alternatives, each concatenated
     chains: dict[str, tuple[Normalizer, ...]]  # named normalization chains, for config/pipeline.toml
     compute: dict[str, str]                  # DuckDB settings: threads, memory_limit, temp_directory
@@ -64,10 +65,6 @@ def settings_path() -> Path:  # the settings file a run reads
     return Path(os.environ.get("ER_SETTINGS") or project_root() / "config" / "settings.toml")
 
 
-SAYS = {"full": "are a known family name and given name", "family": "are known family names", "given": "are known given names",
-        "address": "start with a known prefecture or city"}
-
-
 def norm_name(column: str) -> str:  # a column's name as people mean it: width, case and separators aside
     return re.sub(r"[\s_\-・.]+", "", unicodedata.normalize("NFKC", column).casefold())
 
@@ -81,7 +78,7 @@ def load_settings(path: Path | None = None) -> Settings:
     except FileNotFoundError:
         root = project_root()
     cfg = toml_of(path)
-    paths = {name: root / rel for name, rel in cfg["paths"].items()}
+    paths, sets = {name: root / rel for name, rel in cfg.get("paths", {}).items()}, cfg.get("datasets", {})  # the design kit's: a job needs neither
     steps = set(get_args(Normalizer)) - set(COPIES)  # the comparisons' own copy (er.config.Comparator.copy): not a key's
 
     loc = cfg["locale"]
@@ -93,7 +90,8 @@ def load_settings(path: Path | None = None) -> Settings:
     cols = cfg["columns"]
     for name in SPECIAL:
         checked(isinstance(cols.get(name), str), f"[columns] {name} must name one column", path)
-    fields = {name: field(name, spec, path) for name, spec in cols.items() if name not in SPECIAL}
+    checked(isinstance(cols.get(TRUTH, ""), str), f"[columns] {TRUTH} must name one column", path)
+    fields = {name: field(name, spec, path) for name, spec in cols.items() if name not in (*SPECIAL, TRUTH)}
     unknown = {s for d in fields.values() for s in d.normalize} - steps
     checked(not unknown, f"[columns]: unknown normalizers {unknown}", path)
     # a field that is its own single column, unnormalized, needs no copy
@@ -107,9 +105,8 @@ def load_settings(path: Path | None = None) -> Settings:
     return Settings(
         root=root,
         paths=paths,
-        data=Data(bronze_dir=paths["bronze"], labels_dir=paths["labels"],
-                  datasets=tuple(cfg["datasets"]["all"]), unique_id=cols["id"], entity_id=cols["entity"], household_id=cfg["datasets"].get("household"),
-                  synthetic=bool(cfg["datasets"]["synthetic"])),
+        data=Data(unique_id=cols["id"], bronze_dir=paths.get("bronze"), labels_dir=paths.get("labels"), datasets=tuple(sets.get("all", ())),
+                  entity_id=cols.get(TRUTH), household_id=sets.get("household")),
         standardize=std,
         columns={**{name: ((cols[name],),) for name in SPECIAL}, **{name: d.sources for name, d in fields.items()}},
         chains=chains,
@@ -120,15 +117,8 @@ def load_settings(path: Path | None = None) -> Settings:
     )
 
 
-READ_AS_TEXT = ("encodings", "margin_text", "margin_row", "max_extra")  # [input] keys only a text file's reading needs: records are Parquet
-
-
 def input_spec(cfg: dict) -> InputSpec:  # [input]: the placeholders read as missing
-    if gone := sorted(set(cfg) & set(READ_AS_TEXT)):
-        raise InputError(f"[input] {', '.join(gone)}: {'sets' if len(gone) == 1 else 'set'} nothing: records are Parquet, whose text is UTF-8",
-                         fix=f"delete {', '.join(gone)} from [input]")
-    unknown = set(cfg) - set(InputSpec.__dataclass_fields__)
-    checked(not unknown, f"[input]: unknown keys {sorted(unknown)}")
+    only("[input]", cfg, InputSpec.__dataclass_fields__)
     return InputSpec(**{k: tuple(map(str, v)) if isinstance(v, list) else v for k, v in cfg.items()})
 
 
@@ -148,11 +138,11 @@ def counted_once(p: Pipeline, present: dict[str, tuple]) -> None:
                              fix=f"map each to a column of its own in config/settings.toml [columns] ({f} = …), or leave one unmapped")
 
 
-def fit_to_file(p: Pipeline, s: Settings, file_columns: Iterable[str], labelled: bool = False) -> tuple[Pipeline, list[str]]:
+def fit_to_file(p: Pipeline, s: Settings, file_columns: Iterable[str]) -> tuple[Pipeline, list[str]]:
     """The pipeline for one file: stops if a mandatory field (or every field of a one_of group) is absent; derives each
     field only from the sources the file has; disables whatever reads an absent optional field, and lists it."""
     present = present_fields(s, file_columns)
-    check_fields(p.fields, set(present), s.columns, labelled)
+    check_fields(p.fields, set(present), s.columns)
     counted_once(p, present)
     std = replace(s.standardize, derived=tuple(replace(d, sources=present[d.name]) for d in s.standardize.derived if d.name in present))
-    return restrict(replace(p, rules=replace(p.rules, standardize=std), fs=replace(p.fs, standardize=std)), set(present))
+    return restrict(replace(p, fs=replace(p.fs, standardize=std)), set(present))

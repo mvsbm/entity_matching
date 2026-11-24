@@ -4,7 +4,7 @@ from dataclasses import replace
 import pandas as pd
 import pytest
 
-from er.config import (Budget, FSSpec, InputError, Key, KeyBlocker, Resolver)
+from er.config import (Budget, FSSpec, InputError, Key, KeyBlocker)
 from er.match import exact_u, pattern_coverage, train_fs
 from er.config import fields_read, load_pipeline
 from er.settings import fit_to_file, load_settings
@@ -26,17 +26,14 @@ def test_a_mandatory_field_or_an_empty_one_of_group_stops_the_run():
     names = {"FULL_NAME_KANA", "O_PERSON_NAME_KANA", "LAST_NAME_KANA", "GIVEN_NAME_KANA", "NYS_CNV_P_NAME_KANA"}
     with pytest.raises(ValueError, match="person_name .* / company_name"):
         fit_to_file(p, s, cols - names)
-    with pytest.raises(ValueError, match="entity"):
-        fit_to_file(p, s, cols, labelled=True)  # a labelled run needs the truth
     with pytest.raises(InputError, match="can run: each way reads a field this file lacks"):
         fit_to_file(p, s, {"CONT_ID", "NYS_CNV_P_NAME_KANA"})  # a mistake to fix, not a traceback
-    fit_to_file(p, s, cols | {"ENTITY_ID"}, labelled=True)
 
 
 def test_an_absent_optional_field_disables_exactly_what_reads_it():
     s, p, cols = pipeline_and_columns()
     q, gone = fit_to_file(p, s, cols - {"CIF_ID"})
-    assert "customer_id" not in fields_read(replace(q, generators={b.name: b for b in q.fs.blockers}))
+    assert "customer_id" not in fields_read(q)
     rules = {r.name for st in q.rules.stages for r in st.rules}
     assert rules == {r.name for st in p.rules.stages for r in st.rules} - {"X1_CIF_PERSON_NAME", "X2_CIF_COMPANY_NAME", "X3_CIF_PHONE", "F3_NAME~_CIF"}
     assert [b.name for b in q.fs.blockers] == [b.name for b in p.fs.blockers if b.name not in ("cif", "cif_deletions")]
@@ -46,15 +43,13 @@ def test_an_absent_optional_field_disables_exactly_what_reads_it():
                                                 "generator cif", "generator cif_deletions", "level cif: exact", "level cif: one digit off", "comparison cif",
                                                 "prior rule ['customer_id', 'full_name']", "prior rule ['customer_id', 'company_name']"}
     q, gone = fit_to_file(p, s, cols - {"FULL_NAME_KANA", "O_PERSON_NAME_KANA"})  # a field built from the sources the file has
-    person = next(d for d in q.rules.standardize.derived if d.name == "person_name")
+    person = next(d for d in q.fs.standardize.derived if d.name == "person_name")
     assert person.sources == (("LAST_NAME_KANA", "GIVEN_NAME_KANA"),) and any("X1_CIF_PERSON_NAME" in g for g in gone)
 
 
 def test_pattern_coverage_finds_the_patterns_no_key_guarantees(engine, records):
-    spec = FSSpec(standardize=replace(load_settings().standardize, derived=()), previous_stage="rules", stage="fs", model=model(),
-                    blockers=(KeyBlocker(name="phone", keys=(Key("phone"),)),), min_match_weight=-10.0,  # toy weights
-                    resolver=Resolver(method="connected_components"),
-                    budget=Budget(max_pairs_per_record=10**4, max_block_size=10**4, target_rows=10**6, benchmark_pairs=10))
+    spec = FSSpec(standardize=replace(load_settings().standardize, derived=()), model=model(),
+                  blockers=(KeyBlocker(name="phone", keys=(Key("phone"),)),), min_match_weight=-10.0, budget=Budget())  # toy weights
     model_json = train_fs(model(), records, engine, UID)
     open_ = pattern_coverage(spec, model_json, len(records))
     assert len(open_) and not (open_["phone"] == "exact").any()  # the phone key guarantees every pattern with phone exact

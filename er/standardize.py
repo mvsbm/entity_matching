@@ -53,14 +53,10 @@ def _normalized(s: pd.Series, steps: tuple[Normalizer, ...], std: Standardizatio
                 s = s.str[:1]
             case "first3":  # blocking keys: a postal area
                 s = s.str[:3]
-            case "reverse":  # a second sort key: names that end alike sort together, so an early typo doesn't split them
-                s = s.str[::-1]
             case "one_byte":  # all katakana: each one byte, so DuckDB's similarity (bytes) compares it as characters; else none
                 s = s.where(s.str.fullmatch("[\u30a0-\u30ff]+").fillna(False)).str.translate(ONE_BYTE)
             case "one_byte_hash":  # not all ASCII: each character one byte by its code point (two may share one), so DuckDB's edit distance of it is never more than theirs; else none
                 s = _hashed(s.where(~s.str.isascii().fillna(True)))
-            case "casefold":  # romaji: TANAKA and tanaka are one name
-                s = s.str.casefold()
             case "long_vowel":  # keys, after kana_fold: a long vowel written either way (サトウ, サトオ, サトー) is one reading
                 s = s.str.replace("([オコソトノホモヨロ])[ウオ]", "\\1ウ", regex=True).str.replace("([エケセテネヘメレ])[イエ]", "\\1イ", regex=True)
             case "last3":  # keys: a name's last three characters, its given name's, kept through a change of family name

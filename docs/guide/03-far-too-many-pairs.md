@@ -197,7 +197,7 @@ With these five keys, every potential match on train still shares a key, at its 
 
 ### How the configuration keeps it that way
 
-Every key and rule of the method stays under the budget of 5 pairs per record (`[budget] max_pairs_per_record`) projected to `budget.target_rows`, a million records, as measured at design time on the training file. For each key the projection counts the pairs of one entity, P_same, and the chance pairs, P_chance, and projects each by its own law: P(n) = P_same·n/N + P_chance·n(n − 1)/(N(N − 1)). That is what keeping a share of the entities would give on average, computed instead of sampled. Pairs between two members of a household count as chance, the safe side.
+Every key and rule of the method stays under 5 pairs per record projected to a million records, as measured on the training file when the keys are chosen. For each key the projection counts the pairs of one entity, P_same, and the chance pairs, P_chance, and projects each by its own law: P(n) = P_same·n/N + P_chance·n(n − 1)/(N(N − 1)). That is what keeping a share of the entities would give on average, computed instead of sampled. Pairs between two members of a household count as chance, the safe side.
 
 For the method, the largest projection of a key is phone + name initial, at 2.1 pairs per record. And every potential match on train shares a key: all 3,278 at train's size, and all 3,071 at a million records.
 
@@ -247,7 +247,7 @@ On train, every true pair that could reach the threshold shares a key, at its si
 
 - `er/config.py`: the generator types `KeyBlocker` and `DeletionKeys` (one-deletion keys); `er/candidates.py`: each as SQL (`pairs_sql`), `candidates` (merge by bits), `estimate` (the count before any join)
 - `er/match.py`: `pattern_coverage` (the same question without labels, which every run's `report.txt` reports)
-- `er/config.py`: `Budget` (`max_pairs_per_record`, `max_block_size`, `target_rows`, `sample_pairs`); `FSSpec.bridge` (score every pair across two clusters)
+- `er/config.py`: `Budget` (`sample_pairs`); `FSSpec.bridge` (score every pair across two clusters)
 - `er/match.py`: `exact_u` (u counted: the leading exact levels, and a one-edit level after them through one-deletion keys), `sample_u` (u sampled, every comparison's levels in one pass), `assemble_u`, `refreshed_u` (an increment's u)
 - `config/pipeline.toml`: every generator, in logical fields; `config/settings.toml`: the fields behind the compound keys (`any_name`, the postal area) and the normalizers `initial` and `first3`
 - `er/steps/budget.py`: `steps.budget.budget`, the exact count on the file before any join; `steps.budget.capacity`, the memory limit plus the spill room; `er/steps/fit.py`: `steps.fit.fit`, the fit and then u on the file; `er/candidates.py`: `oversized`, `sample_sql`, `_gate`, the sample check of big blocks; `scripts/benchmark.py`: whole runs on generated files from 13,000 to a million records
