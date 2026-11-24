@@ -23,6 +23,7 @@ import numpy as np
 import pandas as pd
 import pyarrow as pa
 import pyarrow.compute as pc
+import pyarrow.parquet as pq
 import sqlglot
 from rapidfuzz import process
 from rapidfuzz.distance import DamerauLevenshtein, Hamming, JaroWinkler, Levenshtein
@@ -65,7 +66,26 @@ def duckdb_sql(sql: str) -> str:
     """`sql` (BigQuery's dialect) as DuckDB runs it, or ValueError naming what it holds that DuckDB would answer otherwise."""
     if bad := avoided(sql):
         raise ValueError("; ".join(bad) + f": {sql.strip()[:160]}")
-    return ";\n".join(sqlglot.transpile(sql, read="bigquery", write="duckdb", unsupported_level=sqlglot.ErrorLevel.RAISE))
+    trees = [tree.transform(as_bigquery_extracts) for tree in sqlglot.parse(sql, read="bigquery")]
+    return ";\n".join(t.sql(dialect="duckdb", unsupported_level=sqlglot.ErrorLevel.RAISE) for t in trees)
+
+
+def as_bigquery_extracts(node: exp.Expression) -> exp.Expression:
+    """REGEXP_EXTRACT as BigQuery answers it: the group's match where the pattern has one (sqlglot reads groups with
+    Python's re, which can't read RE2's \\x{3000} or \\p{Nd}), and NULL where it doesn't match (DuckDB's gives '')."""
+    if isinstance(node, (exp.RegexpExtract, exp.RegexpExtractAll)) and not node.args.get("bigquery"):
+        pattern = node.expression
+        if (pattern.is_string or isinstance(pattern, exp.RawString)) and groups(pattern.name) == 1:
+            node.set("group", exp.Literal.number(1))
+        node.set("bigquery", True)  # done: transform visits it again inside the IF
+        if isinstance(node, exp.RegexpExtract):
+            return exp.If(this=exp.RegexpLike(this=node.this.copy(), expression=pattern.copy()), true=node)
+    return node
+
+
+def groups(pattern: str) -> int:  # the capturing groups of an RE2 pattern, counted by Python's re once RE2's own escapes are read
+    python = re.sub(r"\\x\{([0-9a-fA-F]+)\}", lambda m: f"\\U{int(m[1], 16):08x}", pattern)
+    return re.compile(re.sub(r"\\[pP](?:\{[^}]*\}|[A-Za-z])", r"\\w", python)).groups
 
 
 def compare(name: str, cut: bool = False):
@@ -105,6 +125,8 @@ class DuckDB:
             self.con.execute(f"SET {key} = '{value}'")
         # the portable hash: MD5's first 15 hex digits as an integer, as BigQuery's er_hash (functions())
         self.con.execute("CREATE OR REPLACE MACRO er_hash(x) AS ('0x' || substr(md5(coalesce(CAST(x AS VARCHAR), '')), 1, 15))::BIGINT")
+        # bytes as UTF-8, as BigQuery's: bytes that aren't hold U+FFFD
+        self.con.execute("CREATE OR REPLACE MACRO safe_convert_bytes_to_string(b) AS CASE WHEN b IS NOT NULL THEN coalesce(TRY(decode(b)), chr(65533)) END")
         for name in FUNCTIONS:
             self.con.create_function(f"cl_{name}", compare(name), ["VARCHAR", "VARCHAR"], "DOUBLE", type="arrow")
             self.con.create_function(f"cl_{name}_cut", compare(name, cut=True), ["VARCHAR", "VARCHAR", "DOUBLE"], "DOUBLE", type="arrow")
@@ -132,8 +154,12 @@ class DuckDB:
         finally:
             self.con.unregister("nayose_put")
 
-    def read_parquet(self, table: str, files: list[Path]) -> None:  # Parquet files as the table `table`, columns by name
-        self.con.execute(f'CREATE OR REPLACE TABLE "{table}" AS SELECT * FROM read_parquet(?, union_by_name = true)', [[str(f) for f in files]])
+    def read_parquet(self, table: str, files: list[Path]) -> None:
+        """Parquet files as the table `table`, each column of each file a name of its own (names), the files' columns
+        joined by name. Text that isn't UTF-8 is refused."""
+        quote = lambda n: '"' + n.replace('"', '""') + '"'
+        parts = [f"SELECT * FROM read_parquet(?) AS t({', '.join(map(quote, names(pq.read_schema(f).names)))})" for f in files]
+        self.con.execute(f'CREATE OR REPLACE TABLE "{table}" AS ' + " UNION ALL BY NAME ".join(parts), [str(f) for f in files])
 
     def close(self) -> None:
         self.con.close()
@@ -198,8 +224,8 @@ class BigQuery:
     def frame(self, sql: str, values: dict | None = None) -> pd.DataFrame:
         return self._job(sql, values).to_dataframe()
 
-    def columns(self, table: str) -> list[tuple[str, str]]:  # a table's columns: (name, type)
-        return [(f.name, f.field_type) for f in self.client.get_table(f"{self.dataset}.{table}").schema]
+    def columns(self, table: str) -> list[tuple[str, str]]:  # a table's columns: (name, type; a repeated one's ending in [])
+        return [(f.name, f.field_type + ("[]" if f.mode == "REPEATED" else "")) for f in self.client.get_table(f"{self.dataset}.{table}").schema]
 
     def put(self, table: str, frame: pd.DataFrame) -> None:  # a small frame as the dataset's table `table` (a load job)
         config = self.bigquery.LoadJobConfig(write_disposition="WRITE_TRUNCATE")
@@ -213,6 +239,24 @@ class BigQuery:
         if self.session:
             self.client.query("CALL BQ.ABORT_SESSION()", job_config=self._config(None)).result()
             self.session = None
+
+
+CONTROL = re.compile("[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f\u200b-\u200d\u2060\ufeff]")
+
+
+def names(header: list[str]) -> list[str]:
+    """Each column a name of its own: a blank one numbered (column_4), one that repeats another but for case suffixed
+    past every name the header gives (TEL, tel → TEL, tel_2): both engines read names case aside."""
+    given = [CONTROL.sub("", h).strip() or f"column_{i + 1}" for i, h in enumerate(header)]
+    out, seen, low = [], set(), {g.casefold() for g in given}
+    for base in given:
+        name, k = base, 1
+        while name.casefold() in seen or (k > 1 and name.casefold() in low):
+            k += 1
+            name = f"{base}_{k}"
+        out.append(name)
+        seen.add(name.casefold())
+    return out
 
 
 def kind(v: object) -> str:  # a parameter's BigQuery type
