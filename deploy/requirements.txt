@@ -1,16 +1,3 @@
-# What a job's image installs: the engine's run-time dependencies, pip only, at requirements.txt's pins
-# (tests/test_deploy.py holds them equal), and the Google clients. Nothing for design time, the notebooks or the tests.
-# The image installs deploy/requirements.lock: these resolved, every package pinned with its hashes. Made again when
-# this file changes, from releases at least two weeks old (tests/test_deploy.py checks the two agree):
-#   uv pip compile deploy/requirements.txt --generate-hashes --python-version 3.12 --universal --no-header \
-#     --exclude-newer "$(date -u -v-14d +%Y-%m-%dT00:00:00Z)" -o deploy/requirements.lock
-numpy==2.4.4
-pandas==3.0.3
-duckdb==2.0.0
-pyarrow==26.0.0
-scipy==1.18.1
-rapidfuzz==3.14.6
-scikit-learn==1.9.1
-google-cloud-bigquery==3.47.0  # er.engine.bigquery: queries, sessions, load jobs
+# What deploy/ needs beyond requirements.txt, on the Jenkins agent: the BigQuery client, pip only (nayose.engines.BigQuery)
+google-cloud-bigquery==3.47.0  # queries, sessions, load jobs
 google-cloud-bigquery-storage==2.43.0  # its Storage Read API: a result read in Arrow batches
-google-cloud-storage==3.17.1  # deploy/runner.py: the run's lock and CURRENT, under preconditions

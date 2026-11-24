@@ -1,12 +1,8 @@
-# Copied to prod.tfvars and filled in by the DevOps team (docs/operations.md). The image's registry lives here, so
-# prod never depends on staging; staging's jobs pull from it.
+# Copied to prod.tfvars and filled in by the DevOps team (docs/operations.md).
 project              = "PROJECT-prod"
 environment          = "prod"
-create_registry      = true
-registry_readers     = ["nayose-runtime@PROJECT-staging.iam.gserviceaccount.com"]
 jenkins_oidc_issuer  = ""
 jenkins_oidc_subject = ""
-update_schedule      = "" # e.g. "0 2 * * *": the batch in in/batch.parquet added nightly
 alert_emails         = []
 billing_account      = ""
 monthly_budget       = 0

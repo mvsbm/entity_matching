@@ -1,9 +1,7 @@
 locals {
-  # named as deploy/deploy.sh and deploy/Jenkinsfile expect them
+  # named as deploy/Jenkinsfile expects them
   bucket = "${var.project}-nayose-runs"
   services = [
-    "run.googleapis.com",
-    "artifactregistry.googleapis.com",
     "storage.googleapis.com",
     "bigquery.googleapis.com",
     "bigquerystorage.googleapis.com",
@@ -11,7 +9,6 @@ locals {
     "iam.googleapis.com",
     "iamcredentials.googleapis.com",
     "sts.googleapis.com",
-    "cloudscheduler.googleapis.com",
     "monitoring.googleapis.com",
     "logging.googleapis.com",
     "billingbudgets.googleapis.com",
@@ -26,7 +23,7 @@ resource "google_project_service" "on" {
   disable_on_destroy = false
 }
 
-# The runs: each a set of versions and the CURRENT that names one (deploy/runner.py); the jobs' inputs in in/.
+# The jobs' input files, in in/: what deploy/run.py loads into the run's dataset.
 resource "google_storage_bucket" "runs" {
   name                        = local.bucket
   location                    = var.region
@@ -38,18 +35,18 @@ resource "google_storage_bucket" "runs" {
   depends_on = [google_project_service.on]
 }
 
-# The column mapping (config/settings.toml's form), which the jobs mount: its value is the DevOps team's to add,
-# never Terraform's state's (docs/operations.md).
-resource "google_secret_manager_secret" "settings" {
-  secret_id = "nayose-settings"
+# The deployment's column mapping (mapping.sql), which the deploy reads: its value is the DevOps team's to add, never
+# Terraform's state's (docs/operations.md).
+resource "google_secret_manager_secret" "mapping" {
+  secret_id = "nayose-mapping"
   replication {
     auto {}
   }
   depends_on = [google_project_service.on]
 }
 
-# The run's tables once its state moves into BigQuery (docs/roadmap.md), and staging's sandbox for the engine-parity
-# check, whose tables expire in a day.
+# The run: its tables, functions and procedures (deploy/deploy.py); and staging's sandbox for the engine-parity check,
+# whose tables expire in a day.
 resource "google_bigquery_dataset" "runs" {
   dataset_id = "nayose"
   location   = var.bigquery_location
@@ -64,46 +61,7 @@ resource "google_bigquery_dataset" "sandbox" {
   depends_on                  = [google_project_service.on]
 }
 
-resource "google_artifact_registry_repository" "images" {
-  count         = var.create_registry ? 1 : 0
-  repository_id = "nayose"
-  location      = var.region
-  format        = "DOCKER"
-  cleanup_policies {
-    id     = "keep-recent"
-    action = "KEEP"
-    most_recent_versions {
-      keep_count = 30 # enough to roll back across weeks of deploys
-    }
-  }
-  cleanup_policies {
-    id     = "drop-old"
-    action = "DELETE"
-    condition {
-      older_than = "${90 * 24 * 3600}s"
-    }
-  }
-  depends_on = [google_project_service.on]
-}
-
-# nayose-update by itself, when update_schedule is set: the batch that landed in in/batch.parquet added.
-resource "google_cloud_scheduler_job" "update" {
-  count     = var.update_schedule == "" ? 0 : 1
-  name      = "nayose-update"
-  schedule  = var.update_schedule
-  time_zone = var.time_zone
-  http_target {
-    http_method = "POST"
-    uri         = "https://run.googleapis.com/v2/projects/${var.project}/locations/${var.region}/jobs/nayose-update:run"
-    oauth_token {
-      service_account_email = google_service_account.scheduler[0].email
-      scope                 = "https://www.googleapis.com/auth/cloud-platform"
-    }
-  }
-  depends_on = [google_project_service.on]
-}
-
-# Told: a job's execution that failed, and the month's spending.
+# Told: the month's spending.
 resource "google_monitoring_notification_channel" "email" {
   for_each     = toset(var.alert_emails)
   display_name = "nayose: ${each.value}"
@@ -111,29 +69,6 @@ resource "google_monitoring_notification_channel" "email" {
   labels = {
     email_address = each.value
   }
-}
-
-resource "google_monitoring_alert_policy" "failed" {
-  display_name          = "nayose: a job failed (${var.environment})"
-  combiner              = "OR"
-  notification_channels = [for c in google_monitoring_notification_channel.email : c.id]
-  conditions {
-    display_name = "a failed execution"
-    condition_threshold {
-      filter          = "resource.type = \"cloud_run_job\" AND metric.type = \"run.googleapis.com/job/completed_execution_count\" AND metric.labels.result = \"failed\""
-      comparison      = "COMPARISON_GT"
-      threshold_value = 0
-      duration        = "0s"
-      aggregations {
-        alignment_period   = "300s"
-        per_series_aligner = "ALIGN_SUM"
-      }
-    }
-  }
-  documentation {
-    content = "A nayose job failed: its execution's log says why (severity ERROR). docs/operations.md: what each exit means."
-  }
-  depends_on = [google_project_service.on]
 }
 
 resource "google_billing_budget" "month" {
