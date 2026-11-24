@@ -109,11 +109,14 @@ def test_each_key_s_candidates_and_matches_are_counted_and_the_keys_that_can_go_
     engine.close()
     got = kq.measure(tmp_path, tmp_path / "truth.parquet", 6.0)
     used = set(nayose.config()["score"]["keys"])
-    assert {r["key"] for r in got["keys"]} <= used and got["matches"] >= got["true"] > 0
+    assert {r["key"] for r in got["keys"]} == used and got["matches"] >= got["true"] > 0
     assert all(r["only"] == 0 for r in got["keys"] if r["key"] in got["drop"])
     con = duckdb.connect(str(tmp_path / "run.duckdb"), read_only=True)
     lost = con.execute("SELECT COUNT(*) FROM scored WHERE rule IS NULL AND match_weight >= 6 AND named AND sources IS NOT NULL "
                        "AND list_has_all(?, string_split(sources, '+'))", [got["drop"]]).fetchone()[0]
     text = kq.report(got, truth=True)
-    names = [n for n in population.df["FULL_NAME_KANA"].dropna().unique() if len(n) > 3][:200]
-    assert lost == 0 and not [n for n in names if n in text]  # none lost; no record's value shown
+    values = {str(v) for v in population.df.stack().unique() if len(str(v)) > 3}
+    assert got["drop"] and lost == 0 and not [v for v in values if v in text]  # some go, none lost; no record's value shown
+    listed = con.execute("SELECT COUNT(*) FROM (SELECT unnest(string_split(sources, '+')) FROM cands)").fetchone()[0]
+    alone = con.execute("SELECT COUNT(*) FROM scored WHERE rule IS NULL AND match_weight >= 6 AND named AND sources NOT LIKE '%+%'").fetchone()[0]
+    assert sum(r["candidates"] for r in got["keys"]) == listed and sum(r["only"] for r in got["keys"]) == alone

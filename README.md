@@ -73,7 +73,7 @@ procedures of the run's dataset, and Jenkins calls them ([operations](docs/opera
 | `nayose/em.py`, `entities.py`, `strings.js` | EM and connected components (Python UDFs); the comparisons in JavaScript |
 | `config/` | `kind_names.npz` (the person-or-company name model), `generator.toml` (the synthetic data) |
 | `deploy/` | the deploy to BigQuery, the Jenkinsfile, the Terraform |
-| `scripts/`, `design/` | design time: generate, benchmark, estimate_cost, train_name_model; the generator and the metrics |
+| `scripts/`, `design/` | design time: generate, benchmark, estimate_cost, key_quality, train_name_model; the generator and the metrics |
 | `data/reference/` | public names, companies and addresses the generator reads |
 | `reports/` | what the benchmark measured on synthetic data |
 | `tests/` | the tests |
