@@ -6,21 +6,14 @@ This page lists the plans, in order. The other docs describe the code as it is. 
 identical, so `tests/test_parity.py`'s digests stay unchanged. Each step also quotes BigQuery's cost before and after,
 in both bytes billed and work, from `scripts/estimate_cost.py`.
 
-## 1 · Score's cost
-
-On 1M generated records, `scripts/estimate_cost.py` puts a build at about 8.4 GB billed and `scripts/benchmark.py`
-at about 30 s. `score.sql` accounts for about 4.6 GB of that and 3.6 million of its 14.8 million comparison calls,
-the fit for 11.2 million, most of them a name's Jaro–Winkler on u's sample of 10 million pairs. records.sql writes a batch's records once, straight from
-their fields.
-
-## 2 · A key index that persists
+## 1 · A key index that persists
 
 `score.sql` makes every record's keys again for each batch, an `O(N·L)` scan, and a lookup makes them again too, an
 `O(N·G)` scan. The plan is to keep the keys as a table of the run, clustered by key on BigQuery. A batch then adds its
 own keys and joins on them alone, so the keys' part of an update costs `O(Δ·b)` and a lookup's costs `O(G·b)`. This is
 the index the on-demand lookups need at a billion records.
 
-## 3 · BigQuery parity on the sandbox
+## 2 · BigQuery parity on the sandbox
 
 No job has run on BigQuery yet. Every result is proven on DuckDB. Once the DevOps team provides staging's sandbox
 dataset (`deploy/terraform/`, whose tables expire in a day), the tests' population runs through both engines, and
@@ -28,7 +21,7 @@ every job's tables are compared by digest, as `tests/test_parity.py` compares th
 `scripts/estimate_cost.py` against BigQuery's own bytes billed and slot time. After that comes the scale rehearsal,
 1M → 10M → 100M generated records with time and bytes billed at each size, before the first real build.
 
-## 4 · Lookups on BigQuery
+## 3 · Lookups on BigQuery
 
 A lookup is an update of the record asked about, rolled back. BigQuery takes no DDL in a transaction, so the deploy
 makes no lookup procedure (`JOBS` in `nayose/engines.py`). On BigQuery, a lookup will run in a session of its own,

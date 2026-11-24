@@ -9,7 +9,7 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
-from nayose.engines import FUNCTIONS, STRINGS, DuckDB
+from nayose.engines import BUILT_IN, FUNCTIONS, STRINGS, DuckDB
 
 EXPECTED = json.loads((Path(__file__).parent / "fixtures" / "expected.json").read_text(encoding="utf-8"))
 
@@ -74,7 +74,7 @@ def test_javascript_scores_as_the_duckdb_twins_do(duck):
     ctx.eval(STRINGS.read_text(encoding="utf-8"))
     given = pairs(20_000)
     duck.con.register("t2", pd.DataFrame(given, columns=["a", "b"], dtype="string").assign(i=range(len(given))))
-    for name in FUNCTIONS:
+    for name in (n for n in FUNCTIONS if n not in BUILT_IN):  # BigQuery's own: deploy/smoke.py checks it there
         got = json.loads(ctx.eval(f"JSON.stringify({json.dumps(given, ensure_ascii=False)}.map(([a, b]) => {name}(a, b)))"))
         want = [x for (x,) in duck.con.execute(f"SELECT cl_{name}(a, b) FROM t2 ORDER BY i").fetchall()]
         assert [(a, b) for (a, b), g, w in zip(given, got, want) if g != w] == [], name
@@ -93,3 +93,19 @@ def test_the_portable_hash_and_nfkc(duck):
     assert got == [int(hashlib.md5((v or "").encode()).hexdigest()[:15], 16) for v in values]  # MD5's first 60 bits: what every sample and order by hash reads
     got = [r[0] for r in duck.con.execute("SELECT nfkc(x) FROM (SELECT unnest(?) AS x)", [values]).fetchall()]
     assert got == [None if v is None else unicodedata.normalize("NFKC", v) for v in values] and got[4] == "カブシキガイシャ" and got[5] == "(株)ヤマダ"
+
+
+def test_a_name_s_jaro_winkler_never_passes_the_most_its_letters_allow(tmp_path, population):
+    import nayose
+    named = population.df[population.df["FULL_NAME_KANA"].notna()].head(300)
+    typo = named.assign(CONT_ID="9" + named["CONT_ID"].str[1:], FULL_NAME_KANA=named["FULL_NAME_KANA"].str[:-1] + "アア")  # a letter changed and repeated
+    pd.concat([named, typo]).to_parquet(tmp_path / "in.parquet", index=False)
+    engine = DuckDB()
+    nayose.records(engine, [tmp_path / "in.parquet"])
+    got = engine.rows("""SELECT COUNT(*), COUNT(CASE WHEN name_jw_most(x, y) < cl_jaro_winkler(x.person_name__kana_fold, y.person_name__kana_fold)
+                                                     - CAST(0.000001 AS FLOAT64) THEN 1 END),
+                                COUNT(CASE WHEN name_jw_most(x, y) < CAST(0.75 AS FLOAT64) THEN 1 END)
+                         FROM records AS x JOIN records AS y ON x.id < y.id
+                         WHERE x.person_name__kana_fold IS NOT NULL AND y.person_name__kana_fold IS NOT NULL""")
+    pairs, above, settled = got[0]
+    assert pairs > 100_000 and above == 0 and settled > pairs / 2  # never under the score, and most pairs settled without a call

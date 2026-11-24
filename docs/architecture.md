@@ -192,9 +192,10 @@ Where sqlglot's translation answers otherwise, `as_bigquery` rewrites the node t
 
 | Function | BigQuery (the deploy's, `functions`) | DuckDB (`DuckDB.__init__`) |
 |---|---|---|
-| `cl_jaro_winkler`, `cl_levenshtein`, `cl_damerau_levenshtein`, `cl_hamming`, and each `_cut` | JavaScript UDFs (`strings.js`) | DuckDB's own where both strings are a byte a character, else rapidfuzz; Jaro–Winkler as float32 |
+| `cl_levenshtein` and its `_cut` | SQL UDFs over `EDIT_DISTANCE`, in characters (`BUILT_IN`; the staging smoke test checks it) | DuckDB's own where both strings are a byte a character, else rapidfuzz |
+| `cl_jaro_winkler`, `cl_damerau_levenshtein`, `cl_hamming`, and each `_cut` | JavaScript UDFs (`strings.js`) | DuckDB's own where both strings are a byte a character, else rapidfuzz; Jaro–Winkler as float32 |
 | `er_hash` (every draw and order by hash) | SQL UDF: MD5's first 15 hex digits as INT64 | a macro, the same |
-| `nfkc` | `NORMALIZE(x, NFKC)` | `unicodedata` |
+| `nfkc` | `NORMALIZE(x, NFKC)` | Arrow's `utf8_normalize` |
 | `one_byte_hash` | SQL UDF over code points | numpy |
 | `fit_model` | Python UDF, `em.py` | `em.fit` |
 | `entities_of` | Python UDF, `entities.py` | `entities.of` |

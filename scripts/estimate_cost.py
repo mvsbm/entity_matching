@@ -18,7 +18,7 @@ from collections import defaultdict
 from pathlib import Path
 
 import nayose
-from nayose.engines import FUNCTIONS, DuckDB, compare
+from nayose.engines import BUILT_IN, FUNCTIONS, DuckDB, compare
 
 MB, TIB = 1e6, 2 ** 40
 PRICE_PER_TIB = 6.25  # on-demand list price, US multi-region (cloud.google.com/bigquery/pricing): check the region's
@@ -28,7 +28,7 @@ SIZE = {"VARCHAR": "COALESCE(SUM(strlen({c}) + 2), 0)", "BOOLEAN": "COUNT({c})"}
 def measured(engine: DuckDB) -> list[dict]:
     """Wraps the engine: each statement's bytes billed, rows produced and comparison calls, appended as it runs."""
     out, calls = [], [0]
-    for name in FUNCTIONS:  # every call counted: the Python twins alone, as BigQuery's JavaScript is called for each
+    for name in (x for x in FUNCTIONS if x not in BUILT_IN):  # every call counted: BigQuery's JavaScript, called for each (its own EDIT_DISTANCE aside)
         for cut, kinds in (("", ["VARCHAR", "VARCHAR"]), ("_cut", ["VARCHAR", "VARCHAR", "DOUBLE"])):
             engine.con.execute(f"DROP MACRO IF EXISTS cl_{name}{cut}")
             engine.con.create_function(f"cl_{name}{cut}", counting(compare(name, cut=bool(cut)), bool(cut), calls), kinds, "DOUBLE", type="arrow")

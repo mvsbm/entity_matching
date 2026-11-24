@@ -16,7 +16,9 @@ import run  # noqa: E402
 from nayose.engines import BigQuery, DuckDB  # noqa: E402
 
 COMPARED = {"scored": "SELECT id_l, id_r, ROUND(match_weight, 9) AS w, rule, sources FROM scored ORDER BY id_l, id_r",
-            "gold": "SELECT id, cluster_id, customer_kind FROM gold ORDER BY id"}
+            "gold": "SELECT id, cluster_id, customer_kind FROM gold ORDER BY id",
+            # BigQuery's EDIT_DISTANCE (cl_levenshtein's there) counted in characters, as the twin: 3 and the cut's 2, not bytes
+            "levenshtein": "SELECT cl_levenshtein('東京都港区芝', '東京府北区') AS d, cl_levenshtein_cut('東京都港区', '大阪府北区', 1) AS c"}
 
 
 def main(argv: list[str] | None = None) -> int:
