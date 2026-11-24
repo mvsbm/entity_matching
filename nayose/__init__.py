@@ -17,6 +17,7 @@ a set of tables: a BigQuery dataset, or a DuckDB database file.
     fingerprint()                   what an increment needs unchanged since the full run: the SQL, the values, the mapping
                                     and the name model
 """
+import functools
 import hashlib
 import json
 import math
@@ -55,6 +56,7 @@ FIELDS = ("full_name", "person_name", "given_name", "company_name", "any_name", 
 # a statement, read from its text (run_file, scratched, the deploy's procedures)
 PARAMETER = re.compile(r"@(\w+)")  # a value a statement reads, by name (run_file gives it, the deploy declares it)
 NOT_CODE = re.compile(r"--[^\n]*|'(?:[^'\\]|\\.)*'")  # a comment or a string: what isn't code
+QUOTED = re.compile(r"""--[^\n]*|'''.*?'''|\"\"\".*?\"\"\"|'(?:[^'\\]|\\.)*'|"(?:[^"\\]|\\.)*"|`[^`]*`""", re.S)  # a -- comment, any of BigQuery's strings or quoted names
 WHEN = re.compile(r"^\s*--\s*when:(.*)$", re.M | re.I)
 LEAD = r"(?:\s*--[^\n]*\n|\s*/\*.*?\*/)*\s*"  # a statement's leading comments
 WRITE = re.compile(rf"^({LEAD})(CREATE\s+OR\s+REPLACE\s+TEMP(?:ORARY)?\s+TABLE|CREATE\s+OR\s+REPLACE\s+TABLE|"
@@ -78,16 +80,35 @@ def mapping() -> Path:  # mapping.sql, or the file NAYOSE_MAPPING names (another
     return Path(os.environ.get("NAYOSE_MAPPING") or HERE / "mapping.sql")
 
 
+MAPPED = ("input_rows", "mapped")  # what a mapping makes, for records.sql
+
+
+@functools.cache
+def method_tables() -> frozenset[str]:  # every table the method's SQL names (a WITH's aside) and Python makes, in lower case
+    names = {"input", "name_weights", "method"}
+    for f in SQL.glob("*.sql"):
+        for sql in statements(f.read_text(encoding="utf-8")):
+            tree = sqlglot.parse_one(sql, read="bigquery")
+            ctes = {c.alias_or_name for c in tree.find_all(exp.CTE)}
+            names |= {t.name for t in tree.find_all(exp.Table) if t.name not in ctes}
+    return frozenset(n.lower() for n in names) - set(MAPPED)
+
+
 def mapping_statements(path: Path) -> list[str]:
     """A mapping's statements, refused unless each, as BigQuery parses it, is one query or makes one temporary table of
-    a name the method doesn't use. A mapping turns the input's columns into fields and keeps nothing: a table of its
-    own would be dropped by the next build (engines.procedures), which makes again all it writes; a temporary table
-    named as one of the method's would hide it (a statement reads the temporary one first); and a function of its own
-    would replace one of the method's on BigQuery alone."""
-    taken = {"input", "name_weights", "method"} | {m[3] for f in SQL.glob("*.sql") for m in map(WRITE.match, statements(f.read_text(encoding="utf-8"))) if m}
-    out = statements(path.read_text(encoding="utf-8"))
+    a name the method doesn't use (case aside), its comments written with --. A mapping turns the input's columns into
+    fields and keeps nothing: a table of its own would be dropped by the next build (engines.procedures), which makes
+    again all it writes; a temporary table named as one of the method's would hide it (a statement reads the temporary
+    one first); a function of its own would replace one of the method's on BigQuery alone; and nayose finds a
+    statement's end and its @values past -- comments alone (statements, run_file)."""
+    try:
+        out = statements(path.read_text(encoding="utf-8"))
+    except ValueError as e:
+        raise InputError(f"{path.name}: {e}", fix="end each statement with a line ending in ';', and start a comment with --") from e
     for sql in out:
         said = " ".join(sql.split())[-100:]
+        if "#" in QUOTED.sub("", sql):
+            raise InputError(f"{path.name}: a comment starts with --, as in the method's files: {said}", fix="write each # comment as --")
         try:
             trees = [t for t in sqlglot.parse(sql, read="bigquery") if t is not None and not isinstance(t, exp.Semicolon)]
         except sqlglot.errors.ParseError as e:
@@ -97,7 +118,7 @@ def mapping_statements(path: Path) -> list[str]:
         name = made and (made.this.this if isinstance(made.this, exp.Schema) else made.this).name
         if isinstance(one, exp.Create) and one.kind == "FUNCTION":
             raise InputError(f"{path.name}: a mapping makes no function of its own: {said}", fix="write it in place, or call one of functions.sql's")
-        if made is not None and name in taken:
+        if made is not None and name.lower() in method_tables():
             raise InputError(f"{path.name}: the temporary table {name} has the name of one of the method's tables, which it would hide",
                              fix="give it a name of its own")
         if made is None and not isinstance(one, exp.Query):

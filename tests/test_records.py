@@ -74,22 +74,25 @@ def test_the_mapping_parses_as_bigquery_and_translates(path):
                                  "CREATE OR REPLACE TEMP TABLE helper AS SELECT 1 AS x; DELETE FROM decisions WHERE TRUE;",
                                  "WITH gone AS (SELECT 1 AS x)\nDELETE FROM decisions WHERE TRUE;",
                                  "-- a helper of its own\nCREATE TEMP FUNCTION blank(v STRING) AS (v IS NULL);",
-                                 "CREATE OR REPLACE TEMP TABLE placeholders AS SELECT 'x' AS v;"])
+                                 "CREATE OR REPLACE TEMP TABLE Placeholders AS SELECT 'x' AS v;",
+                                 "CREATE OR REPLACE TEMP TABLE given AS SELECT 1 AS v;  -- decide.sql's, people's decisions",
+                                 "CREATE OR REPLACE TEMP TABLE helper AS SELECT 1 AS x;  # a note",
+                                 "SELECT 1 AS x;\n# the end"])
 def test_a_mapping_that_makes_more_than_temporary_tables_of_its_own_is_refused_by_the_deploy_and_by_a_job(tmp_path, monkeypatch, bad):
     from nayose.engines import procedures
     given = tmp_path / "mapping.sql"
     given.write_text((nayose.HERE / "mapping.sql").read_text(encoding="utf-8") + "\n" + bad + "\n", encoding="utf-8")
-    with pytest.raises(nayose.InputError, match="temporary tables alone|no function|name of one of the method's"):
+    with pytest.raises(nayose.InputError, match="^mapping.sql: "):
         procedures("p.run", given)
     monkeypatch.setenv("NAYOSE_MAPPING", str(given))
     engine = DuckDB()
-    with pytest.raises(nayose.InputError, match="temporary tables alone|no function|name of one of the method's"):
+    with pytest.raises(nayose.InputError, match="^mapping.sql: "):
         nayose.records(engine, [tmp_path / "none.parquet"])  # refused before the file is read, so none is needed
     assert engine.con.execute("SELECT COUNT(*) FROM duckdb_tables()").fetchone()[0] == 0  # nor anything written
 
 
-def test_a_mapping_in_any_form_bigquery_reads_is_accepted(tmp_path):
-    text = (nayose.HERE / "mapping.sql").read_text(encoding="utf-8").replace("\n-- ", "\n# ").replace("TEMP TABLE mapped", "TEMPORARY TABLE mapped")
+def test_a_mapping_in_the_documented_form_is_accepted(tmp_path):
+    text = (nayose.HERE / "mapping.sql").read_text(encoding="utf-8").replace("TEMP TABLE mapped", "TEMPORARY TABLE mapped")
     given = tmp_path / "mapping.sql"
     given.write_text(text + "\nSELECT IF(COUNT(*) = 0, ERROR('no records'), 0) FROM mapped;  -- a check of its own\n", encoding="utf-8")
     assert len(nayose.mapping_statements(given)) == len(nayose.statements(text)) + 1
