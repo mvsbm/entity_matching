@@ -5,7 +5,7 @@ HIDE_STEREOTYPE()
 title HLD 3 · Components: every module, in its layer; each layer imports only the layers below it
 
 Container(tools_run, "The jobs' entry", "python -m er", "er/__main__.py: build, update, match, decide, lookup: the words, the JSON printed, the exit codes")
-Container(tools_design, "Design-time tools", "scripts/", "scripts/generate.py: synthetic data\nscripts/train_name_model.py: config/kind_names.npz\nscripts/benchmark.py: quality and cost")
+Container(tools_design, "Design-time tools", "scripts/", "scripts/generate.py: synthetic data\nscripts/train_name_model.py: config/kind_names.npz\nscripts/benchmark.py: quality and cost\nscripts/estimate_cost.py: what a build costs BigQuery, measured on DuckDB")
 
 Component(run, "The run", "er/", "er/jobs/build.py: the full run, one line per step, then its index\ner/jobs/update.py: an increment\ner/jobs/match.py: a match run: the pairs at a threshold people set, as a table for them\ner/jobs/decide.py: people's decisions applied\ner/jobs/index.py: the run's keys, indexed and kept up to date: records looked up\ner/steps/job.py: what every step of a job shares (Job, Log, start, Ran)\ner/steps/load.py: 1, load · er/steps/budget.py: 2, budget · er/steps/fit.py: 3, fit\ner/steps/rules.py: 4, rules · er/steps/candidates.py: 5, candidates · er/steps/score.py: 6, score\ner/steps/cluster.py: 7, cluster · er/steps/write.py: 8, write · er/steps/report.py: 9, report\ner/folder.py: the run's folder: one writer, staged writes, steps.json, part numbers\ner/report.py: the reports for people")
 Component(design, "Design time", "design/", "design/generate.py: synthetic records and the truth\ndesign/evaluate.py: metrics, intervals")
