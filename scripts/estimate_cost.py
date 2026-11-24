@@ -17,7 +17,6 @@ from collections import defaultdict
 from pathlib import Path
 
 import nayose
-from nayose import em
 from nayose.engines import FUNCTIONS, DuckDB, compare
 
 MB, TIB = 1e6, 2 ** 40
@@ -87,7 +86,7 @@ def build(path: Path) -> dict[str, list[dict]]:  # stage → its statements' cos
     nayose.records(engine, [path])
     stages = {"records": list(got)}
     got.clear()
-    em.fit(engine)
+    nayose.fit(engine)
     stages["fit"] = list(got)
     engine.close()
     return stages

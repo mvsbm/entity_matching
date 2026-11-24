@@ -1,17 +1,14 @@
 -- The functions nayose's SQL calls, each written once; every job runs this file first. Two kinds:
 --
--- 1. The intake's (stage 1's first step): each value of the input files as read, what loses nothing fixed and counted,
---    never a value. nayose.read applies them to every column of the file (its columns are its own, so that statement
---    is written for each file): raw (the files, every column as text) → input (each value read) and intake (what was
---    fixed: how many values, never one). O(bytes). What is fixed, in order:
+-- 1. The intake's: each value of the input as read, what loses nothing fixed: mapping.sql reads every column it reads
+--    through read_value(value, numeric, @nulls). O(bytes). What is fixed, in order:
 --      damaged       a value holding U+FFFD (bytes decoded wrong upstream, or bytes that aren't UTF-8): missing
---      lists         a value written as a list of plain items (["8700848"], ['大分市'], [0708612], a Parquet list
---                    column): its first filled item; none filled, missing
---      first of several   the same, when it lists several: the rest dropped
+--      lists         a value written as a list of plain items (["8700848"], ['大分市'], [0708612]): its first filled
+--                    item, the rest dropped; none filled, missing
 --      controls      control characters, zero-width characters and BOMs removed; tabs and line breaks one space
 --      placeholders  a value written as a placeholder null ([input] nulls), or of spaces alone (any width): missing
---      numbers       in a column of numbers, a whole number a spreadsheet wrote as a float (12345.0) as its digits, and
---                    one cut short in E notation (1.23E+11: its digits are gone) missing
+--      numbers       in a column of numbers (numeric: the mapping says), a whole number a spreadsheet wrote as a float
+--                    (12345.0) as its digits, and one cut short in E notation (1.23E+11: its digits are gone) missing
 --    SP below is Python's whitespace (str.strip): \t-\r\x{1c}-\x{20}\x{85}\x{a0}\x{1680}\x{2000}-\x{200a}\x{2028}\x{2029}\x{202f}\x{205f}\x{3000}.
 --
 -- 2. The model's comparisons (stage 2 and the scores): how two records compare, field by field, each given the two
@@ -25,25 +22,11 @@
 
 -- ---------- 1. The intake ----------
 
--- A column of numbers: half its filled values digits, a point, an exponent's E+ and a leading minus aside. Each value:
--- NULL not filled, 1 a number, 0 not one.
-CREATE OR REPLACE TEMP FUNCTION numberlike(v STRING) RETURNS INT64 AS (
-  CASE
-    WHEN v IS NULL OR REGEXP_CONTAINS(v, r'^[\t-\r\x{1c}-\x{20}\x{85}\x{a0}\x{1680}\x{2000}-\x{200a}\x{2028}\x{2029}\x{202f}\x{205f}\x{3000}]*$') THEN NULL
-    WHEN REGEXP_CONTAINS(v, r'[^\x00-\x7f]') THEN 0
-    WHEN REGEXP_CONTAINS(
-      LTRIM(REPLACE(REPLACE(REGEXP_REPLACE(REGEXP_REPLACE(v, r'^[\t-\r\x{1c}-\x{20}]+|[\t-\r\x{1c}-\x{20}]+$', ''), r'^([^.]*)\.', r'\1'), 'E+', ''), 'e+', ''), '-'),
-      r'^[0-9]+$') THEN 1
-    ELSE 0
-  END
-);
-
-
--- Damaged, then a value written as a list: (the value, what was fixed).
+-- A value written as a list: its first filled item; else the value (damaged, missing).
 --   A list is plain when JSON reads it as a list of strings, numbers and nulls (["a", 1, null]), or Python as a list
 --   of strings (['a', "b",]; shortcut: a Python string with a backslash in it is left as written, where Python would
 --   read its escapes; none seen in a records file). An item is filled when it holds more than spaces (an escape counts
---   as filled). A string is read as JSON reads it (its escapes, 大, decoded); a number as written, a whole one
+--   as filled). A string is read as JSON reads it (its escapes, \u5927, decoded); a number as written, a whole one
 --   written 12345.0 as its digits, one cut short like 1.23E+11 missing, as a bare one is.
 --   The patterns, in pieces: a JSON string "(?:[^"\\]|\\["\\/bfnrt]|\\u[0-9a-fA-F]{4})*"; a JSON number
 --   -?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?; a Python string '…' or "…" ('' is \x{27}); a blank item
@@ -65,50 +48,35 @@ CREATE OR REPLACE TEMP FUNCTION item_read(item STRING) RETURNS STRING AS (
   END
 );
 
-CREATE OR REPLACE TEMP FUNCTION listed(v STRING) RETURNS STRUCT<v STRING, fixed STRING> AS (
+CREATE OR REPLACE TEMP FUNCTION unlisted(v STRING) RETURNS STRING AS (
   CASE
-    WHEN v IS NULL OR v = '' THEN STRUCT(CAST(NULL AS STRING) AS v, CAST(NULL AS STRING) AS fixed)
-    WHEN REGEXP_CONTAINS(v, r'\x{fffd}') THEN STRUCT(CAST(NULL AS STRING) AS v, 'damaged' AS fixed)
+    WHEN v IS NULL OR v = '' OR REGEXP_CONTAINS(v, r'\x{fffd}') THEN NULL   -- damaged
+    WHEN NOT REGEXP_CONTAINS(v, r'\[') THEN v                                   -- most values: no list
     -- a code with leading zeros, unquoted: [0708612]
     WHEN REGEXP_CONTAINS(v, r'^[\t-\r\x{1c}-\x{20}\x{85}\x{a0}\x{1680}\x{2000}-\x{200a}\x{2028}\x{2029}\x{202f}\x{205f}\x{3000}]*\[[\t-\r\x{1c}-\x{20}\x{85}\x{a0}\x{1680}\x{2000}-\x{200a}\x{2028}\x{2029}\x{202f}\x{205f}\x{3000}]*\p{Nd}+[\t-\r\x{1c}-\x{20}\x{85}\x{a0}\x{1680}\x{2000}-\x{200a}\x{2028}\x{2029}\x{202f}\x{205f}\x{3000}]*\][\t-\r\x{1c}-\x{20}\x{85}\x{a0}\x{1680}\x{2000}-\x{200a}\x{2028}\x{2029}\x{202f}\x{205f}\x{3000}]*$')
-      THEN STRUCT(REGEXP_EXTRACT(v, r'(\p{Nd}+)') AS v, 'lists' AS fixed)
+      THEN REGEXP_EXTRACT(v, r'(\p{Nd}+)')
     -- a plain list, as JSON reads one, or as Python reads a list of strings
     WHEN REGEXP_CONTAINS(v, r'^[\t-\r\x{1c}-\x{20}\x{85}\x{a0}\x{1680}\x{2000}-\x{200a}\x{2028}\x{2029}\x{202f}\x{205f}\x{3000}]*\[[ \t\n\r]*(?:(?:"(?:[^"\\]|\\["\\/bfnrt]|\\u[0-9a-fA-F]{4})*"|-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?|null)(?:[ \t\n\r]*,[ \t\n\r]*(?:"(?:[^"\\]|\\["\\/bfnrt]|\\u[0-9a-fA-F]{4})*"|-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?|null))*)?[ \t\n\r]*\][\t-\r\x{1c}-\x{20}\x{85}\x{a0}\x{1680}\x{2000}-\x{200a}\x{2028}\x{2029}\x{202f}\x{205f}\x{3000}]*$')
       OR REGEXP_CONTAINS(v, r'^[\t-\r\x{1c}-\x{20}\x{85}\x{a0}\x{1680}\x{2000}-\x{200a}\x{2028}\x{2029}\x{202f}\x{205f}\x{3000}]*\[[ \t\n\r\x{0c}]*(?:(?:\x{27}[^\x{27}\\\r\n]*\x{27}|"[^"\\\r\n]*")(?:[ \t\n\r\x{0c}]*,[ \t\n\r\x{0c}]*(?:\x{27}[^\x{27}\\\r\n]*\x{27}|"[^"\\\r\n]*"))*(?:[ \t\n\r\x{0c}]*,)?)?[ \t\n\r\x{0c}]*\][\t-\r\x{1c}-\x{20}\x{85}\x{a0}\x{1680}\x{2000}-\x{200a}\x{2028}\x{2029}\x{202f}\x{205f}\x{3000}]*$')
-      THEN STRUCT(
-        item_read(listed_item(v)) AS v,
-        -- several: a filled item after the first
-        IF(listed_item(v) IS NULL OR REGEXP_CONTAINS(v, r'^[\t-\r\x{1c}-\x{20}\x{85}\x{a0}\x{1680}\x{2000}-\x{200a}\x{2028}\x{2029}\x{202f}\x{205f}\x{3000}]*\[[ \t\n\r\x{0c}]*(?:(?:"[\t-\r\x{1c}-\x{20}\x{85}\x{a0}\x{1680}\x{2000}-\x{200a}\x{2028}\x{2029}\x{202f}\x{205f}\x{3000}]*"|\x{27}[\t-\r\x{1c}-\x{20}\x{85}\x{a0}\x{1680}\x{2000}-\x{200a}\x{2028}\x{2029}\x{202f}\x{205f}\x{3000}]*\x{27}|null)[ \t\n\r\x{0c}]*,[ \t\n\r\x{0c}]*)*(?:"(?:[^"\\]|\\.)*(?:[^"\\\t-\r\x{1c}-\x{20}\x{85}\x{a0}\x{1680}\x{2000}-\x{200a}\x{2028}\x{2029}\x{202f}\x{205f}\x{3000}]|\\.)(?:[^"\\]|\\.)*"|\x{27}[^\x{27}\\\r\n]*[^\x{27}\\\t-\r\x{1c}-\x{20}\x{85}\x{a0}\x{1680}\x{2000}-\x{200a}\x{2028}\x{2029}\x{202f}\x{205f}\x{3000}][^\x{27}\\\r\n]*\x{27}|-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?)(?:[ \t\n\r\x{0c}]*,[ \t\n\r\x{0c}]*(?:"[\t-\r\x{1c}-\x{20}\x{85}\x{a0}\x{1680}\x{2000}-\x{200a}\x{2028}\x{2029}\x{202f}\x{205f}\x{3000}]*"|\x{27}[\t-\r\x{1c}-\x{20}\x{85}\x{a0}\x{1680}\x{2000}-\x{200a}\x{2028}\x{2029}\x{202f}\x{205f}\x{3000}]*\x{27}|null))*(?:[ \t\n\r\x{0c}]*,)?[ \t\n\r\x{0c}]*\][\t-\r\x{1c}-\x{20}\x{85}\x{a0}\x{1680}\x{2000}-\x{200a}\x{2028}\x{2029}\x{202f}\x{205f}\x{3000}]*$'),
-           'lists', 'first of several') AS fixed)
-    ELSE STRUCT(v AS v, CAST(NULL AS STRING) AS fixed)
+      THEN item_read(listed_item(v))
+    ELSE v
   END
 );
 
-
--- Then controls, placeholders and numbers, on a value `listed` gave: (the value, what was fixed). `numeric`: whether
--- its column holds numbers (numberlike); `nulls`: [input] nulls. A value holding no control character or break is
--- read as it is (most are: the test is one scan, where removing them is two).
-CREATE OR REPLACE TEMP FUNCTION settled(v STRING, fixed STRING, numeric BOOL, nulls ARRAY<STRING>) RETURNS STRUCT<v STRING, fixed STRING> AS (
-  CASE
-    WHEN REGEXP_REPLACE(v, r'^[ \x{3000}]+|[ \x{3000}]+$', '') IN UNNEST(nulls)
-      OR REGEXP_CONTAINS(v, r'^[\t-\r\x{1c}-\x{20}\x{85}\x{a0}\x{1680}\x{2000}-\x{200a}\x{2028}\x{2029}\x{202f}\x{205f}\x{3000}]*$')
-      THEN STRUCT(CAST(NULL AS STRING) AS v, 'placeholders' AS fixed)
-    WHEN numeric AND REGEXP_CONTAINS(REGEXP_REPLACE(v, r'^[ \x{3000}]+|[ \x{3000}]+$', ''), r'^-?\p{Nd}+\.0+$')
-      THEN STRUCT(REGEXP_EXTRACT(REGEXP_REPLACE(v, r'^[ \x{3000}]+|[ \x{3000}]+$', ''), r'^(-?\p{Nd}+)\.0+$') AS v, 'numbers' AS fixed)
-    WHEN numeric AND REGEXP_CONTAINS(REGEXP_REPLACE(v, r'^[ \x{3000}]+|[ \x{3000}]+$', ''), r'^-?\p{Nd}(\.\p{Nd}+)?[eE]\+\p{Nd}+$')
-      THEN STRUCT(CAST(NULL AS STRING) AS v, 'numbers' AS fixed)
-    ELSE STRUCT(v AS v, fixed AS fixed)
-  END
-);
-
-CREATE OR REPLACE TEMP FUNCTION tidied(v STRING, fixed STRING, numeric BOOL, nulls ARRAY<STRING>) RETURNS STRUCT<v STRING, fixed STRING> AS (
-  CASE
-    WHEN v IS NULL THEN STRUCT(CAST(NULL AS STRING) AS v, fixed AS fixed)
-    WHEN REGEXP_CONTAINS(v, r'[\x00-\x1f\x7f-\x9f\x{200b}-\x{200d}\x{2060}\x{feff}]')  -- controls, tabs and breaks: removed, a space
-      THEN settled(REGEXP_REPLACE(REGEXP_REPLACE(v, r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f\x{200b}-\x{200d}\x{2060}\x{feff}]', ''), r'[\t\r\n]+', ' '),
-                   'controls', numeric, nulls)
-    ELSE settled(v, fixed, numeric, nulls)
-  END
+-- Each value as read: unlisted, then controls removed (tabs and breaks a space), then a placeholder (nulls: an anchored
+-- pattern of [input] nulls, or spaces alone) and, in a column of numbers, a number cut short marked (CHR(1), which no
+-- value holds once its controls are gone) and made missing, and a whole one written 12345.0 read as its digits. Each
+-- step reads the one before once: a function's argument is copied wherever it is read.
+CREATE OR REPLACE TEMP FUNCTION read_value(v STRING, numeric BOOL, nulls STRING) RETURNS STRING AS (
+  NULLIF(
+    REGEXP_REPLACE(
+      REGEXP_REPLACE(
+        REGEXP_REPLACE(
+          REGEXP_REPLACE(REGEXP_REPLACE(unlisted(v), r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f\x{200b}-\x{200d}\x{2060}\x{feff}]', ''), r'[\t\r\n]+', ' '),
+          nulls, CHR(1)),
+        IF(numeric, r'^[ \x{3000}]*-?\p{Nd}(\.\p{Nd}+)?[eE]\+\p{Nd}+[ \x{3000}]*$', r'$^'), CHR(1)),
+      IF(numeric, r'^[ \x{3000}]*(-?\p{Nd}+)\.0+[ \x{3000}]*$', r'($^)'), r'\1'),
+    CHR(1))
 );
 
 

@@ -8,7 +8,6 @@ from dataclasses import replace
 import pytest
 
 import nayose
-from nayose import em
 from nayose.engines import DuckDB
 
 
@@ -42,10 +41,19 @@ def test_the_model_is_er_s_to_the_last_bit(tmp_path, population, monkeypatch, si
     monkeypatch.setattr(nayose, "config", lambda: c)
     engine = DuckDB()
     nayose.records(engine, [tmp_path / "in.parquet"])
-    em.fit(engine)
+    nayose.fit(engine)
     lam, fit_rows, notes = engine.rows("SELECT probability, fit_rows, notes FROM fit")[0]
     assert lam == old.model["probability_two_random_records_match"] and fit_rows == old.model["er"]["fit_rows"]
-    for table, want in (("model", old.model), ("scoring", old.scoring)):
-        assert {(x, label): (m, u) for x, label, m, u in engine.rows(f"SELECT comparison, label, m, u FROM {table}")} == levels(want)
+    for m, u, want in (("m", "u", old.model), ("file_m", "file_u", old.scoring)):  # as fitted, and with the file's u
+        assert {(x, label): (a, b) for x, label, a, b in engine.rows(f"SELECT comparison, label, {m}, {u} FROM model")} == levels(want)
     notes = json.loads(notes)
     assert {k: notes[k] for k in ("filled", "skipped", "adjusted", "em_pairs")} == {k: old.model["er"][k] for k in ("filled", "skipped", "adjusted", "em_pairs")}
+    assert notes["file_adjusted"] == old.scoring["er"]["adjusted"]
+
+
+def test_em_is_a_python_3_11_module_of_the_standard_library_alone():  # BigQuery's Python UDF: python-3.11, no packages
+    import ast
+    import sys
+    tree = ast.parse((nayose.HERE / "em.py").read_text(encoding="utf-8"), feature_version=(3, 11))
+    imported = {a.name.split(".")[0] for n in ast.walk(tree) if isinstance(n, (ast.Import, ast.ImportFrom)) for a in getattr(n, "names", [])}
+    assert imported <= sys.stdlib_module_names, imported - sys.stdlib_module_names

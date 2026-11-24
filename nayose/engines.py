@@ -29,6 +29,8 @@ from rapidfuzz import process
 from rapidfuzz.distance import DamerauLevenshtein, Hamming, JaroWinkler, Levenshtein
 from sqlglot import exp
 
+from nayose import em
+
 STRINGS = Path(__file__).parent / "strings.js"  # the comparison functions in JavaScript, as BigQuery runs them
 
 FUNCTIONS = {  # each character-level comparison the SQL calls as cl_<name>(a, b) and cl_<name>_cut(a, b, threshold)
@@ -169,8 +171,6 @@ class DuckDB:
             self.con.execute(f"SET {key} = '{value}'")
         # the portable hash: MD5's first 15 hex digits as an integer, as BigQuery's er_hash (functions())
         self.con.execute("CREATE OR REPLACE MACRO er_hash(x) AS ('0x' || substr(md5(coalesce(CAST(x AS VARCHAR), '')), 1, 15))::BIGINT")
-        # bytes as UTF-8, as BigQuery's: bytes that aren't hold U+FFFD
-        self.con.execute("CREATE OR REPLACE MACRO safe_convert_bytes_to_string(b) AS CASE WHEN b IS NOT NULL THEN coalesce(TRY(decode(b)), chr(65533)) END")
         for name in FUNCTIONS:  # cl_*: DuckDB's own function where it answers as the twin does (native), else the twin
             self.con.create_function(f"twin_{name}", compare(name), ["VARCHAR", "VARCHAR"], "DOUBLE", type="arrow")
             self.con.create_function(f"twin_{name}_cut", compare(name, cut=True), ["VARCHAR", "VARCHAR", "DOUBLE"], "DOUBLE", type="arrow")
@@ -178,6 +178,7 @@ class DuckDB:
             self.con.execute(f"CREATE OR REPLACE MACRO cl_{name}_cut(a, b, t) AS {native(name, f'twin_{name}_cut(a, b, t)')}")
         self.con.create_function("nfkc", nfkc, ["VARCHAR"], "VARCHAR", type="arrow")
         self.con.create_function("one_byte_hash", one_byte_hash, ["VARCHAR"], "VARCHAR", type="arrow")
+        self.con.create_function("fit_model", em.fit, ["VARCHAR", "VARCHAR"], "VARCHAR")  # EM: a Python function, as on BigQuery
 
     def run(self, sql: str, values: dict | None = None) -> None:
         self.con.execute(duckdb_sql(sql), values or None)
@@ -201,12 +202,15 @@ class DuckDB:
         finally:
             self.con.unregister("nayose_put")
 
-    def read_parquet(self, table: str, files: list[Path]) -> None:
+    def read_parquet(self, table: str, files: list[Path], columns: list[str] = ()) -> None:
         """Parquet files as the table `table`, each column of each file a name of its own (names), the files' columns
-        joined by name. Text that isn't UTF-8 is refused."""
+        joined by name, and each of `columns` they lack, missing. Text that isn't UTF-8 is refused."""
         quote = lambda n: '"' + n.replace('"', '""') + '"'
         parts = [f"SELECT * FROM read_parquet(?) AS t({', '.join(map(quote, names(pq.read_schema(f).names)))})" for f in files]
         self.con.execute(f'CREATE OR REPLACE TABLE "{table}" AS ' + " UNION ALL BY NAME ".join(parts), [str(f) for f in files])
+        have = {n.casefold() for n, _ in self.columns(table)}
+        for c in (c for c in columns if c.casefold() not in have):
+            self.con.execute(f'ALTER TABLE "{table}" ADD COLUMN {quote(c)} VARCHAR')
 
     def close(self) -> None:
         self.con.close()
@@ -216,8 +220,8 @@ class DuckDB:
 
 def functions(dataset: str) -> list[str]:
     """The statements the deploy runs once in `dataset` (project.dataset): each comparison of FUNCTIONS in JavaScript
-    (cl_<name>, and cl_<name>_cut: the same score, its threshold unread), the portable hash (er_hash), nfkc and
-    one_byte_hash."""
+    (cl_<name>, and cl_<name>_cut: the same score, its threshold unread), the portable hash (er_hash), nfkc,
+    one_byte_hash, and EM's fit_model (nayose/em.py, a Python UDF)."""
     library = STRINGS.read_text(encoding="utf-8")
     out = []
     for name in FUNCTIONS:
@@ -230,6 +234,10 @@ def functions(dataset: str) -> list[str]:
     out.append(f"CREATE OR REPLACE FUNCTION `{dataset}`.nfkc(x STRING) AS (NORMALIZE(x, NFKC))")
     out.append(f"CREATE OR REPLACE FUNCTION `{dataset}`.one_byte_hash(x STRING) AS "
                "(CODE_POINTS_TO_STRING(ARRAY(SELECT 33 + MOD(c, 94) FROM UNNEST(TO_CODE_POINTS(x)) AS c WITH OFFSET AS i ORDER BY i)))")
+    source = Path(em.__file__).read_text(encoding="utf-8")  # BigQuery's Python UDF: python-3.11, standard library only
+    assert "'''" not in source, "nayose/em.py: no triple single quotes, which end BigQuery's raw string"
+    out.append(f"CREATE OR REPLACE FUNCTION `{dataset}`.fit_model(counts STRING, settings STRING) RETURNS STRING LANGUAGE python "
+               f"OPTIONS (runtime_version = 'python-3.11', entry_point = 'fit') AS r'''{source}'''")
     return out
 
 
@@ -239,7 +247,7 @@ class BigQuery:
     `functions`' (project.dataset, the deploy's: functions()). `client`: a google.cloud.bigquery.Client (made when not
     given); `bigquery`: the module its job configurations come from (imported when not given)."""
     name = "bigquery"
-    CALLS = re.compile(r"(?<![\w.`])(" + "|".join([*(f"cl_{n}(?:_cut)?" for n in FUNCTIONS), "er_hash", "nfkc", "one_byte_hash"]) + r")\s*\(", re.I)
+    CALLS = re.compile(r"(?<![\w.`])(" + "|".join([*(f"cl_{n}(?:_cut)?" for n in FUNCTIONS), "er_hash", "nfkc", "one_byte_hash", "fit_model"]) + r")\s*\(", re.I)
 
     def __init__(self, dataset: str, functions: str, client: object = None, bigquery: object = None) -> None:
         self.bigquery = bigquery or importlib.import_module("google.cloud.bigquery")
@@ -281,9 +289,12 @@ class BigQuery:
         config = self.bigquery.LoadJobConfig(write_disposition="WRITE_TRUNCATE")
         self.client.load_table_from_dataframe(frame, f"{self.dataset}.{table}", job_config=config).result()
 
-    def read_parquet(self, table: str, files: list[str]) -> None:  # Parquet files in Cloud Storage (gs://…) as the dataset's table
+    def read_parquet(self, table: str, files: list[str], columns: list[str] = ()) -> None:
+        """Parquet files in Cloud Storage (gs://…) as the dataset's table, each of `columns` they lack, missing."""
         config = self.bigquery.LoadJobConfig(source_format="PARQUET", write_disposition="WRITE_TRUNCATE")
         self.client.load_table_from_uri(list(files), f"{self.dataset}.{table}", job_config=config).result()
+        for c in columns:
+            self.run(f"ALTER TABLE `{table}` ADD COLUMN IF NOT EXISTS `{c}` STRING")
 
     def close(self) -> None:  # the session ended, its temporary tables with it
         if self.session:

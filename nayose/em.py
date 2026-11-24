@@ -1,26 +1,21 @@
 """Stage 2, fit: the model learned from the counts fit.sql leaves, as er/fit.py and er/match.py learn it
 (Fellegi–Sunter as Splink 5.0 fits it), the same numbers to the last bit.
 
-    λ   how likely two random records are one customer: the pairs the near-certain rules find (fit_prior), over the
-        share of all matches they find (prior_recall), over every pair of the sample
+    λ   how likely two random records are one customer: the pairs the near-certain rules find (prior), over the share
+        of all matches they find (prior_recall), over every pair of the sample
     u   how often two different customers land in a level: counted exactly where fit.sql counts it, else sampled, else
         (no sampled pair reached it) a bound
     m   how often one customer's two records land in a level: EM sessions on the sample's pairs sharing a key
-        (em_patterns), each starting from what those before it learned; a level's m is the median of the sessions'
+        (patterns), each starting from what those before it learned; a level's m is the median of the sessions'
 
 Then u measured again on the file to be scored: in a bigger file, a field whose values grow with it agrees by chance
-less often. fit(engine) writes the tables model (as fitted, the sample's u), scoring (the file's u) and fit (λ, the
-sample's size, and what the report says of the fit). O(n + S·K) on the sample, O(N + S·K) on the file; EM
-O(rounds · patterns · K).
+less often. fit() is a pure function, JSON in and JSON out, standard library only: fit.sql calls it as fit_model,
+BigQuery's Python UDF (engines.functions) and DuckDB's alike. O(rounds · patterns · K).
 """
 import copy
 import json
 import math
 import statistics
-
-import pandas as pd
-
-import nayose
 
 START_M = 0.95           # Splink's first guess of m for a comparison's first level
 UNSEEN_M = 1e-6          # the m Splink weighs a level with when no pair of the session reached it
@@ -31,44 +26,33 @@ PRIOR_RULES = {"cif_name": "customer_id + full_name", "cif_company": "customer_i
                "name_code_phone": "full_name + address_code + phone"}  # fit_prior's columns, as the report names the rules
 
 
-def fit(engine) -> None:
-    """Stage 2 on `engine`, after records: fit.sql's counts, on the sample and on the file (functions.sql's
-    comparisons), the model learned on the sample (learn), its u measured on the file (assemble), the tables written.
-    Each scope's u sampled from about its max_pairs pairs: the share of its records whose hash falls under the cut."""
-    c = nayose.config()["fit"]
-    nayose.stage(engine, "functions")
-    levels = [dict(zip(("position", "comparison", "gamma", "label", "kind"), r))
-              for r in engine.rows("SELECT position, comparison, gamma, label, kind FROM levels ORDER BY position, gamma DESC")]
-    n = engine.value("SELECT COUNT(*) FROM records")
-    sizes = {"sample": (min(int(c["fit_rows"]), n), float(c["fit_u_max_pairs"])), "file": (n, float(c["u_max_pairs"]))}
-    share = {scope: 0.5 * ((8 * pairs + 1) ** 0.5 + 1) / max(records, 1) for scope, (records, pairs) in sizes.items()}
-    nayose.stage(engine, "fit", fit_rows=int(c["fit_rows"]), seed=str(c["seed"]), **{f"draw_{s}": x < 1 for s, x in share.items()},
-                 **{f"cut_{s}": max(1, round(x * 1_000_000_000)) for s, x in share.items()})
-    got = measured(engine, {scope: pairs for scope, (_, pairs) in sizes.items()})
-    model = learn(engine, levels, got["sample"], c)
+def fit(counts: str, settings: str) -> str:
+    """The model from fit.sql's counts (counts: its tables, each a list of rows) and config.toml [fit] (settings):
+    learned on the sample (learn), its u measured on the file (assemble). Returns each level with m and u as fitted
+    and on the file (file_m, file_u), λ, the sample's size and the notes the report reads."""
+    c, s = json.loads(counts), json.loads(settings)
+    levels = sorted(c["levels"], key=lambda lv: (lv["position"], -lv["gamma"]))
+    got = measured(c, s)
+    model = learn(levels, got["sample"], c["prior"][0], c["patterns"] or [], s)
     scoring = assemble(model, got["file"])
-    for name, m in (("model", model), ("scoring", scoring)):
-        engine.put(name, pd.DataFrame([dict(position=lv["position"], comparison=lv["comparison"], gamma=lv["gamma"], label=lv["label"],
-                                            kind=lv["kind"], m=lv["m"], u=lv["u"]) for lv in m["levels"]]))
-    engine.put("fit", pd.DataFrame([dict(probability=model["probability"], fit_rows=model["fit_rows"],
-                                         notes=json.dumps(model["notes"], ensure_ascii=False),
-                                         scoring_adjusted=json.dumps(scoring["notes"]["adjusted"], ensure_ascii=False))]))
+    return json.dumps(dict(
+        levels=[dict(lv, file_m=f["m"], file_u=f["u"]) for lv, f in zip(model["levels"], scoring["levels"])],
+        probability=model["probability"], fit_rows=model["fit_rows"], notes=dict(model["notes"], file_adjusted=scoring["notes"]["adjusted"])))
 
 
 # ---------- u: the counts made shares ----------
 
-def measured(engine, max_pairs: dict[str, float]) -> dict[str, dict]:
-    """fit.sql's u counts, read back by scope (sample, file); each scope's max_pairs, what its sample drew from."""
+def measured(c: dict, s: dict) -> dict[str, dict]:
+    """fit.sql's u counts by scope (sample, file); each scope's max_pairs, what its sample drew from."""
     out = {}
-    for scope, pairs in max_pairs.items():
-        rows = lambda table, cols: engine.rows(f"SELECT {cols} FROM {table} WHERE scope = @scope", {"scope": scope})
-        filled = dict(zip(("records", "name", "company", "address", "phone", "cif", "birth"), rows("u_filled", "records, name, company, address, phone, cif, birth")[0]))
-        plan = dict(zip(("phone", "cif", "birth"), (rows("u_plan", "phone, cif, birth") or [(True, True, True)])[0]))
-        out[scope] = dict(n=filled["records"], max_pairs=pairs, filled=filled, plan=plan,
-                          outside=dict(rows("u_outside", "comparison, pairs")),
-                          counted={(c, label): p for c, label, p in rows("u_counted", "comparison, label, pairs")},
-                          near={(c, label): p for c, label, p in rows("u_near", "comparison, label, pairs")},
-                          sampled={(c, g): p for c, g, p in rows("u_sampled", "comparison, gamma, pairs")})
+    for scope, most in (("sample", float(s["fit_u_max_pairs"])), ("file", float(s["u_max_pairs"]))):
+        mine = lambda table: [r for r in c[table] or [] if r["scope"] == scope]
+        filled = next(iter(mine("filled")), {"records": 0})
+        out[scope] = dict(n=filled["records"], max_pairs=most, filled=filled, plan=next(iter(mine("plan")), {}),
+                          outside={r["comparison"]: r["pairs"] for r in mine("outside")},
+                          counted={(r["comparison"], r["label"]): r["pairs"] for r in mine("counted")},
+                          near={(r["comparison"], r["label"]): r["pairs"] for r in mine("near")},
+                          sampled={(r["comparison"], r["gamma"]): r["pairs"] for r in mine("sampled")})
     return out
 
 
@@ -118,7 +102,7 @@ def comparisons(levels: list[dict]) -> list[str]:  # the comparisons, in the mod
 
 # ---------- the model learned on the sample ----------
 
-def learn(engine, levels: list[dict], got: dict, c: dict) -> dict:
+def learn(levels: list[dict], got: dict, prior_counts: dict, patterns: list[dict], c: dict) -> dict:
     """The model on the sample: u, λ, then m by the EM sessions in order (er.match.train_fs). Refuses when no
     near-certain rule, or no session's key, finds a pair in the sample."""
     names = comparisons(levels)
@@ -129,21 +113,21 @@ def learn(engine, levels: list[dict], got: dict, c: dict) -> dict:
     filled_u = [[lv["comparison"], lv["label"]] for lv in levels if lv["label"] not in u[lv["comparison"]]]
     model = dict(levels=[dict(lv, u=u[lv["comparison"]].get(lv["label"]) or u_bound(got, lv["comparison"]), m=None) for lv in levels])
 
-    records, found, *rules = engine.rows("SELECT records, found, cif_name, cif_company, name_code_phone FROM fit_prior")[0]
-    prior = [rule for rule, pairs in zip(PRIOR_RULES, rules) if pairs]
+    records, found = prior_counts["records"], prior_counts["found"]
+    prior = [rule for rule in PRIOR_RULES if prior_counts[rule]]
     sessions = [s["key"] for s in c["sessions"]]
-    patterns = {s: engine.rows("SELECT * EXCEPT (session) FROM em_patterns WHERE session = @s", {"s": s}) for s in sessions}
+    patterns = {s: [tuple(p[n] for n in names) + (p["pairs"],) for p in patterns if p["session"] == s] for s in sessions}
     em_pairs = {s: sum(p[-1] for p in patterns[s]) for s in sessions if patterns[s]}
     if not prior:
-        raise nayose.InputError(f"no two records of the {records:,} the fit samples agree on any near-certain rule ({'; '.join(PRIOR_RULES.values())}), "
-                                "so the chance that two records match can't be estimated", fix="map the fields those rules read, or give a model fitted before")
+        raise ValueError(f"no two records of the {records:,} the fit samples agree on any near-certain rule ({'; '.join(PRIOR_RULES.values())}), "
+                         "so the chance that two records match can't be estimated: map the fields those rules read")
     if not em_pairs:
-        raise nayose.InputError(f"no two records of the {records:,} the fit samples share {' or '.join(sessions)}, the pairs it learns from",
-                                fix="map those fields to filled columns, or give a model fitted before")
+        raise ValueError(f"no two records of the {records:,} the fit samples share {' or '.join(sessions)}, the pairs it learns from: "
+                         "map those fields to filled columns")
     every = int(records * (records - 1) / 2)
     if found > every * c["prior_recall"]:
-        raise nayose.InputError(f"the near-certain rules find {found:,} of the {every:,} pairs, more than a recall of {c['prior_recall']} allows "
-                                f"(at least {found / every:,.2f})", fix="raise [fit] prior_recall, or make the prior rules stricter")
+        raise ValueError(f"the near-certain rules find {found:,} of the {every:,} pairs, more than a recall of {c['prior_recall']} allows "
+                         f"(at least {found / every:,.2f}): raise [fit] prior_recall, or make the prior rules stricter")
     lam = found / c["prior_recall"] / every
 
     trained: dict[tuple[str, str], list[float]] = {}
