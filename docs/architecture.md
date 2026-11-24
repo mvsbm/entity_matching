@@ -99,7 +99,7 @@ The run's tables, those that outlive a job:
 |---|---|
 | records | `records` (a record a row: its fields, kind, copies and `batch`), `this_batch`, `set_aside`, `placeholders`, `name_weights` |
 | fit | `fit_sample`, `fit_prior`, `em_patterns`, `u_outside`, `u_counted`, `u_near`, `u_sampled`, `u_filled`, `model`, `fit` (λ, sizes, notes, and `fitted`: the model whole, which an update starts from) |
-| score | `rule_pairs`, `cands`, `gated`, `scored` (each pair once: `id_l`, `id_r`, its levels, `match_weight`, `match_probability`, `rule`, `sources`) |
+| score | `rule_keys` and `every_key` (each record's keys: the index lookups read), `rule_pairs`, `cands`, `gated`, `scored` (each pair once: `id_l`, `id_r`, its levels, `match_weight`, `match_probability`, `rule`, `sources`) |
 | decide | `decisions` (every decision that changed its pair, the latest flagged), `gold` (each record's `cluster_id`, its kind and its customer's) |
 | report | `report_counts`, `report_fields`, `report_scores`, `report_patterns`, `report_keys`, `report_clusters` |
 | match | `matched` (on BigQuery; here the job writes it to a file) |
@@ -156,14 +156,26 @@ entity of its own.
 
 ## 7 · Lookups
 
-A lookup (`nayose.lookup`, `lookup.sql`) answers which entities a record would join. It is an update of that record
-alone, run inside a transaction that is rolled back afterwards, so nothing is written. A stored record (`--record`)
-gets a new batch number. Typed values or a file's rows go through `records.sql` with `@lookup`: the run's
-placeholders still apply, and the record adds none of its own. `score.sql` then scores every candidate, whatever its
-points, with the run's model as it stands. `lookup.sql` gives each entity from `[lookup] at_least` points up, or joined by a rule, with its best
+A lookup (`nayose.lookup`, `lookup.sql`) answers which entities a record would join, as an update of that record
+alone would score it. It reads what it touches, in three steps:
+
+1. **Its keys,** made from it alone. A stored record (`--record`) gets a new batch number. Typed values or a file's
+   rows go through `records.sql` with `@lookup`: the run's placeholders still apply, and the record adds none of its
+   own.
+2. **The run's key index,** read by those keys. `score.sql` keeps every record's keys as the run's tables `every_key`
+   and `rule_keys`, clustered by key on BigQuery. Every record of the record's blocks, and of its rule keys, comes
+   back.
+3. **The record scored against those records alone,** read by ID, with their entities (`records` and `gold` are
+   clustered by ID). `score.sql` scores every candidate, whatever its points, with the run's model as it stands. Its
+   prior is read at the run's size: `@outside` counts the records the step doesn't hold.
+
+Steps 1 and 3 run in temporary tables named like the run's, since a statement reads a temporary table before the
+run's table of the same name. `engine.scratch` holds them in a transaction rolled back on DuckDB, and in a session
+of their own on BigQuery. `run_file`'s scratch makes every table a statement creates a temporary one, and refuses a
+statement that would change a run's table, so a lookup writes nothing. `lookup.sql` gives each entity from `[lookup] at_least` points up, or joined by a rule, with its best
 record, its points, each comparison's level and the keys that listed it. With no such entity, it gives the closest
 record. It also reports, key by key, what was looked up and what the gate decided for big blocks. The cost is
-`O(N·G)` to make the run's keys again, plus `O(G·b + C·K·L²)`.
+`O(G)` for its keys, plus `O(G·b + C·K·L²)`.
 
 ## 8 · Two engines
 
@@ -252,9 +264,8 @@ In prod, the run is the dataset `nayose` in each project, and nothing changes it
   a sandbox dataset whose tables expire in a day, the two accounts with the least each needs, Workload Identity
   Federation for Jenkins, and the budget. The DevOps team applies it ([operations](operations.md)).
 
-A lookup has no procedure. Its statements write into the run's tables inside a transaction, and BigQuery takes no
-DDL in a transaction. A lookup on BigQuery is a session over clones of the run's tables, which the
-[roadmap](roadmap.md) plans for the BigQuery parity step.
+A lookup has no procedure: `nayose.lookup` sends its statements, each step in a session of its own, writing only
+temporary tables ([7](#7--lookups)). `deploy/run.py` has no lookup job yet ([roadmap](roadmap.md)).
 
 No job has run on BigQuery yet. The deploy's statements are checked offline: `tests/test_deploy.py` runs them
 against a client that records what it is sent. The results are proven on DuckDB: `tests/test_parity.py` holds every
