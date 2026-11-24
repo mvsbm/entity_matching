@@ -8,6 +8,7 @@ import re
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
 import sqlglot
 
 from nayose.engines import bigquery_literal, functions, procedures
@@ -90,3 +91,57 @@ def test_a_job_loads_its_input_into_the_dataset_and_calls_its_procedure(monkeypa
     client = Recorded()
     assert run.main(["p.run", "match", "8"], client=client, bigquery=MODULE) == 0 and "CALL `p.run`.match(8.0)" in client.sent
     assert run.main(["p.run", "lookup", "x"], client=Recorded(), bigquery=MODULE) == 2  # not a job BigQuery runs
+
+
+class Tables(Recorded):  # a dataset's tables, each a version: what a job's statements and loads leave there
+    def __init__(self, tables: dict, job: dict | None = None, fail: bool = False):
+        super().__init__()
+        self.tables, self.job, self.fail, self.marked = dict(tables), job or {}, fail, []
+
+    def query(self, sql, job_config=None):
+        self.sent.append(sql)
+        rows = []
+        for s in sql.split(";\n"):
+            name = [x.split(".")[-1] for x in re.findall(r"`p\.run`\.(\w+)", s)]
+            if "INFORMATION_SCHEMA" in s:
+                rows = [{"table_name": t} for t in sorted(self.tables)]
+            elif s.startswith("SELECT tables FROM"):
+                rows = [{"tables": self.marked}]
+            elif s.startswith("CREATE TABLE") and name[0] in self.tables:
+                raise RuntimeError(f"Already Exists: {name[0]}")
+            elif " CLONE " in s:
+                self.tables[name[0]] = self.tables[name[1]]
+            elif s.startswith("CREATE TABLE"):  # the mark
+                self.tables[name[0]], self.marked = "mark", re.findall(r"'(\w*)'", s.split("AS started, ")[1])
+            elif s.startswith("DROP TABLE"):
+                del self.tables[name[0]]
+            elif s.startswith("CALL `p.run`."):
+                self.tables.update(self.job)
+                if self.fail:
+                    raise RuntimeError("the procedure failed partway")
+        return SimpleNamespace(result=lambda rows=rows: rows, session_info=SimpleNamespace(session_id="s1"))
+
+    def load_table_from_uri(self, uris, table, job_config=None):
+        self.tables[table.split(".")[-1]] = "loaded"
+        return SimpleNamespace(result=lambda: None)
+
+
+def test_a_job_on_bigquery_is_all_or_nothing(monkeypatch):
+    run = script("run")
+    monkeypatch.setattr(run.nayose, "report_text", lambda engine, steps, job: "")
+    before = {"records": 1, "scored": 1, "decisions": 1, "name_weights": 1}
+    made = {"records": 2, "scored": None, "report_steps": 2}  # what the procedure leaves, partway: one dropped, one new
+    done = Tables(before, made)
+    assert run.main(["p.run", "build", "gs://b/x.parquet"], client=done, bigquery=MODULE) == 0
+    assert done.tables == {**before, **made, "input": "loaded"}  # no mark, no clone left
+    failed = Tables(before, made, fail=True)
+    with pytest.raises(RuntimeError, match="partway"):
+        run.main(["p.run", "build", "gs://b/x.parquet"], client=failed, bigquery=MODULE)
+    assert failed.tables == before  # each table from its clone; the input and the new table dropped
+    died = Tables(before, made)  # a job whose process died after its procedure: marked, so the next refuses; undo undoes it
+    engine = run.BigQuery("p.run", "p.run", client=died, bigquery=MODULE)
+    assert run.begin(engine, "p.run", "build")
+    died.tables.update(made)
+    assert run.main(["p.run", "match", "8"], client=died, bigquery=MODULE) == 75 and not any(s.startswith("CALL `p.run`.") for s in died.sent)
+    assert run.main(["p.run", "undo"], client=died, bigquery=MODULE) == 0 and died.tables == before
+    assert run.main(["p.run", "undo"], client=died, bigquery=MODULE) == 0 and died.tables == before  # nothing marked: nothing done

@@ -239,9 +239,11 @@ In prod, the run is the dataset `nayose` in each project, and nothing changes it
   its threshold as an argument. Last, the deploy loads `name_weights`. Every statement is `CREATE OR REPLACE`, so a
   deploy can be run again.
 - **`deploy/run.py PROJECT.DATASET JOB ARGS`** loads the job's input from Cloud Storage into `input` or `given` and
-  `CALL`s the procedure. After a build or an update it prints `report.txt` from the `report_` tables.
+  `CALL`s the procedure. After a build or an update it prints `report.txt` from the `report_` tables. A job is all
+  or nothing: it first marks the dataset (`job_running`) and clones each table, and a failed job is undone from the
+  clones (`undo` undoes one whose process died).
 - **`deploy/smoke.py`** builds one generated file on BigQuery in staging and on DuckDB on the agent, and compares
-  `scored` and `gold` row for row.
+  `scored` and `gold` row for row, and an edit distance on kanji.
 - **`deploy/Jenkinsfile`** runs the stages in order. Checks runs the lint and the tests. Staging deploys and runs the
   smoke test. Approve waits for a person in `APPROVERS`. Prod deploys the same commit with the secret
   `nayose-mapping`. A build with `JOB` set does only one thing: Run, one job in prod, archiving its `report.txt`. The

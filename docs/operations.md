@@ -71,8 +71,11 @@ Start the Jenkins job on main with `JOB` and `ARGS` (space-separated). Only the 
 | `update` | the batch's `gs://` files | adds a batch to the run |
 | `decide` | a filled-in match table's `gs://` files | stores people's decisions and makes the entities again |
 | `match` | a threshold, in points (`8`) | writes the table `nayose.matched`: the pairs at that threshold or more |
+| `undo` | none | undoes a job whose process died: every table as that job found it |
 
 build and update print `report.txt`, which Jenkins archives. It holds no record's value, so it can be shared. On BigQuery it has no COLUMNS NOT MAPPED section, and STEPS has one line, for the whole job. A refusal, such as a decisions file with a bad row, fails the build with BigQuery's error, which says what to fix. People put the input files in `in/`; the runtime account only reads them.
+
+**All or nothing.** A job first makes the table `job_running` (the job, its start, the dataset's tables) and clones each table as `before__<table>`. A clone bills no bytes, and it shares the table's storage until either changes. A job that fails is undone: each table is made again from its clone, and a table the job made is dropped. Then the clones go. A job that finds `job_running` exits 75: another job is running, or one's process died. If none is running, run `undo`; an undo stopped partway can run again. A procedure called other than through `deploy/run.py` is neither marked nor undone.
 
 ## Running locally
 
@@ -96,7 +99,7 @@ python -m nayose lookup --out runs/main --record 1234          or COLUMN=VALUE â
 | 1 | a bug: a traceback on stderr; the run is as it was | report it |
 
 - **Limits:** `--compute` gives build and update DuckDB's settings, such as `memory_limit=8GB threads=4 temp_directory=/big/disk`. Past `memory_limit`, DuckDB spills to `temp_directory`.
-- **Building again:** `python -m nayose build FILES --out runs/main --overwrite` replaces the run and keeps people's decisions. The old run stays until the new one is complete. Build again after any change to `nayose/sql/`, `config.toml` or `mapping.sql`. report.txt's second line names the method the run was made by (`method <fingerprint>`), but nothing refuses an update made by a different method, so compare it before an update.
+- **Building again:** `python -m nayose build FILES --out runs/main --overwrite` replaces the run and keeps people's decisions. The old run stays until the new one is complete. Build again after any change to `nayose/sql/`, `config.toml` or `mapping.sql`. report.txt's second line names the method the run was made by (`method <fingerprint>`). An update by a different method, values or mapping is refused (exit 2; on BigQuery, the procedure's error).
 - **Backup and restore:** copy `run.duckdb` at any time, since writers never change it in place. To restore, copy it back while no job is writing.
 - **Another config or mapping:** set `NAYOSE_CONFIG` or `NAYOSE_MAPPING` to its path.
 
@@ -104,7 +107,6 @@ python -m nayose lookup --out runs/main --record 1234          or COLUMN=VALUE â
 
 - **Lookups on BigQuery.** There is no lookup procedure, so lookups run only locally. A lookup is an update of one record that is then rolled back, and BigQuery takes no DDL in a transaction.
 - **Nothing has run on BigQuery yet.** `tests/test_deploy.py` checks the deploy and the jobs against a client that records what it is sent. The parity check (the tests' population built in `nayose_ci` and held to the same digests as DuckDB) waits for the sandbox. Confirm these on the first staging deploy: the Python functions (`python-3.11`) can be made in the dataset's location; the OIDC token each WIF configuration reads is on the agent, since the Jenkinsfile binds only the configuration file; the smoke test says `the same`.
-- **All or nothing, on BigQuery.** A procedure's statements replace tables one at a time, so a failed job may leave some tables made again and others not. Run it again: a build from every input file so far (decisions stay), or bring the tables back with BigQuery's time travel. Only Jenkins keeps jobs to one at a time (`disableConcurrentBuilds`, per branch), so start jobs from main only. Nothing in BigQuery stops a second call.
 
 ## What the DevOps team decides
 
