@@ -20,7 +20,8 @@ CREATE TABLE IF NOT EXISTS records (
   address__address STRING, postal_code__first3 STRING, any_name__initial STRING, given_name__kana_fold STRING,
   address__address_first3 STRING, person_name__kana_fold_long_vowel STRING, person_name__kana_fold_one_byte STRING,
   company_name__nfkc_strip_legal_form_kana_fold_one_byte STRING, address__address_one_byte_hash STRING,
-  person_name__kana_fold_long_vowel_last3 STRING, batch INT64
+  person_name__kana_fold_long_vowel_last3 STRING, person_name__kana_fold_letters_lo INT64, person_name__kana_fold_letters_hi INT64,
+  batch INT64
 );
 
 CREATE TABLE IF NOT EXISTS placeholders (field STRING, value STRING, n INT64);
@@ -290,6 +291,14 @@ readings AS (
     -- may share one), so the copies are never farther apart than the strings, and DuckDB finds that natively. Else none.
     IF(REGEXP_CONTAINS(address__address, r'[^\x00-\x7f]'), one_byte_hash(address__address), NULL) AS address__address_one_byte_hash
   FROM copies
+),
+lettered AS (
+  -- letters: the katakana a name holds, as bits of its one-byte copy's codes (1–63, 64–96), read in one pass: what
+  -- name_jw_most (functions.sql) bounds its Jaro–Winkler by
+  SELECT *, (SELECT STRUCT(COALESCE(BIT_OR(IF(UNICODE(c) < 64, CAST(1 AS INT64) << (UNICODE(c) - 1), 0)), 0) AS lo,
+                           COALESCE(BIT_OR(IF(UNICODE(c) >= 64, CAST(1 AS INT64) << (UNICODE(c) - 64), 0)), 0) AS hi)
+             FROM UNNEST(SPLIT(person_name__kana_fold_one_byte, '')) AS c) AS letters
+  FROM readings
 )
 SELECT
   id, given_name, any_name, address, address_code, postal_code, prefecture, town_code, city, phone, customer_id, birth_date,
@@ -297,5 +306,8 @@ SELECT
   company_name__nfkc_strip_legal_form_kana_fold, address__address, postal_code__first3, any_name__initial, given_name__kana_fold,
   address__address_first3, person_name__kana_fold_long_vowel, person_name__kana_fold_one_byte,
   company_name__nfkc_strip_legal_form_kana_fold_one_byte, address__address_one_byte_hash,
-  NULLIF(SUBSTR(person_name__kana_fold_long_vowel, -3), '') AS person_name__kana_fold_long_vowel_last3, batch
-FROM readings;
+  NULLIF(SUBSTR(person_name__kana_fold_long_vowel, -3), '') AS person_name__kana_fold_long_vowel_last3,
+  IF(person_name__kana_fold_one_byte IS NULL, NULL, letters.lo) AS person_name__kana_fold_letters_lo,
+  IF(person_name__kana_fold_one_byte IS NULL, NULL, letters.hi) AS person_name__kana_fold_letters_hi,
+  batch
+FROM lettered;

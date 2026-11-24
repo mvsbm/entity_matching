@@ -262,7 +262,7 @@ DuckDB, the database engine a run uses on a laptop or in CI, has built-in simila
 
 ### Solution: character-level versions of every function
 
-The SQL calls character-level versions of each function by name: `cl_jaro_winkler`, `cl_levenshtein`, `cl_damerau_levenshtein` and `cl_hamming`, each also as a `_cut` form that stops once its threshold can't be reached. Every rule and every model level uses them. On BigQuery they are JavaScript functions (`nayose/strings.js`), which the deploy makes. On DuckDB, `nayose/engines.py` registers twins built on the `rapidfuzz` library, and calls DuckDB's own function only where both strings are one byte a character (the one-byte copies of katakana names that `records.sql` makes). The translation for DuckDB refuses `EDIT_DISTANCE`, which DuckDB would answer in bytes, and the tests hold the JavaScript, the twins and DuckDB's own functions to the same scores.
+The SQL calls character-level versions of each function by name: `cl_jaro_winkler`, `cl_levenshtein`, `cl_damerau_levenshtein` and `cl_hamming`, each also as a `_cut` form that stops once its threshold can't be reached. Every rule and every model level uses them. On BigQuery they are JavaScript functions (`nayose/strings.js`), which the deploy makes, but for `cl_levenshtein`: BigQuery's own `EDIT_DISTANCE`, in characters. On DuckDB, `nayose/engines.py` registers twins built on the `rapidfuzz` library, and calls DuckDB's own function only where both strings are one byte a character (the one-byte copies of katakana names that `records.sql` makes). The translation for DuckDB refuses `EDIT_DISTANCE`, which DuckDB would answer in bytes, and the tests hold the JavaScript, the twins and DuckDB's own functions to the same scores.
 
 ### Why it matters
 
