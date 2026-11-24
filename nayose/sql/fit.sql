@@ -4,10 +4,17 @@
 -- exact integer. The comparisons are functions.sql's. O(n + P_prior + P_em·K) on the sample of n records;
 -- O(N + max_pairs·K) for u on each scope.
 --
--- Reads: records. Values: config.toml [fit]: @fit_rows, @seed, @fit_u_max_pairs and @u_max_pairs (about how many pairs
--- u samples on the sample and on the file), @settings (all of it, as JSON, for fit_model).
+-- An update (@refit false) keeps the model the run's build fitted: no sample, no EM; u is measured again on the
+-- run's records, a sampled comparison only once it has gone stale (fit_model with the stored fit).
+--
+-- Reads: records, fit (an update's). Values: config.toml [fit]: @fit_rows, @seed, @fit_u_max_pairs and @u_max_pairs
+-- (about how many pairs u samples on the sample and on the file), @settings (all of it, as JSON, for fit_model);
+-- @refit (a build: the model learned again).
 -- Writes: fit_sample, model (each level's m and u as fitted, file_m and file_u on the file, and bits: log2(file_m /
--- file_u), what a score adds), fit (λ, the sample's size, prior_bits: λ's at the file's size, the notes the report reads).
+-- file_u), what a score adds), fit (λ, the sample's size, the file's, prior_bits: λ's at its size, the notes the report reads,
+-- and fitted: fit_model's answer whole, what an update starts from).
+
+CREATE TABLE IF NOT EXISTS fit (probability FLOAT64, fit_rows INT64, records INT64, prior_bits FLOAT64, notes STRING, fitted STRING);
 
 
 -- 1. The columns the fit reads of a record (the comparisons', the near-certain rules', EM's keys): only these are read,
@@ -23,7 +30,7 @@ FROM records;
 
 CREATE OR REPLACE TABLE fit_sample AS
 SELECT compared.* FROM compared
-JOIN (SELECT id FROM records ORDER BY er_hash(postal_code__first3), er_hash(id) LIMIT @fit_rows) USING (id);
+JOIN (SELECT id FROM records WHERE @refit ORDER BY er_hash(postal_code__first3), er_hash(id) LIMIT @fit_rows) USING (id);
 
 
 -- 2. λ, how likely two random records are one customer, from the pairs the near-certain rules find: each pair once,
@@ -230,7 +237,7 @@ SELECT fit_model(TO_JSON_STRING(STRUCT(
   (SELECT ARRAY_AGG(t) FROM u_counted AS t) AS counted, (SELECT ARRAY_AGG(t) FROM u_near AS t) AS near,
   (SELECT ARRAY_AGG(t) FROM u_sampled AS t) AS sampled, (SELECT ARRAY_AGG(t) FROM u_filled AS t) AS filled,
   (SELECT ARRAY_AGG(t) FROM u_plan AS t) AS plan
-)), @settings) AS out;
+)), @settings, IF(@refit, NULL, (SELECT fitted FROM fit))) AS out;
 
 CREATE OR REPLACE TABLE model AS
 SELECT
@@ -243,5 +250,6 @@ FROM learned, UNNEST(JSON_QUERY_ARRAY(out, '$.levels')) AS lv;
 
 CREATE OR REPLACE TABLE fit AS
 SELECT CAST(JSON_VALUE(out, '$.probability') AS FLOAT64) AS probability, CAST(JSON_VALUE(out, '$.fit_rows') AS INT64) AS fit_rows,
-       CAST(JSON_VALUE(out, '$.prior_bits') AS FLOAT64) AS prior_bits, JSON_QUERY(out, '$.notes') AS notes
+       CAST(JSON_VALUE(out, '$.records') AS INT64) AS records,
+       CAST(JSON_VALUE(out, '$.prior_bits') AS FLOAT64) AS prior_bits, JSON_QUERY(out, '$.notes') AS notes, out AS fitted
 FROM learned;

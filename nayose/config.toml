@@ -42,6 +42,7 @@ crowd = 64  # the fewest customers a compared field's placeholder is held by
 
 [input]  # sql/functions.sql's intake, and mapping.sql
 nulls = ["NULL", "null", "Null", "\\N", "NaN", "nan", "None", "none", "N/A", "n/a", "#N/A", "-", "－"]  # a value written as one of these is missing
+id = "CONT_ID"  # the column mapping.sql reads a record's ID from (a record looked up by its values takes the lookup's own)
 # every column mapping.sql reads; one a file lacks is read as missing
 columns = ["CONT_ID", "FULL_NAME_KANA", "O_PERSON_NAME_KANA", "LAST_NAME_KANA", "GIVEN_NAME_KANA", "NYS_CNV_P_NAME_KANA",
            "STD_ADDRESS", "ORIGINAL_ADDRESS", "SOURCE_ADDR_CD", "POST_CD", "POST_CD_KANA", "ADDRESS_ONE", "ADDR_CD", "ADDRESS_TWO",
@@ -58,7 +59,21 @@ seed = 0                      # the sample's hash seed
 sessions = [{ key = "phone", start = [["phone", "exact"]] }, { key = "address", start = [] }]
 
 [score]  # sql/score.sql
+# the generators and rules a run uses, by the names score.sql gives them (each written once there; its order sets a
+# generator's bit in sources and a rule's rank): leave one out to run without it
+keys = ["cif", "phone_prefecture", "phone_postal_area", "phone_name_initial", "person_name", "company_name", "company_name_deletions",
+        "person_name_deletions_postal_area", "given_name_postal", "address_phone", "address_code_phone", "address_name_initial",
+        "address_code_name_initial", "given_name_address_code", "cif_deletions", "birth_date", "given_name_phone",
+        "birth_date_deletions_prefecture", "name_reading", "phone_given_tail", "postal_given_tail", "postal_area_given_tail"]
+rules = ["X1_CIF_PERSON_NAME", "X2_CIF_COMPANY_NAME", "X3_CIF_PHONE", "X4_PERSON_NAME_ADDRCD_PHONE", "X5_COMPANY_NAME_ADDRCD_PHONE",
+         "F1_NAME~_ADDRCD_PHONE", "F2_NAME~_ADDRESS~_PHONE", "F3_NAME~_CIF", "F4_NAME_ADDRCD_PHONE~", "F5_COMPANY~_PHONE_POSTAL",
+         "F6_COMPANY~_ADDRCD_PHONE", "F7_GIVEN_ADDRCD_PHONE"]
 keep_from = 0.0      # bits: scored pairs are kept from here up (and every rule pair): what a match run can offer
 search_floor = 0.0   # bits: a sampled pair at or above it keeps its oversized block (below the 4 bits people review)
 oversized = 64       # records: a block this big or bigger is checked on a sample of as many of its records first;
                      # a rule leaves out a value of its keys held by this many records
+
+[lookup]  # sql/lookup.sql
+at_least = 4.0     # points: the entities a lookup shows by default, from here up (the review floor), and every one a rule joins
+likely_from = 6.0  # points: a candidate from here up whose names were compared is likely, as people review
+most = 20          # the most entities a lookup shows

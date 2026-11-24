@@ -9,8 +9,10 @@
         (patterns), each starting from what those before it learned; a level's m is the median of the sessions'
 
 Then u measured again on the file to be scored: in a bigger file, a field whose values grow with it agrees by chance
-less often. fit() is a pure function, JSON in and JSON out, standard library only: fit.sql calls it as fit_model,
-BigQuery's Python UDF (engines.functions) and DuckDB's alike. O(rounds · patterns · K).
+less often. An update keeps the model and measures u again on the run's records (refresh): every level counted
+exactly, counted again; a sampled comparison sampled again only once its drift outweighs its sampling error.
+fit() is a pure function, JSON in and JSON out, standard library only: fit.sql calls it as fit_model, BigQuery's
+Python UDF (engines.functions) and DuckDB's alike. O(rounds · patterns · K).
 """
 import copy
 import json
@@ -26,22 +28,73 @@ PRIOR_RULES = {"cif_name": "customer_id + full_name", "cif_company": "customer_i
                "name_code_phone": "full_name + address_code + phone"}  # fit_prior's columns, as the report names the rules
 
 
-def fit(counts: str, settings: str) -> str:
+def fit(counts: str, settings: str, stored: str | None = None) -> str:
     """The model from fit.sql's counts (counts: its tables, each a list of rows) and config.toml [fit] (settings):
-    learned on the sample (learn), its u measured on the file (assemble). Returns each level with m and u as fitted
-    and on the file (file_m, file_u, and bits: what a score adds), λ and its bits at the file's size (prior_bits), the
-    sample's size and the notes the report reads."""
+    learned on the sample (learn), its u measured on the file (assemble). With `stored` (an update: what fit gave a
+    build back), the model kept and its u measured again on the run's records (refresh). Returns each level with m
+    and u as fitted and on the file (file_m, file_u, and bits: what a score adds), λ and its bits at the file's size
+    (prior_bits), the sample's size, the notes the report reads, and what an update needs: the model as fitted and
+    each comparison's basis (u_basis)."""
     c, s = json.loads(counts), json.loads(settings)
     levels = sorted(c["levels"], key=lambda lv: (lv["position"], -lv["gamma"]))
     got = measured(c, s)
+    if stored is not None:
+        return refresh(json.loads(stored), got["file"])
     model = learn(levels, got["sample"], c["prior"][0], c["patterns"] or [], s)
-    scoring = assemble(model, got["file"])
-    n = got["file"]["n"]
+    exact = exact_u(levels, got["file"])
+    sampled = sampled_u(levels, got["file"], [x for x in comparisons(levels) if ELSE not in exact.get(x, {})])
+    return given(model, assemble(model, got["file"], sampled), got["file"]["n"], u_basis(got["file"], sampled, exact, comparisons(levels)), [])
+
+
+def refresh(stored: dict, got: dict) -> str:
+    """An update's model: the one stored, its u measured again on the run's records (er.match.refreshed_u). Every
+    level counted exactly is counted again; a comparison is sampled again only once stale_u finds it stale, the rest
+    keep their sample. O(K) on the counts."""
+    model, basis = stored["model"], stored["basis"]
+    levels, n = model["levels"], got["n"]
+    exact = exact_u(levels, got)
+    check = stale_u(levels, basis, exact, n)
+    again = [x for x in comparisons(levels) if check[x]["drift_bits"] > check[x]["se_bits"] and ELSE not in exact.get(x, {})]
+    basis = {**basis, **u_basis(got, sampled_u(levels, got, again), exact, again)}
+    for name, x in check.items():
+        basis[name]["last_check"] = {k: v if math.isfinite(v) else None for k, v in x.items()}
+    scoring = assemble(model, got, {name: b["sampled"] for name, b in basis.items()})
+    return given(model, scoring, n, basis, [dict(comparison=x, **basis[x]["last_check"]) for x in again])
+
+
+def given(model: dict, scoring: dict, n: int, basis: dict, again: list[dict]) -> str:  # what fit gives back: fit()'s
     lam = min(model["probability"] * (model["fit_rows"] - 1) / max(n - 1, 1), 1 - 1e-9)  # λ rescaled to the file's size: a per-pair rate
     return json.dumps(dict(
         levels=[dict(lv, file_m=f["m"], file_u=f["u"], bits=bits(f["m"], f["u"])) for lv, f in zip(model["levels"], scoring["levels"])],
-        probability=model["probability"], fit_rows=model["fit_rows"], prior_bits=math.log2(lam / (1 - lam)),
-        notes=dict(model["notes"], file_adjusted=scoring["notes"]["adjusted"])))
+        probability=model["probability"], fit_rows=model["fit_rows"], records=n, prior_bits=math.log2(lam / (1 - lam)),
+        notes=dict(model["notes"], file_adjusted=scoring["notes"]["adjusted"], sampled_again=again), model=model, basis=basis))
+
+
+def u_basis(got: dict, sampled: dict, exact: dict, names: list[str]) -> dict:
+    """What a later update needs to tell whether these comparisons' sampled u went stale: the sampled u, the u counted
+    exactly alongside, the record count, and how many sampled pairs had the comparison filled (er.match.u_basis)."""
+    n = got["n"]
+    pairs = min(got["max_pairs"], n * (n - 1) / 2)
+    return {x: dict(sampled=sampled.get(x, {}), exact=exact.get(x, {}), n=n, pairs=pairs * (got["filled"][x] / n if n else 0.0) ** 2) for x in names}
+
+
+def stale_u(levels: list[dict], basis: dict, exact_now: dict, n: int) -> dict[str, dict[str, float]]:
+    """Per comparison, drift_bits: how far its sampled u have likely drifted since they were sampled, the drift of its
+    leading exact level, counted exactly, or log2(N / N then) without one (an equality level can't fall faster); and
+    se_bits: the sampling error of its most precise sampled level, 1/(ln 2·√hits). Once drift > se, staleness outweighs
+    the sample's own noise (er.match.stale_u). A comparison never sampled has drift ∞."""
+    out = {}
+    for name in comparisons(levels):
+        b = basis.get(name)
+        if b is None:
+            out[name] = dict(drift_bits=math.inf, se_bits=0.0)
+            continue
+        lead = next(iter(b["exact"]), None)
+        now = exact_now.get(name, {}).get(lead) if lead else None
+        d = abs(math.log2(now / b["exact"][lead])) if now else math.log2(max(n, 2) / max(b["n"], 2))
+        hits = [u * b["pairs"] for label, u in b["sampled"].items() if label != ELSE and label not in b["exact"]]
+        out[name] = dict(drift_bits=d, se_bits=min((1 / (math.log(2) * math.sqrt(h)) for h in hits if h >= 1), default=math.inf))
+    return out
 
 
 def bits(m: float, u: float) -> float:  # a level's weight, as Splink writes it: log2(m/u), each clamped at 1e-300
@@ -253,14 +306,11 @@ def sensible_m(model: dict, filled: set[tuple[str, str]]) -> list[list]:
 
 # ---------- u on the file to be scored ----------
 
-def assemble(model: dict, got: dict) -> dict:
-    """The model with each level's u measured on the file: counted exactly, else sampled, else the bound on the file. A
-    level never seen in training keeps m = u, 0 bits; m and λ stay as fitted, within sensible_m's limits again
+def assemble(model: dict, got: dict, sampled: dict) -> dict:
+    """The model with each level's u measured on the file: counted exactly, else `sampled`, else the bound on the file.
+    A level never seen in training keeps m = u, 0 bits; m and λ stay as fitted, within sensible_m's limits again
     (er.match.assemble_u)."""
-    levels = model["levels"]
-    exact = exact_u(levels, got)
-    skip = {name for name, u in exact.items() if ELSE in u}
-    sampled = sampled_u(levels, got, [x for x in comparisons(levels) if x not in skip])
+    exact = exact_u(model["levels"], got)
     filled_m = {tuple(x) for x in model["notes"]["filled"]["m"]}
     out = copy.deepcopy(model)
     for lv in out["levels"]:

@@ -1,21 +1,51 @@
--- Stage 3, score: the pairs worth scoring and their scores, as er/'s rules, candidates and score steps make them. The
--- rules' pairs; every pair a key lists, each key's blocks of @oversized records or more checked on a sample first; each
--- pair's level of each comparison (functions.sql) and its weight from the model (the prior's bits and each level's,
--- added in the model's order, to the last bit). Kept: every pair from @keep_from bits up, and every rule pair: what a
--- match run offers people. Nothing merges. O(N + ΣP_r) + O(N·L + ΣP_g) + O(C·K·L²).
+-- Stage 3, score: the pairs worth scoring and their scores, as er/'s rules, candidates and score steps make them, for
+-- the run's latest batch against all its records (a build: every record new). The rules' pairs; every pair a key
+-- lists, each key's blocks of @oversized records or more checked on a sample first; each pair's level of each
+-- comparison (functions.sql) and its weight from the model (the prior's bits and each level's, added in the model's
+-- order, to the last bit). Kept: every pair from @keep_from bits up, and every rule pair: what a match run offers
+-- people. Nothing merges. O(Δ·b) for the batch's pairs, plus O(N·L) to make every record's keys again.
 --
--- Reads: records, compared (fit.sql), model and fit (each level's bits, the prior's bits at the file's size).
--- Values: @keep_from (bits: where scored pairs are kept from), @search_floor (bits: a sampled pair at it or above keeps
--- its block), @oversized (a block of this many records or more is checked on a sample of as many of its records).
+-- Reads: records and this_batch (records.sql), compared (fit.sql), model and fit (each level's bits, the prior's
+-- bits at the file's size). Values: @keys and @rules (by name: the generators and rules this run uses, config.toml
+-- [score]), @keep_from (bits: where scored pairs are kept from), @search_floor (bits: a sampled pair at it or above
+-- keeps its block), @oversized (a block of this many records or more is checked on a sample of as many of its records).
 -- A pair's two records are x and y (l and r name its IDs: DuckDB reads a WHERE's l as the SELECT's, BigQuery as the table).
--- Writes: rule_pairs (the first rule in order naming each pair), cands (the pairs the keys list, the keys that listed
--- each in sources), gated (each oversized block, its sample and whether it was kept), scored (every pair kept).
+-- Writes: rule_pairs (the first rule in order naming each pair), cands (the pairs the batch's keys list, the keys that
+-- listed each in sources), gated (each oversized block the batch reaches, its sample and whether it was kept), scored
+-- (every pair kept). rule_pairs and scored hold every batch's; a batch adds the pairs touching its records.
+
+CREATE OR REPLACE TEMP TABLE fresh AS SELECT id FROM records WHERE batch = (SELECT batch FROM this_batch);
+
+-- The generators and the rules, by name, in order: a generator's position is its bit in sources, a rule's its rank
+-- (the first in order names a pair). Those this run uses are config.toml's; a name it gives that isn't here is refused.
+CREATE OR REPLACE TEMP TABLE generators AS
+SELECT g, name, name IN UNNEST(@keys) AS used FROM UNNEST([
+  'cif', 'phone_prefecture', 'phone_postal_area', 'phone_name_initial', 'person_name', 'company_name', 'company_name_deletions',
+  'person_name_deletions_postal_area', 'given_name_postal', 'address_phone', 'address_code_phone', 'address_name_initial',
+  'address_code_name_initial', 'given_name_address_code', 'cif_deletions', 'birth_date', 'given_name_phone',
+  'birth_date_deletions_prefecture', 'name_reading', 'phone_given_tail', 'postal_given_tail', 'postal_area_given_tail'
+]) AS name WITH OFFSET AS g;
+
+CREATE OR REPLACE TEMP TABLE rules AS
+SELECT i, rule, stage, rule IN UNNEST(@rules) AS used FROM UNNEST([
+  STRUCT(0 AS i, 'X1_CIF_PERSON_NAME' AS rule, 'exact' AS stage), STRUCT(1, 'X2_CIF_COMPANY_NAME', 'exact'),
+  STRUCT(2, 'X3_CIF_PHONE', 'exact'), STRUCT(3, 'X4_PERSON_NAME_ADDRCD_PHONE', 'exact'),
+  STRUCT(4, 'X5_COMPANY_NAME_ADDRCD_PHONE', 'exact'), STRUCT(5, 'F1_NAME~_ADDRCD_PHONE', 'fuzzy'),
+  STRUCT(6, 'F2_NAME~_ADDRESS~_PHONE', 'fuzzy'), STRUCT(7, 'F3_NAME~_CIF', 'fuzzy'), STRUCT(8, 'F4_NAME_ADDRCD_PHONE~', 'fuzzy'),
+  STRUCT(9, 'F5_COMPANY~_PHONE_POSTAL', 'fuzzy'), STRUCT(10, 'F6_COMPANY~_ADDRCD_PHONE', 'fuzzy'), STRUCT(11, 'F7_GIVEN_ADDRCD_PHONE', 'fuzzy')
+]);
+
+SELECT IF(COUNT(*) > 0, ERROR(CONCAT('config.toml [score]: no generator or rule is named ', STRING_AGG(x, ', '),
+                                     '; name those score.sql lists')), 0)
+FROM (SELECT x FROM UNNEST(@keys) AS x WHERE x NOT IN (SELECT name FROM generators)
+      UNION ALL SELECT x FROM UNNEST(@rules) AS x WHERE x NOT IN (SELECT rule FROM rules));
 
 
 -- 1. The rules: each one join on its keys, its fuzzy tests on the pairs that join. A value of a rule's keys held by
 --    @oversized records or more is not one customer's: the rule leaves it out (the model can still match them).
-CREATE OR REPLACE TEMP TABLE rule_keys AS
-SELECT i, k, id FROM (
+--    The batch's records against all: each pair once, the lower ID first.
+CREATE OR REPLACE TEMP TABLE rule_keys AS  -- each rule's key of each record, with how many records hold it (n)
+SELECT i, k, id, n, id IN (SELECT id FROM fresh) AS new FROM (
   SELECT i, k, id, COUNT(*) OVER (PARTITION BY i, k) AS n FROM (
     SELECT 0 AS i, customer_id || CHR(31) || full_name AS k, id FROM records
     UNION ALL SELECT 1, customer_id || CHR(31) || company_name, id FROM records
@@ -29,35 +59,31 @@ SELECT i, k, id FROM (
     UNION ALL SELECT 9, phone || CHR(31) || postal_code, id FROM records
     UNION ALL SELECT 10, address_code || CHR(31) || phone, id FROM records
     UNION ALL SELECT 11, given_name || CHR(31) || address_code || CHR(31) || phone, id FROM records
-  ) WHERE k IS NOT NULL
-) WHERE n < @oversized;
+  ) WHERE k IS NOT NULL AND i IN (SELECT i FROM rules WHERE used)
+);
 
-CREATE OR REPLACE TABLE rule_pairs AS
-WITH rules AS (
-  SELECT * FROM UNNEST([
-    STRUCT(0 AS i, 'X1_CIF_PERSON_NAME' AS rule, 'exact' AS stage), STRUCT(1, 'X2_CIF_COMPANY_NAME', 'exact'),
-    STRUCT(2, 'X3_CIF_PHONE', 'exact'), STRUCT(3, 'X4_PERSON_NAME_ADDRCD_PHONE', 'exact'),
-    STRUCT(4, 'X5_COMPANY_NAME_ADDRCD_PHONE', 'exact'), STRUCT(5, 'F1_NAME~_ADDRCD_PHONE', 'fuzzy'),
-    STRUCT(6, 'F2_NAME~_ADDRESS~_PHONE', 'fuzzy'), STRUCT(7, 'F3_NAME~_CIF', 'fuzzy'), STRUCT(8, 'F4_NAME_ADDRCD_PHONE~', 'fuzzy'),
-    STRUCT(9, 'F5_COMPANY~_PHONE_POSTAL', 'fuzzy'), STRUCT(10, 'F6_COMPANY~_ADDRCD_PHONE', 'fuzzy'), STRUCT(11, 'F7_GIVEN_ADDRCD_PHONE', 'fuzzy')
-  ])
-),
-found AS (
-  SELECT a.i, a.id AS l, b.id AS r
-  FROM rule_keys AS a JOIN rule_keys AS b ON a.i = b.i AND a.k = b.k AND a.id < b.id
+CREATE TABLE IF NOT EXISTS rule_pairs (l STRING, r STRING, rule STRING, stage STRING);
+
+CREATE OR REPLACE TEMP TABLE batch_rule_pairs AS
+WITH found AS (
+  SELECT a.i, LEAST(a.id, b.id) AS l, GREATEST(a.id, b.id) AS r
+  FROM rule_keys AS a JOIN rule_keys AS b ON a.i = b.i AND a.k = b.k AND a.id <> b.id AND (NOT b.new OR a.id < b.id)
   JOIN records AS x ON x.id = a.id JOIN records AS y ON y.id = b.id
-  WHERE CASE a.i WHEN 5 THEN near_name(x, y) WHEN 6 THEN near_name(x, y) AND near_address(x, y) WHEN 7 THEN near_name(x, y)
+  WHERE a.new AND a.n < @oversized
+    AND CASE a.i WHEN 5 THEN near_name(x, y) WHEN 6 THEN near_name(x, y) AND near_address(x, y) WHEN 7 THEN near_name(x, y)
                  WHEN 8 THEN near_phone(x, y) WHEN 9 THEN near_company(x, y) WHEN 10 THEN near_company(x, y) ELSE TRUE END
 )
 SELECT f.l, f.r, rules.rule, rules.stage
 FROM (SELECT l, r, MIN(i) AS i FROM found GROUP BY l, r) AS f JOIN rules USING (i);
+
+INSERT INTO rule_pairs SELECT * FROM batch_rule_pairs;
 
 
 -- 2. The keys: each generator's block of each record, its keys joined (a deletion key's: the value with each one
 --    character deleted, a run of equal characters once, and the value whole, within its other keys). In the order of
 --    their bits in sources.
 CREATE OR REPLACE TEMP TABLE key_blocks AS
-SELECT g, k, id FROM (
+SELECT g, k, id, id IN (SELECT id FROM fresh) AS new FROM (
   SELECT 0 AS g, customer_id AS k, id FROM records                                                      -- cif
   UNION ALL SELECT 1, phone || CHR(31) || prefecture, id FROM records                                   -- phone_prefecture
   UNION ALL SELECT 2, phone || CHR(31) || postal_code__first3, id FROM records                          -- phone_postal_area
@@ -88,25 +114,31 @@ SELECT g, k, id FROM (
   UNION ALL SELECT 19, phone || CHR(31) || person_name__kana_fold_long_vowel_last3, id FROM records     -- phone_given_tail
   UNION ALL SELECT 20, postal_code || CHR(31) || person_name__kana_fold_long_vowel_last3, id FROM records  -- postal_given_tail
   UNION ALL SELECT 21, postal_code__first3 || CHR(31) || person_name__kana_fold_long_vowel_last3, id FROM records  -- postal_area_given_tail
-) WHERE k IS NOT NULL;
+) WHERE k IS NOT NULL AND g IN (SELECT g FROM generators WHERE used);
 
-CREATE OR REPLACE TEMP TABLE key_sizes AS
-SELECT g, k, COUNT(*) AS n FROM key_blocks GROUP BY g, k;
+CREATE OR REPLACE TEMP TABLE key_sizes AS  -- each block the batch reaches, with its size among all the records
+SELECT g, k, COUNT(*) AS n FROM key_blocks GROUP BY g, k HAVING LOGICAL_OR(new);
 
--- every pair of a block under @oversized records, each generator's bit set
+-- every pair of a block under @oversized records that touches the batch, each generator's bit set
 CREATE OR REPLACE TEMP TABLE listed AS
-SELECT a.id AS l, b.id AS r, BIT_OR(1 << a.g) AS bits
-FROM key_blocks AS a JOIN key_blocks AS b ON a.g = b.g AND a.k = b.k AND a.id < b.id
+SELECT LEAST(a.id, b.id) AS l, GREATEST(a.id, b.id) AS r, BIT_OR(1 << a.g) AS bits
+FROM key_blocks AS a JOIN key_blocks AS b ON a.g = b.g AND a.k = b.k AND a.id <> b.id AND (NOT b.new OR a.id < b.id)
 JOIN key_sizes AS s ON s.g = a.g AND s.k = a.k
-WHERE s.n < @oversized
+WHERE a.new AND s.n < @oversized
 GROUP BY 1, 2;
 
 
 -- 3. The model's bits, as a score reads them: the prior's, and each comparison's by level (gamma + 1: the missing
 --    level, -1, weighs 0). A pair's weight: the prior and its levels' bits, added in the model's order.
 CREATE OR REPLACE TEMP TABLE weights AS
+WITH prior AS (  -- λ at the run's size: as fit found it, or for a lookup's (the run's records and the one asked), rescaled
+  SELECT IF(f.records = n.n, f.prior_bits, LOG(lam / (1 - lam), 2)) AS bits
+  FROM fit AS f, (SELECT COUNT(*) AS n FROM records) AS n,
+       (SELECT LEAST(f.probability * (f.fit_rows - 1) / GREATEST(n.n - 1, 1), 1 - CAST(0.000000001 AS FLOAT64)) AS lam
+        FROM fit AS f, (SELECT COUNT(*) AS n FROM records) AS n)
+)
 SELECT
-  (SELECT prior_bits FROM fit) AS prior,
+  (SELECT bits FROM prior) AS prior,
   ARRAY_CONCAT([CAST(0 AS FLOAT64)], ARRAY(SELECT bits FROM model WHERE comparison = 'name' ORDER BY gamma)) AS name,
   ARRAY_CONCAT([CAST(0 AS FLOAT64)], ARRAY(SELECT bits FROM model WHERE comparison = 'company' ORDER BY gamma)) AS company,
   ARRAY_CONCAT([CAST(0 AS FLOAT64)], ARRAY(SELECT bits FROM model WHERE comparison = 'address' ORDER BY gamma)) AS address,
@@ -145,19 +177,21 @@ CREATE OR REPLACE TEMP FUNCTION bound_of(l ANY TYPE, r ANY TYPE, w ANY TYPE) AS 
 );
 
 
--- 4. The gate: a block of @oversized records or more is joined only if a sample of its pairs (among its first
---    @oversized records by hash), less those another block listed, scored as the run scores, holds a pair at
---    @search_floor bits or more. A big block holds few true matches, and a placeholder's (a dummy phone) none.
+-- 4. The gate: a block of @oversized records or more is joined only if a sample of its pairs (the first @oversized
+--    of its batch records by hash against its first @oversized records), less those another block listed, scored as
+--    the run scores, holds a pair at @search_floor bits or more. A big block holds few true matches, and a
+--    placeholder's (a dummy phone) none.
 CREATE OR REPLACE TEMP TABLE gate_pairs AS
-WITH drawn AS (
-  SELECT g, k, id FROM (
-    SELECT b.g, b.k, b.id, ROW_NUMBER() OVER (PARTITION BY b.g, b.k ORDER BY er_hash(b.id)) AS rank
-    FROM key_blocks AS b JOIN key_sizes AS s ON s.g = b.g AND s.k = b.k WHERE s.n >= @oversized
-  ) WHERE rank <= @oversized
+WITH ranked AS (
+  SELECT b.g, b.k, b.id, b.new,
+         ROW_NUMBER() OVER (PARTITION BY b.g, b.k ORDER BY er_hash(b.id)) AS rank,
+         IF(b.new, ROW_NUMBER() OVER (PARTITION BY b.g, b.k, b.new ORDER BY er_hash(b.id)), NULL) AS new_rank
+  FROM key_blocks AS b JOIN key_sizes AS s ON s.g = b.g AND s.k = b.k WHERE s.n >= @oversized
 )
-SELECT DISTINCT a.g, a.k, a.id AS l, b.id AS r
-FROM drawn AS a JOIN drawn AS b ON a.g = b.g AND a.k = b.k AND a.id < b.id
-WHERE NOT EXISTS (SELECT 1 FROM listed AS x WHERE x.l = a.id AND x.r = b.id);
+SELECT DISTINCT a.g, a.k, LEAST(a.id, c.id) AS l, GREATEST(a.id, c.id) AS r
+FROM ranked AS a JOIN ranked AS c ON a.g = c.g AND a.k = c.k AND a.id <> c.id
+WHERE a.new_rank <= @oversized AND c.rank <= @oversized
+  AND NOT EXISTS (SELECT 1 FROM listed AS x WHERE x.l = LEAST(a.id, c.id) AND x.r = GREATEST(a.id, c.id));
 
 CREATE OR REPLACE TABLE gated AS
 WITH scored_sample AS (
@@ -176,34 +210,31 @@ FROM key_sizes AS z LEFT JOIN stats AS s ON s.g = z.g AND s.k = z.k
 WHERE z.n >= @oversized;
 
 
--- 5. The candidates: the pairs listed, and every pair of a block kept, each with the keys that listed it (sources).
+-- 5. The candidates: the pairs listed, and every pair of a block kept that touches the batch, each with the keys that
+--    listed it (sources).
 CREATE OR REPLACE TABLE cands AS
 WITH every AS (
   SELECT l, r, bits FROM listed
   UNION ALL
-  SELECT a.id, b.id, 1 << a.g
-  FROM key_blocks AS a JOIN key_blocks AS b ON a.g = b.g AND a.k = b.k AND a.id < b.id
+  SELECT LEAST(a.id, b.id), GREATEST(a.id, b.id), 1 << a.g
+  FROM key_blocks AS a JOIN key_blocks AS b ON a.g = b.g AND a.k = b.k AND a.id <> b.id AND (NOT b.new OR a.id < b.id)
   JOIN gated AS z ON z.g = a.g AND z.value = a.k
-  WHERE z.decision = 'kept'
+  WHERE a.new AND z.decision = 'kept'
 ),
 pairs AS (SELECT l, r, BIT_OR(bits) AS bits FROM every GROUP BY l, r),
 named AS (  -- each set of bits as the generators' names, in their order
-  SELECT bits, ARRAY_TO_STRING(ARRAY(SELECT name FROM UNNEST([
-    'cif', 'phone_prefecture', 'phone_postal_area', 'phone_name_initial', 'person_name', 'company_name', 'company_name_deletions',
-    'person_name_deletions_postal_area', 'given_name_postal', 'address_phone', 'address_code_phone', 'address_name_initial',
-    'address_code_name_initial', 'given_name_address_code', 'cif_deletions', 'birth_date', 'given_name_phone',
-    'birth_date_deletions_prefecture', 'name_reading', 'phone_given_tail', 'postal_given_tail', 'postal_area_given_tail'
-  ]) AS name WITH OFFSET AS i WHERE (bits >> i) & 1 = 1 ORDER BY i), '+') AS sources
+  SELECT bits, ARRAY_TO_STRING(ARRAY(SELECT name FROM generators WHERE (bits >> g) & 1 = 1 ORDER BY g), '+') AS sources
   FROM (SELECT DISTINCT bits FROM pairs)
 )
 SELECT pairs.l, pairs.r, named.sources FROM pairs JOIN named USING (bits);
 
 
--- 6. The scores: every candidate and rule pair the bound keeps, its levels and its weight; kept from @keep_from bits
---    up, and every rule pair. named: a name was compared (the person's or the company's).
-CREATE OR REPLACE TABLE scored AS
+-- 6. The scores: every candidate and rule pair of the batch the bound keeps, its levels and its weight; kept from
+--    @keep_from bits up, and every rule pair. named: a name was compared (the person's or the company's). Added to
+--    the run's: a pair touching a batch is scored once, as that batch's.
+CREATE OR REPLACE TEMP TABLE batch_scored AS
 WITH pairs AS (
-  SELECT l, r, c.sources, p.rule FROM cands AS c FULL JOIN rule_pairs AS p USING (l, r)
+  SELECT l, r, c.sources, p.rule FROM cands AS c FULL JOIN batch_rule_pairs AS p USING (l, r)
 ),
 levelled AS (
   SELECT p.l, p.r, p.sources, p.rule, gamma_name(x, y) AS gamma_name, gamma_company(x, y) AS gamma_company,
@@ -223,3 +254,7 @@ SELECT
   gamma_name, gamma_company, gamma_address, gamma_phone, gamma_cif, gamma_birth
 FROM weighed
 WHERE match_weight >= @keep_from OR rule IS NOT NULL;
+
+CREATE TABLE IF NOT EXISTS scored AS SELECT * FROM batch_scored WHERE FALSE;
+
+INSERT INTO scored SELECT * FROM batch_scored;
