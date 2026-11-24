@@ -111,3 +111,17 @@ def test_the_cost_estimator_bills_the_columns_a_statement_reads_whole_and_an_upd
     engine.rows("SELECT COUNT(*) FROM t WHERE a = '5b' LIMIT 1")  # a WHERE and a LIMIT cut nothing: column a, whole
     engine.run("UPDATE t SET n = 0 WHERE a = '5b'")  # every column of t
     assert [g["billed"] for g in got] == [3e6 * (2 + 2), 3e6 * ((2 + 2) + (2 + 4) + 8)]
+
+
+def test_a_statement_s_empty_twin_makes_the_same_columns():  # a `-- when: NOT …` twin, made when its statement isn't run
+    import sqlglot
+    from nayose import SQL, WRITE, statements, when
+    for f in SQL.glob("*.sql"):
+        made = {}
+        for s in statements(f.read_text(encoding="utf-8")):
+            if when(s) and (m := WRITE.match(s)) and m.group(2).upper().startswith("CREATE"):
+                tree = sqlglot.parse_one(s, read="bigquery")
+                tree = tree.expressions[0] if isinstance(tree, sqlglot.exp.Block) else tree  # a comment after its ';'
+                made.setdefault(m.group(3), []).append([e.alias_or_name for e in tree.expression.selects])
+        for name, lists in made.items():
+            assert all(x == lists[0] or x == ["*"] for x in lists), (f.name, name, lists)

@@ -216,6 +216,7 @@ SELECT * FROM known UNION ALL SELECT * FROM found;
 --    gone, then every space; the address's own prefecture off its start. first3, initial, last3: a key's start or
 --    end. long_vowel: a long vowel written either way (サトウ, サトオ, サトー) as one reading.
 
+-- when: EXISTS (SELECT 1 FROM found)
 CREATE OR REPLACE TEMP TABLE redone AS  -- the run's records a placeholder the batch found is held by
 SELECT id FROM records
 WHERE person_name IN (SELECT value FROM found WHERE field = 'person_name')
@@ -226,11 +227,22 @@ WHERE person_name IN (SELECT value FROM found WHERE field = 'person_name')
    OR birth_date IN (SELECT value FROM found WHERE field = 'birth_date')
    OR customer_id IN (SELECT value FROM found WHERE field = 'customer_id');
 
+-- when: NOT EXISTS (SELECT 1 FROM found)
+CREATE OR REPLACE TEMP TABLE redone AS SELECT id FROM records WHERE FALSE;  -- no placeholder found: no record made again, none read
+
+-- when: EXISTS (SELECT 1 FROM redone)
 CREATE OR REPLACE TEMP TABLE redone_fields AS  -- their fields, before the copies: made again with the batch's, below
 SELECT id, given_name, any_name, address, address_code, postal_code, prefecture, town_code, city, phone, customer_id,
        birth_date, kind_flag, kind_name, kind, kind_p, kind_by, name_p, kind_flagged, full_name, person_name, company_name, batch
 FROM records WHERE id IN (SELECT id FROM redone);
 
+-- when: NOT EXISTS (SELECT 1 FROM redone)
+CREATE OR REPLACE TEMP TABLE redone_fields AS  -- the same columns, none read
+SELECT id, given_name, any_name, address, address_code, postal_code, prefecture, town_code, city, phone, customer_id,
+       birth_date, kind_flag, kind_name, kind, kind_p, kind_by, name_p, kind_flagged, full_name, person_name, company_name, batch
+FROM records WHERE FALSE;
+
+-- when: EXISTS (SELECT 1 FROM redone)
 DELETE FROM records WHERE id IN (SELECT id FROM redone);
 
 INSERT INTO records
