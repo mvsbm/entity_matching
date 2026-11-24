@@ -46,3 +46,13 @@ nulls = ["NULL", "null", "Null", "\\N", "NaN", "nan", "None", "none", "N/A", "n/
 columns = ["CONT_ID", "FULL_NAME_KANA", "O_PERSON_NAME_KANA", "LAST_NAME_KANA", "GIVEN_NAME_KANA", "NYS_CNV_P_NAME_KANA",
            "STD_ADDRESS", "ORIGINAL_ADDRESS", "SOURCE_ADDR_CD", "POST_CD", "POST_CD_KANA", "ADDRESS_ONE", "ADDR_CD", "ADDRESS_TWO",
            "PHONE_NUM_4", "CIF_ID", "BIRTH_DATE", "PERSON_ORG_CODE"]
+
+[fit]  # sql/fit.sql, sql/u.sql, nayose/em.py
+fit_rows = 100000             # the sample the model is learned on: whole postal areas by hash
+prior_recall = 0.0217         # the share of all matches the near-certain rules are thought to find (λ)
+fit_u_max_pairs = 1000000     # u sampled on the fit's sample: about this many pairs
+u_max_pairs = 10000000        # u sampled on the file to be scored: about this many pairs
+seed = 0                      # the sample's hash seed
+# the EM sessions, in order: each learns from the sample's pairs sharing its key (fit.sql em_patterns); `start`: the
+# exact levels the key guarantees, whose evidence λ among its pairs starts from
+sessions = [{ key = "phone", start = [["phone", "exact"]] }, { key = "address", start = [] }]
