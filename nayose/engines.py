@@ -29,7 +29,7 @@ from rapidfuzz import process
 from rapidfuzz.distance import DamerauLevenshtein, Hamming, JaroWinkler, Levenshtein
 from sqlglot import exp
 
-from nayose import em
+from nayose import em, entities
 
 STRINGS = Path(__file__).parent / "strings.js"  # the comparison functions in JavaScript, as BigQuery runs them
 
@@ -192,6 +192,7 @@ class DuckDB:
         self.con.create_function("nfkc", nfkc, ["VARCHAR"], "VARCHAR", type="arrow")
         self.con.create_function("one_byte_hash", one_byte_hash, ["VARCHAR"], "VARCHAR", type="arrow")
         self.con.create_function("fit_model", em.fit, ["VARCHAR", "VARCHAR"], "VARCHAR")  # EM: a Python function, as on BigQuery
+        self.con.create_function("entities_of", entities.of, ["VARCHAR"], "VARCHAR")  # decide's components: the same
 
     def run(self, sql: str, values: dict | None = None) -> None:
         self.con.execute(duckdb_sql(sql), values or None)
@@ -234,7 +235,7 @@ class DuckDB:
 def functions(dataset: str) -> list[str]:
     """The statements the deploy runs once in `dataset` (project.dataset): each comparison of FUNCTIONS in JavaScript
     (cl_<name>, and cl_<name>_cut: the same score, its threshold unread), the portable hash (er_hash), nfkc,
-    one_byte_hash, and EM's fit_model (nayose/em.py, a Python UDF)."""
+    one_byte_hash, and the Python UDFs: EM's fit_model (nayose/em.py) and decide's entities_of (nayose/entities.py)."""
     library = STRINGS.read_text(encoding="utf-8")
     out = []
     for name in FUNCTIONS:
@@ -247,10 +248,11 @@ def functions(dataset: str) -> list[str]:
     out.append(f"CREATE OR REPLACE FUNCTION `{dataset}`.nfkc(x STRING) AS (NORMALIZE(x, NFKC))")
     out.append(f"CREATE OR REPLACE FUNCTION `{dataset}`.one_byte_hash(x STRING) AS "
                "(CODE_POINTS_TO_STRING(ARRAY(SELECT 33 + MOD(c, 94) FROM UNNEST(TO_CODE_POINTS(x)) AS c WITH OFFSET AS i ORDER BY i)))")
-    source = Path(em.__file__).read_text(encoding="utf-8")  # BigQuery's Python UDF: python-3.11, standard library only
-    assert "'''" not in source, "nayose/em.py: no triple single quotes, which end BigQuery's raw string"
-    out.append(f"CREATE OR REPLACE FUNCTION `{dataset}`.fit_model(counts STRING, settings STRING) RETURNS STRING LANGUAGE python "
-               f"OPTIONS (runtime_version = 'python-3.11', entry_point = 'fit') AS r'''{source}'''")
+    for module, name, args, entry in ((em, "fit_model", "counts STRING, settings STRING", "fit"), (entities, "entities_of", "pairs STRING", "of")):
+        source = Path(module.__file__).read_text(encoding="utf-8")  # BigQuery's Python UDF: python-3.11, standard library only
+        assert "'''" not in source, f"{module.__name__}: no triple single quotes, which end BigQuery's raw string"
+        out.append(f"CREATE OR REPLACE FUNCTION `{dataset}`.{name}({args}) RETURNS STRING LANGUAGE python "
+                   f"OPTIONS (runtime_version = 'python-3.11', entry_point = '{entry}') AS r'''{source}'''")
     return out
 
 
@@ -260,7 +262,7 @@ class BigQuery:
     `functions`' (project.dataset, the deploy's: functions()). `client`: a google.cloud.bigquery.Client (made when not
     given); `bigquery`: the module its job configurations come from (imported when not given)."""
     name = "bigquery"
-    CALLS = re.compile(r"(?<![\w.`])(" + "|".join([*(f"cl_{n}(?:_cut)?" for n in FUNCTIONS), "er_hash", "nfkc", "one_byte_hash", "fit_model"]) + r")\s*\(", re.I)
+    CALLS = re.compile(r"(?<![\w.`])(" + "|".join([*(f"cl_{n}(?:_cut)?" for n in FUNCTIONS), "er_hash", "nfkc", "one_byte_hash", "fit_model", "entities_of"]) + r")\s*\(", re.I)
 
     def __init__(self, dataset: str, functions: str, client: object = None, bigquery: object = None) -> None:
         self.bigquery = bigquery or importlib.import_module("google.cloud.bigquery")

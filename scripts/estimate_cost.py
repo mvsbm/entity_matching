@@ -1,4 +1,5 @@
-"""What a build costs BigQuery, measured on DuckDB, statement by statement: records (stage 1), fit (2) and score (3).
+"""What a build costs BigQuery, measured on DuckDB, statement by statement: records (stage 1), fit (2), score (3) and
+decide (its entities); and a match run at keep_from.
 
     python scripts/estimate_cost.py FILE [FILE ...]
 
@@ -76,7 +77,7 @@ def cost(engine: DuckDB, sql: str, plan: dict, calls: int) -> dict:
         have = dict(engine.con.execute("SELECT column_name, data_type FROM information_schema.columns WHERE table_name = ?", [table]).fetchall())
         read = [c for c in have if c in cols or table == updated]
         sizes = [SIZE.get(have[c], "8 * COUNT({c})").format(c=f'"{c}"') for c in read]
-        billed += max(10 * MB, float(engine.con.execute(f'SELECT {" + ".join(sizes) or "0"} FROM "{table}"').fetchall()[0][0] or 0))
+        billed += max(10 * MB, float(engine.con.execute(f'SELECT {" + ".join(sizes) or "0 * COUNT(*)"} FROM "{table}"').fetchall()[0][0] or 0))
     return dict(label=label[:70], billed=billed, rows=plan.get("query", {}).get("total_intermediate_rows", 0), calls=calls)
 
 
@@ -91,6 +92,12 @@ def build(path: Path) -> dict[str, list[dict]]:  # stage → its statements' cos
     got.clear()
     nayose.score(engine)
     stages["score"] = list(got)
+    got.clear()
+    nayose.decide(engine, [])
+    stages["decide"] = list(got)  # the build's last step: its entities, no decision given
+    got.clear()
+    nayose.match(engine, float(nayose.config()["score"]["keep_from"]))
+    stages["match"] = list(got)  # at keep_from: every pair kept, the most a match run reads
     engine.close()
     return stages
 
