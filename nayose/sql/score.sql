@@ -9,11 +9,13 @@
 -- bits at the file's size). Values: @keys and @rules (by name: the generators and rules this run uses, config.toml
 -- [score]), @keep_from (bits: where scored pairs are kept from), @search_floor (bits: a sampled pair at it or above
 -- keeps its block), @oversized (a block of this many records or more is checked on a sample of as many of its records),
--- @lookup (the batch is a record asked about: its keys kept, each, for lookup.sql's account).
+-- @lookup (the batch is a record asked about: its keys kept, each, for lookup.sql's account), @outside (the run's records
+-- this one doesn't hold: a lookup's holds its record's blocks alone, nayose.lookup; else 0).
 -- A pair's two records are x and y (l and r name its IDs: DuckDB reads a WHERE's l as the SELECT's, BigQuery as the table).
--- Writes: rule_pairs (the first rule in order naming each pair), cands (the pairs the batch's keys list, the keys that
--- listed each in sources), gated (each oversized block the batch reaches, its sample and whether it was kept), scored
--- (every pair kept). rule_pairs and scored hold every batch's; a batch adds the pairs touching its records.
+-- Writes: rule_keys and every_key (each record's keys: the index a lookup reads, by key), rule_pairs (the first rule
+-- in order naming each pair), cands (the pairs the batch's keys list, the keys that listed each in sources), gated
+-- (each oversized block the batch reaches, its sample and whether it was kept), scored (every pair kept). rule_pairs
+-- and scored hold every batch's; a batch adds the pairs touching its records.
 
 CREATE OR REPLACE TEMP TABLE fresh AS SELECT id FROM records WHERE batch = (SELECT batch FROM this_batch);
 
@@ -45,7 +47,7 @@ FROM (SELECT x FROM UNNEST(@keys) AS x WHERE x NOT IN (SELECT name FROM generato
 -- 1. The rules: each one join on its keys, its fuzzy tests on the pairs that join. A value of a rule's keys held by
 --    @oversized records or more is not one customer's: the rule leaves it out (the model can still match them).
 --    The batch's records against all: each pair once, the lower ID first.
-CREATE OR REPLACE TEMP TABLE rule_keys AS  -- each rule's key of each record, with how many records hold it (n)
+CREATE OR REPLACE TABLE rule_keys CLUSTER BY k AS  -- each rule's key of each record, with how many records hold it (n)
 SELECT i, k, id, n, id IN (SELECT id FROM fresh) AS new FROM (
   SELECT i, k, id, COUNT(*) OVER (PARTITION BY i, k) AS n FROM (
     SELECT 0 AS i, customer_id || CHR(31) || full_name AS k, id FROM records
@@ -84,7 +86,7 @@ INSERT INTO rule_pairs SELECT * FROM batch_rule_pairs;
 --    character deleted, a run of equal characters once, and the value whole, within its other keys). In the order of
 --    their bits in sources. Each row with its block's size among all the records (n), counted once; kept only where
 --    the block reaches the batch and can make a pair (two records or more; a lookup's record keeps its own).
-CREATE OR REPLACE TEMP TABLE every_key AS
+CREATE OR REPLACE TABLE every_key CLUSTER BY k AS
 SELECT g, k, id, id IN (SELECT id FROM fresh) AS new FROM (
   SELECT 0 AS g, customer_id AS k, id FROM records                                                      -- cif
   UNION ALL SELECT 1, phone || CHR(31) || prefecture, id FROM records                                   -- phone_prefecture
@@ -137,9 +139,9 @@ GROUP BY 1, 2;
 CREATE OR REPLACE TEMP TABLE weights AS
 WITH prior AS (  -- λ at the run's size: as fit found it, or for a lookup's (the run's records and the one asked), rescaled
   SELECT IF(f.records = n.n, f.prior_bits, LOG(lam / (1 - lam), 2)) AS bits
-  FROM fit AS f, (SELECT COUNT(*) AS n FROM records) AS n,
+  FROM fit AS f, (SELECT COUNT(*) + @outside AS n FROM records) AS n,
        (SELECT LEAST(f.probability * (f.fit_rows - 1) / GREATEST(n.n - 1, 1), 1 - CAST(0.000000001 AS FLOAT64)) AS lam
-        FROM fit AS f, (SELECT COUNT(*) AS n FROM records) AS n)
+        FROM fit AS f, (SELECT COUNT(*) + @outside AS n FROM records) AS n)
 )
 SELECT
   (SELECT bits FROM prior) AS prior,

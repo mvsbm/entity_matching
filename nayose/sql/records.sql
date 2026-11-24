@@ -22,7 +22,7 @@ CREATE TABLE IF NOT EXISTS records (
   company_name__nfkc_strip_legal_form_kana_fold_one_byte STRING, address__address_one_byte_hash STRING,
   person_name__kana_fold_long_vowel_last3 STRING, person_name__kana_fold_letters_lo INT64, person_name__kana_fold_letters_hi INT64,
   batch INT64
-);
+) CLUSTER BY id;  -- a lookup reads its records by ID: on BigQuery, only the blocks that hold them
 
 CREATE TABLE IF NOT EXISTS placeholders (field STRING, value STRING, n INT64);
 

@@ -31,10 +31,10 @@ What a run costs, and how each figure is measured. BigQuery bills in one of two 
 | records | `records.sql` | O(Δ·L) + O(N) | each record of the batch is read and standardized; placeholders are counted over the whole run |
 | fit (a build) | `fit.sql`, `em.py` | O(n + P_em·K) + O(N + S·K) | EM learns on a fixed sample. u is counted exactly for the equality and one-edit levels (by value counts, never pair by pair) and sampled for the rest |
 | fit (an update) | `fit.sql` | O(N) + O(S·K) for a stale comparison | the build's model is kept; u is measured again, and a sampled comparison is sampled again only once it has gone stale |
-| score | `score.sql` | O(N·L) + O(Δ·b + C_Δ·K·L²) | every record's keys are made again; then the batch's blocks are joined and their pairs compared |
+| score | `score.sql` | O(N·L) + O(Δ·b + C_Δ·K·L²) | every record's keys are made again, and kept as the key index; then the batch's blocks are joined and their pairs compared |
 | decide | `decide.sql` | O(D + N) | connected components over the match decisions; then every record placed |
 | match | `match.sql` | O(C + P·F) | a scan of the scored pairs; those kept are joined to their records |
-| lookup | `lookup.sql` | O(N·G) + O(G·b + C·K·L²) | an update of one record, rolled back: it makes the run's keys again too |
+| lookup | `lookup.sql` | O(G) + O(G·b + C·K·L²) | the record's keys made alone; the key index read by them; the record scored against its blocks' records alone |
 | report | `report.sql` | O(N·F) + O(C) | each field's fill; the batch's pairs by band |
 
 A build is O(N·L + n + S·K + ΣP + C·K·L²): linear in N while each key's pairs per record stay flat as the file grows (report.txt's BLOCKS shows them). An update's expensive work grows with its batch. Its O(N) part is scans: the run's records for the placeholders and u, and every record's keys.
@@ -85,13 +85,13 @@ These use the US list price; the region's price differs (`asia-northeast1` is th
 |---|---|---|
 | update | a batch of 10,161 onto 189,839 | 4.3 s |
 | decide, as its own job | a run of 1M | 0.6 s |
-| lookup | 200k | 0.67 s |
+| lookup, as its own job | 200k | 1.2 s |
 
-A lookup makes the run's keys again, so it grows with the run: 3.3 s at 1,039,995 records as a job of its own, the run's 0.52 GB file copied first. `scripts/estimate_cost.py` doesn't measure an update's bytes.
+A lookup reads the key index by its keys, and the records it touches by ID: 2.2 s at 1,039,995 records as a job of its own, most of it copying the run's 1.28 GB file first. On BigQuery, 96 statements, each billed at least 10 MB a table: about 0.7 GB, whatever the run's size, plus the index's blocks its keys fall in (`scripts/estimate_cost.py` can't tell those from the whole index, 1.7 GB at 1M). `scripts/estimate_cost.py` doesn't measure an update's bytes.
 
 ## Memory and disk
 
-The run's tables are DuckDB's. Past `memory_limit` (`--compute memory_limit=8GB`), DuckDB spills to `temp_directory`. Python holds only small results: the fit's counts, the model and report.txt's numbers. Peak memory and `run.duckdb`'s size at 1M: 6.7 GB and 0.52 GB at 1,039,995 records. For files of growing size, `scripts/benchmark.py` builds each one in a process of its own and writes `reports/benchmark.md`: [reports/benchmark.md](../reports/benchmark.md): a build grows like N^0.5 between 13,019 and 1,039,995 records, 3.8 s to 30.9 s, 1.25 GB to 6.7 GB at peak.
+The run's tables are DuckDB's. Past `memory_limit` (`--compute memory_limit=8GB`), DuckDB spills to `temp_directory`. Python holds only small results: the fit's counts, the model and report.txt's numbers. Peak memory and `run.duckdb`'s size at 1M: 6.7 GB and 1.28 GB at 1,039,995 records, 0.75 GB of it the key index (`every_key`, `rule_keys`: 43.5M rows; about 1.7 TB at 1B in BigQuery's bytes). For files of growing size, `scripts/benchmark.py` builds each one in a process of its own and writes `reports/benchmark.md`: [reports/benchmark.md](../reports/benchmark.md): a build grows like N^0.5 between 13,019 and 1,039,995 records, 3.8 s to 30.9 s, 1.25 GB to 6.7 GB at peak.
 
 ## What keeps the cost down
 

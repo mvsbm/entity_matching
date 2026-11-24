@@ -10,6 +10,7 @@ Both answer the same verbs: run (a statement, nothing back), rows, value, frame 
 tables stay in the engine); put (a small frame as a table, such as the model EM learns); read_parquet (input files
 as a table).
 """
+import contextlib
 import functools
 import importlib
 import re
@@ -81,7 +82,10 @@ def as_bigquery(node: exp.Expression) -> exp.Expression:
     - UNNEST ... WITH OFFSET: counted from 0, as BigQuery counts (sqlglot writes DuckDB's WITH ORDINALITY, from 1);
     - array[OFFSET(i)] where i isn't a number: DuckDB's array[i + 1] (sqlglot moves a number's base only);
     - REGEXP_EXTRACT: the group's match where the pattern has one (sqlglot reads groups with Python's re, which can't
-      read RE2's \\x{3000} or \\p{Nd}), and NULL where it doesn't match (DuckDB's gives '')."""
+      read RE2's \\x{3000} or \\p{Nd}), and NULL where it doesn't match (DuckDB's gives '');
+    - CLUSTER BY: BigQuery's storage order, what a filter on its columns prunes by; DuckDB keeps none, so it goes."""
+    if isinstance(node, exp.ClusterProperty):
+        return None
     if isinstance(node, exp.ColumnDef) and node.args.get("kind") is not None and node.args["kind"].this == exp.DataType.Type.VARIANT:
         node.set("kind", None)
         return node
@@ -232,6 +236,14 @@ class DuckDB:
         for c in (c for c in columns if c.casefold() not in have):
             self.con.execute(f'ALTER TABLE "{table}" ADD COLUMN {quote(c)} VARCHAR')
 
+    @contextlib.contextmanager
+    def scratch(self):  # a transaction rolled back: whatever its statements write is undone after
+        self.run("BEGIN TRANSACTION")
+        try:
+            yield
+        finally:
+            self.run("ROLLBACK")
+
     def close(self) -> None:
         self.con.close()
         if self.spill:
@@ -276,7 +288,7 @@ JOBS = {  # each job BigQuery runs as a procedure of the run's dataset: its stag
 }  # shortcut: no lookup procedure, a lookup's statements roll back where BigQuery takes no DDL; on a session over the run's clones, at the parity step
 ARGUMENTS = {"match": {"threshold": "FLOAT64"}}  # a procedure's own values: given when it is called, not declared
 RUN_TABLES = ("records", "placeholders", "this_batch", "set_aside", "fit_sample", "fit_prior", "em_patterns", "u_outside", "u_counted",
-              "u_near", "u_sampled", "u_filled", "model", "fit", "rule_pairs", "cands", "gated", "scored", "gold")  # a build starts without them; decisions stay
+              "u_near", "u_sampled", "u_filled", "model", "fit", "rule_keys", "every_key", "rule_pairs", "cands", "gated", "scored", "gold")  # a build starts without them; decisions stay
 TEMP_FUNCTION = re.compile(r"^((?:\s*--[^\n]*\n)*\s*)CREATE OR REPLACE TEMP FUNCTION (\w+)", re.I)
 
 
@@ -390,6 +402,14 @@ class BigQuery:
         self.client.load_table_from_uri(list(files), f"{self.dataset}.{table}", job_config=config).result()
         for c in columns:
             self.run(f"ALTER TABLE `{table}` ADD COLUMN IF NOT EXISTS `{c}` STRING")
+
+    @contextlib.contextmanager
+    def scratch(self):  # a session of its own: its temporary tables end with it (a lookup writes no other)
+        self.close()
+        try:
+            yield
+        finally:
+            self.close()
 
     def close(self) -> None:  # the session ended, its temporary tables with it
         if self.session:
