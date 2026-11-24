@@ -76,8 +76,8 @@ def test_a_statement_translates_into_the_session_and_the_dataset_s_functions():
 
 
 def test_every_statement_a_job_sends_translates_into_sql_bigquery_reads(tmp_path, population, monkeypatch):
-    """A full run of the tests' population with its reports, an increment, people's decisions, the index kept up to
-    date, lookups by ID and by values, and a batch's would-be entities: every statement each sends its engine translates
+    """A full run of the tests' population with its report, an increment, a match run, people's decisions on its table,
+    the index kept up to date, lookups by ID, by values and of a file: every statement each sends its engine translates
     (none refused: DUCKDB_ONLY, or sqlglot's own) into SQL BigQuery's parser reads. The name model's own, which runs on
     the job's own DuckDB in its process whatever the engine (er.kind), aside."""
     import traceback
@@ -86,7 +86,8 @@ def test_every_statement_a_job_sends_translates_into_sql_bigquery_reads(tmp_path
     from er.jobs import index
     from er.jobs.build import build
     from er.jobs.decide import decide
-    from er.jobs.update import update, would_join
+    from er.jobs.match import match
+    from er.jobs.update import update
     sent = []
     for verb in ("run", "value", "row", "first", "rows", "frame", "numpy", "arrow", "batches"):
         def said(self, sql, *a, real=getattr(DuckDB, verb), **k):
@@ -105,12 +106,13 @@ def test_every_statement_a_job_sends_translates_into_sql_bigquery_reads(tmp_path
     run = tmp_path / "run"
     build(tmp_path / "base.parquet", run, s, p, pipeline_file=method)
     update(tmp_path / "batch.parquet", run, s, p, pipeline_file=method)
-    pd.read_parquet(run / "review.parquet").head(1).assign(decision="match").to_parquet(tmp_path / "decided.parquet")
+    pd.read_parquet(match(run, s, p, 6.0)["into"]).head(1).assign(decision="match").to_parquet(tmp_path / "decided.parquet")
     decide(tmp_path / "decided.parquet", run, s, p)
     one = g.df.iloc[0]
     index.look_up(run, s, p, record=str(one[s.data.unique_id]))
     index.look_up(run, s, p, values={c: str(one[c]) for c in ("FULL_NAME_KANA", "PHONE_NUM_4") if pd.notna(one[c])})
-    would_join(tmp_path / "batch.parquet", run, s, p)
+    g.df.iloc[n:n + 5].to_parquet(tmp_path / "people.parquet", index=False)
+    index.look_up_file(run, s, p, tmp_path / "people.parquet")
     refused = Counter()
     for sql in sent:
         for x in sorted(answered, key=len, reverse=True):

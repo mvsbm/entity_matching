@@ -1,7 +1,7 @@
-"""The reports for people, from what a job did (er.steps.job.Ran) and its tables: qa (the label-free checks, and the
-summary in words), fill_rates, review_sheet (scored pairs as people judge them), carry_over (the open review queue across
-increments) and report_text (the run on a page with no record's value in it). er.steps.report builds them; er.steps.write
-stages them with the run's files."""
+"""The report for people, from what a job did (er.steps.job.Ran) and its tables: qa (the label-free checks, and the
+summary in words), fill_rates, households (pairs maybe two people of one household, er.jobs.match's column) and
+report_text (the run on a page with no record's value in it). er.steps.report builds it; er.steps.write stages it with
+the run's files."""
 import math
 import platform
 import re
@@ -15,10 +15,9 @@ import pandas as pd
 
 from er.engine.engine import Engine
 from er.config import GIVEN, hashed, InputError, Key, lit, Pipeline, q, sources_text, unpivoted
-from er import folder
-from er.io import code_version, read_parquet
+from er.io import code_version
 from er.kind import COMPANY, PERSON, SAYS, UNSURE
-from er.match import ELSE, GIVEN_SHARE, _ranked, levels, named_sql, parameters, pattern_coverage, review_floor, scaled_prior, search_floor
+from er.match import ELSE, GIVEN_SHARE, _ranked, levels, parameters, pattern_coverage, review_floor, scaled_prior, search_floor
 from er.source import filled, fit
 
 if TYPE_CHECKING:
@@ -68,50 +67,26 @@ def unmapped_columns(engine: Engine, table: str, columns: list[str], fields: lis
                         ).sort_values(["share", "filled"], ascending=False, kind="stable", ignore_index=True)
 
 
-def qa(run: "Ran", fields: list[str] | None = None, review: int = 50, previous: Path | None = None) -> dict[str, pd.DataFrame]:
-    """The label-free report of a run: a summary in words (records, entities, who joined them, the model's links and the
-    false ones it expects among them, what to decide, what the loader fixed), fill rate per field (flagged under 5%)
-    (of `fields`, by default every logical field) with the share that looks like the field and the share of its most common value, what was disabled, every step's cost,
-    accepted pairs by weight band, cluster sizes, the largest clusters (the over-merge alarm), and the review sheet
-    for people (review_sheet). Its rows are of two kinds. "decide": every pair of clusters whose best link scored in the
-    threshold's safety margin [review_floor, min_match_weight), or above it with no name compared, not decided yet, best link first. "audit": accepted pairs
-    up to 4 bits above the threshold not decided yet, `review` of them, stratified by 1-bit band. `previous`, the workspace's sheet
-    before an increment: its open rows stay (carry_over), since the scores behind them aren't kept."""
-    engine, u, t = run.engine, q(run.uid), run.pipeline.fs.min_match_weight
+def qa(run: "Ran", fields: list[str] | None = None) -> dict[str, pd.DataFrame]:
+    """The label-free report of a run: a summary in words (records, the candidates scored for match runs, the entities
+    people's decisions made, what the loader fixed), fill rate per field (flagged under 5%) (of `fields`, by default
+    every logical field) with the share that looks like the field and the share of its most common value, what was
+    disabled, every step's cost, scored pairs by weight band, the entities' sizes, and the patterns no key lists."""
+    engine, u = run.engine, q(run.uid)
     fill = fill_rates(run, fields)
-    l, r, lo = q(run.l), q(run.r), review_floor(run.pipeline)
-    bands = engine.frame(f"""SELECT floor(s.match_weight / 2) * 2 AS weight_from, count(*) AS pairs, count(m.{l}) AS accepted
-                        FROM scores s LEFT JOIN matches m USING ({l}, {r}) GROUP BY 1 ORDER BY 1""")
+    bands = engine.frame("SELECT floor(match_weight / 2) * 2 AS weight_from, count(*) AS pairs FROM scores GROUP BY 1 ORDER BY 1")
     sizes = engine.frame("SELECT n AS cluster_size, count(*) AS clusters FROM (SELECT count(*) AS n FROM gold GROUP BY cluster_id) GROUP BY 1 ORDER BY 1")
-    largest = engine.frame("SELECT cluster_id, count(*) AS records FROM gold GROUP BY 1 ORDER BY 2 DESC, 1 LIMIT 10")
-    engine.run(f"CREATE TABLE IF NOT EXISTS er_decisions ({l} VARCHAR, {r} VARCHAR, decision VARCHAR)")
-    decide = engine.frame(f"""SELECT * EXCLUDE (k1, k2) FROM (
-            SELECT s.*, c.sources, least(ga.cluster_id, gb.cluster_id) AS k1, greatest(ga.cluster_id, gb.cluster_id) AS k2
-            FROM scores s JOIN cands c USING ({l}, {r}) JOIN gold ga ON ga.{u} = s.{l} JOIN gold gb ON gb.{u} = s.{r}
-            WHERE s.match_weight >= {lo} AND (s.match_weight < {t} OR NOT {named_sql(run.pipeline.fs)}) AND ga.cluster_id <> gb.cluster_id
-              AND NOT EXISTS (SELECT 1 FROM er_decisions d WHERE d.{l} = s.{l} AND d.{r} = s.{r}))
-        QUALIFY row_number() OVER (PARTITION BY k1, k2 ORDER BY match_weight DESC, {l}, {r}) = 1
-        ORDER BY match_weight DESC, {l}, {r}""").assign(why="decide")
-    audit = engine.frame(f"""SELECT * EXCLUDE (k) FROM (SELECT s.*, m.sources, row_number() OVER (PARTITION BY floor(s.match_weight) ORDER BY {hashed(f's.{l}', f's.{r}')}) AS k
-                        FROM matches m JOIN scores s USING ({l}, {r}) WHERE s.match_weight < {t + 4}
-                          AND NOT EXISTS (SELECT 1 FROM er_decisions d WHERE d.{l} = s.{l} AND d.{r} = s.{r}))
-                        WHERE k <= {max(1, review // 4)} ORDER BY match_weight, {l}, {r}""").assign(why="audit")
+    engine.run(f"CREATE TABLE IF NOT EXISTS er_decisions ({q(run.l)} VARCHAR, {q(run.r)} VARCHAR, decision VARCHAR)")
     steps = pd.DataFrame(run.steps)
     base = ["step", "big_o", "filled", "seconds", "peak_memory_gb"]
     number = lambda v: isinstance(v, int | float) and not isinstance(v, bool) and not math.isnan(v)  # a list (generators) is no fact
     steps = steps[base].assign(facts=steps.drop(columns=base).apply(lambda r: " · ".join(
         f"{k} {v:,.0f}" if float(v).is_integer() else f"{k} {v:,.2f}" for k, v in r.items() if number(v)), axis=1))
     coverage = pattern_coverage(run.pipeline.fs, run.scoring, run.n)
-    sheet = review_sheet(run, pd.concat([decide, audit], ignore_index=True))
-    if previous is not None and previous.exists():
-        sheet = carry_over(run, read_parquet(previous), sheet, previous.parent)
-    decide = sheet[sheet["why"] == "decide"]
-    queue = pd.DataFrame(dict(why=["decide", "audit"], pairs=[len(decide), len(audit)], from_bits=[lo, t], below_bits=[t, t + 4]))
-    fs, aside = run.pipeline.fs, run.engine.value("SELECT count(*) FROM set_aside")
-    total, entities, biggest, by_rules, by_model, by_people = engine.row(f"""SELECT count(*), count(DISTINCT cluster_id), max(n),
-        count(*) FILTER (WHERE resolved_stage = '{fs.previous_stage}'), count(*) FILTER (WHERE resolved_stage = '{fs.stage}'),
-        count(*) FILTER (WHERE resolved_stage = 'review') FROM gold JOIN (SELECT cluster_id, count(*) AS n FROM gold GROUP BY 1) USING (cluster_id)""")
-    linked = next(x for x in reversed(run.steps) if x["step"] == "cluster")
+    aside = run.engine.value("SELECT count(*) FROM set_aside")
+    total, entities, biggest, by_people = engine.row("""SELECT count(*), count(DISTINCT cluster_id), max(n), count(*) FILTER (WHERE resolved_stage = 'review')
+        FROM gold JOIN (SELECT cluster_id, count(*) AS n FROM gold GROUP BY 1) USING (cluster_id)""")
+    scored, ruled = engine.row("SELECT count(*), count(*) FILTER (WHERE EXISTS (SELECT 1 FROM rule_kept k WHERE k.{l} = s.{l} AND k.{r} = s.{r})) FROM scores s".format(l=q(run.l), r=q(run.r)))
     kinds, mixed, kind_rows = pd.DataFrame(), pd.DataFrame(), []
     if "kind" in {c for c, _ in engine.columns("gold")}:
         kinds = engine.frame("""SELECT 'records' AS of, kind, count(*) AS how_many FROM gold GROUP BY ALL
@@ -141,11 +116,9 @@ def qa(run: "Ran", fields: list[str] | None = None, review: int = 50, previous: 
         WHERE d.decision = 'no_match' AND a.cluster_id = b.cluster_id""")  # kept apart, joined by others
     summary = pd.DataFrame([
         ("records", f"{total:,}" + (f", {run.added:,} of them new" if run.added is not None else "") + (f"; {aside:,} set aside (set_aside/)" if aside else "")),
-        ("entities", f"{entities:,}; the largest holds {biggest:,} record{'s' * (biggest != 1)}"),
-        ("joined by", f"the rules {by_rules:,} · the model {by_model:,} · people {by_people:,} records"),
-        ("model links", f"{linked['accepted']:,}{' in this batch' if run.added is not None else ''}; about {linked['expected_false']:,.{1 if linked['expected_false'] >= 1 else 2}f} "
-                        "of them false, as the model expects (the sum of 1 − match probability)"),
-        ("to decide", f"{len(decide):,} pair{'' if len(decide) == 1 else 's'} in review.parquet (why = decide)"),
+        ("candidates", f"{scored:,} pairs scored{' in this batch' if run.added is not None else ''}, {ruled:,} of them a rule's too: "
+                       "scored/, which a match run reads at its threshold (python -m er match)"),
+        ("entities", f"{entities:,}; {by_people:,} records joined by people's decisions; the largest holds {biggest:,} record{'s' * (biggest != 1)}"),
         *kind_rows,
         *([("note", f"{apart:,} pair{'s' if apart > 1 else ''} people called different {'are' if apart > 1 else 'is'} in one entity through other links: "
                     "a full run parts it only where no other link holds it")] if apart else []),
@@ -154,10 +127,7 @@ def qa(run: "Ran", fields: list[str] | None = None, review: int = 50, previous: 
         *(("note", note) for note in run.notes),
         *(("example", x) for x in run.examples)], columns=["what", "value"])
     return dict(summary=summary, fill=fill, disabled=pd.DataFrame({"disabled": run.disabled}), steps=steps, weight_bands=bands,
-                cluster_sizes=sizes, largest_clusters=largest, patterns_without_a_key=coverage.head(20), review=queue,
-                kinds=kinds, mixed_kinds=mixed,
-                oversized_blocks=run.gated,
-                review_sheet=sheet)
+                cluster_sizes=sizes, patterns_without_a_key=coverage.head(20), kinds=kinds, oversized_blocks=run.gated)
 
 
 SPARSE = 0.3  # a compared field filled in fewer records than this: DIAGNOSIS names it
@@ -252,9 +222,9 @@ def report_text(run: "Ran", tables: dict[str, pd.DataFrame], pipeline: Path, ite
     """The run on a page of plain text that holds no record's value (no ID, name, phone or address: the notes that
     quote one are run.examples, never written), so it can leave the machine that holds the records. `tables` is qa()'s.
     It shows what ran (the code, the tracked files changed in this copy, the pipeline, the machine's limits), what limits
-    what the run finds (diagnosis's `items`, made here when not given), the summary, each field's fill and shape, the columns no field reads, scores and accepted links by weight with the false links the
-    model expects, each score band's commonest patterns, cluster sizes, each step's time and memory, its time in each string comparison, the model (the prior, the pairs each EM session learned from, and m, u and bits per level), the costliest
-    blocks, and the patterns no key pairs. O(C + E) over scores and matches."""
+    what the run finds (diagnosis's `items`, made here when not given), the summary, each field's fill and shape, the columns no field reads, the candidates by weight,
+    each score band's commonest patterns, the entities' sizes, each step's time and memory, its time in each string comparison, the model (the prior, the pairs each EM session learned from, and m, u and bits per level), the costliest
+    blocks, and the patterns no key pairs. O(C) over the scores."""
     engine, fs = run.engine, run.pipeline.fs
     t, lo = fs.min_match_weight, review_floor(run.pipeline)
 
@@ -298,15 +268,12 @@ def report_text(run: "Ran", tables: dict[str, pd.DataFrame], pipeline: Path, ite
     edges = sorted({-20, -10, 0, lo, t, t + 2, t + 4, t + 8, t + 12})
     band = "CASE " + " ".join(f"WHEN match_weight < {b} THEN {i}" for i, b in enumerate(edges)) + f" ELSE {len(edges)} END"
     scored = dict(engine.rows(f"SELECT {band}, count(*) FROM scores GROUP BY 1"))
-    accepted = {k: (n, x) for k, n, x in engine.rows(f"SELECT {band}, count(*), sum(1 - match_probability) FROM matches GROUP BY 1")}
     label = lambda i: f"below {edges[0]:g}" if i == 0 else f"{edges[-1]:g} and up" if i == len(edges) else f"{edges[i - 1]:g} to {edges[i]:g}"
     if unscored := sum(x.get("unscored", 0) for x in run.steps if x["step"] == "score"):  # pairs a bound put below 0, never scored: one row below 0
         below = [i for i in scored if i < len(edges) and edges[i] <= 0]
         scored = {-1: sum(scored.pop(i) for i in below) + unscored, **scored}
         label = (lambda f: lambda i: "below 0" if i == -1 else f(i))(label)
-    out += [f"SCORES  (bits; review from {lo:g}, accept from {t:g}; expected false = the sum of 1 − match probability)", *table(pd.DataFrame(
-        [dict(bits=label(i), candidates=f"{scored[i]:,}", accepted=f"{accepted.get(i, (0, 0))[0]:,}", expected_false=f"{accepted.get(i, (0, 0))[1]:.2f}")
-         for i in sorted(scored)])), ""]
+    out += ["SCORES  (the candidates scored, by bits)", *table(pd.DataFrame([dict(bits=label(i), candidates=f"{scored[i]:,}") for i in sorted(scored)])), ""]
 
     gammas = [c for c, _ in engine.columns("scores") if c.startswith("gamma_")]
     if gammas:  # each band's most common patterns among the keys' pairs scored/ keeps, one level per comparison as MODEL names it
@@ -371,28 +338,6 @@ def report_text(run: "Ran", tables: dict[str, pd.DataFrame], pipeline: Path, ite
     return "\n".join(out) + "\n"
 
 
-def carry_over(run: "Ran", previous: pd.DataFrame, sheet: pd.DataFrame, out: Path, full: bool = False) -> pd.DataFrame:
-    """The review queue across runs: the previous sheet's rows holding a decision typed in and not given back (one other
-    than the pair's latest in decisions/: the sheet keeps what was applied), and, across increments, its decide rows
-    nobody gave back whose records are still in different clusters; a full run (`full`) makes the rest again. Those
-    rows as they were, with this run's other rows. O(previous rows)."""
-    l, r, u = q(run.l), q(run.r), q(run.uid)
-    prev = previous if "why" in previous else previous.iloc[:0]  # a sheet from before the queue: nothing to keep
-    if prev.empty:
-        return sheet
-    run.engine.register("er_prev", prev[[run.l, run.r, "decision", "why"]])
-    run.engine.register("er_stored", applied(out, run.uid)[[run.l, run.r, "decision"]].astype("string"))
-    keep = run.engine.frame(f"""SELECT p.{l}, p.{r} FROM er_prev p JOIN gold a ON a.{u} = p.{l} JOIN gold b ON b.{u} = p.{r}
-        WHERE (p.decision IS NOT NULL OR ({'FALSE' if full else 'TRUE'} AND p.why = 'decide' AND a.cluster_id <> b.cluster_id))
-          AND NOT EXISTS (SELECT 1 FROM er_stored d WHERE d.{l} = p.{l} AND d.{r} = p.{r} AND (p.decision IS NULL OR d.decision = p.decision))""")
-    run.engine.unregister("er_prev")
-    run.engine.unregister("er_stored")
-    kept = prev.merge(keep, on=[run.l, run.r]).reindex(columns=sheet.columns)  # a column this run's sheet lacks goes, one it adds is empty
-    both = pd.concat([sheet[~sheet.set_index([run.l, run.r]).index.isin(kept.set_index([run.l, run.r]).index)], kept], ignore_index=True)
-    decide = both[both["why"] == "decide"].sort_values("match_weight", ascending=False, ignore_index=True)
-    return pd.concat([decide, both[both["why"] != "decide"]], ignore_index=True)
-
-
 def households(engine: Engine, records: str, pairs: str, uid: str, p: Pipeline) -> set[tuple[str, str]]:
     """The pairs of `pairs` (SQL: uid_l, uid_r) labelled maybe one household ([household]), read on `records` (SQL, the
     run's standardized records). O(pairs)."""
@@ -404,35 +349,6 @@ def households(engine: Engine, records: str, pairs: str, uid: str, p: Pipeline) 
         WHERE {cond}"""))
 
 
-def review_sheet(run: "Ran", pairs: pd.DataFrame) -> pd.DataFrame:
-    """Scored pairs as people judge them, in the order given: both records' compared fields side by side, and per
-    comparison the level the pair landed in and the bits it earned, which with the prior sum to its weight; whether the
-    run merged it (in kept: a rule's pair, the model's, or people's); whether it may be two people of one household
-    (households); an empty `decision` for people to fill in (match or no_match) and give to Run.decide. O(pairs)."""
-    comps, uid = run.pipeline.fs.model.comparisons, run.uid
-    fields = [f for f in dict.fromkeys(col for c in comps for col in (*c.null_if_missing, *(x for lv in c.levels for x, _ in lv.any_of)))
-              if f in run.columns()]
-    run.engine.register("er_review_ids", pd.DataFrame({uid: pd.concat([pairs[run.l], pairs[run.r]]).unique()}))
-    records = run.engine.frame(f"SELECT {', '.join(q(c) for c in [uid, *fields])} FROM records JOIN er_review_ids USING ({q(uid)})")
-    run.engine.unregister("er_review_ids")
-    run.engine.register("er_review_pairs", pairs[[run.l, run.r]])
-    accepted = run.engine.frame(f"""SELECT p.*, EXISTS (SELECT 1 FROM kept k WHERE k.{q(run.l)} = p.{q(run.l)} AND k.{q(run.r)} = p.{q(run.r)}) AS accepted
-        FROM er_review_pairs p""")
-    homes = households(run.engine, "records", "SELECT * FROM er_review_pairs", uid, run.pipeline)
-    run.engine.unregister("er_review_pairs")
-    accepted["household"] = [(a, b) in homes for a, b in zip(accepted[run.l], accepted[run.r])]
-    out = pairs.merge(accepted, on=[run.l, run.r]).merge(records.add_suffix("_l"), on=run.l).merge(records.add_suffix("_r"), on=run.r)
-    out["decision"] = pd.Series(pd.NA, index=out.index, dtype="string")
-    by_gamma = levels(run.scoring)
-    for c in comps:
-        gamma = out.pop(f"gamma_{c.name}").astype(int)
-        out[c.name] = gamma.map(lambda g: by_gamma[c.name][g][0])
-        out[f"{c.name}_bits"] = gamma.map(lambda g: round(by_gamma[c.name][g][1], 2))
-    return out[[*(["why"] if "why" in out else []), "decision", run.l, run.r, "match_weight", "match_probability", "accepted", "household", "sources",
-                *(f"{f}_{side}" for f in fields for side in ("l", "r")), *(x for c in comps for x in (c.name, f"{c.name}_bits"))]
-               ].reset_index(drop=True)
-
-
 def no_run(out: Path, to: str = "") -> InputError:  # a command that needs a run, on a folder without one
     return InputError(f"no run in {out}" + (f" to {to}" if to else ""), fix=f"build it first: python -m er build FILE --out {out}")
 
@@ -442,10 +358,3 @@ def key(k: Key) -> dict:  # a field a key or rule reads, as the page words it
 
 
 # ---------- how a match was found: one pair, a customer's pairs, the patterns of the whole file ----------
-
-
-def applied(out: Path, uid: str) -> pd.DataFrame:  # each pair's latest decision the folder holds (decisions/)
-    parts = sorted((out / folder.DECISIONS).glob("part-*.parquet"))
-    if not parts:
-        return pd.DataFrame(columns=[f"{uid}_l", f"{uid}_r", "decision"])
-    return pd.concat([read_parquet(f) for f in parts]).drop_duplicates([f"{uid}_l", f"{uid}_r"], keep="last")

@@ -61,7 +61,7 @@ Teams cleaning customer data often work in three tiers:
 2. A score decides the rest.
 3. People review the uncertain middle.
 
-We implement all three. For the third, a run writes a review sheet of the uncertain pairs, and takes people's decisions back.
+We implement all three, but people have the last word: a run merges nothing by itself. A match run lists the pairs at a threshold people set, the rules' among them, and their decisions come back.
 
 ## What problem are we solving?
 
@@ -104,16 +104,16 @@ On real data there are no labelled examples. So the method must learn without la
 | C7 | Answers about pairs don't make groups | A matches B, and B matches C | group with connected components, behind a strict threshold | [5](05-uncertain-evidence-fellegi-sunter.md) |
 | C8 | No answer key, and every choice can overfit | real data has no truth to learn from or measure against | synthetic data with known truth; a rule for every choice; test used once | [1](#where-does-the-truth-come-from) |
 
-**Why two stages?** Rules are cheap, easy to audit and, on our data, never wrong. So they go first and settle the clear cases: 11.9% of the true pairs on val. What remains is messy, with typos in two fields at once, or a move plus a new CIF ID. Messy pairs need evidence weighed, not all-or-nothing conditions, so a probabilistic model handles them.
+**Why two stages?** Rules are cheap, easy to audit and, on our data, never wrong. So they go first and find the clear cases: 11.9% of the true pairs on val. What remains is messy, with typos in two fields at once, or a move plus a new CIF ID. Messy pairs need evidence weighed, not all-or-nothing conditions, so a probabilistic model handles them.
 
-Here is what happens to the validation file:
+Here is what happens to the validation file, with every pair at the method's threshold taken as a match:
 
 ```mermaid
 flowchart LR
   A["10,496 records<br/>2,494 true duplicate pairs"] -->|"exact rules"| B["3.6% found"]
   B -->|"fuzzy rules"| C["11.9% found<br/>2,198 pairs still missed"]
   C -->|"22 candidate generators"| D["2,568 candidate pairs<br/>contain 79.6% of the 2,198"]
-  D -->|"Fellegi–Sunter ≥ 6 bits"| E["918 pairs accepted<br/>none of them false"]
+  D -->|"Fellegi–Sunter ≥ 6 bits"| E["918 pairs<br/>none of them false"]
   E -->|"connected components"| F["49.9% found<br/>0 false merges"]
 ```
 
@@ -166,11 +166,11 @@ Every choice in `config/pipeline.toml` is measured at design time on these split
 |---|---|---|
 | record, entity | one row of a file; the person or company behind one or more records | 1 |
 | true pair | two records of the same entity | 1 |
-| matching, resolution | deciding pair by pair; turning the accepted pairs into groups | 1 |
+| matching, resolution | deciding pair by pair; turning the matched pairs into groups | 1 |
 | train, val, test | the three splits: fit and choose; confirm; report, once | 1 |
 | field | a logical part of a record (name, address, phone), mapped from the file's columns by `[columns]` | 2 |
 | standardize | rewrite each value in one form, so equal facts compare equal | 2 |
-| rule | a condition that accepts a pair outright, such as the same customer ID and the same name | 4 |
+| rule | a condition that pairs two records on strong evidence alone, such as the same customer ID and the same name | 4 |
 | key, block | a value records share, such as the same address and phone; records with one key form a block, and only pairs inside a block are listed | 3 |
 | candidate generator | one way of listing pairs: a key, or one-letter deletions of a value | 3 |
 | candidates | every generator's pairs together: the only pairs scored | 3 |
@@ -179,8 +179,8 @@ Every choice in `config/pipeline.toml` is measured at design time on these split
 | u | how often two **different** entities land there by chance | 5 |
 | λ | the chance that two random records are the same entity: the starting point | 5 |
 | bits, match weight | log₂(λ / (1 − λ)) plus log₂(m / u) for each field; each bit doubles the odds | 5 |
-| threshold | the weight a pair needs to be accepted: 6 bits | 1, 5 |
-| cluster | records joined by accepted pairs, directly or through others: one entity | 5 |
+| threshold | the fewest bits a pair in a match run has: people set it; the method is measured at 6 bits | 1, 5 |
+| cluster | records joined by matched pairs, directly or through others: one entity | 5 |
 | recall | the share of true pairs found | 1 |
 | false merge | two different entities put in one cluster; "at most 0.26%" is the 95% upper bound when none was seen | 1 |
 | cross-validation | fitting on two thirds of train and scoring the other third, three times, so a choice is never judged on the data it was fitted on | 1 |

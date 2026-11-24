@@ -23,24 +23,26 @@ def test_a_run_refuses_a_resolver_it_cannot_apply(population):
 
 
 def test_a_run_ignores_record_order_refuses_a_used_folder_and_an_increment_keeps_every_cluster(tmp_path, population):
-    from er.match import scaled_prior
-    from er.report import qa
     from er.jobs.build import build
+    from er.jobs.match import match
     from er.jobs.update import update
+    from er.match import scaled_prior
     s, p, g = population
     uid = s.data.unique_id
+    l, r = f"{uid}_l", f"{uid}_r"
     g.df.to_parquet(tmp_path / "all.parquet", index=False)
     g.df.sample(frac=1, random_state=1).to_parquet(tmp_path / "shuffled.parquet", index=False)
     first = build(tmp_path / "all.parquet", tmp_path / "a", s, p)
-    sheet = qa(first, [f for f in s.columns if f not in ("id", "entity")])["review_sheet"]
-    assert len(sheet) and {"person_name_l", "person_name_r", "address_l", "address_r", "phone_l", "name", "name_bits"} <= set(sheet.columns)
+    table = pd.read_parquet(match(tmp_path / "a", s, p, p.threshold.keep_from)["into"])
+    assert len(table) and {"person_name_l", "person_name_r", "address_l", "address_r", "phone_l", "name", "name_bits"} <= set(table.columns)
     lam = scaled_prior(first.scoring, first.n)  # the prior and each field's bits add up to the score a reviewer sees
-    bits = sheet[[f"{c.name}_bits" for c in p.fs.model.comparisons]].sum(axis=1) + math.log2(lam / (1 - lam))
-    assert np.allclose(bits, sheet["match_weight"], atol=0.05)
+    bits = table[[f"{c.name}_bits" for c in p.fs.model.comparisons]].sum(axis=1) + math.log2(lam / (1 - lam))
+    assert np.allclose(bits, table["match_weight"], atol=0.05)
     build(tmp_path / "shuffled.parquet", tmp_path / "b", s, p, model=first.model)
+    scored = [pd.read_parquet(tmp_path / d / "scored").sort_values([l, r], ignore_index=True) for d in ("a", "b")]
+    pd.testing.assert_frame_equal(*scored)  # every pair and its score, whatever the records' order
     gold = [pd.read_parquet(tmp_path / d / "gold.parquet") for d in ("a", "b")]
-    pd.testing.assert_frame_equal(*gold)  # clusters, and the stage and rule that resolved each record
-    assert gold[0]["cluster_id"].nunique() < len(gold[0])
+    pd.testing.assert_frame_equal(*gold)  # each record an entity of its own: nothing merges by itself
 
     new = np.random.default_rng(0).random(len(g.df)) < 0.2
     g.df[~new].to_parquet(tmp_path / "old.parquet", index=False)
@@ -63,7 +65,7 @@ def test_a_run_ignores_record_order_refuses_a_used_folder_and_an_increment_keeps
     g.df.drop(columns="PHONE_NUM_4").to_parquet(tmp_path / "no_phone.parquet", index=False)
     with pytest.raises(InputError, match="fitted on other comparison levels") as e:  # the model compares the phone; this file has none
         build(tmp_path / "no_phone.parquet", tmp_path / "d", s, p, model=first.model)
-    assert "without --model" in e.value.fix
+    assert "give no model" in e.value.fix
 
 
 def test_an_interrupted_increment_completes_when_run_again(tmp_path, population, monkeypatch):
@@ -198,22 +200,6 @@ def test_a_full_run_cut_short_in_its_moves_lands_with_its_round(tmp_path, popula
     assert (tmp_path / "run" / "gold.parquet").exists() and len(json.loads((tmp_path / "run" / folder.STEPS).read_text(encoding="utf-8"))["runs"]) == 1  # the run and its log land together
 
 
-def test_a_full_run_keeps_the_decisions_people_wrote_in_the_sheet_and_have_not_given_back(tmp_path, population):
-    from er.jobs.build import build
-    s, p, g = population
-    uid, ws = s.data.unique_id, tmp_path / "ws"
-    g.df.to_parquet(tmp_path / "all.parquet", index=False)
-    build(tmp_path / "all.parquet", ws, s, p, pipeline_file=s.root / "config" / "pipeline.toml")  # with its reports: the sheet
-    sheet = pd.read_parquet(ws / "review.parquet")
-    row = sheet.index[sheet["why"] == "decide"][0]
-    keys = {f"{uid}_l": sheet.at[row, f"{uid}_l"], f"{uid}_r": sheet.at[row, f"{uid}_r"]}
-    sheet.loc[row, "decision"] = "no_match"  # written in the sheet, not applied
-    sheet.to_parquet(ws / "review.parquet", index=False)
-    build(tmp_path / "all.parquet", ws, s, p, overwrite=True, pipeline_file=s.root / "config" / "pipeline.toml")  # a full run makes the sheet again
-    after = pd.read_parquet(ws / "review.parquet")
-    assert after[(after[f"{uid}_l"] == keys[f"{uid}_l"]) & (after[f"{uid}_r"] == keys[f"{uid}_r"])]["decision"].tolist() == ["no_match"]
-
-
 def test_an_overwrite_cut_short_keeps_the_old_run_and_people_s_decisions(tmp_path, population, monkeypatch):
     import os
     from er.folder import finish_writes
@@ -276,23 +262,31 @@ def test_an_increment_refuses_a_changed_pipeline_and_steps_json_says_what_went_i
     update(tmp_path / "new.parquet", tmp_path / "run", s, p)  # the run's own pipeline: it goes on
 
 
-def test_an_increment_never_merges_a_pair_people_said_is_different(tmp_path, population):
+def test_people_s_decisions_stand_through_a_full_run_and_an_increment_and_a_no_match_is_never_offered_again(tmp_path, population):
     from er.jobs.build import build
     from er.jobs.decide import decide
+    from er.jobs.match import match
     from er.jobs.update import update
     s, p, g = population
     uid, ws = s.data.unique_id, tmp_path / "run"
+    l, r = f"{uid}_l", f"{uid}_r"
     g.df.to_parquet(tmp_path / "all.parquet", index=False)
     build(tmp_path / "all.parquet", ws, s, p)
-    a, b = pd.read_parquet(ws / "matches")[[f"{uid}_l", f"{uid}_r"]].iloc[0]  # the model merged them
-    pd.DataFrame({f"{uid}_l": [a], f"{uid}_r": [b], "decision": ["no_match"]}).to_parquet(tmp_path / "said.parquet")
+    a, b = pd.read_parquet(match(ws, s, p, 8.0)["into"])[[l, r]].iloc[0]
+    said = lambda decision: pd.DataFrame({l: [a], r: [b], "decision": [decision]}).to_parquet(tmp_path / "said.parquet")
+    said("match")
     decide(tmp_path / "said.parquet", ws, s, p)
     g.df[g.df[uid] != b].to_parquet(tmp_path / "without.parquet", index=False)
     g.df[g.df[uid] == b].to_parquet(tmp_path / "back.parquet", index=False)
     build(tmp_path / "without.parquet", ws, s, p, overwrite=True)  # decisions/ stays
     update(tmp_path / "back.parquet", ws, s, p)
     gold = pd.read_parquet(ws / "gold.parquet").set_index(uid)["cluster_id"]
-    assert gold[a] != gold[b]  # as a full run applies people's "different"
+    assert gold[a] == gold[b]  # as a full run and an increment read people's decisions back
+    said("no_match")
+    decide(tmp_path / "said.parquet", ws, s, p)
+    gold = pd.read_parquet(ws / "gold.parquet").set_index(uid)["cluster_id"]
+    table = pd.read_parquet(match(ws, s, p, 8.0)["into"])
+    assert gold[a] != gold[b] and not ((table[l] == a) & (table[r] == b)).any()  # the latest stands: parted, and offered no more
 
 
 def test_an_increment_needs_a_workspace_that_holds_a_run(tmp_path, population):

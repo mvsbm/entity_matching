@@ -34,7 +34,7 @@ A **rule** is a short list of conditions that must *all* hold. Requiring two or 
 | address code + phone | 8.67% | 76 |
 | phone + postal code | 11.7% | 109 |
 
-Few true pairs agree on several fields at once, because a duplicate often has a new phone, a new address or a typo. Each rule finds only some true pairs, but rules are combined: a pair is accepted if **any one** rule holds.
+Few true pairs agree on several fields at once, because a duplicate often has a new phone, a new address or a typo. Each rule finds only some true pairs, but rules are combined: a pair is found if **any one** rule holds.
 
 The CIF ID is a special case. In our synthetic data, it is never shared by two entities, so it would be safe on its own, but only 2.2% of true pairs share it. Real systems reuse and mistype CIF IDs, so our rules don't rely on it alone.
 
@@ -63,12 +63,12 @@ The close-enough tests are chosen by the decision rule ([chapter 1](01-entity-re
 
 **How a rule runs.** Each rule is one plain SQL join on its exact fields. Its fuzzy conditions are then checked only on the pairs that join, and two equal values pass without calling the string function at all. Rule F2 (name and address close, same phone) also joins on the first three characters of the normalized address, where the city starts, so it does not pair everyone who shares four phone digits. A pair found by several rules belongs to the first in order. In a run, a rule also leaves out any key value held by 64 records or more: one customer ID on thousands of records is not one customer's.
 
-The stages run in order, as a **cascade**. Fuzzy rules only add pairs that touch a record the exact rules left unresolved, so the clear cases are settled first. The probabilistic stage follows the same rule: its pairs must touch a record the rules left alone, so it can add a record to a rule cluster. It also scores every pair across two rule clusters, so it can join them. Measured at design time, it finds 8 more true pairs on cross-validated train and loses none ([chapter 3](03-far-too-many-pairs.md#keeping-every-potential-match)).
+The stages run in order, as a **cascade**. Fuzzy rules only add pairs that touch a record the exact rules left unresolved, so the clear cases are settled first. The probabilistic stage follows the same rule: its pairs must touch a record the rules left alone, so a match can add a record to a rule cluster. It also scores every pair across two rule clusters, so a match can join them. Measured at design time, it finds 8 more true pairs on cross-validated train and loses none ([chapter 3](03-far-too-many-pairs.md#keeping-every-potential-match)).
 
 ### Why this solution
 
 - **Rules are cheap.** Each rule is one database join on its exact fields, then a fuzzy check on the few pairs that join. On train, the 12 chosen rules look at 4,090 pairs in total, out of 488 million.
-- **Rules are easy to audit.** Every accepted pair carries the name of the rule that accepted it.
+- **Rules are easy to audit.** Every rule pair carries the name of the rule that found it (`rule`, in `scored/` and in a match run's table).
 - **On our data, rules make no mistakes.** That makes them the safe first tier ([chapter 1](01-entity-resolution-and-our-task.md#how-is-it-done-in-practice)).
 
 ## On our data

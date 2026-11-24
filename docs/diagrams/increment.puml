@@ -1,5 +1,5 @@
 @startuml increment
-title LLD 2 · An increment: jobs.update.update, its reports written with it, then the index brought up to date (python -m er update … ~--out …)
+title LLD 2 · An increment: jobs.update.update, its report written with it, then the index brought up to date (python -m er update … ~--out …)
 skinparam defaultFontSize 11
 skinparam rectangle {
   BackgroundColor #F4F6F8
@@ -18,7 +18,7 @@ package "read back from the run's folder" {
   file "state/model.json · state/scoring.json · state/placeholders.json" as f_model
   file "state/records/part-n.parquet" as f_records
   file "state/rule_clusters.parquet · gold.parquet" as f_clusters
-  file "review.parquet · decisions/part-n.parquet" as f_sheet
+  file "decisions/part-n.parquet" as f_sheet
 }
 file "the batch: the files given, read as they come into a folder of the job's own" as f_batch
 
@@ -26,13 +26,13 @@ file "the batch: the files given, read as they come into a folder of the job's o
 rectangle "<b>1 · Load</b>: read the batch beside the stored records; a record already in the run is set aside\n<i>O(Δ·L)</i>\n<size:10><color:#65717E>jobs.update.update · jobs.update.join · steps.job.start · steps.load.load · engine.duckdb.connect · steps.load._lacks</color></size>\n<size:10><color:#65717E>steps.load._set_aside · steps.load.ahead · steps.load.placeholders · folder.finish_writes</color></size>\n<size:10><color:#65717E>folder.held · folder.lockable · folder.run_lock</color></size>\n<size:10><color:#65717E>io.lock · io.object_store · kind.classifier · match.compared_exactly · report.no_run</color></size>\n<size:10><color:#65717E>report.unmapped_columns · settings.fit_to_file · settings.present_fields · source.file_facts · source.filled · source.fit · source.open_source</color></size>\n<size:10><color:#65717E>source.suggest · standardize.prepare · source.readable · source.find · jobs.build.given</color></size>" as load
 rectangle "<b>2 · Refresh u</b>: join the stored records and the batch; count u again, sample it again only where it drifted\n<i>O(N + S·K_stale)</i>\n<size:10><color:#65717E>steps.fit.u_again · match.refreshed_u</color></size>" as fit
 package "every matching step reads records" as matching {
-  rectangle "<b>3 · Rules</b>: join the batch against every record; merge into the stored clusters\n<i>O(Δ·Σb) + a scan</i>\n<size:10><color:#65717E>steps.rules.rules · steps.rules._cascade · steps.rules._untrusted · steps.rules.alone · steps.rules.sized · cluster.merge · match.rule_edges</color></size>" as rules
+  rectangle "<b>3 · Rules</b>: join the batch against every record; merge into the stored rule clusters\n<i>O(Δ·Σb) + a scan</i>\n<size:10><color:#65717E>steps.rules.rules · steps.rules._cascade · steps.rules._untrusted · steps.rules.alone · steps.rules.sized · cluster.merge · match.rule_edges</color></size>" as rules
   rectangle "<b>4 · Candidates</b>: list only the pairs that touch the batch (without bridging, and a record the rules left alone)\n<i>O(Δ·Σb) + a scan</i>\n<size:10><color:#65717E>steps.candidates.candidates · steps.budget.capacity · steps.candidates._gated · steps.candidates._joined · steps.candidates.generators · steps.candidates.reaching · candidates.candidates</color></size>\n<size:10><color:#65717E>match.bound_reads · match.reaching_sql · match.rough_reads · match.search_floor</color></size>" as candidates
   rectangle "<b>5 · Score</b>: score those pairs that can reach 0, a slice at a time; count the patterns they fall in\n<i>O(C_Δ·K·L²)</i>\n<size:10><color:#65717E>steps.score.score · steps.score._bands · steps.score.patterns · steps.score.scored_in_slices · match.bound_tests · match.review_floor · match.score_fs</color></size>\n<size:10><color:#65717E>steps.score.banded</color></size>" as score
-  rectangle "<b>6 · Cluster</b>: accept, less people's no_match, and merge into the stored clusters, each one node; stored answers stand\n<i>O(C_Δ + touched clusters)</i>\n<size:10><color:#65717E>steps.cluster.cluster · steps.cluster._gold · steps.cluster.accept · steps.cluster.customer_kinds · steps.cluster.load_decisions · steps.score.scored_sql · folder.latest_decisions</color></size>\n<size:10><color:#65717E>match.named_sql</color></size>" as cluster
+  rectangle "<b>6 · Cluster</b>: the stored entities and each new record alone, joined by people's match decisions; stored answers stand\n<i>O(D + N)</i>\n<size:10><color:#65717E>steps.cluster.cluster · steps.cluster._gold · steps.cluster.customer_kinds · steps.cluster.load_decisions · folder.latest_decisions</color></size>" as cluster
 }
-rectangle "<b>7 · Write</b>: add the new parts, the batch's scored pairs among them (scored/); rewrite gold and the rules' clusters\n<i>O(Δ + C_Δ) + O(N)</i>\n<size:10><color:#65717E>steps.write.write · steps.score.links_sql · steps.write.log_entry · steps.write.run_config · folder.log</color></size>\n<size:10><color:#65717E>folder.next_part · folder.stage · io.code_version · io.config_hash · io.patiently</color></size>\n<size:10><color:#65717E>io.replace_text · jobs.build.indexed · jobs.build.out_of_memory · jobs.index.update</color></size>" as write
-rectangle "<b>8 · Report</b>: as a full run's, saved with the batch (7); the previous sheet's open rows stay (report.carry_over)\n<i>O(review pairs)</i>\n<size:10><color:#65717E>steps.report.report · report.qa · report.report_text</color></size>" as report
+rectangle "<b>7 · Write</b>: add the new parts, the batch's scored pairs among them (scored/); rewrite gold and the rules' clusters\n<i>O(Δ + C_Δ) + O(N)</i>\n<size:10><color:#65717E>steps.write.write · steps.score.links_sql · steps.score.scored_sql · steps.write.log_entry · steps.write.run_config · folder.log</color></size>\n<size:10><color:#65717E>folder.next_part · folder.stage · io.code_version · io.config_hash · io.patiently</color></size>\n<size:10><color:#65717E>io.replace_text · jobs.build.indexed · jobs.build.out_of_memory · jobs.index.update · match.named_sql</color></size>" as write
+rectangle "<b>8 · Report</b>: as a full run's, saved with the batch (7)\n<i>O(C + N) in SQL</i>\n<size:10><color:#65717E>steps.report.report · report.qa · report.report_text</color></size>" as report
 database "old_records" as old_records
 database "new_records" as new_records
 database "set_aside" as set_aside
@@ -43,13 +43,11 @@ database "rule_kept" as rule_kept
 database "cands" as cands
 database "scores" as scores
 database "rule_scores" as rule_scores
-database "matches" as matches
-database "kept" as kept
 database "gold" as gold
 
 package "written to the run's folder" {
-  file "new parts: matches/, rule_kept/, state/records/, set_aside/\nrewritten: gold.parquet, state/rule_clusters.parquet, state/scoring.json, state/placeholders.json\nsteps.json: an entry added" as f_out
-  file "report.txt · review.parquet" as f_people
+  file "new parts: rule_kept/, scored/, state/records/, set_aside/\nrewritten: gold.parquet, state/rule_clusters.parquet, state/scoring.json, state/placeholders.json\nsteps.json: an entry added" as f_out
+  file "report.txt" as f_people
   file "index/: brought up to date (jobs.index.update)" as f_index
 }
 
@@ -59,7 +57,6 @@ f_model --> fit
 f_clusters --> rules
 f_clusters --> cluster
 f_sheet --> cluster
-f_sheet --> report
 
 load ..> fit
 fit ..> rules
@@ -91,26 +88,17 @@ cands --> score
 score --> scores
 new_ids --> cluster
 rule_clusters --> candidates
-rule_clusters --> cluster
-cands --> cluster
-scores --> cluster
-cluster --> matches
-cluster --> kept
-cluster --> rule_kept
-kept --> report
 cluster --> gold
 new_records --> write
 rule_clusters --> write
 rule_kept --> write
 rule_kept --> score
 rule_kept --> candidates
-matches --> write
+rule_kept --> report
 gold --> write
 set_aside --> write
 records --> report
-cands --> report
 scores --> report
-matches --> report
 gold --> report
 set_aside --> report
 

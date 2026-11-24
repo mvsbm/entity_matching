@@ -26,7 +26,8 @@ table, name a table, drop one), one DuckDB and one BigQuery implementation, chos
 ## The jobs
 
 1. **Build** (the first full run: more than 1 billion records): prepare → index → fit → candidate pairs among the
-   existing customers → a scored candidates table. Nothing merges by itself.
+   existing customers → a scored candidates table. ~~Nothing merges by itself.~~ A match run (`match`) lists the
+   pairs at a threshold people set, and only their decisions (`decide`) join records.
 2. **Update the index** (new customers): prepare the batch → add its keys to the index → score it against the index.
 3. **Look up** (on request: "find the likely matches of these people"): input people → keys → probe the index →
    score → the request's threshold, rules and conditions → candidates in BigQuery, then Google Sheets for review.
@@ -69,9 +70,10 @@ The target, in three named patterns:
 
 ```
 er/
-  __main__.py  the jobs' entry: build, update, decide, lookup
-  jobs/     build.py  update.py  decide.py  index.py       a full run, an increment, decisions: one line per step;
-                                                         the index: built, kept up to date, looked up
+  __main__.py  the jobs' entry: build, update, match, decide, lookup
+  jobs/     build.py  update.py  match.py  decide.py  index.py
+                                                         a full run, an increment, a match run, decisions: one line
+                                                         per step; the index: built, kept up to date, looked up
   steps/    job.py  load.py  budget.py  fit.py  rules.py  candidates.py  score.py  cluster.py  write.py  report.py
   engine/   engine.py (the interface)  duckdb.py  udfs/strings.js
             bigquery.py (the steps it refuses by name: to come)
@@ -92,7 +94,7 @@ the jobs, the table each step writes, and where to change what.
 
 1. ~~The connection without Splink's wrapper, our connected components, our model dict, our EM; term frequencies
    and Splink out, the tests held to values recorded from Splink 5.0~~.
-2. ~~**The cut.** The four jobs of `python -m er` are the only entry; the code holds what they and the design-time
+2. ~~**The cut.** The jobs of `python -m er` are the only entry; the code holds what they and the design-time
    kit (generate, benchmark, train_name_model) call~~.
 3. **The restructure**, step by step, each move checked by digest against the run before it: ~~`er/engine/` with
    the DuckDB engine, `er/steps/` (one module per step), `er/jobs/` (build, update, decide, index)~~; then
@@ -101,7 +103,7 @@ the jobs, the table each step writes, and where to change what.
    the functions in JavaScript (`er/engine/bigquery.py`), checked offline; every statement a job sends portable~~;
    then its store (the run's files as a dataset's tables, the index), and the parity check once CI has a sandbox
    dataset.
-5. **The three jobs** on Cloud Run, wired into Jenkins: ~~`deploy/` (the image, `job.sh`, the jobs, the Jenkinsfile),
+5. **The jobs** on Cloud Run, wired into Jenkins: ~~`deploy/` (the image, `job.sh`, the jobs, the Jenkinsfile),
    run in Docker on this machine~~; then on GCP, once the project, the bucket, the Artifact Registry repository and
    the service account are named.
 6. **Scale rehearsal**: 10M → 100M generated records on BigQuery, time and bytes billed; then the real build.

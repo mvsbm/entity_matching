@@ -79,16 +79,15 @@ def _bands(job: Job) -> list[int]:  # the pairs in `scores` by the score chart's
 
 def patterns(job: Job) -> dict:
     """The patterns the pairs in `scores` fall in, one step per comparison: per pattern its pairs, their mean weight,
-    how many merge and how many wait for people as steps.cluster will take them, and three of them. A full run's and each increment's: together, every pair the run scored."""
-    fs, l, r = job.pipeline.fs, q(job.l), q(job.r)
-    at, floor = bits(fs.min_match_weight), bits(review_floor(job.pipeline))
+    how many are at the review floor or up, and three of them. A full run's and each increment's: together, every pair
+    the run scored."""
+    l, r = q(job.l), q(job.r)
+    floor = bits(review_floor(job.pipeline))
     gammas = [c for c, _ in job.engine.columns("scores") if c.startswith("gamma_")]
     by = ", ".join(q(g) for g in gammas)
     examples = lambda side: f"array_agg({side} ORDER BY __k NULLS FIRST) FILTER (WHERE __k <= 3)"  # the three of lowest hash, in order
     rows = job.engine.rows(f"""SELECT {by}, count(*), round(avg(match_weight), 2),
-        count(*) FILTER (match_weight >= {at} AND {named_sql(fs)}),
-        count(*) FILTER (match_weight >= {floor} AND (match_weight < {at} OR NOT {named_sql(fs)})),
-        {examples(l)}, {examples(r)}
+        count(*) FILTER (match_weight >= {floor}), {examples(l)}, {examples(r)}
         FROM (SELECT *, row_number() OVER (PARTITION BY {by} ORDER BY {hashed(f"{l} || ' ' || {r}")}) AS __k FROM scores) s GROUP BY ALL""") if gammas else []
     return dict(fields=[g.removeprefix("gamma_") for g in gammas], rows=[[*x[:-2], [list(p) for p in zip(x[-2], x[-1])]] for x in rows])
 

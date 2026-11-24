@@ -20,29 +20,29 @@
 | K | comparisons in the model (6) |
 | S | random pairs sampled for u on the file (10⁷; fixed), for each comparison not counted exactly; the fit's own sample, for EM, is 10⁶ |
 | P_em | pairs in EM's blocks (equal phone, equal address) within the fitting sample |
-| E | accepted pairs |
+| E | the rules' pairs |
 
 **A full run** (`jobs.build.build`, which `python -m er build` calls), with the times measured on 1,039,995 generated records by
-`scripts/benchmark.py`, in a process of its own under an 8 GB DuckDB memory limit (peak 7.1 GB, Python included). The reader
+`scripts/benchmark.py`, in a process of its own under an 8 GB DuckDB memory limit (peak 7.3 GB, Python included). The reader
 reads the file before these steps, about 3.3 s a million records ([below](#reading-a-file-as-it-comes)); the lookup index is
 built after them, 3.2 s ([below](#a-lookup)):
 
 | # | Step | Code | Cost | Grows like | At 1M |
 |---|---|---|---|---|---|
-| 1 | load: read in chunks, check the fields, standardize the chunks in parallel processes, and tell persons from companies | `steps.load.load`, `er.standardize.prepare`, `er.kind` | O(N·L) | N | 6.91 s |
-| 2 | budget: every rule's and generator's pairs, exactly, before any join | `steps.budget.budget`, `er.candidates.estimate` | O(N) per rule and generator, a group-by | N | 2.09 s |
-| 3 | fit: λ, and m by EM, on a sample of whole postal areas (EM's own u from 10⁶ pairs); then u measured on this file: value counts for the leading exact levels, position, swap and deletion keys for a one-edit level after them (so cif, phone and birth are counted exactly), S pairs for name, company and address | `steps.fit.fit`, `er.match.train_fs`, `exact_u`, `scored_sample`, `assemble_u` | O(n + S·K + P_em·K) + O(N + S·K) | **constant**, plus N | 4.05 s |
-| 4 | rules: one plain SQL join per rule (the first rule wins a pair), fuzzy checks on the joined pairs only, then the cascade's clusters | `steps.rules.rules`, `er.match.rule_edges`, `er.cluster.merge` | O(N + Σ P_r·L²) + O(E·log E + N) | N; ≤ 0.14 pairs per record per rule at 1M | 2.09 s |
-| 5 | candidates: every generator as one SQL join or window, keeping only the pairs that can reach 0 (step 6's bound) or a rule found, merged by bitmask, only pairs touching a record the rules left alone; oversized blocks checked on a sample scored with the file's u | `steps.candidates.candidates`, `er.candidates.candidates` | O(N·L + Σ P_g) | N; ≤ 1.75 pairs per record per key at 1M | 11.84 s |
-| 6 | score: every candidate that can reach 0 points, with the u the fit measured; a bound settles the rest below 0 unscored, as nothing reads them (below) | `steps.score.score`, `er.match.score_fs`, `bound_sql` | O(C·K_c + C₀·K·L²) | C | 0.24 s |
-| 7 | cluster: accept at the threshold, connected components with the rules' pairs (each rule cluster one node), gold | `steps.cluster.cluster`, `er.cluster.merge` | O(C + E·log E + N) | N | 0.23 s |
-| 8 | write: gold, matches, the rules' pairs and the state for increments, as Parquet | `steps.write.write` | O(N + C) | N | 1.38 s |
-| 9 | report: report.txt and the review sheet, built before the write and landing with it | `steps.report.report` | O(review pairs) + O(N) | N | 0.83 s |
-| | **total** | | | | **29.7 s** |
+| 1 | load: read in chunks, check the fields, standardize the chunks in parallel processes, and tell persons from companies | `steps.load.load`, `er.standardize.prepare`, `er.kind` | O(N·L) | N | 5.30 s |
+| 2 | budget: every rule's and generator's pairs, exactly, before any join | `steps.budget.budget`, `er.candidates.estimate` | O(N) per rule and generator, a group-by | N | 1.96 s |
+| 3 | fit: λ, and m by EM, on a sample of whole postal areas (EM's own u from 10⁶ pairs); then u measured on this file: value counts for the leading exact levels, position, swap and deletion keys for a one-edit level after them (so cif, phone and birth are counted exactly), S pairs for name, company and address | `steps.fit.fit`, `er.match.train_fs`, `exact_u`, `scored_sample`, `assemble_u` | O(n + S·K + P_em·K) + O(N + S·K) | **constant**, plus N | 4.33 s |
+| 4 | rules: one plain SQL join per rule (the first rule wins a pair), fuzzy checks on the joined pairs only, then the cascade's clusters | `steps.rules.rules`, `er.match.rule_edges`, `er.cluster.merge` | O(N + Σ P_r·L²) + O(E·log E + N) | N; ≤ 0.14 pairs per record per rule at 1M | 2.11 s |
+| 5 | candidates: every generator as one SQL join or window, keeping only the pairs that can reach 0 (step 6's bound) or a rule found, merged by bitmask, only pairs touching a record the rules left alone; oversized blocks checked on a sample scored with the file's u | `steps.candidates.candidates`, `er.candidates.candidates` | O(N·L + Σ P_g) | N; ≤ 1.75 pairs per record per key at 1M | 10.74 s |
+| 6 | score: every candidate that can reach 0 points, with the u the fit measured; a bound settles the rest below 0 unscored, as nothing reads them (below) | `steps.score.score`, `er.match.score_fs`, `bound_sql` | O(C·K_c + C₀·K·L²) | C | 0.25 s |
+| 7 | cluster: gold, the entities people's decisions make: each record its own, connected components over the match pairs; nothing merges by itself | `steps.cluster.cluster`, `er.cluster.merge` | O(D + N), for D decisions | N | 0.14 s |
+| 8 | write: gold, the rules' pairs, the scored pairs and the state for increments, as Parquet | `steps.write.write` | O(N + C) | N | 1.14 s |
+| 9 | report: report.txt, built before the write and landing with it | `steps.report.report` | O(C + N) | N | 0.27 s |
+| | **total** | | | | **26.2 s** |
 
-**Pairs that can't reach 0 points.** Nothing reads a candidate's score below the floor: `scored/` keeps 0 points and up (or `[threshold] keep_from`), and the line and review start there. So a pair is scored only when its bound reaches the floor: the prior, each comparison whose tests are equality, Hamming or one edit at its own level, and each other at the best level the pair may land in (`bound_tests`): DuckDB settles each level's test where it can in C++, a name or a company name in katakana by Jaro–Winkler on its one-byte copy, and only a test it can't settle (text outside katakana and ASCII, an edit distance past one) counts as passing. 0 where its fields are missing. Each test is computed once: the outcomes index a table of the bounds they allow, since DuckDB computes an expression as often as it is written. A pair a rule found is scored whatever its bound. A full run's candidates step already leaves the rest out as its keys list them (below); an increment's are counted (`unscored`, one row "below 0" in report.txt's SCORES and the score chart) and never compared by name, company or address: on a file whose address and phone are mostly empty, that is nearly every candidate. Every score written is the same to the last bit. The gate on oversized blocks does the same at its own floor, the review floor. K_c is the comparisons settled first, C₀ the candidates whose bound reaches 0.
+**Pairs that can't reach 0 points.** Nothing reads a candidate's score below the floor: `scored/` keeps 0 points and up (or `[threshold] keep_from`), and a match run's threshold starts there. So a pair is scored only when its bound reaches the floor: the prior, each comparison whose tests are equality, Hamming or one edit at its own level, and each other at the best level the pair may land in (`bound_tests`): DuckDB settles each level's test where it can in C++, a name or a company name in katakana by Jaro–Winkler on its one-byte copy, and only a test it can't settle (text outside katakana and ASCII, an edit distance past one) counts as passing. 0 where its fields are missing. Each test is computed once: the outcomes index a table of the bounds they allow, since DuckDB computes an expression as often as it is written. A pair a rule found is scored whatever its bound. A full run's candidates step already leaves the rest out as its keys list them (below); an increment's are counted (`unscored`, one row "below 0" in report.txt's SCORES and the score chart) and never compared by name, company or address: on a file whose address and phone are mostly empty, that is nearly every candidate. Every score written is the same to the last bit. The gate on oversized blocks does the same at its own floor, the review floor. K_c is the comparisons settled first, C₀ the candidates whose bound reaches 0.
 
-At a million records, the candidates (11.84 s) and the load (6.91 s) take more than half the time. The fit grows
+At a million records, the candidates (10.74 s) and the load (5.30 s) take more than half the time. The fit grows
 far slower than the file: it learns on n records, and its u sample of the file is S pairs for each of name, company
 and address, whatever the file's size; cif, phone and birth are counted exactly, in O(N). The score grows with the
 candidates, and is small because the candidates step lists only the pairs that can reach 0.
@@ -56,20 +56,23 @@ candidates, and is small because the candidates step lists only the pairs that c
 | rules | O(Δ·Σ b) + a scan of the stored records | each rule joins the batch against all records; the cascade merges into the stored clusters, each cluster one node |
 | candidates | O(Δ·Σ b) + a scan | every generator, with the batch as the query; deletion keys and the budget only for the blocks the batch's keys reach |
 | score | O(C_Δ·K·L²) | only the pairs touching the batch |
-| cluster | O(C_Δ + touched clusters) | the stored clusters, with the new pairs merged in |
-| write | O(Δ + C_Δ) appended, O(N) rewritten | new Parquet parts for records, rule pairs and matches; gold and the rules' clusters rewritten. Every file is staged under a temporary name and renamed into place only once all are complete, so an interrupted increment leaves the run as it was, or is finished by the next one |
+| cluster | O(D + N) | the stored entities and each new record alone, joined by people's match decisions |
+| write | O(Δ + C_Δ) appended, O(N) rewritten | new Parquet parts for records, rule pairs and scored pairs; gold and the rules' clusters rewritten. Every file is staged under a temporary name and renamed into place only once all are complete, so an interrupted increment leaves the run as it was, or is finished by the next one |
 | index | O(Δ·(G + R + D·L) + N) | the lookup index brought up to date ([below](#a-lookup)) |
 
-So a full run costs **O(N·L + Σ P + C·K·L² + E·log E)**, plus the fit and the u sample, whose sizes are fixed. It
+So a full run costs **O(N·L + Σ P + C·K·L² + E·log E + D)**, plus the fit and the u sample, whose sizes are fixed. It
 is linear in N when every key's pairs per record stay flat as the file grows, which `budget` checks exactly on each
 file; projected to a million records on labelled train, every key of the method stays under 5 pairs per record (below). An increment costs
 **O(Δ·(L + Σ b) + C_Δ·K·L²)**, plus sequential scans and rewrites of the stored columns, the exact u counts, and a u
 sample only for a comparison that has drifted. Its expensive work grows with the batch, not with the file. A full run
 re-fits the model.
 
-**People's decisions** (`jobs.decide.decide`, `python -m er decide`) cost **O(D + touched clusters)** for D
-decisions, plus O(N) to rewrite gold: each `match` pair merges two stored clusters, each one node, and nothing is scored.
-The index is then brought up to date, as after an increment.
+**A match run** (`jobs.match.match`, `python -m er match`) costs **O(C)** to read `scored/`, plus **O(P·F)** to join
+the P pairs at the threshold to their records' F fields. Nothing is scored.
+
+**People's decisions** (`jobs.decide.decide`, `python -m er decide`) cost **O(D + N)** for D decisions: the entities
+made again from every pair's latest decision, from single records, and gold rewritten. Nothing is scored. The index is
+then brought up to date, as after an increment.
 
 **Measured:** an increment of 1,000 records into a run of 999,000 generated records (the parity runs' 1M file less
 1,000 drawn at random), in a process of its own: 4.0 s of steps, 5.4 s wall clock, a peak of
@@ -142,8 +145,9 @@ Identical results, covered by tests/:
 - **Deletion keys unnested once** per candidates call (`Records.variants`), into a table that the count, the join and
   the oversized blocks' sample all read. A full run joins it in one pass; an increment keeps only the blocks its batch
   reaches.
-- **Clusters merged, not rebuilt** (`er.cluster.merge`). A full run merges its pairs into the rule clusters as an increment
-  does, each cluster one node, so connected components run over the clusters the pairs touch, not over every record.
+- **Clusters merged, not rebuilt** (`er.cluster.merge`). The rules' stages merge their pairs into the clusters before
+  them, and an increment into the stored ones, each cluster one node, so connected components run over the clusters the
+  pairs touch, not over every record.
 - **An increment's records in one table**: the stored parts and the batch are read once, into `records`, which every
   later step reads.
 - **String functions on one thread per DuckDB call** (`er/engine/duckdb.py`, its `udf`). DuckDB already calls them on all its threads,
@@ -240,17 +244,17 @@ on the file itself, without labels ([reports/benchmark.md](../reports/benchmark.
 
 | Records | Seconds | Peak memory | fit | score | everything else |
 |---|---|---|---|---|---|
-| 13,019 | 2.5 | 0.60 GB | 1.49 | 0.02 | 0.99 |
-| 25,947 | 3.1 | 0.67 GB | 1.57 | 0.03 | 1.50 |
-| 52,115 | 4.4 | 0.85 GB | 1.85 | 0.04 | 2.51 |
-| 77,926 | 5.8 | 1.02 GB | 2.21 | 0.05 | 3.54 |
-| 1,039,995 | 29.7 | 7.10 GB | 4.05 | 0.24 | 25.41 |
+| 13,019 | 2.3 | 0.60 GB | 1.49 | 0.02 | 0.79 |
+| 25,947 | 2.8 | 0.68 GB | 1.58 | 0.03 | 1.19 |
+| 52,115 | 3.9 | 0.90 GB | 1.86 | 0.04 | 2.00 |
+| 77,926 | 5.1 | 1.10 GB | 2.23 | 0.05 | 2.82 |
+| 1,039,995 | 26.2 | 7.26 GB | 4.33 | 0.25 | 21.62 |
 
-Over these sizes, time grows like N^0.58. `fit` grows far slower than the file, 1.49 s at 13,019 records and 4.05 s
+Over these sizes, time grows like N^0.57. `fit` grows far slower than the file, 1.49 s at 13,019 records and 4.33 s
 at a million: it learns on 100,000 records (`fit_rows`), its u sample of the file is 10⁷ pairs for each of name, company and address
 whatever the file's size, and cif, phone and birth are counted exactly. So it is most of a small file's time.
-Everything else goes from 3.54 s at 77,926 records to 25.41 s at a million: 13 times the records, 7.2 times the time.
-The candidates step is the largest at a million records, 11.84 s, from 0.96 s at 77,926; scoring stays under a
+Everything else goes from 2.82 s at 77,926 records to 21.62 s at a million: 13 times the records, 7.7 times the time.
+The candidates step is the largest at a million records, 10.74 s, from 0.76 s at 77,926; scoring stays under a
 quarter of a second at every size, since the candidates step lists only the pairs that can reach 0.
 
 ## Reading a file as it comes

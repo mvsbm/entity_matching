@@ -1,5 +1,5 @@
 @startuml full-run
-title LLD 1 · A full run: jobs.build.build, its reports written with it, then the lookup index (python -m er build … ~--out …)
+title LLD 1 · A full run: jobs.build.build, its report written with it, then the lookup index (python -m er build … ~--out …)
 skinparam defaultFontSize 11
 skinparam rectangle {
   BackgroundColor #F4F6F8
@@ -26,12 +26,12 @@ rectangle "<b>1 · Load</b>: read the file, check it, standardize each record (c
 package "every step after load reads records" as after_load {
   rectangle "<b>2 · Budget</b>: count every key's pairs before any join; flag blocks too big to join blind\n<i>O(N) per key</i>\n<size:10><color:#65717E>steps.budget.budget · steps.budget.capacity · candidates.estimate</color></size>" as budget
   rectangle "<b>3 · Fit</b>: learn the model from the file itself, without labels; measure u on this file\n<i>O(n + S·K + P_em·K) + O(N + S·K)</i>\n<size:10><color:#65717E>steps.fit.fit · match.fit_model · match.fit_sample_sql · match.scored_u · match.train_fs · match.u_basis</color></size>" as fit
-  rectangle "<b>4 · Rules</b>: join the certain cases, the first rule wins; score each pair with the model; cluster them (they steer the candidates)\n<i>O(N + ΣP_r·L²) + O(R·K) + O(E·log E + N)</i>\n<size:10><color:#65717E>steps.rules.rules · steps.rules._cascade · steps.rules._untrusted · steps.rules.alone · steps.rules.sized · cluster.merge · match.rule_edges</color></size>\n<size:10><color:#65717E>match.score_fs</color></size>" as rules
+  rectangle "<b>4 · Rules</b>: find the certain cases, the first rule wins; score each pair with the model; cluster them, to steer the candidates\n<i>O(N + ΣP_r·L²) + O(R·K) + O(E·log E + N)</i>\n<size:10><color:#65717E>steps.rules.rules · steps.rules._cascade · steps.rules._untrusted · steps.rules.alone · steps.rules.sized · cluster.merge · match.rule_edges</color></size>\n<size:10><color:#65717E>match.score_fs</color></size>" as rules
   rectangle "<b>5 · Candidates</b>: list the pairs worth scoring, keeping only those that can reach 0; check big blocks on a sample\n<i>O(N·L + ΣP_g)</i>\n<size:10><color:#65717E>steps.candidates.candidates · steps.candidates._gated · steps.candidates._joined · steps.candidates.generators · steps.candidates.reaching · steps.budget.capacity · steps.rules.alone</color></size>\n<size:10><color:#65717E>steps.rules.sized · candidates.candidates · match.bound_reads · match.bound_tests · match.reaching_sql · match.rough_reads · match.search_floor</color></size>" as candidates
   rectangle "<b>6 · Score</b>: give every candidate pair that can reach 0 its evidence in bits, the rest left below 0 by a bound, a million at a time, saying how far it is; count the patterns they fall in\n<i>O(C·K·L²)</i>\n<size:10><color:#65717E>steps.score.score · steps.score._bands · steps.score.patterns · steps.score.scored_in_slices · match.bound_tests · match.named_sql · match.review_floor</color></size>\n<size:10><color:#65717E>match.score_fs · steps.score.banded</color></size>" as score
-  rectangle "<b>7 · Cluster</b>: merge every rule pair, the model's pairs at its threshold with a name compared and people's matches, less their no_match; join them into entities, from single records\n<i>O(C + E·log E + N)</i>\n<size:10><color:#65717E>steps.cluster.cluster · steps.cluster._gold · steps.cluster.accept · steps.cluster.customer_kinds · steps.cluster.load_decisions · steps.rules.alone · steps.rules.sized</color></size>\n<size:10><color:#65717E>steps.score.scored_sql · cluster.merge · folder.latest_decisions · match.named_sql</color></size>" as cluster
-  rectangle "<b>8 · Write</b>: save the answer, the pairs at 0 points or more with each comparison's level (scored/), the state for increments and the reports (9, built first); the old run goes only once all is written\n<i>O(N + C)</i>\n<size:10><color:#65717E>steps.write.write · steps.write.log_entry · steps.write.run_config · steps.rules.alone · steps.rules.sized · steps.score.links_sql · steps.score.scored_sql</color></size>\n<size:10><color:#65717E>folder.finish_writes · folder.log · folder.stage</color></size>\n<size:10><color:#65717E>io.code_version · io.config_hash · io.patiently · io.replace_text · match.named_sql · jobs.build.given · jobs.build.indexed · jobs.build.out_of_memory · source.file_facts · source.find</color></size>" as write
-  rectangle "<b>9 · Report</b>: the checks and the sheets for people, what they typed in and haven't given back kept, saved with the run (8)\n<i>O(review pairs) + O(N) in SQL</i>\n<size:10><color:#65717E>steps.report.report · config.sources_text · io.code_version · io.read_parquet · match._ranked · match.levels</color></size>\n<size:10><color:#65717E>match.named_sql · match.parameters · match.pattern_coverage · match.review_floor · match.scaled_prior · match.search_floor · report.carry_over</color></size>\n<size:10><color:#65717E>report.diagnosis · report.diagnosis_lines · report.fill_rates · report.households · report.qa · report.report_text · report.review_sheet</color></size>\n<size:10><color:#65717E>report.applied · source.filled</color></size>" as report
+  rectangle "<b>7 · Cluster</b>: the entities people's decisions make: each record its own until a match decision joins it; nothing merges by itself\n<i>O(D + N)</i>\n<size:10><color:#65717E>steps.cluster.cluster · steps.cluster._gold · steps.cluster.customer_kinds · steps.cluster.load_decisions</color></size>\n<size:10><color:#65717E>cluster.merge · folder.latest_decisions</color></size>" as cluster
+  rectangle "<b>8 · Write</b>: save the answer, the pairs at 0 points or more with each comparison's level (scored/), the state for increments and the report (9, built first); the old run goes only once all is written\n<i>O(N + C)</i>\n<size:10><color:#65717E>steps.write.write · steps.write.log_entry · steps.write.run_config · steps.rules.alone · steps.rules.sized · steps.score.links_sql · steps.score.scored_sql</color></size>\n<size:10><color:#65717E>folder.finish_writes · folder.log · folder.stage</color></size>\n<size:10><color:#65717E>io.code_version · io.config_hash · io.patiently · io.replace_text · match.named_sql · jobs.build.given · jobs.build.indexed · jobs.build.out_of_memory · source.file_facts · source.find</color></size>" as write
+  rectangle "<b>9 · Report</b>: report.txt, the run on a page with the label-free checks, saved with the run (8)\n<i>O(C + N) in SQL</i>\n<size:10><color:#65717E>steps.report.report · config.sources_text · io.code_version · match._ranked · match.levels</color></size>\n<size:10><color:#65717E>match.parameters · match.pattern_coverage · match.review_floor · match.scaled_prior · match.search_floor</color></size>\n<size:10><color:#65717E>report.diagnosis · report.diagnosis_lines · report.fill_rates · report.households · report.qa · report.report_text</color></size>\n<size:10><color:#65717E>source.filled</color></size>" as report
 }
 database "records" as records
 database "set_aside" as set_aside
@@ -40,14 +40,12 @@ database "rule_kept" as rule_kept
 database "cands" as cands
 database "scores" as scores
 database "rule_scores" as rule_scores
-database "matches" as matches
-database "kept" as kept
 database "gold" as gold
 
 package "the run's folder (~--out)" {
-  file "gold.parquet · steps.json\nmatches/part-n.parquet · rule_kept/part-n.parquet\nset_aside/part-n.parquet\nscored/part-n.parquet: every pair at 0 points or more, each comparison's level" as f_out
+  file "gold.parquet · steps.json\nrule_kept/part-n.parquet · set_aside/part-n.parquet\nscored/part-n.parquet: every pair at 0 points or more, each comparison's level" as f_out
   file "state/records/part-n.parquet · state/rule_clusters.parquet\nstate/model.json · state/scoring.json · state/placeholders.json · state/config.txt" as f_state
-  file "report.txt · review.parquet" as f_people
+  file "report.txt" as f_people
   file "index/: the lookup index, built once the run is written (jobs.index.build)" as f_index
 }
 
@@ -75,25 +73,16 @@ rule_scores --> write
 cands --> write
 scores --> write
 rule_clusters --> candidates
-rule_clusters --> cluster
 rule_clusters --> write
 rule_kept --> write
 rule_kept --> candidates
 rule_kept --> score
+rule_kept --> report
 candidates --> cands
 cands --> score
-cands --> cluster
-cands --> report
 score --> scores
-scores --> cluster
 scores --> report
-cluster --> matches
-cluster --> kept
-cluster --> rule_kept
-kept --> report
 cluster --> gold
-matches --> write
-matches --> report
 gold --> write
 gold --> report
 set_aside --> write
