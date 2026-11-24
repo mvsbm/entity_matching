@@ -7,9 +7,9 @@
 -- An update (@refit false) keeps the model the run's build fitted: no sample, no EM; u is measured again on the
 -- run's records, a sampled comparison only once it has gone stale (fit_model with the stored fit).
 --
--- Reads: records, levels (functions.sql), fit (an update's). Values: config.toml [fit]: @fit_rows, @seed, @fit_u_max_pairs and @u_max_pairs
--- (about how many pairs u samples on the sample and on the file), @settings (all of it, as JSON, for fit_model);
--- @refit (a build: the model learned again).
+-- Reads: records, levels (functions.sql), fit and u_sampled (an update's: as the last job left them). Values:
+-- config.toml [fit]: @fit_rows, @seed, @fit_u_max_pairs and @u_max_pairs (about how many pairs u samples on the
+-- sample and on the file), @settings (all of it, as JSON, for fit_model); @refit (a build: the model learned again).
 -- Writes: compared (a view: the columns the fit and the scores read of a record), fit_sample, fit_prior (the
 -- near-certain rules' pairs in it), em_patterns (EM's patterns of levels, a session a key), u_records (a view: each
 -- scope's records), u_outside, u_counted, u_near and u_filled (u's exact counts, and what bounds a level no sampled
