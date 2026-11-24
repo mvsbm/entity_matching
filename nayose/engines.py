@@ -285,11 +285,26 @@ JOBS = {  # each job BigQuery runs as a procedure of the run's dataset: its stag
     "update": [("functions", {}), ("mapping", {}), ("records", {}), ("fit", {"refit": False}), ("score", {}), ("decide", {}), ("report", {})],
     "decide": [("functions", {}), ("decide", {})],
     "match": [("functions", {}), ("match", {})],
-}  # shortcut: no lookup procedure, a lookup's statements roll back where BigQuery takes no DDL; on a session over the run's clones, at the parity step
+}  # no lookup: nayose.lookup's statements, each step in a session of its own (BigQuery.scratch), write temporary tables alone
 ARGUMENTS = {"match": {"threshold": "FLOAT64"}}  # a procedure's own values: given when it is called, not declared
 RUN_TABLES = ("records", "placeholders", "this_batch", "set_aside", "fit_sample", "fit_prior", "em_patterns", "u_outside", "u_counted",
               "u_near", "u_sampled", "u_filled", "model", "fit", "rule_keys", "every_key", "rule_pairs", "cands", "gated", "scored", "gold")  # a build starts without them; decisions stay
 TEMP_FUNCTION = re.compile(r"^((?:\s*--[^\n]*\n)*\s*)CREATE OR REPLACE TEMP FUNCTION (\w+)", re.I)
+
+
+VIEW = re.compile(r"\A(?:\s*--[^\n]*\n)*\s*CREATE\s+(?:OR\s+REPLACE\s+)?VIEW\b", re.I)
+
+
+def in_dataset(sql: str, dataset: str) -> str:
+    """A view's statement, each table it names (a WITH's aside) the dataset's: BigQuery reads a view's body without
+    a default dataset."""
+    tree, (project, name) = sqlglot.parse_one(sql, read="bigquery"), dataset.split(".")
+    ctes = {c.alias_or_name for c in tree.find_all(exp.CTE)}
+    for t in tree.find_all(exp.Table):
+        if not t.args.get("db") and t.name not in ctes:
+            t.set("db", exp.to_identifier(name))
+            t.set("catalog", exp.to_identifier(project))
+    return tree.sql(dialect="bigquery")
 
 
 def procedures(dataset: str, functions: str, mapping: Path | None = None) -> list[str]:
@@ -309,7 +324,8 @@ def procedures(dataset: str, functions: str, mapping: Path | None = None) -> lis
                 if m := TEMP_FUNCTION.match(sql):
                     made.setdefault(m[2], TEMP_FUNCTION.sub(lambda x: f"{x[1]}CREATE OR REPLACE FUNCTION `{dataset}`.{x[2]}", sql, count=1))
                 else:
-                    body.append(re.sub(r"@(\w+)", r"v_\1", sql))
+                    sql = re.sub(r"@(\w+)", r"v_\1", sql)
+                    body.append(in_dataset(sql, dataset) if VIEW.match(sql) else sql)
         bodies[job] = (body, {k: v for k, v in declared.items() if k not in ARGUMENTS.get(job, {})})
     own = re.compile(r"(?<![\w.`])(" + "|".join(sorted(made, key=len, reverse=True)) + r")\s*\(")
     ours = lambda sql: own.sub(lambda m: f"`{dataset}`.{m[1]}(", BigQuery.CALLS.sub(lambda m: f"`{functions}`.{m[1]}(", sql))
