@@ -5,7 +5,7 @@ build() reads the written run once (state/records, already standardized; gold; t
 its key in row groups small enough that a lookup reads little of it; a second database of what changed since, empty
 when built; and manifest.json, which names them and what they rest on.
 update() writes the second again after a change to the run: the records added since the build, with every key and
-value of theirs, and the records whose entity or rule cluster moved; anything else changed builds the index again.
+value of theirs, and the records whose entity moved; anything else changed builds the index again.
 look_up() prepares a record as a run prepares one, looks each of its keys up, gates an oversized block as a run does,
 scores the candidates with the run's model and groups them by entity. It writes nothing.
 
@@ -60,7 +60,7 @@ DIGITS = ("phone", "postal_code", "customer_id")  # fields held as digits: what 
 REBUILD = 0.1  # shortcut: the records added since the build reaching this share of it build it again, so the delta stays small; lower it if lookups slow
 OPEN = 2  # shortcut: the indexes kept open, each with its DuckDB connection and classifier, for a server's next lookup; raise it when people look up in more workspaces at once
 QUERY = "\x7flookup"  # the ID of a record typed in: no record's, and after every one in order
-MOVES = ("gold.parquet", "state/rule_clusters.parquet", "state/scoring.json", "state/placeholders.json")  # what a delta carries: entities, rules' clusters, the u an increment counts again, the values read as missing
+MOVES = ("gold.parquet", "state/scoring.json", "state/placeholders.json")  # what a delta carries: entities, the u an increment counts again, the values read as missing
 INDEXING = hashlib.sha256(b"".join((Path(__file__).resolve().parents[1] / f"{m}.py").read_bytes() for m in ("jobs/index", "candidates", "config", "standardize", "match", "kind"))
                           + duckdb.__version__.encode()).hexdigest()[:12]  # what reads and writes an index: another version builds it again
 
@@ -70,7 +70,7 @@ _OPENING = threading.Lock()
 
 def _stamp(ws: Path) -> dict[str, list[int]]:  # what an index rests on: each file of the run, by size and time
     files = [*sorted((ws / "state" / "records").glob("part-*.parquet")), ws / "gold.parquet", ws / "state" / "scoring.json", ws / "state" / "placeholders.json", ws / "state" / "model.json",
-             ws / "state" / "config.txt", ws / "state" / "rule_clusters.parquet"]
+             ws / "state" / "config.txt"]
     return {f.relative_to(ws).as_posix(): [f.stat().st_size, f.stat().st_mtime_ns] for f in files if f.exists()}
 
 
@@ -127,17 +127,15 @@ def _rows(x: object, table: str, uid: str) -> str:  # the rows a table of keys h
     return f"SELECT {_hashed(x)} AS h, {u} AS uid FROM {table} WHERE {_filled(_keys(x))}"
 
 
-def _entities(engine: Engine, ws: Path, uid: str) -> str:  # each record's entity, and whether the rules joined it to another, as the run holds them now
-    u = q(uid)
-    return (f"(SELECT g.{u}, g.cluster_id AS entity, coalesce(c.n >= 2, FALSE) AS resolved FROM {engine.read(ws / 'gold.parquet')} g LEFT JOIN "
-            f"(SELECT {u}, count(*) OVER (PARTITION BY cluster_id) AS n FROM {engine.read(ws / 'state' / 'rule_clusters.parquet')}) c USING ({u}))")
+def _entities(engine: Engine, ws: Path, uid: str) -> str:  # each record's entity, as the run holds them now
+    return f"(SELECT {q(uid)}, cluster_id AS entity FROM {engine.read(ws / 'gold.parquet')})"
 
 
 def _write(engine: Engine, into: str, src: str, p: Pipeline, ws: Path, uid: str, records: str | None = None) -> dict[str, list]:
-    """The index's tables in the database `into`, of the records in `src`: the records (each with its entity and whether
-    the rules joined it; in the database `records`, else `into`), each key's (hash, uid), each sorted by hash. Each table's [rows, seconds]."""
+    """The index's tables in the database `into`, of the records in `src`: the records (each with its entity; in the
+    database `records`, else `into`), each key's (hash, uid), each sorted by hash. Each table's [rows, seconds]."""
     u, jobs, records = q(uid), {}, records or into
-    jobs["records"] = [f"CREATE TABLE {records}.records AS SELECT {hashed(f's.{u}')} AS h, s.*, e.entity, coalesce(e.resolved, FALSE) AS resolved "
+    jobs["records"] = [f"CREATE TABLE {records}.records AS SELECT {hashed(f's.{u}')} AS h, s.*, e.entity "
                        f"FROM {src} s LEFT JOIN {_entities(engine, ws, uid)} e USING ({u}) ORDER BY h"]
     for name, x in _tables(p):
         jobs[name] = [f"CREATE TABLE {into}.{name} AS {_rows(x, src, uid)} ORDER BY h"]
@@ -203,7 +201,7 @@ def _build(ws: Path, s: Settings, p: Pipeline, stamp: dict) -> dict:
         engine.run(f"CREATE TEMP TABLE src AS SELECT {', '.join(q(c) for c in have if c in reads)} FROM {src}")  # read once: every table reads it
         made = {"read": [None, round(time.perf_counter() - t, 3)], **_write(engine, "ix", "src", fitted, ws, uid, records="ixr")}
         _write(engine, "dx", "(SELECT * FROM src LIMIT 0)", fitted, ws, uid)  # what changed since: nothing yet
-        engine.run(f"CREATE TABLE dx.moved AS SELECT {q(uid)}, entity, resolved FROM ixr.records LIMIT 0")
+        engine.run(f"CREATE TABLE dx.moved AS SELECT {q(uid)}, entity FROM ixr.records LIMIT 0")
         for db in ("ix", "ixr", "dx"):
             engine.detach(db)
         kind = bool(fitted.kind and fitted.kind.name_field in present_fields(s, have))  # the records hold a kind: a record looked up is told one too
@@ -221,8 +219,8 @@ def _build(ws: Path, s: Settings, p: Pipeline, stamp: dict) -> dict:
 
 def update(ws: Path, s: Settings, p: Pipeline) -> dict:
     """The index of `ws` brought up to date with its run, under the workspace's lock: what changed since the build
-    written again, from the records added since (new parts of state/records) and the records whose entity or rule
-    cluster moved (gold, the rules' clusters). Anything else changed (a full run, the mapping, the method's keys,
+    written again, from the records added since (new parts of state/records) and the records whose entity moved
+    (gold). Anything else changed (a full run, the mapping, the method's keys,
     the code), a column of the added records read as another type, or the records added
     or moved reaching REBUILD of the index, builds it again (rebuilt: why). O(Δ·(G + R + D·L) + N)."""
     ws, t0, uid = Path(ws), time.perf_counter(), s.data.unique_id
@@ -244,18 +242,18 @@ def update(ws: Path, s: Settings, p: Pipeline) -> dict:
             engine.attach("ix", ws / INDEX / m["files"]["keys"], read_only=True)
             engine.attach("ixr", ws / INDEX / m["files"]["records"], read_only=True)
             engine.attach("dx", tmp / delta, row_group_size=ROWS)
-            stored = {c: t for c, t in engine.columns("ixr.records") if c not in ("h", "entity", "resolved")}
+            stored = {c: t for c, t in engine.columns("ixr.records") if c not in ("h", "entity")}
             src = engine.read(new, by_name=True) if new else None
             there = dict(engine.columns(src)) if new else {}
             if retyped := sorted(c for c, t in there.items() if c in stored and t != stored[c]):  # a key hashed as another type meets none of the index's
                 why = f"{', '.join(retyped[:3])} read as another type"
             else:
                 engine.run(f"CREATE TEMP TABLE src AS SELECT {', '.join(q(c) if c in there else f'NULL::{t} AS {q(c)}' for c, t in stored.items())} FROM {src}" if new
-                            else "CREATE TEMP TABLE src AS SELECT * EXCLUDE (h, entity, resolved) FROM ixr.records LIMIT 0")  # the base's columns, in its order
+                            else "CREATE TEMP TABLE src AS SELECT * EXCLUDE (h, entity) FROM ixr.records LIMIT 0")  # the base's columns, in its order
                 _write(engine, "dx", "src", fitted, ws, uid)
                 u = q(uid)
-                engine.run(f"""CREATE TABLE dx.moved AS SELECT b.{u}, e.entity, coalesce(e.resolved, FALSE) AS resolved FROM ixr.records b
-                    LEFT JOIN {_entities(engine, ws, uid)} e USING ({u}) WHERE e.entity IS DISTINCT FROM b.entity OR coalesce(e.resolved, FALSE) <> b.resolved""")
+                engine.run(f"""CREATE TABLE dx.moved AS SELECT b.{u}, e.entity FROM ixr.records b
+                    LEFT JOIN {_entities(engine, ws, uid)} e USING ({u}) WHERE e.entity IS DISTINCT FROM b.entity""")
                 added, moved = (engine.value(f"SELECT count(*) FROM dx.{t}") for t in ("records", "moved"))
                 if added + moved >= REBUILD * m["records"]:  # every read joins what moved: kept small
                     why = f"the records added or moved since reach {REBUILD:.0%} of it"
@@ -371,9 +369,9 @@ def _both(t: str, where: str, cols: str = "*") -> str:  # a table's rows that ho
     return f"(SELECT {cols} FROM {'ixr' if t == 'records' else 'ix'}.{q(t)} WHERE {where} UNION ALL BY NAME SELECT {cols} FROM dx.{q(t)} WHERE {where})"
 
 
-def _records(where: str, uid: str) -> str:  # the records that hold `where` as the run holds them now: those added since, each entity and rule cluster where it moved
+def _records(where: str, uid: str) -> str:  # the records that hold `where` as the run holds them now: those added since, each entity where it moved
     u = q(uid)
-    return (f"(SELECT r.* REPLACE (CASE WHEN m.{u} IS NULL THEN r.entity ELSE m.entity END AS entity, CASE WHEN m.{u} IS NULL THEN r.resolved ELSE m.resolved END AS resolved) "
+    return (f"(SELECT r.* REPLACE (CASE WHEN m.{u} IS NULL THEN r.entity ELSE m.entity END AS entity) "
             f"FROM {_both('records', where)} r LEFT JOIN dx.moved m ON m.{u} = r.{u})")
 
 
@@ -510,7 +508,7 @@ def _query(engine: Engine, s: Settings, p: Pipeline, values: dict | None, record
     file's column names, read as the reader reads a value and prepared with the run's classifier `kind`."""
     uid = s.data.unique_id
     if record is not None:
-        row = engine.frame(f"SELECT * EXCLUDE (h, entity, resolved) FROM {_both('records', f'h = {hashed(f"CAST({lit(record)} AS VARCHAR)")} AND {q(uid)} = {lit(record)}')}")
+        row = engine.frame(f"SELECT * EXCLUDE (h, entity) FROM {_both('records', f'h = {hashed(f"CAST({lit(record)} AS VARCHAR)")} AND {q(uid)} = {lit(record)}')}")
         if row.empty:
             raise InputError(f"{record}: no record of the run has that ID", fix="give a record ID the run holds, or the record's values")
         return row.astype("string")
@@ -591,9 +589,8 @@ def _gate(engine: Engine, p: Pipeline, model: dict, uid: str, me: str, found: di
 
 def _rules(engine: Engine, p: Pipeline, uid: str, me: str, checked: list[dict], extra: int = 1) -> dict[str, tuple[int, str]]:
     """Each stored record a rule joins the record to, with the rule's place in order and name: as er.match.rule_edges
-    finds them (the rule's keys looked up, a value on too many records left out as Run._untrusted leaves it, its
-    conditions checked; the first rule in order winning a pair), then the stages' cascade as Run._rules keeps them: a
-    later stage's pair goes when both its records are already in a rule cluster of two or more."""
+    finds them (the rule's keys looked up, a value on too many records left out as steps.rules._untrusted leaves it, its
+    conditions checked; the first rule in order winning a pair)."""
     m, out, order = p.fs.budget.min_oversized(), {}, {n: i for i, (n, x) in enumerate(t for t in _tables(p) if isinstance(t[1], tuple))}
     for name, (st, rule) in ((n, x) for n, x in _tables(p) if isinstance(x, tuple)):
         h = engine.rows(f"SELECT {_hashed((st, rule))} FROM qry WHERE {_filled(st.keys(rule))}")
@@ -604,17 +601,11 @@ def _rules(engine: Engine, p: Pipeline, uid: str, me: str, checked: list[dict], 
             checked.append(dict(key=f"rule {rule.name}", found=0, why=f"its value is on {size + extra:,} records: the rule doesn't trust it"))
             continue
         hus = [hu for (hu,) in engine.rows(f"SELECT DISTINCT {hashed('uid')} FROM {_both(name, f'h = {h[0][0]}', 'uid')}")]  # literals: the records table read by its zone maps
-        hits = engine.rows(f"""SELECT r.{q(uid)}, r.resolved FROM qry l JOIN {_records(f"h IN ({', '.join(map(str, hus))})", uid)} r
+        hits = engine.rows(f"""SELECT r.{q(uid)} FROM qry l JOIN {_records(f"h IN ({', '.join(map(str, hus))})", uid)} r
             ON {st.sql(rule)} AND r.{q(uid)} <> l.{q(uid)}""") if hus else []
-        for v, resolved in hits:
-            out.setdefault(v, (order[name], rule.name, st.name, bool(resolved)))
-    kept, joined, done = {}, set(), False  # the record starts alone; each stage's kept pairs put it in a cluster of two or more
-    for st in p.rules.stages:
-        here = {v: x for v, x in out.items() if x[2] == st.name and not (done and (x[3] or v in joined))}
-        kept |= {v: (x[0], x[1]) for v, x in here.items()}
-        joined |= set(here)
-        done = done or bool(here)
-    return kept
+        for (v,) in hits:
+            out.setdefault(v, (order[name], rule.name))
+    return out
 
 
 def _scored(engine: Engine, model: dict, uid: str, me: str, ids: list[str], n: int) -> pd.DataFrame:

@@ -63,7 +63,7 @@ The close-enough tests are chosen by the decision rule ([chapter 1](01-entity-re
 
 **How a rule runs.** Each rule is one plain SQL join on its exact fields. Its fuzzy conditions are then checked only on the pairs that join, and two equal values pass without calling the string function at all. Rule F2 (name and address close, same phone) also joins on the first three characters of the normalized address, where the city starts, so it does not pair everyone who shares four phone digits. A pair found by several rules belongs to the first in order. In a run, a rule also leaves out any key value held by 64 records or more: one customer ID on thousands of records is not one customer's.
 
-The stages run in order, as a **cascade**. Fuzzy rules only add pairs that touch a record the exact rules left unresolved, so the clear cases are settled first. The probabilistic stage follows the same rule: its pairs must touch a record the rules left alone, so a match can add a record to a rule cluster. It also scores every pair across two rule clusters, so a match can join them. Measured at design time, it finds 8 more true pairs on cross-validated train and loses none ([chapter 3](03-far-too-many-pairs.md#keeping-every-potential-match)).
+The stages run in order, exact rules first, and the first rule to find a pair names it, so a pair keeps the name of the strictest rule that finds it. No rule pair merges by itself: each waits in `scored/`, with its rule, for people's decisions, so none hides another pair. The probabilistic stage scores every pair the keys list, the rules' too.
 
 ### Why this solution
 
@@ -114,7 +114,7 @@ Most true pairs are like this: on train, the rules miss 6,355 of them, about nin
 - `config/pipeline.toml` `[rules]`: the rules, in logical fields
 - `er/config.py`: `Rule`, `Stage` (`Stage.sql`: a fuzzy condition lets equal values through without the string function), `RulesSpec`, `Comparator`
 - `er/match.py`: `rule_edges` (one SQL join per rule, the first rule wins a pair; for full runs and increments alike)
-- `er/steps/rules.py`: `steps.rules.rules` (the cascade, `steps.rules._cascade`; each stored cluster merged as one node, `er.cluster.merge`)
+- `er/steps/rules.py`: `steps.rules.rules` (every rule's pairs, each scored by the model too)
 
 ## Further reading
 

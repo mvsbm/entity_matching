@@ -79,7 +79,7 @@ def test_a_lookup_lists_and_scores_the_pairs_an_increment_of_the_record_would_an
     engine.register("er_stored", stored.astype({uid: "string"}))
     engine.run("CREATE TABLE records AS SELECT * FROM er_stored")
     for rid in [*stored.loc[crowd[~held], uid].head(3), *stored[uid].head(2)]:
-        query = engine.frame(f"SELECT * EXCLUDE (h, entity, resolved) FROM ixr.records WHERE \"{uid}\" = ?", [rid]).astype("string")
+        query = engine.frame(f"SELECT * EXCLUDE (h, entity) FROM ixr.records WHERE \"{uid}\" = ?", [rid]).astype("string")
         engine.register("er_q", query)
         engine.run("CREATE OR REPLACE TEMP TABLE qry AS SELECT * FROM er_q")
         found, checked = index._candidates(engine, fitted, uid, rid, 0)

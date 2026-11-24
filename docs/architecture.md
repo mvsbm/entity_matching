@@ -153,7 +153,7 @@ Every module sits in one layer: the tools (`er/__main__.py`, the jobs' entry: th
 
 ## 4 · The run
 
-![LLD 1, a full run: load, budget, fit, rules, candidates, score, cluster, write and report, each with the functions it calls; the tables records, set_aside, rule_clusters, rule_kept, rule_scores, cands, scores and gold, made by one step and used by the later ones; the inputs, the files of the run's folder and its lookup index](diagrams/full-run.svg)
+![LLD 1, a full run: load, budget, fit, rules, candidates, score, cluster, write and report, each with the functions it calls; the tables records, set_aside, rule_kept, rule_scores, cands, scores and gold, made by one step and used by the later ones; the inputs, the files of the run's folder and its lookup index](diagrams/full-run.svg)
 
 A job runs a chosen pipeline on one file, without labels, and reads top to bottom, one line per step. Each step is one module of `er/steps/` with one public function, `step(job, …)`, which returns its result (`Loaded`, `Budget`, `Fitted`, `Ruled`, `Listed`, `Scored`, `Clustered`); its docstring names the tables it reads and writes. `steps.job.start` gives every step of a job what it shares (`Job`: the engine, the settings, the method, the log), and `Ran` holds what the job did, which the write, the reports and the callers read. `jobs.build.build` reads the records through the intake into a folder of the job's own (`source.readable`), calls steps 1–8 in order (`jobs.build.resolve`: steps 1–7, writing nothing), then builds the lookup index (`jobs.build.indexed`). It holds the run's lock throughout, so no other job writes in between; given the pipeline file (`python -m er` gives it), step 8 builds step 9's report first and writes it with the run's files. The lock (`flock`) and the renames that finish a write (`os.replace`) hold on a disk, not on object storage. `jobs.update.update` adds a batch of new records to a written run ([5](#5--an-increment)); `jobs.match.match` lists a written run's pairs at a threshold, for people to decide ([6](#6--decisions)). Each step logs its Big-O, with the numbers filled in, its time and its peak memory to `steps.json` (`Log.done`).
 
@@ -197,12 +197,12 @@ The gate on oversized blocks (step 5) and the scores (step 6) both use these u.
 - **Code:** `steps.fit.fit` → `match.train_fs` (`fit.prior`, `fit.session`), `exact_u` (value counts, and position, swap and deletion keys), `counted` (the comparisons that need no sample), `sample_u` (u by random sampling, every comparison's levels counted in one pass), `assemble_u`, `u_basis`. A near-certain or learning rule that finds no pair in the sample (its field nearly empty) is skipped and named in the summary; with none left of either, the run stops with what to fix.
 - **Increment:** no fit. It reads `state/model.json`, so every increment scores with the full run's model, and settles its u before the rules, as a full run does: `match.refreshed_u`. The exact and one-edit levels are counted again on all records. A comparison's sampled u are measured again only once the drift of its exact level, since it was sampled, exceeds the sampling error of its most precise sampled level, 1/(ln 2·√hits) bits: before that, a new sample would only redraw the noise. `O(N + S·K_stale)`.
 
-### 4 · Rules: the certain cases · `O(N + ΣP_r·L²) + O(E·log E + N)`
+### 4 · Rules: the certain cases · `O(N + ΣP_r·L²)`
 
-Each rule is one join on its exact keys; its fuzzy conditions (names within two edits, addresses by Jaro–Winkler, a phone one digit off, …) are checked on the joined pairs only. A pair belongs to the first rule that finds it. Stage by stage, exact then fuzzy, a pair is kept only if it touches a record still unresolved, and the kept pairs are merged into the rule clusters, each cluster one node.
+Each rule is one join on its exact keys; its fuzzy conditions (names within two edits, addresses by Jaro–Winkler, a phone one digit off, …) are checked on the joined pairs only. A pair belongs to the first rule that finds it, so it keeps the name of the strictest: exact rules come first. Nothing merges: every rule pair waits in `scored/`, with its rule and the model's points, for people's decisions, so no rule pair hides another pair.
 
 - **Why:** certain cases are cheap and auditable, and find most duplicates without a false pair. The model then works only on what is left.
-- **Code:** `steps.rules.rules` → `steps.rules._cascade` → `match.rule_edges` (one plain SQL join per rule, the same for full runs and increments), `config.Stage.sql` (a fuzzy condition lets equal values through without the string function), `er/engine/duckdb.py`'s `connect` (the character-level `cl_*` functions), `cluster.merge`. A rule leaves out any value of its keys held by an oversized block (`steps.rules._untrusted`): one address and phone on 3,000 records is not one customer's, so the summary names it, and the model can still match those records. A customer ID such as that is already missing (step 1).
+- **Code:** `steps.rules.rules` → `match.rule_edges` (one plain SQL join per rule, the same for full runs and increments), `config.Stage.sql` (a fuzzy condition lets equal values through without the string function), `er/engine/duckdb.py`'s `connect` (the character-level `cl_*` functions). A rule leaves out any value of its keys held by an oversized block (`steps.rules._untrusted`): one address and phone on 3,000 records is not one customer's, so the summary names it, and the model can still match those records. A customer ID such as that is already missing (step 1).
 - **Increment:** each rule joins the batch against all records. Each stored cluster is merged as a single node (`cluster.merge`): `O(Δ·Σb)` plus a scan.
 
 ### 5 · Candidates: which pairs to score · `O(N·L + ΣP_g)`
@@ -214,13 +214,13 @@ Lists the pairs worth scoring. Each generator is one SQL query:
 | equal keys | a self-join | `O(N + P)` |
 | one-character deletions of a value (a company name, a customer ID; a person's name within its postal area, a birth date within its prefecture) | each value and its deletions, unnested once per call into a table that the count, the join and the sample read, then a self-join | `O(N·L + P)` |
 
-Only pairs that touch a record the rules left alone are listed (with `[model] bridge`, every pair across two rule clusters too). Each generator sets one bit, so OR-ing the bits merges the lists and every pair keeps the names of the generators that found it.
+Every pair a key lists is a candidate, a rule's pair too. Each generator sets one bit, so OR-ing the bits merges the lists and every pair keeps the names of the generators that found it.
 
 Oversized blocks are left out of each generator's join, then checked: about 2,000 pairs among 64 of the block's records, chosen by hash, minus those another block already listed and, without `bridge`, those of two records the rules joined (which the run never lists), are scored as the candidates will be: with the model and the file's u (step 3). A block with a sampled pair at the search floor (`[threshold] search_floor`, 0 bits, or the review floor if that is lower) or above is joined in full, so a pair a better model would lift to review is already listed; one without is skipped, and the run's notes count it. No hit in 2,000 pairs bounds a block's yield under 0.15%. If the kept blocks would not fit, the highest-yield ones go first.
 
 - **Why:** comparing every pair is impossible: 5 × 10¹¹ at a million records. Each key of the method makes at most 5 pairs per record at a million records, and every true pair of labelled train able to reach the threshold shares one, as measured when the keys are chosen. Checking a big block on a sample costs at most what joining it would, and tells a placeholder from a real shared value without guessing.
 - **Code:** `steps.candidates.candidates` → `candidates.candidates` (run, gate, merge) → `Records.variants` (the deletion keys), `candidates.oversized`, `pairs_sql`, `sample_sql`, `_gate`; `steps.candidates._Gate` scores the sample, `steps.candidates._gated` keeps what it decided
-- **Increment:** the batch is the query, so only pairs touching it are listed (without `bridge`, only those that also touch a record the rules left alone, as in a full run), and the deletion keys are kept only for the blocks the batch reaches: `O(Δ·Σb)` plus a scan.
+- **Increment:** the batch is the query, so only pairs touching it are listed, and the deletion keys are kept only for the blocks the batch reaches: `O(Δ·Σb)` plus a scan.
 
 ### 6 · Score: evidence in bits · `O(C·K·L²)`
 
@@ -245,7 +245,7 @@ Writes each table as Parquet under a temporary name, with the report (9), and `s
 
 - **Why:** an interruption must never leave half a run. A write cut before `pending.json` leaves the run as it was; one cut after it is finished by the next run, increment or set of decisions. A run lands with its report or not at all: a retry finds nothing new, so it could not make them again. A new part takes the number after the highest (`folder.next_part`), so a part deleted by hand frees no number to write over.
 - **Code:** `steps.write.write` → `folder.next_part`, `folder.stage`, `folder.finish_writes`, `steps.write.log_entry` → `folder.log`
-- **Increment:** new parts of records, rule pairs and scored pairs; gold and the rules' clusters rewritten: `O(Δ + C_Δ) + O(N)`.
+- **Increment:** new parts of records, rule pairs and scored pairs; gold rewritten: `O(Δ + C_Δ) + O(N)`.
 
 ### 9 · Report, for people · `O(C + N)` in SQL
 
@@ -259,7 +259,7 @@ Writes each table as Parquet under a temporary name, with the report (9), and `s
 
 ![LLD 2, an increment: the batch loaded beside the stored records, records formed from both, u refreshed, the rules, candidates and scores on the pairs touching the batch, the clusters merged into the stored ones, new parts written with the report](diagrams/increment.svg)
 
-`jobs.update.update` reads the batch through the intake, as a full run reads its records, and reads back from the run's folder `state/model.json`, `state/scoring.json`, `state/placeholders.json`, `state/records/`, `state/rule_clusters.parquet`, `gold.parquet` and `decisions/`. It runs steps 1 and 3–8 on the batch, as each step's *Increment* line above says, and step 9 on its pairs. Last, it brings the lookup index up to date (`jobs.build.indexed`, `jobs.index.update`). It takes no model: the stored records' kinds and the model come from the full run. It stops, with what to fix, when the folder holds no run, and when the pipeline or the column mapping is not the one the full run used (`state/config.txt`): its batch would be resolved otherwise than the records it joins.
+`jobs.update.update` reads the batch through the intake, as a full run reads its records, and reads back from the run's folder `state/model.json`, `state/scoring.json`, `state/placeholders.json`, `state/records/`, `gold.parquet` and `decisions/`. It runs steps 1 and 3–8 on the batch, as each step's *Increment* line above says, and step 9 on its pairs. Last, it brings the lookup index up to date (`jobs.build.indexed`, `jobs.index.update`). It takes no model: the stored records' kinds and the model come from the full run. It stops, with what to fix, when the folder holds no run, and when the pipeline or the column mapping is not the one the full run used (`state/config.txt`): its batch would be resolved otherwise than the records it joins.
 
 `jobs.index.look_up` answers one record without a run, from the index `jobs.index.build` writes: the run's own records, every key of each hashed into a table sorted by the hash, so a lookup reads a few row groups of a table, whatever N; a block's records counted in its sorted rows. The record is prepared by `standardize.prepare`, its keys looked up, a key value on `budget.min_oversized()` records or more gated as `candidates._gate` gates it, the rules' keys and conditions checked as `match.rule_edges` does, and the records found scored with the run's model by each level's own SQL: the pairs an increment of that record alone lists, scored alike (`tests/test_lookup.py`). The records sit in a database of their own, in row groups of 2,048, since scoring reads every column of the few it names; the keys in DuckDB's own, which keep them half the size. Build `O(N·(G + R + D·L) + N log N)`; a lookup `O(G·(log N + b) + C·K·L²)`. `jobs.index.look_up_file` looks up each record of a file so, by its values, from `--from` points (by default the review floor, `match.review_floor`): one row per record and entity found, with the record asked, the entity, its best record, the points, the rule and the keys. It writes nothing.
 
@@ -299,7 +299,7 @@ Each chunk, before its normalized copies, gets each record's kind (`er.kind`): `
 
 ## 8 · Data
 
-![LLD 5, the run's folder: gold, rule_kept, scored, set_aside and steps.json; state/ with the records, the rules' clusters, the model, the scoring, the placeholders and the config hash; the lookup index; report.txt; decisions/ and pending.json; each with its columns and keys](diagrams/data.svg)
+![LLD 5, the run's folder: gold, rule_kept, scored, set_aside and steps.json; state/ with the records, the model, the scoring, the placeholders and the config hash; the lookup index; report.txt; decisions/ and pending.json; each with its columns and keys](diagrams/data.svg)
 
 ### On disk
 
@@ -325,7 +325,6 @@ Kept on disk. Steps are numbered as in [the run](#4--the-run); the diagram above
 | `scored/part-n.parquet` | 8, one part per run | `match`; you | every pair at 0 points or more and every rule's pair: weight, how it was found, the level each comparison reached |
 | `matched/points-<threshold>.parquet` | `match`, one table per threshold | people; `decide` | the pairs at the threshold, with their evidence side by side and `decision` to fill in |
 | `state/records/part-n.parquet` | 8, one part per run | increments | the standardized records: the silver layer |
-| `state/rule_clusters.parquet` | 8, rewritten each run | increments | record → rule cluster |
 | `state/model.json` | 8, full runs only | increments | the fitted model: λ, and m and u per level |
 | `state/scoring.json` | 8, every run | increments | the u the run scored with; per comparison, the exact u it was sampled alongside and its last drift check |
 | `state/placeholders.json` | 8, every run | increments, lookups | each field's values read as missing: placeholders, not one entity's nor evidence |
@@ -346,8 +345,7 @@ Working tables live in DuckDB, in memory; past `[compute]` `memory_limit` they s
 |---|---|---|---|
 | `records` | 1 (an increment: after it) | 2–9 | the standardized records: logical fields and keys; in an increment, the stored records and the batch together |
 | `set_aside` | 1 | 8, 9 | records set aside, with the reason |
-| `rule_clusters` | 4 | 5, 8 | record → rule cluster |
-| `rule_kept` | 4 | 5, 6, 8, 9 | the pairs the cascade kept |
+| `rule_kept` | 4 | 5, 6, 8, 9 | every rule's pairs, with the model's points |
 | `cands` | 5 | 6, 8 | candidate pairs, and the generators that found each |
 | `scores` | 6 | 8, 9 | weight, probability, the level of each field |
 | `gold` | 7 | 8, 9 | the answer |

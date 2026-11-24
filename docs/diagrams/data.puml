@@ -39,7 +39,6 @@ package "the answer: steps.write.write" {
     sources : the generators that found the pair (none: a rule alone)
     rule : the rule that found it
     named : a name compared
-    keep : bridges two rule clusters or touches a record the rules left alone
     gamma_<comparison> : the level each comparison reached
   }
   entity "set_aside/part-n.parquet" as set_aside {
@@ -65,10 +64,6 @@ package "state/, for increments: steps.write.write" {
     name_p
     kind_flagged
     kind_name : the name as written
-  }
-  entity "state/rule_clusters.parquet" as rule_clusters {
-    * <id>
-    cluster_id : its rule cluster
   }
   entity "state/model.json" as model {
     the model: λ, m and u per level (in Splink 5.0's model format), the fit's facts
@@ -117,7 +112,6 @@ package "people's work and the writers' state" {
   }
 }
 
-gold }o--|| rule_clusters : <id>
 rule_kept }o--|| gold : <id>_l, <id>_r
 scored }o--|| gold : <id>_l, <id>_r
 records ||--|| gold : <id>

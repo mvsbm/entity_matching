@@ -32,8 +32,8 @@ built after them, 3.2 s ([below](#a-lookup)):
 | 1 | load: read in chunks, check the fields, standardize the chunks in parallel processes, and tell persons from companies | `steps.load.load`, `er.standardize.prepare`, `er.kind` | O(N·L) | N | 5.30 s |
 | 2 | budget: every rule's and generator's pairs, exactly, before any join | `steps.budget.budget`, `er.candidates.estimate` | O(N) per rule and generator, a group-by | N | 1.96 s |
 | 3 | fit: λ, and m by EM, on a sample of whole postal areas (EM's own u from 10⁶ pairs); then u measured on this file: value counts for the leading exact levels, position, swap and deletion keys for a one-edit level after them (so cif, phone and birth are counted exactly), S pairs for name, company and address | `steps.fit.fit`, `er.match.train_fs`, `exact_u`, `scored_sample`, `assemble_u` | O(n + S·K + P_em·K) + O(N + S·K) | **constant**, plus N | 4.33 s |
-| 4 | rules: one plain SQL join per rule (the first rule wins a pair), fuzzy checks on the joined pairs only, then the cascade's clusters | `steps.rules.rules`, `er.match.rule_edges`, `er.cluster.merge` | O(N + Σ P_r·L²) + O(E·log E + N) | N; ≤ 0.14 pairs per record per rule at 1M | 2.11 s |
-| 5 | candidates: every generator as one SQL join or window, keeping only the pairs that can reach 0 (step 6's bound) or a rule found, merged by bitmask, only pairs touching a record the rules left alone; oversized blocks checked on a sample scored with the file's u | `steps.candidates.candidates`, `er.candidates.candidates` | O(N·L + Σ P_g) | N; ≤ 1.75 pairs per record per key at 1M | 10.74 s |
+| 4 | rules: one plain SQL join per rule (the first rule wins a pair), fuzzy checks on the joined pairs only | `steps.rules.rules`, `er.match.rule_edges` | O(N + Σ P_r·L²) | N; ≤ 0.14 pairs per record per rule at 1M | 2.11 s |
+| 5 | candidates: every generator as one SQL join or window, keeping only the pairs that can reach 0 (step 6's bound) or a rule found, merged by bitmask; oversized blocks checked on a sample scored with the file's u | `steps.candidates.candidates`, `er.candidates.candidates` | O(N·L + Σ P_g) | N; ≤ 1.75 pairs per record per key at 1M | 10.74 s |
 | 6 | score: every candidate that can reach 0 points, with the u the fit measured; a bound settles the rest below 0 unscored, as nothing reads them (below) | `steps.score.score`, `er.match.score_fs`, `bound_sql` | O(C·K_c + C₀·K·L²) | C | 0.25 s |
 | 7 | cluster: gold, the entities people's decisions make: each record its own, connected components over the match pairs; nothing merges by itself | `steps.cluster.cluster`, `er.cluster.merge` | O(D + N), for D decisions | N | 0.14 s |
 | 8 | write: gold, the rules' pairs, the scored pairs and the state for increments, as Parquet | `steps.write.write` | O(N + C) | N | 1.14 s |
@@ -53,11 +53,11 @@ candidates, and is small because the candidates step lists only the pairs that c
 |---|---|---|
 | load | O(Δ·L), plus one O(N) copy | the batch; a record already in the run is set aside. The stored records and the batch then form one table, which every later step reads |
 | fit | O(N) + O(S·K_stale) | the stored model, with u settled before the rules: the exact and one-edit u counted again on all the records (group-bys, and the distinct values' position, swap and deletion keys); a comparison's sampled u measured again only once the drift of its exact u exceeds its sampling error (`er.match.refreshed_u`) |
-| rules | O(Δ·Σ b) + a scan of the stored records | each rule joins the batch against all records; the cascade merges into the stored clusters, each cluster one node |
+| rules | O(Δ·Σ b) + a scan of the stored records | each rule joins the batch against all records |
 | candidates | O(Δ·Σ b) + a scan | every generator, with the batch as the query; deletion keys and the budget only for the blocks the batch's keys reach |
 | score | O(C_Δ·K·L²) | only the pairs touching the batch |
 | cluster | O(D + N) | the stored entities and each new record alone, joined by people's match decisions |
-| write | O(Δ + C_Δ) appended, O(N) rewritten | new Parquet parts for records, rule pairs and scored pairs; gold and the rules' clusters rewritten. Every file is staged under a temporary name and renamed into place only once all are complete, so an interrupted increment leaves the run as it was, or is finished by the next one |
+| write | O(Δ + C_Δ) appended, O(N) rewritten | new Parquet parts for records, rule pairs and scored pairs; gold rewritten. Every file is staged under a temporary name and renamed into place only once all are complete, so an interrupted increment leaves the run as it was, or is finished by the next one |
 | index | O(Δ·(G + R + D·L) + N) | the lookup index brought up to date ([below](#a-lookup)) |
 
 So a full run costs **O(N·L + Σ P + C·K·L² + E·log E + D)**, plus the fit and the u sample, whose sizes are fixed. It

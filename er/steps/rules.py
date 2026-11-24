@@ -1,65 +1,38 @@
-"""Step 4, rules: the certain cases. One join per rule (the first rule wins a pair), then the cascade: a later stage
-adds a pair only if it touches a record still unresolved, and the stage's pairs are merged into rule_clusters.
-O(N + Σ P_r·L²) + O(E·log E + N).
+"""Step 4, rules: the certain cases. One join per rule, the first rule in order winning a pair. O(N + Σ P_r·L²).
 
-Reads records (with `batch`, an increment's: new_records too) and rule_clusters (each record alone, or the stored
-clusters and each new record alone). Writes rule_edges (every rule's pairs, with the model's points), rule_scores
-(their scores, when a model is given), rule_kept (the pairs the cascade kept), rule_clusters, and er_untrusted_<i>
-(each rule's values held by an oversized block)."""
+Reads records (with `batch`, an increment's: new_records too). Writes rule_kept (every rule's pairs, with the model's
+points), rule_scores (their scores, when a model is given) and er_untrusted_<i> (each rule's values held by an
+oversized block)."""
 import time
 
-from er.cluster import merge
 from er.config import q
 from er.match import rule_edges, score_fs
 from er.steps.job import Job
 
 
-def sized(clusters: str, op: str, uid: str) -> str:  # the records in a cluster whose size is `op` 1: "> 1" joined, "= 1" alone
-    return f"(SELECT {q(uid)} FROM {clusters} WHERE cluster_id IN (SELECT cluster_id FROM {clusters} GROUP BY 1 HAVING count(*) {op} 1))"
-
-
-def alone(a: str, b: str, uid: str) -> str:  # SQL: the pair (a, b) touches a record the rules left alone; without bridging, only such a pair counts
-    joined = sized("rule_clusters", ">", uid)
-    return f"NOT ({a} IN {joined} AND {b} IN {joined})"
-
-
 def rules(job: Job, n: int, scoring: dict | None, batch: str | None = None) -> None:
-    """The rules' pairs and their cascade. A full run starts rule_clusters here, each record alone; an increment
-    (`batch`: new_records) has started it from the stored clusters. `scoring`: the model the rules' pairs are scored
-    with, for scored/ (None: design time measures the rules alone, before any model is fitted)."""
-    t, engine, uid = time.perf_counter(), job.engine, job.uid
-    if batch is None:
-        engine.run(f"CREATE OR REPLACE TABLE rule_clusters AS SELECT {q(uid)}, {q(uid)} AS cluster_id FROM records")
-    _cascade(job, scoring, batch)
-    if batch is None:
-        p = job.count("rule_edges")
-        job.log.done("rules", "O(N + Σ P_r·L²) + O(E·log E + N)", f"O({n:,} + {p:,} pairs)", t, pairs=p, kept=job.count("rule_kept"))
-    else:
-        job.log.done("rules", "O(|Δ|·Σ b + scan)", f"O({job.count('new_ids'):,} new records)", t, kept=job.count("rule_kept"))
-
-
-def _cascade(job: Job, scoring: dict | None, batch: str | None) -> None:
-    """The rules' pairs (er.match.rule_edges: every record, or a batch against all), less the values each rule
-    doesn't trust (_untrusted), each scored by the model too (rule_scores: what scored/ keeps of them), then the
-    cascade into rule_clusters: a stage's pair is kept only if it touches a record still unresolved, and merged in
-    (er.cluster.merge). The rule clusters steer the candidates; what merges into customers is steps.cluster's."""
-    engine, uid, rules_spec = job.engine, job.uid, job.pipeline.rules
+    """The rules' pairs (er.match.rule_edges: every record, or a batch against all; the first rule in order wins a
+    pair), less the values each rule doesn't trust (_untrusted), each scored by the model too (rule_scores: what
+    scored/ keeps of them), as rule_kept. Nothing merges: each waits in scored/, with its rule, for people's decisions.
+    `scoring`: the model the rules' pairs are scored with (None: design time measures the rules alone, before any
+    model is fitted)."""
+    t, engine, uid, rules_spec = time.perf_counter(), job.engine, job.uid, job.pipeline.rules
     l, r = q(job.l), q(job.r)
     trust = {}
     for i, st, rule in rules_spec.each():
         if (untrusted := _untrusted(job, i, rule.name, st.keys(rule), within=batch)):
             trust[i] = f"NOT EXISTS (SELECT 1 FROM {untrusted} z WHERE {' AND '.join(f'z.{q(c)} = l.{q(c)}' for c in st.keys(rule))})"
-    rule_edges(rules_spec, "records", engine, uid, batch=batch, trust=trust, into="rule_edges")
+    rule_edges(rules_spec, "records", engine, uid, batch=batch, trust=trust, into="rule_kept")
     if scoring is None:  # design time measures the rules alone, before any model is fitted: nothing reads their weights
-        engine.run("CREATE OR REPLACE TABLE rule_edges AS SELECT *, NULL::DOUBLE AS match_weight FROM rule_edges")
+        engine.run("CREATE OR REPLACE TABLE rule_kept AS SELECT *, NULL::DOUBLE AS match_weight FROM rule_kept")
     else:
-        score_fs(scoring, "records", "rule_edges", engine, uid, into="rule_scores", n_records=job.count("records"))  # O(R·K)
-        engine.run(f"CREATE OR REPLACE TABLE rule_edges AS SELECT e.*, s.match_weight FROM rule_edges e JOIN rule_scores s USING ({l}, {r})")
-    engine.run("CREATE OR REPLACE TABLE rule_kept AS SELECT * FROM rule_edges WHERE FALSE")
-    for st in rules_spec.stages:
-        engine.run(f"""CREATE OR REPLACE TABLE er_stage AS SELECT * FROM rule_edges WHERE stage = '{st.name}' AND {alone(l, r, uid)}""")
-        engine.run("INSERT INTO rule_kept SELECT * FROM er_stage")
-        merge(engine, "rule_clusters", "er_stage", "rule_clusters", uid)
+        score_fs(scoring, "records", "rule_kept", engine, uid, into="rule_scores", n_records=job.count("records"))  # O(R·K)
+        engine.run(f"CREATE OR REPLACE TABLE rule_kept AS SELECT e.*, s.match_weight FROM rule_kept e JOIN rule_scores s USING ({l}, {r})")
+    kept = job.count("rule_kept")
+    if batch is None:
+        job.log.done("rules", "O(N + Σ P_r·L²)", f"O({n:,} + {kept:,} pairs)", t, pairs=kept, kept=kept)
+    else:
+        job.log.done("rules", "O(|Δ|·Σ b + scan)", f"O({job.count('new_ids'):,} new records)", t, kept=kept)
 
 
 def _untrusted(job: Job, i: int, rule: str, rule_keys: list[str], within: str | None = None) -> str | None:

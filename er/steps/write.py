@@ -1,6 +1,6 @@
 """Step 8, write: the run's files into its workspace, staged (er.folder.stage: each file under a temporary name, the
 moves still owed saved, then made), with the reports built first. O(N + C). Reads gold, matches, rule_kept,
-rule_clusters, set_aside, scores, cands, rule_scores, and records (a full run) or new_records (an increment)."""
+set_aside, scores, cands, rule_scores, and records (a full run) or new_records (an increment)."""
 import json
 import time
 from dataclasses import replace
@@ -30,7 +30,7 @@ def run_config(p: Pipeline, s: Settings) -> str:
 def write(ran: Ran, out: Path, replace_files: list[Path] | None = None, pipeline_file: Path | None = None) -> None:
     """Gold (each record's entity, as people's decisions make them, its kind and its customer's), every pair scored and
     every rule pair (scored/: what a match run reads), the rules' pairs, as Parquet; and the state an increment needs:
-    the standardized records and the rules' clusters. Records, the rules' pairs and scored/ are folders that increments
+    the standardized records. Records, the rules' pairs and scored/ are folders that increments
     append to (ran.part). `replace_files` (a full run): the old run's files, which the new ones replace. With
     `pipeline_file`: the report for people (steps.report), built first and written with these files."""
     job, part = ran.job, ran.part
@@ -48,7 +48,6 @@ def write(ran: Ran, out: Path, replace_files: list[Path] | None = None, pipeline
     folder.stage(job.engine, out, [("SELECT * FROM rule_kept", out / "rule_kept" / name),
                                    (links_sql(job), out / folder.SCORED / name),  # every pair scored and every rule pair: what a match run reads
                                    (f"SELECT * FROM gold ORDER BY {q(job.uid)}", out / "gold.parquet"),
-                                   ("SELECT * FROM rule_clusters", state / "rule_clusters.parquet"),
                                    (f"SELECT * FROM {'records' if part == 0 else 'new_records'}", state / "records" / name), *aside],
                  [*texts, *people, (logged, out / folder.STEPS)], replace_files)
 

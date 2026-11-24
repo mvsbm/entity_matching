@@ -60,7 +60,6 @@ postal_area_given_tail = { kind = "keys", keys = [{ field = "postal_code", norma
 [model]
 generators = ["cif", "phone_prefecture", "phone_postal_area", "phone_name_initial", "person_name", "company_name", "company_name_deletions", "person_name_deletions_postal_area", "given_name_postal", "address_phone", "address_code_phone", "address_name_initial", "address_code_name_initial", "given_name_address_code", "cif_deletions", "birth_date", "given_name_phone", "birth_date_deletions_prefecture", "name_reading", "phone_given_tail", "postal_given_tail", "postal_area_given_tail"]
 min_match_weight = 8.0
-bridge = false
 needs = ["name", "company"]
 prior_rules = [["customer_id", "full_name"], ["customer_id", "company_name"], ["full_name", "address_code", "phone"]]
 prior_recall = 0.0231
