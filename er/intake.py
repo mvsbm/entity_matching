@@ -31,7 +31,7 @@ from er.config import InputError
 
 REPORT, READ = "intake.json", "read"
 SUFFIXES = (".parquet",)  # the records files a folder holds
-CHUNK = 200_000  # shortcut: about 9 s a million records of 25 columns; past ~20M rows on one machine, split the file
+CHUNK = 200_000  # shortcut: about 3.4 s a million records of 25 columns (docs/performance.md); past ~20M rows on one machine, split the file
 CONVERT = ("write it as Parquet, every column as text: in Python, pandas.read_csv(path, dtype=str).to_parquet(new); "
            "in DuckDB, COPY (FROM read_csv(path, all_varchar = true)) TO new")
 CONTROL = re.compile("[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f​-‍⁠﻿]")

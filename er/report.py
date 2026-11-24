@@ -1,7 +1,6 @@
 """The report for people, from what a job did (er.steps.job.Ran) and its tables: qa (the label-free checks, and the
-summary in words), fill_rates, households (pairs maybe two people of one household, er.jobs.match's column) and
-report_text (the run on a page with no record's value in it). er.steps.report builds it; er.steps.write stages it with
-the run's files."""
+summary in words), fill_rates and report_text (the run on a page with no record's value in it). er.steps.report
+builds it; er.steps.write stages it with the run's files."""
 import math
 import platform
 import re
@@ -15,7 +14,7 @@ import pandas as pd
 
 from er.engine.engine import Engine
 from er.fit import ranked
-from er.config import GIVEN, hashed, InputError, Key, lit, Pipeline, q, sources_text, unpivoted
+from er.config import GIVEN, hashed, InputError, lit, q, sources_text, unpivoted
 from er.io import code_version
 from er.kind import COMPANY, PERSON, SAYS, UNSURE
 from er.match import ELSE, GIVEN_SHARE, levels, parameters, pattern_coverage, review_floor, scaled_prior, search_floor
@@ -25,7 +24,7 @@ if TYPE_CHECKING:
     from er.steps.job import Ran
 
 
-def fill_rates(run: "Ran", fields: list[str] | None = None, sample: int = 10_000) -> pd.DataFrame:
+def fill_rates(run: "Ran", sample: int = 10_000) -> pd.DataFrame:
     """Each field's share of filled records, flagged under 5%: a field almost never filled is often a mapping mistake.
     Then, on a random sample of `sample` records, the share of filled values that look like the field ([locale.detect];
     a low share is a wrong column or a format the comparisons don't expect), the share held by its most common
@@ -33,7 +32,7 @@ def fill_rates(run: "Ran", fields: list[str] | None = None, sample: int = 10_000
     letter or digit (a placeholder such as ＊ or ---), and its values' mean and longest length (a comparison's cost grows
     with both lengths). Numbers only: no value. O(N·F + sample·F)."""
     cols = run.columns()
-    fs = [f for f in (run.fields if fields is None else fields) if f in cols]
+    fs = [f for f in run.fields if f in cols]
     if not fs:
         return pd.DataFrame(columns=["field", "filled", "looks_right", "top_value", "no_letters", "length", "longest", "flag"])
     filled = run.engine.row(f"SELECT {', '.join(f'avg(({q(f)} IS NOT NULL)::INT)' for f in fs)} FROM records")
@@ -68,13 +67,13 @@ def unmapped_columns(engine: Engine, table: str, columns: list[str], fields: lis
                         ).sort_values(["share", "filled"], ascending=False, kind="stable", ignore_index=True)
 
 
-def qa(run: "Ran", fields: list[str] | None = None) -> dict[str, pd.DataFrame]:
+def qa(run: "Ran") -> dict[str, pd.DataFrame]:
     """The label-free report of a run: a summary in words (records, the candidates scored for match runs, the entities
-    people's decisions made, what the loader fixed), fill rate per field (flagged under 5%) (of `fields`, by default
-    every logical field) with the share that looks like the field and the share of its most common value, what was
-    disabled, every step's cost, the entities' sizes, and the patterns no key lists."""
+    people's decisions made, what the loader fixed, what was disabled), fill rate per logical field (flagged under 5%)
+    with the share that looks like the field and the share of its most common value, every step's cost, the entities'
+    sizes, and the patterns no key lists."""
     engine, u = run.engine, q(run.uid)
-    fill = fill_rates(run, fields)
+    fill = fill_rates(run)
     sizes = engine.frame("SELECT n AS cluster_size, count(*) AS clusters FROM (SELECT count(*) AS n FROM gold GROUP BY cluster_id) GROUP BY 1 ORDER BY 1")
     steps = pd.DataFrame(run.steps)
     base = ["step", "big_o", "filled", "seconds", "peak_memory_gb"]
@@ -125,8 +124,7 @@ def qa(run: "Ran", fields: list[str] | None = None) -> dict[str, pd.DataFrame]:
         *(("note", f"turned off, a field it reads is missing: {d}") for d in run.disabled),
         *(("note", note) for note in run.notes),
         *(("example", x) for x in run.examples)], columns=["what", "value"])
-    return dict(summary=summary, fill=fill, disabled=pd.DataFrame({"disabled": run.disabled}), steps=steps,
-                cluster_sizes=sizes, patterns_without_a_key=coverage.head(20), kinds=kinds, oversized_blocks=run.gated)
+    return dict(summary=summary, fill=fill, steps=steps, cluster_sizes=sizes, patterns_without_a_key=coverage.head(20))
 
 
 SPARSE = 0.3  # a compared field filled in fewer records than this: DIAGNOSIS names it
@@ -257,7 +255,7 @@ def report_text(run: "Ran", tables: dict[str, pd.DataFrame], pipeline: Path, ite
         no_letters=fill["no_letters"].map(pct), length=fill["length"].map(lambda x: "" if pd.isna(x) else f"{x:.0f}"),
         longest=fill["longest"].map(lambda x: "" if pd.isna(x) else f"{int(x):,}"), columns=[sources_text(run.present.get(f)) for f in fill["field"]]))), ""]
 
-    if (cols := getattr(run, "unmapped", None)) is not None and len(cols):  # a Run made without load (er.sizes) has none
+    if (cols := run.unmapped) is not None and len(cols):  # the file's columns no field reads (load)
         shown = cols.head(30)
         out += ["COLUMNS NOT MAPPED  (no field reads them; filled, distinct and the field their values look most like: on the first 10,000 records)",
                 *table(pd.DataFrame(dict(column=shown["column"], filled=shown["filled"].map(pct), distinct=shown["distinct"].map(pct),
@@ -323,23 +321,5 @@ def report_text(run: "Ran", tables: dict[str, pd.DataFrame], pipeline: Path, ite
     return "\n".join(out) + "\n"
 
 
-def households(engine: Engine, records: str, pairs: str, uid: str, p: Pipeline) -> set[tuple[str, str]]:
-    """The pairs of `pairs` (SQL: uid_l, uid_r) labelled maybe one household ([household]), read on `records` (SQL, the
-    run's standardized records). O(pairs)."""
-    have = {c for c, _ in engine.columns(records)}
-    if (cond := p.household.sql(have)) == "FALSE":
-        return set()
-    u, l, r = q(uid), q(f"{uid}_l"), q(f"{uid}_r")
-    return set(engine.rows(f"""SELECT x.{l}, x.{r} FROM ({pairs}) x JOIN {records} l ON l.{u} = x.{l} JOIN {records} r ON r.{u} = x.{r}
-        WHERE {cond}"""))
-
-
 def no_run(out: Path, to: str = "") -> InputError:  # a command that needs a run, on a folder without one
     return InputError(f"no run in {out}" + (f" to {to}" if to else ""), fix=f"build it first: python -m er build FILE --out {out}")
-
-
-def key(k: Key) -> dict:  # a field a key or rule reads, as the page words it
-    return dict(field=k.column, normalize=list(k.normalize))
-
-
-# ---------- how a match was found: one pair, a customer's pairs, the patterns of the whole file ----------

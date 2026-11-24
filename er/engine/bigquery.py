@@ -120,18 +120,11 @@ class BigQuery:
     def row(self, sql: str, params: list | None = None) -> tuple:
         return self.rows(sql, params)[0]
 
-    def first(self, sql: str, params: list | None = None) -> tuple | None:
-        got = self.rows(sql, params)
-        return got[0] if got else None
-
     def frame(self, sql: str, params: list | None = None):
         return self._job(sql, params).to_dataframe()
 
-    def arrow(self, sql: str, params: list | None = None):
-        return self._job(sql, params).to_arrow()
-
     def numpy(self, sql: str, params: list | None = None) -> dict:
-        table = self.arrow(sql, params)
+        table = self._job(sql, params).to_arrow()
         return {c: table[c].to_numpy() for c in table.column_names}
 
     def batches(self, sql: str, rows: int) -> Iterator:  # the Storage Read API's batches, as they come

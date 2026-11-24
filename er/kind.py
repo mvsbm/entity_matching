@@ -49,7 +49,7 @@ class NameModel:
         self.engine.run("CREATE TABLE weights AS SELECT * FROM er_weights")
         self.engine.unregister("er_weights")
 
-    def __reduce__(self) -> tuple:  # sent to a process cleaning chunks beside others (er.run's load): built again there, on one thread
+    def __reduce__(self) -> tuple:  # sent to a process cleaning chunks beside others (steps.load): built again there, on one thread
         return NameModel, (self.terms, self.coef, self.intercept, self.ngram, {**(self.compute or {}), "threads": "1"})
 
     @classmethod

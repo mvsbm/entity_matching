@@ -159,8 +159,8 @@ def placeholders(job: Job, pipeline: Pipeline, table: str, known: dict[str, list
       pairs outnumber those of all the values held by fewer: the exact level's u would describe it, not the field.
     With those the run already read as missing (`known`), made missing first, so a batch's count is of what is new.
     Each is made missing in `table` and `also`, in the field, every copy of it, and every field built from the same
-    columns on those records (a name read into person_name, full_name and any_name), so no rule, key, comparison or
-    probe reads it as two records agreeing. Returns them all, `known`'s first. O(N): a group-by and an update per field."""
+    columns on those records (a name read into person_name, full_name and any_name), so no rule, key or
+    comparison reads it as two records agreeing. Returns them all, `known`'s first. O(N): a group-by and an update per field."""
     engine, log, uid = job.engine, job.log, job.uid
     out = dict(known)
     m, cols = pipeline.fs.budget.min_oversized(), job.columns(table)
