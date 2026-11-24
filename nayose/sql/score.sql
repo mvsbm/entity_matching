@@ -232,10 +232,11 @@ SELECT pairs.l, pairs.r, named.sources FROM pairs JOIN named USING (bits);
 -- 6. The scores: every candidate and rule pair of the batch the bound keeps, its levels and its weight; kept from
 --    @keep_from bits up, and every rule pair. named: a name was compared (the person's or the company's). Added to
 --    the run's: a pair touching a batch is scored once, as that batch's.
-CREATE OR REPLACE TEMP TABLE batch_scored AS
-WITH pairs AS (
-  SELECT l, r, c.sources, p.rule FROM cands AS c FULL JOIN batch_rule_pairs AS p USING (l, r)
-),
+CREATE OR REPLACE TEMP TABLE batch_pairs AS  -- the batch's candidates and rule pairs, each once
+SELECT l, r, c.sources, p.rule FROM cands AS c FULL JOIN batch_rule_pairs AS p USING (l, r);
+
+CREATE OR REPLACE TEMP TABLE batch_weighed AS  -- every pair the bound keeps, weighed (report.sql counts them by bits)
+WITH pairs AS (SELECT * FROM batch_pairs),
 levelled AS (
   SELECT p.l, p.r, p.sources, p.rule, gamma_name(x, y) AS gamma_name, gamma_company(x, y) AS gamma_company,
          gamma_address(x, y) AS gamma_address, gamma_phone(x, y) AS gamma_phone, gamma_cif(x, y) AS gamma_cif, gamma_birth(x, y) AS gamma_birth
@@ -252,8 +253,10 @@ SELECT
        ELSE POWER(CAST(2 AS FLOAT64), match_weight) / (CAST(1 AS FLOAT64) + POWER(CAST(2 AS FLOAT64), match_weight)) END AS match_probability,
   sources, rule, (gamma_name >= 0 OR gamma_company >= 0) AS named,
   gamma_name, gamma_company, gamma_address, gamma_phone, gamma_cif, gamma_birth
-FROM weighed
-WHERE match_weight >= @keep_from OR rule IS NOT NULL;
+FROM weighed;
+
+CREATE OR REPLACE TEMP TABLE batch_scored AS
+SELECT * FROM batch_weighed WHERE match_weight >= @keep_from OR rule IS NOT NULL;
 
 CREATE TABLE IF NOT EXISTS scored AS SELECT * FROM batch_scored WHERE FALSE;
 

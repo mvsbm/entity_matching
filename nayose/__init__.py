@@ -19,10 +19,14 @@ a set of tables: a BigQuery dataset, or a DuckDB database file.
 import hashlib
 import json
 import math
+import platform
 import re
+import subprocess
 import tomllib
+from datetime import datetime
 from pathlib import Path
 
+import duckdb
 import numpy as np
 import pandas as pd
 
@@ -204,6 +208,148 @@ def match(engine, threshold: float) -> None:
                          fix=f"give a threshold of {floor:g} or more, or lower [score] keep_from in config.toml and build the run again")
     stage(engine, "functions")
     stage(engine, "match", threshold=float(threshold))
+
+
+FIELDS = ("full_name", "person_name", "given_name", "company_name", "any_name", "address", "address_code", "postal_code", "prefecture",
+          "town_code", "city", "phone", "customer_id", "birth_date")  # a record's fields, as report.txt lists them
+
+
+def report(engine, steps: dict[str, float], job: str) -> str:
+    """report.txt: the run on a page with no record's value in it, after a build or an update (`steps`: each stage's
+    seconds): what ran, the summary, each field's fill and look, the input's columns no field reads, the batch's
+    candidates by bits and each band's commonest patterns, the entities' sizes, each stage, each key's pairs, the
+    model and the largest blocks. Numbers from report.sql; O(N·F + C)."""
+    c, lo, line = config(), float(config()["lookup"]["at_least"]), float(config()["lookup"]["likely_from"])
+    edges = sorted({-20.0, -10.0, 0.0, lo, line, line + 2, line + 4, line + 8, line + 12})
+    patterns = {**c["report"]["patterns"], "company_name": legal_pattern(c["records"])}
+    stage(engine, "report", patterns=json.dumps(patterns, ensure_ascii=False), edges=edges, floor=lo, oversized=int(c["score"]["oversized"]))
+    n = engine.frame("SELECT * FROM report_counts").iloc[0]
+    pct = lambda x: "—" if x is None or pd.isna(x) else f"{x:.1%}"
+
+    def table(df: pd.DataFrame) -> list[str]:  # numbers right-aligned, text left, so the page stays narrow
+        if not len(df):
+            return ["  none"]
+        rows = [list(map(str, df.columns)), *([str(v) for v in r] for r in df.itertuples(index=False))]
+        width = [max(len(r[i]) for r in rows) for i in range(len(df.columns))]
+        number = [all(re.fullmatch(r"[-+]?[\d,.]+(%|e[-+]\d+)?|—", r[i]) for r in rows[1:]) for i in range(len(df.columns))]
+        return ["  " + "  ".join(v.rjust(w) if k else v.ljust(w) for v, w, k in zip(r, width, number)).rstrip() for r in rows]
+
+    added = None if job == "build" else int(n["added"])
+    threads, memory = engine.rows("SELECT current_setting('threads'), current_setting('memory_limit')")[0] if engine.name == "duckdb" else ("—", "—")
+    out = [f"RUN REPORT · {datetime.now():%Y-%m-%d %H:%M} · {'full run' if added is None else f'increment of {added:,} new records'} · no record's value in it",
+           f"code {code_version()} · method {fingerprint()[:12]}",
+           f"python {platform.python_version()} · duckdb {duckdb.__version__} · {platform.system()} {platform.machine()}",
+           f"{threads} threads · memory limit {memory} · took {sum(steps.values()):,.1f} s", ""]
+
+    ph = engine.rows("SELECT p.field, COUNT(*) FROM placeholders AS p GROUP BY p.field ORDER BY p.field")
+    empty = {f: int(n["records"] - n[f]) for f, _ in ph if f in n}
+    fill = {f: n[f] / max(n["records"], 1) for f in FIELDS}
+    summary = [("records", f"{int(n['records']):,}" + (f", {added:,} of them new" if added is not None else "") + (f"; {int(n['set_aside']):,} set aside (set_aside)" if n["set_aside"] else "")),
+               ("candidates", f"{int(n['scored']):,} pairs scored{' in this batch' if added is not None else ''}, {int(n['ruled']):,} of them a rule's too: "
+                              "scored, which a match run reads at its threshold (python -m nayose match)"),
+               ("entities", f"{int(n['entities']):,}; {int(n['by_people']):,} records joined by people's decisions; the largest holds {int(n['largest']):,} record{'s' * bool(n['largest'] != 1)}"),
+               ("kinds", f"{int(n['companies']):,} × 2 company · {int(n['persons']):,} × 1 person · {int(n['unsure']):,} × 0 not sure (records)"),
+               ("kinds", f"{int(n['company_customers']):,} × 2 company · {int(n['person_customers']):,} × 1 person · {int(n['unsure_customers']):,} × 0 not sure (customers)"),
+               *([("flagged", f"{int(n['flagged']):,} records the engine is sure of against the flag: matched as the engine says (gold: kind_flagged)")] if n["flagged"] else []),
+               ("kinds from", "the file's flag, as it is (trust_flag)" if c["records"]["trust_flag"] else f"a written legal form, or a name {c['records']['name_line']:.0%} sure; else the flag"),
+               *(("note", f"{f}: {k:,} value{'s' * bool(k != 1)} held by {c['records']['min_block']}+ records read as missing, a placeholder and not "
+                          f"{'one entity' if f == 'customer_id' else 'evidence'}'s ({empty[f]:,} records without one)") for f, k in ph if f in empty),
+               *(("note", f"{f} only {x:.1%} filled: check its mapping") for f, x in fill.items() if x < 0.05)]
+    out += ["SUMMARY", *(f"  {what:<12} {value}" for what, value in summary), ""]
+
+    shape = engine.frame("SELECT * FROM report_fields").set_index("field")
+    out += ["FIELDS  (looks right, top value, no letters, length: on a sample of 10,000 records)", *table(pd.DataFrame([dict(
+        field=f, filled=pct(fill[f]), looks_right=pct(shape.at[f, "looks_right"]), top_value=pct(shape.at[f, "top_value"]),
+        no_letters=pct(shape.at[f, "no_letters"]), length="" if pd.isna(shape.at[f, "length"]) else f"{shape.at[f, 'length']:.0f}",
+        longest="" if pd.isna(shape.at[f, "longest"]) else f"{int(shape.at[f, 'longest']):,}") for f in FIELDS])), ""]
+    if engine.name == "duckdb" and (cols := unmapped(engine, c, patterns)) is not None and len(cols):
+        shown = cols.head(30)
+        out += ["COLUMNS NOT MAPPED  (no field reads them; filled, distinct and the field their values look most like: on the first 10,000 records)",
+                *table(pd.DataFrame(dict(column=shown["column"], filled=shown["filled"].map(pct), distinct=shown["distinct"].map(pct),
+                                         looks_like=shown["looks_like"], share=[pct(x) if f else "" for f, x in zip(shown["looks_like"], shown["share"])]))),
+                *([f"  and {len(cols) - len(shown):,} more"] if len(cols) > len(shown) else []), ""]
+
+    scored = dict(engine.rows("SELECT band, pairs FROM report_scores"))
+    label = lambda i: "below 0" if i == -1 else f"below {edges[0]:g}" if i == 0 else f"{edges[-1]:g} and up" if i == len(edges) else f"{edges[i - 1]:g} to {edges[i]:g}"
+    if scored.get(-1):  # pairs the bound put below the floor, never weighed: one row below 0, with those weighed below it
+        scored[-1] += sum(scored.pop(i) for i in [i for i in scored if 0 <= i < len(edges) and edges[i] <= 0])
+    out += ["SCORES  (the candidates scored, by bits)", *table(pd.DataFrame([dict(bits=label(i), candidates=f"{scored[i]:,}") for i in sorted(scored) if scored[i]])), ""]
+
+    named = {(x, g): lab for x, g, lab in engine.rows("SELECT comparison, gamma, label FROM model")}
+    comps = ("name", "company", "address", "phone", "cif", "birth")
+    got = engine.frame("SELECT * FROM report_patterns ORDER BY up DESC, k")
+    band = lambda up: f"{lo:g} and up" if up else f"0 to {lo:g}"
+    out += ["PATTERNS BY SCORE  (the keys' pairs at 0 bits and up, below and from the review floor: each band's 12 most common levels)",
+            *table(pd.DataFrame([dict(band=band(x["up"]), pairs=f"{int(x['n']):,}", bits=f"{x['w']:.1f}",
+                                      **{k: "missing" if pd.isna(x[f"gamma_{k}"]) or x[f"gamma_{k}"] < 0 else named[k, int(x[f"gamma_{k}"])] for k in comps})
+                                 for _, x in got.iterrows()])),
+            *(f"  {band(up)}: {int(g['kinds'].iloc[0]) - 12:,} patterns more, {int(g['total'].iloc[0]) - int(g['n'].sum()):,} pairs"
+              for up, g in got.groupby("up", sort=False) if g["kinds"].iloc[0] > 12), ""]
+
+    sizes = dict(engine.rows("SELECT size, entities FROM report_clusters"))
+    bins = [("1", 1, 1), ("2", 2, 2), ("3", 3, 3), ("4", 4, 4), ("5–9", 5, 9), ("10–49", 10, 49), ("50+", 50, math.inf)]
+    out += ["CLUSTERS  (size: how many)", "  " + " · ".join(f"{name}: {total:,}" for name, a, b in bins if (total := sum(v for k, v in sizes.items() if a <= k <= b))), ""]
+
+    fitted = json.loads(engine.value("SELECT notes FROM fit"))
+    facts = dict(records=f"records {int(n['added']):,} · set_aside {int(n['set_aside']):,} · companies {int(n['companies']):,} · persons {int(n['persons']):,} · not sure {int(n['unsure']):,}",
+                 fit=f"fit_rows {fitted['fit_rows']:,}" + (" · the build's model" if job != "build" else "") + f" · sampled_again {len(fitted.get('sampled_again', [])):,}",
+                 score=f"candidates {int(n['candidates']):,} · stored {int(n['scored']):,} · rule pairs {int(n['ruled']):,} · oversized_kept {int(n['oversized_kept']):,} · "
+                       f"oversized_skipped {int(n['oversized_skipped']):,} · unscored {int(n['unscored']):,}",
+                 decide=f"decided {int(n['decided']):,} · entities {int(n['entities']):,}")
+    out += ["STEPS", *table(pd.DataFrame([dict(step=s, seconds=f"{x:.2f}", facts=facts.get(s, "")) for s, x in steps.items()])), ""]
+
+    keys = engine.frame("SELECT * FROM report_keys ORDER BY pairs DESC, g")
+    out += ["KEYS  (pairs each lists, most first)", *table(pd.DataFrame(dict(key=keys["name"], pairs=keys["pairs"].map(lambda x: f"{int(x):,}")))), ""]
+
+    f = engine.frame("SELECT * FROM fit").iloc[0]
+    levels = engine.frame("SELECT comparison, label, file_m, file_u, bits FROM model ORDER BY position, gamma DESC")
+    prior = json.loads(f["fitted"])["prior_bits"]
+    out += [f"MODEL  (prior {prior:.2f} bits at {int(f['records']):,} records; fitted on {int(f['fit_rows']):,} records"
+            + (f"; learned nothing about {', '.join(fitted['skipped'])}" if fitted.get("skipped") else "") + ")",
+            *(["  EM learned from: " + " · ".join(f"{k} {v:,} pairs" for k, v in fitted["em_pairs"].items())] if fitted.get("em_pairs") else []),
+            *table(pd.DataFrame(dict(comparison=levels["comparison"], level=levels["label"], m=levels["file_m"].map(lambda x: f"{x:.4f}" if x >= 1e-3 else f"{x:.2e}"),
+                                     u=levels["file_u"].map(lambda x: f"{x:.2e}"), bits=levels["bits"].map(lambda x: f"{x:.2f}")))),
+            *(f"  {k} {lv}: {why} (EM said {was:+.2f} bits)" for k, lv, why, was in fitted.get("file_adjusted", [])), ""]
+
+    shown = keys.assign(per_record=keys["pairs"] / max(int(n["records"]), 1))
+    shown = shown[(shown["oversized"] > 0) | shown["name"].isin(shown.nlargest(6, "per_record")["name"])].sort_values("per_record", ascending=False, kind="stable")
+    out += [f"BLOCKS  ({int(keys['pairs'].sum()):,} pairs the keys list, before dedupe)", *table(pd.DataFrame(dict(
+        kind="generator", name=shown["name"], per_record=shown["per_record"].map(lambda x: f"{x:.2f}"),
+        largest=shown["largest"].map(lambda x: f"{int(x):,}"), oversized=shown["oversized"].map(lambda x: f"{int(x):,}"))))]
+    return "\n".join(out) + "\n"
+
+
+def unmapped(engine, c: dict, patterns: dict[str, str]) -> pd.DataFrame | None:
+    """The input's columns no field reads (config.toml [input] columns), on its first 10,000 rows: the share filled, the
+    share of filled values held once, and the field whose look ([report] patterns) its values have most, with that
+    share; best fit first. DuckDB's: the file's own columns, read by their names. O(sample · columns · fields)."""
+    read = {x.casefold() for x in c["input"]["columns"]}
+    cols = [x for x, _ in engine.columns("input") if x.casefold() not in read]
+    if not cols:
+        return None
+    quote = lambda x: '"' + x.replace('"', '""') + '"'
+    con = engine.con
+    con.execute("CREATE OR REPLACE TEMP TABLE nayose_sample AS SELECT " + ", ".join(f"CAST({quote(x)} AS VARCHAR) AS {quote(x)}" for x in cols) + " FROM input LIMIT 10000")
+    n = max(1, con.execute("SELECT COUNT(*) FROM nayose_sample").fetchall()[0][0])
+    long = "SELECT * FROM (UNPIVOT nayose_sample ON COLUMNS(*) INTO NAME c VALUE v) WHERE trim(v, ?) <> ''"
+    shape = {x: (k / n, d / max(1, k)) for x, k, d in con.execute(f"SELECT c, COUNT(*), COUNT(DISTINCT v) FROM ({long}) GROUP BY c", [BLANK]).fetchall()}
+    fits = {x: {} for x in cols}
+    for field, pattern in patterns.items():
+        for x, share in con.execute(f"SELECT c, AVG(regexp_matches(v, ?)::INT) FROM ({long}) GROUP BY c", [pattern, BLANK]).fetchall():
+            fits[x][field] = share
+    best = {x: max(fits[x].items(), key=lambda kv: kv[1], default=("", 0.0)) for x in cols}
+    return pd.DataFrame([dict(column=x, filled=shape.get(x, (0.0, 0.0))[0], distinct=shape.get(x, (0.0, 0.0))[1],
+                              looks_like=best[x][0] if best[x][1] > 0 else "", share=best[x][1]) for x in cols]
+                        ).sort_values(["share", "filled"], ascending=False, kind="stable", ignore_index=True)
+
+
+def code_version() -> str:  # the commit the code is at, and + when this copy's tracked files differ from it
+    try:
+        head = subprocess.run(["git", "-C", str(HERE), "rev-parse", "--short", "HEAD"], capture_output=True, text=True, timeout=10).stdout.strip()
+        dirty = subprocess.run(["git", "-C", str(HERE), "status", "--porcelain", "--untracked-files=no"], capture_output=True, text=True, timeout=10).stdout.strip()
+        return (head or "unknown") + ("+" if dirty else "")
+    except (OSError, subprocess.SubprocessError):
+        return "unknown"
 
 
 def statements(text: str) -> list[str]:
