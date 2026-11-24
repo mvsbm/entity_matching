@@ -9,3 +9,4 @@ rapidfuzz==3.14.6
 scikit-learn==1.9.1
 google-cloud-bigquery==3.47.0  # er.engine.bigquery: queries, sessions, load jobs
 google-cloud-bigquery-storage==2.43.0  # its Storage Read API: a result read in Arrow batches
+google-cloud-storage==3.17.2  # deploy/runner.py: the run's lock and CURRENT, under preconditions

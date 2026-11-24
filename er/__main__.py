@@ -8,9 +8,9 @@
     python -m er lookup --out runs/main FULL_NAME_KANA=ヤマダタロウ PHONE_NUM_4=1234
     python -m er lookup --out runs/main --file people.parquet    each record of a file looked up
 
-Each prints one JSON object on stdout: what the job did. Each step, as it ends, is one JSON line on stderr. Exit
-codes: 0; 2, a mistake people fix (the JSON says what is wrong, and the fix); 75, another job is writing the run: try
-again later. The method is config/pipeline.toml (--pipeline another); the column mapping and the compute limits,
+Each prints one JSON object on stdout: what the job did. Each step, as it ends, is one JSON line on stderr. Every
+line has a severity (INFO, WARNING or ERROR), as Cloud Logging reads it. Exit codes: 0; 2, a mistake people fix (the
+JSON says what is wrong, and the fix); 75, another job is writing the run: try again later. The method is config/pipeline.toml (--pipeline another); the column mapping and the compute limits,
 config/settings.toml (--compute KEY=VALUE for one run).
 """
 import argparse
@@ -64,7 +64,7 @@ def run(a: argparse.Namespace) -> dict:
     s = replace(s, compute={**s.compute, **dict(kv.split("=", 1) for kv in a.compute)})
     pipeline = a.pipeline or s.root / "config" / "pipeline.toml"
     p = load_pipeline(pipeline, s.standardize, s.chains, s.columns)
-    echo = lambda step: print(json.dumps(step, ensure_ascii=False, default=str), file=sys.stderr, flush=True)
+    echo = lambda step: print(json.dumps({"severity": "INFO", **step}, ensure_ascii=False, default=str), file=sys.stderr, flush=True)
     if a.job != "build" and not a.out.is_dir():
         raise InputError(f"no run at {a.out}", fix=f"check the path, or build one: python -m er build FILE --out {a.out}")
     match a.job:
@@ -106,14 +106,14 @@ def main(argv: list[str] | None = None) -> int:
     try:
         result = run(a)
     except InputError as e:
-        print(json.dumps(dict(error=str(e), fix=e.fix), ensure_ascii=False))
+        print(json.dumps(dict(severity="WARNING" if isinstance(e, Busy) else "ERROR", error=str(e), fix=e.fix), ensure_ascii=False))
         return 75 if isinstance(e, Busy) else 2
     except Exception as e:
         if not (oom := out_of_memory(e)):
             raise
-        print(json.dumps(dict(error=str(oom), fix=oom.fix), ensure_ascii=False))
+        print(json.dumps(dict(severity="ERROR", error=str(oom), fix=oom.fix), ensure_ascii=False))
         return 2
-    print(json.dumps(result, ensure_ascii=False, default=str))
+    print(json.dumps({"severity": "INFO", **result}, ensure_ascii=False, default=str))
     return 0
 
 
