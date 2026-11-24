@@ -565,13 +565,27 @@ def kind_training_names(persons: pd.DataFrame, registry: pd.DataFrame, legal_fro
     return pd.DataFrame(dict(name=firms + people, y=[1] * len(firms) + [0] * len(people)))
 
 
-def train_name_model(settings, spec):
-    """The person-or-company name model (er.kind.NameModel) for these settings: trained on the reference data's
-    training half (name_model_split), written as config/generator.toml's kana_confusions and branches write bank records
-    (kind_training_names). scripts/train_name_model.py saves it for the runs. O(T·L·g) for T names."""
-    from er.kind import NameModel, text
-    ref, std = settings.paths["reference"], settings.standardize
-    spec_g = load_spec(settings.root / "config" / "generator.toml")[0]  # how bank records misspell and suffix names
-    persons, _, companies, _ = name_model_split(load_reference(ref)[0], load_registry(ref))
-    names = kind_training_names(persons, companies, std.legal_front, std.legal_end, spec_g.kana_confusions, spec_g.branches)
-    return NameModel.fit(text(names["name"], std), names["y"].to_numpy(), spec.ngram)
+def train_name_model(reference: Path, generator: Path) -> dict:
+    """The person-or-company name model nayose's records.sql reads (config/kind_names.npz: terms, coef, intercept):
+    logistic regression on a name's character n-grams (1 to config.toml [records] ngram), the names read as any_name
+    reads them (nayose's SQL: no spaces, NFKC, katakana, no legal form, kana folded), trained on the reference data's
+    training half (name_model_split), written as config/generator.toml's kana_confusions and branches write bank
+    records (kind_training_names). scripts/train_name_model.py saves it for the runs. O(T·L·g) for T names."""
+    import nayose
+    from nayose.engines import DuckDB
+    from sklearn.feature_extraction.text import CountVectorizer
+    from sklearn.linear_model import LogisticRegression
+    r = nayose.config()["records"]
+    spec_g = load_spec(generator)[0]  # how bank records misspell and suffix names
+    persons, _, companies, _ = name_model_split(load_reference(reference)[0], load_registry(reference))
+    names = kind_training_names(persons, companies, r["legal_front"], r["legal_end"], spec_g.kana_confusions, spec_g.branches)
+    engine = DuckDB()
+    engine.put("names", pd.DataFrame({"i": range(len(names)), "name": names["name"].astype("string")}))
+    nayose.stage(engine, "functions")
+    v = nayose.values("records")
+    texts = engine.frame(r"""SELECT NULLIF(TRANSLATE(REGEXP_REPLACE(TRANSLATE(nfkc(REGEXP_REPLACE(name, r'[\s\x{3000}]+', '')), @hiragana, @katakana),
+                                     @legal_pattern, ''), @kana_fold_from, @kana_fold_to), '') AS t FROM names ORDER BY i""",
+                         {k: v[k] for k in ("hiragana", "katakana", "legal_pattern", "kana_fold_from", "kana_fold_to")})["t"]
+    vec = CountVectorizer(analyzer="char", ngram_range=(1, int(r["ngram"])), binary=True, min_df=2)
+    m = LogisticRegression(C=1.0, max_iter=3000).fit(vec.fit_transform(texts.fillna("")), names["y"].to_numpy())
+    return dict(terms=vec.get_feature_names_out().tolist(), coef=m.coef_[0], intercept=float(m.intercept_[0]), ngram=int(r["ngram"]))

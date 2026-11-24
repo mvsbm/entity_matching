@@ -19,6 +19,7 @@ a set of tables: a BigQuery dataset, or a DuckDB database file.
 import hashlib
 import json
 import math
+import os
 import platform
 import re
 import subprocess
@@ -49,8 +50,12 @@ class InputError(ValueError):  # a refusal the person running the job can act on
         self.fix = fix
 
 
-def config(path: Path = HERE / "config.toml") -> dict:
-    return tomllib.loads(path.read_text(encoding="utf-8"))
+def config(path: Path | None = None) -> dict:  # config.toml, or the file NAYOSE_CONFIG names (a variant at design time)
+    return tomllib.loads((path or Path(os.environ.get("NAYOSE_CONFIG") or HERE / "config.toml")).read_text(encoding="utf-8"))
+
+
+def mapping() -> Path:  # mapping.sql, or the file NAYOSE_MAPPING names (another file's columns)
+    return Path(os.environ.get("NAYOSE_MAPPING") or HERE / "mapping.sql")
 
 
 def legal_pattern(c: dict) -> str:
@@ -82,7 +87,7 @@ def records(engine, files: list | None, lookup: bool = False) -> None:
         engine.read_parquet("input", files, c["input"]["columns"])
     engine.put("name_weights", name_weights())
     stage(engine, "functions")
-    run_file(engine, HERE / "mapping.sql", **values("mapping"))
+    run_file(engine, mapping(), **values("mapping"))
     stage(engine, "records", **values("records", lookup=lookup))
 
 
@@ -190,11 +195,16 @@ def lookup(engine, record: str | None = None, values: dict | None = None, at_lea
                          for _, x in checked.iterrows()])
 
 
-def build(engine, files: list) -> None:
-    """A run's first batch on `engine`, an empty run: its records, the model fitted, every pair scored, the entities
-    people's decisions make (none yet, or those the run kept). O(N·L + n + S·K + ΣP + C·K·L²)."""
+def build(engine, files: list, model: str | None = None) -> None:
+    """A run's first batch on `engine`, an empty run: its records, the model fitted (`model`: one fitted elsewhere, as
+    fit gave it back, kept: its u measured on these records), every pair scored, the entities people's decisions make
+    (none yet, or those the run kept). O(N·L + n + S·K + ΣP + C·K·L²)."""
     records(engine, files)
-    fit(engine)
+    if model is not None:
+        engine.run("CREATE OR REPLACE TABLE fit AS SELECT CAST(NULL AS FLOAT64) AS probability, CAST(NULL AS INT64) AS fit_rows, "
+                   "CAST(NULL AS INT64) AS records, CAST(NULL AS FLOAT64) AS prior_bits, CAST(NULL AS STRING) AS notes, @fitted AS fitted",
+                   {"fitted": json.dumps({**json.loads(model), "basis": None})})
+    fit(engine, refit=model is None)
     score(engine)
     decide(engine, [])
 
@@ -413,6 +423,6 @@ def fingerprint(root: Path = HERE) -> str:
     """What an increment needs to be what the full run was: a hash of every stage file, the values (config.toml) and
     the input's mapping (mapping.sql), by name and content. A change to any refuses increments until a full run."""
     h = hashlib.sha256()
-    for f in sorted([*(root / "sql").glob("*.sql"), *(p for p in (root / "config.toml", root / "mapping.sql") if p.exists())]):
+    for f in sorted([*(root / "sql").glob("*.sql"), *(p for p in (root / "config.toml", mapping() if root == HERE else root / "mapping.sql") if p.exists())]):
         h.update(f.name.encode() + b"\0" + f.read_bytes() + b"\0")
     return h.hexdigest()

@@ -1,5 +1,5 @@
-"""Stage 2, fit: the model learned from the counts fit.sql leaves, as er/fit.py and er/match.py learn it
-(Fellegi–Sunter as Splink 5.0 fits it), the same numbers to the last bit.
+"""Stage 2, fit: the model learned from the counts fit.sql leaves: Fellegi–Sunter as Splink 5.0 fits it, the same
+numbers to the last bit.
 
     λ   how likely two random records are one customer: the pairs the near-certain rules find (prior), over the share
         of all matches they find (prior_recall), over every pair of the sample
@@ -38,8 +38,13 @@ def fit(counts: str, settings: str, stored: str | None = None) -> str:
     c, s = json.loads(counts), json.loads(settings)
     levels = sorted(c["levels"], key=lambda lv: (lv["position"], -lv["gamma"]))
     got = measured(c, s)
-    if stored is not None:
+    if stored is not None and json.loads(stored)["basis"] is not None:
         return refresh(json.loads(stored), got["file"])
+    if stored is not None:  # a model fitted on another file (scripts/benchmark.py: on a train split): kept, its u measured on this one whole
+        model = json.loads(stored)["model"]
+        exact = exact_u(levels, got["file"])
+        sampled = sampled_u(levels, got["file"], [x for x in comparisons(levels) if ELSE not in exact.get(x, {})])
+        return given(model, assemble(model, got["file"], sampled), got["file"]["n"], u_basis(got["file"], sampled, exact, comparisons(levels)), [])
     model = learn(levels, got["sample"], c["prior"][0], c["patterns"] or [], s)
     exact = exact_u(levels, got["file"])
     sampled = sampled_u(levels, got["file"], [x for x in comparisons(levels) if ELSE not in exact.get(x, {})])
@@ -47,7 +52,7 @@ def fit(counts: str, settings: str, stored: str | None = None) -> str:
 
 
 def refresh(stored: dict, got: dict) -> str:
-    """An update's model: the one stored, its u measured again on the run's records (er.match.refreshed_u). Every
+    """An update's model: the one stored, its u measured again on the run's records. Every
     level counted exactly is counted again; a comparison is sampled again only once stale_u finds it stale, the rest
     keep their sample. O(K) on the counts."""
     model, basis = stored["model"], stored["basis"]
@@ -72,7 +77,7 @@ def given(model: dict, scoring: dict, n: int, basis: dict, again: list[dict]) ->
 
 def u_basis(got: dict, sampled: dict, exact: dict, names: list[str]) -> dict:
     """What a later update needs to tell whether these comparisons' sampled u went stale: the sampled u, the u counted
-    exactly alongside, the record count, and how many sampled pairs had the comparison filled (er.match.u_basis)."""
+    exactly alongside, the record count, and how many sampled pairs had the comparison filled."""
     n = got["n"]
     pairs = min(got["max_pairs"], n * (n - 1) / 2)
     return {x: dict(sampled=sampled.get(x, {}), exact=exact.get(x, {}), n=n, pairs=pairs * (got["filled"][x] / n if n else 0.0) ** 2) for x in names}
@@ -82,7 +87,7 @@ def stale_u(levels: list[dict], basis: dict, exact_now: dict, n: int) -> dict[st
     """Per comparison, drift_bits: how far its sampled u have likely drifted since they were sampled, the drift of its
     leading exact level, counted exactly, or log2(N / N then) without one (an equality level can't fall faster); and
     se_bits: the sampling error of its most precise sampled level, 1/(ln 2·√hits). Once drift > se, staleness outweighs
-    the sample's own noise (er.match.stale_u). A comparison never sampled has drift ∞."""
+    the sample's own noise. A comparison never sampled has drift ∞."""
     out = {}
     for name in comparisons(levels):
         b = basis.get(name)
@@ -119,7 +124,7 @@ def measured(c: dict, s: dict) -> dict[str, dict]:
 
 def exact_u(levels: list[dict], got: dict) -> dict[str, dict[str, float]]:
     """u of each comparison's levels counted exactly, each among the pairs outside its missing level; with every level
-    counted, the else level's the rest (er.match.exact_u)."""
+    counted, the else level's the rest."""
     out: dict[str, dict[str, float]] = {}
     for name in comparisons(levels):
         outside = float(got["outside"][name])
@@ -137,7 +142,7 @@ def exact_u(levels: list[dict], got: dict) -> dict[str, dict[str, float]]:
 
 def sampled_u(levels: list[dict], got: dict, names: list[str]) -> dict[str, dict[str, float]]:
     """u of these comparisons' levels in the sampled pairs: a level's pairs over those with the comparison filled; a
-    level no pair reached, none (er.match.sample_u)."""
+    level no pair reached, none."""
     out = {}
     for name in names:
         mine = [lv for lv in levels if lv["comparison"] == name]
@@ -150,7 +155,7 @@ def sampled_u(levels: list[dict], got: dict, names: list[str]) -> dict[str, dict
 
 def u_bound(got: dict, name: str) -> float:
     """95% upper bound on u for a level no sampled pair reached: zero hits among the sampled pairs where the comparison
-    is filled, of which there are at least (its fill share)² of the sample (er.match.u_bound)."""
+    is filled, of which there are at least (its fill share)² of the sample."""
     n = got["n"]
     sampled = min(got["max_pairs"], n * (n - 1) / 2)
     n_filled = max(1, int(sampled * (got["filled"][name] / n if n else 0.0) ** 2))
@@ -164,7 +169,7 @@ def comparisons(levels: list[dict]) -> list[str]:  # the comparisons, in the mod
 # ---------- the model learned on the sample ----------
 
 def learn(levels: list[dict], got: dict, prior_counts: dict, patterns: list[dict], c: dict) -> dict:
-    """The model on the sample: u, λ, then m by the EM sessions in order (er.match.train_fs). Refuses when no
+    """The model on the sample: u, λ, then m by the EM sessions in order. Refuses when no
     near-certain rule, or no session's key, finds a pair in the sample."""
     names = comparisons(levels)
     exact = exact_u(levels, got)
@@ -236,7 +241,7 @@ def session(model: dict, patterns: list[tuple], names: list[str], s: dict, lam: 
     """One EM session on the pairs sharing its key: each pattern of levels (the comparisons the key fixed, None) with
     its count, in order. λ among them starts from λ with the evidence of the exact levels the key guarantees; each
     round guesses each pattern's chance of a match from λ and its levels' points, added left to right (E), then counts
-    m from those guesses (M); stops once nothing moves by CONVERGED, or after MAX_ROUNDS (er.fit.session). Returns
+    m from those guesses (M); stops once nothing moves by CONVERGED, or after MAX_ROUNDS. Returns
     each level's m after the last round; a level no pair reached is left out."""
     learns = [i for i, name in enumerate(names) if all(p[i] is not None for p in patterns)]  # the key fixed the others
     order = [names[i] for i in learns]
@@ -281,7 +286,7 @@ def session(model: dict, patterns: list[tuple], names: list[str], s: dict, lam: 
 
 def sensible_m(model: dict, filled: set[tuple[str, str]]) -> list[list]:
     """Two limits on what EM's m may say, each where a sample gave it nothing to go by; returns what changed
-    (er.match.sensible_m).
+   .
     - A near level stands for a typo in a value matches share: where no match agreed exactly in training (every exact
       level's m filled as u), nearness is neighbouring values (IDs handed out in sequence), no evidence: m = u, 0 bits.
     - Partial agreement is never more evidence against a match than none: a level weighs at least its else level."""
@@ -309,7 +314,7 @@ def sensible_m(model: dict, filled: set[tuple[str, str]]) -> list[list]:
 def assemble(model: dict, got: dict, sampled: dict) -> dict:
     """The model with each level's u measured on the file: counted exactly, else `sampled`, else the bound on the file.
     A level never seen in training keeps m = u, 0 bits; m and λ stay as fitted, within sensible_m's limits again
-    (er.match.assemble_u)."""
+   ."""
     exact = exact_u(model["levels"], got)
     filled_m = {tuple(x) for x in model["notes"]["filled"]["m"]}
     out = copy.deepcopy(model)

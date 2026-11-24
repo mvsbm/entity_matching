@@ -1,8 +1,6 @@
-# A pull request runs lint and the fast checks, in about two minutes; its author runs every tier before pushing
-# (CONTRIBUTING.md). main, and a run started by hand on any branch, runs them all: whole runs, and on Windows, set up as
-# a person sets it up there. Each tier is a job of its own and the long ones are split by their recorded times
-# (tests/durations.json, pytest-split), all at once: the set takes about as long as its longest part. The job names
-# pytest (3.12) and pytest (3.14) are what branch protection requires: keep them.
+# A pull request runs lint and the tests, in about two minutes. main, and a run started by hand on any branch, runs them
+# on Windows too, set up as a person sets it up there. The job names pytest (3.12) and pytest (3.14) are what branch
+# protection requires: keep them.
 name: tests
 on:
   push:
@@ -33,41 +31,12 @@ jobs:
           cache-dependency-glob: requirements.txt
       - run: uv pip install --system -r requirements.txt
       - run: ruff check .  # the rules in pyproject.toml [tool.ruff.lint]
-      - run: python -m pytest -n auto -m "not slow"  # a broken engine fails here first; -n auto: a test a core
-  whole:  # whole runs on a generated population, in three parts of about equal time
-    name: whole runs (${{ matrix.python }}, ${{ matrix.group }}/3)
-    if: github.event_name != 'pull_request'
-    runs-on: ubuntu-latest
-    timeout-minutes: 25
-    strategy:
-      fail-fast: false
-      matrix:
-        python: ["3.12", "3.14"]
-        group: [1, 2, 3]
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: ${{ matrix.python }}
-      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2  # v10.3.3
-        with:
-          enable-cache: true
-          cache-dependency-glob: requirements.txt
-      - run: uv pip install --system -r requirements.txt
-      - run: python -m pytest -n auto -m "slow" --splits 3 --group ${{ matrix.group }} --durations-path tests/durations.json --splitting-algorithm least_duration
-  windows:  # every tier on Windows, set up as a person sets it up there (setup_venv.ps1)
-    name: windows (${{ matrix.part }})
+      - run: python -m pytest -n auto  # -n auto: a test a core
+  windows:  # the tests on Windows, set up as a person sets it up there (setup_venv.ps1)
+    name: windows
     if: github.event_name != 'pull_request'
     runs-on: windows-latest
-    timeout-minutes: 40
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - {part: fast, marks: "not slow", split: ""}
-          - {part: whole 1/3, marks: "slow", split: "--splits 3 --group 1"}
-          - {part: whole 2/3, marks: "slow", split: "--splits 3 --group 2"}
-          - {part: whole 3/3, marks: "slow", split: "--splits 3 --group 3"}
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -75,4 +44,4 @@ jobs:
           python-version: "3.14"
           cache: pip
       - run: .\setup_venv.ps1
-      - run: .venv\Scripts\python -m pytest -n auto -m "${{ matrix.marks }}" ${{ matrix.split }} --durations-path tests/durations.json --splitting-algorithm least_duration
+      - run: .venv\Scripts\python -m pytest -n auto

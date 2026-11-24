@@ -1,6 +1,6 @@
 # Creates .venv with the pinned dependencies on Windows, as setup_venv.sh does on macOS and Linux. In PowerShell:
 #   powershell -ExecutionPolicy Bypass -File setup_venv.ps1
-# Then .venv\Scripts\python -m er --help.
+# Then .venv\Scripts\python -m nayose --help.
 $ErrorActionPreference = "Stop"
 Set-Location $PSScriptRoot
 
@@ -26,4 +26,4 @@ if ($LASTEXITCODE) { exit $LASTEXITCODE }
 if ($LASTEXITCODE) { exit $LASTEXITCODE }
 .venv\Scripts\python -m pip install -r requirements.txt
 if ($LASTEXITCODE) { exit $LASTEXITCODE }
-Write-Host "Done. Run .venv\Scripts\python -m er --help"
+Write-Host "Done. Run .venv\Scripts\python -m nayose --help"

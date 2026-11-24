@@ -7,10 +7,7 @@ __pycache__/
 .DS_Store
 Thumbs.db
 
-# pytest-split's times, when --store-durations is run without --durations-path tests/durations.json (CONTRIBUTING.md)
-.test_durations
-
-# a file written beside itself and renamed over it (er.io.replace_text, folder.stage), left by a write cut short
+# a file written beside itself and renamed over it, left by a write cut short
 *.tmp
 
 # Generated data: rebuilt by scripts/generate.py.
@@ -20,7 +17,7 @@ data/medallion/gold/
 data/labels/
 data/artifacts/
 
-# People's runs (python -m er build … --out workspaces/…): their records and results, never committed
+# People's runs (python -m nayose build … --out workspaces/…): their records and results, never committed
 workspaces/
 
 # one writer at a time (er.folder.run_lock)

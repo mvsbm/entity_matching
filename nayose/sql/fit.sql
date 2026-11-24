@@ -1,6 +1,6 @@
 -- Stage 2, fit: the counts the model is learned from, on a sample of a fixed size (so its cost doesn't grow with the
 -- file), and u counted on the sample and on the file to be scored, each a scope; then the model, learned from them by
--- fit_model (nayose/em.py, a Python function on both engines), as er/fit.py and er/match.py learn it. Every count an
+-- fit_model (nayose/em.py, a Python function on both engines): Fellegi–Sunter as Splink 5.0 fits it. Every count an
 -- exact integer. The comparisons are functions.sql's. O(n + P_prior + P_em·K) on the sample of n records;
 -- O(N + max_pairs·K) for u on each scope.
 --
