@@ -1,8 +1,9 @@
 -- The lookup job: the entities a record asked about would be compared with, as an update of it alone compares it
 -- (records.sql and score.sql ran on it, the run's model as it stands), best first, in temporary tables of the run's
--- names holding its blocks' records alone (nayose.lookup), so a lookup writes nothing. Each entity at @at_least points or more, or joined by a rule, with its best record, its
--- points, each comparison's level, the rule that would join it and the keys that listed it; and what was looked up,
--- key by key. O(G·b + C·K·L²) for the record's C candidates.
+-- names holding its blocks' records alone (nayose.lookup), so a lookup writes nothing. Each entity at @at_least
+-- points or more, or joined by a rule, with its best record, its points, each comparison's level, the rule that would
+-- join it and the keys that listed it; and what was looked up, key by key. O(G·b + C·K·L²) for the record's C
+-- candidates.
 --
 -- Reads: fresh (the record asked about), batch_scored and batch_rule_pairs (score.sql: every candidate scored,
 -- keep_from aside), gold (each stored record's entity), records, model (each level's label), generators, rules,
@@ -15,7 +16,9 @@ CREATE OR REPLACE TEMP TABLE candidates AS
 WITH paired AS (
   SELECT s.*, IF(s.id_l = a.id, s.id_r, s.id_l) AS other FROM batch_scored AS s JOIN fresh AS a ON a.id = s.id_l OR a.id = s.id_r
 ),
-said AS (SELECT comparison, gamma, label FROM model UNION ALL SELECT DISTINCT comparison, -1, 'missing' FROM model)
+shown AS (  -- each comparison's level as people read it, a missing side's 'missing': match.sql's shown, its bits aside
+  SELECT comparison, gamma, label FROM model UNION ALL SELECT DISTINCT comparison, -1, 'missing' FROM model
+)
 SELECT
   p.other AS id, g.cluster_id AS entity, p.match_weight AS points, p.rule, r.i AS rule_rank, p.sources,
   p.match_weight >= @likely_from AND (p.gamma_name >= 0 OR p.gamma_company >= 0) AS likely,
@@ -25,12 +28,12 @@ FROM paired AS p
 JOIN gold AS g ON g.id = p.other
 JOIN records AS x ON x.id = p.other
 LEFT JOIN rules AS r ON r.rule = p.rule
-JOIN said AS n ON n.comparison = 'name' AND n.gamma = p.gamma_name
-JOIN said AS c ON c.comparison = 'company' AND c.gamma = p.gamma_company
-JOIN said AS d ON d.comparison = 'address' AND d.gamma = p.gamma_address
-JOIN said AS h ON h.comparison = 'phone' AND h.gamma = p.gamma_phone
-JOIN said AS i ON i.comparison = 'cif' AND i.gamma = p.gamma_cif
-JOIN said AS b ON b.comparison = 'birth' AND b.gamma = p.gamma_birth;
+JOIN shown AS n ON n.comparison = 'name' AND n.gamma = p.gamma_name
+JOIN shown AS c ON c.comparison = 'company' AND c.gamma = p.gamma_company
+JOIN shown AS d ON d.comparison = 'address' AND d.gamma = p.gamma_address
+JOIN shown AS h ON h.comparison = 'phone' AND h.gamma = p.gamma_phone
+JOIN shown AS i ON i.comparison = 'cif' AND i.gamma = p.gamma_cif
+JOIN shown AS b ON b.comparison = 'birth' AND b.gamma = p.gamma_birth;
 
 -- each entity once: its best record (most points, then the lowest ID), the first rule in order that joins any of its
 -- records, and how many of its records are candidates; shown from @at_least points up, or when a rule joins it

@@ -23,9 +23,9 @@ def main(argv: list[str] | None = None, client: object = None, bigquery: object 
     p.add_argument("dataset", help="PROJECT.DATASET: the run's")
     p.add_argument("--mapping", type=Path, help="the deployment's mapping.sql (default: nayose/mapping.sql)")
     a = p.parse_args(argv)
-    engine = BigQuery(a.dataset, a.dataset, client=client, bigquery=bigquery)
+    engine = BigQuery(a.dataset, client=client, bigquery=bigquery)
     try:
-        for sql in [*functions(a.dataset), *procedures(a.dataset, a.dataset, a.mapping)]:
+        for sql in [*functions(a.dataset), *procedures(a.dataset, a.mapping)]:
             engine.run(sql)
         engine.put("name_weights", nayose.name_weights())
     finally:

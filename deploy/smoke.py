@@ -27,7 +27,7 @@ def main(argv: list[str] | None = None) -> int:
         return 1
     with tempfile.TemporaryDirectory() as tmp:
         subprocess.run([sys.executable, "-m", "nayose", "build", local, "--out", tmp], check=True, capture_output=True)
-        here, there = DuckDB(Path(tmp) / "run.duckdb"), BigQuery(dataset, dataset)
+        here, there = DuckDB(Path(tmp) / "run.duckdb"), BigQuery(dataset)
         differ = [name for name, sql in COMPARED.items() if not here.frame(sql).astype("string").fillna("").equals(there.frame(sql).astype("string").fillna(""))]
         here.close()
         there.close()

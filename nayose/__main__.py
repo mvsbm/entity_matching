@@ -10,12 +10,13 @@
 
 A run is a folder: run.duckdb (its tables), report.txt, matched/. A job that writes takes the folder's lock, works on
 a copy of run.duckdb and puts it in place whole when done, so a run is never half written and readers never wait
-(match on a copy of its own, a lookup on the run itself, read-only: on a copy on Windows). Each prints one JSON object on stdout; each stage, as it ends, one JSON line on
-stderr. Exit codes: 0; 2, a mistake people fix (the JSON says what is wrong, and the fix); 75, another job is writing
-the run: try again later. The method is nayose/sql/, its values nayose/config.toml, the input's columns mapping.sql.
+(match on a copy of its own, a lookup on the run itself, read-only: on a copy on Windows). Each prints one JSON object
+on stdout; each stage, as it ends, one JSON line on stderr. Exit codes: 0; 2, a mistake people fix (the JSON says what
+is wrong, and the fix); 75, another job is writing the run: try again later. The method is nayose/sql/, its values nayose/config.toml, the input's columns mapping.sql.
 """
 import argparse
 import contextlib
+import functools
 import glob
 import json
 import os
@@ -64,10 +65,10 @@ def writing(out: Path, make: bool = False, compute: dict | None = None):
         engine = DuckDB(new, compute)
         try:
             yield engine
-            engine.close()
+            engine.close()  # before the rename: Windows can't replace an open file
             os.replace(new, out / RUN)
         finally:
-            engine.close()
+            engine.close()  # a job that failed too; a second close does nothing
             new.unlink(missing_ok=True)
 
 
@@ -116,11 +117,7 @@ def build(a: argparse.Namespace) -> dict:
         if (out / RUN).is_file() and (said := kept(out)):  # people's decisions stay with the run that replaces it
             engine.con.execute(f"CREATE TABLE decisions AS SELECT * FROM read_parquet('{said}')")
             Path(said).unlink()
-        timed(steps, "records", nayose.records, engine, given)
-        timed(steps, "fit", nayose.fit, engine)
-        timed(steps, "score", nayose.score, engine)
-        timed(steps, "decide", nayose.decide, engine, [])
-        engine.run(nayose.METHOD, {"fingerprint": nayose.fingerprint()})
+        nayose.build(engine, given, timed=functools.partial(timed, steps))
         n = engine.value("SELECT COUNT(*) FROM records")
         report(engine, out, steps, "build")
     return dict(records=n, seconds=round(sum(steps.values()), 1), steps=steps)
@@ -141,20 +138,15 @@ def kept(out: Path) -> str | None:  # the run's decisions as a Parquet file besi
 def update(a: argparse.Namespace) -> dict:
     out, given, steps = a.out, files(a.given), {}
     with writing(out, compute=limits(a)) as engine:
-        nayose.unchanged(engine, f"build the run again with them (python -m nayose build FILE --out {out} --overwrite), or update with the code the build ran")
-        before = engine.value("SELECT COUNT(*) FROM records")
-        timed(steps, "records", nayose.records, engine, given)
-        added = engine.value("SELECT COUNT(*) FROM records") - before
+        added = nayose.update(engine, given, timed=functools.partial(timed, steps), out=out)
+        n = engine.value("SELECT COUNT(*) FROM records")
         if not added:
             aside = engine.rows("SELECT reason, COUNT(*) FROM set_aside GROUP BY reason ORDER BY reason")
             if any(reason != "already in the run" for reason, _ in aside):
                 raise InputError(f"{a.given}: no new record to add ({', '.join(f'{n:,} {r}' for r, n in aside)})", fix="give the records set aside IDs, one per record")
-            raise NothingNew(dict(records=before, added=0, seconds=round(sum(steps.values()), 1), steps=steps))
-        timed(steps, "fit", nayose.fit, engine, False)
-        timed(steps, "score", nayose.score, engine)
-        timed(steps, "decide", nayose.decide, engine, [])
+            raise NothingNew(dict(records=n, added=0, seconds=round(sum(steps.values()), 1), steps=steps))
         report(engine, out, steps, "update")
-    return dict(records=before + added, added=added, seconds=round(sum(steps.values()), 1), steps=steps)
+    return dict(records=n, added=added, seconds=round(sum(steps.values()), 1), steps=steps)
 
 
 class NothingNew(Exception):  # nothing new: the run stays as it was, and the job says so
@@ -190,9 +182,10 @@ def lookup(a: argparse.Namespace) -> dict:
     with reading(a.out, copy=False) as engine:
         if not a.file:
             return nayose.lookup(engine, record=a.record, values=values or None, at_least=a.at_least, most=a.count)
-        id_column, out = nayose.config()["input"]["id"], []
+        given = nayose.config()["input"]
+        id_column, columns, out = given["id"], set(given["columns"]), []
         for rec in pq.read_table(files(a.file)[0]).to_pylist():
-            asked = {k: str(v) for k, v in rec.items() if k in nayose.config()["input"]["columns"] and k != id_column and v is not None}
+            asked = {k: str(v) for k, v in rec.items() if k in columns and k != id_column and v is not None}
             found = nayose.lookup(engine, values=asked, at_least=a.at_least, most=a.count)["entities"] if asked else []
             out += [dict(asked=rec.get(id_column), entity=e["entity"], record=e["record"], points=e["points"], rule=e["rule"], keys=e["keys"]) for e in found] or \
                    [dict(asked=rec.get(id_column), entity=None, record=None, points=None, rule=None, keys=[])]

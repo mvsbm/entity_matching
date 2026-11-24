@@ -224,7 +224,8 @@ SELECT resampled(TO_JSON_STRING(STRUCT(
 )), @settings, (SELECT fitted FROM fit)) AS comparisons;
 
 -- when: @refit
-CREATE OR REPLACE TEMP TABLE u_again AS SELECT 'each' AS comparisons;  -- a build samples, as fit_model's learn needs
+CREATE OR REPLACE TEMP TABLE u_again AS  -- a build samples every comparison, as fit_model's learn needs
+SELECT 'name,company,address,phone,cif,birth' AS comparisons;
 
 CREATE TABLE IF NOT EXISTS u_sampled (scope STRING, comparison STRING, gamma INT64, pairs INT64);  -- where none was ever drawn
 

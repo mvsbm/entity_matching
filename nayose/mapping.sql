@@ -14,7 +14,7 @@ SELECT DISTINCT read_value(CONT_ID, TRUE, @nulls) AS nayose_id, * FROM input;
 CREATE OR REPLACE TEMP TABLE mapped AS
 WITH source AS (
   SELECT
-    read_value(CONT_ID, TRUE, @nulls) AS id,
+    read_value(CONT_ID, TRUE, @nulls)              AS id,
     read_value(FULL_NAME_KANA, FALSE, @nulls)      AS FULL_NAME_KANA,
     read_value(O_PERSON_NAME_KANA, FALSE, @nulls)  AS O_PERSON_NAME_KANA,
     read_value(LAST_NAME_KANA, FALSE, @nulls)      AS LAST_NAME_KANA,
@@ -22,16 +22,16 @@ WITH source AS (
     read_value(NYS_CNV_P_NAME_KANA, FALSE, @nulls) AS NYS_CNV_P_NAME_KANA,
     read_value(STD_ADDRESS, FALSE, @nulls)         AS STD_ADDRESS,
     read_value(ORIGINAL_ADDRESS, FALSE, @nulls)    AS ORIGINAL_ADDRESS,
-    read_value(SOURCE_ADDR_CD, TRUE, @nulls)      AS SOURCE_ADDR_CD,
-    read_value(POST_CD, TRUE, @nulls)             AS POST_CD,
-    read_value(POST_CD_KANA, TRUE, @nulls)        AS POST_CD_KANA,
+    read_value(SOURCE_ADDR_CD, TRUE, @nulls)       AS SOURCE_ADDR_CD,
+    read_value(POST_CD, TRUE, @nulls)              AS POST_CD,
+    read_value(POST_CD_KANA, TRUE, @nulls)         AS POST_CD_KANA,
     read_value(ADDRESS_ONE, FALSE, @nulls)         AS ADDRESS_ONE,
-    read_value(ADDR_CD, TRUE, @nulls)             AS ADDR_CD,
+    read_value(ADDR_CD, TRUE, @nulls)              AS ADDR_CD,
     read_value(ADDRESS_TWO, FALSE, @nulls)         AS ADDRESS_TWO,
-    read_value(PHONE_NUM_4, TRUE, @nulls)         AS PHONE_NUM_4,
-    read_value(CIF_ID, TRUE, @nulls)              AS CIF_ID,
-    read_value(BIRTH_DATE, TRUE, @nulls)          AS BIRTH_DATE,
-    read_value(PERSON_ORG_CODE, TRUE, @nulls)     AS PERSON_ORG_CODE
+    read_value(PHONE_NUM_4, TRUE, @nulls)          AS PHONE_NUM_4,
+    read_value(CIF_ID, TRUE, @nulls)               AS CIF_ID,
+    read_value(BIRTH_DATE, TRUE, @nulls)           AS BIRTH_DATE,
+    read_value(PERSON_ORG_CODE, TRUE, @nulls)      AS PERSON_ORG_CODE
   FROM input
 )
 SELECT
