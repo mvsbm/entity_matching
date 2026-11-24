@@ -109,6 +109,8 @@ class Tables(Recorded):  # a dataset's tables, each a version and a type, as Big
         session, given, rows = f"s{self.sessions}", {p[0]: p[2] for p in getattr(job_config, "query_parameters", [])}, []
         for s in sql.split(";\n"):
             name = [x.split(".")[-1] for x in re.findall(r"`p\.run`\.(\w+)", s)]
+            if not name and "INFORMATION_SCHEMA" not in s:  # on the default dataset alone (a lookup's looked_up): recorded, no more
+                continue
             if self.fail and self.fail != "procedure" and self.fail in s:
                 self.fail = None
                 raise RuntimeError(f"failed: {s[:60]}")
@@ -197,3 +199,17 @@ def test_every_function_python_calls_on_bigquery_is_one_the_deploy_makes():  # e
     made = {re.search(r"FUNCTION `p\.run`\.(\w+)\(", s)[1] for s in procedures("p.run", "p.fn") if "CREATE OR REPLACE FUNCTION" in s}
     called = {n for f in SQL.glob("*.sql") for n in re.findall(r"CREATE OR REPLACE TEMP FUNCTION (\w+)", f.read_text(encoding="utf-8"))}
     assert called <= made, called - made
+
+
+def test_a_lookup_on_bigquery_writes_its_answer_to_looked_up_and_prints_none_of_it(monkeypatch, capsys):
+    run = script("run")
+    monkeypatch.setattr(run.nayose, "lookup", lambda engine, record=None, values=None: {"record": {"id": record}, "entities": [{"shown": "ヤマダ"}]})
+    client = Tables({"records": 1})
+    assert run.main(["p.run", "lookup", "--record", "123"], client=client, bigquery=MODULE) == 0
+    said = capsys.readouterr()
+    assert "ヤマダ" not in said.out + said.err and '"entities": 1' in said.err
+    insert = next(s for s in client.sent if s.startswith("INSERT INTO looked_up"))
+    assert "@answer" in insert and "ヤマダ" not in insert  # the answer goes as a parameter, into the run's table
+    client.tables["job_running"], client.kind["job_running"] = "mark", "BASE TABLE"
+    assert run.main(["p.run", "lookup", "--record", "123"], client=client, bigquery=MODULE) == 75
+    assert run.main(["p.run", "lookup", "name"], client=Tables({}), bigquery=MODULE) == 2
