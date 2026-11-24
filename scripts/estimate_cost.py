@@ -1,4 +1,4 @@
-"""What a build costs BigQuery, measured on DuckDB, statement by statement: records (stage 1) and fit (stage 2).
+"""What a build costs BigQuery, measured on DuckDB, statement by statement: records (stage 1), fit (2) and score (3).
 
     python scripts/estimate_cost.py FILE [FILE ...]
 
@@ -88,6 +88,9 @@ def build(path: Path) -> dict[str, list[dict]]:  # stage → its statements' cos
     got.clear()
     nayose.fit(engine)
     stages["fit"] = list(got)
+    got.clear()
+    nayose.score(engine)
+    stages["score"] = list(got)
     engine.close()
     return stages
 

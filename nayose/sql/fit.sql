@@ -6,8 +6,8 @@
 --
 -- Reads: records. Values: config.toml [fit]: @fit_rows, @seed, @fit_u_max_pairs and @u_max_pairs (about how many pairs
 -- u samples on the sample and on the file), @settings (all of it, as JSON, for fit_model).
--- Writes: fit_sample, model (each level's m and u as fitted, file_m and file_u on the file), fit (λ, the sample's size,
--- the notes the report reads).
+-- Writes: fit_sample, model (each level's m and u as fitted, file_m and file_u on the file, and bits: log2(file_m /
+-- file_u), what a score adds), fit (λ, the sample's size, prior_bits: λ's at the file's size, the notes the report reads).
 
 
 -- 1. The columns the fit reads of a record (the comparisons', the near-certain rules', EM's keys): only these are read,
@@ -237,10 +237,11 @@ SELECT
   CAST(JSON_VALUE(lv, '$.position') AS INT64) AS position, JSON_VALUE(lv, '$.comparison') AS comparison,
   CAST(JSON_VALUE(lv, '$.gamma') AS INT64) AS gamma, JSON_VALUE(lv, '$.label') AS label, JSON_VALUE(lv, '$.kind') AS kind,
   CAST(JSON_VALUE(lv, '$.m') AS FLOAT64) AS m, CAST(JSON_VALUE(lv, '$.u') AS FLOAT64) AS u,
-  CAST(JSON_VALUE(lv, '$.file_m') AS FLOAT64) AS file_m, CAST(JSON_VALUE(lv, '$.file_u') AS FLOAT64) AS file_u
+  CAST(JSON_VALUE(lv, '$.file_m') AS FLOAT64) AS file_m, CAST(JSON_VALUE(lv, '$.file_u') AS FLOAT64) AS file_u,
+  CAST(JSON_VALUE(lv, '$.bits') AS FLOAT64) AS bits
 FROM learned, UNNEST(JSON_QUERY_ARRAY(out, '$.levels')) AS lv;
 
 CREATE OR REPLACE TABLE fit AS
 SELECT CAST(JSON_VALUE(out, '$.probability') AS FLOAT64) AS probability, CAST(JSON_VALUE(out, '$.fit_rows') AS INT64) AS fit_rows,
-       JSON_QUERY(out, '$.notes') AS notes
+       CAST(JSON_VALUE(out, '$.prior_bits') AS FLOAT64) AS prior_bits, JSON_QUERY(out, '$.notes') AS notes
 FROM learned;

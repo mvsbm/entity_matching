@@ -56,3 +56,9 @@ seed = 0                      # the sample's hash seed
 # the EM sessions, in order: each learns from the sample's pairs sharing its key (fit.sql em_patterns); `start`: the
 # exact levels the key guarantees, whose evidence λ among its pairs starts from
 sessions = [{ key = "phone", start = [["phone", "exact"]] }, { key = "address", start = [] }]
+
+[score]  # sql/score.sql
+keep_from = 0.0      # bits: scored pairs are kept from here up (and every rule pair): what a match run can offer
+search_floor = 0.0   # bits: a sampled pair at or above it keeps its oversized block (below the 4 bits people review)
+oversized = 64       # records: a block this big or bigger is checked on a sample of as many of its records first;
+                     # a rule leaves out a value of its keys held by this many records
