@@ -209,7 +209,7 @@ Scores every candidate, with the u step 3 measured on this file: for each field,
 Nothing merges by itself. Each record is an entity of its own until people's `match` decisions join it (`decisions/`, each pair's latest): connected components over those pairs. Each record gets its cluster, and what joined it: `resolved_stage` and `resolved_by` are `review` for a record a decision joined, and empty otherwise. Its kind and its customer's come with it ([7](#7--person-or-company)). A cluster is named after its smallest record ID. The rules' pairs and the model's wait in `scored/` for a match run ([6](#6--decisions)).
 
 - **Why:** a score is evidence, not a decision. A household shares address and phone, and those two alone reach the design threshold; so do a person and a company at one address. So people decide every merge, from the threshold they choose. Pairs must still become entities: if A matches B and B matches C, all three are one. Naming a cluster by its smallest ID makes an increment name it as a full run would.
-- **Code:** `steps.cluster.load_decisions` (people's decisions, from `decisions/`), `steps.cluster.cluster` → `cluster.merge` (connected components from single records over the `match` pairs), `steps.cluster._gold` (`steps.cluster.customer_kinds`)
+- **Code:** `steps.cluster.load_decisions` (people's decisions, from `decisions/`), `steps.cluster.cluster` → `cluster.merge` (connected components from single records over the `match` pairs), `steps.cluster.gold_sql` (`steps.cluster.customer_kinds`)
 - **Increment:** the stored entities are the base, each new record alone, and stored answers stand: `O(D + N)`.
 
 ### 8 · Write the run's folder · `O(N + C)`

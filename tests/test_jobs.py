@@ -280,7 +280,8 @@ def test_a_customer_id_held_by_many_records_is_a_placeholder_every_step_and_the_
 
 
 def test_the_diagnosis_names_what_limits_the_run_the_most_pairs_first_each_with_its_fix(tmp_path, population):
-    from er.match import _ranked, review_floor, search_floor
+    from er.fit import ranked
+    from er.match import review_floor, search_floor
     from er.report import SHOWN, diagnosis, diagnosis_lines, qa
     from er.jobs.build import build
     s, p, g = population
@@ -288,7 +289,7 @@ def test_the_diagnosis_names_what_limits_the_run_the_most_pairs_first_each_with_
     run = build(tmp_path / "in.parquet", tmp_path / "run", s, p)
     tables, lo, m = qa(run, [f for f in s.columns if f not in ("id", "entity")]), review_floor(run.pipeline), run.scoring["er"]
     said = lambda: diagnosis_lines(diagnosis(run, tables, lo))[1:-1]
-    top = {c["output_column_name"]: max(g for g, _ in _ranked(c)) for c in run.scoring["comparisons"]}
+    top = {c["output_column_name"]: max(g for g, _ in ranked(c)) for c in run.scoring["comparisons"]}
     assert said() and len(said()) <= SHOWN
     tables["fill"].loc[tables["fill"]["field"] == "birth_date", "filled"] = 0.1  # a compared field mostly empty, and a column like it
     run.unmapped = pd.DataFrame([dict(column="BORN", filled=0.9, distinct=0.5, looks_like="birth_date", share=0.8)])

@@ -12,7 +12,7 @@ from er.config import Pipeline, q
 from er.report import no_run
 from er.settings import Settings
 from er.source import decisions, file_facts, known, readable
-from er.steps.cluster import customer_kinds
+from er.steps.cluster import gold_sql
 from er.steps.job import Ran, start
 from er.steps.write import log_entry, run_config
 
@@ -56,15 +56,9 @@ def _decide(path: str | Path, given: str | Path, out: Path, settings: Settings, 
         WHERE decision = 'match'""")
     engine.run(f"CREATE OR REPLACE TABLE er_base AS SELECT {u}, {u} AS cluster_id FROM gold_old")
     merge(engine, "er_base", "er_review", "clusters", job.uid)
-    have = job.columns("gold_old")
-    kinds = "kind" in have  # each record's kind stands; its customer's follows the merge
-    flagged = "o.kind_flagged" if "kind_flagged" in have else "FALSE AS kind_flagged"  # a run written before flags: none
-    engine.run(f"""CREATE OR REPLACE TABLE gold AS WITH size AS (SELECT cluster_id, count(*) AS n FROM clusters GROUP BY 1)
-             {f", customer AS ({customer_kinds('clusters', 'gold_old', u)})" if kinds else ""}
-        SELECT c.{u}, c.cluster_id, CASE WHEN z.n > 1 THEN 'review' END AS resolved_stage, CASE WHEN z.n > 1 THEN 'review' END AS resolved_by
-               {f", o.kind, o.kind_p, o.kind_by, {flagged}, k.customer_kind" if kinds else ""}
-        FROM clusters c JOIN size z USING (cluster_id) JOIN gold_old o USING ({u}) {"JOIN customer k USING (cluster_id)" if kinds else ""}
-        ORDER BY c.{u}""")
+    have = job.columns("gold_old")  # each record's kind stands; its customer's follows the merge
+    engine.run(gold_sql(u, "gold_old" if "kind" in have else None,
+                        flagged="x.kind_flagged" if "kind_flagged" in have else "FALSE AS kind_flagged"))  # a run written before flags: none
     d, m = job.count("er_decisions"), job.count("er_decisions WHERE decision = 'match'")
     log.done("decide", "O(D + N)", f"O({d:,} decisions + {ran.n:,})", t, decisions=d, matches=m, entities=engine.value("SELECT count(DISTINCT cluster_id) FROM gold"))
     parts = out / folder.DECISIONS

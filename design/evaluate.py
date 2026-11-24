@@ -1,8 +1,7 @@
 """Evaluation against truth. Every metric is a group-by over records or pairs: O(N) or O(P), no pair enumeration.
 
-Two levels:
-  pairs (entity matching)    — the accepted pairs themselves, before transitive closure
-  clusters (entity resolution) — pairwise after closure, B-cubed, over-merged and split entities
+pair_metrics counts the pairs the clusters make, cluster_metrics adds B-cubed, over-merged and split entities, and
+false_pairs judges single pairs (scripts/benchmark.py reads all three).
 
 Where the labels name each record's household, a pair of two people of one household is neither true nor false: it
 is counted apart (`household`), and people decide it. A false pair joins two households.
@@ -11,7 +10,7 @@ import math
 
 import numpy as np
 import pandas as pd
-from scipy.stats import beta, binomtest
+from scipy.stats import beta
 
 
 def c2(counts: pd.Series) -> int:  # pairs inside groups of these sizes
@@ -68,103 +67,7 @@ def false_pairs(left: pd.Series, right: pd.Series, entity: pd.Series, household:
     return left.map(by).to_numpy() != right.map(by).to_numpy()
 
 
-def edge_metrics(edges: pd.DataFrame, entity: pd.Series, uid: str, household: pd.Series | None = None) -> dict[str, float]:
-    """The accepted pairs as decisions: how many are right, and what share of all true pairs they are."""
-    same = edges[f"{uid}_l"].map(entity).to_numpy() == edges[f"{uid}_r"].map(entity).to_numpy()
-    false = false_pairs(edges[f"{uid}_l"], edges[f"{uid}_r"], entity, household)
-    actual, n = c2(entity.value_counts()), int(same.sum() + false.sum())
-    return dict(pairs=len(edges), pairs_TP=int(same.sum()), pairs_FP=int(false.sum()), pairs_household=int((~same & ~false).sum()),
-                pairs_precision=float(same.sum() / n) if n else 1.0,
-                pairs_recall=float(same.sum() / actual) if actual else 1.0,
-                pairs_fp_rate_hi=fp_upper(int(false.sum()), n))
-
-
-def candidate_metrics(pairs: pd.DataFrame, entity: pd.Series, uid: str, targets: pd.DataFrame | None = None) -> dict[str, float]:
-    """Pair completeness (share of true pairs among candidates), on all true pairs and on `targets` (e.g. the pairs
-    an earlier stage missed), and reduction ratio (1 − candidates / all possible pairs)."""
-    l, r = f"{uid}_l", f"{uid}_r"
-    same = pairs[l].map(entity).to_numpy() == pairs[r].map(entity).to_numpy()
-    n = len(entity)
-    out = dict(candidates=len(pairs), true_in_candidates=int(same.sum()),
-               completeness=float(same.sum() / c2(entity.value_counts())) if c2(entity.value_counts()) else 1.0,
-               reduction_ratio=1 - len(pairs) / (n * (n - 1) / 2))
-    if targets is not None:
-        hit = targets.merge(pairs[[l, r]], on=[l, r], how="inner")
-        out["completeness_on_targets"] = len(hit) / len(targets) if len(targets) else 1.0
-    return out
-
-
-class Truth(frozenset):
-    """The true pairs (uid_l, uid_r), and `household`: the pairs of two people of one household, neither true nor false."""
-    household: frozenset = frozenset()
-
-
 def labelled(truth: pd.DataFrame, data) -> tuple[pd.Series, pd.Series | None]:
     """uid → entity, and uid → household where the labels name one (data.household_id)."""
     t = truth.set_index(data.unique_id)
     return t[data.entity_id], t[data.household_id] if data.household_id and data.household_id in t else None
-
-
-def truth_of(truth: pd.DataFrame, data) -> Truth:
-    entity, household = labelled(truth, data)
-    out = Truth(map(tuple, true_pairs(entity, data.unique_id).to_numpy()))
-    if household is not None:
-        out.household = frozenset(map(tuple, true_pairs(household, data.unique_id).to_numpy())) - out
-    return out
-
-
-def true_pairs(entity: pd.Series, uid: str) -> pd.DataFrame:
-    """Every true pair, uid_l < uid_r. O(Σ k²) over entity sizes k: small, entities hold a few records."""
-    frame = entity.rename("e").rename_axis(uid).reset_index()
-    pairs = frame.merge(frame, on="e", suffixes=("_l", "_r"))
-    return pairs[pairs[f"{uid}_l"] < pairs[f"{uid}_r"]][[f"{uid}_l", f"{uid}_r"]].reset_index(drop=True)
-
-
-def missed_pairs(cluster_id: pd.Series, entity: pd.Series, uid: str) -> pd.DataFrame:
-    """True pairs that the clusters do not join."""
-    t = true_pairs(entity, uid)
-    return t[t[f"{uid}_l"].map(cluster_id).to_numpy() != t[f"{uid}_r"].map(cluster_id).to_numpy()].reset_index(drop=True)
-
-
-def predicted_pairs(cluster_id: pd.Series) -> set[tuple[str, str]]:
-    """Every pair the clusters put together (uid_l < uid_r). O(Σ k²) over cluster sizes k; clusters are small."""
-    d = pd.DataFrame({"u": cluster_id.index.map(str), "c": cluster_id.to_numpy()})
-    d = d[d["c"].notna() & d["c"].duplicated(keep=False)]  # a record alone pairs with nothing
-    pairs = d.merge(d, on="c")
-    pairs = pairs[pairs["u_x"] < pairs["u_y"]]
-    return set(zip(pairs["u_x"], pairs["u_y"]))
-
-
-def paired_test(base: set[tuple[str, str]], variant: set[tuple[str, str]], truth: set[tuple[str, str]]) -> dict[str, float]:
-    """Compare two configurations on the same records, pair by pair. Gains / losses count true pairs one joins and
-    the other doesn't; p is an exact two-sided sign test on them. Far more sensitive than comparing two recalls whose
-    intervals overlap, because pairs both configurations agree on carry no information. A Truth's household pairs are
-    neither gains nor false pairs."""
-    gains, losses = len((variant - base) & truth), len((base - variant) & truth)
-    aside = getattr(truth, "household", frozenset())
-    return dict(TP_gains=gains, TP_losses=losses, p=binomtest(gains, gains + losses, 0.5).pvalue if gains + losses else 1.0,
-                FP_added=len((variant - base) - truth - aside), FP_removed=len((base - variant) - truth - aside))
-
-
-def adopt(kind: str, selection: dict[str, float], val: dict[str, float], p_max: float) -> bool:
-    """The decision rule, on paired_test results against the current choice. "better" needs a significant paired gain
-    on the selection set; "cheaper" and "safer" (adds pairs whose gain shows only at scale) no paired loss there. All
-    need no FP added there and no net loss on val: at least as many true pairs gained as lost, and no more false pairs
-    added than removed. "chosen" is the owner's call for a gain the selection sets are too small to show: recall may
-    move, but no FP is added on the selection set, and val adds no more false pairs than it removes."""
-    assert kind in ("better", "cheaper", "safer", "chosen"), kind
-    if kind == "chosen":
-        return selection["FP_added"] == 0 and val["FP_added"] <= val["FP_removed"]
-    gain = (selection["TP_gains"] > selection["TP_losses"] and selection["p"] < p_max if kind == "better"
-            else selection["TP_losses"] == 0)
-    return gain and selection["FP_added"] == 0 and val["TP_gains"] >= val["TP_losses"] and val["FP_added"] <= val["FP_removed"]
-
-
-def average_precision(scores: np.ndarray, same: np.ndarray) -> float:
-    """Area under the precision–recall curve of a ranking (higher score first), over candidate pairs."""
-    order = np.argsort(-scores, kind="stable")
-    hits = same[order].astype(float)
-    if not hits.sum():
-        return 0.0
-    precision_at = np.cumsum(hits) / np.arange(1, len(hits) + 1)
-    return float((precision_at * hits).sum() / hits.sum())

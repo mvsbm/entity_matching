@@ -3,6 +3,7 @@
 -m "not slow"."""
 import json
 import os
+import uuid
 from dataclasses import replace
 from pathlib import Path
 
@@ -10,8 +11,10 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from er.config import Comparator, Comparison, FSModel, Key, Level, load_pipeline
+from er.config import Comparator, Comparison, FSModel, Key, Level, RulesSpec, load_pipeline
+from er.match import rule_edges
 from er.settings import load_settings
+from er.standardize import prepare
 from er.engine.duckdb import connect
 
 UID = "uid"
@@ -50,6 +53,22 @@ def records() -> pd.DataFrame:
         rows.append(dict(uid=f"{e:03d}a", name=name, phone=phone, entity=f"E{e}"))
         rows.append(dict(uid=f"{e:03d}b", name=name[:-1] + "カ" if e % 3 == 0 else name, phone=phone, entity=f"E{e}"))
     return pd.DataFrame(rows).astype("string")
+
+
+def table(engine, df: pd.DataFrame) -> str:  # a frame as a table of the engine, the form the code reads records and pairs in
+    name = f"er_t_{uuid.uuid4().hex[:12]}"
+    engine.register(name, df)
+    return name
+
+
+def ids(engine, values) -> str:  # a table of these record IDs: a query
+    return table(engine, pd.DataFrame({UID: list(values)}, dtype="string"))
+
+
+def rule_pairs(engine, spec: RulesSpec, df: pd.DataFrame) -> pd.DataFrame:  # the rules' pairs of a hand-made frame, prepared as a run prepares its records
+    std = replace(load_settings().standardize, derived=())
+    rule_edges(spec, table(engine, prepare(std, df, spec.normalized())), engine, UID, into="er_t_rules")
+    return engine.frame("SELECT * FROM er_t_rules ORDER BY uid_l, uid_r").astype({"uid_l": "string", "uid_r": "string"})
 
 
 def model(extra_name_levels: tuple[Level, ...] = ()) -> FSModel:

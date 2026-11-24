@@ -52,21 +52,16 @@ def prior(engine: Engine, records: str, rules: list[str], uid: str, recall: floa
     return found / recall / every
 
 
-def numbered(comparisons: list[dict]) -> list[tuple[dict, list[tuple[int, dict]]]]:
-    """Each comparison with its levels and their gammas, as scoring numbers them: the missing level -1, then the first
-    level highest, down to the else level's 0."""
-    out = []
-    for c in comparisons:
-        top = sum(not lv.get("is_null_level") for lv in c["comparison_levels"])
-        ladder = []
-        for lv in c["comparison_levels"]:
-            if lv.get("is_null_level"):
-                ladder.append((-1, lv))
-            else:
-                top -= 1
-                ladder.append((top, lv))
-        out.append((c, ladder))
-    return out
+def ranked(c: dict) -> list[tuple[int, dict]]:
+    """A comparison's levels with their gammas, as scoring numbers them: the missing level -1, then the first level
+    highest, down to the else level's 0."""
+    top = sum(not lv.get("is_null_level") for lv in c["comparison_levels"])
+    return [(-1, lv) if lv.get("is_null_level") else (top := top - 1, lv) for lv in c["comparison_levels"]]
+
+
+def gamma_sql(c: dict) -> str:  # a comparison's gamma from its levels' conditions in order, on "<col>_l" and "<col>_r"
+    return "CASE " + " ".join(f"ELSE {g}" if lv["sql_condition"].strip().upper() == "ELSE" else f"WHEN {lv['sql_condition']} THEN {g}"
+                              for g, lv in ranked(c)) + " END"
 
 
 def columns(c: dict) -> set[str]:  # the record columns a comparison's levels read ("x" of "x_l" and "x_r")
@@ -125,8 +120,7 @@ def _patterns(engine: Engine, records: str, pairs_on: str, uid: str, comparisons
     u = q(uid)
     cols = sorted(set().union(*(columns(c) for c in comparisons)))
     sides = ", ".join(f"l.{q(x)} AS {q(x + '_l')}, r.{q(x)} AS {q(x + '_r')}" for x in cols)
-    gammas = [f"CASE {' '.join(f'ELSE {g}' if lv['sql_condition'].strip().upper() == 'ELSE' else f'WHEN {lv['sql_condition']} THEN {g}' for g, lv in ladder)} END"
-              for _, ladder in numbered(comparisons)]
+    gammas = [gamma_sql(c) for c in comparisons]
     return engine.rows(f"""SELECT {', '.join(gammas)}, count(*) FROM (SELECT {sides} FROM {records} l JOIN {records} r
         ON ({pairs_on}) AND l.{u} < r.{u}) GROUP BY ALL ORDER BY ALL""")
 
@@ -137,11 +131,11 @@ def session(engine: Engine, records: str, settings: dict, pairs_on: str, keyed: 
     settings: the model's comparisons, each level with its u. O(P·K) for the patterns of P pairs and K comparisons,
     then O(rounds · patterns · K)."""
     fixed = {c["output_column_name"] for c in settings["comparisons"] if columns(c) & keyed}
-    ladders = numbered([c for c in settings["comparisons"] if c["output_column_name"] not in fixed])
+    ladders = [(c, ranked(c)) for c in settings["comparisons"] if c["output_column_name"] not in fixed]
 
     # λ among the key's pairs: λ with the evidence of the exact levels the key guarantees, each column once
     odds, left = _odds(lam), set(keyed)
-    for c, ladder in numbered(settings["comparisons"]):
+    for c, ladder in ((c, ranked(c)) for c in settings["comparisons"]):
         for g, lv in ladder:
             col = exact_column(lv["sql_condition"])
             if col and col in left:
