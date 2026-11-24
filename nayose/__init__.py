@@ -94,6 +94,8 @@ def records(engine, files: list | None, lookup: bool = False, scratch: set | Non
     stage(engine, "functions", scratch=scratch)
     run_file(engine, mapping(), scratch=scratch, **values("mapping"))
     stage(engine, "records", scratch=scratch, **values("records", lookup=lookup))
+    if files is not None and engine.name == "duckdb":  # a temporary table, held whole: kept to what the report reads
+        engine.run("CREATE OR REPLACE TEMP TABLE input AS SELECT * FROM input LIMIT 10000")  # (unmapped's sample)
 
 
 def name_weights() -> pd.DataFrame:  # the name model (config/kind_names.npz): each character n-gram's weight
@@ -304,7 +306,7 @@ def decide(engine, files: list) -> None:
         if lack := sorted({"id_l", "id_r", "decision"} - {n.casefold() for n, _ in engine.columns("given")}):
             raise InputError(f"the decisions lack the columns {lack}", fix="give back a match table with decision filled in, or a file with id_l, id_r and decision")
     else:
-        engine.run("CREATE OR REPLACE TABLE given (id_l STRING, id_r STRING, decision STRING, why STRING)")
+        engine.run("CREATE OR REPLACE TEMP TABLE given (id_l STRING, id_r STRING, decision STRING, why STRING)")  # as a file's
     stage(engine, "functions")
     stage(engine, "decide", **values("decide"))
 

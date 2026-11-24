@@ -80,7 +80,7 @@ WITH p AS (
 )
 SELECT * FROM (
   SELECT *, SUM(n) OVER (PARTITION BY up) AS total, COUNT(*) OVER (PARTITION BY up) AS kinds,
-         ROW_NUMBER() OVER (PARTITION BY up ORDER BY n DESC, w DESC) AS k
+         ROW_NUMBER() OVER (PARTITION BY up ORDER BY n DESC, w DESC, gamma_name, gamma_company, gamma_address, gamma_phone, gamma_cif, gamma_birth) AS k
   FROM p
 ) WHERE k <= 12;
 
