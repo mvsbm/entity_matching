@@ -70,7 +70,7 @@ def test_a_run_lists_by_every_key_the_method_names_and_keeps_none_of_its_own(ran
     assert not (d / "ws" / "state" / "keys.json").exists() and not {"keys", "probe", "gap"} & {x["step"] for x in run.steps}
 
 
-def test_a_pipeline_with_keys_to_learn_or_term_frequencies_is_refused(ran, population):
+def test_a_pipeline_with_a_table_it_does_not_read_is_refused(ran, population):
     from er.config import pipeline_from
     import tomllib
     s, p, g, d, run = ran
@@ -78,8 +78,7 @@ def test_a_pipeline_with_keys_to_learn_or_term_frequencies_is_refused(ran, popul
     with pytest.raises(InputError, match=r"\[keys\] sets nothing") as e:
         pipeline_from({**cfg, "keys": {"records": 50_000}}, s.standardize, s.chains)
     assert e.value.fix == "delete [keys]"
-    name = {**cfg["model"]["comparisons"][0], "tf": {"field": "person_name"}}
-    with pytest.raises(InputError, match="tf sets nothing") as e:  # term frequencies: a level weighs the same whichever value agrees
-        pipeline_from({**cfg, "model": {**cfg["model"], "comparisons": [name, *cfg["model"]["comparisons"][1:]]}}, s.standardize, s.chains)
-    assert e.value.fix == "delete tf from those comparisons and their levels"
+    with pytest.raises(InputError, match=r"\[budget\]: max_block_size sets nothing") as e:
+        pipeline_from({**cfg, "budget": {**cfg["budget"], "max_block_size": 5000}}, s.standardize, s.chains)
+    assert e.value.fix == "delete max_block_size from [budget]"
 

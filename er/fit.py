@@ -4,7 +4,7 @@ The model needs three kinds of numbers:
 - λ: how likely two random records are the same customer. `prior` counts the pairs that near-certain rules find.
 - u: how often two *different* customers land in each level. Given to this module (er.match counts and samples it).
 - m: how often the *same* customer lands in each level. Learned here, by EM sessions on the pairs that share a key
-  (`session`), or counted on labelled pairs (`m_from_labels`).
+  (`session`).
 
 An EM session takes the pairs that share one key (a phone, say). Each round it guesses, for every pattern of levels
 the pairs show, how likely such a pair is a match (the E-step), then counts m from those guesses (the M-step). It
@@ -190,22 +190,6 @@ def session(engine: Engine, records: str, settings: dict, pairs_on: str, keyed: 
         if max((x for x in moved if not math.isnan(x)), default=0.0) < CONVERGED:
             break
     return Session(fixed=fixed, start=start, m={(key[0], label[key]): v for key, v in m.items() if v is not None}, rounds=rounds)
-
-
-def m_from_labels(engine: Engine, records: str, settings: dict, label: str, uid: str) -> dict[Level, float]:
-    """m counted on the pairs of records with the same label (never a missing one): each level's share of a
-    comparison's filled pairs. A level no pair reached is left out. O(P·K)."""
-    out = {}
-    patterns = _patterns(engine, records, f"l.{q(label)} = r.{q(label)}", uid, settings["comparisons"])
-    for i, (c, ladder) in enumerate(numbered(settings["comparisons"])):
-        count: dict[int, int] = {}
-        for *gammas, n in patterns:
-            count[gammas[i]] = count.get(gammas[i], 0) + n
-        filled = sum(n for g, n in count.items() if g >= 0)
-        for g, lv in ladder:
-            if g >= 0 and count.get(g):
-                out[c["output_column_name"], lv["label_for_charts"]] = count[g] / filled
-    return out
 
 
 def fitted(settings: dict, lam: float, m: dict[Level, float]) -> dict:

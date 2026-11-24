@@ -6,7 +6,7 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 
-from er.config import InputError, Pipeline
+from er.config import Pipeline
 from er.engine.duckdb import connect
 from er.engine.engine import Engine
 from er.settings import Settings
@@ -77,12 +77,7 @@ class Job:
 
 
 def start(settings: Settings, pipeline: Pipeline, echo: Callable[[dict], None] | None = None) -> Job:
-    """A job on an engine of its own (config/settings.toml [compute]): the method checked first, so a wrong value stops it
-    before any work."""
-    if {pipeline.rules.resolver.method, pipeline.fs.resolver.method} != {"connected_components"}:
-        raise InputError("the run clusters by connected components only; the pipeline asks for "
-                         f"{pipeline.rules.resolver.method} (rules) and {pipeline.fs.resolver.method} (model)",
-                         fix='set resolver = { method = "connected_components" } in both stages of the pipeline')
+    """A job on an engine of its own (config/settings.toml [compute])."""
     return Job(connect(settings.compute), settings, pipeline, Log(echo))
 
 

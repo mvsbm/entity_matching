@@ -3,12 +3,12 @@ moves still owed saved, then made), with the reports built first. O(N + C). Read
 rule_clusters, set_aside, scores, cands, rule_scores, and records (a full run) or new_records (an increment)."""
 import json
 import time
-from dataclasses import fields, replace
+from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
 
 from er import folder
-from er.config import FSModel, Pipeline, q
+from er.config import Pipeline, q
 from er.io import code_version, config_hash
 from er.settings import Settings
 from er.steps.job import Ran
@@ -21,9 +21,8 @@ FINGERPRINTED_ROWS = 30_000  # the fit's sample, as every run's fingerprint hold
 
 def run_config(p: Pipeline, s: Settings) -> str:
     """What an increment needs the full run's to be: the pipeline and the settings that shape the records. The fit's
-    sample and EM (the sessions' rules too) are left out: an increment and a lookup score with the stored model."""
-    fit = {f.name: f.default for f in fields(FSModel) if f.name in ("em_from_keys", "em_median")}
-    p = replace(p, fit_rows=FINGERPRINTED_ROWS, fs=replace(p.fs, model=replace(p.fs.model, em_rules=(), **fit)))
+    sample and EM's sessions are left out: an increment and a lookup score with the stored model."""
+    p = replace(p, fit_rows=FINGERPRINTED_ROWS, fs=replace(p.fs, model=replace(p.fs.model, em_rules=())))
     keep = p.threshold.keep_from  # out of the dataclass's repr, so a workspace that never set it keeps its hash
     return config_hash((p, s.columns, s.standardize, s.flag_company, s.input, PLACEHOLDERS) + ((("keep", keep),) if keep else ()))
 

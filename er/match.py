@@ -14,7 +14,6 @@ from collections.abc import Iterable, Mapping
 from dataclasses import replace
 from itertools import combinations, product
 
-import numpy as np
 import pandas as pd
 
 from er.engine.engine import Engine
@@ -343,11 +342,6 @@ def rule_pairs(df: pd.DataFrame, rule: tuple[Key, ...]) -> int:  # the pairs a b
     return int((sizes * (sizes - 1) // 2).sum())
 
 
-def fit_model(fs: FSSpec) -> FSModel:  # the model as its fit learns it: with em_from_keys, one EM session per equality key of the method
-    keys = tuple(dict.fromkeys(b.keys for b in fs.blockers if isinstance(b, KeyBlocker)))
-    return replace(fs.model, em_rules=keys) if fs.model.em_from_keys and keys else fs.model
-
-
 def fit_sample_sql(models: Iterable[FSModel], uid: str, columns: set[str]) -> str:
     """The records a fit learns from, in the order whose first n are its sample of n: whole postal areas by hash, so
     households stay together and each sample is a smaller one and more; only the columns these models read."""
@@ -402,70 +396,42 @@ def judged(model: FSModel, t: pd.DataFrame, learned: dict[tuple[Key, ...], dict[
     return rows, anchor
 
 
-def train_fs(model: FSModel, df: pd.DataFrame, engine: Engine, uid: str, labels: pd.Series | None = None,
-             u: dict[str, dict[str, float]] | None = None) -> dict:
-    """Train on df; `labels` (entity per uid) is required for m_method="labels". Returns the model JSON plus "er":
-    what scoring needs (the fitting-set size) and which levels had no estimate.
+def train_fs(model: FSModel, df: pd.DataFrame, engine: Engine, uid: str) -> dict:
+    """Train on df: λ from the prior rules, u counted and sampled, m by EM. Returns the model JSON plus "er": what
+    scoring needs (the fitting-set size) and which levels had no estimate.
     A level without an estimate never falls back to a default: no sampled pair → u at its upper bound (the
     weight is a lower bound on the evidence); never seen in training → m = u (0 bits). A prior or EM rule that finds no
-    pair in df (its fields nearly empty there) is skipped, and listed in "er"; none left of either stops the fit.
-    `u` (comparison → level → u, the else level's too): those u, none sampled."""
+    pair in df (its fields nearly empty there) is skipped, and listed in "er"; none left of either stops the fit."""
     t = df.copy()
-    if model.fit_u_max_pairs:  # the fit's own sample size: its own entries in the cache, and its own bounds
+    if model.fit_u_max_pairs:  # the fit's own sample size, and its own bounds
         model = replace(model, u_max_pairs=model.fit_u_max_pairs)
-    if model.m_method == "labels":
-        assert labels is not None, "m_method='labels' needs truth labels"
-        t["__label__"] = t[uid].map(labels)
     labels_of = {c.name: [*(lv.label for lv in c.levels), ELSE] for c in model.comparisons}
-    if u is not None:  # given (a file's, measured already): EM learns m and λ against it, nothing sampled
-        filled_u, u = [], {c.name: {lv: u[c.name][lv] for lv in labels_of[c.name]} for c in model.comparisons}
-    else:
-        exact = exact_u(model, t, engine) if model.u_exact_by_counts else {}  # the leading exact levels, exactly
-        skip = counted(model, exact)
-        u = {**{c: {} for c in skip}, **sample_u(model, [c for c in model.comparisons if c.name not in skip], t, engine, uid)}
-        u = {c: {**levels, **exact.get(c, {})} for c, levels in u.items()}
-        filled_u = [[c.name, lv] for c in model.comparisons for lv in labels_of[c.name] if lv not in u[c.name]]
-        u = {c.name: {lv: u[c.name].get(lv) or u_bound(model, c, t, engine) for lv in labels_of[c.name]} for c in model.comparisons}
+    exact = exact_u(model, t, engine) if model.u_exact_by_counts else {}  # the leading exact levels, exactly
+    skip = counted(model, exact)
+    u = {**{c: {} for c in skip}, **sample_u(model, [c for c in model.comparisons if c.name not in skip], t, engine, uid)}
+    u = {c: {**levels, **exact.get(c, {})} for c, levels in u.items()}
+    filled_u = [[c.name, lv] for c in model.comparisons for lv in labels_of[c.name] if lv not in u[c.name]]
+    u = {c.name: {lv: u[c.name].get(lv) or u_bound(model, c, t, engine) for lv in labels_of[c.name]} for c in model.comparisons}
     fields = lambda rule: " + ".join(k.column for k in rule)
     prior = [r for r in model.prior_rules if rule_pairs(t, r)]
-    em_pairs = {r: n for r in model.em_rules if (n := rule_pairs(t, r))} if model.m_method == "em" else {}  # each EM session's pairs in the sample
+    em_pairs = {r: n for r in model.em_rules if (n := rule_pairs(t, r))}  # each EM session's pairs in the sample
     em = list(em_pairs)
     if not prior:
         raise InputError(f"no two records of the {len(t):,} the fit samples agree on any near-certain rule "
                          f"({'; '.join(map(fields, model.prior_rules))}), so the chance that two records match can't be estimated",
                          fix="map the fields those rules read, or give a model fitted before with --model")
-    if model.m_method == "em" and not em:
+    if not em:
         raise InputError(f"no two records of the {len(t):,} the fit samples share {' or '.join(map(fields, model.em_rules))}, "
                          "the pairs it learns from", fix="map those fields to filled columns, or give a model fitted before with --model")
     settings = model_dict(model, uid, u)  # unestimated levels: handled here
-    median: dict[tuple[str, str], list[float]] = {}
-    with narrowed(t, engine, read_by(settings, *(keys_sql(r) for r in (*prior, *em))) | {uid, "__label__"}) as records:
+    with narrowed(t, engine, read_by(settings, *(keys_sql(r) for r in (*prior, *em))) | {uid}) as records:
         lam = fit.prior(engine, records, [keys_sql(r) for r in prior], uid, model.prior_recall)
-
-        def session(rule: tuple[Key, ...], trained: fit.Trained) -> dict[tuple[str, str], float]:  # what one EM session learned
-            return fit.session(engine, records, settings, keys_sql(rule), keyed(model, rule), uid, lam, trained).m
-
-        def apart(rules: Iterable[tuple[Key, ...]]) -> dict[tuple[Key, ...], dict[tuple[str, str], float]]:  # each from the first guess: kept apart
-            return {rule: session(rule, fit.Trained()) for rule in rules}
         trained = fit.Trained()  # the method's sessions, one after another: each starts from what those before it learned
         learned = {}  # each judged by the given name (er "em_given"): what DIAGNOSIS says of them
-        for rule in em if not model.em_median else ():
-            learned[rule] = session(rule, trained)
+        for rule in em:
+            learned[rule] = fit.session(engine, records, settings, keys_sql(rule), keyed(model, rule), uid, lam, trained).m
             trained.add(learned[rule])
-        learned |= apart(em) if model.em_median else {}
-        for ms in learned.values() if model.em_median else ():
-            for key, v in ms.items():
-                median.setdefault(key, []).append(v)
-        if model.m_method == "labels":
-            trained.add(fit.m_from_labels(engine, records, settings, "__label__", uid))
     model_json = fit.fitted(settings, lam, trained.medians())
-    for c in model_json["comparisons"] if median else ():  # each level's m the median of the sessions that learned it, a comparison's summing to 1
-        levels = [lv for lv in c["comparison_levels"] if not lv.get("is_null_level") and (c["output_column_name"], lv["label_for_charts"]) in median]
-        got = {id(lv): float(np.median(median[c["output_column_name"], lv["label_for_charts"]])) for lv in levels}
-        for lv in levels:
-            lv["m_probability"] = got[id(lv)] / sum(got.values())
-        for lv in (lv for lv in c["comparison_levels"] if not lv.get("is_null_level") and lv not in levels):
-            lv.pop("m_probability", None)  # no session learned it: filled below, m = u
     filled_m = []
     for c in model_json["comparisons"]:
         for lv in c["comparison_levels"]:
@@ -473,7 +439,7 @@ def train_fs(model: FSModel, df: pd.DataFrame, engine: Engine, uid: str, labels:
                 lv["m_probability"] = lv["u_probability"]
                 filled_m.append([c["output_column_name"], lv["label_for_charts"]])
     adjusted = sensible_m(model, model_json, {tuple(x) for x in filled_m})
-    skipped = [fields(r) for r in (*model.prior_rules, *(model.em_rules if model.m_method == "em" else ())) if r not in (*prior, *em)]
+    skipped = [fields(r) for r in (*model.prior_rules, *model.em_rules) if r not in (*prior, *em)]
     return {**model_json, "er": dict(fit_rows=len(t), filled=dict(u=filled_u, m=filled_m), skipped=skipped, adjusted=adjusted,
                                    em_pairs={fields(r): n for r, n in em_pairs.items()},
                                    **({"em_given": [{k: x[k] for k in ("session", "pairs", "given_share")} for x in judged(model, t, learned, em_pairs)[0]]} if learned else {}))}
@@ -510,14 +476,6 @@ def sensible_m(model: FSModel, model_json: dict, filled: set[tuple[str, str]]) -
                     out.append([name, lv["label_for_charts"], "less than no agreement: the else level's weight", round(math.log2(lv["m_probability"] / lv["u_probability"]), 2)])
                     lv["m_probability"] = lv["u_probability"] * floor
     return out
-
-
-def saved(model_json: dict, where: str, fix: str) -> dict:
-    """A model a run saved, refused if its levels were adjusted by term frequency: a level weighs the same whichever
-    value agrees, and a run scores by the levels alone."""
-    if model_json.get("er", {}).get("tf"):
-        raise InputError(f"{where}: the model adjusts levels by term frequency, which no run scores", fix=fix)
-    return model_json
 
 
 def scaled_prior(model_json: dict, n_records: int) -> float:

@@ -20,7 +20,7 @@ RECORDED = json.loads((FIXTURES / "splink-5.0.0.json").read_text(encoding="utf-8
 
 def ours(engine, case: str) -> dict:
     """er.fit on a recorded case's inputs: its records, the model's settings (u given), λ's rules and recall, and each
-    EM session's rule with the columns it holds fixed, in a row; with labels, m from them."""
+    EM session's rule with the columns it holds fixed, in a row."""
     x = RECORDED[case]["inputs"]
     name = f"er_t_fit_{case}"
     engine.register(name, pd.read_parquet(FIXTURES / "splink-5.0.0" / f"{case}.parquet"))
@@ -30,8 +30,6 @@ def ours(engine, case: str) -> dict:
             s = fit.session(engine, name, x["settings"], rule["sql"], set(rule["keyed"]), x["uid"], lam, trained)
             trained.add(s.m)
             sessions.append(dict(fixed=s.fixed, start=s.start, rounds=s.rounds, m=s.m))
-        if x["labels"]:
-            trained.add(fit.m_from_labels(engine, name, x["settings"], x["labels"], x["uid"]))
         return dict(lam=lam, sessions=sessions, model=trained.medians())
     finally:
         engine.unregister(name)
@@ -57,8 +55,6 @@ def test_the_fit_is_splink_s(engine, name):
             assert len(learned) == 2 and all(m and s["rounds"] > 1 for m, s in zip(learned, got["sessions"]))
         case "never_reached":  # a level after JW ≥ 0.9 at 0.95: no pair reaches it, and it is left unlearned
             assert ("name", "never") not in learned[0]
-        case "labels":
-            assert got["model"] and not learned
 
 
 def test_a_fit_repeats_to_the_last_bit(engine, records):

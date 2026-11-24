@@ -77,12 +77,4 @@ function hamming(a, b) {  // rapidfuzz pads the shorter at its end: each missing
   return dist;
 }
 
-function jaccard(a, b) {  // character sets
-  const x = new Set(chars(a)), y = new Set(chars(b));
-  if (!x.size && !y.size) return 0.0;
-  let both = 0;
-  for (const c of x) if (y.has(c)) both++;
-  return both / (x.size + y.size - both);
-}
-
-if (typeof module !== "undefined") module.exports = {jaro, jaro_winkler, levenshtein, damerau_levenshtein, hamming, jaccard};
+if (typeof module !== "undefined") module.exports = {jaro, jaro_winkler, levenshtein, damerau_levenshtein, hamming};

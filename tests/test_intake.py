@@ -194,7 +194,7 @@ def test_a_file_that_isn_t_parquet_is_refused_saying_how_to_write_it_and_parquet
     pd.DataFrame({"id": ["1"]}).to_parquet(tmp_path / "export.dat")
     with readable(tmp_path / "export.dat", intake.InputSpec()) as part:
         assert intake.report(Path(part))["rows"] == 1 and len(pd.read_parquet(find(part)[0])) == 1  # Parquet saved without its ending: read as it is
-    with pytest.raises(InputError, match=r"\[input\] encodings, margin_text: set nothing") as e:
+    with pytest.raises(InputError, match=r"\[input\]: encodings, margin_text set nothing") as e:
         settings_file = tmp_path / "settings.toml"
         root = settings().root
         settings_file.write_text((root / "config" / "settings.toml").read_text(encoding="utf-8").replace(

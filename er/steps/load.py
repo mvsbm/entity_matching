@@ -68,11 +68,11 @@ def load(job: Job, path: str | Path, *, model: dict | None = None, into: str = "
     records, read as the batch's are, and not read again. The placeholders of a full run are found here; an
     increment's, once its batch joins the run's records (placeholders). CHUNK_ROWS records are cleaned at a time."""
     t, engine, s, log, chunk_rows = time.perf_counter(), job.engine, job.settings, job.log, CHUNK_ROWS
-    src = open_source(path, engine, {c for f, alts in s.columns.items() if f != "entity" for alt in alts for c in alt},
-                      reserved={*s.columns, *KIND_COLUMNS, "cluster_id", "resolved_stage", "resolved_by", "er_file", "er_path", "er_first"})
+    src = open_source(path, engine, {c for alts in s.columns.values() for alt in alts for c in alt},
+                      reserved={*s.columns, *KIND_COLUMNS, "entity", "cluster_id", "resolved_stage", "resolved_by", "er_file", "er_path", "er_first"})
     log.notes[:] = list(src.notes)
     present = present_fields(s, src.columns)
-    hints = suggest(src, engine, [f for f in s.columns if f not in present and f != "entity"], s.detect)
+    hints = suggest(src, engine, [f for f in s.columns if f not in present], s.detect)
     mapped = {c for alts in s.columns.values() for alt in alts for c in alt}
     unmapped = unmapped_columns(engine, "er_sample", [c for c in src.columns if c not in mapped], list(s.columns), s.detect).assign(
         column=lambda d: d["column"].map(lambda c: src.given.get(c, c)))  # on suggest's sample: by the names the file gives them

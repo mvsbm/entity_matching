@@ -3,7 +3,7 @@ Everything is in field names (config/settings.toml [columns]); nothing here name
 import math
 import re
 import tomllib
-from collections.abc import Callable, Iterator, Mapping
+from collections.abc import Iterable, Iterator, Mapping
 from dataclasses import dataclass, field, fields, replace
 from pathlib import Path
 from typing import Literal
@@ -11,7 +11,7 @@ from typing import Literal
 from er.strings import FUNCTIONS, Function
 
 COPIES = ("one_byte", "one_byte_hash")  # the steps of a comparison's own copy (Comparator.copied), never a key's nor a feature's: er.standardize makes them
-Normalizer = Literal["nfkc", "strip_spaces", "kana_fold", "strip_legal_form", "address", "initial", "first3", "reverse", "casefold", "one_byte", "one_byte_hash",
+Normalizer = Literal["nfkc", "strip_spaces", "kana_fold", "strip_legal_form", "address", "initial", "first3", "one_byte", "one_byte_hash",
                      "katakana", "strip_separators", "long_vowel", "last3"]
 
 
@@ -221,36 +221,16 @@ class Stage:
 
 @dataclass(frozen=True, kw_only=True)
 class Budget:
-    max_pairs_per_record: float               # design time: a rule / generator's pairs, now and projected to
-                                              # target_rows, above this × records refuse the key; per record, so it means the same
-                                              # at any size. A run on a file never stops on it: it samples oversized blocks instead
-    max_block_size: int                       # design time: the most records one key value may hold in the labelled files
-    target_rows: int                          # the size the cost checks project to
-    benchmark_pairs: int                      # pairs timed per (column, function) to estimate seconds
-    sample_pairs: int = 2_000                 # a run on a file: a block with more pairs than this is checked on a sample of them
-                                              # first (er.candidates); no hit in 2,000 bounds its yield under 0.15%
+    sample_pairs: int = 2_000                 # a block with more pairs than this is checked on a sample of them first
+                                              # (er.candidates); no hit in 2,000 bounds its yield under 0.15%
 
     def min_oversized(self) -> int:  # the fewest records a block needs to have more pairs than the check sample
         return next(b for b in range(2, 10**9) if b * (b - 1) // 2 > self.sample_pairs)
 
-    def max_pairs(self, n: int) -> int:
-        return int(self.max_pairs_per_record * n)
-
-
-# ---------- resolution ----------
-
-@dataclass(frozen=True, kw_only=True)
-class Resolver:
-    method: Literal["connected_components"]  # er.cluster.merge: the run's clustering, the only one
-    cannot_link: tuple[str, ...] = ()         # read by no resolver; kept so the config hash of a stored run stays the same
-
 
 @dataclass(frozen=True, kw_only=True)
 class RulesSpec:
-    standardize: Standardization
     stages: tuple[Stage, ...]
-    resolver: Resolver
-    budget: Budget
 
     def __post_init__(self) -> None:
         names = [r.name for s in self.stages for r in s.rules]
@@ -318,20 +298,16 @@ class Comparison:
 
 @dataclass(frozen=True, kw_only=True)
 class FSModel:
-    name: str
     comparisons: tuple[Comparison, ...]
     prior_rules: tuple[tuple[Key, ...], ...]  # near-certain rules for the prior λ
     prior_recall: float                       # their assumed recall
     u_max_pairs: float
-    m_method: Literal["em", "labels"]
     em_rules: tuple[tuple[Key, ...], ...]     # one EM session per rule
     seed: int
     u_from_scored: bool = False               # u measured on each scored file, m and λ from the fit (er.match.scored_u; an increment: refreshed_u)
     u_exact_by_counts: bool = False           # u of the leading exact levels from value counts, not the sample (er.match.exact_u)
     u_near_by_keys: bool = False              # and a one-edit level right after them, counted through one-deletion keys
     fit_u_max_pairs: float | None = None      # the fit's own u sample, if it differs (with u_from_scored its u feed only EM)
-    em_median: bool = False                   # one EM session per rule, each level's m the median of the sessions that learned it (not Splink's mean)
-    em_from_keys: bool = False                # the EM sessions blocked on the method's equality keys, not on em_rules (er.run.fit)
 
     def normalized(self) -> list[tuple[str, tuple[Normalizer, ...]]]:
         out = [(col, comp.normalize) for c in self.comparisons for lv in c.levels for col, comp in lv.any_of if comp.normalize]
@@ -343,14 +319,11 @@ class FSModel:
 @dataclass(frozen=True, kw_only=True)
 class FSSpec:
     standardize: Standardization
-    previous_stage: str                       # whose clusters / pairs this stage builds on
-    stage: str
     blockers: tuple[Blocker, ...]
     model: FSModel
-    min_match_weight: float                   # accept a pair at or above this (bits); probability = 1 / (1 + 2^−w)
-    resolver: Resolver
+    min_match_weight: float                   # the method's line (bits): the review floor and the benchmark read it; probability = 1 / (1 + 2^−w)
     budget: Budget
-    bridge: bool = False                      # may join two clusters the previous stage formed
+    bridge: bool = False                      # may join two clusters the rules formed
     needs: tuple[str, ...] = ()               # comparisons of which one must be compared for a merge without people
 
     def normalized(self) -> list[tuple[str, tuple[Normalizer, ...]]]:
@@ -369,23 +342,18 @@ class FSSpec:
 
 @dataclass(frozen=True, kw_only=True)
 class Data:
-    bronze_dir: Path                          # <dataset>.parquet: records as they arrive, the input
-    labels_dir: Path                          # <dataset>.parquet: truth, read only to evaluate (scripts/benchmark.py)
-    datasets: tuple[str, ...]                 # the generated population's splits: train, val, test (scripts/generate.py)
     unique_id: str
-    entity_id: str                            # truth column
-    synthetic: bool                           # True for generated data; real (personal) data must not be exported
+    bronze_dir: Path | None = None            # <dataset>.parquet: generated records (scripts/generate.py); a job reads the file it is given
+    labels_dir: Path | None = None            # <dataset>.parquet: truth, read only to evaluate (scripts/benchmark.py)
+    datasets: tuple[str, ...] = ()            # the generated population's splits: train, val, test (scripts/generate.py)
+    entity_id: str | None = None              # truth column, in labels/
     household_id: str | None = None           # truth column naming each record's household: a pair of one household's people is neither true nor false
 
 
 @dataclass(frozen=True, kw_only=True)
 class ThresholdRule:
-    """Pick min_match_weight on out-of-fold (cross-validated) train scores: the lowest grid weight with at most
-    `max_fp` false-positive pairs and an FP-rate upper bound ≤ `max_fp_rate_hi`, then `margin_steps` grid steps
-    stricter, as a safety margin against noise."""
+    """The review floor: the grid point `margin_steps` below min_match_weight (er.match.review_floor)."""
     grid: tuple[float, ...]
-    max_fp: int
-    max_fp_rate_hi: float
     margin_steps: int
     search_floor: float = 0.0  # bits: the oversized-block gate aims here (er.match.search_floor)
     keep_from: float = field(default=0.0, repr=False)  # bits: a pair the best case says can't reach it is never stored; in the run's hash only when set (run_config)
@@ -423,17 +391,13 @@ class Fields:
     mandatory: tuple[str, ...]                # the run stops if any is absent
     one_of: tuple[tuple[str, ...], ...]       # ... or if every field of one group is absent
     optional: tuple[str, ...]                 # absent: whatever reads it is disabled
-    labels: tuple[str, ...]                   # read only by labelled runs (choosing, evaluation)
     identifying: tuple[str, ...] = ()         # one entity's each (a customer ID): a value on many records is a placeholder, read as missing (Run.load)
 
     def needed(self) -> set[str]:  # the fields a run may stop without: every mandatory one and each of a one_of group
         return {*self.mandatory, *(f for g in self.one_of for f in g)}
 
-    def lacking(self, has: Callable[[str], bool]) -> list[str]:  # what a run stops without, as said: a mandatory field, or "a or b" for a group of none
-        return [f for f in self.mandatory if not has(f)] + [" or ".join(g) for g in self.one_of if not any(map(has, g))]
-
     def declared(self) -> set[str]:
-        return {*self.mandatory, *(f for g in self.one_of for f in g), *self.optional, *self.labels}
+        return {*self.mandatory, *(f for g in self.one_of for f in g), *self.optional}
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -445,11 +409,10 @@ class KindSpec:
     trust_flag: bool = False                  # take the file's person/company flag as it is, instead of the model
 
 
-def kind_spec(d: Mapping[str, object]) -> KindSpec:  # [kind], refused when it sets what no field holds
-    if unknown := sorted(set(d) - {f.name for f in fields(KindSpec)}):
-        raise InputError(f"[kind]: {', '.join(unknown)} set nothing: a record's kind is a written legal form, a name the model is "
-                         "sure of (name_line), or else the file's flag", fix=f"delete {', '.join(unknown)} from [kind]")
-    return KindSpec(**d)
+def only(table: str, d: Mapping[str, object], known: Iterable[str]) -> Mapping[str, object]:  # a table of the pipeline, refused when it sets what nothing reads
+    if unknown := sorted(set(d) - set(known)):
+        raise InputError(f"{table}: {', '.join(unknown)} {'sets' if len(unknown) == 1 else 'set'} nothing", fix=f"delete {', '.join(unknown)} from {table}")
+    return d
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -457,7 +420,6 @@ class Pipeline:
     fields: Fields
     rules: RulesSpec
     fs: FSSpec
-    generators: Mapping[str, Blocker]         # every generator defined, by name; fs.blockers uses some of them
     threshold: ThresholdRule
     fit_rows: int = 100_000                   # an unlabelled run fits on a sample of this many records (er.run)
     kind: KindSpec | None = None              # person or company, on every record; None: not told apart
@@ -491,20 +453,16 @@ def generator(name: str, d: dict, chains: Mapping[str, tuple[Normalizer, ...]]) 
     raise ValueError(f"generator {name}: unknown kind {d['kind']!r} (keys, deletions)")
 
 
-def _resolver(d: dict) -> Resolver:
-    return Resolver(method=d["method"], cannot_link=tuple(d.get("cannot_link", ())))
+TABLES = {"fields", "budget", "rules", "generators", "model", "threshold", "kind", "household"}  # what pipeline_from reads
 
 
 def pipeline_from(cfg: dict, std: Standardization, chains: Mapping[str, tuple[Normalizer, ...]]) -> Pipeline:
-    """The parsed config/pipeline.toml → typed config."""
-    if "trust" in cfg:  # nothing merges by a sampled line: the rules' pairs, the model's at its threshold and people's decisions
-        raise InputError("[trust] sets nothing: a run merges nothing by itself; people set a match run's threshold and decide its pairs",
-                         fix="delete [trust]")
-    if "keys" in cfg:  # a run lists pairs by the generators the method names, chosen at design time
-        raise InputError("[keys] sets nothing: a run lists pairs by the [model] generators as given", fix="delete [keys]")
-    f, b, m = cfg["fields"], cfg["budget"], cfg["model"]
-    budget = Budget(**b)
-    rules = RulesSpec(standardize=std, resolver=_resolver(cfg["rules"]["resolver"]), budget=budget, stages=tuple(
+    """The parsed config/pipeline.toml → typed config. A table or a [budget] key it doesn't read is refused."""
+    if unknown := sorted(set(cfg) - TABLES):
+        raise InputError(f"{', '.join(f'[{x}]' for x in unknown)} {'sets' if len(unknown) == 1 else 'set'} nothing", fix=f"delete {', '.join(f'[{x}]' for x in unknown)}")
+    f, m = cfg["fields"], cfg["model"]
+    budget = Budget(**only("[budget]", cfg.get("budget", {}), (x.name for x in fields(Budget))))
+    rules = RulesSpec(stages=tuple(
         Stage(name=s["name"], comparators={c: _comparator(d, chains) for c, d in s.get("comparators", {}).items()},
               rules=tuple(Rule(name=r["name"], exact=tuple(r["exact"]), fuzzy=tuple(r.get("fuzzy", ())),
                                blocking=tuple(_key(k, chains) for k in r.get("blocking", ()))) for r in s["rules"]))
@@ -513,34 +471,30 @@ def pipeline_from(cfg: dict, std: Standardization, chains: Mapping[str, tuple[No
     unknown = [g for g in m["generators"] if g not in generators]
     if unknown:
         raise ValueError(f"[model] generators: {unknown} are not defined in [generators]")
-    if tf := [c["name"] for c in m["comparisons"] if "tf" in c or any("tf" in lv for lv in c["levels"])]:
-        raise InputError(f"[model] comparisons {', '.join(tf)}: tf sets nothing: a level weighs the same whichever value agrees",
-                         fix="delete tf from those comparisons and their levels")
     comparisons = tuple(Comparison(
         name=c["name"], null_if_missing=tuple(c["null_if_missing"]),
         levels=tuple(Level(label=lv["label"],
                            any_of=tuple((a["field"], _comparator(a, chains)) for a in lv["any_of"])) for lv in c["levels"]))
         for c in m["comparisons"])
-    model = FSModel(name=m["name"], comparisons=comparisons, prior_recall=m["prior_recall"], u_max_pairs=m["u_max_pairs"],
-                    prior_rules=tuple(tuple(_key(k, chains) for k in r) for r in m["prior_rules"]), m_method=m["m_method"],
+    model = FSModel(comparisons=comparisons, prior_recall=m["prior_recall"], u_max_pairs=m["u_max_pairs"],
+                    prior_rules=tuple(tuple(_key(k, chains) for k in r) for r in m["prior_rules"]),
                     em_rules=tuple(tuple(_key(k, chains) for k in r) for r in m["em_rules"]), seed=m["seed"],
                     u_from_scored=m.get("u_from_scored", False), u_exact_by_counts=m.get("u_exact_by_counts", False),
-                    u_near_by_keys=m.get("u_near_by_keys", False), fit_u_max_pairs=m.get("fit_u_max_pairs"), em_median=m.get("em_median", False), em_from_keys=m.get("em_from_keys", False))
+                    u_near_by_keys=m.get("u_near_by_keys", False), fit_u_max_pairs=m.get("fit_u_max_pairs"))
     unknown = [c for c in m.get("needs", ()) if c not in {c.name for c in comparisons}]
     if unknown:
         raise ValueError(f"[model] needs: {unknown} are not comparisons in [[model.comparisons]]")
-    fs = FSSpec(standardize=std, previous_stage=m["previous_stage"], stage=m["stage"], model=model,
-                  blockers=tuple(generators[g] for g in m["generators"]), min_match_weight=m["min_match_weight"],
-                  resolver=_resolver(m["resolver"]), budget=budget, bridge=m.get("bridge", False), needs=tuple(m.get("needs", ())))
+    fs = FSSpec(standardize=std, model=model, blockers=tuple(generators[g] for g in m["generators"]), min_match_weight=m["min_match_weight"],
+                budget=budget, bridge=m.get("bridge", False), needs=tuple(m.get("needs", ())))
     t = cfg["threshold"]
     return Pipeline(fields=Fields(mandatory=tuple(f["mandatory"]), one_of=tuple(map(tuple, f["one_of"])),
-                                  optional=tuple(f["optional"]), labels=tuple(f["labels"]), identifying=tuple(f.get("identifying", ()))),
-                    rules=rules, fs=fs, generators=generators,
-                    threshold=ThresholdRule(grid=tuple(t["grid"]), max_fp=t["max_fp"], max_fp_rate_hi=t["max_fp_rate_hi"],
+                                  optional=tuple(f["optional"]), identifying=tuple(f.get("identifying", ()))),
+                    rules=rules, fs=fs,
+                    threshold=ThresholdRule(grid=tuple(t["grid"]),
                                             margin_steps=t["margin_steps"], search_floor=float(t.get("search_floor", 0.0)),
                                             keep_from=float(t.get("keep_from", 0.0))),
                     fit_rows=m.get("fit_rows", 100_000),
-                    kind=kind_spec(cfg["kind"]) if "kind" in cfg else None,
+                    kind=KindSpec(**only("[kind]", cfg["kind"], (x.name for x in fields(KindSpec)))) if "kind" in cfg else None,
                     household=Household(shared=tuple(_key(k, chains) for k in cfg["household"]["shared"]),
                                         apart=tuple((d["field"], _comparator(d, chains)) for d in cfg["household"]["apart"])) if "household" in cfg else Household())
 
@@ -564,7 +518,7 @@ def load_pipeline(path: Path, std: Standardization, chains: Mapping[str, tuple[N
 def fields_read(p: Pipeline) -> set[str]:  # every field the rules, the generators and the model read
     r, m = p.rules, p.fs.model
     out = {c for s in r.stages for rule in s.rules for c in (*rule.exact, *rule.fuzzy, *(k.column for k in rule.blocking))}
-    out |= {k.column for b in p.generators.values() for k in keys_of(b)}
+    out |= {k.column for b in p.fs.blockers for k in keys_of(b)}
     out |= {col for c in m.comparisons for lv in c.levels for col, _ in lv.any_of} | {col for c in m.comparisons for col in c.null_if_missing}
     out |= {k.column for rule in (*m.prior_rules, *m.em_rules) for k in rule}
     out |= {c for s in r.stages for c in s.comparators}
@@ -576,11 +530,11 @@ def sources_text(alternatives: object) -> str:  # a field's sources as people re
     return ", or ".join(" + ".join(alt) for alt in alternatives) if alternatives else "no column (unmapped)"
 
 
-def check_fields(fields: Fields, present: set[str], expected: Mapping[str, object], labelled: bool = False) -> None:
-    """Stop when a mandatory field, every field of a one_of group, or (for a labelled run) a label is absent; the error
-    names the columns config/settings.toml [columns] expects for each."""
+def check_fields(fields: Fields, present: set[str], expected: Mapping[str, object]) -> None:
+    """Stop when a mandatory field or every field of a one_of group is absent; the error names the columns
+    config/settings.toml [columns] expects for each."""
     fix = "map the field to the file's column in config/settings.toml [columns]"
-    missing = [f for f in (*fields.mandatory, *(fields.labels if labelled else ())) if f not in present]
+    missing = [f for f in fields.mandatory if f not in present]
     if missing:
         raise InputError("the file lacks a field every run needs: " + "; ".join(f"{f} (expected in {sources_text(expected.get(f))})" for f in missing), fix)
     empty = [g for g in fields.one_of if not set(g) & present]
@@ -634,7 +588,7 @@ def restrict(p: Pipeline, present: set[str]) -> tuple[Pipeline, list[str]]:
     em = tuple(r for r in m.em_rules if has(k.column for k in r))
     if not prior:  # λ, how often two records match, is first measured on near-certain pairs
         raise lacking("the model can't start", {k.column for r in m.prior_rules for k in r})
-    if m.m_method == "em" and not em:
+    if not em:
         raise lacking("the model can't be fitted", {k.column for r in m.em_rules for k in r})
     gone += [f"prior rule {[k.column for k in r]}" for r in m.prior_rules if r not in prior]
     gone += [f"EM rule {[k.column for k in r]}" for r in m.em_rules if r not in em]
