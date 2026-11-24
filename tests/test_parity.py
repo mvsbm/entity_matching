@@ -62,6 +62,8 @@ def got(tmp_path_factory, population) -> dict:
         out[f"decide{i}.gold"] = digest(engine.frame(TABLES["gold"]))
     nayose.match(engine, 6.0)
     out["match_again"] = digest(engine.frame("SELECT * FROM matched"))
+    for name, ask in (("kin", dict(values={"FULL_NAME_KANA": "ヤマダ ハナコ", "POST_CD": "1500001"})), ("crowd", dict(record="8000000000"))):
+        out[f"lookup.{name}"] = hashlib.sha256(json.dumps(nayose.lookup(engine, **ask), ensure_ascii=False, sort_keys=True).encode()).hexdigest()[:16]  # a big block the gate keeps
 
     first, rest = g.df.iloc[: len(g.df) // 2].copy(), g.df.iloc[len(g.df) // 2:].copy()
     first.loc[first.index[:2], "PHONE_NUM_4"] = "4321"

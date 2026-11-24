@@ -181,8 +181,8 @@ class DuckDB:
     folder of its own). `compute`: DuckDB's settings (threads, memory_limit, temp_directory)."""
     name = "duckdb"
 
-    def __init__(self, path: Path | None = None, compute: dict | None = None) -> None:
-        self.con = duckdb.connect(str(path) if path else ":memory:")
+    def __init__(self, path: Path | None = None, compute: dict | None = None, read_only: bool = False) -> None:
+        self.con = duckdb.connect(str(path) if path else ":memory:", read_only=read_only)  # read_only: temporary objects alone
         self.spill = None
         settings = {k: v for k, v in (compute or {}).items() if v not in ("", None)}
         if not path and "temp_directory" not in settings:  # spilled records in a folder only this job can read
@@ -192,12 +192,12 @@ class DuckDB:
         for key, value in settings.items():
             self.con.execute(f"SET {key} = '{value}'")
         # the portable hash: MD5's first 15 hex digits as an integer, as BigQuery's er_hash (functions())
-        self.con.execute("CREATE OR REPLACE MACRO er_hash(x) AS ('0x' || substr(md5(coalesce(CAST(x AS VARCHAR), '')), 1, 15))::BIGINT")
+        self.con.execute("CREATE OR REPLACE TEMP MACRO er_hash(x) AS ('0x' || substr(md5(coalesce(CAST(x AS VARCHAR), '')), 1, 15))::BIGINT")
         for name in FUNCTIONS:  # cl_*: DuckDB's own function where it answers as the twin does (native), else the twin
             self.con.create_function(f"twin_{name}", compare(name), ["VARCHAR", "VARCHAR"], "DOUBLE", type="arrow")
             self.con.create_function(f"twin_{name}_cut", compare(name, cut=True), ["VARCHAR", "VARCHAR", "DOUBLE"], "DOUBLE", type="arrow")
-            self.con.execute(f"CREATE OR REPLACE MACRO cl_{name}(a, b) AS {native(name, f'twin_{name}(a, b)')}")
-            self.con.execute(f"CREATE OR REPLACE MACRO cl_{name}_cut(a, b, t) AS {native(name, f'twin_{name}_cut(a, b, t)')}")
+            self.con.execute(f"CREATE OR REPLACE TEMP MACRO cl_{name}(a, b) AS {native(name, f'twin_{name}(a, b)')}")
+            self.con.execute(f"CREATE OR REPLACE TEMP MACRO cl_{name}_cut(a, b, t) AS {native(name, f'twin_{name}_cut(a, b, t)')}")
         self.con.create_function("nfkc", nfkc, ["VARCHAR"], "VARCHAR", type="arrow")
         self.con.create_function("one_byte_hash", one_byte_hash, ["VARCHAR"], "VARCHAR", type="arrow")
         self.con.create_function("fit_model", em.fit, ["VARCHAR", "VARCHAR", "VARCHAR"], "VARCHAR", null_handling="special")  # EM: Python, as on BigQuery
@@ -381,8 +381,12 @@ class BigQuery:
         self.client = client or self.bigquery.Client(project=dataset.split(".")[0])
         self.dataset, self.functions, self.session = dataset, functions, None
 
+    OWN = re.compile(r"(?<![\w.`])(" + "|".join(sorted({n for f in STRINGS.parent.glob("sql/*.sql") for n in re.findall(r"CREATE OR REPLACE TEMP FUNCTION (\w+)", f.read_text(encoding="utf-8"))},
+                                                       key=len, reverse=True)) + r")\s*\(")  # the method's SQL functions: the deploy made each in the dataset
+
     def _job(self, sql: str, values: dict | None = None) -> object:
         text = self.CALLS.sub(lambda m: f"`{self.functions}`.{m.group(1)}(", sql)
+        text = self.OWN.sub(lambda m: f"`{self.dataset}`.{m.group(1)}(", text)
         job = self.client.query(text, job_config=self._config(values))
         result = job.result()
         if self.session is None:
@@ -398,6 +402,8 @@ class BigQuery:
         return config
 
     def run(self, sql: str, values: dict | None = None) -> None:
+        if TEMP_FUNCTION.match(sql):  # the deploy's, in the dataset (procedures): made again, a statement each, for nothing
+            return
         self._job(sql, values)
 
     def rows(self, sql: str, values: dict | None = None) -> list[tuple]:

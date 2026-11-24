@@ -88,7 +88,7 @@ python -m nayose lookup --out runs/main --record 1234          or COLUMN=VALUE â
 ```
 
 - **A run is a folder:** `run.duckdb` (its tables), `report.txt` and `matched/`.
-- **One writer at a time:** build, update and decide take the folder's lock (`.lock`). The system frees the lock when the process ends, even if it dies, so none is ever left behind. A writer works on `run.duckdb.new` and puts it in place whole when done, so a job that fails or is killed leaves `run.duckdb` as it was; the next writer removes a leftover `run.duckdb.new`. match and lookup each read a copy of their own and never wait. Every job needs free disk for one more copy of `run.duckdb`.
+- **One writer at a time:** build, update and decide take the folder's lock (`.lock`). The system frees the lock when the process ends, even if it dies, so none is ever left behind. A writer works on `run.duckdb.new` and puts it in place whole when done, so a job that fails or is killed leaves `run.duckdb` as it was; the next writer removes a leftover `run.duckdb.new`. match reads a copy of its own, and a lookup the run itself, read-only (a copy on Windows, where an open file can't be replaced); neither waits. Every job but a lookup needs free disk for one more copy of `run.duckdb` (a lookup on Windows too).
 - **What a job prints:** one JSON object on stdout, and each stage's seconds as a JSON line on stderr.
 
 | Exit | Means | Then |

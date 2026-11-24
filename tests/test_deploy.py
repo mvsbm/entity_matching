@@ -180,3 +180,20 @@ def test_a_job_on_bigquery_is_all_or_nothing(monkeypatch):
         run.main(["p.run", "undo"], client=died, bigquery=MODULE)
     assert run.main(["p.run", "undo"], client=died, bigquery=MODULE) == 0 and died.tables == {**before, "name_weights": 2}
     assert run.main(["p.run", "undo"], client=died, bigquery=MODULE) == 0 and died.tables == {**before, "name_weights": 2}  # nothing marked
+
+
+def test_python_s_statements_on_bigquery_call_the_deploy_s_functions_and_make_none():
+    import nayose
+    from nayose.engines import BigQuery
+    client = Recorded()
+    engine = BigQuery("p.run", "p.fn", client=client, bigquery=MODULE)
+    nayose.stage(engine, "functions")
+    engine.run("SELECT gamma_name(x, y), cl_jaro_winkler(a, b) FROM t")
+    assert not [s for s in client.sent if "TEMP FUNCTION" in s] and "`p.run`.gamma_name(x, y), `p.fn`.cl_jaro_winkler(a, b)" in client.sent[-1]
+
+
+def test_every_function_python_calls_on_bigquery_is_one_the_deploy_makes():  # else a lookup would call one never made
+    from nayose import SQL
+    made = {re.search(r"FUNCTION `p\.run`\.(\w+)\(", s)[1] for s in procedures("p.run", "p.fn") if "CREATE OR REPLACE FUNCTION" in s}
+    called = {n for f in SQL.glob("*.sql") for n in re.findall(r"CREATE OR REPLACE TEMP FUNCTION (\w+)", f.read_text(encoding="utf-8"))}
+    assert called <= made, called - made
