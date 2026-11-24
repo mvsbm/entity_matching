@@ -260,7 +260,16 @@ readings AS (
   SELECT
     *,
     NULLIF(SUBSTR(address__address, 1, 3), '') AS address__address_first3,
-    NULLIF(REGEXP_REPLACE(REGEXP_REPLACE(person_name__kana_fold, r'([オコソトノホモヨロ])[ウオ]', r'\1ウ'), r'([エケセテネヘメレ])[イエ]', r'\1イ'), '') AS person_name__kana_fold_long_vowel
+    NULLIF(REGEXP_REPLACE(REGEXP_REPLACE(person_name__kana_fold, r'([オコソトノホモヨロ])[ウオ]', r'\1ウ'), r'([エケセテネヘメレ])[イエ]', r'\1イ'), '') AS person_name__kana_fold_long_vowel,
+    -- one_byte: a copy a similarity reads, when it is katakana alone: each character one byte of its own (@one_byte), so
+    -- DuckDB's own similarity, which counts bytes, compares it as characters; JavaScript's scores it alike. Else none.
+    IF(REGEXP_CONTAINS(person_name__kana_fold, r'^[\x{30a0}-\x{30ff}]+$'), TRANSLATE(person_name__kana_fold, @katakana_block, @one_byte), NULL)
+      AS person_name__kana_fold_one_byte,
+    IF(REGEXP_CONTAINS(company_name__nfkc_strip_legal_form_kana_fold, r'^[\x{30a0}-\x{30ff}]+$'),
+       TRANSLATE(company_name__nfkc_strip_legal_form_kana_fold, @katakana_block, @one_byte), NULL) AS company_name__nfkc_strip_legal_form_kana_fold_one_byte,
+    -- one_byte_hash: a copy an edit distance reads, when it isn't ASCII: each character a byte by its code point (two
+    -- may share one), so the copies are never farther apart than the strings, and DuckDB finds that natively. Else none.
+    IF(REGEXP_CONTAINS(address__address, r'[^\x00-\x7f]'), one_byte_hash(address__address), NULL) AS address__address_one_byte_hash
   FROM copies
 )
 SELECT

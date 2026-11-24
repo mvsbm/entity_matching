@@ -25,6 +25,7 @@ NAME_MODEL = HERE.parent / "config" / "kind_names.npz"  # the name model: its te
 SMALL_KANA = str.maketrans("ァィゥェォッャュョヮ", "アイウエオツヤユヨワ")  # banks write no small kana: a legal form is also matched so
 HIRAGANA = "".join(chr(c) for c in range(0x3041, 0x3097))  # hiragana, and the katakana each is read as
 KATAKANA = "".join(chr(c + 0x60) for c in range(0x3041, 0x3097))
+KATAKANA_BLOCK, ONE_BYTE = "".join(map(chr, range(0x30A0, 0x3100))), "".join(map(chr, range(1, 0x61)))  # the block, each a byte: 0x01–0x60
 NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")  # a column name config.toml gives
 
 
@@ -97,7 +98,7 @@ def records(engine, files: list) -> None:
     engine.put("name_weights", pd.DataFrame({"term": model["terms"].tolist(), "w": model["coef"]}))
     run_file(engine, HERE / "mapping.sql")
     r = c["records"]
-    stage(engine, "records", hiragana=HIRAGANA, katakana=KATAKANA, kana_fold_from=r["kana_fold_from"], kana_fold_to=r["kana_fold_to"],
+    stage(engine, "records", hiragana=HIRAGANA, katakana=KATAKANA, katakana_block=KATAKANA_BLOCK, one_byte=ONE_BYTE, kana_fold_from=r["kana_fold_from"], kana_fold_to=r["kana_fold_to"],
           legal_pattern=legal_pattern(r), prefecture_pattern=f"^(?:{'|'.join(map(re.escape, r['prefectures']))})",
           flag_company=list(r["flag_company"]), name_line=float(r["name_line"]), trust_flag=bool(r["trust_flag"]),
           shared_name_column=bool(r["shared_name_column"]), ngram=int(r["ngram"]), intercept=float(model["intercept"]),

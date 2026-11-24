@@ -21,7 +21,7 @@
 
 -- A column of numbers: half its filled values digits, a point, an exponent's E+ and a leading minus aside. Each value:
 -- NULL not filled, 1 a number, 0 not one.
-CREATE TEMP FUNCTION numberlike(v STRING) RETURNS INT64 AS (
+CREATE OR REPLACE TEMP FUNCTION numberlike(v STRING) RETURNS INT64 AS (
   CASE
     WHEN v IS NULL OR REGEXP_CONTAINS(v, r'^[\t-\r\x{1c}-\x{20}\x{85}\x{a0}\x{1680}\x{2000}-\x{200a}\x{2028}\x{2029}\x{202f}\x{205f}\x{3000}]*$') THEN NULL
     WHEN REGEXP_CONTAINS(v, r'[^\x00-\x7f]') THEN 0
@@ -42,12 +42,12 @@ CREATE TEMP FUNCTION numberlike(v STRING) RETURNS INT64 AS (
 --   The patterns, in pieces: a JSON string "(?:[^"\\]|\\["\\/bfnrt]|\\u[0-9a-fA-F]{4})*"; a JSON number
 --   -?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?; a Python string '…' or "…" ('' is \x{27}); a blank item
 --   "SP*", 'SP*' or null.
-CREATE TEMP FUNCTION listed_item(v STRING) RETURNS STRING AS (
+CREATE OR REPLACE TEMP FUNCTION listed_item(v STRING) RETURNS STRING AS (
   -- the first filled item, as written (quotes and all): NULL when no item is filled
   REGEXP_EXTRACT(v, r'^[\t-\r\x{1c}-\x{20}\x{85}\x{a0}\x{1680}\x{2000}-\x{200a}\x{2028}\x{2029}\x{202f}\x{205f}\x{3000}]*\[[ \t\n\r\x{0c}]*(?:(?:"[\t-\r\x{1c}-\x{20}\x{85}\x{a0}\x{1680}\x{2000}-\x{200a}\x{2028}\x{2029}\x{202f}\x{205f}\x{3000}]*"|\x{27}[\t-\r\x{1c}-\x{20}\x{85}\x{a0}\x{1680}\x{2000}-\x{200a}\x{2028}\x{2029}\x{202f}\x{205f}\x{3000}]*\x{27}|null)[ \t\n\r\x{0c}]*,[ \t\n\r\x{0c}]*)*("(?:[^"\\]|\\.)*(?:[^"\\\t-\r\x{1c}-\x{20}\x{85}\x{a0}\x{1680}\x{2000}-\x{200a}\x{2028}\x{2029}\x{202f}\x{205f}\x{3000}]|\\.)(?:[^"\\]|\\.)*"|\x{27}[^\x{27}\\\r\n]*[^\x{27}\\\t-\r\x{1c}-\x{20}\x{85}\x{a0}\x{1680}\x{2000}-\x{200a}\x{2028}\x{2029}\x{202f}\x{205f}\x{3000}][^\x{27}\\\r\n]*\x{27}|-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?)')
 );
 
-CREATE TEMP FUNCTION item_read(item STRING) RETURNS STRING AS (
+CREATE OR REPLACE TEMP FUNCTION item_read(item STRING) RETURNS STRING AS (
   CASE
     WHEN item IS NULL THEN NULL
     WHEN NOT (STARTS_WITH(item, '"') OR STARTS_WITH(item, "'")) THEN  -- a number
@@ -59,7 +59,7 @@ CREATE TEMP FUNCTION item_read(item STRING) RETURNS STRING AS (
   END
 );
 
-CREATE TEMP FUNCTION listed(v STRING) RETURNS STRUCT<v STRING, fixed STRING> AS (
+CREATE OR REPLACE TEMP FUNCTION listed(v STRING) RETURNS STRUCT<v STRING, fixed STRING> AS (
   CASE
     WHEN v IS NULL OR v = '' THEN STRUCT(CAST(NULL AS STRING) AS v, CAST(NULL AS STRING) AS fixed)
     WHEN REGEXP_CONTAINS(v, r'\x{fffd}') THEN STRUCT(CAST(NULL AS STRING) AS v, 'damaged' AS fixed)
@@ -82,7 +82,7 @@ CREATE TEMP FUNCTION listed(v STRING) RETURNS STRUCT<v STRING, fixed STRING> AS 
 -- Then controls, placeholders and numbers, on a value `listed` gave: (the value, what was fixed). `numeric`: whether
 -- its column holds numbers (numberlike); `nulls`: [input] nulls. A value holding no control character or break is
 -- read as it is (most are: the test is one scan, where removing them is two).
-CREATE TEMP FUNCTION settled(v STRING, fixed STRING, numeric BOOL, nulls ARRAY<STRING>) RETURNS STRUCT<v STRING, fixed STRING> AS (
+CREATE OR REPLACE TEMP FUNCTION settled(v STRING, fixed STRING, numeric BOOL, nulls ARRAY<STRING>) RETURNS STRUCT<v STRING, fixed STRING> AS (
   CASE
     WHEN REGEXP_REPLACE(v, r'^[ \x{3000}]+|[ \x{3000}]+$', '') IN UNNEST(nulls)
       OR REGEXP_CONTAINS(v, r'^[\t-\r\x{1c}-\x{20}\x{85}\x{a0}\x{1680}\x{2000}-\x{200a}\x{2028}\x{2029}\x{202f}\x{205f}\x{3000}]*$')
@@ -95,7 +95,7 @@ CREATE TEMP FUNCTION settled(v STRING, fixed STRING, numeric BOOL, nulls ARRAY<S
   END
 );
 
-CREATE TEMP FUNCTION tidied(v STRING, fixed STRING, numeric BOOL, nulls ARRAY<STRING>) RETURNS STRUCT<v STRING, fixed STRING> AS (
+CREATE OR REPLACE TEMP FUNCTION tidied(v STRING, fixed STRING, numeric BOOL, nulls ARRAY<STRING>) RETURNS STRUCT<v STRING, fixed STRING> AS (
   CASE
     WHEN v IS NULL THEN STRUCT(CAST(NULL AS STRING) AS v, fixed AS fixed)
     WHEN REGEXP_CONTAINS(v, r'[\x00-\x1f\x7f-\x9f\x{200b}-\x{200d}\x{2060}\x{feff}]')  -- controls, tabs and breaks: removed, a space
