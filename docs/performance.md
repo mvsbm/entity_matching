@@ -91,7 +91,7 @@ A lookup reads the key index by its keys, and the records it touches by ID. Of a
 
 ## Memory and disk
 
-The run's tables are DuckDB's. Past `memory_limit` (`--compute memory_limit=8GB`), DuckDB spills to `temp_directory`. Python holds only small results: the fit's counts, the model and report.txt's numbers. Peak memory and `run.duckdb`'s size at 1M: 6.4 GB and 1.28 GB at 1,039,995 records, 0.75 GB of it the key index (`every_key`, `rule_keys`: 43.5M rows; about 1.7 TB at 1B in BigQuery's bytes). For files of growing size, `scripts/benchmark.py` builds each one in a process of its own and writes `reports/benchmark.md`: [reports/benchmark.md](../reports/benchmark.md): a build grows like N^0.35 between 13,019 and 1,039,995 records, 5.1 s to 24.1 s, 1.29 GB to 6.4 GB at peak. A small file's build is mostly the fit's u sample, about ten million pairs at any size.
+The run's tables are DuckDB's. Past `memory_limit` (`--compute memory_limit=8GB`), DuckDB spills to `temp_directory`. Python holds only small results: the fit's counts, the model and report.txt's numbers. Peak memory and `run.duckdb`'s size at 1M: 6.4 GB and 1.14 GB at 1,039,995 records, 0.75 GB of it the key index (`every_key`, `rule_keys`: 43.5M rows; about 1.7 TB at 1B in BigQuery's bytes). For files of growing size, `scripts/benchmark.py` builds each one in a process of its own and writes `reports/benchmark.md`: [reports/benchmark.md](../reports/benchmark.md): a build grows like N^0.35 between 13,019 and 1,039,995 records, 5.1 s to 24.1 s, 1.29 GB to 6.4 GB at peak. A small file's build is mostly the fit's u sample, about ten million pairs at any size.
 
 ## Each key's worth
 
