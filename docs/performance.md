@@ -64,9 +64,9 @@ Billed, rows and calls: `scripts/estimate_cost.py` on 1M generated records. Wall
 |---|---|---|---|---|
 | records | 2,487 MB | 280M | 0 | 9.8 s |
 | fit | 1,109 MB | 517M | 11.2M | 6.0 s |
-| score | 4,648 MB | 654M | 6.5M | 14.8 s |
+| score | 4,648 MB | 642M | 3.6M | 14.8 s |
 | decide (the build's) | 161 MB | 15M | 0 | 0.18 s |
-| **build** | **8,405 MB** | **1,466M** | **17.7M** | **30.9 s** |
+| **build** | **8,405 MB** | **1,454M** | **14.8M** | **30.9 s** |
 | match at `keep_from` | 199 MB | 4.1M | 205k | 0.6 s, as its own job |
 
 ```

@@ -160,23 +160,44 @@ CREATE OR REPLACE TEMP FUNCTION weight_of(g_name INT64, g_company INT64, g_addre
   + w.phone[OFFSET(g_phone + 1)] + w.cif[OFFSET(g_cif + 1)] + w.birth[OFFSET(g_birth + 1)]
 );
 
--- An upper bound of a pair's weight, from its equalities alone: a fuzzy comparison at its level where a leading
--- equality settles it, else at the best of its later levels; the cheap ones at their own. No pair it rules out could
--- reach the floor, and the costly comparisons are made only on the pairs it keeps.
+-- The most Jaro–Winkler two strings can score, from their lengths and common start alone: Jaro at most (2 + r)/3 (r the
+-- shorter's length over the longer's: every character of the shorter matching, in order), raised by the common start
+-- (up to 4 characters) as Winkler raises it. A threshold this misses, the score misses too.
+CREATE OR REPLACE TEMP FUNCTION jaro_winkler_most(a STRING, b STRING) AS (
+  (2 + LEAST(LENGTH(a), LENGTH(b)) / GREATEST(LENGTH(a), LENGTH(b))) / 3
+    * (1 - CAST(0.1 AS FLOAT64) * IF(LEFT(a, 1) = LEFT(b, 1), IF(LEFT(a, 2) = LEFT(b, 2), IF(LEFT(a, 3) = LEFT(b, 3), IF(LEFT(a, 4) = LEFT(b, 4), 4, 3), 2), 1), 0))
+    + CAST(0.1 AS FLOAT64) * IF(LEFT(a, 1) = LEFT(b, 1), IF(LEFT(a, 2) = LEFT(b, 2), IF(LEFT(a, 3) = LEFT(b, 3), IF(LEFT(a, 4) = LEFT(b, 4), 4, 3), 2), 1), 0)
+);
+
+-- An upper bound of a pair's weight, from equalities and lengths alone: a fuzzy comparison at its level where a
+-- leading equality settles it, else at the best of the levels it can still reach (a Jaro–Winkler level only where
+-- jaro_winkler_most reaches its threshold, the given name's where the given names are equal, an address close only
+-- within two characters of length, the same postal code only where it is); the cheap ones at their own. No pair it
+-- rules out could reach the floor, and the costly comparisons are made only on the pairs it keeps.
 CREATE OR REPLACE TEMP FUNCTION bound_of(l ANY TYPE, r ANY TYPE, w ANY TYPE) AS (
   w.prior
   + CASE WHEN l.person_name IS NULL OR r.person_name IS NULL THEN CAST(0 AS FLOAT64)
          WHEN l.person_name = r.person_name THEN w.name[OFFSET(7)]
          WHEN l.person_name__kana_fold = r.person_name__kana_fold THEN w.name[OFFSET(6)]
          WHEN l.person_name__kana_fold_long_vowel = r.person_name__kana_fold_long_vowel THEN w.name[OFFSET(5)]
-         ELSE w.name_after END
+         WHEN l.person_name__kana_fold IS NULL OR r.person_name__kana_fold IS NULL THEN w.name_after
+         ELSE GREATEST(w.name[OFFSET(1)],
+                       IF(jaro_winkler_most(l.person_name__kana_fold, r.person_name__kana_fold) >= CAST(0.949999 AS FLOAT64), w.name[OFFSET(4)], w.name[OFFSET(1)]),
+                       IF(l.given_name__kana_fold = r.given_name__kana_fold, w.name[OFFSET(3)], w.name[OFFSET(1)]),
+                       IF(jaro_winkler_most(l.person_name__kana_fold, r.person_name__kana_fold) >= CAST(0.749999 AS FLOAT64), w.name[OFFSET(2)], w.name[OFFSET(1)])) END
   + CASE WHEN l.company_name IS NULL OR r.company_name IS NULL THEN CAST(0 AS FLOAT64)
          WHEN l.company_name__nfkc_strip_legal_form_kana_fold = r.company_name__nfkc_strip_legal_form_kana_fold THEN w.company[OFFSET(3)]
-         ELSE w.company_after END
+         WHEN l.company_name__nfkc_strip_legal_form_kana_fold IS NULL OR r.company_name__nfkc_strip_legal_form_kana_fold IS NULL THEN w.company_after
+         WHEN jaro_winkler_most(l.company_name__nfkc_strip_legal_form_kana_fold, r.company_name__nfkc_strip_legal_form_kana_fold)
+              >= CAST(0.799999 AS FLOAT64) THEN w.company_after
+         ELSE w.company[OFFSET(1)] END
   + CASE WHEN (l.address_code IS NULL OR r.address_code IS NULL) AND (l.address IS NULL OR r.address IS NULL)
               AND (l.postal_code IS NULL OR r.postal_code IS NULL) THEN CAST(0 AS FLOAT64)
          WHEN l.address_code = r.address_code OR l.address__address = r.address__address THEN w.address[OFFSET(4)]
-         ELSE w.address_after END
+         ELSE GREATEST(w.address[OFFSET(1)],
+                       IF(l.address__address IS NOT NULL AND r.address__address IS NOT NULL
+                          AND ABS(LENGTH(l.address__address) - LENGTH(r.address__address)) <= 2, w.address[OFFSET(3)], w.address[OFFSET(1)]),
+                       IF(l.postal_code = r.postal_code, w.address[OFFSET(2)], w.address[OFFSET(1)])) END
   + w.phone[OFFSET(gamma_phone(l, r) + 1)] + w.cif[OFFSET(gamma_cif(l, r) + 1)] + w.birth[OFFSET(gamma_birth(l, r) + 1)]
 );
 
